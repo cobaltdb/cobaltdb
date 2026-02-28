@@ -227,7 +227,7 @@ func TestEvalExpressionTypes(t *testing.T) {
 				args = []interface{}{"value"}
 			}
 
-			_, err := evalExpression(tt.expr, args)
+			_, err := EvalExpression(tt.expr, args)
 			if err != nil {
 				t.Errorf("Failed to eval %s: %v", tt.name, err)
 			}
@@ -237,7 +237,7 @@ func TestEvalExpressionTypes(t *testing.T) {
 
 func TestEvalPlaceholderOutOfRange(t *testing.T) {
 	expr := &query.PlaceholderExpr{Index: 10}
-	_, err := evalExpression(expr, []interface{}{"one"})
+	_, err := EvalExpression(expr, []interface{}{"one"})
 	if err == nil {
 		t.Error("Expected error for placeholder index out of range")
 	}

@@ -348,6 +348,11 @@ func (p *Parser) parseOrderByList() ([]*OrderByExpr, error) {
 
 // parseExpressionList parses a comma-separated list of expressions
 func (p *Parser) parseExpressionList() ([]Expression, error) {
+	return p.parseExpressionListWithOffset(0)
+}
+
+// parseExpressionListWithOffset parses a comma-separated list of expressions with placeholder offset
+func (p *Parser) parseExpressionListWithOffset(placeholderOffset int) ([]Expression, error) {
 	var exprs []Expression
 
 	for {
@@ -355,6 +360,13 @@ func (p *Parser) parseExpressionList() ([]Expression, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		// Update placeholder indices with position in the list
+		if placeholder, ok := expr.(*PlaceholderExpr); ok {
+			// Add both offset and current position in the list
+			placeholder.Index += placeholderOffset + len(exprs)
+		}
+
 		exprs = append(exprs, expr)
 
 		if !p.match(TokenComma) {
@@ -715,18 +727,38 @@ func (p *Parser) parseInsert() (*InsertStmt, error) {
 	p.expect(TokenValues)
 
 	// Value lists
+	rowCount := 0
 	for {
 		p.expect(TokenLParen)
-		values, err := p.parseExpressionList()
+
+		// Calculate placeholder offset for this row
+		// If there are columns specified, use that count; otherwise estimate
+		placeholderCount := 0
+		if len(stmt.Columns) > 0 {
+			placeholderCount = len(stmt.Columns)
+		} else {
+			// We'll estimate based on the first row
+			placeholderCount = 0
+		}
+
+		offset := rowCount * placeholderCount
+		values, err := p.parseExpressionListWithOffset(offset)
 		if err != nil {
 			return nil, err
 		}
+
+		// Update placeholder count after first row
+		if rowCount == 0 && placeholderCount == 0 {
+			placeholderCount = len(values)
+		}
+
 		stmt.Values = append(stmt.Values, values)
 		p.expect(TokenRParen)
 
 		if !p.match(TokenComma) {
 			break
 		}
+		rowCount++
 	}
 
 	return stmt, nil

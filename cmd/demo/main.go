@@ -68,7 +68,7 @@ func main() {
 	}
 	defer rows.Close()
 
-	fmt.Println("   Results:")
+	fmt.Println("   Columns:", rows.Columns())
 	for rows.Next() {
 		var name, email string
 		if err := rows.Scan(&name, &email); err != nil {
