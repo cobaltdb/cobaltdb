@@ -190,6 +190,21 @@ func (db *DB) loadExisting() error {
 	// Initialize transaction manager
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
 
+	// Load table data from disk
+	if db.path != ":memory:" {
+		dataDir := db.path + ".data"
+
+		// First load schema
+		if err := db.catalog.LoadSchema(dataDir); err != nil {
+			return fmt.Errorf("failed to load schema: %w", err)
+		}
+
+		// Then load data
+		if err := db.catalog.LoadData(dataDir); err != nil {
+			return fmt.Errorf("failed to load data: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -203,6 +218,14 @@ func (db *DB) Close() error {
 	}
 
 	db.closed = true
+
+	// Save catalog data to disk (if not in-memory)
+	if !db.options.InMemory && db.path != ":memory:" {
+		dataDir := db.path + ".data"
+		if err := db.catalog.SaveData(dataDir); err != nil {
+			return fmt.Errorf("failed to save data: %w", err)
+		}
+	}
 
 	// Flush buffer pool
 	if err := db.pool.Close(); err != nil {

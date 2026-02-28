@@ -4,19 +4,28 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
 
 func main() {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
+	dbPath := "./test.cobalt"
+
+	// Remove existing database
+	os.RemoveAll(dbPath + ".data")
+	os.Remove(dbPath)
+
+	fmt.Println("=== Test: Disk Persistence ===")
+
+	// Open database
+	db, err := engine.Open(dbPath, &engine.Options{
+		InMemory:  false,
 		CacheSize: 1024,
 	})
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
 
 	ctx := context.Background()
 
@@ -25,39 +34,53 @@ func main() {
 		CREATE TABLE users (
 			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
-			age INTEGER
+			email TEXT
 		)
 	`)
 
 	// Insert data
-	db.Exec(ctx, "INSERT INTO users (name, age) VALUES (?, ?)", "Ersin", 30)
-	db.Exec(ctx, "INSERT INTO users (name, age) VALUES (?, ?)", "Jane", 25)
-	db.Exec(ctx, "INSERT INTO users (name, age) VALUES (?, ?)", "John", 35)
+	db.Exec(ctx, "INSERT INTO users (name, email) VALUES (?, ?)", "Ersin", "ersin@test.dev")
+	db.Exec(ctx, "INSERT INTO users (name, email) VALUES (?, ?)", "Jane", "jane@test.dev")
 
-	// Test WHERE clause
-	fmt.Println("Test 1: WHERE age > 28")
-	rows, err := db.Query(ctx, "SELECT name, age FROM users WHERE age > 28")
-	if err != nil {
-		log.Printf("Error: %v", err)
-	} else {
-		for rows.Next() {
-			var name string
-			var age int
-			rows.Scan(&name, &age)
-			fmt.Printf("  - %s, age=%d\n", name, age)
-		}
+	// Query before close
+	rows, _ := db.Query(ctx, "SELECT name, email FROM users")
+	fmt.Println("Before close:")
+	for rows.Next() {
+		var name, email string
+		rows.Scan(&name, &email)
+		fmt.Printf("  - %s <%s>\n", name, email)
 	}
+	rows.Close()
 
-	fmt.Println("\nTest 2: WHERE name = 'Jane'")
-	rows, err = db.Query(ctx, "SELECT name, age FROM users WHERE name = 'Jane'")
+	// Close database
+	db.Close()
+	fmt.Println("Database closed")
+
+	// Reopen database
+	fmt.Println("\nAfter reopen:")
+	db2, err := engine.Open(dbPath, nil)
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Fatalf("Failed to reopen database: %v", err)
+	}
+	defer db2.Close()
+
+	rows2, _ := db2.Query(ctx, "SELECT name, email FROM users")
+	count := 0
+	for rows2.Next() {
+		count++
+		var name, email string
+		rows2.Scan(&name, &email)
+		fmt.Printf("  - %s <%s>\n", name, email)
+	}
+	rows2.Close()
+
+	// Cleanup
+	os.RemoveAll(dbPath + ".data")
+	os.Remove(dbPath)
+
+	if count == 2 {
+		fmt.Printf("\n✅ SUCCESS: %d users loaded from disk!\n", count)
 	} else {
-		for rows.Next() {
-			var name string
-			var age int
-			rows.Scan(&name, &age)
-			fmt.Printf("  - %s, age=%d\n", name, age)
-		}
+		fmt.Printf("\n❌ FAILURE: Expected 2 users, got %d\n", count)
 	}
 }

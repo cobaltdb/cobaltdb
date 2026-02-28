@@ -5,19 +5,19 @@
 
 ---
 
-## 1. Vizyon & Positioning
+## 1. Vision & Positioning
 
 ```
-SQLite        → Single-file relational, C, 40+ yıllık legacy
+SQLite        → Single-file relational, C, 40+ years of legacy
 BoltDB        → Key-value only, no query language
 BadgerDB      → LSM-based KV, no SQL
 DuckDB        → Analytical (OLAP), embedded
 ─────────────────────────────────────────────────
 CobaltDB         → Hybrid document-relational, Go-native,
-                SQL + JSONPath queries, embed veya standalone
+                SQL + JSONPath queries, embedded or standalone
 ```
 
-**Hedef:** SQLite'ın basitliği + MongoDB'nin document flexibility'si + modern Go ecosystem uyumu.
+**Goal:** SQLite's simplicity + MongoDB's document flexibility + modern Go ecosystem compatibility.
 
 ---
 
@@ -79,11 +79,11 @@ CobaltDB         → Hybrid document-relational, Go-native,
 
 ---
 
-## 3. Core Components — Detaylı Tasarım
+## 3. Core Components — Detailed Design
 
 ### 3.1 Storage Backend (I/O Layer)
 
-İki mode destekle: **Disk** ve **Memory**.
+Supports two modes: **Disk** and **Memory**.
 
 ```go
 // backend.go — Storage backend interface
@@ -111,14 +111,14 @@ type MemoryBackend struct {
 }
 ```
 
-**Neden mmap yerine pread/pwrite?**
-- mmap, Go'nun GC'si ile sorunlu olabiliyor (page fault overhead)
-- pread/pwrite daha predictable, buffer pool ile kontrol sende
-- İstenirse mmap backend de eklenebilir (interface sayesinde swap edilebilir)
+**Why pread/pwrite instead of mmap?**
+- mmap can be problematic with Go's GC (page fault overhead)
+- pread/pwrite is more predictable, gives you full control via buffer pool
+- An mmap backend can be added later if needed (swappable thanks to the interface)
 
 ### 3.2 Page Manager
 
-Her şey **page** bazlı. SQLite gibi fixed-size pages.
+Everything is **page**-based. Fixed-size pages like SQLite.
 
 ```go
 const (
@@ -135,7 +135,7 @@ const (
     PageTypeFreeList uint8 = 0x05  // Free page tracking
 )
 
-// Page header (her page'in ilk 16 byte'ı)
+// Page header (first 16 bytes of every page)
 type PageHeader struct {
     PageID    uint32  // 4 bytes — page number
     PageType  uint8   // 1 byte  — type flag
@@ -161,7 +161,7 @@ type MetaPage struct {
 
 ### 3.3 Buffer Pool (Page Cache)
 
-Disk'ten okunan page'leri RAM'de cache'le. LRU eviction.
+Caches pages read from disk in RAM. LRU eviction.
 
 ```go
 type BufferPool struct {
@@ -222,7 +222,7 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 
 ### 3.4 Write-Ahead Log (WAL)
 
-Crash recovery için. Her write önce WAL'a gider.
+For crash recovery. Every write goes to the WAL first.
 
 ```go
 // WAL record format:
@@ -303,7 +303,7 @@ func (w *WAL) Recover(bp *BufferPool) error {
 
 ### 3.5 B+Tree
 
-Ana veri yapısı. Key-Value pairs, sorted, range query desteği.
+Primary data structure. Key-Value pairs, sorted, with range query support.
 
 ```go
 // B+Tree — on-disk, page-based
@@ -313,7 +313,7 @@ type BTree struct {
     order      int  // max keys per node (derived from page size)
 }
 
-// Cell — bir key-value pair (leaf node'da)
+// Cell — a key-value pair (in a leaf node)
 type Cell struct {
     KeySize   uint16
     ValueSize uint32
@@ -353,11 +353,11 @@ func (it *Iterator) Valid() bool
 func (it *Iterator) Close()
 ```
 
-**B+Tree Split/Merge Stratejisi:**
-- Leaf node dolduğunda → split into two, promote middle key to parent
-- Internal node dolduğunda → split, promote middle key up
-- Leaf node %25 altına düştüğünde → merge with sibling or redistribute
-- Bu SQLite'ın kullandığı strateji ile aynı
+**B+Tree Split/Merge Strategy:**
+- When a leaf node is full → split into two, promote middle key to parent
+- When an internal node is full → split, promote middle key up
+- When a leaf node drops below 25% capacity → merge with sibling or redistribute
+- This is the same strategy used by SQLite
 
 ### 3.6 Index Manager
 
@@ -389,7 +389,7 @@ type IndexManager struct {
 
 // JSON path index — extract value from JSON doc, index it
 // CREATE INDEX idx_city ON users (data->>'address.city')
-// Bu, JSON doc içindeki nested field'ı çıkarıp B+Tree'ye koyar
+// This extracts the nested field from the JSON doc and indexes it in the B+Tree
 ```
 
 ### 3.7 Transaction Manager (MVCC)
@@ -478,11 +478,11 @@ func (tm *TxnManager) Commit(txn *Transaction) error {
 }
 ```
 
-**MVCC Yaklaşımı:**
-- Her record'a version stamp (txn ID) ekle
-- Read sırasında, txn'ın start timestamp'inden önceki en son committed version'ı oku
-- Write sırasında, write set'e buffer'la, commit'te conflict check yap
-- Garbage collection: eski version'ları periyodik temizle
+**MVCC Approach:**
+- Add a version stamp (txn ID) to each record
+- During reads, read the latest committed version prior to the txn's start timestamp
+- During writes, buffer into the write set, perform conflict check at commit time
+- Garbage collection: periodically clean up old versions
 
 ---
 
@@ -491,7 +491,7 @@ func (tm *TxnManager) Commit(txn *Transaction) error {
 ### 4.1 SQL + JSON Query Language
 
 ```sql
--- Klasik SQL
+-- Standard SQL
 CREATE TABLE users (
     id    INTEGER PRIMARY KEY,
     name  TEXT NOT NULL,
@@ -703,15 +703,15 @@ type Projection struct {
     Columns []Expression
 }
 
-// Query optimizer — rule-based (cost-based fazla karmaşık olur başlangıç için)
+// Query optimizer — rule-based (cost-based would be too complex for the initial version)
 type Optimizer struct {
     catalog *SystemCatalog
 }
 
 func (o *Optimizer) Optimize(plan PlanNode) PlanNode {
-    plan = o.pushDownFilters(plan)      // WHERE clause'ı scan'a yaklaştır
-    plan = o.useIndexes(plan)           // SeqScan → IndexScan dönüşümü
-    plan = o.eliminateRedundant(plan)   // gereksiz projection'ları kaldır
+    plan = o.pushDownFilters(plan)      // Push WHERE clause closer to scan
+    plan = o.useIndexes(plan)           // Convert SeqScan → IndexScan
+    plan = o.eliminateRedundant(plan)   // Remove redundant projections
     return plan
 }
 
@@ -722,7 +722,7 @@ func (o *Optimizer) Optimize(plan PlanNode) PlanNode {
 ### 4.4 Query Executor (Volcano/Iterator Model)
 
 ```go
-// Her plan node bir iterator olur
+// Each plan node becomes an iterator
 type Executor interface {
     Init() error
     Next() (*Row, error)  // nil = done
@@ -774,7 +774,7 @@ func evalJSONPath(doc []byte, path string) (interface{}, error) {
 
 ## 5. System Catalog
 
-Database metadata — tables, indexes, columns — hepsi de B+Tree'de saklanır.
+Database metadata — tables, indexes, columns — all stored in a B+Tree.
 
 ```go
 type SystemCatalog struct {
@@ -808,7 +808,7 @@ type ColumnDef struct {
 
 ## 6. JSON Document Engine
 
-First-class JSON support — hem column type olarak hem de schema-free collection.
+First-class JSON support — both as a column type and as a schema-free collection.
 
 ```go
 // Fast JSON operations — zero-copy where possible
@@ -826,7 +826,7 @@ type JSONEngine struct{}
 // Internal JSON storage: MessagePack for compactness
 // JSON string → parse → MessagePack bytes → store in B+Tree
 // Query time: MessagePack → navigate path → extract value
-// Bu, raw JSON text'ten %30-50 daha compact ve daha hızlı parse edilir
+// This is 30-50% more compact than raw JSON text and faster to parse
 
 type JSONValue struct {
     raw []byte // MessagePack encoded
@@ -1019,7 +1019,7 @@ func main() {
 
 ---
 
-## 9. SDK'lar (Remote Mode)
+## 9. SDKs (Remote Mode)
 
 ### 9.1 TypeScript/Node.js SDK
 
@@ -1116,7 +1116,7 @@ Separate file: myapp.cobalt.wal  ← Write-Ahead Log
 
 ---
 
-## 11. Benchmarks Hedefi
+## 11. Benchmark Targets
 
 ```
 Target Performance (single-threaded, SSD):
@@ -1136,7 +1136,7 @@ BoltDB point lookup:            ~5μs
 
 ---
 
-## 12. Proje Yapısı
+## 12. Project Structure
 
 ```
 cobaltdb/
@@ -1238,7 +1238,7 @@ cobaltdb/
 
 ## 13. Implementation Roadmap
 
-### Phase 1 — Storage Foundation (2-3 hafta)
+### Phase 1 — Storage Foundation (2-3 weeks)
 - [ ] Backend interface + Disk + Memory implementations
 - [ ] Page layout, header, meta page
 - [ ] Pager (read/write pages)
@@ -1249,7 +1249,7 @@ cobaltdb/
 - [ ] Basic WAL (append, replay)
 - [ ] Unit tests for all storage components
 
-### Phase 2 — Query Engine (2-3 hafta)
+### Phase 2 — Query Engine (2-3 weeks)
 - [ ] Lexer (tokenizer)
 - [ ] Parser (SQL subset → AST)
 - [ ] System catalog (CREATE TABLE, metadata)
@@ -1258,7 +1258,7 @@ cobaltdb/
 - [ ] Expression evaluator (comparisons, AND/OR, functions)
 - [ ] Prepared statements & parameter binding
 
-### Phase 3 — JSON & Transactions (2 hafta)
+### Phase 3 — JSON & Transactions (2 weeks)
 - [ ] JSON column type
 - [ ] JSON path extraction (->>, ->)
 - [ ] JSON functions (json_set, json_extract, etc.)
@@ -1268,14 +1268,14 @@ cobaltdb/
 - [ ] Conflict detection & retry
 - [ ] WAL checkpoint & recovery
 
-### Phase 4 — Indexes & Optimization (1-2 hafta)
+### Phase 4 — Indexes & Optimization (1-2 weeks)
 - [ ] Secondary B+Tree indexes
 - [ ] JSON path indexes
 - [ ] Query planner (filter pushdown, index selection)
 - [ ] Hash index (optional)
 - [ ] EXPLAIN output
 
-### Phase 5 — Server & SDKs (2 hafta)
+### Phase 5 — Server & SDKs (2 weeks)
 - [ ] TCP server + MessagePack protocol
 - [ ] REST/HTTP API
 - [ ] Go client SDK (remote mode)
@@ -1292,7 +1292,7 @@ cobaltdb/
 
 ---
 
-## 14. Diferansiyatörler — Neden CobaltDB?
+## 14. Differentiators — Why CobaltDB?
 
 | Feature             | SQLite    | BoltDB   | BadgerDB | CobaltDB        |
 |---------------------|-----------|----------|----------|--------------|
@@ -1312,20 +1312,21 @@ cobaltdb/
 
 ## 15. Key Design Decisions
 
-1. **B+Tree over LSM-Tree:** Read-heavy workload'lar için daha iyi. Write amplification
-   LSM'den fazla ama read amplification çok daha az. SQLite de B+Tree kullanıyor.
+1. **B+Tree over LSM-Tree:** Better for read-heavy workloads. Write amplification is higher
+   than LSM, but read amplification is much lower. SQLite also uses B+Tree.
 
-2. **Page-based storage:** Predictable I/O, buffer pool ile cache kontrolü. Memory-mapped
-   I/O yerine explicit read/write — Go runtime ile daha uyumlu.
+2. **Page-based storage:** Predictable I/O, cache control via buffer pool. Explicit read/write
+   instead of memory-mapped I/O — more compatible with the Go runtime.
 
-3. **MessagePack for JSON storage:** Raw JSON text'ten ~40% daha compact, parse etmek
-   daha hızlı. Dışarıya JSON olarak expose edilir ama internal'de binary.
+3. **MessagePack for JSON storage:** ~40% more compact than raw JSON text, faster to parse.
+   Exposed as JSON externally but stored as binary internally.
 
-4. **Rule-based optimizer:** İlk versiyon için cost-based optimizer gereksiz karmaşıklık.
-   Filter pushdown + index selection yeterli. İleride statistics-based upgrade yapılabilir.
+4. **Rule-based optimizer:** A cost-based optimizer would be unnecessary complexity for the
+   initial version. Filter pushdown + index selection is sufficient. Can be upgraded to
+   statistics-based optimization later.
 
-5. **Snapshot Isolation default:** Serializable çok pahalı, Read Committed çok weak.
-   SI iyi bir denge — concurrent read'ler block olmaz, write conflict'ler detect edilir.
+5. **Snapshot Isolation default:** Serializable is too expensive, Read Committed is too weak.
+   SI is a good balance — concurrent reads don't block, write conflicts are detected.
 
-6. **Single-file format:** SQLite gibi tek `.cobalt` dosyası + `.cobalt.wal`. Backup = dosya kopyala.
-   Deployment basitliği çok önemli.
+6. **Single-file format:** A single `.cobalt` file + `.cobalt.wal`, just like SQLite. Backup = copy the file.
+   Deployment simplicity is critical.

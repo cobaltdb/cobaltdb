@@ -1,9 +1,11 @@
 package catalog
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 
@@ -417,7 +419,9 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 	iter, _ := tree.Scan(nil, nil)
 	defer iter.Close()
 
+	count := 0
 	for iter.HasNext() {
+		count++
 		_, valueData, err := iter.Next()
 		if err != nil {
 			break
@@ -653,6 +657,166 @@ func (c *Catalog) ListTables() []string {
 		tables = append(tables, name)
 	}
 	return tables
+}
+
+// SaveData saves all table data to disk
+func (c *Catalog) SaveData(dir string) error {
+	// Create directory if not exists
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create data directory: %w", err)
+	}
+
+	// Save catalog schema (table definitions)
+	schema := map[string]interface{}{
+		"tables": c.tables,
+	}
+	schemaBytes, err := json.Marshal(schema)
+	if err != nil {
+		return fmt.Errorf("failed to marshal schema: %w", err)
+	}
+	if err := os.WriteFile(dir+"/schema.json", schemaBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write schema: %w", err)
+	}
+
+	// Save each table's data
+	for tableName, tree := range c.tableTrees {
+		// Get all key-value pairs from B+Tree
+		var keys []string
+		var values [][]byte
+
+		iter, _ := tree.Scan(nil, nil)
+		for iter.HasNext() {
+			key, value, _ := iter.Next()
+			keys = append(keys, string(key))
+			values = append(values, value)
+		}
+		iter.Close()
+
+		if len(keys) == 0 {
+			continue // Skip empty tables
+		}
+
+		// Save to JSON file
+		data := map[string]interface{}{
+			"keys":   keys,
+			"values": values,
+		}
+
+		dataBytes, err := json.Marshal(data)
+		if err != nil {
+			return fmt.Errorf("failed to marshal table %s: %w", tableName, err)
+		}
+
+		filename := fmt.Sprintf("%s/%s.json", dir, tableName)
+		if err := os.WriteFile(filename, dataBytes, 0644); err != nil {
+			return fmt.Errorf("failed to write table %s: %w", tableName, err)
+		}
+	}
+
+	return nil
+}
+
+// LoadSchema loads the catalog schema from disk
+func (c *Catalog) LoadSchema(dir string) error {
+	schemaFile := dir + "/schema.json"
+	if _, err := os.Stat(schemaFile); os.IsNotExist(err) {
+		return nil // No schema to load
+	}
+
+	schemaBytes, err := os.ReadFile(schemaFile)
+	if err != nil {
+		return fmt.Errorf("failed to read schema: %w", err)
+	}
+
+	var schema map[string]interface{}
+	if err := json.Unmarshal(schemaBytes, &schema); err != nil {
+		return fmt.Errorf("failed to unmarshal schema: %w", err)
+	}
+
+	// Load tables
+	if tablesData, ok := schema["tables"].(map[string]interface{}); ok {
+		for name, data := range tablesData {
+			// Marshal back to get proper type
+			tableBytes, _ := json.Marshal(data)
+			var tableDef TableDef
+			json.Unmarshal(tableBytes, &tableDef)
+			c.tables[name] = &tableDef
+
+			// Create B+Tree for the table
+			tree, _ := btree.NewBTree(c.pool)
+			c.tableTrees[name] = tree
+		}
+	}
+
+	return nil
+}
+
+// LoadData loads all table data from disk
+func (c *Catalog) LoadData(dir string) error {
+	// Check if directory exists
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		// No data to load
+		return nil
+	}
+
+	// Read all JSON files in directory
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("failed to read data directory: %w", err)
+	}
+
+	for _, file := range files {
+		if !strings.HasSuffix(file.Name(), ".json") || file.Name() == "schema.json" {
+			continue
+		}
+
+		tableName := strings.TrimSuffix(file.Name(), ".json")
+
+		// Check if table exists
+		if _, err := c.GetTable(tableName); err != nil {
+			continue // Skip non-existent tables
+		}
+
+		// Read file
+		dataBytes, err := os.ReadFile(fmt.Sprintf("%s/%s", dir, file.Name()))
+		if err != nil {
+			return fmt.Errorf("failed to read table %s: %w", tableName, err)
+		}
+
+		// Unmarshal
+		var data map[string]interface{}
+		if err := json.Unmarshal(dataBytes, &data); err != nil {
+			return fmt.Errorf("failed to unmarshal table %s: %w", tableName, err)
+		}
+
+		// Get tree
+		tree, exists := c.tableTrees[tableName]
+		if !exists {
+			continue
+		}
+
+		// Load keys and values
+		keysData := data["keys"].([]interface{})
+		valuesData := data["values"].([]interface{})
+
+		for i, keyData := range keysData {
+			key := []byte(keyData.(string))
+
+			// Decode base64 value
+			encodedValue := valuesData[i].(string)
+			decodedValue, err := base64.StdEncoding.DecodeString(encodedValue)
+			if err != nil {
+				// Try as plain string if not base64
+				decodedValue = []byte(encodedValue)
+			}
+
+			tree.Put(key, decodedValue)
+		}
+
+		// Verify data was loaded
+	}
+
+	return nil
 }
 
 func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
