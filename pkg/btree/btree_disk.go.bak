@@ -1,0 +1,695 @@
+package btree
+
+import (
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"fmt"
+
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
+)
+
+var (
+	ErrKeyNotFound   = errors.New("key not found")
+	ErrKeyExists     = errors.New("key already exists")
+	ErrTreeFull      = errors.New("tree is full")
+	ErrInvalidKey    = errors.New("invalid key")
+	ErrInvalidValue  = errors.New("invalid value")
+)
+
+// BTree represents a B+Tree index
+type BTree struct {
+	rootPageID uint32
+	pool       *storage.BufferPool
+	order      int // max keys per node (derived from page size)
+}
+
+// NewBTree creates a new B+Tree
+func NewBTree(pool *storage.BufferPool) (*BTree, error) {
+	// Calculate order based on page size
+	// Each internal node cell needs: key + child pointer
+	// Assuming average key size of 32 bytes, we can fit ~100 keys per page
+	order := 100
+
+	// Allocate root page
+	rootPage, err := pool.NewPage(storage.PageTypeLeaf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create root page: %w", err)
+	}
+	defer pool.Unpin(rootPage)
+
+	return &BTree{
+		rootPageID: rootPage.ID(),
+		pool:       pool,
+		order:      order,
+	}, nil
+}
+
+// OpenBTree opens an existing B+Tree with the given root page ID
+func OpenBTree(pool *storage.BufferPool, rootPageID uint32) *BTree {
+	return &BTree{
+		rootPageID: rootPageID,
+		pool:       pool,
+		order:      100,
+	}
+}
+
+// RootPageID returns the root page ID of the tree
+func (t *BTree) RootPageID() uint32 {
+	return t.rootPageID
+}
+
+// Get retrieves a value by key
+func (t *BTree) Get(key []byte) ([]byte, error) {
+	if len(key) == 0 {
+		return nil, ErrInvalidKey
+	}
+
+	root, err := t.pool.GetPage(t.rootPageID)
+	if err != nil {
+		return nil, err
+	}
+	defer t.pool.Unpin(root)
+
+	return t.getInNode(root, key)
+}
+
+// getInNode recursively searches for a key in the tree
+func (t *BTree) getInNode(node *storage.CachedPage, key []byte) ([]byte, error) {
+	page := storage.NewPage(0, 0)
+	page.Data = node.Data()
+	page.DeserializeHeader()
+
+	if page.Header.PageType == storage.PageTypeLeaf {
+		return t.getInLeaf(node, key)
+	}
+
+	// Internal node: find the child to descend into
+	childPageID := t.findChild(node, key)
+	if childPageID == 0 {
+		return nil, ErrKeyNotFound
+	}
+
+	child, err := t.pool.GetPage(childPageID)
+	if err != nil {
+		return nil, err
+	}
+	defer t.pool.Unpin(child)
+
+	return t.getInNode(child, key)
+}
+
+// getInLeaf searches for a key in a leaf node
+func (t *BTree) getInLeaf(leaf *storage.CachedPage, key []byte) ([]byte, error) {
+	cells := t.readCells(leaf)
+	for _, cell := range cells {
+		if bytes.Equal(cell.Key, key) {
+			return cell.Value, nil
+		}
+	}
+	return nil, ErrKeyNotFound
+}
+
+// findChild finds the appropriate child page for a key in an internal node
+func (t *BTree) findChild(node *storage.CachedPage, key []byte) uint32 {
+	cells := t.readInternalCells(node)
+
+	for _, cell := range cells {
+		if bytes.Compare(key, cell.Key) < 0 {
+			return cell.ChildPageID
+		}
+	}
+
+	// Return rightmost pointer
+	page := storage.NewPage(0, 0)
+	page.Data = node.Data()
+	page.DeserializeHeader()
+	return page.Header.RightPtr
+}
+
+// Cell represents a key-value pair in a leaf node
+type Cell struct {
+	KeySize   uint16
+	ValueSize uint32
+	Key       []byte
+	Value     []byte
+}
+
+// InternalCell represents a key and child pointer in an internal node
+type InternalCell struct {
+	KeySize     uint16
+	Key         []byte
+	ChildPageID uint32
+}
+
+// readCells reads all cells from a leaf page
+func (t *BTree) readCells(page *storage.CachedPage) []Cell {
+	p := storage.NewPage(0, 0)
+	p.Data = page.Data()
+	p.DeserializeHeader()
+
+	cells := make([]Cell, 0, p.Header.CellCount)
+	offset := storage.PageHeaderSize + 8 // Skip prev/next leaf pointers
+
+	for i := uint16(0); i < p.Header.CellCount; i++ {
+		cellOffset := binary.LittleEndian.Uint16(page.Data()[offset : offset+2])
+		cell := t.readCellAt(page, cellOffset)
+		cells = append(cells, cell)
+		offset += 2
+	}
+
+	return cells
+}
+
+// readCellAt reads a single cell at the given offset
+func (t *BTree) readCellAt(page *storage.CachedPage, offset uint16) Cell {
+	keySize := binary.LittleEndian.Uint16(page.Data()[offset : offset+2])
+	valueSize := binary.LittleEndian.Uint32(page.Data()[offset+2 : offset+6])
+
+	key := make([]byte, keySize)
+	value := make([]byte, valueSize)
+
+	copy(key, page.Data()[offset+6:offset+6+keySize])
+	copy(value, page.Data()[offset+6+keySize:offset+6+keySize+uint16(valueSize)])
+
+	return Cell{
+		KeySize:   keySize,
+		ValueSize: valueSize,
+		Key:       key,
+		Value:     value,
+	}
+}
+
+// readInternalCells reads all cells from an internal page
+func (t *BTree) readInternalCells(page *storage.CachedPage) []InternalCell {
+	p := storage.NewPage(0, 0)
+	p.Data = page.Data()
+	p.DeserializeHeader()
+
+	cells := make([]InternalCell, 0, p.Header.CellCount)
+	offset := storage.PageHeaderSize
+
+	for i := uint16(0); i < p.Header.CellCount; i++ {
+		cellOffset := binary.LittleEndian.Uint16(page.Data()[offset : offset+2])
+		cell := t.readInternalCellAt(page, cellOffset)
+		cells = append(cells, cell)
+		offset += 2
+	}
+
+	return cells
+}
+
+// readInternalCellAt reads a single internal cell at the given offset
+func (t *BTree) readInternalCellAt(page *storage.CachedPage, offset uint16) InternalCell {
+	keySize := binary.LittleEndian.Uint16(page.Data()[offset : offset+2])
+	childPageID := binary.LittleEndian.Uint32(page.Data()[offset+2 : offset+6])
+
+	key := make([]byte, keySize)
+	copy(key, page.Data()[offset+6:offset+6+keySize])
+
+	return InternalCell{
+		KeySize:     keySize,
+		Key:         key,
+		ChildPageID: childPageID,
+	}
+}
+
+// Put inserts or updates a key-value pair
+func (t *BTree) Put(key, value []byte) error {
+	if len(key) == 0 {
+		return ErrInvalidKey
+	}
+	if len(value) == 0 {
+		return ErrInvalidValue
+	}
+
+	root, err := t.pool.GetPage(t.rootPageID)
+	if err != nil {
+		return err
+	}
+	defer t.pool.Unpin(root)
+
+	// Check if root needs to be split
+	if t.needsSplit(root) {
+		if err := t.splitRoot(); err != nil {
+			return err
+		}
+		// Re-get root after split
+		root, err = t.pool.GetPage(t.rootPageID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return t.putInNode(root, key, value)
+}
+
+// putInNode recursively inserts a key-value pair
+func (t *BTree) putInNode(node *storage.CachedPage, key, value []byte) error {
+	page := storage.NewPage(0, 0)
+	copy(page.Data, node.Data())
+	page.DeserializeHeader()
+
+	if page.Header.PageType == storage.PageTypeLeaf {
+		return t.putInLeaf(node, key, value)
+	}
+
+	// Internal node
+	childPageID := t.findChild(node, key)
+	child, err := t.pool.GetPage(childPageID)
+	if err != nil {
+		return err
+	}
+	defer t.pool.Unpin(child)
+
+	// Check if child needs to be split
+	if t.needsSplit(child) {
+		if err := t.splitChild(node, child); err != nil {
+			return err
+		}
+		// Re-find child after split
+		childPageID = t.findChild(node, key)
+		child, err = t.pool.GetPage(childPageID)
+		if err != nil {
+			return err
+		}
+		defer t.pool.Unpin(child)
+	}
+
+	return t.putInNode(child, key, value)
+}
+
+// putInLeaf inserts a key-value pair into a leaf node
+func (t *BTree) putInLeaf(leaf *storage.CachedPage, key, value []byte) error {
+	// Check if key already exists
+	cells := t.readCells(leaf)
+	for i, cell := range cells {
+		if bytes.Equal(cell.Key, key) {
+			// Update existing key
+			return t.updateCell(leaf, uint16(i), key, value)
+		}
+	}
+
+	// Insert new cell
+	return t.insertCell(leaf, key, value)
+}
+
+// needsSplit checks if a page needs to be split
+func (t *BTree) needsSplit(page *storage.CachedPage) bool {
+	p := storage.NewPage(0, 0)
+	p.Data = page.Data()
+	p.DeserializeHeader()
+	return p.Header.CellCount >= uint16(t.order)
+}
+
+// splitRoot splits the root node
+func (t *BTree) splitRoot() error {
+	// Create new root
+	newRoot, err := t.pool.NewPage(storage.PageTypeInternal)
+	if err != nil {
+		return err
+	}
+	defer t.pool.Unpin(newRoot)
+
+	// Old root becomes left child
+	oldRootID := t.rootPageID
+
+	// Create right child
+	rightChild, err := t.pool.NewPage(storage.PageTypeLeaf)
+	if err != nil {
+		return err
+	}
+	defer t.pool.Unpin(rightChild)
+
+	// Move half of the cells to right child
+	oldRoot, err := t.pool.GetPage(oldRootID)
+	if err != nil {
+		return err
+	}
+	defer t.pool.Unpin(oldRoot)
+
+	// Split cells between old and new
+	if err := t.splitPages(oldRoot, rightChild); err != nil {
+		return err
+	}
+
+	// Set up new root
+	newRootPage := storage.NewPage(0, 0)
+	copy(newRootPage.Data, newRoot.Data())
+	newRootPage.DeserializeHeader()
+	newRootPage.Header.PageType = storage.PageTypeInternal
+	newRootPage.Header.RightPtr = rightChild.ID()
+	newRootPage.SerializeHeader()
+
+	// Copy first key from right child to root
+	rightCells := t.readCells(rightChild)
+	if len(rightCells) > 0 {
+		t.insertInternalCell(newRoot, rightCells[0].Key, oldRootID)
+	}
+
+	t.rootPageID = newRoot.ID()
+	return nil
+}
+
+// splitChild splits a child node
+func (t *BTree) splitChild(parent, child *storage.CachedPage) error {
+	// Create new sibling
+	sibling, err := t.pool.NewPage(storage.PageTypeLeaf)
+	if err != nil {
+		return err
+	}
+	defer t.pool.Unpin(sibling)
+
+	// Split cells between child and sibling
+	if err := t.splitPages(child, sibling); err != nil {
+		return err
+	}
+
+	// Add pointer to parent
+	childPage := storage.NewPage(0, 0)
+	copy(childPage.Data, child.Data())
+	childPage.DeserializeHeader()
+
+	siblingCells := t.readCells(sibling)
+	if len(siblingCells) > 0 {
+		t.insertInternalCell(parent, siblingCells[0].Key, child.ID())
+	}
+
+	return nil
+}
+
+// splitPages moves half the cells from left to right
+func (t *BTree) splitPages(left, right *storage.CachedPage) error {
+	cells := t.readCells(left)
+	mid := len(cells) / 2
+
+	// Move cells from mid to end to right page
+	for i := mid; i < len(cells); i++ {
+		cell := cells[i]
+		t.insertCell(right, cell.Key, cell.Value)
+	}
+
+	// Remove moved cells from left page
+	t.truncateCells(left, uint16(mid))
+
+	return nil
+}
+
+// insertCell inserts a new cell into a page
+func (t *BTree) insertCell(page *storage.CachedPage, key, value []byte) error {
+	cellSize := 6 + len(key) + len(value) // 2 (keySize) + 4 (valueSize) + key + value
+
+	p := storage.NewPage(0, 0)
+	p.Data = page.Data()
+	p.DeserializeHeader()
+
+	// Find position to insert (keep cells sorted)
+	cells := t.readCells(page)
+	insertPos := uint16(0)
+	for i, cell := range cells {
+		if bytes.Compare(key, cell.Key) < 0 {
+			insertPos = uint16(i)
+			break
+		}
+		insertPos = uint16(i + 1)
+	}
+
+	// Write cell data at free end
+	cellOffset := p.Header.FreeEnd - uint16(cellSize)
+	binary.LittleEndian.PutUint16(page.Data()[cellOffset:cellOffset+2], uint16(len(key)))
+	binary.LittleEndian.PutUint32(page.Data()[cellOffset+2:cellOffset+6], uint32(len(value)))
+	copy(page.Data()[cellOffset+6:], key)
+	copy(page.Data()[cellOffset+6+uint16(len(key)):], value)
+
+	// Update slot array
+	slotOffset := storage.PageHeaderSize + 8 + insertPos*2
+	// Shift existing slots
+	copy(page.Data()[slotOffset+2:], page.Data()[slotOffset:])
+	binary.LittleEndian.PutUint16(page.Data()[slotOffset:slotOffset+2], cellOffset)
+
+	// Update header
+	p.Header.CellCount++
+	p.Header.FreeEnd = cellOffset
+	p.SetDirty(true)
+	p.SerializeHeader()
+
+	return nil
+}
+
+// updateCell updates an existing cell
+func (t *BTree) updateCell(page *storage.CachedPage, idx uint16, key, value []byte) error {
+	// For simplicity, delete and re-insert
+	// A more optimized version would update in place if sizes match
+	cells := t.readCells(page)
+	if int(idx) >= len(cells) {
+		return ErrKeyNotFound
+	}
+
+	// Delete old cell
+	t.deleteCellAt(page, idx)
+
+	// Insert new cell
+	return t.insertCell(page, key, value)
+}
+
+// deleteCellAt deletes a cell at the given index
+func (t *BTree) deleteCellAt(page *storage.CachedPage, idx uint16) error {
+	p := storage.NewPage(0, 0)
+	p.Data = page.Data()
+	p.DeserializeHeader()
+
+	// Shift slot array
+	slotOffset := storage.PageHeaderSize + 8 + idx*2
+	copy(page.Data()[slotOffset:], page.Data()[slotOffset+2:])
+
+	// Update header
+	p.Header.CellCount--
+	p.SetDirty(true)
+	p.SerializeHeader()
+
+	return nil
+}
+
+// truncateCells truncates cells to the given count
+func (t *BTree) truncateCells(page *storage.CachedPage, count uint16) {
+	p := storage.NewPage(0, 0)
+	p.Data = page.Data()
+	p.DeserializeHeader()
+
+	// Recalculate free end
+	cells := t.readCells(page)
+	if len(cells) > 0 {
+		_ = cells[count-1] // lastCell - not used but needed for logic
+		// Find offset of last remaining cell
+		slotOffset := storage.PageHeaderSize + 8 + (count-1)*2
+		cellOffset := binary.LittleEndian.Uint16(page.Data()[slotOffset : slotOffset+2])
+		p.Header.FreeEnd = cellOffset
+	} else {
+		p.Header.FreeEnd = uint16(storage.PageSize)
+	}
+
+	p.Header.CellCount = count
+	p.SetDirty(true)
+	p.SerializeHeader()
+}
+
+// insertInternalCell inserts a cell into an internal node
+func (t *BTree) insertInternalCell(page *storage.CachedPage, key []byte, childPageID uint32) error {
+	cellSize := 6 + len(key) // 2 (keySize) + 4 (childPageID) + key
+
+	p := storage.NewPage(0, 0)
+	p.Data = page.Data()
+	p.DeserializeHeader()
+
+	// Write cell data
+	cellOffset := p.Header.FreeEnd - uint16(cellSize)
+	binary.LittleEndian.PutUint16(page.Data()[cellOffset:cellOffset+2], uint16(len(key)))
+	binary.LittleEndian.PutUint32(page.Data()[cellOffset+2:cellOffset+6], childPageID)
+	copy(page.Data()[cellOffset+6:], key)
+
+	// Update slot array
+	slotOffset := storage.PageHeaderSize + p.Header.CellCount*2
+	binary.LittleEndian.PutUint16(page.Data()[slotOffset:slotOffset+2], cellOffset)
+
+	// Update header
+	p.Header.CellCount++
+	p.Header.FreeEnd = cellOffset
+	p.SetDirty(true)
+	p.SerializeHeader()
+
+	return nil
+}
+
+// Delete removes a key from the tree
+func (t *BTree) Delete(key []byte) error {
+	if len(key) == 0 {
+		return ErrInvalidKey
+	}
+
+	root, err := t.pool.GetPage(t.rootPageID)
+	if err != nil {
+		return err
+	}
+	defer t.pool.Unpin(root)
+
+	return t.deleteInNode(root, key)
+}
+
+// deleteInNode recursively deletes a key
+func (t *BTree) deleteInNode(node *storage.CachedPage, key []byte) error {
+	page := storage.NewPage(0, 0)
+	copy(page.Data, node.Data())
+	page.DeserializeHeader()
+
+	if page.Header.PageType == storage.PageTypeLeaf {
+		return t.deleteInLeaf(node, key)
+	}
+
+	// Internal node
+	childPageID := t.findChild(node, key)
+	child, err := t.pool.GetPage(childPageID)
+	if err != nil {
+		return err
+	}
+	defer t.pool.Unpin(child)
+
+	return t.deleteInNode(child, key)
+}
+
+// deleteInLeaf deletes a key from a leaf node
+func (t *BTree) deleteInLeaf(leaf *storage.CachedPage, key []byte) error {
+	cells := t.readCells(leaf)
+	for i, cell := range cells {
+		if bytes.Equal(cell.Key, key) {
+			return t.deleteCellAt(leaf, uint16(i))
+		}
+	}
+	return ErrKeyNotFound
+}
+
+// Iterator provides range scan capability
+type Iterator struct {
+	tree       *BTree
+	currentPage *storage.CachedPage
+	currentIdx  int
+	cells       []Cell
+	endKey      []byte
+	done        bool
+}
+
+// Scan returns an iterator for range scanning
+func (t *BTree) Scan(startKey, endKey []byte) (*Iterator, error) {
+	// Find starting leaf
+	root, err := t.pool.GetPage(t.rootPageID)
+	if err != nil {
+		return nil, err
+	}
+	defer t.pool.Unpin(root)
+
+	leaf, err := t.findLeaf(root, startKey)
+	if err != nil {
+		return nil, err
+	}
+
+	cells := t.readCells(leaf)
+
+	// Find starting position
+	startIdx := 0
+	for i, cell := range cells {
+		if bytes.Compare(cell.Key, startKey) >= 0 {
+			startIdx = i
+			break
+		}
+	}
+
+	return &Iterator{
+		tree:        t,
+		currentPage: leaf,
+		currentIdx:  startIdx,
+		cells:       cells,
+		endKey:      endKey,
+		done:        false,
+	}, nil
+}
+
+// findLeaf finds the leaf node containing the given key
+func (t *BTree) findLeaf(node *storage.CachedPage, key []byte) (*storage.CachedPage, error) {
+	page := storage.NewPage(0, 0)
+	copy(page.Data, node.Data())
+	page.DeserializeHeader()
+
+	if page.Header.PageType == storage.PageTypeLeaf {
+		return node, nil
+	}
+
+	childPageID := t.findChild(node, key)
+	child, err := t.pool.GetPage(childPageID)
+	if err != nil {
+		return nil, err
+	}
+	defer t.pool.Unpin(child)
+
+	return t.findLeaf(child, key)
+}
+
+// Next advances the iterator
+func (it *Iterator) Next() ([]byte, []byte, error) {
+	if it.done {
+		return nil, nil, nil
+	}
+
+	if it.currentIdx >= len(it.cells) {
+		// Move to next page
+		page := storage.NewPage(0, 0)
+		copy(page.Data, it.currentPage.Data())
+		page.DeserializeHeader()
+
+		nextPageID := page.Header.RightPtr
+		if nextPageID == 0 {
+			it.done = true
+			return nil, nil, nil
+		}
+
+		nextPage, err := it.tree.pool.GetPage(nextPageID)
+		if err != nil {
+			return nil, nil, err
+		}
+		it.tree.pool.Unpin(it.currentPage)
+		it.currentPage = nextPage
+		it.cells = it.tree.readCells(nextPage)
+		it.currentIdx = 0
+	}
+
+	cell := it.cells[it.currentIdx]
+	it.currentIdx++
+
+	// Check end key
+	if it.endKey != nil && bytes.Compare(cell.Key, it.endKey) > 0 {
+		it.done = true
+		return nil, nil, nil
+	}
+
+	return cell.Key, cell.Value, nil
+}
+
+// Valid returns true if the iterator has more items
+func (it *Iterator) Valid() bool {
+	return !it.done && (it.currentIdx < len(it.cells) || it.hasMorePages())
+}
+
+// hasMorePages checks if there are more pages to read
+func (it *Iterator) hasMorePages() bool {
+	page := storage.NewPage(0, 0)
+	page.Data = it.currentPage.Data()
+	page.DeserializeHeader()
+	return page.Header.RightPtr != 0
+}
+
+// Close closes the iterator
+func (it *Iterator) Close() {
+	if it.currentPage != nil {
+		it.tree.pool.Unpin(it.currentPage)
+		it.currentPage = nil
+	}
+	it.done = true
+}
