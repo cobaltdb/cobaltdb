@@ -329,6 +329,8 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		return db.executeDelete(ctx, s, args)
 	case *query.DropTableStmt:
 		return db.executeDropTable(ctx, s)
+	case *query.CreateIndexStmt:
+		return db.executeCreateIndex(ctx, s)
 	case *query.BeginStmt:
 		return Result{}, errors.New("use Begin() method to start a transaction")
 	case *query.CommitStmt:
@@ -388,6 +390,14 @@ func (db *DB) executeDelete(ctx context.Context, stmt *query.DeleteStmt, args []
 // executeDropTable executes DROP TABLE
 func (db *DB) executeDropTable(ctx context.Context, stmt *query.DropTableStmt) (Result, error) {
 	if err := db.catalog.DropTable(stmt); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeCreateIndex executes CREATE INDEX
+func (db *DB) executeCreateIndex(ctx context.Context, stmt *query.CreateIndexStmt) (Result, error) {
+	if err := db.catalog.CreateIndex(stmt); err != nil {
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil

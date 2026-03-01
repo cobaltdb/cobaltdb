@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -30,6 +31,8 @@ type TableDef struct {
 	PrimaryKey string      `json:"primary_key"`
 	CreatedAt  int64       `json:"created_at"`
 	RootPageID uint32      `json:"root_page_id"`
+	// Performance: cache column indices (not persisted)
+	columnIndices map[string]int `json:"-"`
 }
 
 // ColumnDef represents a column definition
@@ -116,6 +119,9 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 	c.tableTrees[stmt.Table] = tree // Store the tree for data operations
 	c.tableData[stmt.Table] = make(map[string][]byte) // Initialize data storage
 
+	// Build column index cache for performance
+	tableDef.buildColumnIndexCache()
+
 	// Store table definition in catalog tree
 	return c.storeTableDef(tableDef)
 }
@@ -189,6 +195,12 @@ func (c *Catalog) Insert(stmt *query.InsertStmt, args []interface{}) (int64, int
 	rowsAffected := int64(0)
 	autoIncValue := int64(0)
 
+	// Pre-calculate insert column indices for performance
+	insertColIndices := make([]int, len(insertColumns))
+	for i, colName := range insertColumns {
+		insertColIndices[i] = table.GetColumnIndex(colName)
+	}
+
 	for _, valueRow := range stmt.Values {
 		// Generate unique key (use auto-increment if primary key exists)
 		var key string
@@ -214,20 +226,14 @@ func (c *Catalog) Insert(stmt *query.InsertStmt, args []interface{}) (int64, int
 		// Build full row with all columns
 		rowValues := make([]interface{}, len(table.Columns))
 
-		// Map provided values to their columns
-		for colIdx, colName := range insertColumns {
-			if colIdx < len(valueRow) {
-				// Find matching column in table
-				for tableColIdx, tableCol := range table.Columns {
-					if tableCol.Name == colName {
-						val, err := EvalExpression(valueRow[colIdx], args)
-						if err != nil {
-							rowValues[tableColIdx] = nil
-						} else {
-							rowValues[tableColIdx] = val
-						}
-						break
-					}
+		// Map provided values to their columns using pre-calculated indices
+		for colIdx, tableColIdx := range insertColIndices {
+			if colIdx < len(valueRow) && tableColIdx >= 0 {
+				val, err := EvalExpression(valueRow[colIdx], args)
+				if err != nil {
+					rowValues[tableColIdx] = nil
+				} else {
+					rowValues[tableColIdx] = val
 				}
 			}
 		}
@@ -277,15 +283,19 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 		return 0, 0, ErrTableNotFound
 	}
 
-	// TODO: Implement WHERE clause filtering
-	// For now, update all rows
-
 	rowsAffected := int64(0)
 	iter, _ := tree.Scan(nil, nil)
 
 	// Collect keys to update
 	var keys [][]byte
 	var values [][]byte
+
+	// Pre-calculate column indices for SET clauses
+	setColumnIndices := make([]int, len(stmt.Set))
+	for i, setClause := range stmt.Set {
+		setColumnIndices[i] = table.GetColumnIndex(setClause.Column)
+	}
+
 	for iter.HasNext() {
 		key, valueData, err := iter.Next()
 		if err != nil {
@@ -297,20 +307,36 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 		if err != nil {
 			continue
 		}
-		_ = row // TODO: use row for WHERE clause filtering
 
-		// Update fields
-		for _, setClause := range stmt.Set {
-			newVal, err := EvalExpression(setClause.Value, args)
+		// Apply WHERE clause if present
+		if stmt.Where != nil {
+			matched, err := evaluateWhere(row, table.Columns, stmt.Where, args)
 			if err != nil {
 				continue
 			}
-			// Update row (simplified - just append new values for now)
-			_ = newVal
+			if !matched {
+				continue // Skip row that doesn't match WHERE condition
+			}
+		}
+
+		// Make a copy of the row to update
+		updatedRow := make([]interface{}, len(row))
+		copy(updatedRow, row)
+
+		// Update fields - use pre-calculated column indices
+		for i, setClause := range stmt.Set {
+			colIdx := setColumnIndices[i]
+			if colIdx >= 0 {
+				newVal, err := EvalExpression(setClause.Value, args)
+				if err != nil {
+					continue
+				}
+				updatedRow[colIdx] = newVal
+			}
 		}
 
 		// Re-encode row
-		newValueData, err := encodeRow([]query.Expression{}, args)
+		newValueData, err := json.Marshal(updatedRow)
 		if err != nil {
 			continue
 		}
@@ -331,7 +357,7 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 
 // Delete deletes rows from a table
 func (c *Catalog) Delete(stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
-	_, err := c.GetTable(stmt.Table)
+	table, err := c.GetTable(stmt.Table)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -341,19 +367,34 @@ func (c *Catalog) Delete(stmt *query.DeleteStmt, args []interface{}) (int64, int
 		return 0, 0, ErrTableNotFound
 	}
 
-	// TODO: Implement WHERE clause filtering
-	// For now, delete all rows
-
 	rowsAffected := int64(0)
 	iter, _ := tree.Scan(nil, nil)
 
 	// Collect keys to delete
 	var keys [][]byte
 	for iter.HasNext() {
-		key, _, err := iter.Next()
+		key, valueData, err := iter.Next()
 		if err != nil {
 			break
 		}
+
+		// Decode row
+		row, err := decodeRow(valueData, len(table.Columns))
+		if err != nil {
+			continue
+		}
+
+		// Apply WHERE clause if present
+		if stmt.Where != nil {
+			matched, err := evaluateWhere(row, table.Columns, stmt.Where, args)
+			if err != nil {
+				continue
+			}
+			if !matched {
+				continue // Skip row that doesn't match WHERE condition
+			}
+		}
+
 		keys = append(keys, key)
 		rowsAffected++
 	}
@@ -378,7 +419,7 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 		return nil, nil, err
 	}
 
-	// Get column names and their indices in the table
+	// Get column names and their indices in the table (optimized with cache)
 	type colInfo struct {
 		name  string
 		index int
@@ -388,12 +429,9 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 	for _, col := range stmt.Columns {
 		switch c := col.(type) {
 		case *query.Identifier:
-			// Find column index in table
-			for i, tc := range table.Columns {
-				if tc.Name == c.Name {
-					selectCols = append(selectCols, colInfo{name: c.Name, index: i})
-					break
-				}
+			// Use cached column index
+			if idx := table.GetColumnIndex(c.Name); idx >= 0 {
+				selectCols = append(selectCols, colInfo{name: c.Name, index: idx})
 			}
 		case *query.StarExpr:
 			// SELECT * - get all columns from table
@@ -648,6 +686,25 @@ func tokenTypeToColumnType(t query.TokenType) string {
 	default:
 		return "TEXT"
 	}
+}
+
+// buildColumnIndexCache builds a cache of column name to index mappings
+func (t *TableDef) buildColumnIndexCache() {
+	t.columnIndices = make(map[string]int, len(t.Columns))
+	for i, col := range t.Columns {
+		t.columnIndices[col.Name] = i
+	}
+}
+
+// GetColumnIndex returns the index of a column by name, -1 if not found
+func (t *TableDef) GetColumnIndex(name string) int {
+	if t.columnIndices == nil {
+		t.buildColumnIndexCache()
+	}
+	if idx, ok := t.columnIndices[name]; ok {
+		return idx
+	}
+	return -1
 }
 
 // Helper methods for future implementation
@@ -987,6 +1044,110 @@ func decodeRow(data []byte, numCols int) ([]interface{}, error) {
 	var values []interface{}
 	if err := json.Unmarshal(data, &values); err != nil {
 		return nil, err
+	}
+	return values, nil
+}
+
+// fastEncodeRow encodes a row using a simple binary format (faster than JSON)
+// Format: [type1][len1][data1][type2][len2][data2]...
+// Types: 0=nill, 1=int64, 2=float64, 3=string, 4=bool
+func fastEncodeRow(values []interface{}) ([]byte, error) {
+	if len(values) == 0 {
+		return []byte{0}, nil // empty marker
+	}
+
+	var buf []byte
+	for _, v := range values {
+		switch val := v.(type) {
+		case nil:
+			buf = append(buf, 0) // type: nil
+		case int:
+			buf = append(buf, 1) // type: int
+			buf = append(buf, byte(val), byte(val>>8), byte(val>>16), byte(val>>24), byte(val>>32), byte(val>>40), byte(val>>48), byte(val>>56))
+		case int64:
+			buf = append(buf, 1) // type: int64
+			buf = append(buf, byte(val), byte(val>>8), byte(val>>16), byte(val>>24), byte(val>>32), byte(val>>40), byte(val>>48), byte(val>>56))
+		case float64:
+			buf = append(buf, 2) // type: float64
+			bits := uint64(math.Float64bits(val))
+			buf = append(buf, byte(bits), byte(bits>>8), byte(bits>>16), byte(bits>>24), byte(bits>>32), byte(bits>>40), byte(bits>>48), byte(bits>>56))
+		case string:
+			buf = append(buf, 3) // type: string
+			buf = append(buf, byte(len(val)), byte(len(val)>>8))
+			buf = append(buf, val...)
+		case bool:
+			buf = append(buf, 4) // type: bool
+			if val {
+				buf = append(buf, 1)
+			} else {
+				buf = append(buf, 0)
+			}
+		default:
+			// Fallback to JSON for unknown types
+			j, err := json.Marshal(val)
+			if err != nil {
+				buf = append(buf, 0) // nil as fallback
+			} else {
+				buf = append(buf, 3) // treat as string
+				buf = append(buf, byte(len(j)), byte(len(j)>>8))
+				buf = append(buf, j...)
+			}
+		}
+	}
+	return buf, nil
+}
+
+// fastDecodeRow decodes a row from binary format
+func fastDecodeRow(data []byte) ([]interface{}, error) {
+	if len(data) == 0 {
+		return []interface{}{}, nil
+	}
+
+	var values []interface{}
+	i := 0
+	for i < len(data) {
+		typ := data[i]
+		i++
+		switch typ {
+		case 0: // nil
+			values = append(values, nil)
+		case 1: // int64
+			if i+8 > len(data) {
+				return nil, fmt.Errorf("invalid data: expected int64")
+			}
+			var v int64
+			v = int64(data[i]) | int64(data[i+1])<<8 | int64(data[i+2])<<16 | int64(data[i+3])<<24 |
+				int64(data[i+4])<<32 | int64(data[i+5])<<40 | int64(data[i+6])<<48 | int64(data[i+7])<<56
+			values = append(values, v)
+			i += 8
+		case 2: // float64
+			if i+8 > len(data) {
+				return nil, fmt.Errorf("invalid data: expected float64")
+			}
+			bits := uint64(data[i]) | uint64(data[i+1])<<8 | uint64(data[i+2])<<16 | uint64(data[i+3])<<24 |
+				uint64(data[i+4])<<32 | uint64(data[i+5])<<40 | uint64(data[i+6])<<48 | uint64(data[i+7])<<56
+			values = append(values, math.Float64frombits(bits))
+			i += 8
+		case 3: // string
+			if i+2 > len(data) {
+				return nil, fmt.Errorf("invalid data: expected string length")
+			}
+			length := int(data[i]) | int(data[i+1])<<8
+			i += 2
+			if i+length > len(data) {
+				return nil, fmt.Errorf("invalid data: expected string")
+			}
+			values = append(values, string(data[i:i+length]))
+			i += length
+		case 4: // bool
+			if i >= len(data) {
+				return nil, fmt.Errorf("invalid data: expected bool")
+			}
+			values = append(values, data[i] != 0)
+			i++
+		default:
+			return nil, fmt.Errorf("unknown type: %d", typ)
+		}
 	}
 	return values, nil
 }

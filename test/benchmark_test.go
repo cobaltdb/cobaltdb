@@ -205,3 +205,236 @@ func BenchmarkConcurrentRead(b *testing.B) {
 		}
 	})
 }
+
+// WHERE clause benchmarks
+func BenchmarkSelectWithWhere(b *testing.B) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 10 * 1024 * 1024,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, `CREATE TABLE bench_where (id INTEGER, value TEXT, age INTEGER)`)
+
+	// Insert test data
+	for i := 0; i < 10000; i++ {
+		db.Exec(ctx, `INSERT INTO bench_where (id, value, age) VALUES (?, ?, ?)`,
+			i, fmt.Sprintf("value-%d", i), i%100)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, _ := db.Query(ctx, `SELECT id, value FROM bench_where WHERE age > 50`)
+		rows.Close()
+	}
+	b.StopTimer()
+}
+
+func BenchmarkSelectWithWhereAndScan(b *testing.B) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 10 * 1024 * 1024,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, `CREATE TABLE bench_where_scan (id INTEGER, value TEXT, age INTEGER)`)
+
+	// Insert test data
+	for i := 0; i < 1000; i++ {
+		db.Exec(ctx, `INSERT INTO bench_where_scan (id, value, age) VALUES (?, ?, ?)`,
+			i, fmt.Sprintf("value-%d", i), i%100)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, _ := db.Query(ctx, `SELECT id, value FROM bench_where_scan WHERE age > 50`)
+		for rows.Next() {
+			var id int
+			var value string
+			rows.Scan(&id, &value)
+		}
+		rows.Close()
+	}
+	b.StopTimer()
+}
+
+// UPDATE benchmarks
+func BenchmarkUpdate(b *testing.B) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 10 * 1024 * 1024,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, `CREATE TABLE bench_update (id INTEGER, value TEXT, age INTEGER)`)
+
+	// Insert test data
+	for i := 0; i < 1000; i++ {
+		db.Exec(ctx, `INSERT INTO bench_update (id, value, age) VALUES (?, ?, ?)`,
+			i, fmt.Sprintf("value-%d", i), i%100)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		db.Exec(ctx, `UPDATE bench_update SET age = ? WHERE id = ?`, i+1000, i)
+	}
+	b.StopTimer()
+}
+
+func BenchmarkUpdateManyRows(b *testing.B) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 10 * 1024 * 1024,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, `CREATE TABLE bench_update_many (id INTEGER, value TEXT, age INTEGER)`)
+
+	// Insert test data
+	for i := 0; i < 1000; i++ {
+		db.Exec(ctx, `INSERT INTO bench_update_many (id, value, age) VALUES (?, ?, ?)`,
+			i, fmt.Sprintf("value-%d", i), i%100)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		db.Exec(ctx, `UPDATE bench_update_many SET age = ? WHERE age < ?`, 999, 50)
+	}
+	b.StopTimer()
+}
+
+// DELETE benchmarks
+func BenchmarkDelete(b *testing.B) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 10 * 1024 * 1024,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, `CREATE TABLE bench_delete (id INTEGER, value TEXT, age INTEGER)`)
+
+	// Insert test data
+	for i := 0; i < 1000; i++ {
+		db.Exec(ctx, `INSERT INTO bench_delete (id, value, age) VALUES (?, ?, ?)`,
+			i, fmt.Sprintf("value-%d", i), i%100)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		db.Exec(ctx, `DELETE FROM bench_delete WHERE id = ?`, i)
+		// Re-insert for next iteration
+		db.Exec(ctx, `INSERT INTO bench_delete (id, value, age) VALUES (?, ?, ?)`,
+			i, fmt.Sprintf("value-%d", i), i%100)
+	}
+	b.StopTimer()
+}
+
+func BenchmarkDeleteManyRows(b *testing.B) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 10 * 1024 * 1024,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, `CREATE TABLE bench_delete_many (id INTEGER, value TEXT, age INTEGER)`)
+
+	// Insert test data
+	for i := 0; i < 1000; i++ {
+		db.Exec(ctx, `INSERT INTO bench_delete_many (id, value, age) VALUES (?, ?, ?)`,
+			i, fmt.Sprintf("value-%d", i), i%100)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		db.Exec(ctx, `DELETE FROM bench_delete_many WHERE age < ?`, 50)
+		// Re-insert for next iteration
+		for j := 0; j < 1000; j++ {
+			db.Exec(ctx, `INSERT INTO bench_delete_many (id, value, age) VALUES (?, ?, ?)`,
+				j, fmt.Sprintf("value-%d", j), j%100)
+		}
+	}
+	b.StopTimer()
+}
+
+// Large dataset benchmarks
+func BenchmarkInsert10K(b *testing.B) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 100 * 1024 * 1024,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, `CREATE TABLE bench_10k (id INTEGER, value TEXT, age INTEGER)`)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for j := 0; j < 10000; j++ {
+			db.Exec(ctx, `INSERT INTO bench_10k (id, value, age) VALUES (?, ?, ?)`,
+				j, fmt.Sprintf("value-%d", j), j%100)
+		}
+	}
+	b.StopTimer()
+}
+
+func BenchmarkSelect10K(b *testing.B) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 100 * 1024 * 1024,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, `CREATE TABLE bench_select_10k (id INTEGER, value TEXT, age INTEGER)`)
+
+	// Insert test data
+	for i := 0; i < 10000; i++ {
+		db.Exec(ctx, `INSERT INTO bench_select_10k (id, value, age) VALUES (?, ?, ?)`,
+			i, fmt.Sprintf("value-%d", i), i%100)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, _ := db.Query(ctx, `SELECT id, value, age FROM bench_select_10k`)
+		count := 0
+		for rows.Next() {
+			var id int
+			var value string
+			var age int
+			rows.Scan(&id, &value, &age)
+			count++
+		}
+		rows.Close()
+	}
+	b.StopTimer()
+}

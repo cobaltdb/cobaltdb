@@ -110,3 +110,99 @@ func TestDecodeMessage(t *testing.T) {
 		t.Errorf("Expected type %d, got %d", MsgQuery, msg.Type)
 	}
 }
+
+func TestPrepareMessage(t *testing.T) {
+	msg := PrepareMessage{
+		SQL: "SELECT * FROM test WHERE id = ?",
+	}
+
+	data, err := Encode(msg)
+	if err != nil {
+		t.Fatalf("Failed to encode: %v", err)
+	}
+
+	var decoded PrepareMessage
+	err = Decode(data, &decoded)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if decoded.SQL != "SELECT * FROM test WHERE id = ?" {
+		t.Errorf("Expected SQL, got %q", decoded.SQL)
+	}
+}
+
+func TestExecuteMessage(t *testing.T) {
+	msg := ExecuteMessage{
+		StmtID: 1,
+		Params: []interface{}{42},
+	}
+
+	data, err := Encode(msg)
+	if err != nil {
+		t.Fatalf("Failed to encode: %v", err)
+	}
+
+	var decoded ExecuteMessage
+	err = Decode(data, &decoded)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if decoded.StmtID != 1 {
+		t.Errorf("Expected StmtID 1, got %d", decoded.StmtID)
+	}
+
+	if len(decoded.Params) != 1 {
+		t.Errorf("Expected 1 param, got %d", len(decoded.Params))
+	}
+}
+
+func TestMsgTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		msgType  MsgType
+		expected uint8
+	}{
+		{"Query", MsgQuery, 0x01},
+		{"Prepare", MsgPrepare, 0x02},
+		{"Execute", MsgExecute, 0x03},
+		{"Result", MsgResult, 0x10},
+		{"OK", MsgOK, 0x11},
+		{"Error", MsgError, 0x12},
+		{"Ping", MsgPing, 0x20},
+		{"Pong", MsgPong, 0x21},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if uint8(tt.msgType) != tt.expected {
+				t.Errorf("Expected %d, got %d", tt.expected, uint8(tt.msgType))
+			}
+		})
+	}
+}
+
+func TestEmptyParams(t *testing.T) {
+	msg := NewQueryMessage("SELECT 1")
+
+	if msg.SQL != "SELECT 1" {
+		t.Errorf("Expected SQL 'SELECT 1', got %q", msg.SQL)
+	}
+
+	if msg.Params != nil {
+		t.Error("Expected nil params")
+	}
+}
+
+func TestResultMessageWithEmptyRows(t *testing.T) {
+	msg := NewResultMessage([]string{"id", "name"}, [][]interface{}{})
+
+	if msg.Count != 0 {
+		t.Errorf("Expected count 0, got %d", msg.Count)
+	}
+
+	if len(msg.Rows) != 0 {
+		t.Errorf("Expected 0 rows, got %d", len(msg.Rows))
+	}
+}

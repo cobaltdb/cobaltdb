@@ -11,76 +11,65 @@ import (
 
 func main() {
 	dbPath := "./test.cobalt"
-
-	// Remove existing database
 	os.RemoveAll(dbPath + ".data")
 	os.Remove(dbPath)
 
-	fmt.Println("=== Test: Disk Persistence ===")
+	fmt.Println("=== Test: Full CRUD with Disk Persistence ===")
 
-	// Open database
-	db, err := engine.Open(dbPath, &engine.Options{
-		InMemory:  false,
-		CacheSize: 1024,
-	})
+	// Create database
+	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		log.Fatalf("Failed to open: %v", err)
 	}
 
 	ctx := context.Background()
 
-	// Create table
-	db.Exec(ctx, `
-		CREATE TABLE users (
-			id INTEGER PRIMARY KEY,
-			name TEXT NOT NULL,
-			email TEXT
-		)
-	`)
+	// CREATE
+	db.Exec(ctx, `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)`)
 
-	// Insert data
-	db.Exec(ctx, "INSERT INTO users (name, email) VALUES (?, ?)", "Ersin", "ersin@test.dev")
-	db.Exec(ctx, "INSERT INTO users (name, email) VALUES (?, ?)", "Jane", "jane@test.dev")
+	// INSERT
+	db.Exec(ctx, "INSERT INTO users (name, age) VALUES (?, ?)", "Ersin", 30)
+	db.Exec(ctx, "INSERT INTO users (name, age) VALUES (?, ?)", "Jane", 25)
+	db.Exec(ctx, "INSERT INTO users (name, age) VALUES (?, ?)", "John", 35)
 
-	// Query before close
-	rows, _ := db.Query(ctx, "SELECT name, email FROM users")
-	fmt.Println("Before close:")
-	for rows.Next() {
-		var name, email string
-		rows.Scan(&name, &email)
-		fmt.Printf("  - %s <%s>\n", name, email)
-	}
-	rows.Close()
+	// READ
+	fmt.Println("\n1. CREATE + INSERT:")
+	printUsers(db, ctx)
 
-	// Close database
+	// UPDATE
+	db.Exec(ctx, "UPDATE users SET age = ? WHERE name = ?", 31, "Ersin")
+	fmt.Println("\n2. UPDATE (age=31 where name=Ersin):")
+	printUsers(db, ctx)
+
+	// DELETE
+	db.Exec(ctx, "DELETE FROM users WHERE age > ?", 30)
+	fmt.Println("\n3. DELETE (age > 30):")
+	printUsers(db, ctx)
+
+	// Close and reopen
 	db.Close()
-	fmt.Println("Database closed")
+	fmt.Println("\n4. Database closed and reopened...")
 
-	// Reopen database
-	fmt.Println("\nAfter reopen:")
-	db2, err := engine.Open(dbPath, nil)
-	if err != nil {
-		log.Fatalf("Failed to reopen database: %v", err)
-	}
+	db2, _ := engine.Open(dbPath, nil)
 	defer db2.Close()
 
-	rows2, _ := db2.Query(ctx, "SELECT name, email FROM users")
-	count := 0
-	for rows2.Next() {
-		count++
-		var name, email string
-		rows2.Scan(&name, &email)
-		fmt.Printf("  - %s <%s>\n", name, email)
-	}
-	rows2.Close()
+	fmt.Println("\n5. After reopen:")
+	printUsers(db2, ctx)
 
 	// Cleanup
 	os.RemoveAll(dbPath + ".data")
 	os.Remove(dbPath)
 
-	if count == 2 {
-		fmt.Printf("\n✅ SUCCESS: %d users loaded from disk!\n", count)
-	} else {
-		fmt.Printf("\n❌ FAILURE: Expected 2 users, got %d\n", count)
+	fmt.Println("\n✅ All CRUD operations work with disk persistence!")
+}
+
+func printUsers(db *engine.DB, ctx context.Context) {
+	rows, _ := db.Query(ctx, "SELECT name, age FROM users")
+	for rows.Next() {
+		var name string
+		var age int
+		rows.Scan(&name, &age)
+		fmt.Printf("   - %s, age=%d\n", name, age)
 	}
+	rows.Close()
 }

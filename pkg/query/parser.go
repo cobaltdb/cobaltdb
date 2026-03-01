@@ -382,6 +382,54 @@ func (p *Parser) parseExpression() (Expression, error) {
 	return p.parseOr()
 }
 
+// parseExpressionWithOffset parses an expression with placeholder offset
+func (p *Parser) parseExpressionWithOffset(offset int) (Expression, error) {
+	expr, err := p.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	// Apply offset to all placeholders in the expression
+	applyPlaceholderOffset(expr, offset)
+	return expr, nil
+}
+
+// applyPlaceholderOffset recursively applies offset to placeholders
+func applyPlaceholderOffset(expr Expression, offset int) {
+	if expr == nil {
+		return
+	}
+
+	switch e := expr.(type) {
+	case *PlaceholderExpr:
+		e.Index += offset
+	case *BinaryExpr:
+		applyPlaceholderOffset(e.Left, offset)
+		applyPlaceholderOffset(e.Right, offset)
+	case *UnaryExpr:
+		applyPlaceholderOffset(e.Expr, offset)
+	case *FunctionCall:
+		for _, arg := range e.Args {
+			applyPlaceholderOffset(arg, offset)
+		}
+	case *InExpr:
+		applyPlaceholderOffset(e.Expr, offset)
+		for _, item := range e.List {
+			applyPlaceholderOffset(item, offset)
+		}
+	case *BetweenExpr:
+		applyPlaceholderOffset(e.Expr, offset)
+		applyPlaceholderOffset(e.Lower, offset)
+		applyPlaceholderOffset(e.Upper, offset)
+	case *LikeExpr:
+		applyPlaceholderOffset(e.Expr, offset)
+		applyPlaceholderOffset(e.Pattern, offset)
+	case *IsNullExpr:
+		applyPlaceholderOffset(e.Expr, offset)
+	case *SubqueryExpr:
+		// Subqueries would need their own handling
+	}
+}
+
 // parseOr parses OR expressions
 func (p *Parser) parseOr() (Expression, error) {
 	left, err := p.parseAnd()
@@ -796,7 +844,13 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 
 	p.expect(TokenSet)
 
-	// Set clauses
+	// Count set clauses first for placeholder offset
+	setCount := 0
+
+	// Set clauses - parse and save positions
+	var setClauses []*SetClause
+	var setPlaceholders []*PlaceholderExpr
+
 	for {
 		col, err := p.expect(TokenIdentifier)
 		if err != nil {
@@ -810,16 +864,32 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 			return nil, err
 		}
 
-		stmt.Set = append(stmt.Set, &SetClause{Column: col.Literal, Value: val})
+		clause := &SetClause{Column: col.Literal, Value: val}
+		setClauses = append(setClauses, clause)
+
+		// Track placeholder for later fix
+		if placeholder, ok := val.(*PlaceholderExpr); ok {
+			setPlaceholders = append(setPlaceholders, placeholder)
+		}
+		setCount++
 
 		if !p.match(TokenComma) {
 			break
 		}
 	}
 
+	// Fix SET clause placeholder indices (they should be 0, 1, 2, ...)
+	for i, ph := range setPlaceholders {
+		ph.Index = i
+	}
+	stmt.Set = setClauses
+
+	// Calculate offset for WHERE clause placeholders
+	whereOffset := setCount
+
 	// WHERE
 	if p.match(TokenWhere) {
-		where, err := p.parseExpression()
+		where, err := p.parseExpressionWithOffset(whereOffset)
 		if err != nil {
 			return nil, err
 		}
@@ -842,9 +912,9 @@ func (p *Parser) parseDelete() (*DeleteStmt, error) {
 	}
 	stmt.Table = table.Literal
 
-	// WHERE
+	// WHERE - placeholders start at offset 0
 	if p.match(TokenWhere) {
-		where, err := p.parseExpression()
+		where, err := p.parseExpressionWithOffset(0)
 		if err != nil {
 			return nil, err
 		}

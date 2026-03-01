@@ -1,15 +1,13 @@
-# CobaltDB v1.0
+# CobaltDB Documentation
 
-> A lightweight, embeddable database engine written in Go with SQL + JSON query support, persistent storage, in-memory mode, and transaction support.
+## Overview
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/cobaltdb/cobaltdb.svg)](https://pkg.go.dev/github.com/cobaltdb/cobaltdb)
-[![Go Report Card](https://goreportcard.com/badge/github.com/cobaltdb/cobaltdb)](https://goreportcard.com/report/github.com/cobaltdb/cobaltdb)
-[![Tests](https://github.com/cobaltdb/cobaltdb/actions/workflows/test.yml/badge.svg)](https://github.com/cobaltdb/cobaltdb/actions)
+CobaltDB is a lightweight, embeddable database engine written in Go with SQL and JSON query support, persistent storage, in-memory mode, and transaction support.
 
 ## Features
 
 - **SQL Support**: Full SQL parser with SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, CREATE INDEX
-- **WHERE Clause Filtering**: Complete WHERE clause support with comparison operators
+- **WHERE Clause Filtering**: Complete WHERE clause support with comparison operators (=, !=, <, >, <=, >=, IS NULL, IS NOT NULL)
 - **Persistent Storage**: Disk-based storage with data persistence across restarts
 - **In-Memory Mode**: RAM-only databases for testing and caching
 - **Placeholder Support**: Prepared statement placeholders (?)
@@ -70,72 +68,25 @@ func main() {
 }
 ```
 
-## Disk Persistence
+## CLI Usage
 
-```go
-// Open disk-based database
-db, err := engine.Open("./mydb.cobalt", &engine.Options{
-    InMemory:  false,
-    CacheSize: 1024,
-})
-
-// Data is automatically saved on close
-db.Close()
-
-// Reopen - data persists!
-db2, _ := engine.Open("./mydb.cobalt", nil)
-```
-
-## SQL Support
-
-### DDL
-```sql
-CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT)
-CREATE INDEX idx_email ON users(email)
-DROP TABLE users
-```
-
-### DML
-```sql
-INSERT INTO users (name, email) VALUES ('Ersin', 'ersin@test.dev')
-SELECT * FROM users
-SELECT name, email FROM users WHERE age > 25
-UPDATE users SET name = ? WHERE id = ?
-DELETE FROM users WHERE id = ?
-```
-
-### Transactions
-```sql
-BEGIN
-INSERT INTO users (name) VALUES ('Alice')
-COMMIT
--- or
-ROLLBACK
-```
-
-## Running
+### Installation
 
 ```bash
-# Build CLI
-go build -o cobaltdb ./cmd/cobaltdb-cli
+go install github.com/cobaltdb/cobaltdb/cmd/cobaltdb-cli@latest
+```
 
-# Run CLI
-./cobaltdb -memory "CREATE TABLE users (id INTEGER, name TEXT)"
+### Commands
+
+```bash
+# In-memory database
+cobaltdb -memory "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"
+
+# Disk database
+cobaltdb -path ./mydb.db "SELECT * FROM users"
 
 # Interactive mode
-./cobaltdb -memory -i
-
-# Run tests
-go test ./...
-
-# Run benchmarks
-go test -bench=. -benchtime=2s ./test/...
-
-# Run demo
-go run cmd/demo/main.go
-
-# Run server
-go run cmd/cobaltdb-server/main.go
+cobaltdb -memory -i
 ```
 
 ## Architecture
@@ -150,9 +101,9 @@ go run cmd/cobaltdb-server/main.go
                │
 ┌──────────────▼──────────────────────┐
 │       Catalog (pkg/catalog)          │
-│  - Schema management                │
-│  - Table operations                 │
-│  - Data persistence (disk)          │
+│  - Schema management                 │
+│  - Table operations                  │
+│  - Data persistence (disk)           │
 └──────────────┬──────────────────────┘
                │
 ┌──────────────▼──────────────────────┐
@@ -166,53 +117,24 @@ go run cmd/cobaltdb-server/main.go
 │     Storage (pkg/storage)            │
 │  - Buffer Pool                      │
 │  - Page management                  │
-│  - Disk I/O                        │
-│  - WAL (Write-Ahead Log)           │
+│  - Disk I/O                         │
 └──────────────┬──────────────────────┘
                │
 ┌──────────────▼──────────────────────┐
 │        BTree (pkg/btree)            │
-│  - B+Tree implementation           │
+│  - B+Tree implementation            │
 │  - In-memory index                  │
 └─────────────────────────────────────┘
 ```
 
-## v1.0 - What's Working
+## Data Types
 
-### ✅ Core Features
-- SQL Parser (SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, CREATE INDEX, DROP TABLE)
-- WHERE clause with operators: =, !=, <, >, <=, >=, IS NULL, IS NOT NULL
-- Placeholder support (?) for prepared statements
-- In-memory and disk-based storage
-- Data persistence (survives restart)
-- Transactions (BEGIN, COMMIT, ROLLBACK)
-
-### ✅ Data Types
-- INTEGER
-- TEXT
-- REAL
-- BOOLEAN
-- JSON
-
-### ✅ Storage
-- Buffer pool with LRU eviction
-- Page-based storage
-- Disk backend with file I/O
-
-## Roadmap (v1.1+)
-
-- [ ] WAL (Write-Ahead Log) for crash recovery
-- [ ] B+Tree disk persistence
-- [ ] Index usage in query execution
-- [ ] Query optimizer
-- [ ] More SQL functions (COUNT, SUM, AVG, etc.)
-- [ ] Foreign keys
-- [ ] JOIN support
+- **INTEGER**: 64-bit signed integer
+- **TEXT**: UTF-8 string
+- **REAL**: 64-bit floating point
+- **BOOLEAN**: Boolean (true/false)
+- **JSON**: JSON text
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file.
-
----
-
-Built with ❤️ by Ersin KOÇ
+MIT License - see [LICENSE](../LICENSE) file.
