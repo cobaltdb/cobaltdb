@@ -848,8 +848,9 @@ func (c *Catalog) Delete(stmt *query.DeleteStmt, args []interface{}) (int64, int
 
 // Select queries rows from a table or view
 func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
+	// Handle SELECT without FROM clause (scalar expressions)
 	if stmt.From == nil {
-		return nil, nil, errors.New("no table specified")
+		return c.executeScalarSelect(stmt, args)
 	}
 
 	// Check if it's a view first
@@ -1011,6 +1012,158 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 	}
 
 	return returnColumns, rows, nil
+}
+
+// executeScalarSelect handles SELECT without FROM clause (scalar expressions)
+func (c *Catalog) executeScalarSelect(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
+	// SELECT without FROM - evaluate each expression
+	var returnColumns []string
+	var rows [][]interface{}
+
+	// Handle each column in the SELECT clause
+	if len(stmt.Columns) == 0 {
+		return nil, nil, errors.New("no columns specified")
+	}
+
+	// Check if this is a simple expression or contains aggregates/window functions
+	hasAggregate := false
+	hasWindowFunc := false
+
+	for _, col := range stmt.Columns {
+		if fc, ok := col.(*query.FunctionCall); ok {
+			funcName := strings.ToUpper(fc.Name)
+			if funcName == "COUNT" || funcName == "SUM" || funcName == "AVG" || funcName == "MIN" || funcName == "MAX" {
+				hasAggregate = true
+			}
+			// Check for window functions
+			_, hasWindowFunc = col.(*query.WindowExpr)
+		}
+		if _, ok := col.(*query.WindowExpr); ok {
+			hasWindowFunc = true
+		}
+	}
+
+	if hasAggregate {
+		// Aggregate without FROM - compute single aggregate result
+		return c.executeScalarAggregate(stmt, args)
+	}
+
+	if hasWindowFunc {
+		// Window function without FROM - need to handle specially
+		return nil, nil, errors.New("window functions require FROM clause")
+	}
+
+	// Simple scalar expression - evaluate each column expression once
+	row := make([]interface{}, len(stmt.Columns))
+	for i, col := range stmt.Columns {
+		val, err := evaluateExpression(c, nil, nil, col, args)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// Build column name
+		colName := fmt.Sprintf("column_%d", i)
+		if ident, ok := col.(*query.Identifier); ok {
+			colName = ident.Name
+		} else if fc, ok := col.(*query.FunctionCall); ok {
+			colName = fc.Name
+		}
+		returnColumns = append(returnColumns, colName)
+		row[i] = val
+	}
+
+	rows = append(rows, row)
+
+	// Handle DISTINCT
+	if stmt.Distinct {
+		rows = c.applyDistinct(rows)
+	}
+
+	// Handle ORDER BY (for scalar expressions, just sort the single row)
+	if len(stmt.OrderBy) > 0 {
+		// No ordering needed for single row
+	}
+
+	// Handle LIMIT
+	if stmt.Limit != nil {
+		limitVal, err := evaluateExpression(c, nil, nil, stmt.Limit, args)
+		if err == nil {
+			if limit, ok := toInt(limitVal); ok && limit >= 0 && limit < len(rows) {
+				rows = rows[:limit]
+			}
+		}
+	}
+
+	return returnColumns, rows, nil
+}
+
+// executeScalarAggregate handles aggregate functions without FROM
+func (c *Catalog) executeScalarAggregate(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
+	var returnColumns []string
+
+	// Evaluate each column as an aggregate
+	row := make([]interface{}, len(stmt.Columns))
+	for i, col := range stmt.Columns {
+		fc, ok := col.(*query.FunctionCall)
+		if !ok {
+			return nil, nil, errors.New("aggregate functions required in this context")
+		}
+
+		funcName := strings.ToUpper(fc.Name)
+		var colName string
+		var result interface{}
+
+		switch funcName {
+		case "COUNT":
+			colName = "COUNT(*)"
+			// COUNT(*) without FROM is always 1
+			result = float64(1)
+		case "SUM":
+			colName = "SUM"
+			if len(fc.Args) > 0 {
+				val, err := evaluateExpression(c, nil, nil, fc.Args[0], args)
+				if err == nil {
+					if f, ok := toFloat64(val); ok {
+						result = f
+					}
+				}
+			}
+		case "AVG":
+			colName = "AVG"
+			if len(fc.Args) > 0 {
+				val, err := evaluateExpression(c, nil, nil, fc.Args[0], args)
+				if err == nil {
+					if f, ok := toFloat64(val); ok {
+						result = f
+					}
+				}
+			}
+		case "MIN":
+			colName = "MIN"
+			if len(fc.Args) > 0 {
+				val, err := evaluateExpression(c, nil, nil, fc.Args[0], args)
+				if err == nil {
+					result = val
+				}
+			}
+		case "MAX":
+			colName = "MAX"
+			if len(fc.Args) > 0 {
+				val, err := evaluateExpression(c, nil, nil, fc.Args[0], args)
+				if err == nil {
+					result = val
+				}
+			}
+		default:
+			colName = fc.Name
+			result = nil
+		}
+
+		returnColumns = append(returnColumns, colName)
+		row[i] = result
+	}
+
+	return returnColumns, [][]interface{}{row}, nil
 }
 
 // executeSelectWithJoin handles SELECT with JOIN clauses
