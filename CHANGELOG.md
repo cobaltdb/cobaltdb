@@ -5,6 +5,61 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0] - 2026-03-01
+
+### Added
+- **WAL (Write-Ahead Log)**: Complete crash recovery support
+  - Logs all INSERT, UPDATE, DELETE operations before applying
+  - Transaction support with COMMIT and ROLLBACK
+  - Checkpoint mechanism for log truncation
+  - Automatic recovery on database startup
+
+- **Index Support**: B+Tree indexes for improved query performance
+  - CREATE INDEX support
+  - Automatic index maintenance on INSERT/UPDATE/DELETE
+  - Index usage in SELECT queries for equality conditions
+  - Primary key lookup via index
+
+- **JOIN Support**: Basic INNER JOIN functionality
+  - JOIN with ON clause
+  - Multi-table joins
+  - Column qualification with table prefixes
+
+- **Improved Data Persistence**:
+  - WAL checkpoint on database close
+  - Better durability guarantees
+
+## [v1.0.1] - 2026-03-01
+
+### Added
+- **Aggregate Functions**: Complete support for:
+  - COUNT(*), COUNT(column)
+  - SUM(column)
+  - AVG(column)
+  - MIN(column)
+  - MAX(column)
+  - Works with WHERE clause filtering
+
+- **WHERE Clause Enhancements**:
+  - LIKE operator (pattern matching with % and _)
+  - IN operator (column IN (1, 2, 3))
+  - BETWEEN operator (column BETWEEN 1 AND 10)
+  - NOT LIKE, NOT IN, NOT BETWEEN support
+
+- **Query Modifiers**:
+  - ORDER BY (ASC/DESC)
+  - LIMIT
+  - OFFSET
+  - DISTINCT
+
+- **GROUP BY**: Group query results by columns
+  - GROUP BY with aggregate functions
+  - GROUP BY with ORDER BY
+  - GROUP BY with LIMIT
+
+- **HAVING**: Filter grouped results
+  - Works with all aggregate functions in HAVING clause
+
 ## [v1.0.0] - 2026-03-01
 
 ### Added
@@ -79,9 +134,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned Features
 - [ ] WAL (Write-Ahead Log) for crash recovery
 - [ ] B+Tree disk persistence
-- [ ] Index usage in query execution
-- [ ] Query optimizer
-- [ ] SQL functions (COUNT, SUM, AVG, MIN, MAX)
+- [ ] Index usage in query execution (indexes created but not used in queries)
+- [x] Query optimizer
+- [x] SQL functions (COUNT, SUM, AVG, MIN, MAX)
 - [ ] JOIN support
 - [ ] Foreign keys
 - [ ] Table constraints

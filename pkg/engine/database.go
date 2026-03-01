@@ -138,7 +138,7 @@ func (db *DB) createNew() error {
 	db.rootTree = tree
 
 	// Initialize catalog
-	db.catalog = catalog.New(db.rootTree, db.pool)
+	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
 
 	// Initialize transaction manager
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
@@ -185,7 +185,7 @@ func (db *DB) loadExisting() error {
 	db.rootTree = btree.OpenBTree(db.pool, meta.RootPageID)
 
 	// Load catalog
-	db.catalog = catalog.New(db.rootTree, db.pool)
+	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
 
 	// Initialize transaction manager
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
@@ -230,6 +230,13 @@ func (db *DB) Close() error {
 	// Flush buffer pool
 	if err := db.pool.Close(); err != nil {
 		return err
+	}
+
+	// Perform WAL checkpoint if enabled
+	if db.wal != nil {
+		if err := db.wal.Checkpoint(db.pool); err != nil {
+			return fmt.Errorf("failed to checkpoint WAL: %w", err)
+		}
 	}
 
 	// Close WAL
@@ -310,6 +317,10 @@ func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 	}
 
 	transaction := db.txnMgr.Begin(opts)
+
+	// Begin transaction in catalog for WAL logging
+	db.catalog.BeginTransaction(transaction.ID)
+
 	return &Tx{
 		db:  db,
 		txn: transaction,
@@ -318,6 +329,15 @@ func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 
 // execute executes a statement
 func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interface{}) (Result, error) {
+	// Handle autocommit mode for write operations when WAL is enabled
+	autocommit := db.wal != nil && !db.catalog.IsTransactionActive()
+
+	if autocommit {
+		// Start a transaction for this operation
+		db.catalog.BeginTransaction(1) // Use 1 for autocommit transactions
+		defer db.catalog.CommitTransaction()
+	}
+
 	switch s := stmt.(type) {
 	case *query.CreateTableStmt:
 		return db.executeCreateTable(ctx, s)
@@ -558,10 +578,18 @@ func (tx *Tx) Query(ctx context.Context, sql string, args ...interface{}) (*Rows
 
 // Commit commits the transaction
 func (tx *Tx) Commit() error {
+	// Commit in catalog first (writes commit record to WAL)
+	if err := tx.db.catalog.CommitTransaction(); err != nil {
+		return err
+	}
 	return tx.txn.Commit()
 }
 
 // Rollback rolls back the transaction
 func (tx *Tx) Rollback() error {
+	// Rollback in catalog first (writes rollback record to WAL)
+	if err := tx.db.catalog.RollbackTransaction(); err != nil {
+		return err
+	}
 	return tx.txn.Rollback()
 }

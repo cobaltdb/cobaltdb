@@ -10,7 +10,7 @@ import (
 func TestUpdate(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	// Create table
 	createStmt := &query.CreateTableStmt{
@@ -56,7 +56,7 @@ func TestUpdate(t *testing.T) {
 func TestDelete(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	// Create table
 	createStmt := &query.CreateTableStmt{
@@ -109,7 +109,7 @@ func TestDelete(t *testing.T) {
 func TestDropIndex(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	// Create table
 	createStmt := &query.CreateTableStmt{
@@ -142,7 +142,7 @@ func TestDropIndex(t *testing.T) {
 func TestDropNonExistentIndex(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	err := catalog.DropIndex("nonexistent")
 	if err == nil {
@@ -153,7 +153,7 @@ func TestDropNonExistentIndex(t *testing.T) {
 func TestUpdateNonExistentTable(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	updateStmt := &query.UpdateStmt{Table: "nonexistent"}
 	_, _, err := catalog.Update(updateStmt, nil)
@@ -165,7 +165,7 @@ func TestUpdateNonExistentTable(t *testing.T) {
 func TestDeleteNonExistentTable(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	deleteStmt := &query.DeleteStmt{Table: "nonexistent"}
 	_, _, err := catalog.Delete(deleteStmt, nil)
@@ -177,7 +177,7 @@ func TestDeleteNonExistentTable(t *testing.T) {
 func TestSelectWithoutFrom(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	selectStmt := &query.SelectStmt{
 		Columns: []query.Expression{&query.Identifier{Name: "id"}},
@@ -193,7 +193,7 @@ func TestSelectWithoutFrom(t *testing.T) {
 func TestSelectNonExistentTable(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	selectStmt := &query.SelectStmt{
 		Columns: []query.Expression{&query.Identifier{Name: "id"}},
@@ -246,7 +246,7 @@ func TestEvalPlaceholderOutOfRange(t *testing.T) {
 func TestEvaluateWhereWithBinaryExpr(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	// Create table
 	createStmt := &query.CreateTableStmt{
@@ -366,7 +366,7 @@ func TestTokenTypeToColumnType(t *testing.T) {
 func TestInsertMultipleRows(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	// Create table
 	createStmt := &query.CreateTableStmt{
@@ -402,7 +402,7 @@ func TestInsertMultipleRows(t *testing.T) {
 func TestInsertWithPlaceholder(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	// Create table
 	createStmt := &query.CreateTableStmt{
@@ -432,7 +432,7 @@ func TestInsertWithPlaceholder(t *testing.T) {
 func TestUpdateWithWhere(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	// Create table
 	createStmt := &query.CreateTableStmt{
@@ -483,7 +483,7 @@ func TestUpdateWithWhere(t *testing.T) {
 func TestDeleteWithWhere(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	// Create table
 	createStmt := &query.CreateTableStmt{
@@ -531,7 +531,7 @@ func TestDeleteWithWhere(t *testing.T) {
 func TestSelectWithQualifiedIdentifier(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	// Create table
 	createStmt := &query.CreateTableStmt{
@@ -596,7 +596,7 @@ func TestDecodeRow(t *testing.T) {
 func TestCreateIndexDuplicate(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	// Create table
 	createStmt := &query.CreateTableStmt{
@@ -623,7 +623,7 @@ func TestCreateIndexDuplicate(t *testing.T) {
 func TestGetIndexNotFound(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
-	catalog := New(nil, pool)
+	catalog := New(nil, pool, nil)
 
 	_, err := catalog.GetIndex("nonexistent")
 	if err == nil {

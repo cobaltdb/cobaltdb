@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 
@@ -55,28 +56,97 @@ type IndexDef struct {
 	RootPageID uint32   `json:"root_page_id"`
 }
 
+// selectColInfo holds information about selected columns in a query
+type selectColInfo struct {
+	name          string
+	tableName     string // table name for JOINs
+	index         int
+	isAggregate   bool
+	aggregateType string // COUNT, SUM, AVG, MIN, MAX
+	aggregateCol  string // column name for SUM, AVG, MIN, MAX
+}
+
 // Catalog manages database schema metadata
 type Catalog struct {
 	tree        *btree.BTree
 	tables      map[string]*TableDef
 	indexes     map[string]*IndexDef
+	indexTrees  map[string]*btree.BTree // B+Trees for indexes
 	pool        *storage.BufferPool
+	wal         *storage.WAL
 	tableTrees  map[string]*btree.BTree // Each table has its own B+Tree
 	tableData   map[string]map[string][]byte // Temporary: simple in-memory storage
 	keyCounter  int64 // For generating unique keys
+	txnID       uint64 // Current transaction ID
+	txnActive   bool   // Is a transaction active
 }
 
 // New creates a new catalog
-func New(tree *btree.BTree, pool *storage.BufferPool) *Catalog {
+func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog {
 	return &Catalog{
 		tree:       tree,
 		tables:     make(map[string]*TableDef),
 		indexes:    make(map[string]*IndexDef),
+		indexTrees: make(map[string]*btree.BTree),
 		pool:       pool,
+		wal:        wal,
 		tableTrees: make(map[string]*btree.BTree),
 		tableData:  make(map[string]map[string][]byte),
 		keyCounter: 0,
 	}
+}
+
+// SetWAL sets the WAL for the catalog
+func (c *Catalog) SetWAL(wal *storage.WAL) {
+	c.wal = wal
+}
+
+// BeginTransaction begins a new transaction
+func (c *Catalog) BeginTransaction(txnID uint64) {
+	c.txnID = txnID
+	c.txnActive = true
+}
+
+// CommitTransaction commits the current transaction
+func (c *Catalog) CommitTransaction() error {
+	if c.wal != nil && c.txnActive {
+		// Write commit record to WAL
+		record := &storage.WALRecord{
+			TxnID: c.txnID,
+			Type:  storage.WALCommit,
+		}
+		if err := c.wal.Append(record); err != nil {
+			return err
+		}
+	}
+	c.txnActive = false
+	return nil
+}
+
+// RollbackTransaction rolls back the current transaction
+func (c *Catalog) RollbackTransaction() error {
+	if c.wal != nil && c.txnActive {
+		// Write rollback record to WAL
+		record := &storage.WALRecord{
+			TxnID: c.txnID,
+			Type:  storage.WALRollback,
+		}
+		if err := c.wal.Append(record); err != nil {
+			return err
+		}
+	}
+	c.txnActive = false
+	return nil
+}
+
+// IsTransactionActive returns true if a transaction is active
+func (c *Catalog) IsTransactionActive() bool {
+	return c.txnActive
+}
+
+// TxnID returns the current transaction ID
+func (c *Catalog) TxnID() uint64 {
+	return c.txnID
 }
 
 // CreateTable creates a new table
@@ -263,8 +333,37 @@ func (c *Catalog) Insert(stmt *query.InsertStmt, args []interface{}) (int64, int
 			return 0, rowsAffected, err
 		}
 
+		// Log to WAL before applying change
+		if c.wal != nil && c.txnActive {
+			// For INSERT, we log the key and value
+			// Format: key (null-terminated) + value
+			walData := append([]byte(key), 0)
+			walData = append(walData, valueData...)
+			record := &storage.WALRecord{
+				TxnID: c.txnID,
+				Type:  storage.WALInsert,
+				Data:  walData,
+			}
+			if err := c.wal.Append(record); err != nil {
+				return 0, rowsAffected, err
+			}
+		}
+
 		// Store in B+Tree
 		tree.Put([]byte(key), valueData)
+
+		// Update indexes
+		for idxName, idxTree := range c.indexTrees {
+			idxDef := c.indexes[idxName]
+			if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
+				colIdx := table.GetColumnIndex(idxDef.Columns[0])
+				if colIdx >= 0 && colIdx < len(rowValues) {
+					indexKey := fmt.Sprintf("%v", rowValues[colIdx])
+					idxTree.Put([]byte(indexKey), []byte(key))
+				}
+			}
+		}
+
 		rowsAffected++
 	}
 
@@ -349,7 +448,39 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 
 	// Apply updates
 	for i, key := range keys {
+		// Log to WAL before applying change
+		if c.wal != nil && c.txnActive {
+			// For UPDATE, we log the key and new value
+			// Format: key (null-terminated) + value
+			walData := append([]byte(key), 0)
+			walData = append(walData, values[i]...)
+			record := &storage.WALRecord{
+				TxnID: c.txnID,
+				Type:  storage.WALUpdate,
+				Data:  walData,
+			}
+			if err := c.wal.Append(record); err != nil {
+				return 0, rowsAffected, err
+			}
+		}
+
 		tree.Put(key, values[i])
+
+		// Update indexes with new values
+		// Decode the updated row to get new column values
+		updatedRow, err := decodeRow(values[i], len(table.Columns))
+		if err == nil {
+			for idxName, idxTree := range c.indexTrees {
+				idxDef := c.indexes[idxName]
+				if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
+					colIdx := table.GetColumnIndex(idxDef.Columns[0])
+					if colIdx >= 0 && colIdx < len(updatedRow) {
+						indexKey := fmt.Sprintf("%v", updatedRow[colIdx])
+						idxTree.Put([]byte(indexKey), key)
+					}
+				}
+			}
+		}
 	}
 
 	return 0, rowsAffected, nil
@@ -402,6 +533,21 @@ func (c *Catalog) Delete(stmt *query.DeleteStmt, args []interface{}) (int64, int
 
 	// Delete collected keys
 	for _, key := range keys {
+		// Log to WAL before applying change
+		if c.wal != nil && c.txnActive {
+			// For DELETE, we log the key being deleted
+			// Format: key (null-terminated)
+			walData := append([]byte(key), 0)
+			record := &storage.WALRecord{
+				TxnID: c.txnID,
+				Type:  storage.WALDelete,
+				Data:  walData,
+			}
+			if err := c.wal.Append(record); err != nil {
+				return 0, rowsAffected, err
+			}
+		}
+
 		tree.Delete(key)
 	}
 
@@ -420,31 +566,58 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 	}
 
 	// Get column names and their indices in the table (optimized with cache)
-	type colInfo struct {
-		name  string
-		index int
-	}
-	var selectCols []colInfo
+	var selectCols []selectColInfo
+	var hasAggregates bool
 
 	for _, col := range stmt.Columns {
 		switch c := col.(type) {
 		case *query.Identifier:
 			// Use cached column index
 			if idx := table.GetColumnIndex(c.Name); idx >= 0 {
-				selectCols = append(selectCols, colInfo{name: c.Name, index: idx})
+				selectCols = append(selectCols, selectColInfo{name: c.Name, tableName: stmt.From.Name, index: idx})
 			}
 		case *query.StarExpr:
 			// SELECT * - get all columns from table
 			for i, tc := range table.Columns {
-				selectCols = append(selectCols, colInfo{name: tc.Name, index: i})
+				selectCols = append(selectCols, selectColInfo{name: tc.Name, tableName: stmt.From.Name, index: i})
+			}
+		case *query.FunctionCall:
+			// Handle aggregate functions: COUNT, SUM, AVG, MIN, MAX
+			funcName := strings.ToUpper(c.Name)
+			if funcName == "COUNT" || funcName == "SUM" || funcName == "AVG" || funcName == "MIN" || funcName == "MAX" {
+				hasAggregates = true
+				colName := "*" // Default for COUNT(*)
+				if len(c.Args) > 0 {
+					if ident, ok := c.Args[0].(*query.Identifier); ok {
+						colName = ident.Name
+					}
+				}
+				selectCols = append(selectCols, selectColInfo{
+					name:          c.Name + "(" + colName + ")",
+					tableName:     stmt.From.Name,
+					index:         -1,
+					isAggregate:   true,
+					aggregateType: funcName,
+					aggregateCol:  colName,
+				})
 			}
 		}
+	}
+
+	// Handle JOINs if present
+	if len(stmt.Joins) > 0 {
+		return c.executeSelectWithJoin(stmt, args, selectCols)
 	}
 
 	// Extract column names for return
 	returnColumns := make([]string, len(selectCols))
 	for i, ci := range selectCols {
 		returnColumns[i] = ci.name
+	}
+
+	// If we have aggregates or GROUP BY, handle them differently
+	if hasAggregates || len(stmt.GroupBy) > 0 {
+		return c.computeAggregatesWithGroupBy(table, stmt, args, selectCols, returnColumns)
 	}
 
 	// Read all rows from B+Tree
@@ -454,16 +627,31 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 		return returnColumns, rows, nil
 	}
 
+	// Try to use index for WHERE clause
+	var useIndex bool
+	var indexMatches map[string]bool
+	if stmt.Where != nil {
+		indexMatches, useIndex = c.useIndexForQuery(stmt.From.Name, stmt.Where)
+	}
+
 	iter, _ := tree.Scan(nil, nil)
 	defer iter.Close()
 
 	count := 0
 	for iter.HasNext() {
-		count++
-		_, valueData, err := iter.Next()
+		key, valueData, err := iter.Next()
 		if err != nil {
 			break
 		}
+
+		// If using index, only fetch matching rows
+		if useIndex {
+			if !indexMatches[string(key)] {
+				continue
+			}
+		}
+
+		count++
 
 		// Decode full row
 		fullRow, err := decodeRow(valueData, len(table.Columns))
@@ -492,7 +680,818 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 		rows = append(rows, selectedRow)
 	}
 
+	// Apply ORDER BY if present
+	if len(stmt.OrderBy) > 0 {
+		rows = c.applyOrderBy(rows, selectCols, stmt.OrderBy)
+	}
+
+	// Apply DISTINCT if present
+	if stmt.Distinct {
+		rows = c.applyDistinct(rows)
+	}
+
+	// Apply OFFSET if present
+	if stmt.Offset != nil {
+		offsetVal, err := evaluateExpression(nil, nil, stmt.Offset, args)
+		if err == nil {
+			if offset, ok := toInt(offsetVal); ok && offset > 0 && offset < len(rows) {
+				rows = rows[offset:]
+			}
+		}
+	}
+
+	// Apply LIMIT if present
+	if stmt.Limit != nil {
+		limitVal, err := evaluateExpression(nil, nil, stmt.Limit, args)
+		if err == nil {
+			if limit, ok := toInt(limitVal); ok && limit >= 0 && limit < len(rows) {
+				rows = rows[:limit]
+			}
+		}
+	}
+
 	return returnColumns, rows, nil
+}
+
+// executeSelectWithJoin handles SELECT with JOIN clauses
+func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo) ([]string, [][]interface{}, error) {
+	// For now, support simple INNER JOIN with ON clause
+	// Get the main table
+	mainTable, err := c.GetTable(stmt.From.Name)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	mainTree, exists := c.tableTrees[stmt.From.Name]
+	if !exists {
+		return nil, [][]interface{}{}, nil
+	}
+
+	// Process each JOIN
+	var resultRows [][]interface{}
+
+	for _, join := range stmt.Joins {
+		// Get the joined table
+		joinTable, err := c.GetTable(join.Table.Name)
+		if err != nil {
+			continue
+		}
+
+		joinTree, exists := c.tableTrees[join.Table.Name]
+		if !exists {
+			continue
+		}
+
+		// Scan both tables and apply join condition
+		mainIter, _ := mainTree.Scan(nil, nil)
+		defer mainIter.Close()
+
+		for mainIter.HasNext() {
+			_, mainValueData, err := mainIter.Next()
+			if err != nil {
+				break
+			}
+
+			mainRow, err := decodeRow(mainValueData, len(mainTable.Columns))
+			if err != nil {
+				continue
+			}
+
+			// Scan the joined table
+			joinIter, _ := joinTree.Scan(nil, nil)
+			defer joinIter.Close()
+
+			for joinIter.HasNext() {
+				_, joinValueData, err := joinIter.Next()
+				if err != nil {
+					break
+				}
+
+				joinRow, err := decodeRow(joinValueData, len(joinTable.Columns))
+				if err != nil {
+					continue
+				}
+
+				// Check join condition if present
+				if join.Condition != nil {
+					// Combine rows for evaluation
+					combinedRow := append(mainRow, joinRow...)
+					matched, err := evaluateWhere(combinedRow, append(mainTable.Columns, joinTable.Columns...), join.Condition, args)
+					if err != nil || !matched {
+						continue
+					}
+				}
+
+				// Create combined row
+				combinedResult := make([]interface{}, 0)
+				for _, ci := range selectCols {
+					// Determine which table the column belongs to
+					if ci.tableName == "" || ci.tableName == stmt.From.Name {
+						if ci.index >= 0 && ci.index < len(mainRow) {
+							combinedResult = append(combinedResult, mainRow[ci.index])
+						} else {
+							combinedResult = append(combinedResult, nil)
+						}
+					} else if ci.tableName == join.Table.Name {
+						if ci.index >= 0 && ci.index < len(joinRow) {
+							combinedResult = append(combinedResult, joinRow[ci.index])
+						} else {
+							combinedResult = append(combinedResult, nil)
+						}
+					}
+				}
+				resultRows = append(resultRows, combinedResult)
+			}
+		}
+	}
+
+	// Build return columns
+	returnColumns := make([]string, len(selectCols))
+	for i, ci := range selectCols {
+		returnColumns[i] = ci.name
+	}
+
+	return returnColumns, resultRows, nil
+}
+
+// toInt converts a value to int
+func toInt(v interface{}) (int, bool) {
+	switch val := v.(type) {
+	case int:
+		return val, true
+	case int64:
+		return int(val), true
+	case float64:
+		return int(val), true
+	default:
+		return 0, false
+	}
+}
+
+func toInt64(v interface{}) (int64, bool) {
+	switch val := v.(type) {
+	case int:
+		return int64(val), true
+	case int64:
+		return val, true
+	case float64:
+		return int64(val), true
+	default:
+		return 0, false
+	}
+}
+
+// applyOrderBy sorts rows based on ORDER BY clause
+func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo, orderBy []*query.OrderByExpr) [][]interface{} {
+	if len(rows) == 0 || len(orderBy) == 0 {
+		return rows
+	}
+
+	// Build sort key function
+	sorted := make([][]interface{}, len(rows))
+	copy(sorted, rows)
+
+	sort.Slice(sorted, func(i, j int) bool {
+		for _, ob := range orderBy {
+			// Find column index
+			colIdx := -1
+			for idx, ci := range selectCols {
+				if ident, ok := ob.Expr.(*query.Identifier); ok {
+					if ci.name == ident.Name {
+						colIdx = idx
+						break
+					}
+				}
+			}
+			if colIdx < 0 || colIdx >= len(sorted[i]) || colIdx >= len(sorted[j]) {
+				continue
+			}
+
+			cmp := compareValues(sorted[i][colIdx], sorted[j][colIdx])
+			if cmp != 0 {
+				if ob.Desc {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+		}
+		return false
+	})
+
+	return sorted
+}
+
+// applyDistinct removes duplicate rows
+func (c *Catalog) applyDistinct(rows [][]interface{}) [][]interface{} {
+	if len(rows) == 0 {
+		return rows
+	}
+
+	seen := make(map[string]bool)
+	var result [][]interface{}
+
+	for _, row := range rows {
+		// Create a string key for the row
+		var key strings.Builder
+		for _, val := range row {
+			key.WriteString(fmt.Sprintf("%v|", val))
+		}
+		if !seen[key.String()] {
+			seen[key.String()] = true
+			result = append(result, row)
+		}
+	}
+
+	return result
+}
+
+// computeAggregates computes aggregate functions for a SELECT query
+func (c *Catalog) computeAggregates(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, returnColumns []string) ([]string, [][]interface{}, error) {
+	tree, exists := c.tableTrees[stmt.From.Name]
+	if !exists {
+		// Return zeros/nulls for aggregates on empty table
+		return c.computeAggregateResult(selectCols, returnColumns, 0, nil)
+	}
+
+	// Read all rows and collect values for aggregates
+	var filteredRows [][]interface{}
+	var aggregateValues [][]interface{} // [column][row]
+
+	// Initialize aggregate value storage
+	for range selectCols {
+		aggregateValues = append(aggregateValues, nil)
+	}
+
+	iter, _ := tree.Scan(nil, nil)
+	defer iter.Close()
+
+	for iter.HasNext() {
+		_, valueData, err := iter.Next()
+		if err != nil {
+			break
+		}
+
+		// Decode full row
+		fullRow, err := decodeRow(valueData, len(table.Columns))
+		if err != nil {
+			continue
+		}
+
+		// Apply WHERE clause if present
+		if stmt.Where != nil {
+			matched, err := evaluateWhere(fullRow, table.Columns, stmt.Where, args)
+			if err != nil {
+				continue
+			}
+			if !matched {
+				continue
+			}
+		}
+
+		filteredRows = append(filteredRows, fullRow)
+
+		// Collect values for aggregate columns
+		for i, ci := range selectCols {
+			if ci.isAggregate {
+				var val interface{}
+				if ci.aggregateCol == "*" {
+					// COUNT(*): just count rows
+					val = int64(1)
+				} else {
+					// Find column index for aggregate column
+					colIdx := table.GetColumnIndex(ci.aggregateCol)
+					if colIdx >= 0 && colIdx < len(fullRow) {
+						val = fullRow[colIdx]
+					}
+				}
+				aggregateValues[i] = append(aggregateValues[i], val)
+			}
+		}
+	}
+
+	// Compute aggregate results
+	return c.computeAggregateResult(selectCols, returnColumns, len(filteredRows), aggregateValues)
+}
+
+// computeAggregateResult calculates the final aggregate values
+func (c *Catalog) computeAggregateResult(selectCols []selectColInfo, returnColumns []string, rowCount int, aggregateValues [][]interface{}) ([]string, [][]interface{}, error) {
+	resultRow := make([]interface{}, len(selectCols))
+
+	for i, ci := range selectCols {
+		if !ci.isAggregate {
+			continue
+		}
+
+		switch ci.aggregateType {
+		case "COUNT":
+			if ci.aggregateCol == "*" {
+				resultRow[i] = int64(rowCount)
+			} else if aggregateValues != nil && len(aggregateValues[i]) > 0 {
+				// Count non-null values
+				count := int64(0)
+				for _, v := range aggregateValues[i] {
+					if v != nil {
+						count++
+					}
+				}
+				resultRow[i] = count
+			} else {
+				resultRow[i] = int64(0)
+			}
+
+		case "SUM":
+			if aggregateValues != nil && len(aggregateValues[i]) > 0 {
+				var sum float64
+				for _, v := range aggregateValues[i] {
+					if v != nil {
+						if f, ok := toFloat64(v); ok {
+							sum += f
+						}
+					}
+				}
+				resultRow[i] = sum
+			} else {
+				resultRow[i] = nil
+			}
+
+		case "AVG":
+			if aggregateValues != nil && len(aggregateValues[i]) > 0 {
+				var sum float64
+				var count int64
+				for _, v := range aggregateValues[i] {
+					if v != nil {
+						if f, ok := toFloat64(v); ok {
+							sum += f
+						}
+						count++
+					}
+				}
+				if count > 0 {
+					resultRow[i] = sum / float64(count)
+				} else {
+					resultRow[i] = nil
+				}
+			} else {
+				resultRow[i] = nil
+			}
+
+		case "MIN":
+			if aggregateValues != nil && len(aggregateValues[i]) > 0 {
+				var min *float64
+				for _, v := range aggregateValues[i] {
+					if v != nil {
+						if fv, ok := toFloat64(v); ok {
+							if min == nil || fv < *min {
+								min = &fv
+							}
+						}
+					}
+				}
+				if min != nil {
+					resultRow[i] = *min
+				} else {
+					resultRow[i] = nil
+				}
+			} else {
+				resultRow[i] = nil
+			}
+
+		case "MAX":
+			if aggregateValues != nil && len(aggregateValues[i]) > 0 {
+				var max *float64
+				for _, v := range aggregateValues[i] {
+					if v != nil {
+						if fv, ok := toFloat64(v); ok {
+							if max == nil || fv > *max {
+								max = &fv
+							}
+						}
+					}
+				}
+				if max != nil {
+					resultRow[i] = *max
+				} else {
+					resultRow[i] = nil
+				}
+			} else {
+				resultRow[i] = nil
+			}
+		}
+	}
+
+	return returnColumns, [][]interface{}{resultRow}, nil
+}
+
+// computeAggregatesWithGroupBy handles GROUP BY queries with aggregates
+func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, returnColumns []string) ([]string, [][]interface{}, error) {
+	tree, exists := c.tableTrees[stmt.From.Name]
+	if !exists {
+		// Return empty result for GROUP BY on non-existent table
+		return returnColumns, [][]interface{}{}, nil
+	}
+
+	// Parse GROUP BY column indices
+	groupByIndices := make([]int, len(stmt.GroupBy))
+	for i, gb := range stmt.GroupBy {
+		if ident, ok := gb.(*query.Identifier); ok {
+			groupByIndices[i] = table.GetColumnIndex(ident.Name)
+		}
+	}
+
+	// Group rows by GROUP BY columns
+	// key is string representation of group values, value is slice of rows
+	groups := make(map[string][][]interface{})
+
+	iter, _ := tree.Scan(nil, nil)
+	defer iter.Close()
+
+	for iter.HasNext() {
+		_, valueData, err := iter.Next()
+		if err != nil {
+			break
+		}
+
+		// Decode full row
+		fullRow, err := decodeRow(valueData, len(table.Columns))
+		if err != nil {
+			continue
+		}
+
+		// Apply WHERE clause if present (filters rows before grouping)
+		if stmt.Where != nil {
+			matched, err := evaluateWhere(fullRow, table.Columns, stmt.Where, args)
+			if err != nil {
+				continue
+			}
+			if !matched {
+				continue
+			}
+		}
+
+		// Build group key
+		var groupKey strings.Builder
+		for i, idx := range groupByIndices {
+			if i > 0 {
+				groupKey.WriteString("|")
+			}
+			if idx >= 0 && idx < len(fullRow) {
+				groupKey.WriteString(fmt.Sprintf("%v", fullRow[idx]))
+			}
+		}
+
+		// Add row to appropriate group
+		groups[groupKey.String()] = append(groups[groupKey.String()], fullRow)
+	}
+
+	// Compute aggregates for each group
+	var resultRows [][]interface{}
+
+	for _, groupRows := range groups {
+		resultRow := make([]interface{}, len(selectCols))
+
+		for i, ci := range selectCols {
+			if ci.isAggregate {
+				// Collect values for this aggregate
+				var values []interface{}
+				for _, row := range groupRows {
+					if ci.aggregateCol == "*" {
+						// COUNT(*): just count rows
+						values = append(values, int64(1))
+					} else {
+						colIdx := table.GetColumnIndex(ci.aggregateCol)
+						if colIdx >= 0 && colIdx < len(row) {
+							values = append(values, row[colIdx])
+						}
+					}
+				}
+
+				// Compute aggregate
+				switch ci.aggregateType {
+				case "COUNT":
+					if ci.aggregateCol == "*" {
+						resultRow[i] = int64(len(groupRows))
+					} else {
+						count := int64(0)
+						for _, v := range values {
+							if v != nil {
+								count++
+							}
+						}
+						resultRow[i] = count
+					}
+				case "SUM":
+					var sum float64
+					for _, v := range values {
+						if v != nil {
+							if f, ok := toFloat64(v); ok {
+								sum += f
+							}
+						}
+					}
+					resultRow[i] = sum
+				case "AVG":
+					var sum float64
+					var count int64
+					for _, v := range values {
+						if v != nil {
+							if f, ok := toFloat64(v); ok {
+								sum += f
+								count++
+							}
+						}
+					}
+					if count > 0 {
+						resultRow[i] = sum / float64(count)
+					} else {
+						resultRow[i] = nil
+					}
+				case "MIN":
+					var min *float64
+					for _, v := range values {
+						if v != nil {
+							if fv, ok := toFloat64(v); ok {
+								if min == nil || fv < *min {
+									min = &fv
+								}
+							}
+						}
+					}
+					if min != nil {
+						resultRow[i] = *min
+					} else {
+						resultRow[i] = nil
+					}
+				case "MAX":
+					var max *float64
+					for _, v := range values {
+						if v != nil {
+							if fv, ok := toFloat64(v); ok {
+								if max == nil || fv > *max {
+									max = &fv
+								}
+							}
+						}
+					}
+					if max != nil {
+						resultRow[i] = *max
+					} else {
+						resultRow[i] = nil
+					}
+				}
+			} else {
+				// Non-aggregate column - get value from first row in group
+				// Find the column index from selectCols
+				colIdx := -1
+				for _, sc := range selectCols {
+					if !sc.isAggregate && sc.name == ci.name {
+						colIdx = sc.index
+						break
+					}
+				}
+				if colIdx >= 0 && len(groupRows) > 0 && colIdx < len(groupRows[0]) {
+					resultRow[i] = groupRows[0][colIdx]
+				}
+			}
+		}
+
+		// Apply HAVING clause if present
+		if stmt.Having != nil {
+			// Create a temporary row with column values for evaluation
+			// We need to create a virtual row that has the right column structure
+			havingMatched, err := evaluateHaving(resultRow, selectCols, table.Columns, stmt.Having, args)
+			if err != nil || !havingMatched {
+				continue
+			}
+		}
+
+		resultRows = append(resultRows, resultRow)
+	}
+
+	// Apply ORDER BY if present
+	if len(stmt.OrderBy) > 0 {
+		resultRows = c.applyGroupByOrderBy(resultRows, selectCols, stmt.OrderBy)
+	}
+
+	// Apply DISTINCT if present
+	if stmt.Distinct {
+		resultRows = c.applyDistinct(resultRows)
+	}
+
+	// Apply OFFSET if present
+	if stmt.Offset != nil {
+		offsetVal, err := evaluateExpression(nil, nil, stmt.Offset, args)
+		if err == nil {
+			if offset, ok := toInt(offsetVal); ok && offset > 0 && offset < len(resultRows) {
+				resultRows = resultRows[offset:]
+			}
+		}
+	}
+
+	// Apply LIMIT if present
+	if stmt.Limit != nil {
+		limitVal, err := evaluateExpression(nil, nil, stmt.Limit, args)
+		if err == nil {
+			if limit, ok := toInt(limitVal); ok && limit >= 0 && limit < len(resultRows) {
+				resultRows = resultRows[:limit]
+			}
+		}
+	}
+
+	return returnColumns, resultRows, nil
+}
+
+// evaluateHaving evaluates a HAVING clause against a group result row
+func evaluateHaving(row []interface{}, selectCols []selectColInfo, columns []ColumnDef, having query.Expression, args []interface{}) (bool, error) {
+	if having == nil {
+		return true, nil
+	}
+
+	// For HAVING, we need to handle aggregate functions specially
+	// The aggregate results are already in the row at the indices matching selectCols
+	// We need to transform the HAVING expression to use indices from the row
+
+	// First, simplify the HAVING expression by replacing aggregate calls with their values
+	havingExpr := resolveAggregateInExpr(having, selectCols, row)
+
+	// Now evaluate the simplified expression
+	result, err := evaluateExpression(row, nil, havingExpr, args)
+	if err != nil {
+		return false, err
+	}
+
+	if result == nil {
+		return false, nil
+	}
+
+	switch v := result.(type) {
+	case bool:
+		return v, nil
+	case int, int64, float64:
+		switch n := v.(type) {
+		case int:
+			return n != 0, nil
+		case int64:
+			return n != 0, nil
+		case float64:
+			return n != 0, nil
+		}
+	}
+	return true, nil
+}
+
+// resolveAggregateInExpr replaces aggregate function calls with their computed values
+func resolveAggregateInExpr(expr query.Expression, selectCols []selectColInfo, row []interface{}) query.Expression {
+	if expr == nil {
+		return nil
+	}
+
+	switch e := expr.(type) {
+	case *query.BinaryExpr:
+		return &query.BinaryExpr{
+			Left:     resolveAggregateInExpr(e.Left, selectCols, row),
+			Operator: e.Operator,
+			Right:    resolveAggregateInExpr(e.Right, selectCols, row),
+		}
+	case *query.FunctionCall:
+		// Check if this is an aggregate function
+		funcName := strings.ToUpper(e.Name)
+		if funcName == "COUNT" || funcName == "SUM" || funcName == "AVG" || funcName == "MIN" || funcName == "MAX" {
+			// Find the column name for this aggregate
+			colName := "*"
+			if len(e.Args) > 0 {
+				if ident, ok := e.Args[0].(*query.Identifier); ok {
+					colName = ident.Name
+				}
+			}
+			aggName := e.Name + "(" + colName + ")"
+
+			// Find the index in selectCols
+			for i, sc := range selectCols {
+				if sc.isAggregate && sc.name == aggName {
+					// Return a placeholder that evaluates to the value at this index
+					if i < len(row) {
+						// Return a literal with the actual value
+						return &query.NumberLiteral{Value: toNumber(row[i])}
+					}
+				}
+			}
+		}
+		return e
+	case *query.Identifier:
+		// For non-aggregate identifiers, try to find them in selectCols
+		for i, sc := range selectCols {
+			if !sc.isAggregate && sc.name == e.Name {
+				if i < len(row) {
+					return &query.NumberLiteral{Value: toNumber(row[i])}
+				}
+			}
+		}
+		return e
+	default:
+		return e
+	}
+}
+
+// toNumber converts a value to a number for comparison
+func toNumber(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case int:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case float64:
+		return val
+	default:
+		return 0
+	}
+}
+
+// applyGroupByOrderBy applies ORDER BY to GROUP BY results
+func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectColInfo, orderBy []*query.OrderByExpr) [][]interface{} {
+	if len(rows) == 0 || len(orderBy) == 0 {
+		return rows
+	}
+
+	// Build a map from column name to selectCols index
+	nameToIndex := make(map[string]int)
+	for i, ci := range selectCols {
+		nameToIndex[ci.name] = i
+	}
+
+	sorted := make([][]interface{}, len(rows))
+	copy(sorted, rows)
+
+	sort.Slice(sorted, func(i, j int) bool {
+		for _, ob := range orderBy {
+			// Get the column name from the ORDER BY expression
+			var colName string
+			if ident, ok := ob.Expr.(*query.Identifier); ok {
+				colName = ident.Name
+			} else if fn, ok := ob.Expr.(*query.FunctionCall); ok {
+				// Handle aggregate in ORDER BY
+				colName = fn.Name + "("
+				if len(fn.Args) > 0 {
+					if argIdent, ok := fn.Args[0].(*query.Identifier); ok {
+						colName += argIdent.Name + ")"
+					}
+				}
+			}
+
+			idx, ok := nameToIndex[colName]
+			if !ok {
+				continue
+			}
+
+			// Compare values
+			vi := sorted[i][idx]
+			vj := sorted[j][idx]
+
+			// Handle nil values
+			if vi == nil && vj == nil {
+				continue
+			}
+			if vi == nil {
+				return !ob.Desc
+			}
+			if vj == nil {
+				return ob.Desc
+			}
+
+			// Compare based on type
+			switch vi.(type) {
+			case int, int64:
+				vi64, _ := toInt64(vi)
+				vj64, _ := toInt64(vj)
+				if vi64 < vj64 {
+					return !ob.Desc
+				} else if vi64 > vj64 {
+					return ob.Desc
+				}
+			case float64:
+				viF := vi.(float64)
+				vjF := vj.(float64)
+				if viF < vjF {
+					return !ob.Desc
+				} else if viF > vjF {
+					return ob.Desc
+				}
+			case string:
+				viS := vi.(string)
+				vjS := vj.(string)
+				if viS < vjS {
+					return !ob.Desc
+				} else if viS > vjS {
+					return ob.Desc
+				}
+			}
+		}
+		return false
+	})
+
+	return sorted
 }
 
 // evaluateWhere evaluates a WHERE clause against a row
@@ -566,6 +1565,12 @@ func evaluateExpression(row []interface{}, columns []ColumnDef, expr query.Expre
 			}
 		}
 		return nil, fmt.Errorf("column not found: %s.%s", e.Table, e.Column)
+	case *query.LikeExpr:
+		return evaluateLike(row, columns, e, args)
+	case *query.InExpr:
+		return evaluateIn(row, columns, e, args)
+	case *query.BetweenExpr:
+		return evaluateBetween(row, columns, e, args)
 	default:
 		return nil, fmt.Errorf("unsupported expression type: %T", expr)
 	}
@@ -652,6 +1657,171 @@ func compareValues(a, b interface{}) int {
 
 	// Fallback to string comparison
 	return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+}
+
+// evaluateLike evaluates a LIKE expression (column LIKE pattern)
+func evaluateLike(row []interface{}, columns []ColumnDef, expr *query.LikeExpr, args []interface{}) (bool, error) {
+	left, err := evaluateExpression(row, columns, expr.Expr, args)
+	if err != nil {
+		return false, err
+	}
+
+	pattern, err := evaluateExpression(row, columns, expr.Pattern, args)
+	if err != nil {
+		return false, err
+	}
+
+	// Handle NULL
+	if left == nil || pattern == nil {
+		return false, nil
+	}
+
+	leftStr, ok := left.(string)
+	if !ok {
+		leftStr = fmt.Sprintf("%v", left)
+	}
+
+	patternStr, ok := pattern.(string)
+	if !ok {
+		patternStr = fmt.Sprintf("%v", pattern)
+	}
+
+	// Simple LIKE implementation
+	matched := matchLikeSimple(leftStr, patternStr)
+
+	// Handle NOT LIKE
+	if expr.Not {
+		return !matched, nil
+	}
+	return matched, nil
+}
+
+// matchLikeSimple implements simple SQL LIKE matching
+// Supports: % (any sequence), _ (single character)
+func matchLikeSimple(s, pattern string) bool {
+	if pattern == "" {
+		return s == ""
+	}
+
+	// Convert pattern to regex-like matching
+	sIdx := 0
+	pIdx := 0
+
+	for sIdx < len(s) && pIdx < len(pattern) {
+		char := pattern[pIdx]
+
+		// Handle %
+		if char == '%' {
+			// Skip consecutive %
+			for pIdx < len(pattern) && pattern[pIdx] == '%' {
+				pIdx++
+			}
+			if pIdx >= len(pattern) {
+				// Trailing % matches rest
+				return true
+			}
+			// Try matching remaining pattern at each position
+			for sIdx < len(s) {
+				if matchLikeSimple(s[sIdx:], pattern[pIdx:]) {
+					return true
+				}
+				sIdx++
+			}
+			return false
+		}
+
+		// Handle _
+		if char == '_' {
+			sIdx++
+			pIdx++
+			continue
+		}
+
+		// Literal match
+		if sIdx < len(s) && s[sIdx] == char {
+			sIdx++
+			pIdx++
+			continue
+		}
+
+		return false
+	}
+
+	// All of s should be consumed
+	// Skip any trailing % in pattern
+	for pIdx < len(pattern) && pattern[pIdx] == '%' {
+		pIdx++
+	}
+
+	return sIdx == len(s) && pIdx == len(pattern)
+}
+
+// evaluateIn evaluates an IN expression (column IN (1, 2, 3))
+func evaluateIn(row []interface{}, columns []ColumnDef, expr *query.InExpr, args []interface{}) (bool, error) {
+	left, err := evaluateExpression(row, columns, expr.Expr, args)
+	if err != nil {
+		return false, err
+	}
+
+	// Evaluate all values in the list
+	var listValues []interface{}
+	for _, item := range expr.List {
+		val, err := evaluateExpression(row, columns, item, args)
+		if err != nil {
+			return false, err
+		}
+		listValues = append(listValues, val)
+	}
+
+	// Check if left is in list
+	inList := false
+	for _, v := range listValues {
+		if compareValues(left, v) == 0 {
+			inList = true
+			break
+		}
+	}
+
+	// Handle NOT IN
+	if expr.Not {
+		return !inList, nil
+	}
+	return inList, nil
+}
+
+// evaluateBetween evaluates a BETWEEN expression (column BETWEEN 1 AND 10)
+func evaluateBetween(row []interface{}, columns []ColumnDef, expr *query.BetweenExpr, args []interface{}) (bool, error) {
+	exprVal, err := evaluateExpression(row, columns, expr.Expr, args)
+	if err != nil {
+		return false, err
+	}
+
+	lowerVal, err := evaluateExpression(row, columns, expr.Lower, args)
+	if err != nil {
+		return false, err
+	}
+
+	upperVal, err := evaluateExpression(row, columns, expr.Upper, args)
+	if err != nil {
+		return false, err
+	}
+
+	// Handle NULL
+	if exprVal == nil || lowerVal == nil || upperVal == nil {
+		return false, nil
+	}
+
+	// Check: lower <= expr <= upper
+	lowCmp := compareValues(exprVal, lowerVal)
+	highCmp := compareValues(exprVal, upperVal)
+
+	result := lowCmp >= 0 && highCmp <= 0
+
+	// Handle NOT BETWEEN
+	if expr.Not {
+		return !result, nil
+	}
+	return result, nil
 }
 
 // toFloat64 converts a value to float64
@@ -884,21 +2054,49 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 	}
 
 	// Verify table exists
-	if _, err := c.GetTable(stmt.Table); err != nil {
+	table, err := c.GetTable(stmt.Table)
+	if err != nil {
 		return err
 	}
 
-	// For now, just store the index definition without creating B+Tree
-	// TODO: Create B+Tree when pool is available
+	// Create B+Tree for the index
+	indexTree, err := btree.NewBTree(c.pool)
+	if err != nil {
+		return err
+	}
+
 	indexDef := &IndexDef{
 		Name:       stmt.Index,
 		TableName:  stmt.Table,
 		Columns:    stmt.Columns,
 		Unique:     stmt.Unique,
-		RootPageID: 0, // Will be set when B+Tree is created
+		RootPageID: indexTree.RootPageID(),
 	}
 
 	c.indexes[stmt.Index] = indexDef
+	c.indexTrees[stmt.Index] = indexTree
+
+	// Populate index with existing data from the table
+	tree, exists := c.tableTrees[stmt.Table]
+	if exists {
+		tableColIdx := table.GetColumnIndex(stmt.Columns[0])
+		if tableColIdx >= 0 {
+			iter, _ := tree.Scan(nil, nil)
+			for iter.HasNext() {
+				key, valueData, _ := iter.Next()
+				row, err := decodeRow(valueData, len(table.Columns))
+				if err != nil {
+					continue
+				}
+				if tableColIdx < len(row) {
+					// Index key is the column value, value is the primary key
+					indexKey := fmt.Sprintf("%v", row[tableColIdx])
+					indexTree.Put([]byte(indexKey), key)
+				}
+			}
+			iter.Close()
+		}
+	}
 
 	return c.storeIndexDef(indexDef)
 }
@@ -922,6 +2120,71 @@ func (c *Catalog) GetIndex(name string) (*IndexDef, error) {
 		return nil, ErrIndexNotFound
 	}
 	return index, nil
+}
+
+// findUsableIndex finds an index that can be used for a WHERE clause
+// Returns the index name, column name, and the value to search for
+func (c *Catalog) findUsableIndex(tableName string, where query.Expression) (string, string, interface{}) {
+	if where == nil {
+		return "", "", nil
+	}
+
+	// Check for simple equality condition: column = value
+	switch expr := where.(type) {
+	case *query.BinaryExpr:
+		if expr.Operator == query.TokenEq {
+			// Check if left side is a column identifier
+		 if ident, ok := expr.Left.(*query.Identifier); ok {
+				colName := ident.Name
+				// Check if there's an index on this column
+				for idxName, idxDef := range c.indexes {
+					if idxDef.TableName == tableName && len(idxDef.Columns) > 0 && idxDef.Columns[0] == colName {
+						// Get the value to search for
+						var searchVal interface{}
+						switch v := expr.Right.(type) {
+						case *query.NumberLiteral:
+							searchVal = v.Value
+						case *query.StringLiteral:
+							searchVal = v.Value
+						case *query.PlaceholderExpr:
+							// Can't determine value at parse time
+							return "", "", nil
+						default:
+							return "", "", nil
+						}
+						return idxName, colName, searchVal
+					}
+				}
+			}
+		}
+	}
+	return "", "", nil
+}
+
+// useIndexForQuery checks if an index can be used and returns matching primary keys
+func (c *Catalog) useIndexForQuery(tableName string, where query.Expression) (map[string]bool, bool) {
+	idxName, _, searchVal := c.findUsableIndex(tableName, where)
+	if idxName == "" || searchVal == nil {
+		return nil, false
+	}
+
+	indexTree, exists := c.indexTrees[idxName]
+	if !exists {
+		return nil, false
+	}
+
+	// Look up the index
+	indexKey := fmt.Sprintf("%v", searchVal)
+	pkData, err := indexTree.Get([]byte(indexKey))
+	if err != nil {
+		// No matching rows
+		return map[string]bool{}, true
+	}
+
+	// Return the primary key(s) found
+	result := make(map[string]bool)
+	result[string(pkData)] = true
+	return result, true
 }
 
 func (c *Catalog) DropIndex(name string) error {

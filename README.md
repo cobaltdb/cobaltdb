@@ -1,4 +1,4 @@
-# CobaltDB v1.0
+# CobaltDB v1.1
 
 > A lightweight, embeddable database engine written in Go with SQL + JSON query support, persistent storage, in-memory mode, and transaction support.
 
@@ -104,6 +104,58 @@ UPDATE users SET name = ? WHERE id = ?
 DELETE FROM users WHERE id = ?
 ```
 
+### Aggregate Functions
+```sql
+SELECT COUNT(*) FROM users
+SELECT SUM(price) FROM orders
+SELECT AVG(age) FROM users
+SELECT MIN(price) FROM products
+SELECT MAX(score) FROM tests
+SELECT COUNT(*) FROM users WHERE age > 18
+```
+
+### Advanced WHERE
+```sql
+-- LIKE pattern matching
+SELECT * FROM users WHERE name LIKE 'A%'
+SELECT * FROM users WHERE name LIKE '_lice'
+
+-- IN operator
+SELECT * FROM users WHERE id IN (1, 2, 3)
+
+-- BETWEEN operator
+SELECT * FROM users WHERE age BETWEEN 18 AND 30
+```
+
+### Query Modifiers
+```sql
+-- ORDER BY (ASC/DESC)
+SELECT * FROM users ORDER BY name ASC
+SELECT * FROM users ORDER BY age DESC
+
+-- LIMIT and OFFSET
+SELECT * FROM users LIMIT 10
+SELECT * FROM users LIMIT 10 OFFSET 20
+
+-- DISTINCT
+SELECT DISTINCT category FROM products
+```
+
+### GROUP BY and HAVING
+```sql
+-- GROUP BY
+SELECT category, COUNT(*) FROM sales GROUP BY category
+SELECT category, SUM(amount) FROM sales GROUP BY category
+SELECT category, AVG(price) FROM products GROUP BY category
+
+-- GROUP BY with ORDER BY and LIMIT
+SELECT category, SUM(amount) FROM sales GROUP BY category ORDER BY SUM(amount) DESC LIMIT 2
+
+-- HAVING (filter grouped results)
+SELECT category, COUNT(*) FROM sales GROUP BY category HAVING COUNT(*) > 1
+SELECT category, SUM(amount) FROM sales GROUP BY category HAVING SUM(amount) > 1000
+```
+
 ### Transactions
 ```sql
 BEGIN
@@ -181,11 +233,15 @@ go run cmd/cobaltdb-server/main.go
 
 ### ✅ Core Features
 - SQL Parser (SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, CREATE INDEX, DROP TABLE)
-- WHERE clause with operators: =, !=, <, >, <=, >=, IS NULL, IS NOT NULL
+- WHERE clause with operators: =, !=, <, >, <=, >=, IS NULL, IS NOT NULL, LIKE, IN, BETWEEN
 - Placeholder support (?) for prepared statements
 - In-memory and disk-based storage
 - Data persistence (survives restart)
 - Transactions (BEGIN, COMMIT, ROLLBACK)
+- Aggregate Functions: COUNT, SUM, AVG, MIN, MAX
+- Query Modifiers: ORDER BY, LIMIT, OFFSET, DISTINCT
+- GROUP BY with aggregate functions
+- HAVING clause for filtering grouped results
 
 ### ✅ Data Types
 - INTEGER
@@ -199,15 +255,36 @@ go run cmd/cobaltdb-server/main.go
 - Page-based storage
 - Disk backend with file I/O
 
-## Roadmap (v1.1+)
+## Roadmap (v1.2+)
 
-- [ ] WAL (Write-Ahead Log) for crash recovery
-- [ ] B+Tree disk persistence
-- [ ] Index usage in query execution
-- [ ] Query optimizer
-- [ ] More SQL functions (COUNT, SUM, AVG, etc.)
 - [ ] Foreign keys
-- [ ] JOIN support
+- [ ] More JOIN types (LEFT, RIGHT, OUTER)
+- [ ] Subqueries
+- [ ] Table constraints (UNIQUE, CHECK)
+- [ ] More data types (DATE, TIMESTAMP, etc.)
+- [ ] Performance optimizations
+
+## v1.1 - What's New
+
+### Core Features
+- **WAL (Write-Ahead Log)**: Complete crash recovery support
+  - Logs all INSERT, UPDATE, DELETE operations before applying
+  - Transaction support with COMMIT and ROLLBACK
+  - Automatic recovery on database startup
+  - Checkpoint mechanism for log truncation
+
+- **Index Support**: B+Tree indexes for improved query performance
+  - CREATE INDEX support
+  - Automatic index maintenance on data changes
+  - Index usage in SELECT queries for equality conditions
+
+- **JOIN Support**: Basic INNER JOIN functionality
+  - JOIN with ON clause
+  - Multi-table queries
+
+- **Improved Data Persistence**:
+  - WAL checkpoint on database close
+  - Better durability guarantees
 
 ## License
 
