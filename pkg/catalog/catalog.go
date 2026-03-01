@@ -26,25 +26,36 @@ var (
 
 // TableDef represents a table definition
 type TableDef struct {
-	Name       string      `json:"name"`
-	Type       string      `json:"type"` // "table" or "collection"
-	Columns    []ColumnDef `json:"columns"`
-	PrimaryKey string      `json:"primary_key"`
-	CreatedAt  int64       `json:"created_at"`
-	RootPageID uint32      `json:"root_page_id"`
+	Name        string         `json:"name"`
+	Type        string         `json:"type"` // "table" or "collection"
+	Columns     []ColumnDef    `json:"columns"`
+	PrimaryKey  string         `json:"primary_key"`
+	CreatedAt   int64          `json:"created_at"`
+	RootPageID  uint32         `json:"root_page_id"`
+	ForeignKeys []ForeignKeyDef `json:"foreign_keys,omitempty"`
 	// Performance: cache column indices (not persisted)
 	columnIndices map[string]int `json:"-"`
 }
 
+// ForeignKeyDef represents a foreign key constraint
+type ForeignKeyDef struct {
+	Columns       []string `json:"columns"`
+	ReferencedTable string `json:"referenced_table"`
+	ReferencedColumns []string `json:"referenced_columns"`
+	OnDelete      string `json:"on_delete"` // NO ACTION, CASCADE, SET NULL, RESTRICT
+	OnUpdate      string `json:"on_update"` // NO ACTION, CASCADE, SET NULL, RESTRICT
+}
+
 // ColumnDef represents a column definition
 type ColumnDef struct {
-	Name         string `json:"name"`
-	Type         string `json:"type"` // INTEGER, TEXT, REAL, BLOB, JSON, BOOLEAN
-	NotNull      bool   `json:"not_null"`
-	Unique       bool   `json:"unique"`
-	PrimaryKey   bool   `json:"primary_key"`
-	AutoIncrement bool  `json:"auto_increment"`
-	Default      string `json:"default,omitempty"`
+	Name         string           `json:"name"`
+	Type         string           `json:"type"` // INTEGER, TEXT, REAL, BLOB, JSON, BOOLEAN
+	NotNull      bool             `json:"not_null"`
+	Unique       bool             `json:"unique"`
+	PrimaryKey   bool             `json:"primary_key"`
+	AutoIncrement bool             `json:"auto_increment"`
+	Default      string           `json:"default,omitempty"`
+	Check        query.Expression `json:"check,omitempty"`
 }
 
 // IndexDef represents an index definition
@@ -76,6 +87,9 @@ type Catalog struct {
 	wal         *storage.WAL
 	tableTrees  map[string]*btree.BTree // Each table has its own B+Tree
 	tableData   map[string]map[string][]byte // Temporary: simple in-memory storage
+	views       map[string]*query.SelectStmt // Views store their SELECT query
+	triggers    map[string]*query.CreateTriggerStmt // Triggers store their definition
+	procedures  map[string]*query.CreateProcedureStmt // Procedures store their definition
 	keyCounter  int64 // For generating unique keys
 	txnID       uint64 // Current transaction ID
 	txnActive   bool   // Is a transaction active
@@ -92,6 +106,9 @@ func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog
 		wal:        wal,
 		tableTrees: make(map[string]*btree.BTree),
 		tableData:  make(map[string]map[string][]byte),
+		views:      make(map[string]*query.SelectStmt),
+		triggers:   make(map[string]*query.CreateTriggerStmt),
+		procedures: make(map[string]*query.CreateProcedureStmt),
 		keyCounter: 0,
 	}
 }
@@ -164,24 +181,37 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 	}
 
 	tableDef := &TableDef{
-		Name:       stmt.Table,
-		Type:       "table",
-		Columns:    make([]ColumnDef, len(stmt.Columns)),
-		CreatedAt:  0, // TODO: use current timestamp
-		RootPageID: tree.RootPageID(),
+		Name:        stmt.Table,
+		Type:        "table",
+		Columns:     make([]ColumnDef, len(stmt.Columns)),
+		CreatedAt:   0, // TODO: use current timestamp
+		RootPageID:  tree.RootPageID(),
+		ForeignKeys: make([]ForeignKeyDef, len(stmt.ForeignKeys)),
 	}
 
 	for i, col := range stmt.Columns {
 		tableDef.Columns[i] = ColumnDef{
-			Name:         col.Name,
-			Type:         tokenTypeToColumnType(col.Type),
-			NotNull:      col.NotNull,
-			Unique:       col.Unique,
-			PrimaryKey:   col.PrimaryKey,
+			Name:          col.Name,
+			Type:          tokenTypeToColumnType(col.Type),
+			NotNull:       col.NotNull,
+			Unique:        col.Unique,
+			PrimaryKey:    col.PrimaryKey,
 			AutoIncrement: col.AutoIncrement,
+			Check:         col.Check,
 		}
 		if col.PrimaryKey {
 			tableDef.PrimaryKey = col.Name
+		}
+	}
+
+	// Copy foreign key definitions
+	for i, fk := range stmt.ForeignKeys {
+		tableDef.ForeignKeys[i] = ForeignKeyDef{
+			Columns:          fk.Columns,
+			ReferencedTable:  fk.ReferencedTable,
+			ReferencedColumns: fk.ReferencedColumns,
+			OnDelete:        fk.OnDelete,
+			OnUpdate:        fk.OnUpdate,
 		}
 	}
 
@@ -235,6 +265,126 @@ func (c *Catalog) GetTable(name string) (*TableDef, error) {
 		return nil, ErrTableNotFound
 	}
 	return table, nil
+}
+
+// CreateView creates a new view
+func (c *Catalog) CreateView(name string, query *query.SelectStmt) error {
+	if _, exists := c.views[name]; exists {
+		return ErrTableExists
+	}
+	if _, exists := c.tables[name]; exists {
+		return ErrTableExists
+	}
+	c.views[name] = query
+	return nil
+}
+
+// GetView retrieves a view definition
+func (c *Catalog) GetView(name string) (*query.SelectStmt, error) {
+	view, exists := c.views[name]
+	if !exists {
+		return nil, ErrTableNotFound
+	}
+	return view, nil
+}
+
+// DropView drops a view
+func (c *Catalog) DropView(name string) error {
+	if _, exists := c.views[name]; !exists {
+		return ErrTableNotFound
+	}
+	delete(c.views, name)
+	return nil
+}
+
+// HasTableOrView checks if a table or view exists
+func (c *Catalog) HasTableOrView(name string) bool {
+	_, tableExists := c.tables[name]
+	_, viewExists := c.views[name]
+	return tableExists || viewExists
+}
+
+// CreateTrigger creates a new trigger
+func (c *Catalog) CreateTrigger(stmt *query.CreateTriggerStmt) error {
+	if _, exists := c.triggers[stmt.Name]; exists {
+		return fmt.Errorf("trigger %s already exists", stmt.Name)
+	}
+	c.triggers[stmt.Name] = stmt
+	return nil
+}
+
+// GetTrigger retrieves a trigger definition
+func (c *Catalog) GetTrigger(name string) (*query.CreateTriggerStmt, error) {
+	trigger, exists := c.triggers[name]
+	if !exists {
+		return nil, fmt.Errorf("trigger %s not found", name)
+	}
+	return trigger, nil
+}
+
+// DropTrigger drops a trigger
+func (c *Catalog) DropTrigger(name string) error {
+	if _, exists := c.triggers[name]; !exists {
+		return fmt.Errorf("trigger %s not found", name)
+	}
+	delete(c.triggers, name)
+	return nil
+}
+
+// GetTriggersForTable retrieves all triggers for a table
+func (c *Catalog) GetTriggersForTable(tableName string, event string) []*query.CreateTriggerStmt {
+	var result []*query.CreateTriggerStmt
+	for _, trigger := range c.triggers {
+		if trigger.Table == tableName && (event == "" || trigger.Event == event) {
+			result = append(result, trigger)
+		}
+	}
+	return result
+}
+
+// executeTriggers executes all triggers for a given table and event
+func (c *Catalog) executeTriggers(tableName string, event string, timing string, row []interface{}, columns []ColumnDef) error {
+	triggers := c.GetTriggersForTable(tableName, event)
+	for _, trigger := range triggers {
+		// Check timing (BEFORE or AFTER)
+		if trigger.Time != timing {
+			continue
+		}
+		// Execute trigger body (stored statements)
+		// For now, triggers are a framework - execution would require
+		// a full statement execution engine
+		// This is a placeholder for actual trigger execution
+		_ = row
+		_ = columns
+	}
+	return nil
+}
+
+// CreateProcedure creates a new stored procedure
+func (c *Catalog) CreateProcedure(stmt *query.CreateProcedureStmt) error {
+	if _, exists := c.procedures[stmt.Name]; exists {
+		return fmt.Errorf("procedure %s already exists", stmt.Name)
+	}
+	c.procedures[stmt.Name] = stmt
+	return nil
+}
+
+// GetProcedure retrieves a procedure definition
+func (c *Catalog) GetProcedure(name string) (*query.CreateProcedureStmt, error) {
+	proc, exists := c.procedures[name]
+	if !exists {
+		return nil, fmt.Errorf("procedure %s not found", name)
+	}
+	return proc, nil
+}
+
+// DropProcedure drops a procedure
+func (c *Catalog) DropProcedure(name string) error {
+	if _, exists := c.procedures[name]; !exists {
+		return fmt.Errorf("procedure %s not found", name)
+	}
+	delete(c.procedures, name)
+	return nil
 }
 
 // Insert inserts rows into a table
@@ -327,6 +477,99 @@ func (c *Catalog) Insert(stmt *query.InsertStmt, args []interface{}) (int64, int
 			}
 		}
 
+		// Check UNIQUE constraints before inserting
+		for i, col := range table.Columns {
+			if col.Unique && rowValues[i] != nil {
+				// Check if a row with this unique value already exists
+				iter, _ := tree.Scan(nil, nil)
+				for iter.HasNext() {
+					_, existingData, err := iter.Next()
+					if err != nil {
+						break
+					}
+					var existingRow []interface{}
+					if err := json.Unmarshal(existingData, &existingRow); err != nil {
+						continue
+					}
+					if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
+						iter.Close()
+						return 0, rowsAffected, fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
+					}
+				}
+				iter.Close()
+			}
+		}
+
+		// Check CHECK constraints before inserting
+		for _, col := range table.Columns {
+			if col.Check != nil {
+				result, err := evaluateExpression(c, rowValues, table.Columns, col.Check, args)
+				if err != nil {
+					return 0, rowsAffected, fmt.Errorf("CHECK constraint failed: %v", err)
+				}
+				if resultBool, ok := result.(bool); !ok || !resultBool {
+					return 0, rowsAffected, fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
+				}
+			}
+		}
+
+		// Check FOREIGN KEY constraints before inserting
+		for _, fk := range table.ForeignKeys {
+			// Get the value(s) for the foreign key column(s)
+			for i, colName := range fk.Columns {
+				colIdx := table.GetColumnIndex(colName)
+				if colIdx < 0 || colIdx >= len(rowValues) {
+					continue
+				}
+				fkValue := rowValues[colIdx]
+				if fkValue == nil {
+					continue // NULL values skip FK check
+				}
+
+				// Check if referenced row exists
+				refTable, err := c.GetTable(fk.ReferencedTable)
+				if err != nil {
+					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
+				}
+
+				refColIdx := 0
+				if len(fk.ReferencedColumns) > i {
+					refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
+				} else if len(refTable.Columns) > 0 {
+					// Default to first column
+					refColIdx = 0
+				}
+
+				refTree, exists := c.tableTrees[fk.ReferencedTable]
+				if !exists {
+					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
+				}
+
+				// Search for matching row
+				found := false
+				refIter, _ := refTree.Scan(nil, nil)
+				for refIter.HasNext() {
+					_, refData, err := refIter.Next()
+					if err != nil {
+						break
+					}
+					var refRow []interface{}
+					if err := json.Unmarshal(refData, &refRow); err != nil {
+						continue
+					}
+					if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
+						found = true
+						break
+					}
+				}
+				refIter.Close()
+
+				if !found {
+					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
+				}
+			}
+		}
+
 		// Encode row
 		valueData, err := json.Marshal(rowValues)
 		if err != nil {
@@ -366,6 +609,9 @@ func (c *Catalog) Insert(stmt *query.InsertStmt, args []interface{}) (int64, int
 
 		rowsAffected++
 	}
+
+	// Execute AFTER INSERT triggers
+	_ = c.executeTriggers(stmt.Table, "INSERT", "AFTER", nil, table.Columns)
 
 	return 0, rowsAffected, nil
 }
@@ -409,7 +655,7 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 
 		// Apply WHERE clause if present
 		if stmt.Where != nil {
-			matched, err := evaluateWhere(row, table.Columns, stmt.Where, args)
+			matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
 			if err != nil {
 				continue
 			}
@@ -431,6 +677,46 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 					continue
 				}
 				updatedRow[colIdx] = newVal
+			}
+		}
+
+		// Check UNIQUE constraints before updating
+		for i, col := range table.Columns {
+			if col.Unique && updatedRow[i] != nil {
+				// Check if another row (not this one) has the same unique value
+				checkIter, _ := tree.Scan(nil, nil)
+				for checkIter.HasNext() {
+					checkKey, existingData, err := checkIter.Next()
+					if err != nil {
+						break
+					}
+					// Skip the current row being updated
+					if string(checkKey) == string(key) {
+						continue
+					}
+					var existingRow []interface{}
+					if err := json.Unmarshal(existingData, &existingRow); err != nil {
+						continue
+					}
+					if len(existingRow) > i && compareValues(updatedRow[i], existingRow[i]) == 0 {
+						checkIter.Close()
+						return 0, rowsAffected, fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
+					}
+				}
+				checkIter.Close()
+			}
+		}
+
+		// Check CHECK constraints before updating
+		for _, col := range table.Columns {
+			if col.Check != nil {
+				result, err := evaluateExpression(c, updatedRow, table.Columns, col.Check, args)
+				if err != nil {
+					return 0, rowsAffected, fmt.Errorf("CHECK constraint failed: %v", err)
+				}
+				if resultBool, ok := result.(bool); !ok || !resultBool {
+					return 0, rowsAffected, fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
+				}
 			}
 		}
 
@@ -483,6 +769,9 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 		}
 	}
 
+	// Execute AFTER UPDATE triggers
+	_ = c.executeTriggers(stmt.Table, "UPDATE", "AFTER", nil, table.Columns)
+
 	return 0, rowsAffected, nil
 }
 
@@ -517,7 +806,7 @@ func (c *Catalog) Delete(stmt *query.DeleteStmt, args []interface{}) (int64, int
 
 		// Apply WHERE clause if present
 		if stmt.Where != nil {
-			matched, err := evaluateWhere(row, table.Columns, stmt.Where, args)
+			matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
 			if err != nil {
 				continue
 			}
@@ -551,15 +840,26 @@ func (c *Catalog) Delete(stmt *query.DeleteStmt, args []interface{}) (int64, int
 		tree.Delete(key)
 	}
 
+	// Execute AFTER DELETE triggers
+	_ = c.executeTriggers(stmt.Table, "DELETE", "AFTER", nil, table.Columns)
+
 	return 0, rowsAffected, nil
 }
 
-// Select queries rows from a table
+// Select queries rows from a table or view
 func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
 	if stmt.From == nil {
 		return nil, nil, errors.New("no table specified")
 	}
 
+	// Check if it's a view first
+	view, viewErr := c.GetView(stmt.From.Name)
+	if viewErr == nil {
+		// It's a view - execute the view's query
+		return c.Select(view, args)
+	}
+
+	// Not a view - try to get as a table
 	table, err := c.GetTable(stmt.From.Name)
 	if err != nil {
 		return nil, nil, err
@@ -661,7 +961,7 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 
 		// Apply WHERE clause if present
 		if stmt.Where != nil {
-			matched, err := evaluateWhere(fullRow, table.Columns, stmt.Where, args)
+			matched, err := evaluateWhere(c,fullRow, table.Columns, stmt.Where, args)
 			if err != nil {
 				continue // Skip row on error
 			}
@@ -692,7 +992,7 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 
 	// Apply OFFSET if present
 	if stmt.Offset != nil {
-		offsetVal, err := evaluateExpression(nil, nil, stmt.Offset, args)
+		offsetVal, err := evaluateExpression(c, nil, nil, stmt.Offset, args)
 		if err == nil {
 			if offset, ok := toInt(offsetVal); ok && offset > 0 && offset < len(rows) {
 				rows = rows[offset:]
@@ -702,7 +1002,7 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 
 	// Apply LIMIT if present
 	if stmt.Limit != nil {
-		limitVal, err := evaluateExpression(nil, nil, stmt.Limit, args)
+		limitVal, err := evaluateExpression(c, nil, nil, stmt.Limit, args)
 		if err == nil {
 			if limit, ok := toInt(limitVal); ok && limit >= 0 && limit < len(rows) {
 				rows = rows[:limit]
@@ -715,7 +1015,7 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 
 // executeSelectWithJoin handles SELECT with JOIN clauses
 func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo) ([]string, [][]interface{}, error) {
-	// For now, support simple INNER JOIN with ON clause
+	// Support INNER, LEFT, RIGHT JOIN with ON clause
 	// Get the main table
 	mainTable, err := c.GetTable(stmt.From.Name)
 	if err != nil {
@@ -742,25 +1042,117 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 			continue
 		}
 
-		// Scan both tables and apply join condition
-		mainIter, _ := mainTree.Scan(nil, nil)
-		defer mainIter.Close()
+		// Determine if this is a LEFT, RIGHT, or INNER join
+		isLeftJoin := join.Type == query.TokenLeft
+		isRightJoin := join.Type == query.TokenRight
 
-		for mainIter.HasNext() {
-			_, mainValueData, err := mainIter.Next()
-			if err != nil {
-				break
+		// For LEFT/RIGHT JOIN, we need to track matched rows
+		matchedRightRows := make(map[int]bool)
+
+		if isLeftJoin {
+			// LEFT JOIN: first collect all matching rows
+			mainIter, _ := mainTree.Scan(nil, nil)
+			defer mainIter.Close()
+
+			for mainIter.HasNext() {
+				_, mainValueData, err := mainIter.Next()
+				if err != nil {
+					break
+				}
+
+				mainRow, err := decodeRow(mainValueData, len(mainTable.Columns))
+				if err != nil {
+					continue
+				}
+
+				joinIter, _ := joinTree.Scan(nil, nil)
+				defer joinIter.Close()
+				matched := false
+
+				for joinIter.HasNext() {
+					_, joinValueData, err := joinIter.Next()
+					if err != nil {
+						break
+					}
+
+					joinRow, err := decodeRow(joinValueData, len(joinTable.Columns))
+					if err != nil {
+						continue
+					}
+
+					// Check join condition
+					if join.Condition != nil {
+						combinedRow := append(mainRow, joinRow...)
+						matched, err = evaluateWhere(c,combinedRow, append(mainTable.Columns, joinTable.Columns...), join.Condition, args)
+						if err != nil || !matched {
+							continue
+						}
+					} else {
+						matched = true
+					}
+
+					// Create combined row
+					combinedResult := make([]interface{}, 0)
+					for _, ci := range selectCols {
+						if ci.tableName == "" || ci.tableName == stmt.From.Name {
+							if ci.index >= 0 && ci.index < len(mainRow) {
+								combinedResult = append(combinedResult, mainRow[ci.index])
+							} else {
+								combinedResult = append(combinedResult, nil)
+							}
+						} else if ci.tableName == join.Table.Name {
+							if ci.index >= 0 && ci.index < len(joinRow) {
+								combinedResult = append(combinedResult, joinRow[ci.index])
+							} else {
+								combinedResult = append(combinedResult, nil)
+							}
+						}
+					}
+					resultRows = append(resultRows, combinedResult)
+				}
+
+				// If no match, add row with NULLs for join table columns
+				if !matched {
+					combinedResult := make([]interface{}, 0)
+					for _, ci := range selectCols {
+						if ci.tableName == "" || ci.tableName == stmt.From.Name {
+							if ci.index >= 0 && ci.index < len(mainRow) {
+								combinedResult = append(combinedResult, mainRow[ci.index])
+							} else {
+								combinedResult = append(combinedResult, nil)
+							}
+						} else if ci.tableName == join.Table.Name {
+							// NULL for unmatched join columns
+							combinedResult = append(combinedResult, nil)
+						}
+					}
+					resultRows = append(resultRows, combinedResult)
+				}
 			}
-
-			mainRow, err := decodeRow(mainValueData, len(mainTable.Columns))
-			if err != nil {
-				continue
-			}
-
-			// Scan the joined table
+		} else if isRightJoin {
+			// RIGHT JOIN: collect all right table rows first
 			joinIter, _ := joinTree.Scan(nil, nil)
 			defer joinIter.Close()
 
+			// Build a map of all left rows for lookup
+			var mainRows [][]interface{}
+			mainIter, _ := mainTree.Scan(nil, nil)
+			defer mainIter.Close()
+
+			for mainIter.HasNext() {
+				_, mainValueData, err := mainIter.Next()
+				if err != nil {
+					break
+				}
+				mainRow, err := decodeRow(mainValueData, len(mainTable.Columns))
+				if err != nil {
+					continue
+				}
+				mainRows = append(mainRows, mainRow)
+			}
+
+			// Process right table rows
+			rightRowIndex := 0
 			for joinIter.HasNext() {
 				_, joinValueData, err := joinIter.Next()
 				if err != nil {
@@ -772,35 +1164,122 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 					continue
 				}
 
-				// Check join condition if present
-				if join.Condition != nil {
-					// Combine rows for evaluation
-					combinedRow := append(mainRow, joinRow...)
-					matched, err := evaluateWhere(combinedRow, append(mainTable.Columns, joinTable.Columns...), join.Condition, args)
-					if err != nil || !matched {
-						continue
+				matched := false
+
+				// Check against each main row
+				for _, mainRow := range mainRows {
+					if join.Condition != nil {
+						combinedRow := append(mainRow, joinRow...)
+						matched, err = evaluateWhere(c,combinedRow, append(mainTable.Columns, joinTable.Columns...), join.Condition, args)
+						if err != nil || !matched {
+							continue
+						}
+					} else {
+						matched = true
 					}
+
+					// Create combined row
+					combinedResult := make([]interface{}, 0)
+					for _, ci := range selectCols {
+						if ci.tableName == "" || ci.tableName == stmt.From.Name {
+							if ci.index >= 0 && ci.index < len(mainRow) {
+								combinedResult = append(combinedResult, mainRow[ci.index])
+							} else {
+								combinedResult = append(combinedResult, nil)
+							}
+						} else if ci.tableName == join.Table.Name {
+							if ci.index >= 0 && ci.index < len(joinRow) {
+								combinedResult = append(combinedResult, joinRow[ci.index])
+							} else {
+								combinedResult = append(combinedResult, nil)
+							}
+						}
+					}
+					resultRows = append(resultRows, combinedResult)
 				}
 
-				// Create combined row
-				combinedResult := make([]interface{}, 0)
-				for _, ci := range selectCols {
-					// Determine which table the column belongs to
-					if ci.tableName == "" || ci.tableName == stmt.From.Name {
-						if ci.index >= 0 && ci.index < len(mainRow) {
-							combinedResult = append(combinedResult, mainRow[ci.index])
-						} else {
+				// If no match, add row with NULLs for main table columns
+				if !matched {
+					combinedResult := make([]interface{}, 0)
+					for _, ci := range selectCols {
+						if ci.tableName == "" || ci.tableName == stmt.From.Name {
+							// NULL for unmatched main columns
 							combinedResult = append(combinedResult, nil)
-						}
-					} else if ci.tableName == join.Table.Name {
-						if ci.index >= 0 && ci.index < len(joinRow) {
-							combinedResult = append(combinedResult, joinRow[ci.index])
-						} else {
-							combinedResult = append(combinedResult, nil)
+						} else if ci.tableName == join.Table.Name {
+							if ci.index >= 0 && ci.index < len(joinRow) {
+								combinedResult = append(combinedResult, joinRow[ci.index])
+							} else {
+								combinedResult = append(combinedResult, nil)
+							}
 						}
 					}
+					resultRows = append(resultRows, combinedResult)
 				}
-				resultRows = append(resultRows, combinedResult)
+
+				matchedRightRows[rightRowIndex] = matched
+				rightRowIndex++
+			}
+		} else {
+			// INNER JOIN (default behavior)
+			mainIter, _ := mainTree.Scan(nil, nil)
+			defer mainIter.Close()
+
+			for mainIter.HasNext() {
+				_, mainValueData, err := mainIter.Next()
+				if err != nil {
+					break
+				}
+
+				mainRow, err := decodeRow(mainValueData, len(mainTable.Columns))
+				if err != nil {
+					continue
+				}
+
+				// Scan the joined table
+				joinIter, _ := joinTree.Scan(nil, nil)
+				defer joinIter.Close()
+
+				for joinIter.HasNext() {
+					_, joinValueData, err := joinIter.Next()
+					if err != nil {
+						break
+					}
+
+					joinRow, err := decodeRow(joinValueData, len(joinTable.Columns))
+					if err != nil {
+						continue
+					}
+
+					// Check join condition if present
+					if join.Condition != nil {
+						// Combine rows for evaluation
+						combinedRow := append(mainRow, joinRow...)
+						matched, err := evaluateWhere(c,combinedRow, append(mainTable.Columns, joinTable.Columns...), join.Condition, args)
+						if err != nil || !matched {
+							continue
+						}
+					}
+
+					// Create combined row
+					combinedResult := make([]interface{}, 0)
+					for _, ci := range selectCols {
+						// Determine which table the column belongs to
+						if ci.tableName == "" || ci.tableName == stmt.From.Name {
+							if ci.index >= 0 && ci.index < len(mainRow) {
+								combinedResult = append(combinedResult, mainRow[ci.index])
+							} else {
+								combinedResult = append(combinedResult, nil)
+							}
+						} else if ci.tableName == join.Table.Name {
+							if ci.index >= 0 && ci.index < len(joinRow) {
+								combinedResult = append(combinedResult, joinRow[ci.index])
+							} else {
+								combinedResult = append(combinedResult, nil)
+							}
+						}
+					}
+					resultRows = append(resultRows, combinedResult)
+				}
 			}
 		}
 	}
@@ -939,7 +1418,7 @@ func (c *Catalog) computeAggregates(table *TableDef, stmt *query.SelectStmt, arg
 
 		// Apply WHERE clause if present
 		if stmt.Where != nil {
-			matched, err := evaluateWhere(fullRow, table.Columns, stmt.Where, args)
+			matched, err := evaluateWhere(c,fullRow, table.Columns, stmt.Where, args)
 			if err != nil {
 				continue
 			}
@@ -1119,7 +1598,7 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 
 		// Apply WHERE clause if present (filters rows before grouping)
 		if stmt.Where != nil {
-			matched, err := evaluateWhere(fullRow, table.Columns, stmt.Where, args)
+			matched, err := evaluateWhere(c,fullRow, table.Columns, stmt.Where, args)
 			if err != nil {
 				continue
 			}
@@ -1258,7 +1737,7 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 		if stmt.Having != nil {
 			// Create a temporary row with column values for evaluation
 			// We need to create a virtual row that has the right column structure
-			havingMatched, err := evaluateHaving(resultRow, selectCols, table.Columns, stmt.Having, args)
+			havingMatched, err := evaluateHaving(c, resultRow, selectCols, table.Columns, stmt.Having, args)
 			if err != nil || !havingMatched {
 				continue
 			}
@@ -1279,7 +1758,7 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 
 	// Apply OFFSET if present
 	if stmt.Offset != nil {
-		offsetVal, err := evaluateExpression(nil, nil, stmt.Offset, args)
+		offsetVal, err := evaluateExpression(c, nil, nil, stmt.Offset, args)
 		if err == nil {
 			if offset, ok := toInt(offsetVal); ok && offset > 0 && offset < len(resultRows) {
 				resultRows = resultRows[offset:]
@@ -1289,7 +1768,7 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 
 	// Apply LIMIT if present
 	if stmt.Limit != nil {
-		limitVal, err := evaluateExpression(nil, nil, stmt.Limit, args)
+		limitVal, err := evaluateExpression(c, nil, nil, stmt.Limit, args)
 		if err == nil {
 			if limit, ok := toInt(limitVal); ok && limit >= 0 && limit < len(resultRows) {
 				resultRows = resultRows[:limit]
@@ -1301,7 +1780,7 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 }
 
 // evaluateHaving evaluates a HAVING clause against a group result row
-func evaluateHaving(row []interface{}, selectCols []selectColInfo, columns []ColumnDef, having query.Expression, args []interface{}) (bool, error) {
+func evaluateHaving(c *Catalog, row []interface{}, selectCols []selectColInfo, columns []ColumnDef, having query.Expression, args []interface{}) (bool, error) {
 	if having == nil {
 		return true, nil
 	}
@@ -1314,7 +1793,7 @@ func evaluateHaving(row []interface{}, selectCols []selectColInfo, columns []Col
 	havingExpr := resolveAggregateInExpr(having, selectCols, row)
 
 	// Now evaluate the simplified expression
-	result, err := evaluateExpression(row, nil, havingExpr, args)
+	result, err := evaluateExpression(c, row, nil, havingExpr, args)
 	if err != nil {
 		return false, err
 	}
@@ -1495,13 +1974,13 @@ func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectC
 }
 
 // evaluateWhere evaluates a WHERE clause against a row
-func evaluateWhere(row []interface{}, columns []ColumnDef, where query.Expression, args []interface{}) (bool, error) {
+func evaluateWhere(c *Catalog, row []interface{}, columns []ColumnDef, where query.Expression, args []interface{}) (bool, error) {
 	if where == nil {
 		return true, nil
 	}
 
 	// Evaluate the expression
-	result, err := evaluateExpression(row, columns, where, args)
+	result, err := evaluateExpression(c, row, columns, where, args)
 	if err != nil {
 		return false, err
 	}
@@ -1532,10 +2011,10 @@ func evaluateWhere(row []interface{}, columns []ColumnDef, where query.Expressio
 }
 
 // evaluateExpression evaluates an expression against a row
-func evaluateExpression(row []interface{}, columns []ColumnDef, expr query.Expression, args []interface{}) (interface{}, error) {
+func evaluateExpression(c *Catalog, row []interface{}, columns []ColumnDef, expr query.Expression, args []interface{}) (interface{}, error) {
 	switch e := expr.(type) {
 	case *query.BinaryExpr:
-		return evaluateBinaryExpr(row, columns, e, args)
+		return evaluateBinaryExpr(c, row, columns, e, args)
 	case *query.Identifier:
 		// Find column value
 		for i, col := range columns {
@@ -1566,24 +2045,26 @@ func evaluateExpression(row []interface{}, columns []ColumnDef, expr query.Expre
 		}
 		return nil, fmt.Errorf("column not found: %s.%s", e.Table, e.Column)
 	case *query.LikeExpr:
-		return evaluateLike(row, columns, e, args)
+		return evaluateLike(c, row, columns, e, args)
 	case *query.InExpr:
-		return evaluateIn(row, columns, e, args)
+		return evaluateIn(c, row, columns, e, args)
 	case *query.BetweenExpr:
-		return evaluateBetween(row, columns, e, args)
+		return evaluateBetween(c, row, columns, e, args)
+	case *query.FunctionCall:
+		return evaluateFunctionCall(c, row, columns, e, args)
 	default:
 		return nil, fmt.Errorf("unsupported expression type: %T", expr)
 	}
 }
 
 // evaluateBinaryExpr evaluates a binary expression
-func evaluateBinaryExpr(row []interface{}, columns []ColumnDef, expr *query.BinaryExpr, args []interface{}) (interface{}, error) {
-	left, err := evaluateExpression(row, columns, expr.Left, args)
+func evaluateBinaryExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.BinaryExpr, args []interface{}) (interface{}, error) {
+	left, err := evaluateExpression(c, row, columns, expr.Left, args)
 	if err != nil {
 		return nil, err
 	}
 
-	right, err := evaluateExpression(row, columns, expr.Right, args)
+	right, err := evaluateExpression(c, row, columns, expr.Right, args)
 	if err != nil {
 		return nil, err
 	}
@@ -1660,13 +2141,13 @@ func compareValues(a, b interface{}) int {
 }
 
 // evaluateLike evaluates a LIKE expression (column LIKE pattern)
-func evaluateLike(row []interface{}, columns []ColumnDef, expr *query.LikeExpr, args []interface{}) (bool, error) {
-	left, err := evaluateExpression(row, columns, expr.Expr, args)
+func evaluateLike(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.LikeExpr, args []interface{}) (bool, error) {
+	left, err := evaluateExpression(c, row, columns, expr.Expr, args)
 	if err != nil {
 		return false, err
 	}
 
-	pattern, err := evaluateExpression(row, columns, expr.Pattern, args)
+	pattern, err := evaluateExpression(c, row, columns, expr.Pattern, args)
 	if err != nil {
 		return false, err
 	}
@@ -1757,16 +2238,36 @@ func matchLikeSimple(s, pattern string) bool {
 }
 
 // evaluateIn evaluates an IN expression (column IN (1, 2, 3))
-func evaluateIn(row []interface{}, columns []ColumnDef, expr *query.InExpr, args []interface{}) (bool, error) {
-	left, err := evaluateExpression(row, columns, expr.Expr, args)
+func evaluateIn(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.InExpr, args []interface{}) (bool, error) {
+	left, err := evaluateExpression(c, row, columns, expr.Expr, args)
 	if err != nil {
 		return false, err
+	}
+
+	// Handle subquery: IN (SELECT ...)
+	if expr.Subquery != nil {
+		_, subqueryRows, err := c.Select(expr.Subquery, args)
+		if err != nil {
+			return false, err
+		}
+		// Check if left value is in any of the subquery results
+		for _, subRow := range subqueryRows {
+			if len(subRow) > 0 && compareValues(left, subRow[0]) == 0 {
+				if !expr.Not {
+					return true, nil
+				}
+			}
+		}
+		if expr.Not {
+			return true, nil // NOT IN - true if no match
+		}
+		return false, nil
 	}
 
 	// Evaluate all values in the list
 	var listValues []interface{}
 	for _, item := range expr.List {
-		val, err := evaluateExpression(row, columns, item, args)
+		val, err := evaluateExpression(c, row, columns, item, args)
 		if err != nil {
 			return false, err
 		}
@@ -1790,18 +2291,18 @@ func evaluateIn(row []interface{}, columns []ColumnDef, expr *query.InExpr, args
 }
 
 // evaluateBetween evaluates a BETWEEN expression (column BETWEEN 1 AND 10)
-func evaluateBetween(row []interface{}, columns []ColumnDef, expr *query.BetweenExpr, args []interface{}) (bool, error) {
-	exprVal, err := evaluateExpression(row, columns, expr.Expr, args)
+func evaluateBetween(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.BetweenExpr, args []interface{}) (bool, error) {
+	exprVal, err := evaluateExpression(c, row, columns, expr.Expr, args)
 	if err != nil {
 		return false, err
 	}
 
-	lowerVal, err := evaluateExpression(row, columns, expr.Lower, args)
+	lowerVal, err := evaluateExpression(c, row, columns, expr.Lower, args)
 	if err != nil {
 		return false, err
 	}
 
-	upperVal, err := evaluateExpression(row, columns, expr.Upper, args)
+	upperVal, err := evaluateExpression(c, row, columns, expr.Upper, args)
 	if err != nil {
 		return false, err
 	}
@@ -1822,6 +2323,413 @@ func evaluateBetween(row []interface{}, columns []ColumnDef, expr *query.Between
 		return !result, nil
 	}
 	return result, nil
+}
+
+// evaluateFunctionCall evaluates scalar functions
+func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.FunctionCall, args []interface{}) (interface{}, error) {
+	funcName := strings.ToUpper(expr.Name)
+
+	// Evaluate arguments first
+	evalArgs := make([]interface{}, len(expr.Args))
+	for i, arg := range expr.Args {
+		val, err := evaluateExpression(c, row, columns, arg, args)
+		if err != nil {
+			return nil, err
+		}
+		evalArgs[i] = val
+	}
+
+	switch funcName {
+	case "LENGTH", "LEN":
+		if len(evalArgs) < 1 {
+			return nil, fmt.Errorf("LENGTH requires at least 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, nil
+		}
+		str, ok := evalArgs[0].(string)
+		if !ok {
+			str = fmt.Sprintf("%v", evalArgs[0])
+		}
+		return float64(len(str)), nil
+
+	case "UPPER":
+		if len(evalArgs) < 1 {
+			return nil, fmt.Errorf("UPPER requires at least 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, nil
+		}
+		str, ok := evalArgs[0].(string)
+		if !ok {
+			str = fmt.Sprintf("%v", evalArgs[0])
+		}
+		return strings.ToUpper(str), nil
+
+	case "LOWER":
+		if len(evalArgs) < 1 {
+			return nil, fmt.Errorf("LOWER requires at least 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, nil
+		}
+		str, ok := evalArgs[0].(string)
+		if !ok {
+			str = fmt.Sprintf("%v", evalArgs[0])
+		}
+		return strings.ToLower(str), nil
+
+	case "TRIM", "LTRIM", "RTRIM":
+		if len(evalArgs) < 1 {
+			return nil, fmt.Errorf("%s requires at least 1 argument", funcName)
+		}
+		if evalArgs[0] == nil {
+			return nil, nil
+		}
+		str, ok := evalArgs[0].(string)
+		if !ok {
+			str = fmt.Sprintf("%v", evalArgs[0])
+		}
+		str = strings.TrimSpace(str)
+		if funcName == "LTRIM" {
+			str = strings.TrimLeft(str, " \t\n\r")
+		} else if funcName == "RTRIM" {
+			str = strings.TrimRight(str, " \t\n\r")
+		}
+		return str, nil
+
+	case "SUBSTR", "SUBSTRING":
+		if len(evalArgs) < 2 {
+			return nil, fmt.Errorf("SUBSTR requires at least 2 arguments")
+		}
+		if evalArgs[0] == nil {
+			return nil, nil
+		}
+		str, ok := evalArgs[0].(string)
+		if !ok {
+			str = fmt.Sprintf("%v", evalArgs[0])
+		}
+		start, _ := toFloat64(evalArgs[1])
+		startInt := int(start)
+		if startInt < 0 {
+			startInt = len(str) + startInt
+		}
+		if startInt < 0 {
+			startInt = 0
+		}
+		if startInt >= len(str) {
+			return "", nil
+		}
+		if len(evalArgs) >= 3 {
+			length, _ := toFloat64(evalArgs[2])
+			lengthInt := int(length)
+			if startInt+lengthInt > len(str) {
+				lengthInt = len(str) - startInt
+			}
+			return str[startInt : startInt+lengthInt], nil
+		}
+		return str[startInt:], nil
+
+	case "CONCAT":
+		var result strings.Builder
+		for _, arg := range evalArgs {
+			if arg != nil {
+				result.WriteString(fmt.Sprintf("%v", arg))
+			}
+		}
+		return result.String(), nil
+
+	case "ABS":
+		if len(evalArgs) < 1 {
+			return nil, fmt.Errorf("ABS requires at least 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, nil
+		}
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			if f < 0 {
+				return -f, nil
+			}
+			return f, nil
+		}
+		return evalArgs[0], nil
+
+	case "ROUND":
+		if len(evalArgs) < 1 {
+			return nil, fmt.Errorf("ROUND requires at least 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, nil
+		}
+		f, ok := toFloat64(evalArgs[0])
+		if !ok {
+			return evalArgs[0], nil
+		}
+		precision := 0
+		if len(evalArgs) >= 2 {
+			if p, ok := toFloat64(evalArgs[1]); ok {
+				precision = int(p)
+			}
+		}
+		divisor := 1.0
+		for i := 0; i < precision; i++ {
+			divisor *= 10
+		}
+		result := math.Round(f*divisor) / divisor
+		if precision == 0 {
+			return float64(int64(result)), nil
+		}
+		return result, nil
+
+	case "FLOOR":
+		if len(evalArgs) < 1 {
+			return nil, fmt.Errorf("FLOOR requires at least 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, nil
+		}
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return math.Floor(f), nil
+		}
+		return evalArgs[0], nil
+
+	case "CEIL", "CEILING":
+		if len(evalArgs) < 1 {
+			return nil, fmt.Errorf("CEIL requires at least 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, nil
+		}
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return math.Ceil(f), nil
+		}
+		return evalArgs[0], nil
+
+	case "COALESCE", "IFNULL":
+		for _, arg := range evalArgs {
+			if arg != nil {
+				return arg, nil
+			}
+		}
+		return nil, nil
+
+	case "NULLIF":
+		if len(evalArgs) < 2 {
+			return nil, fmt.Errorf("NULLIF requires 2 arguments")
+		}
+		if evalArgs[0] == nil || evalArgs[1] == nil {
+			return evalArgs[0], nil
+		}
+		if compareValues(evalArgs[0], evalArgs[1]) == 0 {
+			return nil, nil
+		}
+		return evalArgs[0], nil
+
+	case "REPLACE":
+		if len(evalArgs) < 3 {
+			return nil, fmt.Errorf("REPLACE requires 3 arguments")
+		}
+		if evalArgs[0] == nil || evalArgs[1] == nil || evalArgs[2] == nil {
+			return nil, nil
+		}
+		str, ok := evalArgs[0].(string)
+		if !ok {
+			str = fmt.Sprintf("%v", evalArgs[0])
+		}
+		old, _ := evalArgs[1].(string)
+		if old == "" {
+			return str, nil
+		}
+		new, _ := evalArgs[2].(string)
+		return strings.ReplaceAll(str, old, new), nil
+
+	case "INSTR":
+		if len(evalArgs) < 2 {
+			return nil, fmt.Errorf("INSTR requires 2 arguments")
+		}
+		if evalArgs[0] == nil || evalArgs[1] == nil {
+			return float64(0), nil
+		}
+		haystack, ok := evalArgs[0].(string)
+		if !ok {
+			haystack = fmt.Sprintf("%v", evalArgs[0])
+		}
+		needle, ok := evalArgs[1].(string)
+		if !ok {
+			needle = fmt.Sprintf("%v", evalArgs[1])
+		}
+		idx := strings.Index(haystack, needle)
+		if idx < 0 {
+			return float64(0), nil
+		}
+		return float64(idx + 1), nil
+
+	case "PRINTF":
+		if len(evalArgs) < 1 {
+			return nil, fmt.Errorf("PRINTF requires at least 1 argument")
+		}
+		format, ok := evalArgs[0].(string)
+		if !ok {
+			format = fmt.Sprintf("%v", evalArgs[0])
+		}
+		// Simple printf implementation
+		var result strings.Builder
+		argIndex := 1
+		i := 0
+		for i < len(format) {
+			if format[i] == '%' && i+1 < len(format) {
+				nextChar := format[i+1]
+				switch nextChar {
+				case 's':
+					if argIndex < len(evalArgs) {
+						result.WriteString(fmt.Sprintf("%v", evalArgs[argIndex]))
+						argIndex++
+					}
+					i += 2
+				case 'd', 'i':
+					if argIndex < len(evalArgs) {
+						if f, ok := toFloat64(evalArgs[argIndex]); ok {
+							result.WriteString(fmt.Sprintf("%d", int64(f)))
+						}
+						argIndex++
+					}
+					i += 2
+				case 'f':
+					if argIndex < len(evalArgs) {
+						if f, ok := toFloat64(evalArgs[argIndex]); ok {
+							result.WriteString(fmt.Sprintf("%f", f))
+						}
+						argIndex++
+					}
+					i += 2
+				default:
+					result.WriteByte(format[i])
+					i++
+				}
+			} else {
+				result.WriteByte(format[i])
+				i++
+			}
+		}
+		return result.String(), nil
+
+	case "DATE", "TIME", "DATETIME":
+		// Simple date/time functions - return current time for now
+		// Full implementation would require time parsing
+		if len(evalArgs) < 1 {
+			return nil, nil
+		}
+		return evalArgs[0], nil
+
+	case "STRFTIME":
+		if len(evalArgs) < 2 {
+			return nil, fmt.Errorf("STRFTIME requires 2 arguments")
+		}
+		// Simple strftime - just return the input for now
+		if evalArgs[1] == nil {
+			return nil, nil
+		}
+		return fmt.Sprintf("%v", evalArgs[1]), nil
+
+	case "CAST":
+		if len(evalArgs) < 2 {
+			return nil, fmt.Errorf("CAST requires 2 arguments")
+		}
+		if evalArgs[0] == nil {
+			return nil, nil
+		}
+		targetType, ok := evalArgs[1].(string)
+		if !ok {
+			targetType = strings.ToUpper(fmt.Sprintf("%v", evalArgs[1]))
+		}
+		switch targetType {
+		case "INTEGER", "INT":
+			if f, ok := toFloat64(evalArgs[0]); ok {
+				return float64(int64(f)), nil
+			}
+			if s, ok := evalArgs[0].(string); ok {
+				var i int64
+				fmt.Sscanf(s, "%d", &i)
+				return float64(i), nil
+			}
+		case "REAL", "FLOAT":
+			if f, ok := toFloat64(evalArgs[0]); ok {
+				return f, nil
+			}
+		case "TEXT", "STRING":
+			return fmt.Sprintf("%v", evalArgs[0]), nil
+		case "BOOLEAN", "BOOL":
+			if b, ok := evalArgs[0].(bool); ok {
+				return b, nil
+			}
+			if s, ok := evalArgs[0].(string); ok {
+				return strings.ToLower(s) == "true", nil
+			}
+		}
+		return evalArgs[0], nil
+
+	default:
+		// Check for JSON functions
+		return evaluateJSONFunction(funcName, evalArgs)
+	}
+}
+
+// evaluateJSONFunction evaluates JSON-related functions
+func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, error) {
+	switch funcName {
+	case "JSON_EXTRACT":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("JSON_EXTRACT requires 2 arguments")
+		}
+		// Simple JSON path extraction - just return the value for now
+		return args[0], nil
+
+	case "JSON_SET":
+		if len(args) < 3 {
+			return nil, fmt.Errorf("JSON_SET requires 3 arguments")
+		}
+		return args[2], nil
+
+	case "JSON_VALID":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("JSON_VALID requires 1 argument")
+		}
+		if args[0] == nil {
+			return false, nil
+		}
+		_, ok := args[0].(string)
+		return ok, nil
+
+	case "JSON_ARRAY_LENGTH":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("JSON_ARRAY_LENGTH requires 1 argument")
+		}
+		if args[0] == nil {
+			return nil, nil
+		}
+		return float64(0), nil
+
+	case "JSON_TYPE":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("JSON_TYPE requires 1 argument")
+		}
+		if args[0] == nil {
+			return "null", nil
+		}
+		switch args[0].(type) {
+		case string:
+			return "string", nil
+		case float64:
+			return "number", nil
+		case bool:
+			return "boolean", nil
+		default:
+			return "unknown", nil
+		}
+
+	default:
+		return nil, fmt.Errorf("unknown function: %s", funcName)
+	}
 }
 
 // toFloat64 converts a value to float64
@@ -1853,6 +2761,10 @@ func tokenTypeToColumnType(t query.TokenType) string {
 		return "BOOLEAN"
 	case query.TokenJSON:
 		return "JSON"
+	case query.TokenDate:
+		return "DATE"
+	case query.TokenTimestamp:
+		return "TIMESTAMP"
 	default:
 		return "TEXT"
 	}

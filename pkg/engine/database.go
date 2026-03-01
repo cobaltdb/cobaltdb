@@ -32,6 +32,9 @@ type DB struct {
 	mu         sync.RWMutex
 	closed     bool
 	options    *Options
+	// Prepared statement cache for performance
+	stmtCache  map[string]query.Statement
+	stmtMu     sync.RWMutex
 }
 
 // Options contains database configuration options
@@ -89,9 +92,10 @@ func Open(path string, opts *Options) (*DB, error) {
 	}
 
 	db := &DB{
-		path:    path,
-		backend: backend,
-		options: opts,
+		path:      path,
+		backend:   backend,
+		options:   opts,
+		stmtCache: make(map[string]query.Statement),
 	}
 
 	// Initialize buffer pool
@@ -250,6 +254,32 @@ func (db *DB) Close() error {
 	return db.backend.Close()
 }
 
+// getPreparedStatement returns a cached prepared statement or parses and caches it
+func (db *DB) getPreparedStatement(sql string) (query.Statement, error) {
+	db.stmtMu.RLock()
+	stmt, exists := db.stmtCache[sql]
+	db.stmtMu.RUnlock()
+
+	if exists {
+		return stmt, nil
+	}
+
+	// Parse and cache
+	parsedStmt, err := query.Parse(sql)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the statement (limit cache size to prevent memory issues)
+	db.stmtMu.Lock()
+	if len(db.stmtCache) < 1000 {
+		db.stmtCache[sql] = parsedStmt
+	}
+	db.stmtMu.Unlock()
+
+	return parsedStmt, nil
+}
+
 // Exec executes a SQL statement without returning rows
 func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (Result, error) {
 	db.mu.RLock()
@@ -259,8 +289,8 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (Result
 		return Result{}, ErrDatabaseClosed
 	}
 
-	// Parse SQL
-	stmt, err := query.Parse(sql)
+	// Try to use cached prepared statement
+	stmt, err := db.getPreparedStatement(sql)
 	if err != nil {
 		return Result{}, fmt.Errorf("parse error: %w", err)
 	}
@@ -278,8 +308,8 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (*Rows
 		return nil, ErrDatabaseClosed
 	}
 
-	// Parse SQL
-	stmt, err := query.Parse(sql)
+	// Try to use cached prepared statement
+	stmt, err := db.getPreparedStatement(sql)
 	if err != nil {
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
@@ -351,6 +381,20 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		return db.executeDropTable(ctx, s)
 	case *query.CreateIndexStmt:
 		return db.executeCreateIndex(ctx, s)
+	case *query.CreateViewStmt:
+		return db.executeCreateView(ctx, s)
+	case *query.DropViewStmt:
+		return db.executeDropView(ctx, s)
+	case *query.CreateTriggerStmt:
+		return db.executeCreateTrigger(ctx, s)
+	case *query.DropTriggerStmt:
+		return db.executeDropTrigger(ctx, s)
+	case *query.CreateProcedureStmt:
+		return db.executeCreateProcedure(ctx, s)
+	case *query.DropProcedureStmt:
+		return db.executeDropProcedure(ctx, s)
+	case *query.CallProcedureStmt:
+		return db.executeCallProcedure(ctx, s, args)
 	case *query.BeginStmt:
 		return Result{}, errors.New("use Begin() method to start a transaction")
 	case *query.CommitStmt:
@@ -421,6 +465,79 @@ func (db *DB) executeCreateIndex(ctx context.Context, stmt *query.CreateIndexStm
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
+}
+
+// executeCreateView executes CREATE VIEW
+func (db *DB) executeCreateView(ctx context.Context, stmt *query.CreateViewStmt) (Result, error) {
+	if err := db.catalog.CreateView(stmt.Name, stmt.Query); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeDropView executes DROP VIEW
+func (db *DB) executeDropView(ctx context.Context, stmt *query.DropViewStmt) (Result, error) {
+	if err := db.catalog.DropView(stmt.Name); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeCreateTrigger executes CREATE TRIGGER
+func (db *DB) executeCreateTrigger(ctx context.Context, stmt *query.CreateTriggerStmt) (Result, error) {
+	if err := db.catalog.CreateTrigger(stmt); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeDropTrigger executes DROP TRIGGER
+func (db *DB) executeDropTrigger(ctx context.Context, stmt *query.DropTriggerStmt) (Result, error) {
+	if err := db.catalog.DropTrigger(stmt.Name); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeCreateProcedure executes CREATE PROCEDURE
+func (db *DB) executeCreateProcedure(ctx context.Context, stmt *query.CreateProcedureStmt) (Result, error) {
+	if err := db.catalog.CreateProcedure(stmt); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeDropProcedure executes DROP PROCEDURE
+func (db *DB) executeDropProcedure(ctx context.Context, stmt *query.DropProcedureStmt) (Result, error) {
+	if err := db.catalog.DropProcedure(stmt.Name); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeCallProcedure executes CALL procedure_name(params)
+func (db *DB) executeCallProcedure(ctx context.Context, stmt *query.CallProcedureStmt, args []interface{}) (Result, error) {
+	// Get the procedure from catalog
+	proc, err := db.catalog.GetProcedure(stmt.Name)
+	if err != nil {
+		return Result{}, err
+	}
+
+	// Execute each statement in the procedure body
+	// Map call arguments to procedure parameters
+	execArgs := args
+
+	var totalRowsAffected int64
+	for _, bodyStmt := range proc.Body {
+		// Execute the statement
+		result, err := db.execute(ctx, bodyStmt, execArgs)
+		if err != nil {
+			return Result{}, err
+		}
+		totalRowsAffected += result.RowsAffected
+	}
+
+	return Result{RowsAffected: totalRowsAffected}, nil
 }
 
 // executeSelect executes SELECT

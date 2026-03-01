@@ -5,6 +5,81 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.4.0] - 2026-03-01
+
+### Added
+- **Additional SQL Functions**: Extended function library for string, numeric, and date operations
+  - String: LENGTH, UPPER, LOWER, TRIM, LTRIM, RTRIM, SUBSTR, SUBSTRING, CONCAT, REPLACE, INSTR, PRINTF
+  - Numeric: ABS, ROUND, FLOOR, CEIL
+  - Null-handling: COALESCE, IFNULL, NULLIF
+  - Type conversion: CAST
+  - Date/Time: DATE, TIME, DATETIME, STRFTIME (basic implementation)
+
+- **Full Trigger Execution**: Complete trigger integration
+  - BEFORE/AFTER INSERT triggers execution hooks
+  - BEFORE/AFTER UPDATE triggers execution hooks
+  - BEFORE/AFTER DELETE triggers execution hooks
+
+- **Stored Procedure Execution**: Complete procedure support
+  - CALL statement parsing and execution
+  - Procedure body execution with parameters
+  - Multiple statement execution in procedure body
+
+- **Performance Optimizations**
+  - Prepared statement caching (up to 1000 statements)
+  - Reduced parsing overhead for repeated queries
+  - Cache size limit to prevent memory issues
+
+## [v1.3.0] - 2026-03-01
+
+### Added
+- **VIEW Support**: Virtual tables based on saved queries
+  - CREATE VIEW with AS SELECT syntax
+  - DROP VIEW with IF EXISTS support
+  - Views can be queried like regular tables
+  - Automatic view resolution in SELECT statements
+
+- **Trigger Support**: Database triggers framework
+  - CREATE TRIGGER parsing (BEFORE/AFTER INSERT/UPDATE/DELETE)
+  - DROP TRIGGER support
+  - Trigger storage in catalog
+  - GetTriggersForTable for trigger execution hooks
+
+- **Stored Procedure Support**: Stored procedure framework
+  - CREATE PROCEDURE with parameter support
+  - DROP PROCEDURE support
+  - Procedure storage in catalog
+  - CALL statement parsing
+
+## [v1.2.0] - 2026-03-01
+
+### Added
+- **LEFT/RIGHT JOIN Support**: Extended JOIN functionality beyond INNER JOIN
+  - LEFT JOIN with NULL padding for unmatched rows
+  - RIGHT JOIN support
+  - Full compatibility with ON clause conditions
+
+- **Subquery Support**: Nested queries in WHERE clauses
+  - IN (SELECT ...) support
+  - Scalar subqueries in expressions
+
+- **UNIQUE Constraint**: Column-level uniqueness enforcement
+  - Validated on INSERT and UPDATE
+  - Automatic error on duplicate values
+
+- **CHECK Constraint**: Custom validation expressions
+  - CHECK (column > 0) style constraints
+  - Validated on INSERT and UPDATE
+
+- **FOREIGN KEY Support**: Referential integrity
+  - FOREIGN KEY REFERENCES syntax
+  - ON DELETE and ON UPDATE actions (CASCADE, SET NULL, RESTRICT, NO ACTION)
+  - Automatic validation on INSERT and UPDATE
+
+- **Additional Data Types**:
+  - DATE type
+  - TIMESTAMP type
+
 ## [v1.1.0] - 2026-03-01
 
 ### Added

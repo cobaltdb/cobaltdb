@@ -1,4 +1,4 @@
-# CobaltDB v1.1
+# CobaltDB v1.4
 
 > A lightweight, embeddable database engine written in Go with SQL + JSON query support, persistent storage, in-memory mode, and transaction support.
 
@@ -15,6 +15,16 @@
 - **Placeholder Support**: Prepared statement placeholders (?)
 - **Transactions**: BEGIN, COMMIT, ROLLBACK support
 - **Zero CGO**: Pure Go implementation
+- **WAL (Write-Ahead Log)**: Crash recovery and durability
+- **Index Support**: B+Tree indexes for query optimization
+- **JOIN Support**: INNER, LEFT, RIGHT JOIN with ON clause
+- **Subqueries**: IN (SELECT ...) support
+- **Constraints**: UNIQUE, CHECK, FOREIGN KEY support
+- **Data Types**: INTEGER, TEXT, REAL, BOOLEAN, JSON, DATE, TIMESTAMP
+- **VIEW Support**: CREATE VIEW, DROP VIEW
+- **Trigger Support**: CREATE TRIGGER, DROP TRIGGER (framework)
+- **Stored Procedure Support**: CREATE PROCEDURE, DROP PROCEDURE, CALL
+- **SQL Functions**: LENGTH, UPPER, LOWER, TRIM, SUBSTR, COALESCE, IFNULL, NULLIF, CAST, and more
 
 ## Installation
 
@@ -255,14 +265,80 @@ go run cmd/cobaltdb-server/main.go
 - Page-based storage
 - Disk backend with file I/O
 
-## Roadmap (v1.2+)
+## Roadmap (v1.5+)
 
-- [ ] Foreign keys
-- [ ] More JOIN types (LEFT, RIGHT, OUTER)
-- [ ] Subqueries
-- [ ] Table constraints (UNIQUE, CHECK)
-- [ ] More data types (DATE, TIMESTAMP, etc.)
-- [ ] Performance optimizations
+- [ ] Additional SQL functions
+- [ ] Query optimizer improvements
+
+## v1.4 - What's New
+
+### Core Features
+- **Additional SQL Functions**: Extended function library for string, numeric, and date operations
+  - String: LENGTH, UPPER, LOWER, TRIM, LTRIM, RTRIM, SUBSTR, SUBSTRING, CONCAT, REPLACE, INSTR
+  - Numeric: ABS, ROUND, FLOOR, CEIL
+  - Null-handling: COALESCE, IFNULL, NULLIF
+  - Formatting: PRINTF, CAST
+  - Date/Time: DATE, TIME, DATETIME, STRFTIME
+
+- **Full Trigger Execution**: Complete trigger integration
+  - BEFORE/AFTER INSERT triggers
+  - BEFORE/AFTER UPDATE triggers
+  - BEFORE/AFTER DELETE triggers
+  - GetTriggersForTable for trigger execution hooks
+
+- **Stored Procedure Execution**: Complete procedure support
+  - CALL statement execution
+  - Procedure body execution with parameters
+
+- **Performance Optimizations**
+  - Prepared statement caching (up to 1000 statements)
+  - Reduced parsing overhead for repeated queries
+
+## v1.3 - What's New
+
+### Core Features
+- **VIEW Support**: Virtual tables based on saved queries
+  - CREATE VIEW with AS SELECT syntax
+  - DROP VIEW with IF EXISTS support
+  - Views can be queried like regular tables
+  - Automatic view resolution in SELECT statements
+
+- **Trigger Support**: Database triggers framework
+  - CREATE TRIGGER parsing (BEFORE/AFTER INSERT/UPDATE/DELETE)
+  - DROP TRIGGER support
+  - Trigger storage in catalog
+  - GetTriggersForTable for trigger execution hooks
+
+- **Stored Procedure Support**: Stored procedure framework
+  - CREATE PROCEDURE with parameter support
+  - DROP PROCEDURE support
+  - Procedure storage in catalog
+
+## v1.2 - What's New
+
+### Core Features
+- **LEFT/RIGHT JOIN Support**: Extended JOIN functionality beyond INNER JOIN
+  - LEFT JOIN with NULL padding for unmatched rows
+  - RIGHT JOIN support
+  - Full compatibility with ON clause conditions
+
+- **Subquery Support**: Nested queries in WHERE clauses
+  - IN (SELECT ...) support
+  - Scalar subqueries in expressions
+
+- **UNIQUE Constraint**: Column-level uniqueness enforcement
+  - Validated on INSERT and UPDATE
+
+- **CHECK Constraint**: Custom validation expressions
+  - CHECK (column > 0) style constraints
+
+- **FOREIGN KEY Support**: Referential integrity
+  - FOREIGN KEY REFERENCES syntax
+  - ON DELETE and ON UPDATE actions
+
+- **Additional Data Types**:
+  - DATE type
+  - TIMESTAMP type
 
 ## v1.1 - What's New
 

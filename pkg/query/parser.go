@@ -516,14 +516,28 @@ func (p *Parser) parseComparison() (Expression, error) {
 		if _, err := p.expect(TokenLParen); err != nil {
 			return nil, err
 		}
-		list, err := p.parseExpressionList()
-		if err != nil {
-			return nil, err
+
+		// Check for subquery: IN (SELECT ...)
+		var subquery *SelectStmt
+		var list []Expression
+		if p.current().Type == TokenSelect {
+			subquery, err = p.parseSelect()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(TokenRParen); err != nil {
+				return nil, err
+			}
+		} else {
+			list, err = p.parseExpressionList()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(TokenRParen); err != nil {
+				return nil, err
+			}
 		}
-		if _, err := p.expect(TokenRParen); err != nil {
-			return nil, err
-		}
-		return &InExpr{Expr: left, List: list, Not: not}, nil
+		return &InExpr{Expr: left, List: list, Not: not, Subquery: subquery}, nil
 	case TokenBetween:
 		p.advance()
 		not := false
@@ -935,6 +949,12 @@ func (p *Parser) parseCreate() (Statement, error) {
 		return p.parseCreateIndex()
 	case TokenCollection:
 		return p.parseCreateCollection()
+	case TokenView:
+		return p.parseCreateView()
+	case TokenTrigger:
+		return p.parseCreateTrigger()
+	case TokenProcedure:
+		return p.parseCreateProcedure()
 	default:
 		return nil, fmt.Errorf("unexpected token after CREATE: %s", p.current().Literal)
 	}
@@ -959,8 +979,21 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 
 	p.expect(TokenLParen)
 
-	// Column definitions
+	// Column definitions and table constraints
 	for {
+		// Check for FOREIGN KEY constraint
+		if p.match(TokenForeign) {
+			fk, err := p.parseForeignKeyDef()
+			if err != nil {
+				return nil, err
+			}
+			stmt.ForeignKeys = append(stmt.ForeignKeys, fk)
+			if !p.match(TokenComma) {
+				break
+			}
+			continue
+		}
+
 		col, err := p.parseColumnDef()
 		if err != nil {
 			return nil, err
@@ -977,6 +1010,84 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 	return stmt, nil
 }
 
+// parseForeignKeyDef parses a FOREIGN KEY constraint
+func (p *Parser) parseForeignKeyDef() (*ForeignKeyDef, error) {
+	fk := &ForeignKeyDef{}
+
+	p.expect(TokenKey) // consume KEY
+	p.expect(TokenLParen)
+
+	// Parse column names
+	for {
+		col, err := p.expect(TokenIdentifier)
+		if err != nil {
+			return nil, err
+		}
+		fk.Columns = append(fk.Columns, col.Literal)
+
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+
+	p.expect(TokenRParen)
+	p.expect(TokenReferences)
+
+	// Referenced table
+	refTable, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	fk.ReferencedTable = refTable.Literal
+
+	// Optional referenced columns
+	if p.match(TokenLParen) {
+		for {
+			refCol, err := p.expect(TokenIdentifier)
+			if err != nil {
+				return nil, err
+			}
+			fk.ReferencedColumns = append(fk.ReferencedColumns, refCol.Literal)
+
+			if !p.match(TokenComma) {
+				break
+			}
+		}
+		p.expect(TokenRParen)
+	}
+
+	// ON DELETE and ON UPDATE
+	if p.match(TokenOn) {
+		p.expect(TokenDelete)
+		if p.match(TokenCascade) {
+			fk.OnDelete = "CASCADE"
+		} else if p.match(TokenSetNull) {
+			fk.OnDelete = "SET NULL"
+		} else if p.match(TokenRestrict) {
+			fk.OnDelete = "RESTRICT"
+		} else {
+			p.match(TokenNo)
+			fk.OnDelete = "NO ACTION"
+		}
+	}
+
+	if p.match(TokenOn) {
+		p.expect(TokenUpdate)
+		if p.match(TokenCascade) {
+			fk.OnUpdate = "CASCADE"
+		} else if p.match(TokenSetNull) {
+			fk.OnUpdate = "SET NULL"
+		} else if p.match(TokenRestrict) {
+			fk.OnUpdate = "RESTRICT"
+		} else {
+			p.match(TokenNo)
+			fk.OnUpdate = "NO ACTION"
+		}
+	}
+
+	return fk, nil
+}
+
 // parseColumnDef parses a column definition
 func (p *Parser) parseColumnDef() (*ColumnDef, error) {
 	name, err := p.expect(TokenIdentifier)
@@ -988,7 +1099,7 @@ func (p *Parser) parseColumnDef() (*ColumnDef, error) {
 
 	// Data type
 	switch p.current().Type {
-	case TokenInteger, TokenText, TokenReal, TokenBlob, TokenBoolean, TokenJSON:
+	case TokenInteger, TokenText, TokenReal, TokenBlob, TokenBoolean, TokenJSON, TokenDate, TokenTimestamp:
 		col.Type = p.current().Type
 		p.advance()
 	default:
@@ -1019,6 +1130,15 @@ func (p *Parser) parseColumnDef() (*ColumnDef, error) {
 				return nil, err
 			}
 			col.Default = val
+		case TokenCheck:
+			p.advance()
+			p.expect(TokenLParen)
+			checkExpr, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			p.expect(TokenRParen)
+			col.Check = checkExpr
 		default:
 			return col, nil
 		}
@@ -1087,6 +1207,191 @@ func (p *Parser) parseCreateCollection() (*CreateCollectionStmt, error) {
 	return stmt, nil
 }
 
+// parseCreateView parses CREATE VIEW
+func (p *Parser) parseCreateView() (*CreateViewStmt, error) {
+	stmt := &CreateViewStmt{}
+	p.advance() // consume VIEW
+
+	if p.match(TokenIf) {
+		p.expect(TokenNot)
+		p.expect(TokenExists)
+		stmt.IfNotExists = true
+	}
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Name = name.Literal
+
+	// AS SELECT query
+	p.expect(TokenAs)
+	stmt.Query, err = p.parseSelect()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse view query: %w", err)
+	}
+
+	return stmt, nil
+}
+
+// parseDropView parses DROP VIEW
+func (p *Parser) parseDropView() (*DropViewStmt, error) {
+	stmt := &DropViewStmt{}
+	p.advance() // consume VIEW
+
+	if p.match(TokenIf) {
+		p.expect(TokenExists)
+		stmt.IfExists = true
+	}
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Name = name.Literal
+
+	return stmt, nil
+}
+
+// parseCreateTrigger parses CREATE TRIGGER
+func (p *Parser) parseCreateTrigger() (*CreateTriggerStmt, error) {
+	stmt := &CreateTriggerStmt{}
+	p.advance() // consume TRIGGER
+
+	if p.match(TokenIf) {
+		p.expect(TokenNot)
+		p.expect(TokenExists)
+		stmt.IfNotExists = true
+	}
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Name = name.Literal
+
+	// BEFORE or AFTER
+	if p.match(TokenBefore) || p.current().Type == TokenBefore {
+		p.advance()
+		stmt.Time = "BEFORE"
+	} else if p.match(TokenAfter) || p.current().Type == TokenAfter {
+		p.advance()
+		stmt.Time = "AFTER"
+	} else {
+		return nil, fmt.Errorf("expected BEFORE or AFTER")
+	}
+
+	// INSERT, UPDATE, DELETE
+	switch p.current().Type {
+	case TokenInsert:
+		stmt.Event = "INSERT"
+	case TokenUpdate:
+		stmt.Event = "UPDATE"
+	case TokenDelete:
+		stmt.Event = "DELETE"
+	default:
+		return nil, fmt.Errorf("expected INSERT, UPDATE, or DELETE")
+	}
+	p.advance()
+
+	// ON table_name
+	p.expect(TokenOn)
+	table, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Table = table.Literal
+
+	// FOR EACH ROW (not fully implemented, just consume tokens)
+	if p.match(TokenFor) {
+		p.expect(TokenEach)
+		p.expect(TokenRow)
+	}
+
+	return stmt, nil
+}
+
+// parseDropTrigger parses DROP TRIGGER
+func (p *Parser) parseDropTrigger() (*DropTriggerStmt, error) {
+	stmt := &DropTriggerStmt{}
+	p.advance() // consume TRIGGER
+
+	if p.match(TokenIf) {
+		p.expect(TokenExists)
+		stmt.IfExists = true
+	}
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Name = name.Literal
+
+	return stmt, nil
+}
+
+// parseCreateProcedure parses CREATE PROCEDURE
+func (p *Parser) parseCreateProcedure() (*CreateProcedureStmt, error) {
+	stmt := &CreateProcedureStmt{}
+	p.advance() // consume PROCEDURE
+
+	if p.match(TokenIf) {
+		p.expect(TokenNot)
+		p.expect(TokenExists)
+		stmt.IfNotExists = true
+	}
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Name = name.Literal
+
+	// (parameters)
+	if p.match(TokenLParen) {
+		for !p.match(TokenRParen) {
+			param := &ParamDef{}
+			paramName, err := p.expect(TokenIdentifier)
+			if err != nil {
+				return nil, err
+			}
+			param.Name = paramName.Literal
+
+			// Type
+			param.Type = p.current().Type
+			p.advance()
+
+			if !p.match(TokenComma) && p.current().Type != TokenRParen {
+				break
+			}
+			if p.match(TokenComma) {
+				continue
+			}
+		}
+	}
+
+	return stmt, nil
+}
+
+// parseDropProcedure parses DROP PROCEDURE
+func (p *Parser) parseDropProcedure() (*DropProcedureStmt, error) {
+	stmt := &DropProcedureStmt{}
+	p.advance() // consume PROCEDURE
+
+	if p.match(TokenIf) {
+		p.expect(TokenExists)
+		stmt.IfExists = true
+	}
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Name = name.Literal
+
+	return stmt, nil
+}
+
 // parseDrop parses a DROP statement
 func (p *Parser) parseDrop() (Statement, error) {
 	p.advance() // consume DROP
@@ -1096,6 +1401,12 @@ func (p *Parser) parseDrop() (Statement, error) {
 		return p.parseDropTable()
 	case TokenIndex:
 		return p.parseDropIndex()
+	case TokenView:
+		return p.parseDropView()
+	case TokenTrigger:
+		return p.parseDropTrigger()
+	case TokenProcedure:
+		return p.parseDropProcedure()
 	default:
 		return nil, fmt.Errorf("unexpected token after DROP: %s", p.current().Literal)
 	}

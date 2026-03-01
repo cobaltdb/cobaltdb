@@ -52,6 +52,13 @@ const (
 	TokenNotNull
 	TokenDefault
 	TokenAutoIncrement
+	TokenCheck
+	TokenForeign
+	TokenReferences
+	TokenCascade
+	TokenSetNull
+	TokenRestrict
+	TokenNo
 	TokenIf
 	TokenExists
 	TokenDistinct
@@ -66,6 +73,11 @@ const (
 	TokenCommit
 	TokenRollback
 	TokenTransaction
+	TokenBefore
+	TokenAfter
+	TokenFor
+	TokenEach
+	TokenRow
 	TokenTrue
 	TokenFalse
 
@@ -76,6 +88,11 @@ const (
 	TokenBlob
 	TokenBoolean
 	TokenJSON
+	TokenDate
+	TokenTimestamp
+	TokenView
+	TokenTrigger
+	TokenProcedure
 
 	// Operators
 	TokenPlus
@@ -116,6 +133,26 @@ const (
 	TokenJsonArrayLength
 	TokenJsonValid
 	TokenJsonType
+	TokenLength
+	TokenUpper
+	TokenLower
+	TokenTrim
+	TokenSubstr
+	TokenSubstring
+	TokenAbs
+	TokenRound
+	TokenFloor
+	TokenCeil
+	TokenCoalesce
+	TokenIfNull
+	TokenNullIf
+	TokenReplace
+	TokenInstr
+	TokenPrintf
+	TokenTime
+	TokenDatetime
+	TokenStrftime
+	TokenTypecast
 )
 
 // Token represents a lexical token
@@ -164,6 +201,12 @@ var keywords = map[string]TokenType{
 	"NULL":           TokenNull,
 	"NOT NULL":       TokenNotNull,
 	"DEFAULT":        TokenDefault,
+	"CHECK":         TokenCheck,
+	"FOREIGN":       TokenForeign,
+	"REFERENCES":    TokenReferences,
+	"CASCADE":       TokenCascade,
+	"RESTRICT":     TokenRestrict,
+	"NO":           TokenNo,
 	"AUTO_INCREMENT": TokenAutoIncrement,
 	"IF":             TokenIf,
 	"EXISTS":         TokenExists,
@@ -179,6 +222,11 @@ var keywords = map[string]TokenType{
 	"COMMIT":         TokenCommit,
 	"ROLLBACK":       TokenRollback,
 	"TRANSACTION":    TokenTransaction,
+	"BEFORE":         TokenBefore,
+	"AFTER":          TokenAfter,
+	"FOR":            TokenFor,
+	"EACH":           TokenEach,
+	"ROW":            TokenRow,
 	"TRUE":           TokenTrue,
 	"FALSE":          TokenFalse,
 
@@ -195,6 +243,11 @@ var keywords = map[string]TokenType{
 	"BOOLEAN": TokenBoolean,
 	"BOOL":    TokenBoolean,
 	"JSON":    TokenJSON,
+	"DATE":      TokenDate,
+	"TIMESTAMP": TokenTimestamp,
+	"VIEW":      TokenView,
+	"TRIGGER":   TokenTrigger,
+	"PROCEDURE": TokenProcedure,
 
 	// Functions
 	"COUNT":           TokenCount,
@@ -208,6 +261,27 @@ var keywords = map[string]TokenType{
 	"JSON_ARRAY_LENGTH": TokenJsonArrayLength,
 	"JSON_VALID":      TokenJsonValid,
 	"JSON_TYPE":       TokenJsonType,
+	"LENGTH":          TokenLength,
+	"UPPER":           TokenUpper,
+	"LOWER":           TokenLower,
+	"TRIM":            TokenTrim,
+	"SUBSTR":          TokenSubstr,
+	"SUBSTRING":       TokenSubstring,
+	"CONCAT":          TokenConcat,
+	"ABS":             TokenAbs,
+	"ROUND":           TokenRound,
+	"FLOOR":           TokenFloor,
+	"CEIL":            TokenCeil,
+	"COALESCE":        TokenCoalesce,
+	"IFNULL":          TokenIfNull,
+	"NULLIF":          TokenNullIf,
+	"REPLACE":         TokenReplace,
+	"INSTR":           TokenInstr,
+	"PRINTF":          TokenPrintf,
+	"TIME":            TokenTime,
+	"DATETIME":        TokenDatetime,
+	"STRFTIME":        TokenStrftime,
+	"CAST":            TokenTypecast,
 }
 
 // LookupKeyword checks if an identifier is a keyword

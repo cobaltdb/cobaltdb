@@ -74,6 +74,7 @@ type CreateTableStmt struct {
 	IfNotExists bool
 	Table       string
 	Columns     []*ColumnDef
+	ForeignKeys []*ForeignKeyDef
 }
 
 func (s *CreateTableStmt) nodeType() string     { return "CreateTableStmt" }
@@ -109,6 +110,82 @@ type CreateCollectionStmt struct {
 func (s *CreateCollectionStmt) nodeType() string     { return "CreateCollectionStmt" }
 func (s *CreateCollectionStmt) statementNode()       {}
 
+// CreateViewStmt represents a CREATE VIEW statement
+type CreateViewStmt struct {
+	IfNotExists bool
+	Name        string
+	Query       *SelectStmt
+}
+
+func (s *CreateViewStmt) nodeType() string     { return "CreateViewStmt" }
+func (s *CreateViewStmt) statementNode()       {}
+
+// DropViewStmt represents a DROP VIEW statement
+type DropViewStmt struct {
+	IfExists bool
+	Name     string
+}
+
+func (s *DropViewStmt) nodeType() string     { return "DropViewStmt" }
+func (s *DropViewStmt) statementNode()       {}
+
+// CreateTriggerStmt represents a CREATE TRIGGER statement
+type CreateTriggerStmt struct {
+	IfNotExists bool
+	Name        string
+	Table       string
+	Time        string // BEFORE, AFTER
+	Event       string // INSERT, UPDATE, DELETE
+	Body        []Statement
+}
+
+func (s *CreateTriggerStmt) nodeType() string     { return "CreateTriggerStmt" }
+func (s *CreateTriggerStmt) statementNode()        {}
+
+// DropTriggerStmt represents a DROP TRIGGER statement
+type DropTriggerStmt struct {
+	IfExists bool
+	Name     string
+}
+
+func (s *DropTriggerStmt) nodeType() string     { return "DropTriggerStmt" }
+func (s *DropTriggerStmt) statementNode()       {}
+
+// CreateProcedureStmt represents a CREATE PROCEDURE statement
+type CreateProcedureStmt struct {
+	IfNotExists bool
+	Name        string
+	Params      []*ParamDef
+	Body        []Statement
+}
+
+func (s *CreateProcedureStmt) nodeType() string     { return "CreateProcedureStmt" }
+func (s *CreateProcedureStmt) statementNode()        {}
+
+// DropProcedureStmt represents a DROP PROCEDURE statement
+type DropProcedureStmt struct {
+	IfExists bool
+	Name     string
+}
+
+func (s *DropProcedureStmt) nodeType() string     { return "DropProcedureStmt" }
+func (s *DropProcedureStmt) statementNode()       {}
+
+// ParamDef represents a procedure parameter
+type ParamDef struct {
+	Name string
+	Type TokenType
+}
+
+// CallProcedureStmt represents a CALL statement
+type CallProcedureStmt struct {
+	Name   string
+	Params []Expression
+}
+
+func (s *CallProcedureStmt) nodeType() string     { return "CallProcedureStmt" }
+func (s *CallProcedureStmt) statementNode()       {}
+
 // BeginStmt represents a BEGIN TRANSACTION statement
 type BeginStmt struct {
 	ReadOnly bool
@@ -138,6 +215,16 @@ type ColumnDef struct {
 	PrimaryKey   bool
 	AutoIncrement bool
 	Default      Expression
+	Check        Expression // CHECK (expression)
+}
+
+// ForeignKeyDef represents a foreign key constraint
+type ForeignKeyDef struct {
+	Columns          []string
+	ReferencedTable  string
+	ReferencedColumns []string
+	OnDelete         string
+	OnUpdate         string
 }
 
 // TableRef represents a table reference
@@ -272,9 +359,10 @@ func (e *PlaceholderExpr) expressionNode()      {}
 
 // InExpr represents an IN expression
 type InExpr struct {
-	Expr  Expression
-	List  []Expression
-	Not   bool
+	Expr     Expression
+	List     []Expression
+	Not      bool
+	Subquery *SelectStmt // For IN (SELECT ...)
 }
 
 func (e *InExpr) nodeType() string     { return "InExpr" }
