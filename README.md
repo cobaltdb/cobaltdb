@@ -1,4 +1,4 @@
-# CobaltDB v1.4
+# CobaltDB v1.5
 
 > A lightweight, embeddable database engine written in Go with SQL + JSON query support, persistent storage, in-memory mode, and transaction support.
 
@@ -265,10 +265,43 @@ go run cmd/cobaltdb-server/main.go
 - Page-based storage
 - Disk backend with file I/O
 
-## Roadmap (v1.5+)
+## v1.5 - What's New
 
-- [ ] Additional SQL functions
-- [ ] Query optimizer improvements
+### Core Features
+- **Full JSON Support**: Complete JSON manipulation functions
+  - JSON_EXTRACT: Extract values from JSON using paths
+  - JSON_SET: Set values in JSON
+  - JSON_REMOVE: Remove values from JSON
+  - JSON_VALID: Check if a string is valid JSON
+  - JSON_ARRAY_LENGTH: Get array length
+  - JSON_TYPE: Get JSON value type
+  - JSON_KEYS: Get object keys
+  - JSON_MERGE: Merge JSON objects
+  - JSON_PRETTY: Format JSON
+  - JSON_MINIFY: Minify JSON
+  - JSON_QUOTE/JSON_UNQUOTE: Quote/unquote strings
+  - REGEXP_MATCH, REGEXP_REPLACE, REGEXP_EXTRACT: Regular expression functions
+
+- **Window Functions Support**: Framework for analytic functions
+  - ROW_NUMBER: Row number within partition
+  - RANK: Rank with gaps
+  - DENSE_RANK: Rank without gaps
+  - LAG/LEAD: Access previous/next row values
+  - FIRST_VALUE/LAST_VALUE: First/last value in partition
+  - NTH_VALUE: Nth value in partition
+
+- **Query Optimizer Improvements**
+  - Prepared statement caching (up to 1000 statements)
+  - Index usage optimization for WHERE clauses
+  - Cost-based query planning
+
+## Roadmap (v1.6+)
+
+- [ ] Common Table Expressions (WITH clause)
+- [ ] VACUUM/ANALYZE commands
+- [ ] Full-Text Search (FTS)
+- [ ] Materialized Views
+- [ ] User Management & Permissions
 
 ## v1.4 - What's New
 

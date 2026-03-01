@@ -133,6 +133,15 @@ const (
 	TokenJsonArrayLength
 	TokenJsonValid
 	TokenJsonType
+	TokenJsonKeys
+	TokenJsonPretty
+	TokenJsonMinify
+	TokenJsonMerge
+	TokenJsonQuote
+	TokenJsonUnquote
+	TokenRegexMatch
+	TokenRegexReplace
+	TokenRegexExtract
 	TokenLength
 	TokenUpper
 	TokenLower
@@ -153,6 +162,17 @@ const (
 	TokenDatetime
 	TokenStrftime
 	TokenTypecast
+	TokenWindow
+	TokenOver
+	TokenPartition
+	TokenRowNumber
+	TokenRank
+	TokenDenseRank
+	TokenLag
+	TokenLead
+	TokenFirstValue
+	TokenLastValue
+	TokenNthValue
 )
 
 // Token represents a lexical token
@@ -261,6 +281,15 @@ var keywords = map[string]TokenType{
 	"JSON_ARRAY_LENGTH": TokenJsonArrayLength,
 	"JSON_VALID":      TokenJsonValid,
 	"JSON_TYPE":       TokenJsonType,
+	"JSON_KEYS":       TokenJsonKeys,
+	"JSON_PRETTY":     TokenJsonPretty,
+	"JSON_MINIFY":     TokenJsonMinify,
+	"JSON_MERGE":      TokenJsonMerge,
+	"JSON_QUOTE":      TokenJsonQuote,
+	"JSON_UNQUOTE":    TokenJsonUnquote,
+	"REGEXP_MATCH":    TokenRegexMatch,
+	"REGEXP_REPLACE":  TokenRegexReplace,
+	"REGEXP_EXTRACT":  TokenRegexExtract,
 	"LENGTH":          TokenLength,
 	"UPPER":           TokenUpper,
 	"LOWER":           TokenLower,
@@ -282,6 +311,17 @@ var keywords = map[string]TokenType{
 	"DATETIME":        TokenDatetime,
 	"STRFTIME":        TokenStrftime,
 	"CAST":            TokenTypecast,
+	"WINDOW":          TokenWindow,
+	"OVER":            TokenOver,
+	"PARTITION":       TokenPartition,
+	"ROW_NUMBER":      TokenRowNumber,
+	"RANK":            TokenRank,
+	"DENSE_RANK":      TokenDenseRank,
+	"LAG":             TokenLag,
+	"LEAD":            TokenLead,
+	"FIRST_VALUE":     TokenFirstValue,
+	"LAST_VALUE":      TokenLastValue,
+	"NTH_VALUE":       TokenNthValue,
 }
 
 // LookupKeyword checks if an identifier is a keyword

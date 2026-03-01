@@ -439,3 +439,23 @@ type ExistsExpr struct {
 
 func (e *ExistsExpr) nodeType() string     { return "ExistsExpr" }
 func (e *ExistsExpr) expressionNode()      {}
+
+// WindowExpr represents a window function expression
+type WindowExpr struct {
+	Function   string       // ROW_NUMBER, RANK, DENSE_RANK, etc.
+	Args       []Expression // Function arguments
+	PartitionBy []Expression // PARTITION BY clause
+	OrderBy    []*OrderByExpr // ORDER BY clause
+}
+
+func (e *WindowExpr) nodeType() string     { return "WindowExpr" }
+func (e *WindowExpr) expressionNode()      {}
+
+// WindowSpec represents a window specification (OVER clause)
+type WindowSpec struct {
+	PartitionBy []Expression
+	OrderBy     []*OrderByExpr
+}
+
+func (e *WindowSpec) nodeType() string     { return "WindowSpec" }
+func (e *WindowSpec) expressionNode()      {}

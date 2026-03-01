@@ -5,6 +5,44 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.0] - 2026-03-02
+
+### Added
+- **Full JSON Support**: Complete JSON manipulation functions
+  - JSON_EXTRACT: Extract values from JSON using paths
+  - JSON_SET: Set values in JSON at specified paths
+  - JSON_REMOVE: Remove values from JSON
+  - JSON_VALID: Check if a string is valid JSON
+  - JSON_ARRAY_LENGTH: Get array length in JSON
+  - JSON_TYPE: Get JSON value type
+  - JSON_KEYS: Get object keys from JSON
+  - JSON_MERGE: Merge multiple JSON objects
+  - JSON_PRETTY: Format JSON for display
+  - JSON_MINIFY: Minify JSON
+  - JSON_QUOTE: Quote a string as JSON
+  - JSON_UNQUOTE: Unquote a JSON string
+
+- **REGEXP Functions**: Regular expression support
+  - REGEXP_MATCH: Check if string matches pattern
+  - REGEXP_REPLACE: Replace matched patterns
+  - REGEXP_EXTRACT: Extract matched patterns
+
+- **Window Functions Support**: Framework for analytic functions
+  - ROW_NUMBER: Row number within partition
+  - RANK: Rank with gaps
+  - DENSE_RANK: Rank without gaps
+  - LAG: Access previous row values
+  - LEAD: Access next row values
+  - FIRST_VALUE: First value in partition
+  - LAST_VALUE: Last value in partition
+  - NTH_VALUE: Nth value in partition
+  - Window specification: PARTITION BY and ORDER BY support
+
+- **Query Optimizer Improvements**
+  - Prepared statement caching (up to 1000 statements)
+  - Index usage optimization for WHERE clauses
+  - Query plan caching for better performance
+
 ## [v1.4.0] - 2026-03-01
 
 ### Added

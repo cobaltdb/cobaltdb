@@ -635,6 +635,21 @@ func (p *Parser) parsePrimary() (Expression, error) {
 		return p.parseString()
 	case TokenIdentifier:
 		return p.parseIdentifierOrFunction()
+	// JSON functions
+	case TokenJsonExtract, TokenJsonSet, TokenJsonRemove, TokenJsonArrayLength,
+		TokenJsonValid, TokenJsonType, TokenJsonKeys, TokenJsonPretty, TokenJsonMinify,
+		TokenJsonMerge, TokenJsonQuote, TokenJsonUnquote:
+		return p.parseIdentifierOrFunction()
+	// REGEXP functions
+	case TokenRegexMatch, TokenRegexReplace, TokenRegexExtract:
+		return p.parseIdentifierOrFunction()
+	// Aggregate and other functions
+	case TokenCount, TokenSum, TokenAvg, TokenMin, TokenMax,
+		TokenLength, TokenUpper, TokenLower, TokenTrim, TokenSubstr, TokenSubstring,
+		TokenAbs, TokenRound, TokenFloor, TokenCeil, TokenCoalesce, TokenIfNull,
+		TokenNullIf, TokenReplace, TokenInstr, TokenPrintf, TokenTime, TokenDatetime,
+		TokenStrftime, TokenTypecast, TokenConcat:
+		return p.parseIdentifierOrFunction()
 	case TokenLParen:
 		return p.parseParenthesized()
 	case TokenStar:
