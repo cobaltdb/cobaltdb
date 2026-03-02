@@ -4125,3 +4125,733 @@ func TestAggregateWithNull(t *testing.T) {
 
 // Test Aggregate functions: MIN and MAX with NULL - skipped, requires GROUP BY
 // func TestAggregateMinMaxNull(t *testing.T) { ... }
+
+// Test binary expression: LESS THAN operator
+func TestBinaryExprLt(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_lt",
+		Columns: []*query.ColumnDef{
+			{Name: "a", Type: query.TokenInteger},
+			{Name: "b", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_lt",
+		Columns: []string{"a", "b"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 5}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.BinaryExpr{
+				Left:     &query.Identifier{Name: "a"},
+				Operator: query.TokenLt,
+				Right:    &query.Identifier{Name: "b"},
+			},
+		},
+		From: &query.TableRef{Name: "test_lt"},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("LT failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+
+	// a < b should be true
+	if rows[0][0] != true {
+		t.Errorf("Expected true, got %v", rows[0][0])
+	}
+}
+
+// Test binary expression: GREATER THAN
+func TestBinaryExprGt(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_gt",
+		Columns: []*query.ColumnDef{
+			{Name: "a", Type: query.TokenInteger},
+			{Name: "b", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_gt",
+		Columns: []string{"a", "b"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 10}, &query.NumberLiteral{Value: 5}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.BinaryExpr{
+				Left:     &query.Identifier{Name: "a"},
+				Operator: query.TokenGt,
+				Right:    &query.Identifier{Name: "b"},
+			},
+		},
+		From: &query.TableRef{Name: "test_gt"},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("GT failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+
+	// a > b should be true
+	if rows[0][0] != true {
+		t.Errorf("Expected true, got %v", rows[0][0])
+	}
+}
+
+// Test binary expression: LESS THAN OR EQUAL
+func TestBinaryExprLte(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_lte",
+		Columns: []*query.ColumnDef{
+			{Name: "a", Type: query.TokenInteger},
+			{Name: "b", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_lte",
+		Columns: []string{"a", "b"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 5}, &query.NumberLiteral{Value: 5}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.BinaryExpr{
+				Left:     &query.Identifier{Name: "a"},
+				Operator: query.TokenLte,
+				Right:    &query.Identifier{Name: "b"},
+			},
+		},
+		From: &query.TableRef{Name: "test_lte"},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("LTE failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+}
+
+// Test binary expression: GREATER THAN OR EQUAL
+func TestBinaryExprGte(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_gte",
+		Columns: []*query.ColumnDef{
+			{Name: "a", Type: query.TokenInteger},
+			{Name: "b", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_gte",
+		Columns: []string{"a", "b"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 10}, &query.NumberLiteral{Value: 5}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.BinaryExpr{
+				Left:     &query.Identifier{Name: "a"},
+				Operator: query.TokenGte,
+				Right:    &query.Identifier{Name: "b"},
+			},
+		},
+		From: &query.TableRef{Name: "test_gte"},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("GTE failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+}
+
+// Test binary expression: NOT EQUAL
+func TestBinaryExprNeq(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_neq",
+		Columns: []*query.ColumnDef{
+			{Name: "a", Type: query.TokenInteger},
+			{Name: "b", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_neq",
+		Columns: []string{"a", "b"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 2}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.BinaryExpr{
+				Left:     &query.Identifier{Name: "a"},
+				Operator: query.TokenNeq,
+				Right:    &query.Identifier{Name: "b"},
+			},
+		},
+		From: &query.TableRef{Name: "test_neq"},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("NEQ failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+}
+
+// Test IN expression
+func TestInExpression(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_in",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_in",
+		Columns: []string{"value"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 1}},
+			{&query.NumberLiteral{Value: 2}},
+			{&query.NumberLiteral{Value: 3}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "value"}},
+		From:    &query.TableRef{Name: "test_in"},
+		Where: &query.InExpr{
+			Expr: &query.Identifier{Name: "value"},
+			List: []query.Expression{
+				&query.NumberLiteral{Value: 1},
+				&query.NumberLiteral{Value: 2},
+			},
+			Not: false,
+		},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("IN failed: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Errorf("Expected 2 rows, got %d", len(rows))
+	}
+}
+
+// Test NOT IN expression
+func TestNotInExpression(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_notin",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_notin",
+		Columns: []string{"value"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 1}},
+			{&query.NumberLiteral{Value: 2}},
+			{&query.NumberLiteral{Value: 3}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "value"}},
+		From:    &query.TableRef{Name: "test_notin"},
+		Where: &query.InExpr{
+			Expr: &query.Identifier{Name: "value"},
+			List: []query.Expression{
+				&query.NumberLiteral{Value: 1},
+				&query.NumberLiteral{Value: 2},
+			},
+			Not: true,
+		},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("NOT IN failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+}
+
+// Test BETWEEN expression
+func TestBetweenExpression(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_between",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_between",
+		Columns: []string{"value"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 5}},
+			{&query.NumberLiteral{Value: 10}},
+			{&query.NumberLiteral{Value: 15}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "value"}},
+		From:    &query.TableRef{Name: "test_between"},
+		Where: &query.BetweenExpr{
+			Expr:  &query.Identifier{Name: "value"},
+			Lower: &query.NumberLiteral{Value: 5},
+			Upper: &query.NumberLiteral{Value: 12},
+			Not:   false,
+		},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("BETWEEN failed: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Errorf("Expected 2 rows, got %d", len(rows))
+	}
+}
+
+// Test NOT BETWEEN expression
+func TestNotBetweenExpression(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_notbetween",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_notbetween",
+		Columns: []string{"value"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 5}},
+			{&query.NumberLiteral{Value: 10}},
+			{&query.NumberLiteral{Value: 15}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "value"}},
+		From:    &query.TableRef{Name: "test_notbetween"},
+		Where: &query.BetweenExpr{
+			Expr:  &query.Identifier{Name: "value"},
+			Lower: &query.NumberLiteral{Value: 5},
+			Upper: &query.NumberLiteral{Value: 12},
+			Not:   true,
+		},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("NOT BETWEEN failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+}
+
+// Test IS NULL expression
+func TestIsNullExpression(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_isnull",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_isnull",
+		Columns: []string{"value"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 1}},
+			{&query.NullLiteral{}},
+			{&query.NumberLiteral{Value: 3}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "value"}},
+		From:    &query.TableRef{Name: "test_isnull"},
+		Where: &query.IsNullExpr{
+			Expr: &query.Identifier{Name: "value"},
+			Not:  false,
+		},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("IS NULL failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+}
+
+// Test IS NOT NULL expression
+func TestIsNotNullExpression(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_isnotnull",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_isnotnull",
+		Columns: []string{"value"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 1}},
+			{&query.NullLiteral{}},
+			{&query.NumberLiteral{Value: 3}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "value"}},
+		From:    &query.TableRef{Name: "test_isnotnull"},
+		Where: &query.IsNullExpr{
+			Expr: &query.Identifier{Name: "value"},
+			Not:  true,
+		},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("IS NOT NULL failed: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Errorf("Expected 2 rows, got %d", len(rows))
+	}
+}
+
+// Test Update with WHERE
+func TestUpdateWithWhereClause(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "update_where",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger},
+			{Name: "value", Type: query.TokenText},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "update_where",
+		Columns: []string{"id", "value"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "a"}},
+			{&query.NumberLiteral{Value: 2}, &query.StringLiteral{Value: "b"}},
+		},
+	}, nil)
+
+	updateStmt := &query.UpdateStmt{
+		Table: "update_where",
+		Set: []*query.SetClause{
+			{Column: "value", Value: &query.StringLiteral{Value: "updated"}},
+		},
+		Where: &query.BinaryExpr{
+			Left:     &query.Identifier{Name: "id"},
+			Operator: query.TokenEq,
+			Right:    &query.NumberLiteral{Value: 1},
+		},
+	}
+
+	_, rowsAffected, err := catalog.Update(updateStmt, nil)
+	if err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	if rowsAffected != 1 {
+		t.Errorf("Expected 1 row affected, got %d", rowsAffected)
+	}
+}
+
+// Test Delete with WHERE
+func TestDeleteWithWhereClause(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "delete_where",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "delete_where",
+		Columns: []string{"id"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 1}},
+			{&query.NumberLiteral{Value: 2}},
+			{&query.NumberLiteral{Value: 3}},
+		},
+	}, nil)
+
+	deleteStmt := &query.DeleteStmt{
+		Table: "delete_where",
+		Where: &query.BinaryExpr{
+			Left:     &query.Identifier{Name: "id"},
+			Operator: query.TokenEq,
+			Right:    &query.NumberLiteral{Value: 2},
+		},
+	}
+
+	_, rowsAffected, err := catalog.Delete(deleteStmt, nil)
+	if err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	if rowsAffected != 1 {
+		t.Errorf("Expected 1 row affected, got %d", rowsAffected)
+	}
+}
+
+// Test CreateTable with IF NOT EXISTS (existing)
+func TestCreateTableIfNotExists(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_exists",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger},
+		},
+	})
+
+	err := catalog.CreateTable(&query.CreateTableStmt{
+		IfNotExists: true,
+		Table:       "test_exists",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger},
+		},
+	})
+
+	if err != nil {
+		t.Errorf("CreateTable IF NOT EXISTS failed: %v", err)
+	}
+}
+
+// Test DropTable with IF EXISTS (non-existent)
+func TestDropTableIfExists(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	err := catalog.DropTable(&query.DropTableStmt{
+		IfExists: true,
+		Table:    "nonexistent",
+	})
+
+	if err != nil {
+		t.Errorf("DropTable IF EXISTS failed: %v", err)
+	}
+}
+
+// Test FLOOR and CEIL functions
+func TestFunctionFloorCeil(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_floor_ceil",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenReal},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_floor_ceil",
+		Columns: []string{"value"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 3.7}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.FunctionCall{
+				Name: "FLOOR",
+				Args: []query.Expression{
+					&query.Identifier{Name: "value"},
+				},
+			},
+		},
+		From: &query.TableRef{Name: "test_floor_ceil"},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("FLOOR failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+
+	stmt2 := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.FunctionCall{
+				Name: "CEIL",
+				Args: []query.Expression{
+					&query.Identifier{Name: "value"},
+				},
+			},
+		},
+		From: &query.TableRef{Name: "test_floor_ceil"},
+	}
+
+	_, rows2, err := catalog.Select(stmt2, nil)
+	if err != nil {
+		t.Fatalf("CEIL failed: %v", err)
+	}
+
+	if len(rows2) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows2))
+	}
+}
+
+// Test COALESCE function
+func TestFunctionCoalesce(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_coalesce",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenText},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_coalesce",
+		Columns: []string{"value"},
+		Values: [][]query.Expression{
+			{&query.NullLiteral{}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.FunctionCall{
+				Name: "COALESCE",
+				Args: []query.Expression{
+					&query.Identifier{Name: "value"},
+					&query.StringLiteral{Value: "default"},
+				},
+			},
+		},
+		From: &query.TableRef{Name: "test_coalesce"},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("COALESCE failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+
+	if rows[0][0] != "default" {
+		t.Errorf("Expected 'default', got %v", rows[0][0])
+	}
+}
