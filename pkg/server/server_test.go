@@ -89,6 +89,7 @@ func TestHandlePing(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	response := client.handleMessage(wire.MsgPing, nil)
@@ -105,6 +106,7 @@ func TestHandleUnknownMessage(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	response := client.handleMessage(wire.MsgType(99), nil)
@@ -125,6 +127,7 @@ func TestHandleQueryCreate(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -153,6 +156,7 @@ func TestHandleQueryInsert(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -182,6 +186,7 @@ func TestHandleQuerySelect(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -213,6 +218,7 @@ func TestHandleQueryWithParams(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -239,6 +245,7 @@ func TestHandleQueryError(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -264,6 +271,7 @@ func TestHandleInvalidQueryMessage(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// Invalid payload
@@ -311,6 +319,7 @@ func TestHandleQueryUpdate(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -342,6 +351,7 @@ func TestHandleQueryDelete(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -372,6 +382,7 @@ func TestHandleQueryEmptyResult(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// Query that returns no results
@@ -405,6 +416,7 @@ func TestHandleQueryMultipleRows(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -436,6 +448,7 @@ func TestHandleQueryWhereCondition(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -463,6 +476,7 @@ func TestHandleMultipleQueries(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// First query - create table
@@ -505,6 +519,7 @@ func TestHandleDropTable(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -536,6 +551,7 @@ func TestHandleCreateIndex(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{

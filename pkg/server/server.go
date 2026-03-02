@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 
+	"github.com/cobaltdb/cobaltdb/pkg/auth"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 	"github.com/cobaltdb/cobaltdb/pkg/wire"
 )
@@ -26,17 +28,26 @@ type Server struct {
 	nextID   uint64
 	mu       sync.RWMutex
 	closed   bool
+	auth     *auth.Authenticator
 }
 
 // Config contains server configuration
 type Config struct {
-	Address string
+	Address           string
+	AuthEnabled       bool
+	RequireAuth       bool
+	DefaultAdminUser  string
+	DefaultAdminPass  string
 }
 
 // DefaultConfig returns the default server configuration
 func DefaultConfig() *Config {
 	return &Config{
-		Address: ":4200",
+		Address:          ":4200",
+		AuthEnabled:      false,
+		RequireAuth:      false,
+		DefaultAdminUser: "admin",
+		DefaultAdminPass: "admin",
 	}
 }
 
@@ -46,9 +57,22 @@ func New(db *engine.DB, config *Config) (*Server, error) {
 		config = DefaultConfig()
 	}
 
+	authenticator := auth.NewAuthenticator()
+
+	// Enable authentication if configured
+	if config.AuthEnabled {
+		authenticator.Enable()
+
+		// Create default admin user if specified
+		if config.DefaultAdminUser != "" {
+			authenticator.CreateUser(config.DefaultAdminUser, config.DefaultAdminPass, true)
+		}
+	}
+
 	return &Server{
-		db:     db,
+		db:      db,
 		clients: make(map[uint64]*ClientConn),
+		auth:    authenticator,
 	}, nil
 }
 
@@ -82,6 +106,7 @@ func (s *Server) acceptLoop() error {
 			Conn:   conn,
 			Server: s,
 			reader: bufio.NewReader(conn),
+			authed: !s.auth.IsEnabled(), // Auto-authenticate if auth is disabled
 		}
 		s.clients[clientID] = client
 		s.mu.Unlock()
@@ -123,10 +148,12 @@ func (s *Server) removeClient(id uint64) {
 
 // ClientConn represents a client connection
 type ClientConn struct {
-	ID     uint64
-	Conn   net.Conn
-	Server *Server
-	reader *bufio.Reader
+	ID       uint64
+	Conn     net.Conn
+	Server   *Server
+	reader   *bufio.Reader
+	username string
+	authed   bool
 }
 
 // Handle handles client requests
@@ -183,7 +210,19 @@ func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interfa
 	case wire.MsgPing:
 		return wire.MsgPong
 
+	case wire.MsgAuth:
+		var authMsg wire.AuthMessage
+		if err := wire.Decode(payload, &authMsg); err != nil {
+			return wire.NewErrorMessage(2, err.Error())
+		}
+		return c.handleAuth(&authMsg)
+
 	case wire.MsgQuery:
+		// Check if authentication is required
+		if !c.authed {
+			return wire.NewErrorMessage(6, "authentication required")
+		}
+
 		var query wire.QueryMessage
 		if err := wire.Decode(payload, &query); err != nil {
 			return wire.NewErrorMessage(2, err.Error())
@@ -196,8 +235,69 @@ func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interfa
 	}
 }
 
+// handleAuth handles authentication
+func (c *ClientConn) handleAuth(authMsg *wire.AuthMessage) interface{} {
+	token, err := c.Server.auth.Authenticate(authMsg.Username, authMsg.Password)
+	if err != nil {
+		return wire.NewErrorMessage(7, "invalid credentials")
+	}
+
+	c.username = authMsg.Username
+	c.authed = true
+
+	return wire.NewAuthSuccessMessage(token)
+}
+
+// checkPermission checks if the authenticated user has permission for the operation
+func (c *ClientConn) checkPermission(sql string) bool {
+	// If auth is disabled or user is admin, allow all
+	if !c.Server.auth.IsEnabled() || c.authed == false {
+		return true
+	}
+
+	user, err := c.Server.auth.GetUser(c.username)
+	if err != nil {
+		return false
+	}
+
+	if user.IsAdmin {
+		return true
+	}
+
+	// Parse SQL to determine required permission
+	sqlUpper := strings.ToUpper(strings.TrimSpace(sql))
+
+	var action string
+	switch {
+	case strings.HasPrefix(sqlUpper, "SELECT"):
+		action = "SELECT"
+	case strings.HasPrefix(sqlUpper, "INSERT"):
+		action = "INSERT"
+	case strings.HasPrefix(sqlUpper, "UPDATE"):
+		action = "UPDATE"
+	case strings.HasPrefix(sqlUpper, "DELETE"):
+		action = "DELETE"
+	case strings.HasPrefix(sqlUpper, "CREATE"):
+		action = "CREATE"
+	case strings.HasPrefix(sqlUpper, "DROP"):
+		action = "DROP"
+	case strings.HasPrefix(sqlUpper, "ALTER"):
+		action = "ALTER"
+	default:
+		return true // Unknown operations allowed by default
+	}
+
+	// Check permission (using empty database/table for now - would need proper parsing)
+	return c.Server.auth.HasPermission(c.username, "", "", action)
+}
+
 // handleQuery handles a query message
 func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) interface{} {
+	// Check permissions
+	if !c.checkPermission(query.SQL) {
+		return wire.NewErrorMessage(8, "permission denied")
+	}
+
 	// Try as query first
 	rows, err := c.Server.db.Query(ctx, query.SQL, query.Params...)
 	if err == nil {
@@ -250,6 +350,9 @@ func (c *ClientConn) sendMessage(msg interface{}) error {
 		payload = m
 	case *wire.ErrorMessage:
 		msgType = wire.MsgError
+		payload = m
+	case *wire.AuthSuccessMessage:
+		msgType = wire.MsgAuthSuccess
 		payload = m
 	default:
 		return fmt.Errorf("unknown message type: %T", msg)

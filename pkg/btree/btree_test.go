@@ -2,13 +2,22 @@ package btree
 
 import (
 	"testing"
+
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
-func TestNewBTree(t *testing.T) {
-	tree, err := NewBTree(nil)
+func setupTestTree(t *testing.T) (*BTree, *storage.BufferPool) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	tree, err := NewBTree(pool)
 	if err != nil {
 		t.Fatalf("Failed to create B+Tree: %v", err)
 	}
+	return tree, pool
+}
+
+func TestNewBTree(t *testing.T) {
+	tree, _ := setupTestTree(t)
 
 	if tree == nil {
 		t.Fatal("Tree is nil")
@@ -20,7 +29,9 @@ func TestNewBTree(t *testing.T) {
 }
 
 func TestOpenBTree(t *testing.T) {
-	tree := OpenBTree(nil, 1)
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	tree := OpenBTree(pool, 1)
 	if tree == nil {
 		t.Fatal("Tree is nil")
 	}
@@ -31,7 +42,8 @@ func TestOpenBTree(t *testing.T) {
 }
 
 func TestPutGet(t *testing.T) {
-	tree, _ := NewBTree(nil)
+	tree, pool := setupTestTree(t)
+	defer pool.Close()
 
 	// Put
 	err := tree.Put([]byte("key1"), []byte("value1"))
@@ -51,7 +63,8 @@ func TestPutGet(t *testing.T) {
 }
 
 func TestGetNonExistent(t *testing.T) {
-	tree, _ := NewBTree(nil)
+	tree, pool := setupTestTree(t)
+	defer pool.Close()
 
 	_, err := tree.Get([]byte("nonexistent"))
 	if err == nil {
@@ -60,7 +73,8 @@ func TestGetNonExistent(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	tree, _ := NewBTree(nil)
+	tree, pool := setupTestTree(t)
+	defer pool.Close()
 
 	// Put
 	tree.Put([]byte("key1"), []byte("value1"))
@@ -79,11 +93,12 @@ func TestDelete(t *testing.T) {
 }
 
 func TestMultiplePuts(t *testing.T) {
-	tree, _ := NewBTree(nil)
+	tree, pool := setupTestTree(t)
+	defer pool.Close()
 
 	// Put multiple
 	for i := 0; i < 100; i++ {
-		key := []byte(string(rune('a' + i%26)) + string(rune('a' + i/26)))
+		key := []byte(string(rune('a'+i%26)) + string(rune('a'+i/26)))
 		value := []byte("value")
 		tree.Put(key, value)
 	}
@@ -104,7 +119,8 @@ func TestMultiplePuts(t *testing.T) {
 }
 
 func TestUpdate(t *testing.T) {
-	tree, _ := NewBTree(nil)
+	tree, pool := setupTestTree(t)
+	defer pool.Close()
 
 	// Put
 	tree.Put([]byte("key1"), []byte("value1"))
@@ -120,7 +136,8 @@ func TestUpdate(t *testing.T) {
 }
 
 func TestSize(t *testing.T) {
-	tree, _ := NewBTree(nil)
+	tree, pool := setupTestTree(t)
+	defer pool.Close()
 
 	if tree.Size() != 0 {
 		t.Errorf("Expected size 0, got %d", tree.Size())
@@ -133,7 +150,8 @@ func TestSize(t *testing.T) {
 }
 
 func TestScan(t *testing.T) {
-	tree, _ := NewBTree(nil)
+	tree, pool := setupTestTree(t)
+	defer pool.Close()
 
 	// Insert keys
 	tree.Put([]byte("a"), []byte("1"))

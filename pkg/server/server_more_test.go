@@ -16,6 +16,7 @@ func TestHandleQueryExecError(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// Query that will fail in exec path (invalid syntax)
@@ -58,6 +59,7 @@ func TestHandleQueryWithScanError(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -85,6 +87,7 @@ func TestHandleQueryUpdateMore(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -117,6 +120,7 @@ func TestHandleQueryDeleteMore(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -146,6 +150,7 @@ func TestHandleQueryDropTable(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -172,6 +177,7 @@ func TestHandleQueryCreateIndex(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -202,6 +208,7 @@ func TestHandleQueryEmptyResultMore(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -234,6 +241,7 @@ func TestHandleQueryMultipleRowsMore(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -263,6 +271,7 @@ func TestHandleQueryInsertMore(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -295,6 +304,7 @@ func TestHandleQueryWithParamsMore(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -326,6 +336,7 @@ func TestHandleQueryNoResults(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{

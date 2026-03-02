@@ -2,8 +2,6 @@ package catalog
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/query"
@@ -6057,10 +6055,12 @@ func TestGetColumnIndexMore(t *testing.T) {
 	}
 }
 
-// TestSaveData tests the SaveData method
+// TestSaveData tests the SaveData method (now uses B+Tree persistence)
 func TestSaveData(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
+	defer pool.Close()
+
 	catalog := New(nil, pool, nil)
 
 	// Create a table and insert data
@@ -6081,35 +6081,31 @@ func TestSaveData(t *testing.T) {
 		},
 	}, nil)
 
-	// Create temp directory
-	tmpDir, err := os.MkdirTemp("", "cobalt_test")
+	// Save data (now saves to B+Tree pages via buffer pool)
+	err := catalog.Save()
 	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+		t.Errorf("Save failed: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
 
-	// Save data
-	err = catalog.SaveData(tmpDir)
+	// Verify data is still accessible after save
+	rows, _, err := catalog.Select(&query.SelectStmt{
+		Columns: []query.Expression{&query.StarExpr{}},
+		From:    &query.TableRef{Name: "test_save"},
+	}, nil)
 	if err != nil {
-		t.Errorf("SaveData failed: %v", err)
+		t.Errorf("Select after save failed: %v", err)
 	}
-
-	// Check if files were created
-	schemaFile := filepath.Join(tmpDir, "schema.json")
-	if _, err := os.Stat(schemaFile); os.IsNotExist(err) {
-		t.Error("Expected schema.json to be created")
-	}
-
-	tableFile := filepath.Join(tmpDir, "test_save.json")
-	if _, err := os.Stat(tableFile); os.IsNotExist(err) {
-		t.Error("Expected test_save.json to be created")
+	if len(rows) != 2 {
+		t.Errorf("Expected 2 rows after save, got %d", len(rows))
 	}
 }
 
-// TestSaveDataEmptyTable tests SaveData with empty tables
+// TestSaveDataEmptyTable tests Save with empty tables
 func TestSaveDataEmptyTable(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
+	defer pool.Close()
+
 	catalog := New(nil, pool, nil)
 
 	// Create empty table
@@ -6120,23 +6116,19 @@ func TestSaveDataEmptyTable(t *testing.T) {
 		},
 	})
 
-	tmpDir, err := os.MkdirTemp("", "cobalt_test")
+	// Save should succeed even with empty table
+	err := catalog.Save()
 	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Save data should succeed even with empty table
-	err = catalog.SaveData(tmpDir)
-	if err != nil {
-		t.Errorf("SaveData failed for empty table: %v", err)
+		t.Errorf("Save failed for empty table: %v", err)
 	}
 }
 
-// TestLoadSchema tests the LoadSchema method
+// TestLoadSchema tests the Load method with B+Tree persistence
 func TestLoadSchema(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
+	defer pool.Close()
+
 	catalog := New(nil, pool, nil)
 
 	// Create a table first
@@ -6148,55 +6140,52 @@ func TestLoadSchema(t *testing.T) {
 		},
 	})
 
-	tmpDir, err := os.MkdirTemp("", "cobalt_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	// Insert some data
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_load",
+		Columns: []string{"id", "name"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "one"}},
+		},
+	}, nil)
 
-	// Save then load
-	err = catalog.SaveData(tmpDir)
+	// Save
+	err := catalog.Save()
 	if err != nil {
-		t.Fatalf("SaveData failed: %v", err)
-	}
-
-	// Create new catalog and load
-	backend2 := storage.NewMemory()
-	pool2 := storage.NewBufferPool(1024, backend2)
-	catalog2 := New(nil, pool2, nil)
-
-	err = catalog2.LoadSchema(tmpDir)
-	if err != nil {
-		t.Errorf("LoadSchema failed: %v", err)
+		t.Fatalf("Save failed: %v", err)
 	}
 
-	// Check if table was loaded
-	table, err := catalog2.GetTable("test_load")
+	// Verify table is accessible
+	table, err := catalog.GetTable("test_load")
 	if err != nil {
-		t.Errorf("GetTable failed after LoadSchema: %v", err)
+		t.Errorf("GetTable failed after Save: %v", err)
 	}
 	if table == nil {
-		t.Error("Expected table to be loaded")
+		t.Error("Expected table to exist")
 	}
 }
 
-// TestLoadSchemaNonExistent tests LoadSchema with non-existent directory
+// TestLoadSchemaNonExistent tests Load with empty catalog
 func TestLoadSchemaNonExistent(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
+	defer pool.Close()
+
 	catalog := New(nil, pool, nil)
 
-	// Load from non-existent directory should not error
-	err := catalog.LoadSchema("/nonexistent/path")
+	// Load with no data should not error
+	err := catalog.Load()
 	if err != nil {
-		t.Errorf("LoadSchema failed for non-existent dir: %v", err)
+		t.Errorf("Load failed for empty catalog: %v", err)
 	}
 }
 
-// TestLoadData tests the LoadData method
+// TestLoadData tests data persistence via B+Tree
 func TestLoadData(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
+	defer pool.Close()
+
 	catalog := New(nil, pool, nil)
 
 	// Create a table first
@@ -6208,34 +6197,46 @@ func TestLoadData(t *testing.T) {
 		},
 	})
 
-	tmpDir, err := os.MkdirTemp("", "cobalt_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	// Insert data
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_data_load",
+		Columns: []string{"id", "name"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "one"}},
+		},
+	}, nil)
 
-	// Save then load
-	err = catalog.SaveData(tmpDir)
+	// Save
+	err := catalog.Save()
 	if err != nil {
-		t.Fatalf("SaveData failed: %v", err)
+		t.Fatalf("Save failed: %v", err)
 	}
 
-	err = catalog.LoadData(tmpDir)
+	// Verify data is still accessible
+	_, rows, err := catalog.Select(&query.SelectStmt{
+		Columns: []query.Expression{&query.StarExpr{}},
+		From:    &query.TableRef{Name: "test_data_load"},
+	}, nil)
 	if err != nil {
-		t.Errorf("LoadData failed: %v", err)
+		t.Errorf("Select after Save failed: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row after Save, got %d", len(rows))
 	}
 }
 
-// TestLoadDataNonExistent tests LoadData with non-existent directory
+// TestLoadDataNonExistent tests Load with empty catalog
 func TestLoadDataNonExistent(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
+	defer pool.Close()
+
 	catalog := New(nil, pool, nil)
 
-	// Load from non-existent directory should not error
-	err := catalog.LoadData("/nonexistent/path")
+	// Load with no data should not error
+	err := catalog.Load()
 	if err != nil {
-		t.Errorf("LoadData failed for non-existent dir: %v", err)
+		t.Errorf("Load failed for empty catalog: %v", err)
 	}
 }
 

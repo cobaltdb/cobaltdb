@@ -8,14 +8,17 @@ import (
 type MsgType uint8
 
 const (
-	MsgQuery     MsgType = 0x01 // SQL query string
-	MsgPrepare   MsgType = 0x02 // Prepared statement
-	MsgExecute   MsgType = 0x03 // Execute prepared
-	MsgResult    MsgType = 0x10 // Query result rows
-	MsgOK        MsgType = 0x11 // Execution success
-	MsgError     MsgType = 0x12 // Error response
-	MsgPing      MsgType = 0x20
-	MsgPong      MsgType = 0x21
+	MsgQuery      MsgType = 0x01 // SQL query string
+	MsgPrepare    MsgType = 0x02 // Prepared statement
+	MsgExecute    MsgType = 0x03 // Execute prepared
+	MsgResult     MsgType = 0x10 // Query result rows
+	MsgOK         MsgType = 0x11 // Execution success
+	MsgError      MsgType = 0x12 // Error response
+	MsgPing       MsgType = 0x20
+	MsgPong       MsgType = 0x21
+	MsgAuth       MsgType = 0x30 // Authentication request
+	MsgAuthSuccess MsgType = 0x31 // Authentication success
+	MsgAuthFailed  MsgType = 0x32 // Authentication failed
 )
 
 // Message represents a protocol message
@@ -130,5 +133,29 @@ func NewErrorMessage(code int, message string) *ErrorMessage {
 	return &ErrorMessage{
 		Code:    code,
 		Message: message,
+	}
+}
+
+// AuthMessage represents an authentication request
+type AuthMessage struct {
+	Username string `msgpack:"username"`
+	Password string `msgpack:"password"`
+}
+
+// AuthSuccessMessage represents a successful authentication response
+type AuthSuccessMessage struct {
+	Token    string `msgpack:"token"`
+	Username string `msgpack:"username"`
+}
+
+// AuthFailedMessage represents a failed authentication response
+type AuthFailedMessage struct {
+	Reason string `msgpack:"reason"`
+}
+
+// NewAuthSuccessMessage creates a new auth success message
+func NewAuthSuccessMessage(token string) *AuthSuccessMessage {
+	return &AuthSuccessMessage{
+		Token: token,
 	}
 }

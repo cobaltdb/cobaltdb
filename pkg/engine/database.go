@@ -188,26 +188,16 @@ func (db *DB) loadExisting() error {
 	// Open root B+Tree
 	db.rootTree = btree.OpenBTree(db.pool, meta.RootPageID)
 
-	// Load catalog
+	// Load catalog - schema and data are now stored in the B+Tree pages
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
+
+	// Load catalog metadata from the B+Tree
+	if err := db.catalog.Load(); err != nil {
+		return fmt.Errorf("failed to load catalog: %w", err)
+	}
 
 	// Initialize transaction manager
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
-
-	// Load table data from disk
-	if db.path != ":memory:" {
-		dataDir := db.path + ".data"
-
-		// First load schema
-		if err := db.catalog.LoadSchema(dataDir); err != nil {
-			return fmt.Errorf("failed to load schema: %w", err)
-		}
-
-		// Then load data
-		if err := db.catalog.LoadData(dataDir); err != nil {
-			return fmt.Errorf("failed to load data: %w", err)
-		}
-	}
 
 	return nil
 }
@@ -223,11 +213,10 @@ func (db *DB) Close() error {
 
 	db.closed = true
 
-	// Save catalog data to disk (if not in-memory)
+	// Save catalog metadata to B+Tree (if not in-memory)
 	if !db.options.InMemory && db.path != ":memory:" {
-		dataDir := db.path + ".data"
-		if err := db.catalog.SaveData(dataDir); err != nil {
-			return fmt.Errorf("failed to save data: %w", err)
+		if err := db.catalog.Save(); err != nil {
+			return fmt.Errorf("failed to save catalog: %w", err)
 		}
 	}
 

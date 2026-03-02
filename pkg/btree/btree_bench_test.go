@@ -4,10 +4,16 @@ import (
 	"fmt"
 	"strconv"
 	"testing"
+
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
 func BenchmarkPut(b *testing.B) {
-	tree, _ := NewBTree(nil)
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTree(pool)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -17,7 +23,11 @@ func BenchmarkPut(b *testing.B) {
 }
 
 func BenchmarkPutSequential(b *testing.B) {
-	tree, _ := NewBTree(nil)
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTree(pool)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -27,7 +37,11 @@ func BenchmarkPutSequential(b *testing.B) {
 }
 
 func BenchmarkGet(b *testing.B) {
-	tree, _ := NewBTree(nil)
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTree(pool)
 
 	// Insert test data
 	for i := 0; i < 10000; i++ {
@@ -42,7 +56,11 @@ func BenchmarkGet(b *testing.B) {
 }
 
 func BenchmarkScan(b *testing.B) {
-	tree, _ := NewBTree(nil)
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTree(pool)
 
 	// Insert test data
 	for i := 0; i < 1000; i++ {
@@ -63,7 +81,11 @@ func BenchmarkScan(b *testing.B) {
 }
 
 func BenchmarkDelete(b *testing.B) {
-	tree, _ := NewBTree(nil)
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTree(pool)
 
 	// Insert test data
 	for i := 0; i < 1000; i++ {
@@ -81,7 +103,11 @@ func BenchmarkDelete(b *testing.B) {
 }
 
 func BenchmarkPutLarge(b *testing.B) {
-	tree, _ := NewBTree(nil)
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1000, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTree(pool)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -93,7 +119,11 @@ func BenchmarkPutLarge(b *testing.B) {
 }
 
 func BenchmarkUpdate(b *testing.B) {
-	tree, _ := NewBTree(nil)
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTree(pool)
 
 	// Insert test data
 	for i := 0; i < 1000; i++ {

@@ -52,6 +52,7 @@ func TestClientConnHandle(t *testing.T) {
 		ID:     1,
 		Conn:   serverConn,
 		Server: srv,
+		authed: true,
 		reader: bufio.NewReader(serverConn),
 	}
 
@@ -99,6 +100,7 @@ func TestSendMessage(t *testing.T) {
 		ID:     1,
 		Conn:   serverConn,
 		Server: srv,
+		authed: true,
 	}
 
 	// Test sending OK message
@@ -141,6 +143,7 @@ func TestSendMessageUnknownType(t *testing.T) {
 		ID:     1,
 		Conn:   serverConn,
 		Server: srv,
+		authed: true,
 	}
 
 	// Test sending unknown message type
@@ -179,6 +182,7 @@ func TestSendError(t *testing.T) {
 		ID:     1,
 		Conn:   serverConn,
 		Server: srv,
+		authed: true,
 	}
 
 	// Test sending error - should not panic
@@ -203,6 +207,7 @@ func TestHandleQueryWithNilDB(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -235,6 +240,7 @@ func TestHandleQueryScanError(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	query := &wire.QueryMessage{
@@ -313,6 +319,7 @@ func TestHandleMessageWithEmptyPayload(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// Test with empty payload for query message
@@ -338,6 +345,7 @@ func TestHandleQueryExecPath(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// INSERT should go through exec path
@@ -369,6 +377,7 @@ func TestHandleQuerySelectPath(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// SELECT should go through query path
@@ -398,6 +407,7 @@ func TestHandleQueryWithLastInsertID(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// INSERT
@@ -439,6 +449,7 @@ func TestClientConnHandleEOF(t *testing.T) {
 		ID:     1,
 		Conn:   serverConn,
 		Server: srv,
+		authed: true,
 		reader: bufio.NewReader(serverConn),
 	}
 
@@ -511,6 +522,7 @@ func TestHandleQueryWithMultipleParams(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// Query with multiple params
@@ -541,6 +553,7 @@ func TestHandleQueryWithNoParams(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// Query without params
@@ -568,6 +581,7 @@ func TestHandleQuerySyntaxError(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// Query with syntax error
@@ -598,6 +612,7 @@ func TestHandleQueryWithNilParams(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// Query with nil params
@@ -645,6 +660,7 @@ func TestSendMessageResult(t *testing.T) {
 		ID:     1,
 		Conn:   serverConn,
 		Server: srv,
+		authed: true,
 	}
 
 	// Test sending ResultMessage
@@ -695,6 +711,7 @@ func TestSendMessageError(t *testing.T) {
 		ID:     1,
 		Conn:   serverConn,
 		Server: srv,
+		authed: true,
 	}
 
 	// Test sending ErrorMessage
@@ -725,6 +742,7 @@ func TestHandleMessagePing(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	response := client.handleMessage(wire.MsgPing, nil)
@@ -742,6 +760,7 @@ func TestHandleMessageQueryDecodeError(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// Invalid query payload
@@ -764,6 +783,7 @@ func TestHandleMessageUnknownType(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	response := client.handleMessage(wire.MsgType(99), nil)
@@ -789,6 +809,7 @@ func TestHandleQueryScanFailure(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// Query that should work
@@ -815,6 +836,7 @@ func TestHandleQueryExecFailure(t *testing.T) {
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
+		authed: true,
 	}
 
 	// Invalid INSERT
@@ -846,6 +868,7 @@ func TestClientConnHandleReadError(t *testing.T) {
 		ID:     1,
 		Conn:   serverConn,
 		Server: srv,
+		authed: true,
 		reader: bufio.NewReader(serverConn),
 	}
 
@@ -888,6 +911,7 @@ func TestSendMessageEncodeError(t *testing.T) {
 		ID:     1,
 		Conn:   serverConn,
 		Server: srv,
+		authed: true,
 	}
 
 	// Try to send a message with a type that can't be encoded

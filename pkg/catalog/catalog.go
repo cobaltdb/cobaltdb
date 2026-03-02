@@ -1,12 +1,10 @@
 package catalog
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,7 +86,6 @@ type Catalog struct {
 	pool        *storage.BufferPool
 	wal         *storage.WAL
 	tableTrees  map[string]*btree.BTree // Each table has its own B+Tree
-	tableData   map[string]map[string][]byte // Temporary: simple in-memory storage
 	views       map[string]*query.SelectStmt // Views store their SELECT query
 	triggers    map[string]*query.CreateTriggerStmt // Triggers store their definition
 	procedures  map[string]*query.CreateProcedureStmt // Procedures store their definition
@@ -107,7 +104,6 @@ func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog
 		pool:       pool,
 		wal:        wal,
 		tableTrees: make(map[string]*btree.BTree),
-		tableData:  make(map[string]map[string][]byte),
 		views:      make(map[string]*query.SelectStmt),
 		triggers:   make(map[string]*query.CreateTriggerStmt),
 		procedures: make(map[string]*query.CreateProcedureStmt),
@@ -219,7 +215,6 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 
 	c.tables[stmt.Table] = tableDef
 	c.tableTrees[stmt.Table] = tree // Store the tree for data operations
-	c.tableData[stmt.Table] = make(map[string][]byte) // Initialize data storage
 
 	// Build column index cache for performance
 	tableDef.buildColumnIndexCache()
@@ -640,9 +635,13 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 	rowsAffected := int64(0)
 	iter, _ := tree.Scan(nil, nil)
 
-	// Collect keys to update
-	var keys [][]byte
-	var values [][]byte
+	// Collect entries to update (need old row for index cleanup)
+	type updateEntry struct {
+		key    []byte
+		oldRow []interface{}
+		newRow []interface{}
+	}
+	var entries []updateEntry
 
 	// Pre-calculate column indices for SET clauses
 	setColumnIndices := make([]int, len(stmt.Set))
@@ -689,6 +688,10 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 			}
 		}
 
+		// Make copies since iterator may reuse buffers
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+
 		// Check UNIQUE constraints before updating
 		for i, col := range table.Columns {
 			if col.Unique && updatedRow[i] != nil {
@@ -729,26 +732,31 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 			}
 		}
 
-		// Re-encode row
-		newValueData, err := json.Marshal(updatedRow)
-		if err != nil {
-			continue
-		}
-
-		keys = append(keys, key)
-		values = append(values, newValueData)
+		entries = append(entries, updateEntry{
+			key:    keyCopy,
+			oldRow: row,
+			newRow: updatedRow,
+		})
 		rowsAffected++
 	}
 	iter.Close()
 
 	// Apply updates
-	for i, key := range keys {
+	for _, entry := range entries {
+		key := entry.key
+
+		// Re-encode row
+		newValueData, err := json.Marshal(entry.newRow)
+		if err != nil {
+			continue
+		}
+
 		// Log to WAL before applying change
 		if c.wal != nil && c.txnActive {
 			// For UPDATE, we log the key and new value
 			// Format: key (null-terminated) + value
 			walData := append([]byte(key), 0)
-			walData = append(walData, values[i]...)
+			walData = append(walData, newValueData...)
 			record := &storage.WALRecord{
 				TxnID: c.txnID,
 				Type:  storage.WALUpdate,
@@ -759,19 +767,23 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 			}
 		}
 
-		tree.Put(key, values[i])
+		tree.Put(key, newValueData)
 
-		// Update indexes with new values
-		// Decode the updated row to get new column values
-		updatedRow, err := decodeRow(values[i], len(table.Columns))
-		if err == nil {
-			for idxName, idxTree := range c.indexTrees {
-				idxDef := c.indexes[idxName]
-				if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
-					colIdx := table.GetColumnIndex(idxDef.Columns[0])
-					if colIdx >= 0 && colIdx < len(updatedRow) {
-						indexKey := fmt.Sprintf("%v", updatedRow[colIdx])
-						idxTree.Put([]byte(indexKey), key)
+		// Update indexes: remove old entries and add new ones
+		for idxName, idxTree := range c.indexTrees {
+			idxDef := c.indexes[idxName]
+			if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
+				colIdx := table.GetColumnIndex(idxDef.Columns[0])
+				if colIdx >= 0 {
+					// Remove old index entry if the indexed column value changed
+					if colIdx < len(entry.oldRow) && entry.oldRow[colIdx] != nil {
+						oldIndexKey := fmt.Sprintf("%v", entry.oldRow[colIdx])
+						idxTree.Delete([]byte(oldIndexKey))
+					}
+					// Add new index entry
+					if colIdx < len(entry.newRow) && entry.newRow[colIdx] != nil {
+						newIndexKey := fmt.Sprintf("%v", entry.newRow[colIdx])
+						idxTree.Put([]byte(newIndexKey), key)
 					}
 				}
 			}
@@ -799,8 +811,12 @@ func (c *Catalog) Delete(stmt *query.DeleteStmt, args []interface{}) (int64, int
 	rowsAffected := int64(0)
 	iter, _ := tree.Scan(nil, nil)
 
-	// Collect keys to delete
-	var keys [][]byte
+	// Collect keys and row data to delete (need row data for index cleanup)
+	type deleteEntry struct {
+		key   []byte
+		value []byte
+	}
+	var entries []deleteEntry
 	for iter.HasNext() {
 		key, valueData, err := iter.Next()
 		if err != nil {
@@ -824,13 +840,36 @@ func (c *Catalog) Delete(stmt *query.DeleteStmt, args []interface{}) (int64, int
 			}
 		}
 
-		keys = append(keys, key)
+		// Make copies of key and value since iterator may reuse buffers
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+		valueCopy := make([]byte, len(valueData))
+		copy(valueCopy, valueData)
+
+		entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy})
 		rowsAffected++
 	}
 	iter.Close()
 
-	// Delete collected keys
-	for _, key := range keys {
+	// Delete collected entries
+	for _, entry := range entries {
+		key := entry.key
+
+		// Remove from indexes first (before deleting the row)
+		row, err := decodeRow(entry.value, len(table.Columns))
+		if err == nil {
+			for idxName, idxTree := range c.indexTrees {
+				idxDef := c.indexes[idxName]
+				if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
+					colIdx := table.GetColumnIndex(idxDef.Columns[0])
+					if colIdx >= 0 && colIdx < len(row) && row[colIdx] != nil {
+						indexKey := fmt.Sprintf("%v", row[colIdx])
+						idxTree.Delete([]byte(indexKey))
+					}
+				}
+			}
+		}
+
 		// Log to WAL before applying change
 		if c.wal != nil && c.txnActive {
 			// For DELETE, we log the key being deleted
@@ -3221,163 +3260,92 @@ func (c *Catalog) ListTables() []string {
 	return tables
 }
 
-// SaveData saves all table data to disk
-func (c *Catalog) SaveData(dir string) error {
-	// Create directory if not exists
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create data directory: %w", err)
+// Save saves catalog metadata to the B+Tree
+// Note: Table data is already persisted via the buffer pool
+func (c *Catalog) Save() error {
+	// Save table definitions to catalog tree
+	for _, tableDef := range c.tables {
+		if err := c.storeTableDef(tableDef); err != nil {
+			return fmt.Errorf("failed to save table definition %s: %w", tableDef.Name, err)
+		}
 	}
 
-	// Save catalog schema (table definitions)
-	schema := map[string]interface{}{
-		"tables": c.tables,
-	}
-	schemaBytes, err := json.Marshal(schema)
-	if err != nil {
-		return fmt.Errorf("failed to marshal schema: %w", err)
-	}
-	if err := os.WriteFile(dir+"/schema.json", schemaBytes, 0644); err != nil {
-		return fmt.Errorf("failed to write schema: %w", err)
-	}
-
-	// Save each table's data
-	for tableName, tree := range c.tableTrees {
-		// Get all key-value pairs from B+Tree
-		var keys []string
-		var values [][]byte
-
-		iter, _ := tree.Scan(nil, nil)
-		for iter.HasNext() {
-			key, value, _ := iter.Next()
-			keys = append(keys, string(key))
-			values = append(values, value)
-		}
-		iter.Close()
-
-		if len(keys) == 0 {
-			continue // Skip empty tables
-		}
-
-		// Save to JSON file
-		data := map[string]interface{}{
-			"keys":   keys,
-			"values": values,
-		}
-
-		dataBytes, err := json.Marshal(data)
-		if err != nil {
-			return fmt.Errorf("failed to marshal table %s: %w", tableName, err)
-		}
-
-		filename := fmt.Sprintf("%s/%s.json", dir, tableName)
-		if err := os.WriteFile(filename, dataBytes, 0644); err != nil {
-			return fmt.Errorf("failed to write table %s: %w", tableName, err)
+	// Flush buffer pool to ensure all pages are written to disk
+	if c.pool != nil {
+		if err := c.pool.FlushAll(); err != nil {
+			return fmt.Errorf("failed to flush buffer pool: %w", err)
 		}
 	}
 
 	return nil
 }
 
-// LoadSchema loads the catalog schema from disk
-func (c *Catalog) LoadSchema(dir string) error {
-	schemaFile := dir + "/schema.json"
-	if _, err := os.Stat(schemaFile); os.IsNotExist(err) {
-		return nil // No schema to load
-	}
-
-	schemaBytes, err := os.ReadFile(schemaFile)
-	if err != nil {
-		return fmt.Errorf("failed to read schema: %w", err)
-	}
-
-	var schema map[string]interface{}
-	if err := json.Unmarshal(schemaBytes, &schema); err != nil {
-		return fmt.Errorf("failed to unmarshal schema: %w", err)
-	}
-
-	// Load tables
-	if tablesData, ok := schema["tables"].(map[string]interface{}); ok {
-		for name, data := range tablesData {
-			// Marshal back to get proper type
-			tableBytes, _ := json.Marshal(data)
-			var tableDef TableDef
-			json.Unmarshal(tableBytes, &tableDef)
-			c.tables[name] = &tableDef
-
-			// Create B+Tree for the table
-			tree, _ := btree.NewBTree(c.pool)
-			c.tableTrees[name] = tree
-		}
-	}
-
-	return nil
-}
-
-// LoadData loads all table data from disk
-func (c *Catalog) LoadData(dir string) error {
-	// Check if directory exists
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		// No data to load
+// Load loads catalog metadata from the B+Tree
+func (c *Catalog) Load() error {
+	if c.tree == nil {
 		return nil
 	}
 
-	// Read all JSON files in directory
-	files, err := os.ReadDir(dir)
+	// Load table definitions from catalog tree
+	// Table data is loaded on-demand via the buffer pool
+	iter, err := c.tree.Scan([]byte("tbl:"), []byte("tbl;"))
 	if err != nil {
-		return fmt.Errorf("failed to read data directory: %w", err)
+		return err
 	}
+	defer iter.Close()
 
-	for _, file := range files {
-		if !strings.HasSuffix(file.Name(), ".json") || file.Name() == "schema.json" {
-			continue
-		}
-
-		tableName := strings.TrimSuffix(file.Name(), ".json")
-
-		// Check if table exists
-		if _, err := c.GetTable(tableName); err != nil {
-			continue // Skip non-existent tables
-		}
-
-		// Read file
-		dataBytes, err := os.ReadFile(fmt.Sprintf("%s/%s", dir, file.Name()))
+	for iter.Valid() {
+		key, value, err := iter.Next()
 		if err != nil {
-			return fmt.Errorf("failed to read table %s: %w", tableName, err)
+			break
 		}
 
-		// Unmarshal
-		var data map[string]interface{}
-		if err := json.Unmarshal(dataBytes, &data); err != nil {
-			return fmt.Errorf("failed to unmarshal table %s: %w", tableName, err)
+		// Parse key to get table name
+		keyStr := string(key)
+		if !strings.HasPrefix(keyStr, "tbl:") {
+			continue
 		}
+		tableName := strings.TrimPrefix(keyStr, "tbl:")
 
-		// Get tree
-		tree, exists := c.tableTrees[tableName]
-		if !exists {
+		// Unmarshal table definition
+		var tableDef TableDef
+		if err := json.Unmarshal(value, &tableDef); err != nil {
 			continue
 		}
 
-		// Load keys and values
-		keysData := data["keys"].([]interface{})
-		valuesData := data["values"].([]interface{})
+		c.tables[tableName] = &tableDef
 
-		for i, keyData := range keysData {
-			key := []byte(keyData.(string))
-
-			// Decode base64 value
-			encodedValue := valuesData[i].(string)
-			decodedValue, err := base64.StdEncoding.DecodeString(encodedValue)
+		// Create or open B+Tree for the table
+		if tableDef.RootPageID != 0 {
+			c.tableTrees[tableName] = btree.OpenBTree(c.pool, tableDef.RootPageID)
+		} else {
+			tree, err := btree.NewBTree(c.pool)
 			if err != nil {
-				// Try as plain string if not base64
-				decodedValue = []byte(encodedValue)
+				continue
 			}
-
-			tree.Put(key, decodedValue)
+			tableDef.RootPageID = tree.RootPageID()
+			c.tableTrees[tableName] = tree
 		}
 
-		// Verify data was loaded
+		// Build column index cache
+		tableDef.buildColumnIndexCache()
 	}
 
+	return nil
+}
+
+// Deprecated: SaveData is no longer needed - data is persisted via B+Tree pages
+func (c *Catalog) SaveData(dir string) error {
+	return c.Save()
+}
+
+// Deprecated: LoadSchema is no longer needed - schema is loaded from B+Tree
+func (c *Catalog) LoadSchema(dir string) error {
+	return nil
+}
+
+// Deprecated: LoadData is no longer needed - data is loaded on-demand from B+Tree
+func (c *Catalog) LoadData(dir string) error {
 	return nil
 }
 
@@ -3533,57 +3501,6 @@ func (c *Catalog) DropIndex(name string) error {
 		key := []byte("idx:" + name)
 		return c.tree.Delete(key)
 	}
-	return nil
-}
-
-// Load loads the catalog from the tree
-func (c *Catalog) Load() error {
-	if c.tree == nil {
-		return nil
-	}
-
-	// Iterate over all catalog entries
-	iter, err := c.tree.Scan([]byte("tbl:"), []byte("tbl:~"))
-	if err != nil {
-		return err
-	}
-	defer iter.Close()
-
-	for {
-		key, value, err := iter.Next()
-		if err != nil {
-			break
-		}
-
-		var tableDef TableDef
-		if err := json.Unmarshal(value, &tableDef); err != nil {
-			return fmt.Errorf("failed to unmarshal table definition: %w", err)
-		}
-
-		c.tables[string(key[4:])] = &tableDef
-	}
-
-	// Load indexes
-	iter, err = c.tree.Scan([]byte("idx:"), []byte("idx:~"))
-	if err != nil {
-		return err
-	}
-	defer iter.Close()
-
-	for {
-		key, value, err := iter.Next()
-		if err != nil {
-			break
-		}
-
-		var indexDef IndexDef
-		if err := json.Unmarshal(value, &indexDef); err != nil {
-			return fmt.Errorf("failed to unmarshal index definition: %w", err)
-		}
-
-		c.indexes[string(key[4:])] = &indexDef
-	}
-
 	return nil
 }
 
