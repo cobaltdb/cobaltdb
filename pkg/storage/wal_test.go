@@ -92,7 +92,9 @@ func TestWALCheckpoint(t *testing.T) {
 			PageID: uint32(i),
 			Data:   []byte("data"),
 		}
-		wal.Append(record)
+		if err := wal.Append(record); err != nil {
+			t.Fatalf("Failed to append WAL record: %v", err)
+		}
 	}
 
 	// Create checkpoint
@@ -119,7 +121,9 @@ func TestWALRecover(t *testing.T) {
 			PageID: uint32(i),
 			Data:   []byte("data"),
 		}
-		wal.Append(record)
+		if err := wal.Append(record); err != nil {
+			t.Fatalf("Failed to append WAL record: %v", err)
+		}
 	}
 	wal.Close()
 
@@ -159,7 +163,9 @@ func TestWALLSN(t *testing.T) {
 		Type: WALInsert,
 		Data: []byte("data"),
 	}
-	wal.Append(record)
+	if err := wal.Append(record); err != nil {
+		t.Fatalf("Failed to append WAL record: %v", err)
+	}
 
 	lsn = wal.LSN()
 	if lsn == 0 {
@@ -185,7 +191,9 @@ func TestWALCheckpointLSN(t *testing.T) {
 
 	// Append
 	record := &WALRecord{Type: WALInsert, Data: []byte("data")}
-	wal.Append(record)
+	if err := wal.Append(record); err != nil {
+		t.Fatalf("Failed to append WAL record: %v", err)
+	}
 }
 
 func TestWALRecordTypes(t *testing.T) {

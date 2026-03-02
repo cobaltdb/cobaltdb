@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -306,6 +307,11 @@ func (c *Catalog) HasTableOrView(name string) bool {
 
 // CreateTrigger creates a new trigger
 func (c *Catalog) CreateTrigger(stmt *query.CreateTriggerStmt) error {
+	// Check if table exists
+	if _, err := c.GetTable(stmt.Table); err != nil {
+		return err
+	}
+
 	if _, exists := c.triggers[stmt.Name]; exists {
 		return fmt.Errorf("trigger %s already exists", stmt.Name)
 	}
@@ -445,6 +451,7 @@ func (c *Catalog) Insert(stmt *query.InsertStmt, args []interface{}) (int64, int
 
 		// Build full row with all columns
 		rowValues := make([]interface{}, len(table.Columns))
+		colSet := make([]bool, len(table.Columns)) // Track which columns were explicitly set
 
 		// Map provided values to their columns using pre-calculated indices
 		for colIdx, tableColIdx := range insertColIndices {
@@ -455,12 +462,13 @@ func (c *Catalog) Insert(stmt *query.InsertStmt, args []interface{}) (int64, int
 				} else {
 					rowValues[tableColIdx] = val
 				}
+				colSet[tableColIdx] = true // Mark this column as explicitly set
 			}
 		}
 
-		// Fill remaining columns with defaults
+		// Fill remaining columns with defaults (only for columns not explicitly set)
 		for i, col := range table.Columns {
-			if rowValues[i] == nil {
+			if !colSet[i] {
 				// Set default values based on column type
 				switch col.Type {
 				case "INTEGER":
@@ -901,6 +909,13 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 					aggregateType: funcName,
 					aggregateCol:  colName,
 				})
+			} else {
+				// Scalar function (COALESCE, LENGTH, UPPER, etc.)
+				selectCols = append(selectCols, selectColInfo{
+					name:      c.Name + "()",
+					tableName: stmt.From.Name,
+					index:     -1, // Will be evaluated per row
+				})
 			}
 		}
 	}
@@ -974,8 +989,17 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 		// Extract only selected columns
 		selectedRow := make([]interface{}, len(selectCols))
 		for i, ci := range selectCols {
-			if ci.index < len(fullRow) {
+			if ci.index >= 0 && ci.index < len(fullRow) {
+				// Regular column
 				selectedRow[i] = fullRow[ci.index]
+			} else if ci.index == -1 && !ci.isAggregate {
+				// Scalar function - evaluate it
+				if expr, ok := stmt.Columns[i].(query.Expression); ok {
+					val, err := evaluateExpression(c, fullRow, table.Columns, expr, args)
+					if err == nil {
+						selectedRow[i] = val
+					}
+				}
 			}
 		}
 		rows = append(rows, selectedRow)
@@ -1778,6 +1802,27 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 	// Compute aggregates for each group
 	var resultRows [][]interface{}
 
+	// If no groups (empty table) and no GROUP BY clause, we still need to return
+	// a single row with aggregate results (e.g., COUNT(*) = 0)
+	if len(groups) == 0 && len(stmt.GroupBy) == 0 && len(selectCols) > 0 {
+		resultRow := make([]interface{}, len(selectCols))
+		hasAggregate := false
+		for i, ci := range selectCols {
+			if ci.isAggregate {
+				hasAggregate = true
+				switch ci.aggregateType {
+				case "COUNT":
+					resultRow[i] = int64(0)
+				case "SUM", "AVG", "MIN", "MAX":
+					resultRow[i] = nil // NULL for empty set
+				}
+			}
+		}
+		if hasAggregate {
+			resultRows = append(resultRows, resultRow)
+		}
+	}
+
 	for _, groupRows := range groups {
 		resultRow := make([]interface{}, len(selectCols))
 
@@ -2036,8 +2081,32 @@ func toNumber(v interface{}) float64 {
 		return float64(val)
 	case float64:
 		return val
+	case string:
+		n, _ := strconv.ParseFloat(val, 64)
+		return n
 	default:
 		return 0
+	}
+}
+
+// toBool converts a value to a boolean
+func toBool(v interface{}) bool {
+	if v == nil {
+		return false
+	}
+	switch val := v.(type) {
+	case bool:
+		return val
+	case int:
+		return val != 0
+	case int64:
+		return val != 0
+	case float64:
+		return val != 0
+	case string:
+		return val != ""
+	default:
+		return false
 	}
 }
 
@@ -2139,13 +2208,17 @@ func evaluateWhere(c *Catalog, row []interface{}, columns []ColumnDef, where que
 	}
 
 	// Convert result to boolean
-	if result == nil {
-		return false, nil
-	}
+	// Note: result can be nil for IS NULL expressions - this is handled below
 
 	switch v := result.(type) {
 	case bool:
 		return v, nil
+	case nil:
+		// For IS NULL expressions, nil result means the value is null
+		// but we need to check if this was from an IS NULL expression
+		// If the where expression is IsNullExpr, nil result should be treated as false
+		// because evaluateIsNull returns a bool, not nil
+		return false, nil
 	case int, int64, float64:
 		// Non-zero numbers are truthy
 		switch n := v.(type) {
@@ -2203,6 +2276,8 @@ func evaluateExpression(c *Catalog, row []interface{}, columns []ColumnDef, expr
 		return evaluateIn(c, row, columns, e, args)
 	case *query.BetweenExpr:
 		return evaluateBetween(c, row, columns, e, args)
+	case *query.IsNullExpr:
+		return evaluateIsNull(c, row, columns, e, args)
 	case *query.FunctionCall:
 		return evaluateFunctionCall(c, row, columns, e, args)
 	default:
@@ -2240,6 +2315,22 @@ func evaluateBinaryExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr
 			return left != right, nil
 		}
 		return false, nil
+	}
+
+	// Handle logical operators (AND, OR)
+	switch expr.Operator {
+	case query.TokenAnd:
+		leftBool := toBool(left)
+		if !leftBool {
+			return false, nil // Short-circuit
+		}
+		return toBool(right), nil
+	case query.TokenOr:
+		leftBool := toBool(left)
+		if leftBool {
+			return true, nil // Short-circuit
+		}
+		return toBool(right), nil
 	}
 
 	// Compare based on operator
@@ -2330,12 +2421,30 @@ func evaluateLike(c *Catalog, row []interface{}, columns []ColumnDef, expr *quer
 	return matched, nil
 }
 
-// matchLikeSimple implements simple SQL LIKE matching
+// evaluateIsNull evaluates IS NULL / IS NOT NULL expression
+func evaluateIsNull(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.IsNullExpr, args []interface{}) (interface{}, error) {
+	val, err := evaluateExpression(c, row, columns, expr.Expr, args)
+	if err != nil {
+		return false, err
+	}
+
+	isNull := val == nil
+	if expr.Not {
+		return !isNull, nil
+	}
+	return isNull, nil
+}
+
+// matchLikeSimple implements simple SQL LIKE matching (case-insensitive)
 // Supports: % (any sequence), _ (single character)
 func matchLikeSimple(s, pattern string) bool {
 	if pattern == "" {
 		return s == ""
 	}
+
+	// Convert both strings to lower case for case-insensitive matching
+	s = strings.ToLower(s)
+	pattern = strings.ToLower(pattern)
 
 	// Convert pattern to regex-like matching
 	sIdx := 0

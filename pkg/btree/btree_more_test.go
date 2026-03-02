@@ -211,3 +211,30 @@ func TestLargeTree(t *testing.T) {
 		t.Errorf("Expected 1000 keys from scan, got %d", count)
 	}
 }
+
+// Test iterator Next() edge cases
+func TestIteratorNextEdgeCases(t *testing.T) {
+	tree, _ := NewBTree(nil)
+
+	// Test Next on empty tree
+	iter, _ := tree.Scan(nil, nil)
+	key, val, err := iter.Next()
+	if key != nil || val != nil || err != nil {
+		t.Error("Expected nil return from Next on empty tree")
+	}
+	if !iter.done {
+		t.Error("Expected iterator to be done after Next on empty tree")
+	}
+	iter.Close()
+
+	// Test Next after exhaustion
+	tree.Put([]byte("a"), []byte("1"))
+	iter, _ = tree.Scan(nil, nil)
+	iter.Next() // Get the only item
+	iter.Next() // Try to get next (should return nil and mark done)
+	if !iter.done {
+		t.Error("Expected iterator to be done after exhausting items")
+	}
+	iter.Close()
+}
+

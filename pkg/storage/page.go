@@ -3,6 +3,7 @@ package storage
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 )
 
 const (
@@ -174,6 +175,9 @@ func (m *MetaPage) Serialize(data []byte) {
 
 // Deserialize reads the meta page from a page's data
 func (m *MetaPage) Deserialize(data []byte) error {
+	if len(data) < 36 {
+		return fmt.Errorf("invalid MetaPage data: expected at least 36 bytes, got %d", len(data))
+	}
 	copy(m.Magic[:], data[0:4])
 	m.Version = binary.LittleEndian.Uint32(data[4:8])
 	m.PageSize = binary.LittleEndian.Uint32(data[8:12])

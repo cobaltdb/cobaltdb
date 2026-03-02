@@ -45,6 +45,8 @@ func (p *Parser) Parse() (Statement, error) {
 		return p.parseCommit()
 	case TokenRollback:
 		return p.parseRollback()
+	case TokenCall:
+		return p.parseCall()
 	default:
 		return nil, fmt.Errorf("unexpected token: %s", p.current().Literal)
 	}
@@ -1286,10 +1288,10 @@ func (p *Parser) parseCreateTrigger() (*CreateTriggerStmt, error) {
 	stmt.Name = name.Literal
 
 	// BEFORE or AFTER
-	if p.match(TokenBefore) || p.current().Type == TokenBefore {
+	if p.current().Type == TokenBefore {
 		p.advance()
 		stmt.Time = "BEFORE"
-	} else if p.match(TokenAfter) || p.current().Type == TokenAfter {
+	} else if p.current().Type == TokenAfter {
 		p.advance()
 		stmt.Time = "AFTER"
 	} else {
@@ -1498,6 +1500,37 @@ func (p *Parser) parseRollback() (*RollbackStmt, error) {
 	p.advance() // consume ROLLBACK
 	p.match(TokenTransaction)
 	return &RollbackStmt{}, nil
+}
+
+// parseCall parses CALL procedure statement
+func (p *Parser) parseCall() (*CallProcedureStmt, error) {
+	p.advance() // consume CALL
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+
+	stmt := &CallProcedureStmt{
+		Name: name.Literal,
+	}
+
+	// Parse arguments
+	if p.match(TokenLParen) {
+		for !p.match(TokenRParen) {
+			arg, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			stmt.Params = append(stmt.Params, arg)
+			if !p.match(TokenComma) {
+				p.expect(TokenRParen)
+				break
+			}
+		}
+	}
+
+	return stmt, nil
 }
 
 // Parse parses a SQL string and returns the AST

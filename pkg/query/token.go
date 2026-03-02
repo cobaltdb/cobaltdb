@@ -93,6 +93,7 @@ const (
 	TokenView
 	TokenTrigger
 	TokenProcedure
+	TokenCall
 
 	// Operators
 	TokenPlus
@@ -268,6 +269,7 @@ var keywords = map[string]TokenType{
 	"VIEW":      TokenView,
 	"TRIGGER":   TokenTrigger,
 	"PROCEDURE": TokenProcedure,
+	"CALL":      TokenCall,
 
 	// Functions
 	"COUNT":           TokenCount,

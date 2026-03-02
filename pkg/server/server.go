@@ -155,6 +155,10 @@ func (c *ClientConn) Handle() {
 		}
 
 		// Read payload
+		if length < 1 {
+			c.sendError(1, fmt.Sprintf("invalid message length: %d", length))
+			continue
+		}
 		payload := make([]byte, length-1)
 		if _, err := io.ReadFull(c.reader, payload); err != nil {
 			c.sendError(1, err.Error())

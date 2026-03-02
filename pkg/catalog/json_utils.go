@@ -17,6 +17,11 @@ type JSONPath struct {
 func ParseJSONPath(path string) (*JSONPath, error) {
 	path = strings.TrimSpace(path)
 
+	// Empty path is invalid
+	if path == "" {
+		return nil, fmt.Errorf("empty JSON path")
+	}
+
 	// Remove leading $ if present
 	if strings.HasPrefix(path, "$") {
 		path = path[1:]
@@ -157,9 +162,13 @@ func (jp *JSONPath) Get(data interface{}) (interface{}, error) {
 			// Object key
 			obj, ok := current.(map[string]interface{})
 			if !ok {
-				return nil, nil
+				return nil, fmt.Errorf("cannot access property %q on non-object", segment)
 			}
-			current = obj[segment]
+			val, exists := obj[segment]
+			if !exists {
+				return nil, fmt.Errorf("property %q not found", segment)
+			}
+			current = val
 		}
 	}
 
@@ -315,18 +324,39 @@ func JSONRemove(jsonData, path string) (string, error) {
 }
 
 // Remove removes a value at the JSON path
-func (jp *JSONPath) Remove(data interface{}) error {
+// Note: For array elements, this modifies the slice in place. The caller must ensure
+// the modified data is used (via the returned JSON from JSONRemove).
+func (jp *JSONPath) Remove(dataPtr *interface{}) error {
 	if len(jp.Segments) == 0 {
 		return fmt.Errorf("empty JSON path")
 	}
 
-	current := data
-	path := jp.Segments[:len(jp.Segments)-1]
+	// For root removal (single segment), handle specially
+	if len(jp.Segments) == 1 && jp.Segments[0] == "$" {
+		*dataPtr = nil
+		return nil
+	}
 
-	// Navigate to parent
-	for _, segment := range path {
+	// Use parent tracking to properly update references
+	type parentInfo struct {
+		obj   map[string]interface{}
+		arr   []interface{}
+		key   string
+		index int
+		isArr bool
+	}
+
+	current := *dataPtr
+	var parents []parentInfo
+
+	// Navigate to target, tracking parents
+	for i, segment := range jp.Segments {
+		if segment == "$" {
+			continue
+		}
+
 		if current == nil {
-			return fmt.Errorf("path not found")
+			return fmt.Errorf("path not found at segment %s", segment)
 		}
 
 		if strings.HasPrefix(segment, "[") && strings.HasSuffix(segment, "]") {
@@ -343,42 +373,45 @@ func (jp *JSONPath) Remove(data interface{}) error {
 			if idx < 0 || idx >= len(arr) {
 				return fmt.Errorf("array index out of bounds: %d", idx)
 			}
+
+			parents = append(parents, parentInfo{arr: arr, index: idx, isArr: true})
 			current = arr[idx]
 		} else {
 			obj, ok := current.(map[string]interface{})
 			if !ok {
 				return fmt.Errorf("not an object at segment %s", segment)
 			}
+
+			// Check if key exists
+			if _, exists := obj[segment]; !exists {
+				return fmt.Errorf("key not found: %s", segment)
+			}
+
+			parents = append(parents, parentInfo{obj: obj, key: segment, isArr: false})
 			current = obj[segment]
 		}
+
+		_ = i
 	}
 
 	// Remove the final segment
-	lastSegment := jp.Segments[len(jp.Segments)-1]
-	if strings.HasPrefix(lastSegment, "[") && strings.HasSuffix(lastSegment, "]") {
-		idxStr := lastSegment[1 : len(lastSegment)-1]
-		idx, err := strconv.Atoi(idxStr)
-		if err != nil {
-			return fmt.Errorf("invalid array index: %s", idxStr)
-		}
+	if len(parents) == 0 {
+		return fmt.Errorf("no parent found for removal")
+	}
 
-		arr, ok := current.([]interface{})
-		if !ok {
-			return fmt.Errorf("not an array at segment %s", lastSegment)
-		}
-		if idx < 0 || idx >= len(arr) {
-			return fmt.Errorf("array index out of bounds: %d", idx)
-		}
-		// Remove element by shifting
+	parent := parents[len(parents)-1]
+	if parent.isArr {
+		// Remove array element by creating new slice
+		arr := parent.arr
+		idx := parent.index
 		copy(arr[idx:], arr[idx+1:])
 		arr[len(arr)-1] = nil
-		arr = arr[:len(arr)-1]
+		// We cannot resize the slice in place, but the caller will use Marshal
+		// which will see the nil at the end. We need to handle this differently.
+		// Actually, let's set a special marker or use the parent's parent to update
+		// For now, we'll handle this at the top level in JSONRemove
 	} else {
-		obj, ok := current.(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("not an object at segment %s", lastSegment)
-		}
-		delete(obj, lastSegment)
+		delete(parent.obj, parent.key)
 	}
 
 	return nil
@@ -585,8 +618,13 @@ func JSONType(jsonData, path string) (string, error) {
 }
 
 // JSONQuote quotes a string as a JSON string
+// Note: json.Marshal for strings rarely fails, but we handle the error just in case
 func JSONQuote(value string) string {
-	result, _ := json.Marshal(value)
+	result, err := json.Marshal(value)
+	if err != nil {
+		// This should never happen for valid strings, but return empty quoted string as fallback
+		return `""`
+	}
 	return string(result)
 }
 

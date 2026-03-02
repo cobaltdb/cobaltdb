@@ -105,18 +105,19 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 
 	// Slow path: load from disk
 	bp.mu.Lock()
-	defer bp.mu.Unlock()
 
 	// Double-check after acquiring write lock
 	if p, ok := bp.pages[pageID]; ok {
-		bp.touchLRU(p)
+		bp.touchLRUUnsafe(p)
 		p.Pin()
+		bp.mu.Unlock()
 		return p, nil
 	}
 
 	// Evict if at capacity
 	if len(bp.pages) >= bp.capacity {
 		if err := bp.evict(); err != nil {
+			bp.mu.Unlock()
 			return nil, err
 		}
 	}
@@ -131,6 +132,7 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 			page := NewPage(pageID, PageTypeFreeList)
 			data = page.Data
 		} else {
+			bp.mu.Unlock()
 			return nil, fmt.Errorf("failed to read page %d: %w", pageID, err)
 		}
 	}
@@ -143,6 +145,7 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 	}
 	bp.pages[pageID] = page
 	page.lruElem = bp.lru.PushFront(page)
+	bp.mu.Unlock()
 	return page, nil
 }
 
@@ -220,6 +223,12 @@ func (bp *BufferPool) touchLRU(page *CachedPage) {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 
+	bp.touchLRUUnsafe(page)
+}
+
+// touchLRUUnsafe moves a page to the front of the LRU list without acquiring lock
+// Must be called with bp.mu held
+func (bp *BufferPool) touchLRUUnsafe(page *CachedPage) {
 	if page.lruElem != nil {
 		bp.lru.MoveToFront(page.lruElem)
 	}

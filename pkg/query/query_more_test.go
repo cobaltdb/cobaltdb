@@ -874,3 +874,278 @@ func TestTokenTypeString(t *testing.T) {
 	_ = TokenTypeString(TokenEOF)
 	_ = TokenTypeString(TokenType(9999))
 }
+
+func TestLookupKeyword(t *testing.T) {
+	tests := []struct {
+		ident string
+		want  TokenType
+	}{
+		{"SELECT", TokenSelect},
+		{"INSERT", TokenInsert},
+		{"UPDATE", TokenUpdate},
+		{"DELETE", TokenDelete},
+		{"FROM", TokenFrom},
+		{"WHERE", TokenWhere},
+		{"JOIN", TokenJoin},
+		{"LEFT", TokenLeft},
+		{"RIGHT", TokenRight},
+		{"INNER", TokenInner},
+		{"ON", TokenOn},
+		{"AND", TokenAnd},
+		{"OR", TokenOr},
+		{"NOT", TokenNot},
+		{"IN", TokenIn},
+		{"IS", TokenIs},
+		{"NULL", TokenNull},
+		{"CREATE", TokenCreate},
+		{"DROP", TokenDrop},
+		{"TABLE", TokenTable},
+		{"INDEX", TokenIndex},
+		{"VIEW", TokenView},
+		{"TRIGGER", TokenTrigger},
+		{"PROCEDURE", TokenProcedure},
+		{"BEGIN", TokenBegin},
+		{"COMMIT", TokenCommit},
+		{"ROLLBACK", TokenRollback},
+		{"ORDER", TokenOrder},
+		{"BY", TokenBy},
+		{"GROUP", TokenGroup},
+		{"HAVING", TokenHaving},
+		{"LIMIT", TokenLimit},
+		{"OFFSET", TokenOffset},
+		{"DISTINCT", TokenDistinct},
+		{"AS", TokenAs},
+		{"ASC", TokenAsc},
+		{"DESC", TokenDesc},
+		{"BETWEEN", TokenBetween},
+		{"LIKE", TokenLike},
+		{"INTO", TokenInto},
+		{"VALUES", TokenValues},
+		{"SET", TokenSet},
+		{"PRIMARY", TokenPrimary},
+		{"KEY", TokenKey},
+		{"FOREIGN", TokenForeign},
+		{"REFERENCES", TokenReferences},
+		{"UNIQUE", TokenUnique},
+		{"CHECK", TokenCheck},
+		{"DEFAULT", TokenDefault},
+		{"AUTO_INCREMENT", TokenAutoIncrement},
+		{"IF", TokenIf},
+		{"EXISTS", TokenExists},
+		// Non-keywords should return TokenIdentifier
+		{"myvar", TokenIdentifier},
+		{"foo", TokenIdentifier},
+		{"bar123", TokenIdentifier},
+		{"", TokenIdentifier},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ident, func(t *testing.T) {
+			got := LookupKeyword(tt.ident)
+			if got != tt.want {
+				t.Errorf("LookupKeyword(%q) = %v, want %v", tt.ident, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseCreateView(t *testing.T) {
+	tests := []struct {
+		sql    string
+		expect string
+	}{
+		{"CREATE VIEW test_view AS SELECT * FROM test", "test_view"},
+		{"CREATE VIEW my_view AS SELECT id FROM users WHERE active = true", "my_view"},
+		{"CREATE VIEW IF NOT EXISTS existing_view AS SELECT 1", "existing_view"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Errorf("Parse error: %v", err)
+				return
+			}
+			createStmt, ok := stmt.(*CreateViewStmt)
+			if !ok {
+				t.Errorf("Expected CreateViewStmt, got %T", stmt)
+				return
+			}
+			if createStmt.Name != tt.expect {
+				t.Errorf("Expected view name %q, got %q", tt.expect, createStmt.Name)
+			}
+		})
+	}
+}
+
+func TestParseDropView(t *testing.T) {
+	tests := []struct {
+		sql    string
+		expect string
+	}{
+		{"DROP VIEW test_view", "test_view"},
+		{"DROP VIEW IF EXISTS my_view", "my_view"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Errorf("Parse error: %v", err)
+				return
+			}
+			dropStmt, ok := stmt.(*DropViewStmt)
+			if !ok {
+				t.Errorf("Expected DropViewStmt, got %T", stmt)
+				return
+			}
+			if dropStmt.Name != tt.expect {
+				t.Errorf("Expected view name %q, got %q", tt.expect, dropStmt.Name)
+			}
+		})
+	}
+}
+
+func TestParseCreateTrigger(t *testing.T) {
+	sql := `CREATE TRIGGER test_trigger AFTER INSERT ON test_table BEGIN SELECT 1; END`
+	stmt, err := Parse(sql)
+	if err != nil {
+		t.Errorf("Parse error: %v", err)
+		return
+	}
+	triggerStmt, ok := stmt.(*CreateTriggerStmt)
+	if !ok {
+		t.Errorf("Expected CreateTriggerStmt, got %T", stmt)
+		return
+	}
+	if triggerStmt.Name != "test_trigger" {
+		t.Errorf("Expected trigger name 'test_trigger', got '%s'", triggerStmt.Name)
+	}
+	if triggerStmt.Table != "test_table" {
+		t.Errorf("Expected table name 'test_table', got '%s'", triggerStmt.Table)
+	}
+	if triggerStmt.Event != "INSERT" {
+		t.Errorf("Expected event 'INSERT', got '%s'", triggerStmt.Event)
+	}
+	if triggerStmt.Time != "AFTER" {
+		t.Errorf("Expected time 'AFTER', got '%s'", triggerStmt.Time)
+	}
+}
+
+func TestParseDropTrigger(t *testing.T) {
+	tests := []struct {
+		sql    string
+		expect string
+	}{
+		{"DROP TRIGGER test_trigger", "test_trigger"},
+		{"DROP TRIGGER IF EXISTS my_trigger", "my_trigger"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Errorf("Parse error: %v", err)
+				return
+			}
+			dropStmt, ok := stmt.(*DropTriggerStmt)
+			if !ok {
+				t.Errorf("Expected DropTriggerStmt, got %T", stmt)
+				return
+			}
+			if dropStmt.Name != tt.expect {
+				t.Errorf("Expected trigger name %q, got %q", tt.expect, dropStmt.Name)
+			}
+		})
+	}
+}
+
+func TestParseCreateProcedure(t *testing.T) {
+	sql := `CREATE PROCEDURE test_proc(param1 INTEGER, param2 TEXT) BEGIN SELECT 1; END`
+	stmt, err := Parse(sql)
+	if err != nil {
+		t.Errorf("Parse error: %v", err)
+		return
+	}
+	procStmt, ok := stmt.(*CreateProcedureStmt)
+	if !ok {
+		t.Errorf("Expected CreateProcedureStmt, got %T", stmt)
+		return
+	}
+	if procStmt.Name != "test_proc" {
+		t.Errorf("Expected procedure name 'test_proc', got '%s'", procStmt.Name)
+	}
+}
+
+func TestParseDropProcedure(t *testing.T) {
+	tests := []struct {
+		sql    string
+		expect string
+	}{
+		{"DROP PROCEDURE test_proc", "test_proc"},
+		{"DROP PROCEDURE IF EXISTS my_proc", "my_proc"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Errorf("Parse error: %v", err)
+				return
+			}
+			dropStmt, ok := stmt.(*DropProcedureStmt)
+			if !ok {
+				t.Errorf("Expected DropProcedureStmt, got %T", stmt)
+				return
+			}
+			if dropStmt.Name != tt.expect {
+				t.Errorf("Expected procedure name %q, got %q", tt.expect, dropStmt.Name)
+			}
+		})
+	}
+}
+
+func TestParseCallProcedure(t *testing.T) {
+	stmt, err := Parse("CALL test_proc(1, 'hello')")
+	if err != nil {
+		t.Errorf("Parse error: %v", err)
+		return
+	}
+	callStmt, ok := stmt.(*CallProcedureStmt)
+	if !ok {
+		t.Errorf("Expected CallProcedureStmt, got %T", stmt)
+		return
+	}
+	if callStmt.Name != "test_proc" {
+		t.Errorf("Expected procedure name 'test_proc', got '%s'", callStmt.Name)
+	}
+}
+
+func TestParseDropIndex(t *testing.T) {
+	tests := []struct {
+		sql    string
+		expect string
+	}{
+		{"DROP INDEX test_index", "test_index"},
+		{"DROP INDEX IF EXISTS my_index", "my_index"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Errorf("Parse error: %v", err)
+				return
+			}
+			// Note: This returns DropTableStmt based on the parser
+			dropStmt, ok := stmt.(*DropTableStmt)
+			if !ok {
+				t.Errorf("Expected DropTableStmt, got %T", stmt)
+				return
+			}
+			if dropStmt.Table != tt.expect {
+				t.Errorf("Expected index name %q, got %q", tt.expect, dropStmt.Table)
+			}
+		})
+	}
+}
