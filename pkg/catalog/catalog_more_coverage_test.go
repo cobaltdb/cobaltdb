@@ -1192,3 +1192,347 @@ func TestLoadWithTree(t *testing.T) {
 		t.Log("Table not found after Load - this may be expected if storeTableDef is not implemented")
 	}
 }
+
+// TestExecuteScalarSelectMore tests executeScalarSelect function
+func TestExecuteScalarSelectMore(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	cat := New(nil, pool, nil)
+
+	// Test simple scalar expression without FROM
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.NumberLiteral{Value: 42},
+			&query.StringLiteral{Value: "hello"},
+		},
+	}
+
+	cols, rows, err := cat.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("Scalar SELECT failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+
+	if len(rows) > 0 {
+		if val, ok := rows[0][0].(float64); !ok || val != 42 {
+			t.Errorf("Expected 42, got %v", rows[0][0])
+		}
+		if val, ok := rows[0][1].(string); !ok || val != "hello" {
+			t.Errorf("Expected 'hello', got %v", rows[0][1])
+		}
+	}
+
+	t.Logf("Scalar SELECT result: cols=%v, rows=%v", cols, rows)
+}
+
+// TestExecuteScalarSelectWithLimitMore tests executeScalarSelect with LIMIT
+func TestExecuteScalarSelectWithLimitMore(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	cat := New(nil, pool, nil)
+
+	// Test scalar expression with LIMIT 0
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.NumberLiteral{Value: 42},
+		},
+		Limit: &query.NumberLiteral{Value: 0},
+	}
+
+	_, rows, err := cat.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("Scalar SELECT with LIMIT failed: %v", err)
+	}
+
+	// With LIMIT 0, should return empty result
+	if len(rows) != 0 {
+		t.Errorf("Expected 0 rows with LIMIT 0, got %d", len(rows))
+	}
+}
+
+// TestExecuteScalarSelectWithDistinctMore tests executeScalarSelect with DISTINCT
+func TestExecuteScalarSelectWithDistinctMore(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	cat := New(nil, pool, nil)
+
+	// Test scalar expression with DISTINCT
+	stmt := &query.SelectStmt{
+		Distinct: true,
+		Columns: []query.Expression{
+			&query.NumberLiteral{Value: 42},
+		},
+	}
+
+	cols, rows, err := cat.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("Scalar SELECT with DISTINCT failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+
+	t.Logf("Scalar SELECT DISTINCT result: cols=%v, rows=%v", cols, rows)
+}
+
+// TestExecuteScalarAggregateCoverage tests executeScalarAggregate function
+func TestExecuteScalarAggregateCoverage(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	cat := New(nil, pool, nil)
+
+	// Test COUNT(*) without FROM - should return 1
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.FunctionCall{Name: "COUNT", Args: []query.Expression{&query.StarExpr{}}},
+		},
+	}
+
+	cols, rows, err := cat.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("Scalar aggregate COUNT failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+
+	if len(rows) > 0 {
+		// COUNT(*) without FROM should return 1
+		switch v := rows[0][0].(type) {
+		case int64:
+			if v != 1 {
+				t.Errorf("Expected COUNT(*)=1, got %d", v)
+			}
+		case int:
+			if v != 1 {
+				t.Errorf("Expected COUNT(*)=1, got %d", v)
+			}
+		default:
+			t.Logf("COUNT(*) returned type %T: %v", rows[0][0], rows[0][0])
+		}
+	}
+
+	t.Logf("Scalar aggregate result: cols=%v, rows=%v", cols, rows)
+}
+
+// TestExecuteScalarAggregateSumCoverage tests executeScalarAggregate with SUM
+func TestExecuteScalarAggregateSumCoverage(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	cat := New(nil, pool, nil)
+
+	// Test SUM without FROM - should return 0 or nil
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.FunctionCall{Name: "SUM", Args: []query.Expression{&query.NumberLiteral{Value: 10}}},
+		},
+	}
+
+	cols, rows, err := cat.Select(stmt, nil)
+	if err != nil {
+		t.Logf("Scalar aggregate SUM failed (may be expected): %v", err)
+		return
+	}
+
+	if len(rows) > 0 {
+		t.Logf("Scalar SUM result: cols=%v, rows=%v", cols, rows)
+	}
+}
+
+// TestSelectWithOrderBy tests SELECT with ORDER BY
+func TestSelectWithOrderBy(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	cat := New(nil, pool, nil)
+
+	// Create table
+	err := cat.CreateTable(&query.CreateTableStmt{
+		Table: "test_order",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "name", Type: query.TokenText},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create table: %v", err)
+	}
+
+	// Insert test data
+	names := []string{"Charlie", "Alice", "Bob"}
+	for i, name := range names {
+		_, _, err := cat.Insert(&query.InsertStmt{
+			Table:   "test_order",
+			Columns: []string{"id", "name"},
+			Values:  [][]query.Expression{{&query.NumberLiteral{Value: float64(i + 1)}, &query.StringLiteral{Value: name}}},
+		}, nil)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	// Test SELECT with ORDER BY
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "name"}},
+		From:    &query.TableRef{Name: "test_order"},
+		OrderBy: []*query.OrderByExpr{
+			{Expr: &query.Identifier{Name: "name"}, Desc: false},
+		},
+	}
+
+	cols, rows, err := cat.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("SELECT with ORDER BY failed: %v", err)
+	}
+
+	if len(rows) != 3 {
+		t.Errorf("Expected 3 rows, got %d", len(rows))
+	}
+
+	// Verify order (Alice, Bob, Charlie)
+	if len(rows) >= 3 {
+		if name, ok := rows[0][0].(string); !ok || name != "Alice" {
+			t.Errorf("Expected first row to be Alice, got %v", rows[0][0])
+		}
+		if name, ok := rows[1][0].(string); !ok || name != "Bob" {
+			t.Errorf("Expected second row to be Bob, got %v", rows[1][0])
+		}
+		if name, ok := rows[2][0].(string); !ok || name != "Charlie" {
+			t.Errorf("Expected third row to be Charlie, got %v", rows[2][0])
+		}
+	}
+
+	t.Logf("ORDER BY result: cols=%v, rows=%v", cols, rows)
+}
+
+// TestSelectWithLimitOffset tests SELECT with LIMIT and OFFSET
+func TestSelectWithLimitOffset(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	cat := New(nil, pool, nil)
+
+	// Create table
+	err := cat.CreateTable(&query.CreateTableStmt{
+		Table: "test_limit",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create table: %v", err)
+	}
+
+	// Insert 10 rows
+	for i := 1; i <= 10; i++ {
+		_, _, err := cat.Insert(&query.InsertStmt{
+			Table:   "test_limit",
+			Columns: []string{"id"},
+			Values:  [][]query.Expression{{&query.NumberLiteral{Value: float64(i)}}},
+		}, nil)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	// Test SELECT with LIMIT
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "id"}},
+		From:    &query.TableRef{Name: "test_limit"},
+		OrderBy: []*query.OrderByExpr{
+			{Expr: &query.Identifier{Name: "id"}, Desc: false},
+		},
+		Limit: &query.NumberLiteral{Value: 3},
+	}
+
+	_, rows, err := cat.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("SELECT with LIMIT failed: %v", err)
+	}
+
+	if len(rows) != 3 {
+		t.Errorf("Expected 3 rows with LIMIT 3, got %d", len(rows))
+	}
+
+	// Verify the rows are 1, 2, 3
+	for i, row := range rows {
+		expectedID := int64(i + 1)
+		switch id := row[0].(type) {
+		case int64:
+			if id != expectedID {
+				t.Errorf("Row %d: expected id=%d, got %d", i, expectedID, id)
+			}
+		case int:
+			if int64(id) != expectedID {
+				t.Errorf("Row %d: expected id=%d, got %d", i, expectedID, id)
+			}
+		}
+	}
+}
+
+// TestSelectWithDistinct tests SELECT DISTINCT
+func TestSelectWithDistinct(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	cat := New(nil, pool, nil)
+
+	// Create table
+	err := cat.CreateTable(&query.CreateTableStmt{
+		Table: "test_distinct",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "category", Type: query.TokenText},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create table: %v", err)
+	}
+
+	// Insert duplicate categories
+	categories := []string{"A", "B", "A", "C", "B", "A"}
+	for i, category := range categories {
+		_, _, err := cat.Insert(&query.InsertStmt{
+			Table:   "test_distinct",
+			Columns: []string{"id", "category"},
+			Values:  [][]query.Expression{{&query.NumberLiteral{Value: float64(i + 1)}, &query.StringLiteral{Value: category}}},
+		}, nil)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	// Test SELECT DISTINCT
+	stmt := &query.SelectStmt{
+		Distinct: true,
+		Columns:  []query.Expression{&query.Identifier{Name: "category"}},
+		From:     &query.TableRef{Name: "test_distinct"},
+		OrderBy: []*query.OrderByExpr{
+			{Expr: &query.Identifier{Name: "category"}, Desc: false},
+		},
+	}
+
+	cols, rows, err := cat.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("SELECT DISTINCT failed: %v", err)
+	}
+
+	// Should return 3 distinct values (A, B, C)
+	if len(rows) != 3 {
+		t.Errorf("Expected 3 distinct rows, got %d", len(rows))
+	}
+
+	// Verify values
+	expected := []string{"A", "B", "C"}
+	for i, exp := range expected {
+		if i < len(rows) {
+			if val, ok := rows[i][0].(string); !ok || val != exp {
+				t.Errorf("Row %d: expected %s, got %v", i, exp, rows[i][0])
+			}
+		}
+	}
+
+	t.Logf("DISTINCT result: cols=%v, rows=%v", cols, rows)
+}

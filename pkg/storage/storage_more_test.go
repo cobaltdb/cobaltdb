@@ -962,3 +962,97 @@ func TestWALApplyRecordEmptyData(t *testing.T) {
 		t.Log("applyRecord with empty data succeeded")
 	}
 }
+
+// TestGetPageErrors tests GetPage with various error conditions
+func TestGetPageErrors(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(10, backend)
+	defer pool.Close()
+
+	// Test getting page with invalid ID
+	page, err := pool.GetPage(999999)
+	if err == nil {
+		t.Log("GetPage with invalid ID may create new page")
+		if page != nil {
+			pool.Unpin(page)
+		}
+	}
+
+	// Test getting page 0 (meta page)
+	page0, err := pool.GetPage(0)
+	if err != nil {
+		t.Logf("GetPage(0) error: %v", err)
+	} else {
+		pool.Unpin(page0)
+	}
+}
+
+// TestGetPageEviction tests GetPage with page eviction
+func TestGetPageEviction(t *testing.T) {
+	// Create small pool to force eviction
+	backend := NewMemory()
+	pool := NewBufferPool(2, backend) // Only 2 pages
+	defer pool.Close()
+
+	// Create multiple pages to trigger eviction
+	// Create multiple pages to trigger eviction
+	for i := 0; i < 5; i++ {
+		page, err := pool.NewPage(PageTypeLeaf)
+		if err != nil {
+			// Pool is full, which is expected with small capacity
+			t.Logf("Pool full at iteration %d: %v", i, err)
+			break
+		}
+		// Unpin pages to allow eviction
+		pool.Unpin(page)
+	}
+
+	t.Log("Page eviction test completed")
+}
+
+
+// TestBufferPoolCloseMultipleTimes tests closing buffer pool multiple times
+func TestBufferPoolCloseMultipleTimes(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(10, backend)
+
+	// First close
+	err := pool.Close()
+	if err != nil {
+		t.Errorf("First close failed: %v", err)
+	}
+
+	// Second close - should not panic
+	err = pool.Close()
+	if err != nil {
+		t.Logf("Second close returned: %v", err)
+	}
+}
+
+// TestMemoryBackendTruncate tests Memory backend Truncate
+func TestMemoryBackendTruncate(t *testing.T) {
+	mem := NewMemory()
+
+	// Write some data
+	data := []byte("hello world")
+	_, err := mem.WriteAt(data, 0)
+	if err != nil {
+		t.Fatalf("Failed to write: %v", err)
+	}
+
+	// Check size
+	if mem.Size() == 0 {
+		t.Error("Size should be non-zero after write")
+	}
+
+	// Truncate
+	err = mem.Truncate(0)
+	if err != nil {
+		t.Logf("Truncate error: %v", err)
+	}
+
+	// Size should be 0 after truncate
+	if mem.Size() != 0 {
+		t.Errorf("Size should be 0 after truncate, got %d", mem.Size())
+	}
+}

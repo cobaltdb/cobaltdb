@@ -242,3 +242,13 @@ func TestTransactionIDIncrement(t *testing.T) {
 		lastID = txn.ID
 	}
 }
+
+// TestGetNonExistentTransaction tests getting a non-existent transaction
+func TestGetNonExistentTransaction(t *testing.T) {
+	mgr := NewManager(nil, nil)
+
+	_, err := mgr.Get(99999)
+	if err != ErrTxnNotFound {
+		t.Errorf("Expected ErrTxnNotFound, got: %v", err)
+	}
+}
