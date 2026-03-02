@@ -4855,3 +4855,410 @@ func TestFunctionCoalesce(t *testing.T) {
 		t.Errorf("Expected 'default', got %v", rows[0][0])
 	}
 }
+
+// Test DropTable error path (table not found without IF EXISTS)
+func TestDropTableError(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	err := catalog.DropTable(&query.DropTableStmt{
+		IfExists: false,
+		Table:    "nonexistent",
+	})
+
+	if err == nil {
+		t.Error("Expected error when dropping non-existent table")
+	}
+}
+
+// Test GetView not found
+func TestGetViewNotFound(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	_, err := catalog.GetView("nonexistent")
+	if err == nil {
+		t.Error("Expected error when getting non-existent view")
+	}
+}
+
+// Test CreateTrigger with error (table not found)
+func TestCreateTriggerError(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	err := catalog.CreateTrigger(&query.CreateTriggerStmt{
+		Name:  "test_trigger",
+		Table: "nonexistent",
+		Time:  "AFTER",
+		Event: "INSERT",
+	})
+
+	if err == nil {
+		t.Error("Expected error when creating trigger on non-existent table")
+	}
+}
+
+// Test GetTrigger not found
+func TestGetTriggerNotFound(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	_, err := catalog.GetTrigger("nonexistent")
+	if err == nil {
+		t.Error("Expected error when getting non-existent trigger")
+	}
+}
+
+// Test DropTrigger not found
+func TestDropTriggerNotFound(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	err := catalog.DropTrigger("nonexistent")
+	if err == nil {
+		t.Error("Expected error when dropping non-existent trigger")
+	}
+}
+
+// Test GetProcedure not found
+func TestGetProcedureNotFound(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	_, err := catalog.GetProcedure("nonexistent")
+	if err == nil {
+		t.Error("Expected error when getting non-existent procedure")
+	}
+}
+
+// Test DropProcedure not found
+func TestDropProcedureNotFound(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	err := catalog.DropProcedure("nonexistent")
+	if err == nil {
+		t.Error("Expected error when dropping non-existent procedure")
+	}
+}
+
+// Test GetColumnIndex
+func TestGetColumnIndex(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_colidx",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger},
+			{Name: "name", Type: query.TokenText},
+		},
+	})
+
+	table, _ := catalog.GetTable("test_colidx")
+
+	idx := table.GetColumnIndex("id")
+	if idx != 0 {
+		t.Errorf("Expected column index 0, got %d", idx)
+	}
+
+	idx = table.GetColumnIndex("nonexistent")
+	if idx != -1 {
+		t.Errorf("Expected -1 for non-existent column, got %d", idx)
+	}
+}
+
+// Test StarExpr (SELECT *)
+func TestStarExpr(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_star",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger},
+			{Name: "name", Type: query.TokenText},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_star",
+		Columns: []string{"id", "name"},
+		Values: [][]query.Expression{
+			{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "test"}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.StarExpr{},
+		},
+		From: &query.TableRef{Name: "test_star"},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("SELECT * failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+}
+
+// Test ORDER BY DESC string
+func TestOrderByDescString(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_order_desc",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenText},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_order_desc",
+		Columns: []string{"value"},
+		Values: [][]query.Expression{
+			{&query.StringLiteral{Value: "a"}},
+			{&query.StringLiteral{Value: "c"}},
+			{&query.StringLiteral{Value: "b"}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns:  []query.Expression{&query.Identifier{Name: "value"}},
+		From:     &query.TableRef{Name: "test_order_desc"},
+		OrderBy: []*query.OrderByExpr{
+			{Expr: &query.Identifier{Name: "value"}, Desc: true},
+		},
+	}
+
+	_, rows, _ := catalog.Select(stmt, nil)
+	if len(rows) != 3 {
+		t.Errorf("Expected 3 rows, got %d", len(rows))
+	}
+}
+
+// Test LIKE with NOT
+func TestLikeNot(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_like_not",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenText},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_like_not",
+		Columns: []string{"value"},
+		Values: [][]query.Expression{
+			{&query.StringLiteral{Value: "hello"}},
+			{&query.StringLiteral{Value: "world"}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "value"}},
+		From:    &query.TableRef{Name: "test_like_not"},
+		Where: &query.LikeExpr{
+			Expr:    &query.Identifier{Name: "value"},
+			Pattern: &query.StringLiteral{Value: "hel%"},
+			Not:     true,
+		},
+	}
+
+	_, rows, _ := catalog.Select(stmt, nil)
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+}
+
+// Test BinaryExpr with string equality
+func TestBinaryExprString(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_str_eq",
+		Columns: []*query.ColumnDef{
+			{Name: "a", Type: query.TokenText},
+			{Name: "b", Type: query.TokenText},
+		},
+	})
+
+	catalog.Insert(&query.InsertStmt{
+		Table:   "test_str_eq",
+		Columns: []string{"a", "b"},
+		Values: [][]query.Expression{
+			{&query.StringLiteral{Value: "hello"}, &query.StringLiteral{Value: "hello"}},
+		},
+	}, nil)
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.BinaryExpr{
+				Left:     &query.Identifier{Name: "a"},
+				Operator: query.TokenEq,
+				Right:    &query.Identifier{Name: "b"},
+			},
+		},
+		From: &query.TableRef{Name: "test_str_eq"},
+	}
+
+	_, rows, _ := catalog.Select(stmt, nil)
+	if len(rows) != 1 || rows[0][0] != true {
+		t.Errorf("Expected true, got %v", rows[0][0])
+	}
+}
+
+// Test empty table with aggregates
+func TestEmptyTableAggregate(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_empty",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenInteger},
+		},
+	})
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.FunctionCall{
+				Name: "COUNT",
+				Args: []query.Expression{
+					&query.Identifier{Name: "value"},
+				},
+			},
+		},
+		From: &query.TableRef{Name: "test_empty"},
+	}
+
+	_, rows, err := catalog.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("COUNT on empty table failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+}
+
+// Test empty table with SUM
+func TestEmptyTableSum(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_empty_sum",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenInteger},
+		},
+	})
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.FunctionCall{
+				Name: "SUM",
+				Args: []query.Expression{
+					&query.Identifier{Name: "value"},
+				},
+			},
+		},
+		From: &query.TableRef{Name: "test_empty_sum"},
+	}
+
+	_, rows, _ := catalog.Select(stmt, nil)
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+}
+
+// Test empty table with AVG
+func TestEmptyTableAvg(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_empty_avg",
+		Columns: []*query.ColumnDef{
+			{Name: "value", Type: query.TokenInteger},
+		},
+	})
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{
+			&query.FunctionCall{
+				Name: "AVG",
+				Args: []query.Expression{
+					&query.Identifier{Name: "value"},
+				},
+			},
+		},
+		From: &query.TableRef{Name: "test_empty_avg"},
+	}
+
+	_, rows, _ := catalog.Select(stmt, nil)
+	if len(rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(rows))
+	}
+}
+
+// Test LIMIT with offset
+func TestLimitWithOffset(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(1024, backend)
+	catalog := New(nil, pool, nil)
+
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "test_limitoff",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger},
+		},
+	})
+
+	for i := 1; i <= 10; i++ {
+		catalog.Insert(&query.InsertStmt{
+			Table:   "test_limitoff",
+			Columns: []string{"id"},
+			Values: [][]query.Expression{
+				{&query.NumberLiteral{Value: float64(i)}},
+			},
+		}, nil)
+	}
+
+	stmt := &query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "id"}},
+		From:    &query.TableRef{Name: "test_limitoff"},
+		Limit:   &query.NumberLiteral{Value: 3},
+		Offset:  &query.NumberLiteral{Value: 2},
+	}
+
+	_, rows, _ := catalog.Select(stmt, nil)
+	if len(rows) != 3 {
+		t.Errorf("Expected 3 rows, got %d", len(rows))
+	}
+}
