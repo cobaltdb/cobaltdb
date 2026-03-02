@@ -604,3 +604,312 @@ func TestContainsDifferentType(t *testing.T) {
 		t.Error("Expected object to not contain array")
 	}
 }
+
+// TestRemoveMore tests Remove function with more edge cases
+func TestRemoveMore(t *testing.T) {
+	// Remove from object
+	jsonStr := `{"name": "John", "age": 30, "city": "NYC"}`
+	val, _ := NewValueFromString(jsonStr)
+
+	result, err := val.Remove("age")
+	if err != nil {
+		t.Fatalf("Failed to remove: %v", err)
+	}
+
+	obj, _ := result.Interface()
+	m := obj.(map[string]interface{})
+	if _, exists := m["age"]; exists {
+		t.Error("Expected 'age' to be removed")
+	}
+	if _, exists := m["name"]; !exists {
+		t.Error("Expected 'name' to still exist")
+	}
+
+	// Remove from nested object
+	jsonStr2 := `{"user": {"name": "John", "age": 30}}`
+	val2, _ := NewValueFromString(jsonStr2)
+
+	result2, err := val2.Remove("user.age")
+	if err != nil {
+		t.Fatalf("Failed to remove nested: %v", err)
+	}
+
+	obj2, _ := result2.Interface()
+	m2 := obj2.(map[string]interface{})
+	user := m2["user"].(map[string]interface{})
+	if _, exists := user["age"]; exists {
+		t.Error("Expected nested 'age' to be removed")
+	}
+}
+
+// TestRemoveNonExistentPath tests removing a non-existent path
+func TestRemoveNonExistentPath(t *testing.T) {
+	jsonStr := `{"name": "John"}`
+	val, _ := NewValueFromString(jsonStr)
+
+	// Remove non-existent path should not error
+	result, err := val.Remove("nonexistent.path")
+	if err != nil {
+		t.Fatalf("Remove non-existent path failed: %v", err)
+	}
+
+	// Result should be same as original
+	obj, _ := result.Interface()
+	m := obj.(map[string]interface{})
+	if m["name"] != "John" {
+		t.Error("Original data should be unchanged")
+	}
+}
+
+// TestSetMore tests Set function with more edge cases
+func TestSetMore(t *testing.T) {
+	// Set in nested object
+	jsonStr := `{"user": {"name": "John"}}`
+	val, _ := NewValueFromString(jsonStr)
+
+	result, err := val.Set("user.age", 30)
+	if err != nil {
+		t.Fatalf("Failed to set nested: %v", err)
+	}
+
+	obj, _ := result.Interface()
+	m := obj.(map[string]interface{})
+	user := m["user"].(map[string]interface{})
+	// msgpack decodes small numbers as int8
+	age, ok := toInt64(user["age"])
+	if !ok || age != 30 {
+		t.Errorf("Expected age 30, got %v (type %T)", user["age"], user["age"])
+	}
+
+	// Set new top-level key
+	jsonStr2 := `{"name": "John"}`
+	val2, _ := NewValueFromString(jsonStr2)
+
+	result2, err := val2.Set("age", 30)
+	if err != nil {
+		t.Fatalf("Failed to set new key: %v", err)
+	}
+
+	obj2, _ := result2.Interface()
+	m2 := obj2.(map[string]interface{})
+	age2, ok := toInt64(m2["age"])
+	if !ok || age2 != 30 {
+		t.Errorf("Expected age 30, got %v (type %T)", m2["age"], m2["age"])
+	}
+}
+
+// toInt64 converts various integer types to int64
+func toInt64(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int16:
+		return int64(n), true
+	case int8:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	}
+	return 0, false
+}
+
+// TestSetInvalidPath tests Set with invalid path
+func TestSetInvalidPath(t *testing.T) {
+	jsonStr := `{"name": "John"}`
+	val, _ := NewValueFromString(jsonStr)
+
+	// Set in non-object should fail
+	_, err := val.Set("name.invalid", "value")
+	if err == nil {
+		t.Error("Expected error when setting in non-object")
+	}
+}
+
+// TestGetIntMore tests GetInt with more cases
+func TestGetIntMore(t *testing.T) {
+	// Get int from different number formats
+	tests := []struct {
+		json     string
+		path     string
+		expected int64
+	}{
+		{`{"v": 42}`, "v", 42},
+		{`{"v": -42}`, "v", -42},
+		{`{"v": 0}`, "v", 0},
+		{`{"v": 42.0}`, "v", 42},
+		{`{"v": 42.9}`, "v", 42}, // Truncated
+	}
+
+	for _, tt := range tests {
+		val, _ := NewValueFromString(tt.json)
+		n, err := val.GetInt(tt.path)
+		if err != nil {
+			t.Errorf("Failed to get int from %s: %v", tt.json, err)
+			continue
+		}
+		if n != tt.expected {
+			t.Errorf("Expected %d, got %d for %s", tt.expected, n, tt.json)
+		}
+	}
+}
+
+// TestGetIntNotFound tests GetInt when path not found
+func TestGetIntNotFound(t *testing.T) {
+	jsonStr := `{"v": 42}`
+	val, _ := NewValueFromString(jsonStr)
+
+	_, err := val.GetInt("nonexistent")
+	if err == nil {
+		t.Error("Expected error for non-existent path")
+	}
+}
+
+// TestGetFloatMore tests GetFloat with more cases
+func TestGetFloatMore(t *testing.T) {
+	tests := []struct {
+		json     string
+		path     string
+		expected float64
+	}{
+		{`{"v": 42}`, "v", 42.0},
+		{`{"v": 42.5}`, "v", 42.5},
+		{`{"v": -3.14}`, "v", -3.14},
+		{`{"v": 0.0}`, "v", 0.0},
+	}
+
+	for _, tt := range tests {
+		val, _ := NewValueFromString(tt.json)
+		n, err := val.GetFloat(tt.path)
+		if err != nil {
+			t.Errorf("Failed to get float from %s: %v", tt.json, err)
+			continue
+		}
+		if n != tt.expected {
+			t.Errorf("Expected %f, got %f for %s", tt.expected, n, tt.json)
+		}
+	}
+}
+
+// TestGetFloatNotFound tests GetFloat when path not found
+func TestGetFloatNotFound(t *testing.T) {
+	jsonStr := `{"v": 42.5}`
+	val, _ := NewValueFromString(jsonStr)
+
+	_, err := val.GetFloat("nonexistent")
+	if err == nil {
+		t.Error("Expected error for non-existent path")
+	}
+}
+
+// TestContainsMore tests Contains with more edge cases
+func TestContainsMore(t *testing.T) {
+	// Contains with array element
+	val, _ := NewValueFromString(`{"items": [1, 2, 3]}`)
+	other, _ := NewValueFromString(`{"items": [2]}`)
+
+	contains, err := val.Contains(other)
+	if err != nil {
+		t.Fatalf("Failed to check contains: %v", err)
+	}
+	if !contains {
+		t.Error("Expected array to contain element 2")
+	}
+
+	// Contains with different values
+	val2, _ := NewValueFromString(`{"items": [1, 2, 3]}`)
+	other2, _ := NewValueFromString(`{"items": [4]}`)
+
+	contains2, err := val2.Contains(other2)
+	if err != nil {
+		t.Fatalf("Failed to check contains: %v", err)
+	}
+	if contains2 {
+		t.Error("Expected array to not contain element 4")
+	}
+}
+
+// TestNewValueMore tests NewValue with various types
+func TestNewValueMore(t *testing.T) {
+	tests := []interface{}{
+		"string",
+		42,
+		42.5,
+		true,
+		nil,
+		[]interface{}{1, 2, 3},
+		map[string]interface{}{"a": 1},
+	}
+
+	for _, tt := range tests {
+		val, err := NewValue(tt)
+		if err != nil {
+			t.Errorf("Failed to create value from %v: %v", tt, err)
+			continue
+		}
+		if val == nil {
+			t.Error("Expected non-nil value")
+		}
+	}
+}
+
+// TestNewValueInvalid tests NewValue with invalid input
+func TestNewValueInvalid(t *testing.T) {
+	// Channel cannot be encoded to msgpack
+	ch := make(chan int)
+	_, err := NewValue(ch)
+	if err == nil {
+		t.Error("Expected error for invalid type")
+	}
+}
+
+// TestToJSONMore tests ToJSON method with various types
+func TestToJSONMore(t *testing.T) {
+	tests := []string{
+		`{"name": "John"}`,
+		`[1, 2, 3]`,
+		`"hello"`,
+		`42`,
+		`true`,
+		`null`,
+	}
+
+	for _, tt := range tests {
+		val, _ := NewValueFromString(tt)
+		jsonBytes, err := val.ToJSON()
+		if err != nil {
+			t.Errorf("Failed to convert %s to JSON: %v", tt, err)
+			continue
+		}
+		if len(jsonBytes) == 0 {
+			t.Error("Expected non-empty JSON")
+		}
+	}
+}
+
+// TestStringMore tests String method
+func TestStringMore(t *testing.T) {
+	tests := []string{
+		`{"name": "John"}`,
+		`[1, 2, 3]`,
+		`"hello"`,
+		`42`,
+		`true`,
+		`null`,
+	}
+
+	for _, tt := range tests {
+		val, _ := NewValueFromString(tt)
+		s, err := val.String()
+		if err != nil {
+			t.Errorf("Failed to get string from %s: %v", tt, err)
+			continue
+		}
+		if s == "" {
+			t.Error("Expected non-empty string")
+		}
+	}
+}

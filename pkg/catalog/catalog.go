@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
@@ -2882,6 +2883,11 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 			return nil, nil
 		}
 		return evalArgs[0], nil
+
+	case "NOW", "CURRENT_TIMESTAMP", "CURRENT_TIME", "CURRENT_DATE":
+		// Return current timestamp
+		now := time.Now()
+		return now.Format("2006-01-02 15:04:05"), nil
 
 	case "STRFTIME":
 		if len(evalArgs) < 2 {

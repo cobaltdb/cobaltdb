@@ -1165,3 +1165,160 @@ func TestApplyPlaceholderOffsetUnaryExpr(t *testing.T) {
 		t.Errorf("Expected placeholder index 2, got %d", expr.Expr.(*PlaceholderExpr).Index)
 	}
 }
+
+// TestParserCurrentPeekMore tests parser current() and peek() methods with edge cases
+func TestParserCurrentPeek(t *testing.T) {
+	// Test with empty token list
+	p := &Parser{tokens: []Token{}, pos: 0}
+
+	// current() should return EOF when pos >= len(tokens)
+	curr := p.current()
+	if curr.Type != TokenEOF {
+		t.Errorf("Expected EOF, got %v", curr.Type)
+	}
+
+	// peek() should return EOF when pos+1 >= len(tokens)
+	peek := p.peek()
+	if peek.Type != TokenEOF {
+		t.Errorf("Expected EOF, got %v", peek.Type)
+	}
+
+	// Test with tokens
+	p2 := &Parser{
+		tokens: []Token{
+			{Type: TokenSelect, Literal: "SELECT"},
+			{Type: TokenIdentifier, Literal: "name"},
+			{Type: TokenFrom, Literal: "FROM"},
+		},
+		pos: 0,
+	}
+
+	if p2.current().Type != TokenSelect {
+		t.Errorf("Expected SELECT, got %v", p2.current().Type)
+	}
+
+	if p2.peek().Type != TokenIdentifier {
+		t.Errorf("Expected Identifier, got %v", p2.peek().Type)
+	}
+
+	// Move to end
+	p2.pos = 2
+	if p2.current().Type != TokenFrom {
+		t.Errorf("Expected FROM, got %v", p2.current().Type)
+	}
+	if p2.peek().Type != TokenEOF {
+		t.Errorf("Expected EOF, got %v", p2.peek().Type)
+	}
+}
+
+// TestParseCreateIndexMore tests CREATE INDEX with more options
+func TestParseCreateIndexMore(t *testing.T) {
+	tests := []struct {
+		sql        string
+		indexName  string
+		tableName  string
+		unique     bool
+		ifNotExist bool
+	}{
+		{"CREATE INDEX idx1 ON users(name)", "idx1", "users", false, false},
+		{"CREATE INDEX IF NOT EXISTS idx3 ON products(price)", "idx3", "products", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Errorf("Parse error: %v", err)
+				return
+			}
+			idxStmt, ok := stmt.(*CreateIndexStmt)
+			if !ok {
+				t.Errorf("Expected CreateIndexStmt, got %T", stmt)
+				return
+			}
+			if idxStmt.Index != tt.indexName {
+				t.Errorf("Expected index name %q, got %q", tt.indexName, idxStmt.Index)
+			}
+			if idxStmt.Table != tt.tableName {
+				t.Errorf("Expected table name %q, got %q", tt.tableName, idxStmt.Table)
+			}
+			if idxStmt.Unique != tt.unique {
+				t.Errorf("Expected unique %v, got %v", tt.unique, idxStmt.Unique)
+			}
+			if idxStmt.IfNotExists != tt.ifNotExist {
+				t.Errorf("Expected IfNotExists %v, got %v", tt.ifNotExist, idxStmt.IfNotExists)
+			}
+		})
+	}
+}
+
+// TestParseForeignKeyDef tests foreign key constraint parsing
+func TestParseForeignKeyDef(t *testing.T) {
+	sql := `CREATE TABLE orders (
+		id INT PRIMARY KEY,
+		user_id INT,
+		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE SET NULL
+	)`
+
+	stmt, err := Parse(sql)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	createStmt, ok := stmt.(*CreateTableStmt)
+	if !ok {
+		t.Fatalf("Expected CreateTableStmt, got %T", stmt)
+	}
+
+	// Check that we have 2 columns
+	if len(createStmt.Columns) != 2 {
+		t.Errorf("Expected 2 columns, got %d", len(createStmt.Columns))
+	}
+
+	// Check foreign key constraint
+	if len(createStmt.ForeignKeys) != 1 {
+		t.Errorf("Expected 1 foreign key, got %d", len(createStmt.ForeignKeys))
+	} else {
+		fk := createStmt.ForeignKeys[0]
+		if len(fk.Columns) != 1 || fk.Columns[0] != "user_id" {
+			t.Errorf("Expected FK column 'user_id', got %v", fk.Columns)
+		}
+		if fk.ReferencedTable != "users" {
+			t.Errorf("Expected ref table 'users', got %q", fk.ReferencedTable)
+		}
+		if len(fk.ReferencedColumns) != 1 || fk.ReferencedColumns[0] != "id" {
+			t.Errorf("Expected ref column 'id', got %v", fk.ReferencedColumns)
+		}
+	}
+}
+
+// TestParseComparisonMore tests comparison operators
+func TestParseComparisonMore(t *testing.T) {
+	tests := []struct {
+		sql      string
+		operator string
+	}{
+		{"SELECT * FROM t WHERE a = 1", "="},
+		{"SELECT * FROM t WHERE a != 1", "!="},
+		{"SELECT * FROM t WHERE a <> 1", "!="},  // <> is normalized to !=
+		{"SELECT * FROM t WHERE a < 1", "<"},
+		{"SELECT * FROM t WHERE a > 1", ">"},
+		{"SELECT * FROM t WHERE a <= 1", "<="},
+		{"SELECT * FROM t WHERE a >= 1", ">="},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Errorf("Parse error: %v", err)
+				return
+			}
+			selectStmt := stmt.(*SelectStmt)
+			binaryExpr := selectStmt.Where.(*BinaryExpr)
+			if TokenTypeString(binaryExpr.Operator) != tt.operator {
+				t.Errorf("Expected operator %q, got %q", tt.operator, TokenTypeString(binaryExpr.Operator))
+			}
+		})
+	}
+}
