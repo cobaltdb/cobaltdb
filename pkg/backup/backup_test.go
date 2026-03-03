@@ -494,3 +494,156 @@ func TestFormatValueQuoteEscaping(t *testing.T) {
 		t.Errorf("formatValue(%q) = %s, expected %s", input, result, expected)
 	}
 }
+
+func TestCreateIncrementalBackup(t *testing.T) {
+	manager, _, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Try to create incremental backup (not implemented yet)
+	_, err := manager.CreateIncrementalBackup(ctx, time.Now(), []string{"users"})
+	if err == nil {
+		t.Error("Expected error for unimplemented incremental backup")
+	}
+
+	// Error message should indicate not implemented
+	if err != nil && !strings.Contains(err.Error(), "not yet implemented") {
+		t.Errorf("Expected 'not yet implemented' error, got: %v", err)
+	}
+}
+
+func TestCalculateTableChecksum(t *testing.T) {
+	manager, _, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create a backup first
+	metadata, err := manager.CreateBackup(ctx, []string{"users"})
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+
+	backupFile := metadata.Filename
+	if backupFile == "" {
+		t.Fatal("Backup filename is empty")
+	}
+
+	// Open backup file
+	file, err := os.Open(backupFile)
+	if err != nil {
+		t.Fatalf("Failed to open backup file: %v", err)
+	}
+	defer file.Close()
+
+	// Calculate checksum for users table
+	checksum, err := manager.calculateTableChecksum(file, "users")
+	if err != nil {
+		t.Errorf("Failed to calculate checksum: %v", err)
+	}
+
+	if checksum == "" {
+		t.Error("Expected non-empty checksum")
+	}
+
+	// Verify checksum is 8 hex characters
+	if len(checksum) != 8 {
+		t.Errorf("Expected 8 character checksum, got %d: %s", len(checksum), checksum)
+	}
+}
+
+func TestCalculateTableChecksumNonExistent(t *testing.T) {
+	manager, _, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create a backup
+	metadata, err := manager.CreateBackup(ctx, []string{"users"})
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+
+	backupFile := metadata.Filename
+	if backupFile == "" {
+		t.Fatal("Backup filename is empty")
+	}
+
+	// Open backup file
+	file, err := os.Open(backupFile)
+	if err != nil {
+		t.Fatalf("Failed to open backup file: %v", err)
+	}
+	defer file.Close()
+
+	// Calculate checksum for non-existent table
+	checksum, err := manager.calculateTableChecksum(file, "nonexistent")
+	if err != nil {
+		t.Errorf("Failed to calculate checksum: %v", err)
+	}
+
+	// Checksum should be valid even for non-existent table (just empty)
+	if checksum == "" {
+		t.Error("Expected checksum even for non-existent table")
+	}
+}
+
+func TestVerifyBackupWithMissingMetadata(t *testing.T) {
+	manager, _, tmpDir, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create backup
+	metadata, err := manager.CreateBackup(ctx, []string{"users"})
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+
+	backupFile := metadata.Filename
+	if backupFile == "" {
+		backupFile = filepath.Join(tmpDir, fmt.Sprintf("backup_%s.sql", metadata.CreatedAt.Format("20060102_150405")))
+	}
+
+	// Delete metadata file
+	metaFile := backupFile + ".meta"
+	os.Remove(metaFile)
+
+	// Verify should fail
+	err = manager.VerifyBackup(backupFile)
+	if err == nil {
+		t.Error("Expected error when metadata is missing")
+	}
+}
+
+func TestVerifyBackupWithCorruptMetadata(t *testing.T) {
+	manager, _, tmpDir, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create backup
+	metadata, err := manager.CreateBackup(ctx, []string{"users"})
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+
+	backupFile := metadata.Filename
+	if backupFile == "" {
+		backupFile = filepath.Join(tmpDir, fmt.Sprintf("backup_%s.sql", metadata.CreatedAt.Format("20060102_150405")))
+	}
+
+	// Corrupt metadata file
+	metaFile := backupFile + ".meta"
+	err = os.WriteFile(metaFile, []byte("invalid json"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to corrupt metadata: %v", err)
+	}
+
+	// Verify should fail
+	err = manager.VerifyBackup(backupFile)
+	if err == nil {
+		t.Error("Expected error when metadata is corrupt")
+	}
+}

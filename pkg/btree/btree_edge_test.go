@@ -530,3 +530,65 @@ func TestBTreeConcurrentReads(t *testing.T) {
 		<-done
 	}
 }
+
+func TestBTreeFlush(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTree(pool)
+
+	// Flush on empty tree should not error
+	err := tree.Flush()
+	if err != nil {
+		t.Errorf("Flush on empty tree failed: %v", err)
+	}
+
+	// Insert some data
+	tree.Put([]byte("key1"), []byte("value1"))
+	tree.Put([]byte("key2"), []byte("value2"))
+
+	// Flush should succeed
+	err = tree.Flush()
+	if err != nil {
+		t.Errorf("Flush failed: %v", err)
+	}
+}
+
+func TestBTreeFlushLargeData(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTree(pool)
+
+	// Insert many keys
+	for i := 0; i < 100; i++ {
+		key := fmt.Sprintf("key%04d", i)
+		value := fmt.Sprintf("value%d", i)
+		tree.Put([]byte(key), []byte(value))
+	}
+
+	// Flush should handle all data
+	err := tree.Flush()
+	if err != nil {
+		t.Errorf("Flush with many keys failed: %v", err)
+	}
+}
+
+func TestBTreeFlushAfterDelete(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTree(pool)
+
+	// Insert, delete, then flush
+	tree.Put([]byte("key1"), []byte("value1"))
+	tree.Delete([]byte("key1"))
+
+	err := tree.Flush()
+	if err != nil {
+		t.Errorf("Flush after delete failed: %v", err)
+	}
+}
