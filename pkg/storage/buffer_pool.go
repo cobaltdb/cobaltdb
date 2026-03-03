@@ -89,9 +89,7 @@ func (bp *BufferPool) SetWAL(wal *WAL) {
 
 // GetPage retrieves a page from the cache or loads it from disk
 func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
-	if pageID == 0 {
-		return nil, ErrInvalidPageID
-	}
+	// Note: pageID 0 is valid (it's the meta page)
 
 	// Fast path: check if page is in cache
 	bp.mu.RLock()
@@ -155,8 +153,8 @@ func (bp *BufferPool) NewPage(pageType PageType) (*CachedPage, error) {
 	defer bp.mu.Unlock()
 
 	// Find next available page ID
-	// Start from 1 (page 0 is meta page)
-	pageID := uint32(1)
+	// Start from 0 (page 0 is the meta page)
+	pageID := uint32(0)
 	for {
 		if _, exists := bp.pages[pageID]; !exists {
 			break

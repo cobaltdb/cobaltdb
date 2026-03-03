@@ -990,59 +990,95 @@ func (c *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, 
 		indexMatches, useIndex = c.useIndexForQuery(stmt.From.Name, stmt.Where)
 	}
 
-	iter, _ := tree.Scan(nil, nil)
-	defer iter.Close()
+	// If using index, directly fetch matching rows instead of full scan
+	if useIndex {
+		for pk := range indexMatches {
+			valueData, err := tree.Get([]byte(pk))
+			if err != nil {
+				continue // Row not found
+			}
 
-	count := 0
-	for iter.HasNext() {
-		key, valueData, err := iter.Next()
-		if err != nil {
-			break
-		}
-
-		// If using index, only fetch matching rows
-		if useIndex {
-			if !indexMatches[string(key)] {
+			// Decode full row
+			fullRow, err := decodeRow(valueData, len(table.Columns))
+			if err != nil {
 				continue
 			}
-		}
 
-		count++
-
-		// Decode full row
-		fullRow, err := decodeRow(valueData, len(table.Columns))
-		if err != nil {
-			continue
-		}
-
-		// Apply WHERE clause if present
-		if stmt.Where != nil {
-			matched, err := evaluateWhere(c,fullRow, table.Columns, stmt.Where, args)
-			if err != nil {
-				continue // Skip row on error
+			// Apply WHERE clause if present (for additional conditions)
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
+				if err != nil {
+					continue // Skip row on error
+				}
+				if !matched {
+					continue // Skip row that doesn't match WHERE condition
+				}
 			}
-			if !matched {
-				continue // Skip row that doesn't match WHERE condition
-			}
-		}
 
-		// Extract only selected columns
-		selectedRow := make([]interface{}, len(selectCols))
-		for i, ci := range selectCols {
-			if ci.index >= 0 && ci.index < len(fullRow) {
-				// Regular column
-				selectedRow[i] = fullRow[ci.index]
-			} else if ci.index == -1 && !ci.isAggregate {
-				// Scalar function - evaluate it
-				if expr, ok := stmt.Columns[i].(query.Expression); ok {
-					val, err := evaluateExpression(c, fullRow, table.Columns, expr, args)
-					if err == nil {
-						selectedRow[i] = val
+			// Extract only selected columns
+			selectedRow := make([]interface{}, len(selectCols))
+			for i, ci := range selectCols {
+				if ci.index >= 0 && ci.index < len(fullRow) {
+					// Regular column
+					selectedRow[i] = fullRow[ci.index]
+				} else if ci.index == -1 && !ci.isAggregate {
+					// Scalar function - evaluate it
+					if expr, ok := stmt.Columns[i].(query.Expression); ok {
+						val, err := evaluateExpression(c, fullRow, table.Columns, expr, args)
+						if err == nil {
+							selectedRow[i] = val
+						}
 					}
 				}
 			}
+			rows = append(rows, selectedRow)
 		}
-		rows = append(rows, selectedRow)
+	} else {
+		// Full table scan when no index is available
+		iter, _ := tree.Scan(nil, nil)
+		defer iter.Close()
+
+		for iter.HasNext() {
+			_, valueData, err := iter.Next()
+			if err != nil {
+				break
+			}
+
+			// Decode full row
+			fullRow, err := decodeRow(valueData, len(table.Columns))
+			if err != nil {
+				continue
+			}
+
+			// Apply WHERE clause if present
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
+				if err != nil {
+					continue // Skip row on error
+				}
+				if !matched {
+					continue // Skip row that doesn't match WHERE condition
+				}
+			}
+
+			// Extract only selected columns
+			selectedRow := make([]interface{}, len(selectCols))
+			for i, ci := range selectCols {
+				if ci.index >= 0 && ci.index < len(fullRow) {
+					// Regular column
+					selectedRow[i] = fullRow[ci.index]
+				} else if ci.index == -1 && !ci.isAggregate {
+					// Scalar function - evaluate it
+					if expr, ok := stmt.Columns[i].(query.Expression); ok {
+						val, err := evaluateExpression(c, fullRow, table.Columns, expr, args)
+						if err == nil {
+							selectedRow[i] = val
+						}
+					}
+				}
+			}
+			rows = append(rows, selectedRow)
+		}
 	}
 
 	// Apply ORDER BY if present
@@ -3665,6 +3701,123 @@ func fastDecodeRow(data []byte) ([]interface{}, error) {
 		}
 	}
 	return values, nil
+}
+
+// GetRow retrieves a single row by its primary key
+func (c *Catalog) GetRow(tableName string, pkValue interface{}) (map[string]interface{}, error) {
+	table, err := c.GetTable(tableName)
+	if err != nil {
+		return nil, err
+	}
+
+	tree, exists := c.tableTrees[tableName]
+	if !exists {
+		return nil, fmt.Errorf("table %s has no data", tableName)
+	}
+
+	// Serialize the primary key using the same format as Insert
+	var key []byte
+	switch val := pkValue.(type) {
+	case string:
+		key = []byte(val)
+	case int:
+		key = []byte(fmt.Sprintf("%020d", int64(val)))
+	case int64:
+		key = []byte(fmt.Sprintf("%020d", val))
+	default:
+		key = []byte(fmt.Sprintf("%v", val))
+	}
+
+	// Get the row from BTree
+	data, err := tree.Get(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Decode the row
+	values, err := fastDecodeRow(data)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to map
+	row := make(map[string]interface{})
+	for i, col := range table.Columns {
+		if i < len(values) {
+			row[col.Name] = values[i]
+		}
+	}
+
+	return row, nil
+}
+
+// UpdateRow updates a single row by its primary key
+func (c *Catalog) UpdateRow(tableName string, pkValue interface{}, row map[string]interface{}) error {
+	table, err := c.GetTable(tableName)
+	if err != nil {
+		return err
+	}
+
+	tree, exists := c.tableTrees[tableName]
+	if !exists {
+		return fmt.Errorf("table %s has no data", tableName)
+	}
+
+	// Serialize the primary key using the same format as Insert
+	var key []byte
+	switch val := pkValue.(type) {
+	case string:
+		key = []byte(val)
+	case int:
+		key = []byte(fmt.Sprintf("%020d", int64(val)))
+	case int64:
+		key = []byte(fmt.Sprintf("%020d", val))
+	default:
+		key = []byte(fmt.Sprintf("%v", val))
+	}
+
+	// Convert row map to values slice
+	values := make([]interface{}, len(table.Columns))
+	for i, col := range table.Columns {
+		if val, exists := row[col.Name]; exists {
+			values[i] = val
+		} else {
+			values[i] = nil
+		}
+	}
+
+	// Encode the row
+	data, err := fastEncodeRow(values)
+	if err != nil {
+		return err
+	}
+
+	// Update in BTree
+	return tree.Put(key, data)
+}
+
+// DeleteRow deletes a single row by its primary key
+func (c *Catalog) DeleteRow(tableName string, pkValue interface{}) error {
+	tree, exists := c.tableTrees[tableName]
+	if !exists {
+		return fmt.Errorf("table %s has no data", tableName)
+	}
+
+	// Serialize the primary key using the same format as Insert
+	var key []byte
+	switch val := pkValue.(type) {
+	case string:
+		key = []byte(val)
+	case int:
+		key = []byte(fmt.Sprintf("%020d", int64(val)))
+	case int64:
+		key = []byte(fmt.Sprintf("%020d", val))
+	default:
+		key = []byte(fmt.Sprintf("%v", val))
+	}
+
+	// Delete from BTree
+	return tree.Delete(key)
 }
 
 // evalExpression evaluates an expression to a value
