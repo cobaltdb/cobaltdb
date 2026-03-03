@@ -921,3 +921,334 @@ func TestSendMessageEncodeError(t *testing.T) {
 		t.Error("Expected error for unknown message type")
 	}
 }
+
+// TestHandleAuthSuccess tests successful authentication
+func TestHandleAuthSuccess(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+
+	// Enable auth and create a user
+	srv.auth.Enable()
+	srv.auth.CreateUser("testuser", "testpass", false)
+
+	client := &ClientConn{
+		ID:     1,
+		Server: srv,
+		authed: false,
+	}
+
+	authMsg := &wire.AuthMessage{
+		Username: "testuser",
+		Password: "testpass",
+	}
+
+	response := client.handleAuth(authMsg)
+
+	// Should return AuthSuccessMessage
+	authSuccess, ok := response.(*wire.AuthSuccessMessage)
+	if !ok {
+		t.Fatalf("Expected AuthSuccessMessage, got %T", response)
+	}
+	if authSuccess.Token == "" {
+		t.Error("Expected non-empty token")
+	}
+
+	// Client should be marked as authenticated
+	if !client.authed {
+		t.Error("Client should be marked as authenticated")
+	}
+	if client.username != "testuser" {
+		t.Errorf("Expected username 'testuser', got '%s'", client.username)
+	}
+}
+
+// TestHandleAuthFailure tests failed authentication
+func TestHandleAuthFailure(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+
+	// Enable auth
+	srv.auth.Enable()
+	srv.auth.CreateUser("testuser", "testpass", false)
+
+	client := &ClientConn{
+		ID:     1,
+		Server: srv,
+		authed: false,
+	}
+
+	authMsg := &wire.AuthMessage{
+		Username: "testuser",
+		Password: "wrongpass",
+	}
+
+	response := client.handleAuth(authMsg)
+
+	// Should return ErrorMessage
+	errMsg, ok := response.(*wire.ErrorMessage)
+	if !ok {
+		t.Fatalf("Expected ErrorMessage, got %T", response)
+	}
+	if errMsg.Code != 7 {
+		t.Errorf("Expected error code 7, got %d", errMsg.Code)
+	}
+
+	// Client should NOT be marked as authenticated
+	if client.authed {
+		t.Error("Client should not be marked as authenticated")
+	}
+}
+
+// TestHandleAuthNonExistentUser tests authentication with non-existent user
+func TestHandleAuthNonExistentUser(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+
+	// Enable auth but don't create user
+	srv.auth.Enable()
+
+	client := &ClientConn{
+		ID:     1,
+		Server: srv,
+		authed: false,
+	}
+
+	authMsg := &wire.AuthMessage{
+		Username: "nonexistent",
+		Password: "somepass",
+	}
+
+	response := client.handleAuth(authMsg)
+
+	// Should return ErrorMessage
+	errMsg, ok := response.(*wire.ErrorMessage)
+	if !ok {
+		t.Fatalf("Expected ErrorMessage, got %T", response)
+	}
+	if errMsg.Code != 7 {
+		t.Errorf("Expected error code 7, got %d", errMsg.Code)
+	}
+}
+
+// TestCheckPermissionAuthDisabled tests checkPermission when auth is disabled
+func TestCheckPermissionAuthDisabled(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+
+	// Auth is disabled by default
+	client := &ClientConn{
+		ID:     1,
+		Server: srv,
+		authed: false,
+	}
+
+	// Should allow all when auth is disabled
+	if !client.checkPermission("SELECT * FROM test") {
+		t.Error("Should allow when auth is disabled")
+	}
+	if !client.checkPermission("INSERT INTO test VALUES (1)") {
+		t.Error("Should allow when auth is disabled")
+	}
+	if !client.checkPermission("DELETE FROM test") {
+		t.Error("Should allow when auth is disabled")
+	}
+}
+
+// TestCheckPermissionNotAuthenticated tests checkPermission when not authenticated
+func TestCheckPermissionNotAuthenticated(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+	srv.auth.Enable()
+
+	client := &ClientConn{
+		ID:     1,
+		Server: srv,
+		authed: false, // Not authenticated
+	}
+
+	// Should allow when not authenticated (auth enabled but no user)
+	// This is the current behavior based on code
+	if !client.checkPermission("SELECT * FROM test") {
+		t.Error("Should allow when not authenticated")
+	}
+}
+
+// TestCheckPermissionAdminUser tests checkPermission for admin user
+func TestCheckPermissionAdminUser(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+	srv.auth.Enable()
+	srv.auth.CreateUser("admin", "adminpass", true) // Create admin user
+
+	client := &ClientConn{
+		ID:       1,
+		Server:   srv,
+		authed:   true,
+		username: "admin",
+	}
+
+	// Admin should have all permissions
+	if !client.checkPermission("SELECT * FROM test") {
+		t.Error("Admin should have SELECT permission")
+	}
+	if !client.checkPermission("INSERT INTO test VALUES (1)") {
+		t.Error("Admin should have INSERT permission")
+	}
+	if !client.checkPermission("UPDATE test SET id = 2") {
+		t.Error("Admin should have UPDATE permission")
+	}
+	if !client.checkPermission("DELETE FROM test") {
+		t.Error("Admin should have DELETE permission")
+	}
+	if !client.checkPermission("CREATE TABLE newtest (id INTEGER)") {
+		t.Error("Admin should have CREATE permission")
+	}
+	if !client.checkPermission("DROP TABLE test") {
+		t.Error("Admin should have DROP permission")
+	}
+	if !client.checkPermission("ALTER TABLE test ADD COLUMN name TEXT") {
+		t.Error("Admin should have ALTER permission")
+	}
+}
+
+// TestCheckPermissionRegularUser tests checkPermission for regular user
+func TestCheckPermissionRegularUser(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+	srv.auth.Enable()
+	srv.auth.CreateUser("regular", "regularpass", false) // Create regular user
+
+	client := &ClientConn{
+		ID:       1,
+		Server:   srv,
+		authed:   true,
+		username: "regular",
+	}
+
+	// Regular user permissions depend on HasPermission implementation
+	// Just verify the function runs without panic
+	client.checkPermission("SELECT * FROM test")
+	client.checkPermission("INSERT INTO test VALUES (1)")
+}
+
+// TestCheckPermissionUnknownOperation tests checkPermission with unknown SQL
+func TestCheckPermissionUnknownOperation(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+	srv.auth.Enable()
+	srv.auth.CreateUser("testuser", "testpass", false)
+
+	client := &ClientConn{
+		ID:       1,
+		Server:   srv,
+		authed:   true,
+		username: "testuser",
+	}
+
+	// Unknown operations are allowed by default
+	if !client.checkPermission("UNKNOWN SQL COMMAND") {
+		t.Error("Unknown operations should be allowed by default")
+	}
+}
+
+// TestCheckPermissionUserNotFound tests checkPermission when user not found
+func TestCheckPermissionUserNotFound(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+	srv.auth.Enable()
+
+	client := &ClientConn{
+		ID:       1,
+		Server:   srv,
+		authed:   true,
+		username: "nonexistent", // User doesn't exist
+	}
+
+	// Should return false when user not found
+	if client.checkPermission("SELECT * FROM test") {
+		t.Error("Should deny when user not found")
+	}
+}
+
+// TestHandleMessageAuth tests handleMessage with Auth message
+func TestHandleMessageAuth(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+	srv.auth.Enable()
+	srv.auth.CreateUser("testuser", "testpass", false)
+
+	client := &ClientConn{
+		ID:     1,
+		Server: srv,
+		authed: false,
+	}
+
+	// Create auth message
+	authMsg := &wire.AuthMessage{
+		Username: "testuser",
+		Password: "testpass",
+	}
+
+	// Encode just the payload (handleMessage decodes it)
+	payload, err := wire.Encode(authMsg)
+	if err != nil {
+		t.Fatalf("Failed to encode auth message: %v", err)
+	}
+
+	response := client.handleMessage(wire.MsgAuth, payload)
+
+	// Should return AuthSuccessMessage
+	_, ok := response.(*wire.AuthSuccessMessage)
+	if !ok {
+		// Log the actual response for debugging
+		if errMsg, isErr := response.(*wire.ErrorMessage); isErr {
+			t.Logf("Got error message: code=%d, message=%s", errMsg.Code, errMsg.Message)
+		}
+		t.Fatalf("Expected AuthSuccessMessage, got %T", response)
+	}
+}
+
+// TestHandleMessageAuthDecodeError tests handleMessage with auth decode error
+func TestHandleMessageAuthDecodeError(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+	client := &ClientConn{
+		ID:     1,
+		Server: srv,
+		authed: false,
+	}
+
+	// Invalid auth payload
+	response := client.handleMessage(wire.MsgAuth, []byte{0xFF, 0xFE, 0xFD})
+
+	// Should return ErrorMessage
+	errMsg, ok := response.(*wire.ErrorMessage)
+	if !ok {
+		t.Fatalf("Expected ErrorMessage, got %T", response)
+	}
+	if errMsg.Code != 2 {
+		t.Errorf("Expected error code 2, got %d", errMsg.Code)
+	}
+}

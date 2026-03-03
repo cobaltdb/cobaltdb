@@ -52,6 +52,10 @@ func (m *mockConn) SetDeadline(t time.Time) error      { return nil }
 func (m *mockConn) SetReadDeadline(t time.Time) error  { return nil }
 func (m *mockConn) SetWriteDeadline(t time.Time) error { return nil }
 
+func (m *mockConn) setReadData(data []byte) {
+	m.readBuf.Write(data)
+}
+
 func TestMySQLServerNew(t *testing.T) {
 	t.Run("NewWithDefaultVersion", func(t *testing.T) {
 		db := &engine.DB{}
@@ -562,6 +566,269 @@ func TestMySQLServerClose(t *testing.T) {
 		if err != nil {
 			t.Errorf("Close failed: %v", err)
 		}
+	})
+}
+
+func TestLenEncIntExtended(t *testing.T) {
+	t.Run("ReadNULLMarker", func(t *testing.T) {
+		data := []byte{0xfb}
+		val, length := readLenEncInt(data)
+		if val != 0 || length != 1 {
+			t.Errorf("readLenEncInt(0xfb) = %d, %d; expected 0, 1", val, length)
+		}
+	})
+
+	t.Run("Read8ByteEncoding", func(t *testing.T) {
+		data := []byte{0xfe, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+		val, length := readLenEncInt(data)
+		if val != 1 || length != 9 {
+			t.Errorf("readLenEncInt(8-byte) = %d, %d; expected 1, 9", val, length)
+		}
+	})
+
+	t.Run("Read8ByteLarge", func(t *testing.T) {
+		data := []byte{0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f}
+		val, length := readLenEncInt(data)
+		expected := uint64(0x7fffffffffffffff)
+		if val != expected || length != 9 {
+			t.Errorf("readLenEncInt(8-byte-large) = %d, %d; expected %d, 9", val, length, expected)
+		}
+	})
+
+	t.Run("ReadEmptyData", func(t *testing.T) {
+		data := []byte{}
+		val, length := readLenEncInt(data)
+		if val != 0 || length != 0 {
+			t.Errorf("readLenEncInt(empty) = %d, %d; expected 0, 0", val, length)
+		}
+	})
+
+	t.Run("ReadInsufficientData2Byte", func(t *testing.T) {
+		data := []byte{0xfc, 0x01} // missing byte
+		val, length := readLenEncInt(data)
+		if val != 0 || length != 0 {
+			t.Errorf("readLenEncInt(insufficient-2) = %d, %d; expected 0, 0", val, length)
+		}
+	})
+
+	t.Run("ReadInsufficientData3Byte", func(t *testing.T) {
+		data := []byte{0xfd, 0x01, 0x00} // missing byte
+		val, length := readLenEncInt(data)
+		if val != 0 || length != 0 {
+			t.Errorf("readLenEncInt(insufficient-3) = %d, %d; expected 0, 0", val, length)
+		}
+	})
+
+	t.Run("ReadInsufficientData8Byte", func(t *testing.T) {
+		data := []byte{0xfe, 0x01, 0x00, 0x00} // missing bytes
+		val, length := readLenEncInt(data)
+		if val != 0 || length != 0 {
+			t.Errorf("readLenEncInt(insufficient-8) = %d, %d; expected 0, 0", val, length)
+		}
+	})
+
+	t.Run("Write8ByteEncoding", func(t *testing.T) {
+		val := uint64(16777216) // 2^24
+		result := writeLenEncInt(val)
+		expected := []byte{0xfe, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00}
+		if !bytes.Equal(result, expected) {
+			t.Errorf("writeLenEncInt(%d) = %v; expected %v", val, result, expected)
+		}
+	})
+
+	t.Run("Write8ByteLarge", func(t *testing.T) {
+		val := uint64(0x7fffffffffffffff)
+		result := writeLenEncInt(val)
+		expected := []byte{0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f}
+		if !bytes.Equal(result, expected) {
+			t.Errorf("writeLenEncInt(%d) = %v; expected %v", val, result, expected)
+		}
+	})
+
+	t.Run("RoundTripValues", func(t *testing.T) {
+		testValues := []uint64{
+			0, 1, 100, 250, 251, 1000, 65535, 65536,
+			100000, 16777215, 16777216, 1000000000,
+			0x7fffffffffffffff,
+		}
+
+		for _, val := range testValues {
+			written := writeLenEncInt(val)
+			read, length := readLenEncInt(written)
+
+			if read != val {
+				t.Errorf("Round-trip failed for %d: got %d", val, read)
+			}
+			if length != len(written) {
+				t.Errorf("Length mismatch for %d: got %d, want %d", val, length, len(written))
+			}
+		}
+	})
+}
+
+// TestListen tests the Listen method
+func TestListen(t *testing.T) {
+	t.Run("ListenSuccess", func(t *testing.T) {
+		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		if err != nil {
+			t.Skip("Cannot open database:", err)
+		}
+		defer db.Close()
+
+		server := NewMySQLServer(db, "test")
+		err = server.Listen("127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("Listen failed: %v", err)
+		}
+		defer server.Close()
+
+		if server.listener == nil {
+			t.Error("Expected listener to be set")
+		}
+	})
+
+	t.Run("ListenInvalidAddress", func(t *testing.T) {
+		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		if err != nil {
+			t.Skip("Cannot open database:", err)
+		}
+		defer db.Close()
+
+		server := NewMySQLServer(db, "test")
+		err = server.Listen("invalid:address:format:too:many:colons")
+		if err == nil {
+			t.Error("Expected error for invalid address")
+		}
+	})
+}
+
+// TestAcceptLoop tests acceptLoop behavior
+func TestAcceptLoop(t *testing.T) {
+	t.Run("AcceptLoopStopsOnClose", func(t *testing.T) {
+		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		if err != nil {
+			t.Skip("Cannot open database:", err)
+		}
+		defer db.Close()
+
+		server := NewMySQLServer(db, "test")
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Skip("Cannot create listener:", err)
+		}
+
+		server.listener = listener
+
+		// Start acceptLoop
+		go server.acceptLoop()
+
+		// Give it time to start
+		time.Sleep(50 * time.Millisecond)
+
+		// Close should stop acceptLoop
+		server.Close()
+
+		// Try to connect - should fail since listener is closed
+		conn, err := net.Dial("tcp", listener.Addr().String())
+		if err == nil {
+			conn.Close()
+		}
+	})
+}
+
+// TestHandleConnection tests handleConnection
+func TestHandleConnection(t *testing.T) {
+	t.Run("HandleConnectionEOF", func(t *testing.T) {
+		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		if err != nil {
+			t.Skip("Cannot open database:", err)
+		}
+		defer db.Close()
+
+		server := NewMySQLServer(db, "test")
+		conn := newMockConn()
+
+		// handleConnection with no data should exit cleanly
+		server.handleConnection(conn)
+	})
+
+	t.Run("HandleConnectionWithResponse", func(t *testing.T) {
+		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		if err != nil {
+			t.Skip("Cannot open database:", err)
+		}
+		defer db.Close()
+
+		server := NewMySQLServer(db, "test")
+		conn := newMockConn()
+
+		// Build a minimal handshake response
+		response := make([]byte, 0, 128)
+		response = append(response, 0x00, 0x00, 0x00, 0x00) // capability flags
+		response = append(response, 0x00, 0x00, 0x00, 0x00) // max packet size
+		response = append(response, 0x21)                   // character set
+		response = append(response, make([]byte, 23)...)    // reserved
+		response = append(response, []byte("user")...)      // username
+		response = append(response, 0x00)
+
+		pktLen := len(response)
+		pkt := make([]byte, 4+pktLen)
+		pkt[0] = byte(pktLen)
+		pkt[1] = byte(pktLen >> 8)
+		pkt[2] = byte(pktLen >> 16)
+		pkt[3] = 1
+		copy(pkt[4:], response)
+
+		conn.setReadData(pkt)
+
+		// This will error after handshake but tests the code path
+		server.handleConnection(conn)
+
+		// Check handshake was sent
+		if conn.writeBuf.Len() == 0 {
+			t.Error("Expected handshake to be sent")
+		}
+	})
+}
+
+// TestHandleQuery tests handleQuery
+func TestHandleQuery(t *testing.T) {
+	t.Run("HandleQuerySimple", func(t *testing.T) {
+		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		if err != nil {
+			t.Skip("Cannot open database:", err)
+		}
+		defer db.Close()
+
+		conn := newMockConn()
+		server := NewMySQLServer(db, "test")
+		client := &MySQLClient{
+			conn:   conn,
+			reader: bufio.NewReader(conn),
+			server: server,
+		}
+
+		// Test a simple query - may fail but shouldn't panic
+		_ = client.handleQuery("SELECT 1")
+	})
+
+	t.Run("HandleQueryExec", func(t *testing.T) {
+		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		if err != nil {
+			t.Skip("Cannot open database:", err)
+		}
+		defer db.Close()
+
+		conn := newMockConn()
+		server := NewMySQLServer(db, "test")
+		client := &MySQLClient{
+			conn:   conn,
+			reader: bufio.NewReader(conn),
+			server: server,
+		}
+
+		// Test an exec query - may fail but shouldn't panic
+		_ = client.handleQuery("CREATE TABLE test (id INT)")
 	})
 }
 

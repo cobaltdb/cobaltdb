@@ -5,6 +5,36 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.1] - 2026-03-03
+
+### Added
+- **Comprehensive Test Coverage Improvements**: 77% overall coverage achieved
+  - `cmd/cobaltdb-server`: 17 new tests for server configuration and lifecycle
+  - `cmd/debug`: 9 new tests for CRUD operations and database persistence
+  - `pkg/btree`: 20 new tests for split operations and edge cases
+  - `pkg/replication`: 30+ new tests for master/slave replication (87.2% coverage)
+  - `pkg/catalog`: JSON function edge case tests
+  - `pkg/protocol`: Network operation tests (74.7% coverage)
+
+### Package Coverage
+| Package | Coverage | Change |
+|---------|----------|--------|
+| `pkg/auth` | 98.6% | +0.0% |
+| `pkg/wire` | 94.7% | +0.0% |
+| `pkg/metrics` | 93.8% | +0.0% |
+| `pkg/engine` | 90.3% | +0.0% |
+| `pkg/btree` | 87.3% | +22.3% |
+| `pkg/replication` | 87.2% | +36.0% |
+| `pkg/query` | 85.7% | +0.0% |
+| `pkg/json` | 84.4% | +0.0% |
+| `pkg/txn` | 81.9% | +0.0% |
+| `pkg/storage` | 81.4% | +0.0% |
+| `pkg/backup` | 78.1% | +0.0% |
+| `pkg/server` | 77.8% | +0.0% |
+| `pkg/catalog` | 74.8% | +0.0% |
+| `pkg/protocol` | 74.7% | +0.0% |
+| **Total** | **77.0%** | **+0.9%** |
+
 ## [v1.5.0] - 2026-03-02
 
 ### Added

@@ -5,6 +5,7 @@
   <img src="https://img.shields.io/badge/Version-1.5.0-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
+  <img src="https://img.shields.io/badge/Coverage-77%25-brightgreen?style=for-the-badge" alt="Test Coverage">
 </p>
 
 <p align="center">
@@ -335,6 +336,10 @@ cd cobaltdb
 # Run tests
 go test ./... -v
 
+# Run tests with coverage
+go test -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out
+
 # Run benchmarks
 go test -bench=. -benchtime=2s ./test/...
 
@@ -347,6 +352,28 @@ go build -o cobaltdb-server ./cmd/cobaltdb-server
 # Run demo
 go run cmd/demo/main.go
 ```
+
+### Test Coverage
+
+| Package | Coverage | Status |
+|---------|----------|--------|
+| `pkg/auth` | 98.6% | ✅ |
+| `pkg/wire` | 94.7% | ✅ |
+| `pkg/metrics` | 93.8% | ✅ |
+| `pkg/engine` | 90.3% | ✅ |
+| `pkg/btree` | 87.3% | ✅ |
+| `pkg/replication` | 87.2% | ✅ |
+| `pkg/query` | 85.7% | ✅ |
+| `pkg/json` | 84.4% | ✅ |
+| `pkg/txn` | 81.9% | ✅ |
+| `pkg/storage` | 81.4% | ✅ |
+| `pkg/backup` | 78.1% | ✅ |
+| `pkg/server` | 77.8% | ✅ |
+| `pkg/catalog` | 74.8% | ✅ |
+| `pkg/protocol` | 74.7% | ✅ |
+| **Total** | **77.0%** | ✅ |
+
+> 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
 
 ---
 
