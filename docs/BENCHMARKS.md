@@ -66,9 +66,57 @@ go build -o cobaltdb-bench ./cmd/cobaltdb-bench
 - Go Version: 1.26.0
 - OS: Windows
 
+## Test Coverage Benchmarks
+
+### Current Coverage (v1.5.1)
+
+| Package | Coverage | Status |
+|---------|----------|--------|
+| `pkg/auth` | 98.6% | ✅ Excellent |
+| `pkg/wire` | 94.7% | ✅ Excellent |
+| `pkg/metrics` | 93.8% | ✅ Excellent |
+| `pkg/engine` | 90.3% | ✅ Good |
+| `pkg/btree` | 87.3% | ✅ Good |
+| `pkg/replication` | 87.2% | ✅ Good |
+| `pkg/query` | 85.7% | ✅ Good |
+| `pkg/json` | 84.4% | ✅ Good |
+| `pkg/txn` | 81.9% | ✅ Good |
+| `pkg/storage` | 81.4% | ✅ Good |
+| `pkg/backup` | 78.1% | ✅ Acceptable |
+| `pkg/server` | 77.8% | ✅ Acceptable |
+| `pkg/catalog` | 74.8% | ✅ Acceptable |
+| `pkg/protocol` | 74.7% | ✅ Acceptable |
+| **Total** | **80.9%** | ✅ Good |
+
+### Coverage History
+
+| Version | Total Coverage | Change |
+|---------|---------------|--------|
+| v1.5.1 | 80.9% | +4.8% |
+| v1.5.0 | 76.1% | - |
+
+### Running Tests with Coverage
+
+```bash
+# Run all tests with coverage
+go test -coverprofile=coverage.out ./...
+
+# View coverage report
+go tool cover -func=coverage.out
+
+# Generate HTML coverage report
+go tool cover -html=coverage.out -o coverage.html
+
+# Run tests for specific package with coverage
+go test -cover ./pkg/engine
+go test -cover ./pkg/btree
+go test -cover ./pkg/replication
+```
+
 ## Notes
 
 - Results may vary based on hardware
 - In-memory benchmarks show best-case performance
 - Disk persistence adds overhead
 - Index creation is supported but not yet used in query execution
+- Test coverage excludes `main()` functions in cmd packages (Go limitation)

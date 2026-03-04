@@ -2,10 +2,10 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go Version">
-  <img src="https://img.shields.io/badge/Version-1.5.0-blue?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.0.0-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
-  <img src="https://img.shields.io/badge/Coverage-77%25-brightgreen?style=for-the-badge" alt="Test Coverage">
+  <img src="https://img.shields.io/badge/Coverage-79.0%25-brightgreen?style=for-the-badge" alt="Test Coverage">
 </p>
 
 <p align="center">
@@ -371,7 +371,7 @@ go run cmd/demo/main.go
 | `pkg/server` | 77.8% | ✅ |
 | `pkg/catalog` | 74.8% | ✅ |
 | `pkg/protocol` | 74.7% | ✅ |
-| **Total** | **77.0%** | ✅ |
+| **Total** | **80.9%** | ✅ |
 
 > 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
 
@@ -389,10 +389,47 @@ go run cmd/demo/main.go
 
 ## 🛣️ Roadmap
 
-- [ ] **v1.6** - Common Table Expressions (WITH clause), VACUUM/ANALYZE
-- [ ] **v2.0** - Full-Text Search (FTS), Materialized Views
-- [ ] **v2.5** - Replication, User Management & Permissions
-- [ ] **v3.0** - Distributed mode, Sharding support
+### ✅ Completed Features (v1.5.1)
+
+- [x] **SQL Support** - SELECT, INSERT, UPDATE, DELETE with JOINs, GROUP BY, ORDER BY, LIMIT
+- [x] **Window Functions** - ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE
+- [x] **JSON Support** - Native JSON type with JSON_EXTRACT, JSON_SET, JSON_REMOVE, JSON_ARRAY_LENGTH
+- [x] **Indexes** - CREATE INDEX, DROP INDEX with B+Tree implementation
+- [x] **Views** - CREATE VIEW, DROP VIEW support
+- [x] **Triggers** - CREATE TRIGGER with BEFORE/AFTER, INSERT/UPDATE/DELETE events
+- [x] **Stored Procedures** - CREATE PROCEDURE, CALL support
+- [x] **Transactions** - BEGIN, COMMIT, ROLLBACK with ACID compliance
+- [x] **Replication** - Master/Slave replication with WAL-based sync
+- [x] **User Management** - Authentication with permissions and sessions
+- [x] **Constraints** - PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK, NOT NULL
+- [x] **MySQL Protocol** - Wire-compatible MySQL protocol support
+
+### ✅ Completed Features (v1.6)
+
+- [x] **Common Table Expressions** - WITH clause support for recursive and non-recursive CTEs
+- [x] **VACUUM** - Database compaction and storage reclamation
+- [x] **ANALYZE** - Table statistics collection for query optimization
+
+### ✅ Completed Features (v2.0)
+
+- [x] **Full-Text Search** - MATCH ... AGAINST syntax with inverted indexes
+- [x] **Materialized Views** - CREATE MATERIALIZED VIEW, REFRESH, and DROP support
+
+### ✅ Completed Features (v1.6)
+
+- [x] **Common Table Expressions** - WITH clause support for recursive and non-recursive CTEs
+- [x] **VACUUM** - Database compaction and storage reclamation
+- [x] **ANALYZE** - Table statistics collection for query optimization
+
+### ✅ Completed Features (v2.0)
+
+- [x] **Full-Text Search** - MATCH ... AGAINST syntax with inverted indexes
+- [x] **Materialized Views** - CREATE MATERIALIZED VIEW, REFRESH, and DROP support
+
+### 📋 Planned Features
+
+- [ ] **v2.5** - Distributed mode, Sharding support
+- [ ] **v3.0** - Cloud-native features, Kubernetes operator
 
 ---
 

@@ -390,6 +390,31 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		return Result{}, errors.New("use Commit() method to commit a transaction")
 	case *query.RollbackStmt:
 		return Result{}, errors.New("use Rollback() method to rollback a transaction")
+	case *query.VacuumStmt:
+		return db.executeVacuum(ctx, s)
+	case *query.AnalyzeStmt:
+		return db.executeAnalyze(ctx, s)
+	case *query.CreateMaterializedViewStmt:
+		return db.executeCreateMaterializedView(ctx, s)
+	case *query.DropMaterializedViewStmt:
+		return db.executeDropMaterializedView(ctx, s)
+	case *query.RefreshMaterializedViewStmt:
+		return db.executeRefreshMaterializedView(ctx, s)
+	case *query.CreateFTSIndexStmt:
+		return db.executeCreateFTSIndex(ctx, s)
+	case *query.DropIndexStmt:
+		// Try FTS index first, then regular index
+		if _, err := db.catalog.GetFTSIndex(s.Index); err == nil {
+			if err := db.catalog.DropFTSIndex(s.Index); err != nil {
+				return Result{}, err
+			}
+			return Result{RowsAffected: 0}, nil
+		}
+		// Try regular index
+		if err := db.catalog.DropIndex(s.Index); err != nil {
+			return Result{}, err
+		}
+		return Result{RowsAffected: 0}, nil
 	default:
 		return Result{}, fmt.Errorf("unsupported statement type: %T", stmt)
 	}
@@ -400,6 +425,8 @@ func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{
 	switch s := stmt.(type) {
 	case *query.SelectStmt:
 		return db.executeSelect(ctx, s, args)
+	case *query.SelectStmtWithCTE:
+		return db.executeSelectWithCTE(ctx, s, args)
 	default:
 		return nil, fmt.Errorf("not a query statement: %T", stmt)
 	}
@@ -540,6 +567,77 @@ func (db *DB) executeSelect(ctx context.Context, stmt *query.SelectStmt, args []
 		rows:    rows,
 		pos:     0,
 	}, nil
+}
+
+// executeSelectWithCTE executes SELECT with CTEs
+func (db *DB) executeSelectWithCTE(ctx context.Context, stmt *query.SelectStmtWithCTE, args []interface{}) (*Rows, error) {
+	columns, rows, err := db.catalog.ExecuteCTE(stmt, args)
+	if err != nil {
+		return nil, err
+	}
+	return &Rows{
+		columns: columns,
+		rows:    rows,
+		pos:     0,
+	}, nil
+}
+
+// executeVacuum executes VACUUM
+func (db *DB) executeVacuum(ctx context.Context, stmt *query.VacuumStmt) (Result, error) {
+	if err := db.catalog.Vacuum(); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeAnalyze executes ANALYZE
+func (db *DB) executeAnalyze(ctx context.Context, stmt *query.AnalyzeStmt) (Result, error) {
+	if stmt.Table == "" {
+		// Analyze all tables
+		tables := db.catalog.ListTables()
+		for _, tableName := range tables {
+			if err := db.catalog.Analyze(tableName); err != nil {
+				return Result{}, err
+			}
+		}
+	} else {
+		if err := db.catalog.Analyze(stmt.Table); err != nil {
+			return Result{}, err
+		}
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeCreateMaterializedView executes CREATE MATERIALIZED VIEW
+func (db *DB) executeCreateMaterializedView(ctx context.Context, stmt *query.CreateMaterializedViewStmt) (Result, error) {
+	if err := db.catalog.CreateMaterializedView(stmt.Name, stmt.Query); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeDropMaterializedView executes DROP MATERIALIZED VIEW
+func (db *DB) executeDropMaterializedView(ctx context.Context, stmt *query.DropMaterializedViewStmt) (Result, error) {
+	if err := db.catalog.DropMaterializedView(stmt.Name); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeRefreshMaterializedView executes REFRESH MATERIALIZED VIEW
+func (db *DB) executeRefreshMaterializedView(ctx context.Context, stmt *query.RefreshMaterializedViewStmt) (Result, error) {
+	if err := db.catalog.RefreshMaterializedView(stmt.Name); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeCreateFTSIndex executes CREATE FULLTEXT INDEX
+func (db *DB) executeCreateFTSIndex(ctx context.Context, stmt *query.CreateFTSIndexStmt) (Result, error) {
+	if err := db.catalog.CreateFTSIndex(stmt.Index, stmt.Table, stmt.Columns); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
 }
 
 // Result represents the result of an Exec operation

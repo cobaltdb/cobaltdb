@@ -77,37 +77,64 @@ type selectColInfo struct {
 	aggregateCol  string // column name for SUM, AVG, MIN, MAX
 }
 
+// MaterializedViewDef represents a materialized view definition
+type MaterializedViewDef struct {
+	Name        string                   `json:"name"`
+	Query       *query.SelectStmt        `json:"query"`
+	Data        []map[string]interface{} `json:"data"` // Cached data
+	LastRefresh time.Time                `json:"last_refresh"`
+}
+
+// StatsTableStats is an alias for table statistics (defined in stats.go)
+type StatsTableStats = TableStats
+
+// FTSIndexDef represents a full-text search index definition
+type FTSIndexDef struct {
+	Name      string   `json:"name"`
+	TableName string   `json:"table_name"`
+	Columns   []string `json:"columns"`
+	// Inverted index: word -> list of row IDs
+	Index     map[string][]int64 `json:"index"`
+}
+
 // Catalog manages database schema metadata
 type Catalog struct {
-	tree        *btree.BTree
-	tables      map[string]*TableDef
-	indexes     map[string]*IndexDef
-	indexTrees  map[string]*btree.BTree // B+Trees for indexes
-	pool        *storage.BufferPool
-	wal         *storage.WAL
-	tableTrees  map[string]*btree.BTree // Each table has its own B+Tree
-	views       map[string]*query.SelectStmt // Views store their SELECT query
-	triggers    map[string]*query.CreateTriggerStmt // Triggers store their definition
-	procedures  map[string]*query.CreateProcedureStmt // Procedures store their definition
-	keyCounter  int64 // For generating unique keys
-	txnID       uint64 // Current transaction ID
-	txnActive   bool   // Is a transaction active
+	tree              *btree.BTree
+	tables            map[string]*TableDef
+	indexes           map[string]*IndexDef
+	indexTrees        map[string]*btree.BTree // B+Trees for indexes
+	pool              *storage.BufferPool
+	wal               *storage.WAL
+	tableTrees        map[string]*btree.BTree // Each table has its own B+Tree
+	views             map[string]*query.SelectStmt // Views store their SELECT query
+	triggers          map[string]*query.CreateTriggerStmt // Triggers store their definition
+	procedures        map[string]*query.CreateProcedureStmt // Procedures store their definition
+	materializedViews map[string]*MaterializedViewDef // Materialized views
+	ftsIndexes        map[string]*FTSIndexDef // Full-text search indexes
+	stats             map[string]*StatsTableStats // Table statistics for ANALYZE
+	keyCounter        int64 // For generating unique keys
+	txnID             uint64 // Current transaction ID
+	txnActive         bool   // Is a transaction active
 }
+
 
 // New creates a new catalog
 func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog {
 	return &Catalog{
-		tree:       tree,
-		tables:     make(map[string]*TableDef),
-		indexes:    make(map[string]*IndexDef),
-		indexTrees: make(map[string]*btree.BTree),
-		pool:       pool,
-		wal:        wal,
-		tableTrees: make(map[string]*btree.BTree),
-		views:      make(map[string]*query.SelectStmt),
-		triggers:   make(map[string]*query.CreateTriggerStmt),
-		procedures: make(map[string]*query.CreateProcedureStmt),
-		keyCounter: 0,
+		tree:              tree,
+		tables:            make(map[string]*TableDef),
+		indexes:           make(map[string]*IndexDef),
+		indexTrees:        make(map[string]*btree.BTree),
+		pool:              pool,
+		wal:               wal,
+		tableTrees:        make(map[string]*btree.BTree),
+		views:             make(map[string]*query.SelectStmt),
+		triggers:          make(map[string]*query.CreateTriggerStmt),
+		procedures:        make(map[string]*query.CreateProcedureStmt),
+		materializedViews: make(map[string]*MaterializedViewDef),
+		ftsIndexes:        make(map[string]*FTSIndexDef),
+		stats:             make(map[string]*StatsTableStats),
+		keyCounter:        0,
 	}
 }
 
@@ -3842,4 +3869,554 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 	default:
 		return nil, fmt.Errorf("unsupported expression type: %T", expr)
 	}
+}
+
+// ==================== MATERIALIZED VIEWS ====================
+
+// CreateMaterializedView creates a new materialized view
+func (c *Catalog) CreateMaterializedView(name string, selectStmt *query.SelectStmt) error {
+	if _, exists := c.materializedViews[name]; exists {
+		return fmt.Errorf("materialized view %s already exists", name)
+	}
+
+	// Execute the query to get initial data
+	columns, rows, err := c.Select(selectStmt, nil)
+	if err != nil {
+		return fmt.Errorf("failed to execute materialized view query: %w", err)
+	}
+
+	// Convert rows to map format
+	data := make([]map[string]interface{}, len(rows))
+	for i, row := range rows {
+		rowMap := make(map[string]interface{})
+		for j, col := range columns {
+			if j < len(row) {
+				rowMap[col] = row[j]
+			}
+		}
+		data[i] = rowMap
+	}
+
+	c.materializedViews[name] = &MaterializedViewDef{
+		Name:        name,
+		Query:       selectStmt,
+		Data:        data,
+		LastRefresh: time.Now(),
+	}
+
+	return nil
+}
+
+// DropMaterializedView drops a materialized view
+func (c *Catalog) DropMaterializedView(name string) error {
+	if _, exists := c.materializedViews[name]; !exists {
+		return fmt.Errorf("materialized view %s not found", name)
+	}
+
+	delete(c.materializedViews, name)
+	return nil
+}
+
+// RefreshMaterializedView refreshes a materialized view's data
+func (c *Catalog) RefreshMaterializedView(name string) error {
+	mv, exists := c.materializedViews[name]
+	if !exists {
+		return fmt.Errorf("materialized view %s not found", name)
+	}
+
+	// Re-execute the query
+	columns, rows, err := c.Select(mv.Query, nil)
+	if err != nil {
+		return fmt.Errorf("failed to refresh materialized view: %w", err)
+	}
+
+	// Convert rows to map format
+	data := make([]map[string]interface{}, len(rows))
+	for i, row := range rows {
+		rowMap := make(map[string]interface{})
+		for j, col := range columns {
+			if j < len(row) {
+				rowMap[col] = row[j]
+			}
+		}
+		data[i] = rowMap
+	}
+
+	mv.Data = data
+	mv.LastRefresh = time.Now()
+
+	return nil
+}
+
+// GetMaterializedView returns a materialized view's data
+func (c *Catalog) GetMaterializedView(name string) (*MaterializedViewDef, error) {
+	mv, exists := c.materializedViews[name]
+	if !exists {
+		return nil, fmt.Errorf("materialized view %s not found", name)
+	}
+	return mv, nil
+}
+
+// ListMaterializedViews returns all materialized view names
+func (c *Catalog) ListMaterializedViews() []string {
+	names := make([]string, 0, len(c.materializedViews))
+	for name := range c.materializedViews {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ==================== FULL-TEXT SEARCH ====================
+
+// CreateFTSIndex creates a full-text search index on a table
+func (c *Catalog) CreateFTSIndex(name, tableName string, columns []string) error {
+	if _, exists := c.ftsIndexes[name]; exists {
+		return fmt.Errorf("FTS index %s already exists", name)
+	}
+
+	// Verify table exists
+	table, err := c.GetTable(tableName)
+	if err != nil {
+		return err
+	}
+
+	// Verify columns exist
+	for _, col := range columns {
+		if table.GetColumnIndex(col) == -1 {
+			return fmt.Errorf("column %s not found in table %s", col, tableName)
+		}
+	}
+
+	ftsIndex := &FTSIndexDef{
+		Name:      name,
+		TableName: tableName,
+		Columns:   columns,
+		Index:     make(map[string][]int64),
+	}
+
+	// Build the index from existing data
+	tree, exists := c.tableTrees[tableName]
+	if exists {
+		iter, err := tree.Scan(nil, nil)
+		if err == nil {
+			for iter.HasNext() {
+				key, value, _ := iter.Next()
+				if key == nil || len(value) == 0 {
+					break
+				}
+				var row map[string]interface{}
+				// value is []byte, no need for type assertion
+				if err := json.Unmarshal(value, &row); err != nil {
+					continue
+				}
+				c.indexRowForFTS(ftsIndex, row, key)
+			}
+		}
+	}
+
+	c.ftsIndexes[name] = ftsIndex
+	return nil
+}
+
+// indexRowForFTS indexes a single row for FTS
+func (c *Catalog) indexRowForFTS(ftsIndex *FTSIndexDef, row map[string]interface{}, key []byte) {
+	// Extract row ID from key - use a simple hash of the key
+	rowID := int64(0)
+	for _, b := range key {
+		rowID = rowID*31 + int64(b)
+	}
+	if rowID < 0 {
+		rowID = -rowID
+	}
+
+	// Index each column
+	for _, col := range ftsIndex.Columns {
+		if val, exists := row[col]; exists && val != nil {
+			text := fmt.Sprintf("%v", val)
+			words := tokenize(text)
+			for _, word := range words {
+				word = strings.ToLower(word)
+				ftsIndex.Index[word] = append(ftsIndex.Index[word], rowID)
+			}
+		}
+	}
+}
+
+// tokenize splits text into words
+func tokenize(text string) []string {
+	// Simple tokenization - split on non-alphanumeric
+	var words []string
+	var current strings.Builder
+
+	for _, r := range text {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			current.WriteRune(r)
+		} else {
+			if current.Len() > 0 {
+				words = append(words, current.String())
+				current.Reset()
+			}
+		}
+	}
+	if current.Len() > 0 {
+		words = append(words, current.String())
+	}
+
+	return words
+}
+
+// DropFTSIndex drops a full-text search index
+func (c *Catalog) DropFTSIndex(name string) error {
+	if _, exists := c.ftsIndexes[name]; !exists {
+		return fmt.Errorf("FTS index %s not found", name)
+	}
+
+	delete(c.ftsIndexes, name)
+	return nil
+}
+
+// SearchFTS performs a full-text search
+func (c *Catalog) SearchFTS(indexName string, query string) ([]int64, error) {
+	ftsIndex, exists := c.ftsIndexes[indexName]
+	if !exists {
+		return nil, fmt.Errorf("FTS index %s not found", indexName)
+	}
+
+	words := tokenize(query)
+	if len(words) == 0 {
+		return []int64{}, nil
+	}
+
+	// Find rows matching all words (AND logic)
+	var result []int64
+	first := true
+
+	for _, word := range words {
+		word = strings.ToLower(word)
+		rows, exists := ftsIndex.Index[word]
+		if !exists {
+			return []int64{}, nil // Word not found, no matches
+		}
+
+		if first {
+			result = append([]int64{}, rows...)
+			first = false
+		} else {
+			// Intersection
+			result = intersectSorted(result, rows)
+			if len(result) == 0 {
+				return []int64{}, nil
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// intersectSorted returns the intersection of two sorted int64 slices
+func intersectSorted(a, b []int64) []int64 {
+	var result []int64
+	i, j := 0, 0
+
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i] < b[j]:
+			i++
+		case a[i] > b[j]:
+			j++
+		default:
+			result = append(result, a[i])
+			i++
+			j++
+		}
+	}
+
+	return result
+}
+
+// GetFTSIndex returns an FTS index definition
+func (c *Catalog) GetFTSIndex(name string) (*FTSIndexDef, error) {
+	ftsIndex, exists := c.ftsIndexes[name]
+	if !exists {
+		return nil, fmt.Errorf("FTS index %s not found", name)
+	}
+	return ftsIndex, nil
+}
+
+// ListFTSIndexes returns all FTS index names
+func (c *Catalog) ListFTSIndexes() []string {
+	names := make([]string, 0, len(c.ftsIndexes))
+	for name := range c.ftsIndexes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ==================== VACUUM ====================
+
+// Vacuum reclaims storage space and defragments the database
+func (c *Catalog) Vacuum() error {
+	// In a real implementation, this would:
+	// 1. Rebuild all B-trees to eliminate fragmentation
+	// 2. Remove deleted entries
+	// 3. Compact storage
+
+	// For now, we'll do a simple compaction of table trees using Scan
+	for name, tree := range c.tableTrees {
+		// Use Scan to get all entries
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			continue
+		}
+
+		// Collect all entries
+		type entry struct {
+			key   []byte
+			value []byte
+		}
+		var entries []entry
+		for iter.HasNext() {
+			key, value, _ := iter.Next()
+			if key == nil {
+				break
+			}
+			entries = append(entries, entry{key: key, value: value})
+		}
+
+		if len(entries) == 0 {
+			continue
+		}
+
+		// Create a new tree
+		newTree, err := btree.NewBTree(c.pool)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			newTree.Put(e.key, e.value)
+		}
+
+		c.tableTrees[name] = newTree
+	}
+
+	// Compact index trees
+	for name, tree := range c.indexTrees {
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			continue
+		}
+
+		type entry struct {
+			key   []byte
+			value []byte
+		}
+		var entries []entry
+		for iter.HasNext() {
+			key, value, _ := iter.Next()
+			if key == nil {
+				break
+			}
+			entries = append(entries, entry{key: key, value: value})
+		}
+
+		if len(entries) == 0 {
+			continue
+		}
+
+		newTree, err := btree.NewBTree(c.pool)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			newTree.Put(e.key, e.value)
+		}
+
+		c.indexTrees[name] = newTree
+	}
+
+	return nil
+}
+
+// ==================== ANALYZE ====================
+
+// Analyze collects statistics for a table
+func (c *Catalog) Analyze(tableName string) error {
+	table, err := c.GetTable(tableName)
+	if err != nil {
+		return err
+	}
+
+	tree, exists := c.tableTrees[tableName]
+	if !exists {
+		return fmt.Errorf("table %s has no data", tableName)
+	}
+
+	// Use Scan to iterate over all entries
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return err
+	}
+
+	var rowCount int64
+	// Analyze each column - first pass: collect all values
+	columnValues := make(map[string][]interface{})
+	nullCounts := make(map[string]int64)
+
+	for iter.HasNext() {
+		_, value, _ := iter.Next()
+		if value == nil {
+			break
+		}
+		rowCount++
+		var row map[string]interface{}
+		// value is []byte, no need for type assertion
+		if err := json.Unmarshal(value, &row); err != nil {
+			continue
+		}
+		for _, col := range table.Columns {
+			val, exists := row[col.Name]
+			if !exists || val == nil {
+				nullCounts[col.Name]++
+			} else {
+				columnValues[col.Name] = append(columnValues[col.Name], val)
+			}
+		}
+	}
+
+	stats := &StatsTableStats{
+		TableName:    tableName,
+		RowCount:     uint64(rowCount),
+		ColumnStats:  make(map[string]*ColumnStats),
+		LastAnalyzed: time.Now(),
+	}
+
+	// Analyze each column
+	for _, col := range table.Columns {
+		values := columnValues[col.Name]
+		colStats := &ColumnStats{
+			ColumnName: col.Name,
+		}
+
+		// Count distinct values
+		valueSet := make(map[string]bool)
+		for _, val := range values {
+			valueSet[fmt.Sprintf("%v", val)] = true
+		}
+
+		colStats.DistinctCount = uint64(len(valueSet))
+		colStats.NullCount = uint64(nullCounts[col.Name])
+
+		// Find min/max
+		if len(values) > 0 {
+			minVal := values[0]
+			maxVal := values[0]
+			for _, val := range values[1:] {
+				if catalogCompareValues(val, minVal) < 0 {
+					minVal = val
+				}
+				if catalogCompareValues(val, maxVal) > 0 {
+					maxVal = val
+				}
+			}
+			colStats.MinValue = minVal
+			colStats.MaxValue = maxVal
+		}
+
+		stats.ColumnStats[col.Name] = colStats
+	}
+
+	c.stats[tableName] = stats
+	return nil
+}
+
+// catalogCompareValues compares two values for min/max tracking
+func catalogCompareValues(a, b interface{}) int {
+	// Handle nil cases
+	if a == nil && b == nil {
+		return 0
+	}
+	if a == nil {
+		return -1
+	}
+	if b == nil {
+		return 1
+	}
+
+	// Try numeric comparison
+	aFloat, aOk := toFloat64(a)
+	bFloat, bOk := toFloat64(b)
+	if aOk && bOk {
+		if aFloat < bFloat {
+			return -1
+		}
+		if aFloat > bFloat {
+			return 1
+		}
+		return 0
+	}
+
+	// String comparison fallback
+	aStr := fmt.Sprintf("%v", a)
+	bStr := fmt.Sprintf("%v", b)
+	if aStr < bStr {
+		return -1
+	}
+	if aStr > bStr {
+		return 1
+	}
+	return 0
+}
+
+// GetTableStats returns statistics for a table
+func (c *Catalog) GetTableStats(tableName string) (*StatsTableStats, error) {
+	stats, exists := c.stats[tableName]
+	if !exists {
+		return nil, fmt.Errorf("no statistics for table %s", tableName)
+	}
+	return stats, nil
+}
+
+// ==================== CTE (Common Table Expressions) ====================
+
+// ExecuteCTE executes a SELECT statement with CTEs
+func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) ([]string, [][]interface{}, error) {
+	// Store original views temporarily
+	originalViews := make(map[string]*query.SelectStmt)
+
+	// Register CTEs as temporary views
+	for _, cte := range stmt.CTEs {
+		// Check for circular references
+		if _, exists := originalViews[cte.Name]; exists {
+			// Restore original views on error
+			for name, view := range originalViews {
+				c.views[name] = view
+			}
+			return nil, nil, fmt.Errorf("duplicate CTE name: %s", cte.Name)
+		}
+
+		// Save original view if exists
+		if orig, exists := c.views[cte.Name]; exists {
+			originalViews[cte.Name] = orig
+		}
+
+		// Register CTE as a view
+		c.views[cte.Name] = cte.Query
+	}
+
+	// Execute the main query
+	columns, rows, err := c.Select(stmt.Select, args)
+
+	// Restore original views
+	for _, cte := range stmt.CTEs {
+		name := cte.Name
+		if orig, exists := originalViews[name]; exists {
+			c.views[name] = orig
+		} else {
+			delete(c.views, name)
+		}
+	}
+
+	return columns, rows, err
 }

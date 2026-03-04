@@ -27,6 +27,8 @@ func (p *Parser) Parse() (Statement, error) {
 	}
 
 	switch p.current().Type {
+	case TokenWith:
+		return p.parseWithCTE()
 	case TokenSelect:
 		return p.parseSelect()
 	case TokenInsert:
@@ -47,6 +49,12 @@ func (p *Parser) Parse() (Statement, error) {
 		return p.parseRollback()
 	case TokenCall:
 		return p.parseCall()
+	case TokenVacuum:
+		return p.parseVacuum()
+	case TokenAnalyze:
+		return p.parseAnalyze()
+	case TokenRefresh:
+		return p.parseRefresh()
 	default:
 		return nil, fmt.Errorf("unexpected token: %s", p.current().Literal)
 	}
@@ -972,6 +980,10 @@ func (p *Parser) parseCreate() (Statement, error) {
 		return p.parseCreateTrigger()
 	case TokenProcedure:
 		return p.parseCreateProcedure()
+	case TokenMaterialized:
+		return p.parseCreateMaterializedView()
+	case TokenFulltext:
+		return p.parseCreateFTSIndex()
 	default:
 		return nil, fmt.Errorf("unexpected token after CREATE: %s", p.current().Literal)
 	}
@@ -1424,6 +1436,8 @@ func (p *Parser) parseDrop() (Statement, error) {
 		return p.parseDropTrigger()
 	case TokenProcedure:
 		return p.parseDropProcedure()
+	case TokenMaterialized:
+		return p.parseDropMaterializedView()
 	default:
 		return nil, fmt.Errorf("unexpected token after DROP: %s", p.current().Literal)
 	}
@@ -1449,9 +1463,8 @@ func (p *Parser) parseDropTable() (*DropTableStmt, error) {
 }
 
 // parseDropIndex parses DROP INDEX
-func (p *Parser) parseDropIndex() (*DropTableStmt, error) {
-	// For simplicity, reuse DropTableStmt
-	stmt := &DropTableStmt{}
+func (p *Parser) parseDropIndex() (*DropIndexStmt, error) {
+	stmt := &DropIndexStmt{}
 	p.advance() // consume INDEX
 
 	if p.match(TokenIf) {
@@ -1463,7 +1476,7 @@ func (p *Parser) parseDropIndex() (*DropTableStmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	stmt.Table = index.Literal // Using Table field for index name
+	stmt.Index = index.Literal
 
 	return stmt, nil
 }
@@ -1542,4 +1555,196 @@ func Parse(sql string) (Statement, error) {
 
 	parser := NewParser(tokens)
 	return parser.Parse()
+}
+
+// parseWithCTE parses a WITH clause (Common Table Expressions)
+func (p *Parser) parseWithCTE() (*SelectStmtWithCTE, error) {
+	stmt := &SelectStmtWithCTE{}
+	p.advance() // consume WITH
+
+	if p.match(TokenRecursive) {
+		stmt.IsRecursive = true
+	}
+
+	// Parse CTE definitions
+	for {
+		cte := &CTEDef{}
+
+		name, err := p.expect(TokenIdentifier)
+		if err != nil {
+			return nil, err
+		}
+		cte.Name = name.Literal
+
+		// Optional column list
+		if p.current().Type == TokenLParen {
+			p.advance()
+			columns, err := p.parseIdentifierList()
+			if err != nil {
+				return nil, err
+			}
+			cte.Columns = columns
+			p.expect(TokenRParen)
+		}
+
+		p.expect(TokenAs)
+		p.expect(TokenLParen)
+
+		query, err := p.parseSelect()
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse CTE query: %w", err)
+		}
+		cte.Query = query
+
+		p.expect(TokenRParen)
+
+		stmt.CTEs = append(stmt.CTEs, cte)
+
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+
+	// Parse the main SELECT
+	if p.current().Type != TokenSelect {
+		return nil, fmt.Errorf("expected SELECT after CTE definitions")
+	}
+
+	selectStmt, err := p.parseSelect()
+	if err != nil {
+		return nil, err
+	}
+	stmt.Select = selectStmt
+
+	return stmt, nil
+}
+
+// parseVacuum parses a VACUUM statement
+func (p *Parser) parseVacuum() (*VacuumStmt, error) {
+	stmt := &VacuumStmt{}
+	p.advance() // consume VACUUM
+
+	// Optional table name
+	if p.current().Type == TokenIdentifier {
+		stmt.Table = p.current().Literal
+		p.advance()
+	}
+
+	return stmt, nil
+}
+
+// parseAnalyze parses an ANALYZE statement
+func (p *Parser) parseAnalyze() (*AnalyzeStmt, error) {
+	stmt := &AnalyzeStmt{}
+	p.advance() // consume ANALYZE
+
+	// Optional table name
+	if p.current().Type == TokenIdentifier {
+		stmt.Table = p.current().Literal
+		p.advance()
+	}
+
+	return stmt, nil
+}
+
+// parseRefresh parses a REFRESH MATERIALIZED VIEW statement
+func (p *Parser) parseRefresh() (*RefreshMaterializedViewStmt, error) {
+	p.advance() // consume REFRESH
+
+	p.expect(TokenMaterialized)
+	p.expect(TokenView)
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+
+	return &RefreshMaterializedViewStmt{Name: name.Literal}, nil
+}
+
+// parseCreateMaterializedView parses CREATE MATERIALIZED VIEW
+func (p *Parser) parseCreateMaterializedView() (*CreateMaterializedViewStmt, error) {
+	stmt := &CreateMaterializedViewStmt{}
+	p.advance() // consume MATERIALIZED
+	p.expect(TokenView)
+
+	if p.match(TokenIf) {
+		p.expect(TokenNot)
+		p.expect(TokenExists)
+		stmt.IfNotExists = true
+	}
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Name = name.Literal
+
+	p.expect(TokenAs)
+	stmt.Query, err = p.parseSelect()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse materialized view query: %w", err)
+	}
+
+	return stmt, nil
+}
+
+// parseDropMaterializedView parses DROP MATERIALIZED VIEW
+func (p *Parser) parseDropMaterializedView() (*DropMaterializedViewStmt, error) {
+	stmt := &DropMaterializedViewStmt{}
+	p.advance() // consume MATERIALIZED
+	p.expect(TokenView)
+
+	if p.match(TokenIf) {
+		p.expect(TokenExists)
+		stmt.IfExists = true
+	}
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Name = name.Literal
+
+	return stmt, nil
+}
+
+// parseCreateFTSIndex parses CREATE FULLTEXT INDEX
+func (p *Parser) parseCreateFTSIndex() (*CreateFTSIndexStmt, error) {
+	stmt := &CreateFTSIndexStmt{}
+	p.advance() // consume FULLTEXT
+
+	p.expect(TokenIndex)
+
+	if p.match(TokenIf) {
+		p.expect(TokenNot)
+		p.expect(TokenExists)
+		stmt.IfNotExists = true
+	}
+
+	index, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Index = index.Literal
+
+	p.expect(TokenOn)
+
+	table, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Table = table.Literal
+
+	p.expect(TokenLParen)
+
+	columns, err := p.parseIdentifierList()
+	if err != nil {
+		return nil, err
+	}
+	stmt.Columns = columns
+
+	p.expect(TokenRParen)
+
+	return stmt, nil
 }

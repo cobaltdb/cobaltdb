@@ -174,6 +174,23 @@ const (
 	TokenFirstValue
 	TokenLastValue
 	TokenNthValue
+
+	// CTE (Common Table Expressions)
+	TokenWith
+	TokenRecursive
+
+	// Maintenance commands
+	TokenVacuum
+	TokenAnalyze
+
+	// Full-text search
+	TokenMatch
+	TokenAgainst
+	TokenFulltext
+
+	// Materialized views
+	TokenMaterialized
+	TokenRefresh
 )
 
 // Token represents a lexical token
@@ -324,6 +341,23 @@ var keywords = map[string]TokenType{
 	"FIRST_VALUE":     TokenFirstValue,
 	"LAST_VALUE":      TokenLastValue,
 	"NTH_VALUE":       TokenNthValue,
+
+	// CTE
+	"WITH":            TokenWith,
+	"RECURSIVE":       TokenRecursive,
+
+	// Maintenance commands
+	"VACUUM":          TokenVacuum,
+	"ANALYZE":         TokenAnalyze,
+
+	// Full-text search
+	"MATCH":           TokenMatch,
+	"AGAINST":         TokenAgainst,
+	"FULLTEXT":        TokenFulltext,
+
+	// Materialized views
+	"MATERIALIZED":    TokenMaterialized,
+	"REFRESH":         TokenRefresh,
 }
 
 // LookupKeyword checks if an identifier is a keyword

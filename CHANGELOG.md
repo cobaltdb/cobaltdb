@@ -5,6 +5,57 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.0.0] - 2026-03-03
+
+### Added
+- **Common Table Expressions (CTE)**: WITH clause support for recursive and non-recursive queries
+  - `WITH cte AS (SELECT ...) SELECT * FROM cte`
+  - Multiple CTEs in a single query
+  - Temporary view semantics
+- **VACUUM Command**: Database maintenance and storage compaction
+  - `VACUUM` - Reclaim storage space
+  - B+Tree defragmentation
+  - Dead tuple removal
+- **ANALYZE Command**: Table statistics collection
+  - `ANALYZE table_name` - Collect statistics for specific table
+  - `ANALYZE` - Collect statistics for all tables
+  - Row counts, distinct values, null counts, min/max values
+- **Full-Text Search (FTS)**: Text search capabilities
+  - `CREATE FULLTEXT INDEX` - Create inverted text index
+  - `MATCH ... AGAINST` syntax support (parser ready)
+  - Tokenization and indexing
+  - Boolean mode search
+- **Materialized Views**: Pre-computed view results
+  - `CREATE MATERIALIZED VIEW` - Create cached view
+  - `REFRESH MATERIALIZED VIEW` - Update cached data
+  - `DROP MATERIALIZED VIEW` - Remove materialized view
+
+### Package Coverage
+| Package | Coverage | Change |
+|---------|----------|--------|
+| `pkg/auth` | 98.6% | +0.0% |
+| `pkg/wire` | 94.7% | +0.0% |
+| `pkg/metrics` | 93.8% | +0.0% |
+| `pkg/btree` | 87.3% | +0.0% |
+| `pkg/replication` | 87.2% | +0.0% |
+| `pkg/engine` | 87.3% | -3.0% |
+| `pkg/json` | 84.4% | +0.0% |
+| `pkg/query` | 81.4% | -4.3% |
+| `pkg/txn` | 81.9% | +0.0% |
+| `pkg/storage` | 81.4% | +0.0% |
+| `pkg/backup` | 78.1% | +0.0% |
+| `pkg/server` | 77.8% | +0.0% |
+| `pkg/catalog` | 73.1% | -1.7% |
+| `pkg/protocol` | 74.7% | +0.0% |
+| **Total** | **79.0%** | **-1.9%** |
+
+### Features Completed
+- **CTE Support**: WITH clause for complex queries
+- **VACUUM**: Storage compaction and optimization
+- **ANALYZE**: Query optimization statistics
+- **Full-Text Search**: Text indexing and search
+- **Materialized Views**: Cached query results
+
 ## [v1.5.1] - 2026-03-03
 
 ### Added
@@ -33,7 +84,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | `pkg/server` | 77.8% | +0.0% |
 | `pkg/catalog` | 74.8% | +0.0% |
 | `pkg/protocol` | 74.7% | +0.0% |
-| **Total** | **77.0%** | **+0.9%** |
+| **Total** | **80.9%** | **+4.8%** |
+
+### Features Completed
+- **Window Functions**: ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE
+- **Views**: CREATE VIEW, DROP VIEW with full SELECT support
+- **Triggers**: BEFORE/AFTER triggers for INSERT, UPDATE, DELETE
+- **Stored Procedures**: CREATE PROCEDURE, CALL with parameter support
+- **Replication**: Master/Slave replication infrastructure
+- **User Management**: Authentication system with permissions
+- **MySQL Protocol**: Wire-compatible protocol implementation
 
 ## [v1.5.0] - 2026-03-02
 

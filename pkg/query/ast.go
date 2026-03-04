@@ -101,6 +101,15 @@ type CreateIndexStmt struct {
 func (s *CreateIndexStmt) nodeType() string     { return "CreateIndexStmt" }
 func (s *CreateIndexStmt) statementNode()       {}
 
+// DropIndexStmt represents a DROP INDEX statement
+type DropIndexStmt struct {
+	IfExists bool
+	Index    string
+}
+
+func (s *DropIndexStmt) nodeType() string     { return "DropIndexStmt" }
+func (s *DropIndexStmt) statementNode()       {}
+
 // CreateCollectionStmt represents a CREATE COLLECTION statement
 type CreateCollectionStmt struct {
 	IfNotExists bool
@@ -459,3 +468,85 @@ type WindowSpec struct {
 
 func (e *WindowSpec) nodeType() string     { return "WindowSpec" }
 func (e *WindowSpec) expressionNode()      {}
+
+// CTEDef represents a CTE (Common Table Expression) definition
+type CTEDef struct {
+	Name       string
+	Columns    []string // Optional column list
+	Query      *SelectStmt
+	IsRecursive bool
+}
+
+// SelectStmtWithCTE represents a SELECT statement with CTEs
+type SelectStmtWithCTE struct {
+	CTEs       []*CTEDef
+	IsRecursive bool
+	Select     *SelectStmt
+}
+
+func (s *SelectStmtWithCTE) nodeType() string     { return "SelectStmtWithCTE" }
+func (s *SelectStmtWithCTE) statementNode()       {}
+
+// VacuumStmt represents a VACUUM statement
+type VacuumStmt struct {
+	Table string // Optional table name
+}
+
+func (s *VacuumStmt) nodeType() string     { return "VacuumStmt" }
+func (s *VacuumStmt) statementNode()       {}
+
+// AnalyzeStmt represents an ANALYZE statement
+type AnalyzeStmt struct {
+	Table string // Optional table name
+}
+
+func (s *AnalyzeStmt) nodeType() string     { return "AnalyzeStmt" }
+func (s *AnalyzeStmt) statementNode()       {}
+
+// CreateFTSIndexStmt represents a CREATE FULLTEXT INDEX statement
+type CreateFTSIndexStmt struct {
+	IfNotExists bool
+	Index       string
+	Table       string
+	Columns     []string
+}
+
+func (s *CreateFTSIndexStmt) nodeType() string     { return "CreateFTSIndexStmt" }
+func (s *CreateFTSIndexStmt) statementNode()       {}
+
+// MatchExpr represents a MATCH ... AGAINST expression for FTS
+type MatchExpr struct {
+	Columns []Expression
+	Pattern Expression
+	Mode    string // BOOLEAN MODE, NATURAL LANGUAGE MODE
+}
+
+func (e *MatchExpr) nodeType() string     { return "MatchExpr" }
+func (e *MatchExpr) expressionNode()      {}
+
+// CreateMaterializedViewStmt represents a CREATE MATERIALIZED VIEW statement
+type CreateMaterializedViewStmt struct {
+	IfNotExists bool
+	Name        string
+	Query       *SelectStmt
+}
+
+func (s *CreateMaterializedViewStmt) nodeType() string     { return "CreateMaterializedViewStmt" }
+func (s *CreateMaterializedViewStmt) statementNode()       {}
+
+// DropMaterializedViewStmt represents a DROP MATERIALIZED VIEW statement
+type DropMaterializedViewStmt struct {
+	IfExists bool
+	Name     string
+}
+
+func (s *DropMaterializedViewStmt) nodeType() string     { return "DropMaterializedViewStmt" }
+func (s *DropMaterializedViewStmt) statementNode()       {}
+
+// RefreshMaterializedViewStmt represents a REFRESH MATERIALIZED VIEW statement
+type RefreshMaterializedViewStmt struct {
+	Name string
+}
+
+func (s *RefreshMaterializedViewStmt) nodeType() string     { return "RefreshMaterializedViewStmt" }
+func (s *RefreshMaterializedViewStmt) statementNode()       {}

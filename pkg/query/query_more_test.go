@@ -1137,14 +1137,14 @@ func TestParseDropIndex(t *testing.T) {
 				t.Errorf("Parse error: %v", err)
 				return
 			}
-			// Note: This returns DropTableStmt based on the parser
-			dropStmt, ok := stmt.(*DropTableStmt)
+			// Note: This returns DropIndexStmt
+			dropStmt, ok := stmt.(*DropIndexStmt)
 			if !ok {
-				t.Errorf("Expected DropTableStmt, got %T", stmt)
+				t.Errorf("Expected DropIndexStmt, got %T", stmt)
 				return
 			}
-			if dropStmt.Table != tt.expect {
-				t.Errorf("Expected index name %q, got %q", tt.expect, dropStmt.Table)
+			if dropStmt.Index != tt.expect {
+				t.Errorf("Expected index name %q, got %q", tt.expect, dropStmt.Index)
 			}
 		})
 	}
