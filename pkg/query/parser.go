@@ -150,6 +150,13 @@ func (p *Parser) parseSelect() (*SelectStmt, error) {
 			return nil, err
 		}
 		stmt.Where = where
+
+		// Fix WHERE clause placeholder indices
+		// Collect all placeholders in WHERE clause and assign indices starting from 0
+		wherePlaceholders := collectPlaceholders(where)
+		for i, ph := range wherePlaceholders {
+			ph.Index = i
+		}
 	}
 
 	// GROUP BY

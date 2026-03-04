@@ -164,6 +164,16 @@ func (c *Catalog) CommitTransaction() error {
 	return nil
 }
 
+// FlushTableTrees flushes all table B+Trees to disk
+func (c *Catalog) FlushTableTrees() error {
+	for tableName, tree := range c.tableTrees {
+		if err := tree.Flush(); err != nil {
+			return fmt.Errorf("failed to flush table %s: %w", tableName, err)
+		}
+	}
+	return nil
+}
+
 // RollbackTransaction rolls back the current transaction
 func (c *Catalog) RollbackTransaction() error {
 	if c.wal != nil && c.txnActive {
@@ -706,7 +716,7 @@ func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int
 		for i, setClause := range stmt.Set {
 			colIdx := setColumnIndices[i]
 			if colIdx >= 0 {
-				newVal, err := EvalExpression(setClause.Value, args)
+				newVal, err := evaluateExpression(c, row, table.Columns, setClause.Value, args)
 				if err != nil {
 					continue
 				}
@@ -2435,6 +2445,18 @@ func evaluateBinaryExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr
 		return toBool(right), nil
 	}
 
+	// Handle arithmetic operators (+, -, *, /)
+	switch expr.Operator {
+	case query.TokenPlus:
+		return addValues(left, right)
+	case query.TokenMinus:
+		return subtractValues(left, right)
+	case query.TokenStar:
+		return multiplyValues(left, right)
+	case query.TokenSlash:
+		return divideValues(left, right)
+	}
+
 	// Compare based on operator
 	switch expr.Operator {
 	case query.TokenEq:
@@ -2484,6 +2506,77 @@ func compareValues(a, b interface{}) int {
 
 	// Fallback to string comparison
 	return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+}
+
+// addValues adds two numeric values
+func addValues(a, b interface{}) (interface{}, error) {
+	aNum, aOk := toFloat64(a)
+	bNum, bOk := toFloat64(b)
+	if !aOk || !bOk {
+		return nil, fmt.Errorf("cannot add non-numeric values")
+	}
+	result := aNum + bNum
+	// Return as int if both inputs were ints
+	_, aIsInt := a.(int)
+	_, bIsInt := b.(int)
+	if aIsInt && bIsInt {
+		return int(result), nil
+	}
+	return result, nil
+}
+
+// subtractValues subtracts two numeric values
+func subtractValues(a, b interface{}) (interface{}, error) {
+	aNum, aOk := toFloat64(a)
+	bNum, bOk := toFloat64(b)
+	if !aOk || !bOk {
+		return nil, fmt.Errorf("cannot subtract non-numeric values")
+	}
+	result := aNum - bNum
+	// Return as int if both inputs were ints
+	_, aIsInt := a.(int)
+	_, bIsInt := b.(int)
+	if aIsInt && bIsInt {
+		return int(result), nil
+	}
+	return result, nil
+}
+
+// multiplyValues multiplies two numeric values
+func multiplyValues(a, b interface{}) (interface{}, error) {
+	aNum, aOk := toFloat64(a)
+	bNum, bOk := toFloat64(b)
+	if !aOk || !bOk {
+		return nil, fmt.Errorf("cannot multiply non-numeric values")
+	}
+	result := aNum * bNum
+	// Return as int if both inputs were ints
+	_, aIsInt := a.(int)
+	_, bIsInt := b.(int)
+	if aIsInt && bIsInt {
+		return int(result), nil
+	}
+	return result, nil
+}
+
+// divideValues divides two numeric values
+func divideValues(a, b interface{}) (interface{}, error) {
+	aNum, aOk := toFloat64(a)
+	bNum, bOk := toFloat64(b)
+	if !aOk || !bOk {
+		return nil, fmt.Errorf("cannot divide non-numeric values")
+	}
+	if bNum == 0 {
+		return nil, fmt.Errorf("division by zero")
+	}
+	result := aNum / bNum
+	// Return as int if both inputs were ints and result is whole number
+	_, aIsInt := a.(int)
+	_, bIsInt := b.(int)
+	if aIsInt && bIsInt && result == float64(int(result)) {
+		return int(result), nil
+	}
+	return result, nil
 }
 
 // evaluateLike evaluates a LIKE expression (column LIKE pattern)

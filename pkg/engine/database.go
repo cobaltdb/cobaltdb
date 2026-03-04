@@ -783,8 +783,21 @@ type Tx struct {
 
 // Exec executes a statement within the transaction
 func (tx *Tx) Exec(ctx context.Context, sql string, args ...interface{}) (Result, error) {
-	// TODO: implement transaction-scoped execution
-	return tx.db.Exec(ctx, sql, args...)
+	tx.db.mu.RLock()
+	defer tx.db.mu.RUnlock()
+
+	if tx.db.closed {
+		return Result{}, ErrDatabaseClosed
+	}
+
+	// Parse the statement
+	stmt, err := tx.db.getPreparedStatement(sql)
+	if err != nil {
+		return Result{}, fmt.Errorf("parse error: %w", err)
+	}
+
+	// Execute within transaction context
+	return tx.db.execute(ctx, stmt, args)
 }
 
 // Query executes a query within the transaction
@@ -795,10 +808,21 @@ func (tx *Tx) Query(ctx context.Context, sql string, args ...interface{}) (*Rows
 
 // Commit commits the transaction
 func (tx *Tx) Commit() error {
+	// Flush table B+Trees to buffer pool first
+	if err := tx.db.catalog.FlushTableTrees(); err != nil {
+		return fmt.Errorf("failed to flush tables: %w", err)
+	}
+
 	// Commit in catalog first (writes commit record to WAL)
 	if err := tx.db.catalog.CommitTransaction(); err != nil {
 		return err
 	}
+
+	// Flush buffer pool to disk to ensure durability
+	if err := tx.db.pool.FlushAll(); err != nil {
+		return fmt.Errorf("failed to flush buffer pool: %w", err)
+	}
+
 	return tx.txn.Commit()
 }
 
