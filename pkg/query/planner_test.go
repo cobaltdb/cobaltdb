@@ -660,7 +660,6 @@ func TestAddProject(t *testing.T) {
 	}
 }
 
-
 func TestPlanWithGroupBy(t *testing.T) {
 	catalog := newMockCatalog()
 	stats := newMockStats()

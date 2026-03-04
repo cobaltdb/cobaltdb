@@ -323,7 +323,7 @@ func TestHandleQueryUpdate(t *testing.T) {
 	}
 
 	query := &wire.QueryMessage{
-		SQL: "UPDATE test SET age = ? WHERE name = ?",
+		SQL:    "UPDATE test SET age = ? WHERE name = ?",
 		Params: []interface{}{26, "Alice"},
 	}
 	payload, _ := wire.Encode(query)
@@ -355,7 +355,7 @@ func TestHandleQueryDelete(t *testing.T) {
 	}
 
 	query := &wire.QueryMessage{
-		SQL: "DELETE FROM test WHERE age > ?",
+		SQL:    "DELETE FROM test WHERE age > ?",
 		Params: []interface{}{25},
 	}
 	payload, _ := wire.Encode(query)
@@ -387,7 +387,7 @@ func TestHandleQueryEmptyResult(t *testing.T) {
 
 	// Query that returns no results
 	query := &wire.QueryMessage{
-		SQL: "SELECT * FROM test WHERE name = ?",
+		SQL:    "SELECT * FROM test WHERE name = ?",
 		Params: []interface{}{"NonExistent"},
 	}
 	payload, _ := wire.Encode(query)

@@ -46,8 +46,12 @@ func (m *mockConn) Close() error {
 	return nil
 }
 
-func (m *mockConn) LocalAddr() net.Addr                { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 3306} }
-func (m *mockConn) RemoteAddr() net.Addr               { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345} }
+func (m *mockConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 3306}
+}
+func (m *mockConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345}
+}
 func (m *mockConn) SetDeadline(t time.Time) error      { return nil }
 func (m *mockConn) SetReadDeadline(t time.Time) error  { return nil }
 func (m *mockConn) SetWriteDeadline(t time.Time) error { return nil }
@@ -129,7 +133,7 @@ func TestMySQLClientReadHandshakeResponse(t *testing.T) {
 		payload := []byte{
 			0x85, 0xa2, 0x1a, 0x00, // capability flags
 			0x00, 0x00, 0x00, 0x01, // max packet size
-			0x21,       // character set (utf8mb4)
+			0x21,                                                       // character set (utf8mb4)
 			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
 			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
 		}
@@ -831,4 +835,3 @@ func TestHandleQuery(t *testing.T) {
 		_ = client.handleQuery("CREATE TABLE test (id INT)")
 	})
 }
-

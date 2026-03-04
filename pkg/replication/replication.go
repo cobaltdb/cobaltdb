@@ -34,12 +34,12 @@ const (
 
 // Config contains replication configuration
 type Config struct {
-	Role             Role
-	MasterAddr       string
-	ReplicationPort  string
-	SyncTimeout      time.Duration
-	ReconnectDelay   time.Duration
-	BufferSize       int
+	Role            Role
+	MasterAddr      string
+	ReplicationPort string
+	SyncTimeout     time.Duration
+	ReconnectDelay  time.Duration
+	BufferSize      int
 }
 
 // DefaultConfig returns default replication configuration
@@ -63,16 +63,16 @@ type ReplicationEvent struct {
 
 // Manager handles replication
 type Manager struct {
-	config   *Config
-	role     Role
-	state    ReplicationState
-	stateMu  sync.RWMutex
+	config  *Config
+	role    Role
+	state   ReplicationState
+	stateMu sync.RWMutex
 
 	// Master fields
-	listeners   []net.Listener
-	slaves      map[string]*SlaveConn
-	slaveMu     sync.RWMutex
-	wal         *storage.WAL
+	listeners []net.Listener
+	slaves    map[string]*SlaveConn
+	slaveMu   sync.RWMutex
+	wal       *storage.WAL
 
 	// Slave fields
 	masterConn   net.Conn
@@ -80,18 +80,18 @@ type Manager struct {
 	currentLSN   uint64
 
 	// Channels
-	eventChan    chan *ReplicationEvent
-	stopChan     chan struct{}
-	wg           sync.WaitGroup
+	eventChan chan *ReplicationEvent
+	stopChan  chan struct{}
+	wg        sync.WaitGroup
 }
 
 // SlaveConn represents a connected slave
 type SlaveConn struct {
-	ID       string
-	Conn     net.Conn
-	Reader   *bufio.Reader
-	LSN      uint64
-	mu       sync.Mutex
+	ID     string
+	Conn   net.Conn
+	Reader *bufio.Reader
+	LSN    uint64
+	mu     sync.Mutex
 }
 
 // NewManager creates a new replication manager

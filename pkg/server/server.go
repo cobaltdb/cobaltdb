@@ -33,11 +33,11 @@ type Server struct {
 
 // Config contains server configuration
 type Config struct {
-	Address           string
-	AuthEnabled       bool
-	RequireAuth       bool
-	DefaultAdminUser  string
-	DefaultAdminPass  string
+	Address          string
+	AuthEnabled      bool
+	RequireAuth      bool
+	DefaultAdminUser string
+	DefaultAdminPass string
 }
 
 // DefaultConfig returns the default server configuration

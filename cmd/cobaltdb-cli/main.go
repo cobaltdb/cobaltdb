@@ -12,11 +12,11 @@ import (
 )
 
 var (
-	flagHelp    bool
+	flagHelp     bool
 	flagInMemory bool
-	flagPath    string
-	flagServer  bool
-	flagPort    int
+	flagPath     string
+	flagServer   bool
+	flagPort     int
 )
 
 func init() {

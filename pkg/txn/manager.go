@@ -7,10 +7,10 @@ import (
 )
 
 var (
-	ErrTxnCommitted  = errors.New("transaction already committed")
-	ErrTxnAborted    = errors.New("transaction already aborted")
-	ErrConflict      = errors.New("transaction conflict")
-	ErrTxnNotFound   = errors.New("transaction not found")
+	ErrTxnCommitted = errors.New("transaction already committed")
+	ErrTxnAborted   = errors.New("transaction already aborted")
+	ErrConflict     = errors.New("transaction conflict")
+	ErrTxnNotFound  = errors.New("transaction not found")
 )
 
 // IsolationLevel represents transaction isolation levels
@@ -150,12 +150,12 @@ func (t *Transaction) SetWrite(key string, value []byte) {
 
 // Manager manages all transactions
 type Manager struct {
-	counter uint64 // atomic, monotonic
-	active  map[uint64]*Transaction
+	counter  uint64 // atomic, monotonic
+	active   map[uint64]*Transaction
 	versions map[string]uint64 // key → latest committed version
-	mu      sync.RWMutex
-	pool    interface{} // BufferPool (using interface{} to avoid import cycle)
-	wal     interface{} // WAL
+	mu       sync.RWMutex
+	pool     interface{} // BufferPool (using interface{} to avoid import cycle)
+	wal      interface{} // WAL
 }
 
 // NewManager creates a new transaction manager

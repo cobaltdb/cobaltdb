@@ -207,12 +207,12 @@ func (pc *PreparedCache) cleanup() {
 
 // PreparedCacheStats contains cache statistics
 type PreparedCacheStats struct {
-	Size           int
-	HitCount       uint64
-	MissCount      uint64
-	EvictionCount  uint64
-	TotalExecTime  time.Duration
-	AvgExecTime    time.Duration
+	Size          int
+	HitCount      uint64
+	MissCount     uint64
+	EvictionCount uint64
+	TotalExecTime time.Duration
+	AvgExecTime   time.Duration
 }
 
 // Stats returns cache statistics

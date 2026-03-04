@@ -39,17 +39,17 @@ type WALRecord struct {
 
 // WAL (Write-Ahead Log) provides durability and crash recovery
 type WAL struct {
-	file      *os.File
-	mu        sync.Mutex
-	bufWriter *bufio.Writer
-	lsn       uint64 // Log Sequence Number (monotonic)
-	checkpoint  uint64 // last checkpoint LSN
-	path      string
+	file       *os.File
+	mu         sync.Mutex
+	bufWriter  *bufio.Writer
+	lsn        uint64 // Log Sequence Number (monotonic)
+	checkpoint uint64 // last checkpoint LSN
+	path       string
 }
 
 // OpenWAL opens or creates a WAL file
 func OpenWAL(path string) (*WAL, error) {
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open WAL file: %w", err)
 	}

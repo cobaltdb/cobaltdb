@@ -60,8 +60,12 @@ func (m *mockConnWithData) Close() error {
 	return nil
 }
 
-func (m *mockConnWithData) LocalAddr() net.Addr                { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 4201} }
-func (m *mockConnWithData) RemoteAddr() net.Addr               { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345} }
+func (m *mockConnWithData) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 4201}
+}
+func (m *mockConnWithData) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345}
+}
 func (m *mockConnWithData) SetDeadline(t time.Time) error      { return nil }
 func (m *mockConnWithData) SetReadDeadline(t time.Time) error  { return nil }
 func (m *mockConnWithData) SetWriteDeadline(t time.Time) error { return nil }
@@ -283,8 +287,6 @@ func TestReplicateFromMasterStop(t *testing.T) {
 		t.Errorf("Expected nil error when stopped, got: %v", err)
 	}
 }
-
-
 
 // TestPromoteSlaveSuccess tests promoting a slave to master
 func TestPromoteSlaveSuccess(t *testing.T) {

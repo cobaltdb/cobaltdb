@@ -28,9 +28,9 @@ type Backup struct {
 // BackupMetadata contains backup metadata
 type BackupMetadata struct {
 	Backup
-	TableCounts map[string]int64 `json:"table_counts"`
+	TableCounts map[string]int64  `json:"table_counts"`
 	Checksums   map[string]string `json:"checksums"`
-	Filename    string           `json:"filename"` // Full path to backup file
+	Filename    string            `json:"filename"` // Full path to backup file
 }
 
 // Manager handles backup and restore operations
@@ -289,7 +289,7 @@ func (m *Manager) writeMetadata(backupFile string, metadata *BackupMetadata) err
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
-	return os.WriteFile(metaFile, data, 0644)
+	return os.WriteFile(metaFile, data, 0600)
 }
 
 // Restore restores a database from backup

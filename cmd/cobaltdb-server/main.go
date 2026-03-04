@@ -14,17 +14,17 @@ import (
 
 func main() {
 	var (
-		dataDir = flag.String("data", "./data", "data directory")
-		address = flag.String("addr", ":4200", "server address")
-		inMemory = flag.Bool("memory", false, "use in-memory storage")
+		dataDir   = flag.String("data", "./data", "data directory")
+		address   = flag.String("addr", ":4200", "server address")
+		inMemory  = flag.Bool("memory", false, "use in-memory storage")
 		cacheSize = flag.Int("cache", 1024, "cache size in pages")
 	)
 	flag.Parse()
 
 	// Open database
 	opts := &engine.Options{
-		CacheSize: *cacheSize,
-		InMemory:  *inMemory,
+		CacheSize:  *cacheSize,
+		InMemory:   *inMemory,
 		WALEnabled: !*inMemory,
 	}
 

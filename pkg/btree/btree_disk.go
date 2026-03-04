@@ -343,10 +343,10 @@ func (t *DiskBTree) splitRoot() error {
 
 	// Clear new root and make it internal
 	rootData := rootPage.Data()
-	rootData[4] = byte(storage.PageTypeInternal) // Page type
-	binary.LittleEndian.PutUint16(rootData[6:8], 0) // Cell count
+	rootData[4] = byte(storage.PageTypeInternal)                                  // Page type
+	binary.LittleEndian.PutUint16(rootData[6:8], 0)                               // Cell count
 	binary.LittleEndian.PutUint16(rootData[8:10], uint16(storage.PageHeaderSize)) // Free start
-	binary.LittleEndian.PutUint32(rootData[12:16], oldRootPage.ID()) // Right ptr
+	binary.LittleEndian.PutUint32(rootData[12:16], oldRootPage.ID())              // Right ptr
 	rootPage.SetDirty(true)
 
 	// Write pages

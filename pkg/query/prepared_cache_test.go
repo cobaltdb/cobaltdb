@@ -736,11 +736,11 @@ func TestCountParametersEdgeCases(t *testing.T) {
 		sql      string
 		expected int
 	}{
-		{"", 0},                                    // Empty SQL (will fail to parse, but function handles nil)
-		{"SELECT * FROM users", 0},                 // No parameters
-		{"SELECT * FROM users WHERE id = ?", 1},    // Single parameter
-		{"SELECT * FROM users WHERE id IN (?, ?, ?)", 3}, // Multiple IN parameters
-		{"SELECT * FROM users WHERE id BETWEEN ? AND ?", 2}, // BETWEEN
+		{"", 0},                                                           // Empty SQL (will fail to parse, but function handles nil)
+		{"SELECT * FROM users", 0},                                        // No parameters
+		{"SELECT * FROM users WHERE id = ?", 1},                           // Single parameter
+		{"SELECT * FROM users WHERE id IN (?, ?, ?)", 3},                  // Multiple IN parameters
+		{"SELECT * FROM users WHERE id BETWEEN ? AND ?", 2},               // BETWEEN
 		{"SELECT * FROM users WHERE (id = ? OR name = ?) AND age > ?", 3}, // Complex expression
 	}
 

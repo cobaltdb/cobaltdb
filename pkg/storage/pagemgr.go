@@ -7,11 +7,11 @@ import (
 
 // PageManager handles page allocation, deallocation, and free list management
 type PageManager struct {
-	pool       *BufferPool
-	meta       *MetaPage
-	mu         sync.RWMutex
-	freeList   []uint32 // Cache of free page IDs
-	maxPages   uint32   // Maximum allocated page ID
+	pool     *BufferPool
+	meta     *MetaPage
+	mu       sync.RWMutex
+	freeList []uint32 // Cache of free page IDs
+	maxPages uint32   // Maximum allocated page ID
 }
 
 // NewPageManager creates a new page manager

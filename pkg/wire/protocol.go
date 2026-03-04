@@ -8,15 +8,15 @@ import (
 type MsgType uint8
 
 const (
-	MsgQuery      MsgType = 0x01 // SQL query string
-	MsgPrepare    MsgType = 0x02 // Prepared statement
-	MsgExecute    MsgType = 0x03 // Execute prepared
-	MsgResult     MsgType = 0x10 // Query result rows
-	MsgOK         MsgType = 0x11 // Execution success
-	MsgError      MsgType = 0x12 // Error response
-	MsgPing       MsgType = 0x20
-	MsgPong       MsgType = 0x21
-	MsgAuth       MsgType = 0x30 // Authentication request
+	MsgQuery       MsgType = 0x01 // SQL query string
+	MsgPrepare     MsgType = 0x02 // Prepared statement
+	MsgExecute     MsgType = 0x03 // Execute prepared
+	MsgResult      MsgType = 0x10 // Query result rows
+	MsgOK          MsgType = 0x11 // Execution success
+	MsgError       MsgType = 0x12 // Error response
+	MsgPing        MsgType = 0x20
+	MsgPong        MsgType = 0x21
+	MsgAuth        MsgType = 0x30 // Authentication request
 	MsgAuthSuccess MsgType = 0x31 // Authentication success
 	MsgAuthFailed  MsgType = 0x32 // Authentication failed
 )
@@ -35,10 +35,10 @@ type QueryMessage struct {
 
 // ResultMessage represents a query result
 type ResultMessage struct {
-	Columns []string         `msgpack:"cols"`
-	Types   []string         `msgpack:"types"`
-	Rows    [][]interface{}  `msgpack:"rows"`
-	Count   int64            `msgpack:"count"`
+	Columns []string        `msgpack:"cols"`
+	Types   []string        `msgpack:"types"`
+	Rows    [][]interface{} `msgpack:"rows"`
+	Count   int64           `msgpack:"count"`
 }
 
 // OKMessage represents a successful execution
@@ -60,8 +60,8 @@ type PrepareMessage struct {
 
 // ExecuteMessage represents an execute prepared statement request
 type ExecuteMessage struct {
-	StmtID uint32          `msgpack:"stmt_id"`
-	Params []interface{}   `msgpack:"params"`
+	StmtID uint32        `msgpack:"stmt_id"`
+	Params []interface{} `msgpack:"params"`
 }
 
 // Encode encodes a message using MessagePack

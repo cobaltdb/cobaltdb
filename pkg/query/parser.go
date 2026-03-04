@@ -8,8 +8,9 @@ import (
 
 // Parser parses SQL tokens into an AST
 type Parser struct {
-	tokens []Token
-	pos    int
+	tokens           []Token
+	pos              int
+	placeholderCount int // Counter for auto-assigning placeholder indices
 }
 
 // NewParser creates a new parser for the given tokens
@@ -22,6 +23,9 @@ func NewParser(tokens []Token) *Parser {
 
 // Parse parses the tokens and returns a statement
 func (p *Parser) Parse() (Statement, error) {
+	// Reset placeholder counter for each parse
+	p.placeholderCount = 0
+
 	if p.current().Type == TokenEOF {
 		return nil, fmt.Errorf("empty statement")
 	}
@@ -373,8 +377,7 @@ func (p *Parser) parseExpressionListWithOffset(placeholderOffset int) ([]Express
 
 		// Update placeholder indices with position in the list
 		if placeholder, ok := expr.(*PlaceholderExpr); ok {
-			// Add both offset and current position in the list
-			placeholder.Index += placeholderOffset + len(exprs)
+			placeholder.Index = placeholderOffset + len(exprs)
 		}
 
 		exprs = append(exprs, expr)
@@ -928,14 +931,62 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 
 	// WHERE
 	if p.match(TokenWhere) {
-		where, err := p.parseExpressionWithOffset(whereOffset)
+		where, err := p.parseExpression()
 		if err != nil {
 			return nil, err
 		}
 		stmt.Where = where
+
+		// Fix WHERE clause placeholder indices
+		// Collect all placeholders in WHERE clause and assign indices starting from whereOffset
+		wherePlaceholders := collectPlaceholders(where)
+		for i, ph := range wherePlaceholders {
+			ph.Index = whereOffset + i
+		}
 	}
 
 	return stmt, nil
+}
+
+// collectPlaceholders collects all PlaceholderExpr nodes from an expression
+func collectPlaceholders(expr Expression) []*PlaceholderExpr {
+	var placeholders []*PlaceholderExpr
+	collectPlaceholdersRecursive(expr, &placeholders)
+	return placeholders
+}
+
+func collectPlaceholdersRecursive(expr Expression, placeholders *[]*PlaceholderExpr) {
+	if expr == nil {
+		return
+	}
+
+	switch e := expr.(type) {
+	case *PlaceholderExpr:
+		*placeholders = append(*placeholders, e)
+	case *BinaryExpr:
+		collectPlaceholdersRecursive(e.Left, placeholders)
+		collectPlaceholdersRecursive(e.Right, placeholders)
+	case *UnaryExpr:
+		collectPlaceholdersRecursive(e.Expr, placeholders)
+	case *FunctionCall:
+		for _, arg := range e.Args {
+			collectPlaceholdersRecursive(arg, placeholders)
+		}
+	case *InExpr:
+		collectPlaceholdersRecursive(e.Expr, placeholders)
+		for _, item := range e.List {
+			collectPlaceholdersRecursive(item, placeholders)
+		}
+	case *BetweenExpr:
+		collectPlaceholdersRecursive(e.Expr, placeholders)
+		collectPlaceholdersRecursive(e.Lower, placeholders)
+		collectPlaceholdersRecursive(e.Upper, placeholders)
+	case *LikeExpr:
+		collectPlaceholdersRecursive(e.Expr, placeholders)
+		collectPlaceholdersRecursive(e.Pattern, placeholders)
+	case *IsNullExpr:
+		collectPlaceholdersRecursive(e.Expr, placeholders)
+	}
 }
 
 // parseDelete parses a DELETE statement
@@ -953,11 +1004,17 @@ func (p *Parser) parseDelete() (*DeleteStmt, error) {
 
 	// WHERE - placeholders start at offset 0
 	if p.match(TokenWhere) {
-		where, err := p.parseExpressionWithOffset(0)
+		where, err := p.parseExpression()
 		if err != nil {
 			return nil, err
 		}
 		stmt.Where = where
+
+		// Fix WHERE clause placeholder indices
+		wherePlaceholders := collectPlaceholders(where)
+		for i, ph := range wherePlaceholders {
+			ph.Index = i
+		}
 	}
 
 	return stmt, nil

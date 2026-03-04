@@ -424,4 +424,3 @@ func TestDropProcedureStmtStatementNode(t *testing.T) {
 	stmt := &DropProcedureStmt{}
 	stmt.statementNode()
 }
-

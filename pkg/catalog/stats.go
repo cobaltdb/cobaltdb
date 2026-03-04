@@ -364,11 +364,11 @@ func (sc *StatsCollector) IsStale(tableName string, threshold time.Duration) boo
 
 // Cost constants for query optimization
 const (
-	SeqPageCost      = 1.0
-	RandomPageCost   = 4.0
-	CpuTupleCost     = 0.01
+	SeqPageCost       = 1.0
+	RandomPageCost    = 4.0
+	CpuTupleCost      = 0.01
 	CpuIndexTupleCost = 0.005
-	CpuOperatorCost  = 0.0025
+	CpuOperatorCost   = 0.0025
 )
 
 // EstimateCost estimates the cost of a sequential scan

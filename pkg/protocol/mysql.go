@@ -15,21 +15,21 @@ import (
 // MySQL protocol constants
 const (
 	// Command types
-	MySQLComQuit          byte = 0x01
-	MySQLComInitDB        byte = 0x02
-	MySQLComQuery         byte = 0x03
-	MySQLComFieldList     byte = 0x04
-	MySQLComCreateDB      byte = 0x05
-	MySQLComDropDB        byte = 0x06
-	MySQLComRefresh       byte = 0x07
-	MySQLComShutdown      byte = 0x08
-	MySQLComStatistics    byte = 0x09
-	MySQLComProcessInfo   byte = 0x0a
-	MySQLComConnect       byte = 0x0b
-	MySQLComProcessKill   byte = 0x0c
-	MySQLComDebug         byte = 0x0d
-	MySQLComPing          byte = 0x0e
-	MySQLComChangeUser    byte = 0x11
+	MySQLComQuit        byte = 0x01
+	MySQLComInitDB      byte = 0x02
+	MySQLComQuery       byte = 0x03
+	MySQLComFieldList   byte = 0x04
+	MySQLComCreateDB    byte = 0x05
+	MySQLComDropDB      byte = 0x06
+	MySQLComRefresh     byte = 0x07
+	MySQLComShutdown    byte = 0x08
+	MySQLComStatistics  byte = 0x09
+	MySQLComProcessInfo byte = 0x0a
+	MySQLComConnect     byte = 0x0b
+	MySQLComProcessKill byte = 0x0c
+	MySQLComDebug       byte = 0x0d
+	MySQLComPing        byte = 0x0e
+	MySQLComChangeUser  byte = 0x11
 
 	// Server status flags
 	MySQLServerStatusInTrans            uint16 = 0x0001
@@ -114,6 +114,9 @@ func (s *MySQLServer) Close() error {
 
 // acceptLoop accepts incoming connections
 func (s *MySQLServer) acceptLoop() {
+	if s.listener == nil {
+		return
+	}
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {

@@ -253,8 +253,8 @@ func TestCreateIndex(t *testing.T) {
 
 	// Create index
 	indexStmt := &query.CreateIndexStmt{
-		Index:  "idx_name",
-		Table:  "users",
+		Index:   "idx_name",
+		Table:   "users",
 		Columns: []string{"name"},
 	}
 

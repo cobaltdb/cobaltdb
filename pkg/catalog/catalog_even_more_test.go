@@ -603,8 +603,8 @@ func TestExecuteSelectWithJoin(t *testing.T) {
 		From: &query.TableRef{Name: "users"},
 		Joins: []*query.JoinClause{
 			{
-				Type:      query.TokenInner,
-				Table:     &query.TableRef{Name: "orders"},
+				Type:  query.TokenInner,
+				Table: &query.TableRef{Name: "orders"},
 				Condition: &query.BinaryExpr{
 					Left:     &query.Identifier{Name: "id"},
 					Operator: query.TokenEq,
@@ -781,7 +781,7 @@ func TestComputeAggregateResultMore(t *testing.T) {
 
 	// Test with aggregate values
 	aggregateValues := [][]interface{}{
-		nil, // COUNT(*)
+		nil,                                     // COUNT(*)
 		{float64(10), float64(20), float64(30)}, // SUM
 		{float64(10), float64(20), float64(30)}, // AVG
 		{float64(10), float64(20), float64(30)}, // MIN
@@ -1490,7 +1490,6 @@ func TestComputeAggregatesWithNullValues(t *testing.T) {
 
 	t.Logf("COUNT(*) with NULLs: cols=%v, rows=%v", cols, rows)
 }
-
 
 // TestLoadCatalogWithNilTree tests Load with nil tree
 func TestLoadCatalogWithNilTree(t *testing.T) {

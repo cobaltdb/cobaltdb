@@ -26,12 +26,12 @@ var (
 
 // TableDef represents a table definition
 type TableDef struct {
-	Name        string         `json:"name"`
-	Type        string         `json:"type"` // "table" or "collection"
-	Columns     []ColumnDef    `json:"columns"`
-	PrimaryKey  string         `json:"primary_key"`
-	CreatedAt   int64          `json:"created_at"`
-	RootPageID  uint32         `json:"root_page_id"`
+	Name        string          `json:"name"`
+	Type        string          `json:"type"` // "table" or "collection"
+	Columns     []ColumnDef     `json:"columns"`
+	PrimaryKey  string          `json:"primary_key"`
+	CreatedAt   int64           `json:"created_at"`
+	RootPageID  uint32          `json:"root_page_id"`
 	ForeignKeys []ForeignKeyDef `json:"foreign_keys,omitempty"`
 	// Performance: cache column indices (not persisted)
 	columnIndices map[string]int `json:"-"`
@@ -39,23 +39,23 @@ type TableDef struct {
 
 // ForeignKeyDef represents a foreign key constraint
 type ForeignKeyDef struct {
-	Columns       []string `json:"columns"`
-	ReferencedTable string `json:"referenced_table"`
+	Columns           []string `json:"columns"`
+	ReferencedTable   string   `json:"referenced_table"`
 	ReferencedColumns []string `json:"referenced_columns"`
-	OnDelete      string `json:"on_delete"` // NO ACTION, CASCADE, SET NULL, RESTRICT
-	OnUpdate      string `json:"on_update"` // NO ACTION, CASCADE, SET NULL, RESTRICT
+	OnDelete          string   `json:"on_delete"` // NO ACTION, CASCADE, SET NULL, RESTRICT
+	OnUpdate          string   `json:"on_update"` // NO ACTION, CASCADE, SET NULL, RESTRICT
 }
 
 // ColumnDef represents a column definition
 type ColumnDef struct {
-	Name         string           `json:"name"`
-	Type         string           `json:"type"` // INTEGER, TEXT, REAL, BLOB, JSON, BOOLEAN
-	NotNull      bool             `json:"not_null"`
-	Unique       bool             `json:"unique"`
-	PrimaryKey   bool             `json:"primary_key"`
+	Name          string           `json:"name"`
+	Type          string           `json:"type"` // INTEGER, TEXT, REAL, BLOB, JSON, BOOLEAN
+	NotNull       bool             `json:"not_null"`
+	Unique        bool             `json:"unique"`
+	PrimaryKey    bool             `json:"primary_key"`
 	AutoIncrement bool             `json:"auto_increment"`
-	Default      string           `json:"default,omitempty"`
-	Check        query.Expression `json:"check,omitempty"`
+	Default       string           `json:"default,omitempty"`
+	Check         query.Expression `json:"check,omitempty"`
 }
 
 // IndexDef represents an index definition
@@ -94,7 +94,7 @@ type FTSIndexDef struct {
 	TableName string   `json:"table_name"`
 	Columns   []string `json:"columns"`
 	// Inverted index: word -> list of row IDs
-	Index     map[string][]int64 `json:"index"`
+	Index map[string][]int64 `json:"index"`
 }
 
 // Catalog manages database schema metadata
@@ -105,18 +105,17 @@ type Catalog struct {
 	indexTrees        map[string]*btree.BTree // B+Trees for indexes
 	pool              *storage.BufferPool
 	wal               *storage.WAL
-	tableTrees        map[string]*btree.BTree // Each table has its own B+Tree
-	views             map[string]*query.SelectStmt // Views store their SELECT query
-	triggers          map[string]*query.CreateTriggerStmt // Triggers store their definition
+	tableTrees        map[string]*btree.BTree               // Each table has its own B+Tree
+	views             map[string]*query.SelectStmt          // Views store their SELECT query
+	triggers          map[string]*query.CreateTriggerStmt   // Triggers store their definition
 	procedures        map[string]*query.CreateProcedureStmt // Procedures store their definition
-	materializedViews map[string]*MaterializedViewDef // Materialized views
-	ftsIndexes        map[string]*FTSIndexDef // Full-text search indexes
-	stats             map[string]*StatsTableStats // Table statistics for ANALYZE
-	keyCounter        int64 // For generating unique keys
-	txnID             uint64 // Current transaction ID
-	txnActive         bool   // Is a transaction active
+	materializedViews map[string]*MaterializedViewDef       // Materialized views
+	ftsIndexes        map[string]*FTSIndexDef               // Full-text search indexes
+	stats             map[string]*StatsTableStats           // Table statistics for ANALYZE
+	keyCounter        int64                                 // For generating unique keys
+	txnID             uint64                                // Current transaction ID
+	txnActive         bool                                  // Is a transaction active
 }
-
 
 // New creates a new catalog
 func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog {
@@ -232,11 +231,11 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 	// Copy foreign key definitions
 	for i, fk := range stmt.ForeignKeys {
 		tableDef.ForeignKeys[i] = ForeignKeyDef{
-			Columns:          fk.Columns,
-			ReferencedTable:  fk.ReferencedTable,
+			Columns:           fk.Columns,
+			ReferencedTable:   fk.ReferencedTable,
 			ReferencedColumns: fk.ReferencedColumns,
-			OnDelete:        fk.OnDelete,
-			OnUpdate:        fk.OnUpdate,
+			OnDelete:          fk.OnDelete,
+			OnUpdate:          fk.OnUpdate,
 		}
 	}
 
@@ -1363,7 +1362,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 					// Check join condition
 					if join.Condition != nil {
 						combinedRow := append(mainRow, joinRow...)
-						matched, err = evaluateWhere(c,combinedRow, append(mainTable.Columns, joinTable.Columns...), join.Condition, args)
+						matched, err = evaluateWhere(c, combinedRow, append(mainTable.Columns, joinTable.Columns...), join.Condition, args)
 						if err != nil || !matched {
 							continue
 						}
@@ -1450,7 +1449,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 				for _, mainRow := range mainRows {
 					if join.Condition != nil {
 						combinedRow := append(mainRow, joinRow...)
-						matched, err = evaluateWhere(c,combinedRow, append(mainTable.Columns, joinTable.Columns...), join.Condition, args)
+						matched, err = evaluateWhere(c, combinedRow, append(mainTable.Columns, joinTable.Columns...), join.Condition, args)
 						if err != nil || !matched {
 							continue
 						}
@@ -1534,7 +1533,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 					if join.Condition != nil {
 						// Combine rows for evaluation
 						combinedRow := append(mainRow, joinRow...)
-						matched, err := evaluateWhere(c,combinedRow, append(mainTable.Columns, joinTable.Columns...), join.Condition, args)
+						matched, err := evaluateWhere(c, combinedRow, append(mainTable.Columns, joinTable.Columns...), join.Condition, args)
 						if err != nil || !matched {
 							continue
 						}
@@ -1698,7 +1697,7 @@ func (c *Catalog) computeAggregates(table *TableDef, stmt *query.SelectStmt, arg
 
 		// Apply WHERE clause if present
 		if stmt.Where != nil {
-			matched, err := evaluateWhere(c,fullRow, table.Columns, stmt.Where, args)
+			matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
 			if err != nil {
 				continue
 			}
@@ -1878,7 +1877,7 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 
 		// Apply WHERE clause if present (filters rows before grouping)
 		if stmt.Where != nil {
-			matched, err := evaluateWhere(c,fullRow, table.Columns, stmt.Where, args)
+			matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
 			if err != nil {
 				continue
 			}
@@ -3500,7 +3499,7 @@ func (c *Catalog) findUsableIndex(tableName string, where query.Expression) (str
 	case *query.BinaryExpr:
 		if expr.Operator == query.TokenEq {
 			// Check if left side is a column identifier
-		 if ident, ok := expr.Left.(*query.Identifier); ok {
+			if ident, ok := expr.Left.(*query.Identifier); ok {
 				colName := ident.Name
 				// Check if there's an index on this column
 				for idxName, idxDef := range c.indexes {

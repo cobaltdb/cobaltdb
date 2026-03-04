@@ -74,7 +74,9 @@ type errorListener struct{}
 
 func (e *errorListener) Accept() (net.Conn, error) { return nil, fmt.Errorf("accept error") }
 func (e *errorListener) Close() error              { return nil }
-func (e *errorListener) Addr() net.Addr            { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 4201} }
+func (e *errorListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 4201}
+}
 
 // TestStartMasterListenerError tests startMaster with listener error
 func TestStartMasterListenerError(t *testing.T) {

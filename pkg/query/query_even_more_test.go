@@ -1300,7 +1300,7 @@ func TestParseComparisonMore(t *testing.T) {
 	}{
 		{"SELECT * FROM t WHERE a = 1", "="},
 		{"SELECT * FROM t WHERE a != 1", "!="},
-		{"SELECT * FROM t WHERE a <> 1", "!="},  // <> is normalized to !=
+		{"SELECT * FROM t WHERE a <> 1", "!="}, // <> is normalized to !=
 		{"SELECT * FROM t WHERE a < 1", "<"},
 		{"SELECT * FROM t WHERE a > 1", ">"},
 		{"SELECT * FROM t WHERE a <= 1", "<="},

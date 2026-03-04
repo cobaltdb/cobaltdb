@@ -1009,7 +1009,6 @@ func TestGetPageEviction(t *testing.T) {
 	t.Log("Page eviction test completed")
 }
 
-
 // TestBufferPoolCloseMultipleTimes tests closing buffer pool multiple times
 func TestBufferPoolCloseMultipleTimes(t *testing.T) {
 	backend := NewMemory()

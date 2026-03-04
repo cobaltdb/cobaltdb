@@ -15,11 +15,11 @@ var (
 
 // CachedPage represents a page in the buffer pool
 type CachedPage struct {
-	id       uint32
-	data     []byte // PageSize bytes
-	dirty    bool
-	pinned   int32 // atomic pin count
-	lruElem  *list.Element
+	id      uint32
+	data    []byte // PageSize bytes
+	dirty   bool
+	pinned  int32 // atomic pin count
+	lruElem *list.Element
 }
 
 // ID returns the page ID
@@ -64,22 +64,37 @@ func (p *CachedPage) IsPinned() bool {
 
 // BufferPool manages cached pages in memory
 type BufferPool struct {
-	capacity int                    // max pages in cache
-	pages    map[uint32]*CachedPage // pageID -> cached page
-	lru      *list.List             // LRU eviction list
-	mu       sync.RWMutex
-	backend  Backend
-	wal      *WAL
+	capacity   int                    // max pages in cache
+	pages      map[uint32]*CachedPage // pageID -> cached page
+	lru        *list.List             // LRU eviction list
+	mu         sync.RWMutex
+	backend    Backend
+	wal        *WAL
+	nextPageID uint32 // next available page ID for allocation
 }
 
 // NewBufferPool creates a new buffer pool
 func NewBufferPool(capacity int, backend Backend) *BufferPool {
-	return &BufferPool{
+	bp := &BufferPool{
 		capacity: capacity,
 		pages:    make(map[uint32]*CachedPage),
 		lru:      list.New(),
 		backend:  backend,
 	}
+
+	// Initialize nextPageID based on backend size
+	// Page 0 is reserved for meta page, so start from 1 if backend is empty
+	backendSize := backend.Size()
+	if backendSize == 0 {
+		bp.nextPageID = 1 // Reserve page 0 for meta page
+	} else {
+		bp.nextPageID = uint32((backendSize + PageSize - 1) / PageSize)
+		if bp.nextPageID == 0 {
+			bp.nextPageID = 1
+		}
+	}
+
+	return bp
 }
 
 // SetWAL sets the WAL for the buffer pool
@@ -152,19 +167,15 @@ func (bp *BufferPool) NewPage(pageType PageType) (*CachedPage, error) {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 
-	// Find next available page ID
-	// Start from 0 (page 0 is the meta page)
-	pageID := uint32(0)
-	for {
-		if _, exists := bp.pages[pageID]; !exists {
-			break
-		}
-		pageID++
-	}
+	// Use next available page ID
+	pageID := bp.nextPageID
+	bp.nextPageID++
 
 	// Evict if at capacity
 	if len(bp.pages) >= bp.capacity {
 		if err := bp.evict(); err != nil {
+			// Rollback the nextPageID increment on failure
+			bp.nextPageID--
 			return nil, err
 		}
 	}

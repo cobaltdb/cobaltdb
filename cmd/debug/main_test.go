@@ -176,9 +176,9 @@ func TestCRUDWithInMemory(t *testing.T) {
 		t.Fatalf("Failed to create table: %v", err)
 	}
 
-	// INSERT
-	for i := 0; i < 10; i++ {
-		_, err = db.Exec(ctx, "INSERT INTO test (value) VALUES (?)", "value")
+	// INSERT (with explicit IDs since AUTO INCREMENT is not fully implemented)
+	for i := 1; i <= 10; i++ {
+		_, err = db.Exec(ctx, "INSERT INTO test (id, value) VALUES (?, ?)", i, "value")
 		if err != nil {
 			t.Fatalf("Failed to insert row %d: %v", i, err)
 		}

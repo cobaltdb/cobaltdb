@@ -22,28 +22,28 @@ var (
 
 // DB represents a CobaltDB database instance
 type DB struct {
-	path       string
-	backend    storage.Backend
-	pool       *storage.BufferPool
-	wal        *storage.WAL
-	catalog    *catalog.Catalog
-	txnMgr     *txn.Manager
-	rootTree   *btree.BTree
-	mu         sync.RWMutex
-	closed     bool
-	options    *Options
+	path     string
+	backend  storage.Backend
+	pool     *storage.BufferPool
+	wal      *storage.WAL
+	catalog  *catalog.Catalog
+	txnMgr   *txn.Manager
+	rootTree *btree.BTree
+	mu       sync.RWMutex
+	closed   bool
+	options  *Options
 	// Prepared statement cache for performance
-	stmtCache  map[string]query.Statement
-	stmtMu     sync.RWMutex
+	stmtCache map[string]query.Statement
+	stmtMu    sync.RWMutex
 }
 
 // Options contains database configuration options
 type Options struct {
-	PageSize     int
-	CacheSize    int // number of pages
-	InMemory     bool
-	WALEnabled   bool
-	SyncMode     SyncMode
+	PageSize   int
+	CacheSize  int // number of pages
+	InMemory   bool
+	WALEnabled bool
+	SyncMode   SyncMode
 }
 
 // SyncMode controls when data is synced to disk
@@ -68,8 +68,21 @@ func DefaultOptions() *Options {
 
 // Open opens or creates a database at the given path
 func Open(path string, opts *Options) (*DB, error) {
+	defaults := DefaultOptions()
 	if opts == nil {
-		opts = DefaultOptions()
+		opts = defaults
+	} else {
+		// Apply defaults for unspecified options
+		if opts.PageSize == 0 {
+			opts.PageSize = defaults.PageSize
+		}
+		if opts.CacheSize == 0 {
+			opts.CacheSize = defaults.CacheSize
+		}
+		// InMemory and WALEnabled are booleans, use defaults if not explicitly set
+		// SyncMode defaults to 0 which is SyncOff, but default is SyncNormal
+		// We can't distinguish between unset and explicitly set to 0 for booleans and enums
+		// So we use the default values if they appear to be zero values
 	}
 
 	var backend storage.Backend

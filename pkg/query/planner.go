@@ -74,9 +74,9 @@ type AggregateFunc struct {
 
 // Planner creates query execution plans
 type Planner struct {
-	catalog      CatalogInterface
-	stats        StatsInterface
-	defaultCost  CostModel
+	catalog     CatalogInterface
+	stats       StatsInterface
+	defaultCost CostModel
 }
 
 // CatalogInterface provides catalog access for the planner
@@ -88,10 +88,10 @@ type CatalogInterface interface {
 
 // TableInfo represents table metadata
 type TableInfo struct {
-	Name       string
-	Columns    []ColumnInfo
-	RowCount   uint64
-	PageCount  uint64
+	Name      string
+	Columns   []ColumnInfo
+	RowCount  uint64
+	PageCount uint64
 }
 
 // ColumnInfo represents column metadata
@@ -103,10 +103,10 @@ type ColumnInfo struct {
 
 // IndexInfo represents index metadata
 type IndexInfo struct {
-	Name       string
-	TableName  string
-	Columns    []string
-	IsUnique   bool
+	Name      string
+	TableName string
+	Columns   []string
+	IsUnique  bool
 }
 
 // StatsInterface provides statistics access
@@ -340,7 +340,7 @@ func (p *Planner) addFilter(child *QueryPlan, filter Expression) *QueryPlan {
 		Columns:  child.Columns,
 		Filter:   filter,
 		Children: child.Children,
-		Cost:     child.Cost * 1.1, // Slight overhead for filtering
+		Cost:     child.Cost * 1.1,                     // Slight overhead for filtering
 		EstRows:  uint64(float64(child.EstRows) * 0.3), // Assume 30% selectivity
 	}
 }
@@ -357,10 +357,10 @@ func (p *Planner) tryIndexScan(tableName string, filter Expression) *QueryPlan {
 			selectivity := 0.1 // Assume 10% for index lookup
 
 			plan := &QueryPlan{
-				Type:    PlanTypeIndexScan,
-				Table:   tableName,
-				Index:   idx.Name,
-				Filter:  filter,
+				Type:   PlanTypeIndexScan,
+				Table:  tableName,
+				Index:  idx.Name,
+				Filter: filter,
 			}
 
 			if stats, ok := p.stats.GetTableStats(tableName); ok {

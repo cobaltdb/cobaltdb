@@ -19,20 +19,20 @@ type Expression interface {
 
 // SelectStmt represents a SELECT statement
 type SelectStmt struct {
-	Distinct   bool
-	Columns    []Expression
-	From       *TableRef
-	Joins      []*JoinClause
-	Where      Expression
-	GroupBy    []Expression
-	Having     Expression
-	OrderBy    []*OrderByExpr
-	Limit      Expression
-	Offset     Expression
+	Distinct bool
+	Columns  []Expression
+	From     *TableRef
+	Joins    []*JoinClause
+	Where    Expression
+	GroupBy  []Expression
+	Having   Expression
+	OrderBy  []*OrderByExpr
+	Limit    Expression
+	Offset   Expression
 }
 
-func (s *SelectStmt) nodeType() string     { return "SelectStmt" }
-func (s *SelectStmt) statementNode()       {}
+func (s *SelectStmt) nodeType() string { return "SelectStmt" }
+func (s *SelectStmt) statementNode()   {}
 
 // InsertStmt represents an INSERT statement
 type InsertStmt struct {
@@ -41,8 +41,8 @@ type InsertStmt struct {
 	Values  [][]Expression
 }
 
-func (s *InsertStmt) nodeType() string     { return "InsertStmt" }
-func (s *InsertStmt) statementNode()       {}
+func (s *InsertStmt) nodeType() string { return "InsertStmt" }
+func (s *InsertStmt) statementNode()   {}
 
 // UpdateStmt represents an UPDATE statement
 type UpdateStmt struct {
@@ -51,8 +51,8 @@ type UpdateStmt struct {
 	Where Expression
 }
 
-func (s *UpdateStmt) nodeType() string     { return "UpdateStmt" }
-func (s *UpdateStmt) statementNode()       {}
+func (s *UpdateStmt) nodeType() string { return "UpdateStmt" }
+func (s *UpdateStmt) statementNode()   {}
 
 // SetClause represents a column assignment in UPDATE
 type SetClause struct {
@@ -66,8 +66,8 @@ type DeleteStmt struct {
 	Where Expression
 }
 
-func (s *DeleteStmt) nodeType() string     { return "DeleteStmt" }
-func (s *DeleteStmt) statementNode()       {}
+func (s *DeleteStmt) nodeType() string { return "DeleteStmt" }
+func (s *DeleteStmt) statementNode()   {}
 
 // CreateTableStmt represents a CREATE TABLE statement
 type CreateTableStmt struct {
@@ -77,8 +77,8 @@ type CreateTableStmt struct {
 	ForeignKeys []*ForeignKeyDef
 }
 
-func (s *CreateTableStmt) nodeType() string     { return "CreateTableStmt" }
-func (s *CreateTableStmt) statementNode()       {}
+func (s *CreateTableStmt) nodeType() string { return "CreateTableStmt" }
+func (s *CreateTableStmt) statementNode()   {}
 
 // DropTableStmt represents a DROP TABLE statement
 type DropTableStmt struct {
@@ -86,8 +86,8 @@ type DropTableStmt struct {
 	Table    string
 }
 
-func (s *DropTableStmt) nodeType() string     { return "DropTableStmt" }
-func (s *DropTableStmt) statementNode()       {}
+func (s *DropTableStmt) nodeType() string { return "DropTableStmt" }
+func (s *DropTableStmt) statementNode()   {}
 
 // CreateIndexStmt represents a CREATE INDEX statement
 type CreateIndexStmt struct {
@@ -98,8 +98,8 @@ type CreateIndexStmt struct {
 	Unique      bool
 }
 
-func (s *CreateIndexStmt) nodeType() string     { return "CreateIndexStmt" }
-func (s *CreateIndexStmt) statementNode()       {}
+func (s *CreateIndexStmt) nodeType() string { return "CreateIndexStmt" }
+func (s *CreateIndexStmt) statementNode()   {}
 
 // DropIndexStmt represents a DROP INDEX statement
 type DropIndexStmt struct {
@@ -107,8 +107,8 @@ type DropIndexStmt struct {
 	Index    string
 }
 
-func (s *DropIndexStmt) nodeType() string     { return "DropIndexStmt" }
-func (s *DropIndexStmt) statementNode()       {}
+func (s *DropIndexStmt) nodeType() string { return "DropIndexStmt" }
+func (s *DropIndexStmt) statementNode()   {}
 
 // CreateCollectionStmt represents a CREATE COLLECTION statement
 type CreateCollectionStmt struct {
@@ -116,8 +116,8 @@ type CreateCollectionStmt struct {
 	Name        string
 }
 
-func (s *CreateCollectionStmt) nodeType() string     { return "CreateCollectionStmt" }
-func (s *CreateCollectionStmt) statementNode()       {}
+func (s *CreateCollectionStmt) nodeType() string { return "CreateCollectionStmt" }
+func (s *CreateCollectionStmt) statementNode()   {}
 
 // CreateViewStmt represents a CREATE VIEW statement
 type CreateViewStmt struct {
@@ -126,8 +126,8 @@ type CreateViewStmt struct {
 	Query       *SelectStmt
 }
 
-func (s *CreateViewStmt) nodeType() string     { return "CreateViewStmt" }
-func (s *CreateViewStmt) statementNode()       {}
+func (s *CreateViewStmt) nodeType() string { return "CreateViewStmt" }
+func (s *CreateViewStmt) statementNode()   {}
 
 // DropViewStmt represents a DROP VIEW statement
 type DropViewStmt struct {
@@ -135,8 +135,8 @@ type DropViewStmt struct {
 	Name     string
 }
 
-func (s *DropViewStmt) nodeType() string     { return "DropViewStmt" }
-func (s *DropViewStmt) statementNode()       {}
+func (s *DropViewStmt) nodeType() string { return "DropViewStmt" }
+func (s *DropViewStmt) statementNode()   {}
 
 // CreateTriggerStmt represents a CREATE TRIGGER statement
 type CreateTriggerStmt struct {
@@ -148,8 +148,8 @@ type CreateTriggerStmt struct {
 	Body        []Statement
 }
 
-func (s *CreateTriggerStmt) nodeType() string     { return "CreateTriggerStmt" }
-func (s *CreateTriggerStmt) statementNode()        {}
+func (s *CreateTriggerStmt) nodeType() string { return "CreateTriggerStmt" }
+func (s *CreateTriggerStmt) statementNode()   {}
 
 // DropTriggerStmt represents a DROP TRIGGER statement
 type DropTriggerStmt struct {
@@ -157,8 +157,8 @@ type DropTriggerStmt struct {
 	Name     string
 }
 
-func (s *DropTriggerStmt) nodeType() string     { return "DropTriggerStmt" }
-func (s *DropTriggerStmt) statementNode()       {}
+func (s *DropTriggerStmt) nodeType() string { return "DropTriggerStmt" }
+func (s *DropTriggerStmt) statementNode()   {}
 
 // CreateProcedureStmt represents a CREATE PROCEDURE statement
 type CreateProcedureStmt struct {
@@ -168,8 +168,8 @@ type CreateProcedureStmt struct {
 	Body        []Statement
 }
 
-func (s *CreateProcedureStmt) nodeType() string     { return "CreateProcedureStmt" }
-func (s *CreateProcedureStmt) statementNode()        {}
+func (s *CreateProcedureStmt) nodeType() string { return "CreateProcedureStmt" }
+func (s *CreateProcedureStmt) statementNode()   {}
 
 // DropProcedureStmt represents a DROP PROCEDURE statement
 type DropProcedureStmt struct {
@@ -177,8 +177,8 @@ type DropProcedureStmt struct {
 	Name     string
 }
 
-func (s *DropProcedureStmt) nodeType() string     { return "DropProcedureStmt" }
-func (s *DropProcedureStmt) statementNode()       {}
+func (s *DropProcedureStmt) nodeType() string { return "DropProcedureStmt" }
+func (s *DropProcedureStmt) statementNode()   {}
 
 // ParamDef represents a procedure parameter
 type ParamDef struct {
@@ -192,48 +192,48 @@ type CallProcedureStmt struct {
 	Params []Expression
 }
 
-func (s *CallProcedureStmt) nodeType() string     { return "CallProcedureStmt" }
-func (s *CallProcedureStmt) statementNode()       {}
+func (s *CallProcedureStmt) nodeType() string { return "CallProcedureStmt" }
+func (s *CallProcedureStmt) statementNode()   {}
 
 // BeginStmt represents a BEGIN TRANSACTION statement
 type BeginStmt struct {
 	ReadOnly bool
 }
 
-func (s *BeginStmt) nodeType() string     { return "BeginStmt" }
-func (s *BeginStmt) statementNode()       {}
+func (s *BeginStmt) nodeType() string { return "BeginStmt" }
+func (s *BeginStmt) statementNode()   {}
 
 // CommitStmt represents a COMMIT statement
 type CommitStmt struct{}
 
-func (s *CommitStmt) nodeType() string     { return "CommitStmt" }
-func (s *CommitStmt) statementNode()       {}
+func (s *CommitStmt) nodeType() string { return "CommitStmt" }
+func (s *CommitStmt) statementNode()   {}
 
 // RollbackStmt represents a ROLLBACK statement
 type RollbackStmt struct{}
 
-func (s *RollbackStmt) nodeType() string     { return "RollbackStmt" }
-func (s *RollbackStmt) statementNode()       {}
+func (s *RollbackStmt) nodeType() string { return "RollbackStmt" }
+func (s *RollbackStmt) statementNode()   {}
 
 // ColumnDef represents a column definition in CREATE TABLE
 type ColumnDef struct {
-	Name         string
-	Type         TokenType
-	NotNull      bool
-	Unique       bool
-	PrimaryKey   bool
+	Name          string
+	Type          TokenType
+	NotNull       bool
+	Unique        bool
+	PrimaryKey    bool
 	AutoIncrement bool
-	Default      Expression
-	Check        Expression // CHECK (expression)
+	Default       Expression
+	Check         Expression // CHECK (expression)
 }
 
 // ForeignKeyDef represents a foreign key constraint
 type ForeignKeyDef struct {
-	Columns          []string
-	ReferencedTable  string
+	Columns           []string
+	ReferencedTable   string
 	ReferencedColumns []string
-	OnDelete         string
-	OnUpdate         string
+	OnDelete          string
+	OnUpdate          string
 }
 
 // TableRef represents a table reference
@@ -260,8 +260,8 @@ type Identifier struct {
 	Name string
 }
 
-func (e *Identifier) nodeType() string     { return "Identifier" }
-func (e *Identifier) expressionNode()      {}
+func (e *Identifier) nodeType() string { return "Identifier" }
+func (e *Identifier) expressionNode()  {}
 
 // QualifiedIdentifier represents a qualified identifier (table.column)
 type QualifiedIdentifier struct {
@@ -269,16 +269,16 @@ type QualifiedIdentifier struct {
 	Column string
 }
 
-func (e *QualifiedIdentifier) nodeType() string     { return "QualifiedIdentifier" }
-func (e *QualifiedIdentifier) expressionNode()      {}
+func (e *QualifiedIdentifier) nodeType() string { return "QualifiedIdentifier" }
+func (e *QualifiedIdentifier) expressionNode()  {}
 
 // StringLiteral represents a string literal
 type StringLiteral struct {
 	Value string
 }
 
-func (e *StringLiteral) nodeType() string     { return "StringLiteral" }
-func (e *StringLiteral) expressionNode()      {}
+func (e *StringLiteral) nodeType() string { return "StringLiteral" }
+func (e *StringLiteral) expressionNode()  {}
 
 // NumberLiteral represents a numeric literal
 type NumberLiteral struct {
@@ -286,22 +286,22 @@ type NumberLiteral struct {
 	Raw   string
 }
 
-func (e *NumberLiteral) nodeType() string     { return "NumberLiteral" }
-func (e *NumberLiteral) expressionNode()      {}
+func (e *NumberLiteral) nodeType() string { return "NumberLiteral" }
+func (e *NumberLiteral) expressionNode()  {}
 
 // BooleanLiteral represents a boolean literal
 type BooleanLiteral struct {
 	Value bool
 }
 
-func (e *BooleanLiteral) nodeType() string     { return "BooleanLiteral" }
-func (e *BooleanLiteral) expressionNode()      {}
+func (e *BooleanLiteral) nodeType() string { return "BooleanLiteral" }
+func (e *BooleanLiteral) expressionNode()  {}
 
 // NullLiteral represents NULL
 type NullLiteral struct{}
 
-func (e *NullLiteral) nodeType() string     { return "NullLiteral" }
-func (e *NullLiteral) expressionNode()      {}
+func (e *NullLiteral) nodeType() string { return "NullLiteral" }
+func (e *NullLiteral) expressionNode()  {}
 
 // BinaryExpr represents a binary expression
 type BinaryExpr struct {
@@ -310,8 +310,8 @@ type BinaryExpr struct {
 	Right    Expression
 }
 
-func (e *BinaryExpr) nodeType() string     { return "BinaryExpr" }
-func (e *BinaryExpr) expressionNode()      {}
+func (e *BinaryExpr) nodeType() string { return "BinaryExpr" }
+func (e *BinaryExpr) expressionNode()  {}
 
 // UnaryExpr represents a unary expression
 type UnaryExpr struct {
@@ -319,8 +319,8 @@ type UnaryExpr struct {
 	Expr     Expression
 }
 
-func (e *UnaryExpr) nodeType() string     { return "UnaryExpr" }
-func (e *UnaryExpr) expressionNode()      {}
+func (e *UnaryExpr) nodeType() string { return "UnaryExpr" }
+func (e *UnaryExpr) expressionNode()  {}
 
 // FunctionCall represents a function call
 type FunctionCall struct {
@@ -328,16 +328,16 @@ type FunctionCall struct {
 	Args []Expression
 }
 
-func (e *FunctionCall) nodeType() string     { return "FunctionCall" }
-func (e *FunctionCall) expressionNode()      {}
+func (e *FunctionCall) nodeType() string { return "FunctionCall" }
+func (e *FunctionCall) expressionNode()  {}
 
 // StarExpr represents * in SELECT *
 type StarExpr struct {
 	Table string // optional table prefix
 }
 
-func (e *StarExpr) nodeType() string     { return "StarExpr" }
-func (e *StarExpr) expressionNode()      {}
+func (e *StarExpr) nodeType() string { return "StarExpr" }
+func (e *StarExpr) expressionNode()  {}
 
 // JSONPathExpr represents a JSON path expression (column->>'path')
 type JSONPathExpr struct {
@@ -346,8 +346,8 @@ type JSONPathExpr struct {
 	AsText bool // ->> vs ->
 }
 
-func (e *JSONPathExpr) nodeType() string     { return "JSONPathExpr" }
-func (e *JSONPathExpr) expressionNode()      {}
+func (e *JSONPathExpr) nodeType() string { return "JSONPathExpr" }
+func (e *JSONPathExpr) expressionNode()  {}
 
 // JSONContainsExpr represents a JSON contains expression (column @> value)
 type JSONContainsExpr struct {
@@ -355,16 +355,16 @@ type JSONContainsExpr struct {
 	Value  Expression
 }
 
-func (e *JSONContainsExpr) nodeType() string     { return "JSONContainsExpr" }
-func (e *JSONContainsExpr) expressionNode()      {}
+func (e *JSONContainsExpr) nodeType() string { return "JSONContainsExpr" }
+func (e *JSONContainsExpr) expressionNode()  {}
 
 // PlaceholderExpr represents a ? placeholder
 type PlaceholderExpr struct {
 	Index int
 }
 
-func (e *PlaceholderExpr) nodeType() string     { return "PlaceholderExpr" }
-func (e *PlaceholderExpr) expressionNode()      {}
+func (e *PlaceholderExpr) nodeType() string { return "PlaceholderExpr" }
+func (e *PlaceholderExpr) expressionNode()  {}
 
 // InExpr represents an IN expression
 type InExpr struct {
@@ -374,8 +374,8 @@ type InExpr struct {
 	Subquery *SelectStmt // For IN (SELECT ...)
 }
 
-func (e *InExpr) nodeType() string     { return "InExpr" }
-func (e *InExpr) expressionNode()      {}
+func (e *InExpr) nodeType() string { return "InExpr" }
+func (e *InExpr) expressionNode()  {}
 
 // BetweenExpr represents a BETWEEN expression
 type BetweenExpr struct {
@@ -385,8 +385,8 @@ type BetweenExpr struct {
 	Not   bool
 }
 
-func (e *BetweenExpr) nodeType() string     { return "BetweenExpr" }
-func (e *BetweenExpr) expressionNode()      {}
+func (e *BetweenExpr) nodeType() string { return "BetweenExpr" }
+func (e *BetweenExpr) expressionNode()  {}
 
 // LikeExpr represents a LIKE expression
 type LikeExpr struct {
@@ -395,8 +395,8 @@ type LikeExpr struct {
 	Not     bool
 }
 
-func (e *LikeExpr) nodeType() string     { return "LikeExpr" }
-func (e *LikeExpr) expressionNode()      {}
+func (e *LikeExpr) nodeType() string { return "LikeExpr" }
+func (e *LikeExpr) expressionNode()  {}
 
 // IsNullExpr represents an IS NULL expression
 type IsNullExpr struct {
@@ -404,8 +404,8 @@ type IsNullExpr struct {
 	Not  bool
 }
 
-func (e *IsNullExpr) nodeType() string     { return "IsNullExpr" }
-func (e *IsNullExpr) expressionNode()      {}
+func (e *IsNullExpr) nodeType() string { return "IsNullExpr" }
+func (e *IsNullExpr) expressionNode()  {}
 
 // CastExpr represents a CAST expression
 type CastExpr struct {
@@ -413,14 +413,14 @@ type CastExpr struct {
 	DataType TokenType
 }
 
-func (e *CastExpr) nodeType() string     { return "CastExpr" }
-func (e *CastExpr) expressionNode()      {}
+func (e *CastExpr) nodeType() string { return "CastExpr" }
+func (e *CastExpr) expressionNode()  {}
 
 // CaseExpr represents a CASE expression
 type CaseExpr struct {
-	Expr     Expression
-	Whens    []*WhenClause
-	Else     Expression
+	Expr  Expression
+	Whens []*WhenClause
+	Else  Expression
 }
 
 // WhenClause represents a WHEN clause in CASE
@@ -429,16 +429,16 @@ type WhenClause struct {
 	Result    Expression
 }
 
-func (e *CaseExpr) nodeType() string     { return "CaseExpr" }
-func (e *CaseExpr) expressionNode()      {}
+func (e *CaseExpr) nodeType() string { return "CaseExpr" }
+func (e *CaseExpr) expressionNode()  {}
 
 // SubqueryExpr represents a subquery expression
 type SubqueryExpr struct {
 	Query *SelectStmt
 }
 
-func (e *SubqueryExpr) nodeType() string     { return "SubqueryExpr" }
-func (e *SubqueryExpr) expressionNode()      {}
+func (e *SubqueryExpr) nodeType() string { return "SubqueryExpr" }
+func (e *SubqueryExpr) expressionNode()  {}
 
 // ExistsExpr represents an EXISTS expression
 type ExistsExpr struct {
@@ -446,19 +446,19 @@ type ExistsExpr struct {
 	Not      bool
 }
 
-func (e *ExistsExpr) nodeType() string     { return "ExistsExpr" }
-func (e *ExistsExpr) expressionNode()      {}
+func (e *ExistsExpr) nodeType() string { return "ExistsExpr" }
+func (e *ExistsExpr) expressionNode()  {}
 
 // WindowExpr represents a window function expression
 type WindowExpr struct {
-	Function   string       // ROW_NUMBER, RANK, DENSE_RANK, etc.
-	Args       []Expression // Function arguments
-	PartitionBy []Expression // PARTITION BY clause
-	OrderBy    []*OrderByExpr // ORDER BY clause
+	Function    string         // ROW_NUMBER, RANK, DENSE_RANK, etc.
+	Args        []Expression   // Function arguments
+	PartitionBy []Expression   // PARTITION BY clause
+	OrderBy     []*OrderByExpr // ORDER BY clause
 }
 
-func (e *WindowExpr) nodeType() string     { return "WindowExpr" }
-func (e *WindowExpr) expressionNode()      {}
+func (e *WindowExpr) nodeType() string { return "WindowExpr" }
+func (e *WindowExpr) expressionNode()  {}
 
 // WindowSpec represents a window specification (OVER clause)
 type WindowSpec struct {
@@ -466,42 +466,42 @@ type WindowSpec struct {
 	OrderBy     []*OrderByExpr
 }
 
-func (e *WindowSpec) nodeType() string     { return "WindowSpec" }
-func (e *WindowSpec) expressionNode()      {}
+func (e *WindowSpec) nodeType() string { return "WindowSpec" }
+func (e *WindowSpec) expressionNode()  {}
 
 // CTEDef represents a CTE (Common Table Expression) definition
 type CTEDef struct {
-	Name       string
-	Columns    []string // Optional column list
-	Query      *SelectStmt
+	Name        string
+	Columns     []string // Optional column list
+	Query       *SelectStmt
 	IsRecursive bool
 }
 
 // SelectStmtWithCTE represents a SELECT statement with CTEs
 type SelectStmtWithCTE struct {
-	CTEs       []*CTEDef
+	CTEs        []*CTEDef
 	IsRecursive bool
-	Select     *SelectStmt
+	Select      *SelectStmt
 }
 
-func (s *SelectStmtWithCTE) nodeType() string     { return "SelectStmtWithCTE" }
-func (s *SelectStmtWithCTE) statementNode()       {}
+func (s *SelectStmtWithCTE) nodeType() string { return "SelectStmtWithCTE" }
+func (s *SelectStmtWithCTE) statementNode()   {}
 
 // VacuumStmt represents a VACUUM statement
 type VacuumStmt struct {
 	Table string // Optional table name
 }
 
-func (s *VacuumStmt) nodeType() string     { return "VacuumStmt" }
-func (s *VacuumStmt) statementNode()       {}
+func (s *VacuumStmt) nodeType() string { return "VacuumStmt" }
+func (s *VacuumStmt) statementNode()   {}
 
 // AnalyzeStmt represents an ANALYZE statement
 type AnalyzeStmt struct {
 	Table string // Optional table name
 }
 
-func (s *AnalyzeStmt) nodeType() string     { return "AnalyzeStmt" }
-func (s *AnalyzeStmt) statementNode()       {}
+func (s *AnalyzeStmt) nodeType() string { return "AnalyzeStmt" }
+func (s *AnalyzeStmt) statementNode()   {}
 
 // CreateFTSIndexStmt represents a CREATE FULLTEXT INDEX statement
 type CreateFTSIndexStmt struct {
@@ -511,8 +511,8 @@ type CreateFTSIndexStmt struct {
 	Columns     []string
 }
 
-func (s *CreateFTSIndexStmt) nodeType() string     { return "CreateFTSIndexStmt" }
-func (s *CreateFTSIndexStmt) statementNode()       {}
+func (s *CreateFTSIndexStmt) nodeType() string { return "CreateFTSIndexStmt" }
+func (s *CreateFTSIndexStmt) statementNode()   {}
 
 // MatchExpr represents a MATCH ... AGAINST expression for FTS
 type MatchExpr struct {
@@ -521,8 +521,8 @@ type MatchExpr struct {
 	Mode    string // BOOLEAN MODE, NATURAL LANGUAGE MODE
 }
 
-func (e *MatchExpr) nodeType() string     { return "MatchExpr" }
-func (e *MatchExpr) expressionNode()      {}
+func (e *MatchExpr) nodeType() string { return "MatchExpr" }
+func (e *MatchExpr) expressionNode()  {}
 
 // CreateMaterializedViewStmt represents a CREATE MATERIALIZED VIEW statement
 type CreateMaterializedViewStmt struct {
@@ -531,8 +531,8 @@ type CreateMaterializedViewStmt struct {
 	Query       *SelectStmt
 }
 
-func (s *CreateMaterializedViewStmt) nodeType() string     { return "CreateMaterializedViewStmt" }
-func (s *CreateMaterializedViewStmt) statementNode()       {}
+func (s *CreateMaterializedViewStmt) nodeType() string { return "CreateMaterializedViewStmt" }
+func (s *CreateMaterializedViewStmt) statementNode()   {}
 
 // DropMaterializedViewStmt represents a DROP MATERIALIZED VIEW statement
 type DropMaterializedViewStmt struct {
@@ -540,13 +540,13 @@ type DropMaterializedViewStmt struct {
 	Name     string
 }
 
-func (s *DropMaterializedViewStmt) nodeType() string     { return "DropMaterializedViewStmt" }
-func (s *DropMaterializedViewStmt) statementNode()       {}
+func (s *DropMaterializedViewStmt) nodeType() string { return "DropMaterializedViewStmt" }
+func (s *DropMaterializedViewStmt) statementNode()   {}
 
 // RefreshMaterializedViewStmt represents a REFRESH MATERIALIZED VIEW statement
 type RefreshMaterializedViewStmt struct {
 	Name string
 }
 
-func (s *RefreshMaterializedViewStmt) nodeType() string     { return "RefreshMaterializedViewStmt" }
-func (s *RefreshMaterializedViewStmt) statementNode()       {}
+func (s *RefreshMaterializedViewStmt) nodeType() string { return "RefreshMaterializedViewStmt" }
+func (s *RefreshMaterializedViewStmt) statementNode()   {}

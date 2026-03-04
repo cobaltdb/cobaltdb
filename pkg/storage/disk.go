@@ -16,7 +16,7 @@ type DiskBackend struct {
 
 // OpenDisk opens or creates a disk-based storage backend
 func OpenDisk(path string) (*DiskBackend, error) {
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}

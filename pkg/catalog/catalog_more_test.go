@@ -5086,8 +5086,8 @@ func TestOrderByDescString(t *testing.T) {
 	}, nil)
 
 	stmt := &query.SelectStmt{
-		Columns:  []query.Expression{&query.Identifier{Name: "value"}},
-		From:     &query.TableRef{Name: "test_order_desc"},
+		Columns: []query.Expression{&query.Identifier{Name: "value"}},
+		From:    &query.TableRef{Name: "test_order_desc"},
 		OrderBy: []*query.OrderByExpr{
 			{Expr: &query.Identifier{Name: "value"}, Desc: true},
 		},
@@ -5730,8 +5730,8 @@ func TestOrderByNumeric(t *testing.T) {
 	}, nil)
 
 	stmt := &query.SelectStmt{
-		Columns:  []query.Expression{&query.Identifier{Name: "value"}},
-		From:     &query.TableRef{Name: "test_order_num"},
+		Columns: []query.Expression{&query.Identifier{Name: "value"}},
+		From:    &query.TableRef{Name: "test_order_num"},
 		OrderBy: []*query.OrderByExpr{
 			{Expr: &query.Identifier{Name: "value"}, Desc: false},
 		},
@@ -5866,8 +5866,8 @@ func TestFindUsableIndex(t *testing.T) {
 
 	// Create index on id column
 	catalog.CreateIndex(&query.CreateIndexStmt{
-		Index:  "idx_id",
-		Table:  "test_idx",
+		Index:   "idx_id",
+		Table:   "test_idx",
 		Columns: []string{"id"},
 	})
 
@@ -5934,8 +5934,8 @@ func TestUseIndexForQuery(t *testing.T) {
 
 	// Create index
 	catalog.CreateIndex(&query.CreateIndexStmt{
-		Index:  "idx_use_id",
-		Table:  "test_use_idx",
+		Index:   "idx_use_id",
+		Table:   "test_use_idx",
 		Columns: []string{"id"},
 	})
 
@@ -6502,11 +6502,11 @@ func TestEvaluateLikeWithPatterns(t *testing.T) {
 		pattern  string
 		expected int
 	}{
-		{"A%", 2},    // Starts with A or a (case insensitive)
-		{"%e", 2},    // Ends with e
-		{"%li%", 2},  // Contains li
-		{"B_b", 1},   // B followed by any char followed by b
-		{"Z%", 0},    // Starts with Z (no matches)
+		{"A%", 2},   // Starts with A or a (case insensitive)
+		{"%e", 2},   // Ends with e
+		{"%li%", 2}, // Contains li
+		{"B_b", 1},  // B followed by any char followed by b
+		{"Z%", 0},   // Starts with Z (no matches)
 	}
 
 	for _, tt := range tests {
@@ -6745,7 +6745,7 @@ func TestApplyGroupByOrderBy(t *testing.T) {
 			&query.FunctionCall{Name: "COUNT", Args: []query.Expression{&query.StarExpr{}}},
 			&query.Identifier{Name: "category"},
 		},
-		From: &query.TableRef{Name: "test_group_order"},
+		From:    &query.TableRef{Name: "test_group_order"},
 		GroupBy: []query.Expression{&query.Identifier{Name: "category"}},
 		OrderBy: []*query.OrderByExpr{
 			{
@@ -6845,7 +6845,7 @@ func TestEvaluateHaving(t *testing.T) {
 			&query.Identifier{Name: "category"},
 			&query.FunctionCall{Name: "SUM", Args: []query.Expression{&query.Identifier{Name: "value"}}},
 		},
-		From: &query.TableRef{Name: "test_having"},
+		From:    &query.TableRef{Name: "test_having"},
 		GroupBy: []query.Expression{&query.Identifier{Name: "category"}},
 		Having: &query.BinaryExpr{
 			Left:     &query.FunctionCall{Name: "SUM", Args: []query.Expression{&query.Identifier{Name: "value"}}},

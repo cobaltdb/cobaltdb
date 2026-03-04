@@ -30,7 +30,6 @@ func TestManagerGet(t *testing.T) {
 	}
 }
 
-
 // TestCommitWithNoWrites tests committing a read-only transaction
 func TestCommitWithNoWrites(t *testing.T) {
 	mgr := NewManager(nil, nil)

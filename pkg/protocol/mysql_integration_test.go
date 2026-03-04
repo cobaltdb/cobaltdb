@@ -271,21 +271,25 @@ func TestFullServerLifecycle(t *testing.T) {
 	// Set read deadline
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
-	// Read handshake packet
-	handshake := make([]byte, 256)
-	n, err := conn.Read(handshake)
+	// Read handshake packet header first (4 bytes)
+	header := make([]byte, 4)
+	_, err = io.ReadFull(conn, header)
 	if err != nil {
-		t.Fatalf("Failed to read handshake: %v", err)
-	}
-	if n < 4 {
-		t.Fatal("Handshake too short")
+		t.Fatalf("Failed to read handshake header: %v", err)
 	}
 
 	// Parse handshake length
-	length := int(handshake[0]) | int(handshake[1])<<8 | int(handshake[2])<<8
-	if n < 4+length {
-		t.Fatal("Incomplete handshake")
+	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
+
+	// Read the rest of the handshake packet
+	payload := make([]byte, length)
+	_, err = io.ReadFull(conn, payload)
+	if err != nil {
+		t.Fatalf("Failed to read handshake payload: %v", err)
 	}
+
+	// Combine header and payload
+	handshake := append(header, payload...)
 
 	// Verify protocol version
 	if handshake[4] != 0x0a {
@@ -317,7 +321,7 @@ func TestFullServerLifecycle(t *testing.T) {
 	// Read OK packet
 	okPacket := make([]byte, 32)
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	n, err = conn.Read(okPacket)
+	n, err := conn.Read(okPacket)
 	if err != nil {
 		t.Fatalf("Failed to read OK packet: %v", err)
 	}

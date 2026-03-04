@@ -108,11 +108,11 @@ func (g *GaugeMetric) Get() int64 {
 
 // HistogramMetric tracks the distribution of values
 type HistogramMetric struct {
-	name   string
-	desc   string
-	labels map[string]string
-	mu     sync.RWMutex
-	values []float64
+	name    string
+	desc    string
+	labels  map[string]string
+	mu      sync.RWMutex
+	values  []float64
 	buckets []float64
 }
 
@@ -345,22 +345,22 @@ type Collector struct {
 	mu       sync.RWMutex
 
 	// Database metrics
-	QueryCounter       *CounterMetric
-	QueryTimer         *TimerMetric
-	ActiveConnections  *GaugeMetric
-	TotalConnections   *CounterMetric
-	CacheHits          *CounterMetric
-	CacheMisses        *CounterMetric
-	TransactionsStarted *CounterMetric
-	TransactionsCommitted *CounterMetric
+	QueryCounter           *CounterMetric
+	QueryTimer             *TimerMetric
+	ActiveConnections      *GaugeMetric
+	TotalConnections       *CounterMetric
+	CacheHits              *CounterMetric
+	CacheMisses            *CounterMetric
+	TransactionsStarted    *CounterMetric
+	TransactionsCommitted  *CounterMetric
 	TransactionsRolledBack *CounterMetric
-	ErrorsTotal        *CounterMetric
-	SlowQueries        *CounterMetric
+	ErrorsTotal            *CounterMetric
+	SlowQueries            *CounterMetric
 
 	// Storage metrics
-	PagesRead          *CounterMetric
-	PagesWritten       *CounterMetric
-	PagesInCache       *GaugeMetric
+	PagesRead    *CounterMetric
+	PagesWritten *CounterMetric
+	PagesInCache *GaugeMetric
 }
 
 // NewCollector creates a new metrics collector
