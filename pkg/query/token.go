@@ -55,6 +55,7 @@ const (
 	TokenDefault
 	TokenAutoIncrement
 	TokenCheck
+	TokenUsing
 	TokenForeign
 	TokenReferences
 	TokenCascade
@@ -101,6 +102,7 @@ const (
 	TokenView
 	TokenTrigger
 	TokenProcedure
+	TokenPolicy
 	TokenCall
 
 	// Operators
@@ -221,6 +223,7 @@ const (
 	TokenShow
 	TokenUse
 	TokenDescribe
+	TokenExplain
 	TokenDatabases
 	TokenTables
 	TokenColumns
@@ -337,7 +340,9 @@ var keywords = map[string]TokenType{
 	"VIEW":      TokenView,
 	"TRIGGER":   TokenTrigger,
 	"PROCEDURE": TokenProcedure,
+	"POLICY":    TokenPolicy,
 	"CALL":      TokenCall,
+	"USING":     TokenUsing,
 
 	// Functions
 	"COUNT":             TokenCount,
@@ -429,6 +434,7 @@ var keywords = map[string]TokenType{
 	"SHOW":      TokenShow,
 	"USE":       TokenUse,
 	"DESCRIBE":  TokenDescribe,
+	"EXPLAIN":   TokenExplain,
 	"DATABASES": TokenDatabases,
 	"TABLES":    TokenTables,
 	"COLUMNS":   TokenColumns,

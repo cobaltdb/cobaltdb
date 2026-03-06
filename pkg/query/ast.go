@@ -215,6 +215,30 @@ type DropProcedureStmt struct {
 func (s *DropProcedureStmt) nodeType() string { return "DropProcedureStmt" }
 func (s *DropProcedureStmt) statementNode()   {}
 
+// CreatePolicyStmt represents a CREATE POLICY statement for row-level security
+type CreatePolicyStmt struct {
+	Name       string     // Policy name
+	Table      string     // Table name
+	Permissive bool       // true = PERMISSIVE (default), false = RESTRICTIVE
+	Event      string     // ALL, SELECT, INSERT, UPDATE, DELETE
+	Using      Expression // USING expression (for SELECT/UPDATE/DELETE)
+	WithCheck  Expression // WITH CHECK expression (for INSERT/UPDATE)
+	ForRoles   []string   // Roles this policy applies to (empty = all)
+}
+
+func (s *CreatePolicyStmt) nodeType() string { return "CreatePolicyStmt" }
+func (s *CreatePolicyStmt) statementNode()   {}
+
+// DropPolicyStmt represents a DROP POLICY statement
+type DropPolicyStmt struct {
+	IfExists bool
+	Name     string
+	Table    string
+}
+
+func (s *DropPolicyStmt) nodeType() string { return "DropPolicyStmt" }
+func (s *DropPolicyStmt) statementNode()   {}
+
 // ParamDef represents a procedure parameter
 type ParamDef struct {
 	Name string
@@ -682,3 +706,11 @@ type DescribeStmt struct {
 
 func (s *DescribeStmt) nodeType() string { return "DescribeStmt" }
 func (s *DescribeStmt) statementNode()   {}
+
+// ExplainStmt represents EXPLAIN <query>
+type ExplainStmt struct {
+	Statement Statement // The statement to explain
+}
+
+func (s *ExplainStmt) nodeType() string { return "ExplainStmt" }
+func (s *ExplainStmt) statementNode()   {}

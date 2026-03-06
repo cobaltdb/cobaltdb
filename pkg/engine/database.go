@@ -879,6 +879,18 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 			db.auditLogger.Log(audit.EventDDL, "db_user", "DROP_PROCEDURE")
 		}
 		return result, err
+	case *query.CreatePolicyStmt:
+		result, err := db.executeCreatePolicy(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_POLICY", audit.WithTable(s.Table))
+		}
+		return result, err
+	case *query.DropPolicyStmt:
+		result, err := db.executeDropPolicy(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "DROP_POLICY")
+		}
+		return result, err
 	case *query.CallProcedureStmt:
 		return db.executeCallProcedure(ctx, s, args)
 	case *query.BeginStmt:
@@ -1000,6 +1012,8 @@ func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{
 		return db.executeShowDatabasesQuery(ctx)
 	case *query.DescribeStmt:
 		return db.executeDescribeQuery(ctx, s)
+	case *query.ExplainStmt:
+		return db.executeExplainQuery(ctx, s)
 	default:
 		return nil, fmt.Errorf("not a query statement: %T", stmt)
 	}
@@ -1132,6 +1146,79 @@ func (db *DB) executeDropProcedure(ctx context.Context, stmt *query.DropProcedur
 	if err := db.catalog.DropProcedure(stmt.Name); err != nil {
 		return Result{}, err
 	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeCreatePolicy executes CREATE POLICY for row-level security
+func (db *DB) executeCreatePolicy(ctx context.Context, stmt *query.CreatePolicyStmt) (Result, error) {
+	// Check if RLS is enabled
+	if !db.catalog.IsRLSEnabled() {
+		return Result{}, errors.New("row-level security is not enabled for this database")
+	}
+
+	// Convert Event string to PolicyType
+	var policyType security.PolicyType
+	switch strings.ToUpper(stmt.Event) {
+	case "ALL":
+		policyType = security.PolicyAll
+	case "SELECT":
+		policyType = security.PolicySelect
+	case "INSERT":
+		policyType = security.PolicyInsert
+	case "UPDATE":
+		policyType = security.PolicyUpdate
+	case "DELETE":
+		policyType = security.PolicyDelete
+	default:
+		return Result{}, fmt.Errorf("invalid policy event: %s", stmt.Event)
+	}
+
+	// Convert Expression to string for storage (simplified)
+	usingExpr := ""
+	if stmt.Using != nil {
+		// In a full implementation, we'd convert the expression back to SQL
+		usingExpr = "true" // Placeholder
+	}
+
+	// Create the policy
+	policy := &security.Policy{
+		Name:       stmt.Name,
+		TableName:  stmt.Table,
+		Type:       policyType,
+		Expression: usingExpr,
+		Users:      nil, // Could be extracted from ForRoles
+		Roles:      stmt.ForRoles,
+		Enabled:    true,
+	}
+
+	if err := db.catalog.CreateRLSPolicy(policy); err != nil {
+		return Result{}, err
+	}
+
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeDropPolicy executes DROP POLICY
+func (db *DB) executeDropPolicy(ctx context.Context, stmt *query.DropPolicyStmt) (Result, error) {
+	// Check if RLS is enabled
+	if !db.catalog.IsRLSEnabled() {
+		return Result{}, errors.New("row-level security is not enabled for this database")
+	}
+
+	tableName := stmt.Table
+	if tableName == "" {
+		// If no table specified, try to find the policy in all tables
+		// This is a simplified implementation
+		return Result{}, errors.New("table name required for DROP POLICY")
+	}
+
+	if err := db.catalog.DropRLSPolicy(tableName, stmt.Name); err != nil {
+		if stmt.IfExists && err.Error() == "security policy not found" {
+			return Result{RowsAffected: 0}, nil
+		}
+		return Result{}, err
+	}
+
 	return Result{RowsAffected: 0}, nil
 }
 
@@ -1588,6 +1675,33 @@ func (db *DB) executeShowDatabasesQuery(ctx context.Context) (*Rows, error) {
 // executeDescribeQuery returns column info for a table (alias for SHOW COLUMNS)
 func (db *DB) executeDescribeQuery(ctx context.Context, stmt *query.DescribeStmt) (*Rows, error) {
 	return db.executeShowColumnsQuery(ctx, &query.ShowColumnsStmt{Table: stmt.Table})
+}
+
+// executeExplainQuery executes EXPLAIN and returns the query plan
+func (db *DB) executeExplainQuery(ctx context.Context, stmt *query.ExplainStmt) (*Rows, error) {
+	// Create optimizer
+	optimizer := query.NewQueryOptimizer()
+
+	// Get the inner statement
+	innerStmt := stmt.Statement
+
+	var explanation string
+	switch s := innerStmt.(type) {
+	case *query.SelectStmt:
+		explanation = optimizer.Explain(s)
+	default:
+		explanation = fmt.Sprintf("EXPLAIN not supported for %T", innerStmt)
+	}
+
+	// Return as a single-row result
+	columns := []string{"QUERY PLAN"}
+	rows := [][]interface{}{{explanation}}
+
+	return &Rows{
+		columns: columns,
+		rows:    rows,
+		pos:     0,
+	}, nil
 }
 
 // Result represents the result of an Exec operation

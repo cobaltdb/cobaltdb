@@ -82,6 +82,8 @@ func (p *Parser) Parse() (Statement, error) {
 	case TokenDesc:
 		// DESC as statement-level (DESCRIBE alias), not inside ORDER BY
 		return p.parseDescribe()
+	case TokenExplain:
+		return p.parseExplain()
 	case TokenSet:
 		return p.parseSetVar()
 	default:
@@ -1558,6 +1560,8 @@ func (p *Parser) parseCreate() (Statement, error) {
 		return p.parseCreateMaterializedView()
 	case TokenFulltext:
 		return p.parseCreateFTSIndex()
+	case TokenPolicy:
+		return p.parseCreatePolicy()
 	default:
 		return nil, fmt.Errorf("unexpected token after CREATE: %s", p.current().Literal)
 	}
@@ -2123,6 +2127,35 @@ func (p *Parser) parseDropProcedure() (*DropProcedureStmt, error) {
 	return stmt, nil
 }
 
+// parseDropPolicy parses DROP POLICY
+func (p *Parser) parseDropPolicy() (*DropPolicyStmt, error) {
+	stmt := &DropPolicyStmt{}
+	p.advance() // consume POLICY
+
+	if p.match(TokenIf) {
+		p.expect(TokenExists)
+		stmt.IfExists = true
+	}
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Name = name.Literal
+
+	// ON table (optional but recommended)
+	if p.current().Type == TokenOn {
+		p.advance() // consume ON
+		table, err := p.expect(TokenIdentifier)
+		if err != nil {
+			return nil, err
+		}
+		stmt.Table = table.Literal
+	}
+
+	return stmt, nil
+}
+
 // parseDrop parses a DROP statement
 func (p *Parser) parseDrop() (Statement, error) {
 	p.advance() // consume DROP
@@ -2140,6 +2173,8 @@ func (p *Parser) parseDrop() (Statement, error) {
 		return p.parseDropProcedure()
 	case TokenMaterialized:
 		return p.parseDropMaterializedView()
+	case TokenPolicy:
+		return p.parseDropPolicy()
 	default:
 		return nil, fmt.Errorf("unexpected token after DROP: %s", p.current().Literal)
 	}
@@ -2598,6 +2633,93 @@ func (p *Parser) parseCreateFTSIndex() (*CreateFTSIndexStmt, error) {
 	return stmt, nil
 }
 
+// parseCreatePolicy parses CREATE POLICY for row-level security
+// CREATE POLICY name ON table [FOR {ALL | SELECT | INSERT | UPDATE | DELETE}]
+//     [TO role [, ...]] [USING (expression)] [WITH CHECK (expression)]
+func (p *Parser) parseCreatePolicy() (*CreatePolicyStmt, error) {
+	stmt := &CreatePolicyStmt{
+		Permissive: true, // default
+		Event:      "ALL", // default
+	}
+	p.advance() // consume POLICY
+
+	// Policy name
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Name = name.Literal
+
+	// ON table
+	p.expect(TokenOn)
+	table, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Table = table.Literal
+
+	// Optional FOR clause
+	if p.match(TokenFor) {
+		eventTok := p.current()
+		switch eventTok.Type {
+		case TokenAll:
+			stmt.Event = "ALL"
+			p.advance()
+		case TokenSelect:
+			stmt.Event = "SELECT"
+			p.advance()
+		case TokenInsert:
+			stmt.Event = "INSERT"
+			p.advance()
+		case TokenUpdate:
+			stmt.Event = "UPDATE"
+			p.advance()
+		case TokenDelete:
+			stmt.Event = "DELETE"
+			p.advance()
+		default:
+			return nil, fmt.Errorf("expected ALL, SELECT, INSERT, UPDATE, or DELETE after FOR, got %s", eventTok.Literal)
+		}
+	}
+
+	// Optional TO clause for roles
+	if p.current().Type == TokenTo {
+		p.advance() // consume TO
+		roles, err := p.parseIdentifierList()
+		if err != nil {
+			return nil, err
+		}
+		stmt.ForRoles = roles
+	}
+
+	// Optional USING clause
+	if p.current().Type == TokenUsing {
+		p.advance() // consume USING
+		p.expect(TokenLParen)
+		usingExpr, err := p.parseExpression()
+		if err != nil {
+			return nil, fmt.Errorf("error in USING expression: %w", err)
+		}
+		stmt.Using = usingExpr
+		p.expect(TokenRParen)
+	}
+
+	// Optional WITH CHECK clause
+	if p.current().Type == TokenWith {
+		p.advance() // consume WITH
+		p.expect(TokenCheck)
+		p.expect(TokenLParen)
+		checkExpr, err := p.parseExpression()
+		if err != nil {
+			return nil, fmt.Errorf("error in WITH CHECK expression: %w", err)
+		}
+		stmt.WithCheck = checkExpr
+		p.expect(TokenRParen)
+	}
+
+	return stmt, nil
+}
+
 // parseShow parses SHOW TABLES, SHOW CREATE TABLE, SHOW DATABASES, SHOW COLUMNS FROM
 func (p *Parser) parseShow() (Statement, error) {
 	p.advance() // consume SHOW
@@ -2671,6 +2793,19 @@ func (p *Parser) parseDescribe() (Statement, error) {
 	}
 	p.advance()
 	return &DescribeStmt{Table: tok.Literal}, nil
+}
+
+// parseExplain parses EXPLAIN <query>
+func (p *Parser) parseExplain() (Statement, error) {
+	p.advance() // consume EXPLAIN
+
+	// Parse the inner statement (SELECT, INSERT, UPDATE, DELETE)
+	innerStmt, err := p.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("error parsing EXPLAIN statement: %w", err)
+	}
+
+	return &ExplainStmt{Statement: innerStmt}, nil
 }
 
 // parseSetVar parses SET <variable> = <value> (for MySQL compatibility)
