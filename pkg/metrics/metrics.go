@@ -342,6 +342,7 @@ type Collector struct {
 	registry *Registry
 	interval time.Duration
 	stopCh   chan struct{}
+	stopOnce sync.Once
 	mu       sync.RWMutex
 
 	// Database metrics
@@ -409,9 +410,9 @@ func (c *Collector) Start(ctx context.Context) {
 	}
 }
 
-// Stop stops metrics collection
+// Stop stops metrics collection (safe to call multiple times)
 func (c *Collector) Stop() {
-	close(c.stopCh)
+	c.stopOnce.Do(func() { close(c.stopCh) })
 }
 
 // collectRuntimeMetrics collects Go runtime metrics

@@ -125,7 +125,13 @@ func (l *Lexer) NextToken() Token {
 			l.readChar()
 		}
 	case '-':
-		if l.peekChar() == '>' {
+		if l.peekChar() == '-' {
+			// SQL line comment: skip to end of line
+			for l.ch != '\n' && l.ch != 0 {
+				l.readChar()
+			}
+			return l.NextToken()
+		} else if l.peekChar() == '>' {
 			// JSON operator ->
 			ch := l.ch
 			l.readChar()
@@ -154,11 +160,39 @@ func (l *Lexer) NextToken() Token {
 		tok = newToken(TokenStar, l.ch, l.line, l.column)
 		l.readChar()
 	case '/':
+		if l.peekChar() == '*' {
+			// SQL block comment: skip until */
+			l.readChar() // skip /
+			l.readChar() // skip *
+			for {
+				if l.ch == 0 {
+					break // EOF
+				}
+				if l.ch == '*' && l.peekChar() == '/' {
+					l.readChar() // skip *
+					l.readChar() // skip /
+					break
+				}
+				l.readChar()
+			}
+			return l.NextToken()
+		}
 		tok = newToken(TokenSlash, l.ch, l.line, l.column)
 		l.readChar()
 	case '%':
 		tok = newToken(TokenPercent, l.ch, l.line, l.column)
 		l.readChar()
+	case '|':
+		if l.peekChar() == '|' {
+			ch := l.ch
+			l.readChar()
+			literal := string(ch) + string(l.ch)
+			tok = Token{Type: TokenConcat, Literal: literal, Line: l.line, Column: l.column - 1}
+			l.readChar()
+		} else {
+			tok = newToken(TokenIllegal, l.ch, l.line, l.column)
+			l.readChar()
+		}
 	case '(':
 		tok = newToken(TokenLParen, l.ch, l.line, l.column)
 		l.readChar()
@@ -183,7 +217,7 @@ func (l *Lexer) NextToken() Token {
 		tok.Line = l.line
 		tok.Column = l.column
 	case '"':
-		tok.Type = TokenString
+		tok.Type = TokenIdentifier
 		tok.Literal = l.readString('"')
 		tok.Line = l.line
 		tok.Column = l.column
@@ -257,16 +291,42 @@ func (l *Lexer) readNumber() string {
 // readString reads a string literal
 func (l *Lexer) readString(quote byte) string {
 	l.readChar() // consume opening quote
-	pos := l.pos
-	for l.ch != quote && l.ch != 0 {
-		if l.ch == '\\' {
-			l.readChar()
+	var result strings.Builder
+	for l.ch != 0 {
+		if l.ch == quote {
+			// Check for SQL-standard escaped quote ('' or "")
+			if l.peekChar() == quote {
+				result.WriteByte(quote)
+				l.readChar() // consume first quote
+				l.readChar() // consume second quote
+				continue
+			}
+			// End of string
+			break
 		}
+		if l.ch == '\\' {
+			// Backslash escaping (MySQL-style)
+			l.readChar()
+			switch l.ch {
+			case 'n':
+				result.WriteByte('\n')
+			case 't':
+				result.WriteByte('\t')
+			case 'r':
+				result.WriteByte('\r')
+			case '0':
+				result.WriteByte(0)
+			default:
+				result.WriteByte(l.ch)
+			}
+			l.readChar()
+			continue
+		}
+		result.WriteByte(l.ch)
 		l.readChar()
 	}
-	str := l.input[pos:l.pos]
 	l.readChar() // consume closing quote
-	return str
+	return result.String()
 }
 
 // readBacktickString reads a backtick-quoted identifier

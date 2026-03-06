@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -82,20 +83,24 @@ func (a *Authenticator) IsEnabled() bool {
 	return a.enabled
 }
 
-// hashPassword hashes a password with salt
+// hashPassword hashes a password with salt using multiple rounds of SHA-256
 func hashPassword(password, salt string) string {
-	h := sha256.New()
-	h.Write([]byte(salt + password))
-	return hex.EncodeToString(h.Sum(nil))
+	// Use iterated hashing for stronger protection against brute force
+	hash := []byte(salt + password)
+	for i := 0; i < 10000; i++ {
+		h := sha256.Sum256(hash)
+		hash = h[:]
+	}
+	return hex.EncodeToString(hash)
 }
 
-// generateSalt generates a random salt
-func generateSalt() string {
-	b := make([]byte, 16)
-	for i := range b {
-		b[i] = byte(time.Now().UnixNano() % 256)
+// generateSalt generates a cryptographically secure random salt
+func generateSalt() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("crypto/rand failed: %w", err)
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }
 
 // CreateUser creates a new user
@@ -107,7 +112,10 @@ func (a *Authenticator) CreateUser(username, password string, isAdmin bool) erro
 		return ErrUserExists
 	}
 
-	salt := generateSalt()
+	salt, err := generateSalt()
+	if err != nil {
+		return err
+	}
 	passwordHash := hashPassword(password, salt)
 
 	a.users[username] = &User{
@@ -141,7 +149,10 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 	user.LastLogin = time.Now()
 
 	// Generate session token
-	token := generateToken(username)
+	token, err := generateToken(username)
+	if err != nil {
+		return "", err
+	}
 	session := &Session{
 		Token:     token,
 		Username:  username,
@@ -153,11 +164,16 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 	return token, nil
 }
 
-// generateToken generates a session token
-func generateToken(username string) string {
+// generateToken generates a cryptographically secure session token
+func generateToken(username string) (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("crypto/rand failed: %w", err)
+	}
 	h := sha256.New()
+	h.Write(b)
 	h.Write([]byte(fmt.Sprintf("%s:%d", username, time.Now().UnixNano())))
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // ValidateToken validates a session token
@@ -200,7 +216,10 @@ func (a *Authenticator) ChangePassword(username, oldPassword, newPassword string
 	}
 
 	// Generate new salt and hash
-	salt := generateSalt()
+	salt, err := generateSalt()
+	if err != nil {
+		return err
+	}
 	user.Salt = salt
 	user.PasswordHash = hashPassword(newPassword, salt)
 

@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"fmt"
+	"io"
 	"sync"
 )
 
@@ -28,7 +28,7 @@ func (m *MemoryBackend) ReadAt(buf []byte, offset int64) (int, error) {
 	defer m.mu.RUnlock()
 
 	if offset >= int64(len(m.data)) {
-		return 0, fmt.Errorf("offset %d beyond data size %d", offset, len(m.data))
+		return 0, io.EOF
 	}
 
 	n := copy(buf, m.data[offset:])

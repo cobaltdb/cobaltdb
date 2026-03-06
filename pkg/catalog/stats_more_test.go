@@ -145,8 +145,8 @@ func TestExecuteScalarAggregateAVG(t *testing.T) {
 			t.Error("Expected non-nil AVG result")
 		} else {
 			// Should be 10
-			if v, ok := rows[0][0].(float64); ok && v != 10 {
-				t.Errorf("Expected AVG=10, got %f", v)
+			if v, ok := toFloat64(rows[0][0]); ok && v != 10 {
+				t.Errorf("Expected AVG=10, got %v", rows[0][0])
 			}
 		}
 	}

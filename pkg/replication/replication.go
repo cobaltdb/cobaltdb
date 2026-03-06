@@ -82,6 +82,7 @@ type Manager struct {
 	// Channels
 	eventChan chan *ReplicationEvent
 	stopChan  chan struct{}
+	stopOnce  sync.Once
 	wg        sync.WaitGroup
 }
 
@@ -128,7 +129,7 @@ func (m *Manager) Start() error {
 
 // Stop stops the replication manager
 func (m *Manager) Stop() error {
-	close(m.stopChan)
+	m.stopOnce.Do(func() { close(m.stopChan) })
 	m.wg.Wait()
 
 	m.slaveMu.Lock()

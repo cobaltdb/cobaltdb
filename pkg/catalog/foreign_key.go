@@ -119,7 +119,7 @@ func (fke *ForeignKeyEnforcer) OnUpdate(ctx context.Context, tableName string, o
 // ValidateInsert validates that foreign key values reference existing rows
 // row is a map from column name to value
 func (fke *ForeignKeyEnforcer) ValidateInsert(ctx context.Context, tableName string, row map[string]interface{}) error {
-	table, err := fke.catalog.GetTable(tableName)
+	table, err := fke.catalog.getTableLocked(tableName)
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func (fke *ForeignKeyEnforcer) ValidateInsert(ctx context.Context, tableName str
 
 // ValidateUpdate validates foreign key constraints on update
 func (fke *ForeignKeyEnforcer) ValidateUpdate(ctx context.Context, tableName string, oldRow, newRow map[string]interface{}) error {
-	table, err := fke.catalog.GetTable(tableName)
+	table, err := fke.catalog.getTableLocked(tableName)
 	if err != nil {
 		return err
 	}
@@ -249,7 +249,7 @@ func (fke *ForeignKeyEnforcer) findReferencingTables(tableName string) []referen
 func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignKeyDef, pkValue interface{}) ([]interface{}, error) {
 	var result []interface{}
 
-	table, err := fke.catalog.GetTable(tableName)
+	table, err := fke.catalog.getTableLocked(tableName)
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +356,7 @@ func (fke *ForeignKeyEnforcer) setNull(ctx context.Context, tableName string, ro
 		return err
 	}
 
-	table, err := fke.catalog.GetTable(tableName)
+	table, err := fke.catalog.getTableLocked(tableName)
 	if err != nil {
 		return err
 	}
@@ -381,7 +381,7 @@ func (fke *ForeignKeyEnforcer) updateForeignKey(ctx context.Context, tableName s
 		return err
 	}
 
-	table, err := fke.catalog.GetTable(tableName)
+	table, err := fke.catalog.getTableLocked(tableName)
 	if err != nil {
 		return err
 	}
@@ -419,7 +419,7 @@ func (fke *ForeignKeyEnforcer) getRowSlice(tableName string, rowKey interface{})
 	return row, nil
 }
 
-// updateRowSlice updates a row from a slice
+// updateRowSlice updates a row from a slice with index maintenance and undo logging
 func (fke *ForeignKeyEnforcer) updateRowSlice(tableName string, rowKey interface{}, rowData []interface{}) error {
 	tree, exists := fke.catalog.tableTrees[tableName]
 	if !exists {
@@ -427,6 +427,66 @@ func (fke *ForeignKeyEnforcer) updateRowSlice(tableName string, rowKey interface
 	}
 
 	key := fke.serializeValue(rowKey)
+
+	// Get old value for undo log and index cleanup
+	oldData, getErr := tree.Get(key)
+
+	table := fke.catalog.tables[tableName]
+
+	// Update indexes: remove old entries, add new ones
+	var idxChanges []indexUndoEntry
+	if table != nil && getErr == nil {
+		oldRow, decErr := decodeRow(oldData, len(table.Columns))
+		if decErr == nil {
+			for idxName, idxTree := range fke.catalog.indexTrees {
+				idxDef := fke.catalog.indexes[idxName]
+				if idxDef != nil && idxDef.TableName == tableName && len(idxDef.Columns) > 0 {
+					// Remove old index entry
+					oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
+					if ok {
+						if fke.catalog.txnActive {
+							oldIdxVal, _ := idxTree.Get([]byte(oldIdxKey))
+							idxChanges = append(idxChanges, indexUndoEntry{
+								indexName: idxName,
+								key:       []byte(oldIdxKey),
+								oldValue:  oldIdxVal,
+								wasAdded:  false,
+							})
+						}
+						_ = idxTree.Delete([]byte(oldIdxKey))
+					}
+					// Add new index entry
+					newIdxKey, ok := buildCompositeIndexKey(table, idxDef, rowData)
+					if ok {
+						_ = idxTree.Put([]byte(newIdxKey), key)
+						if fke.catalog.txnActive {
+							idxChanges = append(idxChanges, indexUndoEntry{
+								indexName: idxName,
+								key:       []byte(newIdxKey),
+								wasAdded:  true,
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Record undo log entry for rollback
+	if fke.catalog.txnActive && getErr == nil {
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+		oldCopy := make([]byte, len(oldData))
+		copy(oldCopy, oldData)
+		fke.catalog.undoLog = append(fke.catalog.undoLog, undoEntry{
+			action:       undoUpdate,
+			tableName:    tableName,
+			key:          keyCopy,
+			oldValue:     oldCopy,
+			indexChanges: idxChanges,
+		})
+	}
+
 	value, err := json.Marshal(rowData)
 	if err != nil {
 		return err
@@ -544,13 +604,13 @@ func (fke *ForeignKeyEnforcer) valuesEqual(a, b interface{}) bool {
 func (fke *ForeignKeyEnforcer) serializeValue(v interface{}) []byte {
 	switch val := v.(type) {
 	case string:
-		return []byte(val)
+		return []byte("S:" + val)
 	case int:
 		return []byte(fmt.Sprintf("%020d", int64(val)))
 	case int64:
 		return []byte(fmt.Sprintf("%020d", val))
 	case float64:
-		return []byte(fmt.Sprintf("%f", val))
+		return []byte(fmt.Sprintf("%020d", int64(val)))
 	case []byte:
 		return val
 	case nil:
@@ -563,6 +623,11 @@ func (fke *ForeignKeyEnforcer) serializeValue(v interface{}) []byte {
 // deserializeValue deserializes a value from bytes
 func (fke *ForeignKeyEnforcer) deserializeValue(data []byte) interface{} {
 	str := string(data)
+
+	// Handle "S:" prefix for string primary keys
+	if len(str) > 2 && str[:2] == "S:" {
+		return str[2:]
+	}
 
 	// Try to parse as int first (handles zero-padded format)
 	var intVal int64
@@ -607,7 +672,7 @@ func (fke *ForeignKeyEnforcer) CheckForeignKeyConstraints(ctx context.Context, t
 		return nil // Table has no data
 	}
 
-	table, err := fke.catalog.GetTable(tableName)
+	table, err := fke.catalog.getTableLocked(tableName)
 	if err != nil {
 		return err
 	}

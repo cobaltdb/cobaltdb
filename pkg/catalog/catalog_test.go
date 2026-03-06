@@ -249,7 +249,13 @@ func TestCreateIndex(t *testing.T) {
 	catalog := New(nil, pool, nil)
 
 	// Create table first
-	catalog.CreateTable(&query.CreateTableStmt{Table: "users"})
+	catalog.CreateTable(&query.CreateTableStmt{
+		Table: "users",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "name", Type: query.TokenText},
+		},
+	})
 
 	// Create index
 	indexStmt := &query.CreateIndexStmt{
@@ -394,9 +400,12 @@ func TestAggregateFunctions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("MIN(price) failed: %v", err)
 		}
-		min := rows[0][0].(float64)
-		if min != 10 {
-			t.Errorf("Expected MIN(price) = 10, got %f", min)
+		minVal, ok := toFloat64(rows[0][0])
+		if !ok {
+			t.Fatalf("MIN(price) returned non-numeric type: %T", rows[0][0])
+		}
+		if minVal != 10 {
+			t.Errorf("Expected MIN(price) = 10, got %v", minVal)
 		}
 	})
 
@@ -412,9 +421,12 @@ func TestAggregateFunctions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("MAX(price) failed: %v", err)
 		}
-		max := rows[0][0].(float64)
-		if max != 50 {
-			t.Errorf("Expected MAX(price) = 50, got %f", max)
+		maxVal, ok := toFloat64(rows[0][0])
+		if !ok {
+			t.Fatalf("MAX(price) returned non-numeric type: %T", rows[0][0])
+		}
+		if maxVal != 50 {
+			t.Errorf("Expected MAX(price) = 50, got %v", maxVal)
 		}
 	})
 

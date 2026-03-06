@@ -418,3 +418,272 @@ func TestConnectionResilience(t *testing.T) {
 		t.Errorf("Expected 100 rows, got %d", count)
 	}
 }
+
+// TestFullDatabaseWorkflow tests a complete database workflow
+func TestFullDatabaseWorkflow(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// 1. Create tables
+	_, err = db.Exec(ctx, `
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY,
+			name TEXT,
+			email TEXT
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create users table: %v", err)
+	}
+
+	_, err = db.Exec(ctx, `
+		CREATE TABLE orders (
+			id INTEGER PRIMARY KEY,
+			user_id INTEGER,
+			amount REAL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create orders table: %v", err)
+	}
+
+	// 2. Insert users
+	users := []struct {
+		id    int
+		name  string
+		email string
+	}{
+		{1, "Alice", "alice@example.com"},
+		{2, "Bob", "bob@example.com"},
+		{3, "Charlie", "charlie@example.com"},
+	}
+
+	for _, u := range users {
+		_, err := db.Exec(ctx,
+			`INSERT INTO users (id, name, email) VALUES (?, ?, ?)`,
+			u.id, u.name, u.email)
+		if err != nil {
+			t.Fatalf("Failed to insert user %s: %v", u.name, err)
+		}
+	}
+
+	// 3. Insert orders
+	orders := []struct {
+		id      int
+		userID  int
+		amount  float64
+	}{
+		{1, 1, 100.50},
+		{2, 1, 200.75},
+		{3, 2, 50.25},
+		{4, 3, 300.00},
+	}
+
+	for _, o := range orders {
+		_, err := db.Exec(ctx,
+			`INSERT INTO orders (id, user_id, amount) VALUES (?, ?, ?)`,
+			o.id, o.userID, o.amount)
+		if err != nil {
+			t.Fatalf("Failed to insert order %d: %v", o.id, err)
+		}
+	}
+
+	// 4. Query with JOIN
+	rows, err := db.Query(ctx, `
+		SELECT u.id, u.name, COUNT(o.id), SUM(o.amount)
+		FROM users u
+		JOIN orders o ON u.id = o.user_id
+		GROUP BY u.id
+	`)
+	if err != nil {
+		t.Fatalf("Failed to query join: %v", err)
+	}
+
+	results := make(map[string]struct {
+		count int
+		total float64
+	})
+
+	for rows.Next() {
+		var id int
+		var name string
+		var count int
+		var total float64
+		rows.Scan(&id, &name, &count, &total)
+		results[name] = struct {
+			count int
+			total float64
+		}{count, total}
+	}
+	rows.Close()
+
+	// Debug: print all results
+	t.Logf("Results: %+v", results)
+
+	// Verify results
+	if r, ok := results["Alice"]; !ok || r.count != 2 {
+		t.Errorf("Alice should have 2 orders, got %d", r.count)
+	}
+	if r, ok := results["Bob"]; !ok || r.count != 1 {
+		t.Errorf("Bob should have 1 order, got %d", r.count)
+	}
+
+	// 5. Update data
+	_, err = db.Exec(ctx,
+		`UPDATE orders SET amount = ? WHERE id = ?`,
+		150.00, 1)
+	if err != nil {
+		t.Fatalf("Failed to update order: %v", err)
+	}
+
+	// 6. Delete data
+	_, err = db.Exec(ctx, `DELETE FROM orders WHERE id = ?`, 4)
+	if err != nil {
+		t.Fatalf("Failed to delete order: %v", err)
+	}
+
+	// 7. Verify final state
+	rows, err = db.Query(ctx, `SELECT COUNT(*) FROM orders`)
+	if err != nil {
+		t.Fatalf("Failed to count orders: %v", err)
+	}
+
+	var orderCount int
+	if rows.Next() {
+		rows.Scan(&orderCount)
+	}
+	rows.Close()
+
+	if orderCount != 3 {
+		t.Errorf("Expected 3 orders after delete, got %d", orderCount)
+	}
+
+	t.Log("Full database workflow completed successfully!")
+}
+
+// TestTransactionRollbackIntegrity tests that rollback properly restores state
+func TestTransactionRollbackIntegrity(t *testing.T) {
+
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create table
+	_, err = db.Exec(ctx, `CREATE TABLE rollback_test (id INTEGER PRIMARY KEY, value TEXT)`)
+	if err != nil {
+		t.Fatalf("Failed to create table: %v", err)
+	}
+
+	// Insert initial data
+	_, err = db.Exec(ctx, `INSERT INTO rollback_test (id, value) VALUES (1, 'original')`)
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	// Verify initial data
+	rows, _ := db.Query(ctx, `SELECT value FROM rollback_test WHERE id = 1`)
+	var initialValue string
+	if rows.Next() {
+		rows.Scan(&initialValue)
+	}
+	rows.Close()
+
+	if initialValue != "original" {
+		t.Fatalf("Initial value should be 'original', got '%s'", initialValue)
+	}
+
+	// Start transaction and update
+	tx, _ := db.Begin(ctx)
+	_, err = tx.Exec(ctx, `UPDATE rollback_test SET value = 'modified' WHERE id = 1`)
+	if err != nil {
+		t.Fatalf("Failed to update in transaction: %v", err)
+	}
+
+	// Rollback
+	err = tx.Rollback()
+	if err != nil {
+		t.Fatalf("Failed to rollback: %v", err)
+	}
+
+	// Verify data is restored
+	rows, _ = db.Query(ctx, `SELECT value FROM rollback_test WHERE id = 1`)
+	var afterRollback string
+	if rows.Next() {
+		rows.Scan(&afterRollback)
+	}
+	rows.Close()
+
+	if afterRollback != "original" {
+		t.Errorf("After rollback value should be 'original', got '%s'", afterRollback)
+	}
+}
+
+// TestIndexUsage tests that indexes are used correctly
+func TestIndexUsage(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create table with index
+	_, err = db.Exec(ctx, `CREATE TABLE indexed_table (id INTEGER PRIMARY KEY, name TEXT)`)
+	if err != nil {
+		t.Fatalf("Failed to create table: %v", err)
+	}
+
+	_, err = db.Exec(ctx, `CREATE INDEX idx_name ON indexed_table(name)`)
+	if err != nil {
+		t.Logf("Index creation may not be fully supported: %v", err)
+	}
+
+	// Insert data
+	for i := 0; i < 100; i++ {
+		_, err := db.Exec(ctx,
+			`INSERT INTO indexed_table (id, name) VALUES (?, ?)`,
+			i, fmt.Sprintf("name-%d", i))
+		if err != nil {
+			t.Fatalf("Failed to insert row %d: %v", i, err)
+		}
+	}
+
+	// Query with WHERE clause (should use index if available)
+	rows, err := db.Query(ctx, `SELECT id FROM indexed_table WHERE name = 'name-50'`)
+	if err != nil {
+		t.Fatalf("Failed to query: %v", err)
+	}
+
+	found := false
+	for rows.Next() {
+		var id int
+		rows.Scan(&id)
+		if id == 50 {
+			found = true
+		}
+	}
+	rows.Close()
+
+	if !found {
+		t.Error("Should find row with id=50")
+	}
+}

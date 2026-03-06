@@ -245,7 +245,7 @@ func TestEvaluateInSimple(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluateIn failed: %v", err)
 	}
-	if !result {
+	if result != true {
 		t.Error("Expected true for IN with matching value")
 	}
 }
@@ -278,7 +278,7 @@ func TestEvaluateInNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluateIn failed: %v", err)
 	}
-	if result {
+	if result == true {
 		t.Error("Expected false for IN with non-matching value")
 	}
 }
@@ -311,7 +311,7 @@ func TestEvaluateInNot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluateIn failed: %v", err)
 	}
-	if !result {
+	if result != true {
 		t.Error("Expected true for NOT IN with non-matching value")
 	}
 }
@@ -344,7 +344,7 @@ func TestEvaluateInNotWithMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluateIn failed: %v", err)
 	}
-	if result {
+	if result == true {
 		t.Error("Expected false for NOT IN with matching value")
 	}
 }
@@ -377,7 +377,7 @@ func TestEvaluateInWithString(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluateIn failed: %v", err)
 	}
-	if !result {
+	if result != true {
 		t.Error("Expected true for IN with matching string value")
 	}
 }

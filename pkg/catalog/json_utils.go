@@ -235,7 +235,12 @@ func (jp *JSONPath) Set(data interface{}, value interface{}) error {
 		return fmt.Errorf("empty JSON path")
 	}
 
+	// Unwrap *interface{} pointer if present
 	current := data
+	if ptr, ok := current.(*interface{}); ok {
+		current = *ptr
+	}
+
 	path := jp.Segments[:len(jp.Segments)-1]
 
 	// Navigate to parent

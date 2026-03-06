@@ -38,6 +38,8 @@ const (
 	TokenLeft
 	TokenRight
 	TokenOuter
+	TokenFull
+	TokenCross
 	TokenOn
 	TokenGroup
 	TokenHaving
@@ -63,6 +65,9 @@ const (
 	TokenExists
 	TokenDistinct
 	TokenAll
+	TokenUnion
+	TokenIntersect
+	TokenExcept
 	TokenAsc
 	TokenDesc
 	TokenLike
@@ -73,6 +78,9 @@ const (
 	TokenCommit
 	TokenRollback
 	TokenTransaction
+	TokenSavepoint
+	TokenRelease
+	TokenTo
 	TokenBefore
 	TokenAfter
 	TokenFor
@@ -157,6 +165,7 @@ const (
 	TokenIfNull
 	TokenNullIf
 	TokenReplace
+	TokenIgnore
 	TokenInstr
 	TokenPrintf
 	TokenTime
@@ -188,9 +197,33 @@ const (
 	TokenAgainst
 	TokenFulltext
 
+	// ESCAPE
+	TokenEscape
+
+	// ALTER TABLE
+	TokenAlter
+	TokenAdd
+	TokenColumn
+	TokenRename
+
 	// Materialized views
 	TokenMaterialized
 	TokenRefresh
+
+	// CASE expression
+	TokenCase
+	TokenWhen
+	TokenThen
+	TokenElse
+	TokenEnd
+
+	// SHOW / USE / DESCRIBE
+	TokenShow
+	TokenUse
+	TokenDescribe
+	TokenDatabases
+	TokenTables
+	TokenColumns
 )
 
 // Token represents a lexical token
@@ -226,6 +259,8 @@ var keywords = map[string]TokenType{
 	"LEFT":           TokenLeft,
 	"RIGHT":          TokenRight,
 	"OUTER":          TokenOuter,
+	"FULL":           TokenFull,
+	"CROSS":          TokenCross,
 	"ON":             TokenOn,
 	"GROUP":          TokenGroup,
 	"HAVING":         TokenHaving,
@@ -246,10 +281,14 @@ var keywords = map[string]TokenType{
 	"RESTRICT":       TokenRestrict,
 	"NO":             TokenNo,
 	"AUTO_INCREMENT": TokenAutoIncrement,
+	"AUTOINCREMENT":  TokenAutoIncrement,
 	"IF":             TokenIf,
 	"EXISTS":         TokenExists,
 	"DISTINCT":       TokenDistinct,
 	"ALL":            TokenAll,
+	"UNION":          TokenUnion,
+	"INTERSECT":      TokenIntersect,
+	"EXCEPT":         TokenExcept,
 	"ASC":            TokenAsc,
 	"DESC":           TokenDesc,
 	"LIKE":           TokenLike,
@@ -260,6 +299,9 @@ var keywords = map[string]TokenType{
 	"COMMIT":         TokenCommit,
 	"ROLLBACK":       TokenRollback,
 	"TRANSACTION":    TokenTransaction,
+	"SAVEPOINT":      TokenSavepoint,
+	"RELEASE":        TokenRelease,
+	"TO":             TokenTo,
 	"BEFORE":         TokenBefore,
 	"AFTER":          TokenAfter,
 	"FOR":            TokenFor,
@@ -271,12 +313,21 @@ var keywords = map[string]TokenType{
 	// Data types
 	"INTEGER":   TokenInteger,
 	"INT":       TokenInteger,
+	"BIGINT":    TokenInteger,
+	"SMALLINT":  TokenInteger,
+	"TINYINT":   TokenInteger,
 	"TEXT":      TokenText,
 	"STRING":    TokenText,
 	"VARCHAR":   TokenText,
+	"CHAR":      TokenText,
+	"NVARCHAR":  TokenText,
+	"NCHAR":     TokenText,
+	"CLOB":      TokenText,
 	"REAL":      TokenReal,
 	"FLOAT":     TokenReal,
 	"DOUBLE":    TokenReal,
+	"NUMERIC":   TokenReal,
+	"DECIMAL":   TokenReal,
 	"BLOB":      TokenBlob,
 	"BOOLEAN":   TokenBoolean,
 	"BOOL":      TokenBoolean,
@@ -324,6 +375,7 @@ var keywords = map[string]TokenType{
 	"IFNULL":            TokenIfNull,
 	"NULLIF":            TokenNullIf,
 	"REPLACE":           TokenReplace,
+	"IGNORE":            TokenIgnore,
 	"INSTR":             TokenInstr,
 	"PRINTF":            TokenPrintf,
 	"TIME":              TokenTime,
@@ -346,6 +398,13 @@ var keywords = map[string]TokenType{
 	"WITH":      TokenWith,
 	"RECURSIVE": TokenRecursive,
 
+	// ALTER TABLE
+	"ESCAPE": TokenEscape,
+	"ALTER":  TokenAlter,
+	"ADD":    TokenAdd,
+	"COLUMN": TokenColumn,
+	"RENAME": TokenRename,
+
 	// Maintenance commands
 	"VACUUM":  TokenVacuum,
 	"ANALYZE": TokenAnalyze,
@@ -358,6 +417,21 @@ var keywords = map[string]TokenType{
 	// Materialized views
 	"MATERIALIZED": TokenMaterialized,
 	"REFRESH":      TokenRefresh,
+
+	// CASE expression
+	"CASE": TokenCase,
+	"WHEN": TokenWhen,
+	"THEN": TokenThen,
+	"ELSE": TokenElse,
+	"END":  TokenEnd,
+
+	// SHOW / USE / DESCRIBE
+	"SHOW":      TokenShow,
+	"USE":       TokenUse,
+	"DESCRIBE":  TokenDescribe,
+	"DATABASES": TokenDatabases,
+	"TABLES":    TokenTables,
+	"COLUMNS":   TokenColumns,
 }
 
 // LookupKeyword checks if an identifier is a keyword

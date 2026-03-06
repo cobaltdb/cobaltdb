@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/auth"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
@@ -22,13 +23,16 @@ var (
 
 // Server represents a CobaltDB server
 type Server struct {
-	listener net.Listener
-	db       *engine.DB
-	clients  map[uint64]*ClientConn
-	nextID   uint64
-	mu       sync.RWMutex
-	closed   bool
-	auth     *auth.Authenticator
+	listener       net.Listener
+	db             *engine.DB
+	clients        map[uint64]*ClientConn
+	nextID         uint64
+	mu             sync.RWMutex
+	closed         bool
+	auth           *auth.Authenticator
+	maxConnections int
+	readTimeout    time.Duration
+	writeTimeout   time.Duration
 }
 
 // Config contains server configuration
@@ -38,6 +42,9 @@ type Config struct {
 	RequireAuth      bool
 	DefaultAdminUser string
 	DefaultAdminPass string
+	MaxConnections   int // Maximum concurrent connections (0 = unlimited)
+	ReadTimeout      int // Read timeout in seconds (0 = 300s default)
+	WriteTimeout     int // Write timeout in seconds (0 = 60s default)
 }
 
 // DefaultConfig returns the default server configuration
@@ -65,24 +72,44 @@ func New(db *engine.DB, config *Config) (*Server, error) {
 
 		// Create default admin user if specified
 		if config.DefaultAdminUser != "" {
-			authenticator.CreateUser(config.DefaultAdminUser, config.DefaultAdminPass, true)
+			if err := authenticator.CreateUser(config.DefaultAdminUser, config.DefaultAdminPass, true); err != nil {
+				return nil, fmt.Errorf("failed to create default admin user: %w", err)
+			}
 		}
 	}
 
+	readTimeout := time.Duration(config.ReadTimeout) * time.Second
+	if readTimeout == 0 {
+		readTimeout = 300 * time.Second // 5 minutes default
+	}
+	writeTimeout := time.Duration(config.WriteTimeout) * time.Second
+	if writeTimeout == 0 {
+		writeTimeout = 60 * time.Second // 1 minute default
+	}
+
 	return &Server{
-		db:      db,
-		clients: make(map[uint64]*ClientConn),
-		auth:    authenticator,
+		db:             db,
+		clients:        make(map[uint64]*ClientConn),
+		auth:           authenticator,
+		maxConnections: config.MaxConnections,
+		readTimeout:    readTimeout,
+		writeTimeout:   writeTimeout,
 	}, nil
 }
 
-// Listen starts the server
+// Listen starts the server on the given address
 func (s *Server) Listen(address string) error {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 
+	s.listener = listener
+	return s.acceptLoop()
+}
+
+// ListenOnListener starts the server using an existing listener
+func (s *Server) ListenOnListener(listener net.Listener) error {
 	s.listener = listener
 	return s.acceptLoop()
 }
@@ -99,6 +126,12 @@ func (s *Server) acceptLoop() error {
 		}
 
 		s.mu.Lock()
+		// Check max connections
+		if s.maxConnections > 0 && len(s.clients) >= s.maxConnections {
+			s.mu.Unlock()
+			conn.Close()
+			continue
+		}
 		s.nextID++
 		clientID := s.nextID
 		client := &ClientConn{
@@ -110,6 +143,12 @@ func (s *Server) acceptLoop() error {
 		}
 		s.clients[clientID] = client
 		s.mu.Unlock()
+
+		// Set TCP keepalive
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			tcpConn.SetKeepAlive(true)
+			tcpConn.SetKeepAlivePeriod(60 * time.Second)
+		}
 
 		go client.Handle()
 	}
@@ -139,6 +178,13 @@ func (s *Server) Close() error {
 	return nil
 }
 
+// ClientCount returns the current number of connected clients
+func (s *Server) ClientCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.clients)
+}
+
 // removeClient removes a client connection
 func (s *Server) removeClient(id uint64) {
 	s.mu.Lock()
@@ -164,21 +210,23 @@ func (c *ClientConn) Handle() {
 	}()
 
 	for {
+		// Set read deadline for idle timeout
+		c.Conn.SetReadDeadline(time.Now().Add(c.Server.readTimeout))
+
 		// Read message length (4 bytes)
 		var length uint32
 		if err := binary.Read(c.reader, binary.LittleEndian, &length); err != nil {
-			if err == io.EOF {
+			if err == io.EOF || errors.Is(err, net.ErrClosed) {
 				return
 			}
-			c.sendError(1, err.Error())
-			continue
+			// Timeout or connection error - stop handling
+			return
 		}
 
 		// Read message type (1 byte)
 		msgType, err := c.reader.ReadByte()
 		if err != nil {
-			c.sendError(1, err.Error())
-			continue
+			return // Connection error
 		}
 
 		// Read payload
@@ -188,8 +236,7 @@ func (c *ClientConn) Handle() {
 		}
 		payload := make([]byte, length-1)
 		if _, err := io.ReadFull(c.reader, payload); err != nil {
-			c.sendError(1, err.Error())
-			continue
+			return // Connection error
 		}
 
 		// Handle message
@@ -218,7 +265,6 @@ func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interfa
 		return c.handleAuth(&authMsg)
 
 	case wire.MsgQuery:
-		// Check if authentication is required
 		if !c.authed {
 			return wire.NewErrorMessage(6, "authentication required")
 		}
@@ -229,6 +275,31 @@ func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interfa
 		}
 
 		return c.handleQuery(ctx, &query)
+
+	case wire.MsgPrepare:
+		if !c.authed {
+			return wire.NewErrorMessage(6, "authentication required")
+		}
+
+		var prepMsg wire.PrepareMessage
+		if err := wire.Decode(payload, &prepMsg); err != nil {
+			return wire.NewErrorMessage(2, err.Error())
+		}
+
+		// Prepare is essentially the same as query in our engine (uses cached prepared stmts)
+		return wire.NewOKMessage(0, 0)
+
+	case wire.MsgExecute:
+		if !c.authed {
+			return wire.NewErrorMessage(6, "authentication required")
+		}
+
+		var execMsg wire.ExecuteMessage
+		if err := wire.Decode(payload, &execMsg); err != nil {
+			return wire.NewErrorMessage(2, err.Error())
+		}
+
+		return wire.NewErrorMessage(3, "prepared statement execution not yet supported via wire protocol")
 
 	default:
 		return wire.NewErrorMessage(3, fmt.Sprintf("unknown message type: %d", msgType))
@@ -284,7 +355,7 @@ func (c *ClientConn) checkPermission(sql string) bool {
 	case strings.HasPrefix(sqlUpper, "ALTER"):
 		action = "ALTER"
 	default:
-		return true // Unknown operations allowed by default
+		return false // Unknown operations denied by default for safety
 	}
 
 	// Check permission (using empty database/table for now - would need proper parsing)
@@ -293,6 +364,11 @@ func (c *ClientConn) checkPermission(sql string) bool {
 
 // handleQuery handles a query message
 func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) interface{} {
+	// Check if database is initialized
+	if c.Server.db == nil {
+		return wire.NewErrorMessage(1, "database not initialized")
+	}
+
 	// Check permissions
 	if !c.checkPermission(query.SQL) {
 		return wire.NewErrorMessage(8, "permission denied")
@@ -367,6 +443,9 @@ func (c *ClientConn) sendMessage(msg interface{}) error {
 			return err
 		}
 	}
+
+	// Set write deadline
+	c.Conn.SetWriteDeadline(time.Now().Add(c.Server.writeTimeout))
 
 	// Write length
 	length := uint32(1 + len(payData))

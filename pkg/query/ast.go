@@ -34,11 +34,45 @@ type SelectStmt struct {
 func (s *SelectStmt) nodeType() string { return "SelectStmt" }
 func (s *SelectStmt) statementNode()   {}
 
+// SetOpType represents the type of set operation
+type SetOpType int
+
+const (
+	SetOpUnion     SetOpType = iota // UNION
+	SetOpIntersect                  // INTERSECT
+	SetOpExcept                     // EXCEPT
+)
+
+// UnionStmt represents a UNION/INTERSECT/EXCEPT of multiple SELECT statements
+type UnionStmt struct {
+	Left    Statement // SelectStmt or UnionStmt
+	Right   *SelectStmt
+	All     bool       // ALL variant (no deduplication)
+	Op      SetOpType  // UNION, INTERSECT, or EXCEPT
+	OrderBy []*OrderByExpr
+	Limit   Expression
+	Offset  Expression
+}
+
+func (s *UnionStmt) nodeType() string { return "UnionStmt" }
+func (s *UnionStmt) statementNode()   {}
+
+// ConflictAction specifies behavior on constraint conflict
+type ConflictAction int
+
+const (
+	ConflictAbort   ConflictAction = iota // Default: abort on conflict
+	ConflictReplace                       // INSERT OR REPLACE: replace existing row
+	ConflictIgnore                        // INSERT OR IGNORE: skip conflicting row
+)
+
 // InsertStmt represents an INSERT statement
 type InsertStmt struct {
-	Table   string
-	Columns []string
-	Values  [][]Expression
+	Table          string
+	Columns        []string
+	Values         [][]Expression
+	Select         *SelectStmt    // For INSERT INTO ... SELECT ...
+	ConflictAction ConflictAction // OR REPLACE / OR IGNORE
 }
 
 func (s *InsertStmt) nodeType() string { return "InsertStmt" }
@@ -145,6 +179,7 @@ type CreateTriggerStmt struct {
 	Table       string
 	Time        string // BEFORE, AFTER
 	Event       string // INSERT, UPDATE, DELETE
+	Condition   Expression // WHEN condition (optional)
 	Body        []Statement
 }
 
@@ -210,10 +245,28 @@ func (s *CommitStmt) nodeType() string { return "CommitStmt" }
 func (s *CommitStmt) statementNode()   {}
 
 // RollbackStmt represents a ROLLBACK statement
-type RollbackStmt struct{}
+type RollbackStmt struct {
+	ToSavepoint string // Non-empty for ROLLBACK TO SAVEPOINT name
+}
 
 func (s *RollbackStmt) nodeType() string { return "RollbackStmt" }
 func (s *RollbackStmt) statementNode()   {}
+
+// SavepointStmt represents a SAVEPOINT name statement
+type SavepointStmt struct {
+	Name string
+}
+
+func (s *SavepointStmt) nodeType() string { return "SavepointStmt" }
+func (s *SavepointStmt) statementNode()   {}
+
+// ReleaseSavepointStmt represents a RELEASE SAVEPOINT name statement
+type ReleaseSavepointStmt struct {
+	Name string
+}
+
+func (s *ReleaseSavepointStmt) nodeType() string { return "ReleaseSavepointStmt" }
+func (s *ReleaseSavepointStmt) statementNode()   {}
 
 // ColumnDef represents a column definition in CREATE TABLE
 type ColumnDef struct {
@@ -238,8 +291,10 @@ type ForeignKeyDef struct {
 
 // TableRef represents a table reference
 type TableRef struct {
-	Name  string
-	Alias string
+	Name         string
+	Alias        string
+	Subquery     *SelectStmt // non-nil for derived tables: FROM (SELECT ...) AS alias
+	SubqueryStmt Statement   // non-nil for derived tables with UNION: FROM (SELECT ... UNION ...) AS alias
 }
 
 // JoinClause represents a JOIN clause
@@ -324,8 +379,9 @@ func (e *UnaryExpr) expressionNode()  {}
 
 // FunctionCall represents a function call
 type FunctionCall struct {
-	Name string
-	Args []Expression
+	Name     string
+	Args     []Expression
+	Distinct bool // for COUNT(DISTINCT col)
 }
 
 func (e *FunctionCall) nodeType() string { return "FunctionCall" }
@@ -393,6 +449,7 @@ type LikeExpr struct {
 	Expr    Expression
 	Pattern Expression
 	Not     bool
+	Escape  Expression // Optional ESCAPE character
 }
 
 func (e *LikeExpr) nodeType() string { return "LikeExpr" }
@@ -473,7 +530,7 @@ func (e *WindowSpec) expressionNode()  {}
 type CTEDef struct {
 	Name        string
 	Columns     []string // Optional column list
-	Query       *SelectStmt
+	Query       Statement // *SelectStmt or *UnionStmt (for recursive CTEs)
 	IsRecursive bool
 }
 
@@ -543,6 +600,15 @@ type DropMaterializedViewStmt struct {
 func (s *DropMaterializedViewStmt) nodeType() string { return "DropMaterializedViewStmt" }
 func (s *DropMaterializedViewStmt) statementNode()   {}
 
+// AliasExpr represents an aliased expression (e.g., SELECT col AS alias)
+type AliasExpr struct {
+	Expr  Expression
+	Alias string
+}
+
+func (e *AliasExpr) nodeType() string { return "AliasExpr" }
+func (e *AliasExpr) expressionNode()  {}
+
 // RefreshMaterializedViewStmt represents a REFRESH MATERIALIZED VIEW statement
 type RefreshMaterializedViewStmt struct {
 	Name string
@@ -550,3 +616,68 @@ type RefreshMaterializedViewStmt struct {
 
 func (s *RefreshMaterializedViewStmt) nodeType() string { return "RefreshMaterializedViewStmt" }
 func (s *RefreshMaterializedViewStmt) statementNode()   {}
+
+// AlterTableStmt represents ALTER TABLE ADD/DROP/RENAME
+type AlterTableStmt struct {
+	Table   string
+	Action  string // "ADD", "DROP", "RENAME_TABLE", "RENAME_COLUMN"
+	Column  ColumnDef
+	OldName string // For RENAME COLUMN: old column name
+	NewName string // For RENAME TABLE/COLUMN: new name
+}
+
+func (s *AlterTableStmt) nodeType() string { return "AlterTableStmt" }
+func (s *AlterTableStmt) statementNode()   {}
+
+// ShowTablesStmt represents SHOW TABLES
+type ShowTablesStmt struct{}
+
+func (s *ShowTablesStmt) nodeType() string { return "ShowTablesStmt" }
+func (s *ShowTablesStmt) statementNode()   {}
+
+// ShowCreateTableStmt represents SHOW CREATE TABLE <name>
+type ShowCreateTableStmt struct {
+	Table string
+}
+
+func (s *ShowCreateTableStmt) nodeType() string { return "ShowCreateTableStmt" }
+func (s *ShowCreateTableStmt) statementNode()   {}
+
+// ShowColumnsStmt represents SHOW COLUMNS FROM <table> / DESCRIBE <table>
+type ShowColumnsStmt struct {
+	Table string
+}
+
+func (s *ShowColumnsStmt) nodeType() string { return "ShowColumnsStmt" }
+func (s *ShowColumnsStmt) statementNode()   {}
+
+// UseStmt represents USE <database>
+type UseStmt struct {
+	Database string
+}
+
+func (s *UseStmt) nodeType() string { return "UseStmt" }
+func (s *UseStmt) statementNode()   {}
+
+// SetVarStmt represents SET <variable> = <value> (MySQL compatibility)
+type SetVarStmt struct {
+	Variable string
+	Value    string
+}
+
+func (s *SetVarStmt) nodeType() string { return "SetVarStmt" }
+func (s *SetVarStmt) statementNode()   {}
+
+// ShowDatabasesStmt represents SHOW DATABASES
+type ShowDatabasesStmt struct{}
+
+func (s *ShowDatabasesStmt) nodeType() string { return "ShowDatabasesStmt" }
+func (s *ShowDatabasesStmt) statementNode()   {}
+
+// DescribeStmt represents DESCRIBE <table>
+type DescribeStmt struct {
+	Table string
+}
+
+func (s *DescribeStmt) nodeType() string { return "DescribeStmt" }
+func (s *DescribeStmt) statementNode()   {}

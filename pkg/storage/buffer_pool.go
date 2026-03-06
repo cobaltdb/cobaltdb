@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 )
@@ -140,14 +141,8 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 	offset := int64(pageID) * int64(PageSize)
 	_, err := bp.backend.ReadAt(data, offset)
 	if err != nil {
-		// If page doesn't exist on disk, create a new one
-		if errors.Is(err, ErrInvalidOffset) || isEOF(err) {
-			page := NewPage(pageID, PageTypeFreeList)
-			data = page.Data
-		} else {
-			bp.mu.Unlock()
-			return nil, fmt.Errorf("failed to read page %d: %w", pageID, err)
-		}
+		bp.mu.Unlock()
+		return nil, fmt.Errorf("failed to read page %d: %w", pageID, err)
 	}
 
 	page := &CachedPage{
@@ -286,5 +281,5 @@ func isEOF(err error) bool {
 	if err == nil {
 		return false
 	}
-	return errors.Is(err, errors.New("EOF")) || errors.Is(err, errors.New("unexpected EOF"))
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }

@@ -290,8 +290,57 @@ func TestEvaluateWhereWithBinaryExpr(t *testing.T) {
 }
 
 func TestEvaluateWhereIsNull(t *testing.T) {
-	// Skip - IS NULL functionality has issues
-	t.Skip("IS NULL evaluation needs fixing")
+	cat := setupTestCatalog(t)
+
+	// Create table with nullable column
+	err := cat.CreateTable(&query.CreateTableStmt{
+		Table: "test_null",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "name", Type: query.TokenText},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create table: %v", err)
+	}
+
+	// Insert rows with NULL and non-NULL values
+	cat.Insert(&query.InsertStmt{
+		Table:   "test_null",
+		Columns: []string{"id", "name"},
+		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
+	}, nil)
+	cat.Insert(&query.InsertStmt{
+		Table:   "test_null",
+		Columns: []string{"id", "name"},
+		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 2}, &query.NullLiteral{}}},
+	}, nil)
+
+	// Test IS NULL
+	_, rows, err := cat.Select(&query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "id"}},
+		From:    &query.TableRef{Name: "test_null"},
+		Where:   &query.IsNullExpr{Expr: &query.Identifier{Name: "name"}, Not: false},
+	}, nil)
+	if err != nil {
+		t.Fatalf("IS NULL query failed: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("IS NULL: expected 1 row, got %d", len(rows))
+	}
+
+	// Test IS NOT NULL
+	_, rows, err = cat.Select(&query.SelectStmt{
+		Columns: []query.Expression{&query.Identifier{Name: "id"}},
+		From:    &query.TableRef{Name: "test_null"},
+		Where:   &query.IsNullExpr{Expr: &query.Identifier{Name: "name"}, Not: true},
+	}, nil)
+	if err != nil {
+		t.Fatalf("IS NOT NULL query failed: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("IS NOT NULL: expected 1 row, got %d", len(rows))
+	}
 }
 
 func TestCompareValues(t *testing.T) {
@@ -5218,11 +5267,8 @@ func TestEmptyTableAggregate(t *testing.T) {
 		t.Fatalf("Expected 1 row, got %d", len(rows))
 	}
 	// COUNT on empty table should return 0
-	count, ok := rows[0][0].(float64)
-	if !ok {
-		count = float64(rows[0][0].(int64))
-	}
-	if count != 0 {
+	count, ok := toFloat64(rows[0][0])
+	if !ok || count != 0 {
 		t.Errorf("Expected COUNT=0 on empty table, got %v", rows[0][0])
 	}
 }
@@ -5488,8 +5534,7 @@ func TestDistinctMultipleColumns(t *testing.T) {
 }
 
 // Test Join with WHERE condition
-// TODO: JOIN implementation needs fixing
-func SkipTestJoinWithWhere(t *testing.T) {
+func TestJoinWithWhere(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
 	catalog := New(nil, pool, nil)
@@ -5739,7 +5784,7 @@ func TestOrderByNumeric(t *testing.T) {
 
 	_, rows, _ := catalog.Select(stmt, nil)
 
-	if len(rows) != 3 || rows[0][0].(float64) != 1 || rows[1][0].(float64) != 2 || rows[2][0].(float64) != 3 {
+	if len(rows) != 3 || fmt.Sprintf("%v", rows[0][0]) != "1" || fmt.Sprintf("%v", rows[1][0]) != "2" || fmt.Sprintf("%v", rows[2][0]) != "3" {
 		t.Errorf("Expected rows [1, 2, 3], got %v", rows)
 	}
 }
@@ -5932,11 +5977,12 @@ func TestUseIndexForQuery(t *testing.T) {
 		},
 	})
 
-	// Create index
+	// Create unique index (index optimization only applies to unique indexes)
 	catalog.CreateIndex(&query.CreateIndexStmt{
 		Index:   "idx_use_id",
 		Table:   "test_use_idx",
 		Columns: []string{"id"},
+		Unique:  true,
 	})
 
 	// Insert some data
@@ -6935,13 +6981,13 @@ func TestComputeAggregatesDirectly(t *testing.T) {
 		t.Errorf("Expected AVG = 30, got %v", rows[0][2])
 	}
 
-	// Verify MIN = 10
-	if min, ok := rows[0][3].(float64); !ok || min != 10 {
+	// Verify MIN = 10 (MIN returns stored value, which is int64 for whole numbers)
+	if min, ok := toFloat64(rows[0][3]); !ok || min != 10 {
 		t.Errorf("Expected MIN = 10, got %v", rows[0][3])
 	}
 
-	// Verify MAX = 50
-	if max, ok := rows[0][4].(float64); !ok || max != 50 {
+	// Verify MAX = 50 (MAX returns stored value, which is int64 for whole numbers)
+	if max, ok := toFloat64(rows[0][4]); !ok || max != 50 {
 		t.Errorf("Expected MAX = 50, got %v", rows[0][4])
 	}
 }
@@ -7249,8 +7295,18 @@ func TestEvaluateWhereWithIsNull(t *testing.T) {
 	}
 
 	if len(rows) > 0 {
-		if id, ok := rows[0][0].(int64); !ok || id != 2 {
-			t.Errorf("Expected id=2, got %v", rows[0][0])
+		// NumberLiteral stores float64, so check both types
+		switch id := rows[0][0].(type) {
+		case int64:
+			if id != 2 {
+				t.Errorf("Expected id=2, got %v", id)
+			}
+		case float64:
+			if id != 2 {
+				t.Errorf("Expected id=2, got %v", id)
+			}
+		default:
+			t.Errorf("Expected id=2, got %v (type %T)", rows[0][0], rows[0][0])
 		}
 	}
 
@@ -7898,7 +7954,7 @@ func TestScalarAggregateFunctions(t *testing.T) {
 		t.Fatalf("MIN failed: %v", err)
 	}
 
-	if min, ok := rows[0][0].(float64); !ok || min != 10 {
+	if min, ok := toFloat64(rows[0][0]); !ok || min != 10 {
 		t.Errorf("Expected MIN=10, got %v", rows[0][0])
 	}
 
@@ -7915,7 +7971,7 @@ func TestScalarAggregateFunctions(t *testing.T) {
 		t.Fatalf("MAX failed: %v", err)
 	}
 
-	if max, ok := rows[0][0].(float64); !ok || max != 50 {
+	if max, ok := toFloat64(rows[0][0]); !ok || max != 50 {
 		t.Errorf("Expected MAX=50, got %v", rows[0][0])
 	}
 }

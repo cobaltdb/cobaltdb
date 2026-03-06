@@ -821,12 +821,12 @@ func TestComputeAggregateResultMore(t *testing.T) {
 	}
 
 	// Verify MIN = 10
-	if min, ok := rows[0][3].(float64); !ok || min != 10 {
+	if minF, minOk := toFloat64(rows[0][3]); !minOk || minF != 10 {
 		t.Errorf("Expected MIN = 10, got %v", rows[0][3])
 	}
 
 	// Verify MAX = 30
-	if max, ok := rows[0][4].(float64); !ok || max != 30 {
+	if maxF, maxOk := toFloat64(rows[0][4]); !maxOk || maxF != 30 {
 		t.Errorf("Expected MAX = 30, got %v", rows[0][4])
 	}
 }

@@ -228,15 +228,20 @@ func (m *Manager) backupTable(ctx context.Context, w io.Writer, table string) (i
 	return count, rows.Close()
 }
 
+// quoteIdentifier safely quotes a SQL identifier to prevent injection
+func quoteIdentifier(name string) string {
+	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
+}
+
 // formatInsert formats an INSERT statement
 func (m *Manager) formatInsert(table string, columns []string, values []interface{}) string {
 	// Build INSERT statement
-	sql := fmt.Sprintf("INSERT INTO %s (", table)
+	sql := fmt.Sprintf("INSERT INTO %s (", quoteIdentifier(table))
 	for i, col := range columns {
 		if i > 0 {
 			sql += ", "
 		}
-		sql += col
+		sql += quoteIdentifier(col)
 	}
 	sql += ") VALUES ("
 

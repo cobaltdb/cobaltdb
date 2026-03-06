@@ -36,16 +36,17 @@ func TestLexerNumbers(t *testing.T) {
 }
 
 func TestLexerStrings(t *testing.T) {
-	tests := []struct {
+	// Single-quoted strings are string literals
+	stringTests := []struct {
 		input    string
 		expected string
 	}{
 		{"'hello'", "hello"},
-		{"\"world\"", "world"},
-		{"'it\\'s'", "it\\'s"},
+		{"'it\\'s'", "it's"},
+		{"'O''Brien'", "O'Brien"},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range stringTests {
 		tokens, err := Tokenize(tt.input)
 		if err != nil {
 			t.Errorf("Failed to tokenize %q: %v", tt.input, err)
@@ -57,6 +58,33 @@ func TestLexerStrings(t *testing.T) {
 		}
 		if tokens[0].Type != TokenString {
 			t.Errorf("Expected string token for %q, got %v", tt.input, tokens[0].Type)
+		}
+		if tokens[0].Literal != tt.expected {
+			t.Errorf("Expected %q, got %q", tt.expected, tokens[0].Literal)
+		}
+	}
+
+	// Double-quoted strings are identifiers per SQL standard
+	identTests := []struct {
+		input    string
+		expected string
+	}{
+		{"\"world\"", "world"},
+		{"\"column name\"", "column name"},
+	}
+
+	for _, tt := range identTests {
+		tokens, err := Tokenize(tt.input)
+		if err != nil {
+			t.Errorf("Failed to tokenize %q: %v", tt.input, err)
+			continue
+		}
+		if len(tokens) < 1 {
+			t.Errorf("No tokens for %q", tt.input)
+			continue
+		}
+		if tokens[0].Type != TokenIdentifier {
+			t.Errorf("Expected identifier token for %q, got %v", tt.input, tokens[0].Type)
 		}
 		if tokens[0].Literal != tt.expected {
 			t.Errorf("Expected %q, got %q", tt.expected, tokens[0].Literal)

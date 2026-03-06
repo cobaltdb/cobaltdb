@@ -214,9 +214,6 @@ func TestHandleQueryWithNilDB(t *testing.T) {
 		SQL: "SELECT 1",
 	}
 
-	// This will panic because db is nil - skip this test
-	t.Skip("handleQuery with nil db causes panic - known limitation")
-
 	response := client.handleQuery(nil, query)
 	errMsg, ok := response.(*wire.ErrorMessage)
 	if !ok {
@@ -1161,9 +1158,9 @@ func TestCheckPermissionUnknownOperation(t *testing.T) {
 		username: "testuser",
 	}
 
-	// Unknown operations are allowed by default
-	if !client.checkPermission("UNKNOWN SQL COMMAND") {
-		t.Error("Unknown operations should be allowed by default")
+	// Unknown operations are denied by default for security
+	if client.checkPermission("UNKNOWN SQL COMMAND") {
+		t.Error("Unknown operations should be denied by default")
 	}
 }
 

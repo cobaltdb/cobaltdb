@@ -763,7 +763,7 @@ func TestSendResultSetVariations(t *testing.T) {
 			server: NewMySQLServer(&engine.DB{}, "5.7.0"),
 		}
 
-		err := client.sendResultSet(nil)
+		err := client.sendResultSetFromRows(nil)
 		if err != nil {
 			t.Errorf("sendResultSet(nil) failed: %v", err)
 		}
@@ -783,7 +783,7 @@ func TestSendResultSetVariations(t *testing.T) {
 			server: NewMySQLServer(&engine.DB{}, "5.7.0"),
 		}
 
-		err := client.sendResultSet(nil)
+		err := client.sendResultSetFromRows(nil)
 		if err == nil {
 			t.Error("Expected error for closed connection")
 		}

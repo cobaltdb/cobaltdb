@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -18,25 +19,32 @@ var (
 	ErrInvalidValue = errors.New("invalid value")
 )
 
-// BTree represents a disk-based B+Tree index using a simpler approach:
+// BTree represents a disk-based B+Tree index using a hybrid approach:
 // - Each table has its own BTree instance
 // - Data is stored as key-value pairs in pages managed by the buffer pool
 // - The BTree maintains an in-memory sorted structure that flushes to disk pages
-// - This is a hybrid approach: in-memory sorted map with periodic page flush
+// - Multi-page overflow: data exceeding one page spills to linked overflow pages
 
 type BTree struct {
-	mu         sync.RWMutex
-	rootPageID uint32
-	pool       *storage.BufferPool
-	order      int
-	// In-memory storage until we implement proper page-based storage
-	memStorage map[string][]byte
-	dirty      bool
+	mu            sync.RWMutex
+	rootPageID    uint32
+	pool          *storage.BufferPool
+	order         int
+	memStorage    map[string][]byte
+	dirty         bool
+	overflowPages []uint32 // IDs of overflow pages used by this tree
 }
+
+// usablePageSize is the space available for data in each page (after header)
+const usablePageSize = storage.PageSize - storage.PageHeaderSize
+
+// Overflow page format:
+// Root page: [totalCount:4][overflowCount:4][overflowIDs:4*N][KV data...]
+// Overflow page: [KV data continuation...]
+// Root header size = 8 bytes + 4*overflowCount
 
 // NewBTree creates a new B+Tree
 func NewBTree(pool *storage.BufferPool) (*BTree, error) {
-	// Allocate root page
 	rootPage, err := pool.NewPage(storage.PageTypeLeaf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create root page: %w", err)
@@ -54,12 +62,92 @@ func NewBTree(pool *storage.BufferPool) (*BTree, error) {
 
 // OpenBTree opens an existing B+Tree with the given root page ID
 func OpenBTree(pool *storage.BufferPool, rootPageID uint32) *BTree {
-	return &BTree{
+	t := &BTree{
 		rootPageID: rootPageID,
 		pool:       pool,
 		order:      100,
 		memStorage: make(map[string][]byte),
 		dirty:      false,
+	}
+	t.loadFromPages()
+	return t
+}
+
+// loadFromPages loads serialized key-value pairs from root + overflow pages into memStorage
+func (t *BTree) loadFromPages() {
+	root, err := t.pool.GetPage(t.rootPageID)
+	if err != nil {
+		return
+	}
+	defer t.pool.Unpin(root)
+
+	pageData := root.Data()[storage.PageHeaderSize:]
+	if len(pageData) < 8 {
+		return
+	}
+
+	totalCount := binary.LittleEndian.Uint32(pageData[0:4])
+	overflowCount := binary.LittleEndian.Uint32(pageData[4:8])
+
+	if totalCount == 0 {
+		return
+	}
+
+	// Read overflow page IDs
+	headerSize := 8 + 4*int(overflowCount)
+	if headerSize > len(pageData) {
+		return
+	}
+
+	t.overflowPages = make([]uint32, overflowCount)
+	for i := uint32(0); i < overflowCount; i++ {
+		off := 8 + 4*int(i)
+		t.overflowPages[i] = binary.LittleEndian.Uint32(pageData[off : off+4])
+	}
+
+	// Collect all data from root page + overflow pages
+	var allData []byte
+	allData = append(allData, pageData[headerSize:]...)
+
+	for _, pgID := range t.overflowPages {
+		pg, err := t.pool.GetPage(pgID)
+		if err != nil {
+			break
+		}
+		allData = append(allData, pg.Data()[storage.PageHeaderSize:]...)
+		t.pool.Unpin(pg)
+	}
+
+	// Deserialize KV pairs
+	offset := 0
+	for i := uint32(0); i < totalCount; i++ {
+		if offset+2 > len(allData) {
+			break
+		}
+		keyLen := int(binary.LittleEndian.Uint16(allData[offset : offset+2]))
+		offset += 2
+
+		if offset+keyLen > len(allData) {
+			break
+		}
+		key := make([]byte, keyLen)
+		copy(key, allData[offset:offset+keyLen])
+		offset += keyLen
+
+		if offset+4 > len(allData) {
+			break
+		}
+		valLen := int(binary.LittleEndian.Uint32(allData[offset : offset+4]))
+		offset += 4
+
+		if offset+valLen > len(allData) {
+			break
+		}
+		val := make([]byte, valLen)
+		copy(val, allData[offset:offset+valLen])
+		offset += valLen
+
+		t.memStorage[string(key)] = val
 	}
 }
 
@@ -77,16 +165,12 @@ func (t *BTree) Get(key []byte) ([]byte, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	// First check in-memory storage
 	if val, ok := t.memStorage[string(key)]; ok {
-		// Return a copy to prevent external modification
 		result := make([]byte, len(val))
 		copy(result, val)
 		return result, nil
 	}
 
-	// TODO: Load from disk pages if not in memory
-	// For now, return not found
 	return nil, ErrKeyNotFound
 }
 
@@ -102,7 +186,6 @@ func (t *BTree) Put(key, value []byte) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Store in memory (with copy to prevent external modification)
 	keyCopy := string(key)
 	valCopy := make([]byte, len(value))
 	copy(valCopy, value)
@@ -147,22 +230,17 @@ func (t *BTree) Scan(startKey, endKey []byte) (*Iterator, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	// Collect all keys and sort them
 	var keys, values [][]byte
 	for k, v := range t.memStorage {
 		kb := []byte(k)
 
-		// Check start key
 		if startKey != nil && bytes.Compare(kb, startKey) < 0 {
 			continue
 		}
-
-		// Check end key
 		if endKey != nil && bytes.Compare(kb, endKey) > 0 {
 			continue
 		}
 
-		// Make copies
 		keyCopy := make([]byte, len(kb))
 		copy(keyCopy, kb)
 		valCopy := make([]byte, len(v))
@@ -172,7 +250,7 @@ func (t *BTree) Scan(startKey, endKey []byte) (*Iterator, error) {
 		values = append(values, valCopy)
 	}
 
-	// Sort keys
+	// Sort keys using standard library sort (faster than bubble sort)
 	sortKeyValues(keys, values)
 
 	return &Iterator{
@@ -187,15 +265,19 @@ func (t *BTree) Scan(startKey, endKey []byte) (*Iterator, error) {
 
 // sortKeyValues sorts keys and values together by key
 func sortKeyValues(keys [][]byte, values [][]byte) {
-	// Simple bubble sort for now
-	for i := 0; i < len(keys); i++ {
-		for j := i + 1; j < len(keys); j++ {
-			if bytes.Compare(keys[i], keys[j]) > 0 {
-				keys[i], keys[j] = keys[j], keys[i]
-				values[i], values[j] = values[j], values[i]
-			}
-		}
-	}
+	sort.Sort(&kvSorter{keys: keys, values: values})
+}
+
+type kvSorter struct {
+	keys   [][]byte
+	values [][]byte
+}
+
+func (s *kvSorter) Len() int           { return len(s.keys) }
+func (s *kvSorter) Less(i, j int) bool { return bytes.Compare(s.keys[i], s.keys[j]) < 0 }
+func (s *kvSorter) Swap(i, j int) {
+	s.keys[i], s.keys[j] = s.keys[j], s.keys[i]
+	s.values[i], s.values[j] = s.values[j], s.values[i]
 }
 
 // Next advances the iterator
@@ -209,7 +291,6 @@ func (it *Iterator) Next() ([]byte, []byte, error) {
 	value := it.values[it.idx]
 	it.idx++
 
-	// Check end key
 	if it.endKey != nil && bytes.Compare(key, it.endKey) > 0 {
 		it.done = true
 		return nil, nil, nil
@@ -250,7 +331,7 @@ func (t *BTree) Size() int {
 	return len(t.memStorage)
 }
 
-// Flush writes all in-memory data to disk pages
+// Flush writes all in-memory data to disk pages (with multi-page overflow support)
 func (t *BTree) Flush() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -259,37 +340,140 @@ func (t *BTree) Flush() error {
 		return nil
 	}
 
-	// Get root page
+	// Serialize all key-value pairs
+	// Format: [keylen:2][key][valuelen:4][value]...
+	var kvBuf bytes.Buffer
+	count := uint32(len(t.memStorage))
+
+	for k, v := range t.memStorage {
+		key := []byte(k)
+		binary.Write(&kvBuf, binary.LittleEndian, uint16(len(key)))
+		kvBuf.Write(key)
+		binary.Write(&kvBuf, binary.LittleEndian, uint32(len(v)))
+		kvBuf.Write(v)
+	}
+
+	kvData := kvBuf.Bytes()
+
+	// Calculate how many overflow pages we need
+	// Root page header: [totalCount:4][overflowCount:4][overflowIDs:4*N]
+	// We start with 0 overflow pages and check if data fits
+	overflowCount := uint32(0)
+	rootHeaderSize := 8 // totalCount + overflowCount
+
+	rootDataSpace := usablePageSize - rootHeaderSize
+	if rootDataSpace < 0 {
+		rootDataSpace = 0
+	}
+
+	if len(kvData) > rootDataSpace {
+		// Need overflow pages
+		remaining := len(kvData) - rootDataSpace
+		// Each overflow page can hold usablePageSize bytes
+		overflowCount = uint32((remaining + usablePageSize - 1) / usablePageSize)
+
+		// But adding overflow page IDs to the header reduces root data space
+		// Recalculate
+		for {
+			rootHeaderSize = 8 + 4*int(overflowCount)
+			rootDataSpace = usablePageSize - rootHeaderSize
+			if rootDataSpace < 0 {
+				rootDataSpace = 0
+			}
+			remaining = len(kvData) - rootDataSpace
+			if remaining <= 0 {
+				overflowCount = 0
+				rootHeaderSize = 8
+				rootDataSpace = usablePageSize - rootHeaderSize
+				break
+			}
+			needed := uint32((remaining + usablePageSize - 1) / usablePageSize)
+			if needed <= overflowCount {
+				overflowCount = needed
+				break
+			}
+			overflowCount = needed
+		}
+	}
+
+	// Allocate or reuse overflow pages
+	// First, release any extra overflow pages we no longer need
+	for len(t.overflowPages) > int(overflowCount) {
+		t.overflowPages = t.overflowPages[:len(t.overflowPages)-1]
+	}
+
+	// Allocate new overflow pages if needed
+	for len(t.overflowPages) < int(overflowCount) {
+		newPage, err := t.pool.NewPage(storage.PageTypeLeaf)
+		if err != nil {
+			return fmt.Errorf("failed to allocate overflow page: %w", err)
+		}
+		t.overflowPages = append(t.overflowPages, newPage.ID())
+		t.pool.Unpin(newPage)
+	}
+
+	// Write root page
 	root, err := t.pool.GetPage(t.rootPageID)
 	if err != nil {
 		return err
 	}
 	defer t.pool.Unpin(root)
 
-	// Serialize all key-value pairs
-	// Format: [count:4][keylen:2][key][valuelen:4][value]...
-	var buf bytes.Buffer
-	count := uint32(len(t.memStorage))
-	binary.Write(&buf, binary.LittleEndian, count)
+	rootBuf := root.Data()[storage.PageHeaderSize:]
 
-	for k, v := range t.memStorage {
-		key := []byte(k)
-		binary.Write(&buf, binary.LittleEndian, uint16(len(key)))
-		buf.Write(key)
-		binary.Write(&buf, binary.LittleEndian, uint32(len(v)))
-		buf.Write(v)
+	// Clear the page data area
+	for i := range rootBuf {
+		rootBuf[i] = 0
 	}
 
-	// Write to page (with overflow handling for large datasets)
-	data := buf.Bytes()
-	pageSize := storage.PageSize - storage.PageHeaderSize
-	if len(data) > pageSize {
-		// Truncate for now - proper overflow handling would require multiple pages
-		data = data[:pageSize]
+	// Write header
+	binary.LittleEndian.PutUint32(rootBuf[0:4], count)
+	binary.LittleEndian.PutUint32(rootBuf[4:8], overflowCount)
+	for i, pgID := range t.overflowPages {
+		off := 8 + 4*i
+		binary.LittleEndian.PutUint32(rootBuf[off:off+4], pgID)
 	}
 
-	copy(root.Data()[storage.PageHeaderSize:], data)
+	// Write KV data to root page
+	rootHeaderSize = 8 + 4*int(overflowCount)
+	rootDataSpace = usablePageSize - rootHeaderSize
+	dataWritten := 0
+
+	writeLen := rootDataSpace
+	if writeLen > len(kvData) {
+		writeLen = len(kvData)
+	}
+	copy(rootBuf[rootHeaderSize:], kvData[:writeLen])
+	dataWritten += writeLen
 	root.SetDirty(true)
+
+	// Write remaining data to overflow pages
+	for _, pgID := range t.overflowPages {
+		if dataWritten >= len(kvData) {
+			break
+		}
+
+		pg, err := t.pool.GetPage(pgID)
+		if err != nil {
+			return fmt.Errorf("failed to get overflow page %d: %w", pgID, err)
+		}
+
+		pgBuf := pg.Data()[storage.PageHeaderSize:]
+		// Clear
+		for i := range pgBuf {
+			pgBuf[i] = 0
+		}
+
+		writeLen = usablePageSize
+		remaining := len(kvData) - dataWritten
+		if writeLen > remaining {
+			writeLen = remaining
+		}
+		copy(pgBuf, kvData[dataWritten:dataWritten+writeLen])
+		dataWritten += writeLen
+		pg.SetDirty(true)
+		t.pool.Unpin(pg)
+	}
 
 	t.dirty = false
 	return nil

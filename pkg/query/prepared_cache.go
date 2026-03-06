@@ -373,6 +373,8 @@ func countExprParameters(expr Expression) int {
 		}
 		count += countExprParameters(e.Else)
 		return count
+	case *AliasExpr:
+		return countExprParameters(e.Expr)
 	default:
 		return 0
 	}

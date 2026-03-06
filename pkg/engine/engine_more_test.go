@@ -107,9 +107,11 @@ func TestExecBeginStmt(t *testing.T) {
 
 	ctx := context.Background()
 	_, err := db.Exec(ctx, "BEGIN")
-	if err == nil {
-		t.Error("Expected error for BEGIN via Exec")
+	if err != nil {
+		t.Errorf("BEGIN via Exec should succeed: %v", err)
 	}
+	// Cleanup: commit the started transaction
+	db.Exec(ctx, "COMMIT")
 }
 
 func TestExecCommitStmt(t *testing.T) {
@@ -117,9 +119,10 @@ func TestExecCommitStmt(t *testing.T) {
 	defer db.Close()
 
 	ctx := context.Background()
+	// COMMIT without active transaction should error
 	_, err := db.Exec(ctx, "COMMIT")
 	if err == nil {
-		t.Error("Expected error for COMMIT via Exec")
+		t.Error("Expected error for COMMIT without active transaction")
 	}
 }
 
@@ -128,9 +131,10 @@ func TestExecRollbackStmt(t *testing.T) {
 	defer db.Close()
 
 	ctx := context.Background()
+	// ROLLBACK without active transaction should error
 	_, err := db.Exec(ctx, "ROLLBACK")
 	if err == nil {
-		t.Error("Expected error for ROLLBACK via Exec")
+		t.Error("Expected error for ROLLBACK without active transaction")
 	}
 }
 
@@ -980,8 +984,6 @@ func TestOpenFileDatabase(t *testing.T) {
 }
 
 func TestOpenFileDatabaseWithWAL(t *testing.T) {
-	// TODO: Fix meta page serialization for WAL mode
-	t.Skip("Skipping test: Meta page corruption issue in WAL mode needs fixing")
 
 	tmpFile := t.TempDir() + "/test.db"
 
@@ -1483,27 +1485,29 @@ func TestDatabaseCloseMultiple(t *testing.T) {
 	}
 }
 
-// TestExecUnsupportedStatement tests exec with unsupported statement
+// TestExecUnsupportedStatement tests exec with transaction SQL statements
 func TestExecUnsupportedStatement(t *testing.T) {
 	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
 	defer db.Close()
 
 	ctx := context.Background()
 
-	// Try to execute a statement that's not supported
+	// BEGIN should start a transaction
 	_, err := db.Exec(ctx, `BEGIN TRANSACTION`)
-	if err == nil {
-		t.Error("Expected error for BEGIN TRANSACTION (should use Begin() method)")
+	if err != nil {
+		t.Errorf("BEGIN TRANSACTION should succeed: %v", err)
 	}
 
+	// COMMIT should succeed with active transaction
 	_, err = db.Exec(ctx, `COMMIT`)
-	if err == nil {
-		t.Error("Expected error for COMMIT (should use Commit() method)")
+	if err != nil {
+		t.Errorf("COMMIT should succeed: %v", err)
 	}
 
+	// ROLLBACK without active transaction should error
 	_, err = db.Exec(ctx, `ROLLBACK`)
 	if err == nil {
-		t.Error("Expected error for ROLLBACK (should use Rollback() method)")
+		t.Error("Expected error for ROLLBACK without active transaction")
 	}
 }
 
@@ -2041,7 +2045,7 @@ func TestRowsScanErrors(t *testing.T) {
 	rows.Close()
 }
 
-// TestExecuteUnsupportedStatement tests executing unsupported statements
+// TestExecuteUnsupportedStatement tests executing transaction SQL statements
 func TestExecuteUnsupportedStatement(t *testing.T) {
 	db, err := Open(":memory:", nil)
 	if err != nil {
@@ -2051,22 +2055,22 @@ func TestExecuteUnsupportedStatement(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Test BEGIN statement (should return error telling user to use Begin method)
+	// BEGIN should succeed and start a transaction
 	_, err = db.Exec(ctx, "BEGIN")
-	if err == nil {
-		t.Error("Expected error for BEGIN statement")
+	if err != nil {
+		t.Errorf("BEGIN should succeed: %v", err)
 	}
 
-	// Test COMMIT statement
+	// COMMIT should succeed with active transaction
 	_, err = db.Exec(ctx, "COMMIT")
-	if err == nil {
-		t.Error("Expected error for COMMIT statement")
+	if err != nil {
+		t.Errorf("COMMIT should succeed: %v", err)
 	}
 
-	// Test ROLLBACK statement
+	// ROLLBACK without active transaction should error
 	_, err = db.Exec(ctx, "ROLLBACK")
 	if err == nil {
-		t.Error("Expected error for ROLLBACK statement")
+		t.Error("Expected error for ROLLBACK without active transaction")
 	}
 }
 

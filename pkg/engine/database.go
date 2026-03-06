@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/catalog"
@@ -33,8 +37,9 @@ type DB struct {
 	closed   bool
 	options  *Options
 	// Prepared statement cache for performance
-	stmtCache map[string]query.Statement
-	stmtMu    sync.RWMutex
+	stmtCache   map[string]query.Statement
+	stmtMu      sync.RWMutex
+	nextTxnID   atomic.Uint64 // Auto-increment transaction ID counter
 }
 
 // Options contains database configuration options
@@ -137,12 +142,12 @@ func (db *DB) initialize() error {
 
 // createNew creates a new database
 func (db *DB) createNew() error {
-	// Create meta page
+	// Create meta page with initial values
 	metaPage := storage.NewPage(0, storage.PageTypeMeta)
 	meta := storage.NewMetaPage()
 	meta.Serialize(metaPage.Data)
 
-	// Write meta page
+	// Write initial meta page
 	if _, err := db.backend.WriteAt(metaPage.Data, 0); err != nil {
 		return fmt.Errorf("failed to write meta page: %w", err)
 	}
@@ -154,6 +159,13 @@ func (db *DB) createNew() error {
 	}
 	db.rootTree = tree
 
+	// Update meta page with actual root page ID
+	meta.RootPageID = db.rootTree.RootPageID()
+	meta.Serialize(metaPage.Data)
+	if _, err := db.backend.WriteAt(metaPage.Data, 0); err != nil {
+		return fmt.Errorf("failed to update meta page: %w", err)
+	}
+
 	// Initialize catalog
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
 
@@ -161,6 +173,26 @@ func (db *DB) createNew() error {
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
 
 	return db.backend.Sync()
+}
+
+// saveMetaPage writes the current meta page to disk with updated root page ID
+func (db *DB) saveMetaPage() error {
+	metaPage := storage.NewPage(0, storage.PageTypeMeta)
+	// Read existing meta page
+	if _, err := db.backend.ReadAt(metaPage.Data, 0); err != nil {
+		return fmt.Errorf("failed to read meta page: %w", err)
+	}
+	var meta storage.MetaPage
+	if err := meta.Deserialize(metaPage.Data); err != nil {
+		return fmt.Errorf("failed to deserialize meta page: %w", err)
+	}
+	// Update root page ID
+	meta.RootPageID = db.rootTree.RootPageID()
+	meta.Serialize(metaPage.Data)
+	if _, err := db.backend.WriteAt(metaPage.Data, 0); err != nil {
+		return fmt.Errorf("failed to write meta page: %w", err)
+	}
+	return nil
 }
 
 // loadExisting loads an existing database
@@ -230,6 +262,11 @@ func (db *DB) Close() error {
 	if !db.options.InMemory && db.path != ":memory:" {
 		if err := db.catalog.Save(); err != nil {
 			return fmt.Errorf("failed to save catalog: %w", err)
+		}
+
+		// Update meta page with current root page ID
+		if err := db.saveMetaPage(); err != nil {
+			return fmt.Errorf("failed to save meta page: %w", err)
 		}
 	}
 
@@ -328,10 +365,50 @@ func (db *DB) QueryRow(ctx context.Context, sql string, args ...interface{}) *Ro
 	}
 
 	if !rows.Next() {
+		rows.Close()
 		return &Row{err: errors.New("no rows in result set")}
 	}
 
 	return &Row{rows: rows}
+}
+
+// Tables returns a list of all table names in the database
+func (db *DB) Tables() []string {
+	return db.catalog.ListTables()
+}
+
+// TableSchema returns a human-readable schema for a table
+func (db *DB) TableSchema(name string) (string, error) {
+	table, err := db.catalog.GetTable(name)
+	if err != nil {
+		return "", err
+	}
+	var result string
+	result = fmt.Sprintf("CREATE TABLE %s (\n", table.Name)
+	for i, col := range table.Columns {
+		result += fmt.Sprintf("  %s %s", col.Name, col.Type)
+		if col.PrimaryKey {
+			result += " PRIMARY KEY"
+		}
+		if col.AutoIncrement {
+			result += " AUTOINCREMENT"
+		}
+		if col.NotNull {
+			result += " NOT NULL"
+		}
+		if col.Unique {
+			result += " UNIQUE"
+		}
+		if col.Default != "" {
+			result += fmt.Sprintf(" DEFAULT %s", col.Default)
+		}
+		if i < len(table.Columns)-1 {
+			result += ","
+		}
+		result += "\n"
+	}
+	result += ");"
+	return result, nil
 }
 
 // Begin starts a new transaction
@@ -360,14 +437,27 @@ func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 }
 
 // execute executes a statement
-func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interface{}) (Result, error) {
+func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interface{}) (result Result, err error) {
 	// Handle autocommit mode for write operations when WAL is enabled
-	autocommit := db.wal != nil && !db.catalog.IsTransactionActive()
+	// Skip autocommit for transaction control statements (BEGIN/COMMIT/ROLLBACK)
+	isTransactionControl := false
+	switch stmt.(type) {
+	case *query.BeginStmt, *query.CommitStmt, *query.RollbackStmt,
+		*query.SavepointStmt, *query.ReleaseSavepointStmt:
+		isTransactionControl = true
+	}
+	autocommit := db.wal != nil && !db.catalog.IsTransactionActive() && !isTransactionControl
 
 	if autocommit {
 		// Start a transaction for this operation
-		db.catalog.BeginTransaction(1) // Use 1 for autocommit transactions
-		defer db.catalog.CommitTransaction()
+		db.catalog.BeginTransaction(db.nextTxnID.Add(1))
+		defer func() {
+			if err != nil {
+				db.catalog.RollbackTransaction()
+			} else {
+				db.catalog.CommitTransaction()
+			}
+		}()
 	}
 
 	switch s := stmt.(type) {
@@ -398,11 +488,54 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 	case *query.CallProcedureStmt:
 		return db.executeCallProcedure(ctx, s, args)
 	case *query.BeginStmt:
-		return Result{}, errors.New("use Begin() method to start a transaction")
+		if db.catalog.IsTransactionActive() {
+			return Result{}, errors.New("transaction already in progress")
+		}
+		transaction := db.txnMgr.Begin(txn.DefaultOptions())
+		db.catalog.BeginTransaction(transaction.ID)
+		return Result{}, nil
 	case *query.CommitStmt:
-		return Result{}, errors.New("use Commit() method to commit a transaction")
+		if !db.catalog.IsTransactionActive() {
+			return Result{}, errors.New("no transaction in progress")
+		}
+		if err := db.catalog.FlushTableTrees(); err != nil {
+			return Result{}, fmt.Errorf("failed to flush tables: %w", err)
+		}
+		if err := db.catalog.CommitTransaction(); err != nil {
+			return Result{}, err
+		}
+		return Result{}, nil
 	case *query.RollbackStmt:
-		return Result{}, errors.New("use Rollback() method to rollback a transaction")
+		if !db.catalog.IsTransactionActive() {
+			return Result{}, errors.New("no transaction in progress")
+		}
+		if s.ToSavepoint != "" {
+			// ROLLBACK TO SAVEPOINT
+			if err := db.catalog.RollbackToSavepoint(s.ToSavepoint); err != nil {
+				return Result{}, err
+			}
+			return Result{}, nil
+		}
+		if err := db.catalog.RollbackTransaction(); err != nil {
+			return Result{}, err
+		}
+		return Result{}, nil
+	case *query.SavepointStmt:
+		if !db.catalog.IsTransactionActive() {
+			return Result{}, errors.New("SAVEPOINT can only be used within a transaction")
+		}
+		if err := db.catalog.Savepoint(s.Name); err != nil {
+			return Result{}, err
+		}
+		return Result{}, nil
+	case *query.ReleaseSavepointStmt:
+		if !db.catalog.IsTransactionActive() {
+			return Result{}, errors.New("RELEASE SAVEPOINT can only be used within a transaction")
+		}
+		if err := db.catalog.ReleaseSavepoint(s.Name); err != nil {
+			return Result{}, err
+		}
+		return Result{}, nil
 	case *query.VacuumStmt:
 		return db.executeVacuum(ctx, s)
 	case *query.AnalyzeStmt:
@@ -415,6 +548,18 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		return db.executeRefreshMaterializedView(ctx, s)
 	case *query.CreateFTSIndexStmt:
 		return db.executeCreateFTSIndex(ctx, s)
+	case *query.AlterTableStmt:
+		return db.executeAlterTable(ctx, s)
+	case *query.SetVarStmt:
+		// MySQL compatibility - accept SET commands silently
+		return Result{}, nil
+	case *query.UseStmt:
+		// MySQL compatibility - accept USE commands silently (single-database)
+		return Result{}, nil
+	case *query.ShowTablesStmt, *query.ShowCreateTableStmt, *query.ShowColumnsStmt,
+		*query.ShowDatabasesStmt, *query.DescribeStmt:
+		// These are query-like statements but may come through Exec
+		return Result{}, nil
 	case *query.DropIndexStmt:
 		// Try FTS index first, then regular index
 		if _, err := db.catalog.GetFTSIndex(s.Index); err == nil {
@@ -438,8 +583,20 @@ func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{
 	switch s := stmt.(type) {
 	case *query.SelectStmt:
 		return db.executeSelect(ctx, s, args)
+	case *query.UnionStmt:
+		return db.executeUnion(ctx, s, args)
 	case *query.SelectStmtWithCTE:
 		return db.executeSelectWithCTE(ctx, s, args)
+	case *query.ShowTablesStmt:
+		return db.executeShowTablesQuery(ctx)
+	case *query.ShowCreateTableStmt:
+		return db.executeShowCreateTableQuery(ctx, s)
+	case *query.ShowColumnsStmt:
+		return db.executeShowColumnsQuery(ctx, s)
+	case *query.ShowDatabasesStmt:
+		return db.executeShowDatabasesQuery(ctx)
+	case *query.DescribeStmt:
+		return db.executeDescribeQuery(ctx, s)
 	default:
 		return nil, fmt.Errorf("not a query statement: %T", stmt)
 	}
@@ -480,6 +637,31 @@ func (db *DB) executeDelete(ctx context.Context, stmt *query.DeleteStmt, args []
 	return Result{LastInsertID: lastInsertID, RowsAffected: rowsAffected}, nil
 }
 
+// executeAlterTable executes ALTER TABLE
+func (db *DB) executeAlterTable(ctx context.Context, stmt *query.AlterTableStmt) (Result, error) {
+	switch stmt.Action {
+	case "ADD":
+		if err := db.catalog.AlterTableAddColumn(stmt); err != nil {
+			return Result{}, err
+		}
+	case "DROP":
+		if err := db.catalog.AlterTableDropColumn(stmt); err != nil {
+			return Result{}, err
+		}
+	case "RENAME_TABLE":
+		if err := db.catalog.AlterTableRename(stmt); err != nil {
+			return Result{}, err
+		}
+	case "RENAME_COLUMN":
+		if err := db.catalog.AlterTableRenameColumn(stmt); err != nil {
+			return Result{}, err
+		}
+	default:
+		return Result{}, fmt.Errorf("unsupported ALTER TABLE action: %s", stmt.Action)
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
 // executeDropTable executes DROP TABLE
 func (db *DB) executeDropTable(ctx context.Context, stmt *query.DropTableStmt) (Result, error) {
 	if err := db.catalog.DropTable(stmt); err != nil {
@@ -499,6 +681,9 @@ func (db *DB) executeCreateIndex(ctx context.Context, stmt *query.CreateIndexStm
 // executeCreateView executes CREATE VIEW
 func (db *DB) executeCreateView(ctx context.Context, stmt *query.CreateViewStmt) (Result, error) {
 	if err := db.catalog.CreateView(stmt.Name, stmt.Query); err != nil {
+		if stmt.IfNotExists {
+			return Result{RowsAffected: 0}, nil
+		}
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
@@ -507,6 +692,9 @@ func (db *DB) executeCreateView(ctx context.Context, stmt *query.CreateViewStmt)
 // executeDropView executes DROP VIEW
 func (db *DB) executeDropView(ctx context.Context, stmt *query.DropViewStmt) (Result, error) {
 	if err := db.catalog.DropView(stmt.Name); err != nil {
+		if stmt.IfExists {
+			return Result{RowsAffected: 0}, nil
+		}
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
@@ -582,6 +770,280 @@ func (db *DB) executeSelect(ctx context.Context, stmt *query.SelectStmt, args []
 	}, nil
 }
 
+// executeUnion executes a UNION/INTERSECT/EXCEPT query by running both sides and combining results
+func (db *DB) executeUnion(ctx context.Context, stmt *query.UnionStmt, args []interface{}) (*Rows, error) {
+	// Execute left side
+	var leftRows *Rows
+	var err error
+	switch l := stmt.Left.(type) {
+	case *query.SelectStmt:
+		leftRows, err = db.executeSelect(ctx, l, args)
+	case *query.UnionStmt:
+		leftRows, err = db.executeUnion(ctx, l, args)
+	default:
+		return nil, fmt.Errorf("unsupported left side of set operation: %T", stmt.Left)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Execute right side
+	rightRows, err := db.executeSelect(ctx, stmt.Right, args)
+	if err != nil {
+		return nil, err
+	}
+
+	// Use left side's column names
+	columns := leftRows.columns
+
+	// Validate column counts match
+	if len(leftRows.columns) != len(rightRows.columns) {
+		return nil, fmt.Errorf("each %s query must have the same number of columns: left has %d, right has %d",
+			"set operation", len(leftRows.columns), len(rightRows.columns))
+	}
+
+	var combined [][]interface{}
+
+	switch stmt.Op {
+	case query.SetOpUnion:
+		// Combine rows
+		combined = make([][]interface{}, 0, len(leftRows.rows)+len(rightRows.rows))
+		combined = append(combined, leftRows.rows...)
+		combined = append(combined, rightRows.rows...)
+
+		// If not UNION ALL, deduplicate
+		if !stmt.All {
+			seen := make(map[string]bool)
+			var unique [][]interface{}
+			for _, row := range combined {
+				key := normalizeRowKey(row)
+				if !seen[key] {
+					seen[key] = true
+					unique = append(unique, row)
+				}
+			}
+			combined = unique
+		}
+
+	case query.SetOpIntersect:
+		// INTERSECT: only rows that appear in both sides
+		rightSet := make(map[string]int)
+		for _, row := range rightRows.rows {
+			key := normalizeRowKey(row)
+			rightSet[key]++
+		}
+
+		if stmt.All {
+			// INTERSECT ALL: preserve duplicates up to min count
+			leftCount := make(map[string]int)
+			leftByKey := make(map[string][][]interface{})
+			for _, row := range leftRows.rows {
+				key := normalizeRowKey(row)
+				leftCount[key]++
+				leftByKey[key] = append(leftByKey[key], row)
+			}
+			for key, lc := range leftCount {
+				rc := rightSet[key]
+				if rc > 0 {
+					count := lc
+					if rc < count {
+						count = rc
+					}
+					for i := 0; i < count && i < len(leftByKey[key]); i++ {
+						combined = append(combined, leftByKey[key][i])
+					}
+				}
+			}
+		} else {
+			// INTERSECT: deduplicated intersection
+			seen := make(map[string]bool)
+			for _, row := range leftRows.rows {
+				key := normalizeRowKey(row)
+				if rightSet[key] > 0 && !seen[key] {
+					seen[key] = true
+					combined = append(combined, row)
+				}
+			}
+		}
+
+	case query.SetOpExcept:
+		// EXCEPT: rows in left that are NOT in right
+		rightSet := make(map[string]int)
+		for _, row := range rightRows.rows {
+			key := normalizeRowKey(row)
+			rightSet[key]++
+		}
+
+		if stmt.All {
+			// EXCEPT ALL: subtract right counts from left
+			for _, row := range leftRows.rows {
+				key := normalizeRowKey(row)
+				if rightSet[key] > 0 {
+					rightSet[key]--
+				} else {
+					combined = append(combined, row)
+				}
+			}
+		} else {
+			// EXCEPT: deduplicated difference
+			seen := make(map[string]bool)
+			for _, row := range leftRows.rows {
+				key := normalizeRowKey(row)
+				if rightSet[key] == 0 && !seen[key] {
+					seen[key] = true
+					combined = append(combined, row)
+				}
+			}
+		}
+	}
+
+	// Apply ORDER BY if present
+	if len(stmt.OrderBy) > 0 {
+		db.applyUnionOrderBy(combined, columns, stmt.OrderBy)
+	}
+
+	// Apply OFFSET
+	if stmt.Offset != nil {
+		if num, ok := stmt.Offset.(*query.NumberLiteral); ok {
+			offset := int(num.Value)
+			if offset > 0 {
+				if offset >= len(combined) {
+					combined = nil
+				} else {
+					combined = combined[offset:]
+				}
+			}
+		}
+	}
+
+	// Apply LIMIT
+	if stmt.Limit != nil {
+		if num, ok := stmt.Limit.(*query.NumberLiteral); ok {
+			limit := int(num.Value)
+			if limit >= 0 && limit <= len(combined) {
+				combined = combined[:limit]
+			}
+		}
+	}
+
+	return &Rows{
+		columns: columns,
+		rows:    combined,
+		pos:     0,
+	}, nil
+}
+
+// normalizeRowKey creates a type-normalized string key for deduplication.
+// Normalizes numeric types so int64(1) and float64(1.0) produce the same key.
+func normalizeRowKey(row []interface{}) string {
+	var sb strings.Builder
+	sb.WriteByte('[')
+	for i, v := range row {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		if v == nil {
+			sb.WriteString("<nil>")
+			continue
+		}
+		switch val := v.(type) {
+		case int:
+			sb.WriteString(strconv.FormatInt(int64(val), 10))
+		case int64:
+			sb.WriteString(strconv.FormatInt(val, 10))
+		case float64:
+			// If it's a whole number, format as integer to match int types
+			if val == float64(int64(val)) {
+				sb.WriteString(strconv.FormatInt(int64(val), 10))
+			} else {
+				sb.WriteString(strconv.FormatFloat(val, 'g', -1, 64))
+			}
+		case string:
+			sb.WriteString("S:")
+			sb.WriteString(val)
+		case bool:
+			if val {
+				sb.WriteString("true")
+			} else {
+				sb.WriteString("false")
+			}
+		default:
+			fmt.Fprintf(&sb, "%v", val)
+		}
+	}
+	sb.WriteByte(']')
+	return sb.String()
+}
+
+// applyUnionOrderBy sorts union result rows
+func (db *DB) applyUnionOrderBy(rows [][]interface{}, columns []string, orderBy []*query.OrderByExpr) {
+	if len(rows) == 0 {
+		return
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		for _, ob := range orderBy {
+			colIdx := -1
+			switch expr := ob.Expr.(type) {
+			case *query.Identifier:
+				for k, col := range columns {
+					if strings.EqualFold(col, expr.Name) {
+						colIdx = k
+						break
+					}
+				}
+			case *query.NumberLiteral:
+				colIdx = int(expr.Value) - 1
+			}
+			if colIdx < 0 || colIdx >= len(rows[i]) || colIdx >= len(rows[j]) {
+				continue
+			}
+			cmp := db.compareUnionValues(rows[i][colIdx], rows[j][colIdx])
+			if cmp != 0 {
+				if ob.Desc {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+		}
+		return false
+	})
+}
+
+// compareUnionValues compares two values for sorting
+func (db *DB) compareUnionValues(a, b interface{}) int {
+	if a == nil && b == nil {
+		return 0
+	}
+	if a == nil {
+		return -1
+	}
+	if b == nil {
+		return 1
+	}
+	sa := fmt.Sprintf("%v", a)
+	sb := fmt.Sprintf("%v", b)
+	// Try numeric comparison
+	fa, errA := strconv.ParseFloat(sa, 64)
+	fb, errB := strconv.ParseFloat(sb, 64)
+	if errA == nil && errB == nil {
+		if fa < fb {
+			return -1
+		}
+		if fa > fb {
+			return 1
+		}
+		return 0
+	}
+	if sa < sb {
+		return -1
+	}
+	if sa > sb {
+		return 1
+	}
+	return 0
+}
+
 // executeSelectWithCTE executes SELECT with CTEs
 func (db *DB) executeSelectWithCTE(ctx context.Context, stmt *query.SelectStmtWithCTE, args []interface{}) (*Rows, error) {
 	columns, rows, err := db.catalog.ExecuteCTE(stmt, args)
@@ -651,6 +1113,78 @@ func (db *DB) executeCreateFTSIndex(ctx context.Context, stmt *query.CreateFTSIn
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
+}
+
+// executeShowTablesQuery returns all table names as rows
+func (db *DB) executeShowTablesQuery(ctx context.Context) (*Rows, error) {
+	tables := db.catalog.ListTables()
+	rows := make([][]interface{}, 0, len(tables))
+	for _, t := range tables {
+		rows = append(rows, []interface{}{t})
+	}
+	return &Rows{
+		columns: []string{"Tables_in_database"},
+		rows:    rows,
+	}, nil
+}
+
+// executeShowCreateTableQuery returns the CREATE TABLE statement
+func (db *DB) executeShowCreateTableQuery(ctx context.Context, stmt *query.ShowCreateTableStmt) (*Rows, error) {
+	schema, err := db.TableSchema(stmt.Table)
+	if err != nil {
+		return nil, err
+	}
+	return &Rows{
+		columns: []string{"Table", "Create Table"},
+		rows:    [][]interface{}{{stmt.Table, schema}},
+	}, nil
+}
+
+// executeShowColumnsQuery returns column information for a table
+func (db *DB) executeShowColumnsQuery(ctx context.Context, stmt *query.ShowColumnsStmt) (*Rows, error) {
+	table, err := db.catalog.GetTable(stmt.Table)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([][]interface{}, 0, len(table.Columns))
+	for _, col := range table.Columns {
+		nullable := "YES"
+		if col.NotNull || col.PrimaryKey {
+			nullable = "NO"
+		}
+		key := ""
+		if col.PrimaryKey {
+			key = "PRI"
+		} else if col.Unique {
+			key = "UNI"
+		}
+		defVal := col.Default
+		if defVal == "" {
+			defVal = "NULL"
+		}
+		extra := ""
+		if col.AutoIncrement {
+			extra = "auto_increment"
+		}
+		rows = append(rows, []interface{}{col.Name, col.Type, nullable, key, defVal, extra})
+	}
+	return &Rows{
+		columns: []string{"Field", "Type", "Null", "Key", "Default", "Extra"},
+		rows:    rows,
+	}, nil
+}
+
+// executeShowDatabasesQuery returns available databases
+func (db *DB) executeShowDatabasesQuery(ctx context.Context) (*Rows, error) {
+	return &Rows{
+		columns: []string{"Database"},
+		rows:    [][]interface{}{{"cobaltdb"}},
+	}, nil
+}
+
+// executeDescribeQuery returns column info for a table (alias for SHOW COLUMNS)
+func (db *DB) executeDescribeQuery(ctx context.Context, stmt *query.DescribeStmt) (*Rows, error) {
+	return db.executeShowColumnsQuery(ctx, &query.ShowColumnsStmt{Table: stmt.Table})
 }
 
 // Result represents the result of an Exec operation
@@ -801,8 +1335,8 @@ func (tx *Tx) Exec(ctx context.Context, sql string, args ...interface{}) (Result
 }
 
 // Query executes a query within the transaction
+// Changes made within this transaction are visible to subsequent queries
 func (tx *Tx) Query(ctx context.Context, sql string, args ...interface{}) (*Rows, error) {
-	// TODO: implement transaction-scoped query
 	return tx.db.Query(ctx, sql, args...)
 }
 

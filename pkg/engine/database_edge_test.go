@@ -549,20 +549,22 @@ func TestExecuteUnsupportedStatementType(t *testing.T) {
 
 	ctx := context.Background()
 
-	// These should return errors directing users to use methods instead of SQL
+	// BEGIN should succeed and start a transaction
 	_, err = db.Exec(ctx, "BEGIN")
-	if err == nil {
-		t.Error("Expected error for BEGIN statement")
+	if err != nil {
+		t.Errorf("BEGIN should succeed: %v", err)
 	}
 
+	// COMMIT should succeed since we have an active transaction
 	_, err = db.Exec(ctx, "COMMIT")
-	if err == nil {
-		t.Error("Expected error for COMMIT statement")
+	if err != nil {
+		t.Errorf("COMMIT should succeed: %v", err)
 	}
 
+	// ROLLBACK without active transaction should return error
 	_, err = db.Exec(ctx, "ROLLBACK")
 	if err == nil {
-		t.Error("Expected error for ROLLBACK statement")
+		t.Error("Expected error for ROLLBACK without active transaction")
 	}
 }
 

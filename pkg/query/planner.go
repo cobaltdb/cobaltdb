@@ -459,6 +459,11 @@ func (p *Planner) evaluateLimitExpression(expr Expression) int {
 func (p *Planner) addProject(child *QueryPlan, columns []Expression) *QueryPlan {
 	columnNames := make([]string, 0, len(columns))
 	for _, col := range columns {
+		// Unwrap AliasExpr: use alias as column name if present
+		if ae, ok := col.(*AliasExpr); ok {
+			columnNames = append(columnNames, ae.Alias)
+			continue
+		}
 		if ident, ok := col.(*Identifier); ok {
 			columnNames = append(columnNames, ident.Name)
 		} else if star, ok := col.(*StarExpr); ok {
@@ -503,6 +508,8 @@ func containsAggregate(expr Expression) bool {
 				return true
 			}
 		}
+	case *AliasExpr:
+		return containsAggregate(e.Expr)
 	}
 	return false
 }
@@ -511,7 +518,12 @@ func containsAggregate(expr Expression) bool {
 func extractAggregates(exprs []Expression) []*AggregateFunc {
 	var aggs []*AggregateFunc
 	for _, expr := range exprs {
-		if fc, ok := expr.(*FunctionCall); ok {
+		// Unwrap AliasExpr
+		actual := expr
+		if ae, ok := expr.(*AliasExpr); ok {
+			actual = ae.Expr
+		}
+		if fc, ok := actual.(*FunctionCall); ok {
 			name := strings.ToUpper(fc.Name)
 			if name == "COUNT" || name == "SUM" || name == "AVG" || name == "MIN" || name == "MAX" {
 				col := "*"

@@ -2,12 +2,14 @@ package protocol
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
 	"strings"
+	"sync"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
@@ -79,6 +81,9 @@ type MySQLServer struct {
 	db       *engine.DB
 	listener net.Listener
 	version  string
+	mu       sync.Mutex
+	clients  map[uint32]net.Conn
+	nextID   uint32
 }
 
 // NewMySQLServer creates a new MySQL-compatible server
@@ -89,6 +94,7 @@ func NewMySQLServer(db *engine.DB, version string) *MySQLServer {
 	return &MySQLServer{
 		db:      db,
 		version: version,
+		clients: make(map[uint32]net.Conn),
 	}
 }
 
@@ -104,8 +110,24 @@ func (s *MySQLServer) Listen(address string) error {
 	return nil
 }
 
-// Close stops the MySQL server
+// Addr returns the listener address (useful for tests)
+func (s *MySQLServer) Addr() net.Addr {
+	if s.listener != nil {
+		return s.listener.Addr()
+	}
+	return nil
+}
+
+// Close stops the MySQL server and all client connections
 func (s *MySQLServer) Close() error {
+	s.mu.Lock()
+	// Close all active client connections
+	for id, conn := range s.clients {
+		conn.Close()
+		delete(s.clients, id)
+	}
+	s.mu.Unlock()
+
 	if s.listener != nil {
 		return s.listener.Close()
 	}
@@ -129,12 +151,25 @@ func (s *MySQLServer) acceptLoop() {
 
 // handleConnection handles a MySQL client connection
 func (s *MySQLServer) handleConnection(conn net.Conn) {
-	defer conn.Close()
+	// Register connection
+	s.mu.Lock()
+	s.nextID++
+	connID := s.nextID
+	s.clients[connID] = conn
+	s.mu.Unlock()
+
+	defer func() {
+		conn.Close()
+		s.mu.Lock()
+		delete(s.clients, connID)
+		s.mu.Unlock()
+	}()
 
 	client := &MySQLClient{
 		conn:   conn,
 		reader: bufio.NewReader(conn),
 		server: s,
+		connID: connID,
 	}
 
 	// Send handshake
@@ -165,6 +200,7 @@ type MySQLClient struct {
 	conn     net.Conn
 	reader   *bufio.Reader
 	server   *MySQLServer
+	connID   uint32
 	username string
 	database string
 }
@@ -195,7 +231,9 @@ func (c *MySQLClient) sendHandshake() error {
 	pkt = append(pkt, 0x00)
 
 	// Connection ID
-	pkt = append(pkt, 0x01, 0x00, 0x00, 0x00)
+	connIDBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(connIDBuf, c.connID)
+	pkt = append(pkt, connIDBuf...)
 
 	// Auth plugin data part 1 (8 bytes)
 	pkt = append(pkt, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
@@ -239,7 +277,7 @@ func (c *MySQLClient) readHandshakeResponse() error {
 		return err
 	}
 
-	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<8
+	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
 	// sequence := header[3]
 
 	// Read packet payload
@@ -248,9 +286,40 @@ func (c *MySQLClient) readHandshakeResponse() error {
 		return err
 	}
 
-	// Parse response (simplified)
-	// In a real implementation, we would parse capability flags,
-	// max packet size, character set, reserved, username, auth response, database, auth plugin name
+	// Parse handshake response
+	// Format: [capFlags:4][maxPacketSize:4][charset:1][reserved:23][username:NUL][authResp...][database:NUL]
+	if len(payload) < 32 {
+		return nil // Too short, accept anyway
+	}
+
+	offset := 4 + 4 + 1 + 23 // skip capFlags(4) + maxPacketSize(4) + charset(1) + reserved(23) = 32
+
+	// Read username (null-terminated)
+	if offset < len(payload) {
+		end := offset
+		for end < len(payload) && payload[end] != 0 {
+			end++
+		}
+		c.username = string(payload[offset:end])
+		offset = end + 1 // skip null terminator
+	}
+
+	// Skip auth response (length-encoded or fixed)
+	if offset < len(payload) {
+		authLen := int(payload[offset])
+		offset += 1 + authLen
+	}
+
+	// Read database if present
+	if offset < len(payload) {
+		end := offset
+		for end < len(payload) && payload[end] != 0 {
+			end++
+		}
+		if end > offset {
+			c.database = string(payload[offset:end])
+		}
+	}
 
 	return nil
 }
@@ -263,7 +332,7 @@ func (c *MySQLClient) handleCommand() error {
 		return err
 	}
 
-	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<8
+	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
 	// sequence := header[3]
 
 	// Read packet payload
@@ -303,19 +372,24 @@ func (c *MySQLClient) handleCommand() error {
 func (c *MySQLClient) handleQuery(sql string) error {
 	sql = strings.TrimSpace(sql)
 
-	// Execute the query
-	ctx := make(map[string]interface{})
-	_ = ctx
-
-	// Try to execute as query first
-	rows, err := c.server.db.Query(nil, sql)
-	if err == nil {
-		defer rows.Close()
-		return c.sendResultSet(rows)
+	// Handle MySQL client initialization queries that may not parse
+	upperSQL := strings.ToUpper(sql)
+	if strings.HasPrefix(upperSQL, "SELECT @@") || strings.HasPrefix(upperSQL, "SELECT @") {
+		// MySQL clients query session variables like @@version_comment, @@max_allowed_packet
+		return c.handleSelectVariable(sql)
 	}
 
-	// Try to execute as exec
-	result, err := c.server.db.Exec(nil, sql)
+	ctx := context.Background()
+
+	// Try to execute as query first (SELECT, SHOW, DESCRIBE)
+	rows, err := c.server.db.Query(ctx, sql)
+	if err == nil {
+		defer rows.Close()
+		return c.sendResultSetFromRows(rows)
+	}
+
+	// Try to execute as exec (INSERT, UPDATE, DELETE, SET, USE, CREATE, etc.)
+	result, err := c.server.db.Exec(ctx, sql)
 	if err != nil {
 		return c.sendErrorPacket(1, err.Error())
 	}
@@ -323,13 +397,193 @@ func (c *MySQLClient) handleQuery(sql string) error {
 	return c.sendOKPacket(uint16(result.RowsAffected), uint16(result.LastInsertID))
 }
 
-// sendResultSet sends a result set to the client
-func (c *MySQLClient) sendResultSet(rows interface{}) error {
-	// Simplified implementation - in a real implementation,
-	// we would send column definitions and row data
+// handleSelectVariable handles SELECT @@variable queries from MySQL clients
+func (c *MySQLClient) handleSelectVariable(sql string) error {
+	// Return sensible defaults for common MySQL session variables
+	seq := byte(1)
 
-	// Send OK packet with no results for now
-	return c.sendOKPacket(0, 0)
+	colName := sql // use the full query as column name
+	value := ""
+
+	upperSQL := strings.ToUpper(sql)
+	switch {
+	case strings.Contains(upperSQL, "@@VERSION_COMMENT"):
+		colName = "@@version_comment"
+		value = "CobaltDB"
+	case strings.Contains(upperSQL, "@@VERSION"):
+		colName = "@@version"
+		value = c.server.version
+	case strings.Contains(upperSQL, "@@MAX_ALLOWED_PACKET"):
+		colName = "@@max_allowed_packet"
+		value = "67108864"
+	case strings.Contains(upperSQL, "@@CHARACTER_SET"):
+		colName = "@@character_set_client"
+		value = "utf8mb4"
+	case strings.Contains(upperSQL, "@@COLLATION"):
+		colName = "@@collation_connection"
+		value = "utf8mb4_general_ci"
+	case strings.Contains(upperSQL, "@@SESSION.AUTO_INCREMENT_INCREMENT"):
+		colName = "@@session.auto_increment_increment"
+		value = "1"
+	case strings.Contains(upperSQL, "@@AUTOCOMMIT"):
+		colName = "@@autocommit"
+		value = "1"
+	default:
+		colName = "@@unknown"
+		value = ""
+	}
+
+	// Send single column, single row result
+	countPkt := writeLenEncInt(1)
+	if err := c.writePacket(countPkt, seq); err != nil {
+		return err
+	}
+	seq++
+
+	colPkt := c.buildColumnDefPacket(colName)
+	if err := c.writePacket(colPkt, seq); err != nil {
+		return err
+	}
+	seq++
+
+	if err := c.sendEOFPacket(seq); err != nil {
+		return err
+	}
+	seq++
+
+	rowPkt := c.buildRowPacket([]interface{}{value})
+	if err := c.writePacket(rowPkt, seq); err != nil {
+		return err
+	}
+	seq++
+
+	return c.sendEOFPacket(seq)
+}
+
+// sendResultSetFromRows sends a MySQL result set from engine.Rows
+func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
+	if rows == nil {
+		return c.sendOKPacket(0, 0)
+	}
+	columns := rows.Columns()
+	seq := byte(1)
+
+	// 1. Send column count packet
+	countPkt := writeLenEncInt(uint64(len(columns)))
+	if err := c.writePacket(countPkt, seq); err != nil {
+		return err
+	}
+	seq++
+
+	// 2. Send column definition packets
+	for _, colName := range columns {
+		pkt := c.buildColumnDefPacket(colName)
+		if err := c.writePacket(pkt, seq); err != nil {
+			return err
+		}
+		seq++
+	}
+
+	// 3. Send EOF packet (end of column definitions)
+	if err := c.sendEOFPacket(seq); err != nil {
+		return err
+	}
+	seq++
+
+	// 4. Send row data packets
+	for rows.Next() {
+		row := make([]interface{}, len(columns))
+		dest := make([]interface{}, len(columns))
+		for i := range dest {
+			dest[i] = &row[i]
+		}
+
+		if err := rows.Scan(dest...); err != nil {
+			continue
+		}
+
+		pkt := c.buildRowPacket(row)
+		if err := c.writePacket(pkt, seq); err != nil {
+			return err
+		}
+		seq++
+	}
+
+	// 5. Send EOF packet (end of rows)
+	return c.sendEOFPacket(seq)
+}
+
+// buildColumnDefPacket builds a column definition packet
+func (c *MySQLClient) buildColumnDefPacket(name string) []byte {
+	var pkt []byte
+
+	// catalog (lenenc_str) - "def"
+	pkt = append(pkt, writeLenEncString("def")...)
+	// schema (lenenc_str) - empty
+	pkt = append(pkt, writeLenEncString("")...)
+	// table (lenenc_str) - empty
+	pkt = append(pkt, writeLenEncString("")...)
+	// org_table (lenenc_str) - empty
+	pkt = append(pkt, writeLenEncString("")...)
+	// name (lenenc_str)
+	pkt = append(pkt, writeLenEncString(name)...)
+	// org_name (lenenc_str)
+	pkt = append(pkt, writeLenEncString(name)...)
+
+	// length of fixed-length fields [0c]
+	pkt = append(pkt, 0x0c)
+
+	// character set (utf8mb4 = 0x2d00)
+	pkt = append(pkt, 0x21, 0x00)
+
+	// column length (4 bytes)
+	pkt = append(pkt, 0xff, 0xff, 0x00, 0x00)
+
+	// column type (VARCHAR)
+	pkt = append(pkt, MySQLTypeVarString)
+
+	// flags (2 bytes)
+	pkt = append(pkt, 0x00, 0x00)
+
+	// decimals
+	pkt = append(pkt, 0x00)
+
+	// filler (2 bytes)
+	pkt = append(pkt, 0x00, 0x00)
+
+	return pkt
+}
+
+// buildRowPacket builds a row data packet (text protocol)
+func (c *MySQLClient) buildRowPacket(row []interface{}) []byte {
+	var pkt []byte
+	for _, val := range row {
+		if val == nil {
+			pkt = append(pkt, 0xfb) // NULL
+		} else {
+			s := fmt.Sprintf("%v", val)
+			pkt = append(pkt, writeLenEncString(s)...)
+		}
+	}
+	return pkt
+}
+
+// sendEOFPacket sends an EOF packet
+func (c *MySQLClient) sendEOFPacket(seq byte) error {
+	pkt := []byte{
+		0xfe,       // EOF marker
+		0x00, 0x00, // warnings
+		0x02, 0x00, // status flags (SERVER_STATUS_AUTOCOMMIT)
+	}
+	return c.writePacket(pkt, seq)
+}
+
+// writeLenEncString writes a length-encoded string
+func writeLenEncString(s string) []byte {
+	var result []byte
+	result = append(result, writeLenEncInt(uint64(len(s)))...)
+	result = append(result, []byte(s)...)
+	return result
 }
 
 // writePacket writes a MySQL protocol packet

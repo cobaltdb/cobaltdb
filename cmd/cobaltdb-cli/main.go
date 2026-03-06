@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
@@ -50,11 +51,11 @@ func main() {
 
 func printHelp() {
 	fmt.Print(`
-CobaltDB CLI v1.0
+CobaltDB CLI v2.0
 
 Usage:
   cobaltdb [options] [sql-command...]
-  cobaltdb [options] -i          # Interactive mode
+  cobaltdb [options]              # Interactive mode
 
 Options:
   -h, -help           Show this help message
@@ -71,7 +72,7 @@ Examples:
   cobaltdb -path ./mydb.db "SELECT * FROM users"
 
   # Interactive mode
-  cobaltdb -memory -i
+  cobaltdb -memory
 
   # Start server
   cobaltdb -server -port 4200
@@ -81,6 +82,7 @@ SQL Commands:
     CREATE TABLE <name> (<columns>)
     CREATE INDEX <name> ON <table>(<column>)
     DROP TABLE <name>
+    ALTER TABLE <name> ADD COLUMN <col> <type>
 
   DML:
     INSERT INTO <table> (<cols>) VALUES (<values>)
@@ -116,54 +118,35 @@ func runCommand(sql, path string, inMemory bool) {
 	}
 	defer db.Close()
 
-	ctx := context.Background()
+	executeSQL(db, sql)
+}
 
-	// Check if it's a query or exec
+func executeSQL(db *engine.DB, sql string) {
+	ctx := context.Background()
 	sql = strings.TrimSpace(sql)
+
+	if sql == "" {
+		return
+	}
+
 	upperSQL := strings.ToUpper(sql)
 
-	if strings.HasPrefix(upperSQL, "SELECT") {
+	if strings.HasPrefix(upperSQL, "SELECT") || strings.HasPrefix(upperSQL, "WITH") ||
+		strings.HasPrefix(upperSQL, "SHOW") || strings.HasPrefix(upperSQL, "DESCRIBE") ||
+		strings.HasPrefix(upperSQL, "DESC ") {
 		rows, err := db.Query(ctx, sql)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return
 		}
 		defer rows.Close()
 
-		// Print columns
-		cols := rows.Columns()
-		if len(cols) > 0 {
-			for i, col := range cols {
-				if i > 0 {
-					fmt.Print("\t")
-				}
-				fmt.Print(col)
-			}
-			fmt.Println()
-		}
-
-		// Print rows
-		for rows.Next() {
-			values := make([]interface{}, len(cols))
-			rowValues := make([]interface{}, len(cols))
-			for i := range values {
-				rowValues[i] = &values[i]
-			}
-			rows.Scan(rowValues...)
-
-			for i, v := range values {
-				if i > 0 {
-					fmt.Print("\t")
-				}
-				fmt.Print(formatValue(v))
-			}
-			fmt.Println()
-		}
+		printRows(rows)
 	} else {
 		result, err := db.Exec(ctx, sql)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return
 		}
 		if result.RowsAffected > 0 {
 			fmt.Printf("Rows affected: %d\n", result.RowsAffected)
@@ -175,6 +158,53 @@ func runCommand(sql, path string, inMemory bool) {
 			fmt.Println("OK")
 		}
 	}
+}
+
+func printRows(rows *engine.Rows) {
+	cols := rows.Columns()
+	if len(cols) == 0 {
+		return
+	}
+
+	// Print columns
+	for i, col := range cols {
+		if i > 0 {
+			fmt.Print("\t")
+		}
+		fmt.Print(col)
+	}
+	fmt.Println()
+
+	// Print separator
+	for i, col := range cols {
+		if i > 0 {
+			fmt.Print("\t")
+		}
+		fmt.Print(strings.Repeat("-", max(len(col), 4)))
+	}
+	fmt.Println()
+
+	// Print rows
+	count := 0
+	for rows.Next() {
+		values := make([]interface{}, len(cols))
+		rowValues := make([]interface{}, len(cols))
+		for i := range values {
+			rowValues[i] = &values[i]
+		}
+		rows.Scan(rowValues...)
+
+		for i, v := range values {
+			if i > 0 {
+				fmt.Print("\t")
+			}
+			fmt.Print(formatValue(v))
+		}
+		fmt.Println()
+		count++
+	}
+
+	fmt.Printf("(%d rows)\n", count)
 }
 
 func formatValue(v interface{}) string {
@@ -201,18 +231,29 @@ func runInteractive(path string, inMemory bool) {
 	}
 	defer db.Close()
 
-	ctx := context.Background()
 	reader := bufio.NewReader(os.Stdin)
 
-	fmt.Println("CobaltDB Interactive CLI")
+	fmt.Println("CobaltDB Interactive CLI v2.0")
 	fmt.Println("Type '.help' for commands, '.quit' to exit")
+	fmt.Println("End SQL statements with ';' (multi-line supported)")
 	fmt.Println()
 
+	var sqlBuffer strings.Builder
+	inMultiLine := false
+
 	for {
-		fmt.Print("cobaltdb> ")
+		if inMultiLine {
+			fmt.Print("      ...> ")
+		} else {
+			fmt.Print("cobaltdb> ")
+		}
 
 		line, err := reader.ReadString('\n')
 		if err != nil {
+			// Execute any remaining buffer before exit
+			if sqlBuffer.Len() > 0 {
+				executeSQL(db, sqlBuffer.String())
+			}
 			break
 		}
 
@@ -221,35 +262,95 @@ func runInteractive(path string, inMemory bool) {
 			continue
 		}
 
-		// Interactive commands
-		if strings.HasPrefix(line, ".") {
-			if handleMetaCommand(line, db, ctx) {
-				continue
-			}
+		// Meta commands only when not in multi-line mode
+		if !inMultiLine && strings.HasPrefix(line, ".") {
+			handleMetaCommand(line, db)
 			continue
 		}
 
-		// SQL commands
-		runCommand(line, path, inMemory)
+		// Accumulate SQL
+		if sqlBuffer.Len() > 0 {
+			sqlBuffer.WriteString(" ")
+		}
+		sqlBuffer.WriteString(line)
+
+		// Check if statement is complete (ends with semicolon)
+		trimmed := strings.TrimSpace(sqlBuffer.String())
+		if strings.HasSuffix(trimmed, ";") {
+			// Remove trailing semicolon and execute
+			sql := strings.TrimSuffix(trimmed, ";")
+			executeSQL(db, sql)
+			sqlBuffer.Reset()
+			inMultiLine = false
+		} else {
+			// Check for single-line commands that don't need semicolons
+			upper := strings.ToUpper(trimmed)
+			if strings.HasPrefix(upper, "BEGIN") || strings.HasPrefix(upper, "COMMIT") ||
+				strings.HasPrefix(upper, "ROLLBACK") || strings.HasPrefix(upper, "USE ") {
+				executeSQL(db, trimmed)
+				sqlBuffer.Reset()
+				inMultiLine = false
+			} else {
+				inMultiLine = true
+			}
+		}
 	}
 }
 
-func handleMetaCommand(line string, db *engine.DB, ctx context.Context) bool {
-	switch strings.ToLower(line) {
+func handleMetaCommand(line string, db *engine.DB) {
+	parts := strings.Fields(line)
+	cmd := strings.ToLower(parts[0])
+
+	switch cmd {
 	case ".quit", ".exit":
 		fmt.Println("Goodbye!")
 		os.Exit(0)
+
 	case ".help":
 		printHelp()
+
 	case ".tables":
-		// Use catalog to list tables
-		fmt.Println("Tables:")
-		// We'll just show a message since there's no system table yet
-		fmt.Println("  (use catalog to manage tables)")
+		tables := db.Tables()
+		if len(tables) == 0 {
+			fmt.Println("No tables found.")
+			return
+		}
+		sort.Strings(tables)
+		for _, t := range tables {
+			fmt.Printf("  %s\n", t)
+		}
+
 	case ".schema":
-		fmt.Println("Use: .schema <table-name>")
+		if len(parts) < 2 {
+			// Show all schemas
+			tables := db.Tables()
+			sort.Strings(tables)
+			for _, t := range tables {
+				schema, err := db.TableSchema(t)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					continue
+				}
+				fmt.Println(schema)
+				fmt.Println()
+			}
+			return
+		}
+		schema, err := db.TableSchema(parts[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return
+		}
+		fmt.Println(schema)
+
 	default:
-		fmt.Printf("Unknown command: %s\n", line)
+		fmt.Printf("Unknown command: %s\nType '.help' for available commands.\n", cmd)
 	}
-	return true
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

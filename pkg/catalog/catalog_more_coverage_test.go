@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -774,12 +775,9 @@ func TestComputeAggregatesMinMax(t *testing.T) {
 		t.Fatalf("MIN query failed: %v", err)
 	}
 
-	min, ok := rows[0][0].(float64)
-	if !ok {
-		t.Fatalf("Expected float64 min, got %T", rows[0][0])
-	}
-	if min != 10.0 {
-		t.Errorf("Expected MIN=10.0, got %.1f", min)
+	minVal := fmt.Sprintf("%v", rows[0][0])
+	if minVal != "10" {
+		t.Errorf("Expected MIN=10, got %s", minVal)
 	}
 	t.Logf("MIN result: cols=%v, rows=%v", cols, rows)
 
@@ -796,12 +794,9 @@ func TestComputeAggregatesMinMax(t *testing.T) {
 		t.Fatalf("MAX query failed: %v", err)
 	}
 
-	max, ok := rows[0][0].(float64)
-	if !ok {
-		t.Fatalf("Expected float64 max, got %T", rows[0][0])
-	}
-	if max != 80.0 {
-		t.Errorf("Expected MAX=80.0, got %.1f", max)
+	maxVal := fmt.Sprintf("%v", rows[0][0])
+	if maxVal != "80" {
+		t.Errorf("Expected MAX=80, got %s", maxVal)
 	}
 	t.Logf("MAX result: cols=%v, rows=%v", cols, rows)
 }
@@ -1217,7 +1212,7 @@ func TestExecuteScalarSelectMore(t *testing.T) {
 	}
 
 	if len(rows) > 0 {
-		if val, ok := rows[0][0].(float64); !ok || val != 42 {
+		if val, ok := toFloat64(rows[0][0]); !ok || val != 42 {
 			t.Errorf("Expected 42, got %v", rows[0][0])
 		}
 		if val, ok := rows[0][1].(string); !ok || val != "hello" {

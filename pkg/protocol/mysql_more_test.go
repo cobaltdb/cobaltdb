@@ -463,7 +463,7 @@ func TestMySQLClientSendResultSet(t *testing.T) {
 
 	// sendResultSet takes an interface{}, typically sql.Rows
 	// For testing, we pass nil which should return OK packet
-	err := client.sendResultSet(nil)
+	err := client.sendResultSetFromRows(nil)
 	if err != nil {
 		t.Fatalf("sendResultSet failed: %v", err)
 	}

@@ -111,7 +111,14 @@ func (t *DiskBTree) findChildPage(data []byte, key []byte) uint32 {
 		}
 	}
 
-	// All keys are smaller, use rightmost child
+	// Key is >= all keys, follow the last entry's child pointer (rightmost child)
+	if len(entries) > 0 {
+		lastEntry := entries[len(entries)-1]
+		if len(lastEntry.Value) == 4 {
+			return binary.LittleEndian.Uint32(lastEntry.Value)
+		}
+	}
+	// Fallback to leftmost child pointer (empty internal node)
 	return binary.LittleEndian.Uint32(data[12:16])
 }
 
@@ -320,51 +327,43 @@ func (t *DiskBTree) splitRoot() error {
 		return err
 	}
 
-	// Create new root (internal node)
-	newRoot, err := t.pm.AllocatePage(storage.PageTypeInternal)
-	if err != nil {
-		t.pm.GetPool().Unpin(rootPage)
-		return err
-	}
-
-	// Move old root to new leaf page
+	// Move old root data to a new leaf page
 	oldRootPage, err := t.pm.AllocatePage(storage.PageTypeLeaf)
 	if err != nil {
 		t.pm.GetPool().Unpin(rootPage)
-		t.pm.GetPool().Unpin(newRoot)
 		return err
 	}
 
 	// Copy old root data to new leaf
 	copy(oldRootPage.Data(), rootPage.Data())
-	// Update page type to leaf
+	// Preserve the correct page ID in the copied page header
+	binary.LittleEndian.PutUint32(oldRootPage.Data()[0:4], oldRootPage.ID())
+	// Ensure page type is leaf
 	oldRootPage.Data()[4] = byte(storage.PageTypeLeaf)
 	oldRootPage.SetDirty(true)
 
-	// Clear new root and make it internal
+	// Convert root page in-place to an empty internal node
+	// The leftmost child pointer (data[12:16]) points to the copy of old data
 	rootData := rootPage.Data()
 	rootData[4] = byte(storage.PageTypeInternal)                                  // Page type
-	binary.LittleEndian.PutUint16(rootData[6:8], 0)                               // Cell count
+	binary.LittleEndian.PutUint16(rootData[6:8], 0)                               // Cell count = 0
 	binary.LittleEndian.PutUint16(rootData[8:10], uint16(storage.PageHeaderSize)) // Free start
-	binary.LittleEndian.PutUint32(rootData[12:16], oldRootPage.ID())              // Right ptr
+	binary.LittleEndian.PutUint32(rootData[12:16], oldRootPage.ID())              // Leftmost child ptr
 	rootPage.SetDirty(true)
 
-	// Write pages
+	// Flush both pages to disk
 	if err := t.pm.GetPool().FlushPage(oldRootPage); err != nil {
 		t.pm.GetPool().Unpin(rootPage)
-		t.pm.GetPool().Unpin(newRoot)
 		t.pm.GetPool().Unpin(oldRootPage)
 		return err
 	}
 	if err := t.pm.GetPool().FlushPage(rootPage); err != nil {
 		t.pm.GetPool().Unpin(rootPage)
-		t.pm.GetPool().Unpin(newRoot)
 		t.pm.GetPool().Unpin(oldRootPage)
 		return err
 	}
 
 	t.pm.GetPool().Unpin(oldRootPage)
-	t.pm.GetPool().Unpin(newRoot)
 
 	return nil
 }

@@ -73,14 +73,14 @@ func (t *Transaction) Commit() error {
 	// For snapshot isolation, check for conflicts
 	if t.Isolation >= SnapshotIsolation {
 		if err := t.manager.detectConflicts(t); err != nil {
-			t.Rollback()
+			t.rollbackLocked()
 			return err
 		}
 	}
 
 	// Apply writes
 	if err := t.manager.applyWrites(t); err != nil {
-		t.Rollback()
+		t.rollbackLocked()
 		return err
 	}
 
@@ -94,6 +94,11 @@ func (t *Transaction) Rollback() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	return t.rollbackLocked()
+}
+
+// rollbackLocked performs rollback while caller already holds t.mu
+func (t *Transaction) rollbackLocked() error {
 	if t.State == TxnCommitted {
 		return ErrTxnCommitted
 	}
