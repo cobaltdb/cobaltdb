@@ -2686,6 +2686,13 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 // Use this from within methods that already hold the lock (Update, Delete, etc.)
 // to avoid deadlocks when evaluating subqueries.
 func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
+	// Apply query optimization
+	optimizer := query.NewQueryOptimizer()
+	optimizedStmt, err := optimizer.OptimizeSelect(stmt)
+	if err == nil && optimizedStmt != nil {
+		stmt = optimizedStmt
+	}
+
 	// Resolve positional references in GROUP BY and ORDER BY (e.g., GROUP BY 1, ORDER BY 2)
 	stmt = resolvePositionalRefs(stmt)
 
