@@ -1177,3 +1177,116 @@ func TestParseDropIndex(t *testing.T) {
 		})
 	}
 }
+
+// ==================== Procedure Body Parser Tests ====================
+
+func TestParseCreateProcedureWithBody(t *testing.T) {
+	sql := `
+		CREATE PROCEDURE test_proc()
+		BEGIN
+			SELECT * FROM users;
+			INSERT INTO logs VALUES (1, 'test');
+		END
+	`
+
+	tokens, err := Tokenize(sql)
+	if err != nil {
+		t.Fatalf("Failed to tokenize: %v", err)
+	}
+	parser := NewParser(tokens)
+	stmt, err := parser.Parse()
+
+	if err != nil {
+		t.Fatalf("Failed to parse procedure with body: %v", err)
+	}
+
+	proc, ok := stmt.(*CreateProcedureStmt)
+	if !ok {
+		t.Fatalf("Expected CreateProcedureStmt, got %T", stmt)
+	}
+
+	if proc.Name != "test_proc" {
+		t.Errorf("Expected procedure name 'test_proc', got '%s'", proc.Name)
+	}
+
+	if len(proc.Body) != 2 {
+		t.Errorf("Expected 2 statements in body, got %d", len(proc.Body))
+	}
+}
+
+func TestParseCreateProcedureWithParamsAndBody(t *testing.T) {
+	sql := `
+		CREATE PROCEDURE add_user(id INTEGER, name TEXT)
+		BEGIN
+			INSERT INTO users VALUES (id, name);
+			SELECT * FROM users WHERE id = id;
+		END
+	`
+
+	tokens, err := Tokenize(sql)
+	if err != nil {
+		t.Fatalf("Failed to tokenize: %v", err)
+	}
+	parser := NewParser(tokens)
+	stmt, err := parser.Parse()
+
+	if err != nil {
+		t.Fatalf("Failed to parse procedure: %v", err)
+	}
+
+	proc := stmt.(*CreateProcedureStmt)
+
+	if len(proc.Params) != 2 {
+		t.Errorf("Expected 2 params, got %d", len(proc.Params))
+	}
+
+	if len(proc.Body) != 2 {
+		t.Errorf("Expected 2 statements in body, got %d", len(proc.Body))
+	}
+}
+
+func TestParseCreateProcedureEmptyBody(t *testing.T) {
+	sql := `
+		CREATE PROCEDURE empty_proc()
+		BEGIN
+		END
+	`
+
+	tokens, err := Tokenize(sql)
+	if err != nil {
+		t.Fatalf("Failed to tokenize: %v", err)
+	}
+	parser := NewParser(tokens)
+	stmt, err := parser.Parse()
+
+	if err != nil {
+		t.Fatalf("Failed to parse procedure: %v", err)
+	}
+
+	proc := stmt.(*CreateProcedureStmt)
+
+	if len(proc.Body) != 0 {
+		t.Errorf("Expected 0 statements in body, got %d", len(proc.Body))
+	}
+}
+
+func TestParseCreateProcedureWithoutBody(t *testing.T) {
+	sql := `CREATE PROCEDURE simple_proc(id INTEGER)`
+
+	tokens, err := Tokenize(sql)
+	if err != nil {
+		t.Fatalf("Failed to tokenize: %v", err)
+	}
+	parser := NewParser(tokens)
+	stmt, err := parser.Parse()
+
+	if err != nil {
+		t.Fatalf("Failed to parse procedure: %v", err)
+	}
+
+	proc := stmt.(*CreateProcedureStmt)
+
+	if len(proc.Body) != 0 {
+		t.Errorf("Expected 0 statements in body, got %d", len(proc.Body))
+	}
+}

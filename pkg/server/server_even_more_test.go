@@ -19,7 +19,7 @@ func TestServerListen(t *testing.T) {
 
 	// Start server in background
 	go func() {
-		err := srv.Listen(":0") // Use random port
+		err := srv.Listen(":0", nil) // Use random port, no TLS
 		if err != nil && err != ErrServerClosed {
 			t.Logf("Listen error: %v", err)
 		}

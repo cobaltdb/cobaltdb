@@ -9,12 +9,18 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/cobaltdb/cobaltdb/pkg/audit"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/catalog"
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
+	"github.com/cobaltdb/cobaltdb/pkg/metrics"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
@@ -36,23 +42,49 @@ type DB struct {
 	mu       sync.RWMutex
 	closed   bool
 	options  *Options
+	// Security components
+	auditLogger *audit.Logger     // Audit logger
+	rlsManager  *security.Manager // Row-level security manager
 	// Prepared statement cache for performance
-	stmtCache   map[string]query.Statement
-	stmtMu      sync.RWMutex
-	nextTxnID   atomic.Uint64 // Auto-increment transaction ID counter
+	stmtCache      map[string]*cachedStmt
+	stmtMu         sync.RWMutex
+	stmtCacheOrder []string // LRU order tracking
+	nextTxnID atomic.Uint64 // Auto-increment transaction ID counter
+	// Metrics collector
+	metrics *metrics.Collector
+	// Connection management
+	connSem         chan struct{} // Connection limit semaphore
+	activeConns     atomic.Int64  // Active connection count
+	shutdownCh      chan struct{} // Shutdown signal
+	shutdownOnce    sync.Once
 }
 
 // Options contains database configuration options
 type Options struct {
-	PageSize   int
-	CacheSize  int // number of pages
-	InMemory   bool
-	WALEnabled bool
-	SyncMode   SyncMode
+	PageSize          int
+	CacheSize         int // number of pages
+	InMemory          bool
+	WALEnabled        bool
+	SyncMode          SyncMode
+	Logger            *logger.Logger            // Optional logger; if nil, uses default
+	MaxConnections    int                       // Maximum concurrent connections (0 = unlimited)
+	ConnectionTimeout time.Duration             // Timeout for acquiring a connection
+	QueryTimeout      time.Duration             // Default query timeout (0 = no timeout)
+	EncryptionKey     []byte                    // Encryption key for data at rest (nil = no encryption)
+	EncryptionConfig  *storage.EncryptionConfig // Detailed encryption configuration
+	AuditConfig       *audit.Config             // Audit logging configuration (nil = disabled)
+	EnableRLS         bool                      // Enable Row-Level Security by default
 }
 
 // SyncMode controls when data is synced to disk
 type SyncMode int
+
+// cachedStmt represents a cached prepared statement with metadata
+type cachedStmt struct {
+	stmt      query.Statement
+	lastUsed  int64 // Unix timestamp for LRU
+	useCount  uint64
+}
 
 const (
 	SyncOff SyncMode = iota
@@ -63,11 +95,15 @@ const (
 // DefaultOptions returns the default database options
 func DefaultOptions() *Options {
 	return &Options{
-		PageSize:   storage.PageSize,
-		CacheSize:  1024, // 4MB cache
-		InMemory:   false,
-		WALEnabled: true,
-		SyncMode:   SyncNormal,
+		PageSize:          storage.PageSize,
+		CacheSize:         1024, // 4MB cache
+		InMemory:          false,
+		WALEnabled:        true,
+		SyncMode:          SyncNormal,
+		Logger:            logger.Default(),
+		MaxConnections:    100,           // Default max connections
+		ConnectionTimeout: 30 * time.Second,
+		QueryTimeout:      60 * time.Second,
 	}
 }
 
@@ -88,14 +124,26 @@ func Open(path string, opts *Options) (*DB, error) {
 		// SyncMode defaults to 0 which is SyncOff, but default is SyncNormal
 		// We can't distinguish between unset and explicitly set to 0 for booleans and enums
 		// So we use the default values if they appear to be zero values
+		if opts.Logger == nil {
+			opts.Logger = defaults.Logger
+		}
 	}
+
+	// Setup logger
+	log := opts.Logger
+	if log == nil {
+		log = logger.Default()
+	}
+	log = log.WithComponent("engine")
 
 	var backend storage.Backend
 	var err error
 
 	if opts.InMemory || path == ":memory:" {
+		log.Infof("Opening in-memory database")
 		backend = storage.NewMemory()
 	} else {
+		log.Infof("Opening database at %s", path)
 		// Ensure directory exists
 		dir := filepath.Dir(path)
 		if dir != "." && dir != "/" {
@@ -105,16 +153,71 @@ func Open(path string, opts *Options) (*DB, error) {
 		}
 		backend, err = storage.OpenDisk(path)
 		if err != nil {
+			log.Errorf("Failed to open database: %v", err)
 			return nil, fmt.Errorf("failed to open database: %w", err)
+		}
+
+		// Wrap with encryption if encryption key is provided
+		if opts.EncryptionConfig != nil && opts.EncryptionConfig.Enabled {
+			log.Infof("Enabling encryption at rest")
+			backend, err = storage.NewEncryptedBackend(backend, opts.EncryptionConfig)
+			if err != nil {
+				backend.Close()
+				return nil, fmt.Errorf("failed to setup encryption: %w", err)
+			}
+		} else if len(opts.EncryptionKey) > 0 {
+			log.Infof("Enabling encryption at rest")
+			encConfig := &storage.EncryptionConfig{
+				Enabled:   true,
+				Key:       opts.EncryptionKey,
+				Algorithm: "aes-256-gcm",
+				UseArgon2: true,
+			}
+			backend, err = storage.NewEncryptedBackend(backend, encConfig)
+			if err != nil {
+				backend.Close()
+				return nil, fmt.Errorf("failed to setup encryption: %w", err)
+			}
 		}
 	}
 
+	// Initialize metrics collector
+	collector := metrics.NewCollector(0) // Use default interval
+
 	db := &DB{
-		path:      path,
-		backend:   backend,
-		options:   opts,
-		stmtCache: make(map[string]query.Statement),
+		path:           path,
+		backend:        backend,
+		options:        opts,
+		stmtCache:      make(map[string]*cachedStmt),
+		stmtCacheOrder: make([]string, 0),
+		metrics:        collector,
+		shutdownCh:     make(chan struct{}),
 	}
+
+	// Initialize audit logger if configured
+	if opts.AuditConfig != nil && opts.AuditConfig.Enabled {
+		log.Infof("Initializing audit logging")
+		auditLogger, err := audit.New(opts.AuditConfig, log)
+		if err != nil {
+			backend.Close()
+			return nil, fmt.Errorf("failed to initialize audit logger: %w", err)
+		}
+		db.auditLogger = auditLogger
+	}
+
+	// Initialize RLS manager if enabled
+	if opts.EnableRLS {
+		log.Infof("Initializing row-level security")
+		db.rlsManager = security.NewManager()
+	}
+
+	// Initialize connection semaphore if max connections is set
+	if opts.MaxConnections > 0 {
+		db.connSem = make(chan struct{}, opts.MaxConnections)
+	}
+
+	// Start metrics collection
+	go collector.Start(context.Background())
 
 	// Initialize buffer pool
 	db.pool = storage.NewBufferPool(opts.CacheSize, backend)
@@ -248,6 +351,31 @@ func (db *DB) loadExisting() error {
 }
 
 // Close closes the database
+// Shutdown gracefully shuts down the database with a timeout
+func (db *DB) Shutdown(ctx context.Context) error {
+	db.shutdownOnce.Do(func() {
+		close(db.shutdownCh)
+	})
+
+	// Wait for active connections to complete or timeout
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Timeout reached, force close
+			return db.Close()
+		case <-ticker.C:
+			if db.activeConns.Load() == 0 {
+				// All connections released
+				return db.Close()
+			}
+		}
+	}
+}
+
+// Close closes the database immediately
 func (db *DB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -257,6 +385,19 @@ func (db *DB) Close() error {
 	}
 
 	db.closed = true
+
+	// Signal shutdown
+	select {
+	case <-db.shutdownCh:
+		// Already closed
+	default:
+		close(db.shutdownCh)
+	}
+
+	// Stop metrics collection
+	if db.metrics != nil {
+		db.metrics.Stop()
+	}
 
 	// Save catalog metadata to B+Tree (if not in-memory)
 	if !db.options.InMemory && db.path != ":memory:" {
@@ -282,6 +423,13 @@ func (db *DB) Close() error {
 		}
 	}
 
+	// Close audit logger
+	if db.auditLogger != nil {
+		if err := db.auditLogger.Close(); err != nil {
+			return fmt.Errorf("failed to close audit logger: %w", err)
+		}
+	}
+
 	// Close WAL
 	if db.wal != nil {
 		if err := db.wal.Close(); err != nil {
@@ -296,11 +444,18 @@ func (db *DB) Close() error {
 // getPreparedStatement returns a cached prepared statement or parses and caches it
 func (db *DB) getPreparedStatement(sql string) (query.Statement, error) {
 	db.stmtMu.RLock()
-	stmt, exists := db.stmtCache[sql]
+	cached, exists := db.stmtCache[sql]
 	db.stmtMu.RUnlock()
 
 	if exists {
-		return stmt, nil
+		// Update last used time synchronously to avoid race conditions
+		db.stmtMu.Lock()
+		if c, ok := db.stmtCache[sql]; ok {
+			c.lastUsed = time.Now().Unix()
+			c.useCount++
+		}
+		db.stmtMu.Unlock()
+		return cached.stmt, nil
 	}
 
 	// Parse and cache
@@ -309,18 +464,140 @@ func (db *DB) getPreparedStatement(sql string) (query.Statement, error) {
 		return nil, err
 	}
 
-	// Cache the statement (limit cache size to prevent memory issues)
+	// Cache the statement with LRU eviction
 	db.stmtMu.Lock()
-	if len(db.stmtCache) < 1000 {
-		db.stmtCache[sql] = parsedStmt
+	if len(db.stmtCache) >= 1000 {
+		// Evict oldest entry (simple LRU: remove first in order)
+		db.evictLRUEntry()
 	}
+	db.stmtCache[sql] = &cachedStmt{
+		stmt:     parsedStmt,
+		lastUsed: time.Now().Unix(),
+		useCount: 1,
+	}
+	db.stmtCacheOrder = append(db.stmtCacheOrder, sql)
 	db.stmtMu.Unlock()
 
 	return parsedStmt, nil
 }
 
+// evictLRUEntry removes the least recently used entry from the cache
+// Note: Must be called with stmtMu.Lock() held
+func (db *DB) evictLRUEntry() {
+	if len(db.stmtCacheOrder) == 0 {
+		return
+	}
+	// Find oldest entry
+	var oldestKey string
+	var oldestTime int64
+	first := true
+	for _, key := range db.stmtCacheOrder {
+		if cached, ok := db.stmtCache[key]; ok {
+			if first || cached.lastUsed < oldestTime {
+				oldestTime = cached.lastUsed
+				oldestKey = key
+				first = false
+			}
+		}
+	}
+	if oldestKey != "" {
+		delete(db.stmtCache, oldestKey)
+		// Remove from order slice
+		for i, key := range db.stmtCacheOrder {
+			if key == oldestKey {
+				db.stmtCacheOrder = append(db.stmtCacheOrder[:i], db.stmtCacheOrder[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+// acquireConnection acquires a connection slot with timeout
+func (db *DB) acquireConnection(ctx context.Context) error {
+	if db.connSem == nil {
+		// No connection limit
+		db.activeConns.Add(1)
+		if db.metrics != nil {
+			db.metrics.ConnectionAcquired()
+		}
+		return nil
+	}
+
+	timeout := db.options.ConnectionTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	// Create timeout context if not provided
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	select {
+	case db.connSem <- struct{}{}:
+		db.activeConns.Add(1)
+		if db.metrics != nil {
+			db.metrics.ConnectionAcquired()
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("connection timeout: %w", ctx.Err())
+	case <-db.shutdownCh:
+		return ErrDatabaseClosed
+	}
+}
+
+// releaseConnection releases a connection slot
+func (db *DB) releaseConnection() {
+	if db.connSem != nil {
+		select {
+		case <-db.connSem:
+		default:
+			// Should not happen, but handle gracefully
+		}
+	}
+	db.activeConns.Add(-1)
+	if db.metrics != nil {
+		db.metrics.ConnectionReleased()
+	}
+}
+
+// withConnection wraps a function with connection acquisition/release
+func (db *DB) withConnection(ctx context.Context, fn func() error) error {
+	if err := db.acquireConnection(ctx); err != nil {
+		return err
+	}
+	defer db.releaseConnection()
+	return fn()
+}
+
 // Exec executes a SQL statement without returning rows
-func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (Result, error) {
+func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result Result, err error) {
+	// Panic recovery for production safety
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic in Exec: %v\n%s", r, debug.Stack())
+			if db.options.Logger != nil {
+				db.options.Logger.Errorf("Panic recovered in Exec: %v", r)
+			}
+		}
+	}()
+
+	// Apply default query timeout if none set
+	if db.options.QueryTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, db.options.QueryTimeout)
+		defer cancel()
+	}
+
+	// Acquire connection
+	if err := db.acquireConnection(ctx); err != nil {
+		return Result{}, err
+	}
+	defer db.releaseConnection()
+
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -328,9 +605,21 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (Result
 		return Result{}, ErrDatabaseClosed
 	}
 
+	// Record metrics
+	start := time.Now()
+	if db.metrics != nil {
+		defer func() {
+			duration := time.Since(start)
+			db.metrics.RecordQuery(duration, duration > 100*time.Millisecond)
+		}()
+	}
+
 	// Try to use cached prepared statement
 	stmt, err := db.getPreparedStatement(sql)
 	if err != nil {
+		if db.metrics != nil {
+			db.metrics.RecordError()
+		}
 		return Result{}, fmt.Errorf("parse error: %w", err)
 	}
 
@@ -339,7 +628,29 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (Result
 }
 
 // Query executes a SQL query and returns rows
-func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (*Rows, error) {
+func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows *Rows, err error) {
+	// Panic recovery for production safety
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic in Query: %v\n%s", r, debug.Stack())
+			if db.options.Logger != nil {
+				db.options.Logger.Errorf("Panic recovered in Query: %v", r)
+			}
+		}
+	}()
+	// Apply default query timeout if none set
+	if db.options.QueryTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, db.options.QueryTimeout)
+		defer cancel()
+	}
+
+	// Acquire connection
+	if err := db.acquireConnection(ctx); err != nil {
+		return nil, err
+	}
+	defer db.releaseConnection()
+
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -347,9 +658,21 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (*Rows
 		return nil, ErrDatabaseClosed
 	}
 
+	// Record metrics
+	start := time.Now()
+	if db.metrics != nil {
+		defer func() {
+			duration := time.Since(start)
+			db.metrics.RecordQuery(duration, duration > 100*time.Millisecond)
+		}()
+	}
+
 	// Try to use cached prepared statement
 	stmt, err := db.getPreparedStatement(sql)
 	if err != nil {
+		if db.metrics != nil {
+			db.metrics.RecordError()
+		}
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
 
@@ -418,10 +741,16 @@ func (db *DB) Begin(ctx context.Context) (*Tx, error) {
 
 // BeginWith starts a new transaction with options
 func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
+	// Acquire connection
+	if err := db.acquireConnection(ctx); err != nil {
+		return nil, err
+	}
+
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	if db.closed {
+		db.releaseConnection()
 		return nil, ErrDatabaseClosed
 	}
 
@@ -438,6 +767,17 @@ func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 
 // execute executes a statement
 func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interface{}) (result Result, err error) {
+	start := time.Now()
+
+	// Check for context cancellation
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return Result{}, fmt.Errorf("context cancelled: %w", ctx.Err())
+		default:
+		}
+	}
+
 	// Handle autocommit mode for write operations when WAL is enabled
 	// Skip autocommit for transaction control statements (BEGIN/COMMIT/ROLLBACK)
 	isTransactionControl := false
@@ -464,27 +804,71 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 	case *query.CreateTableStmt:
 		return db.executeCreateTable(ctx, s)
 	case *query.InsertStmt:
-		return db.executeInsert(ctx, s, args)
+		result, err := db.executeInsert(ctx, s, args)
+		if db.auditLogger != nil {
+			db.auditLogger.LogQuery("db_user", "INSERT", time.Since(start), result.RowsAffected, err)
+		}
+		return result, err
 	case *query.UpdateStmt:
-		return db.executeUpdate(ctx, s, args)
+		result, err := db.executeUpdate(ctx, s, args)
+		if db.auditLogger != nil {
+			db.auditLogger.LogQuery("db_user", "UPDATE", time.Since(start), result.RowsAffected, err)
+		}
+		return result, err
 	case *query.DeleteStmt:
-		return db.executeDelete(ctx, s, args)
+		result, err := db.executeDelete(ctx, s, args)
+		if db.auditLogger != nil {
+			db.auditLogger.LogQuery("db_user", "DELETE", time.Since(start), result.RowsAffected, err)
+		}
+		return result, err
 	case *query.DropTableStmt:
-		return db.executeDropTable(ctx, s)
+		result, err := db.executeDropTable(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "DROP_TABLE", audit.WithTable(s.Table))
+		}
+		return result, err
 	case *query.CreateIndexStmt:
-		return db.executeCreateIndex(ctx, s)
+		result, err := db.executeCreateIndex(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_INDEX", audit.WithTable(s.Table))
+		}
+		return result, err
 	case *query.CreateViewStmt:
-		return db.executeCreateView(ctx, s)
+		result, err := db.executeCreateView(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_VIEW", audit.WithTable(s.Name))
+		}
+		return result, err
 	case *query.DropViewStmt:
-		return db.executeDropView(ctx, s)
+		result, err := db.executeDropView(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "DROP_VIEW", audit.WithTable(s.Name))
+		}
+		return result, err
 	case *query.CreateTriggerStmt:
-		return db.executeCreateTrigger(ctx, s)
+		result, err := db.executeCreateTrigger(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_TRIGGER", audit.WithTable(s.Table))
+		}
+		return result, err
 	case *query.DropTriggerStmt:
-		return db.executeDropTrigger(ctx, s)
+		result, err := db.executeDropTrigger(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "DROP_TRIGGER")
+		}
+		return result, err
 	case *query.CreateProcedureStmt:
-		return db.executeCreateProcedure(ctx, s)
+		result, err := db.executeCreateProcedure(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_PROCEDURE")
+		}
+		return result, err
 	case *query.DropProcedureStmt:
-		return db.executeDropProcedure(ctx, s)
+		result, err := db.executeDropProcedure(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "DROP_PROCEDURE")
+		}
+		return result, err
 	case *query.CallProcedureStmt:
 		return db.executeCallProcedure(ctx, s, args)
 	case *query.BeginStmt:
@@ -580,6 +964,15 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 
 // query executes a query and returns rows
 func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{}) (*Rows, error) {
+	// Check for context cancellation
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
+		default:
+		}
+	}
+
 	switch s := stmt.(type) {
 	case *query.SelectStmt:
 		return db.executeSelect(ctx, s, args)
@@ -1342,6 +1735,8 @@ func (tx *Tx) Query(ctx context.Context, sql string, args ...interface{}) (*Rows
 
 // Commit commits the transaction
 func (tx *Tx) Commit() error {
+	defer tx.db.releaseConnection() // Release connection on commit/rollback
+
 	// Flush table B+Trees to buffer pool first
 	if err := tx.db.catalog.FlushTableTrees(); err != nil {
 		return fmt.Errorf("failed to flush tables: %w", err)
@@ -1362,9 +1757,105 @@ func (tx *Tx) Commit() error {
 
 // Rollback rolls back the transaction
 func (tx *Tx) Rollback() error {
+	defer tx.db.releaseConnection() // Release connection on commit/rollback
+
 	// Rollback in catalog first (writes rollback record to WAL)
 	if err := tx.db.catalog.RollbackTransaction(); err != nil {
 		return err
 	}
+	if tx.db.metrics != nil {
+		tx.db.metrics.RecordTransaction(false)
+	}
 	return tx.txn.Rollback()
+}
+
+// GetMetrics returns a snapshot of all database metrics as JSON
+func (db *DB) GetMetrics() ([]byte, error) {
+	if db.metrics == nil {
+		return nil, fmt.Errorf("metrics not enabled")
+	}
+	return db.metrics.SnapshotJSON()
+}
+
+// GetMetricsCollector returns the metrics collector for advanced usage
+func (db *DB) GetMetricsCollector() *metrics.Collector {
+	return db.metrics
+}
+
+// DBStats holds database statistics
+type DBStats struct {
+	Path            string        `json:"path"`
+	InMemory        bool          `json:"in_memory"`
+	PageSize        int           `json:"page_size"`
+	CacheSize       int           `json:"cache_size"`
+	ActiveConnections int64       `json:"active_connections"`
+	MaxConnections  int           `json:"max_connections"`
+	Tables          int           `json:"tables"`
+	Indexes         int           `json:"indexes"`
+	DatabaseSize    int64         `json:"database_size_bytes"`
+	Uptime          time.Duration `json:"uptime"`
+	IsHealthy       bool          `json:"is_healthy"`
+	LastCheckTime   time.Time     `json:"last_check_time"`
+}
+
+// Stats returns detailed database statistics
+func (db *DB) Stats() (*DBStats, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.closed {
+		return nil, ErrDatabaseClosed
+	}
+
+	stats := &DBStats{
+		Path:              db.path,
+		InMemory:          db.options.InMemory,
+		PageSize:          db.options.PageSize,
+		CacheSize:         db.options.CacheSize,
+		ActiveConnections: db.activeConns.Load(),
+		MaxConnections:    db.options.MaxConnections,
+		LastCheckTime:     time.Now(),
+		IsHealthy:         true,
+	}
+
+	// Get catalog stats
+	if db.catalog != nil {
+		stats.Tables = len(db.catalog.ListTables())
+		// Count regular + FTS + JSON indexes
+		stats.Indexes = len(db.catalog.ListFTSIndexes()) + len(db.catalog.ListJSONIndexes())
+	}
+
+	// Get backend size
+	if db.backend != nil {
+		stats.DatabaseSize = db.backend.Size()
+	}
+
+	return stats, nil
+}
+
+// HealthCheck performs a health check on the database
+func (db *DB) HealthCheck() error {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.closed {
+		return ErrDatabaseClosed
+	}
+
+	// Try a simple catalog operation to verify connectivity
+	if db.catalog == nil {
+		return fmt.Errorf("catalog not initialized")
+	}
+
+	// Ping the backend
+	if db.backend == nil {
+		return fmt.Errorf("backend not initialized")
+	}
+
+	return nil
+}
+
+// IsHealthy returns true if the database is healthy
+func (db *DB) IsHealthy() bool {
+	return db.HealthCheck() == nil
 }

@@ -2048,16 +2048,60 @@ func (p *Parser) parseCreateProcedure() (*CreateProcedureStmt, error) {
 			param.Type = p.current().Type
 			p.advance()
 
+			stmt.Params = append(stmt.Params, param)
+
 			if !p.match(TokenComma) && p.current().Type != TokenRParen {
 				break
-			}
-			if p.match(TokenComma) {
-				continue
 			}
 		}
 	}
 
+	// Parse procedure body: BEGIN ... END
+	if p.current().Type == TokenBegin {
+		body, err := p.parseProcedureBody()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Body = body
+	}
+
 	return stmt, nil
+}
+
+// parseProcedureBody parses BEGIN ... END block
+func (p *Parser) parseProcedureBody() ([]Statement, error) {
+	p.expect(TokenBegin)
+
+	var statements []Statement
+
+	for p.current().Type != TokenEnd && p.current().Type != TokenEOF {
+		// Skip optional semicolons between statements
+		if p.current().Type == TokenSemicolon {
+			p.advance()
+			continue
+		}
+
+		// Parse individual statements in the body
+		stmt, err := p.Parse()
+		if err != nil {
+			return nil, fmt.Errorf("error parsing procedure body: %w", err)
+		}
+		if stmt != nil {
+			statements = append(statements, stmt)
+		}
+
+		// After each statement, expect semicolon or END
+		if p.current().Type == TokenSemicolon {
+			p.advance()
+		}
+	}
+
+	if p.current().Type != TokenEnd {
+		return nil, fmt.Errorf("expected END, got %s", p.current().Literal)
+	}
+	p.advance() // consume END
+
+	return statements, nil
 }
 
 // parseDropProcedure parses DROP PROCEDURE

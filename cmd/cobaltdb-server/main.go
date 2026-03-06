@@ -15,15 +15,19 @@ import (
 
 func main() {
 	var (
-		dataDir    = flag.String("data", "./data", "data directory")
-		address    = flag.String("addr", ":4200", "wire protocol address")
-		mysqlAddr  = flag.String("mysql-addr", ":3307", "MySQL protocol address")
+		dataDir     = flag.String("data", "./data", "data directory")
+		address     = flag.String("addr", ":4200", "wire protocol address")
+		mysqlAddr   = flag.String("mysql-addr", ":3307", "MySQL protocol address")
 		enableMySQL = flag.Bool("mysql", true, "enable MySQL protocol")
-		inMemory   = flag.Bool("memory", false, "use in-memory storage")
-		cacheSize  = flag.Int("cache", 1024, "cache size in pages")
+		inMemory    = flag.Bool("memory", false, "use in-memory storage")
+		cacheSize   = flag.Int("cache", 1024, "cache size in pages")
 		authEnabled = flag.Bool("auth", false, "enable authentication")
-		adminUser  = flag.String("admin-user", "admin", "default admin username")
-		adminPass  = flag.String("admin-pass", "admin", "default admin password")
+		adminUser   = flag.String("admin-user", "admin", "default admin username")
+		adminPass   = flag.String("admin-pass", "admin", "default admin password")
+		tlsEnabled  = flag.Bool("tls", false, "enable TLS")
+		tlsCert     = flag.String("tls-cert", "", "TLS certificate file")
+		tlsKey      = flag.String("tls-key", "", "TLS key file")
+		tlsGenCert  = flag.Bool("tls-gen-cert", false, "auto-generate self-signed TLS certificate")
 	)
 	flag.Parse()
 
@@ -58,6 +62,20 @@ func main() {
 		log.Printf("Mode: in-memory")
 	}
 
+	// Setup TLS configuration
+	var tlsConfig *server.TLSConfig
+	if *tlsEnabled {
+		tlsConfig = &server.TLSConfig{
+			Enabled:            true,
+			CertFile:           *tlsCert,
+			KeyFile:            *tlsKey,
+			GenerateSelfSigned: *tlsGenCert,
+		}
+		if *tlsGenCert {
+			log.Println("TLS: Auto-generating self-signed certificate")
+		}
+	}
+
 	// Create wire protocol server
 	srv, err := server.New(db, &server.Config{
 		Address:          *address,
@@ -65,6 +83,7 @@ func main() {
 		RequireAuth:      *authEnabled,
 		DefaultAdminUser: *adminUser,
 		DefaultAdminPass: *adminPass,
+		TLS:              tlsConfig,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
@@ -80,7 +99,11 @@ func main() {
 		log.Printf("MySQL protocol listening on: %s", *mysqlAddr)
 	}
 
-	log.Printf("Wire protocol listening on: %s", *address)
+	if tlsConfig != nil && tlsConfig.Enabled {
+		log.Printf("Wire protocol listening on: %s (TLS enabled)", *address)
+	} else {
+		log.Printf("Wire protocol listening on: %s", *address)
+	}
 
 	// Handle shutdown gracefully
 	sigChan := make(chan os.Signal, 1)
@@ -96,7 +119,7 @@ func main() {
 	}()
 
 	// Start wire protocol server (blocks)
-	if err := srv.Listen(*address); err != nil {
+	if err := srv.Listen(*address, tlsConfig); err != nil {
 		log.Printf("Server error: %v", err)
 	}
 

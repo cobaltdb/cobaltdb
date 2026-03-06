@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go Version">
-  <img src="https://img.shields.io/badge/Version-2.0.0-blue?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.1.1-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
   <img src="https://img.shields.io/badge/Coverage-59.7%25-yellow?style=for-the-badge" alt="Test Coverage">
@@ -27,6 +27,10 @@
 | **Indexes** | B+Tree | B+Tree | B+Tree |
 | **Network Server** | ✅ Built-in | ❌ | ❌ |
 | **Views/Triggers** | ✅ Full Support | ✅ | ❌ |
+| **Encryption at Rest** | ✅ AES-256-GCM | ❌ | ❌ |
+| **TLS Support** | ✅ TLS 1.3 | ❌ | ❌ |
+| **Audit Logging** | ✅ Built-in | ❌ | ❌ |
+| **Row-Level Security** | ✅ Policy-based | ❌ | ❌ |
 
 ---
 
@@ -131,6 +135,89 @@ go run cmd/cobaltdb-server/main.go
 | **Transaction** | ~3.4 µs | **290K tx/sec** |
 
 > 💡 **In-memory benchmarks.** Disk persistence adds ~20-40% overhead depending on storage.
+
+---
+
+## 🔐 Security Features
+
+CobaltDB provides enterprise-grade security features:
+
+### Encryption at Rest
+
+```go
+import "github.com/cobaltdb/cobaltdb/pkg/storage"
+
+// Generate encryption key
+key, _ := storage.GenerateSecureKey()
+
+// Open encrypted database
+db, _ := engine.Open("encrypted.db", &engine.Options{
+    EncryptionKey: key,
+})
+```
+
+- **AES-256-GCM** authenticated encryption
+- **Argon2id** for secure key derivation
+- Transparent encryption/decryption
+
+### TLS Support
+
+```go
+import "github.com/cobaltdb/cobaltdb/pkg/server"
+
+config := &server.Config{
+    Address: ":4200",
+    TLS: &server.TLSConfig{
+        Enabled:              true,
+        GenerateSelfSigned:   true,  // Auto-generate certs
+        // Or provide your own:
+        // CertFile: "server.crt",
+        // KeyFile:  "server.key",
+    },
+}
+
+srv, _ := server.New(db, config)
+srv.Listen(":4200", config.TLS)
+```
+
+- **TLS 1.2/1.3** support
+- Self-signed certificate generation
+- Client certificate authentication
+
+### Audit Logging
+
+```go
+import "github.com/cobaltdb/cobaltdb/pkg/audit"
+
+auditConfig := &audit.Config{
+    Enabled:  true,
+    LogFile:  "audit.log",
+    LogFormat: "json",  // or "text"
+}
+
+db, _ := engine.Open("audited.db", &engine.Options{
+    AuditConfig: auditConfig,
+})
+```
+
+- JSON and text format support
+- Query, DDL, and authentication events
+- Automatic log rotation (100MB default)
+
+### Row-Level Security (RLS)
+
+```go
+import "github.com/cobaltdb/cobaltdb/pkg/security"
+
+// Enable RLS
+db, _ := engine.Open("secure.db", &engine.Options{
+    EnableRLS: true,
+})
+
+// Create policies via SQL (coming in v2.2)
+// CREATE POLICY tenant_isolation ON users
+//   USING (tenant_id = current_tenant());
+```
 
 ---
 
@@ -379,11 +466,14 @@ go run cmd/demo/main.go
 
 ## 📚 Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) - System design & components
-- [API Reference](docs/API.md) - Go SDK documentation  
-- [SQL Reference](docs/SQL.md) - Complete SQL syntax
-- [Benchmarks](docs/BENCHMARKS.md) - Performance metrics
-- [Changelog](CHANGELOG.md) - Version history
+| Document | Description |
+|----------|-------------|
+| [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) | **Production deployment guide, security checklist, benchmarks** |
+| [TECHNICAL_ARCHITECTURE.md](TECHNICAL_ARCHITECTURE.md) | **Detailed architecture, data flow, performance characteristics** |
+| [CHANGELOG.md](CHANGELOG.md) | Version history, all changes |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design & components |
+| [docs/API.md](docs/API.md) | Go SDK documentation |
+| [docs/SQL.md](docs/SQL.md) | Complete SQL syntax |
 
 ---
 
@@ -411,6 +501,14 @@ go run cmd/demo/main.go
 - [x] **Common Table Expressions** - WITH clause support for recursive and non-recursive CTEs
 - [x] **VACUUM** - Database compaction and storage reclamation
 - [x] **ANALYZE** - Table statistics collection for query optimization
+
+### ✅ Production Hardening (v2.1.1)
+
+- [x] **Panic Recovery** - Server survives any query panic
+- [x] **Resource Leak Fixes** - All iterators properly closed
+- [x] **Race Condition Fixes** - Statement cache thread-safety
+- [x] **Transaction Fixes** - Connection leak plugged
+- [x] **Data Corruption Fix** - Free list loading corrected
 
 ### 📋 Planned Features
 

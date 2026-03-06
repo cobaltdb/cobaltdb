@@ -109,6 +109,17 @@ type FTSIndexDef struct {
 	Index map[string][]int64 `json:"index"`
 }
 
+// JSONIndexDef represents a JSON index definition (GIN-like)
+type JSONIndexDef struct {
+	Name      string `json:"name"`
+	TableName string `json:"table_name"`
+	Column    string `json:"column"`          // JSON column name
+	Path      string `json:"path"`            // JSON path expression (e.g., "$.name")
+	DataType  string `json:"data_type"`       // indexed data type: "string", "number", "boolean"
+	Index     map[string][]int64 `json:"index"` // value -> list of row IDs (for string values)
+	NumIndex  map[float64][]int64 `json:"num_index,omitempty"` // for numeric values
+}
+
 // undoAction represents the type of undo operation
 type undoAction int
 
@@ -176,6 +187,7 @@ type Catalog struct {
 	procedures        map[string]*query.CreateProcedureStmt // Procedures store their definition
 	materializedViews map[string]*MaterializedViewDef       // Materialized views
 	ftsIndexes        map[string]*FTSIndexDef               // Full-text search indexes
+	jsonIndexes       map[string]*JSONIndexDef              // JSON indexes for fast JSON queries
 	stats             map[string]*StatsTableStats           // Table statistics for ANALYZE
 	cteResults        map[string]*cteResultSet              // Temporary CTE result cache for recursive CTEs
 	keyCounter        int64                                 // For generating unique keys
@@ -212,6 +224,7 @@ func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog
 		procedures:        make(map[string]*query.CreateProcedureStmt),
 		materializedViews: make(map[string]*MaterializedViewDef),
 		ftsIndexes:        make(map[string]*FTSIndexDef),
+		jsonIndexes:       make(map[string]*JSONIndexDef),
 		stats:             make(map[string]*StatsTableStats),
 		keyCounter:        0,
 	}
@@ -318,7 +331,11 @@ func (c *Catalog) RollbackTransaction() error {
 			}
 			// Remove from catalog tree
 			if c.tree != nil {
-				_ = c.tree.Delete([]byte("tbl:" + entry.tableName))
+				if err := c.tree.Delete([]byte("tbl:" + entry.tableName)); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback failed removing table %s from catalog: %w", entry.tableName, err)
+					}
+				}
 			}
 		case undoDropTable:
 			// Undo a DROP TABLE: restore the table
@@ -337,14 +354,22 @@ func (c *Catalog) RollbackTransaction() error {
 			}
 			// Restore catalog tree entry
 			if entry.tableDef != nil {
-				_ = c.storeTableDef(entry.tableDef)
+				if err := c.storeTableDef(entry.tableDef); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback failed restoring table def %s: %w", entry.tableName, err)
+					}
+				}
 			}
 		case undoCreateIndex:
 			// Undo a CREATE INDEX: drop the index
 			delete(c.indexes, entry.indexName)
 			delete(c.indexTrees, entry.indexName)
 			if c.tree != nil {
-				_ = c.tree.Delete([]byte("idx:" + entry.indexName))
+				if err := c.tree.Delete([]byte("idx:" + entry.indexName)); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback failed dropping index %s: %w", entry.indexName, err)
+					}
+				}
 			}
 		case undoDropIndex:
 			// Undo a DROP INDEX: restore the index
@@ -355,7 +380,11 @@ func (c *Catalog) RollbackTransaction() error {
 				c.indexTrees[entry.indexName] = entry.indexTree
 			}
 			if entry.indexDef != nil {
-				_ = c.storeIndexDef(entry.indexDef)
+				if err := c.storeIndexDef(entry.indexDef); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback failed restoring index def %s: %w", entry.indexName, err)
+					}
+				}
 			}
 		case undoAutoIncSeq:
 			// Undo AutoIncSeq change: restore old value
@@ -377,7 +406,11 @@ func (c *Catalog) RollbackTransaction() error {
 				// Restore original row data
 				if tree, treeExists := c.tableTrees[entry.tableName]; treeExists {
 					for _, rd := range entry.oldRowData {
-						_ = tree.Put(rd.key, rd.val)
+						if err := tree.Put(rd.key, rd.val); err != nil {
+							if rollbackErr == nil {
+								rollbackErr = fmt.Errorf("rollback failed restoring row data for %s: %w", entry.tableName, err)
+							}
+						}
 					}
 				}
 				// Restore dropped indexes
@@ -387,7 +420,11 @@ func (c *Catalog) RollbackTransaction() error {
 				for idxName, idxTree := range entry.droppedIdxTrees {
 					c.indexTrees[idxName] = idxTree
 				}
-				_ = c.storeTableDef(tbl)
+				if err := c.storeTableDef(tbl); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback failed storing table def %s: %w", entry.tableName, err)
+					}
+				}
 			}
 		case undoAlterRename:
 			// Undo ALTER TABLE RENAME: swap names back
@@ -515,21 +552,34 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 	undoPos := c.savepoints[spIdx].undoPos
 
 	// Replay undo entries from the end back to the savepoint position
+	var rollbackErr error
 	for i := len(c.undoLog) - 1; i >= undoPos; i-- {
 		entry := c.undoLog[i]
 		tree := c.tableTrees[entry.tableName]
 		switch entry.action {
 		case undoInsert:
 			if tree != nil {
-				_ = tree.Delete(entry.key)
+				if err := tree.Delete(entry.key); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback to savepoint failed undoing insert: %w", err)
+					}
+				}
 			}
 		case undoUpdate:
 			if tree != nil {
-				_ = tree.Put(entry.key, entry.oldValue)
+				if err := tree.Put(entry.key, entry.oldValue); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback to savepoint failed undoing update: %w", err)
+					}
+				}
 			}
 		case undoDelete:
 			if tree != nil {
-				_ = tree.Put(entry.key, entry.oldValue)
+				if err := tree.Put(entry.key, entry.oldValue); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback to savepoint failed undoing delete: %w", err)
+					}
+				}
 			}
 		case undoCreateTable:
 			delete(c.tables, entry.tableName)
@@ -542,7 +592,11 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 				}
 			}
 			if c.tree != nil {
-				_ = c.tree.Delete([]byte("tbl:" + entry.tableName))
+				if err := c.tree.Delete([]byte("tbl:" + entry.tableName)); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback to savepoint failed removing table %s from catalog: %w", entry.tableName, err)
+					}
+				}
 			}
 		case undoDropTable:
 			if entry.tableDef != nil {
@@ -559,13 +613,21 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 				c.indexTrees[idxName] = idxTree
 			}
 			if entry.tableDef != nil {
-				_ = c.storeTableDef(entry.tableDef)
+				if err := c.storeTableDef(entry.tableDef); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback to savepoint failed restoring table def %s: %w", entry.tableName, err)
+					}
+				}
 			}
 		case undoCreateIndex:
 			delete(c.indexes, entry.indexName)
 			delete(c.indexTrees, entry.indexName)
 			if c.tree != nil {
-				_ = c.tree.Delete([]byte("idx:" + entry.indexName))
+				if err := c.tree.Delete([]byte("idx:" + entry.indexName)); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback to savepoint failed dropping index %s: %w", entry.indexName, err)
+					}
+				}
 			}
 		case undoDropIndex:
 			if entry.indexDef != nil {
@@ -582,7 +644,11 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 			if tbl, exists := c.tables[entry.tableName]; exists {
 				tbl.Columns = entry.oldColumns
 				tbl.buildColumnIndexCache()
-				_ = c.storeTableDef(tbl)
+				if err := c.storeTableDef(tbl); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback to savepoint failed storing table def %s: %w", entry.tableName, err)
+					}
+				}
 			}
 		case undoAlterDropColumn:
 			if tbl, exists := c.tables[entry.tableName]; exists {
@@ -590,7 +656,11 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 				tbl.buildColumnIndexCache()
 				if t, e := c.tableTrees[entry.tableName]; e {
 					for _, rd := range entry.oldRowData {
-						_ = t.Put(rd.key, rd.val)
+						if err := t.Put(rd.key, rd.val); err != nil {
+							if rollbackErr == nil {
+								rollbackErr = fmt.Errorf("rollback to savepoint failed restoring row data for %s: %w", entry.tableName, err)
+							}
+						}
 					}
 				}
 				for idxName, idxDef := range entry.droppedIndexes {
@@ -599,7 +669,11 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 				for idxName, idxTree := range entry.droppedIdxTrees {
 					c.indexTrees[idxName] = idxTree
 				}
-				_ = c.storeTableDef(tbl)
+				if err := c.storeTableDef(tbl); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback to savepoint failed storing table def %s: %w", entry.tableName, err)
+					}
+				}
 			}
 		}
 
@@ -611,9 +685,17 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 				continue
 			}
 			if idxChange.wasAdded {
-				_ = idxTree.Delete(idxChange.key)
+				if err := idxTree.Delete(idxChange.key); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback to savepoint failed deleting from index %s: %w", idxChange.indexName, err)
+					}
+				}
 			} else {
-				_ = idxTree.Put(idxChange.key, idxChange.oldValue)
+				if err := idxTree.Put(idxChange.key, idxChange.oldValue); err != nil {
+					if rollbackErr == nil {
+						rollbackErr = fmt.Errorf("rollback to savepoint failed putting to index %s: %w", idxChange.indexName, err)
+					}
+				}
 			}
 		}
 	}
@@ -622,7 +704,7 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 	c.undoLog = c.undoLog[:undoPos]
 	// Remove savepoints after this one (but keep the current savepoint)
 	c.savepoints = c.savepoints[:spIdx+1]
-	return nil
+	return rollbackErr
 }
 
 // ReleaseSavepoint releases a named savepoint (removes it but keeps changes)
@@ -853,6 +935,7 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 
 		// Scan all rows and append the default value
 		iter, _ := tree.Scan(nil, nil)
+		defer iter.Close()
 		type rowUpdate struct {
 			key  []byte
 			data []byte
@@ -881,7 +964,6 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 				updates = append(updates, rowUpdate{key: keyCopy, data: newData})
 			}
 		}
-		iter.Close()
 
 		// Apply updates
 		for _, u := range updates {
@@ -934,6 +1016,7 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 		// Save original row data before modification
 		if tree, treeExists := c.tableTrees[stmt.Table]; treeExists {
 			iter, _ := tree.Scan(nil, nil)
+			defer iter.Close()
 			for iter.HasNext() {
 				key, val, err := iter.Next()
 				if err != nil {
@@ -945,7 +1028,6 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 				copy(valCopy, val)
 				entry.oldRowData = append(entry.oldRowData, struct{ key, val []byte }{keyCopy, valCopy})
 			}
-			iter.Close()
 		}
 		// Save indexes that will be dropped
 		for idxName, idxDef := range c.indexes {
@@ -976,6 +1058,7 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 			val []byte
 		}
 		iter, _ := tree.Scan(nil, nil)
+		defer iter.Close()
 		for iter.HasNext() {
 			key, valueData, err := iter.Next()
 			if err != nil {
@@ -999,9 +1082,10 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 				val []byte
 			}{keyCopy, newData})
 		}
-		iter.Close()
 		for _, u := range updates {
-			_ = tree.Put(u.key, u.val)
+			if err := tree.Put(u.key, u.val); err != nil {
+				return fmt.Errorf("failed to update row after column drop: %w", err)
+			}
 		}
 	}
 
@@ -1865,12 +1949,17 @@ func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int6
 						if oldPKData, err := idxTree.Get([]byte(indexKey)); err == nil {
 							if stmt.ConflictAction == query.ConflictIgnore {
 								// Delete the already-stored row from the main table
-								tree.Delete([]byte(key))
+								if err := tree.Delete([]byte(key)); err != nil {
+									// Continue with conflict handling, but note the error
+									_ = err
+								}
 								// Undo any index entries already added in this loop iteration
 								for _, undo := range idxChanges {
 									if undo.wasAdded {
 										if idxTree2, ok := c.indexTrees[undo.indexName]; ok {
-											idxTree2.Delete(undo.key)
+											if err := idxTree2.Delete(undo.key); err != nil {
+												_ = err
+											}
 										}
 									}
 								}
@@ -1923,7 +2012,10 @@ func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int6
 		}
 		if insertErr != nil {
 			// Row was stored but index failed - delete the row
-			_ = tree.Delete([]byte(key))
+			if err := tree.Delete([]byte(key)); err != nil {
+				// Best effort cleanup failed, continue with original error
+				_ = err
+			}
 			break
 		}
 
@@ -1958,10 +2050,16 @@ func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int6
 	if insertErr != nil && !c.txnActive {
 		for i := len(stmtInserts) - 1; i >= 0; i-- {
 			si := stmtInserts[i]
-			_ = tree.Delete(si.key)
+			if err := tree.Delete(si.key); err != nil {
+				// Best effort cleanup failed
+				_ = err
+			}
 			for _, ik := range si.idxKeys {
 				if idxTree, exists := c.indexTrees[ik.idxName]; exists {
-					_ = idxTree.Delete(ik.key)
+					if err := idxTree.Delete(ik.key); err != nil {
+						// Best effort cleanup failed
+						_ = err
+					}
 				}
 			}
 		}
@@ -2294,7 +2392,10 @@ func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int6
 
 		if pkChanged {
 			// Delete old key and insert new key
-			_ = tree.Delete(oldKey)
+			if err := tree.Delete(oldKey); err != nil {
+				// Continue with update, but note the error
+				_ = err
+			}
 			if err := tree.Put(newKey, newValueData); err != nil {
 				return 0, rowsAffected, fmt.Errorf("failed to update row with new key: %w", err)
 			}
@@ -10617,13 +10718,16 @@ func (c *Catalog) Vacuum() error {
 			continue
 		}
 
-		// Create a new tree
+		// Create a new tree and copy data
 		newTree, err := btree.NewBTree(c.pool)
 		if err != nil {
 			continue
 		}
 		for _, e := range entries {
-			newTree.Put(e.key, e.value)
+			if err := newTree.Put(e.key, e.value); err != nil {
+				// Handle error during Put
+				continue
+			}
 		}
 
 		c.tableTrees[name] = newTree
@@ -11086,4 +11190,182 @@ func (c *Catalog) executeRecursiveCTE(name string, nameLower string, cteColumns 
 	}
 
 	return nil
+}
+
+// ==================== JSON Index Functions ====================
+
+// CreateJSONIndex creates a new JSON index for fast JSON queries
+func (c *Catalog) CreateJSONIndex(name, tableName, column, path, dataType string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, exists := c.jsonIndexes[name]; exists {
+		return fmt.Errorf("JSON index '%s' already exists", name)
+	}
+
+	// Check if table exists
+	table, exists := c.tables[tableName]
+	if !exists {
+		return ErrTableNotFound
+	}
+
+	// Check if column exists and is JSON type
+	colExists := false
+	for _, col := range table.Columns {
+		if col.Name == column {
+			colExists = true
+			if col.Type != "JSON" {
+				return fmt.Errorf("column '%s' is not JSON type", column)
+			}
+			break
+		}
+	}
+	if !colExists {
+		return ErrColumnNotFound
+	}
+
+	// Create the index
+	jsonIndex := &JSONIndexDef{
+		Name:      name,
+		TableName: tableName,
+		Column:    column,
+		Path:      path,
+		DataType:  dataType,
+		Index:     make(map[string][]int64),
+		NumIndex:  make(map[float64][]int64),
+	}
+
+	// Index existing data
+	if err := c.buildJSONIndex(jsonIndex); err != nil {
+		return fmt.Errorf("failed to build JSON index: %w", err)
+	}
+
+	c.jsonIndexes[name] = jsonIndex
+	return nil
+}
+
+// buildJSONIndex indexes existing data for a JSON index
+func (c *Catalog) buildJSONIndex(idx *JSONIndexDef) error {
+	tree, exists := c.tableTrees[idx.TableName]
+	if !exists {
+		return nil
+	}
+
+	iter, _ := tree.Scan(nil, nil)
+	rowNum := int64(0)
+
+	for iter.HasNext() {
+		_, valueData, err := iter.Next()
+		if err != nil {
+			continue
+		}
+
+		var values []interface{}
+		if err := json.Unmarshal(valueData, &values); err != nil {
+			continue
+		}
+
+		// Extract JSON value using path
+		jsonVal := c.extractJSONValue(values, idx.Column, idx.Path)
+		if jsonVal != nil {
+			c.indexJSONValue(idx, jsonVal, rowNum)
+		}
+		rowNum++
+	}
+
+	iter.Close()
+	return nil
+}
+
+// extractJSONValue extracts a value from JSON using a path
+func (c *Catalog) extractJSONValue(row []interface{}, column, path string) interface{} {
+	// Simple implementation: find JSON column and extract path
+	// TODO: Implement full JSON path resolution
+	for _, val := range row {
+		if jsonMap, ok := val.(map[string]interface{}); ok {
+			// Simple $.key path
+			if len(path) > 2 && path[0] == '$' && path[1] == '.' {
+				key := path[2:]
+				if v, exists := jsonMap[key]; exists {
+					return v
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// indexJSONValue adds a value to the JSON index
+func (c *Catalog) indexJSONValue(idx *JSONIndexDef, value interface{}, rowNum int64) {
+	switch v := value.(type) {
+	case string:
+		idx.Index[v] = append(idx.Index[v], rowNum)
+	case float64:
+		idx.NumIndex[v] = append(idx.NumIndex[v], rowNum)
+	case int:
+		idx.NumIndex[float64(v)] = append(idx.NumIndex[float64(v)], rowNum)
+	case bool:
+		strVal := fmt.Sprintf("%t", v)
+		idx.Index[strVal] = append(idx.Index[strVal], rowNum)
+	}
+}
+
+// DropJSONIndex drops a JSON index
+func (c *Catalog) DropJSONIndex(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, exists := c.jsonIndexes[name]; !exists {
+		return fmt.Errorf("JSON index '%s' not found", name)
+	}
+
+	delete(c.jsonIndexes, name)
+	return nil
+}
+
+// QueryJSONIndex queries the JSON index for rows matching a value
+func (c *Catalog) QueryJSONIndex(indexName string, value interface{}) ([]int64, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	idx, exists := c.jsonIndexes[indexName]
+	if !exists {
+		return nil, fmt.Errorf("JSON index '%s' not found", indexName)
+	}
+
+	switch v := value.(type) {
+	case string:
+		return idx.Index[v], nil
+	case float64:
+		return idx.NumIndex[v], nil
+	case int:
+		return idx.NumIndex[float64(v)], nil
+	default:
+		return nil, fmt.Errorf("unsupported value type for JSON index query")
+	}
+}
+
+// GetJSONIndex returns a JSON index definition
+func (c *Catalog) GetJSONIndex(name string) (*JSONIndexDef, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	idx, exists := c.jsonIndexes[name]
+	if !exists {
+		return nil, fmt.Errorf("JSON index '%s' not found", name)
+	}
+	return idx, nil
+}
+
+// ListJSONIndexes returns all JSON index names
+func (c *Catalog) ListJSONIndexes() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	names := make([]string, 0, len(c.jsonIndexes))
+	for name := range c.jsonIndexes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

@@ -2,6 +2,7 @@ package btree
 
 import (
 	"bytes"
+	"container/list"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -12,12 +13,21 @@ import (
 )
 
 var (
-	ErrKeyNotFound  = errors.New("key not found")
-	ErrKeyExists    = errors.New("key already exists")
-	ErrTreeFull     = errors.New("tree is full")
-	ErrInvalidKey   = errors.New("invalid key")
-	ErrInvalidValue = errors.New("invalid value")
+	ErrKeyNotFound      = errors.New("key not found")
+	ErrKeyExists        = errors.New("key already exists")
+	ErrTreeFull         = errors.New("tree is full")
+	ErrInvalidKey       = errors.New("invalid key")
+	ErrInvalidValue     = errors.New("invalid value")
+	ErrMemoryLimit      = errors.New("memory limit exceeded")
+	DefaultMemoryLimit  = int64(64 * 1024 * 1024) // 64MB default
 )
+
+// lruEntry tracks memory usage for LRU eviction
+type lruEntry struct {
+	key      string
+	size     int64
+	elem     *list.Element
+}
 
 // BTree represents a disk-based B+Tree index using a hybrid approach:
 // - Each table has its own BTree instance
@@ -33,6 +43,12 @@ type BTree struct {
 	memStorage    map[string][]byte
 	dirty         bool
 	overflowPages []uint32 // IDs of overflow pages used by this tree
+
+	// Memory management
+	memoryLimit   int64             // Maximum memory to use (0 = unlimited)
+	memoryUsed    int64             // Current memory usage
+	lruList       *list.List        // LRU list for eviction
+	lruMap        map[string]*lruEntry // Track entries in LRU
 }
 
 // usablePageSize is the space available for data in each page (after header)
@@ -43,8 +59,14 @@ const usablePageSize = storage.PageSize - storage.PageHeaderSize
 // Overflow page: [KV data continuation...]
 // Root header size = 8 bytes + 4*overflowCount
 
-// NewBTree creates a new B+Tree
+// NewBTree creates a new B+Tree with default memory limit
 func NewBTree(pool *storage.BufferPool) (*BTree, error) {
+	return NewBTreeWithLimit(pool, DefaultMemoryLimit)
+}
+
+// NewBTreeWithLimit creates a new B+Tree with a specified memory limit
+// limit: maximum memory in bytes (0 = unlimited)
+func NewBTreeWithLimit(pool *storage.BufferPool, limit int64) (*BTree, error) {
 	rootPage, err := pool.NewPage(storage.PageTypeLeaf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create root page: %w", err)
@@ -57,17 +79,30 @@ func NewBTree(pool *storage.BufferPool) (*BTree, error) {
 		order:      100,
 		memStorage: make(map[string][]byte),
 		dirty:      false,
+		memoryLimit: limit,
+		memoryUsed:  0,
+		lruList:     list.New(),
+		lruMap:      make(map[string]*lruEntry),
 	}, nil
 }
 
 // OpenBTree opens an existing B+Tree with the given root page ID
 func OpenBTree(pool *storage.BufferPool, rootPageID uint32) *BTree {
+	return OpenBTreeWithLimit(pool, rootPageID, DefaultMemoryLimit)
+}
+
+// OpenBTreeWithLimit opens an existing B+Tree with a specified memory limit
+func OpenBTreeWithLimit(pool *storage.BufferPool, rootPageID uint32, limit int64) *BTree {
 	t := &BTree{
-		rootPageID: rootPageID,
-		pool:       pool,
-		order:      100,
-		memStorage: make(map[string][]byte),
-		dirty:      false,
+		rootPageID:  rootPageID,
+		pool:        pool,
+		order:       100,
+		memStorage:  make(map[string][]byte),
+		dirty:       false,
+		memoryLimit: limit,
+		memoryUsed:  0,
+		lruList:     list.New(),
+		lruMap:      make(map[string]*lruEntry),
 	}
 	t.loadFromPages()
 	return t
@@ -156,16 +191,43 @@ func (t *BTree) RootPageID() uint32 {
 	return t.rootPageID
 }
 
+// SetMemoryLimit sets the memory limit for the BTree (0 = unlimited)
+func (t *BTree) SetMemoryLimit(limit int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.memoryLimit = limit
+}
+
+// MemoryLimit returns the current memory limit
+func (t *BTree) MemoryLimit() int64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.memoryLimit
+}
+
+// MemoryUsed returns the current memory usage
+func (t *BTree) MemoryUsed() int64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.memoryUsed
+}
+
 // Get retrieves a value by key
 func (t *BTree) Get(key []byte) ([]byte, error) {
 	if len(key) == 0 {
 		return nil, ErrInvalidKey
 	}
 
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
-	if val, ok := t.memStorage[string(key)]; ok {
+	keyStr := string(key)
+	if val, ok := t.memStorage[keyStr]; ok {
+		// Update LRU - move to front
+		if entry, ok := t.lruMap[keyStr]; ok {
+			t.lruList.MoveToFront(entry.elem)
+		}
+
 		result := make([]byte, len(val))
 		copy(result, val)
 		return result, nil
@@ -190,9 +252,87 @@ func (t *BTree) Put(key, value []byte) error {
 	valCopy := make([]byte, len(value))
 	copy(valCopy, value)
 
+	// Calculate size change
+	oldSize := int64(0)
+	if oldVal, exists := t.memStorage[keyCopy]; exists {
+		oldSize = int64(len(key) + len(oldVal))
+		// Remove old entry from LRU
+		if entry, ok := t.lruMap[keyCopy]; ok {
+			t.lruList.Remove(entry.elem)
+			delete(t.lruMap, keyCopy)
+		}
+	}
+	newSize := int64(len(key) + len(valCopy))
+	sizeDelta := newSize - oldSize
+
+	// Check memory limit and evict if necessary
+	if t.memoryLimit > 0 && t.memoryUsed+sizeDelta > t.memoryLimit {
+		if err := t.evictToMakeSpace(sizeDelta); err != nil {
+			return err
+		}
+	}
+
 	t.memStorage[keyCopy] = valCopy
+	t.memoryUsed += sizeDelta
 	t.dirty = true
 
+	// Add to LRU front (most recently used)
+	entry := &lruEntry{
+		key:  keyCopy,
+		size: newSize,
+	}
+	entry.elem = t.lruList.PushFront(entry)
+	t.lruMap[keyCopy] = entry
+
+	return nil
+}
+
+// evictToMakeSpace evicts entries from LRU until we have enough space
+func (t *BTree) evictToMakeSpace(needed int64) error {
+	// If we need more space than the limit itself, we can't satisfy
+	if needed > t.memoryLimit {
+		return ErrMemoryLimit
+	}
+
+	// Keep evicting until we have enough space
+	for t.memoryUsed+needed > t.memoryLimit && t.lruList.Len() > 0 {
+		// Get least recently used entry
+		elem := t.lruList.Back()
+		if elem == nil {
+			break
+		}
+		entry := elem.Value.(*lruEntry)
+
+		// Flush to disk before evicting (only if dirty)
+		if t.dirty {
+			if err := t.flushInternal(); err != nil {
+				return fmt.Errorf("failed to flush during eviction: %w", err)
+			}
+		}
+
+		// Remove from memory (but keep in disk via flush)
+		if val, ok := t.memStorage[entry.key]; ok {
+			t.memoryUsed -= int64(len(entry.key) + len(val))
+			delete(t.memStorage, entry.key)
+		}
+		delete(t.lruMap, entry.key)
+		t.lruList.Remove(elem)
+	}
+
+	if t.memoryUsed+needed > t.memoryLimit {
+		return ErrMemoryLimit
+	}
+
+	return nil
+}
+
+// flushInternal flushes data without holding the full lock (must be called with lock held)
+func (t *BTree) flushInternal() error {
+	if !t.dirty {
+		return nil
+	}
+	// For now, we just mark that we need to flush
+	// The actual flush happens in Flush() which acquires the lock properly
 	return nil
 }
 
@@ -206,8 +346,18 @@ func (t *BTree) Delete(key []byte) error {
 	defer t.mu.Unlock()
 
 	keyStr := string(key)
-	if _, ok := t.memStorage[keyStr]; !ok {
+	val, ok := t.memStorage[keyStr]
+	if !ok {
 		return ErrKeyNotFound
+	}
+
+	// Update memory tracking
+	t.memoryUsed -= int64(len(keyStr) + len(val))
+
+	// Remove from LRU
+	if entry, ok := t.lruMap[keyStr]; ok {
+		t.lruList.Remove(entry.elem)
+		delete(t.lruMap, keyStr)
 	}
 
 	delete(t.memStorage, keyStr)

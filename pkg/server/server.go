@@ -42,9 +42,10 @@ type Config struct {
 	RequireAuth      bool
 	DefaultAdminUser string
 	DefaultAdminPass string
-	MaxConnections   int // Maximum concurrent connections (0 = unlimited)
-	ReadTimeout      int // Read timeout in seconds (0 = 300s default)
-	WriteTimeout     int // Write timeout in seconds (0 = 60s default)
+	MaxConnections   int           // Maximum concurrent connections (0 = unlimited)
+	ReadTimeout      int           // Read timeout in seconds (0 = 300s default)
+	WriteTimeout     int           // Write timeout in seconds (0 = 60s default)
+	TLS              *TLSConfig    // TLS configuration (nil = disabled)
 }
 
 // DefaultConfig returns the default server configuration
@@ -98,10 +99,20 @@ func New(db *engine.DB, config *Config) (*Server, error) {
 }
 
 // Listen starts the server on the given address
-func (s *Server) Listen(address string) error {
+func (s *Server) Listen(address string, tlsConfig *TLSConfig) error {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
+	}
+
+	// Wrap with TLS if configured
+	if tlsConfig != nil && tlsConfig.Enabled {
+		tlsConf, err := LoadTLSConfig(tlsConfig)
+		if err != nil {
+			listener.Close()
+			return fmt.Errorf("failed to load TLS config: %w", err)
+		}
+		listener = GetTLSListener(listener, tlsConf)
 	}
 
 	s.listener = listener

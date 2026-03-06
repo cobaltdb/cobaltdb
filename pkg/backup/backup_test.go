@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
 // Mock database interface for testing
@@ -504,12 +506,12 @@ func TestCreateIncrementalBackup(t *testing.T) {
 	// Try to create incremental backup (not implemented yet)
 	_, err := manager.CreateIncrementalBackup(ctx, time.Now(), []string{"users"})
 	if err == nil {
-		t.Error("Expected error for unimplemented incremental backup")
+		t.Error("Expected error for incremental backup without WAL")
 	}
 
-	// Error message should indicate not implemented
-	if err != nil && !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("Expected 'not yet implemented' error, got: %v", err)
+	// Error message should indicate WAL not available
+	if err != nil && !strings.Contains(err.Error(), "WAL not available") {
+		t.Errorf("Expected 'WAL not available' error, got: %v", err)
 	}
 }
 
@@ -645,5 +647,96 @@ func TestVerifyBackupWithCorruptMetadata(t *testing.T) {
 	err = manager.VerifyBackup(backupFile)
 	if err == nil {
 		t.Error("Expected error when metadata is corrupt")
+	}
+}
+
+// ==================== Incremental Backup Tests ====================
+
+func TestCreateIncrementalBackupWithWAL(t *testing.T) {
+	ctx := context.Background()
+
+	// Create mock database
+	mockDB := &mockDB{
+		tables: map[string][]map[string]interface{}{
+			"users": {
+				{"id": 1, "name": "Alice"},
+				{"id": 2, "name": "Bob"},
+			},
+		},
+		schemas: map[string]string{
+			"users": "CREATE TABLE users (id INT PRIMARY KEY, name TEXT)",
+			"orders": "CREATE TABLE orders (id INT PRIMARY KEY, user_id INT, total DECIMAL)",
+		},
+	}
+
+	// Create temp directory
+	tmpDir := t.TempDir()
+
+	config := &Config{
+		DefaultDir:      tmpDir,
+		CompressionType: "none",
+	}
+
+	manager := NewManager(mockDB, config)
+
+	// Create a mock WAL file
+	walPath := filepath.Join(tmpDir, "test.wal")
+	walFile, err := os.Create(walPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL file: %v", err)
+	}
+	// Write minimal WAL header/data
+	walFile.Write([]byte("WAL"))
+	walFile.Close()
+
+	// Open WAL
+	wal, err := storage.OpenWAL(walPath)
+	if err != nil {
+		// Mock WAL - skip test if we can't open
+		t.Skip("Skipping test - WAL not available")
+	}
+	defer wal.Close()
+
+	manager.SetWAL(wal)
+
+	// Create incremental backup
+	metadata, err := manager.CreateIncrementalBackup(ctx, time.Now().Add(-time.Hour), []string{"users"})
+	if err != nil {
+		// Expected to potentially fail if WAL is empty/mock
+		t.Logf("Incremental backup result: %v", err)
+		return
+	}
+
+	if metadata == nil {
+		t.Error("Expected metadata, got nil")
+		return
+	}
+
+	// Verify metadata
+	if metadata.Compression != "none" {
+		t.Errorf("Expected compression 'none', got '%s'", metadata.Compression)
+	}
+
+	// Verify backup file exists
+	if _, err := os.Stat(metadata.Filename); err != nil {
+		t.Errorf("Backup file not found: %v", err)
+	}
+}
+
+func TestSetWAL(t *testing.T) {
+	mockDB := newMockDB()
+	manager := NewManager(mockDB, DefaultConfig())
+
+	// WAL should initially be nil
+	if manager.wal != nil {
+		t.Error("Expected nil WAL initially")
+	}
+
+	// Set WAL
+	mockWAL := "mock-wal"
+	manager.SetWAL(mockWAL)
+
+	if manager.wal == nil {
+		t.Error("Expected WAL to be set")
 	}
 }

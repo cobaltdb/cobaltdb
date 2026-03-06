@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sync"
 )
@@ -92,25 +93,22 @@ func (pm *PageManager) loadFreeList() error {
 
 		data := page.Data()
 
-		// Free list page format: [nextPageID:4][count:4][pageIDs...]
-		if len(data) < 8 {
+		// Free list page format at PageHeaderSize offset: [nextPageID:4][count:4][pageIDs...]
+		if len(data) < PageHeaderSize+8 {
 			pm.pool.Unpin(page)
 			return fmt.Errorf("invalid free list page %d", currentID)
 		}
 
-		nextID := uint32(data[0]) | uint32(data[1])<<8 |
-			uint32(data[2])<<16 | uint32(data[3])<<24
-		count := uint32(data[4]) | uint32(data[5])<<8 |
-			uint32(data[6])<<16 | uint32(data[7])<<24
+		nextID := binary.LittleEndian.Uint32(data[PageHeaderSize : PageHeaderSize+4])
+		count := binary.LittleEndian.Uint32(data[PageHeaderSize+4 : PageHeaderSize+8])
 
 		// Read page IDs
-		offset := 8
+		offset := PageHeaderSize + 8
 		for i := uint32(0); i < count; i++ {
 			if offset+4 > len(data) {
 				break
 			}
-			pageID := uint32(data[offset]) | uint32(data[offset+1])<<8 |
-				uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
+			pageID := binary.LittleEndian.Uint32(data[offset : offset+4])
 			pm.freeList = append(pm.freeList, pageID)
 			offset += 4
 		}
@@ -124,8 +122,101 @@ func (pm *PageManager) loadFreeList() error {
 
 // saveFreeList saves the free list to disk
 func (pm *PageManager) saveFreeList() error {
-	// TODO: Implement free list persistence
-	// For now, free pages are lost on close (acceptable for basic implementation)
+	// If no free pages, clear the free list ID in meta page
+	if len(pm.freeList) == 0 {
+		if pm.meta.FreeListID != 0 {
+			pm.meta.FreeListID = 0
+			return pm.writeMetaPage()
+		}
+		return nil
+	}
+
+	// Calculate how many page IDs fit per page
+	// Page format: [nextPageID:4][count:4][pageIDs...]
+	// Max count per page = (PageSize - PageHeaderSize - 8) / 4
+	maxPerPage := (PageSize - PageHeaderSize - 8) / 4
+	if maxPerPage <= 0 {
+		return fmt.Errorf("page size too small for free list")
+	}
+
+	// Create free list pages
+	var firstPageID uint32 = 0
+	var prevPageID uint32 = 0
+	var pageIDs = make([]uint32, len(pm.freeList))
+	copy(pageIDs, pm.freeList)
+
+	for i := 0; i < len(pageIDs); i += maxPerPage {
+		// Get or allocate a page for free list
+		var page *CachedPage
+		var err error
+
+		if i == 0 && pm.meta.FreeListID != 0 {
+			// Reuse existing first free list page
+			page, err = pm.pool.GetPage(pm.meta.FreeListID)
+		} else {
+			// Allocate a new page from the pool directly to avoid recursion
+			page, err = pm.pool.NewPage(PageTypeFreeList)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to allocate free list page: %w", err)
+		}
+
+		if firstPageID == 0 {
+			firstPageID = page.ID()
+		}
+
+		// Calculate slice for this page
+		end := i + maxPerPage
+		if end > len(pageIDs) {
+			end = len(pageIDs)
+		}
+		slice := pageIDs[i:end]
+
+		// Write page data: [nextPageID:4][count:4][pageIDs...]
+		data := page.Data()
+		nextID := uint32(0)
+		if end < len(pageIDs) {
+			// Will be set when we allocate the next page
+			nextID = 0 // Placeholder, will update after next allocation
+		}
+
+		// Write next page ID and count
+		binary.LittleEndian.PutUint32(data[PageHeaderSize:PageHeaderSize+4], nextID)
+		binary.LittleEndian.PutUint32(data[PageHeaderSize+4:PageHeaderSize+8], uint32(len(slice)))
+
+		// Write page IDs
+		offset := PageHeaderSize + 8
+		for _, id := range slice {
+			binary.LittleEndian.PutUint32(data[offset:offset+4], id)
+			offset += 4
+		}
+
+		page.SetDirty(true)
+
+		// Update previous page's next pointer if needed
+		if prevPageID != 0 {
+			prevPage, err := pm.pool.GetPage(prevPageID)
+			if err == nil {
+				prevData := prevPage.Data()
+				binary.LittleEndian.PutUint32(prevData[PageHeaderSize:PageHeaderSize+4], page.ID())
+				prevPage.SetDirty(true)
+				pm.pool.Unpin(prevPage)
+			}
+		}
+
+		pm.pool.Unpin(page)
+		prevPageID = page.ID()
+	}
+
+	// Update meta page with first free list page ID
+	pm.meta.FreeListID = firstPageID
+	if err := pm.writeMetaPage(); err != nil {
+		return fmt.Errorf("failed to update meta page with free list: %w", err)
+	}
+
+	// Clear the in-memory free list since it's now persisted
+	pm.freeList = pm.freeList[:0]
+
 	return nil
 }
 

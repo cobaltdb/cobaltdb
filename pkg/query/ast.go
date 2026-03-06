@@ -295,6 +295,7 @@ type TableRef struct {
 	Alias        string
 	Subquery     *SelectStmt // non-nil for derived tables: FROM (SELECT ...) AS alias
 	SubqueryStmt Statement   // non-nil for derived tables with UNION: FROM (SELECT ... UNION ...) AS alias
+	IndexHint    string      // hint for index usage (e.g., "auto", "primary", "idx_name")
 }
 
 // JoinClause represents a JOIN clause

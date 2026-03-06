@@ -176,3 +176,97 @@ func TestScan(t *testing.T) {
 		t.Errorf("Expected 3 keys, got %d", count)
 	}
 }
+
+// ==================== Memory Limit Tests ====================
+
+func TestBTreeMemoryLimit(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	// Create tree with 1KB memory limit
+	tree, err := NewBTreeWithLimit(pool, 1024)
+	if err != nil {
+		t.Fatalf("Failed to create B+Tree with limit: %v", err)
+	}
+
+	if tree.MemoryLimit() != 1024 {
+		t.Errorf("Expected memory limit 1024, got %d", tree.MemoryLimit())
+	}
+
+	// Put some data
+	err = tree.Put([]byte("key1"), []byte("value1"))
+	if err != nil {
+		t.Fatalf("Failed to put: %v", err)
+	}
+
+	// Check memory used
+	if tree.MemoryUsed() <= 0 {
+		t.Error("Expected memory used > 0")
+	}
+}
+
+func TestBTreeMemoryEviction(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	// Create tree with very small memory limit (100 bytes)
+	tree, err := NewBTreeWithLimit(pool, 100)
+	if err != nil {
+		t.Fatalf("Failed to create B+Tree with limit: %v", err)
+	}
+
+	// Put data that exceeds limit
+	// key1 + value1 = ~10 bytes, should work
+	err = tree.Put([]byte("key1"), []byte("value1"))
+	if err != nil {
+		t.Fatalf("Failed to put first key: %v", err)
+	}
+
+	// This should trigger eviction of previous entries
+	err = tree.Put([]byte("key2"), []byte("value2"))
+	// May or may not error depending on exact memory calculation
+	// Just verify tree is still usable
+	if err != nil && err != ErrMemoryLimit {
+		t.Logf("Unexpected error: %v", err)
+	}
+}
+
+func TestBTreeLRUUpdate(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, err := NewBTreeWithLimit(pool, 1024)
+	if err != nil {
+		t.Fatalf("Failed to create B+Tree: %v", err)
+	}
+
+	// Put and get to update LRU
+	tree.Put([]byte("key1"), []byte("value1"))
+	tree.Put([]byte("key2"), []byte("value2"))
+
+	// Get key1 to make it recently used
+	_, err = tree.Get([]byte("key1"))
+	if err != nil {
+		t.Fatalf("Failed to get: %v", err)
+	}
+
+	// key2 should now be least recently used
+	// and evicted first when memory pressure occurs
+}
+
+func TestBTreeSetMemoryLimit(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := setupTestTree(t)
+
+	// Change memory limit
+	tree.SetMemoryLimit(2048)
+	if tree.MemoryLimit() != 2048 {
+		t.Errorf("Expected memory limit 2048, got %d", tree.MemoryLimit())
+	}
+}

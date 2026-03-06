@@ -5,6 +5,150 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.2.0] - 2026-03-07
+
+### 🎉 Major Security Release
+
+### Added
+
+#### Enterprise Security Features
+
+- **🔐 Encryption at Rest** (`pkg/storage/encryption.go`)
+  - AES-256-GCM authenticated encryption
+  - Argon2id and PBKDF2 key derivation
+  - Transparent encryption/decryption for storage layer
+  - `EncryptedBackend` wrapper for seamless integration
+  - `GenerateSecureKey()` for secure key generation
+  - Encryption header with metadata support
+
+- **🔒 TLS Support** (`pkg/server/tls.go`)
+  - TLS 1.2/1.3 support with secure cipher suites
+  - Self-signed certificate auto-generation
+  - Client certificate authentication
+  - Certificate validation and verification
+  - `LoadTLSConfig()` and `GetTLSListener()` helpers
+
+- **📝 Audit Logging** (`pkg/audit/logger.go`)
+  - JSON and text format support
+  - Async batching for performance (100ms flush)
+  - Automatic log rotation (100MB default)
+  - Event types: Query, Auth, DDL, DML, System
+  - Configurable via `audit.Config`
+
+- **🛡️ Row-Level Security (RLS)** (`pkg/security/rls.go`)
+  - Policy-based access control
+  - User and role-based filtering
+  - SQL expression evaluation support
+  - `Manager` for policy lifecycle management
+  - Context-based row filtering
+
+- **⚡ Write Performance Improvements** (`pkg/storage/wal_batch.go`)
+  - `BatchedWAL`: 100 kayıt/10ms batch işleme
+  - `AsyncWAL`: Asenkron WAL yazma
+  - Background flusher ile yüksek throughput
+  - >1000 yazma/sn hedefi için optimize edildi
+
+- **🎯 Query Optimizer** (`pkg/query/optimizer.go`)
+  - Cost-based query optimization
+  - Join order optimization with selectivity estimates
+  - Index usage analysis
+  - `Explain()` ile execution plan görüntüleme
+  - Statistics-based cardinality estimation
+
+### Integration
+
+- Engine encryption integration (`pkg/engine/database.go`)
+  - `Options.EncryptionKey` ve `Options.EncryptionConfig`
+  - Otomatik şifreleme backend wrapper'ı
+
+- Engine audit logging integration (`pkg/engine/database.go`)
+  - `Options.AuditConfig` ile audit logger başlatma
+  - DML ve DDL işlemlerinde otomatik log
+
+- Server TLS integration (`pkg/server/server.go`)
+  - `Config.TLS` ile TLS yapılandırması
+  - `Listen()` metodunda TLS desteği
+
+### Test Coverage
+
+| Package | Tests | Status |
+|---------|-------|--------|
+| `pkg/audit` | 5 test | ✅ Passing |
+| `pkg/security` | 22 test | ✅ Passing |
+| `pkg/storage` | 40+ encryption tests | ✅ Passing |
+| `pkg/server` | TLS tests | ✅ Passing |
+
+### Documentation
+
+- README güncellendi: Güvenlik özellikleri karşılaştırma tablosu
+- Yeni "Security Features" bölümü eklendi
+- Kod örnekleri ve kullanım kılavuzları
+
+---
+
+## [v2.1.1] - 2026-03-07
+
+### Production Hardening - Critical Bug Fixes
+
+#### Fixed
+- **CRITICAL: Data Corruption in Page Manager** (`pkg/storage/pagemgr.go`)
+  - `loadFreeList()` was reading from offset 0 instead of `PageHeaderSize`
+  - Could cause free list corruption and infinite loops
+  - Fixed to use correct offset: `data[PageHeaderSize:PageHeaderSize+4]`
+
+- **CRITICAL: Transaction Resource Leak** (`pkg/engine/database.go`)
+  - `Tx.Commit()` and `Tx.Rollback()` not releasing connections
+  - Caused connection pool exhaustion after ~100 transactions
+  - Added `defer tx.db.releaseConnection()` to both methods
+
+- **CRITICAL: No Panic Recovery** (`pkg/engine/database.go`)
+  - Any unexpected panic would crash the entire database server
+  - Added panic recovery with stack traces to `Exec()` and `Query()`
+  - Server now logs and returns error instead of crashing
+
+- **HIGH: Iterator Resource Leaks** (`pkg/catalog/catalog.go`)
+  - Multiple locations where BTree iterators weren't closed on error paths
+  - Affected: `AlterTableAddColumn`, `AlterTableDropColumn` (2 locations)
+  - Fixed by adding `defer iter.Close()` immediately after creation
+
+- **HIGH: Statement Cache Race Condition** (`pkg/engine/database.go`)
+  - LRU update in goroutine could race with eviction
+  - Made update synchronous with proper locking
+
+- **HIGH: Double RUnlock Panic** (`pkg/engine/database.go`)
+  - Refactoring left extra `RUnlock()` call
+  - Removed duplicate `db.stmtMu.RUnlock()`
+
+- **MEDIUM: Nil Context Panic** (`pkg/engine/database.go`)
+  - `ctx.Done()` on nil context causes panic
+  - Added `if ctx != nil` checks before context operations
+
+- **MEDIUM: Parser Error Ignored** (`pkg/query/parser.go`)
+  - CREATE PROCEDURE parameters not being appended
+  - Added `stmt.Params = append(stmt.Params, param)`
+
+- **MEDIUM: Rollback Error Ignored** (`pkg/catalog/catalog.go`)
+  - Rollback errors were silently ignored
+  - Added `rollbackErr` variable to collect errors
+
+### Added
+- **Production Readiness Documentation**
+  - `PRODUCTION_READINESS.md`: Complete production deployment guide
+  - `TECHNICAL_ARCHITECTURE.md`: Detailed architecture documentation
+  - Performance benchmarks and comparisons
+  - Security considerations and deployment checklist
+
+### Security
+- Added panic recovery prevents DoS via malformed queries
+- All public API methods now have panic recovery
+
+### Documentation
+- Updated README with current benchmarks
+- Added known limitations section
+- Documented single-writer concurrency model
+
+---
+
 ## [v2.1.0] - 2026-03-06
 
 ### Added
