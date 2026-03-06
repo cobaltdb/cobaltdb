@@ -272,6 +272,11 @@ func (db *DB) createNew() error {
 	// Initialize catalog
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
 
+	// Enable RLS if configured
+	if db.options.EnableRLS {
+		db.catalog.EnableRLS()
+	}
+
 	// Initialize transaction manager
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
 
@@ -338,6 +343,11 @@ func (db *DB) loadExisting() error {
 
 	// Load catalog - schema and data are now stored in the B+Tree pages
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
+
+	// Enable RLS if configured
+	if db.options.EnableRLS {
+		db.catalog.EnableRLS()
+	}
 
 	// Load catalog metadata from the B+Tree
 	if err := db.catalog.Load(); err != nil {

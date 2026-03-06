@@ -15,6 +15,7 @@ import (
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
@@ -195,6 +196,9 @@ type Catalog struct {
 	txnActive         bool                                  // Is a transaction active
 	undoLog           []undoEntry                           // Undo log for transaction rollback
 	savepoints        []savepointEntry                     // Stack of savepoints
+	rlsManager        *security.Manager                     // Row-level security manager
+	enableRLS         bool                                  // Enable row-level security
+	rlsPolicies       map[string]*security.Policy           // RLS policies: key = "table:policyName"
 }
 
 // savepointEntry records a named savepoint with its undo log position
@@ -226,8 +230,55 @@ func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog
 		ftsIndexes:        make(map[string]*FTSIndexDef),
 		jsonIndexes:       make(map[string]*JSONIndexDef),
 		stats:             make(map[string]*StatsTableStats),
+		rlsPolicies:       make(map[string]*security.Policy),
 		keyCounter:        0,
 	}
+}
+
+// EnableRLS enables row-level security and initializes the RLS manager
+func (c *Catalog) EnableRLS() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.enableRLS = true
+	c.rlsManager = security.NewManager()
+}
+
+// GetRLSManager returns the RLS manager
+func (c *Catalog) GetRLSManager() *security.Manager {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.rlsManager
+}
+
+// IsRLSEnabled checks if RLS is enabled
+func (c *Catalog) IsRLSEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.enableRLS
+}
+
+// CreateRLSPolicy creates a row-level security policy
+func (c *Catalog) CreateRLSPolicy(policy *security.Policy) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.enableRLS {
+		return errors.New("row-level security is not enabled")
+	}
+
+	return c.rlsManager.CreatePolicy(policy)
+}
+
+// DropRLSPolicy drops a row-level security policy
+func (c *Catalog) DropRLSPolicy(tableName, policyName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.enableRLS {
+		return errors.New("row-level security is not enabled")
+	}
+
+	return c.rlsManager.DropPolicy(tableName, policyName)
 }
 
 // SetWAL sets the WAL for the catalog
@@ -11368,4 +11419,97 @@ func (c *Catalog) ListJSONIndexes() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// ApplyRLSFilter applies row-level security filtering to rows
+// Returns only rows that pass the RLS policies for the given user
+func (c *Catalog) ApplyRLSFilter(tableName string, columns []string, rows [][]interface{}, user string, roles []string) ([]string, [][]interface{}, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if !c.enableRLS || c.rlsManager == nil {
+		return columns, rows, nil
+	}
+
+	if !c.rlsManager.IsEnabled(tableName) {
+		return columns, rows, nil
+	}
+
+	// Convert rows to map format for RLS evaluation
+	mapRows := make([]map[string]interface{}, len(rows))
+	for i, row := range rows {
+		mapRow := make(map[string]interface{})
+		for j, col := range columns {
+			if j < len(row) {
+				mapRow[col] = row[j]
+			}
+		}
+		mapRows[i] = mapRow
+	}
+
+	// Apply RLS filtering
+	filtered, err := c.rlsManager.FilterRows(context.Background(), tableName, security.PolicySelect, mapRows, user, roles)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Convert back to row format
+	filteredRows := make([][]interface{}, len(filtered))
+	for i, mapRow := range filtered {
+		row := make([]interface{}, len(columns))
+		for j, col := range columns {
+			row[j] = mapRow[col]
+		}
+		filteredRows[i] = row
+	}
+
+	return columns, filteredRows, nil
+}
+
+// CheckRLSForInsert checks if a row can be inserted based on RLS policies
+func (c *Catalog) CheckRLSForInsert(tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if !c.enableRLS || c.rlsManager == nil {
+		return true, nil
+	}
+
+	if !c.rlsManager.IsEnabled(tableName) {
+		return true, nil
+	}
+
+	return c.rlsManager.CheckAccess(context.Background(), tableName, security.PolicyInsert, row, user, roles)
+}
+
+// CheckRLSForUpdate checks if a row can be updated based on RLS policies
+func (c *Catalog) CheckRLSForUpdate(tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if !c.enableRLS || c.rlsManager == nil {
+		return true, nil
+	}
+
+	if !c.rlsManager.IsEnabled(tableName) {
+		return true, nil
+	}
+
+	return c.rlsManager.CheckAccess(context.Background(), tableName, security.PolicyUpdate, row, user, roles)
+}
+
+// CheckRLSForDelete checks if a row can be deleted based on RLS policies
+func (c *Catalog) CheckRLSForDelete(tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if !c.enableRLS || c.rlsManager == nil {
+		return true, nil
+	}
+
+	if !c.rlsManager.IsEnabled(tableName) {
+		return true, nil
+	}
+
+	return c.rlsManager.CheckAccess(context.Background(), tableName, security.PolicyDelete, row, user, roles)
 }
