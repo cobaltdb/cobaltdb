@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/Version-2.0.0-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
-  <img src="https://img.shields.io/badge/Coverage-79.0%25-brightgreen?style=for-the-badge" alt="Test Coverage">
+  <img src="https://img.shields.io/badge/Coverage-59.7%25-yellow?style=for-the-badge" alt="Test Coverage">
 </p>
 
 <p align="center">
@@ -357,21 +357,21 @@ go run cmd/demo/main.go
 
 | Package | Coverage | Status |
 |---------|----------|--------|
-| `pkg/auth` | 98.6% | ✅ |
+| `pkg/auth` | 95.6% | ✅ |
 | `pkg/wire` | 94.7% | ✅ |
-| `pkg/metrics` | 93.8% | ✅ |
-| `pkg/engine` | 90.3% | ✅ |
-| `pkg/btree` | 87.3% | ✅ |
-| `pkg/replication` | 87.2% | ✅ |
-| `pkg/query` | 85.7% | ✅ |
+| `pkg/metrics` | 97.7% | ✅ |
+| `pkg/txn` | 88.1% | ✅ |
+| `pkg/backup` | 87.7% | ✅ |
+| `pkg/replication` | 87.3% | ✅ |
 | `pkg/json` | 84.4% | ✅ |
-| `pkg/txn` | 81.9% | ✅ |
-| `pkg/storage` | 81.4% | ✅ |
-| `pkg/backup` | 78.1% | ✅ |
-| `pkg/server` | 77.8% | ✅ |
-| `pkg/catalog` | 74.8% | ✅ |
-| `pkg/protocol` | 74.7% | ✅ |
-| **Total** | **80.9%** | ✅ |
+| `pkg/storage` | 82.5% | ✅ |
+| `pkg/protocol` | 79.2% | ✅ |
+| `pkg/query` | 75.6% | ✅ |
+| `pkg/btree` | 73.2% | ✅ |
+| `pkg/server` | 68.6% | ✅ |
+| `pkg/catalog` | 55.0% | ✅ |
+| `pkg/engine` | 49.9% | ✅ |
+| **Total** | **59.7%** | ✅ |
 
 > 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
 
@@ -404,27 +404,13 @@ go run cmd/demo/main.go
 - [x] **Constraints** - PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK, NOT NULL
 - [x] **MySQL Protocol** - Wire-compatible MySQL protocol support
 
-### ✅ Completed Features (v1.6)
-
-- [x] **Common Table Expressions** - WITH clause support for recursive and non-recursive CTEs
-- [x] **VACUUM** - Database compaction and storage reclamation
-- [x] **ANALYZE** - Table statistics collection for query optimization
-
 ### ✅ Completed Features (v2.0)
 
 - [x] **Full-Text Search** - MATCH ... AGAINST syntax with inverted indexes
 - [x] **Materialized Views** - CREATE MATERIALIZED VIEW, REFRESH, and DROP support
-
-### ✅ Completed Features (v1.6)
-
 - [x] **Common Table Expressions** - WITH clause support for recursive and non-recursive CTEs
 - [x] **VACUUM** - Database compaction and storage reclamation
 - [x] **ANALYZE** - Table statistics collection for query optimization
-
-### ✅ Completed Features (v2.0)
-
-- [x] **Full-Text Search** - MATCH ... AGAINST syntax with inverted indexes
-- [x] **Materialized Views** - CREATE MATERIALIZED VIEW, REFRESH, and DROP support
 
 ### 📋 Planned Features
 

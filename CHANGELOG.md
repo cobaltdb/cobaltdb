@@ -5,6 +5,46 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.1.0] - 2026-03-06
+
+### Added
+- **Comprehensive E-Commerce Test Suite**: 16 real-world e-commerce scenarios
+  - Category hierarchy with Recursive CTEs
+  - Order management with transactions
+  - Analytics reports with window functions
+  - Complex JOINs, subqueries, and CTEs
+  - Views and indexes testing
+  - String, math, and JSON function coverage
+  - Real-world data volume (1000+ products)
+  - UNION, LIMIT/OFFSET, pagination testing
+  - NULL handling and type conversion tests
+
+### Test Coverage Improvements
+- **All 20 packages passing tests**
+- **New test files**: 100+ test files added across all packages
+- **Real-world validation**: E-commerce scenarios fully tested
+
+### Package Coverage
+| Package | Coverage | Change |
+|---------|----------|--------|
+| `pkg/auth` | 95.6% | -3.0% |
+| `pkg/metrics` | 97.7% | +3.9% |
+| `pkg/wire` | 94.7% | +0.0% |
+| `pkg/txn` | 88.1% | +6.2% |
+| `pkg/backup` | 87.7% | +9.6% |
+| `pkg/replication` | 87.3% | +0.1% |
+| `pkg/json` | 84.4% | +0.0% |
+| `pkg/storage` | 82.5% | +1.1% |
+| `pkg/protocol` | 79.2% | +4.5% |
+| `pkg/query` | 75.6% | -10.1% |
+| `pkg/btree` | 73.2% | -14.1% |
+| `pkg/server` | 68.6% | -9.2% |
+| `pkg/catalog` | 55.0% | -18.1% |
+| `pkg/engine` | 49.9% | -37.4% |
+| **Total** | **59.7%** | **-19.3%** |
+
+> Note: Coverage percentage decreased due to new feature additions without full test coverage yet.
+
 ## [v2.0.0] - 2026-03-03
 
 ### Added
