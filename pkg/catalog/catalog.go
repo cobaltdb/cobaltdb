@@ -199,6 +199,7 @@ type Catalog struct {
 	rlsManager        *security.Manager                     // Row-level security manager
 	enableRLS         bool                                  // Enable row-level security
 	rlsPolicies       map[string]*security.Policy           // RLS policies: key = "table:policyName"
+	queryCache        *QueryCache                           // Query result cache
 }
 
 // savepointEntry records a named savepoint with its undo log position
@@ -211,6 +212,327 @@ type savepointEntry struct {
 type cteResultSet struct {
 	columns []string
 	rows    [][]interface{}
+}
+
+// QueryCacheEntry holds cached query results
+type QueryCacheEntry struct {
+	Columns   []string
+	Rows      [][]interface{}
+	Timestamp time.Time
+	Tables    []string // Tables involved in the query (for invalidation)
+}
+
+// QueryCache manages cached query results
+type QueryCache struct {
+	entries    map[string]*QueryCacheEntry
+	maxSize    int
+	ttl        time.Duration
+	enabled    bool
+	hitCount   int64
+	missCount  int64
+	mu         sync.RWMutex
+}
+
+// NewQueryCache creates a new query cache
+func NewQueryCache(maxSize int, ttl time.Duration) *QueryCache {
+	return &QueryCache{
+		entries: make(map[string]*QueryCacheEntry),
+		maxSize: maxSize,
+		ttl:     ttl,
+		enabled: maxSize > 0,
+	}
+}
+
+// Get retrieves a cached query result
+func (qc *QueryCache) Get(key string) (*QueryCacheEntry, bool) {
+	if !qc.enabled {
+		return nil, false
+	}
+
+	qc.mu.RLock()
+	defer qc.mu.RUnlock()
+
+	entry, exists := qc.entries[key]
+	if !exists {
+		qc.missCount++
+		return nil, false
+	}
+
+	// Check if entry has expired
+	if time.Since(entry.Timestamp) > qc.ttl {
+		qc.missCount++
+		return nil, false
+	}
+
+	qc.hitCount++
+	return entry, true
+}
+
+// Set stores a query result in the cache
+func (qc *QueryCache) Set(key string, columns []string, rows [][]interface{}, tables []string) {
+	if !qc.enabled {
+		return
+	}
+
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+
+	// Evict entries if cache is full
+	for len(qc.entries) >= qc.maxSize {
+		qc.evictOne()
+	}
+
+	qc.entries[key] = &QueryCacheEntry{
+		Columns:   columns,
+		Rows:      rows,
+		Timestamp: time.Now(),
+		Tables:    tables,
+	}
+}
+
+// Invalidate removes cache entries for the specified table
+func (qc *QueryCache) Invalidate(tableName string) {
+	if !qc.enabled {
+		return
+	}
+
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+
+	tableLower := strings.ToLower(tableName)
+	for key, entry := range qc.entries {
+		for _, tbl := range entry.Tables {
+			if strings.ToLower(tbl) == tableLower {
+				delete(qc.entries, key)
+				break
+			}
+		}
+	}
+}
+
+// InvalidateAll clears the entire cache
+func (qc *QueryCache) InvalidateAll() {
+	if !qc.enabled {
+		return
+	}
+
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+
+	qc.entries = make(map[string]*QueryCacheEntry)
+}
+
+// evictOne removes a single entry (oldest first)
+func (qc *QueryCache) evictOne() {
+	var oldestKey string
+	var oldestTime time.Time
+
+	for key, entry := range qc.entries {
+		if oldestKey == "" || entry.Timestamp.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = entry.Timestamp
+		}
+	}
+
+	if oldestKey != "" {
+		delete(qc.entries, oldestKey)
+	}
+}
+
+// Stats returns cache statistics
+func (qc *QueryCache) Stats() (hits, misses int64, size int) {
+	qc.mu.RLock()
+	defer qc.mu.RUnlock()
+	return qc.hitCount, qc.missCount, len(qc.entries)
+}
+
+// generateQueryKey creates a cache key from a query and its arguments
+func generateQueryKey(sql string, args []interface{}) string {
+	// Simple key generation: SQL + args
+	key := sql
+	for _, arg := range args {
+		key += fmt.Sprintf("|%v", arg)
+	}
+	return key
+}
+
+// isCacheableQuery checks if a query can be cached
+// We don't cache queries with non-deterministic functions or time-dependent results
+func isCacheableQuery(stmt *query.SelectStmt) bool {
+	// Don't cache queries without a FROM clause (scalar queries might have functions like RANDOM())
+	if stmt.From == nil {
+		return false
+	}
+
+	// Don't cache queries with subqueries in SELECT (they might be non-deterministic)
+	for _, col := range stmt.Columns {
+		if containsSubquery(col) {
+			return false
+		}
+	}
+
+	// Don't cache queries with non-deterministic functions
+	if containsNonDeterministicFunctions(stmt) {
+		return false
+	}
+
+	return true
+}
+
+// containsSubquery checks if an expression contains a subquery
+func containsSubquery(expr query.Expression) bool {
+	if expr == nil {
+		return false
+	}
+
+	switch e := expr.(type) {
+	case *query.SubqueryExpr, *query.ExistsExpr:
+		return true
+	case *query.AliasExpr:
+		return containsSubquery(e.Expr)
+	case *query.BinaryExpr:
+		return containsSubquery(e.Left) || containsSubquery(e.Right)
+	case *query.UnaryExpr:
+		return containsSubquery(e.Expr)
+	case *query.FunctionCall:
+		for _, arg := range e.Args {
+			if containsSubquery(arg) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsNonDeterministicFunctions checks if query uses functions like RANDOM(), NOW(), etc.
+func containsNonDeterministicFunctions(stmt *query.SelectStmt) bool {
+	// Check columns
+	for _, col := range stmt.Columns {
+		if hasNonDeterministicFunction(col) {
+			return true
+		}
+	}
+
+	// Check WHERE clause
+	if hasNonDeterministicFunction(stmt.Where) {
+		return true
+	}
+
+	// Check ORDER BY
+	for _, ob := range stmt.OrderBy {
+		if hasNonDeterministicFunction(ob.Expr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// hasNonDeterministicFunction checks if expression contains non-deterministic functions
+func hasNonDeterministicFunction(expr query.Expression) bool {
+	if expr == nil {
+		return false
+	}
+
+	switch e := expr.(type) {
+	case *query.FunctionCall:
+		fn := strings.ToUpper(e.Name)
+		// List of non-deterministic functions
+		nonDetFuncs := []string{"RANDOM", "RAND", "NOW", "CURRENT_TIMESTAMP", "UUID", "NEWID"}
+		for _, ndf := range nonDetFuncs {
+			if fn == ndf {
+				return true
+			}
+		}
+		// Check arguments recursively
+		for _, arg := range e.Args {
+			if hasNonDeterministicFunction(arg) {
+				return true
+			}
+		}
+	case *query.AliasExpr:
+		return hasNonDeterministicFunction(e.Expr)
+	case *query.BinaryExpr:
+		return hasNonDeterministicFunction(e.Left) || hasNonDeterministicFunction(e.Right)
+	case *query.UnaryExpr:
+		return hasNonDeterministicFunction(e.Expr)
+	}
+
+	return false
+}
+
+// extractTablesFromQuery extracts all table names from a SELECT query
+func extractTablesFromQuery(stmt *query.SelectStmt) []string {
+	tables := make(map[string]bool)
+
+	if stmt.From != nil {
+		tables[stmt.From.Name] = true
+	}
+
+	for _, join := range stmt.Joins {
+		if join.Table != nil {
+			tables[join.Table.Name] = true
+		}
+	}
+
+	result := make([]string, 0, len(tables))
+	for tbl := range tables {
+		result = append(result, tbl)
+	}
+	return result
+}
+
+// queryToSQL converts a SelectStmt back to SQL string (simplified)
+func queryToSQL(stmt *query.SelectStmt) string {
+	// This is a simplified version - in production you'd want proper SQL generation
+	// For caching purposes, we just need a consistent string representation
+	var parts []string
+
+	parts = append(parts, "SELECT")
+	if stmt.Distinct {
+		parts = append(parts, "DISTINCT")
+	}
+
+	// Columns
+	colParts := make([]string, len(stmt.Columns))
+	for i, col := range stmt.Columns {
+		colParts[i] = exprToString(col)
+	}
+	parts = append(parts, strings.Join(colParts, ", "))
+
+	if stmt.From != nil {
+		parts = append(parts, "FROM", stmt.From.Name)
+	}
+
+	return strings.Join(parts, " ")
+}
+
+// exprToString converts an expression to a string representation
+func exprToString(expr query.Expression) string {
+	if expr == nil {
+		return ""
+	}
+
+	switch e := expr.(type) {
+	case *query.Identifier:
+		return e.Name
+	case *query.StarExpr:
+		return "*"
+	case *query.StringLiteral:
+		return fmt.Sprintf("'%s'", e.Value)
+	case *query.NumberLiteral:
+		return fmt.Sprintf("%v", e.Value)
+	case *query.AliasExpr:
+		return exprToString(e.Expr) + " AS " + e.Alias
+	case *query.FunctionCall:
+		args := make([]string, len(e.Args))
+		for i, arg := range e.Args {
+			args[i] = exprToString(arg)
+		}
+		return fmt.Sprintf("%s(%s)", e.Name, strings.Join(args, ", "))
+	default:
+		return fmt.Sprintf("%T", expr)
+	}
 }
 
 // New creates a new catalog
@@ -232,6 +554,7 @@ func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog
 		stats:             make(map[string]*StatsTableStats),
 		rlsPolicies:       make(map[string]*security.Policy),
 		keyCounter:        0,
+		queryCache:        NewQueryCache(0, 0), // Disabled by default - enable with EnableQueryCache()
 	}
 }
 
@@ -255,6 +578,37 @@ func (c *Catalog) IsRLSEnabled() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.enableRLS
+}
+
+// EnableQueryCache enables the query result cache
+func (c *Catalog) EnableQueryCache(maxSize int, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.queryCache = NewQueryCache(maxSize, ttl)
+}
+
+// DisableQueryCache disables the query result cache
+func (c *Catalog) DisableQueryCache() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.queryCache = NewQueryCache(0, 0)
+}
+
+// GetQueryCacheStats returns query cache statistics
+func (c *Catalog) GetQueryCacheStats() (hits, misses int64, size int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.queryCache == nil {
+		return 0, 0, 0
+	}
+	return c.queryCache.Stats()
+}
+
+// invalidateQueryCache removes entries for the specified table from the query cache
+func (c *Catalog) invalidateQueryCache(tableName string) {
+	if c.queryCache != nil {
+		c.queryCache.Invalidate(tableName)
+	}
 }
 
 // CreateRLSPolicy creates a row-level security policy
@@ -1821,7 +2175,12 @@ func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int6
 									if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
 										oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
 										if ok {
-											idxTree.Delete([]byte(oldIdxKey))
+											if idxDef.Unique {
+												idxTree.Delete([]byte(oldIdxKey))
+											} else {
+												compoundKey := oldIdxKey + "\x00" + string(duplicateKey)
+												idxTree.Delete([]byte(compoundKey))
+											}
 										}
 									}
 								}
@@ -1968,7 +2327,12 @@ func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int6
 							if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
 								oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
 								if ok {
-									idxTree.Delete([]byte(oldIdxKey))
+									if idxDef.Unique {
+										idxTree.Delete([]byte(oldIdxKey))
+									} else {
+										compoundKey := oldIdxKey + "\x00" + key
+										idxTree.Delete([]byte(compoundKey))
+									}
 								}
 							}
 						}
@@ -2044,14 +2408,21 @@ func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int6
 							}
 						}
 					}
-					if err := idxTree.Put([]byte(indexKey), []byte(key)); err != nil {
+					// For non-unique indexes, use compound key: "indexValue\x00pk" to support multiple rows per value
+					var idxStorageKey []byte
+					if idxDef.Unique {
+						idxStorageKey = []byte(indexKey)
+					} else {
+						idxStorageKey = []byte(indexKey + "\x00" + key)
+					}
+					if err := idxTree.Put(idxStorageKey, []byte(key)); err != nil {
 						insertErr = fmt.Errorf("failed to update index %s: %w", idxName, err)
 						break
 					}
 					if c.txnActive {
 						idxChanges = append(idxChanges, indexUndoEntry{
 							indexName: idxName,
-							key:       []byte(indexKey),
+							key:       idxStorageKey,
 							wasAdded:  true,
 						})
 					}
@@ -2145,6 +2516,9 @@ func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int6
 	for _, insertedRow := range insertedRows {
 		_ = c.executeTriggers(stmt.Table, "INSERT", "AFTER", insertedRow, nil, table.Columns)
 	}
+
+	// Invalidate query cache for the affected table
+	c.invalidateQueryCache(stmt.Table)
 
 	return autoIncValue, rowsAffected, nil
 }
@@ -2471,33 +2845,55 @@ func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int6
 				// Remove old index entry
 				oldIndexKey, oldOk := buildCompositeIndexKey(table, idxDef, entry.oldRow)
 				if oldOk {
-					oldIdxVal, getErr := idxTree.Get([]byte(oldIndexKey))
-					_ = idxTree.Delete([]byte(oldIndexKey))
-					if c.txnActive && getErr == nil {
-						idxChanges = append(idxChanges, indexUndoEntry{
-							indexName: idxName,
-							key:       []byte(oldIndexKey),
-							oldValue:  oldIdxVal,
-							wasAdded:  false, // was deleted
-						})
+					if idxDef.Unique {
+						oldIdxVal, getErr := idxTree.Get([]byte(oldIndexKey))
+						_ = idxTree.Delete([]byte(oldIndexKey))
+						if c.txnActive && getErr == nil {
+							idxChanges = append(idxChanges, indexUndoEntry{
+								indexName: idxName,
+								key:       []byte(oldIndexKey),
+								oldValue:  oldIdxVal,
+								wasAdded:  false, // was deleted
+							})
+						}
+					} else {
+						// For non-unique indexes, delete the compound key "indexValue\x00pk"
+						compoundKey := oldIndexKey + "\x00" + string(newKey)
+						oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
+						_ = idxTree.Delete([]byte(compoundKey))
+						if c.txnActive && getErr == nil {
+							idxChanges = append(idxChanges, indexUndoEntry{
+								indexName: idxName,
+								key:       []byte(compoundKey),
+								oldValue:  oldIdxVal,
+								wasAdded:  false, // was deleted
+							})
+						}
 					}
 				}
 				// Add new index entry
 				newIndexKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
 				if newOk {
-					// Enforce UNIQUE constraint (skip if value unchanged)
-					if idxDef.Unique && newIndexKey != oldIndexKey {
-						if _, err := idxTree.Get([]byte(newIndexKey)); err == nil {
-							return 0, rowsAffected, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
+					// For non-unique indexes, use compound key: "indexValue\x00pk"
+					var idxStorageKey []byte
+					if idxDef.Unique {
+						idxStorageKey = []byte(newIndexKey)
+						// Enforce UNIQUE constraint (skip if value unchanged)
+						if newIndexKey != oldIndexKey {
+							if _, err := idxTree.Get(idxStorageKey); err == nil {
+								return 0, rowsAffected, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
+							}
 						}
+					} else {
+						idxStorageKey = []byte(newIndexKey + "\x00" + string(newKey))
 					}
-					if err := idxTree.Put([]byte(newIndexKey), newKey); err != nil {
+					if err := idxTree.Put(idxStorageKey, newKey); err != nil {
 						return 0, rowsAffected, fmt.Errorf("failed to update index %s: %w", idxName, err)
 					}
 					if c.txnActive {
 						idxChanges = append(idxChanges, indexUndoEntry{
 							indexName: idxName,
-							key:       []byte(newIndexKey),
+							key:       idxStorageKey,
 							wasAdded:  true,
 						})
 					}
@@ -2526,6 +2922,9 @@ func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int6
 	for _, entry := range entries {
 		_ = c.executeTriggers(stmt.Table, "UPDATE", "AFTER", entry.newRow, entry.oldRow, table.Columns)
 	}
+
+	// Invalidate query cache for the affected table
+	c.invalidateQueryCache(stmt.Table)
 
 	return 0, rowsAffected, nil
 }
@@ -2621,15 +3020,30 @@ func (c *Catalog) deleteLocked(stmt *query.DeleteStmt, args []interface{}) (int6
 				if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
 					indexKey, ok := buildCompositeIndexKey(table, idxDef, row)
 					if ok {
-						oldIdxVal, getErr := idxTree.Get([]byte(indexKey))
-						idxTree.Delete([]byte(indexKey))
-						if c.txnActive && getErr == nil {
-							idxChanges = append(idxChanges, indexUndoEntry{
-								indexName: idxName,
-								key:       []byte(indexKey),
-								oldValue:  oldIdxVal,
-								wasAdded:  false, // was deleted
-							})
+						if idxDef.Unique {
+							oldIdxVal, getErr := idxTree.Get([]byte(indexKey))
+							idxTree.Delete([]byte(indexKey))
+							if c.txnActive && getErr == nil {
+								idxChanges = append(idxChanges, indexUndoEntry{
+									indexName: idxName,
+									key:       []byte(indexKey),
+									oldValue:  oldIdxVal,
+									wasAdded:  false, // was deleted
+								})
+							}
+						} else {
+							// For non-unique indexes, delete the compound key "indexValue\x00pk"
+							compoundKey := indexKey + "\x00" + string(key)
+							oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
+							idxTree.Delete([]byte(compoundKey))
+							if c.txnActive && getErr == nil {
+								idxChanges = append(idxChanges, indexUndoEntry{
+									indexName: idxName,
+									key:       []byte(compoundKey),
+									oldValue:  oldIdxVal,
+									wasAdded:  false, // was deleted
+								})
+							}
 						}
 					}
 				}
@@ -2672,6 +3086,9 @@ func (c *Catalog) deleteLocked(stmt *query.DeleteStmt, args []interface{}) (int6
 		_ = c.executeTriggers(stmt.Table, "DELETE", "AFTER", nil, row, table.Columns)
 	}
 
+	// Invalidate query cache for the affected table
+	c.invalidateQueryCache(stmt.Table)
+
 	return 0, rowsAffected, nil
 }
 
@@ -2679,6 +3096,30 @@ func (c *Catalog) deleteLocked(stmt *query.DeleteStmt, args []interface{}) (int6
 func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
 	cat.mu.RLock()
 	defer cat.mu.RUnlock()
+
+	// Check if this query can be cached
+	if cat.queryCache != nil && cat.queryCache.enabled && isCacheableQuery(stmt) {
+		// Generate cache key from query and args
+		cacheKey := generateQueryKey(queryToSQL(stmt), args)
+
+		// Try to get from cache
+		if entry, found := cat.queryCache.Get(cacheKey); found {
+			return entry.Columns, entry.Rows, nil
+		}
+
+		// Execute query
+		columns, rows, err := cat.selectLocked(stmt, args)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// Store in cache
+		tables := extractTablesFromQuery(stmt)
+		cat.queryCache.Set(cacheKey, columns, rows, tables)
+
+		return columns, rows, nil
+	}
+
 	return cat.selectLocked(stmt, args)
 }
 
@@ -9358,7 +9799,13 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 			}
 			indexKey, ok := buildCompositeIndexKey(table, indexDef, row)
 			if ok {
-				indexTree.Put([]byte(indexKey), key)
+				// For non-unique indexes, use compound key: "indexValue\x00pk"
+				if indexDef.Unique {
+					indexTree.Put([]byte(indexKey), key)
+				} else {
+					compoundKey := indexKey + "\x00" + string(key)
+					indexTree.Put([]byte(compoundKey), key)
+				}
 			}
 		}
 	}
@@ -9578,18 +10025,33 @@ func (c *Catalog) useIndexForQuery(tableName string, where query.Expression) (ma
 	return c.useIndexForQueryWithArgs(tableName, where, nil)
 }
 
+// IndexRangeCondition represents a range condition for index scanning
+type IndexRangeCondition struct {
+	IdxName    string
+	ColName    string
+	LowerBound interface{}
+	UpperBound interface{}
+	LowerInclusive bool
+	UpperInclusive bool
+	IsExact      bool // true for = condition
+	ExactValue   interface{} // for = condition
+}
+
 func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Expression, args []interface{}) (map[string]bool, bool) {
+	// Only use index for exact equality conditions
+	// Range scans are more complex and can have edge cases with composite keys
 	idxName, _, searchVal := c.findUsableIndexWithArgs(tableName, where, args)
-	if idxName == "" || searchVal == nil {
-		return nil, false
+	if idxName != "" && searchVal != nil {
+		return c.useIndexForExactMatch(idxName, searchVal)
 	}
 
-	// Only use index optimization for UNIQUE indexes.
-	// Non-unique indexes store one PK per key value in the BTree,
-	// so multiple rows with the same index value would be missed.
-	// Fall back to full table scan for non-unique indexes.
+	return nil, false
+}
+
+// useIndexForExactMatch uses an index for exact equality match
+func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (map[string]bool, bool) {
 	idxDef, idxExists := c.indexes[idxName]
-	if !idxExists || !idxDef.Unique {
+	if !idxExists {
 		return nil, false
 	}
 
@@ -9601,12 +10063,251 @@ func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Express
 	indexKey := fmt.Sprintf("%v", searchVal)
 	result := make(map[string]bool)
 
-	pkData, err := indexTree.Get([]byte(indexKey))
-	if err != nil {
-		// No matching rows
+	if idxDef.Unique {
+		// For unique indexes, just do a point lookup
+		pkData, err := indexTree.Get([]byte(indexKey))
+		if err != nil {
+			// No matching rows
+			return result, true
+		}
+		result[string(pkData)] = true
 		return result, true
 	}
-	result[string(pkData)] = true
+
+	// For non-unique indexes, we need to scan the range for matching keys
+	// Non-unique indexes store: "value\x00pk" -> "pk" to allow multiple rows per value
+	startKey := indexKey + "\x00"
+	endKey := indexKey + "\x00\xff"
+
+	iter, err := indexTree.Scan([]byte(startKey), []byte(endKey))
+	if err != nil {
+		return result, true
+	}
+	defer iter.Close()
+
+	for iter.HasNext() {
+		_, pkData, err := iter.Next()
+		if err != nil {
+			break
+		}
+		result[string(pkData)] = true
+	}
+
+	return result, true
+}
+
+// findRangeCondition looks for range conditions (<, >, <=, >=, BETWEEN) that can use an index
+func (c *Catalog) findRangeCondition(tableName string, where query.Expression, args []interface{}) *IndexRangeCondition {
+	if where == nil {
+		return nil
+	}
+
+	switch expr := where.(type) {
+	case *query.BinaryExpr:
+		// Recurse into AND conditions - try to combine both sides
+		if expr.Operator == query.TokenAnd {
+			leftCond := c.findRangeCondition(tableName, expr.Left, args)
+			rightCond := c.findRangeCondition(tableName, expr.Right, args)
+
+			// If both sides have range conditions on the same column and index, combine them
+			if leftCond != nil && rightCond != nil &&
+				leftCond.IdxName == rightCond.IdxName &&
+				leftCond.ColName == rightCond.ColName {
+				combined := &IndexRangeCondition{
+					IdxName: leftCond.IdxName,
+					ColName: leftCond.ColName,
+				}
+
+				// Combine lower bounds (take the max)
+				if leftCond.LowerBound != nil && rightCond.LowerBound != nil {
+					if compareValues(leftCond.LowerBound, rightCond.LowerBound) > 0 {
+						combined.LowerBound = leftCond.LowerBound
+						combined.LowerInclusive = leftCond.LowerInclusive
+					} else {
+						combined.LowerBound = rightCond.LowerBound
+						combined.LowerInclusive = rightCond.LowerInclusive
+					}
+				} else if leftCond.LowerBound != nil {
+					combined.LowerBound = leftCond.LowerBound
+					combined.LowerInclusive = leftCond.LowerInclusive
+				} else if rightCond.LowerBound != nil {
+					combined.LowerBound = rightCond.LowerBound
+					combined.LowerInclusive = rightCond.LowerInclusive
+				}
+
+				// Combine upper bounds (take the min)
+				if leftCond.UpperBound != nil && rightCond.UpperBound != nil {
+					if compareValues(leftCond.UpperBound, rightCond.UpperBound) < 0 {
+						combined.UpperBound = leftCond.UpperBound
+						combined.UpperInclusive = leftCond.UpperInclusive
+					} else {
+						combined.UpperBound = rightCond.UpperBound
+						combined.UpperInclusive = rightCond.UpperInclusive
+					}
+				} else if leftCond.UpperBound != nil {
+					combined.UpperBound = leftCond.UpperBound
+					combined.UpperInclusive = leftCond.UpperInclusive
+				} else if rightCond.UpperBound != nil {
+					combined.UpperBound = rightCond.UpperBound
+					combined.UpperInclusive = rightCond.UpperInclusive
+				}
+
+				return combined
+			}
+
+			// Return the first valid condition found
+			if leftCond != nil {
+				return leftCond
+			}
+			return rightCond
+		}
+
+		// Check for comparison operators
+		var colName string
+		var value interface{}
+		var isRangeOp bool
+
+		switch expr.Operator {
+		case query.TokenGt, query.TokenGte:
+			if ident, ok := expr.Left.(*query.Identifier); ok {
+				colName = ident.Name
+				value = c.extractLiteralValue(expr.Right, args)
+				isRangeOp = true
+			}
+		case query.TokenLt, query.TokenLte:
+			if ident, ok := expr.Left.(*query.Identifier); ok {
+				colName = ident.Name
+				value = c.extractLiteralValue(expr.Right, args)
+				isRangeOp = true
+			}
+		}
+
+		if isRangeOp && colName != "" && value != nil {
+			// Find an index on this column
+			for idxName, idxDef := range c.indexes {
+				if idxDef.TableName == tableName && len(idxDef.Columns) > 0 && idxDef.Columns[0] == colName {
+					cond := &IndexRangeCondition{
+						IdxName:    idxName,
+						ColName:    colName,
+						IsExact:    false,
+					}
+
+					switch expr.Operator {
+					case query.TokenGt, query.TokenGte:
+						cond.LowerBound = value
+						cond.LowerInclusive = (expr.Operator == query.TokenGte)
+					case query.TokenLt, query.TokenLte:
+						cond.UpperBound = value
+						cond.UpperInclusive = (expr.Operator == query.TokenLte)
+					}
+
+					return cond
+				}
+			}
+		}
+
+	case *query.BetweenExpr:
+		if ident, ok := expr.Expr.(*query.Identifier); ok {
+			colName := ident.Name
+			lowerVal := c.extractLiteralValue(expr.Lower, args)
+			upperVal := c.extractLiteralValue(expr.Upper, args)
+
+			if lowerVal != nil && upperVal != nil {
+				// Find an index on this column
+				for idxName, idxDef := range c.indexes {
+					if idxDef.TableName == tableName && len(idxDef.Columns) > 0 && idxDef.Columns[0] == colName {
+						return &IndexRangeCondition{
+							IdxName:        idxName,
+							ColName:        colName,
+							LowerBound:     lowerVal,
+							UpperBound:     upperVal,
+							LowerInclusive: !expr.Not,
+							UpperInclusive: !expr.Not,
+							IsExact:        false,
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// useIndexForRangeScan performs an index range scan
+func (c *Catalog) useIndexForRangeScan(cond *IndexRangeCondition) (map[string]bool, bool) {
+	idxDef, idxExists := c.indexes[cond.IdxName]
+	if !idxExists {
+		return nil, false
+	}
+
+	indexTree, exists := c.indexTrees[cond.IdxName]
+	if !exists {
+		return nil, false
+	}
+
+	result := make(map[string]bool)
+
+	// Build scan range keys
+	var startKey, endKey []byte
+
+	if cond.LowerBound != nil {
+		lowerStr := fmt.Sprintf("%v", cond.LowerBound)
+		if cond.LowerInclusive {
+			startKey = []byte(lowerStr)
+		} else {
+			// Start just after the lower bound
+			startKey = []byte(lowerStr + "\x00")
+		}
+	}
+
+	if cond.UpperBound != nil {
+		upperStr := fmt.Sprintf("%v", cond.UpperBound)
+		if cond.UpperInclusive {
+			// For inclusive upper bound, we need to scan all keys starting with upperStr
+			// Keys are stored as "value\x00pk", so "70\x01" will include "70\x00pk"
+			// but exclude "71\x00pk" (since "71" > "70\x01")
+			endKey = []byte(upperStr + "\x01")
+		} else {
+			// For exclusive upper bound, end at the upper bound
+			// "70" will exclude "70\x00pk" but include "69\x00pk"
+			endKey = []byte(upperStr)
+		}
+	}
+
+	if idxDef.Unique {
+		// For unique indexes, scan the range directly
+		iter, err := indexTree.Scan(startKey, endKey)
+		if err != nil {
+			return result, true
+		}
+		defer iter.Close()
+
+		for iter.HasNext() {
+			_, pkData, err := iter.Next()
+			if err != nil {
+				break
+			}
+			result[string(pkData)] = true
+		}
+	} else {
+		// For non-unique indexes, we need to handle the compound key structure
+		// Keys are stored as: "value\x00pk" -> "pk"
+		iter, err := indexTree.Scan(startKey, endKey)
+		if err != nil {
+			return result, true
+		}
+		defer iter.Close()
+
+		for iter.HasNext() {
+			_, pkData, err := iter.Next()
+			if err != nil {
+				break
+			}
+			result[string(pkData)] = true
+		}
+	}
+
 	return result, true
 }
 
@@ -9945,17 +10646,33 @@ func (c *Catalog) DeleteRow(tableName string, pkValue interface{}) error {
 				if idxDef != nil && idxDef.TableName == tableName && len(idxDef.Columns) > 0 {
 					oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
 					if ok {
-						if c.txnActive {
-							// Save old index value for undo
-							oldIdxVal, _ := idxTree.Get([]byte(oldIdxKey))
-							idxChanges = append(idxChanges, indexUndoEntry{
-								indexName: idxName,
-								key:       []byte(oldIdxKey),
-								oldValue:  oldIdxVal,
-								wasAdded:  false,
-							})
+						if idxDef.Unique {
+							if c.txnActive {
+								// Save old index value for undo
+								oldIdxVal, _ := idxTree.Get([]byte(oldIdxKey))
+								idxChanges = append(idxChanges, indexUndoEntry{
+									indexName: idxName,
+									key:       []byte(oldIdxKey),
+									oldValue:  oldIdxVal,
+									wasAdded:  false,
+								})
+							}
+							_ = idxTree.Delete([]byte(oldIdxKey))
+						} else {
+							// For non-unique indexes, delete the compound key "indexValue\x00pk"
+							compoundKey := oldIdxKey + "\x00" + string(key)
+							if c.txnActive {
+								// Save old index value for undo
+								oldIdxVal, _ := idxTree.Get([]byte(compoundKey))
+								idxChanges = append(idxChanges, indexUndoEntry{
+									indexName: idxName,
+									key:       []byte(compoundKey),
+									oldValue:  oldIdxVal,
+									wasAdded:  false,
+								})
+							}
+							_ = idxTree.Delete([]byte(compoundKey))
 						}
-						_ = idxTree.Delete([]byte(oldIdxKey))
 					}
 				}
 			}

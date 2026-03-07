@@ -6021,7 +6021,7 @@ func TestUseIndexForQuery(t *testing.T) {
 		t.Error("Expected canUse to be true (no match found)")
 	}
 
-	// Test with non-equality condition
+	// Test with non-equality condition (range scan disabled for now)
 	whereGT := &query.BinaryExpr{
 		Left:     &query.Identifier{Name: "id"},
 		Operator: query.TokenGt,
@@ -6029,7 +6029,7 @@ func TestUseIndexForQuery(t *testing.T) {
 	}
 	_, canUseGT := catalog.useIndexForQuery("test_use_idx", whereGT)
 	if canUseGT {
-		t.Error("Expected index to not be usable for GT condition")
+		t.Error("Expected index to not be usable for GT condition (range scan disabled)")
 	}
 }
 
