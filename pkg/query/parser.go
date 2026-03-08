@@ -1396,6 +1396,49 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 	// Calculate offset for WHERE clause placeholders (count actual placeholders, not SET columns)
 	whereOffset := len(setPlaceholders)
 
+	// FROM - for UPDATE with JOIN
+	if p.match(TokenFrom) {
+		table, err := p.parseTableRef()
+		if err != nil {
+			return nil, err
+		}
+		stmt.From = table
+
+		// Comma-separated tables are implicit CROSS JOINs
+		for p.match(TokenComma) {
+			crossTable, err := p.parseTableRef()
+			if err != nil {
+				return nil, err
+			}
+			stmt.Joins = append(stmt.Joins, &JoinClause{
+				Type:  TokenCross,
+				Table: crossTable,
+			})
+		}
+
+		// JOINs
+		for p.isJoin() {
+			join, err := p.parseJoin()
+			if err != nil {
+				return nil, err
+			}
+			stmt.Joins = append(stmt.Joins, join)
+		}
+
+		// Fix placeholder indices in FROM/JOIN conditions
+		joinPlaceholderOffset := whereOffset
+		for _, join := range stmt.Joins {
+			if join.Condition != nil {
+				joinPlaceholders := collectPlaceholders(join.Condition)
+				for i, ph := range joinPlaceholders {
+					ph.Index = joinPlaceholderOffset + i
+				}
+				joinPlaceholderOffset += len(joinPlaceholders)
+			}
+		}
+		whereOffset = joinPlaceholderOffset
+	}
+
 	// WHERE
 	if p.match(TokenWhere) {
 		where, err := p.parseExpression()
@@ -1509,7 +1552,57 @@ func (p *Parser) parseDelete() (*DeleteStmt, error) {
 	}
 	stmt.Table = table.Literal
 
-	// WHERE - placeholders start at offset 0
+	// Optional table alias
+	if p.current().Type == TokenIdentifier || p.current().Type == TokenAs {
+		if p.match(TokenAs) {
+			alias, err := p.expect(TokenIdentifier)
+			if err != nil {
+				return nil, err
+			}
+			stmt.Alias = alias.Literal
+		} else {
+			stmt.Alias = p.current().Literal
+			p.advance()
+		}
+	}
+
+	// USING - for DELETE with JOIN
+	placeholderOffset := 0
+	if p.match(TokenUsing) {
+		for {
+			usingTable, err := p.parseTableRef()
+			if err != nil {
+				return nil, err
+			}
+			stmt.Using = append(stmt.Using, usingTable)
+
+			if !p.match(TokenComma) {
+				break
+			}
+		}
+
+		// JOINs after USING
+		for p.isJoin() {
+			join, err := p.parseJoin()
+			if err != nil {
+				return nil, err
+			}
+			// Add JOIN as additional table with condition in WHERE
+			stmt.Using = append(stmt.Using, join.Table)
+			// Store join condition in a way it can be used with WHERE
+			// We'll need to combine with WHERE clause
+			if join.Condition != nil {
+				// Collect placeholders from join condition
+				joinPlaceholders := collectPlaceholders(join.Condition)
+				for i, ph := range joinPlaceholders {
+					ph.Index = placeholderOffset + i
+				}
+				placeholderOffset += len(joinPlaceholders)
+			}
+		}
+	}
+
+	// WHERE - placeholders start at offset 0 (or after USING/JOIN placeholders)
 	if p.match(TokenWhere) {
 		where, err := p.parseExpression()
 		if err != nil {
@@ -1520,7 +1613,7 @@ func (p *Parser) parseDelete() (*DeleteStmt, error) {
 		// Fix WHERE clause placeholder indices
 		wherePlaceholders := collectPlaceholders(where)
 		for i, ph := range wherePlaceholders {
-			ph.Index = i
+			ph.Index = placeholderOffset + i
 		}
 	}
 
@@ -1595,12 +1688,42 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 	// Column definitions and table constraints
 	for {
 		// Check for FOREIGN KEY constraint
-		if p.match(TokenForeign) {
+		if p.current().Type == TokenForeign {
+			p.advance() // consume FOREIGN
 			fk, err := p.parseForeignKeyDef()
 			if err != nil {
 				return nil, err
 			}
 			stmt.ForeignKeys = append(stmt.ForeignKeys, fk)
+			if !p.match(TokenComma) {
+				break
+			}
+			continue
+		}
+
+		// Check for table-level PRIMARY KEY constraint
+		if p.current().Type == TokenPrimary {
+			p.advance() // consume PRIMARY
+			if _, err := p.expect(TokenKey); err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(TokenLParen); err != nil {
+				return nil, err
+			}
+			// Parse column names
+			for {
+				col, err := p.expect(TokenIdentifier)
+				if err != nil {
+					return nil, err
+				}
+				stmt.PrimaryKey = append(stmt.PrimaryKey, col.Literal)
+				if !p.match(TokenComma) {
+					break
+				}
+			}
+			if _, err := p.expect(TokenRParen); err != nil {
+				return nil, err
+			}
 			if !p.match(TokenComma) {
 				break
 			}
@@ -2371,7 +2494,7 @@ func (p *Parser) parseSavepoint() (*SavepointStmt, error) {
 }
 
 func (p *Parser) parseRelease() (*ReleaseSavepointStmt, error) {
-	p.advance() // consume RELEASE
+	p.advance()             // consume RELEASE
 	p.match(TokenSavepoint) // optional SAVEPOINT keyword
 	name, err := p.parseSavepointName()
 	if err != nil {
@@ -2635,10 +2758,11 @@ func (p *Parser) parseCreateFTSIndex() (*CreateFTSIndexStmt, error) {
 
 // parseCreatePolicy parses CREATE POLICY for row-level security
 // CREATE POLICY name ON table [FOR {ALL | SELECT | INSERT | UPDATE | DELETE}]
-//     [TO role [, ...]] [USING (expression)] [WITH CHECK (expression)]
+//
+//	[TO role [, ...]] [USING (expression)] [WITH CHECK (expression)]
 func (p *Parser) parseCreatePolicy() (*CreatePolicyStmt, error) {
 	stmt := &CreatePolicyStmt{
-		Permissive: true, // default
+		Permissive: true,  // default
 		Event:      "ALL", // default
 	}
 	p.advance() // consume POLICY

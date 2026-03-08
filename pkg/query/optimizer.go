@@ -200,8 +200,8 @@ func (qo *QueryOptimizer) canUseIndex(table string, where Expression) bool {
 	switch expr := where.(type) {
 	case *BinaryExpr:
 		if expr.Operator == TokenEq || expr.Operator == TokenGt ||
-		   expr.Operator == TokenLt || expr.Operator == TokenGte ||
-		   expr.Operator == TokenLte || expr.Operator == TokenLike {
+			expr.Operator == TokenLt || expr.Operator == TokenGte ||
+			expr.Operator == TokenLte || expr.Operator == TokenLike {
 			if _, ok := expr.Left.(*Identifier); ok {
 				return true
 			}

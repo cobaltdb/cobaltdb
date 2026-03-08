@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,15 +48,15 @@ type DB struct {
 	// Prepared statement cache for performance
 	stmtCache      map[string]*cachedStmt
 	stmtMu         sync.RWMutex
-	stmtCacheOrder []string // LRU order tracking
-	nextTxnID atomic.Uint64 // Auto-increment transaction ID counter
+	stmtCacheOrder []string      // LRU order tracking
+	nextTxnID      atomic.Uint64 // Auto-increment transaction ID counter
 	// Metrics collector
 	metrics *metrics.Collector
 	// Connection management
-	connSem         chan struct{} // Connection limit semaphore
-	activeConns     atomic.Int64  // Active connection count
-	shutdownCh      chan struct{} // Shutdown signal
-	shutdownOnce    sync.Once
+	connSem      chan struct{} // Connection limit semaphore
+	activeConns  atomic.Int64  // Active connection count
+	shutdownCh   chan struct{} // Shutdown signal
+	shutdownOnce sync.Once
 }
 
 // Options contains database configuration options
@@ -74,6 +74,7 @@ type Options struct {
 	EncryptionConfig  *storage.EncryptionConfig // Detailed encryption configuration
 	AuditConfig       *audit.Config             // Audit logging configuration (nil = disabled)
 	EnableRLS         bool                      // Enable Row-Level Security by default
+	MaxStmtCacheSize  int                       // Maximum cached prepared statements (default: 1000)
 }
 
 // SyncMode controls when data is synced to disk
@@ -81,9 +82,9 @@ type SyncMode int
 
 // cachedStmt represents a cached prepared statement with metadata
 type cachedStmt struct {
-	stmt      query.Statement
-	lastUsed  int64 // Unix timestamp for LRU
-	useCount  uint64
+	stmt     query.Statement
+	lastUsed int64 // Unix timestamp for LRU
+	useCount uint64
 }
 
 const (
@@ -101,9 +102,10 @@ func DefaultOptions() *Options {
 		WALEnabled:        true,
 		SyncMode:          SyncNormal,
 		Logger:            logger.Default(),
-		MaxConnections:    100,           // Default max connections
+		MaxConnections:    100, // Default max connections
 		ConnectionTimeout: 30 * time.Second,
 		QueryTimeout:      60 * time.Second,
+		MaxStmtCacheSize:  1000, // Default max cached statements
 	}
 }
 
@@ -476,7 +478,11 @@ func (db *DB) getPreparedStatement(sql string) (query.Statement, error) {
 
 	// Cache the statement with LRU eviction
 	db.stmtMu.Lock()
-	if len(db.stmtCache) >= 1000 {
+	maxCacheSize := db.options.MaxStmtCacheSize
+	if maxCacheSize <= 0 {
+		maxCacheSize = 1000 // Default if not set
+	}
+	if len(db.stmtCache) >= maxCacheSize {
 		// Evict oldest entry (simple LRU: remove first in order)
 		db.evictLRUEntry()
 	}
@@ -1173,11 +1179,13 @@ func (db *DB) executeCreatePolicy(ctx context.Context, stmt *query.CreatePolicyS
 		return Result{}, fmt.Errorf("invalid policy event: %s", stmt.Event)
 	}
 
-	// Convert Expression to string for storage (simplified)
+	// Convert Expression to string for storage
 	usingExpr := ""
 	if stmt.Using != nil {
-		// In a full implementation, we'd convert the expression back to SQL
-		usingExpr = "true" // Placeholder
+		usingExpr = expressionToString(stmt.Using)
+	}
+	if usingExpr == "" {
+		usingExpr = "TRUE" // Default to allowing all if no expression
 	}
 
 	// Create the policy
@@ -1196,6 +1204,104 @@ func (db *DB) executeCreatePolicy(ctx context.Context, stmt *query.CreatePolicyS
 	}
 
 	return Result{RowsAffected: 0}, nil
+}
+
+// expressionToString converts an expression to its SQL string representation
+func expressionToString(expr query.Expression) string {
+	if expr == nil {
+		return ""
+	}
+
+	switch e := expr.(type) {
+	case *query.Identifier:
+		return e.Name
+	case *query.QualifiedIdentifier:
+		if e.Table != "" {
+			return e.Table + "." + e.Column
+		}
+		return e.Column
+	case *query.StringLiteral:
+		return "'" + e.Value + "'"
+	case *query.NumberLiteral:
+		return e.Raw
+	case *query.BooleanLiteral:
+		if e.Value {
+			return "TRUE"
+		}
+		return "FALSE"
+	case *query.NullLiteral:
+		return "NULL"
+	case *query.BinaryExpr:
+		left := expressionToString(e.Left)
+		right := expressionToString(e.Right)
+		op := tokenTypeToString(e.Operator)
+		return left + " " + op + " " + right
+	case *query.UnaryExpr:
+		op := tokenTypeToString(e.Operator)
+		return op + " " + expressionToString(e.Expr)
+	case *query.FunctionCall:
+		args := make([]string, len(e.Args))
+		for i, arg := range e.Args {
+			args[i] = expressionToString(arg)
+		}
+		return e.Name + "(" + strings.Join(args, ", ") + ")"
+	case *query.InExpr:
+		exprStr := expressionToString(e.Expr)
+		items := make([]string, len(e.List))
+		for i, item := range e.List {
+			items[i] = expressionToString(item)
+		}
+		return exprStr + " IN (" + strings.Join(items, ", ") + ")"
+	case *query.LikeExpr:
+		exprStr := expressionToString(e.Expr)
+		patternStr := expressionToString(e.Pattern)
+		if e.Not {
+			return exprStr + " NOT LIKE " + patternStr
+		}
+		return exprStr + " LIKE " + patternStr
+	case *query.IsNullExpr:
+		exprStr := expressionToString(e.Expr)
+		if e.Not {
+			return exprStr + " IS NOT NULL"
+		}
+		return exprStr + " IS NULL"
+	default:
+		return ""
+	}
+}
+
+// tokenTypeToString converts a token type to its string representation
+func tokenTypeToString(tok query.TokenType) string {
+	switch tok {
+	case query.TokenEq:
+		return "="
+	case query.TokenNeq:
+		return "!="
+	case query.TokenLt:
+		return "<"
+	case query.TokenGt:
+		return ">"
+	case query.TokenLte:
+		return "<="
+	case query.TokenGte:
+		return ">="
+	case query.TokenAnd:
+		return "AND"
+	case query.TokenOr:
+		return "OR"
+	case query.TokenNot:
+		return "NOT"
+	case query.TokenPlus:
+		return "+"
+	case query.TokenMinus:
+		return "-"
+	case query.TokenStar:
+		return "*"
+	case query.TokenSlash:
+		return "/"
+	default:
+		return ""
+	}
 }
 
 // executeDropPolicy executes DROP POLICY
@@ -1908,18 +2014,18 @@ func (db *DB) GetMetricsCollector() *metrics.Collector {
 
 // DBStats holds database statistics
 type DBStats struct {
-	Path            string        `json:"path"`
-	InMemory        bool          `json:"in_memory"`
-	PageSize        int           `json:"page_size"`
-	CacheSize       int           `json:"cache_size"`
-	ActiveConnections int64       `json:"active_connections"`
-	MaxConnections  int           `json:"max_connections"`
-	Tables          int           `json:"tables"`
-	Indexes         int           `json:"indexes"`
-	DatabaseSize    int64         `json:"database_size_bytes"`
-	Uptime          time.Duration `json:"uptime"`
-	IsHealthy       bool          `json:"is_healthy"`
-	LastCheckTime   time.Time     `json:"last_check_time"`
+	Path              string        `json:"path"`
+	InMemory          bool          `json:"in_memory"`
+	PageSize          int           `json:"page_size"`
+	CacheSize         int           `json:"cache_size"`
+	ActiveConnections int64         `json:"active_connections"`
+	MaxConnections    int           `json:"max_connections"`
+	Tables            int           `json:"tables"`
+	Indexes           int           `json:"indexes"`
+	DatabaseSize      int64         `json:"database_size_bytes"`
+	Uptime            time.Duration `json:"uptime"`
+	IsHealthy         bool          `json:"is_healthy"`
+	LastCheckTime     time.Time     `json:"last_check_time"`
 }
 
 // Stats returns detailed database statistics

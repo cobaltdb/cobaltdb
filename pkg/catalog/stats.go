@@ -426,3 +426,219 @@ func (sc *StatsCollector) EstimateMergeJoinCost(outerRows, innerRows float64) fl
 	mergeCost := (outerRows + innerRows) * CpuTupleCost
 	return sortCost + mergeCost
 }
+
+// ColumnStatsHelpers provides additional helper methods for ColumnStats
+
+// GetNullFraction returns the fraction of null values in the column
+func (cs *ColumnStats) GetNullFraction(rowCount uint64) float64 {
+	if rowCount == 0 {
+		return 0
+	}
+	return float64(cs.NullCount) / float64(rowCount)
+}
+
+// GetDistinctFraction returns the fraction of distinct values
+func (cs *ColumnStats) GetDistinctFraction(rowCount uint64) float64 {
+	if rowCount == 0 {
+		return 0
+	}
+	return float64(cs.DistinctCount) / float64(rowCount)
+}
+
+// IsUnique checks if the column has all unique values (no duplicates)
+func (cs *ColumnStats) IsUnique(rowCount uint64) bool {
+	nonNullCount := rowCount - cs.NullCount
+	return cs.DistinctCount == nonNullCount && nonNullCount > 0
+}
+
+// EstimateRangeSelectivity estimates selectivity for a range condition using histogram
+func (cs *ColumnStats) EstimateRangeSelectivity(lower, upper interface{}) float64 {
+	if len(cs.Histogram) == 0 || cs.DistinctCount == 0 {
+		return 0.33 // Default for range
+	}
+
+	var matchingRows uint64
+	totalRows := uint64(0)
+
+	for _, bucket := range cs.Histogram {
+		totalRows += bucket.Count
+
+		// Check if bucket overlaps with range
+		if bucketOverlapsRange(bucket, lower, upper) {
+			matchingRows += bucket.Count
+		}
+	}
+
+	if totalRows == 0 {
+		return 0.33
+	}
+
+	return float64(matchingRows) / float64(totalRows)
+}
+
+// bucketOverlapsRange checks if a histogram bucket overlaps with a range
+func bucketOverlapsRange(bucket Bucket, lower, upper interface{}) bool {
+	// Handle nil bounds
+	if lower == nil && upper == nil {
+		return true
+	}
+
+	// For simplicity, use string comparison for non-numeric types
+	lowerStr := valueToString(lower)
+	upperStr := valueToString(upper)
+	bucketLowerStr := valueToString(bucket.LowerBound)
+	bucketUpperStr := valueToString(bucket.UpperBound)
+
+	// Bucket overlaps if: bucket.Lower <= upper AND bucket.Upper >= lower
+	overlaps := bucketLowerStr <= upperStr && bucketUpperStr >= lowerStr
+	return overlaps
+}
+
+// valueToString converts a value to string for comparison
+func valueToString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case int, int32, int64:
+		return fmt.Sprintf("%d", val)
+	case float64:
+		return fmt.Sprintf("%g", val)
+	default:
+		return fmt.Sprintf("%v", val)
+	}
+}
+
+// GetHistogramBucketCount returns the number of histogram buckets
+func (cs *ColumnStats) GetHistogramBucketCount() int {
+	return len(cs.Histogram)
+}
+
+// GetMostCommonValues returns the bounds of the most frequent buckets
+func (cs *ColumnStats) GetMostCommonValues(n int) []interface{} {
+	if len(cs.Histogram) == 0 {
+		return nil
+	}
+
+	// Sort buckets by count (descending)
+	sorted := make([]Bucket, len(cs.Histogram))
+	copy(sorted, cs.Histogram)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Count > sorted[j].Count
+	})
+
+	if n > len(sorted) {
+		n = len(sorted)
+	}
+
+	result := make([]interface{}, 0, n)
+	for i := 0; i < n; i++ {
+		result = append(result, sorted[i].LowerBound)
+	}
+	return result
+}
+
+// StatsSummary provides a summary of statistics across all tables
+type StatsSummary struct {
+	TotalTables    int
+	TotalRows      uint64
+	TableSummaries []TableSummary
+	LastUpdated    time.Time
+}
+
+// TableSummary provides a summary for a single table
+type TableSummary struct {
+	TableName      string
+	RowCount       uint64
+	ColumnCount    int
+	LastAnalyzedAt time.Time
+}
+
+// GetSummary returns a summary of all statistics
+func (sc *StatsCollector) GetSummary() StatsSummary {
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+
+	summary := StatsSummary{
+		TotalTables:    len(sc.stats),
+		TableSummaries: make([]TableSummary, 0, len(sc.stats)),
+	}
+
+	for _, stats := range sc.stats {
+		stats.mu.RLock()
+		summary.TotalRows += stats.RowCount
+		summary.TableSummaries = append(summary.TableSummaries, TableSummary{
+			TableName:      stats.TableName,
+			RowCount:       stats.RowCount,
+			ColumnCount:    len(stats.ColumnStats),
+			LastAnalyzedAt: stats.LastAnalyzed,
+		})
+		stats.mu.RUnlock()
+	}
+
+	return summary
+}
+
+// CorrelationStats tracks correlation between two columns for index recommendations
+type CorrelationStats struct {
+	Column1     string
+	Column2     string
+	Correlation float64 // -1 to 1
+	SampleSize  int
+}
+
+// CalculateCorrelation calculates the Pearson correlation coefficient
+func CalculateCorrelation(x, y []float64) float64 {
+	if len(x) != len(y) || len(x) == 0 {
+		return 0
+	}
+
+	n := float64(len(x))
+
+	// Calculate means
+	var sumX, sumY float64
+	for i := range x {
+		sumX += x[i]
+		sumY += y[i]
+	}
+	meanX := sumX / n
+	meanY := sumY / n
+
+	// Calculate correlation
+	var num, denX, denY float64
+	for i := range x {
+		dx := x[i] - meanX
+		dy := y[i] - meanY
+		num += dx * dy
+		denX += dx * dx
+		denY += dy * dy
+	}
+
+	if denX == 0 || denY == 0 {
+		return 0
+	}
+
+	correlation := num / math.Sqrt(denX*denY)
+	if math.IsNaN(correlation) {
+		return 0
+	}
+
+	return correlation
+}
+
+// IsHighCorrelation returns true if the correlation indicates a strong relationship
+func (cs *CorrelationStats) IsHighCorrelation() bool {
+	return math.Abs(cs.Correlation) > 0.7
+}
+
+// IsPositiveCorrelation returns true if columns are positively correlated
+func (cs *CorrelationStats) IsPositiveCorrelation() bool {
+	return cs.Correlation > 0.3
+}
+
+// IsNegativeCorrelation returns true if columns are negatively correlated
+func (cs *CorrelationStats) IsNegativeCorrelation() bool {
+	return cs.Correlation < -0.3
+}

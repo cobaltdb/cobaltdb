@@ -348,6 +348,7 @@ type Collector struct {
 	// Database metrics
 	QueryCounter           *CounterMetric
 	QueryTimer             *TimerMetric
+	QueryHistogram         *HistogramMetric
 	ActiveConnections      *GaugeMetric
 	TotalConnections       *CounterMetric
 	CacheHits              *CounterMetric
@@ -357,6 +358,10 @@ type Collector struct {
 	TransactionsRolledBack *CounterMetric
 	ErrorsTotal            *CounterMetric
 	SlowQueries            *CounterMetric
+	WriteCounter           *CounterMetric
+	WriteHistogram         *HistogramMetric
+	BufferPoolHits         *CounterMetric
+	BufferPoolMisses       *CounterMetric
 
 	// Storage metrics
 	PagesRead    *CounterMetric
@@ -378,6 +383,7 @@ func NewCollector(interval time.Duration) *Collector {
 		stopCh:                 make(chan struct{}),
 		QueryCounter:           registry.RegisterCounter("queries_total", "Total number of queries", nil),
 		QueryTimer:             registry.RegisterTimer("query_duration_ms", "Query execution time in milliseconds", nil),
+		QueryHistogram:         registry.RegisterHistogram("query_duration_seconds", "Query execution time in seconds", nil, []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}),
 		ActiveConnections:      registry.RegisterGauge("connections_active", "Number of active connections", nil),
 		TotalConnections:       registry.RegisterCounter("connections_total", "Total number of connections", nil),
 		CacheHits:              registry.RegisterCounter("cache_hits_total", "Total cache hits", nil),
@@ -387,6 +393,10 @@ func NewCollector(interval time.Duration) *Collector {
 		TransactionsRolledBack: registry.RegisterCounter("transactions_rolled_back_total", "Total transactions rolled back", nil),
 		ErrorsTotal:            registry.RegisterCounter("errors_total", "Total errors", nil),
 		SlowQueries:            registry.RegisterCounter("slow_queries_total", "Total slow queries", nil),
+		WriteCounter:           registry.RegisterCounter("writes_total", "Total write operations", nil),
+		WriteHistogram:         registry.RegisterHistogram("write_duration_seconds", "Write execution time in seconds", nil, []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}),
+		BufferPoolHits:         registry.RegisterCounter("buffer_pool_hits_total", "Buffer pool hits", nil),
+		BufferPoolMisses:       registry.RegisterCounter("buffer_pool_misses_total", "Buffer pool misses", nil),
 		PagesRead:              registry.RegisterCounter("pages_read_total", "Total pages read from disk", nil),
 		PagesWritten:           registry.RegisterCounter("pages_written_total", "Total pages written to disk", nil),
 		PagesInCache:           registry.RegisterGauge("pages_in_cache", "Number of pages in cache", nil),
@@ -431,9 +441,26 @@ func (c *Collector) collectRuntimeMetrics() {
 func (c *Collector) RecordQuery(duration time.Duration, isSlow bool) {
 	c.QueryCounter.Inc()
 	c.QueryTimer.Time(duration)
+	c.QueryHistogram.Observe(duration.Seconds())
 	if isSlow {
 		c.SlowQueries.Inc()
 	}
+}
+
+// RecordWrite records write operation metrics
+func (c *Collector) RecordWrite(duration time.Duration) {
+	c.WriteCounter.Inc()
+	c.WriteHistogram.Observe(duration.Seconds())
+}
+
+// RecordBufferPoolHit records a buffer pool hit
+func (c *Collector) RecordBufferPoolHit() {
+	c.BufferPoolHits.Inc()
+}
+
+// RecordBufferPoolMiss records a buffer pool miss
+func (c *Collector) RecordBufferPoolMiss() {
+	c.BufferPoolMisses.Inc()
 }
 
 // RecordCacheHit records a cache hit

@@ -33,7 +33,7 @@ type BackupMetadata struct {
 	Backup
 	TableCounts map[string]int64  `json:"table_counts"`
 	Checksums   map[string]string `json:"checksums"`
-	Filename    string            `json:"filename"` // Full path to backup file
+	Filename    string            `json:"filename"`      // Full path to backup file
 	LSN         uint64            `json:"lsn,omitempty"` // Last LSN for incremental backups
 }
 

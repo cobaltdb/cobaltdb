@@ -47,8 +47,8 @@ const (
 type UnionStmt struct {
 	Left    Statement // SelectStmt or UnionStmt
 	Right   *SelectStmt
-	All     bool       // ALL variant (no deduplication)
-	Op      SetOpType  // UNION, INTERSECT, or EXCEPT
+	All     bool      // ALL variant (no deduplication)
+	Op      SetOpType // UNION, INTERSECT, or EXCEPT
 	OrderBy []*OrderByExpr
 	Limit   Expression
 	Offset  Expression
@@ -80,8 +80,10 @@ func (s *InsertStmt) statementNode()   {}
 
 // UpdateStmt represents an UPDATE statement
 type UpdateStmt struct {
-	Table string
+	Table string // Target table to update
 	Set   []*SetClause
+	From  *TableRef // Optional FROM clause for UPDATE with JOIN
+	Joins []*JoinClause
 	Where Expression
 }
 
@@ -96,7 +98,9 @@ type SetClause struct {
 
 // DeleteStmt represents a DELETE statement
 type DeleteStmt struct {
-	Table string
+	Table string      // Target table to delete from
+	Alias string      // Optional table alias
+	Using []*TableRef // USING clause for DELETE with JOIN
 	Where Expression
 }
 
@@ -108,6 +112,7 @@ type CreateTableStmt struct {
 	IfNotExists bool
 	Table       string
 	Columns     []*ColumnDef
+	PrimaryKey  []string // Table-level PRIMARY KEY (col1, col2, ...) for composite PK
 	ForeignKeys []*ForeignKeyDef
 }
 
@@ -177,8 +182,8 @@ type CreateTriggerStmt struct {
 	IfNotExists bool
 	Name        string
 	Table       string
-	Time        string // BEFORE, AFTER
-	Event       string // INSERT, UPDATE, DELETE
+	Time        string     // BEFORE, AFTER
+	Event       string     // INSERT, UPDATE, DELETE
 	Condition   Expression // WHEN condition (optional)
 	Body        []Statement
 }
@@ -554,7 +559,7 @@ func (e *WindowSpec) expressionNode()  {}
 // CTEDef represents a CTE (Common Table Expression) definition
 type CTEDef struct {
 	Name        string
-	Columns     []string // Optional column list
+	Columns     []string  // Optional column list
 	Query       Statement // *SelectStmt or *UnionStmt (for recursive CTEs)
 	IsRecursive bool
 }

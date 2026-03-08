@@ -9,8 +9,8 @@ import (
 
 func TestNewLogger(t *testing.T) {
 	config := &Config{
-		Enabled:  true,
-		LogFile:  "test_audit.log",
+		Enabled:   true,
+		LogFile:   "test_audit.log",
 		LogFormat: "json",
 	}
 
@@ -28,8 +28,8 @@ func TestNewLogger(t *testing.T) {
 
 func TestLogEvent(t *testing.T) {
 	config := &Config{
-		Enabled:  true,
-		LogFile:  "test_audit.log",
+		Enabled:   true,
+		LogFile:   "test_audit.log",
 		LogFormat: "text",
 	}
 

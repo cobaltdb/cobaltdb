@@ -286,6 +286,18 @@ func (m *Manager) Get(id uint64) (*Transaction, error) {
 	return txn, nil
 }
 
+// GetTransaction retrieves an active transaction (alias for Get)
+func (m *Manager) GetTransaction(id uint64) *Transaction {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	txn, ok := m.active[id]
+	if !ok {
+		return nil
+	}
+	return txn
+}
+
 // GetCurrentVersion returns the current version of a key
 func (m *Manager) GetCurrentVersion(key string) uint64 {
 	m.mu.RLock()

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,9 +69,9 @@ type Event struct {
 type Config struct {
 	Enabled         bool
 	LogFile         string
-	LogFormat       string      // "json" or "text"
+	LogFormat       string // "json" or "text"
 	RotationEnabled bool
-	MaxFileSize     int64       // bytes
+	MaxFileSize     int64 // bytes
 	MaxBackups      int
 	MaxAge          int         // days
 	Events          []EventType // Which events to log (empty = all)
@@ -284,11 +285,115 @@ func (al *Logger) writeEvent(event *Event) error {
 }
 
 func (al *Logger) maskSensitiveData(event *Event) {
-	for _, field := range al.config.SensitiveFields {
-		if field == "password" && event.Query != "" {
-			// Simple masking
-		}
+	if event.Query == "" {
+		return
 	}
+
+	query := event.Query
+
+	// Mask passwords in CREATE/ALTER USER statements
+	// Pattern: PASSWORD '...' or PASSWORD "..."
+	query = maskPasswordPattern(query, "PASSWORD")
+	query = maskPasswordPattern(query, "password")
+
+	// Mask passwords in IDENTIFIED BY clauses
+	// Pattern: IDENTIFIED BY '...' or IDENTIFIED BY "..."
+	query = maskPasswordPattern(query, "IDENTIFIED BY")
+	query = maskPasswordPattern(query, "identified by")
+
+	// Mask API keys and tokens
+	query = maskPasswordPattern(query, "API_KEY")
+	query = maskPasswordPattern(query, "api_key")
+	query = maskPasswordPattern(query, "TOKEN")
+	query = maskPasswordPattern(query, "token")
+	query = maskPasswordPattern(query, "SECRET")
+	query = maskPasswordPattern(query, "secret")
+
+	// Mask connection strings with passwords
+	// Pattern: password=... or pwd=...
+	query = maskKeyValuePair(query, "password")
+	query = maskKeyValuePair(query, "pwd")
+
+	event.Query = query
+}
+
+// maskPasswordPattern masks passwords after specific keywords
+func maskPasswordPattern(query, keyword string) string {
+	result := query
+	offset := 0
+
+	for {
+		idx := strings.Index(strings.ToUpper(result[offset:]), strings.ToUpper(keyword))
+		if idx == -1 {
+			break
+		}
+		idx += offset
+
+		// Find the start of the value (skip whitespace and optional =)
+		pos := idx + len(keyword)
+		for pos < len(result) && (result[pos] == ' ' || result[pos] == '\t' || result[pos] == '=') {
+			pos++
+		}
+
+		// Check if value is quoted
+		if pos < len(result) && (result[pos] == '\'' || result[pos] == '"') {
+			quote := result[pos]
+			start := pos
+			pos++
+
+			// Find closing quote
+			for pos < len(result) && result[pos] != quote {
+				pos++
+			}
+
+			if pos < len(result) {
+				// Mask the content between quotes
+				result = result[:start+1] + "***" + result[pos:]
+			}
+		}
+
+		offset = idx + len(keyword)
+	}
+
+	return result
+}
+
+// maskKeyValuePair masks key=value patterns
+func maskKeyValuePair(query, key string) string {
+	result := query
+	offset := 0
+
+	for {
+		// Look for key= or key:= pattern
+		pattern := key + "="
+		idx := strings.Index(strings.ToLower(result[offset:]), pattern)
+		if idx == -1 {
+			// Try with spaces around =
+			pattern = key + " = "
+			idx = strings.Index(strings.ToLower(result[offset:]), pattern)
+		}
+		if idx == -1 {
+			break
+		}
+		idx += offset
+
+		pos := idx + len(pattern)
+
+		// Find end of value (space, comma, or end of string)
+		start := pos
+		for pos < len(result) && result[pos] != ' ' && result[pos] != ',' && result[pos] != ';' {
+			pos++
+		}
+
+		if pos > start {
+			// Mask the value
+			result = result[:start] + "***" + result[pos:]
+		}
+
+		offset = idx + len(pattern)
+	}
+
+	return result
 }
 
 func generateEventID() string {

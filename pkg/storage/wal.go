@@ -156,6 +156,19 @@ func (w *WAL) Append(record *WALRecord) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	return w.appendInternal(record, true)
+}
+
+// AppendWithoutSync adds a record without syncing (for group commit)
+func (w *WAL) AppendWithoutSync(record *WALRecord) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.appendInternal(record, false)
+}
+
+// appendInternal is the internal append implementation
+func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 	if w.file == nil {
 		return ErrWALClosed
 	}
@@ -179,8 +192,8 @@ func (w *WAL) Append(record *WALRecord) error {
 		return err
 	}
 
-	// Commit records must be flushed immediately
-	if record.Type == WALCommit {
+	// Sync if requested (for commit records or explicit sync)
+	if sync {
 		if err := w.bufWriter.Flush(); err != nil {
 			return err
 		}
@@ -188,6 +201,21 @@ func (w *WAL) Append(record *WALRecord) error {
 	}
 
 	return nil
+}
+
+// Sync flushes the buffer and syncs to disk
+func (w *WAL) Sync() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.file == nil {
+		return ErrWALClosed
+	}
+
+	if err := w.bufWriter.Flush(); err != nil {
+		return err
+	}
+	return w.file.Sync()
 }
 
 // encodeRecord encodes a WAL record to bytes (without CRC)

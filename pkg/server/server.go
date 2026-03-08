@@ -42,10 +42,10 @@ type Config struct {
 	RequireAuth      bool
 	DefaultAdminUser string
 	DefaultAdminPass string
-	MaxConnections   int           // Maximum concurrent connections (0 = unlimited)
-	ReadTimeout      int           // Read timeout in seconds (0 = 300s default)
-	WriteTimeout     int           // Write timeout in seconds (0 = 60s default)
-	TLS              *TLSConfig    // TLS configuration (nil = disabled)
+	MaxConnections   int        // Maximum concurrent connections (0 = unlimited)
+	ReadTimeout      int        // Read timeout in seconds (0 = 300s default)
+	WriteTimeout     int        // Write timeout in seconds (0 = 60s default)
+	TLS              *TLSConfig // TLS configuration (nil = disabled)
 }
 
 // DefaultConfig returns the default server configuration

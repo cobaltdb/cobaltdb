@@ -26,31 +26,31 @@ var (
 
 // TLSConfig holds TLS configuration
 type TLSConfig struct {
-	Enabled              bool
-	CertFile             string
-	KeyFile              string
-	CAFile               string
-	ClientAuth           tls.ClientAuthType
-	InsecureSkipVerify   bool
-	MinVersion           uint16
-	MaxVersion           uint16
-	CipherSuites         []uint16
+	Enabled                  bool
+	CertFile                 string
+	KeyFile                  string
+	CAFile                   string
+	ClientAuth               tls.ClientAuthType
+	InsecureSkipVerify       bool
+	MinVersion               uint16
+	MaxVersion               uint16
+	CipherSuites             []uint16
 	PreferServerCipherSuites bool
-	GenerateSelfSigned   bool
-	SelfSignedOrg        string
-	SelfSignedValidDays  int
+	GenerateSelfSigned       bool
+	SelfSignedOrg            string
+	SelfSignedValidDays      int
 }
 
 // DefaultTLSConfig returns default TLS configuration
 func DefaultTLSConfig() *TLSConfig {
 	return &TLSConfig{
-		Enabled:              false,
-		ClientAuth:           tls.NoClientCert,
-		MinVersion:           tls.VersionTLS12,
-		MaxVersion:           tls.VersionTLS13,
+		Enabled:                  false,
+		ClientAuth:               tls.NoClientCert,
+		MinVersion:               tls.VersionTLS12,
+		MaxVersion:               tls.VersionTLS13,
 		PreferServerCipherSuites: true,
-		SelfSignedOrg:        "CobaltDB",
-		SelfSignedValidDays:  365,
+		SelfSignedOrg:            "CobaltDB",
+		SelfSignedValidDays:      365,
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,

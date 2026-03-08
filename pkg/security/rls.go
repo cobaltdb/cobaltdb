@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -15,6 +17,7 @@ var (
 	ErrPolicyAlreadyExists = errors.New("security policy already exists")
 	ErrInvalidPolicy       = errors.New("invalid security policy")
 	ErrRLSNotEnabled       = errors.New("row-level security not enabled for table")
+	ErrInvalidExpression   = errors.New("invalid policy expression")
 )
 
 // PolicyType defines the type of policy
@@ -53,18 +56,18 @@ type Policy struct {
 	Name       string                 `json:"name"`
 	TableName  string                 `json:"table_name"`
 	Type       PolicyType             `json:"type"`
-	Expression string                 `json:"expression"`     // SQL expression
-	Users      []string               `json:"users"`          // Apply to specific users (empty = all)
-	Roles      []string               `json:"roles"`          // Apply to specific roles
+	Expression string                 `json:"expression"` // SQL expression
+	Users      []string               `json:"users"`      // Apply to specific users (empty = all)
+	Roles      []string               `json:"roles"`      // Apply to specific roles
 	Enabled    bool                   `json:"enabled"`
 	Metadata   map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // Manager manages row-level security policies
 type Manager struct {
-	policies      map[string]*Policy // key: "tableName:policyName"
-	tablePolicies map[string][]string // key: tableName, value: []policyNames
-	enabledTables map[string]bool     // Tables with RLS enabled
+	policies      map[string]*Policy    // key: "tableName:policyName"
+	tablePolicies map[string][]string   // key: tableName, value: []policyNames
+	enabledTables map[string]bool       // Tables with RLS enabled
 	compiledExprs map[string]PolicyExpr // Compiled expressions
 	mu            sync.RWMutex
 }
@@ -129,7 +132,7 @@ func (m *Manager) CreatePolicy(policy *Policy) error {
 	// Enable RLS for table automatically
 	m.enabledTables[policy.TableName] = true
 
-	// Compile expression (simplified - real implementation would parse SQL)
+	// Compile expression
 	if err := m.compilePolicy(policy); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidPolicy, err)
 	}
@@ -390,7 +393,6 @@ func (m *Manager) policyKey(tableName, policyName string) string {
 }
 
 // compilePolicy compiles a policy expression
-// This is a simplified version - real implementation would parse SQL
 func (m *Manager) compilePolicy(policy *Policy) error {
 	key := m.policyKey(policy.TableName, policy.Name)
 
@@ -413,50 +415,574 @@ func (m *Manager) compilePolicy(policy *Policy) error {
 }
 
 // parseExpression parses a SQL expression and returns an evaluator
-// This is a simplified placeholder - real implementation would have full SQL parser
+// Supports: =, !=, <>, <, >, <=, >=, AND, OR, NOT, IN, LIKE, IS NULL, IS NOT NULL
 func (m *Manager) parseExpression(expr string) (PolicyExpr, error) {
-	// Simple expressions for common patterns
-	expr = strings.TrimSpace(strings.ToLower(expr))
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+			return true, nil
+		}, nil
+	}
 
-	// user_id = current_user
-	if strings.Contains(expr, "current_user") {
+	upperExpr := strings.ToUpper(expr)
+
+	// Handle boolean literals first
+	if upperExpr == "TRUE" {
+		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+			return true, nil
+		}, nil
+	}
+	if upperExpr == "FALSE" {
+		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+			return false, nil
+		}, nil
+	}
+
+	// Handle NOT operator - must check for "NOT " followed by something
+	if strings.HasPrefix(upperExpr, "NOT ") {
+		innerExpr, err := m.parseExpression(expr[4:])
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+			result, err := innerExpr(ctx, row)
+			if err != nil {
+				return false, err
+			}
+			return !result, nil
+		}, nil
+	}
+
+	// Handle parentheses - find matching pair and strip them
+	if strings.HasPrefix(expr, "(") {
+		// Find the matching closing parenthesis
+		depth := 1
+		endIdx := -1
+		for i := 1; i < len(expr); i++ {
+			if expr[i] == '(' {
+				depth++
+			} else if expr[i] == ')' {
+				depth--
+				if depth == 0 {
+					endIdx = i
+					break
+				}
+			}
+		}
+		// If the entire expression is wrapped in parentheses
+		if endIdx == len(expr)-1 {
+			return m.parseExpression(expr[1 : len(expr)-1])
+		}
+	}
+
+	// Try to parse complex expressions (AND/OR with proper precedence)
+	parsedExpr, err := m.parseComplexExpression(expr)
+	if err == nil {
+		return parsedExpr, nil
+	}
+
+	// Fall back to simple expression parsing
+	return m.parseSimpleExpression(expr)
+}
+
+// parseComplexExpression handles AND/OR combinations with proper precedence and parentheses
+func (m *Manager) parseComplexExpression(expr string) (PolicyExpr, error) {
+	expr = strings.TrimSpace(expr)
+
+	// Find top-level AND/OR (not inside parentheses)
+	andIdx := findTopLevelOperator(expr, " AND ")
+	if andIdx >= 0 {
+		leftExpr, err := m.parseExpression(expr[:andIdx])
+		if err != nil {
+			return nil, err
+		}
+		rightExpr, err := m.parseExpression(expr[andIdx+5:])
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+			left, err := leftExpr(ctx, row)
+			if err != nil {
+				return false, err
+			}
+			if !left {
+				return false, nil
+			}
+			return rightExpr(ctx, row)
+		}, nil
+	}
+
+	orIdx := findTopLevelOperator(expr, " OR ")
+	if orIdx >= 0 {
+		leftExpr, err := m.parseExpression(expr[:orIdx])
+		if err != nil {
+			return nil, err
+		}
+		rightExpr, err := m.parseExpression(expr[orIdx+4:])
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+			left, err := leftExpr(ctx, row)
+			if err != nil {
+				return false, err
+			}
+			if left {
+				return true, nil
+			}
+			return rightExpr(ctx, row)
+		}, nil
+	}
+
+	return nil, fmt.Errorf("could not parse complex expression")
+}
+
+// findTopLevelOperator finds an operator at the top level (not inside parentheses)
+func findTopLevelOperator(expr, op string) int {
+	depth := 0
+	upperExpr := strings.ToUpper(expr)
+	upperOp := strings.ToUpper(op)
+	for i := 0; i <= len(upperExpr)-len(upperOp); i++ {
+		if expr[i] == '(' {
+			depth++
+		} else if expr[i] == ')' {
+			depth--
+		} else if depth == 0 && strings.HasPrefix(upperExpr[i:], upperOp) {
+			return i
+		}
+	}
+	return -1
+}
+
+// parseSimpleExpression handles simple comparison expressions
+func (m *Manager) parseSimpleExpression(expr string) (PolicyExpr, error) {
+	expr = strings.TrimSpace(expr)
+	upperExpr := strings.ToUpper(expr)
+
+	// Check for IS NULL / IS NOT NULL
+	if nullExpr := parseNullCheck(expr); nullExpr != nil {
+		return nullExpr, nil
+	}
+
+	// Check for IN operator
+	if inExpr := parseInOperator(expr); inExpr != nil {
+		return inExpr, nil
+	}
+
+	// Check for LIKE operator
+	if likeExpr := parseLikeOperator(expr); likeExpr != nil {
+		return likeExpr, nil
+	}
+
+	// Parse comparison operators - check for >=, <=, <>, != first (before single char ops)
+	operators := []string{"<=", ">=", "<>", "!=", "=", "<", ">"}
+	for _, op := range operators {
+		if idx := findTopLevelOperator(expr, op); idx >= 0 {
+			left := strings.TrimSpace(expr[:idx])
+			right := strings.TrimSpace(expr[idx+len(op):])
+			return m.createComparisonEvaluator(left, op, right), nil
+		}
+	}
+
+	// Check if this is a bare column name (treat as boolean)
+	if isBareColumn(expr) {
+		colName := strings.TrimSpace(expr)
+		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+			val, ok := row[colName]
+			if !ok {
+				val = row[strings.ToLower(colName)]
+			}
+			// Treat as boolean: non-nil and non-false values are true
+			if val == nil {
+				return false, nil
+			}
+			if b, ok := val.(bool); ok {
+				return b, nil
+			}
+			// Non-nil values are truthy
+			return true, nil
+		}, nil
+	}
+
+	// Check for context functions (bare current_user, current_tenant, etc.)
+	upperExpr = strings.ToUpper(expr)
+	switch upperExpr {
+	case "CURRENT_USER", "CURRENT_USER()":
 		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 			user := ctx.Value("user")
-			if user == nil {
-				return false, nil
-			}
-			userStr, ok := user.(string)
-			if !ok {
-				return false, nil
-			}
-
-			// Check if row has user_id column
-			if rowUserID, ok := row["user_id"]; ok {
-				return fmt.Sprintf("%v", rowUserID) == userStr, nil
-			}
-			return false, nil
+			return user != nil && user != "", nil
 		}, nil
-	}
-
-	// tenant_id = current_tenant
-	if strings.Contains(expr, "current_tenant") {
+	case "CURRENT_TENANT", "CURRENT_TENANT()":
 		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 			tenant := ctx.Value("tenant")
-			if tenant == nil {
-				return false, nil
-			}
-
-			if rowTenantID, ok := row["tenant_id"]; ok {
-				return fmt.Sprintf("%v", rowTenantID) == fmt.Sprintf("%v", tenant), nil
-			}
-			return false, nil
+			return tenant != nil && tenant != "", nil
 		}, nil
 	}
 
-	// Default: allow all
+	return nil, fmt.Errorf("%w: unsupported expression: %s", ErrInvalidExpression, expr)
+}
+
+// isBareColumn checks if expr is a bare column name (not a comparison, not quoted, etc.)
+func isBareColumn(expr string) bool {
+	expr = strings.TrimSpace(expr)
+	upperExpr := strings.ToUpper(expr)
+
+	// Check for operators
+	if strings.Contains(expr, "=") || strings.Contains(expr, "<") || strings.Contains(expr, ">") {
+		return false
+	}
+
+	// Check for SQL keywords
+	switch upperExpr {
+	case "TRUE", "FALSE", "NULL", "AND", "OR", "NOT", "IN", "LIKE", "BETWEEN", "IS":
+		return false
+	}
+
+	// Must be alphanumeric with underscores (identifier pattern)
+	for _, ch := range expr {
+		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_') {
+			return false
+		}
+	}
+
+	return len(expr) > 0
+}
+
+// createComparisonEvaluator creates an evaluator for comparison operations
+func (m *Manager) createComparisonEvaluator(left, op, right string) PolicyExpr {
+	// Normalize column name if it looks like a column reference
+	leftCol := normalizeColumnName(left)
+
+	// Check if this is a context expression like "user_id = current_user"
+	isContextExpr := isContextFunction(right)
+
 	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
-		return true, nil
-	}, nil
+		var leftVal, rightVal interface{}
+
+		if isContextExpr {
+			// For context expressions, left is column, right is context value
+			leftVal = m.getValueFromRow(leftCol, row)
+			rightVal = m.getContextValue(right, ctx)
+		} else {
+			leftVal = m.getValue(left, ctx, row)
+			rightVal = m.getValue(right, ctx, row)
+		}
+
+		// Handle NULL comparisons
+		if leftVal == nil || rightVal == nil {
+			switch op {
+			case "=":
+				return leftVal == rightVal, nil
+			case "!=", "<>":
+				return leftVal != rightVal, nil
+			default:
+				return false, nil
+			}
+		}
+
+		// Try numeric comparison first
+		leftNum, leftIsNum := toFloat64(leftVal)
+		rightNum, rightIsNum := toFloat64(rightVal)
+
+		if leftIsNum && rightIsNum {
+			switch op {
+			case "=":
+				return leftNum == rightNum, nil
+			case "!=", "<>":
+				return leftNum != rightNum, nil
+			case "<":
+				return leftNum < rightNum, nil
+			case ">":
+				return leftNum > rightNum, nil
+			case "<=":
+				return leftNum <= rightNum, nil
+			case ">=":
+				return leftNum >= rightNum, nil
+			}
+		}
+
+		// String comparison
+		leftStr := fmt.Sprintf("%v", leftVal)
+		rightStr := fmt.Sprintf("%v", rightVal)
+
+		switch op {
+		case "=":
+			return leftStr == rightStr, nil
+		case "!=", "<>":
+			return leftStr != rightStr, nil
+		case "<":
+			return leftStr < rightStr, nil
+		case ">":
+			return leftStr > rightStr, nil
+		case "<=":
+			return leftStr <= rightStr, nil
+		case ">=":
+			return leftStr >= rightStr, nil
+		}
+
+		return false, nil
+	}
+}
+
+// isContextFunction checks if expr is a context function like current_user
+func isContextFunction(expr string) bool {
+	upperExpr := strings.ToUpper(strings.TrimSpace(expr))
+	return upperExpr == "CURRENT_USER" || upperExpr == "CURRENT_USER()" ||
+		upperExpr == "CURRENT_TENANT" || upperExpr == "CURRENT_TENANT()" ||
+		upperExpr == "CURRENT_ROLE" || upperExpr == "CURRENT_ROLE()" ||
+		upperExpr == "SESSION_USER"
+}
+
+// normalizeColumnName normalizes a column name
+func normalizeColumnName(name string) string {
+	name = strings.TrimSpace(name)
+	// Remove any trailing comparison operators or whitespace
+	name = strings.TrimRight(name, "=<>")
+	return strings.TrimSpace(name)
+}
+
+// getValue retrieves a value from context or row
+func (m *Manager) getValue(name string, ctx context.Context, row map[string]interface{}) interface{} {
+	name = strings.TrimSpace(name)
+	upperName := strings.ToUpper(name)
+
+	// Check for quoted strings
+	if (strings.HasPrefix(name, "'") && strings.HasSuffix(name, "'")) ||
+		(strings.HasPrefix(name, "\"") && strings.HasSuffix(name, "\"")) {
+		return name[1 : len(name)-1]
+	}
+
+	// Check for numbers
+	if num, err := strconv.ParseFloat(name, 64); err == nil {
+		return num
+	}
+
+	// Check for boolean
+	if upperName == "TRUE" {
+		return true
+	}
+	if upperName == "FALSE" {
+		return false
+	}
+
+	// Check for context variables
+	if val := m.getContextValue(name, ctx); val != nil {
+		return val
+	}
+
+	// Get from row
+	return m.getValueFromRow(name, row)
+}
+
+// getContextValue retrieves a value from context
+func (m *Manager) getContextValue(name string, ctx context.Context) interface{} {
+	upperName := strings.ToUpper(strings.TrimSpace(name))
+
+	switch upperName {
+	case "CURRENT_USER", "CURRENT_USER()":
+		return ctx.Value("user")
+	case "CURRENT_TENANT", "CURRENT_TENANT()":
+		return ctx.Value("tenant")
+	case "CURRENT_ROLE", "CURRENT_ROLE()":
+		return ctx.Value("role")
+	case "SESSION_USER":
+		if user := ctx.Value("session_user"); user != nil {
+			return user
+		}
+		return ctx.Value("user")
+	}
+	return nil
+}
+
+// getValueFromRow retrieves a value from row
+func (m *Manager) getValueFromRow(name string, row map[string]interface{}) interface{} {
+	if val, ok := row[name]; ok {
+		return val
+	}
+	// Try lowercase
+	if val, ok := row[strings.ToLower(name)]; ok {
+		return val
+	}
+	return nil
+}
+
+// parseNullCheck parses IS NULL / IS NOT NULL expressions
+func parseNullCheck(expr string) PolicyExpr {
+	exprUpper := strings.ToUpper(strings.TrimSpace(expr))
+
+	// IS NOT NULL
+	if idx := strings.LastIndex(exprUpper, " IS NOT NULL"); idx > 0 {
+		columnName := strings.TrimSpace(expr[:idx])
+		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+			val, ok := row[columnName]
+			if !ok {
+				val = row[strings.ToLower(columnName)]
+			}
+			return val != nil, nil
+		}
+	}
+
+	// IS NULL
+	if idx := strings.LastIndex(exprUpper, " IS NULL"); idx > 0 {
+		columnName := strings.TrimSpace(expr[:idx])
+		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+			val, ok := row[columnName]
+			if !ok {
+				val = row[strings.ToLower(columnName)]
+			}
+			return val == nil, nil
+		}
+	}
+
+	return nil
+}
+
+// parseInOperator parses IN operator expressions
+func parseInOperator(expr string) PolicyExpr {
+	expr = strings.TrimSpace(expr)
+
+	// Match pattern: column IN (value1, value2, ...)
+	inRegex := regexp.MustCompile(`(?i)^(.+?)\s+IN\s*\((.+?)\)$`)
+	matches := inRegex.FindStringSubmatch(expr)
+	if len(matches) != 3 {
+		return nil
+	}
+
+	columnName := strings.TrimSpace(matches[1])
+	valuesStr := matches[2]
+
+	// Parse values
+	values := parseValueList(valuesStr)
+
+	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+		rowValue, ok := row[columnName]
+		if !ok {
+			rowValue = row[strings.ToLower(columnName)]
+		}
+
+		rowStr := fmt.Sprintf("%v", rowValue)
+		for _, v := range values {
+			if rowStr == v {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+}
+
+// parseLikeOperator parses LIKE operator expressions
+func parseLikeOperator(expr string) PolicyExpr {
+	expr = strings.TrimSpace(expr)
+
+	// Match pattern: column LIKE 'pattern'
+	likeRegex := regexp.MustCompile(`(?i)^(.+?)\s+LIKE\s+['"](.+?)['"]$`)
+	matches := likeRegex.FindStringSubmatch(expr)
+	if len(matches) != 3 {
+		return nil
+	}
+
+	columnName := strings.TrimSpace(matches[1])
+	pattern := matches[2]
+
+	// Convert SQL LIKE pattern to regex
+	regexPattern := likeToRegex(pattern)
+	re, err := regexp.Compile(regexPattern)
+	if err != nil {
+		return nil
+	}
+
+	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+		rowValue, ok := row[columnName]
+		if !ok {
+			rowValue = row[strings.ToLower(columnName)]
+		}
+
+		return re.MatchString(fmt.Sprintf("%v", rowValue)), nil
+	}
+}
+
+// Helper functions
+
+func splitLogical(expr, separator string) []string {
+	exprUpper := strings.ToUpper(expr)
+	sepUpper := strings.ToUpper(separator)
+
+	idx := strings.Index(exprUpper, sepUpper)
+	if idx < 0 {
+		return nil
+	}
+
+	return []string{
+		strings.TrimSpace(expr[:idx]),
+		strings.TrimSpace(expr[idx+len(separator):]),
+	}
+}
+
+func splitByOperator(expr, op string) []string {
+	idx := strings.Index(strings.ToUpper(expr), op)
+	if idx < 0 {
+		return nil
+	}
+
+	return []string{
+		strings.TrimSpace(expr[:idx]),
+		strings.TrimSpace(expr[idx+len(op):]),
+	}
+}
+
+func toFloat64(v interface{}) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case float32:
+		return float64(val), true
+	case int:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	case int32:
+		return float64(val), true
+	case string:
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
+}
+
+func extractColumnName(expr, contextFunc string) string {
+	expr = strings.ToLower(strings.TrimSpace(expr))
+	contextFunc = strings.ToLower(contextFunc)
+
+	// Remove everything after the context function
+	if idx := strings.Index(expr, contextFunc); idx > 0 {
+		return strings.TrimSpace(expr[:idx])
+	}
+	return ""
+}
+
+func parseValueList(valuesStr string) []string {
+	values := []string{}
+	parts := strings.Split(valuesStr, ",")
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		// Remove quotes
+		if (strings.HasPrefix(p, "'") && strings.HasSuffix(p, "'")) ||
+			(strings.HasPrefix(p, "\"") && strings.HasSuffix(p, "\"")) {
+			p = p[1 : len(p)-1]
+		}
+		values = append(values, p)
+	}
+	return values
+}
+
+func likeToRegex(pattern string) string {
+	// Escape regex special characters except % and _
+	result := regexp.QuoteMeta(pattern)
+	// Replace SQL wildcards with regex equivalents
+	result = strings.ReplaceAll(result, "%", ".*")
+	result = strings.ReplaceAll(result, "_", ".")
+	return "^" + result + "$"
 }
 
 // ForceRow indicates that RLS should be applied even for table owners

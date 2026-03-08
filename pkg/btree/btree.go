@@ -13,20 +13,20 @@ import (
 )
 
 var (
-	ErrKeyNotFound      = errors.New("key not found")
-	ErrKeyExists        = errors.New("key already exists")
-	ErrTreeFull         = errors.New("tree is full")
-	ErrInvalidKey       = errors.New("invalid key")
-	ErrInvalidValue     = errors.New("invalid value")
-	ErrMemoryLimit      = errors.New("memory limit exceeded")
-	DefaultMemoryLimit  = int64(64 * 1024 * 1024) // 64MB default
+	ErrKeyNotFound     = errors.New("key not found")
+	ErrKeyExists       = errors.New("key already exists")
+	ErrTreeFull        = errors.New("tree is full")
+	ErrInvalidKey      = errors.New("invalid key")
+	ErrInvalidValue    = errors.New("invalid value")
+	ErrMemoryLimit     = errors.New("memory limit exceeded")
+	DefaultMemoryLimit = int64(64 * 1024 * 1024) // 64MB default
 )
 
 // lruEntry tracks memory usage for LRU eviction
 type lruEntry struct {
-	key      string
-	size     int64
-	elem     *list.Element
+	key  string
+	size int64
+	elem *list.Element
 }
 
 // BTree represents a disk-based B+Tree index using a hybrid approach:
@@ -45,10 +45,10 @@ type BTree struct {
 	overflowPages []uint32 // IDs of overflow pages used by this tree
 
 	// Memory management
-	memoryLimit   int64             // Maximum memory to use (0 = unlimited)
-	memoryUsed    int64             // Current memory usage
-	lruList       *list.List        // LRU list for eviction
-	lruMap        map[string]*lruEntry // Track entries in LRU
+	memoryLimit int64                // Maximum memory to use (0 = unlimited)
+	memoryUsed  int64                // Current memory usage
+	lruList     *list.List           // LRU list for eviction
+	lruMap      map[string]*lruEntry // Track entries in LRU
 }
 
 // usablePageSize is the space available for data in each page (after header)
@@ -74,11 +74,11 @@ func NewBTreeWithLimit(pool *storage.BufferPool, limit int64) (*BTree, error) {
 	defer pool.Unpin(rootPage)
 
 	return &BTree{
-		rootPageID: rootPage.ID(),
-		pool:       pool,
-		order:      100,
-		memStorage: make(map[string][]byte),
-		dirty:      false,
+		rootPageID:  rootPage.ID(),
+		pool:        pool,
+		order:       100,
+		memStorage:  make(map[string][]byte),
+		dirty:       false,
 		memoryLimit: limit,
 		memoryUsed:  0,
 		lruList:     list.New(),

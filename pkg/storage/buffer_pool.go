@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 var (
@@ -72,6 +73,7 @@ type BufferPool struct {
 	backend    Backend
 	wal        *WAL
 	nextPageID uint32 // next available page ID for allocation
+	stats      *bufferPoolStatsCollector
 }
 
 // NewBufferPool creates a new buffer pool
@@ -81,6 +83,7 @@ func NewBufferPool(capacity int, backend Backend) *BufferPool {
 		pages:    make(map[uint32]*CachedPage),
 		lru:      list.New(),
 		backend:  backend,
+		stats:    newBufferPoolStatsCollector(),
 	}
 
 	// Initialize nextPageID based on backend size
@@ -113,11 +116,13 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 		bp.mu.RUnlock()
 		bp.touchLRU(p)
 		p.Pin()
+		bp.stats.recordHit()
 		return p, nil
 	}
 	bp.mu.RUnlock()
 
 	// Slow path: load from disk
+	bp.stats.recordMiss()
 	bp.mu.Lock()
 
 	// Double-check after acquiring write lock
@@ -125,6 +130,7 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 		bp.touchLRUUnsafe(p)
 		p.Pin()
 		bp.mu.Unlock()
+		bp.stats.recordHit()
 		return p, nil
 	}
 
@@ -139,11 +145,14 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 	// Read page from disk
 	data := make([]byte, PageSize)
 	offset := int64(pageID) * int64(PageSize)
+	start := time.Now()
 	_, err := bp.backend.ReadAt(data, offset)
+	readTime := time.Since(start)
 	if err != nil {
 		bp.mu.Unlock()
 		return nil, fmt.Errorf("failed to read page %d: %w", pageID, err)
 	}
+	bp.stats.recordRead(readTime)
 
 	page := &CachedPage{
 		id:     pageID,
@@ -195,9 +204,12 @@ func (bp *BufferPool) FlushPage(page *CachedPage) error {
 	}
 
 	offset := int64(page.id) * int64(PageSize)
+	start := time.Now()
 	if _, err := bp.backend.WriteAt(page.data, offset); err != nil {
 		return fmt.Errorf("failed to write page %d: %w", page.id, err)
 	}
+	writeTime := time.Since(start)
+	bp.stats.recordWrite(writeTime)
 
 	page.SetDirty(false)
 	return nil
@@ -253,6 +265,7 @@ func (bp *BufferPool) evict() error {
 			// Remove from cache
 			delete(bp.pages, page.id)
 			bp.lru.Remove(elem)
+			bp.stats.recordEviction()
 			return nil
 		}
 		elem = elem.Prev()

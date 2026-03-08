@@ -216,10 +216,10 @@ func TestEncryptedWriteReadAtOffset(t *testing.T) {
 	}
 
 	config := &EncryptionConfig{
-		Enabled:   true,
-		Key:       key,
-		Algorithm: "aes-256-gcm",
-		UseArgon2: false, // Test PBKDF2
+		Enabled:     true,
+		Key:         key,
+		Algorithm:   "aes-256-gcm",
+		UseArgon2:   false, // Test PBKDF2
 		PBKDF2Iters: 10000,
 	}
 
@@ -488,11 +488,11 @@ func TestDifferentKeys(t *testing.T) {
 	backendPath1 := filepath.Join(tempDir, "test1.db")
 	backend1, _ := OpenDisk(backendPath1)
 	config1 := &EncryptionConfig{
-		Enabled:   true,
-		Key:       key1,
-		Salt:      []byte("salt123456789012"),
-		Algorithm: "aes-256-gcm",
-		UseArgon2: false,
+		Enabled:     true,
+		Key:         key1,
+		Salt:        []byte("salt123456789012"),
+		Algorithm:   "aes-256-gcm",
+		UseArgon2:   false,
 		PBKDF2Iters: 1000,
 	}
 	eb1, _ := NewEncryptedBackend(backend1, config1)
@@ -508,11 +508,11 @@ func TestDifferentKeys(t *testing.T) {
 	// Try to read with key2 (should fail to decrypt correctly)
 	backend2, _ := OpenDisk(backendPath1)
 	config2 := &EncryptionConfig{
-		Enabled:   true,
-		Key:       key2,
-		Salt:      []byte("salt123456789012"),
-		Algorithm: "aes-256-gcm",
-		UseArgon2: false,
+		Enabled:     true,
+		Key:         key2,
+		Salt:        []byte("salt123456789012"),
+		Algorithm:   "aes-256-gcm",
+		UseArgon2:   false,
 		PBKDF2Iters: 1000,
 	}
 	eb2, _ := NewEncryptedBackend(backend2, config2)

@@ -26,12 +26,12 @@ var (
 
 // EncryptionConfig holds encryption configuration
 type EncryptionConfig struct {
-	Enabled      bool   // Whether encryption is enabled
-	Key          []byte // Raw encryption key (32 bytes for AES-256)
-	Salt         []byte // Salt for key derivation
-	Algorithm    string // "aes-256-gcm" (default)
-	UseArgon2    bool   // Use Argon2id for key derivation (recommended)
-	PBKDF2Iters  int    // PBKDF2 iterations (default: 100000)
+	Enabled     bool   // Whether encryption is enabled
+	Key         []byte // Raw encryption key (32 bytes for AES-256)
+	Salt        []byte // Salt for key derivation
+	Algorithm   string // "aes-256-gcm" (default)
+	UseArgon2   bool   // Use Argon2id for key derivation (recommended)
+	PBKDF2Iters int    // PBKDF2 iterations (default: 100000)
 }
 
 // EncryptedBackend wraps a Backend with transparent encryption/decryption

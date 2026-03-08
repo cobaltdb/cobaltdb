@@ -32,7 +32,7 @@ type TableDef struct {
 	Name        string          `json:"name"`
 	Type        string          `json:"type"` // "table" or "collection"
 	Columns     []ColumnDef     `json:"columns"`
-	PrimaryKey  string          `json:"primary_key"`
+	PrimaryKey  []string        `json:"primary_key"` // Supports composite PK
 	CreatedAt   int64           `json:"created_at"`
 	RootPageID  uint32          `json:"root_page_id"`
 	ForeignKeys []ForeignKeyDef `json:"foreign_keys,omitempty"`
@@ -76,18 +76,18 @@ type IndexDef struct {
 
 // selectColInfo holds information about selected columns in a query
 type selectColInfo struct {
-	name          string
-	tableName     string // table name for JOINs
-	index         int
-	isAggregate   bool
-	aggregateType string // COUNT, SUM, AVG, MIN, MAX
-	aggregateCol  string // column name for SUM, AVG, MIN, MAX
-	aggregateExpr query.Expression // full expression for SUM(expr), AVG(expr), etc.
-	isDistinct    bool             // for COUNT(DISTINCT col)
-	isWindow      bool             // true for window functions
-	windowExpr    *query.WindowExpr // window function expression
-	hasEmbeddedAgg bool             // true when expression (CASE, etc.) contains aggregate calls
-	originalExpr   query.Expression // the original expression for hasEmbeddedAgg columns
+	name           string
+	tableName      string // table name for JOINs
+	index          int
+	isAggregate    bool
+	aggregateType  string            // COUNT, SUM, AVG, MIN, MAX
+	aggregateCol   string            // column name for SUM, AVG, MIN, MAX
+	aggregateExpr  query.Expression  // full expression for SUM(expr), AVG(expr), etc.
+	isDistinct     bool              // for COUNT(DISTINCT col)
+	isWindow       bool              // true for window functions
+	windowExpr     *query.WindowExpr // window function expression
+	hasEmbeddedAgg bool              // true when expression (CASE, etc.) contains aggregate calls
+	originalExpr   query.Expression  // the original expression for hasEmbeddedAgg columns
 }
 
 // MaterializedViewDef represents a materialized view definition
@@ -112,12 +112,12 @@ type FTSIndexDef struct {
 
 // JSONIndexDef represents a JSON index definition (GIN-like)
 type JSONIndexDef struct {
-	Name      string `json:"name"`
-	TableName string `json:"table_name"`
-	Column    string `json:"column"`          // JSON column name
-	Path      string `json:"path"`            // JSON path expression (e.g., "$.name")
-	DataType  string `json:"data_type"`       // indexed data type: "string", "number", "boolean"
-	Index     map[string][]int64 `json:"index"` // value -> list of row IDs (for string values)
+	Name      string              `json:"name"`
+	TableName string              `json:"table_name"`
+	Column    string              `json:"column"`              // JSON column name
+	Path      string              `json:"path"`                // JSON path expression (e.g., "$.name")
+	DataType  string              `json:"data_type"`           // indexed data type: "string", "number", "boolean"
+	Index     map[string][]int64  `json:"index"`               // value -> list of row IDs (for string values)
 	NumIndex  map[float64][]int64 `json:"num_index,omitempty"` // for numeric values
 }
 
@@ -125,18 +125,18 @@ type JSONIndexDef struct {
 type undoAction int
 
 const (
-	undoInsert      undoAction = iota // Undo an INSERT by deleting the key
-	undoUpdate                        // Undo an UPDATE by restoring the old value
-	undoDelete                        // Undo a DELETE by restoring the key/value
-	undoCreateTable                   // Undo a CREATE TABLE by dropping the table
-	undoDropTable                     // Undo a DROP TABLE by restoring the table
-	undoCreateIndex                   // Undo a CREATE INDEX by dropping the index
-	undoDropIndex                     // Undo a DROP INDEX by restoring the index
-	undoAlterAddColumn                // Undo ALTER TABLE ADD COLUMN
-	undoAlterDropColumn               // Undo ALTER TABLE DROP COLUMN
-	undoAlterRename                   // Undo ALTER TABLE RENAME
-	undoAlterRenameColumn             // Undo ALTER TABLE RENAME COLUMN
-	undoAutoIncSeq                    // Undo AutoIncSeq change
+	undoInsert            undoAction = iota // Undo an INSERT by deleting the key
+	undoUpdate                              // Undo an UPDATE by restoring the old value
+	undoDelete                              // Undo a DELETE by restoring the key/value
+	undoCreateTable                         // Undo a CREATE TABLE by dropping the table
+	undoDropTable                           // Undo a DROP TABLE by restoring the table
+	undoCreateIndex                         // Undo a CREATE INDEX by dropping the index
+	undoDropIndex                           // Undo a DROP INDEX by restoring the index
+	undoAlterAddColumn                      // Undo ALTER TABLE ADD COLUMN
+	undoAlterDropColumn                     // Undo ALTER TABLE DROP COLUMN
+	undoAlterRename                         // Undo ALTER TABLE RENAME
+	undoAlterRenameColumn                   // Undo ALTER TABLE RENAME COLUMN
+	undoAutoIncSeq                          // Undo AutoIncSeq change
 )
 
 // indexUndoEntry records an index modification for rollback
@@ -155,22 +155,22 @@ type undoEntry struct {
 	oldValue     []byte // nil for INSERT undo (just delete the key)
 	indexChanges []indexUndoEntry
 	// DDL undo fields
-	tableDef      *TableDef                     // For undoDropTable: original table definition
-	tableTree     *btree.BTree                  // For undoDropTable: original table B-tree
-	tableIndexes  map[string]*IndexDef          // For undoDropTable: indexes
-	tableIdxTrees map[string]*btree.BTree       // For undoDropTable: index B-trees
-	indexDef      *IndexDef                     // For undoDropIndex: original index definition
-	indexTree     *btree.BTree                  // For undoDropIndex: original index B-tree
-	indexName     string                        // For undoCreateIndex: index name to drop
+	tableDef      *TableDef               // For undoDropTable: original table definition
+	tableTree     *btree.BTree            // For undoDropTable: original table B-tree
+	tableIndexes  map[string]*IndexDef    // For undoDropTable: indexes
+	tableIdxTrees map[string]*btree.BTree // For undoDropTable: index B-trees
+	indexDef      *IndexDef               // For undoDropIndex: original index definition
+	indexTree     *btree.BTree            // For undoDropIndex: original index B-tree
+	indexName     string                  // For undoCreateIndex: index name to drop
 	// ALTER TABLE undo fields
-	oldColumns    []ColumnDef                  // For undoAlterAddColumn/undoAlterDropColumn: original columns
-	oldPrimaryKey string                       // For undoAlterRenameColumn: original PK name
-	oldName       string                       // For undoAlterRename/undoAlterRenameColumn: original name
-	newName       string                       // For undoAlterRename/undoAlterRenameColumn: new name
-	oldRowData    []struct{ key, val []byte }  // For undoAlterDropColumn: original row data
-	droppedIndexes map[string]*IndexDef        // For undoAlterDropColumn: dropped indexes
-	droppedIdxTrees map[string]*btree.BTree    // For undoAlterDropColumn: dropped index trees
-	oldAutoIncSeq int64                        // For undoAutoIncSeq: previous AutoIncSeq value
+	oldColumns           []ColumnDef                 // For undoAlterAddColumn/undoAlterDropColumn: original columns
+	oldPrimaryKeyColumns []string                    // For undoAlterRenameColumn: original PK name
+	oldName              string                      // For undoAlterRename/undoAlterRenameColumn: original name
+	newName              string                      // For undoAlterRename/undoAlterRenameColumn: new name
+	oldRowData           []struct{ key, val []byte } // For undoAlterDropColumn: original row data
+	droppedIndexes       map[string]*IndexDef        // For undoAlterDropColumn: dropped indexes
+	droppedIdxTrees      map[string]*btree.BTree     // For undoAlterDropColumn: dropped index trees
+	oldAutoIncSeq        int64                       // For undoAutoIncSeq: previous AutoIncSeq value
 }
 
 // Catalog manages database schema metadata
@@ -195,7 +195,7 @@ type Catalog struct {
 	txnID             uint64                                // Current transaction ID
 	txnActive         bool                                  // Is a transaction active
 	undoLog           []undoEntry                           // Undo log for transaction rollback
-	savepoints        []savepointEntry                     // Stack of savepoints
+	savepoints        []savepointEntry                      // Stack of savepoints
 	rlsManager        *security.Manager                     // Row-level security manager
 	enableRLS         bool                                  // Enable row-level security
 	rlsPolicies       map[string]*security.Policy           // RLS policies: key = "table:policyName"
@@ -204,8 +204,8 @@ type Catalog struct {
 
 // savepointEntry records a named savepoint with its undo log position
 type savepointEntry struct {
-	name     string
-	undoPos  int // Position in undoLog at time of savepoint creation
+	name    string
+	undoPos int // Position in undoLog at time of savepoint creation
 }
 
 // cteResultSet holds pre-computed results for recursive CTEs
@@ -224,13 +224,13 @@ type QueryCacheEntry struct {
 
 // QueryCache manages cached query results
 type QueryCache struct {
-	entries    map[string]*QueryCacheEntry
-	maxSize    int
-	ttl        time.Duration
-	enabled    bool
-	hitCount   int64
-	missCount  int64
-	mu         sync.RWMutex
+	entries   map[string]*QueryCacheEntry
+	maxSize   int
+	ttl       time.Duration
+	enabled   bool
+	hitCount  int64
+	missCount int64
+	mu        sync.RWMutex
 }
 
 // NewQueryCache creates a new query cache
@@ -646,8 +646,8 @@ func (c *Catalog) BeginTransaction(txnID uint64) {
 	defer c.mu.Unlock()
 	c.txnID = txnID
 	c.txnActive = true
-	c.undoLog = nil        // Clear undo log for new transaction
-	c.savepoints = nil     // Clear savepoints
+	c.undoLog = nil    // Clear undo log for new transaction
+	c.savepoints = nil // Clear savepoints
 }
 
 // CommitTransaction commits the current transaction
@@ -862,8 +862,11 @@ func (c *Catalog) RollbackTransaction() error {
 					}
 				}
 				// Restore PK reference if changed
-				if strings.EqualFold(tbl.PrimaryKey, entry.newName) {
-					tbl.PrimaryKey = entry.oldPrimaryKey
+				// Update PK references if needed
+				for i, pkCol := range tbl.PrimaryKey {
+					if strings.EqualFold(pkCol, entry.newName) {
+						tbl.PrimaryKey[i] = entry.oldName
+					}
 				}
 				tbl.buildColumnIndexCache()
 				// Restore index column references
@@ -1178,8 +1181,23 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 			defaultExpr:   col.Default,
 		}
 		if col.PrimaryKey {
-			tableDef.PrimaryKey = col.Name
+			tableDef.PrimaryKey = append(tableDef.PrimaryKey, col.Name)
 			tableDef.Columns[i].NotNull = true // PRIMARY KEY implies NOT NULL
+		}
+	}
+
+	// Handle table-level PRIMARY KEY (for composite PK)
+	if len(stmt.PrimaryKey) > 0 {
+		tableDef.PrimaryKey = append(tableDef.PrimaryKey, stmt.PrimaryKey...)
+		// Mark columns as NOT NULL since they're part of PK
+		for _, pkCol := range stmt.PrimaryKey {
+			for i, col := range tableDef.Columns {
+				if strings.EqualFold(col.Name, pkCol) {
+					tableDef.Columns[i].NotNull = true
+					tableDef.Columns[i].PrimaryKey = true
+					break
+				}
+			}
 		}
 	}
 
@@ -1403,7 +1421,7 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 	}
 
 	// Cannot drop primary key column
-	if strings.EqualFold(table.Columns[colIdx].Name, table.PrimaryKey) {
+	if table.isPrimaryKeyColumn(table.Columns[colIdx].Name) {
 		return fmt.Errorf("cannot drop PRIMARY KEY column '%s'", colName)
 	}
 
@@ -1575,18 +1593,21 @@ func (c *Catalog) AlterTableRenameColumn(stmt *query.AlterTableStmt) error {
 			// Save undo entry before modification
 			if c.txnActive {
 				c.undoLog = append(c.undoLog, undoEntry{
-					action:        undoAlterRenameColumn,
-					tableName:     stmt.Table,
-					oldName:       stmt.OldName,
-					newName:       stmt.NewName,
-					oldPrimaryKey: table.PrimaryKey,
+					action:               undoAlterRenameColumn,
+					tableName:            stmt.Table,
+					oldName:              stmt.OldName,
+					newName:              stmt.NewName,
+					oldPrimaryKeyColumns: append([]string{}, table.PrimaryKey...),
 				})
 			}
 			table.Columns[i].Name = stmt.NewName
 			found = true
 			// Update primary key reference if needed
-			if strings.EqualFold(table.PrimaryKey, stmt.OldName) {
-				table.PrimaryKey = stmt.NewName
+			// Update PK column names if needed
+			for i, pkCol := range table.PrimaryKey {
+				if strings.EqualFold(pkCol, stmt.OldName) {
+					table.PrimaryKey[i] = stmt.NewName
+				}
 			}
 			break
 		}
@@ -2019,8 +2040,11 @@ func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int6
 
 	// Track insertions for statement-level atomicity (undo on partial failure)
 	type stmtInsert struct {
-		key       []byte
-		idxKeys   []struct{ idxName string; key []byte }
+		key     []byte
+		idxKeys []struct {
+			idxName string
+			key     []byte
+		}
 	}
 	var stmtInserts []stmtInsert
 	var insertedRows [][]interface{} // Track rows for trigger execution
@@ -2045,7 +2069,7 @@ func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int6
 		var key string
 		hasPrimaryKey := false
 		for i, colName := range insertColumns {
-			if colName == table.PrimaryKey {
+			if table.isPrimaryKeyColumn(colName) {
 				hasPrimaryKey = true
 				// Get primary key value from valueRow if provided
 				if i < len(valueRow) {
@@ -2456,7 +2480,10 @@ func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int6
 		// Track for statement-level atomicity
 		si := stmtInsert{key: []byte(key)}
 		for _, ic := range idxChanges {
-			si.idxKeys = append(si.idxKeys, struct{ idxName string; key []byte }{ic.indexName, ic.key})
+			si.idxKeys = append(si.idxKeys, struct {
+				idxName string
+				key     []byte
+			}{ic.indexName, ic.key})
 		}
 		stmtInserts = append(stmtInserts, si)
 
@@ -2539,6 +2566,11 @@ func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int6
 	tree, exists := c.tableTrees[stmt.Table]
 	if !exists {
 		return 0, 0, ErrTableNotFound
+	}
+
+	// Handle UPDATE with JOIN
+	if stmt.From != nil || len(stmt.Joins) > 0 {
+		return c.updateWithJoinLocked(stmt, args)
 	}
 
 	rowsAffected := int64(0)
@@ -2738,7 +2770,10 @@ func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int6
 	}
 
 	// Apply updates
-	pkColIdx := table.GetColumnIndex(table.PrimaryKey)
+	pkColIdx := -1
+	if len(table.PrimaryKey) > 0 {
+		pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
+	}
 	// Foreign key enforcer for CASCADE/RESTRICT/SET NULL actions on PK changes
 	fke := NewForeignKeyEnforcer(c)
 	for _, entry := range entries {
@@ -2929,6 +2964,291 @@ func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int6
 	return 0, rowsAffected, nil
 }
 
+// updateWithJoinLocked handles UPDATE with JOIN
+func (c *Catalog) updateWithJoinLocked(stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+	targetTable, err := c.getTableLocked(stmt.Table)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	targetTree, exists := c.tableTrees[stmt.Table]
+	if !exists {
+		return 0, 0, ErrTableNotFound
+	}
+
+	// Build a SELECT statement from the UPDATE to execute the join
+	// Select all columns from target table
+	var columns []query.Expression
+	for _, col := range targetTable.Columns {
+		columns = append(columns, &query.QualifiedIdentifier{Table: stmt.Table, Column: col.Name})
+	}
+	selectStmt := &query.SelectStmt{
+		Columns: columns,
+		From:    &query.TableRef{Name: stmt.Table},
+		Joins:   stmt.Joins,
+		Where:   stmt.Where,
+	}
+
+	// If FROM clause exists, use it as the main table and add target as first join
+	if stmt.From != nil {
+		selectStmt.From = stmt.From
+		// Add target table as first join with no condition
+		selectStmt.Joins = append([]*query.JoinClause{{
+			Type:  query.TokenJoin,
+			Table: &query.TableRef{Name: stmt.Table},
+		}}, stmt.Joins...)
+	}
+
+	// Execute the join to find matching rows
+	_, resultRows, err := c.selectLocked(selectStmt, args)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to execute UPDATE join: %w", err)
+	}
+
+	// Collect keys of rows to update
+	keysToUpdate := make(map[string]struct{})
+	for _, row := range resultRows {
+		if len(row) > 0 && row[0] != nil {
+			if key, ok := row[0].(string); ok {
+				keysToUpdate[key] = struct{}{}
+			}
+		}
+	}
+
+	if len(keysToUpdate) == 0 {
+		return 0, 0, nil // No rows to update
+	}
+
+	// Now update each row
+	rowsAffected := int64(0)
+	type updateEntry struct {
+		key    []byte
+		oldRow []interface{}
+		newRow []interface{}
+	}
+	var entries []updateEntry
+
+	// Pre-calculate column indices for SET clauses
+	setColumnIndices := make([]int, len(stmt.Set))
+	for i, setClause := range stmt.Set {
+		setColumnIndices[i] = targetTable.GetColumnIndex(setClause.Column)
+		if setColumnIndices[i] < 0 {
+			return 0, 0, fmt.Errorf("column '%s' not found in table '%s'", setClause.Column, stmt.Table)
+		}
+	}
+
+	// Iterate over keys to update
+	for keyStr := range keysToUpdate {
+		key := []byte(keyStr)
+		valueData, err := targetTree.Get(key)
+		if err != nil {
+			continue // Row may have been deleted
+		}
+
+		row, err := decodeRow(valueData, len(targetTable.Columns))
+		if err != nil {
+			continue
+		}
+
+		// Make a copy of the row to update
+		updatedRow := make([]interface{}, len(row))
+		copy(updatedRow, row)
+
+		// Apply SET clauses
+		for i, setClause := range stmt.Set {
+			colIdx := setColumnIndices[i]
+			newVal, err := evaluateExpression(c, row, targetTable.Columns, setClause.Value, args)
+			if err != nil {
+				return 0, rowsAffected, fmt.Errorf("failed to evaluate SET expression: %w", err)
+			}
+			updatedRow[colIdx] = newVal
+		}
+
+		// Check constraints (simplified - full checks in actual implementation)
+		for i, col := range targetTable.Columns {
+			if col.NotNull && i < len(updatedRow) && updatedRow[i] == nil {
+				return 0, rowsAffected, fmt.Errorf("NOT NULL constraint failed: %s", col.Name)
+			}
+		}
+
+		entries = append(entries, updateEntry{
+			key:    key,
+			oldRow: row,
+			newRow: updatedRow,
+		})
+		rowsAffected++
+	}
+
+	// Apply all updates
+	for _, entry := range entries {
+		newValue, err := encodeRow(nil, entry.newRow)
+		if err != nil {
+			return 0, rowsAffected, err
+		}
+		if err := targetTree.Put(entry.key, newValue); err != nil {
+			return 0, rowsAffected, err
+		}
+
+		// Update indexes
+		for idxName, idxDef := range c.indexes {
+			if idxDef.TableName == stmt.Table {
+				oldIdxKey, _ := buildCompositeIndexKey(targetTable, idxDef, entry.oldRow)
+				newIdxKey, newOk := buildCompositeIndexKey(targetTable, idxDef, entry.newRow)
+				if idxTree, exists := c.indexTrees[idxName]; exists {
+					if oldIdxKey != "" {
+						idxTree.Delete([]byte(oldIdxKey))
+					}
+					if newOk && newIdxKey != "" {
+						idxTree.Put([]byte(newIdxKey), entry.key)
+					}
+				}
+			}
+		}
+	}
+
+	return int64(len(entries)), rowsAffected, nil
+}
+
+// deleteWithUsingLocked handles DELETE with USING (JOIN)
+func (c *Catalog) deleteWithUsingLocked(stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
+	targetTable, err := c.getTableLocked(stmt.Table)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	targetTree, exists := c.tableTrees[stmt.Table]
+	if !exists {
+		return 0, 0, ErrTableNotFound
+	}
+
+	// Build a SELECT statement to execute the join
+	// Select all columns from target table to get the primary key
+	var columns []query.Expression
+	for _, col := range targetTable.Columns {
+		columns = append(columns, &query.QualifiedIdentifier{Table: stmt.Table, Column: col.Name})
+	}
+
+	selectStmt := &query.SelectStmt{
+		Columns: columns,
+		From:    &query.TableRef{Name: stmt.Table},
+		Where:   stmt.Where,
+	}
+
+	// Add USING tables as joins
+	for _, usingTable := range stmt.Using {
+		selectStmt.Joins = append(selectStmt.Joins, &query.JoinClause{
+			Type:  query.TokenJoin,
+			Table: usingTable,
+		})
+	}
+
+	// Execute the join to find matching rows
+	_, resultRows, err := c.selectLocked(selectStmt, args)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to execute DELETE USING: %w", err)
+	}
+
+	// Collect keys of rows to delete by getting the primary key value
+	keysToDelete := make(map[string]struct{})
+	pkIdx := 0 // Assume first column is PK
+	for _, row := range resultRows {
+		if pkIdx < len(row) && row[pkIdx] != nil {
+			key, err := json.Marshal(row[pkIdx])
+			if err == nil && key != nil {
+				keysToDelete[string(key)] = struct{}{}
+			}
+		}
+	}
+
+	if len(keysToDelete) == 0 {
+		return 0, 0, nil // No rows to delete
+	}
+
+	// Now delete each row
+	rowsAffected := int64(0)
+	type deleteEntry struct {
+		key   []byte
+		value []byte
+		row   []interface{}
+	}
+	var entries []deleteEntry
+
+	// Foreign key enforcer for CASCADE/RESTRICT actions
+	fke := NewForeignKeyEnforcer(c)
+
+	// Collect entries to delete
+	for keyStr := range keysToDelete {
+		key := []byte(keyStr)
+		valueData, err := targetTree.Get(key)
+		if err != nil {
+			continue // Row may have been deleted
+		}
+
+		row, err := decodeRow(valueData, len(targetTable.Columns))
+		if err != nil {
+			continue
+		}
+
+		// Enforce foreign key ON DELETE actions
+		pkColIdx := -1
+		if len(targetTable.PrimaryKey) > 0 {
+			pkColIdx = targetTable.GetColumnIndex(targetTable.PrimaryKey[0])
+		}
+		if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
+			if fkErr := fke.OnDelete(context.Background(), stmt.Table, row[pkColIdx]); fkErr != nil {
+				return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
+			}
+		}
+
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+		valueCopy := make([]byte, len(valueData))
+		copy(valueCopy, valueData)
+
+		entries = append(entries, deleteEntry{
+			key:   keyCopy,
+			value: valueCopy,
+			row:   row,
+		})
+		rowsAffected++
+	}
+
+	// Delete collected entries
+	for _, entry := range entries {
+		// Remove from indexes first
+		for idxName, idxTree := range c.indexTrees {
+			idxDef := c.indexes[idxName]
+			if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
+				indexKey, ok := buildCompositeIndexKey(targetTable, idxDef, entry.row)
+				if ok {
+					if idxDef.Unique {
+						idxTree.Delete([]byte(indexKey))
+					} else {
+						compoundKey := indexKey + "\x00" + string(entry.key)
+						idxTree.Delete([]byte(compoundKey))
+					}
+				}
+			}
+		}
+
+		// Delete from tree
+		targetTree.Delete(entry.key)
+
+		// Log to WAL before applying change
+		if c.wal != nil && c.txnActive {
+			walData := append([]byte(entry.key), 0)
+			record := &storage.WALRecord{
+				TxnID: c.txnID,
+				Type:  storage.WALDelete,
+				Data:  walData,
+			}
+			c.wal.Append(record)
+		}
+	}
+
+	return int64(len(entries)), rowsAffected, nil
+}
+
 // Delete deletes rows from a table
 func (c *Catalog) Delete(stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
 	c.mu.Lock()
@@ -2945,6 +3265,11 @@ func (c *Catalog) deleteLocked(stmt *query.DeleteStmt, args []interface{}) (int6
 	tree, exists := c.tableTrees[stmt.Table]
 	if !exists {
 		return 0, 0, ErrTableNotFound
+	}
+
+	// Handle DELETE with USING (JOIN)
+	if len(stmt.Using) > 0 {
+		return c.deleteWithUsingLocked(stmt, args)
 	}
 
 	rowsAffected := int64(0)
@@ -3001,7 +3326,10 @@ func (c *Catalog) deleteLocked(stmt *query.DeleteStmt, args []interface{}) (int6
 		// Extract primary key value from the row for FK lookup
 		row, err := decodeRow(entry.value, len(table.Columns))
 		if err == nil {
-			pkColIdx := table.GetColumnIndex(table.PrimaryKey)
+			pkColIdx := -1
+			if len(table.PrimaryKey) > 0 {
+				pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
+			}
 			if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
 				if fkErr := fke.OnDelete(context.Background(), stmt.Table, row[pkColIdx]); fkErr != nil {
 					return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
@@ -3631,11 +3959,11 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 					hasAggregates = true
 				}
 				selectCols = append(selectCols, selectColInfo{
-					name:            c.Name + "()",
-					tableName:       mainTableRef,
-					index:           -1, // Will be evaluated per row
-					hasEmbeddedAgg:  len(embeddedAggs) > 0,
-					originalExpr:    actualCol,
+					name:           c.Name + "()",
+					tableName:      mainTableRef,
+					index:          -1, // Will be evaluated per row
+					hasEmbeddedAgg: len(embeddedAggs) > 0,
+					originalExpr:   actualCol,
 				})
 			}
 		case *query.WindowExpr:
@@ -3664,11 +3992,11 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 				hasAggregates = true
 			}
 			selectCols = append(selectCols, selectColInfo{
-				name:            exprName,
-				tableName:       mainTableRef,
-				index:           -1, // Will be evaluated per row
-				hasEmbeddedAgg:  len(embeddedAggs) > 0,
-				originalExpr:    actualCol,
+				name:           exprName,
+				tableName:      mainTableRef,
+				index:          -1, // Will be evaluated per row
+				hasEmbeddedAgg: len(embeddedAggs) > 0,
+				originalExpr:   actualCol,
 			})
 		}
 		// Apply alias to the last added selectColInfo entry
@@ -6304,212 +6632,6 @@ func (c *Catalog) applyDistinct(rows [][]interface{}) [][]interface{} {
 	}
 
 	return result
-}
-
-// computeAggregates computes aggregate functions for a SELECT query
-func (c *Catalog) computeAggregates(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, returnColumns []string) ([]string, [][]interface{}, error) {
-	tree, exists := c.tableTrees[stmt.From.Name]
-	if !exists {
-		// Return zeros/nulls for aggregates on empty table
-		return c.computeAggregateResult(selectCols, returnColumns, 0, nil)
-	}
-
-	// Read all rows and collect values for aggregates
-	var filteredRows [][]interface{}
-	var aggregateValues [][]interface{} // [column][row]
-
-	// Initialize aggregate value storage
-	for range selectCols {
-		aggregateValues = append(aggregateValues, nil)
-	}
-
-	iter, _ := tree.Scan(nil, nil)
-	defer iter.Close()
-
-	for iter.HasNext() {
-		_, valueData, err := iter.Next()
-		if err != nil {
-			break
-		}
-
-		// Decode full row
-		fullRow, err := decodeRow(valueData, len(table.Columns))
-		if err != nil {
-			continue
-		}
-
-		// Apply WHERE clause if present
-		if stmt.Where != nil {
-			matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
-			if err != nil {
-				continue
-			}
-			if !matched {
-				continue
-			}
-		}
-
-		filteredRows = append(filteredRows, fullRow)
-
-		// Collect values for aggregate columns
-		for i, ci := range selectCols {
-			if ci.isAggregate {
-				var val interface{}
-				if ci.aggregateCol == "*" && ci.aggregateExpr == nil {
-					// COUNT(*): just count rows
-					val = int64(1)
-				} else if ci.aggregateExpr != nil {
-					// Expression argument (e.g., SUM(quantity * price))
-					v, err := evaluateExpression(c, fullRow, table.Columns, ci.aggregateExpr, args)
-					if err == nil {
-						val = v
-					}
-				} else {
-					// Find column index for aggregate column
-					colIdx := table.GetColumnIndex(ci.aggregateCol)
-					if colIdx >= 0 && colIdx < len(fullRow) {
-						val = fullRow[colIdx]
-					}
-				}
-				aggregateValues[i] = append(aggregateValues[i], val)
-			}
-		}
-	}
-
-	// Compute aggregate results
-	return c.computeAggregateResult(selectCols, returnColumns, len(filteredRows), aggregateValues)
-}
-
-// computeAggregateResult calculates the final aggregate values
-func (c *Catalog) computeAggregateResult(selectCols []selectColInfo, returnColumns []string, rowCount int, aggregateValues [][]interface{}) ([]string, [][]interface{}, error) {
-	resultRow := make([]interface{}, len(selectCols))
-
-	for i, ci := range selectCols {
-		if !ci.isAggregate {
-			continue
-		}
-
-		switch ci.aggregateType {
-		case "COUNT":
-			if ci.aggregateCol == "*" && !ci.isDistinct {
-				resultRow[i] = int64(rowCount)
-			} else if aggregateValues != nil && len(aggregateValues[i]) > 0 {
-				if ci.isDistinct {
-					// Count distinct non-null values
-					seen := make(map[string]bool)
-					for _, v := range aggregateValues[i] {
-						if v != nil {
-							key := fmt.Sprintf("%v", v)
-							seen[key] = true
-						}
-					}
-					resultRow[i] = int64(len(seen))
-				} else {
-					// Count non-null values
-					count := int64(0)
-					for _, v := range aggregateValues[i] {
-						if v != nil {
-							count++
-						}
-					}
-					resultRow[i] = count
-				}
-			} else {
-				resultRow[i] = int64(0)
-			}
-
-		case "SUM":
-			if aggregateValues != nil && len(aggregateValues[i]) > 0 {
-				var sum float64
-				hasVal := false
-				for _, v := range aggregateValues[i] {
-					if v != nil {
-						if f, ok := toFloat64(v); ok {
-							sum += f
-							hasVal = true
-						}
-					}
-				}
-				if hasVal {
-					resultRow[i] = sum
-				} else {
-					resultRow[i] = nil
-				}
-			} else {
-				resultRow[i] = nil
-			}
-
-		case "AVG":
-			if aggregateValues != nil && len(aggregateValues[i]) > 0 {
-				var sum float64
-				var count int64
-				for _, v := range aggregateValues[i] {
-					if v != nil {
-						if f, ok := toFloat64(v); ok {
-							sum += f
-							count++
-						}
-					}
-				}
-				if count > 0 {
-					resultRow[i] = sum / float64(count)
-				} else {
-					resultRow[i] = nil
-				}
-			} else {
-				resultRow[i] = nil
-			}
-
-		case "MIN":
-			if aggregateValues != nil && len(aggregateValues[i]) > 0 {
-				var minVal interface{}
-				for _, v := range aggregateValues[i] {
-					if v != nil {
-						if minVal == nil || compareValues(v, minVal) < 0 {
-							minVal = v
-						}
-					}
-				}
-				resultRow[i] = minVal
-			} else {
-				resultRow[i] = nil
-			}
-
-		case "MAX":
-			if aggregateValues != nil && len(aggregateValues[i]) > 0 {
-				var maxVal interface{}
-				for _, v := range aggregateValues[i] {
-					if v != nil {
-						if maxVal == nil || compareValues(v, maxVal) > 0 {
-							maxVal = v
-						}
-					}
-				}
-				resultRow[i] = maxVal
-			} else {
-				resultRow[i] = nil
-			}
-
-		case "GROUP_CONCAT":
-			if aggregateValues != nil && len(aggregateValues[i]) > 0 {
-				var parts []string
-				for _, v := range aggregateValues[i] {
-					if v != nil {
-						parts = append(parts, fmt.Sprintf("%v", v))
-					}
-				}
-				if len(parts) > 0 {
-					resultRow[i] = strings.Join(parts, ",")
-				} else {
-					resultRow[i] = nil
-				}
-			} else {
-				resultRow[i] = nil
-			}
-		}
-	}
-
-	return returnColumns, [][]interface{}{resultRow}, nil
 }
 
 // addHiddenHavingAggregates adds any aggregate functions from HAVING clause that aren't already in selectCols.
@@ -9625,6 +9747,16 @@ func (t *TableDef) GetColumnIndex(name string) int {
 	return -1
 }
 
+// isPrimaryKeyColumn checks if a column is part of the primary key
+func (t *TableDef) isPrimaryKeyColumn(name string) bool {
+	for _, pkCol := range t.PrimaryKey {
+		if strings.EqualFold(pkCol, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // Helper methods for future implementation
 func (c *Catalog) ListTables() []string {
 	tables := make([]string, 0, len(c.tables))
@@ -10027,14 +10159,14 @@ func (c *Catalog) useIndexForQuery(tableName string, where query.Expression) (ma
 
 // IndexRangeCondition represents a range condition for index scanning
 type IndexRangeCondition struct {
-	IdxName    string
-	ColName    string
-	LowerBound interface{}
-	UpperBound interface{}
+	IdxName        string
+	ColName        string
+	LowerBound     interface{}
+	UpperBound     interface{}
 	LowerInclusive bool
 	UpperInclusive bool
-	IsExact      bool // true for = condition
-	ExactValue   interface{} // for = condition
+	IsExact        bool        // true for = condition
+	ExactValue     interface{} // for = condition
 }
 
 func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Expression, args []interface{}) (map[string]bool, bool) {
@@ -10187,9 +10319,9 @@ func (c *Catalog) findRangeCondition(tableName string, where query.Expression, a
 			for idxName, idxDef := range c.indexes {
 				if idxDef.TableName == tableName && len(idxDef.Columns) > 0 && idxDef.Columns[0] == colName {
 					cond := &IndexRangeCondition{
-						IdxName:    idxName,
-						ColName:    colName,
-						IsExact:    false,
+						IdxName: idxName,
+						ColName: colName,
+						IsExact: false,
 					}
 
 					switch expr.Operator {
@@ -10697,7 +10829,10 @@ func (c *Catalog) DeleteRow(tableName string, pkValue interface{}) error {
 	// Cascade FK enforcement before deleting
 	if table != nil && len(table.ForeignKeys) >= 0 {
 		fke := NewForeignKeyEnforcer(c)
-		pkColIdx := table.GetColumnIndex(table.PrimaryKey)
+		pkColIdx := -1
+		if len(table.PrimaryKey) > 0 {
+			pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
+		}
 		if pkColIdx >= 0 {
 			oldRow, decErr := decodeRow(oldData, len(table.Columns))
 			if decErr == nil && pkColIdx < len(oldRow) && oldRow[pkColIdx] != nil {

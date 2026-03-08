@@ -48,16 +48,16 @@ func TestParseRefreshMaterializedView(t *testing.T) {
 // TestParseCreateMaterializedView tests parsing CREATE MATERIALIZED VIEW
 func TestParseCreateMaterializedView(t *testing.T) {
 	tests := []struct {
-		name         string
-		input        string
-		wantErr      bool
-		ifNotExists  bool
-		viewName     string
+		name        string
+		input       string
+		wantErr     bool
+		ifNotExists bool
+		viewName    string
 	}{
 		{
-			name:    "basic create",
-			input:   "CREATE MATERIALIZED VIEW myview AS SELECT * FROM t",
-			wantErr: false,
+			name:     "basic create",
+			input:    "CREATE MATERIALIZED VIEW myview AS SELECT * FROM t",
+			wantErr:  false,
 			viewName: "myview",
 		},
 		{
@@ -68,9 +68,9 @@ func TestParseCreateMaterializedView(t *testing.T) {
 			viewName:    "myview",
 		},
 		{
-			name:    "create with complex query",
-			input:   "CREATE MATERIALIZED VIEW stats AS SELECT COUNT(*) FROM orders WHERE amount > 100",
-			wantErr: false,
+			name:     "create with complex query",
+			input:    "CREATE MATERIALIZED VIEW stats AS SELECT COUNT(*) FROM orders WHERE amount > 100",
+			wantErr:  false,
 			viewName: "stats",
 		},
 	}
@@ -106,9 +106,9 @@ func TestParseCreateMaterializedView(t *testing.T) {
 // TestParseDropMaterializedView tests parsing DROP MATERIALIZED VIEW
 func TestParseDropMaterializedView(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
+		name     string
+		input    string
+		wantErr  bool
 		ifExists bool
 		viewName string
 	}{

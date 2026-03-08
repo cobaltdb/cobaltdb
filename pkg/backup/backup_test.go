@@ -664,7 +664,7 @@ func TestCreateIncrementalBackupWithWAL(t *testing.T) {
 			},
 		},
 		schemas: map[string]string{
-			"users": "CREATE TABLE users (id INT PRIMARY KEY, name TEXT)",
+			"users":  "CREATE TABLE users (id INT PRIMARY KEY, name TEXT)",
 			"orders": "CREATE TABLE orders (id INT PRIMARY KEY, user_id INT, total DECIMAL)",
 		},
 	}
