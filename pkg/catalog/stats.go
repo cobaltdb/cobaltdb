@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -88,10 +89,15 @@ func (sc *StatsCollector) CollectStats(tableName string) (*TableStats, error) {
 	return stats, nil
 }
 
+// quoteIdent quotes a SQL identifier to prevent injection
+func quoteIdent(name string) string {
+	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
+}
+
 // countRows counts rows in a table
 func (sc *StatsCollector) countRows(tableName string) (uint64, error) {
 	// Use SELECT COUNT(*) to get row count
-	result, err := sc.catalog.ExecuteQuery(fmt.Sprintf("SELECT COUNT(*) FROM %s", tableName))
+	result, err := sc.catalog.ExecuteQuery(fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteIdent(tableName)))
 	if err != nil {
 		return 0, err
 	}
@@ -121,7 +127,9 @@ func (sc *StatsCollector) collectColumnStats(tableName, columnName string) (*Col
 	}
 
 	// Get distinct values
-	distinctQuery := fmt.Sprintf("SELECT DISTINCT %s FROM %s", columnName, tableName)
+	qTable := quoteIdent(tableName)
+	qCol := quoteIdent(columnName)
+	distinctQuery := fmt.Sprintf("SELECT DISTINCT %s FROM %s", qCol, qTable)
 	result, err := sc.catalog.ExecuteQuery(distinctQuery)
 	if err != nil {
 		return nil, err
@@ -130,7 +138,7 @@ func (sc *StatsCollector) collectColumnStats(tableName, columnName string) (*Col
 	stats.DistinctCount = uint64(len(result.Rows))
 
 	// Count nulls
-	nullQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s IS NULL", tableName, columnName)
+	nullQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s IS NULL", qTable, qCol)
 	nullResult, err := sc.catalog.ExecuteQuery(nullQuery)
 	if err == nil && len(nullResult.Rows) > 0 {
 		if count, ok := nullResult.Rows[0][0].(int64); ok {
@@ -139,7 +147,7 @@ func (sc *StatsCollector) collectColumnStats(tableName, columnName string) (*Col
 	}
 
 	// Get min/max
-	minMaxQuery := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", columnName, columnName, tableName)
+	minMaxQuery := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", qCol, qCol, qTable)
 	minMaxResult, err := sc.catalog.ExecuteQuery(minMaxQuery)
 	if err == nil && len(minMaxResult.Rows) > 0 {
 		stats.MinValue = minMaxResult.Rows[0][0]

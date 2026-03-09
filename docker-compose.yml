@@ -1,0 +1,108 @@
+services:
+  cobaltdb:
+    build: .
+    container_name: cobaltdb
+    ports:
+      - "4200:4200"  # Database port
+      - "8420:8420"  # Admin/metrics port
+    volumes:
+      - cobaltdb_data:/data/cobaltdb
+      - ./config:/etc/cobaltdb:ro
+    environment:
+      - COBALTDB_LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 4200 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - cobaltdb_network
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: cobaltdb_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - cobaltdb_network
+    depends_on:
+      - cobaltdb
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: cobaltdb_grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    networks:
+      - cobaltdb_network
+    depends_on:
+      - prometheus
+
+  # Backup service
+  backup:
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    container_name: cobaltdb_backup
+    volumes:
+      - cobaltdb_data:/data/source:ro
+      - ./backups:/backups
+    environment:
+      - BACKUP_SCHEDULE=0 2 * * *  # Daily at 2 AM
+      - BACKUP_INTERVAL_HOURS=24
+      - BACKUP_RETENTION_DAYS=7
+    depends_on:
+      - cobaltdb
+    networks:
+      - cobaltdb_network
+
+  # Real-world test service
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cobaltdb_test
+    command: >
+      sh -c "echo 'Waiting for CobaltDB...' &&
+             sleep 5 &&
+             echo 'Running real-world scenario test...' &&
+             cobaltdb-cli -host cobaltdb -port 4200 'SELECT 1' &&
+             echo 'Test completed successfully!'"
+    depends_on:
+      - cobaltdb
+    networks:
+      - cobaltdb_network
+    profiles:
+      - test  # Only run when explicitly requested
+
+volumes:
+  cobaltdb_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  cobaltdb_network:
+    driver: bridge

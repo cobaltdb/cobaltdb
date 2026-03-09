@@ -6,7 +6,23 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+// regexpCache caches compiled regexps for GLOB and similar per-row operations (FIX-069).
+var regexpCache sync.Map // string → *regexp.Regexp
+
+func getCachedRegexp(pattern string) (*regexp.Regexp, error) {
+	if v, ok := regexpCache.Load(pattern); ok {
+		return v.(*regexp.Regexp), nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	regexpCache.Store(pattern, re)
+	return re, nil
+}
 
 // JSONPath represents a parsed JSON path
 type JSONPath struct {
@@ -656,27 +672,27 @@ func IsValidJSON(jsonData string) bool {
 	return json.Unmarshal([]byte(jsonData), &data) == nil
 }
 
-// RegexMatch checks if a string matches a regex pattern
+// RegexMatch checks if a string matches a regex pattern (uses package-level cache)
 func RegexMatch(str, pattern string) (bool, error) {
-	re, err := regexp.Compile(pattern)
+	re, err := getCachedRegexp(pattern)
 	if err != nil {
 		return false, fmt.Errorf("invalid regex pattern: %w", err)
 	}
 	return re.MatchString(str), nil
 }
 
-// RegexReplace replaces matches of a regex pattern
+// RegexReplace replaces matches of a regex pattern (uses package-level cache)
 func RegexReplace(str, pattern, replacement string) (string, error) {
-	re, err := regexp.Compile(pattern)
+	re, err := getCachedRegexp(pattern)
 	if err != nil {
 		return "", fmt.Errorf("invalid regex pattern: %w", err)
 	}
 	return re.ReplaceAllString(str, replacement), nil
 }
 
-// RegexExtract extracts matches from a string using regex
+// RegexExtract extracts matches from a string using regex (uses package-level cache)
 func RegexExtract(str, pattern string) ([]string, error) {
-	re, err := regexp.Compile(pattern)
+	re, err := getCachedRegexp(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("invalid regex pattern: %w", err)
 	}

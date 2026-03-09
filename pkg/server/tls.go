@@ -31,7 +31,7 @@ type TLSConfig struct {
 	KeyFile                  string
 	CAFile                   string
 	ClientAuth               tls.ClientAuthType
-	InsecureSkipVerify       bool
+	InsecureSkipVerify       bool // WARNING: Only for development/testing. Never enable in production.
 	MinVersion               uint16
 	MaxVersion               uint16
 	CipherSuites             []uint16
@@ -169,9 +169,15 @@ func generateSelfSignedCert(config *TLSConfig) error {
 		return err
 	}
 
+	// Generate random serial number
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return err
+	}
+
 	// Create certificate template
 	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
+		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			Organization:  []string{config.SelfSignedOrg},
 			Country:       []string{"US"},
@@ -288,9 +294,15 @@ func GenerateClientCert(caCertFile, caKeyFile, clientName string, validDays int)
 		return nil, nil, err
 	}
 
+	// Generate random serial number for client cert
+	clientSerial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, nil, err
+	}
+
 	// Create client certificate template
 	template := x509.Certificate{
-		SerialNumber: big.NewInt(2),
+		SerialNumber: clientSerial,
 		Subject: pkix.Name{
 			Organization: []string{"CobaltDB Client"},
 			CommonName:   clientName,

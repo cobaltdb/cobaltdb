@@ -508,7 +508,7 @@ func TestCheckAccessWithCurrentUserExpression(t *testing.T) {
 	}
 
 	// Test as alice
-	ctx := context.WithValue(context.Background(), "user", "alice")
+	ctx := context.WithValue(context.Background(), RLSUserKey, "alice")
 	filtered, err := mgr.FilterRows(ctx, "documents", PolicySelect, rows, "alice", nil)
 	if err != nil {
 		t.Fatalf("FilterRows failed: %v", err)
@@ -520,7 +520,7 @@ func TestCheckAccessWithCurrentUserExpression(t *testing.T) {
 	}
 
 	// Test as bob
-	ctx = context.WithValue(context.Background(), "user", "bob")
+	ctx = context.WithValue(context.Background(), RLSUserKey, "bob")
 	filtered, err = mgr.FilterRows(ctx, "documents", PolicySelect, rows, "bob", nil)
 	if err != nil {
 		t.Fatalf("FilterRows failed: %v", err)

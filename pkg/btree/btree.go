@@ -47,6 +47,7 @@ type BTree struct {
 	// Memory management
 	memoryLimit int64                // Maximum memory to use (0 = unlimited)
 	memoryUsed  int64                // Current memory usage
+	lruMu       sync.Mutex           // Separate lock for LRU updates (avoids write-locking on reads)
 	lruList     *list.List           // LRU list for eviction
 	lruMap      map[string]*lruEntry // Track entries in LRU
 }
@@ -104,34 +105,37 @@ func OpenBTreeWithLimit(pool *storage.BufferPool, rootPageID uint32, limit int64
 		lruList:     list.New(),
 		lruMap:      make(map[string]*lruEntry),
 	}
-	t.loadFromPages()
+	if err := t.loadFromPages(); err != nil {
+		// Log but continue - tree will appear empty but won't lose data on disk
+		fmt.Printf("btree: warning: failed to load pages for root %d: %v\n", rootPageID, err)
+	}
 	return t
 }
 
 // loadFromPages loads serialized key-value pairs from root + overflow pages into memStorage
-func (t *BTree) loadFromPages() {
+func (t *BTree) loadFromPages() error {
 	root, err := t.pool.GetPage(t.rootPageID)
 	if err != nil {
-		return
+		return fmt.Errorf("failed to load root page %d: %w", t.rootPageID, err)
 	}
 	defer t.pool.Unpin(root)
 
 	pageData := root.Data()[storage.PageHeaderSize:]
 	if len(pageData) < 8 {
-		return
+		return nil // empty/new page, not an error
 	}
 
 	totalCount := binary.LittleEndian.Uint32(pageData[0:4])
 	overflowCount := binary.LittleEndian.Uint32(pageData[4:8])
 
 	if totalCount == 0 {
-		return
+		return nil
 	}
 
 	// Read overflow page IDs
 	headerSize := 8 + 4*int(overflowCount)
 	if headerSize > len(pageData) {
-		return
+		return fmt.Errorf("corrupt root page %d: header size %d exceeds page data %d", t.rootPageID, headerSize, len(pageData))
 	}
 
 	t.overflowPages = make([]uint32, overflowCount)
@@ -147,7 +151,7 @@ func (t *BTree) loadFromPages() {
 	for _, pgID := range t.overflowPages {
 		pg, err := t.pool.GetPage(pgID)
 		if err != nil {
-			break
+			return fmt.Errorf("failed to load overflow page %d: %w", pgID, err)
 		}
 		allData = append(allData, pg.Data()[storage.PageHeaderSize:]...)
 		t.pool.Unpin(pg)
@@ -184,6 +188,7 @@ func (t *BTree) loadFromPages() {
 
 		t.memStorage[string(key)] = val
 	}
+	return nil
 }
 
 // RootPageID returns the root page ID of the tree
@@ -218,22 +223,25 @@ func (t *BTree) Get(key []byte) ([]byte, error) {
 		return nil, ErrInvalidKey
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
+	t.mu.RLock()
 	keyStr := string(key)
-	if val, ok := t.memStorage[keyStr]; ok {
-		// Update LRU - move to front
-		if entry, ok := t.lruMap[keyStr]; ok {
-			t.lruList.MoveToFront(entry.elem)
-		}
-
-		result := make([]byte, len(val))
-		copy(result, val)
-		return result, nil
+	val, ok := t.memStorage[keyStr]
+	if !ok {
+		t.mu.RUnlock()
+		return nil, ErrKeyNotFound
 	}
+	result := make([]byte, len(val))
+	copy(result, val)
+	t.mu.RUnlock()
 
-	return nil, ErrKeyNotFound
+	// Update LRU under its own lock (does not block concurrent readers)
+	t.lruMu.Lock()
+	if entry, ok := t.lruMap[keyStr]; ok {
+		t.lruList.MoveToFront(entry.elem)
+	}
+	t.lruMu.Unlock()
+
+	return result, nil
 }
 
 // Put inserts or updates a key-value pair
@@ -257,10 +265,12 @@ func (t *BTree) Put(key, value []byte) error {
 	if oldVal, exists := t.memStorage[keyCopy]; exists {
 		oldSize = int64(len(key) + len(oldVal))
 		// Remove old entry from LRU
+		t.lruMu.Lock()
 		if entry, ok := t.lruMap[keyCopy]; ok {
 			t.lruList.Remove(entry.elem)
 			delete(t.lruMap, keyCopy)
 		}
+		t.lruMu.Unlock()
 	}
 	newSize := int64(len(key) + len(valCopy))
 	sizeDelta := newSize - oldSize
@@ -277,12 +287,14 @@ func (t *BTree) Put(key, value []byte) error {
 	t.dirty = true
 
 	// Add to LRU front (most recently used)
+	t.lruMu.Lock()
 	entry := &lruEntry{
 		key:  keyCopy,
 		size: newSize,
 	}
 	entry.elem = t.lruList.PushFront(entry)
 	t.lruMap[keyCopy] = entry
+	t.lruMu.Unlock()
 
 	return nil
 }
@@ -295,13 +307,19 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 	}
 
 	// Keep evicting until we have enough space
-	for t.memoryUsed+needed > t.memoryLimit && t.lruList.Len() > 0 {
+	for t.memoryUsed+needed > t.memoryLimit {
 		// Get least recently used entry
+		t.lruMu.Lock()
 		elem := t.lruList.Back()
 		if elem == nil {
+			t.lruMu.Unlock()
 			break
 		}
 		entry := elem.Value.(*lruEntry)
+		evictKey := entry.key
+		t.lruList.Remove(elem)
+		delete(t.lruMap, evictKey)
+		t.lruMu.Unlock()
 
 		// Flush to disk before evicting (only if dirty)
 		if t.dirty {
@@ -311,12 +329,10 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 		}
 
 		// Remove from memory (but keep in disk via flush)
-		if val, ok := t.memStorage[entry.key]; ok {
-			t.memoryUsed -= int64(len(entry.key) + len(val))
-			delete(t.memStorage, entry.key)
+		if val, ok := t.memStorage[evictKey]; ok {
+			t.memoryUsed -= int64(len(evictKey) + len(val))
+			delete(t.memStorage, evictKey)
 		}
-		delete(t.lruMap, entry.key)
-		t.lruList.Remove(elem)
 	}
 
 	if t.memoryUsed+needed > t.memoryLimit {
@@ -326,13 +342,138 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 	return nil
 }
 
-// flushInternal flushes data without holding the full lock (must be called with lock held)
+// flushInternal flushes data to disk pages (must be called with lock held)
 func (t *BTree) flushInternal() error {
 	if !t.dirty {
 		return nil
 	}
-	// For now, we just mark that we need to flush
-	// The actual flush happens in Flush() which acquires the lock properly
+
+	// Serialize all key-value pairs
+	// Format: [keylen:2][key][valuelen:4][value]...
+	var kvBuf bytes.Buffer
+	count := uint32(len(t.memStorage))
+
+	var lenBuf [4]byte
+	for k, v := range t.memStorage {
+		key := []byte(k)
+		binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
+		kvBuf.Write(lenBuf[:2])
+		kvBuf.Write(key)
+		binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
+		kvBuf.Write(lenBuf[:4])
+		kvBuf.Write(v)
+	}
+
+	kvData := kvBuf.Bytes()
+
+	// Calculate how many overflow pages we need
+	overflowCount := uint32(0)
+	rootHeaderSize := 8
+
+	rootDataSpace := usablePageSize - rootHeaderSize
+	if rootDataSpace < 0 {
+		rootDataSpace = 0
+	}
+
+	if len(kvData) > rootDataSpace {
+		remaining := len(kvData) - rootDataSpace
+		overflowCount = uint32((remaining + usablePageSize - 1) / usablePageSize)
+
+		for {
+			rootHeaderSize = 8 + 4*int(overflowCount)
+			rootDataSpace = usablePageSize - rootHeaderSize
+			if rootDataSpace < 0 {
+				rootDataSpace = 0
+			}
+			remaining = len(kvData) - rootDataSpace
+			if remaining <= 0 {
+				overflowCount = 0
+				rootHeaderSize = 8
+				rootDataSpace = usablePageSize - rootHeaderSize
+				break
+			}
+			needed := uint32((remaining + usablePageSize - 1) / usablePageSize)
+			if needed <= overflowCount {
+				overflowCount = needed
+				break
+			}
+			overflowCount = needed
+		}
+	}
+
+	// Release extra overflow pages
+	for len(t.overflowPages) > int(overflowCount) {
+		t.overflowPages = t.overflowPages[:len(t.overflowPages)-1]
+	}
+
+	// Allocate new overflow pages if needed
+	for len(t.overflowPages) < int(overflowCount) {
+		newPage, err := t.pool.NewPage(storage.PageTypeLeaf)
+		if err != nil {
+			return fmt.Errorf("failed to allocate overflow page: %w", err)
+		}
+		t.overflowPages = append(t.overflowPages, newPage.ID())
+		t.pool.Unpin(newPage)
+	}
+
+	// Write root page
+	root, err := t.pool.GetPage(t.rootPageID)
+	if err != nil {
+		return err
+	}
+	defer t.pool.Unpin(root)
+
+	rootBuf := root.Data()[storage.PageHeaderSize:]
+	for i := range rootBuf {
+		rootBuf[i] = 0
+	}
+
+	binary.LittleEndian.PutUint32(rootBuf[0:4], count)
+	binary.LittleEndian.PutUint32(rootBuf[4:8], overflowCount)
+	for i, pgID := range t.overflowPages {
+		off := 8 + 4*i
+		if off+4 > len(rootBuf) {
+			break
+		}
+		binary.LittleEndian.PutUint32(rootBuf[off:off+4], pgID)
+	}
+
+	rootHeaderSize = 8 + 4*int(overflowCount)
+	rootDataSpace = usablePageSize - rootHeaderSize
+	dataWritten := 0
+
+	writeLen := rootDataSpace
+	if writeLen > len(kvData) {
+		writeLen = len(kvData)
+	}
+	copy(rootBuf[rootHeaderSize:], kvData[:writeLen])
+	dataWritten += writeLen
+	root.SetDirty(true)
+
+	for _, pgID := range t.overflowPages {
+		if dataWritten >= len(kvData) {
+			break
+		}
+		pg, err := t.pool.GetPage(pgID)
+		if err != nil {
+			return fmt.Errorf("failed to get overflow page %d: %w", pgID, err)
+		}
+		pgBuf := pg.Data()[storage.PageHeaderSize:]
+		for i := range pgBuf {
+			pgBuf[i] = 0
+		}
+		writeLen = usablePageSize
+		remaining := len(kvData) - dataWritten
+		if writeLen > remaining {
+			writeLen = remaining
+		}
+		copy(pgBuf, kvData[dataWritten:dataWritten+writeLen])
+		dataWritten += writeLen
+		pg.SetDirty(true)
+		t.pool.Unpin(pg)
+	}
+
+	t.dirty = false
 	return nil
 }
 
@@ -355,10 +496,12 @@ func (t *BTree) Delete(key []byte) error {
 	t.memoryUsed -= int64(len(keyStr) + len(val))
 
 	// Remove from LRU
+	t.lruMu.Lock()
 	if entry, ok := t.lruMap[keyStr]; ok {
 		t.lruList.Remove(entry.elem)
 		delete(t.lruMap, keyStr)
 	}
+	t.lruMu.Unlock()
 
 	delete(t.memStorage, keyStr)
 	t.dirty = true
@@ -485,148 +628,7 @@ func (t *BTree) Size() int {
 func (t *BTree) Flush() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	if !t.dirty {
-		return nil
-	}
-
-	// Serialize all key-value pairs
-	// Format: [keylen:2][key][valuelen:4][value]...
-	var kvBuf bytes.Buffer
-	count := uint32(len(t.memStorage))
-
-	for k, v := range t.memStorage {
-		key := []byte(k)
-		binary.Write(&kvBuf, binary.LittleEndian, uint16(len(key)))
-		kvBuf.Write(key)
-		binary.Write(&kvBuf, binary.LittleEndian, uint32(len(v)))
-		kvBuf.Write(v)
-	}
-
-	kvData := kvBuf.Bytes()
-
-	// Calculate how many overflow pages we need
-	// Root page header: [totalCount:4][overflowCount:4][overflowIDs:4*N]
-	// We start with 0 overflow pages and check if data fits
-	overflowCount := uint32(0)
-	rootHeaderSize := 8 // totalCount + overflowCount
-
-	rootDataSpace := usablePageSize - rootHeaderSize
-	if rootDataSpace < 0 {
-		rootDataSpace = 0
-	}
-
-	if len(kvData) > rootDataSpace {
-		// Need overflow pages
-		remaining := len(kvData) - rootDataSpace
-		// Each overflow page can hold usablePageSize bytes
-		overflowCount = uint32((remaining + usablePageSize - 1) / usablePageSize)
-
-		// But adding overflow page IDs to the header reduces root data space
-		// Recalculate
-		for {
-			rootHeaderSize = 8 + 4*int(overflowCount)
-			rootDataSpace = usablePageSize - rootHeaderSize
-			if rootDataSpace < 0 {
-				rootDataSpace = 0
-			}
-			remaining = len(kvData) - rootDataSpace
-			if remaining <= 0 {
-				overflowCount = 0
-				rootHeaderSize = 8
-				rootDataSpace = usablePageSize - rootHeaderSize
-				break
-			}
-			needed := uint32((remaining + usablePageSize - 1) / usablePageSize)
-			if needed <= overflowCount {
-				overflowCount = needed
-				break
-			}
-			overflowCount = needed
-		}
-	}
-
-	// Allocate or reuse overflow pages
-	// First, release any extra overflow pages we no longer need
-	for len(t.overflowPages) > int(overflowCount) {
-		t.overflowPages = t.overflowPages[:len(t.overflowPages)-1]
-	}
-
-	// Allocate new overflow pages if needed
-	for len(t.overflowPages) < int(overflowCount) {
-		newPage, err := t.pool.NewPage(storage.PageTypeLeaf)
-		if err != nil {
-			return fmt.Errorf("failed to allocate overflow page: %w", err)
-		}
-		t.overflowPages = append(t.overflowPages, newPage.ID())
-		t.pool.Unpin(newPage)
-	}
-
-	// Write root page
-	root, err := t.pool.GetPage(t.rootPageID)
-	if err != nil {
-		return err
-	}
-	defer t.pool.Unpin(root)
-
-	rootBuf := root.Data()[storage.PageHeaderSize:]
-
-	// Clear the page data area
-	for i := range rootBuf {
-		rootBuf[i] = 0
-	}
-
-	// Write header
-	binary.LittleEndian.PutUint32(rootBuf[0:4], count)
-	binary.LittleEndian.PutUint32(rootBuf[4:8], overflowCount)
-	for i, pgID := range t.overflowPages {
-		off := 8 + 4*i
-		binary.LittleEndian.PutUint32(rootBuf[off:off+4], pgID)
-	}
-
-	// Write KV data to root page
-	rootHeaderSize = 8 + 4*int(overflowCount)
-	rootDataSpace = usablePageSize - rootHeaderSize
-	dataWritten := 0
-
-	writeLen := rootDataSpace
-	if writeLen > len(kvData) {
-		writeLen = len(kvData)
-	}
-	copy(rootBuf[rootHeaderSize:], kvData[:writeLen])
-	dataWritten += writeLen
-	root.SetDirty(true)
-
-	// Write remaining data to overflow pages
-	for _, pgID := range t.overflowPages {
-		if dataWritten >= len(kvData) {
-			break
-		}
-
-		pg, err := t.pool.GetPage(pgID)
-		if err != nil {
-			return fmt.Errorf("failed to get overflow page %d: %w", pgID, err)
-		}
-
-		pgBuf := pg.Data()[storage.PageHeaderSize:]
-		// Clear
-		for i := range pgBuf {
-			pgBuf[i] = 0
-		}
-
-		writeLen = usablePageSize
-		remaining := len(kvData) - dataWritten
-		if writeLen > remaining {
-			writeLen = remaining
-		}
-		copy(pgBuf, kvData[dataWritten:dataWritten+writeLen])
-		dataWritten += writeLen
-		pg.SetDirty(true)
-		t.pool.Unpin(pg)
-	}
-
-	t.dirty = false
-	return nil
+	return t.flushInternal()
 }
 
 // Cell represents a key-value pair in a leaf node (kept for compatibility)

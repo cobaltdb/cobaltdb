@@ -2,12 +2,16 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 )
 
 var (
@@ -21,13 +25,14 @@ var (
 
 // User represents a database user
 type User struct {
-	Username     string
-	PasswordHash string
-	Salt         string
-	IsAdmin      bool
-	CreatedAt    time.Time
-	LastLogin    time.Time
-	Permissions  []Permission
+	Username        string
+	PasswordHash    string
+	Salt            string
+	MySQLNativeHash []byte // SHA1(SHA1(password)) for MySQL native_password auth (FIX-004)
+	IsAdmin         bool
+	CreatedAt       time.Time
+	LastLogin       time.Time
+	Permissions     []Permission
 }
 
 // Permission represents a database permission
@@ -51,14 +56,43 @@ type Authenticator struct {
 	users    map[string]*User
 	sessions map[string]*Session
 	enabled  bool
+	stopCh   chan struct{}
+	stopped  bool
 }
 
 // NewAuthenticator creates a new authenticator
 func NewAuthenticator() *Authenticator {
-	return &Authenticator{
+	a := &Authenticator{
 		users:    make(map[string]*User),
 		sessions: make(map[string]*Session),
 		enabled:  false,
+		stopCh:   make(chan struct{}),
+	}
+	go a.sessionCleanupLoop()
+	return a
+}
+
+// Stop stops the authenticator's background goroutine
+func (a *Authenticator) Stop() {
+	a.mu.Lock()
+	if !a.stopped {
+		a.stopped = true
+		close(a.stopCh)
+	}
+	a.mu.Unlock()
+}
+
+// sessionCleanupLoop periodically removes expired sessions
+func (a *Authenticator) sessionCleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.stopCh:
+			return
+		case <-ticker.C:
+			a.CleanupExpiredSessions()
+		}
 	}
 }
 
@@ -83,14 +117,16 @@ func (a *Authenticator) IsEnabled() bool {
 	return a.enabled
 }
 
-// hashPassword hashes a password with salt using multiple rounds of SHA-256
+// mysqlNativeHash computes SHA1(SHA1(password)) for MySQL native_password auth (FIX-004).
+func mysqlNativeHash(password string) []byte {
+	h1 := sha1.Sum([]byte(password))
+	h2 := sha1.Sum(h1[:])
+	return h2[:]
+}
+
+// hashPassword hashes a password with salt using Argon2id (memory-hard, GPU-resistant)
 func hashPassword(password, salt string) string {
-	// Use iterated hashing for stronger protection against brute force
-	hash := []byte(salt + password)
-	for i := 0; i < 10000; i++ {
-		h := sha256.Sum256(hash)
-		hash = h[:]
-	}
+	hash := argon2.IDKey([]byte(password), []byte(salt), 3, 64*1024, 4, 32)
 	return hex.EncodeToString(hash)
 }
 
@@ -119,15 +155,55 @@ func (a *Authenticator) CreateUser(username, password string, isAdmin bool) erro
 	passwordHash := hashPassword(password, salt)
 
 	a.users[username] = &User{
-		Username:     username,
-		PasswordHash: passwordHash,
-		Salt:         salt,
-		IsAdmin:      isAdmin,
-		CreatedAt:    time.Now(),
-		Permissions:  make([]Permission, 0),
+		Username:        username,
+		PasswordHash:    passwordHash,
+		Salt:            salt,
+		MySQLNativeHash: mysqlNativeHash(password),
+		IsAdmin:         isAdmin,
+		CreatedAt:       time.Now(),
+		Permissions:     make([]Permission, 0),
 	}
 
 	return nil
+}
+
+// ValidateCredentials checks if the username and password are valid without
+// creating a session. Returns nil on success or ErrInvalidCredentials.
+func (a *Authenticator) ValidateCredentials(username, password string) error {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	user, exists := a.users[username]
+	if !exists {
+		return ErrInvalidCredentials
+	}
+
+	passwordHash := hashPassword(password, user.Salt)
+	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(user.PasswordHash)) != 1 {
+		return ErrInvalidCredentials
+	}
+
+	return nil
+}
+
+// GetMySQLNativeHash returns the MySQL native password hash (SHA1(SHA1(password)))
+// for the given user. Returns nil,ErrUserNotFound if the user doesn't exist.
+func (a *Authenticator) GetMySQLNativeHash(username string) ([]byte, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	user, exists := a.users[username]
+	if !exists {
+		return nil, ErrUserNotFound
+	}
+	return user.MySQLNativeHash, nil
+}
+
+// UserExists returns true if the given username is known to the authenticator.
+func (a *Authenticator) UserExists(username string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	_, exists := a.users[username]
+	return exists
 }
 
 // Authenticate authenticates a user and returns a session token
@@ -141,7 +217,7 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 	}
 
 	passwordHash := hashPassword(password, user.Salt)
-	if passwordHash != user.PasswordHash {
+	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(user.PasswordHash)) != 1 {
 		return "", ErrInvalidCredentials
 	}
 
@@ -211,7 +287,7 @@ func (a *Authenticator) ChangePassword(username, oldPassword, newPassword string
 	}
 
 	passwordHash := hashPassword(oldPassword, user.Salt)
-	if passwordHash != user.PasswordHash {
+	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(user.PasswordHash)) != 1 {
 		return ErrInvalidCredentials
 	}
 
@@ -222,6 +298,7 @@ func (a *Authenticator) ChangePassword(username, oldPassword, newPassword string
 	}
 	user.Salt = salt
 	user.PasswordHash = hashPassword(newPassword, salt)
+	user.MySQLNativeHash = mysqlNativeHash(newPassword)
 
 	return nil
 }
@@ -382,6 +459,23 @@ func (a *Authenticator) ListUsers() []string {
 		usernames = append(usernames, username)
 	}
 	return usernames
+}
+
+// StartSessionCleanup starts a background goroutine that periodically cleans up expired sessions.
+// It stops when stopCh is closed.
+func (a *Authenticator) StartSessionCleanup(interval time.Duration, stopCh <-chan struct{}) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				a.CleanupExpiredSessions()
+			case <-stopCh:
+				return
+			}
+		}
+	}()
 }
 
 // CleanupExpiredSessions removes expired sessions

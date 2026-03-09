@@ -90,9 +90,8 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 	// 4. INSERT - Works
 	t.Log("")
 	t.Log("2. INSERT operations...")
-	_, _, err = cat.Insert(&query.InsertStmt{
-		Table:   "categories",
-		Columns: []string{"id", "name"},
+	_, _, err = cat	.Insert(&query.InsertStmt{
+		Table:   "categories", Columns: []string{"id", "name"},
 		Values: [][]query.Expression{
 			{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Electronics"}},
 			{&query.NumberLiteral{Value: 2}, &query.StringLiteral{Value: "Books"}},
@@ -104,9 +103,8 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 	t.Log("   ✓ INSERT works")
 
 	// 5. INSERT with UNIQUE constraint - Should fail on duplicate
-	_, _, err = cat.Insert(&query.InsertStmt{
-		Table:   "customers",
-		Columns: []string{"id", "email", "name"},
+	_, _, err = cat	.Insert(&query.InsertStmt{
+		Table:   "customers", Columns: []string{"id", "email", "name"},
 		Values: [][]query.Expression{
 			{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "alice@example.com"}, &query.StringLiteral{Value: "Alice"}},
 		},
@@ -115,9 +113,8 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 		t.Fatalf("INSERT customer failed: %v", err)
 	}
 
-	_, _, err = cat.Insert(&query.InsertStmt{
-		Table:   "customers",
-		Columns: []string{"id", "email", "name"},
+	_, _, err = cat	.Insert(&query.InsertStmt{
+		Table:   "customers", Columns: []string{"id", "email", "name"},
 		Values: [][]query.Expression{
 			{&query.NumberLiteral{Value: 2}, &query.StringLiteral{Value: "alice@example.com"}, &query.StringLiteral{Value: "Alice Clone"}},
 		},
@@ -129,9 +126,8 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 	}
 
 	// 6. INSERT with JSON - Works
-	_, _, err = cat.Insert(&query.InsertStmt{
-		Table:   "products",
-		Columns: []string{"id", "name", "price", "stock", "category_id", "metadata"},
+	_, _, err = cat	.Insert(&query.InsertStmt{
+		Table:   "products", Columns: []string{"id", "name", "price", "stock", "category_id", "metadata"},
 		Values: [][]query.Expression{
 			{
 				&query.NumberLiteral{Value: 1},
@@ -149,9 +145,8 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 	t.Log("   ✓ INSERT with JSON works")
 
 	// 7. INSERT with FOREIGN KEY violation - Should fail
-	_, _, err = cat.Insert(&query.InsertStmt{
-		Table:   "orders",
-		Columns: []string{"id", "customer_id", "total"},
+	_, _, err = cat	.Insert(&query.InsertStmt{
+		Table:   "orders", Columns: []string{"id", "customer_id", "total"},
 		Values: [][]query.Expression{
 			{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 999}, &query.NumberLiteral{Value: 100}},
 		},
@@ -163,9 +158,8 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 	}
 
 	// Valid order
-	_, _, err = cat.Insert(&query.InsertStmt{
-		Table:   "orders",
-		Columns: []string{"id", "customer_id", "total"},
+	_, _, err = cat	.Insert(&query.InsertStmt{
+		Table:   "orders", Columns: []string{"id", "customer_id", "total"},
 		Values: [][]query.Expression{
 			{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 150.50}},
 		},
@@ -180,9 +174,8 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 
 	// Insert more products
 	for i := 2; i <= 5; i++ {
-		_, _, err = cat.Insert(&query.InsertStmt{
-			Table:   "products",
-			Columns: []string{"id", "name", "price", "stock", "category_id"},
+		_, _, err = cat	.Insert(&query.InsertStmt{
+			Table:   "products", Columns: []string{"id", "name", "price", "stock", "category_id"},
 			Values: [][]query.Expression{
 				{
 					&query.NumberLiteral{Value: float64(i)},
@@ -222,7 +215,7 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	if err != nil {
 		t.Fatalf("SELECT with JOIN and GROUP BY failed: %v", err)
 	}
@@ -253,9 +246,8 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 	t.Log("4. LEFT JOIN...")
 
 	// Add category with no products
-	_, _, err = cat.Insert(&query.InsertStmt{
-		Table:   "categories",
-		Columns: []string{"id", "name"},
+	_, _, err = cat	.Insert(&query.InsertStmt{
+		Table:   "categories", Columns: []string{"id", "name"},
 		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 3}, &query.StringLiteral{Value: "Empty Category"}}},
 	}, nil)
 	if err != nil {
@@ -284,7 +276,7 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 		},
 	}
 
-	_, leftRows, err := cat.Select(leftJoinStmt, nil)
+	_, leftRows, err := cat	.Select(leftJoinStmt, nil)
 	if err != nil {
 		t.Fatalf("LEFT JOIN failed: %v", err)
 	}
@@ -330,7 +322,7 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 		},
 	}
 
-	_, subRows, err := cat.Select(subqueryStmt, nil)
+	_, subRows, err := cat	.Select(subqueryStmt, nil)
 	if err != nil {
 		t.Logf("   ⚠ Subquery failed: %v", err)
 	} else {
@@ -352,7 +344,7 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 		Limit: &query.NumberLiteral{Value: 3},
 	}
 
-	_, orderRows, err := cat.Select(orderStmt, nil)
+	_, orderRows, err := cat	.Select(orderStmt, nil)
 	if err != nil {
 		t.Fatalf("ORDER BY failed: %v", err)
 	}
@@ -365,9 +357,8 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 	// 12. UPDATE - Works
 	t.Log("")
 	t.Log("7. UPDATE...")
-	_, _, err = cat.Update(&query.UpdateStmt{
-		Table: "products",
-		Set: []*query.SetClause{
+	_, _, err = cat	.Update(&query.UpdateStmt{
+		Table: "products", Set: []*query.SetClause{
 			{Column: "stock", Value: &query.NumberLiteral{Value: 5}},
 		},
 		Where: &query.BinaryExpr{
@@ -391,7 +382,7 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 			Right:    &query.NumberLiteral{Value: 1},
 		},
 	}
-	_, verifyRows, _ := cat.Select(verifyStmt, nil)
+	_, verifyRows, _ := cat	.Select(verifyStmt, nil)
 	if len(verifyRows) > 0 && verifyRows[0][0] == float64(5) {
 		t.Log("   ✓ UPDATE verified: stock is now 5")
 	}
@@ -404,14 +395,13 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 		Columns: []query.Expression{&query.FunctionCall{Name: "COUNT", Args: []query.Expression{&query.StarExpr{}}}},
 		From:    &query.TableRef{Name: "orders"},
 	}
-	_, countRows, _ := cat.Select(orderCountStmt, nil)
+	_, countRows, _ := cat	.Select(orderCountStmt, nil)
 	initialOrderCount := countRows[0][0].(int64)
 	t.Logf("   Orders before customer delete: %d", initialOrderCount)
 
 	// Delete customer (should cascade to orders)
-	_, _, err = cat.Delete(&query.DeleteStmt{
-		Table: "customers",
-		Where: &query.BinaryExpr{
+	_, _, err = cat	.Delete(&query.DeleteStmt{
+		Table: "customers", Where: &query.BinaryExpr{
 			Left:     &query.Identifier{Name: "id"},
 			Operator: query.TokenEq,
 			Right:    &query.NumberLiteral{Value: 1},
@@ -422,12 +412,12 @@ func TestRealWorldECommerceScenario(t *testing.T) {
 	}
 
 	// Check orders were deleted
-	_, countRows, _ = cat.Select(orderCountStmt, nil)
+	_, countRows, _ = cat	.Select(orderCountStmt, nil)
 	finalOrderCount := countRows[0][0].(int64)
 	if finalOrderCount == 0 {
 		t.Log("   ✓ DELETE with CASCADE works: orders were deleted with customer")
 	} else {
-		t.Log("   ✗ CASCADE NOT WORKING: ForeignKeyEnforcer.OnDelete is not called in catalog.Delete()")
+		t.Log("   ✗ CASCADE NOT WORKING: ForeignKeyEnforcer.OnDelete is not called in catalog	.Delete()")
 		t.Logf("      Still have %d orders - this is a BUG", finalOrderCount)
 	}
 

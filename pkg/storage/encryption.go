@@ -41,6 +41,7 @@ type EncryptedBackend struct {
 	cipher     cipher.AEAD
 	sessionKey []byte
 	mu         sync.RWMutex
+	readPool   sync.Pool // pool for encrypted read buffers
 }
 
 // NewEncryptedBackend creates a new encrypted backend wrapper
@@ -121,7 +122,18 @@ func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 	pageSize := PageSize
 	encryptedSize := pageSize + eb.cipher.NonceSize() + eb.cipher.Overhead()
 
-	encryptedBuf := make([]byte, encryptedSize)
+	// Use pooled buffer to reduce allocations on hot read path
+	var encryptedBuf []byte
+	if poolBuf := eb.readPool.Get(); poolBuf != nil {
+		encryptedBuf = poolBuf.([]byte)
+		if len(encryptedBuf) < encryptedSize {
+			encryptedBuf = make([]byte, encryptedSize)
+		}
+	} else {
+		encryptedBuf = make([]byte, encryptedSize)
+	}
+	defer eb.readPool.Put(encryptedBuf)
+
 	n, err := eb.backend.ReadAt(encryptedBuf, offset)
 	if err != nil {
 		return 0, err
@@ -233,12 +245,14 @@ func GenerateSecureKey() ([]byte, error) {
 }
 
 // DeriveKeyFromPassword derives a key from a password using Argon2id
-func DeriveKeyFromPassword(password string, salt []byte) []byte {
+func DeriveKeyFromPassword(password string, salt []byte) ([]byte, error) {
 	if salt == nil {
 		salt = make([]byte, 16)
-		rand.Read(salt)
+		if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+			return nil, fmt.Errorf("failed to generate salt: %w", err)
+		}
 	}
-	return argon2.IDKey([]byte(password), salt, 3, 64*1024, 4, 32)
+	return argon2.IDKey([]byte(password), salt, 3, 64*1024, 4, 32), nil
 }
 
 // EncryptionHeader stores encryption metadata at the start of the file

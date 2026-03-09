@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"os"
 	"sync"
 )
@@ -89,9 +90,10 @@ func (w *WAL) readLSN() error {
 
 	reader := bufio.NewReader(w.file)
 	var lastLSN uint64
+	var headerBuf [17]byte // reusable header buffer across readRecord calls
 
 	for {
-		record, err := w.readRecord(reader)
+		record, err := w.readRecord(reader, headerBuf[:])
 		if err != nil {
 			break // End of file or corruption
 		}
@@ -111,11 +113,11 @@ func (w *WAL) readLSN() error {
 	return nil
 }
 
-// readRecord reads a single WAL record from the reader
-func (w *WAL) readRecord(reader *bufio.Reader) (*WALRecord, error) {
+// readRecord reads a single WAL record from the reader.
+// header must be a 17-byte slice that is reused across calls to avoid per-record allocation.
+func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error) {
 	// Read header: [TxnID:8][Type:1][PageID:4][Offset:2][Length:2]
-	header := make([]byte, 17)
-	if _, err := reader.Read(header); err != nil {
+	if _, err := io.ReadFull(reader, header[:17]); err != nil {
 		return nil, err
 	}
 
@@ -129,20 +131,25 @@ func (w *WAL) readRecord(reader *bufio.Reader) (*WALRecord, error) {
 	dataLen := binary.LittleEndian.Uint16(header[15:17])
 	if dataLen > 0 {
 		record.Data = make([]byte, dataLen)
-		if _, err := reader.Read(record.Data); err != nil {
+		if _, err := io.ReadFull(reader, record.Data); err != nil {
 			return nil, err
 		}
 	}
 
-	// Read and verify CRC
-	var storedCRC uint32
-	if err := binary.Read(reader, binary.LittleEndian, &storedCRC); err != nil {
+	// Read and verify CRC (direct read avoids binary.Read reflection)
+	var crcBuf [4]byte
+	if _, err := io.ReadFull(reader, crcBuf[:]); err != nil {
 		return nil, err
 	}
+	storedCRC := binary.LittleEndian.Uint32(crcBuf[:])
 
-	// Calculate CRC
-	buf := w.encodeRecord(record)
-	calculatedCRC := crc32.ChecksumIEEE(buf)
+	// Calculate CRC from header bytes + data directly (avoids re-encode allocation)
+	crcHash := crc32.NewIEEE()
+	crcHash.Write(header[:17])
+	if len(record.Data) > 0 {
+		crcHash.Write(record.Data)
+	}
+	calculatedCRC := crcHash.Sum32()
 
 	if storedCRC != calculatedCRC {
 		return nil, ErrWALCorrupted
@@ -187,8 +194,10 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 		return err
 	}
 
-	// Write CRC
-	if err := binary.Write(w.bufWriter, binary.LittleEndian, crc); err != nil {
+	// Write CRC (direct encoding avoids binary.Write reflection)
+	var crcBuf [4]byte
+	binary.LittleEndian.PutUint32(crcBuf[:], crc)
+	if _, err := w.bufWriter.Write(crcBuf[:]); err != nil {
 		return err
 	}
 
@@ -261,7 +270,9 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 	if _, err := w.bufWriter.Write(buf); err != nil {
 		return err
 	}
-	if err := binary.Write(w.bufWriter, binary.LittleEndian, crc); err != nil {
+	var crcBuf [4]byte
+	binary.LittleEndian.PutUint32(crcBuf[:], crc)
+	if _, err := w.bufWriter.Write(crcBuf[:]); err != nil {
 		return err
 	}
 
@@ -302,10 +313,11 @@ func (w *WAL) Recover(bp *BufferPool) error {
 	reader := bufio.NewReader(w.file)
 	var committedTxns = make(map[uint64]bool)
 	var pendingTxns = make(map[uint64][]*WALRecord)
+	var headerBuf [17]byte // reusable header buffer across readRecord calls
 
 	// Read all records
 	for {
-		record, err := w.readRecord(reader)
+		record, err := w.readRecord(reader, headerBuf[:])
 		if err != nil {
 			break // End of file
 		}

@@ -20,6 +20,24 @@ var (
 	ErrInvalidExpression   = errors.New("invalid policy expression")
 )
 
+// Typed context keys to avoid collisions with other packages
+type rlsUserKey struct{}
+type rlsTenantKey struct{}
+type rlsRoleKey struct{}
+type rlsSessionUserKey struct{}
+
+// RLSUserKey is the context key for the current user in RLS checks
+var RLSUserKey = rlsUserKey{}
+
+// RLSTenantKey is the context key for the current tenant in RLS checks
+var RLSTenantKey = rlsTenantKey{}
+
+// RLSRoleKey is the context key for the current role in RLS checks
+var RLSRoleKey = rlsRoleKey{}
+
+// RLSSessionUserKey is the context key for the session user in RLS checks
+var RLSSessionUserKey = rlsSessionUserKey{}
+
 // PolicyType defines the type of policy
 type PolicyType int
 
@@ -609,12 +627,12 @@ func (m *Manager) parseSimpleExpression(expr string) (PolicyExpr, error) {
 	switch upperExpr {
 	case "CURRENT_USER", "CURRENT_USER()":
 		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
-			user := ctx.Value("user")
+			user := ctx.Value(RLSUserKey)
 			return user != nil && user != "", nil
 		}, nil
 	case "CURRENT_TENANT", "CURRENT_TENANT()":
 		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
-			tenant := ctx.Value("tenant")
+			tenant := ctx.Value(RLSTenantKey)
 			return tenant != nil && tenant != "", nil
 		}, nil
 	}
@@ -681,8 +699,8 @@ func (m *Manager) createComparisonEvaluator(left, op, right string) PolicyExpr {
 		}
 
 		// Try numeric comparison first
-		leftNum, leftIsNum := toFloat64(leftVal)
-		rightNum, rightIsNum := toFloat64(rightVal)
+		leftNum, leftIsNum := ToFloat64(leftVal)
+		rightNum, rightIsNum := ToFloat64(rightVal)
 
 		if leftIsNum && rightIsNum {
 			switch op {
@@ -780,16 +798,16 @@ func (m *Manager) getContextValue(name string, ctx context.Context) interface{} 
 
 	switch upperName {
 	case "CURRENT_USER", "CURRENT_USER()":
-		return ctx.Value("user")
+		return ctx.Value(RLSUserKey)
 	case "CURRENT_TENANT", "CURRENT_TENANT()":
-		return ctx.Value("tenant")
+		return ctx.Value(RLSTenantKey)
 	case "CURRENT_ROLE", "CURRENT_ROLE()":
-		return ctx.Value("role")
+		return ctx.Value(RLSRoleKey)
 	case "SESSION_USER":
-		if user := ctx.Value("session_user"); user != nil {
+		if user := ctx.Value(RLSSessionUserKey); user != nil {
 			return user
 		}
-		return ctx.Value("user")
+		return ctx.Value(RLSUserKey)
 	}
 	return nil
 }
@@ -930,7 +948,8 @@ func splitByOperator(expr, op string) []string {
 	}
 }
 
-func toFloat64(v interface{}) (float64, bool) {
+// ToFloat64 converts a value to float64
+func ToFloat64(v interface{}) (float64, bool) {
 	switch val := v.(type) {
 	case float64:
 		return val, true
@@ -946,6 +965,11 @@ func toFloat64(v interface{}) (float64, bool) {
 		if f, err := strconv.ParseFloat(val, 64); err == nil {
 			return f, true
 		}
+	case bool:
+		if val {
+			return 1, true
+		}
+		return 0, true
 	}
 	return 0, false
 }

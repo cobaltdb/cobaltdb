@@ -1,0 +1,34 @@
+# Docker Compose Override for Windows Development
+# This file is automatically loaded by docker-compose on Windows
+
+services:
+  cobaltdb:
+    # Windows-specific settings
+    environment:
+      - COBALTDB_LOG_LEVEL=debug
+    # Use named volumes instead of bind mounts for better Windows performance
+    volumes:
+      - cobaltdb_data:/data/cobaltdb
+      - type: bind
+        source: ./config
+        target: /etc/cobaltdb
+        read_only: true
+
+  backup:
+    # Run backup service with local timezone
+    environment:
+      - BACKUP_SCHEDULE=0 2 * * *
+      - BACKUP_RETENTION_DAYS=7
+      - TZ=UTC
+
+  # Disable some services for lightweight development
+  # Comment out to enable
+  # prometheus:
+  #   profiles: ["monitoring"]
+  #
+  # grafana:
+  #   profiles: ["monitoring"]
+
+volumes:
+  cobaltdb_data:
+    driver: local

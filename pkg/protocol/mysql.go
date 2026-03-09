@@ -3,7 +3,9 @@ package protocol
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -11,7 +13,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/cobaltdb/cobaltdb/pkg/auth"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+)
+
+const (
+	// maxMySQLPayloadSize is the maximum allowed MySQL packet payload size (16 MB)
+	maxMySQLPayloadSize = 16 * 1024 * 1024
 )
 
 // MySQL protocol constants
@@ -84,6 +92,7 @@ type MySQLServer struct {
 	mu       sync.Mutex
 	clients  map[uint32]net.Conn
 	nextID   uint32
+	auth     *auth.Authenticator
 }
 
 // NewMySQLServer creates a new MySQL-compatible server
@@ -96,6 +105,13 @@ func NewMySQLServer(db *engine.DB, version string) *MySQLServer {
 		version: version,
 		clients: make(map[uint32]net.Conn),
 	}
+}
+
+// SetAuthenticator sets the authenticator for the MySQL server.
+// When set and enabled, connections must provide valid credentials.
+// If not set or not enabled, all connections are accepted (backward compatible).
+func (s *MySQLServer) SetAuthenticator(a *auth.Authenticator) {
+	s.auth = a
 }
 
 // Listen starts listening for MySQL connections
@@ -159,6 +175,10 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 	s.mu.Unlock()
 
 	defer func() {
+		if r := recover(); r != nil {
+			// Prevent a panicking client from crashing the server
+			_ = r
+		}
 		conn.Close()
 		s.mu.Lock()
 		delete(s.clients, connID)
@@ -182,6 +202,19 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 		return
 	}
 
+	// Authenticate if an authenticator is configured and enabled (FIX-004)
+	if s.auth != nil && s.auth.IsEnabled() {
+		storedHash, err := s.auth.GetMySQLNativeHash(client.username)
+		if err != nil {
+			client.sendErrorPacket(1045, fmt.Sprintf("Access denied for user '%s'", client.username))
+			return
+		}
+		if !client.verifyMySQLNativeAuth(storedHash) {
+			client.sendErrorPacket(1045, fmt.Sprintf("Access denied for user '%s'", client.username))
+			return
+		}
+	}
+
 	// Send OK packet
 	if err := client.sendOKPacket(0, 0); err != nil {
 		return
@@ -197,12 +230,14 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 
 // MySQLClient represents a MySQL client connection
 type MySQLClient struct {
-	conn     net.Conn
-	reader   *bufio.Reader
-	server   *MySQLServer
-	connID   uint32
-	username string
-	database string
+	conn         net.Conn
+	reader       *bufio.Reader
+	server       *MySQLServer
+	connID       uint32
+	username     string
+	database     string
+	authResponse []byte // raw auth response from client handshake
+	scramble     []byte // 20-byte random challenge sent in handshake (FIX-004)
 }
 
 // sendHandshake sends the initial handshake packet
@@ -221,6 +256,12 @@ func (c *MySQLClient) sendHandshake() error {
 	// Auth plugin data part 2 (minimum 12 bytes)
 	// Auth plugin name (null-terminated string)
 
+	// Generate 20-byte random scramble for challenge-response auth (FIX-004)
+	c.scramble = make([]byte, 20)
+	if _, err := rand.Read(c.scramble); err != nil {
+		return fmt.Errorf("failed to generate auth scramble: %w", err)
+	}
+
 	pkt := make([]byte, 0, 128)
 
 	// Protocol version 10
@@ -235,8 +276,8 @@ func (c *MySQLClient) sendHandshake() error {
 	binary.LittleEndian.PutUint32(connIDBuf, c.connID)
 	pkt = append(pkt, connIDBuf...)
 
-	// Auth plugin data part 1 (8 bytes)
-	pkt = append(pkt, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+	// Auth plugin data part 1 (first 8 bytes of scramble)
+	pkt = append(pkt, c.scramble[:8]...)
 
 	// Filler
 	pkt = append(pkt, 0x00)
@@ -259,8 +300,8 @@ func (c *MySQLClient) sendHandshake() error {
 	// Reserved
 	pkt = append(pkt, make([]byte, 10)...)
 
-	// Auth plugin data part 2 (12 bytes)
-	pkt = append(pkt, make([]byte, 12)...)
+	// Auth plugin data part 2 (remaining 12 bytes of scramble)
+	pkt = append(pkt, c.scramble[8:]...)
 
 	// Auth plugin name
 	pkt = append(pkt, []byte("mysql_native_password")...)
@@ -279,6 +320,11 @@ func (c *MySQLClient) readHandshakeResponse() error {
 
 	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
 	// sequence := header[3]
+
+	// Validate payload size to prevent DoS via unbounded allocation
+	if length <= 0 || length > maxMySQLPayloadSize {
+		return fmt.Errorf("invalid handshake payload length: %d", length)
+	}
 
 	// Read packet payload
 	payload := make([]byte, length)
@@ -304,10 +350,15 @@ func (c *MySQLClient) readHandshakeResponse() error {
 		offset = end + 1 // skip null terminator
 	}
 
-	// Skip auth response (length-encoded or fixed)
+	// Read auth response (length-prefixed)
 	if offset < len(payload) {
 		authLen := int(payload[offset])
-		offset += 1 + authLen
+		offset++
+		if offset+authLen <= len(payload) {
+			c.authResponse = make([]byte, authLen)
+			copy(c.authResponse, payload[offset:offset+authLen])
+		}
+		offset += authLen
 	}
 
 	// Read database if present
@@ -324,6 +375,35 @@ func (c *MySQLClient) readHandshakeResponse() error {
 	return nil
 }
 
+// verifyMySQLNativeAuth verifies the client's mysql_native_password auth response (FIX-004).
+// storedHash is SHA1(SHA1(password)) from the auth system.
+// The client sends: SHA1(password) XOR SHA1(scramble + SHA1(SHA1(password)))
+func (c *MySQLClient) verifyMySQLNativeAuth(storedHash []byte) bool {
+	if len(c.authResponse) == 0 {
+		// Empty auth response — only valid if user has empty password (no hash stored)
+		return len(storedHash) == 0
+	}
+	if len(storedHash) == 0 || len(c.authResponse) != 20 || len(c.scramble) != 20 {
+		return false
+	}
+
+	// Compute SHA1(scramble + storedHash)
+	h := sha1.New()
+	h.Write(c.scramble)
+	h.Write(storedHash)
+	scrambledHash := h.Sum(nil)
+
+	// XOR with client response to recover candidate SHA1(password)
+	candidate := make([]byte, 20)
+	for i := range scrambledHash {
+		candidate[i] = c.authResponse[i] ^ scrambledHash[i]
+	}
+
+	// SHA1(candidate) should equal storedHash
+	check := sha1.Sum(candidate)
+	return subtle.ConstantTimeCompare(check[:], storedHash) == 1
+}
+
 // handleCommand handles a MySQL command
 func (c *MySQLClient) handleCommand() error {
 	// Read packet header
@@ -334,6 +414,11 @@ func (c *MySQLClient) handleCommand() error {
 
 	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
 	// sequence := header[3]
+
+	// Validate payload size to prevent DoS via unbounded allocation
+	if length <= 0 || length > maxMySQLPayloadSize {
+		return fmt.Errorf("invalid command payload length: %d", length)
+	}
 
 	// Read packet payload
 	payload := make([]byte, length)
@@ -391,10 +476,10 @@ func (c *MySQLClient) handleQuery(sql string) error {
 	// Try to execute as exec (INSERT, UPDATE, DELETE, SET, USE, CREATE, etc.)
 	result, err := c.server.db.Exec(ctx, sql)
 	if err != nil {
-		return c.sendErrorPacket(1, err.Error())
+		return c.sendErrorPacket(1, sanitizeMySQLError(err))
 	}
 
-	return c.sendOKPacket(uint16(result.RowsAffected), uint16(result.LastInsertID))
+	return c.sendOKPacket(uint64(result.RowsAffected), uint64(result.LastInsertID))
 }
 
 // handleSelectVariable handles SELECT @@variable queries from MySQL clients
@@ -608,17 +693,17 @@ func (c *MySQLClient) writePacket(data []byte, sequence byte) error {
 }
 
 // sendOKPacket sends an OK packet
-func (c *MySQLClient) sendOKPacket(affectedRows, lastInsertID uint16) error {
+func (c *MySQLClient) sendOKPacket(affectedRows, lastInsertID uint64) error {
 	pkt := make([]byte, 0, 32)
 
 	// Header 0x00
 	pkt = append(pkt, 0x00)
 
 	// Affected rows (length encoded integer)
-	pkt = append(pkt, byte(affectedRows))
+	pkt = append(pkt, writeLenEncInt(affectedRows)...)
 
 	// Last insert ID (length encoded integer)
-	pkt = append(pkt, byte(lastInsertID))
+	pkt = append(pkt, writeLenEncInt(lastInsertID)...)
 
 	// Status flags
 	pkt = append(pkt, 0x02, 0x00)
@@ -726,4 +811,15 @@ func writeLenEncInt(value uint64) []byte {
 		binary.LittleEndian.PutUint64(buf[1:], value)
 		return buf
 	}
+}
+
+// sanitizeMySQLError strips internal details from errors before sending to MySQL clients.
+func sanitizeMySQLError(err error) string {
+	msg := err.Error()
+	for _, prefix := range []string{"/", "C:\\", "D:\\"} {
+		if idx := strings.Index(msg, prefix); idx >= 0 {
+			msg = msg[:idx] + "(internal error)"
+		}
+	}
+	return msg
 }

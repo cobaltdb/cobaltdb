@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
@@ -107,7 +108,7 @@ func TestExecuteScalarAggregateNonAggregate(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	// The behavior may vary - some implementations error, others don't
 	if err != nil {
 		t.Logf("Non-aggregate expression returned error: %v", err)
@@ -131,7 +132,7 @@ func TestExecuteScalarAggregateAVG(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	if err != nil {
 		t.Fatalf("Scalar aggregate AVG failed: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestExecuteScalarAggregateAVG(t *testing.T) {
 			t.Error("Expected non-nil AVG result")
 		} else {
 			// Should be 10
-			if v, ok := toFloat64(rows[0][0]); ok && v != 10 {
+			if v, ok := security.ToFloat64(rows[0][0]); ok && v != 10 {
 				t.Errorf("Expected AVG=10, got %v", rows[0][0])
 			}
 		}
@@ -169,7 +170,7 @@ func TestExecuteScalarAggregateMIN(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	if err != nil {
 		t.Fatalf("Scalar aggregate MIN failed: %v", err)
 	}
@@ -202,7 +203,7 @@ func TestExecuteScalarAggregateMAX(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	if err != nil {
 		t.Fatalf("Scalar aggregate MAX failed: %v", err)
 	}
@@ -235,7 +236,7 @@ func TestExecuteScalarAggregateUnknownFunction(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	// Unknown functions may error depending on implementation
 	if err != nil {
 		t.Logf("Unknown function returned error (expected): %v", err)
@@ -272,7 +273,7 @@ func TestExecuteScalarAggregateMultipleColumns(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	if err != nil {
 		t.Fatalf("Scalar aggregate multiple columns failed: %v", err)
 	}
@@ -303,7 +304,7 @@ func TestExecuteScalarAggregateNoArgs(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	if err != nil {
 		t.Fatalf("Scalar aggregate with no args failed: %v", err)
 	}
@@ -337,7 +338,7 @@ func TestExecuteScalarAggregateCaseInsensitive(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	if err != nil {
 		t.Fatalf("Scalar aggregate lowercase count failed: %v", err)
 	}
@@ -424,9 +425,8 @@ func TestCollectColumnStatsWithData(t *testing.T) {
 	}
 
 	for _, d := range data {
-		_, _, err := cat.Insert(&query.InsertStmt{
-			Table:   "test_col_stats",
-			Columns: []string{"id", "name"},
+		_, _, err := cat	.Insert(&query.InsertStmt{
+			Table:   "test_col_stats", Columns: []string{"id", "name"},
 			Values: [][]query.Expression{
 				{&query.NumberLiteral{Value: float64(d.id)}, &query.StringLiteral{Value: d.name}},
 			},
@@ -537,7 +537,7 @@ func TestExecuteScalarAggregateSUMWithString(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	if err != nil {
 		t.Logf("SUM with string failed (may be expected): %v", err)
 		return
@@ -570,7 +570,7 @@ func TestExecuteScalarAggregateAVGWithString(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	if err != nil {
 		t.Logf("AVG with string failed (may be expected): %v", err)
 		return
@@ -603,7 +603,7 @@ func TestExecuteScalarAggregateMINWithString(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	if err != nil {
 		t.Logf("MIN with string failed (may be expected): %v", err)
 		return
@@ -636,7 +636,7 @@ func TestExecuteScalarAggregateMAXWithString(t *testing.T) {
 		},
 	}
 
-	cols, rows, err := cat.Select(stmt, nil)
+	cols, rows, err := cat	.Select(stmt, nil)
 	if err != nil {
 		t.Logf("MAX with string failed (may be expected): %v", err)
 		return

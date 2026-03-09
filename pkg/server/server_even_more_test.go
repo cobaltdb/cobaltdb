@@ -1073,10 +1073,9 @@ func TestCheckPermissionNotAuthenticated(t *testing.T) {
 		authed: false, // Not authenticated
 	}
 
-	// Should allow when not authenticated (auth enabled but no user)
-	// This is the current behavior based on code
-	if !client.checkPermission("SELECT * FROM test") {
-		t.Error("Should allow when not authenticated")
+	// Should deny when not authenticated and auth is enabled (security fix FIX-010)
+	if client.checkPermission("SELECT * FROM test") {
+		t.Error("Should deny when not authenticated")
 	}
 }
 

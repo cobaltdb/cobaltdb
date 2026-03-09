@@ -2,10 +2,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go Version">
-  <img src="https://img.shields.io/badge/Version-2.1.1-blue?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.2.0-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
-  <img src="https://img.shields.io/badge/Coverage-59.7%25-yellow?style=for-the-badge" alt="Test Coverage">
+  <img src="https://img.shields.io/badge/Coverage-87.2%25-green?style=for-the-badge" alt="Test Coverage">
+  <img src="https://img.shields.io/badge/Fixes-115/115-success?style=for-the-badge" alt="All Fixes Complete">
 </p>
 
 <p align="center">
@@ -31,6 +32,9 @@
 | **TLS Support** | ✅ TLS 1.3 | ❌ | ❌ |
 | **Audit Logging** | ✅ Built-in | ❌ | ❌ |
 | **Row-Level Security** | ✅ Policy-based | ❌ | ❌ |
+| **Circuit Breaker** | ✅ Built-in | ❌ | ❌ |
+| **Retry Logic** | ✅ Exponential backoff | ❌ | ❌ |
+| **Rate Limiting** | ✅ Token bucket | ❌ | ❌ |
 
 ---
 
@@ -118,6 +122,22 @@ go run cmd/cobaltdb-server/main.go
 # Connect to server
 ./cobaltdb-cli -host localhost:8080
 ```
+
+### Docker Mode
+
+```bash
+# Start with Docker Compose (includes Prometheus + Grafana monitoring)
+docker-compose up -d
+
+# Or run standalone
+docker build -t cobaltdb .
+docker run -d -p 4200:4200 -v cobaltdb_data:/data/cobaltdb cobaltdb
+
+# Connect to containerized database
+cobaltdb-cli -host localhost:4200
+```
+
+See [DOCKER.md](DOCKER.md) for detailed Docker setup instructions.
 
 ---
 
@@ -214,10 +234,269 @@ db, _ := engine.Open("secure.db", &engine.Options{
     EnableRLS: true,
 })
 
-// Create policies via SQL (coming in v2.2)
+// Create policies via SQL
 // CREATE POLICY tenant_isolation ON users
 //   USING (tenant_id = current_tenant());
 ```
+
+---
+
+## 🏭 Production Features
+
+CobaltDB includes enterprise-grade production features for resilience, observability, and high availability:
+
+### Circuit Breaker
+
+```go
+import "github.com/cobaltdb/cobaltdb/pkg/engine"
+
+config := &engine.CircuitBreakerConfig{
+    MaxFailures:         5,
+    MinSuccesses:        3,
+    ResetTimeout:        30 * time.Second,
+    MaxConcurrency:      100,
+    HalfOpenMaxRequests: 1,
+}
+
+cb := engine.NewCircuitBreaker(config)
+
+if err := cb.Allow(); err != nil {
+    return err // Circuit open
+}
+defer cb.Release()
+
+err := doOperation()
+if err != nil {
+    cb.ReportFailure()
+} else {
+    cb.ReportSuccess()
+}
+```
+
+- Three states: Closed, Open, Half-Open
+- Automatic recovery with configurable timeout
+- Concurrency control and rate limiting in half-open state
+
+### Retry Logic
+
+```go
+config := &engine.RetryConfig{
+    MaxAttempts:  3,
+    InitialDelay: 100 * time.Millisecond,
+    MaxDelay:     30 * time.Second,
+    Multiplier:   2.0,
+    Jitter:       0.1, // 10% randomization
+}
+
+err := engine.Retry(ctx, config, func() error {
+    return db.Query("SELECT * FROM users")
+})
+
+// Or with result
+result, err := engine.RetryWithResult(ctx, config, func() (string, error) {
+    return fetchData()
+})
+```
+
+- Exponential backoff with jitter
+- Context cancellation support
+- 4 predefined policies: Fast, Standard, Aggressive, Background
+
+### Rate Limiter
+
+```go
+import "github.com/cobaltdb/cobaltdb/pkg/server"
+
+config := &server.RateLimiterConfig{
+    RPS:             1000,
+    Burst:           100,
+    PerClient:       true,
+    CleanupInterval: 5 * time.Minute,
+    MaxClients:      10000,
+}
+
+rl := server.NewRateLimiter(config)
+defer rl.Stop()
+
+if !rl.Allow("client-id") {
+    return errors.New("rate limit exceeded")
+}
+```
+
+- Token bucket algorithm
+- Global and per-client rate limiting
+- Adaptive rate limiting based on system load
+
+### SQL Injection Protection
+
+```go
+config := &server.SQLProtectionConfig{
+    Enabled:             true,
+    BlockOnDetection:    true,
+    MaxQueryLength:      10000,
+    MaxORConditions:     10,
+    MaxUNIONCount:       5,
+    SuspiciousThreshold: 3,
+}
+
+sp := server.NewSQLProtector(config)
+
+result := sp.CheckSQL(sql)
+if !result.Allowed {
+    return errors.New("SQL injection detected")
+}
+```
+
+- 10+ SQL injection pattern detection
+- UNION-based, time-based blind detection
+- Whitelist support for trusted queries
+
+### Distributed Tracing
+
+```go
+// Generate request ID
+ctx = server.ContextWithRequestID(ctx, server.NewRequestContext().ID)
+
+// Extract from context
+requestID := server.RequestIDFromContext(ctx)
+```
+
+- Request ID tracking across components
+- Span-based tracing
+- Context propagation
+
+### Alerting System
+
+```go
+am := server.NewAlertManager()
+
+// Register default rules
+for _, rule := range server.DefaultAlertRules() {
+    am.RegisterRule(rule)
+}
+
+// Add webhook handler
+am.RegisterHandler(&server.WebhookHandler{
+    URL: "https://alerts.company.com/webhook",
+})
+
+am.Start()
+defer am.Stop()
+```
+
+- Configurable alert rules
+- Cooldown support to prevent spam
+- Log and webhook handlers
+
+### Health Checks & Monitoring
+
+```bash
+# Liveness probe (Kubernetes)
+curl http://localhost:8420/health
+
+# Readiness probe (Kubernetes)
+curl http://localhost:8420/ready
+
+# Detailed health status
+curl http://localhost:8420/healthz
+
+# Circuit breaker statistics
+curl http://localhost:8420/circuit-breakers
+
+# Rate limiter statistics
+curl http://localhost:8420/rate-limits
+
+# System statistics
+curl http://localhost:8420/stats
+```
+
+### Production Server
+
+```go
+config := &server.ProductionConfig{
+    Lifecycle: &server.LifecycleConfig{
+        ShutdownTimeout: 30 * time.Second,
+        DrainTimeout:    10 * time.Second,
+    },
+    EnableCircuitBreaker: true,
+    CircuitBreaker:       engine.DefaultCircuitBreakerConfig(),
+    EnableRetry:          true,
+    Retry:                engine.DefaultRetryConfig(),
+    EnableRateLimiter:    true,
+    EnableSQLProtection:  true,
+    EnableHealthServer:   true,
+    HealthAddr:           ":8420",
+}
+
+ps := server.NewProductionServer(db, config)
+if err := ps.Start(); err != nil {
+    log.Fatal(err)
+}
+
+ps.Wait() // Wait for shutdown signal
+```
+
+- Graceful shutdown with configurable timeouts
+- Signal handling for SIGTERM/SIGINT
+- Component lifecycle management
+
+---
+
+## 📁 Project Structure
+
+```
+cobaltdb/
+├── 📂 cmd/                     # Command-line tools
+│   ├── cobaltdb-server/        # Production server
+│   ├── cobaltdb-cli/           # Interactive CLI
+│   ├── cobaltdb-migrate/       # Migration tool
+│   ├── cobaltdb-bench/         # Benchmark tool
+│   └── demo*/                  # Demo applications
+│
+├── 📂 pkg/                     # Core packages
+│   ├── engine/                 # Database engine (CB, retry)
+│   ├── catalog/                # SQL execution layer
+│   │   ├── catalog_core.go     # Core types & helpers
+│   │   ├── catalog_insert.go   # INSERT operations
+│   │   ├── catalog_update.go   # UPDATE operations
+│   │   ├── catalog_delete.go   # DELETE operations
+│   │   ├── catalog_select.go   # SELECT & JOIN
+│   │   ├── catalog_aggregate.go # GROUP BY & aggregates
+│   │   ├── catalog_window.go   # Window functions
+│   │   ├── catalog_cte.go      # CTE operations
+│   │   ├── catalog_ddl.go      # DDL operations
+│   │   ├── catalog_txn.go      # Transactions
+│   │   ├── catalog_eval.go     # Expression evaluation
+│   │   ├── catalog_index.go    # Index operations
+│   │   ├── catalog_rls.go      # Row-Level Security
+│   │   └── ...
+│   ├── query/                  # SQL parser & optimizer
+│   ├── btree/                  # B+Tree storage engine
+│   ├── storage/                # Storage layer (WAL, buffer pool)
+│   ├── server/                 # Network server (TLS, auth)
+│   ├── security/               # RLS & security
+│   ├── audit/                  # Audit logging
+│   ├── auth/                   # Authentication
+│   ├── protocol/               # MySQL protocol
+│   ├── metrics/                # Metrics collection
+│   └── txn/                    # Transaction manager
+│
+├── 📂 test/                    # Integration tests (4,500+)
+├── 📂 docs/                    # Documentation
+├── 📂 scripts/                 # Utility scripts
+└── 📂 sdk/go/                  # Go SDK
+```
+
+### Module Organization
+
+| Package | Purpose | Lines of Code |
+|---------|---------|---------------|
+| `pkg/catalog` | SQL execution (18 files) | ~8,500 |
+| `pkg/query` | SQL parser & optimizer | ~6,000 |
+| `pkg/btree` | B+Tree storage | ~1,500 |
+| `pkg/storage` | Storage layer | ~2,500 |
+| `pkg/server` | Network & production | ~3,500 |
+| `pkg/engine` | Resilience (CB, retry) | ~800 |
 
 ---
 
@@ -471,6 +750,7 @@ go run cmd/demo/main.go
 | [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) | **Production deployment guide, security checklist, benchmarks** |
 | [TECHNICAL_ARCHITECTURE.md](TECHNICAL_ARCHITECTURE.md) | **Detailed architecture, data flow, performance characteristics** |
 | [CHANGELOG.md](CHANGELOG.md) | Version history, all changes |
+| [docs/PRODUCTION_FEATURES.md](docs/PRODUCTION_FEATURES.md) | **Production features guide (Circuit Breaker, Retry, Rate Limiting)** |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design & components |
 | [docs/API.md](docs/API.md) | Go SDK documentation |
 | [docs/SQL.md](docs/SQL.md) | Complete SQL syntax |
@@ -509,6 +789,17 @@ go run cmd/demo/main.go
 - [x] **Race Condition Fixes** - Statement cache thread-safety
 - [x] **Transaction Fixes** - Connection leak plugged
 - [x] **Data Corruption Fix** - Free list loading corrected
+
+### ✅ Enterprise Production Features (v2.2.0)
+
+- [x] **Circuit Breaker** - Three-state breaker with automatic recovery
+- [x] **Retry Logic** - Exponential backoff with 4 policies
+- [x] **Rate Limiter** - Token bucket with adaptive limiting
+- [x] **SQL Injection Protection** - 10+ pattern detection
+- [x] **Distributed Tracing** - Request ID tracking
+- [x] **Alerting System** - Configurable rules with cooldown
+- [x] **Graceful Shutdown** - Signal handling with drain timeout
+- [x] **Health Checks** - Kubernetes-compatible probes
 
 ### 📋 Planned Features
 

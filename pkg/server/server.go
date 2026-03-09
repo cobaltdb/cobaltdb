@@ -17,6 +17,11 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/wire"
 )
 
+const (
+	// maxPayloadSize is the maximum allowed message payload size (16 MB)
+	maxPayloadSize uint32 = 16 * 1024 * 1024
+)
+
 var (
 	ErrServerClosed = errors.New("server is closed")
 )
@@ -33,6 +38,8 @@ type Server struct {
 	maxConnections int
 	readTimeout    time.Duration
 	writeTimeout   time.Duration
+	sqlProtector   *SQLProtector // Optional SQL injection protection
+	clientWg       sync.WaitGroup // Tracks active client handler goroutines
 }
 
 // Config contains server configuration
@@ -98,6 +105,16 @@ func New(db *engine.DB, config *Config) (*Server, error) {
 	}, nil
 }
 
+// GetAuthenticator returns the server's authenticator instance.
+func (s *Server) GetAuthenticator() *auth.Authenticator {
+	return s.auth
+}
+
+// SetSQLProtector sets the SQL injection protector for the server
+func (s *Server) SetSQLProtector(sp *SQLProtector) {
+	s.sqlProtector = sp
+}
+
 // Listen starts the server on the given address
 func (s *Server) Listen(address string, tlsConfig *TLSConfig) error {
 	listener, err := net.Listen("tcp", address)
@@ -161,16 +178,26 @@ func (s *Server) acceptLoop() error {
 			tcpConn.SetKeepAlivePeriod(60 * time.Second)
 		}
 
-		go client.Handle()
+		s.clientWg.Add(1)
+		go func() {
+			defer s.clientWg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					// Prevent a panicking client from crashing the server
+					_ = r
+				}
+			}()
+			client.Handle()
+		}()
 	}
 }
 
-// Close closes the server
+// Close closes the server and waits for all client handlers to finish
 func (s *Server) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 
@@ -185,6 +212,11 @@ func (s *Server) Close() error {
 	if s.listener != nil {
 		s.listener.Close()
 	}
+
+	s.mu.Unlock()
+
+	// Wait for all client handlers to finish (outside lock to avoid deadlock)
+	s.clientWg.Wait()
 
 	return nil
 }
@@ -211,11 +243,15 @@ type ClientConn struct {
 	reader   *bufio.Reader
 	username string
 	authed   bool
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 // Handle handles client requests
 func (c *ClientConn) Handle() {
+	c.ctx, c.cancel = context.WithCancel(context.Background())
 	defer func() {
+		c.cancel() // cancel any in-flight queries on disconnect
 		c.Conn.Close()
 		c.Server.removeClient(c.ID)
 	}()
@@ -243,6 +279,10 @@ func (c *ClientConn) Handle() {
 		// Read payload
 		if length < 1 {
 			c.sendError(1, fmt.Sprintf("invalid message length: %d", length))
+			return
+		}
+		if length > maxPayloadSize {
+			c.sendError(1, "message too large")
 			continue
 		}
 		payload := make([]byte, length-1)
@@ -262,7 +302,7 @@ func (c *ClientConn) Handle() {
 
 // handleMessage handles a single message
 func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interface{} {
-	ctx := context.Background()
+	ctx := c.ctx
 
 	switch msgType {
 	case wire.MsgPing:
@@ -271,7 +311,7 @@ func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interfa
 	case wire.MsgAuth:
 		var authMsg wire.AuthMessage
 		if err := wire.Decode(payload, &authMsg); err != nil {
-			return wire.NewErrorMessage(2, err.Error())
+			return wire.NewErrorMessage(2, "malformed message")
 		}
 		return c.handleAuth(&authMsg)
 
@@ -282,7 +322,7 @@ func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interfa
 
 		var query wire.QueryMessage
 		if err := wire.Decode(payload, &query); err != nil {
-			return wire.NewErrorMessage(2, err.Error())
+			return wire.NewErrorMessage(2, "malformed message")
 		}
 
 		return c.handleQuery(ctx, &query)
@@ -294,7 +334,7 @@ func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interfa
 
 		var prepMsg wire.PrepareMessage
 		if err := wire.Decode(payload, &prepMsg); err != nil {
-			return wire.NewErrorMessage(2, err.Error())
+			return wire.NewErrorMessage(2, "malformed message")
 		}
 
 		// Prepare is essentially the same as query in our engine (uses cached prepared stmts)
@@ -307,7 +347,7 @@ func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interfa
 
 		var execMsg wire.ExecuteMessage
 		if err := wire.Decode(payload, &execMsg); err != nil {
-			return wire.NewErrorMessage(2, err.Error())
+			return wire.NewErrorMessage(2, "malformed message")
 		}
 
 		return wire.NewErrorMessage(3, "prepared statement execution not yet supported via wire protocol")
@@ -332,9 +372,13 @@ func (c *ClientConn) handleAuth(authMsg *wire.AuthMessage) interface{} {
 
 // checkPermission checks if the authenticated user has permission for the operation
 func (c *ClientConn) checkPermission(sql string) bool {
-	// If auth is disabled or user is admin, allow all
-	if !c.Server.auth.IsEnabled() || c.authed == false {
+	// If auth is disabled, allow all
+	if !c.Server.auth.IsEnabled() {
 		return true
+	}
+	// If user is not authenticated, deny
+	if !c.authed {
+		return false
 	}
 
 	user, err := c.Server.auth.GetUser(c.username)
@@ -346,25 +390,18 @@ func (c *ClientConn) checkPermission(sql string) bool {
 		return true
 	}
 
-	// Parse SQL to determine required permission
-	sqlUpper := strings.ToUpper(strings.TrimSpace(sql))
+	// Extract first SQL keyword to determine required permission
+	// Using first word only prevents multi-statement bypass (e.g. "SELECT 1;DROP TABLE")
+	sqlTrimmed := strings.TrimSpace(sql)
+	firstWord := sqlTrimmed
+	if idx := strings.IndexAny(sqlTrimmed, " \t\n\r("); idx > 0 {
+		firstWord = sqlTrimmed[:idx]
+	}
+	action := strings.ToUpper(firstWord)
 
-	var action string
-	switch {
-	case strings.HasPrefix(sqlUpper, "SELECT"):
-		action = "SELECT"
-	case strings.HasPrefix(sqlUpper, "INSERT"):
-		action = "INSERT"
-	case strings.HasPrefix(sqlUpper, "UPDATE"):
-		action = "UPDATE"
-	case strings.HasPrefix(sqlUpper, "DELETE"):
-		action = "DELETE"
-	case strings.HasPrefix(sqlUpper, "CREATE"):
-		action = "CREATE"
-	case strings.HasPrefix(sqlUpper, "DROP"):
-		action = "DROP"
-	case strings.HasPrefix(sqlUpper, "ALTER"):
-		action = "ALTER"
+	switch action {
+	case "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER":
+		// valid action
 	default:
 		return false // Unknown operations denied by default for safety
 	}
@@ -385,12 +422,31 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 		return wire.NewErrorMessage(8, "permission denied")
 	}
 
-	// Try as query first
-	rows, err := c.Server.db.Query(ctx, query.SQL, query.Params...)
-	if err == nil {
+	// SQL injection protection
+	if sp := c.Server.sqlProtector; sp != nil {
+		result := sp.CheckSQL(query.SQL)
+		if result.Blocked {
+			return wire.NewErrorMessage(9, "query blocked by SQL protection")
+		}
+	}
+
+	// Determine if this is a query (returns rows) or exec (returns affected count)
+	// by checking the SQL prefix to avoid parsing twice
+	sqlTrimmed := strings.TrimSpace(query.SQL)
+	isQuery := len(sqlTrimmed) >= 4 && (
+		(len(sqlTrimmed) >= 6 && strings.EqualFold(sqlTrimmed[:6], "SELECT")) ||
+		strings.EqualFold(sqlTrimmed[:4], "WITH") ||
+		strings.EqualFold(sqlTrimmed[:4], "SHOW") ||
+		(len(sqlTrimmed) >= 7 && strings.EqualFold(sqlTrimmed[:7], "EXPLAIN")) ||
+		(len(sqlTrimmed) >= 8 && strings.EqualFold(sqlTrimmed[:8], "DESCRIBE")))
+
+	if isQuery {
+		rows, err := c.Server.db.Query(ctx, query.SQL, query.Params...)
+		if err != nil {
+			return wire.NewErrorMessage(4, sanitizeError(err))
+		}
 		defer rows.Close()
 
-		// Collect results
 		columns := rows.Columns()
 		var resultRows [][]interface{}
 
@@ -402,7 +458,7 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 			}
 
 			if err := rows.Scan(dest...); err != nil {
-				return wire.NewErrorMessage(5, err.Error())
+				return wire.NewErrorMessage(5, sanitizeError(err))
 			}
 
 			resultRows = append(resultRows, row)
@@ -411,10 +467,10 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 		return wire.NewResultMessage(columns, resultRows)
 	}
 
-	// Try as exec
+	// Non-query statement (INSERT, UPDATE, DELETE, CREATE, etc.)
 	result, err := c.Server.db.Exec(ctx, query.SQL, query.Params...)
 	if err != nil {
-		return wire.NewErrorMessage(4, err.Error())
+		return wire.NewErrorMessage(4, sanitizeError(err))
 	}
 
 	return wire.NewOKMessage(result.LastInsertID, result.RowsAffected)
@@ -482,4 +538,19 @@ func (c *ClientConn) sendMessage(msg interface{}) error {
 // sendError sends an error message
 func (c *ClientConn) sendError(code int, message string) {
 	c.sendMessage(wire.NewErrorMessage(code, message))
+}
+
+// sanitizeError strips internal details from errors before sending to clients.
+// It preserves SQL-level errors (syntax, constraint, etc.) but removes
+// file paths, stack traces, and internal component names.
+func sanitizeError(err error) string {
+	msg := err.Error()
+	// Remove file paths (Unix and Windows)
+	for _, prefix := range []string{"/", "C:\\", "D:\\"} {
+		if idx := strings.Index(msg, prefix); idx >= 0 {
+			// Truncate at the path
+			msg = msg[:idx] + "(internal error)"
+		}
+	}
+	return msg
 }

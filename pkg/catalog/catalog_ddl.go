@@ -1,0 +1,796 @@
+package catalog
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
+)
+
+func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.tables[stmt.Table]; exists {
+		if stmt.IfNotExists {
+			return nil // Table already exists, silently succeed
+		}
+		return ErrTableExists
+	}
+
+	// Create new B+Tree for the table's data
+	tree, err := btree.NewBTree(c.pool)
+	if err != nil {
+		return err
+	}
+
+	tableDef := &TableDef{
+		Name:        stmt.Table,
+		Type:        "table",
+		Columns:     make([]ColumnDef, len(stmt.Columns)),
+		CreatedAt:   time.Now().UnixNano(),
+		RootPageID:  tree.RootPageID(),
+		ForeignKeys: make([]ForeignKeyDef, len(stmt.ForeignKeys)),
+	}
+
+	for i, col := range stmt.Columns {
+		tableDef.Columns[i] = ColumnDef{
+			Name:          col.Name,
+			Type:          tokenTypeToColumnType(col.Type),
+			NotNull:       col.NotNull,
+			Unique:        col.Unique,
+			PrimaryKey:    col.PrimaryKey,
+			AutoIncrement: col.AutoIncrement,
+			Default:       exprToSQL(col.Default),
+			CheckStr:      exprToSQL(col.Check),
+			Check:         col.Check,
+			defaultExpr:   col.Default,
+		}
+		if col.PrimaryKey {
+			tableDef.PrimaryKey = append(tableDef.PrimaryKey, col.Name)
+			tableDef.Columns[i].NotNull = true // PRIMARY KEY implies NOT NULL
+		}
+	}
+
+	// Handle table-level PRIMARY KEY (for composite PK)
+	if len(stmt.PrimaryKey) > 0 {
+		tableDef.PrimaryKey = append(tableDef.PrimaryKey, stmt.PrimaryKey...)
+		// Mark columns as NOT NULL since they're part of PK
+		for _, pkCol := range stmt.PrimaryKey {
+			for i, col := range tableDef.Columns {
+				if strings.EqualFold(col.Name, pkCol) {
+					tableDef.Columns[i].NotNull = true
+					tableDef.Columns[i].PrimaryKey = true
+					break
+				}
+			}
+		}
+	}
+
+	// Copy foreign key definitions
+	for i, fk := range stmt.ForeignKeys {
+		tableDef.ForeignKeys[i] = ForeignKeyDef{
+			Columns:           fk.Columns,
+			ReferencedTable:   fk.ReferencedTable,
+			ReferencedColumns: fk.ReferencedColumns,
+			OnDelete:          fk.OnDelete,
+			OnUpdate:          fk.OnUpdate,
+		}
+	}
+
+	c.tables[stmt.Table] = tableDef
+	c.tableTrees[stmt.Table] = tree // Store the tree for data operations
+
+	// Build column index cache for performance
+	tableDef.buildColumnIndexCache()
+
+	// Record DDL undo entry for transaction rollback
+	if c.txnActive {
+		c.undoLog = append(c.undoLog, undoEntry{
+			action:    undoCreateTable,
+			tableName: stmt.Table,
+		})
+	}
+
+	// Store table definition in catalog tree
+	return c.storeTableDef(tableDef)
+}
+
+func (c *Catalog) storeTableDef(table *TableDef) error {
+	key := []byte("tbl:" + table.Name)
+	data, err := json.Marshal(table)
+	if err != nil {
+		return err
+	}
+
+	if c.tree != nil {
+		return c.tree.Put(key, data)
+	}
+	return nil
+}
+
+func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !stmt.IfExists {
+		if _, exists := c.tables[stmt.Table]; !exists {
+			return ErrTableNotFound
+		}
+	}
+
+	// Check if table actually exists before trying to delete
+	tableDef, exists := c.tables[stmt.Table]
+
+	// Record DDL undo entry for transaction rollback before deleting
+	if c.txnActive && exists {
+		entry := undoEntry{
+			action:        undoDropTable,
+			tableName:     stmt.Table,
+			tableDef:      tableDef,
+			tableTree:     c.tableTrees[stmt.Table],
+			tableIndexes:  make(map[string]*IndexDef),
+			tableIdxTrees: make(map[string]*btree.BTree),
+		}
+		for idxName, idxDef := range c.indexes {
+			if idxDef.TableName == stmt.Table {
+				entry.tableIndexes[idxName] = idxDef
+				if tree, ok := c.indexTrees[idxName]; ok {
+					entry.tableIdxTrees[idxName] = tree
+				}
+			}
+		}
+		c.undoLog = append(c.undoLog, entry)
+	}
+
+	// Clean up table data B-tree
+	delete(c.tableTrees, stmt.Table)
+
+	// Clean up indexes associated with this table
+	if tableDef != nil {
+		for idxName, idxDef := range c.indexes {
+			if idxDef.TableName == stmt.Table {
+				delete(c.indexes, idxName)
+				delete(c.indexTrees, idxName)
+			}
+		}
+	}
+
+	// Clean up views that reference this table (triggers, FTS indexes, stats)
+	delete(c.stats, stmt.Table)
+	delete(c.tables, stmt.Table)
+
+	// Remove from catalog tree only if the table existed
+	if c.tree != nil && exists {
+		key := []byte("tbl:" + stmt.Table)
+		return c.tree.Delete(key)
+	}
+	return nil
+}
+
+func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	table, exists := c.tables[stmt.Table]
+	if !exists {
+		return ErrTableNotFound
+	}
+
+	// Check if column already exists
+	for _, col := range table.Columns {
+		if col.Name == stmt.Column.Name {
+			return fmt.Errorf("column %s already exists in table %s", stmt.Column.Name, stmt.Table)
+		}
+	}
+
+	// Save undo entry before modification
+	if c.txnActive {
+		oldCols := make([]ColumnDef, len(table.Columns))
+		copy(oldCols, table.Columns)
+		c.undoLog = append(c.undoLog, undoEntry{
+			action:     undoAlterAddColumn,
+			tableName:  stmt.Table,
+			oldColumns: oldCols,
+		})
+	}
+
+	newCol := ColumnDef{
+		Name:          stmt.Column.Name,
+		Type:          tokenTypeToColumnType(stmt.Column.Type),
+		NotNull:       stmt.Column.NotNull,
+		Unique:        stmt.Column.Unique,
+		PrimaryKey:    stmt.Column.PrimaryKey,
+		AutoIncrement: stmt.Column.AutoIncrement,
+		Default:       exprToSQL(stmt.Column.Default),
+		CheckStr:      exprToSQL(stmt.Column.Check),
+		Check:         stmt.Column.Check,
+		defaultExpr:   stmt.Column.Default,
+	}
+
+	table.Columns = append(table.Columns, newCol)
+	table.buildColumnIndexCache()
+
+	// Backfill existing rows with the default value for the new column
+	tree, treeExists := c.tableTrees[stmt.Table]
+	if treeExists {
+		// Compute default value
+		var defaultVal interface{}
+		if newCol.defaultExpr != nil {
+			defaultVal, _ = evaluateExpression(c, nil, nil, newCol.defaultExpr, nil)
+		}
+
+		// Scan all rows and append the default value
+		iter, _ := tree.Scan(nil, nil)
+		defer iter.Close()
+		type rowUpdate struct {
+			key  []byte
+			data []byte
+		}
+		var updates []rowUpdate
+		for iter.HasNext() {
+			key, valueData, err := iter.Next()
+			if err != nil {
+				break
+			}
+			var values []interface{}
+			if err := json.Unmarshal(valueData, &values); err != nil {
+				continue
+			}
+			// Only update rows that are missing the new column
+			if len(values) < len(table.Columns) {
+				for len(values) < len(table.Columns) {
+					values = append(values, defaultVal)
+				}
+				newData, err := json.Marshal(values)
+				if err != nil {
+					continue
+				}
+				keyCopy := make([]byte, len(key))
+				copy(keyCopy, key)
+				updates = append(updates, rowUpdate{key: keyCopy, data: newData})
+			}
+		}
+
+		// Apply updates
+		for _, u := range updates {
+			tree.Put(u.key, u.data)
+		}
+	}
+
+	// Store updated table definition
+	return c.storeTableDef(table)
+}
+
+func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	table, exists := c.tables[stmt.Table]
+	if !exists {
+		return ErrTableNotFound
+	}
+
+	colName := stmt.NewName // Column name to drop stored in NewName
+	colIdx := -1
+	for i, col := range table.Columns {
+		if strings.EqualFold(col.Name, colName) {
+			colIdx = i
+			break
+		}
+	}
+	if colIdx < 0 {
+		return fmt.Errorf("column '%s' does not exist in table '%s'", colName, stmt.Table)
+	}
+
+	// Cannot drop primary key column
+	if table.isPrimaryKeyColumn(table.Columns[colIdx].Name) {
+		return fmt.Errorf("cannot drop PRIMARY KEY column '%s'", colName)
+	}
+
+	// Save undo entry before modification
+	if c.txnActive {
+		oldCols := make([]ColumnDef, len(table.Columns))
+		copy(oldCols, table.Columns)
+		entry := undoEntry{
+			action:          undoAlterDropColumn,
+			tableName:       stmt.Table,
+			oldColumns:      oldCols,
+			droppedIndexes:  make(map[string]*IndexDef),
+			droppedIdxTrees: make(map[string]*btree.BTree),
+		}
+		// Save original row data before modification
+		if tree, treeExists := c.tableTrees[stmt.Table]; treeExists {
+			iter, _ := tree.Scan(nil, nil)
+			defer iter.Close()
+			for iter.HasNext() {
+				key, val, err := iter.Next()
+				if err != nil {
+					break
+				}
+				keyCopy := make([]byte, len(key))
+				copy(keyCopy, key)
+				valCopy := make([]byte, len(val))
+				copy(valCopy, val)
+				entry.oldRowData = append(entry.oldRowData, struct{ key, val []byte }{keyCopy, valCopy})
+			}
+		}
+		// Save indexes that will be dropped
+		for idxName, idxDef := range c.indexes {
+			if idxDef.TableName == stmt.Table {
+				for _, idxCol := range idxDef.Columns {
+					if strings.EqualFold(idxCol, colName) {
+						entry.droppedIndexes[idxName] = idxDef
+						if idxTree, ok := c.indexTrees[idxName]; ok {
+							entry.droppedIdxTrees[idxName] = idxTree
+						}
+						break
+					}
+				}
+			}
+		}
+		c.undoLog = append(c.undoLog, entry)
+	}
+
+	// Remove column from definition
+	table.Columns = append(table.Columns[:colIdx], table.Columns[colIdx+1:]...)
+	table.buildColumnIndexCache()
+
+	// Update all existing rows - remove the dropped column's data
+	tree, exists := c.tableTrees[stmt.Table]
+	if exists {
+		var updates []struct {
+			key []byte
+			val []byte
+		}
+		iter, _ := tree.Scan(nil, nil)
+		defer iter.Close()
+		for iter.HasNext() {
+			key, valueData, err := iter.Next()
+			if err != nil {
+				break
+			}
+			row, err := decodeRow(valueData, colIdx+1+len(table.Columns))
+			if err != nil {
+				continue
+			}
+			if colIdx < len(row) {
+				row = append(row[:colIdx], row[colIdx+1:]...)
+			}
+			newData, err := json.Marshal(row)
+			if err != nil {
+				continue
+			}
+			keyCopy := make([]byte, len(key))
+			copy(keyCopy, key)
+			updates = append(updates, struct {
+				key []byte
+				val []byte
+			}{keyCopy, newData})
+		}
+		for _, u := range updates {
+			if err := tree.Put(u.key, u.val); err != nil {
+				return fmt.Errorf("failed to update row after column drop: %w", err)
+			}
+		}
+	}
+
+	// Drop any indexes on the dropped column
+	for idxName, idxDef := range c.indexes {
+		if idxDef.TableName == stmt.Table {
+			for _, idxCol := range idxDef.Columns {
+				if strings.EqualFold(idxCol, colName) {
+					delete(c.indexes, idxName)
+					delete(c.indexTrees, idxName)
+					break
+				}
+			}
+		}
+	}
+
+	return c.storeTableDef(table)
+}
+
+func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	table, exists := c.tables[stmt.Table]
+	if !exists {
+		return ErrTableNotFound
+	}
+
+	if _, exists := c.tables[stmt.NewName]; exists {
+		return fmt.Errorf("table '%s' already exists", stmt.NewName)
+	}
+
+	// Save undo entry before modification
+	if c.txnActive {
+		c.undoLog = append(c.undoLog, undoEntry{
+			action:    undoAlterRename,
+			tableName: stmt.Table,
+			oldName:   stmt.Table,
+			newName:   stmt.NewName,
+		})
+	}
+
+	// Update table name in all maps
+	delete(c.tables, stmt.Table)
+	c.tables[stmt.NewName] = table
+
+	if tree, exists := c.tableTrees[stmt.Table]; exists {
+		delete(c.tableTrees, stmt.Table)
+		c.tableTrees[stmt.NewName] = tree
+	}
+
+	// Update index references
+	for _, idxDef := range c.indexes {
+		if idxDef.TableName == stmt.Table {
+			idxDef.TableName = stmt.NewName
+		}
+	}
+
+	// Update stats
+	if stats, exists := c.stats[stmt.Table]; exists {
+		delete(c.stats, stmt.Table)
+		c.stats[stmt.NewName] = stats
+	}
+
+	return nil
+}
+
+func (c *Catalog) AlterTableRenameColumn(stmt *query.AlterTableStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	table, exists := c.tables[stmt.Table]
+	if !exists {
+		return ErrTableNotFound
+	}
+
+	found := false
+	for i, col := range table.Columns {
+		if strings.EqualFold(col.Name, stmt.OldName) {
+			// Save undo entry before modification
+			if c.txnActive {
+				c.undoLog = append(c.undoLog, undoEntry{
+					action:               undoAlterRenameColumn,
+					tableName:            stmt.Table,
+					oldName:              stmt.OldName,
+					newName:              stmt.NewName,
+					oldPrimaryKeyColumns: append([]string{}, table.PrimaryKey...),
+				})
+			}
+			table.Columns[i].Name = stmt.NewName
+			found = true
+			// Update primary key reference if needed
+			// Update PK column names if needed
+			for i, pkCol := range table.PrimaryKey {
+				if strings.EqualFold(pkCol, stmt.OldName) {
+					table.PrimaryKey[i] = stmt.NewName
+				}
+			}
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("column '%s' does not exist in table '%s'", stmt.OldName, stmt.Table)
+	}
+
+	table.buildColumnIndexCache()
+
+	// Update index column references
+	for _, idxDef := range c.indexes {
+		if idxDef.TableName == stmt.Table {
+			for i, idxCol := range idxDef.Columns {
+				if strings.EqualFold(idxCol, stmt.OldName) {
+					idxDef.Columns[i] = stmt.NewName
+				}
+			}
+		}
+	}
+
+	return c.storeTableDef(table)
+}
+
+func (c *Catalog) GetTable(name string) (*TableDef, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.getTableLocked(name)
+}
+
+func (c *Catalog) getTableLocked(name string) (*TableDef, error) {
+	table, exists := c.tables[name]
+	if !exists {
+		return nil, ErrTableNotFound
+	}
+	return table, nil
+}
+
+func (c *Catalog) CreateView(name string, query *query.SelectStmt) error {
+	if _, exists := c.views[name]; exists {
+		return ErrTableExists
+	}
+	if _, exists := c.tables[name]; exists {
+		return ErrTableExists
+	}
+	c.views[name] = query
+	return nil
+}
+
+func (c *Catalog) GetView(name string) (*query.SelectStmt, error) {
+	view, exists := c.views[name]
+	if !exists {
+		return nil, ErrTableNotFound
+	}
+	return view, nil
+}
+
+func (c *Catalog) DropView(name string) error {
+	if _, exists := c.views[name]; !exists {
+		return ErrTableNotFound
+	}
+	delete(c.views, name)
+	return nil
+}
+
+func (c *Catalog) HasTableOrView(name string) bool {
+	_, tableExists := c.tables[name]
+	_, viewExists := c.views[name]
+	return tableExists || viewExists
+}
+
+func (c *Catalog) CreateTrigger(stmt *query.CreateTriggerStmt) error {
+	// Check if table exists
+	if _, err := c.getTableLocked(stmt.Table); err != nil {
+		return err
+	}
+
+	if _, exists := c.triggers[stmt.Name]; exists {
+		return fmt.Errorf("trigger %s already exists", stmt.Name)
+	}
+	c.triggers[stmt.Name] = stmt
+	return nil
+}
+
+func (c *Catalog) GetTrigger(name string) (*query.CreateTriggerStmt, error) {
+	trigger, exists := c.triggers[name]
+	if !exists {
+		return nil, fmt.Errorf("trigger %s not found", name)
+	}
+	return trigger, nil
+}
+
+func (c *Catalog) DropTrigger(name string) error {
+	if _, exists := c.triggers[name]; !exists {
+		return fmt.Errorf("trigger %s not found", name)
+	}
+	delete(c.triggers, name)
+	return nil
+}
+
+func (c *Catalog) GetTriggersForTable(tableName string, event string) []*query.CreateTriggerStmt {
+	var result []*query.CreateTriggerStmt
+	for _, trigger := range c.triggers {
+		if trigger.Table == tableName && (event == "" || trigger.Event == event) {
+			result = append(result, trigger)
+		}
+	}
+	return result
+}
+
+func (c *Catalog) executeTriggers(tableName string, event string, timing string, newRow []interface{}, oldRow []interface{}, columns []ColumnDef) error {
+	triggers := c.GetTriggersForTable(tableName, event)
+	for _, trigger := range triggers {
+		if trigger.Time != timing {
+			continue
+		}
+		if len(trigger.Body) == 0 {
+			continue
+		}
+
+		// Evaluate WHEN condition if present
+		if trigger.Condition != nil {
+			resolvedCond := c.resolveTriggerExpr(trigger.Condition, newRow, oldRow, columns)
+			result, err := evaluateExpression(c, nil, nil, resolvedCond, nil)
+			if err != nil {
+				continue // Condition evaluation error - skip trigger
+			}
+			if result == nil {
+				continue // NULL condition - skip trigger
+			}
+			if b, ok := result.(bool); ok && !b {
+				continue // false condition - skip trigger
+			}
+			// For numeric results, 0 = false
+			if f, ok := toFloat64(result); ok && f == 0 {
+				continue
+			}
+		}
+
+		// Execute each statement in the trigger body
+		for _, bodyStmt := range trigger.Body {
+			// Substitute NEW.col and OLD.col references with actual values
+			resolved := c.resolveTriggerRefs(bodyStmt, newRow, oldRow, columns)
+			// Execute the resolved statement
+			if err := c.executeTriggerStatement(resolved); err != nil {
+				return fmt.Errorf("trigger %s: %w", trigger.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) executeTriggerStatement(stmt query.Statement) error {
+	switch s := stmt.(type) {
+	case *query.InsertStmt:
+		_, _, err := c.insertLocked(s, nil)
+		return err
+	case *query.UpdateStmt:
+		_, _, err := c.updateLocked(s, nil)
+		return err
+	case *query.DeleteStmt:
+		_, _, err := c.deleteLocked(s, nil)
+		return err
+	default:
+		return fmt.Errorf("unsupported trigger statement type: %T", stmt)
+	}
+}
+
+func (c *Catalog) resolveTriggerRefs(stmt query.Statement, newRow []interface{}, oldRow []interface{}, columns []ColumnDef) query.Statement {
+	switch s := stmt.(type) {
+	case *query.InsertStmt:
+		resolved := *s
+		resolved.Values = make([][]query.Expression, len(s.Values))
+		for i, row := range s.Values {
+			resolved.Values[i] = make([]query.Expression, len(row))
+			for j, expr := range row {
+				resolved.Values[i][j] = c.resolveTriggerExpr(expr, newRow, oldRow, columns)
+			}
+		}
+		return &resolved
+	case *query.UpdateStmt:
+		resolved := *s
+		resolved.Set = make([]*query.SetClause, len(s.Set))
+		for i, sc := range s.Set {
+			newSc := *sc
+			newSc.Value = c.resolveTriggerExpr(sc.Value, newRow, oldRow, columns)
+			resolved.Set[i] = &newSc
+		}
+		if s.Where != nil {
+			resolved.Where = c.resolveTriggerExpr(s.Where, newRow, oldRow, columns)
+		}
+		return &resolved
+	case *query.DeleteStmt:
+		resolved := *s
+		if s.Where != nil {
+			resolved.Where = c.resolveTriggerExpr(s.Where, newRow, oldRow, columns)
+		}
+		return &resolved
+	}
+	return stmt
+}
+
+func (c *Catalog) resolveTriggerExpr(expr query.Expression, newRow []interface{}, oldRow []interface{}, columns []ColumnDef) query.Expression {
+	if expr == nil {
+		return nil
+	}
+	switch e := expr.(type) {
+	case *query.QualifiedIdentifier:
+		tbl := strings.ToUpper(e.Table)
+		if tbl == "NEW" && newRow != nil {
+			for i, col := range columns {
+				if strings.EqualFold(col.Name, e.Column) && i < len(newRow) {
+					return valueToLiteral(newRow[i])
+				}
+			}
+		} else if tbl == "OLD" && oldRow != nil {
+			for i, col := range columns {
+				if strings.EqualFold(col.Name, e.Column) && i < len(oldRow) {
+					return valueToLiteral(oldRow[i])
+				}
+			}
+		}
+		return e
+	case *query.BinaryExpr:
+		return &query.BinaryExpr{
+			Left:     c.resolveTriggerExpr(e.Left, newRow, oldRow, columns),
+			Operator: e.Operator,
+			Right:    c.resolveTriggerExpr(e.Right, newRow, oldRow, columns),
+		}
+	case *query.UnaryExpr:
+		return &query.UnaryExpr{
+			Operator: e.Operator,
+			Expr:     c.resolveTriggerExpr(e.Expr, newRow, oldRow, columns),
+		}
+	case *query.FunctionCall:
+		newArgs := make([]query.Expression, len(e.Args))
+		for i, arg := range e.Args {
+			newArgs[i] = c.resolveTriggerExpr(arg, newRow, oldRow, columns)
+		}
+		return &query.FunctionCall{Name: e.Name, Args: newArgs, Distinct: e.Distinct}
+	case *query.CaseExpr:
+		newCase := &query.CaseExpr{}
+		if e.Expr != nil {
+			newCase.Expr = c.resolveTriggerExpr(e.Expr, newRow, oldRow, columns)
+		}
+		newCase.Whens = make([]*query.WhenClause, len(e.Whens))
+		for i, w := range e.Whens {
+			newCase.Whens[i] = &query.WhenClause{
+				Condition: c.resolveTriggerExpr(w.Condition, newRow, oldRow, columns),
+				Result:    c.resolveTriggerExpr(w.Result, newRow, oldRow, columns),
+			}
+		}
+		if e.Else != nil {
+			newCase.Else = c.resolveTriggerExpr(e.Else, newRow, oldRow, columns)
+		}
+		return newCase
+	case *query.BetweenExpr:
+		return &query.BetweenExpr{
+			Expr:  c.resolveTriggerExpr(e.Expr, newRow, oldRow, columns),
+			Lower: c.resolveTriggerExpr(e.Lower, newRow, oldRow, columns),
+			Upper: c.resolveTriggerExpr(e.Upper, newRow, oldRow, columns),
+			Not:   e.Not,
+		}
+	case *query.InExpr:
+		newList := make([]query.Expression, len(e.List))
+		for i, v := range e.List {
+			newList[i] = c.resolveTriggerExpr(v, newRow, oldRow, columns)
+		}
+		return &query.InExpr{
+			Expr:     c.resolveTriggerExpr(e.Expr, newRow, oldRow, columns),
+			List:     newList,
+			Not:      e.Not,
+			Subquery: e.Subquery,
+		}
+	case *query.IsNullExpr:
+		return &query.IsNullExpr{
+			Expr: c.resolveTriggerExpr(e.Expr, newRow, oldRow, columns),
+			Not:  e.Not,
+		}
+	case *query.CastExpr:
+		return &query.CastExpr{
+			Expr:     c.resolveTriggerExpr(e.Expr, newRow, oldRow, columns),
+			DataType: e.DataType,
+		}
+	case *query.LikeExpr:
+		return &query.LikeExpr{
+			Expr:    c.resolveTriggerExpr(e.Expr, newRow, oldRow, columns),
+			Pattern: c.resolveTriggerExpr(e.Pattern, newRow, oldRow, columns),
+			Not:     e.Not,
+		}
+	}
+	return expr
+}
+
+func (c *Catalog) CreateProcedure(stmt *query.CreateProcedureStmt) error {
+	if _, exists := c.procedures[stmt.Name]; exists {
+		return fmt.Errorf("procedure %s already exists", stmt.Name)
+	}
+	c.procedures[stmt.Name] = stmt
+	return nil
+}
+
+func (c *Catalog) GetProcedure(name string) (*query.CreateProcedureStmt, error) {
+	proc, exists := c.procedures[name]
+	if !exists {
+		return nil, fmt.Errorf("procedure %s not found", name)
+	}
+	return proc, nil
+}
+
+func (c *Catalog) DropProcedure(name string) error {
+	if _, exists := c.procedures[name]; !exists {
+		return fmt.Errorf("procedure %s not found", name)
+	}
+	delete(c.procedures, name)
+	return nil
+}
+
+func (c *Catalog) GetTableStats(tableName string) (*StatsTableStats, error) {
+	stats, exists := c.stats[tableName]
+	if !exists {
+		return nil, fmt.Errorf("no statistics for table %s", tableName)
+	}
+	return stats, nil
+}

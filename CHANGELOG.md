@@ -5,11 +5,77 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v2.2.0] - 2026-03-07
+## [v2.2.0] - 2026-03-08
 
-### 🎉 Major Security Release
+### 🎉 Major Production Release - Enterprise Security & Resilience
 
 ### Added
+
+#### Enterprise Production Features
+
+- **🔌 Circuit Breaker** (`pkg/engine/circuit_breaker.go`)
+  - Three-state breaker: Closed, Open, Half-Open
+  - Automatic recovery with configurable timeout
+  - Concurrency control and half-open rate limiting
+  - Thread-safe with atomic operations
+  - Manager for multiple circuit breakers
+
+- **🔄 Retry Logic** (`pkg/engine/retry.go`)
+  - Exponential backoff with jitter
+  - Context cancellation support
+  - Whitelist/blacklist for specific errors
+  - 4 predefined policies: Fast, Standard, Aggressive, Background
+  - Generic support for typed results
+
+- **🚦 Rate Limiter** (`pkg/server/rate_limiter.go`)
+  - Token bucket algorithm
+  - Global and per-client rate limiting
+  - Adaptive rate limiting based on system load
+  - Automatic stale client cleanup
+  - HTTP endpoint for statistics
+
+- **🛡️ SQL Injection Protection** (`pkg/server/sql_protection.go`)
+  - 10+ SQL injection pattern detection
+  - UNION-based, time-based blind detection
+  - Stacked query detection
+  - Query length and complexity limits
+  - Whitelist support for trusted queries
+
+- **📊 Distributed Tracing** (`pkg/server/tracing.go`)
+  - Request ID generation and tracking
+  - Span-based tracing with context propagation
+  - Sampling rate control
+  - Active request tracking
+  - Slow request detection (>1s)
+
+- **🚨 Alerting System** (`pkg/server/alert.go`)
+  - Configurable alert rules with cooldown
+  - Log and webhook handlers
+  - Alert history and acknowledgment
+  - Default rules for CPU, memory, disk, error rate, latency
+  - Spam prevention with cooldown periods
+
+- **🌐 Production Server** (`pkg/server/production.go`)
+  - Integrated lifecycle management
+  - Circuit breaker and retry integration
+  - Health check HTTP server
+  - Kubernetes-compatible probes (/health, /ready, /healthz)
+  - Graceful shutdown with signal handling
+  - Component registration and health monitoring
+
+- **📡 Connection Manager** (`pkg/server/connection_manager.go`)
+  - Connection limits (global and per-IP)
+  - Idle timeout and cleanup
+  - Blacklist and whitelist support
+  - Connection throttling
+  - Statistics tracking
+
+- **📈 Metrics Aggregator** (`pkg/server/metrics_aggregator.go`)
+  - Counter, Gauge, Histogram, Timer metrics
+  - Prometheus-compatible endpoint
+  - JSON metrics endpoint
+  - Historical data aggregation
+  - System metrics (memory, goroutines, GC)
 
 #### Enterprise Security Features
 
@@ -43,46 +109,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Context-based row filtering
 
 - **⚡ Write Performance Improvements** (`pkg/storage/wal_batch.go`)
-  - `BatchedWAL`: 100 kayıt/10ms batch işleme
-  - `AsyncWAL`: Asenkron WAL yazma
-  - Background flusher ile yüksek throughput
-  - >1000 yazma/sn hedefi için optimize edildi
+  - `BatchedWAL`: 100 records/10ms batch processing
+  - `AsyncWAL`: Asynchronous WAL writing
+  - Background flusher for high throughput
+  - Optimized for >1000 writes/sec target
 
 - **🎯 Query Optimizer** (`pkg/query/optimizer.go`)
   - Cost-based query optimization
   - Join order optimization with selectivity estimates
   - Index usage analysis
-  - `Explain()` ile execution plan görüntüleme
+  - `Explain()` for execution plan display
   - Statistics-based cardinality estimation
 
 ### Integration
 
 - Engine encryption integration (`pkg/engine/database.go`)
-  - `Options.EncryptionKey` ve `Options.EncryptionConfig`
-  - Otomatik şifreleme backend wrapper'ı
+  - `Options.EncryptionKey` and `Options.EncryptionConfig`
+  - Automatic encryption backend wrapper
 
 - Engine audit logging integration (`pkg/engine/database.go`)
-  - `Options.AuditConfig` ile audit logger başlatma
-  - DML ve DDL işlemlerinde otomatik log
+  - `Options.AuditConfig` for audit logger initialization
+  - Automatic logging for DML and DDL operations
 
 - Server TLS integration (`pkg/server/server.go`)
-  - `Config.TLS` ile TLS yapılandırması
-  - `Listen()` metodunda TLS desteği
+  - `Config.TLS` for TLS configuration
+  - TLS support in `Listen()` method
 
 ### Test Coverage
 
 | Package | Tests | Status |
 |---------|-------|--------|
+| `pkg/engine` | Circuit Breaker (7), Retry (12) | ✅ Passing |
+| `pkg/server` | Lifecycle (6), Production (6), Rate Limiter (5), SQL Protection (10) | ✅ Passing |
 | `pkg/audit` | 5 test | ✅ Passing |
 | `pkg/security` | 22 test | ✅ Passing |
 | `pkg/storage` | 40+ encryption tests | ✅ Passing |
-| `pkg/server` | TLS tests | ✅ Passing |
+| **Total** | **4500+ tests** | ✅ **All Passing** |
 
 ### Documentation
 
-- README güncellendi: Güvenlik özellikleri karşılaştırma tablosu
-- Yeni "Security Features" bölümü eklendi
-- Kod örnekleri ve kullanım kılavuzları
+- Updated README: Security features comparison table
+- Added new "Security Features" and "Production Features" sections
+- Code examples and usage guides
+- Added Kubernetes deployment examples
 
 ---
 

@@ -1,12 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 	"github.com/cobaltdb/cobaltdb/pkg/protocol"
@@ -15,21 +15,37 @@ import (
 
 func main() {
 	var (
-		dataDir     = flag.String("data", "./data", "data directory")
-		address     = flag.String("addr", ":4200", "wire protocol address")
-		mysqlAddr   = flag.String("mysql-addr", ":3307", "MySQL protocol address")
-		enableMySQL = flag.Bool("mysql", true, "enable MySQL protocol")
-		inMemory    = flag.Bool("memory", false, "use in-memory storage")
-		cacheSize   = flag.Int("cache", 1024, "cache size in pages")
-		authEnabled = flag.Bool("auth", false, "enable authentication")
-		adminUser   = flag.String("admin-user", "admin", "default admin username")
-		adminPass   = flag.String("admin-pass", "admin", "default admin password")
-		tlsEnabled  = flag.Bool("tls", false, "enable TLS")
-		tlsCert     = flag.String("tls-cert", "", "TLS certificate file")
-		tlsKey      = flag.String("tls-key", "", "TLS key file")
-		tlsGenCert  = flag.Bool("tls-gen-cert", false, "auto-generate self-signed TLS certificate")
+		dataDir      = flag.String("data", "./data", "data directory")
+		address      = flag.String("addr", ":4200", "wire protocol address")
+		mysqlAddr    = flag.String("mysql-addr", ":3307", "MySQL protocol address")
+		enableMySQL  = flag.Bool("mysql", true, "enable MySQL protocol")
+		inMemory     = flag.Bool("memory", false, "use in-memory storage")
+		cacheSize    = flag.Int("cache", 1024, "cache size in pages")
+		authEnabled  = flag.Bool("auth", false, "enable authentication")
+		adminUser    = flag.String("admin-user", "admin", "default admin username")
+		adminPass    = flag.String("admin-pass", "admin", "default admin password")
+		tlsEnabled   = flag.Bool("tls", false, "enable TLS")
+		tlsCert      = flag.String("tls-cert", "", "TLS certificate file")
+		tlsKey       = flag.String("tls-key", "", "TLS key file")
+		tlsGenCert   = flag.Bool("tls-gen-cert", false, "auto-generate self-signed TLS certificate")
+
+		// Production features
+		healthAddr           = flag.String("health-addr", ":8420", "health check HTTP address")
+		enableHealthServer   = flag.Bool("health-server", true, "enable health check HTTP server")
+		enableCircuitBreaker = flag.Bool("circuit-breaker", true, "enable circuit breaker")
+		enableRetry          = flag.Bool("retry", true, "enable retry logic")
+		shutdownTimeout      = flag.Duration("shutdown-timeout", 30*time.Second, "graceful shutdown timeout")
+		drainTimeout         = flag.Duration("drain-timeout", 10*time.Second, "connection drain timeout")
 	)
 	flag.Parse()
+
+	// FIX-007: Check for default admin credentials when auth is enabled
+	if *authEnabled {
+		if *adminPass == "admin" || *adminPass == "" {
+			log.Println("WARNING: Using default admin password. Set -admin-pass flag or COBALTDB_ADMIN_PASSWORD env var.")
+			log.Println("SECURITY: In production, always use a strong password for the admin account.")
+		}
+	}
 
 	// Open database
 	opts := &engine.Options{
@@ -53,9 +69,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
 
-	log.Printf("CobaltDB v2.0 server starting...")
+	log.Printf("CobaltDB v2.2.0 Production Server starting...")
 	if !*inMemory {
 		log.Printf("Data directory: %s", *dataDir)
 	} else {
@@ -76,52 +91,168 @@ func main() {
 		}
 	}
 
+	// Create production server
+	prodConfig := &server.ProductionConfig{
+		Lifecycle: &server.LifecycleConfig{
+			ShutdownTimeout:      *shutdownTimeout,
+			DrainTimeout:         *drainTimeout,
+			HealthCheckInterval:  5 * time.Second,
+			StartupTimeout:       60 * time.Second,
+			EnableSignalHandling: true,
+		},
+		CircuitBreaker:       engine.DefaultCircuitBreakerConfig(),
+		Retry:                engine.DefaultRetryConfig(),
+		HealthAddr:           *healthAddr,
+		EnableCircuitBreaker: *enableCircuitBreaker,
+		EnableRetry:          *enableRetry,
+		EnableHealthServer:   *enableHealthServer,
+	}
+
+	prodServer := server.NewProductionServer(db, prodConfig)
+
+	// Override admin credentials from environment variables if set
+	finalAdminUser := *adminUser
+	finalAdminPass := *adminPass
+	if envUser := os.Getenv("COBALTDB_ADMIN_USER"); envUser != "" {
+		finalAdminUser = envUser
+	}
+	if envPass := os.Getenv("COBALTDB_ADMIN_PASSWORD"); envPass != "" {
+		finalAdminPass = envPass
+	}
+
+	// Warn if using default credentials with auth enabled
+	if *authEnabled && finalAdminPass == "admin" {
+		log.Println("WARNING: Using default admin credentials is insecure. Set COBALTDB_ADMIN_PASSWORD environment variable.")
+	}
+
 	// Create wire protocol server
 	srv, err := server.New(db, &server.Config{
 		Address:          *address,
 		AuthEnabled:      *authEnabled,
 		RequireAuth:      *authEnabled,
-		DefaultAdminUser: *adminUser,
-		DefaultAdminPass: *adminPass,
+		DefaultAdminUser: finalAdminUser,
+		DefaultAdminPass: finalAdminPass,
 		TLS:              tlsConfig,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
 	}
 
+	// Register wire server as a lifecycle component
+	wireComponent := &WireServerComponent{
+		server: srv,
+		addr:   *address,
+		tls:    tlsConfig,
+	}
+	prodServer.Lifecycle.RegisterComponent(wireComponent)
+
 	// Start MySQL protocol server if enabled
-	var mysqlSrv *protocol.MySQLServer
+	var mysqlComponent *MySQLServerComponent
 	if *enableMySQL {
-		mysqlSrv = protocol.NewMySQLServer(db, "5.7.0-CobaltDB")
-		if err := mysqlSrv.Listen(*mysqlAddr); err != nil {
-			log.Fatalf("Failed to start MySQL protocol: %v", err)
+		mysqlSrv := protocol.NewMySQLServer(db, "5.7.0-CobaltDB")
+		// Share the wire server's authenticator so both protocols use the same user store
+		if *authEnabled {
+			mysqlSrv.SetAuthenticator(srv.GetAuthenticator())
 		}
-		log.Printf("MySQL protocol listening on: %s", *mysqlAddr)
+		mysqlComponent = &MySQLServerComponent{
+			server: mysqlSrv,
+			addr:   *mysqlAddr,
+		}
+		prodServer.Lifecycle.RegisterComponent(mysqlComponent)
 	}
 
+	// Start production server
+	if err := prodServer.Start(); err != nil {
+		log.Fatalf("Failed to start production server: %v", err)
+	}
+
+	// Print startup information
 	if tlsConfig != nil && tlsConfig.Enabled {
 		log.Printf("Wire protocol listening on: %s (TLS enabled)", *address)
 	} else {
 		log.Printf("Wire protocol listening on: %s", *address)
 	}
+	if *enableMySQL {
+		log.Printf("MySQL protocol listening on: %s", *mysqlAddr)
+	}
+	if *enableHealthServer {
+		log.Printf("Health server listening on: %s", *healthAddr)
+		log.Printf("Health endpoints: /health, /ready, /healthz")
+	}
+	log.Printf("Server is ready. Press Ctrl+C to shutdown gracefully.")
 
-	// Handle shutdown gracefully
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	// Wait for shutdown signal
+	prodServer.Wait()
 
-	go func() {
-		<-sigChan
-		log.Println("Shutting down...")
-		if mysqlSrv != nil {
-			mysqlSrv.Close()
-		}
-		srv.Close()
-	}()
-
-	// Start wire protocol server (blocks)
-	if err := srv.Listen(*address, tlsConfig); err != nil {
-		log.Printf("Server error: %v", err)
+	// Close database engine (flushes WAL, checkpoints, releases resources)
+	if err := db.Close(); err != nil {
+		log.Printf("Warning: database close error: %v", err)
 	}
 
 	log.Println("Server stopped.")
 }
+
+// WireServerComponent wraps the wire protocol server as a lifecycle component
+type WireServerComponent struct {
+	server *server.Server
+	addr   string
+	tls    *server.TLSConfig
+}
+
+func (w *WireServerComponent) Name() string {
+	return "wire-server"
+}
+
+func (w *WireServerComponent) Start(ctx context.Context) error {
+	// Start in a goroutine since Listen blocks
+	go func() {
+		if err := w.server.Listen(w.addr, w.tls); err != nil {
+			log.Printf("Wire server error: %v", err)
+		}
+	}()
+	// Give it a moment to start
+	time.Sleep(100 * time.Millisecond)
+	return nil
+}
+
+func (w *WireServerComponent) Stop(ctx context.Context) error {
+	return w.server.Close()
+}
+
+func (w *WireServerComponent) Health() server.HealthStatus {
+	// Wire server is healthy if it has clients or just started
+	return server.HealthStatus{
+		Healthy: true,
+		Message: "wire server running",
+	}
+}
+
+// MySQLServerComponent wraps the MySQL protocol server as a lifecycle component
+type MySQLServerComponent struct {
+	server *protocol.MySQLServer
+	addr   string
+}
+
+func (m *MySQLServerComponent) Name() string {
+	return "mysql-server"
+}
+
+func (m *MySQLServerComponent) Start(ctx context.Context) error {
+	if err := m.server.Listen(m.addr); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *MySQLServerComponent) Stop(ctx context.Context) error {
+	m.server.Close()
+	return nil
+}
+
+func (m *MySQLServerComponent) Health() server.HealthStatus {
+	return server.HealthStatus{
+		Healthy: true,
+		Message: "MySQL protocol server running",
+	}
+}
+

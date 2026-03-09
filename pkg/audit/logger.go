@@ -2,6 +2,7 @@
 package audit
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -192,7 +193,10 @@ func (al *Logger) Log(eventType EventType, user, action string, opts ...LogOptio
 	select {
 	case al.eventChan <- event:
 	default:
+		// Channel full — write synchronously under lock to avoid data race on al.file
+		al.mu.Lock()
 		al.writeEvent(event)
+		al.mu.Unlock()
 	}
 }
 
@@ -397,7 +401,11 @@ func maskKeyValuePair(query, key string) string {
 }
 
 func generateEventID() string {
-	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Unix())
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Unix())
+	}
+	return fmt.Sprintf("%d-%x", time.Now().UnixNano(), b)
 }
 
 // LogOption is a functional option for logging

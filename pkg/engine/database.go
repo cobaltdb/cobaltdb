@@ -45,10 +45,10 @@ type DB struct {
 	// Security components
 	auditLogger *audit.Logger     // Audit logger
 	rlsManager  *security.Manager // Row-level security manager
-	// Prepared statement cache for performance
-	stmtCache      map[string]*cachedStmt
-	stmtMu         sync.RWMutex
-	stmtCacheOrder []string      // LRU order tracking
+	// Prepared statement cache for performance (LRU via doubly-linked list)
+	stmtCache map[string]*cachedStmt
+	stmtMu    sync.RWMutex
+	stmtLRU   *stmtLRUList // O(1) eviction
 	nextTxnID      atomic.Uint64 // Auto-increment transaction ID counter
 	// Metrics collector
 	metrics *metrics.Collector
@@ -85,6 +85,69 @@ type cachedStmt struct {
 	stmt     query.Statement
 	lastUsed int64 // Unix timestamp for LRU
 	useCount uint64
+	sql      string         // key for reverse lookup
+	elem     *stmtLRUEntry  // pointer to LRU list element
+}
+
+// stmtLRUEntry is a node in the doubly-linked LRU list
+type stmtLRUEntry struct {
+	sql  string
+	prev *stmtLRUEntry
+	next *stmtLRUEntry
+}
+
+// stmtLRUList is a simple doubly-linked list for O(1) LRU eviction
+type stmtLRUList struct {
+	head *stmtLRUEntry // most recently used
+	tail *stmtLRUEntry // least recently used
+}
+
+func newStmtLRUList() *stmtLRUList {
+	return &stmtLRUList{}
+}
+
+func (l *stmtLRUList) pushFront(e *stmtLRUEntry) {
+	e.prev = nil
+	e.next = l.head
+	if l.head != nil {
+		l.head.prev = e
+	}
+	l.head = e
+	if l.tail == nil {
+		l.tail = e
+	}
+}
+
+func (l *stmtLRUList) moveToFront(e *stmtLRUEntry) {
+	if l.head == e {
+		return
+	}
+	l.remove(e)
+	l.pushFront(e)
+}
+
+func (l *stmtLRUList) remove(e *stmtLRUEntry) {
+	if e.prev != nil {
+		e.prev.next = e.next
+	} else {
+		l.head = e.next
+	}
+	if e.next != nil {
+		e.next.prev = e.prev
+	} else {
+		l.tail = e.prev
+	}
+	e.prev = nil
+	e.next = nil
+}
+
+func (l *stmtLRUList) removeTail() *stmtLRUEntry {
+	if l.tail == nil {
+		return nil
+	}
+	e := l.tail
+	l.remove(e)
+	return e
 }
 
 const (
@@ -187,13 +250,13 @@ func Open(path string, opts *Options) (*DB, error) {
 	collector := metrics.NewCollector(0) // Use default interval
 
 	db := &DB{
-		path:           path,
-		backend:        backend,
-		options:        opts,
-		stmtCache:      make(map[string]*cachedStmt),
-		stmtCacheOrder: make([]string, 0),
-		metrics:        collector,
-		shutdownCh:     make(chan struct{}),
+		path:       path,
+		backend:    backend,
+		options:    opts,
+		stmtCache:  make(map[string]*cachedStmt),
+		stmtLRU:    newStmtLRUList(),
+		metrics:    collector,
+		shutdownCh: make(chan struct{}),
 	}
 
 	// Initialize audit logger if configured
@@ -226,6 +289,13 @@ func Open(path string, opts *Options) (*DB, error) {
 
 	// Initialize or load database
 	if err := db.initialize(); err != nil {
+		collector.Stop() // Stop metrics goroutine to prevent leak
+		if db.auditLogger != nil {
+			db.auditLogger.Close()
+		}
+		if db.wal != nil {
+			db.wal.Close()
+		}
 		backend.Close()
 		return nil, err
 	}
@@ -423,16 +493,16 @@ func (db *DB) Close() error {
 		}
 	}
 
-	// Flush buffer pool
-	if err := db.pool.Close(); err != nil {
-		return err
-	}
-
-	// Perform WAL checkpoint if enabled
+	// Perform WAL checkpoint before closing pool (checkpoint needs pool access)
 	if db.wal != nil {
 		if err := db.wal.Checkpoint(db.pool); err != nil {
 			return fmt.Errorf("failed to checkpoint WAL: %w", err)
 		}
+	}
+
+	// Flush buffer pool (after checkpoint)
+	if err := db.pool.Close(); err != nil {
+		return fmt.Errorf("failed to close buffer pool: %w", err)
 	}
 
 	// Close audit logger
@@ -445,7 +515,7 @@ func (db *DB) Close() error {
 	// Close WAL
 	if db.wal != nil {
 		if err := db.wal.Close(); err != nil {
-			return err
+			return fmt.Errorf("failed to close WAL: %w", err)
 		}
 	}
 
@@ -460,11 +530,12 @@ func (db *DB) getPreparedStatement(sql string) (query.Statement, error) {
 	db.stmtMu.RUnlock()
 
 	if exists {
-		// Update last used time synchronously to avoid race conditions
+		// Move to front of LRU (most recently used)
 		db.stmtMu.Lock()
 		if c, ok := db.stmtCache[sql]; ok {
 			c.lastUsed = time.Now().Unix()
 			c.useCount++
+			db.stmtLRU.moveToFront(c.elem)
 		}
 		db.stmtMu.Unlock()
 		return cached.stmt, nil
@@ -476,55 +547,36 @@ func (db *DB) getPreparedStatement(sql string) (query.Statement, error) {
 		return nil, err
 	}
 
-	// Cache the statement with LRU eviction
+	// Cache the statement with O(1) LRU eviction
 	db.stmtMu.Lock()
 	maxCacheSize := db.options.MaxStmtCacheSize
 	if maxCacheSize <= 0 {
-		maxCacheSize = 1000 // Default if not set
+		maxCacheSize = 1000
 	}
 	if len(db.stmtCache) >= maxCacheSize {
-		// Evict oldest entry (simple LRU: remove first in order)
 		db.evictLRUEntry()
 	}
-	db.stmtCache[sql] = &cachedStmt{
+	entry := &stmtLRUEntry{sql: sql}
+	cs := &cachedStmt{
 		stmt:     parsedStmt,
 		lastUsed: time.Now().Unix(),
 		useCount: 1,
+		sql:      sql,
+		elem:     entry,
 	}
-	db.stmtCacheOrder = append(db.stmtCacheOrder, sql)
+	db.stmtCache[sql] = cs
+	db.stmtLRU.pushFront(entry)
 	db.stmtMu.Unlock()
 
 	return parsedStmt, nil
 }
 
 // evictLRUEntry removes the least recently used entry from the cache
-// Note: Must be called with stmtMu.Lock() held
+// Must be called with stmtMu.Lock() held
 func (db *DB) evictLRUEntry() {
-	if len(db.stmtCacheOrder) == 0 {
-		return
-	}
-	// Find oldest entry
-	var oldestKey string
-	var oldestTime int64
-	first := true
-	for _, key := range db.stmtCacheOrder {
-		if cached, ok := db.stmtCache[key]; ok {
-			if first || cached.lastUsed < oldestTime {
-				oldestTime = cached.lastUsed
-				oldestKey = key
-				first = false
-			}
-		}
-	}
-	if oldestKey != "" {
-		delete(db.stmtCache, oldestKey)
-		// Remove from order slice
-		for i, key := range db.stmtCacheOrder {
-			if key == oldestKey {
-				db.stmtCacheOrder = append(db.stmtCacheOrder[:i], db.stmtCacheOrder[i+1:]...)
-				break
-			}
-		}
+	tail := db.stmtLRU.removeTail()
+	if tail != nil {
+		delete(db.stmtCache, tail.sql)
 	}
 }
 
@@ -580,23 +632,17 @@ func (db *DB) releaseConnection() {
 	}
 }
 
-// withConnection wraps a function with connection acquisition/release
-func (db *DB) withConnection(ctx context.Context, fn func() error) error {
-	if err := db.acquireConnection(ctx); err != nil {
-		return err
-	}
-	defer db.releaseConnection()
-	return fn()
-}
-
 // Exec executes a SQL statement without returning rows
 func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result Result, err error) {
-	// Panic recovery for production safety
+	// Panic recovery for production safety - always log full stack trace
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in Exec: %v\n%s", r, debug.Stack())
+			stack := debug.Stack()
+			err = fmt.Errorf("internal error in Exec: %v", r)
 			if db.options.Logger != nil {
-				db.options.Logger.Errorf("Panic recovered in Exec: %v", r)
+				db.options.Logger.Errorf("PANIC in Exec: %v\n%s", r, stack)
+			} else {
+				fmt.Printf("PANIC in Exec: %v\n%s\n", r, stack)
 			}
 		}
 	}()
@@ -645,12 +691,15 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 
 // Query executes a SQL query and returns rows
 func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows *Rows, err error) {
-	// Panic recovery for production safety
+	// Panic recovery for production safety - always log full stack trace
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in Query: %v\n%s", r, debug.Stack())
+			stack := debug.Stack()
+			err = fmt.Errorf("internal error in Query: %v", r)
 			if db.options.Logger != nil {
-				db.options.Logger.Errorf("Panic recovered in Query: %v", r)
+				db.options.Logger.Errorf("PANIC in Query: %v\n%s", r, stack)
+			} else {
+				fmt.Printf("PANIC in Query: %v\n%s\n", r, stack)
 			}
 		}
 	}()
@@ -722,32 +771,32 @@ func (db *DB) TableSchema(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var result string
-	result = fmt.Sprintf("CREATE TABLE %s (\n", table.Name)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", table.Name))
 	for i, col := range table.Columns {
-		result += fmt.Sprintf("  %s %s", col.Name, col.Type)
+		sb.WriteString(fmt.Sprintf("  %s %s", col.Name, col.Type))
 		if col.PrimaryKey {
-			result += " PRIMARY KEY"
+			sb.WriteString(" PRIMARY KEY")
 		}
 		if col.AutoIncrement {
-			result += " AUTOINCREMENT"
+			sb.WriteString(" AUTOINCREMENT")
 		}
 		if col.NotNull {
-			result += " NOT NULL"
+			sb.WriteString(" NOT NULL")
 		}
 		if col.Unique {
-			result += " UNIQUE"
+			sb.WriteString(" UNIQUE")
 		}
 		if col.Default != "" {
-			result += fmt.Sprintf(" DEFAULT %s", col.Default)
+			sb.WriteString(fmt.Sprintf(" DEFAULT %s", col.Default))
 		}
 		if i < len(table.Columns)-1 {
-			result += ","
+			sb.WriteByte(',')
 		}
-		result += "\n"
+		sb.WriteByte('\n')
 	}
-	result += ");"
-	return result, nil
+	sb.WriteString(");")
+	return sb.String(), nil
 }
 
 // Begin starts a new transaction
@@ -809,9 +858,13 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		db.catalog.BeginTransaction(db.nextTxnID.Add(1))
 		defer func() {
 			if err != nil {
-				db.catalog.RollbackTransaction()
+				if rbErr := db.catalog.RollbackTransaction(); rbErr != nil {
+					err = fmt.Errorf("%w; rollback failed: %v", err, rbErr)
+				}
 			} else {
-				db.catalog.CommitTransaction()
+				if cmtErr := db.catalog.CommitTransaction(); cmtErr != nil {
+					err = fmt.Errorf("commit failed: %w", cmtErr)
+				}
 			}
 		}()
 	}
@@ -1217,11 +1270,21 @@ func expressionToString(expr query.Expression) string {
 		return e.Name
 	case *query.QualifiedIdentifier:
 		if e.Table != "" {
-			return e.Table + "." + e.Column
+			var sb strings.Builder
+			sb.Grow(len(e.Table) + 1 + len(e.Column))
+			sb.WriteString(e.Table)
+			sb.WriteByte('.')
+			sb.WriteString(e.Column)
+			return sb.String()
 		}
 		return e.Column
 	case *query.StringLiteral:
-		return "'" + e.Value + "'"
+		var sb strings.Builder
+		sb.Grow(len(e.Value) + 2)
+		sb.WriteByte('\'')
+		sb.WriteString(e.Value)
+		sb.WriteByte('\'')
+		return sb.String()
 	case *query.NumberLiteral:
 		return e.Raw
 	case *query.BooleanLiteral:
@@ -1235,36 +1298,78 @@ func expressionToString(expr query.Expression) string {
 		left := expressionToString(e.Left)
 		right := expressionToString(e.Right)
 		op := tokenTypeToString(e.Operator)
-		return left + " " + op + " " + right
+		var sb strings.Builder
+		sb.Grow(len(left) + 1 + len(op) + 1 + len(right))
+		sb.WriteString(left)
+		sb.WriteByte(' ')
+		sb.WriteString(op)
+		sb.WriteByte(' ')
+		sb.WriteString(right)
+		return sb.String()
 	case *query.UnaryExpr:
 		op := tokenTypeToString(e.Operator)
-		return op + " " + expressionToString(e.Expr)
+		operand := expressionToString(e.Expr)
+		var sb strings.Builder
+		sb.Grow(len(op) + 1 + len(operand))
+		sb.WriteString(op)
+		sb.WriteByte(' ')
+		sb.WriteString(operand)
+		return sb.String()
 	case *query.FunctionCall:
 		args := make([]string, len(e.Args))
 		for i, arg := range e.Args {
 			args[i] = expressionToString(arg)
 		}
-		return e.Name + "(" + strings.Join(args, ", ") + ")"
+		joined := strings.Join(args, ", ")
+		var sb strings.Builder
+		sb.Grow(len(e.Name) + 1 + len(joined) + 1)
+		sb.WriteString(e.Name)
+		sb.WriteByte('(')
+		sb.WriteString(joined)
+		sb.WriteByte(')')
+		return sb.String()
 	case *query.InExpr:
 		exprStr := expressionToString(e.Expr)
 		items := make([]string, len(e.List))
 		for i, item := range e.List {
 			items[i] = expressionToString(item)
 		}
-		return exprStr + " IN (" + strings.Join(items, ", ") + ")"
+		joined := strings.Join(items, ", ")
+		var sb strings.Builder
+		sb.Grow(len(exprStr) + 5 + len(joined) + 1)
+		sb.WriteString(exprStr)
+		sb.WriteString(" IN (")
+		sb.WriteString(joined)
+		sb.WriteByte(')')
+		return sb.String()
 	case *query.LikeExpr:
 		exprStr := expressionToString(e.Expr)
 		patternStr := expressionToString(e.Pattern)
+		var sb strings.Builder
 		if e.Not {
-			return exprStr + " NOT LIKE " + patternStr
+			sb.Grow(len(exprStr) + 10 + len(patternStr))
+			sb.WriteString(exprStr)
+			sb.WriteString(" NOT LIKE ")
+		} else {
+			sb.Grow(len(exprStr) + 6 + len(patternStr))
+			sb.WriteString(exprStr)
+			sb.WriteString(" LIKE ")
 		}
-		return exprStr + " LIKE " + patternStr
+		sb.WriteString(patternStr)
+		return sb.String()
 	case *query.IsNullExpr:
 		exprStr := expressionToString(e.Expr)
+		var sb strings.Builder
 		if e.Not {
-			return exprStr + " IS NOT NULL"
+			sb.Grow(len(exprStr) + 12)
+			sb.WriteString(exprStr)
+			sb.WriteString(" IS NOT NULL")
+		} else {
+			sb.Grow(len(exprStr) + 8)
+			sb.WriteString(exprStr)
+			sb.WriteString(" IS NULL")
 		}
-		return exprStr + " IS NULL"
+		return sb.String()
 	default:
 		return ""
 	}
@@ -1934,12 +2039,17 @@ func scanValue(src interface{}, dest interface{}) error {
 
 // Tx represents a database transaction
 type Tx struct {
-	db  *DB
-	txn *txn.Transaction
+	db   *DB
+	txn  *txn.Transaction
+	done atomic.Bool // prevents double commit/rollback and double connection release
 }
 
 // Exec executes a statement within the transaction
 func (tx *Tx) Exec(ctx context.Context, sql string, args ...interface{}) (Result, error) {
+	if tx.done.Load() {
+		return Result{}, errors.New("transaction already completed")
+	}
+
 	tx.db.mu.RLock()
 	defer tx.db.mu.RUnlock()
 
@@ -1957,24 +2067,48 @@ func (tx *Tx) Exec(ctx context.Context, sql string, args ...interface{}) (Result
 	return tx.db.execute(ctx, stmt, args)
 }
 
-// Query executes a query within the transaction
-// Changes made within this transaction are visible to subsequent queries
+// Query executes a query within the transaction.
+// Changes made within this transaction are visible to subsequent queries.
+// Uses the same internal execution path as Tx.Exec to ensure transaction isolation.
 func (tx *Tx) Query(ctx context.Context, sql string, args ...interface{}) (*Rows, error) {
-	return tx.db.Query(ctx, sql, args...)
+	if tx.done.Load() {
+		return nil, errors.New("transaction already completed")
+	}
+
+	tx.db.mu.RLock()
+	defer tx.db.mu.RUnlock()
+
+	if tx.db.closed {
+		return nil, ErrDatabaseClosed
+	}
+
+	stmt, err := tx.db.getPreparedStatement(sql)
+	if err != nil {
+		return nil, fmt.Errorf("parse error: %w", err)
+	}
+
+	return tx.db.query(ctx, stmt, args)
 }
 
 // Commit commits the transaction
 func (tx *Tx) Commit() error {
-	defer tx.db.releaseConnection() // Release connection on commit/rollback
+	if !tx.done.CompareAndSwap(false, true) {
+		return errors.New("transaction already completed")
+	}
+	defer tx.db.releaseConnection()
 
 	// Flush table B+Trees to buffer pool first
 	if err := tx.db.catalog.FlushTableTrees(); err != nil {
+		// Rollback catalog transaction to prevent it from staying active forever
+		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil { /* already have primary error */ }
 		return fmt.Errorf("failed to flush tables: %w", err)
 	}
 
 	// Commit in catalog first (writes commit record to WAL)
 	if err := tx.db.catalog.CommitTransaction(); err != nil {
-		return err
+		// Rollback catalog transaction to prevent it from staying active forever
+		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil { /* already have primary error */ }
+		return fmt.Errorf("commit transaction failed: %w", err)
 	}
 
 	// Flush buffer pool to disk to ensure durability
@@ -1987,11 +2121,14 @@ func (tx *Tx) Commit() error {
 
 // Rollback rolls back the transaction
 func (tx *Tx) Rollback() error {
-	defer tx.db.releaseConnection() // Release connection on commit/rollback
+	if !tx.done.CompareAndSwap(false, true) {
+		return errors.New("transaction already completed")
+	}
+	defer tx.db.releaseConnection()
 
 	// Rollback in catalog first (writes rollback record to WAL)
 	if err := tx.db.catalog.RollbackTransaction(); err != nil {
-		return err
+		return fmt.Errorf("rollback transaction failed: %w", err)
 	}
 	if tx.db.metrics != nil {
 		tx.db.metrics.RecordTransaction(false)

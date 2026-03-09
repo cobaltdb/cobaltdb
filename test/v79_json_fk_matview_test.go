@@ -707,7 +707,7 @@ func TestV79JSONForeignKeyMatView(t *testing.T) {
 	// Create index and verify queries still work
 	checkNoError("CREATE INDEX", "CREATE INDEX v79_idx_age ON v79_indexed(age)")
 	check("Query with index",
-		"SELECT name FROM v79_indexed WHERE age = 21 LIMIT 1", "user_1")
+		"SELECT name FROM v79_indexed WHERE age = 21 ORDER BY id LIMIT 1", "user_1")
 
 	// Multi-column queries: age=20+i%40, i=1..50
 	// BETWEEN 25 AND 30: i=5..10 (ages 25-30) and i=45..50 (ages 25-30) = 12 rows

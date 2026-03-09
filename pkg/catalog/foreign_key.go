@@ -284,9 +284,9 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 		}
 
 		// Parse the row as a slice
-		var row []interface{}
-		if err := json.Unmarshal(value, &row); err != nil {
-			return nil, err
+		row, decErr := decodeRow(value, len(table.Columns))
+		if decErr != nil {
+			return nil, decErr
 		}
 
 		// Check if this row references the deleted row
@@ -411,9 +411,14 @@ func (fke *ForeignKeyEnforcer) getRowSlice(tableName string, rowKey interface{})
 		return nil, err
 	}
 
-	var row []interface{}
-	if err := json.Unmarshal(value, &row); err != nil {
-		return nil, err
+	table := fke.catalog.tables[tableName]
+	numCols := 0
+	if table != nil {
+		numCols = len(table.Columns)
+	}
+	row, decErr := decodeRow(value, numCols)
+	if decErr != nil {
+		return nil, decErr
 	}
 
 	return row, nil
@@ -453,12 +458,16 @@ func (fke *ForeignKeyEnforcer) updateRowSlice(tableName string, rowKey interface
 								wasAdded:  false,
 							})
 						}
-						_ = idxTree.Delete([]byte(oldIdxKey))
+						if err := idxTree.Delete([]byte(oldIdxKey)); err != nil {
+							return fmt.Errorf("index cleanup failed: %w", err)
+						}
 					}
 					// Add new index entry
 					newIdxKey, ok := buildCompositeIndexKey(table, idxDef, rowData)
 					if ok {
-						_ = idxTree.Put([]byte(newIdxKey), key)
+						if err := idxTree.Put([]byte(newIdxKey), key); err != nil {
+							return fmt.Errorf("index update failed: %w", err)
+						}
 						if fke.catalog.txnActive {
 							idxChanges = append(idxChanges, indexUndoEntry{
 								indexName: idxName,
@@ -492,7 +501,13 @@ func (fke *ForeignKeyEnforcer) updateRowSlice(tableName string, rowKey interface
 		return err
 	}
 
-	tree.Put(key, value)
+	if err := tree.Put(key, value); err != nil {
+		return err
+	}
+
+	// Invalidate query cache for the affected child table
+	fke.catalog.invalidateQueryCache(tableName)
+
 	return nil
 }
 
@@ -691,9 +706,9 @@ func (fke *ForeignKeyEnforcer) CheckForeignKeyConstraints(ctx context.Context, t
 		}
 
 		// Parse the row as a slice
-		var rowSlice []interface{}
-		if err := json.Unmarshal(value, &rowSlice); err != nil {
-			return err
+		rowSlice, decErr := decodeRow(value, len(table.Columns))
+		if decErr != nil {
+			return decErr
 		}
 
 		// Convert to map for validation

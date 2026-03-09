@@ -377,36 +377,48 @@ func (p *Parser) parseJoin() (*JoinClause, error) {
 	case TokenInner:
 		join.Type = TokenInner
 		p.advance()
-		p.expect(TokenJoin)
+		if _, err := p.expect(TokenJoin); err != nil {
+			return nil, err
+		}
 	case TokenLeft:
 		join.Type = TokenLeft
 		p.advance()
 		if p.match(TokenOuter) {
 			// LEFT OUTER JOIN
 		}
-		p.expect(TokenJoin)
+		if _, err := p.expect(TokenJoin); err != nil {
+			return nil, err
+		}
 	case TokenRight:
 		join.Type = TokenRight
 		p.advance()
 		if p.match(TokenOuter) {
 			// RIGHT OUTER JOIN
 		}
-		p.expect(TokenJoin)
+		if _, err := p.expect(TokenJoin); err != nil {
+			return nil, err
+		}
 	case TokenFull:
 		join.Type = TokenFull
 		p.advance()
 		if p.match(TokenOuter) {
 			// FULL OUTER JOIN
 		}
-		p.expect(TokenJoin)
+		if _, err := p.expect(TokenJoin); err != nil {
+			return nil, err
+		}
 	case TokenOuter:
 		p.advance()
 		join.Type = TokenFull // treat bare OUTER JOIN as FULL OUTER
-		p.expect(TokenJoin)
+		if _, err := p.expect(TokenJoin); err != nil {
+			return nil, err
+		}
 	case TokenCross:
 		join.Type = TokenCross
 		p.advance()
-		p.expect(TokenJoin)
+		if _, err := p.expect(TokenJoin); err != nil {
+			return nil, err
+		}
 	case TokenJoin:
 		join.Type = TokenJoin
 		p.advance()
@@ -1252,7 +1264,9 @@ func (p *Parser) parseInsert() (*InsertStmt, error) {
 		}
 	}
 
-	p.expect(TokenInto)
+	if _, err := p.expect(TokenInto); err != nil {
+		return nil, err
+	}
 
 	table, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -1271,7 +1285,9 @@ func (p *Parser) parseInsert() (*InsertStmt, error) {
 			return nil, err
 		}
 		stmt.Columns = columns
-		p.expect(TokenRParen)
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
 	}
 
 	// INSERT INTO ... SELECT ...
@@ -1285,14 +1301,18 @@ func (p *Parser) parseInsert() (*InsertStmt, error) {
 	}
 
 	// VALUES
-	p.expect(TokenValues)
+	if _, err := p.expect(TokenValues); err != nil {
+		return nil, err
+	}
 
 	// Value lists
 	rowCount := 0
 	// Calculate placeholder count - if columns specified, use that; otherwise detect from first row
 	placeholderCount := len(stmt.Columns)
 	for {
-		p.expect(TokenLParen)
+		if _, err := p.expect(TokenLParen); err != nil {
+			return nil, err
+		}
 
 		offset := rowCount * placeholderCount
 		values, err := p.parseExpressionListWithOffset(offset)
@@ -1306,7 +1326,9 @@ func (p *Parser) parseInsert() (*InsertStmt, error) {
 		}
 
 		stmt.Values = append(stmt.Values, values)
-		p.expect(TokenRParen)
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
 
 		if !p.match(TokenComma) {
 			break
@@ -1350,7 +1372,9 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 	}
 	stmt.Table = table.Literal
 
-	p.expect(TokenSet)
+	if _, err := p.expect(TokenSet); err != nil {
+		return nil, err
+	}
 
 	// Count set clauses first for placeholder offset
 	setCount := 0
@@ -1368,7 +1392,9 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 			return nil, fmt.Errorf("expected column name, got %s", col.Literal)
 		}
 
-		p.expect(TokenEq)
+		if _, err := p.expect(TokenEq); err != nil {
+			return nil, err
+		}
 
 		val, err := p.parseExpression()
 		if err != nil {
@@ -1544,7 +1570,9 @@ func (p *Parser) parseDelete() (*DeleteStmt, error) {
 	stmt := &DeleteStmt{}
 	p.advance() // consume DELETE
 
-	p.expect(TokenFrom)
+	if _, err := p.expect(TokenFrom); err != nil {
+		return nil, err
+	}
 
 	table, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -1930,8 +1958,12 @@ func (p *Parser) parseCreateIndex() (*CreateIndexStmt, error) {
 	}
 
 	if p.match(TokenIf) {
-		p.expect(TokenNot)
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenNot); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfNotExists = true
 	}
 
@@ -1941,7 +1973,9 @@ func (p *Parser) parseCreateIndex() (*CreateIndexStmt, error) {
 	}
 	stmt.Index = index.Literal
 
-	p.expect(TokenOn)
+	if _, err := p.expect(TokenOn); err != nil {
+		return nil, err
+	}
 
 	table, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -1949,7 +1983,9 @@ func (p *Parser) parseCreateIndex() (*CreateIndexStmt, error) {
 	}
 	stmt.Table = table.Literal
 
-	p.expect(TokenLParen)
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, err
+	}
 
 	columns, err := p.parseIdentifierList()
 	if err != nil {
@@ -1957,7 +1993,9 @@ func (p *Parser) parseCreateIndex() (*CreateIndexStmt, error) {
 	}
 	stmt.Columns = columns
 
-	p.expect(TokenRParen)
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, err
+	}
 
 	return stmt, nil
 }
@@ -1968,8 +2006,12 @@ func (p *Parser) parseCreateCollection() (*CreateCollectionStmt, error) {
 	p.advance() // consume COLLECTION
 
 	if p.match(TokenIf) {
-		p.expect(TokenNot)
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenNot); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfNotExists = true
 	}
 
@@ -1988,8 +2030,12 @@ func (p *Parser) parseCreateView() (*CreateViewStmt, error) {
 	p.advance() // consume VIEW
 
 	if p.match(TokenIf) {
-		p.expect(TokenNot)
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenNot); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfNotExists = true
 	}
 
@@ -2000,7 +2046,9 @@ func (p *Parser) parseCreateView() (*CreateViewStmt, error) {
 	stmt.Name = name.Literal
 
 	// AS SELECT query
-	p.expect(TokenAs)
+	if _, err := p.expect(TokenAs); err != nil {
+		return nil, err
+	}
 	stmt.Query, err = p.parseSelect()
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse view query: %w", err)
@@ -2015,7 +2063,9 @@ func (p *Parser) parseDropView() (*DropViewStmt, error) {
 	p.advance() // consume VIEW
 
 	if p.match(TokenIf) {
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfExists = true
 	}
 
@@ -2034,8 +2084,12 @@ func (p *Parser) parseCreateTrigger() (*CreateTriggerStmt, error) {
 	p.advance() // consume TRIGGER
 
 	if p.match(TokenIf) {
-		p.expect(TokenNot)
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenNot); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfNotExists = true
 	}
 
@@ -2070,7 +2124,9 @@ func (p *Parser) parseCreateTrigger() (*CreateTriggerStmt, error) {
 	p.advance()
 
 	// ON table_name
-	p.expect(TokenOn)
+	if _, err := p.expect(TokenOn); err != nil {
+		return nil, err
+	}
 	table, err := p.expect(TokenIdentifier)
 	if err != nil {
 		return nil, err
@@ -2079,8 +2135,12 @@ func (p *Parser) parseCreateTrigger() (*CreateTriggerStmt, error) {
 
 	// FOR EACH ROW (optional)
 	if p.match(TokenFor) {
-		p.expect(TokenEach)
-		p.expect(TokenRow)
+		if _, err := p.expect(TokenEach); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenRow); err != nil {
+			return nil, err
+		}
 	}
 
 	// WHEN condition (optional)
@@ -2131,7 +2191,9 @@ func (p *Parser) parseDropTrigger() (*DropTriggerStmt, error) {
 	p.advance() // consume TRIGGER
 
 	if p.match(TokenIf) {
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfExists = true
 	}
 
@@ -2150,8 +2212,12 @@ func (p *Parser) parseCreateProcedure() (*CreateProcedureStmt, error) {
 	p.advance() // consume PROCEDURE
 
 	if p.match(TokenIf) {
-		p.expect(TokenNot)
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenNot); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfNotExists = true
 	}
 
@@ -2197,7 +2263,9 @@ func (p *Parser) parseCreateProcedure() (*CreateProcedureStmt, error) {
 
 // parseProcedureBody parses BEGIN ... END block
 func (p *Parser) parseProcedureBody() ([]Statement, error) {
-	p.expect(TokenBegin)
+	if _, err := p.expect(TokenBegin); err != nil {
+		return nil, err
+	}
 
 	var statements []Statement
 
@@ -2237,7 +2305,9 @@ func (p *Parser) parseDropProcedure() (*DropProcedureStmt, error) {
 	p.advance() // consume PROCEDURE
 
 	if p.match(TokenIf) {
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfExists = true
 	}
 
@@ -2256,7 +2326,9 @@ func (p *Parser) parseDropPolicy() (*DropPolicyStmt, error) {
 	p.advance() // consume POLICY
 
 	if p.match(TokenIf) {
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfExists = true
 	}
 
@@ -2309,7 +2381,9 @@ func (p *Parser) parseDropTable() (*DropTableStmt, error) {
 	p.advance() // consume TABLE
 
 	if p.match(TokenIf) {
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfExists = true
 	}
 
@@ -2328,7 +2402,9 @@ func (p *Parser) parseDropIndex() (*DropIndexStmt, error) {
 	p.advance() // consume INDEX
 
 	if p.match(TokenIf) {
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfExists = true
 	}
 
@@ -2525,7 +2601,9 @@ func (p *Parser) parseCall() (*CallProcedureStmt, error) {
 			}
 			stmt.Params = append(stmt.Params, arg)
 			if !p.match(TokenComma) {
-				p.expect(TokenRParen)
+				if _, err := p.expect(TokenRParen); err != nil {
+					return nil, err
+				}
 				break
 			}
 		}
@@ -2583,11 +2661,17 @@ func (p *Parser) parseWithCTE() (*SelectStmtWithCTE, error) {
 				return nil, err
 			}
 			cte.Columns = columns
-			p.expect(TokenRParen)
+			if _, err := p.expect(TokenRParen); err != nil {
+				return nil, err
+			}
 		}
 
-		p.expect(TokenAs)
-		p.expect(TokenLParen)
+		if _, err := p.expect(TokenAs); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenLParen); err != nil {
+			return nil, err
+		}
 
 		query, err := p.parseSelect()
 		if err != nil {
@@ -2603,7 +2687,9 @@ func (p *Parser) parseWithCTE() (*SelectStmtWithCTE, error) {
 		}
 		cte.Query = cteQuery
 
-		p.expect(TokenRParen)
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
 
 		stmt.CTEs = append(stmt.CTEs, cte)
 
@@ -2658,8 +2744,12 @@ func (p *Parser) parseAnalyze() (*AnalyzeStmt, error) {
 func (p *Parser) parseRefresh() (*RefreshMaterializedViewStmt, error) {
 	p.advance() // consume REFRESH
 
-	p.expect(TokenMaterialized)
-	p.expect(TokenView)
+	if _, err := p.expect(TokenMaterialized); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokenView); err != nil {
+		return nil, err
+	}
 
 	name, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -2673,11 +2763,17 @@ func (p *Parser) parseRefresh() (*RefreshMaterializedViewStmt, error) {
 func (p *Parser) parseCreateMaterializedView() (*CreateMaterializedViewStmt, error) {
 	stmt := &CreateMaterializedViewStmt{}
 	p.advance() // consume MATERIALIZED
-	p.expect(TokenView)
+	if _, err := p.expect(TokenView); err != nil {
+		return nil, err
+	}
 
 	if p.match(TokenIf) {
-		p.expect(TokenNot)
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenNot); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfNotExists = true
 	}
 
@@ -2687,7 +2783,9 @@ func (p *Parser) parseCreateMaterializedView() (*CreateMaterializedViewStmt, err
 	}
 	stmt.Name = name.Literal
 
-	p.expect(TokenAs)
+	if _, err := p.expect(TokenAs); err != nil {
+		return nil, err
+	}
 	stmt.Query, err = p.parseSelect()
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse materialized view query: %w", err)
@@ -2700,10 +2798,14 @@ func (p *Parser) parseCreateMaterializedView() (*CreateMaterializedViewStmt, err
 func (p *Parser) parseDropMaterializedView() (*DropMaterializedViewStmt, error) {
 	stmt := &DropMaterializedViewStmt{}
 	p.advance() // consume MATERIALIZED
-	p.expect(TokenView)
+	if _, err := p.expect(TokenView); err != nil {
+		return nil, err
+	}
 
 	if p.match(TokenIf) {
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfExists = true
 	}
 
@@ -2721,11 +2823,17 @@ func (p *Parser) parseCreateFTSIndex() (*CreateFTSIndexStmt, error) {
 	stmt := &CreateFTSIndexStmt{}
 	p.advance() // consume FULLTEXT
 
-	p.expect(TokenIndex)
+	if _, err := p.expect(TokenIndex); err != nil {
+		return nil, err
+	}
 
 	if p.match(TokenIf) {
-		p.expect(TokenNot)
-		p.expect(TokenExists)
+		if _, err := p.expect(TokenNot); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
 		stmt.IfNotExists = true
 	}
 
@@ -2735,7 +2843,9 @@ func (p *Parser) parseCreateFTSIndex() (*CreateFTSIndexStmt, error) {
 	}
 	stmt.Index = index.Literal
 
-	p.expect(TokenOn)
+	if _, err := p.expect(TokenOn); err != nil {
+		return nil, err
+	}
 
 	table, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -2743,7 +2853,9 @@ func (p *Parser) parseCreateFTSIndex() (*CreateFTSIndexStmt, error) {
 	}
 	stmt.Table = table.Literal
 
-	p.expect(TokenLParen)
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, err
+	}
 
 	columns, err := p.parseIdentifierList()
 	if err != nil {
@@ -2751,7 +2863,9 @@ func (p *Parser) parseCreateFTSIndex() (*CreateFTSIndexStmt, error) {
 	}
 	stmt.Columns = columns
 
-	p.expect(TokenRParen)
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, err
+	}
 
 	return stmt, nil
 }
@@ -2775,7 +2889,9 @@ func (p *Parser) parseCreatePolicy() (*CreatePolicyStmt, error) {
 	stmt.Name = name.Literal
 
 	// ON table
-	p.expect(TokenOn)
+	if _, err := p.expect(TokenOn); err != nil {
+		return nil, err
+	}
 	table, err := p.expect(TokenIdentifier)
 	if err != nil {
 		return nil, err
@@ -2819,26 +2935,36 @@ func (p *Parser) parseCreatePolicy() (*CreatePolicyStmt, error) {
 	// Optional USING clause
 	if p.current().Type == TokenUsing {
 		p.advance() // consume USING
-		p.expect(TokenLParen)
+		if _, err := p.expect(TokenLParen); err != nil {
+			return nil, err
+		}
 		usingExpr, err := p.parseExpression()
 		if err != nil {
 			return nil, fmt.Errorf("error in USING expression: %w", err)
 		}
 		stmt.Using = usingExpr
-		p.expect(TokenRParen)
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
 	}
 
 	// Optional WITH CHECK clause
 	if p.current().Type == TokenWith {
 		p.advance() // consume WITH
-		p.expect(TokenCheck)
-		p.expect(TokenLParen)
+		if _, err := p.expect(TokenCheck); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenLParen); err != nil {
+			return nil, err
+		}
 		checkExpr, err := p.parseExpression()
 		if err != nil {
 			return nil, fmt.Errorf("error in WITH CHECK expression: %w", err)
 		}
 		stmt.WithCheck = checkExpr
-		p.expect(TokenRParen)
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
 	}
 
 	return stmt, nil

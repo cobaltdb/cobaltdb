@@ -99,13 +99,19 @@ func TestDeriveKeyFromPassword(t *testing.T) {
 		salt[i] = byte(i)
 	}
 
-	key := DeriveKeyFromPassword(password, salt)
+	key, err := DeriveKeyFromPassword(password, salt)
+	if err != nil {
+		t.Fatalf("DeriveKeyFromPassword failed: %v", err)
+	}
 	if len(key) != 32 {
 		t.Errorf("Expected 32-byte key, got %d bytes", len(key))
 	}
 
 	// Same password and salt should produce same key
-	key2 := DeriveKeyFromPassword(password, salt)
+	key2, err := DeriveKeyFromPassword(password, salt)
+	if err != nil {
+		t.Fatalf("DeriveKeyFromPassword failed: %v", err)
+	}
 	if !bytes.Equal(key, key2) {
 		t.Error("Same password and salt should produce same key")
 	}
@@ -115,7 +121,10 @@ func TestDeriveKeyFromPassword(t *testing.T) {
 	for i := range differentSalt {
 		differentSalt[i] = byte(i + 1)
 	}
-	key3 := DeriveKeyFromPassword(password, differentSalt)
+	key3, err := DeriveKeyFromPassword(password, differentSalt)
+	if err != nil {
+		t.Fatalf("DeriveKeyFromPassword failed: %v", err)
+	}
 	if bytes.Equal(key, key3) {
 		t.Error("Different salt should produce different key")
 	}

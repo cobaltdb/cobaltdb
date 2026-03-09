@@ -173,7 +173,7 @@ func TestExpressionParser(t *testing.T) {
 			name:       "Current user expression",
 			expression: "user_id = current_user",
 			row:        map[string]interface{}{"user_id": "alice"},
-			ctx:        context.WithValue(context.Background(), "user", "alice"),
+			ctx:        context.WithValue(context.Background(), RLSUserKey, "alice"),
 			want:       true,
 			wantErr:    false,
 		},
@@ -181,7 +181,7 @@ func TestExpressionParser(t *testing.T) {
 			name:       "Current tenant expression",
 			expression: "tenant_id = current_tenant",
 			row:        map[string]interface{}{"tenant_id": "tenant1"},
-			ctx:        context.WithValue(context.Background(), "tenant", "tenant1"),
+			ctx:        context.WithValue(context.Background(), RLSTenantKey, "tenant1"),
 			want:       true,
 			wantErr:    false,
 		},
@@ -272,7 +272,7 @@ func TestComplexPolicyWithUserAndExpression(t *testing.T) {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
-	ctx := context.WithValue(context.Background(), "user", "alice")
+	ctx := context.WithValue(context.Background(), RLSUserKey, "alice")
 
 	// Row owned by alice should be allowed
 	row1 := map[string]interface{}{"owner_id": "alice", "shared": false}

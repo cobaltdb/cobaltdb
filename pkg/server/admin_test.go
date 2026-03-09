@@ -316,9 +316,9 @@ func TestAdminServerCORS(t *testing.T) {
 		t.Errorf("Expected 200 for OPTIONS, got %d", resp.StatusCode)
 	}
 
-	// Check CORS headers
-	if resp.Header.Get("Access-Control-Allow-Origin") != "*" {
-		t.Error("Missing CORS header")
+	// Check CORS headers - wildcard origin removed for security, but methods header should exist
+	if resp.Header.Get("Access-Control-Allow-Methods") == "" {
+		t.Error("Missing CORS Allow-Methods header")
 	}
 }
 

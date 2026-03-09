@@ -4,7 +4,6 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
-	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,13 +14,20 @@ var (
 	ErrBufferFull   = errors.New("buffer pool is full")
 )
 
+// lruTouchThreshold controls how often LRU position is updated on cache hits.
+// Only every N-th access acquires the write lock to move the page to the front,
+// reducing write lock contention while maintaining approximate LRU behavior.
+const lruTouchThreshold = 8
+
 // CachedPage represents a page in the buffer pool
+// Fields ordered by decreasing alignment to minimize padding
 type CachedPage struct {
-	id      uint32
-	data    []byte // PageSize bytes
-	dirty   bool
-	pinned  int32 // atomic pin count
-	lruElem *list.Element
+	data        []byte        // PageSize bytes (24 bytes: ptr+len+cap)
+	lruElem     *list.Element // 8 bytes pointer
+	id          uint32        // 4 bytes
+	pinned      int32         // 4 bytes, atomic pin count
+	accessCount uint32        // 4 bytes, atomic access counter for probabilistic LRU
+	dirty       bool          // 1 byte
 }
 
 // ID returns the page ID
@@ -234,8 +240,15 @@ func (bp *BufferPool) Unpin(page *CachedPage) {
 	page.Unpin()
 }
 
-// touchLRU moves a page to the front of the LRU list
+// touchLRU moves a page to the front of the LRU list using probabilistic updates.
+// Only every lruTouchThreshold-th access actually acquires the write lock,
+// dramatically reducing contention on cache hits while maintaining approximate LRU order.
 func (bp *BufferPool) touchLRU(page *CachedPage) {
+	count := atomic.AddUint32(&page.accessCount, 1)
+	if count%lruTouchThreshold != 0 {
+		return
+	}
+
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 
@@ -289,10 +302,3 @@ func (bp *BufferPool) PageCount() int {
 	return len(bp.pages)
 }
 
-// isEOF checks if an error is an EOF-like error
-func isEOF(err error) bool {
-	if err == nil {
-		return false
-	}
-	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
-}

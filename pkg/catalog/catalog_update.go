@@ -1,0 +1,739 @@
+package catalog
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
+)
+
+func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.updateLocked(stmt, args)
+}
+
+func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+	table, err := c.getTableLocked(stmt.Table)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	tree, exists := c.tableTrees[stmt.Table]
+	if !exists {
+		return 0, 0, ErrTableNotFound
+	}
+
+	// Handle UPDATE with JOIN
+	if stmt.From != nil || len(stmt.Joins) > 0 {
+		return c.updateWithJoinLocked(stmt, args)
+	}
+
+	rowsAffected := int64(0)
+	iter, _ := tree.Scan(nil, nil)
+	defer iter.Close()
+
+	// Collect entries to update (need old row for index cleanup)
+	type updateEntry struct {
+		key    []byte
+		oldRow []interface{}
+		newRow []interface{}
+	}
+	var entries []updateEntry
+
+	// Pre-calculate column indices for SET clauses
+	setColumnIndices := make([]int, len(stmt.Set))
+	for i, setClause := range stmt.Set {
+		setColumnIndices[i] = table.GetColumnIndex(setClause.Column)
+		if setColumnIndices[i] < 0 {
+			return 0, 0, fmt.Errorf("column '%s' not found in table '%s'", setClause.Column, stmt.Table)
+		}
+	}
+
+	for iter.HasNext() {
+		key, valueData, err := iter.Next()
+		if err != nil {
+			break
+		}
+
+		// Decode row
+		row, err := decodeRow(valueData, len(table.Columns))
+		if err != nil {
+			continue
+		}
+
+		// Apply WHERE clause if present
+		if stmt.Where != nil {
+			matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+			if err != nil {
+				return 0, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+			}
+			if !matched {
+				continue // Skip row that doesn't match WHERE condition
+			}
+		}
+
+		// Make a copy of the row to update
+		updatedRow := make([]interface{}, len(row))
+		copy(updatedRow, row)
+
+		// Update fields - use pre-calculated column indices
+		for i, setClause := range stmt.Set {
+			colIdx := setColumnIndices[i]
+			if colIdx >= 0 {
+				newVal, err := evaluateExpression(c, row, table.Columns, setClause.Value, args)
+				if err != nil {
+					return 0, rowsAffected, fmt.Errorf("failed to evaluate SET expression for column '%s': %w", setClause.Column, err)
+				}
+				updatedRow[colIdx] = newVal
+			}
+		}
+
+		// Make copies since iterator may reuse buffers
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+
+		// Check UNIQUE constraints before updating
+		for i, col := range table.Columns {
+			if col.Unique && updatedRow[i] != nil {
+				// Check if another row (not this one) has the same unique value
+				checkIter, _ := tree.Scan(nil, nil)
+				duplicate := false
+				for checkIter.HasNext() {
+					checkKey, existingData, err := checkIter.Next()
+					if err != nil {
+						break
+					}
+					// Skip the current row being updated
+					if string(checkKey) == string(key) {
+						continue
+					}
+					var existingRow []interface{}
+					if err := json.Unmarshal(existingData, &existingRow); err != nil {
+						continue
+					}
+					if len(existingRow) > i && compareValues(updatedRow[i], existingRow[i]) == 0 {
+						duplicate = true
+						break
+					}
+				}
+				checkIter.Close()
+				if duplicate {
+					return 0, rowsAffected, fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
+				}
+			}
+		}
+
+		// Check UNIQUE INDEX constraints before updating
+		for idxName, idxDef := range c.indexes {
+			if idxDef.TableName == stmt.Table && idxDef.Unique && len(idxDef.Columns) > 0 {
+				newIdxKey, newOk := buildCompositeIndexKey(table, idxDef, updatedRow)
+				if !newOk {
+					continue
+				}
+				oldIdxKey, _ := buildCompositeIndexKey(table, idxDef, row)
+				if newIdxKey == oldIdxKey {
+					continue // Value unchanged, no conflict possible
+				}
+				if idxTree, exists := c.indexTrees[idxName]; exists {
+					if _, err := idxTree.Get([]byte(newIdxKey)); err == nil {
+						return 0, rowsAffected, fmt.Errorf("UNIQUE constraint failed: duplicate value in index %s", idxName)
+					}
+				}
+			}
+		}
+
+		// Check NOT NULL constraints before updating
+		for i, col := range table.Columns {
+			if col.NotNull && i < len(updatedRow) && updatedRow[i] == nil {
+				return 0, rowsAffected, fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
+			}
+		}
+
+		// Check CHECK constraints before updating
+		for _, col := range table.Columns {
+			if col.Check != nil {
+				result, err := evaluateExpression(c, updatedRow, table.Columns, col.Check, args)
+				if err != nil {
+					return 0, rowsAffected, fmt.Errorf("CHECK constraint failed: %v", err)
+				}
+				// Per SQL standard, NULL (unknown) passes CHECK constraint; only explicit false fails
+				if result != nil {
+					if resultBool, ok := result.(bool); ok && !resultBool {
+						return 0, rowsAffected, fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
+					}
+				}
+			}
+		}
+
+		// Check FOREIGN KEY constraints on updated columns
+		for _, fk := range table.ForeignKeys {
+			for i, colName := range fk.Columns {
+				colIdx := table.GetColumnIndex(colName)
+				if colIdx < 0 || colIdx >= len(updatedRow) {
+					continue
+				}
+				fkValue := updatedRow[colIdx]
+				if fkValue == nil {
+					continue // NULL values skip FK check
+				}
+				// Only check if the FK column value actually changed
+				if colIdx < len(row) && compareValues(fkValue, row[colIdx]) == 0 {
+					continue // Value didn't change, skip check
+				}
+				// Check if referenced row exists
+				refTable, err := c.getTableLocked(fk.ReferencedTable)
+				if err != nil {
+					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: referenced table '%s' not found", fk.ReferencedTable)
+				}
+				refColIdx := 0
+				if len(fk.ReferencedColumns) > i {
+					refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
+				}
+				refTree, exists := c.tableTrees[fk.ReferencedTable]
+				if !exists {
+					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: referenced table '%s' not found", fk.ReferencedTable)
+				}
+				found := false
+				refIter, _ := refTree.Scan(nil, nil)
+				for refIter.HasNext() {
+					_, refData, err := refIter.Next()
+					if err != nil {
+						break
+					}
+					var refRow []interface{}
+					if err := json.Unmarshal(refData, &refRow); err != nil {
+						continue
+					}
+					if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
+						found = true
+						break
+					}
+				}
+				refIter.Close()
+				if !found {
+					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
+				}
+			}
+		}
+
+		entries = append(entries, updateEntry{
+			key:    keyCopy,
+			oldRow: row,
+			newRow: updatedRow,
+		})
+		rowsAffected++
+	}
+
+	// Apply updates
+	pkColIdx := -1
+	if len(table.PrimaryKey) > 0 {
+		pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
+	}
+	// Foreign key enforcer for CASCADE/RESTRICT/SET NULL actions on PK changes
+	fke := NewForeignKeyEnforcer(c)
+	for _, entry := range entries {
+		oldKey := entry.key
+
+		// Re-encode row
+		newValueData, err := json.Marshal(entry.newRow)
+		if err != nil {
+			continue
+		}
+
+		// Check if PRIMARY KEY was changed - need to delete old key and insert new one
+		newKey := oldKey
+		pkChanged := false
+		if pkColIdx >= 0 && pkColIdx < len(entry.newRow) && pkColIdx < len(entry.oldRow) {
+			if compareValues(entry.oldRow[pkColIdx], entry.newRow[pkColIdx]) != 0 {
+				pkChanged = true
+				// Generate new key from the updated PK value
+				pkVal := entry.newRow[pkColIdx]
+				if strVal, ok := pkVal.(string); ok {
+					newKey = []byte("S:" + strVal)
+				} else if fVal, ok := toFloat64(pkVal); ok {
+					newKey = []byte(fmt.Sprintf("%020d", int64(fVal)))
+				}
+				// Check if the new PK already exists (duplicate PK violation)
+				if existingData, err := tree.Get(newKey); err == nil && existingData != nil {
+					return 0, 0, fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal)
+				}
+			}
+		}
+
+		// Enforce foreign key ON UPDATE actions (CASCADE, SET NULL, RESTRICT)
+		if pkChanged && pkColIdx >= 0 {
+			if fkErr := fke.OnUpdate(context.Background(), stmt.Table, entry.oldRow[pkColIdx], entry.newRow[pkColIdx]); fkErr != nil {
+				return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
+			}
+		}
+
+		// Log to WAL before applying change
+		if c.wal != nil && c.txnActive {
+			if pkChanged {
+				// Log delete of old key
+				deleteRecord := &storage.WALRecord{
+					TxnID: c.txnID,
+					Type:  storage.WALDelete,
+					Data:  oldKey,
+				}
+				if err := c.wal.Append(deleteRecord); err != nil {
+					return 0, rowsAffected, err
+				}
+				// Log insert of new key
+				walData := append(newKey, 0)
+				walData = append(walData, newValueData...)
+				insertRecord := &storage.WALRecord{
+					TxnID: c.txnID,
+					Type:  storage.WALInsert,
+					Data:  walData,
+				}
+				if err := c.wal.Append(insertRecord); err != nil {
+					return 0, rowsAffected, err
+				}
+			} else {
+				// For UPDATE without PK change, log the key and new value
+				walData := append([]byte(oldKey), 0)
+				walData = append(walData, newValueData...)
+				record := &storage.WALRecord{
+					TxnID: c.txnID,
+					Type:  storage.WALUpdate,
+					Data:  walData,
+				}
+				if err := c.wal.Append(record); err != nil {
+					return 0, rowsAffected, err
+				}
+			}
+		}
+
+		if pkChanged {
+			// Delete old key and insert new key
+			if err := tree.Delete(oldKey); err != nil {
+				// Continue with update, but note the error
+				_ = err
+			}
+			if err := tree.Put(newKey, newValueData); err != nil {
+				return 0, rowsAffected, fmt.Errorf("failed to update row with new key: %w", err)
+			}
+			// Update auto-increment counter if needed
+			if fVal, ok := toFloat64(entry.newRow[pkColIdx]); ok {
+				pkVal := int64(fVal)
+				if pkVal > table.AutoIncSeq {
+					table.AutoIncSeq = pkVal
+				}
+			}
+		} else {
+			if err := tree.Put(oldKey, newValueData); err != nil {
+				return 0, rowsAffected, fmt.Errorf("failed to update row: %w", err)
+			}
+		}
+
+		// Update indexes: remove old entries and add new ones, track for undo
+		var idxChanges []indexUndoEntry
+		for idxName, idxTree := range c.indexTrees {
+			idxDef := c.indexes[idxName]
+			if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
+				// Remove old index entry
+				oldIndexKey, oldOk := buildCompositeIndexKey(table, idxDef, entry.oldRow)
+				if oldOk {
+					if idxDef.Unique {
+						oldIdxVal, getErr := idxTree.Get([]byte(oldIndexKey))
+						_ = idxTree.Delete([]byte(oldIndexKey))
+						if c.txnActive && getErr == nil {
+							idxChanges = append(idxChanges, indexUndoEntry{
+								indexName: idxName,
+								key:       []byte(oldIndexKey),
+								oldValue:  oldIdxVal,
+								wasAdded:  false, // was deleted
+							})
+						}
+					} else {
+						// For non-unique indexes, delete the compound key "indexValue\x00pk"
+						compoundKey := oldIndexKey + "\x00" + string(newKey)
+						oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
+						_ = idxTree.Delete([]byte(compoundKey))
+						if c.txnActive && getErr == nil {
+							idxChanges = append(idxChanges, indexUndoEntry{
+								indexName: idxName,
+								key:       []byte(compoundKey),
+								oldValue:  oldIdxVal,
+								wasAdded:  false, // was deleted
+							})
+						}
+					}
+				}
+				// Add new index entry
+				newIndexKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
+				if newOk {
+					// For non-unique indexes, use compound key: "indexValue\x00pk"
+					var idxStorageKey []byte
+					if idxDef.Unique {
+						idxStorageKey = []byte(newIndexKey)
+						// Enforce UNIQUE constraint (skip if value unchanged)
+						if newIndexKey != oldIndexKey {
+							if _, err := idxTree.Get(idxStorageKey); err == nil {
+								return 0, rowsAffected, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
+							}
+						}
+					} else {
+						idxStorageKey = []byte(newIndexKey + "\x00" + string(newKey))
+					}
+					if err := idxTree.Put(idxStorageKey, newKey); err != nil {
+						return 0, rowsAffected, fmt.Errorf("failed to update index %s: %w", idxName, err)
+					}
+					if c.txnActive {
+						idxChanges = append(idxChanges, indexUndoEntry{
+							indexName: idxName,
+							key:       idxStorageKey,
+							wasAdded:  true,
+						})
+					}
+				}
+			}
+		}
+
+		// Record undo log entry for rollback (after applying change)
+		if c.txnActive {
+			oldValueData, marshalErr := json.Marshal(entry.oldRow)
+			if marshalErr == nil {
+				keyCopy := make([]byte, len(oldKey))
+				copy(keyCopy, oldKey)
+				c.undoLog = append(c.undoLog, undoEntry{
+					action:       undoUpdate,
+					tableName:    stmt.Table,
+					key:          keyCopy,
+					oldValue:     oldValueData,
+					indexChanges: idxChanges,
+				})
+			}
+		}
+	}
+
+	// Execute AFTER UPDATE triggers (per-row)
+	for _, entry := range entries {
+		_ = c.executeTriggers(stmt.Table, "UPDATE", "AFTER", entry.newRow, entry.oldRow, table.Columns)
+	}
+
+	// Invalidate query cache for the affected table
+	c.invalidateQueryCache(stmt.Table)
+
+	return 0, rowsAffected, nil
+}
+
+func (c *Catalog) updateWithJoinLocked(stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+	targetTable, err := c.getTableLocked(stmt.Table)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	targetTree, exists := c.tableTrees[stmt.Table]
+	if !exists {
+		return 0, 0, ErrTableNotFound
+	}
+
+	// Build a SELECT statement from the UPDATE to execute the join
+	// Select all columns from target table
+	var columns []query.Expression
+	for _, col := range targetTable.Columns {
+		columns = append(columns, &query.QualifiedIdentifier{Table: stmt.Table, Column: col.Name})
+	}
+	selectStmt := &query.SelectStmt{
+		Columns: columns,
+		From:    &query.TableRef{Name: stmt.Table},
+		Joins:   stmt.Joins,
+		Where:   stmt.Where,
+	}
+
+	// If FROM clause exists, use it as the main table and add target as first join
+	if stmt.From != nil {
+		selectStmt.From = stmt.From
+		// Add target table as first join with no condition
+		selectStmt.Joins = append([]*query.JoinClause{{
+			Type:  query.TokenJoin,
+			Table: &query.TableRef{Name: stmt.Table},
+		}}, stmt.Joins...)
+	}
+
+	// Execute the join to find matching rows
+	_, resultRows, err := c.selectLocked(selectStmt, args)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to execute UPDATE join: %w", err)
+	}
+
+	// Collect keys of rows to update
+	keysToUpdate := make(map[string]struct{})
+	for _, row := range resultRows {
+		if len(row) > 0 && row[0] != nil {
+			if key, ok := row[0].(string); ok {
+				keysToUpdate[key] = struct{}{}
+			}
+		}
+	}
+
+	if len(keysToUpdate) == 0 {
+		return 0, 0, nil // No rows to update
+	}
+
+	// Now update each row
+	rowsAffected := int64(0)
+	type updateEntry struct {
+		key    []byte
+		oldRow []interface{}
+		newRow []interface{}
+	}
+	var entries []updateEntry
+
+	// Pre-calculate column indices for SET clauses
+	setColumnIndices := make([]int, len(stmt.Set))
+	for i, setClause := range stmt.Set {
+		setColumnIndices[i] = targetTable.GetColumnIndex(setClause.Column)
+		if setColumnIndices[i] < 0 {
+			return 0, 0, fmt.Errorf("column '%s' not found in table '%s'", setClause.Column, stmt.Table)
+		}
+	}
+
+	// Iterate over keys to update
+	for keyStr := range keysToUpdate {
+		key := []byte(keyStr)
+		valueData, err := targetTree.Get(key)
+		if err != nil {
+			continue // Row may have been deleted
+		}
+
+		row, err := decodeRow(valueData, len(targetTable.Columns))
+		if err != nil {
+			continue
+		}
+
+		// Make a copy of the row to update
+		updatedRow := make([]interface{}, len(row))
+		copy(updatedRow, row)
+
+		// Apply SET clauses
+		for i, setClause := range stmt.Set {
+			colIdx := setColumnIndices[i]
+			newVal, err := evaluateExpression(c, row, targetTable.Columns, setClause.Value, args)
+			if err != nil {
+				return 0, rowsAffected, fmt.Errorf("failed to evaluate SET expression: %w", err)
+			}
+			updatedRow[colIdx] = newVal
+		}
+
+		// Check constraints (simplified - full checks in actual implementation)
+		for i, col := range targetTable.Columns {
+			if col.NotNull && i < len(updatedRow) && updatedRow[i] == nil {
+				return 0, rowsAffected, fmt.Errorf("NOT NULL constraint failed: %s", col.Name)
+			}
+		}
+
+		entries = append(entries, updateEntry{
+			key:    key,
+			oldRow: row,
+			newRow: updatedRow,
+		})
+		rowsAffected++
+	}
+
+	// Apply all updates
+	for _, entry := range entries {
+		newValue, err := encodeRow(nil, entry.newRow)
+		if err != nil {
+			return 0, rowsAffected, err
+		}
+		if err := targetTree.Put(entry.key, newValue); err != nil {
+			return 0, rowsAffected, err
+		}
+
+		// Update indexes
+		for idxName, idxDef := range c.indexes {
+			if idxDef.TableName == stmt.Table {
+				oldIdxKey, _ := buildCompositeIndexKey(targetTable, idxDef, entry.oldRow)
+				newIdxKey, newOk := buildCompositeIndexKey(targetTable, idxDef, entry.newRow)
+				if idxTree, exists := c.indexTrees[idxName]; exists {
+					if oldIdxKey != "" {
+						idxTree.Delete([]byte(oldIdxKey))
+					}
+					if newOk && newIdxKey != "" {
+						idxTree.Put([]byte(newIdxKey), entry.key)
+					}
+				}
+			}
+		}
+	}
+
+	return int64(len(entries)), rowsAffected, nil
+}
+
+func (c *Catalog) deleteWithUsingLocked(stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
+	targetTable, err := c.getTableLocked(stmt.Table)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	targetTree, exists := c.tableTrees[stmt.Table]
+	if !exists {
+		return 0, 0, ErrTableNotFound
+	}
+
+	// Build a SELECT statement to execute the join
+	// Select all columns from target table to get the primary key
+	var columns []query.Expression
+	for _, col := range targetTable.Columns {
+		columns = append(columns, &query.QualifiedIdentifier{Table: stmt.Table, Column: col.Name})
+	}
+
+	selectStmt := &query.SelectStmt{
+		Columns: columns,
+		From:    &query.TableRef{Name: stmt.Table},
+		Where:   stmt.Where,
+	}
+
+	// Add USING tables as joins
+	for _, usingTable := range stmt.Using {
+		selectStmt.Joins = append(selectStmt.Joins, &query.JoinClause{
+			Type:  query.TokenJoin,
+			Table: usingTable,
+		})
+	}
+
+	// Execute the join to find matching rows
+	_, resultRows, err := c.selectLocked(selectStmt, args)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to execute DELETE USING: %w", err)
+	}
+
+	// Collect keys of rows to delete by getting the primary key value
+	keysToDelete := make(map[string]struct{})
+	pkIdx := 0 // Assume first column is PK
+	for _, row := range resultRows {
+		if pkIdx < len(row) && row[pkIdx] != nil {
+			key, err := json.Marshal(row[pkIdx])
+			if err == nil && key != nil {
+				keysToDelete[string(key)] = struct{}{}
+			}
+		}
+	}
+
+	if len(keysToDelete) == 0 {
+		return 0, 0, nil // No rows to delete
+	}
+
+	// Now delete each row
+	rowsAffected := int64(0)
+	type deleteEntry struct {
+		key   []byte
+		value []byte
+		row   []interface{}
+	}
+	var entries []deleteEntry
+
+	// Foreign key enforcer for CASCADE/RESTRICT actions
+	fke := NewForeignKeyEnforcer(c)
+
+	// Collect entries to delete
+	for keyStr := range keysToDelete {
+		key := []byte(keyStr)
+		valueData, err := targetTree.Get(key)
+		if err != nil {
+			continue // Row may have been deleted
+		}
+
+		row, err := decodeRow(valueData, len(targetTable.Columns))
+		if err != nil {
+			continue
+		}
+
+		// Enforce foreign key ON DELETE actions
+		pkColIdx := -1
+		if len(targetTable.PrimaryKey) > 0 {
+			pkColIdx = targetTable.GetColumnIndex(targetTable.PrimaryKey[0])
+		}
+		if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
+			if fkErr := fke.OnDelete(context.Background(), stmt.Table, row[pkColIdx]); fkErr != nil {
+				return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
+			}
+		}
+
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+		valueCopy := make([]byte, len(valueData))
+		copy(valueCopy, valueData)
+
+		entries = append(entries, deleteEntry{
+			key:   keyCopy,
+			value: valueCopy,
+			row:   row,
+		})
+		rowsAffected++
+	}
+
+	// Delete collected entries
+	for _, entry := range entries {
+		// Remove from indexes first
+		for idxName, idxTree := range c.indexTrees {
+			idxDef := c.indexes[idxName]
+			if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
+				indexKey, ok := buildCompositeIndexKey(targetTable, idxDef, entry.row)
+				if ok {
+					if idxDef.Unique {
+						idxTree.Delete([]byte(indexKey))
+					} else {
+						compoundKey := indexKey + "\x00" + string(entry.key)
+						idxTree.Delete([]byte(compoundKey))
+					}
+				}
+			}
+		}
+
+		// Delete from tree
+		targetTree.Delete(entry.key)
+
+		// Log to WAL before applying change
+		if c.wal != nil && c.txnActive {
+			walData := append([]byte(entry.key), 0)
+			record := &storage.WALRecord{
+				TxnID: c.txnID,
+				Type:  storage.WALDelete,
+				Data:  walData,
+			}
+			c.wal.Append(record)
+		}
+	}
+
+	return int64(len(entries)), rowsAffected, nil
+}
+
+func (c *Catalog) UpdateRow(tableName string, pkValue interface{}, row map[string]interface{}) error {
+	table, err := c.getTableLocked(tableName)
+	if err != nil {
+		return err
+	}
+
+	tree, exists := c.tableTrees[tableName]
+	if !exists {
+		return fmt.Errorf("table %s has no data", tableName)
+	}
+
+	// Serialize the primary key using the same format as Insert
+	key := c.serializePK(pkValue, tree)
+
+	// Convert row map to values slice
+	values := make([]interface{}, len(table.Columns))
+	for i, col := range table.Columns {
+		if val, exists := row[col.Name]; exists {
+			values[i] = val
+		} else {
+			values[i] = nil
+		}
+	}
+
+	// Encode the row (Insert uses json.Marshal, so use same format for consistency)
+	data, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+
+	// Update in BTree
+	return tree.Put(key, data)
+}

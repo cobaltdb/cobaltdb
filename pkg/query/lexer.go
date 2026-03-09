@@ -3,7 +3,6 @@ package query
 import (
 	"fmt"
 	"strings"
-	"unicode"
 )
 
 // Lexer tokenizes SQL input
@@ -341,21 +340,30 @@ func (l *Lexer) readBacktickString() string {
 	return str
 }
 
-// isLetter checks if a character is a letter
+// isLetter checks if a character is a letter or underscore (ASCII only)
 func isLetter(ch byte) bool {
-	return unicode.IsLetter(rune(ch))
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
 }
 
-// isDigit checks if a character is a digit
+// isDigit checks if a character is a digit (ASCII fast path)
 func isDigit(ch byte) bool {
-	return unicode.IsDigit(rune(ch))
+	return ch >= '0' && ch <= '9'
+}
+
+// singleByteStrings avoids allocations for single-byte token literals
+var singleByteStrings [256]string
+
+func init() {
+	for i := 0; i < 256; i++ {
+		singleByteStrings[i] = string([]byte{byte(i)})
+	}
 }
 
 // newToken creates a new token
 func newToken(tokenType TokenType, ch byte, line, column int) Token {
 	return Token{
 		Type:    tokenType,
-		Literal: string(ch),
+		Literal: singleByteStrings[ch],
 		Line:    line,
 		Column:  column,
 	}
@@ -364,7 +372,7 @@ func newToken(tokenType TokenType, ch byte, line, column int) Token {
 // Tokenize tokenizes the entire input and returns all tokens
 func Tokenize(input string) ([]Token, error) {
 	l := NewLexer(input)
-	var tokens []Token
+	tokens := make([]Token, 0, len(input)/4+10)
 
 	for {
 		tok := l.NextToken()

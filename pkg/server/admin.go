@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -92,6 +93,11 @@ func (a *AdminServer) Start() error {
 
 	// Start in background
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("recovered panic in admin server: %v", r)
+			}
+		}()
 		log.Printf("[Admin] Starting admin server on %s", a.addr)
 		if err := a.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("[Admin] Server error: %v", err)
@@ -146,14 +152,13 @@ func (a *AdminServer) authMiddleware(next http.Handler) http.Handler {
 				providedToken = authHeader
 			}
 
-			if providedToken != token {
+			if subtle.ConstantTimeCompare([]byte(providedToken), []byte(token)) != 1 {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
 		}
 
-		// CORS headers
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// CORS headers - restrict to same origin; configure explicitly for cross-origin access
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 
@@ -181,24 +186,30 @@ func (a *AdminServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(status)
+	if err := json.NewEncoder(w).Encode(status); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
 }
 
 // handleReady returns readiness status
 func (a *AdminServer) handleReady(w http.ResponseWriter, r *http.Request) {
 	if a.db == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{
+		if err := json.NewEncoder(w).Encode(map[string]string{
 			"status": "not ready",
 			"reason": "database not initialized",
-		})
+		}); err != nil {
+			log.Printf("failed to encode response: %v", err)
+		}
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"status": "ready",
-	})
+	}); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
 }
 
 // handleMetrics redirects to Prometheus format by default
@@ -310,17 +321,21 @@ func (a *AdminServer) handleJSONMetrics(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 
 	if a.db == nil {
-		json.NewEncoder(w).Encode(map[string]string{
+		if err := json.NewEncoder(w).Encode(map[string]string{
 			"error": "database not initialized",
-		})
+		}); err != nil {
+			log.Printf("failed to encode response: %v", err)
+		}
 		return
 	}
 
 	collector := a.db.GetMetricsCollector()
 	if collector == nil {
-		json.NewEncoder(w).Encode(map[string]string{
+		if err := json.NewEncoder(w).Encode(map[string]string{
 			"error": "metrics not enabled",
-		})
+		}); err != nil {
+			log.Printf("failed to encode response: %v", err)
+		}
 		return
 	}
 
@@ -357,7 +372,9 @@ func (a *AdminServer) handleJSONMetrics(w http.ResponseWriter, r *http.Request) 
 		},
 	}
 
-	json.NewEncoder(w).Encode(metrics)
+	if err := json.NewEncoder(w).Encode(metrics); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
 }
 
 // handleStats returns database statistics
@@ -370,17 +387,21 @@ func (a *AdminServer) handleDBStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	if a.db == nil {
-		json.NewEncoder(w).Encode(map[string]string{
+		if err := json.NewEncoder(w).Encode(map[string]string{
 			"error": "database not initialized",
-		})
+		}); err != nil {
+			log.Printf("failed to encode response: %v", err)
+		}
 		return
 	}
 
 	stats, err := a.db.Stats()
 	if err != nil {
-		json.NewEncoder(w).Encode(map[string]string{
+		if encErr := json.NewEncoder(w).Encode(map[string]string{
 			"error": err.Error(),
-		})
+		}); encErr != nil {
+			log.Printf("failed to encode response: %v", encErr)
+		}
 		return
 	}
 
@@ -389,7 +410,9 @@ func (a *AdminServer) handleDBStats(w http.ResponseWriter, r *http.Request) {
 		"stats":     stats,
 	}
 
-	json.NewEncoder(w).Encode(result)
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
 }
 
 // handleSystem returns system information
@@ -415,7 +438,9 @@ func (a *AdminServer) handleSystem(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	json.NewEncoder(w).Encode(info)
+	if err := json.NewEncoder(w).Encode(info); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
 }
 
 func formatFloat(f float64) float64 {
