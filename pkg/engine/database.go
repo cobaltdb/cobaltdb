@@ -1890,16 +1890,28 @@ func (db *DB) executeDescribeQuery(ctx context.Context, stmt *query.DescribeStmt
 
 // executeExplainQuery executes EXPLAIN and returns the query plan
 func (db *DB) executeExplainQuery(ctx context.Context, stmt *query.ExplainStmt) (*Rows, error) {
-	// Create optimizer
-	optimizer := query.NewQueryOptimizer()
-
 	// Get the inner statement
 	innerStmt := stmt.Statement
 
 	var explanation string
 	switch s := innerStmt.(type) {
 	case *query.SelectStmt:
-		explanation = optimizer.Explain(s)
+		explanation = fmt.Sprintf("SELECT FROM %s", s.From.Name)
+		if s.Where != nil {
+			explanation += " WITH WHERE CLAUSE"
+		}
+		if len(s.Joins) > 0 {
+			explanation += fmt.Sprintf(" WITH %d JOIN(S)", len(s.Joins))
+		}
+		if len(s.GroupBy) > 0 {
+			explanation += " WITH GROUP BY"
+		}
+		if len(s.OrderBy) > 0 {
+			explanation += " WITH ORDER BY"
+		}
+		if s.Limit != nil {
+			explanation += " WITH LIMIT"
+		}
 	default:
 		explanation = fmt.Sprintf("EXPLAIN not supported for %T", innerStmt)
 	}

@@ -5,8 +5,6 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -235,84 +233,8 @@ func (eb *EncryptedBackend) GetSalt() []byte {
 	return eb.config.Salt
 }
 
-// GenerateSecureKey generates a random 32-byte encryption key
-func GenerateSecureKey() ([]byte, error) {
-	key := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, key); err != nil {
-		return nil, err
-	}
-	return key, nil
-}
 
-// DeriveKeyFromPassword derives a key from a password using Argon2id
-func DeriveKeyFromPassword(password string, salt []byte) ([]byte, error) {
-	if salt == nil {
-		salt = make([]byte, 16)
-		if _, err := io.ReadFull(rand.Reader, salt); err != nil {
-			return nil, fmt.Errorf("failed to generate salt: %w", err)
-		}
-	}
-	return argon2.IDKey([]byte(password), salt, 3, 64*1024, 4, 32), nil
-}
 
-// EncryptionHeader stores encryption metadata at the start of the file
-type EncryptionHeader struct {
-	Magic         [8]byte  // "COBALTEN"
-	Version       uint16   // 1
-	Algorithm     uint16   // 1 = AES-256-GCM
-	KeyDerivation uint16   // 1 = Argon2id, 2 = PBKDF2
-	Reserved      uint16   // Padding
-	Salt          [16]byte // Salt for key derivation
-	Iterations    uint32   // PBKDF2 iterations (if used)
-}
 
-// WriteHeader writes encryption header to the file
-func WriteHeader(backend Backend, header *EncryptionHeader) error {
-	buf := make([]byte, 64)
-	copy(buf[0:8], header.Magic[:])
-	binary.LittleEndian.PutUint16(buf[8:10], header.Version)
-	binary.LittleEndian.PutUint16(buf[10:12], header.Algorithm)
-	binary.LittleEndian.PutUint16(buf[12:14], header.KeyDerivation)
-	binary.LittleEndian.PutUint16(buf[14:16], header.Reserved)
-	copy(buf[16:32], header.Salt[:])
-	binary.LittleEndian.PutUint32(buf[32:36], header.Iterations)
 
-	_, err := backend.WriteAt(buf, 0)
-	return err
-}
 
-// ReadHeader reads encryption header from the file
-func ReadHeader(backend Backend) (*EncryptionHeader, error) {
-	buf := make([]byte, 64)
-	_, err := backend.ReadAt(buf, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	var header EncryptionHeader
-	copy(header.Magic[:], buf[0:8])
-	header.Version = binary.LittleEndian.Uint16(buf[8:10])
-	header.Algorithm = binary.LittleEndian.Uint16(buf[10:12])
-	header.KeyDerivation = binary.LittleEndian.Uint16(buf[12:14])
-	header.Reserved = binary.LittleEndian.Uint16(buf[14:16])
-	copy(header.Salt[:], buf[16:32])
-	header.Iterations = binary.LittleEndian.Uint32(buf[32:36])
-
-	// Verify magic
-	if subtle.ConstantTimeCompare(header.Magic[:], []byte("COBALTEN")) != 1 {
-		return nil, errors.New("invalid encryption header")
-	}
-
-	return &header, nil
-}
-
-// IsEncrypted checks if a file is encrypted by reading the magic header
-func IsEncrypted(backend Backend) bool {
-	header, err := ReadHeader(backend)
-	return err == nil && header != nil
-}
-
-// EncryptedPageSize returns the size of an encrypted page
-func EncryptedPageSize(cipher cipher.AEAD) int {
-	return PageSize + cipher.NonceSize() + cipher.Overhead()
-}

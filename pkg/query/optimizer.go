@@ -1,8 +1,6 @@
 package query
 
 import (
-	"fmt"
-	"strings"
 )
 
 // QueryOptimizer provides query optimization capabilities
@@ -231,110 +229,5 @@ func (qo *QueryOptimizer) copySelectStmt(stmt *SelectStmt) *SelectStmt {
 	return stmt
 }
 
-// UpdateStats updates statistics for a table
-func (qo *QueryOptimizer) UpdateStats(tableName string, rowCount int64, columnStats map[string]*OptimizerColStats) {
-	qo.stats.RowCount[tableName] = rowCount
-	for col, stats := range columnStats {
-		key := tableName + "." + col
-		qo.stats.ColumnStats[key] = stats
-	}
-}
 
-// UpdateIndexStats updates index statistics
-func (qo *QueryOptimizer) UpdateIndexStats(tableName string, indexName string, stats *OptimizerIdxStats) {
-	key := tableName + "." + indexName
-	qo.stats.IndexStats[key] = stats
-}
 
-// GetBestIndex returns the best index for a query
-func (qo *QueryOptimizer) GetBestIndex(tableName string, where Expression) string {
-	bestIndex := ""
-	bestSelectivity := 1.0
-
-	for key, stats := range qo.stats.IndexStats {
-		if strings.HasPrefix(key, tableName+".") {
-			if stats.Selectivity < bestSelectivity {
-				bestSelectivity = stats.Selectivity
-				bestIndex = strings.TrimPrefix(key, tableName+".")
-			}
-		}
-	}
-
-	return bestIndex
-}
-
-// EstimateRows estimates the number of rows a query will return
-func (qo *QueryOptimizer) EstimateRows(tableName string, where Expression) int64 {
-	rowCount := qo.stats.RowCount[tableName]
-	if rowCount == 0 {
-		rowCount = 1000
-	}
-
-	selectivity := qo.estimateSelectivity(tableName, where)
-	estimated := int64(float64(rowCount) * selectivity)
-	if estimated < 1 {
-		estimated = 1
-	}
-	return estimated
-}
-
-// Explain generates an execution plan explanation
-func (qo *QueryOptimizer) Explain(stmt *SelectStmt) string {
-	var explanation strings.Builder
-
-	explanation.WriteString("QUERY PLAN\n")
-	explanation.WriteString("==========\n\n")
-
-	// Explain table access
-	if stmt.From != nil {
-		explanation.WriteString(fmt.Sprintf("SCAN %s", stmt.From.Name))
-		if stmt.Where != nil && qo.canUseIndex(stmt.From.Name, stmt.Where) {
-			bestIdx := qo.GetBestIndex(stmt.From.Name, stmt.Where)
-			if bestIdx != "" {
-				explanation.WriteString(fmt.Sprintf(" USING INDEX %s", bestIdx))
-			} else {
-				explanation.WriteString(" USING INDEX")
-			}
-		} else {
-			explanation.WriteString(" FULL SCAN")
-		}
-
-		// Estimate rows
-		estimatedRows := qo.EstimateRows(stmt.From.Name, stmt.Where)
-		explanation.WriteString(fmt.Sprintf(" (estimated %d rows)\n", estimatedRows))
-	}
-
-	// Explain JOINs
-	for _, join := range stmt.Joins {
-		explanation.WriteString(fmt.Sprintf("\nJOIN %s ON ... (%s)\n",
-			join.Table.Name, TokenTypeToString(join.Type)))
-	}
-
-	// Explain GROUP BY
-	if len(stmt.GroupBy) > 0 {
-		explanation.WriteString(fmt.Sprintf("\nGROUP BY %v\n", stmt.GroupBy))
-	}
-
-	// Explain ORDER BY
-	if len(stmt.OrderBy) > 0 {
-		explanation.WriteString(fmt.Sprintf("\nORDER BY %v\n", stmt.OrderBy))
-	}
-
-	return explanation.String()
-}
-
-// TokenTypeToString converts a token type to string
-func TokenTypeToString(t TokenType) string {
-	switch t {
-	case TokenInner:
-		return "INNER JOIN"
-	case TokenLeft:
-		return "LEFT JOIN"
-	case TokenRight:
-		return "RIGHT JOIN"
-	case TokenOuter:
-		return "FULL OUTER JOIN"
-	default:
-		return "JOIN"
-	}
-}
