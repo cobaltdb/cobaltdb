@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -579,7 +580,7 @@ func (c *Catalog) GetTriggersForTable(tableName string, event string) []*query.C
 	return result
 }
 
-func (c *Catalog) executeTriggers(tableName string, event string, timing string, newRow []interface{}, oldRow []interface{}, columns []ColumnDef) error {
+func (c *Catalog) executeTriggers(ctx context.Context, tableName string, event string, timing string, newRow []interface{}, oldRow []interface{}, columns []ColumnDef) error {
 	triggers := c.GetTriggersForTable(tableName, event)
 	for _, trigger := range triggers {
 		if trigger.Time != timing {
@@ -613,7 +614,7 @@ func (c *Catalog) executeTriggers(tableName string, event string, timing string,
 			// Substitute NEW.col and OLD.col references with actual values
 			resolved := c.resolveTriggerRefs(bodyStmt, newRow, oldRow, columns)
 			// Execute the resolved statement
-			if err := c.executeTriggerStatement(resolved); err != nil {
+			if err := c.executeTriggerStatement(ctx, resolved); err != nil {
 				return fmt.Errorf("trigger %s: %w", trigger.Name, err)
 			}
 		}
@@ -621,16 +622,16 @@ func (c *Catalog) executeTriggers(tableName string, event string, timing string,
 	return nil
 }
 
-func (c *Catalog) executeTriggerStatement(stmt query.Statement) error {
+func (c *Catalog) executeTriggerStatement(ctx context.Context, stmt query.Statement) error {
 	switch s := stmt.(type) {
 	case *query.InsertStmt:
-		_, _, err := c.insertLocked(s, nil)
+		_, _, err := c.insertLocked(ctx, s, nil)
 		return err
 	case *query.UpdateStmt:
-		_, _, err := c.updateLocked(s, nil)
+		_, _, err := c.updateLocked(ctx, s, nil)
 		return err
 	case *query.DeleteStmt:
-		_, _, err := c.deleteLocked(s, nil)
+		_, _, err := c.deleteLocked(ctx, s, nil)
 		return err
 	default:
 		return fmt.Errorf("unsupported trigger statement type: %T", stmt)

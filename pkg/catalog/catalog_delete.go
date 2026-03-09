@@ -7,13 +7,13 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
-func (c *Catalog) Delete(stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
+func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.deleteLocked(stmt, args)
+	return c.deleteLocked(ctx, stmt, args)
 }
 
-func (c *Catalog) deleteLocked(stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
+func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
 	table, err := c.getTableLocked(stmt.Table)
 	if err != nil {
 		return 0, 0, err
@@ -26,7 +26,7 @@ func (c *Catalog) deleteLocked(stmt *query.DeleteStmt, args []interface{}) (int6
 
 	// Handle DELETE with USING (JOIN)
 	if len(stmt.Using) > 0 {
-		return c.deleteWithUsingLocked(stmt, args)
+		return c.deleteWithUsingLocked(ctx, stmt, args)
 	}
 
 	rowsAffected := int64(0)
@@ -88,7 +88,7 @@ func (c *Catalog) deleteLocked(stmt *query.DeleteStmt, args []interface{}) (int6
 				pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
 			}
 			if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
-				if fkErr := fke.OnDelete(context.Background(), stmt.Table, row[pkColIdx]); fkErr != nil {
+				if fkErr := fke.OnDelete(ctx, stmt.Table, row[pkColIdx]); fkErr != nil {
 					return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
 				}
 			}
@@ -168,7 +168,7 @@ func (c *Catalog) deleteLocked(stmt *query.DeleteStmt, args []interface{}) (int6
 		}
 
 		// Execute AFTER DELETE trigger per-row
-		_ = c.executeTriggers(stmt.Table, "DELETE", "AFTER", nil, row, table.Columns)
+		_ = c.executeTriggers(ctx, stmt.Table, "DELETE", "AFTER", nil, row, table.Columns)
 	}
 
 	// Invalidate query cache for the affected table
@@ -177,7 +177,7 @@ func (c *Catalog) deleteLocked(stmt *query.DeleteStmt, args []interface{}) (int6
 	return 0, rowsAffected, nil
 }
 
-func (c *Catalog) DeleteRow(tableName string, pkValue interface{}) error {
+func (c *Catalog) DeleteRow(ctx context.Context, tableName string, pkValue interface{}) error {
 	tree, exists := c.tableTrees[tableName]
 	if !exists {
 		return fmt.Errorf("table %s has no data", tableName)
@@ -262,7 +262,7 @@ func (c *Catalog) DeleteRow(tableName string, pkValue interface{}) error {
 		if pkColIdx >= 0 {
 			oldRow, decErr := decodeRow(oldData, len(table.Columns))
 			if decErr == nil && pkColIdx < len(oldRow) && oldRow[pkColIdx] != nil {
-				if fkErr := fke.OnDelete(context.Background(), tableName, oldRow[pkColIdx]); fkErr != nil {
+				if fkErr := fke.OnDelete(ctx, tableName, oldRow[pkColIdx]); fkErr != nil {
 					return fmt.Errorf("cascade delete: %w", fkErr)
 				}
 			}

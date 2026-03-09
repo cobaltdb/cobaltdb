@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/query"
@@ -395,6 +396,7 @@ func TestCollectColumnStatsErrorHandling(t *testing.T) {
 
 // TestCollectColumnStatsWithData tests collectColumnStats with actual data
 func TestCollectColumnStatsWithData(t *testing.T) {
+	ctx := context.Background()
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(1024, backend)
 	defer pool.Close()
@@ -425,7 +427,7 @@ func TestCollectColumnStatsWithData(t *testing.T) {
 	}
 
 	for _, d := range data {
-		_, _, err := cat	.Insert(&query.InsertStmt{
+		_, _, err := cat.Insert(ctx, &query.InsertStmt{
 			Table:   "test_col_stats", Columns: []string{"id", "name"},
 			Values: [][]query.Expression{
 				{&query.NumberLiteral{Value: float64(d.id)}, &query.StringLiteral{Value: d.name}},

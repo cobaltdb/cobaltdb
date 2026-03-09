@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 func (c *Catalog) CreateJSONIndex(name, tableName, column, path, dataType string) error {
@@ -88,15 +89,29 @@ func (c *Catalog) buildJSONIndex(idx *JSONIndexDef) error {
 }
 
 func (c *Catalog) extractJSONValue(row []interface{}, column, path string) interface{} {
-	// Simple implementation: find JSON column and extract path
-	// TODO: Implement full JSON path resolution
+	// Enhanced JSON path resolution supporting nested paths like $.key1.key2.key3
 	for _, val := range row {
 		if jsonMap, ok := val.(map[string]interface{}); ok {
-			// Simple $.key path
+			// Handle $.key or $.key1.key2.key3 paths
 			if len(path) > 2 && path[0] == '$' && path[1] == '.' {
-				key := path[2:]
-				if v, exists := jsonMap[key]; exists {
-					return v
+				keys := strings.Split(path[2:], ".")
+				var current interface{} = jsonMap
+				for i, key := range keys {
+					switch curr := current.(type) {
+					case map[string]interface{}:
+						current = curr[key]
+						if current == nil && i < len(keys)-1 {
+							break // Path doesn't exist
+						}
+					default:
+						// Can't traverse further if not a map
+						if i < len(keys)-1 {
+							current = nil
+						}
+					}
+				}
+				if current != nil {
+					return current
 				}
 			}
 		}

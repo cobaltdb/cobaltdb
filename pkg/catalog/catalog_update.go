@@ -8,13 +8,13 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
-func (c *Catalog) Update(stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.updateLocked(stmt, args)
+	return c.updateLocked(ctx, stmt, args)
 }
 
-func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
 	table, err := c.getTableLocked(stmt.Table)
 	if err != nil {
 		return 0, 0, err
@@ -27,7 +27,7 @@ func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int6
 
 	// Handle UPDATE with JOIN
 	if stmt.From != nil || len(stmt.Joins) > 0 {
-		return c.updateWithJoinLocked(stmt, args)
+		return c.updateWithJoinLocked(ctx, stmt, args)
 	}
 
 	rowsAffected := int64(0)
@@ -264,7 +264,7 @@ func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int6
 
 		// Enforce foreign key ON UPDATE actions (CASCADE, SET NULL, RESTRICT)
 		if pkChanged && pkColIdx >= 0 {
-			if fkErr := fke.OnUpdate(context.Background(), stmt.Table, entry.oldRow[pkColIdx], entry.newRow[pkColIdx]); fkErr != nil {
+			if fkErr := fke.OnUpdate(ctx, stmt.Table, entry.oldRow[pkColIdx], entry.newRow[pkColIdx]); fkErr != nil {
 				return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
 			}
 		}
@@ -412,7 +412,7 @@ func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int6
 
 	// Execute AFTER UPDATE triggers (per-row)
 	for _, entry := range entries {
-		_ = c.executeTriggers(stmt.Table, "UPDATE", "AFTER", entry.newRow, entry.oldRow, table.Columns)
+		_ = c.executeTriggers(ctx, stmt.Table, "UPDATE", "AFTER", entry.newRow, entry.oldRow, table.Columns)
 	}
 
 	// Invalidate query cache for the affected table
@@ -421,7 +421,7 @@ func (c *Catalog) updateLocked(stmt *query.UpdateStmt, args []interface{}) (int6
 	return 0, rowsAffected, nil
 }
 
-func (c *Catalog) updateWithJoinLocked(stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
 	targetTable, err := c.getTableLocked(stmt.Table)
 	if err != nil {
 		return 0, 0, err
@@ -565,7 +565,7 @@ func (c *Catalog) updateWithJoinLocked(stmt *query.UpdateStmt, args []interface{
 	return int64(len(entries)), rowsAffected, nil
 }
 
-func (c *Catalog) deleteWithUsingLocked(stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
+func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
 	targetTable, err := c.getTableLocked(stmt.Table)
 	if err != nil {
 		return 0, 0, err
@@ -650,7 +650,7 @@ func (c *Catalog) deleteWithUsingLocked(stmt *query.DeleteStmt, args []interface
 			pkColIdx = targetTable.GetColumnIndex(targetTable.PrimaryKey[0])
 		}
 		if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
-			if fkErr := fke.OnDelete(context.Background(), stmt.Table, row[pkColIdx]); fkErr != nil {
+			if fkErr := fke.OnDelete(ctx, stmt.Table, row[pkColIdx]); fkErr != nil {
 				return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
 			}
 		}

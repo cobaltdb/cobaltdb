@@ -1088,7 +1088,7 @@ func (db *DB) executeCreateTable(ctx context.Context, stmt *query.CreateTableStm
 
 // executeInsert executes INSERT
 func (db *DB) executeInsert(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (Result, error) {
-	lastInsertID, rowsAffected, err := db.catalog.Insert(stmt, args)
+	lastInsertID, rowsAffected, err := db.catalog.Insert(ctx, stmt, args)
 	if err != nil {
 		return Result{}, err
 	}
@@ -1097,7 +1097,7 @@ func (db *DB) executeInsert(ctx context.Context, stmt *query.InsertStmt, args []
 
 // executeUpdate executes UPDATE
 func (db *DB) executeUpdate(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (Result, error) {
-	lastInsertID, rowsAffected, err := db.catalog.Update(stmt, args)
+	lastInsertID, rowsAffected, err := db.catalog.Update(ctx, stmt, args)
 	if err != nil {
 		return Result{}, err
 	}
@@ -1106,7 +1106,7 @@ func (db *DB) executeUpdate(ctx context.Context, stmt *query.UpdateStmt, args []
 
 // executeDelete executes DELETE
 func (db *DB) executeDelete(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (Result, error) {
-	lastInsertID, rowsAffected, err := db.catalog.Delete(stmt, args)
+	lastInsertID, rowsAffected, err := db.catalog.Delete(ctx, stmt, args)
 	if err != nil {
 		return Result{}, err
 	}

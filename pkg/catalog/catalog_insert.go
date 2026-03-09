@@ -1,19 +1,20 @@
 package catalog
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
-func (c *Catalog) Insert(stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
+func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.insertLocked(stmt, args)
+	return c.insertLocked(ctx, stmt, args)
 }
 
-func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
+func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
 	table, err := c.getTableLocked(stmt.Table)
 	if err != nil {
 		return 0, 0, err
@@ -602,7 +603,7 @@ func (c *Catalog) insertLocked(stmt *query.InsertStmt, args []interface{}) (int6
 
 	// Execute AFTER INSERT triggers for each inserted row
 	for _, insertedRow := range insertedRows {
-		_ = c.executeTriggers(stmt.Table, "INSERT", "AFTER", insertedRow, nil, table.Columns)
+		_ = c.executeTriggers(ctx, stmt.Table, "INSERT", "AFTER", insertedRow, nil, table.Columns)
 	}
 
 	// Invalidate query cache for the affected table

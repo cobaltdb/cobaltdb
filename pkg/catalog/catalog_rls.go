@@ -5,7 +5,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 )
 
-func (c *Catalog) ApplyRLSFilter(tableName string, columns []string, rows [][]interface{}, user string, roles []string) ([]string, [][]interface{}, error) {
+func (c *Catalog) ApplyRLSFilter(ctx context.Context, tableName string, columns []string, rows [][]interface{}, user string, roles []string) ([]string, [][]interface{}, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -29,8 +29,8 @@ func (c *Catalog) ApplyRLSFilter(tableName string, columns []string, rows [][]in
 		mapRows[i] = mapRow
 	}
 
-	// Apply RLS filtering
-	filtered, err := c.rlsManager.FilterRows(context.Background(), tableName, security.PolicySelect, mapRows, user, roles)
+	// Apply RLS filtering - use provided context for proper user/tenant propagation
+	filtered, err := c.rlsManager.FilterRows(ctx, tableName, security.PolicySelect, mapRows, user, roles)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -48,7 +48,7 @@ func (c *Catalog) ApplyRLSFilter(tableName string, columns []string, rows [][]in
 	return columns, filteredRows, nil
 }
 
-func (c *Catalog) CheckRLSForInsert(tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
+func (c *Catalog) CheckRLSForInsert(ctx context.Context, tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -60,10 +60,10 @@ func (c *Catalog) CheckRLSForInsert(tableName string, row map[string]interface{}
 		return true, nil
 	}
 
-	return c.rlsManager.CheckAccess(context.Background(), tableName, security.PolicyInsert, row, user, roles)
+	return c.rlsManager.CheckAccess(ctx, tableName, security.PolicyInsert, row, user, roles)
 }
 
-func (c *Catalog) CheckRLSForUpdate(tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
+func (c *Catalog) CheckRLSForUpdate(ctx context.Context, tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -75,10 +75,10 @@ func (c *Catalog) CheckRLSForUpdate(tableName string, row map[string]interface{}
 		return true, nil
 	}
 
-	return c.rlsManager.CheckAccess(context.Background(), tableName, security.PolicyUpdate, row, user, roles)
+	return c.rlsManager.CheckAccess(ctx, tableName, security.PolicyUpdate, row, user, roles)
 }
 
-func (c *Catalog) CheckRLSForDelete(tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
+func (c *Catalog) CheckRLSForDelete(ctx context.Context, tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -90,5 +90,5 @@ func (c *Catalog) CheckRLSForDelete(tableName string, row map[string]interface{}
 		return true, nil
 	}
 
-	return c.rlsManager.CheckAccess(context.Background(), tableName, security.PolicyDelete, row, user, roles)
+	return c.rlsManager.CheckAccess(ctx, tableName, security.PolicyDelete, row, user, roles)
 }

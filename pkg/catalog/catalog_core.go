@@ -349,12 +349,15 @@ func (qc *QueryCache) Stats() (hits, misses int64, size int) {
 }
 
 func generateQueryKey(sql string, args []interface{}) string {
-	// Simple key generation: SQL + args
-	key := sql
+	// Use strings.Builder for efficient concatenation
+	var builder strings.Builder
+	builder.Grow(len(sql) + len(args)*16) // Pre-allocate estimated size
+	builder.WriteString(sql)
 	for _, arg := range args {
-		key += fmt.Sprintf("|%v", arg)
+		builder.WriteByte('|')
+		fmt.Fprint(&builder, arg)
 	}
-	return key
+	return builder.String()
 }
 
 func isCacheableQuery(stmt *query.SelectStmt) bool {
