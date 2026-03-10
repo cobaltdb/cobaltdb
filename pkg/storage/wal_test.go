@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -239,5 +240,27 @@ func TestWALCloseTwice(t *testing.T) {
 	err = wal.Close()
 	if err != nil {
 		t.Fatalf("Failed to close WAL twice: %v", err)
+	}
+}
+
+func TestWALApplyRecordBoundsCheck(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(4, backend)
+	defer pool.Close()
+	if _, err := backend.WriteAt(make([]byte, PageSize), int64(PageSize)); err != nil {
+		t.Fatalf("failed to prime test page: %v", err)
+	}
+
+	wal := &WAL{}
+	record := &WALRecord{
+		Type:   WALUpdate,
+		PageID: 1,
+		Offset: uint16(PageSize - 2),
+		Data:   []byte("toolong"),
+	}
+
+	err := wal.applyRecord(pool, record)
+	if !errors.Is(err, ErrWALCorrupted) {
+		t.Fatalf("expected ErrWALCorrupted, got %v", err)
 	}
 }

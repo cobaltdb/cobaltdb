@@ -14,39 +14,34 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/server"
 )
 
-
 // generateRandomPassword generates a secure random password
-func generateRandomPassword(length int) string {
+func generateRandomPassword(length int) (string, error) {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
 	b := make([]byte, length)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback to time-based if crypto/rand fails
-		for i := range b {
-			b[i] = charset[time.Now().UnixNano()%int64(len(charset))]
-		}
-	} else {
-		for i := range b {
-			b[i] = charset[int(b[i])%len(charset)]
-		}
+		return "", fmt.Errorf("failed to generate secure random password: %w", err)
 	}
-	return string(b)
+	for i := range b {
+		b[i] = charset[int(b[i])%len(charset)]
+	}
+	return string(b), nil
 }
 
 func main() {
 	var (
-		dataDir      = flag.String("data", "./data", "data directory")
-		address      = flag.String("addr", ":4200", "wire protocol address")
-		mysqlAddr    = flag.String("mysql-addr", ":3307", "MySQL protocol address")
-		enableMySQL  = flag.Bool("mysql", true, "enable MySQL protocol")
-		inMemory     = flag.Bool("memory", false, "use in-memory storage")
-		cacheSize    = flag.Int("cache", 1024, "cache size in pages")
-		authEnabled  = flag.Bool("auth", false, "enable authentication")
-		adminUser    = flag.String("admin-user", "admin", "default admin username")
-		adminPass    = flag.String("admin-pass", "", "admin password (required if auth enabled, random generated if not set)")
-		tlsEnabled   = flag.Bool("tls", false, "enable TLS")
-		tlsCert      = flag.String("tls-cert", "", "TLS certificate file")
-		tlsKey       = flag.String("tls-key", "", "TLS key file")
-		tlsGenCert   = flag.Bool("tls-gen-cert", false, "auto-generate self-signed TLS certificate")
+		dataDir     = flag.String("data", "./data", "data directory")
+		address     = flag.String("addr", ":4200", "wire protocol address")
+		mysqlAddr   = flag.String("mysql-addr", ":3307", "MySQL protocol address")
+		enableMySQL = flag.Bool("mysql", true, "enable MySQL protocol")
+		inMemory    = flag.Bool("memory", false, "use in-memory storage")
+		cacheSize   = flag.Int("cache", 1024, "cache size in pages")
+		authEnabled = flag.Bool("auth", false, "enable authentication")
+		adminUser   = flag.String("admin-user", "admin", "default admin username")
+		adminPass   = flag.String("admin-pass", "", "admin password (required if auth enabled, random generated if not set)")
+		tlsEnabled  = flag.Bool("tls", false, "enable TLS")
+		tlsCert     = flag.String("tls-cert", "", "TLS certificate file")
+		tlsKey      = flag.String("tls-key", "", "TLS key file")
+		tlsGenCert  = flag.Bool("tls-gen-cert", false, "auto-generate self-signed TLS certificate")
 
 		// Production features
 		healthAddr           = flag.String("health-addr", ":8420", "health check HTTP address")
@@ -64,9 +59,12 @@ func main() {
 			log.Fatal("ERROR: Admin password must be set when auth is enabled (use -admin-pass flag or COBALTDB_ADMIN_PASSWORD env var)")
 		}
 	} else if *adminPass == "" {
-		// Generate random password when auth is disabled and no password set
-		*adminPass = generateRandomPassword(16)
-		log.Printf("[INFO] Generated random admin password: %s", *adminPass)
+		generated, err := generateRandomPassword(16)
+		if err != nil {
+			log.Fatalf("Failed to generate random admin password: %v", err)
+		}
+		*adminPass = generated
+		log.Printf("[INFO] Generated random admin password (redacted)")
 	}
 
 	// Open database
@@ -81,7 +79,7 @@ func main() {
 		dbPath = ":memory:"
 	} else {
 		// Ensure data directory exists
-		if err := os.MkdirAll(*dataDir, 0755); err != nil {
+		if err := os.MkdirAll(*dataDir, 0750); err != nil {
 			log.Fatalf("Failed to create data directory: %v", err)
 		}
 		dbPath = fmt.Sprintf("%s/cobalt.cb", *dataDir)
@@ -267,8 +265,7 @@ func (m *MySQLServerComponent) Start(ctx context.Context) error {
 }
 
 func (m *MySQLServerComponent) Stop(ctx context.Context) error {
-	m.server.Close()
-	return nil
+	return m.server.Close()
 }
 
 func (m *MySQLServerComponent) Health() server.HealthStatus {
@@ -277,4 +274,3 @@ func (m *MySQLServerComponent) Health() server.HealthStatus {
 		Message: "MySQL protocol server running",
 	}
 }
-

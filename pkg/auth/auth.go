@@ -118,7 +118,9 @@ func (a *Authenticator) IsEnabled() bool {
 
 // mysqlNativeHash computes SHA1(SHA1(password)) for MySQL native_password auth (FIX-004).
 func mysqlNativeHash(password string) []byte {
+	// #nosec G401 -- Required for MySQL native_password protocol compatibility.
 	h1 := sha1.Sum([]byte(password))
+	// #nosec G401 -- Required for MySQL native_password protocol compatibility.
 	h2 := sha1.Sum(h1[:])
 	return h2[:]
 }

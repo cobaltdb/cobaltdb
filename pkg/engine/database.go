@@ -48,8 +48,8 @@ type DB struct {
 	// Prepared statement cache for performance (LRU via doubly-linked list)
 	stmtCache map[string]*cachedStmt
 	stmtMu    sync.RWMutex
-	stmtLRU   *stmtLRUList // O(1) eviction
-	nextTxnID      atomic.Uint64 // Auto-increment transaction ID counter
+	stmtLRU   *stmtLRUList  // O(1) eviction
+	nextTxnID atomic.Uint64 // Auto-increment transaction ID counter
 	// Metrics collector
 	metrics *metrics.Collector
 	// Connection management
@@ -85,8 +85,8 @@ type cachedStmt struct {
 	stmt     query.Statement
 	lastUsed int64 // Unix timestamp for LRU
 	useCount uint64
-	sql      string         // key for reverse lookup
-	elem     *stmtLRUEntry  // pointer to LRU list element
+	sql      string        // key for reverse lookup
+	elem     *stmtLRUEntry // pointer to LRU list element
 }
 
 // stmtLRUEntry is a node in the doubly-linked LRU list
@@ -212,7 +212,7 @@ func Open(path string, opts *Options) (*DB, error) {
 		// Ensure directory exists
 		dir := filepath.Dir(path)
 		if dir != "." && dir != "/" {
-			if err := os.MkdirAll(dir, 0755); err != nil {
+			if err := os.MkdirAll(dir, 0750); err != nil {
 				return nil, fmt.Errorf("failed to create directory: %w", err)
 			}
 		}
@@ -2112,14 +2112,16 @@ func (tx *Tx) Commit() error {
 	// Flush table B+Trees to buffer pool first
 	if err := tx.db.catalog.FlushTableTrees(); err != nil {
 		// Rollback catalog transaction to prevent it from staying active forever
-		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil { /* already have primary error */ }
+		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil { /* already have primary error */
+		}
 		return fmt.Errorf("failed to flush tables: %w", err)
 	}
 
 	// Commit in catalog first (writes commit record to WAL)
 	if err := tx.db.catalog.CommitTransaction(); err != nil {
 		// Rollback catalog transaction to prevent it from staying active forever
-		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil { /* already have primary error */ }
+		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil { /* already have primary error */
+		}
 		return fmt.Errorf("commit transaction failed: %w", err)
 	}
 

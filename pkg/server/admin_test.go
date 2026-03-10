@@ -11,6 +11,20 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
 
+func doAuthGet(t *testing.T, token, url string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("Failed to build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to execute request: %v", err)
+	}
+	return resp
+}
+
 func TestAdminServerHealth(t *testing.T) {
 	// Create in-memory database
 	db, err := engine.Open(":memory:", nil)
@@ -21,6 +35,7 @@ func TestAdminServerHealth(t *testing.T) {
 
 	// Create admin server
 	admin := NewAdminServer(db, "127.0.0.1:0")
+	admin.SetAuthToken("test-token")
 	if err := admin.Start(); err != nil {
 		t.Fatalf("Failed to start admin server: %v", err)
 	}
@@ -30,10 +45,7 @@ func TestAdminServerHealth(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Test health endpoint
-	resp, err := http.Get("http://" + admin.Addr() + "/health")
-	if err != nil {
-		t.Fatalf("Failed to get health: %v", err)
-	}
+	resp := doAuthGet(t, "test-token", "http://"+admin.Addr()+"/health")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -59,6 +71,7 @@ func TestAdminServerReady(t *testing.T) {
 	defer db.Close()
 
 	admin := NewAdminServer(db, "127.0.0.1:0")
+	admin.SetAuthToken("test-token")
 	if err := admin.Start(); err != nil {
 		t.Fatalf("Failed to start admin server: %v", err)
 	}
@@ -66,10 +79,7 @@ func TestAdminServerReady(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	resp, err := http.Get("http://" + admin.Addr() + "/ready")
-	if err != nil {
-		t.Fatalf("Failed to get ready: %v", err)
-	}
+	resp := doAuthGet(t, "test-token", "http://"+admin.Addr()+"/ready")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -91,6 +101,7 @@ func TestAdminServerMetricsJSON(t *testing.T) {
 	_, _ = db.Query(ctx, "SELECT * FROM test")
 
 	admin := NewAdminServer(db, "127.0.0.1:0")
+	admin.SetAuthToken("test-token")
 	if err := admin.Start(); err != nil {
 		t.Fatalf("Failed to start admin server: %v", err)
 	}
@@ -98,10 +109,7 @@ func TestAdminServerMetricsJSON(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	resp, err := http.Get("http://" + admin.Addr() + "/metrics/json")
-	if err != nil {
-		t.Fatalf("Failed to get metrics: %v", err)
-	}
+	resp := doAuthGet(t, "test-token", "http://"+admin.Addr()+"/metrics/json")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -131,6 +139,7 @@ func TestAdminServerMetricsPrometheus(t *testing.T) {
 	defer db.Close()
 
 	admin := NewAdminServer(db, "127.0.0.1:0")
+	admin.SetAuthToken("test-token")
 	if err := admin.Start(); err != nil {
 		t.Fatalf("Failed to start admin server: %v", err)
 	}
@@ -138,10 +147,7 @@ func TestAdminServerMetricsPrometheus(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	resp, err := http.Get("http://" + admin.Addr() + "/metrics/prometheus")
-	if err != nil {
-		t.Fatalf("Failed to get prometheus metrics: %v", err)
-	}
+	resp := doAuthGet(t, "test-token", "http://"+admin.Addr()+"/metrics/prometheus")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -181,6 +187,7 @@ func TestAdminServerDBStats(t *testing.T) {
 	_, _ = db.Exec(ctx, "CREATE TABLE test2 (id INTEGER PRIMARY KEY)")
 
 	admin := NewAdminServer(db, "127.0.0.1:0")
+	admin.SetAuthToken("test-token")
 	if err := admin.Start(); err != nil {
 		t.Fatalf("Failed to start admin server: %v", err)
 	}
@@ -188,10 +195,7 @@ func TestAdminServerDBStats(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	resp, err := http.Get("http://" + admin.Addr() + "/stats")
-	if err != nil {
-		t.Fatalf("Failed to get stats: %v", err)
-	}
+	resp := doAuthGet(t, "test-token", "http://"+admin.Addr()+"/stats")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -217,6 +221,7 @@ func TestAdminServerSystem(t *testing.T) {
 	defer db.Close()
 
 	admin := NewAdminServer(db, "127.0.0.1:0")
+	admin.SetAuthToken("test-token")
 	if err := admin.Start(); err != nil {
 		t.Fatalf("Failed to start admin server: %v", err)
 	}
@@ -224,10 +229,7 @@ func TestAdminServerSystem(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	resp, err := http.Get("http://" + admin.Addr() + "/system")
-	if err != nil {
-		t.Fatalf("Failed to get system info: %v", err)
-	}
+	resp := doAuthGet(t, "test-token", "http://"+admin.Addr()+"/system")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -277,7 +279,7 @@ func TestAdminServerAuth(t *testing.T) {
 	}
 
 	// Request with correct auth should succeed
-	req, _ := http.NewRequest("GET", "http://"+admin.Addr()+"/health", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://"+admin.Addr()+"/health", nil)
 	req.Header.Set("Authorization", "Bearer secret-token")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -298,6 +300,7 @@ func TestAdminServerCORS(t *testing.T) {
 	defer db.Close()
 
 	admin := NewAdminServer(db, "127.0.0.1:0")
+	admin.SetAuthToken("test-token")
 	if err := admin.Start(); err != nil {
 		t.Fatalf("Failed to start admin server: %v", err)
 	}
@@ -319,6 +322,32 @@ func TestAdminServerCORS(t *testing.T) {
 	// Check CORS headers - wildcard origin removed for security, but methods header should exist
 	if resp.Header.Get("Access-Control-Allow-Methods") == "" {
 		t.Error("Missing CORS Allow-Methods header")
+	}
+}
+
+func TestAdminServerDisabledWithoutToken(t *testing.T) {
+	db, err := engine.Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	admin := NewAdminServer(db, "127.0.0.1:0")
+	if err := admin.Start(); err != nil {
+		t.Fatalf("Failed to start admin server: %v", err)
+	}
+	defer admin.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	resp, err := http.Get("http://" + admin.Addr() + "/health")
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when admin token is not configured, got %d", resp.StatusCode)
 	}
 }
 

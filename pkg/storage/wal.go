@@ -50,6 +50,7 @@ type WAL struct {
 
 // OpenWAL opens or creates a WAL file
 func OpenWAL(path string) (*WAL, error) {
+	// #nosec G304 -- Path is provided by trusted application configuration.
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open WAL file: %w", err)
@@ -63,7 +64,7 @@ func OpenWAL(path string) (*WAL, error) {
 
 	// Read existing records to find current LSN
 	if err := wal.readLSN(); err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, err
 	}
 
@@ -145,9 +146,13 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error
 
 	// Calculate CRC from header bytes + data directly (avoids re-encode allocation)
 	crcHash := crc32.NewIEEE()
-	crcHash.Write(header[:17])
+	if _, err := crcHash.Write(header[:17]); err != nil {
+		return nil, err
+	}
 	if len(record.Data) > 0 {
-		crcHash.Write(record.Data)
+		if _, err := crcHash.Write(record.Data); err != nil {
+			return nil, err
+		}
 	}
 	calculatedCRC := crcHash.Sum32()
 
@@ -364,9 +369,13 @@ func (w *WAL) applyRecord(bp *BufferPool, record *WALRecord) error {
 	defer bp.Unpin(page)
 
 	// Apply the change
-	if record.Data != nil && len(record.Data) > 0 {
-		offset := record.Offset
-		copy(page.data[offset:], record.Data)
+	if len(record.Data) > 0 {
+		offset := int(record.Offset)
+		end := offset + len(record.Data)
+		if offset < 0 || end > len(page.data) {
+			return ErrWALCorrupted
+		}
+		copy(page.data[offset:end], record.Data)
 	}
 
 	page.SetDirty(true)

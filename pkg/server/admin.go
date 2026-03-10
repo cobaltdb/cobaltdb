@@ -32,7 +32,7 @@ type AdminServer struct {
 // NewAdminServer creates a new admin server
 func NewAdminServer(db *engine.DB, addr string) *AdminServer {
 	if addr == "" {
-		addr = ":8420" // Default admin port
+		addr = "127.0.0.1:8420" // Secure default: bind admin API to loopback only
 	}
 
 	return &AdminServer{
@@ -144,34 +144,37 @@ func (a *AdminServer) authMiddleware(next http.Handler) http.Handler {
 		a.mu.RUnlock()
 
 		// If auth token is set, require it
-		if token != "" {
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-
-			// Support "Bearer <token>" or just "<token>"
-			parts := strings.SplitN(authHeader, " ", 2)
-			var providedToken string
-			if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-				providedToken = parts[1]
-			} else {
-				providedToken = authHeader
-			}
-
-			if subtle.ConstantTimeCompare([]byte(providedToken), []byte(token)) != 1 {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
-
 		// CORS headers - restrict to same origin; configure explicitly for cross-origin access
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if token == "" {
+			http.Error(w, "admin API disabled until auth token configured", http.StatusServiceUnavailable)
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Support "Bearer <token>" or just "<token>"
+		parts := strings.SplitN(authHeader, " ", 2)
+		var providedToken string
+		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+			providedToken = parts[1]
+		} else {
+			providedToken = authHeader
+		}
+
+		if subtle.ConstantTimeCompare([]byte(providedToken), []byte(token)) != 1 {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -236,13 +239,17 @@ func (a *AdminServer) handlePrometheusMetrics(w http.ResponseWriter, r *http.Req
 	output.WriteString("# Generated: " + time.Now().UTC().Format(time.RFC3339) + "\n\n")
 
 	if a.db == nil {
-		w.Write([]byte(output.String()))
+		if _, err := w.Write([]byte(output.String())); err != nil {
+			log.Printf("failed to write response: %v", err)
+		}
 		return
 	}
 
 	collector := a.db.GetMetricsCollector()
 	if collector == nil {
-		w.Write([]byte(output.String()))
+		if _, err := w.Write([]byte(output.String())); err != nil {
+			log.Printf("failed to write response: %v", err)
+		}
 		return
 	}
 
@@ -321,7 +328,9 @@ func (a *AdminServer) handlePrometheusMetrics(w http.ResponseWriter, r *http.Req
 	output.WriteString("# TYPE cobaltdb_buffer_pool_misses counter\n")
 	output.WriteString(fmt.Sprintf("cobaltdb_buffer_pool_misses %d\n\n", collector.BufferPoolMisses.Get()))
 
-	w.Write([]byte(output.String()))
+	if _, err := w.Write([]byte(output.String())); err != nil {
+		log.Printf("failed to write response: %v", err)
+	}
 }
 
 // handleJSONMetrics returns metrics in JSON format

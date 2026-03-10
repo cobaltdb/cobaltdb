@@ -44,6 +44,10 @@ type EncryptedBackend struct {
 
 // NewEncryptedBackend creates a new encrypted backend wrapper
 func NewEncryptedBackend(backend Backend, config *EncryptionConfig) (*EncryptedBackend, error) {
+	if config == nil {
+		return nil, errors.New("encryption config is nil")
+	}
+
 	if !config.Enabled {
 		return &EncryptedBackend{backend: backend, config: config}, nil
 	}
@@ -232,9 +236,3 @@ func (eb *EncryptedBackend) GetSalt() []byte {
 	defer eb.mu.RUnlock()
 	return eb.config.Salt
 }
-
-
-
-
-
-

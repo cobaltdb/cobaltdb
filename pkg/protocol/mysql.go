@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- MySQL native password protocol requires SHA-1 compatibility.
 	"crypto/subtle"
 	"encoding/binary"
 	"fmt"
@@ -12,6 +12,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/auth"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
@@ -151,14 +152,14 @@ func (s *MySQLServer) Close() error {
 
 	// Close all active client connections
 	for id, conn := range s.clients {
-		conn.Close()
+		_ = conn.Close()
 		delete(s.clients, id)
 	}
 	s.mu.Unlock()
 
 	// Wait for all client handlers to finish
 	if s.listener != nil {
-		s.listener.Close()
+		_ = s.listener.Close()
 	}
 	s.wg.Wait()
 	return nil
@@ -202,23 +203,29 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 	s.clients[connID] = conn
 	s.mu.Unlock()
 
+	var client *MySQLClient
+
 	defer func() {
 		if r := recover(); r != nil {
 			// Prevent a panicking client from crashing the server
 			_ = r
 		}
-		conn.Close()
+		if client.cancel != nil {
+			client.cancel()
+		}
+		_ = conn.Close()
 		s.mu.Lock()
 		delete(s.clients, connID)
 		s.mu.Unlock()
 	}()
 
-	client := &MySQLClient{
+	client = &MySQLClient{
 		conn:   conn,
 		reader: bufio.NewReader(conn),
 		server: s,
 		connID: connID,
 	}
+	client.ctx, client.cancel = context.WithCancel(context.Background())
 
 	// Send handshake
 	if err := client.sendHandshake(); err != nil {
@@ -234,11 +241,15 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 	if s.auth != nil && s.auth.IsEnabled() {
 		storedHash, err := s.auth.GetMySQLNativeHash(client.username)
 		if err != nil {
-			client.sendErrorPacket(1045, fmt.Sprintf("Access denied for user '%s'", client.username))
+			if sendErr := client.sendErrorPacket(1045, fmt.Sprintf("Access denied for user '%s'", client.username)); sendErr != nil {
+				_ = sendErr
+			}
 			return
 		}
 		if !client.verifyMySQLNativeAuth(storedHash) {
-			client.sendErrorPacket(1045, fmt.Sprintf("Access denied for user '%s'", client.username))
+			if sendErr := client.sendErrorPacket(1045, fmt.Sprintf("Access denied for user '%s'", client.username)); sendErr != nil {
+				_ = sendErr
+			}
 			return
 		}
 	}
@@ -262,6 +273,8 @@ type MySQLClient struct {
 	reader       *bufio.Reader
 	server       *MySQLServer
 	connID       uint32
+	ctx          context.Context
+	cancel       context.CancelFunc
 	username     string
 	database     string
 	authResponse []byte // raw auth response from client handshake
@@ -416,6 +429,7 @@ func (c *MySQLClient) verifyMySQLNativeAuth(storedHash []byte) bool {
 	}
 
 	// Compute SHA1(scramble + storedHash)
+	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
 	h := sha1.New()
 	h.Write(c.scramble)
 	h.Write(storedHash)
@@ -428,6 +442,7 @@ func (c *MySQLClient) verifyMySQLNativeAuth(storedHash []byte) bool {
 	}
 
 	// SHA1(candidate) should equal storedHash
+	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
 	check := sha1.Sum(candidate)
 	return subtle.ConstantTimeCompare(check[:], storedHash) == 1
 }
@@ -492,7 +507,12 @@ func (c *MySQLClient) handleQuery(sql string) error {
 		return c.handleSelectVariable(sql)
 	}
 
-	ctx := context.Background()
+	baseCtx := c.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+	defer cancel()
 
 	// Try to execute as query first (SELECT, SHOW, DESCRIBE)
 	rows, err := c.server.db.Query(ctx, sql)
@@ -507,7 +527,16 @@ func (c *MySQLClient) handleQuery(sql string) error {
 		return c.sendErrorPacket(1, sanitizeMySQLError(err))
 	}
 
-	return c.sendOKPacket(uint64(result.RowsAffected), uint64(result.LastInsertID))
+	rowsAffected := uint64(0)
+	if result.RowsAffected > 0 {
+		rowsAffected = uint64(result.RowsAffected)
+	}
+	lastInsertID := uint64(0)
+	if result.LastInsertID > 0 {
+		lastInsertID = uint64(result.LastInsertID)
+	}
+
+	return c.sendOKPacket(rowsAffected, lastInsertID)
 }
 
 // handleSelectVariable handles SELECT @@variable queries from MySQL clients
@@ -515,7 +544,7 @@ func (c *MySQLClient) handleSelectVariable(sql string) error {
 	// Return sensible defaults for common MySQL session variables
 	seq := byte(1)
 
-	colName := sql // use the full query as column name
+	colName := ""
 	value := ""
 
 	upperSQL := strings.ToUpper(sql)
@@ -771,16 +800,19 @@ func scramblePassword(password, scramble []byte) []byte {
 	}
 
 	// SHA1(password)
+	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
 	h1 := sha1.New()
 	h1.Write(password)
 	hash1 := h1.Sum(nil)
 
 	// SHA1(SHA1(password))
+	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
 	h2 := sha1.New()
 	h2.Write(hash1)
 	hash2 := h2.Sum(nil)
 
 	// SHA1(scramble + SHA1(SHA1(password)))
+	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
 	h3 := sha1.New()
 	h3.Write(scramble)
 	h3.Write(hash2)
