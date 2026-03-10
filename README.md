@@ -6,7 +6,6 @@
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
   <img src="https://img.shields.io/badge/Coverage-87.2%25-green?style=for-the-badge" alt="Test Coverage">
-  <img src="https://img.shields.io/badge/Fixes-115/115-success?style=for-the-badge" alt="All Fixes Complete">
 </p>
 
 <p align="center">
@@ -44,7 +43,29 @@
 go get github.com/cobaltdb/cobaltdb
 ```
 
-**Requirements:** Go 1.21 or higher · Zero CGO dependencies
+**Requirements:** Go 1.24+ (`toolchain go1.26.1`) · Zero CGO runtime dependency
+
+### Verification and Security Checks
+
+Run core checks locally:
+
+```bash
+make verify
+```
+
+Run full security/concurrency gate (requires CGO toolchain and `gcc` for race detector):
+
+```bash
+make verify-security
+```
+
+If tool commands are missing locally, install:
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@latest
+go install github.com/securego/gosec/v2/cmd/gosec@latest
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+```
 
 ---
 
