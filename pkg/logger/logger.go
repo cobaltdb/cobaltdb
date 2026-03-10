@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -256,47 +257,59 @@ func copyFields(src map[string]interface{}) map[string]interface{} {
 	return dst
 }
 
-// Global logger instance
-var globalLogger = Default()
+var globalLogger atomic.Pointer[Logger]
+
+func init() {
+	globalLogger.Store(Default())
+}
 
 // SetGlobalLogger sets the global logger
 func SetGlobalLogger(l *Logger) {
-	globalLogger = l
+	if l == nil {
+		l = Default()
+	}
+	globalLogger.Store(l)
 }
 
 // GetGlobalLogger returns the global logger
 func GetGlobalLogger() *Logger {
-	return globalLogger
+	l := globalLogger.Load()
+	if l == nil {
+		fallback := Default()
+		globalLogger.Store(fallback)
+		return fallback
+	}
+	return l
 }
 
 // Global logging functions
 
 // Debug uses the global logger
-func Debug(msg string) { globalLogger.Debug(msg) }
+func Debug(msg string) { GetGlobalLogger().Debug(msg) }
 
 // Debugf uses the global logger
-func Debugf(format string, args ...interface{}) { globalLogger.Debugf(format, args...) }
+func Debugf(format string, args ...interface{}) { GetGlobalLogger().Debugf(format, args...) }
 
 // Info uses the global logger
-func Info(msg string) { globalLogger.Info(msg) }
+func Info(msg string) { GetGlobalLogger().Info(msg) }
 
 // Infof uses the global logger
-func Infof(format string, args ...interface{}) { globalLogger.Infof(format, args...) }
+func Infof(format string, args ...interface{}) { GetGlobalLogger().Infof(format, args...) }
 
 // Warn uses the global logger
-func Warn(msg string) { globalLogger.Warn(msg) }
+func Warn(msg string) { GetGlobalLogger().Warn(msg) }
 
 // Warnf uses the global logger
-func Warnf(format string, args ...interface{}) { globalLogger.Warnf(format, args...) }
+func Warnf(format string, args ...interface{}) { GetGlobalLogger().Warnf(format, args...) }
 
 // Error uses the global logger
-func Error(msg string) { globalLogger.Error(msg) }
+func Error(msg string) { GetGlobalLogger().Error(msg) }
 
 // Errorf uses the global logger
-func Errorf(format string, args ...interface{}) { globalLogger.Errorf(format, args...) }
+func Errorf(format string, args ...interface{}) { GetGlobalLogger().Errorf(format, args...) }
 
 // Fatal uses the global logger
-func Fatal(msg string) { globalLogger.Fatal(msg) }
+func Fatal(msg string) { GetGlobalLogger().Fatal(msg) }
 
 // Fatalf uses the global logger
-func Fatalf(format string, args ...interface{}) { globalLogger.Fatalf(format, args...) }
+func Fatalf(format string, args ...interface{}) { GetGlobalLogger().Fatalf(format, args...) }

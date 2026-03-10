@@ -135,14 +135,19 @@ func (ps *ProductionServer) startHealthServer() {
 	mux.HandleFunc("/rate-limits", ps.rateLimitsHandler())
 
 	ps.healthServer = &http.Server{
-		Addr:    ps.Config.HealthAddr,
-		Handler: mux,
+		Addr:         ps.Config.HealthAddr,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	ps.wg.Add(1)
 	go func() {
 		defer ps.wg.Done()
-		ps.healthServer.ListenAndServe()
+		if err := ps.healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("health server stopped with error: %v\n", err)
+		}
 	}()
 }
 
@@ -166,11 +171,15 @@ func (ps *ProductionServer) Stop() error {
 	if ps.healthServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		ps.healthServer.Shutdown(ctx)
+		if err := ps.healthServer.Shutdown(ctx); err != nil {
+			fmt.Printf("health server shutdown error: %v\n", err)
+		}
 	}
 
 	// Stop lifecycle
-	ps.Lifecycle.Stop()
+	if err := ps.Lifecycle.Stop(); err != nil {
+		return err
+	}
 
 	// Wait for goroutines
 	ps.wg.Wait()
@@ -235,7 +244,9 @@ func (ps *ProductionServer) healthHandler() http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy"}`))
+		if _, err := w.Write([]byte(`{"status":"healthy"}`)); err != nil {
+			http.Error(w, "failed to write health", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -247,10 +258,14 @@ func (ps *ProductionServer) readyHandler() http.HandlerFunc {
 		}
 		if ps.IsHealthy() {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"ready":true}`))
+			if _, err := w.Write([]byte(`{"ready":true}`)); err != nil {
+				http.Error(w, "failed to write ready", http.StatusInternalServerError)
+			}
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"ready":false}`))
+			if _, err := w.Write([]byte(`{"ready":false}`)); err != nil {
+				http.Error(w, "failed to write ready", http.StatusInternalServerError)
+			}
 		}
 	}
 }
@@ -274,7 +289,9 @@ func (ps *ProductionServer) statsHandler() http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"stats":{}}`))
+		if _, err := w.Write([]byte(`{"stats":{}}`)); err != nil {
+			http.Error(w, "failed to write stats", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -292,7 +309,9 @@ func (ps *ProductionServer) circuitBreakerHandler() http.HandlerFunc {
 			"enabled": true,
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(stats)
+		if err := json.NewEncoder(w).Encode(stats); err != nil {
+			http.Error(w, "failed to encode stats", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -303,7 +322,9 @@ func (ps *ProductionServer) rateLimitsHandler() http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"rate_limits":{}}`))
+		if _, err := w.Write([]byte(`{"rate_limits":{}}`)); err != nil {
+			http.Error(w, "failed to write rate limits", http.StatusInternalServerError)
+		}
 	}
 }
 

@@ -38,7 +38,7 @@ type Server struct {
 	maxConnections int
 	readTimeout    time.Duration
 	writeTimeout   time.Duration
-	sqlProtector   *SQLProtector // Optional SQL injection protection
+	sqlProtector   *SQLProtector  // Optional SQL injection protection
 	clientWg       sync.WaitGroup // Tracks active client handler goroutines
 }
 
@@ -126,7 +126,7 @@ func (s *Server) Listen(address string, tlsConfig *TLSConfig) error {
 	if tlsConfig != nil && tlsConfig.Enabled {
 		tlsConf, err := LoadTLSConfig(tlsConfig)
 		if err != nil {
-			listener.Close()
+			_ = listener.Close()
 			return fmt.Errorf("failed to load TLS config: %w", err)
 		}
 		listener = GetTLSListener(listener, tlsConf)
@@ -157,7 +157,7 @@ func (s *Server) acceptLoop() error {
 		// Check max connections
 		if s.maxConnections > 0 && len(s.clients) >= s.maxConnections {
 			s.mu.Unlock()
-			conn.Close()
+			_ = conn.Close()
 			continue
 		}
 		s.nextID++
@@ -174,8 +174,12 @@ func (s *Server) acceptLoop() error {
 
 		// Set TCP keepalive
 		if tcpConn, ok := conn.(*net.TCPConn); ok {
-			tcpConn.SetKeepAlive(true)
-			tcpConn.SetKeepAlivePeriod(60 * time.Second)
+			if err := tcpConn.SetKeepAlive(true); err != nil {
+				fmt.Printf("failed to enable keepalive: %v\n", err)
+			}
+			if err := tcpConn.SetKeepAlivePeriod(60 * time.Second); err != nil {
+				fmt.Printf("failed to set keepalive period: %v\n", err)
+			}
 		}
 
 		s.clientWg.Add(1)
@@ -205,18 +209,22 @@ func (s *Server) Close() error {
 
 	// Close all client connections
 	for _, client := range s.clients {
-		client.Conn.Close()
+		_ = client.Conn.Close()
 	}
 
 	// Close listener
 	if s.listener != nil {
-		s.listener.Close()
+		_ = s.listener.Close()
 	}
 
 	s.mu.Unlock()
 
 	// Wait for all client handlers to finish (outside lock to avoid deadlock)
 	s.clientWg.Wait()
+
+	if s.auth != nil {
+		s.auth.Stop()
+	}
 
 	return nil
 }
@@ -252,13 +260,15 @@ func (c *ClientConn) Handle() {
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	defer func() {
 		c.cancel() // cancel any in-flight queries on disconnect
-		c.Conn.Close()
+		_ = c.Conn.Close()
 		c.Server.removeClient(c.ID)
 	}()
 
 	for {
 		// Set read deadline for idle timeout
-		c.Conn.SetReadDeadline(time.Now().Add(c.Server.readTimeout))
+		if err := c.Conn.SetReadDeadline(time.Now().Add(c.Server.readTimeout)); err != nil {
+			return
+		}
 
 		// Read message length (4 bytes)
 		var length uint32
@@ -433,8 +443,7 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 	// Determine if this is a query (returns rows) or exec (returns affected count)
 	// by checking the SQL prefix to avoid parsing twice
 	sqlTrimmed := strings.TrimSpace(query.SQL)
-	isQuery := len(sqlTrimmed) >= 4 && (
-		(len(sqlTrimmed) >= 6 && strings.EqualFold(sqlTrimmed[:6], "SELECT")) ||
+	isQuery := len(sqlTrimmed) >= 4 && ((len(sqlTrimmed) >= 6 && strings.EqualFold(sqlTrimmed[:6], "SELECT")) ||
 		strings.EqualFold(sqlTrimmed[:4], "WITH") ||
 		strings.EqualFold(sqlTrimmed[:4], "SHOW") ||
 		(len(sqlTrimmed) >= 7 && strings.EqualFold(sqlTrimmed[:7], "EXPLAIN")) ||
@@ -512,7 +521,9 @@ func (c *ClientConn) sendMessage(msg interface{}) error {
 	}
 
 	// Set write deadline
-	c.Conn.SetWriteDeadline(time.Now().Add(c.Server.writeTimeout))
+	if err := c.Conn.SetWriteDeadline(time.Now().Add(c.Server.writeTimeout)); err != nil {
+		return err
+	}
 
 	// Write length
 	length := uint32(1 + len(payData))
@@ -537,7 +548,9 @@ func (c *ClientConn) sendMessage(msg interface{}) error {
 
 // sendError sends an error message
 func (c *ClientConn) sendError(code int, message string) {
-	c.sendMessage(wire.NewErrorMessage(code, message))
+	if err := c.sendMessage(wire.NewErrorMessage(code, message)); err != nil {
+		_ = err
+	}
 }
 
 // sanitizeError strips internal details from errors before sending to clients.

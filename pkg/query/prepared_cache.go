@@ -3,6 +3,7 @@ package query
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"math"
 	"sync"
 	"time"
 )
@@ -25,6 +26,8 @@ type PreparedCache struct {
 	mu         sync.RWMutex
 	maxSize    int
 	ttl        time.Duration
+	stopCh     chan struct{}
+	stopOnce   sync.Once
 }
 
 // NewPreparedCache creates a new prepared statement cache
@@ -40,6 +43,7 @@ func NewPreparedCache(maxSize int, ttl time.Duration) *PreparedCache {
 		statements: make(map[string]*PreparedStatement),
 		maxSize:    maxSize,
 		ttl:        ttl,
+		stopCh:     make(chan struct{}),
 	}
 
 	// Start cleanup goroutine
@@ -185,9 +189,21 @@ func (pc *PreparedCache) cleanupLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		pc.cleanup()
+	for {
+		select {
+		case <-ticker.C:
+			pc.cleanup()
+		case <-pc.stopCh:
+			return
+		}
 	}
+}
+
+// Close stops the background cleanup goroutine.
+func (pc *PreparedCache) Close() {
+	pc.stopOnce.Do(func() {
+		close(pc.stopCh)
+	})
 }
 
 // cleanup removes expired statements
@@ -222,7 +238,11 @@ func (pc *PreparedCache) Stats() PreparedCacheStats {
 	var totalUseCount uint64
 
 	for _, stmt := range pc.statements {
-		totalExecTime += stmt.AvgExecTime * time.Duration(stmt.UseCount)
+		useCount := stmt.UseCount
+		if useCount > uint64(math.MaxInt64) {
+			useCount = uint64(math.MaxInt64)
+		}
+		totalExecTime += stmt.AvgExecTime * time.Duration(useCount)
 		totalUseCount += stmt.UseCount
 	}
 

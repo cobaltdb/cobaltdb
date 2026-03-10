@@ -10,6 +10,7 @@ func TestPreparedCacheCleanup(t *testing.T) {
 	// Create a cache with a very short TTL
 	cache := NewPreparedCache(10, 100*time.Millisecond)
 	defer cache.Clear()
+	defer cache.Close()
 
 	// Add a statement
 	cache.Put("SELECT * FROM users", &SelectStmt{}, 0)
@@ -37,6 +38,7 @@ func TestPreparedCacheCleanupLoop(t *testing.T) {
 	// Create a cache with a short TTL
 	cache := NewPreparedCache(10, 100*time.Millisecond)
 	defer cache.Clear()
+	defer cache.Close()
 
 	// Add a statement
 	cache.Put("SELECT * FROM orders", &SelectStmt{}, 0)
@@ -60,6 +62,7 @@ func TestPreparedCacheCleanupLoop(t *testing.T) {
 func TestPreparedCacheCleanupPartialExpiry(t *testing.T) {
 	cache := NewPreparedCache(10, 200*time.Millisecond)
 	defer cache.Clear()
+	defer cache.Close()
 
 	// Manually add first statement with old timestamp (will expire)
 	cache.mu.Lock()

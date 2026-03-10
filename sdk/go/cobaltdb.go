@@ -53,14 +53,25 @@ func (d *Driver) OpenConnector(dsn string) (driver.Connector, error) {
 type connector struct {
 	cfg    *Config
 	driver *Driver
+	mu     sync.Mutex
+	shared *DB
+	refs   int
 }
 
 func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
-	db, err := Open(c.cfg)
-	if err != nil {
-		return nil, err
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.shared == nil {
+		db, err := Open(c.cfg)
+		if err != nil {
+			return nil, err
+		}
+		c.shared = db
 	}
-	return &conn{db: db, cfg: c.cfg}, nil
+
+	c.refs++
+	return &conn{db: c.shared, cfg: c.cfg, connector: c}, nil
 }
 
 func (c *connector) Driver() driver.Driver {
@@ -69,25 +80,25 @@ func (c *connector) Driver() driver.Driver {
 
 // Config holds database configuration
 type Config struct {
-	Host              string
-	Port              int
-	Database          string
-	Username          string
-	Password          string
-	SSLMode           string
-	SSLCert           string
-	SSLKey            string
-	SSLRootCert       string
-	ConnectTimeout    time.Duration
-	QueryTimeout      time.Duration
-	MaxConnections    int
-	MaxIdleTime       time.Duration
-	MaxLifetime       time.Duration
-	ApplicationName   string
+	Host            string
+	Port            int
+	Database        string
+	Username        string
+	Password        string
+	SSLMode         string
+	SSLCert         string
+	SSLKey          string
+	SSLRootCert     string
+	ConnectTimeout  time.Duration
+	QueryTimeout    time.Duration
+	MaxConnections  int
+	MaxIdleTime     time.Duration
+	MaxLifetime     time.Duration
+	ApplicationName string
 	// Engine-specific options
-	CacheSize         int
-	WALEnabled        bool
-	SyncMode          string
+	CacheSize  int
+	WALEnabled bool
+	SyncMode   string
 }
 
 // DefaultConfig returns default configuration
@@ -279,26 +290,27 @@ func (db *DB) Ping(ctx context.Context) error {
 func (db *DB) Stats() Stats {
 	return Stats{
 		OpenConnections: 1,
-		InUse:          0,
-		Idle:           0,
+		InUse:           0,
+		Idle:            0,
 	}
 }
 
 // Stats holds database statistics
 type Stats struct {
 	OpenConnections int
-	InUse          int
-	Idle           int
-	WaitCount      int64
-	WaitDuration   time.Duration
+	InUse           int
+	Idle            int
+	WaitCount       int64
+	WaitDuration    time.Duration
 }
 
 // conn implements driver.Conn
 type conn struct {
-	db     *DB
-	cfg    *Config
-	mu     sync.Mutex
-	closed bool
+	db        *DB
+	cfg       *Config
+	connector *connector
+	mu        sync.Mutex
+	closed    bool
 }
 
 func (c *conn) Prepare(query string) (driver.Stmt, error) {
@@ -318,7 +330,22 @@ func (c *conn) Close() error {
 	}
 
 	c.closed = true
-	return c.db.Close()
+	if c.connector == nil {
+		return nil
+	}
+
+	c.connector.mu.Lock()
+	defer c.connector.mu.Unlock()
+	if c.connector.refs > 0 {
+		c.connector.refs--
+	}
+	if c.connector.refs == 0 && c.connector.shared != nil {
+		err := c.connector.shared.Close()
+		c.connector.shared = nil
+		return err
+	}
+
+	return nil
 }
 
 func (c *conn) Begin() (driver.Tx, error) {
@@ -433,10 +460,9 @@ func (r *execResult) RowsAffected() (int64, error) {
 
 // driverRows implements driver.Rows
 type driverRows struct {
-	rows  *engine.Rows
-	cols  []string
-	types []string
-	done  bool
+	rows *engine.Rows
+	cols []string
+	done bool
 }
 
 func (r *driverRows) Columns() []string {
@@ -467,9 +493,7 @@ func (r *driverRows) Next(dest []driver.Value) error {
 
 	// Convert to []interface{} for Scan
 	scanDest := make([]interface{}, len(values))
-	for i := range values {
-		scanDest[i] = values[i]
-	}
+	copy(scanDest, values)
 
 	if err := r.rows.Scan(scanDest...); err != nil {
 		return err
@@ -639,17 +663,13 @@ func (j JSON) Value() (driver.Value, error) {
 
 // Pool represents a connection pool
 type Pool struct {
-	db      *DB
-	maxConns int
-	mu      sync.Mutex
-	conns   []*PooledConn
+	mu sync.Mutex
 }
 
 // PooledConn represents a pooled connection
 type PooledConn struct {
 	db       *DB
 	pool     *Pool
-	created  time.Time
 	lastUsed time.Time
 	inUse    bool
 }

@@ -65,7 +65,6 @@ type Lifecycle struct {
 
 	// Shutdown coordination
 	shutdownCh   chan struct{}
-	shutdownMu   sync.Mutex
 	shutdownOnce sync.Once
 
 	// Health tracking
@@ -185,7 +184,9 @@ func (l *Lifecycle) Start() error {
 		default:
 			if err := comp.Start(ctx); err != nil {
 				// Stop already started components
-				l.stopComponents(context.Background())
+				if stopErr := l.stopComponents(context.Background()); stopErr != nil {
+					return fmt.Errorf("failed to start %s: %w (cleanup failed: %v)", comp.Name(), err, stopErr)
+				}
 				return fmt.Errorf("failed to start %s: %w", comp.Name(), err)
 			}
 		}
@@ -391,7 +392,9 @@ func (l *Lifecycle) GracefulShutdownHandler() http.HandlerFunc {
 		}()
 
 		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte(`{"status":"shutting_down"}`))
+		if _, err := w.Write([]byte(`{"status":"shutting_down"}`)); err != nil {
+			fmt.Printf("failed to write shutdown response: %v\n", err)
+		}
 	}
 }
 
@@ -401,7 +404,9 @@ func (l *Lifecycle) ReadyCheck() http.HandlerFunc {
 		state := l.State()
 		if state == StateRunning {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"ready":true}`))
+			if _, err := w.Write([]byte(`{"ready":true}`)); err != nil {
+				fmt.Printf("failed to write ready response: %v\n", err)
+			}
 			return
 		}
 
@@ -417,12 +422,16 @@ func (l *Lifecycle) LiveCheck() http.HandlerFunc {
 		// Consider unhealthy if stopped or failed
 		if state == StateStopped {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"alive":false}`))
+			if _, err := w.Write([]byte(`{"alive":false}`)); err != nil {
+				fmt.Printf("failed to write live response: %v\n", err)
+			}
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"alive":true}`))
+		if _, err := w.Write([]byte(`{"alive":true}`)); err != nil {
+			fmt.Printf("failed to write live response: %v\n", err)
+		}
 	}
 }
 
