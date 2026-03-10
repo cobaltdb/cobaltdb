@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +14,24 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/server"
 )
 
+
+// generateRandomPassword generates a secure random password
+func generateRandomPassword(length int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to time-based if crypto/rand fails
+		for i := range b {
+			b[i] = charset[time.Now().UnixNano()%int64(len(charset))]
+		}
+	} else {
+		for i := range b {
+			b[i] = charset[int(b[i])%len(charset)]
+		}
+	}
+	return string(b)
+}
+
 func main() {
 	var (
 		dataDir      = flag.String("data", "./data", "data directory")
@@ -23,7 +42,7 @@ func main() {
 		cacheSize    = flag.Int("cache", 1024, "cache size in pages")
 		authEnabled  = flag.Bool("auth", false, "enable authentication")
 		adminUser    = flag.String("admin-user", "admin", "default admin username")
-		adminPass    = flag.String("admin-pass", "admin", "default admin password")
+		adminPass    = flag.String("admin-pass", "", "admin password (required if auth enabled, random generated if not set)")
 		tlsEnabled   = flag.Bool("tls", false, "enable TLS")
 		tlsCert      = flag.String("tls-cert", "", "TLS certificate file")
 		tlsKey       = flag.String("tls-key", "", "TLS key file")
@@ -41,10 +60,13 @@ func main() {
 
 	// FIX-007: Check for default admin credentials when auth is enabled
 	if *authEnabled {
-		if *adminPass == "admin" || *adminPass == "" {
-			log.Println("WARNING: Using default admin password. Set -admin-pass flag or COBALTDB_ADMIN_PASSWORD env var.")
-			log.Println("SECURITY: In production, always use a strong password for the admin account.")
+		if *adminPass == "" {
+			log.Fatal("ERROR: Admin password must be set when auth is enabled (use -admin-pass flag or COBALTDB_ADMIN_PASSWORD env var)")
 		}
+	} else if *adminPass == "" {
+		// Generate random password when auth is disabled and no password set
+		*adminPass = generateRandomPassword(16)
+		log.Printf("[INFO] Generated random admin password: %s", *adminPass)
 	}
 
 	// Open database

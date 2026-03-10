@@ -156,7 +156,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			if col.Check != nil {
 				result, err := evaluateExpression(c, updatedRow, table.Columns, col.Check, args)
 				if err != nil {
-					return 0, rowsAffected, fmt.Errorf("CHECK constraint failed: %v", err)
+					return 0, rowsAffected, fmt.Errorf("CHECK constraint failed: %w", err)
 				}
 				// Per SQL standard, NULL (unknown) passes CHECK constraint; only explicit false fails
 				if result != nil {

@@ -65,12 +65,12 @@ func NewEncryptedBackend(backend Backend, config *EncryptionConfig) (*EncryptedB
 	// Initialize cipher
 	block, err := aes.NewCipher(eb.sessionKey)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrEncryptionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrEncryptionFailed, err)
 	}
 
 	aead, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrEncryptionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrEncryptionFailed, err)
 	}
 
 	eb.cipher = aead
@@ -86,7 +86,7 @@ func (eb *EncryptedBackend) deriveKey() error {
 	if len(salt) == 0 {
 		salt = make([]byte, 16)
 		if _, err := io.ReadFull(rand.Reader, salt); err != nil {
-			return fmt.Errorf("%w: %v", ErrKeyDerivation, err)
+			return fmt.Errorf("%w: %w", ErrKeyDerivation, err)
 		}
 		eb.config.Salt = salt
 	}
@@ -150,7 +150,7 @@ func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 	// Decrypt
 	plaintext, err := eb.cipher.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrDecryptionFailed, err)
+		return 0, fmt.Errorf("%w: %w", ErrDecryptionFailed, err)
 	}
 
 	// Copy decrypted data to buffer
@@ -170,7 +170,7 @@ func (eb *EncryptedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 	// Generate random nonce
 	nonce := make([]byte, eb.cipher.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrEncryptionFailed, err)
+		return 0, fmt.Errorf("%w: %w", ErrEncryptionFailed, err)
 	}
 
 	// Encrypt data

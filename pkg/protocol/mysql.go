@@ -93,6 +93,9 @@ type MySQLServer struct {
 	clients  map[uint32]net.Conn
 	nextID   uint32
 	auth     *auth.Authenticator
+	wg       sync.WaitGroup
+	stopChan chan struct{}
+	closed   bool
 }
 
 // NewMySQLServer creates a new MySQL-compatible server
@@ -101,9 +104,10 @@ func NewMySQLServer(db *engine.DB, version string) *MySQLServer {
 		version = "5.7.0-CobaltDB"
 	}
 	return &MySQLServer{
-		db:      db,
-		version: version,
-		clients: make(map[uint32]net.Conn),
+		db:       db,
+		version:  version,
+		clients:  make(map[uint32]net.Conn),
+		stopChan: make(chan struct{}),
 	}
 }
 
@@ -137,6 +141,14 @@ func (s *MySQLServer) Addr() net.Addr {
 // Close stops the MySQL server and all client connections
 func (s *MySQLServer) Close() error {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	// Signal accept loop to stop
+	close(s.stopChan)
+
 	// Close all active client connections
 	for id, conn := range s.clients {
 		conn.Close()
@@ -144,9 +156,11 @@ func (s *MySQLServer) Close() error {
 	}
 	s.mu.Unlock()
 
+	// Wait for all client handlers to finish
 	if s.listener != nil {
-		return s.listener.Close()
+		s.listener.Close()
 	}
+	s.wg.Wait()
 	return nil
 }
 
@@ -156,12 +170,26 @@ func (s *MySQLServer) acceptLoop() {
 		return
 	}
 	for {
+		select {
+		case <-s.stopChan:
+			return
+		default:
+		}
 		conn, err := s.listener.Accept()
 		if err != nil {
-			return
+			select {
+			case <-s.stopChan:
+				return
+			default:
+				return
+			}
 		}
 
-		go s.handleConnection(conn)
+		s.wg.Add(1)
+		go func(c net.Conn) {
+			defer s.wg.Done()
+			s.handleConnection(c)
+		}(conn)
 	}
 }
 

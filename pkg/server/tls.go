@@ -31,7 +31,7 @@ type TLSConfig struct {
 	KeyFile                  string
 	CAFile                   string
 	ClientAuth               tls.ClientAuthType
-	InsecureSkipVerify       bool // WARNING: Only for development/testing. Never enable in production.
+	InsecureSkipVerify       bool // SECURITY: Must be false in production. Certificate verification is mandatory.
 	MinVersion               uint16
 	MaxVersion               uint16
 	CipherSuites             []uint16
@@ -82,7 +82,7 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 
 	cert, err := tls.LoadX509KeyPair(config.CertFile, config.KeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidCert, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidCert, err)
 	}
 
 	// Verify certificate
@@ -125,7 +125,7 @@ func verifyCertificate(cert *tls.Certificate) error {
 
 	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidCert, err)
+		return fmt.Errorf("%w: %w", ErrInvalidCert, err)
 	}
 
 	now := time.Now()

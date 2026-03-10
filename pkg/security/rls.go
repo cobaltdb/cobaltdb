@@ -152,7 +152,7 @@ func (m *Manager) CreatePolicy(policy *Policy) error {
 
 	// Compile expression
 	if err := m.compilePolicy(policy); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidPolicy, err)
+		return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
 
 	return nil

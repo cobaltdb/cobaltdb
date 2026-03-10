@@ -292,7 +292,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			if col.Check != nil {
 				result, err := evaluateExpression(c, rowValues, table.Columns, col.Check, args)
 				if err != nil {
-					insertErr = fmt.Errorf("CHECK constraint failed: %v", err)
+					insertErr = fmt.Errorf("CHECK constraint failed: %w", err)
 					break
 				}
 				// Per SQL standard, NULL (unknown) passes CHECK constraint; only explicit false fails
