@@ -4,9 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
+
+// formatKey formats int64 as zero-padded string (20 digits) for consistent key ordering
+func formatKey(pkVal int64) string {
+	return fmt.Sprintf("%020d", pkVal)
+}
 
 func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
 	c.mu.Lock()
@@ -137,7 +143,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 				if i < len(valueRow) {
 					if numLit, ok := valueRow[i].(*query.NumberLiteral); ok {
 						pkVal := int64(numLit.Value)
-						key = fmt.Sprintf("%020d", pkVal)
+						key = formatKey(pkVal)
 						// Keep auto-inc counter ahead of explicit values
 						if pkVal > table.AutoIncSeq {
 							table.AutoIncSeq = pkVal
@@ -150,7 +156,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 								key = "S:" + strVal // Prefix to distinguish from numeric keys
 							} else if fVal, ok := toFloat64(val); ok {
 								pkVal := int64(fVal)
-								key = fmt.Sprintf("%020d", pkVal)
+								key = formatKey(pkVal)
 								if pkVal > table.AutoIncSeq {
 									table.AutoIncSeq = pkVal
 								}

@@ -3,7 +3,6 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha1"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
@@ -144,6 +143,11 @@ func (a *Authenticator) CreateUser(username, password string, isAdmin bool) erro
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	return a.createUserLocked(username, password, isAdmin)
+}
+
+// createUserLocked creates a user (must be called with lock held)
+func (a *Authenticator) createUserLocked(username, password string, isAdmin bool) error {
 	if _, exists := a.users[username]; exists {
 		return ErrUserExists
 	}
@@ -244,12 +248,10 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 func generateToken(username string) (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("crypto/rand failed: %w", err)
+		return "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
-	h := sha256.New()
-	h.Write(b)
-	h.Write([]byte(fmt.Sprintf("%s:%d", username, time.Now().UnixNano())))
-	return hex.EncodeToString(h.Sum(nil)), nil
+	// Use only random bytes for token - no predictable input
+	return hex.EncodeToString(b), nil
 }
 
 // ValidateToken validates a session token

@@ -10,7 +10,47 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
+// EvalContext bundles common parameters for expression evaluation
+// This reduces parameter count and makes the API cleaner
+type EvalContext struct {
+	Catalog  *Catalog
+	Row      []interface{}
+	Columns  []ColumnDef
+	Args     []interface{}
+	Table    *TableDef
+	TableName string
+}
+
+// NewEvalContext creates a new evaluation context
+func NewEvalContext(c *Catalog, row []interface{}, columns []ColumnDef, args []interface{}) *EvalContext {
+	return &EvalContext{
+		Catalog: c,
+		Row:     row,
+		Columns: columns,
+		Args:    args,
+	}
+}
+
+// WithTable sets the table context
+func (ctx *EvalContext) WithTable(table *TableDef, name string) *EvalContext {
+	ctx.Table = table
+	ctx.TableName = name
+	return ctx
+}
+
+// evaluateExpression evaluates an expression with the given context
 func evaluateExpression(c *Catalog, row []interface{}, columns []ColumnDef, expr query.Expression, args []interface{}) (interface{}, error) {
+	ctx := NewEvalContext(c, row, columns, args)
+	return ctx.evaluate(expr)
+}
+
+// evaluate evaluates an expression using the context
+func (ctx *EvalContext) evaluate(expr query.Expression) (interface{}, error) {
+	c := ctx.Catalog
+	row := ctx.Row
+	columns := ctx.Columns
+	args := ctx.Args
+
 	switch e := expr.(type) {
 	case *query.BinaryExpr:
 		return evaluateBinaryExpr(c, row, columns, e, args)

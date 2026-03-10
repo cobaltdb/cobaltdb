@@ -2,6 +2,7 @@ package test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -393,10 +394,7 @@ func TestV34DataIntegrityEdgeCases(t *testing.T) {
 	afExec(t, db, ctx, "CREATE TABLE v34_large_text (id INTEGER PRIMARY KEY, content TEXT)")
 
 	// Test 33: very long ASCII string (500 chars)
-	longStr := ""
-	for i := 0; i < 500; i++ {
-		longStr += "x"
-	}
+	longStr := strings.Repeat("x", 500)
 	checkNoError("Insert 500-char string",
 		fmt.Sprintf("INSERT INTO v34_large_text VALUES (1, '%s')", longStr))
 	check("500-char string length",

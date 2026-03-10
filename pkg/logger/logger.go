@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -209,29 +210,42 @@ func (l *Logger) log(level Level, msg string, err error) {
 
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 
-	// Build log entry
-	logLine := fmt.Sprintf("[%s] %s", timestamp, level.String())
+	// Build log entry using strings.Builder for better performance
+	var sb strings.Builder
+	sb.Grow(128) // Pre-allocate reasonable size
+
+	sb.WriteByte('[')
+	sb.WriteString(timestamp)
+	sb.WriteString("] ")
+	sb.WriteString(level.String())
 
 	if l.component != "" {
-		logLine += fmt.Sprintf(" [%s]", l.component)
+		sb.WriteString(" [")
+		sb.WriteString(l.component)
+		sb.WriteByte(']')
 	}
 
-	logLine += fmt.Sprintf(" %s", msg)
+	sb.WriteByte(' ')
+	sb.WriteString(msg)
 
 	// Add error if present
 	if err != nil {
-		logLine += fmt.Sprintf(" | error=%s", err.Error())
+		sb.WriteString(" | error=")
+		sb.WriteString(err.Error())
 	}
 
 	// Add fields
 	for k, v := range l.fields {
-		logLine += fmt.Sprintf(" | %s=%v", k, v)
+		sb.WriteString(" | ")
+		sb.WriteString(k)
+		sb.WriteByte('=')
+		fmt.Fprintf(&sb, "%v", v)
 	}
 
-	logLine += "\n"
+	sb.WriteByte('\n')
 
 	// Write to output
-	fmt.Fprint(l.output, logLine)
+	fmt.Fprint(l.output, sb.String())
 }
 
 func copyFields(src map[string]interface{}) map[string]interface{} {

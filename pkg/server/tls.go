@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net"
 	"os"
@@ -97,6 +98,12 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 		CipherSuites:             config.CipherSuites,
 		PreferServerCipherSuites: config.PreferServerCipherSuites,
 		ClientAuth:               config.ClientAuth,
+	}
+
+	// SECURITY: Only allow InsecureSkipVerify via environment variable with explicit acknowledgment
+	if os.Getenv("COBALTDB_ALLOW_INSECURE_TLS") == "I_UNDERSTAND_THE_RISKS" {
+		tlsConfig.InsecureSkipVerify = true
+		log.Printf("[CRITICAL] TLS certificate verification DISABLED - NOT SAFE FOR PRODUCTION")
 	}
 
 	// Load CA for client verification

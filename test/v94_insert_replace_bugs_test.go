@@ -2,6 +2,7 @@ package test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -254,10 +255,7 @@ func TestV94_LongStringValues(t *testing.T) {
 	defer db.Close()
 
 	afExec(t, db, ctx, "CREATE TABLE t94m (id INTEGER PRIMARY KEY, data TEXT)")
-	longStr := ""
-	for i := 0; i < 1000; i++ {
-		longStr += "abcdefghij"
-	}
+	longStr := strings.Repeat("abcdefghij", 1000)
 	_, err := db.Exec(ctx, "INSERT INTO t94m VALUES (1, ?)", longStr)
 	if err != nil {
 		t.Fatalf("INSERT long string failed: %v", err)

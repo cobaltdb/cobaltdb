@@ -109,6 +109,9 @@ type Logger struct {
 	eventChan chan *Event
 	stopChan  chan struct{}
 	wg        sync.WaitGroup
+	closeOnce sync.Once
+	closed    bool
+	closeMu   sync.RWMutex
 }
 
 // New creates a new audit logger
@@ -158,6 +161,14 @@ func (al *Logger) openLogFile() error {
 // Log creates and logs an audit event
 func (al *Logger) Log(eventType EventType, user, action string, opts ...LogOption) {
 	if !al.config.Enabled {
+		return
+	}
+
+	// Check if logger is closed
+	al.closeMu.RLock()
+	closed := al.closed
+	al.closeMu.RUnlock()
+	if closed {
 		return
 	}
 
@@ -523,16 +534,23 @@ func (al *Logger) Close() error {
 		return nil
 	}
 
-	close(al.stopChan)
-	al.wg.Wait()
+	var err error
+	al.closeOnce.Do(func() {
+		al.closeMu.Lock()
+		al.closed = true
+		al.closeMu.Unlock()
 
-	al.mu.Lock()
-	defer al.mu.Unlock()
+		close(al.stopChan)
+		al.wg.Wait()
 
-	if al.file != nil {
-		return al.file.Close()
-	}
-	return nil
+		al.mu.Lock()
+		defer al.mu.Unlock()
+
+		if al.file != nil {
+			err = al.file.Close()
+		}
+	})
+	return err
 }
 
 // Rotate manually rotates the log file

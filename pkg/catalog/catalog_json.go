@@ -3,7 +3,9 @@ package catalog
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -44,7 +46,7 @@ func (c *Catalog) CreateJSONIndex(name, tableName, column, path, dataType string
 		Path:      path,
 		DataType:  dataType,
 		Index:     make(map[string][]int64),
-		NumIndex:  make(map[float64][]int64),
+		NumIndex:  make(map[string][]int64),
 	}
 
 	// Index existing data
@@ -99,10 +101,12 @@ func (c *Catalog) extractJSONValue(row []interface{}, column, path string) inter
 				for i, key := range keys {
 					switch curr := current.(type) {
 					case map[string]interface{}:
-						current = curr[key]
-						if current == nil && i < len(keys)-1 {
-							break // Path doesn't exist
+						next, exists := curr[key]
+						if !exists {
+							current = nil
+							break // Key not found
 						}
+						current = next
 					default:
 						// Can't traverse further if not a map
 						if i < len(keys)-1 {
@@ -119,14 +123,25 @@ func (c *Catalog) extractJSONValue(row []interface{}, column, path string) inter
 	return nil
 }
 
+// float64Key converts float64 to string key for JSON index
+// Uses integer representation for whole numbers to avoid precision issues
+func float64Key(f float64) string {
+	// For integers that fit in int64, use integer representation
+	if f == float64(int64(f)) && f >= float64(math.MinInt64) && f <= float64(math.MaxInt64) {
+		return strconv.FormatInt(int64(f), 10)
+	}
+	// For true floats, use full precision
+	return strconv.FormatFloat(f, 'g', -1, 64)
+}
+
 func (c *Catalog) indexJSONValue(idx *JSONIndexDef, value interface{}, rowNum int64) {
 	switch v := value.(type) {
 	case string:
 		idx.Index[v] = append(idx.Index[v], rowNum)
 	case float64:
-		idx.NumIndex[v] = append(idx.NumIndex[v], rowNum)
+		idx.NumIndex[float64Key(v)] = append(idx.NumIndex[float64Key(v)], rowNum)
 	case int:
-		idx.NumIndex[float64(v)] = append(idx.NumIndex[float64(v)], rowNum)
+		idx.NumIndex[float64Key(float64(v))] = append(idx.NumIndex[float64Key(float64(v))], rowNum)
 	case bool:
 		strVal := fmt.Sprintf("%t", v)
 		idx.Index[strVal] = append(idx.Index[strVal], rowNum)
@@ -158,9 +173,9 @@ func (c *Catalog) QueryJSONIndex(indexName string, value interface{}) ([]int64, 
 	case string:
 		return idx.Index[v], nil
 	case float64:
-		return idx.NumIndex[v], nil
+		return idx.NumIndex[float64Key(v)], nil
 	case int:
-		return idx.NumIndex[float64(v)], nil
+		return idx.NumIndex[float64Key(float64(v))], nil
 	default:
 		return nil, fmt.Errorf("unsupported value type for JSON index query")
 	}

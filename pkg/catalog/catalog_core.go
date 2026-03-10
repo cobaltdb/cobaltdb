@@ -1,3 +1,23 @@
+// Package catalog provides table management and query execution for CobaltDB.
+// It handles table creation, indexing, constraints, and SQL query processing.
+//
+// The Catalog is the central component that manages all database metadata
+// and provides the query execution engine.
+//
+// Example usage:
+//
+//	tree := btree.NewBTree()
+//	catalog := catalog.New(tree, nil, nil)
+//
+//	// Create a table
+//	err := catalog.CreateTable("users", []catalog.Column{
+//	    {Name: "id", Type: "INTEGER", PrimaryKey: true},
+//	    {Name: "name", Type: "TEXT", NotNull: true},
+//	})
+//
+//	// Execute a query
+//	result, err := catalog.ExecuteQuery("SELECT * FROM users WHERE id = ?", 1)
+//
 package catalog
 
 import (
@@ -22,20 +42,29 @@ var (
 	ErrColumnNotFound = errors.New("column not found")
 	ErrIndexExists    = errors.New("index already exists")
 	ErrIndexNotFound  = errors.New("index not found")
+
+	// rowBufferPool reduces GC pressure by reusing row buffers
+	rowBufferPool = sync.Pool{
+		New: func() interface{} {
+			return make([]interface{}, 0, 16)
+		},
+	}
 )
 
 // TableDef represents a table definition
 type TableDef struct {
-	Name        string          `json:"name"`
-	Type        string          `json:"type"` // "table" or "collection"
-	Columns     []ColumnDef     `json:"columns"`
-	PrimaryKey  []string        `json:"primary_key"` // Supports composite PK
-	CreatedAt   int64           `json:"created_at"`
-	RootPageID  uint32          `json:"root_page_id"`
-	ForeignKeys []ForeignKeyDef `json:"foreign_keys,omitempty"`
-	AutoIncSeq  int64           `json:"auto_inc_seq"` // Per-table auto-increment counter
+	Name        string              `json:"name"`
+	Type        string              `json:"type"` // "table" or "collection"
+	Columns     []ColumnDef         `json:"columns"`
+	PrimaryKey  []string            `json:"primary_key"` // Supports composite PK
+	CreatedAt   int64               `json:"created_at"`
+	RootPageID  uint32              `json:"root_page_id"`
+	ForeignKeys []ForeignKeyDef     `json:"foreign_keys,omitempty"`
+	AutoIncSeq  int64               `json:"auto_inc_seq"` // Per-table auto-increment counter
 	// Performance: cache column indices (not persisted)
 	columnIndices map[string]int `json:"-"`
+	// Performance: unique index for O(1) UNIQUE constraint checks
+	uniqueIndex map[int]map[string]string `json:"-"` // column index -> value -> pk
 }
 
 // ForeignKeyDef represents a foreign key constraint
@@ -115,7 +144,7 @@ type JSONIndexDef struct {
 	Path      string              `json:"path"`                // JSON path expression (e.g., "$.name")
 	DataType  string              `json:"data_type"`           // indexed data type: "string", "number", "boolean"
 	Index     map[string][]int64  `json:"index"`               // value -> list of row IDs (for string values)
-	NumIndex  map[float64][]int64 `json:"num_index,omitempty"` // for numeric values
+	NumIndex  map[string][]int64  `json:"num_index,omitempty"` // for numeric values (string key to avoid precision issues)
 }
 
 // undoAction represents the type of undo operation
@@ -1860,8 +1889,14 @@ func toInt(v interface{}) (int, bool) {
 	case int:
 		return val, true
 	case int64:
+		if val > int64(math.MaxInt) || val < int64(math.MinInt) {
+			return 0, false // Overflow
+		}
 		return int(val), true
 	case float64:
+		if val > float64(math.MaxInt) || val < float64(math.MinInt) {
+			return 0, false // Overflow
+		}
 		return int(val), true
 	default:
 		return 0, false

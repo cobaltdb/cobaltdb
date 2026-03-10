@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // TableStats holds statistics for a table
@@ -89,6 +90,31 @@ func (sc *StatsCollector) CollectStats(tableName string) (*TableStats, error) {
 	return stats, nil
 }
 
+// validateIdentifier validates a SQL identifier to prevent injection
+func validateIdentifier(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty identifier")
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("identifier too long")
+	}
+	// Only allow alphanumeric and underscore
+	for _, r := range name {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
+			return fmt.Errorf("invalid character in identifier: %q", r)
+		}
+	}
+	// Check for SQL keywords
+	upperName := strings.ToUpper(name)
+	sqlKeywords := []string{"SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "UNION", "--", "/*"}
+	for _, kw := range sqlKeywords {
+		if strings.Contains(upperName, kw) {
+			return fmt.Errorf("potential SQL injection detected")
+		}
+	}
+	return nil
+}
+
 // quoteIdent quotes a SQL identifier to prevent injection
 func quoteIdent(name string) string {
 	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
@@ -96,6 +122,9 @@ func quoteIdent(name string) string {
 
 // countRows counts rows in a table
 func (sc *StatsCollector) countRows(tableName string) (uint64, error) {
+	if err := validateIdentifier(tableName); err != nil {
+		return 0, fmt.Errorf("invalid table name: %w", err)
+	}
 	// Use SELECT COUNT(*) to get row count
 	result, err := sc.catalog.ExecuteQuery(fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteIdent(tableName)))
 	if err != nil {
@@ -122,6 +151,12 @@ func (sc *StatsCollector) countRows(tableName string) (uint64, error) {
 
 // collectColumnStats collects statistics for a column
 func (sc *StatsCollector) collectColumnStats(tableName, columnName string) (*ColumnStats, error) {
+	if err := validateIdentifier(tableName); err != nil {
+		return nil, fmt.Errorf("invalid table name: %w", err)
+	}
+	if err := validateIdentifier(columnName); err != nil {
+		return nil, fmt.Errorf("invalid column name: %w", err)
+	}
 	stats := &ColumnStats{
 		ColumnName: columnName,
 	}

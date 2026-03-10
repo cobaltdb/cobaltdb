@@ -18,6 +18,10 @@ var (
 	ErrInvalidPolicy       = errors.New("invalid security policy")
 	ErrRLSNotEnabled       = errors.New("row-level security not enabled for table")
 	ErrInvalidExpression   = errors.New("invalid policy expression")
+
+	// Pre-compiled regex patterns for performance
+	inRegex   = regexp.MustCompile(`(?i)^(.+?)\s+IN\s*\((.+?)\)$`)
+	likeRegex = regexp.MustCompile(`(?i)^(.+?)\s+LIKE\s+['"](.+?)['"]$`)
 )
 
 // Typed context keys to avoid collisions with other packages
@@ -860,7 +864,7 @@ func parseInOperator(expr string) PolicyExpr {
 	expr = strings.TrimSpace(expr)
 
 	// Match pattern: column IN (value1, value2, ...)
-	inRegex := regexp.MustCompile(`(?i)^(.+?)\s+IN\s*\((.+?)\)$`)
+	// Uses pre-compiled package-level regex
 	matches := inRegex.FindStringSubmatch(expr)
 	if len(matches) != 3 {
 		return nil
@@ -893,7 +897,7 @@ func parseLikeOperator(expr string) PolicyExpr {
 	expr = strings.TrimSpace(expr)
 
 	// Match pattern: column LIKE 'pattern'
-	likeRegex := regexp.MustCompile(`(?i)^(.+?)\s+LIKE\s+['"](.+?)['"]$`)
+	// Uses pre-compiled package-level regex
 	matches := likeRegex.FindStringSubmatch(expr)
 	if len(matches) != 3 {
 		return nil

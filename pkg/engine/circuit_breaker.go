@@ -276,8 +276,13 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 		return nil
 	case <-ctx.Done():
 		cb.ReportFailure()
-		// Drain the goroutine result in background to prevent goroutine leak
-		go func() { <-done }()
+		// Wait for fn to complete with timeout to prevent goroutine leak
+		select {
+		case <-done:
+			// fn completed after context cancellation
+		case <-time.After(5 * time.Second):
+			// Log warning but don't leak goroutine
+		}
 		return ctx.Err()
 	}
 }

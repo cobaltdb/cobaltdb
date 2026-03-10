@@ -25,6 +25,8 @@ type AdminServer struct {
 	started   bool
 	addr      string
 	authToken string
+	wg        sync.WaitGroup
+	done      chan struct{}
 }
 
 // NewAdminServer creates a new admin server
@@ -90,9 +92,12 @@ func (a *AdminServer) Start() error {
 
 	a.addr = listener.Addr().String()
 	a.started = true
+	a.done = make(chan struct{})
 
 	// Start in background
+	a.wg.Add(1)
 	go func() {
+		defer a.wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("recovered panic in admin server: %v", r)
@@ -110,11 +115,13 @@ func (a *AdminServer) Start() error {
 // Stop stops the admin server
 func (a *AdminServer) Stop() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if !a.started {
+		a.mu.Unlock()
 		return nil
 	}
+	a.started = false
+	close(a.done)
+	a.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -123,7 +130,8 @@ func (a *AdminServer) Stop() error {
 		return err
 	}
 
-	a.started = false
+	// Wait for goroutine to finish
+	a.wg.Wait()
 	log.Printf("[Admin] Server stopped")
 	return nil
 }
