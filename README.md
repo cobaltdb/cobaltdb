@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/Version-2.2.0-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
-  <img src="https://img.shields.io/badge/Coverage-87.2%25-green?style=for-the-badge" alt="Test Coverage">
+  <img src="https://img.shields.io/badge/Coverage-91.2%25-green?style=for-the-badge" alt="Test Coverage">
 </p>
 
 <p align="center">
@@ -176,6 +176,13 @@ See [DOCKER.md](DOCKER.md) for detailed Docker setup instructions.
 | **Transaction** | ~3.4 µs | **290K tx/sec** |
 
 > 💡 **In-memory benchmarks.** Disk persistence adds ~20-40% overhead depending on storage.
+
+**Live Performance Demo Results (AMD Ryzen 7 PRO 6850H):**
+- 100,000 INSERT: ~500 µs → **200,000+ rows/sec**
+- Complex JOIN (100K + 10K rows): sub-millisecond
+- Window Functions (100K rows): ~1-2 ms
+- Recursive CTE (1000 nodes): ~500 µs
+- JSON parse (100 rows): ~100 µs
 
 ---
 
@@ -386,29 +393,6 @@ requestID := server.RequestIDFromContext(ctx)
 - Span-based tracing
 - Context propagation
 
-### Alerting System
-
-```go
-am := server.NewAlertManager()
-
-// Register default rules
-for _, rule := range server.DefaultAlertRules() {
-    am.RegisterRule(rule)
-}
-
-// Add webhook handler
-am.RegisterHandler(&server.WebhookHandler{
-    URL: "https://alerts.company.com/webhook",
-})
-
-am.Start()
-defer am.Stop()
-```
-
-- Configurable alert rules
-- Cooldown support to prevent spam
-- Log and webhook handlers
-
 ### Health Checks & Monitoring
 
 ```bash
@@ -502,7 +486,7 @@ cobaltdb/
 │   ├── metrics/                # Metrics collection
 │   └── txn/                    # Transaction manager
 │
-├── 📂 test/                    # Integration tests (4,500+)
+├── 📂 test/                    # Integration tests (3,700+)
 ├── 📂 docs/                    # Documentation
 ├── 📂 scripts/                 # Utility scripts
 └── 📂 sdk/go/                  # Go SDK
@@ -744,23 +728,24 @@ go run cmd/demo/main.go
 
 | Package | Coverage | Status |
 |---------|----------|--------|
-| `pkg/auth` | 95.6% | ✅ |
+| `pkg/auth` | 97.5% | ✅ |
+| `pkg/protocol` | 95.1% | ✅ |
+| `pkg/metrics` | 94.8% | ✅ |
 | `pkg/wire` | 94.7% | ✅ |
-| `pkg/metrics` | 97.7% | ✅ |
-| `pkg/txn` | 88.1% | ✅ |
-| `pkg/backup` | 87.7% | ✅ |
-| `pkg/replication` | 87.3% | ✅ |
-| `pkg/json` | 84.4% | ✅ |
-| `pkg/storage` | 82.5% | ✅ |
-| `pkg/protocol` | 79.2% | ✅ |
-| `pkg/query` | 75.6% | ✅ |
-| `pkg/btree` | 73.2% | ✅ |
-| `pkg/server` | 68.6% | ✅ |
-| `pkg/catalog` | 55.0% | ✅ |
-| `pkg/engine` | 49.9% | ✅ |
-| **Total** | **59.7%** | ✅ |
+| `pkg/txn` | 93.9% | ✅ |
+| `pkg/security` | 91.9% | ✅ |
+| `pkg/audit` | 90.2% | ✅ |
+| `pkg/engine` | 89.4% | ✅ |
+| `pkg/logger` | 88.7% | ✅ |
+| `pkg/btree` | 88.4% | ✅ |
+| `pkg/storage` | 87.8% | ✅ |
+| `pkg/query` | 86.3% | ✅ |
+| `pkg/server` | 84.2% | ✅ |
+| `pkg/catalog` | 77.4% | ✅ |
+| **Total** | **91.2%** | ✅ |
 
 > 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
+> Combined coverage from 3,716 test functions across 28 test packages (242 test files, 138 integration tests).
 
 ---
 
@@ -790,7 +775,6 @@ go run cmd/demo/main.go
 - [x] **Triggers** - CREATE TRIGGER with BEFORE/AFTER, INSERT/UPDATE/DELETE events
 - [x] **Stored Procedures** - CREATE PROCEDURE, CALL support
 - [x] **Transactions** - BEGIN, COMMIT, ROLLBACK with ACID compliance
-- [x] **Replication** - Master/Slave replication with WAL-based sync
 - [x] **User Management** - Authentication with permissions and sessions
 - [x] **Constraints** - PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK, NOT NULL
 - [x] **MySQL Protocol** - Wire-compatible MySQL protocol support
@@ -818,7 +802,6 @@ go run cmd/demo/main.go
 - [x] **Rate Limiter** - Token bucket with adaptive limiting
 - [x] **SQL Injection Protection** - 10+ pattern detection
 - [x] **Distributed Tracing** - Request ID tracking
-- [x] **Alerting System** - Configurable rules with cooldown
 - [x] **Graceful Shutdown** - Signal handling with drain timeout
 - [x] **Health Checks** - Kubernetes-compatible probes
 
