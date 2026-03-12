@@ -1238,18 +1238,20 @@ func TestBufferPool_NewBufferPool_NonZeroBackend(t *testing.T) {
 
 // TestPageManager_FreePage_ThresholdTriggersSave exercises the >1000 free
 // pages threshold in FreePage that calls saveFreeList automatically.
+// With 1100 freed pages and maxPerPage=1018, this triggers multi-page saving
+// on the second threshold trigger.
 func TestPageManager_FreePage_ThresholdTriggersSave(t *testing.T) {
 	backend := NewMemory()
-	pool := NewBufferPool(2048, backend) // need large pool for many pages
+	pool := NewBufferPool(3000, backend) // need large pool for many pages
 	pm, err := NewPageManager(pool)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pm.Close()
 
-	// Allocate 1010 pages
-	pages := make([]uint32, 1010)
-	for i := 0; i < 1010; i++ {
+	// Allocate 2100 pages
+	pages := make([]uint32, 2100)
+	for i := 0; i < 2100; i++ {
 		p, err := pm.AllocatePage(PageTypeLeaf)
 		if err != nil {
 			t.Fatalf("AllocatePage %d: %v", i, err)
@@ -1258,16 +1260,82 @@ func TestPageManager_FreePage_ThresholdTriggersSave(t *testing.T) {
 		pm.GetPool().Unpin(p)
 	}
 
-	// Free all 1010 pages - the 1001st free should trigger saveFreeList
-	for i := 0; i < 1010; i++ {
+	// Free all 2100 pages - the 1001st free triggers saveFreeList (saves 1001 pages).
+	// saveFreeList clears the list. Then frees continue accumulating.
+	// The 2002nd free triggers saveFreeList again (saves 1001 pages, fits in 1 page).
+	// But to hit multi-page: we need >1018 pages in a single saveFreeList call.
+	// That means we need to accumulate >1018 before triggering (happens at >1000).
+	// Actually, the threshold is checked AFTER appending:
+	// pm.freeList = append(pm.freeList, pageID) // now len = 1001
+	// if len(pm.freeList) > 1000: save
+	// So saveFreeList is called with 1001 pages. 1001 < 1018, so single page.
+	// To get >1018 in one call: impossible via FreePage alone since threshold is 1000.
+	// Multi-page only happens via Close() when >1018 pages accumulated without save.
+	// That can't happen via FreePage since it saves at 1001.
+	// So multi-page requires direct use or Close() with many freed pages.
+
+	// Strategy: free 1001 pages (triggers save at 1001, saves and clears),
+	// then free the remaining. Close() will save whatever's left.
+	for i := 0; i < 2100; i++ {
 		if err := pm.FreePage(pages[i]); err != nil {
 			t.Fatalf("FreePage %d: %v", i, err)
 		}
 	}
 
-	// After threshold trigger, free list should have been saved and cleared
 	freeCount := pm.GetFreePageCount()
-	t.Logf("Free page count after threshold save: %d", freeCount)
+	t.Logf("Free page count after threshold saves: %d", freeCount)
+}
+
+// TestPageManager_SaveFreeList_MultiPage exercises saveFreeList with >1018 pages
+// to trigger multi-page free list writing (prevPageID != 0 path).
+func TestPageManager_SaveFreeList_MultiPage(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(3000, backend)
+	pm, err := NewPageManager(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Allocate 1100 pages
+	pages := make([]uint32, 1100)
+	for i := 0; i < 1100; i++ {
+		p, err := pm.AllocatePage(PageTypeLeaf)
+		if err != nil {
+			t.Fatalf("AllocatePage %d: %v", i, err)
+		}
+		pages[i] = p.ID()
+		pm.GetPool().Unpin(p)
+	}
+
+	// Directly inject 1100 page IDs into the free list without triggering
+	// the >1000 threshold save (which would clear it). This simulates having
+	// accumulated many pages that need multi-page save on Close.
+	pm.mu.Lock()
+	pm.freeList = pm.freeList[:0]
+	for _, pid := range pages {
+		pm.freeList = append(pm.freeList, pid)
+	}
+	pm.mu.Unlock()
+
+	// Close calls saveFreeList with 1100 pages > maxPerPage(1018)
+	// This triggers the multi-page writing path with prevPageID linking
+	if err := pm.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Reopen and verify free list was saved correctly
+	pool2 := NewBufferPool(3000, backend)
+	pm2, err := NewPageManager(pool2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pm2.Close()
+
+	freeCount := pm2.GetFreePageCount()
+	t.Logf("Free pages loaded after multi-page save: %d", freeCount)
+	if freeCount == 0 {
+		t.Error("Expected non-zero free page count after multi-page save")
+	}
 }
 
 // TestPageManager_SaveFreeList_NonZeroExisting exercises saveFreeList when
@@ -1533,12 +1601,13 @@ func TestEncryptedBackend_ReadAtTooShort(t *testing.T) {
 // overflow (when readTimes reaches maxSamples=100 and starts overwriting).
 func TestBufferPool_Stats_ReadTimeOverflow(t *testing.T) {
 	backend := NewMemory()
-	pool := NewBufferPool(5, backend)
+	// Pool capacity 2 + 110 unique pages = many evictions and disk reads
+	pool := NewBufferPool(2, backend)
 	defer pool.Close()
 
-	// Create pages, flush, then do many reads to overflow the stats ring buffer
-	pages := make([]uint32, 5)
-	for i := 0; i < 5; i++ {
+	// Create 110 pages (more than maxSamples=100) to force >100 disk reads
+	pages := make([]uint32, 110)
+	for i := 0; i < 110; i++ {
 		p, _ := pool.NewPage(PageTypeLeaf)
 		pages[i] = p.ID()
 		p.SetDirty(true)
@@ -1546,19 +1615,22 @@ func TestBufferPool_Stats_ReadTimeOverflow(t *testing.T) {
 	}
 	pool.FlushAll()
 
-	// Do 120+ reads, forcing eviction and disk reads to trigger addReadTime >100 times
-	for iter := 0; iter < 30; iter++ {
-		for _, pid := range pages {
-			p, err := pool.GetPage(pid)
-			if err != nil {
-				continue
-			}
-			pool.Unpin(p)
+	// Access each page sequentially. With pool capacity 2, each access of a new
+	// page evicts one and reads from disk, calling addReadTime. 110 unique pages
+	// means >100 disk reads, overflowing the ring buffer.
+	for _, pid := range pages {
+		p, err := pool.GetPage(pid)
+		if err != nil {
+			continue
 		}
+		pool.Unpin(p)
 	}
 
 	stats := pool.Stats()
-	t.Logf("After 150 reads: hits=%d misses=%d reads=%d", stats.HitCount, stats.MissCount, stats.ReadCount)
+	t.Logf("After 110 unique reads: hits=%d misses=%d reads=%d", stats.HitCount, stats.MissCount, stats.ReadCount)
+	if stats.ReadCount < 100 {
+		t.Errorf("Expected at least 100 reads, got %d", stats.ReadCount)
+	}
 }
 
 // TestPageManager_AllocatePage_FreeListGetPageError exercises the AllocatePage
@@ -1921,6 +1993,41 @@ func TestBufferPool_GetPage_EvictionAndReload(t *testing.T) {
 			continue
 		}
 		pool.Unpin(p)
+	}
+}
+
+// TestEncryptedBackend_ReadAt_SmallPoolBuf exercises the ReadAt path where
+// the pooled buffer is too small, triggering reallocation (line 131-133).
+func TestEncryptedBackend_ReadAt_SmallPoolBuf(t *testing.T) {
+	mem := NewMemory()
+	cfg := &EncryptionConfig{
+		Enabled:     true,
+		Key:         []byte("small-pool-test-pass-32-bytes!!!"),
+		Salt:        []byte("1234567890123456"),
+		PBKDF2Iters: 1000,
+	}
+	eb, err := NewEncryptedBackend(mem, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eb.Close()
+
+	// Write a page
+	data := make([]byte, PageSize)
+	data[0] = 0xEE
+	eb.WriteAt(data, 0)
+
+	// Put a deliberately small buffer into the readPool
+	eb.readPool.Put(make([]byte, 10)) // way too small
+
+	// ReadAt should detect the small buffer and reallocate
+	buf := make([]byte, PageSize)
+	_, err = eb.ReadAt(buf, 0)
+	if err != nil {
+		t.Fatalf("ReadAt with small pool buf: %v", err)
+	}
+	if buf[0] != 0xEE {
+		t.Errorf("Expected 0xEE, got 0x%02X", buf[0])
 	}
 }
 

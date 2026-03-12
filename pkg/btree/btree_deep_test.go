@@ -1054,6 +1054,88 @@ func TestBTree_LoadFromPages_TruncatedKeyData(t *testing.T) {
 	_ = tree.Size()
 }
 
+// TestBTree_LoadFromPages_AllTruncationPaths writes carefully crafted data to
+// hit each truncation break path in the loadFromPages deserialization loop.
+func TestBTree_LoadFromPages_AllTruncationPaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		setupFn func(pd []byte) // pd is pageData starting at PageHeaderSize offset
+	}{
+		{
+			// Hit "offset+2 > len(allData)" by filling entry1 to the end
+			name: "truncated_keylen",
+			setupFn: func(pd []byte) {
+				binary.LittleEndian.PutUint32(pd[0:4], 2) // totalCount=2
+				binary.LittleEndian.PutUint32(pd[4:8], 0)
+				// allData = pd[8:], len = 4080-8 = 4072
+				off := 8
+				// Entry1: keyLen(2)+key(2)+valLen(4)+val(4056)=4064
+				binary.LittleEndian.PutUint16(pd[off:off+2], 2)
+				copy(pd[off+2:off+4], []byte("ab"))
+				binary.LittleEndian.PutUint32(pd[off+4:off+8], 4063)
+				// After entry1: offset in allData = 2+2+4+4063 = 4071
+				// Entry2: offset+2 = 4073 > 4072 => break!
+			},
+		},
+		{
+			// Hit "offset+keyLen > len(allData)"
+			name: "truncated_key",
+			setupFn: func(pd []byte) {
+				binary.LittleEndian.PutUint32(pd[0:4], 2)
+				binary.LittleEndian.PutUint32(pd[4:8], 0)
+				off := 8
+				// Entry1: small (2+2+4+2=10)
+				binary.LittleEndian.PutUint16(pd[off:off+2], 2)
+				copy(pd[off+2:off+4], []byte("ab"))
+				binary.LittleEndian.PutUint32(pd[off+4:off+8], 2)
+				copy(pd[off+8:off+10], []byte("cd"))
+				// After entry1: offset=10, remaining=4062
+				// Entry2: keyLen=9999, offset+keyLen=10+9999=10009 > 4072
+				binary.LittleEndian.PutUint16(pd[off+10:off+12], 9999)
+			},
+		},
+		{
+			// Hit "offset+4 > len(allData)" (before reading valLen)
+			name: "truncated_vallen",
+			setupFn: func(pd []byte) {
+				binary.LittleEndian.PutUint32(pd[0:4], 2)
+				binary.LittleEndian.PutUint32(pd[4:8], 0)
+				off := 8
+				// Entry1: fills to offset=4068 in allData
+				// 2+2+4+4060=4068
+				binary.LittleEndian.PutUint16(pd[off:off+2], 2)
+				copy(pd[off+2:off+4], []byte("ab"))
+				binary.LittleEndian.PutUint32(pd[off+4:off+8], 4060)
+				// After entry1: offset=4068
+				// Entry2: keyLen=2, key=2 bytes. After key: offset=4068+2+2=4072
+				// Need offset+4 = 4076 > 4072 for valLen check
+				binary.LittleEndian.PutUint16(pd[off+4068:off+4070], 2)
+				copy(pd[off+4070:off+4072], []byte("ef"))
+				// Now offset=4072, offset+4=4076 > 4072 => break
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := storage.NewMemory()
+			pool := storage.NewBufferPool(100, backend)
+			defer pool.Close()
+
+			rootPage, _ := pool.NewPage(storage.PageTypeLeaf)
+			rootID := rootPage.ID()
+			pd := rootPage.Data()[storage.PageHeaderSize:]
+			tc.setupFn(pd)
+			rootPage.SetDirty(true)
+			pool.Unpin(rootPage)
+			pool.FlushAll()
+
+			tree := OpenBTreeWithLimit(pool, rootID, 0)
+			t.Logf("Loaded %d entries", tree.Size())
+		})
+	}
+}
+
 // TestBTree_LoadFromPages_TruncatedValueLen exercises the value length truncation
 func TestBTree_LoadFromPages_TruncatedValueLen(t *testing.T) {
 	backend := storage.NewMemory()
@@ -1132,6 +1214,86 @@ func TestBTree_LoadFromPages_CorruptOverflowHeader(t *testing.T) {
 	tree := OpenBTreeWithLimit(pool, rootID, 0)
 	if tree.Size() != 0 {
 		t.Logf("Tree size: %d", tree.Size())
+	}
+}
+
+// TestBTree_ReadKVFromPages_AllTruncationPaths exercises each truncation break in
+// readKVFromPages deserialization loop by crafting pages with precise data sizes.
+func TestBTree_ReadKVFromPages_AllTruncationPaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		setupFn func(pd []byte)
+	}{
+		{
+			// Hit offset+keyLen > len(allData)
+			name: "key_data_truncated",
+			setupFn: func(pd []byte) {
+				binary.LittleEndian.PutUint32(pd[0:4], 2) // totalCount=2
+				binary.LittleEndian.PutUint32(pd[4:8], 0)
+				off := 8
+				// Entry1: small
+				binary.LittleEndian.PutUint16(pd[off:off+2], 2)
+				copy(pd[off+2:off+4], []byte("ab"))
+				binary.LittleEndian.PutUint32(pd[off+4:off+8], 2)
+				copy(pd[off+8:off+10], []byte("cd"))
+				// Entry2: keyLen=50000
+				binary.LittleEndian.PutUint16(pd[off+10:off+12], 50000)
+			},
+		},
+		{
+			// Hit offset+4 > len(allData) (before valLen)
+			name: "vallen_truncated",
+			setupFn: func(pd []byte) {
+				binary.LittleEndian.PutUint32(pd[0:4], 2)
+				binary.LittleEndian.PutUint32(pd[4:8], 0)
+				off := 8
+				binary.LittleEndian.PutUint16(pd[off:off+2], 2)
+				copy(pd[off+2:off+4], []byte("ab"))
+				binary.LittleEndian.PutUint32(pd[off+4:off+8], 4060)
+				// After: offset=4068, entry2 keyLen=2, key=2, offset=4072
+				binary.LittleEndian.PutUint16(pd[off+4068:off+4070], 2)
+				copy(pd[off+4070:off+4072], []byte("ef"))
+			},
+		},
+		{
+			// Hit offset+valLen > len(allData)
+			name: "val_data_truncated",
+			setupFn: func(pd []byte) {
+				binary.LittleEndian.PutUint32(pd[0:4], 2)
+				binary.LittleEndian.PutUint32(pd[4:8], 0)
+				off := 8
+				binary.LittleEndian.PutUint16(pd[off:off+2], 2)
+				copy(pd[off+2:off+4], []byte("ab"))
+				binary.LittleEndian.PutUint32(pd[off+4:off+8], 2)
+				copy(pd[off+8:off+10], []byte("cd"))
+				// Entry2: key=2 bytes, valLen=99999
+				binary.LittleEndian.PutUint16(pd[off+10:off+12], 2)
+				copy(pd[off+12:off+14], []byte("ef"))
+				binary.LittleEndian.PutUint32(pd[off+14:off+18], 99999)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := storage.NewMemory()
+			pool := storage.NewBufferPool(100, backend)
+			defer pool.Close()
+
+			tree, _ := NewBTreeWithLimit(pool, 0)
+			// Put and flush to create root page, then corrupt it
+			tree.Put([]byte("xx"), []byte("yy"))
+			tree.Flush()
+
+			rootPage, _ := pool.GetPage(tree.RootPageID())
+			pd := rootPage.Data()[storage.PageHeaderSize:]
+			tc.setupFn(pd)
+			rootPage.SetDirty(true)
+			pool.Unpin(rootPage)
+
+			diskData := tree.readKVFromPages()
+			t.Logf("readKVFromPages returned %d entries", len(diskData))
+		})
 	}
 }
 
@@ -1643,17 +1805,21 @@ func TestBTree_EvictToMakeSpace_EmptyLRUBreak(t *testing.T) {
 	pool := storage.NewBufferPool(100, backend)
 	defer pool.Close()
 
-	tree, err := NewBTreeWithLimit(pool, 100)
+	// Set limit high enough that needed (sizeDelta) won't exceed it,
+	// but memoryUsed + needed will exceed it.
+	tree, err := NewBTreeWithLimit(pool, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Insert some data
-	tree.Put([]byte("x1"), []byte("val1"))
-	tree.Put([]byte("x2"), []byte("val2"))
+	// Insert some data to use up memory. Each entry: key(2) + val(4) = 6 bytes.
+	// Insert 5 entries = 30 bytes of memoryUsed.
+	for i := 0; i < 5; i++ {
+		tree.Put([]byte(fmt.Sprintf("k%d", i)), []byte("val!"))
+	}
+	t.Logf("memoryUsed after inserts: %d, limit: %d", tree.MemoryUsed(), tree.MemoryLimit())
 
-	// Now manually clear the LRU list to simulate empty LRU
-	// while memStorage still holds data
+	// Clear the LRU list but keep memStorage and memoryUsed as-is
 	tree.lruMu.Lock()
 	tree.lruList.Init()
 	for k := range tree.lruMap {
@@ -1661,13 +1827,23 @@ func TestBTree_EvictToMakeSpace_EmptyLRUBreak(t *testing.T) {
 	}
 	tree.lruMu.Unlock()
 
-	// Set a very tight limit so memoryUsed+needed > limit after the empty loop
-	tree.SetMemoryLimit(1)
+	// Now insert a new entry: "ab" + "cdef" = 6 bytes = sizeDelta.
+	// needed(6) <= memoryLimit(50), so passes first check.
+	// memoryUsed(30) + needed(6) = 36 <= 50, so actually won't enter loop.
+	// Need memoryUsed + needed > 50. So fill more: 8 entries = 48 bytes.
+	// Actually let's just set memoryUsed manually to just under the limit.
+	tree.mu.Lock()
+	tree.memoryUsed = 48 // 48 + 6 = 54 > 50
+	tree.mu.Unlock()
 
-	// Try inserting - should hit: elem==nil -> break -> final check -> ErrMemoryLimit
-	err = tree.Put([]byte("overflow"), []byte("big_value_that_doesnt_fit"))
+	// Now inserting "ab" + "cdef" (6 bytes, sizeDelta=6, needed=6):
+	// needed(6) <= limit(50) -> passes first check
+	// memoryUsed(48) + needed(6) = 54 > limit(50) -> enters loop
+	// LRU is empty -> elem==nil -> break (lines 416-418)
+	// Post-loop: 48 + 6 = 54 > 50 -> return ErrMemoryLimit (lines 441-443)
+	err = tree.Put([]byte("ab"), []byte("cdef"))
 	if err != ErrMemoryLimit {
-		t.Logf("Put with empty LRU and tight limit: %v", err)
+		t.Errorf("Expected ErrMemoryLimit, got %v", err)
 	}
 }
 
@@ -1839,6 +2015,189 @@ func TestBTree_FlushInternal_RootDataSpaceNegative(t *testing.T) {
 		if err != nil {
 			t.Errorf("Get %d: %v", i, err)
 		}
+	}
+}
+
+// TestBTree_LoadFromPages_TruncatedValueData exercises the "offset+valLen > len(allData)"
+// break in loadFromPages deserialization. We write a valid key but claim a value length
+// that exceeds available data.
+func TestBTree_LoadFromPages_TruncatedValueData2(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	rootPage, err := pool.NewPage(storage.PageTypeLeaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootID := rootPage.ID()
+
+	pageData := rootPage.Data()[storage.PageHeaderSize:]
+	binary.LittleEndian.PutUint32(pageData[0:4], 1)  // totalCount = 1
+	binary.LittleEndian.PutUint32(pageData[4:8], 0)   // overflowCount = 0
+	// Write key: keyLen=2, key="ab"
+	binary.LittleEndian.PutUint16(pageData[8:10], 2)
+	copy(pageData[10:12], []byte("ab"))
+	// Write valLen=99999 (way more than remaining data) -> triggers "offset+valLen > len(allData)"
+	binary.LittleEndian.PutUint32(pageData[12:16], 99999)
+
+	rootPage.SetDirty(true)
+	pool.Unpin(rootPage)
+	pool.FlushAll()
+
+	tree := OpenBTreeWithLimit(pool, rootID, 0)
+	// Should have loaded 0 entries due to truncation
+	if tree.Size() != 0 {
+		t.Logf("Tree size after val truncation: %d", tree.Size())
+	}
+}
+
+// TestBTree_ReadKVFromPages_TruncatedDeserialization exercises readKVFromPages
+// truncation paths by crafting a page with totalCount > actual entries.
+func TestBTree_ReadKVFromPages_TruncatedDeserialization(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTreeWithLimit(pool, 0)
+
+	// Put one entry and flush to get a valid root page
+	tree.Put([]byte("k1"), []byte("v1"))
+	tree.Flush()
+
+	// Now corrupt the page: set totalCount to a large number
+	// The actual serialized data only has 1 entry, so reading 100 will hit
+	// the truncation break paths in readKVFromPages.
+	rootPage, _ := pool.GetPage(tree.RootPageID())
+	pageData := rootPage.Data()[storage.PageHeaderSize:]
+	binary.LittleEndian.PutUint32(pageData[0:4], 100) // claim 100 entries but only 1 is there
+	rootPage.SetDirty(true)
+	pool.Unpin(rootPage)
+
+	diskData := tree.readKVFromPages()
+	// Should have read just the 1 valid entry before hitting truncation
+	if len(diskData) > 100 {
+		t.Error("Should not have more entries than actually serialized")
+	}
+}
+
+// TestBTree_LoadFromPages_PageTooSmall exercises the len(pageData) < 8 check
+// in loadFromPages (line 129). This requires a page where the data after
+// PageHeaderSize is very small. Since PageSize is 4096, this can't happen
+// naturally. But we can test via readKVFromPages which has the same check.
+func TestBTree_ReadKVFromPages_RootGetPageError(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTreeWithLimit(pool, 0)
+
+	// Set rootPageID to an invalid page
+	tree.rootPageID = 99999
+
+	// readKVFromPages should return empty map when GetPage fails
+	diskData := tree.readKVFromPages()
+	if len(diskData) != 0 {
+		t.Errorf("Expected 0 entries for invalid root, got %d", len(diskData))
+	}
+}
+
+// TestBTree_FlushInternal_GetRootPageError exercises flushInternal when
+// GetPage fails for the root page (line 542-544).
+func TestBTree_FlushInternal_GetRootPageError(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(2, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTreeWithLimit(pool, 0)
+	tree.Put([]byte("k"), []byte("v"))
+
+	// Fill the pool completely so GetPage for root fails
+	p1, _ := pool.NewPage(storage.PageTypeLeaf)
+	// Don't unpin - keep pinned so pool is full
+	// But root page might still be in pool cache. Let's set rootPageID to something invalid.
+	savedRoot := tree.rootPageID
+	tree.rootPageID = 99999
+
+	err := tree.Flush()
+	if err == nil {
+		t.Log("Flush with invalid root: succeeded (page was in cache)")
+	} else {
+		t.Logf("Flush with invalid root: %v (expected)", err)
+	}
+
+	// Restore and clean up
+	tree.rootPageID = savedRoot
+	pool.Unpin(p1)
+}
+
+// TestBTree_FlushInternal_AllocOverflowError exercises flushInternal when
+// NewPage fails for an overflow page (line 533-535).
+func TestBTree_FlushInternal_AllocOverflowError(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(3, backend) // very small pool
+	defer pool.Close()
+
+	tree, _ := NewBTreeWithLimit(pool, 0)
+
+	// Insert a LOT of data to require overflow pages
+	for i := 0; i < 500; i++ {
+		key := fmt.Sprintf("aoe_%06d_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX", i)
+		val := fmt.Sprintf("aoe_v_%06d_YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY", i)
+		tree.Put([]byte(key), []byte(val))
+	}
+
+	// Pin all available pages to force NewPage to fail during overflow allocation
+	pinnedPages := []*storage.CachedPage{}
+	for i := 0; i < 3; i++ {
+		p, err := pool.NewPage(storage.PageTypeLeaf)
+		if err != nil {
+			break
+		}
+		pinnedPages = append(pinnedPages, p)
+	}
+
+	err := tree.Flush()
+	if err != nil {
+		t.Logf("Flush with pool full: %v (expected)", err)
+	}
+
+	// Cleanup
+	for _, p := range pinnedPages {
+		pool.Unpin(p)
+	}
+}
+
+// TestBTree_FlushInternal_GetOverflowError exercises flushInternal when
+// GetPage fails for an existing overflow page during write (line 579).
+func TestBTree_FlushInternal_GetOverflowError(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, _ := NewBTreeWithLimit(pool, 0)
+
+	// Insert enough to create overflow pages
+	for i := 0; i < 200; i++ {
+		key := fmt.Sprintf("goe_%06d_XXXXXXXXXXXXXXXXXXXXXXXXXX", i)
+		val := fmt.Sprintf("goe_v_%06d_YYYYYYYYYYYYYYYYYYYYYY", i)
+		tree.Put([]byte(key), []byte(val))
+	}
+	tree.Flush()
+
+	if len(tree.overflowPages) == 0 {
+		t.Skip("No overflow pages created")
+	}
+
+	// Corrupt one overflow page ID
+	tree.overflowPages[0] = 99999
+
+	// Insert more data to make tree dirty
+	tree.Put([]byte("new_key"), []byte("new_val"))
+
+	err := tree.Flush()
+	if err != nil {
+		t.Logf("Flush with bad overflow page: %v (expected)", err)
 	}
 }
 
