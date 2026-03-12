@@ -90,7 +90,6 @@ func (c *Catalog) buildJSONIndex(idx *JSONIndexDef) error {
 		rowNum++
 	}
 
-	iter.Close()
 	return nil
 }
 

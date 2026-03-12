@@ -159,6 +159,12 @@ func (t *DiskBTree) writeEntries(page *storage.CachedPage, entries []Entry) erro
 	offset := storage.PageHeaderSize
 
 	for _, entry := range entries {
+		if len(entry.Key) > 65535 {
+			return fmt.Errorf("key too long for disk page: %d bytes (max 65535)", len(entry.Key))
+		}
+		if len(entry.Value) > 65535 {
+			return fmt.Errorf("value too long for disk page: %d bytes (max 65535)", len(entry.Value))
+		}
 		if offset+4+len(entry.Key)+len(entry.Value) > len(data) {
 			return fmt.Errorf("page overflow")
 		}
@@ -364,6 +370,7 @@ func (t *DiskBTree) splitRoot() error {
 	}
 
 	t.pm.GetPool().Unpin(oldRootPage)
+	t.pm.GetPool().Unpin(rootPage)
 
 	return nil
 }
