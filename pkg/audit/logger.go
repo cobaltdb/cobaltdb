@@ -566,12 +566,17 @@ func (al *Logger) Rotate() error {
 		return nil
 	}
 
-	al.file.Close()
+	if err := al.file.Close(); err != nil {
+		return fmt.Errorf("failed to close log file for rotation: %w", err)
+	}
+	al.file = nil
 
 	timestamp := time.Now().Format("20060102_150405")
 	backupName := al.config.LogFile + "." + timestamp
 	if err := os.Rename(al.config.LogFile, backupName); err != nil {
-		return err
+		// Rename failed — reopen the original file so logging can continue
+		_ = al.openLogFile()
+		return fmt.Errorf("failed to rename log file: %w", err)
 	}
 
 	return al.openLogFile()

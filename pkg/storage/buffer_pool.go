@@ -27,7 +27,7 @@ type CachedPage struct {
 	id          uint32        // 4 bytes
 	pinned      int32         // 4 bytes, atomic pin count
 	accessCount uint32        // 4 bytes, atomic access counter for probabilistic LRU
-	dirty       bool          // 1 byte
+	dirty       uint32        // 4 bytes, atomic: 1 = dirty, 0 = clean
 }
 
 // ID returns the page ID
@@ -47,12 +47,16 @@ func (p *CachedPage) SetData(data []byte) {
 
 // IsDirty returns true if the page has been modified
 func (p *CachedPage) IsDirty() bool {
-	return p.dirty
+	return atomic.LoadUint32(&p.dirty) != 0
 }
 
 // SetDirty marks the page as dirty
 func (p *CachedPage) SetDirty(dirty bool) {
-	p.dirty = dirty
+	if dirty {
+		atomic.StoreUint32(&p.dirty, 1)
+	} else {
+		atomic.StoreUint32(&p.dirty, 0)
+	}
 }
 
 // Pin increments the pin count
@@ -163,7 +167,7 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 	page := &CachedPage{
 		id:     pageID,
 		data:   data,
-		dirty:  false,
+		dirty:  0, // atomic: 0 = clean
 		pinned: 1,
 	}
 	bp.pages[pageID] = page
@@ -195,7 +199,7 @@ func (bp *BufferPool) NewPage(pageType PageType) (*CachedPage, error) {
 	cached := &CachedPage{
 		id:     pageID,
 		data:   page.Data,
-		dirty:  true,
+		dirty:  1, // atomic: 1 = dirty
 		pinned: 1,
 	}
 	bp.pages[pageID] = cached

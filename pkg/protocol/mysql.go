@@ -210,7 +210,7 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 			// Prevent a panicking client from crashing the server
 			_ = r
 		}
-		if client.cancel != nil {
+		if client != nil && client.cancel != nil {
 			client.cancel()
 		}
 		_ = conn.Close()

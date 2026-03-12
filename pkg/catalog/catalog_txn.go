@@ -106,6 +106,8 @@ func (c *Catalog) CommitTransaction() error {
 }
 
 func (c *Catalog) FlushTableTrees() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	for tableName, tree := range c.tableTrees {
 		if err := tree.Flush(); err != nil {
 			return fmt.Errorf("failed to flush table %s: %w", tableName, err)

@@ -151,7 +151,10 @@ func (s *Server) acceptLoop() error {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
-			if s.closed {
+			s.mu.RLock()
+			closed := s.closed
+			s.mu.RUnlock()
+			if closed {
 				return nil
 			}
 			return err
