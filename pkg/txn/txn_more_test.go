@@ -1,7 +1,10 @@
 package txn
 
 import (
+	"fmt"
 	"testing"
+
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
 // TestManagerGet tests Manager.Get function
@@ -351,5 +354,130 @@ func TestCommitWithApplyWritesError(t *testing.T) {
 		if version != txn.ID {
 			t.Errorf("Expected version %d, got %d", txn.ID, version)
 		}
+	}
+}
+
+// TestApplyWritesWithWAL tests the WAL write path in applyWrites
+func TestApplyWritesWithWAL(t *testing.T) {
+	dir := t.TempDir()
+	disk, err := storage.OpenDisk(dir + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+
+	pool := storage.NewBufferPool(1024, disk)
+	defer pool.Close()
+
+	wal, err := storage.OpenWAL(dir + "/test.wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+
+	mgr := NewManager(pool, wal)
+
+	txn := mgr.Begin(nil)
+	txn.SetWrite("key1", []byte("value1"))
+	txn.SetWrite("key2", []byte("value2"))
+
+	if err := txn.Commit(); err != nil {
+		t.Fatalf("commit with WAL failed: %v", err)
+	}
+
+	// Verify versions were updated
+	if mgr.GetCurrentVersion("key1") == 0 {
+		t.Error("expected version for key1")
+	}
+	if mgr.GetCurrentVersion("key2") == 0 {
+		t.Error("expected version for key2")
+	}
+}
+
+// TestApplyWritesWithPool tests the BufferPool path in applyWrites
+func TestApplyWritesWithPool(t *testing.T) {
+	pool := storage.NewBufferPool(1024, storage.NewMemory())
+	defer pool.Close()
+
+	mgr := NewManager(pool, nil)
+
+	txn := mgr.Begin(nil)
+	txn.SetWrite("test:1", []byte("data"))
+
+	if err := txn.Commit(); err != nil {
+		t.Fatalf("commit with pool failed: %v", err)
+	}
+}
+
+// TestApplyWritesWithPoolAndWAL tests both pool and WAL paths
+func TestApplyWritesWithPoolAndWAL(t *testing.T) {
+	dir := t.TempDir()
+	disk, err := storage.OpenDisk(dir + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+
+	pool := storage.NewBufferPool(1024, disk)
+	defer pool.Close()
+
+	wal, err := storage.OpenWAL(dir + "/test.wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+
+	mgr := NewManager(pool, wal)
+
+	// Multiple transactions
+	for i := 0; i < 5; i++ {
+		txn := mgr.Begin(nil)
+		txn.SetWrite(fmt.Sprintf("key%d", i), []byte(fmt.Sprintf("val%d", i)))
+		if err := txn.Commit(); err != nil {
+			t.Fatalf("commit %d failed: %v", i, err)
+		}
+	}
+
+	if mgr.GetCurrentVersion("key0") == 0 {
+		t.Error("expected version for key0")
+	}
+}
+
+// TestCommitConflictWithWAL tests conflict detection with WAL enabled
+func TestCommitConflictWithWAL(t *testing.T) {
+	dir := t.TempDir()
+	disk, err := storage.OpenDisk(dir + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+
+	pool := storage.NewBufferPool(1024, disk)
+	defer pool.Close()
+
+	wal, err := storage.OpenWAL(dir + "/test.wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+
+	mgr := NewManager(pool, wal)
+
+	// Transaction 1 reads a key
+	txn1 := mgr.Begin(nil)
+	txn1.SetReadVersion("shared_key", 0)
+
+	// Transaction 2 writes the same key and commits
+	txn2 := mgr.Begin(nil)
+	txn2.SetWrite("shared_key", []byte("txn2_value"))
+	if err := txn2.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Transaction 1 tries to write and commit — should conflict
+	txn1.SetWrite("shared_key", []byte("txn1_value"))
+	err = txn1.Commit()
+	if err != ErrConflict {
+		t.Fatalf("expected ErrConflict, got: %v", err)
 	}
 }
