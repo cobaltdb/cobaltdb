@@ -96,7 +96,10 @@ func (w *WAL) readLSN() error {
 	for {
 		record, err := w.readRecord(reader, headerBuf[:])
 		if err != nil {
-			break // End of file or corruption
+			if errors.Is(err, ErrWALCorrupted) {
+				return fmt.Errorf("WAL recovery failed at LSN %d: %w", lastLSN, ErrWALCorrupted)
+			}
+			break // End of file (io.EOF or io.ErrUnexpectedEOF from partial trailing record)
 		}
 		lastLSN = record.LSN
 		if record.Type == WALCheckpoint {

@@ -263,7 +263,13 @@ func (bp *BufferPool) touchLRUUnsafe(page *CachedPage) {
 	}
 }
 
-// evict removes the least recently used unpinned page
+// evict removes the least recently used unpinned page.
+// NOTE: This is called while holding bp.mu (write lock). If the victim page is
+// dirty, FlushPage performs synchronous I/O under the lock, which can block
+// concurrent GetPage/NewPage callers. This is a known limitation; a background
+// flusher or write-behind queue would avoid holding the lock during I/O but adds
+// significant complexity. In practice the impact is limited because eviction only
+// occurs when the pool is at capacity.
 func (bp *BufferPool) evict() error {
 	elem := bp.lru.Back()
 	for elem != nil {

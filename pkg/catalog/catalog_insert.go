@@ -562,10 +562,17 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			continue
 		}
 		if insertErr != nil {
-			// Row was stored but index failed - delete the row
+			// Row was stored but index failed - delete the row and roll back
+			// any index entries that were successfully inserted in this iteration.
 			if err := tree.Delete([]byte(key)); err != nil {
-				// Best effort cleanup failed, continue with original error
-				_ = err
+				_ = err // best-effort cleanup
+			}
+			for _, undo := range idxChanges {
+				if undo.wasAdded {
+					if idxTree2, ok := c.indexTrees[undo.indexName]; ok {
+						_ = idxTree2.Delete(undo.key) // best-effort cleanup
+					}
+				}
 			}
 			break
 		}

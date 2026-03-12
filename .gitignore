@@ -9,6 +9,7 @@ bin/
 # Test artifacts
 *.test
 *.out
+cover.html
 coverage.html
 coverage.out
 

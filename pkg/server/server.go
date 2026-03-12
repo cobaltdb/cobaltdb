@@ -533,7 +533,14 @@ func (c *ClientConn) sendMessage(msg interface{}) error {
 	if payload != nil {
 		payData, err = wire.Encode(payload)
 		if err != nil {
-			return err
+			// Encoding failed — send an error message to the client instead of
+			// silently dropping the response (which would leave the client hanging).
+			if msgType != wire.MsgError {
+				fallbackErr := wire.NewErrorMessage(5, "internal: failed to encode response")
+				return c.sendMessage(fallbackErr)
+			}
+			// If even the error message can't be encoded, give up.
+			return fmt.Errorf("failed to encode error message: %w", err)
 		}
 	}
 
