@@ -876,7 +876,11 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 
 	switch s := stmt.(type) {
 	case *query.CreateTableStmt:
-		return db.executeCreateTable(ctx, s)
+		result, err := db.executeCreateTable(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_TABLE", audit.WithTable(s.Table))
+		}
+		return result, err
 	case *query.InsertStmt:
 		result, err := db.executeInsert(ctx, s, args)
 		if db.auditLogger != nil {
@@ -962,6 +966,9 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 			return Result{}, errors.New("transaction already in progress")
 		}
 		transaction := db.txnMgr.Begin(txn.DefaultOptions())
+		if transaction == nil {
+			return Result{}, errors.New("failed to begin transaction")
+		}
 		db.catalog.BeginTransaction(transaction.ID)
 		return Result{}, nil
 	case *query.CommitStmt:
@@ -1019,7 +1026,11 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 	case *query.CreateFTSIndexStmt:
 		return db.executeCreateFTSIndex(ctx, s)
 	case *query.AlterTableStmt:
-		return db.executeAlterTable(ctx, s)
+		result, err := db.executeAlterTable(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, "db_user", "ALTER_TABLE", audit.WithTable(s.Table))
+		}
+		return result, err
 	case *query.SetVarStmt:
 		// MySQL compatibility - accept SET commands silently
 		return Result{}, nil
@@ -1028,8 +1039,8 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		return Result{}, nil
 	case *query.ShowTablesStmt, *query.ShowCreateTableStmt, *query.ShowColumnsStmt,
 		*query.ShowDatabasesStmt, *query.DescribeStmt:
-		// These are query-like statements but may come through Exec
-		return Result{}, nil
+		// These are query-like statements that return rows — use Query() instead
+		return Result{}, errors.New("use Query() instead of Exec() for SELECT/SHOW statements")
 	case *query.DropIndexStmt:
 		// Try FTS index first, then regular index
 		if _, err := db.catalog.GetFTSIndex(s.Index); err == nil {
@@ -1494,6 +1505,8 @@ func (db *DB) executeUnion(ctx context.Context, stmt *query.UnionStmt, args []in
 	}
 
 	// Execute right side
+	// Note: stmt.Right is always *SelectStmt by parser design (see query.UnionStmt).
+	// Nested unions are represented via Left chaining, not Right nesting.
 	rightRows, err := db.executeSelect(ctx, stmt.Right, args)
 	if err != nil {
 		return nil, err

@@ -352,7 +352,13 @@ func TestV18ComprehensiveSQL(t *testing.T) {
 	// ============================================================
 	// === SHOW/DESCRIBE ===
 	// ============================================================
-	checkNoError("SHOW TABLES works", "SHOW TABLES")
+	// SHOW TABLES must use Query() not Exec()
+	total++
+	if _, err := db.Query(ctx, "SHOW TABLES"); err != nil {
+		t.Errorf("[FAIL] SHOW TABLES works: %v", err)
+	} else {
+		pass++
+	}
 
 	t.Logf("\n=== V18 COMPREHENSIVE SQL: %d/%d tests passed ===", pass, total)
 	if pass < total {

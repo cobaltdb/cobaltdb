@@ -314,7 +314,13 @@ func TestV27StressCorrectness(t *testing.T) {
 	// ============================================================
 	// === SHOW TABLES ===
 	// ============================================================
-	checkNoError("SHOW TABLES runs", "SHOW TABLES")
+	// SHOW TABLES must use Query() not Exec()
+	total++
+	if _, err := db.Query(ctx, "SHOW TABLES"); err != nil {
+		t.Errorf("[FAIL] SHOW TABLES runs: %v", err)
+	} else {
+		pass++
+	}
 
 	t.Logf("\n=== V27 STRESS CORRECTNESS: %d/%d tests passed ===", pass, total)
 	if pass < total {

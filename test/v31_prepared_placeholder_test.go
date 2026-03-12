@@ -234,7 +234,13 @@ func TestV31PreparedAndPlaceholder(t *testing.T) {
 	// ============================================================
 	// === SHOW TABLES ===
 	// ============================================================
-	checkNoError("SHOW TABLES", "SHOW TABLES")
+	// SHOW TABLES must use Query() not Exec()
+	total++
+	if _, err := db.Query(ctx, "SHOW TABLES"); err != nil {
+		t.Errorf("[FAIL] SHOW TABLES: %v", err)
+	} else {
+		pass++
+	}
 
 	// ============================================================
 	// === CASCADE UPDATE VIA FK ===
