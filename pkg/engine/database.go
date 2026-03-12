@@ -835,6 +835,16 @@ func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 	}, nil
 }
 
+// auditUser extracts the username from context for audit logging.
+func auditUser(ctx context.Context) string {
+	if ctx != nil {
+		if user, ok := ctx.Value("cobaltdb_user").(string); ok && user != "" {
+			return user
+		}
+	}
+	return "db_user"
+}
+
 // execute executes a statement
 func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interface{}) (result Result, err error) {
 	start := time.Now()
@@ -878,89 +888,93 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 	case *query.CreateTableStmt:
 		result, err := db.executeCreateTable(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_TABLE", audit.WithTable(s.Table))
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_TABLE", audit.WithTable(s.Table))
 		}
 		return result, err
 	case *query.InsertStmt:
 		result, err := db.executeInsert(ctx, s, args)
 		if db.auditLogger != nil {
-			db.auditLogger.LogQuery("db_user", "INSERT", time.Since(start), result.RowsAffected, err)
+			db.auditLogger.LogQuery(auditUser(ctx), "INSERT", time.Since(start), result.RowsAffected, err)
 		}
 		return result, err
 	case *query.UpdateStmt:
 		result, err := db.executeUpdate(ctx, s, args)
 		if db.auditLogger != nil {
-			db.auditLogger.LogQuery("db_user", "UPDATE", time.Since(start), result.RowsAffected, err)
+			db.auditLogger.LogQuery(auditUser(ctx), "UPDATE", time.Since(start), result.RowsAffected, err)
 		}
 		return result, err
 	case *query.DeleteStmt:
 		result, err := db.executeDelete(ctx, s, args)
 		if db.auditLogger != nil {
-			db.auditLogger.LogQuery("db_user", "DELETE", time.Since(start), result.RowsAffected, err)
+			db.auditLogger.LogQuery(auditUser(ctx), "DELETE", time.Since(start), result.RowsAffected, err)
 		}
 		return result, err
 	case *query.DropTableStmt:
 		result, err := db.executeDropTable(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "DROP_TABLE", audit.WithTable(s.Table))
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_TABLE", audit.WithTable(s.Table))
 		}
 		return result, err
 	case *query.CreateIndexStmt:
 		result, err := db.executeCreateIndex(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_INDEX", audit.WithTable(s.Table))
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_INDEX", audit.WithTable(s.Table))
 		}
 		return result, err
 	case *query.CreateViewStmt:
 		result, err := db.executeCreateView(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_VIEW", audit.WithTable(s.Name))
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_VIEW", audit.WithTable(s.Name))
 		}
 		return result, err
 	case *query.DropViewStmt:
 		result, err := db.executeDropView(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "DROP_VIEW", audit.WithTable(s.Name))
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_VIEW", audit.WithTable(s.Name))
 		}
 		return result, err
 	case *query.CreateTriggerStmt:
 		result, err := db.executeCreateTrigger(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_TRIGGER", audit.WithTable(s.Table))
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_TRIGGER", audit.WithTable(s.Table))
 		}
 		return result, err
 	case *query.DropTriggerStmt:
 		result, err := db.executeDropTrigger(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "DROP_TRIGGER")
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_TRIGGER")
 		}
 		return result, err
 	case *query.CreateProcedureStmt:
 		result, err := db.executeCreateProcedure(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_PROCEDURE")
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_PROCEDURE")
 		}
 		return result, err
 	case *query.DropProcedureStmt:
 		result, err := db.executeDropProcedure(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "DROP_PROCEDURE")
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_PROCEDURE")
 		}
 		return result, err
 	case *query.CreatePolicyStmt:
 		result, err := db.executeCreatePolicy(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "CREATE_POLICY", audit.WithTable(s.Table))
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_POLICY", audit.WithTable(s.Table))
 		}
 		return result, err
 	case *query.DropPolicyStmt:
 		result, err := db.executeDropPolicy(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "DROP_POLICY")
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_POLICY")
 		}
 		return result, err
 	case *query.CallProcedureStmt:
-		return db.executeCallProcedure(ctx, s, args)
+		result, err := db.executeCallProcedure(ctx, s, args)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CALL_PROCEDURE")
+		}
+		return result, err
 	case *query.BeginStmt:
 		if db.catalog.IsTransactionActive() {
 			return Result{}, errors.New("transaction already in progress")
@@ -1014,21 +1028,45 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		}
 		return Result{}, nil
 	case *query.VacuumStmt:
-		return db.executeVacuum(ctx, s)
+		result, err := db.executeVacuum(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventAdmin, auditUser(ctx), "VACUUM")
+		}
+		return result, err
 	case *query.AnalyzeStmt:
-		return db.executeAnalyze(ctx, s)
+		result, err := db.executeAnalyze(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventAdmin, auditUser(ctx), "ANALYZE")
+		}
+		return result, err
 	case *query.CreateMaterializedViewStmt:
-		return db.executeCreateMaterializedView(ctx, s)
+		result, err := db.executeCreateMaterializedView(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_MATERIALIZED_VIEW")
+		}
+		return result, err
 	case *query.DropMaterializedViewStmt:
-		return db.executeDropMaterializedView(ctx, s)
+		result, err := db.executeDropMaterializedView(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_MATERIALIZED_VIEW")
+		}
+		return result, err
 	case *query.RefreshMaterializedViewStmt:
-		return db.executeRefreshMaterializedView(ctx, s)
+		result, err := db.executeRefreshMaterializedView(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "REFRESH_MATERIALIZED_VIEW")
+		}
+		return result, err
 	case *query.CreateFTSIndexStmt:
-		return db.executeCreateFTSIndex(ctx, s)
+		result, err := db.executeCreateFTSIndex(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_FTS_INDEX")
+		}
+		return result, err
 	case *query.AlterTableStmt:
 		result, err := db.executeAlterTable(ctx, s)
 		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, "db_user", "ALTER_TABLE", audit.WithTable(s.Table))
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "ALTER_TABLE", audit.WithTable(s.Table))
 		}
 		return result, err
 	case *query.SetVarStmt:
@@ -1047,11 +1085,17 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 			if err := db.catalog.DropFTSIndex(s.Index); err != nil {
 				return Result{}, err
 			}
+			if db.auditLogger != nil {
+				db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_INDEX")
+			}
 			return Result{RowsAffected: 0}, nil
 		}
 		// Try regular index
 		if err := db.catalog.DropIndex(s.Index); err != nil {
 			return Result{}, err
+		}
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_INDEX")
 		}
 		return Result{RowsAffected: 0}, nil
 	default:
@@ -1061,6 +1105,8 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 
 // query executes a query and returns rows
 func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{}) (*Rows, error) {
+	start := time.Now()
+
 	// Check for context cancellation
 	if ctx != nil {
 		select {
@@ -1072,11 +1118,35 @@ func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{
 
 	switch s := stmt.(type) {
 	case *query.SelectStmt:
-		return db.executeSelect(ctx, s, args)
+		rows, err := db.executeSelect(ctx, s, args)
+		if db.auditLogger != nil {
+			var rowCount int64
+			if rows != nil {
+				rowCount = int64(len(rows.rows))
+			}
+			db.auditLogger.LogQuery(auditUser(ctx), "SELECT", time.Since(start), rowCount, err)
+		}
+		return rows, err
 	case *query.UnionStmt:
-		return db.executeUnion(ctx, s, args)
+		rows, err := db.executeUnion(ctx, s, args)
+		if db.auditLogger != nil {
+			var rowCount int64
+			if rows != nil {
+				rowCount = int64(len(rows.rows))
+			}
+			db.auditLogger.LogQuery(auditUser(ctx), "SELECT", time.Since(start), rowCount, err)
+		}
+		return rows, err
 	case *query.SelectStmtWithCTE:
-		return db.executeSelectWithCTE(ctx, s, args)
+		rows, err := db.executeSelectWithCTE(ctx, s, args)
+		if db.auditLogger != nil {
+			var rowCount int64
+			if rows != nil {
+				rowCount = int64(len(rows.rows))
+			}
+			db.auditLogger.LogQuery(auditUser(ctx), "SELECT", time.Since(start), rowCount, err)
+		}
+		return rows, err
 	case *query.ShowTablesStmt:
 		return db.executeShowTablesQuery(ctx)
 	case *query.ShowCreateTableStmt:
