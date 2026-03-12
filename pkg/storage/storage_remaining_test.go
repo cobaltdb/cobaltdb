@@ -3,6 +3,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"fmt"
 	"testing"
 )
 
@@ -476,5 +477,261 @@ func TestWALRecoverWithApply(t *testing.T) {
 	err = wal2.Recover(pool)
 	if err != nil {
 		t.Logf("Recover result: %v", err)
+	}
+}
+
+// TestWALRecoverCommitThenData tests recovery with commit record followed by data
+func TestWALRecoverCommitThenData(t *testing.T) {
+	tmpDir := t.TempDir()
+	walPath := filepath.Join(tmpDir, "test.wal")
+
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backend := NewMemory()
+	pool := NewBufferPool(1024, backend)
+	defer pool.Close()
+
+	page, _ := pool.NewPage(PageTypeLeaf)
+	pageID := page.ID()
+	pool.Unpin(page)
+
+	txnID := uint64(1)
+
+	// Write data, then commit
+	wal.Append(&WALRecord{TxnID: txnID, Type: WALInsert, PageID: pageID, Offset: 100, Data: []byte("hello")})
+	wal.Append(&WALRecord{TxnID: txnID, Type: WALCommit})
+
+	// Write more data for same txn (post-commit - should apply immediately)
+	wal.Append(&WALRecord{TxnID: txnID, Type: WALUpdate, PageID: pageID, Offset: 200, Data: []byte("world")})
+
+	wal.Close()
+
+	wal2, _ := OpenWAL(walPath)
+	defer wal2.Close()
+
+	err = wal2.Recover(pool)
+	if err != nil {
+		t.Fatalf("recovery with commit failed: %v", err)
+	}
+
+	// Verify data was applied
+	p, err := pool.GetPage(pageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Unpin(p)
+	if string(p.Data()[100:105]) != "hello" {
+		t.Errorf("expected 'hello' at offset 100, got %q", string(p.Data()[100:105]))
+	}
+	if string(p.Data()[200:205]) != "world" {
+		t.Errorf("expected 'world' at offset 200, got %q", string(p.Data()[200:205]))
+	}
+}
+
+// TestWALRecoverRollback tests recovery discards rolled-back transactions
+func TestWALRecoverRollback(t *testing.T) {
+	tmpDir := t.TempDir()
+	walPath := filepath.Join(tmpDir, "test.wal")
+
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backend := NewMemory()
+	pool := NewBufferPool(1024, backend)
+	defer pool.Close()
+
+	page, _ := pool.NewPage(PageTypeLeaf)
+	pageID := page.ID()
+	pool.Unpin(page)
+
+	txnID := uint64(42)
+
+	// Write data, then rollback — data should NOT be applied
+	wal.Append(&WALRecord{TxnID: txnID, Type: WALInsert, PageID: pageID, Offset: 50, Data: []byte("rolled_back")})
+	wal.Append(&WALRecord{TxnID: txnID, Type: WALRollback})
+
+	wal.Close()
+
+	wal2, _ := OpenWAL(walPath)
+	defer wal2.Close()
+
+	err = wal2.Recover(pool)
+	if err != nil {
+		t.Fatalf("recovery with rollback failed: %v", err)
+	}
+
+	// Verify data was NOT applied (page should still have zeros)
+	p, err := pool.GetPage(pageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Unpin(p)
+	if string(p.Data()[50:61]) == "rolled_back" {
+		t.Error("rolled-back data should not be applied")
+	}
+}
+
+// TestWALRecoverMultipleTxns tests recovery with multiple transactions
+func TestWALRecoverMultipleTxns(t *testing.T) {
+	tmpDir := t.TempDir()
+	walPath := filepath.Join(tmpDir, "test.wal")
+
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backend := NewMemory()
+	pool := NewBufferPool(1024, backend)
+	defer pool.Close()
+
+	page, _ := pool.NewPage(PageTypeLeaf)
+	pageID := page.ID()
+	pool.Unpin(page)
+
+	// Txn 1: committed
+	wal.Append(&WALRecord{TxnID: 1, Type: WALInsert, PageID: pageID, Offset: 100, Data: []byte("txn1")})
+	wal.Append(&WALRecord{TxnID: 1, Type: WALCommit})
+
+	// Txn 2: rolled back
+	wal.Append(&WALRecord{TxnID: 2, Type: WALInsert, PageID: pageID, Offset: 200, Data: []byte("txn2")})
+	wal.Append(&WALRecord{TxnID: 2, Type: WALRollback})
+
+	// Txn 3: committed with delete
+	wal.Append(&WALRecord{TxnID: 3, Type: WALDelete, PageID: pageID, Offset: 300, Data: []byte("txn3")})
+	wal.Append(&WALRecord{TxnID: 3, Type: WALCommit})
+
+	wal.Close()
+
+	wal2, _ := OpenWAL(walPath)
+	defer wal2.Close()
+
+	err = wal2.Recover(pool)
+	if err != nil {
+		t.Fatalf("multi-txn recovery failed: %v", err)
+	}
+
+	// Verify txn1 committed data applied
+	p, err := pool.GetPage(pageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Unpin(p)
+	if string(p.Data()[100:104]) != "txn1" {
+		t.Errorf("txn1 data not applied")
+	}
+	// txn2 rolled back — should have zeros
+	if string(p.Data()[200:204]) == "txn2" {
+		t.Errorf("txn2 rolled-back data should not be applied")
+	}
+	// txn3 committed
+	if string(p.Data()[300:304]) != "txn3" {
+		t.Errorf("txn3 data not applied")
+	}
+}
+
+// TestWALRecoverClosedWAL tests recovery on closed WAL
+func TestWALRecoverClosedWAL(t *testing.T) {
+	tmpDir := t.TempDir()
+	walPath := filepath.Join(tmpDir, "test.wal")
+
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wal.Close()
+
+	pool := NewBufferPool(1024, NewMemory())
+	defer pool.Close()
+
+	err = wal.Recover(pool)
+	if err != ErrWALClosed {
+		t.Fatalf("expected ErrWALClosed, got %v", err)
+	}
+}
+
+// TestWALRecoverEmptyWAL tests recovery on empty WAL
+func TestWALRecoverEmptyWAL(t *testing.T) {
+	tmpDir := t.TempDir()
+	walPath := filepath.Join(tmpDir, "test.wal")
+
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pool := NewBufferPool(1024, NewMemory())
+	defer pool.Close()
+
+	err = wal.Recover(pool)
+	if err != nil {
+		t.Fatalf("recovery of empty WAL should succeed, got: %v", err)
+	}
+	wal.Close()
+}
+
+// TestBufferPoolCloseAndFlush tests Close after flush operations  
+func TestBufferPoolCloseAndFlush(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(256, backend)
+	
+	// Create and dirty some pages
+	for i := 0; i < 5; i++ {
+		page, err := pool.NewPage(PageTypeLeaf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		copy(page.Data()[100:], []byte(fmt.Sprintf("data_%d", i)))
+		page.SetDirty(true)
+		pool.Unpin(page)
+	}
+	
+	// FlushAll should work
+	if err := pool.FlushAll(); err != nil {
+		t.Fatalf("FlushAll failed: %v", err)
+	}
+	
+	// Close should work after flush
+	if err := pool.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+}
+
+// TestDiskTruncateExtended tests disk truncation edge cases
+func TestDiskTruncateExtended(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "test.db")
+	
+	disk, err := OpenDisk(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+	
+	// Write some data
+	data := make([]byte, PageSize*3)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	if _, err := disk.WriteAt(data, 0); err != nil {
+		t.Fatal(err)
+	}
+	disk.Sync()
+	
+	// Truncate to 1 page
+	if err := disk.Truncate(int64(PageSize)); err != nil {
+		t.Fatalf("Truncate failed: %v", err)
+	}
+	
+	// Read should fail beyond truncated point
+	buf := make([]byte, PageSize)
+	n, err := disk.ReadAt(buf, int64(PageSize))
+	if err == nil && n == PageSize {
+		t.Error("expected error or short read after truncation")
 	}
 }

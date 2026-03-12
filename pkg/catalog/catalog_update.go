@@ -495,13 +495,21 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		return 0, 0, fmt.Errorf("failed to execute UPDATE join: %w", err)
 	}
 
-	// Collect keys of rows to update
+	// Find primary key column index in the target table
+	pkColIdx := 0
+	if len(targetTable.PrimaryKey) > 0 {
+		pkColIdx = targetTable.GetColumnIndex(targetTable.PrimaryKey[0])
+		if pkColIdx < 0 {
+			pkColIdx = 0
+		}
+	}
+
+	// Collect keys of rows to update by serializing the PK value
 	keysToUpdate := make(map[string]struct{})
 	for _, row := range resultRows {
-		if len(row) > 0 && row[0] != nil {
-			if key, ok := row[0].(string); ok {
-				keysToUpdate[key] = struct{}{}
-			}
+		if pkColIdx < len(row) && row[pkColIdx] != nil {
+			key := c.serializePK(row[pkColIdx], targetTree)
+			keysToUpdate[string(key)] = struct{}{}
 		}
 	}
 
@@ -656,15 +664,21 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		return 0, 0, fmt.Errorf("failed to execute DELETE USING: %w", err)
 	}
 
-	// Collect keys of rows to delete by getting the primary key value
+	// Find primary key column index
+	pkIdx := 0
+	if len(targetTable.PrimaryKey) > 0 {
+		pkIdx = targetTable.GetColumnIndex(targetTable.PrimaryKey[0])
+		if pkIdx < 0 {
+			pkIdx = 0
+		}
+	}
+
+	// Collect keys of rows to delete by serializing the PK value
 	keysToDelete := make(map[string]struct{})
-	pkIdx := 0 // Assume first column is PK
 	for _, row := range resultRows {
 		if pkIdx < len(row) && row[pkIdx] != nil {
-			key, err := json.Marshal(row[pkIdx])
-			if err == nil && key != nil {
-				keysToDelete[string(key)] = struct{}{}
-			}
+			key := c.serializePK(row[pkIdx], targetTree)
+			keysToDelete[string(key)] = struct{}{}
 		}
 	}
 
