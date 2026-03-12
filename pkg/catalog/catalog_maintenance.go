@@ -145,7 +145,7 @@ func (c *Catalog) Vacuum() error {
 		// Use Scan to get all entries
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
-			continue
+			return fmt.Errorf("vacuum: failed to scan table %s: %w", name, err)
 		}
 
 		// Collect all entries
@@ -155,7 +155,11 @@ func (c *Catalog) Vacuum() error {
 		}
 		var entries []entry
 		for iter.HasNext() {
-			key, value, _ := iter.Next()
+			key, value, iterErr := iter.Next()
+			if iterErr != nil {
+				iter.Close()
+				return fmt.Errorf("vacuum: failed to read entry from table %s: %w", name, iterErr)
+			}
 			if key == nil {
 				break
 			}
@@ -170,12 +174,11 @@ func (c *Catalog) Vacuum() error {
 		// Create a new tree and copy data
 		newTree, err := btree.NewBTree(c.pool)
 		if err != nil {
-			continue
+			return fmt.Errorf("vacuum: failed to create new tree for table %s: %w", name, err)
 		}
 		for _, e := range entries {
 			if err := newTree.Put(e.key, e.value); err != nil {
-				// Handle error during Put
-				continue
+				return fmt.Errorf("vacuum: failed to copy entry in table %s: %w", name, err)
 			}
 		}
 
@@ -186,7 +189,7 @@ func (c *Catalog) Vacuum() error {
 	for name, tree := range c.indexTrees {
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
-			continue
+			return fmt.Errorf("vacuum: failed to scan index %s: %w", name, err)
 		}
 
 		type entry struct {
@@ -195,7 +198,11 @@ func (c *Catalog) Vacuum() error {
 		}
 		var entries []entry
 		for iter.HasNext() {
-			key, value, _ := iter.Next()
+			key, value, iterErr := iter.Next()
+			if iterErr != nil {
+				iter.Close()
+				return fmt.Errorf("vacuum: failed to read entry from index %s: %w", name, iterErr)
+			}
 			if key == nil {
 				break
 			}
@@ -209,10 +216,12 @@ func (c *Catalog) Vacuum() error {
 
 		newTree, err := btree.NewBTree(c.pool)
 		if err != nil {
-			continue
+			return fmt.Errorf("vacuum: failed to create new tree for index %s: %w", name, err)
 		}
 		for _, e := range entries {
-			newTree.Put(e.key, e.value)
+			if err := newTree.Put(e.key, e.value); err != nil {
+				return fmt.Errorf("vacuum: failed to copy entry in index %s: %w", name, err)
+			}
 		}
 
 		c.indexTrees[name] = newTree
@@ -247,7 +256,10 @@ func (c *Catalog) Analyze(tableName string) error {
 	nullCounts := make(map[string]int64)
 
 	for iter.HasNext() {
-		_, value, _ := iter.Next()
+		_, value, iterErr := iter.Next()
+		if iterErr != nil {
+			return fmt.Errorf("analyze: failed to read row: %w", iterErr)
+		}
 		if value == nil {
 			break
 		}

@@ -18,8 +18,10 @@ var (
 	ErrTreeFull        = errors.New("tree is full")
 	ErrInvalidKey      = errors.New("invalid key")
 	ErrInvalidValue    = errors.New("invalid value")
+	ErrKeyTooLong      = errors.New("key exceeds maximum length of 65535 bytes")
 	ErrMemoryLimit     = errors.New("memory limit exceeded")
 	DefaultMemoryLimit = int64(64 * 1024 * 1024) // 64MB default
+	MaxKeyLength       = 65535                     // uint16 max - serialization limit
 )
 
 // lruEntry tracks memory usage for LRU eviction
@@ -248,6 +250,9 @@ func (t *BTree) Get(key []byte) ([]byte, error) {
 func (t *BTree) Put(key, value []byte) error {
 	if len(key) == 0 {
 		return ErrInvalidKey
+	}
+	if len(key) > MaxKeyLength {
+		return ErrKeyTooLong
 	}
 	if len(value) == 0 {
 		return ErrInvalidValue
