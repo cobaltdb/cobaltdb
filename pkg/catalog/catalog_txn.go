@@ -520,6 +520,51 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 					}
 				}
 			}
+		case undoAlterRename:
+			// Undo ALTER TABLE RENAME: swap names back
+			if tbl, exists := c.tables[entry.newName]; exists {
+				delete(c.tables, entry.newName)
+				c.tables[entry.oldName] = tbl
+				if tree, treeExists := c.tableTrees[entry.newName]; treeExists {
+					delete(c.tableTrees, entry.newName)
+					c.tableTrees[entry.oldName] = tree
+				}
+				for _, idxDef := range c.indexes {
+					if idxDef.TableName == entry.newName {
+						idxDef.TableName = entry.oldName
+					}
+				}
+				if stats, sExists := c.stats[entry.newName]; sExists {
+					delete(c.stats, entry.newName)
+					c.stats[entry.oldName] = stats
+				}
+			}
+		case undoAlterRenameColumn:
+			// Undo ALTER TABLE RENAME COLUMN: restore old column name
+			if tbl, exists := c.tables[entry.tableName]; exists {
+				for i, col := range tbl.Columns {
+					if strings.EqualFold(col.Name, entry.newName) {
+						tbl.Columns[i].Name = entry.oldName
+						break
+					}
+				}
+				for i, pkCol := range tbl.PrimaryKey {
+					if strings.EqualFold(pkCol, entry.newName) {
+						tbl.PrimaryKey[i] = entry.oldName
+					}
+				}
+				tbl.buildColumnIndexCache()
+				for _, idxDef := range c.indexes {
+					if idxDef.TableName == entry.tableName {
+						for i, idxCol := range idxDef.Columns {
+							if strings.EqualFold(idxCol, entry.newName) {
+								idxDef.Columns[i] = entry.oldName
+							}
+						}
+					}
+				}
+				_ = c.storeTableDef(tbl)
+			}
 		}
 
 		// Reverse index changes
