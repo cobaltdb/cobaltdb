@@ -159,6 +159,8 @@ func generateSalt() (string, error) {
 
 // SetPasswordPolicy enables or disables password complexity enforcement
 func (a *Authenticator) SetPasswordPolicy(enforce bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.enforcePasswordPolicy = enforce
 }
 
@@ -264,16 +266,16 @@ func (a *Authenticator) UserExists(username string) bool {
 
 // Authenticate authenticates a user and returns a session token
 func (a *Authenticator) Authenticate(username, password string) (string, error) {
-	// Check lockout before acquiring main lock
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Check lockout (lock ordering: mu first, then failedMu)
 	a.failedMu.RLock()
 	if attempt, exists := a.failedAttempts[username]; exists && time.Now().Before(attempt.lockUntil) {
 		a.failedMu.RUnlock()
 		return "", fmt.Errorf("account temporarily locked due to too many failed attempts")
 	}
 	a.failedMu.RUnlock()
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	user, exists := a.users[username]
 	if !exists {
@@ -568,7 +570,7 @@ func (a *Authenticator) StartSessionCleanup(interval time.Duration, stopCh <-cha
 	}()
 }
 
-// CleanupExpiredSessions removes expired sessions
+// CleanupExpiredSessions removes expired sessions and stale login attempt records
 func (a *Authenticator) CleanupExpiredSessions() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -579,4 +581,13 @@ func (a *Authenticator) CleanupExpiredSessions() {
 			delete(a.sessions, token)
 		}
 	}
+
+	// Clean up stale failed login attempt records (lock ordering: mu first, then failedMu)
+	a.failedMu.Lock()
+	for username, attempt := range a.failedAttempts {
+		if now.After(attempt.lastFail.Add(attemptResetAfter)) {
+			delete(a.failedAttempts, username)
+		}
+	}
+	a.failedMu.Unlock()
 }

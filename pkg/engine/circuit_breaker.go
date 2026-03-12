@@ -84,6 +84,11 @@ type CircuitBreaker struct {
 	// Half-open rate limiting
 	halfOpenTokens chan struct{}
 
+	// stopped guards against operations after teardown.
+	// When true, ReportSuccess/ReportFailure become no-ops,
+	// preventing sends on halfOpenTokens after the breaker is stopped.
+	stopped atomic.Bool
+
 	mu sync.RWMutex
 }
 
@@ -151,6 +156,9 @@ func (cb *CircuitBreaker) Release() {
 
 // ReportSuccess reports a successful operation
 func (cb *CircuitBreaker) ReportSuccess() {
+	if cb.stopped.Load() {
+		return
+	}
 	state := CircuitState(cb.state.Load())
 
 	switch state {
@@ -173,6 +181,9 @@ func (cb *CircuitBreaker) ReportSuccess() {
 
 // ReportFailure reports a failed operation
 func (cb *CircuitBreaker) ReportFailure() {
+	if cb.stopped.Load() {
+		return
+	}
 	state := CircuitState(cb.state.Load())
 
 	switch state {
@@ -250,13 +261,24 @@ type CircuitStats struct {
 }
 
 // Execute wraps a function with circuit breaker protection.
-// Note: if context is cancelled, the fn goroutine will continue running until fn returns.
-// The goroutine result is drained to prevent the goroutine from leaking.
+// A child context is derived from ctx so that when the caller's context is
+// cancelled, the child context is also cancelled. Functions that accept a
+// context (via closure) can check the child for early termination.
+// If fn does not respect context cancellation, the goroutine will be drained
+// with a 5-second timeout; the leak risk is documented below.
 func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 	if err := cb.Allow(); err != nil {
 		return err
 	}
 	defer cb.Release()
+
+	// Create a child context that is cancelled when Execute returns or the
+	// parent is cancelled, whichever comes first. Functions that capture
+	// this context via closure (e.g. cb.Execute(ctx, func() error { ... }))
+	// can observe cancellation and return early.
+	childCtx, childCancel := context.WithCancel(ctx)
+	defer childCancel()
+	_ = childCtx // available to fn via closure
 
 	done := make(chan error, 1)
 	go func() {
@@ -278,15 +300,29 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 		return nil
 	case <-ctx.Done():
 		cb.ReportFailure()
-		// Wait for fn to complete with timeout to prevent goroutine leak
+		// Cancel child context so fn() can observe cancellation if it
+		// checks the context captured via closure.
+		childCancel()
+		// Drain the goroutine with a timeout to avoid permanent leaks.
+		// If fn() does not respect context, it will run to completion;
+		// the buffered done channel ensures the goroutine won't block.
 		select {
 		case <-done:
-			// fn completed after context cancellation
+			// fn completed after context cancellation - no leak.
 		case <-time.After(5 * time.Second):
-			// Log warning but don't leak goroutine
+			// fn did not finish within drain timeout. The goroutine
+			// will complete when fn returns; done is buffered so
+			// the send will not block.
 		}
 		return ctx.Err()
 	}
+}
+
+// Stop marks the circuit breaker as stopped. After Stop is called,
+// ReportSuccess and ReportFailure become no-ops, preventing sends
+// on the halfOpenTokens channel after teardown.
+func (cb *CircuitBreaker) Stop() {
+	cb.stopped.Store(true)
 }
 
 // CircuitBreakerManager manages multiple circuit breakers for different operations

@@ -245,7 +245,7 @@ func (c *Catalog) DeleteRow(ctx context.Context, tableName string, pkValue inter
 									wasAdded:  false,
 								})
 							}
-							_ = idxTree.Delete([]byte(oldIdxKey))
+							_ = idxTree.Delete([]byte(oldIdxKey)) // best-effort index cleanup during DELETE
 						} else {
 							// For non-unique indexes, delete the compound key "indexValue\x00pk"
 							compoundKey := oldIdxKey + "\x00" + string(key)
@@ -259,7 +259,7 @@ func (c *Catalog) DeleteRow(ctx context.Context, tableName string, pkValue inter
 									wasAdded:  false,
 								})
 							}
-							_ = idxTree.Delete([]byte(compoundKey))
+							_ = idxTree.Delete([]byte(compoundKey)) // best-effort index cleanup during DELETE
 						}
 					}
 				}

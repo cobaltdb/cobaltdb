@@ -122,7 +122,10 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		for i, col := range table.Columns {
 			if col.Unique && updatedRow[i] != nil {
 				// Check if another row (not this one) has the same unique value
-				checkIter, _ := tree.Scan(nil, nil)
+				checkIter, scanErr := tree.Scan(nil, nil)
+				if scanErr != nil {
+					return 0, rowsAffected, fmt.Errorf("failed to scan table for UNIQUE check: %w", scanErr)
+				}
 				duplicate := false
 				for checkIter.HasNext() {
 					checkKey, existingData, err := checkIter.Next()
@@ -220,7 +223,10 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: referenced table '%s' not found", fk.ReferencedTable)
 				}
 				found := false
-				refIter, _ := refTree.Scan(nil, nil)
+				refIter, scanErr := refTree.Scan(nil, nil)
+				if scanErr != nil {
+					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: %w", scanErr)
+				}
 				for refIter.HasNext() {
 					_, refData, err := refIter.Next()
 					if err != nil {
@@ -364,7 +370,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				if oldOk {
 					if idxDef.Unique {
 						oldIdxVal, getErr := idxTree.Get([]byte(oldIndexKey))
-						_ = idxTree.Delete([]byte(oldIndexKey))
+						_ = idxTree.Delete([]byte(oldIndexKey)) // best-effort index cleanup during UPDATE
 						if c.txnActive && getErr == nil {
 							idxChanges = append(idxChanges, indexUndoEntry{
 								indexName: idxName,
@@ -377,7 +383,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 						// For non-unique indexes, delete the compound key "indexValue\x00pk"
 						compoundKey := oldIndexKey + "\x00" + string(entry.key)
 						oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
-						_ = idxTree.Delete([]byte(compoundKey))
+						_ = idxTree.Delete([]byte(compoundKey)) // best-effort index cleanup during UPDATE
 						if c.txnActive && getErr == nil {
 							idxChanges = append(idxChanges, indexUndoEntry{
 								indexName: idxName,

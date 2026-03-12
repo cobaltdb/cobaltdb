@@ -161,6 +161,20 @@ func (s *Server) acceptLoop() error {
 		// Check max connections
 		if s.maxConnections > 0 && len(s.clients) >= s.maxConnections {
 			s.mu.Unlock()
+			// Best-effort: notify client why the connection is being refused.
+			errMsg := wire.NewErrorMessage(10, "max connections reached")
+			if payload, encErr := wire.Encode(errMsg); encErr == nil {
+				_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+				length := uint32(1 + len(payload))
+				buf := make([]byte, 4+1+len(payload))
+				buf[0] = byte(length)
+				buf[1] = byte(length >> 8)
+				buf[2] = byte(length >> 16)
+				buf[3] = byte(length >> 24)
+				buf[4] = byte(wire.MsgError)
+				copy(buf[5:], payload)
+				_, _ = conn.Write(buf)
+			}
 			_ = conn.Close()
 			continue
 		}
@@ -296,7 +310,7 @@ func (c *ClientConn) Handle() {
 		}
 		if length > maxPayloadSize {
 			c.sendError(1, "message too large")
-			continue
+			return // disconnect: payload bytes still on wire would desync the protocol
 		}
 		payload := make([]byte, length-1)
 		if _, err := io.ReadFull(c.reader, payload); err != nil {

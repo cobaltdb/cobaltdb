@@ -252,7 +252,11 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 		mainTableCols = mainTable.Columns
 
 		// Build initial intermediate rows from main table (full column data)
-		mainIter, _ := mainTree.Scan(nil, nil)
+		mainIter, err := mainTree.Scan(nil, nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to scan table: %w", err)
+		}
+		defer mainIter.Close()
 		for mainIter.HasNext() {
 			_, data, err := mainIter.Next()
 			if err != nil {
@@ -264,7 +268,6 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 			}
 			intermediateRows = append(intermediateRows, row)
 		}
-		mainIter.Close()
 	}
 
 	// Track combined columns and table offsets for projection
@@ -347,7 +350,11 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 
 			joinTableCols = joinTable.Columns
 			// Scan join table rows
-			joinIter, _ := joinTree.Scan(nil, nil)
+			joinIter, err := joinTree.Scan(nil, nil)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to scan join table: %w", err)
+			}
+			defer joinIter.Close()
 			for joinIter.HasNext() {
 				_, data, err := joinIter.Next()
 				if err != nil {
@@ -359,7 +366,6 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 				}
 				joinRows = append(joinRows, row)
 			}
-			joinIter.Close()
 		}
 
 		isLeftJoin := join.Type == query.TokenLeft || join.Type == query.TokenFull
@@ -695,7 +701,11 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 		mainTableCols = mainTable.Columns
 
 		// Build initial intermediate rows from main table (full column data)
-		mainIter, _ := mainTree.Scan(nil, nil)
+		mainIter, err := mainTree.Scan(nil, nil)
+		if err != nil {
+			return returnColumns, nil, fmt.Errorf("failed to scan table: %w", err)
+		}
+		defer mainIter.Close()
 		for mainIter.HasNext() {
 			_, data, err := mainIter.Next()
 			if err != nil {
@@ -707,7 +717,6 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 			}
 			intermediateRows = append(intermediateRows, row)
 		}
-		mainIter.Close()
 	}
 
 	// Track combined columns from all tables
@@ -777,7 +786,11 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 			joinTableCols = joinTable.Columns
 
 			// Collect right side rows
-			joinIter, _ := joinTree.Scan(nil, nil)
+			joinIter, err := joinTree.Scan(nil, nil)
+			if err != nil {
+				return returnColumns, nil, fmt.Errorf("failed to scan join table: %w", err)
+			}
+			defer joinIter.Close()
 			for joinIter.HasNext() {
 				_, data, err := joinIter.Next()
 				if err != nil {
@@ -789,7 +802,6 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 				}
 				rightRows = append(rightRows, joinRow)
 			}
-			joinIter.Close()
 		}
 
 		isLeftJoin := join.Type == query.TokenLeft || join.Type == query.TokenFull

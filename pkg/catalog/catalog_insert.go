@@ -383,7 +383,11 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 				// Search for matching row
 				found := false
-				refIter, _ := refTree.Scan(nil, nil)
+				refIter, err := refTree.Scan(nil, nil)
+				if err != nil {
+					insertErr = fmt.Errorf("FOREIGN KEY constraint failed: %w", err)
+					break
+				}
 				for refIter.HasNext() {
 					_, refData, err := refIter.Next()
 					if err != nil {
@@ -623,10 +627,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		// Undo the successful rows immediately for statement atomicity
 		for i := len(stmtInserts) - 1; i >= 0; i-- {
 			si := stmtInserts[i]
-			_ = tree.Delete(si.key)
+			_ = tree.Delete(si.key) // best-effort cleanup on statement rollback
 			for _, ik := range si.idxKeys {
 				if idxTree, exists := c.indexTrees[ik.idxName]; exists {
-					_ = idxTree.Delete(ik.key)
+					_ = idxTree.Delete(ik.key) // best-effort cleanup on statement rollback
 				}
 			}
 		}
