@@ -1,10 +1,11 @@
 package txn
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"sync"
 	"math"
+	"sync"
 	"sync/atomic"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -169,9 +170,9 @@ func (t *Transaction) SetWrite(key string, value []byte) {
 
 // Manager manages all transactions
 type Manager struct {
-	counter  uint64 // atomic, monotonic
-	active   map[uint64]*Transaction
-	versions map[string]uint64 // key → latest committed version
+	counter     uint64 // atomic, monotonic
+	active      map[uint64]*Transaction
+	versions    map[string]uint64 // key → latest committed version
 	mu          sync.RWMutex
 	commitCount atomic.Int64
 	pool        interface{} // BufferPool (using interface{} to avoid import cycle)
@@ -248,7 +249,7 @@ func (m *Manager) applyWrites(txn *Transaction) error {
 
 	// Apply writes to storage via BufferPool if available
 	if m.pool != nil {
-		if bp, ok := m.pool.(*storage.BufferPool); ok {
+		if bp, ok := m.pool.(*storage.BufferPool); ok && bp != nil {
 			for key, value := range txn.WriteSet {
 				// Parse table name from key (format: "tableName:pk" or similar)
 				// For now, we just update the version tracking
@@ -262,16 +263,31 @@ func (m *Manager) applyWrites(txn *Transaction) error {
 
 	// Mark writes as durable in WAL if available
 	if m.wal != nil {
-		if wal, ok := m.wal.(*storage.WAL); ok {
+		if wal, ok := m.wal.(*storage.WAL); ok && wal != nil {
 			for key, value := range txn.WriteSet {
+				// Encode key with length prefix to preserve key/value boundary
+				keyBytes := []byte(key)
+				data := make([]byte, 4+len(keyBytes)+len(value))
+				binary.LittleEndian.PutUint32(data[0:4], uint32(len(keyBytes)))
+				copy(data[4:4+len(keyBytes)], keyBytes)
+				copy(data[4+len(keyBytes):], value)
+
 				record := &storage.WALRecord{
 					TxnID: txn.ID,
 					Type:  storage.WALUpdate,
-					Data:  append([]byte(key), value...),
+					Data:  data,
 				}
-				if err := wal.Append(record); err != nil {
+				if err := wal.AppendWithoutSync(record); err != nil {
 					return fmt.Errorf("failed to append WAL record: %w", err)
 				}
+			}
+			// Write commit record so crash recovery knows this transaction committed
+			commitRecord := &storage.WALRecord{
+				TxnID: txn.ID,
+				Type:  storage.WALCommit,
+			}
+			if err := wal.Append(commitRecord); err != nil {
+				return fmt.Errorf("failed to append WAL commit record: %w", err)
 			}
 		}
 	}

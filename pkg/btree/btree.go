@@ -52,6 +52,7 @@ type BTree struct {
 	lruMu       sync.Mutex           // Separate lock for LRU updates (avoids write-locking on reads)
 	lruList     *list.List           // LRU list for eviction
 	lruMap      map[string]*lruEntry // Track entries in LRU
+	evictedKeys map[string]bool      // Keys evicted from memory but preserved on disk
 }
 
 // usablePageSize is the space available for data in each page (after header)
@@ -86,6 +87,7 @@ func NewBTreeWithLimit(pool *storage.BufferPool, limit int64) (*BTree, error) {
 		memoryUsed:  0,
 		lruList:     list.New(),
 		lruMap:      make(map[string]*lruEntry),
+		evictedKeys: make(map[string]bool),
 	}, nil
 }
 
@@ -106,6 +108,7 @@ func OpenBTreeWithLimit(pool *storage.BufferPool, rootPageID uint32, limit int64
 		memoryUsed:  0,
 		lruList:     list.New(),
 		lruMap:      make(map[string]*lruEntry),
+		evictedKeys: make(map[string]bool),
 	}
 	if err := t.loadFromPages(); err != nil {
 		// Log but continue - tree will appear empty but won't lose data on disk
@@ -193,6 +196,85 @@ func (t *BTree) loadFromPages() error {
 	return nil
 }
 
+// readKVFromPages reads all key-value pairs from disk pages without modifying memStorage.
+// Used to preserve evicted entries during flush and to serve Get requests for evicted keys.
+func (t *BTree) readKVFromPages() map[string][]byte {
+	result := make(map[string][]byte)
+
+	root, err := t.pool.GetPage(t.rootPageID)
+	if err != nil {
+		return result
+	}
+	defer t.pool.Unpin(root)
+
+	pageData := root.Data()[storage.PageHeaderSize:]
+	if len(pageData) < 8 {
+		return result
+	}
+
+	totalCount := binary.LittleEndian.Uint32(pageData[0:4])
+	overflowCount := binary.LittleEndian.Uint32(pageData[4:8])
+
+	if totalCount == 0 {
+		return result
+	}
+
+	headerSize := 8 + 4*int(overflowCount)
+	if headerSize > len(pageData) {
+		return result
+	}
+
+	overflowIDs := make([]uint32, overflowCount)
+	for i := uint32(0); i < overflowCount; i++ {
+		off := 8 + 4*int(i)
+		overflowIDs[i] = binary.LittleEndian.Uint32(pageData[off : off+4])
+	}
+
+	var allData []byte
+	allData = append(allData, pageData[headerSize:]...)
+
+	for _, pgID := range overflowIDs {
+		pg, err := t.pool.GetPage(pgID)
+		if err != nil {
+			return result
+		}
+		allData = append(allData, pg.Data()[storage.PageHeaderSize:]...)
+		t.pool.Unpin(pg)
+	}
+
+	offset := 0
+	for i := uint32(0); i < totalCount; i++ {
+		if offset+2 > len(allData) {
+			break
+		}
+		keyLen := int(binary.LittleEndian.Uint16(allData[offset : offset+2]))
+		offset += 2
+
+		if offset+keyLen > len(allData) {
+			break
+		}
+		key := string(allData[offset : offset+keyLen])
+		offset += keyLen
+
+		if offset+4 > len(allData) {
+			break
+		}
+		valLen := int(binary.LittleEndian.Uint32(allData[offset : offset+4]))
+		offset += 4
+
+		if offset+valLen > len(allData) {
+			break
+		}
+		val := make([]byte, valLen)
+		copy(val, allData[offset:offset+valLen])
+		offset += valLen
+
+		result[key] = val
+	}
+
+	return result
+}
+
 // RootPageID returns the root page ID of the tree
 func (t *BTree) RootPageID() uint32 {
 	return t.rootPageID
@@ -228,22 +310,34 @@ func (t *BTree) Get(key []byte) ([]byte, error) {
 	t.mu.RLock()
 	keyStr := string(key)
 	val, ok := t.memStorage[keyStr]
-	if !ok {
+	if ok {
+		result := make([]byte, len(val))
+		copy(result, val)
 		t.mu.RUnlock()
-		return nil, ErrKeyNotFound
+
+		// Update LRU under its own lock (does not block concurrent readers)
+		t.lruMu.Lock()
+		if entry, ok := t.lruMap[keyStr]; ok {
+			t.lruList.MoveToFront(entry.elem)
+		}
+		t.lruMu.Unlock()
+
+		return result, nil
 	}
-	result := make([]byte, len(val))
-	copy(result, val)
+
+	// Check if key was evicted to disk
+	if t.evictedKeys[keyStr] {
+		diskData := t.readKVFromPages()
+		if val, ok := diskData[keyStr]; ok {
+			result := make([]byte, len(val))
+			copy(result, val)
+			t.mu.RUnlock()
+			return result, nil
+		}
+	}
+
 	t.mu.RUnlock()
-
-	// Update LRU under its own lock (does not block concurrent readers)
-	t.lruMu.Lock()
-	if entry, ok := t.lruMap[keyStr]; ok {
-		t.lruList.MoveToFront(entry.elem)
-	}
-	t.lruMu.Unlock()
-
-	return result, nil
+	return nil, ErrKeyNotFound
 }
 
 // Put inserts or updates a key-value pair
@@ -264,6 +358,9 @@ func (t *BTree) Put(key, value []byte) error {
 	keyCopy := string(key)
 	valCopy := make([]byte, len(value))
 	copy(valCopy, value)
+
+	// If overwriting an evicted key, remove from evicted set
+	delete(t.evictedKeys, keyCopy)
 
 	// Calculate size change
 	oldSize := int64(0)
@@ -333,10 +430,11 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 			}
 		}
 
-		// Remove from memory (but keep in disk via flush)
+		// Remove from memory but track as evicted (data preserved on disk via flush)
 		if val, ok := t.memStorage[evictKey]; ok {
 			t.memoryUsed -= int64(len(evictKey) + len(val))
 			delete(t.memStorage, evictKey)
+			t.evictedKeys[evictKey] = true
 		}
 	}
 
@@ -353,13 +451,31 @@ func (t *BTree) flushInternal() error {
 		return nil
 	}
 
+	// Build the complete data set: memStorage + evicted entries from disk
+	toSerialize := make(map[string][]byte, len(t.memStorage)+len(t.evictedKeys))
+
+	// If there are evicted keys, read their values from disk to preserve them
+	if len(t.evictedKeys) > 0 {
+		diskData := t.readKVFromPages()
+		for k, v := range diskData {
+			if t.evictedKeys[k] {
+				toSerialize[k] = v
+			}
+		}
+	}
+
+	// Overlay with current memStorage (in-memory values are authoritative)
+	for k, v := range t.memStorage {
+		toSerialize[k] = v
+	}
+
 	// Serialize all key-value pairs
 	// Format: [keylen:2][key][valuelen:4][value]...
 	var kvBuf bytes.Buffer
-	count := uint32(len(t.memStorage))
+	count := uint32(len(toSerialize))
 
 	var lenBuf [4]byte
-	for k, v := range t.memStorage {
+	for k, v := range toSerialize {
 		key := []byte(k)
 		binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
 		kvBuf.Write(lenBuf[:2])
@@ -493,24 +609,31 @@ func (t *BTree) Delete(key []byte) error {
 
 	keyStr := string(key)
 	val, ok := t.memStorage[keyStr]
-	if !ok {
-		return ErrKeyNotFound
+	if ok {
+		// Update memory tracking
+		t.memoryUsed -= int64(len(keyStr) + len(val))
+
+		// Remove from LRU
+		t.lruMu.Lock()
+		if entry, ok := t.lruMap[keyStr]; ok {
+			t.lruList.Remove(entry.elem)
+			delete(t.lruMap, keyStr)
+		}
+		t.lruMu.Unlock()
+
+		delete(t.memStorage, keyStr)
+		t.dirty = true
+		return nil
 	}
 
-	// Update memory tracking
-	t.memoryUsed -= int64(len(keyStr) + len(val))
-
-	// Remove from LRU
-	t.lruMu.Lock()
-	if entry, ok := t.lruMap[keyStr]; ok {
-		t.lruList.Remove(entry.elem)
-		delete(t.lruMap, keyStr)
+	// Check if key was evicted to disk
+	if t.evictedKeys[keyStr] {
+		delete(t.evictedKeys, keyStr)
+		t.dirty = true
+		return nil
 	}
-	t.lruMu.Unlock()
 
-	delete(t.memStorage, keyStr)
-	t.dirty = true
-	return nil
+	return ErrKeyNotFound
 }
 
 // Iterator provides range scan capability
@@ -528,6 +651,7 @@ func (t *BTree) Scan(startKey, endKey []byte) (*Iterator, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
+	seen := make(map[string]bool)
 	var keys, values [][]byte
 	for k, v := range t.memStorage {
 		kb := []byte(k)
@@ -546,6 +670,30 @@ func (t *BTree) Scan(startKey, endKey []byte) (*Iterator, error) {
 
 		keys = append(keys, keyCopy)
 		values = append(values, valCopy)
+		seen[k] = true
+	}
+
+	// Include evicted entries from disk
+	if len(t.evictedKeys) > 0 {
+		diskData := t.readKVFromPages()
+		for k, v := range diskData {
+			if !t.evictedKeys[k] || seen[k] {
+				continue
+			}
+			kb := []byte(k)
+			if startKey != nil && bytes.Compare(kb, startKey) < 0 {
+				continue
+			}
+			if endKey != nil && bytes.Compare(kb, endKey) > 0 {
+				continue
+			}
+			keyCopy := make([]byte, len(kb))
+			copy(keyCopy, kb)
+			valCopy := make([]byte, len(v))
+			copy(valCopy, v)
+			keys = append(keys, keyCopy)
+			values = append(values, valCopy)
+		}
 	}
 
 	// Sort keys using standard library sort (faster than bubble sort)
@@ -622,11 +770,11 @@ func (it *Iterator) First() bool {
 	return true
 }
 
-// Size returns the number of keys in the tree
+// Size returns the number of keys in the tree (including evicted keys on disk)
 func (t *BTree) Size() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return len(t.memStorage)
+	return len(t.memStorage) + len(t.evictedKeys)
 }
 
 // Flush writes all in-memory data to disk pages (with multi-page overflow support)

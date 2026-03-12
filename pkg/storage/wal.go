@@ -91,7 +91,7 @@ func (w *WAL) readLSN() error {
 
 	reader := bufio.NewReader(w.file)
 	var lastLSN uint64
-	var headerBuf [17]byte // reusable header buffer across readRecord calls
+	var headerBuf [25]byte // reusable header buffer across readRecord calls
 
 	for {
 		record, err := w.readRecord(reader, headerBuf[:])
@@ -118,21 +118,22 @@ func (w *WAL) readLSN() error {
 }
 
 // readRecord reads a single WAL record from the reader.
-// header must be a 17-byte slice that is reused across calls to avoid per-record allocation.
+// header must be a 25-byte slice that is reused across calls to avoid per-record allocation.
 func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error) {
-	// Read header: [TxnID:8][Type:1][PageID:4][Offset:2][Length:2]
-	if _, err := io.ReadFull(reader, header[:17]); err != nil {
+	// Read header: [LSN:8][TxnID:8][Type:1][PageID:4][Offset:2][Length:2]
+	if _, err := io.ReadFull(reader, header[:25]); err != nil {
 		return nil, err
 	}
 
 	record := &WALRecord{
-		TxnID:  binary.LittleEndian.Uint64(header[0:8]),
-		Type:   WALRecordType(header[8]),
-		PageID: binary.LittleEndian.Uint32(header[9:13]),
-		Offset: binary.LittleEndian.Uint16(header[13:15]),
+		LSN:    binary.LittleEndian.Uint64(header[0:8]),
+		TxnID:  binary.LittleEndian.Uint64(header[8:16]),
+		Type:   WALRecordType(header[16]),
+		PageID: binary.LittleEndian.Uint32(header[17:21]),
+		Offset: binary.LittleEndian.Uint16(header[21:23]),
 	}
 
-	dataLen := binary.LittleEndian.Uint16(header[15:17])
+	dataLen := binary.LittleEndian.Uint16(header[23:25])
 	if dataLen > 0 {
 		record.Data = make([]byte, dataLen)
 		if _, err := io.ReadFull(reader, record.Data); err != nil {
@@ -149,7 +150,7 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error
 
 	// Calculate CRC from header bytes + data directly (avoids re-encode allocation)
 	crcHash := crc32.NewIEEE()
-	if _, err := crcHash.Write(header[:17]); err != nil {
+	if _, err := crcHash.Write(header[:25]); err != nil {
 		return nil, err
 	}
 	if len(record.Data) > 0 {
@@ -179,6 +180,9 @@ func (w *WAL) Append(record *WALRecord) error {
 
 // AppendWithoutSync adds a record without syncing (for group commit)
 func (w *WAL) AppendWithoutSync(record *WALRecord) error {
+	if len(record.Data) > 65535 {
+		return fmt.Errorf("WAL record data size (%d bytes) exceeds maximum (65535 bytes)", len(record.Data))
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -191,8 +195,8 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 		return ErrWALClosed
 	}
 
-	w.lsn++
-	record.LSN = w.lsn
+	newLSN := w.lsn + 1
+	record.LSN = newLSN
 
 	// Encode record
 	buf := w.encodeRecord(record)
@@ -211,6 +215,9 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 	if _, err := w.bufWriter.Write(crcBuf[:]); err != nil {
 		return err
 	}
+
+	// Only update LSN after successful write
+	w.lsn = newLSN
 
 	// Sync if requested (for commit records or explicit sync)
 	if sync {
@@ -239,16 +246,18 @@ func (w *WAL) Sync() error {
 }
 
 // encodeRecord encodes a WAL record to bytes (without CRC)
+// Format: [LSN:8][TxnID:8][Type:1][PageID:4][Offset:2][Length:2][Data:N]
 func (w *WAL) encodeRecord(record *WALRecord) []byte {
 	dataLen := len(record.Data)
-	buf := make([]byte, 17+dataLen)
+	buf := make([]byte, 25+dataLen)
 
-	binary.LittleEndian.PutUint64(buf[0:8], record.TxnID)
-	buf[8] = byte(record.Type)
-	binary.LittleEndian.PutUint32(buf[9:13], record.PageID)
-	binary.LittleEndian.PutUint16(buf[13:15], record.Offset)
-	binary.LittleEndian.PutUint16(buf[15:17], uint16(dataLen))
-	copy(buf[17:], record.Data)
+	binary.LittleEndian.PutUint64(buf[0:8], record.LSN)
+	binary.LittleEndian.PutUint64(buf[8:16], record.TxnID)
+	buf[16] = byte(record.Type)
+	binary.LittleEndian.PutUint32(buf[17:21], record.PageID)
+	binary.LittleEndian.PutUint16(buf[21:23], record.Offset)
+	binary.LittleEndian.PutUint16(buf[23:25], uint16(dataLen))
+	copy(buf[25:], record.Data)
 
 	return buf
 }
@@ -272,8 +281,8 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 		TxnID: 0,
 		Type:  WALCheckpoint,
 	}
-	w.lsn++
-	checkpointRecord.LSN = w.lsn
+	newLSN := w.lsn + 1
+	checkpointRecord.LSN = newLSN
 
 	buf := w.encodeRecord(checkpointRecord)
 	crc := crc32.ChecksumIEEE(buf)
@@ -294,8 +303,11 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 		return err
 	}
 
+	// Update LSN and checkpoint after successful write
+	w.lsn = newLSN
+	w.checkpoint = newLSN
+
 	// 3. Truncate WAL file
-	w.checkpoint = w.lsn
 	if err := w.file.Truncate(0); err != nil {
 		return err
 	}
@@ -324,7 +336,7 @@ func (w *WAL) Recover(bp *BufferPool) error {
 	reader := bufio.NewReader(w.file)
 	var committedTxns = make(map[uint64]bool)
 	var pendingTxns = make(map[uint64][]*WALRecord)
-	var headerBuf [17]byte // reusable header buffer across readRecord calls
+	var headerBuf [25]byte // reusable header buffer across readRecord calls
 
 	// Read all records
 	for {
