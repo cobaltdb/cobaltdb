@@ -41,7 +41,10 @@ func (c *Catalog) CreateFTSIndex(name, tableName string, columns []string) error
 		if err == nil {
 			defer iter.Close()
 			for iter.HasNext() {
-				key, value, _ := iter.Next()
+				key, value, iterErr := iter.Next()
+				if iterErr != nil {
+					break
+				}
 				if key == nil || len(value) == 0 {
 					break
 				}
