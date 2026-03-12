@@ -55,7 +55,10 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 		}
 		defer iter.Close()
 		for iter.HasNext() {
-			key, valueData, _ := iter.Next()
+			key, valueData, iterErr := iter.Next()
+			if iterErr != nil {
+				return fmt.Errorf("failed to read row during index population: %w", iterErr)
+			}
 			row, err := decodeRow(valueData, len(table.Columns))
 			if err != nil {
 				continue

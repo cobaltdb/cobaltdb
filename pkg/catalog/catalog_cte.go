@@ -60,10 +60,15 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 			// Materialize CTE results so subsequent CTEs can reference them
 			if len(stmt.CTEs) > 1 {
 				cols, rows, err := c.selectLocked(selectQuery, args)
-				if err == nil {
-					c.cteResults[cteName] = &cteResultSet{columns: cols, rows: rows}
-					createdCTEResults = append(createdCTEResults, cteName)
+				if err != nil {
+					// Clean up on error
+					for _, name := range createdCTEResults {
+						delete(c.cteResults, name)
+					}
+					return nil, nil, fmt.Errorf("CTE %s: %w", cte.Name, err)
 				}
+				c.cteResults[cteName] = &cteResultSet{columns: cols, rows: rows}
+				createdCTEResults = append(createdCTEResults, cteName)
 			}
 		} else if unionQuery, ok := cte.Query.(*query.UnionStmt); ok {
 			// Execute UNION query and store results in cteResults
