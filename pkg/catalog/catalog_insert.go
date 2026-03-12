@@ -468,7 +468,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 					}
 				}
 				// Delete existing row before replacing
-				tree.Delete([]byte(key))
+				if err := tree.Delete([]byte(key)); err != nil {
+				insertErr = fmt.Errorf("failed to delete row for REPLACE: %w", err)
+				break
+			}
 			} else {
 				insertErr = fmt.Errorf("UNIQUE constraint failed: duplicate primary key value")
 				break
@@ -529,7 +532,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 											}
 										}
 									}
-									tree.Delete([]byte(oldPK))
+									if err := tree.Delete([]byte(oldPK)); err != nil {
+												insertErr = fmt.Errorf("failed to delete old row for index REPLACE: %w", err)
+												break
+											}
 								}
 							} else {
 								insertErr = fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idxName)

@@ -562,7 +562,8 @@ func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
 
 	// Persist renamed table to catalog B-tree
 	if c.tree != nil {
-		c.tree.Delete([]byte("tbl:" + stmt.Table))
+		// Best-effort delete of old entry (may not exist if table was only in-memory)
+		_ = c.tree.Delete([]byte("tbl:" + stmt.Table))
 	}
 	if err := c.storeTableDef(table); err != nil {
 		return fmt.Errorf("failed to persist renamed table: %w", err)
