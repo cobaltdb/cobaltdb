@@ -92,3 +92,83 @@ func (c *Catalog) CheckRLSForDelete(ctx context.Context, tableName string, row m
 
 	return c.rlsManager.CheckAccess(ctx, tableName, security.PolicyDelete, row, user, roles)
 }
+// applyRLSFilterInternal is a lock-free version of ApplyRLSFilter for use
+// within methods that already hold the catalog lock (selectLocked, etc.).
+func (c *Catalog) applyRLSFilterInternal(ctx context.Context, tableName string, columns []string, rows [][]interface{}, user string, roles []string) ([]string, [][]interface{}, error) {
+	if !c.enableRLS || c.rlsManager == nil {
+		return columns, rows, nil
+	}
+
+	if !c.rlsManager.IsEnabled(tableName) {
+		return columns, rows, nil
+	}
+
+	// Convert rows to map format for RLS evaluation
+	mapRows := make([]map[string]interface{}, len(rows))
+	for i, row := range rows {
+		mapRow := make(map[string]interface{})
+		for j, col := range columns {
+			if j < len(row) {
+				mapRow[col] = row[j]
+			}
+		}
+		mapRows[i] = mapRow
+	}
+
+	// Apply RLS filtering
+	filtered, err := c.rlsManager.FilterRows(ctx, tableName, security.PolicySelect, mapRows, user, roles)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Convert back to row format
+	filteredRows := make([][]interface{}, len(filtered))
+	for i, mapRow := range filtered {
+		row := make([]interface{}, len(columns))
+		for j, col := range columns {
+			row[j] = mapRow[col]
+		}
+		filteredRows[i] = row
+	}
+
+	return columns, filteredRows, nil
+}
+
+// checkRLSForInsertInternal is a lock-free version of CheckRLSForInsert.
+func (c *Catalog) checkRLSForInsertInternal(ctx context.Context, tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
+	if !c.enableRLS || c.rlsManager == nil {
+		return true, nil
+	}
+
+	if !c.rlsManager.IsEnabled(tableName) {
+		return true, nil
+	}
+
+	return c.rlsManager.CheckAccess(ctx, tableName, security.PolicyInsert, row, user, roles)
+}
+
+// checkRLSForUpdateInternal is a lock-free version of CheckRLSForUpdate.
+func (c *Catalog) checkRLSForUpdateInternal(ctx context.Context, tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
+	if !c.enableRLS || c.rlsManager == nil {
+		return true, nil
+	}
+
+	if !c.rlsManager.IsEnabled(tableName) {
+		return true, nil
+	}
+
+	return c.rlsManager.CheckAccess(ctx, tableName, security.PolicyUpdate, row, user, roles)
+}
+
+// checkRLSForDeleteInternal is a lock-free version of CheckRLSForDelete.
+func (c *Catalog) checkRLSForDeleteInternal(ctx context.Context, tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
+	if !c.enableRLS || c.rlsManager == nil {
+		return true, nil
+	}
+
+	if !c.rlsManager.IsEnabled(tableName) {
+		return true, nil
+	}
+
+	return c.rlsManager.CheckAccess(ctx, tableName, security.PolicyDelete, row, user, roles)
+}

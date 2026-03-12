@@ -11,6 +11,7 @@ type Parser struct {
 	tokens           []Token
 	pos              int
 	placeholderCount int // Counter for auto-assigning placeholder indices
+	depth            int
 }
 
 // NewParser creates a new parser for the given tokens
@@ -19,6 +20,20 @@ func NewParser(tokens []Token) *Parser {
 		tokens: tokens,
 		pos:    0,
 	}
+}
+
+const maxParserDepth = 200
+
+func (p *Parser) enterDepth() error {
+	p.depth++
+	if p.depth > maxParserDepth {
+		return fmt.Errorf("expression nesting depth exceeds maximum (%d)", maxParserDepth)
+	}
+	return nil
+}
+
+func (p *Parser) leaveDepth() {
+	p.depth--
 }
 
 // Parse parses the tokens and returns a statement
@@ -1233,6 +1248,11 @@ func (p *Parser) parseParenthesized() (Expression, error) {
 		}
 		return &SubqueryExpr{Query: stmt}, nil
 	}
+
+	if err := p.enterDepth(); err != nil {
+		return nil, err
+	}
+	defer p.leaveDepth()
 
 	expr, err := p.parseExpression()
 	if err != nil {

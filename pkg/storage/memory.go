@@ -32,6 +32,9 @@ func (m *MemoryBackend) ReadAt(buf []byte, offset int64) (int, error) {
 	}
 
 	n := copy(buf, m.data[offset:])
+	if n < len(buf) {
+		return n, io.EOF
+	}
 	return n, nil
 }
 

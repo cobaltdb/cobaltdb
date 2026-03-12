@@ -579,7 +579,6 @@ func findTopLevelOperator(expr, op string) int {
 // parseSimpleExpression handles simple comparison expressions
 func (m *Manager) parseSimpleExpression(expr string) (PolicyExpr, error) {
 	expr = strings.TrimSpace(expr)
-	upperExpr := strings.ToUpper(expr)
 
 	// Check for IS NULL / IS NOT NULL
 	if nullExpr := parseNullCheck(expr); nullExpr != nil {
@@ -627,8 +626,7 @@ func (m *Manager) parseSimpleExpression(expr string) (PolicyExpr, error) {
 	}
 
 	// Check for context functions (bare current_user, current_tenant, etc.)
-	upperExpr = strings.ToUpper(expr)
-	switch upperExpr {
+	switch strings.ToUpper(expr) {
 	case "CURRENT_USER", "CURRENT_USER()":
 		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 			user := ctx.Value(RLSUserKey)
@@ -923,35 +921,6 @@ func parseLikeOperator(expr string) PolicyExpr {
 	}
 }
 
-// Helper functions
-
-func splitLogical(expr, separator string) []string {
-	exprUpper := strings.ToUpper(expr)
-	sepUpper := strings.ToUpper(separator)
-
-	idx := strings.Index(exprUpper, sepUpper)
-	if idx < 0 {
-		return nil
-	}
-
-	return []string{
-		strings.TrimSpace(expr[:idx]),
-		strings.TrimSpace(expr[idx+len(separator):]),
-	}
-}
-
-func splitByOperator(expr, op string) []string {
-	idx := strings.Index(strings.ToUpper(expr), op)
-	if idx < 0 {
-		return nil
-	}
-
-	return []string{
-		strings.TrimSpace(expr[:idx]),
-		strings.TrimSpace(expr[idx+len(op):]),
-	}
-}
-
 // ToFloat64 converts a value to float64
 func ToFloat64(v interface{}) (float64, bool) {
 	switch val := v.(type) {
@@ -976,17 +945,6 @@ func ToFloat64(v interface{}) (float64, bool) {
 		return 0, true
 	}
 	return 0, false
-}
-
-func extractColumnName(expr, contextFunc string) string {
-	expr = strings.ToLower(strings.TrimSpace(expr))
-	contextFunc = strings.ToLower(contextFunc)
-
-	// Remove everything after the context function
-	if idx := strings.Index(expr, contextFunc); idx > 0 {
-		return strings.TrimSpace(expr[:idx])
-	}
-	return ""
 }
 
 func parseValueList(valuesStr string) []string {

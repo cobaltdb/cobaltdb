@@ -6,9 +6,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"math/rand"
 	"time"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
+
+const maxStringResultLen = 10 * 1024 * 1024 // 10 MB cap for string functions
 
 // EvalContext bundles common parameters for expression evaluation
 // This reduces parameter count and makes the API cleaner
@@ -701,9 +704,15 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 				return int64(f), nil
 			}
 			if s, ok := evalArgs[0].(string); ok {
-				var i int64
-				fmt.Sscanf(s, "%d", &i)
-				return i, nil
+				i, err := strconv.ParseInt(s, 10, 64)
+				if err == nil {
+					return i, nil
+				}
+				// Try parsing as float and truncate
+				if f, err := strconv.ParseFloat(s, 64); err == nil {
+					return int64(f), nil
+				}
+				return int64(0), nil
 			}
 			if b, ok := evalArgs[0].(bool); ok {
 				if b {
@@ -716,9 +725,11 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 				return f, nil
 			}
 			if s, ok := evalArgs[0].(string); ok {
-				var f float64
-				fmt.Sscanf(s, "%f", &f)
-				return f, nil
+				f, err := strconv.ParseFloat(s, 64)
+				if err == nil {
+					return f, nil
+				}
+				return 0.0, nil
 			}
 		case "TEXT", "STRING":
 			return fmt.Sprintf("%v", evalArgs[0]), nil
@@ -784,6 +795,9 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if count <= 0 {
 			return "", nil
 		}
+		if int(count) > maxStringResultLen/(len(str)+1) {
+			return nil, fmt.Errorf("REPEAT result exceeds maximum allowed size (%d bytes)", maxStringResultLen)
+		}
 		return strings.Repeat(str, int(count)), nil
 
 	case "LEFT":
@@ -833,6 +847,9 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		targetLen, _ := toFloat64(evalArgs[1])
 		pad := fmt.Sprintf("%v", evalArgs[2])
 		ti := int(targetLen)
+		if ti > maxStringResultLen {
+			return nil, fmt.Errorf("LPAD result exceeds maximum allowed size (%d bytes)", maxStringResultLen)
+		}
 		if len(str) >= ti {
 			return str[:ti], nil
 		}
@@ -852,6 +869,9 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		targetLen, _ := toFloat64(evalArgs[1])
 		pad := fmt.Sprintf("%v", evalArgs[2])
 		ti := int(targetLen)
+		if ti > maxStringResultLen {
+			return nil, fmt.Errorf("RPAD result exceeds maximum allowed size (%d bytes)", maxStringResultLen)
+		}
 		if len(str) >= ti {
 			return str[:ti], nil
 		}
@@ -916,7 +936,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		return evalArgs[2], nil
 
 	case "RANDOM":
-		return float64(time.Now().UnixNano() % 1000000), nil
+		return float64(rand.Int63()), nil
 
 	case "UNICODE":
 		if len(evalArgs) < 1 {
@@ -947,6 +967,9 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 			return nil, fmt.Errorf("ZEROBLOB requires 1 argument")
 		}
 		n, _ := toFloat64(evalArgs[0])
+		if int(n) > maxStringResultLen {
+			return nil, fmt.Errorf("ZEROBLOB size exceeds maximum allowed size (%d bytes)", maxStringResultLen)
+		}
 		return strings.Repeat("\x00", int(n)), nil
 
 	case "QUOTE":

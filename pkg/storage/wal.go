@@ -165,6 +165,9 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error
 
 // Append adds a record to the WAL
 func (w *WAL) Append(record *WALRecord) error {
+	if len(record.Data) > 65535 {
+		return fmt.Errorf("WAL record data size (%d bytes) exceeds maximum (65535 bytes)", len(record.Data))
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

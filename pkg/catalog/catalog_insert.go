@@ -183,7 +183,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			if colIdx < len(valueRow) && tableColIdx >= 0 {
 				val, err := evaluateExpression(c, nil, nil, valueRow[colIdx], args)
 				if err != nil {
-					rowValues[tableColIdx] = nil
+					return 0, 0, fmt.Errorf("failed to evaluate value for column '%s': %w", insertColumns[colIdx], err)
 				} else {
 					rowValues[tableColIdx] = val
 				}
@@ -219,6 +219,27 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			}
 		}
 
+		// Apply Row-Level Security check for INSERT
+		if c.enableRLS && c.rlsManager != nil {
+			user, _ := ctx.Value("cobaltdb_user").(string)
+			roles, _ := ctx.Value("cobaltdb_roles").([]string)
+			if user != "" {
+				rowMap := make(map[string]interface{})
+				for i, col := range table.Columns {
+					if i < len(rowValues) {
+						rowMap[col.Name] = rowValues[i]
+					}
+				}
+				allowed, rlsErr := c.checkRLSForInsertInternal(ctx, stmt.Table, rowMap, user, roles)
+				if rlsErr != nil {
+					return 0, 0, fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
+				}
+				if !allowed {
+					return 0, 0, fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
+				}
+			}
+		}
+
 		// Check NOT NULL constraints before inserting
 		for i, col := range table.Columns {
 			if col.NotNull && !col.AutoIncrement && rowValues[i] == nil {
@@ -235,7 +256,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		for i, col := range table.Columns {
 			if col.Unique && rowValues[i] != nil {
 				// Check if a row with this unique value already exists
-				iter, _ := tree.Scan(nil, nil)
+				iter, err := tree.Scan(nil, nil)
+				if err != nil {
+					return 0, 0, fmt.Errorf("failed to scan table for UNIQUE check: %w", err)
+				}
 				var duplicateKey []byte
 				for iter.HasNext() {
 					k, existingData, err := iter.Next()
@@ -267,18 +291,27 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 									if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
 										oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
 										if ok {
+											var delErr error
 											if idxDef.Unique {
-												idxTree.Delete([]byte(oldIdxKey))
+												delErr = idxTree.Delete([]byte(oldIdxKey))
 											} else {
 												compoundKey := oldIdxKey + "\x00" + string(duplicateKey)
-												idxTree.Delete([]byte(compoundKey))
+												delErr = idxTree.Delete([]byte(compoundKey))
+											}
+											if delErr != nil {
+												insertErr = fmt.Errorf("failed to delete from index %s: %w", idxName, delErr)
+												break
 											}
 										}
 									}
 								}
 							}
 						}
-						tree.Delete(duplicateKey)
+						if insertErr == nil {
+							if delErr := tree.Delete(duplicateKey); delErr != nil {
+								insertErr = fmt.Errorf("failed to delete duplicate row: %w", delErr)
+							}
+						}
 					} else {
 						insertErr = fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
 						break
@@ -609,7 +642,9 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 	// Execute AFTER INSERT triggers for each inserted row
 	for _, insertedRow := range insertedRows {
-		_ = c.executeTriggers(ctx, stmt.Table, "INSERT", "AFTER", insertedRow, nil, table.Columns)
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "INSERT", "AFTER", insertedRow, nil, table.Columns); trigErr != nil {
+			return 0, 0, fmt.Errorf("AFTER INSERT trigger failed: %w", trigErr)
+		}
 	}
 
 	// Invalidate query cache for the affected table

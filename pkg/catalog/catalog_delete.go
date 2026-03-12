@@ -30,7 +30,10 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 	}
 
 	rowsAffected := int64(0)
-	iter, _ := tree.Scan(nil, nil)
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to scan table for DELETE: %w", err)
+	}
 	defer iter.Close()
 
 	// Collect keys and row data to delete (need row data for index cleanup)
@@ -59,6 +62,27 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 			}
 			if !matched {
 				continue // Skip row that doesn't match WHERE condition
+			}
+		}
+
+		// Apply Row-Level Security check for DELETE
+		if c.enableRLS && c.rlsManager != nil {
+			user, _ := ctx.Value("cobaltdb_user").(string)
+			roles, _ := ctx.Value("cobaltdb_roles").([]string)
+			if user != "" {
+				rowMap := make(map[string]interface{})
+				for i, col := range table.Columns {
+					if i < len(row) {
+						rowMap[col.Name] = row[i]
+					}
+				}
+				allowed, rlsErr := c.checkRLSForDeleteInternal(ctx, stmt.Table, rowMap, user, roles)
+				if rlsErr != nil {
+					continue // Skip rows that fail RLS check
+				}
+				if !allowed {
+					continue // Skip rows the user doesn't have access to
+				}
 			}
 		}
 
@@ -107,7 +131,9 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 					if ok {
 						if idxDef.Unique {
 							oldIdxVal, getErr := idxTree.Get([]byte(indexKey))
-							idxTree.Delete([]byte(indexKey))
+							if delErr := idxTree.Delete([]byte(indexKey)); delErr != nil {
+								return 0, rowsAffected, fmt.Errorf("failed to delete from unique index %s: %w", idxName, delErr)
+							}
 							if c.txnActive && getErr == nil {
 								idxChanges = append(idxChanges, indexUndoEntry{
 									indexName: idxName,
@@ -120,7 +146,9 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 							// For non-unique indexes, delete the compound key "indexValue\x00pk"
 							compoundKey := indexKey + "\x00" + string(key)
 							oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
-							idxTree.Delete([]byte(compoundKey))
+							if delErr := idxTree.Delete([]byte(compoundKey)); delErr != nil {
+								return 0, rowsAffected, fmt.Errorf("failed to delete from index %s: %w", idxName, delErr)
+							}
 							if c.txnActive && getErr == nil {
 								idxChanges = append(idxChanges, indexUndoEntry{
 									indexName: idxName,
@@ -168,7 +196,9 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		}
 
 		// Execute AFTER DELETE trigger per-row
-		_ = c.executeTriggers(ctx, stmt.Table, "DELETE", "AFTER", nil, row, table.Columns)
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "AFTER", nil, row, table.Columns); trigErr != nil {
+			return 0, rowsAffected, fmt.Errorf("AFTER DELETE trigger failed: %w", trigErr)
+		}
 	}
 
 	// Invalidate query cache for the affected table
@@ -253,7 +283,7 @@ func (c *Catalog) DeleteRow(ctx context.Context, tableName string, pkValue inter
 	}
 
 	// Cascade FK enforcement before deleting
-	if table != nil && len(table.ForeignKeys) >= 0 {
+	if table != nil && len(table.ForeignKeys) > 0 {
 		fke := NewForeignKeyEnforcer(c)
 		pkColIdx := -1
 		if len(table.PrimaryKey) > 0 {

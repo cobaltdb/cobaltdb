@@ -206,7 +206,9 @@ func (al *Logger) Log(eventType EventType, user, action string, opts ...LogOptio
 	default:
 		// Channel full — write synchronously under lock to avoid data race on al.file
 		al.mu.Lock()
-		al.writeEvent(event)
+		if err := al.writeEvent(event); err != nil && al.logger != nil {
+			al.logger.Errorf("Failed to write audit event (sync fallback): %v", err)
+		}
 		al.mu.Unlock()
 	}
 }
@@ -263,7 +265,9 @@ func (al *Logger) flushBatch(events []*Event) {
 		}
 	}
 
-	al.file.Sync()
+	if err := al.file.Sync(); err != nil && al.logger != nil {
+		al.logger.Errorf("Failed to sync audit log: %v", err)
+	}
 }
 
 func (al *Logger) writeEvent(event *Event) error {

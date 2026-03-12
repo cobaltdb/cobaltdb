@@ -115,6 +115,7 @@ func (cb *CircuitBreaker) Allow() error {
 		// Check if we should transition to half-open
 		if cb.shouldAttemptReset() {
 			if cb.tryHalfOpen() {
+				cb.concurrency.Add(1)
 				return nil
 			}
 		}
@@ -124,6 +125,7 @@ func (cb *CircuitBreaker) Allow() error {
 		// Only allow limited requests in half-open state
 		select {
 		case <-cb.halfOpenTokens:
+			cb.concurrency.Add(1)
 			return nil
 		default:
 			return ErrCircuitOpen

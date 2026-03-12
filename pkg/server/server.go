@@ -117,6 +117,10 @@ func (s *Server) SetSQLProtector(sp *SQLProtector) {
 
 // Listen starts the server on the given address
 func (s *Server) Listen(address string, tlsConfig *TLSConfig) error {
+	if s.auth.IsEnabled() && (tlsConfig == nil || !tlsConfig.Enabled) {
+		fmt.Println("WARNING: Authentication is enabled but TLS is disabled. Passwords will be sent in cleartext.")
+	}
+
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
@@ -187,8 +191,7 @@ func (s *Server) acceptLoop() error {
 			defer s.clientWg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					// Prevent a panicking client from crashing the server
-					_ = r
+					fmt.Printf("[PANIC] client handler recovered: %v\n", r)
 				}
 			}()
 			client.Handle()

@@ -240,10 +240,12 @@ func (w *WireServerComponent) Stop(ctx context.Context) error {
 }
 
 func (w *WireServerComponent) Health() server.HealthStatus {
-	// Wire server is healthy if it has clients or just started
+	if w.server == nil {
+		return server.HealthStatus{Healthy: false, Message: "server not initialized"}
+	}
 	return server.HealthStatus{
 		Healthy: true,
-		Message: "wire server running",
+		Message: fmt.Sprintf("wire server running, %d clients", w.server.ClientCount()),
 	}
 }
 

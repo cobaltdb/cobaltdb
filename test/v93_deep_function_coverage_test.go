@@ -426,8 +426,8 @@ func TestV93_LikeEscape(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO t93le VALUES (1, 'hello_world')")
 	afExec(t, db, ctx, "INSERT INTO t93le VALUES (2, 'helloXworld')")
 	afExec(t, db, ctx, "INSERT INTO t93le VALUES (3, 'hello world')")
-	// Use \ as escape char, \_ matches literal underscore
-	rows := afQuery(t, db, ctx, "SELECT name FROM t93le WHERE name LIKE 'hello\\_world' ESCAPE '\\'")
+	// Use ! as escape char, !_ matches literal underscore
+	rows := afQuery(t, db, ctx, "SELECT name FROM t93le WHERE name LIKE 'hello!_world' ESCAPE '!'")
 	if len(rows) != 1 {
 		// If ESCAPE is not supported or behaves differently, just log
 		t.Logf("LIKE ESCAPE returned %d rows (expected 1)", len(rows))

@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -36,6 +37,11 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 	}
 
 	return cat.selectLocked(stmt, args)
+}
+
+// SetRLSContext sets the context used for RLS user/role extraction in SELECT queries.
+func (cat *Catalog) SetRLSContext(ctx context.Context) {
+	cat.rlsCtx = ctx
 }
 
 func (c *Catalog) executeScalarSelect(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {

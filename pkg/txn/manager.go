@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"math"
 	"sync/atomic"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -76,19 +77,29 @@ func (t *Transaction) Commit() error {
 	// For snapshot isolation, check for conflicts
 	if t.Isolation >= SnapshotIsolation {
 		if err := t.manager.detectConflicts(t); err != nil {
-			t.rollbackLocked()
+			if rbErr := t.rollbackLocked(); rbErr != nil {
+				return fmt.Errorf("conflict detection failed and rollback failed: %v; %w", rbErr, err)
+			}
 			return err
 		}
 	}
 
 	// Apply writes
 	if err := t.manager.applyWrites(t); err != nil {
-		t.rollbackLocked()
+		if rbErr := t.rollbackLocked(); rbErr != nil {
+			return fmt.Errorf("apply writes failed and rollback failed: %v; %w", rbErr, err)
+		}
 		return err
 	}
 
 	t.State = TxnCommitted
 	t.manager.removeActive(t.ID)
+
+	// Periodically prune versions map to prevent unbounded memory growth
+	if t.manager.commitCount.Add(1)%1000 == 0 {
+		go t.manager.pruneVersions()
+	}
+
 	return nil
 }
 
@@ -161,9 +172,10 @@ type Manager struct {
 	counter  uint64 // atomic, monotonic
 	active   map[uint64]*Transaction
 	versions map[string]uint64 // key → latest committed version
-	mu       sync.RWMutex
-	pool     interface{} // BufferPool (using interface{} to avoid import cycle)
-	wal      interface{} // WAL
+	mu          sync.RWMutex
+	commitCount atomic.Int64
+	pool        interface{} // BufferPool (using interface{} to avoid import cycle)
+	wal         interface{} // WAL
 }
 
 // NewManager creates a new transaction manager
@@ -265,6 +277,26 @@ func (m *Manager) applyWrites(txn *Transaction) error {
 	}
 
 	return nil
+}
+
+// pruneVersions removes version entries that are no longer needed by any active transaction
+func (m *Manager) pruneVersions() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Find minimum active transaction start timestamp
+	minActive := uint64(math.MaxUint64)
+	for _, txn := range m.active {
+		if txn.StartTS < minActive {
+			minActive = txn.StartTS
+		}
+	}
+
+	// If no active transactions, we can clear all versions
+	if minActive == math.MaxUint64 {
+		m.versions = make(map[string]uint64)
+		return
+	}
 }
 
 // removeActive removes a transaction from the active set

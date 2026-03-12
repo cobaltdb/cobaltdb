@@ -211,13 +211,23 @@ func (l *Lexer) NextToken() Token {
 		tok = newToken(TokenQuestion, l.ch, l.line, l.column)
 		l.readChar()
 	case '\'':
+		startLine, startCol := l.line, l.column
+		lit, ok := l.readString('\'')
+		if !ok {
+			return Token{Type: TokenIllegal, Literal: "unterminated string literal", Line: startLine, Column: startCol}
+		}
 		tok.Type = TokenString
-		tok.Literal = l.readString('\'')
+		tok.Literal = lit
 		tok.Line = l.line
 		tok.Column = l.column
 	case '"':
+		startLine, startCol := l.line, l.column
+		lit, ok := l.readString('"')
+		if !ok {
+			return Token{Type: TokenIllegal, Literal: "unterminated string literal", Line: startLine, Column: startCol}
+		}
 		tok.Type = TokenIdentifier
-		tok.Literal = l.readString('"')
+		tok.Literal = lit
 		tok.Line = l.line
 		tok.Column = l.column
 	case '`':
@@ -288,7 +298,7 @@ func (l *Lexer) readNumber() string {
 }
 
 // readString reads a string literal
-func (l *Lexer) readString(quote byte) string {
+func (l *Lexer) readString(quote byte) (string, bool) {
 	l.readChar() // consume opening quote
 	var result strings.Builder
 	for l.ch != 0 {
@@ -324,8 +334,11 @@ func (l *Lexer) readString(quote byte) string {
 		result.WriteByte(l.ch)
 		l.readChar()
 	}
+	if l.ch == 0 {
+		return result.String(), false
+	}
 	l.readChar() // consume closing quote
-	return result.String()
+	return result.String(), true
 }
 
 // readBacktickString reads a backtick-quoted identifier

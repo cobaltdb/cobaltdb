@@ -21,6 +21,8 @@
 package catalog
 
 import (
+	"context"
+	"container/list"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
@@ -42,13 +45,6 @@ var (
 	ErrColumnNotFound = errors.New("column not found")
 	ErrIndexExists    = errors.New("index already exists")
 	ErrIndexNotFound  = errors.New("index not found")
-
-	// rowBufferPool reduces GC pressure by reusing row buffers
-	rowBufferPool = sync.Pool{
-		New: func() interface{} {
-			return make([]interface{}, 0, 16)
-		},
-	}
 )
 
 // TableDef represents a table definition
@@ -63,8 +59,6 @@ type TableDef struct {
 	AutoIncSeq  int64               `json:"auto_inc_seq"` // Per-table auto-increment counter
 	// Performance: cache column indices (not persisted)
 	columnIndices map[string]int `json:"-"`
-	// Performance: unique index for O(1) UNIQUE constraint checks
-	uniqueIndex map[int]map[string]string `json:"-"` // column index -> value -> pk
 }
 
 // ForeignKeyDef represents a foreign key constraint
@@ -226,6 +220,7 @@ type Catalog struct {
 	enableRLS         bool                                  // Enable row-level security
 	rlsPolicies       map[string]*security.Policy           // RLS policies: key = "table:policyName"
 	queryCache        *QueryCache                           // Query result cache
+	rlsCtx            context.Context                       // Context for RLS user/role extraction in SELECT
 }
 
 // savepointEntry records a named savepoint with its undo log position
@@ -251,29 +246,21 @@ type QueryCacheEntry struct {
 // QueryCache manages cached query results
 type QueryCache struct {
 	entries   map[string]*QueryCacheEntry
+	lru       *list.List
+	lruMap    map[string]*list.Element
 	maxSize   int
 	ttl       time.Duration
 	enabled   bool
-	hitCount  int64
-	missCount int64
+	hitCount  atomic.Int64
+	missCount atomic.Int64
 	mu        sync.RWMutex
-}
-
-// IndexRangeCondition represents a range condition for index scanning
-type IndexRangeCondition struct {
-	IdxName        string
-	ColName        string
-	LowerBound     interface{}
-	UpperBound     interface{}
-	LowerInclusive bool
-	UpperInclusive bool
-	IsExact        bool        // true for = condition
-	ExactValue     interface{} // for = condition
 }
 
 func NewQueryCache(maxSize int, ttl time.Duration) *QueryCache {
 	return &QueryCache{
 		entries: make(map[string]*QueryCacheEntry),
+		lru:     list.New(),
+		lruMap:  make(map[string]*list.Element),
 		maxSize: maxSize,
 		ttl:     ttl,
 		enabled: maxSize > 0,
@@ -285,23 +272,32 @@ func (qc *QueryCache) Get(key string) (*QueryCacheEntry, bool) {
 		return nil, false
 	}
 
-	qc.mu.RLock()
-	defer qc.mu.RUnlock()
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
 
 	entry, exists := qc.entries[key]
 	if !exists {
-		qc.missCount++
+		qc.missCount.Add(1)
 		return nil, false
 	}
 
 	// Check if entry has expired
 	if time.Since(entry.Timestamp) > qc.ttl {
-		qc.missCount++
+		qc.missCount.Add(1)
 		return nil, false
 	}
 
-	qc.hitCount++
+	qc.promoteInLRU(key)
+	qc.hitCount.Add(1)
 	return entry, true
+}
+
+// promoteInLRU moves a key to the front of the LRU list (caller must hold at least RLock)
+// Note: we upgrade to write lock for the LRU mutation
+func (qc *QueryCache) promoteInLRU(key string) {
+	if elem, ok := qc.lruMap[key]; ok {
+		qc.lru.MoveToFront(elem)
+	}
 }
 
 func (qc *QueryCache) Set(key string, columns []string, rows [][]interface{}, tables []string) {
@@ -312,9 +308,18 @@ func (qc *QueryCache) Set(key string, columns []string, rows [][]interface{}, ta
 	qc.mu.Lock()
 	defer qc.mu.Unlock()
 
-	// Evict entries if cache is full
-	for len(qc.entries) >= qc.maxSize {
-		qc.evictOne()
+	// If key already exists, move to front
+	if _, exists := qc.entries[key]; exists {
+		if elem, ok := qc.lruMap[key]; ok {
+			qc.lru.MoveToFront(elem)
+		}
+	} else {
+		// Evict entries if cache is full
+		for len(qc.entries) >= qc.maxSize {
+			qc.evictOne()
+		}
+		elem := qc.lru.PushFront(key)
+		qc.lruMap[key] = elem
 	}
 
 	qc.entries[key] = &QueryCacheEntry{
@@ -337,6 +342,10 @@ func (qc *QueryCache) Invalidate(tableName string) {
 	for key, entry := range qc.entries {
 		for _, tbl := range entry.Tables {
 			if strings.ToLower(tbl) == tableLower {
+				if elem, ok := qc.lruMap[key]; ok {
+					qc.lru.Remove(elem)
+					delete(qc.lruMap, key)
+				}
 				delete(qc.entries, key)
 				break
 			}
@@ -353,28 +362,24 @@ func (qc *QueryCache) InvalidateAll() {
 	defer qc.mu.Unlock()
 
 	qc.entries = make(map[string]*QueryCacheEntry)
+	qc.lru.Init()
+	qc.lruMap = make(map[string]*list.Element)
 }
 
 func (qc *QueryCache) evictOne() {
-	var oldestKey string
-	var oldestTime time.Time
-
-	for key, entry := range qc.entries {
-		if oldestKey == "" || entry.Timestamp.Before(oldestTime) {
-			oldestKey = key
-			oldestTime = entry.Timestamp
-		}
-	}
-
-	if oldestKey != "" {
-		delete(qc.entries, oldestKey)
+	back := qc.lru.Back()
+	if back != nil {
+		key := back.Value.(string)
+		qc.lru.Remove(back)
+		delete(qc.lruMap, key)
+		delete(qc.entries, key)
 	}
 }
 
 func (qc *QueryCache) Stats() (hits, misses int64, size int) {
 	qc.mu.RLock()
 	defer qc.mu.RUnlock()
-	return qc.hitCount, qc.missCount, len(qc.entries)
+	return qc.hitCount.Load(), qc.missCount.Load(), len(qc.entries)
 }
 
 func generateQueryKey(sql string, args []interface{}) string {
@@ -1312,7 +1317,10 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		}
 	} else {
 		// Full table scan when no index is available
-		iter, _ := tree.Scan(nil, nil)
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return returnColumns, nil, fmt.Errorf("failed to scan table: %w", err)
+		}
 		defer iter.Close()
 
 		for iter.HasNext() {
@@ -1439,6 +1447,24 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 			if limit, ok := toInt(limitVal); ok && limit >= 0 && int(limit) <= len(rows) {
 				rows = rows[:limit]
 			}
+		}
+	}
+
+	// Apply Row-Level Security filtering
+	if cat.enableRLS && cat.rlsManager != nil && stmt.From != nil {
+		rlsCtx := cat.rlsCtx
+		if rlsCtx == nil {
+			rlsCtx = context.Background()
+		}
+		user, _ := rlsCtx.Value("cobaltdb_user").(string)
+		roles, _ := rlsCtx.Value("cobaltdb_roles").([]string)
+		if user != "" {
+			cols, filteredRows, rlsErr := cat.applyRLSFilterInternal(rlsCtx, stmt.From.Name, returnColumns, rows, user, roles)
+			if rlsErr != nil {
+				return nil, nil, fmt.Errorf("RLS filter failed: %w", rlsErr)
+			}
+			returnColumns = cols
+			rows = filteredRows
 		}
 	}
 
@@ -1898,19 +1924,6 @@ func toInt(v interface{}) (int, bool) {
 			return 0, false // Overflow
 		}
 		return int(val), true
-	default:
-		return 0, false
-	}
-}
-
-func toInt64(v interface{}) (int64, bool) {
-	switch val := v.(type) {
-	case int:
-		return int64(val), true
-	case int64:
-		return val, true
-	case float64:
-		return int64(val), true
 	default:
 		return 0, false
 	}
@@ -3495,6 +3508,28 @@ func exprToSQL(expr query.Expression) string {
 	}
 }
 
+func typeTaggedKey(v interface{}) string {
+	if v == nil {
+		return "\x01NULL\x01"
+	}
+	switch val := v.(type) {
+	case int64:
+		return "I:" + strconv.FormatInt(val, 10)
+	case float64:
+		if val == float64(int64(val)) && val >= -1e15 && val <= 1e15 {
+			return "I:" + strconv.FormatInt(int64(val), 10)
+		}
+		return "F:" + strconv.FormatFloat(val, 'g', -1, 64)
+	case bool:
+		if val {
+			return "B:1"
+		}
+		return "B:0"
+	default:
+		return "S:" + fmt.Sprintf("%v", v)
+	}
+}
+
 func buildCompositeIndexKey(table *TableDef, idxDef *IndexDef, row []interface{}) (string, bool) {
 	if len(idxDef.Columns) == 0 {
 		return "", false
@@ -3504,7 +3539,7 @@ func buildCompositeIndexKey(table *TableDef, idxDef *IndexDef, row []interface{}
 		if colIdx < 0 || colIdx >= len(row) || row[colIdx] == nil {
 			return "", false
 		}
-		return fmt.Sprintf("%v", row[colIdx]), true
+		return typeTaggedKey(row[colIdx]), true
 	}
 	// Composite key: concatenate all column values
 	var parts []string
@@ -3513,7 +3548,7 @@ func buildCompositeIndexKey(table *TableDef, idxDef *IndexDef, row []interface{}
 		if colIdx < 0 || colIdx >= len(row) || row[colIdx] == nil {
 			return "", false
 		}
-		parts = append(parts, fmt.Sprintf("%v", row[colIdx]))
+		parts = append(parts, typeTaggedKey(row[colIdx]))
 	}
 	return strings.Join(parts, "\x00"), true
 }
@@ -3583,106 +3618,6 @@ func decodeRow(data []byte, numCols int) ([]interface{}, error) {
 	// Pad row to match current column count (handles ALTER TABLE ADD COLUMN)
 	for len(values) < numCols {
 		values = append(values, nil)
-	}
-	return values, nil
-}
-
-func fastEncodeRow(values []interface{}) ([]byte, error) {
-	if len(values) == 0 {
-		return []byte{0}, nil // empty marker
-	}
-
-	var buf []byte
-	for _, v := range values {
-		switch val := v.(type) {
-		case nil:
-			buf = append(buf, 0) // type: nil
-		case int:
-			buf = append(buf, 1) // type: int
-			buf = append(buf, byte(val), byte(val>>8), byte(val>>16), byte(val>>24), byte(val>>32), byte(val>>40), byte(val>>48), byte(val>>56))
-		case int64:
-			buf = append(buf, 1) // type: int64
-			buf = append(buf, byte(val), byte(val>>8), byte(val>>16), byte(val>>24), byte(val>>32), byte(val>>40), byte(val>>48), byte(val>>56))
-		case float64:
-			buf = append(buf, 2) // type: float64
-			bits := uint64(math.Float64bits(val))
-			buf = append(buf, byte(bits), byte(bits>>8), byte(bits>>16), byte(bits>>24), byte(bits>>32), byte(bits>>40), byte(bits>>48), byte(bits>>56))
-		case string:
-			buf = append(buf, 3) // type: string
-			buf = append(buf, byte(len(val)), byte(len(val)>>8))
-			buf = append(buf, val...)
-		case bool:
-			buf = append(buf, 4) // type: bool
-			if val {
-				buf = append(buf, 1)
-			} else {
-				buf = append(buf, 0)
-			}
-		default:
-			// Fallback to JSON for unknown types
-			j, err := json.Marshal(val)
-			if err != nil {
-				buf = append(buf, 0) // nil as fallback
-			} else {
-				buf = append(buf, 3) // treat as string
-				buf = append(buf, byte(len(j)), byte(len(j)>>8))
-				buf = append(buf, j...)
-			}
-		}
-	}
-	return buf, nil
-}
-
-func fastDecodeRow(data []byte) ([]interface{}, error) {
-	if len(data) == 0 {
-		return []interface{}{}, nil
-	}
-
-	var values []interface{}
-	i := 0
-	for i < len(data) {
-		typ := data[i]
-		i++
-		switch typ {
-		case 0: // nil
-			values = append(values, nil)
-		case 1: // int64
-			if i+8 > len(data) {
-				return nil, fmt.Errorf("invalid data: expected int64")
-			}
-			var v int64
-			v = int64(data[i]) | int64(data[i+1])<<8 | int64(data[i+2])<<16 | int64(data[i+3])<<24 |
-				int64(data[i+4])<<32 | int64(data[i+5])<<40 | int64(data[i+6])<<48 | int64(data[i+7])<<56
-			values = append(values, v)
-			i += 8
-		case 2: // float64
-			if i+8 > len(data) {
-				return nil, fmt.Errorf("invalid data: expected float64")
-			}
-			bits := uint64(data[i]) | uint64(data[i+1])<<8 | uint64(data[i+2])<<16 | uint64(data[i+3])<<24 |
-				uint64(data[i+4])<<32 | uint64(data[i+5])<<40 | uint64(data[i+6])<<48 | uint64(data[i+7])<<56
-			values = append(values, math.Float64frombits(bits))
-			i += 8
-		case 3: // string
-			if i+2 > len(data) {
-				return nil, fmt.Errorf("invalid data: expected string length")
-			}
-			length := int(data[i]) | int(data[i+1])<<8
-			i += 2
-			if i+length > len(data) {
-				return nil, fmt.Errorf("invalid data: expected string")
-			}
-			values = append(values, string(data[i:i+length]))
-			i += length
-		case 4: // bool
-			if i >= len(data) {
-				return nil, fmt.Errorf("invalid data: expected bool")
-			}
-			values = append(values, data[i] != 0)
-			i++
-		default:
-			return nil, fmt.Errorf("unknown type: %d", typ)
-		}
 	}
 	return values, nil
 }

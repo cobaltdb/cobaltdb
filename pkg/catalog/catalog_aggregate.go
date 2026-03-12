@@ -83,7 +83,10 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 	groups := make(map[string][][]interface{})
 	groupOrder := []string{} // preserve insertion order
 
-	iter, _ := tree.Scan(nil, nil)
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to scan table for GROUP BY: %w", err)
+	}
 	defer iter.Close()
 
 	for iter.HasNext() {
@@ -113,14 +116,14 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 		var groupKey strings.Builder
 		for i, spec := range groupBySpecs {
 			if i > 0 {
-				groupKey.WriteString("|")
+				groupKey.WriteString("\x00")
 			}
 			if spec.index >= 0 && spec.index < len(fullRow) {
-				groupKey.WriteString(fmt.Sprintf("%v", fullRow[spec.index]))
+				groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
 			} else if spec.expr != nil {
 				val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
 				if err == nil {
-					groupKey.WriteString(fmt.Sprintf("%v", val))
+					groupKey.WriteString(typeTaggedKey(val))
 				}
 			}
 		}

@@ -49,23 +49,40 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
+// loginAttempt tracks failed login attempts for brute-force protection
+type loginAttempt struct {
+	count     int
+	lastFail  time.Time
+	lockUntil time.Time
+}
+
+const (
+	maxLoginAttempts  = 5
+	lockoutDuration   = 5 * time.Minute
+	attemptResetAfter = 15 * time.Minute
+)
+
 // Authenticator handles user authentication
 type Authenticator struct {
-	mu       sync.RWMutex
-	users    map[string]*User
-	sessions map[string]*Session
-	enabled  bool
-	stopCh   chan struct{}
-	stopped  bool
+	mu                   sync.RWMutex
+	users                map[string]*User
+	sessions             map[string]*Session
+	enabled              bool
+	stopCh               chan struct{}
+	stopped              bool
+	failedAttempts       map[string]*loginAttempt
+	failedMu             sync.RWMutex
+	enforcePasswordPolicy bool
 }
 
 // NewAuthenticator creates a new authenticator
 func NewAuthenticator() *Authenticator {
 	a := &Authenticator{
-		users:    make(map[string]*User),
-		sessions: make(map[string]*Session),
-		enabled:  false,
-		stopCh:   make(chan struct{}),
+		users:          make(map[string]*User),
+		sessions:       make(map[string]*Session),
+		enabled:        false,
+		stopCh:         make(chan struct{}),
+		failedAttempts: make(map[string]*loginAttempt),
 	}
 	go a.sessionCleanupLoop()
 	return a
@@ -140,6 +157,33 @@ func generateSalt() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// SetPasswordPolicy enables or disables password complexity enforcement
+func (a *Authenticator) SetPasswordPolicy(enforce bool) {
+	a.enforcePasswordPolicy = enforce
+}
+
+// validatePasswordStrength checks password complexity requirements
+func validatePasswordStrength(password string) error {
+	if len(password) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
+	var hasUpper, hasLower, hasDigit bool
+	for _, ch := range password {
+		switch {
+		case ch >= 'A' && ch <= 'Z':
+			hasUpper = true
+		case ch >= 'a' && ch <= 'z':
+			hasLower = true
+		case ch >= '0' && ch <= '9':
+			hasDigit = true
+		}
+	}
+	if !hasUpper || !hasLower || !hasDigit {
+		return fmt.Errorf("password must contain at least one uppercase letter, one lowercase letter, and one digit")
+	}
+	return nil
+}
+
 // CreateUser creates a new user
 func (a *Authenticator) CreateUser(username, password string, isAdmin bool) error {
 	a.mu.Lock()
@@ -152,6 +196,12 @@ func (a *Authenticator) CreateUser(username, password string, isAdmin bool) erro
 func (a *Authenticator) createUserLocked(username, password string, isAdmin bool) error {
 	if _, exists := a.users[username]; exists {
 		return ErrUserExists
+	}
+
+	if a.enforcePasswordPolicy {
+		if err := validatePasswordStrength(password); err != nil {
+			return err
+		}
 	}
 
 	salt, err := generateSalt()
@@ -214,18 +264,33 @@ func (a *Authenticator) UserExists(username string) bool {
 
 // Authenticate authenticates a user and returns a session token
 func (a *Authenticator) Authenticate(username, password string) (string, error) {
+	// Check lockout before acquiring main lock
+	a.failedMu.RLock()
+	if attempt, exists := a.failedAttempts[username]; exists && time.Now().Before(attempt.lockUntil) {
+		a.failedMu.RUnlock()
+		return "", fmt.Errorf("account temporarily locked due to too many failed attempts")
+	}
+	a.failedMu.RUnlock()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	user, exists := a.users[username]
 	if !exists {
+		a.recordFailedAttempt(username)
 		return "", ErrInvalidCredentials
 	}
 
 	passwordHash := hashPassword(password, user.Salt)
 	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(user.PasswordHash)) != 1 {
+		a.recordFailedAttempt(username)
 		return "", ErrInvalidCredentials
 	}
+
+	// Clear failed attempts on success
+	a.failedMu.Lock()
+	delete(a.failedAttempts, username)
+	a.failedMu.Unlock()
 
 	// Update last login
 	user.LastLogin = time.Now()
@@ -244,6 +309,20 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 
 	a.sessions[token] = session
 	return token, nil
+}
+
+// recordFailedAttempt records a failed login attempt for brute-force protection
+func (a *Authenticator) recordFailedAttempt(username string) {
+	a.failedMu.Lock()
+	if a.failedAttempts[username] == nil {
+		a.failedAttempts[username] = &loginAttempt{}
+	}
+	a.failedAttempts[username].count++
+	a.failedAttempts[username].lastFail = time.Now()
+	if a.failedAttempts[username].count >= maxLoginAttempts {
+		a.failedAttempts[username].lockUntil = time.Now().Add(lockoutDuration)
+	}
+	a.failedMu.Unlock()
 }
 
 // generateToken generates a cryptographically secure session token
@@ -303,6 +382,13 @@ func (a *Authenticator) ChangePassword(username, oldPassword, newPassword string
 	user.Salt = salt
 	user.PasswordHash = hashPassword(newPassword, salt)
 	user.MySQLNativeHash = mysqlNativeHash(newPassword)
+
+	// Invalidate all active sessions for this user
+	for token, sess := range a.sessions {
+		if sess.Username == username {
+			delete(a.sessions, token)
+		}
+	}
 
 	return nil
 }

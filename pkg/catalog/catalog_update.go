@@ -31,7 +31,10 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	}
 
 	rowsAffected := int64(0)
-	iter, _ := tree.Scan(nil, nil)
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to scan table for UPDATE: %w", err)
+	}
 	defer iter.Close()
 
 	// Collect entries to update (need old row for index cleanup)
@@ -71,6 +74,27 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			}
 			if !matched {
 				continue // Skip row that doesn't match WHERE condition
+			}
+		}
+
+		// Apply Row-Level Security check for UPDATE
+		if c.enableRLS && c.rlsManager != nil {
+			user, _ := ctx.Value("cobaltdb_user").(string)
+			roles, _ := ctx.Value("cobaltdb_roles").([]string)
+			if user != "" {
+				rowMap := make(map[string]interface{})
+				for i, col := range table.Columns {
+					if i < len(row) {
+						rowMap[col.Name] = row[i]
+					}
+				}
+				allowed, rlsErr := c.checkRLSForUpdateInternal(ctx, stmt.Table, rowMap, user, roles)
+				if rlsErr != nil {
+					continue // Skip rows that fail RLS check
+				}
+				if !allowed {
+					continue // Skip rows the user doesn't have access to
+				}
 			}
 		}
 
@@ -282,7 +306,9 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 					return 0, rowsAffected, err
 				}
 				// Log insert of new key
-				walData := append(newKey, 0)
+				walData := make([]byte, 0, len(newKey)+1+len(newValueData))
+				walData = append(walData, newKey...)
+				walData = append(walData, 0)
 				walData = append(walData, newValueData...)
 				insertRecord := &storage.WALRecord{
 					TxnID: c.txnID,
@@ -310,8 +336,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		if pkChanged {
 			// Delete old key and insert new key
 			if err := tree.Delete(oldKey); err != nil {
-				// Continue with update, but note the error
-				_ = err
+				return 0, rowsAffected, fmt.Errorf("failed to delete old key during PK update: %w", err)
 			}
 			if err := tree.Put(newKey, newValueData); err != nil {
 				return 0, rowsAffected, fmt.Errorf("failed to update row with new key: %w", err)
@@ -350,7 +375,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 						}
 					} else {
 						// For non-unique indexes, delete the compound key "indexValue\x00pk"
-						compoundKey := oldIndexKey + "\x00" + string(newKey)
+						compoundKey := oldIndexKey + "\x00" + string(entry.key)
 						oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
 						_ = idxTree.Delete([]byte(compoundKey))
 						if c.txnActive && getErr == nil {
@@ -412,7 +437,9 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 
 	// Execute AFTER UPDATE triggers (per-row)
 	for _, entry := range entries {
-		_ = c.executeTriggers(ctx, stmt.Table, "UPDATE", "AFTER", entry.newRow, entry.oldRow, table.Columns)
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "UPDATE", "AFTER", entry.newRow, entry.oldRow, table.Columns); trigErr != nil {
+			return 0, rowsAffected, fmt.Errorf("AFTER UPDATE trigger failed: %w", trigErr)
+		}
 	}
 
 	// Invalidate query cache for the affected table
@@ -558,6 +585,21 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 						idxTree.Put([]byte(newIdxKey), entry.key)
 					}
 				}
+			}
+		}
+
+		// Record undo log for rollback
+		if c.txnActive {
+			oldValueData, marshalErr := json.Marshal(entry.oldRow)
+			if marshalErr == nil {
+				keyCopy := make([]byte, len(entry.key))
+				copy(keyCopy, entry.key)
+				c.undoLog = append(c.undoLog, undoEntry{
+					action:    undoUpdate,
+					tableName: stmt.Table,
+					key:       keyCopy,
+					oldValue:  oldValueData,
+				})
 			}
 		}
 	}

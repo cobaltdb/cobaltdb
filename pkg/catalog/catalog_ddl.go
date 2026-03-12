@@ -4,15 +4,95 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
+// validIdentifierName checks if a table or column name is valid
+// Names must start with a letter or underscore, contain only alphanumeric characters and underscores,
+// and not exceed 64 characters (SQL standard limit)
+var validIdentifierName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`)
+
+// stripQuotes removes surrounding double quotes, backticks, or square brackets from an identifier
+func stripQuotes(name string) string {
+	if len(name) >= 2 {
+		if (name[0] == '"' && name[len(name)-1] == '"') ||
+			(name[0] == '`' && name[len(name)-1] == '`') ||
+			(name[0] == '[' && name[len(name)-1] == ']') {
+			return name[1 : len(name)-1]
+		}
+	}
+	return name
+}
+
+// validateTableName validates a table name
+func validateTableName(name string) error {
+	if name == "" {
+		return fmt.Errorf("table name cannot be empty")
+	}
+	stripped := stripQuotes(name)
+	if !validIdentifierName.MatchString(stripped) {
+		return fmt.Errorf("invalid table name %q: must start with letter or underscore, contain only alphanumeric characters and underscores, and be 1-64 characters", stripped)
+	}
+	if name == stripped && isReservedWord(name) {
+		return fmt.Errorf("table name %q is a reserved word", name)
+	}
+	return nil
+}
+
+// validateColumnName validates a column name
+func validateColumnName(name string) error {
+	if name == "" {
+		return fmt.Errorf("column name cannot be empty")
+	}
+	stripped := stripQuotes(name)
+	if !validIdentifierName.MatchString(stripped) {
+		return fmt.Errorf("invalid column name %q: must start with letter or underscore, contain only alphanumeric characters and underscores, and be 1-64 characters", stripped)
+	}
+	if name == stripped && isReservedWord(name) {
+		return fmt.Errorf("column name %q is a reserved word", name)
+	}
+	return nil
+}
+
+var reservedWords = map[string]bool{
+	"SELECT": true, "INSERT": true, "UPDATE": true, "DELETE": true,
+	"CREATE": true, "DROP": true, "ALTER": true, "TABLE": true,
+	"INDEX": true, "VIEW": true, "TRIGGER": true, "PROCEDURE": true,
+	"FROM": true, "WHERE": true, "JOIN": true, "ON": true, "AND": true,
+	"OR": true, "NOT": true, "IN": true, "BETWEEN": true, "LIKE": true,
+	"NULL": true, "TRUE": true, "FALSE": true, "DEFAULT": true,
+	"PRIMARY": true, "FOREIGN": true, "REFERENCES": true,
+	"UNIQUE": true, "CHECK": true, "CONSTRAINT": true,
+	"COLUMN": true, "RENAME": true, "TO": true, "AS": true,
+	"ORDER": true, "BY": true, "GROUP": true, "HAVING": true,
+	"LIMIT": true, "OFFSET": true, "UNION": true, "INTERSECT": true,
+	"EXCEPT": true, "ALL": true, "DISTINCT": true,
+	"CASE": true, "WHEN": true, "THEN": true, "ELSE": true, "END": true,
+	"CAST": true, "INTO": true, "VALUES": true,
+	"INNER": true, "LEFT": true, "RIGHT": true, "OUTER": true,
+	"CROSS": true, "NATURAL": true, "USING": true,
+	"EXISTS": true, "ROLLBACK": true, "COMMIT": true, "TRANSACTION": true,
+	"IS": true, "INTEGER": true, "TEXT": true, "REAL": true, "BLOB": true,
+	"BOOLEAN": true, "JSON": true, "RETURNING": true,
+}
+
+func isReservedWord(name string) bool {
+	return reservedWords[strings.ToUpper(name)]
+}
+
 func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Validate table name
+	if err := validateTableName(stmt.Table); err != nil {
+		return err
+	}
+
 	if _, exists := c.tables[stmt.Table]; exists {
 		if stmt.IfNotExists {
 			return nil // Table already exists, silently succeed
@@ -173,6 +253,16 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Validate table name
+	if err := validateTableName(stmt.Table); err != nil {
+		return err
+	}
+
+	// Validate column name
+	if err := validateColumnName(stmt.Column.Name); err != nil {
+		return err
+	}
+
 	table, exists := c.tables[stmt.Table]
 	if !exists {
 		return ErrTableNotFound
@@ -222,7 +312,10 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 		}
 
 		// Scan all rows and append the default value
-		iter, _ := tree.Scan(nil, nil)
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return fmt.Errorf("failed to scan table for ALTER TABLE: %w", err)
+		}
 		defer iter.Close()
 		type rowUpdate struct {
 			key  []byte
@@ -255,7 +348,9 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 
 		// Apply updates
 		for _, u := range updates {
-			tree.Put(u.key, u.data)
+			if err := tree.Put(u.key, u.data); err != nil {
+				return fmt.Errorf("failed to update row during ALTER TABLE backfill: %w", err)
+			}
 		}
 	}
 
@@ -266,6 +361,16 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Validate table name
+	if err := validateTableName(stmt.Table); err != nil {
+		return err
+	}
+
+	// Validate column name
+	if err := validateColumnName(stmt.NewName); err != nil {
+		return err
+	}
 
 	table, exists := c.tables[stmt.Table]
 	if !exists {
@@ -302,7 +407,10 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 		}
 		// Save original row data before modification
 		if tree, treeExists := c.tableTrees[stmt.Table]; treeExists {
-			iter, _ := tree.Scan(nil, nil)
+			iter, err := tree.Scan(nil, nil)
+			if err != nil {
+				return fmt.Errorf("failed to scan table for ALTER TABLE DROP COLUMN: %w", err)
+			}
 			defer iter.Close()
 			for iter.HasNext() {
 				key, val, err := iter.Next()
@@ -344,7 +452,10 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 			key []byte
 			val []byte
 		}
-		iter, _ := tree.Scan(nil, nil)
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return fmt.Errorf("failed to scan table for ALTER TABLE DROP COLUMN backfill: %w", err)
+		}
 		defer iter.Close()
 		for iter.HasNext() {
 			key, valueData, err := iter.Next()
@@ -396,6 +507,16 @@ func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Validate old table name
+	if err := validateTableName(stmt.Table); err != nil {
+		return err
+	}
+
+	// Validate new table name
+	if err := validateTableName(stmt.NewName); err != nil {
+		return err
+	}
+
 	table, exists := c.tables[stmt.Table]
 	if !exists {
 		return ErrTableNotFound
@@ -437,12 +558,37 @@ func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
 		c.stats[stmt.NewName] = stats
 	}
 
+	table.Name = stmt.NewName
+
+	// Persist renamed table to catalog B-tree
+	if c.tree != nil {
+		c.tree.Delete([]byte("tbl:" + stmt.Table))
+	}
+	if err := c.storeTableDef(table); err != nil {
+		return fmt.Errorf("failed to persist renamed table: %w", err)
+	}
+
 	return nil
 }
 
 func (c *Catalog) AlterTableRenameColumn(stmt *query.AlterTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Validate table name
+	if err := validateTableName(stmt.Table); err != nil {
+		return err
+	}
+
+	// Validate old column name
+	if err := validateColumnName(stmt.OldName); err != nil {
+		return err
+	}
+
+	// Validate new column name
+	if err := validateColumnName(stmt.NewName); err != nil {
+		return err
+	}
 
 	table, exists := c.tables[stmt.Table]
 	if !exists {

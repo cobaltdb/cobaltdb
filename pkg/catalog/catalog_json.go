@@ -64,7 +64,11 @@ func (c *Catalog) buildJSONIndex(idx *JSONIndexDef) error {
 		return nil
 	}
 
-	iter, _ := tree.Scan(nil, nil)
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return fmt.Errorf("failed to scan table for JSON index: %w", err)
+	}
+	defer iter.Close()
 	rowNum := int64(0)
 
 	for iter.HasNext() {

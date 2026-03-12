@@ -481,46 +481,51 @@ func (db *DB) Close() error {
 		db.metrics.Stop()
 	}
 
+	var errs []error
+
 	// Save catalog metadata to B+Tree (if not in-memory)
 	if !db.options.InMemory && db.path != ":memory:" {
 		if err := db.catalog.Save(); err != nil {
-			return fmt.Errorf("failed to save catalog: %w", err)
+			errs = append(errs, fmt.Errorf("save catalog: %w", err))
 		}
 
 		// Update meta page with current root page ID
 		if err := db.saveMetaPage(); err != nil {
-			return fmt.Errorf("failed to save meta page: %w", err)
+			errs = append(errs, fmt.Errorf("save meta page: %w", err))
 		}
 	}
 
 	// Perform WAL checkpoint before closing pool (checkpoint needs pool access)
 	if db.wal != nil {
 		if err := db.wal.Checkpoint(db.pool); err != nil {
-			return fmt.Errorf("failed to checkpoint WAL: %w", err)
+			errs = append(errs, fmt.Errorf("checkpoint WAL: %w", err))
 		}
 	}
 
 	// Flush buffer pool (after checkpoint)
 	if err := db.pool.Close(); err != nil {
-		return fmt.Errorf("failed to close buffer pool: %w", err)
+		errs = append(errs, fmt.Errorf("close buffer pool: %w", err))
 	}
 
 	// Close audit logger
 	if db.auditLogger != nil {
 		if err := db.auditLogger.Close(); err != nil {
-			return fmt.Errorf("failed to close audit logger: %w", err)
+			errs = append(errs, fmt.Errorf("close audit logger: %w", err))
 		}
 	}
 
 	// Close WAL
 	if db.wal != nil {
 		if err := db.wal.Close(); err != nil {
-			return fmt.Errorf("failed to close WAL: %w", err)
+			errs = append(errs, fmt.Errorf("close WAL: %w", err))
 		}
 	}
 
 	// Close backend
-	return db.backend.Close()
+	if err := db.backend.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("backend close: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 // getPreparedStatement returns a cached prepared statement or parses and caches it

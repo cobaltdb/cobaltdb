@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -130,9 +131,9 @@ func (ps *ProductionServer) startHealthServer() {
 	mux.HandleFunc("/healthz", ps.healthzHandler())
 
 	// Stats endpoints
-	mux.HandleFunc("/stats", ps.statsHandler())
-	mux.HandleFunc("/circuit-breakers", ps.circuitBreakerHandler())
-	mux.HandleFunc("/rate-limits", ps.rateLimitsHandler())
+	mux.HandleFunc("/stats", ps.loopbackOnly(ps.statsHandler()))
+	mux.HandleFunc("/circuit-breakers", ps.loopbackOnly(ps.circuitBreakerHandler()))
+	mux.HandleFunc("/rate-limits", ps.loopbackOnly(ps.rateLimitsHandler()))
 
 	ps.healthServer = &http.Server{
 		Addr:         ps.Config.HealthAddr,
@@ -325,6 +326,18 @@ func (ps *ProductionServer) rateLimitsHandler() http.HandlerFunc {
 		if _, err := w.Write([]byte(`{"rate_limits":{}}`)); err != nil {
 			http.Error(w, "failed to write rate limits", http.StatusInternalServerError)
 		}
+	}
+}
+
+// loopbackOnly restricts access to loopback addresses only
+func (ps *ProductionServer) loopbackOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if host != "127.0.0.1" && host != "::1" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
 	}
 }
 
