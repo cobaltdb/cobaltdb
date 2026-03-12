@@ -484,6 +484,9 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		for _, arg := range evalArgs {
 			if arg != nil {
 				result.WriteString(fmt.Sprintf("%v", arg))
+				if result.Len() > maxStringResultLen {
+					return nil, fmt.Errorf("CONCAT result exceeds maximum length")
+				}
 			}
 		}
 		return result.String(), nil
@@ -592,7 +595,11 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if !ok3 {
 			newStr = fmt.Sprintf("%v", evalArgs[2])
 		}
-		return strings.ReplaceAll(str, old, newStr), nil
+		result := strings.ReplaceAll(str, old, newStr)
+		if len(result) > maxStringResultLen {
+			return nil, fmt.Errorf("REPLACE result exceeds maximum length")
+		}
+		return result, nil
 
 	case "INSTR":
 		if len(evalArgs) < 2 {
@@ -760,7 +767,11 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 				parts = append(parts, fmt.Sprintf("%v", arg))
 			}
 		}
-		return strings.Join(parts, separator), nil
+		result := strings.Join(parts, separator)
+		if len(result) > maxStringResultLen {
+			return nil, fmt.Errorf("CONCAT_WS result exceeds maximum length")
+		}
+		return result, nil
 
 	case "GROUP_CONCAT":
 		// GROUP_CONCAT is handled in aggregate path; scalar fallback just returns the value

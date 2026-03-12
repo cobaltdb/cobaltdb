@@ -284,7 +284,11 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 						}
 					}
 					if len(parts) > 0 {
-						resultRow[i] = strings.Join(parts, ",")
+						joined := strings.Join(parts, ",")
+						if len(joined) > maxStringResultLen {
+							joined = joined[:maxStringResultLen]
+						}
+						resultRow[i] = joined
 					} else {
 						resultRow[i] = nil
 					}

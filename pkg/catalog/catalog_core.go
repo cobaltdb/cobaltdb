@@ -3900,6 +3900,9 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			for _, a := range evalArgs {
 				if a != nil {
 					sb.WriteString(fmt.Sprintf("%v", a))
+					if sb.Len() > maxStringResultLen {
+						return nil, fmt.Errorf("CONCAT result exceeds maximum length")
+					}
 				}
 			}
 			return sb.String(), nil
@@ -3964,7 +3967,11 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 				return str, nil
 			}
 			newStr := fmt.Sprintf("%v", evalArgs[2])
-			return strings.ReplaceAll(str, old, newStr), nil
+			result := strings.ReplaceAll(str, old, newStr)
+			if len(result) > maxStringResultLen {
+				return nil, fmt.Errorf("REPLACE result exceeds maximum length")
+			}
+			return result, nil
 		case "INSTR":
 			if len(evalArgs) >= 2 && evalArgs[0] != nil && evalArgs[1] != nil {
 				str := fmt.Sprintf("%v", evalArgs[0])
@@ -4069,6 +4076,9 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 				n, _ := toFloat64(evalArgs[1])
 				if int(n) <= 0 {
 					return "", nil
+				}
+				if int(n)*len(str) > maxStringResultLen {
+					return nil, fmt.Errorf("REPEAT result exceeds maximum length")
 				}
 				return strings.Repeat(str, int(n)), nil
 			}
