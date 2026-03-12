@@ -654,7 +654,8 @@ func isBareColumn(expr string) bool {
 
 	// Check for SQL keywords
 	switch upperExpr {
-	case "TRUE", "FALSE", "NULL", "AND", "OR", "NOT", "IN", "LIKE", "BETWEEN", "IS":
+	case "TRUE", "FALSE", "NULL", "AND", "OR", "NOT", "IN", "LIKE", "BETWEEN", "IS",
+		"CURRENT_USER", "CURRENT_TENANT", "CURRENT_ROLE", "SESSION_USER":
 		return false
 	}
 
