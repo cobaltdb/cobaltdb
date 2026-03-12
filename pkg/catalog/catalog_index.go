@@ -102,6 +102,8 @@ func (c *Catalog) storeIndexDef(index *IndexDef) error {
 }
 
 func (c *Catalog) GetIndex(name string) (*IndexDef, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	index, exists := c.indexes[name]
 	if !exists {
 		return nil, ErrIndexNotFound

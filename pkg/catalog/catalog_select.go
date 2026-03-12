@@ -324,7 +324,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 
 		if joinTableCols == nil {
 			// Check if it's a view (CTE registered as view)
-			if viewDef, viewErr := c.GetView(join.Table.Name); viewErr == nil {
+			if viewDef, viewErr := c.getViewLocked(join.Table.Name); viewErr == nil {
 				viewCols, viewRows, viewExecErr := c.selectLocked(viewDef, args)
 				if viewExecErr == nil {
 					joinTableCols = make([]ColumnDef, len(viewCols))
@@ -761,7 +761,7 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 
 		// Check if join table is a view (CTE registered as view)
 		if joinTableCols == nil {
-			if viewDef, viewErr := c.GetView(join.Table.Name); viewErr == nil {
+			if viewDef, viewErr := c.getViewLocked(join.Table.Name); viewErr == nil {
 				viewCols, viewRows, viewExecErr := c.selectLocked(viewDef, args)
 				if viewExecErr == nil {
 					joinTableCols = make([]ColumnDef, len(viewCols))

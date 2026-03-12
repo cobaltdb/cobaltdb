@@ -42,7 +42,7 @@ func (fke *ForeignKeyEnforcer) OnDelete(ctx context.Context, tableName string, p
 		case "CASCADE":
 			// Delete all referencing rows
 			for _, rowKey := range rows {
-				if err := fke.catalog.DeleteRow(ctx, referencingTable, rowKey); err != nil {
+				if err := fke.catalog.deleteRowLocked(ctx, referencingTable, rowKey); err != nil {
 					return fmt.Errorf("cascade delete failed: %w", err)
 				}
 			}

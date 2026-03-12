@@ -847,8 +847,17 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		targetLen, _ := toFloat64(evalArgs[1])
 		pad := fmt.Sprintf("%v", evalArgs[2])
 		ti := int(targetLen)
+		if ti <= 0 {
+			return "", nil
+		}
 		if ti > maxStringResultLen {
 			return nil, fmt.Errorf("LPAD result exceeds maximum allowed size (%d bytes)", maxStringResultLen)
+		}
+		if len(pad) == 0 {
+			if len(str) >= ti {
+				return str[:ti], nil
+			}
+			return str, nil
 		}
 		if len(str) >= ti {
 			return str[:ti], nil
@@ -869,8 +878,17 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		targetLen, _ := toFloat64(evalArgs[1])
 		pad := fmt.Sprintf("%v", evalArgs[2])
 		ti := int(targetLen)
+		if ti <= 0 {
+			return "", nil
+		}
 		if ti > maxStringResultLen {
 			return nil, fmt.Errorf("RPAD result exceeds maximum allowed size (%d bytes)", maxStringResultLen)
+		}
+		if len(pad) == 0 {
+			if len(str) >= ti {
+				return str[:ti], nil
+			}
+			return str, nil
 		}
 		if len(str) >= ti {
 			return str[:ti], nil
@@ -967,10 +985,14 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 			return nil, fmt.Errorf("ZEROBLOB requires 1 argument")
 		}
 		n, _ := toFloat64(evalArgs[0])
-		if int(n) > maxStringResultLen {
+		size := int(n)
+		if size <= 0 {
+			return "", nil
+		}
+		if size > maxStringResultLen {
 			return nil, fmt.Errorf("ZEROBLOB size exceeds maximum allowed size (%d bytes)", maxStringResultLen)
 		}
-		return strings.Repeat("\x00", int(n)), nil
+		return strings.Repeat("\x00", size), nil
 
 	case "QUOTE":
 		if len(evalArgs) < 1 {

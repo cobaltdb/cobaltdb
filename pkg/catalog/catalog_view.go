@@ -8,11 +8,14 @@ import (
 )
 
 func (c *Catalog) CreateMaterializedView(name string, selectStmt *query.SelectStmt) error {
+	c.mu.Lock()
 	if _, exists := c.materializedViews[name]; exists {
+		c.mu.Unlock()
 		return fmt.Errorf("materialized view %s already exists", name)
 	}
 
-	// Execute the query to get initial data
+	c.mu.Unlock()
+	// Execute the query to get initial data (outside lock since Select takes its own lock)
 	columns, rows, err := c.Select(selectStmt, nil)
 	if err != nil {
 		return fmt.Errorf("failed to execute materialized view query: %w", err)
@@ -30,6 +33,8 @@ func (c *Catalog) CreateMaterializedView(name string, selectStmt *query.SelectSt
 		data[i] = rowMap
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.materializedViews[name] = &MaterializedViewDef{
 		Name:        name,
 		Query:       selectStmt,
@@ -41,6 +46,8 @@ func (c *Catalog) CreateMaterializedView(name string, selectStmt *query.SelectSt
 }
 
 func (c *Catalog) DropMaterializedView(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if _, exists := c.materializedViews[name]; !exists {
 		return fmt.Errorf("materialized view %s not found", name)
 	}
@@ -50,13 +57,17 @@ func (c *Catalog) DropMaterializedView(name string) error {
 }
 
 func (c *Catalog) RefreshMaterializedView(name string) error {
+	c.mu.RLock()
 	mv, exists := c.materializedViews[name]
 	if !exists {
+		c.mu.RUnlock()
 		return fmt.Errorf("materialized view %s not found", name)
 	}
+	queryStmt := mv.Query
+	c.mu.RUnlock()
 
-	// Re-execute the query
-	columns, rows, err := c.Select(mv.Query, nil)
+	// Re-execute the query (outside lock since Select takes its own lock)
+	columns, rows, err := c.Select(queryStmt, nil)
 	if err != nil {
 		return fmt.Errorf("failed to refresh materialized view: %w", err)
 	}
@@ -73,6 +84,8 @@ func (c *Catalog) RefreshMaterializedView(name string) error {
 		data[i] = rowMap
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	mv.Data = data
 	mv.LastRefresh = time.Now()
 
@@ -80,6 +93,8 @@ func (c *Catalog) RefreshMaterializedView(name string) error {
 }
 
 func (c *Catalog) GetMaterializedView(name string) (*MaterializedViewDef, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	mv, exists := c.materializedViews[name]
 	if !exists {
 		return nil, fmt.Errorf("materialized view %s not found", name)
@@ -88,6 +103,8 @@ func (c *Catalog) GetMaterializedView(name string) (*MaterializedViewDef, error)
 }
 
 func (c *Catalog) ListMaterializedViews() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	names := make([]string, 0, len(c.materializedViews))
 	for name := range c.materializedViews {
 		names = append(names, name)

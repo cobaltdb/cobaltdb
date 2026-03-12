@@ -108,6 +108,11 @@ func (c *Catalog) CommitTransaction() error {
 func (c *Catalog) FlushTableTrees() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.flushTableTreesLocked()
+}
+
+// flushTableTreesLocked is the lock-free internal version. Must be called with mu held.
+func (c *Catalog) flushTableTreesLocked() error {
 	for tableName, tree := range c.tableTrees {
 		if err := tree.Flush(); err != nil {
 			return fmt.Errorf("failed to flush table %s: %w", tableName, err)

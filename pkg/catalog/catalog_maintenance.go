@@ -10,6 +10,8 @@ import (
 )
 
 func (c *Catalog) ListTables() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	tables := make([]string, 0, len(c.tables))
 	for name := range c.tables {
 		tables = append(tables, name)
@@ -18,6 +20,8 @@ func (c *Catalog) ListTables() []string {
 }
 
 func (c *Catalog) Save() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	// Save table definitions to catalog tree
 	for _, tableDef := range c.tables {
 		if err := c.storeTableDef(tableDef); err != nil {
@@ -33,7 +37,7 @@ func (c *Catalog) Save() error {
 	}
 
 	// Flush all table B+Trees to their pages
-	if err := c.FlushTableTrees(); err != nil {
+	if err := c.flushTableTreesLocked(); err != nil {
 		return fmt.Errorf("failed to flush table trees: %w", err)
 	}
 
@@ -48,6 +52,8 @@ func (c *Catalog) Save() error {
 }
 
 func (c *Catalog) Load() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.tree == nil {
 		return nil
 	}
@@ -127,6 +133,8 @@ func (c *Catalog) LoadData(dir string) error {
 }
 
 func (c *Catalog) Vacuum() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	// In a real implementation, this would:
 	// 1. Rebuild all B-trees to eliminate fragmentation
 	// 2. Remove deleted entries
@@ -214,6 +222,8 @@ func (c *Catalog) Vacuum() error {
 }
 
 func (c *Catalog) Analyze(tableName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	table, err := c.getTableLocked(tableName)
 	if err != nil {
 		return err

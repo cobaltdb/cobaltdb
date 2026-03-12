@@ -269,7 +269,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		// Re-encode row
 		newValueData, err := json.Marshal(entry.newRow)
 		if err != nil {
-			continue
+			return 0, rowsAffected, fmt.Errorf("failed to encode updated row: %w", err)
 		}
 
 		// Check if PRIMARY KEY was changed - need to delete old key and insert new one
@@ -427,17 +427,18 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		// Record undo log entry for rollback (after applying change)
 		if c.txnActive {
 			oldValueData, marshalErr := json.Marshal(entry.oldRow)
-			if marshalErr == nil {
-				keyCopy := make([]byte, len(oldKey))
-				copy(keyCopy, oldKey)
-				c.undoLog = append(c.undoLog, undoEntry{
-					action:       undoUpdate,
-					tableName:    stmt.Table,
-					key:          keyCopy,
-					oldValue:     oldValueData,
-					indexChanges: idxChanges,
-				})
+			if marshalErr != nil {
+				return 0, rowsAffected, fmt.Errorf("failed to encode undo log for row: %w", marshalErr)
 			}
+			keyCopy := make([]byte, len(oldKey))
+			copy(keyCopy, oldKey)
+			c.undoLog = append(c.undoLog, undoEntry{
+				action:       undoUpdate,
+				tableName:    stmt.Table,
+				key:          keyCopy,
+				oldValue:     oldValueData,
+				indexChanges: idxChanges,
+			})
 		}
 	}
 
@@ -585,10 +586,14 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 				newIdxKey, newOk := buildCompositeIndexKey(targetTable, idxDef, entry.newRow)
 				if idxTree, exists := c.indexTrees[idxName]; exists {
 					if oldIdxKey != "" {
-						idxTree.Delete([]byte(oldIdxKey))
+						if err := idxTree.Delete([]byte(oldIdxKey)); err != nil {
+							return 0, rowsAffected, fmt.Errorf("failed to delete old index entry: %w", err)
+						}
 					}
 					if newOk && newIdxKey != "" {
-						idxTree.Put([]byte(newIdxKey), entry.key)
+						if err := idxTree.Put([]byte(newIdxKey), entry.key); err != nil {
+							return 0, rowsAffected, fmt.Errorf("failed to insert new index entry: %w", err)
+						}
 					}
 				}
 			}
@@ -725,17 +730,23 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 				indexKey, ok := buildCompositeIndexKey(targetTable, idxDef, entry.row)
 				if ok {
 					if idxDef.Unique {
-						idxTree.Delete([]byte(indexKey))
+						if err := idxTree.Delete([]byte(indexKey)); err != nil {
+							return 0, rowsAffected, fmt.Errorf("failed to delete index entry: %w", err)
+						}
 					} else {
 						compoundKey := indexKey + "\x00" + string(entry.key)
-						idxTree.Delete([]byte(compoundKey))
+						if err := idxTree.Delete([]byte(compoundKey)); err != nil {
+							return 0, rowsAffected, fmt.Errorf("failed to delete compound index entry: %w", err)
+						}
 					}
 				}
 			}
 		}
 
 		// Delete from tree
-		targetTree.Delete(entry.key)
+		if err := targetTree.Delete(entry.key); err != nil {
+			return 0, rowsAffected, fmt.Errorf("failed to delete row from tree: %w", err)
+		}
 
 		// Log to WAL before applying change
 		if c.wal != nil && c.txnActive {
@@ -745,7 +756,9 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 				Type:  storage.WALDelete,
 				Data:  walData,
 			}
-			c.wal.Append(record)
+			if err := c.wal.Append(record); err != nil {
+				return 0, rowsAffected, fmt.Errorf("failed to append WAL record: %w", err)
+			}
 		}
 	}
 
@@ -753,6 +766,13 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 }
 
 func (c *Catalog) UpdateRow(tableName string, pkValue interface{}, row map[string]interface{}) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.updateRowLocked(tableName, pkValue, row)
+}
+
+// updateRowLocked is the lock-free internal version. Must be called with mu held.
+func (c *Catalog) updateRowLocked(tableName string, pkValue interface{}, row map[string]interface{}) error {
 	table, err := c.getTableLocked(tableName)
 	if err != nil {
 		return err

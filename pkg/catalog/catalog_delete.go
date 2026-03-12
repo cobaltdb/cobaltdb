@@ -208,6 +208,13 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 }
 
 func (c *Catalog) DeleteRow(ctx context.Context, tableName string, pkValue interface{}) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.deleteRowLocked(ctx, tableName, pkValue)
+}
+
+// deleteRowLocked is the lock-free internal version. Must be called with mu held.
+func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue interface{}) error {
 	tree, exists := c.tableTrees[tableName]
 	if !exists {
 		return fmt.Errorf("table %s has no data", tableName)

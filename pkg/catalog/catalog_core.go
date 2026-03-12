@@ -588,6 +588,8 @@ func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog
 }
 
 func (c *Catalog) SetWAL(wal *storage.WAL) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.wal = wal
 }
 
@@ -798,7 +800,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 	}
 
 	// Check if it's a view first
-	view, viewErr := cat.GetView(stmt.From.Name)
+	view, viewErr := cat.getViewLocked(stmt.From.Name)
 	if viewErr == nil {
 		// Check if view is complex (has GROUP BY, HAVING, DISTINCT, aggregates, no FROM, or aliased columns)
 		viewIsComplex := view.Distinct || len(view.GroupBy) > 0 || view.Having != nil || view.From == nil

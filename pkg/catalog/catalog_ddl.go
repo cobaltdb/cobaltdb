@@ -656,6 +656,8 @@ func (c *Catalog) getTableLocked(name string) (*TableDef, error) {
 }
 
 func (c *Catalog) CreateView(name string, query *query.SelectStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if _, exists := c.views[name]; exists {
 		return ErrTableExists
 	}
@@ -667,6 +669,13 @@ func (c *Catalog) CreateView(name string, query *query.SelectStmt) error {
 }
 
 func (c *Catalog) GetView(name string) (*query.SelectStmt, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.getViewLocked(name)
+}
+
+// getViewLocked is the lock-free internal version. Must be called with mu held.
+func (c *Catalog) getViewLocked(name string) (*query.SelectStmt, error) {
 	view, exists := c.views[name]
 	if !exists {
 		return nil, ErrTableNotFound
@@ -675,6 +684,8 @@ func (c *Catalog) GetView(name string) (*query.SelectStmt, error) {
 }
 
 func (c *Catalog) DropView(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if _, exists := c.views[name]; !exists {
 		return ErrTableNotFound
 	}
@@ -683,12 +694,16 @@ func (c *Catalog) DropView(name string) error {
 }
 
 func (c *Catalog) HasTableOrView(name string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	_, tableExists := c.tables[name]
 	_, viewExists := c.views[name]
 	return tableExists || viewExists
 }
 
 func (c *Catalog) CreateTrigger(stmt *query.CreateTriggerStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	// Check if table exists
 	if _, err := c.getTableLocked(stmt.Table); err != nil {
 		return err
@@ -702,6 +717,8 @@ func (c *Catalog) CreateTrigger(stmt *query.CreateTriggerStmt) error {
 }
 
 func (c *Catalog) GetTrigger(name string) (*query.CreateTriggerStmt, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	trigger, exists := c.triggers[name]
 	if !exists {
 		return nil, fmt.Errorf("trigger %s not found", name)
@@ -710,6 +727,8 @@ func (c *Catalog) GetTrigger(name string) (*query.CreateTriggerStmt, error) {
 }
 
 func (c *Catalog) DropTrigger(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if _, exists := c.triggers[name]; !exists {
 		return fmt.Errorf("trigger %s not found", name)
 	}
@@ -718,6 +737,13 @@ func (c *Catalog) DropTrigger(name string) error {
 }
 
 func (c *Catalog) GetTriggersForTable(tableName string, event string) []*query.CreateTriggerStmt {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.getTriggersForTableLocked(tableName, event)
+}
+
+// getTriggersForTableLocked is the lock-free internal version. Must be called with mu held.
+func (c *Catalog) getTriggersForTableLocked(tableName string, event string) []*query.CreateTriggerStmt {
 	var result []*query.CreateTriggerStmt
 	for _, trigger := range c.triggers {
 		if trigger.Table == tableName && (event == "" || trigger.Event == event) {
@@ -728,7 +754,7 @@ func (c *Catalog) GetTriggersForTable(tableName string, event string) []*query.C
 }
 
 func (c *Catalog) executeTriggers(ctx context.Context, tableName string, event string, timing string, newRow []interface{}, oldRow []interface{}, columns []ColumnDef) error {
-	triggers := c.GetTriggersForTable(tableName, event)
+	triggers := c.getTriggersForTableLocked(tableName, event)
 	for _, trigger := range triggers {
 		if trigger.Time != timing {
 			continue
@@ -912,6 +938,8 @@ func (c *Catalog) resolveTriggerExpr(expr query.Expression, newRow []interface{}
 }
 
 func (c *Catalog) CreateProcedure(stmt *query.CreateProcedureStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if _, exists := c.procedures[stmt.Name]; exists {
 		return fmt.Errorf("procedure %s already exists", stmt.Name)
 	}
@@ -920,6 +948,8 @@ func (c *Catalog) CreateProcedure(stmt *query.CreateProcedureStmt) error {
 }
 
 func (c *Catalog) GetProcedure(name string) (*query.CreateProcedureStmt, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	proc, exists := c.procedures[name]
 	if !exists {
 		return nil, fmt.Errorf("procedure %s not found", name)
@@ -928,6 +958,8 @@ func (c *Catalog) GetProcedure(name string) (*query.CreateProcedureStmt, error) 
 }
 
 func (c *Catalog) DropProcedure(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if _, exists := c.procedures[name]; !exists {
 		return fmt.Errorf("procedure %s not found", name)
 	}
@@ -936,6 +968,8 @@ func (c *Catalog) DropProcedure(name string) error {
 }
 
 func (c *Catalog) GetTableStats(tableName string) (*StatsTableStats, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	stats, exists := c.stats[tableName]
 	if !exists {
 		return nil, fmt.Errorf("no statistics for table %s", tableName)

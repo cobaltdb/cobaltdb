@@ -8,6 +8,8 @@ import (
 )
 
 func (c *Catalog) CreateFTSIndex(name, tableName string, columns []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if _, exists := c.ftsIndexes[name]; exists {
 		return fmt.Errorf("FTS index %s already exists", name)
 	}
@@ -43,10 +45,17 @@ func (c *Catalog) CreateFTSIndex(name, tableName string, columns []string) error
 				if key == nil || len(value) == 0 {
 					break
 				}
-				var row map[string]interface{}
-				// value is []byte, no need for type assertion
-				if err := json.Unmarshal(value, &row); err != nil {
+				// CobaltDB stores rows as []interface{} arrays, not maps
+				var rowSlice []interface{}
+				if err := json.Unmarshal(value, &rowSlice); err != nil {
 					continue
+				}
+				// Convert to map using column definitions
+				row := make(map[string]interface{})
+				for i, col := range table.Columns {
+					if i < len(rowSlice) {
+						row[col.Name] = rowSlice[i]
+					}
 				}
 				c.indexRowForFTS(ftsIndex, row, key)
 			}
@@ -81,6 +90,8 @@ func (c *Catalog) indexRowForFTS(ftsIndex *FTSIndexDef, row map[string]interface
 }
 
 func (c *Catalog) DropFTSIndex(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if _, exists := c.ftsIndexes[name]; !exists {
 		return fmt.Errorf("FTS index %s not found", name)
 	}
@@ -90,6 +101,8 @@ func (c *Catalog) DropFTSIndex(name string) error {
 }
 
 func (c *Catalog) SearchFTS(indexName string, query string) ([]int64, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	ftsIndex, exists := c.ftsIndexes[indexName]
 	if !exists {
 		return nil, fmt.Errorf("FTS index %s not found", indexName)
@@ -127,6 +140,8 @@ func (c *Catalog) SearchFTS(indexName string, query string) ([]int64, error) {
 }
 
 func (c *Catalog) GetFTSIndex(name string) (*FTSIndexDef, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	ftsIndex, exists := c.ftsIndexes[name]
 	if !exists {
 		return nil, fmt.Errorf("FTS index %s not found", name)
@@ -135,6 +150,8 @@ func (c *Catalog) GetFTSIndex(name string) (*FTSIndexDef, error) {
 }
 
 func (c *Catalog) ListFTSIndexes() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	names := make([]string, 0, len(c.ftsIndexes))
 	for name := range c.ftsIndexes {
 		names = append(names, name)
