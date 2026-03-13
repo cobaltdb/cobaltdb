@@ -367,17 +367,21 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 		return err
 	}
 
-	// Validate column name
-	if err := validateColumnName(stmt.NewName); err != nil {
-		return err
-	}
-
 	table, exists := c.tables[stmt.Table]
 	if !exists {
 		return ErrTableNotFound
 	}
 
-	colName := stmt.NewName // Column name to drop stored in NewName
+	// Column name to drop can be in Column.Name (from parser) or NewName (legacy/tests)
+	colName := stmt.Column.Name
+	if colName == "" {
+		colName = stmt.NewName
+	}
+
+	// Validate column name
+	if err := validateColumnName(colName); err != nil {
+		return err
+	}
 	colIdx := -1
 	for i, col := range table.Columns {
 		if strings.EqualFold(col.Name, colName) {
@@ -388,6 +392,9 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 	if colIdx < 0 {
 		return fmt.Errorf("column '%s' does not exist in table '%s'", colName, stmt.Table)
 	}
+
+	// Save original column count before modification
+	originalColCount := len(table.Columns)
 
 	// Cannot drop primary key column
 	if table.isPrimaryKeyColumn(table.Columns[colIdx].Name) {
@@ -462,7 +469,7 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 			if err != nil {
 				break
 			}
-			row, err := decodeRow(valueData, colIdx+1+len(table.Columns))
+			row, err := decodeRow(valueData, originalColCount)
 			if err != nil {
 				continue
 			}

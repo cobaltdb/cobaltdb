@@ -1479,13 +1479,34 @@ func TestUnitCountRows_EmptyResult(t *testing.T) {
 	cat := newUnitTestCatalog(t)
 	sc := NewStatsCollector(cat)
 
-	// ExecuteQuery returns empty result (stub)
+	// Create table first
+	ctx := context.Background()
+	err := cat.CreateTable(&query.CreateTableStmt{
+		Table:      "mytable",
+		Columns:    []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
+		PrimaryKey: []string{"id"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert some data
+	_, _, err = cat.Insert(ctx, &query.InsertStmt{
+		Table:   "mytable",
+		Columns: []string{"id"},
+		Values:  [][]query.Expression{{numReal(1)}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Now count should return 1
 	count, err := sc.countRows("mytable")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
-		t.Fatalf("expected 0, got %d", count)
+	if count != 1 {
+		t.Fatalf("expected 1, got %d", count)
 	}
 }
 

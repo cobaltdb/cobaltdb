@@ -21,10 +21,41 @@ func TestCoverage_StatsCollector(t *testing.T) {
 	cat, cleanup := setupCoverageCatalog(t)
 	defer cleanup()
 
+	ctx := context.Background()
+
+	// Create tables for testing
+	err := cat.CreateTable(&query.CreateTableStmt{
+		Table:      "mytable",
+		Columns:    []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
+		PrimaryKey: []string{"id"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = cat.CreateTable(&query.CreateTableStmt{
+		Table:      "tbl",
+		Columns:    []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "col", Type: query.TokenText}},
+		PrimaryKey: []string{"id"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert some data
+	_, _, err = cat.Insert(ctx, &query.InsertStmt{
+		Table:   "mytable",
+		Columns: []string{"id"},
+		Values:  [][]query.Expression{{num(1)}, {num(2)}, {num(3)}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	sc := NewStatsCollector(cat)
 
 	// countRows with invalid identifier
-	_, err := sc.countRows("")
+	_, err = sc.countRows("")
 	if err == nil {
 		t.Error("expected error for empty identifier")
 	}
@@ -37,13 +68,13 @@ func TestCoverage_StatsCollector(t *testing.T) {
 		t.Error("expected error for SQL keyword in identifier")
 	}
 
-	// countRows with valid name (stub returns empty result)
+	// countRows with valid name
 	count, err := sc.countRows("mytable")
 	if err != nil {
 		t.Errorf("countRows: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("expected 0, got %d", count)
+	if count != 3 {
+		t.Errorf("expected 3, got %d", count)
 	}
 
 	// collectColumnStats with invalid idents

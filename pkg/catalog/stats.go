@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
 // TableStats holds statistics for a table
@@ -359,10 +361,41 @@ type QueryResult struct {
 
 // ExecuteQuery executes a query and returns results
 func (c *Catalog) ExecuteQuery(sql string) (*QueryResult, error) {
-	// Parse and execute query
-	// This is a simplified version - in production would use proper parsing
-	// For now, return empty result
-	return &QueryResult{}, nil
+	// Lex the SQL statement
+	l := query.NewLexer(sql)
+	var tokens []query.Token
+	for {
+		tok := l.NextToken()
+		tokens = append(tokens, tok)
+		if tok.Type == query.TokenEOF {
+			break
+		}
+	}
+
+	// Parse the SQL statement
+	p := query.NewParser(tokens)
+	stmt, err := p.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("parse error: %w", err)
+	}
+
+	switch s := stmt.(type) {
+	case *query.SelectStmt:
+		cols, rows, err := c.Select(s, nil)
+		if err != nil {
+			return nil, err
+		}
+		return &QueryResult{Columns: cols, Rows: rows}, nil
+	case *query.SelectStmtWithCTE:
+		// Handle CTE - use ExecuteCTE which properly registers CTEs
+		cols, rows, err := c.ExecuteCTE(s, nil)
+		if err != nil {
+			return nil, err
+		}
+		return &QueryResult{Columns: cols, Rows: rows}, nil
+	default:
+		return nil, fmt.Errorf("unsupported query type: %T", stmt)
+	}
 }
 
 // EstimateRowCount estimates the number of rows for a table

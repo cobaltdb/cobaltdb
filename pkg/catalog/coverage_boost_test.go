@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -1552,22 +1553,43 @@ func TestCoverage_StatsCollector_CountRows(t *testing.T) {
 	cat, cleanup := setupCoverageCatalog(t)
 	defer cleanup()
 
+	ctx := context.Background()
+
+	// Create table
+	err := cat.CreateTable(&query.CreateTableStmt{
+		Table:      "validname",
+		Columns:    []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
+		PrimaryKey: []string{"id"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert data
+	_, _, err = cat.Insert(ctx, &query.InsertStmt{
+		Table:   "validname",
+		Columns: []string{"id"},
+		Values:  [][]query.Expression{{numReal(1)}, {numReal(2)}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	sc := NewStatsCollector(cat)
 
 	// Test with invalid table name
-	_, err := sc.countRows("DROP TABLE;--")
+	_, err = sc.countRows("DROP TABLE;--")
 	if err != nil {
 		// Expected - contains SQL keyword
 	}
 
-	// Valid name - will use the stub ExecuteQuery
+	// Valid name - should return actual count
 	count, err := sc.countRows("validname")
 	if err != nil {
 		t.Fatalf("countRows failed: %v", err)
 	}
-	// Stub returns empty result, so count should be 0
-	if count != 0 {
-		t.Errorf("expected 0, got %d", count)
+	if count != 2 {
+		t.Errorf("expected 2, got %d", count)
 	}
 }
 

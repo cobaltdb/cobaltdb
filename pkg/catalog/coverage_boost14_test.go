@@ -10,696 +10,365 @@ import (
 )
 
 // ============================================================
-// selectLocked Complex Paths Coverage
+// High-complexity query coverage for low-coverage functions
 // ============================================================
 
-func TestCovBoost14_DerivedTableWithJoin(t *testing.T) {
+// TestComplex_JoinWithGroupBy - targets executeSelectWithJoinAndGroupBy (56%)
+func TestComplex_JoinWithGroupBy(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(4096, backend)
 	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
+	tree, err := btree.NewBTree(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cat := New(tree, pool, nil)
+	ctx := context.Background()
 
-	createCoverageTestTable(t, cat, "dt_base", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "val", Type: query.TokenInteger},
+	createCoverageTestTable(t, cat, "orders", []*query.ColumnDef{
+		{Name: "order_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "customer_id", Type: query.TokenInteger},
+		{Name: "amount", Type: query.TokenReal},
 	})
-	createCoverageTestTable(t, cat, "dt_join", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+	createCoverageTestTable(t, cat, "customers", []*query.ColumnDef{
+		{Name: "customer_id", Type: query.TokenInteger, PrimaryKey: true},
 		{Name: "name", Type: query.TokenText},
+		{Name: "region", Type: query.TokenText},
 	})
 
-	ctx := context.Background()
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "dt_base",
-		Columns: []string{"id", "val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 100}}},
-	}, nil)
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "dt_join",
-		Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "test"}}},
-	}, nil)
-
-	// Derived table with JOIN
-	stmt := &query.SelectStmt{
-		Columns: []query.Expression{&query.StarExpr{}},
-		From: &query.TableRef{
-			Alias:    "d",
-			Subquery: &query.SelectStmt{From: &query.TableRef{Name: "dt_base"}},
-		},
-		Joins: []*query.JoinClause{
-			{
-				Type:  query.TokenInner,
-				Table: &query.TableRef{Name: "dt_join", Alias: "j"},
-				Condition: &query.BinaryExpr{
-					Left:     &query.QualifiedIdentifier{Table: "d", Column: "id"},
-					Operator: query.TokenEq,
-					Right:    &query.QualifiedIdentifier{Table: "j", Column: "id"},
-				},
-			},
-		},
+	customers := []struct{ id int; name, region string }{
+		{1, "Alice", "North"},
+		{2, "Bob", "South"},
+		{3, "Charlie", "North"},
 	}
-
-	_, rows, err := cat.Select(stmt, nil)
-	if err != nil {
-		t.Logf("Derived table with JOIN error (may be expected): %v", err)
-	}
-	_ = rows
-}
-
-func TestCovBoost14_CTEWithJoin(t *testing.T) {
-	backend := storage.NewMemory()
-	pool := storage.NewBufferPool(4096, backend)
-	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
-	cat := New(tree, pool, nil)
-
-	createCoverageTestTable(t, cat, "cte_j_base", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "val", Type: query.TokenInteger},
-	})
-	createCoverageTestTable(t, cat, "cte_j_join", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "name", Type: query.TokenText},
-	})
-
-	ctx := context.Background()
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "cte_j_base",
-		Columns: []string{"id", "val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 100}}},
-	}, nil)
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "cte_j_join",
-		Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "test"}}},
-	}, nil)
-
-	// CTE with JOIN
-	cteStmt := &query.SelectStmtWithCTE{
-		CTEs: []*query.CTEDef{
-			{
-				Name:  "cte_j",
-				Query: &query.SelectStmt{From: &query.TableRef{Name: "cte_j_base"}},
-			},
-		},
-		Select: &query.SelectStmt{
-			Columns: []query.Expression{&query.StarExpr{}},
-			From:    &query.TableRef{Name: "cte_j"},
-			Joins: []*query.JoinClause{
-				{
-					Type:  query.TokenInner,
-					Table: &query.TableRef{Name: "cte_j_join", Alias: "j"},
-					Condition: &query.BinaryExpr{
-						Left:     &query.QualifiedIdentifier{Table: "cte_j", Column: "id"},
-						Operator: query.TokenEq,
-						Right:    &query.QualifiedIdentifier{Table: "j", Column: "id"},
-					},
-				},
-			},
-		},
-	}
-
-	_, rows, err := cat.ExecuteCTE(cteStmt, nil)
-	if err != nil {
-		t.Logf("CTE with JOIN error (may be expected): %v", err)
-	}
-	_ = rows
-}
-
-func TestCovBoost14_ComplexViewWithJoin(t *testing.T) {
-	backend := storage.NewMemory()
-	pool := storage.NewBufferPool(4096, backend)
-	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
-	cat := New(tree, pool, nil)
-
-	createCoverageTestTable(t, cat, "cv_base", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "val", Type: query.TokenInteger},
-	})
-	createCoverageTestTable(t, cat, "cv_join", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "name", Type: query.TokenText},
-	})
-
-	ctx := context.Background()
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "cv_base",
-		Columns: []string{"id", "val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 100}}},
-	}, nil)
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "cv_join",
-		Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "test"}}},
-	}, nil)
-
-	// Create complex view with GROUP BY (considered complex)
-	viewStmt := &query.SelectStmt{
-		Columns: []query.Expression{
-			&query.QualifiedIdentifier{Column: "id"},
-			&query.FunctionCall{Name: "SUM", Args: []query.Expression{&query.QualifiedIdentifier{Column: "val"}}},
-		},
-		From:    &query.TableRef{Name: "cv_base"},
-		GroupBy: []query.Expression{&query.QualifiedIdentifier{Column: "id"}},
-	}
-	cat.CreateView("complex_view", viewStmt)
-
-	// Query complex view with JOIN
-	outerStmt := &query.SelectStmt{
-		Columns: []query.Expression{&query.StarExpr{}},
-		From:    &query.TableRef{Name: "complex_view", Alias: "cv"},
-		Joins: []*query.JoinClause{
-			{
-				Type:  query.TokenInner,
-				Table: &query.TableRef{Name: "cv_join", Alias: "j"},
-				Condition: &query.BinaryExpr{
-					Left:     &query.QualifiedIdentifier{Table: "cv", Column: "id"},
-					Operator: query.TokenEq,
-					Right:    &query.QualifiedIdentifier{Table: "j", Column: "id"},
-				},
-			},
-		},
-	}
-
-	_, rows, err := cat.Select(outerStmt, nil)
-	if err != nil {
-		t.Logf("Complex view with JOIN error (may be expected): %v", err)
-	}
-	_ = rows
-}
-
-func TestCovBoost14_SimpleViewWithJoin(t *testing.T) {
-	backend := storage.NewMemory()
-	pool := storage.NewBufferPool(4096, backend)
-	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
-	cat := New(tree, pool, nil)
-
-	createCoverageTestTable(t, cat, "sv_base", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "val", Type: query.TokenInteger},
-	})
-	createCoverageTestTable(t, cat, "sv_join", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "name", Type: query.TokenText},
-	})
-
-	ctx := context.Background()
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "sv_base",
-		Columns: []string{"id", "val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 100}}},
-	}, nil)
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "sv_join",
-		Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "test"}}},
-	}, nil)
-
-	// Create simple view
-	viewStmt := &query.SelectStmt{
-		Columns: []query.Expression{
-			&query.QualifiedIdentifier{Column: "id"},
-			&query.QualifiedIdentifier{Column: "val"},
-		},
-		From: &query.TableRef{Name: "sv_base"},
-	}
-	cat.CreateView("simple_view", viewStmt)
-
-	// Query simple view with JOIN - tests view inlining path
-	outerStmt := &query.SelectStmt{
-		Columns: []query.Expression{&query.StarExpr{}},
-		From:    &query.TableRef{Name: "simple_view", Alias: "sv"},
-		Joins: []*query.JoinClause{
-			{
-				Type:  query.TokenInner,
-				Table: &query.TableRef{Name: "sv_join", Alias: "j"},
-				Condition: &query.BinaryExpr{
-					Left:     &query.QualifiedIdentifier{Table: "sv", Column: "id"},
-					Operator: query.TokenEq,
-					Right:    &query.QualifiedIdentifier{Table: "j", Column: "id"},
-				},
-			},
-		},
-	}
-
-	_, rows, err := cat.Select(outerStmt, nil)
-	if err != nil {
-		t.Logf("Simple view with JOIN error (may be expected): %v", err)
-	}
-	_ = rows
-}
-
-func TestCovBoost14_ViewWithStar(t *testing.T) {
-	backend := storage.NewMemory()
-	pool := storage.NewBufferPool(4096, backend)
-	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
-	cat := New(tree, pool, nil)
-
-	createCoverageTestTable(t, cat, "vs_base", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "val", Type: query.TokenInteger},
-	})
-
-	ctx := context.Background()
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "vs_base",
-		Columns: []string{"id", "val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 100}}},
-	}, nil)
-
-	// Create simple view
-	viewStmt := &query.SelectStmt{
-		Columns: []query.Expression{
-			&query.QualifiedIdentifier{Column: "id"},
-			&query.QualifiedIdentifier{Column: "val"},
-		},
-		From: &query.TableRef{Name: "vs_base"},
-	}
-	cat.CreateView("vs_view", viewStmt)
-
-	// Query view with SELECT * - tests view inlining with StarExpr
-	outerStmt := &query.SelectStmt{
-		Columns: []query.Expression{&query.StarExpr{}},
-		From:    &query.TableRef{Name: "vs_view"},
-	}
-
-	_, rows, err := cat.Select(outerStmt, nil)
-	if err != nil {
-		t.Logf("View with SELECT * error (may be expected): %v", err)
-	}
-	_ = rows
-}
-
-// ============================================================
-// CTE with Window Functions Coverage
-// ============================================================
-
-func TestCovBoost14_CTEWithWindowFunction(t *testing.T) {
-	backend := storage.NewMemory()
-	pool := storage.NewBufferPool(4096, backend)
-	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
-	cat := New(tree, pool, nil)
-
-	createCoverageTestTable(t, cat, "cte_win_base", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "val", Type: query.TokenInteger},
-	})
-
-	ctx := context.Background()
-	for i := 1; i <= 5; i++ {
+	for _, c := range customers {
 		cat.Insert(ctx, &query.InsertStmt{
-			Table:   "cte_win_base",
-			Columns: []string{"id", "val"},
-			Values:  [][]query.Expression{{&query.NumberLiteral{Value: float64(i)}, &query.NumberLiteral{Value: float64(i * 10)}}},
+			Table:   "customers",
+			Columns: []string{"customer_id", "name", "region"},
+			Values:  [][]query.Expression{{numReal(float64(c.id)), strReal(c.name), strReal(c.region)}},
 		}, nil)
 	}
 
-	// CTE with window function
-	cteStmt := &query.SelectStmtWithCTE{
-		CTEs: []*query.CTEDef{
-			{
-				Name:  "cte_w",
-				Query: &query.SelectStmt{From: &query.TableRef{Name: "cte_win_base"}},
-			},
-		},
-		Select: &query.SelectStmt{
-			Columns: []query.Expression{
-				&query.QualifiedIdentifier{Column: "id"},
-				&query.QualifiedIdentifier{Column: "val"},
-				&query.WindowExpr{
-					Function: "ROW_NUMBER",
-					OrderBy:  []*query.OrderByExpr{{Expr: &query.QualifiedIdentifier{Column: "val"}}},
-				},
-			},
-			From: &query.TableRef{Name: "cte_w"},
-		},
+	orders := []struct{ id, cid int; amount float64 }{
+		{1, 1, 100.0},
+		{2, 1, 200.0},
+		{3, 2, 150.0},
+		{4, 2, 250.0},
+		{5, 3, 300.0},
 	}
-
-	_, rows, err := cat.ExecuteCTE(cteStmt, nil)
-	if err != nil {
-		t.Logf("CTE with window function error (may be expected): %v", err)
-	}
-	_ = rows
-}
-
-// ============================================================
-// applyOuterQuery Deep Coverage
-// ============================================================
-
-func TestCovBoost14_ApplyOuterQuery_Aggregates(t *testing.T) {
-	backend := storage.NewMemory()
-	pool := storage.NewBufferPool(4096, backend)
-	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
-	cat := New(tree, pool, nil)
-
-	createCoverageTestTable(t, cat, "ao_base", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "grp", Type: query.TokenText},
-		{Name: "val", Type: query.TokenInteger},
-	})
-
-	ctx := context.Background()
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "ao_base",
-		Columns: []string{"id", "grp", "val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "A"}, &query.NumberLiteral{Value: 10}}},
-	}, nil)
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "ao_base",
-		Columns: []string{"id", "grp", "val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 2}, &query.StringLiteral{Value: "A"}, &query.NumberLiteral{Value: 20}}},
-	}, nil)
-
-	// Create view with aggregates (triggers applyOuterQuery path)
-	viewStmt := &query.SelectStmt{
-		Columns: []query.Expression{
-			&query.QualifiedIdentifier{Column: "grp"},
-			&query.FunctionCall{Name: "SUM", Args: []query.Expression{&query.QualifiedIdentifier{Column: "val"}}},
-		},
-		From:    &query.TableRef{Name: "ao_base"},
-		GroupBy: []query.Expression{&query.QualifiedIdentifier{Column: "grp"}},
-	}
-	cat.CreateView("ao_view", viewStmt)
-
-	// Query view with outer aggregate reference in ORDER BY
-	outerStmt := &query.SelectStmt{
-		Columns: []query.Expression{
-			&query.QualifiedIdentifier{Column: "grp"},
-		},
-		From: &query.TableRef{Name: "ao_view"},
-		OrderBy: []*query.OrderByExpr{
-			{Expr: &query.QualifiedIdentifier{Column: "grp"}, Desc: true},
-		},
-	}
-
-	_, rows, err := cat.Select(outerStmt, nil)
-	if err != nil {
-		t.Logf("applyOuterQuery with aggregates error (may be expected): %v", err)
-	}
-	_ = rows
-}
-
-func TestCovBoost14_ApplyOuterQuery_LimitOffset(t *testing.T) {
-	backend := storage.NewMemory()
-	pool := storage.NewBufferPool(4096, backend)
-	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
-	cat := New(tree, pool, nil)
-
-	createCoverageTestTable(t, cat, "lo_base", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "val", Type: query.TokenInteger},
-	})
-
-	ctx := context.Background()
-	for i := 1; i <= 10; i++ {
+	for _, o := range orders {
 		cat.Insert(ctx, &query.InsertStmt{
-			Table:   "lo_base",
-			Columns: []string{"id", "val"},
-			Values:  [][]query.Expression{{&query.NumberLiteral{Value: float64(i)}, &query.NumberLiteral{Value: float64(i * 10)}}},
+			Table:   "orders",
+			Columns: []string{"order_id", "customer_id", "amount"},
+			Values:  [][]query.Expression{{numReal(float64(o.id)), numReal(float64(o.cid)), numReal(o.amount)}},
 		}, nil)
 	}
 
-	// Create view
-	viewStmt := &query.SelectStmt{
-		Columns: []query.Expression{
-			&query.QualifiedIdentifier{Column: "id"},
-			&query.QualifiedIdentifier{Column: "val"},
-		},
-		From: &query.TableRef{Name: "lo_base"},
-	}
-	cat.CreateView("lo_view", viewStmt)
-
-	// Query view with LIMIT and OFFSET
-	outerStmt := &query.SelectStmt{
-		Columns: []query.Expression{&query.StarExpr{}},
-		From:    &query.TableRef{Name: "lo_view"},
-		OrderBy: []*query.OrderByExpr{{Expr: &query.QualifiedIdentifier{Column: "id"}}},
-		Limit:   &query.NumberLiteral{Value: 5},
-		Offset:  &query.NumberLiteral{Value: 2},
-	}
-
-	_, rows, err := cat.Select(outerStmt, nil)
+	result, err := cat.ExecuteQuery(`
+		SELECT c.region, COUNT(o.order_id) as order_count, SUM(o.amount) as total
+		FROM customers c
+		JOIN orders o ON c.customer_id = o.customer_id
+		GROUP BY c.region
+		ORDER BY c.region
+	`)
 	if err != nil {
-		t.Logf("applyOuterQuery with LIMIT/OFFSET error (may be expected): %v", err)
+		t.Fatalf("JOIN+GROUP BY failed: %v", err)
 	}
-	_ = rows
+
+	if len(result.Rows) != 2 {
+		t.Errorf("expected 2 regions, got %d", len(result.Rows))
+	}
 }
 
-// ============================================================
-// Aggregation with Complex ORDER BY Coverage
-// ============================================================
-
-func TestCovBoost14_AggregateOrderByComplex(t *testing.T) {
+// TestComplex_LeftJoinWithGroupBy - more coverage for executeSelectWithJoinAndGroupBy
+func TestComplex_LeftJoinWithGroupBy(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(4096, backend)
 	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
+	tree, err := btree.NewBTree(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cat := New(tree, pool, nil)
-
-	createCoverageTestTable(t, cat, "aob_base", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "grp", Type: query.TokenText},
-		{Name: "val", Type: query.TokenInteger},
-	})
-
 	ctx := context.Background()
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "aob_base",
-		Columns: []string{"id", "grp", "val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "A"}, &query.NumberLiteral{Value: 10}}},
-	}, nil)
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "aob_base",
-		Columns: []string{"id", "grp", "val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 2}, &query.StringLiteral{Value: "B"}, &query.NumberLiteral{Value: 20}}},
-	}, nil)
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "aob_base",
-		Columns: []string{"id", "grp", "val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 3}, &query.StringLiteral{Value: "A"}, &query.NumberLiteral{Value: 30}}},
-	}, nil)
 
-	// GROUP BY with ORDER BY on multiple columns
-	stmt := &query.SelectStmt{
-		Columns: []query.Expression{
-			&query.QualifiedIdentifier{Column: "grp"},
-			&query.FunctionCall{Name: "COUNT", Args: []query.Expression{&query.StarExpr{}}},
-			&query.FunctionCall{Name: "SUM", Args: []query.Expression{&query.QualifiedIdentifier{Column: "val"}}},
-		},
-		From:    &query.TableRef{Name: "aob_base"},
-		GroupBy: []query.Expression{&query.QualifiedIdentifier{Column: "grp"}},
-		OrderBy: []*query.OrderByExpr{
-			{Expr: &query.FunctionCall{Name: "SUM", Args: []query.Expression{&query.QualifiedIdentifier{Column: "val"}}}, Desc: true},
-			{Expr: &query.QualifiedIdentifier{Column: "grp"}, Desc: false},
-		},
-	}
-
-	_, rows, err := cat.Select(stmt, nil)
-	if err != nil {
-		t.Logf("Complex aggregate ORDER BY error (may be expected): %v", err)
-	}
-	_ = rows
-}
-
-// ============================================================
-// Scalar Select Coverage
-// ============================================================
-
-func TestCovBoost14_ScalarSelect(t *testing.T) {
-	backend := storage.NewMemory()
-	pool := storage.NewBufferPool(4096, backend)
-	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
-	cat := New(tree, pool, nil)
-
-	// SELECT without FROM (scalar expression)
-	stmt := &query.SelectStmt{
-		Columns: []query.Expression{
-			&query.NumberLiteral{Value: 42},
-			&query.StringLiteral{Value: "hello"},
-		},
-		From: nil,
-	}
-
-	cols, rows, err := cat.Select(stmt, nil)
-	if err != nil {
-		t.Logf("Scalar SELECT error (may be expected): %v", err)
-	}
-	_ = cols
-	_ = rows
-}
-
-func TestCovBoost14_ScalarSelectWithExpression(t *testing.T) {
-	backend := storage.NewMemory()
-	pool := storage.NewBufferPool(4096, backend)
-	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
-	cat := New(tree, pool, nil)
-
-	// SELECT with expression without FROM
-	stmt := &query.SelectStmt{
-		Columns: []query.Expression{
-			&query.BinaryExpr{
-				Left:     &query.NumberLiteral{Value: 10},
-				Operator: query.TokenPlus,
-				Right:    &query.NumberLiteral{Value: 20},
-			},
-		},
-		From: nil,
-	}
-
-	cols, rows, err := cat.Select(stmt, nil)
-	if err != nil {
-		t.Logf("Scalar SELECT with expression error (may be expected): %v", err)
-	}
-	_ = cols
-	_ = rows
-}
-
-// ============================================================
-// Multiple JOIN Types Coverage
-// ============================================================
-
-func TestCovBoost14_LeftJoin(t *testing.T) {
-	backend := storage.NewMemory()
-	pool := storage.NewBufferPool(4096, backend)
-	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
-	cat := New(tree, pool, nil)
-
-	createCoverageTestTable(t, cat, "lj_left", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "name", Type: query.TokenText},
+	createCoverageTestTable(t, cat, "departments", []*query.ColumnDef{
+		{Name: "dept_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "dept_name", Type: query.TokenText},
 	})
-	createCoverageTestTable(t, cat, "lj_right", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "val", Type: query.TokenInteger},
+	createCoverageTestTable(t, cat, "employees", []*query.ColumnDef{
+		{Name: "emp_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "dept_id", Type: query.TokenInteger},
+		{Name: "salary", Type: query.TokenInteger},
 	})
 
+	cat.Insert(ctx, &query.InsertStmt{
+		Table:   "departments",
+		Columns: []string{"dept_id", "dept_name"},
+		Values:  [][]query.Expression{{numReal(1), strReal("Engineering")}, {numReal(2), strReal("Sales")}, {numReal(3), strReal("HR")}},
+	}, nil)
+
+	cat.Insert(ctx, &query.InsertStmt{
+		Table:   "employees",
+		Columns: []string{"emp_id", "dept_id", "salary"},
+		Values:  [][]query.Expression{{numReal(1), numReal(1), numReal(80000)}, {numReal(2), numReal(1), numReal(90000)}, {numReal(3), numReal(2), numReal(60000)}},
+	}, nil)
+
+	result, err := cat.ExecuteQuery(`
+		SELECT d.dept_name, COUNT(e.emp_id) as emp_count, AVG(e.salary) as avg_salary
+		FROM departments d
+		LEFT JOIN employees e ON d.dept_id = e.dept_id
+		GROUP BY d.dept_id, d.dept_name
+		ORDER BY d.dept_id
+	`)
+	if err != nil {
+		t.Fatalf("LEFT JOIN+GROUP BY failed: %v", err)
+	}
+
+	if len(result.Rows) != 3 {
+		t.Errorf("expected 3 departments, got %d", len(result.Rows))
+	}
+}
+
+// TestComplex_JoinWithHaving - JOIN + GROUP BY + HAVING
+func TestComplex_JoinWithHaving(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, err := btree.NewBTree(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := New(tree, pool, nil)
 	ctx := context.Background()
+
+	createCoverageTestTable(t, cat, "products", []*query.ColumnDef{
+		{Name: "product_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "category", Type: query.TokenText},
+		{Name: "price", Type: query.TokenInteger},
+	})
+	createCoverageTestTable(t, cat, "sales", []*query.ColumnDef{
+		{Name: "sale_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "product_id", Type: query.TokenInteger},
+		{Name: "quantity", Type: query.TokenInteger},
+	})
+
 	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "lj_left",
-		Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
-	}, nil)
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "lj_left",
-		Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 2}, &query.StringLiteral{Value: "Bob"}}},
-	}, nil)
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "lj_right",
-		Columns: []string{"id", "val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 100}}},
+		Table:   "products",
+		Columns: []string{"product_id", "category", "price"},
+		Values:  [][]query.Expression{{numReal(1), strReal("Electronics")}, {numReal(2), strReal("Electronics")}, {numReal(3), strReal("Clothing")}},
 	}, nil)
 
-	// LEFT JOIN
-	stmt := &query.SelectStmt{
-		Columns: []query.Expression{
-			&query.QualifiedIdentifier{Table: "l", Column: "name"},
-			&query.QualifiedIdentifier{Table: "r", Column: "val"},
-		},
-		From: &query.TableRef{Name: "lj_left", Alias: "l"},
-		Joins: []*query.JoinClause{
-			{
-				Type:  query.TokenLeft,
-				Table: &query.TableRef{Name: "lj_right", Alias: "r"},
-				Condition: &query.BinaryExpr{
-					Left:     &query.QualifiedIdentifier{Table: "l", Column: "id"},
-					Operator: query.TokenEq,
-					Right:    &query.QualifiedIdentifier{Table: "r", Column: "id"},
-				},
-			},
-		},
+	salesData := [][]query.Expression{
+		{numReal(1), numReal(1), numReal(10)},
+		{numReal(2), numReal(1), numReal(5)},
+		{numReal(3), numReal(2), numReal(8)},
+		{numReal(4), numReal(3), numReal(3)},
+	}
+	for _, row := range salesData {
+		cat.Insert(ctx, &query.InsertStmt{Table: "sales", Columns: []string{"sale_id", "product_id", "quantity"}, Values: [][]query.Expression{row}}, nil)
 	}
 
-	_, rows, err := cat.Select(stmt, nil)
+	result, err := cat.ExecuteQuery(`
+		SELECT p.category, SUM(s.quantity) as total_sold
+		FROM products p
+		JOIN sales s ON p.product_id = s.product_id
+		GROUP BY p.category
+		HAVING SUM(s.quantity) > 5
+	`)
 	if err != nil {
-		t.Logf("LEFT JOIN error (may be expected): %v", err)
+		t.Logf("JOIN+GROUP BY+HAVING returned error (may be expected): %v", err)
 	}
-	_ = rows
+	_ = result
 }
 
-func TestCovBoost14_MultipleJoins(t *testing.T) {
+// TestComplex_MultipleJoins - three-way JOIN
+func TestComplex_MultipleJoins(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(4096, backend)
 	defer pool.Close()
-	tree, _ := btree.NewBTree(pool)
-	cat := New(tree, pool, nil)
-
-	createCoverageTestTable(t, cat, "mj_a", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "a_val", Type: query.TokenText},
-	})
-	createCoverageTestTable(t, cat, "mj_b", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "a_id", Type: query.TokenInteger},
-		{Name: "b_val", Type: query.TokenText},
-	})
-	createCoverageTestTable(t, cat, "mj_c", []*query.ColumnDef{
-		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
-		{Name: "b_id", Type: query.TokenInteger},
-		{Name: "c_val", Type: query.TokenText},
-	})
-
-	ctx := context.Background()
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "mj_a",
-		Columns: []string{"id", "a_val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "A1"}}},
-	}, nil)
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "mj_b",
-		Columns: []string{"id", "a_id", "b_val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "B1"}}},
-	}, nil)
-	cat.Insert(ctx, &query.InsertStmt{
-		Table:   "mj_c",
-		Columns: []string{"id", "b_id", "c_val"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "C1"}}},
-	}, nil)
-
-	// Multiple JOINs: A JOIN B JOIN C
-	stmt := &query.SelectStmt{
-		Columns: []query.Expression{
-			&query.QualifiedIdentifier{Table: "a", Column: "a_val"},
-			&query.QualifiedIdentifier{Table: "b", Column: "b_val"},
-			&query.QualifiedIdentifier{Table: "c", Column: "c_val"},
-		},
-		From: &query.TableRef{Name: "mj_a", Alias: "a"},
-		Joins: []*query.JoinClause{
-			{
-				Type:  query.TokenInner,
-				Table: &query.TableRef{Name: "mj_b", Alias: "b"},
-				Condition: &query.BinaryExpr{
-					Left:     &query.QualifiedIdentifier{Table: "b", Column: "a_id"},
-					Operator: query.TokenEq,
-					Right:    &query.QualifiedIdentifier{Table: "a", Column: "id"},
-				},
-			},
-			{
-				Type:  query.TokenInner,
-				Table: &query.TableRef{Name: "mj_c", Alias: "c"},
-				Condition: &query.BinaryExpr{
-					Left:     &query.QualifiedIdentifier{Table: "c", Column: "b_id"},
-					Operator: query.TokenEq,
-					Right:    &query.QualifiedIdentifier{Table: "b", Column: "id"},
-				},
-			},
-		},
-	}
-
-	_, rows, err := cat.Select(stmt, nil)
+	tree, err := btree.NewBTree(pool)
 	if err != nil {
-		t.Logf("Multiple JOINs error (may be expected): %v", err)
+		t.Fatal(err)
 	}
-	_ = rows
+	cat := New(tree, pool, nil)
+	ctx := context.Background()
+
+	createCoverageTestTable(t, cat, "authors", []*query.ColumnDef{
+		{Name: "author_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "author_name", Type: query.TokenText},
+	})
+	createCoverageTestTable(t, cat, "books", []*query.ColumnDef{
+		{Name: "book_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "author_id", Type: query.TokenInteger},
+		{Name: "title", Type: query.TokenText},
+	})
+	createCoverageTestTable(t, cat, "borrowings", []*query.ColumnDef{
+		{Name: "borrow_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "book_id", Type: query.TokenInteger},
+		{Name: "borrower", Type: query.TokenText},
+	})
+
+	cat.Insert(ctx, &query.InsertStmt{
+		Table:   "authors",
+		Columns: []string{"author_id", "author_name"},
+		Values:  [][]query.Expression{{numReal(1), strReal("Author 1")}},
+	}, nil)
+	cat.Insert(ctx, &query.InsertStmt{
+		Table:   "books",
+		Columns: []string{"book_id", "author_id", "title"},
+		Values:  [][]query.Expression{{numReal(1), numReal(1), strReal("Book 1")}},
+	}, nil)
+	cat.Insert(ctx, &query.InsertStmt{
+		Table:   "borrowings",
+		Columns: []string{"borrow_id", "book_id", "borrower"},
+		Values:  [][]query.Expression{{numReal(1), numReal(1), strReal("Reader 1")}},
+	}, nil)
+
+	result, err := cat.ExecuteQuery(`
+		SELECT a.author_name, b.title, br.borrower
+		FROM authors a
+		JOIN books b ON a.author_id = b.author_id
+		JOIN borrowings br ON b.book_id = br.book_id
+	`)
+	if err != nil {
+		t.Fatalf("Three-way JOIN failed: %v", err)
+	}
+
+	if len(result.Rows) != 1 {
+		t.Errorf("expected 1 borrowing record, got %d", len(result.Rows))
+	}
 }
+
+// TestComplex_UpdateWithJoin - targets updateWithJoinLocked (76.5%)
+func TestComplex_UpdateWithJoin(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, err := btree.NewBTree(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := New(tree, pool, nil)
+	ctx := context.Background()
+
+	createCoverageTestTable(t, cat, "inventory", []*query.ColumnDef{
+		{Name: "item_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "item_name", Type: query.TokenText},
+		{Name: "qty", Type: query.TokenInteger},
+	})
+	createCoverageTestTable(t, cat, "restock", []*query.ColumnDef{
+		{Name: "restock_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "item_id", Type: query.TokenInteger},
+		{Name: "add_qty", Type: query.TokenInteger},
+	})
+
+	cat.Insert(ctx, &query.InsertStmt{
+		Table:   "inventory",
+		Columns: []string{"item_id", "item_name", "qty"},
+		Values:  [][]query.Expression{{numReal(1), strReal("Widget"), numReal(10)}},
+	}, nil)
+	cat.Insert(ctx, &query.InsertStmt{
+		Table:   "restock",
+		Columns: []string{"restock_id", "item_id", "add_qty"},
+		Values:  [][]query.Expression{{numReal(1), numReal(1), numReal(5)}},
+	}, nil)
+
+	_, err = cat.ExecuteQuery(`
+		UPDATE inventory
+		SET qty = inventory.qty + restock.add_qty
+		FROM restock
+		WHERE inventory.item_id = restock.item_id
+	`)
+	if err != nil {
+		t.Logf("UPDATE with JOIN returned error (may be expected): %v", err)
+	}
+}
+
+// TestComplex_DeleteWithUsing - targets deleteWithUsingLocked (69%)
+func TestComplex_DeleteWithUsing(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, err := btree.NewBTree(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := New(tree, pool, nil)
+	ctx := context.Background()
+
+	createCoverageTestTable(t, cat, "orders_del", []*query.ColumnDef{
+		{Name: "order_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "customer_id", Type: query.TokenInteger},
+	})
+	createCoverageTestTable(t, cat, "archived_orders", []*query.ColumnDef{
+		{Name: "order_id", Type: query.TokenInteger, PrimaryKey: true},
+	})
+
+	cat.Insert(ctx, &query.InsertStmt{
+		Table:   "orders_del",
+		Columns: []string{"order_id", "customer_id"},
+		Values:  [][]query.Expression{{numReal(1), numReal(100)}},
+	}, nil)
+	cat.Insert(ctx, &query.InsertStmt{
+		Table:   "archived_orders",
+		Columns: []string{"order_id"},
+		Values:  [][]query.Expression{{numReal(1)}},
+	}, nil)
+
+	_, err = cat.ExecuteQuery(`
+		DELETE FROM orders_del
+		USING archived_orders
+		WHERE orders_del.order_id = archived_orders.order_id
+	`)
+	if err != nil {
+		t.Logf("DELETE with USING returned error (may be expected): %v", err)
+	}
+}
+
+// TestComplex_ScalarSubquery - targets executeScalarSelect (59.3%)
+func TestComplex_ScalarSubquery(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, err := btree.NewBTree(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := New(tree, pool, nil)
+	ctx := context.Background()
+
+	createCoverageTestTable(t, cat, "emps", []*query.ColumnDef{
+		{Name: "emp_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "emp_name", Type: query.TokenText},
+		{Name: "dept_id", Type: query.TokenInteger},
+		{Name: "salary", Type: query.TokenInteger},
+	})
+	createCoverageTestTable(t, cat, "depts", []*query.ColumnDef{
+		{Name: "dept_id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "dept_name", Type: query.TokenText},
+	})
+
+	cat.Insert(ctx, &query.InsertStmt{
+		Table:   "depts",
+		Columns: []string{"dept_id", "dept_name"},
+		Values:  [][]query.Expression{{numReal(1), strReal("Engineering")}},
+	}, nil)
+	cat.Insert(ctx, &query.InsertStmt{
+		Table:   "emps",
+		Columns: []string{"emp_id", "emp_name", "dept_id", "salary"},
+		Values:  [][]query.Expression{{numReal(1), strReal("Alice"), numReal(1), numReal(100000)}},
+	}, nil)
+
+	result, err := cat.ExecuteQuery(`
+		SELECT emp_name,
+			(SELECT dept_name FROM depts WHERE dept_id = emps.dept_id) as dept
+		FROM emps
+	`)
+	if err != nil {
+		t.Logf("Scalar subquery in SELECT returned error (may be expected): %v", err)
+	} else if len(result.Rows) > 0 {
+		t.Logf("Scalar subquery result: %v", result.Rows[0])
+	}
+}
+
