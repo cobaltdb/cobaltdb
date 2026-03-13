@@ -1711,6 +1711,18 @@ func TestReal_ExistsSubquery(t *testing.T) {
 // Helpers
 func numReal(v float64) *query.NumberLiteral         { return &query.NumberLiteral{Value: v} }
 func strReal(s string) *query.StringLiteral          { return &query.StringLiteral{Value: s} }
+
+// createCoverageTestTable helper for coverage tests
+func createCoverageTestTable(t *testing.T, cat *Catalog, name string, cols []*query.ColumnDef) {
+	t.Helper()
+	stmt := &query.CreateTableStmt{
+		Table:   name,
+		Columns: cols,
+	}
+	if err := cat.CreateTable(stmt); err != nil {
+		t.Fatalf("CreateTable(%s) failed: %v", name, err)
+	}
+}
 func colReal(name string) *query.QualifiedIdentifier {
 	// Parse "table.column" format
 	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 && dotIdx < len(name)-1 {
