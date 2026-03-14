@@ -585,7 +585,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## Roadmap (v1.1+)
+## Roadmap (v0.1.10+)
 
 ### Planned Features
 - [ ] WAL (Write-Ahead Log) for crash recovery
