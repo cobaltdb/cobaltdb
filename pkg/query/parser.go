@@ -377,7 +377,7 @@ func (p *Parser) parseTableRef() (*TableRef, error) {
 // isJoin checks if the current token starts a JOIN clause
 func (p *Parser) isJoin() bool {
 	switch p.current().Type {
-	case TokenJoin, TokenInner, TokenLeft, TokenRight, TokenOuter, TokenFull, TokenCross:
+	case TokenJoin, TokenInner, TokenLeft, TokenRight, TokenOuter, TokenFull, TokenCross, TokenNatural:
 		return true
 	}
 	return false
@@ -434,6 +434,40 @@ func (p *Parser) parseJoin() (*JoinClause, error) {
 		if _, err := p.expect(TokenJoin); err != nil {
 			return nil, err
 		}
+	case TokenNatural:
+		// NATURAL JOIN - automatically match columns with same name
+		join.Natural = true
+		p.advance()
+		// Check for optional join type after NATURAL
+		switch p.current().Type {
+		case TokenInner:
+			join.Type = TokenInner
+			p.advance()
+		case TokenLeft:
+			join.Type = TokenLeft
+			p.advance()
+			if p.match(TokenOuter) {
+				// NATURAL LEFT OUTER JOIN
+			}
+		case TokenRight:
+			join.Type = TokenRight
+			p.advance()
+			if p.match(TokenOuter) {
+				// NATURAL RIGHT OUTER JOIN
+			}
+		case TokenFull:
+			join.Type = TokenFull
+			p.advance()
+			if p.match(TokenOuter) {
+				// NATURAL FULL OUTER JOIN
+			}
+		default:
+			// NATURAL JOIN without type defaults to INNER
+			join.Type = TokenInner
+		}
+		if _, err := p.expect(TokenJoin); err != nil {
+			return nil, err
+		}
 	case TokenJoin:
 		join.Type = TokenJoin
 		p.advance()
@@ -471,6 +505,8 @@ func (p *Parser) parseJoin() (*JoinClause, error) {
 			return nil, err
 		}
 		join.Using = columns
+	} else if join.Natural {
+		// NATURAL JOIN doesn't require ON - condition is determined by common columns
 	} else {
 		if _, err := p.expect(TokenOn); err != nil {
 			return nil, err
@@ -1934,8 +1970,8 @@ func (p *Parser) parseForeignKeyDef() (*ForeignKeyDef, error) {
 				fk.OnDelete = "SET NULL"
 			} else if p.match(TokenRestrict) {
 				fk.OnDelete = "RESTRICT"
-			} else {
-				p.match(TokenNo)
+			} else if p.match(TokenNo) {
+				p.match(TokenAction)
 				fk.OnDelete = "NO ACTION"
 			}
 		} else if p.match(TokenUpdate) {
@@ -1946,8 +1982,8 @@ func (p *Parser) parseForeignKeyDef() (*ForeignKeyDef, error) {
 				fk.OnUpdate = "SET NULL"
 			} else if p.match(TokenRestrict) {
 				fk.OnUpdate = "RESTRICT"
-			} else {
-				p.match(TokenNo)
+			} else if p.match(TokenNo) {
+				p.match(TokenAction)
 				fk.OnUpdate = "NO ACTION"
 			}
 		} else {

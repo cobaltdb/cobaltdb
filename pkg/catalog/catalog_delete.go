@@ -40,6 +40,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 	type deleteEntry struct {
 		key   []byte
 		value []byte
+		row   []interface{} // decoded row for RETURNING clause
 	}
 	var entries []deleteEntry
 	for iter.HasNext() {
@@ -92,7 +93,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		valueCopy := make([]byte, len(valueData))
 		copy(valueCopy, valueData)
 
-		entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy})
+		entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row})
 		rowsAffected++
 	}
 
@@ -203,6 +204,26 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 
 	// Invalidate query cache for the affected table
 	c.invalidateQueryCache(stmt.Table)
+
+	// Handle RETURNING clause (returns OLD row values)
+	var returningRows [][]interface{}
+	var returningCols []string
+	if len(stmt.Returning) > 0 && rowsAffected > 0 {
+		for _, entry := range entries {
+			returningRow, cols, err := c.evaluateReturning(stmt.Returning, entry.row, table, args)
+			if err != nil {
+				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
+			}
+			returningRows = append(returningRows, returningRow)
+			if returningCols == nil {
+				returningCols = cols
+			}
+		}
+	}
+
+	// Store returning rows for retrieval
+	c.lastReturningRows = returningRows
+	c.lastReturningColumns = returningCols
 
 	return 0, rowsAffected, nil
 }

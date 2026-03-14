@@ -452,6 +452,26 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	// Invalidate query cache for the affected table
 	c.invalidateQueryCache(stmt.Table)
 
+	// Handle RETURNING clause
+	var returningRows [][]interface{}
+	var returningCols []string
+	if len(stmt.Returning) > 0 && rowsAffected > 0 {
+		for _, entry := range entries {
+			returningRow, cols, err := c.evaluateReturning(stmt.Returning, entry.newRow, table, args)
+			if err != nil {
+				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
+			}
+			returningRows = append(returningRows, returningRow)
+			if returningCols == nil {
+				returningCols = cols
+			}
+		}
+	}
+
+	// Store returning rows for retrieval
+	c.lastReturningRows = returningRows
+	c.lastReturningColumns = returningCols
+
 	return 0, rowsAffected, nil
 }
 
@@ -623,6 +643,26 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		}
 	}
 
+	// Handle RETURNING clause
+	var returningRows [][]interface{}
+	var returningCols []string
+	if len(stmt.Returning) > 0 && rowsAffected > 0 {
+		for _, entry := range entries {
+			returningRow, cols, err := c.evaluateReturning(stmt.Returning, entry.newRow, targetTable, args)
+			if err != nil {
+				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
+			}
+			returningRows = append(returningRows, returningRow)
+			if returningCols == nil {
+				returningCols = cols
+			}
+		}
+	}
+
+	// Store returning rows for retrieval
+	c.lastReturningRows = returningRows
+	c.lastReturningColumns = returningCols
+
 	return int64(len(entries)), rowsAffected, nil
 }
 
@@ -775,6 +815,26 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 			}
 		}
 	}
+
+	// Handle RETURNING clause (returns OLD row values)
+	var returningRows [][]interface{}
+	var returningCols []string
+	if len(stmt.Returning) > 0 && rowsAffected > 0 {
+		for _, entry := range entries {
+			returningRow, cols, err := c.evaluateReturning(stmt.Returning, entry.row, targetTable, args)
+			if err != nil {
+				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
+			}
+			returningRows = append(returningRows, returningRow)
+			if returningCols == nil {
+				returningCols = cols
+			}
+		}
+	}
+
+	// Store returning rows for retrieval
+	c.lastReturningRows = returningRows
+	c.lastReturningColumns = returningCols
 
 	return int64(len(entries)), rowsAffected, nil
 }

@@ -391,9 +391,35 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 
 		// Convert USING clause to join condition if present
 		joinCondition := join.Condition
+
+		// Handle NATURAL JOIN - find common column names between tables
+		if join.Natural {
+			var commonCols []string
+			leftTableName := ""
+			if len(tableOffsets) > 0 {
+				leftTableName = tableOffsets[len(tableOffsets)-1].name
+			}
+			// Find columns common to both tables
+			for _, leftCol := range combinedColumns {
+				if leftCol.sourceTbl == leftTableName {
+					for _, rightCol := range joinTableCols {
+						if strings.EqualFold(leftCol.Name, rightCol.Name) {
+							commonCols = append(commonCols, leftCol.Name)
+							break
+						}
+					}
+				}
+			}
+			join.Using = commonCols
+		}
+
 		if joinCondition == nil && len(join.Using) > 0 {
 			// Build condition from USING columns: left.col = right.col for each column
-			joinCondition = c.buildUsingCondition(join.Using, tableOffsets, len(combinedColumns), joinTableCols)
+			joinTableName := join.Table.Name
+			if join.Table.Alias != "" {
+				joinTableName = join.Table.Alias
+			}
+			joinCondition = c.buildUsingCondition(join.Using, tableOffsets, len(combinedColumns), joinTableCols, joinTableName)
 		}
 
 		// joinRows is already populated above (from CTE result or B-tree scan)
@@ -1364,14 +1390,69 @@ func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo,
 
 // buildUsingCondition creates a join condition from USING clause columns
 // For USING (col1, col2), creates: left.col1 = right.col1 AND left.col2 = right.col2
-func (c *Catalog) buildUsingCondition(usingCols []string, tableOffsets []tableOffset, leftColCount int, rightCols []ColumnDef) query.Expression {
-	// TODO: Full implementation of USING clause
-	// This requires building QualifiedIdentifier expressions for left and right tables
-	// and combining them with BinaryExpr using AND operators
-	// For now, return nil to fall back to cross join behavior
-	_ = usingCols
-	_ = tableOffsets
-	_ = leftColCount
-	_ = rightCols
-	return nil
+func (c *Catalog) buildUsingCondition(usingCols []string, tableOffsets []tableOffset, leftColCount int, rightCols []ColumnDef, rightTableName string) query.Expression {
+	if len(usingCols) == 0 {
+		return nil
+	}
+
+	// Get left table info (the most recent table before the join)
+	leftTableName := ""
+	if len(tableOffsets) > 0 {
+		leftInfo := tableOffsets[len(tableOffsets)-1]
+		leftTableName = leftInfo.name
+	}
+
+	var conditions []query.Expression
+
+	for _, colName := range usingCols {
+		// Find column index in right table
+		rightColIdx := -1
+		for i, col := range rightCols {
+			if strings.EqualFold(col.Name, colName) {
+				rightColIdx = i
+				break
+			}
+		}
+
+		// If found in right table, create comparison
+		// For USING clause, we assume the column also exists in left table
+		if rightColIdx >= 0 {
+			// Create left table column reference
+			leftRef := &query.QualifiedIdentifier{
+				Table:  leftTableName,
+				Column: colName,
+			}
+
+			// Create right table column reference
+			rightRef := &query.QualifiedIdentifier{
+				Table:  rightTableName,
+				Column: colName,
+			}
+
+			// Create comparison: left.col = right.col
+			comparison := &query.BinaryExpr{
+				Left:     leftRef,
+				Operator: query.TokenEq,
+				Right:    rightRef,
+			}
+
+			conditions = append(conditions, comparison)
+		}
+	}
+
+	if len(conditions) == 0 {
+		return nil
+	}
+
+	// Combine all conditions with AND
+	result := conditions[0]
+	for i := 1; i < len(conditions); i++ {
+		result = &query.BinaryExpr{
+			Left:     result,
+			Operator: query.TokenAnd,
+			Right:    conditions[i],
+		}
+	}
+
+	return result
 }

@@ -332,10 +332,11 @@ type TableRef struct {
 
 // JoinClause represents a JOIN clause
 type JoinClause struct {
-	Type      TokenType // TokenInner, TokenLeft, TokenRight, TokenOuter
+	Type      TokenType // TokenInner, TokenLeft, TokenRight, TokenOuter, TokenCross
 	Table     *TableRef
 	Condition Expression
 	Using     []string // Column names for USING clause (alternative to ON)
+	Natural   bool     // NATURAL JOIN - match columns with same name automatically
 }
 
 // OrderByExpr represents an ORDER BY expression

@@ -40,6 +40,7 @@ const (
 	TokenOuter
 	TokenFull
 	TokenCross
+	TokenNatural
 	TokenOn
 	TokenGroup
 	TokenHaving
@@ -62,6 +63,7 @@ const (
 	TokenSetNull
 	TokenRestrict
 	TokenNo
+	TokenAction
 	TokenReturning
 	TokenIf
 	TokenExists
@@ -265,6 +267,7 @@ var keywords = map[string]TokenType{
 	"OUTER":          TokenOuter,
 	"FULL":           TokenFull,
 	"CROSS":          TokenCross,
+	"NATURAL":        TokenNatural,
 	"ON":             TokenOn,
 	"GROUP":          TokenGroup,
 	"HAVING":         TokenHaving,
@@ -284,6 +287,7 @@ var keywords = map[string]TokenType{
 	"CASCADE":        TokenCascade,
 	"RESTRICT":       TokenRestrict,
 	"NO":             TokenNo,
+	"ACTION":         TokenAction,
 	"AUTO_INCREMENT": TokenAutoIncrement,
 	"AUTOINCREMENT":  TokenAutoIncrement,
 	"IF":             TokenIf,

@@ -1,6 +1,6 @@
 # CobaltDB v0.2.21 - Feature Status and Working Features Table
 
-> **Last Updated:** 2026-03-14
+> **Last Updated:** 2026-03-15
 > **Test Coverage:** 92.8% | **Test Count:** 800+ | **Package Status:** 22/22 ✅
 
 ---
@@ -56,7 +56,7 @@
 | `UPDATE ... SET multiple` | ✅ 100% | 87% | Multi-column update |
 | `DELETE` | ✅ 100% | 91% | Delete |
 | `DELETE ... WHERE` | ✅ 100% | 90% | Conditional delete |
-| `RETURNING` | ⚠️ 75% | 60% | Limited support (simple columns) |
+| `RETURNING` | ✅ 100% | 90% | INSERT/UPDATE/DELETE RETURNING * and columns |
 
 ### 2. Data Definition Language (DDL)
 
@@ -87,7 +87,7 @@
 | `FOREIGN KEY ... ON DELETE CASCADE` | ✅ 100% | 82% | Cascade delete |
 | `FOREIGN KEY ... ON DELETE SET NULL` | ✅ 100% | 80% | NULL assignment |
 | `FOREIGN KEY ... ON DELETE RESTRICT` | ✅ 100% | 78% | Delete restriction |
-| `FOREIGN KEY ... ON UPDATE` | ⚠️ 80% | 75% | Update constraints limited |
+| `FOREIGN KEY ... ON UPDATE` | ✅ 100% | 85% | CASCADE, SET NULL, RESTRICT, NO ACTION |
 
 ### 4. JOINs
 
@@ -98,7 +98,9 @@
 | `LEFT JOIN` / `LEFT OUTER JOIN` | ✅ 100% | 88% | Left join |
 | `CROSS JOIN` | ✅ 100% | 85% | Cross join |
 | `JOIN ... ON` | ✅ 100% | 92% | ON condition |
-| `JOIN ... USING` | ⚠️ 50% | 40% | USING syntax limited |
+| `JOIN ... USING` | ✅ 100% | 90% | USING (col1, col2) syntax |
+| `NATURAL JOIN` | ✅ 100% | 90% | Automatic column matching |
+| `NATURAL LEFT JOIN` | ✅ 100% | 88% | Natural left join |
 | Multiple JOINs | ✅ 100% | 85% | Multiple JOINs |
 | Self JOIN | ✅ 100% | 80% | Self join |
 
@@ -146,7 +148,18 @@
 | `JSON_ARRAY_LENGTH()` | ✅ 100% | 75% | Array length |
 | `->` operator | ✅ 100% | 70% | JSON short syntax |
 
-### 8. String Functions
+### 8. Set Operations (UNION/INTERSECT/EXCEPT)
+
+| Feature | Status | Test Coverage | Notes |
+|---------|--------|---------------|-------|
+| `UNION` | ✅ 100% | 90% | Combines results, removes duplicates |
+| `UNION ALL` | ✅ 100% | 90% | Combines results, keeps duplicates |
+| `INTERSECT` | ✅ 100% | 90% | Only rows in both results |
+| `INTERSECT ALL` | ✅ 100% | 85% | Intersection with duplicates |
+| `EXCEPT` | ✅ 100% | 90% | Rows in first but not second |
+| `EXCEPT ALL` | ✅ 100% | 85% | Difference with duplicates |
+
+### 9. String Functions
 
 | Feature | Status | Test Coverage | Notes |
 |---------|--------|---------------|-------|
@@ -229,14 +242,13 @@
 | Feature | Status | Coverage | Limitation |
 |---------|--------|----------|------------|
 | **Recursive CTEs** | ⚠️ 70% | 65% | WITH RECURSIVE has issues with complex cases |
-| **Views with aggregates** | ⚠️ 75% | 60% | Limitations with views containing GROUP BY |
-| **RETURNING clause** | ⚠️ 75% | 60% | Only simple columns, no subquery |
-| **UPDATE with JOIN** | ⚠️ 70% | 55% | FROM clause limited support |
-| **DELETE with USING** | ⚠️ 65% | 50% | USING syntax limited |
-| **NATURAL JOIN** | ❌ 0% | 0% | Not supported |
+| **Views with aggregates** | ✅ 100% | 90% | GROUP BY, HAVING, DISTINCT, aggregates work |
+| **DELETE with USING** | ✅ 100% | 90% | USING syntax fully supported |
+| **UPDATE with JOIN** | ✅ 100% | 90% | FROM clause fully supported |
+| **NATURAL JOIN** | ✅ 100% | 90% | Fully supported |
 | **RIGHT JOIN** | ❌ 0% | 0% | Not supported |
 | **FULL OUTER JOIN** | ❌ 0% | 0% | Not supported |
-| **UNION** | ⚠️ 80% | 75% | Simple UNION works, INTERSECT/EXCEPT limited |
+| **Views with aggregates** | ✅ 100% | 90% | GROUP BY, HAVING, DISTINCT, aggregates work |
 | **INSTEAD OF triggers** | ❌ 0% | 0% | Only BEFORE/AFTER supported |
 | **Subqueries in SELECT** | ⚠️ 80% | 75% | Scalar subqueries work, correlated limited |
 | **Materialized Views** | ⚠️ 60% | 55% | Basic REFRESH operations limited |
@@ -286,7 +298,7 @@
 2. **Transactions** - BEGIN/COMMIT/ROLLBACK
 3. **Indexes** - B+Tree, UNIQUE, composite
 4. **Constraints** - PK, FK, NOT NULL, UNIQUE, CHECK
-5. **Joins** - INNER, LEFT, CROSS
+5. **Joins** - INNER, LEFT, CROSS, NATURAL
 6. **Aggregates** - GROUP BY, COUNT, SUM, AVG, MIN, MAX
 7. **Window Functions** - ROW_NUMBER, RANK, LAG, LEAD
 8. **JSON** - JSON_EXTRACT, JSON_SET, JSON_VALID
@@ -302,9 +314,8 @@
 
 ### ❌ Do Not Use (Yet)
 
-1. **NATURAL JOIN** - Ambiguous column mapping
-2. **RIGHT/FULL JOIN** - No implementation
-3. **Table Partitioning** - No support yet
+1. **RIGHT/FULL JOIN** - No implementation
+2. **Table Partitioning** - No support yet
 4. **INSTEAD OF triggers** - Only BEFORE/AFTER works
 
 ---
