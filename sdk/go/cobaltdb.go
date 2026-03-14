@@ -282,8 +282,12 @@ func (db *DB) Close() error {
 
 // Ping checks if the database is accessible
 func (db *DB) Ping(ctx context.Context) error {
-	_, err := db.Exec(ctx, "SELECT 1")
-	return err
+	rows, err := db.Query(ctx, "SELECT 1")
+	if err != nil {
+		return err
+	}
+	rows.Close()
+	return nil
 }
 
 // Stats returns database statistics
