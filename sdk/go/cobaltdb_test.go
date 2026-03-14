@@ -339,3 +339,136 @@ func TestParseDSNWithAllOptions(t *testing.T) {
 		t.Errorf("ApplicationName mismatch: got %s, want testapp", cfg.ApplicationName)
 	}
 }
+
+// SDK Coverage Tests
+
+func TestDriverOpenConnectorAndConnect(t *testing.T) {
+	drv := &Driver{}
+
+	// OpenConnector with DSN string
+	connector, err := drv.OpenConnector(":memory:")
+	if err != nil {
+		t.Fatalf("OpenConnector() failed: %v", err)
+	}
+	if connector == nil {
+		t.Fatal("OpenConnector() returned nil")
+	}
+
+	// Test Driver() returns the correct driver
+	if d := connector.Driver(); d != drv {
+		t.Error("Driver() returned wrong driver")
+	}
+}
+
+func TestConnPrepareAndClose(t *testing.T) {
+	drv := &Driver{}
+	c, err := drv.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() failed: %v", err)
+	}
+	defer c.Close()
+
+	// Prepare statement
+	stmt, err := c.Prepare("CREATE TABLE test (id INTEGER)")
+	if err != nil {
+		t.Fatalf("Prepare() failed: %v", err)
+	}
+
+	// Close should not error
+	if err := stmt.Close(); err != nil {
+		t.Errorf("Stmt.Close() failed: %v", err)
+	}
+}
+
+func TestStmtNumInput(t *testing.T) {
+	drv := &Driver{}
+	c, err := drv.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() failed: %v", err)
+	}
+	defer c.Close()
+
+	s, err := c.Prepare("SELECT * FROM test WHERE id = ?")
+	if err != nil {
+		t.Fatalf("Prepare() failed: %v", err)
+	}
+	defer s.Close()
+
+	// NumInput should return -1
+	n := s.(*stmt).NumInput()
+	if n != -1 {
+		t.Errorf("NumInput() = %d, want -1", n)
+	}
+}
+
+func TestTransactionDoubleCommit(t *testing.T) {
+	drv := &Driver{}
+	c, err := drv.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() failed: %v", err)
+	}
+	defer c.Close()
+
+	// Begin transaction
+	tx, err := c.Begin()
+	if err != nil {
+		t.Fatalf("Begin() failed: %v", err)
+	}
+
+	// First commit should work
+	if err := tx.Commit(); err != nil {
+		t.Errorf("First Commit() failed: %v", err)
+	}
+
+	// Second commit should error
+	if err := tx.Commit(); err == nil {
+		t.Error("Second Commit() should have failed")
+	}
+}
+
+func TestTransactionDoubleRollback(t *testing.T) {
+	drv := &Driver{}
+	c, err := drv.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() failed: %v", err)
+	}
+	defer c.Close()
+
+	// Begin transaction
+	tx, err := c.Begin()
+	if err != nil {
+		t.Fatalf("Begin() failed: %v", err)
+	}
+
+	// First rollback should work
+	if err := tx.Rollback(); err != nil {
+		t.Errorf("First Rollback() failed: %v", err)
+	}
+
+	// Second rollback should error
+	if err := tx.Rollback(); err == nil {
+		t.Error("Second Rollback() should have failed")
+	}
+}
+
+func TestIsolationLevelStrings(t *testing.T) {
+	// Test non-default levels have valid strings
+	tests := []struct {
+		level IsolationLevel
+		want  string
+	}{
+		{LevelReadUncommitted, "READ UNCOMMITTED"},
+		{LevelReadCommitted, "READ COMMITTED"},
+		{LevelWriteCommitted, "WRITE COMMITTED"},
+		{LevelRepeatableRead, "REPEATABLE READ"},
+		{LevelSnapshot, "SNAPSHOT"},
+		{LevelSerializable, "SERIALIZABLE"},
+		{LevelLinearizable, "LINEARIZABLE"},
+	}
+
+	for _, tt := range tests {
+		if got := tt.level.String(); got != tt.want {
+			t.Errorf("%d.String() = %q, want %q", tt.level, got, tt.want)
+		}
+	}
+}
