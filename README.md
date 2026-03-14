@@ -800,7 +800,7 @@ go run cmd/demo/main.go
 - [x] **Constraints** - PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK, NOT NULL
 - [x] **MySQL Protocol** - Wire-compatible MySQL protocol support
 
-### ✅ Completed Features (v2.0)
+### ✅ Completed Features (v0.2.0)
 
 - [x] **Full-Text Search** - MATCH ... AGAINST syntax with inverted indexes
 - [x] **Materialized Views** - CREATE MATERIALIZED VIEW, REFRESH, and DROP support
@@ -828,8 +828,8 @@ go run cmd/demo/main.go
 
 ### 📋 Planned Features
 
-- [ ] **v0.2.5** - Distributed mode, Sharding support
-- [ ] **v0.3.0** - Cloud-native features, Kubernetes operator
+- [ ] **v0.3.0** - Distributed mode, Sharding support
+- [ ] **v0.4.0** - Cloud-native features, Kubernetes operator
 
 ---
 
