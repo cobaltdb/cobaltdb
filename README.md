@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/Version-2.2.0-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
-  <img src="https://img.shields.io/badge/Coverage-91.2%25-green?style=for-the-badge" alt="Test Coverage">
+  <img src="https://img.shields.io/badge/Coverage-91.3%25-green?style=for-the-badge" alt="Test Coverage">
 </p>
 
 <p align="center">
@@ -166,14 +166,32 @@ See [DOCKER.md](DOCKER.md) for detailed Docker setup instructions.
 
 **Test Environment:** AMD Ryzen 7 PRO 6850H · Go 1.26 · Windows
 
+### Core Operations
+
 | Operation | Latency | Throughput |
 |-----------|---------|------------|
-| **INSERT** | ~3.2 µs | **310K ops/sec** |
-| **SELECT (Point Lookup)** | ~300 ns | **3.3M ops/sec** |
-| **UPDATE** | ~1.06 µs | **940K ops/sec** |
-| **DELETE** | ~1.6 µs | **620K ops/sec** |
-| **Concurrent INSERT** | ~2.1 µs | **470K ops/sec** |
-| **Transaction** | ~3.4 µs | **290K tx/sec** |
+| **INSERT** | ~2.1 µs | **470K ops/sec** |
+| **INSERT (Batch)** | ~4.1 ms | **245K rows/sec** |
+| **SELECT (Point Lookup)** | ~11 µs | **90K ops/sec** |
+| **SELECT with Scan** | ~1.06 µs | **940K ops/sec** |
+| **UPDATE** | ~1.15 µs | **870K ops/sec** |
+| **DELETE** | ~1.15 µs | **870K ops/sec** |
+| **Concurrent INSERT** | ~2.7 µs | **370K ops/sec** |
+| **Concurrent Read** | ~277 µs | **3.6K ops/sec** |
+| **Transaction** | ~724 µs | **1.4K tx/sec** |
+| **Create Table** | ~7.7 µs | **130K ops/sec** |
+
+### Parser & Storage Performance
+
+| Component | Operation | Latency | Throughput |
+|-----------|-----------|---------|------------|
+| **SQL Parser** | Parse SELECT | ~2.5 µs | **400K ops/sec** |
+| **SQL Parser** | Parse INSERT | ~2.8 µs | **360K ops/sec** |
+| **SQL Parser** | Parse Complex Query | ~10.7 µs | **93K ops/sec** |
+| **Lexer** | Tokenize | ~920 ns | **1.1M ops/sec** |
+| **Buffer Pool** | Get Page | ~2.1 µs | **476K ops/sec** |
+| **Buffer Pool** | Memory Read | ~49 ns | **20M ops/sec** |
+| **WAL** | Append | ~2.1 ms | **476 ops/sec** |
 
 > 💡 **In-memory benchmarks.** Disk persistence adds ~20-40% overhead depending on storage.
 
@@ -735,17 +753,17 @@ go run cmd/demo/main.go
 | `pkg/txn` | 93.9% | ✅ |
 | `pkg/security` | 91.9% | ✅ |
 | `pkg/audit` | 90.2% | ✅ |
-| `pkg/engine` | 89.4% | ✅ |
+| `pkg/engine` | 88.6% | ✅ |
 | `pkg/logger` | 88.7% | ✅ |
 | `pkg/btree` | 88.4% | ✅ |
 | `pkg/storage` | 87.8% | ✅ |
-| `pkg/query` | 86.3% | ✅ |
-| `pkg/server` | 84.2% | ✅ |
-| `pkg/catalog` | 77.4% | ✅ |
+| `pkg/query` | 84.4% | ✅ |
+| `pkg/server` | 83.9% | ✅ |
+| `pkg/catalog` | 76.6% | ✅ |
 | **Total** | **91.2%** | ✅ |
 
 > 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
-> Combined coverage from 3,716 test functions across 28 test packages (242 test files, 138 integration tests).
+> Combined coverage from 3,716 test functions across 28 test packages (272 test files, 138 integration tests).
 
 ---
 
