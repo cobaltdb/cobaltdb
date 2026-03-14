@@ -759,7 +759,7 @@ go run cmd/demo/main.go
 | `pkg/storage` | 87.8% | ✅ |
 | `pkg/query` | 84.4% | ✅ |
 | `pkg/server` | 83.9% | ✅ |
-| `pkg/catalog` | 77.2% | ✅ |
+| `pkg/catalog` | 77.4% | ✅ |
 | **Total** | **91.2%** | ✅ |
 
 > 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
