@@ -775,6 +775,7 @@ go run cmd/demo/main.go
 |----------|-------------|
 | [CHANGELOG.md](CHANGELOG.md) | Version history, all changes |
 | [COVERAGE_GUIDE.md](COVERAGE_GUIDE.md) | Test coverage analysis and targets |
+| [FEATURES.md](FEATURES.md) | **Feature status - what works 100% vs partially** |
 | [docs/PRODUCTION.md](docs/PRODUCTION.md) | **Production features guide (Circuit Breaker, Retry, Rate Limiting)** |
 | [docs/ARCHITECTURE_FULL.md](docs/ARCHITECTURE_FULL.md) | System design & components |
 | [docs/API.md](docs/API.md) | Go SDK documentation |
