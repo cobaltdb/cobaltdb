@@ -711,9 +711,11 @@ func (c *Catalog) HasTableOrView(name string) bool {
 func (c *Catalog) CreateTrigger(stmt *query.CreateTriggerStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Check if table exists
-	if _, err := c.getTableLocked(stmt.Table); err != nil {
-		return err
+	// Check if table or view exists
+	_, tableExists := c.tables[stmt.Table]
+	_, viewExists := c.views[stmt.Table]
+	if !tableExists && !viewExists {
+		return fmt.Errorf("table or view not found: %s", stmt.Table)
 	}
 
 	if _, exists := c.triggers[stmt.Name]; exists {
@@ -982,4 +984,250 @@ func (c *Catalog) GetTableStats(tableName string) (*StatsTableStats, error) {
 		return nil, fmt.Errorf("no statistics for table %s", tableName)
 	}
 	return stats, nil
+}
+
+// findInsteadOfTrigger finds an INSTEAD OF trigger for a table/view and event
+func (c *Catalog) findInsteadOfTrigger(tableName string, event string) *query.CreateTriggerStmt {
+	for _, trigger := range c.triggers {
+		if trigger.Table == tableName && trigger.Event == event && trigger.Time == "INSTEAD OF" {
+			return trigger
+		}
+	}
+	return nil
+}
+
+// getColumnsForTableOrView returns column definitions for a table or view
+func (c *Catalog) getColumnsForTableOrView(name string) []ColumnDef {
+	// Try table first
+	if table, err := c.getTableLocked(name); err == nil {
+		return table.Columns
+	}
+	// Try view
+	if view, err := c.getViewLocked(name); err == nil {
+		// Get column names from view's SELECT
+		cols := make([]ColumnDef, len(view.Columns))
+		for i, col := range view.Columns {
+			colName := ""
+			switch c := col.(type) {
+			case *query.Identifier:
+				colName = c.Name
+			case *query.AliasExpr:
+				if c.Alias != "" {
+					colName = c.Alias
+				} else if id, ok := c.Expr.(*query.Identifier); ok {
+					colName = id.Name
+				}
+			case *query.QualifiedIdentifier:
+				colName = c.Column
+			}
+			if colName == "" {
+				colName = fmt.Sprintf("column_%d", i)
+			}
+			cols[i] = ColumnDef{Name: colName, Type: "TEXT"}
+		}
+		return cols
+	}
+	return nil
+}
+
+// executeInsteadOfTrigger executes an INSTEAD OF trigger for an INSERT statement
+func (c *Catalog) executeInsteadOfTrigger(ctx context.Context, trigger *query.CreateTriggerStmt, stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
+	// For each row being inserted, execute the trigger body
+	rowsAffected := int64(0)
+
+	// Get columns for resolving NEW. references
+	columns := c.getColumnsForTableOrView(stmt.Table)
+
+	valueRows := stmt.Values
+	if stmt.Select != nil {
+		// Handle INSERT...SELECT
+		_, selectRows, err := c.selectLocked(stmt.Select, args)
+		if err != nil {
+			return 0, 0, fmt.Errorf("INSERT...SELECT failed: %w", err)
+		}
+		// Convert select results to expression rows
+		valueRows = make([][]query.Expression, len(selectRows))
+		for i, row := range selectRows {
+			exprRow := make([]query.Expression, len(row))
+			for j, val := range row {
+				switch v := val.(type) {
+				case nil:
+					exprRow[j] = &query.NullLiteral{}
+				case string:
+					exprRow[j] = &query.StringLiteral{Value: v}
+				case float64:
+					exprRow[j] = &query.NumberLiteral{Value: v}
+				case int64:
+					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: fmt.Sprintf("%d", v)}
+				case int:
+					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: fmt.Sprintf("%d", v)}
+				case bool:
+					exprRow[j] = &query.BooleanLiteral{Value: v}
+				default:
+					exprRow[j] = &query.StringLiteral{Value: fmt.Sprintf("%v", v)}
+				}
+			}
+			valueRows[i] = exprRow
+		}
+	}
+
+	for _, valueRow := range valueRows {
+		// Build the NEW row from the insert values
+		newRow := make([]interface{}, len(valueRow))
+		for i, expr := range valueRow {
+			val, _ := evaluateExpression(c, nil, nil, expr, args)
+			newRow[i] = val
+		}
+
+		// Execute trigger body
+		for _, bodyStmt := range trigger.Body {
+			// Resolve NEW. references
+			resolved := c.resolveTriggerRefs(bodyStmt, newRow, nil, columns)
+			if err := c.executeTriggerStatement(ctx, resolved); err != nil {
+				return 0, 0, fmt.Errorf("INSTEAD OF INSERT trigger failed: %w", err)
+			}
+		}
+		rowsAffected++
+	}
+
+	return 0, rowsAffected, nil
+}
+
+// executeInsteadOfUpdateTrigger executes an INSTEAD OF UPDATE trigger
+func (c *Catalog) executeInsteadOfUpdateTrigger(ctx context.Context, trigger *query.CreateTriggerStmt, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+	rowsAffected := int64(0)
+
+	// Get columns for the view/table
+	columns := c.getColumnsForTableOrView(stmt.Table)
+
+	// Get rows from the view/table
+	var rows [][]interface{}
+	if view, err := c.getViewLocked(stmt.Table); err == nil {
+		// It's a view - execute the view's SELECT
+		_, viewRows, err := c.selectLocked(view, args)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to execute view for INSTEAD OF UPDATE: %w", err)
+		}
+		rows = viewRows
+	} else {
+		// It's a table - scan it
+		tree, exists := c.tableTrees[stmt.Table]
+		if !exists {
+			return 0, 0, fmt.Errorf("table not found: %s", stmt.Table)
+		}
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to scan for INSTEAD OF UPDATE: %w", err)
+		}
+		defer iter.Close()
+		for iter.HasNext() {
+			_, valueData, err := iter.Next()
+			if err != nil {
+				break
+			}
+			row, err := decodeRow(valueData, len(columns))
+			if err != nil {
+				continue
+			}
+			rows = append(rows, row)
+		}
+	}
+
+	// Process each row
+	for _, row := range rows {
+		// Check WHERE clause
+		if stmt.Where != nil {
+			matched, err := evaluateWhere(c, row, columns, stmt.Where, args)
+			if err != nil || !matched {
+				continue
+			}
+		}
+
+		// Build NEW row with updated values
+		newRow := make([]interface{}, len(row))
+		copy(newRow, row)
+		for _, setClause := range stmt.Set {
+			for i, col := range columns {
+				if strings.EqualFold(col.Name, setClause.Column) && i < len(newRow) {
+					val, _ := evaluateExpression(c, row, columns, setClause.Value, args)
+					newRow[i] = val
+					break
+				}
+			}
+		}
+
+		// Execute trigger body
+		for _, bodyStmt := range trigger.Body {
+			resolved := c.resolveTriggerRefs(bodyStmt, newRow, row, columns)
+			if err := c.executeTriggerStatement(ctx, resolved); err != nil {
+				return 0, 0, fmt.Errorf("INSTEAD OF UPDATE trigger failed: %w", err)
+			}
+		}
+		rowsAffected++
+	}
+
+	return 0, rowsAffected, nil
+}
+
+// executeInsteadOfDeleteTrigger executes an INSTEAD OF DELETE trigger
+func (c *Catalog) executeInsteadOfDeleteTrigger(ctx context.Context, trigger *query.CreateTriggerStmt, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
+	rowsAffected := int64(0)
+
+	// Get columns for the view/table
+	columns := c.getColumnsForTableOrView(stmt.Table)
+
+	// Get rows from the view/table
+	var rows [][]interface{}
+	if view, err := c.getViewLocked(stmt.Table); err == nil {
+		// It's a view - execute the view's SELECT
+		_, viewRows, err := c.selectLocked(view, args)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to execute view for INSTEAD OF DELETE: %w", err)
+		}
+		rows = viewRows
+	} else {
+		// It's a table - scan it
+		tree, exists := c.tableTrees[stmt.Table]
+		if !exists {
+			return 0, 0, fmt.Errorf("table not found: %s", stmt.Table)
+		}
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to scan for INSTEAD OF DELETE: %w", err)
+		}
+		defer iter.Close()
+		for iter.HasNext() {
+			_, valueData, err := iter.Next()
+			if err != nil {
+				break
+			}
+			row, err := decodeRow(valueData, len(columns))
+			if err != nil {
+				continue
+			}
+			rows = append(rows, row)
+		}
+	}
+
+	// Process each row
+	for _, row := range rows {
+		// Check WHERE clause
+		if stmt.Where != nil {
+			matched, err := evaluateWhere(c, row, columns, stmt.Where, args)
+			if err != nil || !matched {
+				continue
+			}
+		}
+
+		// Execute trigger body with OLD row
+		for _, bodyStmt := range trigger.Body {
+			resolved := c.resolveTriggerRefs(bodyStmt, nil, row, columns)
+			if err := c.executeTriggerStatement(ctx, resolved); err != nil {
+				return 0, 0, fmt.Errorf("INSTEAD OF DELETE trigger failed: %w", err)
+			}
+		}
+		rowsAffected++
+	}
+
+	return 0, rowsAffected, nil
 }

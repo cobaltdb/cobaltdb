@@ -21,6 +21,11 @@ func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []int
 }
 
 func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
+	// Check for INSTEAD OF INSERT trigger first (for views)
+	if trig := c.findInsteadOfTrigger(stmt.Table, "INSERT"); trig != nil {
+		return c.executeInsteadOfTrigger(ctx, trig, stmt, args)
+	}
+
 	table, err := c.getTableLocked(stmt.Table)
 	if err != nil {
 		return 0, 0, err

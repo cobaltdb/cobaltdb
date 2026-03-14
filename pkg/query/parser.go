@@ -2224,15 +2224,21 @@ func (p *Parser) parseCreateTrigger() (*CreateTriggerStmt, error) {
 	}
 	stmt.Name = name.Literal
 
-	// BEFORE or AFTER
+	// BEFORE, AFTER, or INSTEAD OF
 	if p.current().Type == TokenBefore {
 		p.advance()
 		stmt.Time = "BEFORE"
 	} else if p.current().Type == TokenAfter {
 		p.advance()
 		stmt.Time = "AFTER"
+	} else if p.current().Type == TokenInstead {
+		p.advance()
+		if _, err := p.expect(TokenOf); err != nil {
+			return nil, err
+		}
+		stmt.Time = "INSTEAD OF"
 	} else {
-		return nil, fmt.Errorf("expected BEFORE or AFTER")
+		return nil, fmt.Errorf("expected BEFORE, AFTER, or INSTEAD OF")
 	}
 
 	// INSERT, UPDATE, DELETE

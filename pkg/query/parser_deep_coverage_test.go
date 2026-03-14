@@ -572,7 +572,7 @@ func TestParseCreateTriggerInvalidTimingDeep(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid timing")
 	}
-	if !strings.Contains(err.Error(), "BEFORE or AFTER") {
+	if !strings.Contains(err.Error(), "BEFORE, AFTER, or INSTEAD OF") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

@@ -87,6 +87,8 @@ const (
 	TokenTo
 	TokenBefore
 	TokenAfter
+	TokenInstead
+	TokenOf
 	TokenFor
 	TokenEach
 	TokenRow
@@ -312,6 +314,8 @@ var keywords = map[string]TokenType{
 	"TO":             TokenTo,
 	"BEFORE":         TokenBefore,
 	"AFTER":          TokenAfter,
+	"INSTEAD":        TokenInstead,
+	"OF":             TokenOf,
 	"FOR":            TokenFor,
 	"EACH":           TokenEach,
 	"ROW":            TokenRow,

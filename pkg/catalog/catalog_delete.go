@@ -14,6 +14,11 @@ func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []int
 }
 
 func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
+	// Check for INSTEAD OF DELETE trigger first (for views)
+	if trig := c.findInsteadOfTrigger(stmt.Table, "DELETE"); trig != nil {
+		return c.executeInsteadOfDeleteTrigger(ctx, trig, stmt, args)
+	}
+
 	table, err := c.getTableLocked(stmt.Table)
 	if err != nil {
 		return 0, 0, err

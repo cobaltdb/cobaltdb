@@ -15,6 +15,11 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 }
 
 func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+	// Check for INSTEAD OF UPDATE trigger first (for views)
+	if trig := c.findInsteadOfTrigger(stmt.Table, "UPDATE"); trig != nil {
+		return c.executeInsteadOfUpdateTrigger(ctx, trig, stmt, args)
+	}
+
 	table, err := c.getTableLocked(stmt.Table)
 	if err != nil {
 		return 0, 0, err

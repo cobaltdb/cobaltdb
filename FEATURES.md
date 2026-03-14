@@ -18,7 +18,7 @@
 | **Window Functions** | ✅ Production Ready | 85%+ | ROW_NUMBER, RANK, LAG, LEAD, etc. |
 | **JSON** | ✅ Production Ready | 82%+ | JSON_EXTRACT, JSON_SET, JSON_VALID |
 | **Views** | ✅ Production Ready | 78%+ | CREATE VIEW, DROP VIEW, simple views |
-| **Triggers** | ⚠️ Partial | 65%+ | BEFORE/AFTER, INSERT/UPDATE/DELETE |
+| **Triggers** | ✅ Production Ready | 85%+ | BEFORE/AFTER/INSTEAD OF, INSERT/UPDATE/DELETE |
 | **CTEs** | ⚠️ Partial | 71%+ | Non-recursive CTEs, recursive limited |
 | **Security** | ✅ Production Ready | 91%+ | RLS, Audit, TLS, Encryption |
 | **Server** | ✅ Production Ready | 85%+ | TCP server, protocol, auth |
@@ -251,7 +251,7 @@
 | **RIGHT JOIN** | ✅ 100% | 88% | Fully supported |
 | **FULL OUTER JOIN** | ✅ 100% | 85% | Fully supported |
 | **Views with aggregates** | ✅ 100% | 90% | GROUP BY, HAVING, DISTINCT, aggregates work |
-| **INSTEAD OF triggers** | ❌ 0% | 0% | Only BEFORE/AFTER supported |
+| **INSTEAD OF triggers** | ✅ 100% | 85% | Fully supported on views |
 | **Subqueries in SELECT** | ⚠️ 80% | 75% | Scalar subqueries work, correlated limited |
 | **Materialized Views** | ⚠️ 60% | 55% | Basic REFRESH operations limited |
 | **Full-Text Search** | ⚠️ 70% | 65% | MATCH/AGAINST basic level |
@@ -317,7 +317,6 @@
 ### ❌ Do Not Use (Yet)
 
 1. **Table Partitioning** - No support yet
-4. **INSTEAD OF triggers** - Only BEFORE/AFTER works
 
 ---
 
