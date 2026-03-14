@@ -352,7 +352,7 @@ func TestCoverage_applyOuterQueryGroupBy(t *testing.T) {
 }
 
 // TestCoverage_evaluateWhereComplex targets evaluateWhere with complex expressions
-func TestCoverage_evaluateWhereComplex(t *testing.T) {
+func TestCoverage_evaluateWhereComplex67(t *testing.T) {
 	ctx := context.Background()
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(4096, backend)
