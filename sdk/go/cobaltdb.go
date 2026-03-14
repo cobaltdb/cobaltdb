@@ -123,6 +123,12 @@ func DefaultConfig() *Config {
 func ParseDSN(dsn string) (*Config, error) {
 	cfg := DefaultConfig()
 
+	// Handle :memory: database
+	if dsn == ":memory:" {
+		cfg.Database = ":memory:"
+		return cfg, nil
+	}
+
 	// Handle key=value format
 	if strings.Contains(dsn, "=") {
 		pairs := strings.FieldsFunc(dsn, func(r rune) bool {
@@ -247,6 +253,7 @@ func Open(cfg *Config) (*DB, error) {
 		MaxConnections:    cfg.MaxConnections,
 		ConnectionTimeout: cfg.ConnectTimeout,
 		QueryTimeout:      cfg.QueryTimeout,
+		InMemory:          cfg.Database == ":memory:",
 	}
 
 	// Set sync mode
