@@ -536,13 +536,15 @@ Despite 568+ targeted coverage tests, catalog coverage remains at 80.2%. The rem
 - `integration/server_lifecycle_test.go` - Server lifecycle integration tests
 - `integration/catalog_fault_injection_test.go` - Catalog fault injection and concurrency tests
 - `integration/catalog_advanced_test.go` - Advanced catalog function coverage tests
+- `integration/engine_advanced_test.go` - Engine advanced functionality tests
 
 **Tests Added:**
 - **Server Lifecycle (6 tests):** BasicStartup, AcceptLoop, GracefulShutdown, ConnectionTimeout, MaxConnections, SignalHandling
 - **Catalog Fault Injection (7 tests):** RLSConcurrentAccess, FKCascadeDeep, TransactionRollbackComplex, ConcurrentTransactions, QueryCacheRace, WALRecovery, DeadlockDetection
 - **Catalog Advanced (12 tests):** DeleteRowLockedWithTrigger, EvaluateWhereWithSubquery, EvaluateWhereWithExists, InsertLockedWithDefaults, InsertLockedWithExpression, RollbackToSavepointDDL, ApplyOrderByMultiColumn, ApplyOrderByWithNulls, SelectLockedWithQueryCache, ExecuteSelectWithJoinAndGroupByComplex, ApplyOuterQueryWithDistinct, ResolveAggregateInExprWithArithmetic
+- **Engine Advanced (15 tests):** DiskPersistence, LargeDataset, TransactionRollback, ComplexQuery, Joins, Subqueries, Indexes, Constraints, Views, AlterTable, ConcurrencyStress, ForeignKeys, CTEs, WindowFunctions, BackupRestore
 
-**Integration Test Results:** All 25 tests passing
+**Integration Test Results:** All 40 tests passing
 - Concurrent transaction isolation verified
 - FK cascade operations (3-level hierarchy) verified
 - Server max connections enforcement verified
