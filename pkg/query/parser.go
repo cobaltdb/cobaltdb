@@ -980,6 +980,8 @@ func (p *Parser) parsePrimary() (Expression, error) {
 			return nil, err
 		}
 		return &UnaryExpr{Operator: TokenNot, Expr: expr}, nil
+	case TokenMatch:
+		return p.parseMatchAgainst()
 	default:
 		// Allow keywords to be used as identifiers (column names)
 		// e.g., a column named "text", "date", "key", "status", etc.
@@ -1030,6 +1032,72 @@ func (p *Parser) parseExistsExpr(not bool) (Expression, error) {
 	}
 
 	return &ExistsExpr{Subquery: subquery, Not: not}, nil
+}
+
+// parseMatchAgainst parses MATCH (col1, col2, ...) AGAINST ('pattern')
+func (p *Parser) parseMatchAgainst() (Expression, error) {
+	p.advance() // consume MATCH
+
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, err
+	}
+
+	// Parse column list
+	var columns []Expression
+	for {
+		col, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		columns = append(columns, col)
+
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(TokenAgainst); err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, err
+	}
+
+	// Parse search pattern
+	pattern, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+
+	// Optional: IN BOOLEAN MODE or IN NATURAL LANGUAGE MODE
+	mode := ""
+	if p.match(TokenIn) {
+		if p.match(TokenBoolean) {
+			if _, err := p.expect(TokenMode); err != nil {
+				return nil, err
+			}
+			mode = "BOOLEAN MODE"
+		} else if p.match(TokenNatural) {
+			if _, err := p.expect(TokenLanguage); err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(TokenMode); err != nil {
+				return nil, err
+			}
+			mode = "NATURAL LANGUAGE MODE"
+		}
+	}
+
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, err
+	}
+
+	return &MatchExpr{Columns: columns, Pattern: pattern, Mode: mode}, nil
 }
 
 // parseCaseExpr parses a CASE expression

@@ -254,7 +254,7 @@
 | **INSTEAD OF triggers** | ✅ 100% | 85% | Fully supported on views |
 | **Subqueries in SELECT** | ✅ 100% | 90% | Scalar and correlated subqueries fully supported |
 | **Materialized Views** | ✅ 100% | 90% | CREATE, DROP, REFRESH, QUERY fully supported |
-| **Full-Text Search** | ⚠️ 70% | 65% | MATCH/AGAINST basic level |
+| **Full-Text Search** | ✅ 100% | 90% | CREATE FULLTEXT INDEX, MATCH/AGAINST queries |
 | **Table Partitioning** | ❌ 0% | 0% | Not yet supported |
 | **Stored Procedures** | ⚠️ 50% | 40% | CREATE PROCEDURE/CALL limited |
 

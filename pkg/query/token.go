@@ -101,6 +101,8 @@ const (
 	TokenReal
 	TokenBlob
 	TokenBoolean
+	TokenLanguage
+	TokenMode
 	TokenJSON
 	TokenDate
 	TokenTimestamp
@@ -343,6 +345,8 @@ var keywords = map[string]TokenType{
 	"BLOB":      TokenBlob,
 	"BOOLEAN":   TokenBoolean,
 	"BOOL":      TokenBoolean,
+	"LANGUAGE":  TokenLanguage,
+	"MODE":      TokenMode,
 	"JSON":      TokenJSON,
 	"DATE":      TokenDate,
 	"TIMESTAMP": TokenTimestamp,

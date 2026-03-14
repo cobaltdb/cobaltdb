@@ -148,6 +148,8 @@ func (ctx *EvalContext) evaluate(expr query.Expression) (interface{}, error) {
 			return !exists, nil
 		}
 		return exists, nil
+	case *query.MatchExpr:
+		return evaluateMatchExpr(c, row, columns, e, args)
 	case *query.UnaryExpr:
 		val, err := evaluateExpression(c, row, columns, e.Expr, args)
 		if err != nil {
@@ -1060,4 +1062,132 @@ func toFloat64(v interface{}) (float64, bool) {
 	default:
 		return 0, false
 	}
-}
+}
+
+// evaluateMatchExpr evaluates MATCH ... AGAINST for full-text search
+func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.MatchExpr, args []interface{}) (interface{}, error) {
+	// Get the pattern value
+	patternVal, err := evaluateExpression(c, row, columns, expr.Pattern, args)
+	if err != nil {
+		return nil, err
+	}
+	if patternVal == nil {
+		return false, nil
+	}
+	pattern := fmt.Sprintf("%v", patternVal)
+	
+
+	// Tokenize the search pattern into words
+	searchWords := tokenize(pattern)
+	if len(searchWords) == 0 {
+		return false, nil
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Try to find an FTS index that covers the columns in the MATCH expression
+	for _, ftsIdx := range c.ftsIndexes {
+		// Check if this FTS index matches the expression columns
+		if len(expr.Columns) != len(ftsIdx.Columns) {
+			continue
+		}
+
+		// Check column match
+		colsMatch := true
+		for i, colExpr := range expr.Columns {
+			switch col := colExpr.(type) {
+			case *query.Identifier:
+				if strings.ToLower(col.Name) != strings.ToLower(ftsIdx.Columns[i]) {
+					colsMatch = false
+					break
+				}
+			case *query.QualifiedIdentifier:
+				if strings.ToLower(col.Column) != strings.ToLower(ftsIdx.Columns[i]) {
+					colsMatch = false
+					break
+				}
+			default:
+				colsMatch = false
+				break
+			}
+		}
+
+		if colsMatch {
+			// Use this FTS index to check if the row matches
+			// Get the text from all indexed columns for this row
+			var allText []string
+			for _, colName := range ftsIdx.Columns {
+				// Find the column in the row
+				for i, col := range columns {
+					if strings.EqualFold(col.Name, colName) && i < len(row) {
+						if row[i] != nil {
+							allText = append(allText, strings.ToLower(fmt.Sprintf("%v", row[i])))
+						}
+						break
+					}
+				}
+			}
+
+			if len(allText) == 0 {
+				return false, nil
+			}
+
+			// Check if all search words are present in the indexed text
+			// AND logic: all words must be present
+			for _, word := range searchWords {
+				word = strings.ToLower(word)
+				found := false
+				// Check if this word is in the FTS index
+				if rowsWithWord, exists := ftsIdx.Index[word]; exists && len(rowsWithWord) > 0 {
+					// Word exists in index, now check if it's in this row's text
+					for _, text := range allText {
+						if strings.Contains(text, word) {
+							found = true
+							break
+						}
+					}
+				}
+				if !found {
+					return false, nil // Word not found, row doesn't match
+				}
+			}
+			return true, nil // All words found
+		}
+	}
+
+	// No matching FTS index found - do simple text search on the columns
+	// Get text from all specified columns
+	var allText []string
+	for _, colExpr := range expr.Columns {
+		colVal, err := evaluateExpression(c, row, columns, colExpr, args)
+		if err != nil {
+			continue
+		}
+		if colVal != nil {
+			allText = append(allText, strings.ToLower(fmt.Sprintf("%v", colVal)))
+		}
+	}
+
+	if len(allText) == 0 {
+		return false, nil
+	}
+
+	// Check if all search words are present
+	for _, word := range searchWords {
+		word = strings.ToLower(word)
+		found := false
+		for _, text := range allText {
+			if strings.Contains(text, word) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
