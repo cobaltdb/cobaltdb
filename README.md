@@ -2,10 +2,10 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go Version">
-  <img src="https://img.shields.io/badge/Version-0.2.20-blue?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/Version-0.2.21-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
-  <img src="https://img.shields.io/badge/Coverage-91.4%25-green?style=for-the-badge" alt="Test Coverage">
+  <img src="https://img.shields.io/badge/Coverage-92.8%25-green?style=for-the-badge" alt="Test Coverage">
 </p>
 
 <p align="center">
@@ -752,20 +752,20 @@ go run cmd/demo/main.go
 | `pkg/protocol` | 95.1% | ✅ |
 | `pkg/metrics` | 94.8% | ✅ |
 | `pkg/wire` | 94.7% | ✅ |
-| `pkg/txn` | 93.9% | ✅ |
+| `pkg/txn` | 93.5% | ✅ |
 | `pkg/security` | 91.9% | ✅ |
 | `pkg/audit` | 90.2% | ✅ |
-| `pkg/engine` | 88.6% | ✅ |
+| `pkg/engine` | 89.2% | ✅ |
 | `pkg/logger` | 88.7% | ✅ |
-| `pkg/btree` | 88.4% | ✅ |
-| `pkg/storage` | 87.8% | ✅ |
-| `pkg/query` | 84.4% | ✅ |
-| `pkg/server` | 83.9% | ✅ |
-| `pkg/catalog` | 78.2% | ✅ |
-| **Total** | **91.4%** | ✅ |
+| `pkg/btree` | 92.6% | ✅ |
+| `pkg/storage` | 92.0% | ✅ |
+| `pkg/query` | 87.7% | ✅ |
+| `pkg/server` | 85.6% | ✅ |
+| `pkg/catalog` | 80.2% | ✅ |
+| **Total** | **92.8%** | ✅ |
 
 > 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
-> Combined coverage from 5,000+ test functions across 54+ coverage boost test packages (350+ test files, 138 integration tests).
+> Combined coverage from 600+ unit tests and 200+ integration tests across 40+ integration test files.
 
 ---
 
@@ -773,13 +773,14 @@ go run cmd/demo/main.go
 
 | Document | Description |
 |----------|-------------|
-| [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) | **Production deployment guide, security checklist, benchmarks** |
-| [TECHNICAL_ARCHITECTURE.md](TECHNICAL_ARCHITECTURE.md) | **Detailed architecture, data flow, performance characteristics** |
 | [CHANGELOG.md](CHANGELOG.md) | Version history, all changes |
-| [docs/PRODUCTION_FEATURES.md](docs/PRODUCTION_FEATURES.md) | **Production features guide (Circuit Breaker, Retry, Rate Limiting)** |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design & components |
+| [COVERAGE_GUIDE.md](COVERAGE_GUIDE.md) | Test coverage analysis and targets |
+| [docs/PRODUCTION.md](docs/PRODUCTION.md) | **Production features guide (Circuit Breaker, Retry, Rate Limiting)** |
+| [docs/ARCHITECTURE_FULL.md](docs/ARCHITECTURE_FULL.md) | System design & components |
 | [docs/API.md](docs/API.md) | Go SDK documentation |
 | [docs/SQL.md](docs/SQL.md) | Complete SQL syntax |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Performance benchmarks |
+| [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) | Getting started guide |
 
 ---
 
