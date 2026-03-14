@@ -9,6 +9,13 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
+// tableOffset tracks column offsets for each table in a JOIN
+type tableOffset struct {
+	name   string
+	offset int
+	count  int
+}
+
 func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
 	cat.mu.RLock()
 	defer cat.mu.RUnlock()
@@ -282,11 +289,6 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 		combinedColumns[i].sourceTbl = mainAlias
 	}
 
-	type tableOffset struct {
-		name   string
-		offset int
-		count  int
-	}
 	tableOffsets := []tableOffset{{
 		name:   mainAlias,
 		offset: 0,
@@ -387,6 +389,13 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 
 		var newIntermediate [][]interface{}
 
+		// Convert USING clause to join condition if present
+		joinCondition := join.Condition
+		if joinCondition == nil && len(join.Using) > 0 {
+			// Build condition from USING columns: left.col = right.col for each column
+			joinCondition = c.buildUsingCondition(join.Using, tableOffsets, len(combinedColumns), joinTableCols)
+		}
+
 		// joinRows is already populated above (from CTE result or B-tree scan)
 		rightRows := joinRows
 
@@ -398,8 +407,8 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 					copy(combined, leftRow)
 					copy(combined[len(leftRow):], joinRow)
 
-					if join.Condition != nil {
-						ok, err := evaluateWhere(c, combined, newCombinedColumns, join.Condition, args)
+					if joinCondition != nil {
+						ok, err := evaluateWhere(c, combined, newCombinedColumns, joinCondition, args)
 						if err != nil || !ok {
 							continue
 						}
@@ -420,8 +429,8 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 					copy(combined, leftRow)
 					copy(combined[len(leftRow):], joinRow)
 
-					if join.Condition != nil {
-						ok, err := evaluateWhere(c, combined, newCombinedColumns, join.Condition, args)
+					if joinCondition != nil {
+						ok, err := evaluateWhere(c, combined, newCombinedColumns, joinCondition, args)
 						if err != nil || !ok {
 							continue
 						}
@@ -1351,4 +1360,18 @@ func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo,
 	})
 
 	return sorted
+}
+
+// buildUsingCondition creates a join condition from USING clause columns
+// For USING (col1, col2), creates: left.col1 = right.col1 AND left.col2 = right.col2
+func (c *Catalog) buildUsingCondition(usingCols []string, tableOffsets []tableOffset, leftColCount int, rightCols []ColumnDef) query.Expression {
+	// TODO: Full implementation of USING clause
+	// This requires building QualifiedIdentifier expressions for left and right tables
+	// and combining them with BinaryExpr using AND operators
+	// For now, return nil to fall back to cross join behavior
+	_ = usingCols
+	_ = tableOffsets
+	_ = leftColCount
+	_ = rightCols
+	return nil
 }

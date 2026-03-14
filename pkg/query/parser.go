@@ -446,7 +446,7 @@ func (p *Parser) parseJoin() (*JoinClause, error) {
 	}
 	join.Table = table
 
-	// ON condition (optional for CROSS JOIN)
+	// ON or USING condition (optional for CROSS JOIN)
 	if join.Type == TokenCross {
 		// CROSS JOIN doesn't require ON condition, but allow it
 		if p.current().Type == TokenOn {
@@ -457,6 +457,20 @@ func (p *Parser) parseJoin() (*JoinClause, error) {
 			}
 			join.Condition = condition
 		}
+	} else if p.current().Type == TokenUsing {
+		// USING (col1, col2, ...)
+		p.advance() // consume USING
+		if _, err := p.expect(TokenLParen); err != nil {
+			return nil, err
+		}
+		columns, err := p.parseIdentifierList()
+		if err != nil {
+			return nil, fmt.Errorf("USING clause: %w", err)
+		}
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
+		join.Using = columns
 	} else {
 		if _, err := p.expect(TokenOn); err != nil {
 			return nil, err

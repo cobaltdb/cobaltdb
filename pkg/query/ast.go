@@ -335,6 +335,7 @@ type JoinClause struct {
 	Type      TokenType // TokenInner, TokenLeft, TokenRight, TokenOuter
 	Table     *TableRef
 	Condition Expression
+	Using     []string // Column names for USING clause (alternative to ON)
 }
 
 // OrderByExpr represents an ORDER BY expression
