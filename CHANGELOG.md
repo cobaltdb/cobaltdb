@@ -5,7 +5,7 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v2.2.0] - 2026-03-08
+## [v0.2.20] - 2026-03-08
 
 ### 🎉 Major Production Release - Enterprise Security & Resilience
 
@@ -155,7 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [v2.1.1] - 2026-03-07
+## [v0.2.11] - 2026-03-07
 
 ### Production Hardening - Critical Bug Fixes
 
@@ -218,7 +218,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [v2.1.0] - 2026-03-06
+## [v0.2.10] - 2026-03-06
 
 ### Added
 - **Comprehensive E-Commerce Test Suite**: 16 real-world e-commerce scenarios
@@ -258,7 +258,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > Note: Coverage percentage decreased due to new feature additions without full test coverage yet.
 
-## [v2.0.0] - 2026-03-03
+## [v0.2.0] - 2026-03-03
 
 ### Added
 - **Common Table Expressions (CTE)**: WITH clause support for recursive and non-recursive queries
@@ -309,7 +309,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Full-Text Search**: Text indexing and search
 - **Materialized Views**: Cached query results
 
-## [v1.5.1] - 2026-03-03
+## [v0.1.51] - 2026-03-03
 
 ### Added
 - **Comprehensive Test Coverage Improvements**: 77% overall coverage achieved
@@ -348,7 +348,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **User Management**: Authentication system with permissions
 - **MySQL Protocol**: Wire-compatible protocol implementation
 
-## [v1.5.0] - 2026-03-02
+## [v0.1.50] - 2026-03-02
 
 ### Added
 - **Full JSON Support**: Complete JSON manipulation functions
@@ -386,7 +386,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Index usage optimization for WHERE clauses
   - Query plan caching for better performance
 
-## [v1.4.0] - 2026-03-01
+## [v0.1.40] - 2026-03-01
 
 ### Added
 - **Additional SQL Functions**: Extended function library for string, numeric, and date operations
@@ -411,7 +411,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Reduced parsing overhead for repeated queries
   - Cache size limit to prevent memory issues
 
-## [v1.3.0] - 2026-03-01
+## [v0.1.30] - 2026-03-01
 
 ### Added
 - **VIEW Support**: Virtual tables based on saved queries
@@ -432,7 +432,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Procedure storage in catalog
   - CALL statement parsing
 
-## [v1.2.0] - 2026-03-01
+## [v0.1.20] - 2026-03-01
 
 ### Added
 - **LEFT/RIGHT JOIN Support**: Extended JOIN functionality beyond INNER JOIN
@@ -461,7 +461,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - DATE type
   - TIMESTAMP type
 
-## [v1.1.0] - 2026-03-01
+## [v0.1.10] - 2026-03-01
 
 ### Added
 - **WAL (Write-Ahead Log)**: Complete crash recovery support
@@ -485,7 +485,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - WAL checkpoint on database close
   - Better durability guarantees
 
-## [v1.0.1] - 2026-03-01
+## [v0.1.1] - 2026-03-01
 
 ### Added
 - **Aggregate Functions**: Complete support for:
@@ -516,7 +516,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **HAVING**: Filter grouped results
   - Works with all aggregate functions in HAVING clause
 
-## [v1.0.0] - 2026-03-01
+## [v0.1.0] - 2026-03-01
 
 ### Added
 - **SQL Parser**: Full SQL parser with support for:

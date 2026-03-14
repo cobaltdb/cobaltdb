@@ -2,7 +2,7 @@
 
 ## All Production Features Completed!
 
-**Version:** v2.2.0 Final
+**Version:** v0.2.20 Final
 **Date:** 2026-03-08
 **Status:** ALL TESTS PASSING
 
@@ -139,7 +139,7 @@ spec:
     spec:
       containers:
       - name: cobaltdb
-        image: cobaltdb:v2.2.0
+        image: cobaltdb:v0.2.20
         ports:
         - containerPort: 4200
         - containerPort: 8420  # Health/metrics
@@ -256,7 +256,7 @@ docs/PRODUCTION_FEATURES_ADVANCED.md
 
 ## Result
 
-**CobaltDB v2.2.0** is now a truly production-ready database with the following enterprise-grade features:
+**CobaltDB v0.2.20** is now a truly production-ready database with the following enterprise-grade features:
 
 - Resilience: Circuit breaker, retry, rate limiting
 - Security: SQL injection protection, TLS, encryption, RLS
@@ -270,5 +270,5 @@ docs/PRODUCTION_FEATURES_ADVANCED.md
 ---
 
 **Author:** Claude Code
-**Version:** v2.2.0 Final
+**Version:** v0.2.20 Final
 **Date:** 2026-03-08

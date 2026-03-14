@@ -422,4 +422,4 @@ go test -race ./...
 ---
 
 **Last Updated**: 2026-03-07
-**Architecture Version**: v2.1.0
+**Architecture Version**: v0.2.10

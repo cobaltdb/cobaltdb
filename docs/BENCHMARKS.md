@@ -68,7 +68,7 @@ go build -o cobaltdb-bench ./cmd/cobaltdb-bench
 
 ## Test Coverage Benchmarks
 
-### Current Coverage (v1.5.1)
+### Current Coverage (v0.1.51)
 
 | Package | Coverage | Status |
 |---------|----------|--------|
@@ -92,8 +92,8 @@ go build -o cobaltdb-bench ./cmd/cobaltdb-bench
 
 | Version | Total Coverage | Change |
 |---------|---------------|--------|
-| v1.5.1 | 80.9% | +4.8% |
-| v1.5.0 | 76.1% | - |
+| v0.1.51 | 80.9% | +4.8% |
+| v0.1.50 | 76.1% | - |
 
 ### Running Tests with Coverage
 

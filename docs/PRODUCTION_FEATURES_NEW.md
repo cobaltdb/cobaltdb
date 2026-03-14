@@ -1,6 +1,6 @@
 # CobaltDB Advanced Production Features
 
-## New Advanced Production Features (v2.2.0)
+## New Advanced Production Features (v0.2.20)
 
 ### 1. **Rate Limiter** (`pkg/server/rate_limiter.go`)
 - Token bucket algorithm for traffic control
@@ -195,5 +195,5 @@ CobaltDB now includes the following enterprise features:
 ---
 
 **Author:** Claude Code
-**Version:** v2.2.0
+**Version:** v0.2.20
 **Date:** 2026-03-08

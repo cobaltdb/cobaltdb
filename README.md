@@ -785,7 +785,7 @@ go run cmd/demo/main.go
 
 ## 🛣️ Roadmap
 
-### ✅ Completed Features (v1.5.1)
+### ✅ Completed Features (v0.1.51)
 
 - [x] **SQL Support** - SELECT, INSERT, UPDATE, DELETE with JOINs, GROUP BY, ORDER BY, LIMIT
 - [x] **Window Functions** - ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE
@@ -807,7 +807,7 @@ go run cmd/demo/main.go
 - [x] **VACUUM** - Database compaction and storage reclamation
 - [x] **ANALYZE** - Table statistics collection for query optimization
 
-### ✅ Production Hardening (v2.1.1)
+### ✅ Production Hardening (v0.2.11)
 
 - [x] **Panic Recovery** - Server survives any query panic
 - [x] **Resource Leak Fixes** - All iterators properly closed
@@ -815,7 +815,7 @@ go run cmd/demo/main.go
 - [x] **Transaction Fixes** - Connection leak plugged
 - [x] **Data Corruption Fix** - Free list loading corrected
 
-### ✅ Enterprise Production Features (v2.2.0)
+### ✅ Enterprise Production Features (v0.2.20)
 
 - [x] **Circuit Breaker** - Three-state breaker with automatic recovery
 - [x] **Retry Logic** - Exponential backoff with 4 policies

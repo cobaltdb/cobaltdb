@@ -2,7 +2,7 @@
 
 ## Overview
 
-CobaltDB v2.2.0 includes enterprise-grade production features designed for high-availability, resilience, and observability in production environments.
+CobaltDB v0.2.20 includes enterprise-grade production features designed for high-availability, resilience, and observability in production environments.
 
 ## Table of Contents
 

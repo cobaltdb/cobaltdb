@@ -1,6 +1,6 @@
 # CobaltDB - Complete Production Ready Status
 
-**Version:** v2.2.0
+**Version:** v0.2.20
 **Date:** 2026-03-08
 **Status:** ✅ PRODUCTION READY
 
@@ -365,7 +365,7 @@ cobaltdb-cli restore --target-time "2024-01-01 12:00:00"
 
 ## 🎊 Sonuç
 
-**CobaltDB v2.2.0 tamamen production-ready'dir.**
+**CobaltDB v0.2.20 tamamen production-ready'dir.**
 
 Tüm bileşenler:
 - ✅ Geliştirildi

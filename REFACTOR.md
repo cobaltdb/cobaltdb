@@ -1,4 +1,4 @@
-# CobaltDB v2.3.0 Production Hardening Plan
+# CobaltDB v0.2.30 Production Hardening Plan
 
 > Tarih: 2026-03-12
 > Durum: Toplam 45 fix, 4 faz, tahmini ~3500 satir degisiklik

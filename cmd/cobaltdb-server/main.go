@@ -90,7 +90,7 @@ func main() {
 		log.Fatalf("Failed to open database: %v", err)
 	}
 
-	log.Printf("CobaltDB v2.2.0 Production Server starting...")
+	log.Printf("CobaltDB v0.2.20 Production Server starting...")
 	if !*inMemory {
 		log.Printf("Data directory: %s", *dataDir)
 	} else {

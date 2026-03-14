@@ -1,7 +1,7 @@
 # CobaltDB Optimization Summary
 
 **Date:** 2026-03-08
-**Version:** v2.2.0+optimizations
+**Version:** v0.2.20+optimizations
 **Status:** ✅ All Optimizations Complete
 
 ---
@@ -247,7 +247,7 @@ All identified performance issues have been resolved:
 ✅ **Resource Limits:** Configurable cache sizes
 ✅ **Memory Safety:** No unbounded growth
 
-**CobaltDB v2.2.0 is now optimized for production workloads.**
+**CobaltDB v0.2.20 is now optimized for production workloads.**
 
 ---
 
