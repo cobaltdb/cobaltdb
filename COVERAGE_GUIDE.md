@@ -448,21 +448,27 @@ go test ./pkg/catalog -cover -count=1 | grep coverage
 - Null types: NullString, NullInt64, NullTime, JSON - 100%
 - Config/DSN parsing - 87%+
 
-### 🟡 Catalog: 80% maintained, 80+ new tests added
+### 🟡 Catalog: 80% → 80.1%, 550+ coverage tests added
 
 **Files Added:**
 - `pkg/catalog/z_coverage_boost90_test.go` - Trigger and FK tests
 - `pkg/catalog/coverage_boost91_test.go` - Complex SQL tests
 - `pkg/catalog/coverage_boost92_test.go` - RLS and FK deep tests
+- `pkg/catalog/coverage_boost93_test.go` - JOIN+GROUP BY, nested savepoints
+- `pkg/catalog/coverage_boost94_test.go` - Undo logs, multi-row insert
 
 **Functions Covered:**
-- deleteRowLocked with triggers/FK CASCADE
-- evaluateWhere with EXISTS/IN/CASE
-- insertLocked with AUTOINCREMENT
+- deleteRowLocked with triggers/FK CASCADE/RESTRICT/SET NULL
+- evaluateWhere with EXISTS/IN/CASE/ALL/ANY/subqueries
+- insertLocked with AUTOINCREMENT/expressions/multi-row
 - applyOrderBy multi-column
 - selectLocked with cache
-- executeSelectWithJoinAndGroupBy
-- RollbackToSavepoint with DDL
+- executeSelectWithJoinAndGroupBy complex multi-table
+- RollbackToSavepoint with DDL, nested savepoints
+- RLS filter and check operations
+- FK cascade with multiple children tables
+
+**Total Coverage Tests:** 556+ TestCoverage_* functions
 
 ### 🟡 Server: 84.2% → 84.4%
 
