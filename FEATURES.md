@@ -101,6 +101,8 @@
 | `JOIN ... USING` | ✅ 100% | 90% | USING (col1, col2) syntax |
 | `NATURAL JOIN` | ✅ 100% | 90% | Automatic column matching |
 | `NATURAL LEFT JOIN` | ✅ 100% | 88% | Natural left join |
+| `RIGHT JOIN` / `RIGHT OUTER JOIN` | ✅ 100% | 88% | Right join |
+| `FULL OUTER JOIN` | ✅ 100% | 85% | Full outer join |
 | Multiple JOINs | ✅ 100% | 85% | Multiple JOINs |
 | Self JOIN | ✅ 100% | 80% | Self join |
 
@@ -246,8 +248,8 @@
 | **DELETE with USING** | ✅ 100% | 90% | USING syntax fully supported |
 | **UPDATE with JOIN** | ✅ 100% | 90% | FROM clause fully supported |
 | **NATURAL JOIN** | ✅ 100% | 90% | Fully supported |
-| **RIGHT JOIN** | ❌ 0% | 0% | Not supported |
-| **FULL OUTER JOIN** | ❌ 0% | 0% | Not supported |
+| **RIGHT JOIN** | ✅ 100% | 88% | Fully supported |
+| **FULL OUTER JOIN** | ✅ 100% | 85% | Fully supported |
 | **Views with aggregates** | ✅ 100% | 90% | GROUP BY, HAVING, DISTINCT, aggregates work |
 | **INSTEAD OF triggers** | ❌ 0% | 0% | Only BEFORE/AFTER supported |
 | **Subqueries in SELECT** | ⚠️ 80% | 75% | Scalar subqueries work, correlated limited |
@@ -298,7 +300,7 @@
 2. **Transactions** - BEGIN/COMMIT/ROLLBACK
 3. **Indexes** - B+Tree, UNIQUE, composite
 4. **Constraints** - PK, FK, NOT NULL, UNIQUE, CHECK
-5. **Joins** - INNER, LEFT, CROSS, NATURAL
+5. **Joins** - INNER, LEFT, RIGHT, CROSS, NATURAL, FULL OUTER
 6. **Aggregates** - GROUP BY, COUNT, SUM, AVG, MIN, MAX
 7. **Window Functions** - ROW_NUMBER, RANK, LAG, LEAD
 8. **JSON** - JSON_EXTRACT, JSON_SET, JSON_VALID
@@ -314,8 +316,7 @@
 
 ### ❌ Do Not Use (Yet)
 
-1. **RIGHT/FULL JOIN** - No implementation
-2. **Table Partitioning** - No support yet
+1. **Table Partitioning** - No support yet
 4. **INSTEAD OF triggers** - Only BEFORE/AFTER works
 
 ---
