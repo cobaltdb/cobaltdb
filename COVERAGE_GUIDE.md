@@ -1,0 +1,433 @@
+# CobaltDB Test Coverage Guide
+
+**Generated:** 2026-03-14
+
+## Executive Summary
+
+| Priority | Package | Current | Target | Status |
+|----------|---------|---------|--------|--------|
+| P0 (Critical) | sdk/go | 46.2% | 80% | 🔴 Major Gap |
+| P1 (High) | pkg/catalog | 80.0% | 90% | 🟡 Needs Improvement |
+| P1 (High) | pkg/server | 84.2% | 90% | 🟡 Needs Improvement |
+| P2 (Medium) | pkg/engine | 89.4% | 95% | 🟢 Almost There |
+| P2 (Medium) | pkg/query | 87.5% | 95% | 🟢 Almost There |
+| P3 (Low) | cmd/* | <20% | N/A | ⚪ Out of Scope |
+
+---
+
+## P0: SDK/Go (46.2% → 80%)
+
+**Critical Gap:** Database driver interface implementation largely untested.
+
+### Untested Functions (0% Coverage)
+
+| Function | File | Line | Purpose | Test Priority |
+|----------|------|------|---------|---------------|
+| `ExecContext` | cobaltdb.go:367 | Prepared statement exec | 🔴 Critical |
+| `QueryContext` | cobaltdb.go:382 | Prepared statement query | 🔴 Critical |
+| `NumInput` | cobaltdb.go:407 | Driver interface | 🟡 Medium |
+| `stmt.Exec` | cobaltdb.go:411 | Statement execution | 🔴 Critical |
+| `stmt.Query` | cobaltdb.go:419 | Statement query | 🔴 Critical |
+| `tx.Commit` | cobaltdb.go:433 | Transaction commit | 🔴 Critical |
+| `result.LastInsertId` | cobaltdb.go:457 | Result metadata | 🟡 Medium |
+| `result.RowsAffected` | cobaltdb.go:461 | Result metadata | 🟡 Medium |
+| `rows.Columns` | cobaltdb.go:472 | Result set columns | 🟡 Medium |
+| `rows.Close` | cobaltdb.go:479 | Resource cleanup | 🟡 Medium |
+| `rows.Next` | cobaltdb.go:487 | Row iteration | 🔴 Critical |
+| `rows.Scan` | cobaltdb.go:541 | Value scanning | 🔴 Critical |
+| `rows.Scan` (nullable) | cobaltdb.go:576 | Nullable scanning | 🔴 Critical |
+| `rows.Value` | cobaltdb.go:598 | Raw value access | 🟡 Medium |
+| `ColumnTypeDatabaseTypeName` | cobaltdb.go:519 | Type metadata | 🟢 Low |
+| `namedValues` | cobaltdb.go:528 | Argument conversion | 🟡 Medium |
+| `NullString.Scan` | cobaltdb.go:612 | Nullable string | 🟡 Medium |
+| `NullInt64.Scan` | cobaltdb.go:638 | Nullable int | 🟡 Medium |
+| `NullInt64.Value` | cobaltdb.go:659 | Driver value | 🟡 Medium |
+| `NullTime.Scan` | cobaltdb.go:682 | Nullable time | 🟡 Medium |
+| `driverConn.Release` | cobaltdb.go:687 | Conn pool | 🟢 Low |
+| `IsolationLevel.String` | cobaltdb.go:709 | Debug string | 🟢 Low |
+
+### Recommended Tests
+
+1. **TestStmtExecution** - Test prepared statement Exec/Query paths
+2. **TestTransactionFlow** - Begin/Commit/Rollback lifecycle
+3. **TestResultScanning** - Scan various types (string, int, null, time)
+4. **TestRowIteration** - Next/Close patterns
+5. **TestContextCancellation** - Timeout scenarios
+
+---
+
+## P1: Catalog (80.0% → 90%)
+
+**Functions Below 70% Coverage (Priority Order):**
+
+### 1. deleteRowLocked (54.5%) - CRITICAL
+**File:** catalog_delete.go:217
+
+**Uncovered Paths:**
+- Trigger firing after delete
+- Undo log generation
+- Foreign key cascade operations
+- Index cleanup
+
+**Test Scenarios:**
+```go
+// Test 1: Delete with BEFORE/AFTER triggers
+// Test 2: Delete with FK CASCADE
+// Test 3: Delete with FK SET NULL
+// Test 4: Delete within transaction (undo log)
+// Test 5: Delete with unique index cleanup
+```
+
+### 2. evaluateWhere (57.1%) - CRITICAL
+**File:** catalog_core.go:2739
+
+**Uncovered Paths:**
+- Subquery evaluation in WHERE
+- EXISTS/NOT EXISTS
+- IN with subquery
+- CASE expression in WHERE
+- Complex boolean combinations
+
+**Test Scenarios:**
+```go
+// Test 1: WHERE with correlated subquery
+// Test 2: WHERE EXISTS (SELECT ...)
+// Test 3: WHERE column IN (SELECT ...)
+// Test 4: WHERE CASE WHEN ... THEN ... END
+// Test 5: WHERE (a OR b) AND (c OR d) - complex nesting
+```
+
+### 3. resolveAggregateInExpr (57.4%) - HIGH
+**File:** catalog_core.go:2211
+
+**Uncovered Paths:**
+- Arithmetic with aggregates: SUM(a) + SUM(b)
+- HAVING with multiple aggregates
+- Binary expressions between aggregates
+
+**Test Scenarios:**
+```go
+// Test 1: HAVING SUM(a) + SUM(b) > 100
+// Test 2: HAVING COUNT(*) * AVG(x) > 1000
+// Test 3: HAVING MAX(a) - MIN(a) > 10 (range check)
+```
+
+### 4. applyOuterQuery (58.9%) - HIGH
+**File:** catalog_core.go:1476
+
+**Uncovered Paths:**
+- Views with DISTINCT
+- Views with GROUP BY + HAVING
+- Views with window functions
+- Complex nested views
+
+**Test Scenarios:**
+```go
+// Test 1: SELECT * FROM (SELECT DISTINCT ...) WHERE ...
+// Test 2: SELECT * FROM view_with_group_by WHERE aggregate_col > x
+// Test 3: Nested views: view1 -> view2 -> base table
+// Test 4: View with RANK() and WHERE on rank
+```
+
+### 5. RLS Internal Functions (60%) - MEDIUM
+**Files:** catalog_rls.go:138,151,164
+
+- checkRLSForInsertInternal
+- checkRLSForUpdateInternal
+- checkRLSForDeleteInternal
+
+**Test Scenarios:**
+```go
+// Test 1: INSERT with RLS policy check
+// Test 2: UPDATE with RLS (OLD/NEW row visibility)
+// Test 3: DELETE with RLS (row ownership)
+// Test 4: RLS with USING expressions
+// Test 5: RLS with WITH CHECK expressions
+```
+
+### 6. evaluateLike (60.7%) - MEDIUM
+**File:** catalog_core.go:2864
+
+**Uncovered Patterns:**
+- Escape sequences
+- Multi-character wildcards at start/end
+- Pattern with special regex chars
+
+**Test Scenarios:**
+```go
+// Test 1: LIKE '%test%' (contains)
+// Test 2: LIKE 'test%' (starts with)
+// Test 3: LIKE '%test' (ends with)
+// Test 4: LIKE 't__t' (single char wildcards)
+// Test 5: LIKE with escape character
+```
+
+### 7. Load (61.1%) - MEDIUM
+**File:** catalog_maintenance.go:54
+
+**Uncovered Paths:**
+- Loading with corrupted metadata
+- Loading empty catalog
+- Version migration
+
+### 8. insertLocked (61.2%) - HIGH
+**File:** catalog_insert.go:23
+
+**Uncovered Paths:**
+- DEFAULT values
+- AUTOINCREMENT overflow
+- Multi-row insert with partial failures
+- Insert with expression evaluation
+
+### 9. RollbackToSavepoint (62.5%) - MEDIUM
+**File:** catalog_txn.go:378
+
+**Uncovered Paths:**
+- Nested savepoint rollback
+- DDL rollback (CREATE/DROP/ALTER)
+- Index changes rollback
+
+### 10. valuesEqual (63.3%) - LOW
+**File:** foreign_key.go:516
+
+Used in FK cascade operations.
+
+### 11. applyOrderBy (63.5%) - MEDIUM
+**File:** catalog_select.go:1261
+
+**Uncovered Paths:**
+- Multi-column ORDER BY
+- ORDER BY with NULLS FIRST/LAST
+- ORDER BY expression
+
+### 12. selectLocked (64.4%) - HIGH
+**File:** catalog_core.go:596
+
+**Uncovered Paths:**
+- Query cache miss
+- Query cache hit
+- Complex JOIN plans
+- Subquery optimization
+
+### 13. executeSelectWithJoinAndGroupBy (66.0%) - HIGH
+**File:** catalog_select.go:661
+
+Complex function combining JOIN + GROUP BY.
+
+**Test Scenarios:**
+```go
+// Test 1: JOIN + GROUP BY + HAVING
+// Test 2: Multiple JOINs with GROUP BY
+// Test 3: LEFT JOIN with GROUP BY (NULL handling)
+```
+
+### 14. applyRLSFilterInternal (66.7%) - MEDIUM
+**File:** catalog_rls.go:97
+
+RLS filtering logic.
+
+### 15. deleteWithUsingLocked (67.6%) - MEDIUM
+**File:** catalog_update.go:629
+
+DELETE USING syntax support.
+
+### 16. AlterTableDropColumn (67.9%) - MEDIUM
+**File:** catalog_ddl.go:361
+
+**Uncovered:**
+- Drop column with index
+- Drop column with constraints
+- Drop last non-PK column
+
+### 17. evaluateHaving (68.2%) - MEDIUM
+**File:** catalog_core.go:2161
+
+**Uncovered:**
+- HAVING with boolean expressions
+- HAVING with subqueries
+
+### 18. updateRowSlice (69.2%) - LOW
+**File:** foreign_key.go:428
+
+FK update helper.
+
+### 19. countRows (69.2%) - LOW
+**File:** stats.go:126
+
+Table row counting.
+
+### 20. AlterTableRename (70.0%) - MEDIUM
+**File:** catalog_ddl.go:513
+
+Table renaming with constraints.
+
+### 21. CommitTransaction (70.0%) - MEDIUM
+**File:** catalog_txn.go:89
+
+**Uncovered:**
+- Commit with pending FK checks
+- Commit with deferred constraints
+
+### 22. JSON Set (70.7%) - MEDIUM
+**File:** json_utils.go:249
+
+JSON path set operations.
+
+### 23. AlterTableRenameColumn (71.0%) - MEDIUM
+**File:** catalog_ddl.go:582
+
+Column renaming.
+
+### 24. applyGroupByOrderBy (71.1%) - MEDIUM
+**File:** catalog_aggregate.go:568
+
+GROUP BY + ORDER BY combination.
+
+### 25. ExecuteCTE (71.2%) - MEDIUM
+**File:** catalog_cte.go:9
+
+Common Table Expressions.
+
+### 26. RollbackTransaction (71.2%) - MEDIUM
+**File:** catalog_txn.go:124
+
+Transaction rollback paths.
+
+### 27. storeIndexDef (71.4%) - LOW
+**File:** catalog_index.go:94
+
+Index definition storage.
+
+### 28. Save (71.4%) - MEDIUM
+**File:** catalog_maintenance.go:22
+
+Catalog persistence.
+
+---
+
+## P1: Server (84.2% → 90%)
+
+### Critical Functions Below 50%:
+
+| Function | File | Coverage | Focus Area |
+|----------|------|----------|------------|
+| setupSignalHandling | lifecycle.go:254 | 0% | Signal handling - hard to unit test |
+| Wait | production.go:156 | 0% | Process lifecycle |
+| ListenOnListener | server.go:144 | 0% | Network listener |
+| acceptLoop | server.go:150 | 18.6% | Connection acceptance |
+| Listen | server.go:119 | 46.2% | Server startup |
+
+### Recommended Approach:
+These functions require integration tests. Create:
+
+1. **TestServerLifecycle** - Start/Stop/Restart
+2. **TestConnectionHandling** - Multiple concurrent clients
+3. **TestGracefulShutdown** - Signal handling
+
+### Functions 60-80% Coverage:
+
+| Function | File | Coverage | Gap |
+|----------|------|----------|-----|
+| handleDBStats | admin.go:403 | 61.5% | Error handling paths |
+| Handle | server.go:279 | 64.3% | Message routing |
+| handleJSONMetrics | admin.go:337 | 66.7% | Metrics format |
+| GenerateClientCert | tls.go:255 | 67.5% | Cert generation |
+| sendMessage | server.go:509 | 73.5% | Message sending |
+| handleReady | admin.go:206 | 75.0% | Health check |
+| generateSelfSignedCert | tls.go:150 | 75.7% | TLS setup |
+| Stop | admin.go:116 | 78.6% | Shutdown sequence |
+
+---
+
+## P2: Engine (89.4% → 95%)
+
+### Functions Below 80%:
+
+| Function | File | Coverage | Priority |
+|----------|------|----------|----------|
+| Commit | database.go:2194 | 58.3% | 🔴 High |
+| executeVacuum | database.go:1850 | 66.7% | 🟡 Medium |
+| GetMetrics | database.go:2242 | 66.7% | 🟢 Low |
+| execute | database.go:849 | 73.9% | 🟡 Medium |
+| executeSelectWithCTE | database.go:1837 | 75.0% | 🟡 Medium |
+| query | database.go:1107 | 75.8% | 🟡 Medium |
+| loadExisting | database.go:379 | 76.9% | 🟡 Medium |
+| HealthCheck | database.go:2306 | 77.8% | 🟢 Low |
+| RetryWithResult | retry.go:125 | 78.9% | 🟡 Medium |
+| Close | database.go:461 | 79.3% | 🟡 Medium |
+| Exec | database.go:641 | 79.3% | 🟡 Medium |
+| Query | database.go:698 | 79.3% | 🟡 Medium |
+
+---
+
+## P2: Query (87.5% → 95%)
+
+The low coverage functions are primarily `statementNode()` implementations (interface methods). These are tested indirectly through parser tests.
+
+**Real gaps:**
+- Complex expression parsing edge cases
+- Error recovery in parser
+- Tokenizer edge cases
+
+---
+
+## Test Implementation Priority
+
+### Phase 1: SDK Critical Path (46% → 70%)
+1. Test prepared statement execution
+2. Test transaction lifecycle
+3. Test result scanning
+4. Test row iteration
+
+### Phase 2: Catalog Core Functions (80% → 87%)
+1. Test deleteRowLocked with triggers/FK
+2. Test evaluateWhere with subqueries
+3. Test resolveAggregateInExpr
+4. Test applyOuterQuery
+5. Test insertLocked edge cases
+
+### Phase 3: Server Integration (84% → 90%)
+1. Test server lifecycle
+2. Test admin endpoints
+3. Test TLS operations
+4. Test connection handling
+
+### Phase 4: Polish (87% → 95%)
+1. Engine edge cases
+2. Query parser edge cases
+3. Error handling paths
+
+---
+
+## Quick Wins (High Impact, Low Effort)
+
+1. **sdk/go** - Add 5-10 tests for core driver interface → +20-30% coverage
+2. **catalog deleteRowLocked** - Add FK cascade tests → +10% coverage
+3. **catalog evaluateWhere** - Add subquery tests → +10% coverage
+4. **server admin handlers** - Add error case tests → +5% coverage
+
+---
+
+## Coverage Testing Commands
+
+```bash
+# Full project coverage
+go test ./... -coverprofile=coverage.out
+go tool cover -html=coverage.out -o coverage.html
+
+# Specific package with function details
+go test -coverprofile=/tmp/pkg.out ./pkg/catalog
+go tool cover -func=/tmp/pkg.out | sort -k3 -n
+
+# Coverage diff between commits
+go test ./pkg/catalog -cover -count=1 | grep coverage
+```
+
+---
+
+## Notes
+
+- Interface methods (like `statementNode()`) often show 0% but are tested indirectly
+- Error handling paths are generally under-tested
+- Concurrency-related code requires special test patterns
+- Signal handling and network code need integration tests
