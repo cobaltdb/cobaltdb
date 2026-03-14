@@ -41,3 +41,8 @@ temp/
 build/
 
 nul
+
+# Database files
+*.db
+*.wal
+*.db-journal

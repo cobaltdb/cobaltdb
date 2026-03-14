@@ -1,0 +1,17 @@
+run:
+  timeout: 5m
+  skip-dirs:
+    - docs
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+linters-settings:
+  gofmt:
+    simplify: true
