@@ -827,8 +827,8 @@ go run cmd/demo/main.go
 
 ### 📋 Planned Features
 
-- [ ] **v2.5** - Distributed mode, Sharding support
-- [ ] **v3.0** - Cloud-native features, Kubernetes operator
+- [ ] **v0.2.5** - Distributed mode, Sharding support
+- [ ] **v0.3.0** - Cloud-native features, Kubernetes operator
 
 ---
 
