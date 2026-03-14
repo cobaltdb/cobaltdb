@@ -7,8 +7,8 @@
 | Priority | Package | Current | Target | Status |
 |----------|---------|---------|--------|--------|
 | P0 (Critical) | sdk/go | 90.6% | 80% | 🟢 Exceeds Target |
-| P1 (High) | pkg/catalog | 80.0% | 90% | 🟡 Needs Improvement |
-| P1 (High) | pkg/server | 84.2% | 90% | 🟡 Needs Improvement |
+| P1 (High) | pkg/catalog | 80.1% | 90% | 🟡 Needs Improvement |
+| P1 (High) | pkg/server | 84.4% | 90% | 🟡 Needs Improvement |
 | P2 (Medium) | pkg/engine | 89.4% | 95% | 🟢 Almost There |
 | P2 (Medium) | pkg/query | 87.5% | 95% | 🟢 Almost There |
 | P3 (Low) | cmd/* | <20% | N/A | ⚪ Out of Scope |
@@ -431,3 +431,49 @@ go test ./pkg/catalog -cover -count=1 | grep coverage
 - Error handling paths are generally under-tested
 - Concurrency-related code requires special test patterns
 - Signal handling and network code need integration tests
+
+---
+
+## Completed Work (2026-03-14)
+
+### ✅ SDK/Go: 52% → 90.6%
+
+**Files Added/Modified:**
+- `sdk/go/cobaltdb_test.go` - Added comprehensive driver interface tests
+- `sdk/go/cobaltdb_nullable_test.go` - New file for Null type tests
+- `sdk/go/cobaltdb.go` - Fixed `:memory:` database handling
+
+**Coverage Achieved:**
+- Driver interface: Conn, Stmt, Rows, Tx, Result - all 85%+
+- Null types: NullString, NullInt64, NullTime, JSON - 100%
+- Config/DSN parsing - 87%+
+
+### 🟡 Catalog: 80% maintained, 80+ new tests added
+
+**Files Added:**
+- `pkg/catalog/z_coverage_boost90_test.go` - Trigger and FK tests
+- `pkg/catalog/coverage_boost91_test.go` - Complex SQL tests
+- `pkg/catalog/coverage_boost92_test.go` - RLS and FK deep tests
+
+**Functions Covered:**
+- deleteRowLocked with triggers/FK CASCADE
+- evaluateWhere with EXISTS/IN/CASE
+- insertLocked with AUTOINCREMENT
+- applyOrderBy multi-column
+- selectLocked with cache
+- executeSelectWithJoinAndGroupBy
+- RollbackToSavepoint with DDL
+
+### 🟡 Server: 84.2% → 84.4%
+
+**Files Added:**
+- `pkg/server/admin_coverage_boost_test.go` - Admin handler tests
+
+**Functions Covered:**
+- handleDBStats, handleJSONMetrics, handleSystem
+- handleReady, Stop
+
+**Remaining Gaps:**
+- Signal handling (0%) - requires OS integration
+- Network listeners (0-46%) - requires socket testing
+- These need integration tests, not unit tests
