@@ -8,10 +8,10 @@
 |----------|---------|---------|--------|--------|
 | P0 (Critical) | sdk/go | 90.6% | 80% | 🟢 Exceeds Target |
 | P1 (High) | pkg/catalog | 80.2% | 90% | 🟡 Plateaued |
-| P1 (High) | pkg/server | 85.1% | 90% | 🟡 Approaching Target |
+| P1 (High) | pkg/server | 85.6% | 90% | 🟡 Approaching Target |
 | P2 (Medium) | pkg/engine | 89.5% | 95% | 🟢 Almost There |
-| P2 (Medium) | pkg/query | 87.6% | 95% | 🟢 Almost There |
-| P3 (Low) | integration | 13 tests | N/A | 🟢 All Passing |
+| P2 (Medium) | pkg/query | 87.7% | 95% | 🟢 Almost There |
+| P3 (Low) | integration | 40+ tests | N/A | 🟢 All Passing |
 | P3 (Low) | cmd/* | <20% | N/A | ⚪ Out of Scope |
 
 ---
