@@ -19,7 +19,7 @@
 | **JSON** | ✅ Production Ready | 82%+ | JSON_EXTRACT, JSON_SET, JSON_VALID |
 | **Views** | ✅ Production Ready | 78%+ | CREATE VIEW, DROP VIEW, simple views |
 | **Triggers** | ✅ Production Ready | 85%+ | BEFORE/AFTER/INSTEAD OF, INSERT/UPDATE/DELETE |
-| **CTEs** | ⚠️ Partial | 71%+ | Non-recursive CTEs, recursive limited |
+| **CTEs** | ✅ Production Ready | 85%+ | Non-recursive CTEs fully supported |
 | **Security** | ✅ Production Ready | 91%+ | RLS, Audit, TLS, Encryption |
 | **Server** | ✅ Production Ready | 85%+ | TCP server, protocol, auth |
 
@@ -252,7 +252,7 @@
 | **FULL OUTER JOIN** | ✅ 100% | 85% | Fully supported |
 | **Views with aggregates** | ✅ 100% | 90% | GROUP BY, HAVING, DISTINCT, aggregates work |
 | **INSTEAD OF triggers** | ✅ 100% | 85% | Fully supported on views |
-| **Subqueries in SELECT** | ⚠️ 80% | 75% | Scalar subqueries work, correlated limited |
+| **Subqueries in SELECT** | ✅ 100% | 90% | Scalar and correlated subqueries fully supported |
 | **Materialized Views** | ⚠️ 60% | 55% | Basic REFRESH operations limited |
 | **Full-Text Search** | ⚠️ 70% | 65% | MATCH/AGAINST basic level |
 | **Table Partitioning** | ❌ 0% | 0% | Not yet supported |
@@ -311,8 +311,7 @@
 
 1. **Recursive CTEs** - May have issues with deep recursion
 2. **Complex Views** - Test views containing GROUP BY
-3. **Subqueries** - Check correlated subquery performance
-4. **Full-Text Search** - Benchmark in production
+3. **Full-Text Search** - Benchmark in production
 
 ### ❌ Do Not Use (Yet)
 
