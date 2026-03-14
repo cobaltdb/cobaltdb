@@ -1943,7 +1943,7 @@ func (db *DB) executeAnalyze(ctx context.Context, stmt *query.AnalyzeStmt) (Resu
 
 // executeCreateMaterializedView executes CREATE MATERIALIZED VIEW
 func (db *DB) executeCreateMaterializedView(ctx context.Context, stmt *query.CreateMaterializedViewStmt) (Result, error) {
-	if err := db.catalog.CreateMaterializedView(stmt.Name, stmt.Query); err != nil {
+	if err := db.catalog.CreateMaterializedView(stmt.Name, stmt.Query, stmt.IfNotExists); err != nil {
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
@@ -1951,7 +1951,7 @@ func (db *DB) executeCreateMaterializedView(ctx context.Context, stmt *query.Cre
 
 // executeDropMaterializedView executes DROP MATERIALIZED VIEW
 func (db *DB) executeDropMaterializedView(ctx context.Context, stmt *query.DropMaterializedViewStmt) (Result, error) {
-	if err := db.catalog.DropMaterializedView(stmt.Name); err != nil {
+	if err := db.catalog.DropMaterializedView(stmt.Name, stmt.IfExists); err != nil {
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil

@@ -7,10 +7,13 @@ import (
 	"time"
 )
 
-func (c *Catalog) CreateMaterializedView(name string, selectStmt *query.SelectStmt) error {
+func (c *Catalog) CreateMaterializedView(name string, selectStmt *query.SelectStmt, ifNotExists bool) error {
 	c.mu.Lock()
 	if _, exists := c.materializedViews[name]; exists {
 		c.mu.Unlock()
+		if ifNotExists {
+			return nil // Silently succeed
+		}
 		return fmt.Errorf("materialized view %s already exists", name)
 	}
 
@@ -45,10 +48,13 @@ func (c *Catalog) CreateMaterializedView(name string, selectStmt *query.SelectSt
 	return nil
 }
 
-func (c *Catalog) DropMaterializedView(name string) error {
+func (c *Catalog) DropMaterializedView(name string, ifExists bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, exists := c.materializedViews[name]; !exists {
+		if ifExists {
+			return nil // Silently succeed
+		}
 		return fmt.Errorf("materialized view %s not found", name)
 	}
 
@@ -111,4 +117,4 @@ func (c *Catalog) ListMaterializedViews() []string {
 	}
 	sort.Strings(names)
 	return names
-}
+}

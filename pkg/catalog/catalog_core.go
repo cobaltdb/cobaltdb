@@ -898,6 +898,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 	table, err := cat.getTableLocked(stmt.From.Name)
 	if err != nil {
 		// Check if it's a CTE result that has JOINs
+		var foundInCTE bool
 		if cat.cteResults != nil {
 			if cteRes, ok := cat.cteResults[strings.ToLower(stmt.From.Name)]; ok {
 				// Create a synthetic table definition from the CTE result
@@ -907,11 +908,46 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 				for _, colName := range cteRes.columns {
 					table.Columns = append(table.Columns, ColumnDef{Name: colName, Type: "TEXT"})
 				}
+				foundInCTE = true
+			}
+		}
+		// Check for materialized view if not found in CTE
+		if !foundInCTE {
+			if mv, mvErr := cat.GetMaterializedView(stmt.From.Name); mvErr == nil {
+			// It's a materialized view - create a synthetic table from its data
+			table = &TableDef{
+				Name: stmt.From.Name,
+			}
+			// Extract column names from the materialized view data
+			if len(mv.Data) > 0 {
+				for colName := range mv.Data[0] {
+					table.Columns = append(table.Columns, ColumnDef{Name: colName, Type: "TEXT"})
+				}
+				// Also need to store the MV data for scanning - use a special marker
+				// We'll handle MV data in selectLocked similar to CTE results
+			}
+			// Register as temporary CTE-like result for this query
+			if cat.cteResults == nil {
+				cat.cteResults = make(map[string]*cteResultSet)
+			}
+			cols := make([]string, len(table.Columns))
+			for i, col := range table.Columns {
+				cols[i] = col.Name
+			}
+			// Convert map data to rows
+			rows := make([][]interface{}, len(mv.Data))
+			for i, rowMap := range mv.Data {
+				row := make([]interface{}, len(table.Columns))
+				for j, col := range table.Columns {
+					row[j] = rowMap[col.Name]
+				}
+				rows[i] = row
+			}
+			cat.cteResults[strings.ToLower(stmt.From.Name)] = &cteResultSet{columns: cols, rows: rows}
+				// MV data will be cleaned up after row scanning
 			} else {
 				return nil, nil, err
 			}
-		} else {
-			return nil, nil, err
 		}
 	}
 
@@ -1244,8 +1280,19 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 	// Read all rows from B+Tree
 	var rows [][]interface{}
 	var windowFullRows [][]interface{} // full table rows for window function ORDER BY evaluation
+	// Check if this is a materialized view with cached data
+	var mvRows [][]interface{}
+	var isMV bool
+	if cteRes, ok := cat.cteResults[strings.ToLower(stmt.From.Name)]; ok {
+		// This is MV data stored as a CTE result
+		mvRows = cteRes.rows
+		isMV = true
+		// Clean up the MV data entry after we're done
+		defer delete(cat.cteResults, strings.ToLower(stmt.From.Name))
+	}
+
 	tree, exists := cat.tableTrees[stmt.From.Name]
-	if !exists {
+	if !exists && !isMV {
 		return returnColumns, rows, nil
 	}
 
@@ -1305,6 +1352,46 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 						var obIdx int
 						if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
 							val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
+							if err == nil {
+								selectedRow[i] = val
+							}
+						}
+					}
+				}
+			}
+			rows = append(rows, selectedRow)
+			if hasWindowFuncs {
+				fullRowCopy := make([]interface{}, len(fullRow))
+				copy(fullRowCopy, fullRow)
+				windowFullRows = append(windowFullRows, fullRowCopy)
+			}
+		}
+	} else if isMV {
+		// Materialized view data scan (rows already loaded)
+		for _, fullRow := range mvRows {
+			// Apply WHERE clause if present
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
+				if err != nil {
+					continue // Skip row on error
+				}
+				if !matched {
+					continue // Skip row that doesn't match WHERE condition
+				}
+			}
+
+			// Extract only selected columns
+			selectedRow := make([]interface{}, len(selectCols))
+			for i, ci := range selectCols {
+				if ci.isWindow {
+					continue
+				}
+				if ci.index >= 0 && ci.index < len(fullRow) {
+					selectedRow[i] = fullRow[ci.index]
+				} else if ci.index == -1 && !ci.isAggregate {
+					if i < len(stmt.Columns) {
+						if expr, ok := stmt.Columns[i].(query.Expression); ok {
+							val, err := evaluateExpression(cat, fullRow, table.Columns, expr, args)
 							if err == nil {
 								selectedRow[i] = val
 							}
@@ -4172,4 +4259,4 @@ func catalogCompareValues(a, b interface{}) int {
 		return 1
 	}
 	return 0
-}
+}

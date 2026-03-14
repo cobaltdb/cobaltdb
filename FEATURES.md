@@ -253,7 +253,7 @@
 | **Views with aggregates** | ✅ 100% | 90% | GROUP BY, HAVING, DISTINCT, aggregates work |
 | **INSTEAD OF triggers** | ✅ 100% | 85% | Fully supported on views |
 | **Subqueries in SELECT** | ✅ 100% | 90% | Scalar and correlated subqueries fully supported |
-| **Materialized Views** | ⚠️ 60% | 55% | Basic REFRESH operations limited |
+| **Materialized Views** | ✅ 100% | 90% | CREATE, DROP, REFRESH, QUERY fully supported |
 | **Full-Text Search** | ⚠️ 70% | 65% | MATCH/AGAINST basic level |
 | **Table Partitioning** | ❌ 0% | 0% | Not yet supported |
 | **Stored Procedures** | ⚠️ 50% | 40% | CREATE PROCEDURE/CALL limited |
