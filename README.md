@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/Version-2.2.0-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
-  <img src="https://img.shields.io/badge/Coverage-91.3%25-green?style=for-the-badge" alt="Test Coverage">
+  <img src="https://img.shields.io/badge/Coverage-91.4%25-green?style=for-the-badge" alt="Test Coverage">
 </p>
 
 <p align="center">
@@ -759,7 +759,7 @@ go run cmd/demo/main.go
 | `pkg/storage` | 87.8% | ✅ |
 | `pkg/query` | 84.4% | ✅ |
 | `pkg/server` | 83.9% | ✅ |
-| `pkg/catalog` | 76.6% | ✅ |
+| `pkg/catalog` | 77.2% | ✅ |
 | **Total** | **91.2%** | ✅ |
 
 > 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
