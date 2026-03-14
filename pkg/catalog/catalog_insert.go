@@ -667,5 +667,25 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	// Invalidate query cache for the affected table
 	c.invalidateQueryCache(stmt.Table)
 
+	// Handle RETURNING clause
+	var returningRows [][]interface{}
+	var returningCols []string
+	if len(stmt.Returning) > 0 && rowsAffected > 0 {
+		for _, insertedRow := range insertedRows {
+			returningRow, cols, err := c.evaluateReturning(stmt.Returning, insertedRow, table, args)
+			if err != nil {
+				return 0, 0, fmt.Errorf("RETURNING clause failed: %w", err)
+			}
+			returningRows = append(returningRows, returningRow)
+			if returningCols == nil {
+				returningCols = cols
+			}
+		}
+	}
+
+	// Store returning rows for retrieval
+	c.lastReturningRows = returningRows
+	c.lastReturningColumns = returningCols
+
 	return autoIncValue, rowsAffected, nil
 }

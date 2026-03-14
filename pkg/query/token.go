@@ -62,6 +62,7 @@ const (
 	TokenSetNull
 	TokenRestrict
 	TokenNo
+	TokenReturning
 	TokenIf
 	TokenExists
 	TokenDistinct
@@ -404,11 +405,12 @@ var keywords = map[string]TokenType{
 	"RECURSIVE": TokenRecursive,
 
 	// ALTER TABLE
-	"ESCAPE": TokenEscape,
-	"ALTER":  TokenAlter,
-	"ADD":    TokenAdd,
-	"COLUMN": TokenColumn,
-	"RENAME": TokenRename,
+	"ESCAPE":    TokenEscape,
+	"ALTER":     TokenAlter,
+	"ADD":       TokenAdd,
+	"COLUMN":    TokenColumn,
+	"RENAME":    TokenRename,
+	"RETURNING": TokenReturning,
 
 	// Maintenance commands
 	"VACUUM":  TokenVacuum,

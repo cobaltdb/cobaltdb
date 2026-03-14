@@ -1356,7 +1356,42 @@ func (p *Parser) parseInsert() (*InsertStmt, error) {
 		rowCount++
 	}
 
+	// Parse optional RETURNING clause
+	if p.current().Type == TokenReturning {
+		p.advance() // consume RETURNING
+		returning, err := p.parseReturningClause()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Returning = returning
+	}
+
 	return stmt, nil
+}
+
+// parseReturningClause parses a RETURNING clause (expression list)
+func (p *Parser) parseReturningClause() ([]Expression, error) {
+	var expressions []Expression
+
+	// Check for * (all columns)
+	if p.current().Type == TokenStar {
+		p.advance()
+		return []Expression{&ColumnRef{Column: "*"}}, nil
+	}
+
+	for {
+		expr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		expressions = append(expressions, expr)
+
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+
+	return expressions, nil
 }
 
 // parseIdentifierList parses a comma-separated list of identifiers
@@ -1499,6 +1534,16 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 		for i, ph := range wherePlaceholders {
 			ph.Index = whereOffset + i
 		}
+	}
+
+	// Parse optional RETURNING clause
+	if p.current().Type == TokenReturning {
+		p.advance() // consume RETURNING
+		returning, err := p.parseReturningClause()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Returning = returning
 	}
 
 	return stmt, nil
@@ -1663,6 +1708,16 @@ func (p *Parser) parseDelete() (*DeleteStmt, error) {
 		for i, ph := range wherePlaceholders {
 			ph.Index = placeholderOffset + i
 		}
+	}
+
+	// Parse optional RETURNING clause
+	if p.current().Type == TokenReturning {
+		p.advance() // consume RETURNING
+		returning, err := p.parseReturningClause()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Returning = returning
 	}
 
 	return stmt, nil

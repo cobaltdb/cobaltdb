@@ -1159,6 +1159,21 @@ func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{
 		return db.executeDescribeQuery(ctx, s)
 	case *query.ExplainStmt:
 		return db.executeExplainQuery(ctx, s)
+	case *query.InsertStmt:
+		if len(s.Returning) > 0 {
+			return db.executeInsertReturning(ctx, s, args)
+		}
+		return nil, fmt.Errorf("not a query statement: %T", stmt)
+	case *query.UpdateStmt:
+		if len(s.Returning) > 0 {
+			return db.executeUpdateReturning(ctx, s, args)
+		}
+		return nil, fmt.Errorf("not a query statement: %T", stmt)
+	case *query.DeleteStmt:
+		if len(s.Returning) > 0 {
+			return db.executeDeleteReturning(ctx, s, args)
+		}
+		return nil, fmt.Errorf("not a query statement: %T", stmt)
 	default:
 		return nil, fmt.Errorf("not a query statement: %T", stmt)
 	}
@@ -1197,6 +1212,60 @@ func (db *DB) executeDelete(ctx context.Context, stmt *query.DeleteStmt, args []
 		return Result{}, err
 	}
 	return Result{LastInsertID: lastInsertID, RowsAffected: rowsAffected}, nil
+}
+
+// executeInsertReturning executes INSERT with RETURNING clause
+func (db *DB) executeInsertReturning(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (*Rows, error) {
+	_, _, err := db.catalog.Insert(ctx, stmt, args)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get RETURNING results from catalog
+	returningRows := db.catalog.GetLastReturningRows()
+	returningCols := db.catalog.GetLastReturningColumns()
+
+	if len(returningRows) == 0 {
+		return &Rows{rows: nil, columns: returningCols}, nil
+	}
+
+	return &Rows{rows: returningRows, columns: returningCols}, nil
+}
+
+// executeUpdateReturning executes UPDATE with RETURNING clause
+func (db *DB) executeUpdateReturning(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (*Rows, error) {
+	_, _, err := db.catalog.Update(ctx, stmt, args)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get RETURNING results from catalog
+	returningRows := db.catalog.GetLastReturningRows()
+	returningCols := db.catalog.GetLastReturningColumns()
+
+	if len(returningRows) == 0 {
+		return &Rows{rows: nil, columns: returningCols}, nil
+	}
+
+	return &Rows{rows: returningRows, columns: returningCols}, nil
+}
+
+// executeDeleteReturning executes DELETE with RETURNING clause
+func (db *DB) executeDeleteReturning(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (*Rows, error) {
+	_, _, err := db.catalog.Delete(ctx, stmt, args)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get RETURNING results from catalog
+	returningRows := db.catalog.GetLastReturningRows()
+	returningCols := db.catalog.GetLastReturningColumns()
+
+	if len(returningRows) == 0 {
+		return &Rows{rows: nil, columns: returningCols}, nil
+	}
+
+	return &Rows{rows: returningRows, columns: returningCols}, nil
 }
 
 // executeAlterTable executes ALTER TABLE

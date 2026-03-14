@@ -216,11 +216,13 @@ type Catalog struct {
 	txnActive         bool                                  // Is a transaction active
 	undoLog           []undoEntry                           // Undo log for transaction rollback
 	savepoints        []savepointEntry                      // Stack of savepoints
-	rlsManager        *security.Manager                     // Row-level security manager
-	enableRLS         bool                                  // Enable row-level security
-	rlsPolicies       map[string]*security.Policy           // RLS policies: key = "table:policyName"
-	queryCache        *QueryCache                           // Query result cache
-	rlsCtx            context.Context                       // Context for RLS user/role extraction in SELECT
+	rlsManager           *security.Manager                     // Row-level security manager
+	enableRLS            bool                                  // Enable row-level security
+	rlsPolicies          map[string]*security.Policy           // RLS policies: key = "table:policyName"
+	queryCache           *QueryCache                           // Query result cache
+	rlsCtx               context.Context                       // Context for RLS user/role extraction in SELECT
+	lastReturningRows    [][]interface{}                       // Last RETURNING clause results
+	lastReturningColumns []string                              // Column names for RETURNING results
 }
 
 // savepointEntry records a named savepoint with its undo log position

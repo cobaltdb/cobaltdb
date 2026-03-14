@@ -73,6 +73,7 @@ type InsertStmt struct {
 	Values         [][]Expression
 	Select         *SelectStmt    // For INSERT INTO ... SELECT ...
 	ConflictAction ConflictAction // OR REPLACE / OR IGNORE
+	Returning      []Expression   // RETURNING clause expressions
 }
 
 func (s *InsertStmt) nodeType() string { return "InsertStmt" }
@@ -80,11 +81,12 @@ func (s *InsertStmt) statementNode()   {}
 
 // UpdateStmt represents an UPDATE statement
 type UpdateStmt struct {
-	Table string // Target table to update
-	Set   []*SetClause
-	From  *TableRef // Optional FROM clause for UPDATE with JOIN
-	Joins []*JoinClause
-	Where Expression
+	Table     string // Target table to update
+	Set       []*SetClause
+	From      *TableRef // Optional FROM clause for UPDATE with JOIN
+	Joins     []*JoinClause
+	Where     Expression
+	Returning []Expression // RETURNING clause expressions
 }
 
 func (s *UpdateStmt) nodeType() string { return "UpdateStmt" }
@@ -98,10 +100,11 @@ type SetClause struct {
 
 // DeleteStmt represents a DELETE statement
 type DeleteStmt struct {
-	Table string      // Target table to delete from
-	Alias string      // Optional table alias
-	Using []*TableRef // USING clause for DELETE with JOIN
-	Where Expression
+	Table     string      // Target table to delete from
+	Alias     string      // Optional table alias
+	Using     []*TableRef // USING clause for DELETE with JOIN
+	Where     Expression
+	Returning []Expression // RETURNING clause expressions
 }
 
 func (s *DeleteStmt) nodeType() string { return "DeleteStmt" }
@@ -356,6 +359,15 @@ type QualifiedIdentifier struct {
 
 func (e *QualifiedIdentifier) nodeType() string { return "QualifiedIdentifier" }
 func (e *QualifiedIdentifier) expressionNode()  {}
+
+// ColumnRef represents a column reference (can be used for RETURNING *)
+type ColumnRef struct {
+	Table  string // Optional table name
+	Column string // Column name or "*"
+}
+
+func (e *ColumnRef) nodeType() string { return "ColumnRef" }
+func (e *ColumnRef) expressionNode()  {}
 
 // StringLiteral represents a string literal
 type StringLiteral struct {
