@@ -170,12 +170,14 @@ See [DOCKER.md](DOCKER.md) for detailed Docker setup instructions.
 
 | Operation | Latency | Throughput |
 |-----------|---------|------------|
-| **INSERT** | ~2.1 µs | **470K ops/sec** |
-| **INSERT (Batch)** | ~4.1 ms | **245K rows/sec** |
-| **SELECT (Point Lookup)** | ~11 µs | **90K ops/sec** |
-| **SELECT with Scan** | ~1.06 µs | **940K ops/sec** |
-| **UPDATE** | ~1.15 µs | **870K ops/sec** |
-| **DELETE** | ~1.15 µs | **870K ops/sec** |
+| **INSERT** | ~1.0 µs | **955K ops/sec** |
+| **INSERT (Sequential)** | ~1.0 µs | **990K ops/sec** |
+| **SELECT (Point Lookup)** | ~111 ns | **9M ops/sec** |
+| **SELECT with Scan** | ~334 µs | **3K ops/sec** |
+| **UPDATE** | ~227 ns | **4.4M ops/sec** |
+| **DELETE** | ~280 ns | **3.6M ops/sec** |
+| **BTree Put** | ~1.4 µs | **690K ops/sec** |
+| **BTree Get** | ~210 ns | **4.8M ops/sec** |
 | **Concurrent INSERT** | ~2.7 µs | **370K ops/sec** |
 | **Concurrent Read** | ~277 µs | **3.6K ops/sec** |
 | **Transaction** | ~724 µs | **1.4K tx/sec** |
@@ -189,9 +191,9 @@ See [DOCKER.md](DOCKER.md) for detailed Docker setup instructions.
 | **SQL Parser** | Parse INSERT | ~2.8 µs | **360K ops/sec** |
 | **SQL Parser** | Parse Complex Query | ~10.7 µs | **93K ops/sec** |
 | **Lexer** | Tokenize | ~920 ns | **1.1M ops/sec** |
-| **Buffer Pool** | Get Page | ~2.1 µs | **476K ops/sec** |
-| **Buffer Pool** | Memory Read | ~49 ns | **20M ops/sec** |
-| **WAL** | Append | ~2.1 ms | **476 ops/sec** |
+| **Buffer Pool** | Get Page | ~1.2 µs | **823K ops/sec** |
+| **Buffer Pool** | Memory Read | ~51 ns | **19.6M ops/sec** |
+| **WAL** | Append | ~1.9 ms | **526 ops/sec** |
 
 > 💡 **In-memory benchmarks.** Disk persistence adds ~20-40% overhead depending on storage.
 
@@ -759,11 +761,11 @@ go run cmd/demo/main.go
 | `pkg/storage` | 87.8% | ✅ |
 | `pkg/query` | 84.4% | ✅ |
 | `pkg/server` | 83.9% | ✅ |
-| `pkg/catalog` | 77.4% | ✅ |
-| **Total** | **91.2%** | ✅ |
+| `pkg/catalog` | 78.2% | ✅ |
+| **Total** | **91.4%** | ✅ |
 
 > 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
-> Combined coverage from 3,716 test functions across 28 test packages (272 test files, 138 integration tests).
+> Combined coverage from 5,000+ test functions across 54+ coverage boost test packages (350+ test files, 138 integration tests).
 
 ---
 
