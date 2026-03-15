@@ -115,6 +115,55 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 		ForeignKeys: make([]ForeignKeyDef, len(stmt.ForeignKeys)),
 	}
 
+	// Handle partitioning if specified
+	if stmt.Partition != nil {
+		partitionInfo := &PartitionInfo{
+			Type:   stmt.Partition.Type,
+			Column: stmt.Partition.Column,
+		}
+		if stmt.Partition.NumPartitions > 0 {
+			partitionInfo.NumParts = stmt.Partition.NumPartitions
+		}
+		// Convert SinglePartition to PartitionDef
+		// For RANGE partitioning with LESS THAN, the value is the max bound
+		var prevMax int64 = -9223372036854775808 // Min int64 for first partition
+		for _, sp := range stmt.Partition.Partitions {
+			pd := PartitionDef{Name: sp.Name}
+			// Extract max value from Values expressions (for RANGE LESS THAN)
+			if len(sp.Values) >= 1 {
+				if nl, ok := sp.Values[0].(*query.NumberLiteral); ok {
+					pd.MaxValue = int64(nl.Value)
+					pd.MinValue = prevMax
+					prevMax = pd.MaxValue
+				}
+			}
+			partitionInfo.Partitions = append(partitionInfo.Partitions, pd)
+		}
+
+		// For HASH/LIST/KEY partitioning with NumPartitions but no explicit definitions,
+		// auto-generate partition names
+		if len(partitionInfo.Partitions) == 0 && partitionInfo.NumParts > 0 {
+			for i := 0; i < partitionInfo.NumParts; i++ {
+				pd := PartitionDef{
+					Name: fmt.Sprintf("p%d", i),
+				}
+				partitionInfo.Partitions = append(partitionInfo.Partitions, pd)
+			}
+		}
+
+		tableDef.Partition = partitionInfo
+
+		// Create partition trees immediately
+		for _, pd := range partitionInfo.Partitions {
+			partTreeName := stmt.Table + ":" + pd.Name
+			partTree, err := btree.NewBTree(c.pool)
+			if err != nil {
+				return fmt.Errorf("failed to create partition tree for %s: %w", partTreeName, err)
+			}
+			c.tableTrees[partTreeName] = partTree
+		}
+	}
+
 	for i, col := range stmt.Columns {
 		tableDef.Columns[i] = ColumnDef{
 			Name:          col.Name,

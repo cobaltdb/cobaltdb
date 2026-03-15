@@ -27,8 +27,8 @@ func (c *Catalog) applyDistinct(rows [][]interface{}) [][]interface{} {
 }
 
 func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, returnColumns []string) ([]string, [][]interface{}, error) {
-	tree, exists := c.tableTrees[stmt.From.Name]
-	if !exists {
+	// Check if table exists
+	if _, exists := c.tableTrees[stmt.From.Name]; !exists {
 		// Return empty result for GROUP BY on non-existent table
 		return returnColumns, [][]interface{}{}, nil
 	}
@@ -83,57 +83,66 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 	groups := make(map[string][][]interface{})
 	groupOrder := []string{} // preserve insertion order
 
-	iter, err := tree.Scan(nil, nil)
+	// Get all trees for scanning (handles partitioned tables)
+	trees, err := c.getTableTreesForScan(table)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to scan table for GROUP BY: %w", err)
+		return nil, nil, err
 	}
-	defer iter.Close()
 
-	for iter.HasNext() {
-		_, valueData, err := iter.Next()
+	// Scan all partition trees
+	for _, tree := range trees {
+		iter, err := tree.Scan(nil, nil)
 		if err != nil {
-			break
+			return nil, nil, fmt.Errorf("failed to scan table for GROUP BY: %w", err)
 		}
 
-		// Decode full row
-		fullRow, err := decodeRow(valueData, len(table.Columns))
-		if err != nil {
-			continue
-		}
+		for iter.HasNext() {
+			_, valueData, err := iter.Next()
+			if err != nil {
+				break
+			}
 
-		// Apply WHERE clause if present (filters rows before grouping)
-		if stmt.Where != nil {
-			matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
+			// Decode full row
+			fullRow, err := decodeRow(valueData, len(table.Columns))
 			if err != nil {
 				continue
 			}
-			if !matched {
-				continue
-			}
-		}
 
-		// Build group key
-		var groupKey strings.Builder
-		for i, spec := range groupBySpecs {
-			if i > 0 {
-				groupKey.WriteString("\x00")
-			}
-			if spec.index >= 0 && spec.index < len(fullRow) {
-				groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
-			} else if spec.expr != nil {
-				val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
-				if err == nil {
-					groupKey.WriteString(typeTaggedKey(val))
+			// Apply WHERE clause if present (filters rows before grouping)
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
+				if err != nil {
+					continue
+				}
+				if !matched {
+					continue
 				}
 			}
-		}
 
-		// Add row to appropriate group
-		key := groupKey.String()
-		if _, exists := groups[key]; !exists {
-			groupOrder = append(groupOrder, key)
+			// Build group key
+			var groupKey strings.Builder
+			for i, spec := range groupBySpecs {
+				if i > 0 {
+					groupKey.WriteString("\x00")
+				}
+				if spec.index >= 0 && spec.index < len(fullRow) {
+					groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
+				} else if spec.expr != nil {
+					val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
+					if err == nil {
+						groupKey.WriteString(typeTaggedKey(val))
+					}
+				}
+			}
+
+			// Add row to appropriate group
+			key := groupKey.String()
+			if _, exists := groups[key]; !exists {
+				groupOrder = append(groupOrder, key)
+			}
+			groups[key] = append(groups[key], fullRow)
 		}
-		groups[key] = append(groups[key], fullRow)
+		iter.Close()
 	}
 
 	// Compute aggregates for each group

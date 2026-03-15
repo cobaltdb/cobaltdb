@@ -101,6 +101,11 @@ func (c *Catalog) RefreshMaterializedView(name string) error {
 func (c *Catalog) GetMaterializedView(name string) (*MaterializedViewDef, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.getMaterializedViewLocked(name)
+}
+
+// getMaterializedViewLocked is the lock-free internal version. Must be called with mu held.
+func (c *Catalog) getMaterializedViewLocked(name string) (*MaterializedViewDef, error) {
 	mv, exists := c.materializedViews[name]
 	if !exists {
 		return nil, fmt.Errorf("materialized view %s not found", name)

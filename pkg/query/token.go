@@ -109,10 +109,14 @@ const (
 	TokenView
 	TokenTrigger
 	TokenProcedure
+	TokenRange
+	TokenList
+	TokenHash
 	TokenPolicy
 	TokenCall
 	TokenOut
 	TokenInout
+	TokenPartitions
 
 	// Operators
 	TokenPlus
@@ -216,6 +220,8 @@ const (
 	TokenAdd
 	TokenColumn
 	TokenRename
+	TokenLess
+	TokenThan
 
 	// Materialized views
 	TokenMaterialized
@@ -454,6 +460,14 @@ var keywords = map[string]TokenType{
 	"DATABASES": TokenDatabases,
 	"TABLES":    TokenTables,
 	"COLUMNS":   TokenColumns,
+
+	// Partitioning
+	"RANGE":       TokenRange,
+	"LIST":        TokenList,
+	"HASH":        TokenHash,
+	"LESS":        TokenLess,
+	"THAN":        TokenThan,
+	"PARTITIONS":  TokenPartitions,
 }
 
 // LookupKeyword checks if an identifier is a keyword

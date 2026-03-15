@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
+	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
@@ -31,9 +33,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		return 0, 0, err
 	}
 
-	tree, exists := c.tableTrees[stmt.Table]
-	if !exists {
-		return 0, 0, ErrTableNotFound
+	// Get the target tree - may be partitioned
+	tree, _, err := c.getInsertTargetTree(table, stmt, args)
+	if err != nil {
+		return 0, 0, err
 	}
 
 	// Determine column mapping
@@ -693,4 +696,77 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	c.lastReturningColumns = returningCols
 
 	return autoIncValue, rowsAffected, nil
+}
+
+// getInsertTargetTree returns the BTree for inserting a row
+// For partitioned tables, determines the correct partition based on partition key value
+func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, args []interface{}) (*btree.BTree, int, error) {
+	// If table is not partitioned, use the main table tree
+	if table.Partition == nil {
+		tree, exists := c.tableTrees[table.Name]
+		if !exists {
+			return nil, -1, ErrTableNotFound
+		}
+		return tree, -1, nil
+	}
+
+	// Get the partition column index
+	partitionColIdx := table.GetColumnIndex(table.Partition.Column)
+	if partitionColIdx < 0 {
+		return nil, -1, fmt.Errorf("partition column '%s' not found in table '%s'", table.Partition.Column, table.Name)
+	}
+
+	// Determine the partition key value from the INSERT statement
+	var partitionVal interface{}
+
+	// Check if columns were specified in the INSERT
+	if len(stmt.Columns) > 0 {
+		// Find the partition column in the insert columns
+		for i, colName := range stmt.Columns {
+			if strings.EqualFold(colName, table.Partition.Column) {
+				// Found it - get the value from the first row
+				if len(stmt.Values) > 0 && i < len(stmt.Values[0]) {
+					// Evaluate the expression to get the actual value
+					val, err := evaluateExpression(c, nil, nil, stmt.Values[0][i], args)
+					if err == nil {
+						partitionVal = val
+					}
+				}
+				break
+			}
+		}
+	} else {
+		// No columns specified - using all table columns in order
+		if len(stmt.Values) > 0 && partitionColIdx < len(stmt.Values[0]) {
+			val, err := evaluateExpression(c, nil, nil, stmt.Values[0][partitionColIdx], args)
+			if err == nil {
+				partitionVal = val
+			}
+		}
+	}
+
+	// If partition value is nil, we can't determine the partition
+	if partitionVal == nil {
+		return nil, -1, fmt.Errorf("partition column '%s' value is NULL, cannot determine partition", table.Partition.Column)
+	}
+
+	// Get the partition tree name
+	partitionTreeName := table.getPartitionTreeName(partitionVal)
+	if partitionTreeName == "" {
+		return nil, -1, fmt.Errorf("no matching partition found for value %v", partitionVal)
+	}
+
+	// Get or create the partition tree
+	tree, exists := c.tableTrees[partitionTreeName]
+	if !exists {
+		// Partition tree doesn't exist yet - create it using the same method as CreateTable
+		newTree, err := btree.NewBTree(c.pool)
+		if err != nil {
+			return nil, -1, fmt.Errorf("failed to create partition tree: %w", err)
+		}
+		tree = newTree
+		c.tableTrees[partitionTreeName] = tree
+	}
+
+	return tree, partitionColIdx, nil
 }

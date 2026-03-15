@@ -110,6 +110,33 @@ type DeleteStmt struct {
 func (s *DeleteStmt) nodeType() string { return "DeleteStmt" }
 func (s *DeleteStmt) statementNode()   {}
 
+
+// PartitionType represents the type of partitioning
+ type PartitionType int
+
+const (
+	PartitionTypeNone PartitionType = iota
+	PartitionTypeRange
+	PartitionTypeList
+	PartitionTypeHash
+	PartitionTypeKey
+)
+
+// PartitionDef represents table partitioning definition
+type PartitionDef struct {
+	Type       PartitionType
+	Column     string           // Column to partition by
+	Expression Expression       // Optional expression for partitioning
+	Partitions []*SinglePartition // Individual partition definitions
+	NumPartitions int           // For HASH/KEY partitioning
+}
+
+// SinglePartition represents a single partition definition
+type SinglePartition struct {
+	Name  string
+	Values []Expression // For RANGE/LIST (e.g., LESS THAN (100), IN (1,2,3))
+}
+
 // CreateTableStmt represents a CREATE TABLE statement
 type CreateTableStmt struct {
 	IfNotExists bool
@@ -117,6 +144,7 @@ type CreateTableStmt struct {
 	Columns     []*ColumnDef
 	PrimaryKey  []string // Table-level PRIMARY KEY (col1, col2, ...) for composite PK
 	ForeignKeys []*ForeignKeyDef
+	Partition   *PartitionDef // Table partitioning definition
 }
 
 func (s *CreateTableStmt) nodeType() string { return "CreateTableStmt" }

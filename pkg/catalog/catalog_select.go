@@ -251,29 +251,32 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 			return nil, nil, err
 		}
 
-		mainTree, exists := c.tableTrees[stmt.From.Name]
-		if !exists {
-			return nil, [][]interface{}{}, nil
-		}
-
 		mainTableCols = mainTable.Columns
 
-		// Build initial intermediate rows from main table (full column data)
-		mainIter, err := mainTree.Scan(nil, nil)
+		// Get all trees for scanning (handles partitioned tables)
+		trees, err := c.getTableTreesForScan(mainTable)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to scan table: %w", err)
+			return nil, nil, err
 		}
-		defer mainIter.Close()
-		for mainIter.HasNext() {
-			_, data, err := mainIter.Next()
+
+		// Build initial intermediate rows from all partition trees (full column data)
+		for _, tree := range trees {
+			mainIter, err := tree.Scan(nil, nil)
 			if err != nil {
-				break
+				return nil, nil, fmt.Errorf("failed to scan table: %w", err)
 			}
-			row, err := decodeRow(data, len(mainTable.Columns))
-			if err != nil {
-				continue
+			for mainIter.HasNext() {
+				_, data, err := mainIter.Next()
+				if err != nil {
+					break
+				}
+				row, err := decodeRow(data, len(mainTable.Columns))
+				if err != nil {
+					continue
+				}
+				intermediateRows = append(intermediateRows, row)
 			}
-			intermediateRows = append(intermediateRows, row)
+			mainIter.Close()
 		}
 	}
 
@@ -728,29 +731,32 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 			return nil, nil, err
 		}
 
-		mainTree, exists := c.tableTrees[stmt.From.Name]
-		if !exists {
-			return returnColumns, [][]interface{}{}, nil
-		}
-
 		mainTableCols = mainTable.Columns
 
-		// Build initial intermediate rows from main table (full column data)
-		mainIter, err := mainTree.Scan(nil, nil)
+		// Get all trees for scanning (handles partitioned tables)
+		trees, err := c.getTableTreesForScan(mainTable)
 		if err != nil {
-			return returnColumns, nil, fmt.Errorf("failed to scan table: %w", err)
+			return nil, nil, err
 		}
-		defer mainIter.Close()
-		for mainIter.HasNext() {
-			_, data, err := mainIter.Next()
+
+		// Build initial intermediate rows from all partition trees (full column data)
+		for _, tree := range trees {
+			mainIter, err := tree.Scan(nil, nil)
 			if err != nil {
-				break
+				return returnColumns, nil, fmt.Errorf("failed to scan table: %w", err)
 			}
-			row, err := decodeRow(data, len(mainTable.Columns))
-			if err != nil {
-				continue
+			for mainIter.HasNext() {
+				_, data, err := mainIter.Next()
+				if err != nil {
+					break
+				}
+				row, err := decodeRow(data, len(mainTable.Columns))
+				if err != nil {
+					continue
+				}
+				intermediateRows = append(intermediateRows, row)
 			}
-			intermediateRows = append(intermediateRows, row)
+			mainIter.Close()
 		}
 	}
 

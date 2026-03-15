@@ -1936,7 +1936,7 @@ func TestCov_MaterializedView(t *testing.T) {
 	c := newTestCatalog(t)
 	createTestTable(t, c, "t", []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}})
 	insertTestRow(t, c, "t", []query.Expression{nr(1)})
-	c.CreateMaterializedView("mv1", &query.SelectStmt{Columns: []query.Expression{star()}, From: tref("t")})
+	c.CreateMaterializedView("mv1", &query.SelectStmt{Columns: []query.Expression{star()}, From: tref("t")}, false)
 	mv, err := c.GetMaterializedView("mv1")
 	if err != nil || mv == nil {
 		t.Fatal(err)
@@ -1946,7 +1946,7 @@ func TestCov_MaterializedView(t *testing.T) {
 	if len(mvs) != 1 {
 		t.Fatal(len(mvs))
 	}
-	c.DropMaterializedView("mv1")
+	c.DropMaterializedView("mv1", false)
 }
 
 // ── JSON Index ───────────────────────────────────────────────────────

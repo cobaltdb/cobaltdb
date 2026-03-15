@@ -9377,13 +9377,13 @@ func TestCreateMaterializedView(t *testing.T) {
 			Right:    &query.NumberLiteral{Value: 20},
 		},
 	}
-	err = catalog.CreateMaterializedView("mv_users", selectStmt)
+	err = catalog.CreateMaterializedView("mv_users", selectStmt, false)
 	if err != nil {
 		t.Fatalf("CreateMaterializedView failed: %v", err)
 	}
 
 	// Try to create duplicate materialized view (should fail)
-	err = catalog.CreateMaterializedView("mv_users", selectStmt)
+	err = catalog.CreateMaterializedView("mv_users", selectStmt, false)
 	if err == nil {
 		t.Error("expected error for duplicate materialized view")
 	}
@@ -9425,19 +9425,19 @@ func TestDropMaterializedView(t *testing.T) {
 	selectStmt := &query.SelectStmt{
 		From: &query.TableRef{Name: "users"},
 	}
-	err = catalog.CreateMaterializedView("mv_users", selectStmt)
+	err = catalog.CreateMaterializedView("mv_users", selectStmt, false)
 	if err != nil {
 		t.Fatalf("CreateMaterializedView failed: %v", err)
 	}
 
 	// Drop materialized view
-	err = catalog.DropMaterializedView("mv_users")
+	err = catalog.DropMaterializedView("mv_users", false)
 	if err != nil {
 		t.Fatalf("DropMaterializedView failed: %v", err)
 	}
 
 	// Try to drop non-existent materialized view (should fail)
-	err = catalog.DropMaterializedView("mv_nonexistent")
+	err = catalog.DropMaterializedView("mv_nonexistent", false)
 	if err == nil {
 		t.Error("expected error for dropping non-existent materialized view")
 	}
@@ -9479,7 +9479,7 @@ func TestGetMaterializedView(t *testing.T) {
 	selectStmt := &query.SelectStmt{
 		From: &query.TableRef{Name: "users"},
 	}
-	err = catalog.CreateMaterializedView("mv_users", selectStmt)
+	err = catalog.CreateMaterializedView("mv_users", selectStmt, false)
 	if err != nil {
 		t.Fatalf("CreateMaterializedView failed: %v", err)
 	}
@@ -9562,11 +9562,11 @@ func TestListMaterializedViews(t *testing.T) {
 	selectStmt2 := &query.SelectStmt{
 		From: &query.TableRef{Name: "users2"},
 	}
-	err = catalog.CreateMaterializedView("mv_users1", selectStmt1)
+	err = catalog.CreateMaterializedView("mv_users1", selectStmt1, false)
 	if err != nil {
 		t.Fatalf("CreateMaterializedView failed: %v", err)
 	}
-	err = catalog.CreateMaterializedView("mv_users2", selectStmt2)
+	err = catalog.CreateMaterializedView("mv_users2", selectStmt2, false)
 	if err != nil {
 		t.Fatalf("CreateMaterializedView failed: %v", err)
 	}
@@ -9614,7 +9614,7 @@ func TestRefreshMaterializedView(t *testing.T) {
 	selectStmt := &query.SelectStmt{
 		From: &query.TableRef{Name: "users"},
 	}
-	err = catalog.CreateMaterializedView("mv_users", selectStmt)
+	err = catalog.CreateMaterializedView("mv_users", selectStmt, false)
 	if err != nil {
 		t.Fatalf("CreateMaterializedView failed: %v", err)
 	}

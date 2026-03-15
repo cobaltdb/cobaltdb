@@ -25,30 +25,32 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		return 0, 0, err
 	}
 
-	tree, exists := c.tableTrees[stmt.Table]
-	if !exists {
-		return 0, 0, ErrTableNotFound
-	}
-
 	// Handle UPDATE with JOIN
 	if stmt.From != nil || len(stmt.Joins) > 0 {
 		return c.updateWithJoinLocked(ctx, stmt, args)
 	}
 
-	rowsAffected := int64(0)
-	iter, err := tree.Scan(nil, nil)
+	// Get all trees for scanning (handles partitioned tables)
+	trees, err := c.getTableTreesForScan(table)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to scan table for UPDATE: %w", err)
+		return 0, 0, err
 	}
-	defer iter.Close()
+
+	// Get tree names for later lookup during update
+	treeNames := []string{stmt.Table}
+	if table.Partition != nil {
+		treeNames = table.getPartitionTreeNames()
+	}
 
 	// Collect entries to update (need old row for index cleanup)
 	type updateEntry struct {
-		key    []byte
-		oldRow []interface{}
-		newRow []interface{}
+		key      []byte
+		oldRow   []interface{}
+		newRow   []interface{}
+		treeName string // which partition tree this entry came from
 	}
 	var entries []updateEntry
+	rowsAffected := int64(0)
 
 	// Pre-calculate column indices for SET clauses
 	setColumnIndices := make([]int, len(stmt.Set))
@@ -59,7 +61,15 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		}
 	}
 
-	for iter.HasNext() {
+	// Iterate over all partition trees
+	for treeIdx, tree := range trees {
+		treeName := treeNames[treeIdx]
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to scan table for UPDATE: %w", err)
+		}
+
+		for iter.HasNext() {
 		key, valueData, err := iter.Next()
 		if err != nil {
 			break
@@ -254,12 +264,15 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		}
 
 		entries = append(entries, updateEntry{
-			key:    keyCopy,
-			oldRow: row,
-			newRow: updatedRow,
+			key:      keyCopy,
+			oldRow:   row,
+			newRow:   updatedRow,
+			treeName: treeName,
 		})
 		rowsAffected++
 	}
+	iter.Close()
+}
 
 	// Apply updates
 	pkColIdx := -1
@@ -277,6 +290,12 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			return 0, rowsAffected, fmt.Errorf("failed to encode updated row: %w", err)
 		}
 
+		// Get the tree for this entry
+		updateTree, exists := c.tableTrees[entry.treeName]
+		if !exists {
+			return 0, rowsAffected, fmt.Errorf("partition tree %s not found", entry.treeName)
+		}
+
 		// Check if PRIMARY KEY was changed - need to delete old key and insert new one
 		newKey := oldKey
 		pkChanged := false
@@ -291,7 +310,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 					newKey = []byte(fmt.Sprintf("%020d", int64(fVal)))
 				}
 				// Check if the new PK already exists (duplicate PK violation)
-				if existingData, err := tree.Get(newKey); err == nil && existingData != nil {
+				if existingData, err := updateTree.Get(newKey); err == nil && existingData != nil {
 					return 0, 0, fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal)
 				}
 			}
@@ -346,10 +365,10 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 
 		if pkChanged {
 			// Delete old key and insert new key
-			if err := tree.Delete(oldKey); err != nil {
+			if err := updateTree.Delete(oldKey); err != nil {
 				return 0, rowsAffected, fmt.Errorf("failed to delete old key during PK update: %w", err)
 			}
-			if err := tree.Put(newKey, newValueData); err != nil {
+			if err := updateTree.Put(newKey, newValueData); err != nil {
 				return 0, rowsAffected, fmt.Errorf("failed to update row with new key: %w", err)
 			}
 			// Update auto-increment counter if needed
@@ -360,7 +379,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				}
 			}
 		} else {
-			if err := tree.Put(oldKey, newValueData); err != nil {
+			if err := updateTree.Put(oldKey, newValueData); err != nil {
 				return 0, rowsAffected, fmt.Errorf("failed to update row: %w", err)
 			}
 		}

@@ -1966,7 +1966,136 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 		return nil, err
 	}
 
+	// Parse optional PARTITION BY clause
+	if p.current().Type == TokenPartition {
+		p.advance() // consume PARTITION
+		if _, err := p.expect(TokenBy); err != nil {
+			return nil, err
+		}
+		partitionDef, err := p.parsePartitionBy()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Partition = partitionDef
+	}
+
 	return stmt, nil
+}
+
+// parsePartitionBy parses PARTITION BY clause
+func (p *Parser) parsePartitionBy() (*PartitionDef, error) {
+	def := &PartitionDef{}
+
+	switch p.current().Type {
+	case TokenRange:
+		p.advance()
+		def.Type = PartitionTypeRange
+	case TokenList:
+		p.advance()
+		def.Type = PartitionTypeList
+	case TokenHash:
+		p.advance()
+		def.Type = PartitionTypeHash
+	case TokenKey:
+		p.advance()
+		def.Type = PartitionTypeKey
+	default:
+		return nil, fmt.Errorf("expected RANGE, LIST, HASH, or KEY after PARTITION BY")
+	}
+
+	// Parse column or expression in parentheses
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, err
+	}
+
+	// For simplicity, expect a single column name
+	if p.current().Type == TokenIdentifier {
+		def.Column = p.current().Literal
+		p.advance()
+	} else {
+		// Could be an expression
+		expr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		def.Expression = expr
+	}
+
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, err
+	}
+
+	// Parse PARTITIONS num or individual partition definitions
+	if p.current().Type == TokenPartitions {
+		p.advance() // consume PARTITIONS
+		// Should be PARTITIONS num
+		if p.current().Type == TokenNumber {
+			// PARTITIONS num
+			num, _ := strconv.Atoi(p.current().Literal)
+			def.NumPartitions = num
+			p.advance()
+		}
+	} else if p.current().Type == TokenLParen {
+		// Individual partition definitions: (PARTITION p0 VALUES LESS THAN (2020), ...)
+		if _, err := p.expect(TokenLParen); err != nil {
+			return nil, err
+		}
+
+		for {
+			if p.current().Type != TokenPartition {
+				break
+			}
+			p.advance() // consume PARTITION
+
+			// Parse partition name
+			partName, err := p.expect(TokenIdentifier)
+			if err != nil {
+				return nil, err
+			}
+
+			part := &SinglePartition{Name: partName.Literal}
+
+			// Parse VALUES LESS THAN (value) or VALUES IN (values)
+			if p.current().Type == TokenValues {
+				p.advance() // consume VALUES
+
+				if p.current().Type == TokenLess { // LESS
+					p.advance() // consume LESS
+					if _, err := p.expect(TokenThan); err != nil {
+						return nil, fmt.Errorf("expected THAN after LESS: %w", err)
+					}
+				}
+
+				// For now expect a single value in parentheses
+				if _, err := p.expect(TokenLParen); err != nil {
+					return nil, err
+				}
+
+				// Parse value expression
+				valExpr, err := p.parseExpression()
+				if err != nil {
+					return nil, err
+				}
+				part.Values = append(part.Values, valExpr)
+
+				if _, err := p.expect(TokenRParen); err != nil {
+					return nil, err
+				}
+			}
+
+			def.Partitions = append(def.Partitions, part)
+
+			if !p.match(TokenComma) {
+				break
+			}
+		}
+
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
+	}
+
+	return def, nil
 }
 
 // parseForeignKeyDef parses a FOREIGN KEY constraint

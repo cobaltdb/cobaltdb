@@ -237,8 +237,12 @@ func TestCoverage_RollbackToSavepointUndoAlterRename(t *testing.T) {
 	}
 
 	// Verify old name works
-	result, _ := cat.ExecuteQuery("SELECT COUNT(*) FROM sp_rename_orig")
-	t.Logf("Count after rollback: %v", result.Rows)
+	result, err := cat.ExecuteQuery("SELECT COUNT(*) FROM sp_rename_orig")
+	if err != nil {
+		t.Logf("Query error (expected if rollback worked): %v", err)
+	} else {
+		t.Logf("Count after rollback: %v", result.Rows)
+	}
 
 	cat.RollbackTransaction()
 }

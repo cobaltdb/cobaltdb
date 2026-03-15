@@ -24,82 +24,95 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		return 0, 0, err
 	}
 
-	tree, exists := c.tableTrees[stmt.Table]
-	if !exists {
-		return 0, 0, ErrTableNotFound
-	}
-
 	// Handle DELETE with USING (JOIN)
 	if len(stmt.Using) > 0 {
 		return c.deleteWithUsingLocked(ctx, stmt, args)
 	}
 
-	rowsAffected := int64(0)
-	iter, err := tree.Scan(nil, nil)
+	// Get all trees for scanning (handles partitioned tables)
+	trees, err := c.getTableTreesForScan(table)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to scan table for DELETE: %w", err)
+		return 0, 0, err
 	}
-	defer iter.Close()
 
 	// Collect keys and row data to delete (need row data for index cleanup)
 	type deleteEntry struct {
-		key   []byte
-		value []byte
-		row   []interface{} // decoded row for RETURNING clause
+		key      []byte
+		value    []byte
+		row      []interface{} // decoded row for RETURNING clause
+		treeName string        // which partition tree this entry came from
 	}
 	var entries []deleteEntry
-	for iter.HasNext() {
-		key, valueData, err := iter.Next()
-		if err != nil {
-			break
-		}
+	rowsAffected := int64(0)
 
-		// Decode row
-		row, err := decodeRow(valueData, len(table.Columns))
-		if err != nil {
-			continue
-		}
+	// Scan all partition trees to collect entries to delete
+	// Get tree names for later lookup during deletion
+	treeNames := []string{stmt.Table}
+	if table.Partition != nil {
+		treeNames = table.getPartitionTreeNames()
+	}
 
-		// Apply WHERE clause if present
-		if stmt.Where != nil {
-			matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+	for i, tree := range trees {
+		treeName := treeNames[i]
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to scan table for DELETE: %w", err)
+		}
+		for iter.HasNext() {
+			key, valueData, err := iter.Next()
 			if err != nil {
-				return 0, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+				break
 			}
-			if !matched {
-				continue // Skip row that doesn't match WHERE condition
-			}
-		}
 
-		// Apply Row-Level Security check for DELETE
-		if c.enableRLS && c.rlsManager != nil {
-			user, _ := ctx.Value("cobaltdb_user").(string)
-			roles, _ := ctx.Value("cobaltdb_roles").([]string)
-			if user != "" {
-				rowMap := make(map[string]interface{})
-				for i, col := range table.Columns {
-					if i < len(row) {
-						rowMap[col.Name] = row[i]
+			// Decode row
+			row, err := decodeRow(valueData, len(table.Columns))
+			if err != nil {
+				continue
+			}
+
+			// Apply WHERE clause if present
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+				if err != nil {
+					iter.Close()
+					return 0, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+				}
+				if !matched {
+					continue // Skip row that doesn't match WHERE condition
+				}
+			}
+
+			// Apply Row-Level Security check for DELETE
+			if c.enableRLS && c.rlsManager != nil {
+				user, _ := ctx.Value("cobaltdb_user").(string)
+				roles, _ := ctx.Value("cobaltdb_roles").([]string)
+				if user != "" {
+					rowMap := make(map[string]interface{})
+					for i, col := range table.Columns {
+						if i < len(row) {
+							rowMap[col.Name] = row[i]
+						}
+					}
+					allowed, rlsErr := c.checkRLSForDeleteInternal(ctx, stmt.Table, rowMap, user, roles)
+					if rlsErr != nil {
+						continue // Skip rows that fail RLS check
+					}
+					if !allowed {
+						continue // Skip rows the user doesn't have access to
 					}
 				}
-				allowed, rlsErr := c.checkRLSForDeleteInternal(ctx, stmt.Table, rowMap, user, roles)
-				if rlsErr != nil {
-					continue // Skip rows that fail RLS check
-				}
-				if !allowed {
-					continue // Skip rows the user doesn't have access to
-				}
 			}
+
+			// Make copies of key and value since iterator may reuse buffers
+			keyCopy := make([]byte, len(key))
+			copy(keyCopy, key)
+			valueCopy := make([]byte, len(valueData))
+			copy(valueCopy, valueData)
+
+			entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
+			rowsAffected++
 		}
-
-		// Make copies of key and value since iterator may reuse buffers
-		keyCopy := make([]byte, len(key))
-		copy(keyCopy, key)
-		valueCopy := make([]byte, len(valueData))
-		copy(valueCopy, valueData)
-
-		entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row})
-		rowsAffected++
+		iter.Close()
 	}
 
 	// Foreign key enforcer for CASCADE/RESTRICT actions
@@ -197,7 +210,12 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 			})
 		}
 
-		if err := tree.Delete(key); err != nil {
+		// Delete from the correct partition tree
+		deleteTree, exists := c.tableTrees[entry.treeName]
+		if !exists {
+			return 0, rowsAffected, fmt.Errorf("partition tree %s not found", entry.treeName)
+		}
+		if err := deleteTree.Delete(key); err != nil {
 			return 0, rowsAffected, fmt.Errorf("failed to delete row: %w", err)
 		}
 

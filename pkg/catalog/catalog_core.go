@@ -48,6 +48,21 @@ var (
 )
 
 // TableDef represents a table definition
+// PartitionInfo stores table partitioning configuration
+type PartitionInfo struct {
+	Type       query.PartitionType `json:"type"`
+	Column     string              `json:"column"`
+	NumParts   int                 `json:"num_parts"`
+	Partitions []PartitionDef      `json:"partitions"`
+}
+
+// PartitionDef defines a single partition
+type PartitionDef struct {
+	Name      string `json:"name"`
+	MinValue  int64  `json:"min_value"`
+	MaxValue  int64  `json:"max_value"`
+}
+
 type TableDef struct {
 	Name        string              `json:"name"`
 	Type        string              `json:"type"` // "table" or "collection"
@@ -57,6 +72,7 @@ type TableDef struct {
 	RootPageID  uint32              `json:"root_page_id"`
 	ForeignKeys []ForeignKeyDef     `json:"foreign_keys,omitempty"`
 	AutoIncSeq  int64               `json:"auto_inc_seq"` // Per-table auto-increment counter
+	Partition   *PartitionInfo      `json:"partition,omitempty"` // Table partitioning info
 	// Performance: cache column indices (not persisted)
 	columnIndices map[string]int `json:"-"`
 }
@@ -913,7 +929,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		}
 		// Check for materialized view if not found in CTE
 		if !foundInCTE {
-			if mv, mvErr := cat.GetMaterializedView(stmt.From.Name); mvErr == nil {
+			if mv, mvErr := cat.getMaterializedViewLocked(stmt.From.Name); mvErr == nil {
 			// It's a materialized view - create a synthetic table from its data
 			table = &TableDef{
 				Name: stmt.From.Name,
@@ -1291,8 +1307,9 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		defer delete(cat.cteResults, strings.ToLower(stmt.From.Name))
 	}
 
-	tree, exists := cat.tableTrees[stmt.From.Name]
-	if !exists && !isMV {
+	// Get all trees for scanning (handles partitioned tables)
+	trees, err := cat.getTableTreesForScan(table)
+	if err != nil && !isMV {
 		return returnColumns, rows, nil
 	}
 
@@ -1304,10 +1321,21 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 	}
 
 	// If using index, directly fetch matching rows instead of full scan
+	// For partitioned tables, we need to check all partition trees
 	if useIndex {
 		for pk := range indexMatches {
-			valueData, err := tree.Get([]byte(pk))
-			if err != nil {
+			// Try to find the row in any partition tree
+			var valueData []byte
+			var found bool
+			for _, tree := range trees {
+				data, err := tree.Get([]byte(pk))
+				if err == nil {
+					valueData = data
+					found = true
+					break
+				}
+			}
+			if !found {
 				continue // Row not found
 			}
 
@@ -1406,74 +1434,77 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 				windowFullRows = append(windowFullRows, fullRowCopy)
 			}
 		}
-	} else {
+	} else if !isMV {
 		// Full table scan when no index is available
-		iter, err := tree.Scan(nil, nil)
-		if err != nil {
-			return returnColumns, nil, fmt.Errorf("failed to scan table: %w", err)
-		}
-		defer iter.Close()
-
-		for iter.HasNext() {
-			_, valueData, err := iter.Next()
+		// For partitioned tables, scan all partition trees
+		for _, tree := range trees {
+			iter, err := tree.Scan(nil, nil)
 			if err != nil {
-				break
+				return returnColumns, nil, fmt.Errorf("failed to scan table: %w", err)
 			}
 
-			// Decode full row
-			fullRow, err := decodeRow(valueData, len(table.Columns))
-			if err != nil {
-				continue
-			}
-
-			// Apply WHERE clause if present
-			if stmt.Where != nil {
-				matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
+			for iter.HasNext() {
+				_, valueData, err := iter.Next()
 				if err != nil {
-					continue // Skip row on error
+					break
 				}
-				if !matched {
-					continue // Skip row that doesn't match WHERE condition
-				}
-			}
 
-			// Extract only selected columns
-			selectedRow := make([]interface{}, len(selectCols))
-			for i, ci := range selectCols {
-				if ci.isWindow {
-					// Window functions are evaluated after all rows are collected
+				// Decode full row
+				fullRow, err := decodeRow(valueData, len(table.Columns))
+				if err != nil {
 					continue
 				}
-				if ci.index >= 0 && ci.index < len(fullRow) {
-					// Regular column
-					selectedRow[i] = fullRow[ci.index]
-				} else if ci.index == -1 && !ci.isAggregate {
-					// Scalar function or expression - evaluate it
-					if i < len(stmt.Columns) {
-						if expr, ok := stmt.Columns[i].(query.Expression); ok {
-							val, err := evaluateExpression(cat, fullRow, table.Columns, expr, args)
-							if err == nil {
-								selectedRow[i] = val
+
+				// Apply WHERE clause if present
+				if stmt.Where != nil {
+					matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
+					if err != nil {
+						continue // Skip row on error
+					}
+					if !matched {
+						continue // Skip row that doesn't match WHERE condition
+					}
+				}
+
+				// Extract only selected columns
+				selectedRow := make([]interface{}, len(selectCols))
+				for i, ci := range selectCols {
+					if ci.isWindow {
+						// Window functions are evaluated after all rows are collected
+						continue
+					}
+					if ci.index >= 0 && ci.index < len(fullRow) {
+						// Regular column
+						selectedRow[i] = fullRow[ci.index]
+					} else if ci.index == -1 && !ci.isAggregate {
+						// Scalar function or expression - evaluate it
+						if i < len(stmt.Columns) {
+							if expr, ok := stmt.Columns[i].(query.Expression); ok {
+								val, err := evaluateExpression(cat, fullRow, table.Columns, expr, args)
+								if err == nil {
+									selectedRow[i] = val
+								}
 							}
-						}
-					} else if strings.HasPrefix(ci.name, "__orderby_") {
-						// Hidden ORDER BY expression column - extract index from name
-						var obIdx int
-						if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
-							val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
-							if err == nil {
-								selectedRow[i] = val
+						} else if strings.HasPrefix(ci.name, "__orderby_") {
+							// Hidden ORDER BY expression column - extract index from name
+							var obIdx int
+							if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
+								val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
+								if err == nil {
+									selectedRow[i] = val
+								}
 							}
 						}
 					}
 				}
+				rows = append(rows, selectedRow)
+				if hasWindowFuncs {
+					fullRowCopy := make([]interface{}, len(fullRow))
+					copy(fullRowCopy, fullRow)
+					windowFullRows = append(windowFullRows, fullRowCopy)
+				}
 			}
-			rows = append(rows, selectedRow)
-			if hasWindowFuncs {
-				fullRowCopy := make([]interface{}, len(fullRow))
-				copy(fullRowCopy, fullRow)
-				windowFullRows = append(windowFullRows, fullRowCopy)
-			}
+			iter.Close()
 		}
 	}
 
@@ -3520,6 +3551,99 @@ func (t *TableDef) isPrimaryKeyColumn(name string) bool {
 		}
 	}
 	return false
+}
+
+// getPartitionTreeName returns the partition tree name for a row value
+// Returns empty string if table is not partitioned or no matching partition found
+func (t *TableDef) getPartitionTreeName(partitionVal interface{}) string {
+	if t.Partition == nil {
+		return ""
+	}
+
+	// Convert partition value to int64
+	var val int64
+	switch v := partitionVal.(type) {
+	case int64:
+		val = v
+	case int:
+		val = int64(v)
+	case float64:
+		val = int64(v)
+	case string:
+		var err error
+		val, err = strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return ""
+		}
+	default:
+		return ""
+	}
+
+	// Find matching partition based on partition type
+	switch t.Partition.Type {
+	case query.PartitionTypeRange:
+		for _, p := range t.Partition.Partitions {
+			if val >= p.MinValue && val < p.MaxValue {
+				return t.Name + ":" + p.Name
+			}
+		}
+	case query.PartitionTypeList:
+		// For LIST partitions, we'd need value lists - simplified for now
+		if len(t.Partition.Partitions) > 0 {
+			// Hash the value to pick a partition
+			idx := int(val) % len(t.Partition.Partitions)
+			if idx < 0 {
+				idx = -idx
+			}
+			return t.Name + ":" + t.Partition.Partitions[idx].Name
+		}
+	case query.PartitionTypeHash:
+		if len(t.Partition.Partitions) > 0 {
+			idx := int(val) % len(t.Partition.Partitions)
+			if idx < 0 {
+				idx = -idx
+			}
+			return t.Name + ":" + t.Partition.Partitions[idx].Name
+		}
+	}
+
+	return ""
+}
+
+// getPartitionTreeNames returns all partition tree names for a partitioned table
+// Used for SELECT to scan all partitions
+func (t *TableDef) getPartitionTreeNames() []string {
+	if t.Partition == nil {
+		return []string{t.Name}
+	}
+
+	names := make([]string, len(t.Partition.Partitions))
+	for i, p := range t.Partition.Partitions {
+		names[i] = t.Name + ":" + p.Name
+	}
+	return names
+}
+
+// getTableTreesForScan returns all B-trees for scanning a table
+// For partitioned tables, returns all partition trees; for non-partitioned, returns the single tree
+func (c *Catalog) getTableTreesForScan(table *TableDef) ([]*btree.BTree, error) {
+	if table.Partition == nil {
+		tree, exists := c.tableTrees[table.Name]
+		if !exists {
+			return nil, ErrTableNotFound
+		}
+		return []*btree.BTree{tree}, nil
+	}
+
+	// Partitioned table - collect all partition trees
+	treeNames := table.getPartitionTreeNames()
+	trees := make([]*btree.BTree, 0, len(treeNames))
+	for _, name := range treeNames {
+		if tree, exists := c.tableTrees[name]; exists {
+			trees = append(trees, tree)
+		}
+	}
+	return trees, nil
 }
 
 func exprToSQL(expr query.Expression) string {
