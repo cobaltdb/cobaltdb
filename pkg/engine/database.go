@@ -1350,6 +1350,9 @@ func (db *DB) executeDropTrigger(ctx context.Context, stmt *query.DropTriggerStm
 // executeCreateProcedure executes CREATE PROCEDURE
 func (db *DB) executeCreateProcedure(ctx context.Context, stmt *query.CreateProcedureStmt) (Result, error) {
 	if err := db.catalog.CreateProcedure(stmt); err != nil {
+		if stmt.IfNotExists {
+			return Result{}, nil // Silently succeed
+		}
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
@@ -1358,6 +1361,9 @@ func (db *DB) executeCreateProcedure(ctx context.Context, stmt *query.CreateProc
 // executeDropProcedure executes DROP PROCEDURE
 func (db *DB) executeDropProcedure(ctx context.Context, stmt *query.DropProcedureStmt) (Result, error) {
 	if err := db.catalog.DropProcedure(stmt.Name); err != nil {
+		if stmt.IfExists {
+			return Result{}, nil // Silently succeed
+		}
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
@@ -1596,14 +1602,17 @@ func (db *DB) executeCallProcedure(ctx context.Context, stmt *query.CallProcedur
 		return Result{}, err
 	}
 
-	// Execute each statement in the procedure body
-	// Map call arguments to procedure parameters
-	execArgs := args
+	// Map procedure parameters to call arguments
+	paramMap := make(map[string]interface{})
+	for i, param := range proc.Params {
+		if i < len(args) {
+			paramMap[param.Name] = args[i]
+		}
+	}
 
 	var totalRowsAffected int64
 	for _, bodyStmt := range proc.Body {
-		// Execute the statement
-		result, err := db.execute(ctx, bodyStmt, execArgs)
+		result, err := db.executeWithParams(ctx, bodyStmt, paramMap)
 		if err != nil {
 			return Result{}, err
 		}
@@ -1613,6 +1622,117 @@ func (db *DB) executeCallProcedure(ctx context.Context, stmt *query.CallProcedur
 	return Result{RowsAffected: totalRowsAffected}, nil
 }
 
+// executeWithParams executes a statement with parameter substitution
+func (db *DB) executeWithParams(ctx context.Context, stmt query.Statement, paramMap map[string]interface{}) (Result, error) {
+	// Substitute parameters in the statement
+	substitutedStmt := substituteParamsInStatement(stmt, paramMap)
+	
+	// Execute the statement (with no additional args since params are substituted)
+	return db.execute(ctx, substitutedStmt, nil)
+}
+
+// substituteParamsInStatement replaces parameter references with literal values
+func substituteParamsInStatement(stmt query.Statement, paramMap map[string]interface{}) query.Statement {
+	switch s := stmt.(type) {
+	case *query.InsertStmt:
+		newStmt := *s
+		newStmt.Values = substituteParamsInValues(s.Values, paramMap)
+		return &newStmt
+	case *query.UpdateStmt:
+		newStmt := *s
+		newStmt.Set = substituteParamsInSetClauses(s.Set, paramMap)
+		if s.Where != nil {
+			newStmt.Where = substituteParamsInExpr(s.Where, paramMap)
+		}
+		return &newStmt
+	case *query.DeleteStmt:
+		newStmt := *s
+		if s.Where != nil {
+			newStmt.Where = substituteParamsInExpr(s.Where, paramMap)
+		}
+		return &newStmt
+	default:
+		return stmt
+	}
+}
+
+// substituteParamsInValues replaces params in VALUES clause
+func substituteParamsInValues(values [][]query.Expression, paramMap map[string]interface{}) [][]query.Expression {
+	result := make([][]query.Expression, len(values))
+	for i, row := range values {
+		result[i] = make([]query.Expression, len(row))
+		for j, expr := range row {
+			result[i][j] = substituteParamsInExpr(expr, paramMap)
+		}
+	}
+	return result
+}
+
+// substituteParamsInSetClauses replaces params in SET clause
+func substituteParamsInSetClauses(set []*query.SetClause, paramMap map[string]interface{}) []*query.SetClause {
+	result := make([]*query.SetClause, len(set))
+	for i, clause := range set {
+		newClause := *clause
+		newClause.Value = substituteParamsInExpr(clause.Value, paramMap)
+		result[i] = &newClause
+	}
+	return result
+}
+
+// substituteParamsInExpr replaces parameter identifiers with literal values
+func substituteParamsInExpr(expr query.Expression, paramMap map[string]interface{}) query.Expression {
+	if expr == nil {
+		return nil
+	}
+	
+	switch e := expr.(type) {
+	case *query.Identifier:
+		if val, ok := paramMap[e.Name]; ok {
+			switch v := val.(type) {
+			case string:
+				return &query.StringLiteral{Value: v}
+			case int:
+				return &query.NumberLiteral{Value: float64(v)}
+			case int64:
+				return &query.NumberLiteral{Value: float64(v)}
+			case float64:
+				return &query.NumberLiteral{Value: v}
+			case bool:
+				return &query.BooleanLiteral{Value: v}
+			case nil:
+				return &query.NullLiteral{}
+			default:
+				return &query.StringLiteral{Value: fmt.Sprintf("%v", v)}
+			}
+		}
+		return expr
+	case *query.BinaryExpr:
+		return &query.BinaryExpr{
+			Left:     substituteParamsInExpr(e.Left, paramMap),
+			Operator: e.Operator,
+			Right:    substituteParamsInExpr(e.Right, paramMap),
+		}
+	case *query.UnaryExpr:
+		return &query.UnaryExpr{
+			Operator: e.Operator,
+			Expr:     substituteParamsInExpr(e.Expr, paramMap),
+		}
+	case *query.FunctionCall:
+		newArgs := make([]query.Expression, len(e.Args))
+		for i, arg := range e.Args {
+			newArgs[i] = substituteParamsInExpr(arg, paramMap)
+		}
+		return &query.FunctionCall{
+			Name:     e.Name,
+			Args:     newArgs,
+			Distinct: e.Distinct,
+		}
+	default:
+		return expr
+	}
+}
+
+// executeSelect executes SELECT
 // executeSelect executes SELECT
 func (db *DB) executeSelect(ctx context.Context, stmt *query.SelectStmt, args []interface{}) (*Rows, error) {
 	columns, rows, err := db.catalog.Select(stmt, args)

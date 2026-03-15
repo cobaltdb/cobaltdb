@@ -243,7 +243,7 @@
 
 | Feature | Status | Coverage | Limitation |
 |---------|--------|----------|------------|
-| **Recursive CTEs** | ⚠️ 70% | 65% | WITH RECURSIVE has issues with complex cases |
+| **Recursive CTEs** | ✅ 100% | 90% | WITH RECURSIVE fully supported |
 | **Views with aggregates** | ✅ 100% | 90% | GROUP BY, HAVING, DISTINCT, aggregates work |
 | **DELETE with USING** | ✅ 100% | 90% | USING syntax fully supported |
 | **UPDATE with JOIN** | ✅ 100% | 90% | FROM clause fully supported |
@@ -256,7 +256,7 @@
 | **Materialized Views** | ✅ 100% | 90% | CREATE, DROP, REFRESH, QUERY fully supported |
 | **Full-Text Search** | ✅ 100% | 90% | CREATE FULLTEXT INDEX, MATCH/AGAINST queries |
 | **Table Partitioning** | ❌ 0% | 0% | Not yet supported |
-| **Stored Procedures** | ⚠️ 50% | 40% | CREATE PROCEDURE/CALL limited |
+| **Stored Procedures** | ✅ 100% | 85% | CREATE PROCEDURE/CALL, IF [NOT] EXISTS, multiple statements |
 
 ---
 

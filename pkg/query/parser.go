@@ -2430,6 +2430,14 @@ func (p *Parser) parseCreateProcedure() (*CreateProcedureStmt, error) {
 	if p.match(TokenLParen) {
 		for !p.match(TokenRParen) {
 			param := &ParamDef{}
+			
+			// Optional IN/OUT/INOUT keyword
+			if p.current().Type == TokenIn {
+				p.advance() // consume IN
+			} else if p.current().Type == TokenOut {
+				p.advance() // consume OUT
+			}
+			
 			paramName, err := p.expect(TokenIdentifier)
 			if err != nil {
 				return nil, err

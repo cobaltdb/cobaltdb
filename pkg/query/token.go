@@ -111,6 +111,8 @@ const (
 	TokenProcedure
 	TokenPolicy
 	TokenCall
+	TokenOut
+	TokenInout
 
 	// Operators
 	TokenPlus
