@@ -463,3 +463,196 @@ func TestCreateBackupWithCancelledContextImmediate(t *testing.T) {
 	}
 }
 
+// TestListBackupsAndGetBackup tests listing and retrieving backups
+func TestListBackupsAndGetBackup(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+
+	db := &MockDatabase{dbPath: dbFile}
+	mgr := NewManager(config, db)
+
+	// Initially should have no backups
+	backups := mgr.ListBackups()
+	if len(backups) != 0 {
+		t.Errorf("Expected 0 backups initially, got %d", len(backups))
+	}
+
+	// Create a backup
+	ctx := context.Background()
+	backup, err := mgr.CreateBackup(ctx, TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+
+	// List should now have one backup
+	backups = mgr.ListBackups()
+	if len(backups) != 1 {
+		t.Errorf("Expected 1 backup, got %d", len(backups))
+	}
+
+	// GetBackup should return the backup
+	retrieved := mgr.GetBackup(backup.ID)
+	if retrieved == nil {
+		t.Fatal("GetBackup returned nil for existing backup")
+	}
+	if retrieved.ID != backup.ID {
+		t.Errorf("GetBackup returned wrong backup: %s vs %s", retrieved.ID, backup.ID)
+	}
+
+	// GetBackup for non-existent should return nil
+	notFound := mgr.GetBackup("non_existent")
+	if notFound != nil {
+		t.Error("GetBackup should return nil for non-existent backup")
+	}
+}
+
+// TestRestoreWithWAL tests restore including WAL files
+func TestRestoreWithWAL(t *testing.T) {
+	tempDir := t.TempDir()
+	targetDir := t.TempDir()
+	walDir := filepath.Join(tempDir, "wal")
+	os.MkdirAll(walDir, 0755)
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test database"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	// Create WAL files
+	if err := os.WriteFile(filepath.Join(walDir, "wal_1.log"), []byte("wal content 1"), 0644); err != nil {
+		t.Fatalf("Failed to create WAL file: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+
+	db := &MockDatabaseWithWAL{dbPath: dbFile, walPath: walDir, lsn: 100}
+	mgr := NewManager(config, db)
+
+	ctx := context.Background()
+	backup, err := mgr.CreateBackup(ctx, TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+
+	targetPath := filepath.Join(targetDir, "restored.db")
+	if err := mgr.Restore(ctx, backup.ID, targetPath); err != nil {
+		t.Fatalf("Failed to restore backup with WAL: %v", err)
+	}
+
+	// Verify WAL files were restored
+	targetWALPath := filepath.Join(targetDir, "wal", "wal_1.log")
+	if _, err := os.Stat(targetWALPath); os.IsNotExist(err) {
+		t.Error("WAL file should have been restored")
+	}
+}
+
+// TestRestoreWithCancelledContext tests restore cancellation
+func TestRestoreWithCancelledContext(t *testing.T) {
+	tempDir := t.TempDir()
+	targetDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	content := make([]byte, 1024*1024) // 1MB
+	if err := os.WriteFile(dbFile, content, 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+
+	db := &MockDatabase{dbPath: dbFile}
+	mgr := NewManager(config, db)
+
+	ctx := context.Background()
+	backup, err := mgr.CreateBackup(ctx, TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+
+	// Cancel context before restore
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	targetPath := filepath.Join(targetDir, "restored.db")
+	err = mgr.Restore(cancelCtx, backup.ID, targetPath)
+	if err == nil {
+		t.Error("Expected error for cancelled context during restore")
+	}
+}
+
+// TestRestoreMissingBackupFile tests restore when backup file is missing
+func TestRestoreMissingBackupFile(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+
+	db := &MockDatabase{dbPath: "/tmp/test.db"}
+	mgr := NewManager(config, db)
+
+	// Manually add backup metadata without file
+	backup := &Backup{
+		ID:          "test_backup",
+		Destination: filepath.Join(tempDir, "nonexistent.db"),
+		CompletedAt: time.Now(),
+	}
+	mgr.metadata.Backups = append(mgr.metadata.Backups, backup)
+
+	ctx := context.Background()
+	err := mgr.Restore(ctx, backup.ID, filepath.Join(tempDir, "restored.db"))
+	if err == nil {
+		t.Error("Expected error when backup file is missing")
+	}
+}
+
+// TestDeleteBackupSuccess tests successful backup deletion
+func TestDeleteBackupSuccess(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+
+	db := &MockDatabase{dbPath: dbFile}
+	mgr := NewManager(config, db)
+
+	ctx := context.Background()
+	backup, err := mgr.CreateBackup(ctx, TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+
+	// Verify backup file exists
+	if _, err := os.Stat(backup.Destination); os.IsNotExist(err) {
+		t.Fatal("Backup file should exist before deletion")
+	}
+
+	// Delete the backup
+	if err := mgr.DeleteBackup(backup.ID); err != nil {
+		t.Fatalf("Failed to delete backup: %v", err)
+	}
+
+	// Verify backup file is removed
+	if _, err := os.Stat(backup.Destination); !os.IsNotExist(err) {
+		t.Error("Backup file should be removed after deletion")
+	}
+
+	// Verify backup is removed from metadata
+	if mgr.GetBackup(backup.ID) != nil {
+		t.Error("Backup should be removed from metadata")
+	}
+}
+
