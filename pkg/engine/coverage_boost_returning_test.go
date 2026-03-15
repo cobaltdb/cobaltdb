@@ -223,3 +223,122 @@ func TestExplainQuery(t *testing.T) {
 	cols := rows.Columns()
 	t.Logf("EXPLAIN returned columns: %v", cols)
 }
+
+// TestBackupDatabaseInterface tests backup.Database interface methods
+func TestBackupDatabaseInterface(t *testing.T) {
+	// Test with in-memory database (no WAL)
+	db, err := Open(":memory:", &Options{InMemory: true})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Test GetWALPath with no WAL
+	walPath := db.GetWALPath()
+	if walPath != "" {
+		t.Errorf("Expected empty WAL path for in-memory DB, got '%s'", walPath)
+	}
+
+	// Test Checkpoint with no WAL
+	if err := db.Checkpoint(); err != nil {
+		t.Errorf("Checkpoint failed: %v", err)
+	}
+
+	// Test GetCurrentLSN with no WAL
+	lsn := db.GetCurrentLSN()
+	if lsn != 0 {
+		t.Errorf("Expected LSN 0 for in-memory DB, got %d", lsn)
+	}
+
+	// Test BeginHotBackup
+	if err := db.BeginHotBackup(); err != nil {
+		t.Errorf("BeginHotBackup failed: %v", err)
+	}
+
+	// Test EndHotBackup
+	if err := db.EndHotBackup(); err != nil {
+		t.Errorf("EndHotBackup failed: %v", err)
+	}
+
+	// Test backup manager methods with nil manager
+	backups := db.ListBackups()
+	if backups == nil {
+		t.Log("ListBackups returned nil when manager not initialized")
+	} else if len(backups) != 0 {
+		t.Errorf("Expected 0 backups, got %d", len(backups))
+	}
+
+	backup := db.GetBackup("test")
+	if backup != nil {
+		t.Error("Expected nil backup when manager not initialized")
+	}
+
+	// Test GetMetrics with nil metrics
+	metrics, err := db.GetMetrics()
+	if err == nil {
+		t.Logf("GetMetrics returned: %s", string(metrics))
+	} else {
+		t.Logf("GetMetrics returned expected error: %v", err)
+	}
+}
+
+// TestBackupDatabaseInterfaceWithWAL tests backup interface with WAL enabled
+func TestBackupDatabaseInterfaceWithWAL(t *testing.T) {
+	// Create temp directory for database
+	tempDir := t.TempDir()
+	dbPath := tempDir + "/test_wal.db"
+
+	// Open with WAL enabled
+	db, err := Open(dbPath, &Options{
+		InMemory:    false,
+		WALEnabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+
+	// Create a table and insert data
+	ctx := context.Background()
+	_, err = db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+	if err != nil {
+		t.Fatalf("Failed to create table: %v", err)
+	}
+
+	_, err = db.Exec(ctx, "INSERT INTO test VALUES (1)")
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	// Test GetWALPath
+	walPath := db.GetWALPath()
+	t.Logf("WAL path: %s", walPath)
+
+	// Test GetCurrentLSN
+	lsn := db.GetCurrentLSN()
+	t.Logf("Current LSN: %d", lsn)
+
+	// Test Checkpoint
+	if err := db.Checkpoint(); err != nil {
+		t.Errorf("Checkpoint failed: %v", err)
+	}
+
+	db.Close()
+}
+
+
+// TestCreateBackupWithoutManager tests CreateBackup when manager is nil
+func TestCreateBackupWithoutManager(t *testing.T) {
+	db, err := Open(":memory:", &Options{InMemory: true})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	_, err = db.CreateBackup(ctx, "full")
+	if err == nil {
+		t.Error("Expected error when backup manager not initialized")
+	} else {
+		t.Logf("CreateBackup without manager returned expected error: %v", err)
+	}
+}
