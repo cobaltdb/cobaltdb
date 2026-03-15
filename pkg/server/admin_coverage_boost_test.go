@@ -157,3 +157,49 @@ func TestStopCoverage(t *testing.T) {
 		t.Logf("Double stop returned error (may be expected): %v", err)
 	}
 }
+
+// TestHandleJSONMetricsNoDB tests handleJSONMetrics with nil database
+func TestHandleJSONMetricsNoDB(t *testing.T) {
+	admin := NewAdminServer(nil, "127.0.0.1:0")
+	admin.SetAuthToken("test-token")
+	if err := admin.Start(); err != nil {
+		t.Fatalf("Failed to start admin server: %v", err)
+	}
+	defer admin.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	resp := doAuthGet(t, "test-token", "http://"+admin.Addr()+"/metrics/json")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("handleJSONMetrics returned status %d, expected 200", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	t.Logf("JSON metrics response with nil DB: %s", bodyStr)
+}
+
+// TestHandleDBStatsNoDB tests handleDBStats with nil database
+func TestHandleDBStatsNoDB(t *testing.T) {
+	admin := NewAdminServer(nil, "127.0.0.1:0")
+	admin.SetAuthToken("test-token")
+	if err := admin.Start(); err != nil {
+		t.Fatalf("Failed to start admin server: %v", err)
+	}
+	defer admin.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	resp := doAuthGet(t, "test-token", "http://"+admin.Addr()+"/stats")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("handleDBStats returned status %d, expected 200", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	t.Logf("DBStats response with nil DB: %s", bodyStr)
+}
