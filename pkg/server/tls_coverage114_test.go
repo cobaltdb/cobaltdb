@@ -304,3 +304,69 @@ func TestLoadTLSConfigWithCertFiles114(t *testing.T) {
 		t.Error("Expected at least one certificate")
 	}
 }
+
+// TestGenerateClientCert114 tests client certificate generation
+func TestGenerateClientCert114(t *testing.T) {
+	// Create temp directory for certs
+	tempDir := t.TempDir()
+
+	// Generate CA cert first
+	caConfig := &TLSConfig{
+		GenerateSelfSigned:  true,
+		SelfSignedOrg:       "Test CA",
+		SelfSignedValidDays: 1,
+	}
+
+	// Change to temp directory
+	originalDir, _ := os.Getwd()
+	os.Chdir(tempDir)
+	defer os.Chdir(originalDir)
+
+	err := generateSelfSignedCert(caConfig)
+	if err != nil {
+		t.Fatalf("Failed to generate CA cert: %v", err)
+	}
+
+	caCertPath := filepath.Join("certs", "server.crt")
+	caKeyPath := filepath.Join("certs", "server.key")
+
+	// Generate client cert
+	certPEM, keyPEM, err := GenerateClientCert(caCertPath, caKeyPath, "testclient", 1)
+	if err != nil {
+		t.Fatalf("Failed to generate client cert: %v", err)
+	}
+
+	if len(certPEM) == 0 {
+		t.Error("Expected non-empty certificate PEM")
+	}
+	if len(keyPEM) == 0 {
+		t.Error("Expected non-empty key PEM")
+	}
+}
+
+// TestGenerateClientCertErrors114 tests client certificate generation error cases
+func TestGenerateClientCertErrors114(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Test with non-existent CA cert
+	_, _, err := GenerateClientCert(
+		filepath.Join(tempDir, "nonexistent.crt"),
+		filepath.Join(tempDir, "nonexistent.key"),
+		"testclient",
+		1,
+	)
+	if err == nil {
+		t.Error("Expected error for non-existent CA cert")
+	}
+
+	// Test with invalid CA cert file
+	invalidCertPath := filepath.Join(tempDir, "invalid.crt")
+	invalidKeyPath := filepath.Join(tempDir, "invalid.key")
+	os.WriteFile(invalidCertPath, []byte("invalid cert data"), 0644)
+	os.WriteFile(invalidKeyPath, []byte("invalid key data"), 0644)
+
+	_, _, err = GenerateClientCert(invalidCertPath, invalidKeyPath, "testclient", 1)
+	if err == nil {
+		t.Error("Expected error for invalid CA cert")
+	}
+}
