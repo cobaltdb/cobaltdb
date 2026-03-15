@@ -276,6 +276,7 @@ func (c *Catalog) RollbackTransaction() error {
 			if tbl, exists := c.tables[entry.newName]; exists {
 				delete(c.tables, entry.newName)
 				c.tables[entry.oldName] = tbl
+				tbl.Name = entry.oldName // Restore table name
 				if tree, treeExists := c.tableTrees[entry.newName]; treeExists {
 					delete(c.tableTrees, entry.newName)
 					c.tableTrees[entry.oldName] = tree
@@ -525,6 +526,7 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 			if tbl, exists := c.tables[entry.newName]; exists {
 				delete(c.tables, entry.newName)
 				c.tables[entry.oldName] = tbl
+				tbl.Name = entry.oldName // Restore table name
 				if tree, treeExists := c.tableTrees[entry.newName]; treeExists {
 					delete(c.tableTrees, entry.newName)
 					c.tableTrees[entry.oldName] = tree
