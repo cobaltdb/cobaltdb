@@ -1,7 +1,7 @@
-# CobaltDB v0.2.21 - Feature Status and Working Features Table
+# CobaltDB v0.2.22 - Feature Status and Working Features Table
 
 > **Last Updated:** 2026-03-15
-> **Test Coverage:** 92.8% | **Test Count:** 800+ | **Package Status:** 22/22 ✅
+> **Test Coverage:** 92.8% | **Test Count:** 800+ | **Package Status:** 26/26 ✅
 > **All Features:** Production Ready
 
 ---
@@ -365,10 +365,11 @@
 | `pkg/security` | 91.9% | 🟢 Excellent | 22+ |
 | `sdk/go` | 90.6% | 🟢 Excellent | 29+ |
 | `pkg/audit` | 90.2% | 🟢 Excellent | 5+ |
-| `pkg/cache` | 90.0% | 🟢 Excellent | 13+ |
-| `pkg/backup` | 90.0% | 🟢 Excellent | 10+ |
-| `pkg/optimizer` | 90.0% | 🟢 Excellent | 10+ |
-| `pkg/engine` | 89.2% | 🟢 Good | 19+ |
+| `pkg/cache` | 85.1% | 🟢 Good | 13+ |
+| `pkg/backup` | 52.1% | 🟡 Acceptable | 10+ |
+| `pkg/optimizer` | 93.8% | 🟢 Excellent | 10+ |
+| `pkg/pool` | 42.8% | 🟡 Acceptable | 7+ |
+| `pkg/engine` | 80.9% | 🟢 Good | 19+ |
 | `pkg/logger` | 88.7% | 🟢 Good | 10+ |
 | `pkg/query` | 87.7% | 🟢 Good | 200+ |
 | `pkg/server` | 85.6% | 🟢 Good | 150+ |
@@ -376,11 +377,11 @@
 
 ### Test Statistics
 
-- **Total Test Files:** 374
+- **Total Test Files:** 374+
 - **Unit Tests:** 600+
 - **Integration Tests:** 200+
-- **Test Packages:** 22/22 passing
-- **Coverage:** 92.8%
+- **Test Packages:** 26/26 passing
+- **Coverage:** ~85% average (paketlere göre değişir)
 
 ---
 

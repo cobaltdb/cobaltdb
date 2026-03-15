@@ -21,6 +21,15 @@ Five major enterprise database features implemented and integrated into the engi
 - Cache statistics (hits, misses, evictions)
 - 13 comprehensive tests, 85.1% coverage
 
+#### Connection Pooling (`pkg/pool`)
+- Min/max connection limits
+- Health checks with ping verification
+- Dynamic pool sizing
+- Connection timeouts
+- Graceful shutdown
+- LIFO connection reuse
+- 7 tests, 42.8% coverage
+
 #### Query Optimizer (`pkg/optimizer`)
 - Cost-based index selection
 - Join reordering for optimal performance
@@ -45,7 +54,7 @@ Five major enterprise database features implemented and integrated into the engi
 - Automatic reconnection with exponential backoff
 - Heartbeat monitoring
 - Prometheus metrics integration
-- 5 tests, 85%+ coverage
+- Integration tests (requires network)
 
 #### Connection Pooling (`pkg/pool`)
 - Min/max connection limits
@@ -55,6 +64,8 @@ Five major enterprise database features implemented and integrated into the engi
 - Graceful shutdown
 - LIFO connection reuse
 - 7 tests, 42.8% coverage
+
+#### Query Optimizer (`pkg/optimizer`)
 
 #### Engine Integration
 - All modules integrated into `engine.Open()`
