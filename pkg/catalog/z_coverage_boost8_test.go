@@ -209,3 +209,67 @@ func TestCoverage_AggregateFunctions(t *testing.T) {
 		}
 	}
 }
+
+// TestCoverage_CreateTableHashPartitionAuto tests CreateTable with HASH partitioning
+// where partitions are auto-generated based on NumPartitions
+func TestCoverage_CreateTableHashPartitionAuto(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	cat := New(tree, pool, nil)
+
+	// Create table with HASH partitioning and NumPartitions but no explicit partition defs
+	err := cat.CreateTable(&query.CreateTableStmt{
+		Table: "hash_part_auto",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "data", Type: query.TokenText},
+		},
+		Partition: &query.PartitionDef{
+			Type:          query.PartitionTypeHash,
+			Column:        "id",
+			NumPartitions: 4, // Auto-generate 4 partitions
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create hash partitioned table: %v", err)
+	}
+
+	// Verify table was created
+	cat.mu.RLock()
+	table, exists := cat.tables["hash_part_auto"]
+	cat.mu.RUnlock()
+
+	if !exists {
+		t.Fatal("Table 'hash_part_auto' was not created")
+	}
+
+	if table.Partition == nil {
+		t.Fatal("Table should have partition info")
+	}
+
+	if table.Partition.Type != query.PartitionTypeHash {
+		t.Errorf("Expected HASH partition type, got %v", table.Partition.Type)
+	}
+
+	// Should have 4 auto-generated partitions
+	if len(table.Partition.Partitions) != 4 {
+		t.Errorf("Expected 4 partitions, got %d", len(table.Partition.Partitions))
+	}
+
+	// Check partition names are auto-generated (p0, p1, p2, p3)
+	expectedNames := map[string]bool{"p0": false, "p1": false, "p2": false, "p3": false}
+	for _, p := range table.Partition.Partitions {
+		if _, exists := expectedNames[p.Name]; !exists {
+			t.Errorf("Unexpected partition name: %s", p.Name)
+		}
+		expectedNames[p.Name] = true
+	}
+
+	for name, found := range expectedNames {
+		if !found {
+			t.Errorf("Expected partition %s not found", name)
+		}
+	}
+}
