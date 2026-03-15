@@ -220,7 +220,7 @@ func TestBackupInProgress(t *testing.T) {
 
 func TestGenerateBackupID(t *testing.T) {
 	id1 := generateBackupID()
-	time.Sleep(1 * time.Millisecond) // Ensure different timestamp
+	time.Sleep(10 * time.Millisecond) // Ensure different timestamp
 	id2 := generateBackupID()
 
 	if id1 == "" {
