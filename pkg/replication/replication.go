@@ -214,11 +214,13 @@ func (m *Manager) Start() error {
 // Stop gracefully shuts down replication
 func (m *Manager) Stop() error {
 	close(m.stopCh)
-	m.wg.Wait()
 
+	// Close listener first to unblock acceptSlaves()
 	if m.listener != nil {
 		m.listener.Close()
 	}
+
+	m.wg.Wait()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

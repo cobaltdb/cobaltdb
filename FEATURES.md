@@ -30,7 +30,7 @@
 | **Query Cache** | ✅ Production Ready | 90%+ | LRU cache with TTL and invalidation |
 | **Query Optimizer** | ✅ Production Ready | 90%+ | Cost-based optimization, join reordering |
 | **Hot Backup** | ✅ Production Ready | 90%+ | Online backups with compression |
-| **Replication** | ✅ Production Ready | 85%+ | Master-Slave with WAL shipping |
+| **Replication** | ✅ Production Ready | 85.4% | Master-Slave with WAL shipping |
 | **Connection Pool** | ✅ Production Ready | 88%+ | Health checks, dynamic sizing |
 
 ---
@@ -357,7 +357,7 @@
 |---------|----------|--------|------------|
 | `pkg/auth` | 97.5% | 🟢 Excellent | 50+ |
 | `pkg/protocol` | 95.1% | 🟢 Excellent | 80+ |
-| `pkg/metrics` | 94.8% | 🟢 Excellent | 30+ |
+| `pkg/metrics` | 94.8% | 🟢 Excellent | 40+ |
 | `pkg/wire` | 94.7% | 🟢 Excellent | 60+ |
 | `pkg/txn` | 93.9% | 🟢 Excellent | 40+ |
 | `pkg/btree` | 92.6% | 🟢 Excellent | 100+ |
@@ -366,14 +366,15 @@
 | `sdk/go` | 90.6% | 🟢 Excellent | 29+ |
 | `pkg/audit` | 90.2% | 🟢 Excellent | 5+ |
 | `pkg/cache` | 85.1% | 🟢 Good | 13+ |
-| `pkg/backup` | 52.1% | 🟡 Acceptable | 10+ |
+| `pkg/backup` | 82.5% | 🟢 Good | 10+ |
 | `pkg/optimizer` | 93.8% | 🟢 Excellent | 10+ |
-| `pkg/pool` | 42.8% | 🟡 Acceptable | 7+ |
-| `pkg/engine` | 80.9% | 🟢 Good | 19+ |
+| `pkg/pool` | 87.6% | 🟢 Good | 10+ |
+| `pkg/engine` | 86.5% | 🟢 Good | 22+ |
 | `pkg/logger` | 88.7% | 🟢 Good | 10+ |
-| `pkg/query` | 87.7% | 🟢 Good | 200+ |
-| `pkg/server` | 85.6% | 🟢 Good | 150+ |
-| `pkg/catalog` | 80.2% | 🟡 Acceptable | 100+ |
+| `pkg/query` | 86.5% | 🟢 Good | 200+ |
+| `pkg/server` | 85.8% | 🟢 Good | 150+ |
+| `pkg/catalog` | 80.4% | 🟢 Good | 100+ |
+| `pkg/replication` | 85.4% | 🟢 Good | 40+ |
 
 ### Test Statistics
 

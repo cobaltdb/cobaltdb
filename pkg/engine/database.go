@@ -73,6 +73,9 @@ type DB struct {
 
 	// Backup Manager
 	backupMgr *backup.Manager
+
+	// Slow Query Log
+	slowQueryLog *metrics.SlowQueryLog
 }
 
 // Options contains database configuration options
@@ -112,6 +115,12 @@ type Options struct {
 	BackupRetention         time.Duration // Backup retention period
 	MaxBackups              int           // Maximum number of backups to keep
 	BackupCompressionLevel  int           // Compression level (0-9, 0=disabled)
+
+	// Slow Query Log Options
+	EnableSlowQueryLog   bool          // Enable slow query logging
+	SlowQueryThreshold   time.Duration // Threshold for slow queries (default: 1s)
+	SlowQueryMaxEntries  int           // Max in-memory entries (default: 1000)
+	SlowQueryLogFile     string        // Log file path (empty = memory only)
 }
 
 // SyncMode controls when data is synced to disk
@@ -452,6 +461,19 @@ func (db *DB) createNew() error {
 	if backupConfig.BackupDir == "" {
 		backupConfig.BackupDir = "./backups"
 	}
+	// Initialize slow query log
+	if db.options.EnableSlowQueryLog {
+		threshold := db.options.SlowQueryThreshold
+		if threshold == 0 {
+			threshold = 1 * time.Second
+		}
+		maxEntries := db.options.SlowQueryMaxEntries
+		if maxEntries == 0 {
+			maxEntries = 1000
+		}
+		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
+	}
+
 	db.backupMgr = backup.NewManager(backupConfig, db)
 
 	return db.backend.Sync()
@@ -594,6 +616,19 @@ func (db *DB) loadExisting() error {
 	if backupConfig.BackupDir == "" {
 		backupConfig.BackupDir = "./backups"
 	}
+	// Initialize slow query log
+	if db.options.EnableSlowQueryLog {
+		threshold := db.options.SlowQueryThreshold
+		if threshold == 0 {
+			threshold = 1 * time.Second
+		}
+		maxEntries := db.options.SlowQueryMaxEntries
+		if maxEntries == 0 {
+			maxEntries = 1000
+		}
+		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
+	}
+
 	db.backupMgr = backup.NewManager(backupConfig, db)
 
 	return nil
@@ -855,6 +890,14 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 		}()
 	}
 
+	// Slow query logging
+	if db.slowQueryLog != nil {
+		defer func() {
+			duration := time.Since(start)
+			db.slowQueryLog.Log(sql, duration, result.RowsAffected, 0)
+		}()
+	}
+
 	// Try to use cached prepared statement
 	stmt, err := db.getPreparedStatement(sql)
 	if err != nil {
@@ -908,6 +951,14 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 		defer func() {
 			duration := time.Since(start)
 			db.metrics.RecordQuery(duration, duration > 100*time.Millisecond)
+		}()
+	}
+
+	// Slow query logging
+	if db.slowQueryLog != nil {
+		defer func() {
+			duration := time.Since(start)
+			db.slowQueryLog.Log(sql, duration, 0, 0)
 		}()
 	}
 
