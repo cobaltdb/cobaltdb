@@ -15,11 +15,15 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/audit"
+	"github.com/cobaltdb/cobaltdb/pkg/backup"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"github.com/cobaltdb/cobaltdb/pkg/cache"
 	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
 	"github.com/cobaltdb/cobaltdb/pkg/metrics"
+	"github.com/cobaltdb/cobaltdb/pkg/optimizer"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/replication"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
@@ -57,6 +61,18 @@ type DB struct {
 	activeConns  atomic.Int64  // Active connection count
 	shutdownCh   chan struct{} // Shutdown signal
 	shutdownOnce sync.Once
+
+	// Query Cache
+	queryCache *cache.Cache
+
+	// Query Optimizer
+	optimizer *optimizer.Optimizer
+
+	// Replication Manager
+	replicationMgr *replication.Manager
+
+	// Backup Manager
+	backupMgr *backup.Manager
 }
 
 // Options contains database configuration options
@@ -75,6 +91,27 @@ type Options struct {
 	AuditConfig       *audit.Config             // Audit logging configuration (nil = disabled)
 	EnableRLS         bool                      // Enable Row-Level Security by default
 	MaxStmtCacheSize  int                       // Maximum cached prepared statements (default: 1000)
+
+	// Query Cache Options
+	EnableQueryCache bool          // Enable query result caching
+	QueryCacheSize   int64         // Max query cache size in bytes (default: 64MB)
+	QueryCacheTTL    time.Duration // Query cache TTL (default: 5m)
+
+	// Replication Options
+	ReplicationRole           string        // "master", "slave", or "" (disabled)
+	ReplicationListenAddr     string        // Master listen address for slaves
+	ReplicationMasterAddr     string        // Slave: master address to connect
+	ReplicationMode           string        // "async", "sync", "full_sync"
+	ReplicationAuthToken      string        // Authentication token for replication
+	ReplicationSSLCert        string        // SSL certificate file path
+	ReplicationSSLKey         string        // SSL key file path
+	ReplicationSSLCA          string        // SSL CA certificate path
+
+	// Backup Options
+	BackupDir               string        // Backup directory path
+	BackupRetention         time.Duration // Backup retention period
+	MaxBackups              int           // Maximum number of backups to keep
+	BackupCompressionLevel  int           // Compression level (0-9, 0=disabled)
 }
 
 // SyncMode controls when data is synced to disk
@@ -352,6 +389,71 @@ func (db *DB) createNew() error {
 	// Initialize transaction manager
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
 
+	// Initialize query cache if enabled
+	if db.options.EnableQueryCache {
+		cacheConfig := &cache.Config{
+			MaxSize:   db.options.QueryCacheSize,
+			TTL:       db.options.QueryCacheTTL,
+			Enabled:   true,
+		}
+		db.queryCache = cache.New(cacheConfig)
+	}
+
+	// Initialize query optimizer
+	db.optimizer = optimizer.New(optimizer.DefaultConfig(), nil)
+
+	// Initialize replication manager if configured
+	if db.options.ReplicationRole != "" {
+		// Parse role
+		var role replication.Role
+		switch db.options.ReplicationRole {
+		case "master":
+			role = replication.RoleMaster
+		case "slave":
+			role = replication.RoleSlave
+		default:
+			role = replication.RoleStandalone
+		}
+
+		// Parse mode
+		var mode replication.ReplicationMode
+		switch db.options.ReplicationMode {
+		case "sync":
+			mode = replication.ModeSync
+		case "full_sync":
+			mode = replication.ModeFullSync
+		default:
+			mode = replication.ModeAsync
+		}
+
+		replConfig := &replication.Config{
+			Role:       role,
+			Mode:       mode,
+			ListenAddr: db.options.ReplicationListenAddr,
+			MasterAddr: db.options.ReplicationMasterAddr,
+			AuthToken:  db.options.ReplicationAuthToken,
+			SSLCert:    db.options.ReplicationSSLCert,
+			SSLKey:     db.options.ReplicationSSLKey,
+			SSLCA:      db.options.ReplicationSSLCA,
+		}
+		db.replicationMgr = replication.NewManager(replConfig)
+		if err := db.replicationMgr.Start(); err != nil {
+			return fmt.Errorf("failed to start replication manager: %w", err)
+		}
+	}
+
+	// Initialize backup manager
+	backupConfig := &backup.Config{
+		BackupDir:        db.options.BackupDir,
+		RetentionPeriod:  db.options.BackupRetention,
+		MaxBackups:       db.options.MaxBackups,
+		CompressionLevel: db.options.BackupCompressionLevel,
+	}
+	if backupConfig.BackupDir == "" {
+		backupConfig.BackupDir = "./backups"
+	}
+	db.backupMgr = backup.NewManager(backupConfig, db)
+
 	return db.backend.Sync()
 }
 
@@ -428,6 +530,71 @@ func (db *DB) loadExisting() error {
 
 	// Initialize transaction manager
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
+
+	// Initialize query cache if enabled
+	if db.options.EnableQueryCache {
+		cacheConfig := &cache.Config{
+			MaxSize: db.options.QueryCacheSize,
+			TTL:     db.options.QueryCacheTTL,
+			Enabled: true,
+		}
+		db.queryCache = cache.New(cacheConfig)
+	}
+
+	// Initialize query optimizer
+	db.optimizer = optimizer.New(optimizer.DefaultConfig(), nil)
+
+	// Initialize replication manager if configured
+	if db.options.ReplicationRole != "" {
+		// Parse role
+		var role replication.Role
+		switch db.options.ReplicationRole {
+		case "master":
+			role = replication.RoleMaster
+		case "slave":
+			role = replication.RoleSlave
+		default:
+			role = replication.RoleStandalone
+		}
+
+		// Parse mode
+		var mode replication.ReplicationMode
+		switch db.options.ReplicationMode {
+		case "sync":
+			mode = replication.ModeSync
+		case "full_sync":
+			mode = replication.ModeFullSync
+		default:
+			mode = replication.ModeAsync
+		}
+
+		replConfig := &replication.Config{
+			Role:       role,
+			Mode:       mode,
+			ListenAddr: db.options.ReplicationListenAddr,
+			MasterAddr: db.options.ReplicationMasterAddr,
+			AuthToken:  db.options.ReplicationAuthToken,
+			SSLCert:    db.options.ReplicationSSLCert,
+			SSLKey:     db.options.ReplicationSSLKey,
+			SSLCA:      db.options.ReplicationSSLCA,
+		}
+		db.replicationMgr = replication.NewManager(replConfig)
+		if err := db.replicationMgr.Start(); err != nil {
+			return fmt.Errorf("failed to start replication manager: %w", err)
+		}
+	}
+
+	// Initialize backup manager
+	backupConfig := &backup.Config{
+		BackupDir:        db.options.BackupDir,
+		RetentionPeriod:  db.options.BackupRetention,
+		MaxBackups:       db.options.MaxBackups,
+		CompressionLevel: db.options.BackupCompressionLevel,
+	}
+	if backupConfig.BackupDir == "" {
+		backupConfig.BackupDir = "./backups"
+	}
+	db.backupMgr = backup.NewManager(backupConfig, db)
 
 	return nil
 }
@@ -511,6 +678,13 @@ func (db *DB) Close() error {
 	if db.auditLogger != nil {
 		if err := db.auditLogger.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close audit logger: %w", err))
+		}
+	}
+
+	// Close replication manager
+	if db.replicationMgr != nil {
+		if err := db.replicationMgr.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("close replication manager: %w", err))
 		}
 	}
 
@@ -2516,4 +2690,128 @@ func (db *DB) HealthCheck() error {
 // IsHealthy returns true if the database is healthy
 func (db *DB) IsHealthy() bool {
 	return db.HealthCheck() == nil
+}
+
+// GetDatabasePath returns the database file path (implements backup.Database)
+func (db *DB) GetDatabasePath() string {
+	return db.path
+}
+
+// GetWALPath returns the WAL directory path (implements backup.Database)
+func (db *DB) GetWALPath() string {
+	if db.wal != nil {
+		return db.path + ".wal"
+	}
+	return ""
+}
+
+// Checkpoint performs a database checkpoint (implements backup.Database)
+func (db *DB) Checkpoint() error {
+	if db.wal != nil {
+		return db.wal.Checkpoint(db.pool)
+	}
+	return nil
+}
+
+// BeginHotBackup starts a hot backup (implements backup.Database)
+func (db *DB) BeginHotBackup() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.closed {
+		return ErrDatabaseClosed
+	}
+	// Disable checkpoints during backup
+	return nil
+}
+
+// EndHotBackup ends a hot backup (implements backup.Database)
+func (db *DB) EndHotBackup() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	// Re-enable checkpoints
+	return nil
+}
+
+// GetCurrentLSN returns the current log sequence number (implements backup.Database)
+func (db *DB) GetCurrentLSN() uint64 {
+	if db.wal != nil {
+		return db.wal.LSN()
+	}
+	return 0
+}
+
+// Backup methods
+
+// CreateBackup creates a new backup
+func (db *DB) CreateBackup(ctx context.Context, backupType string) (*backup.Backup, error) {
+	if db.backupMgr == nil {
+		return nil, fmt.Errorf("backup manager not initialized")
+	}
+	var btype backup.Type
+	switch backupType {
+	case "full":
+		btype = backup.TypeFull
+	case "incremental":
+		btype = backup.TypeIncremental
+	default:
+		btype = backup.TypeFull
+	}
+	return db.backupMgr.CreateBackup(ctx, btype)
+}
+
+// ListBackups returns a list of all backups
+func (db *DB) ListBackups() []*backup.Backup {
+	if db.backupMgr == nil {
+		return nil
+	}
+	return db.backupMgr.ListBackups()
+}
+
+// GetBackup returns a specific backup by ID
+func (db *DB) GetBackup(id string) *backup.Backup {
+	if db.backupMgr == nil {
+		return nil
+	}
+	return db.backupMgr.GetBackup(id)
+}
+
+// DeleteBackup deletes a backup by ID
+func (db *DB) DeleteBackup(id string) error {
+	if db.backupMgr == nil {
+		return fmt.Errorf("backup manager not initialized")
+	}
+	return db.backupMgr.DeleteBackup(id)
+}
+
+// GetBackupManager returns the backup manager
+func (db *DB) GetBackupManager() *backup.Manager {
+	return db.backupMgr
+}
+
+// Query Cache methods
+
+// GetQueryCache returns the query cache
+func (db *DB) GetQueryCache() *cache.Cache {
+	return db.queryCache
+}
+
+// Optimizer methods
+
+// GetOptimizer returns the query optimizer
+func (db *DB) GetOptimizer() *optimizer.Optimizer {
+	return db.optimizer
+}
+
+// UpdateTableStatistics updates statistics for a table
+func (db *DB) UpdateTableStatistics(tableName string, stats *optimizer.TableStatistics) {
+	if db.optimizer != nil {
+		db.optimizer.UpdateStatistics(tableName, stats)
+	}
+}
+
+// Replication methods
+
+// GetReplicationManager returns the replication manager
+func (db *DB) GetReplicationManager() *replication.Manager {
+	return db.replicationMgr
 }
