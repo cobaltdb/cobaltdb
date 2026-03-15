@@ -401,9 +401,10 @@ func (db *DB) createNew() error {
 	// Initialize query cache if enabled
 	if db.options.EnableQueryCache {
 		cacheConfig := &cache.Config{
-			MaxSize:   db.options.QueryCacheSize,
-			TTL:       db.options.QueryCacheTTL,
-			Enabled:   true,
+			MaxSize:         db.options.QueryCacheSize,
+			TTL:             db.options.QueryCacheTTL,
+			Enabled:         true,
+			CleanupInterval: 1 * time.Minute,
 		}
 		db.queryCache = cache.New(cacheConfig)
 	}
@@ -556,9 +557,10 @@ func (db *DB) loadExisting() error {
 	// Initialize query cache if enabled
 	if db.options.EnableQueryCache {
 		cacheConfig := &cache.Config{
-			MaxSize: db.options.QueryCacheSize,
-			TTL:     db.options.QueryCacheTTL,
-			Enabled: true,
+			MaxSize:         db.options.QueryCacheSize,
+			TTL:             db.options.QueryCacheTTL,
+			Enabled:         true,
+			CleanupInterval: 1 * time.Minute,
 		}
 		db.queryCache = cache.New(cacheConfig)
 	}
