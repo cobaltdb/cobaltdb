@@ -34,6 +34,10 @@
 | **Circuit Breaker** | ✅ Built-in | ❌ | ❌ |
 | **Retry Logic** | ✅ Exponential backoff | ❌ | ❌ |
 | **Rate Limiting** | ✅ Token bucket | ❌ | ❌ |
+| **Query Cache** | ✅ LRU with TTL | ❌ | ❌ |
+| **Query Optimizer** | ✅ Cost-based | ❌ | ❌ |
+| **Hot Backup** | ✅ Online backup | ❌ | ❌ |
+| **Replication** | ✅ Master-Slave | ❌ | ❌ |
 
 ---
 

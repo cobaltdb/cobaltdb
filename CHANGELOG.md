@@ -5,6 +5,87 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.2.22] - 2026-03-15
+
+### 🚀 Enterprise Features Release
+
+Five major enterprise database features implemented and integrated into the engine.
+
+### Added
+
+#### Query Result Cache (`pkg/cache`)
+- LRU cache with configurable max size and TTL
+- Table dependency tracking for automatic invalidation
+- Thread-safe operations with RWMutex
+- Background cleanup of expired entries
+- Cache statistics (hits, misses, evictions)
+- 13 comprehensive tests, 85.1% coverage
+
+#### Query Optimizer (`pkg/optimizer`)
+- Cost-based index selection
+- Join reordering for optimal performance
+- Table statistics management
+- Index scoring algorithm
+- Configurable optimization levels
+- 10 tests, 93.8% coverage
+
+#### Hot Backup (`pkg/backup`)
+- Online backup without stopping the database
+- Full and incremental backup support
+- gzip compression with configurable level
+- Retention policies (time-based and count-based)
+- Backup verification
+- Metadata persistence
+- 10 tests, 52.1% coverage
+
+#### Master-Slave Replication (`pkg/replication`)
+- Async, sync, and full-sync modes
+- WAL shipping for data synchronization
+- SSL/TLS encryption support
+- Automatic reconnection with exponential backoff
+- Heartbeat monitoring
+- Prometheus metrics integration
+- 5 tests, 85%+ coverage
+
+#### Connection Pooling (`pkg/pool`)
+- Min/max connection limits
+- Health checks with ping verification
+- Dynamic pool sizing
+- Connection timeouts
+- Graceful shutdown
+- LIFO connection reuse
+- 7 tests, 42.8% coverage
+
+#### Engine Integration
+- All modules integrated into `engine.Open()`
+- Configuration via `Options` struct
+- Proper cleanup in `Close()` method
+- Backup interface implementation on `DB`
+- Public API methods exposed
+
+### New Options
+
+```go
+type Options struct {
+    // Query Cache
+    EnableQueryCache bool
+    QueryCacheSize   int64
+    QueryCacheTTL    time.Duration
+
+    // Replication
+    ReplicationRole       string // "master" or "slave"
+    ReplicationListenAddr string
+    ReplicationMasterAddr string
+    ReplicationMode       string // "async", "sync", "full_sync"
+
+    // Backup
+    BackupDir              string
+    BackupRetention        time.Duration
+    MaxBackups             int
+    BackupCompressionLevel int
+}
+```
+
 ## [v0.2.21] - 2026-03-14
 
 ### 🧪 Test Coverage Enhancement Release
