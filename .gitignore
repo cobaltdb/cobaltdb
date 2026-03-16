@@ -47,3 +47,6 @@ nul
 *.wal
 *.db-journal
 .claude/
+
+
+EOF
