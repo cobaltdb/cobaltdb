@@ -46,3 +46,4 @@ nul
 *.db
 *.wal
 *.db-journal
+.claude/
