@@ -997,6 +997,11 @@ func (db *DB) Tables() []string {
 	return db.catalog.ListTables()
 }
 
+// Path returns the database file path
+func (db *DB) Path() string {
+	return db.path
+}
+
 // TableSchema returns a human-readable schema for a table
 func (db *DB) TableSchema(name string) (string, error) {
 	table, err := db.catalog.GetTable(name)
@@ -1288,6 +1293,12 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		result, err := db.executeCreateFTSIndex(ctx, s)
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_FTS_INDEX")
+		}
+		return result, err
+	case *query.CreateVectorIndexStmt:
+		result, err := db.executeCreateVectorIndex(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_VECTOR_INDEX")
 		}
 		return result, err
 	case *query.AlterTableStmt:
@@ -2315,6 +2326,14 @@ func (db *DB) executeRefreshMaterializedView(ctx context.Context, stmt *query.Re
 // executeCreateFTSIndex executes CREATE FULLTEXT INDEX
 func (db *DB) executeCreateFTSIndex(ctx context.Context, stmt *query.CreateFTSIndexStmt) (Result, error) {
 	if err := db.catalog.CreateFTSIndex(stmt.Index, stmt.Table, stmt.Columns); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+// executeCreateVectorIndex executes CREATE VECTOR INDEX
+func (db *DB) executeCreateVectorIndex(ctx context.Context, stmt *query.CreateVectorIndexStmt) (Result, error) {
+	if err := db.catalog.CreateVectorIndex(stmt.Index, stmt.Table, stmt.Column); err != nil {
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil

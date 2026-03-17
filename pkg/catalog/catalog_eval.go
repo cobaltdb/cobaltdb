@@ -120,6 +120,9 @@ func (ctx *EvalContext) evaluate(expr query.Expression) (interface{}, error) {
 		return evaluateCaseExpr(c, row, columns, e, args)
 	case *query.CastExpr:
 		return evaluateCastExpr(c, row, columns, e, args)
+	case *query.VectorLiteral:
+		// Return vector as []float64
+		return e.Values, nil
 	case *query.SubqueryExpr:
 		// Scalar subquery: execute and return first column of first row
 		// Support correlated subqueries by resolving outer references
@@ -1034,9 +1037,84 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		matched, _ := regexp.MatchString(regexPattern, str)
 		return matched, nil
 
+	case "COSINE_SIMILARITY", "COSINE_SIMILARIT":
+		if len(evalArgs) != 2 {
+			return nil, fmt.Errorf("COSINE_SIMILARITY requires exactly 2 arguments")
+		}
+		v1, err := toVector(evalArgs[0])
+		if err != nil {
+			return nil, fmt.Errorf("COSINE_SIMILARITY first argument: %v", err)
+		}
+		v2, err := toVector(evalArgs[1])
+		if err != nil {
+			return nil, fmt.Errorf("COSINE_SIMILARITY second argument: %v", err)
+		}
+		return cosineSimilarity(v1, v2), nil
+
+	case "L2_DISTANCE", "L2_DIST":
+		if len(evalArgs) != 2 {
+			return nil, fmt.Errorf("L2_DISTANCE requires exactly 2 arguments")
+		}
+		v1, err := toVector(evalArgs[0])
+		if err != nil {
+			return nil, fmt.Errorf("L2_DISTANCE first argument: %v", err)
+		}
+		v2, err := toVector(evalArgs[1])
+		if err != nil {
+			return nil, fmt.Errorf("L2_DISTANCE second argument: %v", err)
+		}
+		return l2Distance(v1, v2), nil
+
+	case "INNER_PRODUCT", "DOT_PRODUCT", "DOT":
+		if len(evalArgs) != 2 {
+			return nil, fmt.Errorf("INNER_PRODUCT requires exactly 2 arguments")
+		}
+		v1, err := toVector(evalArgs[0])
+		if err != nil {
+			return nil, fmt.Errorf("INNER_PRODUCT first argument: %v", err)
+		}
+		v2, err := toVector(evalArgs[1])
+		if err != nil {
+			return nil, fmt.Errorf("INNER_PRODUCT second argument: %v", err)
+		}
+		return innerProduct(v1, v2), nil
+
 	default:
 		// Check for JSON functions
 		return evaluateJSONFunction(funcName, evalArgs)
+	}
+}
+
+// toVector converts an interface value to a []float64 vector
+func toVector(v interface{}) ([]float64, error) {
+	switch vec := v.(type) {
+	case []float64:
+		return vec, nil
+	case []interface{}:
+		result := make([]float64, len(vec))
+		for i, val := range vec {
+			switch fv := val.(type) {
+			case float64:
+				result[i] = fv
+			case int:
+				result[i] = float64(fv)
+			case int64:
+				result[i] = float64(fv)
+			case float32:
+				result[i] = float64(fv)
+			default:
+				return nil, fmt.Errorf("element %d is not a number: %T", i, val)
+			}
+		}
+		return result, nil
+	case string:
+		// Try to parse as JSON array
+		// For now, return error - JSON parsing can be added if needed
+		return nil, fmt.Errorf("cannot convert string to vector")
+	case nil:
+		return nil, fmt.Errorf("cannot convert NULL to vector")
+	default:
+		return nil, fmt.Errorf("cannot convert %T to vector", v)
 	}
 }
 

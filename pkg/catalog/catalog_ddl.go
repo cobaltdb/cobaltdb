@@ -176,6 +176,7 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 			CheckStr:      exprToSQL(col.Check),
 			Check:         col.Check,
 			defaultExpr:   col.Default,
+			Dimensions:    col.Dimensions,
 		}
 		if col.PrimaryKey {
 			tableDef.PrimaryKey = append(tableDef.PrimaryKey, col.Name)
@@ -346,6 +347,7 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 		CheckStr:      exprToSQL(stmt.Column.Check),
 		Check:         stmt.Column.Check,
 		defaultExpr:   stmt.Column.Default,
+		Dimensions:    stmt.Column.Dimensions,
 	}
 
 	table.Columns = append(table.Columns, newCol)

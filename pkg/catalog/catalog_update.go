@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
+
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
@@ -75,11 +77,12 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			break
 		}
 
-		// Decode row
-		row, err := decodeRow(valueData, len(table.Columns))
+		// Decode row with version info
+		vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 		if err != nil {
 			continue
 		}
+		row := vrow.Data
 
 		// Apply WHERE clause if present
 		if stmt.Where != nil {
@@ -284,8 +287,8 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	for _, entry := range entries {
 		oldKey := entry.key
 
-		// Re-encode row
-		newValueData, err := json.Marshal(entry.newRow)
+		// Re-encode row with new timestamp
+		newValueData, err := encodeVersionedRow(entry.newRow, nil)
 		if err != nil {
 			return 0, rowsAffected, fmt.Errorf("failed to encode updated row: %w", err)
 		}
@@ -447,6 +450,9 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				}
 			}
 		}
+
+		// Update vector indexes
+		c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, entry.key)
 
 		// Record undo log entry for rollback (after applying change)
 		if c.txnActive {
@@ -770,10 +776,15 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 			continue // Row may have been deleted
 		}
 
-		row, err := decodeRow(valueData, len(targetTable.Columns))
+		vrow, err := decodeVersionedRow(valueData, len(targetTable.Columns))
 		if err != nil {
 			continue
 		}
+		// Skip already deleted rows
+		if vrow.Version.DeletedAt > 0 {
+			continue
+		}
+		row := vrow.Data
 
 		// Enforce foreign key ON DELETE actions
 		pkColIdx := -1
@@ -799,8 +810,19 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		rowsAffected++
 	}
 
-	// Delete collected entries
+	// Soft delete collected entries
 	for _, entry := range entries {
+		// Get current value to decode
+		currentData, err := targetTree.Get(entry.key)
+		if err != nil {
+			continue // Row may have been deleted
+		}
+
+		vrow, err := decodeVersionedRow(currentData, len(targetTable.Columns))
+		if err != nil {
+			continue
+		}
+
 		// Remove from indexes first
 		for idxName, idxTree := range c.indexTrees {
 			idxDef := c.indexes[idxName]
@@ -821,9 +843,17 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 			}
 		}
 
-		// Delete from tree
-		if err := targetTree.Delete(entry.key); err != nil {
-			return 0, rowsAffected, fmt.Errorf("failed to delete row from tree: %w", err)
+		// Soft delete: mark as deleted
+		vrow.Version.markDeleted(time.Now())
+
+		// Re-encode and store
+		deletedValueData, err := json.Marshal(vrow)
+		if err != nil {
+			return 0, rowsAffected, fmt.Errorf("failed to encode deleted row: %w", err)
+		}
+
+		if err := targetTree.Put(entry.key, deletedValueData); err != nil {
+			return 0, rowsAffected, fmt.Errorf("failed to soft delete row: %w", err)
 		}
 
 		// Log to WAL before applying change

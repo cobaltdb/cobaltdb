@@ -17,6 +17,12 @@ type Expression interface {
 	expressionNode()
 }
 
+// TemporalExpr represents AS OF expression for temporal queries
+type TemporalExpr struct {
+	Timestamp Expression // Literal timestamp or expression like '2024-01-15'
+	IsSystem  bool       // True for AS OF SYSTEM TIME expr
+}
+
 // SelectStmt represents a SELECT statement
 type SelectStmt struct {
 	Distinct bool
@@ -29,6 +35,7 @@ type SelectStmt struct {
 	OrderBy  []*OrderByExpr
 	Limit    Expression
 	Offset   Expression
+	AsOf     *TemporalExpr // AS OF clause for temporal queries
 }
 
 func (s *SelectStmt) nodeType() string { return "SelectStmt" }
@@ -170,6 +177,17 @@ type CreateIndexStmt struct {
 
 func (s *CreateIndexStmt) nodeType() string { return "CreateIndexStmt" }
 func (s *CreateIndexStmt) statementNode()   {}
+
+// CreateVectorIndexStmt represents a CREATE VECTOR INDEX statement for HNSW indexes
+type CreateVectorIndexStmt struct {
+	IfNotExists bool
+	Index       string
+	Table       string
+	Column      string
+}
+
+func (s *CreateVectorIndexStmt) nodeType() string { return "CreateVectorIndexStmt" }
+func (s *CreateVectorIndexStmt) statementNode()   {}
 
 // DropIndexStmt represents a DROP INDEX statement
 type DropIndexStmt struct {
@@ -338,6 +356,7 @@ type ColumnDef struct {
 	AutoIncrement bool
 	Default       Expression
 	Check         Expression // CHECK (expression)
+	Dimensions    int        // For VECTOR type: number of dimensions
 }
 
 // ForeignKeyDef represents a foreign key constraint
@@ -429,6 +448,14 @@ type NullLiteral struct{}
 
 func (e *NullLiteral) nodeType() string { return "NullLiteral" }
 func (e *NullLiteral) expressionNode()  {}
+
+// VectorLiteral represents a vector literal [0.1, 0.2, 0.3, ...]
+type VectorLiteral struct {
+	Values []float64
+}
+
+func (e *VectorLiteral) nodeType() string { return "VectorLiteral" }
+func (e *VectorLiteral) expressionNode()  {}
 
 // BinaryExpr represents a binary expression
 type BinaryExpr struct {

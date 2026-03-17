@@ -28,11 +28,11 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
@@ -89,7 +89,7 @@ type ForeignKeyDef struct {
 // ColumnDef represents a column definition
 type ColumnDef struct {
 	Name          string           `json:"name"`
-	Type          string           `json:"type"` // INTEGER, TEXT, REAL, BLOB, JSON, BOOLEAN
+	Type          string           `json:"type"` // INTEGER, TEXT, REAL, BLOB, JSON, BOOLEAN, VECTOR
 	NotNull       bool             `json:"not_null"`
 	Unique        bool             `json:"unique"`
 	PrimaryKey    bool             `json:"primary_key"`
@@ -99,6 +99,7 @@ type ColumnDef struct {
 	Check         query.Expression `json:"-"`                   // Parsed CHECK expression (not persisted)
 	defaultExpr   query.Expression `json:"-"`                   // Parsed DEFAULT expression (not persisted)
 	sourceTbl     string           `json:"-"`                   // Source table name for JOIN column disambiguation
+	Dimensions    int              `json:"dimensions,omitempty"` // For VECTOR type: number of dimensions
 }
 
 // IndexDef represents an index definition
@@ -225,6 +226,7 @@ type Catalog struct {
 	materializedViews map[string]*MaterializedViewDef       // Materialized views
 	ftsIndexes        map[string]*FTSIndexDef               // Full-text search indexes
 	jsonIndexes       map[string]*JSONIndexDef              // JSON indexes for fast JSON queries
+	vectorIndexes     map[string]*VectorIndexDef            // Vector (HNSW) indexes for similarity search
 	stats             map[string]*StatsTableStats           // Table statistics for ANALYZE
 	cteResults        map[string]*cteResultSet              // Temporary CTE result cache for recursive CTEs
 	keyCounter        int64                                 // For generating unique keys
@@ -598,6 +600,7 @@ func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog
 		materializedViews: make(map[string]*MaterializedViewDef),
 		ftsIndexes:        make(map[string]*FTSIndexDef),
 		jsonIndexes:       make(map[string]*JSONIndexDef),
+		vectorIndexes:     make(map[string]*VectorIndexDef),
 		stats:             make(map[string]*StatsTableStats),
 		rlsPolicies:       make(map[string]*security.Policy),
 		keyCounter:        0,
@@ -621,6 +624,16 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 
 	// Resolve positional references in GROUP BY and ORDER BY (e.g., GROUP BY 1, ORDER BY 2)
 	stmt = resolvePositionalRefs(stmt)
+
+	// Handle AS OF temporal queries
+	queryTime := time.Now()
+	if stmt.AsOf != nil {
+		ts, err := cat.evaluateTemporalExpr(stmt.AsOf, args)
+		if err != nil {
+			return nil, nil, fmt.Errorf("AS OF expression error: %w", err)
+		}
+		queryTime = *ts
+	}
 
 	// Handle SELECT without FROM clause (scalar expressions)
 	if stmt.From == nil {
@@ -1339,11 +1352,18 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 				continue // Row not found
 			}
 
-			// Decode full row
-			fullRow, err := decodeRow(valueData, len(table.Columns))
+			// Decode full row with version info
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
 				continue
 			}
+
+			// Apply AS OF temporal filtering
+			if !vrow.Version.isVisibleAt(queryTime) {
+				continue // Skip row that wasn't visible at query time
+			}
+
+			fullRow := vrow.Data
 
 			// Apply WHERE clause if present (for additional conditions)
 			if stmt.Where != nil {
@@ -1449,11 +1469,18 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 					break
 				}
 
-				// Decode full row
-				fullRow, err := decodeRow(valueData, len(table.Columns))
+				// Decode full row with version info
+				vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 				if err != nil {
 					continue
 				}
+
+				// Apply AS OF temporal filtering
+				if !vrow.Version.isVisibleAt(queryTime) {
+					continue // Skip row that wasn't visible at query time
+				}
+
+				fullRow := vrow.Data
 
 				// Apply WHERE clause if present
 				if stmt.Where != nil {
@@ -3522,6 +3549,8 @@ func tokenTypeToColumnType(t query.TokenType) string {
 		return "DATE"
 	case query.TokenTimestamp:
 		return "TIMESTAMP"
+	case query.TokenVector:
+		return "VECTOR"
 	default:
 		return "TEXT"
 	}
@@ -4383,4 +4412,111 @@ func catalogCompareValues(a, b interface{}) int {
 		return 1
 	}
 	return 0
+}
+
+// evaluateTemporalExpr evaluates an AS OF temporal expression
+// Returns the timestamp to query data as of that point in time
+func (cat *Catalog) evaluateTemporalExpr(expr *query.TemporalExpr, args []interface{}) (*time.Time, error) {
+	if expr == nil {
+		return nil, nil
+	}
+
+	// Evaluate the timestamp expression
+	val, err := EvalExpression(expr.Timestamp, args)
+	if err != nil {
+		return nil, err
+	}
+
+	var result time.Time
+
+	if expr.IsSystem {
+		// AS OF SYSTEM TIME 'expression'
+		// Parse interval expression like '-1 hour', '-30 minutes', etc.
+		switch v := val.(type) {
+		case string:
+			result = parseSystemTimeExpr(v)
+		case time.Time:
+			result = v
+		default:
+			result = time.Now()
+		}
+	} else {
+		// AS OF 'timestamp'
+		switch v := val.(type) {
+		case string:
+			// Try to parse as ISO 8601 or other common formats
+			parsed, err := time.Parse(time.RFC3339, v)
+			if err != nil {
+				parsed, err = time.Parse("2006-01-02 15:04:05", v)
+				if err != nil {
+					parsed, err = time.Parse("2006-01-02", v)
+					if err != nil {
+						return nil, fmt.Errorf("cannot parse timestamp: %v", v)
+					}
+				}
+			}
+			result = parsed
+		case time.Time:
+			result = v
+		default:
+			return nil, fmt.Errorf("invalid timestamp type: %T", val)
+		}
+	}
+
+	return &result, nil
+}
+
+// parseSystemTimeExpr parses expressions like "-1 hour", "-30 minutes", etc.
+func parseSystemTimeExpr(expr string) time.Time {
+	now := time.Now()
+
+	// Simple parsing for common patterns
+	expr = strings.TrimSpace(strings.ToLower(expr))
+
+	// Handle negative offset (past)
+	if strings.HasPrefix(expr, "-") {
+		expr = strings.TrimSpace(expr[1:])
+
+		// Try to extract number and unit
+		var num int
+		var unit string
+		fmt.Sscanf(expr, "%d %s", &num, &unit)
+
+		switch {
+		case strings.HasPrefix(unit, "hour") || strings.HasPrefix(unit, "hr"):
+			return now.Add(-time.Duration(num) * time.Hour)
+		case strings.HasPrefix(unit, "minute") || strings.HasPrefix(unit, "min"):
+			return now.Add(-time.Duration(num) * time.Minute)
+		case strings.HasPrefix(unit, "second") || strings.HasPrefix(unit, "sec"):
+			return now.Add(-time.Duration(num) * time.Second)
+		case strings.HasPrefix(unit, "day"):
+			return now.AddDate(0, 0, -num)
+		}
+	}
+
+	// Handle positive offset (future) - less common but supported
+	if strings.HasPrefix(expr, "+") {
+		expr = strings.TrimSpace(expr[1:])
+		var num int
+		var unit string
+		fmt.Sscanf(expr, "%d %s", &num, &unit)
+
+		switch {
+		case strings.HasPrefix(unit, "hour") || strings.HasPrefix(unit, "hr"):
+			return now.Add(time.Duration(num) * time.Hour)
+		case strings.HasPrefix(unit, "minute") || strings.HasPrefix(unit, "min"):
+			return now.Add(time.Duration(num) * time.Minute)
+		}
+	}
+
+	// Default: try to parse as absolute timestamp
+	if t, err := time.Parse(time.RFC3339, expr); err == nil {
+		return t
+	}
+	if t, err := time.Parse("2006-01-02 15:04:05", expr); err == nil {
+		return t
+	}
+
+	// Default to current time
+	return now
 }

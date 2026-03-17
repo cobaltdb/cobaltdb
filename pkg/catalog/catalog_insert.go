@@ -425,8 +425,8 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			break
 		}
 
-		// Encode row
-		valueData, err := json.Marshal(rowValues)
+		// Encode row with temporal versioning
+		valueData, err := encodeVersionedRow(rowValues, nil)
 		if err != nil {
 			insertErr = err
 			break
@@ -572,6 +572,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 				}
 			}
 		}
+
+		// Update vector indexes
+		c.updateVectorIndexesForInsert(stmt.Table, rowValues, []byte(key))
+
 		if skipRow {
 			continue
 		}

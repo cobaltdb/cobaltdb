@@ -197,6 +197,17 @@ func (p *Parser) parseSelect() (*SelectStmt, error) {
 		}
 	}
 
+	// AS OF (temporal queries)
+	if p.match(TokenAs) {
+		if p.match(TokenOf) {
+			temporal, err := p.parseTemporalExpr()
+			if err != nil {
+				return nil, err
+			}
+			stmt.AsOf = temporal
+		}
+	}
+
 	// WHERE
 	if p.match(TokenWhere) {
 		where, err := p.parseExpression()
@@ -363,7 +374,15 @@ func (p *Parser) parseTableRef() (*TableRef, error) {
 	if p.current().Type == TokenIdentifier {
 		ref.Alias = p.current().Literal
 		p.advance()
-	} else if p.match(TokenAs) {
+	} else if p.current().Type == TokenAs {
+		// Check if this is AS OF (temporal) or AS alias
+		// Look ahead: if next token is OF, this is AS OF, not alias
+		if p.peek().Type == TokenOf {
+			// This is AS OF, don't consume AS here - it will be handled by parseSelect
+			return ref, nil
+		}
+		// This is AS alias
+		p.advance() // consume AS
 		alias, err := p.expect(TokenIdentifier)
 		if err != nil {
 			return nil, err
@@ -381,6 +400,29 @@ func (p *Parser) isJoin() bool {
 		return true
 	}
 	return false
+}
+
+// parseTemporalExpr parses AS OF temporal expression
+// Supports: AS OF '2024-01-15' or AS OF SYSTEM TIME '-1 hour'
+func (p *Parser) parseTemporalExpr() (*TemporalExpr, error) {
+	temporal := &TemporalExpr{}
+
+	// Check for SYSTEM TIME syntax
+	if p.match(TokenSystem) {
+		if _, err := p.expect(TokenTime); err != nil {
+			return nil, err
+		}
+		temporal.IsSystem = true
+	}
+
+	// Parse the timestamp expression
+	tsExpr, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	temporal.Timestamp = tsExpr
+
+	return temporal, nil
 }
 
 // parseJoin parses a JOIN clause
@@ -932,6 +974,9 @@ func (p *Parser) parsePrimary() (Expression, error) {
 		TokenNullIf, TokenReplace, TokenInstr, TokenPrintf, TokenTime, TokenDatetime,
 		TokenStrftime, TokenConcat, TokenLeft, TokenRight:
 		return p.parseIdentifierOrFunction()
+	// Vector similarity functions
+	case TokenCosineSimilarity, TokenL2Distance, TokenInnerProduct:
+		return p.parseIdentifierOrFunction()
 	// Window functions
 	case TokenRowNumber, TokenRank, TokenDenseRank, TokenLag, TokenLead,
 		TokenFirstValue, TokenLastValue, TokenNthValue:
@@ -982,6 +1027,8 @@ func (p *Parser) parsePrimary() (Expression, error) {
 		return &UnaryExpr{Operator: TokenNot, Expr: expr}, nil
 	case TokenMatch:
 		return p.parseMatchAgainst()
+	case TokenLBracket:
+		return p.parseVectorLiteral()
 	default:
 		// Allow keywords to be used as identifiers (column names)
 		// e.g., a column named "text", "date", "key", "status", etc.
@@ -1187,6 +1234,49 @@ func (p *Parser) parseCast() (Expression, error) {
 	}
 
 	return &CastExpr{Expr: expr, DataType: dataType}, nil
+}
+
+// parseVectorLiteral parses a vector literal [0.1, 0.2, 0.3, ...]
+func (p *Parser) parseVectorLiteral() (Expression, error) {
+	p.advance() // consume [
+
+	var values []float64
+
+	// Empty vector []
+	if p.current().Type == TokenRBracket {
+		p.advance() // consume ]
+		return &VectorLiteral{Values: values}, nil
+	}
+
+	// Parse comma-separated numbers
+	for {
+		// Expect a number
+		if p.current().Type != TokenNumber {
+			return nil, fmt.Errorf("expected number in vector literal, got %s", p.current().Literal)
+		}
+
+		val, err := strconv.ParseFloat(p.current().Literal, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid number in vector literal: %s", p.current().Literal)
+		}
+		values = append(values, val)
+		p.advance()
+
+		// Check for closing bracket or comma
+		if p.current().Type == TokenRBracket {
+			p.advance() // consume ]
+			break
+		}
+
+		if p.current().Type == TokenComma {
+			p.advance() // consume ,
+			continue
+		}
+
+		return nil, fmt.Errorf("expected ',' or ']' in vector literal, got %s", p.current().Literal)
+	}
+
+	return &VectorLiteral{Values: values}, nil
 }
 
 // parseNumber parses a number literal
@@ -1874,6 +1964,8 @@ func (p *Parser) parseCreate() (Statement, error) {
 		return p.parseCreateMaterializedView()
 	case TokenFulltext:
 		return p.parseCreateFTSIndex()
+	case TokenVector:
+		return p.parseCreateVectorIndex()
 	case TokenPolicy:
 		return p.parseCreatePolicy()
 	default:
@@ -2205,18 +2297,26 @@ func (p *Parser) parseColumnDef() (*ColumnDef, error) {
 
 	// Data type
 	switch p.current().Type {
-	case TokenInteger, TokenText, TokenReal, TokenBlob, TokenBoolean, TokenJSON, TokenDate, TokenTimestamp, TokenDatetime:
+	case TokenInteger, TokenText, TokenReal, TokenBlob, TokenBoolean, TokenJSON, TokenDate, TokenTimestamp, TokenDatetime, TokenVector:
 		col.Type = p.current().Type
 		p.advance()
 	default:
 		return nil, fmt.Errorf("expected data type, got %s", p.current().Literal)
 	}
 
-	// Skip optional type parameters like VARCHAR(255), DECIMAL(10,2), CHAR(50)
+	// Parse optional type parameters like VARCHAR(255), DECIMAL(10,2), CHAR(50), VECTOR(768)
 	if p.current().Type == TokenLParen {
 		p.advance() // consume '('
-		for p.current().Type != TokenRParen && p.current().Type != TokenEOF {
-			p.advance() // skip parameters
+		// For VECTOR type, parse dimensions
+		if col.Type == TokenVector && p.current().Type == TokenNumber {
+			dims, _ := strconv.Atoi(p.current().Literal)
+			col.Dimensions = dims
+			p.advance()
+		} else {
+			// For other types, just skip parameters
+			for p.current().Type != TokenRParen && p.current().Type != TokenEOF {
+				p.advance()
+			}
 		}
 		if p.current().Type == TokenRParen {
 			p.advance() // consume ')'
@@ -3198,6 +3298,60 @@ func (p *Parser) parseCreateFTSIndex() (*CreateFTSIndexStmt, error) {
 		return nil, err
 	}
 	stmt.Columns = columns
+
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, err
+	}
+
+	return stmt, nil
+}
+
+// parseCreateVectorIndex parses CREATE VECTOR INDEX
+// CREATE VECTOR INDEX [IF NOT EXISTS] idx_name ON table_name (column_name)
+func (p *Parser) parseCreateVectorIndex() (*CreateVectorIndexStmt, error) {
+	stmt := &CreateVectorIndexStmt{}
+	p.advance() // consume VECTOR
+
+	if _, err := p.expect(TokenIndex); err != nil {
+		return nil, err
+	}
+
+	if p.match(TokenIf) {
+		if _, err := p.expect(TokenNot); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
+		stmt.IfNotExists = true
+	}
+
+	index, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Index = index.Literal
+
+	if _, err := p.expect(TokenOn); err != nil {
+		return nil, err
+	}
+
+	table, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Table = table.Literal
+
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, err
+	}
+
+	// Vector index only supports a single column
+	column, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Column = column.Literal
 
 	if _, err := p.expect(TokenRParen); err != nil {
 		return nil, err

@@ -198,6 +198,12 @@ func (l *Lexer) NextToken() Token {
 	case ')':
 		tok = newToken(TokenRParen, l.ch, l.line, l.column)
 		l.readChar()
+	case '[':
+		tok = newToken(TokenLBracket, l.ch, l.line, l.column)
+		l.readChar()
+	case ']':
+		tok = newToken(TokenRBracket, l.ch, l.line, l.column)
+		l.readChar()
 	case ',':
 		tok = newToken(TokenComma, l.ch, l.line, l.column)
 		l.readChar()

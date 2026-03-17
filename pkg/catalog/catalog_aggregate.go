@@ -102,11 +102,16 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 				break
 			}
 
-			// Decode full row
-			fullRow, err := decodeRow(valueData, len(table.Columns))
+			// Decode full row with version info
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
 				continue
 			}
+			// Skip deleted rows
+			if vrow.Version.DeletedAt > 0 {
+				continue
+			}
+			fullRow := vrow.Data
 
 			// Apply WHERE clause if present (filters rows before grouping)
 			if stmt.Where != nil {

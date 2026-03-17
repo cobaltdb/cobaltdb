@@ -117,6 +117,7 @@ const (
 	TokenOut
 	TokenInout
 	TokenPartitions
+	TokenVector // Vector type for embeddings/AI
 
 	// Operators
 	TokenPlus
@@ -140,6 +141,8 @@ const (
 	// Punctuation
 	TokenLParen
 	TokenRParen
+	TokenLBracket // [ for vector literals
+	TokenRBracket // ] for vector literals
 	TokenComma
 	TokenSemicolon
 	TokenDot
@@ -199,6 +202,11 @@ const (
 	TokenLastValue
 	TokenNthValue
 
+	// Vector similarity functions
+	TokenCosineSimilarity // COSINE_SIMILARITY
+	TokenL2Distance       // L2_DISTANCE (Euclidean)
+	TokenInnerProduct     // INNER_PRODUCT (dot product)
+
 	// CTE (Common Table Expressions)
 	TokenWith
 	TokenRecursive
@@ -214,6 +222,10 @@ const (
 
 	// ESCAPE
 	TokenEscape
+
+	// Temporal queries (AS OF SYSTEM TIME)
+	TokenAsOf
+	TokenSystem
 
 	// ALTER TABLE
 	TokenAlter
@@ -364,6 +376,7 @@ var keywords = map[string]TokenType{
 	"POLICY":    TokenPolicy,
 	"CALL":      TokenCall,
 	"USING":     TokenUsing,
+	"VECTOR":    TokenVector,
 
 	// Functions
 	"COUNT":             TokenCount,
@@ -424,6 +437,9 @@ var keywords = map[string]TokenType{
 	"WITH":      TokenWith,
 	"RECURSIVE": TokenRecursive,
 
+	// Temporal queries
+	"SYSTEM": TokenSystem,
+
 	// ALTER TABLE
 	"ESCAPE":    TokenEscape,
 	"ALTER":     TokenAlter,
@@ -468,6 +484,11 @@ var keywords = map[string]TokenType{
 	"LESS":        TokenLess,
 	"THAN":        TokenThan,
 	"PARTITIONS":  TokenPartitions,
+
+	// Vector functions
+	"COSINE_SIMILARITY": TokenCosineSimilarity,
+	"L2_DISTANCE":       TokenL2Distance,
+	"INNER_PRODUCT":     TokenInnerProduct,
 }
 
 // LookupKeyword checks if an identifier is a keyword

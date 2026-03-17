@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CobaltDB Web UI</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <!-- Monaco Editor -->
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.js"></script>
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1><i class="fas fa-database"></i> CobaltDB</h1>
+                <span class="version">{{.Version}}</span>
+            </div>
+
+            <div class="database-info">
+                <i class="fas fa-hdd"></i>
+                <span class="db-path" title="{{.DatabasePath}}">{{.DatabasePath}}</span>
+                <button id="themeToggle" class="theme-toggle" title="Toggle Theme">
+                    <i class="fas fa-sun"></i>
+                </button>
+            </div>
+
+            <div class="schema-explorer">
+                <h3><i class="fas fa-table"></i> Tables</h3>
+                <div id="tableList" class="table-list">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+
+            <div class="saved-queries">
+                <div class="section-header">
+                    <h3><i class="fas fa-bookmark"></i> Saved Queries</h3>
+                    <div class="section-actions">
+                        <button onclick="exportSavedQueries()" title="Export"><i class="fas fa-download"></i></button>
+                        <button onclick="document.getElementById('importFile').click()" title="Import"><i class="fas fa-upload"></i></button>
+                        <input type="file" id="importFile" accept=".json" style="display: none;" onchange="importSavedQueries(this)">
+                    </div>
+                </div>
+                <div id="savedQueriesList" class="saved-queries-list">
+                    <div class="empty">No saved queries</div>
+                </div>
+            </div>
+
+            <div class="query-history">
+                <h3><i class="fas fa-history"></i> History</h3>
+                <div id="historyList" class="history-list">
+                    <div class="empty">No queries yet</div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Toolbar -->
+            <div class="toolbar">
+                <button id="runBtn" class="btn btn-primary">
+                    <i class="fas fa-play"></i> Run Query
+                </button>
+                <button id="formatBtn" class="btn btn-secondary">
+                    <i class="fas fa-code"></i> Format
+                </button>
+                <button id="clearBtn" class="btn btn-secondary">
+                    <i class="fas fa-trash"></i> Clear
+                </button>
+                <button id="saveQueryBtn" class="btn btn-secondary">
+                    <i class="fas fa-save"></i> Save
+                </button>
+                <div class="spacer"></div>
+                <button id="exportCsvBtn" class="btn btn-secondary" disabled>
+                    <i class="fas fa-file-csv"></i> CSV
+                </button>
+                <button id="exportJsonBtn" class="btn btn-secondary" disabled>
+                    <i class="fas fa-file-code"></i> JSON
+                </button>
+            </div>
+
+            <!-- Editor Section -->
+            <div class="editor-section">
+                <div class="tabs-header">
+                    <div id="queryTabs" class="query-tabs">
+                        <div class="tab active" data-tab="0">
+                            <span class="tab-name" onclick="renameTab(0)">Query 1</span>
+                            <button class="tab-close" onclick="closeTab(0, event)"><i class="fas fa-times"></i></button>
+                        </div>
+                    </div>
+                    <button class="tab-add" onclick="addTab()" title="New Tab"><i class="fas fa-plus"></i></button>
+                </div>
+                <div id="editor" class="editor"></div>
+            </div>
+
+            <!-- Results Section -->
+            <div class="results-section">
+                <div class="results-header">
+                    <span><i class="fas fa-list"></i> Results</span>
+                    <div class="results-info">
+                        <span id="rowCount"></span>
+                        <span id="execTime"></span>
+                    </div>
+                </div>
+                <div id="results" class="results">
+                    <div class="empty-state">
+                        <i class="fas fa-database"></i>
+                        <p>Run a query to see results</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Table Detail Modal -->
+        <div id="tableModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="modalTitle">Table Details</h2>
+                    <button class="close-btn" onclick="closeModal()">&times;</button>
+                </div>
+                <div id="modalBody" class="modal-body">
+                </div>
+            </div>
+        </div>
+
+        <!-- Save Query Modal -->
+        <div id="saveQueryModal" class="modal">
+            <div class="modal-content" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h2>Save Query</h2>
+                    <button class="close-btn" onclick="closeSaveModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <form id="saveQueryForm">
+                        <div class="form-group">
+                            <label for="queryName">Name *</label>
+                            <input type="text" id="queryName" class="form-input" placeholder="e.g., Active Users" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="queryDescription">Description</label>
+                            <textarea id="queryDescription" class="form-input" rows="3" placeholder="Optional description..."></textarea>
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-secondary" onclick="closeSaveModal()">Cancel</button>
+                            <button type="submit" class="btn btn-primary">Save</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

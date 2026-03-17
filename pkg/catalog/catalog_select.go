@@ -270,11 +270,15 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 				if err != nil {
 					break
 				}
-				row, err := decodeRow(data, len(mainTable.Columns))
+				vrow, err := decodeVersionedRow(data, len(mainTable.Columns))
 				if err != nil {
 					continue
 				}
-				intermediateRows = append(intermediateRows, row)
+				// Skip deleted rows
+				if vrow.Version.DeletedAt > 0 {
+					continue
+				}
+				intermediateRows = append(intermediateRows, vrow.Data)
 			}
 			mainIter.Close()
 		}
@@ -365,11 +369,15 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 				if err != nil {
 					break
 				}
-				row, err := decodeRow(data, len(joinTable.Columns))
+				vrow, err := decodeVersionedRow(data, len(joinTable.Columns))
 				if err != nil {
 					continue
 				}
-				joinRows = append(joinRows, row)
+				// Skip deleted rows
+				if vrow.Version.DeletedAt > 0 {
+					continue
+				}
+				joinRows = append(joinRows, vrow.Data)
 			}
 		}
 
@@ -750,11 +758,15 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 				if err != nil {
 					break
 				}
-				row, err := decodeRow(data, len(mainTable.Columns))
+				vrow, err := decodeVersionedRow(data, len(mainTable.Columns))
 				if err != nil {
 					continue
 				}
-				intermediateRows = append(intermediateRows, row)
+				// Skip deleted rows
+				if vrow.Version.DeletedAt > 0 {
+					continue
+				}
+				intermediateRows = append(intermediateRows, vrow.Data)
 			}
 			mainIter.Close()
 		}
@@ -837,11 +849,15 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 				if err != nil {
 					break
 				}
-				joinRow, err := decodeRow(data, len(joinTable.Columns))
+				vrow, err := decodeVersionedRow(data, len(joinTable.Columns))
 				if err != nil {
 					continue
 				}
-				rightRows = append(rightRows, joinRow)
+				// Skip deleted rows
+				if vrow.Version.DeletedAt > 0 {
+					continue
+				}
+				rightRows = append(rightRows, vrow.Data)
 			}
 		}
 

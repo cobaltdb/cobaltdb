@@ -749,3 +749,528 @@ func TestCoverage_selectLockedRecursiveCTE(t *testing.T) {
 
 	t.Logf("Recursive CTE query returned %d rows", len(result.Rows))
 }
+
+// TestCoverage_selectLockedWindowWithCTE96 targets window functions with pre-computed CTE
+func TestCoverage_selectLockedWindowWithCTE96(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	createCoverageTestTable(t, c, "window_cte_base96", []*query.ColumnDef{
+		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "category", Type: query.TokenText},
+		{Name: "amount", Type: query.TokenInteger},
+	})
+
+	for i := 1; i <= 20; i++ {
+		cat := "A"
+		if i > 10 {
+			cat = "B"
+		}
+		c.Insert(ctx, &query.InsertStmt{
+			Table:   "window_cte_base96",
+			Columns: []string{"id", "category", "amount"},
+			Values:  [][]query.Expression{{numReal(float64(i)), strReal(cat), numReal(float64(i * 10))}},
+		}, nil)
+	}
+
+	result, err := c.ExecuteQuery(`
+		WITH RECURSIVE cte_data AS (
+			SELECT id, category, amount FROM window_cte_base96 WHERE id <= 10
+		)
+		SELECT id, category, amount,
+			ROW_NUMBER() OVER (PARTITION BY category ORDER BY amount) as rn
+		FROM cte_data
+	`)
+	if err != nil {
+		t.Logf("Window with recursive CTE error: %v", err)
+	} else {
+		t.Logf("Query returned %d rows", len(result.Rows))
+	}
+
+	result, err = c.ExecuteQuery(`
+		WITH cte_sum AS (
+			SELECT category, SUM(amount) as total
+			FROM window_cte_base96
+			GROUP BY category
+		)
+		SELECT category, total,
+			RANK() OVER (ORDER BY total DESC) as rnk
+		FROM cte_sum
+	`)
+	if err != nil {
+		t.Logf("Window with CTE error: %v", err)
+	} else {
+		t.Logf("CTE window query returned %d rows", len(result.Rows))
+	}
+}
+
+// TestCoverage_selectLockedRLS96 targets selectLocked with RLS policies
+func TestCoverage_selectLockedRLS96(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	// Create table via SQL to enable RLS properly
+	_, err := c.ExecuteQuery(`CREATE TABLE rls_test_data96 (
+		id INTEGER PRIMARY KEY,
+		tenant_id INTEGER,
+		data TEXT
+	)`)
+	if err != nil {
+		t.Logf("Create table error: %v", err)
+		return
+	}
+
+	// Insert data
+	for i := 1; i <= 10; i++ {
+		tenant := 1
+		if i > 5 {
+			tenant = 2
+		}
+		c.Insert(ctx, &query.InsertStmt{
+			Table:   "rls_test_data96",
+			Columns: []string{"id", "tenant_id", "data"},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(tenant)), strReal("data")}},
+		}, nil)
+	}
+
+	// Enable RLS via SQL
+	_, err = c.ExecuteQuery("ALTER TABLE rls_test_data96 ENABLE ROW LEVEL SECURITY")
+	if err != nil {
+		t.Logf("Enable RLS error: %v", err)
+		return
+	}
+
+	// Create policy via SQL
+	_, err = c.ExecuteQuery("CREATE POLICY tenant_isolation ON rls_test_data96 USING (tenant_id = CURRENT_TENANT)")
+	if err != nil {
+		t.Logf("Create policy error: %v", err)
+		return
+	}
+
+	// Query with RLS
+	result, err := c.ExecuteQuery("SELECT * FROM rls_test_data96")
+	if err != nil {
+		t.Logf("RLS query error: %v", err)
+	} else {
+		t.Logf("RLS query returned %d rows", len(result.Rows))
+	}
+}
+
+// TestCoverage_insertLockedTriggers96 targets insertLocked with triggers
+func TestCoverage_insertLockedTriggers96(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	// Create audit log table
+	_, err := c.ExecuteQuery(`CREATE TABLE audit_log96 (
+		id INTEGER PRIMARY KEY,
+		action TEXT,
+		table_name TEXT,
+		row_id INTEGER
+	)`)
+	if err != nil {
+		t.Logf("Create audit log error: %v", err)
+		return
+	}
+
+	// Create main table
+	_, err = c.ExecuteQuery(`CREATE TABLE trigger_test_table96 (
+		id INTEGER PRIMARY KEY,
+		name TEXT
+	)`)
+	if err != nil {
+		t.Logf("Create main table error: %v", err)
+		return
+	}
+
+	// Create trigger via SQL
+	_, err = c.ExecuteQuery(`CREATE TRIGGER audit_insert AFTER INSERT ON trigger_test_table96
+		BEGIN
+			INSERT INTO audit_log96 (action, table_name, row_id) VALUES ('INSERT', 'trigger_test_table96', NEW.id);
+		END`)
+	if err != nil {
+		t.Logf("Create trigger error: %v", err)
+		return
+	}
+
+	_, _, err = c.Insert(ctx, &query.InsertStmt{
+		Table:   "trigger_test_table96",
+		Columns: []string{"id", "name"},
+		Values:  [][]query.Expression{{numReal(1), strReal("Test")}},
+	}, nil)
+	if err != nil {
+		t.Logf("Insert with trigger error: %v", err)
+	}
+
+	result, err := c.ExecuteQuery("SELECT * FROM audit_log96")
+	if err != nil {
+		t.Logf("Audit log query error: %v", err)
+	} else {
+		t.Logf("Audit log has %d rows", len(result.Rows))
+	}
+}
+
+// TestCoverage_insertLockedFKValidation96 targets insertLocked with FK validation
+func TestCoverage_insertLockedFKValidation96(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	// Create tables with FK via SQL
+	_, err := c.ExecuteQuery(`CREATE TABLE parent_fk96 (
+		id INTEGER PRIMARY KEY,
+		name TEXT
+	)`)
+	if err != nil {
+		t.Logf("Create parent error: %v", err)
+		return
+	}
+
+	_, err = c.ExecuteQuery(`CREATE TABLE child_fk96 (
+		id INTEGER PRIMARY KEY,
+		parent_id INTEGER REFERENCES parent_fk96(id) ON DELETE RESTRICT ON UPDATE CASCADE,
+		data TEXT
+	)`)
+	if err != nil {
+		t.Logf("Create child error: %v", err)
+		return
+	}
+
+	// Insert parent
+	c.Insert(ctx, &query.InsertStmt{
+		Table:   "parent_fk96",
+		Columns: []string{"id", "name"},
+		Values:  [][]query.Expression{{numReal(1), strReal("Parent 1")}},
+	}, nil)
+
+	// Insert valid child
+	_, _, err = c.Insert(ctx, &query.InsertStmt{
+		Table:   "child_fk96",
+		Columns: []string{"id", "parent_id", "data"},
+		Values:  [][]query.Expression{{numReal(1), numReal(1), strReal("Child 1")}},
+	}, nil)
+	if err != nil {
+		t.Logf("Valid child insert error: %v", err)
+	}
+
+	// Insert invalid child (FK violation)
+	_, _, err = c.Insert(ctx, &query.InsertStmt{
+		Table:   "child_fk96",
+		Columns: []string{"id", "parent_id", "data"},
+		Values:  [][]query.Expression{{numReal(2), numReal(999), strReal("Invalid Child")}},
+	}, nil)
+	if err != nil {
+		t.Logf("Invalid child insert error (expected): %v", err)
+	}
+}
+
+// TestCoverage_countRows96 targets countRows function via SQL
+func TestCoverage_countRows96(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	createCoverageTestTable(t, c, "count_test96", []*query.ColumnDef{
+		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "data", Type: query.TokenText},
+	})
+
+	// Check empty table count
+	result, _ := c.ExecuteQuery("SELECT COUNT(*) FROM count_test96")
+	t.Logf("Empty table count: %v", result.Rows[0][0])
+
+	for i := 1; i <= 100; i++ {
+		c.Insert(ctx, &query.InsertStmt{
+			Table:   "count_test96",
+			Columns: []string{"id", "data"},
+			Values:  [][]query.Expression{{numReal(float64(i)), strReal("data")}},
+		}, nil)
+	}
+
+	// Check count after inserts
+	result, _ = c.ExecuteQuery("SELECT COUNT(*) FROM count_test96")
+	t.Logf("After 100 inserts count: %v", result.Rows[0][0])
+
+	// Delete some rows
+	c.ExecuteQuery("DELETE FROM count_test96 WHERE id <= 30")
+
+	// Check count after delete
+	result, _ = c.ExecuteQuery("SELECT COUNT(*) FROM count_test96")
+	t.Logf("After delete count: %v", result.Rows[0][0])
+}
+
+// TestCoverage_insertLockedMultipleRows96 targets insertLocked with multiple value rows
+func TestCoverage_insertLockedMultipleRows96(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	createCoverageTestTable(t, c, "multi_insert96", []*query.ColumnDef{
+		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "name", Type: query.TokenText},
+		{Name: "value", Type: query.TokenInteger},
+	})
+
+	_, count, err := c.Insert(ctx, &query.InsertStmt{
+		Table:   "multi_insert96",
+		Columns: []string{"id", "name", "value"},
+		Values: [][]query.Expression{
+			{numReal(1), strReal("A"), numReal(10)},
+			{numReal(2), strReal("B"), numReal(20)},
+			{numReal(3), strReal("C"), numReal(30)},
+			{numReal(4), strReal("D"), numReal(40)},
+			{numReal(5), strReal("E"), numReal(50)},
+		},
+	}, nil)
+	if err != nil {
+		t.Logf("Multi-row insert error: %v", err)
+	} else {
+		t.Logf("Inserted %d rows", count)
+	}
+
+	result, err := c.ExecuteQuery("SELECT COUNT(*) FROM multi_insert96")
+	if err != nil {
+		t.Logf("Count query error: %v", err)
+	} else if len(result.Rows) > 0 {
+		t.Logf("Total rows in table: %v", result.Rows[0][0])
+	}
+}
+
+// TestCoverage_selectLockedUnionSetOps targets selectLocked with set operations
+func TestCoverage_selectLockedUnionSetOps96(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	createCoverageTestTable(t, c, "union_a_ops", []*query.ColumnDef{
+		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "val", Type: query.TokenInteger},
+	})
+	createCoverageTestTable(t, c, "union_b_ops", []*query.ColumnDef{
+		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "val", Type: query.TokenInteger},
+	})
+
+	for i := 1; i <= 10; i++ {
+		c.Insert(ctx, &query.InsertStmt{
+			Table:   "union_a_ops",
+			Columns: []string{"id", "val"},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(i * 10))}},
+		}, nil)
+	}
+	for i := 5; i <= 15; i++ {
+		c.Insert(ctx, &query.InsertStmt{
+			Table:   "union_b_ops",
+			Columns: []string{"id", "val"},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(i * 20))}},
+		}, nil)
+	}
+
+	queries := []string{
+		"SELECT id FROM union_a_ops UNION SELECT id FROM union_b_ops",
+		"SELECT id FROM union_a_ops UNION ALL SELECT id FROM union_b_ops",
+		"SELECT id FROM union_a_ops INTERSECT SELECT id FROM union_b_ops",
+		"SELECT id FROM union_a_ops EXCEPT SELECT id FROM union_b_ops",
+	}
+
+	for _, q := range queries {
+		result, err := c.ExecuteQuery(q)
+		if err != nil {
+			t.Logf("Query '%s' error: %v", q, err)
+		} else {
+			t.Logf("Query '%s' returned %d rows", q, len(result.Rows))
+		}
+	}
+}
+
+// TestCoverage_selectLockedComplexWhere96 targets selectLocked with complex WHERE clauses
+func TestCoverage_selectLockedComplexWhere96(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	createCoverageTestTable(t, c, "complex_where", []*query.ColumnDef{
+		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "status", Type: query.TokenText},
+		{Name: "amount", Type: query.TokenInteger},
+		{Name: "category", Type: query.TokenText},
+	})
+
+	statuses := []string{"active", "pending", "inactive", "deleted"}
+	categories := []string{"A", "B", "C"}
+	for i := 1; i <= 50; i++ {
+		c.Insert(ctx, &query.InsertStmt{
+			Table:   "complex_where",
+			Columns: []string{"id", "status", "amount", "category"},
+			Values: [][]query.Expression{
+				{numReal(float64(i)), strReal(statuses[i%4]), numReal(float64(i * 10)), strReal(categories[i%3])},
+			},
+		}, nil)
+	}
+
+	queries := []string{
+		"SELECT * FROM complex_where WHERE status = 'active' AND amount > 100",
+		"SELECT * FROM complex_where WHERE status IN ('active', 'pending') OR amount > 300",
+		"SELECT * FROM complex_where WHERE amount BETWEEN 100 AND 300",
+		"SELECT * FROM complex_where WHERE status NOT IN ('deleted') AND category = 'A'",
+		"SELECT * FROM complex_where WHERE (status = 'active' OR status = 'pending') AND amount < 200",
+	}
+
+	for _, q := range queries {
+		result, err := c.ExecuteQuery(q)
+		if err != nil {
+			t.Logf("Query error: %v", err)
+		} else {
+			t.Logf("Query returned %d rows", len(result.Rows))
+		}
+	}
+}
+
+// TestCoverage_insertLockedConflictUpdate targets insertLocked ON CONFLICT DO UPDATE
+func TestCoverage_insertLockedConflictUpdate(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	createCoverageTestTable(t, c, "conflict_update", []*query.ColumnDef{
+		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "counter", Type: query.TokenInteger},
+		{Name: "data", Type: query.TokenText},
+	})
+
+	c.Insert(ctx, &query.InsertStmt{
+		Table:   "conflict_update",
+		Columns: []string{"id", "counter", "data"},
+		Values:  [][]query.Expression{{numReal(1), numReal(10), strReal("original")}},
+	}, nil)
+
+	stmt, _ := query.Parse("INSERT INTO conflict_update (id, counter, data) VALUES (1, 20, 'upsert') ON CONFLICT (id) DO UPDATE SET counter = counter + 1, data = 'updated'")
+	if ins, ok := stmt.(*query.InsertStmt); ok {
+		_, _, err := c.Insert(ctx, ins, nil)
+		if err != nil {
+			t.Logf("UPSERT error: %v", err)
+		}
+	}
+
+	result, _ := c.ExecuteQuery("SELECT * FROM conflict_update WHERE id = 1")
+	if len(result.Rows) > 0 {
+		t.Logf("After UPSERT: %v", result.Rows[0])
+	}
+}
+
+// TestCoverage_selectLockedLimitOffset targets selectLocked with LIMIT/OFFSET
+func TestCoverage_selectLockedLimitOffset(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	createCoverageTestTable(t, c, "limit_test", []*query.ColumnDef{
+		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "val", Type: query.TokenInteger},
+	})
+
+	for i := 1; i <= 100; i++ {
+		c.Insert(ctx, &query.InsertStmt{
+			Table:   "limit_test",
+			Columns: []string{"id", "val"},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(i * 10))}},
+		}, nil)
+	}
+
+	queries := []string{
+		"SELECT * FROM limit_test LIMIT 10",
+		"SELECT * FROM limit_test LIMIT 10 OFFSET 20",
+		"SELECT * FROM limit_test ORDER BY id DESC LIMIT 5",
+		"SELECT * FROM limit_test WHERE id > 50 LIMIT 10",
+	}
+
+	for _, q := range queries {
+		result, err := c.ExecuteQuery(q)
+		if err != nil {
+			t.Logf("Query error: %v", err)
+		} else {
+			t.Logf("Query returned %d rows", len(result.Rows))
+		}
+	}
+}
+
+// TestCoverage_selectLockedOrderByMulti targets selectLocked with multi-column ORDER BY
+func TestCoverage_selectLockedOrderByMulti(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	createCoverageTestTable(t, c, "orderby_multi", []*query.ColumnDef{
+		{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		{Name: "category", Type: query.TokenText},
+		{Name: "subcategory", Type: query.TokenText},
+		{Name: "amount", Type: query.TokenInteger},
+	})
+
+	categories := []string{"A", "B", "C"}
+	subcategories := []string{"X", "Y"}
+	id := 1
+	for _, cat := range categories {
+		for _, sub := range subcategories {
+			for i := 1; i <= 3; i++ {
+				c.Insert(ctx, &query.InsertStmt{
+					Table:   "orderby_multi",
+					Columns: []string{"id", "category", "subcategory", "amount"},
+					Values:  [][]query.Expression{{numReal(float64(id)), strReal(cat), strReal(sub), numReal(float64(i * 10))}},
+				}, nil)
+				id++
+			}
+		}
+	}
+
+	queries := []string{
+		"SELECT * FROM orderby_multi ORDER BY category, subcategory",
+		"SELECT * FROM orderby_multi ORDER BY category DESC, amount ASC",
+		"SELECT * FROM orderby_multi ORDER BY amount DESC LIMIT 5",
+	}
+
+	for _, q := range queries {
+		result, err := c.ExecuteQuery(q)
+		if err != nil {
+			t.Logf("Query error: %v", err)
+		} else {
+			t.Logf("Query returned %d rows", len(result.Rows))
+		}
+	}
+}

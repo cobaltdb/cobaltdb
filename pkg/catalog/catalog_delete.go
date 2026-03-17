@@ -2,7 +2,10 @@ package catalog
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"time"
+
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
@@ -64,9 +67,15 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 				break
 			}
 
-			// Decode row
-			row, err := decodeRow(valueData, len(table.Columns))
+			// Decode row with version info
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
+				continue
+			}
+			row := vrow.Data
+
+			// Skip already deleted rows
+			if vrow.Version.DeletedAt > 0 {
 				continue
 			}
 
@@ -118,30 +127,31 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 	// Foreign key enforcer for CASCADE/RESTRICT actions
 	fke := NewForeignKeyEnforcer(c)
 
-	// Delete collected entries
+	// Soft delete collected entries (mark as deleted for temporal versioning)
 	for _, entry := range entries {
 		key := entry.key
 
+		// Decode row with version info
+		vrow, err := decodeVersionedRow(entry.value, len(table.Columns))
+		if err != nil {
+			continue
+		}
+		row := vrow.Data
+
 		// Enforce foreign key ON DELETE actions (CASCADE, SET NULL, RESTRICT)
 		// Extract primary key value from the row for FK lookup
-		row, err := decodeRow(entry.value, len(table.Columns))
-		if err == nil {
-			pkColIdx := -1
-			if len(table.PrimaryKey) > 0 {
-				pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
-			}
-			if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
-				if fkErr := fke.OnDelete(ctx, stmt.Table, row[pkColIdx]); fkErr != nil {
-					return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
-				}
+		pkColIdx := -1
+		if len(table.PrimaryKey) > 0 {
+			pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
+		}
+		if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
+			if fkErr := fke.OnDelete(ctx, stmt.Table, row[pkColIdx]); fkErr != nil {
+				return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
 			}
 		}
 
-		// Remove from indexes first (before deleting the row), track for undo
+		// Remove from indexes first (before soft deleting the row), track for undo
 		var idxChanges []indexUndoEntry
-		if row == nil {
-			row, err = decodeRow(entry.value, len(table.Columns))
-		}
 		if err == nil {
 			for idxName, idxTree := range c.indexTrees {
 				idxDef := c.indexes[idxName]
@@ -182,6 +192,9 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 			}
 		}
 
+		// Update vector indexes - delete the row from vector indexes
+		c.updateVectorIndexesForDelete(stmt.Table, key)
+
 		// Log to WAL before applying change
 		if c.wal != nil && c.txnActive {
 			walData := append([]byte(key), 0)
@@ -210,13 +223,23 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 			})
 		}
 
-		// Delete from the correct partition tree
+		// Soft delete: mark row as deleted instead of physically deleting
 		deleteTree, exists := c.tableTrees[entry.treeName]
 		if !exists {
 			return 0, rowsAffected, fmt.Errorf("partition tree %s not found", entry.treeName)
 		}
-		if err := deleteTree.Delete(key); err != nil {
-			return 0, rowsAffected, fmt.Errorf("failed to delete row: %w", err)
+
+		// Mark as deleted with current timestamp
+		vrow.Version.markDeleted(time.Now())
+
+		// Re-encode and store the soft-deleted row
+		deletedValueData, err := json.Marshal(vrow)
+		if err != nil {
+			return 0, rowsAffected, fmt.Errorf("failed to encode deleted row: %w", err)
+		}
+
+		if err := deleteTree.Put(key, deletedValueData); err != nil {
+			return 0, rowsAffected, fmt.Errorf("failed to soft delete row: %w", err)
 		}
 
 		// Execute AFTER DELETE trigger per-row
@@ -270,7 +293,7 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 	// Get old value for undo log and index cleanup
 	oldData, err := tree.Get(key)
 	if err != nil {
-		return tree.Delete(key) // Key might not exist in expected format, try anyway
+		return nil // Key doesn't exist, nothing to delete
 	}
 
 	table := c.tables[tableName]
@@ -278,8 +301,9 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 	// Clean up index entries
 	var idxChanges []indexUndoEntry
 	if table != nil {
-		oldRow, decErr := decodeRow(oldData, len(table.Columns))
-		if decErr == nil {
+		vrow, decErr := decodeVersionedRow(oldData, len(table.Columns))
+		if decErr == nil && vrow != nil {
+			oldRow := vrow.Data
 			for idxName, idxTree := range c.indexTrees {
 				idxDef := c.indexes[idxName]
 				if idxDef != nil && idxDef.TableName == tableName && len(idxDef.Columns) > 0 {
@@ -318,21 +342,6 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 		}
 	}
 
-	// Record undo log entry for rollback
-	if c.txnActive {
-		keyCopy := make([]byte, len(key))
-		copy(keyCopy, key)
-		oldCopy := make([]byte, len(oldData))
-		copy(oldCopy, oldData)
-		c.undoLog = append(c.undoLog, undoEntry{
-			action:       undoDelete,
-			tableName:    tableName,
-			key:          keyCopy,
-			oldValue:     oldCopy,
-			indexChanges: idxChanges,
-		})
-	}
-
 	// Cascade FK enforcement before deleting
 	if table != nil && len(table.ForeignKeys) > 0 {
 		fke := NewForeignKeyEnforcer(c)
@@ -350,6 +359,36 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 		}
 	}
 
-	// Delete from BTree
-	return tree.Delete(key)
+	// Decode row with version info
+	vrow, err := decodeVersionedRow(oldData, len(table.Columns))
+	if err != nil {
+		// If we can't decode, fall back to physical delete
+		return tree.Delete(key)
+	}
+
+	// Record undo log entry for rollback
+	if c.txnActive {
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+		oldCopy := make([]byte, len(oldData))
+		copy(oldCopy, oldData)
+		c.undoLog = append(c.undoLog, undoEntry{
+			action:       undoDelete,
+			tableName:    tableName,
+			key:          keyCopy,
+			oldValue:     oldCopy,
+			indexChanges: idxChanges,
+		})
+	}
+
+	// Soft delete: mark row as deleted instead of physically deleting
+	vrow.Version.markDeleted(time.Now())
+
+	// Re-encode and store the soft-deleted row
+	deletedValueData, err := json.Marshal(vrow)
+	if err != nil {
+		return fmt.Errorf("failed to encode deleted row: %w", err)
+	}
+
+	return tree.Put(key, deletedValueData)
 }
