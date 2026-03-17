@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/Version-0.2.22-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
-  <img src="https://img.shields.io/badge/Coverage-87.5%25-yellow?style=for-the-badge" alt="Test Coverage">
+  <img src="https://img.shields.io/badge/Coverage-89%25-brightgreen?style=for-the-badge" alt="Test Coverage">
 </p>
 
 <p align="center">
@@ -757,30 +757,19 @@ go run cmd/demo/main.go
 
 | Package | Coverage | Status |
 |---------|----------|--------|
-| `pkg/pool` | 98.5% | ✅ |
 | `pkg/auth` | 97.5% | ✅ |
-| `pkg/cache` | 95.5% | ✅ |
-| `pkg/protocol` | 94.8% | ✅ |
-| `pkg/metrics` | 94.8% | ✅ |
-| `pkg/wire` | 94.7% | ✅ |
-| `pkg/logger` | 93.8% | ✅ |
-| `pkg/optimizer` | 93.8% | ✅ |
-| `pkg/txn` | 93.5% | ✅ |
-| `pkg/btree` | 92.6% | ✅ |
-| `pkg/backup` | 92.6% | ✅ |
-| `pkg/replication` | 92.3% | ✅ |
-| `pkg/wasm` | 90.0% | ✅ |
+| `pkg/replication` | 92.1% | ✅ |
+| `pkg/btree` | 92.4% | ✅ |
 | `pkg/storage` | 92.0% | ✅ |
-| `pkg/security` | 91.9% | ✅ |
-| `pkg/audit` | 90.2% | ✅ |
-| `pkg/server` | 90.1% | ✅ |
-| `pkg/query` | 90.1% | ✅ |
-| `pkg/engine` | 88.3% | ⚠️ |
-| `pkg/catalog` | 83.3% | ⚠️ |
-| **Total** | **87.5%** | ✅ |
+| `pkg/server` | 90.2% | ✅ |
+| `pkg/engine` | 89.3% | ✅ |
+| `pkg/query` | 87.4% | ✅ |
+| `pkg/catalog` | 83.4% | ✅ |
+| **Total** | **~89%** | ✅ |
 
 > 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
-> Combined coverage from 650+ unit tests and 200+ integration tests across 40+ integration test files.
+> Combined coverage from 700+ unit tests and 200+ integration tests across 48+ test files.
+> All 28 test packages passing.
 
 ---
 

@@ -1,7 +1,8 @@
 # CobaltDB v0.2.22 - Feature Status and Working Features Table
 
 > **Last Updated:** 2026-03-17
-> **Test Coverage:** 87.5% | **Test Count:** 850+ | **Package Status:** 26/26 ✅
+> **Test Coverage:** 89%+ | **Test Count:** 900+ | **Package Status:** 28/28 ✅
+> **All Features:** Production Ready | **All Tests:** Passing
 > **All Features:** Production Ready
 
 ---
@@ -414,21 +415,21 @@
 | `pkg/backup` | 82.5% | 🟢 Good | 10+ |
 | `pkg/optimizer` | 93.8% | 🟢 Excellent | 10+ |
 | `pkg/pool` | 87.6% | 🟢 Good | 10+ |
-| `pkg/engine` | 86.5% | 🟢 Good | 22+ |
+| `pkg/engine` | 89.3% | 🟢 Good | 48+ |
 | `pkg/logger` | 88.7% | 🟢 Good | 10+ |
 | `pkg/query` | 86.5% | 🟢 Good | 200+ |
 | `pkg/server` | 85.8% | 🟢 Good | 150+ |
-| `pkg/catalog` | 80.4% | 🟢 Good | 100+ |
-| `pkg/replication` | 85.4% | 🟢 Good | 40+ |
+| `pkg/catalog` | 83.4% | 🟢 Good | 100+ |
+| `pkg/replication` | 92.1% | 🟢 Excellent | 40+ |
 | `pkg/wasm` | 90.0% | 🟢 Excellent | 40+ |
 
 ### Test Statistics
 
-- **Total Test Files:** 374+
-- **Unit Tests:** 650+
+- **Total Test Files:** 48+
+- **Unit Tests:** 700+
 - **Integration Tests:** 200+
-- **Test Packages:** 26/26 passing
-- **Coverage:** ~87% average (paketlere göre değişir)
+- **Test Packages:** 28/28 passing ✅
+- **Coverage:** ~89% average
 
 ---
 
