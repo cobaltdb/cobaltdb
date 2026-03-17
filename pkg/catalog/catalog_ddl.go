@@ -362,6 +362,9 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 			defaultVal, _ = evaluateExpression(c, nil, nil, newCol.defaultExpr, nil)
 		}
 
+		// Remember the old column count before adding the new column
+		oldColCount := len(table.Columns) - 1
+
 		// Scan all rows and append the default value
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
@@ -378,16 +381,20 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 			if err != nil {
 				break
 			}
-			var values []interface{}
-			if err := json.Unmarshal(valueData, &values); err != nil {
+			// Use oldColCount to decode to avoid automatic padding with nil
+			vrow, err := decodeVersionedRow(valueData, oldColCount)
+			if err != nil {
 				continue
 			}
+			values := vrow.Data
 			// Only update rows that are missing the new column
-			if len(values) < len(table.Columns) {
+			if len(values) <= oldColCount {
 				for len(values) < len(table.Columns) {
 					values = append(values, defaultVal)
 				}
-				newData, err := json.Marshal(values)
+				// Update the VersionedRow and re-encode
+				vrow.Data = values
+				newData, err := json.Marshal(vrow)
 				if err != nil {
 					continue
 				}

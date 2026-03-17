@@ -2,7 +2,6 @@ package catalog
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -274,10 +273,15 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 					if err != nil {
 						break
 					}
-					var existingRow []interface{}
-					if err := json.Unmarshal(existingData, &existingRow); err != nil {
+					vrow, err := decodeVersionedRow(existingData, len(table.Columns))
+					if err != nil {
 						continue
 					}
+// Skip soft-deleted rows in UNIQUE check
+					if vrow.Version.DeletedAt > 0 {
+						continue
+					}
+					existingRow := vrow.Data
 					if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
 						duplicateKey = k
 						break
@@ -401,10 +405,11 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 					if err != nil {
 						break
 					}
-					var refRow []interface{}
-					if err := json.Unmarshal(refData, &refRow); err != nil {
+					vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
+					if err != nil {
 						continue
 					}
+					refRow := vrow.Data
 					if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
 						found = true
 						break
@@ -450,14 +455,17 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Enforce PRIMARY KEY uniqueness - check if key already exists
-		if _, err := tree.Get([]byte(key)); err == nil {
-			if stmt.ConflictAction == query.ConflictIgnore {
-				continue // Skip this row
-			} else if stmt.ConflictAction == query.ConflictReplace {
-				// Clean up index entries for the row being replaced (PK conflict)
-				oldData, getErr := tree.Get([]byte(key))
-				if getErr == nil {
-					oldRow, decErr := decodeRow(oldData, len(table.Columns))
+		if existingData, err := tree.Get([]byte(key)); err == nil {
+			// Check if existing row is soft-deleted
+			vrow, decErr := decodeVersionedRow(existingData, len(table.Columns))
+			isDeleted := decErr == nil && vrow.Version.DeletedAt > 0
+
+			if !isDeleted {
+				if stmt.ConflictAction == query.ConflictIgnore {
+					continue // Skip this row
+				} else if stmt.ConflictAction == query.ConflictReplace {
+					// Clean up index entries for the row being replaced (PK conflict)
+					oldRow, decErr := decodeRow(existingData, len(table.Columns))
 					if decErr == nil {
 						for idxName, idxTree := range c.indexTrees {
 							idxDef := c.indexes[idxName]
@@ -474,16 +482,17 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 							}
 						}
 					}
+					// Delete existing row before replacing
+					if err := tree.Delete([]byte(key)); err != nil {
+						insertErr = fmt.Errorf("failed to delete row for REPLACE: %w", err)
+						break
+					}
+				} else {
+					insertErr = fmt.Errorf("UNIQUE constraint failed: duplicate primary key value")
+					break
 				}
-				// Delete existing row before replacing
-				if err := tree.Delete([]byte(key)); err != nil {
-				insertErr = fmt.Errorf("failed to delete row for REPLACE: %w", err)
-				break
 			}
-			} else {
-				insertErr = fmt.Errorf("UNIQUE constraint failed: duplicate primary key value")
-				break
-			}
+			// If isDeleted is true, we can proceed with insert (soft-deleted row can be replaced)
 		}
 
 		// Store in B+Tree

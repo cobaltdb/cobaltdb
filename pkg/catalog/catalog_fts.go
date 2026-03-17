@@ -1,7 +1,6 @@
 package catalog
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -48,11 +47,12 @@ func (c *Catalog) CreateFTSIndex(name, tableName string, columns []string) error
 				if key == nil || len(value) == 0 {
 					break
 				}
-				// CobaltDB stores rows as []interface{} arrays, not maps
-				var rowSlice []interface{}
-				if err := json.Unmarshal(value, &rowSlice); err != nil {
+				// CobaltDB stores rows as VersionedRow (with []interface{} Data), not maps
+				vrow, err := decodeVersionedRow(value, len(table.Columns))
+				if err != nil {
 					continue
 				}
+				rowSlice := vrow.Data
 				// Convert to map using column definitions
 				row := make(map[string]interface{})
 				for i, col := range table.Columns {

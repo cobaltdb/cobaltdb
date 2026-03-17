@@ -284,10 +284,15 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 		}
 
 		// Parse the row as a slice
-		row, decErr := decodeRow(value, len(table.Columns))
+		vrow, decErr := decodeVersionedRow(value, len(table.Columns))
 		if decErr != nil {
 			return nil, decErr
 		}
+		// Skip soft-deleted rows
+		if vrow.Version.DeletedAt > 0 {
+			continue
+		}
+		row := vrow.Data
 
 		// Check if this row references the deleted row
 		matches := true

@@ -560,6 +560,10 @@ func (t *BTree) flushInternal() error {
 	}
 
 	rootHeaderSize = 8 + 4*int(overflowCount)
+	// Cap header size to prevent overflow - only so many page IDs fit in root
+	if rootHeaderSize > usablePageSize {
+		rootHeaderSize = usablePageSize
+	}
 	rootDataSpace = usablePageSize - rootHeaderSize
 	dataWritten := 0
 

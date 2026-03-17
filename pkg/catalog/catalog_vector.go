@@ -1,7 +1,6 @@
 package catalog
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 )
@@ -60,12 +59,12 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 				if key == nil || len(value) == 0 {
 					break
 				}
-				// CobaltDB stores rows as []interface{} arrays
-				var rowSlice []interface{}
-				if err := json.Unmarshal(value, &rowSlice); err != nil {
+				// CobaltDB stores rows as VersionedRow (with []interface{} Data)
+				vrow, err := decodeVersionedRow(value, len(table.Columns))
+				if err != nil {
 					continue
 				}
-				c.indexRowForVector(vectorIndex, rowSlice, key, colIdx)
+				c.indexRowForVector(vectorIndex, vrow.Data, key, colIdx)
 			}
 		}
 	}

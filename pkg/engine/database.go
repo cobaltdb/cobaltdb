@@ -121,6 +121,7 @@ type Options struct {
 	SlowQueryThreshold   time.Duration // Threshold for slow queries (default: 1s)
 	SlowQueryMaxEntries  int           // Max in-memory entries (default: 1000)
 	SlowQueryLogFile     string        // Log file path (empty = memory only)
+
 }
 
 // SyncMode controls when data is synced to disk
@@ -2887,3 +2888,4 @@ func (db *DB) UpdateTableStatistics(tableName string, stats *optimizer.TableStat
 func (db *DB) GetReplicationManager() *replication.Manager {
 	return db.replicationMgr
 }
+

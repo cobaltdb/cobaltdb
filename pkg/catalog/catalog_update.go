@@ -84,6 +84,11 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		}
 		row := vrow.Data
 
+		// Skip soft-deleted rows
+		if vrow.Version.DeletedAt > 0 {
+			continue
+		}
+
 		// Apply WHERE clause if present
 		if stmt.Where != nil {
 			matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
@@ -154,10 +159,11 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 					if string(checkKey) == string(key) {
 						continue
 					}
-					var existingRow []interface{}
-					if err := json.Unmarshal(existingData, &existingRow); err != nil {
+					vrow, err := decodeVersionedRow(existingData, len(table.Columns))
+					if err != nil {
 						continue
 					}
+					existingRow := vrow.Data
 					if len(existingRow) > i && compareValues(updatedRow[i], existingRow[i]) == 0 {
 						duplicate = true
 						break
@@ -250,10 +256,11 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 					if err != nil {
 						break
 					}
-					var refRow []interface{}
-					if err := json.Unmarshal(refData, &refRow); err != nil {
+					vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
+					if err != nil {
 						continue
 					}
+					refRow := vrow.Data
 					if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
 						found = true
 						break

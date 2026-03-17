@@ -264,10 +264,11 @@ func (c *Catalog) Analyze(tableName string) error {
 			break
 		}
 		rowCount++
-		var rowSlice []interface{}
-		if err := json.Unmarshal(value, &rowSlice); err != nil {
+		vrow, err := decodeVersionedRow(value, len(table.Columns))
+		if err != nil {
 			continue
 		}
+		rowSlice := vrow.Data
 		for i, col := range table.Columns {
 			if i >= len(rowSlice) || rowSlice[i] == nil {
 				nullCounts[col.Name]++

@@ -385,7 +385,12 @@ func (m *Manager) sendHeartbeat(slave *SlaveConnection) error {
 func (m *Manager) syncWAL() {
 	defer m.wg.Done()
 
-	ticker := time.NewTicker(m.config.SyncInterval)
+	syncInterval := m.config.SyncInterval
+	if syncInterval <= 0 {
+		syncInterval = 100 * time.Millisecond // Default value
+	}
+
+	ticker := time.NewTicker(syncInterval)
 	defer ticker.Stop()
 
 	for {

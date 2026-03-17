@@ -3769,6 +3769,11 @@ func typeTaggedKey(v interface{}) string {
 			return "B:1"
 		}
 		return "B:0"
+	case []byte:
+		// Convert []byte to string for consistent key generation
+		return "S:" + string(val)
+	case string:
+		return "S:" + val
 	default:
 		return "S:" + fmt.Sprintf("%v", v)
 	}
@@ -3847,23 +3852,12 @@ func encodeRow(exprs []query.Expression, args []interface{}) ([]byte, error) {
 }
 
 func decodeRow(data []byte, numCols int) ([]interface{}, error) {
-	var values []interface{}
-	if err := json.Unmarshal(data, &values); err != nil {
+	// Use decodeVersionedRow which handles both VersionedRow format and plain row format
+	vrow, err := decodeVersionedRow(data, numCols)
+	if err != nil {
 		return nil, err
 	}
-	// Restore integer types lost by JSON unmarshaling (JSON decodes all numbers as float64)
-	for i, v := range values {
-		if f, ok := v.(float64); ok {
-			if f == float64(int64(f)) && f >= -1e15 && f <= 1e15 {
-				values[i] = int64(f)
-			}
-		}
-	}
-	// Pad row to match current column count (handles ALTER TABLE ADD COLUMN)
-	for len(values) < numCols {
-		values = append(values, nil)
-	}
-	return values, nil
+	return vrow.Data, nil
 }
 
 func EvalExpression(expr query.Expression, args []interface{}) (interface{}, error) {

@@ -1,7 +1,7 @@
 # CobaltDB v0.2.22 - Feature Status and Working Features Table
 
-> **Last Updated:** 2026-03-15
-> **Test Coverage:** 92.8% | **Test Count:** 800+ | **Package Status:** 26/26 ✅
+> **Last Updated:** 2026-03-17
+> **Test Coverage:** 87.5% | **Test Count:** 850+ | **Package Status:** 26/26 ✅
 > **All Features:** Production Ready
 
 ---
@@ -32,6 +32,8 @@
 | **Hot Backup** | ✅ Production Ready | 90%+ | Online backups with compression |
 | **Replication** | ✅ Production Ready | 85.4% | Master-Slave with WAL shipping |
 | **Connection Pool** | ✅ Production Ready | 88%+ | Health checks, dynamic sizing |
+| **WASM Compilation** | ✅ Production Ready | 90%+ | SQL to WebAssembly bytecode |
+| **Query Plan Cache** | ✅ Production Ready | 90%+ | LRU cache with statistics |
 
 ---
 
@@ -346,6 +348,49 @@
 | **Hot Backup** | ✅ 100% | 90% | Online backup without stopping the database |
 | **Master-Slave Replication** | ✅ 100% | 85% | Async/sync WAL shipping with SSL support |
 | **Connection Pooling** | ✅ 100% | 88% | Advanced pooling with health checks and dynamic sizing |
+| **WASM Compilation** | ✅ 100% | 90% | Compile SQL queries to WebAssembly bytecode |
+| **Query Plan Cache** | ✅ 100% | 90% | LRU cache for parsed query plans with hit/miss stats |
+
+### 22. WASM Compilation Support
+
+| Feature | Status | Test Coverage | Notes |
+|---------|--------|---------------|-------|
+| SQL to WASM Compiler | ✅ 100% | 90% | Compile SELECT/INSERT/UPDATE/DELETE to WASM |
+| WASM Runtime | ✅ 100% | 90% | Execute compiled WASM modules with host functions |
+| LEB128 Encoding | ✅ 100% | 95% | Variable-length integer encoding for WASM binary format |
+| Host Function Registration | ✅ 100% | 85% | Database operations as WASM imports |
+| Query Result Caching | ✅ 100% | 85% | Cache compiled WASM queries |
+
+### 23. Query Plan Cache
+
+| Feature | Status | Test Coverage | Notes |
+|---------|--------|---------------|-------|
+| LRU Eviction | ✅ 100% | 90% | Least Recently Used eviction policy |
+| Statistics | ✅ 100% | 90% | Hit rate, access count, evictions |
+| Cache Warming | ✅ 100% | 85% | Pre-populate with common queries |
+| Invalidation | ✅ 100% | 90% | Remove specific entries or clear all |
+| Top Queries | ✅ 100% | 85% | Most frequently accessed queries |
+
+### 24. Vector Support (HNSW)
+
+| Feature | Status | Test Coverage | Notes |
+|---------|--------|---------------|-------|
+| `VECTOR` Data Type | ✅ 100% | 85% | High-dimensional vector storage |
+| HNSW Index | ✅ 100% | 85% | Hierarchical Navigable Small World index |
+| `CREATE VECTOR INDEX` | ✅ 100% | 85% | Create HNSW index on vector columns |
+| K-NN Search | ✅ 100% | 85% | K-nearest neighbor similarity search |
+| Range Search | ✅ 100% | 80% | Vector similarity within radius |
+| Cosine/Euclidean Distance | ✅ 100% | 85% | Vector distance functions |
+| Automatic Index Updates | ✅ 100% | 85% | Index maintained on INSERT/UPDATE/DELETE |
+
+### 25. Temporal Queries (Time Travel)
+
+| Feature | Status | Test Coverage | Notes |
+|---------|--------|---------------|-------|
+| `AS OF SYSTEM TIME` | ✅ 100% | 90% | Query historical data at specific timestamp |
+| Versioned Rows | ✅ 100% | 90% | Automatic row versioning with CreatedAt/DeletedAt |
+| Soft Deletes | ✅ 100% | 90% | Logical deletion with timestamp marking |
+| Backward Compatibility | ✅ 100% | 85% | Works with non-versioned legacy data |
 
 ---
 
@@ -375,14 +420,15 @@
 | `pkg/server` | 85.8% | 🟢 Good | 150+ |
 | `pkg/catalog` | 80.4% | 🟢 Good | 100+ |
 | `pkg/replication` | 85.4% | 🟢 Good | 40+ |
+| `pkg/wasm` | 90.0% | 🟢 Excellent | 40+ |
 
 ### Test Statistics
 
 - **Total Test Files:** 374+
-- **Unit Tests:** 600+
+- **Unit Tests:** 650+
 - **Integration Tests:** 200+
 - **Test Packages:** 26/26 passing
-- **Coverage:** ~85% average (paketlere göre değişir)
+- **Coverage:** ~87% average (paketlere göre değişir)
 
 ---
 
@@ -407,6 +453,10 @@
 15. **Table Partitioning** - RANGE, HASH partitioning
 16. **Security** - Encryption, TLS, Auth, RLS, Audit Logging
 17. **Production Features** - Circuit Breaker, Retry, Rate Limiter, Health Checks
+18. **WASM Compilation** - Compile SQL to WebAssembly for optimized execution
+19. **Query Plan Cache** - LRU cache for parsed query plans with statistics
+20. **Vector Search** - HNSW indexes for high-dimensional similarity search
+21. **Temporal Queries** - Time travel with AS OF SYSTEM TIME
 
 ---
 
@@ -421,5 +471,5 @@
 ---
 
 **Prepared by:** CobaltDB Team
-**Version:** v0.2.21
-**Date:** 2026-03-15
+**Version:** v0.2.22
+**Date:** 2026-03-17

@@ -38,6 +38,10 @@
 | **Query Optimizer** | ✅ Cost-based | ❌ | ❌ |
 | **Hot Backup** | ✅ Online backup | ❌ | ❌ |
 | **Replication** | ✅ Master-Slave | ❌ | ❌ |
+| **WASM Compilation** | ✅ SQL to WASM | ❌ | ❌ |
+| **Query Plan Cache** | ✅ LRU with stats | ❌ | ❌ |
+| **Vector Search (HNSW)** | ✅ Similarity search | ❌ | ❌ |
+| **Temporal Queries** | ✅ AS OF SYSTEM TIME | ❌ | ❌ |
 
 ---
 
@@ -683,6 +687,7 @@ CALL transfer_funds(1, 2, 100.00);
 | `TEXT` | Variable-length string | `'hello'`, `"world"` |
 | `BOOLEAN` | True/False | `TRUE`, `FALSE` |
 | `JSON` | Native JSON document | `'{"key": "value"}'` |
+| `VECTOR(n)` | n-dimensional vector | `VECTOR(128)` for embeddings |
 | `DATE` | Date only | `'2026-03-02'` |
 | `TIMESTAMP` | Date + Time | `'2026-03-02 14:30:00'` |
 
@@ -764,6 +769,7 @@ go run cmd/demo/main.go
 | `pkg/btree` | 92.6% | ✅ |
 | `pkg/backup` | 92.6% | ✅ |
 | `pkg/replication` | 92.3% | ✅ |
+| `pkg/wasm` | 90.0% | ✅ |
 | `pkg/storage` | 92.0% | ✅ |
 | `pkg/security` | 91.9% | ✅ |
 | `pkg/audit` | 90.2% | ✅ |
@@ -774,7 +780,7 @@ go run cmd/demo/main.go
 | **Total** | **87.5%** | ✅ |
 
 > 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
-> Combined coverage from 600+ unit tests and 200+ integration tests across 40+ integration test files.
+> Combined coverage from 650+ unit tests and 200+ integration tests across 40+ integration test files.
 
 ---
 
@@ -835,6 +841,13 @@ go run cmd/demo/main.go
 - [x] **Distributed Tracing** - Request ID tracking
 - [x] **Graceful Shutdown** - Signal handling with drain timeout
 - [x] **Health Checks** - Kubernetes-compatible probes
+
+### ✅ v0.2.22 - WASM & Advanced Features (2026-03-17)
+
+- [x] **WASM Compilation** - Compile SQL queries to WebAssembly bytecode
+- [x] **Query Plan Cache** - LRU cache for parsed query plans with statistics
+- [x] **Vector Support** - VECTOR data type with HNSW index for similarity search
+- [x] **Temporal Queries** - AS OF SYSTEM TIME for time-travel queries
 
 ### 📋 Planned Features
 
