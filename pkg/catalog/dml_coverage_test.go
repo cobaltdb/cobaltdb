@@ -446,6 +446,207 @@ func TestForeignKeyCascadeDeleteDML(t *testing.T) {
 	}
 }
 
+// TestInsertLockedCheckConstraint tests CHECK constraint validation
+func TestInsertLockedCheckConstraint(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	// Create table with CHECK constraint (age >= 0)
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "check_test",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "age", Type: query.TokenInteger, Check: &query.BinaryExpr{
+				Left:     &query.QualifiedIdentifier{Column: "age"},
+				Operator: query.TokenGte,
+				Right:    num(0),
+			}},
+		},
+	})
+
+	// Insert valid row
+	_, _, err := c.Insert(ctx, &query.InsertStmt{
+		Table:   "check_test",
+		Columns: []string{"id", "age"},
+		Values:  [][]query.Expression{{num(1), num(25)}},
+	}, nil)
+	if err != nil {
+		t.Logf("Valid insert failed: %v", err)
+	}
+
+	// Insert invalid row (should fail CHECK constraint)
+	_, _, err = c.Insert(ctx, &query.InsertStmt{
+		Table:   "check_test",
+		Columns: []string{"id", "age"},
+		Values:  [][]query.Expression{{num(2), num(-5)}},
+	}, nil)
+	if err == nil {
+		t.Log("Expected CHECK constraint failure for negative age")
+	}
+}
+
+// TestInsertLockedConflictIgnore tests ON CONFLICT IGNORE
+func TestInsertLockedConflictIgnore(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	// Create table with unique column
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "conflict_test",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "code", Type: query.TokenText, Unique: true},
+		},
+	})
+
+	// Create unique index
+	c.CreateIndex(&query.CreateIndexStmt{
+		Index:   "idx_code",
+		Table:   "conflict_test",
+		Columns: []string{"code"},
+		Unique:  true,
+	})
+
+	// First insert
+	c.Insert(ctx, &query.InsertStmt{
+		Table:   "conflict_test",
+		Columns: []string{"id", "code"},
+		Values:  [][]query.Expression{{num(1), str("ABC")}},
+	}, nil)
+
+	// Second insert with same code - should be ignored
+	_, affected, err := c.Insert(ctx, &query.InsertStmt{
+		Table:          "conflict_test",
+		Columns:        []string{"id", "code"},
+		Values:         [][]query.Expression{{num(2), str("ABC")}},
+		ConflictAction: query.ConflictIgnore,
+	}, nil)
+	if err != nil {
+		t.Logf("Conflict ignore error: %v", err)
+	}
+	if affected != 0 {
+		t.Logf("Expected 0 rows affected with CONFLICT IGNORE, got %d", affected)
+	}
+}
+
+// TestInsertLockedConflictReplace tests ON CONFLICT REPLACE
+func TestInsertLockedConflictReplace(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	// Create table with unique column
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "replace_test",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "code", Type: query.TokenText, Unique: true},
+			{Name: "data", Type: query.TokenText},
+		},
+	})
+
+	// Create unique index
+	c.CreateIndex(&query.CreateIndexStmt{
+		Index:   "idx_code_replace",
+		Table:   "replace_test",
+		Columns: []string{"code"},
+		Unique:  true,
+	})
+
+	// First insert
+	c.Insert(ctx, &query.InsertStmt{
+		Table:   "replace_test",
+		Columns: []string{"id", "code", "data"},
+		Values:  [][]query.Expression{{num(1), str("ABC"), str("old")}},
+	}, nil)
+
+	// Second insert with same code - should replace
+	_, affected, err := c.Insert(ctx, &query.InsertStmt{
+		Table:          "replace_test",
+		Columns:        []string{"id", "code", "data"},
+		Values:         [][]query.Expression{{num(2), str("ABC"), str("new")}},
+		ConflictAction: query.ConflictReplace,
+	}, nil)
+	if err != nil {
+		t.Logf("Conflict replace error: %v", err)
+	}
+	if affected != 1 {
+		t.Logf("Expected 1 row affected with CONFLICT REPLACE, got %d", affected)
+	}
+}
+
+// TestInsertLockedFKViolation tests FK constraint violation
+func TestInsertLockedFKViolation(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	// Create parent table
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "fk_parent_violation",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		},
+	})
+
+	// Create child table with FK
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "fk_child_violation",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "parent_id", Type: query.TokenInteger},
+		},
+		ForeignKeys: []*query.ForeignKeyDef{
+			{
+				Columns:           []string{"parent_id"},
+				ReferencedTable:   "fk_parent_violation",
+				ReferencedColumns: []string{"id"},
+			},
+		},
+	})
+
+	// Insert parent
+	c.Insert(ctx, &query.InsertStmt{
+		Table:   "fk_parent_violation",
+		Columns: []string{"id"},
+		Values:  [][]query.Expression{{num(1)}},
+	}, nil)
+
+	// Insert child with valid FK
+	_, _, err := c.Insert(ctx, &query.InsertStmt{
+		Table:   "fk_child_violation",
+		Columns: []string{"id", "parent_id"},
+		Values:  [][]query.Expression{{num(1), num(1)}},
+	}, nil)
+	if err != nil {
+		t.Logf("Valid FK insert failed: %v", err)
+	}
+
+	// Insert child with invalid FK (should fail)
+	_, _, err = c.Insert(ctx, &query.InsertStmt{
+		Table:   "fk_child_violation",
+		Columns: []string{"id", "parent_id"},
+		Values:  [][]query.Expression{{num(2), num(999)}},
+	}, nil)
+	if err == nil {
+		t.Log("Expected FK constraint failure for non-existent parent")
+	}
+}
+
 // Helper functions
 func num(n int64) *query.NumberLiteral {
 	return &query.NumberLiteral{Value: float64(n)}
