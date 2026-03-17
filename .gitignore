@@ -48,5 +48,7 @@ nul
 *.db-journal
 .claude/
 
-
-EOF
+# Website
+website/node_modules/
+website/dist/
+website/build.log

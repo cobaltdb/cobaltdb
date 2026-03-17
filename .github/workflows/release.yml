@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build cobaltdb-server
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+          mkdir -p dist
+          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o "dist/cobaltdb-server-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
+            ./cmd/cobaltdb-server
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cobaltdb-server-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+          {
+            echo 'changelog<<CHANGELOG_EOF'
+            if [ -n "$PREV_TAG" ]; then
+              git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges
+            else
+              git log --pretty=format:"- %s" --no-merges -20
+            fi
+            echo ''
+            echo 'CHANGELOG_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: false
+          body: |
+            ## CobaltDB ${{ github.ref_name }}
+
+            ### Changes since ${{ steps.changelog.outputs.prev_tag }}
+            ${{ steps.changelog.outputs.changelog }}
+
+            ### Installation
+
+            **Go library:**
+            ```bash
+            go get github.com/cobaltdb/cobaltdb@${{ github.ref_name }}
+            ```
+
+            **Server binary:** Download the appropriate binary below for your platform.
+
+            ### Platforms
+            | OS | Arch | Binary |
+            |---|---|---|
+            | Linux | amd64 | `cobaltdb-server-linux-amd64` |
+            | Linux | arm64 | `cobaltdb-server-linux-arm64` |
+            | macOS | amd64 | `cobaltdb-server-darwin-amd64` |
+            | macOS | arm64 | `cobaltdb-server-darwin-arm64` |
+            | Windows | amd64 | `cobaltdb-server-windows-amd64.exe` |
+          files: dist/*

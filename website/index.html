@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CobaltDB - Modern Embeddable SQL Database</title>
+    <meta name="description" content="CobaltDB is a high-performance, embeddable SQL database written in Go. Fast, reliable, and designed for modern applications with WASM support." />
+    <meta name="keywords" content="database, SQL, Go, embeddable, WASM, WebAssembly, B-tree, ACID, CobaltDB" />
+    <meta property="og:title" content="CobaltDB - Modern Embeddable SQL Database" />
+    <meta property="og:description" content="High-performance, embeddable SQL database written in Go with WASM support." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/og-image.svg" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="/og-image.svg" />
+    <meta name="twitter:title" content="CobaltDB - Modern Embeddable SQL Database" />
+    <meta name="twitter:description" content="High-performance, embeddable SQL database written in Go with WASM support." />
+    <meta name="theme-color" content="#09090b" />
+    <!-- GitHub Pages SPA redirect handler -->
+    <script>
+      (function(l) {
+        if (l.search[1] === '/') {
+          var decoded = l.search.slice(1).split('&').map(function(s) {
+            return s.replace(/~and~/g, '&')
+          }).join('?');
+          window.history.replaceState(null, null,
+            l.pathname.slice(0, -1) + decoded + l.hash
+          );
+        }
+      }(window.location))
+    </script>
+  </head>
+  <body class="bg-background text-foreground antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
