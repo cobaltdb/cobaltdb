@@ -6,9 +6,18 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
+
+// deleteEntry tracks a row to be deleted
+type deleteEntry struct {
+	key      []byte
+	value    []byte
+	row      []interface{} // decoded row for RETURNING clause
+	treeName string        // which partition tree this entry came from
+}
 
 func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
 	c.mu.Lock()
@@ -39,12 +48,6 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 	}
 
 	// Collect keys and row data to delete (need row data for index cleanup)
-	type deleteEntry struct {
-		key      []byte
-		value    []byte
-		row      []interface{} // decoded row for RETURNING clause
-		treeName string        // which partition tree this entry came from
-	}
 	var entries []deleteEntry
 	rowsAffected := int64(0)
 
@@ -55,8 +58,33 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		treeNames = table.getPartitionTreeNames()
 	}
 
+	// Check if we can use an index for the WHERE clause
+	var indexedRows map[string]bool
+	useIndex := false
+	if stmt.Where != nil {
+		indexedRows, useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+	}
+
 	for i, tree := range trees {
 		treeName := treeNames[i]
+
+		// If we have indexed rows, only process those specific rows
+		if useIndex {
+			for pkStr := range indexedRows {
+				key := []byte(pkStr)
+				valueData, err := tree.Get(key)
+				if err != nil {
+					continue // Row not found
+				}
+				// Process this row
+				if err := c.processDeleteRow(ctx, table, tree, treeName, key, valueData, stmt, args, &entries, &rowsAffected); err != nil {
+					return 0, rowsAffected, err
+				}
+			}
+			continue
+		}
+
+		// Full table scan path
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
 			return 0, 0, fmt.Errorf("failed to scan table for DELETE: %w", err)
@@ -278,6 +306,62 @@ func (c *Catalog) DeleteRow(ctx context.Context, tableName string, pkValue inter
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.deleteRowLocked(ctx, tableName, pkValue)
+}
+
+// processDeleteRow processes a single row deletion from index lookup
+func (c *Catalog) processDeleteRow(ctx context.Context, table *TableDef, tree *btree.BTree, treeName string, key []byte, valueData []byte,
+	stmt *query.DeleteStmt, args []interface{}, entries *[]deleteEntry, rowsAffected *int64) error {
+
+	// Decode row with version info
+	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+	if err != nil {
+		return nil // Skip unparseable rows
+	}
+	row := vrow.Data
+
+	// Skip already deleted rows
+	if vrow.Version.DeletedAt > 0 {
+		return nil
+	}
+
+	// Apply WHERE clause to filter (in case of partial index match)
+	if stmt.Where != nil {
+		matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+		if err != nil || !matched {
+			return nil
+		}
+	}
+
+	// Apply Row-Level Security check for DELETE
+	if c.enableRLS && c.rlsManager != nil {
+		user, _ := ctx.Value("cobaltdb_user").(string)
+		roles, _ := ctx.Value("cobaltdb_roles").([]string)
+		if user != "" {
+			rowMap := make(map[string]interface{})
+			for i, col := range table.Columns {
+				if i < len(row) {
+					rowMap[col.Name] = row[i]
+				}
+			}
+			allowed, rlsErr := c.checkRLSForDeleteInternal(ctx, stmt.Table, rowMap, user, roles)
+			if rlsErr != nil {
+				return nil // Skip rows that fail RLS check
+			}
+			if !allowed {
+				return nil // Skip rows the user doesn't have access to
+			}
+		}
+	}
+
+	// Make copies of key and value
+	keyCopy := make([]byte, len(key))
+	copy(keyCopy, key)
+	valueCopy := make([]byte, len(valueData))
+	copy(valueCopy, valueData)
+
+	*entries = append(*entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
+	*rowsAffected++
+	return nil
 }
 
 // deleteRowLocked is the lock-free internal version. Must be called with mu held.

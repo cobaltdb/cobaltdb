@@ -6,9 +6,18 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
+
+// updateEntry tracks a row to be updated
+type updateEntry struct {
+	key      []byte
+	oldRow   []interface{}
+	newRow   []interface{}
+	treeName string // which partition tree this entry came from
+}
 
 func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
 	c.mu.Lock()
@@ -45,12 +54,6 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	}
 
 	// Collect entries to update (need old row for index cleanup)
-	type updateEntry struct {
-		key      []byte
-		oldRow   []interface{}
-		newRow   []interface{}
-		treeName string // which partition tree this entry came from
-	}
 	var entries []updateEntry
 	rowsAffected := int64(0)
 
@@ -63,9 +66,34 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		}
 	}
 
+	// Check if we can use an index for the WHERE clause
+	var indexedRows map[string]bool
+	useIndex := false
+	if stmt.Where != nil {
+		indexedRows, useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+	}
+
 	// Iterate over all partition trees
 	for treeIdx, tree := range trees {
 		treeName := treeNames[treeIdx]
+
+		// If we have indexed rows, only process those specific rows
+		if useIndex {
+			for pkStr := range indexedRows {
+				key := []byte(pkStr)
+				valueData, err := tree.Get(key)
+				if err != nil {
+					continue // Row not found
+				}
+				// Process this row
+				if err := c.processUpdateRow(ctx, table, tree, treeName, key, valueData, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
+					return 0, rowsAffected, err
+				}
+			}
+			continue
+		}
+
+		// Full table scan path
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
 			return 0, 0, fmt.Errorf("failed to scan table for UPDATE: %w", err)
@@ -100,186 +128,9 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			}
 		}
 
-		// Apply Row-Level Security check for UPDATE
-		if c.enableRLS && c.rlsManager != nil {
-			user, _ := ctx.Value("cobaltdb_user").(string)
-			roles, _ := ctx.Value("cobaltdb_roles").([]string)
-			if user != "" {
-				rowMap := make(map[string]interface{})
-				for i, col := range table.Columns {
-					if i < len(row) {
-						rowMap[col.Name] = row[i]
-					}
-				}
-				allowed, rlsErr := c.checkRLSForUpdateInternal(ctx, stmt.Table, rowMap, user, roles)
-				if rlsErr != nil {
-					continue // Skip rows that fail RLS check
-				}
-				if !allowed {
-					continue // Skip rows the user doesn't have access to
-				}
-			}
+		if err := c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
+			return 0, rowsAffected, err
 		}
-
-		// Make a copy of the row to update
-		updatedRow := make([]interface{}, len(row))
-		copy(updatedRow, row)
-
-		// Update fields - use pre-calculated column indices
-		for i, setClause := range stmt.Set {
-			colIdx := setColumnIndices[i]
-			if colIdx >= 0 {
-				newVal, err := evaluateExpression(c, row, table.Columns, setClause.Value, args)
-				if err != nil {
-					return 0, rowsAffected, fmt.Errorf("failed to evaluate SET expression for column '%s': %w", setClause.Column, err)
-				}
-				updatedRow[colIdx] = newVal
-			}
-		}
-
-		// Make copies since iterator may reuse buffers
-		keyCopy := make([]byte, len(key))
-		copy(keyCopy, key)
-
-		// Check UNIQUE constraints before updating
-		for i, col := range table.Columns {
-			if col.Unique && updatedRow[i] != nil {
-				// Check if another row (not this one) has the same unique value
-				checkIter, scanErr := tree.Scan(nil, nil)
-				if scanErr != nil {
-					return 0, rowsAffected, fmt.Errorf("failed to scan table for UNIQUE check: %w", scanErr)
-				}
-				duplicate := false
-				for checkIter.HasNext() {
-					checkKey, existingData, err := checkIter.Next()
-					if err != nil {
-						break
-					}
-					// Skip the current row being updated
-					if string(checkKey) == string(key) {
-						continue
-					}
-					vrow, err := decodeVersionedRow(existingData, len(table.Columns))
-					if err != nil {
-						continue
-					}
-					existingRow := vrow.Data
-					if len(existingRow) > i && compareValues(updatedRow[i], existingRow[i]) == 0 {
-						duplicate = true
-						break
-					}
-				}
-				checkIter.Close()
-				if duplicate {
-					return 0, rowsAffected, fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
-				}
-			}
-		}
-
-		// Check UNIQUE INDEX constraints before updating
-		for idxName, idxDef := range c.indexes {
-			if idxDef.TableName == stmt.Table && idxDef.Unique && len(idxDef.Columns) > 0 {
-				newIdxKey, newOk := buildCompositeIndexKey(table, idxDef, updatedRow)
-				if !newOk {
-					continue
-				}
-				oldIdxKey, _ := buildCompositeIndexKey(table, idxDef, row)
-				if newIdxKey == oldIdxKey {
-					continue // Value unchanged, no conflict possible
-				}
-				if idxTree, exists := c.indexTrees[idxName]; exists {
-					if _, err := idxTree.Get([]byte(newIdxKey)); err == nil {
-						return 0, rowsAffected, fmt.Errorf("UNIQUE constraint failed: duplicate value in index %s", idxName)
-					}
-				}
-			}
-		}
-
-		// Check NOT NULL constraints before updating
-		for i, col := range table.Columns {
-			if col.NotNull && i < len(updatedRow) && updatedRow[i] == nil {
-				return 0, rowsAffected, fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
-			}
-		}
-
-		// Check CHECK constraints before updating
-		for _, col := range table.Columns {
-			if col.Check != nil {
-				result, err := evaluateExpression(c, updatedRow, table.Columns, col.Check, args)
-				if err != nil {
-					return 0, rowsAffected, fmt.Errorf("CHECK constraint failed: %w", err)
-				}
-				// Per SQL standard, NULL (unknown) passes CHECK constraint; only explicit false fails
-				if result != nil {
-					if resultBool, ok := result.(bool); ok && !resultBool {
-						return 0, rowsAffected, fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
-					}
-				}
-			}
-		}
-
-		// Check FOREIGN KEY constraints on updated columns
-		for _, fk := range table.ForeignKeys {
-			for i, colName := range fk.Columns {
-				colIdx := table.GetColumnIndex(colName)
-				if colIdx < 0 || colIdx >= len(updatedRow) {
-					continue
-				}
-				fkValue := updatedRow[colIdx]
-				if fkValue == nil {
-					continue // NULL values skip FK check
-				}
-				// Only check if the FK column value actually changed
-				if colIdx < len(row) && compareValues(fkValue, row[colIdx]) == 0 {
-					continue // Value didn't change, skip check
-				}
-				// Check if referenced row exists
-				refTable, err := c.getTableLocked(fk.ReferencedTable)
-				if err != nil {
-					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: referenced table '%s' not found", fk.ReferencedTable)
-				}
-				refColIdx := 0
-				if len(fk.ReferencedColumns) > i {
-					refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
-				}
-				refTree, exists := c.tableTrees[fk.ReferencedTable]
-				if !exists {
-					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: referenced table '%s' not found", fk.ReferencedTable)
-				}
-				found := false
-				refIter, scanErr := refTree.Scan(nil, nil)
-				if scanErr != nil {
-					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: %w", scanErr)
-				}
-				for refIter.HasNext() {
-					_, refData, err := refIter.Next()
-					if err != nil {
-						break
-					}
-					vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
-					if err != nil {
-						continue
-					}
-					refRow := vrow.Data
-					if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
-						found = true
-						break
-					}
-				}
-				refIter.Close()
-				if !found {
-					return 0, rowsAffected, fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
-				}
-			}
-		}
-
-		entries = append(entries, updateEntry{
-			key:      keyCopy,
-			oldRow:   row,
-			newRow:   updatedRow,
-			treeName: treeName,
-		})
-		rowsAffected++
 	}
 	iter.Close()
 }
@@ -765,12 +616,12 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 
 	// Now delete each row
 	rowsAffected := int64(0)
-	type deleteEntry struct {
+	type delEntry struct {
 		key   []byte
 		value []byte
 		row   []interface{}
 	}
-	var entries []deleteEntry
+	var entries []delEntry
 
 	// Foreign key enforcer for CASCADE/RESTRICT actions
 	fke := NewForeignKeyEnforcer(c)
@@ -809,7 +660,7 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		valueCopy := make([]byte, len(valueData))
 		copy(valueCopy, valueData)
 
-		entries = append(entries, deleteEntry{
+		entries = append(entries, delEntry{
 			key:   keyCopy,
 			value: valueCopy,
 			row:   row,
@@ -898,6 +749,207 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 	c.lastReturningColumns = returningCols
 
 	return int64(len(entries)), rowsAffected, nil
+}
+
+// processUpdateRow processes a single row update from index lookup (valueData is raw bytes)
+func (c *Catalog) processUpdateRow(ctx context.Context, table *TableDef, tree *btree.BTree, treeName string, key []byte, valueData []byte,
+	stmt *query.UpdateStmt, args []interface{}, setColumnIndices []int, entries *[]updateEntry, rowsAffected *int64) error {
+	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+	if err != nil {
+		return nil // Skip unparseable rows
+	}
+	row := vrow.Data
+	if vrow.Version.DeletedAt > 0 {
+		return nil // Skip soft-deleted rows
+	}
+	return c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, entries, rowsAffected)
+}
+
+// processUpdateRowData processes a single row update from scan path (row is already decoded)
+func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tree *btree.BTree, treeName string, key []byte, row []interface{},
+	stmt *query.UpdateStmt, args []interface{}, setColumnIndices []int, entries *[]updateEntry, rowsAffected *int64) error {
+
+	// Apply Row-Level Security check for UPDATE
+	if c.enableRLS && c.rlsManager != nil {
+		user, _ := ctx.Value("cobaltdb_user").(string)
+		roles, _ := ctx.Value("cobaltdb_roles").([]string)
+		if user != "" {
+			rowMap := make(map[string]interface{})
+			for i, col := range table.Columns {
+				if i < len(row) {
+					rowMap[col.Name] = row[i]
+				}
+			}
+			allowed, rlsErr := c.checkRLSForUpdateInternal(ctx, stmt.Table, rowMap, user, roles)
+			if rlsErr != nil {
+				return nil // Skip rows that fail RLS check
+			}
+			if !allowed {
+				return nil // Skip rows the user doesn't have access to
+			}
+		}
+	}
+
+	// Make a copy of the row to update
+	updatedRow := make([]interface{}, len(row))
+	copy(updatedRow, row)
+
+	// Update fields - use pre-calculated column indices
+	for i, setClause := range stmt.Set {
+		colIdx := setColumnIndices[i]
+		if colIdx >= 0 {
+			newVal, err := evaluateExpression(c, row, table.Columns, setClause.Value, args)
+			if err != nil {
+				return fmt.Errorf("failed to evaluate SET expression for column '%s': %w", setClause.Column, err)
+			}
+			updatedRow[colIdx] = newVal
+		}
+	}
+
+	// Make copies since buffers may be reused
+	keyCopy := make([]byte, len(key))
+	copy(keyCopy, key)
+
+	// Check UNIQUE constraints before updating
+	for i, col := range table.Columns {
+		if col.Unique && updatedRow[i] != nil {
+			// Check if another row (not this one) has the same unique value
+			checkIter, scanErr := tree.Scan(nil, nil)
+			if scanErr != nil {
+				return fmt.Errorf("failed to scan table for UNIQUE check: %w", scanErr)
+			}
+			duplicate := false
+			for checkIter.HasNext() {
+				checkKey, existingData, err := checkIter.Next()
+				if err != nil {
+					break
+				}
+				// Skip the current row being updated
+				if string(checkKey) == string(key) {
+					continue
+				}
+				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
+				if err != nil {
+					continue
+				}
+				existingRow := vrow.Data
+				if len(existingRow) > i && compareValues(updatedRow[i], existingRow[i]) == 0 {
+					duplicate = true
+					break
+				}
+			}
+			checkIter.Close()
+			if duplicate {
+				return fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
+			}
+		}
+	}
+
+	// Check UNIQUE INDEX constraints before updating
+	for idxName, idxDef := range c.indexes {
+		if idxDef.TableName == stmt.Table && idxDef.Unique && len(idxDef.Columns) > 0 {
+			newIdxKey, newOk := buildCompositeIndexKey(table, idxDef, updatedRow)
+			if !newOk {
+				continue
+			}
+			oldIdxKey, _ := buildCompositeIndexKey(table, idxDef, row)
+			if newIdxKey == oldIdxKey {
+				continue // Value unchanged, no conflict possible
+			}
+			if idxTree, exists := c.indexTrees[idxName]; exists {
+				if _, err := idxTree.Get([]byte(newIdxKey)); err == nil {
+					return fmt.Errorf("UNIQUE constraint failed: duplicate value in index %s", idxName)
+				}
+			}
+		}
+	}
+
+	// Check NOT NULL constraints before updating
+	for i, col := range table.Columns {
+		if col.NotNull && i < len(updatedRow) && updatedRow[i] == nil {
+			return fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
+		}
+	}
+
+	// Check CHECK constraints before updating
+	for _, col := range table.Columns {
+		if col.Check != nil {
+			result, err := evaluateExpression(c, updatedRow, table.Columns, col.Check, args)
+			if err != nil {
+				return fmt.Errorf("CHECK constraint failed: %w", err)
+			}
+			// Per SQL standard, NULL (unknown) passes CHECK constraint; only explicit false fails
+			if result != nil {
+				if resultBool, ok := result.(bool); ok && !resultBool {
+					return fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
+				}
+			}
+		}
+	}
+
+	// Check FOREIGN KEY constraints on updated columns
+	for _, fk := range table.ForeignKeys {
+		for i, colName := range fk.Columns {
+			colIdx := table.GetColumnIndex(colName)
+			if colIdx < 0 || colIdx >= len(updatedRow) {
+				continue
+			}
+			fkValue := updatedRow[colIdx]
+			if fkValue == nil {
+				continue // NULL values skip FK check
+			}
+			// Only check if the FK column value actually changed
+			if colIdx < len(row) && compareValues(fkValue, row[colIdx]) == 0 {
+				continue // Value didn't change, skip check
+			}
+			// Check if referenced row exists
+			refTable, err := c.getTableLocked(fk.ReferencedTable)
+			if err != nil {
+				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table '%s' not found", fk.ReferencedTable)
+			}
+			refColIdx := 0
+			if len(fk.ReferencedColumns) > i {
+				refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
+			}
+			refTree, exists := c.tableTrees[fk.ReferencedTable]
+			if !exists {
+				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table '%s' not found", fk.ReferencedTable)
+			}
+			found := false
+			refIter, scanErr := refTree.Scan(nil, nil)
+			if scanErr != nil {
+				return fmt.Errorf("FOREIGN KEY constraint failed: %w", scanErr)
+			}
+			for refIter.HasNext() {
+				_, refData, err := refIter.Next()
+				if err != nil {
+					break
+				}
+				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
+				if err != nil {
+					continue
+				}
+				refRow := vrow.Data
+				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
+					found = true
+					break
+				}
+			}
+			refIter.Close()
+			if !found {
+				return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
+			}
+		}
+	}
+
+	*entries = append(*entries, updateEntry{
+		key:      keyCopy,
+		oldRow:   row,
+		newRow:   updatedRow,
+		treeName: treeName,
+	})
+	*rowsAffected++
+	return nil
 }
 
 func (c *Catalog) UpdateRow(tableName string, pkValue interface{}, row map[string]interface{}) error {

@@ -144,6 +144,13 @@ func (c *Catalog) findUsableIndexWithArgs(tableName string, where query.Expressi
 						return idxName, colName, searchVal
 					}
 				}
+				// Check if this is the PRIMARY KEY column
+				if table, exists := c.tables[tableName]; exists && len(table.PrimaryKey) == 1 && table.PrimaryKey[0] == colName {
+					searchVal := c.extractLiteralValue(expr.Right, args)
+					if searchVal != nil {
+						return "__PK__", colName, searchVal
+					}
+				}
 			}
 			// Also check right side: value = column
 			if ident, ok := expr.Right.(*query.Identifier); ok {
@@ -155,6 +162,13 @@ func (c *Catalog) findUsableIndexWithArgs(tableName string, where query.Expressi
 							continue
 						}
 						return idxName, colName, searchVal
+					}
+				}
+				// Check if this is the PRIMARY KEY column
+				if table, exists := c.tables[tableName]; exists && len(table.PrimaryKey) == 1 && table.PrimaryKey[0] == colName {
+					searchVal := c.extractLiteralValue(expr.Left, args)
+					if searchVal != nil {
+						return "__PK__", colName, searchVal
 					}
 				}
 			}
@@ -193,6 +207,14 @@ func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Express
 }
 
 func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (map[string]bool, bool) {
+	// Special case: PRIMARY KEY lookup
+	if idxName == "__PK__" {
+		result := make(map[string]bool)
+		pkKey := typeTaggedKey(searchVal)
+		result[pkKey] = true
+		return result, true
+	}
+
 	idxDef, idxExists := c.indexes[idxName]
 	if !idxExists {
 		return nil, false

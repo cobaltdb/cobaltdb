@@ -136,6 +136,7 @@ func runSelectBenchmark(db *engine.DB, ctx context.Context) {
 	// Setup
 	db.Exec(ctx, "DROP TABLE IF EXISTS bench_select")
 	db.Exec(ctx, "CREATE TABLE bench_select (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+	db.Exec(ctx, "CREATE INDEX idx_bench_select_age ON bench_select(age)")
 	for i := 0; i < flagRows; i++ {
 		db.Exec(ctx, "INSERT INTO bench_select (name, age) VALUES (?, ?)", fmt.Sprintf("user-%d", i), i%100)
 	}
@@ -149,21 +150,35 @@ func runSelectBenchmark(db *engine.DB, ctx context.Context) {
 	elapsed := time.Since(start)
 
 	ops := float64(100) / elapsed.Seconds()
-	fmt.Printf("Time: %v\n", elapsed)
+	fmt.Printf("Full Table Scan - Time: %v\n", elapsed)
 	fmt.Printf("Ops/sec: %.2f\n", ops)
 	fmt.Println()
 
-	// With WHERE
-	fmt.Println("=== SELECT with WHERE ===")
+	// With indexed WHERE (PK lookup)
+	fmt.Println("=== SELECT with PK Lookup ===")
 	start = time.Now()
-	for i := 0; i < 100; i++ {
-		rows, _ := db.Query(ctx, "SELECT * FROM bench_select WHERE age > ?", 50)
+	for i := 0; i < 1000; i++ {
+		rows, _ := db.Query(ctx, "SELECT * FROM bench_select WHERE id = ?", i%(flagRows-1)+1)
 		rows.Close()
 	}
 	elapsed = time.Since(start)
 
-	ops = float64(100) / elapsed.Seconds()
-	fmt.Printf("Time: %v\n", elapsed)
+	ops = float64(1000) / elapsed.Seconds()
+	fmt.Printf("PK Lookup - Time: %v\n", elapsed)
+	fmt.Printf("Ops/sec: %.2f\n", ops)
+	fmt.Println()
+
+	// With indexed WHERE (secondary index - equality)
+	fmt.Println("=== SELECT with Index Lookup ===")
+	start = time.Now()
+	for i := 0; i < 1000; i++ {
+		rows, _ := db.Query(ctx, "SELECT * FROM bench_select WHERE age = ?", i%100)
+		rows.Close()
+	}
+	elapsed = time.Since(start)
+
+	ops = float64(1000) / elapsed.Seconds()
+	fmt.Printf("Index Lookup - Time: %v\n", elapsed)
 	fmt.Printf("Ops/sec: %.2f\n", ops)
 	fmt.Println()
 }
@@ -174,28 +189,31 @@ func runUpdateBenchmark(db *engine.DB, ctx context.Context) {
 	// Setup
 	db.Exec(ctx, "DROP TABLE IF EXISTS bench_update")
 	db.Exec(ctx, "CREATE TABLE bench_update (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+	db.Exec(ctx, "CREATE INDEX idx_bench_update_age ON bench_update(age)")
 	for i := 0; i < flagRows; i++ {
 		db.Exec(ctx, "INSERT INTO bench_update (name, age) VALUES (?, ?)", fmt.Sprintf("user-%d", i), i%100)
 	}
 
-	// Single row update
+	// Single row update with PK
+	fmt.Println("--- PK Lookup Update ---")
 	start := time.Now()
 	for i := 0; i < 1000; i++ {
-		db.Exec(ctx, "UPDATE bench_update SET age = ? WHERE id = ?", i+1000, i)
+		db.Exec(ctx, "UPDATE bench_update SET age = ? WHERE id = ?", i+1000, i%(flagRows-1)+1)
 	}
 	elapsed := time.Since(start)
 
 	ops := float64(1000) / elapsed.Seconds()
-	fmt.Printf("Single row - Time: %v\n", elapsed)
+	fmt.Printf("PK Update - Time: %v\n", elapsed)
 	fmt.Printf("Ops/sec: %.2f\n", ops)
 	fmt.Println()
 
-	// Multi-row update
+	// Multi-row update (full scan)
+	fmt.Println("--- Full Scan Update ---")
 	start = time.Now()
 	db.Exec(ctx, "UPDATE bench_update SET age = ? WHERE age < ?", 999, 50)
 	elapsed = time.Since(start)
 
-	fmt.Printf("Multi row (all age < 50) - Time: %v\n", elapsed)
+	fmt.Printf("Full Scan Update (all age < 50) - Time: %v\n", elapsed)
 	fmt.Println()
 }
 
@@ -205,29 +223,33 @@ func runDeleteBenchmark(db *engine.DB, ctx context.Context) {
 	// Setup
 	db.Exec(ctx, "DROP TABLE IF EXISTS bench_delete")
 	db.Exec(ctx, "CREATE TABLE bench_delete (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+	db.Exec(ctx, "CREATE INDEX idx_bench_delete_age ON bench_delete(age)")
 	for i := 0; i < flagRows; i++ {
 		db.Exec(ctx, "INSERT INTO bench_delete (name, age) VALUES (?, ?)", fmt.Sprintf("user-%d", i), i%100)
 	}
 
-	// Single row delete
+	// Single row delete with PK
+	fmt.Println("--- PK Lookup Delete ---")
 	start := time.Now()
 	for i := 0; i < 1000; i++ {
-		db.Exec(ctx, "DELETE FROM bench_delete WHERE id = ?", i)
-		db.Exec(ctx, "INSERT INTO bench_delete (id, name, age) VALUES (?, ?, ?)", i, fmt.Sprintf("user-%d", i), i%100)
+		id := i%(flagRows-1) + 1
+		db.Exec(ctx, "DELETE FROM bench_delete WHERE id = ?", id)
+		db.Exec(ctx, "INSERT INTO bench_delete (id, name, age) VALUES (?, ?, ?)", id, fmt.Sprintf("user-%d", id), id%100)
 	}
 	elapsed := time.Since(start)
 
 	ops := float64(1000) / elapsed.Seconds()
-	fmt.Printf("Single row - Time: %v\n", elapsed)
+	fmt.Printf("PK Delete - Time: %v\n", elapsed)
 	fmt.Printf("Ops/sec: %.2f\n", ops)
 	fmt.Println()
 
-	// Multi-row delete
+	// Multi-row delete (full scan)
+	fmt.Println("--- Full Scan Delete ---")
 	start = time.Now()
 	db.Exec(ctx, "DELETE FROM bench_delete WHERE age < ?", 50)
 	elapsed = time.Since(start)
 
-	fmt.Printf("Multi row (all age < 50) - Time: %v\n", elapsed)
+	fmt.Printf("Full Scan Delete (all age < 50) - Time: %v\n", elapsed)
 	fmt.Println()
 }
 
