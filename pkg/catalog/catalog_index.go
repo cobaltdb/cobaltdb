@@ -210,7 +210,20 @@ func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (
 	// Special case: PRIMARY KEY lookup
 	if idxName == "__PK__" {
 		result := make(map[string]bool)
-		pkKey := typeTaggedKey(searchVal)
+		// Use serializePK format for consistency with table storage
+		var pkKey string
+		switch val := searchVal.(type) {
+		case int:
+			pkKey = fmt.Sprintf("%020d", int64(val))
+		case int64:
+			pkKey = fmt.Sprintf("%020d", val)
+		case float64:
+			pkKey = fmt.Sprintf("%020d", int64(val))
+		case string:
+			pkKey = "S:" + val
+		default:
+			pkKey = fmt.Sprintf("%v", val)
+		}
 		result[pkKey] = true
 		return result, true
 	}
