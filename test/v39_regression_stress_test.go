@@ -1246,11 +1246,9 @@ func TestV39RegressionStress(t *testing.T) {
 		`UPDATE v39_idx_tbl SET score = 0 WHERE cat = 'Z' AND score = 50`)
 	checkRowCount("IX10c score=50 AND cat='Z' has 0 rows after UPDATE",
 		`SELECT id FROM v39_idx_tbl WHERE cat = 'Z' AND score = 50`, 0)
-	// IX10d: Known issue — composite index lookup after UPDATE on indexed column
-	// returns all cat='Z' rows instead of filtering by score=0.
-	// TODO: fix composite index maintenance during UPDATE (expected ~6, gets 167)
-	// checkRowCount("IX10d score=0 AND cat='Z' has 6 rows after UPDATE",
-	// 	`SELECT id FROM v39_idx_tbl WHERE cat = 'Z' AND score = 0`, 6)
+	// IX10d: score=id%50+1, so no rows start with score=0. Only the 3 updated rows have score=0.
+	checkRowCount("IX10d score=0 AND cat='Z' has 3 rows after UPDATE",
+		`SELECT id FROM v39_idx_tbl WHERE cat = 'Z' AND score = 0`, 3)
 
 	// IX11: Verify total count unchanged after all index operations.
 	check("IX11 total count still 334 after all index operations",

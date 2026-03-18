@@ -762,6 +762,17 @@ func (c *Catalog) processUpdateRow(ctx context.Context, table *TableDef, tree *b
 	if vrow.Version.DeletedAt > 0 {
 		return nil // Skip soft-deleted rows
 	}
+	// Index may return superset of matching rows (e.g. composite index prefix match),
+	// so always re-check WHERE clause to ensure correctness.
+	if stmt.Where != nil {
+		matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+		if err != nil {
+			return fmt.Errorf("WHERE evaluation error: %w", err)
+		}
+		if !matched {
+			return nil
+		}
+	}
 	return c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, entries, rowsAffected)
 }
 
