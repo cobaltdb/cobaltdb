@@ -858,4 +858,221 @@ CREATE POLICY user_documents ON documents
       </>
     ),
   },
+
+  'vector': {
+    title: 'Vector Search',
+    description: 'HNSW-based similarity search for AI applications.',
+    headings: [
+      { id: 'creating', title: 'Creating Vector Indexes' },
+      { id: 'searching', title: 'Similarity Search' },
+      { id: 'metrics', title: 'Distance Metrics' },
+    ],
+    content: (
+      <>
+        <h2 id="creating">Creating Vector Indexes</h2>
+        <p>Create a vector index for similarity search:</p>
+        <pre>{`CREATE VECTOR INDEX idx_embeddings ON documents(embedding);
+
+-- Insert vector data
+INSERT INTO documents (id, content, embedding) VALUES (
+    1,
+    'Machine learning is...',
+    '[0.1, 0.2, 0.3, 0.4, 0.5]'
+);`}</pre>
+
+        <h2 id="searching">Similarity Search</h2>
+        <p>Perform K-nearest neighbor (KNN) search:</p>
+        <pre>{`-- Find 5 most similar documents
+SELECT id, content, L2_DISTANCE(embedding, '[0.1, 0.2, 0.3, 0.4, 0.5]') as dist
+FROM documents
+ORDER BY dist
+LIMIT 5;`}</pre>
+
+        <h2 id="metrics">Distance Metrics</h2>
+        <ul>
+          <li><code>L2_DISTANCE(a, b)</code> - Euclidean distance</li>
+          <li><code>COSINE_SIMILARITY(a, b)</code> - Cosine similarity (-1 to 1)</li>
+          <li><code>INNER_PRODUCT(a, b)</code> - Dot product</li>
+        </ul>
+
+        <DocsInfo>
+          Vector indexes use HNSW (Hierarchical Navigable Small World) algorithm for efficient approximate nearest neighbor search.
+        </DocsInfo>
+      </>
+    ),
+  },
+
+  'caching': {
+    title: 'Query Caching',
+    description: 'Improve performance with query plan and result caching.',
+    headings: [
+      { id: 'plan-cache', title: 'Query Plan Cache' },
+      { id: 'result-cache', title: 'Result Cache' },
+      { id: 'configuration', title: 'Configuration' },
+    ],
+    content: (
+      <>
+        <h2 id="plan-cache">Query Plan Cache</h2>
+        <p>CobaltDB caches parsed query plans to avoid re-parsing identical queries:</p>
+        <pre>{`db, err := engine.Open("mydb.db", &engine.Options{
+    EnablePlanCache:  true,
+    PlanCacheSize:    32 * 1024 * 1024, // 32MB
+    PlanCacheEntries: 1000,
+})`}</pre>
+
+        <h3>Runtime Control</h3>
+        <pre>{`// Enable/disable at runtime
+db.EnablePlanCache(64*1024*1024, 2000)
+db.DisablePlanCache()
+
+// Get cache statistics
+stats := db.GetPlanCacheStats()
+fmt.Printf("Hit rate: %.2f%%\\n", stats.HitRate)`}</pre>
+
+        <h2 id="result-cache">Result Cache</h2>
+        <p>Cache query results for frequently accessed data:</p>
+        <pre>{`db, err := engine.Open("mydb.db", &engine.Options{
+    EnableQueryCache: true,
+    QueryCacheSize:   64 * 1024 * 1024, // 64MB
+    QueryCacheTTL:    5 * time.Minute,
+})`}</pre>
+
+        <h2 id="configuration">Configuration</h2>
+        <DocsTip>
+          Plan caching is recommended for all workloads. Result caching is best for read-heavy applications with relatively stable data.
+        </DocsTip>
+      </>
+    ),
+  },
+
+  'replication': {
+    title: 'Replication',
+    description: 'Master-slave replication for high availability.',
+    headings: [
+      { id: 'master', title: 'Configuring Master' },
+      { id: 'slave', title: 'Configuring Slave' },
+      { id: 'modes', title: 'Replication Modes' },
+    ],
+    content: (
+      <>
+        <h2 id="master">Configuring Master</h2>
+        <pre>{`db, err := engine.Open("mydb.db", &engine.Options{
+    ReplicationRole:       "master",
+    ReplicationListenAddr: ":50051",
+    ReplicationMode:       "async", // async, sync, full_sync
+    ReplicationAuthToken:  "secret-token",
+})`}</pre>
+
+        <h2 id="slave">Configuring Slave</h2>
+        <pre>{`db, err := engine.Open("mydb.db", &engine.Options{
+    ReplicationRole:      "slave",
+    ReplicationMasterAddr: "master.example.com:50051",
+    ReplicationAuthToken:  "secret-token",
+})`}</pre>
+
+        <h2 id="modes">Replication Modes</h2>
+        <ul>
+          <li><strong>async:</strong> Master doesn't wait for slaves. Best performance, some replication lag.</li>
+          <li><strong>sync:</strong> Master waits for at least one slave acknowledgment.</li>
+          <li><strong>full_sync:</strong> Master waits for all slaves. Safest but slowest.</li>
+        </ul>
+
+        <DocsInfo>
+          Replication happens automatically for all write operations. No application changes required.
+        </DocsInfo>
+      </>
+    ),
+  },
+
+  'backup': {
+    title: 'Hot Backup',
+    description: 'Online backups without stopping the database.',
+    headings: [
+      { id: 'creating', title: 'Creating Backups' },
+      { id: 'restoring', title: 'Restoring Backups' },
+      { id: 'automation', title: 'Automated Backups' },
+    ],
+    content: (
+      <>
+        <h2 id="creating">Creating Backups</h2>
+        <p>Create backups while the database is running:</p>
+        <pre>{`// Create a full backup
+backup, err := db.CreateBackup("full")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Backup created: %s\\n", backup.ID)
+
+// Create incremental backup
+backup, err = db.CreateBackup("incremental")`}</pre>
+
+        <h2 id="restoring">Restoring Backups</h2>
+        <pre>{`// Restore from backup
+err := db.Restore(backupID)
+
+// Or restore to a new database
+newDB, err := engine.RestoreTo(backupID, "restored.db", nil)`}</pre>
+
+        <h2 id="automation">Automated Backups</h2>
+        <pre>{`db, err := engine.Open("mydb.db", &engine.Options{
+    BackupDir:              "./backups",
+    BackupRetention:        7 * 24 * time.Hour, // 7 days
+    MaxBackups:             10,
+    BackupCompressionLevel: 6, // 0-9
+})`}</pre>
+
+        <DocsTip>
+          Hot backups use copy-on-write technology to ensure consistent snapshots without blocking writes.
+        </DocsTip>
+      </>
+    ),
+  },
+
+  'temporal': {
+    title: 'Temporal Queries',
+    description: 'Query historical data with AS OF SYSTEM TIME.',
+    headings: [
+      { id: 'syntax', title: 'Syntax' },
+      { id: 'examples', title: 'Examples' },
+      { id: 'use-cases', title: 'Use Cases' },
+    ],
+    content: (
+      <>
+        <h2 id="syntax">Syntax</h2>
+        <p>Query data as it existed at a specific point in time:</p>
+        <pre>{`-- Query data from 1 hour ago
+SELECT * FROM accounts AS OF SYSTEM TIME '-1 hour';
+
+-- Query data at a specific timestamp
+SELECT * FROM accounts AS OF SYSTEM TIME '2024-01-15 10:30:00';
+
+-- Query data from yesterday
+SELECT * FROM transactions AS OF SYSTEM TIME '-1 day'
+WHERE account_id = 123;`}</pre>
+
+        <h2 id="examples">Examples</h2>
+        <pre>{`-- Compare current vs historical balance
+SELECT
+    (SELECT balance FROM accounts WHERE id = 1) as current_balance,
+    (SELECT balance FROM accounts AS OF SYSTEM TIME '-1 day' WHERE id = 1) as yesterday_balance;
+
+-- Find deleted records
+SELECT * FROM users AS OF SYSTEM TIME '-1 hour'
+EXCEPT
+SELECT * FROM users;`}</pre>
+
+        <h2 id="use-cases">Use Cases</h2>
+        <ul>
+          <li>Audit and compliance reporting</li>
+          <li>Point-in-time recovery analysis</li>
+          <li>Tracking data changes over time</li>
+          <li>Reproducing historical reports</li>
+        </ul>
+
+        <DocsInfo>
+          Temporal queries use row versioning. Each row stores creation and deletion timestamps for time-travel queries.
+        </DocsInfo>
+      </>
+    ),
+  },
 }

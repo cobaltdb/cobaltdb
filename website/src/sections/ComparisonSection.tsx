@@ -20,6 +20,11 @@ const features: FeatureRow[] = [
   { feature: 'WASM Support', cobaltdb: 'yes', sqlite: 'partial', postgres: 'no' },
   { feature: 'Row-Level Security', cobaltdb: 'yes', sqlite: 'no', postgres: 'yes' },
   { feature: 'Encryption at Rest', cobaltdb: 'yes', sqlite: 'no', postgres: 'partial' },
+  { feature: 'Vector Search (HNSW)', cobaltdb: 'yes', sqlite: 'no', postgres: 'partial' },
+  { feature: 'Query Plan Cache', cobaltdb: 'yes', sqlite: 'no', postgres: 'yes' },
+  { feature: 'Temporal Queries', cobaltdb: 'yes', sqlite: 'no', postgres: 'partial' },
+  { feature: 'Master-Slave Replication', cobaltdb: 'yes', sqlite: 'no', postgres: 'yes' },
+  { feature: 'Hot Backup', cobaltdb: 'yes', sqlite: 'partial', postgres: 'yes' },
   { feature: 'Written in Go', cobaltdb: 'yes', sqlite: 'no', postgres: 'no' },
 ]
 

@@ -28,6 +28,8 @@ const sidebarNav = [
       { title: 'JSON Support', href: '/docs/json' },
       { title: 'Triggers', href: '/docs/triggers' },
       { title: 'Views', href: '/docs/views' },
+      { title: 'Vector Search', href: '/docs/vector' },
+      { title: 'Temporal Queries', href: '/docs/temporal' },
     ],
   },
   {
@@ -36,6 +38,9 @@ const sidebarNav = [
       { title: 'WASM Guide', href: '/docs/wasm' },
       { title: 'Go API', href: '/docs/api' },
       { title: 'Security', href: '/docs/security' },
+      { title: 'Query Caching', href: '/docs/caching' },
+      { title: 'Replication', href: '/docs/replication' },
+      { title: 'Hot Backup', href: '/docs/backup' },
     ],
   },
 ]

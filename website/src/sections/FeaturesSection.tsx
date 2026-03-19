@@ -8,14 +8,18 @@ import {
   Lock,
   Layers,
   Workflow,
-  Globe
+  Globe,
+  Cpu,
+  Sparkles,
+  Clock,
+  Server
 } from 'lucide-react'
 
 const features = [
   {
     icon: Zap,
     title: 'High Performance',
-    description: 'B-tree storage with buffer pool caching delivers 100K+ QPS. Optimized for read-heavy workloads.',
+    description: 'B-tree storage with buffer pool caching delivers 100K+ QPS. Query plan caching and optimizer for maximum speed.',
   },
   {
     icon: Shield,
@@ -56,6 +60,26 @@ const features = [
     icon: Globe,
     title: 'Production Ready',
     description: '16 packages at 90%+ coverage. Battle-tested with 5,000+ integration tests across 107 suites.',
+  },
+  {
+    icon: Cpu,
+    title: 'Vector Search',
+    description: 'HNSW-based similarity search for AI applications. L2 distance, cosine similarity, and inner product metrics.',
+  },
+  {
+    icon: Sparkles,
+    title: 'Query Intelligence',
+    description: 'Cost-based query optimizer, query plan cache, and result caching for optimal performance.',
+  },
+  {
+    icon: Clock,
+    title: 'Temporal Queries',
+    description: 'AS OF SYSTEM TIME syntax for historical data queries. Point-in-time recovery and versioning.',
+  },
+  {
+    icon: Server,
+    title: 'Enterprise Ready',
+    description: 'Master-slave replication, hot backup, connection pooling, and circuit breaker patterns.',
   },
 ]
 
