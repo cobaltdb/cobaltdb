@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -379,6 +380,7 @@ func (c *Catalog) ExecuteQuery(sql string) (*QueryResult, error) {
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
 
+	ctx := context.Background()
 	switch s := stmt.(type) {
 	case *query.SelectStmt:
 		cols, rows, err := c.Select(s, nil)
@@ -387,11 +389,38 @@ func (c *Catalog) ExecuteQuery(sql string) (*QueryResult, error) {
 		}
 		return &QueryResult{Columns: cols, Rows: rows}, nil
 	case *query.SelectStmtWithCTE:
-		// Handle CTE - use ExecuteCTE which properly registers CTEs
 		cols, rows, err := c.ExecuteCTE(s, nil)
 		if err != nil {
 			return nil, err
 		}
+		return &QueryResult{Columns: cols, Rows: rows}, nil
+	case *query.CreateTableStmt:
+		err := c.CreateTable(s)
+		return &QueryResult{}, err
+	case *query.CreateIndexStmt:
+		err := c.CreateIndex(s)
+		return &QueryResult{}, err
+	case *query.DropTableStmt:
+		err := c.DropTable(s)
+		return &QueryResult{}, err
+	case *query.InsertStmt:
+		_, _, err := c.Insert(ctx, s, nil)
+		return &QueryResult{}, err
+	case *query.UpdateStmt:
+		_, _, err := c.Update(ctx, s, nil)
+		if err != nil {
+			return nil, err
+		}
+		cols := c.GetLastReturningColumns()
+		rows := c.GetLastReturningRows()
+		return &QueryResult{Columns: cols, Rows: rows}, nil
+	case *query.DeleteStmt:
+		_, _, err := c.Delete(ctx, s, nil)
+		if err != nil {
+			return nil, err
+		}
+		cols := c.GetLastReturningColumns()
+		rows := c.GetLastReturningRows()
 		return &QueryResult{Columns: cols, Rows: rows}, nil
 	default:
 		return nil, fmt.Errorf("unsupported query type: %T", stmt)

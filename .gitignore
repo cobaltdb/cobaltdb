@@ -48,6 +48,11 @@ nul
 *.db-journal
 .claude/
 
+# Test-generated directories
+pkg/engine/backups/
+test.cobalt.data/
+dist/data/
+
 # Website
 website/node_modules/
 website/dist/

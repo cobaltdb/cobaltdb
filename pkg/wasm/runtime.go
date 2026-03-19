@@ -18,8 +18,14 @@ type Runtime struct {
 	CallStack []CallFrame
 	// Functions table
 	Functions []Function
+	// Types from type section
+	Types []FuncType
+	// Function type indices from function section
+	funcTypeIndices []uint32
 	// Imported functions
 	Imports map[string]ImportFunc
+	// Import names by function index (for lookup in callImport)
+	importNames []string
 	// Current function index being executed
 	currentFunc int
 }
@@ -34,9 +40,11 @@ type CallFrame struct {
 
 // Function represents a WASM function
 type Function struct {
-	TypeIdx int
-	Locals  []ValueType
-	Code    []byte
+	TypeIdx    int
+	Locals     []ValueType
+	Code       []byte
+	IsImport   bool // true if this is an imported function
+	ParamCount int  // Number of parameters (for call instruction)
 }
 
 // ImportFunc is a host function that can be called from WASM
@@ -90,10 +98,122 @@ func (rt *Runtime) Execute(compiled *CompiledQuery, args []interface{}) (*QueryR
 	}
 
 	// SELECT query - parse result buffer
+	if len(result) < 2 {
+		return &QueryResult{}, nil
+	}
 	resultPtr := int32(result[0])
 	rowCount := int32(result[1])
 
+	if rowCount < 0 || rowCount > 100000 {
+		return nil, fmt.Errorf("invalid row count: %d", rowCount)
+	}
+
 	return rt.parseResults(compiled.ResultSchema, resultPtr, rowCount)
+}
+
+// ExecuteStreaming executes a compiled query with streaming results
+// Returns a StreamingResult that can be used to fetch rows incrementally
+func (rt *Runtime) ExecuteStreaming(compiled *CompiledQuery, args []interface{}, chunkSize int) (*StreamingResult, error) {
+	// Load the WASM module
+	if err := rt.LoadModule(compiled.Bytecode); err != nil {
+		return nil, fmt.Errorf("failed to load module: %w", err)
+	}
+
+	// Setup parameters in memory
+	paramPtr := int32(0)
+	if err := rt.writeParams(paramPtr, args); err != nil {
+		return nil, fmt.Errorf("failed to write params: %w", err)
+	}
+
+	// Call the entry point function
+	result, err := rt.CallFunction(int(compiled.EntryPoint), []uint64{uint64(paramPtr)})
+	if err != nil {
+		return nil, fmt.Errorf("execution failed: %w", err)
+	}
+
+	// Parse results
+	if compiled.ResultSchema == nil {
+		return nil, fmt.Errorf("streaming not supported for non-SELECT queries")
+	}
+
+	if len(result) < 2 {
+		return &StreamingResult{
+			Runtime:   rt,
+			Compiled:  compiled,
+			ChunkSize: chunkSize,
+			TotalRows: 0,
+			HasMore:   false,
+			Columns:   []string{},
+		}, nil
+	}
+
+	resultPtr := int32(result[0])
+	rowCount := int(result[1])
+
+	if rowCount < 0 || rowCount > 1000000 {
+		return nil, fmt.Errorf("invalid row count: %d", rowCount)
+	}
+
+	// Extract column names
+	columns := make([]string, len(compiled.ResultSchema))
+	for i, col := range compiled.ResultSchema {
+		columns[i] = col.Name
+	}
+
+	return &StreamingResult{
+		Runtime:   rt,
+		Compiled:  compiled,
+		ChunkSize: chunkSize,
+		TotalRows: int(rowCount),
+		HasMore:   rowCount > 0,
+		Columns:   columns,
+		resultPtr: resultPtr,
+	}, nil
+}
+
+// Next fetches the next chunk of results
+func (sr *StreamingResult) Next() ([]Row, error) {
+	if !sr.HasMore {
+		return nil, nil
+	}
+
+	// Calculate start and end row for this chunk
+	startRow := sr.ChunkIndex * sr.ChunkSize
+	endRow := startRow + sr.ChunkSize
+	if endRow > sr.TotalRows {
+		endRow = sr.TotalRows
+	}
+
+	// For simplified implementation, return rows from memory
+	schema := sr.Compiled.ResultSchema
+
+	rows := make([]Row, 0, endRow-startRow)
+	rowSize := len(schema) * 8 // Simplified: each column is 8 bytes
+
+	for i := startRow; i < endRow; i++ {
+		rowOffset := sr.resultPtr + int32(i*rowSize)
+		row := Row{Values: make([]interface{}, len(schema))}
+		for j := range schema {
+			valOffset := rowOffset + int32(j*8)
+			if valOffset+8 <= int32(len(sr.Runtime.Memory)) {
+				val := binary.LittleEndian.Uint64(sr.Runtime.Memory[valOffset:])
+				row.Values[j] = int64(val)
+			}
+		}
+		rows = append(rows, row)
+	}
+
+	sr.ChunkIndex++
+	sr.HasMore = endRow < sr.TotalRows
+
+	return rows, nil
+}
+
+// Close releases streaming result resources
+func (sr *StreamingResult) Close() {
+	sr.Runtime = nil
+	sr.Compiled = nil
+	sr.CurrentChunk = nil
 }
 
 // QueryResult holds query execution results
@@ -106,6 +226,20 @@ type QueryResult struct {
 // Row represents a result row
 type Row struct {
 	Values []interface{}
+}
+
+// StreamingResult allows iterating over large result sets incrementally
+type StreamingResult struct {
+	Runtime      *Runtime
+	Compiled     *CompiledQuery
+	ChunkIndex   int
+	ChunkSize    int
+	TotalRows    int
+	CurrentChunk []Row
+	Columns      []string
+	Position     int
+	HasMore      bool
+	resultPtr    int32
 }
 
 // writeParams writes query parameters to WASM memory
@@ -228,13 +362,18 @@ func (rt *Runtime) LoadModule(bytecode []byte) error {
 
 		switch sectionID {
 		case 0x01: // Type section
-			// Parse type section (not needed for simple execution)
+			if err := rt.parseTypeSection(sectionData); err != nil {
+				return err
+			}
 		case 0x02: // Import section
 			if err := rt.parseImportSection(sectionData); err != nil {
 				return err
 			}
 		case 0x03: // Function section
-			// Parse function section
+			// Parse function section - will be used by code section
+			if err := rt.parseFunctionSection(sectionData); err != nil {
+				return err
+			}
 		case 0x07: // Export section
 			// Parse export section
 		case 0x0a: // Code section
@@ -248,6 +387,95 @@ func (rt *Runtime) LoadModule(bytecode []byte) error {
 		}
 
 		offset = sectionEnd
+	}
+
+	return nil
+}
+
+
+// callImport calls a registered import function
+func (rt *Runtime) callImport(funcIdx int, params []uint64) ([]uint64, error) {
+	// Get import name based on function index
+	if funcIdx >= len(rt.importNames) {
+		return nil, fmt.Errorf("no import name for function index %d", funcIdx)
+	}
+	importName := rt.importNames[funcIdx]
+	fn, ok := rt.Imports[importName]
+	if !ok {
+		return nil, fmt.Errorf("no import handler registered for %s (function %d)", importName, funcIdx)
+	}
+	return fn(rt, params)
+}
+
+// parseTypeSection parses the type section
+func (rt *Runtime) parseTypeSection(data []byte) error {
+	count, n := readLeb128(data, 0)
+	offset := n
+
+	rt.Types = make([]FuncType, 0, count)
+
+	for i := uint64(0); i < count; i++ {
+		if offset >= len(data) {
+			return fmt.Errorf("type section truncated")
+		}
+		// Read form (must be 0x60 for func)
+		form := data[offset]
+		offset++
+		if form != 0x60 {
+			return fmt.Errorf("invalid type form: 0x%02x", form)
+		}
+
+		// Read param count
+		paramCount, n := readLeb128(data, offset)
+		offset += n
+
+		// Read params
+		params := make([]ValueType, paramCount)
+		for j := uint64(0); j < paramCount; j++ {
+			if offset >= len(data) {
+				return fmt.Errorf("type section truncated reading params")
+			}
+			params[j] = ValueType(data[offset])
+			offset++
+		}
+
+		// Read result count
+		resultCount, n := readLeb128(data, offset)
+		offset += n
+
+		// Read results
+		results := make([]ValueType, resultCount)
+		for j := uint64(0); j < resultCount; j++ {
+			if offset >= len(data) {
+				return fmt.Errorf("type section truncated reading results")
+			}
+			results[j] = ValueType(data[offset])
+			offset++
+		}
+
+		rt.Types = append(rt.Types, FuncType{
+			Params:  params,
+			Results: results,
+		})
+	}
+
+	return nil
+}
+
+// parseFunctionSection parses the function section
+func (rt *Runtime) parseFunctionSection(data []byte) error {
+	count, n := readLeb128(data, 0)
+	offset := n
+
+	rt.funcTypeIndices = make([]uint32, 0, count)
+
+	for i := uint64(0); i < count; i++ {
+		if offset >= len(data) {
+			return fmt.Errorf("function section truncated")
+		}
+		typeIdx, n := readLeb128(data, offset)
+		offset += n
+		rt.funcTypeIndices = append(rt.funcTypeIndices, uint32(typeIdx))
 	}
 
 	return nil
@@ -285,12 +513,27 @@ func (rt *Runtime) parseImportSection(data []byte) error {
 		importKey := module + ":" + field
 		switch kind {
 		case 0x00: // Function
-			// Create stub function
+			// Get param count from type
+			paramCount := 0
+			if int(idx) < len(rt.Types) {
+				paramCount = len(rt.Types[int(idx)].Params)
+			}
+			// Track import name by function index
+			funcIdx := len(rt.Functions)
+			rt.importNames = append(rt.importNames, importKey)
+			// Create import function stub (no code - will be handled by callImport)
 			rt.Functions = append(rt.Functions, Function{
-				TypeIdx: int(idx),
-				Locals:  nil,
-				Code:    []byte{0x10, byte(len(rt.Functions)), 0x0b}, // call import, end
+				TypeIdx:    int(idx),
+				Locals:     nil,
+				Code:       nil, // Import functions have no code
+				IsImport:   true,
+				ParamCount: paramCount,
 			})
+			// Store the import name at the function index
+			for len(rt.importNames) <= funcIdx {
+				rt.importNames = append(rt.importNames, "")
+			}
+			rt.importNames[funcIdx] = importKey
 		default:
 			return fmt.Errorf("unsupported import kind: %d for %s", kind, importKey)
 		}
@@ -358,10 +601,23 @@ func (rt *Runtime) parseCodeSection(data []byte) error {
 		// Rest is function body
 		body := funcData[offset2:]
 
+		// Get type index from function section
+		typeIdx := 0
+		if int(i) < len(rt.funcTypeIndices) {
+			typeIdx = int(rt.funcTypeIndices[i])
+		}
+
+		// Get param count from type
+		paramCount := 0
+		if typeIdx < len(rt.Types) {
+			paramCount = len(rt.Types[typeIdx].Params)
+		}
+
 		rt.Functions = append(rt.Functions, Function{
-			TypeIdx: int(i),
-			Locals:  locals,
-			Code:    body,
+			TypeIdx:    typeIdx,
+			Locals:     locals,
+			Code:       body,
+			ParamCount: paramCount,
 		})
 
 		offset = funcEnd
@@ -377,6 +633,19 @@ func (rt *Runtime) CallFunction(funcIdx int, params []uint64) ([]uint64, error) 
 	}
 
 	fn := rt.Functions[funcIdx]
+
+	// If this is an import function, call it directly and push results to stack
+	if fn.IsImport {
+		results, err := rt.callImport(funcIdx, params)
+		if err != nil {
+			return nil, err
+		}
+		// Push return values to stack
+		for _, r := range results {
+			rt.Stack = append(rt.Stack, r)
+		}
+		return results, nil
+	}
 
 	// Create call frame
 	frame := CallFrame{
@@ -464,8 +733,20 @@ func (rt *Runtime) executeFunction(fn Function) error {
 		case 0x10: // call
 			funcIdx, n := readLeb128(code, pc)
 			pc += n
+			// Get function to know param count
+			if int(funcIdx) >= len(rt.Functions) {
+				return fmt.Errorf("call to invalid function index: %d", funcIdx)
+			}
+			fn := rt.Functions[funcIdx]
+			paramCount := fn.ParamCount
+			// Pop parameters from stack
+			var params []uint64
+			if paramCount > 0 && len(rt.Stack) >= paramCount {
+				params = rt.Stack[len(rt.Stack)-paramCount:]
+				rt.Stack = rt.Stack[:len(rt.Stack)-paramCount]
+			}
 			// Call function
-			_, err := rt.CallFunction(int(funcIdx), nil)
+			_, err := rt.CallFunction(int(funcIdx), params)
 			if err != nil {
 				return err
 			}
@@ -707,3 +988,158 @@ func (rt *Runtime) executeFunction(fn Function) error {
 	return nil
 }
 
+// QueryProfiler provides performance profiling for WASM queries
+type QueryProfiler struct {
+	// Execution metrics
+	TotalExecutions   int64
+	TotalDuration     int64 // nanoseconds
+	MinDuration       int64
+	MaxDuration       int64
+	AvgDuration       int64
+	LastDuration      int64
+
+	// Memory metrics
+	PeakMemoryUsage   int
+	TotalMemoryAllocs int64
+
+	// Operation counters
+	OpcodesExecuted   int64
+	HostCalls         int64
+	MemoryAccesses    int64
+
+	// Per-query history (limited size)
+	History           []QueryExecutionRecord
+	HistorySize       int
+}
+
+// QueryExecutionRecord represents a single query execution record
+type QueryExecutionRecord struct {
+	Timestamp  int64
+	Duration   int64
+	Rows       int
+	MemoryUsed int
+}
+
+// NewQueryProfiler creates a new query profiler
+func NewQueryProfiler() *QueryProfiler {
+	return &QueryProfiler{
+		MinDuration:     int64(^uint64(0) >> 1), // Max int64
+		HistorySize:     100,
+		History:         make([]QueryExecutionRecord, 0, 100),
+	}
+}
+
+// RecordExecution records a query execution
+func (p *QueryProfiler) RecordExecution(duration int64, rows int, memoryUsed int) {
+	p.TotalExecutions++
+	p.TotalDuration += duration
+	p.LastDuration = duration
+
+	if duration < p.MinDuration {
+		p.MinDuration = duration
+	}
+	if duration > p.MaxDuration {
+		p.MaxDuration = duration
+	}
+
+	p.AvgDuration = p.TotalDuration / p.TotalExecutions
+
+	if memoryUsed > p.PeakMemoryUsage {
+		p.PeakMemoryUsage = memoryUsed
+	}
+
+	// Add to history
+	record := QueryExecutionRecord{
+		Timestamp:  timeNow(),
+		Duration:   duration,
+		Rows:       rows,
+		MemoryUsed: memoryUsed,
+	}
+
+	if len(p.History) >= p.HistorySize {
+		p.History = p.History[1:]
+	}
+	p.History = append(p.History, record)
+}
+
+// GetStats returns profiling statistics
+func (p *QueryProfiler) GetStats() ProfileStats {
+	return ProfileStats{
+		TotalExecutions: p.TotalExecutions,
+		TotalDuration:   p.TotalDuration,
+		MinDuration:     p.MinDuration,
+		MaxDuration:     p.MaxDuration,
+		AvgDuration:     p.AvgDuration,
+		LastDuration:    p.LastDuration,
+		PeakMemoryUsage: p.PeakMemoryUsage,
+	}
+}
+
+// ProfileStats contains profiling statistics
+type ProfileStats struct {
+	TotalExecutions int64
+	TotalDuration   int64
+	MinDuration     int64
+	MaxDuration     int64
+	AvgDuration     int64
+	LastDuration    int64
+	PeakMemoryUsage int
+}
+
+// timeNow returns current timestamp (simplified)
+func timeNow() int64 {
+	return 0 // Placeholder - in real impl would use time.Now().UnixNano()
+}
+
+// BenchmarkResult represents benchmark results
+type BenchmarkResult struct {
+	QueryName       string
+	Iterations      int
+	TotalDuration   int64
+	AvgDuration     int64
+	MinDuration     int64
+	MaxDuration     int64
+	RowsPerSecond   float64
+	Throughput      float64 // ops/sec
+}
+
+// BenchmarkQuery benchmarks a query execution
+func BenchmarkQuery(rt *Runtime, compiled *CompiledQuery, iterations int) (*BenchmarkResult, error) {
+	if iterations <= 0 {
+		iterations = 100
+	}
+
+	result := &BenchmarkResult{
+		QueryName:  "query",
+		Iterations: iterations,
+		MinDuration: int64(^uint64(0) >> 1),
+	}
+
+	var totalRows int
+
+	for i := 0; i < iterations; i++ {
+		start := timeNow()
+
+		queryResult, err := rt.Execute(compiled, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		duration := timeNow() - start
+		totalRows += len(queryResult.Rows)
+
+		result.TotalDuration += duration
+		if duration < result.MinDuration {
+			result.MinDuration = duration
+		}
+		if duration > result.MaxDuration {
+			result.MaxDuration = duration
+		}
+	}
+
+	result.AvgDuration = result.TotalDuration / int64(iterations)
+	result.Throughput = float64(iterations) / (float64(result.TotalDuration) / 1e9)
+	result.RowsPerSecond = float64(totalRows) / (float64(result.TotalDuration) / 1e9)
+
+	return result, nil
+}

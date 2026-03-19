@@ -2059,24 +2059,7 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 	return nil
 }
 
-func toInt(v interface{}) (int, bool) {
-	switch val := v.(type) {
-	case int:
-		return val, true
-	case int64:
-		if val > int64(math.MaxInt) || val < int64(math.MinInt) {
-			return 0, false // Overflow
-		}
-		return int(val), true
-	case float64:
-		if val > float64(math.MaxInt) || val < float64(math.MinInt) {
-			return 0, false // Overflow
-		}
-		return int(val), true
-	default:
-		return 0, false
-	}
-}
+
 
 func addHiddenOrderByCols(orderBy []*query.OrderByExpr, selectCols []selectColInfo, table *TableDef) ([]selectColInfo, int) {
 	if len(orderBy) == 0 || table == nil {
@@ -2471,72 +2454,6 @@ func resolveAggregateInExpr(expr query.Expression, selectCols []selectColInfo, r
 	}
 }
 
-func valueToLiteral(v interface{}) query.Expression {
-	if v == nil {
-		return &query.NullLiteral{}
-	}
-	switch val := v.(type) {
-	case string:
-		return &query.StringLiteral{Value: val}
-	case bool:
-		return &query.BooleanLiteral{Value: val}
-	default:
-		_ = val
-		return &query.NumberLiteral{Value: toNumber(v)}
-	}
-}
-
-func toNumber(v interface{}) float64 {
-	if v == nil {
-		return 0
-	}
-	switch val := v.(type) {
-	case int:
-		return float64(val)
-	case int64:
-		return float64(val)
-	case float64:
-		return val
-	case string:
-		n, _ := strconv.ParseFloat(val, 64)
-		return n
-	default:
-		return 0
-	}
-}
-
-func toBool(v interface{}) bool {
-	if v == nil {
-		return false
-	}
-	switch val := v.(type) {
-	case bool:
-		return val
-	case int:
-		return val != 0
-	case int64:
-		return val != 0
-	case float64:
-		return val != 0
-	case string:
-		return val != ""
-	default:
-		return false
-	}
-}
-
-func toBoolNullable(v interface{}) (bool, bool) {
-	if v == nil {
-		return false, true
-	}
-	return toBool(v), false
-}
-
-func isStarArg(e query.Expression) bool {
-	_, ok := e.(*query.StarExpr)
-	return ok
-}
-
 func replaceAggregatesInExpr(expr query.Expression, aggResults map[*query.FunctionCall]interface{}) query.Expression {
 	if expr == nil {
 		return nil
@@ -2749,29 +2666,6 @@ func resolveOuterRefsInQuery(subquery *query.SelectStmt, outerRow []interface{},
 		result.Joins = newJoins
 	}
 	return &result
-}
-
-func valueToExpr(val interface{}) query.Expression {
-	if val == nil {
-		return &query.NullLiteral{}
-	}
-	switch v := val.(type) {
-	case string:
-		return &query.StringLiteral{Value: v}
-	case float64:
-		return &query.NumberLiteral{Value: v}
-	case int:
-		return &query.NumberLiteral{Value: float64(v)}
-	case int64:
-		return &query.NumberLiteral{Value: float64(v)}
-	case bool:
-		if v {
-			return &query.NumberLiteral{Value: 1}
-		}
-		return &query.NumberLiteral{Value: 0}
-	default:
-		return &query.StringLiteral{Value: fmt.Sprintf("%v", v)}
-	}
 }
 
 func resolveOuterRefsInExpr(expr query.Expression, outerRow []interface{}, outerColumns []ColumnDef, innerTables map[string]bool) query.Expression {
@@ -4513,4 +4407,33 @@ func parseSystemTimeExpr(expr string) time.Time {
 
 	// Default to current time
 	return now
+}
+
+// applyOffsetLimit applies OFFSET and LIMIT to a result set
+func applyOffsetLimit(rows [][]interface{}, offsetExpr, limitExpr query.Expression, args []interface{}) [][]interface{} {
+	result := rows
+	
+	if offsetExpr != nil {
+		offsetVal, err := EvalExpression(offsetExpr, args)
+		if err == nil {
+			if off, ok := toInt(offsetVal); ok && off > 0 {
+				if int(off) < len(result) {
+					result = result[off:]
+				} else {
+					result = nil
+				}
+			}
+		}
+	}
+	
+	if limitExpr != nil && len(result) > 0 {
+		limitVal, err := EvalExpression(limitExpr, args)
+		if err == nil {
+			if lim, ok := toInt(limitVal); ok && lim >= 0 && int(lim) < len(result) {
+				result = result[:lim]
+			}
+		}
+	}
+	
+	return result
 }

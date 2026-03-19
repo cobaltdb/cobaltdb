@@ -76,6 +76,9 @@ type DB struct {
 
 	// Slow Query Log
 	slowQueryLog *metrics.SlowQueryLog
+
+	// Query Plan Cache - caches parsed query statements
+	planCache *QueryPlanCache
 }
 
 // Options contains database configuration options
@@ -121,6 +124,11 @@ type Options struct {
 	SlowQueryThreshold   time.Duration // Threshold for slow queries (default: 1s)
 	SlowQueryMaxEntries  int           // Max in-memory entries (default: 1000)
 	SlowQueryLogFile     string        // Log file path (empty = memory only)
+
+	// Query Plan Cache Options
+	EnablePlanCache  bool  // Enable query plan caching
+	PlanCacheSize    int64 // Max plan cache size in bytes (default: 32MB)
+	PlanCacheEntries int   // Max number of cached plans (default: 1000)
 
 }
 
@@ -634,6 +642,19 @@ func (db *DB) loadExisting() error {
 
 	db.backupMgr = backup.NewManager(backupConfig, db)
 
+	// Initialize query plan cache
+	if db.options.EnablePlanCache {
+		planCacheSize := db.options.PlanCacheSize
+		if planCacheSize <= 0 {
+			planCacheSize = 32 * 1024 * 1024 // 32MB default
+		}
+		planCacheEntries := db.options.PlanCacheEntries
+		if planCacheEntries <= 0 {
+			planCacheEntries = 1000
+		}
+		db.planCache = NewQueryPlanCache(planCacheSize, planCacheEntries)
+	}
+
 	return nil
 }
 
@@ -741,7 +762,14 @@ func (db *DB) Close() error {
 }
 
 // getPreparedStatement returns a cached prepared statement or parses and caches it
-func (db *DB) getPreparedStatement(sql string) (query.Statement, error) {
+func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.Statement, error) {
+	// First check plan cache if enabled (more sophisticated caching with size limits)
+	if db.planCache != nil {
+		if entry, found := db.planCache.Get(sql, args); found {
+			return entry.ParsedStmt, nil
+		}
+	}
+
 	db.stmtMu.RLock()
 	cached, exists := db.stmtCache[sql]
 	db.stmtMu.RUnlock()
@@ -762,6 +790,11 @@ func (db *DB) getPreparedStatement(sql string) (query.Statement, error) {
 	parsedStmt, err := query.Parse(sql)
 	if err != nil {
 		return nil, err
+	}
+
+	// Cache in plan cache if enabled
+	if db.planCache != nil {
+		db.planCache.Put(sql, args, parsedStmt)
 	}
 
 	// Cache the statement with O(1) LRU eviction
@@ -902,7 +935,7 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 	}
 
 	// Try to use cached prepared statement
-	stmt, err := db.getPreparedStatement(sql)
+	stmt, err := db.getPreparedStatement(sql, args...)
 	if err != nil {
 		if db.metrics != nil {
 			db.metrics.RecordError()
@@ -966,7 +999,7 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 	}
 
 	// Try to use cached prepared statement
-	stmt, err := db.getPreparedStatement(sql)
+	stmt, err := db.getPreparedStatement(sql, args...)
 	if err != nil {
 		if db.metrics != nil {
 			db.metrics.RecordError()
@@ -2594,7 +2627,7 @@ func (tx *Tx) Exec(ctx context.Context, sql string, args ...interface{}) (Result
 	}
 
 	// Parse the statement
-	stmt, err := tx.db.getPreparedStatement(sql)
+	stmt, err := tx.db.getPreparedStatement(sql, args...)
 	if err != nil {
 		return Result{}, fmt.Errorf("parse error: %w", err)
 	}
@@ -2618,7 +2651,7 @@ func (tx *Tx) Query(ctx context.Context, sql string, args ...interface{}) (*Rows
 		return nil, ErrDatabaseClosed
 	}
 
-	stmt, err := tx.db.getPreparedStatement(sql)
+	stmt, err := tx.db.getPreparedStatement(sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
@@ -2866,6 +2899,60 @@ func (db *DB) GetBackupManager() *backup.Manager {
 // GetQueryCache returns the query cache
 func (db *DB) GetQueryCache() *cache.Cache {
 	return db.queryCache
+}
+
+// PlanCache methods
+
+// GetPlanCacheStats returns query plan cache statistics
+// Returns nil if plan cache is not enabled
+func (db *DB) GetPlanCacheStats() *QueryPlanCacheStats {
+	if db.planCache == nil {
+		return nil
+	}
+	stats := db.planCache.GetStats()
+	return &stats
+}
+
+// ClearPlanCache clears all entries from the query plan cache
+func (db *DB) ClearPlanCache() {
+	if db.planCache != nil {
+		db.planCache.Clear()
+	}
+}
+
+// EnablePlanCache enables the query plan cache with specified size limits
+func (db *DB) EnablePlanCache(maxSize int64, maxEntries int) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if db.planCache != nil {
+		// Already enabled, just update settings
+		return
+	}
+
+	if maxSize <= 0 {
+		maxSize = 32 * 1024 * 1024 // 32MB default
+	}
+	if maxEntries <= 0 {
+		maxEntries = 1000
+	}
+	db.planCache = NewQueryPlanCache(maxSize, maxEntries)
+}
+
+// DisablePlanCache disables and clears the query plan cache
+func (db *DB) DisablePlanCache() {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if db.planCache != nil {
+		db.planCache.Clear()
+		db.planCache = nil
+	}
+}
+
+// IsPlanCacheEnabled returns true if plan cache is enabled
+func (db *DB) IsPlanCacheEnabled() bool {
+	return db.planCache != nil
 }
 
 // Optimizer methods
