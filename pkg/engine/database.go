@@ -1156,11 +1156,17 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_TABLE", audit.WithTable(s.Table))
 		}
+		if err == nil {
+			db.replicateWrite("CREATE_TABLE", s.Table, nil)
+		}
 		return result, err
 	case *query.InsertStmt:
 		result, err := db.executeInsert(ctx, s, args)
 		if db.auditLogger != nil {
 			db.auditLogger.LogQuery(auditUser(ctx), "INSERT", time.Since(start), result.RowsAffected, err)
+		}
+		if err == nil {
+			db.replicateWrite("INSERT", s.Table, args)
 		}
 		return result, err
 	case *query.UpdateStmt:
@@ -1168,11 +1174,17 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		if db.auditLogger != nil {
 			db.auditLogger.LogQuery(auditUser(ctx), "UPDATE", time.Since(start), result.RowsAffected, err)
 		}
+		if err == nil {
+			db.replicateWrite("UPDATE", s.Table, args)
+		}
 		return result, err
 	case *query.DeleteStmt:
 		result, err := db.executeDelete(ctx, s, args)
 		if db.auditLogger != nil {
 			db.auditLogger.LogQuery(auditUser(ctx), "DELETE", time.Since(start), result.RowsAffected, err)
+		}
+		if err == nil {
+			db.replicateWrite("DELETE", s.Table, args)
 		}
 		return result, err
 	case *query.DropTableStmt:
@@ -1180,17 +1192,26 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_TABLE", audit.WithTable(s.Table))
 		}
+		if err == nil {
+			db.replicateWrite("DROP_TABLE", s.Table, nil)
+		}
 		return result, err
 	case *query.CreateIndexStmt:
 		result, err := db.executeCreateIndex(ctx, s)
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_INDEX", audit.WithTable(s.Table))
 		}
+		if err == nil {
+			db.replicateWrite("CREATE_INDEX", s.Table, nil)
+		}
 		return result, err
 	case *query.CreateViewStmt:
 		result, err := db.executeCreateView(ctx, s)
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_VIEW", audit.WithTable(s.Name))
+		}
+		if err == nil {
+			db.replicateWrite("CREATE_VIEW", s.Name, nil)
 		}
 		return result, err
 	case *query.DropViewStmt:
@@ -1204,11 +1225,17 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_TRIGGER", audit.WithTable(s.Table))
 		}
+		if err == nil {
+			db.replicateWrite("CREATE_TRIGGER", s.Table, nil)
+		}
 		return result, err
 	case *query.DropTriggerStmt:
 		result, err := db.executeDropTrigger(ctx, s)
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_TRIGGER")
+		}
+		if err == nil {
+			db.replicateWrite("DROP_TRIGGER", "", nil)
 		}
 		return result, err
 	case *query.CreateProcedureStmt:
@@ -1216,11 +1243,17 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_PROCEDURE")
 		}
+		if err == nil {
+			db.replicateWrite("CREATE_PROCEDURE", "", nil)
+		}
 		return result, err
 	case *query.DropProcedureStmt:
 		result, err := db.executeDropProcedure(ctx, s)
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_PROCEDURE")
+		}
+		if err == nil {
+			db.replicateWrite("DROP_PROCEDURE", "", nil)
 		}
 		return result, err
 	case *query.CreatePolicyStmt:
@@ -1228,17 +1261,26 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_POLICY", audit.WithTable(s.Table))
 		}
+		if err == nil {
+			db.replicateWrite("CREATE_POLICY", s.Table, nil)
+		}
 		return result, err
 	case *query.DropPolicyStmt:
 		result, err := db.executeDropPolicy(ctx, s)
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_POLICY")
 		}
+		if err == nil {
+			db.replicateWrite("DROP_POLICY", "", nil)
+		}
 		return result, err
 	case *query.CallProcedureStmt:
 		result, err := db.executeCallProcedure(ctx, s, args)
 		if db.auditLogger != nil {
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CALL_PROCEDURE")
+		}
+		if err == nil {
+			db.replicateWrite("CALL_PROCEDURE", "", args)
 		}
 		return result, err
 	case *query.BeginStmt:
@@ -2967,6 +3009,30 @@ func (db *DB) UpdateTableStatistics(tableName string, stats *optimizer.TableStat
 	if db.optimizer != nil {
 		db.optimizer.UpdateStatistics(tableName, stats)
 	}
+}
+
+// replicateWrite sends write operations to the replication manager
+// This is called automatically after successful write operations (INSERT, UPDATE, DELETE, DDL)
+func (db *DB) replicateWrite(operation string, table string, args []interface{}) {
+	if db.replicationMgr == nil {
+		return // Replication not enabled
+	}
+
+	// Serialize the write operation
+	// Format: operation|table|args...
+	data := fmt.Sprintf("%s|%s|", operation, table)
+	if len(args) > 0 {
+		for i, arg := range args {
+			if i > 0 {
+				data += ","
+			}
+			data += fmt.Sprintf("%v", arg)
+		}
+	}
+
+	// Send to replication manager (async, non-blocking)
+	// The replication manager handles buffering and sending to slaves
+	_ = db.replicationMgr.ReplicateWALEntry([]byte(data))
 }
 
 // Replication methods
