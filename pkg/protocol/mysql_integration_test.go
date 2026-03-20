@@ -496,8 +496,8 @@ func TestPacketStructure(t *testing.T) {
 	length := int(data[0]) | int(data[1])<<8 | int(data[2])<<8
 	sequence := data[3]
 
-	if sequence != 0 {
-		t.Errorf("Expected sequence 0, got %d", sequence)
+	if sequence != 1 {
+		t.Errorf("Expected sequence 1, got %d", sequence)
 	}
 
 	payload := data[4:]

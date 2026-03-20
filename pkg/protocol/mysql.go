@@ -279,6 +279,7 @@ type MySQLClient struct {
 	database     string
 	authResponse []byte // raw auth response from client handshake
 	scramble     []byte // 20-byte random challenge sent in handshake (FIX-004)
+	sequence     byte   // packet sequence number for proper protocol flow
 }
 
 // sendHandshake sends the initial handshake packet
@@ -341,13 +342,15 @@ func (c *MySQLClient) sendHandshake() error {
 	// Reserved
 	pkt = append(pkt, make([]byte, 10)...)
 
-	// Auth plugin data part 2 (remaining 12 bytes of scramble)
+	// Auth plugin data part 2 (remaining 12 bytes of scramble + null terminator)
 	pkt = append(pkt, c.scramble[8:]...)
+	pkt = append(pkt, 0x00) // null terminator for auth data part 2
 
 	// Auth plugin name
 	pkt = append(pkt, []byte("mysql_native_password")...)
 	pkt = append(pkt, 0x00)
 
+	c.sequence = 0
 	return c.writePacket(pkt, 0)
 }
 
@@ -360,7 +363,7 @@ func (c *MySQLClient) readHandshakeResponse() error {
 	}
 
 	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
-	// sequence := header[3]
+	c.sequence = header[3] // track sequence from client
 
 	// Validate payload size to prevent DoS via unbounded allocation
 	if length <= 0 || length > maxMySQLPayloadSize {
@@ -456,7 +459,7 @@ func (c *MySQLClient) handleCommand() error {
 	}
 
 	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
-	// sequence := header[3]
+	c.sequence = header[3] // track command sequence
 
 	// Validate payload size to prevent DoS via unbounded allocation
 	if length <= 0 || length > maxMySQLPayloadSize {
@@ -751,24 +754,20 @@ func (c *MySQLClient) writePacket(data []byte, sequence byte) error {
 
 // sendOKPacket sends an OK packet
 func (c *MySQLClient) sendOKPacket(affectedRows, lastInsertID uint64) error {
+	pkt := c.buildOKPacket(affectedRows, lastInsertID)
+	seq := c.sequence + 1
+	c.sequence = seq
+	return c.writePacket(pkt, seq)
+}
+
+func (c *MySQLClient) buildOKPacket(affectedRows, lastInsertID uint64) []byte {
 	pkt := make([]byte, 0, 32)
-
-	// Header 0x00
 	pkt = append(pkt, 0x00)
-
-	// Affected rows (length encoded integer)
 	pkt = append(pkt, writeLenEncInt(affectedRows)...)
-
-	// Last insert ID (length encoded integer)
 	pkt = append(pkt, writeLenEncInt(lastInsertID)...)
-
-	// Status flags
-	pkt = append(pkt, 0x02, 0x00)
-
-	// Warnings
-	pkt = append(pkt, 0x00, 0x00)
-
-	return c.writePacket(pkt, 0)
+	pkt = append(pkt, 0x02, 0x00) // status flags
+	pkt = append(pkt, 0x00, 0x00) // warnings
+	return pkt
 }
 
 // sendErrorPacket sends an error packet
