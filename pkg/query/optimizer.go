@@ -285,9 +285,14 @@ func (qo *QueryOptimizer) extractWhereColumns(expr Expression) []string {
 	return cols
 }
 
-// copySelectStmt creates a shallow copy of a SELECT statement to avoid modifying the original
+// copySelectStmt creates a copy of a SELECT statement to avoid modifying the original
 func (qo *QueryOptimizer) copySelectStmt(stmt *SelectStmt) *SelectStmt {
 	copied := *stmt
+	// Deep copy From to avoid race on IndexHint field
+	if stmt.From != nil {
+		fromCopy := *stmt.From
+		copied.From = &fromCopy
+	}
 	if len(stmt.Joins) > 0 {
 		copied.Joins = make([]*JoinClause, len(stmt.Joins))
 		copy(copied.Joins, stmt.Joins)
