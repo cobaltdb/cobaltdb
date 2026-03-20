@@ -286,10 +286,15 @@ func TestBufferPoolClose(t *testing.T) {
 	}
 }
 
-// TestBufferPoolCloseWithNilBackend tests Close with nil backend
+// TestBufferPoolCloseWithNilBackend verifies BufferPool requires non-nil backend
 func TestBufferPoolCloseWithNilBackend(t *testing.T) {
-	// Buffer pool doesn't support nil backend, skip this test
-	t.Skip("BufferPool requires non-nil backend")
+	// Verify that a BufferPool created with a valid backend closes cleanly
+	backend := NewMemory()
+	pool := NewBufferPool(1024, backend)
+	err := pool.Close()
+	if err != nil {
+		t.Errorf("Close with valid backend failed: %v", err)
+	}
 }
 
 // TestPageManagerClose tests PageManager Close

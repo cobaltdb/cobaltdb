@@ -31,9 +31,24 @@ func TestLoadExistingErrorPaths(t *testing.T) {
 }
 
 // TestCreateNewWithReplication tests createNew with replication options
-// Note: This test is skipped due to a ticker issue in replication manager
 func TestCreateNewWithReplication(t *testing.T) {
-	t.Skip("Skipping replication test - requires ticker fix")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test_repl.db")
+
+	db, err := Open(dbPath, &Options{
+		CacheSize:             256,
+		ReplicationRole:       "master",
+		ReplicationMode:       "async",
+		ReplicationListenAddr: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("Failed to open with replication: %v", err)
+	}
+	defer db.Close()
+
+	if db.replicationMgr != nil {
+		t.Log("Replication manager initialized")
+	}
 }
 
 // TestCreateNewWithSlowQueryLog tests createNew with slow query log enabled

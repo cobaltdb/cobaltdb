@@ -1916,11 +1916,27 @@ func (db *DB) executeCallProcedure(ctx context.Context, stmt *query.CallProcedur
 		return Result{}, err
 	}
 
+	// Evaluate call arguments from SQL literals (e.g., CALL proc(1, 'hello'))
+	callArgs := make([]interface{}, 0, len(stmt.Params))
+	for _, paramExpr := range stmt.Params {
+		val, err := catalog.EvalExpression(paramExpr, nil)
+		if err != nil {
+			return Result{}, fmt.Errorf("evaluating procedure argument: %w", err)
+		}
+		callArgs = append(callArgs, val)
+	}
+
+	// Merge: SQL literal args take precedence, then positional Go args fill remaining
+	mergedArgs := callArgs
+	if len(mergedArgs) == 0 && len(args) > 0 {
+		mergedArgs = args
+	}
+
 	// Map procedure parameters to call arguments
 	paramMap := make(map[string]interface{})
 	for i, param := range proc.Params {
-		if i < len(args) {
-			paramMap[param.Name] = args[i]
+		if i < len(mergedArgs) {
+			paramMap[param.Name] = mergedArgs[i]
 		}
 	}
 
@@ -3020,19 +3036,21 @@ func (db *DB) replicateWrite(operation string, table string, args []interface{})
 
 	// Serialize the write operation
 	// Format: operation|table|args...
-	data := fmt.Sprintf("%s|%s|", operation, table)
-	if len(args) > 0 {
-		for i, arg := range args {
-			if i > 0 {
-				data += ","
-			}
-			data += fmt.Sprintf("%v", arg)
+	var sb strings.Builder
+	sb.WriteString(operation)
+	sb.WriteByte('|')
+	sb.WriteString(table)
+	sb.WriteByte('|')
+	for i, arg := range args {
+		if i > 0 {
+			sb.WriteByte(',')
 		}
+		fmt.Fprintf(&sb, "%v", arg)
 	}
 
 	// Send to replication manager (async, non-blocking)
 	// The replication manager handles buffering and sending to slaves
-	_ = db.replicationMgr.ReplicateWALEntry([]byte(data))
+	_ = db.replicationMgr.ReplicateWALEntry([]byte(sb.String()))
 }
 
 // Replication methods
@@ -3040,5 +3058,21 @@ func (db *DB) replicateWrite(operation string, table string, args []interface{})
 // GetReplicationManager returns the replication manager
 func (db *DB) GetReplicationManager() *replication.Manager {
 	return db.replicationMgr
+}
+
+// SearchVectorKNN performs a K-nearest neighbor search on a vector index
+func (db *DB) SearchVectorKNN(indexName string, queryVector []float64, k int) ([]string, []float64, error) {
+	if db.closed {
+		return nil, nil, ErrDatabaseClosed
+	}
+	return db.catalog.SearchVectorKNN(indexName, queryVector, k)
+}
+
+// SearchVectorRange performs a range search on a vector index
+func (db *DB) SearchVectorRange(indexName string, queryVector []float64, radius float64) ([]string, []float64, error) {
+	if db.closed {
+		return nil, nil, ErrDatabaseClosed
+	}
+	return db.catalog.SearchVectorRange(indexName, queryVector, radius)
 }
 

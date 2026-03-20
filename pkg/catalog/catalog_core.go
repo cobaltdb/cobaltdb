@@ -914,7 +914,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 				mergedStmt.Where = stmt.Where
 			}
 			// If outer query uses SELECT *, use view's columns instead
-			if len(stmt.Columns) == 1 {
+			if len(stmt.Columns) > 0 {
 				if _, isStar := stmt.Columns[0].(*query.StarExpr); isStar {
 					mergedStmt.Columns = view.Columns
 				}

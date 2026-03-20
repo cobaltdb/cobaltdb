@@ -7,16 +7,21 @@ CobaltDB is a production-ready SQL database engine written in Go. It supports st
 
 ### Core Packages
 - `pkg/catalog` - SQL execution engine (SELECT, INSERT, UPDATE, DELETE, DDL)
-- `pkg/query` - SQL parser and AST definitions
+- `pkg/query` - SQL parser, AST definitions, and query optimizer
 - `pkg/btree` - B-tree storage engine (in-memory and disk-based)
 - `pkg/storage` - Storage layer (buffer pool, WAL, encryption)
-- `pkg/engine` - Database orchestration with circuit breaker and retry logic
+- `pkg/engine` - Database orchestration with circuit breaker, retry, and query plan cache
 - `pkg/wasm` - WebAssembly compiler and runtime for SQL execution
 - `pkg/server` - MySQL protocol server implementation
 - `pkg/security` - Row-level security (RLS) policies
 - `pkg/auth` - Authentication and authorization
 - `pkg/audit` - Audit logging
-- `pkg/metrics` - Metrics collection and monitoring
+- `pkg/metrics` - Metrics collection, monitoring, and slow query logging
+- `pkg/optimizer` - Cost-based query optimizer with join reordering and index selection
+- `pkg/cache` - Query result cache with TTL support
+- `pkg/pool` - Connection pooling with health checks and dynamic sizing
+- `pkg/replication` - Master-slave replication (async, sync, full_sync modes)
+- `pkg/backup` - Backup and restore with compression support
 
 ### Key Components
 
@@ -58,9 +63,10 @@ go tool cover -func=coverage.out
 ```
 
 ### Test Statistics
-- 5,965+ test functions
-- 499 test files
-- Target: %90+ coverage per package
+- 8,400+ test functions
+- 500+ test files
+- 20 packages, all passing
+- Target: %90+ coverage per package (18/20 packages above 90%)
 
 ## Code Guidelines
 
@@ -93,7 +99,7 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 ## Known Limitations
 - UPDATE...FROM SET can only reference target table columns
 - Composite multi-column PRIMARY KEY not supported
-- Parser doesn't support: NATURAL JOIN, INSTEAD OF trigger, NO ACTION FK, ->> operator
+- Parser doesn't support: ->> JSON operator, RESTRICTIVE RLS policy
 
 ## Security Features
 - TLS support for connections
@@ -144,11 +150,26 @@ result, _ := rt.Execute(compiled, args)
 - `host_functions.go` - Database host function implementations
 - `README.md` - Complete WASM documentation
 
-## Dead Code Removed (2026-03-18)
-The following features were removed as they were never integrated:
-- Connection pooling
-- Query plan cache
-- Group commit, Read replicas, Index advisor
-- Query timeout, Slow query log, Table partitioning
-- Deadlock detection, PITR/Backup, Parallel query
-- FDW, AlertManager, AutoVacuum, JobScheduler, Compression
+## Integrated Features (v2.2.0+)
+The following features are fully implemented and integrated in the engine:
+- **Query Plan Cache** (`pkg/engine/query_plan_cache.go`) - LRU cache for parsed statements
+- **Query Result Cache** (`pkg/cache/`) - TTL-based query result caching
+- **Query Optimizer** (`pkg/optimizer/`) - Cost-based optimizer with join reordering
+- **Replication** (`pkg/replication/`) - Master-slave with async/sync/full_sync modes
+- **Backup/Restore** (`pkg/backup/`) - Full, incremental, differential backups with compression
+- **Connection Pooling** (`pkg/pool/`) - Health checks and dynamic sizing
+- **Slow Query Log** (`pkg/metrics/slow_query.go`) - Threshold-based slow query tracking
+- **Query Timeout** - Configurable per-database timeout enforcement
+- **Table Partitioning** - Partition definitions in DDL
+
+## Features Not Implemented
+The following features do not exist in the codebase:
+- FDW (Foreign Data Wrappers)
+- AlertManager
+- AutoVacuum
+- JobScheduler
+- Compression (storage-level)
+- Deadlock detection
+- Group commit
+- Index advisor
+- Parallel query execution

@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
 
 // MockComponent is a test component that tracks lifecycle calls
@@ -273,9 +275,39 @@ func TestLifecycleRegisterHealthCheck(t *testing.T) {
 }
 
 func TestDBComponent(t *testing.T) {
-	// This test would need a real DB, skipping for now
-	// In production, DBComponent.Health() would check actual DB health
-	t.Skip("Requires actual database connection")
+	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	if err != nil {
+		t.Fatalf("Failed to open DB: %v", err)
+	}
+
+	comp := NewDBComponent("test-db", db)
+
+	// Name
+	if comp.Name() != "test-db" {
+		t.Errorf("Expected name 'test-db', got %q", comp.Name())
+	}
+
+	// Health before start
+	health := comp.Health()
+	if !health.Healthy {
+		t.Errorf("Expected healthy, got: %s", health.Message)
+	}
+
+	// Start
+	if err := comp.Start(context.Background()); err != nil {
+		t.Errorf("Start failed: %v", err)
+	}
+
+	// Health after start
+	health = comp.Health()
+	if !health.Healthy {
+		t.Errorf("Expected healthy after start, got: %s", health.Message)
+	}
+
+	// Stop
+	if err := comp.Stop(context.Background()); err != nil {
+		t.Errorf("Stop failed: %v", err)
+	}
 }
 
 // TrackingComponent wraps a component and tracks lifecycle calls

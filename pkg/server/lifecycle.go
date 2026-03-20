@@ -67,6 +67,9 @@ type Lifecycle struct {
 	shutdownCh   chan struct{}
 	shutdownOnce sync.Once
 
+	// Hook goroutine tracking
+	hookWg sync.WaitGroup
+
 	// Health tracking
 	healthChecks map[string]HealthCheck
 	healthMu     sync.RWMutex
@@ -224,6 +227,7 @@ func (l *Lifecycle) Stop() error {
 
 	l.cancel()
 	l.setState(StateStopped)
+	l.hookWg.Wait()
 
 	return err
 }
@@ -318,7 +322,9 @@ func (l *Lifecycle) setState(state LifecycleState) {
 
 	// Trigger hooks
 	for _, hook := range hooks {
+		l.hookWg.Add(1)
 		go func(h func()) {
+			defer l.hookWg.Done()
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("panic in lifecycle state hook: %v", r)

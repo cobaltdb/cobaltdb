@@ -94,14 +94,54 @@ func TestLoadExistingWithRLSDeep(t *testing.T) {
 
 // TestLoadExistingWithReplicationDeep tests loadExisting with replication config
 func TestLoadExistingWithReplicationDeep(t *testing.T) {
-	// Skip this test - replication causes ticker panic
-	t.Skip("Replication config causes panic - skipping")
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_repl_load.db")
+
+	// Create and close a database first
+	db, err := Open(dbPath, &Options{CacheSize: 256})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	db.Close()
+
+	// Reopen with replication config
+	db2, err := Open(dbPath, &Options{
+		CacheSize:             256,
+		ReplicationRole:       "master",
+		ReplicationMode:       "async",
+		ReplicationListenAddr: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("Failed to reopen with replication: %v", err)
+	}
+	defer db2.Close()
+
+	if db2.replicationMgr == nil {
+		t.Log("Replication manager not initialized on reload")
+	} else {
+		t.Log("Replication manager initialized on reload")
+	}
 }
 
 // TestCreateNewWithReplicationDeep tests createNew with replication
 func TestCreateNewWithReplicationDeep(t *testing.T) {
-	// Skip this test - replication causes ticker panic
-	t.Skip("Replication config causes panic - skipping")
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_repl_new.db")
+
+	db, err := Open(dbPath, &Options{
+		CacheSize:             256,
+		ReplicationRole:       "master",
+		ReplicationMode:       "async",
+		ReplicationListenAddr: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create with replication: %v", err)
+	}
+	defer db.Close()
+
+	if db.replicationMgr != nil {
+		t.Log("Replication manager initialized for new DB")
+	}
 }
 
 // TestCommitWithPoolFlushError tests Commit when buffer pool flush fails
@@ -490,7 +530,24 @@ func TestLoadExistingWithInvalidWALPath(t *testing.T) {
 
 // TestStorageBackendErrorDeep tests storage backend error scenarios
 func TestStorageBackendErrorDeep(t *testing.T) {
-	// Try to create storage at an invalid path - skip this test
-	// Storage package may have different function signatures
-	t.Skip("Storage function signature unknown")
+	// Test opening a database at a clearly invalid path
+	_, err := Open("/dev/null/impossible/path/db.cdb", nil)
+	if err == nil {
+		t.Log("Path unexpectedly succeeded on this system")
+	} else {
+		t.Logf("Expected error for invalid path: %v", err)
+	}
+
+	// Test opening with valid in-memory path works fine
+	db, err := Open(":memory:", &Options{InMemory: true})
+	if err != nil {
+		t.Fatalf("In-memory open failed: %v", err)
+	}
+	defer db.Close()
+
+	// Simple query to verify the database works
+	_, err = db.Exec(context.Background(), "CREATE TABLE test_storage (id INTEGER PRIMARY KEY)")
+	if err != nil {
+		t.Errorf("CREATE TABLE failed: %v", err)
+	}
 }

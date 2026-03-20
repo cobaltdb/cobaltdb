@@ -93,7 +93,7 @@ func (s *SlowQueryLog) writeToFile(entry SlowQueryEntry) {
 	}
 	defer f.Close()
 
-	fmt.Fprintf(f, "%s\n", data)
+	_, _ = fmt.Fprintf(f, "%s\n", data)
 }
 
 // GetEntries returns a copy of recent slow query entries

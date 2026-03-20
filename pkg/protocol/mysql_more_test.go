@@ -482,11 +482,9 @@ func TestMySQLClientSendResultSet(t *testing.T) {
 func TestMySQLClientHandleQuery(t *testing.T) {
 	t.Run("SimpleQuery", func(t *testing.T) {
 		conn := newMockConn()
-		// Create a properly initialized DB
-		db, err := engine.Open("memory", nil)
+		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
 		if err != nil {
-			t.Skipf("Failed to create DB: %v", err)
-			return
+			t.Fatalf("Failed to create DB: %v", err)
 		}
 		defer db.Close()
 
@@ -496,18 +494,15 @@ func TestMySQLClientHandleQuery(t *testing.T) {
 			server: NewMySQLServer(db, "5.7.0"),
 		}
 
-		// This should work with a real DB
 		err = client.handleQuery("SELECT 1")
-		// May error due to SQL parsing but should not panic
 		t.Logf("Query result: %v", err)
 	})
 
 	t.Run("EmptyQuery", func(t *testing.T) {
 		conn := newMockConn()
-		db, err := engine.Open("memory", nil)
+		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
 		if err != nil {
-			t.Skipf("Failed to create DB: %v", err)
-			return
+			t.Fatalf("Failed to create DB: %v", err)
 		}
 		defer db.Close()
 
@@ -518,7 +513,6 @@ func TestMySQLClientHandleQuery(t *testing.T) {
 		}
 
 		err = client.handleQuery("")
-		// May or may not error
 		t.Logf("Empty query result: %v", err)
 	})
 }

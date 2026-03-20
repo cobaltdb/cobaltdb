@@ -105,10 +105,37 @@ func (qo *QueryOptimizer) optimizeJoinOrder(stmt *SelectStmt) *SelectStmt {
 	// and smaller tables before larger ones
 	optimizedTables := qo.orderTablesBySelectivity(tables, stmt.Where)
 
-	// For now, we don't reorder the actual statement structure
-	// as it would require restructuring the AST significantly
-	// The optimized order is used by the executor
-	_ = optimizedTables
+	// Reorder JOINs based on selectivity, but only when safe:
+	// Skip reorder if any tables are duplicated (self-join) or use aliases
+	if len(optimizedTables) > 1 && len(stmt.Joins) > 0 {
+		seen := make(map[string]bool)
+		hasDuplicates := false
+		for _, t := range tables {
+			if seen[t] {
+				hasDuplicates = true
+				break
+			}
+			seen[t] = true
+		}
+
+		if !hasDuplicates {
+			joinMap := make(map[string]*JoinClause)
+			for _, join := range stmt.Joins {
+				joinMap[join.Table.Name] = join
+			}
+
+			reordered := make([]*JoinClause, 0, len(stmt.Joins))
+			for _, tableName := range optimizedTables {
+				if j, ok := joinMap[tableName]; ok {
+					reordered = append(reordered, j)
+				}
+			}
+			// If we matched all joins, apply reorder; otherwise keep original
+			if len(reordered) == len(stmt.Joins) {
+				stmt.Joins = reordered
+			}
+		}
+	}
 
 	return stmt
 }
@@ -213,20 +240,71 @@ func (qo *QueryOptimizer) canUseIndex(table string, where Expression) bool {
 	return false
 }
 
-// optimizeProjections removes unnecessary columns
+// optimizeProjections applies projection optimizations
 func (qo *QueryOptimizer) optimizeProjections(stmt *SelectStmt) *SelectStmt {
-	// For now, keep all projections
-	// A more advanced optimizer would:
-	// 1. Remove unused columns
-	// 2. Push projections down to scans
+	if stmt == nil || len(stmt.Columns) == 0 {
+		return stmt
+	}
+
+	// If SELECT * (StarExpr), no projection optimization possible
+	for _, col := range stmt.Columns {
+		if _, ok := col.(*StarExpr); ok {
+			return stmt
+		}
+	}
+
+	// Mark index hints for columns referenced in WHERE that have indexes
+	if stmt.From != nil && stmt.Where != nil {
+		cols := qo.extractWhereColumns(stmt.Where)
+		for _, col := range cols {
+			key := stmt.From.Name + "." + col
+			if _, ok := qo.stats.IndexStats[key]; ok {
+				if stmt.From.IndexHint == "" {
+					stmt.From.IndexHint = "auto"
+				}
+				break
+			}
+		}
+	}
+
 	return stmt
 }
 
-// copySelectStmt creates a deep copy of a SELECT statement
+// extractWhereColumns extracts column names referenced in a WHERE clause
+func (qo *QueryOptimizer) extractWhereColumns(expr Expression) []string {
+	var cols []string
+	switch e := expr.(type) {
+	case *Identifier:
+		cols = append(cols, e.Name)
+	case *QualifiedIdentifier:
+		cols = append(cols, e.Column)
+	case *BinaryExpr:
+		cols = append(cols, qo.extractWhereColumns(e.Left)...)
+		cols = append(cols, qo.extractWhereColumns(e.Right)...)
+	}
+	return cols
+}
+
+// copySelectStmt creates a shallow copy of a SELECT statement to avoid modifying the original
 func (qo *QueryOptimizer) copySelectStmt(stmt *SelectStmt) *SelectStmt {
-	// For now, return the same statement
-	// In production, implement deep copy
-	return stmt
+	copied := *stmt
+	if len(stmt.Joins) > 0 {
+		copied.Joins = make([]*JoinClause, len(stmt.Joins))
+		copy(copied.Joins, stmt.Joins)
+	}
+	if len(stmt.Columns) > 0 {
+		copied.Columns = make([]Expression, len(stmt.Columns))
+		copy(copied.Columns, stmt.Columns)
+	}
+	if len(stmt.OrderBy) > 0 {
+		copied.OrderBy = make([]*OrderByExpr, len(stmt.OrderBy))
+		copy(copied.OrderBy, stmt.OrderBy)
+	}
+	if len(stmt.GroupBy) > 0 {
+		copied.GroupBy = make([]Expression, len(stmt.GroupBy))
+		copy(copied.GroupBy, stmt.GroupBy)
+	}
+	return &copied
 }
 
 

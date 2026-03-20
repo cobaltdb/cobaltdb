@@ -453,6 +453,10 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 		}
 	}
 
+	if err := targetFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync restored file: %w", err)
+	}
+
 	// Restore WAL files if present
 	if len(backup.WALFiles) > 0 {
 		walBackupDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", backup.ID))
@@ -622,6 +626,8 @@ func copyFile(srcPath, dstPath string) error {
 	}
 	defer dstFile.Close()
 
-	_, err = io.Copy(dstFile, srcFile)
-	return err
+	if _, err = io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+	return dstFile.Sync()
 }

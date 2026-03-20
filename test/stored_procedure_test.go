@@ -53,13 +53,27 @@ func TestStoredProcedure_WithParams(t *testing.T) {
 	afExec(t, db, ctx, "CREATE TABLE params_table (id INTEGER PRIMARY KEY, name TEXT, value INTEGER)")
 
 	t.Run("Create procedure with parameters", func(t *testing.T) {
-		// Create procedure with parameters - currently limited support
-		// Parameters need to be substituted in procedure body during execution
-		t.Skip("Procedure parameter substitution not fully implemented")
+		afExec(t, db, ctx, "CREATE PROCEDURE insert_with_params(p_id INTEGER, p_name TEXT, p_value INTEGER) BEGIN INSERT INTO params_table VALUES (p_id, p_name, p_value); END")
+
+		// Call with literal arguments
+		afExec(t, db, ctx, "CALL insert_with_params(1, 'hello', 100)")
+
+		rows := afQuery(t, db, ctx, "SELECT * FROM params_table WHERE id = 1")
+		if len(rows) != 1 {
+			t.Errorf("Expected 1 row, got %d", len(rows))
+		}
+		if len(rows) > 0 {
+			t.Logf("Row: %v", rows[0])
+		}
 	})
 
 	t.Run("Procedure with different param values", func(t *testing.T) {
-		t.Skip("Procedure parameter substitution not fully implemented")
+		afExec(t, db, ctx, "CALL insert_with_params(2, 'world', 200)")
+
+		rows := afQuery(t, db, ctx, "SELECT * FROM params_table WHERE id = 2")
+		if len(rows) != 1 {
+			t.Errorf("Expected 1 row, got %d", len(rows))
+		}
 	})
 }
 

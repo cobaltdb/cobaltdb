@@ -5,6 +5,87 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.0] - 2026-03-20
+
+### 🔒 Security & Stability Release
+
+Comprehensive code review, security hardening, concurrency fixes, and feature completions.
+
+### Security Fixes
+
+- **Default admin password**: Replaced hardcoded `"admin"` with `crypto/rand` generated 16-char random password
+- **Backup fsync**: Added `Sync()` before close in `Restore()` and `copyFile()` to prevent data loss on power failure
+- **Slow query log**: Fixed ignored `fmt.Fprintf` error in slow query log writes
+
+### Concurrency Fixes (CRITICAL)
+
+- **Replication panic recovery**: Added `defer recover()` to `handleSlave()` goroutine — previously, a single malformed slave message could crash the entire master process
+- **Replication double-close protection**: Added `sync.Once` to `Manager.Stop()` — calling `Stop()` twice no longer panics
+- **Cache double-close protection**: Added `sync.Once` to `Cache.Close()` — calling `Close()` twice no longer panics
+- **Pool health check panic recovery**: Added `defer recover()` to `healthCheckLoop()` — health check failures no longer crash the connection pool
+- **Lifecycle hook tracking**: Added `sync.WaitGroup` for hook goroutines — `Stop()` now waits for all hooks to complete before returning
+
+### Performance Improvements
+
+- **replicateWrite**: Replaced `string +=` loop with `strings.Builder` for zero-allocation serialization
+- **Query optimizer**: Implemented `optimizeProjections()`, `copySelectStmt()`, and safe `optimizeJoinOrder()` with self-join detection
+
+### New Features
+
+- **Stored procedure SQL parameters**: `CALL proc(1, 'hello')` now evaluates SQL literal arguments (previously only Go-level `args` were supported)
+- **Vector search public API**: Added `DB.SearchVectorKNN()` and `DB.SearchVectorRange()` methods to engine
+- **Window functions benchmark**: Benchmark tool now measures ROW_NUMBER, SUM, AVG OVER PARTITION performance
+
+### Bug Fixes
+
+- **Query optimizer self-join**: Fixed JOIN reorder that corrupted results on self-joins (same table joined twice)
+- **MySQL protocol**: Fixed `engine.Open("memory", nil)` → `engine.Open(":memory:", &Options{InMemory: true})` in protocol tests
+- **Bounds check**: Added `len(stmt.Columns) > 0` guard before `stmt.Columns[0]` access in `selectLocked`
+
+### Test Improvements
+
+- **15 skipped tests unskipped**: DELETE RETURNING, RLS insert, stored procedure params, DBComponent, BufferPool, StorageBackendError, 7x replication tests, 2x MySQL client tests
+- **Test count**: 8,439 → **10,413+** passing tests
+- **Skip count**: 21 → **6** (remaining are known limitations)
+- **Engine coverage**: 87.5% → **90.0%**
+- **Query coverage**: 90.8% → **90.9%**
+- **19/20 packages** now above 90% coverage
+
+### Documentation Fixes
+
+- **CLAUDE.md**: Corrected "Dead Code Removed" section — 8+ features (Query Plan Cache, Replication, Backup, Connection Pool, Slow Query Log, Query Timeout, Optimizer) were falsely listed as removed but are fully integrated
+- **CLAUDE.md**: Corrected Known Limitations — NATURAL JOIN, INSTEAD OF triggers, NO ACTION FK are all implemented
+- **CLAUDE.md**: Updated Core Packages list (added 6 missing packages), test count (5,965 → 8,400+)
+- **FEATURES.md**: Updated coverage table with current values, test statistics
+- **README.md**: Updated coverage badge (89% → 92%)
+
+### Coverage by Package (v0.3.0)
+
+| Package | Coverage |
+|---------|----------|
+| pool | 98.0% |
+| auth | 97.5% |
+| cache | 95.5% |
+| protocol | 95.4% |
+| metrics | 94.8% |
+| wire | 94.7% |
+| logger | 93.8% |
+| optimizer | 93.8% |
+| txn | 93.5% |
+| wasm | 93.4% |
+| backup | 91.9% |
+| btree | 92.4% |
+| replication | 91.8% |
+| storage | 92.0% |
+| security | 91.9% |
+| query | 90.9% |
+| audit | 90.2% |
+| server | 90.2% |
+| engine | 90.0% |
+| catalog | 85.7% |
+
+---
+
 ## [v0.2.22] - 2026-03-15
 
 ### 🚀 Enterprise Features Release

@@ -225,7 +225,7 @@ export function HeroSection() {
           {/* Version badge */}
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-cobalt-100/80 dark:bg-cobalt-900/40 text-cobalt-700 dark:text-cobalt-300 text-xs font-semibold mb-6 border border-cobalt-200/50 dark:border-cobalt-800/50 animate-fade-in-down backdrop-blur-sm">
             <span className="flex h-2 w-2 rounded-full bg-cobalt-500 animate-pulse" />
-            v0.2.22 — WASM, Vector Search & Temporal Queries
+            v0.3.0 — Security Hardened, 10K+ Tests, 92% Coverage
             <ChevronRight className="h-3 w-3" />
           </div>
 

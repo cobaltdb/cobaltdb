@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -55,14 +56,31 @@ type Config struct {
 	TLS              *TLSConfig // TLS configuration (nil = disabled)
 }
 
+// generateRandomPassword generates a 16-character random alphanumeric password
+// using crypto/rand for secure random generation.
+func generateRandomPassword() string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback should never happen with crypto/rand, but be safe
+		panic("crypto/rand failed: " + err.Error())
+	}
+	for i := range b {
+		b[i] = charset[b[i]%byte(len(charset))]
+	}
+	return string(b)
+}
+
 // DefaultConfig returns the default server configuration
 func DefaultConfig() *Config {
+	pass := generateRandomPassword()
+	fmt.Printf("[cobaltdb] Generated default admin password: %s\n", pass)
 	return &Config{
 		Address:          ":4200",
 		AuthEnabled:      false,
 		RequireAuth:      false,
 		DefaultAdminUser: "admin",
-		DefaultAdminPass: "admin",
+		DefaultAdminPass: pass,
 	}
 }
 

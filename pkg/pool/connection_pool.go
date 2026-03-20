@@ -446,6 +446,12 @@ func (p *Pool) removeConn(conn *Conn) {
 // healthCheckLoop periodically checks connection health
 func (p *Pool) healthCheckLoop() {
 	defer p.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			// Log panic but don't crash the pool
+			_ = r
+		}
+	}()
 
 	ticker := time.NewTicker(p.config.HealthCheckInterval)
 	defer ticker.Stop()

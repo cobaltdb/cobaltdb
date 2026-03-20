@@ -141,7 +141,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Version      string
 	}{
 		DatabasePath: s.db.Path(),
-		Version:      "1.0.0",
+		Version:      "0.3.0",
 	}
 
 	if err := s.tmpl.Execute(w, data); err != nil {

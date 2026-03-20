@@ -143,7 +143,6 @@ func TestCreateNewWithWALAndRecovery(t *testing.T) {
 
 // TestCreateNewWithReplicationSkip tests createNew with replication configured
 func TestCreateNewWithReplicationSkip(t *testing.T) {
-	t.Skip("Skipping replication test - requires ticker fix")
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_repl.db")
 
@@ -169,7 +168,6 @@ func TestCreateNewWithReplicationSkip(t *testing.T) {
 
 // TestCreateNewWithAllFeatures tests createNew with all optional features enabled
 func TestCreateNewWithAllFeaturesSkip(t *testing.T) {
-	t.Skip("Skipping all features test - requires replication ticker fix")
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_all_features.db")
 

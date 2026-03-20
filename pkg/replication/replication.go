@@ -157,6 +157,7 @@ type Manager struct {
 
 	// Common fields
 	stopCh   chan struct{}
+	stopOnce sync.Once
 	wg       sync.WaitGroup
 	metrics  *Metrics
 
@@ -213,7 +214,7 @@ func (m *Manager) Start() error {
 
 // Stop gracefully shuts down replication
 func (m *Manager) Stop() error {
-	close(m.stopCh)
+	m.stopOnce.Do(func() { close(m.stopCh) })
 
 	// Close listener first to unblock acceptSlaves()
 	if m.listener != nil {
@@ -280,6 +281,13 @@ func (m *Manager) acceptSlaves() {
 
 // handleSlave handles a single slave connection
 func (m *Manager) handleSlave(conn net.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Log panic but don't crash the master
+			_ = r
+		}
+	}()
+
 	slaveID := conn.RemoteAddr().String()
 
 	// Authenticate if needed

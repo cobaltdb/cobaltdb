@@ -2,6 +2,8 @@ package test
 
 import (
 	"testing"
+
+	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
 
 // TestInsertLockedIntBoolTypes tests INSERT...SELECT with int and bool types
@@ -48,9 +50,20 @@ func TestInsertLockedIntBoolTypes(t *testing.T) {
 
 // TestInsertLockedRLS tests Row-Level Security during insert
 func TestInsertLockedRLS(t *testing.T) {
-	// RLS requires database to be opened with EnableRLS option
-	// This is tested in the main engine tests
-	t.Skip("RLS requires special database configuration - tested in engine tests")
+	db, err := engine.Open(":memory:", &engine.Options{InMemory: true, EnableRLS: true})
+	if err != nil {
+		t.Fatalf("DB open: %v", err)
+	}
+	defer db.Close()
+	ctx := t.Context()
+
+	afExec(t, db, ctx, "CREATE TABLE rls_test (id INTEGER PRIMARY KEY, data TEXT, owner TEXT)")
+	afExec(t, db, ctx, "INSERT INTO rls_test VALUES (1, 'public', 'admin')")
+
+	rows := afQuery(t, db, ctx, "SELECT COUNT(*) FROM rls_test")
+	if len(rows) == 0 || rows[0][0] != int64(1) {
+		t.Errorf("Expected 1 row, got %v", rows)
+	}
 }
 
 // TestInsertLockedTriggers tests BEFORE INSERT triggers

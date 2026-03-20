@@ -592,20 +592,22 @@ func runAdvancedFeatureBenchmarks() {
 	})
 	suite.Results = append(suite.Results, result)
 
-	// Window Functions - SKIP (not yet implemented)
-	suite.Results = append(suite.Results, BenchmarkResult{
-		Name:        "Window Functions",
-		Category:    "Advanced",
-		Operations:  0,
-		Duration:    0,
-		OpsPerSec:   0,
-		LatencyAvg:  0,
-		LatencyMin:  0,
-		LatencyMax:  0,
-		MemoryUsage: 0,
-		Success:     true,
-		Error:       "Not implemented - skipped",
+	// Window Functions
+	result = benchmarkFunc("Window Functions", "Advanced", IterationsNormal, func() error {
+		rows, err := db.Query(ctx, `
+			SELECT id, name, category, value,
+				ROW_NUMBER() OVER (PARTITION BY category ORDER BY value DESC) as rn,
+				SUM(value) OVER (PARTITION BY category) as cat_total,
+				AVG(value) OVER (PARTITION BY category) as cat_avg
+			FROM advanced_test
+			WHERE id < 1000`)
+		if err != nil {
+			return err
+		}
+		rows.Close()
+		return nil
 	})
+	suite.Results = append(suite.Results, result)
 }
 
 func runConcurrencyBenchmarks() {

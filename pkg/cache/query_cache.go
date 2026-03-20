@@ -69,8 +69,9 @@ type Cache struct {
 	evicts uint64
 
 	// Cleanup
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh    chan struct{}
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 
 	// Table dependency tracking for invalidation
 	tableDeps map[string]map[string]struct{} // table -> set of query keys
@@ -104,7 +105,7 @@ func New(config *Config) *Cache {
 // Close shuts down the cache
 func (c *Cache) Close() {
 	if c.config.Enabled {
-		close(c.stopCh)
+		c.closeOnce.Do(func() { close(c.stopCh) })
 		c.wg.Wait()
 	}
 }

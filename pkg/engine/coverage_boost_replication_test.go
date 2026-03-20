@@ -16,8 +16,23 @@ func TestCreateNewWithReplicationSlave(t *testing.T) {
 
 // TestCreateNewWithReplicationFullSync tests createNew with full_sync replication mode
 func TestCreateNewWithReplicationFullSync(t *testing.T) {
-	// Skip - replication with full_sync causes panic due to ticker issue
-	t.Skip("Replication with full_sync requires ticker fix")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test_fullsync.db")
+
+	db, err := Open(dbPath, &Options{
+		CacheSize:             256,
+		ReplicationRole:       "master",
+		ReplicationMode:       "full_sync",
+		ReplicationListenAddr: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("Failed to open with full_sync replication: %v", err)
+	}
+	defer db.Close()
+
+	if db.replicationMgr != nil {
+		t.Log("Full sync replication manager initialized")
+	}
 }
 
 // TestCreateNewWithSlowQueryLogCustomThreshold tests createNew with custom slow query threshold
@@ -52,8 +67,25 @@ func TestCreateNewWithSlowQueryLogCustomThreshold(t *testing.T) {
 
 // TestCreateNewWithReplicationSSL tests createNew with replication SSL options
 func TestCreateNewWithReplicationSSL(t *testing.T) {
-	// Skip - replication causes ticker panic
-	t.Skip("Replication SSL test requires ticker fix")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test_ssl.db")
+
+	db, err := Open(dbPath, &Options{
+		CacheSize:             256,
+		ReplicationRole:       "master",
+		ReplicationMode:       "async",
+		ReplicationListenAddr: "127.0.0.1:0",
+		ReplicationSSLCert:    "/nonexistent/cert.pem",
+		ReplicationSSLKey:     "/nonexistent/key.pem",
+	})
+	if err != nil {
+		t.Fatalf("Failed to open with SSL replication: %v", err)
+	}
+	defer db.Close()
+
+	if db.replicationMgr != nil {
+		t.Log("SSL replication manager initialized")
+	}
 }
 
 // TestLoadExistingWithWALRecoveryCorrupted tests loadExisting with WAL recovery when WAL is corrupted
