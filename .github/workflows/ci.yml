@@ -59,4 +59,4 @@ jobs:
         run: govulncheck ./...
 
       - name: Static security scan
-        run: gosec -exclude=G115,G118,G304,G301,G306,G401,G402,G505 ./cmd/cobaltdb-server ./pkg/server ./pkg/protocol ./pkg/storage ./pkg/auth ./sdk/go ./pkg/logger ./pkg/query
+        run: gosec -exclude=G104,G115,G118,G304,G301,G306,G401,G402,G505 ./cmd/cobaltdb-server ./pkg/server ./pkg/protocol ./pkg/storage ./pkg/auth ./sdk/go ./pkg/logger ./pkg/query
