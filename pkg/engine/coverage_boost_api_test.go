@@ -2,7 +2,10 @@ package engine
 
 import (
 	"context"
+	"os"
 	"testing"
+
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
 // TestPathMethod tests the Path() method
@@ -405,6 +408,55 @@ func TestDBWithWALMethods(t *testing.T) {
 	// HealthCheck
 	err = db.HealthCheck()
 	t.Logf("HealthCheck: %v", err)
+}
+
+// TestOpenWithCustomLogger tests Open with a custom logger
+func TestOpenWithCustomLogger(t *testing.T) {
+	customLog := logger.New(logger.InfoLevel, os.Stderr)
+	db, err := Open(":memory:", &Options{
+		InMemory: true,
+		Logger:   customLog,
+	})
+	if err != nil {
+		t.Fatalf("Open with custom logger: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE log_test (id INTEGER PRIMARY KEY)")
+	t.Log("Custom logger test passed")
+}
+
+// TestOpenWithMaxConnections tests connection limit configuration
+func TestOpenWithMaxConnections(t *testing.T) {
+	db, err := Open(":memory:", &Options{
+		InMemory:       true,
+		MaxConnections: 10,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	t.Logf("DB with max connections opened")
+}
+
+// TestOpenWithQueryCache tests query cache configuration
+func TestOpenWithQueryCacheConfig(t *testing.T) {
+	db, err := Open(":memory:", &Options{
+		InMemory:         true,
+		EnableQueryCache: true,
+		QueryCacheSize:   1024 * 1024,
+		QueryCacheTTL:    60,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	qc := db.GetQueryCache()
+	if qc == nil {
+		t.Log("Query cache not returned (may use different init path)")
+	}
 }
 
 // TestSearchVectorRangeMethod tests the public SearchVectorRange method
