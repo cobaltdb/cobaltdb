@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -35,6 +36,8 @@ func TestConcurrentAccess(t *testing.T) {
 	numGoroutines := 10
 	numOperations := 100
 
+	var errCount atomic.Int64
+
 	// Writers
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
@@ -43,7 +46,7 @@ func TestConcurrentAccess(t *testing.T) {
 			for j := 0; j < numOperations; j++ {
 				_, err := db.Exec(ctx, "UPDATE race_test SET value = ? WHERE id = 1", id*numOperations+j)
 				if err != nil {
-					t.Logf("Update error: %v", err)
+					errCount.Add(1)
 				}
 			}
 		}(i)
@@ -55,15 +58,18 @@ func TestConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
-				_, err := db.Query(ctx, "SELECT value FROM race_test WHERE id = 1")
+				rows, err := db.Query(ctx, "SELECT value FROM race_test WHERE id = 1")
 				if err != nil {
-					t.Logf("Query error: %v", err)
+					errCount.Add(1)
+				} else {
+					rows.Close()
 				}
 			}
 		}()
 	}
 
 	wg.Wait()
+	t.Logf("Errors: %d (expected some under contention)", errCount.Load())
 }
 
 // TestConcurrentTransactions tests concurrent transaction operations
@@ -87,6 +93,7 @@ func TestConcurrentTransactions(t *testing.T) {
 	var wg sync.WaitGroup
 	numGoroutines := 5
 
+	var txnErrs atomic.Int64
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(id int) {
@@ -94,7 +101,7 @@ func TestConcurrentTransactions(t *testing.T) {
 			for j := 0; j < 10; j++ {
 				_, err := db.Exec(ctx, "INSERT INTO txn_test VALUES (?)", id*10+j)
 				if err != nil {
-					t.Logf("Insert error: %v", err)
+					txnErrs.Add(1)
 				}
 			}
 		}(i)
@@ -134,6 +141,7 @@ func TestCatalogConcurrentAccess(t *testing.T) {
 	numGoroutines := 5
 
 	// Create tables concurrently
+	var catErrs atomic.Int64
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(id int) {
@@ -141,7 +149,7 @@ func TestCatalogConcurrentAccess(t *testing.T) {
 			sql := "CREATE TABLE catalog_test_" + string(rune('a'+id)) + " (id INTEGER PRIMARY KEY)"
 			_, err := db.Exec(ctx, sql)
 			if err != nil {
-				t.Logf("Create table error: %v", err)
+				catErrs.Add(1)
 			}
 		}(i)
 	}
@@ -181,14 +189,17 @@ func TestQueryCacheRace(t *testing.T) {
 	numGoroutines := 10
 	numQueries := 50
 
+	var cacheErrs atomic.Int64
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < numQueries; j++ {
-				_, err := db.Query(ctx, "SELECT * FROM cache_race_test WHERE id = ?", j%10)
+				rows, err := db.Query(ctx, "SELECT * FROM cache_race_test WHERE id = ?", j%10)
 				if err != nil {
-					t.Logf("Query error: %v", err)
+					cacheErrs.Add(1)
+				} else {
+					rows.Close()
 				}
 			}
 		}(i)
@@ -219,6 +230,7 @@ func TestBufferPoolRace(t *testing.T) {
 	var wg sync.WaitGroup
 	numGoroutines := 5
 
+	var bufErrs atomic.Int64
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(id int) {
@@ -226,7 +238,7 @@ func TestBufferPoolRace(t *testing.T) {
 			for j := 0; j < 20; j++ {
 				_, err := db.Exec(ctx, "INSERT INTO buffer_test VALUES (?, ?)", id*20+j, "test data")
 				if err != nil {
-					t.Logf("Insert error: %v", err)
+					bufErrs.Add(1)
 				}
 			}
 		}(i)
