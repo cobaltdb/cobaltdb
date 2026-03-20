@@ -231,12 +231,13 @@ export function HeroSection() {
 
           <h1 className="text-4xl md:text-5xl lg:text-[3.5rem] font-black tracking-tight mb-6 animate-fade-in-up leading-[1.1]">
             The SQL Database That{' '}
-            <span className="text-gradient-animated">Ships With Your App</span>
+            <span className="text-gradient-animated">Runs Anywhere</span>
           </h1>
 
           <p className="text-lg md:text-xl text-muted-foreground mb-8 max-w-2xl mx-auto leading-relaxed animate-fade-in-up stagger-2">
-            Pure Go. Zero dependencies. ACID transactions, cost-based optimizer,
-            window functions, JSON support, full-text search, and encryption at rest.
+            Embed in your Go app or deploy as a standalone MySQL-compatible server.
+            Pure Go, zero dependencies, AES-256 encryption, ACID transactions,
+            replication, and 10,400+ tests.
           </p>
 
           {/* CTA Buttons */}

@@ -28,8 +28,8 @@ const features = [
   },
   {
     icon: Database,
-    title: 'Embeddable',
-    description: 'Zero external dependencies. Import the Go package and run a full SQL database inside your app.',
+    title: 'Embedded + Server',
+    description: 'Use as a Go library or deploy as a standalone MySQL-compatible server. Any MySQL client can connect.',
   },
   {
     icon: Search,
@@ -44,7 +44,7 @@ const features = [
   {
     icon: Lock,
     title: 'Security First',
-    description: 'Encryption at rest, TLS, audit logging, and row-level security for multi-tenant apps.',
+    description: 'AES-256-GCM encryption (data + WAL + audit), TLS 1.2+, RLS, Argon2id auth, SQLi protection.',
   },
   {
     icon: Layers,
@@ -59,7 +59,7 @@ const features = [
   {
     icon: Globe,
     title: 'Production Ready',
-    description: '16 packages at 90%+ coverage. Battle-tested with 5,000+ integration tests across 107 suites.',
+    description: '19 packages at 90%+ coverage. Battle-tested with 10,400+ tests. 19 security fixes in v0.3.0.',
   },
   {
     icon: Cpu,

@@ -1,7 +1,7 @@
 # 🔷 CobaltDB
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go Version">
+  <img src="https://img.shields.io/badge/Go-1.24+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go Version">
   <img src="https://img.shields.io/badge/Version-0.3.0-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
@@ -9,39 +9,49 @@
 </p>
 
 <p align="center">
-  <b>⚡ The Modern Embedded Database for Go</b><br>
-  <i>SQL + JSON · ACID Transactions · MVCC · Pure Go · Zero Dependencies</i>
+  <b>⚡ The Modern SQL Database Engine — Embedded or Standalone Server</b><br>
+  <i>MySQL Protocol · SQL + JSON · ACID · MVCC · Encryption · Replication · Pure Go</i>
 </p>
 
 ---
 
-## 🚀 What Makes CobaltDB Special
+## 🚀 Two Modes, One Database
 
-| Feature | CobaltDB | SQLite | BoltDB |
-|---------|----------|--------|--------|
-| **Language** | Go (Zero CGO) | C | Go |
-| **Query Language** | SQL + JSONPath | SQL | Key-Value Only |
-| **JSON Support** | Native | Extension | Manual |
-| **Transactions** | MVCC (Snapshot Isolation) | WAL | ACID |
-| **Concurrency** | Lock-Free Reads | File Locks | Lock-Free |
-| **Indexes** | B+Tree | B+Tree | B+Tree |
-| **Network Server** | ✅ Built-in | ❌ | ❌ |
-| **Views/Triggers** | ✅ Full Support | ✅ | ❌ |
-| **Encryption at Rest** | ✅ AES-256-GCM | ❌ | ❌ |
-| **TLS Support** | ✅ TLS 1.3 | ❌ | ❌ |
-| **Audit Logging** | ✅ Built-in | ❌ | ❌ |
-| **Row-Level Security** | ✅ Policy-based | ❌ | ❌ |
-| **Circuit Breaker** | ✅ Built-in | ❌ | ❌ |
-| **Retry Logic** | ✅ Exponential backoff | ❌ | ❌ |
-| **Rate Limiting** | ✅ Token bucket | ❌ | ❌ |
-| **Query Cache** | ✅ LRU with TTL | ❌ | ❌ |
-| **Query Optimizer** | ✅ Cost-based | ❌ | ❌ |
-| **Hot Backup** | ✅ Online backup | ❌ | ❌ |
-| **Replication** | ✅ Master-Slave | ❌ | ❌ |
-| **WASM Compilation** | ✅ SQL to WASM | ❌ | ❌ |
-| **Query Plan Cache** | ✅ LRU with stats | ❌ | ❌ |
-| **Vector Search (HNSW)** | ✅ Similarity search | ❌ | ❌ |
-| **Temporal Queries** | ✅ AS OF SYSTEM TIME | ❌ | ❌ |
+CobaltDB runs in two modes — use it as an **embedded library** inside your Go application, or deploy it as a **standalone database server** that any MySQL client can connect to.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     CobaltDB                            │
+│                                                         │
+│  ┌─────────────┐           ┌──────────────────────┐     │
+│  │ Embedded    │           │ Standalone Server     │     │
+│  │ (Go Library)│           │ (MySQL Protocol)      │     │
+│  │             │           │                       │     │
+│  │ db.Query()  │           │ mysql -h host -P 4200 │     │
+│  │ db.Exec()   │           │ Any MySQL client/ORM  │     │
+│  └─────────────┘           └──────────────────────┘     │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Comparison
+
+| Feature | CobaltDB | PostgreSQL | MySQL | SQLite |
+|---------|----------|------------|-------|--------|
+| **Deployment** | Embedded + Server | Server only | Server only | Embedded only |
+| **Protocol** | MySQL wire protocol | PostgreSQL | MySQL | C API |
+| **Language** | Pure Go (Zero CGO) | C | C/C++ | C |
+| **Query Language** | SQL + JSON | SQL + JSON | SQL + JSON | SQL |
+| **Encryption at Rest** | ✅ AES-256-GCM | Plugin | Plugin | ❌ |
+| **WAL Encryption** | ✅ Built-in | ❌ | ❌ | ❌ |
+| **TLS** | ✅ TLS 1.2+ | ✅ | ✅ | ❌ |
+| **Replication** | ✅ Master-Slave | ✅ | ✅ | ❌ |
+| **Row-Level Security** | ✅ Policy-based | ✅ | ❌ | ❌ |
+| **Audit Logging** | ✅ Encrypted | Plugin | Plugin | ❌ |
+| **Vector Search** | ✅ HNSW | pgvector | ❌ | ❌ |
+| **Temporal Queries** | ✅ AS OF | ✅ | ❌ | ❌ |
+| **Zero Dependencies** | ✅ | ❌ | ❌ | ✅ |
+| **Cross-Compile** | ✅ Any OS/Arch | ❌ | ❌ | CGO needed |
+| **Single Binary** | ✅ | ❌ | ❌ | Library |
 
 ---
 
@@ -129,15 +139,24 @@ func main() {
 }
 ```
 
-### Server Mode
+### Server Mode (Standalone Database)
 
 ```bash
-# Start the server
-go run cmd/cobaltdb-server/main.go
+# Start CobaltDB as a standalone database server
+./cobaltdb-server --addr :4200 --data ./mydb.db
 
-# Or build and run
-./cobaltdb-server --addr :8080 --data ./data
+# Connect with ANY MySQL client
+mysql -h 127.0.0.1 -P 4200 -u admin
+
+# Or use any MySQL-compatible ORM/driver:
+#   - Go: database/sql + go-sql-driver/mysql
+#   - Python: mysql-connector-python, SQLAlchemy
+#   - Node.js: mysql2, knex, prisma
+#   - Java: JDBC mysql-connector
+#   - Ruby: mysql2 gem
 ```
+
+**Server features:** TLS encryption, authentication, connection pooling, rate limiting, circuit breaker, health checks, audit logging, replication.
 
 ### CLI Mode
 
@@ -148,8 +167,8 @@ go run cmd/cobaltdb-server/main.go
 # Execute SQL directly
 ./cobaltdb-cli -memory "SELECT * FROM users"
 
-# Connect to server
-./cobaltdb-cli -host localhost:8080
+# Connect to running server
+./cobaltdb-cli -host localhost:4200
 ```
 
 ### Docker Mode
@@ -403,8 +422,8 @@ if !result.Allowed {
 }
 ```
 
-- 10+ SQL injection pattern detection
-- UNION-based, time-based blind detection
+- 15 SQL injection pattern detection
+- UNION-based, time-based blind, conditional blind, OOB exfil detection
 - Whitelist support for trusted queries
 
 ### Distributed Tracing
@@ -755,21 +774,20 @@ go run cmd/demo/main.go
 
 ### Test Coverage
 
-| Package | Coverage | Status |
-|---------|----------|--------|
-| `pkg/auth` | 97.5% | ✅ |
-| `pkg/replication` | 92.1% | ✅ |
-| `pkg/btree` | 92.4% | ✅ |
-| `pkg/storage` | 92.0% | ✅ |
-| `pkg/server` | 90.2% | ✅ |
-| `pkg/engine` | 89.3% | ✅ |
-| `pkg/query` | 87.4% | ✅ |
-| `pkg/catalog` | 83.4% | ✅ |
-| **Total** | **~89%** | ✅ |
+| Package | Coverage | Package | Coverage |
+|---------|----------|---------|----------|
+| `pkg/pool` | 98.0% ✅ | `pkg/wasm` | 93.4% ✅ |
+| `pkg/auth` | 96.8% ✅ | `pkg/btree` | 92.4% ✅ |
+| `pkg/cache` | 95.5% ✅ | `pkg/backup` | 91.9% ✅ |
+| `pkg/protocol` | 95.1% ✅ | `pkg/security` | 91.9% ✅ |
+| `pkg/metrics` | 94.8% ✅ | `pkg/replication` | 91.8% ✅ |
+| `pkg/wire` | 94.7% ✅ | `pkg/query` | 90.9% ✅ |
+| `pkg/optimizer` | 93.8% ✅ | `pkg/audit` | 90.9% ✅ |
+| `pkg/logger` | 93.8% ✅ | `pkg/storage` | 90.5% ✅ |
+| `pkg/txn` | 93.5% ✅ | `pkg/server` | 90.2% ✅ |
+| `pkg/engine` | 90.0% ✅ | `pkg/catalog` | 85.5% ✅ |
 
-> 💡 **Note:** cmd packages show 0% coverage because Go does not count `main()` functions in coverage reports.
-> Combined coverage from 700+ unit tests and 200+ integration tests across 48+ test files.
-> All 28 test packages passing.
+> **10,400+ tests** across 22 packages, all passing. 19/20 packages above 90% coverage.
 
 ---
 
@@ -838,21 +856,32 @@ go run cmd/demo/main.go
 - [x] **Vector Support** - VECTOR data type with HNSW index for similarity search
 - [x] **Temporal Queries** - AS OF SYSTEM TIME for time-travel queries
 
+### ✅ v0.3.0 - Security Hardening & Stability (2026-03-20)
+
+- [x] **WAL Encryption** - AEAD encryption for write-ahead log with header authentication
+- [x] **Audit Log Encryption** - AES-256-GCM encrypted audit log entries
+- [x] **RLS Hardening** - Fixed bypass in UPDATE...FROM and DELETE...USING
+- [x] **Auth Hardening** - Password policy, brute force rate limiting, random default password
+- [x] **SQL Injection Protection** - 15 detection patterns (conditional blind, OOB exfil, etc.)
+- [x] **Concurrency Fixes** - Panic recovery, double-close protection, lifecycle tracking
+- [x] **10,400+ Tests** - 19/20 packages above 90% coverage
+
 ### 📋 Planned Features
 
-- [ ] **v0.3.0** - Distributed mode, Sharding support
-- [ ] **v0.4.0** - Cloud-native features, Kubernetes operator
+- [ ] **v0.4.0** - Distributed mode, Sharding support
+- [ ] **v0.5.0** - Cloud-native features, Kubernetes operator
 
 ---
 
 ## 💪 Why CobaltDB?
 
-1. **🚀 Pure Go** - Zero CGO means easy cross-compilation and deployment
-2. **📱 Embedded or Server** - Use as library or standalone server
-3. **🔄 ACID + MVCC** - True isolation without locking reads
-4. **🗂️ SQL + JSON** - Relational power with document flexibility
-5. **⚡ Blazing Fast** - 3.3M+ point lookups per second
-6. **🛠️ Production Ready** - Comprehensive test coverage, battle-tested
+1. **🚀 Pure Go** - Zero CGO, single binary, cross-compile to any OS/architecture
+2. **📱 Embedded + Server** - Use as Go library OR deploy as standalone MySQL-compatible server
+3. **🔒 Security First** - AES-256-GCM encryption (data + WAL + audit), TLS 1.2+, RLS, Argon2id auth
+4. **🔄 ACID + MVCC** - Snapshot isolation, lock-free reads, WAL durability
+5. **🗂️ SQL + JSON + Vector** - Relational queries, JSONPath, HNSW similarity search
+6. **⚡ Blazing Fast** - 9M+ point lookups/sec, 955K inserts/sec
+7. **🏭 Production Ready** - 10,400+ tests, 92% coverage, circuit breaker, rate limiter, replication
 
 ---
 

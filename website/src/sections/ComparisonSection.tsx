@@ -12,6 +12,8 @@ interface FeatureRow {
 
 const features: FeatureRow[] = [
   { feature: 'Embeddable (in-process)', cobaltdb: 'yes', sqlite: 'yes', postgres: 'no' },
+  { feature: 'Standalone Server', cobaltdb: 'yes', sqlite: 'no', postgres: 'yes' },
+  { feature: 'MySQL Protocol', cobaltdb: 'yes', sqlite: 'no', postgres: 'no' },
   { feature: 'Zero Dependencies', cobaltdb: 'yes', sqlite: 'yes', postgres: 'no' },
   { feature: 'ACID Transactions', cobaltdb: 'yes', sqlite: 'yes', postgres: 'yes' },
   { feature: 'Window Functions', cobaltdb: 'yes', sqlite: 'yes', postgres: 'yes' },
@@ -73,7 +75,7 @@ export function ComparisonSection() {
             How CobaltDB <span className="text-gradient">Compares</span>
           </h2>
           <p className="text-lg text-muted-foreground leading-relaxed">
-            The best of both worlds: embeddable like SQLite, feature-rich like PostgreSQL.
+            Embeddable like SQLite, feature-rich like PostgreSQL, compatible with MySQL clients.
           </p>
         </div>
 
