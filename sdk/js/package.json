@@ -1,0 +1,20 @@
+{
+  "name": "cobaltdb-sdk",
+  "version": "0.3.0",
+  "description": "CobaltDB Node.js SDK - Connect to CobaltDB server via MySQL protocol",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": ["cobaltdb", "database", "sql", "mysql", "embedded"],
+  "author": "CobaltDB Team",
+  "license": "MIT",
+  "peerDependencies": {
+    "mysql2": ">=3.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cobaltdb/cobaltdb",
+    "directory": "sdk/js"
+  }
+}
