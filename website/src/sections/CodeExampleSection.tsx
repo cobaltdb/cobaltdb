@@ -84,6 +84,67 @@ CREATE VIRTUAL TABLE docs USING fts4(title, content);
 INSERT INTO docs VALUES ('Getting Started', 'CobaltDB is fast...');
 SELECT * FROM docs WHERE docs MATCH 'fast';`,
   },
+  python: {
+    lang: 'python',
+    label: 'Python',
+    code: `# pip install mysql-connector-python
+import cobaltdb  # or use mysql.connector directly
+
+# Connect to CobaltDB server (MySQL protocol on port 3307)
+conn = cobaltdb.connect(host='127.0.0.1', port=3307, user='admin')
+
+# Create table and insert data
+conn.execute("""
+    CREATE TABLE products (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        price REAL,
+        tags JSON
+    )
+""")
+
+conn.execute("INSERT INTO products VALUES (1, 'Laptop', 999.99, "
+             "'[\\"electronics\\", \\"computer\\"]')")
+
+# Query with JSON support
+cursor = conn.execute("""
+    SELECT name, price, JSON_EXTRACT(tags, '$[0]') as category
+    FROM products
+    WHERE price > 100
+""")
+
+for row in cursor.fetchall():
+    print(f"{row[0]}: ${row[1]} ({row[2]})")
+    # Laptop: $999.99 (electronics)
+
+conn.close()`,
+  },
+  mysql: {
+    lang: 'bash',
+    label: 'MySQL CLI',
+    code: `# Start CobaltDB server
+./cobaltdb-server --mysql-addr :3307 --data ./mydata.db
+
+# Connect with standard MySQL client
+mysql -h 127.0.0.1 -P 3307 -u admin
+
+# Run SQL queries directly
+mysql> CREATE TABLE users (id INT PRIMARY KEY, name TEXT, email TEXT);
+mysql> INSERT INTO users VALUES (1, 'Alice', 'alice@example.com');
+mysql> INSERT INTO users VALUES (2, 'Bob', 'bob@example.com');
+
+mysql> SELECT * FROM users ORDER BY name;
++----+-------+-------------------+
+| id | name  | email             |
++----+-------+-------------------+
+|  1 | Alice | alice@example.com |
+|  2 | Bob   | bob@example.com   |
++----+-------+-------------------+
+
+# Works with any MySQL tool, ORM, or framework:
+#   SQLAlchemy, Django, Prisma, Hibernate, GORM,
+#   Sequelize, ActiveRecord, mysql2, JDBC...`,
+  },
   wasm: {
     lang: 'js',
     label: 'WASM',

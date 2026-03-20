@@ -89,74 +89,55 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 ## ⚡ Quick Start
 
-### Embedded Mode (Library)
-
-```go
-package main
-
-import (
-    "context"
-    "log"
-    "github.com/cobaltdb/cobaltdb/pkg/engine"
-)
-
-func main() {
-    // Create in-memory database
-    db, err := engine.Open(":memory:", &engine.Options{
-        InMemory:  true,
-        CacheSize: 1024,
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer db.Close()
-
-    ctx := context.Background()
-
-    // Create table with constraints
-    db.Exec(ctx, `CREATE TABLE users (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        email TEXT UNIQUE,
-        metadata JSON,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )`)
-
-    // Insert with JSON
-    db.Exec(ctx, 
-        "INSERT INTO users (name, email, metadata) VALUES (?, ?, ?)",
-        "Ersin Koc", 
-        "ersin@cobaltdb.dev",
-        `{"role": "admin", "active": true}`)
-
-    // Query with JSON extraction
-    rows, _ := db.Query(ctx, `
-        SELECT name, email, JSON_EXTRACT(metadata, '$.role') as role
-        FROM users 
-        WHERE name = ?`, 
-        "Ersin Koc")
-    defer rows.Close()
-}
-```
-
-### Server Mode (Standalone Database)
+### 1. Server Mode — Connect with Any MySQL Client
 
 ```bash
-# Start CobaltDB as a standalone database server
-./cobaltdb-server --addr :4200 --data ./mydb.db
+# Start CobaltDB server
+./cobaltdb-server --mysql-addr :3307 --data ./mydb.db
 
-# Connect with ANY MySQL client
-mysql -h 127.0.0.1 -P 4200 -u admin
-
-# Or use any MySQL-compatible ORM/driver:
-#   - Go: database/sql + go-sql-driver/mysql
-#   - Python: mysql-connector-python, SQLAlchemy
-#   - Node.js: mysql2, knex, prisma
-#   - Java: JDBC mysql-connector
-#   - Ruby: mysql2 gem
+# Connect with standard MySQL client
+mysql -h 127.0.0.1 -P 3307 -u admin
 ```
 
-**Server features:** TLS encryption, authentication, connection pooling, rate limiting, circuit breaker, health checks, audit logging, replication.
+```sql
+mysql> CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT);
+mysql> INSERT INTO users VALUES (1, 'Alice', 'alice@example.com');
+mysql> SELECT * FROM users;
++----+-------+-------------------+
+| id | name  | email             |
++----+-------+-------------------+
+|  1 | Alice | alice@example.com |
++----+-------+-------------------+
+```
+
+> **Verified working** with `go-sql-driver/mysql`, `mysql` CLI, and standard MySQL wire protocol.
+> Works with **any MySQL-compatible client**: Python (mysql-connector, SQLAlchemy), Node.js (mysql2, Prisma), Java (JDBC), Ruby, PHP, etc.
+
+**Server features:** MySQL protocol, TLS 1.2+, authentication (Argon2id), connection pooling, rate limiting, circuit breaker, health checks, encrypted audit logging, master-slave replication.
+
+### 2. Embedded Mode — Use as a Go Library
+
+```go
+import "github.com/cobaltdb/cobaltdb/pkg/engine"
+
+db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+defer db.Close()
+
+ctx := context.Background()
+db.Exec(ctx, `CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE,
+    metadata JSON
+)`)
+
+db.Exec(ctx, "INSERT INTO users VALUES (?, ?, ?, ?)",
+    1, "Alice", "alice@example.com", `{"role": "admin"}`)
+
+rows, _ := db.Query(ctx, `SELECT name, JSON_EXTRACT(metadata, '$.role') FROM users`)
+```
+
+> Zero CGO, zero dependencies. Import and use — no external server needed.
 
 ### CLI Mode
 

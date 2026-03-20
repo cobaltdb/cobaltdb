@@ -6,6 +6,7 @@ import {
   Cpu,
   CloudOff,
   Rocket,
+  Server,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -22,6 +23,12 @@ const useCases: UseCase[] = [
     title: 'Embedded Applications',
     description: 'Ship a full SQL database inside your Go binary. No external processes, no network calls, no configuration.',
     examples: ['Desktop apps', 'CLI tools', 'Single-binary services'],
+  },
+  {
+    icon: Server,
+    title: 'MySQL-Compatible Server',
+    description: 'Deploy as a standalone database server. Any MySQL client, ORM, or framework connects out of the box — Python, Node.js, Java, Go, Ruby.',
+    examples: ['Web backends', 'Microservices', 'Drop-in MySQL replacement'],
   },
   {
     icon: Wifi,

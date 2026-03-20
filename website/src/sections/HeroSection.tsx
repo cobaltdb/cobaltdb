@@ -268,19 +268,36 @@ export function HeroSection() {
           <InteractiveTerminal />
         </div>
 
+        {/* MySQL compatibility banner */}
+        <div className="flex flex-wrap items-center justify-center gap-3 mt-10 animate-fade-in-up stagger-5">
+          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Works with:</span>
+          <span className="px-2.5 py-1 rounded-md bg-muted text-xs font-mono">mysql CLI</span>
+          <span className="px-2.5 py-1 rounded-md bg-muted text-xs font-mono">go-sql-driver</span>
+          <span className="px-2.5 py-1 rounded-md bg-muted text-xs font-mono">SQLAlchemy</span>
+          <span className="px-2.5 py-1 rounded-md bg-muted text-xs font-mono">Prisma</span>
+          <span className="px-2.5 py-1 rounded-md bg-muted text-xs font-mono">Hibernate</span>
+          <span className="px-2.5 py-1 rounded-md bg-muted text-xs font-mono">GORM</span>
+          <span className="px-2.5 py-1 rounded-md bg-muted text-xs font-mono">mysql2</span>
+          <span className="px-2.5 py-1 rounded-md bg-muted text-xs font-mono">Any MySQL client</span>
+        </div>
+
         {/* Stats */}
-        <div className="grid grid-cols-3 gap-6 max-w-2xl mx-auto mt-16 animate-fade-in-up stagger-5">
+        <div className="grid grid-cols-4 gap-4 max-w-3xl mx-auto mt-10 animate-fade-in-up stagger-5">
           <div className="text-center p-4 rounded-xl hover:bg-card/50 transition-colors">
-            <AnimatedCounter target={100000} suffix="+" />
-            <div className="text-sm text-muted-foreground mt-1 font-medium">Queries/sec</div>
+            <AnimatedCounter target={9000000} suffix="+" />
+            <div className="text-sm text-muted-foreground mt-1 font-medium">Reads/sec</div>
           </div>
           <div className="text-center p-4 border-x border-border rounded-xl">
-            <AnimatedCounter target={5000} suffix="+" />
+            <AnimatedCounter target={10400} suffix="+" />
             <div className="text-sm text-muted-foreground mt-1 font-medium">Tests</div>
           </div>
-          <div className="text-center p-4 rounded-xl hover:bg-card/50 transition-colors">
-            <AnimatedCounter target={90} suffix="%+" />
+          <div className="text-center p-4 border-r border-border rounded-xl">
+            <AnimatedCounter target={92} suffix="%" />
             <div className="text-sm text-muted-foreground mt-1 font-medium">Coverage</div>
+          </div>
+          <div className="text-center p-4 rounded-xl hover:bg-card/50 transition-colors">
+            <AnimatedCounter target={19} suffix=" fixes" />
+            <div className="text-sm text-muted-foreground mt-1 font-medium">Security v0.3</div>
           </div>
         </div>
       </div>
