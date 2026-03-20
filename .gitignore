@@ -57,3 +57,4 @@ dist/data/
 website/node_modules/
 website/dist/
 website/build.log
+pkg/server/certs/
