@@ -4,6 +4,26 @@ Production-ready example applications demonstrating CobaltDB usage patterns.
 
 ## 📁 Examples
 
+### 0. MySQL Server (`mysql-server/`) ⭐
+**Start CobaltDB as a standalone MySQL-compatible server.** Connect with any MySQL client — mysql CLI, Python, Node.js, Java, Go, or any ORM.
+
+**Run:**
+```bash
+go run examples/mysql-server/main.go
+```
+
+**Connect:**
+```bash
+mysql -h 127.0.0.1 -P 3307 -u admin
+```
+
+```sql
+mysql> SELECT * FROM users;
+mysql> SELECT u.name, SUM(o.amount) FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.name;
+```
+
+---
+
 ### 1. REST API (`rest-api/`)
 A production-ready HTTP API with CRUD operations.
 
