@@ -456,14 +456,13 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 		} else {
 			// Try hash join for simple equality ON conditions (O(N+M) instead of O(N*M))
 			leftColIdx, rightColIdx, canHashJoin := detectEqualityJoinQualified(joinCondition, combinedColumns, joinTableCols, tableOffsets, joinAlias)
-			_ = leftColIdx; _ = rightColIdx
-			canHashJoin = false // DISABLED: hash join needs more testing
 
 			if canHashJoin && !isRightJoin {
 				// Hash join: build hash map on right table, probe with left table
+				// Skip NULL keys (SQL semantics: NULL != NULL in JOINs)
 				hashMap := make(map[string][]int) // key -> right row indices
 				for ri, joinRow := range rightRows {
-					if rightColIdx < len(joinRow) {
+					if rightColIdx < len(joinRow) && joinRow[rightColIdx] != nil {
 						key := fmt.Sprintf("%v", joinRow[rightColIdx])
 						hashMap[key] = append(hashMap[key], ri)
 					}
@@ -471,7 +470,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 
 				for _, leftRow := range intermediateRows {
 					matched := false
-					if leftColIdx < len(leftRow) {
+					if leftColIdx < len(leftRow) && leftRow[leftColIdx] != nil {
 						key := fmt.Sprintf("%v", leftRow[leftColIdx])
 						if indices, ok := hashMap[key]; ok {
 							for _, ri := range indices {
@@ -1542,10 +1541,11 @@ func detectEqualityJoinQualified(condition query.Expression, combinedCols []Colu
 		return 0, 0, false // Neither side references the join table
 	}
 
-	// Find left column index in combined columns
+	// Find left column index in combined columns using table+column match
 	leftIdx := -1
 	for i, col := range combinedCols {
-		if strings.EqualFold(col.Name, leftTableQI.Column) {
+		if strings.EqualFold(col.Name, leftTableQI.Column) &&
+			(col.sourceTbl == "" || strings.EqualFold(col.sourceTbl, leftTableQI.Table)) {
 			leftIdx = i
 			break
 		}
