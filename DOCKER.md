@@ -28,11 +28,29 @@ docker-compose down -v
 
 | Service | Port | Description |
 |---------|------|-------------|
-| cobaltdb | 4200 | Database server |
-| cobaltdb | 8420 | Admin/metrics API |
+| cobaltdb | 4200 | Wire protocol server |
+| cobaltdb | 3307 | MySQL protocol server (connect with any MySQL client) |
+| cobaltdb | 8420 | Health check / metrics API |
 | prometheus | 9090 | Metrics collection |
 | grafana | 3000 | Metrics visualization |
 | backup | - | Automated backups |
+
+## Connecting with MySQL Clients
+
+Once the container is running, connect with any MySQL client:
+
+```bash
+# MySQL CLI
+mysql -h 127.0.0.1 -P 3307 -u admin
+
+# Python
+import mysql.connector
+conn = mysql.connector.connect(host='127.0.0.1', port=3307, user='admin')
+
+# Node.js
+const mysql = require('mysql2');
+const conn = mysql.createConnection({ host: '127.0.0.1', port: 3307, user: 'admin' });
+```
 
 ## Windows-Specific Notes
 
