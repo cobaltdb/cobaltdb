@@ -52,6 +52,60 @@ for rows.Next() {
     ],
   },
   {
+    id: 'connect',
+    label: 'Server + SDKs',
+    icon: Terminal,
+    steps: [
+      {
+        title: 'Start CobaltDB Server',
+        code: `# Start standalone server with MySQL protocol
+./cobaltdb-server --addr :4200 --mysql-addr :3307
+
+# Or with Docker
+docker run -d -p 3307:3307 -p 4200:4200 cobaltdb`,
+        lang: 'bash',
+      },
+      {
+        title: 'Connect from Python',
+        code: `import cobaltdb  # pip install mysql-connector-python
+
+conn = cobaltdb.connect(host='127.0.0.1', port=3307, user='admin')
+conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+conn.execute("INSERT INTO users VALUES (1, 'Alice')")
+
+cursor = conn.execute("SELECT * FROM users")
+for row in cursor.fetchall():
+    print(row)  # (1, 'Alice')`,
+        lang: 'python',
+      },
+      {
+        title: 'Connect from Node.js',
+        code: `const cobaltdb = require('cobaltdb-sdk');  // npm install mysql2
+
+const conn = await cobaltdb.connect({ host: '127.0.0.1', port: 3307 });
+await conn.execute('CREATE TABLE users (id INT PRIMARY KEY, name TEXT)');
+await conn.execute('INSERT INTO users VALUES (?, ?)', [1, 'Alice']);
+
+const [rows] = await conn.execute('SELECT * FROM users');
+console.log(rows);  // [{ id: 1, name: 'Alice' }]`,
+        lang: 'javascript',
+      },
+      {
+        title: 'Connect from Any MySQL Client',
+        code: `# MySQL CLI
+mysql -h 127.0.0.1 -P 3307 -u admin -e "SELECT * FROM users"
+
+# Works with any MySQL-compatible tool:
+# - SQLAlchemy, Django ORM (Python)
+# - Prisma, Sequelize, Knex (Node.js)
+# - Hibernate, JOOQ (Java)
+# - GORM (Go)
+# - ActiveRecord (Ruby)`,
+        lang: 'bash',
+      },
+    ],
+  },
+  {
     id: 'advanced',
     label: 'Advanced SQL',
     icon: Terminal,

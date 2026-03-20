@@ -189,6 +189,67 @@ See [DOCKER.md](DOCKER.md) for detailed Docker setup instructions.
 
 ---
 
+## 🌍 Multi-Language SDKs
+
+CobaltDB speaks the MySQL wire protocol — connect from **any language** using standard MySQL drivers.
+
+### Go (Embedded)
+```go
+import (
+    "database/sql"
+    _ "github.com/cobaltdb/cobaltdb/sdk/go"  // register driver
+)
+
+db, _ := sql.Open("cobaltdb", "file://./data/mydb.cb?cache=1024")
+db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+db.Exec("INSERT INTO users VALUES (?, ?)", 1, "Alice")
+```
+
+### Go (Network Client)
+```go
+import "database/sql"
+import _ "github.com/go-sql-driver/mysql"
+
+db, _ := sql.Open("mysql", "admin@tcp(127.0.0.1:3307)/")
+rows, _ := db.Query("SELECT * FROM users")
+```
+
+### Python
+```python
+import cobaltdb  # sdk/python
+
+conn = cobaltdb.connect(host='127.0.0.1', port=3307, user='admin')
+cursor = conn.execute("SELECT * FROM users")
+for row in cursor.fetchall():
+    print(row)
+```
+
+### Node.js
+```javascript
+const cobaltdb = require('./sdk/js');
+
+const conn = await cobaltdb.connect({ host: '127.0.0.1', port: 3307 });
+const [rows] = await conn.execute('SELECT * FROM users');
+console.log(rows);
+```
+
+### Java
+```java
+import com.cobaltdb.sdk.CobaltDB;
+
+Connection conn = CobaltDB.connect("127.0.0.1", 3307, "admin", "");
+ResultSet rs = conn.createStatement().executeQuery("SELECT * FROM users");
+```
+
+### Any MySQL Client
+```bash
+mysql -h 127.0.0.1 -P 3307 -u admin -e "SELECT * FROM users"
+```
+
+> **Tip:** Any MySQL-compatible ORM works too — SQLAlchemy, Prisma, Hibernate, GORM, Sequelize, ActiveRecord, etc.
+
+---
+
 ## 🔥 Performance Benchmarks
 
 **Test Environment:** AMD Ryzen 7 PRO 6850H · Go 1.26 · Windows
@@ -533,10 +594,17 @@ cobaltdb/
 │   ├── metrics/                # Metrics collection
 │   └── txn/                    # Transaction manager
 │
-├── 📂 test/                    # Integration tests (3,700+)
+├── 📂 test/                    # Integration tests (5,000+)
 ├── 📂 docs/                    # Documentation
 ├── 📂 scripts/                 # Utility scripts
-└── 📂 sdk/go/                  # Go SDK
+│
+├── 📂 sdk/                     # Multi-language SDKs
+│   ├── go/                     # Go SDK (database/sql driver)
+│   ├── python/                 # Python SDK (mysql-connector wrapper)
+│   ├── js/                     # Node.js SDK (mysql2 wrapper)
+│   └── java/                   # Java SDK (JDBC wrapper)
+│
+└── 📂 website/                 # Project website
 ```
 
 ### Module Organization
