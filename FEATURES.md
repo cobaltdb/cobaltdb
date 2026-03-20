@@ -400,34 +400,34 @@
 
 | Package | Coverage | Status |
 |---------|----------|--------|
-| `pkg/pool` | 98.5% | 🟢 Excellent |
-| `pkg/auth` | 97.5% | 🟢 Excellent |
+| `pkg/pool` | 97.5% | 🟢 Excellent |
+| `pkg/auth` | 96.8% | 🟢 Excellent |
 | `pkg/cache` | 95.5% | 🟢 Excellent |
-| `pkg/protocol` | 95.1% | 🟢 Excellent |
+| `pkg/protocol` | 95.4% | 🟢 Excellent |
 | `pkg/metrics` | 94.8% | 🟢 Excellent |
 | `pkg/wire` | 94.7% | 🟢 Excellent |
 | `pkg/logger` | 93.8% | 🟢 Excellent |
 | `pkg/optimizer` | 93.8% | 🟢 Excellent |
 | `pkg/txn` | 93.5% | 🟢 Excellent |
 | `pkg/wasm` | 93.4% | 🟢 Excellent |
-| `pkg/backup` | 92.6% | 🟢 Excellent |
 | `pkg/btree` | 92.4% | 🟢 Excellent |
-| `pkg/replication` | 92.1% | 🟢 Excellent |
-| `pkg/storage` | 92.0% | 🟢 Excellent |
+| `pkg/backup` | 91.9% | 🟢 Excellent |
 | `pkg/security` | 91.9% | 🟢 Excellent |
-| `pkg/query` | 90.8% | 🟢 Excellent |
-| `pkg/audit` | 90.2% | 🟢 Excellent |
-| `pkg/server` | 90.1% | 🟢 Excellent |
-| `pkg/engine` | 87.5% | 🟢 Good |
-| `pkg/catalog` | 85.7% | 🟢 Good |
+| `pkg/replication` | 91.8% | 🟢 Excellent |
+| `pkg/query` | 90.9% | 🟢 Excellent |
+| `pkg/audit` | 90.9% | 🟢 Excellent |
+| `pkg/storage` | 90.5% | 🟢 Excellent |
+| `pkg/server` | 90.2% | 🟢 Excellent |
+| `pkg/engine` | 90.0% | 🟢 Excellent |
+| `pkg/catalog` | 85.5% | 🟢 Good |
 
 ### Test Statistics
 
 - **Total Test Files:** 500+
-- **Total Test Functions:** 8,400+
-- **Package Tests:** 20/20 passing ✅
+- **Total Test Functions:** 10,400+
+- **Package Tests:** 22/22 passing ✅
 - **Integration Tests:** Passing ✅
-- **Coverage:** ~92% average (18/20 packages above 90%)
+- **Coverage:** ~92% average (19/20 packages above 90%)
 
 ---
 
