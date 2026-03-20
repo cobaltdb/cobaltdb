@@ -457,6 +457,11 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 			// Try hash join for simple equality ON conditions (O(N+M) instead of O(N*M))
 			leftColIdx, rightColIdx, canHashJoin := detectEqualityJoinQualified(joinCondition, combinedColumns, joinTableCols, tableOffsets, joinAlias)
 
+			// Fallback: try unqualified equality detection if QI detection failed
+			if !canHashJoin {
+				leftColIdx, rightColIdx, canHashJoin = detectEqualityJoinUnique(joinCondition, combinedColumns, joinTableCols)
+			}
+
 			if canHashJoin && !isRightJoin {
 				// Hash join: build hash map on right table, probe with left table
 				// Skip NULL keys (SQL semantics: NULL != NULL in JOINs)
@@ -1563,6 +1568,64 @@ func detectEqualityJoinQualified(condition query.Expression, combinedCols []Colu
 	if leftIdx >= 0 && rightIdx >= 0 {
 		return leftIdx, rightIdx, true
 	}
+	return 0, 0, false
+}
+
+// detectEqualityJoinUnique checks if a join condition uses unqualified column names
+// that are UNIQUE in their respective column sets (no ambiguity).
+func detectEqualityJoinUnique(condition query.Expression, combinedCols []ColumnDef, rightCols []ColumnDef) (int, int, bool) {
+	binExpr, ok := condition.(*query.BinaryExpr)
+	if !ok || binExpr.Operator != query.TokenEq {
+		return 0, 0, false
+	}
+
+	// Extract column names (Identifier only, not QualifiedIdentifier which is handled above)
+	var leftName, rightName string
+	if id, ok := binExpr.Left.(*query.Identifier); ok {
+		leftName = id.Name
+	}
+	if id, ok := binExpr.Right.(*query.Identifier); ok {
+		rightName = id.Name
+	}
+	if leftName == "" || rightName == "" {
+		return 0, 0, false
+	}
+
+	// Try both orderings: (leftName in combined, rightName in right) and vice versa
+	for pass := 0; pass < 2; pass++ {
+		var cName, rName string
+		if pass == 0 {
+			cName, rName = leftName, rightName
+		} else {
+			cName, rName = rightName, leftName
+		}
+
+		// Find cName in combinedCols — must be unique
+		cIdx := -1
+		cCount := 0
+		for i, col := range combinedCols {
+			if strings.EqualFold(col.Name, cName) {
+				cIdx = i
+				cCount++
+			}
+		}
+
+		// Find rName in rightCols — must be unique
+		rIdx := -1
+		rCount := 0
+		for i, col := range rightCols {
+			if strings.EqualFold(col.Name, rName) {
+				rIdx = i
+				rCount++
+			}
+		}
+
+		// Only use hash join if both columns are unambiguous (appear exactly once)
+		if cIdx >= 0 && rIdx >= 0 && cCount == 1 && rCount == 1 {
+			return cIdx, rIdx, true
+		}
+	}
+
 	return 0, 0, false
 }
 
