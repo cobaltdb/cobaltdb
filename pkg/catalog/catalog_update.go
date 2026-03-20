@@ -470,6 +470,25 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 			updatedRow[colIdx] = newVal
 		}
 
+		// Check RLS policy for UPDATE on this specific row
+		if c.enableRLS && c.rlsManager != nil {
+			rowMap := make(map[string]interface{}, len(targetTable.Columns))
+			for i, col := range targetTable.Columns {
+				if i < len(row) {
+					rowMap[col.Name] = row[i]
+				}
+			}
+			user, _ := ctx.Value("cobaltdb_user").(string)
+			roles, _ := ctx.Value("cobaltdb_roles").([]string)
+			allowed, rlsErr := c.checkRLSForUpdateInternal(ctx, stmt.Table, rowMap, user, roles)
+			if rlsErr != nil {
+				return 0, rowsAffected, fmt.Errorf("RLS check failed: %w", rlsErr)
+			}
+			if !allowed {
+				continue // Skip rows not permitted by RLS policy
+			}
+		}
+
 		// Check constraints (simplified - full checks in actual implementation)
 		for i, col := range targetTable.Columns {
 			if col.NotNull && i < len(updatedRow) && updatedRow[i] == nil {
