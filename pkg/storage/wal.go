@@ -2,6 +2,8 @@ package storage
 
 import (
 	"bufio"
+	"crypto/cipher"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -46,6 +48,42 @@ type WAL struct {
 	lsn        uint64 // Log Sequence Number (monotonic)
 	checkpoint uint64 // last checkpoint LSN
 	path       string
+	cipher     cipher.AEAD // optional encryption cipher for WAL data
+}
+
+// SetEncryptionCipher sets an AEAD cipher for encrypting WAL record data.
+// When set, WAL record Data fields are encrypted before writing and decrypted on read.
+// The cipher must use the same key as the main storage encryption.
+func (w *WAL) SetEncryptionCipher(c cipher.AEAD) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.cipher = c
+}
+
+// encryptData encrypts WAL record data if a cipher is configured
+func (w *WAL) encryptData(plaintext []byte) ([]byte, error) {
+	if w.cipher == nil || len(plaintext) == 0 {
+		return plaintext, nil
+	}
+	nonce := make([]byte, w.cipher.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("WAL encrypt: failed to generate nonce: %w", err)
+	}
+	return w.cipher.Seal(nonce, nonce, plaintext, nil), nil
+}
+
+// decryptData decrypts WAL record data if a cipher is configured
+func (w *WAL) decryptData(ciphertext []byte) ([]byte, error) {
+	if w.cipher == nil || len(ciphertext) == 0 {
+		return ciphertext, nil
+	}
+	nonceSize := w.cipher.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("WAL decrypt: ciphertext too short")
+	}
+	nonce := ciphertext[:nonceSize]
+	data := ciphertext[nonceSize:]
+	return w.cipher.Open(nil, nonce, data, nil)
 }
 
 // OpenWAL opens or creates a WAL file
@@ -164,6 +202,15 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error
 		return nil, ErrWALCorrupted
 	}
 
+	// Decrypt record data if cipher is configured
+	if w.cipher != nil && len(record.Data) > 0 {
+		decrypted, err := w.decryptData(record.Data)
+		if err != nil {
+			return nil, fmt.Errorf("WAL record decryption failed at LSN %d: %w", record.LSN, err)
+		}
+		record.Data = decrypted
+	}
+
 	return record, nil
 }
 
@@ -198,8 +245,21 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 	newLSN := w.lsn + 1
 	record.LSN = newLSN
 
+	// Encrypt record data if cipher is configured
+	originalData := record.Data
+	if w.cipher != nil && len(record.Data) > 0 {
+		encrypted, err := w.encryptData(record.Data)
+		if err != nil {
+			return err
+		}
+		record.Data = encrypted
+	}
+
 	// Encode record
 	buf := w.encodeRecord(record)
+
+	// Restore original data to avoid modifying caller's record
+	record.Data = originalData
 
 	// Calculate and write CRC
 	crc := crc32.ChecksumIEEE(buf)

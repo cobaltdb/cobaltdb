@@ -534,6 +534,12 @@ func (db *DB) loadExisting() error {
 			return fmt.Errorf("failed to open WAL: %w", err)
 		}
 		db.wal = wal
+
+		// If encryption is enabled, share the cipher with WAL for encrypted WAL records
+		if encBackend, ok := db.backend.(*storage.EncryptedBackend); ok {
+			wal.SetEncryptionCipher(encBackend.GetCipher())
+		}
+
 		db.pool.SetWAL(wal)
 
 		// Recover from WAL if needed

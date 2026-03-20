@@ -240,6 +240,12 @@ func (eb *EncryptedBackend) Close() error {
 	return eb.backend.Close()
 }
 
+// GetCipher returns the AEAD cipher used for encryption.
+// This can be used to encrypt other data stores (e.g., WAL) with the same key.
+func (eb *EncryptedBackend) GetCipher() cipher.AEAD {
+	return eb.cipher
+}
+
 // GetSalt returns the salt used for key derivation
 func (eb *EncryptedBackend) GetSalt() []byte {
 	eb.mu.RLock()
