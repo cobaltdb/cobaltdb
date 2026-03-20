@@ -2,7 +2,10 @@
 package audit
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -81,6 +84,7 @@ type Config struct {
 	LogDDL          bool
 	LogConnections  bool
 	SensitiveFields []string // Fields to mask in logs
+	EncryptionKey   []byte   // Optional: encrypt audit log entries (nil = plaintext)
 }
 
 // DefaultConfig returns default audit configuration
@@ -112,6 +116,7 @@ type Logger struct {
 	closeOnce sync.Once
 	closed    bool
 	closeMu   sync.RWMutex
+	cipher    cipher.AEAD // optional encryption for log entries
 }
 
 // New creates a new audit logger
@@ -125,6 +130,19 @@ func New(config *Config, log *logger.Logger) (*Logger, error) {
 		logger:    log,
 		eventChan: make(chan *Event, 1000),
 		stopChan:  make(chan struct{}),
+	}
+
+	// Initialize encryption if key provided
+	if len(config.EncryptionKey) > 0 {
+		block, err := aes.NewCipher(config.EncryptionKey)
+		if err != nil {
+			return nil, fmt.Errorf("audit log encryption setup failed: %w", err)
+		}
+		gcm, err := cipher.NewGCM(block)
+		if err != nil {
+			return nil, fmt.Errorf("audit log GCM setup failed: %w", err)
+		}
+		al.cipher = gcm
 	}
 
 	if !config.Enabled {
@@ -297,6 +315,16 @@ func (al *Logger) writeEvent(event *Event) error {
 			return err
 		}
 		line = string(data) + "\n"
+	}
+
+	// Encrypt log line if cipher is configured
+	if al.cipher != nil {
+		nonce := make([]byte, al.cipher.NonceSize())
+		if _, nonceErr := rand.Read(nonce); nonceErr != nil {
+			return fmt.Errorf("audit log nonce generation failed: %w", nonceErr)
+		}
+		encrypted := al.cipher.Seal(nonce, nonce, []byte(line), nil)
+		line = "ENC:" + base64.StdEncoding.EncodeToString(encrypted) + "\n"
 	}
 
 	_, err := al.file.WriteString(line)

@@ -663,6 +663,25 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		}
 		row := vrow.Data
 
+		// Check RLS policy for DELETE on this row
+		if c.enableRLS && c.rlsManager != nil {
+			rowMap := make(map[string]interface{}, len(targetTable.Columns))
+			for i, col := range targetTable.Columns {
+				if i < len(row) {
+					rowMap[col.Name] = row[i]
+				}
+			}
+			user, _ := ctx.Value("cobaltdb_user").(string)
+			roles, _ := ctx.Value("cobaltdb_roles").([]string)
+			allowed, rlsErr := c.checkRLSForDeleteInternal(ctx, stmt.Table, rowMap, user, roles)
+			if rlsErr != nil {
+				return 0, 0, fmt.Errorf("RLS check failed: %w", rlsErr)
+			}
+			if !allowed {
+				continue // Skip rows not permitted by RLS policy
+			}
+		}
+
 		// Enforce foreign key ON DELETE actions
 		pkColIdx := -1
 		if len(targetTable.PrimaryKey) > 0 {

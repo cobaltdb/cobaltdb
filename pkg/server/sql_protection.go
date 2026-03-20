@@ -338,6 +338,36 @@ func compilePatterns() []*SuspiciousPattern {
 			Severity:    ProtectionMedium,
 			Description: "Boolean-based blind injection",
 		},
+		{
+			Name:        "conditional_blind",
+			Pattern:     regexp.MustCompile(`(?i)IF\s*\(\s*\(SELECT|CASE\s+WHEN\s+\(SELECT`),
+			Severity:    ProtectionHigh,
+			Description: "Conditional blind SQL injection (IF/CASE with subquery)",
+		},
+		{
+			Name:        "outofband_exfil",
+			Pattern:     regexp.MustCompile(`(?i)LOAD_FILE\s*\(|INTO\s+OUTFILE|INTO\s+DUMPFILE`),
+			Severity:    ProtectionCritical,
+			Description: "Out-of-band data exfiltration attempt",
+		},
+		{
+			Name:        "system_function_abuse",
+			Pattern:     regexp.MustCompile(`(?i)LOAD\s+DATA|SYSTEM_USER\s*\(\)|SESSION_USER\s*\(\)`),
+			Severity:    ProtectionHigh,
+			Description: "System function abuse attempt",
+		},
+		{
+			Name:        "double_encoding",
+			Pattern:     regexp.MustCompile(`(?i)%27|%22|%3B|%2D%2D`),
+			Severity:    ProtectionMedium,
+			Description: "URL-encoded SQL injection characters",
+		},
+		{
+			Name:        "or_always_true",
+			Pattern:     regexp.MustCompile(`(?i)OR\s+\d+\s*=\s*\d+\s*--|OR\s+''='`),
+			Severity:    ProtectionCritical,
+			Description: "OR-based always-true condition",
+		},
 	}
 }
 
