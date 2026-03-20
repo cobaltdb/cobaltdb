@@ -62,8 +62,8 @@ RUN printf '%s\n' \
 # Install su-exec for user switching
 RUN apk add --no-cache su-exec
 
-# Expose ports
-EXPOSE 4200 8420
+# Expose ports: 4200=wire protocol, 3307=MySQL protocol, 8420=health checks
+EXPOSE 4200 3307 8420
 
 # Volume for data persistence
 VOLUME ["/data/cobaltdb"]
@@ -74,4 +74,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Default command
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["-addr", ":4200", "-data", "/data/cobaltdb", "-cache", "1024"]
+CMD ["-addr", ":4200", "-mysql-addr", ":3307", "-data", "/data/cobaltdb", "-cache", "1024"]
