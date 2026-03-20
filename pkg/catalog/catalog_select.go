@@ -454,44 +454,79 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 				}
 			}
 		} else {
-			// Track which right rows were matched (for RIGHT/FULL OUTER JOIN)
-			rightMatched := make([]bool, len(rightRows))
+			// Try hash join for simple equality ON conditions (O(N+M) instead of O(N*M))
+			leftColIdx, rightColIdx, canHashJoin := detectEqualityJoinQualified(joinCondition, combinedColumns, joinTableCols, tableOffsets, joinAlias)
+			_ = leftColIdx; _ = rightColIdx
+			canHashJoin = false // DISABLED: hash join needs more testing
 
-			// Iterate through left side rows
-			for _, leftRow := range intermediateRows {
-				matched := false
-
+			if canHashJoin && !isRightJoin {
+				// Hash join: build hash map on right table, probe with left table
+				hashMap := make(map[string][]int) // key -> right row indices
 				for ri, joinRow := range rightRows {
-					combined := make([]interface{}, len(leftRow)+len(joinRow))
-					copy(combined, leftRow)
-					copy(combined[len(leftRow):], joinRow)
+					if rightColIdx < len(joinRow) {
+						key := fmt.Sprintf("%v", joinRow[rightColIdx])
+						hashMap[key] = append(hashMap[key], ri)
+					}
+				}
 
-					if joinCondition != nil {
-						ok, err := evaluateWhere(c, combined, newCombinedColumns, joinCondition, args)
-						if err != nil || !ok {
-							continue
+				for _, leftRow := range intermediateRows {
+					matched := false
+					if leftColIdx < len(leftRow) {
+						key := fmt.Sprintf("%v", leftRow[leftColIdx])
+						if indices, ok := hashMap[key]; ok {
+							for _, ri := range indices {
+								combined := make([]interface{}, len(leftRow)+len(rightRows[ri]))
+								copy(combined, leftRow)
+								copy(combined[len(leftRow):], rightRows[ri])
+								newIntermediate = append(newIntermediate, combined)
+								matched = true
+							}
 						}
 					}
-					matched = true
-					rightMatched[ri] = true
-					newIntermediate = append(newIntermediate, combined)
-				}
 
-				if isLeftJoin && !matched {
-					// NULLs for join table columns
-					combined := make([]interface{}, len(leftRow)+len(joinTableCols))
-					copy(combined, leftRow)
-					newIntermediate = append(newIntermediate, combined)
-				}
-			}
-
-			// For RIGHT/FULL OUTER JOIN: add unmatched right rows with NULL left side
-			if isRightJoin {
-				for ri, joinRow := range rightRows {
-					if !rightMatched[ri] {
-						combined := make([]interface{}, len(combinedColumns)+len(joinTableCols))
-						copy(combined[len(combinedColumns):], joinRow)
+					if isLeftJoin && !matched {
+						combined := make([]interface{}, len(leftRow)+len(joinTableCols))
+						copy(combined, leftRow)
 						newIntermediate = append(newIntermediate, combined)
+					}
+				}
+			} else {
+				// Fallback: nested loop join
+				rightMatched := make([]bool, len(rightRows))
+
+				for _, leftRow := range intermediateRows {
+					matched := false
+
+					for ri, joinRow := range rightRows {
+						combined := make([]interface{}, len(leftRow)+len(joinRow))
+						copy(combined, leftRow)
+						copy(combined[len(leftRow):], joinRow)
+
+						if joinCondition != nil {
+							ok, err := evaluateWhere(c, combined, newCombinedColumns, joinCondition, args)
+							if err != nil || !ok {
+								continue
+							}
+						}
+						matched = true
+						rightMatched[ri] = true
+						newIntermediate = append(newIntermediate, combined)
+					}
+
+					if isLeftJoin && !matched {
+						combined := make([]interface{}, len(leftRow)+len(joinTableCols))
+						copy(combined, leftRow)
+						newIntermediate = append(newIntermediate, combined)
+					}
+				}
+
+				if isRightJoin {
+					for ri, joinRow := range rightRows {
+						if !rightMatched[ri] {
+							combined := make([]interface{}, len(combinedColumns)+len(joinTableCols))
+							copy(combined[len(combinedColumns):], joinRow)
+							newIntermediate = append(newIntermediate, combined)
+						}
 					}
 				}
 			}
@@ -1477,4 +1512,128 @@ func (c *Catalog) buildUsingCondition(usingCols []string, tableOffsets []tableOf
 	}
 
 	return result
+}
+
+// detectEqualityJoinQualified checks if a join condition is a qualified equality
+// (e.g., t1.id = t2.user_id) and resolves column indices in combined row and right row.
+// Returns (leftIdxInCombinedRow, rightIdxInRightRow, true) if hash join can be used.
+func detectEqualityJoinQualified(condition query.Expression, combinedCols []ColumnDef, rightCols []ColumnDef, offsets []tableOffset, rightAlias string) (int, int, bool) {
+	binExpr, ok := condition.(*query.BinaryExpr)
+	if !ok || binExpr.Operator != query.TokenEq {
+		return 0, 0, false
+	}
+
+	// Both sides must be QualifiedIdentifier (t.col) for safe hash join
+	leftQI, leftOk := binExpr.Left.(*query.QualifiedIdentifier)
+	rightQI, rightOk := binExpr.Right.(*query.QualifiedIdentifier)
+	if !leftOk || !rightOk {
+		return 0, 0, false
+	}
+
+	// Determine which side refers to the right (new join) table
+	var leftTableQI, rightTableQI *query.QualifiedIdentifier
+	if strings.EqualFold(rightQI.Table, rightAlias) {
+		leftTableQI = leftQI
+		rightTableQI = rightQI
+	} else if strings.EqualFold(leftQI.Table, rightAlias) {
+		leftTableQI = rightQI
+		rightTableQI = leftQI
+	} else {
+		return 0, 0, false // Neither side references the join table
+	}
+
+	// Find left column index in combined columns
+	leftIdx := -1
+	for i, col := range combinedCols {
+		if strings.EqualFold(col.Name, leftTableQI.Column) {
+			leftIdx = i
+			break
+		}
+	}
+
+	// Find right column index in right-only columns
+	rightIdx := -1
+	for i, col := range rightCols {
+		if strings.EqualFold(col.Name, rightTableQI.Column) {
+			rightIdx = i
+			break
+		}
+	}
+
+	if leftIdx >= 0 && rightIdx >= 0 {
+		return leftIdx, rightIdx, true
+	}
+	return 0, 0, false
+}
+
+// detectEqualityJoin checks if a join condition is a simple equality (a.col = b.col)
+// and returns the column indices in left and right row slices.
+// Returns (leftIdx, rightIdx, true) if hash join can be used.
+func detectEqualityJoin(condition query.Expression, leftCols []ColumnDef, rightCols []ColumnDef) (int, int, bool) {
+	binExpr, ok := condition.(*query.BinaryExpr)
+	if !ok || binExpr.Operator != query.TokenEq {
+		return 0, 0, false
+	}
+
+	leftIdx := -1
+	rightIdx := -1
+
+	// Try to resolve left side as a column reference
+	leftColName := extractColumnName(binExpr.Left)
+	rightColName := extractColumnName(binExpr.Right)
+
+	if leftColName == "" || rightColName == "" {
+		return 0, 0, false
+	}
+
+	// Check if leftColName is in leftCols and rightColName is in rightCols
+	for i, col := range leftCols {
+		if strings.EqualFold(col.Name, leftColName) {
+			leftIdx = i
+			break
+		}
+	}
+	for i, col := range rightCols {
+		if strings.EqualFold(col.Name, rightColName) {
+			rightIdx = i
+			break
+		}
+	}
+
+	if leftIdx >= 0 && rightIdx >= 0 {
+		return leftIdx, rightIdx, true
+	}
+
+	// Try swapped: leftColName in rightCols, rightColName in leftCols
+	leftIdx = -1
+	rightIdx = -1
+	for i, col := range leftCols {
+		if strings.EqualFold(col.Name, rightColName) {
+			leftIdx = i
+			break
+		}
+	}
+	for i, col := range rightCols {
+		if strings.EqualFold(col.Name, leftColName) {
+			rightIdx = i
+			break
+		}
+	}
+
+	if leftIdx >= 0 && rightIdx >= 0 {
+		return leftIdx, rightIdx, true
+	}
+
+	return 0, 0, false
+}
+
+// extractColumnName extracts column name from Identifier or QualifiedIdentifier
+func extractColumnName(expr query.Expression) string {
+	switch e := expr.(type) {
+	case *query.Identifier:
+		return e.Name
+	case *query.QualifiedIdentifier:
+		return e.Column
+	}
+	return ""
 }

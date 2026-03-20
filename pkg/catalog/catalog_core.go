@@ -640,6 +640,11 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		return cat.executeScalarSelect(stmt, args)
 	}
 
+	// Fast path: SELECT COUNT(*) FROM table [WHERE ...] — skip row decoding
+	if cols, rows, ok := cat.tryCountStarFastPath(stmt, args, queryTime); ok {
+		return cols, rows, nil
+	}
+
 	// Handle derived tables: FROM (SELECT ...) AS alias or FROM (SELECT ... UNION ...) AS alias
 	if stmt.From.Subquery != nil || stmt.From.SubqueryStmt != nil {
 		subCols, subRows, err := cat.executeDerivedTable(stmt.From, args)
@@ -2102,6 +2107,148 @@ func addHiddenOrderByCols(orderBy []*query.OrderByExpr, selectCols []selectColIn
 		}
 	}
 	return selectCols, added
+}
+
+// tryCountStarFastPath detects SELECT COUNT(*) FROM table and counts rows
+// without decoding row data. Returns (cols, rows, true) if fast path used.
+func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interface{}, queryTime time.Time) ([]string, [][]interface{}, bool) {
+	// Only works for: single COUNT(*), single table, no JOINs, no GROUP BY, no subquery
+	if len(stmt.Columns) != 1 || len(stmt.Joins) > 0 || len(stmt.GroupBy) > 0 || stmt.Having != nil {
+		return nil, nil, false
+	}
+	if stmt.From.Subquery != nil || stmt.From.SubqueryStmt != nil {
+		return nil, nil, false
+	}
+
+	// Check if it's COUNT(*) or COUNT(*) with alias
+	col := stmt.Columns[0]
+	if ae, ok := col.(*query.AliasExpr); ok {
+		col = ae.Expr
+	}
+	fc, ok := col.(*query.FunctionCall)
+	if !ok || !strings.EqualFold(fc.Name, "COUNT") || len(fc.Args) != 1 {
+		return nil, nil, false
+	}
+	if _, isStar := fc.Args[0].(*query.StarExpr); !isStar {
+		return nil, nil, false
+	}
+
+	// Get table and tree
+	table, err := cat.getTableLocked(stmt.From.Name)
+	if err != nil {
+		return nil, nil, false
+	}
+	// Skip fast path for partitioned tables (data spread across partition trees)
+	if table.Partition != nil {
+		return nil, nil, false
+	}
+	tree, exists := cat.tableTrees[stmt.From.Name]
+	if !exists {
+		return nil, nil, false
+	}
+
+	// Count rows by iterating B-tree keys
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return nil, nil, false
+	}
+
+	count := int64(0)
+	hasWhere := stmt.Where != nil
+	hasTemporalQuery := stmt.AsOf != nil
+
+	for iter.HasNext() {
+		key, valueData, err := iter.Next()
+		if err != nil || key == nil {
+			break
+		}
+
+		if !hasWhere && !hasTemporalQuery {
+			// Fast path: no WHERE, no AS OF — skip all decoding, just count keys
+			// Soft-deleted rows still have B-tree entries, so we need a minimal check
+			// But for non-temporal queries, all live rows are visible
+			if len(valueData) > 0 && valueData[0] == '{' {
+				// Check if row has non-zero DeletedAt via quick byte scan
+				if !bytesContainDeletedAt(valueData) {
+					count++
+					continue
+				}
+			}
+			// Fallback to full decode for edge cases
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil {
+				continue
+			}
+			if vrow.Version.DeletedAt == 0 {
+				count++
+			}
+		} else if hasWhere {
+			// WHERE clause requires row data
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil {
+				continue
+			}
+			if !vrow.Version.isVisibleAt(queryTime) {
+				continue
+			}
+			matched, err := evaluateWhere(cat, vrow.Data, table.Columns, stmt.Where, args)
+			if err != nil || !matched {
+				continue
+			}
+			count++
+		} else {
+			// AS OF temporal query — need version check
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil {
+				continue
+			}
+			if !vrow.Version.isVisibleAt(queryTime) {
+				continue
+			}
+			count++
+		}
+	}
+	iter.Close()
+
+	colName := "COUNT(*)"
+	if ae, ok := stmt.Columns[0].(*query.AliasExpr); ok {
+		colName = ae.Alias
+	}
+
+	return []string{colName}, [][]interface{}{{count}}, true
+}
+
+// bytesContainDeletedAt quickly checks if JSON data has a non-zero deleted_at.
+// Returns true if "deleted_at" appears with a non-zero value (soft-deleted row).
+// This avoids full JSON unmarshal for COUNT(*) fast path.
+func bytesContainDeletedAt(data []byte) bool {
+	// Look for "deleted_at": followed by a non-zero digit
+	needle := []byte(`"deleted_at":`)
+	for i := 0; i <= len(data)-len(needle)-1; i++ {
+		match := true
+		for j := 0; j < len(needle); j++ {
+			if data[i+j] != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			// Check the value after the colon
+			pos := i + len(needle)
+			// Skip whitespace
+			for pos < len(data) && (data[pos] == ' ' || data[pos] == '\t') {
+				pos++
+			}
+			// If value is 0, row is NOT deleted
+			if pos < len(data) && data[pos] == '0' {
+				return false
+			}
+			// Non-zero value means row IS deleted
+			return true
+		}
+	}
+	// No deleted_at field found — treat as not deleted (legacy format)
+	return false
 }
 
 func stripHiddenCols(rows [][]interface{}, totalCols int, hiddenCount int) [][]interface{} {
