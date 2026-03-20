@@ -7,82 +7,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v0.3.0] - 2026-03-20
 
-### 🔒 Security & Stability Release
+### 🔒 Security, MySQL Protocol & Multi-Language SDKs
 
-Comprehensive code review, security hardening, concurrency fixes, and feature completions.
+22 commits, 106 files changed. Comprehensive security audit, MySQL protocol verification with real clients, and multi-language SDK release.
 
-### Security Fixes
+### MySQL Protocol (Verified Working)
 
-- **Default admin password**: Replaced hardcoded `"admin"` with `crypto/rand` generated 16-char random password
-- **Backup fsync**: Added `Sync()` before close in `Restore()` and `copyFile()` to prevent data loss on power failure
-- **Slow query log**: Fixed ignored `fmt.Fprintf` error in slow query log writes
+- **Wire protocol fixes**: Fixed auth-plugin-data null terminator, sequence numbering for real MySQL clients
+- **Verified with `go-sql-driver/mysql`**: Ping, CREATE, INSERT, SELECT, UPDATE, DELETE, JSON_EXTRACT, AVG — all working
+- **4 E2E integration tests**: Full lifecycle, COM_PING, multi-query sequence, version verification
+- **Docker/config**: MySQL port 3307 exposed in Dockerfile, docker-compose, and config
 
-### Concurrency Fixes (CRITICAL)
+### Multi-Language SDKs
 
-- **Replication panic recovery**: Added `defer recover()` to `handleSlave()` goroutine — previously, a single malformed slave message could crash the entire master process
-- **Replication double-close protection**: Added `sync.Once` to `Manager.Stop()` — calling `Stop()` twice no longer panics
-- **Cache double-close protection**: Added `sync.Once` to `Cache.Close()` — calling `Close()` twice no longer panics
-- **Pool health check panic recovery**: Added `defer recover()` to `healthCheckLoop()` — health check failures no longer crash the connection pool
-- **Lifecycle hook tracking**: Added `sync.WaitGroup` for hook goroutines — `Stop()` now waits for all hooks to complete before returning
+- **Python SDK** (`sdk/python/`): Wrapper around mysql-connector-python/PyMySQL
+- **Node.js SDK** (`sdk/js/`): Wrapper around mysql2 with connection pooling
+- **Java SDK** (`sdk/java/`): Wrapper around MySQL JDBC driver
+- **Go SDK** (`sdk/go/`): Native `database/sql` driver (already existed)
 
-### Performance Improvements
+### Security Fixes (19 total)
 
-- **replicateWrite**: Replaced `string +=` loop with `strings.Builder` for zero-allocation serialization
-- **Query optimizer**: Implemented `optimizeProjections()`, `copySelectStmt()`, and safe `optimizeJoinOrder()` with self-join detection
+**Encryption:**
+- WAL encryption with AEAD cipher and header authentication (AAD)
+- Audit log encryption (AES-256-GCM, per-entry nonce)
+- Page encryption AAD (prevents page swapping between offsets)
+- Encryption key memory clearing on Close()
+
+**Authentication:**
+- Password policy enforcement on ChangePassword() (was bypassed)
+- Brute force rate limiting (progressive 200ms-1s delay)
+- Random default admin password via crypto/rand
+
+**Row-Level Security:**
+- Fixed RLS bypass in UPDATE...FROM (per-row policy check added)
+- Fixed RLS bypass in DELETE...USING (per-row policy check added)
+
+**SQL Injection Protection (10 → 15 patterns):**
+- Conditional blind (IF/CASE with subquery)
+- Out-of-band exfiltration (LOAD_FILE, INTO OUTFILE)
+- System function abuse, double URL encoding, OR always-true
+
+**Other:**
+- Audit metadata masking (password/secret/token/key/credential/auth)
+- yaml.v3 DoS vulnerability fixed (v3.0.0 → v3.0.1)
+- golang.org/x/crypto upgraded to v0.49.0
+
+### Concurrency & Stability Fixes
+
+- Replication `handleSlave()` panic recovery
+- Replication/Cache double-close protection (sync.Once)
+- Pool `healthCheckLoop()` panic recovery
+- Lifecycle hook goroutine tracking (WaitGroup)
+- Backup `Restore()` and `copyFile()` fsync
+- `replicateWrite` string concatenation → strings.Builder
 
 ### New Features
 
-- **Stored procedure SQL parameters**: `CALL proc(1, 'hello')` now evaluates SQL literal arguments (previously only Go-level `args` were supported)
-- **Vector search public API**: Added `DB.SearchVectorKNN()` and `DB.SearchVectorRange()` methods to engine
-- **Window functions benchmark**: Benchmark tool now measures ROW_NUMBER, SUM, AVG OVER PARTITION performance
+- **Stored procedure SQL parameters**: `CALL proc(1, 'hello')`
+- **Vector search public API**: `DB.SearchVectorKNN()`, `DB.SearchVectorRange()`
+- **Query optimizer**: `optimizeProjections`, `copySelectStmt`, safe `optimizeJoinOrder`
 
 ### Bug Fixes
 
-- **Query optimizer self-join**: Fixed JOIN reorder that corrupted results on self-joins (same table joined twice)
-- **MySQL protocol**: Fixed `engine.Open("memory", nil)` → `engine.Open(":memory:", &Options{InMemory: true})` in protocol tests
-- **Bounds check**: Added `len(stmt.Columns) > 0` guard before `stmt.Columns[0]` access in `selectLocked`
+- Query optimizer self-join reorder corruption
+- MySQL protocol auth plugin name truncation
+- MySQL protocol OK packet sequence numbering
+- `selectLocked` bounds check on `stmt.Columns[0]`
+
+### Documentation
+
+- README repositioned as "Embedded + Standalone MySQL-compatible Server"
+- Server Mode is now Quick Start #1 with mysql CLI session output
+- "Works with" compatibility list (SQLAlchemy, Prisma, Hibernate, GORM...)
+- Website: new hero, features, comparison, code examples, use cases sections
+- CLAUDE.md: corrected "Dead Code Removed", Known Limitations
 
 ### Test Improvements
 
-- **15 skipped tests unskipped**: DELETE RETURNING, RLS insert, stored procedure params, DBComponent, BufferPool, StorageBackendError, 7x replication tests, 2x MySQL client tests
-- **Test count**: 8,439 → **10,413+** passing tests
-- **Skip count**: 21 → **6** (remaining are known limitations)
-- **Engine coverage**: 87.5% → **90.0%**
-- **Query coverage**: 90.8% → **90.9%**
-- **19/20 packages** now above 90% coverage
-
-### Documentation Fixes
-
-- **CLAUDE.md**: Corrected "Dead Code Removed" section — 8+ features (Query Plan Cache, Replication, Backup, Connection Pool, Slow Query Log, Query Timeout, Optimizer) were falsely listed as removed but are fully integrated
-- **CLAUDE.md**: Corrected Known Limitations — NATURAL JOIN, INSTEAD OF triggers, NO ACTION FK are all implemented
-- **CLAUDE.md**: Updated Core Packages list (added 6 missing packages), test count (5,965 → 8,400+)
-- **FEATURES.md**: Updated coverage table with current values, test statistics
-- **README.md**: Updated coverage badge (89% → 92%)
+- 8,439 → **10,477** passing tests
+- 21 → **6** skips
+- 15 previously-skipped tests unskipped and working
+- 4 new MySQL wire protocol E2E integration tests
+- 19/20 packages above 90% coverage
 
 ### Coverage by Package (v0.3.0)
 
 | Package | Coverage |
 |---------|----------|
-| pool | 98.0% |
-| auth | 97.5% |
-| cache | 95.5% |
-| protocol | 95.4% |
-| metrics | 94.8% |
-| wire | 94.7% |
-| logger | 93.8% |
-| optimizer | 93.8% |
-| txn | 93.5% |
-| wasm | 93.4% |
-| backup | 91.9% |
-| btree | 92.4% |
-| replication | 91.8% |
-| storage | 92.0% |
-| security | 91.9% |
-| query | 90.9% |
-| audit | 90.2% |
-| server | 90.2% |
-| engine | 90.0% |
-| catalog | 85.7% |
+| pool | 98.0% | wasm | 93.4% |
+| auth | 96.8% | btree | 92.4% |
+| cache | 95.5% | backup | 91.9% |
+| protocol | 95.5% | security | 91.9% |
+| metrics | 94.8% | replication | 91.8% |
+| wire | 94.7% | query | 90.9% |
+| optimizer | 93.8% | audit | 90.9% |
+| logger | 93.8% | storage | 90.5% |
+| txn | 93.5% | server | 90.2% |
+| engine | 90.0% | catalog | 85.5% |
 
 ---
 
