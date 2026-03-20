@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -151,8 +152,10 @@ func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 	nonce := encryptedBuf[:nonceSize]
 	ciphertext := encryptedBuf[nonceSize:n]
 
-	// Decrypt
-	plaintext, err := eb.cipher.Open(nil, nonce, ciphertext, nil)
+	// Decrypt with page offset as authenticated data (AAD)
+	aad := make([]byte, 8)
+	binary.LittleEndian.PutUint64(aad, uint64(offset))
+	plaintext, err := eb.cipher.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrDecryptionFailed, err)
 	}
@@ -177,8 +180,10 @@ func (eb *EncryptedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 		return 0, fmt.Errorf("%w: %w", ErrEncryptionFailed, err)
 	}
 
-	// Encrypt data
-	ciphertext := eb.cipher.Seal(nonce, nonce, buf, nil)
+	// Encrypt data with page offset as authenticated data (AAD)
+	aad := make([]byte, 8)
+	binary.LittleEndian.PutUint64(aad, uint64(offset))
+	ciphertext := eb.cipher.Seal(nonce, nonce, buf, aad)
 
 	// Write encrypted data
 	return eb.backend.WriteAt(ciphertext, offset)
@@ -225,6 +230,11 @@ func (eb *EncryptedBackend) Close() error {
 			eb.sessionKey[i] = 0
 		}
 		eb.sessionKey = nil
+	}
+
+	// Clear original key from memory
+	for i := range eb.config.Key {
+		eb.config.Key[i] = 0
 	}
 
 	return eb.backend.Close()

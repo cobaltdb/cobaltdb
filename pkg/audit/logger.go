@@ -304,6 +304,9 @@ func (al *Logger) writeEvent(event *Event) error {
 }
 
 func (al *Logger) maskSensitiveData(event *Event) {
+	// Mask sensitive values in Metadata map
+	event.Metadata = maskMetadataValues(event.Metadata)
+
 	if event.Query == "" {
 		return
 	}
@@ -413,6 +416,31 @@ func maskKeyValuePair(query, key string) string {
 	}
 
 	return result
+}
+
+// maskMetadataValues masks values in metadata whose keys match sensitive patterns
+func maskMetadataValues(metadata map[string]interface{}) map[string]interface{} {
+	if metadata == nil {
+		return nil
+	}
+	sensitiveKeys := []string{"password", "secret", "token", "key", "credential", "auth"}
+	masked := make(map[string]interface{}, len(metadata))
+	for k, v := range metadata {
+		keyLower := strings.ToLower(k)
+		isSensitive := false
+		for _, sk := range sensitiveKeys {
+			if strings.Contains(keyLower, sk) {
+				isSensitive = true
+				break
+			}
+		}
+		if isSensitive {
+			masked[k] = "***MASKED***"
+		} else {
+			masked[k] = v
+		}
+	}
+	return masked
 }
 
 func generateEventID() string {

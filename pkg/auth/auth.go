@@ -279,13 +279,17 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 
 	user, exists := a.users[username]
 	if !exists {
-		a.recordFailedAttempt(username)
+		count := a.recordFailedAttempt(username)
+		// Progressive rate limiting after failed attempt
+		time.Sleep(time.Duration(min(count, 5)) * 200 * time.Millisecond)
 		return "", ErrInvalidCredentials
 	}
 
 	passwordHash := hashPassword(password, user.Salt)
 	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(user.PasswordHash)) != 1 {
-		a.recordFailedAttempt(username)
+		count := a.recordFailedAttempt(username)
+		// Progressive rate limiting after failed attempt
+		time.Sleep(time.Duration(min(count, 5)) * 200 * time.Millisecond)
 		return "", ErrInvalidCredentials
 	}
 
@@ -313,8 +317,9 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 	return token, nil
 }
 
-// recordFailedAttempt records a failed login attempt for brute-force protection
-func (a *Authenticator) recordFailedAttempt(username string) {
+// recordFailedAttempt records a failed login attempt for brute-force protection.
+// Returns the current attempt count for the user.
+func (a *Authenticator) recordFailedAttempt(username string) int {
 	a.failedMu.Lock()
 	if a.failedAttempts[username] == nil {
 		a.failedAttempts[username] = &loginAttempt{}
@@ -324,7 +329,9 @@ func (a *Authenticator) recordFailedAttempt(username string) {
 	if a.failedAttempts[username].count >= maxLoginAttempts {
 		a.failedAttempts[username].lockUntil = time.Now().Add(lockoutDuration)
 	}
+	count := a.failedAttempts[username].count
 	a.failedMu.Unlock()
+	return count
 }
 
 // generateToken generates a cryptographically secure session token
@@ -374,6 +381,12 @@ func (a *Authenticator) ChangePassword(username, oldPassword, newPassword string
 	passwordHash := hashPassword(oldPassword, user.Salt)
 	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(user.PasswordHash)) != 1 {
 		return ErrInvalidCredentials
+	}
+
+	if a.enforcePasswordPolicy {
+		if err := validatePasswordStrength(newPassword); err != nil {
+			return err
+		}
 	}
 
 	// Generate new salt and hash
