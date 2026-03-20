@@ -23,13 +23,13 @@ CobaltDB runs in two modes — use it as an **embedded library** inside your Go 
 ┌─────────────────────────────────────────────────────────┐
 │                     CobaltDB                            │
 │                                                         │
-│  ┌─────────────┐           ┌──────────────────────┐     │
-│  │ Embedded    │           │ Standalone Server     │     │
-│  │ (Go Library)│           │ (MySQL Protocol)      │     │
-│  │             │           │                       │     │
-│  │ db.Query()  │           │ mysql -h host -P 4200 │     │
-│  │ db.Exec()   │           │ Any MySQL client/ORM  │     │
-│  └─────────────┘           └──────────────────────┘     │
+│  ┌─────────────┐           ┌───────────────────────┐    │
+│  │ Embedded    │           │ Standalone Server     │    │
+│  │ (Go Library)│           │ (MySQL Protocol)      │    │
+│  │             │           │                       │    │
+│  │ db.Query()  │           │ mysql -h host -P 4200 │    │
+│  │ db.Exec()   │           │ Any MySQL client/ORM  │    │
+│  └─────────────┘           └───────────────────────┘    │
 └─────────────────────────────────────────────────────────┘
 ```
 
