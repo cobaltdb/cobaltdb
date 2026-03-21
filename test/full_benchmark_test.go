@@ -14,7 +14,7 @@ func BenchmarkFullSuite(b *testing.B) {
 	ctx := context.Background()
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 100 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -255,20 +255,16 @@ func benchmarkDeleteSuite(b *testing.B, db *engine.DB, ctx context.Context) {
 	})
 
 	b.Run("ManyRows", func(b *testing.B) {
-		db.Exec(ctx, "DROP TABLE IF EXISTS bench_delete_many")
-		db.Exec(ctx, "CREATE TABLE bench_delete_many (id INTEGER PRIMARY KEY, age INTEGER)")
-		for i := 0; i < 10000; i++ {
-			db.Exec(ctx, "INSERT INTO bench_delete_many (age) VALUES (?)", i%100)
-		}
-		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			db.Exec(ctx, "DELETE FROM bench_delete_many WHERE age < ?", 50)
-			// Re-populate for next iteration
-			if i < b.N-1 {
-				for j := 0; j < 5000; j++ {
-					db.Exec(ctx, "INSERT INTO bench_delete_many (age) VALUES (?)", j%50)
-				}
+			b.StopTimer()
+			db.Exec(ctx, "DROP TABLE IF EXISTS bench_delete_many")
+			db.Exec(ctx, "CREATE TABLE bench_delete_many (id INTEGER PRIMARY KEY, age INTEGER)")
+			for j := 0; j < 1000; j++ {
+				db.Exec(ctx, "INSERT INTO bench_delete_many (age) VALUES (?)", j%100)
 			}
+			b.StartTimer()
+
+			db.Exec(ctx, "DELETE FROM bench_delete_many WHERE age < ?", 50)
 		}
 	})
 }
@@ -603,8 +599,8 @@ func benchmarkConcurrentSuite(b *testing.B, db *engine.DB, ctx context.Context) 
 		})
 	})
 
-	b.Run("ParallelRead_100", func(b *testing.B) {
-		b.SetParallelism(100)
+	b.Run("ParallelRead_20", func(b *testing.B) {
+		b.SetParallelism(20)
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
@@ -639,24 +635,28 @@ func BenchmarkFullInsert10K(b *testing.B) {
 	benchmarkFullInsert(b, 10000)
 }
 
-func BenchmarkFullInsert50K(b *testing.B) {
-	benchmarkFullInsert(b, 50000)
+func BenchmarkFullInsert20K(b *testing.B) {
+	benchmarkFullInsert(b, 20000)
 }
 
 func benchmarkFullInsert(b *testing.B, rows int) {
 	ctx := context.Background()
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 2048})
 	defer db.Close()
 
-	db.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS bench_insert_%d", rows))
-	db.Exec(ctx, fmt.Sprintf("CREATE TABLE bench_insert_%d (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)", rows))
+	tableName := fmt.Sprintf("bench_insert_%d", rows)
 
 	b.ResetTimer()
 	start := time.Now()
 	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		db.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+		db.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)", tableName))
+		b.StartTimer()
+
 		tx, _ := db.Begin(ctx)
 		for j := 0; j < rows; j++ {
-			tx.Exec(ctx, fmt.Sprintf("INSERT INTO bench_insert_%d (name, age) VALUES (?, ?)", rows),
+			tx.Exec(ctx, fmt.Sprintf("INSERT INTO %s (name, age) VALUES (?, ?)", tableName),
 				fmt.Sprintf("user-%d", j), j%100)
 		}
 		tx.Commit()
@@ -675,8 +675,8 @@ func BenchmarkFullSelect10K(b *testing.B) {
 	benchmarkFullSelect(b, 10000)
 }
 
-func BenchmarkFullSelect50K(b *testing.B) {
-	benchmarkFullSelect(b, 50000)
+func BenchmarkFullSelect20K(b *testing.B) {
+	benchmarkFullSelect(b, 20000)
 }
 
 func benchmarkFullSelect(b *testing.B, rows int) {

@@ -74,8 +74,9 @@ func BenchmarkBTreePutGet(b *testing.B) {
 
 // BenchmarkBTreeDelete benchmarks Delete operations
 func BenchmarkBTreeDelete(b *testing.B) {
+	const numEntries = 10000
 	backend := storage.NewMemory()
-	pool := storage.NewBufferPool(100, backend)
+	pool := storage.NewBufferPool(1000, backend)
 	defer pool.Close()
 
 	tree, err := NewBTree(pool)
@@ -83,8 +84,8 @@ func BenchmarkBTreeDelete(b *testing.B) {
 		b.Fatalf("Failed to create B-tree: %v", err)
 	}
 
-	// Insert data
-	for i := 0; i < b.N; i++ {
+	// Insert fixed dataset
+	for i := 0; i < numEntries; i++ {
 		key := fmt.Sprintf("key_%010d", i)
 		value := fmt.Sprintf("value_%010d", i)
 		tree.Put([]byte(key), []byte(value))
@@ -92,8 +93,9 @@ func BenchmarkBTreeDelete(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		key := fmt.Sprintf("key_%010d", i)
+		key := fmt.Sprintf("key_%010d", i%numEntries)
 		tree.Delete([]byte(key))
+		tree.Put([]byte(key), []byte("value"))
 	}
 }
 
@@ -126,7 +128,7 @@ func BenchmarkBTreeScan(b *testing.B) {
 
 // BenchmarkBTreeLargeDataset benchmarks operations on large dataset
 func BenchmarkBTreeLargeDataset(b *testing.B) {
-	sizes := []int{1000, 10000, 100000}
+	sizes := []int{1000, 10000, 50000}
 
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("Put_%d", size), func(b *testing.B) {

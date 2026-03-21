@@ -90,7 +90,7 @@ type BufferPool struct {
 func NewBufferPool(capacity int, backend Backend) *BufferPool {
 	bp := &BufferPool{
 		capacity: capacity,
-		pages:    make(map[uint32]*CachedPage),
+		pages:    make(map[uint32]*CachedPage, capacity),
 		lru:      list.New(),
 		backend:  backend,
 		stats:    newBufferPoolStatsCollector(),
@@ -285,7 +285,8 @@ func (bp *BufferPool) evict() error {
 					return err
 				}
 			}
-			// Remove from cache
+			// Recycle page data buffer and remove from cache
+			putPageData(page.data)
 			delete(bp.pages, page.id)
 			bp.lru.Remove(elem)
 			bp.stats.recordEviction()

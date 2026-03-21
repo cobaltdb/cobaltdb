@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 )
 
 const (
@@ -18,6 +19,31 @@ var (
 	ErrInvalidPageType = errors.New("invalid page type")
 	ErrPageCorrupted   = errors.New("page is corrupted")
 )
+
+// pageDataPool recycles PageSize byte slices to reduce GC pressure
+var pageDataPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, PageSize)
+		return &b
+	},
+}
+
+// getPageData retrieves a page-sized buffer from the pool
+func getPageData() []byte {
+	bp := pageDataPool.Get().(*[]byte)
+	b := *bp
+	// Zero the buffer before reuse
+	clear(b)
+	return b
+}
+
+// putPageData returns a page-sized buffer to the pool
+func putPageData(b []byte) {
+	if cap(b) >= PageSize {
+		b = b[:PageSize]
+		pageDataPool.Put(&b)
+	}
+}
 
 // PageType represents the type of a page
 type PageType uint8
@@ -56,7 +82,7 @@ type Page struct {
 
 // NewPage creates a new page with the given ID and type
 func NewPage(pageID uint32, pageType PageType) *Page {
-	data := make([]byte, PageSize)
+	data := getPageData()
 	page := &Page{
 		Header: PageHeader{
 			PageID:    pageID,

@@ -7,12 +7,13 @@ import (
 
 // BenchmarkBufferPoolGetPage benchmarks GetPage operations
 func BenchmarkBufferPoolGetPage(b *testing.B) {
-	backend := NewMemory()
-	pool := NewBufferPool(100, backend)
+	const numPages = 500
+	backend := NewMemoryWithLimit(64 * 1024 * 1024)
+	pool := NewBufferPool(numPages, backend)
 	defer pool.Close()
 
-	// Create pages
-	for i := 0; i < 1000; i++ {
+	// Create pages - pool capacity matches page count so no eviction
+	for i := 0; i < numPages; i++ {
 		page, _ := pool.NewPage(PageTypeLeaf)
 		if page != nil {
 			pool.Unpin(page)
@@ -21,26 +22,42 @@ func BenchmarkBufferPoolGetPage(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		page, _ := pool.GetPage(uint32(i%1000 + 1))
+		page, _ := pool.GetPage(uint32(i%numPages + 1))
 		if page != nil {
 			pool.Unpin(page)
 		}
 	}
 }
 
-// BenchmarkBufferPoolNewPage benchmarks NewPage operations
+// BenchmarkBufferPoolNewPage benchmarks NewPage operations.
+// Resets pool in batches to prevent unbounded backend growth.
 func BenchmarkBufferPoolNewPage(b *testing.B) {
-	backend := NewMemory()
-	pool := NewBufferPool(1000, backend)
-	defer pool.Close()
+	const batchSize = 5000
+
+	var pool *BufferPool
+	reset := func() {
+		if pool != nil {
+			pool.Close()
+		}
+		backend := NewMemoryWithLimit(64 * 1024 * 1024)
+		pool = NewBufferPool(batchSize, backend)
+	}
+	reset()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		if i > 0 && i%batchSize == 0 {
+			b.StopTimer()
+			reset()
+			b.StartTimer()
+		}
 		page, _ := pool.NewPage(PageTypeLeaf)
 		if page != nil {
 			pool.Unpin(page)
 		}
 	}
+	b.StopTimer()
+	pool.Close()
 }
 
 // BenchmarkBufferPoolFlushAll benchmarks FlushAll operations
@@ -91,12 +108,13 @@ func BenchmarkWALAppend(b *testing.B) {
 
 // BenchmarkMemoryWriteAt benchmarks Memory backend WriteAt
 func BenchmarkMemoryWriteAt(b *testing.B) {
-	mem := NewMemory()
+	mem := NewMemoryWithLimit(64 * 1024 * 1024) // 64MB cap
 	data := make([]byte, 4096)
+	const maxPages = 10000 // cycle within 40MB
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		mem.WriteAt(data, int64(i*4096))
+		mem.WriteAt(data, int64((i%maxPages)*4096))
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 func BenchmarkInsert(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -31,7 +31,7 @@ func BenchmarkInsert(b *testing.B) {
 func BenchmarkInsertBatch(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -57,7 +57,7 @@ func BenchmarkInsertBatch(b *testing.B) {
 func BenchmarkSelect(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -84,7 +84,7 @@ func BenchmarkSelect(b *testing.B) {
 func BenchmarkSelectWithScan(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -116,7 +116,7 @@ func BenchmarkSelectWithScan(b *testing.B) {
 func BenchmarkCreateTable(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 1024 * 1024,
+		CacheSize: 1024, // 1024 pages = 4MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -129,6 +129,7 @@ func BenchmarkCreateTable(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		tableName := fmt.Sprintf("table_%d", i)
 		db.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (id INTEGER, value TEXT)`, tableName))
+		db.Exec(ctx, fmt.Sprintf(`DROP TABLE %s`, tableName))
 	}
 	b.StopTimer()
 }
@@ -136,7 +137,7 @@ func BenchmarkCreateTable(b *testing.B) {
 func BenchmarkTransaction(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -158,7 +159,7 @@ func BenchmarkTransaction(b *testing.B) {
 func BenchmarkConcurrentInsert(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -182,7 +183,7 @@ func BenchmarkConcurrentInsert(b *testing.B) {
 func BenchmarkConcurrentRead(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -210,7 +211,7 @@ func BenchmarkConcurrentRead(b *testing.B) {
 func BenchmarkSelectWithWhere(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -237,7 +238,7 @@ func BenchmarkSelectWithWhere(b *testing.B) {
 func BenchmarkSelectWithWhereAndScan(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -270,7 +271,7 @@ func BenchmarkSelectWithWhereAndScan(b *testing.B) {
 func BenchmarkUpdate(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -296,7 +297,7 @@ func BenchmarkUpdate(b *testing.B) {
 func BenchmarkUpdateManyRows(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -323,7 +324,7 @@ func BenchmarkUpdateManyRows(b *testing.B) {
 func BenchmarkDelete(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -352,7 +353,7 @@ func BenchmarkDelete(b *testing.B) {
 func BenchmarkDeleteManyRows(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 10 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -360,22 +361,19 @@ func BenchmarkDeleteManyRows(b *testing.B) {
 	defer db.Close()
 
 	ctx := context.Background()
-	db.Exec(ctx, `CREATE TABLE bench_delete_many (id INTEGER, value TEXT, age INTEGER)`)
-
-	// Insert test data
-	for i := 0; i < 1000; i++ {
-		db.Exec(ctx, `INSERT INTO bench_delete_many (id, value, age) VALUES (?, ?, ?)`,
-			i, fmt.Sprintf("value-%d", i), i%100)
-	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		db.Exec(ctx, `DELETE FROM bench_delete_many WHERE age < ?`, 50)
-		// Re-insert for next iteration
+		b.StopTimer()
+		db.Exec(ctx, `DROP TABLE IF EXISTS bench_delete_many`)
+		db.Exec(ctx, `CREATE TABLE bench_delete_many (id INTEGER, value TEXT, age INTEGER)`)
 		for j := 0; j < 1000; j++ {
 			db.Exec(ctx, `INSERT INTO bench_delete_many (id, value, age) VALUES (?, ?, ?)`,
 				j, fmt.Sprintf("value-%d", j), j%100)
 		}
+		b.StartTimer()
+
+		db.Exec(ctx, `DELETE FROM bench_delete_many WHERE age < ?`, 50)
 	}
 	b.StopTimer()
 }
@@ -384,7 +382,7 @@ func BenchmarkDeleteManyRows(b *testing.B) {
 func BenchmarkInsert10K(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 100 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -392,14 +390,20 @@ func BenchmarkInsert10K(b *testing.B) {
 	defer db.Close()
 
 	ctx := context.Background()
-	db.Exec(ctx, `CREATE TABLE bench_10k (id INTEGER, value TEXT, age INTEGER)`)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		db.Exec(ctx, `DROP TABLE IF EXISTS bench_10k`)
+		db.Exec(ctx, `CREATE TABLE bench_10k (id INTEGER, value TEXT, age INTEGER)`)
+		b.StartTimer()
+
+		tx, _ := db.Begin(ctx)
 		for j := 0; j < 10000; j++ {
-			db.Exec(ctx, `INSERT INTO bench_10k (id, value, age) VALUES (?, ?, ?)`,
+			tx.Exec(ctx, `INSERT INTO bench_10k (id, value, age) VALUES (?, ?, ?)`,
 				j, fmt.Sprintf("value-%d", j), j%100)
 		}
+		tx.Commit()
 	}
 	b.StopTimer()
 }
@@ -407,7 +411,7 @@ func BenchmarkInsert10K(b *testing.B) {
 func BenchmarkSelect10K(b *testing.B) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
-		CacheSize: 100 * 1024 * 1024,
+		CacheSize: 2048, // 2048 pages = 8MB
 	})
 	if err != nil {
 		b.Fatal(err)
