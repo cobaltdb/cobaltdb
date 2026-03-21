@@ -36,8 +36,19 @@ func encodeVersionedRow(rowValues []interface{}, asOfTime *time.Time) ([]byte, e
 	return json.Marshal(vrow)
 }
 
-// decodeVersionedRow decodes versioned row data
+// decodeVersionedRow decodes versioned row data.
+// Uses a custom fast decoder for the known JSON format, falling back to
+// json.Unmarshal for edge cases. The fast path avoids reflection and
+// reduces allocations by parsing the "data" array and "version" object directly.
 func decodeVersionedRow(data []byte, numCols int) (*VersionedRow, error) {
+	// Fast path: custom decoder for known format {"data":[...],"version":{...}}
+	if len(data) > 2 && data[0] == '{' {
+		if vrow, ok := decodeVersionedRowFast(data, numCols); ok {
+			return vrow, nil
+		}
+	}
+
+	// Slow path: generic json.Unmarshal (backward compatibility, edge cases)
 	var vrow VersionedRow
 	if err := json.Unmarshal(data, &vrow); err != nil {
 		// Fallback: try decoding as plain row (backward compatibility)
@@ -69,6 +80,217 @@ func decodeVersionedRow(data []byte, numCols int) (*VersionedRow, error) {
 	}
 
 	return &vrow, nil
+}
+
+// decodeVersionedRowFast is a zero-reflection decoder for VersionedRow JSON.
+// It parses the known format directly using byte scanning, avoiding
+// json.Unmarshal overhead (reflection, map allocation, etc.).
+// Returns (row, true) on success or (nil, false) to fall back to slow path.
+func decodeVersionedRowFast(data []byte, numCols int) (*VersionedRow, bool) {
+	// Find "data":[ array
+	dataKey := []byte(`"data":[`)
+	pos := 1 // skip {
+	for pos <= len(data)-len(dataKey) {
+		if data[pos] == 'd' && pos+len(dataKey) <= len(data) && string(data[pos-1:pos-1+len(dataKey)]) == string(dataKey) {
+			pos = pos - 1 + len(dataKey)
+			goto foundData
+		}
+		pos++
+	}
+	return nil, false
+
+foundData:
+	// Parse the data array elements
+	rowData := make([]interface{}, 0, numCols)
+	for pos < len(data) {
+		// Skip whitespace
+		for pos < len(data) && data[pos] <= ' ' {
+			pos++
+		}
+		if pos >= len(data) {
+			return nil, false
+		}
+		if data[pos] == ']' {
+			pos++
+			break
+		}
+
+		// Parse one value
+		var val interface{}
+		var newPos int
+
+		switch data[pos] {
+		case '"':
+			// String value
+			pos++
+			start := pos
+			hasEscape := false
+			for pos < len(data) {
+				if data[pos] == '\\' {
+					hasEscape = true
+					pos += 2
+					continue
+				}
+				if data[pos] == '"' {
+					if hasEscape {
+						// Has escape sequences — use json.Unmarshal for correctness
+						var s string
+						if err := json.Unmarshal(data[start-1:pos+1], &s); err != nil {
+							return nil, false
+						}
+						val = s
+					} else {
+						val = string(data[start:pos])
+					}
+					pos++
+					goto valueReady
+				}
+				pos++
+			}
+			return nil, false
+
+		case 'n':
+			if pos+4 <= len(data) && string(data[pos:pos+4]) == "null" {
+				val = nil
+				pos += 4
+				goto valueReady
+			}
+			return nil, false
+
+		case 't':
+			if pos+4 <= len(data) && string(data[pos:pos+4]) == "true" {
+				val = true
+				pos += 4
+				goto valueReady
+			}
+			return nil, false
+
+		case 'f':
+			if pos+5 <= len(data) && string(data[pos:pos+5]) == "false" {
+				val = false
+				pos += 5
+				goto valueReady
+			}
+			return nil, false
+
+		case '{', '[':
+			// Nested object/array — use json.Unmarshal for this value
+			newPos = skipJSONValue(data, pos)
+			if newPos < 0 {
+				return nil, false
+			}
+			if err := json.Unmarshal(data[pos:newPos], &val); err != nil {
+				return nil, false
+			}
+			pos = newPos
+			goto valueReady
+
+		default:
+			// Number — parse directly, avoiding float64 for integers
+			numStart := pos
+			isFloat := false
+			if pos < len(data) && (data[pos] == '-' || data[pos] == '+') {
+				pos++
+			}
+			for pos < len(data) && data[pos] >= '0' && data[pos] <= '9' {
+				pos++
+			}
+			if pos < len(data) && (data[pos] == '.' || data[pos] == 'e' || data[pos] == 'E') {
+				isFloat = true
+				pos++
+				if pos < len(data) && (data[pos] == '+' || data[pos] == '-') {
+					pos++
+				}
+				for pos < len(data) && data[pos] >= '0' && data[pos] <= '9' {
+					pos++
+				}
+			}
+			numStr := string(data[numStart:pos])
+			if isFloat {
+				fv, err := strconv.ParseFloat(numStr, 64)
+				if err != nil {
+					return nil, false
+				}
+				val = fv
+			} else {
+				iv, err := strconv.ParseInt(numStr, 10, 64)
+				if err != nil {
+					// Might be too large for int64, use float64
+					fv, err2 := strconv.ParseFloat(numStr, 64)
+					if err2 != nil {
+						return nil, false
+					}
+					val = fv
+				} else {
+					val = iv // Direct int64, no float64→int64 conversion needed
+				}
+			}
+			goto valueReady
+		}
+
+	valueReady:
+		rowData = append(rowData, val)
+
+		// Skip whitespace + comma
+		for pos < len(data) && data[pos] <= ' ' {
+			pos++
+		}
+		if pos < len(data) && data[pos] == ',' {
+			pos++
+		}
+	}
+
+	// Parse version: find "created_at": and "deleted_at":
+	var createdAt, deletedAt int64
+	caKey := []byte(`"created_at":`)
+	daKey := []byte(`"deleted_at":`)
+	for pos < len(data) {
+		if data[pos] == 'c' && pos > 0 && data[pos-1] == '"' && pos-1+len(caKey) <= len(data) && string(data[pos-1:pos-1+len(caKey)]) == string(caKey) {
+			numStart := pos - 1 + len(caKey)
+			for numStart < len(data) && data[numStart] <= ' ' {
+				numStart++
+			}
+			numEnd := numStart
+			if numEnd < len(data) && data[numEnd] == '-' {
+				numEnd++
+			}
+			for numEnd < len(data) && data[numEnd] >= '0' && data[numEnd] <= '9' {
+				numEnd++
+			}
+			if v, err := strconv.ParseInt(string(data[numStart:numEnd]), 10, 64); err == nil {
+				createdAt = v
+			}
+		} else if data[pos] == 'd' && pos > 0 && data[pos-1] == '"' && pos-1+len(daKey) <= len(data) && string(data[pos-1:pos-1+len(daKey)]) == string(daKey) {
+			numStart := pos - 1 + len(daKey)
+			for numStart < len(data) && data[numStart] <= ' ' {
+				numStart++
+			}
+			numEnd := numStart
+			if numEnd < len(data) && data[numEnd] == '-' {
+				numEnd++
+			}
+			for numEnd < len(data) && data[numEnd] >= '0' && data[numEnd] <= '9' {
+				numEnd++
+			}
+			if v, err := strconv.ParseInt(string(data[numStart:numEnd]), 10, 64); err == nil {
+				deletedAt = v
+			}
+		}
+		pos++
+	}
+
+	// Pad row to match column count
+	for len(rowData) < numCols {
+		rowData = append(rowData, nil)
+	}
+
+	return &VersionedRow{
+		Data: rowData,
+		Version: RowVersion{
+			CreatedAt: createdAt,
+			DeletedAt: deletedAt,
+		},
+	}, true
 }
 
 // extractColumnFloat64 extracts a numeric column value from raw JSON row data
