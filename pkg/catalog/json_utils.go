@@ -212,17 +212,240 @@ func JSONExtract(jsonData, path string) (interface{}, error) {
 		return nil, nil
 	}
 
-	var data interface{}
-	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %w", err)
-	}
-
 	jp, err := getCachedJSONPath(path)
 	if err != nil {
 		return nil, fmt.Errorf("invalid JSON path: %w", err)
 	}
 
+	var data interface{}
+	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+
 	return jp.Get(data)
+}
+
+// jsonExtractSingleKey extracts a top-level key from a JSON object using byte scanning.
+// Returns (value, true) on success. Falls back to (nil, false) for edge cases.
+// Currently unused — kept for future optimization of simple JSON path queries.
+func jsonExtractSingleKey(jsonData string, key string) (interface{}, bool) { //nolint:unused
+	if len(jsonData) < 2 || jsonData[0] != '{' {
+		return nil, false
+	}
+
+	// Zero-allocation: work directly on the string (no []byte conversion)
+	keyQuoted := `"` + key + `"`
+	pos := 1
+
+	for pos < len(jsonData) {
+		for pos < len(jsonData) && jsonData[pos] <= ' ' {
+			pos++
+		}
+		if pos >= len(jsonData) || jsonData[pos] == '}' {
+			break
+		}
+		if jsonData[pos] != '"' {
+			return nil, false
+		}
+
+		// Check key match (string slice comparison, no allocation)
+		if pos+len(keyQuoted) <= len(jsonData) && jsonData[pos:pos+len(keyQuoted)] == keyQuoted {
+			pos += len(keyQuoted)
+			for pos < len(jsonData) && jsonData[pos] <= ' ' {
+				pos++
+			}
+			if pos >= len(jsonData) || jsonData[pos] != ':' {
+				return nil, false
+			}
+			pos++
+			for pos < len(jsonData) && jsonData[pos] <= ' ' {
+				pos++
+			}
+			return parseJSONValueStr(jsonData, pos)
+		}
+
+		// Skip key string
+		pos++
+		for pos < len(jsonData) {
+			if jsonData[pos] == '\\' {
+				pos += 2
+				continue
+			}
+			if jsonData[pos] == '"' {
+				pos++
+				break
+			}
+			pos++
+		}
+
+		// Skip : whitespace value
+		for pos < len(jsonData) && jsonData[pos] <= ' ' {
+			pos++
+		}
+		if pos >= len(jsonData) || jsonData[pos] != ':' {
+			return nil, false
+		}
+		pos++
+		for pos < len(jsonData) && jsonData[pos] <= ' ' {
+			pos++
+		}
+		pos = skipJSONValueStr(jsonData, pos)
+		if pos < 0 {
+			return nil, false
+		}
+
+		for pos < len(jsonData) && jsonData[pos] <= ' ' {
+			pos++
+		}
+		if pos < len(jsonData) && jsonData[pos] == ',' {
+			pos++
+		}
+	}
+
+	return nil, false
+}
+
+// parseJSONValueStr parses a JSON value from a string at pos. Zero-allocation for primitives.
+func parseJSONValueStr(s string, pos int) (interface{}, bool) {
+	if pos >= len(s) {
+		return nil, false
+	}
+	switch s[pos] {
+	case '"':
+		pos++
+		start := pos
+		for pos < len(s) {
+			if s[pos] == '\\' {
+				// Has escape sequences — fall back to json.Unmarshal for correctness
+				end := pos
+				for end < len(s) {
+					if s[end] == '\\' {
+						end += 2
+						continue
+					}
+					if s[end] == '"' {
+						var result string
+						if err := json.Unmarshal([]byte(s[start-1:end+1]), &result); err != nil {
+							return nil, false
+						}
+						return result, true
+					}
+					end++
+				}
+				return nil, false
+			}
+			if s[pos] == '"' {
+				return s[start:pos], true // zero-allocation string slice
+			}
+			pos++
+		}
+		return nil, false
+	case 't':
+		if pos+4 <= len(s) && s[pos:pos+4] == "true" {
+			return true, true
+		}
+		return nil, false
+	case 'f':
+		if pos+5 <= len(s) && s[pos:pos+5] == "false" {
+			return false, true
+		}
+		return nil, false
+	case 'n':
+		if pos+4 <= len(s) && s[pos:pos+4] == "null" {
+			return nil, true
+		}
+		return nil, false
+	case '[', '{':
+		end := skipJSONValueStr(s, pos)
+		if end < 0 {
+			return nil, false
+		}
+		var result interface{}
+		if err := json.Unmarshal([]byte(s[pos:end]), &result); err != nil {
+			return nil, false
+		}
+		return result, true
+	default:
+		// Number
+		end := pos
+		for end < len(s) && s[end] != ',' && s[end] != '}' && s[end] != ']' && s[end] > ' ' {
+			end++
+		}
+		numStr := s[pos:end]
+		if iv, err := strconv.ParseInt(numStr, 10, 64); err == nil {
+			return float64(iv), true
+		}
+		if fv, err := strconv.ParseFloat(numStr, 64); err == nil {
+			return fv, true
+		}
+		return nil, false
+	}
+}
+
+// skipJSONValueStr skips a JSON value in a string. Zero-allocation.
+func skipJSONValueStr(s string, pos int) int {
+	if pos >= len(s) {
+		return -1
+	}
+	switch s[pos] {
+	case '"':
+		pos++
+		for pos < len(s) {
+			if s[pos] == '\\' {
+				pos += 2
+				continue
+			}
+			if s[pos] == '"' {
+				return pos + 1
+			}
+			pos++
+		}
+		return -1
+	case '{', '[':
+		open := s[pos]
+		close := byte('}')
+		if open == '[' {
+			close = ']'
+		}
+		depth := 0
+		inStr := false
+		for pos < len(s) {
+			ch := s[pos]
+			if inStr {
+				if ch == '\\' {
+					pos += 2
+					continue
+				}
+				if ch == '"' {
+					inStr = false
+				}
+			} else {
+				if ch == '"' {
+					inStr = true
+				} else if ch == open {
+					depth++
+				} else if ch == close {
+					depth--
+					if depth == 0 {
+						return pos + 1
+					}
+				}
+			}
+			pos++
+		}
+		return -1
+	case 't':
+		return pos + 4
+	case 'f':
+		return pos + 5
+	case 'n':
+		return pos + 4
+	default:
+		for pos < len(s) && s[pos] != ',' && s[pos] != '}' && s[pos] != ']' && s[pos] > ' ' {
+			pos++
+		}
+		return pos
+	}
 }
 
 // JSONSet sets a value in JSON using a path
