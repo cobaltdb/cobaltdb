@@ -9,17 +9,17 @@ interface BenchmarkItem {
 }
 
 const throughputData: BenchmarkItem[] = [
-  { name: 'CobaltDB', value: 98000, maxValue: 100000, highlight: true, label: '98K QPS' },
-  { name: 'PostgreSQL', value: 52000, maxValue: 100000, label: '52K QPS' },
-  { name: 'MySQL', value: 48000, maxValue: 100000, label: '48K QPS' },
-  { name: 'SQLite', value: 45000, maxValue: 100000, label: '45K QPS' },
+  { name: 'Point Lookup', value: 15700, maxValue: 16000, highlight: true, label: '15.7M ops/sec' },
+  { name: 'GET (B-Tree)', value: 6500, maxValue: 16000, label: '6.5M ops/sec' },
+  { name: 'PUT (B-Tree)', value: 1560, maxValue: 16000, label: '1.56M ops/sec' },
+  { name: 'SQL INSERT', value: 500, maxValue: 16000, label: '500K ops/sec' },
 ]
 
 const latencyData: BenchmarkItem[] = [
-  { name: 'CobaltDB', value: 0.8, maxValue: 2.5, highlight: true, label: '0.8ms' },
-  { name: 'PostgreSQL', value: 1.9, maxValue: 2.5, label: '1.9ms' },
-  { name: 'SQLite', value: 2.1, maxValue: 2.5, label: '2.1ms' },
-  { name: 'MySQL', value: 2.3, maxValue: 2.5, label: '2.3ms' },
+  { name: 'Point Lookup (B-Tree)', value: 64, maxValue: 900, highlight: true, label: '64 ns' },
+  { name: 'SQL Point Lookup', value: 210, maxValue: 900, label: '2.1 \u00B5s' },
+  { name: 'Full Scan (1K rows)', value: 598, maxValue: 900, label: '598 \u00B5s' },
+  { name: 'Hash JOIN (1K rows)', value: 700, maxValue: 900, label: '700 \u00B5s' },
 ]
 
 function BenchmarkBars({ data, inView }: { data: BenchmarkItem[]; inView: boolean }) {
@@ -114,7 +114,7 @@ export function PerformanceSection() {
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
-                Throughput (QPS)
+                Throughput (ops/sec)
               </button>
               <button
                 onClick={() => handleTabChange('latency')}
@@ -138,7 +138,7 @@ export function PerformanceSection() {
           </div>
 
           <p className="text-center text-xs text-muted-foreground mt-6">
-            AMD Ryzen 9 5900X, 32GB RAM, NVMe SSD. Read-heavy OLTP workload, 1M rows. In-process (no network overhead).
+            AMD Ryzen 9 9950X3D, Go 1.26, Windows 11. In-memory benchmarks, no network overhead.
           </p>
         </div>
       </div>

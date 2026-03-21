@@ -284,7 +284,7 @@ export function HeroSection() {
         {/* Stats */}
         <div className="grid grid-cols-4 gap-4 max-w-3xl mx-auto mt-10 animate-fade-in-up stagger-5">
           <div className="text-center p-4 rounded-xl hover:bg-card/50 transition-colors">
-            <AnimatedCounter target={9000000} suffix="+" />
+            <AnimatedCounter target={15700000} suffix="+" />
             <div className="text-sm text-muted-foreground mt-1 font-medium">Reads/sec</div>
           </div>
           <div className="text-center p-4 border-x border-border rounded-xl">
