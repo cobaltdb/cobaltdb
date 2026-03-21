@@ -191,6 +191,21 @@ func (jp *JSONPath) Get(data interface{}) (interface{}, error) {
 	return current, nil
 }
 
+// jsonPathCache caches parsed JSONPath objects for reuse across rows.
+var jsonPathCache sync.Map // string → *JSONPath
+
+func getCachedJSONPath(path string) (*JSONPath, error) {
+	if v, ok := jsonPathCache.Load(path); ok {
+		return v.(*JSONPath), nil
+	}
+	jp, err := ParseJSONPath(path)
+	if err != nil {
+		return nil, err
+	}
+	jsonPathCache.Store(path, jp)
+	return jp, nil
+}
+
 // JSONExtract extracts a value from JSON using a path
 func JSONExtract(jsonData, path string) (interface{}, error) {
 	if jsonData == "" {
@@ -202,7 +217,7 @@ func JSONExtract(jsonData, path string) (interface{}, error) {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
-	jp, err := ParseJSONPath(path)
+	jp, err := getCachedJSONPath(path)
 	if err != nil {
 		return nil, fmt.Errorf("invalid JSON path: %w", err)
 	}
