@@ -1336,6 +1336,24 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		return returnColumns, rows, nil
 	}
 
+	// Compute early termination limit for LIMIT/OFFSET without ORDER BY/DISTINCT/window.
+	// When no reordering is needed, we can stop scanning once we have offset+limit rows.
+	earlyLimit := 0
+	if stmt.Limit != nil && len(stmt.OrderBy) == 0 && !stmt.Distinct && !hasWindowFuncs {
+		if limitVal, err := evaluateExpression(cat, nil, nil, stmt.Limit, args); err == nil {
+			if limit, ok := toInt(limitVal); ok && limit > 0 {
+				earlyLimit = int(limit)
+				if stmt.Offset != nil {
+					if offsetVal, err := evaluateExpression(cat, nil, nil, stmt.Offset, args); err == nil {
+						if offset, ok := toInt(offsetVal); ok && offset > 0 {
+							earlyLimit += int(offset)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Try to use index for WHERE clause
 	var useIndex bool
 	var indexMatches map[string]bool
@@ -1539,6 +1557,12 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 					fullRowCopy := make([]interface{}, len(fullRow))
 					copy(fullRowCopy, fullRow)
 					windowFullRows = append(windowFullRows, fullRowCopy)
+				}
+
+				// Early termination: if no ORDER BY, DISTINCT, or window functions,
+				// we can stop scanning once we have enough rows for OFFSET+LIMIT.
+				if earlyLimit > 0 && len(rows) >= earlyLimit {
+					break
 				}
 			}
 			iter.Close()
