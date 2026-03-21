@@ -251,5 +251,109 @@ All identified performance issues have been resolved:
 
 ---
 
-**Optimized By:** Claude Code
-**Last Updated:** 2026-03-08
+## v0.3.1 Performance Release (2026-03-21)
+
+### 7. ✅ Custom VersionedRow Fast Decoder
+
+**File:** `pkg/catalog/temporal.go`
+
+**Problem:**
+- `decodeVersionedRow()` used `json.Unmarshal` for every row — reflection overhead, float64→int64 roundtrip
+- 1,051 ns/row, 17 allocs/row
+- Dominated full scan time (84% of FullScan cost)
+
+**Solution:**
+- `decodeVersionedRowFast()`: zero-reflection byte-scanning decoder for the known JSON format
+- Parses integers directly as `int64` (no float64 intermediate)
+- Falls back to `json.Unmarshal` for backward compatibility edge cases
+
+**Results:**
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| Decode latency | 1,051 ns | 204 ns | **5.2×** |
+| Allocs/row | 17 | 9 | **47% less** |
+| FullScan 10K | 16.7 ms | 8.8 ms | **2.3×** |
+
+---
+
+### 8. ✅ MemoryBackend Safety & Efficiency
+
+**File:** `pkg/storage/memory.go`
+
+**Problem:**
+- `WriteAt()` reallocated on every write past `len(data)` even when `cap(data)` was sufficient
+- Geometric doubling: 50GB backend → 100GB allocation attempt → system lockup
+- `CacheSize` was misused as bytes in benchmarks (10M pages = 40GB)
+
+**Solution:**
+- Zero-copy fast path: `m.data = m.data[:endOffset]` when capacity is sufficient
+- Capped geometric growth at 64MB increments
+- Configurable max size (default 1GB) via `NewMemoryWithLimit()`
+- Fixed all `CacheSize` values in benchmarks (page count, not bytes)
+
+**Results:**
+| Metric | Before | After |
+|--------|--------|-------|
+| MemoryWriteAt B/op | 64 MB | 12 B |
+| Benchmark RAM usage | 100+ GB | < 1 GB |
+
+---
+
+### 9. ✅ SUM/AVG Byte-Level Fast Path
+
+**File:** `pkg/catalog/catalog_core.go`
+
+**Problem:** SUM/AVG went through full `decodeVersionedRow()` for every row even when only one numeric column was needed.
+
+**Solution:** `extractColumnFloat64()` extracts a single numeric column from raw JSON bytes without full decode. Falls back to full decode on failure. Uses `bytesContainDeletedAt()` to skip deleted rows.
+
+**Results:**
+| Operation | Before | After |
+|-----------|--------|-------|
+| SUM (10K) | 14 ms | 3.9 ms (**3.6×**) |
+| AVG (10K) | 16 ms | 4.4 ms (**3.6×**) |
+
+---
+
+### 10. ✅ LIMIT/OFFSET Early Termination
+
+**File:** `pkg/catalog/catalog_core.go`
+
+**Problem:** `SELECT * FROM t LIMIT 100 OFFSET 1000` scanned all 10K rows, then sliced.
+
+**Solution:** When no ORDER BY/DISTINCT/window functions, stop scanning after `offset + limit` matching rows.
+
+**Results:** 16.9 ms → 3.7 ms (**4.6×**)
+
+---
+
+### 11. ✅ Hash Join & compareValues strconv
+
+**Files:** `pkg/catalog/catalog_select.go`, `pkg/catalog/catalog_eval.go`, `pkg/catalog/stats.go`
+
+**Problem:** `fmt.Sprintf("%v", val)` used reflection for every hash join key and value comparison.
+
+**Solution:** `hashJoinKey()` and `valueToString()` use `strconv.FormatInt/FormatFloat` for common types.
+
+**Results:**
+| Operation | Before | After |
+|-----------|--------|-------|
+| InnerJoin 10K | 12.3 ms | 9.6 ms (**1.3×**) |
+| LeftJoin 10K | 12.2 ms | 8.8 ms (**1.4×**) |
+| ORDER BY 10K | 9.1 ms | 7.6 ms (**1.2×**) |
+
+---
+
+### 12. ✅ JSONPath Cache
+
+**File:** `pkg/catalog/json_utils.go`
+
+**Problem:** `ParseJSONPath()` re-parsed the same path string for every row in JSON_EXTRACT WHERE scans.
+
+**Solution:** `sync.Map` cache for parsed `JSONPath` objects via `getCachedJSONPath()`.
+
+**Results:** JSON_EXTRACT point lookup 4.7 µs → 3.7 µs (**22% faster**)
+
+---
+
+**Last Updated:** 2026-03-21
