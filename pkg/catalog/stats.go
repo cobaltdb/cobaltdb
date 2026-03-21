@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -599,7 +600,8 @@ func bucketOverlapsRange(bucket Bucket, lower, upper interface{}) bool {
 	return overlaps
 }
 
-// valueToString converts a value to string for comparison
+// valueToString converts a value to string for comparison.
+// Uses strconv for common types to avoid fmt.Sprintf reflection overhead.
 func valueToString(v interface{}) string {
 	if v == nil {
 		return ""
@@ -607,10 +609,19 @@ func valueToString(v interface{}) string {
 	switch val := v.(type) {
 	case string:
 		return val
-	case int, int32, int64:
-		return fmt.Sprintf("%d", val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
 	case float64:
-		return fmt.Sprintf("%g", val)
+		return strconv.FormatFloat(val, 'g', -1, 64)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
 	default:
 		return fmt.Sprintf("%v", val)
 	}

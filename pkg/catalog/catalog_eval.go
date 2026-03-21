@@ -314,8 +314,8 @@ func compareValues(a, b interface{}) int {
 		return 0
 	}
 
-	// Fallback to string comparison
-	return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+	// Fallback to string comparison (use fast conversion for known types)
+	return strings.Compare(valueToString(a), valueToString(b))
 }
 
 func evaluateCaseExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.CaseExpr, args []interface{}) (interface{}, error) {
