@@ -142,16 +142,14 @@ CobaltDB supports ACID transactions:
 
 ## Performance Characteristics
 
-- **Insert**: ~300K ops/sec (in-memory)
-- **Select**: Full table scan
-- **Update/Delete**: Full table scan with filtering
-- **Index**: Created but not used in queries yet
+- **B-Tree GET**: 15.7M ops/sec (64 ns)
+- **B-Tree PUT**: 1.56M ops/sec (641 ns)
+- **SQL INSERT**: 500K ops/sec (2.0 µs)
+- **Full Scan (1K rows)**: 598 µs (custom fast decoder)
+- **Hash JOIN (1K)**: 700 µs
+- **Index lookup**: 19× faster than full scan
 
-## Future Improvements
-
-See [CHANGELOG.md](../CHANGELOG.md) for roadmap:
-- WAL for crash recovery
-- B+Tree disk persistence
+See [BENCHMARKS.md](BENCHMARKS.md) for detailed results.
 - Index usage in query execution
 - Query optimizer
 - JOIN support
