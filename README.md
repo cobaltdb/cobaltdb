@@ -250,20 +250,25 @@ mysql -h 127.0.0.1 -P 3307 -u admin -e "SELECT * FROM users"
 
 | Operation | Latency | Detail |
 |-----------|---------|--------|
-| **INSERT** | ~1.7 µs | Single row with SQL parsing |
-| **Point Lookup** | ~2.3 µs | WHERE id = ? (indexed) |
-| **Full Scan (1K)** | ~1.4 ms | SELECT * |
-| **Full Scan (10K)** | ~16.7 ms | SELECT * |
-| **SUM/AVG** | ~4.2 ms | Byte-level fast path, no JSON decode |
-| **COUNT(*)** | ~3.1 ms | Fast path, skip row decode |
-| **LIMIT 100 OFFSET 1K** | ~4.7 ms | Early termination |
-| **Index vs No Index** | 321 µs vs 17 ms | **52x faster with index** |
-| **Inner JOIN (1K)** | ~2.0 ms | Hash join |
-| **3-Way JOIN** | ~4.9 ms | Hash join |
-| **Recursive CTE** | ~3.7 µs | 1000 nodes |
-| **Concurrent Read (×20)** | ~824 ns | Parallel goroutines |
-| **Transaction** | ~392 µs | Single statement |
-| **Rollback** | ~148 µs | 100 statements |
+| **INSERT** | ~2.0 µs | Single row with SQL parsing |
+| **Point Lookup** | ~2.1 µs | WHERE id = ? (indexed) |
+| **Full Scan (1K)** | ~598 µs | Custom fast decoder, no reflection |
+| **Full Scan (10K)** | ~8.8 ms | 130K allocs (42% less than json.Unmarshal) |
+| **SUM/AVG** | ~5.0 ms | Byte-level fast path, no JSON decode |
+| **COUNT(*)** | ~4.4 ms | Fast path, skip row decode |
+| **LIMIT 100 OFFSET 1K** | ~3.7 ms | Early termination |
+| **WHERE (10K)** | ~10.3 ms | Custom decoder + expression eval |
+| **Index vs No Index** | 458 µs vs 8.7 ms | **19x faster with index** |
+| **Inner JOIN (1K)** | ~724 µs | Hash join |
+| **3-Way JOIN (1K×3)** | ~2.0 ms | Hash join |
+| **Recursive CTE** | ~3.6 µs | 1000 nodes |
+| **Simple CTE** | ~584 µs | View-based resolution |
+| **Concurrent Read (×20)** | ~669 ns | Parallel goroutines |
+| **Transaction** | ~347 µs | Single statement |
+| **Rollback** | ~167 µs | 100 statements |
+| **Window (RowNumber)** | ~10.0 ms | OVER (ORDER BY) on 10K rows |
+| **DELETE (bulk)** | ~998 µs | WHERE age < 50 on 1K rows |
+| **UPDATE (bulk)** | ~9.2 ms | WHERE age < 50 on 10K rows |
 
 ### Parser & Storage Performance
 
