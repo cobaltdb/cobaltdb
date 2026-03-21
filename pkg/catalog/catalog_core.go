@@ -2327,11 +2327,54 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 		return nil, nil, false
 	}
 
+	// Use byte-level fast path for SUM/AVG without WHERE (skip full JSON decode)
+	canUseByteFastPath := stmt.Where == nil
+	if canUseByteFastPath {
+		for _, spec := range specs {
+			if spec.funcName != "SUM" && spec.funcName != "AVG" && !(spec.funcName == "COUNT" && spec.colName == "*") {
+				canUseByteFastPath = false
+				break
+			}
+		}
+	}
+
 	for iter.HasNext() {
 		_, valueData, err := iter.Next()
 		if err != nil {
 			break
 		}
+
+		if canUseByteFastPath && len(valueData) > 0 && valueData[0] == '{' {
+			if bytesContainDeletedAt(valueData) {
+				continue
+			}
+			// Try byte-level extraction; fall back to full decode on failure
+			allOK := true
+			for i, spec := range specs {
+				if spec.funcName == "COUNT" {
+					states[i].count++
+					continue
+				}
+				if fval, ok := extractColumnFloat64(valueData, spec.colIdx); ok {
+					states[i].sum += fval
+					states[i].count++
+					states[i].hasVal = true
+				} else {
+					allOK = false
+					break
+				}
+			}
+			if allOK {
+				continue
+			}
+			// Byte extraction failed for this row — undo partial updates and fall through
+			for i, spec := range specs {
+				if spec.funcName == "COUNT" {
+					states[i].count--
+				}
+			}
+		}
+
 		vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 		if err != nil {
 			continue
