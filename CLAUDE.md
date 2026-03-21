@@ -63,10 +63,21 @@ go tool cover -func=coverage.out
 ```
 
 ### Test Statistics
-- 8,400+ test functions
+- 10,400+ test functions
 - 500+ test files
 - 20 packages, all passing
-- Target: %90+ coverage per package (18/20 packages above 90%)
+- Target: %90+ coverage per package (19/20 packages above 90%, only catalog at 85%)
+
+### Running Benchmarks Safely
+```bash
+# Full suite — bounded memory, safe CacheSize
+go test ./test/ -run=^$ -bench=BenchmarkFullSuite -benchtime=500ms -benchmem
+
+# Package-level
+go test ./pkg/btree/ -bench=. -benchmem
+go test ./pkg/storage/ -bench=. -benchmem
+go test ./pkg/query/ -bench=. -benchmem
+```
 
 ## Code Guidelines
 
@@ -78,12 +89,28 @@ go tool cover -func=coverage.out
 
 ### Common Pitfalls
 - **CRLF line endings** - Use Go scripts for text replacements, Edit tool may fail
-- **JSON encoding** - Write paths use `json.Marshal`, read paths use `decodeRow()`
+- **JSON encoding** - Write paths use `json.Marshal`, read paths use `decodeVersionedRow()`
 - **Reserved words** - `rank`, `key` are reserved SQL keywords
 - **Float precision** - Use `fmt.Sprintf("%.1f", val)` for comparisons
 - **NULL sorting** - NULLs sort last ASC / first DESC
+- **CacheSize is PAGE COUNT not bytes** - `CacheSize: 1024` = 1024 pages = 4MB. Do NOT use `1024*1024` (that's 4GB!)
+- **MemoryBackend has 1GB default limit** - Use `NewMemoryWithLimit()` for custom limits
+- **fmt.Sprintf in hot paths** - Use `strconv.FormatInt/FormatFloat` instead (see `hashJoinKey`, `valueToString`)
 
 ## Performance Considerations
+
+### Row Decoding (v0.3.1)
+- `decodeVersionedRowFast()` is the primary decoder — zero-reflection byte scanning (204ns/row)
+- Falls back to `json.Unmarshal` for edge cases (1051ns/row)
+- Integers parsed directly as `int64` (no float64→int64 roundtrip)
+- Do NOT convert write paths to `encodeRowFast` (known to cause failures)
+
+### Fast Paths
+- **COUNT(*)** - `tryCountStarFastPath()`: skips row decode, uses `bytesContainDeletedAt()` byte scan
+- **SUM/AVG** - `trySimpleAggregateFastPath()`: uses `extractColumnFloat64()` byte-level extraction when no WHERE clause. Falls back to full decode per-row on failure.
+- **LIMIT/OFFSET** - Early termination in iterate loop when no ORDER BY/DISTINCT/window functions
+- **Hash JOIN** - `hashJoinKey()` uses `strconv` instead of `fmt.Sprintf` for key generation
+- **JSONPath** - `getCachedJSONPath()` caches parsed paths in `sync.Map`
 
 ### Catalog.mu Lock Contention
 The main mutex can become a bottleneck under high concurrency. Consider:
@@ -91,10 +118,11 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 - Using read locks when possible
 - Avoiding nested lock acquisitions
 
-### Row Encoding
-- Write: `json.Marshal` for row data
-- Read: `decodeRow()` handles both JSON and binary formats
-- Do NOT convert write paths to `encodeRowFast` (known to cause failures)
+### Storage Safety
+- `MemoryBackend` caps geometric growth at 64MB increments (prevents 50GB→100GB doubling)
+- Default max size: 1GB. Use `NewMemoryWithLimit()` for benchmarks/tests
+- `BufferPool` uses `sync.Pool` for page buffer recycling (`pageDataPool`)
+- `BufferPool.evict()` recycles page data via `putPageData()`
 
 ## Known Limitations
 - UPDATE...FROM SET can only reference target table columns
