@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
@@ -468,7 +470,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 				hashMap := make(map[string][]int) // key -> right row indices
 				for ri, joinRow := range rightRows {
 					if rightColIdx < len(joinRow) && joinRow[rightColIdx] != nil {
-						key := fmt.Sprintf("%v", joinRow[rightColIdx])
+						key := hashJoinKey(joinRow[rightColIdx])
 						hashMap[key] = append(hashMap[key], ri)
 					}
 				}
@@ -476,7 +478,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 				for _, leftRow := range intermediateRows {
 					matched := false
 					if leftColIdx < len(leftRow) && leftRow[leftColIdx] != nil {
-						key := fmt.Sprintf("%v", leftRow[leftColIdx])
+						key := hashJoinKey(leftRow[leftColIdx])
 						if indices, ok := hashMap[key]; ok {
 							for _, ri := range indices {
 								combined := make([]interface{}, len(leftRow)+len(rightRows[ri]))
@@ -1699,4 +1701,26 @@ func extractColumnName(expr query.Expression) string {
 		return e.Column
 	}
 	return ""
+}
+
+// hashJoinKey converts a value to a string key for hash join lookups.
+// Uses type-specific formatting to avoid fmt.Sprintf reflection overhead.
+func hashJoinKey(v interface{}) string {
+	switch val := v.(type) {
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case float64:
+		return strconv.FormatFloat(val, 'g', -1, 64)
+	case string:
+		return val
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
