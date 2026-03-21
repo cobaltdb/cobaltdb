@@ -5,6 +5,77 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.1] - 2026-03-21
+
+### ⚡ Performance — Up to 5.2× Faster Query Execution
+
+14 commits focused on storage safety, query engine optimization, and documentation.
+
+### Critical Fixes
+
+- **MemoryBackend RAM explosion** — `WriteAt()` reallocated on every write past current length even when capacity was sufficient. Combined with geometric doubling (50GB → 100GB), this caused 100GB+ RAM usage and system lockups during benchmarks. Fixed with zero-copy capacity reuse + 64MB growth cap + 1GB default max size.
+- **CacheSize unit bug** — Benchmark and test files used `CacheSize: 10 * 1024 * 1024` thinking it was bytes, but it's page count. This allocated 10M pages = 40GB of BufferPool. Fixed all occurrences to correct page counts (1024–2048).
+
+### Performance Optimizations
+
+| Optimization | Before | After | Speedup |
+|-------------|--------|-------|---------|
+| Custom VersionedRow decoder (skip json.Unmarshal) | 1,051 ns | 204 ns | **5.2×** |
+| LIMIT/OFFSET early termination | 17 ms | 3.7 ms | **4.6×** |
+| SUM/AVG byte-level fast path | 14 ms | 3.9 ms | **3.6×** |
+| Hash join key (strconv vs fmt.Sprintf) | 12 ms | 9.6 ms | **1.3×** |
+| compareValues (strconv vs fmt.Sprintf) | — | — | **1.2×** |
+| JSONPath cache (sync.Map) | 4.7 µs | 3.7 µs | **1.3×** |
+| MemoryBackend WriteAt | 64 MB/op | 12 B/op | **5.3M×** |
+| BufferPool page recycling (sync.Pool) | — | — | 0 alloc eviction |
+
+- **Custom `decodeVersionedRowFast`**: Zero-reflection byte-scanning decoder for the known VersionedRow JSON format. Parses integers directly as `int64` (no float64 roundtrip). Falls back to `json.Unmarshal` for edge cases.
+- **LIMIT/OFFSET early termination**: Stop scanning after `offset+limit` matching rows when no ORDER BY/DISTINCT/window functions needed.
+- **SUM/AVG byte-level fast path**: Extract numeric column values from raw JSON bytes without full row decode. Falls back to full decode if byte extraction fails.
+- **Hash join key optimization**: Replace `fmt.Sprintf("%v")` with type-switch `strconv` calls in hash join build/probe phases.
+- **`valueToString` optimization**: Same `fmt.Sprintf` → `strconv` pattern in `compareValues` fallback (affects ORDER BY, GROUP BY, DISTINCT).
+
+### Benchmark Results (10K rows, AMD Ryzen 9 9950X3D)
+
+| Operation | Latency |
+|-----------|---------|
+| Full Scan (1K) | 598 µs |
+| Full Scan (10K) | 8.8 ms |
+| SUM/AVG | 3.9–4.4 ms |
+| LIMIT 100 OFFSET 1K | 3.7 ms |
+| Inner JOIN (1K) | 700 µs |
+| 3-Way JOIN | 1.7 ms |
+| ORDER BY (10K) | 7.6 ms |
+| Point Lookup | 2.1 µs |
+| Concurrent Read (×20) | 669 ns |
+
+### Storage & Benchmark Safety
+
+- `MemoryBackend`: Capped geometric growth at 64MB increments, configurable max size (default 1GB)
+- `NewMemoryWithLimit()`: Constructor for custom size limits
+- All benchmark files: DROP/CREATE between iterations, bounded dataset sizes, correct CacheSize units
+- B-tree benchmark 100K → 50K, parallelism 100 → 20
+- `sync.Pool` for page buffer recycling, pre-allocated BufferPool map
+
+### Test & Coverage
+
+- New tests for `decodeVersionedRowFast`, `extractColumnFloat64`, `skipJSONValue`, `skipJSONBracketed`
+- New tests for `NewMemoryWithLimit`, capacity reuse, growth cap, truncate limits
+- `BenchmarkDecodeVersionedRow`: Fast (204 ns) vs Slow (1,051 ns) comparison
+- Storage coverage: 89.7% → 90.2% (back above 90%)
+- Catalog coverage: 84.0% → 85.2% (dead code removed)
+- Integration test suite: 7.0s → 5.8s (17% faster)
+
+### Documentation & Website
+
+- README: Updated benchmark tables with Ryzen 9 9950X3D results, added SQL Engine section
+- docs/BENCHMARKS.md: Complete rewrite with v0.3.1 data
+- docs/ARCHITECTURE_FULL.md: Updated performance section
+- Website HeroSection: 9M → 15.7M reads/sec
+- Website PerformanceSection: Real CobaltDB benchmark data (throughput + latency tabs)
+
+---
+
 ## [v0.3.0] - 2026-03-20
 
 ### 🔒 Security, MySQL Protocol & Multi-Language SDKs
