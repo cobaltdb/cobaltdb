@@ -233,45 +233,51 @@ mysql -h 127.0.0.1 -P 3307 -u admin -e "SELECT * FROM users"
 
 ## 🔥 Performance Benchmarks
 
-**Test Environment:** AMD Ryzen 7 PRO 6850H · Go 1.26 · Windows
+**Test Environment:** AMD Ryzen 9 9950X3D · Go 1.26 · Windows 11
 
-### Core Operations
+### Core Operations (B-Tree Level)
 
 | Operation | Latency | Throughput |
 |-----------|---------|------------|
-| **INSERT** | ~1.0 µs | **955K ops/sec** |
-| **INSERT (Sequential)** | ~1.0 µs | **990K ops/sec** |
-| **SELECT (Point Lookup)** | ~111 ns | **9M ops/sec** |
-| **SELECT with Scan** | ~334 µs | **3K ops/sec** |
-| **UPDATE** | ~227 ns | **4.4M ops/sec** |
-| **DELETE** | ~280 ns | **3.6M ops/sec** |
-| **BTree Put** | ~1.4 µs | **690K ops/sec** |
-| **BTree Get** | ~210 ns | **4.8M ops/sec** |
-| **Concurrent INSERT** | ~2.7 µs | **370K ops/sec** |
-| **Concurrent Read** | ~277 µs | **3.6K ops/sec** |
-| **Transaction** | ~724 µs | **1.4K tx/sec** |
-| **Create Table** | ~7.7 µs | **130K ops/sec** |
+| **PUT** | ~641 ns | **1.56M ops/sec** |
+| **PUT (Sequential)** | ~694 ns | **1.44M ops/sec** |
+| **GET (Point Lookup)** | ~64 ns | **15.7M ops/sec** |
+| **UPDATE** | ~153 ns | **6.5M ops/sec** |
+| **DELETE** | ~197 ns | **5.1M ops/sec** |
+| **SCAN (1K range)** | ~270 µs | **3.7K ops/sec** |
+
+### SQL Engine Performance (10K rows)
+
+| Operation | Latency | Detail |
+|-----------|---------|--------|
+| **INSERT** | ~1.7 µs | Single row with SQL parsing |
+| **Point Lookup** | ~2.3 µs | WHERE id = ? (indexed) |
+| **Full Scan (1K)** | ~1.4 ms | SELECT * |
+| **Full Scan (10K)** | ~16.7 ms | SELECT * |
+| **SUM/AVG** | ~4.2 ms | Byte-level fast path, no JSON decode |
+| **COUNT(*)** | ~3.1 ms | Fast path, skip row decode |
+| **LIMIT 100 OFFSET 1K** | ~4.7 ms | Early termination |
+| **Index vs No Index** | 321 µs vs 17 ms | **52x faster with index** |
+| **Inner JOIN (1K)** | ~2.0 ms | Hash join |
+| **3-Way JOIN** | ~4.9 ms | Hash join |
+| **Recursive CTE** | ~3.7 µs | 1000 nodes |
+| **Concurrent Read (×20)** | ~824 ns | Parallel goroutines |
+| **Transaction** | ~392 µs | Single statement |
+| **Rollback** | ~148 µs | 100 statements |
 
 ### Parser & Storage Performance
 
 | Component | Operation | Latency | Throughput |
 |-----------|-----------|---------|------------|
-| **SQL Parser** | Parse SELECT | ~2.5 µs | **400K ops/sec** |
-| **SQL Parser** | Parse INSERT | ~2.8 µs | **360K ops/sec** |
-| **SQL Parser** | Parse Complex Query | ~10.7 µs | **93K ops/sec** |
-| **Lexer** | Tokenize | ~920 ns | **1.1M ops/sec** |
-| **Buffer Pool** | Get Page | ~1.2 µs | **823K ops/sec** |
-| **Buffer Pool** | Memory Read | ~51 ns | **19.6M ops/sec** |
-| **WAL** | Append | ~1.9 ms | **526 ops/sec** |
+| **SQL Parser** | Parse SELECT | ~826 ns | **1.2M ops/sec** |
+| **SQL Parser** | Parse INSERT | ~1.0 µs | **960K ops/sec** |
+| **SQL Parser** | Parse Complex Query | ~4.7 µs | **214K ops/sec** |
+| **Lexer** | Tokenize | ~499 ns | **2.0M ops/sec** |
+| **Buffer Pool** | Get Page | ~27 ns | **36.5M ops/sec** |
+| **Buffer Pool** | Memory Read | ~34 ns | **29.4M ops/sec** |
+| **WAL** | Append | ~192 µs | **5.2K ops/sec** |
 
 > 💡 **In-memory benchmarks.** Disk persistence adds ~20-40% overhead depending on storage.
-
-**Live Performance Demo Results (AMD Ryzen 7 PRO 6850H):**
-- 100,000 INSERT: ~500 µs → **200,000+ rows/sec**
-- Complex JOIN (100K + 10K rows): sub-millisecond
-- Window Functions (100K rows): ~1-2 ms
-- Recursive CTE (1000 nodes): ~500 µs
-- JSON parse (100 rows): ~100 µs
 
 ---
 
@@ -929,7 +935,7 @@ go run cmd/demo/main.go
 3. **🔒 Security First** - AES-256-GCM encryption (data + WAL + audit), TLS 1.2+, RLS, Argon2id auth
 4. **🔄 ACID + MVCC** - Snapshot isolation, lock-free reads, WAL durability
 5. **🗂️ SQL + JSON + Vector** - Relational queries, JSONPath, HNSW similarity search
-6. **⚡ Blazing Fast** - 9M+ point lookups/sec, 955K inserts/sec
+6. **⚡ Blazing Fast** - 15M+ point lookups/sec, 1.5M+ inserts/sec
 7. **🏭 Production Ready** - 10,400+ tests, 92% coverage, circuit breaker, rate limiter, replication
 
 ---
