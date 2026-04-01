@@ -250,7 +250,7 @@ func TestGetTLSVersionNameCov(t *testing.T) {
 		v    uint16
 		want string
 	}{
-		{tls.VersionSSL30, "SSLv3"},
+		{0x0300, "SSLv3"},
 		{tls.VersionTLS10, "TLS 1.0"},
 		{tls.VersionTLS11, "TLS 1.1"},
 		{tls.VersionTLS12, "TLS 1.2"},

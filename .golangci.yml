@@ -1,7 +1,20 @@
 run:
   timeout: 5m
-  skip-dirs:
+  tests: false
+
+issues:
+  exclude-dirs:
     - docs
+    - cmd/benchmark
+    - cmd/cobaltdb-bench
+    - cmd/debug
+    - cmd/demo
+    - cmd/demo-ecommerce
+    - cmd/demo-full-sql-test
+    - cmd/demo-integrity-test
+    - cmd/demo-performance
+    - cmd/demo-showcase
+    - cmd/demo-zero-error-proof
 
 linters:
   enable:

@@ -277,7 +277,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 					if err != nil {
 						continue
 					}
-// Skip soft-deleted rows in UNIQUE check
+					// Skip soft-deleted rows in UNIQUE check
 					if vrow.Version.DeletedAt > 0 {
 						continue
 					}
@@ -473,10 +473,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 								oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
 								if ok {
 									if idxDef.Unique {
-										idxTree.Delete([]byte(oldIdxKey))
+										_ = idxTree.Delete([]byte(oldIdxKey))
 									} else {
 										compoundKey := oldIdxKey + "\x00" + key
-										idxTree.Delete([]byte(compoundKey))
+										_ = idxTree.Delete([]byte(compoundKey))
 									}
 								}
 							}
@@ -543,16 +543,16 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 												if otherIdxDef.TableName == stmt.Table && len(otherIdxDef.Columns) > 0 {
 													oldIdxKey, ok := buildCompositeIndexKey(table, otherIdxDef, oldRow)
 													if ok {
-														otherIdxTree.Delete([]byte(oldIdxKey))
+														_ = otherIdxTree.Delete([]byte(oldIdxKey))
 													}
 												}
 											}
 										}
 									}
 									if err := tree.Delete([]byte(oldPK)); err != nil {
-												insertErr = fmt.Errorf("failed to delete old row for index REPLACE: %w", err)
-												break
-											}
+										insertErr = fmt.Errorf("failed to delete old row for index REPLACE: %w", err)
+										break
+									}
 								}
 							} else {
 								insertErr = fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idxName)
@@ -782,4 +782,4 @@ func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, a
 	}
 
 	return tree, partitionColIdx, nil
-}
+}

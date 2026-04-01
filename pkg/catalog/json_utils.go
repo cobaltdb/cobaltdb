@@ -39,9 +39,7 @@ func ParseJSONPath(path string) (*JSONPath, error) {
 	}
 
 	// Remove leading $ if present
-	if strings.HasPrefix(path, "$") {
-		path = path[1:]
-	}
+	path = strings.TrimPrefix(path, "$")
 	if !strings.HasPrefix(path, ".") && !strings.HasPrefix(path, "[") {
 		// If it starts with a key, add a dot
 		path = "." + path

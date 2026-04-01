@@ -155,7 +155,9 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (*Backup, e
 	if err := m.db.BeginHotBackup(); err != nil {
 		return nil, fmt.Errorf("failed to begin hot backup: %w", err)
 	}
-	defer m.db.EndHotBackup()
+	defer func() {
+		_ = m.db.EndHotBackup()
+	}()
 
 	// Perform checkpoint to minimize WAL
 	if err := m.db.Checkpoint(); err != nil {

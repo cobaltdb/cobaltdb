@@ -11,21 +11,21 @@ import (
 
 // SlowQueryEntry represents a single slow query log entry
 type SlowQueryEntry struct {
-	Timestamp   time.Time     `json:"timestamp"`
-	SQL         string        `json:"sql"`
-	Duration    time.Duration `json:"duration_ms"`
-	RowsAffected int64        `json:"rows_affected,omitempty"`
-	RowsReturned int64        `json:"rows_returned,omitempty"`
+	Timestamp    time.Time     `json:"timestamp"`
+	SQL          string        `json:"sql"`
+	Duration     time.Duration `json:"duration_ms"`
+	RowsAffected int64         `json:"rows_affected,omitempty"`
+	RowsReturned int64         `json:"rows_returned,omitempty"`
 }
 
 // SlowQueryLog manages slow query logging
 type SlowQueryLog struct {
-	enabled   bool
-	threshold time.Duration
+	enabled    bool
+	threshold  time.Duration
 	maxEntries int
-	entries   []SlowQueryEntry
-	mu        sync.RWMutex
-	logFile   string
+	entries    []SlowQueryEntry
+	mu         sync.RWMutex
+	logFile    string
 }
 
 // NewSlowQueryLog creates a new slow query logger
@@ -84,7 +84,9 @@ func (s *SlowQueryLog) writeToFile(entry SlowQueryEntry) {
 	// Ensure directory exists
 	dir := filepath.Dir(s.logFile)
 	if dir != "" && dir != "." {
-		os.MkdirAll(dir, 0755)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return
+		}
 	}
 
 	f, err := os.OpenFile(s.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)

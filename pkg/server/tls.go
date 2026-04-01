@@ -384,7 +384,7 @@ func GetCipherSuiteName(id uint16) string {
 // GetTLSVersionName returns the name of a TLS version
 func GetTLSVersionName(version uint16) string {
 	switch version {
-	case tls.VersionSSL30:
+	case 0x0300: // SSLv3
 		return "SSLv3"
 	case tls.VersionTLS10:
 		return "TLS 1.0"

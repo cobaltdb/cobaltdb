@@ -122,15 +122,15 @@ type Memory struct {
 
 // Global represents a WASM global
 type Global struct {
-	Type  ValueType
+	Type    ValueType
 	Mutable bool
-	Init  []byte
+	Init    []byte
 }
 
 // Export represents a WASM export
 type Export struct {
-	Name string
-	Kind byte
+	Name  string
+	Kind  byte
 	Index uint32
 }
 
@@ -409,7 +409,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32}, // leftTableId, rightTableId, outPtr, maxRows
-		Results: []ValueType{I32},               // row count
+		Results: []ValueType{I32},                // row count
 	})
 
 	// Import executeSubquery function
@@ -445,7 +445,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32}, // leftTableId, rightTableId, outPtr, maxRows
-		Results: []ValueType{I32},               // row count
+		Results: []ValueType{I32},                // row count
 	})
 
 	// Import rightJoin function
@@ -457,7 +457,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32}, // leftTableId, rightTableId, outPtr, maxRows
-		Results: []ValueType{I32},               // row count
+		Results: []ValueType{I32},                // row count
 	})
 
 	// Import fullJoin function
@@ -469,7 +469,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32}, // leftTableId, rightTableId, outPtr, maxRows
-		Results: []ValueType{I32},               // row count
+		Results: []ValueType{I32},                // row count
 	})
 
 	// Import limitOffset function
@@ -493,7 +493,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32}, // inPtr, rowCount, rowSize, outPtr
-		Results: []ValueType{I32},               // distinctRowCount
+		Results: []ValueType{I32},                // distinctRowCount
 	})
 
 	// Import unionResults function
@@ -517,7 +517,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32}, // inPtr, rowCount, funcType, outPtr
-		Results: []ValueType{I32},               // success
+		Results: []ValueType{I32},                // success
 	})
 
 	// Import exceptResults function
@@ -553,7 +553,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I64, I64, I32, I32}, // tableId, indexId, minVal, maxVal, outPtr, maxRows
-		Results: []ValueType{I32},                         // rowCount
+		Results: []ValueType{I32},                          // rowCount
 	})
 
 	// Import bindParameter function
@@ -577,7 +577,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32, I32}, // queryId, outerRowPtr, outerRowSize, outPtr, maxRows
-		Results: []ValueType{I32},                    // rowCount
+		Results: []ValueType{I32},                     // rowCount
 	})
 
 	// Import fetchChunk function
@@ -600,7 +600,7 @@ func (c *Compiler) addRuntimeImports() {
 		Index:  uint32(len(c.types)),
 	})
 	c.types = append(c.types, FuncType{
-		Params:  []ValueType{}, // no params
+		Params:  []ValueType{},    // no params
 		Results: []ValueType{I32}, // success
 	})
 
@@ -611,7 +611,7 @@ func (c *Compiler) addRuntimeImports() {
 		Index:  uint32(len(c.types)),
 	})
 	c.types = append(c.types, FuncType{
-		Params:  []ValueType{}, // no params
+		Params:  []ValueType{},    // no params
 		Results: []ValueType{I32}, // success
 	})
 
@@ -622,7 +622,7 @@ func (c *Compiler) addRuntimeImports() {
 		Index:  uint32(len(c.types)),
 	})
 	c.types = append(c.types, FuncType{
-		Params:  []ValueType{}, // no params
+		Params:  []ValueType{},    // no params
 		Results: []ValueType{I32}, // success
 	})
 
@@ -693,7 +693,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32, I32, I32}, // tableNamePtr, tableNameLen, aggType, colNamePtr, colNameLen, outPtr
-		Results: []ValueType{I32},                         // success
+		Results: []ValueType{I32},                          // success
 	})
 
 	// Import repartitionTable function
@@ -717,7 +717,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32}, // inPtr1, inPtr2, outPtr, count
-		Results: []ValueType{I32},               // success
+		Results: []ValueType{I32},                // success
 	})
 
 	// Import vectorizedMultiply function
@@ -729,7 +729,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32}, // inPtr1, inPtr2, outPtr, count
-		Results: []ValueType{I32},               // success
+		Results: []ValueType{I32},                // success
 	})
 
 	// Import vectorizedCompare function
@@ -765,7 +765,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32}, // inPtr, count, outMinPtr, outMaxPtr
-		Results: []ValueType{I32},               // success
+		Results: []ValueType{I32},                // success
 	})
 
 	// Import vectorizedFilter function
@@ -777,7 +777,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32, I32, I32}, // inPtr, maskPtr, outPtr, count
-		Results: []ValueType{I32},               // filteredCount
+		Results: []ValueType{I32},                // filteredCount
 	})
 
 	// Import vectorizedBatchCopy function
@@ -825,7 +825,7 @@ func (c *Compiler) addRuntimeImports() {
 		Index:  uint32(len(c.types)),
 	})
 	c.types = append(c.types, FuncType{
-		Params:  []ValueType{}, // no params
+		Params:  []ValueType{},    // no params
 		Results: []ValueType{I32}, // success
 	})
 
@@ -838,7 +838,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I64, I32}, // eventType, duration, rowCount
-		Results: []ValueType{I32}, // success
+		Results: []ValueType{I32},           // success
 	})
 
 	// getOpcodeStats
@@ -850,7 +850,7 @@ func (c *Compiler) addRuntimeImports() {
 	})
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32, I32}, // outPtr, maxOpcodes
-		Results: []ValueType{I32}, // count
+		Results: []ValueType{I32},      // count
 	})
 
 	// Update function index to account for imports
@@ -862,7 +862,7 @@ func (c *Compiler) compileSelect(stmt *query.SelectStmt) (uint32, error) {
 	// Create function type for query entry point
 	funcTypeIdx := uint32(len(c.types))
 	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32},    // params pointer
+		Params:  []ValueType{I32},      // params pointer
 		Results: []ValueType{I32, I32}, // result pointer, row count
 	})
 
@@ -990,7 +990,7 @@ func (c *Compiler) compileDelete(stmt *query.DeleteStmt) (uint32, error) {
 func (c *Compiler) compileUnion(stmt *query.UnionStmt) (uint32, error) {
 	funcTypeIdx := uint32(len(c.types))
 	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32},    // params pointer
+		Params:  []ValueType{I32},      // params pointer
 		Results: []ValueType{I32, I32}, // result pointer, row count
 	})
 
@@ -1096,7 +1096,6 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 	buf.WriteByte(0x21) // local.set
 	buf.WriteByte(resultPtrIdx)
 
-
 	if hasJoins {
 		// Determine join type
 		joinType := query.TokenInner
@@ -1169,10 +1168,10 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x00) // table id 0
 		buf.WriteByte(0x20) // local.get
 		buf.WriteByte(resultPtrIdx)
-		buf.WriteByte(0x41) // i32.const
+		buf.WriteByte(0x41)    // i32.const
 		writeLeb128(buf, 1000) // max rows
-		buf.WriteByte(0x10) // call
-		writeLeb128(buf, 0) // function index 0 (tableScan import)
+		buf.WriteByte(0x10)    // call
+		writeLeb128(buf, 0)    // function index 0 (tableScan import)
 
 		// Store row count
 		buf.WriteByte(0x21) // local.set
@@ -1190,7 +1189,7 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x08)
 		buf.WriteByte(0x20) // local.get (resultPtr)
 		buf.WriteByte(resultPtrIdx)
-		buf.WriteByte(0x10) // call
+		buf.WriteByte(0x10)  // call
 		writeLeb128(buf, 14) // function index 14 (distinctRows import)
 
 		// Store new row count
@@ -1233,7 +1232,7 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x00)
 		buf.WriteByte(0x20) // local.get (resultPtr)
 		buf.WriteByte(resultPtrIdx)
-		buf.WriteByte(0x10) // call
+		buf.WriteByte(0x10)  // call
 		writeLeb128(buf, 13) // function index 13 (limitOffset import)
 
 		// Store new row count
@@ -1268,13 +1267,13 @@ func (c *Compiler) generateInsertBody(stmt *query.InsertStmt) []byte {
 	// Initialize rowsAffected = 0
 	buf.WriteByte(0x42) // i64.const 0
 	buf.WriteByte(0x00)
-	buf.WriteByte(0x21) // local.set
+	buf.WriteByte(0x21)        // local.set
 	buf.WriteByte(localOffset) // rowsAffected
 
 	// Get table ID - for now assume table 0
 	buf.WriteByte(0x41) // i32.const 0
 	buf.WriteByte(0x00)
-	buf.WriteByte(0x21) // local.set
+	buf.WriteByte(0x21)            // local.set
 	buf.WriteByte(localOffset + 1) // tableId
 
 	// For each value row, insert it
@@ -1283,16 +1282,16 @@ func (c *Compiler) generateInsertBody(stmt *query.InsertStmt) []byte {
 		// Set rowDataPtr = 2048 (after result buffer)
 		buf.WriteByte(0x41) // i32.const 2048
 		writeLeb128(buf, 2048)
-		buf.WriteByte(0x21) // local.set
+		buf.WriteByte(0x21)            // local.set
 		buf.WriteByte(localOffset + 2) // rowDataPtr
 
 		// Call insertRow(tableId, rowDataPtr)
-		buf.WriteByte(0x20) // local.get
+		buf.WriteByte(0x20)            // local.get
 		buf.WriteByte(localOffset + 1) // tableId
-		buf.WriteByte(0x20) // local.get
+		buf.WriteByte(0x20)            // local.get
 		buf.WriteByte(localOffset + 2) // rowDataPtr
-		buf.WriteByte(0x10) // call
-		writeLeb128(buf, 3) // function index 3 (insertRow import)
+		buf.WriteByte(0x10)            // call
+		writeLeb128(buf, 3)            // function index 3 (insertRow import)
 
 		// Drop result for now (in real impl, check success)
 		buf.WriteByte(0x1a) // drop
@@ -1300,12 +1299,12 @@ func (c *Compiler) generateInsertBody(stmt *query.InsertStmt) []byte {
 		// rowsAffected = 1 (simplified - one row inserted)
 		buf.WriteByte(0x42) // i64.const 1
 		buf.WriteByte(0x01)
-		buf.WriteByte(0x21) // local.set
+		buf.WriteByte(0x21)        // local.set
 		buf.WriteByte(localOffset) // rowsAffected
 	}
 
 	// Return rowsAffected
-	buf.WriteByte(0x20) // local.get
+	buf.WriteByte(0x20)        // local.get
 	buf.WriteByte(localOffset) // rowsAffected
 
 	buf.WriteByte(0x0b) // end
@@ -1340,40 +1339,40 @@ func (c *Compiler) generateDeleteBody(stmt *query.DeleteStmt) []byte {
 	// Initialize rowsAffected = 0
 	buf.WriteByte(0x42) // i64.const 0
 	buf.WriteByte(0x00)
-	buf.WriteByte(0x21) // local.set
+	buf.WriteByte(0x21)        // local.set
 	buf.WriteByte(localOffset) // rowsAffected
 
 	// Get table ID from table name
 	// For now assume table 0
 	buf.WriteByte(0x41) // i32.const 0
 	buf.WriteByte(0x00)
-	buf.WriteByte(0x21) // local.set
+	buf.WriteByte(0x21)            // local.set
 	buf.WriteByte(localOffset + 1) // tableId
 
 	// Get rowId from WHERE clause (simplified - assume rowId = 1)
 	buf.WriteByte(0x42) // i64.const 1
 	buf.WriteByte(0x01)
-	buf.WriteByte(0x21) // local.set
+	buf.WriteByte(0x21)            // local.set
 	buf.WriteByte(localOffset + 2) // rowId
 
 	// Call deleteRow(tableId, rowId)
-	buf.WriteByte(0x20) // local.get
+	buf.WriteByte(0x20)            // local.get
 	buf.WriteByte(localOffset + 1) // tableId
-	buf.WriteByte(0x20) // local.get
+	buf.WriteByte(0x20)            // local.get
 	buf.WriteByte(localOffset + 2) // rowId
-	buf.WriteByte(0x10) // call
-	writeLeb128(buf, 5) // function index 5 (deleteRow import)
+	buf.WriteByte(0x10)            // call
+	writeLeb128(buf, 5)            // function index 5 (deleteRow import)
 
 	// Check result and increment rowsAffected if success
 	// For now just set rowsAffected = 1
 	buf.WriteByte(0x1a) // drop (result)
 	buf.WriteByte(0x42) // i64.const 1
 	buf.WriteByte(0x01)
-	buf.WriteByte(0x21) // local.set
+	buf.WriteByte(0x21)        // local.set
 	buf.WriteByte(localOffset) // rowsAffected
 
 	// Return rowsAffected
-	buf.WriteByte(0x20) // local.get
+	buf.WriteByte(0x20)        // local.get
 	buf.WriteByte(localOffset) // rowsAffected
 
 	buf.WriteByte(0x0b) // end
@@ -1582,6 +1581,8 @@ func (c *Compiler) encodeDataSection() []byte {
 
 // compileExpression compiles a SQL expression to WASM bytecode
 // Returns the generated bytecode and the resulting type
+//
+//nolint:unused // retained for upcoming expression compiler integration and compatibility tests.
 func (c *Compiler) compileExpression(expr query.Expression, buf *bytes.Buffer) (string, error) {
 	switch e := expr.(type) {
 	case *query.NumberLiteral:
@@ -1708,7 +1709,7 @@ func (c *Compiler) compileExpression(expr query.Expression, buf *bytes.Buffer) (
 		buf.WriteByte(0x00)
 		buf.WriteByte(0x41) // i32.const 4096 (outPtr - scratch space)
 		writeLeb128(buf, 4096)
-		buf.WriteByte(0x10) // call
+		buf.WriteByte(0x10)  // call
 		writeLeb128(buf, 16) // function index 16 (windowFunction import)
 
 		// Return success indicator
@@ -1723,6 +1724,8 @@ func (c *Compiler) compileExpression(expr query.Expression, buf *bytes.Buffer) (
 }
 
 // compileAggregateFunction compiles aggregate functions (COUNT, SUM, AVG, MIN, MAX)
+//
+//nolint:unused // retained for upcoming expression compiler integration and compatibility tests.
 func (c *Compiler) compileAggregateFunction(fn *query.FunctionCall, buf *bytes.Buffer) (string, error) {
 	funcName := fn.Name
 
@@ -1795,6 +1798,8 @@ func (c *Compiler) compileAggregateFunction(fn *query.FunctionCall, buf *bytes.B
 }
 
 // hasWhereClause checks if a SELECT statement has a WHERE clause
+//
+//nolint:unused // retained for planned optimizer-driven codegen branches.
 func (c *Compiler) hasWhereClause(stmt *query.SelectStmt) bool {
 	return stmt.Where != nil
 }
@@ -1819,8 +1824,6 @@ func (c *Compiler) inferResultSchema(stmt query.Statement) []ColumnInfo {
 	}
 }
 
-
-
 func writeLeb128(buf *bytes.Buffer, value uint64) {
 	for {
 		byteVal := uint8(value & 0x7f)
@@ -1835,6 +1838,7 @@ func writeLeb128(buf *bytes.Buffer, value uint64) {
 	}
 }
 
+//nolint:unused // retained for signed literal support in expression bytecode generation.
 func writeLeb128Signed(buf *bytes.Buffer, value int64) {
 	for {
 		byteVal := uint8(value & 0x7f)

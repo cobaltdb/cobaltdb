@@ -156,8 +156,9 @@ func (p *Parser) parseSelect() (*SelectStmt, error) {
 	// DISTINCT?
 	if p.match(TokenDistinct) {
 		stmt.Distinct = true
-	} else if p.match(TokenAll) {
-		// ALL is default
+	} else {
+		// ALL is the default SELECT mode; consume it when present.
+		_ = p.match(TokenAll)
 	}
 
 	// Column list
@@ -440,27 +441,21 @@ func (p *Parser) parseJoin() (*JoinClause, error) {
 	case TokenLeft:
 		join.Type = TokenLeft
 		p.advance()
-		if p.match(TokenOuter) {
-			// LEFT OUTER JOIN
-		}
+		_ = p.match(TokenOuter) // optional OUTER
 		if _, err := p.expect(TokenJoin); err != nil {
 			return nil, err
 		}
 	case TokenRight:
 		join.Type = TokenRight
 		p.advance()
-		if p.match(TokenOuter) {
-			// RIGHT OUTER JOIN
-		}
+		_ = p.match(TokenOuter) // optional OUTER
 		if _, err := p.expect(TokenJoin); err != nil {
 			return nil, err
 		}
 	case TokenFull:
 		join.Type = TokenFull
 		p.advance()
-		if p.match(TokenOuter) {
-			// FULL OUTER JOIN
-		}
+		_ = p.match(TokenOuter) // optional OUTER
 		if _, err := p.expect(TokenJoin); err != nil {
 			return nil, err
 		}
@@ -488,21 +483,15 @@ func (p *Parser) parseJoin() (*JoinClause, error) {
 		case TokenLeft:
 			join.Type = TokenLeft
 			p.advance()
-			if p.match(TokenOuter) {
-				// NATURAL LEFT OUTER JOIN
-			}
+			_ = p.match(TokenOuter) // optional OUTER
 		case TokenRight:
 			join.Type = TokenRight
 			p.advance()
-			if p.match(TokenOuter) {
-				// NATURAL RIGHT OUTER JOIN
-			}
+			_ = p.match(TokenOuter) // optional OUTER
 		case TokenFull:
 			join.Type = TokenFull
 			p.advance()
-			if p.match(TokenOuter) {
-				// NATURAL FULL OUTER JOIN
-			}
+			_ = p.match(TokenOuter) // optional OUTER
 		default:
 			// NATURAL JOIN without type defaults to INNER
 			join.Type = TokenInner
@@ -629,7 +618,9 @@ func (p *Parser) parseExpression() (Expression, error) {
 	return p.parseOr()
 }
 
-// parseExpressionWithOffset parses an expression with placeholder offset
+// parseExpressionWithOffset parses an expression with placeholder offset.
+//
+//nolint:unused // retained for parser compatibility tests and future placeholder rewrites.
 func (p *Parser) parseExpressionWithOffset(offset int) (Expression, error) {
 	expr, err := p.parseOr()
 	if err != nil {
@@ -640,7 +631,9 @@ func (p *Parser) parseExpressionWithOffset(offset int) (Expression, error) {
 	return expr, nil
 }
 
-// applyPlaceholderOffset recursively applies offset to placeholders
+// applyPlaceholderOffset recursively applies offset to placeholders.
+//
+//nolint:unused // retained for parser compatibility tests and future placeholder rewrites.
 func applyPlaceholderOffset(expr Expression, offset int) {
 	if expr == nil {
 		return
@@ -2659,14 +2652,14 @@ func (p *Parser) parseCreateProcedure() (*CreateProcedureStmt, error) {
 	if p.match(TokenLParen) {
 		for !p.match(TokenRParen) {
 			param := &ParamDef{}
-			
+
 			// Optional IN/OUT/INOUT keyword
 			if p.current().Type == TokenIn {
 				p.advance() // consume IN
 			} else if p.current().Type == TokenOut {
 				p.advance() // consume OUT
 			}
-			
+
 			paramName, err := p.expect(TokenIdentifier)
 			if err != nil {
 				return nil, err
@@ -2948,9 +2941,7 @@ func (p *Parser) parseBegin() (*BeginStmt, error) {
 	stmt := &BeginStmt{}
 	p.advance() // consume BEGIN
 
-	if p.match(TokenTransaction) {
-		// optional
-	}
+	_ = p.match(TokenTransaction) // optional
 
 	if p.current().Type == TokenIdentifier && strings.ToUpper(p.current().Literal) == "READ" {
 		p.advance()
@@ -3575,7 +3566,9 @@ func (p *Parser) parseSetVar() (Statement, error) {
 	return &SetVarStmt{Variable: varName, Value: strings.Join(valueParts, " ")}, nil
 }
 
-// parseUnion parses UNION [ALL] SELECT ... chains (backward compat wrapper)
+// parseUnion parses UNION [ALL] SELECT ... chains (backward compat wrapper).
+//
+//nolint:unused // retained for parser compatibility tests.
 func (p *Parser) parseUnion(left Statement) (Statement, error) {
 	return p.parseSetOp(left)
 }

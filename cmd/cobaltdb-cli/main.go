@@ -192,7 +192,10 @@ func printRows(rows *engine.Rows) {
 		for i := range values {
 			rowValues[i] = &values[i]
 		}
-		rows.Scan(rowValues...)
+		if err := rows.Scan(rowValues...); err != nil {
+			fmt.Printf("scan error: %v\n", err)
+			continue
+		}
 
 		for i, v := range values {
 			if i > 0 {

@@ -263,7 +263,7 @@ ps.Wait()
 The `cobaltdb-server` supports these production flags:
 
 ```
---health-addr string        Health check HTTP address (default ":8420")
+--health-addr string        Health check HTTP address (default "127.0.0.1:8420")
 --health-server             Enable health check HTTP server (default true)
 --circuit-breaker           Enable circuit breaker (default true)
 --retry                     Enable retry logic (default true)
@@ -492,6 +492,7 @@ GET  /healthz             - Detailed health status
 GET  /circuit-breakers    - Circuit breaker statistics
 GET  /rate-limits         - Rate limiter statistics
 GET  /sql-protection      - SQL protection statistics
+GET  /transaction-metrics - Transaction monitoring metrics
 GET  /active-requests     - Active requests
 GET  /stats               - Detailed system statistics
 POST /shutdown            - Graceful shutdown
@@ -518,6 +519,19 @@ POST /shutdown            - Graceful shutdown
   "healthy": true,
   "goroutines": 42,
   "memory_mb": 128
+}
+```
+
+**/transaction-metrics:**
+```json
+{
+  "active_txns": 5,
+  "committed_txns": 1500,
+  "aborted_txns": 23,
+  "deadlocks_detected": 3,
+  "lock_timeouts": 1,
+  "txn_timeouts": 0,
+  "long_running_txns": 2
 }
 ```
 

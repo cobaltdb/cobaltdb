@@ -124,6 +124,14 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 - `BufferPool` uses `sync.Pool` for page buffer recycling (`pageDataPool`)
 - `BufferPool.evict()` recycles page data via `putPageData()`
 
+### Deadlock Detection
+- Automatic deadlock detection runs every 100ms in background
+- Uses wait-for graph with DFS cycle detection
+- Automatically aborts youngest transaction (highest StartTS) in cycle
+- Metrics tracked at `/transaction-metrics` endpoint
+- Lock wait timeout: 5s default (configurable via `Options.LockWaitTimeout`)
+- Transaction timeout: Optional (configurable via `Options.Timeout`)
+
 ## Known Limitations
 - UPDATE...FROM SET can only reference target table columns
 - Composite multi-column PRIMARY KEY not supported
@@ -189,6 +197,9 @@ The following features are fully implemented and integrated in the engine:
 - **Slow Query Log** (`pkg/metrics/slow_query.go`) - Threshold-based slow query tracking
 - **Query Timeout** - Configurable per-database timeout enforcement
 - **Table Partitioning** - Partition definitions in DDL
+- **Deadlock Detection** (`pkg/txn/manager.go`) - Wait-for graph with automatic cycle detection
+- **Transaction Timeout** - Per-transaction and lock wait timeouts
+- **Transaction Metrics** - Real-time monitoring via HTTP endpoint
 
 ## Features Not Implemented
 The following features do not exist in the codebase:
@@ -197,7 +208,8 @@ The following features do not exist in the codebase:
 - AutoVacuum
 - JobScheduler
 - Compression (storage-level)
-- Deadlock detection
 - Group commit
 - Index advisor
 - Parallel query execution
+
+**Note:** Deadlock detection is now fully implemented in `pkg/txn/manager.go`.

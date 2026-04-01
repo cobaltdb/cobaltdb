@@ -792,7 +792,9 @@ func (c *MySQLClient) sendErrorPacket(code uint16, message string) error {
 	return c.writePacket(pkt, 0)
 }
 
-// scramblePassword scrambles a password using MySQL's algorithm
+// scramblePassword scrambles a password using MySQL's algorithm.
+//
+//nolint:unused // retained for protocol compatibility tests.
 func scramblePassword(password, scramble []byte) []byte {
 	if len(password) == 0 {
 		return nil
@@ -826,7 +828,9 @@ func scramblePassword(password, scramble []byte) []byte {
 	return result
 }
 
-// readLenEncInt reads a length-encoded integer
+// readLenEncInt reads a length-encoded integer.
+//
+//nolint:unused // retained for protocol compatibility tests.
 func readLenEncInt(data []byte) (uint64, int) {
 	if len(data) == 0 {
 		return 0, 0

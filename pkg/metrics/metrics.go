@@ -343,7 +343,6 @@ type Collector struct {
 	interval time.Duration
 	stopCh   chan struct{}
 	stopOnce sync.Once
-	mu       sync.RWMutex
 
 	// Database metrics
 	QueryCounter           *CounterMetric

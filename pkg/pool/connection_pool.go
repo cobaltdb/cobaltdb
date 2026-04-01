@@ -73,12 +73,12 @@ func (c *Config) Validate() error {
 // Conn represents a pooled connection
 type Conn struct {
 	net.Conn
-	pool        *Pool
-	createdAt   time.Time
-	lastUsedAt  time.Time
-	inUse       int32
-	closed      int32
-	id          uint64
+	pool       *Pool
+	createdAt  time.Time
+	lastUsedAt time.Time
+	inUse      int32
+	closed     int32
+	id         uint64
 }
 
 // newConn wraps a net.Conn in a pooled connection
@@ -120,7 +120,9 @@ func (c *Conn) IsHealthy(timeout time.Duration) bool {
 	if err := c.Conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return false
 	}
-	defer c.Conn.SetReadDeadline(time.Time{})
+	defer func() {
+		_ = c.Conn.SetReadDeadline(time.Time{})
+	}()
 
 	// Try to read (this is a simple health check)
 	// In production, you might send a ping/pong
@@ -146,35 +148,35 @@ type Pool struct {
 	dialer func() (net.Conn, error)
 
 	// Pool state
-	mu         sync.RWMutex
-	conns      []*Conn
-	available  chan *Conn
-	closed     int32
-	connIDSeq  uint64
+	mu        sync.RWMutex
+	conns     []*Conn
+	available chan *Conn
+	closed    int32
+	connIDSeq uint64
 
 	// Waiting clients
-	waiters    []chan *Conn
-	waitersMu  sync.Mutex
+	waiters   []chan *Conn
+	waitersMu sync.Mutex
 
 	// Metrics
-	stats      Stats
+	stats Stats
 
 	// Background tasks
-	stopCh     chan struct{}
-	wg         sync.WaitGroup
+	stopCh chan struct{}
+	wg     sync.WaitGroup
 }
 
 // Stats holds pool statistics
 type Stats struct {
-	TotalConns     int32 `json:"total_connections"`
-	IdleConns      int32 `json:"idle_connections"`
-	ActiveConns    int32 `json:"active_connections"`
-	WaitQueueLen   int32 `json:"wait_queue_length"`
-	TotalAcquires  uint64 `json:"total_acquires"`
-	TotalReleases  uint64 `json:"total_releases"`
-	TotalTimeouts  uint64 `json:"total_timeouts"`
-	TotalCreates   uint64 `json:"total_creates"`
-	TotalDestroys  uint64 `json:"total_destroys"`
+	TotalConns    int32  `json:"total_connections"`
+	IdleConns     int32  `json:"idle_connections"`
+	ActiveConns   int32  `json:"active_connections"`
+	WaitQueueLen  int32  `json:"wait_queue_length"`
+	TotalAcquires uint64 `json:"total_acquires"`
+	TotalReleases uint64 `json:"total_releases"`
+	TotalTimeouts uint64 `json:"total_timeouts"`
+	TotalCreates  uint64 `json:"total_creates"`
+	TotalDestroys uint64 `json:"total_destroys"`
 }
 
 // New creates a new connection pool

@@ -2,13 +2,13 @@ package catalog
 
 import (
 	"fmt"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"math"
+	"math/rand"
 	"regexp"
 	"strconv"
 	"strings"
-	"math/rand"
 	"time"
-	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
 const maxStringResultLen = 10 * 1024 * 1024 // 10 MB cap for string functions
@@ -16,11 +16,11 @@ const maxStringResultLen = 10 * 1024 * 1024 // 10 MB cap for string functions
 // EvalContext bundles common parameters for expression evaluation
 // This reduces parameter count and makes the API cleaner
 type EvalContext struct {
-	Catalog  *Catalog
-	Row      []interface{}
-	Columns  []ColumnDef
-	Args     []interface{}
-	Table    *TableDef
+	Catalog   *Catalog
+	Row       []interface{}
+	Columns   []ColumnDef
+	Args      []interface{}
+	Table     *TableDef
 	TableName string
 }
 
@@ -1153,7 +1153,6 @@ func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr 
 		return false, nil
 	}
 	pattern := fmt.Sprintf("%v", patternVal)
-	
 
 	// Tokenize the search pattern into words
 	searchWords := tokenize(pattern)
@@ -1176,18 +1175,17 @@ func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr 
 		for i, colExpr := range expr.Columns {
 			switch col := colExpr.(type) {
 			case *query.Identifier:
-				if strings.ToLower(col.Name) != strings.ToLower(ftsIdx.Columns[i]) {
+				if !strings.EqualFold(col.Name, ftsIdx.Columns[i]) {
 					colsMatch = false
 					break
 				}
 			case *query.QualifiedIdentifier:
-				if strings.ToLower(col.Column) != strings.ToLower(ftsIdx.Columns[i]) {
+				if !strings.EqualFold(col.Column, ftsIdx.Columns[i]) {
 					colsMatch = false
 					break
 				}
 			default:
 				colsMatch = false
-				break
 			}
 		}
 
@@ -1268,4 +1266,3 @@ func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr 
 
 	return true, nil
 }
-

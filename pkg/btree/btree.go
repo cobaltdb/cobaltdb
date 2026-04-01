@@ -21,7 +21,7 @@ var (
 	ErrKeyTooLong      = errors.New("key exceeds maximum length of 65535 bytes")
 	ErrMemoryLimit     = errors.New("memory limit exceeded")
 	DefaultMemoryLimit = int64(64 * 1024 * 1024) // 64MB default
-	MaxKeyLength       = 65535                     // uint16 max - serialization limit
+	MaxKeyLength       = 65535                   // uint16 max - serialization limit
 )
 
 // lruEntry tracks memory usage for LRU eviction
@@ -509,8 +509,6 @@ func (t *BTree) flushInternal() error {
 			remaining = len(kvData) - rootDataSpace
 			if remaining <= 0 {
 				overflowCount = 0
-				rootHeaderSize = 8
-				rootDataSpace = usablePageSize - rootHeaderSize
 				break
 			}
 			needed := uint32((remaining + usablePageSize - 1) / usablePageSize)

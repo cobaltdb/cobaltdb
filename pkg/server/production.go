@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/metrics"
 )
 
 // ProductionStats holds server statistics
@@ -134,6 +135,8 @@ func (ps *ProductionServer) startHealthServer() {
 	mux.HandleFunc("/stats", ps.loopbackOnly(ps.statsHandler()))
 	mux.HandleFunc("/circuit-breakers", ps.loopbackOnly(ps.circuitBreakerHandler()))
 	mux.HandleFunc("/rate-limits", ps.loopbackOnly(ps.rateLimitsHandler()))
+	mux.HandleFunc("/transaction-metrics", ps.loopbackOnly(ps.transactionMetricsHandler()))
+	mux.HandleFunc("/metrics/prometheus", ps.loopbackOnly(metrics.GetPrometheusHandler()))
 
 	ps.healthServer = &http.Server{
 		Addr:         ps.Config.HealthAddr,
@@ -329,6 +332,22 @@ func (ps *ProductionServer) rateLimitsHandler() http.HandlerFunc {
 	}
 }
 
+func (ps *ProductionServer) transactionMetricsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		stats := metrics.GetTransactionMetrics().GetStats()
+
+		if err := json.NewEncoder(w).Encode(stats); err != nil {
+			http.Error(w, "failed to encode transaction metrics", http.StatusInternalServerError)
+		}
+	}
+}
+
 // loopbackOnly restricts access to loopback addresses only
 func (ps *ProductionServer) loopbackOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +360,9 @@ func (ps *ProductionServer) loopbackOnly(next http.HandlerFunc) http.HandlerFunc
 	}
 }
 
-// authRequiredHandler wraps a handler with admin token authentication
+// authRequiredHandler wraps a handler with admin token authentication.
+//
+//nolint:unused // retained for production server compatibility tests.
 func (ps *ProductionServer) authRequiredHandler(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// In production, this should verify the admin token

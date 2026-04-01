@@ -33,7 +33,7 @@ go build -o cobalt-webui.exe ./webui/server.go
 
 ### Run
 ```bash
-./cobalt-webui.exe <database_file>
+./cobalt-webui.exe [flags] <database_file>
 ```
 
 Example:
@@ -44,7 +44,21 @@ Example:
 ```
 
 ### Access
-Open http://localhost:8080 in your browser
+By default Web UI binds to `127.0.0.1:8080` and enables token auth.
+
+Start output includes a one-time URL like:
+
+```text
+Open http://127.0.0.1:8080/?token=<generated-token> in your browser
+```
+
+The token is converted to an HttpOnly cookie on first load.
+
+### Security Flags
+
+- `-addr` (default: `127.0.0.1:8080`) - HTTP bind address
+- `-token` - explicit token value (or set `COBALTDB_WEBUI_TOKEN`)
+- `-insecure-no-auth` - disable auth (unsafe; local trusted development only)
 
 ## Saved Queries
 
@@ -94,6 +108,8 @@ Work with multiple queries simultaneously:
 - Tab content is preserved when switching between tabs
 
 ## API Endpoints
+
+All API endpoints require auth when token auth is enabled (default).
 
 - `GET /` - Web interface
 - `POST /api/query` - Execute SQL query

@@ -120,7 +120,7 @@ func (c *Catalog) indexRowForVector(vectorIndex *VectorIndexDef, rowSlice []inte
 
 	// Insert into HNSW index
 	if vectorIndex.HNSW != nil {
-		vectorIndex.HNSW.Insert(rowKey, vector)
+		_ = vectorIndex.HNSW.Insert(rowKey, vector)
 	}
 }
 
@@ -225,7 +225,7 @@ func (c *Catalog) updateVectorIndexesForDelete(tableName string, key []byte) {
 			continue
 		}
 		if vectorIndex.HNSW != nil {
-			vectorIndex.HNSW.Delete(rowKey)
+			_ = vectorIndex.HNSW.Delete(rowKey)
 		}
 	}
 }
@@ -240,7 +240,7 @@ func (c *Catalog) updateVectorIndexesForUpdate(tableName string, rowSlice []inte
 
 		// Delete old entry
 		if vectorIndex.HNSW != nil {
-			vectorIndex.HNSW.Delete(rowKey)
+			_ = vectorIndex.HNSW.Delete(rowKey)
 		}
 
 		// Find column index and re-insert

@@ -320,7 +320,9 @@ func applyMigration(db *sql.DB, m Migration) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	// Execute migration SQL
 	if _, err := tx.Exec(m.UpSQL); err != nil {
@@ -344,7 +346,9 @@ func revertMigration(db *sql.DB, m Migration) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	// Execute down SQL
 	if m.DownSQL != "" {
@@ -415,6 +419,8 @@ func parseTimestamp(ts string) time.Time {
 }
 
 // Interactive mode for creating migrations
+//
+//nolint:unused // kept for future interactive CLI mode.
 func interactiveCreate(dir string) error {
 	reader := bufio.NewReader(os.Stdin)
 

@@ -104,26 +104,26 @@ type Options struct {
 	QueryCacheTTL    time.Duration // Query cache TTL (default: 5m)
 
 	// Replication Options
-	ReplicationRole           string        // "master", "slave", or "" (disabled)
-	ReplicationListenAddr     string        // Master listen address for slaves
-	ReplicationMasterAddr     string        // Slave: master address to connect
-	ReplicationMode           string        // "async", "sync", "full_sync"
-	ReplicationAuthToken      string        // Authentication token for replication
-	ReplicationSSLCert        string        // SSL certificate file path
-	ReplicationSSLKey         string        // SSL key file path
-	ReplicationSSLCA          string        // SSL CA certificate path
+	ReplicationRole       string // "master", "slave", or "" (disabled)
+	ReplicationListenAddr string // Master listen address for slaves
+	ReplicationMasterAddr string // Slave: master address to connect
+	ReplicationMode       string // "async", "sync", "full_sync"
+	ReplicationAuthToken  string // Authentication token for replication
+	ReplicationSSLCert    string // SSL certificate file path
+	ReplicationSSLKey     string // SSL key file path
+	ReplicationSSLCA      string // SSL CA certificate path
 
 	// Backup Options
-	BackupDir               string        // Backup directory path
-	BackupRetention         time.Duration // Backup retention period
-	MaxBackups              int           // Maximum number of backups to keep
-	BackupCompressionLevel  int           // Compression level (0-9, 0=disabled)
+	BackupDir              string        // Backup directory path
+	BackupRetention        time.Duration // Backup retention period
+	MaxBackups             int           // Maximum number of backups to keep
+	BackupCompressionLevel int           // Compression level (0-9, 0=disabled)
 
 	// Slow Query Log Options
-	EnableSlowQueryLog   bool          // Enable slow query logging
-	SlowQueryThreshold   time.Duration // Threshold for slow queries (default: 1s)
-	SlowQueryMaxEntries  int           // Max in-memory entries (default: 1000)
-	SlowQueryLogFile     string        // Log file path (empty = memory only)
+	EnableSlowQueryLog  bool          // Enable slow query logging
+	SlowQueryThreshold  time.Duration // Threshold for slow queries (default: 1s)
+	SlowQueryMaxEntries int           // Max in-memory entries (default: 1000)
+	SlowQueryLogFile    string        // Log file path (empty = memory only)
 
 	// Query Plan Cache Options
 	EnablePlanCache  bool  // Enable query plan caching
@@ -800,7 +800,9 @@ func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.State
 
 	// Cache in plan cache if enabled
 	if db.planCache != nil {
-		db.planCache.Put(sql, args, parsedStmt)
+		if err := db.planCache.Put(sql, args, parsedStmt); err != nil {
+			return nil, err
+		}
 	}
 
 	// Cache the statement with O(1) LRU eviction
@@ -1962,7 +1964,7 @@ func (db *DB) executeCallProcedure(ctx context.Context, stmt *query.CallProcedur
 func (db *DB) executeWithParams(ctx context.Context, stmt query.Statement, paramMap map[string]interface{}) (Result, error) {
 	// Substitute parameters in the statement
 	substitutedStmt := substituteParamsInStatement(stmt, paramMap)
-	
+
 	// Execute the statement (with no additional args since params are substituted)
 	return db.execute(ctx, substitutedStmt, nil)
 }
@@ -2020,7 +2022,7 @@ func substituteParamsInExpr(expr query.Expression, paramMap map[string]interface
 	if expr == nil {
 		return nil
 	}
-	
+
 	switch e := expr.(type) {
 	case *query.Identifier:
 		if val, ok := paramMap[e.Name]; ok {
@@ -2733,7 +2735,8 @@ func (tx *Tx) Commit() error {
 	// Flush table B+Trees to buffer pool first
 	if err := tx.db.catalog.FlushTableTrees(); err != nil {
 		// Rollback catalog transaction to prevent it from staying active forever
-		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil { /* already have primary error */
+		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil {
+			_ = rbErr // best-effort rollback; preserve primary error
 		}
 		return fmt.Errorf("failed to flush tables: %w", err)
 	}
@@ -2741,7 +2744,8 @@ func (tx *Tx) Commit() error {
 	// Commit in catalog first (writes commit record to WAL)
 	if err := tx.db.catalog.CommitTransaction(); err != nil {
 		// Rollback catalog transaction to prevent it from staying active forever
-		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil { /* already have primary error */
+		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil {
+			_ = rbErr // best-effort rollback; preserve primary error
 		}
 		return fmt.Errorf("commit transaction failed: %w", err)
 	}
@@ -3081,4 +3085,3 @@ func (db *DB) SearchVectorRange(indexName string, queryVector []float64, radius 
 	}
 	return db.catalog.SearchVectorRange(indexName, queryVector, radius)
 }
-

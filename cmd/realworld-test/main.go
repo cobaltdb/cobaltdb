@@ -43,6 +43,7 @@ func main() {
 	fmt.Printf("Target: %s (Wire), %s (MySQL)\n",
 		net.JoinHostPort(*flagHost, fmt.Sprintf("%d", *flagPort)),
 		net.JoinHostPort(*flagHost, fmt.Sprintf("%d", *flagMySQLPort)))
+	fmt.Printf("Duration target: %v\n", *flagDuration)
 	fmt.Printf("Concurrency: %d workers\n", *flagConcurrency)
 	fmt.Printf("Operations: %d per worker\n", *flagOperations)
 	fmt.Println()
@@ -167,7 +168,9 @@ func testMySQLProtocol() *Stats {
 	fmt.Printf("Connected in %v\n", connectLatency)
 
 	// Try to read server greeting (MySQL protocol)
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		fmt.Printf("Warning: Could not set read deadline: %v\n", err)
+	}
 	reader := bufio.NewReader(conn)
 
 	// Read first byte (protocol version)

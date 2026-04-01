@@ -30,21 +30,21 @@ func generateRandomPassword(length int) (string, error) {
 func main() {
 	var (
 		dataDir     = flag.String("data", "./data", "data directory")
-		address     = flag.String("addr", ":4200", "wire protocol address")
-		mysqlAddr   = flag.String("mysql-addr", ":3307", "MySQL protocol address")
+		address     = flag.String("addr", "127.0.0.1:4200", "wire protocol address")
+		mysqlAddr   = flag.String("mysql-addr", "127.0.0.1:3307", "MySQL protocol address")
 		enableMySQL = flag.Bool("mysql", true, "enable MySQL protocol")
 		inMemory    = flag.Bool("memory", false, "use in-memory storage")
 		cacheSize   = flag.Int("cache", 1024, "cache size in pages")
-		authEnabled = flag.Bool("auth", false, "enable authentication")
+		authEnabled = flag.Bool("auth", true, "enable authentication")
 		adminUser   = flag.String("admin-user", "admin", "default admin username")
-		adminPass   = flag.String("admin-pass", "", "admin password (required if auth enabled, random generated if not set)")
+		adminPass   = flag.String("admin-pass", "", "admin password (generated securely if not set)")
 		tlsEnabled  = flag.Bool("tls", false, "enable TLS")
 		tlsCert     = flag.String("tls-cert", "", "TLS certificate file")
 		tlsKey      = flag.String("tls-key", "", "TLS key file")
 		tlsGenCert  = flag.Bool("tls-gen-cert", false, "auto-generate self-signed TLS certificate")
 
 		// Production features
-		healthAddr           = flag.String("health-addr", ":8420", "health check HTTP address")
+		healthAddr           = flag.String("health-addr", "127.0.0.1:8420", "health check HTTP address")
 		enableHealthServer   = flag.Bool("health-server", true, "enable health check HTTP server")
 		enableCircuitBreaker = flag.Bool("circuit-breaker", true, "enable circuit breaker")
 		enableRetry          = flag.Bool("retry", true, "enable retry logic")
@@ -53,18 +53,27 @@ func main() {
 	)
 	flag.Parse()
 
-	// FIX-007: Check for default admin credentials when auth is enabled
+	// Override admin credentials from environment variables if set.
+	if envUser := os.Getenv("COBALTDB_ADMIN_USER"); envUser != "" {
+		*adminUser = envUser
+	}
+	if envPass := os.Getenv("COBALTDB_ADMIN_PASSWORD"); envPass != "" {
+		*adminPass = envPass
+	}
+
+	// Secure-by-default authentication behavior.
 	if *authEnabled {
 		if *adminPass == "" {
-			log.Fatal("ERROR: Admin password must be set when auth is enabled (use -admin-pass flag or COBALTDB_ADMIN_PASSWORD env var)")
+			generated, err := generateRandomPassword(20)
+			if err != nil {
+				log.Fatalf("Failed to generate random admin password: %v", err)
+			}
+			*adminPass = generated
+			log.Printf("[SECURITY] Auth is enabled by default. Generated admin password for this run: %s", generated)
+			log.Printf("[SECURITY] Set -admin-pass or COBALTDB_ADMIN_PASSWORD to use a fixed secret.")
 		}
-	} else if *adminPass == "" {
-		generated, err := generateRandomPassword(16)
-		if err != nil {
-			log.Fatalf("Failed to generate random admin password: %v", err)
-		}
-		*adminPass = generated
-		log.Printf("[INFO] Generated random admin password (redacted)")
+	} else {
+		log.Printf("[SECURITY WARNING] Authentication is disabled (-auth=false). Do not expose this server publicly.")
 	}
 
 	// Open database
@@ -130,15 +139,8 @@ func main() {
 
 	prodServer := server.NewProductionServer(db, prodConfig)
 
-	// Override admin credentials from environment variables if set
 	finalAdminUser := *adminUser
 	finalAdminPass := *adminPass
-	if envUser := os.Getenv("COBALTDB_ADMIN_USER"); envUser != "" {
-		finalAdminUser = envUser
-	}
-	if envPass := os.Getenv("COBALTDB_ADMIN_PASSWORD"); envPass != "" {
-		finalAdminPass = envPass
-	}
 
 	// Warn if using default credentials with auth enabled
 	if *authEnabled && finalAdminPass == "admin" {

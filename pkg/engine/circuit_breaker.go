@@ -13,17 +13,17 @@ import (
 )
 
 var (
-	ErrCircuitOpen     = errors.New("circuit breaker is open")
-	ErrCircuitTooMany  = errors.New("too many concurrent requests")
+	ErrCircuitOpen    = errors.New("circuit breaker is open")
+	ErrCircuitTooMany = errors.New("too many concurrent requests")
 )
 
 // CircuitState represents the state of the circuit breaker
 type CircuitState int32
 
 const (
-	CircuitClosed    CircuitState = iota // Normal operation
-	CircuitOpen                           // Failing, reject requests
-	CircuitHalfOpen                       // Testing if service recovered
+	CircuitClosed   CircuitState = iota // Normal operation
+	CircuitOpen                         // Failing, reject requests
+	CircuitHalfOpen                     // Testing if service recovered
 )
 
 func (s CircuitState) String() string {
@@ -73,13 +73,13 @@ type CircuitBreaker struct {
 	config *CircuitBreakerConfig
 
 	// State management
-	state        atomic.Int32
-	failures     atomic.Int32
-	successes    atomic.Int32
-	lastFailure  atomic.Int64 // Unix timestamp
+	state       atomic.Int32
+	failures    atomic.Int32
+	successes   atomic.Int32
+	lastFailure atomic.Int64 // Unix timestamp
 
 	// Concurrency control
-	concurrency  atomic.Int32
+	concurrency atomic.Int32
 
 	// Half-open rate limiting
 	halfOpenTokens chan struct{}
@@ -88,8 +88,6 @@ type CircuitBreaker struct {
 	// When true, ReportSuccess/ReportFailure become no-ops,
 	// preventing sends on halfOpenTokens after the breaker is stopped.
 	stopped atomic.Bool
-
-	mu sync.RWMutex
 }
 
 // NewCircuitBreaker creates a new circuit breaker
@@ -208,7 +206,7 @@ func (cb *CircuitBreaker) ReportFailure() {
 // openCircuit transitions to open state
 func (cb *CircuitBreaker) openCircuit() {
 	if cb.state.CompareAndSwap(int32(CircuitClosed), int32(CircuitOpen)) ||
-	   cb.state.CompareAndSwap(int32(CircuitHalfOpen), int32(CircuitOpen)) {
+		cb.state.CompareAndSwap(int32(CircuitHalfOpen), int32(CircuitOpen)) {
 		cb.successes.Store(0)
 	}
 }
@@ -327,7 +325,7 @@ func (cb *CircuitBreaker) Stop() {
 
 // CircuitBreakerManager manages multiple circuit breakers for different operations
 type CircuitBreakerManager struct {
-	mu     sync.RWMutex
+	mu       sync.RWMutex
 	breakers map[string]*CircuitBreaker
 }
 

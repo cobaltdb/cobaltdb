@@ -39,18 +39,18 @@ const (
 
 // Config holds replication configuration
 type Config struct {
-	Role           Role
-	Mode           ReplicationMode
-	ListenAddr     string              // For master: address to listen on
-	MasterAddr     string              // For slave: master address to connect
-	Slaves         []string            // For master: list of slave addresses
-	MaxLag         time.Duration       // Maximum allowed replication lag
-	SyncInterval   time.Duration       // How often to sync WAL
-	AuthToken      string              // Authentication token
-	Compress       bool                // Compress replication stream
-	SSLCert        string              // SSL certificate file
-	SSLKey         string              // SSL key file
-	SSLCA          string              // SSL CA certificate
+	Role         Role
+	Mode         ReplicationMode
+	ListenAddr   string        // For master: address to listen on
+	MasterAddr   string        // For slave: master address to connect
+	Slaves       []string      // For master: list of slave addresses
+	MaxLag       time.Duration // Maximum allowed replication lag
+	SyncInterval time.Duration // How often to sync WAL
+	AuthToken    string        // Authentication token
+	Compress     bool          // Compress replication stream
+	SSLCert      string        // SSL certificate file
+	SSLKey       string        // SSL key file
+	SSLCA        string        // SSL CA certificate
 }
 
 // DefaultConfig returns default replication configuration
@@ -66,10 +66,10 @@ func DefaultConfig() *Config {
 
 // WALEntry represents a single WAL entry for replication
 type WALEntry struct {
-	LSN       uint64    // Log Sequence Number
+	LSN       uint64 // Log Sequence Number
 	Timestamp time.Time
-	Data      []byte    // Serialized operation
-	Checksum  uint32    // CRC32 checksum
+	Data      []byte // Serialized operation
+	Checksum  uint32 // CRC32 checksum
 }
 
 // Encode serializes the WAL entry
@@ -151,9 +151,8 @@ type Manager struct {
 	listener    net.Listener
 
 	// Slave fields
-	masterConn   net.Conn
-	lastApplied  uint64
-	replicaWAL   []*WALEntry
+	masterConn  net.Conn
+	lastApplied uint64
 
 	// Common fields
 	stopCh   chan struct{}
@@ -162,8 +161,8 @@ type Manager struct {
 	metrics  *Metrics
 
 	// Callbacks
-	OnApply    func(entry *WALEntry) error
-	OnLag      func(slave string, lag time.Duration)
+	OnApply      func(entry *WALEntry) error
+	OnLag        func(slave string, lag time.Duration)
 	OnDisconnect func(slave string, err error)
 }
 
@@ -180,11 +179,11 @@ type SlaveConnection struct {
 
 // Metrics holds replication metrics
 type Metrics struct {
-	ReplicatedBytes   uint64
-	AppliedEntries    uint64
-	ActiveSlaves      int32
-	ReplicationLag    int64 // in milliseconds
-	LastAppliedTime   int64 // Unix timestamp
+	ReplicatedBytes uint64
+	AppliedEntries  uint64
+	ActiveSlaves    int32
+	ReplicationLag  int64 // in milliseconds
+	LastAppliedTime int64 // Unix timestamp
 }
 
 // NewManager creates a new replication manager
@@ -359,7 +358,9 @@ func (m *Manager) authenticateSlave(conn net.Conn) error {
 
 	token = token[:len(token)-1] // Remove newline
 	if token != m.config.AuthToken {
-		conn.Write([]byte("AUTH_FAILED\n"))
+		if _, writeErr := conn.Write([]byte("AUTH_FAILED\n")); writeErr != nil {
+			return fmt.Errorf("authentication failed: %w", writeErr)
+		}
 		return fmt.Errorf("authentication failed")
 	}
 
@@ -548,7 +549,9 @@ func (m *Manager) handleMasterMessage(msg string) error {
 	case "STAR":
 		// START <LSN>
 		var lsn uint64
-		fmt.Sscanf(msg, "START %d", &lsn)
+		if _, err := fmt.Sscanf(msg, "START %d", &lsn); err != nil {
+			return fmt.Errorf("invalid START message: %w", err)
+		}
 		m.lastApplied = lsn
 
 	case "PING":
@@ -741,14 +744,14 @@ func calculateCRC32(data []byte) uint32 {
 // JSON helpers for metadata
 
 type ReplicationStatus struct {
-	Role          string            `json:"role"`
-	Mode          string            `json:"mode"`
-	Connected     bool              `json:"connected"`
-	ActiveSlaves  int               `json:"active_slaves,omitempty"`
-	LastApplied   uint64            `json:"last_applied_lsn"`
-	CurrentMaster uint64            `json:"current_master_lsn,omitempty"`
-	Slaves        []SlaveStatus     `json:"slaves,omitempty"`
-	Lag           time.Duration     `json:"replication_lag,omitempty"`
+	Role          string        `json:"role"`
+	Mode          string        `json:"mode"`
+	Connected     bool          `json:"connected"`
+	ActiveSlaves  int           `json:"active_slaves,omitempty"`
+	LastApplied   uint64        `json:"last_applied_lsn"`
+	CurrentMaster uint64        `json:"current_master_lsn,omitempty"`
+	Slaves        []SlaveStatus `json:"slaves,omitempty"`
+	Lag           time.Duration `json:"replication_lag,omitempty"`
 }
 
 type SlaveStatus struct {

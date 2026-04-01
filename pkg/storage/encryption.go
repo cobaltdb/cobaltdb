@@ -128,14 +128,20 @@ func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 	// Use pooled buffer to reduce allocations on hot read path
 	var encryptedBuf []byte
 	if poolBuf := eb.readPool.Get(); poolBuf != nil {
-		encryptedBuf = poolBuf.([]byte)
-		if len(encryptedBuf) < encryptedSize {
-			encryptedBuf = make([]byte, encryptedSize)
+		switch b := poolBuf.(type) {
+		case *[]byte:
+			encryptedBuf = *b
+		case []byte:
+			encryptedBuf = b
 		}
-	} else {
+	}
+	if len(encryptedBuf) < encryptedSize {
 		encryptedBuf = make([]byte, encryptedSize)
 	}
-	defer eb.readPool.Put(encryptedBuf)
+	defer func() {
+		pooled := encryptedBuf
+		eb.readPool.Put(&pooled)
+	}()
 
 	n, err := eb.backend.ReadAt(encryptedBuf, offset)
 	if err != nil {

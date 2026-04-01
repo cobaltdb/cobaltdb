@@ -2,8 +2,8 @@ package catalog
 
 import (
 	"fmt"
-	"strings"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"strings"
 )
 
 func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) ([]string, [][]interface{}, error) {
@@ -240,9 +240,7 @@ func (c *Catalog) executeRecursiveCTE(name string, nameLower string, cteColumns 
 	if len(cteColumns) > 0 && len(cteColumns) <= len(anchorCols) {
 		cteCols = make([]string, len(anchorCols))
 		copy(cteCols, anchorCols)
-		for i, col := range cteColumns {
-			cteCols[i] = col
-		}
+		copy(cteCols, cteColumns)
 	}
 
 	// Step 2: Iteratively execute recursive member
@@ -285,4 +283,4 @@ func (c *Catalog) executeRecursiveCTE(name string, nameLower string, cteColumns 
 	}
 
 	return nil
-}
+}

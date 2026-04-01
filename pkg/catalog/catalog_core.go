@@ -21,22 +21,22 @@
 package catalog
 
 import (
-	"context"
 	"container/list"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
-	"sort"
-	"time"
-	"strconv"
-	"strings"
-	"sync"
-	"sync/atomic"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
+	"math"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 var (
@@ -58,21 +58,21 @@ type PartitionInfo struct {
 
 // PartitionDef defines a single partition
 type PartitionDef struct {
-	Name      string `json:"name"`
-	MinValue  int64  `json:"min_value"`
-	MaxValue  int64  `json:"max_value"`
+	Name     string `json:"name"`
+	MinValue int64  `json:"min_value"`
+	MaxValue int64  `json:"max_value"`
 }
 
 type TableDef struct {
-	Name        string              `json:"name"`
-	Type        string              `json:"type"` // "table" or "collection"
-	Columns     []ColumnDef         `json:"columns"`
-	PrimaryKey  []string            `json:"primary_key"` // Supports composite PK
-	CreatedAt   int64               `json:"created_at"`
-	RootPageID  uint32              `json:"root_page_id"`
-	ForeignKeys []ForeignKeyDef     `json:"foreign_keys,omitempty"`
-	AutoIncSeq  int64               `json:"auto_inc_seq"` // Per-table auto-increment counter
-	Partition   *PartitionInfo      `json:"partition,omitempty"` // Table partitioning info
+	Name        string          `json:"name"`
+	Type        string          `json:"type"` // "table" or "collection"
+	Columns     []ColumnDef     `json:"columns"`
+	PrimaryKey  []string        `json:"primary_key"` // Supports composite PK
+	CreatedAt   int64           `json:"created_at"`
+	RootPageID  uint32          `json:"root_page_id"`
+	ForeignKeys []ForeignKeyDef `json:"foreign_keys,omitempty"`
+	AutoIncSeq  int64           `json:"auto_inc_seq"`        // Per-table auto-increment counter
+	Partition   *PartitionInfo  `json:"partition,omitempty"` // Table partitioning info
 	// Performance: cache column indices (not persisted)
 	columnIndices map[string]int `json:"-"`
 }
@@ -95,10 +95,10 @@ type ColumnDef struct {
 	PrimaryKey    bool             `json:"primary_key"`
 	AutoIncrement bool             `json:"auto_increment"`
 	Default       string           `json:"default,omitempty"`
-	CheckStr      string           `json:"check_str,omitempty"` // CHECK expression as SQL text (persisted)
-	Check         query.Expression `json:"-"`                   // Parsed CHECK expression (not persisted)
-	defaultExpr   query.Expression `json:"-"`                   // Parsed DEFAULT expression (not persisted)
-	sourceTbl     string           `json:"-"`                   // Source table name for JOIN column disambiguation
+	CheckStr      string           `json:"check_str,omitempty"`  // CHECK expression as SQL text (persisted)
+	Check         query.Expression `json:"-"`                    // Parsed CHECK expression (not persisted)
+	defaultExpr   query.Expression `json:"-"`                    // Parsed DEFAULT expression (not persisted)
+	sourceTbl     string           `json:"-"`                    // Source table name for JOIN column disambiguation
 	Dimensions    int              `json:"dimensions,omitempty"` // For VECTOR type: number of dimensions
 }
 
@@ -149,13 +149,13 @@ type FTSIndexDef struct {
 
 // JSONIndexDef represents a JSON index definition (GIN-like)
 type JSONIndexDef struct {
-	Name      string              `json:"name"`
-	TableName string              `json:"table_name"`
-	Column    string              `json:"column"`              // JSON column name
-	Path      string              `json:"path"`                // JSON path expression (e.g., "$.name")
-	DataType  string              `json:"data_type"`           // indexed data type: "string", "number", "boolean"
-	Index     map[string][]int64  `json:"index"`               // value -> list of row IDs (for string values)
-	NumIndex  map[string][]int64  `json:"num_index,omitempty"` // for numeric values (string key to avoid precision issues)
+	Name      string             `json:"name"`
+	TableName string             `json:"table_name"`
+	Column    string             `json:"column"`              // JSON column name
+	Path      string             `json:"path"`                // JSON path expression (e.g., "$.name")
+	DataType  string             `json:"data_type"`           // indexed data type: "string", "number", "boolean"
+	Index     map[string][]int64 `json:"index"`               // value -> list of row IDs (for string values)
+	NumIndex  map[string][]int64 `json:"num_index,omitempty"` // for numeric values (string key to avoid precision issues)
 }
 
 // undoAction represents the type of undo operation
@@ -212,28 +212,28 @@ type undoEntry struct {
 
 // Catalog manages database schema metadata
 type Catalog struct {
-	mu                sync.RWMutex
-	tree              *btree.BTree
-	tables            map[string]*TableDef
-	indexes           map[string]*IndexDef
-	indexTrees        map[string]*btree.BTree // B+Trees for indexes
-	pool              *storage.BufferPool
-	wal               *storage.WAL
-	tableTrees        map[string]*btree.BTree               // Each table has its own B+Tree
-	views             map[string]*query.SelectStmt          // Views store their SELECT query
-	triggers          map[string]*query.CreateTriggerStmt   // Triggers store their definition
-	procedures        map[string]*query.CreateProcedureStmt // Procedures store their definition
-	materializedViews map[string]*MaterializedViewDef       // Materialized views
-	ftsIndexes        map[string]*FTSIndexDef               // Full-text search indexes
-	jsonIndexes       map[string]*JSONIndexDef              // JSON indexes for fast JSON queries
-	vectorIndexes     map[string]*VectorIndexDef            // Vector (HNSW) indexes for similarity search
-	stats             map[string]*StatsTableStats           // Table statistics for ANALYZE
-	cteResults        map[string]*cteResultSet              // Temporary CTE result cache for recursive CTEs
-	keyCounter        int64                                 // For generating unique keys
-	txnID             uint64                                // Current transaction ID
-	txnActive         bool                                  // Is a transaction active
-	undoLog           []undoEntry                           // Undo log for transaction rollback
-	savepoints        []savepointEntry                      // Stack of savepoints
+	mu                   sync.RWMutex
+	tree                 *btree.BTree
+	tables               map[string]*TableDef
+	indexes              map[string]*IndexDef
+	indexTrees           map[string]*btree.BTree // B+Trees for indexes
+	pool                 *storage.BufferPool
+	wal                  *storage.WAL
+	tableTrees           map[string]*btree.BTree               // Each table has its own B+Tree
+	views                map[string]*query.SelectStmt          // Views store their SELECT query
+	triggers             map[string]*query.CreateTriggerStmt   // Triggers store their definition
+	procedures           map[string]*query.CreateProcedureStmt // Procedures store their definition
+	materializedViews    map[string]*MaterializedViewDef       // Materialized views
+	ftsIndexes           map[string]*FTSIndexDef               // Full-text search indexes
+	jsonIndexes          map[string]*JSONIndexDef              // JSON indexes for fast JSON queries
+	vectorIndexes        map[string]*VectorIndexDef            // Vector (HNSW) indexes for similarity search
+	stats                map[string]*StatsTableStats           // Table statistics for ANALYZE
+	cteResults           map[string]*cteResultSet              // Temporary CTE result cache for recursive CTEs
+	keyCounter           int64                                 // For generating unique keys
+	txnID                uint64                                // Current transaction ID
+	txnActive            bool                                  // Is a transaction active
+	undoLog              []undoEntry                           // Undo log for transaction rollback
+	savepoints           []savepointEntry                      // Stack of savepoints
 	rlsManager           *security.Manager                     // Row-level security manager
 	enableRLS            bool                                  // Enable row-level security
 	rlsPolicies          map[string]*security.Policy           // RLS policies: key = "table:policyName"
@@ -953,36 +953,36 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		// Check for materialized view if not found in CTE
 		if !foundInCTE {
 			if mv, mvErr := cat.getMaterializedViewLocked(stmt.From.Name); mvErr == nil {
-			// It's a materialized view - create a synthetic table from its data
-			table = &TableDef{
-				Name: stmt.From.Name,
-			}
-			// Extract column names from the materialized view data
-			if len(mv.Data) > 0 {
-				for colName := range mv.Data[0] {
-					table.Columns = append(table.Columns, ColumnDef{Name: colName, Type: "TEXT"})
+				// It's a materialized view - create a synthetic table from its data
+				table = &TableDef{
+					Name: stmt.From.Name,
 				}
-				// Also need to store the MV data for scanning - use a special marker
-				// We'll handle MV data in selectLocked similar to CTE results
-			}
-			// Register as temporary CTE-like result for this query
-			if cat.cteResults == nil {
-				cat.cteResults = make(map[string]*cteResultSet)
-			}
-			cols := make([]string, len(table.Columns))
-			for i, col := range table.Columns {
-				cols[i] = col.Name
-			}
-			// Convert map data to rows
-			rows := make([][]interface{}, len(mv.Data))
-			for i, rowMap := range mv.Data {
-				row := make([]interface{}, len(table.Columns))
-				for j, col := range table.Columns {
-					row[j] = rowMap[col.Name]
+				// Extract column names from the materialized view data
+				if len(mv.Data) > 0 {
+					for colName := range mv.Data[0] {
+						table.Columns = append(table.Columns, ColumnDef{Name: colName, Type: "TEXT"})
+					}
+					// Also need to store the MV data for scanning - use a special marker
+					// We'll handle MV data in selectLocked similar to CTE results
 				}
-				rows[i] = row
-			}
-			cat.cteResults[strings.ToLower(stmt.From.Name)] = &cteResultSet{columns: cols, rows: rows}
+				// Register as temporary CTE-like result for this query
+				if cat.cteResults == nil {
+					cat.cteResults = make(map[string]*cteResultSet)
+				}
+				cols := make([]string, len(table.Columns))
+				for i, col := range table.Columns {
+					cols[i] = col.Name
+				}
+				// Convert map data to rows
+				rows := make([][]interface{}, len(mv.Data))
+				for i, rowMap := range mv.Data {
+					row := make([]interface{}, len(table.Columns))
+					for j, col := range table.Columns {
+						row[j] = rowMap[col.Name]
+					}
+					rows[i] = row
+				}
+				cat.cteResults[strings.ToLower(stmt.From.Name)] = &cteResultSet{columns: cols, rows: rows}
 				// MV data will be cleaned up after row scanning
 			} else {
 				return nil, nil, err
@@ -1417,11 +1417,9 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 				} else if ci.index == -1 && !ci.isAggregate {
 					// Scalar function or expression - evaluate it
 					if i < len(stmt.Columns) {
-						if expr, ok := stmt.Columns[i].(query.Expression); ok {
-							val, err := evaluateExpression(cat, fullRow, table.Columns, expr, args)
-							if err == nil {
-								selectedRow[i] = val
-							}
+						val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
+						if err == nil {
+							selectedRow[i] = val
 						}
 					} else if strings.HasPrefix(ci.name, "__orderby_") {
 						// Hidden ORDER BY expression column - extract index from name
@@ -1466,11 +1464,9 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 					selectedRow[i] = fullRow[ci.index]
 				} else if ci.index == -1 && !ci.isAggregate {
 					if i < len(stmt.Columns) {
-						if expr, ok := stmt.Columns[i].(query.Expression); ok {
-							val, err := evaluateExpression(cat, fullRow, table.Columns, expr, args)
-							if err == nil {
-								selectedRow[i] = val
-							}
+						val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
+						if err == nil {
+							selectedRow[i] = val
 						}
 					}
 				}
@@ -1534,11 +1530,9 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 					} else if ci.index == -1 && !ci.isAggregate {
 						// Scalar function or expression - evaluate it
 						if i < len(stmt.Columns) {
-							if expr, ok := stmt.Columns[i].(query.Expression); ok {
-								val, err := evaluateExpression(cat, fullRow, table.Columns, expr, args)
-								if err == nil {
-									selectedRow[i] = val
-								}
+							val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
+							if err == nil {
+								selectedRow[i] = val
 							}
 						} else if strings.HasPrefix(ci.name, "__orderby_") {
 							// Hidden ORDER BY expression column - extract index from name
@@ -1606,7 +1600,6 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 	// Strip hidden ORDER BY columns after sorting and distinct
 	if hiddenOrderByCols > 0 {
 		rows = stripHiddenCols(rows, len(selectCols), hiddenOrderByCols)
-		selectCols = selectCols[:len(selectCols)-hiddenOrderByCols]
 	}
 
 	// Apply OFFSET if present
@@ -2093,8 +2086,6 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 	return nil
 }
 
-
-
 func addHiddenOrderByCols(orderBy []*query.OrderByExpr, selectCols []selectColInfo, table *TableDef) ([]selectColInfo, int) {
 	if len(orderBy) == 0 || table == nil {
 		return selectCols, 0
@@ -2271,7 +2262,6 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 		colName  string // column name or "*"
 		colIdx   int    // column index in table
 		alias    string // result column name
-		isDistinct bool
 	}
 	var specs []aggSpec
 
@@ -3248,15 +3238,14 @@ func evaluateWhere(c *Catalog, row []interface{}, columns []ColumnDef, where que
 }
 
 func isIntegerType(v interface{}) bool {
-	switch v.(type) {
+	switch val := v.(type) {
 	case int:
 		return true
 	case int64:
 		return true
 	case float64:
 		// JSON numbers are decoded as float64, check if it's a whole number
-		f := v.(float64)
-		return f == float64(int64(f)) && f >= -1e15 && f <= 1e15
+		return val == float64(int64(val)) && val >= -1e15 && val <= 1e15
 	}
 	return false
 }
@@ -3682,10 +3671,6 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		jsonData, _ := args[0].(string)
 		path, _ := args[1].(string)
 		value, _ := args[2].(string)
-		// Convert value to JSON string if it's not already
-		if value != "" && args[2] != nil {
-			// The value should already be a string representation
-		}
 		return JSONSet(jsonData, path, value)
 
 	case "JSON_REMOVE":
@@ -4798,7 +4783,9 @@ func parseSystemTimeExpr(expr string) time.Time {
 		// Try to extract number and unit
 		var num int
 		var unit string
-		fmt.Sscanf(expr, "%d %s", &num, &unit)
+		if _, err := fmt.Sscanf(expr, "%d %s", &num, &unit); err != nil {
+			return now
+		}
 
 		switch {
 		case strings.HasPrefix(unit, "hour") || strings.HasPrefix(unit, "hr"):
@@ -4817,7 +4804,9 @@ func parseSystemTimeExpr(expr string) time.Time {
 		expr = strings.TrimSpace(expr[1:])
 		var num int
 		var unit string
-		fmt.Sscanf(expr, "%d %s", &num, &unit)
+		if _, err := fmt.Sscanf(expr, "%d %s", &num, &unit); err != nil {
+			return now
+		}
 
 		switch {
 		case strings.HasPrefix(unit, "hour") || strings.HasPrefix(unit, "hr"):
@@ -4839,10 +4828,12 @@ func parseSystemTimeExpr(expr string) time.Time {
 	return now
 }
 
-// applyOffsetLimit applies OFFSET and LIMIT to a result set
+// applyOffsetLimit applies OFFSET and LIMIT to a result set.
+//
+//nolint:unused // retained for coverage and future shared offset/limit path reuse.
 func applyOffsetLimit(rows [][]interface{}, offsetExpr, limitExpr query.Expression, args []interface{}) [][]interface{} {
 	result := rows
-	
+
 	if offsetExpr != nil {
 		offsetVal, err := EvalExpression(offsetExpr, args)
 		if err == nil {
@@ -4855,7 +4846,7 @@ func applyOffsetLimit(rows [][]interface{}, offsetExpr, limitExpr query.Expressi
 			}
 		}
 	}
-	
+
 	if limitExpr != nil && len(result) > 0 {
 		limitVal, err := EvalExpression(limitExpr, args)
 		if err == nil {
@@ -4864,6 +4855,6 @@ func applyOffsetLimit(rows [][]interface{}, offsetExpr, limitExpr query.Expressi
 			}
 		}
 	}
-	
+
 	return result
 }

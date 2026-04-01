@@ -22,11 +22,11 @@ type HostFunctions struct {
 
 // Partition represents a data partition for parallel scanning
 type Partition struct {
-	ID         int                    // Partition ID (0-based)
-	TableName  string                 // Table this partition belongs to
-	StartRow   int                    // Starting row index (inclusive)
-	EndRow     int                    // Ending row index (exclusive)
-	Metadata   map[string]interface{} // Additional partition metadata
+	ID        int                    // Partition ID (0-based)
+	TableName string                 // Table this partition belongs to
+	StartRow  int                    // Starting row index (inclusive)
+	EndRow    int                    // Ending row index (exclusive)
+	Metadata  map[string]interface{} // Additional partition metadata
 }
 
 // UserDefinedFunction represents a custom function that can be called from SQL
@@ -40,10 +40,10 @@ type UserDefinedFunction struct {
 
 // TxOperation represents a transaction operation for rollback
 type TxOperation struct {
-	Type      string // "insert", "update", "delete"
-	Table     string
-	Row       map[string]interface{}
-	RowIndex  int // for update/delete
+	Type     string // "insert", "update", "delete"
+	Table    string
+	Row      map[string]interface{}
+	RowIndex int // for update/delete
 }
 
 // NewHostFunctions creates a new host function provider
@@ -570,7 +570,7 @@ func (h *HostFunctions) getColumnOffset(rt *Runtime, params []uint64) ([]uint64,
 		return []uint64{0}, nil
 	}
 
-	_ = int(params[0])    // tableId
+	_ = int(params[0]) // tableId
 	columnIdx := int(params[1])
 
 	// Simplified - assume each column is 8 bytes
@@ -586,7 +586,7 @@ func (h *HostFunctions) executeSubquery(rt *Runtime, params []uint64) ([]uint64,
 		return []uint64{0}, nil
 	}
 
-	_ = int(params[0])    // queryId - identifies which subquery to execute
+	_ = int(params[0]) // queryId - identifies which subquery to execute
 	outPtr := int32(params[1])
 	maxRows := int(params[2])
 
@@ -621,7 +621,7 @@ func (h *HostFunctions) sortRows(rt *Runtime, params []uint64) ([]uint64, error)
 
 	inPtr := int32(params[0])
 	rowCount := int(params[1])
-	_ = int(params[2])  // columnIdx
+	_ = int(params[2]) // columnIdx
 	_ = params[3] != 0 // ascending
 	outPtr := int32(params[4])
 
@@ -759,8 +759,8 @@ func (h *HostFunctions) exceptResults(rt *Runtime, params []uint64) ([]uint64, e
 
 	leftPtr := int32(params[0])
 	leftCount := int(params[1])
-	_ = int32(params[2])  // rightPtr
-	_ = int(params[3])    // rightCount
+	_ = int32(params[2]) // rightPtr
+	_ = int(params[3])   // rightCount
 	outPtr := int32(params[4])
 
 	// Simplified: just copy left results (no actual EXCEPT logic for now)
@@ -783,8 +783,8 @@ func (h *HostFunctions) intersectResults(rt *Runtime, params []uint64) ([]uint64
 
 	leftPtr := int32(params[0])
 	leftCount := int(params[1])
-	_ = int32(params[2])  // rightPtr
-	_ = int(params[3])    // rightCount
+	_ = int32(params[2]) // rightPtr
+	_ = int(params[3])   // rightCount
 	outPtr := int32(params[4])
 
 	// Simplified: just copy left results (no actual INTERSECT logic for now)
@@ -819,8 +819,8 @@ func (h *HostFunctions) windowFunction(rt *Runtime, params []uint64) ([]uint64, 
 	}
 
 	// Optional parameters with defaults
-	arg1 := int64(1)  // default offset for LAG/LEAD
-	arg2 := int64(0)  // default value for LAG/LEAD
+	arg1 := int64(1) // default offset for LAG/LEAD
+	arg2 := int64(0) // default value for LAG/LEAD
 	if len(params) >= 5 {
 		arg1 = int64(params[4])
 	}
@@ -973,9 +973,9 @@ func (h *HostFunctions) executeCorrelatedSubquery(rt *Runtime, params []uint64) 
 		return []uint64{0}, nil
 	}
 
-	_ = int(params[0])    // queryId - identifies which subquery to execute
-	_ = int32(params[1])  // outerRowPtr - pointer to outer query row data
-	_ = int(params[2])    // outerRowSize - size of outer row in bytes
+	_ = int(params[0])   // queryId - identifies which subquery to execute
+	_ = int32(params[1]) // outerRowPtr - pointer to outer query row data
+	_ = int(params[2])   // outerRowSize - size of outer row in bytes
 	outPtr := int32(params[3])
 	maxRows := int(params[4])
 
@@ -1053,9 +1053,9 @@ func (h *HostFunctions) fetchChunk(rt *Runtime, params []uint64) ([]uint64, erro
 		return []uint64{0}, nil
 	}
 
-	_ = int(params[0])    // startRow
-	_ = int(params[1])    // rowCount
-	_ = int32(params[2])  // outPtr
+	_ = int(params[0])   // startRow
+	_ = int(params[1])   // rowCount
+	_ = int32(params[2]) // outPtr
 
 	// Simplified: return rows from test table
 	// In full implementation, would fetch specific chunk from storage
@@ -1074,7 +1074,7 @@ func (h *HostFunctions) indexScan(rt *Runtime, params []uint64) ([]uint64, error
 	}
 
 	tableId := int(params[0])
-	_ = int(params[1]) // indexId - which index to use
+	_ = int(params[1])   // indexId - which index to use
 	_ = int64(params[2]) // minVal - minimum value for range
 	_ = int64(params[3]) // maxVal - maximum value for range
 	outPtr := int32(params[4])
@@ -1220,13 +1220,9 @@ func (h *HostFunctions) rollbackToSavepoint(rt *Runtime, params []uint64) ([]uin
 
 	targetSavepoint := int(params[0])
 
-	// Rollback operations until we reach the target savepoint
-	for i := len(h.txLog) - 1; i >= 0; i-- {
-		// In a real implementation, each operation would track its savepoint
-		// For now, we just truncate the log
-		_ = targetSavepoint
-		break
-	}
+	// In a real implementation, each operation would track savepoint metadata.
+	// For now we only keep the value to preserve behavior without stale loop code.
+	_ = targetSavepoint
 
 	return []uint64{1}, nil
 }
@@ -1247,10 +1243,9 @@ func (h *HostFunctions) executeUDF(rt *Runtime, params []uint64) ([]uint64, erro
 	if int(funcNamePtr)+funcNameLen > len(rt.Memory) {
 		return []uint64{0}, nil
 	}
-	funcName := string(rt.Memory[funcNamePtr : funcNamePtr+int32(funcNameLen)])
 
 	// Look up UDF
-	udf, ok := h.udfs[funcName]
+	udf, ok := h.udfs[string(rt.Memory[funcNamePtr:funcNamePtr+int32(funcNameLen)])]
 	if !ok {
 		return []uint64{0}, nil // Function not found
 	}
@@ -1296,10 +1291,9 @@ func (h *HostFunctions) getPartitionCount(rt *Runtime, params []uint64) ([]uint6
 	if int(tableNamePtr)+tableNameLen > len(rt.Memory) {
 		return []uint64{0}, nil
 	}
-	tableName := string(rt.Memory[tableNamePtr : tableNamePtr+int32(tableNameLen)])
 
 	// Get partition count
-	partitions, ok := h.partitions[tableName]
+	partitions, ok := h.partitions[string(rt.Memory[tableNamePtr:tableNamePtr+int32(tableNameLen)])]
 	if !ok {
 		// Table not partitioned - return 1 (single implicit partition)
 		return []uint64{1}, nil
@@ -1705,7 +1699,7 @@ func (h *HostFunctions) vectorizedMinMax(rt *Runtime, params []uint64) ([]uint64
 	}
 
 	minVal := int64(^uint64(0) >> 1) // Max int64
-	maxVal := int64(-1 << 63)       // Min int64
+	maxVal := int64(-1 << 63)        // Min int64
 
 	for i := 0; i < count; i++ {
 		offset := int32(i * 8)
@@ -1857,9 +1851,9 @@ func (h *HostFunctions) logProfilingEvent(rt *Runtime, params []uint64) ([]uint6
 		return []uint64{0}, nil
 	}
 
-	_ = int(params[0]) // eventType
+	_ = int(params[0])   // eventType
 	_ = int64(params[1]) // duration
-	_ = int(params[2]) // rowCount
+	_ = int(params[2])   // rowCount
 
 	// In real implementation, would log to profiler
 	return []uint64{1}, nil

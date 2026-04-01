@@ -2,9 +2,9 @@ package catalog
 
 import (
 	"fmt"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"sort"
 	"strings"
-	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
 func (c *Catalog) applyDistinct(rows [][]interface{}) [][]interface{} {
@@ -680,9 +680,7 @@ func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectC
 						break
 					}
 				}
-				if !foundExact {
-					// Fallback: use the name-matched index
-				}
+				_ = foundExact // Fallback: use the name-matched index
 			}
 
 			// Compare values
@@ -726,4 +724,4 @@ func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectC
 	})
 
 	return sorted
-}
+}

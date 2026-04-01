@@ -107,7 +107,7 @@ func TestServerConfiguration(t *testing.T) {
 		{
 			name:      "DefaultConfig",
 			dataDir:   "./data",
-			address:   ":4200",
+			address:   "127.0.0.1:4200",
 			inMemory:  false,
 			cacheSize: 1024,
 		},
@@ -445,7 +445,7 @@ func TestServerAddressConfiguration(t *testing.T) {
 		name    string
 		address string
 	}{
-		{"DefaultPort", ":4200"},
+		{"DefaultPort", "127.0.0.1:4200"},
 		{"CustomPort", ":8080"},
 		{"Localhost", "127.0.0.1:0"},
 		{"AllInterfaces", "0.0.0.0:0"},

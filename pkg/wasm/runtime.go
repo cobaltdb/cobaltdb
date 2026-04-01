@@ -32,10 +32,10 @@ type Runtime struct {
 
 // CallFrame represents a function call frame
 type CallFrame struct {
-	FuncIdx    int
-	Locals     []uint64
-	ReturnPC   int
-	SP         int // Stack pointer
+	FuncIdx  int
+	Locals   []uint64
+	ReturnPC int
+	SP       int // Stack pointer
 }
 
 // Function represents a WASM function
@@ -392,7 +392,6 @@ func (rt *Runtime) LoadModule(bytecode []byte) error {
 	return nil
 }
 
-
 // callImport calls a registered import function
 func (rt *Runtime) callImport(funcIdx int, params []uint64) ([]uint64, error) {
 	// Get import name based on function index
@@ -558,7 +557,7 @@ func (rt *Runtime) parseMemorySection(data []byte) error {
 
 	var max uint64
 	if flags&0x01 != 0 {
-		max, n = readLeb128(data, offset)
+		max, _ = readLeb128(data, offset)
 		_ = max
 	}
 
@@ -641,9 +640,7 @@ func (rt *Runtime) CallFunction(funcIdx int, params []uint64) ([]uint64, error) 
 			return nil, err
 		}
 		// Push return values to stack
-		for _, r := range results {
-			rt.Stack = append(rt.Stack, r)
-		}
+		rt.Stack = append(rt.Stack, results...)
 		return results, nil
 	}
 
@@ -656,9 +653,7 @@ func (rt *Runtime) CallFunction(funcIdx int, params []uint64) ([]uint64, error) 
 	}
 
 	// Copy parameters to locals
-	for i, p := range params {
-		frame.Locals[i] = p
-	}
+	copy(frame.Locals, params)
 
 	rt.CallStack = append(rt.CallStack, frame)
 	rt.currentFunc = funcIdx
@@ -991,25 +986,25 @@ func (rt *Runtime) executeFunction(fn Function) error {
 // QueryProfiler provides performance profiling for WASM queries
 type QueryProfiler struct {
 	// Execution metrics
-	TotalExecutions   int64
-	TotalDuration     int64 // nanoseconds
-	MinDuration       int64
-	MaxDuration       int64
-	AvgDuration       int64
-	LastDuration      int64
+	TotalExecutions int64
+	TotalDuration   int64 // nanoseconds
+	MinDuration     int64
+	MaxDuration     int64
+	AvgDuration     int64
+	LastDuration    int64
 
 	// Memory metrics
 	PeakMemoryUsage   int
 	TotalMemoryAllocs int64
 
 	// Operation counters
-	OpcodesExecuted   int64
-	HostCalls         int64
-	MemoryAccesses    int64
+	OpcodesExecuted int64
+	HostCalls       int64
+	MemoryAccesses  int64
 
 	// Per-query history (limited size)
-	History           []QueryExecutionRecord
-	HistorySize       int
+	History     []QueryExecutionRecord
+	HistorySize int
 }
 
 // QueryExecutionRecord represents a single query execution record
@@ -1023,9 +1018,9 @@ type QueryExecutionRecord struct {
 // NewQueryProfiler creates a new query profiler
 func NewQueryProfiler() *QueryProfiler {
 	return &QueryProfiler{
-		MinDuration:     int64(^uint64(0) >> 1), // Max int64
-		HistorySize:     100,
-		History:         make([]QueryExecutionRecord, 0, 100),
+		MinDuration: int64(^uint64(0) >> 1), // Max int64
+		HistorySize: 100,
+		History:     make([]QueryExecutionRecord, 0, 100),
 	}
 }
 
@@ -1093,14 +1088,14 @@ func timeNow() int64 {
 
 // BenchmarkResult represents benchmark results
 type BenchmarkResult struct {
-	QueryName       string
-	Iterations      int
-	TotalDuration   int64
-	AvgDuration     int64
-	MinDuration     int64
-	MaxDuration     int64
-	RowsPerSecond   float64
-	Throughput      float64 // ops/sec
+	QueryName     string
+	Iterations    int
+	TotalDuration int64
+	AvgDuration   int64
+	MinDuration   int64
+	MaxDuration   int64
+	RowsPerSecond float64
+	Throughput    float64 // ops/sec
 }
 
 // BenchmarkQuery benchmarks a query execution
@@ -1110,8 +1105,8 @@ func BenchmarkQuery(rt *Runtime, compiled *CompiledQuery, iterations int) (*Benc
 	}
 
 	result := &BenchmarkResult{
-		QueryName:  "query",
-		Iterations: iterations,
+		QueryName:   "query",
+		Iterations:  iterations,
 		MinDuration: int64(^uint64(0) >> 1),
 	}
 

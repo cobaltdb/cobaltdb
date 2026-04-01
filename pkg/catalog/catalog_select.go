@@ -144,11 +144,6 @@ func (c *Catalog) executeScalarSelect(stmt *query.SelectStmt, args []interface{}
 		rows = c.applyDistinct(rows)
 	}
 
-	// Handle ORDER BY (for scalar expressions, just sort the single row)
-	if len(stmt.OrderBy) > 0 {
-		// No ordering needed for single row
-	}
-
 	// Handle LIMIT
 	if stmt.Limit != nil {
 		limitVal, err := evaluateExpression(c, nil, nil, stmt.Limit, args)
@@ -647,12 +642,10 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 			if ci.index == -1 && !ci.isAggregate {
 				// Scalar function - evaluate it against the combined row
 				if i < len(stmt.Columns) {
-					if expr, ok := stmt.Columns[i].(query.Expression); ok {
-						val, err := evaluateExpression(c, row, combinedColumns, expr, args)
-						if err == nil {
-							projected = append(projected, val)
-							continue
-						}
+					val, err := evaluateExpression(c, row, combinedColumns, stmt.Columns[i], args)
+					if err == nil {
+						projected = append(projected, val)
+						continue
 					}
 				}
 				projected = append(projected, nil)
@@ -710,7 +703,6 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 	// Strip hidden ORDER BY columns
 	if hiddenOrderByCols > 0 {
 		resultRows = stripHiddenCols(resultRows, len(selectCols), hiddenOrderByCols)
-		selectCols = selectCols[:visibleCols]
 	}
 
 	// Apply DISTINCT
@@ -1634,6 +1626,8 @@ func detectEqualityJoinUnique(condition query.Expression, combinedCols []ColumnD
 // detectEqualityJoin checks if a join condition is a simple equality (a.col = b.col)
 // and returns the column indices in left and right row slices.
 // Returns (leftIdx, rightIdx, true) if hash join can be used.
+//
+//nolint:unused // retained for future hash-join planner optimizations and tests.
 func detectEqualityJoin(condition query.Expression, leftCols []ColumnDef, rightCols []ColumnDef) (int, int, bool) {
 	binExpr, ok := condition.(*query.BinaryExpr)
 	if !ok || binExpr.Operator != query.TokenEq {
@@ -1692,7 +1686,9 @@ func detectEqualityJoin(condition query.Expression, leftCols []ColumnDef, rightC
 	return 0, 0, false
 }
 
-// extractColumnName extracts column name from Identifier or QualifiedIdentifier
+// extractColumnName extracts column name from Identifier or QualifiedIdentifier.
+//
+//nolint:unused // retained for future hash-join planner optimizations and tests.
 func extractColumnName(expr query.Expression) string {
 	switch e := expr.(type) {
 	case *query.Identifier:
@@ -1723,4 +1719,4 @@ func hashJoinKey(v interface{}) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
-}
+}

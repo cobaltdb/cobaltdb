@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"html/template"
 	"log"
@@ -19,11 +23,13 @@ import (
 
 // Server holds the web UI server state
 type Server struct {
-	db          *engine.DB
-	history     []QueryRecord
+	db           *engine.DB
+	history      []QueryRecord
 	savedQueries map[string]SavedQuery
-	tmpl        *template.Template
-	mu          sync.RWMutex
+	tmpl         *template.Template
+	apiToken     string
+	authEnabled  bool
+	mu           sync.RWMutex
 }
 
 // SavedQuery represents a saved query
@@ -74,14 +80,38 @@ type ColumnInfo struct {
 	Type string `json:"type"`
 }
 
+const authCookieName = "cobaltdb_webui_token"
+
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: webui <database_file>")
-		fmt.Println("Example: webui mydb.db")
+	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
+	tokenFlag := flag.String("token", "", "Web UI access token (defaults to COBALTDB_WEBUI_TOKEN or a generated token)")
+	insecureNoAuth := flag.Bool("insecure-no-auth", false, "disable token auth (unsafe; for trusted local development only)")
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: webui [flags] <database_file>\n\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(flag.CommandLine.Output(), "\nExample: webui -addr 127.0.0.1:8080 mydb.db\n")
+	}
+	flag.Parse()
+
+	if flag.NArg() < 1 {
+		flag.Usage()
 		os.Exit(1)
 	}
 
-	dbPath := os.Args[1]
+	dbPath := flag.Arg(0)
+
+	apiToken := strings.TrimSpace(*tokenFlag)
+	if apiToken == "" {
+		apiToken = strings.TrimSpace(os.Getenv("COBALTDB_WEBUI_TOKEN"))
+	}
+	authEnabled := !*insecureNoAuth
+	if authEnabled && apiToken == "" {
+		generatedToken, err := generateToken(24)
+		if err != nil {
+			log.Fatalf("Failed to generate access token: %v", err)
+		}
+		apiToken = generatedToken
+	}
 
 	// Open database
 	db, err := engine.Open(dbPath, nil)
@@ -94,6 +124,8 @@ func main() {
 		db:           db,
 		history:      make([]QueryRecord, 0),
 		savedQueries: make(map[string]SavedQuery),
+		apiToken:     apiToken,
+		authEnabled:  authEnabled,
 	}
 
 	// Load templates
@@ -104,30 +136,133 @@ func main() {
 	server.tmpl = tmpl
 
 	// Setup routes
+	mux := http.NewServeMux()
 	fs := http.FileServer(http.Dir("webui/static"))
-	http.Handle("/static/", http.StripPrefix("/static/", fs))
+	mux.Handle("/static/", http.StripPrefix("/static/", fs))
 
-	http.HandleFunc("/", server.handleIndex)
-	http.HandleFunc("/api/query", server.handleQuery)
-	http.HandleFunc("/api/schema", server.handleSchema)
-	http.HandleFunc("/api/history", server.handleHistory)
-	http.HandleFunc("/api/tables/", server.handleTableInfo)
-	http.HandleFunc("/api/export/csv", server.handleExportCSV)
-	http.HandleFunc("/api/export/json", server.handleExportJSON)
-	http.HandleFunc("/api/saved-queries", server.handleSavedQueries)
-	http.HandleFunc("/api/saved-queries/", server.handleSavedQuery)
-	http.HandleFunc("/api/export-saved-queries", server.handleExportSavedQueries)
-	http.HandleFunc("/api/import-saved-queries", server.handleImportSavedQueries)
-	http.HandleFunc("/api/update-row", server.handleUpdateRow)
+	mux.HandleFunc("/", server.handleIndex)
+	mux.HandleFunc("/api/query", server.handleQuery)
+	mux.HandleFunc("/api/schema", server.handleSchema)
+	mux.HandleFunc("/api/history", server.handleHistory)
+	mux.HandleFunc("/api/tables/", server.handleTableInfo)
+	mux.HandleFunc("/api/export/csv", server.handleExportCSV)
+	mux.HandleFunc("/api/export/json", server.handleExportJSON)
+	mux.HandleFunc("/api/saved-queries", server.handleSavedQueries)
+	mux.HandleFunc("/api/saved-queries/", server.handleSavedQuery)
+	mux.HandleFunc("/api/export-saved-queries", server.handleExportSavedQueries)
+	mux.HandleFunc("/api/import-saved-queries", server.handleImportSavedQueries)
+	mux.HandleFunc("/api/update-row", server.handleUpdateRow)
 
-	port := "8080"
+	handler := http.Handler(mux)
+	if authEnabled {
+		handler = server.authMiddleware(handler)
+	}
+
 	fmt.Printf("CobaltDB Web UI starting...\n")
 	fmt.Printf("Database: %s\n", dbPath)
-	fmt.Printf("Open http://localhost:%s in your browser\n", port)
+	fmt.Printf("Bind: %s\n", *addr)
+	if authEnabled {
+		fmt.Printf("Token auth: enabled\n")
+		fmt.Printf("Open http://%s/?token=%s in your browser\n", *addr, apiToken)
+		fmt.Printf("Tip: token query parameter is converted to an HttpOnly cookie automatically\n")
+	} else {
+		fmt.Printf("Token auth: DISABLED (unsafe)\n")
+		fmt.Printf("Open http://%s in your browser\n", *addr)
+	}
 
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	if err := http.ListenAndServe(*addr, handler); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
+}
+
+func generateToken(size int) (string, error) {
+	tokenBytes := make([]byte, size)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", fmt.Errorf("failed to generate random token: %w", err)
+	}
+	return hex.EncodeToString(tokenBytes), nil
+}
+
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.authEnabled {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		token := s.extractToken(r)
+		if !secureTokenCompare(token, s.apiToken) {
+			s.writeUnauthorized(w, r)
+			return
+		}
+
+		queryToken := strings.TrimSpace(r.URL.Query().Get("token"))
+		if secureTokenCompare(queryToken, s.apiToken) {
+			http.SetCookie(w, &http.Cookie{
+				Name:     authCookieName,
+				Value:    s.apiToken,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+			})
+
+			// Strip token from browser URL after first successful auth.
+			if r.Method == http.MethodGet && !strings.HasPrefix(r.URL.Path, "/api/") {
+				cleanURL := *r.URL
+				query := cleanURL.Query()
+				query.Del("token")
+				cleanURL.RawQuery = query.Encode()
+				http.Redirect(w, r, cleanURL.String(), http.StatusFound)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) extractToken(r *http.Request) string {
+	if authHeader := strings.TrimSpace(r.Header.Get("Authorization")); authHeader != "" {
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+			return strings.TrimSpace(parts[1])
+		}
+	}
+
+	if headerToken := strings.TrimSpace(r.Header.Get("X-CobaltDB-Token")); headerToken != "" {
+		return headerToken
+	}
+
+	if cookie, err := r.Cookie(authCookieName); err == nil {
+		if cookieToken := strings.TrimSpace(cookie.Value); cookieToken != "" {
+			return cookieToken
+		}
+	}
+
+	return strings.TrimSpace(r.URL.Query().Get("token"))
+}
+
+func secureTokenCompare(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func (s *Server) writeUnauthorized(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Unauthorized: provide token using query param, Authorization bearer token, or X-CobaltDB-Token header",
+		})
+		return
+	}
+	http.Error(w, "Unauthorized: open this URL with ?token=<token>", http.StatusUnauthorized)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -163,10 +298,13 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
-		json.NewEncoder(w).Encode(QueryResponse{
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(QueryResponse{
 			Success: false,
 			Message: "Empty query",
-		})
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -237,7 +375,9 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
@@ -267,12 +407,14 @@ func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(schema)
+	if err := json.NewEncoder(w).Encode(schema); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s.history)
+	writeJSON(w, s.history)
 }
 
 func (s *Server) handleTableInfo(w http.ResponseWriter, r *http.Request) {
@@ -306,7 +448,7 @@ func (s *Server) handleTableInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tableInfo)
+	writeJSON(w, tableInfo)
 }
 
 func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
@@ -329,7 +471,10 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", "attachment; filename=export.csv")
 
 	writer := csv.NewWriter(w)
-	writer.Write(columns)
+	if err := writer.Write(columns); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	for rows.Next() {
 		values := make([]interface{}, len(columns))
@@ -350,7 +495,10 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 				rowStr[i] = fmt.Sprintf("%v", v)
 			}
 		}
-		writer.Write(rowStr)
+		if err := writer.Write(rowStr); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	writer.Flush()
@@ -393,7 +541,7 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=export.json")
-	json.NewEncoder(w).Encode(result)
+	writeJSON(w, result)
 }
 
 func (s *Server) addToHistory(query, duration string, rows int) {
@@ -422,6 +570,12 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%.2f s", d.Seconds())
 }
 
+func writeJSON(w http.ResponseWriter, payload interface{}) {
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 // handleSavedQueries handles GET and POST for saved queries
 func (s *Server) handleSavedQueries(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -434,7 +588,7 @@ func (s *Server) handleSavedQueries(w http.ResponseWriter, r *http.Request) {
 		s.mu.RUnlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(queries)
+		writeJSON(w, queries)
 
 	case http.MethodPost:
 		var req struct {
@@ -463,7 +617,7 @@ func (s *Server) handleSavedQueries(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
+		writeJSON(w, map[string]string{"status": "saved"})
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -492,7 +646,7 @@ func (s *Server) handleSavedQuery(w http.ResponseWriter, r *http.Request) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(query)
+		writeJSON(w, query)
 
 	case http.MethodDelete:
 		s.mu.Lock()
@@ -500,7 +654,7 @@ func (s *Server) handleSavedQuery(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+		writeJSON(w, map[string]string{"status": "deleted"})
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -523,7 +677,7 @@ func (s *Server) handleExportSavedQueries(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=saved-queries.json")
-	json.NewEncoder(w).Encode(queries)
+	writeJSON(w, queries)
 }
 
 // handleImportSavedQueries imports saved queries from JSON file
@@ -562,7 +716,7 @@ func (s *Server) handleImportSavedQueries(w http.ResponseWriter, r *http.Request
 	s.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "imported", "count": fmt.Sprintf("%d", len(queries))})
+	writeJSON(w, map[string]string{"status": "imported", "count": fmt.Sprintf("%d", len(queries))})
 }
 
 // handleUpdateRow handles updating a specific row in a table
@@ -573,10 +727,10 @@ func (s *Server) handleUpdateRow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Table   string                 `json:"table"`
-		Column  string                 `json:"column"`
-		Value   interface{}            `json:"value"`
-		Where   map[string]interface{} `json:"where"`
+		Table  string                 `json:"table"`
+		Column string                 `json:"column"`
+		Value  interface{}            `json:"value"`
+		Where  map[string]interface{} `json:"where"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -608,7 +762,7 @@ func (s *Server) handleUpdateRow(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, map[string]interface{}{
 			"success": false,
 			"error":   err.Error(),
 		})
@@ -616,7 +770,7 @@ func (s *Server) handleUpdateRow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, map[string]interface{}{
 		"success": true,
 	})
 }

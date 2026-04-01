@@ -23,12 +23,12 @@ type QueryPlanCacheEntry struct {
 
 // QueryPlanCache provides LRU caching for query plans
 type QueryPlanCache struct {
-	mu            sync.RWMutex
-	entries       map[string]*list.Element // Hash -> List Element
-	lruList       *list.List
-	maxSize       int64
-	currentSize   int64
-	maxEntries    int
+	mu          sync.RWMutex
+	entries     map[string]*list.Element // Hash -> List Element
+	lruList     *list.List
+	maxSize     int64
+	currentSize int64
+	maxEntries  int
 
 	// Statistics
 	hits          uint64
@@ -214,7 +214,9 @@ func (c *QueryPlanCache) WarmCache(queries []string) error {
 		}
 
 		// Add to cache
-		c.Put(sql, nil, stmt)
+		if err := c.Put(sql, nil, stmt); err != nil {
+			continue
+		}
 	}
 	return nil
 }
