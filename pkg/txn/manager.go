@@ -641,8 +641,9 @@ func (m *Manager) BeginWithContext(ctx context.Context, opts *Options) *Transact
 
 	// Use provided context, optionally with timeout
 	if opts.Timeout > 0 {
-		ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
-		defer cancel()
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		_ = cancel // Will be called when transaction ends (stored in txn)
 	}
 
 	txn := &Transaction{
