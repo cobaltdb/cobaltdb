@@ -151,7 +151,7 @@ func (t *Transaction) Commit() error {
 
 	// Check for timeout
 	if t.IsTimedOut() {
-		t.rollbackLocked()
+		_ = t.rollbackLocked()
 		metrics.GetTransactionMetrics().RecordTxnTimeout()
 		return ErrTxnTimeout
 	}
@@ -434,7 +434,7 @@ func (m *Manager) resolveDeadlock(cycle []uint64, activeTxns map[uint64]*Transac
 	if victimID != 0 {
 		if victim, ok := activeTxns[victimID]; ok {
 			victim.SetWaitingFor(0) // Clear waiting state
-			victim.Rollback()       // Abort the victim
+			_ = victim.Rollback()   // Abort the victim
 		}
 	}
 }
@@ -641,7 +641,8 @@ func (m *Manager) BeginWithContext(ctx context.Context, opts *Options) *Transact
 
 	// Use provided context, optionally with timeout
 	if opts.Timeout > 0 {
-		ctx, _ = context.WithTimeout(ctx, opts.Timeout)
+		ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
 	}
 
 	txn := &Transaction{

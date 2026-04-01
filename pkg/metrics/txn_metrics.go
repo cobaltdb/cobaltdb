@@ -34,8 +34,6 @@ type TransactionMetrics struct {
 
 	// Average transaction duration
 	totalTxnTime atomic.Int64 // nanoseconds
-
-	mu sync.RWMutex
 }
 
 // Global transaction metrics instance
