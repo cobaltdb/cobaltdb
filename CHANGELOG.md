@@ -5,6 +5,44 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.1] - 2026-04-08
+
+### Bug Fixes & Completeness
+
+#### Schema/Data Export-Import
+- **`LoadSchema()`** and **`LoadData()`** were empty stubs — now fully implemented (`catalog_maintenance.go`)
+- **`SaveData()`** now exports schema and row data as JSON files to a directory
+- `LoadSchema` reads `schema.json` and recreates tables with DEFAULT/CHECK expressions
+- `LoadData` reads `<table>.json` files and inserts rows into table B+Trees
+- Round-trip safe: `SaveData` → `LoadSchema` + `LoadData` preserves all data
+
+#### JSON ->> Operator
+- **Lexer**: `->>` token now correctly lexed when entered via `-` character path (was only handled via `>` path)
+- **Evaluator**: `JSONPathExpr` node now evaluated in catalog — `->` returns raw JSON, `->>` returns unquoted text
+- Test that was previously `t.Skip("JSON operator parsing needs lexer improvement")` now passes
+
+#### RLS RESTRICTIVE Policy
+- **Parser**: `CREATE POLICY ... AS PERMISSIVE` / `AS RESTRICTIVE` syntax now supported
+- Test that was previously `t.Skip("RESTRICTIVE policy not supported by parser")` now passes
+
+#### Docker
+- **`Dockerfile.backup`** created — backup service in `docker-compose.yml` now builds correctly
+- Cron-style scheduling with configurable interval and retention
+
+### Documentation
+- **FEATURES.md** updated to v0.4.0 with new sections: Deadlock Detection, Transaction Management, Schema & Data Export/Import
+- **CLAUDE.md** inaccuracies fixed:
+  - AlertManager removed from "not implemented" (exists in `pkg/metrics/alerting.go`)
+  - Compression clarified as "page-level" only (backup gzip exists)
+  - Group commit primitive noted as existing
+  - `->>` and RESTRICTIVE RLS removed from Known Limitations
+- Stale test comments fixed (`v75_regression_test.go`, `real_world_validation_test.go`)
+
+### Tests
+- 23 new coverage tests for catalog: FK constraints, JOINs, window functions, aggregates, subqueries, CASE, LIKE, BETWEEN, DELETE USING, INSERT OR REPLACE/IGNORE, etc.
+- Save/Load round-trip tests with corrupt file handling
+- All 20 packages passing, 10,400+ tests
+
 ## [v0.4.0] - 2026-03-31
 
 ### 🔒 Production Ready Release — Deadlock Detection & Transaction Management
