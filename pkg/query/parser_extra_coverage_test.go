@@ -763,10 +763,12 @@ func TestParseCreatePolicy_Restrictive(t *testing.T) {
 	sql := "CREATE POLICY pol1 ON t AS RESTRICTIVE USING (1 = 1)"
 	stmt, err := Parse(sql)
 	if err != nil {
-		t.Skip("RESTRICTIVE policy not supported by parser")
+		t.Fatalf("RESTRICTIVE policy parsing failed: %v", err)
 	}
 	cp := stmt.(*CreatePolicyStmt)
-	_ = cp.Permissive // Parser may not distinguish RESTRICTIVE
+	if cp.Permissive {
+		t.Error("expected Permissive=false for RESTRICTIVE policy")
+	}
 }
 
 func TestParseCreatePolicy_NoUsing(t *testing.T) {

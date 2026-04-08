@@ -95,8 +95,7 @@ func TestLexerJSONOperators(t *testing.T) {
 	}
 
 	if !foundArrow2 {
-		// Skip this test for now - lexer needs improvement
-		t.Skip("JSON operator parsing needs lexer improvement")
+		t.Fatal("expected TokenArrow2 (->>) in token stream")
 	}
 }
 

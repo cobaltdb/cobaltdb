@@ -823,8 +823,7 @@ func TestParseSubquery(t *testing.T) {
 	sql := "SELECT * FROM (SELECT id FROM users) AS sub"
 	_, err := Parse(sql)
 	if err != nil {
-		// Skip if subquery parsing not fully implemented
-		t.Skip("Subquery parsing not fully implemented")
+		t.Fatalf("Subquery parsing failed: %v", err)
 	}
 }
 
