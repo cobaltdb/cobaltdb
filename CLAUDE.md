@@ -135,7 +135,6 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 ## Known Limitations
 - UPDATE...FROM SET can only reference target table columns
 - Composite multi-column PRIMARY KEY not supported
-- Parser doesn't support: ->> JSON operator, RESTRICTIVE RLS policy
 
 ## Security Features
 - TLS support for connections
@@ -204,12 +203,12 @@ The following features are fully implemented and integrated in the engine:
 ## Features Not Implemented
 The following features do not exist in the codebase:
 - FDW (Foreign Data Wrappers)
-- AlertManager
-- AutoVacuum
+- AutoVacuum (manual VACUUM exists in `catalog_maintenance.go`)
 - JobScheduler
-- Compression (storage-level)
-- Group commit
+- Page-level Storage Compression (backup-level gzip compression exists in `pkg/backup/`)
+- Group commit (WAL `AppendWithoutSync` primitive exists but no coordinator)
 - Index advisor
 - Parallel query execution
 
 **Note:** Deadlock detection is now fully implemented in `pkg/txn/manager.go`.
+Alert system is implemented in `pkg/metrics/alerting.go` (AlertManager with rules, handlers, severity levels).
