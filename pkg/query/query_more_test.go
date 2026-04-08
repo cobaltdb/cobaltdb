@@ -596,8 +596,7 @@ func TestParseCreateUniqueIndex(t *testing.T) {
 	sql := "CREATE UNIQUE INDEX idx_email ON users (email)"
 	stmt, err := Parse(sql)
 	if err != nil {
-		// UNIQUE INDEX may not be fully supported - skip test
-		t.Skip("UNIQUE INDEX parsing not fully supported")
+		t.Fatalf("UNIQUE INDEX parsing failed: %v", err)
 	}
 
 	createStmt, ok := stmt.(*CreateIndexStmt)
