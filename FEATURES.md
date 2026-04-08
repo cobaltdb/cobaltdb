@@ -1,7 +1,7 @@
-# CobaltDB v0.3.0 - Feature Status and Working Features Table
+# CobaltDB v0.4.0 - Feature Status and Working Features Table
 
-> **Last Updated:** 2026-03-20
-> **Test Coverage:** 92%+ | **Test Count:** 10,400+ | **Package Status:** 22/22 ✅
+> **Last Updated:** 2026-04-08
+> **Test Coverage:** 92%+ | **Test Count:** 10,400+ | **Package Status:** 20/20 ✅
 > **All Features:** Production Ready | **All Tests:** Passing
 
 ---
@@ -392,6 +392,25 @@
 | Soft Deletes | ✅ 100% | 90% | Logical deletion with timestamp marking |
 | Backward Compatibility | ✅ 100% | 85% | Works with non-versioned legacy data |
 
+### 26. Deadlock Detection & Transaction Management
+
+| Feature | Status | Test Coverage | Notes |
+|---------|--------|---------------|-------|
+| Deadlock Detection | ✅ 100% | 90% | Wait-for graph with DFS cycle detection |
+| Automatic Victim Selection | ✅ 100% | 85% | Aborts youngest transaction in cycle |
+| Lock Wait Timeout | ✅ 100% | 88% | Configurable timeout (default 5s) |
+| Transaction Timeout | ✅ 100% | 85% | Per-transaction timeout enforcement |
+| Transaction Metrics | ✅ 100% | 85% | Real-time monitoring via HTTP endpoint |
+| Savepoints | ✅ 100% | 82% | Partial rollback within transactions |
+
+### 27. Schema & Data Export/Import
+
+| Feature | Status | Test Coverage | Notes |
+|---------|--------|---------------|-------|
+| `SaveData(dir)` | ✅ 100% | 85% | Export schema + data as JSON files |
+| `LoadSchema(dir)` | ✅ 100% | 85% | Load table definitions from JSON |
+| `LoadData(dir)` | ✅ 100% | 85% | Load row data from JSON files |
+
 ---
 
 ## 📈 Test Coverage Details
@@ -470,5 +489,5 @@
 ---
 
 **Prepared by:** CobaltDB Team
-**Version:** v0.3.0
-**Date:** 2026-03-20
+**Version:** v0.4.0
+**Date:** 2026-04-08

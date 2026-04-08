@@ -170,7 +170,7 @@ func TestV75Regression(t *testing.T) {
 	check("ALTER: explicit value", "SELECT score FROM v75_alter WHERE id = 4", 99)
 
 	// ============================================================
-	// === BUG: INTERSECT/EXCEPT not supported (Task #219) ===
+	// === Set Operations: INTERSECT and EXCEPT ===
 	// ============================================================
 
 	afExec(t, db, ctx, `CREATE TABLE v75_seta (id INTEGER PRIMARY KEY, name TEXT)`)

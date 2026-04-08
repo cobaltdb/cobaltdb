@@ -3379,6 +3379,21 @@ func (p *Parser) parseCreatePolicy() (*CreatePolicyStmt, error) {
 	}
 	stmt.Table = table.Literal
 
+	// Optional AS PERMISSIVE / AS RESTRICTIVE clause
+	if p.current().Type == TokenAs {
+		p.advance() // consume AS
+		switch strings.ToUpper(p.current().Literal) {
+		case "PERMISSIVE":
+			stmt.Permissive = true
+			p.advance()
+		case "RESTRICTIVE":
+			stmt.Permissive = false
+			p.advance()
+		default:
+			return nil, fmt.Errorf("expected PERMISSIVE or RESTRICTIVE after AS, got %s", p.current().Literal)
+		}
+	}
+
 	// Optional FOR clause
 	if p.match(TokenFor) {
 		eventTok := p.current()

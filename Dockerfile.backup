@@ -1,0 +1,94 @@
+# Multi-stage build for CobaltDB Backup Service
+FROM golang:1.24-alpine AS builder
+
+RUN apk add --no-cache git make
+
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+# Build CLI binary (used for backup operations)
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-w -s" \
+    -o /build/cobaltdb-cli \
+    ./cmd/cobaltdb-cli
+
+# Runtime stage
+FROM alpine:latest
+
+RUN apk add --no-cache ca-certificates tzdata
+
+# Create non-root user
+RUN addgroup -g 1000 -S cobaltdb && \
+    adduser -u 1000 -S cobaltdb -G cobaltdb
+
+# Create backup and source directories
+RUN mkdir -p /backups /data/source && \
+    chown -R cobaltdb:cobaltdb /backups
+
+COPY --from=builder /build/cobaltdb-cli /usr/local/bin/
+
+# Create backup runner script
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    '' \
+    'BACKUP_SCHEDULE="${BACKUP_SCHEDULE:-0 2 * * *}"' \
+    'BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"' \
+    'BACKUP_DIR="/backups"' \
+    'TIMESTAMP=$(date +%Y%m%d_%H%M%S)'' \
+    'BACKUP_FILE="${BACKUP_DIR}/cobaltdb_backup_${TIMESTAMP}.tar.gz"' \
+    '' \
+    'echo "[$(date)] Starting backup..."' \
+    'mkdir -p "${BACKUP_DIR}"' \
+    '' \
+    '# Create backup from data directory' \
+    'if tar czf "${BACKUP_FILE}" -C /data/source . 2>/dev/null; then' \
+    '    SIZE=$(du -h "${BACKUP_FILE}" | cut -f1)' \
+    '    echo "[$(date)] Backup completed: ${BACKUP_FILE} (${SIZE})"' \
+    '' \
+    '    # Clean old backups beyond retention period' \
+    '    if [ "${BACKUP_RETENTION_DAYS}" -gt 0 ] 2>/dev/null; then' \
+    '        DELETED=$(find "${BACKUP_DIR}" -name "cobaltdb_backup_*.tar.gz" -mtime +"${BACKUP_RETENTION_DAYS}" -delete -print | wc -l)' \
+    '        if [ "${DELETED}" -gt 0 ]; then' \
+    '            echo "[$(date)] Cleaned ${DELETED} old backup(s)"' \
+    '        fi' \
+    '    fi' \
+    'else' \
+    '    echo "[$(date)] ERROR: Backup failed"' >&2' \
+    '    rm -f "${BACKUP_FILE}"' \
+    '    exit 1' \
+    'fi' \
+    > /usr/local/bin/run-backup.sh \
+    && chmod +x /usr/local/bin/run-backup.sh
+
+# Create scheduler script
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    '' \
+    'echo "CobaltDB Backup Service"' \
+    'echo "Schedule: ${BACKUP_SCHEDULE:-0 2 * * *}"' \
+    'echo "Retention: ${BACKUP_RETENTION_DAYS:-7} days"' \
+    'echo "Backup dir: /backups"' \
+    '' \
+    '# Convert cron schedule to sleep interval (default 24h)' \
+    'BACKUP_INTERVAL_HOURS="${BACKUP_INTERVAL_HOURS:-24}"' \
+    'SLEEP_SECONDS=$((BACKUP_INTERVAL_HOURS * 3600))' \
+    '' \
+    '# Run initial backup' \
+    'run-backup.sh' \
+    '' \
+    '# Loop forever' \
+    'while true; do' \
+    '    echo "[$(date)] Next backup in ${BACKUP_INTERVAL_HOURS} hour(s)"' \
+    '    sleep "${SLEEP_SECONDS}"' \
+    '    run-backup.sh' \
+    'done' \
+    > /usr/local/bin/backup-scheduler.sh \
+    && chmod +x /usr/local/bin/backup-scheduler.sh
+
+USER cobaltdb
+
+VOLUME ["/backups"]
+
+ENTRYPOINT ["backup-scheduler.sh"]

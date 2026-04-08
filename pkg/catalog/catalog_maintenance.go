@@ -3,6 +3,8 @@ package catalog
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -120,15 +122,182 @@ func (c *Catalog) Load() error {
 	return nil
 }
 
+// SaveData exports all table schemas and row data as JSON files to dir.
+// It writes a schema.json containing all table definitions and one <table>.json
+// per table containing key/value data.
 func (c *Catalog) SaveData(dir string) error {
-	return c.Save()
-}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
-func (c *Catalog) LoadSchema(dir string) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("save data: cannot create directory %s: %w", dir, err)
+	}
+
+	// Export schema
+	schema := map[string]interface{}{
+		"tables": c.tables,
+	}
+	schemaData, err := json.MarshalIndent(schema, "", "  ")
+	if err != nil {
+		return fmt.Errorf("save data: failed to marshal schema: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "schema.json"), schemaData, 0644); err != nil {
+		return fmt.Errorf("save data: failed to write schema.json: %w", err)
+	}
+
+	// Export each table's data
+	for tableName, tree := range c.tableTrees {
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return fmt.Errorf("save data: failed to scan table %s: %w", tableName, err)
+		}
+
+		var keys [][]byte
+		var values [][]byte
+		for iter.HasNext() {
+			k, v, iterErr := iter.Next()
+			if iterErr != nil {
+				iter.Close()
+				return fmt.Errorf("save data: failed to read from table %s: %w", tableName, iterErr)
+			}
+			if k == nil {
+				break
+			}
+			keys = append(keys, k)
+			values = append(values, v)
+		}
+		iter.Close()
+
+		tableData := map[string]interface{}{
+			"keys":   keys,
+			"values": values,
+		}
+		data, err := json.Marshal(tableData)
+		if err != nil {
+			return fmt.Errorf("save data: failed to marshal table %s: %w", tableName, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, tableName+".json"), data, 0644); err != nil {
+			return fmt.Errorf("save data: failed to write %s.json: %w", tableName, err)
+		}
+	}
+
 	return nil
 }
 
+// LoadSchema reads schema.json from dir and recreates the table definitions
+// and their B+Trees in the catalog.
+func (c *Catalog) LoadSchema(dir string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	schemaPath := filepath.Join(dir, "schema.json")
+	data, err := os.ReadFile(schemaPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // no schema file, nothing to load
+		}
+		return fmt.Errorf("load schema: failed to read %s: %w", schemaPath, err)
+	}
+
+	var schema struct {
+		Tables map[string]*TableDef `json:"tables"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		return fmt.Errorf("load schema: failed to parse %s: %w", schemaPath, err)
+	}
+
+	for name, tableDef := range schema.Tables {
+		// Restore DEFAULT and CHECK expressions from persisted strings
+		for i := range tableDef.Columns {
+			if tableDef.Columns[i].Default != "" && tableDef.Columns[i].defaultExpr == nil {
+				if parsed, parseErr := query.ParseExpression(tableDef.Columns[i].Default); parseErr == nil {
+					tableDef.Columns[i].defaultExpr = parsed
+				}
+			}
+			if tableDef.Columns[i].CheckStr != "" && tableDef.Columns[i].Check == nil {
+				if parsed, parseErr := query.ParseExpression(tableDef.Columns[i].CheckStr); parseErr == nil {
+					tableDef.Columns[i].Check = parsed
+				}
+			}
+		}
+		tableDef.buildColumnIndexCache()
+
+		c.tables[name] = tableDef
+
+		// Create or open B+Tree for the table
+		if tableDef.RootPageID != 0 && c.pool != nil {
+			c.tableTrees[name] = btree.OpenBTree(c.pool, tableDef.RootPageID)
+		} else {
+			var tree *btree.BTree
+			if c.pool != nil {
+				tree, err = btree.NewBTree(c.pool)
+				if err != nil {
+					return fmt.Errorf("load schema: failed to create tree for %s: %w", name, err)
+				}
+				tableDef.RootPageID = tree.RootPageID()
+			}
+			if tree != nil {
+				c.tableTrees[name] = tree
+			}
+		}
+
+		// Persist to catalog tree
+		if c.tree != nil {
+			_ = c.storeTableDef(tableDef)
+		}
+	}
+
+	return nil
+}
+
+// LoadData reads <table>.json data files from dir and inserts rows into the tables.
+// Each file contains keys/values arrays that are put directly into the table's B+Tree.
 func (c *Catalog) LoadData(dir string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for tableName := range c.tables {
+		dataPath := filepath.Join(dir, tableName+".json")
+		data, err := os.ReadFile(dataPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // no data file for this table
+			}
+			return fmt.Errorf("load data: failed to read %s: %w", dataPath, err)
+		}
+
+		var tableData struct {
+			Keys   [][]byte `json:"keys"`
+			Values [][]byte `json:"values"`
+		}
+		if err := json.Unmarshal(data, &tableData); err != nil {
+			return fmt.Errorf("load data: failed to parse %s: %w", dataPath, err)
+		}
+
+		tree, exists := c.tableTrees[tableName]
+		if !exists {
+			// Create tree if missing
+			if c.pool != nil {
+				tree, err = btree.NewBTree(c.pool)
+				if err != nil {
+					return fmt.Errorf("load data: failed to create tree for %s: %w", tableName, err)
+				}
+				c.tableTrees[tableName] = tree
+			} else {
+				continue
+			}
+		}
+
+		for i, key := range tableData.Keys {
+			if i >= len(tableData.Values) {
+				break
+			}
+			if err := tree.Put(key, tableData.Values[i]); err != nil {
+				return fmt.Errorf("load data: failed to insert into %s: %w", tableName, err)
+			}
+		}
+	}
+
 	return nil
 }
 

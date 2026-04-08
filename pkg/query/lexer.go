@@ -131,12 +131,21 @@ func (l *Lexer) NextToken() Token {
 			}
 			return l.NextToken()
 		} else if l.peekChar() == '>' {
-			// JSON operator ->
+			// JSON operator -> or ->>
 			ch := l.ch
 			l.readChar()
-			literal := string(ch) + string(l.ch)
-			tok = Token{Type: TokenArrow, Literal: literal, Line: l.line, Column: l.column - 1}
-			l.readChar()
+			if l.peekChar() == '>' {
+				// JSON operator ->>
+				ch2 := l.ch
+				l.readChar()
+				literal := string(ch) + string(ch2) + string(l.ch)
+				tok = Token{Type: TokenArrow2, Literal: literal, Line: l.line, Column: l.column - 2}
+				l.readChar()
+			} else {
+				literal := string(ch) + string(l.ch)
+				tok = Token{Type: TokenArrow, Literal: literal, Line: l.line, Column: l.column - 1}
+				l.readChar()
+			}
 		} else {
 			tok = newToken(TokenMinus, l.ch, l.line, l.column)
 			l.readChar()

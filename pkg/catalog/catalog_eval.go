@@ -153,6 +153,34 @@ func (ctx *EvalContext) evaluate(expr query.Expression) (interface{}, error) {
 		return exists, nil
 	case *query.MatchExpr:
 		return evaluateMatchExpr(c, row, columns, e, args)
+	case *query.JSONPathExpr:
+		// Evaluate -> (JSON object) and ->> (JSON text) operators
+		val, err := evaluateExpression(c, row, columns, e.Column, args)
+		if err != nil {
+			return nil, err
+		}
+		jsonStr, ok := val.(string)
+		if !ok {
+			return nil, nil
+		}
+		result, err := JSONExtract(jsonStr, e.Path)
+		if err != nil {
+			return nil, err
+		}
+		if result == nil {
+			return nil, nil
+		}
+		if e.AsText {
+			// ->> returns the value as text (unquoted string)
+			switch v := result.(type) {
+			case string:
+				return v, nil
+			default:
+				return fmt.Sprintf("%v", v), nil
+			}
+		}
+		// -> returns the raw JSON value
+		return result, nil
 	case *query.UnaryExpr:
 		val, err := evaluateExpression(c, row, columns, e.Expr, args)
 		if err != nil {
