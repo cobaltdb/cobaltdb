@@ -179,6 +179,26 @@ func (c *Catalog) evaluateWindowFunctions(rows [][]interface{}, selectCols []sel
 					}
 				}
 
+			case "NTILE":
+				if len(we.Args) > 0 {
+					if numLit, ok := we.Args[0].(*query.NumberLiteral); ok {
+						numBuckets := int(numLit.Value)
+						if numBuckets > 0 {
+							partitionSize := len(entries) / numBuckets
+							if len(entries)%numBuckets != 0 {
+								partitionSize++
+							}
+							for i, entry := range entries {
+								bucket := int64(i/partitionSize) + 1
+								if bucket > int64(numBuckets) {
+									bucket = int64(numBuckets)
+								}
+								rows[entry.originalIdx][colIdx] = bucket
+							}
+						}
+					}
+				}
+
 			case "NTH_VALUE":
 				if len(we.Args) >= 2 {
 					if num, ok := we.Args[1].(*query.NumberLiteral); ok {
