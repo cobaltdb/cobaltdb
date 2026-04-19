@@ -115,3 +115,69 @@ func TestBuildJSONIndexEmptyTable(t *testing.T) {
 		t.Errorf("CreateJSONIndex on empty table failed: %v", err)
 	}
 }
+
+func TestBuildJSONIndexWithInvalidRowData(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "json_bad",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "data", Type: query.TokenJSON},
+		},
+	})
+
+	// Insert one valid row and one invalid raw value directly into the tree
+	c.Insert(ctx, &query.InsertStmt{
+		Table:   "json_bad",
+		Columns: []string{"id", "data"},
+		Values:  [][]query.Expression{{numReal(1), strReal(`{"name":"alice"}`)}},
+	}, nil)
+
+	// Put invalid JSON bytes directly into the tree to trigger json.Unmarshal error
+	c.tableTrees["json_bad"].Put([]byte{99}, []byte("not json"))
+
+	// CreateJSONIndex should skip the invalid row and succeed
+	err := c.CreateJSONIndex("idx_bad", "json_bad", "data", "$.name", "TEXT")
+	if err != nil {
+		t.Errorf("CreateJSONIndex with invalid row data failed: %v", err)
+	}
+}
+
+func TestBuildJSONIndexWithNilJSONValue(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "json_nil",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "data", Type: query.TokenJSON},
+		},
+	})
+
+	// Insert rows where path does not match
+	c.Insert(ctx, &query.InsertStmt{
+		Table:   "json_nil",
+		Columns: []string{"id", "data"},
+		Values: [][]query.Expression{
+			{numReal(1), strReal(`{"other":"value1"}`)},
+			{numReal(2), strReal(`{"other":"value2"}`)},
+		},
+	}, nil)
+
+	// CreateJSONIndex should succeed even when path yields nil
+	err := c.CreateJSONIndex("idx_nil", "json_nil", "data", "$.name", "TEXT")
+	if err != nil {
+		t.Errorf("CreateJSONIndex with nil JSON values failed: %v", err)
+	}
+}

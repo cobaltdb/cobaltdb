@@ -323,9 +323,7 @@ func (m *Manager) handleSlave(conn net.Conn) {
 	}()
 
 	// Send initial WAL position
-	m.mu.RLock()
-	startLSN := m.currentLSN
-	m.mu.RUnlock()
+	startLSN := atomic.LoadUint64(&m.currentLSN)
 
 	if err := m.sendInitialSnapshot(slave, startLSN); err != nil {
 		return
@@ -370,6 +368,9 @@ func (m *Manager) authenticateSlave(conn net.Conn) error {
 
 // sendInitialSnapshot sends current database state to a new slave
 func (m *Manager) sendInitialSnapshot(slave *SlaveConnection, startLSN uint64) error {
+	slave.mu.Lock()
+	defer slave.mu.Unlock()
+
 	// Send START message with LSN
 	msg := fmt.Sprintf("START %d\n", startLSN)
 	if _, err := slave.Writer.WriteString(msg); err != nil {
@@ -438,7 +439,10 @@ func (m *Manager) replicateWAL() {
 		if err := m.sendWALToSlave(slave, data); err != nil {
 			// Mark slave as lagging
 			if m.OnLag != nil {
-				m.OnLag(slave.ID, time.Since(slave.LastPing))
+				slave.mu.Lock()
+				lastPing := slave.LastPing
+				slave.mu.Unlock()
+				m.OnLag(slave.ID, time.Since(lastPing))
 			}
 		}
 	}
@@ -462,7 +466,7 @@ func (m *Manager) sendWALToSlave(slave *SlaveConnection, data []byte) error {
 	}
 
 	// Update slave's LSN
-	slave.LastLSN = m.currentLSN
+	slave.LastLSN = atomic.LoadUint64(&m.currentLSN)
 	slave.LastPing = time.Now()
 
 	atomic.AddUint64(&m.metrics.ReplicatedBytes, uint64(len(data)))
@@ -552,11 +556,11 @@ func (m *Manager) handleMasterMessage(msg string) error {
 		if _, err := fmt.Sscanf(msg, "START %d", &lsn); err != nil {
 			return fmt.Errorf("invalid START message: %w", err)
 		}
-		m.lastApplied = lsn
+		atomic.StoreUint64(&m.lastApplied, lsn)
 
 	case "PING":
 		// Heartbeat - respond with current position
-		if _, err := fmt.Fprintf(m.masterConn, "PONG %d\n", m.lastApplied); err != nil {
+		if _, err := fmt.Fprintf(m.masterConn, "PONG %d\n", atomic.LoadUint64(&m.lastApplied)); err != nil {
 			return err
 		}
 
@@ -584,7 +588,7 @@ func (m *Manager) applyWALData(data string) error {
 			}
 		}
 
-		m.lastApplied = entry.LSN
+		atomic.StoreUint64(&m.lastApplied, entry.LSN)
 		atomic.AddUint64(&m.metrics.AppliedEntries, 1)
 	}
 
@@ -636,7 +640,10 @@ func (m *Manager) WaitForSlaves(timeout time.Duration) error {
 			m.mu.RLock()
 			allCaughtUp := true
 			for _, slave := range m.slaves {
-				if slave.LastLSN < m.currentLSN {
+				slave.mu.Lock()
+				lastLSN := slave.LastLSN
+				slave.mu.Unlock()
+				if lastLSN < atomic.LoadUint64(&m.currentLSN) {
 					allCaughtUp = false
 					break
 				}
@@ -764,7 +771,7 @@ type SlaveStatus struct {
 // GetStatus returns current replication status
 func (m *Manager) GetStatus() *ReplicationStatus {
 	status := &ReplicationStatus{
-		LastApplied: m.lastApplied,
+		LastApplied: atomic.LoadUint64(&m.lastApplied),
 	}
 
 	switch m.config.Role {
@@ -774,14 +781,18 @@ func (m *Manager) GetStatus() *ReplicationStatus {
 
 		m.mu.RLock()
 		status.ActiveSlaves = len(m.slaves)
-		status.CurrentMaster = m.currentLSN
+		status.CurrentMaster = atomic.LoadUint64(&m.currentLSN)
 		status.Slaves = make([]SlaveStatus, 0, len(m.slaves))
 		for id, slave := range m.slaves {
-			lag := time.Since(slave.LastPing)
+			slave.mu.Lock()
+			lastLSN := slave.LastLSN
+			lastPing := slave.LastPing
+			slave.mu.Unlock()
+			lag := time.Since(lastPing)
 			status.Slaves = append(status.Slaves, SlaveStatus{
 				ID:       id,
-				LastLSN:  slave.LastLSN,
-				LastPing: slave.LastPing,
+				LastLSN:  lastLSN,
+				LastPing: lastPing,
 				Lag:      lag,
 			})
 		}

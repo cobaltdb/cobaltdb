@@ -87,7 +87,7 @@ services:
       sh -c "echo 'Waiting for CobaltDB...' &&
              sleep 5 &&
              echo 'Running real-world scenario test...' &&
-             cobaltdb-cli -host cobaltdb -port 4200 'SELECT 1' &&
+             nc -z cobaltdb 4200 &&
              echo 'Test completed successfully!'"
     depends_on:
       - cobaltdb

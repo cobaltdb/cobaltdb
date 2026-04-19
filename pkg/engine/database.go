@@ -2894,7 +2894,13 @@ func (db *DB) BeginHotBackup() error {
 	if db.closed {
 		return ErrDatabaseClosed
 	}
-	// Disable checkpoints during backup
+	// Persist catalog metadata and root page ID before copying files
+	if err := db.catalog.Save(); err != nil {
+		return fmt.Errorf("failed to save catalog: %w", err)
+	}
+	if err := db.saveMetaPage(); err != nil {
+		return fmt.Errorf("failed to save meta page: %w", err)
+	}
 	return nil
 }
 

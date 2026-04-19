@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -61,7 +62,7 @@ func TestAlertManagerCheckRules(t *testing.T) {
 	am := NewAlertManager()
 
 	// Create a rule that always fires
-	fireCount := 0
+	var fireCount int64
 	rule := &AlertRule{
 		Name:        "test_always_fire",
 		Description: "Test rule that always fires",
@@ -76,7 +77,7 @@ func TestAlertManagerCheckRules(t *testing.T) {
 	// Create a callback handler to catch the alert
 	handler := &CallbackAlertHandler{
 		Callback: func(a Alert) {
-			fireCount++
+			atomic.AddInt64(&fireCount, 1)
 		},
 	}
 
@@ -90,7 +91,7 @@ func TestAlertManagerCheckRules(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Check that the rule fired
-	if fireCount == 0 {
+	if atomic.LoadInt64(&fireCount) == 0 {
 		t.Error("Expected rule to fire at least once")
 	}
 }
@@ -100,7 +101,7 @@ func TestAlertManagerCheckRulesMuted(t *testing.T) {
 	am := NewAlertManager()
 
 	// Create a rule that always fires
-	fireCount := 0
+	var fireCount int64
 	rule := &AlertRule{
 		Name:        "test_muted_rule",
 		Description: "Test muted rule",
@@ -114,7 +115,7 @@ func TestAlertManagerCheckRulesMuted(t *testing.T) {
 
 	handler := &CallbackAlertHandler{
 		Callback: func(a Alert) {
-			fireCount++
+			atomic.AddInt64(&fireCount, 1)
 		},
 	}
 
@@ -129,7 +130,7 @@ func TestAlertManagerCheckRulesMuted(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Check that the muted rule didn't fire
-	if fireCount != 0 {
+	if atomic.LoadInt64(&fireCount) != 0 {
 		t.Error("Muted rule should not fire")
 	}
 }
@@ -138,7 +139,7 @@ func TestAlertManagerCheckRulesMuted(t *testing.T) {
 func TestAlertManagerCheckRulesCooldown(t *testing.T) {
 	am := NewAlertManager()
 
-	fireCount := 0
+	var fireCount int64
 	rule := &AlertRule{
 		Name:        "test_cooldown_rule",
 		Description: "Test rule with cooldown",
@@ -152,7 +153,7 @@ func TestAlertManagerCheckRulesCooldown(t *testing.T) {
 
 	handler := &CallbackAlertHandler{
 		Callback: func(a Alert) {
-			fireCount++
+			atomic.AddInt64(&fireCount, 1)
 		},
 	}
 
@@ -163,16 +164,16 @@ func TestAlertManagerCheckRulesCooldown(t *testing.T) {
 	am.checkRules()
 	time.Sleep(50 * time.Millisecond)
 
-	if fireCount != 1 {
-		t.Errorf("Expected 1 fire, got %d", fireCount)
+	if atomic.LoadInt64(&fireCount) != 1 {
+		t.Errorf("Expected 1 fire, got %d", atomic.LoadInt64(&fireCount))
 	}
 
 	// Second call immediately - should not fire due to cooldown
 	am.checkRules()
 	time.Sleep(50 * time.Millisecond)
 
-	if fireCount != 1 {
-		t.Errorf("Expected still 1 fire due to cooldown, got %d", fireCount)
+	if atomic.LoadInt64(&fireCount) != 1 {
+		t.Errorf("Expected still 1 fire due to cooldown, got %d", atomic.LoadInt64(&fireCount))
 	}
 }
 

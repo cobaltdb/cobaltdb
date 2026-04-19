@@ -67,7 +67,7 @@ func ParseLevel(s string) Level {
 type Logger struct {
 	level     Level
 	output    io.Writer
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	fields    map[string]interface{}
 	component string
 }
@@ -91,6 +91,8 @@ func Default() *Logger {
 
 // WithComponent returns a new logger with the given component name
 func (l *Logger) WithComponent(component string) *Logger {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return &Logger{
 		level:     l.level,
 		output:    l.output,
@@ -101,6 +103,8 @@ func (l *Logger) WithComponent(component string) *Logger {
 
 // WithField returns a new logger with the given field
 func (l *Logger) WithField(key string, value interface{}) *Logger {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	newFields := copyFields(l.fields)
 	newFields[key] = value
 	return &Logger{
@@ -113,6 +117,8 @@ func (l *Logger) WithField(key string, value interface{}) *Logger {
 
 // WithFields returns a new logger with the given fields
 func (l *Logger) WithFields(fields map[string]interface{}) *Logger {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	newFields := copyFields(l.fields)
 	for k, v := range fields {
 		newFields[k] = v
@@ -141,6 +147,8 @@ func (l *Logger) SetOutput(output io.Writer) {
 
 // IsEnabled returns true if the given level is enabled
 func (l *Logger) IsEnabled(level Level) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return level >= l.level
 }
 
@@ -202,12 +210,12 @@ func (l *Logger) Log(level Level, msg string, err error) {
 }
 
 func (l *Logger) log(level Level, msg string, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	if level < l.level {
 		return
 	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 

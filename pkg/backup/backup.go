@@ -244,6 +244,7 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 		if err != nil {
 			return fmt.Errorf("failed to create compressor: %w", err)
 		}
+		defer compressor.Close()
 		writer = compressor
 	}
 
@@ -462,7 +463,8 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 	// Restore WAL files if present
 	if len(backup.WALFiles) > 0 {
 		walBackupDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", backup.ID))
-		targetWALDir := filepath.Join(filepath.Dir(targetPath), "wal")
+		// WAL directory is expected at <db-path>.wal (same convention as engine.GetWALPath)
+		targetWALDir := targetPath + ".wal"
 
 		if err := os.MkdirAll(targetWALDir, 0755); err != nil {
 			return fmt.Errorf("failed to create WAL directory: %w", err)

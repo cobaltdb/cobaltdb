@@ -150,3 +150,17 @@ func TestStatsCountRowsWithFloatResult(t *testing.T) {
 		t.Errorf("Expected 2 rows, got %d", count)
 	}
 }
+
+func TestStatsCountRowsInvalidTableName(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+	sc := NewStatsCollector(c)
+
+	_, err := sc.countRows("DROP")
+	if err == nil {
+		t.Error("expected error for invalid table name")
+	}
+}

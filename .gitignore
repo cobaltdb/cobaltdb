@@ -19,6 +19,7 @@ go.work
 # IDE
 .idea/
 .vscode/
+.project/
 *.swp
 *.swo
 *~
@@ -41,6 +42,7 @@ temp/
 build/
 
 nul
+CON:
 
 # Database files
 *.db
@@ -52,6 +54,7 @@ nul
 pkg/engine/backups/
 test.cobalt.data/
 dist/data/
+pkg/catalog/schema.json
 
 # Website
 website/node_modules/

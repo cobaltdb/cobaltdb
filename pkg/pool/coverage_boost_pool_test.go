@@ -38,8 +38,8 @@ func TestIsHealthyWithDeadlineError(t *testing.T) {
 func TestIsExpiredWithIdleTime(t *testing.T) {
 	// Connection not in use, idle for a long time
 	conn := &Conn{
-		createdAt:   time.Now(),
-		lastUsedAt:  time.Now().Add(-2 * time.Hour),
+		createdAt:      time.Now(),
+		lastUsedAtNano: time.Now().Add(-2 * time.Hour).UnixNano(),
 	}
 	atomic.StoreInt32(&conn.inUse, 0)
 
@@ -50,8 +50,8 @@ func TestIsExpiredWithIdleTime(t *testing.T) {
 
 	// Connection in use should not be expired by idle time
 	conn2 := &Conn{
-		createdAt:   time.Now(),
-		lastUsedAt:  time.Now().Add(-2 * time.Hour),
+		createdAt:      time.Now(),
+		lastUsedAtNano: time.Now().Add(-2 * time.Hour).UnixNano(),
 	}
 	atomic.StoreInt32(&conn2.inUse, 1)
 
@@ -62,7 +62,7 @@ func TestIsExpiredWithIdleTime(t *testing.T) {
 	// Connection with zero idle time should not be expired
 	conn3 := &Conn{
 		createdAt:   time.Now(),
-		lastUsedAt:  time.Now().Add(-2 * time.Hour),
+		lastUsedAtNano: time.Now().Add(-2 * time.Hour).UnixNano(),
 	}
 	atomic.StoreInt32(&conn3.inUse, 0)
 

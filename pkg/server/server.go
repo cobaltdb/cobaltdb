@@ -154,13 +154,17 @@ func (s *Server) Listen(address string, tlsConfig *TLSConfig) error {
 		listener = GetTLSListener(listener, tlsConf)
 	}
 
+	s.mu.Lock()
 	s.listener = listener
+	s.mu.Unlock()
 	return s.acceptLoop()
 }
 
 // ListenOnListener starts the server using an existing listener
 func (s *Server) ListenOnListener(listener net.Listener) error {
+	s.mu.Lock()
 	s.listener = listener
+	s.mu.Unlock()
 	return s.acceptLoop()
 }
 

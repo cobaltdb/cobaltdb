@@ -167,7 +167,7 @@ func (c *Cache) Set(sql string, args []interface{}, columns []string, rows [][]i
 	}
 
 	// Make room if needed
-	for c.currentSize+size > c.config.MaxSize {
+	for atomic.LoadInt64(&c.currentSize)+size > c.config.MaxSize {
 		if !c.evictLRU() {
 			break // Can't evict anything
 		}

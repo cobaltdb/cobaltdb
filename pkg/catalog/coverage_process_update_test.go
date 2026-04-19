@@ -2,6 +2,8 @@ package catalog
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -151,5 +153,142 @@ func TestProcessUpdateRowMultipleRows(t *testing.T) {
 			// Value was updated
 			t.Logf("Row was updated, new count: %d", v)
 		}
+	}
+}
+
+// TestProcessUpdateRowDecodeError tests processUpdateRow skips rows that fail decode
+func TestProcessUpdateRowDecodeError(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "proc_dec",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "val", Type: query.TokenText},
+		},
+	})
+
+	c.Insert(ctx, &query.InsertStmt{
+		Table:   "proc_dec",
+		Columns: []string{"id", "val"},
+		Values:  [][]query.Expression{{numReal(1), strReal("a")}},
+	}, nil)
+
+	// Overwrite with invalid bytes to trigger decodeVersionedRow error
+	pkKey := fmt.Sprintf("%020d", 1)
+	c.tableTrees["proc_dec"].Put([]byte(pkKey), []byte("not json"))
+
+	count, _, err := c.Update(ctx, &query.UpdateStmt{
+		Table: "proc_dec",
+		Set:   []*query.SetClause{{Column: "val", Value: strReal("x")}},
+		Where: &query.BinaryExpr{
+			Left:     &query.Identifier{Name: "id"},
+			Operator: query.TokenEq,
+			Right:    &query.NumberLiteral{Value: 1},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("expected no error for decode error skip, got: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 updates for unparseable row, got %d", count)
+	}
+}
+
+// TestProcessUpdateRowDeletedRow tests processUpdateRow skips soft-deleted rows
+func TestProcessUpdateRowDeletedRow(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "proc_del",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "val", Type: query.TokenText},
+		},
+	})
+
+	c.Insert(ctx, &query.InsertStmt{
+		Table:   "proc_del",
+		Columns: []string{"id", "val"},
+		Values:  [][]query.Expression{{numReal(1), strReal("a")}},
+	}, nil)
+
+	vrow := VersionedRow{
+		Data:    []interface{}{float64(1), "a"},
+		Version: RowVersion{CreatedAt: 1, DeletedAt: 1},
+	}
+	data, _ := json.Marshal(vrow)
+	pkKey := fmt.Sprintf("%020d", 1)
+	c.tableTrees["proc_del"].Put([]byte(pkKey), data)
+
+	count, _, err := c.Update(ctx, &query.UpdateStmt{
+		Table: "proc_del",
+		Set:   []*query.SetClause{{Column: "val", Value: strReal("x")}},
+		Where: &query.BinaryExpr{
+			Left:     &query.Identifier{Name: "id"},
+			Operator: query.TokenEq,
+			Right:    &query.NumberLiteral{Value: 1},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("expected no error for deleted row skip, got: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 updates for deleted row, got %d", count)
+	}
+}
+
+// TestProcessUpdateRowWhereEvalError tests processUpdateRow returns error on WHERE eval failure
+func TestProcessUpdateRowWhereEvalError(t *testing.T) {
+	ctx := context.Background()
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "proc_we",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "val", Type: query.TokenText},
+		},
+	})
+
+	c.Insert(ctx, &query.InsertStmt{
+		Table:   "proc_we",
+		Columns: []string{"id", "val"},
+		Values:  [][]query.Expression{{numReal(1), strReal("a")}},
+	}, nil)
+
+	_, _, err := c.Update(ctx, &query.UpdateStmt{
+		Table: "proc_we",
+		Set:   []*query.SetClause{{Column: "val", Value: strReal("x")}},
+		Where: &query.BinaryExpr{
+			Left: &query.BinaryExpr{
+				Left:     &query.Identifier{Name: "id"},
+				Operator: query.TokenEq,
+				Right:    &query.NumberLiteral{Value: 1},
+			},
+			Operator: query.TokenAnd,
+			Right: &query.BinaryExpr{
+				Left:     &query.Identifier{Name: "nonexistent"},
+				Operator: query.TokenEq,
+				Right:    &query.StringLiteral{Value: "x"},
+			},
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error for WHERE evaluation failure")
 	}
 }

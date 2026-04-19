@@ -398,10 +398,10 @@ func TestPoolScaleUp(t *testing.T) {
 // TestReleaseNilPool tests releasing connection with nil pool
 func TestReleaseNilPool(t *testing.T) {
 	conn := &Conn{
-		Conn:       &mockConn{},
-		pool:       nil,
-		createdAt:  time.Now(),
-		lastUsedAt: time.Now(),
+		Conn:           &mockConn{},
+		pool:           nil,
+		createdAt:      time.Now(),
+		lastUsedAtNano: time.Now().UnixNano(),
 	}
 
 	// Should not panic

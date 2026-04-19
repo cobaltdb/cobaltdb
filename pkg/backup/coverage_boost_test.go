@@ -548,7 +548,8 @@ func TestRestoreWithWAL(t *testing.T) {
 	}
 
 	// Verify WAL files were restored
-	targetWALPath := filepath.Join(targetDir, "wal", "wal_1.log")
+	// Engine convention: WAL directory is at <db-path>.wal
+	targetWALPath := filepath.Join(targetPath+".wal", "wal_1.log")
 	if _, err := os.Stat(targetWALPath); os.IsNotExist(err) {
 		t.Error("WAL file should have been restored")
 	}

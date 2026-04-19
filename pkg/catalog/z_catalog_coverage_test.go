@@ -2350,3 +2350,79 @@ func TestCov_BinaryExprIS(t *testing.T) {
 	v, _ := evaluateExpression(c, nil, nil, binop(nl(), query.TokenIs, bl(true)), nil)
 	_ = v
 }
+
+// ── Analyze missing table ────────────────────────────────────────────
+func TestCov_AnalyzeMissingTable(t *testing.T) {
+	c := newTestCatalog(t)
+	err := c.Analyze("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for missing table")
+	}
+}
+
+// ── Analyze no tree ──────────────────────────────────────────────────
+func TestCov_AnalyzeNoTree(t *testing.T) {
+	c := newTestCatalog(t)
+	createTestTable(t, c, "t", []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}})
+	delete(c.tableTrees, "t")
+	err := c.Analyze("t")
+	if err == nil {
+		t.Fatal("expected error when table has no tree")
+	}
+}
+
+// ── Analyze with invalid row data ────────────────────────────────────
+func TestCov_AnalyzeInvalidRow(t *testing.T) {
+	c := newTestCatalog(t)
+	createTestTable(t, c, "t", []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}})
+	c.tableTrees["t"].Put([]byte{1}, []byte("not json"))
+	err := c.Analyze("t")
+	if err != nil {
+		t.Fatalf("Analyze should skip invalid rows, got: %v", err)
+	}
+	stats := c.stats["t"]
+	if stats == nil || stats.RowCount != 1 {
+		// rowCount is incremented before decodeVersionedRow, so the invalid row still counts
+		t.Errorf("expected 1 row counted (invalid row skipped for stats), got %v", stats)
+	}
+}
+
+// ── Vacuum with index trees ──────────────────────────────────────────
+func TestCov_VacuumWithIndexTree(t *testing.T) {
+	c := newTestCatalog(t)
+	createTestTable(t, c, "t", []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "val", Type: query.TokenText}})
+	err := c.CreateIndex(&query.CreateIndexStmt{Index: "idx_val", Table: "t", Columns: []string{"val"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertTestRow(t, c, "t", []query.Expression{nr(1), sr("a")})
+	insertTestRow(t, c, "t", []query.Expression{nr(2), sr("b")})
+	err = c.Vacuum()
+	if err != nil {
+		t.Fatalf("Vacuum failed: %v", err)
+	}
+}
+
+// ── Vacuum with empty index tree ─────────────────────────────────────
+func TestCov_VacuumWithEmptyIndexTree(t *testing.T) {
+	c := newTestCatalog(t)
+	createTestTable(t, c, "t", []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "val", Type: query.TokenText}})
+	err := c.CreateIndex(&query.CreateIndexStmt{Index: "idx_val", Table: "t", Columns: []string{"val"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.Vacuum()
+	if err != nil {
+		t.Fatalf("Vacuum with empty index tree failed: %v", err)
+	}
+}
+
+// ── QueryCache disabled paths ────────────────────────────────────────
+func TestCov_QueryCacheDisabled(t *testing.T) {
+	qc := NewQueryCache(0, 0)
+	qc.Get("key")
+	qc.Set("key", []string{"a"}, [][]interface{}{{1}}, []string{"t"})
+	qc.InvalidateAll()
+	_, _, _ = qc.Stats()
+}
+

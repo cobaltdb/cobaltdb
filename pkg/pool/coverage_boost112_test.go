@@ -286,7 +286,7 @@ func TestConnIsHealthy112(t *testing.T) {
 	c := &Conn{
 		Conn:       &mockConn{},
 		createdAt:  now,
-		lastUsedAt: now,
+		lastUsedAtNano: now.UnixNano(),
 	}
 
 	if !c.IsHealthy(time.Second) {

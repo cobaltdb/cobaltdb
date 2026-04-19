@@ -73,23 +73,23 @@ func (c *Config) Validate() error {
 // Conn represents a pooled connection
 type Conn struct {
 	net.Conn
-	pool       *Pool
-	createdAt  time.Time
-	lastUsedAt time.Time
-	inUse      int32
-	closed     int32
-	id         uint64
+	pool           *Pool
+	createdAt      time.Time
+	lastUsedAtNano int64
+	inUse          int32
+	closed         int32
+	id             uint64
 }
 
 // newConn wraps a net.Conn in a pooled connection
 func newConn(conn net.Conn, pool *Pool, id uint64) *Conn {
 	now := time.Now()
 	return &Conn{
-		Conn:       conn,
-		pool:       pool,
-		createdAt:  now,
-		lastUsedAt: now,
-		id:         id,
+		Conn:           conn,
+		pool:           pool,
+		createdAt:      now,
+		lastUsedAtNano: now.UnixNano(),
+		id:             id,
 	}
 }
 
@@ -134,8 +134,11 @@ func (c *Conn) IsExpired(maxLifetime, maxIdleTime time.Duration) bool {
 	if maxLifetime > 0 && time.Since(c.createdAt) > maxLifetime {
 		return true
 	}
-	if maxIdleTime > 0 && atomic.LoadInt32(&c.inUse) == 0 && time.Since(c.lastUsedAt) > maxIdleTime {
-		return true
+	if maxIdleTime > 0 && atomic.LoadInt32(&c.inUse) == 0 {
+		lastUsed := atomic.LoadInt64(&c.lastUsedAtNano)
+		if time.Now().UnixNano()-lastUsed > int64(maxIdleTime) {
+			return true
+		}
 	}
 	return false
 }
@@ -268,7 +271,7 @@ func (p *Pool) Acquire(ctx context.Context) (*Conn, error) {
 	case conn := <-p.available:
 		if conn != nil && atomic.LoadInt32(&conn.closed) == 0 {
 			atomic.StoreInt32(&conn.inUse, 1)
-			conn.lastUsedAt = time.Now()
+			atomic.StoreInt64(&conn.lastUsedAtNano, time.Now().UnixNano())
 			atomic.AddInt32(&p.stats.IdleConns, -1)
 			atomic.AddInt32(&p.stats.ActiveConns, 1)
 			return conn, nil
@@ -289,7 +292,7 @@ func (p *Pool) Acquire(ctx context.Context) (*Conn, error) {
 		case conn := <-p.available:
 			if conn != nil {
 				atomic.StoreInt32(&conn.inUse, 1)
-				conn.lastUsedAt = time.Now()
+				atomic.StoreInt64(&conn.lastUsedAtNano, time.Now().UnixNano())
 				atomic.AddInt32(&p.stats.IdleConns, -1)
 				atomic.AddInt32(&p.stats.ActiveConns, 1)
 				return conn, nil
@@ -346,7 +349,7 @@ func (p *Pool) waitForConnection(ctx context.Context) (*Conn, error) {
 			return nil, ErrPoolClosed
 		}
 		atomic.StoreInt32(&conn.inUse, 1)
-		conn.lastUsedAt = time.Now()
+		atomic.StoreInt64(&conn.lastUsedAtNano, time.Now().UnixNano())
 		atomic.AddInt32(&p.stats.ActiveConns, 1)
 		return conn, nil
 	case <-time.After(timeout):
@@ -365,7 +368,7 @@ func (p *Pool) release(conn *Conn) {
 	}
 
 	atomic.StoreInt32(&conn.inUse, 0)
-	conn.lastUsedAt = time.Now()
+	atomic.StoreInt64(&conn.lastUsedAtNano, time.Now().UnixNano())
 	atomic.AddInt32(&p.stats.ActiveConns, -1)
 	atomic.AddInt32(&p.stats.IdleConns, 1)
 	atomic.AddUint64(&p.stats.TotalReleases, 1)

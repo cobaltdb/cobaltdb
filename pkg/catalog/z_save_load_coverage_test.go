@@ -1,12 +1,14 @@
 package catalog
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
 // newEmptyCatalog creates a catalog with initialized maps for save/load testing
@@ -228,3 +230,146 @@ func TestLoadSchemaCorruptJSON(t *testing.T) {
 		t.Fatal("expected error for corrupt schema.json")
 	}
 }
+
+func TestLoadDataWithNilPool(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a catalog with pool and insert data, then save
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "items",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "name", Type: query.TokenText},
+		},
+	})
+	c.Insert(context.Background(), &query.InsertStmt{
+		Table:   "items",
+		Columns: []string{"id", "name"},
+		Values:  [][]query.Expression{{numReal(1), strReal("a")}},
+	}, nil)
+
+	err := c.SaveData(tmpDir)
+	if err != nil {
+		t.Fatalf("SaveData: %v", err)
+	}
+
+	// Load into fresh catalog without pool (tableTrees will be missing)
+	cat2 := newEmptyCatalog()
+	err = cat2.LoadSchema(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadSchema: %v", err)
+	}
+
+	// LoadData with missing tree and nil pool should continue without error
+	err = cat2.LoadData(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadData with nil pool should succeed, got: %v", err)
+	}
+}
+
+func TestLoadDataKeysLongerThanValues(t *testing.T) {
+	tmpDir := t.TempDir()
+	cat := createTestCatalogForSaveLoad(t)
+
+	// Write a data file where keys array is longer than values array.
+	// Values must be base64-encoded because [][]byte marshals to base64 strings.
+	data := []byte(`{"keys":["AQ==","Ag==","Aw=="],"values":["YQ==","Yg=="]}`)
+	err := os.WriteFile(filepath.Join(tmpDir, "users.json"), data, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = cat.LoadData(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadData keys>values should succeed, got: %v", err)
+	}
+}
+
+func TestLoadSchemaWithPool(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create catalog with pool, table, and data, then save
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, _ := btree.NewBTree(pool)
+	c := New(tree, pool, nil)
+
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "products",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "name", Type: query.TokenText},
+		},
+	})
+	c.Insert(context.Background(), &query.InsertStmt{
+		Table:   "products",
+		Columns: []string{"id", "name"},
+		Values:  [][]query.Expression{{numReal(1), strReal("widget")}},
+	}, nil)
+
+	err := c.SaveData(tmpDir)
+	if err != nil {
+		t.Fatalf("SaveData: %v", err)
+	}
+
+	// Load into fresh catalog that has a pool so trees are created
+	cat2 := newEmptyCatalog()
+	cat2.pool = pool
+
+	err = cat2.LoadSchema(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadSchema with pool: %v", err)
+	}
+
+	if _, ok := cat2.tableTrees["products"]; !ok {
+		t.Fatal("expected products tree to be created when pool is present")
+	}
+}
+
+func TestSaveNormalPath(t *testing.T) {
+	c := newTestCatalog(t)
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "t",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		},
+	})
+	err := c.Save()
+	if err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+}
+
+func TestLoadNormalPath(t *testing.T) {
+	c := newTestCatalog(t)
+	c.CreateTable(&query.CreateTableStmt{
+		Table: "t",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		},
+	})
+	c.Insert(context.Background(), &query.InsertStmt{
+		Table:   "t",
+		Columns: []string{"id"},
+		Values:  [][]query.Expression{{numReal(1)}},
+	}, nil)
+	err := c.Save()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if _, ok := c.tables["t"]; !ok {
+		t.Fatal("expected table t to be loaded")
+	}
+}
+
