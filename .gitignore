@@ -55,6 +55,7 @@ pkg/engine/backups/
 test.cobalt.data/
 dist/data/
 pkg/catalog/schema.json
+/certs/
 
 # Website
 website/node_modules/
