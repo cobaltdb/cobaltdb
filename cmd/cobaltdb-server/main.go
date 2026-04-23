@@ -27,6 +27,8 @@ func generateRandomPassword(length int) (string, error) {
 	return string(b), nil
 }
 
+var version = "dev"
+
 func main() {
 	var (
 		dataDir     = flag.String("data", "./data", "data directory")
@@ -99,7 +101,7 @@ func main() {
 		log.Fatalf("Failed to open database: %v", err)
 	}
 
-	log.Printf("CobaltDB v0.3.0 Production Server starting...")
+	log.Printf("CobaltDB %s Production Server starting...", version)
 	if !*inMemory {
 		log.Printf("Data directory: %s", *dataDir)
 	} else {

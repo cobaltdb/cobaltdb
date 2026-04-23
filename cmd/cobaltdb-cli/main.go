@@ -20,6 +20,8 @@ var (
 	flagPort     int
 )
 
+var version = "dev"
+
 func init() {
 	flag.BoolVar(&flagHelp, "help", false, "Show help")
 	flag.BoolVar(&flagHelp, "h", false, "Show help (short)")
@@ -50,8 +52,8 @@ func main() {
 }
 
 func printHelp() {
-	fmt.Print(`
-CobaltDB CLI v2.0
+	fmt.Printf(`
+CobaltDB CLI %s
 
 Usage:
   cobaltdb [options] [sql-command...]
@@ -100,7 +102,7 @@ Interactive Commands:
   .schema <table>      Show table schema
   .quit, .exit         Exit CLI
   .help                Show this help
-`)
+`, version)
 }
 
 func runCommand(sql, path string, inMemory bool) {
