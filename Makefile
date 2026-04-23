@@ -91,4 +91,26 @@ docker-build:
 docker-run:
 	@docker run -p 4200:4200 cobaltdb:latest
 
+release:
+	@echo "Building release binaries..."
+	@mkdir -p dist
+	@for goos in linux darwin windows; do \
+		for goarch in amd64 arm64; do \
+			if [ "$$goos" = "windows" ] && [ "$$goarch" = "arm64" ]; then continue; fi; \
+			ext=""; if [ "$$goos" = "windows" ]; then ext=".exe"; fi; \
+			CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build \
+				-ldflags="-s -w -X main.version=$$(git describe --tags --always)" \
+				-o "dist/$(BINARY_SERVER)-$$goos-$$goarch$$ext" \
+				$(PKG)/cmd/$(BINARY_SERVER); \
+			CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build \
+				-ldflags="-s -w -X main.version=$$(git describe --tags --always)" \
+				-o "dist/$(BINARY_CLI)-$$goos-$$goarch$$ext" \
+				$(PKG)/cmd/$(BINARY_CLI); \
+		done \
+	done
+	@cd dist && sha256sum * > checksums.txt
+	@echo "Release artifacts built in dist/"
+	@echo "Checksums:"
+	@cat dist/checksums.txt
+
 all: deps fmt test build
