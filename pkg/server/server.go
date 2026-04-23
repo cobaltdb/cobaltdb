@@ -74,7 +74,6 @@ func generateRandomPassword() string {
 // DefaultConfig returns the default server configuration
 func DefaultConfig() *Config {
 	pass := generateRandomPassword()
-	fmt.Printf("[cobaltdb] Generated default admin password: %s\n", pass)
 	return &Config{
 		Address:          ":4200",
 		AuthEnabled:      false,
