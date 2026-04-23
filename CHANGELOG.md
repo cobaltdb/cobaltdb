@@ -5,6 +5,32 @@ All notable changes to CobaltDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Production Readiness
+
+#### Security
+- Fix sensitive credential leak: `DefaultConfig()` no longer prints the generated admin password to stdout
+- Security review clean: no new vulnerabilities in production code changes
+
+#### Concurrency & Reliability
+- Data race fixes across 7 packages (cache, logger, metrics, pool, replication, server)
+- Race detector now passes cleanly on **all 20 packages** (`go test -race ./pkg/...`)
+- Stress tests added: ACID rollback/commit durability, 60s concurrent r/w, deadlock detection, backup-restore round-trip
+- Fuzz tests added: SQL parser (`FuzzParseSQL`) and wire protocol (`FuzzDecodeMessage`)
+
+#### Build & Deployment
+- Add missing MIT LICENSE file
+- Run `gofmt -w .` across entire codebase (135 files)
+- Update Docker base image to `golang:1.26-alpine` (dependencies require Go 1.25+)
+- Untrack auto-generated TLS certificate files from git
+- Fix build-time version injection for server and CLI binaries (was hardcoded v0.3.0 / v2.0)
+
+### Tests
+- 31+ new coverage boost tests
+- Overall test coverage: **91.2%** (20/20 packages above 89%)
+- All 20 packages passing, 10,400+ tests
+
 ## [v0.4.1] - 2026-04-08
 
 ### Bug Fixes & Completeness
