@@ -1,10 +1,9 @@
 package catalog
 
 import (
-
 	"fmt"
-	"strings"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"strings"
 )
 
 func (c *Catalog) serializePK(pkValue interface{}, tree *btree.BTree) []byte {
@@ -73,4 +72,4 @@ func (c *Catalog) GetRow(tableName string, pkValue interface{}) (map[string]inte
 	}
 
 	return row, nil
-}
+}

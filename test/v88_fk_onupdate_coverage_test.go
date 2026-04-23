@@ -630,7 +630,7 @@ func TestV88_ComplexBinaryExpressions(t *testing.T) {
 
 	// Complex arithmetic expressions
 	afExpectVal(t, db, ctx, "SELECT (a * b) + (a - b) FROM t WHERE id = 1", float64(37)) // (10*3) + (10-3) = 30 + 7 = 37
-	afExpectVal(t, db, ctx, "SELECT a % b FROM t WHERE id = 1", float64(1))               // 10 % 3 = 1
+	afExpectVal(t, db, ctx, "SELECT a % b FROM t WHERE id = 1", float64(1))              // 10 % 3 = 1
 }
 
 // ============================================================

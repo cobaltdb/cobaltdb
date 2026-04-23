@@ -153,7 +153,7 @@ func TestAggregateFunctions(t *testing.T) {
 				&query.QualifiedIdentifier{Table: "test", Column: "category"},
 				fn,
 			},
-			From:    &query.TableRef{Name: "test"},
+			From: &query.TableRef{Name: "test"},
 			GroupBy: []query.Expression{
 				&query.QualifiedIdentifier{Table: "test", Column: "category"},
 			},

@@ -10,9 +10,9 @@ import (
 
 // MockDatabase implements Database interface for testing
 type MockDatabase struct {
-	dbPath string
+	dbPath  string
 	walPath string
-	lsn    uint64
+	lsn     uint64
 }
 
 func (m *MockDatabase) GetDatabasePath() string {

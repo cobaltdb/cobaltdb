@@ -312,4 +312,3 @@ func (bp *BufferPool) PageCount() int {
 	defer bp.mu.RUnlock()
 	return len(bp.pages)
 }
-

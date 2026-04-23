@@ -143,8 +143,8 @@ func TestV21SQLCorrectness(t *testing.T) {
 	// === LARGE NUMBERS ===
 	// ============================================================
 	afExec(t, db, ctx, "CREATE TABLE large_nums (id INTEGER PRIMARY KEY, val INTEGER)")
-	afExec(t, db, ctx, "INSERT INTO large_nums VALUES (1, 2147483647)")   // max int32
-	afExec(t, db, ctx, "INSERT INTO large_nums VALUES (2, -2147483648)")  // min int32
+	afExec(t, db, ctx, "INSERT INTO large_nums VALUES (1, 2147483647)")  // max int32
+	afExec(t, db, ctx, "INSERT INTO large_nums VALUES (2, -2147483648)") // min int32
 	afExec(t, db, ctx, "INSERT INTO large_nums VALUES (3, 1000000000)")
 
 	check("Large positive", "SELECT val FROM large_nums WHERE id = 1", 2147483647)

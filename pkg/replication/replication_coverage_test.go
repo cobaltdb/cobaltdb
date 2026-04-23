@@ -47,7 +47,7 @@ func TestWALEntryEncodeDecodeErrors(t *testing.T) {
 
 	// Test decode with invalid length
 	invalidData := make([]byte, 8)
-	binary.BigEndian.PutUint32(invalidData[0:4], 1) // Version
+	binary.BigEndian.PutUint32(invalidData[0:4], 1)       // Version
 	binary.BigEndian.PutUint32(invalidData[4:8], 1000000) // Invalid data length
 	if err := entry.Decode(invalidData); err == nil {
 		t.Error("Expected error for invalid data length")

@@ -392,7 +392,7 @@ func TestBoost2_DeleteWithUsing(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "dwu_orders",
 			Columns: []string{"id", "customer_id", "status"},
-			Values:  [][]query.Expression{{boost2Num(float64(i)), boost2Num(float64((i%2)+1)), boost2Str("pending")}},
+			Values:  [][]query.Expression{{boost2Num(float64(i)), boost2Num(float64((i % 2) + 1)), boost2Str("pending")}},
 		}, nil)
 	}
 	c.Insert(ctx, &query.InsertStmt{
@@ -513,7 +513,7 @@ func TestBoost2_UpdateWithJoin(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "uwj_emp",
 			Columns: []string{"id", "dept_id", "bonus"},
-			Values:  [][]query.Expression{{boost2Num(float64(i)), boost2Num(float64((i%2)+1)), boost2Num(0)}},
+			Values:  [][]query.Expression{{boost2Num(float64(i)), boost2Num(float64((i % 2) + 1)), boost2Num(0)}},
 		}, nil)
 	}
 	c.Insert(ctx, &query.InsertStmt{

@@ -258,9 +258,9 @@ func TestSkipJSONValue(t *testing.T) {
 
 func TestSkipJSONBracketed(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		input string
-		want int
+		want  int
 	}{
 		{"empty object", `{}`, 2},
 		{"empty array", `[]`, 2},

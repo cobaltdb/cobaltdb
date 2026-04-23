@@ -28,9 +28,9 @@ func TestInsertLockedReturning(t *testing.T) {
 
 	// Insert with RETURNING
 	stmt := &query.InsertStmt{
-		Table:   "ins_return",
-		Columns: []string{"id", "val"},
-		Values:  [][]query.Expression{{numReal(1), strReal("test")}},
+		Table:     "ins_return",
+		Columns:   []string{"id", "val"},
+		Values:    [][]query.Expression{{numReal(1), strReal("test")}},
 		Returning: []query.Expression{&query.Identifier{Name: "id"}, &query.Identifier{Name: "val"}},
 	}
 
@@ -97,10 +97,10 @@ func TestInsertLockedWithIndexes(t *testing.T) {
 
 	// Create multiple indexes
 	c.CreateIndex(&query.CreateIndexStmt{
-		Index:   "idx_code", Table: "ins_idx", Columns: []string{"code"}, Unique: false,
+		Index: "idx_code", Table: "ins_idx", Columns: []string{"code"}, Unique: false,
 	})
 	c.CreateIndex(&query.CreateIndexStmt{
-		Index:   "idx_val", Table: "ins_idx", Columns: []string{"val"}, Unique: false,
+		Index: "idx_val", Table: "ins_idx", Columns: []string{"val"}, Unique: false,
 	})
 
 	// Insert with indexes
@@ -447,7 +447,7 @@ func TestSaveWithIndex(t *testing.T) {
 	})
 
 	c.CreateIndex(&query.CreateIndexStmt{
-		Index:   "idx_code_save", Table: "save_idx", Columns: []string{"code"}, Unique: false,
+		Index: "idx_code_save", Table: "save_idx", Columns: []string{"code"}, Unique: false,
 	})
 
 	c.Insert(ctx, &query.InsertStmt{
@@ -520,7 +520,7 @@ func TestVacuumWithIndexes(t *testing.T) {
 	})
 
 	c.CreateIndex(&query.CreateIndexStmt{
-		Index:   "idx_vac", Table: "vac_idx", Columns: []string{"code"}, Unique: false,
+		Index: "idx_vac", Table: "vac_idx", Columns: []string{"code"}, Unique: false,
 	})
 
 	// Insert and delete

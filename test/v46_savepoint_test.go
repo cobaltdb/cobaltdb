@@ -203,7 +203,7 @@ func TestV46Savepoint(t *testing.T) {
 	checkNoError("AS2 update Charlie", "UPDATE v46_accounts SET balance = balance + 300 WHERE id = 3")
 	checkNoError("AS2 ROLLBACK TO mid", "ROLLBACK TO SAVEPOINT mid")
 	check("AS2 Alice kept", "SELECT balance FROM v46_accounts WHERE id = 1", 1100) // 1000+100
-	check("AS2 Bob kept", "SELECT balance FROM v46_accounts WHERE id = 2", 2200) // 2000+200
+	check("AS2 Bob kept", "SELECT balance FROM v46_accounts WHERE id = 2", 2200)   // 2000+200
 	check("AS2 Charlie rolled back", "SELECT balance FROM v46_accounts WHERE id = 3", 3000)
 	checkNoError("AS2 COMMIT", "COMMIT")
 

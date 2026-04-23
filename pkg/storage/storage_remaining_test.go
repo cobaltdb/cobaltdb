@@ -1,9 +1,9 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
-	"fmt"
 	"testing"
 )
 
@@ -680,11 +680,11 @@ func TestWALRecoverEmptyWAL(t *testing.T) {
 	wal.Close()
 }
 
-// TestBufferPoolCloseAndFlush tests Close after flush operations  
+// TestBufferPoolCloseAndFlush tests Close after flush operations
 func TestBufferPoolCloseAndFlush(t *testing.T) {
 	backend := NewMemory()
 	pool := NewBufferPool(256, backend)
-	
+
 	// Create and dirty some pages
 	for i := 0; i < 5; i++ {
 		page, err := pool.NewPage(PageTypeLeaf)
@@ -695,12 +695,12 @@ func TestBufferPoolCloseAndFlush(t *testing.T) {
 		page.SetDirty(true)
 		pool.Unpin(page)
 	}
-	
+
 	// FlushAll should work
 	if err := pool.FlushAll(); err != nil {
 		t.Fatalf("FlushAll failed: %v", err)
 	}
-	
+
 	// Close should work after flush
 	if err := pool.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
@@ -711,13 +711,13 @@ func TestBufferPoolCloseAndFlush(t *testing.T) {
 func TestDiskTruncateExtended(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "test.db")
-	
+
 	disk, err := OpenDisk(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer disk.Close()
-	
+
 	// Write some data
 	data := make([]byte, PageSize*3)
 	for i := range data {
@@ -727,12 +727,12 @@ func TestDiskTruncateExtended(t *testing.T) {
 		t.Fatal(err)
 	}
 	disk.Sync()
-	
+
 	// Truncate to 1 page
 	if err := disk.Truncate(int64(PageSize)); err != nil {
 		t.Fatalf("Truncate failed: %v", err)
 	}
-	
+
 	// Read should fail beyond truncated point
 	buf := make([]byte, PageSize)
 	n, err := disk.ReadAt(buf, int64(PageSize))

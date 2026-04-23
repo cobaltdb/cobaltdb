@@ -1191,7 +1191,7 @@ func TestBTreeFlushWithExactPageSize(t *testing.T) {
 	// Insert data that's close to exactly filling one page
 	// usablePageSize = 4096 - 16 = 4080, minus 8 header = 4072
 	// Each entry overhead: 2 (keyLen) + 4 (valLen) = 6 bytes
-	entrySize := 6 + 20 + 20 // 46 bytes per entry
+	entrySize := 6 + 20 + 20       // 46 bytes per entry
 	numEntries := 4072 / entrySize // ~88 entries
 
 	for i := 0; i < numEntries; i++ {

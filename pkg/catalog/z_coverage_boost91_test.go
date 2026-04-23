@@ -896,7 +896,7 @@ func TestB91_CountRowsViaAnalyze(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "analyze_tbl91",
 			Columns: []string{"id", "name", "score"},
-			Values:  [][]query.Expression{
+			Values: [][]query.Expression{
 				{numReal(float64(i)), strReal("user"), numReal(float64(i) * 1.5)},
 			},
 		}, nil)
@@ -1209,9 +1209,9 @@ func TestB91_StoreIndexDefPaths(t *testing.T) {
 
 	// Create multiple indexes to cover storeIndexDef branches
 	indexes := []struct {
-		name    string
-		cols    []string
-		unique  bool
+		name   string
+		cols   []string
+		unique bool
 	}{
 		{"idx_s1", []string{"val1"}, false},
 		{"idx_s2", []string{"val2"}, false},
@@ -1301,7 +1301,7 @@ func TestB91_DeleteLockedWithIndexCleanup(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "del_idx_tbl",
 			Columns: []string{"id", "email", "score"},
-			Values:  [][]query.Expression{
+			Values: [][]query.Expression{
 				{numReal(float64(i)), strReal("user" + string(rune('0'+i)) + "@test.com"), numReal(float64(i * 10))},
 			},
 		}, nil)

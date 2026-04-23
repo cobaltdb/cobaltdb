@@ -2,8 +2,8 @@ package catalog
 
 import (
 	"fmt"
-	"sort"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"sort"
 	"time"
 )
 

@@ -2,9 +2,9 @@ package catalog
 
 import (
 	"fmt"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"sort"
 	"strings"
-	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
 func (c *Catalog) evaluateWindowFunctions(rows [][]interface{}, selectCols []selectColInfo, table *TableDef, stmt *query.SelectStmt, args []interface{}, fullRows [][]interface{}) [][]interface{} {
@@ -472,4 +472,4 @@ func (c *Catalog) evalWindowExprOnRow(expr query.Expression, row []interface{}, 
 		}
 	}
 	return nil
-}
+}

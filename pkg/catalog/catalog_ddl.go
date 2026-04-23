@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"regexp"
 	"strings"
 	"time"
-	"github.com/cobaltdb/cobaltdb/pkg/btree"
-	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
 // validIdentifierName checks if a table or column name is valid
@@ -1288,4 +1288,4 @@ func (c *Catalog) executeInsteadOfDeleteTrigger(ctx context.Context, trigger *qu
 	}
 
 	return 0, rowsAffected, nil
-}
+}

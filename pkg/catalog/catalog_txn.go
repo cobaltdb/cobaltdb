@@ -3,10 +3,10 @@ package catalog
 import (
 	"errors"
 	"fmt"
-	"strings"
-	"time"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
+	"strings"
+	"time"
 )
 
 func (c *Catalog) EnableRLS() {
@@ -621,4 +621,4 @@ func (c *Catalog) TxnID() uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.txnID
-}
+}

@@ -372,4 +372,3 @@ func TestLoadNormalPath(t *testing.T) {
 		t.Fatal("expected table t to be loaded")
 	}
 }
-

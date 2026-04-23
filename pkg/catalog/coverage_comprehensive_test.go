@@ -158,7 +158,7 @@ func TestComprehensive_EvalExpressionPaths(t *testing.T) {
 
 	// JSONPath with missing path (result nil)
 	val, err := EvalExpression(&query.JSONPathExpr{Column: &query.StringLiteral{Value: `{}`}, Path: "$.missing"}, nil)
-		if err != nil {
+	if err != nil {
 		t.Logf("JSONPath missing: got %v, %v", val, err)
 	}
 
@@ -660,9 +660,9 @@ func TestComprehensive_LikePaths(t *testing.T) {
 func TestComprehensive_InPaths(t *testing.T) {
 	// IN with nil value (unsupported in EvalExpression directly)
 	val, err := EvalExpression(&query.InExpr{
-		Expr:  &query.NullLiteral{},
-		List:  []query.Expression{&query.NumberLiteral{Value: 1}},
-		Not: false,
+		Expr: &query.NullLiteral{},
+		List: []query.Expression{&query.NumberLiteral{Value: 1}},
+		Not:  false,
 	}, nil)
 	if err != nil {
 		t.Logf("IN nil: got %v, %v", val, err)
@@ -670,9 +670,9 @@ func TestComprehensive_InPaths(t *testing.T) {
 
 	// NOT IN
 	val, err = EvalExpression(&query.InExpr{
-		Expr:  &query.NumberLiteral{Value: 5},
-		List:  []query.Expression{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 2}},
-		Not: true,
+		Expr: &query.NumberLiteral{Value: 5},
+		List: []query.Expression{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 2}},
+		Not:  true,
 	}, nil)
 	if err != nil {
 		t.Logf("NOT IN: got %v, %v", val, err)
@@ -1408,9 +1408,9 @@ func TestComprehensive_InsertPaths(t *testing.T) {
 
 	// INSERT with RETURNING
 	_, _, err := c.Insert(ctx, &query.InsertStmt{
-		Table:    "ins_t",
-		Columns:  []string{"id", "val"},
-		Values:   [][]query.Expression{{numReal(1), numReal(10)}},
+		Table:     "ins_t",
+		Columns:   []string{"id", "val"},
+		Values:    [][]query.Expression{{numReal(1), numReal(10)}},
 		Returning: []query.Expression{&query.Identifier{Name: "id"}},
 	}, nil)
 	if err != nil {

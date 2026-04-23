@@ -78,12 +78,12 @@ const (
 
 // ProtectionStats holds protection statistics
 type ProtectionStats struct {
-	QueriesChecked    atomic.Uint64
-	QueriesBlocked    atomic.Uint64
-	QueriesFlagged    atomic.Uint64
-	PatternsDetected  atomic.Uint64
-	ViolationsByType  map[string]uint64
-	statsMu           sync.RWMutex
+	QueriesChecked   atomic.Uint64
+	QueriesBlocked   atomic.Uint64
+	QueriesFlagged   atomic.Uint64
+	PatternsDetected atomic.Uint64
+	ViolationsByType map[string]uint64
+	statsMu          sync.RWMutex
 }
 
 // NewSQLProtector creates a new SQL protector
@@ -106,8 +106,8 @@ func (sp *SQLProtector) CheckSQL(sql string) *CheckResult {
 	sp.stats.QueriesChecked.Add(1)
 
 	result := &CheckResult{
-		SQL:       sql,
-		Allowed:   true,
+		SQL:        sql,
+		Allowed:    true,
 		Violations: []Violation{},
 	}
 

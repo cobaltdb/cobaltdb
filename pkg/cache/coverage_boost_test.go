@@ -41,7 +41,6 @@ func TestCacheConcurrency(t *testing.T) {
 	}
 }
 
-
 // TestCacheMaxEntries tests max entries limit
 func TestCacheMaxEntries(t *testing.T) {
 	config := &Config{

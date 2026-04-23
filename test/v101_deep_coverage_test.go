@@ -24,26 +24,42 @@ func TestV101DeepCoverage(t *testing.T) {
 
 		t.Run("AggInOrderBy", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT dept, SUM(salary) as s FROM gb_emp GROUP BY dept ORDER BY SUM(salary) DESC")
-			if len(rows) != 3 { t.Fatalf("expected 3 rows, got %d", len(rows)) }
-			if fmt.Sprintf("%v", rows[0][0]) != "eng" { t.Fatalf("expected eng first, got %v", rows[0][0]) }
+			if len(rows) != 3 {
+				t.Fatalf("expected 3 rows, got %d", len(rows))
+			}
+			if fmt.Sprintf("%v", rows[0][0]) != "eng" {
+				t.Fatalf("expected eng first, got %v", rows[0][0])
+			}
 		})
 
 		t.Run("PositionalOrderBy", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT dept, COUNT(*) as cnt FROM gb_emp GROUP BY dept ORDER BY 1")
-			if len(rows) != 3 { t.Fatalf("expected 3 rows, got %d", len(rows)) }
-			if fmt.Sprintf("%v", rows[0][0]) != "eng" { t.Fatalf("expected eng first, got %v", rows[0][0]) }
-			if fmt.Sprintf("%v", rows[2][0]) != "sales" { t.Fatalf("expected sales last, got %v", rows[2][0]) }
+			if len(rows) != 3 {
+				t.Fatalf("expected 3 rows, got %d", len(rows))
+			}
+			if fmt.Sprintf("%v", rows[0][0]) != "eng" {
+				t.Fatalf("expected eng first, got %v", rows[0][0])
+			}
+			if fmt.Sprintf("%v", rows[2][0]) != "sales" {
+				t.Fatalf("expected sales last, got %v", rows[2][0])
+			}
 		})
 
 		t.Run("StringOrderByGroupBy", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT dept, MAX(name) as max_name FROM gb_emp GROUP BY dept ORDER BY dept DESC")
-			if len(rows) != 3 { t.Fatalf("expected 3, got %d", len(rows)) }
-			if fmt.Sprintf("%v", rows[0][0]) != "sales" { t.Fatalf("expected sales first, got %v", rows[0][0]) }
+			if len(rows) != 3 {
+				t.Fatalf("expected 3, got %d", len(rows))
+			}
+			if fmt.Sprintf("%v", rows[0][0]) != "sales" {
+				t.Fatalf("expected sales first, got %v", rows[0][0])
+			}
 		})
 
 		t.Run("NullOrderByGroupBy", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT dept, AVG(salary) as avg_sal FROM gb_emp GROUP BY dept ORDER BY AVG(salary)")
-			if len(rows) != 3 { t.Fatalf("expected 3, got %d", len(rows)) }
+			if len(rows) != 3 {
+				t.Fatalf("expected 3, got %d", len(rows))
+			}
 		})
 
 		t.Run("ExprArgAggregate", func(t *testing.T) {
@@ -52,9 +68,13 @@ func TestV101DeepCoverage(t *testing.T) {
 			afExec(t, db, ctx, "INSERT INTO gb_orders VALUES (2, 'A', 20.0, 3)")
 			afExec(t, db, ctx, "INSERT INTO gb_orders VALUES (3, 'B', 15.0, 2)")
 			rows := afQuery(t, db, ctx, "SELECT dept, SUM(price * qty) as total FROM gb_orders GROUP BY dept ORDER BY SUM(price * qty) DESC")
-			if len(rows) != 2 { t.Fatalf("expected 2, got %d", len(rows)) }
+			if len(rows) != 2 {
+				t.Fatalf("expected 2, got %d", len(rows))
+			}
 			got := fmt.Sprintf("%.1f", rows[0][1])
-			if got != "110.0" { t.Fatalf("expected 110.0, got %s", got) }
+			if got != "110.0" {
+				t.Fatalf("expected 110.0, got %s", got)
+			}
 		})
 	})
 
@@ -72,26 +92,46 @@ func TestV101DeepCoverage(t *testing.T) {
 
 		t.Run("SUM_Join", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT jg_dept.dname, SUM(jg_emp.salary) FROM jg_dept JOIN jg_emp ON jg_dept.id = jg_emp.dept_id GROUP BY jg_dept.dname ORDER BY SUM(jg_emp.salary) DESC")
-			if len(rows) != 2 { t.Fatalf("expected 2, got %d", len(rows)) }
-			if fmt.Sprintf("%.0f", rows[0][1]) != "220" { t.Fatalf("expected 220, got %v", rows[0][1]) }
+			if len(rows) != 2 {
+				t.Fatalf("expected 2, got %d", len(rows))
+			}
+			if fmt.Sprintf("%.0f", rows[0][1]) != "220" {
+				t.Fatalf("expected 220, got %v", rows[0][1])
+			}
 		})
 		t.Run("AVG_Join", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT jg_dept.dname, AVG(jg_emp.salary) FROM jg_dept JOIN jg_emp ON jg_dept.id = jg_emp.dept_id GROUP BY jg_dept.dname ORDER BY jg_dept.dname")
-			if len(rows) != 2 { t.Fatalf("expected 2, got %d", len(rows)) }
-			if fmt.Sprintf("%.0f", rows[0][1]) != "110" { t.Fatalf("expected 110, got %v", rows[0][1]) }
+			if len(rows) != 2 {
+				t.Fatalf("expected 2, got %d", len(rows))
+			}
+			if fmt.Sprintf("%.0f", rows[0][1]) != "110" {
+				t.Fatalf("expected 110, got %v", rows[0][1])
+			}
 		})
 		t.Run("MinMax_Join", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT jg_dept.dname, MIN(jg_emp.salary), MAX(jg_emp.salary) FROM jg_dept JOIN jg_emp ON jg_dept.id = jg_emp.dept_id GROUP BY jg_dept.dname ORDER BY jg_dept.dname")
-			if len(rows) != 2 { t.Fatalf("expected 2, got %d", len(rows)) }
-			if fmt.Sprintf("%v", rows[0][1]) != "100" { t.Fatalf("expected min 100, got %v", rows[0][1]) }
-			if fmt.Sprintf("%v", rows[0][2]) != "120" { t.Fatalf("expected max 120, got %v", rows[0][2]) }
+			if len(rows) != 2 {
+				t.Fatalf("expected 2, got %d", len(rows))
+			}
+			if fmt.Sprintf("%v", rows[0][1]) != "100" {
+				t.Fatalf("expected min 100, got %v", rows[0][1])
+			}
+			if fmt.Sprintf("%v", rows[0][2]) != "120" {
+				t.Fatalf("expected max 120, got %v", rows[0][2])
+			}
 		})
 		t.Run("Count_Join", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT jg_dept.dname, COUNT(*), COUNT(jg_emp.bonus) FROM jg_dept JOIN jg_emp ON jg_dept.id = jg_emp.dept_id GROUP BY jg_dept.dname ORDER BY jg_dept.dname")
-			if len(rows) != 2 { t.Fatalf("expected 2, got %d", len(rows)) }
+			if len(rows) != 2 {
+				t.Fatalf("expected 2, got %d", len(rows))
+			}
 			salesRow := rows[1]
-			if fmt.Sprintf("%v", salesRow[1]) != "2" { t.Fatalf("expected COUNT(*) = 2, got %v", salesRow[1]) }
-			if fmt.Sprintf("%v", salesRow[2]) != "1" { t.Fatalf("expected COUNT(bonus) = 1, got %v", salesRow[2]) }
+			if fmt.Sprintf("%v", salesRow[1]) != "2" {
+				t.Fatalf("expected COUNT(*) = 2, got %v", salesRow[1])
+			}
+			if fmt.Sprintf("%v", salesRow[2]) != "1" {
+				t.Fatalf("expected COUNT(bonus) = 1, got %v", salesRow[2])
+			}
 		})
 	})
 
@@ -104,14 +144,22 @@ func TestV101DeepCoverage(t *testing.T) {
 		afExec(t, db, ctx, "INSERT INTO ob_items VALUES (3, 'Doohickey', 5.0, 10)")
 		t.Run("QualifiedOrderBy", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT ob_items.name, ob_items.price FROM ob_items ORDER BY ob_items.price ASC")
-			if len(rows) != 3 { t.Fatalf("expected 3, got %d", len(rows)) }
-			if fmt.Sprintf("%v", rows[0][0]) != "Doohickey" { t.Fatalf("expected Doohickey, got %v", rows[0][0]) }
+			if len(rows) != 3 {
+				t.Fatalf("expected 3, got %d", len(rows))
+			}
+			if fmt.Sprintf("%v", rows[0][0]) != "Doohickey" {
+				t.Fatalf("expected Doohickey, got %v", rows[0][0])
+			}
 		})
 		t.Run("ExpressionOrderBy", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT name, price * qty as total FROM ob_items ORDER BY price * qty DESC")
-			if len(rows) != 3 { t.Fatalf("expected 3, got %d", len(rows)) }
+			if len(rows) != 3 {
+				t.Fatalf("expected 3, got %d", len(rows))
+			}
 			got0 := fmt.Sprintf("%v", rows[0][1])
-			if got0 != "50" && got0 != "50.0" { t.Fatalf("expected 50 or 50.0, got %s", got0) }
+			if got0 != "50" && got0 != "50.0" {
+				t.Fatalf("expected 50 or 50.0, got %s", got0)
+			}
 		})
 	})
 
@@ -129,42 +177,72 @@ func TestV101DeepCoverage(t *testing.T) {
 
 		t.Run("BETWEEN", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT cs_t1.name FROM cs_t1 WHERE EXISTS (SELECT 1 FROM cs_t2 WHERE cs_t2.val BETWEEN cs_t1.lo AND cs_t1.hi)")
-			if len(rows) < 1 { t.Fatal("expected at least 1 row") }
+			if len(rows) < 1 {
+				t.Fatal("expected at least 1 row")
+			}
 			found := false
-			for _, r := range rows { if fmt.Sprintf("%v", r[0]) == "alice" { found = true } }
-			if !found { t.Fatal("expected alice") }
+			for _, r := range rows {
+				if fmt.Sprintf("%v", r[0]) == "alice" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("expected alice")
+			}
 		})
 		t.Run("IsNull", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT cs_t1.name FROM cs_t1 WHERE EXISTS (SELECT 1 FROM cs_t2 WHERE cs_t1.val IS NOT NULL)")
-			if len(rows) < 2 { t.Fatalf("expected >= 2, got %d", len(rows)) }
+			if len(rows) < 2 {
+				t.Fatalf("expected >= 2, got %d", len(rows))
+			}
 		})
 		t.Run("LIKE", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT cs_t1.name FROM cs_t1 WHERE EXISTS (SELECT 1 FROM cs_t2 WHERE cs_t2.name LIKE cs_t1.pattern)")
-			if len(rows) < 1 { t.Fatalf("expected >= 1, got %d", len(rows)) }
+			if len(rows) < 1 {
+				t.Fatalf("expected >= 1, got %d", len(rows))
+			}
 		})
 		t.Run("CASE", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT cs_t1.name, (SELECT CASE WHEN cs_t1.val > 0 THEN cs_t2.a ELSE cs_t2.b END FROM cs_t2 WHERE cs_t2.id = 1) FROM cs_t1 WHERE cs_t1.id = 1")
-			if len(rows) != 1 { t.Fatalf("expected 1, got %d", len(rows)) }
-			if fmt.Sprintf("%v", rows[0][1]) != "5" { t.Fatalf("expected 5, got %v", rows[0][1]) }
+			if len(rows) != 1 {
+				t.Fatalf("expected 1, got %d", len(rows))
+			}
+			if fmt.Sprintf("%v", rows[0][1]) != "5" {
+				t.Fatalf("expected 5, got %v", rows[0][1])
+			}
 		})
 		t.Run("FunctionCall", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT cs_t1.name, (SELECT UPPER(cs_t1.name) FROM cs_t2 WHERE cs_t2.id = 1) FROM cs_t1 WHERE cs_t1.id = 1")
-			if len(rows) != 1 { t.Fatalf("expected 1, got %d", len(rows)) }
-			if fmt.Sprintf("%v", rows[0][1]) != "ALICE" { t.Fatalf("expected ALICE, got %v", rows[0][1]) }
+			if len(rows) != 1 {
+				t.Fatalf("expected 1, got %d", len(rows))
+			}
+			if fmt.Sprintf("%v", rows[0][1]) != "ALICE" {
+				t.Fatalf("expected ALICE, got %v", rows[0][1])
+			}
 		})
 		t.Run("UnaryExpr", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT cs_t1.name, (SELECT -cs_t1.val FROM cs_t2 WHERE cs_t2.id = 1) FROM cs_t1 WHERE cs_t1.id = 3")
-			if len(rows) != 1 { t.Fatalf("expected 1, got %d", len(rows)) }
-			if fmt.Sprintf("%.0f", rows[0][1]) != "3" { t.Fatalf("expected 3, got %v", rows[0][1]) }
+			if len(rows) != 1 {
+				t.Fatalf("expected 1, got %d", len(rows))
+			}
+			if fmt.Sprintf("%.0f", rows[0][1]) != "3" {
+				t.Fatalf("expected 3, got %v", rows[0][1])
+			}
 		})
 		t.Run("IN", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT cs_t1.name FROM cs_t1 WHERE EXISTS (SELECT 1 FROM cs_t2 WHERE cs_t1.val IN (cs_t2.a, cs_t2.b))")
-			if len(rows) < 1 { t.Fatalf("expected >= 1, got %d", len(rows)) }
+			if len(rows) < 1 {
+				t.Fatalf("expected >= 1, got %d", len(rows))
+			}
 		})
 		t.Run("AliasExpr", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT cs_t1.name, (SELECT cs_t1.val + cs_t2.a AS combined FROM cs_t2 WHERE cs_t2.id = 1) FROM cs_t1 WHERE cs_t1.id = 1")
-			if len(rows) != 1 { t.Fatalf("expected 1, got %d", len(rows)) }
-			if fmt.Sprintf("%v", rows[0][1]) != "10" { t.Fatalf("expected 10, got %v", rows[0][1]) }
+			if len(rows) != 1 {
+				t.Fatalf("expected 1, got %d", len(rows))
+			}
+			if fmt.Sprintf("%v", rows[0][1]) != "10" {
+				t.Fatalf("expected 10, got %v", rows[0][1])
+			}
 		})
 	})
 
@@ -173,17 +251,27 @@ func TestV101DeepCoverage(t *testing.T) {
 		defer db.Close()
 		t.Run("UnionInDerived", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT * FROM (SELECT 1 as n UNION SELECT 2 UNION SELECT 3) sub ORDER BY n")
-			if len(rows) != 3 { t.Fatalf("expected 3, got %d", len(rows)) }
-			if fmt.Sprintf("%v", rows[0][0]) != "1" { t.Fatalf("expected 1, got %v", rows[0][0]) }
-			if fmt.Sprintf("%v", rows[2][0]) != "3" { t.Fatalf("expected 3, got %v", rows[2][0]) }
+			if len(rows) != 3 {
+				t.Fatalf("expected 3, got %d", len(rows))
+			}
+			if fmt.Sprintf("%v", rows[0][0]) != "1" {
+				t.Fatalf("expected 1, got %v", rows[0][0])
+			}
+			if fmt.Sprintf("%v", rows[2][0]) != "3" {
+				t.Fatalf("expected 3, got %v", rows[2][0])
+			}
 		})
 		t.Run("SubqueryInFrom", func(t *testing.T) {
 			afExec(t, db, ctx, "CREATE TABLE dt_data (id INTEGER PRIMARY KEY, val TEXT)")
 			afExec(t, db, ctx, "INSERT INTO dt_data VALUES (1, 'alpha')")
 			afExec(t, db, ctx, "INSERT INTO dt_data VALUES (2, 'beta')")
 			rows := afQuery(t, db, ctx, "SELECT sub.id, sub.val FROM (SELECT id, val FROM dt_data) sub ORDER BY sub.id")
-			if len(rows) != 2 { t.Fatalf("expected 2, got %d", len(rows)) }
-			if fmt.Sprintf("%v", rows[0][1]) != "alpha" { t.Fatalf("expected alpha, got %v", rows[0][1]) }
+			if len(rows) != 2 {
+				t.Fatalf("expected 2, got %d", len(rows))
+			}
+			if fmt.Sprintf("%v", rows[0][1]) != "alpha" {
+				t.Fatalf("expected alpha, got %v", rows[0][1])
+			}
 		})
 	})
 
@@ -217,7 +305,9 @@ func TestV101DeepCoverage(t *testing.T) {
 		afExec(t, db, ctx, "INSERT INTO sl_t2 VALUES (2, 2, 200.0)")
 		afExpectVal(t, db, ctx, "SELECT status FROM sl_t1 WHERE id = 1", "active")
 		_, err := db.Exec(ctx, "INSERT INTO sl_t1 (id, name, age) VALUES (3, 'Charlie', -1)")
-		if err == nil { t.Fatal("expected CHECK constraint error") }
+		if err == nil {
+			t.Fatal("expected CHECK constraint error")
+		}
 		afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM sl_t1", float64(2))
 		afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM sl_t2", float64(2))
 	})
@@ -235,7 +325,9 @@ func TestV101DeepCoverage(t *testing.T) {
 			afExec(t, db, ctx, "INSERT INTO fk_child_c VALUES (3, 2, 'Child2a')")
 			afExec(t, db, ctx, "DELETE FROM fk_parent_c WHERE id = 1")
 			rows := afExpectRows(t, db, ctx, "SELECT * FROM fk_child_c", 1)
-			if fmt.Sprintf("%v", rows[0][2]) != "Child2a" { t.Fatalf("expected Child2a, got %v", rows[0][2]) }
+			if fmt.Sprintf("%v", rows[0][2]) != "Child2a" {
+				t.Fatalf("expected Child2a, got %v", rows[0][2])
+			}
 		})
 		t.Run("SetNull", func(t *testing.T) {
 			db, ctx := af(t)
@@ -249,9 +341,15 @@ func TestV101DeepCoverage(t *testing.T) {
 			afExec(t, db, ctx, "INSERT INTO fk_child_sn VALUES (3, 2, 'Child2a')")
 			afExec(t, db, ctx, "DELETE FROM fk_parent_sn WHERE id = 1")
 			rows := afExpectRows(t, db, ctx, "SELECT * FROM fk_child_sn ORDER BY id", 3)
-			if rows[0][1] != nil { t.Fatalf("expected NULL, got %v", rows[0][1]) }
-			if rows[1][1] != nil { t.Fatalf("expected NULL, got %v", rows[1][1]) }
-			if fmt.Sprintf("%v", rows[2][1]) != "2" { t.Fatalf("expected 2, got %v", rows[2][1]) }
+			if rows[0][1] != nil {
+				t.Fatalf("expected NULL, got %v", rows[0][1])
+			}
+			if rows[1][1] != nil {
+				t.Fatalf("expected NULL, got %v", rows[1][1])
+			}
+			if fmt.Sprintf("%v", rows[2][1]) != "2" {
+				t.Fatalf("expected 2, got %v", rows[2][1])
+			}
 		})
 		t.Run("Restrict", func(t *testing.T) {
 			db, ctx := af(t)
@@ -261,7 +359,9 @@ func TestV101DeepCoverage(t *testing.T) {
 			afExec(t, db, ctx, "INSERT INTO fk_parent_r VALUES (1, 'Parent1')")
 			afExec(t, db, ctx, "INSERT INTO fk_child_r VALUES (1, 1, 'Child1')")
 			_, err := db.Exec(ctx, "DELETE FROM fk_parent_r WHERE id = 1")
-			if err == nil { t.Fatal("expected RESTRICT error") }
+			if err == nil {
+				t.Fatal("expected RESTRICT error")
+			}
 			afExpectRows(t, db, ctx, "SELECT * FROM fk_parent_r", 1)
 			afExpectRows(t, db, ctx, "SELECT * FROM fk_child_r", 1)
 		})
@@ -280,46 +380,70 @@ func TestV101DeepCoverage(t *testing.T) {
 
 		t.Run("RunningSUM", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT id, grp, amount, SUM(amount) OVER (PARTITION BY grp ORDER BY id) as running_sum FROM wf_data ORDER BY grp, id")
-			if len(rows) != 6 { t.Fatalf("expected 6, got %d", len(rows)) }
+			if len(rows) != 6 {
+				t.Fatalf("expected 6, got %d", len(rows))
+			}
 			for _, r := range rows {
-				if fmt.Sprintf("%v", r[0]) == "1" && fmt.Sprintf("%.0f", r[3]) != "10" { t.Fatalf("id=1 sum expected 10, got %v", r[3]) }
-				if fmt.Sprintf("%v", r[0]) == "3" && fmt.Sprintf("%.0f", r[3]) != "60" { t.Fatalf("id=3 sum expected 60, got %v", r[3]) }
+				if fmt.Sprintf("%v", r[0]) == "1" && fmt.Sprintf("%.0f", r[3]) != "10" {
+					t.Fatalf("id=1 sum expected 10, got %v", r[3])
+				}
+				if fmt.Sprintf("%v", r[0]) == "3" && fmt.Sprintf("%.0f", r[3]) != "60" {
+					t.Fatalf("id=3 sum expected 60, got %v", r[3])
+				}
 			}
 		})
 		t.Run("PartitionAVG", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT id, grp, amount, AVG(amount) OVER (PARTITION BY grp) as grp_avg FROM wf_data ORDER BY grp, id")
-			if len(rows) != 6 { t.Fatalf("expected 6, got %d", len(rows)) }
+			if len(rows) != 6 {
+				t.Fatalf("expected 6, got %d", len(rows))
+			}
 			for _, r := range rows {
 				if fmt.Sprintf("%v", r[1]) == "X" {
-					if fmt.Sprintf("%.0f", r[3]) != "20" { t.Fatalf("X avg expected 20, got %v", r[3]) }
+					if fmt.Sprintf("%.0f", r[3]) != "20" {
+						t.Fatalf("X avg expected 20, got %v", r[3])
+					}
 					break
 				}
 			}
 		})
 		t.Run("PartitionMinMax", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT id, grp, MIN(amount) OVER (PARTITION BY grp) as grp_min, MAX(amount) OVER (PARTITION BY grp) as grp_max FROM wf_data ORDER BY grp, id")
-			if len(rows) != 6 { t.Fatalf("expected 6, got %d", len(rows)) }
+			if len(rows) != 6 {
+				t.Fatalf("expected 6, got %d", len(rows))
+			}
 			for _, r := range rows {
 				if fmt.Sprintf("%v", r[1]) == "X" {
-					if fmt.Sprintf("%v", r[2]) != "10" { t.Fatalf("X min expected 10, got %v", r[2]) }
-					if fmt.Sprintf("%v", r[3]) != "30" { t.Fatalf("X max expected 30, got %v", r[3]) }
+					if fmt.Sprintf("%v", r[2]) != "10" {
+						t.Fatalf("X min expected 10, got %v", r[2])
+					}
+					if fmt.Sprintf("%v", r[3]) != "30" {
+						t.Fatalf("X max expected 30, got %v", r[3])
+					}
 					break
 				}
 			}
 		})
 		t.Run("RunningCount", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT id, grp, COUNT(*) OVER (PARTITION BY grp ORDER BY id) as running_count FROM wf_data ORDER BY grp, id")
-			if len(rows) != 6 { t.Fatalf("expected 6, got %d", len(rows)) }
+			if len(rows) != 6 {
+				t.Fatalf("expected 6, got %d", len(rows))
+			}
 			for _, r := range rows {
-				if fmt.Sprintf("%v", r[0]) == "3" && fmt.Sprintf("%v", r[2]) != "3" { t.Fatalf("id=3 count expected 3, got %v", r[2]) }
+				if fmt.Sprintf("%v", r[0]) == "3" && fmt.Sprintf("%v", r[2]) != "3" {
+					t.Fatalf("id=3 count expected 3, got %v", r[2])
+				}
 			}
 		})
 		t.Run("WindowNullValues", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, "SELECT id, grp, SUM(amount) OVER (PARTITION BY grp) as grp_sum FROM wf_data ORDER BY grp, id")
-			if len(rows) != 6 { t.Fatalf("expected 6, got %d", len(rows)) }
+			if len(rows) != 6 {
+				t.Fatalf("expected 6, got %d", len(rows))
+			}
 			for _, r := range rows {
 				if fmt.Sprintf("%v", r[0]) == "4" {
-					if fmt.Sprintf("%.0f", r[2]) != "40" { t.Fatalf("Y sum expected 40, got %v", r[2]) }
+					if fmt.Sprintf("%.0f", r[2]) != "40" {
+						t.Fatalf("Y sum expected 40, got %v", r[2])
+					}
 					break
 				}
 			}
@@ -332,23 +456,35 @@ func TestV101DeepCoverage(t *testing.T) {
 
 		t.Run("JSON_QUOTE", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, `SELECT JSON_QUOTE('hello world')`)
-			if len(rows) == 0 || len(rows[0]) == 0 { t.Fatal("expected result") }
+			if len(rows) == 0 || len(rows[0]) == 0 {
+				t.Fatal("expected result")
+			}
 			got := fmt.Sprintf("%v", rows[0][0])
-			if !strings.Contains(got, "hello world") { t.Fatalf("expected quoted, got %v", got) }
+			if !strings.Contains(got, "hello world") {
+				t.Fatalf("expected quoted, got %v", got)
+			}
 		})
 
 		t.Run("JSON_PRETTY", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, `SELECT JSON_PRETTY('{"a":1,"b":2}')`)
-			if len(rows) == 0 || len(rows[0]) == 0 { t.Fatal("expected result") }
+			if len(rows) == 0 || len(rows[0]) == 0 {
+				t.Fatal("expected result")
+			}
 			result := fmt.Sprintf("%v", rows[0][0])
-			if !strings.Contains(result, "a") { t.Fatalf("expected prettified, got %v", result) }
+			if !strings.Contains(result, "a") {
+				t.Fatalf("expected prettified, got %v", result)
+			}
 		})
 
 		t.Run("JSON_MINIFY", func(t *testing.T) {
 			rows := afQuery(t, db, ctx, `SELECT JSON_MINIFY('{ "a" : 1 , "b" : 2 }')`)
-			if len(rows) == 0 || len(rows[0]) == 0 { t.Fatal("expected result") }
+			if len(rows) == 0 || len(rows[0]) == 0 {
+				t.Fatal("expected result")
+			}
 			result := fmt.Sprintf("%v", rows[0][0])
-			if strings.Contains(result, " : ") { t.Fatalf("expected minified, got %v", result) }
+			if strings.Contains(result, " : ") {
+				t.Fatalf("expected minified, got %v", result)
+			}
 		})
 
 		t.Run("JSON_TYPE_array", func(t *testing.T) {

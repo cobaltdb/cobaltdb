@@ -58,12 +58,12 @@ func TestCreateNewWithSlowQueryLog(t *testing.T) {
 	logPath := filepath.Join(tmpDir, "slow.log")
 
 	db, err := Open(dbPath, &Options{
-		InMemory:             false,
-		CacheSize:            1024,
-		EnableSlowQueryLog:   true,
-		SlowQueryThreshold:   100 * time.Millisecond,
-		SlowQueryMaxEntries:  100,
-		SlowQueryLogFile:     logPath,
+		InMemory:            false,
+		CacheSize:           1024,
+		EnableSlowQueryLog:  true,
+		SlowQueryThreshold:  100 * time.Millisecond,
+		SlowQueryMaxEntries: 100,
+		SlowQueryLogFile:    logPath,
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database with slow query log: %v", err)
@@ -295,9 +295,8 @@ func TestOpenWithAuditConfig(t *testing.T) {
 		InMemory:  false,
 		CacheSize: 1024,
 		AuditConfig: &audit.Config{
-			Enabled:    true,
-			LogFile:    filepath.Join(tmpDir, "audit.log"),
-			
+			Enabled: true,
+			LogFile: filepath.Join(tmpDir, "audit.log"),
 		},
 	})
 	if err != nil {

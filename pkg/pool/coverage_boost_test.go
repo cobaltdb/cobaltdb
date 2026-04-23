@@ -15,8 +15,8 @@ type mockConnWithClose struct {
 	mu     sync.Mutex
 }
 
-func (m *mockConnWithClose) Read(b []byte) (n int, err error)   { return 0, nil }
-func (m *mockConnWithClose) Write(b []byte) (n int, err error)  { return len(b), nil }
+func (m *mockConnWithClose) Read(b []byte) (n int, err error)  { return 0, nil }
+func (m *mockConnWithClose) Write(b []byte) (n int, err error) { return len(b), nil }
 func (m *mockConnWithClose) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

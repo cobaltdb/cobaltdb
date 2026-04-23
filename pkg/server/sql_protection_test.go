@@ -34,7 +34,7 @@ func TestSQLProtectorInjection(t *testing.T) {
 
 	// Test SQL injection patterns
 	testCases := []struct {
-		sql       string
+		sql        string
 		shouldFlag bool
 	}{
 		{"SELECT * FROM users WHERE id = 1 OR '1'='1", true},

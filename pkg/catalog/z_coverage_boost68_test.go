@@ -240,7 +240,7 @@ func TestCoverage_applyOuterQueryOrderBy(t *testing.T) {
 		cat.Insert(ctx, &query.InsertStmt{
 			Table:   "outer_order",
 			Columns: []string{"id", "val"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(21-i))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(21 - i))}},
 		}, nil)
 	}
 

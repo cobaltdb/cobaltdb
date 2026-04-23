@@ -15,6 +15,7 @@ import (
 //  7. String manipulation chains (UPPER/LOWER/TRIM/REPLACE/LENGTH/SUBSTR)
 //  8. Arithmetic in aggregates (SUM(a+b), AVG(a*b), COUNT(CASE WHEN))
 //  9. Multiple UNION ALL (3+ legs chained)
+//
 // 10. CTE used multiple times in one query
 // 11. Complex JOIN conditions (ON with AND and inequality)
 // 12. COALESCE in aggregates

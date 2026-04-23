@@ -47,8 +47,8 @@ func TestEdgeCases(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO items VALUES (5, 'epsilon', 50, NULL)")
 
 	// === LIMIT EDGE CASES ===
-	checkRows("LIMIT exact count", "SELECT * FROM items LIMIT 5", 5)         // Bug: LIMIT == row count
-	checkRows("LIMIT more than rows", "SELECT * FROM items LIMIT 100", 5)    // LIMIT > row count
+	checkRows("LIMIT exact count", "SELECT * FROM items LIMIT 5", 5)      // Bug: LIMIT == row count
+	checkRows("LIMIT more than rows", "SELECT * FROM items LIMIT 100", 5) // LIMIT > row count
 	checkRows("LIMIT 1", "SELECT * FROM items LIMIT 1", 1)
 	checkRows("LIMIT 0", "SELECT * FROM items LIMIT 0", 0)
 	checkRows("LIMIT with ORDER", "SELECT * FROM items ORDER BY val DESC LIMIT 3", 3)

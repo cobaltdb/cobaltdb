@@ -19,7 +19,7 @@ func TestLoadWithCorruptData(t *testing.T) {
 	}
 
 	// Insert various malformed entries
-	catalogTree.Put([]byte("tbl:"), []byte(""))               // Empty table name
+	catalogTree.Put([]byte("tbl:"), []byte(""))                // Empty table name
 	catalogTree.Put([]byte("tbl:no_json"), []byte("not json")) // Invalid JSON
 	catalogTree.Put([]byte("idx:test"), []byte("index data"))  // Non-table key
 	catalogTree.Put([]byte("other"), []byte("data"))           // Unknown key

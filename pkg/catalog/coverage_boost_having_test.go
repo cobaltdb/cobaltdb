@@ -324,9 +324,9 @@ func TestEvaluateHavingWithNumericResult(t *testing.T) {
 
 	// Test various HAVING conditions
 	tests := []string{
-		"SELECT dept FROM sales GROUP BY dept HAVING 1",              // Always true (numeric 1)
-		"SELECT dept FROM sales GROUP BY dept HAVING 0",              // Always false (numeric 0)
-		"SELECT dept FROM sales GROUP BY dept HAVING SUM(amount)",    // Truthy if non-zero
+		"SELECT dept FROM sales GROUP BY dept HAVING 1",           // Always true (numeric 1)
+		"SELECT dept FROM sales GROUP BY dept HAVING 0",           // Always false (numeric 0)
+		"SELECT dept FROM sales GROUP BY dept HAVING SUM(amount)", // Truthy if non-zero
 	}
 
 	for _, sql := range tests {

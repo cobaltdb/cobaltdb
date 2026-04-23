@@ -404,7 +404,10 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	}
 	defer rows.Close()
 
-	expected := []struct{ id int; name string }{{1, "apple"}, {2, "banana"}}
+	expected := []struct {
+		id   int
+		name string
+	}{{1, "apple"}, {2, "banana"}}
 	for i, exp := range expected {
 		if !rows.Next() {
 			t.Fatalf("expected row %d", i)

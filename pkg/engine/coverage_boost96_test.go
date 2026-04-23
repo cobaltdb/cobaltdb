@@ -156,7 +156,6 @@ func TestExecuteAnalyze96(t *testing.T) {
 	}
 }
 
-
 // TestExecuteWithCTE96 targets executeSelectWithCTE
 func TestExecuteWithCTE96(t *testing.T) {
 	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
@@ -386,7 +385,6 @@ func TestTableSchemaNotFound96(t *testing.T) {
 		t.Logf("Got expected error: %v", err)
 	}
 }
-
 
 // TestCircuitBreakerReportFailure96 targets ReportFailure
 func TestCircuitBreakerReportFailure96(t *testing.T) {

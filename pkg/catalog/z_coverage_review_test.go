@@ -170,7 +170,7 @@ func TestRC_RollbackDDL(t *testing.T) {
 
 	c.BeginTransaction(2)
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "rb_ddl",
+		Table:   "rb_ddl",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 	c.RollbackTransaction()

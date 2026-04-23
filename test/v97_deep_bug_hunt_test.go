@@ -927,10 +927,10 @@ func TestV97_UpdateMultipleColumnsConditionally(t *testing.T) {
 	// Update both status and attempts in one statement
 	afExec(t, db, ctx, "UPDATE t97_multi_upd SET status = 'failed', attempts = attempts + 1 WHERE status = 'pending' AND attempts >= 3")
 
-	afExpectVal(t, db, ctx, "SELECT status FROM t97_multi_upd WHERE id = 1", "pending")    // not updated (attempts=0)
-	afExpectVal(t, db, ctx, "SELECT status FROM t97_multi_upd WHERE id = 2", "failed")      // updated
-	afExpectVal(t, db, ctx, "SELECT attempts FROM t97_multi_upd WHERE id = 2", 4)            // 3+1
-	afExpectVal(t, db, ctx, "SELECT status FROM t97_multi_upd WHERE id = 3", "done")         // not matched
+	afExpectVal(t, db, ctx, "SELECT status FROM t97_multi_upd WHERE id = 1", "pending") // not updated (attempts=0)
+	afExpectVal(t, db, ctx, "SELECT status FROM t97_multi_upd WHERE id = 2", "failed")  // updated
+	afExpectVal(t, db, ctx, "SELECT attempts FROM t97_multi_upd WHERE id = 2", 4)       // 3+1
+	afExpectVal(t, db, ctx, "SELECT status FROM t97_multi_upd WHERE id = 3", "done")    // not matched
 }
 
 func TestV97_SubqueryInSelect(t *testing.T) {

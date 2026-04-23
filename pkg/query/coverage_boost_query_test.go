@@ -349,7 +349,7 @@ func TestCovBoostQuery_WithCTE(t *testing.T) {
 		{"CTE_Multiple", "WITH cte1 AS (SELECT 1), cte2 AS (SELECT 2) SELECT * FROM cte1, cte2", false},
 		{"CTE_Recursive", "WITH RECURSIVE cte AS (SELECT 1 UNION ALL SELECT n+1 FROM cte WHERE n < 5) SELECT * FROM cte", false},
 		{"CTE_ColumnList", "WITH cte (a, b) AS (SELECT 1, 2) SELECT * FROM cte", false},
-		{"CTE_Materialized", "WITH cte AS MATERIALIZED (SELECT 1) SELECT * FROM cte", true}, // Parser doesn't support MATERIALIZED
+		{"CTE_Materialized", "WITH cte AS MATERIALIZED (SELECT 1) SELECT * FROM cte", true},        // Parser doesn't support MATERIALIZED
 		{"CTE_NotMaterialized", "WITH cte AS NOT MATERIALIZED (SELECT 1) SELECT * FROM cte", true}, // Parser doesn't support NOT MATERIALIZED
 		{"CTE_MissingName", "WITH AS (SELECT 1) SELECT * FROM t", true},
 		{"CTE_MissingAs", "WITH cte (SELECT 1) SELECT * FROM t", true},

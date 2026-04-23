@@ -95,7 +95,7 @@ func TestRightJoin_Chained(t *testing.T) {
 	afExec(t, db, ctx, "CREATE TABLE c (c_id INTEGER, b_id INTEGER, data TEXT)")
 
 	afExec(t, db, ctx, "INSERT INTO a VALUES (1, 'A1'), (2, 'A2')")
-	afExec(t, db, ctx, "INSERT INTO b VALUES (10, 1, 'B10'), (20, 2, 'B20'), (30, 99, 'B30')") // 30 has no matching a
+	afExec(t, db, ctx, "INSERT INTO b VALUES (10, 1, 'B10'), (20, 2, 'B20'), (30, 99, 'B30')")          // 30 has no matching a
 	afExec(t, db, ctx, "INSERT INTO c VALUES (100, 10, 'C100'), (200, 20, 'C200'), (300, 999, 'C300')") // 300 has no matching b
 
 	t.Run("Chained RIGHT JOINs", func(t *testing.T) {

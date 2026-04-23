@@ -1366,9 +1366,9 @@ func TestBoost3_AlterTablePaths(t *testing.T) {
 
 	// Drop column
 	err = c.AlterTableDropColumn(&query.AlterTableStmt{
-		Table:   "alter_tbl",
-		Action:  "DROP_COLUMN",
-		Column:  query.ColumnDef{Name: "age"},
+		Table:  "alter_tbl",
+		Action: "DROP_COLUMN",
+		Column: query.ColumnDef{Name: "age"},
 	})
 	if err != nil {
 		t.Logf("AlterTableDropColumn: %v", err)

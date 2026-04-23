@@ -254,7 +254,7 @@ func TestCoverage_applyOrderByMixed(t *testing.T) {
 		cat.Insert(ctx, &query.InsertStmt{
 			Table:   "order_mixed",
 			Columns: []string{"id", "num", "txt", "flt"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(21-i)), strReal(string(rune('A'+i%26))), numReal(float64(i) * 0.5)}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(21 - i)), strReal(string(rune('A' + i%26))), numReal(float64(i) * 0.5)}},
 		}, nil)
 	}
 

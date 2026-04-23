@@ -205,4 +205,4 @@ func (c *Catalog) ListJSONIndexes() []string {
 	}
 	sort.Strings(names)
 	return names
-}
+}

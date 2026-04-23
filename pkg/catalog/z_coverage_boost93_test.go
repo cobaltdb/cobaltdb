@@ -1432,4 +1432,3 @@ func TestB93_EstimateSelectivityPaths(t *testing.T) {
 	corr := CalculateCorrelation([]float64{1, 2, 3, 4, 5}, []float64{2, 4, 6, 8, 10})
 	_ = corr
 }
-

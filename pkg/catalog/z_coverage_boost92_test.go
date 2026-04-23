@@ -386,7 +386,7 @@ func TestB92_SelectLockedViewComplex(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "view_complex_data",
 			Columns: []string{"id", "dept", "salary"},
-			Values:  [][]query.Expression{
+			Values: [][]query.Expression{
 				{numReal(float64(i + 1)), strReal(dept), numReal(float64((i + 1) * 10000))},
 			},
 		}, nil)
@@ -436,7 +436,7 @@ func TestB92_SelectLockedSimpleView(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "simple_view_data",
 			Columns: []string{"id", "name", "active"},
-			Values:  [][]query.Expression{
+			Values: [][]query.Expression{
 				{numReal(float64(i)), strReal("User" + string(rune('0'+i))), numReal(float64(active))},
 			},
 		}, nil)
@@ -570,7 +570,7 @@ func TestB92_SelectWithViewAndJoins(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "vj_employees",
 			Columns: []string{"id", "dept_id", "name", "salary"},
-			Values:  [][]query.Expression{
+			Values: [][]query.Expression{
 				{numReal(float64(i)), numReal(float64(deptID)), strReal("Emp" + string(rune('0'+i))), numReal(float64(i * 10000))},
 			},
 		}, nil)
@@ -651,7 +651,7 @@ func TestB92_SelectWithGroupByExprArg(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "gbexpr_tbl",
 			Columns: []string{"id", "dept", "price", "qty"},
-			Values:  [][]query.Expression{
+			Values: [][]query.Expression{
 				{numReal(float64(i)), strReal(dept), numReal(float64(i) * 1.5), numReal(float64(i))},
 			},
 		}, nil)
@@ -793,7 +793,7 @@ func TestB92_StatsCountRowsFloat(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "stats_cr_tbl",
 			Columns: []string{"id", "val", "name"},
-			Values:  [][]query.Expression{
+			Values: [][]query.Expression{
 				{numReal(float64(i)), numReal(float64(i) * 1.5), strReal("item")},
 			},
 		}, nil)

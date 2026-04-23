@@ -19,6 +19,7 @@ import (
 //  7. Complex WHERE clauses            (tests WH1-WH8)
 //  8. Error handling                   (tests ER1-ER10)
 //  9. Multi-column operations          (tests MC1-MC10)
+//
 // 10. Integration: complete workflow   (tests WF1-WF10)
 //
 // All table names carry the v40_ prefix to avoid collisions with other test files.
@@ -957,9 +958,9 @@ func TestV40FinalComprehensive(t *testing.T) {
 	// MC5: UPDATE multiple columns in one SET clause.
 	checkNoError("MC5a UPDATE multiple columns in one statement",
 		"UPDATE v40_mc SET salary = 999, bonus = 99, year = 2025 WHERE id = 10")
-	check("MC5b salary updated",  "SELECT salary FROM v40_mc WHERE id = 10", 999)
-	check("MC5c bonus updated",   "SELECT bonus  FROM v40_mc WHERE id = 10", 99)
-	check("MC5d year updated",    "SELECT year   FROM v40_mc WHERE id = 10", 2025)
+	check("MC5b salary updated", "SELECT salary FROM v40_mc WHERE id = 10", 999)
+	check("MC5c bonus updated", "SELECT bonus  FROM v40_mc WHERE id = 10", 99)
+	check("MC5d year updated", "SELECT year   FROM v40_mc WHERE id = 10", 2025)
 
 	// MC6: DISTINCT on multiple columns.
 	// SELECT DISTINCT dept, role returns unique (dept,role) pairs:

@@ -64,14 +64,14 @@ const (
 
 // Authenticator handles user authentication
 type Authenticator struct {
-	mu                   sync.RWMutex
-	users                map[string]*User
-	sessions             map[string]*Session
-	enabled              bool
-	stopCh               chan struct{}
-	stopped              bool
-	failedAttempts       map[string]*loginAttempt
-	failedMu             sync.RWMutex
+	mu                    sync.RWMutex
+	users                 map[string]*User
+	sessions              map[string]*Session
+	enabled               bool
+	stopCh                chan struct{}
+	stopped               bool
+	failedAttempts        map[string]*loginAttempt
+	failedMu              sync.RWMutex
 	enforcePasswordPolicy bool
 }
 

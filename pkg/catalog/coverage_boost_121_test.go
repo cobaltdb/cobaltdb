@@ -296,4 +296,3 @@ func TestVacuumWithData(t *testing.T) {
 		t.Errorf("Vacuum failed: %v", err)
 	}
 }
-

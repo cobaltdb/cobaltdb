@@ -353,8 +353,8 @@ func TestOpenWithOptions(t *testing.T) {
 
 	// Test with CacheSize option
 	db2, err := engine.Open(":memory:", &engine.Options{
-		InMemory:   true,
-		CacheSize:  1024,
+		InMemory:  true,
+		CacheSize: 1024,
 	})
 	if err != nil {
 		t.Fatalf("Failed to open with CacheSize: %v", err)

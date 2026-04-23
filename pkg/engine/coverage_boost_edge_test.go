@@ -215,8 +215,8 @@ func TestCreateNewWithAuditError(t *testing.T) {
 
 	db, err := Open(dbPath, &Options{
 		AuditConfig: &audit.Config{
-			Enabled:  true,
-			LogFile:  filepath.Join(dir, "audit.log"),
+			Enabled:   true,
+			LogFile:   filepath.Join(dir, "audit.log"),
 			LogFormat: "json",
 		},
 	})
@@ -238,9 +238,9 @@ func TestCreateNewWithBackupManagerError(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	db, err := Open(dbPath, &Options{
-		BackupDir:        filepath.Join(dir, "backups"),
-		BackupRetention:  7,
-		MaxBackups:       10,
+		BackupDir:       filepath.Join(dir, "backups"),
+		BackupRetention: 7,
+		MaxBackups:      10,
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database with backup: %v", err)

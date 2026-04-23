@@ -67,7 +67,7 @@ func TestCoverage_ApplyOrderBy(t *testing.T) {
 		cat.Insert(ctx, &query.InsertStmt{
 			Table:   "order_test",
 			Columns: []string{"id", "name", "val"},
-			Values:  [][]query.Expression{{numReal(float64(11-i)), strReal(name), numReal(float64(i * 10))}},
+			Values:  [][]query.Expression{{numReal(float64(11 - i)), strReal(name), numReal(float64(i * 10))}},
 		}, nil)
 	}
 

@@ -1,7 +1,6 @@
 package query
 
-import (
-)
+import ()
 
 // QueryOptimizer provides query optimization capabilities
 type QueryOptimizer struct {
@@ -311,6 +310,3 @@ func (qo *QueryOptimizer) copySelectStmt(stmt *SelectStmt) *SelectStmt {
 	}
 	return &copied
 }
-
-
-

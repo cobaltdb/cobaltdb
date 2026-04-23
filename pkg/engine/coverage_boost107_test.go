@@ -14,10 +14,10 @@ func TestCreateNewWithQueryCache(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_query_cache.db")
 
 	options := &Options{
-		CacheSize:          256,
-		EnableQueryCache:   true,
-		QueryCacheSize:     1024,
-		QueryCacheTTL:      5 * time.Minute,
+		CacheSize:        256,
+		EnableQueryCache: true,
+		QueryCacheSize:   1024,
+		QueryCacheTTL:    5 * time.Minute,
 	}
 
 	db, err := Open(dbPath, options)
@@ -53,10 +53,10 @@ func TestLoadExistingWithQueryCache(t *testing.T) {
 
 	// Create database first
 	options := &Options{
-		CacheSize:          256,
-		EnableQueryCache:   true,
-		QueryCacheSize:     1024,
-		QueryCacheTTL:      5 * time.Minute,
+		CacheSize:        256,
+		EnableQueryCache: true,
+		QueryCacheSize:   1024,
+		QueryCacheTTL:    5 * time.Minute,
 	}
 
 	db1, err := Open(dbPath, options)
@@ -93,8 +93,8 @@ func TestCreateNewWithWALAndRecovery(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_wal.db")
 
 	options := &Options{
-		CacheSize:    256,
-		WALEnabled:   true,
+		CacheSize:  256,
+		WALEnabled: true,
 	}
 
 	db, err := Open(dbPath, options)
@@ -172,18 +172,18 @@ func TestCreateNewWithAllFeaturesSkip(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_all_features.db")
 
 	options := &Options{
-		CacheSize:             256,
-		EnableRLS:             true,
-		EnableQueryCache:      true,
-		QueryCacheSize:        1024,
-		QueryCacheTTL:         60,
-		WALEnabled:            true,
-		ReplicationRole:       "master",
-		ReplicationMode:       "async",
-		ReplicationListenAddr: "127.0.0.1:0",
-		BackupDir:             filepath.Join(tempDir, "backups"),
-		BackupRetention:       7,
-		MaxBackups:            10,
+		CacheSize:              256,
+		EnableRLS:              true,
+		EnableQueryCache:       true,
+		QueryCacheSize:         1024,
+		QueryCacheTTL:          60,
+		WALEnabled:             true,
+		ReplicationRole:        "master",
+		ReplicationMode:        "async",
+		ReplicationListenAddr:  "127.0.0.1:0",
+		BackupDir:              filepath.Join(tempDir, "backups"),
+		BackupRetention:        7,
+		MaxBackups:             10,
 		BackupCompressionLevel: 6,
 	}
 
@@ -214,14 +214,14 @@ func TestLoadExistingWithAllFeatures(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_load_all.db")
 
 	options := &Options{
-		CacheSize:             256,
-		EnableRLS:             true,
-		EnableQueryCache:      true,
-		QueryCacheSize:        1024,
-		QueryCacheTTL:         60,
-		BackupDir:             filepath.Join(tempDir, "backups"),
-		BackupRetention:       7,
-		MaxBackups:            10,
+		CacheSize:        256,
+		EnableRLS:        true,
+		EnableQueryCache: true,
+		QueryCacheSize:   1024,
+		QueryCacheTTL:    60,
+		BackupDir:        filepath.Join(tempDir, "backups"),
+		BackupRetention:  7,
+		MaxBackups:       10,
 	}
 
 	// Create database

@@ -55,10 +55,10 @@ type Cache struct {
 	config *Config
 
 	// Cache storage
-	mu       sync.RWMutex
-	entries  map[string]*Entry
-	lruList  *list.List // LRU eviction list
-	elemMap  map[string]*list.Element
+	mu      sync.RWMutex
+	entries map[string]*Entry
+	lruList *list.List // LRU eviction list
+	elemMap map[string]*list.Element
 
 	// Current size tracking
 	currentSize int64

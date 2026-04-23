@@ -619,6 +619,6 @@ func TestV78PreparedEdge(t *testing.T) {
 	if pass < total {
 		t.Errorf("Some tests failed: %d/%d", pass, total)
 	}
-	_ = checkNull   // keep used
-	_ = checkError  // keep used
+	_ = checkNull  // keep used
+	_ = checkError // keep used
 }

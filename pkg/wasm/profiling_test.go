@@ -210,7 +210,7 @@ func TestProfilingSupport(t *testing.T) {
 		host.getQueryMetrics(rt, params)
 
 		// Log some events
-		host.logProfilingEvent(rt, []uint64{0, 0, 0})     // query_start
+		host.logProfilingEvent(rt, []uint64{0, 0, 0})       // query_start
 		host.logProfilingEvent(rt, []uint64{1, 100000, 50}) // query_end
 
 		// Get memory stats

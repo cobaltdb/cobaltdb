@@ -44,13 +44,13 @@ func sel(t *testing.T, c *Catalog, s *query.SelectStmt) ([]string, [][]interface
 	return cols, rows
 }
 
-func nr(v float64) *query.NumberLiteral   { return &query.NumberLiteral{Value: v} }
-func sr(v string) *query.StringLiteral    { return &query.StringLiteral{Value: v} }
-func nl() *query.NullLiteral             { return &query.NullLiteral{} }
-func bl(v bool) *query.BooleanLiteral    { return &query.BooleanLiteral{Value: v} }
-func id(n string) *query.Identifier      { return &query.Identifier{Name: n} }
-func star() *query.StarExpr              { return &query.StarExpr{} }
-func tref(n string) *query.TableRef      { return &query.TableRef{Name: n} }
+func nr(v float64) *query.NumberLiteral { return &query.NumberLiteral{Value: v} }
+func sr(v string) *query.StringLiteral  { return &query.StringLiteral{Value: v} }
+func nl() *query.NullLiteral            { return &query.NullLiteral{} }
+func bl(v bool) *query.BooleanLiteral   { return &query.BooleanLiteral{Value: v} }
+func id(n string) *query.Identifier     { return &query.Identifier{Name: n} }
+func star() *query.StarExpr             { return &query.StarExpr{} }
+func tref(n string) *query.TableRef     { return &query.TableRef{Name: n} }
 func qi(t, c string) *query.QualifiedIdentifier {
 	return &query.QualifiedIdentifier{Table: t, Column: c}
 }
@@ -107,7 +107,7 @@ func TestCov_SelectOrderLimitOffset(t *testing.T) {
 	_, rows := sel(t, c, &query.SelectStmt{
 		Columns: []query.Expression{star()}, From: tref("t"),
 		OrderBy: []*query.OrderByExpr{{Expr: id("id")}},
-		Limit: nr(2), Offset: nr(1),
+		Limit:   nr(2), Offset: nr(1),
 	})
 	if len(rows) != 2 {
 		t.Fatal(len(rows))
@@ -135,7 +135,7 @@ func TestCov_SelectGroupByHaving(t *testing.T) {
 	insertTestRow(t, c, "t", []query.Expression{nr(3), sr("b")})
 	_, rows := sel(t, c, &query.SelectStmt{
 		Columns: []query.Expression{id("grp"), fn("COUNT", star())},
-		From: tref("t"), GroupBy: []query.Expression{id("grp")},
+		From:    tref("t"), GroupBy: []query.Expression{id("grp")},
 		Having: binop(fn("COUNT", star()), query.TokenGt, nr(1)),
 	})
 	if len(rows) != 1 {
@@ -1495,9 +1495,9 @@ func TestCov_BinaryExprNullLogic(t *testing.T) {
 // ── EvalExpression comprehensive ─────────────────────────────────────
 func TestCov_EvalExprBinary(t *testing.T) {
 	ops := []struct {
-		op  query.TokenType
-		l   query.Expression
-		r   query.Expression
+		op query.TokenType
+		l  query.Expression
+		r  query.Expression
 	}{
 		{query.TokenPlus, nr(10), nr(5)},
 		{query.TokenMinus, nr(10), nr(3)},
@@ -2086,7 +2086,7 @@ func TestCov_QueryCacheDisable(t *testing.T) {
 		t.Fatal()
 	}
 	c.DisableQueryCache()
-	_,_,statsSize = c.GetQueryCacheStats()
+	_, _, statsSize = c.GetQueryCacheStats()
 	if statsSize != 0 {
 		t.Fatal("expected nil after disable")
 	}
@@ -2110,7 +2110,6 @@ func TestCov_MatchLikeEdge(t *testing.T) {
 		t.Fatal()
 	}
 }
-
 
 // ── Direct evaluateExpression for function edge cases ────────────────
 func TestCov_FuncEdgeCases(t *testing.T) {
@@ -2289,13 +2288,21 @@ func TestCov_EvalWhereTypes(t *testing.T) {
 	cols := []ColumnDef{{Name: "a"}, {Name: "b"}}
 	row := []interface{}{"hello", float64(5)}
 	m, _ := evaluateWhere(c, row, cols, &query.LikeExpr{Expr: id("a"), Pattern: sr("hel%")}, nil)
-	if !m { t.Fatal() }
+	if !m {
+		t.Fatal()
+	}
 	m, _ = evaluateWhere(c, row, cols, &query.BetweenExpr{Expr: id("b"), Lower: nr(1), Upper: nr(10)}, nil)
-	if !m { t.Fatal() }
+	if !m {
+		t.Fatal()
+	}
 	m, _ = evaluateWhere(c, row, cols, &query.InExpr{Expr: id("b"), List: []query.Expression{nr(5), nr(10)}}, nil)
-	if !m { t.Fatal() }
+	if !m {
+		t.Fatal()
+	}
 	m, _ = evaluateWhere(c, row, cols, &query.IsNullExpr{Expr: id("a"), Not: true}, nil)
-	if !m { t.Fatal() }
+	if !m {
+		t.Fatal()
+	}
 }
 
 // ── HAVING more branches ─────────────────────────────────────────────
@@ -2307,10 +2314,12 @@ func TestCov_HavingWithAgg(t *testing.T) {
 	insertTestRow(t, c, "t", []query.Expression{nr(3), sr("b"), nr(5)})
 	_, rows := sel(t, c, &query.SelectStmt{
 		Columns: []query.Expression{id("grp"), fn("SUM", id("val"))},
-		From: tref("t"), GroupBy: []query.Expression{id("grp")},
+		From:    tref("t"), GroupBy: []query.Expression{id("grp")},
 		Having: binop(fn("SUM", id("val")), query.TokenGt, nr(10)),
 	})
-	if len(rows) != 1 { t.Fatal(len(rows)) }
+	if len(rows) != 1 {
+		t.Fatal(len(rows))
+	}
 }
 
 // ── ORDER BY with NULLs ─────────────────────────────────────────────
@@ -2324,7 +2333,9 @@ func TestCov_OrderByNull(t *testing.T) {
 		Columns: []query.Expression{star()}, From: tref("t"),
 		OrderBy: []*query.OrderByExpr{{Expr: id("val")}},
 	})
-	if len(rows) != 3 { t.Fatal(len(rows)) }
+	if len(rows) != 3 {
+		t.Fatal(len(rows))
+	}
 }
 
 // ── CTE basic ────────────────────────────────────────────────────────
@@ -2335,13 +2346,17 @@ func TestCov_CTEBasic(t *testing.T) {
 	insertTestRow(t, c, "t", []query.Expression{nr(2)})
 	_, rows, err := c.ExecuteCTE(
 		&query.SelectStmtWithCTE{
-			CTEs: []*query.CTEDef{{Name: "cte", Query: &query.SelectStmt{Columns: []query.Expression{star()}, From: tref("t")}}},
+			CTEs:   []*query.CTEDef{{Name: "cte", Query: &query.SelectStmt{Columns: []query.Expression{star()}, From: tref("t")}}},
 			Select: &query.SelectStmt{Columns: []query.Expression{star()}, From: tref("cte")},
 		},
 		nil,
 	)
-	if err != nil { t.Fatal(err) }
-	if len(rows) != 2 { t.Fatal(len(rows)) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatal(len(rows))
+	}
 }
 
 // ── evaluateBinaryExpr IS operator ───────────────────────────────────
@@ -2425,4 +2440,3 @@ func TestCov_QueryCacheDisabled(t *testing.T) {
 	qc.InvalidateAll()
 	_, _, _ = qc.Stats()
 }
-

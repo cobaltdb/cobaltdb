@@ -108,8 +108,8 @@ func TestCoverage_CreateTableIfNotExists(t *testing.T) {
 
 	// Try to create again with IF NOT EXISTS (should succeed)
 	err = cat.CreateTable(&query.CreateTableStmt{
-		Table:        "if_not_exists_test",
-		IfNotExists:  true,
+		Table:       "if_not_exists_test",
+		IfNotExists: true,
 		Columns: []*query.ColumnDef{
 			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
 		},

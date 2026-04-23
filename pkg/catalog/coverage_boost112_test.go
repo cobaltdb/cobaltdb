@@ -354,10 +354,10 @@ func TestCoverage_InsertConflictIgnore(t *testing.T) {
 
 	// Insert duplicate with IGNORE
 	_, _, err = c.Insert(ctx, &query.InsertStmt{
-		Table:            "unique_test",
-		Columns:          []string{"id", "code"},
-		Values:           [][]query.Expression{{numReal(2), strReal("ABC")}},
-		ConflictAction:   query.ConflictIgnore,
+		Table:          "unique_test",
+		Columns:        []string{"id", "code"},
+		Values:         [][]query.Expression{{numReal(2), strReal("ABC")}},
+		ConflictAction: query.ConflictIgnore,
 	}, nil)
 
 	// Should not error, but row should be skipped
@@ -400,10 +400,10 @@ func TestCoverage_InsertConflictReplace(t *testing.T) {
 
 	// Insert duplicate with REPLACE
 	_, _, err = c.Insert(ctx, &query.InsertStmt{
-		Table:            "replace_test",
-		Columns:          []string{"id", "code"},
-		Values:           [][]query.Expression{{numReal(2), strReal("ABC")}},
-		ConflictAction:   query.ConflictReplace,
+		Table:          "replace_test",
+		Columns:        []string{"id", "code"},
+		Values:         [][]query.Expression{{numReal(2), strReal("ABC")}},
+		ConflictAction: query.ConflictReplace,
 	}, nil)
 
 	if err != nil {
@@ -450,10 +450,10 @@ func TestCoverage_InsertConflictReplaceWithIndex(t *testing.T) {
 
 	// Replace with same category (tests index cleanup)
 	_, _, err := c.Insert(ctx, &query.InsertStmt{
-		Table:            "idx_replace",
-		Columns:          []string{"id", "category", "name"},
-		Values:           [][]query.Expression{{numReal(2), strReal("A"), strReal("Replaced")}},
-		ConflictAction:   query.ConflictReplace,
+		Table:          "idx_replace",
+		Columns:        []string{"id", "category", "name"},
+		Values:         [][]query.Expression{{numReal(2), strReal("A"), strReal("Replaced")}},
+		ConflictAction: query.ConflictReplace,
 	}, nil)
 
 	if err != nil {

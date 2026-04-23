@@ -3,9 +3,9 @@ package catalog
 
 import (
 	"fmt"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"math"
 	"strconv"
-	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
 func toInt(v interface{}) (int, bool) {

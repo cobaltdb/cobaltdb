@@ -121,9 +121,9 @@ func TestV5UpdatePrimaryKey(t *testing.T) {
 
 	// === Multi-expression ORDER BY ===
 	afExec(t, db, ctx, "CREATE TABLE order_test (id INTEGER PRIMARY KEY, price REAL, qty INTEGER)")
-	afExec(t, db, ctx, "INSERT INTO order_test VALUES (1, 10, 3)")  // price*qty=30
-	afExec(t, db, ctx, "INSERT INTO order_test VALUES (2, 20, 2)")  // price*qty=40
-	afExec(t, db, ctx, "INSERT INTO order_test VALUES (3, 5, 10)")  // price*qty=50
+	afExec(t, db, ctx, "INSERT INTO order_test VALUES (1, 10, 3)") // price*qty=30
+	afExec(t, db, ctx, "INSERT INTO order_test VALUES (2, 20, 2)") // price*qty=40
+	afExec(t, db, ctx, "INSERT INTO order_test VALUES (3, 5, 10)") // price*qty=50
 
 	rows := afQuery(t, db, ctx, "SELECT id FROM order_test ORDER BY price * qty DESC")
 	total++

@@ -493,7 +493,7 @@ func TestLastMile_EvaluateExpressionDirect(t *testing.T) {
 
 	// Simple CASE baseVal error (line 353)
 	_, err = evaluateExpression(c, nil, nil, &query.CaseExpr{
-		Expr: &query.Identifier{Name: "bad"},
+		Expr:  &query.Identifier{Name: "bad"},
 		Whens: []*query.WhenClause{{Condition: &query.NumberLiteral{Value: 1}, Result: &query.NumberLiteral{Value: 1}}},
 	}, nil)
 	if err == nil {
@@ -502,7 +502,7 @@ func TestLastMile_EvaluateExpressionDirect(t *testing.T) {
 
 	// Simple CASE when error (line 361)
 	_, err = evaluateExpression(c, nil, nil, &query.CaseExpr{
-		Expr: &query.NumberLiteral{Value: 1},
+		Expr:  &query.NumberLiteral{Value: 1},
 		Whens: []*query.WhenClause{{Condition: &query.Identifier{Name: "bad"}, Result: &query.NumberLiteral{Value: 1}}},
 	}, nil)
 	if err == nil {

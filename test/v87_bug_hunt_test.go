@@ -507,9 +507,9 @@ func TestV87_TriggerWhenCascade(t *testing.T) {
 			INSERT INTO v87_twc_audit VALUES ('premium_added:' || CAST(NEW.order_id AS TEXT));
 		END`)
 
-	afExec(t, db, ctx, "INSERT INTO v87_twc_orders VALUES (1, 500, 'normal')")    // too small
-	afExec(t, db, ctx, "INSERT INTO v87_twc_orders VALUES (2, 2000, 'big')")       // cascade!
-	afExec(t, db, ctx, "INSERT INTO v87_twc_orders VALUES (3, 100, 'tiny')")       // too small
+	afExec(t, db, ctx, "INSERT INTO v87_twc_orders VALUES (1, 500, 'normal')") // too small
+	afExec(t, db, ctx, "INSERT INTO v87_twc_orders VALUES (2, 2000, 'big')")   // cascade!
+	afExec(t, db, ctx, "INSERT INTO v87_twc_orders VALUES (3, 100, 'tiny')")   // too small
 
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM v87_twc_premium", float64(1))
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM v87_twc_audit", float64(1))

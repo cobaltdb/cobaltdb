@@ -300,4 +300,4 @@ func (c *Catalog) DropIndex(name string) error {
 		return c.tree.Delete(key)
 	}
 	return nil
-}
+}

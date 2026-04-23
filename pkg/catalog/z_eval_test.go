@@ -219,12 +219,12 @@ func TestEvaluateExpression_In(t *testing.T) {
 		expected interface{}
 	}{
 		{"in_list_found", &query.InExpr{
-			Expr:  &query.Identifier{Name: "value"},
-			List:  []query.Expression{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 2}, &query.NumberLiteral{Value: 3}},
+			Expr: &query.Identifier{Name: "value"},
+			List: []query.Expression{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 2}, &query.NumberLiteral{Value: 3}},
 		}, true},
 		{"in_list_not_found", &query.InExpr{
-			Expr:  &query.Identifier{Name: "value"},
-			List:  []query.Expression{&query.NumberLiteral{Value: 4}, &query.NumberLiteral{Value: 5}},
+			Expr: &query.Identifier{Name: "value"},
+			List: []query.Expression{&query.NumberLiteral{Value: 4}, &query.NumberLiteral{Value: 5}},
 		}, false},
 		{"in_subquery_placeholder", &query.InExpr{
 			Expr: &query.Identifier{Name: "value"},
@@ -1899,9 +1899,9 @@ func TestToBool(t *testing.T) {
 // TestToBoolNullable tests the toBoolNullable helper function
 func TestToBoolNullable(t *testing.T) {
 	tests := []struct {
-		name     string
-		value    interface{}
-		expected bool
+		name       string
+		value      interface{}
+		expected   bool
 		expectedOk bool
 	}{
 		{"nil", nil, false, true},
@@ -1984,11 +1984,11 @@ func TestValueToExpr(t *testing.T) {
 
 func TestStripHiddenCols(t *testing.T) {
 	tests := []struct {
-		name       string
-		rows       [][]interface{}
-		totalCols  int
+		name        string
+		rows        [][]interface{}
+		totalCols   int
 		hiddenCount int
-		expected   [][]interface{}
+		expected    [][]interface{}
 	}{
 		{
 			name:        "no_hidden",
@@ -2053,10 +2053,10 @@ func TestBuildCompositeIndexKey(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		row         []interface{}
-		expectKey   string
-		expectOk    bool
+		name      string
+		row       []interface{}
+		expectKey string
+		expectOk  bool
 	}{
 		{"valid", []interface{}{int64(1), "john", "john@example.com"}, "S:john", true},
 		{"nil_value", []interface{}{int64(1), nil, "john@example.com"}, "", false},
@@ -2525,9 +2525,9 @@ func TestResolveOuterRefsInExpr(t *testing.T) {
 
 	t.Run("in_expr", func(t *testing.T) {
 		expr := &query.InExpr{
-			Expr:  &query.QualifiedIdentifier{Table: "users", Column: "id"},
-			List:  []query.Expression{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 2}},
-			Not:   false,
+			Expr: &query.QualifiedIdentifier{Table: "users", Column: "id"},
+			List: []query.Expression{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 2}},
+			Not:  false,
 		}
 		result := resolveOuterRefsInExpr(expr, outerRow, outerColumns, innerTables)
 		inExpr, ok := result.(*query.InExpr)
@@ -2715,8 +2715,8 @@ func TestResolvePositionalRefs(t *testing.T) {
 					&query.Identifier{Name: "id"},
 					&query.Identifier{Name: "name"},
 				},
-				GroupBy:  []query.Expression{&query.Identifier{Name: "id"}},
-				OrderBy:  []*query.OrderByExpr{{Expr: &query.Identifier{Name: "name"}}},
+				GroupBy: []query.Expression{&query.Identifier{Name: "id"}},
+				OrderBy: []*query.OrderByExpr{{Expr: &query.Identifier{Name: "name"}}},
 			},
 			expectModified: false,
 		},
@@ -3403,10 +3403,10 @@ func TestEvalExpression_BinaryExprNull(t *testing.T) {
 		},
 		// PlaceholderExpr out of range
 		{
-			name: "placeholder_out_of_range",
-			expr: &query.PlaceholderExpr{Index: 5},
-			args: []interface{}{1, 2, 3},
-			expect: nil,
+			name:    "placeholder_out_of_range",
+			expr:    &query.PlaceholderExpr{Index: 5},
+			args:    []interface{}{1, 2, 3},
+			expect:  nil,
 			wantErr: true,
 		},
 	}
@@ -3590,43 +3590,43 @@ func TestEvalExpression_CastExpr(t *testing.T) {
 	}{
 		// Cast to INTEGER
 		{"cast_float_to_int", &query.CastExpr{
-			Expr: &query.NumberLiteral{Value: 42.7},
+			Expr:     &query.NumberLiteral{Value: 42.7},
 			DataType: query.TokenInteger,
 		}, nil, int64(42), false},
 		{"cast_string_to_int", &query.CastExpr{
-			Expr: &query.StringLiteral{Value: "123"},
+			Expr:     &query.StringLiteral{Value: "123"},
 			DataType: query.TokenInteger,
 		}, nil, int64(123), false},
 		{"cast_null_to_int", &query.CastExpr{
-			Expr: &query.NullLiteral{},
+			Expr:     &query.NullLiteral{},
 			DataType: query.TokenInteger,
 		}, nil, nil, false},
 
 		// Cast to REAL
 		{"cast_int_to_real", &query.CastExpr{
-			Expr: &query.NumberLiteral{Value: 42.0},
+			Expr:     &query.NumberLiteral{Value: 42.0},
 			DataType: query.TokenReal,
 		}, nil, float64(42), false},
 		{"cast_string_to_real", &query.CastExpr{
-			Expr: &query.StringLiteral{Value: "3.14"},
+			Expr:     &query.StringLiteral{Value: "3.14"},
 			DataType: query.TokenReal,
 		}, nil, float64(3.14), false},
 		{"cast_null_to_real", &query.CastExpr{
-			Expr: &query.NullLiteral{},
+			Expr:     &query.NullLiteral{},
 			DataType: query.TokenReal,
 		}, nil, nil, false},
 
 		// Cast to TEXT
 		{"cast_int_to_text", &query.CastExpr{
-			Expr: &query.NumberLiteral{Value: 42.0},
+			Expr:     &query.NumberLiteral{Value: 42.0},
 			DataType: query.TokenText,
 		}, nil, "42", false},
 		{"cast_bool_to_text", &query.CastExpr{
-			Expr: &query.BooleanLiteral{Value: true},
+			Expr:     &query.BooleanLiteral{Value: true},
 			DataType: query.TokenText,
 		}, nil, "true", false},
 		{"cast_null_to_text", &query.CastExpr{
-			Expr: &query.NullLiteral{},
+			Expr:     &query.NullLiteral{},
 			DataType: query.TokenText,
 		}, nil, nil, false},
 
@@ -4561,8 +4561,8 @@ func TestCatalogCompareValues(t *testing.T) {
 		{"less_string", "abc", "xyz", -1},
 		{"greater_string", "xyz", "abc", 1},
 		{"nil_equal", nil, nil, 0},
-		{"nil_less", nil, int64(5), -1},    // NULL sorts before non-NULL in catalogCompareValues
-		{"nil_greater", int64(5), nil, 1},  // non-NULL sorts after NULL
+		{"nil_less", nil, int64(5), -1},   // NULL sorts before non-NULL in catalogCompareValues
+		{"nil_greater", int64(5), nil, 1}, // non-NULL sorts after NULL
 		{"mixed_types_less", int64(3), float64(5.0), -1},
 		{"mixed_types_greater", float64(7.5), int64(3), 1},
 	}
@@ -4771,7 +4771,7 @@ func TestCreateIndex(t *testing.T) {
 
 	// Insert a test row
 	insertStmt := &query.InsertStmt{
-		Table: "products",
+		Table:   "products",
 		Columns: []string{"id", "name", "price"},
 		Values: [][]query.Expression{
 			{
@@ -4788,10 +4788,10 @@ func TestCreateIndex(t *testing.T) {
 
 	// Create an index
 	createIdxStmt := &query.CreateIndexStmt{
-		Index:  "idx_price",
-		Table:  "products",
+		Index:   "idx_price",
+		Table:   "products",
 		Columns: []string{"price"},
-		Unique: false,
+		Unique:  false,
 	}
 
 	err = catalog.CreateIndex(createIdxStmt)
@@ -4970,7 +4970,7 @@ func TestUpdate(t *testing.T) {
 
 	// Insert test data
 	insertStmt := &query.InsertStmt{
-		Table: "users",
+		Table:   "users",
 		Columns: []string{"id", "name", "age"},
 		Values: [][]query.Expression{
 			{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}, &query.NumberLiteral{Value: 25}},
@@ -5360,7 +5360,7 @@ func TestInsertSelect(t *testing.T) {
 
 	// INSERT...SELECT: copy data from source to destination
 	insertSelectStmt := &query.InsertStmt{
-		Table: "dest_table",
+		Table:   "dest_table",
 		Columns: []string{"name", "value"},
 		Select: &query.SelectStmt{
 			Columns: []query.Expression{
@@ -5465,7 +5465,7 @@ func TestInsertDefaultValue(t *testing.T) {
 
 	// Insert with only id specified - name and status should use defaults
 	insertStmt := &query.InsertStmt{
-		Table: "default_test",
+		Table:   "default_test",
 		Columns: []string{"id"},
 		Values: [][]query.Expression{
 			{&query.NumberLiteral{Value: 1}},
@@ -6444,7 +6444,6 @@ func TestRollbackTransaction_WithAlterRenameUndo(t *testing.T) {
 	}
 }
 
-
 // TestSavepoint tests creating a savepoint
 func TestSavepoint(t *testing.T) {
 	catalog, cleanup := setupEvalTestCatalog(t)
@@ -7040,7 +7039,6 @@ func TestRollbackToSavepoint_NoTransaction(t *testing.T) {
 	}
 }
 
-
 // TestReleaseSavepoint tests releasing a savepoint
 func TestReleaseSavepoint(t *testing.T) {
 	catalog, cleanup := setupEvalTestCatalog(t)
@@ -7192,7 +7190,7 @@ func TestExecuteCTE_Recursive(t *testing.T) {
 			From: &query.TableRef{Name: "hierarchy"},
 			Joins: []*query.JoinClause{
 				{
-					Type: query.TokenJoin,
+					Type:  query.TokenJoin,
 					Table: &query.TableRef{Name: "descendants"},
 					Condition: &query.BinaryExpr{
 						Left:     &query.QualifiedIdentifier{Table: "hierarchy", Column: "parent_id"},
@@ -7569,8 +7567,8 @@ func TestExecuteDerivedTable_NoSubquery(t *testing.T) {
 
 	// Create a TableRef with no Subquery or SubqueryStmt
 	ref := &query.TableRef{
-		Name:     "test_table",
-		Subquery: nil,
+		Name:         "test_table",
+		Subquery:     nil,
 		SubqueryStmt: nil,
 	}
 
@@ -8476,13 +8474,13 @@ func TestExecuteTriggers(t *testing.T) {
 
 	// Create trigger with WHEN condition - only log users over 18
 	triggerWithCondition := &query.CreateTriggerStmt{
-		Name:    "log_adult_users",
-		Table:   "users",
-		Event:   "INSERT",
-		Time:    "AFTER",
+		Name:  "log_adult_users",
+		Table: "users",
+		Event: "INSERT",
+		Time:  "AFTER",
 		Body: []query.Statement{
 			&query.InsertStmt{
-				Table: "audit_log",
+				Table:   "audit_log",
 				Columns: []string{"action", "user_id"},
 				Values: [][]query.Expression{
 					{&query.StringLiteral{Value: "INSERT"}, &query.NumberLiteral{Value: 1}},
@@ -8499,13 +8497,13 @@ func TestExecuteTriggers(t *testing.T) {
 
 	// Create trigger without WHEN condition
 	triggerNoCondition := &query.CreateTriggerStmt{
-		Name:    "log_all_updates",
-		Table:   "users",
-		Event:   "UPDATE",
-		Time:    "AFTER",
+		Name:  "log_all_updates",
+		Table: "users",
+		Event: "UPDATE",
+		Time:  "AFTER",
 		Body: []query.Statement{
 			&query.InsertStmt{
-				Table: "audit_log",
+				Table:   "audit_log",
 				Columns: []string{"action", "user_id"},
 				Values: [][]query.Expression{
 					{&query.StringLiteral{Value: "UPDATE"}, &query.NumberLiteral{Value: 2}},
@@ -8517,13 +8515,13 @@ func TestExecuteTriggers(t *testing.T) {
 
 	// Create trigger with false WHEN condition (should skip execution)
 	triggerFalseCondition := &query.CreateTriggerStmt{
-		Name:    "never_fires",
-		Table:   "users",
-		Event:   "DELETE",
-		Time:    "AFTER",
+		Name:  "never_fires",
+		Table: "users",
+		Event: "DELETE",
+		Time:  "AFTER",
 		Body: []query.Statement{
 			&query.InsertStmt{
-				Table: "audit_log",
+				Table:   "audit_log",
 				Columns: []string{"action", "user_id"},
 				Values: [][]query.Expression{
 					{&query.StringLiteral{Value: "DELETE"}, &query.NumberLiteral{Value: 3}},
@@ -8645,7 +8643,7 @@ func TestResolveTriggerRefs(t *testing.T) {
 		Time:  "AFTER",
 		Body: []query.Statement{
 			&query.InsertStmt{
-				Table: "audit_log",
+				Table:   "audit_log",
 				Columns: []string{"action", "old_name", "new_name"},
 				Values: [][]query.Expression{
 					{
@@ -8784,9 +8782,9 @@ func TestGetTriggersForTable(t *testing.T) {
 func TestColumnStats(t *testing.T) {
 	// Test GetNullFraction
 	cs := &ColumnStats{
-		NullCount:      10,
-		DistinctCount:  50,
-		Histogram:      []Bucket{},
+		NullCount:     10,
+		DistinctCount: 50,
+		Histogram:     []Bucket{},
 	}
 
 	// Test with non-zero row count
@@ -8815,8 +8813,8 @@ func TestColumnStats(t *testing.T) {
 
 	// Test IsUnique - all unique (no nulls)
 	csUnique := &ColumnStats{
-		NullCount:      0,
-		DistinctCount:  100,
+		NullCount:     0,
+		DistinctCount: 100,
 	}
 	if !csUnique.IsUnique(100) {
 		t.Error("expected IsUnique(100) = true for all unique values")
@@ -8824,8 +8822,8 @@ func TestColumnStats(t *testing.T) {
 
 	// Test IsUnique - with nulls
 	csUniqueWithNulls := &ColumnStats{
-		NullCount:      10,
-		DistinctCount:  90,
+		NullCount:     10,
+		DistinctCount: 90,
 	}
 	if !csUniqueWithNulls.IsUnique(100) {
 		t.Error("expected IsUnique(100) = true for 90 distinct + 10 nulls")
@@ -8833,8 +8831,8 @@ func TestColumnStats(t *testing.T) {
 
 	// Test IsUnique - duplicates exist
 	csNotUnique := &ColumnStats{
-		NullCount:      0,
-		DistinctCount:  50,
+		NullCount:     0,
+		DistinctCount: 50,
 	}
 	if csNotUnique.IsUnique(100) {
 		t.Error("expected IsUnique(100) = false when duplicates exist")
@@ -8842,8 +8840,8 @@ func TestColumnStats(t *testing.T) {
 
 	// Test IsUnique - zero non-null count
 	csZeroNonNull := &ColumnStats{
-		NullCount:      100,
-		DistinctCount:  0,
+		NullCount:     100,
+		DistinctCount: 0,
 	}
 	if csZeroNonNull.IsUnique(100) {
 		t.Error("expected IsUnique(100) = false when no non-null values")
@@ -12097,7 +12095,7 @@ func TestResolveTriggerRefs_WithInsertStmt(t *testing.T) {
 
 	// Test with InsertStmt - VALUES clause
 	insertStmt := &query.InsertStmt{
-		Table: "test_table",
+		Table:   "test_table",
 		Columns: []string{"id", "name"},
 		Values: [][]query.Expression{
 			{
@@ -12490,7 +12488,7 @@ func TestWindowFunctionsComprehensive(t *testing.T) {
 		{
 			name: "RANK",
 			windowExpr: &query.WindowExpr{
-				Function: "RANK",
+				Function:    "RANK",
 				PartitionBy: []query.Expression{&query.Identifier{Name: "level"}},
 				OrderBy:     []*query.OrderByExpr{{Expr: &query.Identifier{Name: "score"}, Desc: true}},
 			},
@@ -12504,7 +12502,7 @@ func TestWindowFunctionsComprehensive(t *testing.T) {
 		{
 			name: "DENSE_RANK",
 			windowExpr: &query.WindowExpr{
-				Function: "DENSE_RANK",
+				Function:    "DENSE_RANK",
 				PartitionBy: []query.Expression{&query.Identifier{Name: "level"}},
 				OrderBy:     []*query.OrderByExpr{{Expr: &query.Identifier{Name: "score"}, Desc: true}},
 			},
@@ -12515,8 +12513,8 @@ func TestWindowFunctionsComprehensive(t *testing.T) {
 		{
 			name: "LAG",
 			windowExpr: &query.WindowExpr{
-				Function: "LAG",
-				Args:     []query.Expression{&query.Identifier{Name: "score"}},
+				Function:    "LAG",
+				Args:        []query.Expression{&query.Identifier{Name: "score"}},
 				PartitionBy: []query.Expression{&query.Identifier{Name: "level"}},
 				OrderBy:     []*query.OrderByExpr{{Expr: &query.Identifier{Name: "score"}}},
 			},
@@ -12527,8 +12525,8 @@ func TestWindowFunctionsComprehensive(t *testing.T) {
 		{
 			name: "LAG with offset",
 			windowExpr: &query.WindowExpr{
-				Function: "LAG",
-				Args:     []query.Expression{&query.Identifier{Name: "score"}, &query.NumberLiteral{Value: 2}},
+				Function:    "LAG",
+				Args:        []query.Expression{&query.Identifier{Name: "score"}, &query.NumberLiteral{Value: 2}},
 				PartitionBy: []query.Expression{&query.Identifier{Name: "level"}},
 				OrderBy:     []*query.OrderByExpr{{Expr: &query.Identifier{Name: "score"}}},
 			},
@@ -12539,8 +12537,8 @@ func TestWindowFunctionsComprehensive(t *testing.T) {
 		{
 			name: "LEAD",
 			windowExpr: &query.WindowExpr{
-				Function: "LEAD",
-				Args:     []query.Expression{&query.Identifier{Name: "score"}},
+				Function:    "LEAD",
+				Args:        []query.Expression{&query.Identifier{Name: "score"}},
 				PartitionBy: []query.Expression{&query.Identifier{Name: "level"}},
 				OrderBy:     []*query.OrderByExpr{{Expr: &query.Identifier{Name: "score"}}},
 			},
@@ -12551,8 +12549,8 @@ func TestWindowFunctionsComprehensive(t *testing.T) {
 		{
 			name: "FIRST_VALUE",
 			windowExpr: &query.WindowExpr{
-				Function: "FIRST_VALUE",
-				Args:     []query.Expression{&query.Identifier{Name: "player"}},
+				Function:    "FIRST_VALUE",
+				Args:        []query.Expression{&query.Identifier{Name: "player"}},
 				PartitionBy: []query.Expression{&query.Identifier{Name: "level"}},
 				OrderBy:     []*query.OrderByExpr{{Expr: &query.Identifier{Name: "score"}, Desc: true}},
 			},
@@ -12563,8 +12561,8 @@ func TestWindowFunctionsComprehensive(t *testing.T) {
 		{
 			name: "LAST_VALUE",
 			windowExpr: &query.WindowExpr{
-				Function: "LAST_VALUE",
-				Args:     []query.Expression{&query.Identifier{Name: "player"}},
+				Function:    "LAST_VALUE",
+				Args:        []query.Expression{&query.Identifier{Name: "player"}},
 				PartitionBy: []query.Expression{&query.Identifier{Name: "level"}},
 				OrderBy:     []*query.OrderByExpr{{Expr: &query.Identifier{Name: "score"}}},
 			},
@@ -12575,8 +12573,8 @@ func TestWindowFunctionsComprehensive(t *testing.T) {
 		{
 			name: "NTH_VALUE",
 			windowExpr: &query.WindowExpr{
-				Function: "NTH_VALUE",
-				Args:     []query.Expression{&query.Identifier{Name: "player"}, &query.NumberLiteral{Value: 2}},
+				Function:    "NTH_VALUE",
+				Args:        []query.Expression{&query.Identifier{Name: "player"}, &query.NumberLiteral{Value: 2}},
 				PartitionBy: []query.Expression{&query.Identifier{Name: "level"}},
 				OrderBy:     []*query.OrderByExpr{{Expr: &query.Identifier{Name: "score"}, Desc: true}},
 			},
@@ -12913,7 +12911,6 @@ func TestIndexRowForFTS(t *testing.T) {
 	catalog.indexRowForFTS(ftsIndex, row3, key3)
 }
 
-
 // TestExprToSQL tests the exprToSQL function for converting expressions to SQL strings
 func TestExprToSQL(t *testing.T) {
 	tests := []struct {
@@ -12967,9 +12964,9 @@ func TestExprToSQL(t *testing.T) {
 
 		// Nested expressions
 		{"nested_binary", &query.BinaryExpr{
-			Left:  &query.BinaryExpr{Left: &query.Identifier{Name: "a"}, Operator: query.TokenPlus, Right: &query.Identifier{Name: "b"}},
+			Left:     &query.BinaryExpr{Left: &query.Identifier{Name: "a"}, Operator: query.TokenPlus, Right: &query.Identifier{Name: "b"}},
 			Operator: query.TokenStar,
-			Right: &query.BinaryExpr{Left: &query.Identifier{Name: "c"}, Operator: query.TokenMinus, Right: &query.Identifier{Name: "d"}},
+			Right:    &query.BinaryExpr{Left: &query.Identifier{Name: "c"}, Operator: query.TokenMinus, Right: &query.Identifier{Name: "d"}},
 		}, "((a + b) * (c - d))"},
 	}
 

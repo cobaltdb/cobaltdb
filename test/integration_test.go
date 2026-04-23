@@ -477,9 +477,9 @@ func TestFullDatabaseWorkflow(t *testing.T) {
 
 	// 3. Insert orders
 	orders := []struct {
-		id      int
-		userID  int
-		amount  float64
+		id     int
+		userID int
+		amount float64
 	}{
 		{1, 1, 100.50},
 		{2, 1, 200.75},

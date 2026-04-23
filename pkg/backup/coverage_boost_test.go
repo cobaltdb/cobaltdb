@@ -9,7 +9,7 @@ import (
 )
 
 // MockDatabaseWithWAL implements Database interface with WAL
- type MockDatabaseWithWAL struct {
+type MockDatabaseWithWAL struct {
 	dbPath  string
 	walPath string
 	lsn     uint64
@@ -423,7 +423,6 @@ func TestCleanupOldBackupsByRetention(t *testing.T) {
 	}
 }
 
-
 // TestDeleteBackupNotFound tests deleting non-existent backup
 func TestDeleteBackupNotFound(t *testing.T) {
 	config := DefaultConfig()
@@ -656,4 +655,3 @@ func TestDeleteBackupSuccess(t *testing.T) {
 		t.Error("Backup should be removed from metadata")
 	}
 }
-

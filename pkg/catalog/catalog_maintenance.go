@@ -3,12 +3,12 @@ package catalog
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-	"github.com/cobaltdb/cobaltdb/pkg/btree"
-	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
 func (c *Catalog) ListTables() []string {
@@ -491,4 +491,4 @@ func (c *Catalog) Analyze(tableName string) error {
 
 	c.stats[tableName] = stats
 	return nil
-}
+}

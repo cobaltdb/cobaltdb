@@ -204,7 +204,7 @@ func TestDecodeWALEntriesErrorCases(t *testing.T) {
 			name: "invalid entry length",
 			data: func() []byte {
 				buf := new(bytes.Buffer)
-				binary.Write(buf, binary.BigEndian, uint32(1)) // 1 entry
+				binary.Write(buf, binary.BigEndian, uint32(1))    // 1 entry
 				binary.Write(buf, binary.BigEndian, uint32(1000)) // But length says 1000 bytes
 				return buf.Bytes()
 			}(),
@@ -247,7 +247,7 @@ func TestWALEntryDecodeErrors(t *testing.T) {
 			name: "truncated data length",
 			data: func() []byte {
 				buf := new(bytes.Buffer)
-				binary.Write(buf, binary.BigEndian, uint64(1)) // LSN
+				binary.Write(buf, binary.BigEndian, uint64(1))                    // LSN
 				binary.Write(buf, binary.BigEndian, int64(time.Now().UnixNano())) // Timestamp
 				return buf.Bytes()
 			}(),
@@ -256,10 +256,10 @@ func TestWALEntryDecodeErrors(t *testing.T) {
 			name: "truncated data content",
 			data: func() []byte {
 				buf := new(bytes.Buffer)
-				binary.Write(buf, binary.BigEndian, uint64(1)) // LSN
+				binary.Write(buf, binary.BigEndian, uint64(1))                    // LSN
 				binary.Write(buf, binary.BigEndian, int64(time.Now().UnixNano())) // Timestamp
-				binary.Write(buf, binary.BigEndian, uint32(100)) // Data length = 100
-				buf.Write([]byte("short")) // But only 5 bytes
+				binary.Write(buf, binary.BigEndian, uint32(100))                  // Data length = 100
+				buf.Write([]byte("short"))                                        // But only 5 bytes
 				return buf.Bytes()
 			}(),
 		},
@@ -267,10 +267,10 @@ func TestWALEntryDecodeErrors(t *testing.T) {
 			name: "truncated checksum",
 			data: func() []byte {
 				buf := new(bytes.Buffer)
-				binary.Write(buf, binary.BigEndian, uint64(1)) // LSN
+				binary.Write(buf, binary.BigEndian, uint64(1))                    // LSN
 				binary.Write(buf, binary.BigEndian, int64(time.Now().UnixNano())) // Timestamp
-				binary.Write(buf, binary.BigEndian, uint32(4)) // Data length = 4
-				buf.Write([]byte("test")) // 4 bytes of data
+				binary.Write(buf, binary.BigEndian, uint32(4))                    // Data length = 4
+				buf.Write([]byte("test"))                                         // 4 bytes of data
 				// Missing checksum
 				return buf.Bytes()
 			}(),

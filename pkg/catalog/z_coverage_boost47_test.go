@@ -213,7 +213,7 @@ func TestCoverage_JoinAggregateExpr(t *testing.T) {
 		cat.Insert(ctx, &query.InsertStmt{
 			Table:   "jae_prod",
 			Columns: []string{"id", "cat_id", "price", "qty"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(catID)), numReal(float64(i * 10)), numReal(float64(i % 5 + 1))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(catID)), numReal(float64(i * 10)), numReal(float64(i%5 + 1))}},
 		}, nil)
 	}
 

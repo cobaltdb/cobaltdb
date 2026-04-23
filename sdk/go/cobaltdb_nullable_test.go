@@ -8,9 +8,9 @@ import (
 // TestNullStringScan covers NullString.Scan method
 func TestNullStringScan(t *testing.T) {
 	tests := []struct {
-		name     string
-		value    interface{}
-		wantStr  string
+		name      string
+		value     interface{}
+		wantStr   string
 		wantValid bool
 	}{
 		{"nil", nil, "", false},
@@ -73,10 +73,10 @@ func TestNullInt64Scan(t *testing.T) {
 // TestNullInt64Value covers NullInt64.Value method
 func TestNullInt64Value(t *testing.T) {
 	tests := []struct {
-		name     string
-		ni       NullInt64
-		wantNil  bool
-		wantVal  int64
+		name    string
+		ni      NullInt64
+		wantNil bool
+		wantVal int64
 	}{
 		{"valid", NullInt64{Int64: 42, Valid: true}, false, 42},
 		{"invalid", NullInt64{Int64: 0, Valid: false}, true, 0},

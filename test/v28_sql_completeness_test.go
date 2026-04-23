@@ -287,7 +287,7 @@ func TestV28SQLCompleteness(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO like_special VALUES (3, 'world')")
 	afExec(t, db, ctx, "INSERT INTO like_special VALUES (4, 'he%llo')")
 
-	checkRowCount("LIKE with %", "SELECT * FROM like_special WHERE val LIKE 'hel%'", 2) // hello, help
+	checkRowCount("LIKE with %", "SELECT * FROM like_special WHERE val LIKE 'hel%'", 2)  // hello, help
 	checkRowCount("LIKE with _", "SELECT * FROM like_special WHERE val LIKE 'hel_o'", 1) // hello
 
 	// ============================================================

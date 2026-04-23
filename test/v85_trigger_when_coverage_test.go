@@ -92,9 +92,9 @@ func TestV85_TriggerWhenAND(t *testing.T) {
 			INSERT INTO tw_and_log VALUES ('active_big');
 		END`)
 
-	afExec(t, db, ctx, "INSERT INTO tw_and VALUES (1, 3, 1)")   // val too low
-	afExec(t, db, ctx, "INSERT INTO tw_and VALUES (2, 10, 0)")  // not active
-	afExec(t, db, ctx, "INSERT INTO tw_and VALUES (3, 10, 1)")  // should fire
+	afExec(t, db, ctx, "INSERT INTO tw_and VALUES (1, 3, 1)")  // val too low
+	afExec(t, db, ctx, "INSERT INTO tw_and VALUES (2, 10, 0)") // not active
+	afExec(t, db, ctx, "INSERT INTO tw_and VALUES (3, 10, 1)") // should fire
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM tw_and_log", float64(1))
 }
 
@@ -112,9 +112,9 @@ func TestV85_TriggerWhenOR(t *testing.T) {
 			INSERT INTO tw_or_log VALUES ('alert');
 		END`)
 
-	afExec(t, db, ctx, "INSERT INTO tw_or VALUES (1, 3, 0)")  // neither
-	afExec(t, db, ctx, "INSERT INTO tw_or VALUES (2, 9, 0)")  // priority high
-	afExec(t, db, ctx, "INSERT INTO tw_or VALUES (3, 1, 1)")  // urgent
+	afExec(t, db, ctx, "INSERT INTO tw_or VALUES (1, 3, 0)") // neither
+	afExec(t, db, ctx, "INSERT INTO tw_or VALUES (2, 9, 0)") // priority high
+	afExec(t, db, ctx, "INSERT INTO tw_or VALUES (3, 1, 1)") // urgent
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM tw_or_log", float64(2))
 }
 
@@ -132,9 +132,9 @@ func TestV85_TriggerWhenWithFunction(t *testing.T) {
 			INSERT INTO tw_fn_log VALUES (NEW.name);
 		END`)
 
-	afExec(t, db, ctx, "INSERT INTO tw_fn VALUES (1, 'Bob')")      // 3 chars - skip
-	afExec(t, db, ctx, "INSERT INTO tw_fn VALUES (2, 'Charlie')")  // 7 chars - fire
-	afExec(t, db, ctx, "INSERT INTO tw_fn VALUES (3, 'Jo')")       // 2 chars - skip
+	afExec(t, db, ctx, "INSERT INTO tw_fn VALUES (1, 'Bob')")     // 3 chars - skip
+	afExec(t, db, ctx, "INSERT INTO tw_fn VALUES (2, 'Charlie')") // 7 chars - fire
+	afExec(t, db, ctx, "INSERT INTO tw_fn VALUES (3, 'Jo')")      // 2 chars - skip
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM tw_fn_log", float64(1))
 	afExpectVal(t, db, ctx, "SELECT msg FROM tw_fn_log", "Charlie")
 }
@@ -154,10 +154,10 @@ func TestV85_TriggerWhenUpdateOldNew(t *testing.T) {
 		END`)
 
 	afExec(t, db, ctx, "INSERT INTO tw_upd VALUES (1, 50)")
-	afExec(t, db, ctx, "UPDATE tw_upd SET score = 30 WHERE id = 1")  // decrease - skip
+	afExec(t, db, ctx, "UPDATE tw_upd SET score = 30 WHERE id = 1") // decrease - skip
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM tw_upd_log", float64(0))
 
-	afExec(t, db, ctx, "UPDATE tw_upd SET score = 80 WHERE id = 1")  // increase - fire
+	afExec(t, db, ctx, "UPDATE tw_upd SET score = 80 WHERE id = 1") // increase - fire
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM tw_upd_log", float64(1))
 }
 
@@ -179,10 +179,10 @@ func TestV85_TriggerWhenDelete(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO tw_del VALUES (2, 1)")
 	afExec(t, db, ctx, "INSERT INTO tw_del VALUES (3, 0)")
 
-	afExec(t, db, ctx, "DELETE FROM tw_del WHERE id = 1")  // not protected
+	afExec(t, db, ctx, "DELETE FROM tw_del WHERE id = 1") // not protected
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM tw_del_log", float64(0))
 
-	afExec(t, db, ctx, "DELETE FROM tw_del WHERE id = 2")  // protected
+	afExec(t, db, ctx, "DELETE FROM tw_del WHERE id = 2") // protected
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM tw_del_log", float64(1))
 }
 
@@ -246,9 +246,9 @@ func TestV85_TriggerWhenMultipleTriggers(t *testing.T) {
 			INSERT INTO tw_multi_log VALUES ('big');
 		END`)
 
-	afExec(t, db, ctx, "INSERT INTO tw_multi VALUES (1, 5)")    // small fires
-	afExec(t, db, ctx, "INSERT INTO tw_multi VALUES (2, 50)")   // neither fires
-	afExec(t, db, ctx, "INSERT INTO tw_multi VALUES (3, 200)")  // big fires
+	afExec(t, db, ctx, "INSERT INTO tw_multi VALUES (1, 5)")   // small fires
+	afExec(t, db, ctx, "INSERT INTO tw_multi VALUES (2, 50)")  // neither fires
+	afExec(t, db, ctx, "INSERT INTO tw_multi VALUES (3, 200)") // big fires
 
 	rows := afQuery(t, db, ctx, "SELECT msg FROM tw_multi_log ORDER BY msg")
 	if len(rows) != 2 {
@@ -277,9 +277,9 @@ func TestV85_TriggerWhenBETWEEN(t *testing.T) {
 			INSERT INTO tw_btw_log VALUES ('normal');
 		END`)
 
-	afExec(t, db, ctx, "INSERT INTO tw_btw VALUES (1, 35)")  // below range
-	afExec(t, db, ctx, "INSERT INTO tw_btw VALUES (2, 37)")  // in range
-	afExec(t, db, ctx, "INSERT INTO tw_btw VALUES (3, 40)")  // above range
+	afExec(t, db, ctx, "INSERT INTO tw_btw VALUES (1, 35)") // below range
+	afExec(t, db, ctx, "INSERT INTO tw_btw VALUES (2, 37)") // in range
+	afExec(t, db, ctx, "INSERT INTO tw_btw VALUES (3, 40)") // above range
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM tw_btw_log", float64(1))
 }
 
@@ -1027,8 +1027,8 @@ func TestV85_SavepointNestedRelease(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO sp_nest VALUES (2, 'b')")
 	afExec(t, db, ctx, "SAVEPOINT sp2")
 	afExec(t, db, ctx, "INSERT INTO sp_nest VALUES (3, 'c')")
-	afExec(t, db, ctx, "RELEASE SAVEPOINT sp2")  // sp2 released, insert 3 committed to sp1
-	afExec(t, db, ctx, "RELEASE SAVEPOINT sp1")  // sp1 released, all committed to txn
+	afExec(t, db, ctx, "RELEASE SAVEPOINT sp2") // sp2 released, insert 3 committed to sp1
+	afExec(t, db, ctx, "RELEASE SAVEPOINT sp1") // sp1 released, all committed to txn
 	afExec(t, db, ctx, "COMMIT")
 
 	rows := afQuery(t, db, ctx, "SELECT COUNT(*) FROM sp_nest")
@@ -1047,7 +1047,7 @@ func TestV85_SavepointRollbackPartial(t *testing.T) {
 	afExec(t, db, ctx, "SAVEPOINT sp1")
 	afExec(t, db, ctx, "INSERT INTO sp_part VALUES (2, 'lose')")
 	afExec(t, db, ctx, "INSERT INTO sp_part VALUES (3, 'lose')")
-	afExec(t, db, ctx, "ROLLBACK TO SAVEPOINT sp1")  // undo inserts 2,3
+	afExec(t, db, ctx, "ROLLBACK TO SAVEPOINT sp1") // undo inserts 2,3
 	afExec(t, db, ctx, "INSERT INTO sp_part VALUES (4, 'keep')")
 	afExec(t, db, ctx, "COMMIT")
 
@@ -1223,7 +1223,7 @@ func TestV85_LeftJoinWithGroupBy(t *testing.T) {
 
 	afExec(t, db, ctx, "INSERT INTO lj_dept VALUES (1, 'eng')")
 	afExec(t, db, ctx, "INSERT INTO lj_dept VALUES (2, 'hr')")
-	afExec(t, db, ctx, "INSERT INTO lj_dept VALUES (3, 'empty')")  // no employees
+	afExec(t, db, ctx, "INSERT INTO lj_dept VALUES (3, 'empty')") // no employees
 	afExec(t, db, ctx, "INSERT INTO lj_emp VALUES (1, 1, 100)")
 	afExec(t, db, ctx, "INSERT INTO lj_emp VALUES (2, 1, 200)")
 	afExec(t, db, ctx, "INSERT INTO lj_emp VALUES (3, 2, 150)")
@@ -1308,14 +1308,14 @@ func TestV85_CreateTableIfNotExists(t *testing.T) {
 	defer db.Close()
 
 	afExec(t, db, ctx, "CREATE TABLE ine_tbl (id INTEGER)")
-	afExec(t, db, ctx, "CREATE TABLE IF NOT EXISTS ine_tbl (id INTEGER)")  // should not error
+	afExec(t, db, ctx, "CREATE TABLE IF NOT EXISTS ine_tbl (id INTEGER)") // should not error
 }
 
 func TestV85_DropTableIfExists(t *testing.T) {
 	db, ctx := af(t)
 	defer db.Close()
 
-	afExec(t, db, ctx, "DROP TABLE IF EXISTS nonexistent_table")  // should not error
+	afExec(t, db, ctx, "DROP TABLE IF EXISTS nonexistent_table") // should not error
 }
 
 func TestV85_InsertIntoNonexistentTable(t *testing.T) {
@@ -1938,8 +1938,8 @@ func TestV85_AggregateNullHandling(t *testing.T) {
 
 	afExpectVal(t, db, ctx, "SELECT SUM(val) FROM an", float64(60))
 	afExpectVal(t, db, ctx, "SELECT AVG(val) FROM an", float64(20))
-	afExpectVal(t, db, ctx, "SELECT COUNT(val) FROM an", float64(3))     // non-NULL count
-	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM an", float64(5))       // total count
+	afExpectVal(t, db, ctx, "SELECT COUNT(val) FROM an", float64(3)) // non-NULL count
+	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM an", float64(5))   // total count
 	afExpectVal(t, db, ctx, "SELECT MIN(val) FROM an", float64(10))
 	afExpectVal(t, db, ctx, "SELECT MAX(val) FROM an", float64(30))
 }
@@ -2026,8 +2026,8 @@ func TestV85_TriggerMixWhenAndNoWhen(t *testing.T) {
 			INSERT INTO tw_mix_log VALUES ('conditional');
 		END`)
 
-	afExec(t, db, ctx, "INSERT INTO tw_mix VALUES (1, 10)")   // only always fires
-	afExec(t, db, ctx, "INSERT INTO tw_mix VALUES (2, 100)")  // both fire
+	afExec(t, db, ctx, "INSERT INTO tw_mix VALUES (1, 10)")  // only always fires
+	afExec(t, db, ctx, "INSERT INTO tw_mix VALUES (2, 100)") // both fire
 
 	rows := afQuery(t, db, ctx, "SELECT msg, COUNT(*) FROM tw_mix_log GROUP BY msg ORDER BY msg")
 	if len(rows) != 2 {

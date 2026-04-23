@@ -125,4 +125,3 @@ func TestValuesEqualEdgeCases117(t *testing.T) {
 		t.Log("Float precision test: 0.1+0.2 vs 0.3")
 	}
 }
-

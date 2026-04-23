@@ -228,8 +228,8 @@ func TestCovDeep_SelectOrderBy(t *testing.T) {
 
 	// ORDER BY ASC
 	stmt := &query.SelectStmt{
-		From:     &query.TableRef{Name: "sel_order"},
-		OrderBy:  []*query.OrderByExpr{{Expr: &query.QualifiedIdentifier{Column: "val"}, Desc: false}},
+		From:    &query.TableRef{Name: "sel_order"},
+		OrderBy: []*query.OrderByExpr{{Expr: &query.QualifiedIdentifier{Column: "val"}, Desc: false}},
 	}
 	_, rows, err := cat.Select(stmt, nil)
 	if err != nil {
@@ -241,8 +241,8 @@ func TestCovDeep_SelectOrderBy(t *testing.T) {
 
 	// ORDER BY DESC
 	stmt2 := &query.SelectStmt{
-		From:     &query.TableRef{Name: "sel_order"},
-		OrderBy:  []*query.OrderByExpr{{Expr: &query.QualifiedIdentifier{Column: "val"}, Desc: true}},
+		From:    &query.TableRef{Name: "sel_order"},
+		OrderBy: []*query.OrderByExpr{{Expr: &query.QualifiedIdentifier{Column: "val"}, Desc: true}},
 	}
 	_, rows2, err := cat.Select(stmt2, nil)
 	if err != nil {

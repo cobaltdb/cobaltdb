@@ -8,10 +8,10 @@ import (
 // TestV36AnalyticalQueries simulates real business analytical/reporting scenarios.
 //
 // Four domains are covered:
-//   1. Sales Analytics Dashboard  (tests  1-22)
-//   2. HR Analytics               (tests 23-38)
-//   3. Inventory Management       (tests 39-54)
-//   4. Financial Reporting        (tests 55-72)
+//  1. Sales Analytics Dashboard  (tests  1-22)
+//  2. HR Analytics               (tests 23-38)
+//  3. Inventory Management       (tests 39-54)
+//  4. Financial Reporting        (tests 55-72)
 //
 // All table names carry the v36_ prefix to prevent collisions with other test files.
 //

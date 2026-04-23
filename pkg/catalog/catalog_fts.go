@@ -161,4 +161,4 @@ func (c *Catalog) ListFTSIndexes() []string {
 	}
 	sort.Strings(names)
 	return names
-}
+}

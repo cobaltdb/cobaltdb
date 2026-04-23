@@ -21,6 +21,7 @@ import (
 //  7. Type coercion edge cases          (tests T1-T8)
 //  8. JOIN edge cases                   (tests J1-J10)
 //  9. INSERT / UPDATE edge cases        (tests I1-I10)
+//
 // 10. Aggregate edge cases              (tests A1-A10)
 //
 // All table names carry the v38_ prefix to prevent collisions.

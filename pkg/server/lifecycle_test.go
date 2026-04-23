@@ -196,8 +196,8 @@ func TestLifecycleHealthCheck(t *testing.T) {
 		healthy: true,
 	}
 	unhealthyComp := &MockComponent{
-		name:    "unhealthy",
-		healthy: false,
+		name:          "unhealthy",
+		healthy:       false,
 		healthMessage: "unhealthy for testing",
 	}
 

@@ -34,7 +34,7 @@ func TestCoverage_selectLockedComplexWhere(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "complex_where",
 			Columns: []string{"id", "a", "b", "c"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(i%5)), numReal(float64(i%7)), strReal("val")}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(i % 5)), numReal(float64(i % 7)), strReal("val")}},
 		}, nil)
 	}
 
@@ -321,7 +321,7 @@ func TestCoverage_deleteWithUsingLockedMultipleConditions(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "del_multi_main",
 			Columns: []string{"id", "cat_id", "status"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i%4)+1)), strReal("active")}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i % 4) + 1)), strReal("active")}},
 		}, nil)
 	}
 
@@ -379,7 +379,7 @@ func TestCoverage_executeSelectWithJoinAndGroupByAggregates(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "agg_main",
 			Columns: []string{"id", "cat_id", "amount"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i%4)+1)), numReal(float64(i * 5))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i % 4) + 1)), numReal(float64(i * 5))}},
 		}, nil)
 	}
 

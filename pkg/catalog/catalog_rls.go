@@ -91,7 +91,8 @@ func (c *Catalog) CheckRLSForDelete(ctx context.Context, tableName string, row m
 	}
 
 	return c.rlsManager.CheckAccess(ctx, tableName, security.PolicyDelete, row, user, roles)
-}
+}
+
 // applyRLSFilterInternal is a lock-free version of ApplyRLSFilter for use
 // within methods that already hold the catalog lock (selectLocked, etc.).
 func (c *Catalog) applyRLSFilterInternal(ctx context.Context, tableName string, columns []string, rows [][]interface{}, user string, roles []string) ([]string, [][]interface{}, error) {

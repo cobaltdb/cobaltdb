@@ -85,14 +85,14 @@ func TestV32RealWorldScenarios(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO orders (customer_id, order_date, status) VALUES (5, '2024-02-28', 'cancelled')")
 
 	// Insert order items
-	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (1, 1, 3)")  // Alice: 3 Widgets
-	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (1, 2, 1)")  // Alice: 1 Gadget
-	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (2, 3, 1)")  // Alice: 1 Phone
-	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (3, 1, 5)")  // Bob: 5 Widgets
-	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (3, 4, 2)")  // Bob: 2 Cables
-	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (4, 5, 1)")  // Charlie: 1 Screen
-	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (5, 2, 2)")  // Diana: 2 Gadgets
-	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (6, 3, 1)")  // Eve: 1 Phone (cancelled)
+	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (1, 1, 3)") // Alice: 3 Widgets
+	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (1, 2, 1)") // Alice: 1 Gadget
+	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (2, 3, 1)") // Alice: 1 Phone
+	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (3, 1, 5)") // Bob: 5 Widgets
+	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (3, 4, 2)") // Bob: 2 Cables
+	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (4, 5, 1)") // Charlie: 1 Screen
+	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (5, 2, 2)") // Diana: 2 Gadgets
+	afExec(t, db, ctx, "INSERT INTO order_items (order_id, product_id, quantity) VALUES (6, 3, 1)") // Eve: 1 Phone (cancelled)
 
 	// === Queries ===
 
@@ -166,9 +166,9 @@ func TestV32RealWorldScenarios(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO tags (name) VALUES ('tips')")
 
 	// Post tags
-	afExec(t, db, ctx, "INSERT INTO post_tags (post_id, tag_id) VALUES (1, 1)")  // Getting Started: tutorial
-	afExec(t, db, ctx, "INSERT INTO post_tags (post_id, tag_id) VALUES (2, 2)")  // Advanced Tips: advanced
-	afExec(t, db, ctx, "INSERT INTO post_tags (post_id, tag_id) VALUES (2, 3)")  // Advanced Tips: tips
+	afExec(t, db, ctx, "INSERT INTO post_tags (post_id, tag_id) VALUES (1, 1)") // Getting Started: tutorial
+	afExec(t, db, ctx, "INSERT INTO post_tags (post_id, tag_id) VALUES (2, 2)") // Advanced Tips: advanced
+	afExec(t, db, ctx, "INSERT INTO post_tags (post_id, tag_id) VALUES (2, 3)") // Advanced Tips: tips
 
 	// Queries
 	check("Published post count", "SELECT COUNT(*) FROM posts WHERE status = 'published'", 2)

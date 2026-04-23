@@ -618,15 +618,15 @@ func TestInsertLockedWithSelectUnionFinal(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t1",
+		Table:   "t1",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "val", Type: query.TokenInteger}},
 	})
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t2",
+		Table:   "t2",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "val", Type: query.TokenInteger}},
 	})
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t3",
+		Table:   "t3",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "val", Type: query.TokenInteger}},
 	})
 

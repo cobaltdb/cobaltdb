@@ -19,8 +19,8 @@ func TestCompilerModuleGeneration(t *testing.T) {
 
 	// Check for expected imports
 	expectedImports := map[string]bool{
-		"env:tableScan":    false,
-		"env:filterRow":    false,
+		"env:tableScan":     false,
+		"env:filterRow":     false,
 		"env:compareValues": false,
 	}
 

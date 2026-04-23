@@ -21,6 +21,7 @@ import (
 //  7. Expressions in UPDATE SET           (tests US1-US8)
 //  8. Expressions in JOINs               (tests JE1-JE8)
 //  9. Expressions in subqueries          (tests SQ1-SQ8)
+//
 // 10. Complex combined expressions        (tests CC1-CC10)
 //
 // Total target: 90+ tests.

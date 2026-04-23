@@ -54,11 +54,11 @@ type AlertRule struct {
 
 // AlertManager manages alerting rules and notifications
 type AlertManager struct {
-	rules      map[string]*AlertRule
-	alerts     []Alert
-	handlers   []AlertHandler
-	mu         sync.RWMutex
-	stopCh     chan struct{}
+	rules         map[string]*AlertRule
+	alerts        []Alert
+	handlers      []AlertHandler
+	mu            sync.RWMutex
+	stopCh        chan struct{}
 	checkInterval time.Duration
 }
 

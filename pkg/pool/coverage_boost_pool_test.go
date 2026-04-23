@@ -61,7 +61,7 @@ func TestIsExpiredWithIdleTime(t *testing.T) {
 
 	// Connection with zero idle time should not be expired
 	conn3 := &Conn{
-		createdAt:   time.Now(),
+		createdAt:      time.Now(),
 		lastUsedAtNano: time.Now().Add(-2 * time.Hour).UnixNano(),
 	}
 	atomic.StoreInt32(&conn3.inUse, 0)

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
-	"github.com/cobaltdb/cobaltdb/pkg/btree"
 )
 
 // TestInsertLockedTypeConversions tests INSERT...SELECT with various types
@@ -216,10 +216,10 @@ func TestUpdateLockedWithTriggerDML(t *testing.T) {
 
 	// Create trigger
 	c.CreateTrigger(&query.CreateTriggerStmt{
-		Name:      "update_audit_trigger_dml",
-		Table:     "update_trigger_main_dml",
-		Time:      "AFTER",
-		Event:     "UPDATE",
+		Name:  "update_audit_trigger_dml",
+		Table: "update_trigger_main_dml",
+		Time:  "AFTER",
+		Event: "UPDATE",
 		Body: []query.Statement{
 			&query.InsertStmt{
 				Table:   "update_audit_dml",

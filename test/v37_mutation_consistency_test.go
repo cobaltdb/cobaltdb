@@ -11,13 +11,13 @@ import (
 // trigger log counts, and view freshness.
 //
 // Seven domains are covered:
-//   1. Bulk UPDATE consistency          (tests  U1-U12)
-//   2. Bulk DELETE consistency          (tests  D1-D12)
-//   3. INSERT patterns                  (tests  I1-I11)
-//   4. Transaction consistency          (tests  T1-T12)
-//   5. FK cascade chains                (tests  F1-F12)
-//   6. Index consistency under mutation (tests  X1-X12)
-//   7. Complex mutation sequences       (tests  C1-C12)
+//  1. Bulk UPDATE consistency          (tests  U1-U12)
+//  2. Bulk DELETE consistency          (tests  D1-D12)
+//  3. INSERT patterns                  (tests  I1-I11)
+//  4. Transaction consistency          (tests  T1-T12)
+//  5. FK cascade chains                (tests  F1-F12)
+//  6. Index consistency under mutation (tests  X1-X12)
+//  7. Complex mutation sequences       (tests  C1-C12)
 //
 // All table names carry the v37_ prefix to prevent collisions with other test
 // files. Expected values are derived by hand with inline arithmetic comments.

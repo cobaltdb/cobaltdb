@@ -15,12 +15,12 @@ import (
 )
 
 var (
-	ErrTxnCommitted    = errors.New("transaction already committed")
-	ErrTxnAborted      = errors.New("transaction already aborted")
-	ErrConflict        = errors.New("transaction conflict")
-	ErrTxnNotFound     = errors.New("transaction not found")
+	ErrTxnCommitted     = errors.New("transaction already committed")
+	ErrTxnAborted       = errors.New("transaction already aborted")
+	ErrConflict         = errors.New("transaction conflict")
+	ErrTxnNotFound      = errors.New("transaction not found")
 	ErrDeadlockDetected = errors.New("deadlock detected")
-	ErrTxnTimeout      = errors.New("transaction timeout")
+	ErrTxnTimeout       = errors.New("transaction timeout")
 )
 
 // IsolationLevel represents transaction isolation levels
@@ -43,10 +43,10 @@ const (
 
 // Options contains transaction options
 type Options struct {
-	Isolation        IsolationLevel
-	ReadOnly         bool
-	Timeout          time.Duration // Transaction timeout (0 = no timeout)
-	LockWaitTimeout  time.Duration // Max time to wait for a lock (0 = default 5s)
+	Isolation       IsolationLevel
+	ReadOnly        bool
+	Timeout         time.Duration // Transaction timeout (0 = no timeout)
+	LockWaitTimeout time.Duration // Max time to wait for a lock (0 = default 5s)
 }
 
 // DefaultOptions returns default transaction options
@@ -54,7 +54,7 @@ func DefaultOptions() *Options {
 	return &Options{
 		Isolation:       SnapshotIsolation,
 		ReadOnly:        false,
-		Timeout:         0,             // No default timeout
+		Timeout:         0,               // No default timeout
 		LockWaitTimeout: 5 * time.Second, // 5 second lock wait timeout
 	}
 }
@@ -72,11 +72,11 @@ type Transaction struct {
 	manager   *Manager
 
 	// Deadlock detection and timeout fields
-	ctx           context.Context    // Transaction context for timeout/cancellation
-	cancel        context.CancelFunc // Cancel function for cleanup
-	waitingFor    uint64             // Transaction ID this txn is waiting for (deadlock detection)
-	waitingSince  time.Time          // When this txn started waiting
-	locksHeld     map[string]bool    // Keys this transaction currently holds locks on
+	ctx          context.Context    // Transaction context for timeout/cancellation
+	cancel       context.CancelFunc // Cancel function for cleanup
+	waitingFor   uint64             // Transaction ID this txn is waiting for (deadlock detection)
+	waitingSince time.Time          // When this txn started waiting
+	locksHeld    map[string]bool    // Keys this transaction currently holds locks on
 }
 
 // SetWaitingFor sets which transaction this one is waiting for (deadlock detection)

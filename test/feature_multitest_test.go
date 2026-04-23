@@ -833,7 +833,7 @@ func TestStringOpsMultiWay(t *testing.T) {
 	expectVal(t, db, ctx, "SELECT first || ' ' || last FROM people WHERE id = 1", "John Doe")
 
 	// Way 3: LIKE patterns
-	expectRows(t, db, ctx, "SELECT * FROM words WHERE word LIKE 'H%'", 1)   // Hello
+	expectRows(t, db, ctx, "SELECT * FROM words WHERE word LIKE 'H%'", 1)    // Hello
 	expectRows(t, db, ctx, "SELECT * FROM words WHERE word LIKE '%l%'", 3)   // Hello, World, CobaltDB
 	expectRows(t, db, ctx, "SELECT * FROM words WHERE word LIKE '____o'", 1) // Hello (5 chars ending in o)
 
@@ -935,7 +935,7 @@ func TestDDLMultiWay(t *testing.T) {
 
 	// Way 2: CREATE TABLE IF NOT EXISTS
 	mustExec(t, db, ctx, "CREATE TABLE IF NOT EXISTS t1 (id INTEGER PRIMARY KEY, name TEXT)") // hata vermemeli
-	expectRows(t, db, ctx, "SELECT * FROM t1", 1) // veri kaybolmamalı
+	expectRows(t, db, ctx, "SELECT * FROM t1", 1)                                             // veri kaybolmamalı
 
 	// Way 3: DROP TABLE
 	mustExec(t, db, ctx, "CREATE TABLE t2 (id INTEGER PRIMARY KEY)")

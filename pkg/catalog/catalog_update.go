@@ -100,40 +100,40 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		}
 
 		for iter.HasNext() {
-		key, valueData, err := iter.Next()
-		if err != nil {
-			break
-		}
-
-		// Decode row with version info
-		vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-		if err != nil {
-			continue
-		}
-		row := vrow.Data
-
-		// Skip soft-deleted rows
-		if vrow.Version.DeletedAt > 0 {
-			continue
-		}
-
-		// Apply WHERE clause if present
-		if stmt.Where != nil {
-			matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+			key, valueData, err := iter.Next()
 			if err != nil {
-				return 0, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+				break
 			}
-			if !matched {
-				continue // Skip row that doesn't match WHERE condition
-			}
-		}
 
-		if err := c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
-			return 0, rowsAffected, err
+			// Decode row with version info
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil {
+				continue
+			}
+			row := vrow.Data
+
+			// Skip soft-deleted rows
+			if vrow.Version.DeletedAt > 0 {
+				continue
+			}
+
+			// Apply WHERE clause if present
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+				if err != nil {
+					return 0, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+				}
+				if !matched {
+					continue // Skip row that doesn't match WHERE condition
+				}
+			}
+
+			if err := c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
+				return 0, rowsAffected, err
+			}
 		}
+		iter.Close()
 	}
-	iter.Close()
-}
 
 	// Apply updates
 	pkColIdx := -1
@@ -1040,4 +1040,4 @@ func (c *Catalog) updateRowLocked(tableName string, pkValue interface{}, row map
 
 	// Update in BTree
 	return tree.Put(key, data)
-}
+}

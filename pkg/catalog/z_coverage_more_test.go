@@ -38,7 +38,7 @@ func TestGetPartitionTreeNames101(t *testing.T) {
 				{Name: "p1"},
 				{Name: "p2"},
 				{Name: "p3"},
-				},
+			},
 		},
 	}
 	names2 := table2.getPartitionTreeNames()

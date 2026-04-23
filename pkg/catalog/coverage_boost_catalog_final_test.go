@@ -116,9 +116,9 @@ func TestCoverage_deleteWithUsingLockedWithIndex(t *testing.T) {
 
 	// Create index
 	c.CreateIndex(&query.CreateIndexStmt{
-		Index:     "idx_del_code",
-		Table:     "del_idx_main",
-		Columns:   []string{"code"},
+		Index:   "idx_del_code",
+		Table:   "del_idx_main",
+		Columns: []string{"code"},
 	})
 
 	// Insert data
@@ -126,7 +126,7 @@ func TestCoverage_deleteWithUsingLockedWithIndex(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "del_idx_main",
 			Columns: []string{"id", "ref_id", "code"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i%3)+1)), strReal("code" + string(rune('0'+i%10)))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i % 3) + 1)), strReal("code" + string(rune('0'+i%10)))}},
 		}, nil)
 	}
 

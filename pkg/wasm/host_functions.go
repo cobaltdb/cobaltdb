@@ -801,7 +801,9 @@ func (h *HostFunctions) intersectResults(rt *Runtime, params []uint64) ([]uint64
 // windowFunction computes window functions like ROW_NUMBER, RANK, LAG, LEAD, etc.
 // Params: [inPtr, rowCount, funcType, outPtr, arg1, arg2] -> Returns: success
 // funcType: 0=ROW_NUMBER, 1=RANK, 2=DENSE_RANK, 3=LAG, 4=LEAD, 5=FIRST_VALUE, 6=LAST_VALUE
-//           10=SUM, 11=AVG, 12=MIN, 13=MAX, 14=COUNT
+//
+//	10=SUM, 11=AVG, 12=MIN, 13=MAX, 14=COUNT
+//
 // arg1: offset for LAG/LEAD (default 1), or input column pointer for aggregates
 // arg2: default value for LAG/LEAD (0 if not specified)
 func (h *HostFunctions) windowFunction(rt *Runtime, params []uint64) ([]uint64, error) {

@@ -143,7 +143,7 @@ func TestV23FunctionsAndParser(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO like_patterns VALUES (3, 'a%c')")
 	afExec(t, db, ctx, "INSERT INTO like_patterns VALUES (4, 'xyz')")
 
-	checkRowCount("LIKE percent", "SELECT * FROM like_patterns WHERE val LIKE 'a%'", 3) // abc, ABC (case-insensitive), a%c
+	checkRowCount("LIKE percent", "SELECT * FROM like_patterns WHERE val LIKE 'a%'", 3)     // abc, ABC (case-insensitive), a%c
 	checkRowCount("LIKE underscore", "SELECT * FROM like_patterns WHERE val LIKE '_bc'", 2) // abc, ABC (case-insensitive)
 
 	// ============================================================

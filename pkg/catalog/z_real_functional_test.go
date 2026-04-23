@@ -788,10 +788,10 @@ func TestReal_Distinct(t *testing.T) {
 
 	// SELECT DISTINCT category
 	_, rows, err := cat.Select(&query.SelectStmt{
-		Columns:         []query.Expression{colReal("category")},
-		From:            &query.TableRef{Name: "orders"},
-		Distinct:        true,
-		OrderBy:         []*query.OrderByExpr{{Expr: colReal("category")}},
+		Columns:  []query.Expression{colReal("category")},
+		From:     &query.TableRef{Name: "orders"},
+		Distinct: true,
+		OrderBy:  []*query.OrderByExpr{{Expr: colReal("category")}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("DISTINCT failed: %v", err)
@@ -1178,8 +1178,8 @@ func TestReal_StatsCollectStats(t *testing.T) {
 
 	// Create table with NULL values for collectColumnStats
 	cat.CreateTable(&query.CreateTableStmt{
-		Table:      "stats_null_test",
-		Columns:    []*query.ColumnDef{
+		Table: "stats_null_test",
+		Columns: []*query.ColumnDef{
 			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
 			{Name: "val", Type: query.TokenInteger},
 		},
@@ -1709,8 +1709,8 @@ func TestReal_ExistsSubquery(t *testing.T) {
 }
 
 // Helpers
-func numReal(v float64) *query.NumberLiteral         { return &query.NumberLiteral{Value: v} }
-func strReal(s string) *query.StringLiteral          { return &query.StringLiteral{Value: s} }
+func numReal(v float64) *query.NumberLiteral { return &query.NumberLiteral{Value: v} }
+func strReal(s string) *query.StringLiteral  { return &query.StringLiteral{Value: s} }
 
 // createCoverageTestTable helper for coverage tests
 func createCoverageTestTable(t *testing.T, cat *Catalog, name string, cols []*query.ColumnDef) {

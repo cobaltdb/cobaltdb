@@ -51,7 +51,7 @@ func TestCoverage_executeSelectWithJoinAndGroupByBasic(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "jgb_orders",
 			Columns: []string{"id", "customer_id", "amount"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i%4)+1)), numReal(float64(i * 10))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i % 4) + 1)), numReal(float64(i * 10))}},
 		}, nil)
 	}
 
@@ -189,7 +189,7 @@ func TestCoverage_executeSelectWithJoinAndGroupByWithHaving(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "jgbh_sales",
 			Columns: []string{"id", "store_id", "amount"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i%4)+1)), numReal(float64(amount))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i % 4) + 1)), numReal(float64(amount))}},
 		}, nil)
 	}
 
@@ -246,7 +246,7 @@ func TestCoverage_executeSelectWithJoinAndGroupByWithOrderBy(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "jgbo_items",
 			Columns: []string{"id", "vendor_id", "cost"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i%5)+1)), numReal(float64((6-i%5) * 100))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i % 5) + 1)), numReal(float64((6 - i%5) * 100))}},
 		}, nil)
 	}
 
@@ -303,7 +303,7 @@ func TestCoverage_executeSelectWithJoinAndGroupByLeftJoin(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "jgl_employees",
 			Columns: []string{"id", "dept_id", "name"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i%3)+1)), strReal("Emp" + string(rune('0'+i)))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i % 3) + 1)), strReal("Emp" + string(rune('0'+i)))}},
 		}, nil)
 	}
 
@@ -366,7 +366,7 @@ func TestCoverage_executeSelectWithJoinAndGroupByExpressionGroupBy(t *testing.T)
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "jge_transactions",
 			Columns: []string{"id", "account_id", "amount", "tx_type"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i%3)+1)), numReal(float64(i * 10)), strReal(txType)}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i % 3) + 1)), numReal(float64(i * 10)), strReal(txType)}},
 		}, nil)
 	}
 
@@ -424,7 +424,7 @@ func TestCoverage_executeSelectWithJoinAndGroupByQualifiedIdentifier(t *testing.
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "jgq_inventory",
 			Columns: []string{"id", "warehouse_id", "quantity"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i%3)+1)), numReal(float64(i * 5))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i % 3) + 1)), numReal(float64(i * 5))}},
 		}, nil)
 	}
 
@@ -481,7 +481,7 @@ func TestCoverage_executeSelectWithJoinAndGroupByLimitOffset(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "jglo_data",
 			Columns: []string{"id", "group_id", "value"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i%10)+1)), numReal(float64(i))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64((i % 10) + 1)), numReal(float64(i))}},
 		}, nil)
 	}
 
@@ -616,7 +616,7 @@ func TestCoverage_executeSelectWithJoinAndGroupByCrossJoin(t *testing.T) {
 			c.Insert(ctx, &query.InsertStmt{
 				Table:   "jgc_inventory",
 				Columns: []string{"color_id", "size_id", "quantity"},
-				Values:  [][]query.Expression{{numReal(float64(ci)), numReal(float64(si)), numReal(float64(ci*si*10))}},
+				Values:  [][]query.Expression{{numReal(float64(ci)), numReal(float64(si)), numReal(float64(ci * si * 10))}},
 			}, nil)
 		}
 	}

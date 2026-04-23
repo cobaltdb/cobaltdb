@@ -1015,8 +1015,8 @@ func TestBTree_LoadFromPages_TruncatedKey(t *testing.T) {
 	// Write: totalCount=5, overflowCount=0, then NO KV data at all
 	// This hits the "offset+2 > len(allData)" break in deserialization
 	pageData := rootPage.Data()[storage.PageHeaderSize:]
-	binary.LittleEndian.PutUint32(pageData[0:4], 5)  // totalCount
-	binary.LittleEndian.PutUint32(pageData[4:8], 0)   // overflowCount
+	binary.LittleEndian.PutUint32(pageData[0:4], 5) // totalCount
+	binary.LittleEndian.PutUint32(pageData[4:8], 0) // overflowCount
 	rootPage.SetDirty(true)
 	pool.Unpin(rootPage)
 	pool.FlushAll()
@@ -1043,7 +1043,7 @@ func TestBTree_LoadFromPages_TruncatedKeyData(t *testing.T) {
 	// Write: totalCount=1, overflowCount=0, then keyLen=100 but only 2 bytes of data
 	// This hits the "offset+keyLen > len(allData)" break
 	pageData := rootPage.Data()[storage.PageHeaderSize:]
-	binary.LittleEndian.PutUint32(pageData[0:4], 1)   // totalCount
+	binary.LittleEndian.PutUint32(pageData[0:4], 1)    // totalCount
 	binary.LittleEndian.PutUint32(pageData[4:8], 0)    // overflowCount
 	binary.LittleEndian.PutUint16(pageData[8:10], 100) // keyLen = 100 (but no space)
 	rootPage.SetDirty(true)
@@ -1151,7 +1151,7 @@ func TestBTree_LoadFromPages_TruncatedValueLen(t *testing.T) {
 	// Write a valid key but insufficient space for the 4-byte value length
 	pageData := rootPage.Data()[storage.PageHeaderSize:]
 	binary.LittleEndian.PutUint32(pageData[0:4], 1) // totalCount
-	binary.LittleEndian.PutUint32(pageData[4:8], 0)  // overflowCount
+	binary.LittleEndian.PutUint32(pageData[4:8], 0) // overflowCount
 	// Write key: keyLen=3, key="abc"
 	binary.LittleEndian.PutUint16(pageData[8:10], 3) // keyLen
 	copy(pageData[10:13], []byte("abc"))
@@ -1204,7 +1204,7 @@ func TestBTree_LoadFromPages_CorruptOverflowHeader(t *testing.T) {
 	// Write a huge overflowCount that makes headerSize exceed pageData length
 	pageData := rootPage.Data()[storage.PageHeaderSize:]
 	binary.LittleEndian.PutUint32(pageData[0:4], 5)      // totalCount
-	binary.LittleEndian.PutUint32(pageData[4:8], 999999)  // overflowCount (way too many)
+	binary.LittleEndian.PutUint32(pageData[4:8], 999999) // overflowCount (way too many)
 
 	rootPage.SetDirty(true)
 	pool.Unpin(rootPage)
@@ -1894,7 +1894,7 @@ func TestBTree_ReadKVFromPages_OverflowGetPageError(t *testing.T) {
 	rootPage, _ := pool.GetPage(tree.RootPageID())
 	pageData := rootPage.Data()[storage.PageHeaderSize:]
 	// Set overflowCount = 1 and overflow page ID = 99999 (nonexistent)
-	binary.LittleEndian.PutUint32(pageData[4:8], 1) // overflowCount = 1
+	binary.LittleEndian.PutUint32(pageData[4:8], 1)      // overflowCount = 1
 	binary.LittleEndian.PutUint32(pageData[8:12], 99999) // invalid page ID
 	rootPage.SetDirty(true)
 	pool.Unpin(rootPage)
@@ -1936,7 +1936,7 @@ func TestBTree_LoadFromPages_OverflowPageError(t *testing.T) {
 	rootID := rootPage.ID()
 
 	pageData := rootPage.Data()[storage.PageHeaderSize:]
-	binary.LittleEndian.PutUint32(pageData[0:4], 5)     // totalCount = 5
+	binary.LittleEndian.PutUint32(pageData[0:4], 5)      // totalCount = 5
 	binary.LittleEndian.PutUint32(pageData[4:8], 1)      // overflowCount = 1
 	binary.LittleEndian.PutUint32(pageData[8:12], 99999) // invalid overflow page ID
 	rootPage.SetDirty(true)
@@ -2033,8 +2033,8 @@ func TestBTree_LoadFromPages_TruncatedValueData2(t *testing.T) {
 	rootID := rootPage.ID()
 
 	pageData := rootPage.Data()[storage.PageHeaderSize:]
-	binary.LittleEndian.PutUint32(pageData[0:4], 1)  // totalCount = 1
-	binary.LittleEndian.PutUint32(pageData[4:8], 0)   // overflowCount = 0
+	binary.LittleEndian.PutUint32(pageData[0:4], 1) // totalCount = 1
+	binary.LittleEndian.PutUint32(pageData[4:8], 0) // overflowCount = 0
 	// Write key: keyLen=2, key="ab"
 	binary.LittleEndian.PutUint16(pageData[8:10], 2)
 	copy(pageData[10:12], []byte("ab"))

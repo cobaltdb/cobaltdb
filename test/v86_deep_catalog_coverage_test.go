@@ -968,8 +968,8 @@ func TestV86_TriggerWhenArithmetic(t *testing.T) {
 			INSERT INTO twa_log VALUES ('expensive_order');
 		END`)
 
-	afExec(t, db, ctx, "INSERT INTO twa VALUES (1, 5, 10)")    // 50 - skip
-	afExec(t, db, ctx, "INSERT INTO twa VALUES (2, 20, 10)")   // 200 - fire
+	afExec(t, db, ctx, "INSERT INTO twa VALUES (1, 5, 10)")  // 50 - skip
+	afExec(t, db, ctx, "INSERT INTO twa VALUES (2, 20, 10)") // 200 - fire
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM twa_log", float64(1))
 }
 
@@ -1181,11 +1181,11 @@ func TestV86_SavepointWithTriggerWhen(t *testing.T) {
 		END`)
 
 	afExec(t, db, ctx, "BEGIN TRANSACTION")
-	afExec(t, db, ctx, "INSERT INTO sptw VALUES (1, 10)")   // no trigger
+	afExec(t, db, ctx, "INSERT INTO sptw VALUES (1, 10)") // no trigger
 	afExec(t, db, ctx, "SAVEPOINT sp1")
-	afExec(t, db, ctx, "INSERT INTO sptw VALUES (2, 100)")  // trigger fires
-	afExec(t, db, ctx, "ROLLBACK TO SAVEPOINT sp1")         // undo insert + trigger
-	afExec(t, db, ctx, "INSERT INTO sptw VALUES (3, 75)")   // trigger fires
+	afExec(t, db, ctx, "INSERT INTO sptw VALUES (2, 100)") // trigger fires
+	afExec(t, db, ctx, "ROLLBACK TO SAVEPOINT sp1")        // undo insert + trigger
+	afExec(t, db, ctx, "INSERT INTO sptw VALUES (3, 75)")  // trigger fires
 	afExec(t, db, ctx, "COMMIT")
 
 	afExpectVal(t, db, ctx, "SELECT COUNT(*) FROM sptw", float64(2))

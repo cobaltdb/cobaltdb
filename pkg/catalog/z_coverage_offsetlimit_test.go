@@ -10,7 +10,7 @@ import (
 func TestApplyOffsetLimit_Basic(t *testing.T) {
 	c := New(nil, nil, nil)
 	_ = c
-	
+
 	// Test data
 	rows := [][]interface{}{
 		{"row1"},
@@ -19,7 +19,7 @@ func TestApplyOffsetLimit_Basic(t *testing.T) {
 		{"row4"},
 		{"row5"},
 	}
-	
+
 	tests := []struct {
 		name     string
 		offset   query.Expression
@@ -70,7 +70,7 @@ func TestApplyOffsetLimit_Basic(t *testing.T) {
 			expected: 5,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := applyOffsetLimit(rows, tt.offset, tt.limit, tt.args)
@@ -86,17 +86,17 @@ func TestApplyOffsetLimit_WithArgs(t *testing.T) {
 	rows := [][]interface{}{
 		{"a"}, {"b"}, {"c"}, {"d"}, {"e"},
 	}
-	
+
 	// Test with placeholder expression
 	offsetExpr := &query.PlaceholderExpr{Index: 0}
 	limitExpr := &query.PlaceholderExpr{Index: 1}
 	args := []interface{}{1, 2}
-	
+
 	result := applyOffsetLimit(rows, offsetExpr, limitExpr, args)
 	if len(result) != 2 {
 		t.Errorf("expected 2 rows, got %d", len(result))
 	}
-	
+
 	// Verify correct rows
 	if result[0][0] != "b" || result[1][0] != "c" {
 		t.Error("wrong rows returned")

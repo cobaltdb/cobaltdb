@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"context"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
-	"context"
 )
 
 // TestParseSystemTimeExpr tests parseSystemTimeExpr function
@@ -55,14 +55,14 @@ func TestParseSystemTimeExpr(t *testing.T) {
 			isPast: false,
 		},
 		{
-			name:   "RFC3339 format",
-			expr:   "2026-03-17T10:00:00Z",
-			isRFC:  true,
+			name:  "RFC3339 format",
+			expr:  "2026-03-17T10:00:00Z",
+			isRFC: true,
 		},
 		{
-			name:   "datetime format",
-			expr:   "2026-03-17 10:00:00",
-			isRFC:  true,
+			name:  "datetime format",
+			expr:  "2026-03-17 10:00:00",
+			isRFC: true,
 		},
 		{
 			name:   "unknown format defaults to now",

@@ -907,9 +907,9 @@ func TestCopyFileLargeFile(t *testing.T) {
 
 type MockDatabaseWithErrors struct {
 	MockDatabase
-	checkpointError    error
-	beginBackupError   error
-	endBackupError     error
+	checkpointError  error
+	beginBackupError error
+	endBackupError   error
 }
 
 func (m *MockDatabaseWithErrors) Checkpoint() error {
@@ -971,7 +971,7 @@ func TestCreateBackupBeginHotBackupError(t *testing.T) {
 	config.BackupDir = filepath.Join(tempDir, "backups")
 
 	db := &MockDatabaseWithErrors{
-		MockDatabase:   MockDatabase{dbPath: dbFile},
+		MockDatabase:     MockDatabase{dbPath: dbFile},
 		beginBackupError: errors.New("begin hot backup failed"),
 	}
 	mgr := NewManager(config, db)

@@ -314,9 +314,9 @@ type candidate struct {
 // candidateHeap is a min-heap for candidates
 type candidateHeap []candidate
 
-func (h candidateHeap) Len() int           { return len(h) }
-func (h candidateHeap) Less(i, j int) bool { return h[i].Distance < h[j].Distance }
-func (h candidateHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h candidateHeap) Len() int            { return len(h) }
+func (h candidateHeap) Less(i, j int) bool  { return h[i].Distance < h[j].Distance }
+func (h candidateHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
 func (h *candidateHeap) Push(x interface{}) { *h = append(*h, x.(candidate)) }
 func (h *candidateHeap) Pop() interface{} {
 	old := *h
@@ -515,6 +515,6 @@ type VectorIndexDef struct {
 	TableName  string
 	ColumnName string
 	Dimensions int
-	IndexType  string // "hnsw", "ivf", etc.
+	IndexType  string     // "hnsw", "ivf", etc.
 	HNSW       *HNSWIndex `json:"-"` // Runtime index, not persisted
 }

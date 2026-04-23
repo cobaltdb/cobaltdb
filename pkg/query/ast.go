@@ -117,9 +117,8 @@ type DeleteStmt struct {
 func (s *DeleteStmt) nodeType() string { return "DeleteStmt" }
 func (s *DeleteStmt) statementNode()   {}
 
-
 // PartitionType represents the type of partitioning
- type PartitionType int
+type PartitionType int
 
 const (
 	PartitionTypeNone PartitionType = iota
@@ -131,16 +130,16 @@ const (
 
 // PartitionDef represents table partitioning definition
 type PartitionDef struct {
-	Type       PartitionType
-	Column     string           // Column to partition by
-	Expression Expression       // Optional expression for partitioning
-	Partitions []*SinglePartition // Individual partition definitions
-	NumPartitions int           // For HASH/KEY partitioning
+	Type          PartitionType
+	Column        string             // Column to partition by
+	Expression    Expression         // Optional expression for partitioning
+	Partitions    []*SinglePartition // Individual partition definitions
+	NumPartitions int                // For HASH/KEY partitioning
 }
 
 // SinglePartition represents a single partition definition
 type SinglePartition struct {
-	Name  string
+	Name   string
 	Values []Expression // For RANGE/LIST (e.g., LESS THAN (100), IN (1,2,3))
 }
 

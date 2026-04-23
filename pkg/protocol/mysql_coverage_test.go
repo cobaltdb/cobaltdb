@@ -81,9 +81,9 @@ func TestWriteLenEncIntCoverage(t *testing.T) {
 		{"zero", 0, 1, 1},
 		{"small", 100, 1, 1},
 		{"250", 250, 1, 1},
-		{"251", 251, 3, 3},       // 0xFC + 2 bytes
-		{"65535", 65535, 3, 3},    // 0xFC + 2 bytes
-		{"65536", 65536, 4, 4},   // 0xFD + 3 bytes
+		{"251", 251, 3, 3},         // 0xFC + 2 bytes
+		{"65535", 65535, 3, 3},     // 0xFC + 2 bytes
+		{"65536", 65536, 4, 4},     // 0xFD + 3 bytes
 		{"large", 1<<24 + 1, 9, 9}, // 0xFE + 8 bytes
 	}
 

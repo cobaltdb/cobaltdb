@@ -11,12 +11,12 @@ import (
 //
 // Schema (all table names prefixed with v33_ to avoid collisions):
 //
-//   v33_dept        (id, name, budget)
-//   v33_emp         (id, name, dept_id, manager_id, salary, hire_year)
-//   v33_proj        (id, name, dept_id, budget)
-//   v33_assignment  (id, emp_id, proj_id, hours)
-//   v33_client      (id, name, country)
-//   v33_contract    (id, client_id, proj_id, value)
+//	v33_dept        (id, name, budget)
+//	v33_emp         (id, name, dept_id, manager_id, salary, hire_year)
+//	v33_proj        (id, name, dept_id, budget)
+//	v33_assignment  (id, emp_id, proj_id, hours)
+//	v33_client      (id, name, country)
+//	v33_contract    (id, client_id, proj_id, value)
 func TestV33AdvancedJoinsSubqueries(t *testing.T) {
 	db, ctx := af(t)
 	pass := 0

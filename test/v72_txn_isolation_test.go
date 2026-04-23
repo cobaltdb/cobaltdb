@@ -69,7 +69,7 @@ func TestV72TxnIsolation(t *testing.T) {
 	checkNoError("BT2 UPDATE", "UPDATE v72_basic SET val = 999 WHERE id = 1")
 	checkNoError("BT2 DELETE", "DELETE FROM v72_basic WHERE id = 2")
 	checkNoError("BT2 ROLLBACK", "ROLLBACK")
-	check("BT2 count", "SELECT COUNT(*) FROM v72_basic", 3) // unchanged
+	check("BT2 count", "SELECT COUNT(*) FROM v72_basic", 3)           // unchanged
 	check("BT2 val 1", "SELECT val FROM v72_basic WHERE id = 1", 150) // unchanged
 	check("BT2 val 2", "SELECT val FROM v72_basic WHERE id = 2", 200) // not deleted
 

@@ -85,7 +85,10 @@ func TestB124_GroupByOrderByBranches(t *testing.T) {
 	c := newCat124()
 	exec124(c, "CREATE TABLE b124_data (id INTEGER PRIMARY KEY, cat TEXT, val INTEGER)")
 	ctx := context.Background()
-	entries := []struct{ cat string; val int }{
+	entries := []struct {
+		cat string
+		val int
+	}{
 		{"X", 10}, {"Y", 30}, {"X", 20}, {"Z", 5}, {"Y", 15}, {"Z", 25},
 	}
 	for i, e := range entries {
@@ -386,7 +389,10 @@ func TestB124_ApplyOuterQueryBranches(t *testing.T) {
 	c := newCat124()
 	exec124(c, "CREATE TABLE b124_outer (id INTEGER PRIMARY KEY, dept TEXT, sal INTEGER)")
 	ctx := context.Background()
-	data := []struct{ dept string; sal int }{
+	data := []struct {
+		dept string
+		sal  int
+	}{
 		{"eng", 100}, {"eng", 200}, {"hr", 150}, {"hr", 80}, {"mg", 300},
 	}
 	for i, d := range data {

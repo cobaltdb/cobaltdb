@@ -516,9 +516,9 @@ func TestFKOnUpdateMultipleFKs(t *testing.T) {
 		productID  interface{}
 		quantity   int
 	}{
-		{1, 100, nil, 5},   // customer cascaded, product set null
-		{2, 100, 2, 3},     // customer cascaded, product unchanged
-		{3, 2, nil, 2},     // customer unchanged, product set null
+		{1, 100, nil, 5}, // customer cascaded, product set null
+		{2, 100, 2, 3},   // customer cascaded, product unchanged
+		{3, 2, nil, 2},   // customer unchanged, product set null
 	}
 
 	count := 0

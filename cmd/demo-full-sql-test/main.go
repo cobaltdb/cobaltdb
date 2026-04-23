@@ -14,9 +14,9 @@ import (
 )
 
 var (
-	stats    = &TestStats{}
-	db       *engine.DB
-	ctx      = context.Background()
+	stats       = &TestStats{}
+	db          *engine.DB
+	ctx         = context.Background()
 	colorGreen  = "\033[32m"
 	colorRed    = "\033[31m"
 	colorYellow = "\033[33m"
@@ -26,13 +26,13 @@ var (
 )
 
 type TestStats struct {
-	InsertOps   int64
-	SelectOps   int64
-	UpdateOps   int64
-	DeleteOps   int64
-	TxnOps      int64
-	ErrorOps    int64
-	TotalOps    int64
+	InsertOps int64
+	SelectOps int64
+	UpdateOps int64
+	DeleteOps int64
+	TxnOps    int64
+	ErrorOps  int64
+	TotalOps  int64
 }
 
 func main() {
@@ -189,10 +189,18 @@ func testDDL() {
 	}
 
 	// Indexes
-	if exec("CREATE INDEX idx_users_email ON test_users(email)") { success++ }
-	if exec("CREATE INDEX idx_users_age ON test_users(age)") { success++ }
-	if exec("CREATE INDEX idx_products_category ON test_products(category_id)") { success++ }
-	if exec("CREATE INDEX idx_orders_user ON test_orders(user_id)") { success++ }
+	if exec("CREATE INDEX idx_users_email ON test_users(email)") {
+		success++
+	}
+	if exec("CREATE INDEX idx_users_age ON test_users(age)") {
+		success++
+	}
+	if exec("CREATE INDEX idx_products_category ON test_products(category_id)") {
+		success++
+	}
+	if exec("CREATE INDEX idx_orders_user ON test_orders(user_id)") {
+		success++
+	}
 
 	// Views
 	exec("DROP VIEW IF EXISTS v_active_users")
@@ -315,7 +323,7 @@ func testSelects() {
 
 // Test 4: UPDATE
 func testUpdates() {
-	updates := []struct{
+	updates := []struct {
 		desc string
 		sql  string
 	}{
@@ -345,7 +353,7 @@ func testDeletes() {
 		exec("INSERT INTO test_logs (level, message) VALUES ('TEMP', 'temp')")
 	}
 
-	deletes := []struct{
+	deletes := []struct {
 		desc string
 		sql  string
 	}{
@@ -366,7 +374,7 @@ func testDeletes() {
 
 // Test 6: JOIN
 func testJoins() {
-	joins := []struct{
+	joins := []struct {
 		desc string
 		sql  string
 	}{

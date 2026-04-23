@@ -7,13 +7,13 @@ import (
 )
 
 // TestV76DeepCoverage targets the least-covered code paths in the SQL engine:
-// - Window functions: DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE
-// - SQL functions: REVERSE, REPEAT, LEFT, RIGHT, LPAD, RPAD, HEX, QUOTE, UNICODE, CHAR,
-//   ROUND, FLOOR, CEIL, PRINTF, GLOB, IIF, ZEROBLOB, CONCAT_WS, GROUP_CONCAT
-// - CAST edge cases
-// - ALTER TABLE DROP COLUMN
-// - Nested SAVEPOINT rollback
-// - ORDER BY edge cases
+//   - Window functions: DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE
+//   - SQL functions: REVERSE, REPEAT, LEFT, RIGHT, LPAD, RPAD, HEX, QUOTE, UNICODE, CHAR,
+//     ROUND, FLOOR, CEIL, PRINTF, GLOB, IIF, ZEROBLOB, CONCAT_WS, GROUP_CONCAT
+//   - CAST edge cases
+//   - ALTER TABLE DROP COLUMN
+//   - Nested SAVEPOINT rollback
+//   - ORDER BY edge cases
 func TestV76DeepCoverage(t *testing.T) {
 	db, ctx := af(t)
 	pass := 0

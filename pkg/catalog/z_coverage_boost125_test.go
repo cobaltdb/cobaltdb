@@ -423,8 +423,8 @@ func TestB125_StoreIndexDef(t *testing.T) {
 
 	// ErrIndexExists path
 	err2 := c.CreateIndex(&query.CreateIndexStmt{
-		Index:  "b125_st_name_idx",
-		Table:  "b125_st",
+		Index:   "b125_st_name_idx",
+		Table:   "b125_st",
 		Columns: []string{"name"},
 	})
 	if err2 != ErrIndexExists {
@@ -766,7 +766,7 @@ func TestB125_ToInt(t *testing.T) {
 	}
 
 	// int64 overflow
-	_, ok3 := toInt(int64(1<<62))
+	_, ok3 := toInt(int64(1 << 62))
 	t.Logf("toInt large int64 ok=%v", ok3)
 
 	// float64 branch

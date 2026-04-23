@@ -1087,9 +1087,9 @@ func TestBoost_TypeTaggedKey(t *testing.T) {
 		{nil, "\x01NULL\x01"},
 		{int64(42), "I:"},
 		{int64(-1), "I:"},
-		{float64(3.14), "F:"},    // non-integer float
-		{float64(100.0), "I:"},   // integer float (cast to integer path)
-		{float64(1e16), "F:"},    // too large for integer path
+		{float64(3.14), "F:"},  // non-integer float
+		{float64(100.0), "I:"}, // integer float (cast to integer path)
+		{float64(1e16), "F:"},  // too large for integer path
 		{true, "B:1"},
 		{false, "B:0"},
 		{[]byte("hello"), "S:"},

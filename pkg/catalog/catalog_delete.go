@@ -475,4 +475,4 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 	}
 
 	return tree.Put(key, deletedValueData)
-}
+}

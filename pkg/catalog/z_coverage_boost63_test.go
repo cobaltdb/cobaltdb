@@ -403,7 +403,7 @@ func TestCoverage_CastExpression(t *testing.T) {
 		cat.Insert(ctx, &query.InsertStmt{
 			Table:   "cast_test",
 			Columns: []string{"id", "num_str", "float_val"},
-			Values:  [][]query.Expression{{numReal(float64(i)), strReal(string(rune('0'+i))), numReal(float64(i) + 0.5)}},
+			Values:  [][]query.Expression{{numReal(float64(i)), strReal(string(rune('0' + i))), numReal(float64(i) + 0.5)}},
 		}, nil)
 	}
 

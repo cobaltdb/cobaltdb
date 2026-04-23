@@ -17,7 +17,6 @@
 //
 //	// Execute a query
 //	result, err := catalog.ExecuteQuery("SELECT * FROM users WHERE id = ?", 1)
-//
 package catalog
 
 import (

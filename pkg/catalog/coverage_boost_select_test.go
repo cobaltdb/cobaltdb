@@ -20,15 +20,15 @@ func TestSelectLockedWithMultipleJoins(t *testing.T) {
 
 	// Create three tables
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t1",
+		Table:   "t1",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "val", Type: query.TokenText}},
 	})
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t2",
+		Table:   "t2",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "t1_id", Type: query.TokenInteger}},
 	})
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t3",
+		Table:   "t3",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "t2_id", Type: query.TokenInteger}},
 	})
 
@@ -68,11 +68,11 @@ func TestSelectLockedWithLeftJoin(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t1",
+		Table:   "t1",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t2",
+		Table:   "t2",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "t1_id", Type: query.TokenInteger}},
 	})
 
@@ -107,11 +107,11 @@ func TestSelectLockedWithWhereInSubquery(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t1",
+		Table:   "t1",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t2",
+		Table:   "t2",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "val", Type: query.TokenInteger}},
 	})
 
@@ -145,11 +145,11 @@ func TestSelectLockedWithExistsSubquery(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "parent",
+		Table:   "parent",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "child",
+		Table:   "child",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "parent_id", Type: query.TokenInteger}},
 	})
 
@@ -183,7 +183,7 @@ func TestSelectLockedWithCaseExpression(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "test",
+		Table:   "test",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}, {Name: "val", Type: query.TokenInteger}},
 	})
 
@@ -212,7 +212,7 @@ func TestSelectLockedWithLimitOffset(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "test",
+		Table:   "test",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 
@@ -369,11 +369,11 @@ func TestSelectLockedWithCrossJoin(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t1",
+		Table:   "t1",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t2",
+		Table:   "t2",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 
@@ -444,11 +444,11 @@ func TestSelectLockedWithUnionAll(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t1",
+		Table:   "t1",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t2",
+		Table:   "t2",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 
@@ -482,11 +482,11 @@ func TestSelectLockedWithIntersect(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t1",
+		Table:   "t1",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t2",
+		Table:   "t2",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 
@@ -520,11 +520,11 @@ func TestSelectLockedWithExcept(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t1",
+		Table:   "t1",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 	c.CreateTable(&query.CreateTableStmt{
-		Table: "t2",
+		Table:   "t2",
 		Columns: []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}},
 	})
 

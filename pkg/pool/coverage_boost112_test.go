@@ -284,8 +284,8 @@ func TestConnIsHealthy112(t *testing.T) {
 	// Healthy connection
 	now := time.Now()
 	c := &Conn{
-		Conn:       &mockConn{},
-		createdAt:  now,
+		Conn:           &mockConn{},
+		createdAt:      now,
 		lastUsedAtNano: now.UnixNano(),
 	}
 

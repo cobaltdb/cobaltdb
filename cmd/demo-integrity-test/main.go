@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	db  *engine.DB
-	ctx = context.Background()
+	db   *engine.DB
+	ctx  = context.Background()
 	pass = 0
 	fail = 0
 )

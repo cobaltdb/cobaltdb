@@ -65,8 +65,8 @@ func TestForeignKeyEnforcerValidateInsert(t *testing.T) {
 
 	// Insert a parent row
 	_, _, err := catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
+		Table: "users", Columns: []string{"id", "name"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Failed to insert parent row: %v", err)
@@ -136,13 +136,13 @@ func TestForeignKeyEnforcerOnDeleteRestrict(t *testing.T) {
 
 	// Insert data
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
+		Table: "users", Columns: []string{"id", "name"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
 	}, nil)
 
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "orders", Columns: []string{"id", "user_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
+		Table: "orders", Columns: []string{"id", "user_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	// Try to delete parent row (should fail with RESTRICT)
@@ -184,18 +184,18 @@ func TestForeignKeyEnforcerOnDeleteCascade(t *testing.T) {
 
 	// Insert data
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
+		Table: "users", Columns: []string{"id", "name"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
 	}, nil)
 
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "orders", Columns: []string{"id", "user_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
+		Table: "orders", Columns: []string{"id", "user_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "orders", Columns: []string{"id", "user_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 2}, &query.NumberLiteral{Value: 1}}},
+		Table: "orders", Columns: []string{"id", "user_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 2}, &query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	// Delete parent row (should cascade)
@@ -237,13 +237,13 @@ func TestForeignKeyEnforcerOnDeleteSetNull(t *testing.T) {
 
 	// Insert data
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
+		Table: "users", Columns: []string{"id", "name"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
 	}, nil)
 
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "orders", Columns: []string{"id", "user_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
+		Table: "orders", Columns: []string{"id", "user_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	// Delete parent row (should set null)
@@ -285,13 +285,13 @@ func TestForeignKeyEnforcerOnUpdateCascade(t *testing.T) {
 
 	// Insert data
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
+		Table: "users", Columns: []string{"id", "name"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
 	}, nil)
 
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "orders", Columns: []string{"id", "user_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
+		Table: "orders", Columns: []string{"id", "user_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	// Update parent primary key (should cascade)
@@ -381,13 +381,13 @@ func TestForeignKeyEnforcerValidateUpdate(t *testing.T) {
 
 	// Insert data
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
+		Table: "users", Columns: []string{"id", "name"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "Alice"}}},
 	}, nil)
 
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 2}, &query.StringLiteral{Value: "Bob"}}},
+		Table: "users", Columns: []string{"id", "name"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 2}, &query.StringLiteral{Value: "Bob"}}},
 	}, nil)
 
 	// Test valid update (references existing parent)
@@ -531,8 +531,8 @@ func TestForeignKeyEnforcerCompositeKey(t *testing.T) {
 
 	// Insert parent row
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"tenant_id", "user_id", "name"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 100}, &query.StringLiteral{Value: "Alice"}}},
+		Table: "users", Columns: []string{"tenant_id", "user_id", "name"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 100}, &query.StringLiteral{Value: "Alice"}}},
 	}, nil)
 
 	// Valid insert with both FK values
@@ -582,14 +582,14 @@ func TestForeignKeyEnforcerSelfReferencing(t *testing.T) {
 
 	// Insert top-level manager
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "employees", Columns: []string{"id", "name", "manager_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "CEO"}, &query.NullLiteral{}}},
+		Table: "employees", Columns: []string{"id", "name", "manager_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.StringLiteral{Value: "CEO"}, &query.NullLiteral{}}},
 	}, nil)
 
 	// Insert employee with valid manager
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "employees", Columns: []string{"id", "name", "manager_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 2}, &query.StringLiteral{Value: "Manager"}, &query.NumberLiteral{Value: 1}}},
+		Table: "employees", Columns: []string{"id", "name", "manager_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 2}, &query.StringLiteral{Value: "Manager"}, &query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	// Valid insert with NULL manager
@@ -658,13 +658,13 @@ func TestForeignKeyEnforcerMultipleForeignKeys(t *testing.T) {
 
 	// Insert parent rows
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}}},
+		Table: "users", Columns: []string{"id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "products", Columns: []string{"id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 100}}},
+		Table: "products", Columns: []string{"id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 100}}},
 	}, nil)
 
 	// Valid insert with both FKs valid
@@ -728,14 +728,14 @@ func TestForeignKeyEnforcerCircularReference(t *testing.T) {
 
 	// Insert into table A with NULL FK (allowed)
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "table_a", Columns: []string{"id", "b_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NullLiteral{}}},
+		Table: "table_a", Columns: []string{"id", "b_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NullLiteral{}}},
 	}, nil)
 
 	// Insert into table B referencing table A
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "table_b", Columns: []string{"id", "a_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 100}, &query.NumberLiteral{Value: 1}}},
+		Table: "table_b", Columns: []string{"id", "a_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 100}, &query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	// Now update table A to reference table B
@@ -779,8 +779,8 @@ func TestForeignKeyEnforcerValidateUpdateNoChange(t *testing.T) {
 
 	// Insert data
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}}},
+		Table: "users", Columns: []string{"id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	// Update with no FK change should succeed even if parent doesn't exist
@@ -829,13 +829,13 @@ func TestForeignKeyEnforcerOnDeleteNoAction(t *testing.T) {
 
 	// Insert data
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}}},
+		Table: "users", Columns: []string{"id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "orders", Columns: []string{"id", "user_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
+		Table: "orders", Columns: []string{"id", "user_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	// Try to delete parent (should fail with NO ACTION)
@@ -876,13 +876,13 @@ func TestForeignKeyEnforcerOnUpdateNoAction(t *testing.T) {
 
 	// Insert data
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}}},
+		Table: "users", Columns: []string{"id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "orders", Columns: []string{"id", "user_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
+		Table: "orders", Columns: []string{"id", "user_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	// Try to update parent PK (should fail with NO ACTION)
@@ -923,13 +923,13 @@ func TestForeignKeyEnforcerOnUpdateSetNull(t *testing.T) {
 
 	// Insert data
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "users", Columns: []string{"id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}}},
+		Table: "users", Columns: []string{"id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	catalog.Insert(ctx, &query.InsertStmt{
-		Table:   "orders", Columns: []string{"id", "user_id"},
-		Values:  [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
+		Table: "orders", Columns: []string{"id", "user_id"},
+		Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}, &query.NumberLiteral{Value: 1}}},
 	}, nil)
 
 	// Update parent PK (should set null)

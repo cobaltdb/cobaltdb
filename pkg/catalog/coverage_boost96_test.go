@@ -501,7 +501,7 @@ func TestCoverage_applyOuterQueryORDERBY(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "outer_order",
 			Columns: []string{"id", "val"},
-			Values:  [][]query.Expression{{numReal(float64(6-i)), numReal(float64(i * 10))}},
+			Values:  [][]query.Expression{{numReal(float64(6 - i)), numReal(float64(i * 10))}},
 		}, nil)
 	}
 
@@ -559,7 +559,7 @@ func TestCoverage_selectLockedCTEWithJoin(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "cte_other",
 			Columns: []string{"id", "main_id", "value"},
-			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(i)), numReal(float64(i*10))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), numReal(float64(i)), numReal(float64(i * 10))}},
 		}, nil)
 	}
 
@@ -645,7 +645,7 @@ func TestCoverage_evaluateHavingMultipleConditions(t *testing.T) {
 		c.Insert(ctx, &query.InsertStmt{
 			Table:   "having_multi",
 			Columns: []string{"id", "grp", "amt1", "amt2"},
-			Values:  [][]query.Expression{{numReal(float64(i)), strReal(grp), numReal(float64(i*10)), numReal(float64(i*5))}},
+			Values:  [][]query.Expression{{numReal(float64(i)), strReal(grp), numReal(float64(i * 10)), numReal(float64(i * 5))}},
 		}, nil)
 	}
 

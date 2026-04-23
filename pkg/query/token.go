@@ -478,12 +478,12 @@ var keywords = map[string]TokenType{
 	"COLUMNS":   TokenColumns,
 
 	// Partitioning
-	"RANGE":       TokenRange,
-	"LIST":        TokenList,
-	"HASH":        TokenHash,
-	"LESS":        TokenLess,
-	"THAN":        TokenThan,
-	"PARTITIONS":  TokenPartitions,
+	"RANGE":      TokenRange,
+	"LIST":       TokenList,
+	"HASH":       TokenHash,
+	"LESS":       TokenLess,
+	"THAN":       TokenThan,
+	"PARTITIONS": TokenPartitions,
 
 	// Vector functions
 	"COSINE_SIMILARITY": TokenCosineSimilarity,

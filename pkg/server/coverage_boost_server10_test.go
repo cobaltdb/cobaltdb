@@ -249,19 +249,19 @@ func TestCheckSQLWithLongQuery(t *testing.T) {
 	protector := NewSQLProtector(config)
 
 	tests := []struct {
-		name         string
-		query        string
-		shouldAllow  bool
+		name        string
+		query       string
+		shouldAllow bool
 	}{
 		{
-			name:         "ShortQuery",
-			query:        "SELECT * FROM users",
-			shouldAllow:  true,
+			name:        "ShortQuery",
+			query:       "SELECT * FROM users",
+			shouldAllow: true,
 		},
 		{
-			name:         "LongQuery",
-			query:        "SELECT * FROM users WHERE id = 1 AND name = 'test' AND status = 'active' AND created_at > '2024-01-01'",
-			shouldAllow:  false, // Should be blocked for exceeding length
+			name:        "LongQuery",
+			query:       "SELECT * FROM users WHERE id = 1 AND name = 'test' AND status = 'active' AND created_at > '2024-01-01'",
+			shouldAllow: false, // Should be blocked for exceeding length
 		},
 	}
 

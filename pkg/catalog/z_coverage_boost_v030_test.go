@@ -434,9 +434,9 @@ func TestV030_SelectHaving(t *testing.T) {
 		From:    &query.TableRef{Name: "hv_t"},
 		GroupBy: []query.Expression{&query.Identifier{Name: "cat"}},
 		Having: &query.BinaryExpr{
-			Left: &query.FunctionCall{Name: "COUNT", Args: []query.Expression{&query.StarExpr{}}},
+			Left:     &query.FunctionCall{Name: "COUNT", Args: []query.Expression{&query.StarExpr{}}},
 			Operator: query.TokenGt,
-			Right: n(3),
+			Right:    n(3),
 		},
 	}, nil)
 	if err != nil {

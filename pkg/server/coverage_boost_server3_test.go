@@ -76,4 +76,3 @@ func TestLifecycleWaitCoverage(t *testing.T) {
 		t.Error("Lifecycle.Wait() did not return after Stop()")
 	}
 }
-
