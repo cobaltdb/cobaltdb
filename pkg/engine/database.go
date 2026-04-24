@@ -153,9 +153,9 @@ type Options struct {
 	AutoVacuumThreshold float64       // Dead tuple ratio to trigger vacuum (default: 0.2 = 20%)
 
 	// Scheduler Options
-	EnableScheduler      bool          // Enable job scheduler (default: true for disk)
-	AnalyzeInterval      time.Duration // Interval for automatic ANALYZE (default: 1h)
-	SchedulerWorkers     int           // Number of scheduler workers (default: 2)
+	EnableScheduler       bool          // Enable job scheduler (default: true for disk)
+	AnalyzeInterval       time.Duration // Interval for automatic ANALYZE (default: 1h)
+	SchedulerWorkers      int           // Number of scheduler workers (default: 2)
 	SchedulerTickInterval time.Duration // Dispatcher resolution (default: 1s)
 
 	// Compression Options
@@ -248,11 +248,11 @@ const (
 // DefaultOptions returns the default database options
 func DefaultOptions() *Options {
 	return &Options{
-		PageSize:          storage.PageSize,
-		CacheSize:         1024, // 4MB cache
-		InMemory:          false,
-		WALEnabled:        true,
-		SyncMode:          SyncNormal,
+		PageSize:            storage.PageSize,
+		CacheSize:           1024, // 4MB cache
+		InMemory:            false,
+		WALEnabled:          true,
+		SyncMode:            SyncNormal,
 		Logger:              logger.Default(),
 		MaxConnections:      100, // Default max connections
 		ConnectionTimeout:   30 * time.Second,
@@ -609,15 +609,15 @@ func (db *DB) loadExisting() error {
 
 		db.pool.SetWAL(wal)
 
-			// Enable group commit based on SyncMode
-			switch db.options.SyncMode {
-			case SyncNormal:
-				wal.EnableGroupCommit(0, 1*time.Millisecond)
-			case SyncOff:
-				wal.EnableGroupCommit(0, 0)
-			default: // SyncFull
-				// immediate sync (default behavior)
-			}
+		// Enable group commit based on SyncMode
+		switch db.options.SyncMode {
+		case SyncNormal:
+			wal.EnableGroupCommit(0, 1*time.Millisecond)
+		case SyncOff:
+			wal.EnableGroupCommit(0, 0)
+		default: // SyncFull
+			// immediate sync (default behavior)
+		}
 
 		// Recover from WAL if needed
 		if wal.LSN() > wal.CheckpointLSN() {

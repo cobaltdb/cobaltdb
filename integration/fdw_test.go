@@ -42,14 +42,22 @@ func TestFDWCSVSelect(t *testing.T) {
 	}
 	defer rows.Close()
 
-	var results []struct{ id int; name string; score int }
+	var results []struct {
+		id    int
+		name  string
+		score int
+	}
 	for rows.Next() {
 		var id, score int
 		var name string
 		if err := rows.Scan(&id, &name, &score); err != nil {
 			t.Fatalf("Scan failed: %v", err)
 		}
-		results = append(results, struct{ id int; name string; score int }{id, name, score})
+		results = append(results, struct {
+			id    int
+			name  string
+			score int
+		}{id, name, score})
 	}
 
 	if len(results) != 2 {

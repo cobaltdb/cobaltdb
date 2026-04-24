@@ -421,16 +421,16 @@ func TestAdvisorExtractColumnsComplexExpressions(t *testing.T) {
 
 	recs := a.Recommendations(nil)
 	expectedCols := map[string]bool{
-		"deleted":     true,
-		"name":        true,
-		"archived":    true,
-		"price":       true,
-		"discount":    true,
-		"code":        true,
-		"status":      true,
-		"active_flag": true,
+		"deleted":      true,
+		"name":         true,
+		"archived":     true,
+		"price":        true,
+		"discount":     true,
+		"code":         true,
+		"status":       true,
+		"active_flag":  true,
 		"default_flag": true,
-		"category_id": true,
+		"category_id":  true,
 	}
 
 	for _, r := range recs {

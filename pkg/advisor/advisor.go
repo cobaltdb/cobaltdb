@@ -11,12 +11,12 @@ import (
 
 // ColumnPattern tracks how a single column is used in queries.
 type ColumnPattern struct {
-	ColumnName    string
-	SelectCount   int64
-	WhereCount    int64
-	JoinCount     int64
-	OrderByCount  int64
-	GroupByCount  int64
+	ColumnName   string
+	SelectCount  int64
+	WhereCount   int64
+	JoinCount    int64
+	OrderByCount int64
+	GroupByCount int64
 }
 
 // TablePattern aggregates column usage for one table.
@@ -27,18 +27,18 @@ type TablePattern struct {
 
 // IndexRecommendation represents a suggested index.
 type IndexRecommendation struct {
-	TableName   string
-	Columns     []string
-	Reason      string
-	QueryCount  int64
-	Priority    float64
-	Existing    bool
+	TableName  string
+	Columns    []string
+	Reason     string
+	QueryCount int64
+	Priority   float64
+	Existing   bool
 }
 
 // IndexAdvisor analyzes executed queries and recommends missing indexes.
 type IndexAdvisor struct {
-	patterns map[string]*TablePattern // tableName -> pattern
-	mu       sync.RWMutex
+	patterns    map[string]*TablePattern // tableName -> pattern
+	mu          sync.RWMutex
 	maxPatterns int
 }
 
