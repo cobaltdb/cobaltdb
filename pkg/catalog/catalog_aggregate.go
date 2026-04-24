@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"fmt"
+	"github.com/cobaltdb/cobaltdb/pkg/parallel"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"sort"
 	"strings"
@@ -89,19 +90,75 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 		return nil, nil, err
 	}
 
-	// Scan all partition trees
+	// Materialize all raw values first
+	var allValues [][]byte
 	for _, tree := range trees {
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to scan table for GROUP BY: %w", err)
 		}
-
 		for iter.HasNext() {
 			_, valueData, err := iter.Next()
 			if err != nil {
 				break
 			}
+			allValues = append(allValues, valueData)
+		}
+		iter.Close()
+	}
 
+	// Determine if parallel execution is eligible
+	canParallel := c.parallelWorkers > 0 &&
+		len(allValues) >= c.parallelThreshold &&
+		!hasSubqueries(stmt)
+
+	if canParallel {
+		groups = parallel.ParallelGroupBy(allValues, c.parallelWorkers, c.parallelThreshold,
+			func(chunk [][]byte) map[string][][]interface{} {
+				localGroups := make(map[string][][]interface{})
+				for _, valueData := range chunk {
+					vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+					if err != nil {
+						continue
+					}
+					if vrow.Version.DeletedAt > 0 {
+						continue
+					}
+					fullRow := vrow.Data
+					if stmt.Where != nil {
+						matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
+						if err != nil {
+							continue
+						}
+						if !matched {
+							continue
+						}
+					}
+					var groupKey strings.Builder
+					for i, spec := range groupBySpecs {
+						if i > 0 {
+							groupKey.WriteString("\x00")
+						}
+						if spec.index >= 0 && spec.index < len(fullRow) {
+							groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
+						} else if spec.expr != nil {
+							val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
+							if err == nil {
+								groupKey.WriteString(typeTaggedKey(val))
+							}
+						}
+					}
+					key := groupKey.String()
+					localGroups[key] = append(localGroups[key], fullRow)
+				}
+				return localGroups
+			})
+		// Build groupOrder from merged groups
+		for k := range groups {
+			groupOrder = append(groupOrder, k)
+		}
+	} else {
+		for _, valueData := range allValues {
 			// Decode full row with version info
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
@@ -147,7 +204,6 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 			}
 			groups[key] = append(groups[key], fullRow)
 		}
-		iter.Close()
 	}
 
 	// Compute aggregates for each group

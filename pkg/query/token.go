@@ -223,6 +223,10 @@ const (
 	// ESCAPE
 	TokenEscape
 
+	// FDW (Foreign Data Wrappers)
+	TokenWrapper
+	TokenOptions
+
 	// Temporal queries (AS OF SYSTEM TIME)
 	TokenAsOf
 	TokenSystem
@@ -439,6 +443,10 @@ var keywords = map[string]TokenType{
 
 	// Temporal queries
 	"SYSTEM": TokenSystem,
+
+	// FDW
+	"WRAPPER": TokenWrapper,
+	"OPTIONS": TokenOptions,
 
 	// ALTER TABLE
 	"ESCAPE":    TokenEscape,

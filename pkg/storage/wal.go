@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 )
 
 var (
@@ -49,6 +50,15 @@ type WAL struct {
 	checkpoint uint64 // last checkpoint LSN
 	path       string
 	cipher     cipher.AEAD // optional encryption cipher for WAL data
+
+	// Group commit fields
+	groupCommitEnabled bool
+	groupCommitMu      sync.Mutex
+	pendingSyncs       []chan struct{}
+	batchSize          int
+	syncInterval       time.Duration
+	stopGC             chan struct{}
+	gcOnce             sync.Once
 }
 
 // SetEncryptionCipher sets an AEAD cipher for encrypting WAL record data.
@@ -216,14 +226,18 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error
 	return record, nil
 }
 
-// Append adds a record to the WAL
+// Append adds a record to the WAL.
+// When group commit is enabled, the record is written without an immediate sync
+// and the caller blocks until the next batch sync.
 func (w *WAL) Append(record *WALRecord) error {
 	if len(record.Data) > 65535 {
 		return fmt.Errorf("WAL record data size (%d bytes) exceeds maximum (65535 bytes)", len(record.Data))
 	}
+	if w.groupCommitEnabled {
+		return w.groupCommitAppend(record)
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
 	return w.appendInternal(record, true)
 }
 
@@ -314,6 +328,114 @@ func (w *WAL) Sync() error {
 		return err
 	}
 	return w.file.Sync()
+}
+
+// EnableGroupCommit turns on group commit batching. Append calls block until
+// the next periodic or batch-size-triggered sync. AppendWithoutSync is
+// unaffected. Sync() forces an immediate sync of pending records.
+//
+// interval is the maximum time a caller waits before being synced.
+// If interval <= 0, callers never wait for a background sync; they rely on
+// explicit Sync() or Close().
+//
+// batchSize is the number of pending Append calls that trigger an immediate
+// sync. If batchSize <= 0, only the ticker (or explicit Sync/close) triggers
+// a sync.
+func (w *WAL) EnableGroupCommit(batchSize int, interval time.Duration) {
+	w.groupCommitMu.Lock()
+	defer w.groupCommitMu.Unlock()
+	w.groupCommitEnabled = true
+	w.batchSize = batchSize
+	w.syncInterval = interval
+	if interval > 0 {
+		w.stopGC = make(chan struct{})
+		go w.groupCommitLoop(interval)
+	}
+}
+
+// DisableGroupCommit turns off group commit and flushes any pending records.
+func (w *WAL) DisableGroupCommit() {
+	w.groupCommitMu.Lock()
+	defer w.groupCommitMu.Unlock()
+	if !w.groupCommitEnabled {
+		return
+	}
+	w.groupCommitEnabled = false
+	w.flushPendingLocked()
+	w.gcOnce.Do(func() {
+		if w.stopGC != nil {
+			close(w.stopGC)
+		}
+	})
+}
+
+// groupCommitAppend writes the record without sync and blocks until the next
+// batch sync. Must NOT be called while holding w.mu.
+func (w *WAL) groupCommitAppend(record *WALRecord) error {
+	w.groupCommitMu.Lock()
+
+	// Write record without syncing
+	w.mu.Lock()
+	err := w.appendInternal(record, false)
+	w.mu.Unlock()
+	if err != nil {
+		w.groupCommitMu.Unlock()
+		return err
+	}
+
+	// SyncOff mode: don't wait for background sync
+	if w.syncInterval <= 0 && w.batchSize <= 0 {
+		w.groupCommitMu.Unlock()
+		return nil
+	}
+
+	done := make(chan struct{})
+	w.pendingSyncs = append(w.pendingSyncs, done)
+
+	// Trigger immediate sync if batch is full
+	if w.batchSize > 0 && len(w.pendingSyncs) >= w.batchSize {
+		w.flushPendingLocked()
+	}
+
+	w.groupCommitMu.Unlock()
+
+	// Wait for sync
+	<-done
+	return nil
+}
+
+// flushPendingLocked syncs the WAL and signals all pending callers.
+// Must be called with w.groupCommitMu held.
+func (w *WAL) flushPendingLocked() {
+	w.mu.Lock()
+	if w.file != nil {
+		_ = w.bufWriter.Flush()
+		_ = w.file.Sync()
+	}
+	w.mu.Unlock()
+
+	for _, done := range w.pendingSyncs {
+		close(done)
+	}
+	w.pendingSyncs = w.pendingSyncs[:0]
+}
+
+// groupCommitLoop runs a ticker that periodically syncs pending records.
+func (w *WAL) groupCommitLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-w.stopGC:
+			return
+		case <-ticker.C:
+			w.groupCommitMu.Lock()
+			if len(w.pendingSyncs) > 0 {
+				w.flushPendingLocked()
+			}
+			w.groupCommitMu.Unlock()
+		}
+	}
 }
 
 // encodeRecord encodes a WAL record to bytes (without CRC)
@@ -473,6 +595,9 @@ func (w *WAL) applyRecord(bp *BufferPool, record *WALRecord) error {
 
 // Close closes the WAL file
 func (w *WAL) Close() error {
+	// Stop group commit and flush pending records first
+	w.DisableGroupCommit()
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

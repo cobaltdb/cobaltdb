@@ -304,99 +304,208 @@ func (c *Catalog) LoadData(dir string) error {
 func (c *Catalog) Vacuum() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// In a real implementation, this would:
-	// 1. Rebuild all B-trees to eliminate fragmentation
-	// 2. Remove deleted entries
-	// 3. Compact storage
 
-	// For now, we'll do a simple compaction of table trees using Scan
-	for name, tree := range c.tableTrees {
-		// Use Scan to get all entries
-		iter, err := tree.Scan(nil, nil)
-		if err != nil {
-			return fmt.Errorf("vacuum: failed to scan table %s: %w", name, err)
+	for name := range c.tableTrees {
+		if err := c.vacuumTreeLocked(name); err != nil {
+			return err
 		}
-
-		// Collect all entries
-		type entry struct {
-			key   []byte
-			value []byte
-		}
-		var entries []entry
-		for iter.HasNext() {
-			key, value, iterErr := iter.Next()
-			if iterErr != nil {
-				iter.Close()
-				return fmt.Errorf("vacuum: failed to read entry from table %s: %w", name, iterErr)
-			}
-			if key == nil {
-				break
-			}
-			entries = append(entries, entry{key: key, value: value})
-		}
-		iter.Close()
-
-		if len(entries) == 0 {
-			continue
-		}
-
-		// Create a new tree and copy data
-		newTree, err := btree.NewBTree(c.pool)
-		if err != nil {
-			return fmt.Errorf("vacuum: failed to create new tree for table %s: %w", name, err)
-		}
-		for _, e := range entries {
-			if err := newTree.Put(e.key, e.value); err != nil {
-				return fmt.Errorf("vacuum: failed to copy entry in table %s: %w", name, err)
-			}
-		}
-
-		c.tableTrees[name] = newTree
 	}
 
-	// Compact index trees
+	// Compact index trees (indexes don't have soft-deleted entries)
 	for name, tree := range c.indexTrees {
-		iter, err := tree.Scan(nil, nil)
-		if err != nil {
-			return fmt.Errorf("vacuum: failed to scan index %s: %w", name, err)
+		if err := c.compactIndexTreeLocked(name, tree); err != nil {
+			return err
 		}
-
-		type entry struct {
-			key   []byte
-			value []byte
-		}
-		var entries []entry
-		for iter.HasNext() {
-			key, value, iterErr := iter.Next()
-			if iterErr != nil {
-				iter.Close()
-				return fmt.Errorf("vacuum: failed to read entry from index %s: %w", name, iterErr)
-			}
-			if key == nil {
-				break
-			}
-			entries = append(entries, entry{key: key, value: value})
-		}
-		iter.Close()
-
-		if len(entries) == 0 {
-			continue
-		}
-
-		newTree, err := btree.NewBTree(c.pool)
-		if err != nil {
-			return fmt.Errorf("vacuum: failed to create new tree for index %s: %w", name, err)
-		}
-		for _, e := range entries {
-			if err := newTree.Put(e.key, e.value); err != nil {
-				return fmt.Errorf("vacuum: failed to copy entry in index %s: %w", name, err)
-			}
-		}
-
-		c.indexTrees[name] = newTree
 	}
 
 	return nil
+}
+
+// VacuumTable vacuums a specific table and its partitions.
+func (c *Catalog) VacuumTable(tableName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	table, err := c.getTableLocked(tableName)
+	if err != nil {
+		return err
+	}
+
+	treeNames := table.getPartitionTreeNames()
+	for _, name := range treeNames {
+		if err := c.vacuumTreeLocked(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// vacuumTreeLocked rebuilds a single table tree, skipping soft-deleted rows.
+// Must be called with c.mu held (write lock).
+func (c *Catalog) vacuumTreeLocked(name string) error {
+	tree, exists := c.tableTrees[name]
+	if !exists {
+		return nil
+	}
+
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return fmt.Errorf("vacuum: failed to scan table %s: %w", name, err)
+	}
+
+	type entry struct {
+		key   []byte
+		value []byte
+	}
+	var entries []entry
+	var liveCount int64
+	for iter.HasNext() {
+		key, value, iterErr := iter.Next()
+		if iterErr != nil {
+			iter.Close()
+			return fmt.Errorf("vacuum: failed to read entry from table %s: %w", name, iterErr)
+		}
+		if key == nil {
+			break
+		}
+		// Skip soft-deleted rows
+		if bytesContainDeletedAt(value) {
+			continue
+		}
+		entries = append(entries, entry{key: key, value: value})
+		liveCount++
+	}
+	iter.Close()
+
+	if len(entries) == 0 {
+		c.vacuumMu.Lock()
+		c.deadTuples[name] = 0
+		c.liveTuples[name] = 0
+		c.vacuumMu.Unlock()
+		return nil
+	}
+
+	newTree, err := btree.NewBTree(c.pool)
+	if err != nil {
+		return fmt.Errorf("vacuum: failed to create new tree for table %s: %w", name, err)
+	}
+	for _, e := range entries {
+		if err := newTree.Put(e.key, e.value); err != nil {
+			return fmt.Errorf("vacuum: failed to copy entry in table %s: %w", name, err)
+		}
+	}
+
+	c.tableTrees[name] = newTree
+
+	c.ensureVacuumMaps()
+	c.vacuumMu.Lock()
+	c.deadTuples[name] = 0
+	c.liveTuples[name] = liveCount
+	c.vacuumMu.Unlock()
+
+	return nil
+}
+
+// compactIndexTreeLocked rebuilds an index tree.
+// Must be called with c.mu held (write lock).
+func (c *Catalog) compactIndexTreeLocked(name string, tree *btree.BTree) error {
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return fmt.Errorf("vacuum: failed to scan index %s: %w", name, err)
+	}
+
+	type entry struct {
+		key   []byte
+		value []byte
+	}
+	var entries []entry
+	for iter.HasNext() {
+		key, value, iterErr := iter.Next()
+		if iterErr != nil {
+			iter.Close()
+			return fmt.Errorf("vacuum: failed to read entry from index %s: %w", name, iterErr)
+		}
+		if key == nil {
+			break
+		}
+		entries = append(entries, entry{key: key, value: value})
+	}
+	iter.Close()
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	newTree, err := btree.NewBTree(c.pool)
+	if err != nil {
+		return fmt.Errorf("vacuum: failed to create new tree for index %s: %w", name, err)
+	}
+	for _, e := range entries {
+		if err := newTree.Put(e.key, e.value); err != nil {
+			return fmt.Errorf("vacuum: failed to copy entry in index %s: %w", name, err)
+		}
+	}
+
+	c.indexTrees[name] = newTree
+	return nil
+}
+
+// GetDeadTupleRatio returns the ratio of dead tuples to total tuples for a table.
+// A ratio of 0.0 means no dead tuples; 1.0 means all tuples are dead.
+func (c *Catalog) GetDeadTupleRatio(tableName string) float64 {
+	c.vacuumMu.RLock()
+	defer c.vacuumMu.RUnlock()
+
+	dead := int64(0)
+	live := int64(0)
+
+	// Sum across main table and all partition trees
+	table, err := c.GetTable(tableName)
+	if err != nil {
+		// Fallback to exact tree name
+		dead = c.deadTuples[tableName]
+		live = c.liveTuples[tableName]
+		total := dead + live
+		if total == 0 {
+			return 0
+		}
+		return float64(dead) / float64(total)
+	}
+
+	for _, name := range table.getPartitionTreeNames() {
+		dead += c.deadTuples[name]
+		live += c.liveTuples[name]
+	}
+
+	total := dead + live
+	if total == 0 {
+		return 0
+	}
+	return float64(dead) / float64(total)
+}
+
+// ListTablesNeedingVacuum returns table names whose dead tuple ratio exceeds threshold.
+func (c *Catalog) ListTablesNeedingVacuum(threshold float64) []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var result []string
+	seen := make(map[string]bool)
+	for name := range c.tableTrees {
+		// Strip partition suffix to get base table name
+		baseName := name
+		if idx := strings.Index(name, ":"); idx > 0 {
+			baseName = name[:idx]
+		}
+		if seen[baseName] {
+			continue
+		}
+		seen[baseName] = true
+		if c.GetDeadTupleRatio(baseName) >= threshold {
+			result = append(result, baseName)
+		}
+	}
+	return result
 }
 
 func (c *Catalog) Analyze(tableName string) error {

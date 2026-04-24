@@ -29,6 +29,8 @@ func createCatalogForCovBoost(t *testing.T) *Catalog {
 		jsonIndexes:       make(map[string]*JSONIndexDef),
 		vectorIndexes:     make(map[string]*VectorIndexDef),
 		stats:             make(map[string]*StatsTableStats),
+		deadTuples:        make(map[string]int64),
+		liveTuples:        make(map[string]int64),
 	}
 }
 

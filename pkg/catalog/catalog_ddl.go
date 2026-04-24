@@ -99,6 +99,12 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 		}
 		return ErrTableExists
 	}
+	if _, exists := c.foreignTables[stmt.Table]; exists {
+		if stmt.IfNotExists {
+			return nil
+		}
+		return ErrTableExists
+	}
 
 	// Create new B+Tree for the table's data
 	tree, err := btree.NewBTree(c.pool)
@@ -184,11 +190,22 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 		}
 	}
 
-	// Handle table-level PRIMARY KEY (for composite PK)
+	// Handle table-level PRIMARY KEY (for composite PK).
+	// Dedupe: a column may appear in both col.PrimaryKey and stmt.PrimaryKey
+	// when ASTs are constructed by hand (and harmlessly in some parser
+	// edge cases). Without dedup, ["id"] + ["id"] becomes a bogus composite.
 	if len(stmt.PrimaryKey) > 0 {
-		tableDef.PrimaryKey = append(tableDef.PrimaryKey, stmt.PrimaryKey...)
-		// Mark columns as NOT NULL since they're part of PK
+		seen := make(map[string]bool, len(tableDef.PrimaryKey))
+		for _, pk := range tableDef.PrimaryKey {
+			seen[strings.ToLower(pk)] = true
+		}
 		for _, pkCol := range stmt.PrimaryKey {
+			if !seen[strings.ToLower(pkCol)] {
+				tableDef.PrimaryKey = append(tableDef.PrimaryKey, pkCol)
+				seen[strings.ToLower(pkCol)] = true
+			}
+			// Mark the column as PK/NOT NULL regardless of whether it was a
+			// dup, so the column flag stays in sync with the PK list.
 			for i, col := range tableDef.Columns {
 				if strings.EqualFold(col.Name, pkCol) {
 					tableDef.Columns[i].NotNull = true
@@ -246,8 +263,16 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 	defer c.mu.Unlock()
 	if !stmt.IfExists {
 		if _, exists := c.tables[stmt.Table]; !exists {
-			return ErrTableNotFound
+			if _, fexists := c.foreignTables[stmt.Table]; !fexists {
+				return ErrTableNotFound
+			}
 		}
+	}
+
+	// Drop foreign table if present
+	if _, fexists := c.foreignTables[stmt.Table]; fexists {
+		delete(c.foreignTables, stmt.Table)
+		return nil
 	}
 
 	// Check if table actually exists before trying to delete
@@ -715,6 +740,15 @@ func (c *Catalog) GetTable(name string) (*TableDef, error) {
 func (c *Catalog) getTableLocked(name string) (*TableDef, error) {
 	table, exists := c.tables[name]
 	if !exists {
+		// Check if it's a foreign table - return a synthetic TableDef
+		if ft, ok := c.foreignTables[name]; ok {
+			synthetic := &TableDef{
+				Name:    ft.TableName,
+				Type:    "foreign",
+				Columns: ft.Columns,
+			}
+			return synthetic, nil
+		}
 		return nil, ErrTableNotFound
 	}
 	return table, nil

@@ -178,15 +178,16 @@ func TestV107LowCovTarget(t *testing.T) {
 	check("UPDATE FROM txn verify after commit",
 		"SELECT val FROM v107_txn_upd WHERE id = 1", 100.0)
 
-	// Test 8: UPDATE...FROM with SET referencing joined column (errors because
-	// evaluateExpression only sees target table columns, not joined columns)
+	// Test 8: UPDATE...FROM with SET referencing joined column
 	afExec(t, db, ctx, "CREATE TABLE v107_prices (id INTEGER PRIMARY KEY, product TEXT, price REAL)")
 	afExec(t, db, ctx, "CREATE TABLE v107_adj (product TEXT, new_price REAL)")
 	afExec(t, db, ctx, "INSERT INTO v107_prices VALUES (1, 'apple', 1.00)")
 	afExec(t, db, ctx, "INSERT INTO v107_adj VALUES ('apple', 1.50)")
 
-	checkError("UPDATE FROM set from joined col errors",
+	checkNoError("UPDATE FROM set from joined col",
 		"UPDATE v107_prices SET price = v107_adj.new_price FROM v107_adj WHERE v107_prices.product = v107_adj.product")
+	check("UPDATE FROM joined col verify",
+		"SELECT price FROM v107_prices WHERE id = 1", 1.5)
 
 	// Test 9: UPDATE...FROM with empty FROM table (0 matching rows in join)
 	afExec(t, db, ctx, "CREATE TABLE v107_empty_ref (id INTEGER PRIMARY KEY, val TEXT)")

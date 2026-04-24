@@ -274,6 +274,26 @@ func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (
 	return result, true
 }
 
+// ListIndexesByTable returns all regular indexes grouped by table name.
+// Each entry is the list of columns for that index. Primary keys are
+// included as an index on the table.
+func (c *Catalog) ListIndexesByTable() map[string][][]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	result := make(map[string][][]string)
+	for _, idxDef := range c.indexes {
+		result[idxDef.TableName] = append(result[idxDef.TableName], idxDef.Columns)
+	}
+	// Treat primary keys as existing indexes
+	for _, tbl := range c.tables {
+		if len(tbl.PrimaryKey) > 0 {
+			result[tbl.Name] = append(result[tbl.Name], tbl.PrimaryKey)
+		}
+	}
+	return result
+}
+
 func (c *Catalog) DropIndex(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

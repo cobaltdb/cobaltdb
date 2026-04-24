@@ -26,6 +26,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"github.com/cobaltdb/cobaltdb/pkg/fdw"
+	"github.com/cobaltdb/cobaltdb/pkg/parallel"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -74,6 +76,14 @@ type TableDef struct {
 	Partition   *PartitionInfo  `json:"partition,omitempty"` // Table partitioning info
 	// Performance: cache column indices (not persisted)
 	columnIndices map[string]int `json:"-"`
+}
+
+// ForeignTableDef represents a foreign table definition
+type ForeignTableDef struct {
+	TableName string            `json:"table_name"`
+	Columns   []ColumnDef       `json:"columns"`
+	Wrapper   string            `json:"wrapper"`
+	Options   map[string]string `json:"options"`
 }
 
 // ForeignKeyDef represents a foreign key constraint
@@ -214,11 +224,13 @@ type Catalog struct {
 	mu                   sync.RWMutex
 	tree                 *btree.BTree
 	tables               map[string]*TableDef
+	foreignTables        map[string]*ForeignTableDef           // Foreign table definitions
 	indexes              map[string]*IndexDef
 	indexTrees           map[string]*btree.BTree // B+Trees for indexes
 	pool                 *storage.BufferPool
 	wal                  *storage.WAL
 	tableTrees           map[string]*btree.BTree               // Each table has its own B+Tree
+	fdwRegistry          *fdw.Registry                         // FDW registry for foreign data wrappers
 	views                map[string]*query.SelectStmt          // Views store their SELECT query
 	triggers             map[string]*query.CreateTriggerStmt   // Triggers store their definition
 	procedures           map[string]*query.CreateProcedureStmt // Procedures store their definition
@@ -240,6 +252,15 @@ type Catalog struct {
 	rlsCtx               context.Context                       // Context for RLS user/role extraction in SELECT
 	lastReturningRows    [][]interface{}                       // Last RETURNING clause results
 	lastReturningColumns []string                              // Column names for RETURNING results
+
+	// Dead tuple tracking for AutoVacuum
+	deadTuples map[string]int64 // table name -> count of soft-deleted rows
+	liveTuples map[string]int64 // table name -> count of live rows
+	vacuumMu   sync.RWMutex     // protects deadTuples and liveTuples
+
+	// Parallel execution options
+	parallelWorkers   int // 0 = disabled
+	parallelThreshold int // min rows to trigger parallel
 }
 
 // savepointEntry records a named savepoint with its undo log position
@@ -588,11 +609,13 @@ func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog
 	return &Catalog{
 		tree:              tree,
 		tables:            make(map[string]*TableDef),
+		foreignTables:     make(map[string]*ForeignTableDef),
 		indexes:           make(map[string]*IndexDef),
 		indexTrees:        make(map[string]*btree.BTree),
 		pool:              pool,
 		wal:               wal,
 		tableTrees:        make(map[string]*btree.BTree),
+		fdwRegistry:       fdw.NewRegistry(),
 		views:             make(map[string]*query.SelectStmt),
 		triggers:          make(map[string]*query.CreateTriggerStmt),
 		procedures:        make(map[string]*query.CreateProcedureStmt),
@@ -604,6 +627,8 @@ func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog
 		rlsPolicies:       make(map[string]*security.Policy),
 		keyCounter:        0,
 		queryCache:        NewQueryCache(0, 0), // Disabled by default - enable with EnableQueryCache()
+		deadTuples:        make(map[string]int64),
+		liveTuples:        make(map[string]int64),
 	}
 }
 
@@ -611,6 +636,25 @@ func (c *Catalog) SetWAL(wal *storage.WAL) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.wal = wal
+}
+
+// SetParallelOptions configures parallel query execution.
+func (c *Catalog) SetParallelOptions(workers, threshold int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.parallelWorkers = workers
+	c.parallelThreshold = threshold
+}
+
+// ensureVacuumMaps lazily initializes dead/live tuple tracking maps.
+// This allows tests that construct Catalog directly (not via New) to work.
+func (c *Catalog) ensureVacuumMaps() {
+	if c.deadTuples == nil {
+		c.deadTuples = make(map[string]int64)
+	}
+	if c.liveTuples == nil {
+		c.liveTuples = make(map[string]int64)
+	}
 }
 
 func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
@@ -1480,18 +1524,43 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 	} else if !isMV {
 		// Full table scan when no index is available
 		// For partitioned tables, scan all partition trees
+
+		// Materialize all raw values first
+		var allValues [][]byte
 		for _, tree := range trees {
 			iter, err := tree.Scan(nil, nil)
 			if err != nil {
 				return returnColumns, nil, fmt.Errorf("failed to scan table: %w", err)
 			}
-
 			for iter.HasNext() {
 				_, valueData, err := iter.Next()
 				if err != nil {
 					break
 				}
+				allValues = append(allValues, valueData)
+			}
+			iter.Close()
+		}
 
+		// Determine if parallel execution is eligible
+		canParallel := cat.parallelWorkers > 0 &&
+			len(allValues) >= cat.parallelThreshold &&
+			len(stmt.OrderBy) == 0 &&
+			!stmt.Distinct &&
+			!hasWindowFuncs &&
+			!hasSubqueries(stmt) &&
+			stmt.Limit == nil &&
+			stmt.Offset == nil
+
+		if canParallel {
+			results := parallel.ParallelSelectRows(allValues, cat.parallelWorkers, cat.parallelThreshold,
+				func(chunk [][]byte) [][]interface{} {
+					chunkRows, _ := cat.processRowChunk(chunk, table, selectCols, stmt, args, queryTime, false)
+					return chunkRows
+				})
+			rows = append(rows, results...)
+		} else {
+			for _, valueData := range allValues {
 				// Decode full row with version info
 				vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 				if err != nil {
@@ -1558,7 +1627,6 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 					break
 				}
 			}
-			iter.Close()
 		}
 	}
 
@@ -3964,6 +4032,50 @@ func (t *TableDef) getPartitionTreeNames() []string {
 // getTableTreesForScan returns all B-trees for scanning a table
 // For partitioned tables, returns all partition trees; for non-partitioned, returns the single tree
 func (c *Catalog) getTableTreesForScan(table *TableDef) ([]*btree.BTree, error) {
+	// Foreign table: materialize FDW data into a temporary B-tree
+	if table.Type == "foreign" {
+		ft, ok := c.foreignTables[table.Name]
+		if !ok {
+			return nil, ErrTableNotFound
+		}
+		if c.fdwRegistry == nil {
+			return nil, fmt.Errorf("fdw registry not initialized")
+		}
+		wrapper, ok := c.fdwRegistry.Get(ft.Wrapper)
+		if !ok {
+			return nil, fmt.Errorf("foreign data wrapper '%s' not found", ft.Wrapper)
+		}
+		if err := wrapper.Open(ft.Options); err != nil {
+			return nil, fmt.Errorf("fdw open failed: %w", err)
+		}
+		cols := make([]string, len(ft.Columns))
+		for i, col := range ft.Columns {
+			cols[i] = col.Name
+		}
+		rows, err := wrapper.Scan(ft.TableName, cols)
+		if err != nil {
+			wrapper.Close()
+			return nil, fmt.Errorf("fdw scan failed: %w", err)
+		}
+		wrapper.Close()
+
+		tmpTree, err := btree.NewBTree(c.pool)
+		if err != nil {
+			return nil, err
+		}
+		for i, row := range rows {
+			key := []byte(fmt.Sprintf("fdw:%d", i))
+			val, err := encodeVersionedRow(row, nil)
+			if err != nil {
+				return nil, err
+			}
+			if err := tmpTree.Put(key, val); err != nil {
+				return nil, err
+			}
+		}
+		return []*btree.BTree{tmpTree}, nil
+	}
+
 	if table.Partition == nil {
 		tree, exists := c.tableTrees[table.Name]
 		if !exists {
@@ -4856,4 +4968,149 @@ func applyOffsetLimit(rows [][]interface{}, offsetExpr, limitExpr query.Expressi
 	}
 
 	return result
+}
+
+// hasSubqueriesInExpr returns true if the expression contains any subquery.
+func hasSubqueriesInExpr(expr query.Expression) bool {
+	if expr == nil {
+		return false
+	}
+	switch e := expr.(type) {
+	case *query.SubqueryExpr, *query.ExistsExpr:
+		return true
+	case *query.InExpr:
+		if e.Subquery != nil {
+			return true
+		}
+		for _, item := range e.List {
+			if hasSubqueriesInExpr(item) {
+				return true
+			}
+		}
+		return hasSubqueriesInExpr(e.Expr)
+	case *query.BinaryExpr:
+		return hasSubqueriesInExpr(e.Left) || hasSubqueriesInExpr(e.Right)
+	case *query.UnaryExpr:
+		return hasSubqueriesInExpr(e.Expr)
+	case *query.FunctionCall:
+		for _, arg := range e.Args {
+			if hasSubqueriesInExpr(arg) {
+				return true
+			}
+		}
+		return false
+	case *query.CaseExpr:
+		if hasSubqueriesInExpr(e.Expr) {
+			return true
+		}
+		for _, w := range e.Whens {
+			if hasSubqueriesInExpr(w.Condition) || hasSubqueriesInExpr(w.Result) {
+				return true
+			}
+		}
+		return hasSubqueriesInExpr(e.Else)
+	case *query.CastExpr:
+		return hasSubqueriesInExpr(e.Expr)
+	case *query.BetweenExpr:
+		return hasSubqueriesInExpr(e.Expr) || hasSubqueriesInExpr(e.Lower) || hasSubqueriesInExpr(e.Upper)
+	case *query.LikeExpr:
+		return hasSubqueriesInExpr(e.Expr) || hasSubqueriesInExpr(e.Pattern)
+	case *query.IsNullExpr:
+		return hasSubqueriesInExpr(e.Expr)
+	case *query.AliasExpr:
+		return hasSubqueriesInExpr(e.Expr)
+	default:
+		return false
+	}
+}
+
+// hasSubqueries returns true if the SELECT statement contains any subquery expressions.
+func hasSubqueries(stmt *query.SelectStmt) bool {
+	if stmt.Where != nil && hasSubqueriesInExpr(stmt.Where) {
+		return true
+	}
+	for _, col := range stmt.Columns {
+		if hasSubqueriesInExpr(col) {
+			return true
+		}
+	}
+	for _, gb := range stmt.GroupBy {
+		if hasSubqueriesInExpr(gb) {
+			return true
+		}
+	}
+	if stmt.Having != nil && hasSubqueriesInExpr(stmt.Having) {
+		return true
+	}
+	for _, ob := range stmt.OrderBy {
+		if hasSubqueriesInExpr(ob.Expr) {
+			return true
+		}
+	}
+	return false
+}
+
+// processRowChunk decodes, filters, and projects a chunk of raw row values.
+// It returns the projected rows and optional full rows for window functions.
+func (cat *Catalog) processRowChunk(
+	values [][]byte,
+	table *TableDef,
+	selectCols []selectColInfo,
+	stmt *query.SelectStmt,
+	args []interface{},
+	queryTime time.Time,
+	hasWindowFuncs bool,
+) ([][]interface{}, [][]interface{}) {
+	var rows [][]interface{}
+	var windowFullRows [][]interface{}
+	for _, valueData := range values {
+		vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+		if err != nil {
+			continue
+		}
+		if !vrow.Version.isVisibleAt(queryTime) {
+			continue
+		}
+		fullRow := vrow.Data
+		if stmt.Where != nil {
+			matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
+			if err != nil {
+				continue
+			}
+			if !matched {
+				continue
+			}
+		}
+		selectedRow := make([]interface{}, len(selectCols))
+		for i, ci := range selectCols {
+			if ci.isWindow {
+				continue
+			}
+			if ci.index >= 0 && ci.index < len(fullRow) {
+				selectedRow[i] = fullRow[ci.index]
+			} else if ci.index == -1 && !ci.isAggregate {
+				if i < len(stmt.Columns) {
+					val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
+					if err == nil {
+						selectedRow[i] = val
+					}
+				} else if strings.HasPrefix(ci.name, "__orderby_") {
+					var obIdx int
+					if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
+						val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
+						if err == nil {
+							selectedRow[i] = val
+						}
+					}
+				}
+			}
+		}
+		rows = append(rows, selectedRow)
+		if hasWindowFuncs {
+			fullRowCopy := make([]interface{}, len(fullRow))
+			copy(fullRowCopy, fullRow)
+			windowFullRows = append(windowFullRows, fullRowCopy)
+		}
+	}
+	return rows, windowFullRows
 }

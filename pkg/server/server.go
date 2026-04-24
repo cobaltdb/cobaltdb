@@ -167,10 +167,29 @@ func (s *Server) ListenOnListener(listener net.Listener) error {
 	return s.acceptLoop()
 }
 
-// acceptLoop accepts incoming connections
+// acceptLoop accepts incoming connections.
+//
+// Register the loop itself in s.clientWg *before* accepting any connections.
+// This gives Close()'s s.clientWg.Wait() a non-zero counter to synchronize
+// against, so later per-connection s.clientWg.Add(1) calls can't race with
+// Wait (the classic "positive-delta-while-zero-concurrent-with-Wait"
+// WaitGroup race). Snapshot the listener while we hold the lock.
 func (s *Server) acceptLoop() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	listener := s.listener
+	s.clientWg.Add(1)
+	s.mu.Unlock()
+	defer s.clientWg.Done()
+
+	if listener == nil {
+		return nil
+	}
 	for {
-		conn, err := s.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			s.mu.RLock()
 			closed := s.closed

@@ -1,7 +1,33 @@
-# CobaltDB Developer Guide
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
-CobaltDB is a production-ready SQL database engine written in Go. It supports standard SQL with extensions for JSON, full-text search, window functions, CTEs, and row-level security.
+CobaltDB is a production-ready pure-Go SQL database engine (zero CGO at runtime). It ships in two shapes from the same codebase:
+- **Embedded library** — `github.com/cobaltdb/cobaltdb/pkg/engine` opened via `engine.Open(path, *engine.Options)` for in-process use (`:memory:` or disk-backed).
+- **Standalone server** — `cmd/cobaltdb-server` speaks the MySQL wire protocol (default port 4200/3307) so any MySQL client or ORM works unchanged.
+
+Supports standard SQL plus JSON, full-text search, window functions, CTEs, row-level security, temporal `AS OF` queries, HNSW vector search, replication, and AES-256-GCM encryption at rest.
+
+**Note:** `AGENTS.md` contains an older near-duplicate of this guide. When updating guidance, prefer editing `CLAUDE.md` — keep `AGENTS.md` aligned if the change affects agent-facing instructions.
+
+## Build & Verify
+
+Use the Makefile — it pins the right flags. Outputs go to `bin/`.
+
+```bash
+make build              # builds bin/cobaltdb-server and bin/cobaltdb-cli
+make verify             # go build + go vet + go test ./... (core gate)
+make verify-security    # verify + race + vuln + gosec + lint (needs CGO for -race)
+make race               # CGO_ENABLED=1 go test -race ./...
+make lint               # golangci-lint (errcheck + govet) on security-critical pkgs only
+make test-coverage      # writes coverage.out + coverage.html
+make release            # cross-compiles server+CLI for linux/darwin/windows × amd64/arm64 into dist/
+```
+
+The `lint` and `gosec` targets intentionally scope to `SECURITY_PKGS` (defined at the top of `Makefile`) — cmd/cobaltdb-server, pkg/server, pkg/protocol, pkg/storage, pkg/auth, sdk/go, pkg/logger, pkg/query. Broader linting is not wired up.
+
+Runtime: `make run-server` / `make run-cli` use `go run`. Binaries already built at repo root (`cobaltdb-server`, `cobaltdb-cli`) are artifacts from prior builds, not canonical — always rebuild via `make build` into `bin/`.
 
 ## Architecture
 
@@ -10,13 +36,16 @@ CobaltDB is a production-ready SQL database engine written in Go. It supports st
 - `pkg/query` - SQL parser, AST definitions, and query optimizer
 - `pkg/btree` - B-tree storage engine (in-memory and disk-based)
 - `pkg/storage` - Storage layer (buffer pool, WAL, encryption)
-- `pkg/engine` - Database orchestration with circuit breaker, retry, and query plan cache
+- `pkg/engine` - Database orchestration with circuit breaker, retry, and query plan cache (the public embedded entrypoint)
+- `pkg/txn` - Transaction manager, lock manager, MVCC, deadlock detection
 - `pkg/wasm` - WebAssembly compiler and runtime for SQL execution
 - `pkg/server` - MySQL protocol server implementation
+- `pkg/protocol` / `pkg/wire` - MySQL wire protocol codec primitives
 - `pkg/security` - Row-level security (RLS) policies
-- `pkg/auth` - Authentication and authorization
-- `pkg/audit` - Audit logging
-- `pkg/metrics` - Metrics collection, monitoring, and slow query logging
+- `pkg/auth` - Authentication and authorization (Argon2id)
+- `pkg/audit` - Audit logging (encrypted)
+- `pkg/logger` - Structured logging used across packages
+- `pkg/metrics` - Metrics collection, monitoring, slow query logging, AlertManager
 - `pkg/optimizer` - Cost-based query optimizer with join reordering and index selection
 - `pkg/cache` - Query result cache with TTL support
 - `pkg/pool` - Connection pooling with health checks and dynamic sizing
@@ -54,13 +83,24 @@ Simple LRU cache for query results. Enabled via `SetQueryCache(true, maxEntries)
 # All package tests
 go test ./pkg/...
 
-# Integration tests
+# Integration tests (lives in ./integration, not ./pkg — not covered by ./pkg/...)
 go test ./integration/...
+
+# Single package
+go test ./pkg/catalog/
+
+# Single test by name (regex)
+go test ./pkg/catalog/ -run TestCatalog_SelectWithJoin -v
+
+# Single integration test
+go test ./integration/ -run TestMySQLE2E -v
 
 # Coverage
 go test ./pkg/... -coverprofile=coverage.out
 go tool cover -func=coverage.out
 ```
+
+Three test trees coexist — `./pkg/...` for unit tests, `./integration/...` for cross-package integration, `./test/...` for benchmarks and large end-to-end suites. `go test ./...` runs all three.
 
 ### Test Statistics
 - 10,400+ test functions
@@ -133,8 +173,7 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 - Transaction timeout: Optional (configurable via `Options.Timeout`)
 
 ## Known Limitations
-- UPDATE...FROM SET can only reference target table columns
-- Composite multi-column PRIMARY KEY not supported
+(No engine-level limitations currently tracked.)
 
 ## Security Features
 - TLS support for connections
@@ -199,16 +238,17 @@ The following features are fully implemented and integrated in the engine:
 - **Deadlock Detection** (`pkg/txn/manager.go`) - Wait-for graph with automatic cycle detection
 - **Transaction Timeout** - Per-transaction and lock wait timeouts
 - **Transaction Metrics** - Real-time monitoring via HTTP endpoint
+- **AutoVacuum** (`pkg/catalog/catalog_maintenance.go`, `pkg/engine/database.go`) - Automatic dead tuple cleanup with configurable interval and threshold
+- **Group Commit** (`pkg/storage/wal.go`) - WAL-level batching of fsyncs; `SyncMode` controls behavior (SyncFull=immediate, SyncNormal=1ms batch, SyncOff=async)
+- **JobScheduler** (`pkg/scheduler/`) - Background job scheduler with worker pool, retry logic, and panic recovery. Runs AutoVacuum and AutoAnalyze by default. Supports custom user jobs via `DB.GetScheduler().Register()`.
+- **Page-level Storage Compression** (`pkg/storage/compression.go`) - Optional zlib-based per-page compression. Stores compressed pages with inline header at logical `pageID * PageSize` offsets, creating sparse-file holes on supported filesystems. Falls back to raw storage when compression doesn't meet the configured `MinRatio` threshold. Configurable via `Options.CompressionConfig`.
+- **Index Advisor** (`pkg/advisor/`) - AST-based query analyzer that tracks column usage in WHERE, JOIN, ORDER BY, and GROUP BY clauses. Recommends single-column and composite indexes, suppressing suggestions already covered by existing indexes or primary keys. Accessible via `DB.GetIndexRecommendations()`.
+- **Parallel Query Execution** (`pkg/parallel/`, `pkg/catalog/catalog_core.go`, `pkg/catalog/catalog_aggregate.go`) - Chunk-based parallel processing for simple SELECT scans and GROUP BY queries. Splits materialized row data across worker goroutines for CPU-bound work (row decoding, WHERE evaluation, projection, grouping). Enabled by default with `runtime.NumCPU()` workers and a threshold of 1000 rows. Configurable via `Options.ParallelWorkers` and `Options.ParallelThreshold`.
+- **Foreign Data Wrappers (FDW)** (`pkg/fdw/`, `pkg/catalog/catalog_fdw.go`, `pkg/engine/database.go`) - Lightweight FDW framework for querying external data sources via SQL. Supports `CREATE FOREIGN TABLE ... WRAPPER ... OPTIONS (...)`. Built-in CSV wrapper reads local CSV files. Foreign tables are materialized into temporary B-trees at scan time, enabling full query engine features (JOIN, GROUP BY, ORDER BY) without changes to scan loops. Foreign tables are read-only in this version.
 
 ## Features Not Implemented
 The following features do not exist in the codebase:
-- FDW (Foreign Data Wrappers)
-- AutoVacuum (manual VACUUM exists in `catalog_maintenance.go`)
-- JobScheduler
-- Page-level Storage Compression (backup-level gzip compression exists in `pkg/backup/`)
-- Group commit (WAL `AppendWithoutSync` primitive exists but no coordinator)
-- Index advisor
-- Parallel query execution
+*(none — all planned features are implemented)*
 
 **Note:** Deadlock detection is now fully implemented in `pkg/txn/manager.go`.
 Alert system is implemented in `pkg/metrics/alerting.go` (AlertManager with rules, handlers, severity levels).

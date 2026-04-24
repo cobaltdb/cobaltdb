@@ -35,6 +35,9 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	if err != nil {
 		return 0, 0, err
 	}
+	if table.Type == "foreign" {
+		return 0, 0, fmt.Errorf("cannot update foreign table '%s'", stmt.Table)
+	}
 
 	// Handle UPDATE with JOIN
 	if stmt.From != nil || len(stmt.Joins) > 0 {
@@ -374,14 +377,48 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		return 0, 0, ErrTableNotFound
 	}
 
-	// Build a SELECT statement from the UPDATE to execute the join
-	// Select all columns from target table
-	var columns []query.Expression
+	// Build a SELECT statement from the UPDATE to execute the join. Select
+	// target columns AND columns from every source table referenced in
+	// FROM/JOIN so that SET expressions can reference source-table columns
+	// (e.g. UPDATE t SET x = s.y FROM s WHERE t.id = s.id).
+	var selectColumns []query.Expression
+	var joinedColDefs []ColumnDef
 	for _, col := range targetTable.Columns {
-		columns = append(columns, &query.QualifiedIdentifier{Table: stmt.Table, Column: col.Name})
+		selectColumns = append(selectColumns, &query.QualifiedIdentifier{Table: stmt.Table, Column: col.Name})
+		cd := col
+		cd.sourceTbl = stmt.Table
+		joinedColDefs = append(joinedColDefs, cd)
 	}
+
+	// Collect source table references (FROM + JOINs).
+	var sourceRefs []*query.TableRef
+	if stmt.From != nil {
+		sourceRefs = append(sourceRefs, stmt.From)
+	}
+	for _, j := range stmt.Joins {
+		if j != nil && j.Table != nil {
+			sourceRefs = append(sourceRefs, j.Table)
+		}
+	}
+	for _, tref := range sourceRefs {
+		srcTable, srcErr := c.getTableLocked(tref.Name)
+		if srcErr != nil {
+			continue // Source may be a subquery/CTE we cannot introspect here
+		}
+		tableAlias := tref.Name
+		if tref.Alias != "" {
+			tableAlias = tref.Alias
+		}
+		for _, col := range srcTable.Columns {
+			selectColumns = append(selectColumns, &query.QualifiedIdentifier{Table: tableAlias, Column: col.Name})
+			cd := col
+			cd.sourceTbl = tableAlias
+			joinedColDefs = append(joinedColDefs, cd)
+		}
+	}
+
 	selectStmt := &query.SelectStmt{
-		Columns: columns,
+		Columns: selectColumns,
 		From:    &query.TableRef{Name: stmt.Table},
 		Joins:   stmt.Joins,
 		Where:   stmt.Where,
@@ -412,16 +449,24 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		}
 	}
 
-	// Collect keys of rows to update by serializing the PK value
-	keysToUpdate := make(map[string]struct{})
+	// Map each target row's key to the first joined row that matched it, so
+	// SET expressions referencing source columns can still resolve. If two
+	// source rows match the same target row, SQL's UPDATE semantics allow
+	// picking either — we pick the first, matching most engines.
+	keyToJoinedRow := make(map[string][]interface{})
+	keyOrder := make([]string, 0)
 	for _, row := range resultRows {
 		if pkColIdx < len(row) && row[pkColIdx] != nil {
 			key := c.serializePK(row[pkColIdx], targetTree)
-			keysToUpdate[string(key)] = struct{}{}
+			k := string(key)
+			if _, seen := keyToJoinedRow[k]; !seen {
+				keyToJoinedRow[k] = row
+				keyOrder = append(keyOrder, k)
+			}
 		}
 	}
 
-	if len(keysToUpdate) == 0 {
+	if len(keyOrder) == 0 {
 		return 0, 0, nil // No rows to update
 	}
 
@@ -443,8 +488,9 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		}
 	}
 
-	// Iterate over keys to update
-	for keyStr := range keysToUpdate {
+	// Iterate over keys to update (deterministic: iteration order of keyOrder
+	// mirrors match order, which matches existing behavior).
+	for _, keyStr := range keyOrder {
 		key := []byte(keyStr)
 		valueData, err := targetTree.Get(key)
 		if err != nil {
@@ -460,10 +506,26 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		updatedRow := make([]interface{}, len(row))
 		copy(updatedRow, row)
 
+		// Use the joined row for SET evaluation so SET expressions can
+		// reference source-table columns. The target portion of the joined
+		// row may be stale (selectLocked may have projected through several
+		// layers), but it came from the same selectLocked snapshot we used
+		// to locate this key, so it's consistent with that snapshot. The
+		// authoritative target-column values for indexing/encoding come
+		// from `row` fetched above.
+		evalRow := keyToJoinedRow[keyStr]
+		evalCols := joinedColDefs
+		if len(evalRow) != len(evalCols) {
+			// Fallback to target-only evaluation if the shapes disagree
+			// (e.g. subquery projection rewrote the column list).
+			evalRow = row
+			evalCols = targetTable.Columns
+		}
+
 		// Apply SET clauses
 		for i, setClause := range stmt.Set {
 			colIdx := setColumnIndices[i]
-			newVal, err := evaluateExpression(c, row, targetTable.Columns, setClause.Value, args)
+			newVal, err := evaluateExpression(c, evalRow, evalCols, setClause.Value, args)
 			if err != nil {
 				return 0, rowsAffected, fmt.Errorf("failed to evaluate SET expression: %w", err)
 			}

@@ -35,6 +35,9 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 	if err != nil {
 		return 0, 0, err
 	}
+	if table.Type == "foreign" {
+		return 0, 0, fmt.Errorf("cannot delete from foreign table '%s'", stmt.Table)
+	}
 
 	// Handle DELETE with USING (JOIN)
 	if len(stmt.Using) > 0 {
@@ -274,6 +277,12 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "AFTER", nil, row, table.Columns); trigErr != nil {
 			return 0, rowsAffected, fmt.Errorf("AFTER DELETE trigger failed: %w", trigErr)
 		}
+
+		// Track dead tuple for AutoVacuum
+		c.ensureVacuumMaps()
+		c.vacuumMu.Lock()
+		c.deadTuples[entry.treeName]++
+		c.vacuumMu.Unlock()
 	}
 
 	// Invalidate query cache for the affected table

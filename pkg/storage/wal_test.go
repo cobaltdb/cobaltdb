@@ -2,8 +2,10 @@ package storage
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestOpenWAL(t *testing.T) {
@@ -262,5 +264,108 @@ func TestWALApplyRecordBoundsCheck(t *testing.T) {
 	err := wal.applyRecord(pool, record)
 	if !errors.Is(err, ErrWALCorrupted) {
 		t.Fatalf("expected ErrWALCorrupted, got %v", err)
+	}
+}
+
+func TestWALGroupCommit(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "groupcommit.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	// Enable group commit with a small interval so the test doesn't hang
+	wal.EnableGroupCommit(0, 5*time.Millisecond)
+
+	done := make(chan error, 3)
+	for i := 0; i < 3; i++ {
+		go func(idx int) {
+			rec := &WALRecord{
+				TxnID: uint64(idx),
+				Type:  WALInsert,
+				Data:  []byte(fmt.Sprintf("row%d", idx)),
+			}
+			done <- wal.Append(rec)
+		}(i)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := <-done; err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+	}
+
+	// All three appends should have completed after the next ticker sync
+	wal.DisableGroupCommit()
+
+	if wal.LSN() != 3 {
+		t.Fatalf("expected LSN=3, got %d", wal.LSN())
+	}
+}
+
+func TestWALGroupCommitBatchSize(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "groupcommit_batch.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	// Enable group commit with batch size of 2 (no ticker)
+	wal.EnableGroupCommit(2, 0)
+
+	// First append should block until second append triggers the batch
+	done1 := make(chan error, 1)
+	go func() {
+		done1 <- wal.Append(&WALRecord{TxnID: 1, Type: WALInsert, Data: []byte("a")})
+	}()
+
+	// Give goroutine time to start and block
+	time.Sleep(20 * time.Millisecond)
+
+	// Second append should trigger immediate sync and unblock both
+	if err := wal.Append(&WALRecord{TxnID: 2, Type: WALInsert, Data: []byte("b")}); err != nil {
+		t.Fatalf("Second append failed: %v", err)
+	}
+
+	if err := <-done1; err != nil {
+		t.Fatalf("First append failed: %v", err)
+	}
+
+	wal.DisableGroupCommit()
+
+	if wal.LSN() != 2 {
+		t.Fatalf("expected LSN=2, got %d", wal.LSN())
+	}
+}
+
+func TestWALGroupCommitSyncOff(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "groupcommit_off.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	// SyncOff: no background sync, no batch size
+	wal.EnableGroupCommit(0, 0)
+
+	// Append should return immediately without blocking
+	if err := wal.Append(&WALRecord{TxnID: 1, Type: WALInsert, Data: []byte("x")}); err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+
+	// Data is in buffer but not synced
+	wal.DisableGroupCommit() // this flushes pending
+
+	if wal.LSN() != 1 {
+		t.Fatalf("expected LSN=1, got %d", wal.LSN())
 	}
 }

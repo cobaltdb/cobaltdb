@@ -1931,6 +1931,8 @@ func (p *Parser) parseCreate() (Statement, error) {
 	switch p.current().Type {
 	case TokenTable:
 		return p.parseCreateTable()
+	case TokenForeign:
+		return p.parseCreateForeignTable()
 	case TokenIndex:
 		return p.parseCreateIndex()
 	case TokenUnique:
@@ -2062,6 +2064,87 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 			return nil, err
 		}
 		stmt.Partition = partitionDef
+	}
+
+	return stmt, nil
+}
+
+// parseCreateForeignTable parses CREATE FOREIGN TABLE
+func (p *Parser) parseCreateForeignTable() (*CreateForeignTableStmt, error) {
+	stmt := &CreateForeignTableStmt{Options: make(map[string]string)}
+	p.advance() // consume FOREIGN
+
+	if _, err := p.expect(TokenTable); err != nil {
+		return nil, err
+	}
+
+	if p.match(TokenIf) {
+		if _, err := p.expect(TokenNot); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
+	}
+
+	table, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Table = table.Literal
+
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, err
+	}
+
+	for {
+		col, err := p.parseColumnDef()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Columns = append(stmt.Columns, col)
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, err
+	}
+
+	// WRAPPER 'name'
+	if _, err := p.expect(TokenWrapper); err != nil {
+		return nil, err
+	}
+	wrapper, err := p.expect(TokenString)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Wrapper = wrapper.Literal
+
+	// OPTIONS (key 'value', ...)
+	if p.current().Type == TokenOptions {
+		p.advance() // consume OPTIONS
+		if _, err := p.expect(TokenLParen); err != nil {
+			return nil, err
+		}
+		for {
+			keyTok, err := p.expect(TokenIdentifier)
+			if err != nil {
+				return nil, err
+			}
+			valTok, err := p.expect(TokenString)
+			if err != nil {
+				return nil, err
+			}
+			stmt.Options[keyTok.Literal] = valTok.Literal
+			if !p.match(TokenComma) {
+				break
+			}
+		}
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
 	}
 
 	return stmt, nil

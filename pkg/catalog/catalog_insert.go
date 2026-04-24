@@ -15,6 +15,62 @@ func formatKey(pkVal int64) string {
 	return fmt.Sprintf("%020d", pkVal)
 }
 
+// compositeKeySep separates columns in a composite primary key. 0x00 is safe:
+// formatKeyComponent outputs only digits or ASCII, never a null byte.
+const compositeKeySep = "\x00"
+
+// formatKeyComponent formats a single value as a key component. Must be
+// consistent with formatKey for int types so single-column PKs keep their
+// existing on-disk representation.
+func formatKeyComponent(val interface{}) (string, bool) {
+	switch v := val.(type) {
+	case int:
+		return formatKey(int64(v)), true
+	case int64:
+		return formatKey(v), true
+	case float64:
+		return formatKey(int64(v)), true
+	case string:
+		return "S:" + v, true
+	case bool:
+		if v {
+			return "B:1", true
+		}
+		return "B:0", true
+	case nil:
+		return "", false
+	default:
+		return fmt.Sprintf("X:%v", v), true
+	}
+}
+
+// buildCompositePK builds the btree key for a row given the table's PK columns
+// and the already-evaluated rowValues slice (aligned with table.Columns). For
+// single-column PKs this produces the same key as the legacy formatKey path,
+// preserving backward compatibility. Returns ok=false if any PK column value
+// is nil (PK implies NOT NULL).
+func buildCompositePK(table *TableDef, rowValues []interface{}) (string, bool) {
+	if len(table.PrimaryKey) == 0 {
+		return "", false
+	}
+	parts := make([]string, 0, len(table.PrimaryKey))
+	for _, pkCol := range table.PrimaryKey {
+		idx := table.GetColumnIndex(pkCol)
+		if idx < 0 || idx >= len(rowValues) {
+			return "", false
+		}
+		part, ok := formatKeyComponent(rowValues[idx])
+		if !ok {
+			return "", false
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 1 {
+		return parts[0], true
+	}
+	return strings.Join(parts, compositeKeySep), true
+}
+
 func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -30,6 +86,9 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	table, err := c.getTableLocked(stmt.Table)
 	if err != nil {
 		return 0, 0, err
+	}
+	if table.Type == "foreign" {
+		return 0, 0, fmt.Errorf("cannot insert into foreign table '%s'", stmt.Table)
 	}
 
 	// Get the target tree - may be partitioned
@@ -140,41 +199,49 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			}
 		}
 
-		// Generate unique key (use auto-increment if primary key exists)
+		// Generate unique key (use auto-increment if primary key exists).
+		// For composite primary keys we defer key generation until after
+		// rowValues have been evaluated (the composite key is built from
+		// all PK column values together).
 		var key string
 		hasPrimaryKey := false
-		for i, colName := range insertColumns {
-			if table.isPrimaryKeyColumn(colName) {
-				hasPrimaryKey = true
-				// Get primary key value from valueRow if provided
-				if i < len(valueRow) {
-					if numLit, ok := valueRow[i].(*query.NumberLiteral); ok {
-						pkVal := int64(numLit.Value)
-						key = formatKey(pkVal)
-						// Keep auto-inc counter ahead of explicit values
-						if pkVal > table.AutoIncSeq {
-							table.AutoIncSeq = pkVal
-						}
-					} else {
-						// Non-numeric primary key (TEXT, etc.)
-						val, err := evaluateExpression(c, nil, nil, valueRow[i], args)
-						if err == nil && val != nil {
-							if strVal, ok := val.(string); ok {
-								key = "S:" + strVal // Prefix to distinguish from numeric keys
-							} else if fVal, ok := toFloat64(val); ok {
-								pkVal := int64(fVal)
-								key = formatKey(pkVal)
-								if pkVal > table.AutoIncSeq {
-									table.AutoIncSeq = pkVal
+		compositePK := len(table.PrimaryKey) > 1
+		if !compositePK {
+			for i, colName := range insertColumns {
+				if table.isPrimaryKeyColumn(colName) {
+					hasPrimaryKey = true
+					// Get primary key value from valueRow if provided
+					if i < len(valueRow) {
+						if numLit, ok := valueRow[i].(*query.NumberLiteral); ok {
+							pkVal := int64(numLit.Value)
+							key = formatKey(pkVal)
+							// Keep auto-inc counter ahead of explicit values
+							if pkVal > table.AutoIncSeq {
+								table.AutoIncSeq = pkVal
+							}
+						} else {
+							// Non-numeric primary key (TEXT, etc.)
+							val, err := evaluateExpression(c, nil, nil, valueRow[i], args)
+							if err == nil && val != nil {
+								if strVal, ok := val.(string); ok {
+									key = "S:" + strVal // Prefix to distinguish from numeric keys
+								} else if fVal, ok := toFloat64(val); ok {
+									pkVal := int64(fVal)
+									key = formatKey(pkVal)
+									if pkVal > table.AutoIncSeq {
+										table.AutoIncSeq = pkVal
+									}
 								}
 							}
 						}
 					}
 				}
 			}
+		} else {
+			hasPrimaryKey = true // composite PKs are always present
 		}
 
-		if !hasPrimaryKey || key == "" {
+		if !compositePK && (!hasPrimaryKey || key == "") {
 			// Generate auto-increment key (per-table counter)
 			table.AutoIncSeq++
 			autoIncValue = table.AutoIncSeq
@@ -256,6 +323,18 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 		if insertErr != nil {
 			break
+		}
+
+		// For composite primary keys, build the btree key from all PK column
+		// values now that rowValues is fully populated (including defaults).
+		// Single-column PKs already generated their key above.
+		if compositePK {
+			compositeKey, ok := buildCompositePK(table, rowValues)
+			if !ok {
+				insertErr = fmt.Errorf("composite PRIMARY KEY columns must all be non-null")
+				break
+			}
+			key = compositeKey
 		}
 
 		// Check UNIQUE constraints before inserting
@@ -707,6 +786,14 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	// Store returning rows for retrieval
 	c.lastReturningRows = returningRows
 	c.lastReturningColumns = returningCols
+
+	// Track live tuples for AutoVacuum
+	if rowsAffected > 0 {
+		c.ensureVacuumMaps()
+		c.vacuumMu.Lock()
+		c.liveTuples[stmt.Table] += rowsAffected
+		c.vacuumMu.Unlock()
+	}
 
 	return autoIncValue, rowsAffected, nil
 }

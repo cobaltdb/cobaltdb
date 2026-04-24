@@ -156,6 +156,17 @@ type CreateTableStmt struct {
 func (s *CreateTableStmt) nodeType() string { return "CreateTableStmt" }
 func (s *CreateTableStmt) statementNode()   {}
 
+// CreateForeignTableStmt represents a CREATE FOREIGN TABLE statement
+type CreateForeignTableStmt struct {
+	Table   string
+	Columns []*ColumnDef
+	Wrapper string
+	Options map[string]string
+}
+
+func (s *CreateForeignTableStmt) nodeType() string { return "CreateForeignTableStmt" }
+func (s *CreateForeignTableStmt) statementNode()   {}
+
 // DropTableStmt represents a DROP TABLE statement
 type DropTableStmt struct {
 	IfExists bool

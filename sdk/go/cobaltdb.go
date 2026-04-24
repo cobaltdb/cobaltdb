@@ -293,8 +293,7 @@ func (db *DB) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	rows.Close()
-	return nil
+	return rows.Close()
 }
 
 // Stats returns database statistics

@@ -165,21 +165,38 @@ func (s *MySQLServer) Close() error {
 	return nil
 }
 
-// acceptLoop accepts incoming connections
+// acceptLoop accepts incoming connections.
+//
+// Register the loop itself in s.wg *before* accepting any connections. This
+// gives Close()'s s.wg.Wait() a non-zero counter to synchronize against, so
+// later s.wg.Add(1) calls for per-connection handlers can't race with Wait
+// (the classic "positive-delta-while-zero-concurrent-with-Wait" WaitGroup
+// race). If we're already closed, return without touching wg.
 func (s *MySQLServer) acceptLoop() {
-	if s.listener == nil {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	listener := s.listener
+	stopChan := s.stopChan
+	s.wg.Add(1)
+	s.mu.Unlock()
+	defer s.wg.Done()
+
+	if listener == nil {
 		return
 	}
 	for {
 		select {
-		case <-s.stopChan:
+		case <-stopChan:
 			return
 		default:
 		}
-		conn, err := s.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			select {
-			case <-s.stopChan:
+			case <-stopChan:
 				return
 			default:
 				return

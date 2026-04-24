@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -14,16 +15,19 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cobaltdb/cobaltdb/pkg/advisor"
 	"github.com/cobaltdb/cobaltdb/pkg/audit"
 	"github.com/cobaltdb/cobaltdb/pkg/backup"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/cache"
 	"github.com/cobaltdb/cobaltdb/pkg/catalog"
+	"github.com/cobaltdb/cobaltdb/pkg/fdw"
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
 	"github.com/cobaltdb/cobaltdb/pkg/metrics"
 	"github.com/cobaltdb/cobaltdb/pkg/optimizer"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/replication"
+	"github.com/cobaltdb/cobaltdb/pkg/scheduler"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
@@ -79,6 +83,19 @@ type DB struct {
 
 	// Query Plan Cache - caches parsed query statements
 	planCache *QueryPlanCache
+
+	// commitMu serializes the durability phase of Tx.Commit (btree flush +
+	// buffer pool flush). Without this, two commits can race on shared page
+	// bytes: one writing via btree.flushInternal while the other reads via
+	// BufferPool.FlushAll → WriteAt. Serializing only the flush phase keeps
+	// normal query concurrency intact.
+	commitMu sync.Mutex
+
+	// JobScheduler manages periodic maintenance tasks (vacuum, analyze, etc.)
+	scheduler *scheduler.Scheduler
+
+	// IndexAdvisor analyzes queries and recommends missing indexes
+	indexAdvisor *advisor.IndexAdvisor
 }
 
 // Options contains database configuration options
@@ -130,6 +147,23 @@ type Options struct {
 	PlanCacheSize    int64 // Max plan cache size in bytes (default: 32MB)
 	PlanCacheEntries int   // Max number of cached plans (default: 1000)
 
+	// AutoVacuum Options
+	EnableAutoVacuum    bool          // Enable automatic VACUUM (default: true for disk)
+	AutoVacuumInterval  time.Duration // Interval between auto-vacuum checks (default: 1m)
+	AutoVacuumThreshold float64       // Dead tuple ratio to trigger vacuum (default: 0.2 = 20%)
+
+	// Scheduler Options
+	EnableScheduler      bool          // Enable job scheduler (default: true for disk)
+	AnalyzeInterval      time.Duration // Interval for automatic ANALYZE (default: 1h)
+	SchedulerWorkers     int           // Number of scheduler workers (default: 2)
+	SchedulerTickInterval time.Duration // Dispatcher resolution (default: 1s)
+
+	// Compression Options
+	CompressionConfig *storage.CompressionConfig // Page-level compression config (nil = disabled)
+
+	// Parallel Query Execution Options
+	ParallelWorkers   int // Number of parallel query workers (0 = disabled, default: NumCPU)
+	ParallelThreshold int // Min rows to trigger parallel execution (default: 1000)
 }
 
 // SyncMode controls when data is synced to disk
@@ -219,11 +253,19 @@ func DefaultOptions() *Options {
 		InMemory:          false,
 		WALEnabled:        true,
 		SyncMode:          SyncNormal,
-		Logger:            logger.Default(),
-		MaxConnections:    100, // Default max connections
-		ConnectionTimeout: 30 * time.Second,
-		QueryTimeout:      60 * time.Second,
-		MaxStmtCacheSize:  1000, // Default max cached statements
+		Logger:              logger.Default(),
+		MaxConnections:      100, // Default max connections
+		ConnectionTimeout:   30 * time.Second,
+		QueryTimeout:        60 * time.Second,
+		MaxStmtCacheSize:    1000, // Default max cached statements
+		EnableAutoVacuum:    true,
+		AutoVacuumInterval:  1 * time.Minute,
+		AutoVacuumThreshold: 0.2, // 20% dead tuples triggers vacuum
+		EnableScheduler:     true,
+		AnalyzeInterval:     1 * time.Hour,
+		SchedulerWorkers:    2,
+		ParallelWorkers:     runtime.NumCPU(),
+		ParallelThreshold:   1000,
 	}
 }
 
@@ -299,19 +341,30 @@ func Open(path string, opts *Options) (*DB, error) {
 				return nil, fmt.Errorf("failed to setup encryption: %w", err)
 			}
 		}
+
+		// Wrap with page-level compression if configured
+		if opts.CompressionConfig != nil && opts.CompressionConfig.Enabled {
+			log.Infof("Enabling page-level compression")
+			backend, err = storage.NewCompressedBackend(backend, opts.CompressionConfig)
+			if err != nil {
+				backend.Close()
+				return nil, fmt.Errorf("failed to setup compression: %w", err)
+			}
+		}
 	}
 
 	// Initialize metrics collector
 	collector := metrics.NewCollector(0) // Use default interval
 
 	db := &DB{
-		path:       path,
-		backend:    backend,
-		options:    opts,
-		stmtCache:  make(map[string]*cachedStmt),
-		stmtLRU:    newStmtLRUList(),
-		metrics:    collector,
-		shutdownCh: make(chan struct{}),
+		path:         path,
+		backend:      backend,
+		options:      opts,
+		stmtCache:    make(map[string]*cachedStmt),
+		stmtLRU:      newStmtLRUList(),
+		metrics:      collector,
+		shutdownCh:   make(chan struct{}),
+		indexAdvisor: advisor.NewIndexAdvisor(),
 	}
 
 	// Initialize audit logger if configured
@@ -353,6 +406,14 @@ func Open(path string, opts *Options) (*DB, error) {
 		}
 		backend.Close()
 		return nil, err
+	}
+
+	// Start scheduler for maintenance jobs if enabled.
+	// Auto-vacuum implies the scheduler must be active.
+	if !db.options.InMemory && db.path != ":memory:" {
+		if db.options.EnableScheduler || db.options.EnableAutoVacuum {
+			db.startScheduler()
+		}
 	}
 
 	return db, nil
@@ -398,6 +459,12 @@ func (db *DB) createNew() error {
 
 	// Initialize catalog
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
+	db.catalog.SetParallelOptions(db.options.ParallelWorkers, db.options.ParallelThreshold)
+
+	// Initialize FDW registry and register built-in wrappers
+	fdwRegistry := fdw.NewRegistry()
+	fdwRegistry.Register("csv", &fdw.CSVWrapper{})
+	db.catalog.SetFDWRegistry(fdwRegistry)
 
 	// Enable RLS if configured
 	if db.options.EnableRLS {
@@ -542,6 +609,16 @@ func (db *DB) loadExisting() error {
 
 		db.pool.SetWAL(wal)
 
+			// Enable group commit based on SyncMode
+			switch db.options.SyncMode {
+			case SyncNormal:
+				wal.EnableGroupCommit(0, 1*time.Millisecond)
+			case SyncOff:
+				wal.EnableGroupCommit(0, 0)
+			default: // SyncFull
+				// immediate sync (default behavior)
+			}
+
 		// Recover from WAL if needed
 		if wal.LSN() > wal.CheckpointLSN() {
 			if err := wal.Recover(db.pool); err != nil {
@@ -555,6 +632,12 @@ func (db *DB) loadExisting() error {
 
 	// Load catalog - schema and data are now stored in the B+Tree pages
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
+	db.catalog.SetParallelOptions(db.options.ParallelWorkers, db.options.ParallelThreshold)
+
+	// Initialize FDW registry and register built-in wrappers
+	fdwRegistry := fdw.NewRegistry()
+	fdwRegistry.Register("csv", &fdw.CSVWrapper{})
+	db.catalog.SetFDWRegistry(fdwRegistry)
 
 	// Enable RLS if configured
 	if db.options.EnableRLS {
@@ -713,6 +796,11 @@ func (db *DB) Close() error {
 		db.metrics.Stop()
 	}
 
+	// Stop scheduler (vacuum, analyze, and other maintenance jobs)
+	if db.scheduler != nil {
+		db.scheduler.Stop()
+	}
+
 	var errs []error
 
 	// Save catalog metadata to B+Tree (if not in-memory)
@@ -765,6 +853,110 @@ func (db *DB) Close() error {
 		errs = append(errs, fmt.Errorf("backend close: %w", err))
 	}
 	return errors.Join(errs...)
+}
+
+// startScheduler initializes and starts the job scheduler, registering
+// default maintenance jobs (auto-vacuum, analyze).
+func (db *DB) startScheduler() {
+	workers := db.options.SchedulerWorkers
+	if workers <= 0 {
+		workers = 2
+	}
+	tick := db.options.SchedulerTickInterval
+	if tick <= 0 {
+		tick = 1 * time.Second
+	}
+	db.scheduler = scheduler.NewWithInterval(workers, db.options.Logger, tick)
+
+	// Register auto-vacuum job
+	if db.options.EnableAutoVacuum {
+		interval := db.options.AutoVacuumInterval
+		if interval <= 0 {
+			interval = 1 * time.Minute
+		}
+		threshold := db.options.AutoVacuumThreshold
+		if threshold <= 0 {
+			threshold = 0.2
+		}
+		vacuumJob := &scheduler.Job{
+			ID:       "auto-vacuum",
+			Name:     "Auto Vacuum",
+			Type:     scheduler.JobTypeVacuum,
+			Interval: interval,
+			Enabled:  true,
+			Fn: func(ctx context.Context) error {
+				return db.runAutoVacuumJob(threshold)
+			},
+		}
+		if err := db.scheduler.Register(vacuumJob); err != nil {
+			db.options.Logger.Warnf("Failed to register auto-vacuum job: %v", err)
+		}
+	}
+
+	// Register analyze job
+	analyzeInterval := db.options.AnalyzeInterval
+	if analyzeInterval <= 0 {
+		analyzeInterval = 1 * time.Hour
+	}
+	analyzeJob := &scheduler.Job{
+		ID:       "auto-analyze",
+		Name:     "Auto Analyze",
+		Type:     scheduler.JobTypeAnalyze,
+		Interval: analyzeInterval,
+		Enabled:  true,
+		Fn: func(ctx context.Context) error {
+			return db.runAnalyzeJob()
+		},
+	}
+	if err := db.scheduler.Register(analyzeJob); err != nil {
+		db.options.Logger.Warnf("Failed to register auto-analyze job: %v", err)
+	}
+
+	db.scheduler.Start()
+}
+
+// runAutoVacuumJob checks all tables and vacuums those exceeding the dead-tuple threshold.
+func (db *DB) runAutoVacuumJob(threshold float64) error {
+	tables := db.catalog.ListTablesNeedingVacuum(threshold)
+	for _, tableName := range tables {
+		if err := db.catalog.VacuumTable(tableName); err != nil {
+			if db.options.Logger != nil {
+				db.options.Logger.Warnf("AutoVacuum failed for table %s: %v", tableName, err)
+			}
+		} else {
+			if db.options.Logger != nil {
+				db.options.Logger.Infof("AutoVacuum completed for table %s", tableName)
+			}
+		}
+	}
+	return nil
+}
+
+// runAnalyzeJob runs ANALYZE on all tables to update query planner statistics.
+func (db *DB) runAnalyzeJob() error {
+	tables := db.catalog.ListTables()
+	for _, tableName := range tables {
+		if err := db.catalog.Analyze(tableName); err != nil {
+			if db.options.Logger != nil {
+				db.options.Logger.Warnf("AutoAnalyze failed for table %s: %v", tableName, err)
+			}
+		} else {
+			if db.options.Logger != nil {
+				db.options.Logger.Infof("AutoAnalyze completed for table %s", tableName)
+			}
+		}
+	}
+	return nil
+}
+
+// GetScheduler returns the job scheduler for advanced usage.
+func (db *DB) GetScheduler() *scheduler.Scheduler {
+	return db.scheduler
+}
+
+// RegisterFDW registers a foreign data wrapper with the database.
+func (db *DB) RegisterFDW(name string, wrapper fdw.ForeignDataWrapper) {
+	db.catalog.GetFDWRegistry().Register(name, wrapper)
 }
 
 // getPreparedStatement returns a cached prepared statement or parses and caches it
@@ -951,6 +1143,11 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 		return Result{}, fmt.Errorf("parse error: %w", err)
 	}
 
+	// Feed statement to index advisor for pattern analysis
+	if db.indexAdvisor != nil {
+		db.indexAdvisor.Analyze(stmt)
+	}
+
 	// Execute statement
 	return db.execute(ctx, stmt, args)
 }
@@ -1013,6 +1210,11 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 			db.metrics.RecordError()
 		}
 		return nil, fmt.Errorf("parse error: %w", err)
+	}
+
+	// Feed statement to index advisor for pattern analysis
+	if db.indexAdvisor != nil {
+		db.indexAdvisor.Analyze(stmt)
 	}
 
 	// Execute query
@@ -1166,6 +1368,12 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		}
 		if err == nil {
 			db.replicateWrite("CREATE_TABLE", s.Table, nil)
+		}
+		return result, err
+	case *query.CreateForeignTableStmt:
+		result, err := db.executeCreateForeignTable(ctx, s)
+		if db.auditLogger != nil {
+			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_FOREIGN_TABLE", audit.WithTable(s.Table))
 		}
 		return result, err
 	case *query.InsertStmt:
@@ -1504,6 +1712,13 @@ func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{
 // executeCreateTable executes CREATE TABLE
 func (db *DB) executeCreateTable(ctx context.Context, stmt *query.CreateTableStmt) (Result, error) {
 	if err := db.catalog.CreateTable(stmt); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+func (db *DB) executeCreateForeignTable(ctx context.Context, stmt *query.CreateForeignTableStmt) (Result, error) {
+	if err := db.catalog.CreateForeignTable(stmt); err != nil {
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
@@ -2635,6 +2850,13 @@ func scanValue(src interface{}, dest interface{}) error {
 				*d = int(f)
 				return nil
 			}
+			// Try string
+			if s, ok := src.(string); ok {
+				if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+					*d = int(i)
+					return nil
+				}
+			}
 			return fmt.Errorf("cannot scan %T into int", src)
 		}
 		*d = int(v)
@@ -2645,12 +2867,24 @@ func scanValue(src interface{}, dest interface{}) error {
 				*d = int64(f)
 				return nil
 			}
+			if s, ok := src.(string); ok {
+				if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+					*d = i
+					return nil
+				}
+			}
 			return fmt.Errorf("cannot scan %T into int64", src)
 		}
 		*d = v
 	case *float64:
 		v, ok := src.(float64)
 		if !ok {
+			if s, ok := src.(string); ok {
+				if f, err := strconv.ParseFloat(s, 64); err == nil {
+					*d = f
+					return nil
+				}
+			}
 			return fmt.Errorf("cannot scan %T into float64", src)
 		}
 		*d = v
@@ -2732,6 +2966,12 @@ func (tx *Tx) Commit() error {
 	}
 	defer tx.db.releaseConnection()
 
+	// Serialize the durability phase: btree flush mutates shared page bytes
+	// that buffer pool flush reads. Without this lock, concurrent commits
+	// race on page.data. See DB.commitMu comment.
+	tx.db.commitMu.Lock()
+	defer tx.db.commitMu.Unlock()
+
 	// Flush table B+Trees to buffer pool first
 	if err := tx.db.catalog.FlushTableTrees(); err != nil {
 		// Rollback catalog transaction to prevent it from staying active forever
@@ -2786,6 +3026,11 @@ func (db *DB) GetMetrics() ([]byte, error) {
 // GetMetricsCollector returns the metrics collector for advanced usage
 func (db *DB) GetMetricsCollector() *metrics.Collector {
 	return db.metrics
+}
+
+// GetCatalog returns the underlying catalog instance.
+func (db *DB) GetCatalog() *catalog.Catalog {
+	return db.catalog
 }
 
 // DBStats holds database statistics
@@ -2973,6 +3218,30 @@ func (db *DB) GetBackupManager() *backup.Manager {
 // GetQueryCache returns the query cache
 func (db *DB) GetQueryCache() *cache.Cache {
 	return db.queryCache
+}
+
+// GetIndexRecommendations returns missing index suggestions based on
+// observed query patterns since the database was opened.
+func (db *DB) GetIndexRecommendations() []*advisor.IndexRecommendation {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.indexAdvisor == nil {
+		return nil
+	}
+
+	existing := db.catalog.ListIndexesByTable()
+	return db.indexAdvisor.Recommendations(existing)
+}
+
+// ResetIndexAdvisor clears all recorded query patterns.
+func (db *DB) ResetIndexAdvisor() {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.indexAdvisor != nil {
+		db.indexAdvisor.Reset()
+	}
 }
 
 // PlanCache methods
