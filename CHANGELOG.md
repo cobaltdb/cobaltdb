@@ -26,6 +26,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Untrack auto-generated TLS certificate files from git
 - Fix build-time version injection for server and CLI binaries (was hardcoded v0.3.0 / v2.0)
 
+### New Features
+
+#### Index Advisor (`pkg/advisor/`)
+- AST-based query analyzer that tracks column usage in WHERE, JOIN, ORDER BY, and GROUP BY clauses
+- Recommends single-column and composite indexes, suppressing suggestions already covered by existing indexes or primary keys
+- Accessible via `DB.GetIndexRecommendations()`
+
+#### Parallel Query Execution (`pkg/parallel/`)
+- Chunk-based parallel processing for simple SELECT scans and GROUP BY queries
+- Splits materialized row data across worker goroutines for CPU-bound work (row decoding, WHERE evaluation, projection, grouping)
+- Enabled by default with `runtime.NumCPU()` workers and a threshold of 1000 rows; configurable via `Options.ParallelWorkers` and `Options.ParallelThreshold`
+
+#### Foreign Data Wrappers (`pkg/fdw/`)
+- Lightweight FDW framework for querying external data sources via SQL
+- Supports `CREATE FOREIGN TABLE ... WRAPPER ... OPTIONS (...)` syntax
+- Built-in CSV wrapper reads local CSV files
+- Foreign tables are materialized into temporary B-trees at scan time, enabling full query engine features (JOIN, GROUP BY, ORDER BY)
+- Foreign tables are read-only in this version
+
 ### Tests
 - 31+ new coverage boost tests
 - Overall test coverage: **91.2%** (20/20 packages above 89%)
