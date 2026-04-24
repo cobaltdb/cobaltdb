@@ -37,10 +37,8 @@ func (c *CSVWrapper) Scan(table string, columns []string) ([][]interface{}, erro
 	if c.file == nil {
 		return nil, fmt.Errorf("csv FDW not opened")
 	}
-	// Re-open for each scan so multiple scans work
-	path := c.file.Name()
-	c.file.Close()
-	f, err := os.Open(path)
+	// Re-open for each scan so multiple scans work independently
+	f, err := os.Open(c.file.Name())
 	if err != nil {
 		return nil, err
 	}
