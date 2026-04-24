@@ -83,7 +83,9 @@ func (a *IndexAdvisor) analyzeSelect(stmt *query.SelectStmt) {
 			}
 			for _, col := range colNames {
 				if tableName != "" {
-					counter(a.record(tableName, col))
+					if cp := a.record(tableName, col); cp != nil {
+						counter(cp)
+					}
 				}
 			}
 		}
@@ -112,13 +114,17 @@ func (a *IndexAdvisor) analyzeUpdate(stmt *query.UpdateStmt) {
 		cols := extractColumns(stmt.Where)
 		for _, colNames := range cols {
 			for _, col := range colNames {
-				a.record(stmt.Table, col).WhereCount++
+				if cp := a.record(stmt.Table, col); cp != nil {
+					cp.WhereCount++
+				}
 			}
 		}
 	}
 	for _, set := range stmt.Set {
 		if set != nil {
-			a.record(stmt.Table, set.Column).SelectCount++
+			if cp := a.record(stmt.Table, set.Column); cp != nil {
+				cp.SelectCount++
+			}
 		}
 	}
 }
@@ -128,7 +134,9 @@ func (a *IndexAdvisor) analyzeDelete(stmt *query.DeleteStmt) {
 		cols := extractColumns(stmt.Where)
 		for _, colNames := range cols {
 			for _, col := range colNames {
-				a.record(stmt.Table, col).WhereCount++
+				if cp := a.record(stmt.Table, col); cp != nil {
+					cp.WhereCount++
+				}
 			}
 		}
 	}
@@ -150,6 +158,9 @@ func (a *IndexAdvisor) collectTablesFromSelect(stmt *query.SelectStmt) map[strin
 func (a *IndexAdvisor) record(tableName, columnName string) *ColumnPattern {
 	tp, ok := a.patterns[tableName]
 	if !ok {
+		if len(a.patterns) >= a.maxPatterns {
+			return nil
+		}
 		tp = &TablePattern{
 			TableName: tableName,
 			Columns:   make(map[string]*ColumnPattern),

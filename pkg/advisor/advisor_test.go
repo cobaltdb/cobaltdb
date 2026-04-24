@@ -466,3 +466,29 @@ func rangeRecsForTable(recs []*IndexRecommendation, table string) []*IndexRecomm
 	}
 	return out
 }
+
+func TestAdvisorMaxPatterns(t *testing.T) {
+	a := NewIndexAdvisor()
+	a.maxPatterns = 2
+
+	a.Analyze(&query.SelectStmt{
+		From:  &query.TableRef{Name: "t1"},
+		Where: &query.BinaryExpr{Left: &query.Identifier{Name: "c"}, Operator: query.TokenEq, Right: &query.NumberLiteral{Value: 1}},
+	})
+	a.Analyze(&query.SelectStmt{
+		From:  &query.TableRef{Name: "t2"},
+		Where: &query.BinaryExpr{Left: &query.Identifier{Name: "c"}, Operator: query.TokenEq, Right: &query.NumberLiteral{Value: 1}},
+	})
+	// Third table should be ignored because maxPatterns = 2
+	a.Analyze(&query.SelectStmt{
+		From:  &query.TableRef{Name: "t3"},
+		Where: &query.BinaryExpr{Left: &query.Identifier{Name: "c"}, Operator: query.TokenEq, Right: &query.NumberLiteral{Value: 1}},
+	})
+
+	recs := a.Recommendations(nil)
+	for _, r := range recs {
+		if r.TableName == "t3" {
+			t.Error("expected t3 to be ignored due to maxPatterns limit")
+		}
+	}
+}
