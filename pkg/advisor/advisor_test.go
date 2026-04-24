@@ -315,6 +315,139 @@ func TestAdvisorPrefixOfExisting(t *testing.T) {
 	}
 }
 
+func TestAdvisorExtractColumnsComplexExpressions(t *testing.T) {
+	a := NewIndexAdvisor()
+
+	// Test UnaryExpr (NOT), LikeExpr, IsNullExpr, BetweenExpr, CastExpr
+	stmt := &query.SelectStmt{
+		From: &query.TableRef{Name: "items"},
+		Where: &query.BinaryExpr{
+			Left: &query.UnaryExpr{
+				Operator: query.TokenNot,
+				Expr:     &query.Identifier{Name: "deleted"},
+			},
+			Operator: query.TokenAnd,
+			Right: &query.BinaryExpr{
+				Left: &query.LikeExpr{
+					Expr:    &query.Identifier{Name: "name"},
+					Pattern: &query.StringLiteral{Value: "%test%"},
+				},
+				Operator: query.TokenAnd,
+				Right: &query.BinaryExpr{
+					Left: &query.IsNullExpr{
+						Expr: &query.Identifier{Name: "archived"},
+						Not:  true,
+					},
+					Operator: query.TokenAnd,
+					Right: &query.BetweenExpr{
+						Expr:  &query.Identifier{Name: "price"},
+						Lower: &query.NumberLiteral{Value: 10},
+						Upper: &query.NumberLiteral{Value: 100},
+					},
+				},
+			},
+		},
+	}
+	a.Analyze(stmt)
+
+	// Test FunctionCall, CaseExpr
+	stmt2 := &query.SelectStmt{
+		From: &query.TableRef{Name: "items"},
+		Where: &query.FunctionCall{
+			Name: "COALESCE",
+			Args: []query.Expression{
+				&query.Identifier{Name: "discount"},
+				&query.NumberLiteral{Value: 0},
+			},
+		},
+	}
+	a.Analyze(stmt2)
+
+	// Test CastExpr
+	stmt3 := &query.SelectStmt{
+		From: &query.TableRef{Name: "items"},
+		Where: &query.CastExpr{
+			Expr:     &query.Identifier{Name: "code"},
+			DataType: query.TokenInteger,
+		},
+	}
+	a.Analyze(stmt3)
+
+	// Test CaseExpr
+	stmt4 := &query.SelectStmt{
+		From: &query.TableRef{Name: "items"},
+		Where: &query.CaseExpr{
+			Expr: &query.Identifier{Name: "status"},
+			Whens: []*query.WhenClause{
+				{Condition: &query.StringLiteral{Value: "active"}, Result: &query.Identifier{Name: "active_flag"}},
+			},
+			Else: &query.Identifier{Name: "default_flag"},
+		},
+	}
+	a.Analyze(stmt4)
+
+	// Test ExistsExpr with Subquery
+	stmt5 := &query.SelectStmt{
+		From: &query.TableRef{Name: "items"},
+		Where: &query.ExistsExpr{
+			Subquery: &query.SelectStmt{
+				From: &query.TableRef{Name: "reviews"},
+				Where: &query.BinaryExpr{
+					Left:     &query.QualifiedIdentifier{Table: "reviews", Column: "item_id"},
+					Operator: query.TokenEq,
+					Right:    &query.QualifiedIdentifier{Table: "items", Column: "id"},
+				},
+			},
+		},
+	}
+	a.Analyze(stmt5)
+
+	// Test InExpr with Subquery
+	stmt6 := &query.SelectStmt{
+		From: &query.TableRef{Name: "items"},
+		Where: &query.InExpr{
+			Expr: &query.Identifier{Name: "category_id"},
+			Subquery: &query.SelectStmt{
+				From: &query.TableRef{Name: "categories"},
+				Where: &query.BinaryExpr{
+					Left:     &query.Identifier{Name: "active"},
+					Operator: query.TokenEq,
+					Right:    &query.BooleanLiteral{Value: true},
+				},
+			},
+		},
+	}
+	a.Analyze(stmt6)
+
+	recs := a.Recommendations(nil)
+	expectedCols := map[string]bool{
+		"deleted":     true,
+		"name":        true,
+		"archived":    true,
+		"price":       true,
+		"discount":    true,
+		"code":        true,
+		"status":      true,
+		"active_flag": true,
+		"default_flag": true,
+		"category_id": true,
+	}
+
+	for _, r := range recs {
+		if r.TableName == "items" && len(r.Columns) == 1 {
+			delete(expectedCols, r.Columns[0])
+		}
+	}
+
+	if len(expectedCols) > 0 {
+		missing := make([]string, 0, len(expectedCols))
+		for c := range expectedCols {
+			missing = append(missing, c)
+		}
+		t.Errorf("missing recommendations for columns: %v", missing)
+	}
+}
+
 func containsColumn(cols []string, target string) bool {
 	for _, c := range cols {
 		if strings.EqualFold(c, target) {
