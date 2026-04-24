@@ -90,3 +90,56 @@ func TestCSVWrapper_NoHeader(t *testing.T) {
 		t.Fatalf("unexpected row 0: %v", rows[0])
 	}
 }
+
+func TestCSVWrapper_OpenMissingFileOption(t *testing.T) {
+	csv := &CSVWrapper{}
+	err := csv.Open(map[string]string{})
+	if err == nil {
+		t.Fatal("expected error when missing 'file' option")
+	}
+}
+
+func TestCSVWrapper_ScanEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.csv")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer csv.Close()
+
+	rows, err := csv.Scan("test", []string{"id", "name"})
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	if rows != nil {
+		t.Fatalf("expected nil rows for empty file, got %v", rows)
+	}
+}
+
+func TestCSVWrapper_CloseNilFile(t *testing.T) {
+	csv := &CSVWrapper{}
+	if err := csv.Close(); err != nil {
+		t.Fatalf("close on nil file should not error: %v", err)
+	}
+}
+
+func TestCSVWrapper_OpenMissingFile(t *testing.T) {
+	csv := &CSVWrapper{}
+	err := csv.Open(map[string]string{"file": "/nonexistent/path/file.csv"})
+	if err == nil {
+		t.Fatal("expected error when file does not exist")
+	}
+}
+
+func TestCSVWrapper_ScanNotOpened(t *testing.T) {
+	csv := &CSVWrapper{}
+	_, err := csv.Scan("test", []string{"id"})
+	if err == nil {
+		t.Fatal("expected error when scanning without open")
+	}
+}
