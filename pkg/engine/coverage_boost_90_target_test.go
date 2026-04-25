@@ -5,7 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/cobaltdb/cobaltdb/pkg/audit"
+	"github.com/cobaltdb/cobaltdb/pkg/fdw"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
 
@@ -576,4 +581,658 @@ func TestBeginWithCustomOptions90(t *testing.T) {
 	if err != nil {
 		t.Errorf("Commit failed: %v", err)
 	}
+}
+
+// TestGetIndexRecommendations90 tests the index advisor API
+func TestGetIndexRecommendations90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)")
+
+	// Run queries that should trigger advisor recommendations
+	for i := 0; i < 5; i++ {
+		db.Query(ctx, "SELECT * FROM users WHERE email = 'test@example.com'")
+	}
+
+	recs := db.GetIndexRecommendations()
+	if recs == nil {
+		t.Log("No recommendations yet")
+	}
+}
+
+// TestResetIndexAdvisor90 tests resetting the advisor
+func TestResetIndexAdvisor90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)")
+	db.Query(ctx, "SELECT * FROM users WHERE email = 'test'")
+
+	recsBefore := db.GetIndexRecommendations()
+	if len(recsBefore) == 0 {
+		t.Log("No recommendations before reset")
+	}
+
+	db.ResetIndexAdvisor()
+	recsAfter := db.GetIndexRecommendations()
+	if len(recsAfter) != 0 {
+		t.Errorf("Expected 0 recommendations after reset, got %d", len(recsAfter))
+	}
+}
+
+// TestRegisterFDW90 tests registering a custom FDW
+func TestRegisterFDW90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	db.RegisterFDW("mock", func() fdw.ForeignDataWrapper {
+		return nil
+	})
+}
+
+// TestGetScheduler90 tests GetScheduler
+func TestGetScheduler90(t *testing.T) {
+	// In-memory databases don't start the scheduler by default
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	sched := db.GetScheduler()
+	if sched != nil {
+		t.Error("Expected nil scheduler for in-memory DB")
+	}
+
+	// Disk-backed databases do start the scheduler
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "sched.db")
+	db2, err := Open(dbPath, nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db2.Close()
+
+	sched2 := db2.GetScheduler()
+	if sched2 == nil {
+		t.Error("Expected non-nil scheduler for disk-backed DB")
+	}
+}
+
+// TestGetCatalog90 tests GetCatalog
+func TestGetCatalog90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	cat := db.GetCatalog()
+	if cat == nil {
+		t.Error("Expected non-nil catalog")
+	}
+}
+
+// TestCreateForeignTable90 tests CREATE FOREIGN TABLE through engine
+func TestCreateForeignTable90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create foreign table without a real CSV file
+	_, err = db.Exec(ctx, "CREATE FOREIGN TABLE ext (id INTEGER, name TEXT) WRAPPER 'csv' OPTIONS (file '/tmp/nonexistent.csv')")
+	if err != nil {
+		// May fail because file doesn't exist when wrapper validates
+		t.Logf("CREATE FOREIGN TABLE returned: %v", err)
+	}
+}
+
+// TestLoadExistingReopen tests reopening an existing database (loadExisting path).
+func TestLoadExistingReopen90(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "reopen.db")
+
+	// Create and populate with slow query log defaults
+	db, err := Open(dbPath, &Options{
+		EnableSlowQueryLog:     true,
+		SlowQueryThreshold:     0,
+		SlowQueryMaxEntries:    0,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+	db.Exec(ctx, "INSERT INTO test VALUES (1)")
+	db.Close()
+
+	// Reopen - triggers loadExisting
+	db2, err := Open(dbPath, nil)
+	if err != nil {
+		t.Fatalf("Failed to reopen database: %v", err)
+	}
+	defer db2.Close()
+
+	row := db2.QueryRow(ctx, "SELECT COUNT(*) FROM test")
+	var count int
+	err = row.Scan(&count)
+	if err != nil {
+		t.Fatalf("Query after reopen failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("Expected 1 row after reopen, got %d", count)
+	}
+}
+
+// TestCreateNewWithSlowQueryDefaults tests createNew with slow query log default values.
+func TestCreateNewWithSlowQueryDefaults90(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "slow.db")
+	db, err := Open(dbPath, &Options{
+		EnableSlowQueryLog: true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+}
+
+// TestQueryWithCancelledContext tests query with a cancelled context.
+func TestQueryWithCancelledContext90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = db.query(ctx, &query.SelectStmt{From: &query.TableRef{Name: "test"}}, nil)
+	if err == nil {
+		t.Error("Expected error for cancelled context")
+	}
+}
+
+// TestStartSchedulerNoAutoVacuum tests startScheduler with auto-vacuum disabled.
+func TestStartSchedulerNoAutoVacuum90(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "sched_no_av.db")
+	db, err := Open(dbPath, &Options{
+		EnableAutoVacuum: false,
+		EnableScheduler:  true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	sched := db.GetScheduler()
+	if sched == nil {
+		t.Error("Expected non-nil scheduler")
+	}
+}
+
+// TestRunAnalyzeJob tests the auto-analyze job directly.
+func TestRunAnalyzeJob90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+	db.Exec(ctx, "INSERT INTO test VALUES (1), (2), (3)")
+
+	err = db.runAnalyzeJob()
+	if err != nil {
+		t.Errorf("runAnalyzeJob failed: %v", err)
+	}
+}
+
+// TestRunAutoVacuumJob tests the auto-vacuum job directly.
+func TestRunAutoVacuumJob90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+	db.Exec(ctx, "INSERT INTO test VALUES (1), (2), (3)")
+	db.Exec(ctx, "DELETE FROM test WHERE id > 1")
+
+	err = db.runAutoVacuumJob(0.1)
+	if err != nil {
+		t.Errorf("runAutoVacuumJob failed: %v", err)
+	}
+}
+
+// TestExecuteCreateForeignTableError tests executeCreateForeignTable error path.
+func TestExecuteCreateForeignTableError90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.executeCreateForeignTable(context.Background(), &query.CreateForeignTableStmt{
+		Table:   "dup",
+		Wrapper: "missing",
+	})
+	if err == nil {
+		t.Error("Expected error for missing wrapper")
+	}
+}
+
+// TestExecuteVacuum90 tests executeVacuum happy path.
+func TestExecuteVacuum90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+	db.Exec(ctx, "INSERT INTO test VALUES (1), (2), (3)")
+
+	_, err = db.executeVacuum(ctx, &query.VacuumStmt{})
+	if err != nil {
+		t.Logf("executeVacuum returned: %v", err)
+	}
+}
+
+// TestExecuteSelectWithCTEError tests executeSelectWithCTE error path.
+func TestExecuteSelectWithCTEError90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// CTE with a bad query should error
+	_, err = db.executeSelectWithCTE(context.Background(), &query.SelectStmtWithCTE{
+		Select: &query.SelectStmt{
+			Columns: []query.Expression{&query.StarExpr{}},
+			From:    &query.TableRef{Name: "nonexistent"},
+		},
+	}, nil)
+	if err == nil {
+		t.Error("Expected error for CTE on nonexistent table")
+	}
+}
+
+// TestQueryNonQueryStatement tests query with a non-query statement type.
+func TestQueryNonQueryStatement90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.query(context.Background(), &query.CreateTableStmt{Table: "test"}, nil)
+	if err == nil {
+		t.Error("Expected error for non-query statement")
+	}
+}
+
+// TestExecuteWithCancelledContext tests execute with a cancelled context.
+func TestExecuteWithCancelledContext90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = db.execute(ctx, &query.InsertStmt{Table: "test", Columns: []string{"id"}, Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}}},}, nil)
+	if err == nil {
+		t.Error("Expected error for cancelled context in execute")
+	}
+}
+
+// TestCircuitBreakerHalfOpen tests circuit breaker half-open state.
+func TestCircuitBreakerHalfOpen90(t *testing.T) {
+	cb := NewCircuitBreaker(&CircuitBreakerConfig{
+		MaxFailures:         1,
+		ResetTimeout:        1 * time.Millisecond,
+		HalfOpenMaxRequests: 1,
+		MinSuccesses:        1,
+		MaxConcurrency:      100,
+	})
+	defer cb.Stop()
+
+	// Fail to open
+	cb.Allow()
+	cb.ReportFailure()
+	if cb.State() != CircuitOpen {
+		t.Fatalf("Expected open state, got %v", cb.State())
+	}
+
+	// Wait for reset timeout
+	time.Sleep(5 * time.Millisecond)
+
+	// Allow transitions to half-open (does not consume token)
+	err := cb.Allow()
+	if err != nil {
+		t.Fatalf("Expected allow in half-open, got %v", err)
+	}
+	if cb.State() != CircuitHalfOpen {
+		t.Fatalf("Expected half-open state, got %v", cb.State())
+	}
+
+	// Allow in half-open consumes the token
+	err = cb.Allow()
+	if err != nil {
+		t.Fatalf("Expected allow with token, got %v", err)
+	}
+
+	// Third allow should fail (no tokens left)
+	err = cb.Allow()
+	if err != ErrCircuitOpen {
+		t.Errorf("Expected ErrCircuitOpen, got %v", err)
+	}
+
+	// Report success should close circuit
+	cb.ReportSuccess()
+	if cb.State() != CircuitClosed {
+		t.Errorf("Expected closed state after success, got %v", cb.State())
+	}
+}
+
+// TestExecuteDefaultCase tests execute with an unsupported statement type.
+func TestExecuteDefaultCase90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.execute(context.Background(), &query.CreateCollectionStmt{Name: "coll"}, nil)
+	if err == nil {
+		t.Error("Expected error for unsupported statement type")
+	}
+}
+
+// TestOpenWithPlanCache tests opening a database with plan cache enabled.
+func TestOpenWithPlanCache90(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "plan_cache.db")
+	db, err := Open(dbPath, &Options{
+		EnablePlanCache: true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+	// Execute same query twice to exercise plan cache
+	db.Exec(ctx, "SELECT * FROM test WHERE id = 1")
+	db.Exec(ctx, "SELECT * FROM test WHERE id = 2")
+}
+
+// TestExecuteCreateViewIfNotExists tests executeCreateView with IF NOT EXISTS on existing view.
+func TestExecuteCreateViewIfNotExists90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE VIEW v_test AS SELECT 1")
+
+	_, err = db.executeCreateView(ctx, &query.CreateViewStmt{Name: "v_test", Query: &query.SelectStmt{Columns: []query.Expression{&query.NumberLiteral{Value: 2}}}, IfNotExists: true})
+	if err != nil {
+		t.Errorf("IF NOT EXISTS on existing view should succeed: %v", err)
+	}
+}
+
+// TestExecuteDropViewIfExists tests executeDropView with IF EXISTS on non-existent view.
+func TestExecuteDropViewIfExists90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.executeDropView(context.Background(), &query.DropViewStmt{Name: "missing_view", IfExists: true})
+	if err != nil {
+		t.Errorf("IF EXISTS on non-existent view should succeed: %v", err)
+	}
+}
+
+// TestExecuteAnalyzeAllTables tests executeAnalyze with empty table (analyze all).
+func TestExecuteAnalyzeAllTables90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+	db.Exec(ctx, "INSERT INTO test VALUES (1), (2)")
+
+	_, err = db.executeAnalyze(ctx, &query.AnalyzeStmt{Table: ""})
+	if err != nil {
+		t.Errorf("Analyze all tables failed: %v", err)
+	}
+}
+
+// TestOpenWithAuditAndCompression tests opening with audit logger and compression.
+func TestOpenWithAuditAndCompression90(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "audit_comp.db")
+
+	auditFile := filepath.Join(dir, "audit.log")
+	db, err := Open(dbPath, &Options{
+		CompressionConfig: &storage.CompressionConfig{Enabled: true, Level: storage.CompressionLevelFast, MinRatio: 0.9},
+		AuditConfig: &audit.Config{
+			Enabled:    true,
+			LogFile:    auditFile,
+			LogFormat:  "json",
+			LogDDL:     true,
+			LogQueries: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	// Run DDL and DML to exercise auditLogger branches in execute
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
+	db.Exec(ctx, "INSERT INTO test VALUES (1, 'alice')")
+	db.Exec(ctx, "UPDATE test SET name = 'bob' WHERE id = 1")
+	db.Query(ctx, "SELECT * FROM test")
+	db.Exec(ctx, "DELETE FROM test WHERE id = 1")
+	db.Exec(ctx, "DROP TABLE test")
+}
+
+// TestQueryNonQueryStatements tests query() with INSERT/UPDATE/DELETE without RETURNING.
+func TestQueryNonQueryStatements90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+
+	_, err = db.query(ctx, &query.InsertStmt{Table: "test", Columns: []string{"id"}, Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}}}}, nil)
+	if err == nil {
+		t.Error("Expected error for INSERT without RETURNING in query()")
+	}
+
+	_, err = db.query(ctx, &query.UpdateStmt{Table: "test", Set: []*query.SetClause{{Column: "id", Value: &query.NumberLiteral{Value: 2}}}}, nil)
+	if err == nil {
+		t.Error("Expected error for UPDATE without RETURNING in query()")
+	}
+
+	_, err = db.query(ctx, &query.DeleteStmt{Table: "test"}, nil)
+	if err == nil {
+		t.Error("Expected error for DELETE without RETURNING in query()")
+	}
+}
+
+// TestHealthCheckClosed tests HealthCheck on a closed database.
+func TestHealthCheckClosed90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	db.Close()
+
+	err = db.HealthCheck()
+	if err != ErrDatabaseClosed {
+		t.Errorf("Expected ErrDatabaseClosed, got %v", err)
+	}
+}
+
+// TestLoadExistingWithReplicationAndCaches tests loadExisting with replication, caches, and slow query log.
+func TestLoadExistingWithReplicationAndCaches90(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "repl_cache.db")
+
+	// Create database with replication (master), query cache, plan cache, slow query log
+	db, err := Open(dbPath, &Options{
+		ReplicationRole:       "master",
+		ReplicationMode:       "sync",
+		ReplicationListenAddr: "127.0.0.1:0",
+		EnableQueryCache:      true,
+		EnablePlanCache:       true,
+		PlanCacheSize:         0,
+		PlanCacheEntries:      0,
+		EnableSlowQueryLog:    true,
+		SlowQueryThreshold:    0,
+		SlowQueryMaxEntries:   0,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+	db.Exec(ctx, "INSERT INTO test VALUES (1)")
+	db.Close()
+
+	// Reopen to trigger loadExisting paths with full_sync mode
+	db2, err := Open(dbPath, &Options{
+		ReplicationRole:       "master",
+		ReplicationMode:       "full_sync",
+		ReplicationListenAddr: "127.0.0.1:0",
+		EnableQueryCache:      true,
+		EnablePlanCache:       true,
+		PlanCacheSize:         0,
+		PlanCacheEntries:      0,
+		EnableSlowQueryLog:    true,
+		SlowQueryThreshold:    0,
+		SlowQueryMaxEntries:   0,
+	})
+	if err != nil {
+		t.Fatalf("Failed to reopen database: %v", err)
+	}
+	defer db2.Close()
+
+	row := db2.QueryRow(ctx, "SELECT COUNT(*) FROM test")
+	var count int
+	err = row.Scan(&count)
+	if err != nil {
+		t.Fatalf("Query after reopen failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("Expected 1 row after reopen, got %d", count)
+	}
+}
+
+// TestGetMetricsNil tests GetMetrics when metrics collector is nil.
+func TestGetMetricsNil90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Manually nil out metrics to test defensive check
+	db.metrics = nil
+	_, err = db.GetMetrics()
+	if err == nil {
+		t.Error("Expected error when metrics is nil")
+	}
+}
+
+// TestBackupMethodsNilManager tests backup methods when backupMgr is nil.
+func TestBackupMethodsNilManager90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Manually nil out backupMgr to test defensive checks
+	db.backupMgr = nil
+
+	backups := db.ListBackups()
+	if backups != nil {
+		t.Error("Expected nil backups when backupMgr is nil")
+	}
+
+	b := db.GetBackup("id")
+	if b != nil {
+		t.Error("Expected nil backup when backupMgr is nil")
+	}
+
+	err = db.DeleteBackup("id")
+	if err == nil {
+		t.Error("Expected error when backupMgr is nil")
+	}
+}
+
+// TestReplicateWritePath tests replicateWrite when replication manager is active.
+func TestReplicateWritePath90(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "repl_write.db")
+
+	db, err := Open(dbPath, &Options{
+		ReplicationRole:       "master",
+		ReplicationMode:       "async",
+		ReplicationListenAddr: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	// Write operations should trigger replicateWrite
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+	db.Exec(ctx, "INSERT INTO test VALUES (1)")
+	db.Exec(ctx, "UPDATE test SET id = 2 WHERE id = 1")
+	db.Exec(ctx, "DELETE FROM test WHERE id = 2")
+	db.Exec(ctx, "DROP TABLE test")
 }

@@ -107,9 +107,7 @@ func (cb *CompressedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 		}
 
 		payload := data[compressionHeaderSize:]
-		if len(payload) < int(payloadSize) {
-			payload = payload[:len(payload)]
-		} else {
+		if len(payload) > int(payloadSize) {
 			payload = payload[:payloadSize]
 		}
 
