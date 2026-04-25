@@ -7,6 +7,7 @@ type WorkerPool struct {
 	workers int
 	workCh  chan func()
 	wg      sync.WaitGroup
+	pending sync.WaitGroup
 	stopCh  chan struct{}
 	started bool
 	mu      sync.Mutex
@@ -42,22 +43,18 @@ func (p *WorkerPool) Start() {
 // Submit sends a work item to the pool. Blocks if the channel is full.
 func (p *WorkerPool) Submit(fn func()) {
 	p.Start()
+	p.pending.Add(1)
 	p.workCh <- fn
 }
 
 // Wait blocks until all submitted work items have completed.
 func (p *WorkerPool) Wait() {
-	p.mu.Lock()
-	if !p.started {
-		p.mu.Unlock()
-		return
-	}
-	p.mu.Unlock()
-	// Drain by closing workCh and waiting for workers to finish
+	p.pending.Wait()
 }
 
 // WaitAndClose waits for all work to finish and shuts down workers.
 func (p *WorkerPool) WaitAndClose() {
+	p.Wait()
 	p.mu.Lock()
 	if !p.started {
 		p.mu.Unlock()
@@ -66,6 +63,9 @@ func (p *WorkerPool) WaitAndClose() {
 	close(p.workCh)
 	p.mu.Unlock()
 	p.wg.Wait()
+	p.mu.Lock()
+	p.started = false
+	p.mu.Unlock()
 }
 
 // Close immediately signals workers to stop without waiting for queued work.
@@ -89,6 +89,7 @@ func (p *WorkerPool) worker() {
 				return
 			}
 			fn()
+			p.pending.Done()
 		case <-p.stopCh:
 			return
 		}
