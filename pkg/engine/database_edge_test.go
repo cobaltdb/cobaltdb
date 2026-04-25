@@ -584,6 +584,11 @@ func TestScanValueTypeConversions(t *testing.T) {
 		{"nil_to_interface", nil, new(interface{}), nil, false},
 		{"string_to_string", "test", new(string), "test", false},
 		{"bool_to_bool", true, new(bool), true, false},
+		{"string_to_bool_true", "true", new(bool), true, false},
+		{"string_to_bool_false", "false", new(bool), false, false},
+		{"string_to_int", "42", new(int), 42, false},
+		{"string_to_int64", "42", new(int64), int64(42), false},
+		{"string_to_float64", "3.14", new(float64), 3.14, false},
 		{"bytes_to_bytes", []byte{1, 2, 3}, new([]byte), []byte{1, 2, 3}, false},
 	}
 

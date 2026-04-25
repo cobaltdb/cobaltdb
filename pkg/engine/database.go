@@ -2891,6 +2891,12 @@ func scanValue(src interface{}, dest interface{}) error {
 	case *bool:
 		v, ok := src.(bool)
 		if !ok {
+			if s, ok := src.(string); ok {
+				if b, err := strconv.ParseBool(s); err == nil {
+					*d = b
+					return nil
+				}
+			}
 			return fmt.Errorf("cannot scan %T into bool", src)
 		}
 		*d = v
