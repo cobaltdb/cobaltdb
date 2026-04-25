@@ -1013,3 +1013,53 @@ func TestParseExpressionFunction(t *testing.T) {
 		t.Fatal("Expression is nil")
 	}
 }
+
+// ---- CREATE FOREIGN TABLE ----
+
+func TestParseCreateForeignTable(t *testing.T) {
+	sql := `CREATE FOREIGN TABLE ext_users (id INTEGER, name TEXT) WRAPPER 'csv' OPTIONS (file '/tmp/data.csv')`
+	stmt, err := Parse(sql)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	ft, ok := stmt.(*CreateForeignTableStmt)
+	if !ok {
+		t.Fatalf("Expected *CreateForeignTableStmt, got %T", stmt)
+	}
+	if ft.Table != "ext_users" {
+		t.Errorf("Expected table=ext_users, got %s", ft.Table)
+	}
+	if len(ft.Columns) != 2 {
+		t.Fatalf("Expected 2 columns, got %d", len(ft.Columns))
+	}
+	if ft.Wrapper != "csv" {
+		t.Errorf("Expected wrapper=csv, got %s", ft.Wrapper)
+	}
+	if ft.Options["file"] != "/tmp/data.csv" {
+		t.Errorf("Expected file=/tmp/data.csv, got %s", ft.Options["file"])
+	}
+}
+
+func TestParseCreateForeignTableMissingWrapper(t *testing.T) {
+	_, err := Parse("CREATE FOREIGN TABLE ext (id INTEGER)")
+	if err == nil {
+		t.Error("Expected error for CREATE FOREIGN TABLE without WRAPPER")
+	}
+}
+
+func TestParseCreateForeignTableNoOptions(t *testing.T) {
+	stmt, err := Parse("CREATE FOREIGN TABLE ext (id INTEGER) WRAPPER 'csv'")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	ft, ok := stmt.(*CreateForeignTableStmt)
+	if !ok {
+		t.Fatalf("Expected *CreateForeignTableStmt, got %T", stmt)
+	}
+	if ft.Wrapper != "csv" {
+		t.Errorf("Expected wrapper=csv, got %s", ft.Wrapper)
+	}
+	if len(ft.Options) != 0 {
+		t.Errorf("Expected empty options, got %v", ft.Options)
+	}
+}
