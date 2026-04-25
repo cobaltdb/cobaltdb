@@ -442,3 +442,75 @@ func BenchmarkSelect10K(b *testing.B) {
 	}
 	b.StopTimer()
 }
+
+func BenchmarkSelectParallel(b *testing.B) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:          true,
+		CacheSize:         2048,
+		ParallelWorkers:   4,
+		ParallelThreshold: 1000,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, `CREATE TABLE bench_parallel (id INTEGER, value TEXT, age INTEGER)`)
+
+	for i := 0; i < 10000; i++ {
+		db.Exec(ctx, `INSERT INTO bench_parallel (id, value, age) VALUES (?, ?, ?)`,
+			i, fmt.Sprintf("value-%d", i), i%100)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, _ := db.Query(ctx, `SELECT id, value, age FROM bench_parallel WHERE age > 50`)
+		count := 0
+		for rows.Next() {
+			var id int
+			var value string
+			var age int
+			rows.Scan(&id, &value, &age)
+			count++
+		}
+		rows.Close()
+	}
+	b.StopTimer()
+}
+
+func BenchmarkSelectSerial(b *testing.B) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:          true,
+		CacheSize:         2048,
+		ParallelWorkers:   0,
+		ParallelThreshold: 1000,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, `CREATE TABLE bench_serial (id INTEGER, value TEXT, age INTEGER)`)
+
+	for i := 0; i < 10000; i++ {
+		db.Exec(ctx, `INSERT INTO bench_serial (id, value, age) VALUES (?, ?, ?)`,
+			i, fmt.Sprintf("value-%d", i), i%100)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, _ := db.Query(ctx, `SELECT id, value, age FROM bench_serial WHERE age > 50`)
+		count := 0
+		for rows.Next() {
+			var id int
+			var value string
+			var age int
+			rows.Scan(&id, &value, &age)
+			count++
+		}
+		rows.Close()
+	}
+	b.StopTimer()
+}
