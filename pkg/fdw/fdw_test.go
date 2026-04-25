@@ -142,3 +142,17 @@ func TestCSVWrapper_ScanNotOpened(t *testing.T) {
 		t.Fatal("expected error when scanning without open")
 	}
 }
+
+func TestRegistry_Has(t *testing.T) {
+	r := NewRegistry()
+	if r.Has("csv") {
+		t.Fatal("expected csv to not be registered")
+	}
+	r.Register("csv", func() ForeignDataWrapper { return &CSVWrapper{} })
+	if !r.Has("csv") {
+		t.Fatal("expected csv to be registered")
+	}
+	if r.Has("missing") {
+		t.Fatal("expected missing to not be registered")
+	}
+}
