@@ -8,8 +8,7 @@ import (
 
 func TestRegistry_RegisterAndGet(t *testing.T) {
 	r := NewRegistry()
-	csv := &CSVWrapper{}
-	r.Register("csv", csv)
+	r.Register("csv", func() ForeignDataWrapper { return &CSVWrapper{} })
 
 	got, ok := r.Get("csv")
 	if !ok {
@@ -27,8 +26,8 @@ func TestRegistry_RegisterAndGet(t *testing.T) {
 
 func TestRegistry_List(t *testing.T) {
 	r := NewRegistry()
-	r.Register("csv", &CSVWrapper{})
-	r.Register("http", &CSVWrapper{})
+	r.Register("csv", func() ForeignDataWrapper { return &CSVWrapper{} })
+	r.Register("http", func() ForeignDataWrapper { return &CSVWrapper{} })
 
 	names := r.List()
 	if len(names) != 2 {

@@ -21,7 +21,7 @@ func (c *Catalog) CreateForeignTable(stmt *query.CreateForeignTableStmt) error {
 
 	// Validate wrapper exists
 	if c.fdwRegistry != nil {
-		if _, ok := c.fdwRegistry.Get(stmt.Wrapper); !ok {
+		if !c.fdwRegistry.Has(stmt.Wrapper) {
 			return fmt.Errorf("foreign data wrapper '%s' not found", stmt.Wrapper)
 		}
 	}

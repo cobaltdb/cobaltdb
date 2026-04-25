@@ -24,38 +24,50 @@ type ForeignDataWrapper interface {
 
 // Registry maintains a collection of named FDW implementations.
 type Registry struct {
-	mu       sync.RWMutex
-	wrappers map[string]ForeignDataWrapper
+	mu        sync.RWMutex
+	factories map[string]func() ForeignDataWrapper
 }
 
 // NewRegistry creates an empty FDW registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		wrappers: make(map[string]ForeignDataWrapper),
+		factories: make(map[string]func() ForeignDataWrapper),
 	}
 }
 
-// Register adds an FDW implementation to the registry.
-func (r *Registry) Register(name string, fdw ForeignDataWrapper) {
+// Register adds an FDW factory to the registry.
+// The factory should return a new, independent wrapper instance each time it is called.
+func (r *Registry) Register(name string, factory func() ForeignDataWrapper) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.wrappers[name] = fdw
+	r.factories[name] = factory
 }
 
-// Get looks up an FDW by name.
+// Get looks up an FDW by name and returns a fresh instance.
 func (r *Registry) Get(name string) (ForeignDataWrapper, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	f, ok := r.wrappers[name]
-	return f, ok
+	f, ok := r.factories[name]
+	if !ok {
+		return nil, false
+	}
+	return f(), true
+}
+
+// Has reports whether an FDW with the given name is registered.
+func (r *Registry) Has(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.factories[name]
+	return ok
 }
 
 // List returns all registered FDW names.
 func (r *Registry) List() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	names := make([]string, 0, len(r.wrappers))
-	for n := range r.wrappers {
+	names := make([]string, 0, len(r.factories))
+	for n := range r.factories {
 		names = append(names, n)
 	}
 	return names

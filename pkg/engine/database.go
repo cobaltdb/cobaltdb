@@ -463,7 +463,7 @@ func (db *DB) createNew() error {
 
 	// Initialize FDW registry and register built-in wrappers
 	fdwRegistry := fdw.NewRegistry()
-	fdwRegistry.Register("csv", &fdw.CSVWrapper{})
+	fdwRegistry.Register("csv", func() fdw.ForeignDataWrapper { return &fdw.CSVWrapper{} })
 	db.catalog.SetFDWRegistry(fdwRegistry)
 
 	// Enable RLS if configured
@@ -636,7 +636,7 @@ func (db *DB) loadExisting() error {
 
 	// Initialize FDW registry and register built-in wrappers
 	fdwRegistry := fdw.NewRegistry()
-	fdwRegistry.Register("csv", &fdw.CSVWrapper{})
+	fdwRegistry.Register("csv", func() fdw.ForeignDataWrapper { return &fdw.CSVWrapper{} })
 	db.catalog.SetFDWRegistry(fdwRegistry)
 
 	// Enable RLS if configured
@@ -954,9 +954,9 @@ func (db *DB) GetScheduler() *scheduler.Scheduler {
 	return db.scheduler
 }
 
-// RegisterFDW registers a foreign data wrapper with the database.
-func (db *DB) RegisterFDW(name string, wrapper fdw.ForeignDataWrapper) {
-	db.catalog.GetFDWRegistry().Register(name, wrapper)
+// RegisterFDW registers a foreign data wrapper factory with the database.
+func (db *DB) RegisterFDW(name string, factory func() fdw.ForeignDataWrapper) {
+	db.catalog.GetFDWRegistry().Register(name, factory)
 }
 
 // getPreparedStatement returns a cached prepared statement or parses and caches it
