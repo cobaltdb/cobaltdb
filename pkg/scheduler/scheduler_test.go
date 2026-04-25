@@ -224,3 +224,86 @@ func TestSchedulerStopIdempotent(t *testing.T) {
 	s.Stop() // should not panic
 	s.Stop() // should not panic
 }
+
+func TestSchedulerUnregister(t *testing.T) {
+	s := New(1, nil)
+	j := &Job{ID: "u", Interval: time.Second, Fn: func(ctx context.Context) error { return nil }}
+	_ = s.Register(j)
+
+	if len(s.List()) != 1 {
+		t.Fatalf("expected 1 job before unregister")
+	}
+
+	s.Unregister("u")
+	if len(s.List()) != 0 {
+		t.Fatalf("expected 0 jobs after unregister")
+	}
+
+	// Unregister non-existent should not panic
+	s.Unregister("missing")
+}
+
+func TestSchedulerGetMissing(t *testing.T) {
+	s := New(1, nil)
+	_, ok := s.Get("missing")
+	if ok {
+		t.Error("expected false for missing job")
+	}
+}
+
+func TestSchedulerTriggerMissing(t *testing.T) {
+	s := New(1, nil)
+	err := s.Trigger("missing")
+	if err == nil {
+		t.Error("expected error for missing job")
+	}
+}
+
+func TestSchedulerEnableDisableMissing(t *testing.T) {
+	s := New(1, nil)
+	if s.Enable("missing") {
+		t.Error("expected false for enabling missing job")
+	}
+	if s.Disable("missing") {
+		t.Error("expected false for disabling missing job")
+	}
+}
+
+func TestSchedulerStartIdempotent(t *testing.T) {
+	s := New(1, nil)
+	s.Start()
+	s.Start() // second start should be no-op
+	s.Stop()
+}
+
+func TestSchedulerNewWithIntervalDefaults(t *testing.T) {
+	// workers <= 0 should default to 2
+	s := NewWithInterval(0, nil, 100*time.Millisecond)
+	if s.workers != 2 {
+		t.Errorf("expected workers=2, got %d", s.workers)
+	}
+
+	// tick <= 0 should default to 1s
+	s2 := NewWithInterval(1, nil, 0)
+	if s2.tickInterval != 1*time.Second {
+		t.Errorf("expected tickInterval=1s, got %v", s2.tickInterval)
+	}
+}
+
+func TestSchedulerWorkerNilJob(t *testing.T) {
+	s := New(1, nil)
+	ch := make(chan *Job, 1)
+	ch <- nil
+	close(ch)
+
+	s.wg.Add(1)
+	s.worker(ch)
+	// should return early on nil job without panic
+}
+
+func TestJobValidateMissingID(t *testing.T) {
+	j := &Job{Interval: time.Second, Fn: func(ctx context.Context) error { return nil }}
+	if err := j.Validate(); err == nil {
+		t.Error("expected error for missing ID")
+	}
+}

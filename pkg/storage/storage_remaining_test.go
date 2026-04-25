@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -738,5 +739,123 @@ func TestDiskTruncateExtended(t *testing.T) {
 	n, err := disk.ReadAt(buf, int64(PageSize))
 	if err == nil && n == PageSize {
 		t.Error("expected error or short read after truncation")
+	}
+}
+
+// TestCompressedBackendSize tests Size() delegation.
+func TestCompressedBackendSize(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, DefaultCompressionConfig())
+	if err != nil {
+		t.Fatalf("NewCompressedBackend: %v", err)
+	}
+	defer cb.Close()
+
+	if cb.Size() != mem.Size() {
+		t.Errorf("Expected Size()=%d, got %d", mem.Size(), cb.Size())
+	}
+
+	_, _ = cb.WriteAt(make([]byte, PageSize), 0)
+	if cb.Size() != mem.Size() {
+		t.Errorf("Expected Size()=%d after write, got %d", mem.Size(), cb.Size())
+	}
+}
+
+// TestCompressedBackendGetBuffers tests pooled buffer miss paths.
+func TestCompressedBackendGetBuffers(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, DefaultCompressionConfig())
+	if err != nil {
+		t.Fatalf("NewCompressedBackend: %v", err)
+	}
+	defer cb.Close()
+
+	// First call with empty pool should allocate new buffers
+	wb := cb.getWriteBuf()
+	if wb == nil || len(*wb) != PageSize {
+		t.Errorf("Expected write buf of size %d, got %v", PageSize, wb)
+	}
+	rb := cb.getReadBuf()
+	if rb == nil || len(*rb) != PageSize {
+		t.Errorf("Expected read buf of size %d, got %v", PageSize, rb)
+	}
+
+	// Return them to pool
+	cb.putWriteBuf(wb)
+	cb.putReadBuf(rb)
+
+	// Second call should reuse from pool
+	wb2 := cb.getWriteBuf()
+	rb2 := cb.getReadBuf()
+	cb.putWriteBuf(wb2)
+	cb.putReadBuf(rb2)
+}
+
+// TestEncryptedBackendGetCipher tests GetCipher delegation.
+func TestEncryptedBackendGetCipher(t *testing.T) {
+	mem := NewMemory()
+	cfg := &EncryptionConfig{
+		Enabled: true,
+		Key:     []byte("test-key-32-bytes-long-ok!!!"),
+		Salt:    []byte("1234567890123456"),
+	}
+	eb, err := NewEncryptedBackend(mem, cfg)
+	if err != nil {
+		t.Fatalf("NewEncryptedBackend: %v", err)
+	}
+	defer eb.Close()
+
+	c := eb.GetCipher()
+	if c == nil {
+		t.Error("Expected non-nil cipher")
+	}
+}
+
+// failingBackend wraps a Backend and fails all writes.
+type failingBackend struct {
+	Backend
+}
+
+func (f *failingBackend) WriteAt(p []byte, off int64) (int, error) {
+	return 0, errors.New("simulated write failure")
+}
+
+func (f *failingBackend) Sync() error {
+	return errors.New("simulated sync failure")
+}
+
+// TestBufferPoolCloseFlushError tests Close when FlushAll fails.
+func TestBufferPoolCloseFlushError(t *testing.T) {
+	mem := NewMemory()
+	pool := NewBufferPool(16, mem)
+
+	page, _ := pool.NewPage(PageTypeLeaf)
+	page.SetDirty(true)
+	pool.Unpin(page)
+
+	// Swap backend to failing one after dirtying a page
+	pool.backend = &failingBackend{Backend: mem}
+
+	err := pool.Close()
+	if err == nil {
+		t.Error("Expected error from Close when flush fails")
+	}
+}
+
+// TestPageManagerCloseError tests PageManager Close when saveFreeList fails.
+func TestPageManagerCloseError(t *testing.T) {
+	mem := NewMemory()
+	pool := NewBufferPool(16, mem)
+	pm, err := NewPageManager(pool)
+	if err != nil {
+		t.Fatalf("NewPageManager: %v", err)
+	}
+
+	// Swap pool backend to failing one
+	pool.backend = &failingBackend{Backend: mem}
+
+	err = pm.Close()
+	if err == nil {
+		t.Error("Expected error from PageManager.Close when saveFreeList fails")
 	}
 }

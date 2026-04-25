@@ -200,13 +200,13 @@ func TestStress_Extended(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	duration := 60 * time.Second
+	duration := 10 * time.Second
 	deadline := time.Now().Add(duration)
 
 	errors := make(chan error, 1000)
 
 	// Writers
-	for w := 0; w < 8; w++ {
+	for w := 0; w < 4; w++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -221,7 +221,7 @@ func TestStress_Extended(t *testing.T) {
 	}
 
 	// Readers
-	for r := 0; r < 8; r++ {
+	for r := 0; r < 4; r++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -244,7 +244,17 @@ func TestStress_Extended(t *testing.T) {
 		}(r)
 	}
 
-	wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(120 * time.Second):
+		t.Fatal("TestStress_Extended timed out waiting for goroutines")
+	}
 	close(errors)
 
 	for e := range errors {

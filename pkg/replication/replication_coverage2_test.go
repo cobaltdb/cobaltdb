@@ -354,7 +354,7 @@ func TestSlaveDisconnectReconnect(t *testing.T) {
 	}
 
 	// Give time for connection
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	// Verify connected
 	metrics := master.GetMetrics()
@@ -366,7 +366,7 @@ func TestSlaveDisconnectReconnect(t *testing.T) {
 	slave.Stop()
 
 	// Give time for disconnection detection
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	// Start new slave
 	slave2 := NewManager(slaveConfig)
@@ -376,7 +376,7 @@ func TestSlaveDisconnectReconnect(t *testing.T) {
 	defer slave2.Stop()
 
 	// Give time for reconnection
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	// Check for at least 1 active slave (old one may not be cleaned up yet)
 	metrics = master.GetMetrics()
