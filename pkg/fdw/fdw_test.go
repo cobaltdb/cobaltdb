@@ -156,3 +156,32 @@ func TestRegistry_Has(t *testing.T) {
 		t.Fatal("expected missing to not be registered")
 	}
 }
+
+func TestCSVWrapper_QuotedFieldsAndEmptyCells(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.csv")
+	content := "id,name,desc\n1,\"alice, jr\",\"\"\n2,bob,developer\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer csv.Close()
+
+	rows, err := csv.Scan("test", []string{"id", "name", "desc"})
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	if rows[0][1] != "alice, jr" {
+		t.Fatalf("unexpected quoted field: %q", rows[0][1])
+	}
+	if rows[0][2] != "" {
+		t.Fatalf("unexpected empty cell: %q", rows[0][2])
+	}
+}
