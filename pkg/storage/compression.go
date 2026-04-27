@@ -69,11 +69,12 @@ type CompressedBackend struct {
 	backend Backend
 	config  *CompressionConfig
 
-	// Pools reuse buffers and writers to reduce allocations.
+	// Pools reuse buffers, writers, and readers to reduce allocations.
 	writeBufPool sync.Pool
 	readBufPool  sync.Pool
 	zlibWriters  sync.Pool
 	zstdEncoders sync.Pool
+	lz4Readers   sync.Pool
 }
 
 // NewCompressedBackend creates a compressed backend wrapper.
@@ -92,6 +93,9 @@ func NewCompressedBackend(backend Backend, config *CompressionConfig) (*Compress
 	cb.readBufPool.New = func() interface{} {
 		b := make([]byte, PageSize)
 		return &b
+	}
+	cb.lz4Readers.New = func() interface{} {
+		return lz4.NewReader(bytes.NewReader(nil))
 	}
 	return cb, nil
 }
@@ -384,7 +388,13 @@ func (cb *CompressedBackend) decompressZlib(data []byte, originalSize int) ([]by
 
 // decompressLZ4 decompresses LZ4-compressed data.
 func (cb *CompressedBackend) decompressLZ4(data []byte, originalSize int) ([]byte, error) {
-	r := lz4.NewReader(bytes.NewReader(data))
+	r, ok := cb.lz4Readers.Get().(*lz4.Reader)
+	if !ok {
+		r = lz4.NewReader(bytes.NewReader(data))
+	} else {
+		r.Reset(bytes.NewReader(data))
+	}
+	defer cb.lz4Readers.Put(r)
 	out := make([]byte, originalSize)
 	n, err := io.ReadFull(r, out)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
