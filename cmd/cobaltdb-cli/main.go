@@ -469,11 +469,9 @@ func (c *cliCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	if c.db != nil {
 		switch lastWord {
 		case "FROM", "INTO", "JOIN", "UPDATE", "TABLE", "DROP", "ALTER":
-			for _, t := range c.db.Tables() {
-				suggestions = append(suggestions, t)
+			suggestions = append(suggestions, c.db.Tables()...)
+			}
 		}
-		}
-	}
 
 	// SQL keyword completion
 	for _, kw := range sqlKeywords {
@@ -1192,9 +1190,3 @@ func splitSQLStatements(sql string) []string {
 	return statements
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
