@@ -448,7 +448,7 @@ func (c *Catalog) evaluateExprWithGroupAggregates(expr query.Expression, groupRo
 	// Compute each aggregate over the group rows
 	aggResults := make(map[*query.FunctionCall]interface{})
 	for _, fc := range aggCalls {
-		funcName := strings.ToUpper(fc.Name)
+		funcName := toUpperFast(fc.Name)
 		var values []interface{}
 		for _, row := range groupRows {
 			if len(fc.Args) == 0 || isStarArg(fc.Args[0]) {
@@ -546,7 +546,7 @@ func (c *Catalog) evaluateExprWithGroupAggregatesJoin(expr query.Expression, gro
 
 	aggResults := make(map[*query.FunctionCall]interface{})
 	for _, fc := range aggCalls {
-		funcName := strings.ToUpper(fc.Name)
+		funcName := toUpperFast(fc.Name)
 		var values []interface{}
 		for _, row := range groupRows {
 			if len(fc.Args) == 0 || isStarArg(fc.Args[0]) {

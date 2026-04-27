@@ -73,7 +73,7 @@ func (c *Catalog) executeScalarSelect(stmt *query.SelectStmt, args []interface{}
 			actual = ae.Expr
 		}
 		if fc, ok := actual.(*query.FunctionCall); ok {
-			funcName := strings.ToUpper(fc.Name)
+			funcName := toUpperFast(fc.Name)
 			if funcName == "COUNT" || funcName == "SUM" || funcName == "AVG" || funcName == "MIN" || funcName == "MAX" || funcName == "GROUP_CONCAT" {
 				hasAggregate = true
 			}
@@ -168,7 +168,7 @@ func (c *Catalog) executeScalarAggregate(stmt *query.SelectStmt, args []interfac
 			return nil, nil, errors.New("aggregate functions required in this context")
 		}
 
-		funcName := strings.ToUpper(fc.Name)
+		funcName := toUpperFast(fc.Name)
 		var colName string
 		var result interface{}
 

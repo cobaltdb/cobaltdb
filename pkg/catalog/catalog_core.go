@@ -1761,7 +1761,7 @@ func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, v
 			if aliasName != "" {
 				returnCols[i] = aliasName
 			} else if fc, ok := actual.(*query.FunctionCall); ok {
-				fn := strings.ToUpper(fc.Name)
+				fn := toUpperFast(fc.Name)
 				if len(fc.Args) > 0 {
 					returnCols[i] = fn + "()"
 				} else {
@@ -1816,7 +1816,7 @@ func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, v
 					actual = ae.Expr
 				}
 				if fc, ok := actual.(*query.FunctionCall); ok {
-					fn := strings.ToUpper(fc.Name)
+					fn := toUpperFast(fc.Name)
 					resultRow[i] = cat.computeViewAggregate(fn, fc, group.rows, columns, args)
 				} else {
 					// Non-aggregate column: use value from first row in group
@@ -2339,7 +2339,7 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 		if !ok || len(fc.Args) != 1 {
 			return nil, nil, false
 		}
-		funcName := strings.ToUpper(fc.Name)
+		funcName := toUpperFast(fc.Name)
 		if funcName != "SUM" && funcName != "AVG" && funcName != "MIN" && funcName != "MAX" && funcName != "COUNT" {
 			return nil, nil, false
 		}
@@ -2625,7 +2625,7 @@ func addHiddenHavingAggregates(having query.Expression, selectCols []selectColIn
 
 	added := 0
 	for _, fc := range aggCalls {
-		funcName := strings.ToUpper(fc.Name)
+		funcName := toUpperFast(fc.Name)
 		colName := "*"
 		aggTableName := mainTableRef
 		var aggExpr query.Expression
@@ -2679,7 +2679,7 @@ func addHiddenOrderByAggregates(orderBy []*query.OrderByExpr, selectCols []selec
 	}
 	added := 0
 	for _, fc := range aggCalls {
-		funcName := strings.ToUpper(fc.Name)
+		funcName := toUpperFast(fc.Name)
 		colName := "*"
 		aggTableName := mainTableRef
 		var aggExpr query.Expression
@@ -2834,7 +2834,7 @@ func resolveAggregateInExpr(expr query.Expression, selectCols []selectColInfo, r
 		}
 	case *query.FunctionCall:
 		// Check if this is an aggregate function
-		funcName := strings.ToUpper(e.Name)
+		funcName := toUpperFast(e.Name)
 		if funcName == "COUNT" || funcName == "SUM" || funcName == "AVG" || funcName == "MIN" || funcName == "MAX" || funcName == "GROUP_CONCAT" {
 			// Find the column name for this aggregate
 			colName := "*"
@@ -4496,7 +4496,7 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			}
 			evalArgs[i] = val
 		}
-		funcName := strings.ToUpper(e.Name)
+		funcName := toUpperFast(e.Name)
 		switch funcName {
 		case "COALESCE":
 			for _, a := range evalArgs {

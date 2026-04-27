@@ -3,6 +3,8 @@ package catalog
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"math"
 	"strconv"
@@ -114,4 +116,16 @@ func valueToExpr(val interface{}) query.Expression {
 	default:
 		return &query.StringLiteral{Value: fmt.Sprintf("%v", v)}
 	}
+}
+
+// toUpperFast returns an uppercased copy of s only if s contains lowercase
+// letters. This avoids an allocation when s is already uppercase (the common
+// case for SQL identifiers parsed by the query package).
+func toUpperFast(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'a' && s[i] <= 'z' {
+			return strings.ToUpper(s)
+		}
+	}
+	return s
 }
