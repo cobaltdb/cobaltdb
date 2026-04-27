@@ -82,6 +82,17 @@ type ColumnInfo struct {
 
 const authCookieName = "cobaltdb_webui_token"
 
+// toUpperFast returns an uppercased copy of s only if s contains lowercase
+// letters. This avoids an allocation when s is already uppercase.
+func toUpperFast(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'a' && s[i] <= 'z' {
+			return strings.ToUpper(s)
+		}
+	}
+	return s
+}
+
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
 	tokenFlag := flag.String("token", "", "Web UI access token (defaults to COBALTDB_WEBUI_TOKEN or a generated token)")
@@ -312,7 +323,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 
 	// Determine if it's a SELECT query
-	upperQuery := strings.ToUpper(query)
+	upperQuery := toUpperFast(query)
 	isSelect := strings.HasPrefix(upperQuery, "SELECT") ||
 		strings.HasPrefix(upperQuery, "WITH") ||
 		strings.HasPrefix(upperQuery, "SHOW") ||
