@@ -467,7 +467,14 @@ func (c *ClientConn) checkPermission(sql string) bool {
 	if idx := strings.IndexAny(sqlTrimmed, " \t\n\r("); idx > 0 {
 		firstWord = sqlTrimmed[:idx]
 	}
-	action := strings.ToUpper(firstWord)
+	// Fast-path: most SQL is already uppercase; avoid ToUpper allocation.
+	action := firstWord
+	for i := 0; i < len(action); i++ {
+		if action[i] >= 'a' && action[i] <= 'z' {
+			action = strings.ToUpper(action)
+			break
+		}
+	}
 
 	switch action {
 	case "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER":
