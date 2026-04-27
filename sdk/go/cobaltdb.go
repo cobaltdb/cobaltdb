@@ -18,6 +18,17 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
 
+// toLowerFast returns a lowercased copy of s only if s contains uppercase
+// letters. This avoids an allocation when s is already lowercase.
+func toLowerFast(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			return strings.ToLower(s)
+		}
+	}
+	return s
+}
+
 func init() {
 	sql.Register("cobaltdb", &Driver{})
 }
@@ -142,7 +153,7 @@ func ParseDSN(dsn string) (*Config, error) {
 			key := strings.TrimSpace(parts[0])
 			value := strings.TrimSpace(parts[1])
 
-			switch strings.ToLower(key) {
+			switch toLowerFast(key) {
 			case "host", "hostname":
 				cfg.Host = value
 			case "port":
