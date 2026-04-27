@@ -3037,9 +3037,9 @@ func (p *Parser) parseBegin() (*BeginStmt, error) {
 
 	_ = p.match(TokenTransaction) // optional
 
-	if p.current().Type == TokenIdentifier && strings.ToUpper(p.current().Literal) == "READ" {
+	if p.current().Type == TokenIdentifier && toUpperFast(p.current().Literal) == "READ" {
 		p.advance()
-		if p.current().Type == TokenIdentifier && strings.ToUpper(p.current().Literal) == "ONLY" {
+		if p.current().Type == TokenIdentifier && toUpperFast(p.current().Literal) == "ONLY" {
 			p.advance()
 			stmt.ReadOnly = true
 		}
@@ -3476,7 +3476,7 @@ func (p *Parser) parseCreatePolicy() (*CreatePolicyStmt, error) {
 	// Optional AS PERMISSIVE / AS RESTRICTIVE clause
 	if p.current().Type == TokenAs {
 		p.advance() // consume AS
-		switch strings.ToUpper(p.current().Literal) {
+		switch toUpperFast(p.current().Literal) {
 		case "PERMISSIVE":
 			stmt.Permissive = true
 			p.advance()
@@ -3597,7 +3597,7 @@ func (p *Parser) parseShow() (Statement, error) {
 	case TokenIdentifier:
 		varName := p.current().Literal
 		p.advance()
-		upperVar := strings.ToUpper(varName)
+		upperVar := toUpperFast(varName)
 		if upperVar == "STATUS" || upperVar == "VARIABLES" || upperVar == "WARNINGS" || upperVar == "ERRORS" {
 			for p.current().Type != TokenSemicolon && p.current().Type != TokenEOF {
 				p.advance()
