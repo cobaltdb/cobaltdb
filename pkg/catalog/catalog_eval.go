@@ -779,7 +779,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 				return f != 0, nil
 			}
 			if s, ok := evalArgs[0].(string); ok {
-				return strings.ToLower(s) == "true" || s == "1", nil
+				return strings.EqualFold(s, "true") || s == "1", nil
 			}
 		}
 		return evalArgs[0], nil
