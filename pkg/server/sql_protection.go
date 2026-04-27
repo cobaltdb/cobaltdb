@@ -129,8 +129,6 @@ func (sp *SQLProtector) CheckSQL(sql string) *CheckResult {
 		})
 	}
 
-	sqlUpper := strings.ToUpper(sql)
-
 	// Check for suspicious patterns
 	for _, pattern := range sp.patterns {
 		if pattern.Pattern.MatchString(sql) {
@@ -145,7 +143,7 @@ func (sp *SQLProtector) CheckSQL(sql string) *CheckResult {
 	}
 
 	// Check OR condition count
-	orCount := strings.Count(sqlUpper, " OR ")
+	orCount := countIgnoreCase(sql, " OR ")
 	if orCount > sp.config.MaxORConditions {
 		result.Violations = append(result.Violations, Violation{
 			Type:        "too_many_or_conditions",
@@ -155,7 +153,7 @@ func (sp *SQLProtector) CheckSQL(sql string) *CheckResult {
 	}
 
 	// Check UNION count
-	unionCount := strings.Count(sqlUpper, "UNION")
+	unionCount := countIgnoreCase(sql, "UNION")
 	if unionCount > sp.config.MaxUNIONCount {
 		result.Violations = append(result.Violations, Violation{
 			Type:        "too_many_unions",
@@ -376,6 +374,21 @@ var (
 	sanitizeSingleQuoteRe = regexp.MustCompile(`'[^']*'`)
 	sanitizeDoubleQuoteRe = regexp.MustCompile(`"[^"]*"`)
 )
+
+// countIgnoreCase counts occurrences of substr in s without allocating.
+func countIgnoreCase(s, substr string) int {
+	if len(substr) == 0 {
+		return 0
+	}
+	count := 0
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if strings.EqualFold(s[i:i+len(substr)], substr) {
+			count++
+			i += len(substr) - 1
+		}
+	}
+	return count
+}
 
 // hasSuspiciousComments checks for suspicious comment patterns
 func hasSuspiciousComments(sql string) bool {
