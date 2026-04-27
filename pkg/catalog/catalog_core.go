@@ -4536,12 +4536,12 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			return nil, nil
 		case "UPPER":
 			if len(evalArgs) == 1 && evalArgs[0] != nil {
-				return strings.ToUpper(fmt.Sprintf("%v", evalArgs[0])), nil
+				return toUpperFast(fmt.Sprintf("%v", evalArgs[0])), nil
 			}
 			return nil, nil
 		case "LOWER":
 			if len(evalArgs) == 1 && evalArgs[0] != nil {
-				return strings.ToLower(fmt.Sprintf("%v", evalArgs[0])), nil
+				return toLowerFast(fmt.Sprintf("%v", evalArgs[0])), nil
 			}
 			return nil, nil
 		case "LENGTH":
@@ -4883,7 +4883,7 @@ func parseSystemTimeExpr(expr string) time.Time {
 	now := time.Now()
 
 	// Simple parsing for common patterns
-	expr = strings.TrimSpace(strings.ToLower(expr))
+	expr = strings.TrimSpace(toLowerFast(expr))
 
 	// Handle negative offset (past)
 	if strings.HasPrefix(expr, "-") {

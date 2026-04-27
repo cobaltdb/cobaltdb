@@ -3,7 +3,6 @@ package catalog
 import (
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
-	"strings"
 )
 
 func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) ([]string, [][]interface{}, error) {
@@ -22,7 +21,7 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 
 	// Register CTEs as temporary views or execute recursive CTEs
 	for _, cte := range stmt.CTEs {
-		cteName := strings.ToLower(cte.Name)
+		cteName := toLowerFast(cte.Name)
 
 		// Check for duplicates
 		if _, exists := originalViews[cte.Name]; exists {

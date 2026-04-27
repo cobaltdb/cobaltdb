@@ -434,7 +434,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if !ok {
 			str = fmt.Sprintf("%v", evalArgs[0])
 		}
-		return strings.ToUpper(str), nil
+		return toUpperFast(str), nil
 
 	case "LOWER":
 		if len(evalArgs) < 1 {
@@ -447,7 +447,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if !ok {
 			str = fmt.Sprintf("%v", evalArgs[0])
 		}
-		return strings.ToLower(str), nil
+		return toLowerFast(str), nil
 
 	case "TRIM", "LTRIM", "RTRIM":
 		if len(evalArgs) < 1 {
@@ -734,7 +734,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		targetType, ok := evalArgs[1].(string)
 		if !ok {
-			targetType = strings.ToUpper(fmt.Sprintf("%v", evalArgs[1]))
+			targetType = toUpperFast(fmt.Sprintf("%v", evalArgs[1]))
 		}
 		switch targetType {
 		case "INTEGER", "INT":
@@ -1277,7 +1277,7 @@ func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr 
 
 	// Check if all search words are present
 	for _, word := range searchWords {
-		word = strings.ToLower(word)
+		word = toLowerFast(word)
 		found := false
 		for _, text := range allText {
 			if strings.Contains(text, word) {

@@ -643,10 +643,10 @@ func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectC
 	// Build a map from column name to selectCols index
 	nameToIndex := make(map[string]int)
 	for i, ci := range selectCols {
-		nameToIndex[strings.ToUpper(ci.name)] = i
+		nameToIndex[toUpperFast(ci.name)] = i
 		// For aggregates, also add the signature format
 		if ci.isAggregate {
-			sig := strings.ToUpper(ci.aggregateType + "(" + ci.aggregateCol + ")")
+			sig := toUpperFast(ci.aggregateType + "(" + ci.aggregateCol + ")")
 			nameToIndex[sig] = i
 		}
 	}
@@ -719,7 +719,7 @@ func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectC
 				continue
 			}
 
-			idx, ok := nameToIndex[strings.ToUpper(colName)]
+			idx, ok := nameToIndex[toUpperFast(colName)]
 			if !ok {
 				continue
 			}

@@ -81,7 +81,7 @@ var reservedWords = map[string]bool{
 }
 
 func isReservedWord(name string) bool {
-	return reservedWords[strings.ToUpper(name)]
+	return reservedWords[toUpperFast(name)]
 }
 
 func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
@@ -197,12 +197,12 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 	if len(stmt.PrimaryKey) > 0 {
 		seen := make(map[string]bool, len(tableDef.PrimaryKey))
 		for _, pk := range tableDef.PrimaryKey {
-			seen[strings.ToLower(pk)] = true
+			seen[toLowerFast(pk)] = true
 		}
 		for _, pkCol := range stmt.PrimaryKey {
-			if !seen[strings.ToLower(pkCol)] {
+			if !seen[toLowerFast(pkCol)] {
 				tableDef.PrimaryKey = append(tableDef.PrimaryKey, pkCol)
-				seen[strings.ToLower(pkCol)] = true
+				seen[toLowerFast(pkCol)] = true
 			}
 			// Mark the column as PK/NOT NULL regardless of whether it was a
 			// dup, so the column flag stays in sync with the PK list.
@@ -952,7 +952,7 @@ func (c *Catalog) resolveTriggerExpr(expr query.Expression, newRow []interface{}
 	}
 	switch e := expr.(type) {
 	case *query.QualifiedIdentifier:
-		tbl := strings.ToUpper(e.Table)
+		tbl := toUpperFast(e.Table)
 		if tbl == "NEW" && newRow != nil {
 			for i, col := range columns {
 				if strings.EqualFold(col.Name, e.Column) && i < len(newRow) {
