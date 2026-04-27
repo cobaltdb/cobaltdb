@@ -129,3 +129,14 @@ func toUpperFast(s string) string {
 	}
 	return s
 }
+
+// toLowerFast returns a lowercased copy of s only if s contains uppercase
+// letters. This avoids an allocation when s is already lowercase.
+func toLowerFast(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			return strings.ToLower(s)
+		}
+	}
+	return s
+}

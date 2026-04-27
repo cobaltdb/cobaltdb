@@ -3459,8 +3459,8 @@ func matchLikeSimple(s, pattern string, escapeChar ...byte) bool {
 	}
 
 	// Convert both strings to lower case for case-insensitive matching
-	s = strings.ToLower(s)
-	pattern = strings.ToLower(pattern)
+	s = toLowerFast(s)
+	pattern = toLowerFast(pattern)
 	if esc >= 'A' && esc <= 'Z' {
 		esc = esc + 32 // lowercase the escape char too
 	}
