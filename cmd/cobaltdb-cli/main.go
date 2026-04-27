@@ -26,6 +26,15 @@ var (
 
 var version = "dev"
 
+type sessionState struct {
+	mode   string
+	timer  bool
+}
+
+func newSessionState() *sessionState {
+	return &sessionState{mode: "table", timer: false}
+}
+
 func init() {
 	flag.BoolVar(&flagHelp, "help", false, "Show help")
 	flag.BoolVar(&flagHelp, "h", false, "Show help (short)")
@@ -142,6 +151,8 @@ Interactive Commands:
   .schema <table>      Show table schema
   .quit, .exit         Exit CLI
   .help                Show this help
+  .mode <mode>         Set output mode: table|csv|json|line
+  .timer <on|off>      Toggle query execution timer
   .backup create ...   Create backup
   .backup list         List backups
   .backup restore <id> Restore backup
@@ -181,6 +192,10 @@ func runCommand(sql, path string, inMemory bool) {
 }
 
 func executeSQL(db *engine.DB, sql string) {
+	executeSQLInteractive(db, sql, newSessionState())
+}
+
+func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
 	ctx := context.Background()
 	sql = strings.TrimSpace(sql)
 
@@ -189,6 +204,7 @@ func executeSQL(db *engine.DB, sql string) {
 	}
 
 	upperSQL := strings.ToUpper(sql)
+	start := time.Now()
 
 	if strings.HasPrefix(upperSQL, "SELECT") || strings.HasPrefix(upperSQL, "WITH") ||
 		strings.HasPrefix(upperSQL, "SHOW") || strings.HasPrefix(upperSQL, "DESCRIBE") ||
@@ -200,7 +216,7 @@ func executeSQL(db *engine.DB, sql string) {
 		}
 		defer rows.Close()
 
-		printRows(rows)
+		printRowsWithMode(rows, state.mode)
 	} else {
 		result, err := db.Exec(ctx, sql)
 		if err != nil {
@@ -217,15 +233,31 @@ func executeSQL(db *engine.DB, sql string) {
 			fmt.Println("OK")
 		}
 	}
+
+	if state.timer {
+		fmt.Printf("Query executed in %s\n", time.Since(start).Round(time.Microsecond))
+	}
 }
 
-func printRows(rows *engine.Rows) {
+func printRowsWithMode(rows *engine.Rows, mode string) {
 	cols := rows.Columns()
 	if len(cols) == 0 {
 		return
 	}
 
-	// Collect all rows and calculate column widths
+	switch mode {
+	case "csv":
+		printRowsCSV(rows, cols)
+	case "json":
+		printRowsJSON(rows, cols)
+	case "line":
+		printRowsLine(rows, cols)
+	default:
+		printRowsTable(rows, cols)
+	}
+}
+
+func printRowsTable(rows *engine.Rows, cols []string) {
 	colCount := len(cols)
 	widths := make([]int, colCount)
 	for i, col := range cols {
@@ -257,7 +289,6 @@ func printRows(rows *engine.Rows) {
 		count++
 	}
 
-	// Cap very wide columns to keep table readable
 	for i := range widths {
 		if widths[i] > 60 {
 			widths[i] = 60
@@ -271,6 +302,77 @@ func printRows(rows *engine.Rows) {
 		printTableRow(row, widths)
 	}
 	printTableBorder(cols, widths, "bottom")
+	fmt.Printf("(%d rows)\n", count)
+}
+
+func printRowsCSV(rows *engine.Rows, cols []string) {
+	writer := csv.NewWriter(os.Stdout)
+	_ = writer.Write(cols)
+	count := 0
+	colCount := len(cols)
+	for rows.Next() {
+		values := make([]interface{}, colCount)
+		rowValues := make([]interface{}, colCount)
+		for i := range values {
+			rowValues[i] = &values[i]
+		}
+		if err := rows.Scan(rowValues...); err != nil {
+			continue
+		}
+		record := make([]string, colCount)
+		for i, v := range values {
+			record[i] = formatValue(v)
+		}
+		_ = writer.Write(record)
+		count++
+	}
+	writer.Flush()
+	fmt.Printf("(%d rows)\n", count)
+}
+
+func printRowsJSON(rows *engine.Rows, cols []string) {
+	count := 0
+	colCount := len(cols)
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, colCount)
+		rowValues := make([]interface{}, colCount)
+		for i := range values {
+			rowValues[i] = &values[i]
+		}
+		if err := rows.Scan(rowValues...); err != nil {
+			continue
+		}
+		rowMap := make(map[string]interface{})
+		for i, c := range cols {
+			rowMap[c] = values[i]
+		}
+		results = append(results, rowMap)
+		count++
+	}
+	data, _ := json.MarshalIndent(results, "", "  ")
+	fmt.Println(string(data))
+	fmt.Printf("(%d rows)\n", count)
+}
+
+func printRowsLine(rows *engine.Rows, cols []string) {
+	count := 0
+	colCount := len(cols)
+	for rows.Next() {
+		values := make([]interface{}, colCount)
+		rowValues := make([]interface{}, colCount)
+		for i := range values {
+			rowValues[i] = &values[i]
+		}
+		if err := rows.Scan(rowValues...); err != nil {
+			continue
+		}
+		for i, c := range cols {
+			fmt.Printf("%s = %s\n", c, formatValue(values[i]))
+		}
+		fmt.Println()
+		count++
+	}
 	fmt.Printf("(%d rows)\n", count)
 }
 
@@ -419,6 +521,7 @@ func runInteractive(path string, inMemory bool) {
 	fmt.Println("End SQL statements with ';' (multi-line supported)")
 	fmt.Println()
 
+	state := newSessionState()
 	var sqlBuffer strings.Builder
 	inMultiLine := false
 
@@ -433,7 +536,7 @@ func runInteractive(path string, inMemory bool) {
 		if err != nil {
 			// EOF or interrupt
 			if sqlBuffer.Len() > 0 {
-				executeSQL(db, sqlBuffer.String())
+				executeSQLInteractive(db, sqlBuffer.String(), state)
 			}
 			fmt.Println("\nGoodbye!")
 			break
@@ -446,7 +549,7 @@ func runInteractive(path string, inMemory bool) {
 
 		// Meta commands only when not in multi-line mode
 		if !inMultiLine && strings.HasPrefix(line, ".") {
-			handleMetaCommand(line, db)
+			handleMetaCommand(line, db, state)
 			continue
 		}
 
@@ -461,7 +564,7 @@ func runInteractive(path string, inMemory bool) {
 		if strings.HasSuffix(trimmed, ";") {
 			// Remove trailing semicolon and execute
 			sql := strings.TrimSuffix(trimmed, ";")
-			executeSQL(db, sql)
+			executeSQLInteractive(db, sql, state)
 			sqlBuffer.Reset()
 			inMultiLine = false
 		} else {
@@ -469,7 +572,7 @@ func runInteractive(path string, inMemory bool) {
 			upper := strings.ToUpper(trimmed)
 			if strings.HasPrefix(upper, "BEGIN") || strings.HasPrefix(upper, "COMMIT") ||
 				strings.HasPrefix(upper, "ROLLBACK") || strings.HasPrefix(upper, "USE ") {
-				executeSQL(db, trimmed)
+				executeSQLInteractive(db, trimmed, state)
 				sqlBuffer.Reset()
 				inMultiLine = false
 			} else {
@@ -479,7 +582,7 @@ func runInteractive(path string, inMemory bool) {
 	}
 }
 
-func handleMetaCommand(line string, db *engine.DB) {
+func handleMetaCommand(line string, db *engine.DB, state *sessionState) {
 	parts := strings.Fields(line)
 	cmd := strings.ToLower(parts[0])
 
@@ -490,6 +593,40 @@ func handleMetaCommand(line string, db *engine.DB) {
 
 	case ".help":
 		printHelp()
+
+	case ".mode":
+		if len(parts) < 2 {
+			fmt.Printf("Current mode: %s\n", state.mode)
+			fmt.Println("Usage: .mode table|csv|json|line")
+			return
+		}
+		m := strings.ToLower(parts[1])
+		switch m {
+		case "table", "csv", "json", "line":
+			state.mode = m
+			fmt.Printf("Output mode set to %s\n", m)
+		default:
+			fmt.Printf("Unknown mode: %s. Supported: table, csv, json, line\n", m)
+		}
+		return
+
+	case ".timer":
+		if len(parts) < 2 {
+			fmt.Printf("Timer: %s\n", map[bool]string{true: "on", false: "off"}[state.timer])
+			fmt.Println("Usage: .timer on|off")
+			return
+		}
+		switch strings.ToLower(parts[1]) {
+		case "on":
+			state.timer = true
+			fmt.Println("Timer enabled")
+		case "off":
+			state.timer = false
+			fmt.Println("Timer disabled")
+		default:
+			fmt.Println("Usage: .timer on|off")
+		}
+		return
 
 	case ".tables":
 		tables := db.Tables()
