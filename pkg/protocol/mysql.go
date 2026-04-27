@@ -521,8 +521,7 @@ func (c *MySQLClient) handleQuery(sql string) error {
 	sql = strings.TrimSpace(sql)
 
 	// Handle MySQL client initialization queries that may not parse
-	upperSQL := strings.ToUpper(sql)
-	if strings.HasPrefix(upperSQL, "SELECT @@") || strings.HasPrefix(upperSQL, "SELECT @") {
+	if hasPrefixIgnoreCase(sql, "SELECT @@") || hasPrefixIgnoreCase(sql, "SELECT @") {
 		// MySQL clients query session variables like @@version_comment, @@max_allowed_packet
 		return c.handleSelectVariable(sql)
 	}
@@ -567,27 +566,26 @@ func (c *MySQLClient) handleSelectVariable(sql string) error {
 	colName := ""
 	value := ""
 
-	upperSQL := strings.ToUpper(sql)
 	switch {
-	case strings.Contains(upperSQL, "@@VERSION_COMMENT"):
+	case containsIgnoreCase(sql, "@@VERSION_COMMENT"):
 		colName = "@@version_comment"
 		value = "CobaltDB"
-	case strings.Contains(upperSQL, "@@VERSION"):
+	case containsIgnoreCase(sql, "@@VERSION"):
 		colName = "@@version"
 		value = c.server.version
-	case strings.Contains(upperSQL, "@@MAX_ALLOWED_PACKET"):
+	case containsIgnoreCase(sql, "@@MAX_ALLOWED_PACKET"):
 		colName = "@@max_allowed_packet"
 		value = "67108864"
-	case strings.Contains(upperSQL, "@@CHARACTER_SET"):
+	case containsIgnoreCase(sql, "@@CHARACTER_SET"):
 		colName = "@@character_set_client"
 		value = "utf8mb4"
-	case strings.Contains(upperSQL, "@@COLLATION"):
+	case containsIgnoreCase(sql, "@@COLLATION"):
 		colName = "@@collation_connection"
 		value = "utf8mb4_general_ci"
-	case strings.Contains(upperSQL, "@@SESSION.AUTO_INCREMENT_INCREMENT"):
+	case containsIgnoreCase(sql, "@@SESSION.AUTO_INCREMENT_INCREMENT"):
 		colName = "@@session.auto_increment_increment"
 		value = "1"
-	case strings.Contains(upperSQL, "@@AUTOCOMMIT"):
+	case containsIgnoreCase(sql, "@@AUTOCOMMIT"):
 		colName = "@@autocommit"
 		value = "1"
 	default:
@@ -902,4 +900,25 @@ func sanitizeMySQLError(err error) string {
 		}
 	}
 	return msg
+}
+
+// hasPrefixIgnoreCase reports whether s starts with prefix, case-insensitively.
+func hasPrefixIgnoreCase(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// containsIgnoreCase reports whether s contains substr, case-insensitively.
+func containsIgnoreCase(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(substr) > len(s) {
+		return false
+	}
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if strings.EqualFold(s[i:i+len(substr)], substr) {
+			return true
+		}
+	}
+	return false
 }
