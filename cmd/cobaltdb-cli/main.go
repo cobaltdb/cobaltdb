@@ -464,12 +464,32 @@ func (c *cliCompleter) Do(line []rune, pos int) ([][]rune, int) {
 
 	// Meta command completion
 	if strings.HasPrefix(prefix, ".") {
-		for _, cmd := range metaCommands {
-			if strings.HasPrefix(cmd, prefix) {
-				suggestions = append(suggestions, cmd)
+		words := strings.Fields(prefix)
+		if len(words) == 1 {
+			for _, cmd := range metaCommands {
+				if strings.HasPrefix(cmd, prefix) {
+					suggestions = append(suggestions, cmd)
+				}
+			}
+			return strToRunes(suggestions), len([]rune(prefix))
+		}
+		// Argument completion for meta-commands
+		cmd := strings.ToLower(words[0])
+		switch cmd {
+		case ".mode":
+			for _, m := range []string{"table", "csv", "json", "line"} {
+				if len(words) == 2 && strings.HasPrefix(m, strings.ToLower(words[1])) || len(words) == 1 {
+					suggestions = append(suggestions, m)
+				}
+			}
+		case ".timer", ".headers":
+			for _, m := range []string{"on", "off"} {
+				if len(words) == 2 && strings.HasPrefix(m, strings.ToLower(words[1])) || len(words) == 1 {
+					suggestions = append(suggestions, m)
+				}
 			}
 		}
-		return strToRunes(suggestions), len([]rune(prefix))
+		return strToRunes(suggestions), len([]rune(words[len(words)-1]))
 	}
 
 	// Table name completion after FROM, INTO, JOIN, UPDATE, TABLE
