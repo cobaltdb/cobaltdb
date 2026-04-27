@@ -108,13 +108,16 @@ func validateIdentifier(name string) error {
 			return fmt.Errorf("invalid character in identifier: %q", r)
 		}
 	}
-	// Check for SQL keywords
+	// Check for SQL keywords (exact match to avoid false positives like "selected")
 	upperName := strings.ToUpper(name)
-	sqlKeywords := []string{"SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "UNION", "--", "/*"}
+	sqlKeywords := []string{"SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "UNION"}
 	for _, kw := range sqlKeywords {
-		if strings.Contains(upperName, kw) {
+		if upperName == kw {
 			return fmt.Errorf("potential SQL injection detected")
 		}
+	}
+	if strings.Contains(name, "--") || strings.Contains(name, "/*") {
+		return fmt.Errorf("potential SQL injection detected")
 	}
 	return nil
 }
