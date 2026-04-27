@@ -1224,7 +1224,7 @@ func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr 
 				for i, col := range columns {
 					if strings.EqualFold(col.Name, colName) && i < len(row) {
 						if row[i] != nil {
-							allText = append(allText, strings.ToLower(fmt.Sprintf("%v", row[i])))
+							allText = append(allText, toLowerFast(fmt.Sprintf("%v", row[i])))
 						}
 						break
 					}
@@ -1238,7 +1238,7 @@ func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr 
 			// Check if all search words are present in the indexed text
 			// AND logic: all words must be present
 			for _, word := range searchWords {
-				word = strings.ToLower(word)
+				word = toLowerFast(word)
 				found := false
 				// Check if this word is in the FTS index
 				if rowsWithWord, exists := ftsIdx.Index[word]; exists && len(rowsWithWord) > 0 {
@@ -1267,7 +1267,7 @@ func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr 
 			continue
 		}
 		if colVal != nil {
-			allText = append(allText, strings.ToLower(fmt.Sprintf("%v", colVal)))
+			allText = append(allText, toLowerFast(fmt.Sprintf("%v", colVal)))
 		}
 	}
 
