@@ -3938,6 +3938,11 @@ func (t *TableDef) GetColumnIndex(name string) int {
 	if t.columnIndices == nil {
 		t.buildColumnIndexCache()
 	}
+	// Fast path: exact case match (common when parsed SQL matches DDL).
+	if idx, ok := t.columnIndices[name]; ok {
+		return idx
+	}
+	// Fallback: case-insensitive lookup.
 	if idx, ok := t.columnIndices[strings.ToLower(name)]; ok {
 		return idx
 	}
