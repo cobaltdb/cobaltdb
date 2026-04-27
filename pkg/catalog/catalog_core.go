@@ -509,11 +509,10 @@ func hasNonDeterministicFunction(expr query.Expression) bool {
 
 	switch e := expr.(type) {
 	case *query.FunctionCall:
-		fn := strings.ToUpper(e.Name)
 		// List of non-deterministic functions
 		nonDetFuncs := []string{"RANDOM", "RAND", "NOW", "CURRENT_TIMESTAMP", "UUID", "NEWID"}
 		for _, ndf := range nonDetFuncs {
-			if fn == ndf {
+			if strings.EqualFold(e.Name, ndf) {
 				return true
 			}
 		}
@@ -899,8 +898,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 					break
 				}
 				if fc, ok := actual.(*query.FunctionCall); ok {
-					fn := strings.ToUpper(fc.Name)
-					if fn == "COUNT" || fn == "SUM" || fn == "AVG" || fn == "MIN" || fn == "MAX" || fn == "GROUP_CONCAT" {
+					if strings.EqualFold(fc.Name, "COUNT") || strings.EqualFold(fc.Name, "SUM") || strings.EqualFold(fc.Name, "AVG") || strings.EqualFold(fc.Name, "MIN") || strings.EqualFold(fc.Name, "MAX") || strings.EqualFold(fc.Name, "GROUP_CONCAT") {
 						viewIsComplex = true
 						break
 					}
@@ -1159,8 +1157,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 			}
 		case *query.FunctionCall:
 			// Handle aggregate functions: COUNT, SUM, AVG, MIN, MAX
-			funcName := strings.ToUpper(c.Name)
-			if funcName == "COUNT" || funcName == "SUM" || funcName == "AVG" || funcName == "MIN" || funcName == "MAX" || funcName == "GROUP_CONCAT" {
+			if strings.EqualFold(c.Name, "COUNT") || strings.EqualFold(c.Name, "SUM") || strings.EqualFold(c.Name, "AVG") || strings.EqualFold(c.Name, "MIN") || strings.EqualFold(c.Name, "MAX") || strings.EqualFold(c.Name, "GROUP_CONCAT") {
 				hasAggregates = true
 				colName := "*" // Default for COUNT(*)
 				aggTableName := mainTableRef
@@ -1204,7 +1201,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 					tableName:     aggTableName,
 					index:         -1,
 					isAggregate:   true,
-					aggregateType: funcName,
+					aggregateType: c.Name,
 					aggregateCol:  colName,
 					aggregateExpr: aggExpr,
 					isDistinct:    c.Distinct,
@@ -1729,8 +1726,7 @@ func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, v
 			actual = ae.Expr
 		}
 		if fc, ok := actual.(*query.FunctionCall); ok {
-			fn := strings.ToUpper(fc.Name)
-			if fn == "COUNT" || fn == "SUM" || fn == "AVG" || fn == "MIN" || fn == "MAX" || fn == "GROUP_CONCAT" {
+			if strings.EqualFold(fc.Name, "COUNT") || strings.EqualFold(fc.Name, "SUM") || strings.EqualFold(fc.Name, "AVG") || strings.EqualFold(fc.Name, "MIN") || strings.EqualFold(fc.Name, "MAX") || strings.EqualFold(fc.Name, "GROUP_CONCAT") {
 				hasAggregates = true
 				break
 			}
@@ -2733,8 +2729,7 @@ func collectAggregatesFromExpr(expr query.Expression, result *[]*query.FunctionC
 	}
 	switch e := expr.(type) {
 	case *query.FunctionCall:
-		funcName := strings.ToUpper(e.Name)
-		if funcName == "COUNT" || funcName == "SUM" || funcName == "AVG" || funcName == "MIN" || funcName == "MAX" || funcName == "GROUP_CONCAT" {
+		if strings.EqualFold(e.Name, "COUNT") || strings.EqualFold(e.Name, "SUM") || strings.EqualFold(e.Name, "AVG") || strings.EqualFold(e.Name, "MIN") || strings.EqualFold(e.Name, "MAX") || strings.EqualFold(e.Name, "GROUP_CONCAT") {
 			*result = append(*result, e)
 		}
 		for _, arg := range e.Args {
