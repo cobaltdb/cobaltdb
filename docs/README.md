@@ -145,6 +145,7 @@ cobaltdb -path ./mydb.db
 | `.schema [table]` | Show CREATE TABLE statement(s) |
 | `.mode table\|csv\|json\|line` | Switch query output format |
 | `.timer on\|off` | Toggle query execution timing |
+| `.headers on\|off` | Toggle header row for table/csv output |
 | `.dump [file.sql]` | Export database as SQL dump |
 | `.restore <file.sql>` | Restore database from SQL dump |
 | `.import <csv> <table>` | Import CSV into table |
