@@ -24,6 +24,28 @@ var (
 	likeRegex = regexp.MustCompile(`(?i)^(.+?)\s+LIKE\s+['"](.+?)['"]$`)
 )
 
+// toUpperFast returns an uppercased copy of s only if s contains lowercase
+// letters. This avoids an allocation when s is already uppercase.
+func toUpperFast(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'a' && s[i] <= 'z' {
+			return strings.ToUpper(s)
+		}
+	}
+	return s
+}
+
+// toLowerFast returns a lowercased copy of s only if s contains uppercase
+// letters. This avoids an allocation when s is already lowercase.
+func toLowerFast(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			return strings.ToLower(s)
+		}
+	}
+	return s
+}
+
 // Typed context keys to avoid collisions with other packages
 type rlsUserKey struct{}
 type rlsTenantKey struct{}
@@ -446,7 +468,7 @@ func (m *Manager) parseExpression(expr string) (PolicyExpr, error) {
 		}, nil
 	}
 
-	upperExpr := strings.ToUpper(expr)
+	upperExpr := toUpperFast(expr)
 
 	// Handle boolean literals first
 	if upperExpr == "TRUE" {
@@ -562,8 +584,8 @@ func (m *Manager) parseComplexExpression(expr string) (PolicyExpr, error) {
 // findTopLevelOperator finds an operator at the top level (not inside parentheses)
 func findTopLevelOperator(expr, op string) int {
 	depth := 0
-	upperExpr := strings.ToUpper(expr)
-	upperOp := strings.ToUpper(op)
+	upperExpr := toUpperFast(expr)
+	upperOp := toUpperFast(op)
 	for i := 0; i <= len(upperExpr)-len(upperOp); i++ {
 		if expr[i] == '(' {
 			depth++
@@ -608,10 +630,11 @@ func (m *Manager) parseSimpleExpression(expr string) (PolicyExpr, error) {
 	// Check if this is a bare column name (treat as boolean)
 	if isBareColumn(expr) {
 		colName := strings.TrimSpace(expr)
+		lowerCol := toLowerFast(colName)
 		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 			val, ok := row[colName]
 			if !ok {
-				val = row[strings.ToLower(colName)]
+				val = row[lowerCol]
 			}
 			// Treat as boolean: non-nil and non-false values are true
 			if val == nil {
@@ -626,7 +649,7 @@ func (m *Manager) parseSimpleExpression(expr string) (PolicyExpr, error) {
 	}
 
 	// Check for context functions (bare current_user, current_tenant, etc.)
-	switch strings.ToUpper(expr) {
+	switch toUpperFast(expr) {
 	case "CURRENT_USER", "CURRENT_USER()":
 		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 			user := ctx.Value(RLSUserKey)
@@ -645,7 +668,7 @@ func (m *Manager) parseSimpleExpression(expr string) (PolicyExpr, error) {
 // isBareColumn checks if expr is a bare column name (not a comparison, not quoted, etc.)
 func isBareColumn(expr string) bool {
 	expr = strings.TrimSpace(expr)
-	upperExpr := strings.ToUpper(expr)
+	upperExpr := toUpperFast(expr)
 
 	// Check for operators
 	if strings.Contains(expr, "=") || strings.Contains(expr, "<") || strings.Contains(expr, ">") {
@@ -765,7 +788,7 @@ func normalizeColumnName(name string) string {
 // getValue retrieves a value from context or row
 func (m *Manager) getValue(name string, ctx context.Context, row map[string]interface{}) interface{} {
 	name = strings.TrimSpace(name)
-	upperName := strings.ToUpper(name)
+	upperName := toUpperFast(name)
 
 	// Check for quoted strings
 	if (strings.HasPrefix(name, "'") && strings.HasSuffix(name, "'")) ||
@@ -797,7 +820,7 @@ func (m *Manager) getValue(name string, ctx context.Context, row map[string]inte
 
 // getContextValue retrieves a value from context
 func (m *Manager) getContextValue(name string, ctx context.Context) interface{} {
-	upperName := strings.ToUpper(strings.TrimSpace(name))
+	upperName := toUpperFast(strings.TrimSpace(name))
 
 	switch upperName {
 	case "CURRENT_USER", "CURRENT_USER()":
@@ -821,7 +844,7 @@ func (m *Manager) getValueFromRow(name string, row map[string]interface{}) inter
 		return val
 	}
 	// Try lowercase
-	if val, ok := row[strings.ToLower(name)]; ok {
+	if val, ok := row[toLowerFast(name)]; ok {
 		return val
 	}
 	return nil
@@ -834,10 +857,11 @@ func parseNullCheck(expr string) PolicyExpr {
 	// IS NOT NULL
 	if idx := strings.LastIndex(exprUpper, " IS NOT NULL"); idx > 0 {
 		columnName := strings.TrimSpace(expr[:idx])
+		lowerCol := toLowerFast(columnName)
 		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 			val, ok := row[columnName]
 			if !ok {
-				val = row[strings.ToLower(columnName)]
+				val = row[lowerCol]
 			}
 			return val != nil, nil
 		}
@@ -846,10 +870,11 @@ func parseNullCheck(expr string) PolicyExpr {
 	// IS NULL
 	if idx := strings.LastIndex(exprUpper, " IS NULL"); idx > 0 {
 		columnName := strings.TrimSpace(expr[:idx])
+		lowerCol := toLowerFast(columnName)
 		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 			val, ok := row[columnName]
 			if !ok {
-				val = row[strings.ToLower(columnName)]
+				val = row[lowerCol]
 			}
 			return val == nil, nil
 		}
@@ -870,6 +895,7 @@ func parseInOperator(expr string) PolicyExpr {
 	}
 
 	columnName := strings.TrimSpace(matches[1])
+	lowerCol := toLowerFast(columnName)
 	valuesStr := matches[2]
 
 	// Parse values
@@ -878,7 +904,7 @@ func parseInOperator(expr string) PolicyExpr {
 	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 		rowValue, ok := row[columnName]
 		if !ok {
-			rowValue = row[strings.ToLower(columnName)]
+			rowValue = row[lowerCol]
 		}
 
 		rowStr := fmt.Sprintf("%v", rowValue)
@@ -903,6 +929,7 @@ func parseLikeOperator(expr string) PolicyExpr {
 	}
 
 	columnName := strings.TrimSpace(matches[1])
+	lowerCol := toLowerFast(columnName)
 	pattern := matches[2]
 
 	// Convert SQL LIKE pattern to regex
@@ -915,7 +942,7 @@ func parseLikeOperator(expr string) PolicyExpr {
 	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 		rowValue, ok := row[columnName]
 		if !ok {
-			rowValue = row[strings.ToLower(columnName)]
+			rowValue = row[lowerCol]
 		}
 
 		return re.MatchString(fmt.Sprintf("%v", rowValue)), nil
