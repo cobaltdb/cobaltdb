@@ -447,6 +447,7 @@ var sqlKeywords = []string{
 
 var metaCommands = []string{
 	".tables", ".schema", ".quit", ".exit", ".help",
+	".mode", ".timer", ".headers",
 	".backup", ".metrics", ".status", ".vacuum", ".analyze",
 	".import", ".export", ".dump", ".restore",
 }
