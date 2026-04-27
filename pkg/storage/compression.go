@@ -292,9 +292,13 @@ func (cb *CompressedBackend) compressLZ4(data []byte) ([]byte, float64, error) {
 	var buf bytes.Buffer
 	w := lz4.NewWriter(&buf)
 	if cb.config.Level == CompressionLevelBest {
-		w.Apply(lz4.CompressionLevelOption(lz4.Level9))
+		if err := w.Apply(lz4.CompressionLevelOption(lz4.Level9)); err != nil {
+			return nil, 1.0, err
+		}
 	} else {
-		w.Apply(lz4.CompressionLevelOption(lz4.Level1))
+		if err := w.Apply(lz4.CompressionLevelOption(lz4.Level1)); err != nil {
+			return nil, 1.0, err
+		}
 	}
 
 	if _, err := w.Write(data); err != nil {
