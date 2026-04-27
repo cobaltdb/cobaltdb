@@ -258,7 +258,7 @@ func (l *Lexer) NextToken() Token {
 	default:
 		if isLetter(l.ch) {
 			literal := l.readIdentifier()
-			tok.Type = LookupKeyword(strings.ToUpper(literal))
+			tok.Type = LookupKeyword(literal)
 			tok.Literal = literal
 			tok.Line = l.line
 			tok.Column = l.column - len(literal) + 1

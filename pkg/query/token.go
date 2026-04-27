@@ -1,5 +1,7 @@
 package query
 
+import "strings"
+
 // TokenType represents the type of a token
 type TokenType int
 
@@ -503,6 +505,15 @@ var keywords = map[string]TokenType{
 func LookupKeyword(ident string) TokenType {
 	if tok, ok := keywords[ident]; ok {
 		return tok
+	}
+	// Fast path: if ident contains lowercase letters, try uppercase.
+	for i := 0; i < len(ident); i++ {
+		if ident[i] >= 'a' && ident[i] <= 'z' {
+			if tok, ok := keywords[strings.ToUpper(ident)]; ok {
+				return tok
+			}
+			break
+		}
 	}
 	return TokenIdentifier
 }
