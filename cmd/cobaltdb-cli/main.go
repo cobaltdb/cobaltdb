@@ -197,6 +197,26 @@ func executeSQL(db *engine.DB, sql string) {
 	executeSQLInteractive(db, sql, newSessionState())
 }
 
+func isQuery(sql string) bool {
+	if len(sql) < 4 {
+		return false
+	}
+	// Allocation-free case-insensitive prefix check
+	switch {
+	case len(sql) >= 6 && (sql[0] == 'S' || sql[0] == 's') && strings.EqualFold(sql[:6], "SELECT"):
+		return true
+	case len(sql) >= 4 && (sql[0] == 'W' || sql[0] == 'w') && strings.EqualFold(sql[:4], "WITH"):
+		return true
+	case len(sql) >= 4 && (sql[0] == 'S' || sql[0] == 's') && strings.EqualFold(sql[:4], "SHOW"):
+		return true
+	case len(sql) >= 8 && (sql[0] == 'D' || sql[0] == 'd') && strings.EqualFold(sql[:8], "DESCRIBE"):
+		return true
+	case len(sql) >= 5 && (sql[0] == 'D' || sql[0] == 'd') && strings.EqualFold(sql[:5], "DESC "):
+		return true
+	}
+	return false
+}
+
 func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
 	ctx := context.Background()
 	sql = strings.TrimSpace(sql)
@@ -205,12 +225,9 @@ func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
 		return
 	}
 
-	upperSQL := strings.ToUpper(sql)
 	start := time.Now()
 
-	if strings.HasPrefix(upperSQL, "SELECT") || strings.HasPrefix(upperSQL, "WITH") ||
-		strings.HasPrefix(upperSQL, "SHOW") || strings.HasPrefix(upperSQL, "DESCRIBE") ||
-		strings.HasPrefix(upperSQL, "DESC ") {
+	if isQuery(sql) {
 		rows, err := db.Query(ctx, sql)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
