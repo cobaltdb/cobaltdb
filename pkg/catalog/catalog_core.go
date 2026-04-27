@@ -3653,7 +3653,7 @@ func evaluateCastExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *
 			return f != 0, nil
 		}
 		if s, ok := val.(string); ok {
-			return strings.ToLower(s) == "true" || s == "1", nil
+			return strings.EqualFold(s, "true") || s == "1", nil
 		}
 		return false, nil
 	}
