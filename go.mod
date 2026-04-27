@@ -10,6 +10,7 @@ require (
 )
 
 require (
+	github.com/chzyer/readline v1.5.1 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect

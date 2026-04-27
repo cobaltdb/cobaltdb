@@ -1,17 +1,18 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/chzyer/readline"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
 
@@ -319,11 +320,99 @@ func formatValue(v interface{}) string {
 	}
 }
 
+type cliCompleter struct {
+	db *engine.DB
+}
+
+var sqlKeywords = []string{
+	"SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET",
+	"DELETE", "CREATE", "TABLE", "DROP", "ALTER", "INDEX", "ON", "JOIN",
+	"LEFT", "RIGHT", "INNER", "OUTER", "CROSS", "GROUP", "BY", "ORDER",
+	"HAVING", "LIMIT", "OFFSET", "DISTINCT", "ALL", "UNION", "INTERSECT",
+	"EXCEPT", "ASC", "DESC", "AND", "OR", "NOT", "NULL", "TRUE", "FALSE",
+	"AS", "CASE", "WHEN", "THEN", "ELSE", "END", "EXISTS", "IN", "BETWEEN",
+	"LIKE", "IS", "COUNT", "SUM", "AVG", "MAX", "MIN", "BEGIN", "COMMIT",
+	"ROLLBACK", "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "UNIQUE",
+	"NOT NULL", "DEFAULT", "AUTOINCREMENT", "INTEGER", "TEXT", "REAL",
+	"BLOB", "BOOLEAN", "DATE", "DATETIME",
+}
+
+var metaCommands = []string{
+	".tables", ".schema", ".quit", ".exit", ".help",
+	".backup", ".metrics", ".status", ".vacuum", ".analyze",
+	".import", ".export", ".dump", ".restore",
+}
+
+func (c *cliCompleter) Do(line []rune, pos int) ([][]rune, int) {
+	prefix := string(line[:pos])
+	words := strings.Fields(prefix)
+	if len(words) == 0 {
+		return nil, 0
+	}
+	lastWord := strings.ToUpper(words[len(words)-1])
+
+	var suggestions []string
+
+	// Meta command completion
+	if strings.HasPrefix(prefix, ".") {
+		for _, cmd := range metaCommands {
+			if strings.HasPrefix(cmd, prefix) {
+				suggestions = append(suggestions, cmd)
+			}
+		}
+		return strToRunes(suggestions), len([]rune(prefix))
+	}
+
+	// Table name completion after FROM, INTO, JOIN, UPDATE, TABLE
+	if c.db != nil {
+		switch lastWord {
+		case "FROM", "INTO", "JOIN", "UPDATE", "TABLE", "DROP", "ALTER":
+			for _, t := range c.db.Tables() {
+				suggestions = append(suggestions, t)
+		}
+		}
+	}
+
+	// SQL keyword completion
+	for _, kw := range sqlKeywords {
+		if strings.HasPrefix(kw, lastWord) {
+			suggestions = append(suggestions, kw)
+		}
+	}
+
+	return strToRunes(suggestions), len([]rune(lastWord))
+}
+
+func strToRunes(strs []string) [][]rune {
+	out := make([][]rune, len(strs))
+	for i, s := range strs {
+		out[i] = []rune(s)
+	}
+	return out
+}
+
 func runInteractive(path string, inMemory bool) {
 	db := openDB(path, inMemory)
 	defer db.Close()
 
-	reader := bufio.NewReader(os.Stdin)
+	// Setup history directory
+	homeDir, _ := os.UserHomeDir()
+	historyFile := filepath.Join(homeDir, ".cobaltdb_history")
+
+	completer := &cliCompleter{db: db}
+	l, err := readline.NewEx(&readline.Config{
+		Prompt:          "cobaltdb> ",
+		HistoryFile:     historyFile,
+		AutoComplete:    completer,
+		InterruptPrompt: "^C",
+		EOFPrompt:       ".quit",
+		HistoryLimit:    10000,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize readline: %v\n", err)
+		return
+	}
+	defer l.Close()
 
 	fmt.Println("CobaltDB Interactive CLI v2.0")
 	fmt.Println("Type '.help' for commands, '.quit' to exit")
@@ -335,17 +424,18 @@ func runInteractive(path string, inMemory bool) {
 
 	for {
 		if inMultiLine {
-			fmt.Print("      ...> ")
+			l.SetPrompt("      ...> ")
 		} else {
-			fmt.Print("cobaltdb> ")
+			l.SetPrompt("cobaltdb> ")
 		}
 
-		line, err := reader.ReadString('\n')
+		line, err := l.Readline()
 		if err != nil {
-			// Execute any remaining buffer before exit
+			// EOF or interrupt
 			if sqlBuffer.Len() > 0 {
 				executeSQL(db, sqlBuffer.String())
 			}
+			fmt.Println("\nGoodbye!")
 			break
 		}
 
