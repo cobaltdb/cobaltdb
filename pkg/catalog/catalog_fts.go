@@ -3,7 +3,6 @@ package catalog
 import (
 	"fmt"
 	"sort"
-	"strings"
 )
 
 func (c *Catalog) CreateFTSIndex(name, tableName string, columns []string) error {
@@ -85,7 +84,7 @@ func (c *Catalog) indexRowForFTS(ftsIndex *FTSIndexDef, row map[string]interface
 			text := fmt.Sprintf("%v", val)
 			words := tokenize(text)
 			for _, word := range words {
-				word = strings.ToLower(word)
+				word = toLowerFast(word)
 				ftsIndex.Index[word] = append(ftsIndex.Index[word], rowID)
 			}
 		}
@@ -121,7 +120,7 @@ func (c *Catalog) SearchFTS(indexName string, query string) ([]int64, error) {
 	first := true
 
 	for _, word := range words {
-		word = strings.ToLower(word)
+		word = toLowerFast(word)
 		rows, exists := ftsIndex.Index[word]
 		if !exists {
 			return []int64{}, nil // Word not found, no matches
