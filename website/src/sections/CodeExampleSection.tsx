@@ -119,6 +119,38 @@ for row in cursor.fetchall():
 
 conn.close()`,
   },
+  cli: {
+    lang: 'bash',
+    label: 'CLI',
+    code: `# Start interactive session
+cobaltdb -path ./mydb.db
+
+# Inside the shell
+cobaltdb> CREATE TABLE users (
+       ...>     id INTEGER PRIMARY KEY,
+       ...>     name TEXT NOT NULL,
+       ...>     email TEXT
+       ...> );
+cobaltdb> INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com');
+cobaltdb> INSERT INTO users (name, email) VALUES ('Bob', 'bob@example.com');
+
+# Switch output mode
+cobaltdb> .mode table
+cobaltdb> SELECT * FROM users;
+┌────┬───────┬───────────────────┐
+│ id │ name  │ email             │
+├────┼───────┼───────────────────┤
+│ 1  │ Alice │ alice@example.com │
+│ 2  │ Bob   │ bob@example.com   │
+└────┴───────┴───────────────────┘
+(2 rows)
+
+# Quick admin commands
+cobaltdb> .tables
+cobaltdb> .schema users
+cobaltdb> .dump backup.sql
+cobaltdb> .quit`,
+  },
   mysql: {
     lang: 'bash',
     label: 'MySQL CLI',
@@ -211,7 +243,7 @@ export function CodeExampleSection() {
 
         <div className="max-w-4xl mx-auto">
           <Tabs defaultValue="go" className="w-full">
-            <TabsList className="grid w-full max-w-sm mx-auto grid-cols-3 mb-6">
+            <TabsList className="grid w-full max-w-sm mx-auto grid-cols-5 mb-6">
               {Object.entries(codeExamples).map(([key, example]) => (
                 <TabsTrigger key={key} value={key}>{example.label}</TabsTrigger>
               ))}
@@ -241,7 +273,7 @@ export function CodeExampleSection() {
                         <div className="w-2.5 h-2.5 rounded-full bg-green-500/60" />
                       </div>
                       <span className="text-[11px] text-gray-500 font-mono">
-                        {key === 'go' ? 'main.go' : key === 'sql' ? 'queries.sql' : 'app.js'}
+                        {key === 'go' ? 'main.go' : key === 'sql' ? 'queries.sql' : key === 'cli' ? 'terminal' : 'app.js'}
                       </span>
                     </div>
                     {/* Code with line numbers */}
