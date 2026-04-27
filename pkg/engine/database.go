@@ -33,6 +33,17 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
 
+// toUpperFast returns an uppercased copy of s only if s contains lowercase
+// letters. This avoids an allocation when s is already uppercase.
+func toUpperFast(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'a' && s[i] <= 'z' {
+			return strings.ToUpper(s)
+		}
+	}
+	return s
+}
+
 var (
 	ErrDatabaseClosed = errors.New("database is closed")
 	ErrInvalidPath    = errors.New("invalid database path")
@@ -1915,7 +1926,7 @@ func (db *DB) executeCreatePolicy(ctx context.Context, stmt *query.CreatePolicyS
 
 	// Convert Event string to PolicyType
 	var policyType security.PolicyType
-	switch strings.ToUpper(stmt.Event) {
+	switch toUpperFast(stmt.Event) {
 	case "ALL":
 		policyType = security.PolicyAll
 	case "SELECT":
