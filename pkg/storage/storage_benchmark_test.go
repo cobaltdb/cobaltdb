@@ -207,3 +207,67 @@ func BenchmarkBufferPoolLargeDataset(b *testing.B) {
 		})
 	}
 }
+
+func benchmarkCompressedWriteAt(b *testing.B, algo CompressionAlgorithm) {
+	mem := NewMemory()
+	cb, _ := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:   true,
+		Algorithm: algo,
+		Level:     CompressionLevelFast,
+		MinRatio:  1.0,
+	})
+	data := make([]byte, PageSize)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cb.WriteAt(data, int64(i%100)*int64(PageSize))
+	}
+}
+
+func benchmarkCompressedReadAt(b *testing.B, algo CompressionAlgorithm) {
+	mem := NewMemory()
+	cb, _ := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:   true,
+		Algorithm: algo,
+		Level:     CompressionLevelFast,
+		MinRatio:  1.0,
+	})
+	data := make([]byte, PageSize)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	for i := 0; i < 100; i++ {
+		cb.WriteAt(data, int64(i)*int64(PageSize))
+	}
+	buf := make([]byte, PageSize)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cb.ReadAt(buf, int64(i%100)*int64(PageSize))
+	}
+}
+
+func BenchmarkCompressedBackendZlibWriteAt(b *testing.B) {
+	benchmarkCompressedWriteAt(b, CompressionAlgorithmZlib)
+}
+
+func BenchmarkCompressedBackendLZ4WriteAt(b *testing.B) {
+	benchmarkCompressedWriteAt(b, CompressionAlgorithmLZ4)
+}
+
+func BenchmarkCompressedBackendZstdWriteAt(b *testing.B) {
+	benchmarkCompressedWriteAt(b, CompressionAlgorithmZstd)
+}
+
+func BenchmarkCompressedBackendZlibReadAt(b *testing.B) {
+	benchmarkCompressedReadAt(b, CompressionAlgorithmZlib)
+}
+
+func BenchmarkCompressedBackendLZ4ReadAt(b *testing.B) {
+	benchmarkCompressedReadAt(b, CompressionAlgorithmLZ4)
+}
+
+func BenchmarkCompressedBackendZstdReadAt(b *testing.B) {
+	benchmarkCompressedReadAt(b, CompressionAlgorithmZstd)
+}

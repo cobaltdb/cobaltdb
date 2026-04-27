@@ -3,11 +3,14 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/csv"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
@@ -39,7 +42,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Get remaining args as SQL commands
+	// Get remaining args as SQL commands or subcommands
 	args := flag.Args()
 	if len(args) == 0 {
 		// Interactive mode
@@ -47,8 +50,26 @@ func main() {
 		return
 	}
 
-	// Execute single command
-	runCommand(strings.Join(args, " "), flagPath, flagInMemory)
+	// Check for subcommands
+	switch args[0] {
+	case "backup":
+		runBackupCommand(args[1:], flagPath, flagInMemory)
+	case "metrics":
+		runMetricsCommand(flagPath, flagInMemory)
+	case "status":
+		runStatusCommand(flagPath, flagInMemory)
+	case "vacuum":
+		runVacuumCommand(flagPath, flagInMemory)
+	case "analyze":
+		runAnalyzeCommand(flagPath, flagInMemory)
+	case "import":
+		runImportCommand(args[1:], flagPath, flagInMemory)
+	case "export":
+		runExportCommand(args[1:], flagPath, flagInMemory)
+	default:
+		// Execute single SQL command
+		runCommand(strings.Join(args, " "), flagPath, flagInMemory)
+	}
 }
 
 func printHelp() {
@@ -79,6 +100,18 @@ Examples:
   # Start server
   cobaltdb -server -port 4200
 
+Subcommands:
+  backup create [full|incremental|differential]   Create a database backup
+  backup list                                     List all backups
+  backup restore <id>                             Restore a backup by ID
+  backup delete <id>                             Delete a backup by ID
+  metrics                                         Show database metrics
+  status                                          Show database status
+  vacuum                                          Run VACUUM on the database
+  analyze                                         Run ANALYZE on the database
+  import <file.csv> <table>                     Import CSV into a table
+  export <table> <file.csv> [--format csv|json]  Export table to file
+
 SQL Commands:
   DDL:
     CREATE TABLE <name> (<columns>)
@@ -102,10 +135,20 @@ Interactive Commands:
   .schema <table>      Show table schema
   .quit, .exit         Exit CLI
   .help                Show this help
+  .backup create ...   Create backup
+  .backup list         List backups
+  .backup restore <id> Restore backup
+  .backup delete <id>  Delete backup
+  .metrics             Show metrics
+  .status              Show status
+  .vacuum              Run VACUUM
+  .analyze             Run ANALYZE
+  .import <csv> <tbl>  Import CSV
+  .export <tbl> <csv>  Export table to CSV
 `, version)
 }
 
-func runCommand(sql, path string, inMemory bool) {
+func openDB(path string, inMemory bool) *engine.DB {
 	opts := &engine.Options{
 		InMemory: inMemory,
 	}
@@ -118,6 +161,11 @@ func runCommand(sql, path string, inMemory bool) {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
 	}
+	return db
+}
+
+func runCommand(sql, path string, inMemory bool) {
+	db := openDB(path, inMemory)
 	defer db.Close()
 
 	executeSQL(db, sql)
@@ -225,15 +273,7 @@ func formatValue(v interface{}) string {
 }
 
 func runInteractive(path string, inMemory bool) {
-	opts := &engine.Options{
-		InMemory: inMemory,
-	}
-
-	db, err := engine.Open(path, opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
-		os.Exit(1)
-	}
+	db := openDB(path, inMemory)
 	defer db.Close()
 
 	reader := bufio.NewReader(os.Stdin)
@@ -348,9 +388,333 @@ func handleMetaCommand(line string, db *engine.DB) {
 		}
 		fmt.Println(schema)
 
+	case ".backup":
+		if len(parts) < 2 {
+			fmt.Println("Usage: .backup create [full|incremental|differential]")
+			fmt.Println("       .backup list")
+			fmt.Println("       .backup restore <id>")
+			fmt.Println("       .backup delete <id>")
+			return
+		}
+		handleBackupCommand(parts[1:], db)
+
+	case ".metrics":
+		data, err := db.GetMetrics()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return
+		}
+		fmt.Println(string(data))
+
+	case ".status":
+		printStatus(db)
+
+	case ".vacuum":
+		executeSQL(db, "VACUUM")
+
+	case ".analyze":
+		executeSQL(db, "ANALYZE")
+
+	case ".import":
+		if len(parts) < 3 {
+			fmt.Println("Usage: .import <file.csv> <table>")
+			return
+		}
+		if err := importCSV(db, parts[1], parts[2]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
+
+	case ".export":
+		if len(parts) < 3 {
+			fmt.Println("Usage: .export <table> <file.csv> [--format csv|json]")
+			return
+		}
+		format := "csv"
+		if len(parts) > 4 && parts[3] == "--format" {
+			format = parts[4]
+		}
+		if err := exportTable(db, parts[1], parts[2], format); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
+
 	default:
 		fmt.Printf("Unknown command: %s\nType '.help' for available commands.\n", cmd)
 	}
+}
+
+// Subcommand handlers
+
+func runBackupCommand(args []string, path string, inMemory bool) {
+	db := openDB(path, inMemory)
+	defer db.Close()
+
+	if len(args) == 0 {
+		fmt.Println("Usage: backup create [full|incremental|differential]")
+		fmt.Println("       backup list")
+		fmt.Println("       backup restore <id>")
+		fmt.Println("       backup delete <id>")
+		os.Exit(1)
+	}
+	handleBackupCommand(args, db)
+}
+
+func handleBackupCommand(args []string, db *engine.DB) {
+	ctx := context.Background()
+	sub := strings.ToLower(args[0])
+
+	switch sub {
+	case "create":
+		backupType := "full"
+		if len(args) > 1 {
+			backupType = strings.ToLower(args[1])
+		}
+		b, err := db.CreateBackup(ctx, backupType)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating backup: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Backup created: %s\n", b.ID)
+		fmt.Printf("Type: %s, Size: %d bytes\n", backupType, b.Size)
+
+	case "list":
+		backups := db.ListBackups()
+		if len(backups) == 0 {
+			fmt.Println("No backups found.")
+			return
+		}
+		fmt.Printf("%-30s %-12s %-20s %10s\n", "ID", "Type", "Completed", "Size")
+		fmt.Println(strings.Repeat("-", 80))
+		for _, b := range backups {
+			btype := "full"
+			if b.Incremental {
+				btype = "incremental"
+			}
+			fmt.Printf("%-30s %-12s %-20s %10d\n", b.ID, btype, b.CompletedAt.Format(time.RFC3339), b.Size)
+		}
+
+	case "restore":
+		if len(args) < 2 {
+			fmt.Println("Usage: backup restore <id>")
+			os.Exit(1)
+		}
+		id := args[1]
+		targetPath := db.Path() + ".restored"
+		mgr := db.GetBackupManager()
+		if err := mgr.Restore(ctx, id, targetPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error restoring backup: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Backup restored to: %s\n", targetPath)
+
+	case "delete":
+		if len(args) < 2 {
+			fmt.Println("Usage: backup delete <id>")
+			os.Exit(1)
+		}
+		if err := db.DeleteBackup(args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error deleting backup: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Backup deleted.")
+
+	default:
+		fmt.Printf("Unknown backup subcommand: %s\n", sub)
+		os.Exit(1)
+	}
+}
+
+func runMetricsCommand(path string, inMemory bool) {
+	db := openDB(path, inMemory)
+	defer db.Close()
+
+	data, err := db.GetMetrics()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(data))
+}
+
+func runStatusCommand(path string, inMemory bool) {
+	db := openDB(path, inMemory)
+	defer db.Close()
+
+	printStatus(db)
+}
+
+func printStatus(db *engine.DB) {
+	fmt.Printf("Database path: %s\n", db.Path())
+
+	tables := db.Tables()
+	fmt.Printf("Tables: %d\n", len(tables))
+
+	sched := db.GetScheduler()
+	if sched != nil {
+		fmt.Printf("Scheduler: running\n")
+	} else {
+		fmt.Printf("Scheduler: not running\n")
+	}
+}
+
+func runVacuumCommand(path string, inMemory bool) {
+	db := openDB(path, inMemory)
+	defer db.Close()
+
+	executeSQL(db, "VACUUM")
+}
+
+func runAnalyzeCommand(path string, inMemory bool) {
+	db := openDB(path, inMemory)
+	defer db.Close()
+
+	executeSQL(db, "ANALYZE")
+}
+
+func runImportCommand(args []string, path string, inMemory bool) {
+	if len(args) < 2 {
+		fmt.Println("Usage: import <file.csv> <table>")
+		os.Exit(1)
+	}
+	db := openDB(path, inMemory)
+	defer db.Close()
+
+	if err := importCSV(db, args[0], args[1]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func importCSV(db *engine.DB, filePath, table string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("open file: %w", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return fmt.Errorf("read csv: %w", err)
+	}
+
+	if len(records) == 0 {
+		return fmt.Errorf("empty csv file")
+	}
+
+	ctx := context.Background()
+	headers := records[0]
+	for i, h := range headers {
+		headers[i] = strings.TrimSpace(h)
+	}
+
+	imported := 0
+	for _, row := range records[1:] {
+		if len(row) != len(headers) {
+			continue
+		}
+		placeholders := make([]string, len(headers))
+		values := make([]interface{}, len(headers))
+		for i, v := range row {
+			placeholders[i] = "?"
+			values[i] = strings.TrimSpace(v)
+		}
+		sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(headers, ", "), strings.Join(placeholders, ", "))
+		_, err := db.Exec(ctx, sql, values...)
+		if err != nil {
+			return fmt.Errorf("insert row %d: %w", imported+1, err)
+		}
+		imported++
+	}
+
+	fmt.Printf("Imported %d rows into %s\n", imported, table)
+	return nil
+}
+
+func runExportCommand(args []string, path string, inMemory bool) {
+	if len(args) < 2 {
+		fmt.Println("Usage: export <table> <file> [--format csv|json]")
+		os.Exit(1)
+	}
+	format := "csv"
+	if len(args) > 3 && args[2] == "--format" {
+		format = args[3]
+	}
+	db := openDB(path, inMemory)
+	defer db.Close()
+
+	if err := exportTable(db, args[0], args[1], format); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func exportTable(db *engine.DB, table, filePath, format string) error {
+	ctx := context.Background()
+	rows, err := db.Query(ctx, fmt.Sprintf("SELECT * FROM %s", table))
+	if err != nil {
+		return fmt.Errorf("query table: %w", err)
+	}
+	defer rows.Close()
+
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("create file: %w", err)
+	}
+	defer file.Close()
+
+	cols := rows.Columns()
+	exported := 0
+
+	switch format {
+	case "json":
+		encoder := json.NewEncoder(file)
+		encoder.SetIndent("", "  ")
+		for rows.Next() {
+			values := make([]interface{}, len(cols))
+			rowValues := make([]interface{}, len(cols))
+			for i := range values {
+				rowValues[i] = &values[i]
+			}
+			if err := rows.Scan(rowValues...); err != nil {
+				continue
+			}
+			rowMap := make(map[string]interface{})
+			for i, c := range cols {
+				rowMap[c] = formatValue(values[i])
+			}
+			if err := encoder.Encode(rowMap); err != nil {
+				return fmt.Errorf("encode json: %w", err)
+			}
+			exported++
+		}
+	default:
+		writer := csv.NewWriter(file)
+		if err := writer.Write(cols); err != nil {
+			return fmt.Errorf("write header: %w", err)
+		}
+		for rows.Next() {
+			values := make([]interface{}, len(cols))
+			rowValues := make([]interface{}, len(cols))
+			for i := range values {
+				rowValues[i] = &values[i]
+			}
+			if err := rows.Scan(rowValues...); err != nil {
+				continue
+			}
+			record := make([]string, len(cols))
+			for i, v := range values {
+				record[i] = formatValue(v)
+			}
+			if err := writer.Write(record); err != nil {
+				return fmt.Errorf("write row: %w", err)
+			}
+			exported++
+		}
+		writer.Flush()
+	}
+
+	fmt.Printf("Exported %d rows from %s to %s\n", exported, table, filePath)
+	return nil
 }
 
 func max(a, b int) int {

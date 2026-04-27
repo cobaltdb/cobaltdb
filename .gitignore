@@ -1,7 +1,7 @@
 # Build artifacts
 bin/
-cobaltdb-server
-cobaltdb-cli
+/cobaltdb-server
+/cobaltdb-cli
 *.exe
 *.exe~
 *.dll

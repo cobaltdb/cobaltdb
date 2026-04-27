@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -857,5 +858,121 @@ func TestPageManagerCloseError(t *testing.T) {
 	err = pm.Close()
 	if err == nil {
 		t.Error("Expected error from PageManager.Close when saveFreeList fails")
+	}
+}
+
+// TestCompressedBackendLZ4RoundTrip tests LZ4 compression round-trip.
+func TestCompressedBackendLZ4RoundTrip(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:   true,
+		Algorithm: CompressionAlgorithmLZ4,
+		Level:     CompressionLevelFast,
+		MinRatio:  1.0,
+	})
+	if err != nil {
+		t.Fatalf("NewCompressedBackend: %v", err)
+	}
+
+	page := make([]byte, PageSize)
+	copy(page, []byte("hello lz4 compressed page data"))
+
+	_, err = cb.WriteAt(page, 0)
+	if err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+
+	readBuf := make([]byte, PageSize)
+	n, err := cb.ReadAt(readBuf, 0)
+	if err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+
+	if !bytes.Equal(readBuf[:n], page) {
+		t.Error("LZ4 round-trip data mismatch")
+	}
+}
+
+// TestCompressedBackendZstdRoundTrip tests zstd compression round-trip.
+func TestCompressedBackendZstdRoundTrip(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:   true,
+		Algorithm: CompressionAlgorithmZstd,
+		Level:     CompressionLevelDefault,
+		MinRatio:  1.0,
+	})
+	if err != nil {
+		t.Fatalf("NewCompressedBackend: %v", err)
+	}
+
+	page := make([]byte, PageSize)
+	copy(page, []byte("hello zstd compressed page data"))
+
+	_, err = cb.WriteAt(page, 0)
+	if err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+
+	readBuf := make([]byte, PageSize)
+	n, err := cb.ReadAt(readBuf, 0)
+	if err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+
+	if !bytes.Equal(readBuf[:n], page) {
+		t.Error("zstd round-trip data mismatch")
+	}
+}
+
+// TestCompressedBackendAlgorithmDetection verifies that mixed algorithm
+// pages on the same backend are detected correctly during read.
+func TestCompressedBackendAlgorithmDetection(t *testing.T) {
+	mem := NewMemory()
+
+	// Write a zlib page.
+	cbZlib, _ := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:   true,
+		Algorithm: CompressionAlgorithmZlib,
+		Level:     CompressionLevelFast,
+		MinRatio:  1.0,
+	})
+	pageZlib := make([]byte, PageSize)
+	copy(pageZlib, []byte("zlib page"))
+	_, err := cbZlib.WriteAt(pageZlib, 0)
+	if err != nil {
+		t.Fatalf("zlib WriteAt: %v", err)
+	}
+
+	// Write a zstd page at next slot.
+	cbZstd, _ := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:   true,
+		Algorithm: CompressionAlgorithmZstd,
+		Level:     CompressionLevelFast,
+		MinRatio:  1.0,
+	})
+	pageZstd := make([]byte, PageSize)
+	copy(pageZstd, []byte("zstd page"))
+	_, err = cbZstd.WriteAt(pageZstd, int64(PageSize))
+	if err != nil {
+		t.Fatalf("zstd WriteAt: %v", err)
+	}
+
+	// Read back both pages using a generic reader (algorithm from magic).
+	readBuf := make([]byte, PageSize)
+	n, err := cbZlib.ReadAt(readBuf, 0)
+	if err != nil {
+		t.Fatalf("read zlib page: %v", err)
+	}
+	if !bytes.Equal(readBuf[:n], pageZlib) {
+		t.Error("zlib page mismatch")
+	}
+
+	n, err = cbZstd.ReadAt(readBuf, int64(PageSize))
+	if err != nil {
+		t.Fatalf("read zstd page: %v", err)
+	}
+	if !bytes.Equal(readBuf[:n], pageZstd) {
+		t.Error("zstd page mismatch")
 	}
 }
