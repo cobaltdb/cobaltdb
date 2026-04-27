@@ -385,7 +385,8 @@ func evaluateCaseExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *
 }
 
 func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.FunctionCall, args []interface{}) (interface{}, error) {
-	funcName := strings.ToUpper(expr.Name)
+	// Parser uppercases function names at parse time; avoid ToUpper allocation.
+	funcName := expr.Name
 
 	// Short-circuit evaluation for COALESCE/IFNULL - evaluate lazily
 	if funcName == "COALESCE" || funcName == "IFNULL" {
