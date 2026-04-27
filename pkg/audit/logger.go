@@ -17,6 +17,20 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
+// indexIgnoreCase returns the index of the first instance of substr in s,
+// interpreted as if both strings were lowercased. It does not allocate.
+func indexIgnoreCase(s, substr string) int {
+	if len(substr) == 0 {
+		return 0
+	}
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if strings.EqualFold(s[i:i+len(substr)], substr) {
+			return i
+		}
+	}
+	return -1
+}
+
 // EventType represents the type of audit event
 type EventType int
 
@@ -373,7 +387,7 @@ func maskPasswordPattern(query, keyword string) string {
 	offset := 0
 
 	for {
-		idx := strings.Index(strings.ToUpper(result[offset:]), strings.ToUpper(keyword))
+		idx := indexIgnoreCase(result[offset:], keyword)
 		if idx == -1 {
 			break
 		}
@@ -416,11 +430,11 @@ func maskKeyValuePair(query, key string) string {
 	for {
 		// Look for key= or key:= pattern
 		pattern := key + "="
-		idx := strings.Index(strings.ToLower(result[offset:]), pattern)
+		idx := indexIgnoreCase(result[offset:], pattern)
 		if idx == -1 {
 			// Try with spaces around =
 			pattern = key + " = "
-			idx = strings.Index(strings.ToLower(result[offset:]), pattern)
+			idx = indexIgnoreCase(result[offset:], pattern)
 		}
 		if idx == -1 {
 			break
@@ -454,10 +468,9 @@ func maskMetadataValues(metadata map[string]interface{}) map[string]interface{} 
 	sensitiveKeys := []string{"password", "secret", "token", "key", "credential", "auth"}
 	masked := make(map[string]interface{}, len(metadata))
 	for k, v := range metadata {
-		keyLower := strings.ToLower(k)
 		isSensitive := false
 		for _, sk := range sensitiveKeys {
-			if strings.Contains(keyLower, sk) {
+			if indexIgnoreCase(k, sk) >= 0 {
 				isSensitive = true
 				break
 			}
