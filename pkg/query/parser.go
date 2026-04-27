@@ -24,6 +24,17 @@ func NewParser(tokens []Token) *Parser {
 
 const maxParserDepth = 200
 
+// toUpperFast returns an uppercased copy of s only if s contains lowercase
+// letters. This avoids an allocation when s is already uppercase.
+func toUpperFast(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'a' && s[i] <= 'z' {
+			return strings.ToUpper(s)
+		}
+	}
+	return s
+}
+
 func (p *Parser) enterDepth() error {
 	p.depth++
 	if p.depth > maxParserDepth {
@@ -1363,10 +1374,10 @@ func (p *Parser) parseFunctionCall(name string) (Expression, error) {
 
 	// Check for OVER clause (window function)
 	if p.current().Type == TokenOver {
-		return p.parseWindowExpr(strings.ToUpper(name), args)
+		return p.parseWindowExpr(toUpperFast(name), args)
 	}
 
-	return &FunctionCall{Name: strings.ToUpper(name), Args: args, Distinct: distinct}, nil
+	return &FunctionCall{Name: toUpperFast(name), Args: args, Distinct: distinct}, nil
 }
 
 // parseWindowExpr parses the OVER (...) clause for window functions
