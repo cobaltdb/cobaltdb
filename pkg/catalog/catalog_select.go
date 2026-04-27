@@ -231,7 +231,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 
 	// Check if main table is a CTE result
 	if c.cteResults != nil {
-		if cteRes, ok := c.cteResults[strings.ToLower(stmt.From.Name)]; ok {
+		if cteRes, ok := c.cteResults[toLowerFast(stmt.From.Name)]; ok {
 			mainTableCols = make([]ColumnDef, len(cteRes.columns))
 			for i, col := range cteRes.columns {
 				mainTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
@@ -318,7 +318,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 
 		// Check if join table is a CTE result
 		if joinTableCols == nil && c.cteResults != nil {
-			if cteRes, ok := c.cteResults[strings.ToLower(join.Table.Name)]; ok {
+			if cteRes, ok := c.cteResults[toLowerFast(join.Table.Name)]; ok {
 				// Use CTE result rows
 				joinTableCols = make([]ColumnDef, len(cteRes.columns))
 				for i, col := range cteRes.columns {
@@ -576,11 +576,11 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 			}
 			// Check if already in selectCols
 			found := false
-			colLower := strings.ToLower(colName)
-			tblLower := strings.ToLower(tblName)
+			colLower := toLowerFast(colName)
+			tblLower := toLowerFast(tblName)
 			for _, ci := range selectCols {
-				if strings.ToLower(ci.name) == colLower {
-					if tblName == "" || strings.ToLower(ci.tableName) == tblLower {
+				if toLowerFast(ci.name) == colLower {
+					if tblName == "" || toLowerFast(ci.tableName) == tblLower {
 						found = true
 						break
 					}
@@ -590,10 +590,10 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 				// Find the column in the appropriate table
 				if tblName != "" {
 					for _, to := range tableOffsets {
-						if strings.ToLower(to.name) == tblLower {
+						if toLowerFast(to.name) == tblLower {
 							// Find column index in that table
 							for _, col := range combinedColumns {
-								if strings.ToLower(col.Name) == colLower && strings.ToLower(col.sourceTbl) == tblLower {
+								if toLowerFast(col.Name) == colLower && toLowerFast(col.sourceTbl) == tblLower {
 									// Get raw index within the table
 									rawIdx := -1
 									// Look up the table to get column index
@@ -604,7 +604,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 									if rawIdx < 0 {
 										// Try finding by iterating through the table's known columns
 										for ci, cc := range combinedColumns[to.offset : to.offset+to.count] {
-											if strings.ToLower(cc.Name) == colLower {
+											if toLowerFast(cc.Name) == colLower {
 												rawIdx = ci
 												break
 											}
@@ -755,7 +755,7 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 		intermediateRows = make([][]interface{}, len(subRows))
 		copy(intermediateRows, subRows)
 	} else if c.cteResults != nil {
-		if cteRes, ok := c.cteResults[strings.ToLower(stmt.From.Name)]; ok {
+		if cteRes, ok := c.cteResults[toLowerFast(stmt.From.Name)]; ok {
 			mainTableCols = make([]ColumnDef, len(cteRes.columns))
 			for i, col := range cteRes.columns {
 				mainTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
@@ -836,7 +836,7 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 
 		// Check if join table is a CTE result
 		if joinTableCols == nil && c.cteResults != nil {
-			if cteRes, ok := c.cteResults[strings.ToLower(join.Table.Name)]; ok {
+			if cteRes, ok := c.cteResults[toLowerFast(join.Table.Name)]; ok {
 				joinTableCols = make([]ColumnDef, len(cteRes.columns))
 				for i, col := range cteRes.columns {
 					joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
@@ -1365,37 +1365,37 @@ func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo,
 			case *query.Identifier:
 				// Check for dotted identifier like "table.column"
 				if dotIdx := strings.IndexByte(expr.Name, '.'); dotIdx > 0 && dotIdx < len(expr.Name)-1 {
-					tblLower := strings.ToLower(expr.Name[:dotIdx])
-					colNameLower := strings.ToLower(expr.Name[dotIdx+1:])
+					tblLower := toLowerFast(expr.Name[:dotIdx])
+					colNameLower := toLowerFast(expr.Name[dotIdx+1:])
 					for idx, ci := range selectCols {
-						if strings.ToLower(ci.name) == colNameLower && strings.ToLower(ci.tableName) == tblLower {
+						if toLowerFast(ci.name) == colNameLower && toLowerFast(ci.tableName) == tblLower {
 							colIdx = idx
 							break
 						}
 					}
 					if colIdx < 0 {
 						for idx, ci := range selectCols {
-							if strings.ToLower(ci.name) == colNameLower {
+							if toLowerFast(ci.name) == colNameLower {
 								colIdx = idx
 								break
 							}
 						}
 					}
 				} else {
-					nameLower := strings.ToLower(expr.Name)
+					nameLower := toLowerFast(expr.Name)
 					for idx, ci := range selectCols {
-						if strings.ToLower(ci.name) == nameLower {
+						if toLowerFast(ci.name) == nameLower {
 							colIdx = idx
 							break
 						}
 					}
 				}
 			case *query.QualifiedIdentifier:
-				colLower := strings.ToLower(expr.Column)
-				tblLower := strings.ToLower(expr.Table)
+				colLower := toLowerFast(expr.Column)
+				tblLower := toLowerFast(expr.Table)
 				// First try exact match with table name
 				for idx, ci := range selectCols {
-					if strings.ToLower(ci.name) == colLower && strings.ToLower(ci.tableName) == tblLower {
+					if toLowerFast(ci.name) == colLower && toLowerFast(ci.tableName) == tblLower {
 						colIdx = idx
 						break
 					}
@@ -1403,7 +1403,7 @@ func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo,
 				// Fallback to column-name-only match
 				if colIdx < 0 {
 					for idx, ci := range selectCols {
-						if strings.ToLower(ci.name) == colLower {
+						if toLowerFast(ci.name) == colLower {
 							colIdx = idx
 							break
 						}
