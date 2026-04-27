@@ -109,7 +109,7 @@ func validateIdentifier(name string) error {
 		}
 	}
 	// Check for SQL keywords (exact match to avoid false positives like "selected")
-	upperName := strings.ToUpper(name)
+	upperName := toUpperFast(name)
 	sqlKeywords := []string{"SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "UNION"}
 	for _, kw := range sqlKeywords {
 		if upperName == kw {
