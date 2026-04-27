@@ -124,3 +124,77 @@ func TestRunInteractive(t *testing.T) {
 func TestInit(t *testing.T) {
 	// Test that init() doesn't panic
 }
+
+func TestSqlEscape(t *testing.T) {
+	tests := []struct {
+		input    interface{}
+		expected string
+	}{
+		{nil, "NULL"},
+		{"hello", "'hello'"},
+		{"it's", "'it''s'"},
+		{[]byte("test"), "'test'"},
+		{123, "123"},
+		{3.14, "3.14"},
+		{true, "true"},
+	}
+	for _, test := range tests {
+		result := sqlEscape(test.input)
+		if result != test.expected {
+			t.Errorf("sqlEscape(%v) = %s, expected %s", test.input, result, test.expected)
+		}
+	}
+}
+
+func TestStripSQLComments(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"SELECT 1", "SELECT 1\n"},
+		{"-- comment\nSELECT 1", "SELECT 1\n"},
+		{"SELECT 1\n-- comment\nSELECT 2", "SELECT 1\nSELECT 2\n"},
+		{"SELECT 1 -- inline", "SELECT 1 -- inline\n"},
+	}
+	for _, test := range tests {
+		result := stripSQLComments(test.input)
+		if result != test.expected {
+			t.Errorf("stripSQLComments(%q) = %q, expected %q", test.input, result, test.expected)
+		}
+	}
+}
+
+func TestSplitSQLStatements(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{"SELECT 1; SELECT 2;", []string{"SELECT 1;", " SELECT 2;"}},
+		{"SELECT 'a;b';", []string{"SELECT 'a;b';"}},
+		{"INSERT INTO t VALUES ('a', 'b');", []string{"INSERT INTO t VALUES ('a', 'b');"}},
+		{"SELECT 1", []string{"SELECT 1"}},
+	}
+	for _, test := range tests {
+		result := splitSQLStatements(test.input)
+		if len(result) != len(test.expected) {
+			t.Errorf("splitSQLStatements(%q) len = %d, expected %d", test.input, len(result), len(test.expected))
+			continue
+		}
+		for i := range result {
+			if result[i] != test.expected[i] {
+				t.Errorf("splitSQLStatements(%q)[%d] = %q, expected %q", test.input, i, result[i], test.expected[i])
+			}
+		}
+	}
+}
+
+func TestStrToRunes(t *testing.T) {
+	input := []string{"SELECT", "FROM"}
+	result := strToRunes(input)
+	if len(result) != 2 {
+		t.Fatalf("expected 2, got %d", len(result))
+	}
+	if string(result[0]) != "SELECT" {
+		t.Errorf("expected SELECT, got %s", string(result[0]))
+	}
+}
