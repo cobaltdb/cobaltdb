@@ -1075,4 +1075,92 @@ SELECT * FROM users;`}</pre>
       </>
     ),
   },
+
+  'cli': {
+    title: 'CLI Reference',
+    description: 'Interactive and command-line tools for managing CobaltDB.',
+    headings: [
+      { id: 'installation', title: 'Installation' },
+      { id: 'quick-commands', title: 'Quick Commands' },
+      { id: 'subcommands', title: 'Subcommands' },
+      { id: 'interactive', title: 'Interactive Mode' },
+      { id: 'meta-commands', title: 'Meta-Commands' },
+    ],
+    content: (
+      <>
+        <h2 id="installation">Installation</h2>
+        <pre>{`go install github.com/cobaltdb/cobaltdb/cmd/cobaltdb-cli@latest`}</pre>
+
+        <h2 id="quick-commands">Quick Commands</h2>
+        <p>Run SQL directly from the shell:</p>
+        <pre>{`# In-memory database
+cobaltdb -memory "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"
+
+# Disk database
+cobaltdb -path ./mydb.db "SELECT * FROM users"
+
+# Interactive mode (default when no SQL given)
+cobaltdb -memory`}</pre>
+
+        <h2 id="subcommands">Subcommands</h2>
+        <pre>{`# Backups
+cobaltdb -path ./mydb.db backup create [full|incremental|differential]
+cobaltdb -path ./mydb.db backup list
+cobaltdb -path ./mydb.db backup restore <id>
+cobaltdb -path ./mydb.db backup delete <id>
+
+# Maintenance
+cobaltdb -path ./mydb.db vacuum
+cobaltdb -path ./mydb.db analyze
+
+# Import / Export
+cobaltdb -path ./mydb.db import <file.csv> <table>
+cobaltdb -path ./mydb.db export <table> <file.csv> [--format csv|json]
+
+# Dump / Restore
+cobaltdb -path ./mydb.db dump [file.sql]
+cobaltdb -path ./mydb.db restore <file.sql>
+
+# Observability
+cobaltdb -path ./mydb.db metrics
+cobaltdb -path ./mydb.db status`}</pre>
+
+        <h2 id="interactive">Interactive Mode</h2>
+        <p>Launch without SQL arguments to enter the interactive shell with:</p>
+        <ul>
+          <li><strong>Line editing</strong> with arrow keys and persistent history (~/.cobaltdb_history)</li>
+          <li><strong>Tab completion</strong> for SQL keywords, meta-commands, and table names</li>
+          <li><strong>Multi-line SQL</strong> support (statements end with ;)</li>
+          <li><strong>Output modes</strong> via .mode command</li>
+        </ul>
+
+        <DocsTip>
+          Press Tab to autocomplete SQL keywords or table names after FROM, INTO, JOIN, UPDATE, TABLE, DROP, and ALTER.
+        </DocsTip>
+
+        <h2 id="meta-commands">Meta-Commands</h2>
+        <p>Interactive mode supports SQLite-style dot-commands:</p>
+        <pre>{`.tables                  List all tables
+.schema [table]          Show CREATE TABLE statement(s)
+.mode table|csv|json|line Switch query output format
+.timer on|off            Toggle query execution timing
+.dump [file.sql]         Export database as SQL dump
+.restore <file.sql>      Restore database from SQL dump
+.import <csv> <table>    Import CSV into table
+.export <table> <csv>    Export table to CSV
+.backup create ...       Create backup
+.backup list             List backups
+.metrics                 Show database metrics
+.status                  Show database status
+.vacuum                  Run VACUUM
+.analyze                 Run ANALYZE
+.help                    Show help
+.quit, .exit             Exit CLI`}</pre>
+
+        <DocsInfo>
+          Output modes affect only SELECT query results. DML statements always show rows affected / last insert ID.
+        </DocsInfo>
+      </>
+    ),
+  },
 }

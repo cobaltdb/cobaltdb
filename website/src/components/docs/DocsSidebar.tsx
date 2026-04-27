@@ -35,6 +35,7 @@ const sidebarNav = [
   {
     title: 'Integration',
     items: [
+      { title: 'CLI Reference', href: '/docs/cli' },
       { title: 'WASM Guide', href: '/docs/wasm' },
       { title: 'Go API', href: '/docs/api' },
       { title: 'Security', href: '/docs/security' },
