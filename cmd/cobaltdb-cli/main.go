@@ -216,29 +216,18 @@ func printRows(rows *engine.Rows) {
 		return
 	}
 
-	// Print columns
+	// Collect all rows and calculate column widths
+	colCount := len(cols)
+	widths := make([]int, colCount)
 	for i, col := range cols {
-		if i > 0 {
-			fmt.Print("\t")
-		}
-		fmt.Print(col)
+		widths[i] = len(col)
 	}
-	fmt.Println()
 
-	// Print separator
-	for i, col := range cols {
-		if i > 0 {
-			fmt.Print("\t")
-		}
-		fmt.Print(strings.Repeat("-", max(len(col), 4)))
-	}
-	fmt.Println()
-
-	// Print rows
+	var data [][]string
 	count := 0
 	for rows.Next() {
-		values := make([]interface{}, len(cols))
-		rowValues := make([]interface{}, len(cols))
+		values := make([]interface{}, colCount)
+		rowValues := make([]interface{}, colCount)
 		for i := range values {
 			rowValues[i] = &values[i]
 		}
@@ -247,17 +236,67 @@ func printRows(rows *engine.Rows) {
 			continue
 		}
 
+		row := make([]string, colCount)
 		for i, v := range values {
-			if i > 0 {
-				fmt.Print("\t")
+			s := formatValue(v)
+			row[i] = s
+			if len(s) > widths[i] {
+				widths[i] = len(s)
 			}
-			fmt.Print(formatValue(v))
 		}
-		fmt.Println()
+		data = append(data, row)
 		count++
 	}
 
+	// Cap very wide columns to keep table readable
+	for i := range widths {
+		if widths[i] > 60 {
+			widths[i] = 60
+		}
+	}
+
+	printTableBorder(cols, widths, "top")
+	printTableRow(cols, widths)
+	printTableBorder(cols, widths, "mid")
+	for _, row := range data {
+		printTableRow(row, widths)
+	}
+	printTableBorder(cols, widths, "bottom")
 	fmt.Printf("(%d rows)\n", count)
+}
+
+func printTableBorder(cols []string, widths []int, pos string) {
+	left, mid, right := "┌", "┬", "┐"
+	hline := "─"
+	if pos == "mid" {
+		left, mid, right = "├", "┼", "┤"
+	} else if pos == "bottom" {
+		left, mid, right = "└", "┴", "┘"
+	}
+	fmt.Print(left)
+	for i, w := range widths {
+		fmt.Print(strings.Repeat(hline, w+2))
+		if i < len(widths)-1 {
+			fmt.Print(mid)
+		}
+	}
+	fmt.Println(right)
+}
+
+func printTableRow(cells []string, widths []int) {
+	fmt.Print("│ ")
+	for i, cell := range cells {
+		if i > 0 {
+			fmt.Print(" │ ")
+		}
+		disp := cell
+		if len(disp) > widths[i] {
+			disp = disp[:widths[i]-3] + "..."
+		}
+		fmt.Print(disp)
+		fmt.Print(strings.Repeat(" ", widths[i]-len(disp)))
+	}
+	fmt.Println(" │")
 }
 
 func formatValue(v interface{}) string {
