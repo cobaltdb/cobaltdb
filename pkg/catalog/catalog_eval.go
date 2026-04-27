@@ -66,10 +66,9 @@ func (ctx *EvalContext) evaluate(expr query.Expression) (interface{}, error) {
 				Column: e.Name[dotIdx+1:],
 			}, args)
 		}
-		// Find column value (case-insensitive)
-		nameLower := strings.ToLower(e.Name)
+		// Find column value (case-insensitive, allocation-free)
 		for i, col := range columns {
-			if strings.ToLower(col.Name) == nameLower && i < len(row) {
+			if strings.EqualFold(col.Name, e.Name) && i < len(row) {
 				return row[i], nil
 			}
 		}
@@ -89,16 +88,14 @@ func (ctx *EvalContext) evaluate(expr query.Expression) (interface{}, error) {
 		return nil, nil
 	case *query.QualifiedIdentifier:
 		// table.column format - prefer exact table match using sourceTbl (case-insensitive)
-		colLower := strings.ToLower(e.Column)
-		tblLower := strings.ToLower(e.Table)
 		for i, col := range columns {
-			if strings.ToLower(col.Name) == colLower && strings.ToLower(col.sourceTbl) == tblLower && i < len(row) {
+			if strings.EqualFold(col.Name, e.Column) && strings.EqualFold(col.sourceTbl, e.Table) && i < len(row) {
 				return row[i], nil
 			}
 		}
 		// Fallback: match by column name only (for non-JOIN contexts)
 		for i, col := range columns {
-			if strings.ToLower(col.Name) == colLower && i < len(row) {
+			if strings.EqualFold(col.Name, e.Column) && i < len(row) {
 				return row[i], nil
 			}
 		}
