@@ -670,23 +670,23 @@ func handleMetaCommand(line string, db *engine.DB, state *sessionState) {
 		}
 		return
 
-		case ".headers":
-			if len(parts) < 2 {
-				fmt.Printf("Headers: %s\n", map[bool]string{true: "on", false: "off"}[state.headers])
-				fmt.Println("Usage: .headers on|off")
-				return
-			}
-			switch strings.ToLower(parts[1]) {
-			case "on":
-				state.headers = true
-				fmt.Println("Headers enabled")
-			case "off":
-				state.headers = false
-				fmt.Println("Headers disabled")
-			default:
-				fmt.Println("Usage: .headers on|off")
-			}
+	case ".headers":
+		if len(parts) < 2 {
+			fmt.Printf("Headers: %s\n", map[bool]string{true: "on", false: "off"}[state.headers])
+			fmt.Println("Usage: .headers on|off")
 			return
+		}
+		switch strings.ToLower(parts[1]) {
+		case "on":
+			state.headers = true
+			fmt.Println("Headers enabled")
+		case "off":
+			state.headers = false
+			fmt.Println("Headers disabled")
+		default:
+			fmt.Println("Usage: .headers on|off")
+		}
+		return
 
 	case ".tables":
 		tables := db.Tables()
