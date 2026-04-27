@@ -378,10 +378,9 @@ func (qc *QueryCache) Invalidate(tableName string) {
 	qc.mu.Lock()
 	defer qc.mu.Unlock()
 
-	tableLower := strings.ToLower(tableName)
 	for key, entry := range qc.entries {
 		for _, tbl := range entry.Tables {
-			if strings.ToLower(tbl) == tableLower {
+			if strings.EqualFold(tbl, tableName) {
 				if elem, ok := qc.lruMap[key]; ok {
 					qc.lru.Remove(elem)
 					delete(qc.lruMap, key)
@@ -706,7 +705,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		if cat.cteResults == nil {
 			cat.cteResults = make(map[string]*cteResultSet)
 		}
-		dtName := strings.ToLower(stmt.From.Alias)
+		dtName := toLowerFast(stmt.From.Alias)
 		cat.cteResults[dtName] = &cteResultSet{columns: subCols, rows: subRows}
 		defer delete(cat.cteResults, dtName)
 		// Fall through to normal JOIN handling
@@ -714,7 +713,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 
 	// Check if it's a pre-computed CTE result (from recursive CTE execution)
 	if cat.cteResults != nil {
-		if cteRes, ok := cat.cteResults[strings.ToLower(stmt.From.Name)]; ok {
+		if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
 			if len(stmt.Joins) == 0 {
 				// Check if outer query has window functions
 				hasWindowFuncs := false
@@ -918,7 +917,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 			}
 			// Complex view with JOINs: store results as temporary CTE result
 			// so the JOIN handling path can resolve it
-			viewResultName := strings.ToLower(stmt.From.Name)
+			viewResultName := toLowerFast(stmt.From.Name)
 			if cat.cteResults == nil {
 				cat.cteResults = make(map[string]*cteResultSet)
 			}
@@ -980,7 +979,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		// Check if it's a CTE result that has JOINs
 		var foundInCTE bool
 		if cat.cteResults != nil {
-			if cteRes, ok := cat.cteResults[strings.ToLower(stmt.From.Name)]; ok {
+			if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
 				// Create a synthetic table definition from the CTE result
 				table = &TableDef{
 					Name: stmt.From.Name,
@@ -1023,7 +1022,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 					}
 					rows[i] = row
 				}
-				cat.cteResults[strings.ToLower(stmt.From.Name)] = &cteResultSet{columns: cols, rows: rows}
+				cat.cteResults[toLowerFast(stmt.From.Name)] = &cteResultSet{columns: cols, rows: rows}
 				// MV data will be cleaned up after row scanning
 			} else {
 				return nil, nil, err
@@ -1362,12 +1361,12 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 	// Check if this is a materialized view with cached data
 	var mvRows [][]interface{}
 	var isMV bool
-	if cteRes, ok := cat.cteResults[strings.ToLower(stmt.From.Name)]; ok {
+	if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
 		// This is MV data stored as a CTE result
 		mvRows = cteRes.rows
 		isMV = true
 		// Clean up the MV data entry after we're done
-		defer delete(cat.cteResults, strings.ToLower(stmt.From.Name))
+		defer delete(cat.cteResults, toLowerFast(stmt.From.Name))
 	}
 
 	// Get all trees for scanning (handles partitioned tables)
@@ -2158,10 +2157,9 @@ func addHiddenOrderByCols(orderBy []*query.OrderByExpr, selectCols []selectColIn
 	for obIdx, ob := range orderBy {
 		switch expr := ob.Expr.(type) {
 		case *query.Identifier:
-			nameLower := strings.ToLower(expr.Name)
 			found := false
 			for _, ci := range selectCols {
-				if strings.ToLower(ci.name) == nameLower {
+				if strings.EqualFold(ci.name, expr.Name) {
 					found = true
 					break
 				}
@@ -3078,17 +3076,17 @@ func resolveOuterRefsInQuery(subquery *query.SelectStmt, outerRow []interface{},
 	innerTables := make(map[string]bool)
 	if subquery.From != nil {
 		if subquery.From.Alias != "" {
-			innerTables[strings.ToLower(subquery.From.Alias)] = true
+			innerTables[toLowerFast(subquery.From.Alias)] = true
 		} else {
-			innerTables[strings.ToLower(subquery.From.Name)] = true
+			innerTables[toLowerFast(subquery.From.Name)] = true
 		}
 	}
 	for _, join := range subquery.Joins {
 		if join.Table != nil {
 			if join.Table.Alias != "" {
-				innerTables[strings.ToLower(join.Table.Alias)] = true
+				innerTables[toLowerFast(join.Table.Alias)] = true
 			} else {
-				innerTables[strings.ToLower(join.Table.Name)] = true
+				innerTables[toLowerFast(join.Table.Name)] = true
 			}
 		}
 	}
@@ -3157,7 +3155,7 @@ func resolveOuterRefsInExpr(expr query.Expression, outerRow []interface{}, outer
 
 	switch e := expr.(type) {
 	case *query.QualifiedIdentifier:
-		tableName := strings.ToLower(e.Table)
+		tableName := toLowerFast(e.Table)
 		// If this table is NOT in the inner query's tables, it's an outer reference
 		if !innerTables[tableName] {
 			// Find the column in outer columns by matching sourceTbl and column name
@@ -3930,7 +3928,7 @@ func tokenTypeToColumnType(t query.TokenType) string {
 func (t *TableDef) buildColumnIndexCache() {
 	t.columnIndices = make(map[string]int, len(t.Columns))
 	for i, col := range t.Columns {
-		t.columnIndices[strings.ToLower(col.Name)] = i
+		t.columnIndices[toLowerFast(col.Name)] = i
 	}
 }
 
@@ -3943,7 +3941,7 @@ func (t *TableDef) GetColumnIndex(name string) int {
 		return idx
 	}
 	// Fallback: case-insensitive lookup.
-	if idx, ok := t.columnIndices[strings.ToLower(name)]; ok {
+	if idx, ok := t.columnIndices[toLowerFast(name)]; ok {
 		return idx
 	}
 	return -1
