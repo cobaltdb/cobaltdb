@@ -27,12 +27,13 @@ var (
 var version = "dev"
 
 type sessionState struct {
-	mode   string
-	timer  bool
+	mode    string
+	timer   bool
+	headers bool
 }
 
 func newSessionState() *sessionState {
-	return &sessionState{mode: "table", timer: false}
+	return &sessionState{mode: "table", timer: false, headers: true}
 }
 
 func init() {
@@ -153,6 +154,7 @@ Interactive Commands:
   .help                Show this help
   .mode <mode>         Set output mode: table|csv|json|line
   .timer <on|off>      Toggle query execution timer
+  .headers <on|off>    Toggle header row for table/csv output
   .backup create ...   Create backup
   .backup list         List backups
   .backup restore <id> Restore backup
@@ -216,7 +218,7 @@ func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
 		}
 		defer rows.Close()
 
-		printRowsWithMode(rows, state.mode)
+		printRowsWithMode(rows, state)
 	} else {
 		result, err := db.Exec(ctx, sql)
 		if err != nil {
@@ -239,25 +241,25 @@ func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
 	}
 }
 
-func printRowsWithMode(rows *engine.Rows, mode string) {
+func printRowsWithMode(rows *engine.Rows, state *sessionState) {
 	cols := rows.Columns()
 	if len(cols) == 0 {
 		return
 	}
 
-	switch mode {
+	switch state.mode {
 	case "csv":
-		printRowsCSV(rows, cols)
+		printRowsCSV(rows, cols, state.headers)
 	case "json":
 		printRowsJSON(rows, cols)
 	case "line":
 		printRowsLine(rows, cols)
 	default:
-		printRowsTable(rows, cols)
+		printRowsTable(rows, cols, state.headers)
 	}
 }
 
-func printRowsTable(rows *engine.Rows, cols []string) {
+func printRowsTable(rows *engine.Rows, cols []string, headers bool) {
 	colCount := len(cols)
 	widths := make([]int, colCount)
 	for i, col := range cols {
@@ -296,8 +298,10 @@ func printRowsTable(rows *engine.Rows, cols []string) {
 	}
 
 	printTableBorder(cols, widths, "top")
-	printTableRow(cols, widths)
-	printTableBorder(cols, widths, "mid")
+	if headers {
+		printTableRow(cols, widths)
+		printTableBorder(cols, widths, "mid")
+	}
 	for _, row := range data {
 		printTableRow(row, widths)
 	}
@@ -305,9 +309,11 @@ func printRowsTable(rows *engine.Rows, cols []string) {
 	fmt.Printf("(%d rows)\n", count)
 }
 
-func printRowsCSV(rows *engine.Rows, cols []string) {
+func printRowsCSV(rows *engine.Rows, cols []string, headers bool) {
 	writer := csv.NewWriter(os.Stdout)
-	_ = writer.Write(cols)
+	if headers {
+		_ = writer.Write(cols)
+	}
 	count := 0
 	colCount := len(cols)
 	for rows.Next() {
@@ -625,6 +631,24 @@ func handleMetaCommand(line string, db *engine.DB, state *sessionState) {
 			fmt.Println("Usage: .timer on|off")
 		}
 		return
+
+		case ".headers":
+			if len(parts) < 2 {
+				fmt.Printf("Headers: %s\n", map[bool]string{true: "on", false: "off"}[state.headers])
+				fmt.Println("Usage: .headers on|off")
+				return
+			}
+			switch strings.ToLower(parts[1]) {
+			case "on":
+				state.headers = true
+				fmt.Println("Headers enabled")
+			case "off":
+				state.headers = false
+				fmt.Println("Headers disabled")
+			default:
+				fmt.Println("Usage: .headers on|off")
+			}
+			return
 
 	case ".tables":
 		tables := db.Tables()
