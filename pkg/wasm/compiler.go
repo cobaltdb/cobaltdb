@@ -316,545 +316,76 @@ func (c *Compiler) reset() {
 
 // addRuntimeImports adds required runtime imports
 func (c *Compiler) addRuntimeImports() {
-	// Import table scan function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "tableScan",
-		Kind:   0x00, // function
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32}, // tableId, outPtr, maxRows
-		Results: []ValueType{I32},           // row count
-	})
-
-	// Import filter function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "filterRow",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32}, // rowData, predicatePtr
-		Results: []ValueType{I32},      // boolean result
-	})
-
-	// Import comparison function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "compareValues",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32}, // val1, val2, op
-		Results: []ValueType{I32},           // comparison result
-	})
-
-	// Import insert row function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "insertRow",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32}, // tableId, rowDataPtr
-		Results: []ValueType{I32},      // success (1 or 0)
-	})
-
-	// Import update row function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "updateRow",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I64, I32}, // tableId, rowId, rowDataPtr
-		Results: []ValueType{I32},           // success (1 or 0)
-	})
-
-	// Import delete row function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "deleteRow",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I64}, // tableId, rowId
-		Results: []ValueType{I32},      // success (1 or 0)
-	})
-
-	// Import groupBy function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "groupBy",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32}, // tableId, groupColumnIdx, outPtr
-		Results: []ValueType{I32},           // groupCount
-	})
-
-	// Import innerJoin function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "innerJoin",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32}, // leftTableId, rightTableId, outPtr, maxRows
-		Results: []ValueType{I32},                // row count
-	})
-
-	// Import executeSubquery function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "executeSubquery",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32}, // queryId, outPtr, maxRows
-		Results: []ValueType{I32},           // row count
-	})
-
-	// Import sortRows function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "sortRows",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32, I32}, // inPtr, rowCount, columnIdx, ascending, outPtr
-		Results: []ValueType{I32},                     // sortedRowCount
-	})
-
-	// Import leftJoin function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "leftJoin",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32}, // leftTableId, rightTableId, outPtr, maxRows
-		Results: []ValueType{I32},                // row count
-	})
-
-	// Import rightJoin function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "rightJoin",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32}, // leftTableId, rightTableId, outPtr, maxRows
-		Results: []ValueType{I32},                // row count
-	})
-
-	// Import fullJoin function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "fullJoin",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32}, // leftTableId, rightTableId, outPtr, maxRows
-		Results: []ValueType{I32},                // row count
-	})
-
-	// Import limitOffset function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "limitOffset",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32, I32}, // inPtr, rowCount, limit, offset, outPtr
-		Results: []ValueType{I32},                     // newRowCount
-	})
-
-	// Import distinctRows function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "distinctRows",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32}, // inPtr, rowCount, rowSize, outPtr
-		Results: []ValueType{I32},                // distinctRowCount
-	})
-
-	// Import unionResults function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "unionResults",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32, I32}, // leftPtr, leftCount, rightPtr, rightCount, outPtr
-		Results: []ValueType{I32},                     // totalRowCount
-	})
-
-	// Import windowFunction function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "windowFunction",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32}, // inPtr, rowCount, funcType, outPtr
-		Results: []ValueType{I32},                // success
-	})
-
-	// Import exceptResults function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "exceptResults",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32, I32}, // leftPtr, leftCount, rightPtr, rightCount, outPtr
-		Results: []ValueType{I32},                     // resultRowCount
-	})
-
-	// Import intersectResults function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "intersectResults",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32, I32}, // leftPtr, leftCount, rightPtr, rightCount, outPtr
-		Results: []ValueType{I32},                     // resultRowCount
-	})
-
-	// Import indexScan function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "indexScan",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I64, I64, I32, I32}, // tableId, indexId, minVal, maxVal, outPtr, maxRows
-		Results: []ValueType{I32},                          // rowCount
-	})
-
-	// Import bindParameter function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "bindParameter",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32}, // slotIdx, valuePtr, valueType
-		Results: []ValueType{I32},           // success
-	})
-
-	// Import executeCorrelatedSubquery function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "executeCorrelatedSubquery",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32, I32}, // queryId, outerRowPtr, outerRowSize, outPtr, maxRows
-		Results: []ValueType{I32},                     // rowCount
-	})
-
-	// Import fetchChunk function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "fetchChunk",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32}, // startRow, rowCount, outPtr
-		Results: []ValueType{I32},           // actualRowCount
-	})
-
-	// Import transaction functions
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "beginTransaction",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{},    // no params
-		Results: []ValueType{I32}, // success
-	})
-
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "commitTransaction",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{},    // no params
-		Results: []ValueType{I32}, // success
-	})
-
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "rollbackTransaction",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{},    // no params
-		Results: []ValueType{I32}, // success
-	})
-
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "savepoint",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32}, // savepointId
-		Results: []ValueType{I32}, // success
-	})
-
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "rollbackToSavepoint",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32}, // savepointId
-		Results: []ValueType{I32}, // success
-	})
-
-	// Import executeUDF function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "executeUDF",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32}, // funcNamePtr, funcNameLen, argsPtr, argCount
-		Results: []ValueType{I64},                // result value
-	})
-
-	// Import getPartitionCount function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "getPartitionCount",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32}, // tableNamePtr, tableNameLen
-		Results: []ValueType{I32},      // partitionCount
-	})
-
-	// Import partitionScan function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "partitionScan",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32, I32}, // tableNamePtr, tableNameLen, partitionId, outPtr, maxRows
-		Results: []ValueType{I32},                     // rowCount
-	})
-
-	// Import parallelAggregate function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "parallelAggregate",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32, I32, I32}, // tableNamePtr, tableNameLen, aggType, colNamePtr, colNameLen, outPtr
-		Results: []ValueType{I32},                          // success
-	})
-
-	// Import repartitionTable function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "repartitionTable",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32}, // tableNamePtr, tableNameLen, partitionCount
-		Results: []ValueType{I32},           // success
-	})
-
-	// Import vectorizedAdd function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "vectorizedAdd",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32}, // inPtr1, inPtr2, outPtr, count
-		Results: []ValueType{I32},                // success
-	})
-
-	// Import vectorizedMultiply function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "vectorizedMultiply",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32}, // inPtr1, inPtr2, outPtr, count
-		Results: []ValueType{I32},                // success
-	})
-
-	// Import vectorizedCompare function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "vectorizedCompare",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32, I32}, // inPtr1, inPtr2, outPtr, count, op
-		Results: []ValueType{I32},                     // success
-	})
-
-	// Import vectorizedSum function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "vectorizedSum",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32}, // inPtr, count
-		Results: []ValueType{I64},      // sum
-	})
-
-	// Import vectorizedMinMax function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "vectorizedMinMax",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32}, // inPtr, count, outMinPtr, outMaxPtr
-		Results: []ValueType{I32},                // success
-	})
-
-	// Import vectorizedFilter function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "vectorizedFilter",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32, I32}, // inPtr, maskPtr, outPtr, count
-		Results: []ValueType{I32},                // filteredCount
-	})
-
-	// Import vectorizedBatchCopy function
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "vectorizedBatchCopy",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32, I32}, // srcPtr, dstPtr, count
-		Results: []ValueType{I32},           // success
-	})
-
-	// Import profiling functions
-	// getQueryMetrics
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "getQueryMetrics",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32}, // outPtr
-		Results: []ValueType{I32}, // success
-	})
-
-	// getMemoryStats
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "getMemoryStats",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32}, // outPtr
-		Results: []ValueType{I32}, // success
-	})
-
-	// resetMetrics
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "resetMetrics",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{},    // no params
-		Results: []ValueType{I32}, // success
-	})
-
-	// logProfilingEvent
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "logProfilingEvent",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I64, I32}, // eventType, duration, rowCount
-		Results: []ValueType{I32},           // success
-	})
-
-	// getOpcodeStats
-	c.imports = append(c.imports, Import{
-		Module: "env",
-		Name:   "getOpcodeStats",
-		Kind:   0x00,
-		Index:  uint32(len(c.types)),
-	})
-	c.types = append(c.types, FuncType{
-		Params:  []ValueType{I32, I32}, // outPtr, maxOpcodes
-		Results: []ValueType{I32},      // count
-	})
-
-	// Update function index to account for imports
+	for _, spec := range runtimeImportSpecs {
+		c.imports = append(c.imports, Import{
+			Module: "env",
+			Name:   spec.name,
+			Kind:   0x00,
+			Index:  uint32(len(c.types)),
+		})
+		c.types = append(c.types, FuncType{
+			Params:  spec.params,
+			Results: spec.results,
+		})
+	}
 	c.funcIdx = uint32(len(c.imports))
+}
+
+// importSpec describes a single WASM host import.
+type importSpec struct {
+	name    string
+	params  []ValueType
+	results []ValueType
+}
+
+// runtimeImportSpecs lists all host functions imported by compiled WASM modules.
+// Order matters — import indices are sequential.
+var runtimeImportSpecs = []importSpec{
+	{"tableScan", []ValueType{I32, I32, I32}, []ValueType{I32}},
+	{"filterRow", []ValueType{I32, I32}, []ValueType{I32}},
+	{"compareValues", []ValueType{I32, I32, I32}, []ValueType{I32}},
+	{"insertRow", []ValueType{I32, I32}, []ValueType{I32}},
+	{"updateRow", []ValueType{I32, I64, I32}, []ValueType{I32}},
+	{"deleteRow", []ValueType{I32, I64}, []ValueType{I32}},
+	{"groupBy", []ValueType{I32, I32, I32}, []ValueType{I32}},
+	{"innerJoin", []ValueType{I32, I32, I32, I32}, []ValueType{I32}},
+	{"executeSubquery", []ValueType{I32, I32, I32}, []ValueType{I32}},
+	{"sortRows", []ValueType{I32, I32, I32, I32, I32}, []ValueType{I32}},
+	{"leftJoin", []ValueType{I32, I32, I32, I32}, []ValueType{I32}},
+	{"rightJoin", []ValueType{I32, I32, I32, I32}, []ValueType{I32}},
+	{"fullJoin", []ValueType{I32, I32, I32, I32}, []ValueType{I32}},
+	{"limitOffset", []ValueType{I32, I32, I32, I32, I32}, []ValueType{I32}},
+	{"distinctRows", []ValueType{I32, I32, I32, I32}, []ValueType{I32}},
+	{"unionResults", []ValueType{I32, I32, I32, I32, I32}, []ValueType{I32}},
+	{"windowFunction", []ValueType{I32, I32, I32, I32}, []ValueType{I32}},
+	{"exceptResults", []ValueType{I32, I32, I32, I32, I32}, []ValueType{I32}},
+	{"intersectResults", []ValueType{I32, I32, I32, I32, I32}, []ValueType{I32}},
+	{"indexScan", []ValueType{I32, I32, I64, I64, I32, I32}, []ValueType{I32}},
+	{"bindParameter", []ValueType{I32, I32, I32}, []ValueType{I32}},
+	{"executeCorrelatedSubquery", []ValueType{I32, I32, I32, I32, I32}, []ValueType{I32}},
+	{"fetchChunk", []ValueType{I32, I32, I32}, []ValueType{I32}},
+	{"beginTransaction", []ValueType{}, []ValueType{I32}},
+	{"commitTransaction", []ValueType{}, []ValueType{I32}},
+	{"rollbackTransaction", []ValueType{}, []ValueType{I32}},
+	{"savepoint", []ValueType{I32}, []ValueType{I32}},
+	{"rollbackToSavepoint", []ValueType{I32}, []ValueType{I32}},
+	{"executeUDF", []ValueType{I32, I32, I32, I32}, []ValueType{I64}},
+	{"getPartitionCount", []ValueType{I32, I32}, []ValueType{I32}},
+	{"partitionScan", []ValueType{I32, I32, I32, I32, I32}, []ValueType{I32}},
+	{"parallelAggregate", []ValueType{I32, I32, I32, I32, I32, I32}, []ValueType{I32}},
+	{"repartitionTable", []ValueType{I32, I32, I32}, []ValueType{I32}},
+	{"vectorizedAdd", []ValueType{I32, I32, I32, I32}, []ValueType{I32}},
+	{"vectorizedMultiply", []ValueType{I32, I32, I32, I32}, []ValueType{I32}},
+	{"vectorizedCompare", []ValueType{I32, I32, I32, I32, I32}, []ValueType{I32}},
+	{"vectorizedSum", []ValueType{I32, I32}, []ValueType{I64}},
+	{"vectorizedMinMax", []ValueType{I32, I32, I32, I32}, []ValueType{I32}},
+	{"vectorizedFilter", []ValueType{I32, I32, I32, I32}, []ValueType{I32}},
+	{"vectorizedBatchCopy", []ValueType{I32, I32, I32}, []ValueType{I32}},
+	{"getQueryMetrics", []ValueType{I32}, []ValueType{I32}},
+	{"getMemoryStats", []ValueType{I32}, []ValueType{I32}},
+	{"resetMetrics", []ValueType{}, []ValueType{I32}},
+	{"logProfilingEvent", []ValueType{I32, I64, I32}, []ValueType{I32}},
+	{"getOpcodeStats", []ValueType{I32, I32}, []ValueType{I32}},
 }
 
 // compileSelect compiles a SELECT statement

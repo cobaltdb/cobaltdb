@@ -681,306 +681,251 @@ func (rt *Runtime) executeFunction(fn Function) error {
 		opcode := code[pc]
 		pc++
 
-		switch opcode {
-		case 0x00: // unreachable
+		switch {
+		case opcode == 0x00:
 			return fmt.Errorf("unreachable executed")
-
-		case 0x01: // nop
-			// Do nothing
-
-		case 0x02: // block
-			// Read block type
-			_ = code[pc]
-			pc++
-			// Simplified - just skip
-
-		case 0x03: // loop
-			_ = code[pc]
-			pc++
-
-		case 0x04: // if
-			_ = code[pc]
-			pc++
-
-		case 0x05: // else
-			// Simplified
-
-		case 0x0b: // end
-			// End of block or function
-
-		case 0x0c: // br
-			labelIdx, n := readLeb128(code, pc)
-			_ = labelIdx
-			pc += n
-
-		case 0x0d: // br_if
-			labelIdx, n := readLeb128(code, pc)
-			_ = labelIdx
-			pc += n
-			// Pop condition
-			if len(rt.Stack) > 0 {
-				rt.Stack = rt.Stack[:len(rt.Stack)-1]
-			}
-
-		case 0x0f: // return
+		case opcode == 0x01: // nop
+		case opcode == 0x0b: // end
+		case opcode == 0x0f: // return
 			return nil
-
-		case 0x10: // call
-			funcIdx, n := readLeb128(code, pc)
-			pc += n
-			// Get function to know param count
-			if int(funcIdx) >= len(rt.Functions) {
-				return fmt.Errorf("call to invalid function index: %d", funcIdx)
-			}
-			fn := rt.Functions[funcIdx]
-			paramCount := fn.ParamCount
-			// Pop parameters from stack
-			var params []uint64
-			if paramCount > 0 && len(rt.Stack) >= paramCount {
-				params = rt.Stack[len(rt.Stack)-paramCount:]
-				rt.Stack = rt.Stack[:len(rt.Stack)-paramCount]
-			}
-			// Call function
-			_, err := rt.CallFunction(int(funcIdx), params)
+		case opcode == 0x10:
+			var err error
+			pc, err = rt.execCall(code, pc)
 			if err != nil {
 				return err
 			}
-
-		case 0x1a: // drop
+		case opcode == 0x41 || opcode == 0x42:
+			pc = rt.execConst(code, pc)
+		case opcode == 0x44:
+			pc = rt.execF64Const(code, pc)
+		case opcode >= 0x46 && opcode <= 0x4d:
+			rt.execI32Compare(opcode)
+		case opcode == 0x51:
+			rt.execI64Eq()
+		case opcode == 0x6a || opcode == 0x6b || opcode == 0x6c:
+			rt.execI32Arith(opcode)
+		case opcode == 0x7c || opcode == 0x7d || opcode == 0x7e:
+			rt.execI64Arith(opcode)
+		case opcode >= 0x20 && opcode <= 0x21:
+			pc = rt.execLocal(opcode, code, pc)
+		case opcode >= 0x28 && opcode <= 0x29:
+			pc = rt.execLoad(opcode, code, pc)
+		case opcode >= 0x36 && opcode <= 0x37:
+			pc = rt.execStore(opcode, code, pc)
+		case opcode == 0x1a:
 			if len(rt.Stack) > 0 {
 				rt.Stack = rt.Stack[:len(rt.Stack)-1]
 			}
-
-		case 0x1b: // select
-			if len(rt.Stack) >= 3 {
-				c := rt.Stack[len(rt.Stack)-1]
-				v2 := rt.Stack[len(rt.Stack)-2]
-				v1 := rt.Stack[len(rt.Stack)-3]
-				rt.Stack = rt.Stack[:len(rt.Stack)-3]
-				if c != 0 {
-					rt.Stack = append(rt.Stack, v1)
-				} else {
-					rt.Stack = append(rt.Stack, v2)
-				}
-			}
-
-		case 0x20: // local.get
-			localIdx, n := readLeb128(code, pc)
+		case opcode == 0x1b:
+			rt.execSelect()
+		case opcode == 0x02 || opcode == 0x03 || opcode == 0x04:
+			pc++
+		case opcode == 0x05: // else
+		case opcode == 0x0c || opcode == 0x0d:
+			_, n := readLeb128(code, pc)
 			pc += n
-			if len(rt.CallStack) > 0 {
-				frame := &rt.CallStack[len(rt.CallStack)-1]
-				if int(localIdx) < len(frame.Locals) {
-					rt.Stack = append(rt.Stack, frame.Locals[localIdx])
-				}
-			}
-
-		case 0x21: // local.set
-			localIdx, n := readLeb128(code, pc)
-			pc += n
-			if len(rt.Stack) > 0 && len(rt.CallStack) > 0 {
-				frame := &rt.CallStack[len(rt.CallStack)-1]
-				if int(localIdx) < len(frame.Locals) {
-					frame.Locals[localIdx] = rt.Stack[len(rt.Stack)-1]
-				}
+			if opcode == 0x0d && len(rt.Stack) > 0 {
 				rt.Stack = rt.Stack[:len(rt.Stack)-1]
 			}
-
-		case 0x41: // i32.const
-			val, n := readLeb128Signed(code, pc)
-			pc += n
-			rt.Stack = append(rt.Stack, uint64(val))
-
-		case 0x42: // i64.const
-			val, n := readLeb128Signed(code, pc)
-			pc += n
-			rt.Stack = append(rt.Stack, uint64(val))
-
-		case 0x44: // f64.const
-			// Read 8 bytes
-			if pc+8 <= len(code) {
-				bits := binary.LittleEndian.Uint64(code[pc:])
-				rt.Stack = append(rt.Stack, bits)
-				pc += 8
-			}
-
-		case 0x6a: // i32.add
-			if len(rt.Stack) >= 2 {
-				a := uint32(rt.Stack[len(rt.Stack)-2])
-				b := uint32(rt.Stack[len(rt.Stack)-1])
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				rt.Stack = append(rt.Stack, uint64(a+b))
-			}
-
-		case 0x6b: // i32.sub
-			if len(rt.Stack) >= 2 {
-				a := uint32(rt.Stack[len(rt.Stack)-2])
-				b := uint32(rt.Stack[len(rt.Stack)-1])
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				rt.Stack = append(rt.Stack, uint64(a-b))
-			}
-
-		case 0x6c: // i32.mul
-			if len(rt.Stack) >= 2 {
-				a := uint32(rt.Stack[len(rt.Stack)-2])
-				b := uint32(rt.Stack[len(rt.Stack)-1])
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				rt.Stack = append(rt.Stack, uint64(a*b))
-			}
-
-		case 0x7c: // i64.add
-			if len(rt.Stack) >= 2 {
-				a := rt.Stack[len(rt.Stack)-2]
-				b := rt.Stack[len(rt.Stack)-1]
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				rt.Stack = append(rt.Stack, a+b)
-			}
-
-		case 0x7d: // i64.sub
-			if len(rt.Stack) >= 2 {
-				a := rt.Stack[len(rt.Stack)-2]
-				b := rt.Stack[len(rt.Stack)-1]
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				rt.Stack = append(rt.Stack, a-b)
-			}
-
-		case 0x7e: // i64.mul
-			if len(rt.Stack) >= 2 {
-				a := rt.Stack[len(rt.Stack)-2]
-				b := rt.Stack[len(rt.Stack)-1]
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				rt.Stack = append(rt.Stack, a*b)
-			}
-
-		case 0x46: // i32.eq
-			if len(rt.Stack) >= 2 {
-				a := uint32(rt.Stack[len(rt.Stack)-2])
-				b := uint32(rt.Stack[len(rt.Stack)-1])
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				if a == b {
-					rt.Stack = append(rt.Stack, 1)
-				} else {
-					rt.Stack = append(rt.Stack, 0)
-				}
-			}
-
-		case 0x47: // i32.ne
-			if len(rt.Stack) >= 2 {
-				a := uint32(rt.Stack[len(rt.Stack)-2])
-				b := uint32(rt.Stack[len(rt.Stack)-1])
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				if a != b {
-					rt.Stack = append(rt.Stack, 1)
-				} else {
-					rt.Stack = append(rt.Stack, 0)
-				}
-			}
-
-		case 0x48: // i32.lt_s
-			if len(rt.Stack) >= 2 {
-				a := int32(rt.Stack[len(rt.Stack)-2])
-				b := int32(rt.Stack[len(rt.Stack)-1])
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				if a < b {
-					rt.Stack = append(rt.Stack, 1)
-				} else {
-					rt.Stack = append(rt.Stack, 0)
-				}
-			}
-
-		case 0x4d: // i32.gt_s
-			if len(rt.Stack) >= 2 {
-				a := int32(rt.Stack[len(rt.Stack)-2])
-				b := int32(rt.Stack[len(rt.Stack)-1])
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				if a > b {
-					rt.Stack = append(rt.Stack, 1)
-				} else {
-					rt.Stack = append(rt.Stack, 0)
-				}
-			}
-
-		case 0x51: // i64.eq
-			if len(rt.Stack) >= 2 {
-				a := rt.Stack[len(rt.Stack)-2]
-				b := rt.Stack[len(rt.Stack)-1]
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				if a == b {
-					rt.Stack = append(rt.Stack, 1)
-				} else {
-					rt.Stack = append(rt.Stack, 0)
-				}
-			}
-
-		case 0x28: // i32.load
-			memArgAlign, n := readLeb128(code, pc)
-			_ = memArgAlign
-			pc += n
-			memArgOffset, n := readLeb128(code, pc)
-			_ = memArgOffset
-			pc += n
-			if len(rt.Stack) > 0 {
-				addr := int(rt.Stack[len(rt.Stack)-1])
-				rt.Stack = rt.Stack[:len(rt.Stack)-1]
-				if addr+4 <= len(rt.Memory) {
-					val := binary.LittleEndian.Uint32(rt.Memory[addr:])
-					rt.Stack = append(rt.Stack, uint64(val))
-				}
-			}
-
-		case 0x29: // i64.load
-			memArgAlign, n := readLeb128(code, pc)
-			_ = memArgAlign
-			pc += n
-			memArgOffset, n := readLeb128(code, pc)
-			_ = memArgOffset
-			pc += n
-			if len(rt.Stack) > 0 {
-				addr := int(rt.Stack[len(rt.Stack)-1])
-				rt.Stack = rt.Stack[:len(rt.Stack)-1]
-				if addr+8 <= len(rt.Memory) {
-					val := binary.LittleEndian.Uint64(rt.Memory[addr:])
-					rt.Stack = append(rt.Stack, val)
-				}
-			}
-
-		case 0x36: // i32.store
-			memArgAlign, n := readLeb128(code, pc)
-			_ = memArgAlign
-			pc += n
-			memArgOffset, n := readLeb128(code, pc)
-			_ = memArgOffset
-			pc += n
-			if len(rt.Stack) >= 2 {
-				val := uint32(rt.Stack[len(rt.Stack)-1])
-				addr := int(rt.Stack[len(rt.Stack)-2])
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				if addr+4 <= len(rt.Memory) {
-					binary.LittleEndian.PutUint32(rt.Memory[addr:], val)
-				}
-			}
-
-		case 0x37: // i64.store
-			memArgAlign, n := readLeb128(code, pc)
-			_ = memArgAlign
-			pc += n
-			memArgOffset, n := readLeb128(code, pc)
-			_ = memArgOffset
-			pc += n
-			if len(rt.Stack) >= 2 {
-				val := rt.Stack[len(rt.Stack)-1]
-				addr := int(rt.Stack[len(rt.Stack)-2])
-				rt.Stack = rt.Stack[:len(rt.Stack)-2]
-				if addr+8 <= len(rt.Memory) {
-					binary.LittleEndian.PutUint64(rt.Memory[addr:], val)
-				}
-			}
-
 		default:
 			return fmt.Errorf("unimplemented opcode: 0x%02x", opcode)
 		}
 	}
 
 	return nil
+}
+
+func (rt *Runtime) execCall(code []byte, pc int) (int, error) {
+	funcIdx, n := readLeb128(code, pc)
+	pc += n
+	if int(funcIdx) >= len(rt.Functions) {
+		return pc, fmt.Errorf("call to invalid function index: %d", funcIdx)
+	}
+	fn := rt.Functions[funcIdx]
+	paramCount := fn.ParamCount
+	var params []uint64
+	if paramCount > 0 && len(rt.Stack) >= paramCount {
+		params = rt.Stack[len(rt.Stack)-paramCount:]
+		rt.Stack = rt.Stack[:len(rt.Stack)-paramCount]
+	}
+	_, err := rt.CallFunction(int(funcIdx), params)
+	return pc, err
+}
+
+func (rt *Runtime) execConst(code []byte, pc int) int {
+	val, n := readLeb128Signed(code, pc)
+	pc += n
+	rt.Stack = append(rt.Stack, uint64(val))
+	return pc
+}
+
+func (rt *Runtime) execF64Const(code []byte, pc int) int {
+	if pc+8 <= len(code) {
+		bits := binary.LittleEndian.Uint64(code[pc:])
+		rt.Stack = append(rt.Stack, bits)
+		pc += 8
+	}
+	return pc
+}
+
+func (rt *Runtime) execI32Compare(opcode byte) {
+	if len(rt.Stack) < 2 {
+		return
+	}
+	a := uint32(rt.Stack[len(rt.Stack)-2])
+	b := uint32(rt.Stack[len(rt.Stack)-1])
+	rt.Stack = rt.Stack[:len(rt.Stack)-2]
+	var result uint64
+	switch opcode {
+	case 0x46: // i32.eq
+		if a == b {
+			result = 1
+		}
+	case 0x47: // i32.ne
+		if a != b {
+			result = 1
+		}
+	case 0x48: // i32.lt_s
+		if int32(a) < int32(b) {
+			result = 1
+		}
+	case 0x4d: // i32.gt_s
+		if int32(a) > int32(b) {
+			result = 1
+		}
+	}
+	rt.Stack = append(rt.Stack, result)
+}
+
+func (rt *Runtime) execI64Eq() {
+	if len(rt.Stack) < 2 {
+		return
+	}
+	a := rt.Stack[len(rt.Stack)-2]
+	b := rt.Stack[len(rt.Stack)-1]
+	rt.Stack = rt.Stack[:len(rt.Stack)-2]
+	if a == b {
+		rt.Stack = append(rt.Stack, 1)
+	} else {
+		rt.Stack = append(rt.Stack, 0)
+	}
+}
+
+func (rt *Runtime) execI32Arith(opcode byte) {
+	if len(rt.Stack) < 2 {
+		return
+	}
+	a := uint32(rt.Stack[len(rt.Stack)-2])
+	b := uint32(rt.Stack[len(rt.Stack)-1])
+	rt.Stack = rt.Stack[:len(rt.Stack)-2]
+	var result uint32
+	switch opcode {
+	case 0x6a: // i32.add
+		result = a + b
+	case 0x6b: // i32.sub
+		result = a - b
+	case 0x6c: // i32.mul
+		result = a * b
+	}
+	rt.Stack = append(rt.Stack, uint64(result))
+}
+
+func (rt *Runtime) execI64Arith(opcode byte) {
+	if len(rt.Stack) < 2 {
+		return
+	}
+	a := rt.Stack[len(rt.Stack)-2]
+	b := rt.Stack[len(rt.Stack)-1]
+	rt.Stack = rt.Stack[:len(rt.Stack)-2]
+	var result uint64
+	switch opcode {
+	case 0x7c: // i64.add
+		result = a + b
+	case 0x7d: // i64.sub
+		result = a - b
+	case 0x7e: // i64.mul
+		result = a * b
+	}
+	rt.Stack = append(rt.Stack, result)
+}
+
+func (rt *Runtime) execLocal(opcode byte, code []byte, pc int) int {
+	localIdx, n := readLeb128(code, pc)
+	pc += n
+	if len(rt.CallStack) == 0 {
+		return pc
+	}
+	frame := &rt.CallStack[len(rt.CallStack)-1]
+	if int(localIdx) >= len(frame.Locals) {
+		return pc
+	}
+	if opcode == 0x20 { // local.get
+		rt.Stack = append(rt.Stack, frame.Locals[localIdx])
+	} else { // local.set
+		if len(rt.Stack) > 0 {
+			frame.Locals[localIdx] = rt.Stack[len(rt.Stack)-1]
+			rt.Stack = rt.Stack[:len(rt.Stack)-1]
+		}
+	}
+	return pc
+}
+
+func (rt *Runtime) execLoad(opcode byte, code []byte, pc int) int {
+	memArgAlign, n := readLeb128(code, pc)
+	_ = memArgAlign
+	pc += n
+	memArgOffset, n := readLeb128(code, pc)
+	_ = memArgOffset
+	pc += n
+	if len(rt.Stack) == 0 {
+		return pc
+	}
+	addr := int(rt.Stack[len(rt.Stack)-1])
+	rt.Stack = rt.Stack[:len(rt.Stack)-1]
+	if opcode == 0x28 && addr+4 <= len(rt.Memory) { // i32.load
+		val := binary.LittleEndian.Uint32(rt.Memory[addr:])
+		rt.Stack = append(rt.Stack, uint64(val))
+	} else if opcode == 0x29 && addr+8 <= len(rt.Memory) { // i64.load
+		val := binary.LittleEndian.Uint64(rt.Memory[addr:])
+		rt.Stack = append(rt.Stack, val)
+	}
+	return pc
+}
+
+func (rt *Runtime) execStore(opcode byte, code []byte, pc int) int {
+	memArgAlign, n := readLeb128(code, pc)
+	_ = memArgAlign
+	pc += n
+	memArgOffset, n := readLeb128(code, pc)
+	_ = memArgOffset
+	pc += n
+	if len(rt.Stack) < 2 {
+		return pc
+	}
+	val := rt.Stack[len(rt.Stack)-1]
+	addr := int(rt.Stack[len(rt.Stack)-2])
+	rt.Stack = rt.Stack[:len(rt.Stack)-2]
+	if opcode == 0x36 && addr+4 <= len(rt.Memory) { // i32.store
+		binary.LittleEndian.PutUint32(rt.Memory[addr:], uint32(val))
+	} else if opcode == 0x37 && addr+8 <= len(rt.Memory) { // i64.store
+		binary.LittleEndian.PutUint64(rt.Memory[addr:], val)
+	}
+	return pc
+}
+
+func (rt *Runtime) execSelect() {
+	if len(rt.Stack) < 3 {
+		return
+	}
+	c := rt.Stack[len(rt.Stack)-1]
+	v2 := rt.Stack[len(rt.Stack)-2]
+	v1 := rt.Stack[len(rt.Stack)-3]
+	rt.Stack = rt.Stack[:len(rt.Stack)-3]
+	if c != 0 {
+		rt.Stack = append(rt.Stack, v1)
+	} else {
+		rt.Stack = append(rt.Stack, v2)
+	}
 }
 
 // QueryProfiler provides performance profiling for WASM queries

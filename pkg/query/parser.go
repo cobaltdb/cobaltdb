@@ -440,127 +440,119 @@ func (p *Parser) parseTemporalExpr() (*TemporalExpr, error) {
 // parseJoin parses a JOIN clause
 func (p *Parser) parseJoin() (*JoinClause, error) {
 	join := &JoinClause{}
+	p.parseJoinType(join)
 
-	// JOIN type
-	switch p.current().Type {
-	case TokenInner:
-		join.Type = TokenInner
-		p.advance()
-		if _, err := p.expect(TokenJoin); err != nil {
-			return nil, err
-		}
-	case TokenLeft:
-		join.Type = TokenLeft
-		p.advance()
-		_ = p.match(TokenOuter) // optional OUTER
-		if _, err := p.expect(TokenJoin); err != nil {
-			return nil, err
-		}
-	case TokenRight:
-		join.Type = TokenRight
-		p.advance()
-		_ = p.match(TokenOuter) // optional OUTER
-		if _, err := p.expect(TokenJoin); err != nil {
-			return nil, err
-		}
-	case TokenFull:
-		join.Type = TokenFull
-		p.advance()
-		_ = p.match(TokenOuter) // optional OUTER
-		if _, err := p.expect(TokenJoin); err != nil {
-			return nil, err
-		}
-	case TokenOuter:
-		p.advance()
-		join.Type = TokenFull // treat bare OUTER JOIN as FULL OUTER
-		if _, err := p.expect(TokenJoin); err != nil {
-			return nil, err
-		}
-	case TokenCross:
-		join.Type = TokenCross
-		p.advance()
-		if _, err := p.expect(TokenJoin); err != nil {
-			return nil, err
-		}
-	case TokenNatural:
-		// NATURAL JOIN - automatically match columns with same name
-		join.Natural = true
-		p.advance()
-		// Check for optional join type after NATURAL
-		switch p.current().Type {
-		case TokenInner:
-			join.Type = TokenInner
-			p.advance()
-		case TokenLeft:
-			join.Type = TokenLeft
-			p.advance()
-			_ = p.match(TokenOuter) // optional OUTER
-		case TokenRight:
-			join.Type = TokenRight
-			p.advance()
-			_ = p.match(TokenOuter) // optional OUTER
-		case TokenFull:
-			join.Type = TokenFull
-			p.advance()
-			_ = p.match(TokenOuter) // optional OUTER
-		default:
-			// NATURAL JOIN without type defaults to INNER
-			join.Type = TokenInner
-		}
-		if _, err := p.expect(TokenJoin); err != nil {
-			return nil, err
-		}
-	case TokenJoin:
-		join.Type = TokenJoin
-		p.advance()
-	}
-
-	// Table
 	table, err := p.parseTableRef()
 	if err != nil {
 		return nil, err
 	}
 	join.Table = table
 
-	// ON or USING condition (optional for CROSS JOIN)
-	if join.Type == TokenCross {
-		// CROSS JOIN doesn't require ON condition, but allow it
+	if err := p.parseJoinCondition(join); err != nil {
+		return nil, err
+	}
+	return join, nil
+}
+
+func (p *Parser) parseJoinType(join *JoinClause) {
+	switch p.current().Type {
+	case TokenInner:
+		join.Type = TokenInner
+		p.advance()
+		p.expect(TokenJoin)
+	case TokenLeft:
+		join.Type = TokenLeft
+		p.advance()
+		_ = p.match(TokenOuter)
+		p.expect(TokenJoin)
+	case TokenRight:
+		join.Type = TokenRight
+		p.advance()
+		_ = p.match(TokenOuter)
+		p.expect(TokenJoin)
+	case TokenFull:
+		join.Type = TokenFull
+		p.advance()
+		_ = p.match(TokenOuter)
+		p.expect(TokenJoin)
+	case TokenOuter:
+		p.advance()
+		join.Type = TokenFull
+		p.expect(TokenJoin)
+	case TokenCross:
+		join.Type = TokenCross
+		p.advance()
+		p.expect(TokenJoin)
+	case TokenNatural:
+		join.Natural = true
+		p.advance()
+		p.parseNaturalJoinType(join)
+		p.expect(TokenJoin)
+	case TokenJoin:
+		join.Type = TokenJoin
+		p.advance()
+	}
+}
+
+func (p *Parser) parseNaturalJoinType(join *JoinClause) {
+	switch p.current().Type {
+	case TokenInner:
+		join.Type = TokenInner
+		p.advance()
+	case TokenLeft:
+		join.Type = TokenLeft
+		p.advance()
+		_ = p.match(TokenOuter)
+	case TokenRight:
+		join.Type = TokenRight
+		p.advance()
+		_ = p.match(TokenOuter)
+	case TokenFull:
+		join.Type = TokenFull
+		p.advance()
+		_ = p.match(TokenOuter)
+	default:
+		join.Type = TokenInner
+	}
+}
+
+func (p *Parser) parseJoinCondition(join *JoinClause) error {
+	switch {
+	case join.Type == TokenCross:
 		if p.current().Type == TokenOn {
 			p.advance()
-			condition, err := p.parseExpression()
+			cond, err := p.parseExpression()
 			if err != nil {
-				return nil, err
+				return err
 			}
-			join.Condition = condition
+			join.Condition = cond
 		}
-	} else if p.current().Type == TokenUsing {
-		// USING (col1, col2, ...)
-		p.advance() // consume USING
+	case p.current().Type == TokenUsing:
+		p.advance()
 		if _, err := p.expect(TokenLParen); err != nil {
-			return nil, err
+			return err
 		}
 		columns, err := p.parseIdentifierList()
 		if err != nil {
-			return nil, fmt.Errorf("USING clause: %w", err)
+			return fmt.Errorf("USING clause: %w", err)
 		}
 		if _, err := p.expect(TokenRParen); err != nil {
-			return nil, err
+			return err
 		}
 		join.Using = columns
-	} else if join.Natural {
-		// NATURAL JOIN doesn't require ON - condition is determined by common columns
-	} else {
+	case join.Natural:
+		// condition determined by common columns
+	default:
 		if _, err := p.expect(TokenOn); err != nil {
-			return nil, err
+			return err
 		}
-		condition, err := p.parseExpression()
+		cond, err := p.parseExpression()
 		if err != nil {
-			return nil, err
+			return err
 		}
-		join.Condition = condition
+		join.Condition = cond
 	}
-
-	return join, nil
+	return nil
 }
 
 // parseOrderByList parses ORDER BY expressions
@@ -745,7 +737,6 @@ func (p *Parser) parseComparison() (Expression, error) {
 		return nil, err
 	}
 
-	// Check for various comparison operators
 	switch p.current().Type {
 	case TokenEq, TokenNeq, TokenLt, TokenGt, TokenLte, TokenGte:
 		op := p.current().Type
@@ -756,147 +747,100 @@ func (p *Parser) parseComparison() (Expression, error) {
 		}
 		return &BinaryExpr{Left: left, Operator: op, Right: right}, nil
 	case TokenLike:
-		p.advance()
-		not := false
-		if p.match(TokenNot) {
-			not = true
+		return p.parseLikeExpr(left, false)
+	case TokenNot:
+		if p.peek().Type == TokenIn {
+			p.advance()
+			return p.parseInExpr(left, true)
+		} else if p.peek().Type == TokenLike {
+			p.advance()
+			return p.parseLikeExpr(left, true)
+		} else if p.peek().Type == TokenBetween {
+			p.advance()
+			return p.parseBetweenExpr(left, true)
 		}
-		pattern, err := p.parseAdditive()
-		if err != nil {
-			return nil, err
-		}
-		var escape Expression
-		if p.current().Type == TokenEscape {
-			p.advance() // consume ESCAPE
-			escape, err = p.parsePrimary()
-			if err != nil {
-				return nil, err
-			}
-		}
-		return &LikeExpr{Expr: left, Pattern: pattern, Not: not, Escape: escape}, nil
 	case TokenIn:
-		p.advance()
-		not := false
-		if p.match(TokenNot) {
-			not = true
-		}
-		if _, err := p.expect(TokenLParen); err != nil {
-			return nil, err
-		}
-
-		// Check for subquery: IN (SELECT ...)
-		var subquery *SelectStmt
-		var list []Expression
-		if p.current().Type == TokenSelect {
-			subquery, err = p.parseSelect()
-			if err != nil {
-				return nil, err
-			}
-			if _, err := p.expect(TokenRParen); err != nil {
-				return nil, err
-			}
-		} else {
-			list, err = p.parseExpressionList()
-			if err != nil {
-				return nil, err
-			}
-			if _, err := p.expect(TokenRParen); err != nil {
-				return nil, err
-			}
-		}
-		return &InExpr{Expr: left, List: list, Not: not, Subquery: subquery}, nil
+		return p.parseInExpr(left, false)
 	case TokenBetween:
-		p.advance()
-		not := false
-		if p.match(TokenNot) {
-			not = true
-		}
-		lower, err := p.parseAdditive()
-		if err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TokenAnd); err != nil {
-			return nil, err
-		}
-		upper, err := p.parseAdditive()
-		if err != nil {
-			return nil, err
-		}
-		return &BetweenExpr{Expr: left, Lower: lower, Upper: upper, Not: not}, nil
+		return p.parseBetweenExpr(left, false)
 	case TokenIs:
 		p.advance()
-		not := false
-		if p.match(TokenNot) {
-			not = true
-		}
+		not := p.match(TokenNot)
 		if !p.match(TokenNull) {
 			return nil, fmt.Errorf("expected NULL after IS")
 		}
 		return &IsNullExpr{Expr: left, Not: not}, nil
-	case TokenNot:
-		// Handle NOT IN, NOT LIKE, NOT BETWEEN
-		switch p.peek().Type {
-		case TokenIn:
-			p.advance() // consume NOT
-			p.advance() // consume IN
-			if _, err := p.expect(TokenLParen); err != nil {
-				return nil, err
-			}
-			var subquery *SelectStmt
-			var list []Expression
-			if p.current().Type == TokenSelect {
-				subquery, err = p.parseSelect()
-				if err != nil {
-					return nil, err
-				}
-				if _, err := p.expect(TokenRParen); err != nil {
-					return nil, err
-				}
-			} else {
-				list, err = p.parseExpressionList()
-				if err != nil {
-					return nil, err
-				}
-				if _, err := p.expect(TokenRParen); err != nil {
-					return nil, err
-				}
-			}
-			return &InExpr{Expr: left, List: list, Not: true, Subquery: subquery}, nil
-		case TokenLike:
-			p.advance() // consume NOT
-			p.advance() // consume LIKE
-			pattern, err := p.parseAdditive()
-			if err != nil {
-				return nil, err
-			}
-			var escape Expression
-			if p.current().Type == TokenEscape {
-				p.advance()
-				escape, err = p.parsePrimary()
-				if err != nil {
-					return nil, err
-				}
-			}
-			return &LikeExpr{Expr: left, Pattern: pattern, Not: true, Escape: escape}, nil
-		case TokenBetween:
-			p.advance() // consume NOT
-			p.advance() // consume BETWEEN
-			lower, err := p.parseAdditive()
-			if err != nil {
-				return nil, err
-			}
-			if _, err := p.expect(TokenAnd); err != nil {
-				return nil, err
-			}
-			upper, err := p.parseAdditive()
-			if err != nil {
-				return nil, err
-			}
-			return &BetweenExpr{Expr: left, Lower: lower, Upper: upper, Not: true}, nil
-		}
 	}
 
 	return left, nil
+}
+
+func (p *Parser) parseInExpr(left Expression, not bool) (Expression, error) {
+	p.advance() // consume IN
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, err
+	}
+	var subquery *SelectStmt
+	var list []Expression
+	if p.current().Type == TokenSelect {
+		var err error
+		subquery, err = p.parseSelect()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		list, err = p.parseExpressionList()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
+	}
+	return &InExpr{Expr: left, List: list, Not: not, Subquery: subquery}, nil
+}
+
+func (p *Parser) parseLikeExpr(left Expression, not bool) (Expression, error) {
+	p.advance() // consume LIKE
+	if !not {
+		not = p.match(TokenNot)
+	}
+	pattern, err := p.parseAdditive()
+	if err != nil {
+		return nil, err
+	}
+	var escape Expression
+	if p.current().Type == TokenEscape {
+		p.advance()
+		escape, err = p.parsePrimary()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &LikeExpr{Expr: left, Pattern: pattern, Not: not, Escape: escape}, nil
+}
+
+func (p *Parser) parseBetweenExpr(left Expression, not bool) (Expression, error) {
+	p.advance() // consume BETWEEN
+	if !not {
+		not = p.match(TokenNot)
+	}
+	lower, err := p.parseAdditive()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokenAnd); err != nil {
+		return nil, err
+	}
+	upper, err := p.parseAdditive()
+	if err != nil {
+		return nil, err
+	}
+	return &BetweenExpr{Expr: left, Lower: lower, Upper: upper, Not: not}, nil
 }
 
 // parseAdditive parses + and - expressions
