@@ -507,7 +507,7 @@ func TestHashJoinKeyEdgeCases(t *testing.T) {
 		{"bool true", true, "true"},
 		{"bool false", false, "false"},
 		{"nil", nil, "<nil>"},
-		{"byte slice", []byte{1, 2, 3}, "[1 2 3]"},
+		{"byte slice", []byte{1, 2, 3}, "\x01\x02\x03"},
 		{"time", time.Now(), ""}, // just check it doesn't panic
 	}
 

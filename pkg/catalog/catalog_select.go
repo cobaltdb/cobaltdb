@@ -467,7 +467,8 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 				for ri, joinRow := range rightRows {
 					if rightColIdx < len(joinRow) && joinRow[rightColIdx] != nil {
 						key := hashJoinKey(joinRow[rightColIdx])
-						hashMap[key] = append(hashMap[key], ri)
+						existing := hashMap[key]
+						hashMap[key] = append(existing, ri)
 					}
 				}
 
@@ -1117,10 +1118,11 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 			}
 		}
 		key := groupKey.String()
-		if _, exists := groups[key]; !exists {
+		existing := groups[key]
+		if len(existing) == 0 {
 			groupOrder = append(groupOrder, key)
 		}
-		groups[key] = append(groups[key], row)
+		groups[key] = append(existing, row)
 	}
 
 	// Compute aggregates for each group
@@ -1718,6 +1720,20 @@ func hashJoinKey(v interface{}) string {
 			return "true"
 		}
 		return "false"
+	case []byte:
+		return string(val)
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
+	case int16:
+		return strconv.FormatInt(int64(val), 10)
+	case int8:
+		return strconv.FormatInt(int64(val), 10)
+	case uint:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint64:
+		return strconv.FormatUint(val, 10)
+	case uint32:
+		return strconv.FormatUint(uint64(val), 10)
 	default:
 		return fmt.Sprintf("%v", v)
 	}

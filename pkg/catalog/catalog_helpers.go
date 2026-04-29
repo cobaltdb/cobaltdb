@@ -165,6 +165,18 @@ func ValueToStringKey(v interface{}) string {
 			return "true"
 		}
 		return "false"
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
+	case int16:
+		return strconv.FormatInt(int64(val), 10)
+	case int8:
+		return strconv.FormatInt(int64(val), 10)
+	case uint:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint64:
+		return strconv.FormatUint(val, 10)
+	case uint32:
+		return strconv.FormatUint(uint64(val), 10)
 	default:
 		return fmt.Sprintf("%v", val)
 	}
