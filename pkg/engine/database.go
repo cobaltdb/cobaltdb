@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -33,8 +30,6 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
 
-// toUpperFast returns an uppercased copy of s only if s contains lowercase
-// letters. This avoids an allocation when s is already uppercase.
 func toUpperFast(s string) string {
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 'a' && s[i] <= 'z' {
@@ -202,9 +197,11 @@ type stmtLRUList struct {
 	tail *stmtLRUEntry // least recently used
 }
 
+
 func newStmtLRUList() *stmtLRUList {
 	return &stmtLRUList{}
 }
+
 
 func (l *stmtLRUList) pushFront(e *stmtLRUEntry) {
 	e.prev = nil
@@ -218,6 +215,7 @@ func (l *stmtLRUList) pushFront(e *stmtLRUEntry) {
 	}
 }
 
+
 func (l *stmtLRUList) moveToFront(e *stmtLRUEntry) {
 	if l.head == e {
 		return
@@ -225,6 +223,7 @@ func (l *stmtLRUList) moveToFront(e *stmtLRUEntry) {
 	l.remove(e)
 	l.pushFront(e)
 }
+
 
 func (l *stmtLRUList) remove(e *stmtLRUEntry) {
 	if e.prev != nil {
@@ -240,6 +239,7 @@ func (l *stmtLRUList) remove(e *stmtLRUEntry) {
 	e.prev = nil
 	e.next = nil
 }
+
 
 func (l *stmtLRUList) removeTail() *stmtLRUEntry {
 	if l.tail == nil {
@@ -257,776 +257,19 @@ const (
 )
 
 // DefaultOptions returns the default database options
-func DefaultOptions() *Options {
-	return &Options{
-		PageSize:            storage.PageSize,
-		CacheSize:           1024, // 4MB cache
-		InMemory:            false,
-		WALEnabled:          true,
-		SyncMode:            SyncNormal,
-		Logger:              logger.Default(),
-		MaxConnections:      100, // Default max connections
-		ConnectionTimeout:   30 * time.Second,
-		QueryTimeout:        60 * time.Second,
-		MaxStmtCacheSize:    1000, // Default max cached statements
-		EnableAutoVacuum:    true,
-		AutoVacuumInterval:  1 * time.Minute,
-		AutoVacuumThreshold: 0.2, // 20% dead tuples triggers vacuum
-		EnableScheduler:     true,
-		AnalyzeInterval:     1 * time.Hour,
-		SchedulerWorkers:    2,
-		ParallelWorkers:     runtime.NumCPU(),
-		ParallelThreshold:   1000,
-	}
-}
 
-// Open opens or creates a database at the given path
-func Open(path string, opts *Options) (*DB, error) {
-	defaults := DefaultOptions()
-	if opts == nil {
-		opts = defaults
-	} else {
-		// Apply defaults for unspecified options
-		if opts.PageSize == 0 {
-			opts.PageSize = defaults.PageSize
-		}
-		if opts.CacheSize == 0 {
-			opts.CacheSize = defaults.CacheSize
-		}
-		// InMemory and WALEnabled are booleans, use defaults if not explicitly set
-		// SyncMode defaults to 0 which is SyncOff, but default is SyncNormal
-		// We can't distinguish between unset and explicitly set to 0 for booleans and enums
-		// So we use the default values if they appear to be zero values
-		if opts.Logger == nil {
-			opts.Logger = defaults.Logger
-		}
-	}
-
-	// Setup logger
-	log := opts.Logger
-	if log == nil {
-		log = logger.Default()
-	}
-	log = log.WithComponent("engine")
-
-	var backend storage.Backend
-	var err error
-
-	if opts.InMemory || path == ":memory:" {
-		log.Infof("Opening in-memory database")
-		backend = storage.NewMemory()
-	} else {
-		log.Infof("Opening database at %s", path)
-		// Ensure directory exists
-		dir := filepath.Dir(path)
-		if dir != "." && dir != "/" {
-			if err := os.MkdirAll(dir, 0750); err != nil {
-				return nil, fmt.Errorf("failed to create directory: %w", err)
-			}
-		}
-		backend, err = storage.OpenDisk(path)
-		if err != nil {
-			log.Errorf("Failed to open database: %v", err)
-			return nil, fmt.Errorf("failed to open database: %w", err)
-		}
-
-		// Wrap with encryption if encryption key is provided
-		if opts.EncryptionConfig != nil && opts.EncryptionConfig.Enabled {
-			log.Infof("Enabling encryption at rest")
-			// Try to load existing salt for key derivation consistency
-			if len(opts.EncryptionConfig.Salt) == 0 && path != ":memory:" {
-				if salt, loadErr := storage.LoadSalt(path); loadErr == nil && salt != nil {
-					opts.EncryptionConfig.Salt = salt
-				}
-			}
-			backend, err = storage.NewEncryptedBackend(backend, opts.EncryptionConfig)
-			if err != nil {
-				backend.Close()
-				return nil, fmt.Errorf("failed to setup encryption: %w", err)
-			}
-			// Persist salt for future opens
-			if path != ":memory:" {
-				if salt := backend.(*storage.EncryptedBackend).GetSalt(); salt != nil {
-					if perr := storage.PersistSalt(path, salt); perr != nil {
-						log.Warnf("failed to persist encryption salt: %v", perr)
-					}
-				}
-			}
-		} else if len(opts.EncryptionKey) > 0 {
-			log.Infof("Enabling encryption at rest")
-			encConfig := &storage.EncryptionConfig{
-				Enabled:   true,
-				Key:       opts.EncryptionKey,
-				Algorithm: "aes-256-gcm",
-				UseArgon2: true,
-			}
-			// Try to load existing salt for key derivation consistency
-			if path != ":memory:" {
-				if salt, loadErr := storage.LoadSalt(path); loadErr == nil && salt != nil {
-					encConfig.Salt = salt
-				}
-			}
-			backend, err = storage.NewEncryptedBackend(backend, encConfig)
-			if err != nil {
-				backend.Close()
-				return nil, fmt.Errorf("failed to setup encryption: %w", err)
-			}
-			// Persist salt for future opens
-			if path != ":memory:" {
-				if salt := backend.(*storage.EncryptedBackend).GetSalt(); salt != nil {
-					if perr := storage.PersistSalt(path, salt); perr != nil {
-						log.Warnf("failed to persist encryption salt: %v", perr)
-					}
-				}
-			}
-		}
-
-		// Wrap with page-level compression if configured
-		if opts.CompressionConfig != nil && opts.CompressionConfig.Enabled {
-			log.Infof("Enabling page-level compression")
-			backend, err = storage.NewCompressedBackend(backend, opts.CompressionConfig)
-			if err != nil {
-				backend.Close()
-				return nil, fmt.Errorf("failed to setup compression: %w", err)
-			}
-		}
-	}
-
-	// Initialize metrics collector
-	collector := metrics.NewCollector(0) // Use default interval
-
-	db := &DB{
-		path:         path,
-		backend:      backend,
-		options:      opts,
-		stmtCache:    make(map[string]*cachedStmt),
-		stmtLRU:      newStmtLRUList(),
-		metrics:      collector,
-		shutdownCh:   make(chan struct{}),
-		indexAdvisor: advisor.NewIndexAdvisor(),
-	}
-
-	// Initialize audit logger if configured
-	if opts.AuditConfig != nil && opts.AuditConfig.Enabled {
-		log.Infof("Initializing audit logging")
-		auditLogger, err := audit.New(opts.AuditConfig, log)
-		if err != nil {
-			backend.Close()
-			return nil, fmt.Errorf("failed to initialize audit logger: %w", err)
-		}
-		db.auditLogger = auditLogger
-	}
-
-	// Initialize RLS manager if enabled
-	if opts.EnableRLS {
-		log.Infof("Initializing row-level security")
-		db.rlsManager = security.NewManager()
-	}
-
-	// Initialize connection semaphore if max connections is set
-	if opts.MaxConnections > 0 {
-		db.connSem = make(chan struct{}, opts.MaxConnections)
-	}
-
-	// Start metrics collection
-	go collector.Start(context.Background())
-
-	// Initialize buffer pool
-	db.pool = storage.NewBufferPool(opts.CacheSize, backend)
-
-	// Start background dirty page flusher (5s interval) for disk-backed databases
-	if db.path != ":memory:" {
-		db.pool.StartBackgroundFlusher(5 * time.Second)
-	}
-
-	// Initialize or load database
-	if err := db.initialize(); err != nil {
-		collector.Stop() // Stop metrics goroutine to prevent leak
-		if db.auditLogger != nil {
-			db.auditLogger.Close()
-		}
-		if db.wal != nil {
-			db.wal.Close()
-		}
-		backend.Close()
-		return nil, err
-	}
-
-	// Start scheduler for maintenance jobs if enabled.
-	// Auto-vacuum implies the scheduler must be active.
-	if !db.options.InMemory && db.path != ":memory:" {
-		if db.options.EnableScheduler || db.options.EnableAutoVacuum {
-			db.startScheduler()
-		}
-	}
-
-	return db, nil
-}
-
-// initialize initializes a new database or loads an existing one
-func (db *DB) initialize() error {
-	// Check if database exists
-	if db.backend.Size() == 0 {
-		// Create new database
-		return db.createNew()
-	}
-
-	// Load existing database
-	return db.loadExisting()
-}
-
-// createNew creates a new database
-func (db *DB) createNew() error {
-	// Create meta page with initial values
-	metaPage := storage.NewPage(0, storage.PageTypeMeta)
-	meta := storage.NewMetaPage()
-	meta.Serialize(metaPage.Data)
-
-	// Write initial meta page
-	if _, err := db.backend.WriteAt(metaPage.Data, 0); err != nil {
-		return fmt.Errorf("failed to write meta page: %w", err)
-	}
-
-	// Create root B+Tree for system catalog
-	tree, err := btree.NewBTree(db.pool)
-	if err != nil {
-		return fmt.Errorf("failed to create catalog tree: %w", err)
-	}
-	db.rootTree = tree
-
-	// Update meta page with actual root page ID
-	meta.RootPageID = db.rootTree.RootPageID()
-	meta.Serialize(metaPage.Data)
-	if _, err := db.backend.WriteAt(metaPage.Data, 0); err != nil {
-		return fmt.Errorf("failed to update meta page: %w", err)
-	}
-
-	// Initialize catalog
-	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
-	db.catalog.SetParallelOptions(db.options.ParallelWorkers, db.options.ParallelThreshold)
-
-	// Initialize FDW registry and register built-in wrappers
-	fdwRegistry := fdw.NewRegistry()
-	fdwRegistry.Register("csv", func() fdw.ForeignDataWrapper { return &fdw.CSVWrapper{} })
-	db.catalog.SetFDWRegistry(fdwRegistry)
-
-	// Enable RLS if configured
-	if db.options.EnableRLS {
-		db.catalog.EnableRLS()
-	}
-
-	// Initialize transaction manager
-	db.txnMgr = txn.NewManager(db.pool, db.wal)
-
-	// Initialize WAL for new databases when enabled
-	if db.options.WALEnabled && db.path != ":memory:" && db.wal == nil {
-		walPath := db.path + ".wal"
-		wal, err := storage.OpenWAL(walPath)
-		if err != nil {
-			return fmt.Errorf("failed to initialize WAL: %w", err)
-		}
-		db.wal = wal
-
-		if encBackend, ok := db.backend.(*storage.EncryptedBackend); ok {
-			wal.SetEncryptionCipher(encBackend.GetCipher())
-		}
-
-		db.pool.SetWAL(wal)
-
-		switch db.options.SyncMode {
-		case SyncNormal:
-			wal.EnableGroupCommit(0, 1*time.Millisecond)
-		case SyncOff:
-			wal.EnableGroupCommit(0, 0)
-		}
-	}
-
-	// Initialize query cache if enabled
-	if db.options.EnableQueryCache {
-		cacheConfig := &cache.Config{
-			MaxSize:         db.options.QueryCacheSize,
-			TTL:             db.options.QueryCacheTTL,
-			Enabled:         true,
-			CleanupInterval: 1 * time.Minute,
-		}
-		db.queryCache = cache.New(cacheConfig)
-	}
-
-	// Initialize query optimizer
-	db.optimizer = optimizer.New(optimizer.DefaultConfig(), nil)
-
-	// Initialize replication manager if configured
-	if db.options.ReplicationRole != "" {
-		// Parse role
-		var role replication.Role
-		switch db.options.ReplicationRole {
-		case "master":
-			role = replication.RoleMaster
-		case "slave":
-			role = replication.RoleSlave
-		default:
-			role = replication.RoleStandalone
-		}
-
-		// Parse mode
-		var mode replication.ReplicationMode
-		switch db.options.ReplicationMode {
-		case "sync":
-			mode = replication.ModeSync
-		case "full_sync":
-			mode = replication.ModeFullSync
-		default:
-			mode = replication.ModeAsync
-		}
-
-		replConfig := &replication.Config{
-			Role:       role,
-			Mode:       mode,
-			ListenAddr: db.options.ReplicationListenAddr,
-			MasterAddr: db.options.ReplicationMasterAddr,
-			AuthToken:  db.options.ReplicationAuthToken,
-			SSLCert:    db.options.ReplicationSSLCert,
-			SSLKey:     db.options.ReplicationSSLKey,
-			SSLCA:      db.options.ReplicationSSLCA,
-		}
-		db.replicationMgr = replication.NewManager(replConfig)
-		if err := db.replicationMgr.Start(); err != nil {
-			return fmt.Errorf("failed to start replication manager: %w", err)
-		}
-	}
-
-	// Initialize backup manager
-	backupConfig := &backup.Config{
-		BackupDir:        db.options.BackupDir,
-		RetentionPeriod:  db.options.BackupRetention,
-		MaxBackups:       db.options.MaxBackups,
-		CompressionLevel: db.options.BackupCompressionLevel,
-	}
-	if backupConfig.BackupDir == "" {
-		backupConfig.BackupDir = "./backups"
-	}
-	// Initialize slow query log
-	if db.options.EnableSlowQueryLog {
-		threshold := db.options.SlowQueryThreshold
-		if threshold == 0 {
-			threshold = 1 * time.Second
-		}
-		maxEntries := db.options.SlowQueryMaxEntries
-		if maxEntries == 0 {
-			maxEntries = 1000
-		}
-		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
-	}
-
-	db.backupMgr = backup.NewManager(backupConfig, db)
-
-	return db.backend.Sync()
-}
-
-// saveMetaPage writes the current meta page to disk with updated root page ID
-func (db *DB) saveMetaPage() error {
-	metaPage := storage.NewPage(0, storage.PageTypeMeta)
-	// Read existing meta page
-	if _, err := db.backend.ReadAt(metaPage.Data, 0); err != nil {
-		return fmt.Errorf("failed to read meta page: %w", err)
-	}
-	var meta storage.MetaPage
-	if err := meta.Deserialize(metaPage.Data); err != nil {
-		return fmt.Errorf("failed to deserialize meta page: %w", err)
-	}
-	// Update root page ID
-	meta.RootPageID = db.rootTree.RootPageID()
-	meta.Serialize(metaPage.Data)
-	if _, err := db.backend.WriteAt(metaPage.Data, 0); err != nil {
-		return fmt.Errorf("failed to write meta page: %w", err)
-	}
-	return nil
-}
-
-// loadExisting loads an existing database
-func (db *DB) loadExisting() error {
-	// Read meta page
-	metaPage := storage.NewPage(0, storage.PageTypeMeta)
-	if _, err := db.backend.ReadAt(metaPage.Data, 0); err != nil {
-		return fmt.Errorf("failed to read meta page: %w", err)
-	}
-
-	var meta storage.MetaPage
-	if err := meta.Deserialize(metaPage.Data); err != nil {
-		return fmt.Errorf("failed to deserialize meta page: %w", err)
-	}
-
-	if err := meta.Validate(); err != nil {
-		return fmt.Errorf("invalid database: %w", err)
-	}
-
-	// Open WAL if enabled
-	if db.options.WALEnabled && db.path != ":memory:" {
-		walPath := db.path + ".wal"
-		wal, err := storage.OpenWAL(walPath)
-		if err != nil {
-			return fmt.Errorf("failed to open WAL: %w", err)
-		}
-		db.wal = wal
-
-		// If encryption is enabled, share the cipher with WAL for encrypted WAL records
-		if encBackend, ok := db.backend.(*storage.EncryptedBackend); ok {
-			wal.SetEncryptionCipher(encBackend.GetCipher())
-		}
-
-		db.pool.SetWAL(wal)
-
-		// Enable group commit based on SyncMode
-		switch db.options.SyncMode {
-		case SyncNormal:
-			wal.EnableGroupCommit(0, 1*time.Millisecond)
-		case SyncOff:
-			wal.EnableGroupCommit(0, 0)
-		default: // SyncFull
-			// immediate sync (default behavior)
-		}
-
-		// Recover from WAL if needed
-		if wal.LSN() > wal.CheckpointLSN() {
-			if err := wal.Recover(db.pool); err != nil {
-				return fmt.Errorf("failed to recover from WAL: %w", err)
-			}
-		}
-	}
-
-	// Open root B+Tree
-	db.rootTree = btree.OpenBTree(db.pool, meta.RootPageID)
-
-	// Load catalog - schema and data are now stored in the B+Tree pages
-	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
-	db.catalog.SetParallelOptions(db.options.ParallelWorkers, db.options.ParallelThreshold)
-
-	// Initialize FDW registry and register built-in wrappers
-	fdwRegistry := fdw.NewRegistry()
-	fdwRegistry.Register("csv", func() fdw.ForeignDataWrapper { return &fdw.CSVWrapper{} })
-	db.catalog.SetFDWRegistry(fdwRegistry)
-
-	// Enable RLS if configured
-	if db.options.EnableRLS {
-		db.catalog.EnableRLS()
-	}
-
-	// Load catalog metadata from the B+Tree
-	if err := db.catalog.Load(); err != nil {
-		return fmt.Errorf("failed to load catalog: %w", err)
-	}
-
-	// Initialize transaction manager
-	db.txnMgr = txn.NewManager(db.pool, db.wal)
-
-	// Initialize query cache if enabled
-	if db.options.EnableQueryCache {
-		cacheConfig := &cache.Config{
-			MaxSize:         db.options.QueryCacheSize,
-			TTL:             db.options.QueryCacheTTL,
-			Enabled:         true,
-			CleanupInterval: 1 * time.Minute,
-		}
-		db.queryCache = cache.New(cacheConfig)
-	}
-
-	// Initialize query optimizer
-	db.optimizer = optimizer.New(optimizer.DefaultConfig(), nil)
-
-	// Initialize replication manager if configured
-	if db.options.ReplicationRole != "" {
-		// Parse role
-		var role replication.Role
-		switch db.options.ReplicationRole {
-		case "master":
-			role = replication.RoleMaster
-		case "slave":
-			role = replication.RoleSlave
-		default:
-			role = replication.RoleStandalone
-		}
-
-		// Parse mode
-		var mode replication.ReplicationMode
-		switch db.options.ReplicationMode {
-		case "sync":
-			mode = replication.ModeSync
-		case "full_sync":
-			mode = replication.ModeFullSync
-		default:
-			mode = replication.ModeAsync
-		}
-
-		replConfig := &replication.Config{
-			Role:       role,
-			Mode:       mode,
-			ListenAddr: db.options.ReplicationListenAddr,
-			MasterAddr: db.options.ReplicationMasterAddr,
-			AuthToken:  db.options.ReplicationAuthToken,
-			SSLCert:    db.options.ReplicationSSLCert,
-			SSLKey:     db.options.ReplicationSSLKey,
-			SSLCA:      db.options.ReplicationSSLCA,
-		}
-		db.replicationMgr = replication.NewManager(replConfig)
-		if err := db.replicationMgr.Start(); err != nil {
-			return fmt.Errorf("failed to start replication manager: %w", err)
-		}
-	}
-
-	// Initialize backup manager
-	backupConfig := &backup.Config{
-		BackupDir:        db.options.BackupDir,
-		RetentionPeriod:  db.options.BackupRetention,
-		MaxBackups:       db.options.MaxBackups,
-		CompressionLevel: db.options.BackupCompressionLevel,
-	}
-	if backupConfig.BackupDir == "" {
-		backupConfig.BackupDir = "./backups"
-	}
-	// Initialize slow query log
-	if db.options.EnableSlowQueryLog {
-		threshold := db.options.SlowQueryThreshold
-		if threshold == 0 {
-			threshold = 1 * time.Second
-		}
-		maxEntries := db.options.SlowQueryMaxEntries
-		if maxEntries == 0 {
-			maxEntries = 1000
-		}
-		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
-	}
-
-	db.backupMgr = backup.NewManager(backupConfig, db)
-
-	// Initialize query plan cache
-	if db.options.EnablePlanCache {
-		planCacheSize := db.options.PlanCacheSize
-		if planCacheSize <= 0 {
-			planCacheSize = 32 * 1024 * 1024 // 32MB default
-		}
-		planCacheEntries := db.options.PlanCacheEntries
-		if planCacheEntries <= 0 {
-			planCacheEntries = 1000
-		}
-		db.planCache = NewQueryPlanCache(planCacheSize, planCacheEntries)
-	}
-
-	return nil
-}
-
-// Close closes the database
-// Shutdown gracefully shuts down the database with a timeout
-func (db *DB) Shutdown(ctx context.Context) error {
-	db.shutdownOnce.Do(func() {
-		close(db.shutdownCh)
-	})
-
-	// Wait for active connections to complete or timeout
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			// Timeout reached, force close
-			return db.Close()
-		case <-ticker.C:
-			if db.activeConns.Load() == 0 {
-				// All connections released
-				return db.Close()
-			}
-		}
-	}
-}
-
-// Close closes the database immediately
-func (db *DB) Close() error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	if db.closed {
-		return nil
-	}
-
-	db.closed = true
-
-	// Signal shutdown
-	select {
-	case <-db.shutdownCh:
-		// Already closed
-	default:
-		close(db.shutdownCh)
-	}
-
-	// Stop metrics collection
-	if db.metrics != nil {
-		db.metrics.Stop()
-	}
-
-	// Stop scheduler (vacuum, analyze, and other maintenance jobs)
-	if db.scheduler != nil {
-		db.scheduler.Stop()
-	}
-
-	var errs []error
-
-	// Save catalog metadata to B+Tree (if not in-memory)
-	if !db.options.InMemory && db.path != ":memory:" {
-		if err := db.catalog.Save(); err != nil {
-			errs = append(errs, fmt.Errorf("save catalog: %w", err))
-		}
-
-		// Update meta page with current root page ID
-		if err := db.saveMetaPage(); err != nil {
-			errs = append(errs, fmt.Errorf("save meta page: %w", err))
-		}
-	}
-
-	// Perform WAL checkpoint before closing pool (checkpoint needs pool access)
-	if db.wal != nil {
-		if err := db.wal.Checkpoint(db.pool); err != nil {
-			errs = append(errs, fmt.Errorf("checkpoint WAL: %w", err))
-		}
-	}
-
-	// Flush buffer pool (after checkpoint)
-	if err := db.pool.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("close buffer pool: %w", err))
-	}
-
-	// Close audit logger
-	if db.auditLogger != nil {
-		if err := db.auditLogger.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close audit logger: %w", err))
-		}
-	}
-
-	// Close replication manager
-	if db.replicationMgr != nil {
-		if err := db.replicationMgr.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("close replication manager: %w", err))
-		}
-	}
-
-	// Close WAL
-	if db.wal != nil {
-		if err := db.wal.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close WAL: %w", err))
-		}
-	}
-
-	// Close backend
-	if err := db.backend.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("backend close: %w", err))
-	}
-	return errors.Join(errs...)
-}
-
-// startScheduler initializes and starts the job scheduler, registering
-// default maintenance jobs (auto-vacuum, analyze).
-func (db *DB) startScheduler() {
-	workers := db.options.SchedulerWorkers
-	if workers <= 0 {
-		workers = 2
-	}
-	tick := db.options.SchedulerTickInterval
-	if tick <= 0 {
-		tick = 1 * time.Second
-	}
-	db.scheduler = scheduler.NewWithInterval(workers, db.options.Logger, tick)
-
-	// Register auto-vacuum job
-	if db.options.EnableAutoVacuum {
-		interval := db.options.AutoVacuumInterval
-		if interval <= 0 {
-			interval = 1 * time.Minute
-		}
-		threshold := db.options.AutoVacuumThreshold
-		if threshold <= 0 {
-			threshold = 0.2
-		}
-		vacuumJob := &scheduler.Job{
-			ID:       "auto-vacuum",
-			Name:     "Auto Vacuum",
-			Type:     scheduler.JobTypeVacuum,
-			Interval: interval,
-			Enabled:  true,
-			Fn: func(ctx context.Context) error {
-				return db.runAutoVacuumJob(threshold)
-			},
-		}
-		if err := db.scheduler.Register(vacuumJob); err != nil {
-			db.options.Logger.Warnf("Failed to register auto-vacuum job: %v", err)
-		}
-	}
-
-	// Register analyze job
-	analyzeInterval := db.options.AnalyzeInterval
-	if analyzeInterval <= 0 {
-		analyzeInterval = 1 * time.Hour
-	}
-	analyzeJob := &scheduler.Job{
-		ID:       "auto-analyze",
-		Name:     "Auto Analyze",
-		Type:     scheduler.JobTypeAnalyze,
-		Interval: analyzeInterval,
-		Enabled:  true,
-		Fn: func(ctx context.Context) error {
-			return db.runAnalyzeJob()
-		},
-	}
-	if err := db.scheduler.Register(analyzeJob); err != nil {
-		db.options.Logger.Warnf("Failed to register auto-analyze job: %v", err)
-	}
-
-	db.scheduler.Start()
-}
-
-// runAutoVacuumJob checks all tables and vacuums those exceeding the dead-tuple threshold.
-func (db *DB) runAutoVacuumJob(threshold float64) error {
-	tables := db.catalog.ListTablesNeedingVacuum(threshold)
-	for _, tableName := range tables {
-		if err := db.catalog.VacuumTable(tableName); err != nil {
-			if db.options.Logger != nil {
-				db.options.Logger.Warnf("AutoVacuum failed for table %s: %v", tableName, err)
-			}
-		} else {
-			if db.options.Logger != nil {
-				db.options.Logger.Infof("AutoVacuum completed for table %s", tableName)
-			}
-		}
-	}
-	return nil
-}
-
-// runAnalyzeJob runs ANALYZE on all tables to update query planner statistics.
-func (db *DB) runAnalyzeJob() error {
-	tables := db.catalog.ListTables()
-	for _, tableName := range tables {
-		if err := db.catalog.Analyze(tableName); err != nil {
-			if db.options.Logger != nil {
-				db.options.Logger.Warnf("AutoAnalyze failed for table %s: %v", tableName, err)
-			}
-		} else {
-			if db.options.Logger != nil {
-				db.options.Logger.Infof("AutoAnalyze completed for table %s", tableName)
-			}
-		}
-	}
-	return nil
-}
-
-// GetScheduler returns the job scheduler for advanced usage.
 func (db *DB) GetScheduler() *scheduler.Scheduler {
 	return db.scheduler
 }
 
 // RegisterFDW registers a foreign data wrapper factory with the database.
+
 func (db *DB) RegisterFDW(name string, factory func() fdw.ForeignDataWrapper) {
 	db.catalog.GetFDWRegistry().Register(name, factory)
 }
 
 // getPreparedStatement returns a cached prepared statement or parses and caches it
+
 func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.Statement, error) {
 	// First check plan cache if enabled (more sophisticated caching with size limits)
 	if db.planCache != nil {
@@ -1090,6 +333,7 @@ func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.State
 
 // evictLRUEntry removes the least recently used entry from the cache
 // Must be called with stmtMu.Lock() held
+
 func (db *DB) evictLRUEntry() {
 	tail := db.stmtLRU.removeTail()
 	if tail != nil {
@@ -1098,6 +342,7 @@ func (db *DB) evictLRUEntry() {
 }
 
 // acquireConnection acquires a connection slot with timeout
+
 func (db *DB) acquireConnection(ctx context.Context) error {
 	if db.connSem == nil {
 		// No connection limit
@@ -1135,6 +380,7 @@ func (db *DB) acquireConnection(ctx context.Context) error {
 }
 
 // releaseConnection releases a connection slot
+
 func (db *DB) releaseConnection() {
 	if db.connSem != nil {
 		select {
@@ -1150,6 +396,7 @@ func (db *DB) releaseConnection() {
 }
 
 // Exec executes a SQL statement without returning rows
+
 func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result Result, err error) {
 	// Panic recovery for production safety - always log full stack trace
 	defer func() {
@@ -1220,6 +467,7 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 }
 
 // Query executes a SQL query and returns rows
+
 func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows *Rows, err error) {
 	// Panic recovery for production safety - always log full stack trace
 	defer func() {
@@ -1289,6 +537,7 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 }
 
 // QueryRow executes a SQL query and returns a single row
+
 func (db *DB) QueryRow(ctx context.Context, sql string, args ...interface{}) *Row {
 	rows, err := db.Query(ctx, sql, args...)
 	if err != nil {
@@ -1304,16 +553,19 @@ func (db *DB) QueryRow(ctx context.Context, sql string, args ...interface{}) *Ro
 }
 
 // Tables returns a list of all table names in the database
+
 func (db *DB) Tables() []string {
 	return db.catalog.ListTables()
 }
 
 // Path returns the database file path
+
 func (db *DB) Path() string {
 	return db.path
 }
 
 // TableSchema returns a human-readable schema for a table
+
 func (db *DB) TableSchema(name string) (string, error) {
 	table, err := db.catalog.GetTable(name)
 	if err != nil {
@@ -1348,11 +600,13 @@ func (db *DB) TableSchema(name string) (string, error) {
 }
 
 // Begin starts a new transaction
+
 func (db *DB) Begin(ctx context.Context) (*Tx, error) {
 	return db.BeginWith(ctx, txn.DefaultOptions())
 }
 
 // BeginWith starts a new transaction with options
+
 func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 	// Acquire connection
 	if err := db.acquireConnection(ctx); err != nil {
@@ -1379,6 +633,7 @@ func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 }
 
 // auditUser extracts the username from context for audit logging.
+
 func auditUser(ctx context.Context) string {
 	if ctx != nil {
 		if user, ok := ctx.Value("cobaltdb_user").(string); ok && user != "" {
@@ -1389,6 +644,7 @@ func auditUser(ctx context.Context) string {
 }
 
 // execute executes a statement
+
 func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interface{}) (result Result, err error) {
 	start := time.Now()
 
@@ -1701,6 +957,7 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 }
 
 // query executes a query and returns rows
+
 func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{}) (*Rows, error) {
 	start := time.Now()
 
@@ -1777,12 +1034,14 @@ func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{
 }
 
 // executeCreateTable executes CREATE TABLE
+
 func (db *DB) executeCreateTable(ctx context.Context, stmt *query.CreateTableStmt) (Result, error) {
 	if err := db.catalog.CreateTable(stmt); err != nil {
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
 }
+
 
 func (db *DB) executeCreateForeignTable(ctx context.Context, stmt *query.CreateForeignTableStmt) (Result, error) {
 	if err := db.catalog.CreateForeignTable(stmt); err != nil {
@@ -1792,6 +1051,7 @@ func (db *DB) executeCreateForeignTable(ctx context.Context, stmt *query.CreateF
 }
 
 // executeInsert executes INSERT
+
 func (db *DB) executeInsert(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (Result, error) {
 	lastInsertID, rowsAffected, err := db.catalog.Insert(ctx, stmt, args)
 	if err != nil {
@@ -1801,6 +1061,7 @@ func (db *DB) executeInsert(ctx context.Context, stmt *query.InsertStmt, args []
 }
 
 // executeUpdate executes UPDATE
+
 func (db *DB) executeUpdate(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (Result, error) {
 	lastInsertID, rowsAffected, err := db.catalog.Update(ctx, stmt, args)
 	if err != nil {
@@ -1810,6 +1071,7 @@ func (db *DB) executeUpdate(ctx context.Context, stmt *query.UpdateStmt, args []
 }
 
 // executeDelete executes DELETE
+
 func (db *DB) executeDelete(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (Result, error) {
 	lastInsertID, rowsAffected, err := db.catalog.Delete(ctx, stmt, args)
 	if err != nil {
@@ -1819,6 +1081,7 @@ func (db *DB) executeDelete(ctx context.Context, stmt *query.DeleteStmt, args []
 }
 
 // executeInsertReturning executes INSERT with RETURNING clause
+
 func (db *DB) executeInsertReturning(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (*Rows, error) {
 	_, _, err := db.catalog.Insert(ctx, stmt, args)
 	if err != nil {
@@ -1837,6 +1100,7 @@ func (db *DB) executeInsertReturning(ctx context.Context, stmt *query.InsertStmt
 }
 
 // executeUpdateReturning executes UPDATE with RETURNING clause
+
 func (db *DB) executeUpdateReturning(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (*Rows, error) {
 	_, _, err := db.catalog.Update(ctx, stmt, args)
 	if err != nil {
@@ -1855,6 +1119,7 @@ func (db *DB) executeUpdateReturning(ctx context.Context, stmt *query.UpdateStmt
 }
 
 // executeDeleteReturning executes DELETE with RETURNING clause
+
 func (db *DB) executeDeleteReturning(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (*Rows, error) {
 	_, _, err := db.catalog.Delete(ctx, stmt, args)
 	if err != nil {
@@ -1873,6 +1138,7 @@ func (db *DB) executeDeleteReturning(ctx context.Context, stmt *query.DeleteStmt
 }
 
 // executeAlterTable executes ALTER TABLE
+
 func (db *DB) executeAlterTable(ctx context.Context, stmt *query.AlterTableStmt) (Result, error) {
 	switch stmt.Action {
 	case "ADD":
@@ -1898,6 +1164,7 @@ func (db *DB) executeAlterTable(ctx context.Context, stmt *query.AlterTableStmt)
 }
 
 // executeDropTable executes DROP TABLE
+
 func (db *DB) executeDropTable(ctx context.Context, stmt *query.DropTableStmt) (Result, error) {
 	if err := db.catalog.DropTable(stmt); err != nil {
 		return Result{}, err
@@ -1906,6 +1173,7 @@ func (db *DB) executeDropTable(ctx context.Context, stmt *query.DropTableStmt) (
 }
 
 // executeCreateIndex executes CREATE INDEX
+
 func (db *DB) executeCreateIndex(ctx context.Context, stmt *query.CreateIndexStmt) (Result, error) {
 	if err := db.catalog.CreateIndex(stmt); err != nil {
 		return Result{}, err
@@ -1914,6 +1182,7 @@ func (db *DB) executeCreateIndex(ctx context.Context, stmt *query.CreateIndexStm
 }
 
 // executeCreateView executes CREATE VIEW
+
 func (db *DB) executeCreateView(ctx context.Context, stmt *query.CreateViewStmt) (Result, error) {
 	if err := db.catalog.CreateView(stmt.Name, stmt.Query); err != nil {
 		if stmt.IfNotExists {
@@ -1925,6 +1194,7 @@ func (db *DB) executeCreateView(ctx context.Context, stmt *query.CreateViewStmt)
 }
 
 // executeDropView executes DROP VIEW
+
 func (db *DB) executeDropView(ctx context.Context, stmt *query.DropViewStmt) (Result, error) {
 	if err := db.catalog.DropView(stmt.Name); err != nil {
 		if stmt.IfExists {
@@ -1936,6 +1206,7 @@ func (db *DB) executeDropView(ctx context.Context, stmt *query.DropViewStmt) (Re
 }
 
 // executeCreateTrigger executes CREATE TRIGGER
+
 func (db *DB) executeCreateTrigger(ctx context.Context, stmt *query.CreateTriggerStmt) (Result, error) {
 	if err := db.catalog.CreateTrigger(stmt); err != nil {
 		return Result{}, err
@@ -1944,6 +1215,7 @@ func (db *DB) executeCreateTrigger(ctx context.Context, stmt *query.CreateTrigge
 }
 
 // executeDropTrigger executes DROP TRIGGER
+
 func (db *DB) executeDropTrigger(ctx context.Context, stmt *query.DropTriggerStmt) (Result, error) {
 	if err := db.catalog.DropTrigger(stmt.Name); err != nil {
 		return Result{}, err
@@ -1952,6 +1224,7 @@ func (db *DB) executeDropTrigger(ctx context.Context, stmt *query.DropTriggerStm
 }
 
 // executeCreateProcedure executes CREATE PROCEDURE
+
 func (db *DB) executeCreateProcedure(ctx context.Context, stmt *query.CreateProcedureStmt) (Result, error) {
 	if err := db.catalog.CreateProcedure(stmt); err != nil {
 		if stmt.IfNotExists {
@@ -1963,6 +1236,7 @@ func (db *DB) executeCreateProcedure(ctx context.Context, stmt *query.CreateProc
 }
 
 // executeDropProcedure executes DROP PROCEDURE
+
 func (db *DB) executeDropProcedure(ctx context.Context, stmt *query.DropProcedureStmt) (Result, error) {
 	if err := db.catalog.DropProcedure(stmt.Name); err != nil {
 		if stmt.IfExists {
@@ -1974,6 +1248,7 @@ func (db *DB) executeDropProcedure(ctx context.Context, stmt *query.DropProcedur
 }
 
 // executeCreatePolicy executes CREATE POLICY for row-level security
+
 func (db *DB) executeCreatePolicy(ctx context.Context, stmt *query.CreatePolicyStmt) (Result, error) {
 	// Check if RLS is enabled
 	if !db.catalog.IsRLSEnabled() {
@@ -2025,6 +1300,7 @@ func (db *DB) executeCreatePolicy(ctx context.Context, stmt *query.CreatePolicyS
 }
 
 // expressionToString converts an expression to its SQL string representation
+
 func expressionToString(expr query.Expression) string {
 	if expr == nil {
 		return ""
@@ -2141,6 +1417,7 @@ func expressionToString(expr query.Expression) string {
 }
 
 // tokenTypeToString converts a token type to its string representation
+
 func tokenTypeToString(tok query.TokenType) string {
 	switch tok {
 	case query.TokenEq:
@@ -2175,6 +1452,7 @@ func tokenTypeToString(tok query.TokenType) string {
 }
 
 // executeDropPolicy executes DROP POLICY
+
 func (db *DB) executeDropPolicy(ctx context.Context, stmt *query.DropPolicyStmt) (Result, error) {
 	// Check if RLS is enabled
 	if !db.catalog.IsRLSEnabled() {
@@ -2199,6 +1477,7 @@ func (db *DB) executeDropPolicy(ctx context.Context, stmt *query.DropPolicyStmt)
 }
 
 // executeCallProcedure executes CALL procedure_name(params)
+
 func (db *DB) executeCallProcedure(ctx context.Context, stmt *query.CallProcedureStmt, args []interface{}) (Result, error) {
 	// Get the procedure from catalog
 	proc, err := db.catalog.GetProcedure(stmt.Name)
@@ -2243,6 +1522,7 @@ func (db *DB) executeCallProcedure(ctx context.Context, stmt *query.CallProcedur
 }
 
 // executeWithParams executes a statement with parameter substitution
+
 func (db *DB) executeWithParams(ctx context.Context, stmt query.Statement, paramMap map[string]interface{}) (Result, error) {
 	// Substitute parameters in the statement
 	substitutedStmt := substituteParamsInStatement(stmt, paramMap)
@@ -2252,6 +1532,7 @@ func (db *DB) executeWithParams(ctx context.Context, stmt query.Statement, param
 }
 
 // substituteParamsInStatement replaces parameter references with literal values
+
 func substituteParamsInStatement(stmt query.Statement, paramMap map[string]interface{}) query.Statement {
 	switch s := stmt.(type) {
 	case *query.InsertStmt:
@@ -2277,6 +1558,7 @@ func substituteParamsInStatement(stmt query.Statement, paramMap map[string]inter
 }
 
 // substituteParamsInValues replaces params in VALUES clause
+
 func substituteParamsInValues(values [][]query.Expression, paramMap map[string]interface{}) [][]query.Expression {
 	result := make([][]query.Expression, len(values))
 	for i, row := range values {
@@ -2289,6 +1571,7 @@ func substituteParamsInValues(values [][]query.Expression, paramMap map[string]i
 }
 
 // substituteParamsInSetClauses replaces params in SET clause
+
 func substituteParamsInSetClauses(set []*query.SetClause, paramMap map[string]interface{}) []*query.SetClause {
 	result := make([]*query.SetClause, len(set))
 	for i, clause := range set {
@@ -2300,6 +1583,7 @@ func substituteParamsInSetClauses(set []*query.SetClause, paramMap map[string]in
 }
 
 // substituteParamsInExpr replaces parameter identifiers with literal values
+
 func substituteParamsInExpr(expr query.Expression, paramMap map[string]interface{}) query.Expression {
 	if expr == nil {
 		return nil
@@ -2354,6 +1638,7 @@ func substituteParamsInExpr(expr query.Expression, paramMap map[string]interface
 
 // executeSelect executes SELECT
 // executeSelect executes SELECT
+
 func (db *DB) executeSelect(ctx context.Context, stmt *query.SelectStmt, args []interface{}) (*Rows, error) {
 	columns, rows, err := db.catalog.Select(stmt, args)
 	if err != nil {
@@ -2367,6 +1652,7 @@ func (db *DB) executeSelect(ctx context.Context, stmt *query.SelectStmt, args []
 }
 
 // executeUnion executes a UNION/INTERSECT/EXCEPT query by running both sides and combining results
+
 func (db *DB) executeUnion(ctx context.Context, stmt *query.UnionStmt, args []interface{}) (*Rows, error) {
 	// Execute left side
 	var leftRows *Rows
@@ -2533,6 +1819,7 @@ func (db *DB) executeUnion(ctx context.Context, stmt *query.UnionStmt, args []in
 
 // normalizeRowKey creates a type-normalized string key for deduplication.
 // Normalizes numeric types so int64(1) and float64(1.0) produce the same key.
+
 func normalizeRowKey(row []interface{}) string {
 	var sb strings.Builder
 	sb.WriteByte('[')
@@ -2574,6 +1861,7 @@ func normalizeRowKey(row []interface{}) string {
 }
 
 // applyUnionOrderBy sorts union result rows
+
 func (db *DB) applyUnionOrderBy(rows [][]interface{}, columns []string, orderBy []*query.OrderByExpr) {
 	if len(rows) == 0 {
 		return
@@ -2609,6 +1897,7 @@ func (db *DB) applyUnionOrderBy(rows [][]interface{}, columns []string, orderBy 
 }
 
 // compareUnionValues compares two values for sorting
+
 func (db *DB) compareUnionValues(a, b interface{}) int {
 	if a == nil && b == nil {
 		return 0
@@ -2698,6 +1987,7 @@ func (db *DB) compareUnionValues(a, b interface{}) int {
 	return 0
 }
 
+
 func valueToStringForCompare(v interface{}) string {
 	if v == nil {
 		return "<nil>"
@@ -2724,6 +2014,7 @@ func valueToStringForCompare(v interface{}) string {
 }
 
 // executeSelectWithCTE executes SELECT with CTEs
+
 func (db *DB) executeSelectWithCTE(ctx context.Context, stmt *query.SelectStmtWithCTE, args []interface{}) (*Rows, error) {
 	columns, rows, err := db.catalog.ExecuteCTE(stmt, args)
 	if err != nil {
@@ -2737,6 +2028,7 @@ func (db *DB) executeSelectWithCTE(ctx context.Context, stmt *query.SelectStmtWi
 }
 
 // executeVacuum executes VACUUM
+
 func (db *DB) executeVacuum(ctx context.Context, stmt *query.VacuumStmt) (Result, error) {
 	if err := db.catalog.Vacuum(); err != nil {
 		return Result{}, err
@@ -2745,6 +2037,7 @@ func (db *DB) executeVacuum(ctx context.Context, stmt *query.VacuumStmt) (Result
 }
 
 // executeAnalyze executes ANALYZE
+
 func (db *DB) executeAnalyze(ctx context.Context, stmt *query.AnalyzeStmt) (Result, error) {
 	if stmt.Table == "" {
 		// Analyze all tables
@@ -2763,6 +2056,7 @@ func (db *DB) executeAnalyze(ctx context.Context, stmt *query.AnalyzeStmt) (Resu
 }
 
 // executeCreateMaterializedView executes CREATE MATERIALIZED VIEW
+
 func (db *DB) executeCreateMaterializedView(ctx context.Context, stmt *query.CreateMaterializedViewStmt) (Result, error) {
 	if err := db.catalog.CreateMaterializedView(stmt.Name, stmt.Query, stmt.IfNotExists); err != nil {
 		return Result{}, err
@@ -2771,6 +2065,7 @@ func (db *DB) executeCreateMaterializedView(ctx context.Context, stmt *query.Cre
 }
 
 // executeDropMaterializedView executes DROP MATERIALIZED VIEW
+
 func (db *DB) executeDropMaterializedView(ctx context.Context, stmt *query.DropMaterializedViewStmt) (Result, error) {
 	if err := db.catalog.DropMaterializedView(stmt.Name, stmt.IfExists); err != nil {
 		return Result{}, err
@@ -2779,6 +2074,7 @@ func (db *DB) executeDropMaterializedView(ctx context.Context, stmt *query.DropM
 }
 
 // executeRefreshMaterializedView executes REFRESH MATERIALIZED VIEW
+
 func (db *DB) executeRefreshMaterializedView(ctx context.Context, stmt *query.RefreshMaterializedViewStmt) (Result, error) {
 	if err := db.catalog.RefreshMaterializedView(stmt.Name); err != nil {
 		return Result{}, err
@@ -2787,6 +2083,7 @@ func (db *DB) executeRefreshMaterializedView(ctx context.Context, stmt *query.Re
 }
 
 // executeCreateFTSIndex executes CREATE FULLTEXT INDEX
+
 func (db *DB) executeCreateFTSIndex(ctx context.Context, stmt *query.CreateFTSIndexStmt) (Result, error) {
 	if err := db.catalog.CreateFTSIndex(stmt.Index, stmt.Table, stmt.Columns); err != nil {
 		return Result{}, err
@@ -2795,6 +2092,7 @@ func (db *DB) executeCreateFTSIndex(ctx context.Context, stmt *query.CreateFTSIn
 }
 
 // executeCreateVectorIndex executes CREATE VECTOR INDEX
+
 func (db *DB) executeCreateVectorIndex(ctx context.Context, stmt *query.CreateVectorIndexStmt) (Result, error) {
 	if err := db.catalog.CreateVectorIndex(stmt.Index, stmt.Table, stmt.Column); err != nil {
 		return Result{}, err
@@ -2803,6 +2101,7 @@ func (db *DB) executeCreateVectorIndex(ctx context.Context, stmt *query.CreateVe
 }
 
 // executeShowTablesQuery returns all table names as rows
+
 func (db *DB) executeShowTablesQuery(ctx context.Context) (*Rows, error) {
 	tables := db.catalog.ListTables()
 	rows := make([][]interface{}, 0, len(tables))
@@ -2816,6 +2115,7 @@ func (db *DB) executeShowTablesQuery(ctx context.Context) (*Rows, error) {
 }
 
 // executeShowCreateTableQuery returns the CREATE TABLE statement
+
 func (db *DB) executeShowCreateTableQuery(ctx context.Context, stmt *query.ShowCreateTableStmt) (*Rows, error) {
 	schema, err := db.TableSchema(stmt.Table)
 	if err != nil {
@@ -2828,6 +2128,7 @@ func (db *DB) executeShowCreateTableQuery(ctx context.Context, stmt *query.ShowC
 }
 
 // executeShowColumnsQuery returns column information for a table
+
 func (db *DB) executeShowColumnsQuery(ctx context.Context, stmt *query.ShowColumnsStmt) (*Rows, error) {
 	table, err := db.catalog.GetTable(stmt.Table)
 	if err != nil {
@@ -2862,6 +2163,7 @@ func (db *DB) executeShowColumnsQuery(ctx context.Context, stmt *query.ShowColum
 }
 
 // executeShowDatabasesQuery returns available databases
+
 func (db *DB) executeShowDatabasesQuery(ctx context.Context) (*Rows, error) {
 	return &Rows{
 		columns: []string{"Database"},
@@ -2870,11 +2172,13 @@ func (db *DB) executeShowDatabasesQuery(ctx context.Context) (*Rows, error) {
 }
 
 // executeDescribeQuery returns column info for a table (alias for SHOW COLUMNS)
+
 func (db *DB) executeDescribeQuery(ctx context.Context, stmt *query.DescribeStmt) (*Rows, error) {
 	return db.executeShowColumnsQuery(ctx, &query.ShowColumnsStmt{Table: stmt.Table})
 }
 
 // executeExplainQuery executes EXPLAIN and returns the query plan
+
 func (db *DB) executeExplainQuery(ctx context.Context, stmt *query.ExplainStmt) (*Rows, error) {
 	// Get the inner statement
 	innerStmt := stmt.Statement
@@ -2927,6 +2231,7 @@ type Rows struct {
 }
 
 // Next advances to the next row
+
 func (r *Rows) Next() bool {
 	if r == nil {
 		return false
@@ -2936,6 +2241,7 @@ func (r *Rows) Next() bool {
 }
 
 // Scan copies column values into dest
+
 func (r *Rows) Scan(dest ...interface{}) error {
 	if r.pos == 0 || r.pos > len(r.rows) {
 		return errors.New("no current row")
@@ -2956,11 +2262,13 @@ func (r *Rows) Scan(dest ...interface{}) error {
 }
 
 // Columns returns the column names
+
 func (r *Rows) Columns() []string {
 	return r.columns
 }
 
 // Close closes the rows
+
 func (r *Rows) Close() error {
 	return nil
 }
@@ -2972,6 +2280,7 @@ type Row struct {
 }
 
 // Scan copies column values into dest
+
 func (r *Row) Scan(dest ...interface{}) error {
 	if r.err != nil {
 		return r.err
@@ -2984,6 +2293,7 @@ func (r *Row) Scan(dest ...interface{}) error {
 }
 
 // scanValue scans a value into a destination
+
 func scanValue(src interface{}, dest interface{}) error {
 	switch d := dest.(type) {
 	case *interface{}:
@@ -3087,6 +2397,7 @@ type Tx struct {
 }
 
 // Exec executes a statement within the transaction
+
 func (tx *Tx) Exec(ctx context.Context, sql string, args ...interface{}) (Result, error) {
 	if tx.done.Load() {
 		return Result{}, errors.New("transaction already completed")
@@ -3112,6 +2423,7 @@ func (tx *Tx) Exec(ctx context.Context, sql string, args ...interface{}) (Result
 // Query executes a query within the transaction.
 // Changes made within this transaction are visible to subsequent queries.
 // Uses the same internal execution path as Tx.Exec to ensure transaction isolation.
+
 func (tx *Tx) Query(ctx context.Context, sql string, args ...interface{}) (*Rows, error) {
 	if tx.done.Load() {
 		return nil, errors.New("transaction already completed")
@@ -3133,6 +2445,7 @@ func (tx *Tx) Query(ctx context.Context, sql string, args ...interface{}) (*Rows
 }
 
 // Commit commits the transaction
+
 func (tx *Tx) Commit() error {
 	if !tx.done.CompareAndSwap(false, true) {
 		return errors.New("transaction already completed")
@@ -3172,6 +2485,7 @@ func (tx *Tx) Commit() error {
 }
 
 // Rollback rolls back the transaction
+
 func (tx *Tx) Rollback() error {
 	if !tx.done.CompareAndSwap(false, true) {
 		return errors.New("transaction already completed")
@@ -3189,6 +2503,7 @@ func (tx *Tx) Rollback() error {
 }
 
 // GetMetrics returns a snapshot of all database metrics as JSON
+
 func (db *DB) GetMetrics() ([]byte, error) {
 	if db.metrics == nil {
 		return nil, fmt.Errorf("metrics not enabled")
@@ -3197,339 +2512,4 @@ func (db *DB) GetMetrics() ([]byte, error) {
 }
 
 // GetMetricsCollector returns the metrics collector for advanced usage
-func (db *DB) GetMetricsCollector() *metrics.Collector {
-	return db.metrics
-}
 
-// GetCatalog returns the underlying catalog instance.
-func (db *DB) GetCatalog() *catalog.Catalog {
-	return db.catalog
-}
-
-// DBStats holds database statistics
-type DBStats struct {
-	Path              string        `json:"path"`
-	InMemory          bool          `json:"in_memory"`
-	PageSize          int           `json:"page_size"`
-	CacheSize         int           `json:"cache_size"`
-	ActiveConnections int64         `json:"active_connections"`
-	MaxConnections    int           `json:"max_connections"`
-	Tables            int           `json:"tables"`
-	Indexes           int           `json:"indexes"`
-	DatabaseSize      int64         `json:"database_size_bytes"`
-	Uptime            time.Duration `json:"uptime"`
-	IsHealthy         bool          `json:"is_healthy"`
-	LastCheckTime     time.Time     `json:"last_check_time"`
-}
-
-// Stats returns detailed database statistics
-func (db *DB) Stats() (*DBStats, error) {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	if db.closed {
-		return nil, ErrDatabaseClosed
-	}
-
-	stats := &DBStats{
-		Path:              db.path,
-		InMemory:          db.options.InMemory,
-		PageSize:          db.options.PageSize,
-		CacheSize:         db.options.CacheSize,
-		ActiveConnections: db.activeConns.Load(),
-		MaxConnections:    db.options.MaxConnections,
-		LastCheckTime:     time.Now(),
-		IsHealthy:         true,
-	}
-
-	// Get catalog stats
-	if db.catalog != nil {
-		stats.Tables = len(db.catalog.ListTables())
-		// Count regular + FTS + JSON indexes
-		stats.Indexes = len(db.catalog.ListFTSIndexes()) + len(db.catalog.ListJSONIndexes())
-	}
-
-	// Get backend size
-	if db.backend != nil {
-		stats.DatabaseSize = db.backend.Size()
-	}
-
-	return stats, nil
-}
-
-// HealthCheck performs a health check on the database
-func (db *DB) HealthCheck() error {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	if db.closed {
-		return ErrDatabaseClosed
-	}
-
-	// Try a simple catalog operation to verify connectivity
-	if db.catalog == nil {
-		return fmt.Errorf("catalog not initialized")
-	}
-
-	// Ping the backend
-	if db.backend == nil {
-		return fmt.Errorf("backend not initialized")
-	}
-
-	return nil
-}
-
-// IsHealthy returns true if the database is healthy
-func (db *DB) IsHealthy() bool {
-	return db.HealthCheck() == nil
-}
-
-// GetDatabasePath returns the database file path (implements backup.Database)
-func (db *DB) GetDatabasePath() string {
-	return db.path
-}
-
-// GetWALPath returns the WAL directory path (implements backup.Database)
-func (db *DB) GetWALPath() string {
-	if db.wal != nil {
-		return db.path + ".wal"
-	}
-	return ""
-}
-
-// Checkpoint performs a database checkpoint (implements backup.Database)
-func (db *DB) Checkpoint() error {
-	if db.wal != nil {
-		return db.wal.Checkpoint(db.pool)
-	}
-	return nil
-}
-
-// BeginHotBackup starts a hot backup (implements backup.Database)
-func (db *DB) BeginHotBackup() error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	if db.closed {
-		return ErrDatabaseClosed
-	}
-	// Persist catalog metadata and root page ID before copying files
-	if err := db.catalog.Save(); err != nil {
-		return fmt.Errorf("failed to save catalog: %w", err)
-	}
-	if err := db.saveMetaPage(); err != nil {
-		return fmt.Errorf("failed to save meta page: %w", err)
-	}
-	return nil
-}
-
-// EndHotBackup ends a hot backup (implements backup.Database)
-func (db *DB) EndHotBackup() error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	// Re-enable checkpoints
-	return nil
-}
-
-// GetCurrentLSN returns the current log sequence number (implements backup.Database)
-func (db *DB) GetCurrentLSN() uint64 {
-	if db.wal != nil {
-		return db.wal.LSN()
-	}
-	return 0
-}
-
-// Backup methods
-
-// CreateBackup creates a new backup
-func (db *DB) CreateBackup(ctx context.Context, backupType string) (*backup.Backup, error) {
-	if db.backupMgr == nil {
-		return nil, fmt.Errorf("backup manager not initialized")
-	}
-	var btype backup.Type
-	switch backupType {
-	case "full":
-		btype = backup.TypeFull
-	case "incremental":
-		btype = backup.TypeIncremental
-	default:
-		btype = backup.TypeFull
-	}
-	return db.backupMgr.CreateBackup(ctx, btype)
-}
-
-// ListBackups returns a list of all backups
-func (db *DB) ListBackups() []*backup.Backup {
-	if db.backupMgr == nil {
-		return nil
-	}
-	return db.backupMgr.ListBackups()
-}
-
-// GetBackup returns a specific backup by ID
-func (db *DB) GetBackup(id string) *backup.Backup {
-	if db.backupMgr == nil {
-		return nil
-	}
-	return db.backupMgr.GetBackup(id)
-}
-
-// DeleteBackup deletes a backup by ID
-func (db *DB) DeleteBackup(id string) error {
-	if db.backupMgr == nil {
-		return fmt.Errorf("backup manager not initialized")
-	}
-	return db.backupMgr.DeleteBackup(id)
-}
-
-// GetBackupManager returns the backup manager
-func (db *DB) GetBackupManager() *backup.Manager {
-	return db.backupMgr
-}
-
-// Query Cache methods
-
-// GetQueryCache returns the query cache
-func (db *DB) GetQueryCache() *cache.Cache {
-	return db.queryCache
-}
-
-// GetIndexRecommendations returns missing index suggestions based on
-// observed query patterns since the database was opened.
-func (db *DB) GetIndexRecommendations() []*advisor.IndexRecommendation {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	if db.indexAdvisor == nil {
-		return nil
-	}
-
-	existing := db.catalog.ListIndexesByTable()
-	return db.indexAdvisor.Recommendations(existing)
-}
-
-// ResetIndexAdvisor clears all recorded query patterns.
-func (db *DB) ResetIndexAdvisor() {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	if db.indexAdvisor != nil {
-		db.indexAdvisor.Reset()
-	}
-}
-
-// PlanCache methods
-
-// GetPlanCacheStats returns query plan cache statistics
-// Returns nil if plan cache is not enabled
-func (db *DB) GetPlanCacheStats() *QueryPlanCacheStats {
-	if db.planCache == nil {
-		return nil
-	}
-	stats := db.planCache.GetStats()
-	return &stats
-}
-
-// ClearPlanCache clears all entries from the query plan cache
-func (db *DB) ClearPlanCache() {
-	if db.planCache != nil {
-		db.planCache.Clear()
-	}
-}
-
-// EnablePlanCache enables the query plan cache with specified size limits
-func (db *DB) EnablePlanCache(maxSize int64, maxEntries int) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	if db.planCache != nil {
-		// Already enabled, just update settings
-		return
-	}
-
-	if maxSize <= 0 {
-		maxSize = 32 * 1024 * 1024 // 32MB default
-	}
-	if maxEntries <= 0 {
-		maxEntries = 1000
-	}
-	db.planCache = NewQueryPlanCache(maxSize, maxEntries)
-}
-
-// DisablePlanCache disables and clears the query plan cache
-func (db *DB) DisablePlanCache() {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	if db.planCache != nil {
-		db.planCache.Clear()
-		db.planCache = nil
-	}
-}
-
-// IsPlanCacheEnabled returns true if plan cache is enabled
-func (db *DB) IsPlanCacheEnabled() bool {
-	return db.planCache != nil
-}
-
-// Optimizer methods
-
-// GetOptimizer returns the query optimizer
-func (db *DB) GetOptimizer() *optimizer.Optimizer {
-	return db.optimizer
-}
-
-// UpdateTableStatistics updates statistics for a table
-func (db *DB) UpdateTableStatistics(tableName string, stats *optimizer.TableStatistics) {
-	if db.optimizer != nil {
-		db.optimizer.UpdateStatistics(tableName, stats)
-	}
-}
-
-// replicateWrite sends write operations to the replication manager
-// This is called automatically after successful write operations (INSERT, UPDATE, DELETE, DDL)
-func (db *DB) replicateWrite(operation string, table string, args []interface{}) {
-	if db.replicationMgr == nil {
-		return // Replication not enabled
-	}
-
-	// Serialize the write operation
-	// Format: operation|table|args...
-	var sb strings.Builder
-	sb.WriteString(operation)
-	sb.WriteByte('|')
-	sb.WriteString(table)
-	sb.WriteByte('|')
-	for i, arg := range args {
-		if i > 0 {
-			sb.WriteByte(',')
-		}
-		fmt.Fprintf(&sb, "%v", arg)
-	}
-
-	// Send to replication manager (async, non-blocking)
-	// The replication manager handles buffering and sending to slaves
-	_ = db.replicationMgr.ReplicateWALEntry([]byte(sb.String()))
-}
-
-// Replication methods
-
-// GetReplicationManager returns the replication manager
-func (db *DB) GetReplicationManager() *replication.Manager {
-	return db.replicationMgr
-}
-
-// SearchVectorKNN performs a K-nearest neighbor search on a vector index
-func (db *DB) SearchVectorKNN(indexName string, queryVector []float64, k int) ([]string, []float64, error) {
-	if db.closed {
-		return nil, nil, ErrDatabaseClosed
-	}
-	return db.catalog.SearchVectorKNN(indexName, queryVector, k)
-}
-
-// SearchVectorRange performs a range search on a vector index
-func (db *DB) SearchVectorRange(indexName string, queryVector []float64, radius float64) ([]string, []float64, error) {
-	if db.closed {
-		return nil, nil, ErrDatabaseClosed
-	}
-	return db.catalog.SearchVectorRange(indexName, queryVector, radius)
-}
