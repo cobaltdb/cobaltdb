@@ -1,12 +1,10 @@
 package catalog
 
 import (
-	"encoding/hex"
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"math"
 	"math/rand"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -410,120 +408,12 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		evalArgs[i] = val
 	}
 
+	// Try string functions first (largest group)
+	if result, handled := evaluateStringFunction(funcName, evalArgs); handled {
+		return result.val, result.err
+	}
+
 	switch funcName {
-	case "LENGTH", "LEN":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("LENGTH requires at least 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		str, ok := evalArgs[0].(string)
-		if !ok {
-			str = ValueToStringKey(evalArgs[0])
-		}
-		return float64(len(str)), nil
-
-	case "UPPER":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("UPPER requires at least 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		str, ok := evalArgs[0].(string)
-		if !ok {
-			str = ValueToStringKey(evalArgs[0])
-		}
-		return toUpperFast(str), nil
-
-	case "LOWER":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("LOWER requires at least 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		str, ok := evalArgs[0].(string)
-		if !ok {
-			str = ValueToStringKey(evalArgs[0])
-		}
-		return toLowerFast(str), nil
-
-	case "TRIM", "LTRIM", "RTRIM":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("%s requires at least 1 argument", funcName)
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		str, ok := evalArgs[0].(string)
-		if !ok {
-			str = ValueToStringKey(evalArgs[0])
-		}
-		// Optional second arg: characters to trim (default: whitespace)
-		trimChars := " \t\n\r"
-		if len(evalArgs) >= 2 && evalArgs[1] != nil {
-			trimChars = ValueToStringKey(evalArgs[1])
-		}
-		switch funcName {
-		case "LTRIM":
-			return strings.TrimLeft(str, trimChars), nil
-		case "RTRIM":
-			return strings.TrimRight(str, trimChars), nil
-		default:
-			return strings.Trim(str, trimChars), nil
-		}
-
-	case "SUBSTR", "SUBSTRING":
-		if len(evalArgs) < 2 {
-			return nil, fmt.Errorf("SUBSTR requires at least 2 arguments")
-		}
-		// SQL standard: any NULL argument returns NULL
-		if evalArgs[0] == nil || evalArgs[1] == nil {
-			return nil, nil
-		}
-		if len(evalArgs) >= 3 && evalArgs[2] == nil {
-			return nil, nil
-		}
-		str, ok := evalArgs[0].(string)
-		if !ok {
-			str = ValueToStringKey(evalArgs[0])
-		}
-		start, _ := toFloat64(evalArgs[1])
-		startInt := int(start) - 1 // SQL SUBSTR is 1-indexed
-		if startInt < 0 {
-			startInt = 0
-		}
-		if startInt >= len(str) {
-			return "", nil
-		}
-		if len(evalArgs) >= 3 {
-			length, _ := toFloat64(evalArgs[2])
-			lengthInt := int(length)
-			if lengthInt < 0 {
-				return "", nil
-			}
-			if startInt+lengthInt > len(str) {
-				lengthInt = len(str) - startInt
-			}
-			return str[startInt : startInt+lengthInt], nil
-		}
-		return str[startInt:], nil
-
-	case "CONCAT":
-		var result strings.Builder
-		result.Grow(len(evalArgs) * 16)
-		for _, arg := range evalArgs {
-			if arg != nil {
-				result.WriteString(ValueToStringKey(arg))
-				if result.Len() > maxStringResultLen {
-					return nil, fmt.Errorf("CONCAT result exceeds maximum length")
-				}
-			}
-		}
-		return result.String(), nil
-
 	case "ABS":
 		if len(evalArgs) < 1 {
 			return nil, fmt.Errorf("ABS requires at least 1 argument")
@@ -605,105 +495,6 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 			return nil, nil
 		}
 		return evalArgs[0], nil
-
-	case "REPLACE":
-		if len(evalArgs) < 3 {
-			return nil, fmt.Errorf("REPLACE requires 3 arguments")
-		}
-		if evalArgs[0] == nil || evalArgs[1] == nil || evalArgs[2] == nil {
-			return nil, nil
-		}
-		str, ok := evalArgs[0].(string)
-		if !ok {
-			str = ValueToStringKey(evalArgs[0])
-		}
-		old, ok2 := evalArgs[1].(string)
-		if !ok2 {
-			old = ValueToStringKey(evalArgs[1])
-		}
-		if old == "" {
-			return str, nil
-		}
-		newStr, ok3 := evalArgs[2].(string)
-		if !ok3 {
-			newStr = ValueToStringKey(evalArgs[2])
-		}
-		result := strings.ReplaceAll(str, old, newStr)
-		if len(result) > maxStringResultLen {
-			return nil, fmt.Errorf("REPLACE result exceeds maximum length")
-		}
-		return result, nil
-
-	case "INSTR":
-		if len(evalArgs) < 2 {
-			return nil, fmt.Errorf("INSTR requires 2 arguments")
-		}
-		if evalArgs[0] == nil || evalArgs[1] == nil {
-			return nil, nil // SQL standard: NULL input returns NULL
-		}
-		haystack, ok := evalArgs[0].(string)
-		if !ok {
-			haystack = ValueToStringKey(evalArgs[0])
-		}
-		needle, ok := evalArgs[1].(string)
-		if !ok {
-			needle = ValueToStringKey(evalArgs[1])
-		}
-		idx := strings.Index(haystack, needle)
-		if idx < 0 {
-			return float64(0), nil
-		}
-		return float64(idx + 1), nil
-
-	case "PRINTF":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("PRINTF requires at least 1 argument")
-		}
-		format, ok := evalArgs[0].(string)
-		if !ok {
-			format = ValueToStringKey(evalArgs[0])
-		}
-		// Simple printf implementation
-		var result strings.Builder
-		result.Grow(len(format) + len(evalArgs)*16)
-		argIndex := 1
-		i := 0
-		for i < len(format) {
-			if format[i] == '%' && i+1 < len(format) {
-				nextChar := format[i+1]
-				switch nextChar {
-				case 's':
-					if argIndex < len(evalArgs) {
-						result.WriteString(ValueToStringKey(evalArgs[argIndex]))
-						argIndex++
-					}
-					i += 2
-				case 'd', 'i':
-					if argIndex < len(evalArgs) {
-						if f, ok := toFloat64(evalArgs[argIndex]); ok {
-							result.WriteString(strconv.FormatInt(int64(f), 10))
-						}
-						argIndex++
-					}
-					i += 2
-				case 'f':
-					if argIndex < len(evalArgs) {
-						if f, ok := toFloat64(evalArgs[argIndex]); ok {
-							result.WriteString(strconv.FormatFloat(f, 'f', 6, 64))
-						}
-						argIndex++
-					}
-					i += 2
-				default:
-					result.WriteByte(format[i])
-					i++
-				}
-			} else {
-				result.WriteByte(format[i])
-				i++
-			}
-		}
-		return result.String(), nil
 
 	case "DATE", "TIME", "DATETIME":
 		// Simple date/time functions - return current time for now
@@ -787,174 +578,12 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		return evalArgs[0], nil
 
-	case "CONCAT_WS":
-		if len(evalArgs) < 2 {
-			return nil, fmt.Errorf("CONCAT_WS requires at least 2 arguments")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		separator := ValueToStringKey(evalArgs[0])
-		var parts []string
-		for _, arg := range evalArgs[1:] {
-			if arg != nil {
-				parts = append(parts, ValueToStringKey(arg))
-			}
-		}
-		result := strings.Join(parts, separator)
-		if len(result) > maxStringResultLen {
-			return nil, fmt.Errorf("CONCAT_WS result exceeds maximum length")
-		}
-		return result, nil
-
 	case "GROUP_CONCAT":
 		// GROUP_CONCAT is handled in aggregate path; scalar fallback just returns the value
 		if len(evalArgs) >= 1 && evalArgs[0] != nil {
 			return ValueToStringKey(evalArgs[0]), nil
 		}
 		return nil, nil
-
-	case "REVERSE":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("REVERSE requires 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		str := ValueToStringKey(evalArgs[0])
-		runes := []rune(str)
-		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
-			runes[i], runes[j] = runes[j], runes[i]
-		}
-		return string(runes), nil
-
-	case "REPEAT":
-		if len(evalArgs) < 2 {
-			return nil, fmt.Errorf("REPEAT requires 2 arguments")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		str := ValueToStringKey(evalArgs[0])
-		count, _ := toFloat64(evalArgs[1])
-		if count <= 0 {
-			return "", nil
-		}
-		if int(count) > maxStringResultLen/(len(str)+1) {
-			return nil, fmt.Errorf("REPEAT result exceeds maximum allowed size (%d bytes)", maxStringResultLen)
-		}
-		return strings.Repeat(str, int(count)), nil
-
-	case "LEFT":
-		if len(evalArgs) < 2 {
-			return nil, fmt.Errorf("LEFT requires 2 arguments")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		str := ValueToStringKey(evalArgs[0])
-		n, _ := toFloat64(evalArgs[1])
-		ni := int(n)
-		if ni <= 0 {
-			return "", nil
-		}
-		if ni >= len(str) {
-			return str, nil
-		}
-		return str[:ni], nil
-
-	case "RIGHT":
-		if len(evalArgs) < 2 {
-			return nil, fmt.Errorf("RIGHT requires 2 arguments")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		str := ValueToStringKey(evalArgs[0])
-		n, _ := toFloat64(evalArgs[1])
-		ni := int(n)
-		if ni <= 0 {
-			return "", nil
-		}
-		if ni >= len(str) {
-			return str, nil
-		}
-		return str[len(str)-ni:], nil
-
-	case "LPAD":
-		if len(evalArgs) < 3 {
-			return nil, fmt.Errorf("LPAD requires 3 arguments")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		str := ValueToStringKey(evalArgs[0])
-		targetLen, _ := toFloat64(evalArgs[1])
-		pad := ValueToStringKey(evalArgs[2])
-		ti := int(targetLen)
-		if ti <= 0 {
-			return "", nil
-		}
-		if ti > maxStringResultLen {
-			return nil, fmt.Errorf("LPAD result exceeds maximum allowed size (%d bytes)", maxStringResultLen)
-		}
-		if len(pad) == 0 {
-			if len(str) >= ti {
-				return str[:ti], nil
-			}
-			return str, nil
-		}
-		if len(str) >= ti {
-			return str[:ti], nil
-		}
-		for len(str) < ti {
-			str = pad + str
-		}
-		return str[len(str)-ti:], nil
-
-	case "RPAD":
-		if len(evalArgs) < 3 {
-			return nil, fmt.Errorf("RPAD requires 3 arguments")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		str := ValueToStringKey(evalArgs[0])
-		targetLen, _ := toFloat64(evalArgs[1])
-		pad := ValueToStringKey(evalArgs[2])
-		ti := int(targetLen)
-		if ti <= 0 {
-			return "", nil
-		}
-		if ti > maxStringResultLen {
-			return nil, fmt.Errorf("RPAD result exceeds maximum allowed size (%d bytes)", maxStringResultLen)
-		}
-		if len(pad) == 0 {
-			if len(str) >= ti {
-				return str[:ti], nil
-			}
-			return str, nil
-		}
-		if len(str) >= ti {
-			return str[:ti], nil
-		}
-		for len(str) < ti {
-			str = str + pad
-		}
-		return str[:ti], nil
-
-	case "HEX":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("HEX requires 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		if f, ok := toFloat64(evalArgs[0]); ok {
-			return strings.ToUpper(strconv.FormatInt(int64(f), 16)), nil
-		}
-		str := ValueToStringKey(evalArgs[0])
-		return strings.ToUpper(hex.EncodeToString([]byte(str))), nil
 
 	case "TYPEOF":
 		if len(evalArgs) < 1 {
@@ -1001,31 +630,6 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 	case "RANDOM":
 		return float64(rand.Int63()), nil
 
-	case "UNICODE":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("UNICODE requires 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		str := ValueToStringKey(evalArgs[0])
-		if len(str) == 0 {
-			return nil, nil
-		}
-		return float64([]rune(str)[0]), nil
-
-	case "CHAR":
-		var result strings.Builder
-		result.Grow(len(evalArgs) * 4)
-		for _, arg := range evalArgs {
-			if arg != nil {
-				if f, ok := toFloat64(arg); ok {
-					result.WriteRune(rune(int(f)))
-				}
-			}
-		}
-		return result.String(), nil
-
 	case "ZEROBLOB":
 		if len(evalArgs) < 1 {
 			return nil, fmt.Errorf("ZEROBLOB requires 1 argument")
@@ -1039,33 +643,6 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 			return nil, fmt.Errorf("ZEROBLOB size exceeds maximum allowed size (%d bytes)", maxStringResultLen)
 		}
 		return strings.Repeat("\x00", size), nil
-
-	case "QUOTE":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("QUOTE requires 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return "NULL", nil
-		}
-		if s, ok := evalArgs[0].(string); ok {
-			return "'" + strings.ReplaceAll(s, "'", "''") + "'", nil
-		}
-		return ValueToStringKey(evalArgs[0]), nil
-
-	case "GLOB":
-		if len(evalArgs) < 2 {
-			return nil, fmt.Errorf("GLOB requires 2 arguments")
-		}
-		if evalArgs[0] == nil || evalArgs[1] == nil {
-			return nil, nil
-		}
-		pattern := ValueToStringKey(evalArgs[0])
-		str := ValueToStringKey(evalArgs[1])
-		// Simple glob: * matches any, ? matches single char
-		regexPattern := "^" + strings.ReplaceAll(strings.ReplaceAll(
-			regexp.QuoteMeta(pattern), `\*`, ".*"), `\?`, ".") + "$"
-		matched, _ := regexp.MatchString(regexPattern, str)
-		return matched, nil
 
 	case "COSINE_SIMILARITY", "COSINE_SIMILARIT":
 		if len(evalArgs) != 2 {

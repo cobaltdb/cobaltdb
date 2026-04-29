@@ -62,6 +62,7 @@ type PartitionDef struct {
 	MaxValue int64  `json:"max_value"`
 }
 
+// TableDef holds the schema definition for a table or collection.
 type TableDef struct {
 	Name        string          `json:"name"`
 	Type        string          `json:"type"` // "table" or "collection"
@@ -275,6 +276,7 @@ type cteResultSet struct {
 
 // Query cache types and functions moved to catalog_cache.go
 
+// New creates a new Catalog backed by the given B-tree, buffer pool, and WAL.
 func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog {
 	return &Catalog{
 		tree:              tree,
@@ -2919,6 +2921,7 @@ func decodeRow(data []byte, numCols int) ([]interface{}, error) {
 	return vrow.Data, nil
 }
 
+// EvalExpression evaluates a query expression against the given argument list.
 func EvalExpression(expr query.Expression, args []interface{}) (interface{}, error) {
 	switch e := expr.(type) {
 	case *query.StringLiteral:

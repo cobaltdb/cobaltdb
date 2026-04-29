@@ -41,6 +41,7 @@ type QueryCache struct {
 	mu        sync.RWMutex
 }
 
+// NewQueryCache creates a new LRU query result cache with the given maximum size and TTL.
 func NewQueryCache(maxSize int, ttl time.Duration) *QueryCache {
 	return &QueryCache{
 		entries: make(map[string]*QueryCacheEntry),

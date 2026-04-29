@@ -58,22 +58,21 @@ type Config struct {
 
 // generateRandomPassword generates a 16-character random alphanumeric password
 // using crypto/rand for secure random generation.
-func generateRandomPassword() string {
+func generateRandomPassword() (string, error) {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback should never happen with crypto/rand, but be safe
-		panic("crypto/rand failed: " + err.Error())
+		return "", fmt.Errorf("crypto/rand failed: %w", err)
 	}
 	for i := range b {
 		b[i] = charset[b[i]%byte(len(charset))]
 	}
-	return string(b)
+	return string(b), nil
 }
 
 // DefaultConfig returns the default server configuration
 func DefaultConfig() *Config {
-	pass := generateRandomPassword()
+	pass, _ := generateRandomPassword()
 	return &Config{
 		Address:          ":4200",
 		AuthEnabled:      false,

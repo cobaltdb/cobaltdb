@@ -18,6 +18,7 @@ type tableOffset struct {
 	count  int
 }
 
+// Select executes a SELECT statement and returns column names and matching rows.
 func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
 	cat.mu.RLock()
 	defer cat.mu.RUnlock()
