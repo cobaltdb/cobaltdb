@@ -57,6 +57,16 @@ Runtime: `make run-server` / `make run-cli` use `go run`. Binaries already built
 #### Catalog
 The Catalog is the central execution engine. It manages tables, indexes, and executes queries.
 
+**File Organization:**
+- `catalog_core.go` - Main query execution (`selectLocked`, `EvalExpression`, `evaluateWhere`)
+- `catalog_select.go` - JOIN execution and SELECT dispatch
+- `catalog_select_helpers.go` - Column resolution, CTE handling, post-processing
+- `catalog_cache.go` - Internal query result cache
+- `catalog_fastpath.go` - COUNT(*) and SUM/AVG fast paths
+- `catalog_eval_json.go` - JSON function evaluation
+- `catalog_rls.go` - Row-level security helpers
+- `catalog_txn.go` - Transaction rollback and undo replay
+
 **Thread Safety:**
 - Uses `sync.RWMutex` for concurrency control
 - Public methods acquire locks, internal `*Locked` methods are lock-free
@@ -75,6 +85,21 @@ Simple LRU cache for query results. Enabled via `SetQueryCache(true, maxEntries)
 - `BufferPool` - LRU page cache with pin/unpin protocol
 - `WAL` - Write-ahead logging for durability
 - `Encryption` - AES-GCM encryption at rest
+
+#### Interfaces
+Core interfaces are defined for testability and modularity:
+- `btree.KVStore` - Key-value storage operations (`pkg/btree/interfaces.go`)
+- `storage.WriteAheadLog` - WAL operations (`pkg/storage/interfaces.go`)
+- `storage.BufferPoolManager` - Buffer pool page management
+- `txn.LockManager` - Lock acquisition/release with shared and exclusive modes
+- `txn.TransactionManager` - Transaction lifecycle
+- `catalog.QueryCacheStore` - Query result caching
+
+#### MVCC Version Store
+`pkg/txn/version_store.go` provides per-key version chains for snapshot isolation:
+- `Commit(key, value, commitTS)` adds a new version
+- `GetAtSnapshot(key, snapshotTS)` walks the chain for visible version
+- `Prune(minActiveTS)` garbage-collects old versions
 
 ## Testing
 
@@ -105,7 +130,7 @@ Three test trees coexist — `./pkg/...` for unit tests, `./integration/...` for
 ### Test Statistics
 - 10,400+ test functions
 - 500+ test files
-- 20 packages, all passing
+- 24 packages, all passing
 - Target: %90+ coverage per package (19/20 packages above 90%, only catalog at 85%)
 
 ### Running Benchmarks Safely
@@ -181,6 +206,7 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 - Audit logging for compliance
 - SQL injection protection via prepared statements
 - Encryption at rest
+- MySQL prepared statement protocol support (COM_STMT_PREPARE/EXECUTE/CLOSE/RESET)
 
 ## WebAssembly (WASM) System (2026-03-18)
 

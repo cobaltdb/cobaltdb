@@ -746,8 +746,8 @@ func (m *Manager) createComparisonEvaluator(left, op, right string) PolicyExpr {
 		}
 
 		// String comparison
-		leftStr := fmt.Sprintf("%v", leftVal)
-		rightStr := fmt.Sprintf("%v", rightVal)
+		leftStr := valueToString(leftVal)
+		rightStr := valueToString(rightVal)
 
 		switch op {
 		case "=":
@@ -907,7 +907,7 @@ func parseInOperator(expr string) PolicyExpr {
 			rowValue = row[lowerCol]
 		}
 
-		rowStr := fmt.Sprintf("%v", rowValue)
+		rowStr := valueToString(rowValue)
 		for _, v := range values {
 			if rowStr == v {
 				return true, nil
@@ -945,7 +945,7 @@ func parseLikeOperator(expr string) PolicyExpr {
 			rowValue = row[lowerCol]
 		}
 
-		return re.MatchString(fmt.Sprintf("%v", rowValue)), nil
+		return re.MatchString(valueToString(rowValue)), nil
 	}
 }
 
@@ -997,6 +997,59 @@ func likeToRegex(pattern string) string {
 	result = strings.ReplaceAll(result, "%", ".*")
 	result = strings.ReplaceAll(result, "_", ".")
 	return "^" + result + "$"
+}
+
+// valueToString converts a value to a string without fmt.Sprintf reflection
+// for common types. Used in per-row RLS evaluation hot paths.
+func valueToString(v interface{}) string {
+	if v == nil {
+		return "<nil>"
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	default:
+		return valueToStringKey(val)
+	}
+}
+
+// valueToStringKey is a local copy of catalog.ValueToStringKey to avoid import cycles.
+func valueToStringKey(v interface{}) string {
+	if v == nil {
+		return "<nil>"
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }
 
 // ForceRow indicates that RLS should be applied even for table owners

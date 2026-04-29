@@ -54,7 +54,7 @@ type WAL struct {
 	// Group commit fields
 	groupCommitEnabled bool
 	groupCommitMu      sync.Mutex
-	pendingSyncs       []chan struct{}
+	pendingSyncs       []chan error // each caller receives the flush/sync error (nil on success)
 	batchSize          int
 	syncInterval       time.Duration
 	stopGC             chan struct{}
@@ -389,7 +389,7 @@ func (w *WAL) groupCommitAppend(record *WALRecord) error {
 		return nil
 	}
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	w.pendingSyncs = append(w.pendingSyncs, done)
 
 	// Trigger immediate sync if batch is full
@@ -399,23 +399,29 @@ func (w *WAL) groupCommitAppend(record *WALRecord) error {
 
 	w.groupCommitMu.Unlock()
 
-	// Wait for sync
-	<-done
+	// Wait for sync result
+	if err := <-done; err != nil {
+		return fmt.Errorf("group commit failed: %w", err)
+	}
 	return nil
 }
 
 // flushPendingLocked syncs the WAL and signals all pending callers.
 // Must be called with w.groupCommitMu held.
 func (w *WAL) flushPendingLocked() {
+	var flushErr error
 	w.mu.Lock()
 	if w.file != nil {
-		_ = w.bufWriter.Flush()
-		_ = w.file.Sync()
+		if err := w.bufWriter.Flush(); err != nil {
+			flushErr = fmt.Errorf("WAL flush: %w", err)
+		} else if err := w.file.Sync(); err != nil {
+			flushErr = fmt.Errorf("WAL sync: %w", err)
+		}
 	}
 	w.mu.Unlock()
 
 	for _, done := range w.pendingSyncs {
-		close(done)
+		done <- flushErr
 	}
 	w.pendingSyncs = w.pendingSyncs[:0]
 }
@@ -532,10 +538,22 @@ func (w *WAL) Recover(bp *BufferPool) error {
 	var headerBuf [25]byte // reusable header buffer across readRecord calls
 
 	// Read all records
+	var lastCheckpointLSN uint64
 	for {
 		record, err := w.readRecord(reader, headerBuf[:])
 		if err != nil {
 			break // End of file
+		}
+
+		// Track the latest checkpoint
+		if record.Type == WALCheckpoint {
+			lastCheckpointLSN = record.LSN
+			continue
+		}
+
+		// Skip records before or at the last checkpoint — already applied
+		if lastCheckpointLSN > 0 && record.LSN <= lastCheckpointLSN {
+			continue
 		}
 
 		switch record.Type {

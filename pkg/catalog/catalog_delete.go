@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -122,26 +123,10 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 				}
 			}
 
-			// Apply Row-Level Security check for DELETE
-			if c.enableRLS && c.rlsManager != nil {
-				user, _ := ctx.Value("cobaltdb_user").(string)
-				roles, _ := ctx.Value("cobaltdb_roles").([]string)
-				if user != "" {
-					rowMap := make(map[string]interface{})
-					for i, col := range table.Columns {
-						if i < len(row) {
-							rowMap[col.Name] = row[i]
-						}
-					}
-					allowed, rlsErr := c.checkRLSForDeleteInternal(ctx, stmt.Table, rowMap, user, roles)
-					if rlsErr != nil {
-						continue // Skip rows that fail RLS check
-					}
-					if !allowed {
-						continue // Skip rows the user doesn't have access to
-					}
-				}
-			}
+		// Apply Row-Level Security check for DELETE
+		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
+			continue
+		}
 
 			// Make copies of key and value since iterator may reuse buffers
 			keyCopy := make([]byte, len(key))
@@ -341,26 +326,10 @@ func (c *Catalog) processDeleteRow(ctx context.Context, table *TableDef, tree *b
 		}
 	}
 
-	// Apply Row-Level Security check for DELETE
-	if c.enableRLS && c.rlsManager != nil {
-		user, _ := ctx.Value("cobaltdb_user").(string)
-		roles, _ := ctx.Value("cobaltdb_roles").([]string)
-		if user != "" {
-			rowMap := make(map[string]interface{})
-			for i, col := range table.Columns {
-				if i < len(row) {
-					rowMap[col.Name] = row[i]
-				}
-			}
-			allowed, rlsErr := c.checkRLSForDeleteInternal(ctx, stmt.Table, rowMap, user, roles)
-			if rlsErr != nil {
-				return nil // Skip rows that fail RLS check
-			}
-			if !allowed {
-				return nil // Skip rows the user doesn't have access to
-			}
+		// Apply Row-Level Security check for DELETE
+		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
+			return nil
 		}
-	}
 
 	// Make copies of key and value
 	keyCopy := make([]byte, len(key))

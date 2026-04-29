@@ -135,6 +135,7 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 						}
 					}
 					var groupKey strings.Builder
+					groupKey.Grow(len(groupBySpecs) * 16)
 					for i, spec := range groupBySpecs {
 						if i > 0 {
 							groupKey.WriteString("\x00")
@@ -281,7 +282,7 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 						seen := make(map[string]bool)
 						for _, v := range values {
 							if v != nil {
-								seen[fmt.Sprintf("%v", v)] = true
+								seen[ValueToStringKey(v)] = true
 							}
 						}
 						resultRow[i] = int64(len(seen))
@@ -350,7 +351,7 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 					var parts []string
 					for _, v := range values {
 						if v != nil {
-							parts = append(parts, fmt.Sprintf("%v", v))
+							parts = append(parts, ValueToStringKey(v))
 						}
 					}
 					if len(parts) > 0 {
@@ -708,8 +709,8 @@ func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectC
 						}
 						continue
 					}
-					viS := fmt.Sprintf("%v", vi)
-					vjS := fmt.Sprintf("%v", vj)
+					viS := ValueToStringKey(vi)
+					vjS := ValueToStringKey(vj)
 					if viS < vjS {
 						return !ob.Desc
 					} else if viS > vjS {

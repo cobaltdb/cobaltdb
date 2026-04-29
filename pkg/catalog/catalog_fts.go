@@ -81,7 +81,7 @@ func (c *Catalog) indexRowForFTS(ftsIndex *FTSIndexDef, row map[string]interface
 	// Index each column
 	for _, col := range ftsIndex.Columns {
 		if val, exists := row[col]; exists && val != nil {
-			text := fmt.Sprintf("%v", val)
+			text := ValueToStringKey(val)
 			words := tokenize(text)
 			for _, word := range words {
 				word = toLowerFast(word)

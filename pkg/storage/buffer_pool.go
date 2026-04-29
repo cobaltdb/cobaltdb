@@ -84,6 +84,11 @@ type BufferPool struct {
 	wal        *WAL
 	nextPageID uint32 // next available page ID for allocation
 	stats      *bufferPoolStatsCollector
+
+	// Background flusher
+	flushInterval time.Duration
+	flushDone     chan struct{}
+	flushOnce     sync.Once
 }
 
 // NewBufferPool creates a new buffer pool
@@ -153,12 +158,13 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 	}
 
 	// Read page from disk
-	data := make([]byte, PageSize)
+	data := getPageData()
 	offset := int64(pageID) * int64(PageSize)
 	start := time.Now()
 	_, err := bp.backend.ReadAt(data, offset)
 	readTime := time.Since(start)
 	if err != nil {
+		putPageData(data)
 		bp.mu.Unlock()
 		return nil, fmt.Errorf("failed to read page %d: %w", pageID, err)
 	}
@@ -298,12 +304,64 @@ func (bp *BufferPool) evict() error {
 	return ErrBufferFull
 }
 
-// Close flushes all pages and closes the buffer pool
+// Close stops the background flusher, flushes all pages, and closes the buffer pool
 func (bp *BufferPool) Close() error {
+	bp.stopBackgroundFlusher()
 	if err := bp.FlushAll(); err != nil {
 		return err
 	}
 	return nil
+}
+
+// StartBackgroundFlusher starts a goroutine that periodically flushes dirty pages.
+// This reduces eviction latency by proactively writing dirty pages to disk
+// instead of flushing them synchronously during eviction under the write lock.
+func (bp *BufferPool) StartBackgroundFlusher(interval time.Duration) {
+	bp.flushInterval = interval
+	bp.flushDone = make(chan struct{})
+	go bp.backgroundFlushLoop()
+}
+
+func (bp *BufferPool) stopBackgroundFlusher() {
+	bp.flushOnce.Do(func() {
+		if bp.flushDone != nil {
+			close(bp.flushDone)
+		}
+	})
+}
+
+func (bp *BufferPool) backgroundFlushLoop() {
+	ticker := time.NewTicker(bp.flushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-bp.flushDone:
+			return
+		case <-ticker.C:
+			bp.flushDirtyPages()
+		}
+	}
+}
+
+// flushDirtyPages writes dirty unpinned pages to disk without holding the lock during I/O.
+func (bp *BufferPool) flushDirtyPages() {
+	// Collect dirty unpinned pages under read lock
+	bp.mu.RLock()
+	var dirty []*CachedPage
+	for _, page := range bp.pages {
+		if page.IsDirty() && !page.IsPinned() {
+			dirty = append(dirty, page)
+		}
+	}
+	bp.mu.RUnlock()
+
+	// Flush each page individually (acquires write lock briefly per page)
+	for _, page := range dirty {
+		if !page.IsDirty() || page.IsPinned() {
+			continue // re-check after lock release
+		}
+		_ = bp.FlushPage(page)
+	}
 }
 
 // PageCount returns the number of pages in the cache

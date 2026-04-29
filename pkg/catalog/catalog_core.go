@@ -20,7 +20,6 @@
 package catalog
 
 import (
-	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,7 +35,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -275,333 +273,7 @@ type cteResultSet struct {
 	rows    [][]interface{}
 }
 
-// QueryCacheEntry holds cached query results
-type QueryCacheEntry struct {
-	Columns   []string
-	Rows      [][]interface{}
-	Timestamp time.Time
-	Tables    []string // Tables involved in the query (for invalidation)
-}
-
-// QueryCache manages cached query results
-type QueryCache struct {
-	entries   map[string]*QueryCacheEntry
-	lru       *list.List
-	lruMap    map[string]*list.Element
-	maxSize   int
-	ttl       time.Duration
-	enabled   bool
-	hitCount  atomic.Int64
-	missCount atomic.Int64
-	mu        sync.RWMutex
-}
-
-func NewQueryCache(maxSize int, ttl time.Duration) *QueryCache {
-	return &QueryCache{
-		entries: make(map[string]*QueryCacheEntry),
-		lru:     list.New(),
-		lruMap:  make(map[string]*list.Element),
-		maxSize: maxSize,
-		ttl:     ttl,
-		enabled: maxSize > 0,
-	}
-}
-
-func (qc *QueryCache) Get(key string) (*QueryCacheEntry, bool) {
-	if !qc.enabled {
-		return nil, false
-	}
-
-	qc.mu.Lock()
-	defer qc.mu.Unlock()
-
-	entry, exists := qc.entries[key]
-	if !exists {
-		qc.missCount.Add(1)
-		return nil, false
-	}
-
-	// Check if entry has expired
-	if time.Since(entry.Timestamp) > qc.ttl {
-		qc.missCount.Add(1)
-		return nil, false
-	}
-
-	qc.promoteInLRU(key)
-	qc.hitCount.Add(1)
-	return entry, true
-}
-
-// promoteInLRU moves a key to the front of the LRU list (caller must hold at least RLock)
-// Note: we upgrade to write lock for the LRU mutation
-func (qc *QueryCache) promoteInLRU(key string) {
-	if elem, ok := qc.lruMap[key]; ok {
-		qc.lru.MoveToFront(elem)
-	}
-}
-
-func (qc *QueryCache) Set(key string, columns []string, rows [][]interface{}, tables []string) {
-	if !qc.enabled {
-		return
-	}
-
-	qc.mu.Lock()
-	defer qc.mu.Unlock()
-
-	// If key already exists, move to front
-	if _, exists := qc.entries[key]; exists {
-		if elem, ok := qc.lruMap[key]; ok {
-			qc.lru.MoveToFront(elem)
-		}
-	} else {
-		// Evict entries if cache is full
-		for len(qc.entries) >= qc.maxSize {
-			qc.evictOne()
-		}
-		elem := qc.lru.PushFront(key)
-		qc.lruMap[key] = elem
-	}
-
-	qc.entries[key] = &QueryCacheEntry{
-		Columns:   columns,
-		Rows:      rows,
-		Timestamp: time.Now(),
-		Tables:    tables,
-	}
-}
-
-func (qc *QueryCache) Invalidate(tableName string) {
-	if !qc.enabled {
-		return
-	}
-
-	qc.mu.Lock()
-	defer qc.mu.Unlock()
-
-	for key, entry := range qc.entries {
-		for _, tbl := range entry.Tables {
-			if strings.EqualFold(tbl, tableName) {
-				if elem, ok := qc.lruMap[key]; ok {
-					qc.lru.Remove(elem)
-					delete(qc.lruMap, key)
-				}
-				delete(qc.entries, key)
-				break
-			}
-		}
-	}
-}
-
-func (qc *QueryCache) InvalidateAll() {
-	if !qc.enabled {
-		return
-	}
-
-	qc.mu.Lock()
-	defer qc.mu.Unlock()
-
-	qc.entries = make(map[string]*QueryCacheEntry)
-	qc.lru.Init()
-	qc.lruMap = make(map[string]*list.Element)
-}
-
-func (qc *QueryCache) evictOne() {
-	back := qc.lru.Back()
-	if back != nil {
-		key := back.Value.(string)
-		qc.lru.Remove(back)
-		delete(qc.lruMap, key)
-		delete(qc.entries, key)
-	}
-}
-
-func (qc *QueryCache) Stats() (hits, misses int64, size int) {
-	qc.mu.RLock()
-	defer qc.mu.RUnlock()
-	return qc.hitCount.Load(), qc.missCount.Load(), len(qc.entries)
-}
-
-func generateQueryKey(sql string, args []interface{}) string {
-	// Use strings.Builder for efficient concatenation
-	var builder strings.Builder
-	builder.Grow(len(sql) + len(args)*16) // Pre-allocate estimated size
-	builder.WriteString(sql)
-	for _, arg := range args {
-		builder.WriteByte('|')
-		fmt.Fprint(&builder, arg)
-	}
-	return builder.String()
-}
-
-func isCacheableQuery(stmt *query.SelectStmt) bool {
-	// Don't cache queries without a FROM clause (scalar queries might have functions like RANDOM())
-	if stmt.From == nil {
-		return false
-	}
-
-	// Don't cache queries with subqueries in SELECT (they might be non-deterministic)
-	for _, col := range stmt.Columns {
-		if containsSubquery(col) {
-			return false
-		}
-	}
-
-	// Don't cache queries with non-deterministic functions
-	if containsNonDeterministicFunctions(stmt) {
-		return false
-	}
-
-	return true
-}
-
-func containsSubquery(expr query.Expression) bool {
-	if expr == nil {
-		return false
-	}
-
-	switch e := expr.(type) {
-	case *query.SubqueryExpr, *query.ExistsExpr:
-		return true
-	case *query.AliasExpr:
-		return containsSubquery(e.Expr)
-	case *query.BinaryExpr:
-		return containsSubquery(e.Left) || containsSubquery(e.Right)
-	case *query.UnaryExpr:
-		return containsSubquery(e.Expr)
-	case *query.FunctionCall:
-		for _, arg := range e.Args {
-			if containsSubquery(arg) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func containsNonDeterministicFunctions(stmt *query.SelectStmt) bool {
-	// Check columns
-	for _, col := range stmt.Columns {
-		if hasNonDeterministicFunction(col) {
-			return true
-		}
-	}
-
-	// Check WHERE clause
-	if hasNonDeterministicFunction(stmt.Where) {
-		return true
-	}
-
-	// Check ORDER BY
-	for _, ob := range stmt.OrderBy {
-		if hasNonDeterministicFunction(ob.Expr) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func hasNonDeterministicFunction(expr query.Expression) bool {
-	if expr == nil {
-		return false
-	}
-
-	switch e := expr.(type) {
-	case *query.FunctionCall:
-		// List of non-deterministic functions
-		nonDetFuncs := []string{"RANDOM", "RAND", "NOW", "CURRENT_TIMESTAMP", "UUID", "NEWID"}
-		for _, ndf := range nonDetFuncs {
-			if strings.EqualFold(e.Name, ndf) {
-				return true
-			}
-		}
-		// Check arguments recursively
-		for _, arg := range e.Args {
-			if hasNonDeterministicFunction(arg) {
-				return true
-			}
-		}
-	case *query.AliasExpr:
-		return hasNonDeterministicFunction(e.Expr)
-	case *query.BinaryExpr:
-		return hasNonDeterministicFunction(e.Left) || hasNonDeterministicFunction(e.Right)
-	case *query.UnaryExpr:
-		return hasNonDeterministicFunction(e.Expr)
-	}
-
-	return false
-}
-
-func extractTablesFromQuery(stmt *query.SelectStmt) []string {
-	tables := make(map[string]bool)
-
-	if stmt.From != nil {
-		tables[stmt.From.Name] = true
-	}
-
-	for _, join := range stmt.Joins {
-		if join.Table != nil {
-			tables[join.Table.Name] = true
-		}
-	}
-
-	result := make([]string, 0, len(tables))
-	for tbl := range tables {
-		result = append(result, tbl)
-	}
-	return result
-}
-
-func queryToSQL(stmt *query.SelectStmt) string {
-	// This is a simplified version - in production you'd want proper SQL generation
-	// For caching purposes, we just need a consistent string representation
-	var parts []string
-
-	parts = append(parts, "SELECT")
-	if stmt.Distinct {
-		parts = append(parts, "DISTINCT")
-	}
-
-	// Columns
-	colParts := make([]string, len(stmt.Columns))
-	for i, col := range stmt.Columns {
-		colParts[i] = exprToString(col)
-	}
-	parts = append(parts, strings.Join(colParts, ", "))
-
-	if stmt.From != nil {
-		parts = append(parts, "FROM", stmt.From.Name)
-	}
-
-	return strings.Join(parts, " ")
-}
-
-func exprToString(expr query.Expression) string {
-	if expr == nil {
-		return ""
-	}
-
-	switch e := expr.(type) {
-	case *query.Identifier:
-		return e.Name
-	case *query.StarExpr:
-		return "*"
-	case *query.StringLiteral:
-		return fmt.Sprintf("'%s'", e.Value)
-	case *query.NumberLiteral:
-		return fmt.Sprintf("%v", e.Value)
-	case *query.AliasExpr:
-		return exprToString(e.Expr) + " AS " + e.Alias
-	case *query.FunctionCall:
-		args := make([]string, len(e.Args))
-		for i, arg := range e.Args {
-			args[i] = exprToString(arg)
-		}
-		return fmt.Sprintf("%s(%s)", e.Name, strings.Join(args, ", "))
-	default:
-		return fmt.Sprintf("%T", expr)
-	}
-}
+// Query cache types and functions moved to catalog_cache.go
 
 func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog {
 	return &Catalog{
@@ -711,175 +383,15 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		// Fall through to normal JOIN handling
 	}
 
-	// Check if it's a pre-computed CTE result (from recursive CTE execution)
-	if cat.cteResults != nil {
-		if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
-			if len(stmt.Joins) == 0 {
-				// Check if outer query has window functions
-				hasWindowFuncs := false
-				for _, col := range stmt.Columns {
-					actual := col
-					if ae, ok := col.(*query.AliasExpr); ok {
-						actual = ae.Expr
-					}
-					if _, ok := actual.(*query.WindowExpr); ok {
-						hasWindowFuncs = true
-						break
-					}
+		// Check if it's a pre-computed CTE result (from recursive CTE execution)
+		if cat.cteResults != nil {
+			if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
+				if result, handled := cat.handleCTEResult(stmt, args, cteRes); handled {
+					return result.cols, result.rows, result.err
 				}
-				if hasWindowFuncs {
-					// Window functions need the full selectLocked pipeline.
-					// Build a synthetic TableDef from CTE columns and process CTE rows
-					// as if they were table rows.
-					syntheticCols := make([]ColumnDef, len(cteRes.columns))
-					for i, name := range cteRes.columns {
-						syntheticCols[i] = ColumnDef{Name: name, Type: "TEXT"}
-					}
-					syntheticTable := &TableDef{
-						Name:    stmt.From.Name,
-						Columns: syntheticCols,
-					}
-
-					// Build selectColInfo for the outer query
-					selectCols := make([]selectColInfo, len(stmt.Columns))
-					returnColumns := make([]string, len(stmt.Columns))
-					for i, col := range stmt.Columns {
-						aliasName := ""
-						actual := col
-						if ae, ok := col.(*query.AliasExpr); ok {
-							aliasName = ae.Alias
-							actual = ae.Expr
-						}
-						switch c := actual.(type) {
-						case *query.WindowExpr:
-							selectCols[i] = selectColInfo{
-								name:       aliasName,
-								isWindow:   true,
-								windowExpr: c,
-							}
-							if aliasName != "" {
-								returnColumns[i] = aliasName
-							} else {
-								returnColumns[i] = c.Function
-							}
-						case *query.Identifier:
-							selectCols[i] = selectColInfo{name: c.Name}
-							if aliasName != "" {
-								returnColumns[i] = aliasName
-							} else {
-								returnColumns[i] = c.Name
-							}
-						default:
-							selectCols[i] = selectColInfo{name: aliasName}
-							if aliasName != "" {
-								returnColumns[i] = aliasName
-							} else {
-								returnColumns[i] = fmt.Sprintf("col%d", i)
-							}
-						}
-					}
-
-					// Filter rows with WHERE
-					var filteredRows [][]interface{}
-					for _, row := range cteRes.rows {
-						if stmt.Where != nil {
-							matched, err := evaluateWhere(cat, row, syntheticCols, stmt.Where, args)
-							if err != nil || !matched {
-								continue
-							}
-						}
-						filteredRows = append(filteredRows, row)
-					}
-
-					// Project columns
-					var projectedRows [][]interface{}
-					for _, row := range filteredRows {
-						projRow := make([]interface{}, len(selectCols))
-						for i, ci := range selectCols {
-							if ci.isWindow {
-								projRow[i] = nil // placeholder for window function
-							} else {
-								// Find column in CTE result
-								for j, name := range cteRes.columns {
-									colName := ci.name
-									if colName == "" {
-										continue
-									}
-									if strings.EqualFold(name, colName) && j < len(row) {
-										projRow[i] = row[j]
-										break
-									}
-								}
-							}
-						}
-						projectedRows = append(projectedRows, projRow)
-					}
-
-					// Evaluate window functions
-					projectedRows = cat.evaluateWindowFunctions(projectedRows, selectCols, syntheticTable, stmt, args, filteredRows)
-
-					// Apply ORDER BY
-					if len(stmt.OrderBy) > 0 {
-						sort.SliceStable(projectedRows, func(a, b int) bool {
-							for _, ob := range stmt.OrderBy {
-								va, _ := evaluateExpression(cat, projectedRows[a], syntheticCols, ob.Expr, args)
-								vb, _ := evaluateExpression(cat, projectedRows[b], syntheticCols, ob.Expr, args)
-								// Try to resolve from projected columns
-								if va == nil {
-									for j, ci := range selectCols {
-										if id, ok := ob.Expr.(*query.Identifier); ok && strings.EqualFold(ci.name, id.Name) {
-											va = projectedRows[a][j]
-											vb = projectedRows[b][j]
-											break
-										}
-									}
-								}
-								cmp := compareValues(va, vb)
-								if cmp == 0 {
-									continue
-								}
-								if ob.Desc {
-									return cmp > 0
-								}
-								return cmp < 0
-							}
-							return false
-						})
-					}
-
-					// Apply LIMIT/OFFSET
-					if stmt.Offset != nil {
-						offsetVal, err := evaluateExpression(cat, nil, nil, stmt.Offset, args)
-						if err == nil {
-							if off, ok := toInt(offsetVal); ok && off > 0 {
-								if int(off) < len(projectedRows) {
-									projectedRows = projectedRows[off:]
-								} else {
-									projectedRows = nil
-								}
-							}
-						}
-					}
-					if stmt.Limit != nil {
-						limitVal, err := evaluateExpression(cat, nil, nil, stmt.Limit, args)
-						if err == nil {
-							if lim, ok := toInt(limitVal); ok && lim >= 0 && int(lim) < len(projectedRows) {
-								projectedRows = projectedRows[:lim]
-							}
-						}
-					}
-
-					return returnColumns, projectedRows, nil
-				}
-				// No window functions: use applyOuterQuery for simple CTE access
-				return cat.applyOuterQuery(stmt, cteRes.columns, cteRes.rows, args)
+				// CTE with JOINs: fall through to executeSelectWithJoin
 			}
-			// CTE with JOINs: register CTE as a temporary table definition
-			// so executeSelectWithJoin can find it via getTableLocked
-			// (executeSelectWithJoin already handles cteResults for both main and join tables)
-			// Fall through - executeSelectWithJoin will pick it up from cteResults
 		}
-	}
 
 	// Check if it's a view first
 	view, viewErr := cat.getViewLocked(stmt.From.Name)
@@ -1030,241 +542,12 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		}
 	}
 
-	// Get column names and their indices in the table (optimized with cache)
-	var selectCols []selectColInfo
-	var hasAggregates bool
-
-	// Determine main table alias for consistent naming in selectCols
 	mainTableRef := stmt.From.Name
 	if stmt.From.Alias != "" {
 		mainTableRef = stmt.From.Alias
 	}
 
-	for _, col := range stmt.Columns {
-		// Unwrap AliasExpr to get the underlying expression and alias name
-		aliasName := ""
-		actualCol := col
-		if ae, ok := col.(*query.AliasExpr); ok {
-			aliasName = ae.Alias
-			actualCol = ae.Expr
-		}
-		switch c := actualCol.(type) {
-		case *query.Identifier:
-			// Check if this is a dotted identifier like "table.column"
-			if dotIdx := strings.IndexByte(c.Name, '.'); dotIdx > 0 && dotIdx < len(c.Name)-1 {
-				// Treat as QualifiedIdentifier
-				qi := &query.QualifiedIdentifier{Table: c.Name[:dotIdx], Column: c.Name[dotIdx+1:]}
-				colName := qi.Column
-				targetTable := qi.Table
-
-				mainTableAlias := stmt.From.Name
-				if stmt.From.Alias != "" {
-					mainTableAlias = stmt.From.Alias
-				}
-
-				if targetTable == stmt.From.Name || targetTable == stmt.From.Alias {
-					if idx := table.GetColumnIndex(colName); idx >= 0 {
-						displayName := colName
-						if aliasName != "" {
-							displayName = aliasName
-						}
-						selectCols = append(selectCols, selectColInfo{name: displayName, tableName: mainTableAlias, index: idx})
-					}
-				} else {
-					for _, join := range stmt.Joins {
-						joinAlias := join.Table.Name
-						if join.Table.Alias != "" {
-							joinAlias = join.Table.Alias
-						}
-						if joinAlias == targetTable || join.Table.Name == targetTable {
-							joinTable, err := cat.getTableLocked(join.Table.Name)
-							if err == nil {
-								if idx := joinTable.GetColumnIndex(colName); idx >= 0 {
-									displayName := colName
-									if aliasName != "" {
-										displayName = aliasName
-									}
-									selectCols = append(selectCols, selectColInfo{name: displayName, tableName: joinAlias, index: idx})
-								}
-							}
-							break
-						}
-					}
-				}
-			} else {
-				// Use cached column index
-				if idx := table.GetColumnIndex(c.Name); idx >= 0 {
-					displayName := c.Name
-					if aliasName != "" {
-						displayName = aliasName
-					}
-					selectCols = append(selectCols, selectColInfo{name: displayName, tableName: mainTableRef, index: idx})
-				}
-			}
-		case *query.QualifiedIdentifier:
-			// Handle qualified identifiers like "u.name" or "o.id"
-			// Find which table this column belongs to
-			targetTable := c.Table
-			colName := c.Column
-
-			// Determine main table alias for consistent naming
-			mainTableAlias := stmt.From.Name
-			if stmt.From.Alias != "" {
-				mainTableAlias = stmt.From.Alias
-			}
-
-			// Check if it's the main table
-			if targetTable == stmt.From.Name || targetTable == stmt.From.Alias {
-				if idx := table.GetColumnIndex(colName); idx >= 0 {
-					selectCols = append(selectCols, selectColInfo{name: colName, tableName: mainTableAlias, index: idx})
-				}
-			} else {
-				// Check joined tables
-				for _, join := range stmt.Joins {
-					joinAlias := join.Table.Name
-					if join.Table.Alias != "" {
-						joinAlias = join.Table.Alias
-					}
-					if joinAlias == targetTable || join.Table.Name == targetTable {
-						joinTable, err := cat.getTableLocked(join.Table.Name)
-						if err == nil {
-							if idx := joinTable.GetColumnIndex(colName); idx >= 0 {
-								selectCols = append(selectCols, selectColInfo{name: colName, tableName: joinAlias, index: idx})
-							}
-						}
-						break
-					}
-				}
-			}
-		case *query.StarExpr:
-			// SELECT * - get all columns from main table
-			for i, tc := range table.Columns {
-				selectCols = append(selectCols, selectColInfo{name: tc.Name, tableName: mainTableRef, index: i})
-			}
-			// Also include columns from joined tables
-			for _, join := range stmt.Joins {
-				joinAlias := join.Table.Name
-				if join.Table.Alias != "" {
-					joinAlias = join.Table.Alias
-				}
-				joinTable, err := cat.getTableLocked(join.Table.Name)
-				if err == nil {
-					for i, tc := range joinTable.Columns {
-						selectCols = append(selectCols, selectColInfo{name: tc.Name, tableName: joinAlias, index: i})
-					}
-				}
-			}
-		case *query.FunctionCall:
-			// Handle aggregate functions: COUNT, SUM, AVG, MIN, MAX
-			if strings.EqualFold(c.Name, "COUNT") || strings.EqualFold(c.Name, "SUM") || strings.EqualFold(c.Name, "AVG") || strings.EqualFold(c.Name, "MIN") || strings.EqualFold(c.Name, "MAX") || strings.EqualFold(c.Name, "GROUP_CONCAT") {
-				hasAggregates = true
-				colName := "*" // Default for COUNT(*)
-				aggTableName := mainTableRef
-				var aggExpr query.Expression // non-nil when arg is an expression (not simple column)
-				if len(c.Args) > 0 {
-					switch arg := c.Args[0].(type) {
-					case *query.Identifier:
-						colName = arg.Name
-					case *query.QualifiedIdentifier:
-						colName = arg.Column
-						// Find which table this belongs to
-						if arg.Table == stmt.From.Name || arg.Table == stmt.From.Alias {
-							aggTableName = mainTableRef
-						} else {
-							// Check joined tables
-							for _, join := range stmt.Joins {
-								joinAlias := join.Table.Name
-								if join.Table.Alias != "" {
-									joinAlias = join.Table.Alias
-								}
-								if joinAlias == arg.Table || join.Table.Name == arg.Table {
-									aggTableName = joinAlias
-									break
-								}
-							}
-						}
-					case *query.StarExpr:
-						colName = "*"
-					default:
-						// Expression argument (e.g., SUM(quantity * price))
-						colName = fmt.Sprintf("%v", arg)
-						aggExpr = c.Args[0]
-					}
-				}
-				displayName := c.Name + "(" + colName + ")"
-				if c.Distinct {
-					displayName = c.Name + "(DISTINCT " + colName + ")"
-				}
-				selectCols = append(selectCols, selectColInfo{
-					name:          displayName,
-					tableName:     aggTableName,
-					index:         -1,
-					isAggregate:   true,
-					aggregateType: c.Name,
-					aggregateCol:  colName,
-					aggregateExpr: aggExpr,
-					isDistinct:    c.Distinct,
-				})
-			} else {
-				// Scalar function (COALESCE, LENGTH, UPPER, etc.)
-				// Check if the function contains aggregate sub-expressions
-				var embeddedAggs []*query.FunctionCall
-				collectAggregatesFromExpr(actualCol, &embeddedAggs)
-				if len(embeddedAggs) > 0 {
-					hasAggregates = true
-				}
-				selectCols = append(selectCols, selectColInfo{
-					name:           c.Name + "()",
-					tableName:      mainTableRef,
-					index:          -1, // Will be evaluated per row
-					hasEmbeddedAgg: len(embeddedAggs) > 0,
-					originalExpr:   actualCol,
-				})
-			}
-		case *query.WindowExpr:
-			// Window function (ROW_NUMBER, RANK, etc.)
-			displayName := c.Function + "()"
-			if aliasName != "" {
-				displayName = aliasName
-			}
-			selectCols = append(selectCols, selectColInfo{
-				name:       displayName,
-				tableName:  mainTableRef,
-				index:      -1,
-				isWindow:   true,
-				windowExpr: c,
-			})
-		default:
-			// Handle arbitrary expressions (CASE, CAST, arithmetic, etc.)
-			// Check if expression contains aggregate function calls
-			var embeddedAggs []*query.FunctionCall
-			collectAggregatesFromExpr(actualCol, &embeddedAggs)
-			exprName := "expr"
-			if aliasName != "" {
-				exprName = aliasName
-			}
-			if len(embeddedAggs) > 0 {
-				hasAggregates = true
-			}
-			selectCols = append(selectCols, selectColInfo{
-				name:           exprName,
-				tableName:      mainTableRef,
-				index:          -1, // Will be evaluated per row
-				hasEmbeddedAgg: len(embeddedAggs) > 0,
-				originalExpr:   actualCol,
-			})
-		}
-		// Apply alias to the last added selectColInfo entry
-		if aliasName != "" && len(selectCols) > 0 {
-			selectCols[len(selectCols)-1].name = aliasName
-		}
-	}
-
-	// Extract column names for return
-	returnColumns := make([]string, len(selectCols))
-	for i, ci := range selectCols {
-		returnColumns[i] = ci.name
-	}
+	selectCols, returnColumns, hasAggregates := cat.buildSelectColumnInfo(stmt, table, mainTableRef)
 
 	// Handle JOINs if present
 	if len(stmt.Joins) > 0 {
@@ -1626,85 +909,19 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		}
 	}
 
-	// Evaluate window functions if present (hasWindowFuncs was computed above)
-	if hasWindowFuncs {
-		rows = cat.evaluateWindowFunctions(rows, selectCols, table, stmt, args, windowFullRows)
-	}
-
-	// Apply ORDER BY if present
-	if len(stmt.OrderBy) > 0 {
-		rows = cat.applyOrderBy(rows, selectCols, stmt.OrderBy)
-	}
-
-	// Apply DISTINCT before stripping hidden ORDER BY columns
-	// This preserves sort order from ORDER BY while deduplicating visible columns
-	if stmt.Distinct {
-		// For DISTINCT, only compare visible columns (not hidden ORDER BY cols)
-		visibleCols := len(selectCols)
-		if hiddenOrderByCols > 0 {
-			visibleCols = len(selectCols) - hiddenOrderByCols
-		}
-		seen := make(map[string]bool)
-		var distinctRows [][]interface{}
-		for _, row := range rows {
-			visibleSlice := row
-			if visibleCols < len(row) {
-				visibleSlice = row[:visibleCols]
-			}
-			key := rowKeyForDedup(visibleSlice)
-			if !seen[key] {
-				seen[key] = true
-				distinctRows = append(distinctRows, row)
-			}
-		}
-		rows = distinctRows
-	}
-
-	// Strip hidden ORDER BY columns after sorting and distinct
-	if hiddenOrderByCols > 0 {
-		rows = stripHiddenCols(rows, len(selectCols), hiddenOrderByCols)
-	}
-
-	// Apply OFFSET if present
-	if stmt.Offset != nil {
-		offsetVal, err := evaluateExpression(cat, nil, nil, stmt.Offset, args)
-		if err == nil {
-			if offset, ok := toInt(offsetVal); ok && offset > 0 {
-				if offset >= len(rows) {
-					rows = nil
-				} else {
-					rows = rows[offset:]
-				}
-			}
-		}
-	}
-
-	// Apply LIMIT if present
-	if stmt.Limit != nil {
-		limitVal, err := evaluateExpression(cat, nil, nil, stmt.Limit, args)
-		if err == nil {
-			if limit, ok := toInt(limitVal); ok && limit >= 0 && int(limit) <= len(rows) {
-				rows = rows[:limit]
-			}
-		}
-	}
-
-	// Apply Row-Level Security filtering
-	if cat.enableRLS && cat.rlsManager != nil && stmt.From != nil {
-		rlsCtx := cat.rlsCtx
-		if rlsCtx == nil {
-			rlsCtx = context.Background()
-		}
-		user, _ := rlsCtx.Value("cobaltdb_user").(string)
-		roles, _ := rlsCtx.Value("cobaltdb_roles").([]string)
-		if user != "" {
-			cols, filteredRows, rlsErr := cat.applyRLSFilterInternal(rlsCtx, stmt.From.Name, returnColumns, rows, user, roles)
-			if rlsErr != nil {
-				return nil, nil, fmt.Errorf("RLS filter failed: %w", rlsErr)
-			}
-			returnColumns = cols
-			rows = filteredRows
-		}
+	returnColumns, rows = cat.applySelectPostProcess(applySelectPostProcessParams{
+		rows:              rows,
+		selectCols:        selectCols,
+		stmt:              stmt,
+		args:              args,
+		returnColumns:     returnColumns,
+		hiddenOrderByCols: hiddenOrderByCols,
+		hasWindowFuncs:    hasWindowFuncs,
+		windowFullRows:    windowFullRows,
+		table:             table,
+	})
+	if rows == nil && returnColumns != nil {
+		return returnColumns, nil, nil
 	}
 
 	return returnColumns, rows, nil
@@ -1769,7 +986,7 @@ func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, v
 			} else if id, ok := actual.(*query.Identifier); ok {
 				returnCols[i] = id.Name
 			} else {
-				returnCols[i] = fmt.Sprintf("col%d", i)
+				returnCols[i] = "col" + strconv.Itoa(i)
 			}
 		}
 
@@ -1787,7 +1004,7 @@ func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, v
 				for _, gb := range stmt.GroupBy {
 					val, err := evaluateExpression(cat, row, columns, gb, args)
 					if err == nil {
-						keyParts = append(keyParts, fmt.Sprintf("%v", val))
+						keyParts = append(keyParts, ValueToStringKey(val))
 					} else {
 						keyParts = append(keyParts, "<nil>")
 					}
@@ -2136,7 +1353,7 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 			if len(fc.Args) > 0 {
 				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
 				if err == nil && val != nil {
-					parts = append(parts, fmt.Sprintf("%v", val))
+					parts = append(parts, ValueToStringKey(val))
 				}
 			}
 		}
@@ -2179,7 +1396,7 @@ func addHiddenOrderByCols(orderBy []*query.OrderByExpr, selectCols []selectColIn
 		default:
 			// Expression - add as hidden column to be evaluated per-row
 			// Use obIdx so applyOrderBy can match by ORDER BY position
-			exprName := fmt.Sprintf("__orderby_%d", obIdx)
+			exprName := "__orderby_" + strconv.Itoa(obIdx)
 			selectCols = append(selectCols, selectColInfo{
 				name:  exprName,
 				index: -1, // Will be evaluated per row
@@ -2192,399 +1409,6 @@ func addHiddenOrderByCols(orderBy []*query.OrderByExpr, selectCols []selectColIn
 
 // tryCountStarFastPath detects SELECT COUNT(*) FROM table and counts rows
 // without decoding row data. Returns (cols, rows, true) if fast path used.
-func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interface{}, queryTime time.Time) ([]string, [][]interface{}, bool) {
-	// Only works for: single COUNT(*), single table, no JOINs, no GROUP BY, no subquery
-	if len(stmt.Columns) != 1 || len(stmt.Joins) > 0 || len(stmt.GroupBy) > 0 || stmt.Having != nil {
-		return nil, nil, false
-	}
-	if stmt.From.Subquery != nil || stmt.From.SubqueryStmt != nil {
-		return nil, nil, false
-	}
-
-	// Check if it's COUNT(*) or COUNT(*) with alias
-	col := stmt.Columns[0]
-	if ae, ok := col.(*query.AliasExpr); ok {
-		col = ae.Expr
-	}
-	fc, ok := col.(*query.FunctionCall)
-	if !ok || !strings.EqualFold(fc.Name, "COUNT") || len(fc.Args) != 1 {
-		return nil, nil, false
-	}
-	if _, isStar := fc.Args[0].(*query.StarExpr); !isStar {
-		return nil, nil, false
-	}
-
-	// Get table and tree
-	table, err := cat.getTableLocked(stmt.From.Name)
-	if err != nil {
-		return nil, nil, false
-	}
-	// Skip fast path for partitioned tables (data spread across partition trees)
-	if table.Partition != nil {
-		return nil, nil, false
-	}
-	tree, exists := cat.tableTrees[stmt.From.Name]
-	if !exists {
-		return nil, nil, false
-	}
-
-	// Count rows by iterating B-tree keys
-	iter, err := tree.Scan(nil, nil)
-	if err != nil {
-		return nil, nil, false
-	}
-
-	count := int64(0)
-	hasWhere := stmt.Where != nil
-	hasTemporalQuery := stmt.AsOf != nil
-
-	for iter.HasNext() {
-		key, valueData, err := iter.Next()
-		if err != nil || key == nil {
-			break
-		}
-
-		if !hasWhere && !hasTemporalQuery {
-			// Fast path: no WHERE, no AS OF — skip all decoding, just count keys
-			// Soft-deleted rows still have B-tree entries, so we need a minimal check
-			// But for non-temporal queries, all live rows are visible
-			if len(valueData) > 0 && valueData[0] == '{' {
-				// Check if row has non-zero DeletedAt via quick byte scan
-				if !bytesContainDeletedAt(valueData) {
-					count++
-					continue
-				}
-			}
-			// Fallback to full decode for edge cases
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-			if err != nil {
-				continue
-			}
-			if vrow.Version.DeletedAt == 0 {
-				count++
-			}
-		} else if hasWhere {
-			// WHERE clause requires row data
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-			if err != nil {
-				continue
-			}
-			if !vrow.Version.isVisibleAt(queryTime) {
-				continue
-			}
-			matched, err := evaluateWhere(cat, vrow.Data, table.Columns, stmt.Where, args)
-			if err != nil || !matched {
-				continue
-			}
-			count++
-		} else {
-			// AS OF temporal query — need version check
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-			if err != nil {
-				continue
-			}
-			if !vrow.Version.isVisibleAt(queryTime) {
-				continue
-			}
-			count++
-		}
-	}
-	iter.Close()
-
-	colName := "COUNT(*)"
-	if ae, ok := stmt.Columns[0].(*query.AliasExpr); ok {
-		colName = ae.Alias
-	}
-
-	return []string{colName}, [][]interface{}{{count}}, true
-}
-
-// bytesContainDeletedAt quickly checks if JSON data has a non-zero deleted_at.
-// Returns true if "deleted_at" appears with a non-zero value (soft-deleted row).
-// This avoids full JSON unmarshal for COUNT(*) fast path.
-// trySimpleAggregateFastPath handles SELECT with only simple aggregates
-// (SUM, AVG, MIN, MAX, COUNT) on a single table without GROUP BY/JOIN/subquery.
-// Computes aggregates in a single streaming pass.
-func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, bool) {
-	// Requirements: no GROUP BY, no HAVING, no JOINs, no subquery, no ORDER BY, no LIMIT
-	if len(stmt.GroupBy) > 0 || stmt.Having != nil || len(stmt.Joins) > 0 {
-		return nil, nil, false
-	}
-	if stmt.From == nil || stmt.From.Subquery != nil || stmt.From.SubqueryStmt != nil {
-		return nil, nil, false
-	}
-	if stmt.AsOf != nil || stmt.Limit != nil || len(stmt.OrderBy) > 0 {
-		return nil, nil, false
-	}
-
-	// All columns must be simple aggregates (no DISTINCT, no expression args)
-	type aggSpec struct {
-		funcName string // SUM, AVG, MIN, MAX, COUNT
-		colName  string // column name or "*"
-		colIdx   int    // column index in table
-		alias    string // result column name
-	}
-	var specs []aggSpec
-
-	for _, col := range stmt.Columns {
-		actual := col
-		alias := ""
-		if ae, ok := col.(*query.AliasExpr); ok {
-			alias = ae.Alias
-			actual = ae.Expr
-		}
-		fc, ok := actual.(*query.FunctionCall)
-		if !ok || len(fc.Args) != 1 {
-			return nil, nil, false
-		}
-		funcName := toUpperFast(fc.Name)
-		if funcName != "SUM" && funcName != "AVG" && funcName != "MIN" && funcName != "MAX" && funcName != "COUNT" {
-			return nil, nil, false
-		}
-
-		// DISTINCT aggregates are complex — fall back to normal path
-		if fc.Distinct {
-			return nil, nil, false
-		}
-
-		colName := "*"
-		if _, isStar := fc.Args[0].(*query.StarExpr); !isStar {
-			if id, ok := fc.Args[0].(*query.Identifier); ok {
-				colName = id.Name
-			} else {
-				return nil, nil, false // expression arg, too complex
-			}
-		}
-		if alias == "" {
-			alias = funcName + "(" + colName + ")"
-		}
-		specs = append(specs, aggSpec{funcName: funcName, colName: colName, alias: alias})
-	}
-
-	if len(specs) == 0 {
-		return nil, nil, false
-	}
-
-	// Get table
-	table, err := cat.getTableLocked(stmt.From.Name)
-	if err != nil {
-		return nil, nil, false
-	}
-	if table.Partition != nil {
-		return nil, nil, false
-	}
-	tree, exists := cat.tableTrees[stmt.From.Name]
-	if !exists {
-		return nil, nil, false
-	}
-
-	// Resolve column indices
-	for i := range specs {
-		if specs[i].colName != "*" {
-			specs[i].colIdx = table.GetColumnIndex(specs[i].colName)
-			if specs[i].colIdx < 0 {
-				return nil, nil, false
-			}
-		}
-	}
-
-	// Streaming aggregate state
-	type aggState struct {
-		count  int64
-		sum    float64
-		hasVal bool
-		genVal interface{} // for MIN/MAX on non-numeric types (strings)
-	}
-	states := make([]aggState, len(specs))
-
-	iter, err := tree.Scan(nil, nil)
-	if err != nil {
-		return nil, nil, false
-	}
-
-	// Use byte-level fast path for SUM/AVG without WHERE (skip full JSON decode)
-	canUseByteFastPath := stmt.Where == nil
-	if canUseByteFastPath {
-		for _, spec := range specs {
-			if spec.funcName != "SUM" && spec.funcName != "AVG" && !(spec.funcName == "COUNT" && spec.colName == "*") {
-				canUseByteFastPath = false
-				break
-			}
-		}
-	}
-
-	for iter.HasNext() {
-		_, valueData, err := iter.Next()
-		if err != nil {
-			break
-		}
-
-		if canUseByteFastPath && len(valueData) > 0 && valueData[0] == '{' {
-			if bytesContainDeletedAt(valueData) {
-				continue
-			}
-			// Try byte-level extraction; fall back to full decode on failure
-			allOK := true
-			for i, spec := range specs {
-				if spec.funcName == "COUNT" {
-					states[i].count++
-					continue
-				}
-				if fval, ok := extractColumnFloat64(valueData, spec.colIdx); ok {
-					states[i].sum += fval
-					states[i].count++
-					states[i].hasVal = true
-				} else {
-					allOK = false
-					break
-				}
-			}
-			if allOK {
-				continue
-			}
-			// Byte extraction failed for this row — undo partial updates and fall through
-			for i, spec := range specs {
-				if spec.funcName == "COUNT" {
-					states[i].count--
-				}
-			}
-		}
-
-		vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-		if err != nil {
-			continue
-		}
-		if vrow.Version.DeletedAt > 0 {
-			continue
-		}
-		row := vrow.Data
-
-		// Apply WHERE
-		if stmt.Where != nil {
-			matched, err := evaluateWhere(cat, row, table.Columns, stmt.Where, args)
-			if err != nil || !matched {
-				continue
-			}
-		}
-
-		// Update aggregates
-		for i, spec := range specs {
-			if spec.funcName == "COUNT" {
-				if spec.colName == "*" {
-					states[i].count++
-				} else if spec.colIdx < len(row) && row[spec.colIdx] != nil {
-					states[i].count++
-				}
-				continue
-			}
-
-			if spec.colIdx >= len(row) || row[spec.colIdx] == nil {
-				continue
-			}
-			val := row[spec.colIdx]
-
-			switch spec.funcName {
-			case "SUM":
-				if fval, ok := toFloat64Safe(val); ok {
-					states[i].sum += fval
-					states[i].hasVal = true
-				}
-			case "AVG":
-				if fval, ok := toFloat64Safe(val); ok {
-					states[i].sum += fval
-					states[i].count++
-					states[i].hasVal = true
-				}
-			case "MIN":
-				if !states[i].hasVal {
-					states[i].genVal = val
-					states[i].hasVal = true
-				} else if compareValues(val, states[i].genVal) < 0 {
-					states[i].genVal = val
-				}
-			case "MAX":
-				if !states[i].hasVal {
-					states[i].genVal = val
-					states[i].hasVal = true
-				} else if compareValues(val, states[i].genVal) > 0 {
-					states[i].genVal = val
-				}
-			}
-		}
-	}
-	iter.Close()
-
-	// Build result
-	colNames := make([]string, len(specs))
-	resultRow := make([]interface{}, len(specs))
-	for i, spec := range specs {
-		colNames[i] = spec.alias
-		switch spec.funcName {
-		case "COUNT":
-			resultRow[i] = states[i].count
-		case "SUM":
-			if states[i].hasVal {
-				resultRow[i] = states[i].sum
-			}
-		case "AVG":
-			if states[i].hasVal && states[i].count > 0 {
-				resultRow[i] = states[i].sum / float64(states[i].count)
-			}
-		case "MIN", "MAX":
-			if states[i].hasVal {
-				resultRow[i] = states[i].genVal
-			}
-		}
-	}
-
-	return colNames, [][]interface{}{resultRow}, true
-}
-
-// toFloat64Safe converts a value to float64, returning (value, true) or (0, false)
-func toFloat64Safe(v interface{}) (float64, bool) {
-	switch n := v.(type) {
-	case int64:
-		return float64(n), true
-	case float64:
-		return n, true
-	case int:
-		return float64(n), true
-	case int32:
-		return float64(n), true
-	}
-	return 0, false
-}
-
-func bytesContainDeletedAt(data []byte) bool {
-	// Look for "deleted_at": followed by a non-zero digit
-	needle := []byte(`"deleted_at":`)
-	for i := 0; i <= len(data)-len(needle)-1; i++ {
-		match := true
-		for j := 0; j < len(needle); j++ {
-			if data[i+j] != needle[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			// Check the value after the colon
-			pos := i + len(needle)
-			// Skip whitespace
-			for pos < len(data) && (data[pos] == ' ' || data[pos] == '\t') {
-				pos++
-			}
-			// If value is 0, row is NOT deleted
-			if pos < len(data) && data[pos] == '0' {
-				return false
-			}
-			// Non-zero value means row IS deleted
-			return true
-		}
-	}
-	// No deleted_at field found — treat as not deleted (legacy format)
-	return false
-}
-
 func stripHiddenCols(rows [][]interface{}, totalCols int, hiddenCount int) [][]interface{} {
 	if hiddenCount <= 0 {
 		return rows
@@ -2600,6 +1424,7 @@ func stripHiddenCols(rows [][]interface{}, totalCols int, hiddenCount int) [][]i
 
 func rowKeyForDedup(vals []interface{}) string {
 	var b strings.Builder
+	b.Grow(len(vals) * 16)
 	for i, val := range vals {
 		if i > 0 {
 			b.WriteByte(0) // null byte separator
@@ -2607,7 +1432,27 @@ func rowKeyForDedup(vals []interface{}) string {
 		if val == nil {
 			b.WriteString("\x01NULL\x01") // tagged NULL marker
 		} else {
-			b.WriteString(fmt.Sprintf("V:%v", val))
+			b.WriteString("V:")
+			switch v := val.(type) {
+			case string:
+				b.WriteString(v)
+			case []byte:
+				b.Write(v)
+			case int64:
+				b.WriteString(strconv.FormatInt(v, 10))
+			case int:
+				b.WriteString(strconv.Itoa(v))
+			case float64:
+				b.WriteString(strconv.FormatFloat(v, 'f', -1, 64))
+			case bool:
+				if v {
+					b.WriteString("true")
+				} else {
+					b.WriteString("false")
+				}
+			default:
+				b.WriteString(ValueToStringKey(v))
+			}
 		}
 	}
 	return b.String()
@@ -3381,6 +2226,10 @@ func moduloValues(a, b interface{}) (interface{}, error) {
 	return math.Mod(aNum, bNum), nil
 }
 
+func concatValues(a, b interface{}) string {
+	return ValueToStringKey(a) + ValueToStringKey(b)
+}
+
 func evaluateLike(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.LikeExpr, args []interface{}) (interface{}, error) {
 	left, err := evaluateExpression(c, row, columns, expr.Expr, args)
 	if err != nil {
@@ -3399,12 +2248,12 @@ func evaluateLike(c *Catalog, row []interface{}, columns []ColumnDef, expr *quer
 
 	leftStr, ok := left.(string)
 	if !ok {
-		leftStr = fmt.Sprintf("%v", left)
+		leftStr = ValueToStringKey(left)
 	}
 
 	patternStr, ok := pattern.(string)
 	if !ok {
-		patternStr = fmt.Sprintf("%v", pattern)
+		patternStr = ValueToStringKey(pattern)
 	}
 
 	// Handle ESCAPE character
@@ -3412,7 +2261,7 @@ func evaluateLike(c *Catalog, row []interface{}, columns []ColumnDef, expr *quer
 	if expr.Escape != nil {
 		escVal, err := evaluateExpression(c, row, columns, expr.Escape, args)
 		if err == nil && escVal != nil {
-			escStr := fmt.Sprintf("%v", escVal)
+			escStr := ValueToStringKey(escVal)
 			if len(escStr) == 1 {
 				escapeChar = escStr[0]
 			}
@@ -3642,7 +2491,7 @@ func evaluateCastExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *
 		}
 		return float64(0), nil
 	case query.TokenText:
-		return fmt.Sprintf("%v", val), nil
+		return ValueToStringKey(val), nil
 	case query.TokenBoolean:
 		if b, ok := val.(bool); ok {
 			return b, nil
@@ -3690,214 +2539,6 @@ func evaluateBetween(c *Catalog, row []interface{}, columns []ColumnDef, expr *q
 		return !result, nil
 	}
 	return result, nil
-}
-
-func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, error) {
-	switch funcName {
-	case "JSON_EXTRACT":
-		if len(args) < 2 {
-			return nil, fmt.Errorf("JSON_EXTRACT requires 2 arguments")
-		}
-		// Handle various argument types
-		var jsonData string
-		var path string
-
-		// First arg - could be string or other
-		switch v := args[0].(type) {
-		case string:
-			jsonData = v
-		default:
-			if args[0] != nil {
-				jsonData = fmt.Sprintf("%v", args[0])
-			}
-		}
-
-		// Second arg - could be string or other
-		switch v := args[1].(type) {
-		case string:
-			path = v
-		default:
-			if args[1] != nil {
-				path = fmt.Sprintf("%v", args[1])
-			}
-		}
-
-		return JSONExtract(jsonData, path)
-
-	case "JSON_SET":
-		if len(args) < 3 {
-			return nil, fmt.Errorf("JSON_SET requires 3 arguments")
-		}
-		jsonData, _ := args[0].(string)
-		path, _ := args[1].(string)
-		value, _ := args[2].(string)
-		return JSONSet(jsonData, path, value)
-
-	case "JSON_REMOVE":
-		if len(args) < 2 {
-			return nil, fmt.Errorf("JSON_REMOVE requires 2 arguments")
-		}
-		jsonData, _ := args[0].(string)
-		path, _ := args[1].(string)
-		return JSONRemove(jsonData, path)
-
-	case "JSON_VALID":
-		if len(args) < 1 {
-			return nil, fmt.Errorf("JSON_VALID requires 1 argument")
-		}
-		if args[0] == nil {
-			return false, nil
-		}
-		str, ok := args[0].(string)
-		if !ok {
-			return false, nil
-		}
-		return IsValidJSON(str), nil
-
-	case "JSON_ARRAY_LENGTH":
-		if len(args) < 1 {
-			return nil, fmt.Errorf("JSON_ARRAY_LENGTH requires 1 argument")
-		}
-		if args[0] == nil {
-			return 0, nil
-		}
-		jsonData, ok := args[0].(string)
-		if !ok {
-			return 0, nil
-		}
-		length, err := JSONArrayLength(jsonData)
-		if err != nil {
-			return nil, err
-		}
-		return float64(length), nil
-
-	case "JSON_TYPE":
-		if len(args) < 1 {
-			return nil, fmt.Errorf("JSON_TYPE requires at least 1 argument")
-		}
-		if args[0] == nil {
-			return "null", nil
-		}
-		jsonData, ok := args[0].(string)
-		if !ok {
-			return "unknown", nil
-		}
-		var path string
-		if len(args) > 1 {
-			path, _ = args[1].(string)
-		}
-		return JSONType(jsonData, path)
-
-	case "JSON_KEYS":
-		if len(args) < 1 {
-			return nil, fmt.Errorf("JSON_KEYS requires at least 1 argument")
-		}
-		if args[0] == nil {
-			return nil, nil
-		}
-		jsonData, ok := args[0].(string)
-		if !ok {
-			return nil, nil
-		}
-		return JSONKeys(jsonData)
-
-	case "JSON_PRETTY":
-		if len(args) < 1 {
-			return nil, fmt.Errorf("JSON_PRETTY requires 1 argument")
-		}
-		if args[0] == nil {
-			return "", nil
-		}
-		jsonData, ok := args[0].(string)
-		if !ok {
-			return nil, nil
-		}
-		return JSONPretty(jsonData)
-
-	case "JSON_MINIFY":
-		if len(args) < 1 {
-			return nil, fmt.Errorf("JSON_MINIFY requires 1 argument")
-		}
-		if args[0] == nil {
-			return "", nil
-		}
-		jsonData, ok := args[0].(string)
-		if !ok {
-			return nil, nil
-		}
-		return JSONMinify(jsonData)
-
-	case "JSON_MERGE":
-		if len(args) < 2 {
-			return nil, fmt.Errorf("JSON_MERGE requires 2 arguments")
-		}
-		json1, _ := args[0].(string)
-		json2, _ := args[1].(string)
-		return JSONMerge(json1, json2)
-
-	case "JSON_QUOTE":
-		if len(args) < 1 {
-			return nil, fmt.Errorf("JSON_QUOTE requires 1 argument")
-		}
-		if args[0] == nil {
-			return "null", nil
-		}
-		str, ok := args[0].(string)
-		if !ok {
-			return nil, nil
-		}
-		return JSONQuote(str), nil
-
-	case "JSON_UNQUOTE":
-		if len(args) < 1 {
-			return nil, fmt.Errorf("JSON_UNQUOTE requires 1 argument")
-		}
-		if args[0] == nil {
-			return "", nil
-		}
-		str, ok := args[0].(string)
-		if !ok {
-			return nil, nil
-		}
-		return JSONUnquote(str)
-
-	case "REGEXP_MATCH":
-		if len(args) < 2 {
-			return nil, fmt.Errorf("REGEXP_MATCH requires 2 arguments")
-		}
-		str, _ := args[0].(string)
-		pattern, _ := args[1].(string)
-		if str == "" || pattern == "" {
-			return false, nil
-		}
-		return RegexMatch(str, pattern)
-
-	case "REGEXP_REPLACE":
-		if len(args) < 3 {
-			return nil, fmt.Errorf("REGEXP_REPLACE requires 3 arguments")
-		}
-		str, _ := args[0].(string)
-		pattern, _ := args[1].(string)
-		replacement, _ := args[2].(string)
-		if str == "" || pattern == "" {
-			return str, nil
-		}
-		return RegexReplace(str, pattern, replacement)
-
-	case "REGEXP_EXTRACT":
-		if len(args) < 2 {
-			return nil, fmt.Errorf("REGEXP_EXTRACT requires 2 arguments")
-		}
-		str, _ := args[0].(string)
-		pattern, _ := args[1].(string)
-		if str == "" || pattern == "" {
-			return []string{}, nil
-		}
-		return RegexExtract(str, pattern)
-
-	default:
-		return nil, fmt.Errorf("unknown function: %s", funcName)
-	}
 }
 
 func tokenTypeToColumnType(t query.TokenType) string {
@@ -4062,7 +2703,7 @@ func (c *Catalog) getTableTreesForScan(table *TableDef) ([]*btree.BTree, error) 
 			return nil, err
 		}
 		for i, row := range rows {
-			key := []byte(fmt.Sprintf("fdw:%d", i))
+			key := []byte("fdw:" + strconv.Itoa(i))
 			val, err := encodeVersionedRow(row, nil)
 			if err != nil {
 				return nil, err
@@ -4193,7 +2834,7 @@ func typeTaggedKey(v interface{}) string {
 	case string:
 		return "S:" + val
 	default:
-		return "S:" + fmt.Sprintf("%v", v)
+		return "S:" + ValueToStringKey(v)
 	}
 }
 
@@ -4418,7 +3059,7 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 		case query.TokenOr:
 			return toBool(left) || toBool(right), nil
 		case query.TokenConcat:
-			return fmt.Sprintf("%v%v", left, right), nil
+			return concatValues(left, right), nil
 		}
 		return nil, fmt.Errorf("unsupported binary operator in value expression")
 	case *query.CaseExpr:
@@ -4486,7 +3127,7 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			}
 			return float64(0), nil
 		case query.TokenText:
-			return fmt.Sprintf("%v", val), nil
+			return ValueToStringKey(val), nil
 		}
 		return val, nil
 	case *query.FunctionCall:
@@ -4536,24 +3177,25 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			return nil, nil
 		case "UPPER":
 			if len(evalArgs) == 1 && evalArgs[0] != nil {
-				return toUpperFast(fmt.Sprintf("%v", evalArgs[0])), nil
+				return toUpperFast(ValueToStringKey(evalArgs[0])), nil
 			}
 			return nil, nil
 		case "LOWER":
 			if len(evalArgs) == 1 && evalArgs[0] != nil {
-				return toLowerFast(fmt.Sprintf("%v", evalArgs[0])), nil
+				return toLowerFast(ValueToStringKey(evalArgs[0])), nil
 			}
 			return nil, nil
 		case "LENGTH":
 			if len(evalArgs) == 1 && evalArgs[0] != nil {
-				return len(fmt.Sprintf("%v", evalArgs[0])), nil
+				return len(ValueToStringKey(evalArgs[0])), nil
 			}
 			return nil, nil
 		case "CONCAT":
 			var sb strings.Builder
+			sb.Grow(len(evalArgs) * 16)
 			for _, a := range evalArgs {
 				if a != nil {
-					sb.WriteString(fmt.Sprintf("%v", a))
+					sb.WriteString(ValueToStringKey(a))
 					if sb.Len() > maxStringResultLen {
 						return nil, fmt.Errorf("CONCAT result exceeds maximum length")
 					}
@@ -4570,17 +3212,17 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			return nil, nil
 		case "TRIM":
 			if len(evalArgs) >= 1 && evalArgs[0] != nil {
-				return strings.TrimSpace(fmt.Sprintf("%v", evalArgs[0])), nil
+				return strings.TrimSpace(ValueToStringKey(evalArgs[0])), nil
 			}
 			return nil, nil
 		case "LTRIM":
 			if len(evalArgs) >= 1 && evalArgs[0] != nil {
-				return strings.TrimLeft(fmt.Sprintf("%v", evalArgs[0]), " \t\n\r"), nil
+				return strings.TrimLeft(ValueToStringKey(evalArgs[0]), " \t\n\r"), nil
 			}
 			return nil, nil
 		case "RTRIM":
 			if len(evalArgs) >= 1 && evalArgs[0] != nil {
-				return strings.TrimRight(fmt.Sprintf("%v", evalArgs[0]), " \t\n\r"), nil
+				return strings.TrimRight(ValueToStringKey(evalArgs[0]), " \t\n\r"), nil
 			}
 			return nil, nil
 		case "SUBSTR", "SUBSTRING":
@@ -4590,7 +3232,7 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			if evalArgs[0] == nil || evalArgs[1] == nil {
 				return nil, nil
 			}
-			str := fmt.Sprintf("%v", evalArgs[0])
+			str := ValueToStringKey(evalArgs[0])
 			start, _ := toFloat64(evalArgs[1])
 			startInt := int(start) - 1
 			if startInt < 0 {
@@ -4615,12 +3257,12 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			if len(evalArgs) < 3 || evalArgs[0] == nil || evalArgs[1] == nil || evalArgs[2] == nil {
 				return nil, nil
 			}
-			str := fmt.Sprintf("%v", evalArgs[0])
-			old := fmt.Sprintf("%v", evalArgs[1])
+			str := ValueToStringKey(evalArgs[0])
+			old := ValueToStringKey(evalArgs[1])
 			if old == "" {
 				return str, nil
 			}
-			newStr := fmt.Sprintf("%v", evalArgs[2])
+			newStr := ValueToStringKey(evalArgs[2])
 			result := strings.ReplaceAll(str, old, newStr)
 			if len(result) > maxStringResultLen {
 				return nil, fmt.Errorf("REPLACE result exceeds maximum length")
@@ -4628,8 +3270,8 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			return result, nil
 		case "INSTR":
 			if len(evalArgs) >= 2 && evalArgs[0] != nil && evalArgs[1] != nil {
-				str := fmt.Sprintf("%v", evalArgs[0])
-				substr := fmt.Sprintf("%v", evalArgs[1])
+				str := ValueToStringKey(evalArgs[0])
+				substr := ValueToStringKey(evalArgs[1])
 				idx := strings.Index(str, substr)
 				if idx < 0 {
 					return int64(0), nil
@@ -4716,7 +3358,7 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			return nil, nil
 		case "REVERSE":
 			if len(evalArgs) >= 1 && evalArgs[0] != nil {
-				str := fmt.Sprintf("%v", evalArgs[0])
+				str := ValueToStringKey(evalArgs[0])
 				runes := []rune(str)
 				for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
 					runes[i], runes[j] = runes[j], runes[i]
@@ -4726,7 +3368,7 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			return nil, nil
 		case "REPEAT":
 			if len(evalArgs) >= 2 && evalArgs[0] != nil && evalArgs[1] != nil {
-				str := fmt.Sprintf("%v", evalArgs[0])
+				str := ValueToStringKey(evalArgs[0])
 				n, _ := toFloat64(evalArgs[1])
 				if int(n) <= 0 {
 					return "", nil
@@ -4815,8 +3457,8 @@ func catalogCompareValues(a, b interface{}) int {
 	}
 
 	// String comparison fallback
-	aStr := fmt.Sprintf("%v", a)
-	bStr := fmt.Sprintf("%v", b)
+	aStr := ValueToStringKey(a)
+	bStr := ValueToStringKey(b)
 	if aStr < bStr {
 		return -1
 	}

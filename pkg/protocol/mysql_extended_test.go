@@ -485,7 +485,7 @@ func TestReadLenEncIntVariations(t *testing.T) {
 	}
 }
 
-// TestWriteLenEncIntVariations tests writeLenEncInt edge cases
+// TestWriteLenEncIntVariations tests appendLenEncInt(nil, edge cases
 func TestWriteLenEncIntVariations(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -504,9 +504,9 @@ func TestWriteLenEncIntVariations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := writeLenEncInt(tt.value)
+			result := appendLenEncInt(nil, tt.value)
 			if !bytes.Equal(result, tt.expected) {
-				t.Errorf("writeLenEncInt(%d) = %v; expected %v",
+				t.Errorf("appendLenEncInt(nil, %d) = %v; expected %v",
 					tt.value, result, tt.expected)
 			}
 		})

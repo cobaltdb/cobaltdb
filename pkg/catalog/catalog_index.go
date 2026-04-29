@@ -211,18 +211,9 @@ func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (
 	if idxName == "__PK__" {
 		result := make(map[string]bool)
 		// Use serializePK format for consistency with table storage
-		var pkKey string
-		switch val := searchVal.(type) {
-		case int:
-			pkKey = fmt.Sprintf("%020d", int64(val))
-		case int64:
-			pkKey = fmt.Sprintf("%020d", val)
-		case float64:
-			pkKey = fmt.Sprintf("%020d", int64(val))
-		case string:
-			pkKey = "S:" + val
-		default:
-			pkKey = fmt.Sprintf("%v", val)
+		pkKey, ok := formatKeyComponent(searchVal)
+		if !ok {
+			pkKey = ValueToStringKey(searchVal)
 		}
 		result[pkKey] = true
 		return result, true

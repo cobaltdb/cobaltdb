@@ -295,6 +295,7 @@ type Manager struct {
 	counter     uint64 // atomic, monotonic
 	active      map[uint64]*Transaction
 	versions    map[string]uint64 // key → latest committed version
+	versionStore *VersionStore    // MVCC version chain storage
 	mu          sync.RWMutex
 	commitCount atomic.Int64
 	pool        interface{} // BufferPool (using interface{} to avoid import cycle)
@@ -306,8 +307,13 @@ type Manager struct {
 	deadlockDetectorOnce  sync.Once
 
 	// Lock management for deadlock detection
-	lockOwners map[string]uint64 // key → transaction ID that holds the lock
-	lockMu     sync.RWMutex
+	lockEntries map[string]*lockEntry // key → lock state (shared + exclusive)
+	lockMu      sync.RWMutex
+}
+
+type lockEntry struct {
+	shared    map[uint64]bool // txnIDs holding shared locks
+	exclusive uint64          // txnID holding exclusive lock (0 if none)
 }
 
 // NewManager creates a new transaction manager
@@ -315,11 +321,12 @@ func NewManager(pool, wal interface{}) *Manager {
 	m := &Manager{
 		active:                make(map[uint64]*Transaction),
 		versions:              make(map[string]uint64),
+		versionStore:          NewVersionStore(),
 		pool:                  pool,
 		wal:                   wal,
 		deadlockCheckInterval: 100 * time.Millisecond, // Check every 100ms
 		stopDeadlockDetector:  make(chan struct{}),
-		lockOwners:            make(map[string]uint64),
+		lockEntries:           make(map[string]*lockEntry),
 	}
 	return m
 }
@@ -439,19 +446,50 @@ func (m *Manager) resolveDeadlock(cycle []uint64, activeTxns map[uint64]*Transac
 	}
 }
 
-// AcquireLock attempts to acquire a lock on a key for a transaction
-// Returns ErrDeadlockDetected if acquiring this lock would cause a deadlock
+// AcquireLock acquires an exclusive lock (backward compatible).
 func (m *Manager) AcquireLock(txnID uint64, key string, timeout time.Duration) error {
+	return m.AcquireLockMode(txnID, key, LockExclusive, timeout)
+}
+
+// AcquireLockMode acquires a lock in the specified mode (shared or exclusive).
+func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeout time.Duration) error {
 	m.lockMu.Lock()
-	defer m.lockMu.Unlock()
 
-	// Check who owns this lock
-	ownerID, locked := m.lockOwners[key]
-	if !locked || ownerID == txnID {
-		// Lock is available or already held by this transaction
-		m.lockOwners[key] = txnID
+	entry := m.lockEntries[key]
+	if entry == nil {
+		entry = &lockEntry{shared: make(map[uint64]bool)}
+		m.lockEntries[key] = entry
+	}
 
-		// Record in transaction
+	// Check if we can acquire immediately
+	canAcquire := false
+	switch mode {
+	case LockShared:
+		// Shared lock: allowed if no exclusive lock, or we hold the exclusive lock
+		if entry.exclusive == 0 || entry.exclusive == txnID {
+			canAcquire = true
+		}
+	case LockExclusive:
+		// Exclusive lock: allowed if no holders, or we already hold exclusive
+		if entry.exclusive == txnID {
+			canAcquire = true
+		} else if entry.exclusive == 0 && len(entry.shared) == 0 {
+			canAcquire = true
+		} else if len(entry.shared) == 1 && entry.shared[txnID] {
+			// Upgrade: we hold the only shared lock → exclusive
+			canAcquire = true
+		}
+	}
+
+	if canAcquire {
+		switch mode {
+		case LockShared:
+			entry.shared[txnID] = true
+		case LockExclusive:
+			entry.exclusive = txnID
+		}
+		m.lockMu.Unlock()
+
 		m.mu.RLock()
 		txn, exists := m.active[txnID]
 		m.mu.RUnlock()
@@ -461,24 +499,35 @@ func (m *Manager) AcquireLock(txnID uint64, key string, timeout time.Duration) e
 		return nil
 	}
 
-	// Lock is held by another transaction - set up waiting
+	// Determine who is blocking us
+	blockerID := entry.exclusive
+	if blockerID == 0 {
+		// Blocked by shared lock holders — pick any
+		for id := range entry.shared {
+			if id != txnID {
+				blockerID = id
+				break
+			}
+		}
+	}
+
 	m.mu.RLock()
 	txn, exists := m.active[txnID]
-	waitingTxn, waitingExists := m.active[ownerID]
+	waitingTxn, waitingExists := m.active[blockerID]
 	m.mu.RUnlock()
 
 	if !exists {
+		m.lockMu.Unlock()
 		return ErrTxnNotFound
 	}
 
-	// Set waiting relationship for deadlock detection
 	if waitingExists {
-		txn.SetWaitingFor(ownerID)
-		_ = waitingTxn // Avoid unused variable error
+		txn.SetWaitingFor(blockerID)
+		_ = waitingTxn
 	}
 
-	// Check if this would cause a deadlock immediately
-	if m.wouldCauseDeadlock(txnID, ownerID) {
+	if m.wouldCauseDeadlock(txnID, blockerID) {
+		m.lockMu.Unlock()
 		txn.SetWaitingFor(0)
 		return ErrDeadlockDetected
 	}
@@ -497,13 +546,34 @@ func (m *Manager) AcquireLock(txnID uint64, key string, timeout time.Duration) e
 			case <-timer.C:
 				m.lockMu.Lock()
 				txn.SetWaitingFor(0)
+					m.lockMu.Unlock()
 				return fmt.Errorf("lock acquisition timeout")
 			case <-ticker.C:
 				m.lockMu.Lock()
-				currentOwner, stillLocked := m.lockOwners[key]
-				if !stillLocked || currentOwner == txnID {
-					// Lock became available
-					m.lockOwners[key] = txnID
+				e := m.lockEntries[key]
+				if e == nil {
+					e = &lockEntry{shared: make(map[uint64]bool)}
+					m.lockEntries[key] = e
+				}
+				// Re-check if we can acquire
+				ok := false
+				switch mode {
+				case LockShared:
+					if e.exclusive == 0 || e.exclusive == txnID {
+						ok = true
+					}
+				case LockExclusive:
+					if e.exclusive == txnID || (e.exclusive == 0 && len(e.shared) == 0) || (len(e.shared) == 1 && e.shared[txnID]) {
+						ok = true
+					}
+				}
+				if ok {
+					switch mode {
+					case LockShared:
+						e.shared[txnID] = true
+					case LockExclusive:
+						e.exclusive = txnID
+					}
 					m.lockMu.Unlock()
 					txn.SetWaitingFor(0)
 					txn.AddLockHeld(key)
@@ -514,7 +584,8 @@ func (m *Manager) AcquireLock(txnID uint64, key string, timeout time.Duration) e
 		}
 	}
 
-	return fmt.Errorf("lock is held by transaction %d", ownerID)
+	m.lockMu.Unlock()
+	return fmt.Errorf("lock is held by transaction %d", blockerID)
 }
 
 // wouldCauseDeadlock checks if txnID waiting for ownerID would create a cycle
@@ -555,10 +626,26 @@ func (m *Manager) ReleaseLock(txnID uint64, key string) {
 	m.lockMu.Lock()
 	defer m.lockMu.Unlock()
 
-	if owner, ok := m.lockOwners[key]; ok && owner == txnID {
-		delete(m.lockOwners, key)
+	entry := m.lockEntries[key]
+	if entry == nil {
+		return
+	}
 
-		// Clear from transaction's held locks
+	released := false
+	if entry.exclusive == txnID {
+		entry.exclusive = 0
+		released = true
+	}
+	if entry.shared[txnID] {
+		delete(entry.shared, txnID)
+		released = true
+	}
+
+	if released {
+		if entry.exclusive == 0 && len(entry.shared) == 0 {
+			delete(m.lockEntries, key)
+		}
+
 		m.mu.RLock()
 		txn, exists := m.active[txnID]
 		m.mu.RUnlock()
@@ -570,17 +657,19 @@ func (m *Manager) ReleaseLock(txnID uint64, key string) {
 
 // ReleaseAllLocks releases all locks held by a transaction
 func (m *Manager) ReleaseAllLocks(txnID uint64) {
-	// Get locks before any state changes
 	m.mu.RLock()
 	txn, exists := m.active[txnID]
 	m.mu.RUnlock()
 
 	if !exists {
-		// Transaction might already be removed, try to clean up from lockOwners
 		m.lockMu.Lock()
-		for key, owner := range m.lockOwners {
-			if owner == txnID {
-				delete(m.lockOwners, key)
+		for key, entry := range m.lockEntries {
+			if entry.exclusive == txnID {
+				entry.exclusive = 0
+			}
+			delete(entry.shared, txnID)
+			if entry.exclusive == 0 && len(entry.shared) == 0 {
+				delete(m.lockEntries, key)
 			}
 		}
 		m.lockMu.Unlock()
@@ -696,8 +785,11 @@ func (m *Manager) applyWrites(txn *Transaction) error {
 	defer m.mu.Unlock()
 
 	// Update versions for all written keys
-	for key := range txn.WriteSet {
+	for key, value := range txn.WriteSet {
 		m.versions[key] = txn.ID
+		if m.versionStore != nil {
+			m.versionStore.Commit(key, value, txn.ID)
+		}
 	}
 
 	// Apply writes to storage via BufferPool if available
@@ -762,10 +854,18 @@ func (m *Manager) pruneVersions() {
 	}
 
 	// If no active transactions, we can clear all versions
-	if minActive == math.MaxUint64 {
-		m.versions = make(map[string]uint64)
-		return
-	}
+		if minActive == math.MaxUint64 {
+			m.versions = make(map[string]uint64)
+			if m.versionStore != nil {
+				m.versionStore = NewVersionStore()
+			}
+			return
+		}
+
+		// Prune old version chain entries
+		if m.versionStore != nil {
+			m.versionStore.Prune(minActive)
+		}
 }
 
 // removeActive removes a transaction from the active set
@@ -805,4 +905,9 @@ func (m *Manager) GetCurrentVersion(key string) uint64 {
 	defer m.mu.RUnlock()
 
 	return m.versions[key]
+}
+
+// GetVersionStore returns the MVCC version store for snapshot reads.
+func (m *Manager) GetVersionStore() *VersionStore {
+	return m.versionStore
 }

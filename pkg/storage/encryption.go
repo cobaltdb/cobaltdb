@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 
 	"golang.org/x/crypto/argon2"
@@ -252,9 +253,56 @@ func (eb *EncryptedBackend) GetCipher() cipher.AEAD {
 	return eb.cipher
 }
 
-// GetSalt returns the salt used for key derivation
+// GetSalt returns a copy of the salt used for key derivation
 func (eb *EncryptedBackend) GetSalt() []byte {
 	eb.mu.RLock()
 	defer eb.mu.RUnlock()
-	return eb.config.Salt
+	if len(eb.config.Salt) == 0 {
+		return nil
+	}
+	salt := make([]byte, len(eb.config.Salt))
+	copy(salt, eb.config.Salt)
+	return salt
+}
+
+const saltFileMarker = "CBLT_SALT_V1"
+
+// PersistSalt writes the salt to a sidecar file (<dbpath>.salt).
+// This must be called after NewEncryptedBackend when a new salt is generated.
+func PersistSalt(dbPath string, salt []byte) error {
+	if len(salt) == 0 {
+		return nil
+	}
+	saltPath := dbPath + ".salt"
+	data := make([]byte, 0, len(saltFileMarker)+1+len(salt))
+	data = append(data, saltFileMarker...)
+	data = append(data, '\n')
+	data = append(data, salt...)
+	return os.WriteFile(saltPath, data, 0600)
+}
+
+// LoadSalt reads a previously persisted salt from the sidecar file.
+// Returns nil without error if the file does not exist.
+func LoadSalt(dbPath string) ([]byte, error) {
+	saltPath := dbPath + ".salt"
+	data, err := os.ReadFile(saltPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read salt file: %w", err)
+	}
+
+	// Verify marker
+	markerLen := len(saltFileMarker) + 1 // marker + newline
+	if len(data) < markerLen || string(data[:len(saltFileMarker)]) != saltFileMarker {
+		return nil, ErrInvalidSalt
+	}
+
+	salt := make([]byte, len(data)-markerLen)
+	copy(salt, data[markerLen:])
+	if len(salt) == 0 {
+		return nil, ErrInvalidSalt
+	}
+	return salt, nil
 }

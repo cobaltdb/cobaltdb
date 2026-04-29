@@ -7,6 +7,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -1113,7 +1114,7 @@ func (c *Catalog) getColumnsForTableOrView(name string) []ColumnDef {
 				colName = c.Column
 			}
 			if colName == "" {
-				colName = fmt.Sprintf("column_%d", i)
+				colName = "column_" + strconv.Itoa(i)
 			}
 			cols[i] = ColumnDef{Name: colName, Type: "TEXT"}
 		}
@@ -1150,9 +1151,9 @@ func (c *Catalog) executeInsteadOfTrigger(ctx context.Context, trigger *query.Cr
 				case float64:
 					exprRow[j] = &query.NumberLiteral{Value: v}
 				case int64:
-					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: fmt.Sprintf("%d", v)}
+					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: strconv.FormatInt(int64(v), 10)}
 				case int:
-					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: fmt.Sprintf("%d", v)}
+					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: strconv.FormatInt(int64(v), 10)}
 				case bool:
 					exprRow[j] = &query.BooleanLiteral{Value: v}
 				default:

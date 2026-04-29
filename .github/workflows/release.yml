@@ -61,6 +61,18 @@ jobs:
             -o "dist/cobaltdb-server-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
             ./cmd/cobaltdb-server
 
+      - name: Build cobaltdb-cli
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o "dist/cobaltdb-cli-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
+            ./cmd/cobaltdb-cli
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -81,6 +93,12 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          shasum -a 256 * > checksums.txt
+          cat checksums.txt
 
       - name: Generate changelog
         id: changelog
@@ -116,13 +134,19 @@ jobs:
             ```
 
             **Server binary:** Download the appropriate binary below for your platform.
+            **CLI binary:** Also available for all platforms (`cobaltdb-cli-*`).
 
             ### Platforms
-            | OS | Arch | Binary |
-            |---|---|---|
-            | Linux | amd64 | `cobaltdb-server-linux-amd64` |
-            | Linux | arm64 | `cobaltdb-server-linux-arm64` |
-            | macOS | amd64 | `cobaltdb-server-darwin-amd64` |
-            | macOS | arm64 | `cobaltdb-server-darwin-arm64` |
-            | Windows | amd64 | `cobaltdb-server-windows-amd64.exe` |
+            | OS | Arch | Server | CLI |
+            |---|---|---|---|
+            | Linux | amd64 | `cobaltdb-server-linux-amd64` | `cobaltdb-cli-linux-amd64` |
+            | Linux | arm64 | `cobaltdb-server-linux-arm64` | `cobaltdb-cli-linux-arm64` |
+            | macOS | amd64 | `cobaltdb-server-darwin-amd64` | `cobaltdb-cli-darwin-amd64` |
+            | macOS | arm64 | `cobaltdb-server-darwin-arm64` | `cobaltdb-cli-darwin-arm64` |
+            | Windows | amd64 | `cobaltdb-server-windows-amd64.exe` | `cobaltdb-cli-windows-amd64.exe` |
+
+            Verify downloads with `checksums.txt`:
+            ```bash
+            shasum -a 256 -c checksums.txt --ignore-missing
+            ```
           files: dist/*

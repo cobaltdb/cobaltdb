@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -171,7 +172,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				if strVal, ok := pkVal.(string); ok {
 					newKey = []byte("S:" + strVal)
 				} else if fVal, ok := toFloat64(pkVal); ok {
-					newKey = []byte(fmt.Sprintf("%020d", int64(fVal)))
+					newKey = []byte(formatKey(int64(fVal)))
 				}
 				// Check if the new PK already exists (duplicate PK violation)
 				if existingData, err := updateTree.Get(newKey); err == nil && existingData != nil {
@@ -533,22 +534,10 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		}
 
 		// Check RLS policy for UPDATE on this specific row
-		if c.enableRLS && c.rlsManager != nil {
-			rowMap := make(map[string]interface{}, len(targetTable.Columns))
-			for i, col := range targetTable.Columns {
-				if i < len(row) {
-					rowMap[col.Name] = row[i]
-				}
-			}
-			user, _ := ctx.Value("cobaltdb_user").(string)
-			roles, _ := ctx.Value("cobaltdb_roles").([]string)
-			allowed, rlsErr := c.checkRLSForUpdateInternal(ctx, stmt.Table, rowMap, user, roles)
-			if rlsErr != nil {
-				return 0, rowsAffected, fmt.Errorf("RLS check failed: %w", rlsErr)
-			}
-			if !allowed {
-				continue // Skip rows not permitted by RLS policy
-			}
+		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, targetTable.Columns, row, security.PolicyUpdate); rlsErr != nil {
+			return 0, rowsAffected, fmt.Errorf("RLS check failed: %w", rlsErr)
+		} else if !allowed {
+			continue
 		}
 
 		// Check constraints (simplified - full checks in actual implementation)
@@ -726,22 +715,10 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		row := vrow.Data
 
 		// Check RLS policy for DELETE on this row
-		if c.enableRLS && c.rlsManager != nil {
-			rowMap := make(map[string]interface{}, len(targetTable.Columns))
-			for i, col := range targetTable.Columns {
-				if i < len(row) {
-					rowMap[col.Name] = row[i]
-				}
-			}
-			user, _ := ctx.Value("cobaltdb_user").(string)
-			roles, _ := ctx.Value("cobaltdb_roles").([]string)
-			allowed, rlsErr := c.checkRLSForDeleteInternal(ctx, stmt.Table, rowMap, user, roles)
-			if rlsErr != nil {
-				return 0, 0, fmt.Errorf("RLS check failed: %w", rlsErr)
-			}
-			if !allowed {
-				continue // Skip rows not permitted by RLS policy
-			}
+		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, targetTable.Columns, row, security.PolicyDelete); rlsErr != nil {
+			return 0, 0, fmt.Errorf("RLS check failed: %w", rlsErr)
+		} else if !allowed {
+			continue
 		}
 
 		// Enforce foreign key ON DELETE actions
@@ -881,24 +858,8 @@ func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tre
 	stmt *query.UpdateStmt, args []interface{}, setColumnIndices []int, entries *[]updateEntry, rowsAffected *int64) error {
 
 	// Apply Row-Level Security check for UPDATE
-	if c.enableRLS && c.rlsManager != nil {
-		user, _ := ctx.Value("cobaltdb_user").(string)
-		roles, _ := ctx.Value("cobaltdb_roles").([]string)
-		if user != "" {
-			rowMap := make(map[string]interface{})
-			for i, col := range table.Columns {
-				if i < len(row) {
-					rowMap[col.Name] = row[i]
-				}
-			}
-			allowed, rlsErr := c.checkRLSForUpdateInternal(ctx, stmt.Table, rowMap, user, roles)
-			if rlsErr != nil {
-				return nil // Skip rows that fail RLS check
-			}
-			if !allowed {
-				return nil // Skip rows the user doesn't have access to
-			}
-		}
+	if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyUpdate); rlsErr != nil || !allowed {
+		return nil
 	}
 
 	// Make a copy of the row to update

@@ -1,7 +1,6 @@
 package catalog
 
 import (
-	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"sort"
 	"strings"
@@ -39,7 +38,7 @@ func (c *Catalog) evaluateWindowFunctions(rows [][]interface{}, selectCols []sel
 				var keyParts []string
 				for _, pExpr := range we.PartitionBy {
 					val := c.evalWindowExprOnRow(pExpr, row, selectCols, table, args, fRow)
-					keyParts = append(keyParts, fmt.Sprintf("%v", val))
+					keyParts = append(keyParts, ValueToStringKey(val))
 				}
 				partKey = strings.Join(keyParts, "|")
 			}

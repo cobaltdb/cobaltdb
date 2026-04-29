@@ -573,7 +573,7 @@ func (c *Catalog) Analyze(tableName string) error {
 		// Count distinct values
 		valueSet := make(map[string]bool)
 		for _, val := range values {
-			valueSet[fmt.Sprintf("%v", val)] = true
+			valueSet[ValueToStringKey(val)] = true
 		}
 
 		colStats.DistinctCount = uint64(len(valueSet))

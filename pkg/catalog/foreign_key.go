@@ -1,10 +1,12 @@
 package catalog
 
 import (
+	"strings"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 var (
@@ -261,6 +263,7 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 	}
 
 	// Get column indices for foreign key columns
+	// Get column indices for foreign key columns
 	fkColIndices := make([]int, len(fk.Columns))
 	for i, col := range fk.Columns {
 		idx := table.GetColumnIndex(col)
@@ -270,7 +273,23 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 		fkColIndices[i] = idx
 	}
 
-	// Iterate through all rows and find matching ones
+	// Try index-based lookup for single-column FK
+	if len(fk.Columns) == 1 {
+		colLower := strings.ToLower(fk.Columns[0])
+		for idxName, idxDef := range fke.catalog.indexes {
+			if idxDef.TableName == tableName && len(idxDef.Columns) == 1 && strings.ToLower(idxDef.Columns[0]) == colLower {
+				if idxTree, ok := fke.catalog.indexTrees[idxName]; ok {
+					idxKey := typeTaggedKey(pkValue)
+					if _, err := idxTree.Get([]byte(idxKey)); err == nil {
+						result = append(result, pkValue)
+					}
+					return result, nil
+				}
+			}
+		}
+	}
+
+	// Fallback: full table scan
 	iter, err := tree.Scan([]byte{}, []byte{0xFF})
 	if err != nil {
 		return nil, err
@@ -283,36 +302,28 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 			return nil, err
 		}
 
-		// Parse the row as a slice
 		vrow, decErr := decodeVersionedRow(value, len(table.Columns))
 		if decErr != nil {
 			return nil, decErr
 		}
-		// Skip soft-deleted rows
 		if vrow.Version.DeletedAt > 0 {
 			continue
 		}
 		row := vrow.Data
 
-		// Check if this row references the deleted row
 		matches := true
 		for _, colIdx := range fkColIndices {
 			if colIdx >= len(row) {
 				matches = false
 				break
 			}
-
-			rowVal := row[colIdx]
-			expectedVal := pkValue
-
-			if !fke.valuesEqual(rowVal, expectedVal) {
+			if !fke.valuesEqual(row[colIdx], pkValue) {
 				matches = false
 				break
 			}
 		}
 
 		if matches {
-			// Use the key as the primary key
 			pk := fke.deserializeValue(key)
 			result = append(result, pk)
 		}
@@ -626,18 +637,32 @@ func (fke *ForeignKeyEnforcer) serializeValue(v interface{}) []byte {
 	case string:
 		return []byte("S:" + val)
 	case int:
-		return []byte(fmt.Sprintf("%020d", int64(val)))
+		return padIntKey(int64(val))
 	case int64:
-		return []byte(fmt.Sprintf("%020d", val))
+		return padIntKey(val)
 	case float64:
-		return []byte(fmt.Sprintf("%020d", int64(val)))
+		return padIntKey(int64(val))
 	case []byte:
 		return val
 	case nil:
 		return []byte("NULL")
 	default:
-		return []byte(fmt.Sprintf("%v", val))
+		return []byte(ValueToStringKey(val))
 	}
+}
+
+// padIntKey formats an int64 as a zero-padded 20-digit key without fmt.Sprintf.
+func padIntKey(v int64) []byte {
+	s := strconv.FormatInt(v, 10)
+	if len(s) >= 20 {
+		return []byte(s)
+	}
+	buf := make([]byte, 20)
+	for i := range buf {
+		buf[i] = '0'
+	}
+	copy(buf[20-len(s):], s)
+	return buf
 }
 
 // deserializeValue deserializes a value from bytes

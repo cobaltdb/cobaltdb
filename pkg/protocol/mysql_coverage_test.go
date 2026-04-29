@@ -89,7 +89,7 @@ func TestWriteLenEncIntCoverage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := writeLenEncInt(tt.value)
+			result := appendLenEncInt(nil, tt.value)
 			if len(result) < tt.minBytes || len(result) > tt.maxBytes {
 				t.Errorf("value %d: expected %d-%d bytes, got %d", tt.value, tt.minBytes, tt.maxBytes, len(result))
 			}

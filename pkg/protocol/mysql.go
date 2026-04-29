@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/auth"
+	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
 
@@ -41,6 +43,11 @@ const (
 	MySQLComDebug       byte = 0x0d
 	MySQLComPing        byte = 0x0e
 	MySQLComChangeUser  byte = 0x11
+		MySQLComStmtPrepare byte = 0x16
+		MySQLComStmtExecute byte = 0x17
+		MySQLComStmtSendLongData byte = 0x18
+		MySQLComStmtClose   byte = 0x19
+		MySQLComStmtReset   byte = 0x1a
 
 	// Server status flags
 	MySQLServerStatusInTrans            uint16 = 0x0001
@@ -297,6 +304,8 @@ type MySQLClient struct {
 	authResponse []byte // raw auth response from client handshake
 	scramble     []byte // 20-byte random challenge sent in handshake (FIX-004)
 	sequence     byte   // packet sequence number for proper protocol flow
+		stmts        map[uint32]*preparedStmt
+		nextStmtID   uint32
 }
 
 // sendHandshake sends the initial handshake packet
@@ -510,8 +519,19 @@ func (c *MySQLClient) handleCommand() error {
 		c.database = string(data)
 		return c.sendOKPacket(0, 0)
 
+	case MySQLComStmtPrepare:
+		return c.handleStmtPrepare(string(data))
+
+	case MySQLComStmtExecute:
+		return c.handleStmtExecute(data)
+
+	case MySQLComStmtClose:
+		return c.handleStmtClose(data)
+
+	case MySQLComStmtReset:
+		return c.handleStmtReset(data)
+
 	default:
-		// Send error for unsupported commands
 		return c.sendErrorPacket(0, "Unsupported command")
 	}
 }
@@ -594,7 +614,7 @@ func (c *MySQLClient) handleSelectVariable(sql string) error {
 	}
 
 	// Send single column, single row result
-	countPkt := writeLenEncInt(1)
+	countPkt := appendLenEncInt(nil, 1)
 	if err := c.writePacket(countPkt, seq); err != nil {
 		return err
 	}
@@ -629,7 +649,7 @@ func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
 	seq := byte(1)
 
 	// 1. Send column count packet
-	countPkt := writeLenEncInt(uint64(len(columns)))
+	countPkt := appendLenEncInt(nil, uint64(len(columns)))
 	if err := c.writePacket(countPkt, seq); err != nil {
 		return err
 	}
@@ -651,6 +671,7 @@ func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
 	seq++
 
 	// 4. Send row data packets
+	var scanErrors int
 	for rows.Next() {
 		row := make([]interface{}, len(columns))
 		dest := make([]interface{}, len(columns))
@@ -659,6 +680,7 @@ func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
 		}
 
 		if err := rows.Scan(dest...); err != nil {
+			scanErrors++
 			continue
 		}
 
@@ -668,6 +690,7 @@ func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
 		}
 		seq++
 	}
+	_ = scanErrors
 
 	// 5. Send EOF packet (end of rows)
 	return c.sendEOFPacket(seq)
@@ -678,17 +701,17 @@ func (c *MySQLClient) buildColumnDefPacket(name string) []byte {
 	var pkt []byte
 
 	// catalog (lenenc_str) - "def"
-	pkt = append(pkt, writeLenEncString("def")...)
+	pkt = appendLenEncString(pkt, "def")
 	// schema (lenenc_str) - empty
-	pkt = append(pkt, writeLenEncString("")...)
+	pkt = appendLenEncString(pkt, "")
 	// table (lenenc_str) - empty
-	pkt = append(pkt, writeLenEncString("")...)
+	pkt = appendLenEncString(pkt, "")
 	// org_table (lenenc_str) - empty
-	pkt = append(pkt, writeLenEncString("")...)
+	pkt = appendLenEncString(pkt, "")
 	// name (lenenc_str)
-	pkt = append(pkt, writeLenEncString(name)...)
+	pkt = appendLenEncString(pkt, name)
 	// org_name (lenenc_str)
-	pkt = append(pkt, writeLenEncString(name)...)
+	pkt = appendLenEncString(pkt, name)
 
 	// length of fixed-length fields [0c]
 	pkt = append(pkt, 0x0c)
@@ -721,11 +744,37 @@ func (c *MySQLClient) buildRowPacket(row []interface{}) []byte {
 		if val == nil {
 			pkt = append(pkt, 0xfb) // NULL
 		} else {
-			s := fmt.Sprintf("%v", val)
-			pkt = append(pkt, writeLenEncString(s)...)
+			pkt = appendLenEncString(pkt, valueToWireString(val))
 		}
 	}
 	return pkt
+}
+
+// valueToWireString converts a value to its string representation for the MySQL
+// wire protocol. Uses strconv for common numeric types to avoid fmt.Sprintf
+// reflection overhead.
+func valueToWireString(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case bool:
+		if val {
+			return "1"
+		}
+		return "0"
+	case time.Time:
+		return val.Format("2006-01-02 15:04:05")
+	default:
+		return catalog.ValueToStringKey(val)
+	}
 }
 
 // sendEOFPacket sends an EOF packet
@@ -738,25 +787,29 @@ func (c *MySQLClient) sendEOFPacket(seq byte) error {
 	return c.writePacket(pkt, seq)
 }
 
-// writeLenEncString writes a length-encoded string
+// appendLenEncString appends a length-encoded string to dst.
+func appendLenEncString(dst []byte, s string) []byte {
+	dst = appendLenEncInt(dst, uint64(len(s)))
+	return append(dst, s...)
+}
+
+// writeLenEncString returns a newly allocated length-encoded string.
+// Prefer appendLenEncString for zero-allocation appending.
 func writeLenEncString(s string) []byte {
-	var result []byte
-	result = append(result, writeLenEncInt(uint64(len(s)))...)
-	result = append(result, []byte(s)...)
-	return result
+	return appendLenEncString(nil, s)
 }
 
 // writePacket writes a MySQL protocol packet
 func (c *MySQLClient) writePacket(data []byte, sequence byte) error {
 	// Packet header: 3 bytes length + 1 byte sequence
 	length := len(data)
-	header := make([]byte, 4)
+	var header [4]byte
 	header[0] = byte(length)
 	header[1] = byte(length >> 8)
 	header[2] = byte(length >> 16)
 	header[3] = sequence
 
-	if _, err := c.conn.Write(header); err != nil {
+	if _, err := c.conn.Write(header[:]); err != nil {
 		return err
 	}
 
@@ -778,8 +831,8 @@ func (c *MySQLClient) sendOKPacket(affectedRows, lastInsertID uint64) error {
 func (c *MySQLClient) buildOKPacket(affectedRows, lastInsertID uint64) []byte {
 	pkt := make([]byte, 0, 32)
 	pkt = append(pkt, 0x00)
-	pkt = append(pkt, writeLenEncInt(affectedRows)...)
-	pkt = append(pkt, writeLenEncInt(lastInsertID)...)
+	pkt = appendLenEncInt(pkt, affectedRows)
+	pkt = appendLenEncInt(pkt, lastInsertID)
 	pkt = append(pkt, 0x02, 0x00) // status flags
 	pkt = append(pkt, 0x00, 0x00) // warnings
 	return pkt
@@ -874,20 +927,21 @@ func readLenEncInt(data []byte) (uint64, int) {
 	}
 }
 
-// writeLenEncInt writes a length-encoded integer
-func writeLenEncInt(value uint64) []byte {
+// appendLenEncInt appends a length-encoded integer to dst and returns the extended slice.
+// Avoids allocation for all but the largest values (>= 2^24).
+func appendLenEncInt(dst []byte, value uint64) []byte {
 	switch {
 	case value < 251:
-		return []byte{byte(value)}
+		return append(dst, byte(value))
 	case value < 1<<16:
-		return []byte{0xfc, byte(value), byte(value >> 8)}
+		return append(dst, 0xfc, byte(value), byte(value>>8))
 	case value < 1<<24:
-		return []byte{0xfd, byte(value), byte(value >> 8), byte(value >> 16)}
+		return append(dst, 0xfd, byte(value), byte(value>>8), byte(value>>16))
 	default:
 		buf := make([]byte, 9)
 		buf[0] = 0xfe
 		binary.LittleEndian.PutUint64(buf[1:], value)
-		return buf
+		return append(dst, buf...)
 	}
 }
 
@@ -922,3 +976,138 @@ func containsIgnoreCase(s, substr string) bool {
 	}
 	return false
 }
+// preparedStmt holds server-side prepared statement state.
+type preparedStmt struct {
+	id        uint32
+	sql       string
+	numParams int
+	numColumns int
+}
+
+func (c *MySQLClient) getStmtMap() map[uint32]*preparedStmt {
+	if c.stmts == nil {
+		c.stmts = make(map[uint32]*preparedStmt)
+	}
+	return c.stmts
+}
+
+func (c *MySQLClient) handleStmtPrepare(sql string) error {
+	sql = strings.TrimSpace(sql)
+
+	baseCtx := c.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+	defer cancel()
+
+	var numColumns int
+	rows, err := c.server.db.Query(ctx, sql)
+	if err == nil {
+		numColumns = len(rows.Columns())
+		rows.Close()
+	}
+
+	c.nextStmtID++
+	stmtID := c.nextStmtID
+	stmt := &preparedStmt{
+		id:         stmtID,
+		sql:        sql,
+		numParams:  0,
+		numColumns: numColumns,
+	}
+	c.getStmtMap()[stmtID] = stmt
+
+	pkt := make([]byte, 0, 64)
+	pkt = append(pkt, 0x00)
+	pkt = append(pkt, byte(stmtID), byte(stmtID>>8), byte(stmtID>>16), byte(stmtID>>24))
+	pkt = append(pkt, byte(numColumns), byte(numColumns>>8))
+	pkt = append(pkt, 0x00, 0x00)
+	pkt = append(pkt, 0x00)
+	pkt = append(pkt, 0x00, 0x00)
+
+	seq := byte(0)
+	if err := c.writePacket(pkt, seq); err != nil {
+		return err
+	}
+	seq++
+
+	for i := 0; i < numColumns; i++ {
+		colPkt := c.buildColumnDefPacket(fmt.Sprintf("col%d", i))
+		if err := c.writePacket(colPkt, seq); err != nil {
+			return err
+		}
+		seq++
+	}
+	if numColumns > 0 {
+		eof := []byte{0xfe, 0x00, 0x00, 0x00, 0x00}
+		if err := c.writePacket(eof, seq); err != nil {
+			return err
+		}
+		seq++
+	}
+
+	return nil
+}
+
+func (c *MySQLClient) handleStmtExecute(data []byte) error {
+	if len(data) < 9 {
+		return c.sendErrorPacket(0, "malformed COM_STMT_EXECUTE")
+	}
+
+	stmtID := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
+	stmt, ok := c.getStmtMap()[stmtID]
+	if !ok {
+		return c.sendErrorPacket(0, "unknown prepared statement")
+	}
+
+	baseCtx := c.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+	defer cancel()
+
+	rows, err := c.server.db.Query(ctx, stmt.sql)
+	if err == nil {
+		defer rows.Close()
+		return c.sendResultSetFromRows(rows)
+	}
+
+	result, err := c.server.db.Exec(ctx, stmt.sql)
+	if err != nil {
+		return c.sendErrorPacket(1, sanitizeMySQLError(err))
+	}
+
+	rowsAffected := uint64(0)
+	if result.RowsAffected > 0 {
+		rowsAffected = uint64(result.RowsAffected)
+	}
+	lastInsertID := uint64(0)
+	if result.LastInsertID > 0 {
+		lastInsertID = uint64(result.LastInsertID)
+	}
+
+	return c.sendOKPacket(rowsAffected, lastInsertID)
+}
+
+func (c *MySQLClient) handleStmtClose(data []byte) error {
+	if len(data) < 4 {
+		return nil
+	}
+	stmtID := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
+	delete(c.getStmtMap(), stmtID)
+	return nil
+}
+
+func (c *MySQLClient) handleStmtReset(data []byte) error {
+	if len(data) < 4 {
+		return c.sendErrorPacket(0, "malformed COM_STMT_RESET")
+	}
+	stmtID := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
+	if _, ok := c.getStmtMap()[stmtID]; !ok {
+		return c.sendErrorPacket(0, "unknown prepared statement")
+	}
+	return c.sendOKPacket(0, 0)
+}
+

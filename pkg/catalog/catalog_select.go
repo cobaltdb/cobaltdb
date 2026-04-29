@@ -102,7 +102,7 @@ func (c *Catalog) executeScalarSelect(stmt *query.SelectStmt, args []interface{}
 		if !matched {
 			// WHERE is false — return empty result with column names
 			for i, col := range stmt.Columns {
-				colName := fmt.Sprintf("column_%d", i)
+				colName := "column_" + strconv.Itoa(i)
 				if ae, ok := col.(*query.AliasExpr); ok {
 					colName = ae.Alias
 				} else if ident, ok := col.(*query.Identifier); ok {
@@ -125,7 +125,7 @@ func (c *Catalog) executeScalarSelect(stmt *query.SelectStmt, args []interface{}
 		}
 
 		// Build column name
-		colName := fmt.Sprintf("column_%d", i)
+		colName := "column_" + strconv.Itoa(i)
 		if ae, ok := col.(*query.AliasExpr); ok {
 			colName = ae.Alias
 		} else if ident, ok := col.(*query.Identifier); ok {
@@ -1101,16 +1101,17 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 	groupOrder := []string{}
 	for _, row := range joinedRows {
 		var groupKey strings.Builder
+		groupKey.Grow(len(joinGroupBySpecs) * 16)
 		for i, spec := range joinGroupBySpecs {
 			if i > 0 {
 				groupKey.WriteString("|")
 			}
 			if spec.index >= 0 && spec.index < len(row) {
-				groupKey.WriteString(fmt.Sprintf("%v", row[spec.index]))
+				groupKey.WriteString(ValueToStringKey(row[spec.index]))
 			} else if spec.expr != nil {
 				val, err := evaluateExpression(c, row, allColumns, spec.expr, args)
 				if err == nil {
-					groupKey.WriteString(fmt.Sprintf("%v", val))
+					groupKey.WriteString(ValueToStringKey(val))
 				}
 			}
 		}
@@ -1207,7 +1208,7 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 						seen := make(map[string]bool)
 						for _, v := range values {
 							if v != nil {
-								seen[fmt.Sprintf("%v", v)] = true
+								seen[ValueToStringKey(v)] = true
 							}
 						}
 						resultRow[i] = int64(len(seen))
@@ -1276,7 +1277,7 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 					var parts []string
 					for _, v := range values {
 						if v != nil {
-							parts = append(parts, fmt.Sprintf("%v", v))
+							parts = append(parts, ValueToStringKey(v))
 						}
 					}
 					if len(parts) > 0 {
@@ -1417,7 +1418,7 @@ func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo,
 			default:
 				// Expression ORDER BY (e.g., ORDER BY price * quantity)
 				// Match to the correct hidden ORDER BY column by index
-				targetName := fmt.Sprintf("__orderby_%d", obIdx)
+				targetName := "__orderby_" + strconv.Itoa(obIdx)
 				for idx, ci := range selectCols {
 					if ci.name == targetName {
 						colIdx = idx

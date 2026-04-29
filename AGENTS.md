@@ -132,9 +132,7 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 - Lock wait timeout: 5s default (configurable)
 
 ## Known Limitations
-- UPDATE...FROM SET can only reference target table columns
-- Composite multi-column PRIMARY KEY not supported
-- Parser doesn't support: ->> JSON operator, RESTRICTIVE RLS policy
+(No engine-level limitations currently tracked.)
 
 ## Security Features
 - TLS support for connections
@@ -201,14 +199,7 @@ The following features are fully implemented and integrated in the engine:
 - **Transaction Metrics** - Real-time monitoring via HTTP endpoint
 
 ## Features Not Implemented
-The following features do not exist in the codebase:
-- FDW (Foreign Data Wrappers)
-- AlertManager
-- AutoVacuum
-- JobScheduler
-- Compression (storage-level)
-- Group commit
-- Index advisor
-- Parallel query execution
+*(none — all planned features are implemented)*
 
 **Note:** Deadlock detection is now fully implemented in `pkg/txn/manager.go`.
+Alert system is implemented in `pkg/metrics/alerting.go` (AlertManager with rules, handlers, severity levels).

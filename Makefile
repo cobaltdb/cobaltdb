@@ -4,12 +4,14 @@ BINARY_SERVER=cobaltdb-server
 BINARY_CLI=cobaltdb-cli
 PKG=github.com/cobaltdb/cobaltdb
 SECURITY_PKGS=./cmd/cobaltdb-server ./pkg/server ./pkg/protocol ./pkg/storage ./pkg/auth ./sdk/go ./pkg/logger ./pkg/query
+VERSION?=$(shell cat VERSION 2>/dev/null || echo dev)
+LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION)"
 
 build:
 	@echo "Building server..."
-	@go build -o bin/$(BINARY_SERVER) $(PKG)/cmd/$(BINARY_SERVER)
+	@go build $(LDFLAGS) -o bin/$(BINARY_SERVER) $(PKG)/cmd/$(BINARY_SERVER)
 	@echo "Building CLI..."
-	@go build -o bin/$(BINARY_CLI) $(PKG)/cmd/$(BINARY_CLI)
+	@go build $(LDFLAGS) -o bin/$(BINARY_CLI) $(PKG)/cmd/$(BINARY_CLI)
 	@echo "Build complete!"
 
 test:

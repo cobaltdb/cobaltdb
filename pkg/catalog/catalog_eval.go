@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"encoding/hex"
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"math"
@@ -173,7 +174,7 @@ func (ctx *EvalContext) evaluate(expr query.Expression) (interface{}, error) {
 			case string:
 				return v, nil
 			default:
-				return fmt.Sprintf("%v", v), nil
+				return ValueToStringKey(v), nil
 			}
 		}
 		// -> returns the raw JSON value
@@ -279,7 +280,7 @@ func evaluateBinaryExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr
 	case query.TokenPercent:
 		return moduloValues(left, right)
 	case query.TokenConcat:
-		return fmt.Sprintf("%v%v", left, right), nil
+		return concatValues(left, right), nil
 	}
 
 	// Compare based on operator
@@ -419,7 +420,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		str, ok := evalArgs[0].(string)
 		if !ok {
-			str = fmt.Sprintf("%v", evalArgs[0])
+			str = ValueToStringKey(evalArgs[0])
 		}
 		return float64(len(str)), nil
 
@@ -432,7 +433,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		str, ok := evalArgs[0].(string)
 		if !ok {
-			str = fmt.Sprintf("%v", evalArgs[0])
+			str = ValueToStringKey(evalArgs[0])
 		}
 		return toUpperFast(str), nil
 
@@ -445,7 +446,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		str, ok := evalArgs[0].(string)
 		if !ok {
-			str = fmt.Sprintf("%v", evalArgs[0])
+			str = ValueToStringKey(evalArgs[0])
 		}
 		return toLowerFast(str), nil
 
@@ -458,12 +459,12 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		str, ok := evalArgs[0].(string)
 		if !ok {
-			str = fmt.Sprintf("%v", evalArgs[0])
+			str = ValueToStringKey(evalArgs[0])
 		}
 		// Optional second arg: characters to trim (default: whitespace)
 		trimChars := " \t\n\r"
 		if len(evalArgs) >= 2 && evalArgs[1] != nil {
-			trimChars = fmt.Sprintf("%v", evalArgs[1])
+			trimChars = ValueToStringKey(evalArgs[1])
 		}
 		switch funcName {
 		case "LTRIM":
@@ -487,7 +488,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		str, ok := evalArgs[0].(string)
 		if !ok {
-			str = fmt.Sprintf("%v", evalArgs[0])
+			str = ValueToStringKey(evalArgs[0])
 		}
 		start, _ := toFloat64(evalArgs[1])
 		startInt := int(start) - 1 // SQL SUBSTR is 1-indexed
@@ -512,9 +513,10 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 
 	case "CONCAT":
 		var result strings.Builder
+		result.Grow(len(evalArgs) * 16)
 		for _, arg := range evalArgs {
 			if arg != nil {
-				result.WriteString(fmt.Sprintf("%v", arg))
+				result.WriteString(ValueToStringKey(arg))
 				if result.Len() > maxStringResultLen {
 					return nil, fmt.Errorf("CONCAT result exceeds maximum length")
 				}
@@ -613,18 +615,18 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		str, ok := evalArgs[0].(string)
 		if !ok {
-			str = fmt.Sprintf("%v", evalArgs[0])
+			str = ValueToStringKey(evalArgs[0])
 		}
 		old, ok2 := evalArgs[1].(string)
 		if !ok2 {
-			old = fmt.Sprintf("%v", evalArgs[1])
+			old = ValueToStringKey(evalArgs[1])
 		}
 		if old == "" {
 			return str, nil
 		}
 		newStr, ok3 := evalArgs[2].(string)
 		if !ok3 {
-			newStr = fmt.Sprintf("%v", evalArgs[2])
+			newStr = ValueToStringKey(evalArgs[2])
 		}
 		result := strings.ReplaceAll(str, old, newStr)
 		if len(result) > maxStringResultLen {
@@ -641,11 +643,11 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		haystack, ok := evalArgs[0].(string)
 		if !ok {
-			haystack = fmt.Sprintf("%v", evalArgs[0])
+			haystack = ValueToStringKey(evalArgs[0])
 		}
 		needle, ok := evalArgs[1].(string)
 		if !ok {
-			needle = fmt.Sprintf("%v", evalArgs[1])
+			needle = ValueToStringKey(evalArgs[1])
 		}
 		idx := strings.Index(haystack, needle)
 		if idx < 0 {
@@ -659,10 +661,11 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		format, ok := evalArgs[0].(string)
 		if !ok {
-			format = fmt.Sprintf("%v", evalArgs[0])
+			format = ValueToStringKey(evalArgs[0])
 		}
 		// Simple printf implementation
 		var result strings.Builder
+		result.Grow(len(format) + len(evalArgs)*16)
 		argIndex := 1
 		i := 0
 		for i < len(format) {
@@ -671,14 +674,14 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 				switch nextChar {
 				case 's':
 					if argIndex < len(evalArgs) {
-						result.WriteString(fmt.Sprintf("%v", evalArgs[argIndex]))
+						result.WriteString(ValueToStringKey(evalArgs[argIndex]))
 						argIndex++
 					}
 					i += 2
 				case 'd', 'i':
 					if argIndex < len(evalArgs) {
 						if f, ok := toFloat64(evalArgs[argIndex]); ok {
-							result.WriteString(fmt.Sprintf("%d", int64(f)))
+							result.WriteString(strconv.FormatInt(int64(f), 10))
 						}
 						argIndex++
 					}
@@ -686,7 +689,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 				case 'f':
 					if argIndex < len(evalArgs) {
 						if f, ok := toFloat64(evalArgs[argIndex]); ok {
-							result.WriteString(fmt.Sprintf("%f", f))
+							result.WriteString(strconv.FormatFloat(f, 'f', 6, 64))
 						}
 						argIndex++
 					}
@@ -723,7 +726,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if evalArgs[1] == nil {
 			return nil, nil
 		}
-		return fmt.Sprintf("%v", evalArgs[1]), nil
+		return ValueToStringKey(evalArgs[1]), nil
 
 	case "CAST":
 		if len(evalArgs) < 2 {
@@ -734,7 +737,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		targetType, ok := evalArgs[1].(string)
 		if !ok {
-			targetType = toUpperFast(fmt.Sprintf("%v", evalArgs[1]))
+			targetType = toUpperFast(ValueToStringKey(evalArgs[1]))
 		}
 		switch targetType {
 		case "INTEGER", "INT":
@@ -770,7 +773,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 				return 0.0, nil
 			}
 		case "TEXT", "STRING":
-			return fmt.Sprintf("%v", evalArgs[0]), nil
+			return ValueToStringKey(evalArgs[0]), nil
 		case "BOOLEAN", "BOOL":
 			if b, ok := evalArgs[0].(bool); ok {
 				return b, nil
@@ -791,11 +794,11 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if evalArgs[0] == nil {
 			return nil, nil
 		}
-		separator := fmt.Sprintf("%v", evalArgs[0])
+		separator := ValueToStringKey(evalArgs[0])
 		var parts []string
 		for _, arg := range evalArgs[1:] {
 			if arg != nil {
-				parts = append(parts, fmt.Sprintf("%v", arg))
+				parts = append(parts, ValueToStringKey(arg))
 			}
 		}
 		result := strings.Join(parts, separator)
@@ -807,7 +810,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 	case "GROUP_CONCAT":
 		// GROUP_CONCAT is handled in aggregate path; scalar fallback just returns the value
 		if len(evalArgs) >= 1 && evalArgs[0] != nil {
-			return fmt.Sprintf("%v", evalArgs[0]), nil
+			return ValueToStringKey(evalArgs[0]), nil
 		}
 		return nil, nil
 
@@ -818,7 +821,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if evalArgs[0] == nil {
 			return nil, nil
 		}
-		str := fmt.Sprintf("%v", evalArgs[0])
+		str := ValueToStringKey(evalArgs[0])
 		runes := []rune(str)
 		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
 			runes[i], runes[j] = runes[j], runes[i]
@@ -832,7 +835,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if evalArgs[0] == nil {
 			return nil, nil
 		}
-		str := fmt.Sprintf("%v", evalArgs[0])
+		str := ValueToStringKey(evalArgs[0])
 		count, _ := toFloat64(evalArgs[1])
 		if count <= 0 {
 			return "", nil
@@ -849,7 +852,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if evalArgs[0] == nil {
 			return nil, nil
 		}
-		str := fmt.Sprintf("%v", evalArgs[0])
+		str := ValueToStringKey(evalArgs[0])
 		n, _ := toFloat64(evalArgs[1])
 		ni := int(n)
 		if ni <= 0 {
@@ -867,7 +870,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if evalArgs[0] == nil {
 			return nil, nil
 		}
-		str := fmt.Sprintf("%v", evalArgs[0])
+		str := ValueToStringKey(evalArgs[0])
 		n, _ := toFloat64(evalArgs[1])
 		ni := int(n)
 		if ni <= 0 {
@@ -885,9 +888,9 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if evalArgs[0] == nil {
 			return nil, nil
 		}
-		str := fmt.Sprintf("%v", evalArgs[0])
+		str := ValueToStringKey(evalArgs[0])
 		targetLen, _ := toFloat64(evalArgs[1])
-		pad := fmt.Sprintf("%v", evalArgs[2])
+		pad := ValueToStringKey(evalArgs[2])
 		ti := int(targetLen)
 		if ti <= 0 {
 			return "", nil
@@ -916,9 +919,9 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if evalArgs[0] == nil {
 			return nil, nil
 		}
-		str := fmt.Sprintf("%v", evalArgs[0])
+		str := ValueToStringKey(evalArgs[0])
 		targetLen, _ := toFloat64(evalArgs[1])
-		pad := fmt.Sprintf("%v", evalArgs[2])
+		pad := ValueToStringKey(evalArgs[2])
 		ti := int(targetLen)
 		if ti <= 0 {
 			return "", nil
@@ -948,10 +951,10 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 			return nil, nil
 		}
 		if f, ok := toFloat64(evalArgs[0]); ok {
-			return fmt.Sprintf("%X", int64(f)), nil
+			return strings.ToUpper(strconv.FormatInt(int64(f), 16)), nil
 		}
-		str := fmt.Sprintf("%v", evalArgs[0])
-		return fmt.Sprintf("%X", []byte(str)), nil
+		str := ValueToStringKey(evalArgs[0])
+		return strings.ToUpper(hex.EncodeToString([]byte(str))), nil
 
 	case "TYPEOF":
 		if len(evalArgs) < 1 {
@@ -1005,7 +1008,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if evalArgs[0] == nil {
 			return nil, nil
 		}
-		str := fmt.Sprintf("%v", evalArgs[0])
+		str := ValueToStringKey(evalArgs[0])
 		if len(str) == 0 {
 			return nil, nil
 		}
@@ -1013,6 +1016,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 
 	case "CHAR":
 		var result strings.Builder
+		result.Grow(len(evalArgs) * 4)
 		for _, arg := range evalArgs {
 			if arg != nil {
 				if f, ok := toFloat64(arg); ok {
@@ -1046,7 +1050,7 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if s, ok := evalArgs[0].(string); ok {
 			return "'" + strings.ReplaceAll(s, "'", "''") + "'", nil
 		}
-		return fmt.Sprintf("%v", evalArgs[0]), nil
+		return ValueToStringKey(evalArgs[0]), nil
 
 	case "GLOB":
 		if len(evalArgs) < 2 {
@@ -1055,8 +1059,8 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		if evalArgs[0] == nil || evalArgs[1] == nil {
 			return nil, nil
 		}
-		pattern := fmt.Sprintf("%v", evalArgs[0])
-		str := fmt.Sprintf("%v", evalArgs[1])
+		pattern := ValueToStringKey(evalArgs[0])
+		str := ValueToStringKey(evalArgs[1])
 		// Simple glob: * matches any, ? matches single char
 		regexPattern := "^" + strings.ReplaceAll(strings.ReplaceAll(
 			regexp.QuoteMeta(pattern), `\*`, ".*"), `\?`, ".") + "$"
@@ -1178,7 +1182,7 @@ func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr 
 	if patternVal == nil {
 		return false, nil
 	}
-	pattern := fmt.Sprintf("%v", patternVal)
+	pattern := ValueToStringKey(patternVal)
 
 	// Tokenize the search pattern into words
 	searchWords := tokenize(pattern)
@@ -1224,7 +1228,7 @@ func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr 
 				for i, col := range columns {
 					if strings.EqualFold(col.Name, colName) && i < len(row) {
 						if row[i] != nil {
-							allText = append(allText, toLowerFast(fmt.Sprintf("%v", row[i])))
+							allText = append(allText, toLowerFast(ValueToStringKey(row[i])))
 						}
 						break
 					}
@@ -1267,7 +1271,7 @@ func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr 
 			continue
 		}
 		if colVal != nil {
-			allText = append(allText, toLowerFast(fmt.Sprintf("%v", colVal)))
+			allText = append(allText, toLowerFast(ValueToStringKey(colVal)))
 		}
 	}
 

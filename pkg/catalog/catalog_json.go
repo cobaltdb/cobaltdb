@@ -146,7 +146,12 @@ func (c *Catalog) indexJSONValue(idx *JSONIndexDef, value interface{}, rowNum in
 	case int:
 		idx.NumIndex[float64Key(float64(v))] = append(idx.NumIndex[float64Key(float64(v))], rowNum)
 	case bool:
-		strVal := fmt.Sprintf("%t", v)
+		var strVal string
+		if v {
+			strVal = "true"
+		} else {
+			strVal = "false"
+		}
 		idx.Index[strVal] = append(idx.Index[strVal], rowNum)
 	}
 }

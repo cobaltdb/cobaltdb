@@ -22,6 +22,7 @@ var (
 	flagPath     string
 	flagServer   bool
 	flagPort     int
+	flagVersion  bool
 )
 
 var version = "dev"
@@ -43,10 +44,16 @@ func init() {
 	flag.StringVar(&flagPath, "path", ":memory:", "Database path (default: :memory:)")
 	flag.BoolVar(&flagServer, "server", false, "Start as server")
 	flag.IntVar(&flagPort, "port", 4200, "Server port")
+	flag.BoolVar(&flagVersion, "version", false, "Print version and exit")
 }
 
 func main() {
 	flag.Parse()
+
+	if flagVersion {
+		fmt.Printf("CobaltDB CLI %s\n", version)
+		os.Exit(0)
+	}
 
 	if flagHelp || len(os.Args) == 1 {
 		printHelp()

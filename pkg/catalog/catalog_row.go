@@ -3,6 +3,7 @@ package catalog
 import (
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"strconv"
 	"strings"
 )
 
@@ -27,13 +28,25 @@ func (c *Catalog) serializePK(pkValue interface{}, tree *btree.BTree) []byte {
 		}
 		return key // Default to direct string key
 	case int:
-		return []byte(fmt.Sprintf("%020d", int64(val)))
+		s := strconv.FormatInt(int64(val), 10)
+		if len(s) < 20 {
+			s = strings.Repeat("0", 20-len(s)) + s
+		}
+		return []byte(s)
 	case int64:
-		return []byte(fmt.Sprintf("%020d", val))
+		s := strconv.FormatInt(val, 10)
+		if len(s) < 20 {
+			s = strings.Repeat("0", 20-len(s)) + s
+		}
+		return []byte(s)
 	case float64:
-		return []byte(fmt.Sprintf("%020d", int64(val)))
+		s := strconv.FormatInt(int64(val), 10)
+		if len(s) < 20 {
+			s = strings.Repeat("0", 20-len(s)) + s
+		}
+		return []byte(s)
 	default:
-		return []byte(fmt.Sprintf("%v", val))
+		return []byte(ValueToStringKey(val))
 	}
 }
 

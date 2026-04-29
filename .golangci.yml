@@ -5,16 +5,10 @@ run:
 issues:
   exclude-dirs:
     - docs
-    - cmd/benchmark
     - cmd/cobaltdb-bench
     - cmd/debug
     - cmd/demo
-    - cmd/demo-ecommerce
-    - cmd/demo-full-sql-test
-    - cmd/demo-integrity-test
-    - cmd/demo-performance
-    - cmd/demo-showcase
-    - cmd/demo-zero-error-proof
+    - cmd/realworld-test
 
 linters:
   enable:

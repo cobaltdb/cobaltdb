@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 type QueryPlanCacheEntry struct {
 	SQL          string
 	ParsedStmt   query.Statement
+	HashKey      string // cached hash key for O(1) eviction lookup
 	CreatedAt    time.Time
 	LastAccessed time.Time
 	AccessCount  uint64
@@ -117,6 +119,7 @@ func (c *QueryPlanCache) Put(sql string, args []interface{}, stmt query.Statemen
 
 	// Create and add new entry
 	entry := c.createEntry(sql, stmt)
+	entry.HashKey = hash
 	elem := c.lruList.PushFront(entry)
 	c.entries[hash] = elem
 	c.currentSize += entry.Size
@@ -144,10 +147,11 @@ func (c *QueryPlanCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	count := len(c.entries)
 	c.entries = make(map[string]*list.Element)
 	c.lruList = list.New()
 	c.currentSize = 0
-	c.invalidations += uint64(len(c.entries))
+	c.invalidations += uint64(count)
 }
 
 // GetStats returns cache statistics
@@ -229,7 +233,7 @@ func (c *QueryPlanCache) evictLRU() {
 	}
 
 	entry := elem.Value.(*QueryPlanCacheEntry)
-	hash := c.hashQuery(entry.SQL, nil)
+	hash := entry.HashKey
 	delete(c.entries, hash)
 	c.lruList.Remove(elem)
 	c.currentSize -= entry.Size
@@ -249,17 +253,53 @@ func (c *QueryPlanCache) createEntry(sql string, stmt query.Statement) *QueryPla
 	}
 }
 
-// hashQuery creates a hash for the query and args
+// queryPlanSHA256Pool recycles SHA256 hashers for query plan cache keys.
+var queryPlanSHA256Pool = sync.Pool{
+	New: func() interface{} {
+		return sha256.New()
+	},
+}
+
+// typeNameOf returns the type name of v without fmt.Sprintf reflection.
+func typeNameOf(v interface{}) string {
+	switch v.(type) {
+	case string:
+		return "string"
+	case int:
+		return "int"
+	case int64:
+		return "int64"
+	case float64:
+		return "float64"
+	case bool:
+		return "bool"
+	case []byte:
+		return "[]byte"
+	case nil:
+		return "nil"
+	default:
+		return fmt.Sprintf("%T", v)
+	}
+}
+
+// hashQuery creates a hash for the query and args.
 func (c *QueryPlanCache) hashQuery(sql string, args []interface{}) string {
-	h := sha256.New()
+	h := queryPlanSHA256Pool.Get().(hash.Hash)
+	h.Reset()
 	h.Write([]byte(sql))
 	if len(args) > 0 {
 		// Include arg types in hash (not values for security)
 		for _, arg := range args {
-			h.Write([]byte(fmt.Sprintf("%T", arg)))
+			h.Write([]byte(typeNameOf(arg)))
 		}
 	}
-	return hex.EncodeToString(h.Sum(nil))[:32]
+	var sumBuf [32]byte
+	sum := h.Sum(sumBuf[:0])
+	queryPlanSHA256Pool.Put(h)
+
+	var hexBuf [64]byte
+	hex.Encode(hexBuf[:], sum)
+	return string(hexBuf[:32])
 }
 
 // estimateEntrySize estimates the memory size of a cache entry

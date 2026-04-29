@@ -2,8 +2,41 @@ package catalog
 
 import (
 	"context"
+
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 )
+
+// rowToMap converts a row slice to a column-name-keyed map.
+func rowToMap(columns []ColumnDef, row []interface{}) map[string]interface{} {
+	m := make(map[string]interface{}, len(columns))
+	for i, col := range columns {
+		if i < len(row) {
+			m[col.Name] = row[i]
+		}
+	}
+	return m
+}
+
+// rlsContext extracts user and roles from the context.
+func rlsContext(ctx context.Context) (user string, roles []string) {
+	user, _ = ctx.Value("cobaltdb_user").(string)
+	roles, _ = ctx.Value("cobaltdb_roles").([]string)
+	return
+}
+
+// checkRowAccessLocked checks RLS access for the given operation.
+// Caller must hold the catalog lock. Returns (allowed, error).
+func (c *Catalog) checkRowAccessLocked(ctx context.Context, tableName string, columns []ColumnDef, row []interface{}, operation security.PolicyType) (bool, error) {
+	if !c.enableRLS || c.rlsManager == nil {
+		return true, nil
+	}
+	user, roles := rlsContext(ctx)
+	if user == "" {
+		return true, nil
+	}
+	rowMap := rowToMap(columns, row)
+	return c.rlsManager.CheckAccess(ctx, tableName, operation, rowMap, user, roles)
+}
 
 func (c *Catalog) ApplyRLSFilter(ctx context.Context, tableName string, columns []string, rows [][]interface{}, user string, roles []string) ([]string, [][]interface{}, error) {
 	c.mu.RLock()

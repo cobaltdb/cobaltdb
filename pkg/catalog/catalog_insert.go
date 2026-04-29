@@ -1,8 +1,10 @@
 package catalog
 
 import (
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -12,7 +14,11 @@ import (
 
 // formatKey formats int64 as zero-padded string (20 digits) for consistent key ordering
 func formatKey(pkVal int64) string {
-	return fmt.Sprintf("%020d", pkVal)
+	s := strconv.FormatInt(pkVal, 10)
+	if len(s) < 20 {
+		return strings.Repeat("0", 20-len(s)) + s
+	}
+	return s
 }
 
 // compositeKeySep separates columns in a composite primary key. 0x00 is safe:
@@ -40,7 +46,7 @@ func formatKeyComponent(val interface{}) (string, bool) {
 	case nil:
 		return "", false
 	default:
-		return fmt.Sprintf("X:%v", v), true
+		return "X:" + ValueToStringKey(v), true
 	}
 }
 
@@ -149,13 +155,13 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 				case float64:
 					exprRow[j] = &query.NumberLiteral{Value: v}
 				case int64:
-					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: fmt.Sprintf("%d", v)}
+					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: strconv.FormatInt(v, 10)}
 				case int:
-					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: fmt.Sprintf("%d", v)}
+					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: strconv.Itoa(v)}
 				case bool:
 					exprRow[j] = &query.BooleanLiteral{Value: v}
 				default:
-					exprRow[j] = &query.StringLiteral{Value: fmt.Sprintf("%v", v)}
+					exprRow[j] = &query.StringLiteral{Value: ValueToStringKey(v)}
 				}
 			}
 			valueRows[i] = exprRow
@@ -245,7 +251,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			// Generate auto-increment key (per-table counter)
 			table.AutoIncSeq++
 			autoIncValue = table.AutoIncSeq
-			key = fmt.Sprintf("%020d", autoIncValue)
+			key = formatKey(autoIncValue)
 		}
 
 		// Build full row with all columns
@@ -294,24 +300,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Apply Row-Level Security check for INSERT
-		if c.enableRLS && c.rlsManager != nil {
-			user, _ := ctx.Value("cobaltdb_user").(string)
-			roles, _ := ctx.Value("cobaltdb_roles").([]string)
-			if user != "" {
-				rowMap := make(map[string]interface{})
-				for i, col := range table.Columns {
-					if i < len(rowValues) {
-						rowMap[col.Name] = rowValues[i]
-					}
-				}
-				allowed, rlsErr := c.checkRLSForInsertInternal(ctx, stmt.Table, rowMap, user, roles)
-				if rlsErr != nil {
-					return 0, 0, fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
-				}
-				if !allowed {
-					return 0, 0, fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
-				}
-			}
+		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, rowValues, security.PolicyInsert); rlsErr != nil {
+			return 0, 0, fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
+		} else if !allowed {
+			return 0, 0, fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
 		}
 
 		// Check NOT NULL constraints before inserting
@@ -341,38 +333,56 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		skipRow := false
 		for i, col := range table.Columns {
 			if col.Unique && rowValues[i] != nil {
-				// Check if a row with this unique value already exists
-				iter, err := tree.Scan(nil, nil)
-				if err != nil {
-					return 0, 0, fmt.Errorf("failed to scan table for UNIQUE check: %w", err)
-				}
 				var duplicateKey []byte
-				for iter.HasNext() {
-					k, existingData, err := iter.Next()
-					if err != nil {
-						break
-					}
-					vrow, err := decodeVersionedRow(existingData, len(table.Columns))
-					if err != nil {
-						continue
-					}
-					// Skip soft-deleted rows in UNIQUE check
-					if vrow.Version.DeletedAt > 0 {
-						continue
-					}
-					existingRow := vrow.Data
-					if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
-						duplicateKey = k
+
+				// Try index-based lookup first (O(log n) vs full table scan)
+				colLower := strings.ToLower(col.Name)
+				found := false
+				for idxName, idxDef := range c.indexes {
+					if idxDef.TableName == stmt.Table && idxDef.Unique && len(idxDef.Columns) == 1 && strings.ToLower(idxDef.Columns[0]) == colLower {
+						if idxTree, ok := c.indexTrees[idxName]; ok {
+							idxKey := typeTaggedKey(rowValues[i])
+							if _, err := idxTree.Get([]byte(idxKey)); err == nil {
+								duplicateKey = []byte(idxKey)
+							}
+						}
+						found = true
 						break
 					}
 				}
-				iter.Close()
+
+				// Fallback: full table scan if no unique index found
+				if !found {
+					iter, err := tree.Scan(nil, nil)
+					if err != nil {
+						return 0, 0, fmt.Errorf("failed to scan table for UNIQUE check: %w", err)
+					}
+					for iter.HasNext() {
+						k, existingData, err := iter.Next()
+						if err != nil {
+							break
+						}
+						vrow, err := decodeVersionedRow(existingData, len(table.Columns))
+						if err != nil {
+							continue
+						}
+						if vrow.Version.DeletedAt > 0 {
+							continue
+						}
+						existingRow := vrow.Data
+						if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
+							duplicateKey = k
+							break
+						}
+					}
+					iter.Close()
+				}
+
 				if duplicateKey != nil {
 					if stmt.ConflictAction == query.ConflictIgnore {
 						skipRow = true
 						break
 					} else if stmt.ConflictAction == query.ConflictReplace {
-						// Clean up index entries for the row being replaced
 						oldData, getErr := tree.Get(duplicateKey)
 						if getErr == nil {
 							oldRow, decErr := decodeRow(oldData, len(table.Columns))
@@ -685,8 +695,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 		// Record undo log entry for rollback (after applying change)
 		if c.txnActive {
-			keyCopy := make([]byte, len(key))
-			copy(keyCopy, []byte(key))
+			keyCopy := []byte(key)
 			c.undoLog = append(c.undoLog, undoEntry{
 				action:       undoInsert,
 				tableName:    stmt.Table,

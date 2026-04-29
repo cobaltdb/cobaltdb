@@ -626,7 +626,7 @@ func valueToString(v interface{}) string {
 		}
 		return "false"
 	default:
-		return fmt.Sprintf("%v", val)
+		return ValueToStringKey(val)
 	}
 }
 

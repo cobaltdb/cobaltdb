@@ -114,7 +114,7 @@ func valueToExpr(val interface{}) query.Expression {
 		}
 		return &query.NumberLiteral{Value: 0}
 	default:
-		return &query.StringLiteral{Value: fmt.Sprintf("%v", v)}
+		return &query.StringLiteral{Value: ValueToStringKey(v)}
 	}
 }
 
@@ -139,4 +139,33 @@ func toLowerFast(s string) string {
 		}
 	}
 	return s
+}
+
+// ValueToStringKey converts a value to a string for use in map keys (GROUP BY,
+// DISTINCT, etc.). It returns "<nil>" for nil so that nil and empty string do
+// not collide. Uses strconv for common numeric types to avoid fmt.Sprintf
+// reflection overhead.
+func ValueToStringKey(v interface{}) string {
+	if v == nil {
+		return "<nil>"
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }

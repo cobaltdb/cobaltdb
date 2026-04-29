@@ -2,6 +2,11 @@
 bin/
 /cobaltdb-server
 /cobaltdb-cli
+cobaltdb-bench
+cobaltdb-migrate
+debug
+demo
+realworld-test
 *.exe
 *.exe~
 *.dll
@@ -14,6 +19,9 @@ bin/
 cover.html
 coverage.html
 coverage.out
+coverage_*.html
+cov_report.html
+storage_cov.out
 
 # Go workspace
 go.work

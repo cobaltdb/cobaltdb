@@ -5,8 +5,11 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"hash"
+	"strconv"
 	"sync"
+
+	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 	"sync/atomic"
 	"time"
 )
@@ -395,14 +398,57 @@ func (c *Cache) calculateHitRate() float64 {
 	return float64(hits) / float64(total) * 100.0
 }
 
-// generateKey creates a cache key from SQL and args
+// sha256Pool recycles SHA256 hashers to avoid allocation per cache key.
+var sha256Pool = sync.Pool{
+	New: func() interface{} {
+		return sha256.New()
+	},
+}
+
+// generateKey creates a cache key from SQL and args.
+// Uses a pooled hasher and stack buffers to minimize allocations.
 func generateKey(sql string, args []interface{}) string {
-	h := sha256.New()
+	h := sha256Pool.Get().(hash.Hash)
+	h.Reset()
+
 	h.Write([]byte(sql))
 	for _, arg := range args {
-		h.Write([]byte(fmt.Sprintf("|%v", arg)))
+		h.Write([]byte("|"))
+		h.Write([]byte(argToString(arg)))
 	}
-	return hex.EncodeToString(h.Sum(nil))
+
+	var sumBuf [32]byte
+	sum := h.Sum(sumBuf[:0])
+	sha256Pool.Put(h)
+
+	var hexBuf [64]byte
+	hex.Encode(hexBuf[:], sum)
+	return string(hexBuf[:])
+}
+
+func argToString(v interface{}) string {
+	if v == nil {
+		return "<nil>"
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	default:
+		return catalog.ValueToStringKey(val)
+	}
 }
 
 // estimateSize estimates the memory size of cached data

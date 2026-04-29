@@ -31,6 +31,7 @@ var version = "dev"
 
 func main() {
 	var (
+		showVersion = flag.Bool("version", false, "print version and exit")
 		dataDir     = flag.String("data", "./data", "data directory")
 		address     = flag.String("addr", "127.0.0.1:4200", "wire protocol address")
 		mysqlAddr   = flag.String("mysql-addr", "127.0.0.1:3307", "MySQL protocol address")
@@ -54,6 +55,11 @@ func main() {
 		drainTimeout         = flag.Duration("drain-timeout", 10*time.Second, "connection drain timeout")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("CobaltDB Server %s\n", version)
+		os.Exit(0)
+	}
 
 	// Override admin credentials from environment variables if set.
 	if envUser := os.Getenv("COBALTDB_ADMIN_USER"); envUser != "" {

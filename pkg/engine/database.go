@@ -333,10 +333,24 @@ func Open(path string, opts *Options) (*DB, error) {
 		// Wrap with encryption if encryption key is provided
 		if opts.EncryptionConfig != nil && opts.EncryptionConfig.Enabled {
 			log.Infof("Enabling encryption at rest")
+			// Try to load existing salt for key derivation consistency
+			if len(opts.EncryptionConfig.Salt) == 0 && path != ":memory:" {
+				if salt, loadErr := storage.LoadSalt(path); loadErr == nil && salt != nil {
+					opts.EncryptionConfig.Salt = salt
+				}
+			}
 			backend, err = storage.NewEncryptedBackend(backend, opts.EncryptionConfig)
 			if err != nil {
 				backend.Close()
 				return nil, fmt.Errorf("failed to setup encryption: %w", err)
+			}
+			// Persist salt for future opens
+			if path != ":memory:" {
+				if salt := backend.(*storage.EncryptedBackend).GetSalt(); salt != nil {
+					if perr := storage.PersistSalt(path, salt); perr != nil {
+						log.Warnf("failed to persist encryption salt: %v", perr)
+					}
+				}
 			}
 		} else if len(opts.EncryptionKey) > 0 {
 			log.Infof("Enabling encryption at rest")
@@ -346,10 +360,24 @@ func Open(path string, opts *Options) (*DB, error) {
 				Algorithm: "aes-256-gcm",
 				UseArgon2: true,
 			}
+			// Try to load existing salt for key derivation consistency
+			if path != ":memory:" {
+				if salt, loadErr := storage.LoadSalt(path); loadErr == nil && salt != nil {
+					encConfig.Salt = salt
+				}
+			}
 			backend, err = storage.NewEncryptedBackend(backend, encConfig)
 			if err != nil {
 				backend.Close()
 				return nil, fmt.Errorf("failed to setup encryption: %w", err)
+			}
+			// Persist salt for future opens
+			if path != ":memory:" {
+				if salt := backend.(*storage.EncryptedBackend).GetSalt(); salt != nil {
+					if perr := storage.PersistSalt(path, salt); perr != nil {
+						log.Warnf("failed to persist encryption salt: %v", perr)
+					}
+				}
 			}
 		}
 
@@ -405,6 +433,11 @@ func Open(path string, opts *Options) (*DB, error) {
 
 	// Initialize buffer pool
 	db.pool = storage.NewBufferPool(opts.CacheSize, backend)
+
+	// Start background dirty page flusher (5s interval) for disk-backed databases
+	if db.path != ":memory:" {
+		db.pool.StartBackgroundFlusher(5 * time.Second)
+	}
 
 	// Initialize or load database
 	if err := db.initialize(); err != nil {
@@ -484,6 +517,29 @@ func (db *DB) createNew() error {
 
 	// Initialize transaction manager
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
+
+	// Initialize WAL for new databases when enabled
+	if db.options.WALEnabled && db.path != ":memory:" && db.wal == nil {
+		walPath := db.path + ".wal"
+		wal, err := storage.OpenWAL(walPath)
+		if err != nil {
+			return fmt.Errorf("failed to initialize WAL: %w", err)
+		}
+		db.wal = wal
+
+		if encBackend, ok := db.backend.(*storage.EncryptedBackend); ok {
+			wal.SetEncryptionCipher(encBackend.GetCipher())
+		}
+
+		db.pool.SetWAL(wal)
+
+		switch db.options.SyncMode {
+		case SyncNormal:
+			wal.EnableGroupCommit(0, 1*time.Millisecond)
+		case SyncOff:
+			wal.EnableGroupCommit(0, 0)
+		}
+	}
 
 	// Initialize query cache if enabled
 	if db.options.EnableQueryCache {
@@ -2266,7 +2322,7 @@ func substituteParamsInExpr(expr query.Expression, paramMap map[string]interface
 			case nil:
 				return &query.NullLiteral{}
 			default:
-				return &query.StringLiteral{Value: fmt.Sprintf("%v", v)}
+				return &query.StringLiteral{Value: catalog.ValueToStringKey(v)}
 			}
 		}
 		return expr
@@ -2563,8 +2619,64 @@ func (db *DB) compareUnionValues(a, b interface{}) int {
 	if b == nil {
 		return 1
 	}
-	sa := fmt.Sprintf("%v", a)
-	sb := fmt.Sprintf("%v", b)
+
+	// Fast path: direct numeric comparison without string conversion
+	switch av := a.(type) {
+	case int64:
+		switch bv := b.(type) {
+		case int64:
+			if av < bv {
+				return -1
+			}
+			if av > bv {
+				return 1
+			}
+			return 0
+		case float64:
+			af := float64(av)
+			if af < bv {
+				return -1
+			}
+			if af > bv {
+				return 1
+			}
+			return 0
+		}
+	case float64:
+		switch bv := b.(type) {
+		case int64:
+			bf := float64(bv)
+			if av < bf {
+				return -1
+			}
+			if av > bf {
+				return 1
+			}
+			return 0
+		case float64:
+			if av < bv {
+				return -1
+			}
+			if av > bv {
+				return 1
+			}
+			return 0
+		}
+	case string:
+		if bv, ok := b.(string); ok {
+			if av < bv {
+				return -1
+			}
+			if av > bv {
+				return 1
+			}
+			return 0
+		}
+	}
+
+	// Fallback: type-aware string conversion to avoid fmt.Sprintf reflection
+	sa := valueToStringForCompare(a)
+	sb := valueToStringForCompare(b)
 	// Try numeric comparison
 	fa, errA := strconv.ParseFloat(sa, 64)
 	fb, errB := strconv.ParseFloat(sb, 64)
@@ -2584,6 +2696,31 @@ func (db *DB) compareUnionValues(a, b interface{}) int {
 		return 1
 	}
 	return 0
+}
+
+func valueToStringForCompare(v interface{}) string {
+	if v == nil {
+		return "<nil>"
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	default:
+		return catalog.ValueToStringKey(val)
+	}
 }
 
 // executeSelectWithCTE executes SELECT with CTEs
@@ -2852,7 +2989,26 @@ func scanValue(src interface{}, dest interface{}) error {
 	case *interface{}:
 		*d = src
 	case *string:
-		*d = fmt.Sprintf("%v", src)
+		switch v := src.(type) {
+		case string:
+			*d = v
+		case []byte:
+			*d = string(v)
+		case int64:
+			*d = strconv.FormatInt(v, 10)
+		case int:
+			*d = strconv.Itoa(v)
+		case float64:
+			*d = strconv.FormatFloat(v, 'f', -1, 64)
+		case bool:
+			if v {
+				*d = "true"
+			} else {
+				*d = "false"
+			}
+		default:
+			*d = catalog.ValueToStringKey(v)
+		}
 	case *int:
 		v, ok := src.(int64)
 		if !ok {
