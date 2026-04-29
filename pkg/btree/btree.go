@@ -793,10 +793,3 @@ type Cell struct {
 	Key       []byte
 	Value     []byte
 }
-
-// InternalCell represents a key and child pointer in an internal node (kept for compatibility)
-type InternalCell struct {
-	KeySize     uint16
-	Key         []byte
-	ChildPageID uint32
-}

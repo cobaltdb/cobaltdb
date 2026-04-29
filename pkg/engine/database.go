@@ -643,6 +643,30 @@ func auditUser(ctx context.Context) string {
 	return "db_user"
 }
 
+// dispatchDDL executes a DDL handler, then logs audit and replicates on success.
+func (db *DB) dispatchDDL(ctx context.Context, action, table string, handler func() (Result, error), opts ...audit.LogOption) (Result, error) {
+	result, err := handler()
+	if db.auditLogger != nil {
+		db.auditLogger.Log(audit.EventDDL, auditUser(ctx), action, opts...)
+	}
+	if err == nil {
+		db.replicateWrite(action, table, nil)
+	}
+	return result, err
+}
+
+// dispatchDML executes a DML handler, then logs audit query and replicates on success.
+func (db *DB) dispatchDML(ctx context.Context, action, table string, start time.Time, handler func() (Result, error)) (Result, error) {
+	result, err := handler()
+	if db.auditLogger != nil {
+		db.auditLogger.LogQuery(auditUser(ctx), action, time.Since(start), result.RowsAffected, err)
+	}
+	if err == nil {
+		db.replicateWrite(action, table, nil)
+	}
+	return result, err
+}
+
 // execute executes a statement
 
 func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interface{}) (result Result, err error) {
@@ -685,14 +709,7 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 
 	switch s := stmt.(type) {
 	case *query.CreateTableStmt:
-		result, err := db.executeCreateTable(ctx, s)
-		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_TABLE", audit.WithTable(s.Table))
-		}
-		if err == nil {
-			db.replicateWrite("CREATE_TABLE", s.Table, nil)
-		}
-		return result, err
+		return db.dispatchDDL(ctx, "CREATE_TABLE", s.Table, func() (Result, error) { return db.executeCreateTable(ctx, s) }, audit.WithTable(s.Table))
 	case *query.CreateForeignTableStmt:
 		result, err := db.executeCreateForeignTable(ctx, s)
 		if db.auditLogger != nil {
@@ -727,32 +744,11 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		}
 		return result, err
 	case *query.DropTableStmt:
-		result, err := db.executeDropTable(ctx, s)
-		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_TABLE", audit.WithTable(s.Table))
-		}
-		if err == nil {
-			db.replicateWrite("DROP_TABLE", s.Table, nil)
-		}
-		return result, err
+		return db.dispatchDDL(ctx, "DROP_TABLE", s.Table, func() (Result, error) { return db.executeDropTable(ctx, s) }, audit.WithTable(s.Table))
 	case *query.CreateIndexStmt:
-		result, err := db.executeCreateIndex(ctx, s)
-		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_INDEX", audit.WithTable(s.Table))
-		}
-		if err == nil {
-			db.replicateWrite("CREATE_INDEX", s.Table, nil)
-		}
-		return result, err
+		return db.dispatchDDL(ctx, "CREATE_INDEX", s.Table, func() (Result, error) { return db.executeCreateIndex(ctx, s) }, audit.WithTable(s.Table))
 	case *query.CreateViewStmt:
-		result, err := db.executeCreateView(ctx, s)
-		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_VIEW", audit.WithTable(s.Name))
-		}
-		if err == nil {
-			db.replicateWrite("CREATE_VIEW", s.Name, nil)
-		}
-		return result, err
+		return db.dispatchDDL(ctx, "CREATE_VIEW", s.Name, func() (Result, error) { return db.executeCreateView(ctx, s) }, audit.WithTable(s.Name))
 	case *query.DropViewStmt:
 		result, err := db.executeDropView(ctx, s)
 		if db.auditLogger != nil {
@@ -760,68 +756,19 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		}
 		return result, err
 	case *query.CreateTriggerStmt:
-		result, err := db.executeCreateTrigger(ctx, s)
-		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_TRIGGER", audit.WithTable(s.Table))
-		}
-		if err == nil {
-			db.replicateWrite("CREATE_TRIGGER", s.Table, nil)
-		}
-		return result, err
+		return db.dispatchDDL(ctx, "CREATE_TRIGGER", s.Table, func() (Result, error) { return db.executeCreateTrigger(ctx, s) }, audit.WithTable(s.Table))
 	case *query.DropTriggerStmt:
-		result, err := db.executeDropTrigger(ctx, s)
-		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_TRIGGER")
-		}
-		if err == nil {
-			db.replicateWrite("DROP_TRIGGER", "", nil)
-		}
-		return result, err
+		return db.dispatchDDL(ctx, "DROP_TRIGGER", "", func() (Result, error) { return db.executeDropTrigger(ctx, s) })
 	case *query.CreateProcedureStmt:
-		result, err := db.executeCreateProcedure(ctx, s)
-		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_PROCEDURE")
-		}
-		if err == nil {
-			db.replicateWrite("CREATE_PROCEDURE", "", nil)
-		}
-		return result, err
+		return db.dispatchDDL(ctx, "CREATE_PROCEDURE", "", func() (Result, error) { return db.executeCreateProcedure(ctx, s) })
 	case *query.DropProcedureStmt:
-		result, err := db.executeDropProcedure(ctx, s)
-		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_PROCEDURE")
-		}
-		if err == nil {
-			db.replicateWrite("DROP_PROCEDURE", "", nil)
-		}
-		return result, err
+		return db.dispatchDDL(ctx, "DROP_PROCEDURE", "", func() (Result, error) { return db.executeDropProcedure(ctx, s) })
 	case *query.CreatePolicyStmt:
-		result, err := db.executeCreatePolicy(ctx, s)
-		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_POLICY", audit.WithTable(s.Table))
-		}
-		if err == nil {
-			db.replicateWrite("CREATE_POLICY", s.Table, nil)
-		}
-		return result, err
+		return db.dispatchDDL(ctx, "CREATE_POLICY", s.Table, func() (Result, error) { return db.executeCreatePolicy(ctx, s) }, audit.WithTable(s.Table))
 	case *query.DropPolicyStmt:
-		result, err := db.executeDropPolicy(ctx, s)
-		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_POLICY")
-		}
-		if err == nil {
-			db.replicateWrite("DROP_POLICY", "", nil)
-		}
-		return result, err
+		return db.dispatchDDL(ctx, "DROP_POLICY", "", func() (Result, error) { return db.executeDropPolicy(ctx, s) })
 	case *query.CallProcedureStmt:
-		result, err := db.executeCallProcedure(ctx, s, args)
-		if db.auditLogger != nil {
-			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CALL_PROCEDURE")
-		}
-		if err == nil {
-			db.replicateWrite("CALL_PROCEDURE", "", args)
-		}
-		return result, err
+		return db.dispatchDDL(ctx, "CALL_PROCEDURE", "", func() (Result, error) { return db.executeCallProcedure(ctx, s, args) })
 	case *query.BeginStmt:
 		if db.catalog.IsTransactionActive() {
 			return Result{}, errors.New("transaction already in progress")
