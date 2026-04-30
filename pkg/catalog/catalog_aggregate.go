@@ -107,59 +107,70 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 	groups, groupOrder := c.buildGroupByGroups(table, stmt, args, groupBySpecs, allValues)
 
 
-	// Compute aggregates for each group
-	var resultRows [][]interface{}
 
-	// If no groups (empty table) and no GROUP BY clause, we still need to return
-	// a single row with aggregate results (e.g., COUNT(*) = 0)
-	if len(groups) == 0 && len(stmt.GroupBy) == 0 && len(selectCols) > 0 {
-		resultRow := make([]interface{}, len(selectCols))
-		hasAggregate := false
-		for i, ci := range selectCols {
-			if ci.isAggregate {
-				hasAggregate = true
-				switch ci.aggregateType {
-				case "COUNT":
-					resultRow[i] = int64(0)
-				case "SUM", "AVG", "MIN", "MAX":
-					resultRow[i] = nil // NULL for empty set
-				}
-			} else if ci.hasEmbeddedAgg {
-				hasAggregate = true
-				// Evaluate expression with empty group (aggregates return 0/NULL)
-				val, err := c.evaluateExprWithGroupAggregates(ci.originalExpr, nil, table, args)
-				if err == nil {
-					resultRow[i] = val
-				}
+	// Compute empty-group result (e.g., COUNT(*) = 0 on empty table)
+	resultRows := c.computeEmptyGroupResult(groups, stmt, selectCols, table, args)
+
+	// Compute aggregate result for each group
+	groupResultRows := c.computeGroupResultRows(groups, groupOrder, stmt, selectCols, table, args)
+	resultRows = append(resultRows, groupResultRows...)
+
+	// Apply ORDER BY, DISTINCT, OFFSET, LIMIT
+	resultRows = c.applyGroupByPostProcessing(resultRows, stmt, selectCols, args)
+
+	return returnColumns, resultRows, nil
+}
+
+
+// computeEmptyGroupResult returns a single result row for aggregate queries on empty tables.
+func (c *Catalog) computeEmptyGroupResult(groups map[string][][]interface{}, stmt *query.SelectStmt, selectCols []selectColInfo, table *TableDef, args []interface{}) [][]interface{} {
+	if len(groups) > 0 || len(stmt.GroupBy) > 0 || len(selectCols) == 0 {
+		return nil
+	}
+	resultRow := make([]interface{}, len(selectCols))
+	hasAggregate := false
+	for i, ci := range selectCols {
+		if ci.isAggregate {
+			hasAggregate = true
+			switch ci.aggregateType {
+			case "COUNT":
+				resultRow[i] = int64(0)
+			case "SUM", "AVG", "MIN", "MAX":
+				resultRow[i] = nil
 			}
-		}
-		if hasAggregate {
-			// Apply HAVING clause even for empty-table aggregate
-			if stmt.Having != nil {
-				havingMatched, err := evaluateHaving(c, resultRow, selectCols, table.Columns, stmt.Having, args)
-				if err == nil && havingMatched {
-					resultRows = append(resultRows, resultRow)
-				}
-			} else {
-				resultRows = append(resultRows, resultRow)
+		} else if ci.hasEmbeddedAgg {
+			hasAggregate = true
+			val, err := c.evaluateExprWithGroupAggregates(ci.originalExpr, nil, table, args)
+			if err == nil {
+				resultRow[i] = val
 			}
 		}
 	}
+	if !hasAggregate {
+		return nil
+	}
+	if stmt.Having != nil {
+		havingMatched, err := evaluateHaving(c, resultRow, selectCols, table.Columns, stmt.Having, args)
+		if err != nil || !havingMatched {
+			return nil
+		}
+	}
+	return [][]interface{}{resultRow}
+}
 
+// computeGroupResultRows computes aggregate result rows for each group.
+func (c *Catalog) computeGroupResultRows(groups map[string][][]interface{}, groupOrder []string, stmt *query.SelectStmt, selectCols []selectColInfo, table *TableDef, args []interface{}) [][]interface{} {
+	var resultRows [][]interface{}
 	for _, gk := range groupOrder {
 		groupRows := groups[gk]
 		resultRow := make([]interface{}, len(selectCols))
-
 		for i, ci := range selectCols {
 			if ci.isAggregate {
-				// Collect values for this aggregate
 				var values []interface{}
 				for _, row := range groupRows {
 					if ci.aggregateCol == "*" && ci.aggregateExpr == nil {
-						// COUNT(*): just count rows
 						values = append(values, int64(1))
 					} else if ci.aggregateExpr != nil {
-						// Expression argument (e.g., SUM(quantity * price))
 						v, err := evaluateExpression(c, row, table.Columns, ci.aggregateExpr, args)
 						if err == nil {
 							values = append(values, v)
@@ -171,20 +182,14 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 						}
 					}
 				}
-
-				// Compute aggregate
 				resultRow[i] = computeAggregateValue(ci, values, groupRows)
-				// Apply string length limit for GROUP_CONCAT
 				if ci.aggregateType == "GROUP_CONCAT" && resultRow[i] != nil {
 					if joined, ok := resultRow[i].(string); ok && len(joined) > maxStringResultLen {
 						resultRow[i] = joined[:maxStringResultLen]
 					}
 				}
 			} else {
-				// Non-aggregate column - get value from first row in group
 				if ci.hasEmbeddedAgg && len(groupRows) > 0 {
-					// Expression (CASE, etc.) with embedded aggregates
-					// Pre-compute aggregates over the group, then evaluate expression
 					val, err := c.evaluateExprWithGroupAggregates(ci.originalExpr, groupRows, table, args)
 					if err == nil {
 						resultRow[i] = val
@@ -192,7 +197,6 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 				} else if ci.index >= 0 && len(groupRows) > 0 && ci.index < len(groupRows[0]) {
 					resultRow[i] = groupRows[0][ci.index]
 				} else if ci.index == -1 && len(groupRows) > 0 {
-					// Expression column (CASE, CAST, etc.) - evaluate it
 					if i < len(stmt.Columns) {
 						expr := stmt.Columns[i]
 						if ae, ok := expr.(*query.AliasExpr); ok {
@@ -206,31 +210,25 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 				}
 			}
 		}
-
-		// Apply HAVING clause if present
 		if stmt.Having != nil {
-			// Create a temporary row with column values for evaluation
-			// We need to create a virtual row that has the right column structure
 			havingMatched, err := evaluateHaving(c, resultRow, selectCols, table.Columns, stmt.Having, args)
 			if err != nil || !havingMatched {
 				continue
 			}
 		}
-
 		resultRows = append(resultRows, resultRow)
 	}
+	return resultRows
+}
 
-	// Apply ORDER BY if present
+// applyGroupByPostProcessing applies ORDER BY, DISTINCT, OFFSET, LIMIT to grouped results.
+func (c *Catalog) applyGroupByPostProcessing(resultRows [][]interface{}, stmt *query.SelectStmt, selectCols []selectColInfo, args []interface{}) [][]interface{} {
 	if len(stmt.OrderBy) > 0 {
 		resultRows = c.applyGroupByOrderBy(resultRows, selectCols, stmt.OrderBy)
 	}
-
-	// Apply DISTINCT if present
 	if stmt.Distinct {
 		resultRows = c.applyDistinct(resultRows)
 	}
-
-	// Apply OFFSET if present
 	if stmt.Offset != nil {
 		offsetVal, err := evaluateExpression(c, nil, nil, stmt.Offset, args)
 		if err == nil {
@@ -243,8 +241,6 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 			}
 		}
 	}
-
-	// Apply LIMIT if present
 	if stmt.Limit != nil {
 		limitVal, err := evaluateExpression(c, nil, nil, stmt.Limit, args)
 		if err == nil {
@@ -253,8 +249,7 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 			}
 		}
 	}
-
-	return returnColumns, resultRows, nil
+	return resultRows
 }
 
 	// buildGroupByGroups scans raw values and groups rows by GROUP BY columns.

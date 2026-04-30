@@ -413,73 +413,22 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		return result.val, result.err
 	}
 
+		// Try math functions
+		if val, handled, err := evaluateMathFunction(funcName, evalArgs); handled {
+			return val, err
+		}
+
+		// Try vector functions
+		if val, handled, err := evaluateVectorFunction(funcName, evalArgs); handled {
+			return val, err
+		}
+
+		// Try CAST
+		if val, handled, err := evaluateCastFunction(funcName, evalArgs); handled {
+			return val, err
+		}
+
 	switch funcName {
-	case "ABS":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("ABS requires at least 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		if f, ok := toFloat64(evalArgs[0]); ok {
-			if f < 0 {
-				return -f, nil
-			}
-			return f, nil
-		}
-		return evalArgs[0], nil
-
-	case "ROUND":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("ROUND requires at least 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		f, ok := toFloat64(evalArgs[0])
-		if !ok {
-			return evalArgs[0], nil
-		}
-		precision := 0
-		if len(evalArgs) >= 2 {
-			if p, ok := toFloat64(evalArgs[1]); ok {
-				precision = int(p)
-			}
-		}
-		divisor := 1.0
-		for i := 0; i < precision; i++ {
-			divisor *= 10
-		}
-		result := math.Round(f*divisor) / divisor
-		if precision == 0 {
-			return float64(int64(result)), nil
-		}
-		return result, nil
-
-	case "FLOOR":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("FLOOR requires at least 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		if f, ok := toFloat64(evalArgs[0]); ok {
-			return math.Floor(f), nil
-		}
-		return evalArgs[0], nil
-
-	case "CEIL", "CEILING":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("CEIL requires at least 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		if f, ok := toFloat64(evalArgs[0]); ok {
-			return math.Ceil(f), nil
-		}
-		return evalArgs[0], nil
-
 	case "COALESCE", "IFNULL":
 		// Handled above with short-circuit evaluation
 		return nil, nil
@@ -518,65 +467,6 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 			return nil, nil
 		}
 		return ValueToStringKey(evalArgs[1]), nil
-
-	case "CAST":
-		if len(evalArgs) < 2 {
-			return nil, fmt.Errorf("CAST requires 2 arguments")
-		}
-		if evalArgs[0] == nil {
-			return nil, nil
-		}
-		targetType, ok := evalArgs[1].(string)
-		if !ok {
-			targetType = toUpperFast(ValueToStringKey(evalArgs[1]))
-		}
-		switch targetType {
-		case "INTEGER", "INT":
-			if f, ok := toFloat64(evalArgs[0]); ok {
-				return int64(f), nil
-			}
-			if s, ok := evalArgs[0].(string); ok {
-				i, err := strconv.ParseInt(s, 10, 64)
-				if err == nil {
-					return i, nil
-				}
-				// Try parsing as float and truncate
-				if f, err := strconv.ParseFloat(s, 64); err == nil {
-					return int64(f), nil
-				}
-				return int64(0), nil
-			}
-			if b, ok := evalArgs[0].(bool); ok {
-				if b {
-					return int64(1), nil
-				}
-				return int64(0), nil
-			}
-		case "REAL", "FLOAT":
-			if f, ok := toFloat64(evalArgs[0]); ok {
-				return f, nil
-			}
-			if s, ok := evalArgs[0].(string); ok {
-				f, err := strconv.ParseFloat(s, 64)
-				if err == nil {
-					return f, nil
-				}
-				return 0.0, nil
-			}
-		case "TEXT", "STRING":
-			return ValueToStringKey(evalArgs[0]), nil
-		case "BOOLEAN", "BOOL":
-			if b, ok := evalArgs[0].(bool); ok {
-				return b, nil
-			}
-			if f, ok := toFloat64(evalArgs[0]); ok {
-				return f != 0, nil
-			}
-			if s, ok := evalArgs[0].(string); ok {
-				return strings.EqualFold(s, "true") || s == "1", nil
-			}
-		}
-		return evalArgs[0], nil
 
 	case "GROUP_CONCAT":
 		// GROUP_CONCAT is handled in aggregate path; scalar fallback just returns the value
@@ -644,52 +534,196 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		}
 		return strings.Repeat("\x00", size), nil
 
-	case "COSINE_SIMILARITY", "COSINE_SIMILARIT":
-		if len(evalArgs) != 2 {
-			return nil, fmt.Errorf("COSINE_SIMILARITY requires exactly 2 arguments")
-		}
-		v1, err := toVector(evalArgs[0])
-		if err != nil {
-			return nil, fmt.Errorf("COSINE_SIMILARITY first argument: %v", err)
-		}
-		v2, err := toVector(evalArgs[1])
-		if err != nil {
-			return nil, fmt.Errorf("COSINE_SIMILARITY second argument: %v", err)
-		}
-		return cosineSimilarity(v1, v2), nil
-
-	case "L2_DISTANCE", "L2_DIST":
-		if len(evalArgs) != 2 {
-			return nil, fmt.Errorf("L2_DISTANCE requires exactly 2 arguments")
-		}
-		v1, err := toVector(evalArgs[0])
-		if err != nil {
-			return nil, fmt.Errorf("L2_DISTANCE first argument: %v", err)
-		}
-		v2, err := toVector(evalArgs[1])
-		if err != nil {
-			return nil, fmt.Errorf("L2_DISTANCE second argument: %v", err)
-		}
-		return l2Distance(v1, v2), nil
-
-	case "INNER_PRODUCT", "DOT_PRODUCT", "DOT":
-		if len(evalArgs) != 2 {
-			return nil, fmt.Errorf("INNER_PRODUCT requires exactly 2 arguments")
-		}
-		v1, err := toVector(evalArgs[0])
-		if err != nil {
-			return nil, fmt.Errorf("INNER_PRODUCT first argument: %v", err)
-		}
-		v2, err := toVector(evalArgs[1])
-		if err != nil {
-			return nil, fmt.Errorf("INNER_PRODUCT second argument: %v", err)
-		}
-		return innerProduct(v1, v2), nil
-
 	default:
 		// Check for JSON functions
 		return evaluateJSONFunction(funcName, evalArgs)
 	}
+}
+
+
+// evaluateMathFunction handles ABS, ROUND, FLOOR, CEIL math functions.
+func evaluateMathFunction(funcName string, evalArgs []interface{}) (interface{}, bool, error) {
+	switch funcName {
+	case "ABS":
+		if len(evalArgs) < 1 {
+			return nil, true, fmt.Errorf("ABS requires at least 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			if f < 0 {
+				return -f, true, nil
+			}
+			return f, true, nil
+		}
+		return evalArgs[0], true, nil
+
+	case "ROUND":
+		if len(evalArgs) < 1 {
+			return nil, true, fmt.Errorf("ROUND requires at least 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		f, ok := toFloat64(evalArgs[0])
+		if !ok {
+			return evalArgs[0], true, nil
+		}
+		precision := 0
+		if len(evalArgs) >= 2 {
+			if p, ok := toFloat64(evalArgs[1]); ok {
+				precision = int(p)
+			}
+		}
+		divisor := 1.0
+		for i := 0; i < precision; i++ {
+			divisor *= 10
+		}
+		result := math.Round(f*divisor) / divisor
+		if precision == 0 {
+			return float64(int64(result)), true, nil
+		}
+		return result, true, nil
+
+	case "FLOOR":
+		if len(evalArgs) < 1 {
+			return nil, true, fmt.Errorf("FLOOR requires at least 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return math.Floor(f), true, nil
+		}
+		return evalArgs[0], true, nil
+
+	case "CEIL", "CEILING":
+		if len(evalArgs) < 1 {
+			return nil, true, fmt.Errorf("CEIL requires at least 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return math.Ceil(f), true, nil
+		}
+		return evalArgs[0], true, nil
+	}
+	return nil, false, nil
+}
+
+
+
+// evaluateCastFunction handles the CAST type conversion.
+func evaluateCastFunction(funcName string, evalArgs []interface{}) (interface{}, bool, error) {
+	if funcName != "CAST" {
+		return nil, false, nil
+	}
+	if len(evalArgs) < 2 {
+		return nil, true, fmt.Errorf("CAST requires 2 arguments")
+	}
+	if evalArgs[0] == nil {
+		return nil, true, nil
+	}
+	targetType, ok := evalArgs[1].(string)
+	if !ok {
+		targetType = toUpperFast(ValueToStringKey(evalArgs[1]))
+	}
+	switch targetType {
+	case "INTEGER", "INT":
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return int64(f), true, nil
+		}
+		if s, ok := evalArgs[0].(string); ok {
+			i, err := strconv.ParseInt(s, 10, 64)
+			if err == nil {
+				return i, true, nil
+			}
+			if f, err := strconv.ParseFloat(s, 64); err == nil {
+				return int64(f), true, nil
+			}
+			return int64(0), true, nil
+		}
+		if b, ok := evalArgs[0].(bool); ok {
+			if b {
+				return int64(1), true, nil
+			}
+			return int64(0), true, nil
+		}
+	case "REAL", "FLOAT":
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return f, true, nil
+		}
+		if s, ok := evalArgs[0].(string); ok {
+			f, err := strconv.ParseFloat(s, 64)
+			if err == nil {
+				return f, true, nil
+			}
+			return 0.0, true, nil
+		}
+	case "TEXT", "STRING":
+		return ValueToStringKey(evalArgs[0]), true, nil
+	case "BOOLEAN", "BOOL":
+		if b, ok := evalArgs[0].(bool); ok {
+			return b, true, nil
+		}
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return f != 0, true, nil
+		}
+		if s, ok := evalArgs[0].(string); ok {
+			return strings.EqualFold(s, "true") || s == "1", true, nil
+		}
+	}
+	return evalArgs[0], true, nil
+}
+
+// evaluateVectorFunction handles COSINE_SIMILARITY, L2_DISTANCE, INNER_PRODUCT.
+func evaluateVectorFunction(funcName string, evalArgs []interface{}) (interface{}, bool, error) {
+	switch funcName {
+	case "COSINE_SIMILARITY", "COSINE_SIMILARIT":
+		if len(evalArgs) != 2 {
+			return nil, true, fmt.Errorf("COSINE_SIMILARITY requires exactly 2 arguments")
+		}
+		v1, err := toVector(evalArgs[0])
+		if err != nil {
+			return nil, true, fmt.Errorf("COSINE_SIMILARITY first argument: %v", err)
+		}
+		v2, err := toVector(evalArgs[1])
+		if err != nil {
+			return nil, true, fmt.Errorf("COSINE_SIMILARITY second argument: %v", err)
+		}
+		return cosineSimilarity(v1, v2), true, nil
+
+	case "L2_DISTANCE", "L2_DIST":
+		if len(evalArgs) != 2 {
+			return nil, true, fmt.Errorf("L2_DISTANCE requires exactly 2 arguments")
+		}
+		v1, err := toVector(evalArgs[0])
+		if err != nil {
+			return nil, true, fmt.Errorf("L2_DISTANCE first argument: %v", err)
+		}
+		v2, err := toVector(evalArgs[1])
+		if err != nil {
+			return nil, true, fmt.Errorf("L2_DISTANCE second argument: %v", err)
+		}
+		return l2Distance(v1, v2), true, nil
+
+	case "INNER_PRODUCT", "DOT_PRODUCT", "DOT":
+		if len(evalArgs) != 2 {
+			return nil, true, fmt.Errorf("INNER_PRODUCT requires exactly 2 arguments")
+		}
+		v1, err := toVector(evalArgs[0])
+		if err != nil {
+			return nil, true, fmt.Errorf("INNER_PRODUCT first argument: %v", err)
+		}
+		v2, err := toVector(evalArgs[1])
+		if err != nil {
+			return nil, true, fmt.Errorf("INNER_PRODUCT second argument: %v", err)
+		}
+		return innerProduct(v1, v2), true, nil
+	}
+	return nil, false, nil
 }
 
 // toVector converts an interface value to a []float64 vector
