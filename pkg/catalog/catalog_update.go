@@ -282,12 +282,12 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 
 	// Now update each row
 	rowsAffected := int64(0)
-	type updateEntry struct {
-		key    []byte
-		oldRow []interface{}
-		newRow []interface{}
-	}
-	var entries []updateEntry
+
+
+
+
+
+	var entries []joinUpdateEntry
 
 	// Pre-calculate column indices for SET clauses
 	setColumnIndices := make([]int, len(stmt.Set))
@@ -356,7 +356,7 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 			}
 		}
 
-		entries = append(entries, updateEntry{
+		entries = append(entries, joinUpdateEntry{
 			key:    key,
 			oldRow: row,
 			newRow: updatedRow,
@@ -364,51 +364,10 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		rowsAffected++
 	}
 
-	// Apply all updates
-	for _, entry := range entries {
-		newValue, err := encodeRow(nil, entry.newRow)
-		if err != nil {
+		// Apply all updates
+		if err := c.applyJoinUpdateEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
 			return 0, rowsAffected, err
 		}
-		if err := targetTree.Put(entry.key, newValue); err != nil {
-			return 0, rowsAffected, err
-		}
-
-		// Update indexes
-		for idxName, idxDef := range c.indexes {
-			if idxDef.TableName == stmt.Table {
-				oldIdxKey, _ := buildCompositeIndexKey(targetTable, idxDef, entry.oldRow)
-				newIdxKey, newOk := buildCompositeIndexKey(targetTable, idxDef, entry.newRow)
-				if idxTree, exists := c.indexTrees[idxName]; exists {
-					if oldIdxKey != "" {
-						if err := idxTree.Delete([]byte(oldIdxKey)); err != nil {
-							return 0, rowsAffected, fmt.Errorf("failed to delete old index entry: %w", err)
-						}
-					}
-					if newOk && newIdxKey != "" {
-						if err := idxTree.Put([]byte(newIdxKey), entry.key); err != nil {
-							return 0, rowsAffected, fmt.Errorf("failed to insert new index entry: %w", err)
-						}
-					}
-				}
-			}
-		}
-
-		// Record undo log for rollback
-		if c.txnActive {
-			oldValueData, marshalErr := json.Marshal(entry.oldRow)
-			if marshalErr == nil {
-				keyCopy := make([]byte, len(entry.key))
-				copy(keyCopy, entry.key)
-				c.undoLog = append(c.undoLog, undoEntry{
-					action:    undoUpdate,
-					tableName: stmt.Table,
-					key:       keyCopy,
-					oldValue:  oldValueData,
-				})
-			}
-		}
-	}
 
 	// Handle RETURNING clause
 	var returningRows [][]interface{}
@@ -431,6 +390,65 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 	c.lastReturningColumns = returningCols
 
 	return int64(len(entries)), rowsAffected, nil
+}
+
+
+// joinUpdateEntry is a local entry type used by updateWithJoinLocked to track
+// pending updates discovered through a JOIN.
+type joinUpdateEntry struct {
+	key    []byte
+	oldRow []interface{}
+	newRow []interface{}
+}
+
+// applyJoinUpdateEntries writes back updated rows, updates indexes, and records
+// undo log entries for a JOIN-based UPDATE.
+func (c *Catalog) applyJoinUpdateEntries(tableName string, table *TableDef, tree *btree.BTree, entries []joinUpdateEntry) error {
+	for _, entry := range entries {
+		newValue, err := encodeRow(nil, entry.newRow)
+		if err != nil {
+			return err
+		}
+		if err := tree.Put(entry.key, newValue); err != nil {
+			return err
+		}
+
+		// Update indexes
+		for idxName, idxDef := range c.indexes {
+			if idxDef.TableName == tableName {
+				oldIdxKey, _ := buildCompositeIndexKey(table, idxDef, entry.oldRow)
+				newIdxKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
+				if idxTree, exists := c.indexTrees[idxName]; exists {
+					if oldIdxKey != "" {
+						if err := idxTree.Delete([]byte(oldIdxKey)); err != nil {
+							return fmt.Errorf("failed to delete old index entry: %w", err)
+						}
+					}
+					if newOk && newIdxKey != "" {
+						if err := idxTree.Put([]byte(newIdxKey), entry.key); err != nil {
+							return fmt.Errorf("failed to insert new index entry: %w", err)
+						}
+					}
+				}
+			}
+		}
+
+		// Record undo log for rollback
+		if c.txnActive {
+			oldValueData, marshalErr := json.Marshal(entry.oldRow)
+			if marshalErr == nil {
+				keyCopy := make([]byte, len(entry.key))
+				copy(keyCopy, entry.key)
+				c.undoLog = append(c.undoLog, undoEntry{
+					action:    undoUpdate,
+					tableName: tableName,
+					key:       keyCopy,
+					oldValue:  oldValueData,
+				})
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
@@ -495,12 +513,7 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 
 	// Now delete each row
 	rowsAffected := int64(0)
-	type delEntry struct {
-		key   []byte
-		value []byte
-		row   []interface{}
-	}
-	var entries []delEntry
+	var entries []joinDelEntry
 
 	// Foreign key enforcer for CASCADE/RESTRICT actions
 	fke := NewForeignKeyEnforcer(c)
@@ -546,7 +559,7 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		valueCopy := make([]byte, len(valueData))
 		copy(valueCopy, valueData)
 
-		entries = append(entries, delEntry{
+		entries = append(entries, joinDelEntry{
 			key:   keyCopy,
 			value: valueCopy,
 			row:   row,
@@ -554,65 +567,10 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		rowsAffected++
 	}
 
-	// Soft delete collected entries
-	for _, entry := range entries {
-		// Get current value to decode
-		currentData, err := targetTree.Get(entry.key)
-		if err != nil {
-			continue // Row may have been deleted
+		// Soft delete collected entries
+		if err := c.softDeleteJoinEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
+			return 0, rowsAffected, err
 		}
-
-		vrow, err := decodeVersionedRow(currentData, len(targetTable.Columns))
-		if err != nil {
-			continue
-		}
-
-		// Remove from indexes first
-		for idxName, idxTree := range c.indexTrees {
-			idxDef := c.indexes[idxName]
-			if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
-				indexKey, ok := buildCompositeIndexKey(targetTable, idxDef, entry.row)
-				if ok {
-					if idxDef.Unique {
-						if err := idxTree.Delete([]byte(indexKey)); err != nil {
-							return 0, rowsAffected, fmt.Errorf("failed to delete index entry: %w", err)
-						}
-					} else {
-						compoundKey := indexKey + "\x00" + string(entry.key)
-						if err := idxTree.Delete([]byte(compoundKey)); err != nil {
-							return 0, rowsAffected, fmt.Errorf("failed to delete compound index entry: %w", err)
-						}
-					}
-				}
-			}
-		}
-
-		// Soft delete: mark as deleted
-		vrow.Version.markDeleted(time.Now())
-
-		// Re-encode and store
-		deletedValueData, err := json.Marshal(vrow)
-		if err != nil {
-			return 0, rowsAffected, fmt.Errorf("failed to encode deleted row: %w", err)
-		}
-
-		if err := targetTree.Put(entry.key, deletedValueData); err != nil {
-			return 0, rowsAffected, fmt.Errorf("failed to soft delete row: %w", err)
-		}
-
-		// Log to WAL before applying change
-		if c.wal != nil && c.txnActive {
-			walData := append([]byte(entry.key), 0)
-			record := &storage.WALRecord{
-				TxnID: c.txnID,
-				Type:  storage.WALDelete,
-				Data:  walData,
-			}
-			if err := c.wal.Append(record); err != nil {
-				return 0, rowsAffected, fmt.Errorf("failed to append WAL record: %w", err)
-			}
-		}
-	}
 
 	// Handle RETURNING clause (returns OLD row values)
 	var returningRows [][]interface{}
@@ -638,6 +596,78 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 }
 
 // processUpdateRow processes a single row update from index lookup (valueData is raw bytes)
+
+// joinDelEntry is a local entry type used by deleteWithUsingLocked to track
+// pending deletions discovered through a JOIN.
+type joinDelEntry struct {
+	key   []byte
+	value []byte
+	row   []interface{}
+}
+
+// softDeleteJoinEntries performs soft deletion of collected entries from a
+// USING-based DELETE: updates indexes, writes WAL records, and marks rows deleted.
+func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree *btree.BTree, entries []joinDelEntry) error {
+	for _, entry := range entries {
+		// Get current value to decode
+		currentData, err := tree.Get(entry.key)
+		if err != nil {
+			continue // Row may have been deleted
+		}
+
+		vrow, err := decodeVersionedRow(currentData, len(table.Columns))
+		if err != nil {
+			continue
+		}
+
+		// Remove from indexes first
+		for idxName, idxTree := range c.indexTrees {
+			idxDef := c.indexes[idxName]
+			if idxDef.TableName == tableName && len(idxDef.Columns) > 0 {
+				indexKey, ok := buildCompositeIndexKey(table, idxDef, entry.row)
+				if ok {
+					if idxDef.Unique {
+						if err := idxTree.Delete([]byte(indexKey)); err != nil {
+							return fmt.Errorf("failed to delete index entry: %w", err)
+						}
+					} else {
+						compoundKey := indexKey + "\x00" + string(entry.key)
+						if err := idxTree.Delete([]byte(compoundKey)); err != nil {
+							return fmt.Errorf("failed to delete compound index entry: %w", err)
+						}
+					}
+				}
+			}
+		}
+
+		// Soft delete: mark as deleted
+		vrow.Version.markDeleted(time.Now())
+
+		// Re-encode and store
+		deletedValueData, err := json.Marshal(vrow)
+		if err != nil {
+			return fmt.Errorf("failed to encode deleted row: %w", err)
+		}
+
+		if err := tree.Put(entry.key, deletedValueData); err != nil {
+			return fmt.Errorf("failed to soft delete row: %w", err)
+		}
+
+		// Log to WAL before applying change
+		if c.wal != nil && c.txnActive {
+			walData := append([]byte(entry.key), 0)
+			record := &storage.WALRecord{
+				TxnID: c.txnID,
+				Type:  storage.WALDelete,
+				Data:  walData,
+			}
+			if err := c.wal.Append(record); err != nil {
+				return fmt.Errorf("failed to append WAL record: %w", err)
+			}
+		}
+	}
+	return nil
+}
 func (c *Catalog) processUpdateRow(ctx context.Context, table *TableDef, tree *btree.BTree, treeName string, key []byte, valueData []byte,
 	stmt *query.UpdateStmt, args []interface{}, setColumnIndices []int, entries *[]updateEntry, rowsAffected *int64) error {
 	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
