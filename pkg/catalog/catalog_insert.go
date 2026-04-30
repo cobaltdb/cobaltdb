@@ -170,6 +170,47 @@ func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insert
 	return rowValues, nil
 }
 
+// validateInsertRow checks NOT NULL, composite PK, UNIQUE, CHECK, and FK constraints.
+// Returns the (possibly updated) key, whether to skip the row, and any error.
+func (c *Catalog) validateInsertRow(table *TableDef, tree *btree.BTree, stmt *query.InsertStmt, rowValues []interface{}, args []interface{}, compositePK bool, key string) (string, bool, error) {
+	// Check NOT NULL constraints
+	for i, col := range table.Columns {
+		if col.NotNull && !col.AutoIncrement && rowValues[i] == nil {
+			return key, false, fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
+		}
+	}
+
+	// For composite primary keys, build the btree key from all PK column values
+	if compositePK {
+		compositeKey, ok := buildCompositePK(table, rowValues)
+		if !ok {
+			return key, false, fmt.Errorf("composite PRIMARY KEY columns must all be non-null")
+		}
+		key = compositeKey
+	}
+
+	// Check UNIQUE constraints
+	skipRow, err := c.checkUniqueConstraints(tree, table, stmt, rowValues)
+	if err != nil {
+		return key, false, err
+	}
+	if skipRow {
+		return key, true, nil
+	}
+
+	// Check CHECK constraints
+	if err := c.checkInsertConstraints(table, rowValues, args); err != nil {
+		return key, false, err
+	}
+
+	// Check FOREIGN KEY constraints
+	if err := c.checkForeignKeyConstraints(table, rowValues); err != nil {
+		return key, false, err
+	}
+
+	return key, false, nil
+}
+
 func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
 	// Check for INSTEAD OF INSERT trigger first (for views)
 	if trig := c.findInsteadOfTrigger(stmt.Table, "INSERT"); trig != nil {
@@ -327,50 +368,15 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			return 0, 0, fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
 		}
 
-		// Check NOT NULL constraints before inserting
-		for i, col := range table.Columns {
-			if col.NotNull && !col.AutoIncrement && rowValues[i] == nil {
-				insertErr = fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
+			// Validate row constraints and resolve key
+			var skipRow bool
+			key, skipRow, insertErr = c.validateInsertRow(table, tree, stmt, rowValues, args, compositePK, key)
+			if insertErr != nil {
 				break
 			}
-		}
-		if insertErr != nil {
-			break
-		}
-
-		// For composite primary keys, build the btree key from all PK column
-		// values now that rowValues is fully populated (including defaults).
-		// Single-column PKs already generated their key above.
-		if compositePK {
-			compositeKey, ok := buildCompositePK(table, rowValues)
-			if !ok {
-				insertErr = fmt.Errorf("composite PRIMARY KEY columns must all be non-null")
-				break
+			if skipRow {
+				continue
 			}
-			key = compositeKey
-		}
-
-		// Check UNIQUE constraints before inserting
-		skipRow := false
-		skipRow, insertErr = c.checkUniqueConstraints(tree, table, stmt, rowValues)
-		if insertErr != nil {
-			break
-		}
-		if skipRow {
-			continue
-		}
-
-		// Check CHECK constraints before inserting
-		if err := c.checkInsertConstraints(table, rowValues, args); err != nil {
-			insertErr = err
-			break
-		}
-
-		// Check FOREIGN KEY constraints before inserting
-		if err := c.checkForeignKeyConstraints(table, rowValues); err != nil {
-			insertErr = err
-			break
-		}
 
 		// Encode row with temporal versioning
 		valueData, err := encodeVersionedRow(rowValues, nil)

@@ -634,29 +634,50 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 			break
 		}
 	}
+	// Scan rows from table (index lookup, materialized view, or full table scan)
+	rows, windowFullRows := cat.scanTableRows(table, stmt, args, selectCols, hasWindowFuncs, queryTime)
 
-	// Read all rows from B+Tree
+
+	returnColumns, rows = cat.applySelectPostProcess(applySelectPostProcessParams{
+		rows:              rows,
+		selectCols:        selectCols,
+		stmt:              stmt,
+		args:              args,
+		returnColumns:     returnColumns,
+		hiddenOrderByCols: hiddenOrderByCols,
+		hasWindowFuncs:    hasWindowFuncs,
+		windowFullRows:    windowFullRows,
+		table:             table,
+	})
+	if rows == nil && returnColumns != nil {
+		return returnColumns, nil, nil
+	}
+
+	return returnColumns, rows, nil
+}
+
+
+// scanTableRows reads rows from the table using index lookup, materialized view data, or full scan.
+func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, hasWindowFuncs bool, queryTime time.Time) ([][]interface{}, [][]interface{}) {
 	var rows [][]interface{}
-	var windowFullRows [][]interface{} // full table rows for window function ORDER BY evaluation
+	var windowFullRows [][]interface{}
+
 	// Check if this is a materialized view with cached data
 	var mvRows [][]interface{}
 	var isMV bool
 	if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
-		// This is MV data stored as a CTE result
 		mvRows = cteRes.rows
 		isMV = true
-		// Clean up the MV data entry after we're done
 		defer delete(cat.cteResults, toLowerFast(stmt.From.Name))
 	}
 
 	// Get all trees for scanning (handles partitioned tables)
 	trees, err := cat.getTableTreesForScan(table)
 	if err != nil && !isMV {
-		return returnColumns, rows, nil
+		return nil, nil
 	}
 
 	// Compute early termination limit for LIMIT/OFFSET without ORDER BY/DISTINCT/window.
-	// When no reordering is needed, we can stop scanning once we have offset+limit rows.
 	earlyLimit := 0
 	if stmt.Limit != nil && len(stmt.OrderBy) == 0 && !stmt.Distinct && !hasWindowFuncs {
 		if limitVal, err := evaluateExpression(cat, nil, nil, stmt.Limit, args); err == nil {
@@ -680,11 +701,8 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		indexMatches, useIndex = cat.useIndexForQueryWithArgs(stmt.From.Name, stmt.Where, args)
 	}
 
-	// If using index, directly fetch matching rows instead of full scan
-	// For partitioned tables, we need to check all partition trees
 	if useIndex {
 		for pk := range indexMatches {
-			// Try to find the row in any partition tree
 			var valueData []byte
 			var found bool
 			for _, tree := range trees {
@@ -696,33 +714,22 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 				}
 			}
 			if !found {
-				continue // Row not found
+				continue
 			}
-
-			// Decode full row with version info
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
 				continue
 			}
-
-			// Apply AS OF temporal filtering
 			if !vrow.Version.isVisibleAt(queryTime) {
-				continue // Skip row that wasn't visible at query time
+				continue
 			}
-
 			fullRow := vrow.Data
-
-			// Apply WHERE clause if present (for additional conditions)
 			if stmt.Where != nil {
 				matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-				if err != nil {
-					continue // Skip row on error
-				}
-				if !matched {
-					continue // Skip row that doesn't match WHERE condition
+				if err != nil || !matched {
+					continue
 				}
 			}
-
 			selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
 			rows = append(rows, selectedRow)
 			if hasWindowFuncs {
@@ -732,19 +739,13 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 			}
 		}
 	} else if isMV {
-		// Materialized view data scan (rows already loaded)
 		for _, fullRow := range mvRows {
-			// Apply WHERE clause if present
 			if stmt.Where != nil {
 				matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-				if err != nil {
-					continue // Skip row on error
-				}
-				if !matched {
-					continue // Skip row that doesn't match WHERE condition
+				if err != nil || !matched {
+					continue
 				}
 			}
-
 			selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
 			rows = append(rows, selectedRow)
 			if hasWindowFuncs {
@@ -753,16 +754,12 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 				windowFullRows = append(windowFullRows, fullRowCopy)
 			}
 		}
-	} else if !isMV {
-		// Full table scan when no index is available
-		// For partitioned tables, scan all partition trees
-
-		// Materialize all raw values first
+	} else {
 		var allValues [][]byte
 		for _, tree := range trees {
 			iter, err := tree.Scan(nil, nil)
 			if err != nil {
-				return returnColumns, nil, fmt.Errorf("failed to scan table: %w", err)
+				continue
 			}
 			for iter.HasNext() {
 				_, valueData, err := iter.Next()
@@ -774,7 +771,6 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 			iter.Close()
 		}
 
-		// Determine if parallel execution is eligible
 		canParallel := cat.parallelWorkers > 0 &&
 			len(allValues) >= cat.parallelThreshold &&
 			len(stmt.OrderBy) == 0 &&
@@ -793,30 +789,20 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 			rows = append(rows, results...)
 		} else {
 			for _, valueData := range allValues {
-				// Decode full row with version info
 				vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 				if err != nil {
 					continue
 				}
-
-				// Apply AS OF temporal filtering
 				if !vrow.Version.isVisibleAt(queryTime) {
-					continue // Skip row that wasn't visible at query time
+					continue
 				}
-
 				fullRow := vrow.Data
-
-				// Apply WHERE clause if present
 				if stmt.Where != nil {
 					matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-					if err != nil {
-						continue // Skip row on error
-					}
-					if !matched {
-						continue // Skip row that doesn't match WHERE condition
+					if err != nil || !matched {
+						continue
 					}
 				}
-
 				selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
 				rows = append(rows, selectedRow)
 				if hasWindowFuncs {
@@ -824,9 +810,6 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 					copy(fullRowCopy, fullRow)
 					windowFullRows = append(windowFullRows, fullRowCopy)
 				}
-
-				// Early termination: if no ORDER BY, DISTINCT, or window functions,
-				// we can stop scanning once we have enough rows for OFFSET+LIMIT.
 				if earlyLimit > 0 && len(rows) >= earlyLimit {
 					break
 				}
@@ -834,24 +817,8 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		}
 	}
 
-	returnColumns, rows = cat.applySelectPostProcess(applySelectPostProcessParams{
-		rows:              rows,
-		selectCols:        selectCols,
-		stmt:              stmt,
-		args:              args,
-		returnColumns:     returnColumns,
-		hiddenOrderByCols: hiddenOrderByCols,
-		hasWindowFuncs:    hasWindowFuncs,
-		windowFullRows:    windowFullRows,
-		table:             table,
-	})
-	if rows == nil && returnColumns != nil {
-		return returnColumns, nil, nil
-	}
-
-	return returnColumns, rows, nil
+	return rows, windowFullRows
 }
-
 
 // projectSelectedRow extracts selected column values from a full table row.
 // Handles regular columns, scalar expressions, and hidden ORDER BY expression columns.
