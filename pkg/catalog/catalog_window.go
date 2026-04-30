@@ -6,6 +6,13 @@ import (
 	"strings"
 )
 
+// windowPartEntry tracks a row within a window function partition.
+type windowPartEntry struct {
+	originalIdx int
+	row         []interface{}
+	fullRow     []interface{}
+}
+
 func (c *Catalog) evaluateWindowFunctions(rows [][]interface{}, selectCols []selectColInfo, table *TableDef, stmt *query.SelectStmt, args []interface{}, fullRows [][]interface{}) [][]interface{} {
 	if len(rows) == 0 {
 		return rows
@@ -19,12 +26,7 @@ func (c *Catalog) evaluateWindowFunctions(rows [][]interface{}, selectCols []sel
 		we := ci.windowExpr
 
 		// Build partition groups
-		type partitionEntry struct {
-			originalIdx int
-			row         []interface{}
-			fullRow     []interface{} // full table row for evaluating non-SELECT columns
-		}
-		partitions := make(map[string][]partitionEntry)
+		partitions := make(map[string][]windowPartEntry)
 		partitionOrder := []string{} // preserve order of first appearance
 
 		for i, row := range rows {
@@ -46,363 +48,11 @@ func (c *Catalog) evaluateWindowFunctions(rows [][]interface{}, selectCols []sel
 			if _, exists := partitions[partKey]; !exists {
 				partitionOrder = append(partitionOrder, partKey)
 			}
-			partitions[partKey] = append(partitions[partKey], partitionEntry{originalIdx: i, row: row, fullRow: fRow})
+			partitions[partKey] = append(partitions[partKey], windowPartEntry{originalIdx: i, row: row, fullRow: fRow})
 		}
 
 		// Process each partition
-		for _, pk := range partitionOrder {
-			entries := partitions[pk]
-
-			// Sort within partition by window ORDER BY
-			if len(we.OrderBy) > 0 {
-				sort.SliceStable(entries, func(a, b int) bool {
-					for _, ob := range we.OrderBy {
-						va := c.evalWindowExprOnRow(ob.Expr, entries[a].row, selectCols, table, args, entries[a].fullRow)
-						vb := c.evalWindowExprOnRow(ob.Expr, entries[b].row, selectCols, table, args, entries[b].fullRow)
-						cmp := compareValues(va, vb)
-						if cmp == 0 {
-							continue
-						}
-						if ob.Desc {
-							return cmp > 0
-						}
-						return cmp < 0
-					}
-					return false
-				})
-			}
-
-			// Compute window function values
-			switch we.Function {
-			case "ROW_NUMBER":
-				for i, entry := range entries {
-					rows[entry.originalIdx][colIdx] = int64(i + 1)
-				}
-
-			case "RANK":
-				rank := 1
-				for i, entry := range entries {
-					if i > 0 {
-						// Check if ORDER BY values changed from previous row
-						changed := false
-						for _, ob := range we.OrderBy {
-							va := c.evalWindowExprOnRow(ob.Expr, entries[i-1].row, selectCols, table, args, entries[i-1].fullRow)
-							vb := c.evalWindowExprOnRow(ob.Expr, entry.row, selectCols, table, args, entry.fullRow)
-							if compareValues(va, vb) != 0 {
-								changed = true
-								break
-							}
-						}
-						if changed {
-							rank = i + 1
-						}
-					}
-					rows[entry.originalIdx][colIdx] = int64(rank)
-				}
-
-			case "DENSE_RANK":
-				denseRank := 1
-				for i, entry := range entries {
-					if i > 0 {
-						changed := false
-						for _, ob := range we.OrderBy {
-							va := c.evalWindowExprOnRow(ob.Expr, entries[i-1].row, selectCols, table, args, entries[i-1].fullRow)
-							vb := c.evalWindowExprOnRow(ob.Expr, entry.row, selectCols, table, args, entry.fullRow)
-							if compareValues(va, vb) != 0 {
-								changed = true
-								break
-							}
-						}
-						if changed {
-							denseRank++
-						}
-					}
-					rows[entry.originalIdx][colIdx] = int64(denseRank)
-				}
-
-			case "LAG":
-				offset := 1
-				if len(we.Args) >= 2 {
-					if num, ok := we.Args[1].(*query.NumberLiteral); ok {
-						offset = int(num.Value)
-					}
-				}
-				var defaultVal interface{}
-				if len(we.Args) >= 3 {
-					defaultVal = c.evalWindowExprOnRow(we.Args[2], entries[0].row, selectCols, table, args, entries[0].fullRow)
-				}
-				for i, entry := range entries {
-					if i-offset >= 0 {
-						if len(we.Args) > 0 {
-							rows[entry.originalIdx][colIdx] = c.evalWindowExprOnRow(we.Args[0], entries[i-offset].row, selectCols, table, args, entries[i-offset].fullRow)
-						}
-					} else {
-						rows[entry.originalIdx][colIdx] = defaultVal
-					}
-				}
-
-			case "LEAD":
-				offset := 1
-				if len(we.Args) >= 2 {
-					if num, ok := we.Args[1].(*query.NumberLiteral); ok {
-						offset = int(num.Value)
-					}
-				}
-				var defaultVal interface{}
-				if len(we.Args) >= 3 {
-					defaultVal = c.evalWindowExprOnRow(we.Args[2], entries[0].row, selectCols, table, args, entries[0].fullRow)
-				}
-				for i, entry := range entries {
-					if i+offset < len(entries) {
-						if len(we.Args) > 0 {
-							rows[entry.originalIdx][colIdx] = c.evalWindowExprOnRow(we.Args[0], entries[i+offset].row, selectCols, table, args, entries[i+offset].fullRow)
-						}
-					} else {
-						rows[entry.originalIdx][colIdx] = defaultVal
-					}
-				}
-
-			case "FIRST_VALUE":
-				if len(entries) > 0 && len(we.Args) > 0 {
-					firstVal := c.evalWindowExprOnRow(we.Args[0], entries[0].row, selectCols, table, args, entries[0].fullRow)
-					for _, entry := range entries {
-						rows[entry.originalIdx][colIdx] = firstVal
-					}
-				}
-
-			case "LAST_VALUE":
-				if len(entries) > 0 && len(we.Args) > 0 {
-					lastVal := c.evalWindowExprOnRow(we.Args[0], entries[len(entries)-1].row, selectCols, table, args, entries[len(entries)-1].fullRow)
-					for _, entry := range entries {
-						rows[entry.originalIdx][colIdx] = lastVal
-					}
-				}
-
-			case "NTILE":
-				if len(we.Args) > 0 {
-					if numLit, ok := we.Args[0].(*query.NumberLiteral); ok {
-						numBuckets := int(numLit.Value)
-						if numBuckets > 0 {
-							partitionSize := len(entries) / numBuckets
-							if len(entries)%numBuckets != 0 {
-								partitionSize++
-							}
-							for i, entry := range entries {
-								bucket := int64(i/partitionSize) + 1
-								if bucket > int64(numBuckets) {
-									bucket = int64(numBuckets)
-								}
-								rows[entry.originalIdx][colIdx] = bucket
-							}
-						}
-					}
-				}
-
-			case "NTH_VALUE":
-				if len(we.Args) >= 2 {
-					if num, ok := we.Args[1].(*query.NumberLiteral); ok {
-						n := int(num.Value)
-						if n >= 1 && n <= len(entries) {
-							nthVal := c.evalWindowExprOnRow(we.Args[0], entries[n-1].row, selectCols, table, args, entries[n-1].fullRow)
-							for _, entry := range entries {
-								rows[entry.originalIdx][colIdx] = nthVal
-							}
-						}
-					}
-				}
-
-			case "COUNT":
-				if len(we.OrderBy) > 0 {
-					// Running COUNT with ORDER BY
-					if len(we.Args) > 0 {
-						if _, isStar := we.Args[0].(*query.StarExpr); isStar {
-							for i, entry := range entries {
-								rows[entry.originalIdx][colIdx] = int64(i + 1)
-							}
-						} else {
-							count := int64(0)
-							for _, entry := range entries {
-								val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-								if val != nil {
-									count++
-								}
-								rows[entry.originalIdx][colIdx] = count
-							}
-						}
-					} else {
-						for i, entry := range entries {
-							rows[entry.originalIdx][colIdx] = int64(i + 1)
-						}
-					}
-				} else if len(we.Args) > 0 {
-					if _, isStar := we.Args[0].(*query.StarExpr); isStar {
-						count := int64(len(entries))
-						for _, entry := range entries {
-							rows[entry.originalIdx][colIdx] = count
-						}
-					} else {
-						count := int64(0)
-						for _, entry := range entries {
-							val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-							if val != nil {
-								count++
-							}
-						}
-						for _, entry := range entries {
-							rows[entry.originalIdx][colIdx] = count
-						}
-					}
-				} else {
-					count := int64(len(entries))
-					for _, entry := range entries {
-						rows[entry.originalIdx][colIdx] = count
-					}
-				}
-
-			case "SUM":
-				if len(we.Args) > 0 {
-					if len(we.OrderBy) > 0 {
-						// Running SUM with ORDER BY
-						sum := 0.0
-						hasVal := false
-						for _, entry := range entries {
-							val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-							if val != nil {
-								if v, ok := toFloat64(val); ok {
-									sum += v
-									hasVal = true
-								}
-							}
-							if hasVal {
-								rows[entry.originalIdx][colIdx] = sum
-							} else {
-								rows[entry.originalIdx][colIdx] = nil
-							}
-						}
-					} else {
-						// Partition-wide SUM
-						sum := 0.0
-						hasVal := false
-						for _, entry := range entries {
-							val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-							if val != nil {
-								if v, ok := toFloat64(val); ok {
-									sum += v
-									hasVal = true
-								}
-							}
-						}
-						for _, entry := range entries {
-							if hasVal {
-								rows[entry.originalIdx][colIdx] = sum
-							} else {
-								rows[entry.originalIdx][colIdx] = nil
-							}
-						}
-					}
-				}
-
-			case "AVG":
-				if len(we.Args) > 0 && len(entries) > 0 {
-					if len(we.OrderBy) > 0 {
-						// Running AVG with ORDER BY
-						sum := 0.0
-						count := 0
-						for _, entry := range entries {
-							val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-							if val != nil {
-								if v, ok := toFloat64(val); ok {
-									sum += v
-									count++
-								}
-							}
-							if count > 0 {
-								rows[entry.originalIdx][colIdx] = sum / float64(count)
-							} else {
-								rows[entry.originalIdx][colIdx] = nil
-							}
-						}
-					} else {
-						// Partition-wide AVG
-						sum := 0.0
-						count := 0
-						for _, entry := range entries {
-							val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-							if val != nil {
-								if v, ok := toFloat64(val); ok {
-									sum += v
-									count++
-								}
-							}
-						}
-						if count > 0 {
-							avg := sum / float64(count)
-							for _, entry := range entries {
-								rows[entry.originalIdx][colIdx] = avg
-							}
-						} else {
-							for _, entry := range entries {
-								rows[entry.originalIdx][colIdx] = nil
-							}
-						}
-					}
-				}
-
-			case "MIN":
-				if len(we.Args) > 0 && len(entries) > 0 {
-					if len(we.OrderBy) > 0 {
-						// Running MIN with ORDER BY
-						var minVal interface{}
-						for _, entry := range entries {
-							val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-							if val != nil && (minVal == nil || compareValues(val, minVal) < 0) {
-								minVal = val
-							}
-							rows[entry.originalIdx][colIdx] = minVal
-						}
-					} else {
-						// Partition-wide MIN
-						minVal := c.evalWindowExprOnRow(we.Args[0], entries[0].row, selectCols, table, args, entries[0].fullRow)
-						for _, entry := range entries[1:] {
-							val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-							if compareValues(val, minVal) < 0 {
-								minVal = val
-							}
-						}
-						for _, entry := range entries {
-							rows[entry.originalIdx][colIdx] = minVal
-						}
-					}
-				}
-
-			case "MAX":
-				if len(we.Args) > 0 && len(entries) > 0 {
-					if len(we.OrderBy) > 0 {
-						// Running MAX with ORDER BY
-						var maxVal interface{}
-						for _, entry := range entries {
-							val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-							if val != nil && (maxVal == nil || compareValues(val, maxVal) > 0) {
-								maxVal = val
-							}
-							rows[entry.originalIdx][colIdx] = maxVal
-						}
-					} else {
-						// Partition-wide MAX
-						maxVal := c.evalWindowExprOnRow(we.Args[0], entries[0].row, selectCols, table, args, entries[0].fullRow)
-						for _, entry := range entries[1:] {
-							val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-							if compareValues(val, maxVal) > 0 {
-								maxVal = val
-							}
-						}
-						for _, entry := range entries {
-							rows[entry.originalIdx][colIdx] = maxVal
-						}
-					}
-				}
-			}
-		}
+		c.evalWindowPartitions(rows, colIdx, we, partitions, partitionOrder, selectCols, table, args)
 	}
 
 	return rows
@@ -471,4 +121,361 @@ func (c *Catalog) evalWindowExprOnRow(expr query.Expression, row []interface{}, 
 		}
 	}
 	return nil
+}
+
+func (c *Catalog) evalWindowPartitions(rows [][]interface{}, colIdx int, we *query.WindowExpr, partitions map[string][]windowPartEntry, partitionOrder []string, selectCols []selectColInfo, table *TableDef, args []interface{}) {
+		// Process each partition
+		for _, pk := range partitionOrder {
+		entries := partitions[pk]
+
+		// Sort within partition by window ORDER BY
+		if len(we.OrderBy) > 0 {
+			sort.SliceStable(entries, func(a, b int) bool {
+				for _, ob := range we.OrderBy {
+					va := c.evalWindowExprOnRow(ob.Expr, entries[a].row, selectCols, table, args, entries[a].fullRow)
+					vb := c.evalWindowExprOnRow(ob.Expr, entries[b].row, selectCols, table, args, entries[b].fullRow)
+					cmp := compareValues(va, vb)
+					if cmp == 0 {
+						continue
+					}
+					if ob.Desc {
+						return cmp > 0
+					}
+					return cmp < 0
+				}
+				return false
+			})
+		}
+
+		// Compute window function values
+		switch we.Function {
+		case "ROW_NUMBER":
+			for i, entry := range entries {
+				rows[entry.originalIdx][colIdx] = int64(i + 1)
+			}
+
+		case "RANK":
+			rank := 1
+			for i, entry := range entries {
+				if i > 0 {
+					// Check if ORDER BY values changed from previous row
+					changed := false
+					for _, ob := range we.OrderBy {
+						va := c.evalWindowExprOnRow(ob.Expr, entries[i-1].row, selectCols, table, args, entries[i-1].fullRow)
+						vb := c.evalWindowExprOnRow(ob.Expr, entry.row, selectCols, table, args, entry.fullRow)
+						if compareValues(va, vb) != 0 {
+							changed = true
+							break
+						}
+					}
+					if changed {
+						rank = i + 1
+					}
+				}
+				rows[entry.originalIdx][colIdx] = int64(rank)
+			}
+
+		case "DENSE_RANK":
+			denseRank := 1
+			for i, entry := range entries {
+				if i > 0 {
+					changed := false
+					for _, ob := range we.OrderBy {
+						va := c.evalWindowExprOnRow(ob.Expr, entries[i-1].row, selectCols, table, args, entries[i-1].fullRow)
+						vb := c.evalWindowExprOnRow(ob.Expr, entry.row, selectCols, table, args, entry.fullRow)
+						if compareValues(va, vb) != 0 {
+							changed = true
+							break
+						}
+					}
+					if changed {
+						denseRank++
+					}
+				}
+				rows[entry.originalIdx][colIdx] = int64(denseRank)
+			}
+
+		case "LAG":
+			offset := 1
+			if len(we.Args) >= 2 {
+				if num, ok := we.Args[1].(*query.NumberLiteral); ok {
+					offset = int(num.Value)
+				}
+			}
+			var defaultVal interface{}
+			if len(we.Args) >= 3 {
+				defaultVal = c.evalWindowExprOnRow(we.Args[2], entries[0].row, selectCols, table, args, entries[0].fullRow)
+			}
+			for i, entry := range entries {
+				if i-offset >= 0 {
+					if len(we.Args) > 0 {
+						rows[entry.originalIdx][colIdx] = c.evalWindowExprOnRow(we.Args[0], entries[i-offset].row, selectCols, table, args, entries[i-offset].fullRow)
+					}
+				} else {
+					rows[entry.originalIdx][colIdx] = defaultVal
+				}
+			}
+
+		case "LEAD":
+			offset := 1
+			if len(we.Args) >= 2 {
+				if num, ok := we.Args[1].(*query.NumberLiteral); ok {
+					offset = int(num.Value)
+				}
+			}
+			var defaultVal interface{}
+			if len(we.Args) >= 3 {
+				defaultVal = c.evalWindowExprOnRow(we.Args[2], entries[0].row, selectCols, table, args, entries[0].fullRow)
+			}
+			for i, entry := range entries {
+				if i+offset < len(entries) {
+					if len(we.Args) > 0 {
+						rows[entry.originalIdx][colIdx] = c.evalWindowExprOnRow(we.Args[0], entries[i+offset].row, selectCols, table, args, entries[i+offset].fullRow)
+					}
+				} else {
+					rows[entry.originalIdx][colIdx] = defaultVal
+				}
+			}
+
+		case "FIRST_VALUE":
+			if len(entries) > 0 && len(we.Args) > 0 {
+				firstVal := c.evalWindowExprOnRow(we.Args[0], entries[0].row, selectCols, table, args, entries[0].fullRow)
+				for _, entry := range entries {
+					rows[entry.originalIdx][colIdx] = firstVal
+				}
+			}
+
+		case "LAST_VALUE":
+			if len(entries) > 0 && len(we.Args) > 0 {
+				lastVal := c.evalWindowExprOnRow(we.Args[0], entries[len(entries)-1].row, selectCols, table, args, entries[len(entries)-1].fullRow)
+				for _, entry := range entries {
+					rows[entry.originalIdx][colIdx] = lastVal
+				}
+			}
+
+		case "NTILE":
+			if len(we.Args) > 0 {
+				if numLit, ok := we.Args[0].(*query.NumberLiteral); ok {
+					numBuckets := int(numLit.Value)
+					if numBuckets > 0 {
+						partitionSize := len(entries) / numBuckets
+						if len(entries)%numBuckets != 0 {
+							partitionSize++
+						}
+						for i, entry := range entries {
+							bucket := int64(i/partitionSize) + 1
+							if bucket > int64(numBuckets) {
+								bucket = int64(numBuckets)
+							}
+							rows[entry.originalIdx][colIdx] = bucket
+						}
+					}
+				}
+			}
+
+		case "NTH_VALUE":
+			if len(we.Args) >= 2 {
+				if num, ok := we.Args[1].(*query.NumberLiteral); ok {
+					n := int(num.Value)
+					if n >= 1 && n <= len(entries) {
+						nthVal := c.evalWindowExprOnRow(we.Args[0], entries[n-1].row, selectCols, table, args, entries[n-1].fullRow)
+						for _, entry := range entries {
+							rows[entry.originalIdx][colIdx] = nthVal
+						}
+					}
+				}
+			}
+
+		case "COUNT":
+			if len(we.OrderBy) > 0 {
+				// Running COUNT with ORDER BY
+				if len(we.Args) > 0 {
+					if _, isStar := we.Args[0].(*query.StarExpr); isStar {
+						for i, entry := range entries {
+							rows[entry.originalIdx][colIdx] = int64(i + 1)
+						}
+					} else {
+						count := int64(0)
+						for _, entry := range entries {
+							val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+							if val != nil {
+								count++
+							}
+							rows[entry.originalIdx][colIdx] = count
+						}
+					}
+				} else {
+					for i, entry := range entries {
+						rows[entry.originalIdx][colIdx] = int64(i + 1)
+					}
+				}
+			} else if len(we.Args) > 0 {
+				if _, isStar := we.Args[0].(*query.StarExpr); isStar {
+					count := int64(len(entries))
+					for _, entry := range entries {
+						rows[entry.originalIdx][colIdx] = count
+					}
+				} else {
+					count := int64(0)
+					for _, entry := range entries {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil {
+							count++
+						}
+					}
+					for _, entry := range entries {
+						rows[entry.originalIdx][colIdx] = count
+					}
+				}
+			} else {
+				count := int64(len(entries))
+				for _, entry := range entries {
+					rows[entry.originalIdx][colIdx] = count
+				}
+			}
+
+		case "SUM":
+			if len(we.Args) > 0 {
+				if len(we.OrderBy) > 0 {
+					// Running SUM with ORDER BY
+					sum := 0.0
+					hasVal := false
+					for _, entry := range entries {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil {
+							if v, ok := toFloat64(val); ok {
+								sum += v
+								hasVal = true
+							}
+						}
+						if hasVal {
+							rows[entry.originalIdx][colIdx] = sum
+						} else {
+							rows[entry.originalIdx][colIdx] = nil
+						}
+					}
+				} else {
+					// Partition-wide SUM
+					sum := 0.0
+					hasVal := false
+					for _, entry := range entries {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil {
+							if v, ok := toFloat64(val); ok {
+								sum += v
+								hasVal = true
+							}
+						}
+					}
+					for _, entry := range entries {
+						if hasVal {
+							rows[entry.originalIdx][colIdx] = sum
+						} else {
+							rows[entry.originalIdx][colIdx] = nil
+						}
+					}
+				}
+			}
+
+		case "AVG":
+			if len(we.Args) > 0 && len(entries) > 0 {
+				if len(we.OrderBy) > 0 {
+					// Running AVG with ORDER BY
+					sum := 0.0
+					count := 0
+					for _, entry := range entries {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil {
+							if v, ok := toFloat64(val); ok {
+								sum += v
+								count++
+							}
+						}
+						if count > 0 {
+							rows[entry.originalIdx][colIdx] = sum / float64(count)
+						} else {
+							rows[entry.originalIdx][colIdx] = nil
+						}
+					}
+				} else {
+					// Partition-wide AVG
+					sum := 0.0
+					count := 0
+					for _, entry := range entries {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil {
+							if v, ok := toFloat64(val); ok {
+								sum += v
+								count++
+							}
+						}
+					}
+					if count > 0 {
+						avg := sum / float64(count)
+						for _, entry := range entries {
+							rows[entry.originalIdx][colIdx] = avg
+						}
+					} else {
+						for _, entry := range entries {
+							rows[entry.originalIdx][colIdx] = nil
+						}
+					}
+				}
+			}
+
+		case "MIN":
+			if len(we.Args) > 0 && len(entries) > 0 {
+				if len(we.OrderBy) > 0 {
+					// Running MIN with ORDER BY
+					var minVal interface{}
+					for _, entry := range entries {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil && (minVal == nil || compareValues(val, minVal) < 0) {
+							minVal = val
+						}
+						rows[entry.originalIdx][colIdx] = minVal
+					}
+				} else {
+					// Partition-wide MIN
+					minVal := c.evalWindowExprOnRow(we.Args[0], entries[0].row, selectCols, table, args, entries[0].fullRow)
+					for _, entry := range entries[1:] {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if compareValues(val, minVal) < 0 {
+							minVal = val
+						}
+					}
+					for _, entry := range entries {
+						rows[entry.originalIdx][colIdx] = minVal
+					}
+				}
+			}
+
+		case "MAX":
+			if len(we.Args) > 0 && len(entries) > 0 {
+				if len(we.OrderBy) > 0 {
+					// Running MAX with ORDER BY
+					var maxVal interface{}
+					for _, entry := range entries {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil && (maxVal == nil || compareValues(val, maxVal) > 0) {
+							maxVal = val
+						}
+						rows[entry.originalIdx][colIdx] = maxVal
+					}
+				} else {
+					// Partition-wide MAX
+					maxVal := c.evalWindowExprOnRow(we.Args[0], entries[0].row, selectCols, table, args, entries[0].fullRow)
+					for _, entry := range entries[1:] {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if compareValues(val, maxVal) > 0 {
+							maxVal = val
+						}
+					}
+					for _, entry := range entries {
+						rows[entry.originalIdx][colIdx] = maxVal
+					}
+				}
+			}
+		}
+		}
 }
