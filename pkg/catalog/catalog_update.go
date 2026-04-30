@@ -139,201 +139,10 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		iter.Close()
 	}
 
-	// Apply updates
-	pkColIdx := -1
-	if len(table.PrimaryKey) > 0 {
-		pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
+	// Apply collected updates
+	if err := c.applyUpdateEntries(ctx, table, stmt, entries); err != nil {
+		return 0, rowsAffected, err
 	}
-	// Foreign key enforcer for CASCADE/RESTRICT/SET NULL actions on PK changes
-	fke := NewForeignKeyEnforcer(c)
-	for _, entry := range entries {
-		oldKey := entry.key
-
-		// Re-encode row with new timestamp
-		newValueData, err := encodeVersionedRow(entry.newRow, nil)
-		if err != nil {
-			return 0, rowsAffected, fmt.Errorf("failed to encode updated row: %w", err)
-		}
-
-		// Get the tree for this entry
-		updateTree, exists := c.tableTrees[entry.treeName]
-		if !exists {
-			return 0, rowsAffected, fmt.Errorf("partition tree %s not found", entry.treeName)
-		}
-
-		// Check if PRIMARY KEY was changed - need to delete old key and insert new one
-		newKey := oldKey
-		pkChanged := false
-		if pkColIdx >= 0 && pkColIdx < len(entry.newRow) && pkColIdx < len(entry.oldRow) {
-			if compareValues(entry.oldRow[pkColIdx], entry.newRow[pkColIdx]) != 0 {
-				pkChanged = true
-				// Generate new key from the updated PK value
-				pkVal := entry.newRow[pkColIdx]
-				if strVal, ok := pkVal.(string); ok {
-					newKey = []byte("S:" + strVal)
-				} else if fVal, ok := toFloat64(pkVal); ok {
-					newKey = []byte(formatKey(int64(fVal)))
-				}
-				// Check if the new PK already exists (duplicate PK violation)
-				if existingData, err := updateTree.Get(newKey); err == nil && existingData != nil {
-					return 0, 0, fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal)
-				}
-			}
-		}
-
-		// Enforce foreign key ON UPDATE actions (CASCADE, SET NULL, RESTRICT)
-		if pkChanged && pkColIdx >= 0 {
-			if fkErr := fke.OnUpdate(ctx, stmt.Table, entry.oldRow[pkColIdx], entry.newRow[pkColIdx]); fkErr != nil {
-				return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
-			}
-		}
-
-		// Log to WAL before applying change
-		if c.wal != nil && c.txnActive {
-			if pkChanged {
-				// Log delete of old key
-				deleteRecord := &storage.WALRecord{
-					TxnID: c.txnID,
-					Type:  storage.WALDelete,
-					Data:  oldKey,
-				}
-				if err := c.wal.Append(deleteRecord); err != nil {
-					return 0, rowsAffected, err
-				}
-				// Log insert of new key
-				walData := make([]byte, 0, len(newKey)+1+len(newValueData))
-				walData = append(walData, newKey...)
-				walData = append(walData, 0)
-				walData = append(walData, newValueData...)
-				insertRecord := &storage.WALRecord{
-					TxnID: c.txnID,
-					Type:  storage.WALInsert,
-					Data:  walData,
-				}
-				if err := c.wal.Append(insertRecord); err != nil {
-					return 0, rowsAffected, err
-				}
-			} else {
-				// For UPDATE without PK change, log the key and new value
-				walData := append([]byte(oldKey), 0)
-				walData = append(walData, newValueData...)
-				record := &storage.WALRecord{
-					TxnID: c.txnID,
-					Type:  storage.WALUpdate,
-					Data:  walData,
-				}
-				if err := c.wal.Append(record); err != nil {
-					return 0, rowsAffected, err
-				}
-			}
-		}
-
-		if pkChanged {
-			// Delete old key and insert new key
-			if err := updateTree.Delete(oldKey); err != nil {
-				return 0, rowsAffected, fmt.Errorf("failed to delete old key during PK update: %w", err)
-			}
-			if err := updateTree.Put(newKey, newValueData); err != nil {
-				return 0, rowsAffected, fmt.Errorf("failed to update row with new key: %w", err)
-			}
-			// Update auto-increment counter if needed
-			if fVal, ok := toFloat64(entry.newRow[pkColIdx]); ok {
-				pkVal := int64(fVal)
-				if pkVal > table.AutoIncSeq {
-					table.AutoIncSeq = pkVal
-				}
-			}
-		} else {
-			if err := updateTree.Put(oldKey, newValueData); err != nil {
-				return 0, rowsAffected, fmt.Errorf("failed to update row: %w", err)
-			}
-		}
-
-		// Update indexes: remove old entries and add new ones, track for undo
-		var idxChanges []indexUndoEntry
-		for idxName, idxTree := range c.indexTrees {
-			idxDef := c.indexes[idxName]
-			if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
-				// Remove old index entry
-				oldIndexKey, oldOk := buildCompositeIndexKey(table, idxDef, entry.oldRow)
-				if oldOk {
-					if idxDef.Unique {
-						oldIdxVal, getErr := idxTree.Get([]byte(oldIndexKey))
-						_ = idxTree.Delete([]byte(oldIndexKey)) // best-effort index cleanup during UPDATE
-						if c.txnActive && getErr == nil {
-							idxChanges = append(idxChanges, indexUndoEntry{
-								indexName: idxName,
-								key:       []byte(oldIndexKey),
-								oldValue:  oldIdxVal,
-								wasAdded:  false, // was deleted
-							})
-						}
-					} else {
-						// For non-unique indexes, delete the compound key "indexValue\x00pk"
-						compoundKey := oldIndexKey + "\x00" + string(entry.key)
-						oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
-						_ = idxTree.Delete([]byte(compoundKey)) // best-effort index cleanup during UPDATE
-						if c.txnActive && getErr == nil {
-							idxChanges = append(idxChanges, indexUndoEntry{
-								indexName: idxName,
-								key:       []byte(compoundKey),
-								oldValue:  oldIdxVal,
-								wasAdded:  false, // was deleted
-							})
-						}
-					}
-				}
-				// Add new index entry
-				newIndexKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
-				if newOk {
-					// For non-unique indexes, use compound key: "indexValue\x00pk"
-					var idxStorageKey []byte
-					if idxDef.Unique {
-						idxStorageKey = []byte(newIndexKey)
-						// Enforce UNIQUE constraint (skip if value unchanged)
-						if newIndexKey != oldIndexKey {
-							if _, err := idxTree.Get(idxStorageKey); err == nil {
-								return 0, rowsAffected, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
-							}
-						}
-					} else {
-						idxStorageKey = []byte(newIndexKey + "\x00" + string(newKey))
-					}
-					if err := idxTree.Put(idxStorageKey, newKey); err != nil {
-						return 0, rowsAffected, fmt.Errorf("failed to update index %s: %w", idxName, err)
-					}
-					if c.txnActive {
-						idxChanges = append(idxChanges, indexUndoEntry{
-							indexName: idxName,
-							key:       idxStorageKey,
-							wasAdded:  true,
-						})
-					}
-				}
-			}
-		}
-
-		// Update vector indexes
-		c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, entry.key)
-
-		// Record undo log entry for rollback (after applying change)
-		if c.txnActive {
-			oldValueData, marshalErr := json.Marshal(entry.oldRow)
-			if marshalErr != nil {
-				return 0, rowsAffected, fmt.Errorf("failed to encode undo log for row: %w", marshalErr)
-			}
-			keyCopy := make([]byte, len(oldKey))
-			copy(keyCopy, oldKey)
-			c.undoLog = append(c.undoLog, undoEntry{
-				action:       undoUpdate,
-				tableName:    stmt.Table,
-				key:          keyCopy,
-				oldValue:     oldValueData,
-				indexChanges: idxChanges,
-			})
-		}
-	}
-
 	// Execute AFTER UPDATE triggers (per-row)
 	for _, entry := range entries {
 		if trigErr := c.executeTriggers(ctx, stmt.Table, "UPDATE", "AFTER", entry.newRow, entry.oldRow, table.Columns); trigErr != nil {
@@ -1063,4 +872,192 @@ func (c *Catalog) updateRowLocked(tableName string, pkValue interface{}, row map
 
 	// Update in BTree
 	return tree.Put(key, data)
+}
+
+// applyUpdateEntries applies collected update entries: re-encodes rows, handles
+// PK changes, enforces FK constraints, logs to WAL, updates indexes, and records
+// undo log entries.
+func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt *query.UpdateStmt, entries []updateEntry) error {
+	pkColIdx := -1
+	if len(table.PrimaryKey) > 0 {
+		pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
+	}
+	fke := NewForeignKeyEnforcer(c)
+
+	for _, entry := range entries {
+		oldKey := entry.key
+
+		// Re-encode row with new timestamp
+		newValueData, err := encodeVersionedRow(entry.newRow, nil)
+		if err != nil {
+			return fmt.Errorf("failed to encode updated row: %w", err)
+		}
+
+		// Get the tree for this entry
+		updateTree, exists := c.tableTrees[entry.treeName]
+		if !exists {
+			return fmt.Errorf("partition tree %s not found", entry.treeName)
+		}
+
+		// Check if PRIMARY KEY was changed
+		newKey := oldKey
+		pkChanged := false
+		if pkColIdx >= 0 && pkColIdx < len(entry.newRow) && pkColIdx < len(entry.oldRow) {
+			if compareValues(entry.oldRow[pkColIdx], entry.newRow[pkColIdx]) != 0 {
+				pkChanged = true
+				pkVal := entry.newRow[pkColIdx]
+				if strVal, ok := pkVal.(string); ok {
+					newKey = []byte("S:" + strVal)
+				} else if fVal, ok := toFloat64(pkVal); ok {
+					newKey = []byte(formatKey(int64(fVal)))
+				}
+				if existingData, err := updateTree.Get(newKey); err == nil && existingData != nil {
+					return fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal)
+				}
+			}
+		}
+
+		// Enforce foreign key ON UPDATE actions
+		if pkChanged && pkColIdx >= 0 {
+			if fkErr := fke.OnUpdate(ctx, stmt.Table, entry.oldRow[pkColIdx], entry.newRow[pkColIdx]); fkErr != nil {
+				return fmt.Errorf("foreign key constraint: %w", fkErr)
+			}
+		}
+
+		// Log to WAL before applying change
+		if c.wal != nil && c.txnActive {
+			if pkChanged {
+				deleteRecord := &storage.WALRecord{
+					TxnID: c.txnID,
+					Type:  storage.WALDelete,
+					Data:  oldKey,
+				}
+				if err := c.wal.Append(deleteRecord); err != nil {
+					return err
+				}
+				walData := make([]byte, 0, len(newKey)+1+len(newValueData))
+				walData = append(walData, newKey...)
+				walData = append(walData, 0)
+				walData = append(walData, newValueData...)
+				insertRecord := &storage.WALRecord{
+					TxnID: c.txnID,
+					Type:  storage.WALInsert,
+					Data:  walData,
+				}
+				if err := c.wal.Append(insertRecord); err != nil {
+					return err
+				}
+			} else {
+				walData := append([]byte(oldKey), 0)
+				walData = append(walData, newValueData...)
+				record := &storage.WALRecord{
+					TxnID: c.txnID,
+					Type:  storage.WALUpdate,
+					Data:  walData,
+				}
+				if err := c.wal.Append(record); err != nil {
+					return err
+				}
+			}
+		}
+
+		if pkChanged {
+			if err := updateTree.Delete(oldKey); err != nil {
+				return fmt.Errorf("failed to delete old key during PK update: %w", err)
+			}
+			if err := updateTree.Put(newKey, newValueData); err != nil {
+				return fmt.Errorf("failed to update row with new key: %w", err)
+			}
+			if fVal, ok := toFloat64(entry.newRow[pkColIdx]); ok {
+				pkVal := int64(fVal)
+				if pkVal > table.AutoIncSeq {
+					table.AutoIncSeq = pkVal
+				}
+			}
+		} else {
+			if err := updateTree.Put(oldKey, newValueData); err != nil {
+				return fmt.Errorf("failed to update row: %w", err)
+			}
+		}
+
+		// Update indexes: remove old entries and add new ones, track for undo
+		var idxChanges []indexUndoEntry
+		for idxName, idxTree := range c.indexTrees {
+			idxDef := c.indexes[idxName]
+			if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
+				oldIndexKey, oldOk := buildCompositeIndexKey(table, idxDef, entry.oldRow)
+				if oldOk {
+					if idxDef.Unique {
+						oldIdxVal, getErr := idxTree.Get([]byte(oldIndexKey))
+						_ = idxTree.Delete([]byte(oldIndexKey))
+						if c.txnActive && getErr == nil {
+							idxChanges = append(idxChanges, indexUndoEntry{
+								indexName: idxName,
+								key:       []byte(oldIndexKey),
+								oldValue:  oldIdxVal,
+								wasAdded:  false,
+							})
+						}
+					} else {
+						compoundKey := oldIndexKey + "\x00" + string(entry.key)
+						oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
+						_ = idxTree.Delete([]byte(compoundKey))
+						if c.txnActive && getErr == nil {
+							idxChanges = append(idxChanges, indexUndoEntry{
+								indexName: idxName,
+								key:       []byte(compoundKey),
+								oldValue:  oldIdxVal,
+								wasAdded:  false,
+							})
+						}
+					}
+				}
+				newIndexKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
+				if newOk {
+					var idxStorageKey []byte
+					if idxDef.Unique {
+						idxStorageKey = []byte(newIndexKey)
+						if newIndexKey != oldIndexKey {
+							if _, err := idxTree.Get(idxStorageKey); err == nil {
+								return fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
+							}
+						}
+					} else {
+						idxStorageKey = []byte(newIndexKey + "\x00" + string(newKey))
+					}
+					if err := idxTree.Put(idxStorageKey, newKey); err != nil {
+						return fmt.Errorf("failed to update index %s: %w", idxName, err)
+					}
+					if c.txnActive {
+						idxChanges = append(idxChanges, indexUndoEntry{
+							indexName: idxName,
+							key:       idxStorageKey,
+							wasAdded:  true,
+						})
+					}
+				}
+			}
+		}
+
+		// Update vector indexes
+		c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, entry.key)
+
+		// Record undo log entry for rollback
+		if c.txnActive {
+			oldValueData, marshalErr := json.Marshal(entry.oldRow)
+			if marshalErr != nil {
+				return fmt.Errorf("failed to encode undo log for row: %w", marshalErr)
+			}
+			keyCopy := make([]byte, len(oldKey))
+			copy(keyCopy, oldKey)
+			c.undoLog = append(c.undoLog, undoEntry{
+				action:       undoUpdate,
+				tableName:    stmt.Table,
+				key:          keyCopy,
+				oldValue:     oldValueData,
+				indexChanges: idxChanges,
+			})
+		}
+	}
+	return nil
 }

@@ -1126,216 +1126,7 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 	}
 
 	// Compute aggregates for each group
-	var resultRows [][]interface{}
-
-	for _, gk := range groupOrder {
-		groupRows := groups[gk]
-		if len(groupRows) == 0 {
-			continue
-		}
-		resultRow := make([]interface{}, len(selectCols))
-
-		for i, ci := range selectCols {
-			if ci.isAggregate {
-				// Collect values for this aggregate
-				var values []interface{}
-				for _, row := range groupRows {
-					if ci.aggregateCol == "*" && ci.aggregateExpr == nil {
-						values = append(values, int64(1))
-					} else if ci.aggregateExpr != nil {
-						// Expression argument (e.g., SUM(quantity * price))
-						v, err := evaluateExpression(c, row, allColumns, ci.aggregateExpr, args)
-						if err == nil {
-							values = append(values, v)
-						}
-					} else {
-						// Find column index for aggregate column
-						// Need to consider which table the column belongs to
-						colIdx := -1
-
-						// First, determine which table the aggregate column belongs to
-						targetTable := ci.tableName
-
-						// Check if the target table matches the main table (by name or alias)
-						mainAlias := stmt.From.Name
-						if stmt.From.Alias != "" {
-							mainAlias = stmt.From.Alias
-						}
-						if targetTable == "" || strings.EqualFold(targetTable, mainAlias) || strings.EqualFold(targetTable, stmt.From.Name) {
-							// Column is in main table
-							for j, col := range mainTableCols {
-								if strings.EqualFold(col.Name, ci.aggregateCol) {
-									colIdx = j
-									break
-								}
-							}
-						} else {
-							// Column is in a joined table - find the correct table and offset
-							offset := len(mainTableCols)
-							for _, join := range stmt.Joins {
-								joinTable, err := c.getTableLocked(join.Table.Name)
-								if err != nil {
-									continue
-								}
-								joinAlias := join.Table.Name
-								if join.Table.Alias != "" {
-									joinAlias = join.Table.Alias
-								}
-								if strings.EqualFold(joinAlias, targetTable) || strings.EqualFold(join.Table.Name, targetTable) {
-									// Found the right table, look for column
-									for j, col := range joinTable.Columns {
-										if strings.EqualFold(col.Name, ci.aggregateCol) {
-											colIdx = offset + j
-											break
-										}
-									}
-									break
-								}
-								offset += len(joinTable.Columns)
-							}
-						}
-
-						if colIdx >= 0 && colIdx < len(row) {
-							values = append(values, row[colIdx])
-						}
-					}
-				}
-
-				// Compute aggregate
-				switch ci.aggregateType {
-				case "COUNT":
-					if ci.aggregateCol == "*" && !ci.isDistinct {
-						resultRow[i] = int64(len(groupRows))
-					} else if ci.isDistinct {
-						// Count distinct non-null values
-						seen := make(map[string]bool)
-						for _, v := range values {
-							if v != nil {
-								seen[ValueToStringKey(v)] = true
-							}
-						}
-						resultRow[i] = int64(len(seen))
-					} else {
-						count := int64(0)
-						for _, v := range values {
-							if v != nil {
-								count++
-							}
-						}
-						resultRow[i] = count
-					}
-				case "SUM":
-					var sum float64
-					hasVal := false
-					for _, v := range values {
-						if v != nil {
-							if f, ok := toFloat64(v); ok {
-								sum += f
-								hasVal = true
-							}
-						}
-					}
-					if hasVal {
-						resultRow[i] = sum
-					} else {
-						resultRow[i] = nil
-					}
-				case "AVG":
-					var sum float64
-					var count int64
-					for _, v := range values {
-						if v != nil {
-							if f, ok := toFloat64(v); ok {
-								sum += f
-								count++
-							}
-						}
-					}
-					if count > 0 {
-						resultRow[i] = sum / float64(count)
-					} else {
-						resultRow[i] = nil
-					}
-				case "MIN":
-					var minVal interface{}
-					for _, v := range values {
-						if v != nil {
-							if minVal == nil || compareValues(v, minVal) < 0 {
-								minVal = v
-							}
-						}
-					}
-					resultRow[i] = minVal
-				case "MAX":
-					var maxVal interface{}
-					for _, v := range values {
-						if v != nil {
-							if maxVal == nil || compareValues(v, maxVal) > 0 {
-								maxVal = v
-							}
-						}
-					}
-					resultRow[i] = maxVal
-				case "GROUP_CONCAT":
-					var parts []string
-					for _, v := range values {
-						if v != nil {
-							parts = append(parts, ValueToStringKey(v))
-						}
-					}
-					if len(parts) > 0 {
-						resultRow[i] = strings.Join(parts, ",")
-					} else {
-						resultRow[i] = nil
-					}
-				}
-			} else {
-				// Non-aggregate column - get value from first row
-				colIdx := -1
-				// Try table-qualified match first
-				if ci.tableName != "" {
-					for j, col := range allColumns {
-						if strings.EqualFold(col.Name, ci.name) && strings.EqualFold(col.sourceTbl, ci.tableName) {
-							colIdx = j
-							break
-						}
-					}
-				}
-				// Fallback to name-only match
-				if colIdx < 0 {
-					for j, col := range allColumns {
-						if col.Name == ci.name {
-							colIdx = j
-							break
-						}
-					}
-				}
-				if ci.hasEmbeddedAgg && len(groupRows) > 0 {
-					// Expression with embedded aggregates in JOIN context
-					val, err := c.evaluateExprWithGroupAggregatesJoin(ci.originalExpr, groupRows, allColumns, args)
-					if err == nil {
-						resultRow[i] = val
-					}
-				} else if colIdx >= 0 && len(groupRows) > 0 && colIdx < len(groupRows[0]) {
-					resultRow[i] = groupRows[0][colIdx]
-				} else if colIdx == -1 && len(groupRows) > 0 {
-					// Expression column (CASE, CAST, etc.) - evaluate it
-					if i < len(stmt.Columns) {
-						expr := stmt.Columns[i]
-						if ae, ok := expr.(*query.AliasExpr); ok {
-							expr = ae.Expr
-						}
-						val, err := evaluateExpression(c, groupRows[0], allColumns, expr, args)
-						if err == nil {
-							resultRow[i] = val
-						}
-					}
-				}
-			}
-		}
-
-		resultRows = append(resultRows, resultRow)
-	}
+	resultRows := c.computeJoinGroupAggregates(stmt, selectCols, mainTableCols, allColumns, groupOrder, groups, args)
 
 	// Apply HAVING clause to results
 	if stmt.Having != nil {
@@ -1737,4 +1528,214 @@ func hashJoinKey(v interface{}) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+
+// computeJoinGroupAggregates computes aggregate results for each group in a
+// JOIN+GROUP BY query. Returns one result row per group with aggregate and
+// non-aggregate column values.
+func (c *Catalog) computeJoinGroupAggregates(stmt *query.SelectStmt, selectCols []selectColInfo, mainTableCols []ColumnDef, allColumns []ColumnDef, groupOrder []string, groups map[string][][]interface{}, args []interface{}) [][]interface{} {
+	var resultRows [][]interface{}
+
+	for _, gk := range groupOrder {
+		groupRows := groups[gk]
+		if len(groupRows) == 0 {
+			continue
+		}
+		resultRow := make([]interface{}, len(selectCols))
+
+		for i, ci := range selectCols {
+			if ci.isAggregate {
+				var values []interface{}
+				for _, row := range groupRows {
+					if ci.aggregateCol == "*" && ci.aggregateExpr == nil {
+						values = append(values, int64(1))
+					} else if ci.aggregateExpr != nil {
+						v, err := evaluateExpression(c, row, allColumns, ci.aggregateExpr, args)
+						if err == nil {
+							values = append(values, v)
+						}
+					} else {
+						colIdx := c.resolveJoinAggregateColumn(ci, stmt, mainTableCols, len(row))
+						if colIdx >= 0 && colIdx < len(row) {
+							values = append(values, row[colIdx])
+						}
+					}
+				}
+
+				resultRow[i] = computeAggregateValue(ci, values, groupRows)
+			} else {
+				colIdx := -1
+				if ci.tableName != "" {
+					for j, col := range allColumns {
+						if strings.EqualFold(col.Name, ci.name) && strings.EqualFold(col.sourceTbl, ci.tableName) {
+							colIdx = j
+							break
+						}
+					}
+				}
+				if colIdx < 0 {
+					for j, col := range allColumns {
+						if col.Name == ci.name {
+							colIdx = j
+							break
+						}
+					}
+				}
+				if ci.hasEmbeddedAgg && len(groupRows) > 0 {
+					val, err := c.evaluateExprWithGroupAggregatesJoin(ci.originalExpr, groupRows, allColumns, args)
+					if err == nil {
+						resultRow[i] = val
+					}
+				} else if colIdx >= 0 && len(groupRows) > 0 && colIdx < len(groupRows[0]) {
+					resultRow[i] = groupRows[0][colIdx]
+				} else if colIdx == -1 && len(groupRows) > 0 {
+					if i < len(stmt.Columns) {
+						expr := stmt.Columns[i]
+						if ae, ok := expr.(*query.AliasExpr); ok {
+							expr = ae.Expr
+						}
+						val, err := evaluateExpression(c, groupRows[0], allColumns, expr, args)
+						if err == nil {
+							resultRow[i] = val
+						}
+					}
+				}
+			}
+		}
+
+		resultRows = append(resultRows, resultRow)
+	}
+	return resultRows
+}
+
+// resolveJoinAggregateColumn finds the column index for an aggregate column
+// across main and joined tables in a JOIN+GROUP BY query.
+func (c *Catalog) resolveJoinAggregateColumn(ci selectColInfo, stmt *query.SelectStmt, mainTableCols []ColumnDef, rowLen int) int {
+	colIdx := -1
+	targetTable := ci.tableName
+
+	mainAlias := stmt.From.Name
+	if stmt.From.Alias != "" {
+		mainAlias = stmt.From.Alias
+	}
+	if targetTable == "" || strings.EqualFold(targetTable, mainAlias) || strings.EqualFold(targetTable, stmt.From.Name) {
+		for j, col := range mainTableCols {
+			if strings.EqualFold(col.Name, ci.aggregateCol) {
+				colIdx = j
+				break
+			}
+		}
+	} else {
+		offset := len(mainTableCols)
+		for _, join := range stmt.Joins {
+			joinTable, err := c.getTableLocked(join.Table.Name)
+			if err != nil {
+				continue
+			}
+			joinAlias := join.Table.Name
+			if join.Table.Alias != "" {
+				joinAlias = join.Table.Alias
+			}
+			if strings.EqualFold(joinAlias, targetTable) || strings.EqualFold(join.Table.Name, targetTable) {
+				for j, col := range joinTable.Columns {
+					if strings.EqualFold(col.Name, ci.aggregateCol) {
+						colIdx = offset + j
+						break
+					}
+				}
+				break
+			}
+			offset += len(joinTable.Columns)
+		}
+	}
+	return colIdx
+}
+
+// computeAggregateValue computes a single aggregate function result from collected values.
+func computeAggregateValue(ci selectColInfo, values []interface{}, groupRows [][]interface{}) interface{} {
+	switch ci.aggregateType {
+	case "COUNT":
+		if ci.aggregateCol == "*" && !ci.isDistinct {
+			return int64(len(groupRows))
+		} else if ci.isDistinct {
+			seen := make(map[string]bool)
+			for _, v := range values {
+				if v != nil {
+					seen[ValueToStringKey(v)] = true
+				}
+			}
+			return int64(len(seen))
+		} else {
+			count := int64(0)
+			for _, v := range values {
+				if v != nil {
+					count++
+				}
+			}
+			return count
+		}
+	case "SUM":
+		var sum float64
+		hasVal := false
+		for _, v := range values {
+			if v != nil {
+				if f, ok := toFloat64(v); ok {
+					sum += f
+					hasVal = true
+				}
+			}
+		}
+		if hasVal {
+			return sum
+		}
+		return nil
+	case "AVG":
+		var sum float64
+		var count int64
+		for _, v := range values {
+			if v != nil {
+				if f, ok := toFloat64(v); ok {
+					sum += f
+					count++
+				}
+			}
+		}
+		if count > 0 {
+			return sum / float64(count)
+		}
+		return nil
+	case "MIN":
+		var minVal interface{}
+		for _, v := range values {
+			if v != nil {
+				if minVal == nil || compareValues(v, minVal) < 0 {
+					minVal = v
+				}
+			}
+		}
+		return minVal
+	case "MAX":
+		var maxVal interface{}
+		for _, v := range values {
+			if v != nil {
+				if maxVal == nil || compareValues(v, maxVal) > 0 {
+					maxVal = v
+				}
+			}
+		}
+		return maxVal
+	case "GROUP_CONCAT":
+		var parts []string
+		for _, v := range values {
+			if v != nil {
+				parts = append(parts, ValueToStringKey(v))
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, ",")
+		}
+		return nil
+	}
+	return nil
 }

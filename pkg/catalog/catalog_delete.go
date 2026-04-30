@@ -140,134 +140,9 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		iter.Close()
 	}
 
-	// Foreign key enforcer for CASCADE/RESTRICT actions
-	fke := NewForeignKeyEnforcer(c)
-
-	// Soft delete collected entries (mark as deleted for temporal versioning)
-	for _, entry := range entries {
-		key := entry.key
-
-		// Decode row with version info
-		vrow, err := decodeVersionedRow(entry.value, len(table.Columns))
-		if err != nil {
-			continue
-		}
-		row := vrow.Data
-
-		// Enforce foreign key ON DELETE actions (CASCADE, SET NULL, RESTRICT)
-		// Extract primary key value from the row for FK lookup
-		pkColIdx := -1
-		if len(table.PrimaryKey) > 0 {
-			pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
-		}
-		if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
-			if fkErr := fke.OnDelete(ctx, stmt.Table, row[pkColIdx]); fkErr != nil {
-				return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
-			}
-		}
-
-		// Remove from indexes first (before soft deleting the row), track for undo
-		var idxChanges []indexUndoEntry
-		if err == nil {
-			for idxName, idxTree := range c.indexTrees {
-				idxDef := c.indexes[idxName]
-				if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
-					indexKey, ok := buildCompositeIndexKey(table, idxDef, row)
-					if ok {
-						if idxDef.Unique {
-							oldIdxVal, getErr := idxTree.Get([]byte(indexKey))
-							if delErr := idxTree.Delete([]byte(indexKey)); delErr != nil {
-								return 0, rowsAffected, fmt.Errorf("failed to delete from unique index %s: %w", idxName, delErr)
-							}
-							if c.txnActive && getErr == nil {
-								idxChanges = append(idxChanges, indexUndoEntry{
-									indexName: idxName,
-									key:       []byte(indexKey),
-									oldValue:  oldIdxVal,
-									wasAdded:  false, // was deleted
-								})
-							}
-						} else {
-							// For non-unique indexes, delete the compound key "indexValue\x00pk"
-							compoundKey := indexKey + "\x00" + string(key)
-							oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
-							if delErr := idxTree.Delete([]byte(compoundKey)); delErr != nil {
-								return 0, rowsAffected, fmt.Errorf("failed to delete from index %s: %w", idxName, delErr)
-							}
-							if c.txnActive && getErr == nil {
-								idxChanges = append(idxChanges, indexUndoEntry{
-									indexName: idxName,
-									key:       []byte(compoundKey),
-									oldValue:  oldIdxVal,
-									wasAdded:  false, // was deleted
-								})
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Update vector indexes - delete the row from vector indexes
-		c.updateVectorIndexesForDelete(stmt.Table, key)
-
-		// Log to WAL before applying change
-		if c.wal != nil && c.txnActive {
-			walData := append([]byte(key), 0)
-			record := &storage.WALRecord{
-				TxnID: c.txnID,
-				Type:  storage.WALDelete,
-				Data:  walData,
-			}
-			if err := c.wal.Append(record); err != nil {
-				return 0, rowsAffected, err
-			}
-		}
-
-		// Record undo log entry for rollback
-		if c.txnActive {
-			keyCopy2 := make([]byte, len(key))
-			copy(keyCopy2, key)
-			valueCopy2 := make([]byte, len(entry.value))
-			copy(valueCopy2, entry.value)
-			c.undoLog = append(c.undoLog, undoEntry{
-				action:       undoDelete,
-				tableName:    stmt.Table,
-				key:          keyCopy2,
-				oldValue:     valueCopy2,
-				indexChanges: idxChanges,
-			})
-		}
-
-		// Soft delete: mark row as deleted instead of physically deleting
-		deleteTree, exists := c.tableTrees[entry.treeName]
-		if !exists {
-			return 0, rowsAffected, fmt.Errorf("partition tree %s not found", entry.treeName)
-		}
-
-		// Mark as deleted with current timestamp
-		vrow.Version.markDeleted(time.Now())
-
-		// Re-encode and store the soft-deleted row
-		deletedValueData, err := json.Marshal(vrow)
-		if err != nil {
-			return 0, rowsAffected, fmt.Errorf("failed to encode deleted row: %w", err)
-		}
-
-		if err := deleteTree.Put(key, deletedValueData); err != nil {
-			return 0, rowsAffected, fmt.Errorf("failed to soft delete row: %w", err)
-		}
-
-		// Execute AFTER DELETE trigger per-row
-		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "AFTER", nil, row, table.Columns); trigErr != nil {
-			return 0, rowsAffected, fmt.Errorf("AFTER DELETE trigger failed: %w", trigErr)
-		}
-
-		// Track dead tuple for AutoVacuum
-		c.ensureVacuumMaps()
-		c.vacuumMu.Lock()
-		c.deadTuples[entry.treeName]++
-		c.vacuumMu.Unlock()
+	// Apply soft deletes (FK enforcement, index cleanup, WAL, triggers)
+	if _, applyErr := c.applyDeleteEntries(ctx, table, stmt, entries); applyErr != nil {
+		return 0, rowsAffected, applyErr
 	}
 
 	// Invalidate query cache for the affected table
@@ -453,4 +328,144 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 	}
 
 	return tree.Put(key, deletedValueData)
+}
+
+// applyDeleteEntries performs soft deletion of collected entries: FK enforcement,
+// index cleanup, WAL logging, undo tracking, and AFTER DELETE triggers.
+// Returns the number of rows processed and any error encountered.
+func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt *query.DeleteStmt, entries []deleteEntry) (int64, error) {
+	// Foreign key enforcer for CASCADE/RESTRICT actions
+	fke := NewForeignKeyEnforcer(c)
+
+	var rowsAffected int64
+
+	// Soft delete collected entries (mark as deleted for temporal versioning)
+	for _, entry := range entries {
+		key := entry.key
+
+		// Decode row with version info
+		vrow, err := decodeVersionedRow(entry.value, len(table.Columns))
+		if err != nil {
+			continue
+		}
+		row := vrow.Data
+
+		// Enforce foreign key ON DELETE actions (CASCADE, SET NULL, RESTRICT)
+		// Extract primary key value from the row for FK lookup
+		pkColIdx := -1
+		if len(table.PrimaryKey) > 0 {
+			pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
+		}
+		if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
+			if fkErr := fke.OnDelete(ctx, stmt.Table, row[pkColIdx]); fkErr != nil {
+				return rowsAffected, fmt.Errorf("foreign key constraint: %w", fkErr)
+			}
+		}
+
+		// Remove from indexes first (before soft deleting the row), track for undo
+		var idxChanges []indexUndoEntry
+		if err == nil {
+			for idxName, idxTree := range c.indexTrees {
+				idxDef := c.indexes[idxName]
+				if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
+					indexKey, ok := buildCompositeIndexKey(table, idxDef, row)
+					if ok {
+						if idxDef.Unique {
+							oldIdxVal, getErr := idxTree.Get([]byte(indexKey))
+							if delErr := idxTree.Delete([]byte(indexKey)); delErr != nil {
+								return rowsAffected, fmt.Errorf("failed to delete from unique index %s: %w", idxName, delErr)
+							}
+							if c.txnActive && getErr == nil {
+								idxChanges = append(idxChanges, indexUndoEntry{
+									indexName: idxName,
+									key:       []byte(indexKey),
+									oldValue:  oldIdxVal,
+									wasAdded:  false, // was deleted
+								})
+							}
+						} else {
+							// For non-unique indexes, delete the compound key "indexValue\x00pk"
+							compoundKey := indexKey + "\x00" + string(key)
+							oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
+							if delErr := idxTree.Delete([]byte(compoundKey)); delErr != nil {
+								return rowsAffected, fmt.Errorf("failed to delete from index %s: %w", idxName, delErr)
+							}
+							if c.txnActive && getErr == nil {
+								idxChanges = append(idxChanges, indexUndoEntry{
+									indexName: idxName,
+									key:       []byte(compoundKey),
+									oldValue:  oldIdxVal,
+									wasAdded:  false, // was deleted
+								})
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Update vector indexes - delete the row from vector indexes
+		c.updateVectorIndexesForDelete(stmt.Table, key)
+
+		// Log to WAL before applying change
+		if c.wal != nil && c.txnActive {
+			walData := append([]byte(key), 0)
+			record := &storage.WALRecord{
+				TxnID: c.txnID,
+				Type:  storage.WALDelete,
+				Data:  walData,
+			}
+			if err := c.wal.Append(record); err != nil {
+				return rowsAffected, err
+			}
+		}
+
+		// Record undo log entry for rollback
+		if c.txnActive {
+			keyCopy2 := make([]byte, len(key))
+			copy(keyCopy2, key)
+			valueCopy2 := make([]byte, len(entry.value))
+			copy(valueCopy2, entry.value)
+			c.undoLog = append(c.undoLog, undoEntry{
+				action:       undoDelete,
+				tableName:    stmt.Table,
+				key:          keyCopy2,
+				oldValue:     valueCopy2,
+				indexChanges: idxChanges,
+			})
+		}
+
+		// Soft delete: mark row as deleted instead of physically deleting
+		deleteTree, exists := c.tableTrees[entry.treeName]
+		if !exists {
+			return rowsAffected, fmt.Errorf("partition tree %s not found", entry.treeName)
+		}
+
+		// Mark as deleted with current timestamp
+		vrow.Version.markDeleted(time.Now())
+
+		// Re-encode and store the soft-deleted row
+		deletedValueData, err := json.Marshal(vrow)
+		if err != nil {
+			return rowsAffected, fmt.Errorf("failed to encode deleted row: %w", err)
+		}
+
+		if err := deleteTree.Put(key, deletedValueData); err != nil {
+			return rowsAffected, fmt.Errorf("failed to soft delete row: %w", err)
+		}
+
+		// Execute AFTER DELETE trigger per-row
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "AFTER", nil, row, table.Columns); trigErr != nil {
+			return rowsAffected, fmt.Errorf("AFTER DELETE trigger failed: %w", trigErr)
+		}
+
+		// Track dead tuple for AutoVacuum
+		c.ensureVacuumMaps()
+		c.vacuumMu.Lock()
+		c.deadTuples[entry.treeName]++
+		c.vacuumMu.Unlock()
+
+		rowsAffected++
+	}
+	return rowsAffected, nil
 }
