@@ -969,307 +969,319 @@ func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, v
 	}
 
 	// Handle aggregates or GROUP BY on the view result
+	// Handle aggregates or GROUP BY on the view result
 	if hasAggregates || len(stmt.GroupBy) > 0 {
-		// Build return column names
-		returnCols := make([]string, len(stmt.Columns))
-		for i, col := range stmt.Columns {
-			aliasName := ""
-			actual := col
-			if ae, ok := col.(*query.AliasExpr); ok {
-				aliasName = ae.Alias
-				actual = ae.Expr
-			}
-			if aliasName != "" {
-				returnCols[i] = aliasName
-			} else if fc, ok := actual.(*query.FunctionCall); ok {
-				fn := toUpperFast(fc.Name)
-				if len(fc.Args) > 0 {
-					returnCols[i] = fn + "()"
-				} else {
-					returnCols[i] = fn + "(*)"
-				}
-			} else if id, ok := actual.(*query.Identifier); ok {
-				returnCols[i] = id.Name
-			} else {
-				returnCols[i] = "col" + strconv.Itoa(i)
-			}
-		}
-
-		// Group rows if GROUP BY is present
-		type rowGroup struct {
-			key  string
-			rows [][]interface{}
-		}
-		var groups []rowGroup
-
-		if len(stmt.GroupBy) > 0 {
-			groupMap := make(map[string]int)
-			for _, row := range filteredRows {
-				var keyParts []string
-				for _, gb := range stmt.GroupBy {
-					val, err := evaluateExpression(cat, row, columns, gb, args)
-					if err == nil {
-						keyParts = append(keyParts, ValueToStringKey(val))
-					} else {
-						keyParts = append(keyParts, "<nil>")
-					}
-				}
-				key := strings.Join(keyParts, "|")
-				if idx, exists := groupMap[key]; exists {
-					groups[idx].rows = append(groups[idx].rows, row)
-				} else {
-					groupMap[key] = len(groups)
-					groups = append(groups, rowGroup{key: key, rows: [][]interface{}{row}})
-				}
-			}
-		} else {
-			// Single group: all rows
-			groups = []rowGroup{{key: "", rows: filteredRows}}
-		}
-
-		// Compute aggregates for each group
-		var resultRows [][]interface{}
-		for _, group := range groups {
-			resultRow := make([]interface{}, len(stmt.Columns))
-			for i, col := range stmt.Columns {
-				actual := col
-				if ae, ok := col.(*query.AliasExpr); ok {
-					actual = ae.Expr
-				}
-				if fc, ok := actual.(*query.FunctionCall); ok {
-					fn := toUpperFast(fc.Name)
-					resultRow[i] = cat.computeViewAggregate(fn, fc, group.rows, columns, args)
-				} else {
-					// Non-aggregate column: use value from first row in group
-					if len(group.rows) > 0 {
-						val, err := evaluateExpression(cat, group.rows[0], columns, actual, args)
-						if err == nil {
-							resultRow[i] = val
-						}
-					}
-				}
-			}
-			resultRows = append(resultRows, resultRow)
-		}
-
-		// Build result columns for HAVING/ORDER BY evaluation
-		resultColumns := make([]ColumnDef, len(returnCols))
-		for i, name := range returnCols {
-			resultColumns[i] = ColumnDef{Name: name}
-		}
-
-		// Apply HAVING filter
-		if stmt.Having != nil {
-			var havingRows [][]interface{}
-			for _, row := range resultRows {
-				ok, err := evaluateWhere(cat, row, resultColumns, stmt.Having, args)
-				if err == nil && ok {
-					havingRows = append(havingRows, row)
-				}
-			}
-			resultRows = havingRows
-		}
-
-		// Apply ORDER BY
-		if len(stmt.OrderBy) > 0 && len(resultRows) > 1 {
-			sort.SliceStable(resultRows, func(i, j int) bool {
-				for _, ob := range stmt.OrderBy {
-					vi, _ := evaluateExpression(cat, resultRows[i], resultColumns, ob.Expr, args)
-					vj, _ := evaluateExpression(cat, resultRows[j], resultColumns, ob.Expr, args)
-					cmp := compareValues(vi, vj)
-					if ob.Desc {
-						cmp = -cmp
-					}
-					if cmp != 0 {
-						return cmp < 0
-					}
-				}
-				return false
-			})
-		}
-
-		// Apply LIMIT/OFFSET
-		if stmt.Offset != nil {
-			offsetVal, err := EvalExpression(stmt.Offset, args)
-			if err == nil {
-				if f, ok := toFloat64(offsetVal); ok {
-					offset := int(f)
-					if offset >= len(resultRows) {
-						resultRows = nil
-					} else if offset > 0 {
-						resultRows = resultRows[offset:]
-					}
-				}
-			}
-		}
-		if stmt.Limit != nil {
-			limitVal, err := EvalExpression(stmt.Limit, args)
-			if err == nil {
-				if f, ok := toFloat64(limitVal); ok {
-					limit := int(f)
-					if limit >= 0 && limit <= len(resultRows) {
-						resultRows = resultRows[:limit]
-					}
-				}
-			}
-		}
-
-		return returnCols, resultRows, nil
+		return cat.applyOuterQueryAggregates(stmt, filteredRows, columns, args)
 	}
+	return cat.applyOuterQueryProjection(stmt, filteredRows, viewCols, columns, args)
+}
 
-	// Project columns
-	var returnCols []string
-	var resultRows [][]interface{}
 
-	// Build column mapping
-	type colMapping struct {
-		name    string
-		viewIdx int // -1 if needs evaluation
-	}
-	var mappings []colMapping
-
-	for _, col := range stmt.Columns {
+// applyOuterQueryAggregates handles the aggregate/GROUP BY path of applyOuterQuery.
+func (cat *Catalog) applyOuterQueryAggregates(stmt *query.SelectStmt, filteredRows [][]interface{}, columns []ColumnDef, args []interface{}) ([]string, [][]interface{}, error) {
+	// Build return column names
+	returnCols := make([]string, len(stmt.Columns))
+	for i, col := range stmt.Columns {
 		aliasName := ""
 		actual := col
 		if ae, ok := col.(*query.AliasExpr); ok {
 			aliasName = ae.Alias
 			actual = ae.Expr
 		}
-		switch c := actual.(type) {
-		case *query.StarExpr:
-			for j, name := range viewCols {
-				mappings = append(mappings, colMapping{name: name, viewIdx: j})
+		if aliasName != "" {
+			returnCols[i] = aliasName
+		} else if fc, ok := actual.(*query.FunctionCall); ok {
+			fn := toUpperFast(fc.Name)
+			if len(fc.Args) > 0 {
+				returnCols[i] = fn + "()"
+			} else {
+				returnCols[i] = fn + "(*)"
 			}
-		case *query.Identifier:
-			found := false
-			for j, name := range viewCols {
-				if strings.EqualFold(name, c.Name) {
-					displayName := name
-					if aliasName != "" {
-						displayName = aliasName
-					}
-					mappings = append(mappings, colMapping{name: displayName, viewIdx: j})
-					found = true
-					break
-				}
-			}
-			if !found {
-				mappings = append(mappings, colMapping{name: c.Name, viewIdx: -1})
-			}
-		default:
-			name := "expr"
-			if aliasName != "" {
-				name = aliasName
-			}
-			mappings = append(mappings, colMapping{name: name, viewIdx: -1})
+		} else if id, ok := actual.(*query.Identifier); ok {
+			returnCols[i] = id.Name
+		} else {
+			returnCols[i] = "col" + strconv.Itoa(i)
 		}
 	}
 
-	returnCols = make([]string, len(mappings))
-	for i, m := range mappings {
-		returnCols[i] = m.name
+	// Group rows if GROUP BY is present
+	type rowGroup struct {
+		key  string
+		rows [][]interface{}
+	}
+	var groups []rowGroup
+
+	if len(stmt.GroupBy) > 0 {
+		groupMap := make(map[string]int)
+		for _, row := range filteredRows {
+			var keyParts []string
+			for _, gb := range stmt.GroupBy {
+				val, err := evaluateExpression(cat, row, columns, gb, args)
+				if err == nil {
+					keyParts = append(keyParts, ValueToStringKey(val))
+				} else {
+					keyParts = append(keyParts, "<nil>")
+				}
+			}
+			key := strings.Join(keyParts, "|")
+			if idx, exists := groupMap[key]; exists {
+				groups[idx].rows = append(groups[idx].rows, row)
+			} else {
+				groupMap[key] = len(groups)
+				groups = append(groups, rowGroup{key: key, rows: [][]interface{}{row}})
+			}
+		}
+	} else {
+		// Single group: all rows
+		groups = []rowGroup{{key: "", rows: filteredRows}}
 	}
 
-	for _, row := range filteredRows {
-		resultRow := make([]interface{}, len(mappings))
-		for i, m := range mappings {
-			if m.viewIdx >= 0 && m.viewIdx < len(row) {
-				resultRow[i] = row[m.viewIdx]
+	// Compute aggregates for each group
+	var resultRows [][]interface{}
+	for _, group := range groups {
+		resultRow := make([]interface{}, len(stmt.Columns))
+		for i, col := range stmt.Columns {
+			actual := col
+			if ae, ok := col.(*query.AliasExpr); ok {
+				actual = ae.Expr
+			}
+			if fc, ok := actual.(*query.FunctionCall); ok {
+				fn := toUpperFast(fc.Name)
+				resultRow[i] = cat.computeViewAggregate(fn, fc, group.rows, columns, args)
 			} else {
-				// Evaluate expression against view row
-				val, err := evaluateExpression(cat, row, columns, stmt.Columns[i], args)
-				if err == nil {
-					resultRow[i] = val
+				// Non-aggregate column: use value from first row in group
+				if len(group.rows) > 0 {
+					val, err := evaluateExpression(cat, group.rows[0], columns, actual, args)
+					if err == nil {
+						resultRow[i] = val
+					}
 				}
 			}
 		}
 		resultRows = append(resultRows, resultRow)
 	}
 
-	// Build selectColInfo for ORDER BY
-	selectCols := make([]selectColInfo, len(mappings))
-	for i, m := range mappings {
-		selectCols[i] = selectColInfo{name: m.name, index: i}
+	// Build result columns for HAVING/ORDER BY evaluation
+	resultColumns := make([]ColumnDef, len(returnCols))
+	for i, name := range returnCols {
+		resultColumns[i] = ColumnDef{Name: name}
 	}
 
-	// Add hidden ORDER BY columns from view that aren't in the outer SELECT
-	hiddenViewOrderByCols := 0
-	if len(stmt.OrderBy) > 0 {
-		for _, ob := range stmt.OrderBy {
-			if ident, ok := ob.Expr.(*query.Identifier); ok {
-				// Check if this column is already in selectCols
-				found := false
-				for _, sc := range selectCols {
-					if strings.EqualFold(sc.name, ident.Name) {
-						found = true
-						break
-					}
-				}
-				if !found {
-					// Check if it's a view column
-					for j, vc := range viewCols {
-						if strings.EqualFold(vc, ident.Name) {
-							// Add as hidden column and append values from view rows
-							selectCols = append(selectCols, selectColInfo{name: vc, index: len(mappings) + hiddenViewOrderByCols})
-							for k := range resultRows {
-								if j < len(filteredRows[k]) {
-									resultRows[k] = append(resultRows[k], filteredRows[k][j])
-								}
-							}
-							hiddenViewOrderByCols++
-							break
-						}
-					}
-				}
+	// Apply HAVING filter
+	if stmt.Having != nil {
+		var havingRows [][]interface{}
+		for _, row := range resultRows {
+			ok, err := evaluateWhere(cat, row, resultColumns, stmt.Having, args)
+			if err == nil && ok {
+				havingRows = append(havingRows, row)
 			}
 		}
+		resultRows = havingRows
 	}
 
 	// Apply ORDER BY
-	if len(stmt.OrderBy) > 0 {
-		resultRows = cat.applyOrderBy(resultRows, selectCols, stmt.OrderBy)
-	}
-
-	// Strip hidden ORDER BY columns
-	if hiddenViewOrderByCols > 0 {
-		visibleCount := len(mappings)
-		for i, row := range resultRows {
-			if len(row) > visibleCount {
-				resultRows[i] = row[:visibleCount]
+	if len(stmt.OrderBy) > 0 && len(resultRows) > 1 {
+		sort.SliceStable(resultRows, func(i, j int) bool {
+			for _, ob := range stmt.OrderBy {
+				vi, _ := evaluateExpression(cat, resultRows[i], resultColumns, ob.Expr, args)
+				vj, _ := evaluateExpression(cat, resultRows[j], resultColumns, ob.Expr, args)
+				cmp := compareValues(vi, vj)
+				if ob.Desc {
+					cmp = -cmp
+				}
+				if cmp != 0 {
+					return cmp < 0
+				}
 			}
-		}
+			return false
+		})
 	}
 
-	// Apply DISTINCT
-	if stmt.Distinct {
-		resultRows = cat.applyDistinct(resultRows)
-	}
-
-	// Apply OFFSET
+	// Apply LIMIT/OFFSET
 	if stmt.Offset != nil {
-		offsetVal, err := evaluateExpression(cat, nil, nil, stmt.Offset, args)
+		offsetVal, err := EvalExpression(stmt.Offset, args)
 		if err == nil {
-			if offset, ok := toInt(offsetVal); ok && offset > 0 {
+			if f, ok := toFloat64(offsetVal); ok {
+				offset := int(f)
 				if offset >= len(resultRows) {
 					resultRows = nil
-				} else {
+				} else if offset > 0 {
 					resultRows = resultRows[offset:]
 				}
 			}
 		}
 	}
-
-	// Apply LIMIT
 	if stmt.Limit != nil {
-		limitVal, err := evaluateExpression(cat, nil, nil, stmt.Limit, args)
+		limitVal, err := EvalExpression(stmt.Limit, args)
 		if err == nil {
-			if limit, ok := toInt(limitVal); ok && limit >= 0 && int(limit) <= len(resultRows) {
-				resultRows = resultRows[:limit]
+			if f, ok := toFloat64(limitVal); ok {
+				limit := int(f)
+				if limit >= 0 && limit <= len(resultRows) {
+					resultRows = resultRows[:limit]
+				}
 			}
 		}
 	}
 
 	return returnCols, resultRows, nil
+
+}
+
+// applyOuterQueryProjection handles the non-aggregate projection path of applyOuterQuery.
+func (cat *Catalog) applyOuterQueryProjection(stmt *query.SelectStmt, filteredRows [][]interface{}, viewCols []string, columns []ColumnDef, args []interface{}) ([]string, [][]interface{}, error) {
+// Project columns
+var returnCols []string
+var resultRows [][]interface{}
+
+// Build column mapping
+type colMapping struct {
+	name    string
+	viewIdx int // -1 if needs evaluation
+}
+var mappings []colMapping
+
+for _, col := range stmt.Columns {
+	aliasName := ""
+	actual := col
+	if ae, ok := col.(*query.AliasExpr); ok {
+		aliasName = ae.Alias
+		actual = ae.Expr
+	}
+	switch c := actual.(type) {
+	case *query.StarExpr:
+		for j, name := range viewCols {
+			mappings = append(mappings, colMapping{name: name, viewIdx: j})
+		}
+	case *query.Identifier:
+		found := false
+		for j, name := range viewCols {
+			if strings.EqualFold(name, c.Name) {
+				displayName := name
+				if aliasName != "" {
+					displayName = aliasName
+				}
+				mappings = append(mappings, colMapping{name: displayName, viewIdx: j})
+				found = true
+				break
+			}
+		}
+		if !found {
+			mappings = append(mappings, colMapping{name: c.Name, viewIdx: -1})
+		}
+	default:
+		name := "expr"
+		if aliasName != "" {
+			name = aliasName
+		}
+		mappings = append(mappings, colMapping{name: name, viewIdx: -1})
+	}
+}
+
+returnCols = make([]string, len(mappings))
+for i, m := range mappings {
+	returnCols[i] = m.name
+}
+
+for _, row := range filteredRows {
+	resultRow := make([]interface{}, len(mappings))
+	for i, m := range mappings {
+		if m.viewIdx >= 0 && m.viewIdx < len(row) {
+			resultRow[i] = row[m.viewIdx]
+		} else {
+			// Evaluate expression against view row
+			val, err := evaluateExpression(cat, row, columns, stmt.Columns[i], args)
+			if err == nil {
+				resultRow[i] = val
+			}
+		}
+	}
+	resultRows = append(resultRows, resultRow)
+}
+
+// Build selectColInfo for ORDER BY
+selectCols := make([]selectColInfo, len(mappings))
+for i, m := range mappings {
+	selectCols[i] = selectColInfo{name: m.name, index: i}
+}
+
+// Add hidden ORDER BY columns from view that aren't in the outer SELECT
+hiddenViewOrderByCols := 0
+if len(stmt.OrderBy) > 0 {
+	for _, ob := range stmt.OrderBy {
+		if ident, ok := ob.Expr.(*query.Identifier); ok {
+			// Check if this column is already in selectCols
+			found := false
+			for _, sc := range selectCols {
+				if strings.EqualFold(sc.name, ident.Name) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Check if it's a view column
+				for j, vc := range viewCols {
+					if strings.EqualFold(vc, ident.Name) {
+						// Add as hidden column and append values from view rows
+						selectCols = append(selectCols, selectColInfo{name: vc, index: len(mappings) + hiddenViewOrderByCols})
+						for k := range resultRows {
+							if j < len(filteredRows[k]) {
+								resultRows[k] = append(resultRows[k], filteredRows[k][j])
+							}
+						}
+						hiddenViewOrderByCols++
+						break
+					}
+				}
+			}
+		}
+	}
+}
+
+// Apply ORDER BY
+if len(stmt.OrderBy) > 0 {
+	resultRows = cat.applyOrderBy(resultRows, selectCols, stmt.OrderBy)
+}
+
+// Strip hidden ORDER BY columns
+if hiddenViewOrderByCols > 0 {
+	visibleCount := len(mappings)
+	for i, row := range resultRows {
+		if len(row) > visibleCount {
+			resultRows[i] = row[:visibleCount]
+		}
+	}
+}
+
+// Apply DISTINCT
+if stmt.Distinct {
+	resultRows = cat.applyDistinct(resultRows)
+}
+
+// Apply OFFSET
+if stmt.Offset != nil {
+	offsetVal, err := evaluateExpression(cat, nil, nil, stmt.Offset, args)
+	if err == nil {
+		if offset, ok := toInt(offsetVal); ok && offset > 0 {
+			if offset >= len(resultRows) {
+				resultRows = nil
+			} else {
+				resultRows = resultRows[offset:]
+			}
+		}
+	}
+}
+
+// Apply LIMIT
+if stmt.Limit != nil {
+	limitVal, err := evaluateExpression(cat, nil, nil, stmt.Limit, args)
+	if err == nil {
+		if limit, ok := toInt(limitVal); ok && limit >= 0 && int(limit) <= len(resultRows) {
+			resultRows = resultRows[:limit]
+		}
+	}
+}
+
+return returnCols, resultRows, nil
 }
 
 func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows [][]interface{}, columns []ColumnDef, args []interface{}) interface{} {
@@ -2975,99 +2987,7 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 		if err != nil {
 			return nil, err
 		}
-		// NULL propagation: NULL op anything = NULL (except AND/OR)
-		if left == nil || right == nil {
-			switch e.Operator {
-			case query.TokenAnd:
-				if left == nil && right == nil {
-					return nil, nil
-				}
-				if left == nil {
-					if toBool(right) {
-						return nil, nil // NULL AND true = NULL
-					}
-					return false, nil // NULL AND false = false
-				}
-				if toBool(left) {
-					return nil, nil // true AND NULL = NULL
-				}
-				return false, nil // false AND NULL = false
-			case query.TokenOr:
-				if left == nil && right == nil {
-					return nil, nil
-				}
-				if left == nil {
-					if toBool(right) {
-						return true, nil // NULL OR true = true
-					}
-					return nil, nil // NULL OR false = NULL
-				}
-				if toBool(left) {
-					return true, nil // true OR NULL = true
-				}
-				return nil, nil // false OR NULL = NULL
-			case query.TokenConcat:
-				// Concat with NULL returns NULL in standard SQL
-				return nil, nil
-			default:
-				return nil, nil
-			}
-		}
-		// Handle arithmetic in value expressions
-		lf, lok := toFloat64(left)
-		rf, rok := toFloat64(right)
-		if lok && rok {
-			bothInt := isIntegerType(left) && isIntegerType(right)
-			switch e.Operator {
-			case query.TokenPlus:
-				if bothInt {
-					return int64(lf) + int64(rf), nil
-				}
-				return lf + rf, nil
-			case query.TokenMinus:
-				if bothInt {
-					return int64(lf) - int64(rf), nil
-				}
-				return lf - rf, nil
-			case query.TokenStar:
-				if bothInt {
-					return int64(lf) * int64(rf), nil
-				}
-				return lf * rf, nil
-			case query.TokenSlash:
-				if rf != 0 {
-					return lf / rf, nil
-				}
-				return nil, fmt.Errorf("division by zero")
-			case query.TokenPercent:
-				if rf != 0 {
-					return int64(lf) % int64(rf), nil
-				}
-				return nil, fmt.Errorf("division by zero")
-			}
-		}
-		// Comparison operators
-		switch e.Operator {
-		case query.TokenEq:
-			return compareValues(left, right) == 0, nil
-		case query.TokenNeq:
-			return compareValues(left, right) != 0, nil
-		case query.TokenLt:
-			return compareValues(left, right) < 0, nil
-		case query.TokenGt:
-			return compareValues(left, right) > 0, nil
-		case query.TokenLte:
-			return compareValues(left, right) <= 0, nil
-		case query.TokenGte:
-			return compareValues(left, right) >= 0, nil
-		case query.TokenAnd:
-			return toBool(left) && toBool(right), nil
-		case query.TokenOr:
-			return toBool(left) || toBool(right), nil
-		case query.TokenConcat:
-			return concatValues(left, right), nil
-		}
-		return nil, fmt.Errorf("unsupported binary operator in value expression")
+		return evalBinaryExprValue(left, right, e.Operator)
 	case *query.CaseExpr:
 		if e.Expr != nil {
 			// Simple CASE: CASE expr WHEN val THEN result
@@ -3137,7 +3057,6 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 		}
 		return val, nil
 	case *query.FunctionCall:
-		// Evaluate function arguments
 		evalArgs := make([]interface{}, len(e.Args))
 		for i, arg := range e.Args {
 			val, err := EvalExpression(arg, args)
@@ -3146,253 +3065,353 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			}
 			evalArgs[i] = val
 		}
-		funcName := toUpperFast(e.Name)
-		switch funcName {
-		case "COALESCE":
-			for _, a := range evalArgs {
-				if a != nil {
-					return a, nil
-				}
-			}
-			return nil, nil
-		case "NULLIF":
-			if len(evalArgs) == 2 && compareValues(evalArgs[0], evalArgs[1]) == 0 {
-				return nil, nil
-			}
-			if len(evalArgs) >= 1 {
-				return evalArgs[0], nil
-			}
-			return nil, nil
-		case "IIF":
-			if len(evalArgs) == 3 {
-				if toBool(evalArgs[0]) {
-					return evalArgs[1], nil
-				}
-				return evalArgs[2], nil
-			}
-			return nil, nil
-		case "ABS":
-			if len(evalArgs) == 1 {
-				if f, ok := toFloat64(evalArgs[0]); ok {
-					if f < 0 {
-						return -f, nil
-					}
-					return f, nil
-				}
-			}
-			return nil, nil
-		case "UPPER":
-			if len(evalArgs) == 1 && evalArgs[0] != nil {
-				return toUpperFast(ValueToStringKey(evalArgs[0])), nil
-			}
-			return nil, nil
-		case "LOWER":
-			if len(evalArgs) == 1 && evalArgs[0] != nil {
-				return toLowerFast(ValueToStringKey(evalArgs[0])), nil
-			}
-			return nil, nil
-		case "LENGTH":
-			if len(evalArgs) == 1 && evalArgs[0] != nil {
-				return len(ValueToStringKey(evalArgs[0])), nil
-			}
-			return nil, nil
-		case "CONCAT":
-			var sb strings.Builder
-			sb.Grow(len(evalArgs) * 16)
-			for _, a := range evalArgs {
-				if a != nil {
-					sb.WriteString(ValueToStringKey(a))
-					if sb.Len() > maxStringResultLen {
-						return nil, fmt.Errorf("CONCAT result exceeds maximum length")
-					}
-				}
-			}
-			return sb.String(), nil
-		case "IFNULL":
-			if len(evalArgs) >= 2 {
-				if evalArgs[0] != nil {
-					return evalArgs[0], nil
-				}
-				return evalArgs[1], nil
-			}
-			return nil, nil
-		case "TRIM":
-			if len(evalArgs) >= 1 && evalArgs[0] != nil {
-				return strings.TrimSpace(ValueToStringKey(evalArgs[0])), nil
-			}
-			return nil, nil
-		case "LTRIM":
-			if len(evalArgs) >= 1 && evalArgs[0] != nil {
-				return strings.TrimLeft(ValueToStringKey(evalArgs[0]), " \t\n\r"), nil
-			}
-			return nil, nil
-		case "RTRIM":
-			if len(evalArgs) >= 1 && evalArgs[0] != nil {
-				return strings.TrimRight(ValueToStringKey(evalArgs[0]), " \t\n\r"), nil
-			}
-			return nil, nil
-		case "SUBSTR", "SUBSTRING":
-			if len(evalArgs) < 2 {
-				return nil, nil
-			}
-			if evalArgs[0] == nil || evalArgs[1] == nil {
-				return nil, nil
-			}
-			str := ValueToStringKey(evalArgs[0])
-			start, _ := toFloat64(evalArgs[1])
-			startInt := int(start) - 1
-			if startInt < 0 {
-				startInt = 0
-			}
-			if startInt >= len(str) {
-				return "", nil
-			}
-			if len(evalArgs) >= 3 && evalArgs[2] != nil {
-				length, _ := toFloat64(evalArgs[2])
-				lengthInt := int(length)
-				if lengthInt < 0 {
-					return "", nil
-				}
-				if startInt+lengthInt > len(str) {
-					lengthInt = len(str) - startInt
-				}
-				return str[startInt : startInt+lengthInt], nil
-			}
-			return str[startInt:], nil
-		case "REPLACE":
-			if len(evalArgs) < 3 || evalArgs[0] == nil || evalArgs[1] == nil || evalArgs[2] == nil {
-				return nil, nil
-			}
-			str := ValueToStringKey(evalArgs[0])
-			old := ValueToStringKey(evalArgs[1])
-			if old == "" {
-				return str, nil
-			}
-			newStr := ValueToStringKey(evalArgs[2])
-			result := strings.ReplaceAll(str, old, newStr)
-			if len(result) > maxStringResultLen {
-				return nil, fmt.Errorf("REPLACE result exceeds maximum length")
-			}
-			return result, nil
-		case "INSTR":
-			if len(evalArgs) >= 2 && evalArgs[0] != nil && evalArgs[1] != nil {
-				str := ValueToStringKey(evalArgs[0])
-				substr := ValueToStringKey(evalArgs[1])
-				idx := strings.Index(str, substr)
-				if idx < 0 {
-					return int64(0), nil
-				}
-				return int64(idx + 1), nil // 1-based
-			}
-			return nil, nil
-		case "ROUND":
-			if len(evalArgs) >= 1 && evalArgs[0] != nil {
-				f, ok := toFloat64(evalArgs[0])
-				if !ok {
-					return nil, nil
-				}
-				decimals := 0
-				if len(evalArgs) >= 2 {
-					d, _ := toFloat64(evalArgs[1])
-					decimals = int(d)
-				}
-				pow := math.Pow(10, float64(decimals))
-				return math.Round(f*pow) / pow, nil
-			}
-			return nil, nil
-		case "FLOOR":
-			if len(evalArgs) >= 1 && evalArgs[0] != nil {
-				if f, ok := toFloat64(evalArgs[0]); ok {
-					return math.Floor(f), nil
-				}
-			}
-			return nil, nil
-		case "CEIL", "CEILING":
-			if len(evalArgs) >= 1 && evalArgs[0] != nil {
-				if f, ok := toFloat64(evalArgs[0]); ok {
-					return math.Ceil(f), nil
-				}
-			}
-			return nil, nil
-		case "TYPEOF":
-			if len(evalArgs) < 1 || evalArgs[0] == nil {
-				return "null", nil
-			}
-			switch evalArgs[0].(type) {
-			case int, int64:
-				return "integer", nil
-			case float64:
-				f := evalArgs[0].(float64)
-				if f == float64(int64(f)) {
-					return "integer", nil
-				}
-				return "real", nil
-			case string:
-				return "text", nil
-			case bool:
-				return "integer", nil
-			default:
-				return "text", nil
-			}
-		case "MIN":
-			if len(evalArgs) >= 2 {
-				min := evalArgs[0]
-				for _, a := range evalArgs[1:] {
-					if a != nil && (min == nil || compareValues(a, min) < 0) {
-						min = a
-					}
-				}
-				return min, nil
-			}
-			if len(evalArgs) == 1 {
-				return evalArgs[0], nil
-			}
-			return nil, nil
-		case "MAX":
-			if len(evalArgs) >= 2 {
-				max := evalArgs[0]
-				for _, a := range evalArgs[1:] {
-					if a != nil && (max == nil || compareValues(a, max) > 0) {
-						max = a
-					}
-				}
-				return max, nil
-			}
-			if len(evalArgs) == 1 {
-				return evalArgs[0], nil
-			}
-			return nil, nil
-		case "REVERSE":
-			if len(evalArgs) >= 1 && evalArgs[0] != nil {
-				str := ValueToStringKey(evalArgs[0])
-				runes := []rune(str)
-				for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
-					runes[i], runes[j] = runes[j], runes[i]
-				}
-				return string(runes), nil
-			}
-			return nil, nil
-		case "REPEAT":
-			if len(evalArgs) >= 2 && evalArgs[0] != nil && evalArgs[1] != nil {
-				str := ValueToStringKey(evalArgs[0])
-				n, _ := toFloat64(evalArgs[1])
-				if int(n) <= 0 {
-					return "", nil
-				}
-				if int(n)*len(str) > maxStringResultLen {
-					return nil, fmt.Errorf("REPEAT result exceeds maximum length")
-				}
-				return strings.Repeat(str, int(n)), nil
-			}
-			return nil, nil
-		default:
-			return nil, fmt.Errorf("unsupported function in value expression: %s", funcName)
-		}
+		return evalFunctionCallValue(toUpperFast(e.Name), evalArgs)
 	case *query.AliasExpr:
 		return EvalExpression(e.Expr, args)
 	default:
 		return nil, fmt.Errorf("unsupported expression type: %T", expr)
 	}
+}
+
+// evalBinaryExprValue evaluates a binary expression with already-evaluated operands.
+func evalBinaryExprValue(left, right interface{}, operator query.TokenType) (interface{}, error) {
+if left == nil || right == nil {
+	switch operator {
+	case query.TokenAnd:
+		if left == nil && right == nil {
+			return nil, nil
+		}
+		if left == nil {
+			if toBool(right) {
+				return nil, nil // NULL AND true = NULL
+			}
+			return false, nil // NULL AND false = false
+		}
+		if toBool(left) {
+			return nil, nil // true AND NULL = NULL
+		}
+		return false, nil // false AND NULL = false
+	case query.TokenOr:
+		if left == nil && right == nil {
+			return nil, nil
+		}
+		if left == nil {
+			if toBool(right) {
+				return true, nil // NULL OR true = true
+			}
+			return nil, nil // NULL OR false = NULL
+		}
+		if toBool(left) {
+			return true, nil // true OR NULL = true
+		}
+		return nil, nil // false OR NULL = NULL
+	case query.TokenConcat:
+		// Concat with NULL returns NULL in standard SQL
+		return nil, nil
+	default:
+		return nil, nil
+	}
+}
+// Handle arithmetic in value expressions
+lf, lok := toFloat64(left)
+rf, rok := toFloat64(right)
+if lok && rok {
+	bothInt := isIntegerType(left) && isIntegerType(right)
+	switch operator {
+	case query.TokenPlus:
+		if bothInt {
+			return int64(lf) + int64(rf), nil
+		}
+		return lf + rf, nil
+	case query.TokenMinus:
+		if bothInt {
+			return int64(lf) - int64(rf), nil
+		}
+		return lf - rf, nil
+	case query.TokenStar:
+		if bothInt {
+			return int64(lf) * int64(rf), nil
+		}
+		return lf * rf, nil
+	case query.TokenSlash:
+		if rf != 0 {
+			return lf / rf, nil
+		}
+		return nil, fmt.Errorf("division by zero")
+	case query.TokenPercent:
+		if rf != 0 {
+			return int64(lf) % int64(rf), nil
+		}
+		return nil, fmt.Errorf("division by zero")
+	}
+}
+// Comparison operators
+switch operator {
+case query.TokenEq:
+	return compareValues(left, right) == 0, nil
+case query.TokenNeq:
+	return compareValues(left, right) != 0, nil
+case query.TokenLt:
+	return compareValues(left, right) < 0, nil
+case query.TokenGt:
+	return compareValues(left, right) > 0, nil
+case query.TokenLte:
+	return compareValues(left, right) <= 0, nil
+case query.TokenGte:
+	return compareValues(left, right) >= 0, nil
+case query.TokenAnd:
+	return toBool(left) && toBool(right), nil
+case query.TokenOr:
+	return toBool(left) || toBool(right), nil
+case query.TokenConcat:
+	return concatValues(left, right), nil
+}
+	return nil, fmt.Errorf("unsupported binary operator in value expression")
+}
+
+// evalFunctionCallValue evaluates a scalar function call with already-evaluated arguments.
+func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}, error) {
+	switch funcName {
+case "COALESCE":
+	for _, a := range evalArgs {
+		if a != nil {
+			return a, nil
+		}
+	}
+	return nil, nil
+case "NULLIF":
+	if len(evalArgs) == 2 && compareValues(evalArgs[0], evalArgs[1]) == 0 {
+		return nil, nil
+	}
+	if len(evalArgs) >= 1 {
+		return evalArgs[0], nil
+	}
+	return nil, nil
+case "IIF":
+	if len(evalArgs) == 3 {
+		if toBool(evalArgs[0]) {
+			return evalArgs[1], nil
+		}
+		return evalArgs[2], nil
+	}
+	return nil, nil
+case "ABS":
+	if len(evalArgs) == 1 {
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			if f < 0 {
+				return -f, nil
+			}
+			return f, nil
+		}
+	}
+	return nil, nil
+case "UPPER":
+	if len(evalArgs) == 1 && evalArgs[0] != nil {
+		return toUpperFast(ValueToStringKey(evalArgs[0])), nil
+	}
+	return nil, nil
+case "LOWER":
+	if len(evalArgs) == 1 && evalArgs[0] != nil {
+		return toLowerFast(ValueToStringKey(evalArgs[0])), nil
+	}
+	return nil, nil
+case "LENGTH":
+	if len(evalArgs) == 1 && evalArgs[0] != nil {
+		return len(ValueToStringKey(evalArgs[0])), nil
+	}
+	return nil, nil
+case "CONCAT":
+	var sb strings.Builder
+	sb.Grow(len(evalArgs) * 16)
+	for _, a := range evalArgs {
+		if a != nil {
+			sb.WriteString(ValueToStringKey(a))
+			if sb.Len() > maxStringResultLen {
+				return nil, fmt.Errorf("CONCAT result exceeds maximum length")
+			}
+		}
+	}
+	return sb.String(), nil
+case "IFNULL":
+	if len(evalArgs) >= 2 {
+		if evalArgs[0] != nil {
+			return evalArgs[0], nil
+		}
+		return evalArgs[1], nil
+	}
+	return nil, nil
+case "TRIM":
+	if len(evalArgs) >= 1 && evalArgs[0] != nil {
+		return strings.TrimSpace(ValueToStringKey(evalArgs[0])), nil
+	}
+	return nil, nil
+case "LTRIM":
+	if len(evalArgs) >= 1 && evalArgs[0] != nil {
+		return strings.TrimLeft(ValueToStringKey(evalArgs[0]), " \t\n\r"), nil
+	}
+	return nil, nil
+case "RTRIM":
+	if len(evalArgs) >= 1 && evalArgs[0] != nil {
+		return strings.TrimRight(ValueToStringKey(evalArgs[0]), " \t\n\r"), nil
+	}
+	return nil, nil
+case "SUBSTR", "SUBSTRING":
+	if len(evalArgs) < 2 {
+		return nil, nil
+	}
+	if evalArgs[0] == nil || evalArgs[1] == nil {
+		return nil, nil
+	}
+	str := ValueToStringKey(evalArgs[0])
+	start, _ := toFloat64(evalArgs[1])
+	startInt := int(start) - 1
+	if startInt < 0 {
+		startInt = 0
+	}
+	if startInt >= len(str) {
+		return "", nil
+	}
+	if len(evalArgs) >= 3 && evalArgs[2] != nil {
+		length, _ := toFloat64(evalArgs[2])
+		lengthInt := int(length)
+		if lengthInt < 0 {
+			return "", nil
+		}
+		if startInt+lengthInt > len(str) {
+			lengthInt = len(str) - startInt
+		}
+		return str[startInt : startInt+lengthInt], nil
+	}
+	return str[startInt:], nil
+case "REPLACE":
+	if len(evalArgs) < 3 || evalArgs[0] == nil || evalArgs[1] == nil || evalArgs[2] == nil {
+		return nil, nil
+	}
+	str := ValueToStringKey(evalArgs[0])
+	old := ValueToStringKey(evalArgs[1])
+	if old == "" {
+		return str, nil
+	}
+	newStr := ValueToStringKey(evalArgs[2])
+	result := strings.ReplaceAll(str, old, newStr)
+	if len(result) > maxStringResultLen {
+		return nil, fmt.Errorf("REPLACE result exceeds maximum length")
+	}
+	return result, nil
+case "INSTR":
+	if len(evalArgs) >= 2 && evalArgs[0] != nil && evalArgs[1] != nil {
+		str := ValueToStringKey(evalArgs[0])
+		substr := ValueToStringKey(evalArgs[1])
+		idx := strings.Index(str, substr)
+		if idx < 0 {
+			return int64(0), nil
+		}
+		return int64(idx + 1), nil // 1-based
+	}
+	return nil, nil
+case "ROUND":
+	if len(evalArgs) >= 1 && evalArgs[0] != nil {
+		f, ok := toFloat64(evalArgs[0])
+		if !ok {
+			return nil, nil
+		}
+		decimals := 0
+		if len(evalArgs) >= 2 {
+			d, _ := toFloat64(evalArgs[1])
+			decimals = int(d)
+		}
+		pow := math.Pow(10, float64(decimals))
+		return math.Round(f*pow) / pow, nil
+	}
+	return nil, nil
+case "FLOOR":
+	if len(evalArgs) >= 1 && evalArgs[0] != nil {
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return math.Floor(f), nil
+		}
+	}
+	return nil, nil
+case "CEIL", "CEILING":
+	if len(evalArgs) >= 1 && evalArgs[0] != nil {
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return math.Ceil(f), nil
+		}
+	}
+	return nil, nil
+case "TYPEOF":
+	if len(evalArgs) < 1 || evalArgs[0] == nil {
+		return "null", nil
+	}
+	switch evalArgs[0].(type) {
+	case int, int64:
+		return "integer", nil
+	case float64:
+		f := evalArgs[0].(float64)
+		if f == float64(int64(f)) {
+			return "integer", nil
+		}
+		return "real", nil
+	case string:
+		return "text", nil
+	case bool:
+		return "integer", nil
+	default:
+		return "text", nil
+	}
+case "MIN":
+	if len(evalArgs) >= 2 {
+		min := evalArgs[0]
+		for _, a := range evalArgs[1:] {
+			if a != nil && (min == nil || compareValues(a, min) < 0) {
+				min = a
+			}
+		}
+		return min, nil
+	}
+	if len(evalArgs) == 1 {
+		return evalArgs[0], nil
+	}
+	return nil, nil
+case "MAX":
+	if len(evalArgs) >= 2 {
+		max := evalArgs[0]
+		for _, a := range evalArgs[1:] {
+			if a != nil && (max == nil || compareValues(a, max) > 0) {
+				max = a
+			}
+		}
+		return max, nil
+	}
+	if len(evalArgs) == 1 {
+		return evalArgs[0], nil
+	}
+	return nil, nil
+case "REVERSE":
+	if len(evalArgs) >= 1 && evalArgs[0] != nil {
+		str := ValueToStringKey(evalArgs[0])
+		runes := []rune(str)
+		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+			runes[i], runes[j] = runes[j], runes[i]
+		}
+		return string(runes), nil
+	}
+	return nil, nil
+case "REPEAT":
+	if len(evalArgs) >= 2 && evalArgs[0] != nil && evalArgs[1] != nil {
+		str := ValueToStringKey(evalArgs[0])
+		n, _ := toFloat64(evalArgs[1])
+		if int(n) <= 0 {
+			return "", nil
+		}
+		if int(n)*len(str) > maxStringResultLen {
+			return nil, fmt.Errorf("REPEAT result exceeds maximum length")
+		}
+		return strings.Repeat(str, int(n)), nil
+	}
+	return nil, nil
+default:
+	return nil, fmt.Errorf("unsupported function in value expression: %s", funcName)
+}
 }
 
 func tokenize(text string) []string {
