@@ -29,6 +29,10 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("Expected default SyncInterval to be 100ms, got %v", config.SyncInterval)
 	}
 
+	if config.MaxWALBufferEntries != defaultMaxWALBufferEntries {
+		t.Errorf("Expected default MaxWALBufferEntries to be %d, got %d", defaultMaxWALBufferEntries, config.MaxWALBufferEntries)
+	}
+
 	if !config.Compress {
 		t.Error("Expected default Compress to be true")
 	}

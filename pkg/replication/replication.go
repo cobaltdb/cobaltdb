@@ -39,30 +39,34 @@ const (
 
 const maxReplicationFrameSize = 64 << 20 // 64 MiB
 
+const defaultMaxWALBufferEntries = 10000
+
 // Config holds replication configuration
 type Config struct {
-	Role         Role
-	Mode         ReplicationMode
-	ListenAddr   string        // For master: address to listen on
-	MasterAddr   string        // For slave: master address to connect
-	Slaves       []string      // For master: list of slave addresses
-	MaxLag       time.Duration // Maximum allowed replication lag
-	SyncInterval time.Duration // How often to sync WAL
-	AuthToken    string        // Authentication token
-	Compress     bool          // Compress replication stream
-	SSLCert      string        // SSL certificate file
-	SSLKey       string        // SSL key file
-	SSLCA        string        // SSL CA certificate
+	Role                Role
+	Mode                ReplicationMode
+	ListenAddr          string        // For master: address to listen on
+	MasterAddr          string        // For slave: master address to connect
+	Slaves              []string      // For master: list of slave addresses
+	MaxLag              time.Duration // Maximum allowed replication lag
+	SyncInterval        time.Duration // How often to sync WAL
+	MaxWALBufferEntries int           // Maximum master WAL entries retained for disconnected/lagging slaves
+	AuthToken           string        // Authentication token
+	Compress            bool          // Compress replication stream
+	SSLCert             string        // SSL certificate file
+	SSLKey              string        // SSL key file
+	SSLCA               string        // SSL CA certificate
 }
 
 // DefaultConfig returns default replication configuration
 func DefaultConfig() *Config {
 	return &Config{
-		Role:         RoleStandalone,
-		Mode:         ModeAsync,
-		SyncInterval: 100 * time.Millisecond,
-		MaxLag:       30 * time.Second,
-		Compress:     true,
+		Role:                RoleStandalone,
+		Mode:                ModeAsync,
+		SyncInterval:        100 * time.Millisecond,
+		MaxLag:              30 * time.Second,
+		MaxWALBufferEntries: defaultMaxWALBufferEntries,
+		Compress:            true,
 	}
 }
 
@@ -190,6 +194,10 @@ type Metrics struct {
 
 // NewManager creates a new replication manager
 func NewManager(config *Config) *Manager {
+	if config.MaxWALBufferEntries <= 0 {
+		config.MaxWALBufferEntries = defaultMaxWALBufferEntries
+	}
+
 	return &Manager{
 		config:      config,
 		role:        config.Role,
@@ -721,6 +729,7 @@ func (m *Manager) ReplicateWALEntry(data []byte) error {
 	}
 
 	m.walBuffer = append(m.walBuffer, entry)
+	m.enforceWALRetentionLocked()
 
 	return nil
 }
@@ -737,8 +746,7 @@ func (m *Manager) pruneWALBufferLocked() {
 	}
 
 	if len(m.slaves) == 0 {
-		clearWALEntries(m.walBuffer)
-		m.walBuffer = m.walBuffer[:0]
+		m.enforceWALRetentionLocked()
 		return
 	}
 
@@ -764,12 +772,26 @@ func (m *Manager) pruneWALBufferLocked() {
 	copy(m.walBuffer, m.walBuffer[pruneCount:])
 	clearWALEntries(m.walBuffer[len(m.walBuffer)-pruneCount:])
 	m.walBuffer = m.walBuffer[:len(m.walBuffer)-pruneCount]
+	m.enforceWALRetentionLocked()
 }
 
 func clearWALEntries(entries []*WALEntry) {
 	for i := range entries {
 		entries[i] = nil
 	}
+}
+
+func (m *Manager) enforceWALRetentionLocked() {
+	maxEntries := m.config.MaxWALBufferEntries
+	if maxEntries <= 0 || len(m.walBuffer) <= maxEntries {
+		return
+	}
+
+	dropCount := len(m.walBuffer) - maxEntries
+	clearWALEntries(m.walBuffer[:dropCount])
+	copy(m.walBuffer, m.walBuffer[dropCount:])
+	clearWALEntries(m.walBuffer[len(m.walBuffer)-dropCount:])
+	m.walBuffer = m.walBuffer[:maxEntries]
 }
 
 // GetMetrics returns current replication metrics

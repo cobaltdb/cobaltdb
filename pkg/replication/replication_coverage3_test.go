@@ -275,6 +275,52 @@ func TestPruneWALBufferKeepsOnlyUnacknowledgedEntries(t *testing.T) {
 	}
 }
 
+func TestWALRetentionBoundsBufferWithoutSlaves(t *testing.T) {
+	mgr := NewManager(&Config{
+		Role:                RoleMaster,
+		Mode:                ModeAsync,
+		MaxWALBufferEntries: 3,
+	})
+
+	for i := 0; i < 5; i++ {
+		if err := mgr.ReplicateWALEntry([]byte{byte('a' + i)}); err != nil {
+			t.Fatalf("ReplicateWALEntry failed: %v", err)
+		}
+	}
+
+	if len(mgr.walBuffer) != 3 {
+		t.Fatalf("Expected retained buffer length 3, got %d", len(mgr.walBuffer))
+	}
+	for i, entry := range mgr.walBuffer {
+		expectedLSN := uint64(i + 3)
+		if entry.LSN != expectedLSN {
+			t.Fatalf("Entry %d: expected LSN %d, got %d", i, expectedLSN, entry.LSN)
+		}
+	}
+}
+
+func TestWALRetentionBoundsBufferWithLaggingSlave(t *testing.T) {
+	mgr := NewManager(&Config{
+		Role:                RoleMaster,
+		Mode:                ModeAsync,
+		MaxWALBufferEntries: 2,
+	})
+	mgr.slaves["lagging"] = &SlaveConnection{ID: "lagging", LastLSN: 1}
+
+	for i := 0; i < 5; i++ {
+		if err := mgr.ReplicateWALEntry([]byte{byte('a' + i)}); err != nil {
+			t.Fatalf("ReplicateWALEntry failed: %v", err)
+		}
+	}
+
+	if len(mgr.walBuffer) != 2 {
+		t.Fatalf("Expected retained buffer length 2, got %d", len(mgr.walBuffer))
+	}
+	if mgr.walBuffer[0].LSN != 4 || mgr.walBuffer[1].LSN != 5 {
+		t.Fatalf("Expected retained LSNs 4 and 5, got %+v", mgr.walBuffer)
+	}
+}
+
 // TestWALEntryEncodeDecodeVariations tests Encode/Decode with various scenarios
 func TestWALEntryEncodeDecodeVariations(t *testing.T) {
 	// Test with valid entry first
