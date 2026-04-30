@@ -228,7 +228,7 @@ func (c *Catalog) executeScalarAggregate(stmt *query.SelectStmt, args []interfac
 
 // loadMainTableRows resolves the main FROM table reference to column definitions
 // and row data, checking CTE results and B-tree scans.
-func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]interface{}) {
+func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]interface{}, error) {
 	// Check if main table is a CTE result
 	if c.cteResults != nil {
 		if cteRes, ok := c.cteResults[toLowerFast(from.Name)]; ok {
@@ -238,20 +238,20 @@ func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]inte
 			}
 			intermediateRows := make([][]interface{}, len(cteRes.rows))
 			copy(intermediateRows, cteRes.rows)
-			return mainTableCols, intermediateRows
+			return mainTableCols, intermediateRows, nil
 		}
 	}
 
 	// Get the main table
 	mainTable, err := c.getTableLocked(from.Name)
 	if err != nil {
-		return nil, nil
+		return nil, nil, fmt.Errorf("table '%s' not found: %w", from.Name, err)
 	}
 
 	// Get all trees for scanning (handles partitioned tables)
 	trees, err := c.getTableTreesForScan(mainTable)
 	if err != nil {
-		return mainTable.Columns, nil
+		return mainTable.Columns, nil, nil
 	}
 
 	var intermediateRows [][]interface{}
@@ -276,7 +276,7 @@ func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]inte
 		}
 		mainIter.Close()
 	}
-	return mainTable.Columns, intermediateRows
+	return mainTable.Columns, intermediateRows, nil
 }
 
 func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo) ([]string, [][]interface{}, error) {
@@ -284,7 +284,10 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 	var intermediateRows [][]interface{}
 
 	// Check if main table is a CTE result
-	mainTableCols, intermediateRows = c.loadMainTableRows(stmt.From)
+	mainTableCols, intermediateRows, err := c.loadMainTableRows(stmt.From)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// Track combined columns and table offsets for projection
 	combinedColumns := make([]ColumnDef, len(mainTableCols))
@@ -576,7 +579,10 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 	var intermediateRows [][]interface{}
 
 	// Check if main table is a CTE result or derived table
-	mainTableCols, intermediateRows = c.loadMainTableRows(stmt.From)
+	mainTableCols, intermediateRows, err := c.loadMainTableRows(stmt.From)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// Track combined columns from all tables
 	allColumns := make([]ColumnDef, len(mainTableCols))
