@@ -1716,3 +1716,484 @@ func computeAggregateValue(ci selectColInfo, values []interface{}, groupRows [][
 	}
 	return nil
 }
+
+// projectSelectedRow extracts selected column values from a full table row.
+// Handles regular columns, scalar expressions, and hidden ORDER BY expression columns.
+func (cat *Catalog) projectSelectedRow(fullRow []interface{}, selectCols []selectColInfo, stmt *query.SelectStmt, table *TableDef, args []interface{}, hasWindowFuncs bool) []interface{} {
+	selectedRow := make([]interface{}, len(selectCols))
+	for i, ci := range selectCols {
+		if ci.isWindow {
+			continue
+		}
+		if ci.index >= 0 && ci.index < len(fullRow) {
+			selectedRow[i] = fullRow[ci.index]
+		} else if ci.index == -1 && !ci.isAggregate {
+			if i < len(stmt.Columns) {
+				val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
+				if err == nil {
+					selectedRow[i] = val
+				}
+			} else if len(ci.name) > 10 && ci.name[:10] == "__orderby_" {
+				var obIdx int
+				if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
+					val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
+					if err == nil {
+						selectedRow[i] = val
+					}
+				}
+			}
+		}
+	}
+	return selectedRow
+}
+
+func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, viewRows [][]interface{}, args []interface{}) ([]string, [][]interface{}, error) {
+	// Build column definitions from view result columns
+	columns := make([]ColumnDef, len(viewCols))
+	for i, name := range viewCols {
+		columns[i] = ColumnDef{Name: name}
+	}
+
+	// Check if outer query has aggregates
+	hasAggregates := false
+	for _, col := range stmt.Columns {
+		actual := col
+		if ae, ok := col.(*query.AliasExpr); ok {
+			actual = ae.Expr
+		}
+		if fc, ok := actual.(*query.FunctionCall); ok {
+			if strings.EqualFold(fc.Name, "COUNT") || strings.EqualFold(fc.Name, "SUM") || strings.EqualFold(fc.Name, "AVG") || strings.EqualFold(fc.Name, "MIN") || strings.EqualFold(fc.Name, "MAX") || strings.EqualFold(fc.Name, "GROUP_CONCAT") {
+				hasAggregates = true
+				break
+			}
+		}
+	}
+
+	// Apply WHERE clause
+	var filteredRows [][]interface{}
+	if stmt.Where != nil {
+		for _, row := range viewRows {
+			matched, err := evaluateWhere(cat, row, columns, stmt.Where, args)
+			if err != nil || !matched {
+				continue
+			}
+			filteredRows = append(filteredRows, row)
+		}
+	} else {
+		filteredRows = viewRows
+	}
+
+	// Handle aggregates or GROUP BY on the view result
+	// Handle aggregates or GROUP BY on the view result
+	if hasAggregates || len(stmt.GroupBy) > 0 {
+		return cat.applyOuterQueryAggregates(stmt, filteredRows, columns, args)
+	}
+	return cat.applyOuterQueryProjection(stmt, filteredRows, viewCols, columns, args)
+}
+
+
+// applyOuterQueryAggregates handles the aggregate/GROUP BY path of applyOuterQuery.
+func (cat *Catalog) applyOuterQueryAggregates(stmt *query.SelectStmt, filteredRows [][]interface{}, columns []ColumnDef, args []interface{}) ([]string, [][]interface{}, error) {
+	// Build return column names
+	returnCols := make([]string, len(stmt.Columns))
+	for i, col := range stmt.Columns {
+		aliasName := ""
+		actual := col
+		if ae, ok := col.(*query.AliasExpr); ok {
+			aliasName = ae.Alias
+			actual = ae.Expr
+		}
+		if aliasName != "" {
+			returnCols[i] = aliasName
+		} else if fc, ok := actual.(*query.FunctionCall); ok {
+			fn := toUpperFast(fc.Name)
+			if len(fc.Args) > 0 {
+				returnCols[i] = fn + "()"
+			} else {
+				returnCols[i] = fn + "(*)"
+			}
+		} else if id, ok := actual.(*query.Identifier); ok {
+			returnCols[i] = id.Name
+		} else {
+			returnCols[i] = "col" + strconv.Itoa(i)
+		}
+	}
+
+	// Group rows if GROUP BY is present
+	type rowGroup struct {
+		key  string
+		rows [][]interface{}
+	}
+	var groups []rowGroup
+
+	if len(stmt.GroupBy) > 0 {
+		groupMap := make(map[string]int)
+		for _, row := range filteredRows {
+			var keyParts []string
+			for _, gb := range stmt.GroupBy {
+				val, err := evaluateExpression(cat, row, columns, gb, args)
+				if err == nil {
+					keyParts = append(keyParts, ValueToStringKey(val))
+				} else {
+					keyParts = append(keyParts, "<nil>")
+				}
+			}
+			key := strings.Join(keyParts, "|")
+			if idx, exists := groupMap[key]; exists {
+				groups[idx].rows = append(groups[idx].rows, row)
+			} else {
+				groupMap[key] = len(groups)
+				groups = append(groups, rowGroup{key: key, rows: [][]interface{}{row}})
+			}
+		}
+	} else {
+		// Single group: all rows
+		groups = []rowGroup{{key: "", rows: filteredRows}}
+	}
+
+	// Compute aggregates for each group
+	var resultRows [][]interface{}
+	for _, group := range groups {
+		resultRow := make([]interface{}, len(stmt.Columns))
+		for i, col := range stmt.Columns {
+			actual := col
+			if ae, ok := col.(*query.AliasExpr); ok {
+				actual = ae.Expr
+			}
+			if fc, ok := actual.(*query.FunctionCall); ok {
+				fn := toUpperFast(fc.Name)
+				resultRow[i] = cat.computeViewAggregate(fn, fc, group.rows, columns, args)
+			} else {
+				// Non-aggregate column: use value from first row in group
+				if len(group.rows) > 0 {
+					val, err := evaluateExpression(cat, group.rows[0], columns, actual, args)
+					if err == nil {
+						resultRow[i] = val
+					}
+				}
+			}
+		}
+		resultRows = append(resultRows, resultRow)
+	}
+
+	// Build result columns for HAVING/ORDER BY evaluation
+	resultColumns := make([]ColumnDef, len(returnCols))
+	for i, name := range returnCols {
+		resultColumns[i] = ColumnDef{Name: name}
+	}
+
+	// Apply HAVING filter
+	if stmt.Having != nil {
+		var havingRows [][]interface{}
+		for _, row := range resultRows {
+			ok, err := evaluateWhere(cat, row, resultColumns, stmt.Having, args)
+			if err == nil && ok {
+				havingRows = append(havingRows, row)
+			}
+		}
+		resultRows = havingRows
+	}
+
+	// Apply ORDER BY
+	if len(stmt.OrderBy) > 0 && len(resultRows) > 1 {
+		sort.SliceStable(resultRows, func(i, j int) bool {
+			for _, ob := range stmt.OrderBy {
+				vi, _ := evaluateExpression(cat, resultRows[i], resultColumns, ob.Expr, args)
+				vj, _ := evaluateExpression(cat, resultRows[j], resultColumns, ob.Expr, args)
+				cmp := compareValues(vi, vj)
+				if ob.Desc {
+					cmp = -cmp
+				}
+				if cmp != 0 {
+					return cmp < 0
+				}
+			}
+			return false
+		})
+	}
+
+	// Apply LIMIT/OFFSET
+	if stmt.Offset != nil {
+		offsetVal, err := EvalExpression(stmt.Offset, args)
+		if err == nil {
+			if f, ok := toFloat64(offsetVal); ok {
+				offset := int(f)
+				if offset >= len(resultRows) {
+					resultRows = nil
+				} else if offset > 0 {
+					resultRows = resultRows[offset:]
+				}
+			}
+		}
+	}
+	if stmt.Limit != nil {
+		limitVal, err := EvalExpression(stmt.Limit, args)
+		if err == nil {
+			if f, ok := toFloat64(limitVal); ok {
+				limit := int(f)
+				if limit >= 0 && limit <= len(resultRows) {
+					resultRows = resultRows[:limit]
+				}
+			}
+		}
+	}
+
+	return returnCols, resultRows, nil
+
+}
+
+// applyOuterQueryProjection handles the non-aggregate projection path of applyOuterQuery.
+func (cat *Catalog) applyOuterQueryProjection(stmt *query.SelectStmt, filteredRows [][]interface{}, viewCols []string, columns []ColumnDef, args []interface{}) ([]string, [][]interface{}, error) {
+// Project columns
+var returnCols []string
+var resultRows [][]interface{}
+
+// Build column mapping
+type colMapping struct {
+	name    string
+	viewIdx int // -1 if needs evaluation
+}
+var mappings []colMapping
+
+for _, col := range stmt.Columns {
+	aliasName := ""
+	actual := col
+	if ae, ok := col.(*query.AliasExpr); ok {
+		aliasName = ae.Alias
+		actual = ae.Expr
+	}
+	switch c := actual.(type) {
+	case *query.StarExpr:
+		for j, name := range viewCols {
+			mappings = append(mappings, colMapping{name: name, viewIdx: j})
+		}
+	case *query.Identifier:
+		found := false
+		for j, name := range viewCols {
+			if strings.EqualFold(name, c.Name) {
+				displayName := name
+				if aliasName != "" {
+					displayName = aliasName
+				}
+				mappings = append(mappings, colMapping{name: displayName, viewIdx: j})
+				found = true
+				break
+			}
+		}
+		if !found {
+			mappings = append(mappings, colMapping{name: c.Name, viewIdx: -1})
+		}
+	default:
+		name := "expr"
+		if aliasName != "" {
+			name = aliasName
+		}
+		mappings = append(mappings, colMapping{name: name, viewIdx: -1})
+	}
+}
+
+returnCols = make([]string, len(mappings))
+for i, m := range mappings {
+	returnCols[i] = m.name
+}
+
+for _, row := range filteredRows {
+	resultRow := make([]interface{}, len(mappings))
+	for i, m := range mappings {
+		if m.viewIdx >= 0 && m.viewIdx < len(row) {
+			resultRow[i] = row[m.viewIdx]
+		} else {
+			// Evaluate expression against view row
+			val, err := evaluateExpression(cat, row, columns, stmt.Columns[i], args)
+			if err == nil {
+				resultRow[i] = val
+			}
+		}
+	}
+	resultRows = append(resultRows, resultRow)
+}
+
+// Build selectColInfo for ORDER BY
+selectCols := make([]selectColInfo, len(mappings))
+for i, m := range mappings {
+	selectCols[i] = selectColInfo{name: m.name, index: i}
+}
+
+// Add hidden ORDER BY columns from view that aren't in the outer SELECT
+hiddenViewOrderByCols := 0
+if len(stmt.OrderBy) > 0 {
+	for _, ob := range stmt.OrderBy {
+		if ident, ok := ob.Expr.(*query.Identifier); ok {
+			// Check if this column is already in selectCols
+			found := false
+			for _, sc := range selectCols {
+				if strings.EqualFold(sc.name, ident.Name) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Check if it's a view column
+				for j, vc := range viewCols {
+					if strings.EqualFold(vc, ident.Name) {
+						// Add as hidden column and append values from view rows
+						selectCols = append(selectCols, selectColInfo{name: vc, index: len(mappings) + hiddenViewOrderByCols})
+						for k := range resultRows {
+							if j < len(filteredRows[k]) {
+								resultRows[k] = append(resultRows[k], filteredRows[k][j])
+							}
+						}
+						hiddenViewOrderByCols++
+						break
+					}
+				}
+			}
+		}
+	}
+}
+
+// Apply ORDER BY
+if len(stmt.OrderBy) > 0 {
+	resultRows = cat.applyOrderBy(resultRows, selectCols, stmt.OrderBy)
+}
+
+// Strip hidden ORDER BY columns
+if hiddenViewOrderByCols > 0 {
+	visibleCount := len(mappings)
+	for i, row := range resultRows {
+		if len(row) > visibleCount {
+			resultRows[i] = row[:visibleCount]
+		}
+	}
+}
+
+// Apply DISTINCT
+if stmt.Distinct {
+	resultRows = cat.applyDistinct(resultRows)
+}
+
+// Apply OFFSET
+if stmt.Offset != nil {
+	offsetVal, err := evaluateExpression(cat, nil, nil, stmt.Offset, args)
+	if err == nil {
+		if offset, ok := toInt(offsetVal); ok && offset > 0 {
+			if offset >= len(resultRows) {
+				resultRows = nil
+			} else {
+				resultRows = resultRows[offset:]
+			}
+		}
+	}
+}
+
+// Apply LIMIT
+if stmt.Limit != nil {
+	limitVal, err := evaluateExpression(cat, nil, nil, stmt.Limit, args)
+	if err == nil {
+		if limit, ok := toInt(limitVal); ok && limit >= 0 && int(limit) <= len(resultRows) {
+			resultRows = resultRows[:limit]
+		}
+	}
+}
+
+return returnCols, resultRows, nil
+}
+
+func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows [][]interface{}, columns []ColumnDef, args []interface{}) interface{} {
+	switch fn {
+	case "COUNT":
+		if len(fc.Args) > 0 {
+			if _, ok := fc.Args[0].(*query.StarExpr); ok {
+				return int64(len(rows))
+			}
+			// COUNT(col) - count non-null
+			count := int64(0)
+			for _, row := range rows {
+				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
+				if err == nil && val != nil {
+					count++
+				}
+			}
+			return count
+		}
+		return int64(len(rows))
+	case "SUM":
+		sum := float64(0)
+		hasVal := false
+		for _, row := range rows {
+			if len(fc.Args) > 0 {
+				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
+				if err == nil && val != nil {
+					if f, ok := toFloat64(val); ok {
+						sum += f
+						hasVal = true
+					}
+				}
+			}
+		}
+		if hasVal {
+			return sum
+		}
+		return nil
+	case "AVG":
+		sum := float64(0)
+		count := 0
+		for _, row := range rows {
+			if len(fc.Args) > 0 {
+				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
+				if err == nil && val != nil {
+					if f, ok := toFloat64(val); ok {
+						sum += f
+						count++
+					}
+				}
+			}
+		}
+		if count > 0 {
+			return sum / float64(count)
+		}
+		return nil
+	case "MIN":
+		var minVal interface{}
+		for _, row := range rows {
+			if len(fc.Args) > 0 {
+				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
+				if err == nil && val != nil {
+					if minVal == nil || compareValues(val, minVal) < 0 {
+						minVal = val
+					}
+				}
+			}
+		}
+		return minVal
+	case "MAX":
+		var maxVal interface{}
+		for _, row := range rows {
+			if len(fc.Args) > 0 {
+				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
+				if err == nil && val != nil {
+					if maxVal == nil || compareValues(val, maxVal) > 0 {
+						maxVal = val
+					}
+				}
+			}
+		}
+		return maxVal
+	case "GROUP_CONCAT":
+		var parts []string
+		for _, row := range rows {
+			if len(fc.Args) > 0 {
+				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
+				if err == nil && val != nil {
+					parts = append(parts, ValueToStringKey(val))
+				}
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, ",")
+		}
+		return nil
+	}
+	return nil
+}
+
