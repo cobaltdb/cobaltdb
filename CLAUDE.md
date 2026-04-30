@@ -145,7 +145,7 @@ Three test trees coexist — `./pkg/...` for unit tests, `./integration/...` for
 - 10,400+ test functions
 - 500+ test files
 - 24 packages, all passing
-- Target: %90+ coverage per package (19/20 packages above 90%, only catalog at 85%)
+- Target: %90+ coverage per package (24/25 packages above 90%, only storage at 89%)
 
 ### Running Benchmarks Safely
 ```bash
