@@ -5,9 +5,12 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,6 +63,7 @@ type Config struct {
 	SSLCert             string        // SSL certificate file
 	SSLKey              string        // SSL key file
 	SSLCA               string        // SSL CA certificate
+	StateFile           string        // Optional slave state file for last applied LSN
 }
 
 // DefaultConfig returns default replication configuration
@@ -196,6 +200,11 @@ type Metrics struct {
 	ActiveSlaves    int32
 	ReplicationLag  int64 // in milliseconds
 	LastAppliedTime int64 // Unix timestamp
+}
+
+type replicationState struct {
+	LastApplied uint64    `json:"last_applied"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // NewManager creates a new replication manager
@@ -630,6 +639,10 @@ func (m *Manager) sendWALToSlave(slave *SlaveConnection, data []byte) error {
 
 // startSlave initializes slave replication
 func (m *Manager) startSlave() error {
+	if err := m.loadReplicationState(); err != nil {
+		return fmt.Errorf("failed to load replication state: %w", err)
+	}
+
 	// Connect to master
 	conn, err := net.Dial("tcp", m.config.MasterAddr)
 	if err != nil {
@@ -746,6 +759,7 @@ func (m *Manager) handleMasterMessage(msg string) error {
 			return fmt.Errorf("invalid START message: %w", err)
 		}
 		atomic.StoreUint64(&m.lastApplied, lsn)
+		return m.saveReplicationState()
 
 	case "PING":
 		// Heartbeat - respond with current position
@@ -779,6 +793,7 @@ func (m *Manager) applyWALDataBytes(data []byte) error {
 	}
 
 	// Apply each entry
+	var advanced bool
 	for _, entry := range entries {
 		if entry.LSN <= atomic.LoadUint64(&m.lastApplied) {
 			continue
@@ -792,9 +807,78 @@ func (m *Manager) applyWALDataBytes(data []byte) error {
 
 		atomic.StoreUint64(&m.lastApplied, entry.LSN)
 		atomic.AddUint64(&m.metrics.AppliedEntries, 1)
+		advanced = true
 	}
 
 	atomic.StoreInt64(&m.metrics.LastAppliedTime, time.Now().Unix())
+	if advanced {
+		return m.saveReplicationState()
+	}
+
+	return nil
+}
+
+func (m *Manager) loadReplicationState() error {
+	if m.config.StateFile == "" {
+		return nil
+	}
+
+	file, err := os.Open(m.config.StateFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+
+	var state replicationState
+	if err := json.NewDecoder(file).Decode(&state); err != nil {
+		return err
+	}
+	atomic.StoreUint64(&m.lastApplied, state.LastApplied)
+	return nil
+}
+
+func (m *Manager) saveReplicationState() error {
+	if m.config.StateFile == "" {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(m.config.StateFile), 0755); err != nil {
+		return err
+	}
+
+	tmpPath := m.config.StateFile + ".tmp"
+	file, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	state := replicationState{
+		LastApplied: atomic.LoadUint64(&m.lastApplied),
+		UpdatedAt:   time.Now(),
+	}
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(state); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, m.config.StateFile); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
 
 	return nil
 }

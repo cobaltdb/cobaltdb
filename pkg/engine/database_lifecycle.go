@@ -383,16 +383,8 @@ func (db *DB) createNew() error {
 		}
 	}
 
-	// Initialize backup manager
-	backupConfig := &backup.Config{
-		BackupDir:        db.options.BackupDir,
-		RetentionPeriod:  db.options.BackupRetention,
-		MaxBackups:       db.options.MaxBackups,
-		CompressionLevel: db.options.BackupCompressionLevel,
-	}
-	if backupConfig.BackupDir == "" {
-		backupConfig.BackupDir = "./backups"
-	}
+	db.initializeBackupManager()
+
 	// Initialize slow query log
 	if db.options.EnableSlowQueryLog {
 		threshold := db.options.SlowQueryThreshold
@@ -406,8 +398,6 @@ func (db *DB) createNew() error {
 		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
 		db.unregisterSlowQueryLog = metrics.RegisterSlowQueryLog(db.slowQueryLog)
 	}
-
-	db.backupMgr = backup.NewManager(backupConfig, db)
 
 	return db.backend.Sync()
 }
@@ -564,16 +554,8 @@ func (db *DB) loadExisting() error {
 		}
 	}
 
-	// Initialize backup manager
-	backupConfig := &backup.Config{
-		BackupDir:        db.options.BackupDir,
-		RetentionPeriod:  db.options.BackupRetention,
-		MaxBackups:       db.options.MaxBackups,
-		CompressionLevel: db.options.BackupCompressionLevel,
-	}
-	if backupConfig.BackupDir == "" {
-		backupConfig.BackupDir = "./backups"
-	}
+	db.initializeBackupManager()
+
 	// Initialize slow query log
 	if db.options.EnableSlowQueryLog {
 		threshold := db.options.SlowQueryThreshold
@@ -587,8 +569,6 @@ func (db *DB) loadExisting() error {
 		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
 		db.unregisterSlowQueryLog = metrics.RegisterSlowQueryLog(db.slowQueryLog)
 	}
-
-	db.backupMgr = backup.NewManager(backupConfig, db)
 
 	// Initialize query plan cache
 	if db.options.EnablePlanCache {
@@ -604,6 +584,24 @@ func (db *DB) loadExisting() error {
 	}
 
 	return nil
+}
+
+func (db *DB) initializeBackupManager() {
+	if db.options.BackupDir == "" && (db.options.InMemory || db.path == ":memory:") {
+		db.backupMgr = nil
+		return
+	}
+
+	backupConfig := &backup.Config{
+		BackupDir:        db.options.BackupDir,
+		RetentionPeriod:  db.options.BackupRetention,
+		MaxBackups:       db.options.MaxBackups,
+		CompressionLevel: db.options.BackupCompressionLevel,
+	}
+	if backupConfig.BackupDir == "" {
+		backupConfig.BackupDir = "./backups"
+	}
+	db.backupMgr = backup.NewManager(backupConfig, db)
 }
 
 // Close closes the database

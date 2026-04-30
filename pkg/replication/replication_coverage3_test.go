@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -285,6 +287,66 @@ func TestHandleMasterMessageRESYNC(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "resync required") {
 		t.Fatalf("Unexpected RESYNC error: %v", err)
+	}
+}
+
+func TestReplicationStateSaveLoad(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "replication-state.json")
+
+	mgr := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
+	mgr.lastApplied = 42
+	if err := mgr.saveReplicationState(); err != nil {
+		t.Fatalf("saveReplicationState failed: %v", err)
+	}
+
+	reloaded := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
+	if err := reloaded.loadReplicationState(); err != nil {
+		t.Fatalf("loadReplicationState failed: %v", err)
+	}
+	if reloaded.lastApplied != 42 {
+		t.Fatalf("Expected lastApplied=42, got %d", reloaded.lastApplied)
+	}
+}
+
+func TestApplyWALDataPersistsReplicationState(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "replication-state.json")
+	mgr := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync, StateFile: stateFile})
+
+	entries := []*WALEntry{
+		{LSN: 7, Timestamp: time.Now(), Data: []byte("test"), Checksum: calculateCRC32([]byte("test"))},
+	}
+	data, err := encodeWALEntries(entries)
+	if err != nil {
+		t.Fatalf("Failed to encode entries: %v", err)
+	}
+
+	if err := mgr.applyWALDataBytes(data); err != nil {
+		t.Fatalf("applyWALDataBytes failed: %v", err)
+	}
+
+	reloaded := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
+	if err := reloaded.loadReplicationState(); err != nil {
+		t.Fatalf("loadReplicationState failed: %v", err)
+	}
+	if reloaded.lastApplied != 7 {
+		t.Fatalf("Expected persisted lastApplied=7, got %d", reloaded.lastApplied)
+	}
+}
+
+func TestStartMessagePersistsReplicationState(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "replication-state.json")
+	mgr := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
+
+	if err := mgr.handleMasterMessage("START 11\n"); err != nil {
+		t.Fatalf("handleMasterMessage START failed: %v", err)
+	}
+
+	content, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("Failed to read state file: %v", err)
+	}
+	if !strings.Contains(string(content), `"last_applied": 11`) {
+		t.Fatalf("Expected persisted last_applied 11, got %s", string(content))
 	}
 }
 
