@@ -1363,6 +1363,141 @@ func TestRestoreBackupChainCycleFails(t *testing.T) {
 	}
 }
 
+func TestRestoreIncrementalAppliesDeltaChain(t *testing.T) {
+	tempDir := t.TempDir()
+	dbFile := filepath.Join(tempDir, "source.db")
+	if err := os.WriteFile(dbFile, []byte("first version of database"), 0644); err != nil {
+		t.Fatalf("Failed to create source database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+	config.Verify = true
+
+	mgr := NewManager(config, &MockDatabase{dbPath: dbFile})
+	ctx := context.Background()
+
+	full, err := mgr.CreateBackup(ctx, TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create full backup: %v", err)
+	}
+	if err := os.WriteFile(dbFile, []byte("second version with changed bytes"), 0644); err != nil {
+		t.Fatalf("Failed to update source database: %v", err)
+	}
+
+	incremental, err := mgr.CreateBackup(ctx, TypeIncremental)
+	if err != nil {
+		t.Fatalf("Failed to create incremental backup: %v", err)
+	}
+	if incremental.ParentID != full.ID {
+		t.Fatalf("Expected incremental parent %s, got %s", full.ID, incremental.ParentID)
+	}
+
+	payload, err := os.ReadFile(incremental.Destination)
+	if err != nil {
+		t.Fatalf("Failed to read incremental payload: %v", err)
+	}
+	if !strings.HasPrefix(string(payload), deltaMagic) {
+		t.Fatalf("Expected incremental payload to use delta format")
+	}
+
+	restorePath := filepath.Join(tempDir, "restored.db")
+	if err := mgr.Restore(ctx, incremental.ID, restorePath); err != nil {
+		t.Fatalf("Restore incremental failed: %v", err)
+	}
+	restored, err := os.ReadFile(restorePath)
+	if err != nil {
+		t.Fatalf("Failed to read restored database: %v", err)
+	}
+	if string(restored) != "second version with changed bytes" {
+		t.Fatalf("Unexpected restored content: %q", string(restored))
+	}
+}
+
+func TestRestoreDifferentialAppliesFullParentDelta(t *testing.T) {
+	tempDir := t.TempDir()
+	dbFile := filepath.Join(tempDir, "source.db")
+	if err := os.WriteFile(dbFile, []byte("full database state"), 0644); err != nil {
+		t.Fatalf("Failed to create source database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+	config.Verify = true
+
+	mgr := NewManager(config, &MockDatabase{dbPath: dbFile})
+	ctx := context.Background()
+
+	full, err := mgr.CreateBackup(ctx, TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create full backup: %v", err)
+	}
+	if err := os.WriteFile(dbFile, []byte("intermediate incremental state"), 0644); err != nil {
+		t.Fatalf("Failed to write incremental state: %v", err)
+	}
+	if _, err := mgr.CreateBackup(ctx, TypeIncremental); err != nil {
+		t.Fatalf("Failed to create incremental backup: %v", err)
+	}
+	if err := os.WriteFile(dbFile, []byte("differential target state"), 0644); err != nil {
+		t.Fatalf("Failed to write differential state: %v", err)
+	}
+
+	differential, err := mgr.CreateBackup(ctx, TypeDifferential)
+	if err != nil {
+		t.Fatalf("Failed to create differential backup: %v", err)
+	}
+	if differential.ParentID != full.ID {
+		t.Fatalf("Expected differential parent %s, got %s", full.ID, differential.ParentID)
+	}
+
+	restorePath := filepath.Join(tempDir, "restored-diff.db")
+	if err := mgr.Restore(ctx, differential.ID, restorePath); err != nil {
+		t.Fatalf("Restore differential failed: %v", err)
+	}
+	restored, err := os.ReadFile(restorePath)
+	if err != nil {
+		t.Fatalf("Failed to read restored differential database: %v", err)
+	}
+	if string(restored) != "differential target state" {
+		t.Fatalf("Unexpected restored content: %q", string(restored))
+	}
+}
+
+func TestRestoreLegacyIncrementalSnapshotStillWorks(t *testing.T) {
+	tempDir := t.TempDir()
+	fullPath := filepath.Join(tempDir, "full.db")
+	legacyPath := filepath.Join(tempDir, "legacy-incremental.db")
+	if err := os.WriteFile(fullPath, []byte("old state"), 0644); err != nil {
+		t.Fatalf("Failed to create full backup file: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("legacy snapshot state"), 0644); err != nil {
+		t.Fatalf("Failed to create legacy incremental file: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+
+	mgr := NewManager(config, &MockDatabase{dbPath: filepath.Join(tempDir, "source.db")})
+	mgr.metadata.Backups = append(mgr.metadata.Backups,
+		&Backup{ID: "full", Type: TypeFull, Destination: fullPath, CompletedAt: time.Now()},
+		&Backup{ID: "legacy", Type: TypeIncremental, Destination: legacyPath, ParentID: "full", CompletedAt: time.Now()},
+	)
+
+	restorePath := filepath.Join(tempDir, "restored-legacy.db")
+	if err := mgr.Restore(context.Background(), "legacy", restorePath); err != nil {
+		t.Fatalf("Restore legacy incremental failed: %v", err)
+	}
+	restored, err := os.ReadFile(restorePath)
+	if err != nil {
+		t.Fatalf("Failed to read restored legacy database: %v", err)
+	}
+	if string(restored) != "legacy snapshot state" {
+		t.Fatalf("Unexpected restored legacy content: %q", string(restored))
+	}
+}
+
 func TestBackupMetadataPersistsAcrossManagers(t *testing.T) {
 	tempDir := t.TempDir()
 

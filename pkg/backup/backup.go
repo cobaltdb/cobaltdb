@@ -2,10 +2,14 @@
 package backup
 
 import (
+	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"hash/crc32"
 	"io"
 	"os"
@@ -47,6 +51,31 @@ type Config struct {
 }
 
 const metadataFileName = "metadata.json"
+
+const (
+	deltaMagic     = "CBDBDELTA1\n"
+	deltaChunkSize = 64 * 1024
+)
+
+type deltaHeader struct {
+	ChunkSize  int   `json:"chunk_size"`
+	TargetSize int64 `json:"target_size"`
+}
+
+type payloadWriter struct {
+	writer  io.Writer
+	crc     hash.Hash32
+	written int64
+}
+
+func (w *payloadWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	if n > 0 {
+		_, _ = w.crc.Write(p[:n])
+		w.written += int64(n)
+	}
+	return n, err
+}
 
 // DefaultConfig returns default backup configuration
 func DefaultConfig() *Config {
@@ -225,6 +254,10 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (*Backup, e
 
 // copyDatabase copies the database file to backup location
 func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
+	if backup.Incremental && backup.ParentID != "" {
+		return m.copyDatabaseDelta(ctx, backup)
+	}
+
 	srcPath := m.db.GetDatabasePath()
 	dstPath := backup.Destination
 
@@ -305,6 +338,140 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 	backup.Size = written
 	backup.Checksum = crc.Sum32()
 
+	return nil
+}
+
+func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
+	parent := m.GetBackup(backup.ParentID)
+	if parent == nil {
+		return fmt.Errorf("parent backup not found: %s", backup.ParentID)
+	}
+
+	tmpParent, err := os.CreateTemp(m.config.BackupDir, "parent-*.db")
+	if err != nil {
+		return fmt.Errorf("failed to create parent restore file: %w", err)
+	}
+	parentPath := tmpParent.Name()
+	if err := tmpParent.Close(); err != nil {
+		_ = os.Remove(parentPath)
+		return fmt.Errorf("failed to close parent restore file: %w", err)
+	}
+	defer os.Remove(parentPath)
+
+	if err := m.materializeBackup(ctx, parent, parentPath); err != nil {
+		return fmt.Errorf("failed to materialize parent backup: %w", err)
+	}
+
+	srcFile, err := os.Open(m.db.GetDatabasePath())
+	if err != nil {
+		return fmt.Errorf("failed to open source database: %w", err)
+	}
+	defer srcFile.Close()
+
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat source file: %w", err)
+	}
+
+	parentFile, err := os.Open(parentPath)
+	if err != nil {
+		return fmt.Errorf("failed to open parent database: %w", err)
+	}
+	defer parentFile.Close()
+
+	dstFile, err := os.Create(backup.Destination)
+	if err != nil {
+		return fmt.Errorf("failed to create backup file: %w", err)
+	}
+	defer dstFile.Close()
+
+	var writer io.Writer = dstFile
+	var compressor *gzip.Writer
+	if m.config.CompressionLevel > 0 {
+		compressor, err = gzip.NewWriterLevel(dstFile, m.config.CompressionLevel)
+		if err != nil {
+			return fmt.Errorf("failed to create compressor: %w", err)
+		}
+		defer compressor.Close()
+		writer = compressor
+	}
+
+	crc := crc32.NewIEEE()
+	payload := &payloadWriter{writer: writer, crc: crc}
+	if _, err := payload.Write([]byte(deltaMagic)); err != nil {
+		return fmt.Errorf("failed to write delta header: %w", err)
+	}
+	header := deltaHeader{ChunkSize: deltaChunkSize, TargetSize: srcInfo.Size()}
+	headerBytes, err := json.Marshal(header)
+	if err != nil {
+		return fmt.Errorf("failed to encode delta header: %w", err)
+	}
+	if _, err := payload.Write(append(headerBytes, '\n')); err != nil {
+		return fmt.Errorf("failed to write delta header: %w", err)
+	}
+
+	srcBuf := make([]byte, deltaChunkSize)
+	parentBuf := make([]byte, deltaChunkSize)
+	var offset int64
+	var copied int64
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		n, readErr := srcFile.Read(srcBuf)
+		if n > 0 {
+			parentN, parentErr := parentFile.ReadAt(parentBuf[:n], offset)
+			if parentErr != nil && parentErr != io.EOF {
+				return fmt.Errorf("failed to read parent database: %w", parentErr)
+			}
+			if parentN != n || !bytes.Equal(srcBuf[:n], parentBuf[:n]) {
+				if err := writeDeltaRecord(payload, uint64(offset), srcBuf[:n]); err != nil {
+					return err
+				}
+			}
+
+			offset += int64(n)
+			copied += int64(n)
+			if m.OnProgress != nil && srcInfo.Size() > 0 {
+				percent := int((copied * 100) / srcInfo.Size())
+				m.OnProgress(percent)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return fmt.Errorf("failed to read source file: %w", readErr)
+		}
+	}
+
+	if compressor != nil {
+		if err := compressor.Close(); err != nil {
+			return fmt.Errorf("failed to finalize compression: %w", err)
+		}
+	}
+
+	backup.Size = payload.written
+	backup.Checksum = crc.Sum32()
+
+	return nil
+}
+
+func writeDeltaRecord(writer io.Writer, offset uint64, data []byte) error {
+	if err := binary.Write(writer, binary.LittleEndian, offset); err != nil {
+		return fmt.Errorf("failed to write delta offset: %w", err)
+	}
+	length := uint32(len(data))
+	if err := binary.Write(writer, binary.LittleEndian, length); err != nil {
+		return fmt.Errorf("failed to write delta length: %w", err)
+	}
+	if _, err := writer.Write(data); err != nil {
+		return fmt.Errorf("failed to write delta data: %w", err)
+	}
 	return nil
 }
 
@@ -400,13 +567,9 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 		return fmt.Errorf("backup not found: %s", backupID)
 	}
 
-	if err := m.validateRestoreChain(backup); err != nil {
+	chain, err := m.buildRestoreChain(backup)
+	if err != nil {
 		return err
-	}
-
-	// Check if backup file exists
-	if _, err := os.Stat(backup.Destination); err != nil {
-		return fmt.Errorf("backup file not found: %w", err)
 	}
 
 	// Create target directory if needed
@@ -415,36 +578,84 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 		return fmt.Errorf("failed to create target directory: %w", err)
 	}
 
-	// Open backup file
-	backupFile, err := os.Open(backup.Destination)
-	if err != nil {
-		return fmt.Errorf("failed to open backup file: %w", err)
+	for _, chainBackup := range chain {
+		if err := m.restoreBackupPayload(ctx, chainBackup, targetPath); err != nil {
+			return err
+		}
 	}
-	defer backupFile.Close()
 
-	// Create target file
+	// Restore WAL files if present
+	if len(backup.WALFiles) > 0 {
+		walBackupDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", backup.ID))
+		// WAL directory is expected at <db-path>.wal (same convention as engine.GetWALPath)
+		targetWALDir := targetPath + ".wal"
+
+		if err := os.MkdirAll(targetWALDir, 0755); err != nil {
+			return fmt.Errorf("failed to create WAL directory: %w", err)
+		}
+
+		for _, walFile := range backup.WALFiles {
+			srcPath := filepath.Join(walBackupDir, walFile)
+			dstPath := filepath.Join(targetWALDir, walFile)
+
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return fmt.Errorf("failed to restore WAL file %s: %w", walFile, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (m *Manager) materializeBackup(ctx context.Context, backup *Backup, targetPath string) error {
+	chain, err := m.buildRestoreChain(backup)
+	if err != nil {
+		return err
+	}
+
+	for _, chainBackup := range chain {
+		if err := m.restoreBackupPayload(ctx, chainBackup, targetPath); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (m *Manager) restoreBackupPayload(ctx context.Context, backup *Backup, targetPath string) error {
+	if _, err := os.Stat(backup.Destination); err != nil {
+		return fmt.Errorf("backup file not found: %w", err)
+	}
+
+	reader, err := m.openBackupReader(backup)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	prefix := make([]byte, len(deltaMagic))
+	n, err := io.ReadFull(reader, prefix)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return fmt.Errorf("failed to read backup file: %w", err)
+	}
+	if backup.Incremental && backup.ParentID != "" && string(prefix[:n]) == deltaMagic {
+		return m.applyDeltaPayload(ctx, reader, targetPath)
+	}
+
 	targetFile, err := os.Create(targetPath)
 	if err != nil {
 		return fmt.Errorf("failed to create target file: %w", err)
 	}
 	defer targetFile.Close()
 
-	var reader io.Reader = backupFile
-
-	// Handle decompression
-	if filepath.Ext(backup.Destination) == ".gz" {
-		gzReader, err := gzip.NewReader(backupFile)
-		if err != nil {
-			return fmt.Errorf("failed to create gzip reader: %w", err)
+	if n > 0 {
+		if _, err := targetFile.Write(prefix[:n]); err != nil {
+			return fmt.Errorf("failed to write target file: %w", err)
 		}
-		defer gzReader.Close()
-		reader = gzReader
 	}
 
-	// Copy with progress
 	buf := make([]byte, 64*1024)
-	written := int64(0)
-
+	written := int64(n)
 	for {
 		select {
 		case <-ctx.Done():
@@ -475,25 +686,101 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 	if err := targetFile.Sync(); err != nil {
 		return fmt.Errorf("failed to sync restored file: %w", err)
 	}
+	return nil
+}
 
-	// Restore WAL files if present
-	if len(backup.WALFiles) > 0 {
-		walBackupDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", backup.ID))
-		// WAL directory is expected at <db-path>.wal (same convention as engine.GetWALPath)
-		targetWALDir := targetPath + ".wal"
+func (m *Manager) openBackupReader(backup *Backup) (io.ReadCloser, error) {
+	file, err := os.Open(backup.Destination)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open backup file: %w", err)
+	}
 
-		if err := os.MkdirAll(targetWALDir, 0755); err != nil {
-			return fmt.Errorf("failed to create WAL directory: %w", err)
+	if filepath.Ext(backup.Destination) != ".gz" {
+		return file, nil
+	}
+
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	return &compoundReadCloser{Reader: gzReader, closers: []io.Closer{gzReader, file}}, nil
+}
+
+type compoundReadCloser struct {
+	io.Reader
+	closers []io.Closer
+}
+
+func (r *compoundReadCloser) Close() error {
+	var closeErr error
+	for _, closer := range r.closers {
+		if err := closer.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
+}
+
+func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targetPath string) error {
+	buffered := bufio.NewReader(reader)
+	headerLine, err := buffered.ReadBytes('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read delta header: %w", err)
+	}
+
+	var header deltaHeader
+	if err := json.Unmarshal(bytes.TrimSpace(headerLine), &header); err != nil {
+		return fmt.Errorf("failed to decode delta header: %w", err)
+	}
+	if header.ChunkSize <= 0 || header.TargetSize < 0 {
+		return fmt.Errorf("invalid delta header")
+	}
+
+	targetFile, err := os.OpenFile(targetPath, os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open target file for delta restore: %w", err)
+	}
+	defer targetFile.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
 
-		for _, walFile := range backup.WALFiles {
-			srcPath := filepath.Join(walBackupDir, walFile)
-			dstPath := filepath.Join(targetWALDir, walFile)
-
-			if err := copyFile(srcPath, dstPath); err != nil {
-				return fmt.Errorf("failed to restore WAL file %s: %w", walFile, err)
-			}
+		var offset uint64
+		err := binary.Read(buffered, binary.LittleEndian, &offset)
+		if err == io.EOF {
+			break
 		}
+		if err != nil {
+			return fmt.Errorf("failed to read delta offset: %w", err)
+		}
+
+		var length uint32
+		if err := binary.Read(buffered, binary.LittleEndian, &length); err != nil {
+			return fmt.Errorf("failed to read delta length: %w", err)
+		}
+		if int(length) > header.ChunkSize {
+			return fmt.Errorf("delta record length %d exceeds chunk size %d", length, header.ChunkSize)
+		}
+
+		data := make([]byte, length)
+		if _, err := io.ReadFull(buffered, data); err != nil {
+			return fmt.Errorf("failed to read delta data: %w", err)
+		}
+		if _, err := targetFile.WriteAt(data, int64(offset)); err != nil {
+			return fmt.Errorf("failed to apply delta data: %w", err)
+		}
+	}
+
+	if err := targetFile.Truncate(header.TargetSize); err != nil {
+		return fmt.Errorf("failed to truncate restored file: %w", err)
+	}
+	if err := targetFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync restored file: %w", err)
 	}
 
 	return nil
@@ -523,14 +810,16 @@ func (m *Manager) findParentBackupID(backupType Type) string {
 }
 
 func (m *Manager) validateRestoreChain(backup *Backup) error {
+	_, err := m.buildRestoreChain(backup)
+	return err
+}
+
+func (m *Manager) buildRestoreChain(backup *Backup) ([]*Backup, error) {
 	if backup == nil {
-		return fmt.Errorf("backup not found")
-	}
-	if backup.Type == TypeFull && backup.ParentID == "" {
-		return nil
+		return nil, fmt.Errorf("backup not found")
 	}
 	if backup.ParentID == "" {
-		return fmt.Errorf("backup %s requires a parent backup", backup.ID)
+		return []*Backup{backup}, nil
 	}
 
 	m.metadata.mu.RLock()
@@ -542,36 +831,44 @@ func (m *Manager) validateRestoreChain(backup *Backup) error {
 
 	seen := map[string]bool{backup.ID: true}
 	current := backup
-	for current.Type != TypeFull {
+	chain := []*Backup{backup}
+	for current.ParentID != "" {
 		parent, ok := backupsByID[current.ParentID]
 		if !ok {
-			return fmt.Errorf("backup %s parent not found: %s", current.ID, current.ParentID)
+			return nil, fmt.Errorf("backup %s parent not found: %s", current.ID, current.ParentID)
 		}
 		if seen[parent.ID] {
-			return fmt.Errorf("backup chain contains a cycle at %s", parent.ID)
+			return nil, fmt.Errorf("backup chain contains a cycle at %s", parent.ID)
 		}
 		if _, err := os.Stat(parent.Destination); err != nil {
-			return fmt.Errorf("backup %s parent file not found: %w", current.ID, err)
+			return nil, fmt.Errorf("backup %s parent file not found: %w", current.ID, err)
 		}
 
 		switch current.Type {
 		case TypeIncremental:
 			if parent.Type != TypeFull && parent.Type != TypeIncremental {
-				return fmt.Errorf("incremental backup %s has invalid parent type %v", current.ID, parent.Type)
+				return nil, fmt.Errorf("incremental backup %s has invalid parent type %v", current.ID, parent.Type)
 			}
 		case TypeDifferential:
 			if parent.Type != TypeFull {
-				return fmt.Errorf("differential backup %s requires full parent, got %v", current.ID, parent.Type)
+				return nil, fmt.Errorf("differential backup %s requires full parent, got %v", current.ID, parent.Type)
 			}
+		case TypeFull:
+			return nil, fmt.Errorf("full backup %s cannot have a parent backup", current.ID)
 		default:
-			return fmt.Errorf("unknown backup type %v for backup %s", current.Type, current.ID)
+			return nil, fmt.Errorf("unknown backup type %v for backup %s", current.Type, current.ID)
 		}
 
 		seen[parent.ID] = true
+		chain = append(chain, parent)
 		current = parent
 	}
 
-	return nil
+	for left, right := 0, len(chain)-1; left < right; left, right = left+1, right-1 {
+		chain[left], chain[right] = chain[right], chain[left]
+	}
+
+	return chain, nil
 }
 
 func (m *Manager) metadataPath() string {
