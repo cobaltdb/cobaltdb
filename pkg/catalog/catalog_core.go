@@ -329,6 +329,89 @@ func (c *Catalog) ensureVacuumMaps() {
 	}
 }
 
+// tryViewSelect attempts to resolve the query against a view. Returns handled=true
+// if the FROM clause references a view and the query was fully resolved.
+func (cat *Catalog) tryViewSelect(stmt *query.SelectStmt, args []interface{}) (bool, []string, [][]interface{}, error) {
+	view, viewErr := cat.getViewLocked(stmt.From.Name)
+	if viewErr != nil {
+		return false, nil, nil, nil
+	}
+
+	viewIsComplex := view.Distinct || len(view.GroupBy) > 0 || view.Having != nil || view.From == nil
+	if !viewIsComplex {
+		for _, col := range view.Columns {
+			actual := col
+			if ae, ok := col.(*query.AliasExpr); ok {
+				_ = ae
+				viewIsComplex = true
+				break
+			}
+			if fc, ok := actual.(*query.FunctionCall); ok {
+				if strings.EqualFold(fc.Name, "COUNT") || strings.EqualFold(fc.Name, "SUM") || strings.EqualFold(fc.Name, "AVG") || strings.EqualFold(fc.Name, "MIN") || strings.EqualFold(fc.Name, "MAX") || strings.EqualFold(fc.Name, "GROUP_CONCAT") {
+					viewIsComplex = true
+					break
+				}
+			}
+		}
+	}
+
+	if viewIsComplex {
+		viewCols, viewRows, err := cat.selectLocked(view, args)
+		if err != nil {
+			return true, nil, nil, err
+		}
+		if len(stmt.Joins) == 0 {
+			cols, rows, err := cat.applyOuterQuery(stmt, viewCols, viewRows, args)
+			return true, cols, rows, err
+		}
+		viewResultName := toLowerFast(stmt.From.Name)
+		if cat.cteResults == nil {
+			cat.cteResults = make(map[string]*cteResultSet)
+		}
+		cat.cteResults[viewResultName] = &cteResultSet{columns: viewCols, rows: viewRows}
+		return false, nil, nil, nil
+	}
+
+	var mergedJoins []*query.JoinClause
+	mergedJoins = append(mergedJoins, view.Joins...)
+	mergedJoins = append(mergedJoins, stmt.Joins...)
+	mergedFrom := &query.TableRef{Name: view.From.Name, Alias: view.From.Alias, Subquery: view.From.Subquery, SubqueryStmt: view.From.SubqueryStmt}
+	if stmt.From.Alias != "" {
+		mergedFrom.Alias = stmt.From.Alias
+	} else if mergedFrom.Alias == "" {
+		mergedFrom.Alias = stmt.From.Name
+	}
+	mergedStmt := &query.SelectStmt{
+		Distinct: stmt.Distinct,
+		Columns:  stmt.Columns,
+		From:     mergedFrom,
+		Joins:    mergedJoins,
+		GroupBy:  stmt.GroupBy,
+		Having:   stmt.Having,
+		OrderBy:  stmt.OrderBy,
+		Limit:    stmt.Limit,
+		Offset:   stmt.Offset,
+	}
+	if view.Where != nil && stmt.Where != nil {
+		mergedStmt.Where = &query.BinaryExpr{
+			Left:     view.Where,
+			Operator: query.TokenAnd,
+			Right:    stmt.Where,
+		}
+	} else if view.Where != nil {
+		mergedStmt.Where = view.Where
+	} else {
+		mergedStmt.Where = stmt.Where
+	}
+	if len(stmt.Columns) > 0 {
+		if _, isStar := stmt.Columns[0].(*query.StarExpr); isStar {
+			mergedStmt.Columns = view.Columns
+		}
+	}
+	cols, rows, err := cat.selectLocked(mergedStmt, args)
+	return true, cols, rows, err
+}
+
 func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
 	// Apply query optimization
 	optimizer := query.NewQueryOptimizer()
@@ -396,95 +479,8 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 		}
 
 	// Check if it's a view first
-	view, viewErr := cat.getViewLocked(stmt.From.Name)
-	if viewErr == nil {
-		// Check if view is complex (has GROUP BY, HAVING, DISTINCT, aggregates, no FROM, or aliased columns)
-		viewIsComplex := view.Distinct || len(view.GroupBy) > 0 || view.Having != nil || view.From == nil
-		if !viewIsComplex {
-			for _, col := range view.Columns {
-				actual := col
-				if ae, ok := col.(*query.AliasExpr); ok {
-					// View has aliased columns - outer query may reference aliases
-					// which don't exist in the underlying table, so treat as complex
-					_ = ae
-					viewIsComplex = true
-					break
-				}
-				if fc, ok := actual.(*query.FunctionCall); ok {
-					if strings.EqualFold(fc.Name, "COUNT") || strings.EqualFold(fc.Name, "SUM") || strings.EqualFold(fc.Name, "AVG") || strings.EqualFold(fc.Name, "MIN") || strings.EqualFold(fc.Name, "MAX") || strings.EqualFold(fc.Name, "GROUP_CONCAT") {
-						viewIsComplex = true
-						break
-					}
-				}
-			}
-		}
-
-		if viewIsComplex {
-			// For complex views: execute the view first, then apply outer query
-			viewCols, viewRows, err := cat.selectLocked(view, args)
-			if err != nil {
-				return nil, nil, err
-			}
-			if len(stmt.Joins) == 0 {
-				// No JOINs: use applyOuterQuery for simple complex-view access
-				return cat.applyOuterQuery(stmt, viewCols, viewRows, args)
-			}
-			// Complex view with JOINs: store results as temporary CTE result
-			// so the JOIN handling path can resolve it
-			viewResultName := toLowerFast(stmt.From.Name)
-			if cat.cteResults == nil {
-				cat.cteResults = make(map[string]*cteResultSet)
-			}
-			cat.cteResults[viewResultName] = &cteResultSet{columns: viewCols, rows: viewRows}
-			defer delete(cat.cteResults, viewResultName)
-			// Skip simple view inlining - fall through to table lookup which will
-			// find the CTE result we just stored
-		} else {
-			// Simple view: inline the view's FROM/WHERE with the outer query
-			// Merge JOINs: view's JOINs first, then outer query's JOINs
-			var mergedJoins []*query.JoinClause
-			mergedJoins = append(mergedJoins, view.Joins...)
-			mergedJoins = append(mergedJoins, stmt.Joins...)
-			// Create a copy of view.From to preserve the outer query's alias
-			mergedFrom := &query.TableRef{Name: view.From.Name, Alias: view.From.Alias, Subquery: view.From.Subquery, SubqueryStmt: view.From.SubqueryStmt}
-			// Preserve the outer query's alias for the view name so references like ap.col still work
-			if stmt.From.Alias != "" {
-				mergedFrom.Alias = stmt.From.Alias
-			} else if mergedFrom.Alias == "" {
-				// Use the view name as alias so references like view_name.col still work
-				mergedFrom.Alias = stmt.From.Name
-			}
-			mergedStmt := &query.SelectStmt{
-				Distinct: stmt.Distinct,
-				Columns:  stmt.Columns,
-				From:     mergedFrom,
-				Joins:    mergedJoins,
-				GroupBy:  stmt.GroupBy,
-				Having:   stmt.Having,
-				OrderBy:  stmt.OrderBy,
-				Limit:    stmt.Limit,
-				Offset:   stmt.Offset,
-			}
-			// Merge WHERE clauses: both view and outer query conditions must hold
-			if view.Where != nil && stmt.Where != nil {
-				mergedStmt.Where = &query.BinaryExpr{
-					Left:     view.Where,
-					Operator: query.TokenAnd,
-					Right:    stmt.Where,
-				}
-			} else if view.Where != nil {
-				mergedStmt.Where = view.Where
-			} else {
-				mergedStmt.Where = stmt.Where
-			}
-			// If outer query uses SELECT *, use view's columns instead
-			if len(stmt.Columns) > 0 {
-				if _, isStar := stmt.Columns[0].(*query.StarExpr); isStar {
-					mergedStmt.Columns = view.Columns
-				}
-			}
-			return cat.selectLocked(mergedStmt, args)
-		}
+	if handled, cols, rows, err := cat.tryViewSelect(stmt, args); handled {
+		return cols, rows, err
 	}
 
 	// Not a view - try to get as a table (or CTE result for JOIN queries)
