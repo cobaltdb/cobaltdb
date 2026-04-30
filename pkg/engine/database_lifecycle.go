@@ -203,7 +203,7 @@ func Open(path string, opts *Options) (*DB, error) {
 
 	// Initialize buffer pool
 	db.pool = storage.NewBufferPool(opts.CacheSize, backend)
-	metrics.RegisterStorageMetricsProvider(func() metrics.StorageMetrics {
+	db.unregisterStorageStats = metrics.RegisterStorageMetricsProvider(func() metrics.StorageMetrics {
 		stats := db.pool.Stats()
 		return metrics.StorageMetrics{
 			Capacity:      stats.Capacity,
@@ -404,7 +404,7 @@ func (db *DB) createNew() error {
 			maxEntries = 1000
 		}
 		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
-		metrics.RegisterSlowQueryLog(db.slowQueryLog)
+		db.unregisterSlowQueryLog = metrics.RegisterSlowQueryLog(db.slowQueryLog)
 	}
 
 	db.backupMgr = backup.NewManager(backupConfig, db)
@@ -585,7 +585,7 @@ func (db *DB) loadExisting() error {
 			maxEntries = 1000
 		}
 		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
-		metrics.RegisterSlowQueryLog(db.slowQueryLog)
+		db.unregisterSlowQueryLog = metrics.RegisterSlowQueryLog(db.slowQueryLog)
 	}
 
 	db.backupMgr = backup.NewManager(backupConfig, db)
@@ -655,6 +655,12 @@ func (db *DB) Close() error {
 	// Stop metrics collection
 	if db.metrics != nil {
 		db.metrics.Stop()
+	}
+	if db.unregisterSlowQueryLog != nil {
+		db.unregisterSlowQueryLog()
+	}
+	if db.unregisterStorageStats != nil {
+		db.unregisterStorageStats()
 	}
 
 	// Stop scheduler (vacuum, analyze, and other maintenance jobs)

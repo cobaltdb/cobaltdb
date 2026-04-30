@@ -203,12 +203,14 @@ var globalPrometheusMetrics = NewPrometheusMetrics()
 
 var globalSlowQueryLog struct {
 	sync.RWMutex
-	log *SlowQueryLog
+	log        *SlowQueryLog
+	generation uint64
 }
 
 var globalStorageMetrics struct {
 	sync.RWMutex
-	provider func() StorageMetrics
+	provider   func() StorageMetrics
+	generation uint64
 }
 
 // GetPrometheusHandler returns the global Prometheus metrics HTTP handler
@@ -224,10 +226,19 @@ type SlowQueryStats struct {
 
 // RegisterSlowQueryLog exposes the engine slow query log to global metrics
 // exporters. Passing nil clears the current registration.
-func RegisterSlowQueryLog(log *SlowQueryLog) {
+func RegisterSlowQueryLog(log *SlowQueryLog) func() {
 	globalSlowQueryLog.Lock()
 	defer globalSlowQueryLog.Unlock()
+	globalSlowQueryLog.generation++
+	generation := globalSlowQueryLog.generation
 	globalSlowQueryLog.log = log
+	return func() {
+		globalSlowQueryLog.Lock()
+		defer globalSlowQueryLog.Unlock()
+		if globalSlowQueryLog.generation == generation {
+			globalSlowQueryLog.log = nil
+		}
+	}
 }
 
 // GetSlowQueryLog returns the slow query log registered by the engine.
@@ -239,8 +250,17 @@ func GetSlowQueryLog() *SlowQueryLog {
 
 // RegisterStorageMetricsProvider exposes live storage metrics to global
 // Prometheus exporters. Passing nil clears the current registration.
-func RegisterStorageMetricsProvider(provider func() StorageMetrics) {
+func RegisterStorageMetricsProvider(provider func() StorageMetrics) func() {
 	globalStorageMetrics.Lock()
 	defer globalStorageMetrics.Unlock()
+	globalStorageMetrics.generation++
+	generation := globalStorageMetrics.generation
 	globalStorageMetrics.provider = provider
+	return func() {
+		globalStorageMetrics.Lock()
+		defer globalStorageMetrics.Unlock()
+		if globalStorageMetrics.generation == generation {
+			globalStorageMetrics.provider = nil
+		}
+	}
 }

@@ -1,11 +1,13 @@
 declare module 'sql.js' {
+  type SqlValue = string | number | Uint8Array | null
+
   interface SqlJsStatic {
-    Database: new (data?: ArrayLike<number> | Buffer | null) => Database
+    Database: new (data?: ArrayLike<number> | Uint8Array | null) => Database
   }
 
   interface Database {
-    run(sql: string, params?: any[]): Database
-    exec(sql: string, params?: any[]): QueryExecResult[]
+    run(sql: string, params?: SqlValue[]): Database
+    exec(sql: string, params?: SqlValue[]): QueryExecResult[]
     getRowsModified(): number
     close(): void
     export(): Uint8Array
@@ -13,7 +15,7 @@ declare module 'sql.js' {
 
   interface QueryExecResult {
     columns: string[]
-    values: any[][]
+    values: SqlValue[][]
   }
 
   interface SqlJsConfig {
@@ -21,5 +23,5 @@ declare module 'sql.js' {
   }
 
   export default function initSqlJs(config?: SqlJsConfig): Promise<SqlJsStatic>
-  export type { Database, QueryExecResult, SqlJsStatic }
+  export type { Database, QueryExecResult, SqlJsStatic, SqlValue }
 }

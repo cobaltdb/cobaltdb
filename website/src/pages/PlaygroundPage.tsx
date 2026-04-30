@@ -7,15 +7,22 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Play, RotateCcw, Copy, Check, Database, Table2, FileJson, Loader2, AlertCircle, Trash2, History, Clock } from 'lucide-react'
 import { Alert, AlertDescription } from '@components/ui/alert'
 import { SqlEditor } from '@components/playground/SqlEditor'
-import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
+import initSqlJs, {
+  type Database as SqlJsDatabase,
+  type SqlJsStatic,
+  type SqlValue,
+} from 'sql.js'
 
 interface QueryResult {
   columns: string[]
-  rows: any[][]
+  rows: SqlValue[][]
   executionTime: number
   rowCount: number
   statement: string
 }
+
+const getErrorMessage = (err: unknown, fallback: string) =>
+  err instanceof Error ? err.message : fallback
 
 const sampleDatabases = {
   empty: {
@@ -155,7 +162,7 @@ export function PlaygroundPage() {
   const [history, setHistory] = useState<{ sql: string; time: string; ok: boolean }[]>([])
   const [schemaKey, setSchemaKey] = useState(0) // bump to re-render schema
   const dbRef = useRef<SqlJsDatabase | null>(null)
-  const sqlRef = useRef<typeof initSqlJs | null>(null)
+  const sqlRef = useRef<SqlJsStatic | null>(null)
 
   // Load sql.js WASM
   useEffect(() => {
@@ -164,7 +171,7 @@ export function PlaygroundPage() {
         const SQL = await initSqlJs({
           locateFile: () => '/sql-wasm.wasm'
         })
-        sqlRef.current = SQL as any
+        sqlRef.current = SQL
         // Create initial database
         const db = new SQL.Database()
         dbRef.current = db
@@ -174,8 +181,8 @@ export function PlaygroundPage() {
           db.run(setup)
         }
         setWasmLoaded(true)
-      } catch (err: any) {
-        setLoadError(err.message || 'Failed to load SQL engine')
+      } catch (err: unknown) {
+        setLoadError(getErrorMessage(err, 'Failed to load SQL engine'))
       }
     }
     load()
@@ -194,15 +201,15 @@ export function PlaygroundPage() {
       dbRef.current.close()
     }
     // Create fresh database
-    const SQL = sqlRef.current as any
+    const SQL = sqlRef.current
     const db = new SQL.Database()
     dbRef.current = db
     const setup = sampleDatabases[dbKey as keyof typeof sampleDatabases]?.setup
     if (setup) {
       try {
         db.run(setup)
-      } catch (err: any) {
-        setError(`Setup error: ${err.message}`)
+      } catch (err: unknown) {
+        setError(`Setup error: ${getErrorMessage(err, 'unknown setup error')}`)
       }
     }
     setResults([])
@@ -264,8 +271,8 @@ export function PlaygroundPage() {
                 statement: stmt,
               })
             }
-          } catch (err: any) {
-            setError(`${err.message}\n\nStatement: ${stmt}`)
+          } catch (err: unknown) {
+            setError(`${getErrorMessage(err, 'statement failed')}\n\nStatement: ${stmt}`)
             setIsExecuting(false)
             return
           }
@@ -277,8 +284,8 @@ export function PlaygroundPage() {
         if (/\b(CREATE|DROP|ALTER)\b/i.test(sql)) {
           setSchemaKey(k => k + 1)
         }
-      } catch (err: any) {
-        setError(err.message || 'An error occurred while executing the query')
+      } catch (err: unknown) {
+        setError(getErrorMessage(err, 'An error occurred while executing the query'))
         setHistory(prev => [{ sql: sql.trim(), time: new Date().toLocaleTimeString(), ok: false }, ...prev].slice(0, 50))
       } finally {
         setIsExecuting(false)
@@ -646,10 +653,10 @@ function SchemaExplorer({ db }: { db: SqlJsDatabase | null }) {
   try {
     const result = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     if (result.length > 0) {
-      tables = result[0].values.map(([name]: any[]) => {
+      tables = result[0].values.map(([name]: SqlValue[]) => {
         const cols = db.exec(`PRAGMA table_info(${name})`)
         const columns = cols.length > 0
-          ? cols[0].values.map((row: any[]) => `${row[1]} ${row[2]}`)
+          ? cols[0].values.map((row: SqlValue[]) => `${row[1]} ${row[2]}`)
           : []
         return { name: String(name), columns: columns.map(String) }
       })

@@ -70,7 +70,7 @@ function TypingText({ text, startDelay }: { text: string; startDelay: number }) 
 
   useEffect(() => {
     let idx = 0
-    let timer: ReturnType<typeof setTimeout>
+    let timer: ReturnType<typeof setInterval> | undefined
 
     const startTimer = setTimeout(() => {
       const interval = setInterval(() => {
@@ -83,7 +83,7 @@ function TypingText({ text, startDelay }: { text: string; startDelay: number }) 
           setDisplayed(text.slice(0, idx))
         }
       }, 12)
-      timer = interval as any
+      timer = interval
     }, startDelay)
 
     return () => {

@@ -85,7 +85,9 @@ type DB struct {
 	backupMgr *backup.Manager
 
 	// Slow Query Log
-	slowQueryLog *metrics.SlowQueryLog
+	slowQueryLog           *metrics.SlowQueryLog
+	unregisterSlowQueryLog func()
+	unregisterStorageStats func()
 
 	// Query Plan Cache - caches parsed query statements
 	planCache *QueryPlanCache
@@ -197,11 +199,9 @@ type stmtLRUList struct {
 	tail *stmtLRUEntry // least recently used
 }
 
-
 func newStmtLRUList() *stmtLRUList {
 	return &stmtLRUList{}
 }
-
 
 func (l *stmtLRUList) pushFront(e *stmtLRUEntry) {
 	e.prev = nil
@@ -215,7 +215,6 @@ func (l *stmtLRUList) pushFront(e *stmtLRUEntry) {
 	}
 }
 
-
 func (l *stmtLRUList) moveToFront(e *stmtLRUEntry) {
 	if l.head == e {
 		return
@@ -223,7 +222,6 @@ func (l *stmtLRUList) moveToFront(e *stmtLRUEntry) {
 	l.remove(e)
 	l.pushFront(e)
 }
-
 
 func (l *stmtLRUList) remove(e *stmtLRUEntry) {
 	if e.prev != nil {
@@ -239,7 +237,6 @@ func (l *stmtLRUList) remove(e *stmtLRUEntry) {
 	e.prev = nil
 	e.next = nil
 }
-
 
 func (l *stmtLRUList) removeTail() *stmtLRUEntry {
 	if l.tail == nil {
@@ -988,7 +985,6 @@ func (db *DB) executeCreateTable(ctx context.Context, stmt *query.CreateTableStm
 	}
 	return Result{RowsAffected: 0}, nil
 }
-
 
 func (db *DB) executeCreateForeignTable(ctx context.Context, stmt *query.CreateForeignTableStmt) (Result, error) {
 	if err := db.catalog.CreateForeignTable(stmt); err != nil {
@@ -1934,7 +1930,6 @@ func (db *DB) compareUnionValues(a, b interface{}) int {
 	return 0
 }
 
-
 func valueToStringForCompare(v interface{}) string {
 	if v == nil {
 		return "<nil>"
@@ -2459,4 +2454,3 @@ func (db *DB) GetMetrics() ([]byte, error) {
 }
 
 // GetMetricsCollector returns the metrics collector for advanced usage
-
