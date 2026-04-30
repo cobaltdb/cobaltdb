@@ -557,126 +557,9 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 		intermediateRows = filteredRows
 	}
 
-	// Add hidden ORDER BY columns from joined tables not already in selectCols
-	hiddenOrderByCols := 0
-	if len(stmt.OrderBy) > 0 {
-		for _, ob := range stmt.OrderBy {
-			var colName, tblName string
-			switch expr := ob.Expr.(type) {
-			case *query.QualifiedIdentifier:
-				colName = expr.Column
-				tblName = expr.Table
-			case *query.Identifier:
-				if dotIdx := strings.IndexByte(expr.Name, '.'); dotIdx > 0 && dotIdx < len(expr.Name)-1 {
-					tblName = expr.Name[:dotIdx]
-					colName = expr.Name[dotIdx+1:]
-				} else {
-					colName = expr.Name
-				}
-			default:
-				continue
-			}
-			// Check if already in selectCols
-			found := false
-			colLower := toLowerFast(colName)
-			tblLower := toLowerFast(tblName)
-			for _, ci := range selectCols {
-				if toLowerFast(ci.name) == colLower {
-					if tblName == "" || toLowerFast(ci.tableName) == tblLower {
-						found = true
-						break
-					}
-				}
-			}
-			if !found {
-				// Find the column in the appropriate table
-				if tblName != "" {
-					for _, to := range tableOffsets {
-						if toLowerFast(to.name) == tblLower {
-							// Find column index in that table
-							for _, col := range combinedColumns {
-								if toLowerFast(col.Name) == colLower && toLowerFast(col.sourceTbl) == tblLower {
-									// Get raw index within the table
-									rawIdx := -1
-									// Look up the table to get column index
-									tblDef, tErr := c.getTableLocked(to.name)
-									if tErr == nil {
-										rawIdx = tblDef.GetColumnIndex(colName)
-									}
-									if rawIdx < 0 {
-										// Try finding by iterating through the table's known columns
-										for ci, cc := range combinedColumns[to.offset : to.offset+to.count] {
-											if toLowerFast(cc.Name) == colLower {
-												rawIdx = ci
-												break
-											}
-										}
-									}
-									if rawIdx >= 0 {
-										selectCols = append(selectCols, selectColInfo{name: colName, tableName: to.name, index: rawIdx})
-										hiddenOrderByCols++
-									}
-									break
-								}
-							}
-							break
-						}
-					}
-				} else {
-					// No table qualifier - search main table columns
-					for ci, cc := range mainTableCols {
-						if strings.EqualFold(cc.Name, colName) {
-							selectCols = append(selectCols, selectColInfo{name: colName, tableName: mainAlias, index: ci})
-							hiddenOrderByCols++
-							break
-						}
-					}
-				}
-			}
-		}
-	}
+	selectCols, hiddenOrderByCols := c.resolveHiddenJoinOrderByCols(stmt, selectCols, mainTableCols, mainAlias, combinedColumns, tableOffsets)
 
-	// Project selectCols from intermediate rows
-	var resultRows [][]interface{}
-	for _, row := range intermediateRows {
-		projected := make([]interface{}, 0, len(selectCols))
-		for i, ci := range selectCols {
-			if ci.index == -1 && !ci.isAggregate {
-				// Scalar function - evaluate it against the combined row
-				if i < len(stmt.Columns) {
-					val, err := evaluateExpression(c, row, combinedColumns, stmt.Columns[i], args)
-					if err == nil {
-						projected = append(projected, val)
-						continue
-					}
-				}
-				projected = append(projected, nil)
-				continue
-			}
-			if ci.index < 0 {
-				// Aggregate - append nil placeholder
-				projected = append(projected, nil)
-				continue
-			}
-			found := false
-			for _, to := range tableOffsets {
-				if ci.tableName == to.name || (ci.tableName == "" && to.offset == 0) {
-					colIdx := to.offset + ci.index
-					if colIdx >= 0 && colIdx < len(row) {
-						projected = append(projected, row[colIdx])
-					} else {
-						projected = append(projected, nil)
-					}
-					found = true
-					break
-				}
-			}
-			if !found {
-				projected = append(projected, nil)
-			}
-		}
-		resultRows = append(resultRows, projected)
-	}
+	resultRows := c.projectJoinSelectCols(stmt, intermediateRows, selectCols, combinedColumns, tableOffsets, args)
 
 	// Evaluate window functions on projected rows
 	hasWindowFuncs := false
@@ -738,6 +621,125 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 
 	return returnColumns, resultRows, nil
 }
+
+// resolveHiddenJoinOrderByCols adds hidden ORDER BY columns from joined tables.
+func (c *Catalog) resolveHiddenJoinOrderByCols(stmt *query.SelectStmt, selectCols []selectColInfo, mainTableCols []ColumnDef, mainAlias string, combinedColumns []ColumnDef, tableOffsets []tableOffset) ([]selectColInfo, int) {
+	hiddenOrderByCols := 0
+	if len(stmt.OrderBy) > 0 {
+		for _, ob := range stmt.OrderBy {
+			var colName, tblName string
+			switch expr := ob.Expr.(type) {
+			case *query.QualifiedIdentifier:
+				colName = expr.Column
+				tblName = expr.Table
+			case *query.Identifier:
+				if dotIdx := strings.IndexByte(expr.Name, '.'); dotIdx > 0 && dotIdx < len(expr.Name)-1 {
+					tblName = expr.Name[:dotIdx]
+					colName = expr.Name[dotIdx+1:]
+				} else {
+					colName = expr.Name
+				}
+			default:
+				continue
+			}
+			found := false
+			colLower := toLowerFast(colName)
+			tblLower := toLowerFast(tblName)
+			for _, ci := range selectCols {
+				if toLowerFast(ci.name) == colLower {
+					if tblName == "" || toLowerFast(ci.tableName) == tblLower {
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				if tblName != "" {
+					for _, to := range tableOffsets {
+						if toLowerFast(to.name) == tblLower {
+							for _, col := range combinedColumns {
+								if toLowerFast(col.Name) == colLower && toLowerFast(col.sourceTbl) == tblLower {
+									rawIdx := -1
+									tblDef, tErr := c.getTableLocked(to.name)
+									if tErr == nil {
+										rawIdx = tblDef.GetColumnIndex(colName)
+									}
+									if rawIdx < 0 {
+										for ci, cc := range combinedColumns[to.offset : to.offset+to.count] {
+											if toLowerFast(cc.Name) == colLower {
+												rawIdx = ci
+												break
+											}
+										}
+									}
+									if rawIdx >= 0 {
+										selectCols = append(selectCols, selectColInfo{name: colName, tableName: to.name, index: rawIdx})
+										hiddenOrderByCols++
+									}
+									break
+								}
+							}
+							break
+						}
+					}
+				} else {
+					for ci, cc := range mainTableCols {
+						if strings.EqualFold(cc.Name, colName) {
+							selectCols = append(selectCols, selectColInfo{name: colName, tableName: mainAlias, index: ci})
+							hiddenOrderByCols++
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	return selectCols, hiddenOrderByCols
+}
+
+// projectJoinSelectCols projects select columns from joined rows.
+func (c *Catalog) projectJoinSelectCols(stmt *query.SelectStmt, intermediateRows [][]interface{}, selectCols []selectColInfo, combinedColumns []ColumnDef, tableOffsets []tableOffset, args []interface{}) [][]interface{} {
+	var resultRows [][]interface{}
+	for _, row := range intermediateRows {
+		projected := make([]interface{}, 0, len(selectCols))
+		for i, ci := range selectCols {
+			if ci.index == -1 && !ci.isAggregate {
+				if i < len(stmt.Columns) {
+					val, err := evaluateExpression(c, row, combinedColumns, stmt.Columns[i], args)
+					if err == nil {
+						projected = append(projected, val)
+						continue
+					}
+				}
+				projected = append(projected, nil)
+				continue
+			}
+			if ci.index < 0 {
+				projected = append(projected, nil)
+				continue
+			}
+			found := false
+			for _, to := range tableOffsets {
+				if ci.tableName == to.name || (ci.tableName == "" && to.offset == 0) {
+					colIdx := to.offset + ci.index
+					if colIdx >= 0 && colIdx < len(row) {
+						projected = append(projected, row[colIdx])
+					} else {
+						projected = append(projected, nil)
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				projected = append(projected, nil)
+			}
+		}
+		resultRows = append(resultRows, projected)
+	}
+	return resultRows
+}
+
 
 func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, returnColumns []string) ([]string, [][]interface{}, error) {
 	var mainTableCols []ColumnDef
