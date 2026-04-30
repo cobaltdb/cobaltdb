@@ -45,7 +45,8 @@ const maxReplicationFrameSize = 64 << 20 // 64 MiB
 const defaultMaxWALBufferEntries = 10000
 const defaultMaxWALBufferBytes int64 = 64 << 20 // 64 MiB
 const resumeHandshakeTimeout = 5 * time.Second
-const walEntryMetadataBytes = 24 // LSN + timestamp + data length + checksum
+const walEntryMetadataBytes = 24           // LSN + timestamp + data length + checksum
+const maxReplicationSnapshotSize = 1 << 30 // 1 GiB
 
 // Config holds replication configuration
 type Config struct {
@@ -177,20 +178,23 @@ type Manager struct {
 	metrics  *Metrics
 
 	// Callbacks
-	OnApply      func(entry *WALEntry) error
-	OnLag        func(slave string, lag time.Duration)
-	OnDisconnect func(slave string, err error)
+	OnApply         func(entry *WALEntry) error
+	OnSnapshot      func() ([]byte, error)
+	OnApplySnapshot func(data []byte, lsn uint64) error
+	OnLag           func(slave string, lag time.Duration)
+	OnDisconnect    func(slave string, err error)
 }
 
 // SlaveConnection represents a connection to a slave
 type SlaveConnection struct {
-	ID       string
-	Conn     net.Conn
-	Writer   *bufio.Writer
-	Reader   *bufio.Reader
-	LastLSN  uint64
-	LastPing time.Time
-	mu       sync.Mutex
+	ID            string
+	Conn          net.Conn
+	Writer        *bufio.Writer
+	Reader        *bufio.Reader
+	LastLSN       uint64
+	LastPing      time.Time
+	NeedsSnapshot bool
+	mu            sync.Mutex
 }
 
 // Metrics holds replication metrics
@@ -412,6 +416,9 @@ func (m *Manager) receiveResumeRequest(slave *SlaveConnection) (uint64, error) {
 func (m *Manager) prepareSlaveResume(slave *SlaveConnection, requestedLSN uint64) error {
 	currentLSN := atomic.LoadUint64(&m.currentLSN)
 	if requestedLSN > currentLSN {
+		if m.prepareSlaveSnapshot(slave, currentLSN) {
+			return nil
+		}
 		_ = m.sendResyncRequired(slave, currentLSN)
 		return fmt.Errorf("slave requested future LSN %d, current LSN %d", requestedLSN, currentLSN)
 	}
@@ -421,6 +428,9 @@ func (m *Manager) prepareSlaveResume(slave *SlaveConnection, requestedLSN uint64
 	m.mu.RUnlock()
 
 	if !canResume {
+		if m.prepareSlaveSnapshot(slave, currentLSN) {
+			return nil
+		}
 		_ = m.sendResyncRequired(slave, currentLSN)
 		return fmt.Errorf("slave requested LSN %d outside retained WAL window", requestedLSN)
 	}
@@ -431,6 +441,20 @@ func (m *Manager) prepareSlaveResume(slave *SlaveConnection, requestedLSN uint64
 	slave.mu.Unlock()
 
 	return nil
+}
+
+func (m *Manager) prepareSlaveSnapshot(slave *SlaveConnection, currentLSN uint64) bool {
+	if m.OnSnapshot == nil {
+		return false
+	}
+
+	slave.mu.Lock()
+	slave.LastLSN = 0
+	slave.LastPing = time.Now()
+	slave.NeedsSnapshot = true
+	slave.mu.Unlock()
+
+	return true
 }
 
 func (m *Manager) canResumeFromLocked(requestedLSN, currentLSN uint64) bool {
@@ -488,6 +512,10 @@ func (m *Manager) sendInitialSnapshot(slave *SlaveConnection, startLSN uint64) e
 	slave.mu.Lock()
 	defer slave.mu.Unlock()
 
+	if slave.NeedsSnapshot {
+		return m.sendSnapshotLocked(slave, atomic.LoadUint64(&m.currentLSN))
+	}
+
 	// Send START message with LSN
 	msg := fmt.Sprintf("START %d\n", startLSN)
 	if _, err := slave.Writer.WriteString(msg); err != nil {
@@ -498,6 +526,36 @@ func (m *Manager) sendInitialSnapshot(slave *SlaveConnection, startLSN uint64) e
 	}
 	slave.LastLSN = startLSN
 	slave.LastPing = time.Now()
+	return nil
+}
+
+func (m *Manager) sendSnapshotLocked(slave *SlaveConnection, lsn uint64) error {
+	if m.OnSnapshot == nil {
+		return fmt.Errorf("snapshot provider not configured")
+	}
+
+	data, err := m.OnSnapshot()
+	if err != nil {
+		return fmt.Errorf("failed to create replication snapshot: %w", err)
+	}
+	if len(data) > maxReplicationSnapshotSize {
+		return fmt.Errorf("replication snapshot too large: %d bytes", len(data))
+	}
+
+	if _, err := slave.Writer.WriteString(fmt.Sprintf("SNAPSHOT %d %d\n", lsn, len(data))); err != nil {
+		return err
+	}
+	if _, err := slave.Writer.Write(data); err != nil {
+		return err
+	}
+	if err := slave.Writer.Flush(); err != nil {
+		return err
+	}
+
+	slave.LastLSN = lsn
+	slave.LastPing = time.Now()
+	slave.NeedsSnapshot = false
+	atomic.AddUint64(&m.metrics.ReplicatedBytes, uint64(len(data)))
 	return nil
 }
 
@@ -721,6 +779,9 @@ func (m *Manager) readMasterFrame(reader *bufio.Reader) error {
 		if err != nil {
 			return err
 		}
+		if len(line) >= len("SNAP") && line[:4] == "SNAP" {
+			return m.handleSnapshotMessage(reader, line)
+		}
 		return m.handleMasterMessage(line)
 	default:
 		var frameLen uint32
@@ -740,6 +801,35 @@ func (m *Manager) readMasterFrame(reader *bufio.Reader) error {
 		}
 		return m.sendAck()
 	}
+}
+
+func (m *Manager) handleSnapshotMessage(reader *bufio.Reader, msg string) error {
+	var lsn uint64
+	var size uint64
+	if _, err := fmt.Sscanf(msg, "SNAPSHOT %d %d", &lsn, &size); err != nil {
+		return fmt.Errorf("invalid SNAPSHOT message: %w", err)
+	}
+	if size > maxReplicationSnapshotSize {
+		return fmt.Errorf("replication snapshot too large: %d bytes", size)
+	}
+
+	data := make([]byte, size)
+	if _, err := io.ReadFull(reader, data); err != nil {
+		return fmt.Errorf("failed to read replication snapshot: %w", err)
+	}
+
+	if m.OnApplySnapshot != nil {
+		if err := m.OnApplySnapshot(data, lsn); err != nil {
+			return err
+		}
+	}
+
+	atomic.StoreUint64(&m.lastApplied, lsn)
+	atomic.StoreInt64(&m.metrics.LastAppliedTime, time.Now().Unix())
+	if err := m.saveReplicationState(); err != nil {
+		return err
+	}
+	return m.sendAck()
 }
 
 // handleMasterMessage processes messages from master

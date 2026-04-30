@@ -211,6 +211,98 @@ func TestSendInitialSnapshotMarksSlaveCaughtUp(t *testing.T) {
 	}
 }
 
+func TestPrepareSlaveResumeUsesSnapshotForGap(t *testing.T) {
+	mgr := NewManager(&Config{
+		Role:                RoleMaster,
+		Mode:                ModeAsync,
+		MaxWALBufferEntries: 2,
+	})
+	mgr.OnSnapshot = func() ([]byte, error) {
+		return []byte("snapshot"), nil
+	}
+	for i := 0; i < 5; i++ {
+		if err := mgr.ReplicateWALEntry([]byte{byte('a' + i)}); err != nil {
+			t.Fatalf("ReplicateWALEntry failed: %v", err)
+		}
+	}
+
+	var out bytes.Buffer
+	slave := &SlaveConnection{
+		ID:     "slave-1",
+		Writer: bufio.NewWriter(&out),
+	}
+
+	if err := mgr.prepareSlaveResume(slave, 2); err != nil {
+		t.Fatalf("prepareSlaveResume failed: %v", err)
+	}
+	if !slave.NeedsSnapshot {
+		t.Fatal("Expected slave to be marked for snapshot")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("Expected no RESYNC response when snapshot is available, got %q", out.String())
+	}
+}
+
+func TestSendInitialSnapshotSendsSnapshotFrame(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster})
+	mgr.currentLSN = 7
+	mgr.OnSnapshot = func() ([]byte, error) {
+		return []byte("snap"), nil
+	}
+
+	var out bytes.Buffer
+	slave := &SlaveConnection{
+		ID:            "slave-1",
+		Writer:        bufio.NewWriter(&out),
+		NeedsSnapshot: true,
+	}
+
+	if err := mgr.sendInitialSnapshot(slave, 2); err != nil {
+		t.Fatalf("sendInitialSnapshot failed: %v", err)
+	}
+	if slave.LastLSN != 7 {
+		t.Fatalf("Expected LastLSN=7, got %d", slave.LastLSN)
+	}
+	if slave.NeedsSnapshot {
+		t.Fatal("Expected NeedsSnapshot to be cleared")
+	}
+	if got := out.String(); got != "SNAPSHOT 7 4\nsnap" {
+		t.Fatalf("Expected snapshot frame, got %q", got)
+	}
+}
+
+func TestReadMasterFrameAppliesSnapshot(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave})
+	conn := &mockConn{}
+	mgr.masterConn = conn
+
+	var applied []byte
+	var appliedLSN uint64
+	mgr.OnApplySnapshot = func(data []byte, lsn uint64) error {
+		applied = append([]byte(nil), data...)
+		appliedLSN = lsn
+		return nil
+	}
+
+	reader := bufio.NewReader(strings.NewReader("SNAPSHOT 13 7\npayload"))
+	if err := mgr.readMasterFrame(reader); err != nil {
+		t.Fatalf("readMasterFrame failed: %v", err)
+	}
+
+	if string(applied) != "payload" {
+		t.Fatalf("Expected snapshot payload, got %q", string(applied))
+	}
+	if appliedLSN != 13 {
+		t.Fatalf("Expected applied LSN 13, got %d", appliedLSN)
+	}
+	if mgr.lastApplied != 13 {
+		t.Fatalf("Expected lastApplied=13, got %d", mgr.lastApplied)
+	}
+	if got := string(conn.writeData); got != "ACK 13\n" {
+		t.Fatalf("Expected ACK 13, got %q", got)
+	}
+}
+
 func TestReceiveResumeRequest(t *testing.T) {
 	mgr := NewManager(&Config{Role: RoleMaster})
 	slave := &SlaveConnection{

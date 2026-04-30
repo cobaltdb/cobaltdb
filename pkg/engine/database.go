@@ -137,6 +137,7 @@ type Options struct {
 	ReplicationSSLCert    string // SSL certificate file path
 	ReplicationSSLKey     string // SSL key file path
 	ReplicationSSLCA      string // SSL CA certificate path
+	ReplicationStateFile  string // Slave resume state file path
 
 	// Backup Options
 	BackupDir              string        // Backup directory path

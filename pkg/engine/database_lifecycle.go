@@ -376,6 +376,7 @@ func (db *DB) createNew() error {
 			SSLCert:    db.options.ReplicationSSLCert,
 			SSLKey:     db.options.ReplicationSSLKey,
 			SSLCA:      db.options.ReplicationSSLCA,
+			StateFile:  db.options.ReplicationStateFile,
 		}
 		db.replicationMgr = replication.NewManager(replConfig)
 		if err := db.replicationMgr.Start(); err != nil {
@@ -547,6 +548,7 @@ func (db *DB) loadExisting() error {
 			SSLCert:    db.options.ReplicationSSLCert,
 			SSLKey:     db.options.ReplicationSSLKey,
 			SSLCA:      db.options.ReplicationSSLCA,
+			StateFile:  db.options.ReplicationStateFile,
 		}
 		db.replicationMgr = replication.NewManager(replConfig)
 		if err := db.replicationMgr.Start(); err != nil {
