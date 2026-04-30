@@ -434,106 +434,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 		// joinRows is already populated above (from CTE result or B-tree scan)
 		rightRows := joinRows
 
-		if isCrossJoin {
-			// CROSS JOIN: Cartesian product
-			for _, leftRow := range intermediateRows {
-				for _, joinRow := range rightRows {
-					combined := make([]interface{}, len(leftRow)+len(joinRow))
-					copy(combined, leftRow)
-					copy(combined[len(leftRow):], joinRow)
-
-					if joinCondition != nil {
-						ok, err := evaluateWhere(c, combined, newCombinedColumns, joinCondition, args)
-						if err != nil || !ok {
-							continue
-						}
-					}
-					newIntermediate = append(newIntermediate, combined)
-				}
-			}
-		} else {
-			// Try hash join for simple equality ON conditions (O(N+M) instead of O(N*M))
-			leftColIdx, rightColIdx, canHashJoin := detectEqualityJoinQualified(joinCondition, combinedColumns, joinTableCols, tableOffsets, joinAlias)
-
-			// Fallback: try unqualified equality detection if QI detection failed
-			if !canHashJoin {
-				leftColIdx, rightColIdx, canHashJoin = detectEqualityJoinUnique(joinCondition, combinedColumns, joinTableCols)
-			}
-
-			if canHashJoin && !isRightJoin {
-				// Hash join: build hash map on right table, probe with left table
-				// Skip NULL keys (SQL semantics: NULL != NULL in JOINs)
-				hashMap := make(map[string][]int) // key -> right row indices
-				for ri, joinRow := range rightRows {
-					if rightColIdx < len(joinRow) && joinRow[rightColIdx] != nil {
-						key := hashJoinKey(joinRow[rightColIdx])
-						existing := hashMap[key]
-						hashMap[key] = append(existing, ri)
-					}
-				}
-
-				for _, leftRow := range intermediateRows {
-					matched := false
-					if leftColIdx < len(leftRow) && leftRow[leftColIdx] != nil {
-						key := hashJoinKey(leftRow[leftColIdx])
-						if indices, ok := hashMap[key]; ok {
-							for _, ri := range indices {
-								combined := make([]interface{}, len(leftRow)+len(rightRows[ri]))
-								copy(combined, leftRow)
-								copy(combined[len(leftRow):], rightRows[ri])
-								newIntermediate = append(newIntermediate, combined)
-								matched = true
-							}
-						}
-					}
-
-					if isLeftJoin && !matched {
-						combined := make([]interface{}, len(leftRow)+len(joinTableCols))
-						copy(combined, leftRow)
-						newIntermediate = append(newIntermediate, combined)
-					}
-				}
-			} else {
-				// Fallback: nested loop join
-				rightMatched := make([]bool, len(rightRows))
-
-				for _, leftRow := range intermediateRows {
-					matched := false
-
-					for ri, joinRow := range rightRows {
-						combined := make([]interface{}, len(leftRow)+len(joinRow))
-						copy(combined, leftRow)
-						copy(combined[len(leftRow):], joinRow)
-
-						if joinCondition != nil {
-							ok, err := evaluateWhere(c, combined, newCombinedColumns, joinCondition, args)
-							if err != nil || !ok {
-								continue
-							}
-						}
-						matched = true
-						rightMatched[ri] = true
-						newIntermediate = append(newIntermediate, combined)
-					}
-
-					if isLeftJoin && !matched {
-						combined := make([]interface{}, len(leftRow)+len(joinTableCols))
-						copy(combined, leftRow)
-						newIntermediate = append(newIntermediate, combined)
-					}
-				}
-
-				if isRightJoin {
-					for ri, joinRow := range rightRows {
-						if !rightMatched[ri] {
-							combined := make([]interface{}, len(combinedColumns)+len(joinTableCols))
-							copy(combined[len(combinedColumns):], joinRow)
-							newIntermediate = append(newIntermediate, combined)
-						}
-					}
-				}
-			}
-		}
+		newIntermediate = c.executeJoinPass(intermediateRows, rightRows, joinTableCols, combinedColumns, newCombinedColumns, joinCondition, args, isLeftJoin, isRightJoin, isCrossJoin)
 
 		intermediateRows = newIntermediate
 		combinedColumns = newCombinedColumns
@@ -821,155 +722,7 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 		allColumns[i].sourceTbl = mainAlias
 	}
 
-	// Chain through each JOIN to build full combined rows
-	for _, join := range stmt.Joins {
-		var joinTableCols []ColumnDef
-		var rightRows [][]interface{}
-
-		// Check if join table is a derived table
-		if join.Table.Subquery != nil || join.Table.SubqueryStmt != nil {
-			subCols, subRows, err := c.executeDerivedTable(join.Table, args)
-			if err == nil {
-				joinTableCols = make([]ColumnDef, len(subCols))
-				for i, col := range subCols {
-					joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
-				}
-				rightRows = subRows
-			}
-		}
-
-		// Check if join table is a CTE result
-		if joinTableCols == nil && c.cteResults != nil {
-			if cteRes, ok := c.cteResults[toLowerFast(join.Table.Name)]; ok {
-				joinTableCols = make([]ColumnDef, len(cteRes.columns))
-				for i, col := range cteRes.columns {
-					joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
-				}
-				rightRows = cteRes.rows
-			}
-		}
-
-		// Check if join table is a view (CTE registered as view)
-		if joinTableCols == nil {
-			if viewDef, viewErr := c.getViewLocked(join.Table.Name); viewErr == nil {
-				viewCols, viewRows, viewExecErr := c.selectLocked(viewDef, args)
-				if viewExecErr == nil {
-					joinTableCols = make([]ColumnDef, len(viewCols))
-					for i, col := range viewCols {
-						joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
-					}
-					rightRows = viewRows
-				}
-			}
-		}
-
-		if joinTableCols == nil {
-			// Normal table lookup
-			joinTable, err := c.getTableLocked(join.Table.Name)
-			if err != nil {
-				continue
-			}
-			joinTree, exists := c.tableTrees[join.Table.Name]
-			if !exists {
-				continue
-			}
-			joinTableCols = joinTable.Columns
-
-			// Collect right side rows
-			joinIter, err := joinTree.Scan(nil, nil)
-			if err != nil {
-				return returnColumns, nil, fmt.Errorf("failed to scan join table: %w", err)
-			}
-			defer joinIter.Close()
-			for joinIter.HasNext() {
-				_, data, err := joinIter.Next()
-				if err != nil {
-					break
-				}
-				vrow, err := decodeVersionedRow(data, len(joinTable.Columns))
-				if err != nil {
-					continue
-				}
-				// Skip deleted rows
-				if vrow.Version.DeletedAt > 0 {
-					continue
-				}
-				rightRows = append(rightRows, vrow.Data)
-			}
-		}
-
-		isLeftJoin := join.Type == query.TokenLeft || join.Type == query.TokenFull
-		isRightJoin := join.Type == query.TokenRight || join.Type == query.TokenFull
-		isCrossJoin := join.Type == query.TokenCross
-
-		newAllColumns := make([]ColumnDef, len(allColumns)+len(joinTableCols))
-		copy(newAllColumns, allColumns)
-		copy(newAllColumns[len(allColumns):], joinTableCols)
-		// Set source table name for join table columns
-		joinAlias := join.Table.Name
-		if join.Table.Alias != "" {
-			joinAlias = join.Table.Alias
-		}
-		for i := len(allColumns); i < len(newAllColumns); i++ {
-			newAllColumns[i].sourceTbl = joinAlias
-		}
-
-		var newIntermediate [][]interface{}
-
-		if isCrossJoin {
-			// CROSS JOIN: Cartesian product - include ALL combinations
-			for _, leftRow := range intermediateRows {
-				for _, joinRow := range rightRows {
-					combined := make([]interface{}, len(leftRow)+len(joinRow))
-					copy(combined, leftRow)
-					copy(combined[len(leftRow):], joinRow)
-					newIntermediate = append(newIntermediate, combined)
-				}
-			}
-		} else {
-			rightMatched := make([]bool, len(rightRows))
-
-			for _, leftRow := range intermediateRows {
-				matched := false
-
-				for ri, joinRow := range rightRows {
-					combined := make([]interface{}, len(leftRow)+len(joinRow))
-					copy(combined, leftRow)
-					copy(combined[len(leftRow):], joinRow)
-
-					if join.Condition != nil {
-						ok, err := evaluateWhere(c, combined, newAllColumns, join.Condition, args)
-						if err != nil || !ok {
-							continue
-						}
-					}
-					matched = true
-					rightMatched[ri] = true
-					newIntermediate = append(newIntermediate, combined)
-				}
-
-				if isLeftJoin && !matched {
-					combined := make([]interface{}, len(leftRow)+len(joinTableCols))
-					copy(combined, leftRow)
-					newIntermediate = append(newIntermediate, combined)
-				}
-			}
-
-			// For RIGHT/FULL OUTER JOIN: add unmatched right rows
-			if isRightJoin {
-				for ri, joinRow := range rightRows {
-					if !rightMatched[ri] {
-						combined := make([]interface{}, len(allColumns)+len(joinTableCols))
-						copy(combined[len(allColumns):], joinRow)
-						newIntermediate = append(newIntermediate, combined)
-					}
-				}
-			}
-		}
-
-		intermediateRows = newIntermediate
-		allColumns = newAllColumns
-	}
+	intermediateRows, allColumns = c.executeJoinChainForGroupBy(stmt, args, intermediateRows, allColumns, mainTableCols)
 
 	// Apply WHERE clause to joined rows before GROUP BY
 	if stmt.Where != nil {
@@ -1144,6 +897,255 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 
 	return returnColumns, resultRows, nil
 }
+
+// executeJoinPass performs CROSS, hash, or nested loop join on the given row sets.
+func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows [][]interface{}, joinTableCols []ColumnDef, combinedColumns []ColumnDef, newCombinedColumns []ColumnDef, joinCondition query.Expression, args []interface{}, isLeftJoin, isRightJoin, isCrossJoin bool) [][]interface{} {
+	var newIntermediate [][]interface{}
+
+	if isCrossJoin {
+		for _, leftRow := range intermediateRows {
+			for _, joinRow := range rightRows {
+				combined := make([]interface{}, len(leftRow)+len(joinRow))
+				copy(combined, leftRow)
+				copy(combined[len(leftRow):], joinRow)
+
+				if joinCondition != nil {
+					ok, err := evaluateWhere(c, combined, newCombinedColumns, joinCondition, args)
+					if err != nil || !ok {
+						continue
+					}
+				}
+				newIntermediate = append(newIntermediate, combined)
+			}
+		}
+	} else {
+		leftColIdx, rightColIdx, canHashJoin := detectEqualityJoinQualified(joinCondition, combinedColumns, joinTableCols, nil, "")
+
+		if !canHashJoin {
+			leftColIdx, rightColIdx, canHashJoin = detectEqualityJoinUnique(joinCondition, combinedColumns, joinTableCols)
+		}
+
+		if canHashJoin && !isRightJoin {
+			hashMap := make(map[string][]int)
+			for ri, joinRow := range rightRows {
+				if rightColIdx < len(joinRow) && joinRow[rightColIdx] != nil {
+					key := hashJoinKey(joinRow[rightColIdx])
+					existing := hashMap[key]
+					hashMap[key] = append(existing, ri)
+				}
+			}
+
+			for _, leftRow := range intermediateRows {
+				matched := false
+				if leftColIdx < len(leftRow) && leftRow[leftColIdx] != nil {
+					key := hashJoinKey(leftRow[leftColIdx])
+					if indices, ok := hashMap[key]; ok {
+						for _, ri := range indices {
+							combined := make([]interface{}, len(leftRow)+len(rightRows[ri]))
+							copy(combined, leftRow)
+							copy(combined[len(leftRow):], rightRows[ri])
+							newIntermediate = append(newIntermediate, combined)
+							matched = true
+						}
+					}
+				}
+
+				if isLeftJoin && !matched {
+					combined := make([]interface{}, len(leftRow)+len(joinTableCols))
+					copy(combined, leftRow)
+					newIntermediate = append(newIntermediate, combined)
+				}
+			}
+		} else {
+			rightMatched := make([]bool, len(rightRows))
+
+			for _, leftRow := range intermediateRows {
+				matched := false
+
+				for ri, joinRow := range rightRows {
+					combined := make([]interface{}, len(leftRow)+len(joinRow))
+					copy(combined, leftRow)
+					copy(combined[len(leftRow):], joinRow)
+
+					if joinCondition != nil {
+						ok, err := evaluateWhere(c, combined, newCombinedColumns, joinCondition, args)
+						if err != nil || !ok {
+							continue
+						}
+					}
+					matched = true
+					rightMatched[ri] = true
+					newIntermediate = append(newIntermediate, combined)
+				}
+
+				if isLeftJoin && !matched {
+					combined := make([]interface{}, len(leftRow)+len(joinTableCols))
+					copy(combined, leftRow)
+					newIntermediate = append(newIntermediate, combined)
+				}
+			}
+
+			if isRightJoin {
+				for ri, joinRow := range rightRows {
+					if !rightMatched[ri] {
+						combined := make([]interface{}, len(combinedColumns)+len(joinTableCols))
+						copy(combined[len(combinedColumns):], joinRow)
+						newIntermediate = append(newIntermediate, combined)
+					}
+				}
+			}
+		}
+	}
+
+	return newIntermediate
+}
+
+
+// executeJoinChainForGroupBy chains through JOINs for GROUP BY queries.
+func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []interface{}, intermediateRows [][]interface{}, allColumns []ColumnDef, mainTableCols []ColumnDef) ([][]interface{}, []ColumnDef) {
+	for _, join := range stmt.Joins {
+		var joinTableCols []ColumnDef
+		var rightRows [][]interface{}
+
+		if join.Table.Subquery != nil || join.Table.SubqueryStmt != nil {
+			subCols, subRows, err := c.executeDerivedTable(join.Table, args)
+			if err == nil {
+				joinTableCols = make([]ColumnDef, len(subCols))
+				for i, col := range subCols {
+					joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
+				}
+				rightRows = subRows
+			}
+		}
+
+		if joinTableCols == nil && c.cteResults != nil {
+			if cteRes, ok := c.cteResults[toLowerFast(join.Table.Name)]; ok {
+				joinTableCols = make([]ColumnDef, len(cteRes.columns))
+				for i, col := range cteRes.columns {
+					joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
+				}
+				rightRows = cteRes.rows
+			}
+		}
+
+		if joinTableCols == nil {
+			if viewDef, viewErr := c.getViewLocked(join.Table.Name); viewErr == nil {
+				viewCols, viewRows, viewExecErr := c.selectLocked(viewDef, args)
+				if viewExecErr == nil {
+					joinTableCols = make([]ColumnDef, len(viewCols))
+					for i, col := range viewCols {
+						joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
+					}
+					rightRows = viewRows
+				}
+			}
+		}
+
+		if joinTableCols == nil {
+			joinTable, err := c.getTableLocked(join.Table.Name)
+			if err != nil {
+				continue
+			}
+			joinTree, exists := c.tableTrees[join.Table.Name]
+			if !exists {
+				continue
+			}
+			joinTableCols = joinTable.Columns
+
+			joinIter, err := joinTree.Scan(nil, nil)
+			if err != nil {
+				continue
+			}
+			defer joinIter.Close()
+			for joinIter.HasNext() {
+				_, data, err := joinIter.Next()
+				if err != nil {
+					break
+				}
+				vrow, err := decodeVersionedRow(data, len(joinTable.Columns))
+				if err != nil {
+					continue
+				}
+				if vrow.Version.DeletedAt > 0 {
+					continue
+				}
+				rightRows = append(rightRows, vrow.Data)
+			}
+		}
+
+		isLeftJoin := join.Type == query.TokenLeft || join.Type == query.TokenFull
+		isRightJoin := join.Type == query.TokenRight || join.Type == query.TokenFull
+		isCrossJoin := join.Type == query.TokenCross
+
+		newAllColumns := make([]ColumnDef, len(allColumns)+len(joinTableCols))
+		copy(newAllColumns, allColumns)
+		copy(newAllColumns[len(allColumns):], joinTableCols)
+		joinAlias := join.Table.Name
+		if join.Table.Alias != "" {
+			joinAlias = join.Table.Alias
+		}
+		for i := len(allColumns); i < len(newAllColumns); i++ {
+			newAllColumns[i].sourceTbl = joinAlias
+		}
+
+		var newIntermediate [][]interface{}
+
+		if isCrossJoin {
+			for _, leftRow := range intermediateRows {
+				for _, joinRow := range rightRows {
+					combined := make([]interface{}, len(leftRow)+len(joinRow))
+					copy(combined, leftRow)
+					copy(combined[len(leftRow):], joinRow)
+					newIntermediate = append(newIntermediate, combined)
+				}
+			}
+		} else {
+			rightMatched := make([]bool, len(rightRows))
+
+			for _, leftRow := range intermediateRows {
+				matched := false
+
+				for ri, joinRow := range rightRows {
+					combined := make([]interface{}, len(leftRow)+len(joinRow))
+					copy(combined, leftRow)
+					copy(combined[len(leftRow):], joinRow)
+
+					if join.Condition != nil {
+						ok, err := evaluateWhere(c, combined, newAllColumns, join.Condition, args)
+						if err != nil || !ok {
+							continue
+						}
+					}
+					matched = true
+					rightMatched[ri] = true
+					newIntermediate = append(newIntermediate, combined)
+				}
+
+				if isLeftJoin && !matched {
+					combined := make([]interface{}, len(leftRow)+len(joinTableCols))
+					copy(combined, leftRow)
+					newIntermediate = append(newIntermediate, combined)
+				}
+			}
+
+			if isRightJoin {
+				for ri, joinRow := range rightRows {
+					if !rightMatched[ri] {
+						combined := make([]interface{}, len(allColumns)+len(joinTableCols))
+						copy(combined[len(allColumns):], joinRow)
+						newIntermediate = append(newIntermediate, combined)
+					}
+				}
+			}
+		}
+
+		intermediateRows = newIntermediate
+		allColumns = newAllColumns
+	}
+
+	return intermediateRows, allColumns
+}
+
 
 func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo, orderBy []*query.OrderByExpr) [][]interface{} {
 	if len(rows) == 0 || len(orderBy) == 0 {
