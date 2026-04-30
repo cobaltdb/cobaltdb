@@ -412,6 +412,56 @@ func (cat *Catalog) tryViewSelect(stmt *query.SelectStmt, args []interface{}) (b
 	return true, cols, rows, err
 }
 
+// resolveFromTable resolves the FROM clause table name to a TableDef by
+// checking the catalog table registry, CTE results, and materialized views.
+func (cat *Catalog) resolveFromTable(name string) (*TableDef, error) {
+	table, err := cat.getTableLocked(name)
+	if err == nil {
+		return table, nil
+	}
+
+	// Check if it's a CTE result
+	if cat.cteResults != nil {
+		if cteRes, ok := cat.cteResults[toLowerFast(name)]; ok {
+			table = &TableDef{Name: name}
+			for _, colName := range cteRes.columns {
+				table.Columns = append(table.Columns, ColumnDef{Name: colName, Type: "TEXT"})
+			}
+			return table, nil
+		}
+	}
+
+	// Check for materialized view
+	if mv, mvErr := cat.getMaterializedViewLocked(name); mvErr == nil {
+		table = &TableDef{Name: name}
+		if len(mv.Data) > 0 {
+			for colName := range mv.Data[0] {
+				table.Columns = append(table.Columns, ColumnDef{Name: colName, Type: "TEXT"})
+			}
+		}
+		// Register as temporary CTE-like result for this query
+		if cat.cteResults == nil {
+			cat.cteResults = make(map[string]*cteResultSet)
+		}
+		cols := make([]string, len(table.Columns))
+		for i, col := range table.Columns {
+			cols[i] = col.Name
+		}
+		rows := make([][]interface{}, len(mv.Data))
+		for i, rowMap := range mv.Data {
+			row := make([]interface{}, len(table.Columns))
+			for j, col := range table.Columns {
+				row[j] = rowMap[col.Name]
+			}
+			rows[i] = row
+		}
+		cat.cteResults[toLowerFast(name)] = &cteResultSet{columns: cols, rows: rows}
+		return table, nil
+	}
+
+	return nil, fmt.Errorf("table '%s' not found", name)
+}
+
 func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
 	// Apply query optimization
 	optimizer := query.NewQueryOptimizer()
@@ -484,60 +534,9 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 	}
 
 	// Not a view - try to get as a table (or CTE result for JOIN queries)
-	table, err := cat.getTableLocked(stmt.From.Name)
+	table, err := cat.resolveFromTable(stmt.From.Name)
 	if err != nil {
-		// Check if it's a CTE result that has JOINs
-		var foundInCTE bool
-		if cat.cteResults != nil {
-			if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
-				// Create a synthetic table definition from the CTE result
-				table = &TableDef{
-					Name: stmt.From.Name,
-				}
-				for _, colName := range cteRes.columns {
-					table.Columns = append(table.Columns, ColumnDef{Name: colName, Type: "TEXT"})
-				}
-				foundInCTE = true
-			}
-		}
-		// Check for materialized view if not found in CTE
-		if !foundInCTE {
-			if mv, mvErr := cat.getMaterializedViewLocked(stmt.From.Name); mvErr == nil {
-				// It's a materialized view - create a synthetic table from its data
-				table = &TableDef{
-					Name: stmt.From.Name,
-				}
-				// Extract column names from the materialized view data
-				if len(mv.Data) > 0 {
-					for colName := range mv.Data[0] {
-						table.Columns = append(table.Columns, ColumnDef{Name: colName, Type: "TEXT"})
-					}
-					// Also need to store the MV data for scanning - use a special marker
-					// We'll handle MV data in selectLocked similar to CTE results
-				}
-				// Register as temporary CTE-like result for this query
-				if cat.cteResults == nil {
-					cat.cteResults = make(map[string]*cteResultSet)
-				}
-				cols := make([]string, len(table.Columns))
-				for i, col := range table.Columns {
-					cols[i] = col.Name
-				}
-				// Convert map data to rows
-				rows := make([][]interface{}, len(mv.Data))
-				for i, rowMap := range mv.Data {
-					row := make([]interface{}, len(table.Columns))
-					for j, col := range table.Columns {
-						row[j] = rowMap[col.Name]
-					}
-					rows[i] = row
-				}
-				cat.cteResults[toLowerFast(stmt.From.Name)] = &cteResultSet{columns: cols, rows: rows}
-				// MV data will be cleaned up after row scanning
-			} else {
-				return nil, nil, err
-			}
-		}
+		return nil, nil, err
 	}
 
 	mainTableRef := stmt.From.Name
@@ -724,35 +723,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 				}
 			}
 
-			// Extract only selected columns
-			selectedRow := make([]interface{}, len(selectCols))
-			for i, ci := range selectCols {
-				if ci.isWindow {
-					// Window functions are evaluated after all rows are collected
-					continue
-				}
-				if ci.index >= 0 && ci.index < len(fullRow) {
-					// Regular column
-					selectedRow[i] = fullRow[ci.index]
-				} else if ci.index == -1 && !ci.isAggregate {
-					// Scalar function or expression - evaluate it
-					if i < len(stmt.Columns) {
-						val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
-						if err == nil {
-							selectedRow[i] = val
-						}
-					} else if len(ci.name) > 10 && ci.name[:10] == "__orderby_" {
-						// Hidden ORDER BY expression column - extract index from name
-						var obIdx int
-						if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
-							val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
-							if err == nil {
-								selectedRow[i] = val
-							}
-						}
-					}
-				}
-			}
+			selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
 			rows = append(rows, selectedRow)
 			if hasWindowFuncs {
 				fullRowCopy := make([]interface{}, len(fullRow))
@@ -774,23 +745,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 				}
 			}
 
-			// Extract only selected columns
-			selectedRow := make([]interface{}, len(selectCols))
-			for i, ci := range selectCols {
-				if ci.isWindow {
-					continue
-				}
-				if ci.index >= 0 && ci.index < len(fullRow) {
-					selectedRow[i] = fullRow[ci.index]
-				} else if ci.index == -1 && !ci.isAggregate {
-					if i < len(stmt.Columns) {
-						val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
-						if err == nil {
-							selectedRow[i] = val
-						}
-					}
-				}
-			}
+			selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
 			rows = append(rows, selectedRow)
 			if hasWindowFuncs {
 				fullRowCopy := make([]interface{}, len(fullRow))
