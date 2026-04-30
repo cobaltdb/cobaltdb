@@ -37,6 +37,8 @@ const (
 	RoleSlave
 )
 
+const maxReplicationFrameSize = 64 << 20 // 64 MiB
+
 // Config holds replication configuration
 type Config struct {
 	Role         Role
@@ -329,6 +331,12 @@ func (m *Manager) handleSlave(conn net.Conn) {
 		return
 	}
 
+	ackDone := make(chan struct{})
+	go func() {
+		m.readSlaveAcks(slave)
+		close(ackDone)
+	}()
+
 	// Keep connection alive and handle heartbeats
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -336,6 +344,8 @@ func (m *Manager) handleSlave(conn net.Conn) {
 	for {
 		select {
 		case <-m.stopCh:
+			return
+		case <-ackDone:
 			return
 		case <-ticker.C:
 			if err := m.sendHeartbeat(slave); err != nil {
@@ -389,6 +399,31 @@ func (m *Manager) sendHeartbeat(slave *SlaveConnection) error {
 		return err
 	}
 	return slave.Writer.Flush()
+}
+
+// readSlaveAcks receives ACK/PONG messages from a slave and updates the
+// master's view of the slave's applied LSN.
+func (m *Manager) readSlaveAcks(slave *SlaveConnection) {
+	for {
+		line, err := slave.Reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+
+		var lsn uint64
+		if _, err := fmt.Sscanf(line, "ACK %d", &lsn); err != nil {
+			if _, err := fmt.Sscanf(line, "PONG %d", &lsn); err != nil {
+				continue
+			}
+		}
+
+		slave.mu.Lock()
+		if lsn > slave.LastLSN {
+			slave.LastLSN = lsn
+		}
+		slave.LastPing = time.Now()
+		slave.mu.Unlock()
+	}
 }
 
 // syncWAL periodically syncs WAL entries to slaves
@@ -465,8 +500,6 @@ func (m *Manager) sendWALToSlave(slave *SlaveConnection, data []byte) error {
 		return err
 	}
 
-	// Update slave's LSN
-	slave.LastLSN = atomic.LoadUint64(&m.currentLSN)
 	slave.LastPing = time.Now()
 
 	atomic.AddUint64(&m.metrics.ReplicatedBytes, uint64(len(data)))
@@ -524,19 +557,47 @@ func (m *Manager) replicateFromMaster() {
 		default:
 		}
 
-		// Read message
-		line, err := reader.ReadString('\n')
-		if err != nil {
+		if err := m.readMasterFrame(reader); err != nil {
 			if m.OnDisconnect != nil {
 				m.OnDisconnect("master", err)
 			}
 			return
 		}
+	}
+}
 
-		// Handle message
-		if err := m.handleMasterMessage(line); err != nil {
-			continue
+// readMasterFrame reads either a text control message or a length-prefixed WAL
+// frame from the master.
+func (m *Manager) readMasterFrame(reader *bufio.Reader) error {
+	next, err := reader.Peek(1)
+	if err != nil {
+		return err
+	}
+
+	switch next[0] {
+	case 'S', 'P':
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
 		}
+		return m.handleMasterMessage(line)
+	default:
+		var frameLen uint32
+		if err := binary.Read(reader, binary.BigEndian, &frameLen); err != nil {
+			return err
+		}
+		if frameLen > maxReplicationFrameSize {
+			return fmt.Errorf("replication frame too large: %d bytes", frameLen)
+		}
+
+		data := make([]byte, frameLen)
+		if _, err := io.ReadFull(reader, data); err != nil {
+			return err
+		}
+		if err := m.applyWALDataBytes(data); err != nil {
+			return err
+		}
+		return m.sendAck()
 	}
 }
 
@@ -560,9 +621,7 @@ func (m *Manager) handleMasterMessage(msg string) error {
 
 	case "PING":
 		// Heartbeat - respond with current position
-		if _, err := fmt.Fprintf(m.masterConn, "PONG %d\n", atomic.LoadUint64(&m.lastApplied)); err != nil {
-			return err
-		}
+		return m.sendPong()
 
 	default:
 		// WAL data
@@ -574,14 +633,22 @@ func (m *Manager) handleMasterMessage(msg string) error {
 
 // applyWALData applies WAL data received from master
 func (m *Manager) applyWALData(data string) error {
+	return m.applyWALDataBytes([]byte(data))
+}
+
+func (m *Manager) applyWALDataBytes(data []byte) error {
 	// Decode entries
-	entries, err := decodeWALEntries([]byte(data))
+	entries, err := decodeWALEntries(data)
 	if err != nil {
 		return err
 	}
 
 	// Apply each entry
 	for _, entry := range entries {
+		if entry.LSN <= atomic.LoadUint64(&m.lastApplied) {
+			continue
+		}
+
 		if m.OnApply != nil {
 			if err := m.OnApply(entry); err != nil {
 				return err
@@ -595,6 +662,22 @@ func (m *Manager) applyWALData(data string) error {
 	atomic.StoreInt64(&m.metrics.LastAppliedTime, time.Now().Unix())
 
 	return nil
+}
+
+func (m *Manager) sendAck() error {
+	if m.masterConn == nil {
+		return nil
+	}
+	_, err := fmt.Fprintf(m.masterConn, "ACK %d\n", atomic.LoadUint64(&m.lastApplied))
+	return err
+}
+
+func (m *Manager) sendPong() error {
+	if m.masterConn == nil {
+		return nil
+	}
+	_, err := fmt.Fprintf(m.masterConn, "PONG %d\n", atomic.LoadUint64(&m.lastApplied))
+	return err
 }
 
 // ReplicateWALEntry adds a WAL entry for replication (called by master)
@@ -634,37 +717,51 @@ func (m *Manager) WaitForSlaves(timeout time.Duration) error {
 		return nil // Async mode doesn't wait
 	}
 
-	done := make(chan struct{})
-	go func() {
-		for {
-			m.mu.RLock()
-			allCaughtUp := true
-			for _, slave := range m.slaves {
-				slave.mu.Lock()
-				lastLSN := slave.LastLSN
-				slave.mu.Unlock()
-				if lastLSN < atomic.LoadUint64(&m.currentLSN) {
-					allCaughtUp = false
-					break
-				}
-			}
-			m.mu.RUnlock()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
 
-			if allCaughtUp {
-				close(done)
-				return
-			}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 
-			time.Sleep(10 * time.Millisecond)
+	for {
+		if m.slavesCaughtUp() {
+			return nil
 		}
-	}()
 
-	select {
-	case <-done:
-		return nil
-	case <-time.After(timeout):
-		return fmt.Errorf("timeout waiting for slaves")
+		select {
+		case <-m.stopCh:
+			return fmt.Errorf("replication stopped while waiting for slaves")
+		case <-deadline.C:
+			return fmt.Errorf("timeout waiting for slaves")
+		case <-ticker.C:
+		}
 	}
+}
+
+func (m *Manager) slavesCaughtUp() bool {
+	currentLSN := atomic.LoadUint64(&m.currentLSN)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.slaves) == 0 {
+		return true
+	}
+
+	caughtUp := 0
+	for _, slave := range m.slaves {
+		slave.mu.Lock()
+		lastLSN := slave.LastLSN
+		slave.mu.Unlock()
+		if lastLSN >= currentLSN {
+			caughtUp++
+		}
+	}
+
+	if m.config.Mode == ModeSync {
+		return caughtUp > 0
+	}
+	return caughtUp == len(m.slaves)
 }
 
 // Helper functions

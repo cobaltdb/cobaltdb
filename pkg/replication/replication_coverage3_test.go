@@ -1,9 +1,11 @@
 package replication
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,6 +98,94 @@ func TestApplyWALDataNoCallback(t *testing.T) {
 	// Verify lastApplied was updated
 	if mgr.lastApplied != 1 {
 		t.Errorf("Expected lastApplied=1, got %d", mgr.lastApplied)
+	}
+}
+
+func TestReadMasterFrameBinaryWALAndAck(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync})
+	conn := &mockConn{}
+	mgr.masterConn = conn
+
+	entries := []*WALEntry{
+		{LSN: 1, Timestamp: time.Now(), Data: []byte("test1"), Checksum: calculateCRC32([]byte("test1"))},
+		{LSN: 2, Timestamp: time.Now(), Data: []byte("test2"), Checksum: calculateCRC32([]byte("test2"))},
+	}
+
+	data, err := encodeWALEntries(entries)
+	if err != nil {
+		t.Fatalf("Failed to encode entries: %v", err)
+	}
+
+	var frame bytes.Buffer
+	if err := binary.Write(&frame, binary.BigEndian, uint32(len(data))); err != nil {
+		t.Fatalf("Failed to write frame length: %v", err)
+	}
+	frame.Write(data)
+
+	appliedCount := 0
+	mgr.OnApply = func(entry *WALEntry) error {
+		appliedCount++
+		return nil
+	}
+
+	if err := mgr.readMasterFrame(bufio.NewReader(&frame)); err != nil {
+		t.Fatalf("readMasterFrame failed: %v", err)
+	}
+
+	if appliedCount != 2 {
+		t.Fatalf("Expected 2 applied entries, got %d", appliedCount)
+	}
+	if mgr.lastApplied != 2 {
+		t.Fatalf("Expected lastApplied=2, got %d", mgr.lastApplied)
+	}
+	if !strings.Contains(string(conn.writeData), "ACK 2\n") {
+		t.Fatalf("Expected ACK 2, got %q", string(conn.writeData))
+	}
+}
+
+func TestApplyWALDataSkipsAlreadyAppliedEntries(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync})
+	mgr.lastApplied = 2
+
+	entries := []*WALEntry{
+		{LSN: 1, Timestamp: time.Now(), Data: []byte("old1"), Checksum: calculateCRC32([]byte("old1"))},
+		{LSN: 2, Timestamp: time.Now(), Data: []byte("old2"), Checksum: calculateCRC32([]byte("old2"))},
+		{LSN: 3, Timestamp: time.Now(), Data: []byte("new"), Checksum: calculateCRC32([]byte("new"))},
+	}
+
+	data, err := encodeWALEntries(entries)
+	if err != nil {
+		t.Fatalf("Failed to encode entries: %v", err)
+	}
+
+	applied := 0
+	mgr.OnApply = func(entry *WALEntry) error {
+		applied++
+		if entry.LSN != 3 {
+			t.Fatalf("Expected only LSN 3 to be applied, got %d", entry.LSN)
+		}
+		return nil
+	}
+
+	if err := mgr.applyWALDataBytes(data); err != nil {
+		t.Fatalf("applyWALDataBytes failed: %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("Expected 1 applied entry, got %d", applied)
+	}
+}
+
+func TestReadSlaveAcksUpdatesLastLSN(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster})
+	slave := &SlaveConnection{
+		ID:     "slave-1",
+		Reader: bufio.NewReader(strings.NewReader("ACK 5\nPONG 4\nACK 9\nINVALID\n")),
+	}
+
+	mgr.readSlaveAcks(slave)
+
+	if slave.LastLSN != 9 {
+		t.Fatalf("Expected LastLSN=9, got %d", slave.LastLSN)
 	}
 }
 
