@@ -1,8 +1,8 @@
-# CobaltDB v0.4.0 - Feature Status and Working Features Table
+# CobaltDB v0.5.0 - Feature Status and Working Features Table
 
-> **Last Updated:** 2026-04-08
-> **Test Coverage:** 92%+ | **Test Count:** 10,400+ | **Package Status:** 20/20 ✅
-> **All Features:** Production Ready | **All Tests:** Passing
+> **Verified:** 2026-04-30
+> **Test Coverage:** 91.4% total over `pkg/...` | **Test Functions:** 7,100+ | **Package Status:** 24/24 `pkg` packages passing
+> **Core SQL Engine:** Production-oriented | **Advanced Systems:** replication, true incremental backup chains, and some WASM compiler paths still need hardening
 
 ---
 
@@ -29,10 +29,10 @@
 | **Server** | ✅ Production Ready | 85%+ | TCP server, MySQL protocol, auth |
 | **Query Cache** | ✅ Production Ready | 90%+ | LRU cache with TTL and invalidation |
 | **Query Optimizer** | ✅ Production Ready | 90%+ | Cost-based optimization, join reordering |
-| **Hot Backup** | ✅ Production Ready | 90%+ | Online backups with compression |
-| **Replication** | ✅ Production Ready | 85.4% | Master-Slave with WAL shipping |
+| **Hot Backup** | ⚠️ Functional | 92% | Full-file online backups with compression; true delta incremental chains are still roadmap |
+| **Replication** | ⚠️ Experimental | 92.2% | Master-slave stream transport exists; automatic full engine apply/failover is not production-grade yet |
 | **Connection Pool** | ✅ Production Ready | 88%+ | Health checks, dynamic sizing |
-| **WASM Compilation** | ✅ Production Ready | 90%+ | SQL to WebAssembly bytecode |
+| **WASM Compilation** | ⚠️ Experimental | 91.5% | SQL to WebAssembly bytecode for selected paths; some compiler paths still use simplified placeholders |
 | **Query Plan Cache** | ✅ Production Ready | 90%+ | LRU cache with statistics |
 
 ---
@@ -345,21 +345,21 @@
 |---------|--------|---------------|-------|
 | **Query Result Cache** | ✅ 100% | 90% | LRU cache with TTL and table dependency invalidation |
 | **Query Optimizer** | ✅ 100% | 90% | Cost-based index selection and join reordering |
-| **Hot Backup** | ✅ 100% | 90% | Online backup without stopping the database |
-| **Master-Slave Replication** | ✅ 100% | 85% | Async/sync WAL shipping with SSL support |
+| **Hot Backup** | ⚠️ Functional | 92% | Full-file online backup without stopping the database |
+| **Master-Slave Replication** | ⚠️ Experimental | 92% | WAL stream transport; automatic full apply/failover hardening remains roadmap |
 | **Connection Pooling** | ✅ 100% | 88% | Advanced pooling with health checks and dynamic sizing |
-| **WASM Compilation** | ✅ 100% | 90% | Compile SQL queries to WebAssembly bytecode |
+| **WASM Compilation** | ⚠️ Experimental | 91% | Compile selected SQL paths to WebAssembly bytecode |
 | **Query Plan Cache** | ✅ 100% | 90% | LRU cache for parsed query plans with hit/miss stats |
 
 ### 22. WASM Compilation Support
 
 | Feature | Status | Test Coverage | Notes |
 |---------|--------|---------------|-------|
-| SQL to WASM Compiler | ✅ 100% | 90% | Compile SELECT/INSERT/UPDATE/DELETE to WASM |
-| WASM Runtime | ✅ 100% | 90% | Execute compiled WASM modules with host functions |
+| SQL to WASM Compiler | ⚠️ Partial | 91% | Compile selected SELECT/INSERT/UPDATE/DELETE paths to WASM |
+| WASM Runtime | ✅ Broad | 91% | Execute compiled WASM modules with host functions |
 | LEB128 Encoding | ✅ 100% | 95% | Variable-length integer encoding for WASM binary format |
 | Host Function Registration | ✅ 100% | 85% | Database operations as WASM imports |
-| Query Result Caching | ✅ 100% | 85% | Cache compiled WASM queries |
+| Query Result Caching | ✅ Broad | 85% | Cache compiled WASM queries |
 
 ### 23. Query Plan Cache
 
@@ -432,21 +432,21 @@
 | `pkg/btree` | 92.4% | 🟢 Excellent |
 | `pkg/backup` | 91.9% | 🟢 Excellent |
 | `pkg/security` | 91.9% | 🟢 Excellent |
-| `pkg/replication` | 91.8% | 🟢 Excellent |
+| `pkg/replication` | 92.2% | 🟢 Excellent |
 | `pkg/query` | 90.9% | 🟢 Excellent |
 | `pkg/audit` | 90.9% | 🟢 Excellent |
-| `pkg/storage` | 90.5% | 🟢 Excellent |
-| `pkg/server` | 90.2% | 🟢 Excellent |
-| `pkg/engine` | 90.0% | 🟢 Excellent |
-| `pkg/catalog` | 85.5% | 🟢 Good |
+| `pkg/storage` | 90.9% | 🟢 Excellent |
+| `pkg/server` | 91.4% | 🟢 Excellent |
+| `pkg/engine` | 90.9% | 🟢 Excellent |
+| `pkg/catalog` | 90.4% | 🟢 Excellent |
 
 ### Test Statistics
 
-- **Total Test Files:** 500+
-- **Total Test Functions:** 10,400+
-- **Package Tests:** 22/22 passing ✅
+- **Total Test Files:** 600+
+- **Total Test Functions:** 7,100+
+- **Package Tests:** 24/24 `pkg` packages passing ✅
 - **Integration Tests:** Passing ✅
-- **Coverage:** ~92% average (19/20 packages above 90%)
+- **Coverage:** 91%+ total over `pkg/...` (24/24 packages above 90%)
 
 ---
 
@@ -471,7 +471,7 @@
 15. **Table Partitioning** - RANGE, HASH partitioning
 16. **Security** - Encryption, TLS, Auth, RLS, Audit Logging
 17. **Production Features** - Circuit Breaker, Retry, Rate Limiter, Health Checks
-18. **WASM Compilation** - Compile SQL to WebAssembly for optimized execution
+18. **WASM Compilation** - Experimental SQL-to-WebAssembly execution for selected paths
 19. **Query Plan Cache** - LRU cache for parsed query plans with statistics
 20. **Vector Search** - HNSW indexes for high-dimensional similarity search
 21. **Temporal Queries** - Time travel with AS OF SYSTEM TIME
@@ -481,13 +481,13 @@
 ## 📝 Notes
 
 - All tests pass: `go test ./...`
-- Coverage report: `go test -coverprofile=coverage.out ./...`
+- Coverage report: `go test ./pkg/... -coverprofile=coverage.out`
 - Race detector: `go test -race ./...` (recommended on Ubuntu)
 - Benchmark: `go test -bench=. ./test/...`
-- All features listed are production-ready and fully supported
+- Core SQL features are broadly covered; replication, true incremental backup chains, and some WASM compiler paths should be treated as advanced/experimental until hardened further.
 
 ---
 
 **Prepared by:** CobaltDB Team
-**Version:** v0.4.0
-**Date:** 2026-04-08
+**Version:** v0.5.0
+**Date:** 2026-04-30

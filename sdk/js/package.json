@@ -1,6 +1,6 @@
 {
   "name": "cobaltdb-sdk",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "CobaltDB Node.js SDK - Connect to CobaltDB server via MySQL protocol",
   "main": "index.js",
   "scripts": {

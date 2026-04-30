@@ -2,7 +2,7 @@
 
 ## Overview
 
-CobaltDB v0.2.20 includes enterprise-grade production features designed for high-availability, resilience, and observability in production environments.
+CobaltDB v0.5.0 includes production-oriented features for resilience and observability. Core embedded/server SQL paths are broadly tested; replication, true incremental backup chains, and selected WASM compiler paths still require additional hardening before they should be treated as fully production-grade HA infrastructure.
 
 ## Table of Contents
 
@@ -396,14 +396,14 @@ CobaltDB's production features provide:
 - **Graceful Operations**: Lifecycle management ensures clean startup/shutdown
 - **Enterprise Ready**: Kubernetes-compatible probes and graceful shutdown
 
-These features make CobaltDB suitable for production deployments with high availability requirements.
+These features make CobaltDB suitable for production-oriented deployments; high-availability automation still needs the replication and failover hardening called out above.
 # CobaltDB Advanced Production Features - Final
 
-## All Production Features Completed!
+## Production Feature Status
 
-**Version:** v0.2.20 Final
-**Date:** 2026-03-08
-**Status:** ALL TESTS PASSING
+**Version:** v0.5.0
+**Date:** 2026-04-30
+**Status:** CORE TESTS PASSING; HA HARDENING IN PROGRESS
 
 ---
 
@@ -552,7 +552,7 @@ spec:
     spec:
       containers:
       - name: cobaltdb
-        image: cobaltdb:v0.2.20
+        image: cobaltdb:v0.5.0
         ports:
         - containerPort: 4200
         - containerPort: 8420  # Health/metrics
@@ -663,31 +663,31 @@ docs/PRODUCTION_FEATURES_ADVANCED.md
 | Performance | 4 | Completed |
 | Scaling | 3 | Completed |
 | Data Integrity | 3 | Completed |
-| **Total** | **25** | **All Completed** |
+| **Total** | **25** | **Core items completed; HA/storage roadmap remains** |
 
 ---
 
 ## Result
 
-**CobaltDB v0.2.20** is now a truly production-ready database with the following enterprise-grade features:
+**CobaltDB v0.5.0** has a production-oriented core with the following hardening features:
 
 - Resilience: Circuit breaker, retry, rate limiting
 - Security: SQL injection protection, TLS, encryption, RLS
 - Observability: Tracing, alerting, metrics, health checks
 - Performance: Query cache, connection pool, parallel query, group commit
-- Scalability: Read replicas, partitioning, cluster management
-- Data Integrity: WAL, PITR, backup/restore
+- Scalability: partitioning and replication transport; automatic failover/cluster management remains roadmap
+- Data Integrity: WAL and full-file backup/restore; PITR and true incremental backup chains remain roadmap
 
-**All tests passing!**
+**All tests passing in the current verification run.**
 
 ---
 
 **Author:** Claude Code
-**Version:** v0.2.20 Final
-**Date:** 2026-03-08
+**Version:** v0.5.0
+**Date:** 2026-04-30
 # CobaltDB Advanced Production Features
 
-## New Advanced Production Features (v0.2.20)
+## Advanced Production Features
 
 ### 1. **Rate Limiter** (`pkg/server/rate_limiter.go`)
 - Token bucket algorithm for traffic control
@@ -877,10 +877,10 @@ CobaltDB now includes the following enterprise features:
 | Alerting System | `pkg/server/alert.go` | ✅ |
 | Request Tracking | `pkg/server/tracing.go` | ✅ |
 
-**Total: 8 production-grade features, 25 test packages, 4500+ tests - All PASS!**
+**Total: 8 production-oriented feature areas. Core tests pass; HA and backup-depth items remain active roadmap work.**
 
 ---
 
 **Author:** Claude Code
-**Version:** v0.2.20
-**Date:** 2026-03-08
+**Version:** v0.5.0
+**Date:** 2026-04-30

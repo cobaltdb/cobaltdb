@@ -4,12 +4,28 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 )
 
 // PrometheusMetrics provides Prometheus-compatible metrics export
 type PrometheusMetrics struct {
 	startTime time.Time
+}
+
+// StorageMetrics contains the storage counters exported by Prometheus.
+type StorageMetrics struct {
+	Capacity      int
+	PageCount     int
+	DirtyCount    int
+	PinnedCount   int32
+	FreeCount     int
+	HitCount      uint64
+	MissCount     uint64
+	HitRatio      float64
+	ReadCount     uint64
+	WriteCount    uint64
+	EvictionCount uint64
 }
 
 // NewPrometheusMetrics creates a new Prometheus metrics exporter
@@ -133,20 +149,67 @@ func (p *PrometheusMetrics) writeQueryMetrics(w http.ResponseWriter) {
 
 // writeStorageMetrics writes storage-related metrics
 func (p *PrometheusMetrics) writeStorageMetrics(w http.ResponseWriter) {
-	// Placeholder for storage metrics
-	// These would be populated from the actual storage layer
+	stats := StorageMetrics{}
+	globalStorageMetrics.RLock()
+	provider := globalStorageMetrics.provider
+	globalStorageMetrics.RUnlock()
+	if provider != nil {
+		stats = provider()
+	}
 
 	fmt.Fprintf(w, "# HELP cobaltdb_storage_pages_total Total number of storage pages\n")
 	fmt.Fprintf(w, "# TYPE cobaltdb_storage_pages_total gauge\n")
-	fmt.Fprintf(w, "cobaltdb_storage_pages_total 0\n")
+	fmt.Fprintf(w, "cobaltdb_storage_pages_total %d\n", stats.PageCount)
 
 	fmt.Fprintf(w, "# HELP cobaltdb_storage_pages_dirty Number of dirty pages\n")
 	fmt.Fprintf(w, "# TYPE cobaltdb_storage_pages_dirty gauge\n")
-	fmt.Fprintf(w, "cobaltdb_storage_pages_dirty 0\n")
+	fmt.Fprintf(w, "cobaltdb_storage_pages_dirty %d\n", stats.DirtyCount)
+
+	fmt.Fprintf(w, "# HELP cobaltdb_storage_pages_pinned Number of pinned pages\n")
+	fmt.Fprintf(w, "# TYPE cobaltdb_storage_pages_pinned gauge\n")
+	fmt.Fprintf(w, "cobaltdb_storage_pages_pinned %d\n", stats.PinnedCount)
+
+	fmt.Fprintf(w, "# HELP cobaltdb_storage_pages_free Number of free buffer slots\n")
+	fmt.Fprintf(w, "# TYPE cobaltdb_storage_pages_free gauge\n")
+	fmt.Fprintf(w, "cobaltdb_storage_pages_free %d\n", stats.FreeCount)
+
+	fmt.Fprintf(w, "# HELP cobaltdb_storage_cache_hits_total Total buffer pool cache hits\n")
+	fmt.Fprintf(w, "# TYPE cobaltdb_storage_cache_hits_total counter\n")
+	fmt.Fprintf(w, "cobaltdb_storage_cache_hits_total %d\n", stats.HitCount)
+
+	fmt.Fprintf(w, "# HELP cobaltdb_storage_cache_misses_total Total buffer pool cache misses\n")
+	fmt.Fprintf(w, "# TYPE cobaltdb_storage_cache_misses_total counter\n")
+	fmt.Fprintf(w, "cobaltdb_storage_cache_misses_total %d\n", stats.MissCount)
+
+	fmt.Fprintf(w, "# HELP cobaltdb_storage_cache_hit_ratio Buffer pool cache hit ratio\n")
+	fmt.Fprintf(w, "# TYPE cobaltdb_storage_cache_hit_ratio gauge\n")
+	fmt.Fprintf(w, "cobaltdb_storage_cache_hit_ratio %.6f\n", stats.HitRatio)
+
+	fmt.Fprintf(w, "# HELP cobaltdb_storage_reads_total Total storage reads\n")
+	fmt.Fprintf(w, "# TYPE cobaltdb_storage_reads_total counter\n")
+	fmt.Fprintf(w, "cobaltdb_storage_reads_total %d\n", stats.ReadCount)
+
+	fmt.Fprintf(w, "# HELP cobaltdb_storage_writes_total Total storage writes\n")
+	fmt.Fprintf(w, "# TYPE cobaltdb_storage_writes_total counter\n")
+	fmt.Fprintf(w, "cobaltdb_storage_writes_total %d\n", stats.WriteCount)
+
+	fmt.Fprintf(w, "# HELP cobaltdb_storage_evictions_total Total buffer pool evictions\n")
+	fmt.Fprintf(w, "# TYPE cobaltdb_storage_evictions_total counter\n")
+	fmt.Fprintf(w, "cobaltdb_storage_evictions_total %d\n", stats.EvictionCount)
 }
 
 // Global Prometheus metrics instance
 var globalPrometheusMetrics = NewPrometheusMetrics()
+
+var globalSlowQueryLog struct {
+	sync.RWMutex
+	log *SlowQueryLog
+}
+
+var globalStorageMetrics struct {
+	sync.RWMutex
+	provider func() StorageMetrics
+}
 
 // GetPrometheusHandler returns the global Prometheus metrics HTTP handler
 func GetPrometheusHandler() http.HandlerFunc {
@@ -159,8 +222,25 @@ type SlowQueryStats struct {
 	CurrentEntries int
 }
 
-// GetSlowQueryLog returns the global slow query log (placeholder)
+// RegisterSlowQueryLog exposes the engine slow query log to global metrics
+// exporters. Passing nil clears the current registration.
+func RegisterSlowQueryLog(log *SlowQueryLog) {
+	globalSlowQueryLog.Lock()
+	defer globalSlowQueryLog.Unlock()
+	globalSlowQueryLog.log = log
+}
+
+// GetSlowQueryLog returns the slow query log registered by the engine.
 func GetSlowQueryLog() *SlowQueryLog {
-	// This would return the actual slow query log from the engine
-	return nil
+	globalSlowQueryLog.RLock()
+	defer globalSlowQueryLog.RUnlock()
+	return globalSlowQueryLog.log
+}
+
+// RegisterStorageMetricsProvider exposes live storage metrics to global
+// Prometheus exporters. Passing nil clears the current registration.
+func RegisterStorageMetricsProvider(provider func() StorageMetrics) {
+	globalStorageMetrics.Lock()
+	defer globalStorageMetrics.Unlock()
+	globalStorageMetrics.provider = provider
 }

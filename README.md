@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go Version">
-  <img src="https://img.shields.io/badge/Version-0.4.1-blue?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/Version-0.5.0-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
   <img src="https://img.shields.io/badge/Coverage-90%2B-brightgreen?style=for-the-badge" alt="Test Coverage">
@@ -838,18 +838,20 @@ go run cmd/demo/main.go
 
 | Package | Coverage | Package | Coverage |
 |---------|----------|---------|----------|
-| `pkg/pool` | 98.0% ✅ | `pkg/wasm` | 93.4% ✅ |
-| `pkg/auth` | 96.8% ✅ | `pkg/btree` | 92.4% ✅ |
-| `pkg/cache` | 95.5% ✅ | `pkg/backup` | 91.9% ✅ |
-| `pkg/protocol` | 95.1% ✅ | `pkg/security` | 91.9% ✅ |
-| `pkg/metrics` | 94.8% ✅ | `pkg/replication` | 91.8% ✅ |
-| `pkg/wire` | 94.7% ✅ | `pkg/query` | 90.9% ✅ |
-| `pkg/optimizer` | 93.8% ✅ | `pkg/audit` | 90.9% ✅ |
-| `pkg/logger` | 93.8% ✅ | `pkg/storage` | 90.5% ✅ |
-| `pkg/txn` | 93.5% ✅ | `pkg/server` | 90.2% ✅ |
-| `pkg/engine` | 90.0% ✅ | `pkg/catalog` | 85.5% ✅ |
+| `pkg/pool` | 98.0% ✅ | `pkg/auth` | 96.8% ✅ |
+| `pkg/fdw` | 96.7% ✅ | `pkg/metrics` | 96.4% ✅ |
+| `pkg/advisor` | 95.8% ✅ | `pkg/wire` | 94.7% ✅ |
+| `pkg/protocol` | 94.2% ✅ | `pkg/logger` | 94.3% ✅ |
+| `pkg/optimizer` | 93.8% ✅ | `pkg/txn` | 93.4% ✅ |
+| `pkg/security` | 93.2% ✅ | `pkg/btree` | 92.7% ✅ |
+| `pkg/backup` | 92.0% ✅ | `pkg/replication` | 92.2% ✅ |
+| `pkg/wasm` | 91.5% ✅ | `pkg/query` | 91.4% ✅ |
+| `pkg/server` | 91.4% ✅ | `pkg/parallel` | 91.2% ✅ |
+| `pkg/engine` | 90.8% ✅ | `pkg/audit` | 90.3% ✅ |
+| `pkg/cache` | 90.9% ✅ | `pkg/catalog` | 90.4% ✅ |
+| `pkg/storage` | 90.9% ✅ |  |  |
 
-> **10,400+ tests** across 22 packages, all passing. 19/20 packages above 90% coverage.
+> **7,100+ test functions** across 600+ test files, all passing. 24/24 `pkg` packages are above 90% coverage.
 
 ---
 
@@ -926,7 +928,7 @@ go run cmd/demo/main.go
 - [x] **Auth Hardening** - Password policy, brute force rate limiting, random default password
 - [x] **SQL Injection Protection** - 15 detection patterns (conditional blind, OOB exfil, etc.)
 - [x] **Concurrency Fixes** - Panic recovery, double-close protection, lifecycle tracking
-- [x] **10,400+ Tests** - 19/20 packages above 90% coverage
+- [x] **7,100+ Test Functions** - 24/24 `pkg` packages above 90% coverage
 
 ### ✅ v0.3.1 - Production Ready Release (2026-03-31)
 
@@ -954,12 +956,12 @@ go run cmd/demo/main.go
 - [x] **Auth Hardening** - Password policy, brute force rate limiting, random default password
 - [x] **SQL Injection Protection** - 15 detection patterns (conditional blind, OOB exfil, etc.)
 - [x] **Concurrency Fixes** - Panic recovery, double-close protection, lifecycle tracking
-- [x] **10,400+ Tests** - 19/20 packages above 90% coverage
+- [x] **7,100+ Test Functions** - 24/24 `pkg` packages above 90% coverage
 
 ### 📋 Planned Features
 
-- [ ] **v0.4.0** - Distributed mode, Sharding support
-- [ ] **v0.5.0** - Cloud-native features, Kubernetes operator
+- [ ] **Distributed mode** - Sharding, consensus, and automatic failover
+- [ ] **Cloud-native operations** - Kubernetes operator and managed backups
 
 ---
 
@@ -971,7 +973,7 @@ go run cmd/demo/main.go
 4. **🔄 ACID + MVCC** - Snapshot isolation, lock-free reads, WAL durability
 5. **🗂️ SQL + JSON + Vector** - Relational queries, JSONPath, HNSW similarity search
 6. **⚡ Blazing Fast** - 15M+ point lookups/sec, 1.5M+ inserts/sec
-7. **🏭 Production Ready** - 10,400+ tests, 92% coverage, circuit breaker, rate limiter, replication
+7. **🏭 Production-Oriented Core** - 7,100+ test functions, 91%+ package coverage, circuit breaker, rate limiter, and health checks
 
 ---
 

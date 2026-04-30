@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestPrometheusMetricsHandler tests the Prometheus HTTP handler
@@ -108,6 +109,8 @@ func TestWriteSystemMetrics(t *testing.T) {
 // TestWriteQueryMetrics tests writing query metrics
 func TestWriteQueryMetrics(t *testing.T) {
 	pm := NewPrometheusMetrics()
+	RegisterSlowQueryLog(nil)
+	t.Cleanup(func() { RegisterSlowQueryLog(nil) })
 
 	// Create a response writer
 	w := httptest.NewRecorder()
@@ -117,11 +120,23 @@ func TestWriteQueryMetrics(t *testing.T) {
 
 	// Output may be empty if slow query log is not initialized
 	_ = w.Body.String()
+
+	slowLog := NewSlowQueryLog(true, time.Millisecond, 10, "")
+	slowLog.Log("SELECT 1", 2*time.Millisecond, 0, 1)
+	RegisterSlowQueryLog(slowLog)
+
+	w = httptest.NewRecorder()
+	pm.writeQueryMetrics(w)
+	if !strings.Contains(w.Body.String(), "cobaltdb_slow_queries_total 1") {
+		t.Error("Output should contain registered slow query count")
+	}
 }
 
 // TestWriteStorageMetrics tests writing storage metrics
 func TestWriteStorageMetrics(t *testing.T) {
 	pm := NewPrometheusMetrics()
+	RegisterStorageMetricsProvider(nil)
+	t.Cleanup(func() { RegisterStorageMetricsProvider(nil) })
 
 	// Create a response writer
 	w := httptest.NewRecorder()
@@ -133,5 +148,30 @@ func TestWriteStorageMetrics(t *testing.T) {
 	output := w.Body.String()
 	if output == "" {
 		t.Error("writeStorageMetrics produced no output")
+	}
+
+	RegisterStorageMetricsProvider(func() StorageMetrics {
+		return StorageMetrics{
+			PageCount:     7,
+			DirtyCount:    2,
+			PinnedCount:   1,
+			FreeCount:     5,
+			HitCount:      11,
+			MissCount:     3,
+			HitRatio:      0.75,
+			ReadCount:     4,
+			WriteCount:    6,
+			EvictionCount: 8,
+		}
+	})
+
+	w = httptest.NewRecorder()
+	pm.writeStorageMetrics(w)
+	output = w.Body.String()
+	if !strings.Contains(output, "cobaltdb_storage_pages_total 7") {
+		t.Error("Output should contain registered page count")
+	}
+	if !strings.Contains(output, "cobaltdb_storage_cache_hit_ratio 0.750000") {
+		t.Error("Output should contain registered hit ratio")
 	}
 }

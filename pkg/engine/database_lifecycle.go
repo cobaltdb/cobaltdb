@@ -203,6 +203,22 @@ func Open(path string, opts *Options) (*DB, error) {
 
 	// Initialize buffer pool
 	db.pool = storage.NewBufferPool(opts.CacheSize, backend)
+	metrics.RegisterStorageMetricsProvider(func() metrics.StorageMetrics {
+		stats := db.pool.Stats()
+		return metrics.StorageMetrics{
+			Capacity:      stats.Capacity,
+			PageCount:     stats.PageCount,
+			DirtyCount:    stats.DirtyCount,
+			PinnedCount:   stats.PinnedCount,
+			FreeCount:     stats.FreeCount,
+			HitCount:      stats.HitCount,
+			MissCount:     stats.MissCount,
+			HitRatio:      stats.HitRatio,
+			ReadCount:     stats.ReadCount,
+			WriteCount:    stats.WriteCount,
+			EvictionCount: stats.EvictionCount,
+		}
+	})
 
 	// Start background dirty page flusher (5s interval) for disk-backed databases
 	if db.path != ":memory:" {
@@ -388,6 +404,7 @@ func (db *DB) createNew() error {
 			maxEntries = 1000
 		}
 		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
+		metrics.RegisterSlowQueryLog(db.slowQueryLog)
 	}
 
 	db.backupMgr = backup.NewManager(backupConfig, db)
@@ -568,6 +585,7 @@ func (db *DB) loadExisting() error {
 			maxEntries = 1000
 		}
 		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
+		metrics.RegisterSlowQueryLog(db.slowQueryLog)
 	}
 
 	db.backupMgr = backup.NewManager(backupConfig, db)
@@ -796,4 +814,3 @@ func (db *DB) runAnalyzeJob() error {
 }
 
 // GetScheduler returns the job scheduler for advanced usage.
-

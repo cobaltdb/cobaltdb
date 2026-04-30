@@ -3,6 +3,9 @@ package metrics
 import (
 	"fmt"
 	"log"
+	"math"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -298,8 +301,14 @@ func DefaultAlertRules() []*AlertRule {
 			Threshold:   85,
 			Cooldown:    5 * time.Minute,
 			Condition: func() (bool, float64) {
-				// This is a placeholder - real implementation would check actual memory
-				return false, 0
+				limit := debug.SetMemoryLimit(-1)
+				if limit <= 0 || limit == math.MaxInt64 {
+					return false, 0
+				}
+				var mem runtime.MemStats
+				runtime.ReadMemStats(&mem)
+				usage := (float64(mem.Sys) / float64(limit)) * 100
+				return usage > 85, usage
 			},
 		},
 		{

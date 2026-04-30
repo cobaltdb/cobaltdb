@@ -99,22 +99,24 @@ go test ./pkg/query/ -bench=. -benchtime=1s -benchmem
 - **OS:** Windows 11
 - **Mode:** In-memory (no disk I/O)
 
-## Test Coverage (v0.3.0)
+## Test Coverage (verified 2026-04-30)
 
 | Package | Coverage | Package | Coverage |
 |---------|----------|---------|----------|
-| `pkg/pool` | 97.5% | `pkg/wasm` | 93.4% |
-| `pkg/auth` | 96.8% | `pkg/btree` | 92.4% |
-| `pkg/cache` | 95.5% | `pkg/backup` | 91.9% |
-| `pkg/protocol` | 95.5% | `pkg/security` | 91.9% |
-| `pkg/wire` | 94.7% | `pkg/replication` | 91.8% |
-| `pkg/metrics` | 94.2% | `pkg/query` | 91.0% |
-| `pkg/optimizer` | 93.8% | `pkg/audit` | 90.9% |
-| `pkg/logger` | 93.8% | `pkg/server` | 90.2% |
-| `pkg/txn` | 93.5% | `pkg/storage` | 90.2% |
-| `pkg/engine` | 90.0% | `pkg/catalog` | 85.2% |
+| `pkg/pool` | 98.0% | `pkg/auth` | 96.8% |
+| `pkg/fdw` | 96.7% | `pkg/metrics` | 96.4% |
+| `pkg/advisor` | 95.8% | `pkg/wire` | 94.7% |
+| `pkg/protocol` | 94.2% | `pkg/logger` | 94.3% |
+| `pkg/optimizer` | 93.8% | `pkg/txn` | 93.4% |
+| `pkg/security` | 93.2% | `pkg/btree` | 92.7% |
+| `pkg/backup` | 92.0% | `pkg/replication` | 92.2% |
+| `pkg/wasm` | 91.5% | `pkg/query` | 91.4% |
+| `pkg/server` | 91.4% | `pkg/parallel` | 91.2% |
+| `pkg/engine` | 90.9% | `pkg/catalog` | 90.4% |
+| `pkg/cache` | 90.9% | `pkg/audit` | 90.3% |
+| `pkg/storage` | 90.9% |  |  |
 
-> **19/20 packages above 90% coverage.** 10,400+ tests across 22 packages.
+> **24/24 `pkg` packages above 90% coverage.** 7,100+ test functions across 600+ test files.
 
 ## Notes
 

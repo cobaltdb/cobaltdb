@@ -63,10 +63,10 @@ go tool cover -func=coverage.out
 ```
 
 ### Test Statistics
-- 10,400+ test functions
-- 500+ test files
-- 20 packages, all passing
-- Target: %90+ coverage per package (19/20 packages above 90%, only catalog at 85%)
+- 7,100+ test functions
+- 600+ test files
+- 24 `pkg` packages, all passing
+- Target: %90+ coverage per package (24/24 packages above 90%)
 
 ### Running Benchmarks Safely
 ```bash

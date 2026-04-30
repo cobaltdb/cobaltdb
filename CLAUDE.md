@@ -142,10 +142,10 @@ go tool cover -func=coverage.out
 Three test trees coexist — `./pkg/...` for unit tests, `./integration/...` for cross-package integration, `./test/...` for benchmarks and large end-to-end suites. `go test ./...` runs all three.
 
 ### Test Statistics
-- 10,400+ test functions
-- 500+ test files
-- 24 packages, all passing
-- Target: %90+ coverage per package (24/25 packages above 90%, only storage at 89%)
+- 7,100+ test functions
+- 600+ test files
+- 24 `pkg` packages, all passing
+- Target: %90+ coverage per package (24/24 packages above 90%)
 
 ### Running Benchmarks Safely
 ```bash

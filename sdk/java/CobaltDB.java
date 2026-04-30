@@ -41,7 +41,7 @@ import java.util.Properties;
  */
 public class CobaltDB {
 
-    public static final String VERSION = "0.3.0";
+    public static final String VERSION = "0.5.0";
     public static final int DEFAULT_PORT = 3307;
     public static final String DEFAULT_HOST = "127.0.0.1";
     public static final String DEFAULT_USER = "admin";
