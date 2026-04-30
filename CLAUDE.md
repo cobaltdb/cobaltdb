@@ -58,14 +58,26 @@ Runtime: `make run-server` / `make run-cli` use `go run`. Binaries already built
 The Catalog is the central execution engine. It manages tables, indexes, and executes queries.
 
 **File Organization:**
-- `catalog_core.go` - Main query execution (`selectLocked`, `EvalExpression`, `evaluateWhere`)
-- `catalog_select.go` - JOIN execution and SELECT dispatch
+- `catalog_core.go` - Catalog struct, `selectLocked` dispatch, `scanTableRows`, table utilities
+- `catalog_select.go` - JOIN execution, outer-query projection, view aggregate processing
 - `catalog_select_helpers.go` - Column resolution, CTE handling, post-processing
-- `catalog_cache.go` - Internal query result cache
-- `catalog_fastpath.go` - COUNT(*) and SUM/AVG fast paths
+- `catalog_eval.go` - Expression evaluation (`evaluateExpression`, `evaluateWhere`, `evaluateLike`, `evaluateIn`, `evaluateBetween`, function dispatch)
 - `catalog_eval_json.go` - JSON function evaluation
+- `catalog_eval_string.go` - String function evaluation (UPPER, LOWER, TRIM, SUBSTR, etc.)
+- `catalog_aggregate.go` - GROUP BY, aggregates, HAVING, hidden column management
+- `catalog_window.go` - Window functions (ROW_NUMBER, RANK, LAG, LEAD, aggregates OVER)
+- `catalog_insert.go` - INSERT logic with constraint validation
+- `catalog_update.go` - UPDATE/DELETE with JOIN support
+- `catalog_delete.go` - DELETE with soft-delete and FK enforcement
+- `catalog_ddl.go` - DDL operations (CREATE TABLE, indexes, triggers, policies)
+- `catalog_fastpath.go` - COUNT(*) and SUM/AVG streaming fast paths
+- `catalog_cache.go` - Internal query result cache
 - `catalog_rls.go` - Row-level security helpers
-- `catalog_txn.go` - Transaction rollback and undo replay
+- `catalog_txn.go` - Transaction management, rollback, undo replay
+- `catalog_maintenance.go` - Save/Load, vacuum, analyze
+- `catalog_cte.go` - CTE execution (recursive and non-recursive)
+- `catalog_view.go` - Materialized view management
+- `catalog_returning.go` - RETURNING clause evaluation
 
 **Thread Safety:**
 - Uses `sync.RWMutex` for concurrency control
@@ -73,9 +85,11 @@ The Catalog is the central execution engine. It manages tables, indexes, and exe
 - The mutex is NOT reentrant - never call locked methods from locked methods
 
 **Main Execution Paths:**
-- `selectLocked` - Simple SELECT execution
+- `selectLocked` - Simple SELECT execution (dispatches to helpers)
+- `scanTableRows` - Row scanning (index, MV, or full table scan)
 - `executeSelectWithJoin` - JOIN support
 - `executeSelectWithJoinAndGroupBy` - GROUP BY with aggregates
+- `evaluateFunctionCall` - Function evaluation with dispatch helpers (math, string, vector, CAST)
 
 #### Query Cache
 Simple LRU cache for query results. Enabled via `SetQueryCache(true, maxEntries)`.
