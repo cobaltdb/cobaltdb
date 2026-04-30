@@ -40,6 +40,7 @@ const (
 const maxReplicationFrameSize = 64 << 20 // 64 MiB
 
 const defaultMaxWALBufferEntries = 10000
+const resumeHandshakeTimeout = 5 * time.Second
 
 // Config holds replication configuration
 type Config struct {
@@ -299,20 +300,30 @@ func (m *Manager) handleSlave(conn net.Conn) {
 
 	slaveID := conn.RemoteAddr().String()
 
-	// Authenticate if needed
-	if m.config.AuthToken != "" {
-		if err := m.authenticateSlave(conn); err != nil {
-			conn.Close()
-			return
-		}
-	}
-
 	slave := &SlaveConnection{
 		ID:       slaveID,
 		Conn:     conn,
 		Writer:   bufio.NewWriter(conn),
 		Reader:   bufio.NewReader(conn),
 		LastPing: time.Now(),
+	}
+
+	// Authenticate if needed
+	if m.config.AuthToken != "" {
+		if err := m.authenticateSlaveWithReader(slave.Reader, conn); err != nil {
+			conn.Close()
+			return
+		}
+	}
+
+	resumeLSN, err := m.receiveResumeRequest(slave)
+	if err != nil {
+		conn.Close()
+		return
+	}
+	if err := m.prepareSlaveResume(slave, resumeLSN); err != nil {
+		conn.Close()
+		return
 	}
 
 	m.mu.Lock()
@@ -333,10 +344,7 @@ func (m *Manager) handleSlave(conn net.Conn) {
 		}
 	}()
 
-	// Send initial WAL position
-	startLSN := atomic.LoadUint64(&m.currentLSN)
-
-	if err := m.sendInitialSnapshot(slave, startLSN); err != nil {
+	if err := m.sendInitialSnapshot(slave, resumeLSN); err != nil {
 		return
 	}
 
@@ -364,10 +372,83 @@ func (m *Manager) handleSlave(conn net.Conn) {
 	}
 }
 
+func (m *Manager) receiveResumeRequest(slave *SlaveConnection) (uint64, error) {
+	if slave.Conn != nil {
+		if err := slave.Conn.SetReadDeadline(time.Now().Add(resumeHandshakeTimeout)); err != nil {
+			return 0, err
+		}
+		defer slave.Conn.SetReadDeadline(time.Time{})
+	}
+
+	line, err := slave.Reader.ReadString('\n')
+	if err != nil {
+		return 0, err
+	}
+
+	var lsn uint64
+	if _, err := fmt.Sscanf(line, "RESUME %d", &lsn); err != nil {
+		return 0, fmt.Errorf("invalid RESUME message: %w", err)
+	}
+	return lsn, nil
+}
+
+func (m *Manager) prepareSlaveResume(slave *SlaveConnection, requestedLSN uint64) error {
+	currentLSN := atomic.LoadUint64(&m.currentLSN)
+	if requestedLSN > currentLSN {
+		_ = m.sendResyncRequired(slave, currentLSN)
+		return fmt.Errorf("slave requested future LSN %d, current LSN %d", requestedLSN, currentLSN)
+	}
+
+	m.mu.RLock()
+	canResume := m.canResumeFromLocked(requestedLSN, currentLSN)
+	m.mu.RUnlock()
+
+	if !canResume {
+		_ = m.sendResyncRequired(slave, currentLSN)
+		return fmt.Errorf("slave requested LSN %d outside retained WAL window", requestedLSN)
+	}
+
+	slave.mu.Lock()
+	slave.LastLSN = requestedLSN
+	slave.LastPing = time.Now()
+	slave.mu.Unlock()
+
+	return nil
+}
+
+func (m *Manager) canResumeFromLocked(requestedLSN, currentLSN uint64) bool {
+	if requestedLSN == currentLSN {
+		return true
+	}
+	if requestedLSN > currentLSN {
+		return false
+	}
+	if len(m.walBuffer) == 0 {
+		return false
+	}
+
+	firstRetained := m.walBuffer[0].LSN
+	lastRetained := m.walBuffer[len(m.walBuffer)-1].LSN
+	return requestedLSN+1 >= firstRetained && currentLSN <= lastRetained
+}
+
+func (m *Manager) sendResyncRequired(slave *SlaveConnection, currentLSN uint64) error {
+	slave.mu.Lock()
+	defer slave.mu.Unlock()
+
+	if _, err := slave.Writer.WriteString(fmt.Sprintf("RESYNC %d\n", currentLSN)); err != nil {
+		return err
+	}
+	return slave.Writer.Flush()
+}
+
 // authenticateSlave authenticates a slave connection
 func (m *Manager) authenticateSlave(conn net.Conn) error {
+	return m.authenticateSlaveWithReader(bufio.NewReader(conn), conn)
+}
+
+func (m *Manager) authenticateSlaveWithReader(reader *bufio.Reader, conn net.Conn) error {
 	// Simple token-based auth
-	reader := bufio.NewReader(conn)
 	token, err := reader.ReadString('\n')
 	if err != nil {
 		return err
@@ -547,6 +628,7 @@ func (m *Manager) startSlave() error {
 		return fmt.Errorf("failed to connect to master: %w", err)
 	}
 	m.masterConn = conn
+	reader := bufio.NewReader(conn)
 
 	// Authenticate
 	if m.config.AuthToken != "" {
@@ -556,7 +638,6 @@ func (m *Manager) startSlave() error {
 		}
 
 		// Read auth response
-		reader := bufio.NewReader(conn)
 		response, err := reader.ReadString('\n')
 		if err != nil {
 			conn.Close()
@@ -569,18 +650,25 @@ func (m *Manager) startSlave() error {
 		}
 	}
 
+	if _, err := fmt.Fprintf(conn, "RESUME %d\n", atomic.LoadUint64(&m.lastApplied)); err != nil {
+		conn.Close()
+		return err
+	}
+
 	// Start replication goroutine
 	m.wg.Add(1)
-	go m.replicateFromMaster()
+	go m.replicateFromMasterWithReader(reader)
 
 	return nil
 }
 
 // replicateFromMaster handles replication stream from master
 func (m *Manager) replicateFromMaster() {
-	defer m.wg.Done()
+	m.replicateFromMasterWithReader(bufio.NewReader(m.masterConn))
+}
 
-	reader := bufio.NewReader(m.masterConn)
+func (m *Manager) replicateFromMasterWithReader(reader *bufio.Reader) {
+	defer m.wg.Done()
 
 	for {
 		select {
@@ -607,7 +695,7 @@ func (m *Manager) readMasterFrame(reader *bufio.Reader) error {
 	}
 
 	switch next[0] {
-	case 'S', 'P':
+	case 'S', 'P', 'R':
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			return err
@@ -654,6 +742,13 @@ func (m *Manager) handleMasterMessage(msg string) error {
 	case "PING":
 		// Heartbeat - respond with current position
 		return m.sendPong()
+
+	case "RESY":
+		var lsn uint64
+		if _, err := fmt.Sscanf(msg, "RESYNC %d", &lsn); err != nil {
+			return fmt.Errorf("invalid RESYNC message: %w", err)
+		}
+		return fmt.Errorf("replication resync required at master LSN %d", lsn)
 
 	default:
 		// WAL data

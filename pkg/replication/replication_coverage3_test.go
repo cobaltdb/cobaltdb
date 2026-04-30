@@ -209,6 +209,85 @@ func TestSendInitialSnapshotMarksSlaveCaughtUp(t *testing.T) {
 	}
 }
 
+func TestReceiveResumeRequest(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster})
+	slave := &SlaveConnection{
+		ID:     "slave-1",
+		Reader: bufio.NewReader(strings.NewReader("RESUME 17\n")),
+	}
+
+	lsn, err := mgr.receiveResumeRequest(slave)
+	if err != nil {
+		t.Fatalf("receiveResumeRequest failed: %v", err)
+	}
+	if lsn != 17 {
+		t.Fatalf("Expected LSN 17, got %d", lsn)
+	}
+}
+
+func TestPrepareSlaveResumeAllowsRetainedWindow(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	for i := 0; i < 3; i++ {
+		if err := mgr.ReplicateWALEntry([]byte{byte('a' + i)}); err != nil {
+			t.Fatalf("ReplicateWALEntry failed: %v", err)
+		}
+	}
+
+	var out bytes.Buffer
+	slave := &SlaveConnection{
+		ID:     "slave-1",
+		Writer: bufio.NewWriter(&out),
+	}
+
+	if err := mgr.prepareSlaveResume(slave, 1); err != nil {
+		t.Fatalf("prepareSlaveResume failed: %v", err)
+	}
+	if slave.LastLSN != 1 {
+		t.Fatalf("Expected LastLSN=1, got %d", slave.LastLSN)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("Expected no RESYNC response, got %q", out.String())
+	}
+}
+
+func TestPrepareSlaveResumeRejectsGap(t *testing.T) {
+	mgr := NewManager(&Config{
+		Role:                RoleMaster,
+		Mode:                ModeAsync,
+		MaxWALBufferEntries: 2,
+	})
+	for i := 0; i < 5; i++ {
+		if err := mgr.ReplicateWALEntry([]byte{byte('a' + i)}); err != nil {
+			t.Fatalf("ReplicateWALEntry failed: %v", err)
+		}
+	}
+
+	var out bytes.Buffer
+	slave := &SlaveConnection{
+		ID:     "slave-1",
+		Writer: bufio.NewWriter(&out),
+	}
+
+	if err := mgr.prepareSlaveResume(slave, 2); err == nil {
+		t.Fatal("Expected gap error")
+	}
+	if got := out.String(); got != "RESYNC 5\n" {
+		t.Fatalf("Expected RESYNC 5, got %q", got)
+	}
+}
+
+func TestHandleMasterMessageRESYNC(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave})
+
+	err := mgr.handleMasterMessage("RESYNC 9\n")
+	if err == nil {
+		t.Fatal("Expected RESYNC error")
+	}
+	if !strings.Contains(err.Error(), "resync required") {
+		t.Fatalf("Unexpected RESYNC error: %v", err)
+	}
+}
+
 func TestReplicateWALSendsOnlyEntriesAfterSlaveLSN(t *testing.T) {
 	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
 	for i := 0; i < 3; i++ {
