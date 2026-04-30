@@ -1362,3 +1362,109 @@ func TestRestoreBackupChainCycleFails(t *testing.T) {
 		t.Fatalf("Expected cycle error, got %v", err)
 	}
 }
+
+func TestBackupMetadataPersistsAcrossManagers(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+	config.Verify = false
+
+	db := &MockDatabase{dbPath: dbFile}
+	mgr := NewManager(config, db)
+
+	backup, err := mgr.CreateBackup(context.Background(), TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+
+	reloaded := NewManager(config, db)
+	loadedBackup := reloaded.GetBackup(backup.ID)
+	if loadedBackup == nil {
+		t.Fatalf("Expected backup %s to load from metadata", backup.ID)
+	}
+	if loadedBackup.Destination != backup.Destination {
+		t.Fatalf("Expected destination %s, got %s", backup.Destination, loadedBackup.Destination)
+	}
+}
+
+func TestDeleteBackupPersistsMetadata(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+	config.Verify = false
+
+	db := &MockDatabase{dbPath: dbFile}
+	mgr := NewManager(config, db)
+
+	backup, err := mgr.CreateBackup(context.Background(), TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+	if err := mgr.DeleteBackup(backup.ID); err != nil {
+		t.Fatalf("DeleteBackup failed: %v", err)
+	}
+
+	reloaded := NewManager(config, db)
+	if got := reloaded.GetBackup(backup.ID); got != nil {
+		t.Fatalf("Expected deleted backup to be absent after reload, got %+v", got)
+	}
+}
+
+func TestCleanupOldBackupsPersistsMetadata(t *testing.T) {
+	tempDir := t.TempDir()
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.MaxBackups = 1
+	config.RetentionPeriod = 0
+	if err := os.MkdirAll(config.BackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	db := &MockDatabase{dbPath: filepath.Join(tempDir, "source.db")}
+	mgr := NewManager(config, db)
+
+	now := time.Now()
+	oldPath := filepath.Join(config.BackupDir, "old.db")
+	newPath := filepath.Join(config.BackupDir, "new.db")
+	if err := os.WriteFile(oldPath, []byte("old"), 0644); err != nil {
+		t.Fatalf("Failed to create old backup file: %v", err)
+	}
+	if err := os.WriteFile(newPath, []byte("new"), 0644); err != nil {
+		t.Fatalf("Failed to create new backup file: %v", err)
+	}
+
+	mgr.metadata.Backups = append(mgr.metadata.Backups,
+		&Backup{ID: "old", Type: TypeFull, Destination: oldPath, CompletedAt: now.Add(-time.Hour)},
+		&Backup{ID: "new", Type: TypeFull, Destination: newPath, CompletedAt: now},
+	)
+
+	if err := mgr.saveMetadataLocked(); err != nil {
+		t.Fatalf("saveMetadataLocked failed: %v", err)
+	}
+	if err := mgr.cleanupOldBackups(); err != nil {
+		t.Fatalf("cleanupOldBackups failed: %v", err)
+	}
+
+	reloaded := NewManager(config, db)
+	if reloaded.GetBackup("old") != nil {
+		t.Fatal("Expected old backup metadata to be removed after reload")
+	}
+	if reloaded.GetBackup("new") == nil {
+		t.Fatal("Expected new backup metadata to remain after reload")
+	}
+}

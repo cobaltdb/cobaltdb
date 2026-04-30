@@ -4,6 +4,7 @@ package backup
 import (
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -44,6 +45,8 @@ type Config struct {
 	// Encryption key file
 	KeyFile string
 }
+
+const metadataFileName = "metadata.json"
 
 // DefaultConfig returns default backup configuration
 func DefaultConfig() *Config {
@@ -112,11 +115,13 @@ type Database interface {
 
 // NewManager creates a new backup manager
 func NewManager(config *Config, db Database) *Manager {
-	return &Manager{
+	m := &Manager{
 		config:   config,
 		metadata: &Metadata{Backups: make([]*Backup, 0)},
 		db:       db,
 	}
+	_ = m.loadMetadata()
+	return m
 }
 
 // CreateBackup creates a new backup
@@ -198,6 +203,10 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (*Backup, e
 	// Save metadata
 	m.metadata.mu.Lock()
 	m.metadata.Backups = append(m.metadata.Backups, backup)
+	if err := m.saveMetadataLocked(); err != nil {
+		m.metadata.mu.Unlock()
+		return nil, fmt.Errorf("failed to save backup metadata: %w", err)
+	}
 	m.metadata.mu.Unlock()
 
 	// Cleanup old backups
@@ -565,6 +574,75 @@ func (m *Manager) validateRestoreChain(backup *Backup) error {
 	return nil
 }
 
+func (m *Manager) metadataPath() string {
+	return filepath.Join(m.config.BackupDir, metadataFileName)
+}
+
+func (m *Manager) loadMetadata() error {
+	file, err := os.Open(m.metadataPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to open backup metadata: %w", err)
+	}
+	defer file.Close()
+
+	var metadata Metadata
+	if err := json.NewDecoder(file).Decode(&metadata); err != nil {
+		return fmt.Errorf("failed to decode backup metadata: %w", err)
+	}
+	if metadata.Backups == nil {
+		metadata.Backups = make([]*Backup, 0)
+	}
+
+	m.metadata.mu.Lock()
+	m.metadata.Backups = metadata.Backups
+	m.metadata.mu.Unlock()
+
+	return nil
+}
+
+func (m *Manager) saveMetadataLocked() error {
+	if _, err := os.Stat(m.config.BackupDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat backup directory: %w", err)
+	}
+
+	path := m.metadataPath()
+	tmpPath := path + ".tmp"
+
+	file, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to create backup metadata file: %w", err)
+	}
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(m.metadata); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to encode backup metadata: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to sync backup metadata: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to close backup metadata: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to replace backup metadata: %w", err)
+	}
+
+	return nil
+}
+
 // ListBackups returns all backups
 func (m *Manager) ListBackups() []*Backup {
 	m.metadata.mu.RLock()
@@ -608,6 +686,9 @@ func (m *Manager) DeleteBackup(backupID string) error {
 
 			// Remove from metadata
 			m.metadata.Backups = append(m.metadata.Backups[:i], m.metadata.Backups[i+1:]...)
+			if err := m.saveMetadataLocked(); err != nil {
+				return fmt.Errorf("failed to save backup metadata: %w", err)
+			}
 			return nil
 		}
 	}
@@ -667,6 +748,7 @@ func (m *Manager) cleanupOldBackups() error {
 	}
 
 	// Delete marked backups
+	changed := false
 	for _, b := range toDelete {
 		os.Remove(b.Destination)
 		if len(b.WALFiles) > 0 {
@@ -678,8 +760,15 @@ func (m *Manager) cleanupOldBackups() error {
 		for i, meta := range m.metadata.Backups {
 			if meta.ID == b.ID {
 				m.metadata.Backups = append(m.metadata.Backups[:i], m.metadata.Backups[i+1:]...)
+				changed = true
 				break
 			}
+		}
+	}
+
+	if changed {
+		if err := m.saveMetadataLocked(); err != nil {
+			return fmt.Errorf("failed to save backup metadata: %w", err)
 		}
 	}
 
