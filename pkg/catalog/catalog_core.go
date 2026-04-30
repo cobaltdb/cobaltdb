@@ -866,35 +866,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 					}
 				}
 
-				// Extract only selected columns
-				selectedRow := make([]interface{}, len(selectCols))
-				for i, ci := range selectCols {
-					if ci.isWindow {
-						// Window functions are evaluated after all rows are collected
-						continue
-					}
-					if ci.index >= 0 && ci.index < len(fullRow) {
-						// Regular column
-						selectedRow[i] = fullRow[ci.index]
-					} else if ci.index == -1 && !ci.isAggregate {
-						// Scalar function or expression - evaluate it
-						if i < len(stmt.Columns) {
-							val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
-							if err == nil {
-								selectedRow[i] = val
-							}
-						} else if len(ci.name) > 10 && ci.name[:10] == "__orderby_" {
-							// Hidden ORDER BY expression column - extract index from name
-							var obIdx int
-							if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
-								val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
-								if err == nil {
-									selectedRow[i] = val
-								}
-							}
-						}
-					}
-				}
+				selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
 				rows = append(rows, selectedRow)
 				if hasWindowFuncs {
 					fullRowCopy := make([]interface{}, len(fullRow))
@@ -927,6 +899,37 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 	}
 
 	return returnColumns, rows, nil
+}
+
+
+// projectSelectedRow extracts selected column values from a full table row.
+// Handles regular columns, scalar expressions, and hidden ORDER BY expression columns.
+func (cat *Catalog) projectSelectedRow(fullRow []interface{}, selectCols []selectColInfo, stmt *query.SelectStmt, table *TableDef, args []interface{}, hasWindowFuncs bool) []interface{} {
+	selectedRow := make([]interface{}, len(selectCols))
+	for i, ci := range selectCols {
+		if ci.isWindow {
+			continue
+		}
+		if ci.index >= 0 && ci.index < len(fullRow) {
+			selectedRow[i] = fullRow[ci.index]
+		} else if ci.index == -1 && !ci.isAggregate {
+			if i < len(stmt.Columns) {
+				val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
+				if err == nil {
+					selectedRow[i] = val
+				}
+			} else if len(ci.name) > 10 && ci.name[:10] == "__orderby_" {
+				var obIdx int
+				if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
+					val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
+					if err == nil {
+						selectedRow[i] = val
+					}
+				}
+			}
+		}
+	}
+	return selectedRow
 }
 
 func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, viewRows [][]interface{}, args []interface{}) ([]string, [][]interface{}, error) {

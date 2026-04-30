@@ -273,95 +273,11 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 				}
 
 				// Compute aggregate
-				switch ci.aggregateType {
-				case "COUNT":
-					if ci.aggregateCol == "*" && !ci.isDistinct {
-						resultRow[i] = int64(len(groupRows))
-					} else if ci.isDistinct {
-						// Count distinct non-null values
-						seen := make(map[string]bool)
-						for _, v := range values {
-							if v != nil {
-								seen[ValueToStringKey(v)] = true
-							}
-						}
-						resultRow[i] = int64(len(seen))
-					} else {
-						count := int64(0)
-						for _, v := range values {
-							if v != nil {
-								count++
-							}
-						}
-						resultRow[i] = count
-					}
-				case "SUM":
-					var sum float64
-					hasVal := false
-					for _, v := range values {
-						if v != nil {
-							if f, ok := toFloat64(v); ok {
-								sum += f
-								hasVal = true
-							}
-						}
-					}
-					if hasVal {
-						resultRow[i] = sum
-					} else {
-						resultRow[i] = nil
-					}
-				case "AVG":
-					var sum float64
-					var count int64
-					for _, v := range values {
-						if v != nil {
-							if f, ok := toFloat64(v); ok {
-								sum += f
-								count++
-							}
-						}
-					}
-					if count > 0 {
-						resultRow[i] = sum / float64(count)
-					} else {
-						resultRow[i] = nil
-					}
-				case "MIN":
-					var minVal interface{}
-					for _, v := range values {
-						if v != nil {
-							if minVal == nil || compareValues(v, minVal) < 0 {
-								minVal = v
-							}
-						}
-					}
-					resultRow[i] = minVal
-				case "MAX":
-					var maxVal interface{}
-					for _, v := range values {
-						if v != nil {
-							if maxVal == nil || compareValues(v, maxVal) > 0 {
-								maxVal = v
-							}
-						}
-					}
-					resultRow[i] = maxVal
-				case "GROUP_CONCAT":
-					var parts []string
-					for _, v := range values {
-						if v != nil {
-							parts = append(parts, ValueToStringKey(v))
-						}
-					}
-					if len(parts) > 0 {
-						joined := strings.Join(parts, ",")
-						if len(joined) > maxStringResultLen {
-							joined = joined[:maxStringResultLen]
-						}
-						resultRow[i] = joined
-					} else {
-						resultRow[i] = nil
+				resultRow[i] = computeAggregateValue(ci, values, groupRows)
+				// Apply string length limit for GROUP_CONCAT
+				if ci.aggregateType == "GROUP_CONCAT" && resultRow[i] != nil {
+					if joined, ok := resultRow[i].(string); ok && len(joined) > maxStringResultLen {
+						resultRow[i] = joined[:maxStringResultLen]
 					}
 				}
 			} else {
