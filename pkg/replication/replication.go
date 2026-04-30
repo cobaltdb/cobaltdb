@@ -40,7 +40,9 @@ const (
 const maxReplicationFrameSize = 64 << 20 // 64 MiB
 
 const defaultMaxWALBufferEntries = 10000
+const defaultMaxWALBufferBytes int64 = 64 << 20 // 64 MiB
 const resumeHandshakeTimeout = 5 * time.Second
+const walEntryMetadataBytes = 24 // LSN + timestamp + data length + checksum
 
 // Config holds replication configuration
 type Config struct {
@@ -52,6 +54,7 @@ type Config struct {
 	MaxLag              time.Duration // Maximum allowed replication lag
 	SyncInterval        time.Duration // How often to sync WAL
 	MaxWALBufferEntries int           // Maximum master WAL entries retained for disconnected/lagging slaves
+	MaxWALBufferBytes   int64         // Maximum encoded master WAL bytes retained for disconnected/lagging slaves
 	AuthToken           string        // Authentication token
 	Compress            bool          // Compress replication stream
 	SSLCert             string        // SSL certificate file
@@ -67,6 +70,7 @@ func DefaultConfig() *Config {
 		SyncInterval:        100 * time.Millisecond,
 		MaxLag:              30 * time.Second,
 		MaxWALBufferEntries: defaultMaxWALBufferEntries,
+		MaxWALBufferBytes:   defaultMaxWALBufferBytes,
 		Compress:            true,
 	}
 }
@@ -150,12 +154,13 @@ type Manager struct {
 	role   Role
 
 	// Master fields
-	mu          sync.RWMutex
-	slaves      map[string]*SlaveConnection
-	slaveWALPos map[string]uint64
-	walBuffer   []*WALEntry
-	currentLSN  uint64
-	listener    net.Listener
+	mu             sync.RWMutex
+	slaves         map[string]*SlaveConnection
+	slaveWALPos    map[string]uint64
+	walBuffer      []*WALEntry
+	walBufferBytes int64
+	currentLSN     uint64
+	listener       net.Listener
 
 	// Slave fields
 	masterConn  net.Conn
@@ -197,6 +202,9 @@ type Metrics struct {
 func NewManager(config *Config) *Manager {
 	if config.MaxWALBufferEntries <= 0 {
 		config.MaxWALBufferEntries = defaultMaxWALBufferEntries
+	}
+	if config.MaxWALBufferBytes <= 0 {
+		config.MaxWALBufferBytes = defaultMaxWALBufferBytes
 	}
 
 	return &Manager{
@@ -824,6 +832,7 @@ func (m *Manager) ReplicateWALEntry(data []byte) error {
 	}
 
 	m.walBuffer = append(m.walBuffer, entry)
+	m.walBufferBytes += retainedWALBytes(entry)
 	m.enforceWALRetentionLocked()
 
 	return nil
@@ -863,10 +872,7 @@ func (m *Manager) pruneWALBufferLocked() {
 		return
 	}
 
-	clearWALEntries(m.walBuffer[:pruneCount])
-	copy(m.walBuffer, m.walBuffer[pruneCount:])
-	clearWALEntries(m.walBuffer[len(m.walBuffer)-pruneCount:])
-	m.walBuffer = m.walBuffer[:len(m.walBuffer)-pruneCount]
+	m.dropWALPrefixLocked(pruneCount)
 	m.enforceWALRetentionLocked()
 }
 
@@ -877,16 +883,56 @@ func clearWALEntries(entries []*WALEntry) {
 }
 
 func (m *Manager) enforceWALRetentionLocked() {
-	maxEntries := m.config.MaxWALBufferEntries
-	if maxEntries <= 0 || len(m.walBuffer) <= maxEntries {
+	for m.exceedsWALRetentionLocked() {
+		m.dropWALPrefixLocked(1)
+	}
+}
+
+func (m *Manager) exceedsWALRetentionLocked() bool {
+	if len(m.walBuffer) == 0 {
+		return false
+	}
+	if maxEntries := m.config.MaxWALBufferEntries; maxEntries > 0 && len(m.walBuffer) > maxEntries {
+		return true
+	}
+	return m.config.MaxWALBufferBytes > 0 && m.walBufferBytes > m.config.MaxWALBufferBytes
+}
+
+func (m *Manager) dropWALPrefixLocked(dropCount int) {
+	if dropCount <= 0 {
+		return
+	}
+	if dropCount >= len(m.walBuffer) {
+		clearWALEntries(m.walBuffer)
+		m.walBuffer = m.walBuffer[:0]
+		m.walBufferBytes = 0
 		return
 	}
 
-	dropCount := len(m.walBuffer) - maxEntries
+	droppedBytes := retainedWALEntriesBytes(m.walBuffer[:dropCount])
 	clearWALEntries(m.walBuffer[:dropCount])
 	copy(m.walBuffer, m.walBuffer[dropCount:])
 	clearWALEntries(m.walBuffer[len(m.walBuffer)-dropCount:])
-	m.walBuffer = m.walBuffer[:maxEntries]
+	m.walBuffer = m.walBuffer[:len(m.walBuffer)-dropCount]
+	m.walBufferBytes -= droppedBytes
+	if m.walBufferBytes < 0 {
+		m.walBufferBytes = retainedWALEntriesBytes(m.walBuffer)
+	}
+}
+
+func retainedWALEntriesBytes(entries []*WALEntry) int64 {
+	var total int64
+	for _, entry := range entries {
+		total += retainedWALBytes(entry)
+	}
+	return total
+}
+
+func retainedWALBytes(entry *WALEntry) int64 {
+	if entry == nil {
+		return 0
+	}
+	return int64(walEntryMetadataBytes + len(entry.Data))
 }
 
 // GetMetrics returns current replication metrics

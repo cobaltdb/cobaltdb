@@ -33,6 +33,10 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("Expected default MaxWALBufferEntries to be %d, got %d", defaultMaxWALBufferEntries, config.MaxWALBufferEntries)
 	}
 
+	if config.MaxWALBufferBytes != defaultMaxWALBufferBytes {
+		t.Errorf("Expected default MaxWALBufferBytes to be %d, got %d", defaultMaxWALBufferBytes, config.MaxWALBufferBytes)
+	}
+
 	if !config.Compress {
 		t.Error("Expected default Compress to be true")
 	}

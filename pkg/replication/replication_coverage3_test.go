@@ -400,6 +400,51 @@ func TestWALRetentionBoundsBufferWithLaggingSlave(t *testing.T) {
 	}
 }
 
+func TestWALRetentionBoundsBufferByBytes(t *testing.T) {
+	mgr := NewManager(&Config{
+		Role:                RoleMaster,
+		Mode:                ModeAsync,
+		MaxWALBufferEntries: 100,
+		MaxWALBufferBytes:   55,
+	})
+
+	for i := 0; i < 3; i++ {
+		if err := mgr.ReplicateWALEntry([]byte{byte('a' + i)}); err != nil {
+			t.Fatalf("ReplicateWALEntry failed: %v", err)
+		}
+	}
+
+	if len(mgr.walBuffer) != 2 {
+		t.Fatalf("Expected retained buffer length 2, got %d", len(mgr.walBuffer))
+	}
+	if mgr.walBufferBytes != 50 {
+		t.Fatalf("Expected retained WAL bytes 50, got %d", mgr.walBufferBytes)
+	}
+	if mgr.walBuffer[0].LSN != 2 || mgr.walBuffer[1].LSN != 3 {
+		t.Fatalf("Expected retained LSNs 2 and 3, got %+v", mgr.walBuffer)
+	}
+}
+
+func TestWALRetentionDropsOversizedSingleEntry(t *testing.T) {
+	mgr := NewManager(&Config{
+		Role:                RoleMaster,
+		Mode:                ModeAsync,
+		MaxWALBufferEntries: 100,
+		MaxWALBufferBytes:   10,
+	})
+
+	if err := mgr.ReplicateWALEntry([]byte("too-large")); err != nil {
+		t.Fatalf("ReplicateWALEntry failed: %v", err)
+	}
+
+	if len(mgr.walBuffer) != 0 {
+		t.Fatalf("Expected oversized entry to be dropped, got %d retained entries", len(mgr.walBuffer))
+	}
+	if mgr.walBufferBytes != 0 {
+		t.Fatalf("Expected retained WAL bytes 0, got %d", mgr.walBufferBytes)
+	}
+}
+
 // TestWALEntryEncodeDecodeVariations tests Encode/Decode with various scenarios
 func TestWALEntryEncodeDecodeVariations(t *testing.T) {
 	// Test with valid entry first
