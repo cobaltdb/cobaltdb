@@ -316,6 +316,7 @@ func (m *Manager) handleSlave(conn net.Conn) {
 		m.mu.Lock()
 		delete(m.slaves, slaveID)
 		atomic.AddInt32(&m.metrics.ActiveSlaves, -1)
+		m.pruneWALBufferLocked()
 		m.mu.Unlock()
 		conn.Close()
 
@@ -386,7 +387,12 @@ func (m *Manager) sendInitialSnapshot(slave *SlaveConnection, startLSN uint64) e
 	if _, err := slave.Writer.WriteString(msg); err != nil {
 		return err
 	}
-	return slave.Writer.Flush()
+	if err := slave.Writer.Flush(); err != nil {
+		return err
+	}
+	slave.LastLSN = startLSN
+	slave.LastPing = time.Now()
+	return nil
 }
 
 // sendHeartbeat sends a heartbeat to a slave
@@ -423,6 +429,8 @@ func (m *Manager) readSlaveAcks(slave *SlaveConnection) {
 		}
 		slave.LastPing = time.Now()
 		slave.mu.Unlock()
+
+		m.pruneWALBuffer()
 	}
 }
 
@@ -463,14 +471,21 @@ func (m *Manager) replicateWAL() {
 		return
 	}
 
-	// Encode entries
-	data, err := encodeWALEntries(entries)
-	if err != nil {
-		return
-	}
-
 	// Send to all slaves
 	for _, slave := range slaves {
+		slave.mu.Lock()
+		lastLSN := slave.LastLSN
+		slave.mu.Unlock()
+
+		pending := filterWALEntriesAfter(entries, lastLSN)
+		if len(pending) == 0 {
+			continue
+		}
+
+		data, err := encodeWALEntries(pending)
+		if err != nil {
+			continue
+		}
 		if err := m.sendWALToSlave(slave, data); err != nil {
 			// Mark slave as lagging
 			if m.OnLag != nil {
@@ -481,6 +496,15 @@ func (m *Manager) replicateWAL() {
 			}
 		}
 	}
+}
+
+func filterWALEntriesAfter(entries []*WALEntry, lastLSN uint64) []*WALEntry {
+	for i, entry := range entries {
+		if entry.LSN > lastLSN {
+			return entries[i:]
+		}
+	}
+	return nil
 }
 
 // sendWALToSlave sends WAL data to a specific slave
@@ -699,6 +723,53 @@ func (m *Manager) ReplicateWALEntry(data []byte) error {
 	m.walBuffer = append(m.walBuffer, entry)
 
 	return nil
+}
+
+func (m *Manager) pruneWALBuffer() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneWALBufferLocked()
+}
+
+func (m *Manager) pruneWALBufferLocked() {
+	if len(m.walBuffer) == 0 {
+		return
+	}
+
+	if len(m.slaves) == 0 {
+		clearWALEntries(m.walBuffer)
+		m.walBuffer = m.walBuffer[:0]
+		return
+	}
+
+	minApplied := ^uint64(0)
+	for _, slave := range m.slaves {
+		slave.mu.Lock()
+		lastLSN := slave.LastLSN
+		slave.mu.Unlock()
+		if lastLSN < minApplied {
+			minApplied = lastLSN
+		}
+	}
+
+	pruneCount := 0
+	for pruneCount < len(m.walBuffer) && m.walBuffer[pruneCount].LSN <= minApplied {
+		pruneCount++
+	}
+	if pruneCount == 0 {
+		return
+	}
+
+	clearWALEntries(m.walBuffer[:pruneCount])
+	copy(m.walBuffer, m.walBuffer[pruneCount:])
+	clearWALEntries(m.walBuffer[len(m.walBuffer)-pruneCount:])
+	m.walBuffer = m.walBuffer[:len(m.walBuffer)-pruneCount]
+}
+
+func clearWALEntries(entries []*WALEntry) {
+	for i := range entries {
+		entries[i] = nil
+	}
 }
 
 // GetMetrics returns current replication metrics

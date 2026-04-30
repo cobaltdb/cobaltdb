@@ -189,6 +189,92 @@ func TestReadSlaveAcksUpdatesLastLSN(t *testing.T) {
 	}
 }
 
+func TestSendInitialSnapshotMarksSlaveCaughtUp(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster})
+	var out bytes.Buffer
+	slave := &SlaveConnection{
+		ID:     "slave-1",
+		Writer: bufio.NewWriter(&out),
+	}
+
+	if err := mgr.sendInitialSnapshot(slave, 42); err != nil {
+		t.Fatalf("sendInitialSnapshot failed: %v", err)
+	}
+
+	if slave.LastLSN != 42 {
+		t.Fatalf("Expected LastLSN=42, got %d", slave.LastLSN)
+	}
+	if got := out.String(); got != "START 42\n" {
+		t.Fatalf("Expected START frame, got %q", got)
+	}
+}
+
+func TestReplicateWALSendsOnlyEntriesAfterSlaveLSN(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	for i := 0; i < 3; i++ {
+		if err := mgr.ReplicateWALEntry([]byte{byte('a' + i)}); err != nil {
+			t.Fatalf("ReplicateWALEntry failed: %v", err)
+		}
+	}
+
+	var out bytes.Buffer
+	slave := &SlaveConnection{
+		ID:       "slave-1",
+		Writer:   bufio.NewWriter(&out),
+		LastLSN:  2,
+		LastPing: time.Now(),
+	}
+	mgr.slaves[slave.ID] = slave
+
+	mgr.replicateWAL()
+
+	var frameLen uint32
+	if err := binary.Read(&out, binary.BigEndian, &frameLen); err != nil {
+		t.Fatalf("Failed to read frame length: %v", err)
+	}
+
+	frame := make([]byte, frameLen)
+	if _, err := out.Read(frame); err != nil {
+		t.Fatalf("Failed to read frame: %v", err)
+	}
+
+	entries, err := decodeWALEntries(frame)
+	if err != nil {
+		t.Fatalf("Failed to decode WAL frame: %v", err)
+	}
+	if len(entries) != 1 || entries[0].LSN != 3 {
+		t.Fatalf("Expected only LSN 3, got %+v", entries)
+	}
+}
+
+func TestPruneWALBufferKeepsOnlyUnacknowledgedEntries(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	for i := 0; i < 5; i++ {
+		if err := mgr.ReplicateWALEntry([]byte{byte('a' + i)}); err != nil {
+			t.Fatalf("ReplicateWALEntry failed: %v", err)
+		}
+	}
+
+	mgr.slaves["slow"] = &SlaveConnection{ID: "slow", LastLSN: 3}
+	mgr.slaves["fast"] = &SlaveConnection{ID: "fast", LastLSN: 5}
+
+	mgr.pruneWALBuffer()
+
+	if len(mgr.walBuffer) != 2 {
+		t.Fatalf("Expected 2 retained entries, got %d", len(mgr.walBuffer))
+	}
+	if mgr.walBuffer[0].LSN != 4 || mgr.walBuffer[1].LSN != 5 {
+		t.Fatalf("Expected retained LSNs 4 and 5, got %+v", mgr.walBuffer)
+	}
+
+	mgr.slaves["slow"].LastLSN = 5
+	mgr.pruneWALBuffer()
+
+	if len(mgr.walBuffer) != 0 {
+		t.Fatalf("Expected fully pruned WAL buffer, got %d entries", len(mgr.walBuffer))
+	}
+}
+
 // TestWALEntryEncodeDecodeVariations tests Encode/Decode with various scenarios
 func TestWALEntryEncodeDecodeVariations(t *testing.T) {
 	// Test with valid entry first
