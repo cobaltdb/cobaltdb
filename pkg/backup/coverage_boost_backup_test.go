@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1209,5 +1210,155 @@ func TestRestoreInvalidTargetPath(t *testing.T) {
 	err = mgr.Restore(ctx, backup.ID, invalidTarget)
 	if err == nil {
 		t.Error("Expected error for invalid target path")
+	}
+}
+
+func TestIncrementalBackupRecordsLatestParent(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+	config.Verify = false
+
+	db := &MockDatabase{dbPath: dbFile}
+	mgr := NewManager(config, db)
+	ctx := context.Background()
+
+	full, err := mgr.CreateBackup(ctx, TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create full backup: %v", err)
+	}
+	time.Sleep(time.Nanosecond)
+
+	incremental, err := mgr.CreateBackup(ctx, TypeIncremental)
+	if err != nil {
+		t.Fatalf("Failed to create incremental backup: %v", err)
+	}
+	if incremental.ParentID != full.ID {
+		t.Fatalf("Expected incremental parent %s, got %s", full.ID, incremental.ParentID)
+	}
+}
+
+func TestDifferentialBackupRecordsLatestFullParent(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+	config.Verify = false
+
+	db := &MockDatabase{dbPath: dbFile}
+	mgr := NewManager(config, db)
+	ctx := context.Background()
+
+	full, err := mgr.CreateBackup(ctx, TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create full backup: %v", err)
+	}
+	time.Sleep(time.Nanosecond)
+	if _, err := mgr.CreateBackup(ctx, TypeIncremental); err != nil {
+		t.Fatalf("Failed to create incremental backup: %v", err)
+	}
+	time.Sleep(time.Nanosecond)
+
+	differential, err := mgr.CreateBackup(ctx, TypeDifferential)
+	if err != nil {
+		t.Fatalf("Failed to create differential backup: %v", err)
+	}
+	if differential.ParentID != full.ID {
+		t.Fatalf("Expected differential parent %s, got %s", full.ID, differential.ParentID)
+	}
+}
+
+func TestRestoreIncrementalMissingParentFails(t *testing.T) {
+	tempDir := t.TempDir()
+	backupPath := filepath.Join(tempDir, "incremental.db")
+	if err := os.WriteFile(backupPath, []byte("incremental content"), 0644); err != nil {
+		t.Fatalf("Failed to create backup file: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+
+	mgr := NewManager(config, &MockDatabase{dbPath: filepath.Join(tempDir, "source.db")})
+	mgr.metadata.Backups = append(mgr.metadata.Backups, &Backup{
+		ID:          "inc",
+		Type:        TypeIncremental,
+		Destination: backupPath,
+		ParentID:    "missing",
+		CompletedAt: time.Now(),
+	})
+
+	err := mgr.Restore(context.Background(), "inc", filepath.Join(tempDir, "restored.db"))
+	if err == nil {
+		t.Fatal("Expected missing parent error")
+	}
+	if !strings.Contains(err.Error(), "parent not found") {
+		t.Fatalf("Expected parent not found error, got %v", err)
+	}
+}
+
+func TestRestoreDifferentialInvalidParentTypeFails(t *testing.T) {
+	tempDir := t.TempDir()
+	parentPath := filepath.Join(tempDir, "parent.db")
+	diffPath := filepath.Join(tempDir, "diff.db")
+	if err := os.WriteFile(parentPath, []byte("parent content"), 0644); err != nil {
+		t.Fatalf("Failed to create parent file: %v", err)
+	}
+	if err := os.WriteFile(diffPath, []byte("diff content"), 0644); err != nil {
+		t.Fatalf("Failed to create diff file: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+
+	mgr := NewManager(config, &MockDatabase{dbPath: filepath.Join(tempDir, "source.db")})
+	mgr.metadata.Backups = append(mgr.metadata.Backups,
+		&Backup{ID: "inc-parent", Type: TypeIncremental, Destination: parentPath, ParentID: "full", CompletedAt: time.Now()},
+		&Backup{ID: "diff", Type: TypeDifferential, Destination: diffPath, ParentID: "inc-parent", CompletedAt: time.Now()},
+	)
+
+	err := mgr.Restore(context.Background(), "diff", filepath.Join(tempDir, "restored.db"))
+	if err == nil {
+		t.Fatal("Expected invalid differential parent error")
+	}
+	if !strings.Contains(err.Error(), "requires full parent") {
+		t.Fatalf("Expected differential parent error, got %v", err)
+	}
+}
+
+func TestRestoreBackupChainCycleFails(t *testing.T) {
+	tempDir := t.TempDir()
+	backupPath := filepath.Join(tempDir, "backup.db")
+	if err := os.WriteFile(backupPath, []byte("backup content"), 0644); err != nil {
+		t.Fatalf("Failed to create backup file: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+
+	mgr := NewManager(config, &MockDatabase{dbPath: filepath.Join(tempDir, "source.db")})
+	mgr.metadata.Backups = append(mgr.metadata.Backups,
+		&Backup{ID: "a", Type: TypeIncremental, Destination: backupPath, ParentID: "b", CompletedAt: time.Now()},
+		&Backup{ID: "b", Type: TypeIncremental, Destination: backupPath, ParentID: "a", CompletedAt: time.Now()},
+	)
+
+	err := mgr.Restore(context.Background(), "a", filepath.Join(tempDir, "restored.db"))
+	if err == nil {
+		t.Fatal("Expected cycle error")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("Expected cycle error, got %v", err)
 	}
 }

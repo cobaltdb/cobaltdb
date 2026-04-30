@@ -150,6 +150,9 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (*Backup, e
 		Source:      m.db.GetDatabasePath(),
 		Incremental: backupType != TypeFull,
 	}
+	if backup.Incremental {
+		backup.ParentID = m.findParentBackupID(backupType)
+	}
 
 	// Start hot backup
 	if err := m.db.BeginHotBackup(); err != nil {
@@ -388,6 +391,10 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 		return fmt.Errorf("backup not found: %s", backupID)
 	}
 
+	if err := m.validateRestoreChain(backup); err != nil {
+		return err
+	}
+
 	// Check if backup file exists
 	if _, err := os.Stat(backup.Destination); err != nil {
 		return fmt.Errorf("backup file not found: %w", err)
@@ -478,6 +485,81 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 				return fmt.Errorf("failed to restore WAL file %s: %w", walFile, err)
 			}
 		}
+	}
+
+	return nil
+}
+
+func (m *Manager) findParentBackupID(backupType Type) string {
+	m.metadata.mu.RLock()
+	defer m.metadata.mu.RUnlock()
+
+	var parent *Backup
+	for _, backup := range m.metadata.Backups {
+		if backup.CompletedAt.IsZero() {
+			continue
+		}
+		if backupType == TypeDifferential && backup.Type != TypeFull {
+			continue
+		}
+		if parent == nil || backup.CompletedAt.After(parent.CompletedAt) {
+			parent = backup
+		}
+	}
+
+	if parent == nil {
+		return ""
+	}
+	return parent.ID
+}
+
+func (m *Manager) validateRestoreChain(backup *Backup) error {
+	if backup == nil {
+		return fmt.Errorf("backup not found")
+	}
+	if backup.Type == TypeFull && backup.ParentID == "" {
+		return nil
+	}
+	if backup.ParentID == "" {
+		return fmt.Errorf("backup %s requires a parent backup", backup.ID)
+	}
+
+	m.metadata.mu.RLock()
+	backupsByID := make(map[string]*Backup, len(m.metadata.Backups))
+	for _, candidate := range m.metadata.Backups {
+		backupsByID[candidate.ID] = candidate
+	}
+	m.metadata.mu.RUnlock()
+
+	seen := map[string]bool{backup.ID: true}
+	current := backup
+	for current.Type != TypeFull {
+		parent, ok := backupsByID[current.ParentID]
+		if !ok {
+			return fmt.Errorf("backup %s parent not found: %s", current.ID, current.ParentID)
+		}
+		if seen[parent.ID] {
+			return fmt.Errorf("backup chain contains a cycle at %s", parent.ID)
+		}
+		if _, err := os.Stat(parent.Destination); err != nil {
+			return fmt.Errorf("backup %s parent file not found: %w", current.ID, err)
+		}
+
+		switch current.Type {
+		case TypeIncremental:
+			if parent.Type != TypeFull && parent.Type != TypeIncremental {
+				return fmt.Errorf("incremental backup %s has invalid parent type %v", current.ID, parent.Type)
+			}
+		case TypeDifferential:
+			if parent.Type != TypeFull {
+				return fmt.Errorf("differential backup %s requires full parent, got %v", current.ID, parent.Type)
+			}
+		default:
+			return fmt.Errorf("unknown backup type %v for backup %s", current.Type, current.ID)
+		}
+
+		seen[parent.ID] = true
+		current = parent
 	}
 
 	return nil
