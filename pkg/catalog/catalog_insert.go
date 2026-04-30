@@ -134,37 +134,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	// Handle INSERT...SELECT: execute SELECT and convert to value rows
 	valueRows := stmt.Values
 	if stmt.Select != nil {
-		selectCols, selectRows, err := c.selectLocked(stmt.Select, args)
+		var err error
+		valueRows, err = c.convertSelectToValueRows(stmt, insertColumns, args)
 		if err != nil {
-			return 0, 0, fmt.Errorf("INSERT...SELECT failed: %w", err)
-		}
-		// Validate column count matches
-		if len(selectCols) != len(insertColumns) {
-			return 0, 0, fmt.Errorf("INSERT...SELECT column count mismatch: INSERT has %d columns, SELECT returns %d columns", len(insertColumns), len(selectCols))
-		}
-		// Convert select results to expression rows
-		valueRows = make([][]query.Expression, len(selectRows))
-		for i, row := range selectRows {
-			exprRow := make([]query.Expression, len(row))
-			for j, val := range row {
-				switch v := val.(type) {
-				case nil:
-					exprRow[j] = &query.NullLiteral{}
-				case string:
-					exprRow[j] = &query.StringLiteral{Value: v}
-				case float64:
-					exprRow[j] = &query.NumberLiteral{Value: v}
-				case int64:
-					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: strconv.FormatInt(v, 10)}
-				case int:
-					exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: strconv.Itoa(v)}
-				case bool:
-					exprRow[j] = &query.BooleanLiteral{Value: v}
-				default:
-					exprRow[j] = &query.StringLiteral{Value: ValueToStringKey(v)}
-				}
-			}
-			valueRows[i] = exprRow
+			return 0, 0, err
 		}
 	}
 
@@ -186,7 +159,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			key     []byte
 		}
 	}
-	var stmtInserts []stmtInsert
+	var stmtInserts []stmtInsertEntry
 	var insertedRows [][]interface{} // Track rows for trigger execution
 	var insertErr error
 
@@ -331,95 +304,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 		// Check UNIQUE constraints before inserting
 		skipRow := false
-		for i, col := range table.Columns {
-			if col.Unique && rowValues[i] != nil {
-				var duplicateKey []byte
-
-				// Try index-based lookup first (O(log n) vs full table scan)
-				colLower := strings.ToLower(col.Name)
-				found := false
-				for idxName, idxDef := range c.indexes {
-					if idxDef.TableName == stmt.Table && idxDef.Unique && len(idxDef.Columns) == 1 && strings.ToLower(idxDef.Columns[0]) == colLower {
-						if idxTree, ok := c.indexTrees[idxName]; ok {
-							idxKey := typeTaggedKey(rowValues[i])
-							if _, err := idxTree.Get([]byte(idxKey)); err == nil {
-								duplicateKey = []byte(idxKey)
-							}
-						}
-						found = true
-						break
-					}
-				}
-
-				// Fallback: full table scan if no unique index found
-				if !found {
-					iter, err := tree.Scan(nil, nil)
-					if err != nil {
-						return 0, 0, fmt.Errorf("failed to scan table for UNIQUE check: %w", err)
-					}
-					for iter.HasNext() {
-						k, existingData, err := iter.Next()
-						if err != nil {
-							break
-						}
-						vrow, err := decodeVersionedRow(existingData, len(table.Columns))
-						if err != nil {
-							continue
-						}
-						if vrow.Version.DeletedAt > 0 {
-							continue
-						}
-						existingRow := vrow.Data
-						if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
-							duplicateKey = k
-							break
-						}
-					}
-					iter.Close()
-				}
-
-				if duplicateKey != nil {
-					if stmt.ConflictAction == query.ConflictIgnore {
-						skipRow = true
-						break
-					} else if stmt.ConflictAction == query.ConflictReplace {
-						oldData, getErr := tree.Get(duplicateKey)
-						if getErr == nil {
-							oldRow, decErr := decodeRow(oldData, len(table.Columns))
-							if decErr == nil {
-								for idxName, idxTree := range c.indexTrees {
-									idxDef := c.indexes[idxName]
-									if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
-										oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
-										if ok {
-											var delErr error
-											if idxDef.Unique {
-												delErr = idxTree.Delete([]byte(oldIdxKey))
-											} else {
-												compoundKey := oldIdxKey + "\x00" + string(duplicateKey)
-												delErr = idxTree.Delete([]byte(compoundKey))
-											}
-											if delErr != nil {
-												insertErr = fmt.Errorf("failed to delete from index %s: %w", idxName, delErr)
-												break
-											}
-										}
-									}
-								}
-							}
-						}
-						if insertErr == nil {
-							if delErr := tree.Delete(duplicateKey); delErr != nil {
-								insertErr = fmt.Errorf("failed to delete duplicate row: %w", delErr)
-							}
-						}
-					} else {
-						insertErr = fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
-						break
-					}
-				}
-			}
-		}
+		skipRow, insertErr = c.checkUniqueConstraints(tree, table, stmt, rowValues)
 		if insertErr != nil {
 			break
 		}
@@ -428,94 +313,14 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Check CHECK constraints before inserting
-		for _, col := range table.Columns {
-			if col.Check != nil {
-				result, err := evaluateExpression(c, rowValues, table.Columns, col.Check, args)
-				if err != nil {
-					insertErr = fmt.Errorf("CHECK constraint failed: %w", err)
-					break
-				}
-				// Per SQL standard, NULL (unknown) passes CHECK constraint; only explicit false fails
-				if result != nil {
-					if resultBool, ok := result.(bool); ok && !resultBool {
-						insertErr = fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
-						break
-					}
-				}
-			}
-		}
-		if insertErr != nil {
+		if err := c.checkInsertConstraints(table, rowValues, args); err != nil {
+			insertErr = err
 			break
 		}
 
 		// Check FOREIGN KEY constraints before inserting
-		for _, fk := range table.ForeignKeys {
-			// Get the value(s) for the foreign key column(s)
-			for i, colName := range fk.Columns {
-				colIdx := table.GetColumnIndex(colName)
-				if colIdx < 0 || colIdx >= len(rowValues) {
-					continue
-				}
-				fkValue := rowValues[colIdx]
-				if fkValue == nil {
-					continue // NULL values skip FK check
-				}
-
-				// Check if referenced row exists
-				refTable, err := c.getTableLocked(fk.ReferencedTable)
-				if err != nil {
-					insertErr = fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
-					break
-				}
-
-				refColIdx := 0
-				if len(fk.ReferencedColumns) > i {
-					refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
-				} else if len(refTable.Columns) > 0 {
-					// Default to first column
-					refColIdx = 0
-				}
-
-				refTree, exists := c.tableTrees[fk.ReferencedTable]
-				if !exists {
-					insertErr = fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
-					break
-				}
-
-				// Search for matching row
-				found := false
-				refIter, err := refTree.Scan(nil, nil)
-				if err != nil {
-					insertErr = fmt.Errorf("FOREIGN KEY constraint failed: %w", err)
-					break
-				}
-				for refIter.HasNext() {
-					_, refData, err := refIter.Next()
-					if err != nil {
-						break
-					}
-					vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
-					if err != nil {
-						continue
-					}
-					refRow := vrow.Data
-					if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
-						found = true
-						break
-					}
-				}
-				refIter.Close()
-
-				if !found {
-					insertErr = fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
-					break
-				}
-			}
-			if insertErr != nil {
-				break
-			}
-		}
-		if insertErr != nil {
+		if err := c.checkForeignKeyConstraints(table, rowValues); err != nil {
+			insertErr = err
 			break
 		}
 
@@ -705,7 +510,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Track for statement-level atomicity
-		si := stmtInsert{key: []byte(key)}
+		si := stmtInsertEntry{key: []byte(key)}
 		for _, ic := range idxChanges {
 			si.idxKeys = append(si.idxKeys, struct {
 				idxName string
@@ -722,47 +527,17 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		rowsAffected++
 	}
 
-	// Statement-level atomicity: undo all inserts on error (outside explicit transactions)
-	if insertErr != nil && !c.txnActive {
-		for i := len(stmtInserts) - 1; i >= 0; i-- {
-			si := stmtInserts[i]
-			if err := tree.Delete(si.key); err != nil {
-				// Best effort cleanup failed
-				_ = err
-			}
-			for _, ik := range si.idxKeys {
-				if idxTree, exists := c.indexTrees[ik.idxName]; exists {
-					if err := idxTree.Delete(ik.key); err != nil {
-						// Best effort cleanup failed
-						_ = err
-					}
-				}
-			}
-		}
-		table.AutoIncSeq = savedAutoIncSeq
-		return 0, 0, insertErr
-	}
+	// Statement-level atomicity: undo all inserts on error
 	if insertErr != nil {
-		// Inside explicit transaction - undo log handles cleanup on ROLLBACK
-		// But remove the undo entries for this failed statement's successful rows
-		// since the caller will see an error and may want statement-level atomicity
-		// Undo the successful rows immediately for statement atomicity
-		for i := len(stmtInserts) - 1; i >= 0; i-- {
-			si := stmtInserts[i]
-			_ = tree.Delete(si.key) // best-effort cleanup on statement rollback
-			for _, ik := range si.idxKeys {
-				if idxTree, exists := c.indexTrees[ik.idxName]; exists {
-					_ = idxTree.Delete(ik.key) // best-effort cleanup on statement rollback
-				}
-			}
+		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
+		if !c.txnActive {
+			return 0, 0, insertErr
 		}
-		// Remove the undo log entries we added for this statement
-		// (the AutoIncSeq entry + one per successful row)
-		undoToRemove := 1 + len(stmtInserts) // 1 for AutoIncSeq + N for rows
+		// Inside explicit transaction - remove undo log entries
+		undoToRemove := 1 + len(stmtInserts)
 		if len(c.undoLog) >= undoToRemove {
 			c.undoLog = c.undoLog[:len(c.undoLog)-undoToRemove]
 		}
-		table.AutoIncSeq = savedAutoIncSeq
 		return 0, 0, insertErr
 	}
 
@@ -805,6 +580,243 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	}
 
 	return autoIncValue, rowsAffected, nil
+}
+
+// convertSelectToValueRows executes the SELECT part of INSERT...SELECT and
+// converts the result rows into expression rows that the insert loop can process.
+func (c *Catalog) convertSelectToValueRows(stmt *query.InsertStmt, insertColumns []string, args []interface{}) ([][]query.Expression, error) {
+	selectCols, selectRows, err := c.selectLocked(stmt.Select, args)
+	if err != nil {
+		return nil, fmt.Errorf("INSERT...SELECT failed: %w", err)
+	}
+	if len(selectCols) != len(insertColumns) {
+		return nil, fmt.Errorf("INSERT...SELECT column count mismatch: INSERT has %d columns, SELECT returns %d columns", len(insertColumns), len(selectCols))
+	}
+	valueRows := make([][]query.Expression, len(selectRows))
+	for i, row := range selectRows {
+		exprRow := make([]query.Expression, len(row))
+		for j, val := range row {
+			switch v := val.(type) {
+			case nil:
+				exprRow[j] = &query.NullLiteral{}
+			case string:
+				exprRow[j] = &query.StringLiteral{Value: v}
+			case float64:
+				exprRow[j] = &query.NumberLiteral{Value: v}
+			case int64:
+				exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: strconv.FormatInt(v, 10)}
+			case int:
+				exprRow[j] = &query.NumberLiteral{Value: float64(v), Raw: strconv.Itoa(v)}
+			case bool:
+				exprRow[j] = &query.BooleanLiteral{Value: v}
+			default:
+				exprRow[j] = &query.StringLiteral{Value: ValueToStringKey(v)}
+			}
+		}
+		valueRows[i] = exprRow
+	}
+	return valueRows, nil
+}
+
+// checkUniqueConstraints verifies UNIQUE constraints for a single row.
+// Returns (skipRow=true) when the row should be silently skipped (ON CONFLICT IGNORE),
+// or an error for constraint violations. Handles ON CONFLICT REPLACE by deleting
+// the conflicting row and its index entries.
+func (c *Catalog) checkUniqueConstraints(tree *btree.BTree, table *TableDef, stmt *query.InsertStmt, rowValues []interface{}) (bool, error) {
+	for i, col := range table.Columns {
+		if !col.Unique || rowValues[i] == nil {
+			continue
+		}
+
+		var duplicateKey []byte
+
+		// Try index-based lookup first (O(log n) vs full table scan)
+		colLower := strings.ToLower(col.Name)
+		found := false
+		for idxName, idxDef := range c.indexes {
+			if idxDef.TableName == stmt.Table && idxDef.Unique && len(idxDef.Columns) == 1 && strings.ToLower(idxDef.Columns[0]) == colLower {
+				if idxTree, ok := c.indexTrees[idxName]; ok {
+					idxKey := typeTaggedKey(rowValues[i])
+					if _, err := idxTree.Get([]byte(idxKey)); err == nil {
+						duplicateKey = []byte(idxKey)
+					}
+				}
+				found = true
+				break
+			}
+		}
+
+		// Fallback: full table scan if no unique index found
+		if !found {
+			iter, err := tree.Scan(nil, nil)
+			if err != nil {
+				return false, fmt.Errorf("failed to scan table for UNIQUE check: %w", err)
+			}
+			for iter.HasNext() {
+				k, existingData, err := iter.Next()
+				if err != nil {
+					break
+				}
+				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
+				if err != nil {
+					continue
+				}
+				if vrow.Version.DeletedAt > 0 {
+					continue
+				}
+				existingRow := vrow.Data
+				if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
+					duplicateKey = k
+					break
+				}
+			}
+			iter.Close()
+		}
+
+		if duplicateKey != nil {
+			if stmt.ConflictAction == query.ConflictIgnore {
+				return true, nil
+			} else if stmt.ConflictAction == query.ConflictReplace {
+				oldData, getErr := tree.Get(duplicateKey)
+				if getErr == nil {
+					oldRow, decErr := decodeRow(oldData, len(table.Columns))
+					if decErr == nil {
+						for idxName, idxTree := range c.indexTrees {
+							idxDef := c.indexes[idxName]
+							if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
+								oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
+								if ok {
+									var delErr error
+									if idxDef.Unique {
+										delErr = idxTree.Delete([]byte(oldIdxKey))
+									} else {
+										compoundKey := oldIdxKey + "\x00" + string(duplicateKey)
+										delErr = idxTree.Delete([]byte(compoundKey))
+									}
+									if delErr != nil {
+										return false, fmt.Errorf("failed to delete from index %s: %w", idxName, delErr)
+									}
+								}
+							}
+						}
+					}
+				}
+				if delErr := tree.Delete(duplicateKey); delErr != nil {
+					return false, fmt.Errorf("failed to delete duplicate row: %w", delErr)
+				}
+			} else {
+				return false, fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
+			}
+		}
+	}
+	return false, nil
+}
+
+// checkInsertConstraints evaluates CHECK constraints for a row being inserted.
+// Per SQL standard, NULL (unknown) passes; only explicit false fails.
+func (c *Catalog) checkInsertConstraints(table *TableDef, rowValues []interface{}, args []interface{}) error {
+	for _, col := range table.Columns {
+		if col.Check == nil {
+			continue
+		}
+		result, err := evaluateExpression(c, rowValues, table.Columns, col.Check, args)
+		if err != nil {
+			return fmt.Errorf("CHECK constraint failed: %w", err)
+		}
+		if result != nil {
+			if resultBool, ok := result.(bool); ok && !resultBool {
+				return fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// checkForeignKeyConstraints validates FOREIGN KEY references for a row.
+// NULL values skip FK checking per SQL standard.
+func (c *Catalog) checkForeignKeyConstraints(table *TableDef, rowValues []interface{}) error {
+	for _, fk := range table.ForeignKeys {
+		for i, colName := range fk.Columns {
+			colIdx := table.GetColumnIndex(colName)
+			if colIdx < 0 || colIdx >= len(rowValues) {
+				continue
+			}
+			fkValue := rowValues[colIdx]
+			if fkValue == nil {
+				continue
+			}
+
+			refTable, err := c.getTableLocked(fk.ReferencedTable)
+			if err != nil {
+				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
+			}
+
+			refColIdx := 0
+			if len(fk.ReferencedColumns) > i {
+				refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
+			} else if len(refTable.Columns) > 0 {
+				refColIdx = 0
+			}
+
+			refTree, exists := c.tableTrees[fk.ReferencedTable]
+			if !exists {
+				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
+			}
+
+			found := false
+			refIter, err := refTree.Scan(nil, nil)
+			if err != nil {
+				return fmt.Errorf("FOREIGN KEY constraint failed: %w", err)
+			}
+			for refIter.HasNext() {
+				_, refData, err := refIter.Next()
+				if err != nil {
+					break
+				}
+				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
+				if err != nil {
+					continue
+				}
+				refRow := vrow.Data
+				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
+					found = true
+					break
+				}
+			}
+			refIter.Close()
+
+			if !found {
+				return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
+			}
+		}
+	}
+	return nil
+}
+
+// stmtInsertEntry is used to track successful row insertions for rollback.
+type stmtInsertEntry struct {
+	key     []byte
+	idxKeys []stmtIndexKey
+}
+
+type stmtIndexKey struct {
+	idxName string
+	key     []byte
+}
+
+// rollbackStatementInserts undoes all successfully inserted rows on statement
+// failure. Inside an explicit transaction it also removes undo-log entries.
+func (c *Catalog) rollbackStatementInserts(tree *btree.BTree, table *TableDef, stmtInserts []stmtInsertEntry, savedAutoIncSeq int64) {
+	for i := len(stmtInserts) - 1; i >= 0; i-- {
+		si := stmtInserts[i]
+		_ = tree.Delete(si.key)
+		for _, ik := range si.idxKeys {
+			if idxTree, exists := c.indexTrees[ik.idxName]; exists {
+				_ = idxTree.Delete(ik.key)
+			}
+		}
+	}
+	table.AutoIncSeq = savedAutoIncSeq
 }
 
 // getInsertTargetTree returns the BTree for inserting a row
