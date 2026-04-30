@@ -226,61 +226,65 @@ func (c *Catalog) executeScalarAggregate(stmt *query.SelectStmt, args []interfac
 	return returnColumns, [][]interface{}{row}, nil
 }
 
+// loadMainTableRows resolves the main FROM table reference to column definitions
+// and row data, checking CTE results and B-tree scans.
+func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]interface{}) {
+	// Check if main table is a CTE result
+	if c.cteResults != nil {
+		if cteRes, ok := c.cteResults[toLowerFast(from.Name)]; ok {
+			mainTableCols := make([]ColumnDef, len(cteRes.columns))
+			for i, col := range cteRes.columns {
+				mainTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
+			}
+			intermediateRows := make([][]interface{}, len(cteRes.rows))
+			copy(intermediateRows, cteRes.rows)
+			return mainTableCols, intermediateRows
+		}
+	}
+
+	// Get the main table
+	mainTable, err := c.getTableLocked(from.Name)
+	if err != nil {
+		return nil, nil
+	}
+
+	// Get all trees for scanning (handles partitioned tables)
+	trees, err := c.getTableTreesForScan(mainTable)
+	if err != nil {
+		return mainTable.Columns, nil
+	}
+
+	var intermediateRows [][]interface{}
+	for _, tree := range trees {
+		mainIter, err := tree.Scan(nil, nil)
+		if err != nil {
+			continue
+		}
+		for mainIter.HasNext() {
+			_, data, err := mainIter.Next()
+			if err != nil {
+				break
+			}
+			vrow, err := decodeVersionedRow(data, len(mainTable.Columns))
+			if err != nil {
+				continue
+			}
+			if vrow.Version.DeletedAt > 0 {
+				continue
+			}
+			intermediateRows = append(intermediateRows, vrow.Data)
+		}
+		mainIter.Close()
+	}
+	return mainTable.Columns, intermediateRows
+}
+
 func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo) ([]string, [][]interface{}, error) {
 	var mainTableCols []ColumnDef
 	var intermediateRows [][]interface{}
 
 	// Check if main table is a CTE result
-	if c.cteResults != nil {
-		if cteRes, ok := c.cteResults[toLowerFast(stmt.From.Name)]; ok {
-			mainTableCols = make([]ColumnDef, len(cteRes.columns))
-			for i, col := range cteRes.columns {
-				mainTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
-			}
-			intermediateRows = make([][]interface{}, len(cteRes.rows))
-			copy(intermediateRows, cteRes.rows)
-		}
-	}
-
-	if mainTableCols == nil {
-		// Get the main table
-		mainTable, err := c.getTableLocked(stmt.From.Name)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		mainTableCols = mainTable.Columns
-
-		// Get all trees for scanning (handles partitioned tables)
-		trees, err := c.getTableTreesForScan(mainTable)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		// Build initial intermediate rows from all partition trees (full column data)
-		for _, tree := range trees {
-			mainIter, err := tree.Scan(nil, nil)
-			if err != nil {
-				return nil, nil, fmt.Errorf("failed to scan table: %w", err)
-			}
-			for mainIter.HasNext() {
-				_, data, err := mainIter.Next()
-				if err != nil {
-					break
-				}
-				vrow, err := decodeVersionedRow(data, len(mainTable.Columns))
-				if err != nil {
-					continue
-				}
-				// Skip deleted rows
-				if vrow.Version.DeletedAt > 0 {
-					continue
-				}
-				intermediateRows = append(intermediateRows, vrow.Data)
-			}
-			mainIter.Close()
-		}
-	}
+	mainTableCols, intermediateRows = c.loadMainTableRows(stmt.From)
 
 	// Track combined columns and table offsets for projection
 	combinedColumns := make([]ColumnDef, len(mainTableCols))
@@ -302,82 +306,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 
 	// Chain through each JOIN
 	for _, join := range stmt.Joins {
-		var joinTableCols []ColumnDef
-		var joinRows [][]interface{}
-
-		// Check if join table is a derived table (subquery or UNION)
-		if join.Table.Subquery != nil || join.Table.SubqueryStmt != nil {
-			subCols, subRows, err := c.executeDerivedTable(join.Table, args)
-			if err == nil {
-				joinTableCols = make([]ColumnDef, len(subCols))
-				for i, col := range subCols {
-					joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
-				}
-				joinRows = subRows
-			}
-		}
-
-		// Check if join table is a CTE result
-		if joinTableCols == nil && c.cteResults != nil {
-			if cteRes, ok := c.cteResults[toLowerFast(join.Table.Name)]; ok {
-				// Use CTE result rows
-				joinTableCols = make([]ColumnDef, len(cteRes.columns))
-				for i, col := range cteRes.columns {
-					joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
-				}
-				joinRows = cteRes.rows
-			}
-		}
-
-		if joinTableCols == nil {
-			// Check if it's a view (CTE registered as view)
-			if viewDef, viewErr := c.getViewLocked(join.Table.Name); viewErr == nil {
-				viewCols, viewRows, viewExecErr := c.selectLocked(viewDef, args)
-				if viewExecErr == nil {
-					joinTableCols = make([]ColumnDef, len(viewCols))
-					for i, col := range viewCols {
-						joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
-					}
-					joinRows = viewRows
-				}
-			}
-		}
-
-		if joinTableCols == nil {
-			// Normal table lookup
-			joinTable, err := c.getTableLocked(join.Table.Name)
-			if err != nil {
-				continue
-			}
-
-			joinTree, exists := c.tableTrees[join.Table.Name]
-			if !exists {
-				continue
-			}
-
-			joinTableCols = joinTable.Columns
-			// Scan join table rows
-			joinIter, err := joinTree.Scan(nil, nil)
-			if err != nil {
-				return nil, nil, fmt.Errorf("failed to scan join table: %w", err)
-			}
-			defer joinIter.Close()
-			for joinIter.HasNext() {
-				_, data, err := joinIter.Next()
-				if err != nil {
-					break
-				}
-				vrow, err := decodeVersionedRow(data, len(joinTable.Columns))
-				if err != nil {
-					continue
-				}
-				// Skip deleted rows
-				if vrow.Version.DeletedAt > 0 {
-					continue
-				}
-				joinRows = append(joinRows, vrow.Data)
-			}
-		}
+		joinTableCols, joinRows := c.resolveJoinTable(join, args)
 
 		isLeftJoin := join.Type == query.TokenLeft || join.Type == query.TokenFull
 		isRightJoin := join.Type == query.TokenRight || join.Type == query.TokenFull
@@ -647,68 +576,7 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 	var intermediateRows [][]interface{}
 
 	// Check if main table is a CTE result or derived table
-	if stmt.From.Subquery != nil || stmt.From.SubqueryStmt != nil {
-		// Derived table as main table
-		subCols, subRows, err := c.executeDerivedTable(stmt.From, args)
-		if err != nil {
-			return nil, nil, err
-		}
-		mainTableCols = make([]ColumnDef, len(subCols))
-		for i, col := range subCols {
-			mainTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
-		}
-		intermediateRows = make([][]interface{}, len(subRows))
-		copy(intermediateRows, subRows)
-	} else if c.cteResults != nil {
-		if cteRes, ok := c.cteResults[toLowerFast(stmt.From.Name)]; ok {
-			mainTableCols = make([]ColumnDef, len(cteRes.columns))
-			for i, col := range cteRes.columns {
-				mainTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
-			}
-			intermediateRows = make([][]interface{}, len(cteRes.rows))
-			copy(intermediateRows, cteRes.rows)
-		}
-	}
-
-	if mainTableCols == nil {
-		// Get main table for column info
-		mainTable, err := c.getTableLocked(stmt.From.Name)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		mainTableCols = mainTable.Columns
-
-		// Get all trees for scanning (handles partitioned tables)
-		trees, err := c.getTableTreesForScan(mainTable)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		// Build initial intermediate rows from all partition trees (full column data)
-		for _, tree := range trees {
-			mainIter, err := tree.Scan(nil, nil)
-			if err != nil {
-				return returnColumns, nil, fmt.Errorf("failed to scan table: %w", err)
-			}
-			for mainIter.HasNext() {
-				_, data, err := mainIter.Next()
-				if err != nil {
-					break
-				}
-				vrow, err := decodeVersionedRow(data, len(mainTable.Columns))
-				if err != nil {
-					continue
-				}
-				// Skip deleted rows
-				if vrow.Version.DeletedAt > 0 {
-					continue
-				}
-				intermediateRows = append(intermediateRows, vrow.Data)
-			}
-			mainIter.Close()
-		}
-	}
+	mainTableCols, intermediateRows = c.loadMainTableRows(stmt.From)
 
 	// Track combined columns from all tables
 	allColumns := make([]ColumnDef, len(mainTableCols))
@@ -899,6 +767,105 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 }
 
 // executeJoinPass performs CROSS, hash, or nested loop join on the given row sets.
+// resolveJoinTable resolves a JOIN table reference to its column definitions and
+// row data by checking subqueries, CTE results, views, and regular tables.
+func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) ([]ColumnDef, [][]interface{}) {
+	var joinTableCols []ColumnDef
+	var joinRows [][]interface{}
+
+	// Check if join table is a derived table (subquery or UNION)
+	if join.Table.Subquery != nil || join.Table.SubqueryStmt != nil {
+		subCols, subRows, err := c.executeDerivedTable(join.Table, args)
+		if err == nil {
+			joinTableCols = make([]ColumnDef, len(subCols))
+			for i, col := range subCols {
+				joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
+			}
+			joinRows = subRows
+		}
+	}
+
+	// Check if join table is a CTE result
+	if joinTableCols == nil && c.cteResults != nil {
+		if cteRes, ok := c.cteResults[toLowerFast(join.Table.Name)]; ok {
+			joinTableCols = make([]ColumnDef, len(cteRes.columns))
+			for i, col := range cteRes.columns {
+				joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
+			}
+			joinRows = cteRes.rows
+		}
+	}
+
+	if joinTableCols == nil {
+		// Check if it's a view (CTE registered as view)
+		if viewDef, viewErr := c.getViewLocked(join.Table.Name); viewErr == nil {
+			viewCols, viewRows, viewExecErr := c.selectLocked(viewDef, args)
+			if viewExecErr == nil {
+				joinTableCols = make([]ColumnDef, len(viewCols))
+				for i, col := range viewCols {
+					joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
+			}
+				joinRows = viewRows
+			}
+		}
+	}
+
+	if joinTableCols == nil {
+		// Check if it's a materialized view
+		if mv, mvErr := c.getMaterializedViewLocked(join.Table.Name); mvErr == nil {
+			joinTableCols = make([]ColumnDef, 0, len(mv.Data[0]))
+			if len(mv.Data) > 0 {
+				for colName := range mv.Data[0] {
+					joinTableCols = append(joinTableCols, ColumnDef{Name: colName, Type: "TEXT"})
+				}
+			}
+			for _, rowMap := range mv.Data {
+				row := make([]interface{}, len(joinTableCols))
+				for j, col := range joinTableCols {
+					row[j] = rowMap[col.Name]
+				}
+				joinRows = append(joinRows, row)
+			}
+		}
+	}
+
+	if joinTableCols == nil {
+		// Normal table lookup
+		joinTable, err := c.getTableLocked(join.Table.Name)
+		if err != nil {
+			return nil, nil
+		}
+
+		joinTree, exists := c.tableTrees[join.Table.Name]
+		if !exists {
+			return nil, nil
+		}
+
+		joinTableCols = joinTable.Columns
+		joinIter, err := joinTree.Scan(nil, nil)
+		if err != nil {
+			return nil, nil
+		}
+		defer joinIter.Close()
+		for joinIter.HasNext() {
+			_, data, err := joinIter.Next()
+			if err != nil {
+				break
+			}
+			vrow, err := decodeVersionedRow(data, len(joinTable.Columns))
+			if err != nil {
+				continue
+			}
+			if vrow.Version.DeletedAt > 0 {
+				continue
+			}
+			joinRows = append(joinRows, vrow.Data)
+		}
+	}
+
+	return joinTableCols, joinRows
+}
+
 func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows [][]interface{}, joinTableCols []ColumnDef, combinedColumns []ColumnDef, newCombinedColumns []ColumnDef, joinCondition query.Expression, args []interface{}, isLeftJoin, isRightJoin, isCrossJoin bool) [][]interface{} {
 	var newIntermediate [][]interface{}
 
