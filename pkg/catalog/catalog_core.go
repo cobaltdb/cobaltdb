@@ -745,7 +745,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 						if err == nil {
 							selectedRow[i] = val
 						}
-					} else if strings.HasPrefix(ci.name, "__orderby_") {
+					} else if len(ci.name) > 10 && ci.name[:10] == "__orderby_" {
 						// Hidden ORDER BY expression column - extract index from name
 						var obIdx int
 						if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
@@ -883,7 +883,7 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 							if err == nil {
 								selectedRow[i] = val
 							}
-						} else if strings.HasPrefix(ci.name, "__orderby_") {
+						} else if len(ci.name) > 10 && ci.name[:10] == "__orderby_" {
 							// Hidden ORDER BY expression column - extract index from name
 							var obIdx int
 							if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
@@ -3737,7 +3737,7 @@ func (cat *Catalog) processRowChunk(
 					if err == nil {
 						selectedRow[i] = val
 					}
-				} else if strings.HasPrefix(ci.name, "__orderby_") {
+				} else if len(ci.name) > 10 && ci.name[:10] == "__orderby_" {
 					var obIdx int
 					if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
 						val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)

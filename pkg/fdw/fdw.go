@@ -1,7 +1,6 @@
 package fdw
 
 import (
-	"errors"
 	"sync"
 )
 
@@ -72,9 +71,3 @@ func (r *Registry) List() []string {
 	}
 	return names
 }
-
-// ErrNotFound is returned when an FDW or foreign table is not found.
-var ErrNotFound = errors.New("foreign data wrapper not found")
-
-// ErrNotSupported is returned for unsupported operations.
-var ErrNotSupported = errors.New("operation not supported by foreign data wrapper")
