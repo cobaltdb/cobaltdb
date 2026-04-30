@@ -181,31 +181,8 @@ func (p *Parser) parseSelect() (*SelectStmt, error) {
 
 	// FROM
 	if p.match(TokenFrom) {
-		table, err := p.parseTableRef()
-		if err != nil {
+		if err := p.parseFromAndJoins(stmt); err != nil {
 			return nil, err
-		}
-		stmt.From = table
-
-		// Comma-separated tables are implicit CROSS JOINs (FROM a, b, c)
-		for p.match(TokenComma) {
-			crossTable, err := p.parseTableRef()
-			if err != nil {
-				return nil, err
-			}
-			stmt.Joins = append(stmt.Joins, &JoinClause{
-				Type:  TokenCross,
-				Table: crossTable,
-			})
-		}
-
-		// JOINs
-		for p.isJoin() {
-			join, err := p.parseJoin()
-			if err != nil {
-				return nil, err
-			}
-			stmt.Joins = append(stmt.Joins, join)
 		}
 	}
 
@@ -227,13 +204,7 @@ func (p *Parser) parseSelect() (*SelectStmt, error) {
 			return nil, err
 		}
 		stmt.Where = where
-
-		// Fix WHERE clause placeholder indices
-		// Collect all placeholders in WHERE clause and assign indices starting from 0
-		wherePlaceholders := collectPlaceholders(where)
-		for i, ph := range wherePlaceholders {
-			ph.Index = i
-		}
+		reindexPlaceholders(where, 0)
 	}
 
 	// GROUP BY
@@ -553,6 +524,64 @@ func (p *Parser) parseJoinCondition(join *JoinClause) error {
 		join.Condition = cond
 	}
 	return nil
+}
+
+// parseFromAndJoins parses FROM table references, comma-separated cross joins,
+// and explicit JOIN clauses into stmt.From and stmt.Joins.
+func (p *Parser) parseFromAndJoins(stmt *SelectStmt) error {
+	table, err := p.parseTableRef()
+	if err != nil {
+		return err
+	}
+	stmt.From = table
+
+	for p.match(TokenComma) {
+		crossTable, err := p.parseTableRef()
+		if err != nil {
+			return err
+		}
+		stmt.Joins = append(stmt.Joins, &JoinClause{
+			Type:  TokenCross,
+			Table: crossTable,
+		})
+	}
+
+	for p.isJoin() {
+		join, err := p.parseJoin()
+		if err != nil {
+			return err
+		}
+		stmt.Joins = append(stmt.Joins, join)
+	}
+	return nil
+}
+
+
+func (p *Parser) parseIfNotExists() bool {
+	if p.match(TokenIf) {
+		if p.match(TokenNot) {
+			_ = p.match(TokenExists)
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Parser) parseOptionalParenExpr(tokenType TokenType) (Expression, error) {
+	if !p.match(tokenType) {
+		return nil, nil
+	}
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, err
+	}
+	expr, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, err
+	}
+	return expr, nil
 }
 
 // parseOrderByList parses ORDER BY expressions
@@ -1587,114 +1616,32 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 		return nil, err
 	}
 
-	// Count set clauses first for placeholder offset
-	setCount := 0
-
-	// Set clauses - parse and save positions
-	var setClauses []*SetClause
-	var setPlaceholders []*PlaceholderExpr
-
-	for {
-		// Allow keywords as column names in SET clause
-		col := p.current()
-		if col.Type == TokenIdentifier || (col.Literal != "" && col.Type != TokenEOF && col.Type != TokenEq) {
-			p.advance()
-		} else {
-			return nil, fmt.Errorf("expected column name, got %s", col.Literal)
-		}
-
-		if _, err := p.expect(TokenEq); err != nil {
-			return nil, err
-		}
-
-		val, err := p.parseExpression()
-		if err != nil {
-			return nil, err
-		}
-
-		clause := &SetClause{Column: col.Literal, Value: val}
-		setClauses = append(setClauses, clause)
-
-		// Track placeholders for later fix (including nested ones in function calls)
-		setPlaceholders = append(setPlaceholders, collectPlaceholders(val)...)
-		setCount++
-
-		if !p.match(TokenComma) {
-			break
-		}
-	}
-
-	// Fix SET clause placeholder indices (they should be 0, 1, 2, ...)
-	for i, ph := range setPlaceholders {
-		ph.Index = i
+	setClauses, setPlaceholders, err := p.parseSetClauses()
+	if err != nil {
+		return nil, err
 	}
 	stmt.Set = setClauses
 
-	// Calculate offset for WHERE clause placeholders (count actual placeholders, not SET columns)
 	whereOffset := len(setPlaceholders)
 
-	// FROM - for UPDATE with JOIN
 	if p.match(TokenFrom) {
-		table, err := p.parseTableRef()
+		whereOffset, err = p.parseUpdateFromJoin(stmt, whereOffset)
 		if err != nil {
 			return nil, err
 		}
-		stmt.From = table
-
-		// Comma-separated tables are implicit CROSS JOINs
-		for p.match(TokenComma) {
-			crossTable, err := p.parseTableRef()
-			if err != nil {
-				return nil, err
-			}
-			stmt.Joins = append(stmt.Joins, &JoinClause{
-				Type:  TokenCross,
-				Table: crossTable,
-			})
-		}
-
-		// JOINs
-		for p.isJoin() {
-			join, err := p.parseJoin()
-			if err != nil {
-				return nil, err
-			}
-			stmt.Joins = append(stmt.Joins, join)
-		}
-
-		// Fix placeholder indices in FROM/JOIN conditions
-		joinPlaceholderOffset := whereOffset
-		for _, join := range stmt.Joins {
-			if join.Condition != nil {
-				joinPlaceholders := collectPlaceholders(join.Condition)
-				for i, ph := range joinPlaceholders {
-					ph.Index = joinPlaceholderOffset + i
-				}
-				joinPlaceholderOffset += len(joinPlaceholders)
-			}
-		}
-		whereOffset = joinPlaceholderOffset
 	}
 
-	// WHERE
 	if p.match(TokenWhere) {
 		where, err := p.parseExpression()
 		if err != nil {
 			return nil, err
 		}
 		stmt.Where = where
-
-		// Fix WHERE clause placeholder indices
-		// Collect all placeholders in WHERE clause and assign indices starting from whereOffset
-		wherePlaceholders := collectPlaceholders(where)
-		for i, ph := range wherePlaceholders {
-			ph.Index = whereOffset + i
-		}
+		reindexPlaceholders(where, whereOffset)
 	}
 
-	// Parse optional RETURNING clause
 	if p.current().Type == TokenReturning {
-		p.advance() // consume RETURNING
+		p.advance()
 		returning, err := p.parseReturningClause()
 		if err != nil {
 			return nil, err
@@ -1703,6 +1650,92 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 	}
 
 	return stmt, nil
+}
+
+func (p *Parser) parseSetClauses() ([]*SetClause, []*PlaceholderExpr, error) {
+	var clauses []*SetClause
+	var placeholders []*PlaceholderExpr
+
+	for {
+		col := p.current()
+		if col.Type == TokenIdentifier || (col.Literal != "" && col.Type != TokenEOF && col.Type != TokenEq) {
+			p.advance()
+		} else {
+			return nil, nil, fmt.Errorf("expected column name, got %s", col.Literal)
+		}
+
+		if _, err := p.expect(TokenEq); err != nil {
+			return nil, nil, err
+		}
+
+		val, err := p.parseExpression()
+		if err != nil {
+			return nil, nil, err
+		}
+
+		clauses = append(clauses, &SetClause{Column: col.Literal, Value: val})
+		placeholders = append(placeholders, collectPlaceholders(val)...)
+
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+
+	for i, ph := range placeholders {
+		ph.Index = i
+	}
+	return clauses, placeholders, nil
+}
+
+func (p *Parser) parseUpdateFromJoin(stmt *UpdateStmt, whereOffset int) (int, error) {
+	table, err := p.parseTableRef()
+	if err != nil {
+		return whereOffset, err
+	}
+	stmt.From = table
+
+	for p.match(TokenComma) {
+		crossTable, err := p.parseTableRef()
+		if err != nil {
+			return whereOffset, err
+		}
+		stmt.Joins = append(stmt.Joins, &JoinClause{
+			Type:  TokenCross,
+			Table: crossTable,
+		})
+	}
+
+	for p.isJoin() {
+		join, err := p.parseJoin()
+		if err != nil {
+			return whereOffset, err
+		}
+		stmt.Joins = append(stmt.Joins, join)
+	}
+
+	offset := whereOffset
+	for _, join := range stmt.Joins {
+		if join.Condition != nil {
+			joinPHs := collectPlaceholders(join.Condition)
+			reindexPlaceholdersFromExpr(join.Condition, offset)
+			offset += len(joinPHs)
+		}
+	}
+	return offset, nil
+}
+
+func reindexPlaceholders(expr Expression, offset int) {
+	phs := collectPlaceholders(expr)
+	for i, ph := range phs {
+		ph.Index = offset + i
+	}
+}
+
+func reindexPlaceholdersFromExpr(expr Expression, offset int) {
+	phs := collectPlaceholders(expr)
+	for i, ph := range phs {
+		ph.Index = offset + i
+	}
 }
 
 // collectPlaceholders collects all PlaceholderExpr nodes from an expression
@@ -1928,15 +1961,7 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 	stmt := &CreateTableStmt{}
 	p.advance() // consume TABLE
 
-	if p.match(TokenIf) {
-		if _, err := p.expect(TokenNot); err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TokenExists); err != nil {
-			return nil, err
-		}
-		stmt.IfNotExists = true
-	}
+	stmt.IfNotExists = p.parseIfNotExists()
 
 	table, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -2148,78 +2173,65 @@ func (p *Parser) parsePartitionBy() (*PartitionDef, error) {
 		return nil, err
 	}
 
-	// Parse PARTITIONS num or individual partition definitions
+	if err := p.parsePartitionDefs(def); err != nil {
+		return nil, err
+	}
+	return def, nil
+}
+
+func (p *Parser) parsePartitionDefs(def *PartitionDef) error {
 	if p.current().Type == TokenPartitions {
-		p.advance() // consume PARTITIONS
-		// Should be PARTITIONS num
+		p.advance()
 		if p.current().Type == TokenNumber {
-			// PARTITIONS num
 			num, _ := strconv.Atoi(p.current().Literal)
 			def.NumPartitions = num
 			p.advance()
 		}
-	} else if p.current().Type == TokenLParen {
-		// Individual partition definitions: (PARTITION p0 VALUES LESS THAN (2020), ...)
-		if _, err := p.expect(TokenLParen); err != nil {
-			return nil, err
+		return nil
+	}
+	if p.current().Type != TokenLParen {
+		return nil
+	}
+	p.advance()
+
+	for p.current().Type == TokenPartition {
+		p.advance()
+		partName, err := p.expect(TokenIdentifier)
+		if err != nil {
+			return err
 		}
+		part := &SinglePartition{Name: partName.Literal}
 
-		for {
-			if p.current().Type != TokenPartition {
-				break
+		if p.current().Type == TokenValues {
+			p.advance()
+			if p.current().Type == TokenLess {
+				p.advance()
+				if _, err := p.expect(TokenThan); err != nil {
+					return fmt.Errorf("expected THAN after LESS: %w", err)
+				}
 			}
-			p.advance() // consume PARTITION
-
-			// Parse partition name
-			partName, err := p.expect(TokenIdentifier)
+			if _, err := p.expect(TokenLParen); err != nil {
+				return err
+			}
+			valExpr, err := p.parseExpression()
 			if err != nil {
-				return nil, err
+				return err
 			}
-
-			part := &SinglePartition{Name: partName.Literal}
-
-			// Parse VALUES LESS THAN (value) or VALUES IN (values)
-			if p.current().Type == TokenValues {
-				p.advance() // consume VALUES
-
-				if p.current().Type == TokenLess { // LESS
-					p.advance() // consume LESS
-					if _, err := p.expect(TokenThan); err != nil {
-						return nil, fmt.Errorf("expected THAN after LESS: %w", err)
-					}
-				}
-
-				// For now expect a single value in parentheses
-				if _, err := p.expect(TokenLParen); err != nil {
-					return nil, err
-				}
-
-				// Parse value expression
-				valExpr, err := p.parseExpression()
-				if err != nil {
-					return nil, err
-				}
-				part.Values = append(part.Values, valExpr)
-
-				if _, err := p.expect(TokenRParen); err != nil {
-					return nil, err
-				}
-			}
-
-			def.Partitions = append(def.Partitions, part)
-
-			if !p.match(TokenComma) {
-				break
+			part.Values = append(part.Values, valExpr)
+			if _, err := p.expect(TokenRParen); err != nil {
+				return err
 			}
 		}
 
-		if _, err := p.expect(TokenRParen); err != nil {
-			return nil, err
+		def.Partitions = append(def.Partitions, part)
+		if !p.match(TokenComma) {
+			break
 		}
 	}
-
-	return def, nil
+	_, err := p.expect(TokenRParen)
+	return err
 }
+
 
 // parseForeignKeyDef parses a FOREIGN KEY constraint
 func (p *Parser) parseForeignKeyDef() (*ForeignKeyDef, error) {
@@ -2410,15 +2422,7 @@ func (p *Parser) parseCreateIndex() (*CreateIndexStmt, error) {
 		stmt.Unique = true
 	}
 
-	if p.match(TokenIf) {
-		if _, err := p.expect(TokenNot); err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TokenExists); err != nil {
-			return nil, err
-		}
-		stmt.IfNotExists = true
-	}
+	stmt.IfNotExists = p.parseIfNotExists()
 
 	index, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -2458,15 +2462,7 @@ func (p *Parser) parseCreateCollection() (*CreateCollectionStmt, error) {
 	stmt := &CreateCollectionStmt{}
 	p.advance() // consume COLLECTION
 
-	if p.match(TokenIf) {
-		if _, err := p.expect(TokenNot); err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TokenExists); err != nil {
-			return nil, err
-		}
-		stmt.IfNotExists = true
-	}
+	stmt.IfNotExists = p.parseIfNotExists()
 
 	name, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -2482,15 +2478,7 @@ func (p *Parser) parseCreateView() (*CreateViewStmt, error) {
 	stmt := &CreateViewStmt{}
 	p.advance() // consume VIEW
 
-	if p.match(TokenIf) {
-		if _, err := p.expect(TokenNot); err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TokenExists); err != nil {
-			return nil, err
-		}
-		stmt.IfNotExists = true
-	}
+	stmt.IfNotExists = p.parseIfNotExists()
 
 	name, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -2536,15 +2524,7 @@ func (p *Parser) parseCreateTrigger() (*CreateTriggerStmt, error) {
 	stmt := &CreateTriggerStmt{}
 	p.advance() // consume TRIGGER
 
-	if p.match(TokenIf) {
-		if _, err := p.expect(TokenNot); err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TokenExists); err != nil {
-			return nil, err
-		}
-		stmt.IfNotExists = true
-	}
+	stmt.IfNotExists = p.parseIfNotExists()
 
 	name, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -2670,15 +2650,7 @@ func (p *Parser) parseCreateProcedure() (*CreateProcedureStmt, error) {
 	stmt := &CreateProcedureStmt{}
 	p.advance() // consume PROCEDURE
 
-	if p.match(TokenIf) {
-		if _, err := p.expect(TokenNot); err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TokenExists); err != nil {
-			return nil, err
-		}
-		stmt.IfNotExists = true
-	}
+	stmt.IfNotExists = p.parseIfNotExists()
 
 	name, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -3232,15 +3204,7 @@ func (p *Parser) parseCreateMaterializedView() (*CreateMaterializedViewStmt, err
 		return nil, err
 	}
 
-	if p.match(TokenIf) {
-		if _, err := p.expect(TokenNot); err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TokenExists); err != nil {
-			return nil, err
-		}
-		stmt.IfNotExists = true
-	}
+	stmt.IfNotExists = p.parseIfNotExists()
 
 	name, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -3292,15 +3256,7 @@ func (p *Parser) parseCreateFTSIndex() (*CreateFTSIndexStmt, error) {
 		return nil, err
 	}
 
-	if p.match(TokenIf) {
-		if _, err := p.expect(TokenNot); err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TokenExists); err != nil {
-			return nil, err
-		}
-		stmt.IfNotExists = true
-	}
+	stmt.IfNotExists = p.parseIfNotExists()
 
 	index, err := p.expect(TokenIdentifier)
 	if err != nil {
@@ -3345,15 +3301,7 @@ func (p *Parser) parseCreateVectorIndex() (*CreateVectorIndexStmt, error) {
 		return nil, err
 	}
 
-	if p.match(TokenIf) {
-		if _, err := p.expect(TokenNot); err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TokenExists); err != nil {
-			return nil, err
-		}
-		stmt.IfNotExists = true
-	}
+	stmt.IfNotExists = p.parseIfNotExists()
 
 	index, err := p.expect(TokenIdentifier)
 	if err != nil {
