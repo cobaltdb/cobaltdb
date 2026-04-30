@@ -83,6 +83,93 @@ func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []int
 	return c.insertLocked(ctx, stmt, args)
 }
 
+// buildInsertRow maps provided value expressions to their target columns and
+// fills unset columns with defaults (auto-increment, DEFAULT expression, or NULL).
+// resolvePKConflict handles an existing primary key during INSERT by checking
+// if the existing row is soft-deleted and applying the statement conflict action
+// (IGNORE or REPLACE). Returns (true, nil) to skip the row, (false, nil) to
+// proceed with insert, or (false, error) on failure.
+func (c *Catalog) resolvePKConflict(tree *btree.BTree, table *TableDef, stmt *query.InsertStmt, key []byte) (bool, error) {
+	existingData, err := tree.Get(key)
+	if err != nil {
+		return false, nil // Key does not exist, proceed with insert
+	}
+
+	vrow, decErr := decodeVersionedRow(existingData, len(table.Columns))
+	isDeleted := decErr == nil && vrow.Version.DeletedAt > 0
+	if isDeleted {
+		return false, nil // Soft-deleted row can be replaced
+	}
+
+	if stmt.ConflictAction == query.ConflictIgnore {
+		return true, nil // Skip this row
+	} else if stmt.ConflictAction == query.ConflictReplace {
+		oldRow, decErr := decodeRow(existingData, len(table.Columns))
+		if decErr == nil {
+			for idxName, idxTree := range c.indexTrees {
+				idxDef := c.indexes[idxName]
+				if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
+					oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
+					if ok {
+						if idxDef.Unique {
+							_ = idxTree.Delete([]byte(oldIdxKey))
+						} else {
+							compoundKey := oldIdxKey + "\x00" + string(key)
+							_ = idxTree.Delete([]byte(compoundKey))
+						}
+					}
+				}
+			}
+		}
+		if err := tree.Delete(key); err != nil {
+			return false, fmt.Errorf("failed to delete row for REPLACE: %w", err)
+		}
+		return false, nil // Proceed with insert after cleanup
+	}
+	return false, fmt.Errorf("UNIQUE constraint failed: duplicate primary key value")
+}
+
+func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insertColumns []string, valueRow []query.Expression, args []interface{}, autoIncValue int64) ([]interface{}, error) {
+	rowValues := make([]interface{}, len(table.Columns))
+	colSet := make([]bool, len(table.Columns))
+
+	for colIdx, tableColIdx := range insertColIndices {
+		if colIdx < len(valueRow) && tableColIdx >= 0 {
+			val, err := evaluateExpression(c, nil, nil, valueRow[colIdx], args)
+			if err != nil {
+				return nil, fmt.Errorf("failed to evaluate value for column '%s': %w", insertColumns[colIdx], err)
+			}
+			rowValues[tableColIdx] = val
+			colSet[tableColIdx] = true
+		}
+	}
+
+	for i, col := range table.Columns {
+		if !colSet[i] {
+			if col.AutoIncrement {
+				rowValues[i] = float64(autoIncValue)
+				continue
+			}
+			if col.defaultExpr != nil {
+				defVal, err := EvalExpression(col.defaultExpr, args)
+				if err == nil {
+					rowValues[i] = defVal
+					continue
+				}
+			}
+			rowValues[i] = nil
+		}
+	}
+
+	for i, col := range table.Columns {
+		if col.PrimaryKey && rowValues[i] == nil && autoIncValue > 0 {
+			rowValues[i] = float64(autoIncValue)
+		}
+	}
+
+	return rowValues, nil
+}
+
 func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
 	// Check for INSTEAD OF INSERT trigger first (for views)
 	if trig := c.findInsteadOfTrigger(stmt.Table, "INSERT"); trig != nil {
@@ -228,48 +315,9 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Build full row with all columns
-		rowValues := make([]interface{}, len(table.Columns))
-		colSet := make([]bool, len(table.Columns)) // Track which columns were explicitly set
-
-		// Map provided values to their columns using pre-calculated indices
-		for colIdx, tableColIdx := range insertColIndices {
-			if colIdx < len(valueRow) && tableColIdx >= 0 {
-				val, err := evaluateExpression(c, nil, nil, valueRow[colIdx], args)
-				if err != nil {
-					return 0, 0, fmt.Errorf("failed to evaluate value for column '%s': %w", insertColumns[colIdx], err)
-				} else {
-					rowValues[tableColIdx] = val
-				}
-				colSet[tableColIdx] = true // Mark this column as explicitly set
-			}
-		}
-
-		// Fill remaining columns with defaults (only for columns not explicitly set)
-		for i, col := range table.Columns {
-			if !colSet[i] {
-				// Auto-increment columns get the generated key value
-				if col.AutoIncrement {
-					rowValues[i] = float64(autoIncValue)
-					continue
-				}
-				// Try to use DEFAULT expression first
-				if col.defaultExpr != nil {
-					defVal, err := EvalExpression(col.defaultExpr, args)
-					if err == nil {
-						rowValues[i] = defVal
-						continue
-					}
-				}
-				// SQL standard: omitted columns without DEFAULT get NULL
-				rowValues[i] = nil
-			}
-		}
-
-		// For INTEGER PRIMARY KEY columns, NULL means auto-increment
-		for i, col := range table.Columns {
-			if col.PrimaryKey && rowValues[i] == nil && autoIncValue > 0 {
-				rowValues[i] = float64(autoIncValue)
-			}
+		rowValues, buildErr := c.buildInsertRow(table, insertColIndices, insertColumns, valueRow, args, autoIncValue)
+		if buildErr != nil {
+			return 0, 0, buildErr
 		}
 
 		// Apply Row-Level Security check for INSERT
@@ -348,46 +396,13 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			}
 		}
 
-		// Enforce PRIMARY KEY uniqueness - check if key already exists
-		if existingData, err := tree.Get([]byte(key)); err == nil {
-			// Check if existing row is soft-deleted
-			vrow, decErr := decodeVersionedRow(existingData, len(table.Columns))
-			isDeleted := decErr == nil && vrow.Version.DeletedAt > 0
-
-			if !isDeleted {
-				if stmt.ConflictAction == query.ConflictIgnore {
-					continue // Skip this row
-				} else if stmt.ConflictAction == query.ConflictReplace {
-					// Clean up index entries for the row being replaced (PK conflict)
-					oldRow, decErr := decodeRow(existingData, len(table.Columns))
-					if decErr == nil {
-						for idxName, idxTree := range c.indexTrees {
-							idxDef := c.indexes[idxName]
-							if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
-								oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
-								if ok {
-									if idxDef.Unique {
-										_ = idxTree.Delete([]byte(oldIdxKey))
-									} else {
-										compoundKey := oldIdxKey + "\x00" + key
-										_ = idxTree.Delete([]byte(compoundKey))
-									}
-								}
-							}
-						}
-					}
-					// Delete existing row before replacing
-					if err := tree.Delete([]byte(key)); err != nil {
-						insertErr = fmt.Errorf("failed to delete row for REPLACE: %w", err)
-						break
-					}
-				} else {
-					insertErr = fmt.Errorf("UNIQUE constraint failed: duplicate primary key value")
-					break
-				}
+			// Enforce PRIMARY KEY uniqueness - check if key already exists
+			if skip, err := c.resolvePKConflict(tree, table, stmt, []byte(key)); err != nil {
+				insertErr = err
+				break
+			} else if skip {
+				continue
 			}
-			// If isDeleted is true, we can proceed with insert (soft-deleted row can be replaced)
-		}
 
 		// Store in B+Tree
 		if err := tree.Put([]byte(key), valueData); err != nil {
@@ -395,93 +410,9 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			break
 		}
 
-		// Update indexes and track changes for undo
 		var idxChanges []indexUndoEntry
-		for idxName, idxTree := range c.indexTrees {
-			idxDef := c.indexes[idxName]
-			if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
-				indexKey, ok := buildCompositeIndexKey(table, idxDef, rowValues)
-				if ok {
-					// Enforce UNIQUE constraint
-					if idxDef.Unique {
-						if oldPKData, err := idxTree.Get([]byte(indexKey)); err == nil {
-							if stmt.ConflictAction == query.ConflictIgnore {
-								// Delete the already-stored row from the main table
-								if err := tree.Delete([]byte(key)); err != nil {
-									// Continue with conflict handling, but note the error
-									_ = err
-								}
-								// Undo any index entries already added in this loop iteration
-								for _, undo := range idxChanges {
-									if undo.wasAdded {
-										if idxTree2, ok := c.indexTrees[undo.indexName]; ok {
-											if err := idxTree2.Delete(undo.key); err != nil {
-												_ = err
-											}
-										}
-									}
-								}
-								skipRow = true
-								break
-							} else if stmt.ConflictAction == query.ConflictReplace {
-								// Delete the old row that conflicts on this unique index
-								oldPK := string(oldPKData)
-								if oldPK != key { // Only if it's a different row
-									oldRowData, getErr := tree.Get([]byte(oldPK))
-									if getErr == nil {
-										oldRow, decErr := decodeRow(oldRowData, len(table.Columns))
-										if decErr == nil {
-											// Clean up all index entries for the old row
-											for otherIdxName, otherIdxTree := range c.indexTrees {
-												otherIdxDef := c.indexes[otherIdxName]
-												if otherIdxDef.TableName == stmt.Table && len(otherIdxDef.Columns) > 0 {
-													oldIdxKey, ok := buildCompositeIndexKey(table, otherIdxDef, oldRow)
-													if ok {
-														_ = otherIdxTree.Delete([]byte(oldIdxKey))
-													}
-												}
-											}
-										}
-									}
-									if err := tree.Delete([]byte(oldPK)); err != nil {
-										insertErr = fmt.Errorf("failed to delete old row for index REPLACE: %w", err)
-										break
-									}
-								}
-							} else {
-								insertErr = fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idxName)
-								break
-							}
-						}
-					}
-					// For non-unique indexes, use compound key: "indexValue\x00pk" to support multiple rows per value
-					var idxStorageKey []byte
-					if idxDef.Unique {
-						idxStorageKey = []byte(indexKey)
-					} else {
-						idxStorageKey = []byte(indexKey + "\x00" + key)
-					}
-					if err := idxTree.Put(idxStorageKey, []byte(key)); err != nil {
-						insertErr = fmt.Errorf("failed to update index %s: %w", idxName, err)
-						break
-					}
-					if c.txnActive {
-						idxChanges = append(idxChanges, indexUndoEntry{
-							indexName: idxName,
-							key:       idxStorageKey,
-							wasAdded:  true,
-						})
-					}
-				}
-			}
-		}
-
-		// Update vector indexes
-		c.updateVectorIndexesForInsert(stmt.Table, rowValues, []byte(key))
-
-		if skipRow {
-			continue
-		}
+		// Update indexes and track changes for undo
+		idxChanges, skipRow, insertErr = c.insertRowIndexes(tree, table, stmt, []byte(key), rowValues)
 		if insertErr != nil {
 			// Row was stored but index failed - delete the row and roll back
 			// any index entries that were successfully inserted in this iteration.
@@ -496,6 +427,13 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 				}
 			}
 			break
+		}
+
+		// Update vector indexes
+		c.updateVectorIndexesForInsert(stmt.Table, rowValues, []byte(key))
+
+		if skipRow {
+			continue
 		}
 
 		// Record undo log entry for rollback (after applying change)
@@ -622,6 +560,85 @@ func (c *Catalog) convertSelectToValueRows(stmt *query.InsertStmt, insertColumns
 // Returns (skipRow=true) when the row should be silently skipped (ON CONFLICT IGNORE),
 // or an error for constraint violations. Handles ON CONFLICT REPLACE by deleting
 // the conflicting row and its index entries.
+// insertRowIndexes updates all indexes for a single inserted row, handling
+// UNIQUE constraint violations with INSERT OR IGNORE/REPLACE conflict resolution.
+// Returns index undo entries, whether the row should be skipped, and any error.
+func (c *Catalog) insertRowIndexes(tree *btree.BTree, table *TableDef, stmt *query.InsertStmt, key []byte, rowValues []interface{}) ([]indexUndoEntry, bool, error) {
+	var idxChanges []indexUndoEntry
+	skipRow := false
+	for idxName, idxTree := range c.indexTrees {
+		idxDef := c.indexes[idxName]
+		if idxDef.TableName != stmt.Table || len(idxDef.Columns) == 0 {
+			continue
+		}
+		indexKey, ok := buildCompositeIndexKey(table, idxDef, rowValues)
+		if !ok {
+			continue
+		}
+		// Enforce UNIQUE constraint
+		if idxDef.Unique {
+			if oldPKData, err := idxTree.Get([]byte(indexKey)); err == nil {
+				if stmt.ConflictAction == query.ConflictIgnore {
+					// Delete the already-stored row from the main table
+					_ = tree.Delete(key)
+					// Undo any index entries already added in this loop iteration
+					for _, undo := range idxChanges {
+						if undo.wasAdded {
+							if idxTree2, ok := c.indexTrees[undo.indexName]; ok {
+								_ = idxTree2.Delete(undo.key)
+							}
+						}
+					}
+					skipRow = true
+					return idxChanges, skipRow, nil
+				} else if stmt.ConflictAction == query.ConflictReplace {
+					oldPK := string(oldPKData)
+					if oldPK != string(key) {
+						oldRowData, getErr := tree.Get([]byte(oldPK))
+						if getErr == nil {
+							oldRow, decErr := decodeRow(oldRowData, len(table.Columns))
+							if decErr == nil {
+								for otherIdxName, otherIdxTree := range c.indexTrees {
+									otherIdxDef := c.indexes[otherIdxName]
+									if otherIdxDef.TableName == stmt.Table && len(otherIdxDef.Columns) > 0 {
+										oldIdxKey, ok := buildCompositeIndexKey(table, otherIdxDef, oldRow)
+										if ok {
+											_ = otherIdxTree.Delete([]byte(oldIdxKey))
+										}
+									}
+								}
+							}
+						}
+						if err := tree.Delete([]byte(oldPK)); err != nil {
+							return idxChanges, skipRow, fmt.Errorf("failed to delete old row for index REPLACE: %w", err)
+						}
+					}
+				} else {
+					return idxChanges, skipRow, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idxName)
+				}
+			}
+		}
+		// For non-unique indexes, use compound key: "indexValue\x00pk"
+		var idxStorageKey []byte
+		if idxDef.Unique {
+			idxStorageKey = []byte(indexKey)
+		} else {
+			idxStorageKey = []byte(indexKey + "\x00" + string(key))
+		}
+		if err := idxTree.Put(idxStorageKey, key); err != nil {
+			return idxChanges, skipRow, fmt.Errorf("failed to update index %s: %w", idxName, err)
+		}
+		if c.txnActive {
+			idxChanges = append(idxChanges, indexUndoEntry{
+				indexName: idxName,
+				key:       idxStorageKey,
+				wasAdded:  true,
+			})
+		}
+	}
+	return idxChanges, skipRow, nil
+}
+
 func (c *Catalog) checkUniqueConstraints(tree *btree.BTree, table *TableDef, stmt *query.InsertStmt, rowValues []interface{}) (bool, error) {
 	for i, col := range table.Columns {
 		if !col.Unique || rowValues[i] == nil {
