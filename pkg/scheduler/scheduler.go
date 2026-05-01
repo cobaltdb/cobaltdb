@@ -32,8 +32,8 @@ type Logger interface {
 // noopLogger discards all log output.
 type noopLogger struct{}
 
-func (n *noopLogger) Infof(format string, args ...interface{}) {}
-func (n *noopLogger) Warnf(format string, args ...interface{}) {}
+func (n *noopLogger) Infof(format string, args ...interface{})  {}
+func (n *noopLogger) Warnf(format string, args ...interface{})  {}
 func (n *noopLogger) Errorf(format string, args ...interface{}) {}
 
 // New creates a Scheduler with the given number of workers.
@@ -238,6 +238,12 @@ func (s *Scheduler) worker(ch <-chan *Job) {
 		if j == nil {
 			return
 		}
+		s.mu.RLock()
+		enabled := j.Enabled
+		s.mu.RUnlock()
+		if !enabled {
+			continue
+		}
 		if err := s.runJob(j); err != nil {
 			s.logger.Errorf("Job %s failed: %v", j.ID, err)
 		}
@@ -263,6 +269,8 @@ func (s *Scheduler) runJob(j *Job) (err error) {
 			j.FailCount++
 			j.Status = JobStatusFailed
 			s.logger.Errorf("Job %s failed: %v", j.ID, err)
+		} else if !j.Enabled {
+			j.Status = JobStatusDisabled
 		} else {
 			j.LastError = nil
 			j.Status = JobStatusIdle
