@@ -107,8 +107,6 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 
 	groups, groupOrder := c.buildGroupByGroups(table, stmt, args, groupBySpecs, allValues)
 
-
-
 	// Compute empty-group result (e.g., COUNT(*) = 0 on empty table)
 	resultRows := c.computeEmptyGroupResult(groups, stmt, selectCols, table, args)
 
@@ -121,7 +119,6 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 
 	return returnColumns, resultRows, nil
 }
-
 
 // computeEmptyGroupResult returns a single result row for aggregate queries on empty tables.
 func (c *Catalog) computeEmptyGroupResult(groups map[string][][]interface{}, stmt *query.SelectStmt, selectCols []selectColInfo, table *TableDef, args []interface{}) [][]interface{} {
@@ -253,105 +250,105 @@ func (c *Catalog) applyGroupByPostProcessing(resultRows [][]interface{}, stmt *q
 	return resultRows
 }
 
-	// buildGroupByGroups scans raw values and groups rows by GROUP BY columns.
-	func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, args []interface{}, specs []groupBySpec, allValues [][]byte) (map[string][][]interface{}, []string) {
-		groups := make(map[string][][]interface{})
-		var groupOrder []string
+// buildGroupByGroups scans raw values and groups rows by GROUP BY columns.
+func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, args []interface{}, specs []groupBySpec, allValues [][]byte) (map[string][][]interface{}, []string) {
+	groups := make(map[string][][]interface{})
+	var groupOrder []string
 
-		canParallel := c.parallelWorkers > 0 &&
-			len(allValues) >= c.parallelThreshold &&
-			!hasSubqueries(stmt)
+	canParallel := c.parallelWorkers > 0 &&
+		len(allValues) >= c.parallelThreshold &&
+		!hasSubqueries(stmt)
 
-		if canParallel {
-			groups = parallel.ParallelGroupBy(allValues, c.parallelWorkers, c.parallelThreshold,
-				func(chunk [][]byte) map[string][][]interface{} {
-					localGroups := make(map[string][][]interface{})
-					for _, valueData := range chunk {
-						vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-						if err != nil {
-							continue
-						}
-						if vrow.Version.DeletedAt > 0 {
-							continue
-						}
-						fullRow := vrow.Data
-						if stmt.Where != nil {
-							matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
-							if err != nil {
-								continue
-							}
-							if !matched {
-								continue
-							}
-						}
-						var groupKey strings.Builder
-						groupKey.Grow(len(specs) * 16)
-						for i, spec := range specs {
-							if i > 0 {
-								groupKey.WriteString("\x00")
-							}
-							if spec.index >= 0 && spec.index < len(fullRow) {
-								groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
-							} else if spec.expr != nil {
-								val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
-								if err == nil {
-									groupKey.WriteString(typeTaggedKey(val))
-								}
-							}
-						}
-						key := groupKey.String()
-						localGroups[key] = append(localGroups[key], fullRow)
-					}
-					return localGroups
-				})
-			for k := range groups {
-				groupOrder = append(groupOrder, k)
-			}
-		} else {
-			for _, valueData := range allValues {
-				vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-				if err != nil {
-					continue
-				}
-				if vrow.Version.DeletedAt > 0 {
-					continue
-				}
-				fullRow := vrow.Data
-
-				if stmt.Where != nil {
-					matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
+	if canParallel {
+		groups = parallel.ParallelGroupBy(allValues, c.parallelWorkers, c.parallelThreshold,
+			func(chunk [][]byte) map[string][][]interface{} {
+				localGroups := make(map[string][][]interface{})
+				for _, valueData := range chunk {
+					vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 					if err != nil {
 						continue
 					}
-					if !matched {
+					if vrow.Version.DeletedAt > 0 {
 						continue
 					}
-				}
-
-				var groupKey strings.Builder
-				for i, spec := range specs {
-					if i > 0 {
-						groupKey.WriteString("\x00")
-					}
-					if spec.index >= 0 && spec.index < len(fullRow) {
-						groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
-					} else if spec.expr != nil {
-						val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
-						if err == nil {
-							groupKey.WriteString(typeTaggedKey(val))
+					fullRow := vrow.Data
+					if stmt.Where != nil {
+						matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
+						if err != nil {
+							continue
+						}
+						if !matched {
+							continue
 						}
 					}
+					var groupKey strings.Builder
+					groupKey.Grow(len(specs) * 16)
+					for i, spec := range specs {
+						if i > 0 {
+							groupKey.WriteString("\x00")
+						}
+						if spec.index >= 0 && spec.index < len(fullRow) {
+							groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
+						} else if spec.expr != nil {
+							val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
+							if err == nil {
+								groupKey.WriteString(typeTaggedKey(val))
+							}
+						}
+					}
+					key := groupKey.String()
+					localGroups[key] = append(localGroups[key], fullRow)
 				}
-				key := groupKey.String()
-				if _, exists := groups[key]; !exists {
-					groupOrder = append(groupOrder, key)
-				}
-				groups[key] = append(groups[key], fullRow)
-			}
+				return localGroups
+			})
+		for k := range groups {
+			groupOrder = append(groupOrder, k)
 		}
+	} else {
+		for _, valueData := range allValues {
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil {
+				continue
+			}
+			if vrow.Version.DeletedAt > 0 {
+				continue
+			}
+			fullRow := vrow.Data
 
-		return groups, groupOrder
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
+				if err != nil {
+					continue
+				}
+				if !matched {
+					continue
+				}
+			}
+
+			var groupKey strings.Builder
+			for i, spec := range specs {
+				if i > 0 {
+					groupKey.WriteString("\x00")
+				}
+				if spec.index >= 0 && spec.index < len(fullRow) {
+					groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
+				} else if spec.expr != nil {
+					val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
+					if err == nil {
+						groupKey.WriteString(typeTaggedKey(val))
+					}
+				}
+			}
+			key := groupKey.String()
+			if _, exists := groups[key]; !exists {
+				groupOrder = append(groupOrder, key)
+			}
+			groups[key] = append(groups[key], fullRow)
+		}
 	}
+
+	return groups, groupOrder
+}
 
 // computeAggregatesForExpr collects every aggregate function call inside expr,
 // evaluates it across groupRows, and returns the per-call results. exprColumns
@@ -380,9 +377,9 @@ func (c *Catalog) computeAggregatesForExpr(expr query.Expression, groupRows [][]
 	return aggResults
 }
 
-// reduceBasicAggregate applies COUNT/SUM/AVG/MIN/MAX over the supplied values.
-// For unknown function names it returns nil; DISTINCT and GROUP_CONCAT are not
-// handled here (see computeAggregateValue for the full selectColInfo-driven path).
+// reduceBasicAggregate applies basic aggregate functions over the supplied values.
+// For unknown function names it returns nil; DISTINCT is handled in the full
+// selectColInfo-driven path.
 func reduceBasicAggregate(funcName string, values []interface{}, groupSize int, isCountStar bool) interface{} {
 	switch funcName {
 	case "COUNT":
@@ -450,6 +447,17 @@ func reduceBasicAggregate(funcName string, values []interface{}, groupSize int, 
 			}
 		}
 		return maxVal
+	case "GROUP_CONCAT":
+		var parts []string
+		for _, v := range values {
+			if v != nil {
+				parts = append(parts, ValueToStringKey(v))
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, ",")
+		}
+		return nil
 	}
 	return nil
 }

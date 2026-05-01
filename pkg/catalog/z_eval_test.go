@@ -1158,35 +1158,31 @@ func TestEvaluateExprWithGroupAggregates_MIN_MAX(t *testing.T) {
 }
 
 func TestEvaluateExprWithGroupAggregates_GROUP_CONCAT(t *testing.T) {
-	// Note: GROUP_CONCAT is handled in computeAggregatesWithGroupBy, not in evaluateExprWithGroupAggregates
-	// This test verifies the function works with other aggregate types
 	catalog, cleanup := setupEvalTestCatalog(t)
 	defer cleanup()
 
 	table := &TableDef{
 		Columns: []ColumnDef{
 			{Name: "id", Type: "INTEGER"},
-			{Name: "value", Type: "INTEGER"},
+			{Name: "value", Type: "TEXT"},
 		},
 	}
 
 	groupRows := [][]interface{}{
-		{int64(1), int64(100)},
-		{int64(2), int64(200)},
-		{int64(3), int64(300)},
+		{int64(1), "alpha"},
+		{int64(2), "beta"},
+		{int64(3), nil},
 	}
 
-	// Test COUNT which is supported
-	expr := &query.FunctionCall{Name: "COUNT", Args: []query.Expression{&query.StarExpr{}}}
+	expr := &query.FunctionCall{Name: "GROUP_CONCAT", Args: []query.Expression{&query.Identifier{Name: "value"}}}
 
 	result, err := catalog.evaluateExprWithGroupAggregates(expr, groupRows, table, nil)
 	if err != nil {
 		t.Fatalf("evaluateExprWithGroupAggregates returned error: %v", err)
 	}
 
-	resultF, _ := toFloat64(result)
-	if resultF != 3 {
-		t.Errorf("expected COUNT(*) = 3, got %v", result)
+	if result != "alpha,beta" {
+		t.Errorf("expected GROUP_CONCAT(value) = alpha,beta, got %v", result)
 	}
 }
 
