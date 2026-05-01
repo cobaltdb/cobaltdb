@@ -379,6 +379,7 @@ func (db *DB) createNew() error {
 			StateFile:  db.options.ReplicationStateFile,
 		}
 		db.replicationMgr = replication.NewManager(replConfig)
+		db.configureReplicationCallbacks()
 		if err := db.replicationMgr.Start(); err != nil {
 			return fmt.Errorf("failed to start replication manager: %w", err)
 		}
@@ -551,6 +552,7 @@ func (db *DB) loadExisting() error {
 			StateFile:  db.options.ReplicationStateFile,
 		}
 		db.replicationMgr = replication.NewManager(replConfig)
+		db.configureReplicationCallbacks()
 		if err := db.replicationMgr.Start(); err != nil {
 			return fmt.Errorf("failed to start replication manager: %w", err)
 		}
