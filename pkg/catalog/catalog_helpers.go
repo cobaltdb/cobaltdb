@@ -10,6 +10,16 @@ import (
 	"strconv"
 )
 
+// isAggregateFuncName reports whether name (already upper-cased) is one of the
+// SQL aggregate functions handled by the engine.
+func isAggregateFuncName(name string) bool {
+	switch name {
+	case "COUNT", "SUM", "AVG", "MIN", "MAX", "GROUP_CONCAT":
+		return true
+	}
+	return false
+}
+
 func toInt(v interface{}) (int, bool) {
 	switch val := v.(type) {
 	case int:

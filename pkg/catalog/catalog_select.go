@@ -74,8 +74,7 @@ func (c *Catalog) executeScalarSelect(stmt *query.SelectStmt, args []interface{}
 			actual = ae.Expr
 		}
 		if fc, ok := actual.(*query.FunctionCall); ok {
-			funcName := toUpperFast(fc.Name)
-			if funcName == "COUNT" || funcName == "SUM" || funcName == "AVG" || funcName == "MIN" || funcName == "MAX" || funcName == "GROUP_CONCAT" {
+			if isAggregateFuncName(toUpperFast(fc.Name)) {
 				hasAggregate = true
 			}
 		}

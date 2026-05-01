@@ -353,94 +353,109 @@ func (c *Catalog) applyGroupByPostProcessing(resultRows [][]interface{}, stmt *q
 		return groups, groupOrder
 	}
 
-func (c *Catalog) evaluateExprWithGroupAggregates(expr query.Expression, groupRows [][]interface{}, table *TableDef, args []interface{}) (interface{}, error) {
-	// Collect all aggregate function calls from the expression
+// computeAggregatesForExpr collects every aggregate function call inside expr,
+// evaluates it across groupRows, and returns the per-call results. exprColumns
+// supplies the columns visible to argument evaluation (single-table or joined).
+func (c *Catalog) computeAggregatesForExpr(expr query.Expression, groupRows [][]interface{}, exprColumns []ColumnDef, args []interface{}) map[*query.FunctionCall]interface{} {
 	var aggCalls []*query.FunctionCall
 	collectAggregatesFromExpr(expr, &aggCalls)
 
-	// Compute each aggregate over the group rows
-	aggResults := make(map[*query.FunctionCall]interface{})
+	aggResults := make(map[*query.FunctionCall]interface{}, len(aggCalls))
 	for _, fc := range aggCalls {
-		funcName := toUpperFast(fc.Name)
+		isCountStar := len(fc.Args) == 0 || isStarArg(fc.Args[0])
+
 		var values []interface{}
 		for _, row := range groupRows {
-			if len(fc.Args) == 0 || isStarArg(fc.Args[0]) {
+			if isCountStar {
 				values = append(values, int64(1))
 			} else {
-				v, err := evaluateExpression(c, row, table.Columns, fc.Args[0], args)
+				v, err := evaluateExpression(c, row, exprColumns, fc.Args[0], args)
 				if err == nil {
 					values = append(values, v)
 				}
 			}
 		}
-
-		switch funcName {
-		case "COUNT":
-			if len(fc.Args) == 0 || isStarArg(fc.Args[0]) {
-				aggResults[fc] = int64(len(groupRows))
-			} else {
-				count := int64(0)
-				for _, v := range values {
-					if v != nil {
-						count++
-					}
-				}
-				aggResults[fc] = count
-			}
-		case "SUM":
-			var sum float64
-			hasVal := false
-			for _, v := range values {
-				if v != nil {
-					if f, ok := toFloat64(v); ok {
-						sum += f
-						hasVal = true
-					}
-				}
-			}
-			if hasVal {
-				aggResults[fc] = sum
-			} else {
-				aggResults[fc] = nil
-			}
-		case "AVG":
-			var sum float64
-			var count int64
-			for _, v := range values {
-				if v != nil {
-					if f, ok := toFloat64(v); ok {
-						sum += f
-						count++
-					}
-				}
-			}
-			if count > 0 {
-				aggResults[fc] = sum / float64(count)
-			} else {
-				aggResults[fc] = nil
-			}
-		case "MIN":
-			var minVal interface{}
-			for _, v := range values {
-				if v != nil {
-					if minVal == nil || compareValues(v, minVal) < 0 {
-						minVal = v
-					}
-				}
-			}
-			aggResults[fc] = minVal
-		case "MAX":
-			var maxVal interface{}
-			for _, v := range values {
-				if v != nil {
-					if maxVal == nil || compareValues(v, maxVal) > 0 {
-						maxVal = v
-					}
-				}
-			}
-			aggResults[fc] = maxVal
-		}
+		aggResults[fc] = reduceBasicAggregate(toUpperFast(fc.Name), values, len(groupRows), isCountStar)
 	}
+	return aggResults
+}
+
+// reduceBasicAggregate applies COUNT/SUM/AVG/MIN/MAX over the supplied values.
+// For unknown function names it returns nil; DISTINCT and GROUP_CONCAT are not
+// handled here (see computeAggregateValue for the full selectColInfo-driven path).
+func reduceBasicAggregate(funcName string, values []interface{}, groupSize int, isCountStar bool) interface{} {
+	switch funcName {
+	case "COUNT":
+		if isCountStar {
+			return int64(groupSize)
+		}
+		count := int64(0)
+		for _, v := range values {
+			if v != nil {
+				count++
+			}
+		}
+		return count
+	case "SUM":
+		var sum float64
+		hasVal := false
+		for _, v := range values {
+			if v == nil {
+				continue
+			}
+			if f, ok := toFloat64(v); ok {
+				sum += f
+				hasVal = true
+			}
+		}
+		if hasVal {
+			return sum
+		}
+		return nil
+	case "AVG":
+		var sum float64
+		var count int64
+		for _, v := range values {
+			if v == nil {
+				continue
+			}
+			if f, ok := toFloat64(v); ok {
+				sum += f
+				count++
+			}
+		}
+		if count > 0 {
+			return sum / float64(count)
+		}
+		return nil
+	case "MIN":
+		var minVal interface{}
+		for _, v := range values {
+			if v == nil {
+				continue
+			}
+			if minVal == nil || compareValues(v, minVal) < 0 {
+				minVal = v
+			}
+		}
+		return minVal
+	case "MAX":
+		var maxVal interface{}
+		for _, v := range values {
+			if v == nil {
+				continue
+			}
+			if maxVal == nil || compareValues(v, maxVal) > 0 {
+				maxVal = v
+			}
+		}
+		return maxVal
+	}
+	return nil
+}
+
+func (c *Catalog) evaluateExprWithGroupAggregates(expr query.Expression, groupRows [][]interface{}, table *TableDef, args []interface{}) (interface{}, error) {
+	aggResults := c.computeAggregatesForExpr(expr, groupRows, table.Columns, args)
 
 	// Replace aggregate calls in expression with their computed values, then evaluate
 	replaced := replaceAggregatesInExpr(expr, aggResults)
@@ -454,91 +469,7 @@ func (c *Catalog) evaluateExprWithGroupAggregates(expr query.Expression, groupRo
 }
 
 func (c *Catalog) evaluateExprWithGroupAggregatesJoin(expr query.Expression, groupRows [][]interface{}, allColumns []ColumnDef, args []interface{}) (interface{}, error) {
-	var aggCalls []*query.FunctionCall
-	collectAggregatesFromExpr(expr, &aggCalls)
-
-	aggResults := make(map[*query.FunctionCall]interface{})
-	for _, fc := range aggCalls {
-		funcName := toUpperFast(fc.Name)
-		var values []interface{}
-		for _, row := range groupRows {
-			if len(fc.Args) == 0 || isStarArg(fc.Args[0]) {
-				values = append(values, int64(1))
-			} else {
-				v, err := evaluateExpression(c, row, allColumns, fc.Args[0], args)
-				if err == nil {
-					values = append(values, v)
-				}
-			}
-		}
-
-		switch funcName {
-		case "COUNT":
-			if len(fc.Args) == 0 || isStarArg(fc.Args[0]) {
-				aggResults[fc] = int64(len(groupRows))
-			} else {
-				count := int64(0)
-				for _, v := range values {
-					if v != nil {
-						count++
-					}
-				}
-				aggResults[fc] = count
-			}
-		case "SUM":
-			var sum float64
-			hasVal := false
-			for _, v := range values {
-				if v != nil {
-					if f, ok := toFloat64(v); ok {
-						sum += f
-						hasVal = true
-					}
-				}
-			}
-			if hasVal {
-				aggResults[fc] = sum
-			} else {
-				aggResults[fc] = nil
-			}
-		case "AVG":
-			var sum float64
-			var count int64
-			for _, v := range values {
-				if v != nil {
-					if f, ok := toFloat64(v); ok {
-						sum += f
-						count++
-					}
-				}
-			}
-			if count > 0 {
-				aggResults[fc] = sum / float64(count)
-			} else {
-				aggResults[fc] = nil
-			}
-		case "MIN":
-			var minVal interface{}
-			for _, v := range values {
-				if v != nil {
-					if minVal == nil || compareValues(v, minVal) < 0 {
-						minVal = v
-					}
-				}
-			}
-			aggResults[fc] = minVal
-		case "MAX":
-			var maxVal interface{}
-			for _, v := range values {
-				if v != nil {
-					if maxVal == nil || compareValues(v, maxVal) > 0 {
-						maxVal = v
-					}
-				}
-			}
-			aggResults[fc] = maxVal
-		}
-	}
+	aggResults := c.computeAggregatesForExpr(expr, groupRows, allColumns, args)
 
 	replaced := replaceAggregatesInExpr(expr, aggResults)
 	var baseRow []interface{}
@@ -1008,7 +939,7 @@ func resolveAggregateInExpr(expr query.Expression, selectCols []selectColInfo, r
 	case *query.FunctionCall:
 		// Check if this is an aggregate function
 		funcName := toUpperFast(e.Name)
-		if funcName == "COUNT" || funcName == "SUM" || funcName == "AVG" || funcName == "MIN" || funcName == "MAX" || funcName == "GROUP_CONCAT" {
+		if isAggregateFuncName(funcName) {
 			// Find the column name for this aggregate
 			colName := "*"
 			hasExprArg := false
