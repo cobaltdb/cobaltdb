@@ -31,6 +31,14 @@ const (
 	WALCheckpoint WALRecordType = 0x06
 )
 
+// WAL on-disk format constants.
+//
+//	[LSN:8][TxnID:8][Type:1][PageID:4][Offset:2][Length:2][Data:N][CRC:4]
+const (
+	walHeaderSize        = 25         // bytes preceding the variable-length data payload
+	walMaxRecordDataSize = 1<<16 - 1  // payload length is encoded as uint16
+)
+
 // WALRecord represents a single write-ahead log record
 type WALRecord struct {
 	LSN    uint64
@@ -140,7 +148,7 @@ func (w *WAL) readLSN() error {
 
 	reader := bufio.NewReader(w.file)
 	var lastLSN uint64
-	var headerBuf [25]byte // reusable header buffer across readRecord calls
+	var headerBuf [walHeaderSize]byte // reusable header buffer across readRecord calls
 
 	for {
 		record, err := w.readRecord(reader, headerBuf[:])
@@ -167,10 +175,10 @@ func (w *WAL) readLSN() error {
 }
 
 // readRecord reads a single WAL record from the reader.
-// header must be a 25-byte slice that is reused across calls to avoid per-record allocation.
+// header must be a walHeaderSize slice that is reused across calls to avoid per-record allocation.
 func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error) {
 	// Read header: [LSN:8][TxnID:8][Type:1][PageID:4][Offset:2][Length:2]
-	if _, err := io.ReadFull(reader, header[:25]); err != nil {
+	if _, err := io.ReadFull(reader, header[:walHeaderSize]); err != nil {
 		return nil, err
 	}
 
@@ -199,7 +207,7 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error
 
 	// Calculate CRC from header bytes + data directly (avoids re-encode allocation)
 	crcHash := crc32.NewIEEE()
-	if _, err := crcHash.Write(header[:25]); err != nil {
+	if _, err := crcHash.Write(header[:walHeaderSize]); err != nil {
 		return nil, err
 	}
 	if len(record.Data) > 0 {
@@ -216,7 +224,7 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error
 	// Decrypt record data if cipher is configured
 	if w.cipher != nil && len(record.Data) > 0 {
 		// Use header bytes as AAD to verify header integrity
-		decrypted, err := w.decryptData(record.Data, header[:25])
+		decrypted, err := w.decryptData(record.Data, header[:walHeaderSize])
 		if err != nil {
 			return nil, fmt.Errorf("WAL record decryption failed at LSN %d: %w", record.LSN, err)
 		}
@@ -230,8 +238,8 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error
 // When group commit is enabled, the record is written without an immediate sync
 // and the caller blocks until the next batch sync.
 func (w *WAL) Append(record *WALRecord) error {
-	if len(record.Data) > 65535 {
-		return fmt.Errorf("WAL record data size (%d bytes) exceeds maximum (65535 bytes)", len(record.Data))
+	if err := validateRecordSize(record); err != nil {
+		return err
 	}
 	if w.groupCommitEnabled {
 		return w.groupCommitAppend(record)
@@ -243,13 +251,21 @@ func (w *WAL) Append(record *WALRecord) error {
 
 // AppendWithoutSync adds a record without syncing (for group commit)
 func (w *WAL) AppendWithoutSync(record *WALRecord) error {
-	if len(record.Data) > 65535 {
-		return fmt.Errorf("WAL record data size (%d bytes) exceeds maximum (65535 bytes)", len(record.Data))
+	if err := validateRecordSize(record); err != nil {
+		return err
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	return w.appendInternal(record, false)
+}
+
+func validateRecordSize(record *WALRecord) error {
+	if len(record.Data) > walMaxRecordDataSize {
+		return fmt.Errorf("WAL record data size (%d bytes) exceeds maximum (%d bytes)",
+			len(record.Data), walMaxRecordDataSize)
+	}
+	return nil
 }
 
 // appendInternal is the internal append implementation
@@ -264,16 +280,10 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 	// Encrypt record data if cipher is configured
 	originalData := record.Data
 	if w.cipher != nil && len(record.Data) > 0 {
-		// Build header bytes as AAD (LSN+TxnID+Type+PageID+Offset)
-		headerAAD := make([]byte, 25)
-		binary.LittleEndian.PutUint64(headerAAD[0:8], record.LSN)
-		binary.LittleEndian.PutUint64(headerAAD[8:16], record.TxnID)
-		headerAAD[16] = byte(record.Type)
-		binary.LittleEndian.PutUint32(headerAAD[17:21], record.PageID)
-		binary.LittleEndian.PutUint16(headerAAD[21:23], record.Offset)
-		binary.LittleEndian.PutUint16(headerAAD[23:25], uint16(len(record.Data)))
+		var headerAAD [walHeaderSize]byte
+		writeRecordHeader(headerAAD[:], record, len(record.Data))
 
-		encrypted, err := w.encryptData(record.Data, headerAAD)
+		encrypted, err := w.encryptData(record.Data, headerAAD[:])
 		if err != nil {
 			return err
 		}
@@ -444,20 +454,24 @@ func (w *WAL) groupCommitLoop(interval time.Duration) {
 	}
 }
 
+// writeRecordHeader serializes the fixed-size WAL record header into dst[:walHeaderSize].
+// dataLen carries the length of the (possibly encrypted) payload that will follow the header.
+func writeRecordHeader(dst []byte, record *WALRecord, dataLen int) {
+	binary.LittleEndian.PutUint64(dst[0:8], record.LSN)
+	binary.LittleEndian.PutUint64(dst[8:16], record.TxnID)
+	dst[16] = byte(record.Type)
+	binary.LittleEndian.PutUint32(dst[17:21], record.PageID)
+	binary.LittleEndian.PutUint16(dst[21:23], record.Offset)
+	binary.LittleEndian.PutUint16(dst[23:25], uint16(dataLen))
+}
+
 // encodeRecord encodes a WAL record to bytes (without CRC)
 // Format: [LSN:8][TxnID:8][Type:1][PageID:4][Offset:2][Length:2][Data:N]
 func (w *WAL) encodeRecord(record *WALRecord) []byte {
 	dataLen := len(record.Data)
-	buf := make([]byte, 25+dataLen)
-
-	binary.LittleEndian.PutUint64(buf[0:8], record.LSN)
-	binary.LittleEndian.PutUint64(buf[8:16], record.TxnID)
-	buf[16] = byte(record.Type)
-	binary.LittleEndian.PutUint32(buf[17:21], record.PageID)
-	binary.LittleEndian.PutUint16(buf[21:23], record.Offset)
-	binary.LittleEndian.PutUint16(buf[23:25], uint16(dataLen))
-	copy(buf[25:], record.Data)
-
+	buf := make([]byte, walHeaderSize+dataLen)
+	writeRecordHeader(buf, record, dataLen)
+	copy(buf[walHeaderSize:], record.Data)
 	return buf
 }
 
@@ -535,7 +549,7 @@ func (w *WAL) Recover(bp *BufferPool) error {
 	reader := bufio.NewReader(w.file)
 	var committedTxns = make(map[uint64]bool)
 	var pendingTxns = make(map[uint64][]*WALRecord)
-	var headerBuf [25]byte // reusable header buffer across readRecord calls
+	var headerBuf [walHeaderSize]byte // reusable header buffer across readRecord calls
 
 	// Read all records
 	var lastCheckpointLSN uint64

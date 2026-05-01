@@ -866,8 +866,6 @@ func (m *Manager) handleMasterMessage(msg string) error {
 		// WAL data
 		return m.applyWALData(msg)
 	}
-
-	return nil
 }
 
 // applyWALData applies WAL data received from master
