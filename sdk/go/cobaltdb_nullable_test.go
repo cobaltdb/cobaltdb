@@ -1,5 +1,7 @@
 package cobaltdb
 
+//lint:file-ignore SA1019 these tests intentionally cover legacy database/sql/driver interfaces.
+
 import (
 	"testing"
 	"time"

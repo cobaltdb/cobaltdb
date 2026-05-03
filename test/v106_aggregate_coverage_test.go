@@ -535,25 +535,17 @@ func TestV106_AggCoverage(t *testing.T) {
 	})
 
 	t.Run("CorrelatedSubquery_NOT_EXISTS", func(t *testing.T) {
-		rows := afQuery(t, db, ctx, `
+		afQuery(t, db, ctx, `
 			SELECT name FROM v106a_items i
 			WHERE NOT EXISTS (SELECT 1 FROM v106a_orders o WHERE o.item_id = i.id)
 			ORDER BY name`)
-		// Items with no orders
-		if len(rows) < 0 {
-			t.Fatal("unexpected error")
-		}
 	})
 
 	t.Run("CorrelatedSubquery_NOT_IN", func(t *testing.T) {
-		rows := afQuery(t, db, ctx, `
+		afQuery(t, db, ctx, `
 			SELECT name FROM v106a_items
 			WHERE id NOT IN (SELECT item_id FROM v106a_orders)
 			ORDER BY name`)
-		// Items with no orders at all
-		if len(rows) < 0 {
-			t.Fatal("unexpected error")
-		}
 	})
 
 	t.Run("CorrelatedSubquery_Scalar_InSELECT", func(t *testing.T) {
@@ -632,11 +624,7 @@ func TestV106_AggCoverage(t *testing.T) {
 	})
 
 	t.Run("NOT_LIKE", func(t *testing.T) {
-		rows := afQuery(t, db, ctx, "SELECT name FROM v106a_items WHERE name NOT LIKE '%a%' ORDER BY name")
-		// Items without 'a' in name (case-insensitive)
-		if len(rows) < 0 {
-			t.Fatal("unexpected error")
-		}
+		afQuery(t, db, ctx, "SELECT name FROM v106a_items WHERE name NOT LIKE '%a%' ORDER BY name")
 	})
 
 	t.Run("LIKE_NULL", func(t *testing.T) {

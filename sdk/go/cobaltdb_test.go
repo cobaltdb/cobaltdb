@@ -1,9 +1,12 @@
 package cobaltdb
 
+//lint:file-ignore SA1019 these tests intentionally cover legacy database/sql/driver interfaces.
+
 import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"testing"
 	"time"
 )
@@ -57,6 +60,18 @@ func TestParseDSN(t *testing.T) {
 				t.Error("ParseDSN() returned nil config without error")
 			}
 		})
+	}
+}
+
+func TestRowScanHelper(t *testing.T) {
+	sentinel := errors.New("row scan failed")
+	row := &Row{err: sentinel}
+	if err := row.Scan(new(string)); !errors.Is(err, sentinel) {
+		t.Fatalf("Row.Scan() error = %v, want %v", err, sentinel)
+	}
+
+	if err := (&Row{}).Scan(); err != nil {
+		t.Fatalf("Row.Scan() with nil error = %v, want nil", err)
 	}
 }
 
@@ -215,7 +230,7 @@ func TestConnectorConnect(t *testing.T) {
 	}
 
 	connector := &connector{cfg: cfg, driver: &Driver{}}
-	conn, err := connector.Connect(nil)
+	conn, err := connector.Connect(context.TODO())
 	if err != nil {
 		t.Fatalf("connector.Connect() failed: %v", err)
 	}
@@ -261,7 +276,7 @@ func TestDBPing(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := db.Ping(nil); err != nil {
+	if err := db.Ping(context.TODO()); err != nil {
 		t.Errorf("Ping() failed: %v", err)
 	}
 }
@@ -683,7 +698,7 @@ func TestConnectorConnectWithPrepare(t *testing.T) {
 	}
 
 	// Connect
-	conn, err := connector.Connect(nil)
+	conn, err := connector.Connect(context.TODO())
 	if err != nil {
 		t.Fatalf("Connect() failed: %v", err)
 	}
@@ -1105,7 +1120,7 @@ func TestConnectorWithDriver(t *testing.T) {
 	}
 
 	// Connect
-	conn, err := connector.Connect(nil)
+	conn, err := connector.Connect(context.TODO())
 	if err != nil {
 		t.Fatalf("Connect() failed: %v", err)
 	}

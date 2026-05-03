@@ -1254,57 +1254,6 @@ func (c *Compiler) compileExpression(expr query.Expression, buf *bytes.Buffer) (
 	}
 }
 
-// compileBinaryOp emits the WASM opcode for a binary operator.
-func (c *Compiler) compileBinaryOp(op query.TokenType, leftType string, buf *bytes.Buffer) (string, error) {
-	typePrefix := byte(0x6a) // i32 default
-	if leftType == "INTEGER" {
-		typePrefix = byte(0x7c) // i64 default
-	}
-
-	comparison := false
-	switch op {
-	case query.TokenPlus:
-		buf.WriteByte(typePrefix)     // add
-	case query.TokenMinus:
-		buf.WriteByte(typePrefix + 1) // sub
-	case query.TokenStar:
-		buf.WriteByte(typePrefix + 2) // mul
-	case query.TokenEq:
-		comparison = true
-		if leftType == "INTEGER" {
-			buf.WriteByte(0x51)
-		} else {
-			buf.WriteByte(0x46)
-		}
-	case query.TokenNeq:
-		comparison = true
-		if leftType == "INTEGER" {
-			buf.WriteByte(0x52)
-		} else {
-			buf.WriteByte(0x47)
-		}
-	case query.TokenLt:
-		comparison = true
-		if leftType == "INTEGER" {
-			buf.WriteByte(0x53)
-		} else {
-			buf.WriteByte(0x48)
-		}
-	case query.TokenGt:
-		comparison = true
-		if leftType == "INTEGER" {
-			buf.WriteByte(0x55)
-		} else {
-			buf.WriteByte(0x4a)
-		}
-	}
-
-	if comparison {
-		return "BOOLEAN", nil
-	}
-	return leftType, nil
-}
-
 // compileAggregateFunction compiles aggregate functions (COUNT, SUM, AVG, MIN, MAX)
 //
 //nolint:unused // retained for upcoming expression compiler integration and compatibility tests.

@@ -519,7 +519,7 @@ func TestDBListBackups99(t *testing.T) {
 
 	backups := db.ListBackups()
 	// May return nil or empty slice depending on implementation
-	if backups != nil && len(backups) > 0 {
+	if len(backups) > 0 {
 		t.Error("Expected nil or empty when backup manager not initialized")
 	}
 }

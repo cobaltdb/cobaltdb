@@ -338,7 +338,7 @@ func TestFullServerLifecycle(t *testing.T) {
 
 	// Read ping response (OK packet)
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	n, err = conn.Read(okPacket)
+	_, err = conn.Read(okPacket)
 	if err != nil {
 		t.Fatalf("Failed to read ping response: %v", err)
 	}

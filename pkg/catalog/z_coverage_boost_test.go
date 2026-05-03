@@ -401,7 +401,7 @@ func TestCovBoost_ScalarFunctions(t *testing.T) {
 	}
 
 	// LOWER
-	r, err = c.ExecuteQuery("SELECT LOWER(name) FROM fn_t WHERE id = 2")
+	_, err = c.ExecuteQuery("SELECT LOWER(name) FROM fn_t WHERE id = 2")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -667,7 +667,7 @@ func TestRemaining_QueryCacheStats(t *testing.T) {
 	c.ExecuteQuery("SELECT * FROM qc_t")
 	c.ExecuteQuery("SELECT * FROM qc_t")
 
-	hits, misses, size = c.GetQueryCacheStats()
+	_, _, size = c.GetQueryCacheStats()
 	if size == 0 {
 		t.Logf("Cache stats empty after queries")
 	}

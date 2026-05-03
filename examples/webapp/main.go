@@ -113,7 +113,7 @@ func handleNewTask(w http.ResponseWriter, r *http.Request) {
 
 func handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Redirect(w, r, "/task/new", 302)
+		http.Redirect(w, r, "/task/new", http.StatusFound)
 		return
 	}
 
@@ -130,7 +130,7 @@ func handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/", 302)
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func handleCompleteTask(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +145,7 @@ func handleCompleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/", 302)
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func handleDeleteTask(w http.ResponseWriter, r *http.Request) {
@@ -158,5 +158,5 @@ func handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/", 302)
+	http.Redirect(w, r, "/", http.StatusFound)
 }

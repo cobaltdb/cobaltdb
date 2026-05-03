@@ -96,7 +96,7 @@ func TestMemoryBackend(t *testing.T) {
 	backend2.LoadFromData(backendData)
 
 	buf2 := make([]byte, len(data))
-	n, err = backend2.ReadAt(buf2, 0)
+	_, err = backend2.ReadAt(buf2, 0)
 	if err != nil {
 		t.Fatalf("Failed to read from backend2: %v", err)
 	}

@@ -809,11 +809,6 @@ func (m *Manager) findParentBackupID(backupType Type) string {
 	return parent.ID
 }
 
-func (m *Manager) validateRestoreChain(backup *Backup) error {
-	_, err := m.buildRestoreChain(backup)
-	return err
-}
-
 func (m *Manager) buildRestoreChain(backup *Backup) ([]*Backup, error) {
 	if backup == nil {
 		return nil, fmt.Errorf("backup not found")

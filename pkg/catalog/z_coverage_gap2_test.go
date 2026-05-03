@@ -646,10 +646,7 @@ func TestCov2_BetweenOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	for i := 1; i <= 10; i++ {
-		c.ExecuteQuery("INSERT INTO rng VALUES (1, 1)")
-		break
-	}
+	c.ExecuteQuery("INSERT INTO rng VALUES (1, 1)")
 	c.ExecuteQuery("INSERT INTO rng VALUES (5, 5)")
 	c.ExecuteQuery("INSERT INTO rng VALUES (10, 10)")
 

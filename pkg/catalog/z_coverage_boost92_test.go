@@ -16,19 +16,6 @@ func newB92Cat() *Catalog {
 	return New(tree, pool, nil)
 }
 
-func b92Insert(t *testing.T, c *Catalog, table string, cols []string, vals []query.Expression) {
-	t.Helper()
-	ctx := context.Background()
-	_, _, err := c.Insert(ctx, &query.InsertStmt{
-		Table:   table,
-		Columns: cols,
-		Values:  [][]query.Expression{vals},
-	}, nil)
-	if err != nil {
-		t.Fatalf("Insert into %s: %v", table, err)
-	}
-}
-
 // TestB92_InsertWithFKConstraintViolation tests FK check in insertLocked
 func TestB92_InsertWithFKConstraintViolation(t *testing.T) {
 	c := newB92Cat()

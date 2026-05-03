@@ -72,18 +72,6 @@ func bhExpectVal(t *testing.T, db *engine.DB, ctx context.Context, sql string, e
 	}
 }
 
-func bhExpectError(t *testing.T, db *engine.DB, ctx context.Context, sql string) {
-	t.Helper()
-	_, err := db.Exec(ctx, sql)
-	if err == nil {
-		rows, err2 := db.Query(ctx, sql)
-		if err2 == nil {
-			rows.Close()
-			t.Fatalf("[%s] expected error but succeeded", sql)
-		}
-	}
-}
-
 func setupBHData(t *testing.T, db *engine.DB, ctx context.Context) {
 	t.Helper()
 	bhExec(t, db, ctx, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE, age INTEGER, active INTEGER DEFAULT 1)")

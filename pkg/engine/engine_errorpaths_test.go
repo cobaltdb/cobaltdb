@@ -296,6 +296,7 @@ func TestTxCommitAndRollbackPaths(t *testing.T) {
 // TestAuditUserContext tests auditUser context extraction
 func TestAuditUserContext(t *testing.T) {
 	// Nil context
+	//lint:ignore SA1012 auditUser intentionally supports nil context as a fallback path.
 	user := auditUser(nil)
 	if user != "db_user" {
 		t.Errorf("expected 'db_user', got %q", user)
@@ -308,6 +309,7 @@ func TestAuditUserContext(t *testing.T) {
 	}
 
 	// Context with user
+	//lint:ignore SA1029 auditUser intentionally reads this legacy string key.
 	ctx := context.WithValue(context.Background(), "cobaltdb_user", "admin")
 	user = auditUser(ctx)
 	if user != "admin" {
@@ -315,6 +317,7 @@ func TestAuditUserContext(t *testing.T) {
 	}
 
 	// Context with empty user
+	//lint:ignore SA1029 auditUser intentionally reads this legacy string key.
 	ctx = context.WithValue(context.Background(), "cobaltdb_user", "")
 	user = auditUser(ctx)
 	if user != "db_user" {

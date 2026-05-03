@@ -217,6 +217,7 @@ func TestInsertLockedRLSDenied(t *testing.T) {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
+	//lint:ignore SA1029 catalog RLS intentionally reads this legacy string key.
 	ctx = context.WithValue(ctx, "cobaltdb_user", "alice")
 	_, _, err := c.insertLocked(ctx, &query.InsertStmt{
 		Table:   "rls_t",

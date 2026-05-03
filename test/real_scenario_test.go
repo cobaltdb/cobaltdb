@@ -481,7 +481,7 @@ func TestRealWorldScenario(t *testing.T) {
 	exec("BEGIN")
 	exec("INSERT INTO categories (id, name) VALUES (11, 'Rollback Me')")
 	exec("ROLLBACK")
-	rows = queryExpectRows("SELECT * FROM categories WHERE id = 11", 0)
+	queryExpectRows("SELECT * FROM categories WHERE id = 11", 0)
 	t.Log("  [OK] BEGIN + INSERT + ROLLBACK correctly discarded")
 
 	// ============================================================
@@ -507,7 +507,7 @@ func TestRealWorldScenario(t *testing.T) {
 		t.Logf("       %v", row[0])
 	}
 
-	rows = queryExpectRows("SHOW CREATE TABLE users", 1)
+	queryExpectRows("SHOW CREATE TABLE users", 1)
 	t.Logf("  [OK] SHOW CREATE TABLE users: returned DDL")
 
 	rows = queryExpectRows("DESCRIBE products", -1)
@@ -576,7 +576,7 @@ func TestRealWorldScenario(t *testing.T) {
 	rows = queryExpectRows("SELECT COUNT(*) FROM empty_table", 1)
 	t.Logf("  [OK] COUNT on empty table: %v", rows[0][0])
 
-	rows = queryExpectRows("SELECT * FROM empty_table", 0)
+	queryExpectRows("SELECT * FROM empty_table", 0)
 	t.Log("  [OK] SELECT * on empty table: 0 rows")
 
 	// NULL handling

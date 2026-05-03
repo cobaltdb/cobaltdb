@@ -165,6 +165,7 @@ func TestLoadTLSConfigSelfSigned114(t *testing.T) {
 	}
 	if tlsConfig == nil {
 		t.Error("Expected non-nil tls.Config")
+		return
 	}
 	if len(tlsConfig.Certificates) == 0 {
 		t.Error("Expected at least one certificate")

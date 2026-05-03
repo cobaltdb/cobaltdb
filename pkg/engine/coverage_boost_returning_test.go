@@ -43,7 +43,7 @@ func TestExecuteInsertReturning(t *testing.T) {
 	}
 
 	// Verify we have a row
-	if rows.rows == nil || len(rows.rows) == 0 {
+	if len(rows.rows) == 0 {
 		t.Error("Expected at least one row")
 	}
 }

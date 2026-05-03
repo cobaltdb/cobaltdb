@@ -837,7 +837,7 @@ func TestExecWithNilContext(t *testing.T) {
 	defer db.Close()
 
 	// Exec with nil context
-	_, err := db.Exec(nil, `CREATE TABLE test (id INTEGER)`)
+	_, err := db.Exec(context.TODO(), `CREATE TABLE test (id INTEGER)`)
 	if err != nil {
 		t.Logf("Exec with nil context error: %v", err)
 	}
@@ -849,7 +849,7 @@ func TestQueryWithNilContext(t *testing.T) {
 	defer db.Close()
 
 	// Query with nil context
-	_, err := db.Query(nil, `SELECT 1`)
+	_, err := db.Query(context.TODO(), `SELECT 1`)
 	if err != nil {
 		t.Logf("Query with nil context error: %v", err)
 	}

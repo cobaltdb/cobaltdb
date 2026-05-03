@@ -31,19 +31,6 @@ func boostCreateTable(t *testing.T, c *Catalog, name string, cols []*query.Colum
 	}
 }
 
-func boostInsertRows(t *testing.T, c *Catalog, table string, cols []string, rows [][]query.Expression) {
-	t.Helper()
-	ctx := context.Background()
-	_, _, err := c.Insert(ctx, &query.InsertStmt{
-		Table:   table,
-		Columns: cols,
-		Values:  rows,
-	}, nil)
-	if err != nil {
-		t.Fatalf("insert into %s: %v", table, err)
-	}
-}
-
 func boostQuery(t *testing.T, c *Catalog, sql string) *QueryResult {
 	t.Helper()
 	r, err := c.ExecuteQuery(sql)
@@ -55,15 +42,6 @@ func boostQuery(t *testing.T, c *Catalog, sql string) *QueryResult {
 
 func boostQueryMayFail(c *Catalog, sql string) (*QueryResult, error) {
 	return c.ExecuteQuery(sql)
-}
-
-func boostSelect(t *testing.T, c *Catalog, stmt *query.SelectStmt) ([]string, [][]interface{}) {
-	t.Helper()
-	cols, rows, err := c.Select(stmt, nil)
-	if err != nil {
-		t.Fatalf("Select: %v", err)
-	}
-	return cols, rows
 }
 
 func boostNum(v float64) *query.NumberLiteral { return &query.NumberLiteral{Value: v} }

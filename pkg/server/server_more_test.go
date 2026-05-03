@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
@@ -52,8 +53,8 @@ func TestHandleQueryWithScanError(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(nil, "CREATE TABLE test (id INTEGER, data TEXT)")
-	db.Exec(nil, "INSERT INTO test (id, data) VALUES (1, 'test')")
+	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER, data TEXT)")
+	db.Exec(context.TODO(), "INSERT INTO test (id, data) VALUES (1, 'test')")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -80,8 +81,8 @@ func TestHandleQueryUpdateMore(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(nil, "CREATE TABLE test (id INTEGER, name TEXT)")
-	db.Exec(nil, "INSERT INTO test (id, name) VALUES (1, 'Alice')")
+	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER, name TEXT)")
+	db.Exec(context.TODO(), "INSERT INTO test (id, name) VALUES (1, 'Alice')")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -112,9 +113,9 @@ func TestHandleQueryDeleteMore(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(nil, "CREATE TABLE test (id INTEGER)")
-	db.Exec(nil, "INSERT INTO test (id) VALUES (1)")
-	db.Exec(nil, "INSERT INTO test (id) VALUES (2)")
+	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER)")
+	db.Exec(context.TODO(), "INSERT INTO test (id) VALUES (1)")
+	db.Exec(context.TODO(), "INSERT INTO test (id) VALUES (2)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -144,7 +145,7 @@ func TestHandleQueryDropTable(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(nil, "CREATE TABLE test (id INTEGER)")
+	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -171,7 +172,7 @@ func TestHandleQueryCreateIndex(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(nil, "CREATE TABLE test (id INTEGER, name TEXT)")
+	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER, name TEXT)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -202,7 +203,7 @@ func TestHandleQueryEmptyResultMore(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(nil, "CREATE TABLE test (id INTEGER)")
+	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -232,9 +233,9 @@ func TestHandleQueryMultipleRowsMore(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(nil, "CREATE TABLE test (id INTEGER)")
+	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER)")
 	for i := 0; i < 10; i++ {
-		db.Exec(nil, "INSERT INTO test (id) VALUES (?)", i)
+		db.Exec(context.TODO(), "INSERT INTO test (id) VALUES (?)", i)
 	}
 
 	srv, _ := New(db, nil)
@@ -265,7 +266,7 @@ func TestHandleQueryInsertMore(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(nil, "CREATE TABLE test (id INTEGER, name TEXT)")
+	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER, name TEXT)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -296,9 +297,9 @@ func TestHandleQueryWithParamsMore(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(nil, "CREATE TABLE test (id INTEGER, name TEXT)")
-	db.Exec(nil, "INSERT INTO test (id, name) VALUES (1, 'Alice')")
-	db.Exec(nil, "INSERT INTO test (id, name) VALUES (2, 'Bob')")
+	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER, name TEXT)")
+	db.Exec(context.TODO(), "INSERT INTO test (id, name) VALUES (1, 'Alice')")
+	db.Exec(context.TODO(), "INSERT INTO test (id, name) VALUES (2, 'Bob')")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -329,8 +330,8 @@ func TestHandleQueryNoResults(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(nil, "CREATE TABLE test (id INTEGER)")
-	db.Exec(nil, "INSERT INTO test (id) VALUES (1)")
+	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER)")
+	db.Exec(context.TODO(), "INSERT INTO test (id) VALUES (1)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{

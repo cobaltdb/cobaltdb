@@ -4802,6 +4802,7 @@ func TestCreateIndex(t *testing.T) {
 	}
 	if idx == nil {
 		t.Error("expected index to be created")
+		return
 	}
 	if idx.TableName != "products" {
 		t.Errorf("expected table name 'products', got '%s'", idx.TableName)

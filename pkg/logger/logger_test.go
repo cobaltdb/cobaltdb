@@ -2,6 +2,8 @@ package logger
 
 import (
 	"bytes"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -187,5 +189,49 @@ func TestGlobalLogger(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "global test") {
 		t.Errorf("Expected global test in output, got: %s", output)
+	}
+}
+
+func TestGlobalFatalFunctions(t *testing.T) {
+	if mode := os.Getenv("COBALTDB_LOGGER_FATAL_HELPER"); mode != "" {
+		SetGlobalLogger(New(DebugLevel, os.Stdout))
+		switch mode {
+		case "fatal":
+			Fatal("fatal helper message")
+		case "fatalf":
+			Fatalf("fatal %s message", "formatted")
+		default:
+			t.Fatalf("unknown fatal helper mode %q", mode)
+		}
+		return
+	}
+
+	tests := []struct {
+		mode string
+		want string
+	}{
+		{mode: "fatal", want: "fatal helper message"},
+		{mode: "fatalf", want: "fatal formatted message"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=TestGlobalFatalFunctions")
+			cmd.Env = append(os.Environ(), "COBALTDB_LOGGER_FATAL_HELPER="+tt.mode)
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("%s did not exit", tt.mode)
+			}
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("expected ExitError, got %T: %v", err, err)
+			}
+			if exitErr.ExitCode() != 1 {
+				t.Fatalf("expected exit code 1, got %d", exitErr.ExitCode())
+			}
+			if !strings.Contains(string(output), tt.want) {
+				t.Fatalf("expected output to contain %q, got %q", tt.want, output)
+			}
+		})
 	}
 }

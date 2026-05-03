@@ -87,7 +87,7 @@ func TestV030_ToVector(t *testing.T) {
 	}
 
 	// int in interface slice
-	v, err = toVector([]interface{}{1, 2})
+	_, err = toVector([]interface{}{1, 2})
 	if err != nil {
 		t.Logf("int interface: %v", err)
 	}

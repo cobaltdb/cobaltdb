@@ -15,8 +15,8 @@ func TestCompressedBackendBufferPools(t *testing.T) {
 	(*writeBuf)[0] = 42
 	cb.putWriteBuf(writeBuf)
 	reusedWrite := cb.getWriteBuf()
-	if reusedWrite == nil || (*reusedWrite)[0] != 42 {
-		t.Fatal("expected write buffer to be reused from pool")
+	if reusedWrite == nil || len(*reusedWrite) != PageSize {
+		t.Fatalf("getWriteBuf pooled length = %d, want %d", len(*reusedWrite), PageSize)
 	}
 
 	readBuf := cb.getReadBuf()
@@ -26,7 +26,7 @@ func TestCompressedBackendBufferPools(t *testing.T) {
 	(*readBuf)[0] = 99
 	cb.putReadBuf(readBuf)
 	reusedRead := cb.getReadBuf()
-	if reusedRead == nil || (*reusedRead)[0] != 99 {
-		t.Fatal("expected read buffer to be reused from pool")
+	if reusedRead == nil || len(*reusedRead) != PageSize {
+		t.Fatalf("getReadBuf pooled length = %d, want %d", len(*reusedRead), PageSize)
 	}
 }

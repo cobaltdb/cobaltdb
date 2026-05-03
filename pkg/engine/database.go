@@ -653,18 +653,6 @@ func (db *DB) dispatchDDL(ctx context.Context, action, table string, handler fun
 	return result, err
 }
 
-// dispatchDML executes a DML handler, then logs audit query and replicates on success.
-func (db *DB) dispatchDML(ctx context.Context, action, table string, start time.Time, handler func() (Result, error)) (Result, error) {
-	result, err := handler()
-	if db.auditLogger != nil {
-		db.auditLogger.LogQuery(auditUser(ctx), action, time.Since(start), result.RowsAffected, err)
-	}
-	if err == nil {
-		db.replicateWrite(action, table, nil)
-	}
-	return result, err
-}
-
 // execute executes a statement
 
 func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interface{}) (result Result, err error) {

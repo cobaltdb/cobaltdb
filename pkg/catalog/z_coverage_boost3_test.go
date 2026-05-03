@@ -912,6 +912,7 @@ func TestBoost3_DeleteWithRLSNoUser(t *testing.T) {
 	t.Logf("Delete with RLS no user: n=%d err=%v", n, err)
 
 	// Delete with user context
+	//lint:ignore SA1029 catalog RLS intentionally reads this legacy string key.
 	rlsCtx := context.WithValue(ctx, "cobaltdb_user", "admin")
 	n, _, err = c.Delete(rlsCtx, &query.DeleteStmt{
 		Table: "rls_del_tbl",

@@ -215,6 +215,7 @@ func TestRuntimeParseResults(t *testing.T) {
 	}
 	if result == nil {
 		t.Error("parseResults returned nil")
+		return
 	}
 	if len(result.Columns) != 2 {
 		t.Errorf("Expected 2 columns, got %d", len(result.Columns))

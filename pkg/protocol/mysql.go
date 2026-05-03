@@ -793,6 +793,7 @@ func appendLenEncString(dst []byte, s string) []byte {
 	return append(dst, s...)
 }
 
+//nolint:unused // used by coverage tests
 // writeLenEncString returns a newly allocated length-encoded string.
 // Prefer appendLenEncString for zero-allocation appending.
 func writeLenEncString(s string) []byte {
@@ -1005,7 +1006,7 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	rows, err := c.server.db.Query(ctx, sql)
 	if err == nil {
 		numColumns = len(rows.Columns())
-		rows.Close()
+		_ = rows.Close()
 	}
 
 	c.nextStmtID++
@@ -1044,7 +1045,6 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 		if err := c.writePacket(eof, seq); err != nil {
 			return err
 		}
-		seq++
 	}
 
 	return nil

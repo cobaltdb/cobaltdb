@@ -1312,9 +1312,7 @@ func TestPageManager_SaveFreeList_MultiPage(t *testing.T) {
 	// accumulated many pages that need multi-page save on Close.
 	pm.mu.Lock()
 	pm.freeList = pm.freeList[:0]
-	for _, pid := range pages {
-		pm.freeList = append(pm.freeList, pid)
-	}
+	pm.freeList = append(pm.freeList, pages...)
 	pm.mu.Unlock()
 
 	// Close calls saveFreeList with 1100 pages > maxPerPage(1018)
@@ -2018,7 +2016,8 @@ func TestEncryptedBackend_ReadAt_SmallPoolBuf(t *testing.T) {
 	eb.WriteAt(data, 0)
 
 	// Put a deliberately small buffer into the readPool
-	eb.readPool.Put(make([]byte, 10)) // way too small
+	smallBuf := make([]byte, 10) // way too small
+	eb.readPool.Put(&smallBuf)
 
 	// ReadAt should detect the small buffer and reallocate
 	buf := make([]byte, PageSize)

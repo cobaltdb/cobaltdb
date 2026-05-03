@@ -911,7 +911,7 @@ func TestComprehensive_JSONFunctionPaths(t *testing.T) {
 	}
 
 	// JSONKeys
-	val, err = EvalExpression(&query.FunctionCall{Name: "JSON_KEYS", Args: []query.Expression{
+	_, err = EvalExpression(&query.FunctionCall{Name: "JSON_KEYS", Args: []query.Expression{
 		&query.StringLiteral{Value: `{"a":1,"b":2}`},
 	}}, nil)
 	if err != nil {
@@ -919,7 +919,7 @@ func TestComprehensive_JSONFunctionPaths(t *testing.T) {
 	}
 
 	// JSONPretty
-	val, err = EvalExpression(&query.FunctionCall{Name: "JSON_PRETTY", Args: []query.Expression{
+	_, err = EvalExpression(&query.FunctionCall{Name: "JSON_PRETTY", Args: []query.Expression{
 		&query.StringLiteral{Value: `{"a":1}`},
 	}}, nil)
 	if err != nil {
@@ -927,7 +927,7 @@ func TestComprehensive_JSONFunctionPaths(t *testing.T) {
 	}
 
 	// JSONMinify
-	val, err = EvalExpression(&query.FunctionCall{Name: "JSON_MINIFY", Args: []query.Expression{
+	_, err = EvalExpression(&query.FunctionCall{Name: "JSON_MINIFY", Args: []query.Expression{
 		&query.StringLiteral{Value: "{\n  \"a\" : 1\n}"},
 	}}, nil)
 	if err != nil {
@@ -935,7 +935,7 @@ func TestComprehensive_JSONFunctionPaths(t *testing.T) {
 	}
 
 	// JSONMerge
-	val, err = EvalExpression(&query.FunctionCall{Name: "JSON_MERGE", Args: []query.Expression{
+	_, err = EvalExpression(&query.FunctionCall{Name: "JSON_MERGE", Args: []query.Expression{
 		&query.StringLiteral{Value: `{"a":1}`},
 		&query.StringLiteral{Value: `{"b":2}`},
 	}}, nil)
@@ -944,7 +944,7 @@ func TestComprehensive_JSONFunctionPaths(t *testing.T) {
 	}
 
 	// JSONQuote
-	val, err = EvalExpression(&query.FunctionCall{Name: "JSON_QUOTE", Args: []query.Expression{
+	_, err = EvalExpression(&query.FunctionCall{Name: "JSON_QUOTE", Args: []query.Expression{
 		&query.StringLiteral{Value: "hello"},
 	}}, nil)
 	if err != nil {
@@ -1241,7 +1241,7 @@ func TestComprehensive_HiddenAggPaths(t *testing.T) {
 
 	// addHiddenOrderByAggregates with non-aggregate function
 	orderBy := []*query.OrderByExpr{&query.OrderByExpr{Expr: &query.FunctionCall{Name: "UPPER", Args: []query.Expression{&query.Identifier{Name: "a"}}}}}
-	newCols, count = addHiddenOrderByAggregates(orderBy, cols, "t")
+	_, count = addHiddenOrderByAggregates(orderBy, cols, "t")
 	if count != 0 {
 		t.Errorf("Expected 0 hidden aggregates for ORDER BY UPPER, got %d", count)
 	}
@@ -1556,7 +1556,7 @@ func TestComprehensive_FunctionEdgePaths(t *testing.T) {
 	}
 
 	// DATE / TIME / DATETIME
-	val, err = EvalExpression(&query.FunctionCall{Name: "DATE", Args: []query.Expression{
+	_, err = EvalExpression(&query.FunctionCall{Name: "DATE", Args: []query.Expression{
 		&query.StringLiteral{Value: "2024-01-15 12:30:00"},
 	}}, nil)
 	if err != nil {

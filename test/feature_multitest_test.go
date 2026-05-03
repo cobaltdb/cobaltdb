@@ -419,7 +419,7 @@ func TestAggregateMultiWay(t *testing.T) {
 	}
 
 	// Way 6: HAVING
-	rows = expectRows(t, db, ctx, "SELECT product, COUNT(*) FROM sales GROUP BY product HAVING COUNT(*) > 1 ORDER BY product", 2) // Gadget, Widget
+	expectRows(t, db, ctx, "SELECT product, COUNT(*) FROM sales GROUP BY product HAVING COUNT(*) > 1 ORDER BY product", 2) // Gadget, Widget
 
 	// Way 7: GROUP BY + WHERE
 	rows = expectRows(t, db, ctx, "SELECT region, SUM(amount) FROM sales WHERE product = 'Widget' GROUP BY region ORDER BY region", 2)
@@ -508,7 +508,7 @@ func TestSubqueryMultiWay(t *testing.T) {
 	}
 
 	// Way 2: scalar subquery in WHERE
-	rows = expectRows(t, db, ctx,
+	expectRows(t, db, ctx,
 		"SELECT id, price FROM items WHERE price > (SELECT AVG(price) FROM items) ORDER BY price", 2) // 40, 50
 
 	// Way 3: scalar subquery in SELECT
@@ -519,11 +519,11 @@ func TestSubqueryMultiWay(t *testing.T) {
 	}
 
 	// Way 4: IN subquery - multiple results
-	rows = expectRows(t, db, ctx,
+	expectRows(t, db, ctx,
 		"SELECT id, price FROM items WHERE cat_id IN (SELECT id FROM categories WHERE name IN ('A', 'C')) ORDER BY id", 3) // items 1,2 (cat A) + 5 (cat C)
 
 	// Way 5: subquery with comparison
-	rows = expectRows(t, db, ctx,
+	expectRows(t, db, ctx,
 		"SELECT id FROM items WHERE price = (SELECT MIN(price) FROM items)", 1) // id=1, price=10
 
 	t.Log("[OK] Subquery 5 different ways")
@@ -551,7 +551,7 @@ func TestCTEMultiWay(t *testing.T) {
 	}
 
 	// Way 2: CTE + aggregate
-	rows = expectRows(t, db, ctx,
+	expectRows(t, db, ctx,
 		"WITH totals AS (SELECT customer, SUM(amount) as total FROM orders WHERE status = 'completed' GROUP BY customer) SELECT customer, total FROM totals ORDER BY total DESC", 3)
 
 	// Way 3: CTE + WHERE on main query
@@ -566,7 +566,7 @@ func TestCTEMultiWay(t *testing.T) {
 	mustExec(t, db, ctx, "INSERT INTO customers VALUES ('Alice', 'gold')")
 	mustExec(t, db, ctx, "INSERT INTO customers VALUES ('Bob', 'silver')")
 	mustExec(t, db, ctx, "INSERT INTO customers VALUES ('Carol', 'gold')")
-	rows = expectRows(t, db, ctx,
+	expectRows(t, db, ctx,
 		"WITH big_orders AS (SELECT * FROM orders WHERE amount >= 100) SELECT b.customer, c.tier, b.amount FROM big_orders b JOIN customers c ON b.customer = c.name ORDER BY b.amount DESC", 4)
 
 	t.Log("[OK] CTE 4 different ways")
@@ -751,7 +751,7 @@ func TestCaseWhenMultiWay(t *testing.T) {
 	}
 
 	// Way 2: CASE in WHERE clause (via subquery)
-	rows = expectRows(t, db, ctx, `
+	expectRows(t, db, ctx, `
 		SELECT name FROM scores WHERE CASE WHEN score >= 80 THEN 1 ELSE 0 END = 1 ORDER BY name`, 2)
 
 	// Way 3: CASE with NULL handling
@@ -1289,7 +1289,7 @@ func TestComplexScenarioMultiWay(t *testing.T) {
 
 	// Test 7: View oluştur ve sorgula
 	mustExec(t, db, ctx, "CREATE VIEW team_stats AS SELECT t.name, COUNT(p.id) as player_count, SUM(p.salary) as total_salary FROM teams t LEFT JOIN players p ON t.id = p.team_id GROUP BY t.name")
-	rows = expectRows(t, db, ctx, "SELECT * FROM team_stats ORDER BY total_salary DESC", 3)
+	expectRows(t, db, ctx, "SELECT * FROM team_stats ORDER BY total_salary DESC", 3)
 
 	// Test 8: DELETE + verify
 	mustExec(t, db, ctx, "DELETE FROM games WHERE home_score < away_score")
@@ -1334,23 +1334,22 @@ func TestExistsMultiWay(t *testing.T) {
 	mustExec(t, db, ctx, "INSERT INTO employees (id, name, dept_id, salary) VALUES (4, 'Dave', 3, 95000)")
 
 	// Test 1: EXISTS with subquery that returns rows
-	rows := expectRows(t, db, ctx, "SELECT name FROM departments WHERE EXISTS (SELECT 1 FROM employees WHERE dept_id = 1)", 4)
-	_ = rows
+	expectRows(t, db, ctx, "SELECT name FROM departments WHERE EXISTS (SELECT 1 FROM employees WHERE dept_id = 1)", 4)
 
 	// Test 2: NOT EXISTS - find departments with no employees
-	rows = mustQuery(t, db, ctx, "SELECT name FROM departments WHERE NOT EXISTS (SELECT 1 FROM employees WHERE employees.dept_id = departments.id)")
+	mustQuery(t, db, ctx, "SELECT name FROM departments WHERE NOT EXISTS (SELECT 1 FROM employees WHERE employees.dept_id = departments.id)")
 	// Note: NOT EXISTS with correlated subquery may not work, test simpler case
 	// Test simpler NOT EXISTS
-	rows = expectRows(t, db, ctx, "SELECT name FROM departments WHERE NOT EXISTS (SELECT 1 FROM employees WHERE dept_id = 999)", 4)
+	expectRows(t, db, ctx, "SELECT name FROM departments WHERE NOT EXISTS (SELECT 1 FROM employees WHERE dept_id = 999)", 4)
 
 	// Test 3: EXISTS with empty subquery result
-	rows = expectRows(t, db, ctx, "SELECT name FROM departments WHERE EXISTS (SELECT 1 FROM employees WHERE dept_id = 999)", 0)
+	expectRows(t, db, ctx, "SELECT name FROM departments WHERE EXISTS (SELECT 1 FROM employees WHERE dept_id = 999)", 0)
 
 	// Test 4: NOT EXISTS with empty subquery result (all depts should match)
-	rows = expectRows(t, db, ctx, "SELECT name FROM departments WHERE NOT EXISTS (SELECT 1 FROM employees WHERE dept_id = 999)", 4)
+	expectRows(t, db, ctx, "SELECT name FROM departments WHERE NOT EXISTS (SELECT 1 FROM employees WHERE dept_id = 999)", 4)
 
 	// Test 5: EXISTS combined with other conditions
-	rows = expectRows(t, db, ctx, "SELECT name FROM departments WHERE id > 2 AND EXISTS (SELECT 1 FROM employees WHERE salary > 80000)", 2)
+	expectRows(t, db, ctx, "SELECT name FROM departments WHERE id > 2 AND EXISTS (SELECT 1 FROM employees WHERE salary > 80000)", 2)
 
 	t.Log("[OK] EXISTS/NOT EXISTS 5 different tests")
 }
@@ -1391,7 +1390,7 @@ func TestEscapedQuotesMultiWay(t *testing.T) {
 	}
 
 	// Test 5: LIKE with escaped quotes
-	rows = expectRows(t, db, ctx, "SELECT name FROM people WHERE name LIKE 'O''%'", 1)
+	expectRows(t, db, ctx, "SELECT name FROM people WHERE name LIKE 'O''%'", 1)
 
 	t.Log("[OK] Escaped quotes 5 different tests")
 }
@@ -1433,7 +1432,7 @@ func TestSubqueryInUpdateDeleteMultiWay(t *testing.T) {
 
 	// Test 3: DELETE with subquery in WHERE
 	mustExec(t, db, ctx, "DELETE FROM products WHERE category_id = (SELECT id FROM categories WHERE name = 'Clothing')")
-	rows = expectRows(t, db, ctx, "SELECT * FROM products", 3) // Shirt and Jacket deleted
+	expectRows(t, db, ctx, "SELECT * FROM products", 3) // Shirt and Jacket deleted
 
 	// Test 4: NOT IN with subquery
 	rows = expectRows(t, db, ctx, "SELECT name FROM products WHERE category_id NOT IN (SELECT id FROM categories WHERE name = 'Electronics')", 1)

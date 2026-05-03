@@ -339,7 +339,7 @@ func TestCreateComparisonEvaluatorContextExpr(t *testing.T) {
 	// Both NULL =
 	expr = mgr.createComparisonEvaluator("a", "=", "b")
 	row = map[string]interface{}{"a": nil, "b": nil}
-	result, err = expr(ctx, row)
+	_, err = expr(ctx, row)
 	// Both nil columns - getValue for "b" will try row["b"] which is nil
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)

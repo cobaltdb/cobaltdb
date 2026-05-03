@@ -245,6 +245,9 @@ func TestPartitionSupport(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parallelAggregate MAX failed: %v", err)
 		}
+		if result[0] != 1 {
+			t.Errorf("Expected success (1), got %d", result[0])
+		}
 
 		maxVal := binary.LittleEndian.Uint64(rt.Memory[outPtr:])
 		t.Logf("Parallel MAX(id) = %d", maxVal)

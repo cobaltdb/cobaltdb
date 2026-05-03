@@ -1,7 +1,6 @@
 package catalog
 
 import (
-	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"context"
 	"fmt"
 	"strconv"
@@ -9,6 +8,7 @@ import (
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
@@ -279,14 +279,6 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		})
 	}
 
-	// Track insertions for statement-level atomicity (undo on partial failure)
-	type stmtInsert struct {
-		key     []byte
-		idxKeys []struct {
-			idxName string
-			key     []byte
-		}
-	}
 	var stmtInserts []stmtInsertEntry
 	var insertedRows [][]interface{} // Track rows for trigger execution
 	var insertErr error
@@ -368,15 +360,15 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			return 0, 0, fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
 		}
 
-			// Validate row constraints and resolve key
-			var skipRow bool
-			key, skipRow, insertErr = c.validateInsertRow(table, tree, stmt, rowValues, args, compositePK, key)
-			if insertErr != nil {
-				break
-			}
-			if skipRow {
-				continue
-			}
+		// Validate row constraints and resolve key
+		var skipRow bool
+		key, skipRow, insertErr = c.validateInsertRow(table, tree, stmt, rowValues, args, compositePK, key)
+		if insertErr != nil {
+			break
+		}
+		if skipRow {
+			continue
+		}
 
 		// Encode row with temporal versioning
 		valueData, err := encodeVersionedRow(rowValues, nil)
@@ -402,13 +394,13 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			}
 		}
 
-			// Enforce PRIMARY KEY uniqueness - check if key already exists
-			if skip, err := c.resolvePKConflict(tree, table, stmt, []byte(key)); err != nil {
-				insertErr = err
-				break
-			} else if skip {
-				continue
-			}
+		// Enforce PRIMARY KEY uniqueness - check if key already exists
+		if skip, err := c.resolvePKConflict(tree, table, stmt, []byte(key)); err != nil {
+			insertErr = err
+			break
+		} else if skip {
+			continue
+		}
 
 		// Store in B+Tree
 		if err := tree.Put([]byte(key), valueData); err != nil {

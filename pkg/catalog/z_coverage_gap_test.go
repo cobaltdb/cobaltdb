@@ -45,7 +45,7 @@ func TestCovGap_ScalarSelect(t *testing.T) {
 	if len(result.Rows) == 0 {
 		t.Fatal("expected at least one row")
 	}
-	result, err = c.ExecuteQuery("SELECT UPPER('hello')")
+	_, err = c.ExecuteQuery("SELECT UPPER('hello')")
 	if err != nil {
 		t.Fatalf("scalar function: %v", err)
 	}

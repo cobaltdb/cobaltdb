@@ -129,7 +129,9 @@ func TestSelectLockedWithWindowFuncs(t *testing.T) {
 
 // TestProcessUpdateRowWithRLS tests RLS during update
 func TestProcessUpdateRowWithRLS(t *testing.T) {
+	//lint:ignore SA1029 catalog RLS intentionally reads this legacy string key.
 	ctx := context.WithValue(context.Background(), "cobaltdb_user", "admin")
+	//lint:ignore SA1029 catalog RLS intentionally reads this legacy string key.
 	ctx = context.WithValue(ctx, "cobaltdb_roles", []string{"admin"})
 
 	backend := storage.NewMemory()

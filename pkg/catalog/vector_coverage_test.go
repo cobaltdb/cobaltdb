@@ -151,7 +151,7 @@ func TestSearchVectorRange(t *testing.T) {
 	}
 
 	// Test with larger radius
-	keys, dists, err = c.SearchVectorRange("idx_range_test", queryVec, 3.0)
+	keys, _, err = c.SearchVectorRange("idx_range_test", queryVec, 3.0)
 	if err != nil {
 		t.Fatalf("SearchVectorRange with larger radius failed: %v", err)
 	}

@@ -430,35 +430,35 @@ func (p *Parser) parseJoinType(join *JoinClause) {
 	case TokenInner:
 		join.Type = TokenInner
 		p.advance()
-		p.expect(TokenJoin)
+		_, _ = p.expect(TokenJoin)
 	case TokenLeft:
 		join.Type = TokenLeft
 		p.advance()
 		_ = p.match(TokenOuter)
-		p.expect(TokenJoin)
+		_, _ = p.expect(TokenJoin)
 	case TokenRight:
 		join.Type = TokenRight
 		p.advance()
 		_ = p.match(TokenOuter)
-		p.expect(TokenJoin)
+		_, _ = p.expect(TokenJoin)
 	case TokenFull:
 		join.Type = TokenFull
 		p.advance()
 		_ = p.match(TokenOuter)
-		p.expect(TokenJoin)
+		_, _ = p.expect(TokenJoin)
 	case TokenOuter:
 		p.advance()
 		join.Type = TokenFull
-		p.expect(TokenJoin)
+		_, _ = p.expect(TokenJoin)
 	case TokenCross:
 		join.Type = TokenCross
 		p.advance()
-		p.expect(TokenJoin)
+		_, _ = p.expect(TokenJoin)
 	case TokenNatural:
 		join.Natural = true
 		p.advance()
 		p.parseNaturalJoinType(join)
-		p.expect(TokenJoin)
+		_, _ = p.expect(TokenJoin)
 	case TokenJoin:
 		join.Type = TokenJoin
 		p.advance()
@@ -556,7 +556,6 @@ func (p *Parser) parseFromAndJoins(stmt *SelectStmt) error {
 	return nil
 }
 
-
 func (p *Parser) parseIfNotExists() bool {
 	if p.match(TokenIf) {
 		if p.match(TokenNot) {
@@ -565,23 +564,6 @@ func (p *Parser) parseIfNotExists() bool {
 		}
 	}
 	return false
-}
-
-func (p *Parser) parseOptionalParenExpr(tokenType TokenType) (Expression, error) {
-	if !p.match(tokenType) {
-		return nil, nil
-	}
-	if _, err := p.expect(TokenLParen); err != nil {
-		return nil, err
-	}
-	expr, err := p.parseExpression()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := p.expect(TokenRParen); err != nil {
-		return nil, err
-	}
-	return expr, nil
 }
 
 // parseOrderByList parses ORDER BY expressions
@@ -2231,7 +2213,6 @@ func (p *Parser) parsePartitionDefs(def *PartitionDef) error {
 	_, err := p.expect(TokenRParen)
 	return err
 }
-
 
 // parseForeignKeyDef parses a FOREIGN KEY constraint
 func (p *Parser) parseForeignKeyDef() (*ForeignKeyDef, error) {

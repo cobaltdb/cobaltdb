@@ -95,6 +95,7 @@ func TestPreparedStatements(t *testing.T) {
 
 		if compiled == nil {
 			t.Error("Expected compiled query, got nil")
+			return
 		}
 
 		t.Logf("Executed prepared statement, bytecode length: %d", len(compiled.Bytecode))

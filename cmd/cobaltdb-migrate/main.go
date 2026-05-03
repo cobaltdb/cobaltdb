@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"database/sql"
 	"flag"
 	"fmt"
@@ -416,21 +415,4 @@ func getNextVersion(dir string) (int64, error) {
 func parseTimestamp(ts string) time.Time {
 	t, _ := time.Parse("20060102150405", ts)
 	return t
-}
-
-// Interactive mode for creating migrations
-//
-//nolint:unused // kept for future interactive CLI mode.
-func interactiveCreate(dir string) error {
-	reader := bufio.NewReader(os.Stdin)
-
-	fmt.Print("Migration name: ")
-	name, _ := reader.ReadString('\n')
-	name = strings.TrimSpace(name)
-
-	if name == "" {
-		return fmt.Errorf("migration name cannot be empty")
-	}
-
-	return createMigration(dir, name)
 }

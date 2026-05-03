@@ -152,9 +152,7 @@ func TestValueTypeByte(t *testing.T) {
 
 func TestModule(t *testing.T) {
 	m := &Module{}
-	if m == nil {
-		t.Fatal("Module is nil")
-	}
+	_ = m
 }
 
 func TestMemory(t *testing.T) {

@@ -175,7 +175,9 @@ func TestBoost2_RLSDeletePath(t *testing.T) {
 	}
 
 	// Delete with a user context - exercises the RLS check in processDeleteRow and deleteLocked
+	//lint:ignore SA1029 catalog RLS intentionally reads this legacy string key.
 	rlsCtx := context.WithValue(ctx, "cobaltdb_user", "user1")
+	//lint:ignore SA1029 catalog RLS intentionally reads this legacy string key.
 	rlsCtx = context.WithValue(rlsCtx, "cobaltdb_roles", []string{"user"})
 
 	affected, _, err := c.Delete(rlsCtx, &query.DeleteStmt{Table: "rls_del"}, nil)
@@ -217,7 +219,9 @@ func TestBoost2_RLSUpdatePath(t *testing.T) {
 		}, nil)
 	}
 
+	//lint:ignore SA1029 catalog RLS intentionally reads this legacy string key.
 	rlsCtx := context.WithValue(ctx, "cobaltdb_user", "user1")
+	//lint:ignore SA1029 catalog RLS intentionally reads this legacy string key.
 	rlsCtx = context.WithValue(rlsCtx, "cobaltdb_roles", []string{"user"})
 
 	_, affected, err := c.Update(rlsCtx, &query.UpdateStmt{

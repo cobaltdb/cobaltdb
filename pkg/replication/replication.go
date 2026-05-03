@@ -398,7 +398,7 @@ func (m *Manager) receiveResumeRequest(slave *SlaveConnection) (uint64, error) {
 		if err := slave.Conn.SetReadDeadline(time.Now().Add(resumeHandshakeTimeout)); err != nil {
 			return 0, err
 		}
-		defer slave.Conn.SetReadDeadline(time.Time{})
+		defer func() { _ = slave.Conn.SetReadDeadline(time.Time{}) }()
 	}
 
 	line, err := slave.Reader.ReadString('\n')
@@ -484,6 +484,7 @@ func (m *Manager) sendResyncRequired(slave *SlaveConnection, currentLSN uint64) 
 }
 
 // authenticateSlave authenticates a slave connection
+//nolint:unused // used by coverage tests
 func (m *Manager) authenticateSlave(conn net.Conn) error {
 	return m.authenticateSlaveWithReader(bufio.NewReader(conn), conn)
 }
@@ -742,6 +743,7 @@ func (m *Manager) startSlave() error {
 }
 
 // replicateFromMaster handles replication stream from master
+//nolint:unused // used by coverage tests
 func (m *Manager) replicateFromMaster() {
 	m.replicateFromMasterWithReader(bufio.NewReader(m.masterConn))
 }

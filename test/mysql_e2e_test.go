@@ -18,7 +18,6 @@ import (
 type mysqlTestClient struct {
 	conn   net.Conn
 	reader *bufio.Reader
-	seq    byte
 }
 
 func newMySQLTestClient(addr string) (*mysqlTestClient, error) {
