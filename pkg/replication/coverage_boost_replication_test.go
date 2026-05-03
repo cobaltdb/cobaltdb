@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -907,5 +909,67 @@ func TestSendInitialSnapshotFlushError(t *testing.T) {
 	err := mgr.sendInitialSnapshot(slave, 12345)
 	if err == nil {
 		t.Error("Expected error when write fails")
+	}
+}
+
+// TestSaveReplicationStateErrors tests error paths in saveReplicationState
+func TestSaveReplicationStateErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.StateFile = filepath.Join(tempDir, "state", "repl.json")
+	mgr := NewManager(config)
+
+	// Normal save
+	if err := mgr.saveReplicationState(); err != nil {
+		t.Fatalf("saveReplicationState failed: %v", err)
+	}
+
+	// Remove file and create state file as directory so Create fails
+	os.Remove(config.StateFile)
+	if err := os.MkdirAll(config.StateFile, 0755); err != nil {
+		t.Fatalf("failed to create state dir: %v", err)
+	}
+	if err := mgr.saveReplicationState(); err == nil {
+		t.Fatal("expected error when state file is directory")
+	}
+
+	// Test rename failure: make StateFile a directory so Rename fails
+	os.RemoveAll(config.StateFile)
+	if err := os.MkdirAll(config.StateFile, 0755); err != nil {
+		t.Fatalf("failed to create state dir for rename test: %v", err)
+	}
+	if err := mgr.saveReplicationState(); err == nil {
+		t.Fatal("expected error when rename fails")
+	}
+}
+
+// TestLoadReplicationStateErrors tests error paths in loadReplicationState
+func TestLoadReplicationStateErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.StateFile = filepath.Join(tempDir, "state", "repl.json")
+	mgr := NewManager(config)
+
+	// Missing file returns nil
+	if err := mgr.loadReplicationState(); err != nil {
+		t.Fatalf("loadReplicationState should return nil for missing file: %v", err)
+	}
+
+	// Invalid JSON
+	if err := os.MkdirAll(filepath.Dir(config.StateFile), 0755); err != nil {
+		t.Fatalf("failed to create state dir: %v", err)
+	}
+	if err := os.WriteFile(config.StateFile, []byte("not json"), 0644); err != nil {
+		t.Fatalf("failed to write bad state: %v", err)
+	}
+	if err := mgr.loadReplicationState(); err == nil {
+		t.Fatal("expected error for invalid state JSON")
+	}
+}
+
+// TestRetainedWALBytesNil tests retainedWALBytes with nil entry
+func TestRetainedWALBytesNil(t *testing.T) {
+	if retainedWALBytes(nil) != 0 {
+		t.Fatal("retainedWALBytes(nil) should be 0")
 	}
 }

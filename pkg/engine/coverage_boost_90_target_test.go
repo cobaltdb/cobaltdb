@@ -1236,3 +1236,71 @@ func TestReplicateWritePath90(t *testing.T) {
 	db.Exec(ctx, "DELETE FROM test WHERE id = 2")
 	db.Exec(ctx, "DROP TABLE test")
 }
+
+// TestExecuteVacuumAndAnalyze90 tests VACUUM and ANALYZE execution
+func TestExecuteVacuumAndAnalyze90(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := Open(dbPath, nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+	db.Exec(ctx, "INSERT INTO test VALUES (1)")
+
+	if _, err := db.Exec(ctx, "VACUUM"); err != nil {
+		t.Fatalf("VACUUM failed: %v", err)
+	}
+	if _, err := db.Exec(ctx, "ANALYZE"); err != nil {
+		t.Fatalf("ANALYZE failed: %v", err)
+	}
+	if _, err := db.Exec(ctx, "ANALYZE test"); err != nil {
+		t.Fatalf("ANALYZE test failed: %v", err)
+	}
+}
+
+// TestHealthCheckClosedDB tests HealthCheck on closed database
+func TestHealthCheckClosedDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := Open(dbPath, nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	db.Close()
+
+	if err := db.HealthCheck(); err == nil {
+		t.Fatal("expected error for closed database")
+	}
+	if db.IsHealthy() {
+		t.Fatal("expected unhealthy for closed database")
+	}
+}
+
+// TestRunAutoJobs tests runAutoVacuumJob and runAnalyzeJob
+func TestRunAutoJobs(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := Open(dbPath, nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+
+	if err := db.runAutoVacuumJob(0.5); err != nil {
+		t.Fatalf("runAutoVacuumJob failed: %v", err)
+	}
+	if err := db.runAnalyzeJob(); err != nil {
+		t.Fatalf("runAnalyzeJob failed: %v", err)
+	}
+}
+

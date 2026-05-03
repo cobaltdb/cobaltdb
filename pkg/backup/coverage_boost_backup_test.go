@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1601,5 +1602,348 @@ func TestCleanupOldBackupsPersistsMetadata(t *testing.T) {
 	}
 	if reloaded.GetBackup("new") == nil {
 		t.Fatal("Expected new backup metadata to remain after reload")
+	}
+}
+
+type errWriter struct {
+	errAfter int
+	written  int
+}
+
+func (e *errWriter) Write(p []byte) (int, error) {
+	if e.written >= e.errAfter {
+		return 0, errors.New("mock write error")
+	}
+	e.written += len(p)
+	return len(p), nil
+}
+
+// TestWriteDeltaRecordErrors tests error paths in writeDeltaRecord
+func TestWriteDeltaRecordErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		errAfter int
+		wantErr  string
+	}{
+		{"offset write fails", 0, "failed to write delta offset"},
+		{"length write fails", 8, "failed to write delta length"},
+		{"data write fails", 12, "failed to write delta data"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &errWriter{errAfter: tt.errAfter}
+			err := writeDeltaRecord(w, 42, []byte("hello"))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestSaveMetadataLockedNoDir tests saveMetadataLocked when backup dir does not exist
+func TestSaveMetadataLockedNoDir(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "nonexistent")
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	if err := mgr.saveMetadataLocked(); err != nil {
+		t.Fatalf("saveMetadataLocked should return nil when dir missing: %v", err)
+	}
+}
+
+// TestSaveMetadataLockedCreateError tests saveMetadataLocked when metadata file cannot be created
+func TestSaveMetadataLockedCreateError(t *testing.T) {
+	tempDir := t.TempDir()
+	backupDir := filepath.Join(tempDir, "backups")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = backupDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	// Make backup dir read-only so os.Create fails
+	if err := os.Chmod(backupDir, 0555); err != nil {
+		t.Fatalf("Failed to chmod backup dir: %v", err)
+	}
+	defer os.Chmod(backupDir, 0755)
+
+	if err := mgr.saveMetadataLocked(); err == nil {
+		t.Fatal("saveMetadataLocked should error when file cannot be created")
+	}
+}
+
+// TestSaveMetadataLockedRenameError tests saveMetadataLocked when rename fails
+func TestSaveMetadataLockedRenameError(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	// Create metadata path as a directory so os.Rename fails
+	metaPath := mgr.metadataPath()
+	if err := os.MkdirAll(metaPath, 0755); err != nil {
+		t.Fatalf("failed to create metadata dir: %v", err)
+	}
+
+	if err := mgr.saveMetadataLocked(); err == nil {
+		t.Fatal("saveMetadataLocked should error when rename fails")
+	}
+}
+
+// TestCopyDatabaseDeltaNoParent tests copyDatabaseDelta when parent backup is missing
+func TestCopyDatabaseDeltaNoParent(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	backup := &Backup{ID: "child", Type: TypeIncremental, ParentID: "missing", Destination: filepath.Join(tempDir, "child.db")}
+	ctx := context.Background()
+	if err := mgr.copyDatabaseDelta(ctx, backup); err == nil {
+		t.Fatal("expected error when parent backup is missing")
+	}
+}
+
+// TestCopyDatabaseDeltaMaterializeError tests copyDatabaseDelta when materializeBackup fails
+func TestCopyDatabaseDeltaMaterializeError(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	// Add parent backup without a file
+	parent := &Backup{ID: "parent", Type: TypeFull, Destination: filepath.Join(tempDir, "parent.db")}
+	mgr.metadata.Backups = append(mgr.metadata.Backups, parent)
+
+	child := &Backup{ID: "child", Type: TypeIncremental, ParentID: "parent", Destination: filepath.Join(tempDir, "child.db")}
+	ctx := context.Background()
+	if err := mgr.copyDatabaseDelta(ctx, child); err == nil {
+		t.Fatal("expected error when parent file is missing")
+	}
+}
+
+// TestCreateBackupMkdirError tests CreateBackup when MkdirAll fails
+func TestCreateBackupMkdirError(t *testing.T) {
+	config := DefaultConfig()
+	config.BackupDir = "/dev/null/invalid"
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	ctx := context.Background()
+	if _, err := mgr.CreateBackup(ctx, TypeFull); err == nil {
+		t.Fatal("expected error when backup dir cannot be created")
+	}
+}
+
+// TestCopyDatabaseCompressionError tests copyDatabase with invalid compression level
+func TestCopyDatabaseCompressionError(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	config.CompressionLevel = 10 // invalid
+	dbPath := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbPath, []byte("data"), 0644); err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	db := &MockDatabase{dbPath: dbPath}
+	mgr := NewManager(config, db)
+
+	backup := &Backup{ID: "b1", Destination: filepath.Join(tempDir, "b1.db")}
+	ctx := context.Background()
+	if err := mgr.copyDatabase(ctx, backup); err == nil {
+		t.Fatal("expected error for invalid compression level")
+	}
+}
+
+// TestCopyDatabaseDeltaContextCancel tests copyDatabaseDelta with cancelled context
+func TestCopyDatabaseDeltaContextCancel(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+
+	dbPath := filepath.Join(tempDir, "test.db")
+	parentPath := filepath.Join(tempDir, "parent.db")
+	if err := os.WriteFile(dbPath, []byte("src data"), 0644); err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	if err := os.WriteFile(parentPath, []byte("parent data"), 0644); err != nil {
+		t.Fatalf("failed to create parent db: %v", err)
+	}
+
+	db := &MockDatabase{dbPath: dbPath}
+	mgr := NewManager(config, db)
+
+	parent := &Backup{ID: "parent", Type: TypeFull, Destination: parentPath}
+	mgr.metadata.Backups = append(mgr.metadata.Backups, parent)
+
+	child := &Backup{ID: "child", Type: TypeIncremental, ParentID: "parent", Destination: filepath.Join(tempDir, "child.db")}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := mgr.copyDatabaseDelta(ctx, child); err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("expected context canceled error, got %v", err)
+	}
+}
+
+// TestBuildRestoreChainErrors tests error paths in buildRestoreChain
+func TestBuildRestoreChainErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	// Nil backup
+	if _, err := mgr.buildRestoreChain(nil); err == nil {
+		t.Fatal("expected error for nil backup")
+	}
+
+	// Missing parent in chain
+	child := &Backup{ID: "child", Type: TypeIncremental, ParentID: "missing"}
+	mgr.metadata.Backups = append(mgr.metadata.Backups, child)
+	if _, err := mgr.buildRestoreChain(child); err == nil {
+		t.Fatal("expected error when parent missing in chain")
+	}
+}
+
+// TestLoadMetadataErrors tests error paths in loadMetadata
+func TestLoadMetadataErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	// Make metadata path a directory so Open fails
+	metaPath := mgr.metadataPath()
+	if err := os.MkdirAll(metaPath, 0755); err != nil {
+		t.Fatalf("failed to create metadata dir: %v", err)
+	}
+	if err := mgr.loadMetadata(); err == nil {
+		t.Fatal("expected error when metadata path is directory")
+	}
+	os.RemoveAll(metaPath)
+
+	// Invalid JSON in metadata file
+	if err := os.WriteFile(metaPath, []byte("not json"), 0644); err != nil {
+		t.Fatalf("failed to write bad metadata: %v", err)
+	}
+	if err := mgr.loadMetadata(); err == nil {
+		t.Fatal("expected error for invalid metadata JSON")
+	}
+}
+
+// TestCompoundReadCloserError tests Close when a closer returns an error
+func TestCompoundReadCloserError(t *testing.T) {
+	errCloser := &MockReadCloser{errOnClose: errors.New("close error")}
+	crc := &compoundReadCloser{Reader: strings.NewReader("data"), closers: []io.Closer{errCloser}}
+	if err := crc.Close(); err == nil {
+		t.Fatal("expected close error")
+	}
+}
+
+type MockReadCloser struct {
+	errOnClose error
+}
+
+func (m *MockReadCloser) Read(p []byte) (int, error) { return 0, io.EOF }
+func (m *MockReadCloser) Close() error                 { return m.errOnClose }
+
+// TestMaterializeBackupErrors tests error paths in materializeBackup
+func TestMaterializeBackupErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	ctx := context.Background()
+
+	// Nil backup
+	if err := mgr.materializeBackup(ctx, nil, filepath.Join(tempDir, "out.db")); err == nil {
+		t.Fatal("expected error for nil backup")
+	}
+
+	// Backup with missing file
+	mgr.metadata.Backups = append(mgr.metadata.Backups, &Backup{ID: "bad", Destination: filepath.Join(tempDir, "missing")})
+	if err := mgr.materializeBackup(ctx, mgr.metadata.Backups[0], filepath.Join(tempDir, "out.db")); err == nil {
+		t.Fatal("expected error for missing backup file")
+	}
+}
+
+// TestOpenBackupReaderErrors tests error paths in openBackupReader
+func TestOpenBackupReaderErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	// Non-existent file
+	_, err := mgr.openBackupReader(&Backup{Destination: filepath.Join(tempDir, "missing")})
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+
+	// Invalid gzip file
+	badGz := filepath.Join(tempDir, "bad.gz")
+	if err := os.WriteFile(badGz, []byte("not gz"), 0644); err != nil {
+		t.Fatalf("failed to write bad.gz: %v", err)
+	}
+	_, err = mgr.openBackupReader(&Backup{Destination: badGz})
+	if err == nil {
+		t.Fatal("expected error for invalid gzip")
+	}
+}
+
+// TestApplyDeltaPayloadErrors tests error paths in applyDeltaPayload
+func TestApplyDeltaPayloadErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	targetPath := filepath.Join(tempDir, "target.db")
+	if err := os.WriteFile(targetPath, make([]byte, 1024), 0644); err != nil {
+		t.Fatalf("failed to create target: %v", err)
+	}
+
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr string
+	}{
+		{"invalid json header", "not json\n", "failed to decode delta header"},
+		{"invalid chunk size", `{"chunk_size":0,"target_size":100}` + "\n", "invalid delta header"},
+		{"short offset", `{"chunk_size":1024,"target_size":100}` + "\nABCD", "failed to read delta offset"},
+		{"length exceeds chunk", `{"chunk_size":2,"target_size":100}` + "\n\x00\x00\x00\x00\x00\x00\x00\x00\x10\x00\x00\x00", "delta record length"},
+		{"short data", `{"chunk_size":1024,"target_size":100}` + "\n\x00\x00\x00\x00\x00\x00\x00\x00\x05\x00\x00\x00AB", "failed to read delta data"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := mgr.applyDeltaPayload(ctx, strings.NewReader(tt.input), targetPath)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+
+	// Context cancellation
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	validHeader := `{"chunk_size":1024,"target_size":100}` + "\n"
+	err := mgr.applyDeltaPayload(cancelledCtx, strings.NewReader(validHeader), targetPath)
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }

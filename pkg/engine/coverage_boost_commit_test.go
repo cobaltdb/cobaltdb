@@ -374,3 +374,30 @@ func TestLoadExistingWithConcurrentModification(t *testing.T) {
 		result.Close()
 	}
 }
+
+// TestDoubleCommit tests committing the same transaction twice
+func TestDoubleCommit(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := Open(dbPath, nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("First commit failed: %v", err)
+	}
+	if err := tx.Commit(); err == nil {
+		t.Fatal("Second commit should fail")
+	}
+}
