@@ -148,7 +148,7 @@ func (ctx *EvalContext) evaluate(expr query.Expression) (interface{}, error) {
 		}
 		return exists, nil
 	case *query.MatchExpr:
-		return evaluateMatchExpr(c, row, columns, e, args)
+		return evaluateMatchExprLocked(c, row, columns, e, args)
 	case *query.JSONPathExpr:
 		// Evaluate -> (JSON object) and ->> (JSON text) operators
 		val, err := evaluateExpression(c, row, columns, e.Column, args)
@@ -783,8 +783,17 @@ func toFloat64(v interface{}) (float64, bool) {
 	}
 }
 
-// evaluateMatchExpr evaluates MATCH ... AGAINST for full-text search
+// evaluateMatchExpr evaluates MATCH ... AGAINST for full-text search.
+// It acquires the catalog read lock; use evaluateMatchExprLocked when the caller already holds the lock.
 func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.MatchExpr, args []interface{}) (interface{}, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return evaluateMatchExprLocked(c, row, columns, expr, args)
+}
+
+// evaluateMatchExprLocked evaluates MATCH ... AGAINST for full-text search.
+// Caller must hold c.mu (read or write lock).
+func evaluateMatchExprLocked(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.MatchExpr, args []interface{}) (interface{}, error) {
 	// Get the pattern value
 	patternVal, err := evaluateExpression(c, row, columns, expr.Pattern, args)
 	if err != nil {
@@ -800,9 +809,6 @@ func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr 
 	if len(searchWords) == 0 {
 		return false, nil
 	}
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 
 	// Try to find an FTS index that covers the columns in the MATCH expression
 	for _, ftsIdx := range c.ftsIndexes {
