@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -76,13 +77,29 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 	for i, tree := range trees {
 		treeName := treeNames[i]
 
+		// Collect pending writes for this tree to overlay in scan.
+		pendingKeys := make(map[string][]byte)
+		if ts := c.getCurrentTxn(); ts != nil {
+			for _, pw := range ts.pendingWrites {
+				if pw.TreeName == treeName {
+					pendingKeys[string(pw.Key)] = pw.Value
+				}
+			}
+		}
+
 		// If we have indexed rows, only process those specific rows
 		if useIndex {
 			for pkStr := range indexedRows {
 				key := []byte(pkStr)
 				valueData, err := tree.Get(key)
-				if err != nil {
-					continue // Row not found
+				found := err == nil && valueData != nil
+				// Overlay pending write
+				if pwValue, ok := pendingKeys[pkStr]; ok {
+					valueData = pwValue
+					found = true
+				}
+				if !found {
+					continue
 				}
 				// Process this row
 				if err := c.processDeleteRow(ctx, table, tree, treeName, key, valueData, stmt, args, &entries, &rowsAffected); err != nil {
@@ -97,10 +114,16 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		if err != nil {
 			return 0, 0, fmt.Errorf("failed to scan table for DELETE: %w", err)
 		}
+		seenPending := make(map[string]bool)
 		for iter.HasNext() {
 			key, valueData, err := iter.Next()
 			if err != nil {
 				break
+			}
+			k := string(key)
+			if pwValue, ok := pendingKeys[k]; ok {
+				valueData = pwValue
+				seenPending[k] = true
 			}
 
 			// Decode row with version info
@@ -127,10 +150,10 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 				}
 			}
 
-		// Apply Row-Level Security check for DELETE
-		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
-			continue
-		}
+			// Apply Row-Level Security check for DELETE
+			if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
+				continue
+			}
 
 			// Make copies of key and value since iterator may reuse buffers
 			keyCopy := make([]byte, len(key))
@@ -142,6 +165,43 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 			rowsAffected++
 		}
 		iter.Close()
+
+		// Process pending inserts/updates not present in B-tree
+		var pendingKeyList []string
+		for k := range pendingKeys {
+			if !seenPending[k] {
+				pendingKeyList = append(pendingKeyList, k)
+			}
+		}
+		sort.Strings(pendingKeyList)
+		for _, k := range pendingKeyList {
+			key := []byte(k)
+			valueData := pendingKeys[k]
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil || vrow.Version.DeletedAt > 0 {
+				continue
+			}
+			row := vrow.Data
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+				if err != nil {
+					return 0, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+				}
+				if !matched {
+					continue
+				}
+			}
+			// Apply Row-Level Security check for DELETE
+			if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
+				continue
+			}
+			keyCopy := make([]byte, len(key))
+			copy(keyCopy, key)
+			valueCopy := make([]byte, len(valueData))
+			copy(valueCopy, valueData)
+			entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
+			rowsAffected++
+		}
 	}
 
 	// Track pending-write start position for statement-level rollback in buffered mode.

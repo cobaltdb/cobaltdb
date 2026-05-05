@@ -306,6 +306,7 @@ func (db *DB) createNew() error {
 	// Initialize transaction manager
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
 	db.catalog.SetTxnManager(db.txnMgr)
+	db.catalog.EnableBufferedWrites()
 
 	// Initialize WAL for new databases when enabled
 	if db.options.WALEnabled && db.path != ":memory:" && db.wal == nil {
@@ -503,6 +504,7 @@ func (db *DB) loadExisting() error {
 	// Initialize transaction manager
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
 	db.catalog.SetTxnManager(db.txnMgr)
+	db.catalog.EnableBufferedWrites()
 
 	// Initialize query cache if enabled
 	if db.options.EnableQueryCache {

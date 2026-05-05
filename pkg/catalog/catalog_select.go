@@ -254,13 +254,14 @@ func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]inte
 	}
 
 	var intermediateRows [][]interface{}
+	seen := make(map[string]int)
 	for _, tree := range trees {
 		mainIter, err := tree.Scan(nil, nil)
 		if err != nil {
 			continue
 		}
 		for mainIter.HasNext() {
-			_, data, err := mainIter.Next()
+			key, data, err := mainIter.Next()
 			if err != nil {
 				break
 			}
@@ -272,10 +273,45 @@ func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]inte
 				continue
 			}
 			intermediateRows = append(intermediateRows, vrow.Data)
+			seen[string(key)] = len(intermediateRows) - 1
 		}
 		mainIter.Close()
 	}
-	return mainTable.Columns, intermediateRows, nil
+
+	// Read-your-writes: overlay buffered writes (INSERT, UPDATE, DELETE).
+	if ts := c.getCurrentTxn(); ts != nil {
+		for _, pw := range ts.pendingWrites {
+			if pw.TreeName == mainTable.Name {
+				k := string(pw.Key)
+				vrow, err := decodeVersionedRow(pw.Value, len(mainTable.Columns))
+				if err != nil {
+					continue
+				}
+				if vrow.Version.DeletedAt > 0 {
+					if idx, ok := seen[k]; ok {
+						intermediateRows[idx] = nil
+					}
+					continue
+				}
+				if idx, ok := seen[k]; ok {
+					intermediateRows[idx] = vrow.Data
+				} else {
+					intermediateRows = append(intermediateRows, vrow.Data)
+					seen[k] = len(intermediateRows) - 1
+				}
+			}
+		}
+	}
+
+	// Remove nil rows (soft-deleted via pending writes)
+	var filtered [][]interface{}
+	for _, row := range intermediateRows {
+		if row != nil {
+			filtered = append(filtered, row)
+		}
+	}
+
+	return mainTable.Columns, filtered, nil
 }
 
 func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo) ([]string, [][]interface{}, error) {
@@ -841,27 +877,17 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 			return nil, nil
 		}
 
-		joinTree, exists := c.tableTrees[join.Table.Name]
-		if !exists {
-			return nil, nil
-		}
-
 		joinTableCols = joinTable.Columns
-		joinIter, err := joinTree.Scan(nil, nil)
-		if err != nil {
-			return nil, nil
+		effectiveData := c.getEffectiveTableData(joinTable)
+		effectiveKeys := make([]string, 0, len(effectiveData))
+		for k := range effectiveData {
+			effectiveKeys = append(effectiveKeys, k)
 		}
-		defer joinIter.Close()
-		for joinIter.HasNext() {
-			_, data, err := joinIter.Next()
-			if err != nil {
-				break
-			}
+		sort.Strings(effectiveKeys)
+		for _, k := range effectiveKeys {
+			data := effectiveData[k]
 			vrow, err := decodeVersionedRow(data, len(joinTable.Columns))
 			if err != nil {
-				continue
-			}
-			if vrow.Version.DeletedAt > 0 {
 				continue
 			}
 			joinRows = append(joinRows, vrow.Data)

@@ -218,12 +218,13 @@ type undoEntry struct {
 
 // catalogTxnState holds per-transaction state for multi-transaction support.
 type catalogTxnState struct {
-	txnID         uint64
-	txnActive     bool
-	undoLog       []undoEntry
-	savepoints    []savepointEntry
-	managerTxn    interface{}    // *txn.Transaction when txnManager bridge is active
-	pendingWrites []PendingWrite // buffered DML for commit-time application
+	txnID             uint64
+	txnActive         bool
+	undoLog           []undoEntry
+	savepoints        []savepointEntry
+	managerTxn        interface{}    // *txn.Transaction when txnManager bridge is active
+	pendingWrites     []PendingWrite // buffered DML for commit-time application
+	holdsBufferedLock bool           // true if this transaction holds bufferedTxnMu
 }
 
 // PendingWrite buffers a DML operation for commit-time application when the
@@ -289,6 +290,13 @@ type Catalog struct {
 	// Parallel execution options
 	parallelWorkers   int // 0 = disabled
 	parallelThreshold int // min rows to trigger parallel
+
+	// bufferedTxnMu serializes buffered write transactions to prevent lost
+	// updates. When buffered writes are enabled, each transaction holds this
+	// lock for its entire lifetime, preserving single-writer semantics while
+	// still deferring B-tree mutations to commit time.
+	bufferedTxnMu   sync.Mutex
+	bufferedTxnOwner uint64 // txnID that currently holds bufferedTxnMu
 }
 
 // savepointEntry records a named savepoint with its undo log position
@@ -887,6 +895,51 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 	}
 
 	return rows, windowFullRows
+}
+
+// getEffectiveTableData returns all live rows for a table as a map of key to
+// versioned row data, merging committed B-tree data with pending buffered
+// writes for read-your-writes visibility.
+func (c *Catalog) getEffectiveTableData(table *TableDef) map[string][]byte {
+	result := make(map[string][]byte)
+	trees, _ := c.getTableTreesForScan(table)
+	for _, tree := range trees {
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			continue
+		}
+		for iter.HasNext() {
+			key, valueData, err := iter.Next()
+			if err != nil {
+				break
+			}
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil {
+				continue
+			}
+			if vrow.Version.DeletedAt == 0 {
+				result[string(key)] = valueData
+			}
+		}
+		iter.Close()
+	}
+	if ts := c.getCurrentTxn(); ts != nil {
+		for _, pw := range ts.pendingWrites {
+			if pw.TreeName == table.Name {
+				k := string(pw.Key)
+				vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
+				if err != nil {
+					continue
+				}
+				if vrow.Version.DeletedAt > 0 {
+					delete(result, k)
+				} else {
+					result[k] = pw.Value
+				}
+			}
+		}
+	}
+	return result
 }
 
 func resolvePositionalRefs(stmt *query.SelectStmt) *query.SelectStmt {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -93,15 +94,30 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	for treeIdx, tree := range trees {
 		treeName := treeNames[treeIdx]
 
+		// Collect pending writes for this tree to overlay in scan.
+		pendingKeys := make(map[string][]byte)
+		if ts := c.getCurrentTxn(); ts != nil {
+			for _, pw := range ts.pendingWrites {
+				if pw.TreeName == treeName {
+					pendingKeys[string(pw.Key)] = pw.Value
+				}
+			}
+		}
+
 		// If we have indexed rows, only process those specific rows
 		if useIndex {
 			for pkStr := range indexedRows {
 				key := []byte(pkStr)
 				valueData, err := tree.Get(key)
-				if err != nil {
-					continue // Row not found
+				found := err == nil && valueData != nil
+				// Overlay pending write
+				if pwValue, ok := pendingKeys[pkStr]; ok {
+					valueData = pwValue
+					found = true
 				}
-				// Process this row
+				if !found {
+					continue
+				}
 				if err := c.processUpdateRow(ctx, table, tree, treeName, key, valueData, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
 					return 0, rowsAffected, err
 				}
@@ -114,11 +130,17 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		if err != nil {
 			return 0, 0, fmt.Errorf("failed to scan table for UPDATE: %w", err)
 		}
+		seenPending := make(map[string]bool)
 
 		for iter.HasNext() {
 			key, valueData, err := iter.Next()
 			if err != nil {
 				break
+			}
+			k := string(key)
+			if pwValue, ok := pendingKeys[k]; ok {
+				valueData = pwValue
+				seenPending[k] = true
 			}
 
 			// Decode row with version info
@@ -149,6 +171,33 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			}
 		}
 		iter.Close()
+
+		// Process pending inserts/updates not present in B-tree
+		var pendingKeyList []string
+		for k := range pendingKeys {
+			if !seenPending[k] {
+				pendingKeyList = append(pendingKeyList, k)
+			}
+		}
+		sort.Strings(pendingKeyList)
+		for _, k := range pendingKeyList {
+			key := []byte(k)
+			valueData := pendingKeys[k]
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil || vrow.Version.DeletedAt > 0 {
+				continue
+			}
+			row := vrow.Data
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+				if err != nil || !matched {
+					continue
+				}
+			}
+			if err := c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
+				return 0, rowsAffected, err
+			}
+		}
 	}
 
 	// Track pending-write start position for statement-level rollback in buffered mode.
@@ -1033,9 +1082,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		}
 
 		if pkChanged {
-			if err := updateTree.Delete(oldKey); err != nil {
-				return fmt.Errorf("failed to delete old key during PK update: %w", err)
-			}
+			_ = updateTree.Delete(oldKey) // best-effort; key may be buffered-only
 			if err := updateTree.Put(newKey, newValueData); err != nil {
 				return fmt.Errorf("failed to update row with new key: %w", err)
 			}

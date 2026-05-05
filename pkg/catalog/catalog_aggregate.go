@@ -82,27 +82,17 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 		}
 	}
 
-	// Get all trees for scanning (handles partitioned tables)
-	trees, err := c.getTableTreesForScan(table)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Materialize all raw values first
+	// Materialize all raw values first, merging committed data with pending
+	// buffered writes for read-your-writes visibility.
 	var allValues [][]byte
-	for _, tree := range trees {
-		iter, err := tree.Scan(nil, nil)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to scan table for GROUP BY: %w", err)
-		}
-		for iter.HasNext() {
-			_, valueData, err := iter.Next()
-			if err != nil {
-				break
-			}
-			allValues = append(allValues, valueData)
-		}
-		iter.Close()
+	effectiveData := c.getEffectiveTableData(table)
+	effectiveKeys := make([]string, 0, len(effectiveData))
+	for k := range effectiveData {
+		effectiveKeys = append(effectiveKeys, k)
+	}
+	sort.Strings(effectiveKeys)
+	for _, k := range effectiveKeys {
+		allValues = append(allValues, effectiveData[k])
 	}
 
 	groups, groupOrder := c.buildGroupByGroups(table, stmt, args, groupBySpecs, allValues)

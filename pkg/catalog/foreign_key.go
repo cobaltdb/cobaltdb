@@ -521,7 +521,7 @@ func (fke *ForeignKeyEnforcer) updateRowSlice(tableName string, rowKey interface
 		copy(keyCopy, key)
 		oldCopy := make([]byte, len(oldData))
 		copy(oldCopy, oldData)
-		fke.catalog.undoLog = append(fke.catalog.undoLog, undoEntry{
+		fke.catalog.appendUndoEntry(undoEntry{
 			action:       undoUpdate,
 			tableName:    tableName,
 			key:          keyCopy,
