@@ -2109,43 +2109,27 @@ func (db *DB) executeDescribeQuery(ctx context.Context, stmt *query.DescribeStmt
 }
 
 // executeExplainQuery executes EXPLAIN and returns the query plan
-
 func (db *DB) executeExplainQuery(ctx context.Context, stmt *query.ExplainStmt) (*Rows, error) {
-	// Get the inner statement
 	innerStmt := stmt.Statement
 
-	var explanation string
 	switch s := innerStmt.(type) {
 	case *query.SelectStmt:
-		explanation = fmt.Sprintf("SELECT FROM %s", s.From.Name)
-		if s.Where != nil {
-			explanation += " WITH WHERE CLAUSE"
-		}
-		if len(s.Joins) > 0 {
-			explanation += fmt.Sprintf(" WITH %d JOIN(S)", len(s.Joins))
-		}
-		if len(s.GroupBy) > 0 {
-			explanation += " WITH GROUP BY"
-		}
-		if len(s.OrderBy) > 0 {
-			explanation += " WITH ORDER BY"
-		}
-		if s.Limit != nil {
-			explanation += " WITH LIMIT"
-		}
+		plan := db.buildQueryPlan(s)
+		columns, rows := formatQueryPlan(plan)
+		return &Rows{
+			columns: columns,
+			rows:    rows,
+			pos:     0,
+		}, nil
 	default:
-		explanation = fmt.Sprintf("EXPLAIN not supported for %T", innerStmt)
+		columns := []string{"QUERY PLAN"}
+		rows := [][]interface{}{{fmt.Sprintf("EXPLAIN not supported for %T", innerStmt)}}
+		return &Rows{
+			columns: columns,
+			rows:    rows,
+			pos:     0,
+		}, nil
 	}
-
-	// Return as a single-row result
-	columns := []string{"QUERY PLAN"}
-	rows := [][]interface{}{{explanation}}
-
-	return &Rows{
-		columns: columns,
-		rows:    rows,
-		pos:     0,
-	}, nil
 }
 
 // Result represents the result of an Exec operation

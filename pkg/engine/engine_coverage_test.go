@@ -1154,28 +1154,36 @@ func TestExplainSelect(t *testing.T) {
 	defer rows.Close()
 
 	cols := rows.Columns()
-	if len(cols) != 1 || cols[0] != "QUERY PLAN" {
-		t.Errorf("Unexpected columns: %v", cols)
+	expectedCols := []string{"id", "parent_id", "operation", "detail", "cost", "rows"}
+	if len(cols) != len(expectedCols) {
+		t.Errorf("Unexpected column count: got %d, want %d", len(cols), len(expectedCols))
+	}
+	for i, want := range expectedCols {
+		if i >= len(cols) || cols[i] != want {
+			t.Errorf("Unexpected column %d: got %v, want %v", i, cols, expectedCols)
+			break
+		}
 	}
 
-	if !rows.Next() {
-		t.Fatal("Expected a row")
+	var operations []string
+	for rows.Next() {
+		var id, parentID, rowCount int64
+		var operation, detail, cost string
+		if err := rows.Scan(&id, &parentID, &operation, &detail, &cost, &rowCount); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		operations = append(operations, operation)
 	}
-	var plan string
-	if err := rows.Scan(&plan); err != nil {
-		t.Fatalf("Scan failed: %v", err)
+
+	expectedOps := []string{"Seq Scan", "Filter", "Sort", "Limit"}
+	if len(operations) != len(expectedOps) {
+		t.Errorf("Unexpected operation count: got %d, want %d. Operations: %v", len(operations), len(expectedOps), operations)
 	}
-	if !strings.Contains(plan, "SELECT FROM exptbl") {
-		t.Errorf("Plan missing table reference: %s", plan)
-	}
-	if !strings.Contains(plan, "WHERE") {
-		t.Errorf("Plan missing WHERE: %s", plan)
-	}
-	if !strings.Contains(plan, "ORDER BY") {
-		t.Errorf("Plan missing ORDER BY: %s", plan)
-	}
-	if !strings.Contains(plan, "LIMIT") {
-		t.Errorf("Plan missing LIMIT: %s", plan)
+	for i, want := range expectedOps {
+		if i >= len(operations) || operations[i] != want {
+			t.Errorf("Unexpected operation at %d: got %v, want %v", i, operations, expectedOps)
+			break
+		}
 	}
 }
 
