@@ -214,10 +214,7 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 ## Known Limitations
 
 - **Single-writer model** — Only one write transaction at a time; long-running SELECTs block writes.
-- **MySQL wire protocol** — Prepared statement execution is not yet supported via the wire protocol; only 8 MySQL commands are handled.
 - **Coarse-grained locking** — Catalog uses a single `sync.RWMutex`; DDL blocks all DML.
-- **Composite foreign keys** — Multi-column foreign key enforcement is not fully implemented.
-- **HNSW index** — Vector indexes are runtime-only and not persisted to disk.
 - **HA / clustering** — No built-in sharding, Raft/Paxos, or automatic failover.
 - **WASM streaming** — Streaming results are only supported for SELECT queries.
 
