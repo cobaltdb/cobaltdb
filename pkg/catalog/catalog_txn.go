@@ -3,8 +3,10 @@ package catalog
 import (
 	"errors"
 	"fmt"
+
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
+	"github.com/cobaltdb/cobaltdb/pkg/txn"
 	"strings"
 	"time"
 )
@@ -158,15 +160,35 @@ func (c *Catalog) BeginTransaction(txnID uint64) {
 	if c.activeTxns == nil {
 		c.activeTxns = make(map[uint64]*catalogTxnState)
 	}
-	c.activeTxns[txnID] = &catalogTxnState{
+	cs := &catalogTxnState{
 		txnID:     txnID,
 		txnActive: true,
 	}
+	// When a txn.Manager bridge is present, also start a Manager transaction.
+	if mgr, ok := c.txnManager.(*txn.Manager); ok && mgr != nil {
+		cs.managerTxn = mgr.Begin(txn.DefaultOptions())
+	}
+	c.activeTxns[txnID] = cs
 }
 
 func (c *Catalog) CommitTransaction() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// When a txn.Manager bridge is active, commit through the Manager first.
+	// This performs conflict detection and updates the version store.
+	if ts := c.getCurrentTxn(); ts != nil {
+		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
+			if err := mt.Commit(); err != nil {
+				return fmt.Errorf("txn manager commit: %w", err)
+			}
+			// Apply any buffered writes to B-trees after Manager commit succeeds.
+			if err := c.applyPendingWritesLocked(ts); err != nil {
+				return fmt.Errorf("apply buffered writes: %w", err)
+			}
+		}
+	}
+
 	if c.wal != nil && c.txnActive {
 		// Write commit record to WAL
 		record := &storage.WALRecord{
@@ -206,6 +228,16 @@ func (c *Catalog) flushTableTreesLocked() error {
 func (c *Catalog) RollbackTransaction() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Rollback the Manager transaction first if present.
+	if ts := c.getCurrentTxn(); ts != nil {
+		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
+			_ = mt.Rollback() // best-effort; continue with catalog rollback
+		}
+		// Discard buffered writes.
+		ts.pendingWrites = nil
+	}
+
 	if c.wal != nil && c.txnActive {
 		record := &storage.WALRecord{
 			TxnID: c.txnID,
@@ -481,9 +513,14 @@ func (c *Catalog) Savepoint(name string) error {
 	if !c.isCurrentTxnActive() {
 		return fmt.Errorf("SAVEPOINT can only be used within a transaction")
 	}
+	pwPos := 0
+	if ts := c.getCurrentTxn(); ts != nil {
+		pwPos = len(ts.pendingWrites)
+	}
 	sps := append(c.getCurrentTxnSavepoints(), savepointEntry{
-		name:    name,
-		undoPos: len(c.getCurrentTxnUndoLog()),
+		name:            name,
+		undoPos:         len(c.getCurrentTxnUndoLog()),
+		pendingWritePos: pwPos,
 	})
 	c.setCurrentTxnSavepoints(sps)
 	return nil
@@ -510,15 +547,23 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 	}
 
 	undoPos := sps[spIdx].undoPos
+	pwPos := sps[spIdx].pendingWritePos
 
 	if err := c.replayUndoLog(len(c.getCurrentTxnUndoLog())-1, undoPos, "rollback to savepoint"); err != nil {
 		c.truncateUndoLog(undoPos)
+		if ts := c.getCurrentTxn(); ts != nil {
+			ts.pendingWrites = ts.pendingWrites[:pwPos]
+		}
 		c.setCurrentTxnSavepoints(sps[:spIdx+1])
 		return err
 	}
 
 	// Truncate undo log to savepoint position
 	c.truncateUndoLog(undoPos)
+	// Truncate pending writes to savepoint position (buffered mode)
+	if ts := c.getCurrentTxn(); ts != nil {
+		ts.pendingWrites = ts.pendingWrites[:pwPos]
+	}
 	// Remove savepoints after this one (but keep the current savepoint)
 	c.setCurrentTxnSavepoints(sps[:spIdx+1])
 	return nil
@@ -547,4 +592,119 @@ func (c *Catalog) TxnID() uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.getCurrentTxnID()
+}
+
+// SetTxnManager connects the Catalog to a txn.Manager for MVCC multi-writer
+// support. When set, DML operations buffer writes in the Manager transaction
+// and apply them at commit time instead of mutating B-trees directly.
+func (c *Catalog) SetTxnManager(mgr interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.txnManager = mgr
+}
+
+// hasTxnManager returns true when the Catalog is wired to a txn.Manager.
+func (c *Catalog) hasTxnManager() bool {
+	return c.txnManager != nil
+}
+
+// getCurrentManagerTxn returns the txn.Manager Transaction for the current
+// catalog transaction, or nil if none exists.
+func (c *Catalog) getCurrentManagerTxn() interface{} {
+	if ts := c.getCurrentTxn(); ts != nil {
+		return ts.managerTxn
+	}
+	return nil
+}
+
+// isBufferedMode returns true when the current transaction should buffer
+// writes instead of mutating B-trees directly.
+func (c *Catalog) isBufferedMode() bool {
+	return c.enableBufferedWrites && c.hasTxnManager() && c.getCurrentManagerTxn() != nil && c.isCurrentTxnActive()
+}
+
+// EnableBufferedWrites turns on the buffered DML path for MVCC multi-writer.
+// This is opt-in until read-your-writes support is fully implemented.
+func (c *Catalog) EnableBufferedWrites() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.enableBufferedWrites = true
+}
+
+// getCurrentTxnPendingWrites returns the pending write buffer for the current
+// transaction, initializing it if necessary.
+func (c *Catalog) getCurrentTxnPendingWrites() []PendingWrite {
+	if ts := c.getCurrentTxn(); ts != nil {
+		return ts.pendingWrites
+	}
+	return nil
+}
+
+// appendPendingWrite adds a buffered write to the current transaction.
+func (c *Catalog) appendPendingWrite(pw PendingWrite) {
+	if ts := c.getCurrentTxn(); ts != nil {
+		ts.pendingWrites = append(ts.pendingWrites, pw)
+	}
+}
+
+// clearPendingWrites discards all buffered writes for the current transaction.
+func (c *Catalog) clearPendingWrites() {
+	if ts := c.getCurrentTxn(); ts != nil {
+		ts.pendingWrites = nil
+	}
+}
+
+// applyPendingWritesLocked applies buffered DML writes to B-trees at commit time.
+// Must be called with c.mu held.
+func (c *Catalog) applyPendingWritesLocked(ts *catalogTxnState) error {
+	for _, pw := range ts.pendingWrites {
+		tree, exists := c.tableTrees[pw.TreeName]
+		if !exists {
+			return fmt.Errorf("partition tree %s not found", pw.TreeName)
+		}
+		if err := tree.Put(pw.Key, pw.Value); err != nil {
+			return fmt.Errorf("failed to apply buffered write to %s: %w", pw.TreeName, err)
+		}
+		for _, idx := range pw.IndexUpdates {
+			idxTree, exists := c.indexTrees[idx.IndexName]
+			if !exists {
+				continue
+			}
+			if idx.IsDelete {
+				_ = idxTree.Delete(idx.Key)
+			} else {
+				_ = idxTree.Put(idx.Key, idx.Value)
+			}
+		}
+	}
+	ts.pendingWrites = nil
+	return nil
+}
+
+// keyInPendingWrites reports whether the given table/key already exists in the
+// current transaction's pending write buffer.
+func (c *Catalog) keyInPendingWrites(tableName string, key []byte) bool {
+	if ts := c.getCurrentTxn(); ts != nil {
+		for _, pw := range ts.pendingWrites {
+			if pw.TreeName == tableName && string(pw.Key) == string(key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// indexKeyInPendingWrites reports whether the given index key already exists in
+// the current transaction's pending write buffer (for unique constraint checks).
+func (c *Catalog) indexKeyInPendingWrites(indexName string, key []byte) bool {
+	if ts := c.getCurrentTxn(); ts != nil {
+		for _, pw := range ts.pendingWrites {
+			for _, idx := range pw.IndexUpdates {
+				if idx.IndexName == indexName && string(idx.Key) == string(key) && !idx.IsDelete {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

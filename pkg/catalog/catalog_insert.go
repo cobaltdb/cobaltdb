@@ -10,6 +10,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
+	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
 
 // formatKey formats int64 as zero-padded string (20 digits) for consistent key ordering
@@ -283,6 +284,18 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	var insertedRows [][]interface{} // Track rows for trigger execution
 	var insertErr error
 
+	// Determine if we can use buffered writes for this insert.
+	// Buffered mode is supported only for non-partitioned tables without
+	// secondary indexes in this proof-of-concept phase.
+	hasSecondaryIndexes := false
+	for _, idxDef := range c.indexes {
+		if idxDef.TableName == stmt.Table {
+			hasSecondaryIndexes = true
+			break
+		}
+	}
+	useBuffer := c.isBufferedMode() && !hasSecondaryIndexes && table.Partition == nil
+
 	for _, valueRow := range valueRows {
 		// Validate value count matches column count
 		if len(valueRow) != len(insertColumns) {
@@ -377,6 +390,47 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			break
 		}
 
+		if useBuffer {
+			// Buffered write path: defer B-tree mutation to commit time.
+			// Skip WAL — txn.Manager handles durability at commit.
+
+			// Check PK conflict against committed data AND buffered writes.
+			if skip, err := c.resolvePKConflict(tree, table, stmt, []byte(key)); err != nil {
+				insertErr = err
+				break
+			} else if skip {
+				continue
+			}
+			if c.keyInPendingWrites(stmt.Table, []byte(key)) {
+				if stmt.ConflictAction == query.ConflictIgnore {
+					continue
+				}
+				insertErr = fmt.Errorf("UNIQUE constraint failed: duplicate primary key value")
+				break
+			}
+
+			// Buffer the write for commit-time application.
+			c.appendPendingWrite(PendingWrite{
+				TreeName: stmt.Table,
+				Key:      []byte(key),
+				Value:    valueData,
+			})
+
+			// Also buffer in the Manager transaction's WriteSet for conflict detection.
+			if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
+				writeKey := stmt.Table + ":" + key
+				mt.SetWrite(writeKey, valueData)
+			}
+
+			// Save row for trigger execution
+			rowCopy := make([]interface{}, len(rowValues))
+			copy(rowCopy, rowValues)
+			insertedRows = append(insertedRows, rowCopy)
+			rowsAffected++
+			continue
+		}
+
+		// Direct mutation path (legacy single-writer mode).
 		// Log to WAL before applying change
 		if c.wal != nil && c.txnActive {
 			// For INSERT, we log the key and value

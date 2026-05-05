@@ -218,10 +218,29 @@ type undoEntry struct {
 
 // catalogTxnState holds per-transaction state for multi-transaction support.
 type catalogTxnState struct {
-	txnID      uint64
-	txnActive  bool
-	undoLog    []undoEntry
-	savepoints []savepointEntry
+	txnID         uint64
+	txnActive     bool
+	undoLog       []undoEntry
+	savepoints    []savepointEntry
+	managerTxn    interface{}    // *txn.Transaction when txnManager bridge is active
+	pendingWrites []PendingWrite // buffered DML for commit-time application
+}
+
+// PendingWrite buffers a DML operation for commit-time application when the
+// txn.Manager bridge is active. This avoids holding Catalog.mu during DML.
+type PendingWrite struct {
+	TreeName     string
+	Key          []byte
+	Value        []byte
+	IndexUpdates []PendingIndexUpdate
+}
+
+// PendingIndexUpdate buffers an index mutation for commit-time application.
+type PendingIndexUpdate struct {
+	IndexName string
+	Key       []byte
+	Value     []byte // nil for delete
+	IsDelete  bool
 }
 
 // Catalog manages database schema metadata
@@ -249,6 +268,8 @@ type Catalog struct {
 	txnID                uint64                                // Current transaction ID (legacy; used when activeTxns not yet integrated)
 	txnActive            bool                                  // Is a transaction active (legacy)
 	undoLog              []undoEntry                           // Undo log for transaction rollback (legacy)
+	txnManager           interface{}                           // *txn.Manager bridge for MVCC multi-writer (nil = legacy single-writer mode)
+	enableBufferedWrites bool                                  // Enable buffered DML (disabled by default until read-your-writes is fully implemented)
 	savepoints           []savepointEntry                      // Stack of savepoints (legacy)
 	activeTxns           map[uint64]*catalogTxnState           // Per-transaction state for multi-writer support
 	currentTxnID         uint64                                // ID of the transaction currently executing
@@ -272,8 +293,9 @@ type Catalog struct {
 
 // savepointEntry records a named savepoint with its undo log position
 type savepointEntry struct {
-	name    string
-	undoPos int // Position in undoLog at time of savepoint creation
+	name           string
+	undoPos        int // Position in undoLog at time of savepoint creation
+	pendingWritePos int // Position in pendingWrites at time of savepoint creation (buffered mode)
 }
 
 // cteResultSet holds pre-computed results for recursive CTEs
