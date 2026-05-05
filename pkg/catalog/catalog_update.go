@@ -518,7 +518,7 @@ func (c *Catalog) applyJoinUpdateEntries(tableName string, table *TableDef, tree
 		}
 
 		// Record undo log for rollback
-		if c.txnActive {
+		if c.isCurrentTxnActive() {
 			oldValueData, marshalErr := json.Marshal(entry.oldRow)
 			if marshalErr == nil {
 				keyCopy := make([]byte, len(entry.key))
@@ -741,7 +741,7 @@ func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree 
 		}
 
 		// Log to WAL before applying change
-		if c.wal != nil && c.txnActive {
+		if c.wal != nil && c.isCurrentTxnActive() {
 			walData := append([]byte(entry.key), 0)
 			record := &storage.WALRecord{
 				TxnID: c.txnID,
@@ -1053,7 +1053,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		}
 
 		// Log to WAL before applying change
-		if c.wal != nil && c.txnActive {
+		if c.wal != nil && c.isCurrentTxnActive() {
 			if pkChanged {
 				deleteRecord := &storage.WALRecord{
 					TxnID: c.txnID,
@@ -1116,7 +1116,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 					if idxDef.Unique {
 						oldIdxVal, getErr := idxTree.Get([]byte(oldIndexKey))
 						_ = idxTree.Delete([]byte(oldIndexKey))
-						if c.txnActive && getErr == nil {
+						if c.isCurrentTxnActive() && getErr == nil {
 							idxChanges = append(idxChanges, indexUndoEntry{
 								indexName: idxName,
 								key:       []byte(oldIndexKey),
@@ -1128,7 +1128,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 						compoundKey := oldIndexKey + "\x00" + string(entry.key)
 						oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
 						_ = idxTree.Delete([]byte(compoundKey))
-						if c.txnActive && getErr == nil {
+						if c.isCurrentTxnActive() && getErr == nil {
 							idxChanges = append(idxChanges, indexUndoEntry{
 								indexName: idxName,
 								key:       []byte(compoundKey),
@@ -1154,7 +1154,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 					if err := idxTree.Put(idxStorageKey, newKey); err != nil {
 						return fmt.Errorf("failed to update index %s: %w", idxName, err)
 					}
-					if c.txnActive {
+					if c.isCurrentTxnActive() {
 						idxChanges = append(idxChanges, indexUndoEntry{
 							indexName: idxName,
 							key:       idxStorageKey,
@@ -1169,7 +1169,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, entry.key)
 
 		// Record undo log entry for rollback
-		if c.txnActive {
+		if c.isCurrentTxnActive() {
 			oldValueData, marshalErr := json.Marshal(entry.oldRow)
 			if marshalErr != nil {
 				return fmt.Errorf("failed to encode undo log for row: %w", marshalErr)

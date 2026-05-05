@@ -5514,8 +5514,8 @@ func TestBeginTransaction(t *testing.T) {
 	defer cleanup()
 
 	catalog.BeginTransaction(1)
-	if !catalog.txnActive {
-		t.Error("expected txnActive to be true")
+	if !catalog.isCurrentTxnActive() {
+		t.Error("expected isCurrentTxnActive to be true")
 	}
 }
 
@@ -5531,8 +5531,8 @@ func TestCommitTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitTransaction failed: %v", err)
 	}
-	if catalog.txnActive {
-		t.Error("expected txnActive to be false after commit")
+	if catalog.isCurrentTxnActive() {
+		t.Error("expected isCurrentTxnActive to be false after commit")
 	}
 }
 
@@ -5928,8 +5928,8 @@ func TestRollbackTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RollbackTransaction failed: %v", err)
 	}
-	if catalog.txnActive {
-		t.Error("expected txnActive to be false after rollback")
+	if catalog.isCurrentTxnActive() {
+		t.Error("expected isCurrentTxnActive to be false after rollback")
 	}
 }
 

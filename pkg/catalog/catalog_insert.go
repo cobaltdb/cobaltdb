@@ -272,7 +272,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 	// Save AutoIncSeq before insert loop for rollback
 	savedAutoIncSeq := table.AutoIncSeq
-	if c.txnActive {
+	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
 			action:        undoAutoIncSeq,
 			tableName:     stmt.Table,
@@ -443,7 +443,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 		// Direct mutation path (legacy single-writer mode).
 		// Log to WAL before applying change
-		if c.wal != nil && c.txnActive {
+		if c.wal != nil && c.isCurrentTxnActive() {
 			// For INSERT, we log the key and value
 			// Format: key (null-terminated) + value
 			walData := append([]byte(key), 0)
@@ -500,7 +500,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Record undo log entry for rollback (after applying change)
-		if c.txnActive {
+		if c.isCurrentTxnActive() {
 			keyCopy := []byte(key)
 			c.appendUndoEntry(undoEntry{
 				action:       undoInsert,
@@ -535,7 +535,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 		}
 		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
-		if !c.txnActive {
+		if !c.isCurrentTxnActive() {
 			return 0, 0, insertErr
 		}
 		// Inside explicit transaction - remove undo log entries
@@ -696,7 +696,7 @@ func (c *Catalog) insertRowIndexes(tree *btree.BTree, table *TableDef, stmt *que
 		if err := idxTree.Put(idxStorageKey, key); err != nil {
 			return idxChanges, skipRow, fmt.Errorf("failed to update index %s: %w", idxName, err)
 		}
-		if c.txnActive {
+		if c.isCurrentTxnActive() {
 			idxChanges = append(idxChanges, indexUndoEntry{
 				indexName: idxName,
 				key:       idxStorageKey,

@@ -334,7 +334,7 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 					oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
 					if ok {
 						if idxDef.Unique {
-							if c.txnActive {
+							if c.isCurrentTxnActive() {
 								// Save old index value for undo
 								oldIdxVal, _ := idxTree.Get([]byte(oldIdxKey))
 								idxChanges = append(idxChanges, indexUndoEntry{
@@ -348,7 +348,7 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 						} else {
 							// For non-unique indexes, delete the compound key "indexValue\x00pk"
 							compoundKey := oldIdxKey + "\x00" + string(key)
-							if c.txnActive {
+							if c.isCurrentTxnActive() {
 								// Save old index value for undo
 								oldIdxVal, _ := idxTree.Get([]byte(compoundKey))
 								idxChanges = append(idxChanges, indexUndoEntry{
@@ -394,7 +394,7 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 	}
 
 	// Record undo log entry for rollback
-	if c.txnActive {
+	if c.isCurrentTxnActive() {
 		keyCopy := make([]byte, len(key))
 		copy(keyCopy, key)
 		oldCopy := make([]byte, len(oldData))
@@ -467,7 +467,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 							if delErr := idxTree.Delete([]byte(indexKey)); delErr != nil {
 								return rowsAffected, fmt.Errorf("failed to delete from unique index %s: %w", idxName, delErr)
 							}
-							if c.txnActive && getErr == nil {
+							if c.isCurrentTxnActive() && getErr == nil {
 								idxChanges = append(idxChanges, indexUndoEntry{
 									indexName: idxName,
 									key:       []byte(indexKey),
@@ -482,7 +482,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 							if delErr := idxTree.Delete([]byte(compoundKey)); delErr != nil {
 								return rowsAffected, fmt.Errorf("failed to delete from index %s: %w", idxName, delErr)
 							}
-							if c.txnActive && getErr == nil {
+							if c.isCurrentTxnActive() && getErr == nil {
 								idxChanges = append(idxChanges, indexUndoEntry{
 									indexName: idxName,
 									key:       []byte(compoundKey),
@@ -500,7 +500,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 		c.updateVectorIndexesForDelete(stmt.Table, key)
 
 		// Log to WAL before applying change
-		if c.wal != nil && c.txnActive {
+		if c.wal != nil && c.isCurrentTxnActive() {
 			walData := append([]byte(key), 0)
 			record := &storage.WALRecord{
 				TxnID: c.txnID,
@@ -513,7 +513,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 		}
 
 		// Record undo log entry for rollback
-		if c.txnActive {
+		if c.isCurrentTxnActive() {
 			keyCopy2 := make([]byte, len(key))
 			copy(keyCopy2, key)
 			valueCopy2 := make([]byte, len(entry.value))

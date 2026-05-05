@@ -147,12 +147,14 @@ func (c *Catalog) getCurrentTxnSavepoints() []savepointEntry {
 	return c.savepoints
 }
 
-// isCurrentTxnActive returns true if the current transaction is active.
+// isCurrentTxnActive returns true if the current goroutine has an active
+// transaction.  It walks the goroutine-to-txn map and activeTxns store so it
+// is safe under concurrent transactions (unlike the legacy c.txnActive bool).
 func (c *Catalog) isCurrentTxnActive() bool {
 	if ts := c.getCurrentTxn(); ts != nil {
 		return ts.txnActive
 	}
-	return c.txnActive
+	return false
 }
 
 // getCurrentTxnID returns the ID of the current transaction.
@@ -208,12 +210,9 @@ func (c *Catalog) BeginTransactionWithTxn(txnID uint64, managerTxn interface{}) 
 }
 
 func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
-	willBuffer := c.enableBufferedWrites && managerTxn != nil
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.txnID = txnID
-	c.txnActive = true
 	c.undoLog = nil    // Clear undo log for new transaction
 	c.savepoints = nil // Clear savepoints
 	c.currentTxnID = txnID
@@ -223,11 +222,9 @@ func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 	}
 	cs.managerTxn = managerTxn
 	c.activeTxns.Store(txnID, cs)
-	// Register goroutine-local txn ID so concurrent writers each see their own
-	// transaction state via getCurrentTxn().
-	if willBuffer {
-		c.registerGoroutineTxn(txnID)
-	}
+	// Register goroutine-local txn ID so concurrent writers (including autocommit)
+	// each see their own transaction state via getCurrentTxn().
+	c.registerGoroutineTxn(txnID)
 }
 
 func (c *Catalog) CommitTransaction() error {
@@ -249,20 +246,20 @@ func (c *Catalog) CommitTransaction() error {
 		}
 	}
 
-	if c.wal != nil && c.txnActive {
-		// Write commit record to WAL
+	if c.wal != nil && ts != nil && ts.txnActive {
+		// Write commit record to WAL using the transaction's own ID.
 		record := &storage.WALRecord{
-			TxnID: c.txnID,
+			TxnID: ts.txnID,
 			Type:  storage.WALCommit,
 		}
 		if err := c.wal.Append(record); err != nil {
 			return err
 		}
 	}
-	c.txnActive = false
 	c.undoLog = nil    // Discard undo log on successful commit
 	c.savepoints = nil // Clear savepoints
 	if ts != nil {
+		ts.txnActive = false
 		c.activeTxns.Delete(ts.txnID)
 	}
 	c.currentTxnID = 0
@@ -291,7 +288,8 @@ func (c *Catalog) RollbackTransaction() error {
 	defer c.mu.Unlock()
 
 	// Rollback the Manager transaction first if present.
-	if ts := c.getCurrentTxn(); ts != nil {
+	ts := c.getCurrentTxn()
+	if ts != nil {
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
 			_ = mt.Rollback() // best-effort; continue with catalog rollback
 		}
@@ -299,9 +297,9 @@ func (c *Catalog) RollbackTransaction() error {
 		ts.pendingWrites = nil
 	}
 
-	if c.wal != nil && c.txnActive {
+	if c.wal != nil && ts != nil && ts.txnActive {
 		record := &storage.WALRecord{
-			TxnID: c.txnID,
+			TxnID: ts.txnID,
 			Type:  storage.WALRollback,
 		}
 		if err := c.wal.Append(record); err != nil {
@@ -311,10 +309,10 @@ func (c *Catalog) RollbackTransaction() error {
 
 	undoLog := c.getCurrentTxnUndoLog()
 	if err := c.replayUndoLog(len(undoLog)-1, 0, "rollback"); err != nil {
-		c.txnActive = false
 		c.undoLog = nil
 		c.savepoints = nil
-		if ts := c.getCurrentTxn(); ts != nil {
+		if ts != nil {
+			ts.txnActive = false
 			c.activeTxns.Delete(ts.txnID)
 		}
 		c.currentTxnID = 0
@@ -322,10 +320,10 @@ func (c *Catalog) RollbackTransaction() error {
 		return err
 	}
 
-	c.txnActive = false
 	c.undoLog = nil
 	c.savepoints = nil
-	if ts := c.getCurrentTxn(); ts != nil {
+	if ts != nil {
+		ts.txnActive = false
 		c.activeTxns.Delete(ts.txnID)
 	}
 	c.currentTxnID = 0

@@ -235,7 +235,7 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 	tableDef.buildColumnIndexCache()
 
 	// Record DDL undo entry for transaction rollback
-	if c.txnActive {
+	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
 			action:    undoCreateTable,
 			tableName: stmt.Table,
@@ -280,7 +280,7 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 	tableDef, exists := c.tables[stmt.Table]
 
 	// Record DDL undo entry for transaction rollback before deleting
-	if c.txnActive && exists {
+	if c.isCurrentTxnActive() && exists {
 		entry := undoEntry{
 			action:        undoDropTable,
 			tableName:     stmt.Table,
@@ -352,7 +352,7 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 	}
 
 	// Save undo entry before modification
-	if c.txnActive {
+	if c.isCurrentTxnActive() {
 		oldCols := make([]ColumnDef, len(table.Columns))
 		copy(oldCols, table.Columns)
 		c.appendUndoEntry(undoEntry{
@@ -486,7 +486,7 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 	}
 
 	// Save undo entry before modification
-	if c.txnActive {
+	if c.isCurrentTxnActive() {
 		oldCols := make([]ColumnDef, len(table.Columns))
 		copy(oldCols, table.Columns)
 		entry := undoEntry{
@@ -618,7 +618,7 @@ func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
 	}
 
 	// Save undo entry before modification
-	if c.txnActive {
+	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
 			action:    undoAlterRename,
 			tableName: stmt.Table,
@@ -691,7 +691,7 @@ func (c *Catalog) AlterTableRenameColumn(stmt *query.AlterTableStmt) error {
 	for i, col := range table.Columns {
 		if strings.EqualFold(col.Name, stmt.OldName) {
 			// Save undo entry before modification
-			if c.txnActive {
+			if c.isCurrentTxnActive() {
 				c.appendUndoEntry(undoEntry{
 					action:               undoAlterRenameColumn,
 					tableName:            stmt.Table,
