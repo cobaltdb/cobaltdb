@@ -43,6 +43,17 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 		return nil, nil, false
 	}
 
+	// If there are pending buffered writes for this table, the fast path
+	// will miss uncommitted INSERT/UPDATE/DELETE. Fall back to normal scan
+	// so read-your-writes works correctly.
+	if ts := cat.getCurrentTxn(); ts != nil && len(ts.pendingWrites) > 0 {
+		for _, pw := range ts.pendingWrites {
+			if pw.TreeName == stmt.From.Name {
+				return nil, nil, false
+			}
+		}
+	}
+
 	// Count rows by iterating B-tree keys
 	iter, err := tree.Scan(nil, nil)
 	if err != nil {
@@ -191,6 +202,17 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 	tree, exists := cat.tableTrees[stmt.From.Name]
 	if !exists {
 		return nil, nil, false
+	}
+
+	// If there are pending buffered writes for this table, the fast path
+	// will miss uncommitted INSERT/UPDATE/DELETE. Fall back to normal scan
+	// so read-your-writes works correctly.
+	if ts := cat.getCurrentTxn(); ts != nil && len(ts.pendingWrites) > 0 {
+		for _, pw := range ts.pendingWrites {
+			if pw.TreeName == stmt.From.Name {
+				return nil, nil, false
+			}
+		}
 	}
 
 	// Resolve column indices

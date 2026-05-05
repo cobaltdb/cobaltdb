@@ -284,6 +284,12 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	var insertedRows [][]interface{} // Track rows for trigger execution
 	var insertErr error
 
+	// Track pending-write start position for statement-level rollback in buffered mode.
+	pendingWriteStartPos := 0
+	if ts := c.getCurrentTxn(); ts != nil {
+		pendingWriteStartPos = len(ts.pendingWrites)
+	}
+
 	// Determine if we can use buffered writes for this insert.
 	// Buffered mode defers B-tree mutation until commit. It supports tables
 	// with secondary indexes as long as we are not doing REPLACE (which
@@ -524,6 +530,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 	// Statement-level atomicity: undo all inserts on error
 	if insertErr != nil {
+		// Discard buffered writes added by this statement.
+		if ts := c.getCurrentTxn(); ts != nil {
+			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+		}
 		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
 		if !c.txnActive {
 			return 0, 0, insertErr

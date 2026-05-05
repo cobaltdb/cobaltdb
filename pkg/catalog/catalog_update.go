@@ -151,9 +151,18 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		iter.Close()
 	}
 
+	// Track pending-write start position for statement-level rollback in buffered mode.
+	pendingWriteStartPos := 0
+	if ts := c.getCurrentTxn(); ts != nil {
+		pendingWriteStartPos = len(ts.pendingWrites)
+	}
+
 	// Apply collected updates
 	if useBuffer {
 		if err := c.bufferUpdateEntries(table, stmt, entries); err != nil {
+			if ts := c.getCurrentTxn(); ts != nil {
+				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+			}
 			return 0, rowsAffected, err
 		}
 	} else {
