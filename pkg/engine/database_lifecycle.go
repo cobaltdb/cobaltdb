@@ -676,6 +676,10 @@ func (db *DB) Close() error {
 
 	var errs []error
 
+	// Serialize all page-flush operations during close so that no concurrent
+	// btree flush can race with BufferPool.FlushAll.
+	db.flushMu.Lock()
+
 	// Save catalog metadata to B+Tree (if not in-memory)
 	if !db.options.InMemory && db.path != ":memory:" {
 		if err := db.catalog.Save(); err != nil {
@@ -699,6 +703,8 @@ func (db *DB) Close() error {
 	if err := db.pool.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close buffer pool: %w", err))
 	}
+
+	db.flushMu.Unlock()
 
 	// Close audit logger
 	if db.auditLogger != nil {

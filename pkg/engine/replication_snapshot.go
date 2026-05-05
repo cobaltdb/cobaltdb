@@ -34,6 +34,9 @@ func (db *DB) createReplicationSnapshot() ([]byte, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
+	db.flushMu.Lock()
+	defer db.flushMu.Unlock()
+
 	if err := db.catalog.Save(); err != nil {
 		return nil, fmt.Errorf("failed to save catalog: %w", err)
 	}

@@ -123,10 +123,19 @@ func (db *DB) GetWALPath() string {
 // Checkpoint performs a database checkpoint (implements backup.Database)
 
 func (db *DB) Checkpoint() error {
+	db.flushMu.Lock()
+	defer db.flushMu.Unlock()
+
+	if db.catalog != nil {
+		if err := db.catalog.FlushTableTrees(); err != nil {
+			return fmt.Errorf("failed to flush table trees: %w", err)
+		}
+	}
+
 	if db.wal != nil {
 		return db.wal.Checkpoint(db.pool)
 	}
-	return nil
+	return db.pool.FlushAll()
 }
 
 // BeginHotBackup starts a hot backup (implements backup.Database)
@@ -137,6 +146,10 @@ func (db *DB) BeginHotBackup() error {
 	if db.closed {
 		return ErrDatabaseClosed
 	}
+
+	db.flushMu.Lock()
+	defer db.flushMu.Unlock()
+
 	// Persist catalog metadata and root page ID before copying files
 	if err := db.catalog.Save(); err != nil {
 		return fmt.Errorf("failed to save catalog: %w", err)

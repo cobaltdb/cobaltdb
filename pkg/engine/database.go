@@ -92,12 +92,11 @@ type DB struct {
 	// Query Plan Cache - caches parsed query statements
 	planCache *QueryPlanCache
 
-	// commitMu serializes the durability phase of Tx.Commit (btree flush +
-	// buffer pool flush). Without this, two commits can race on shared page
-	// bytes: one writing via btree.flushInternal while the other reads via
-	// BufferPool.FlushAll → WriteAt. Serializing only the flush phase keeps
-	// normal query concurrency intact.
-	commitMu sync.Mutex
+	// flushMu coordinates page-flush operations. Explicit transaction commits
+	// acquire an RLock so they can flush B-tree pages concurrently; checkpoint,
+	// close, and backup paths acquire a Lock so that BufferPool.FlushAll never
+	// runs concurrently with a btree flush.
+	flushMu sync.RWMutex
 
 	// JobScheduler manages periodic maintenance tasks (vacuum, analyze, etc.)
 	scheduler *scheduler.Scheduler
@@ -2377,11 +2376,12 @@ func (tx *Tx) Commit() error {
 	}
 	defer tx.db.releaseConnection()
 
-	// Serialize the durability phase: btree flush mutates shared page bytes
-	// that buffer pool flush reads. Without this lock, concurrent commits
-	// race on page.data. See DB.commitMu comment.
-	tx.db.commitMu.Lock()
-	defer tx.db.commitMu.Unlock()
+	// Concurrent explicit transactions may flush B-tree pages at the same
+	// time; they serialize on per-tree mutexes inside FlushTableTrees.
+	// BufferPool.FlushAll is deferred to checkpoint/close so it cannot race
+	// with an ongoing btree flush.
+	tx.db.flushMu.RLock()
+	defer tx.db.flushMu.RUnlock()
 
 	// Flush table B+Trees to buffer pool first
 	if err := tx.db.catalog.FlushTableTrees(); err != nil {
@@ -2399,11 +2399,6 @@ func (tx *Tx) Commit() error {
 			_ = rbErr // best-effort rollback; preserve primary error
 		}
 		return fmt.Errorf("commit transaction failed: %w", err)
-	}
-
-	// Flush buffer pool to disk to ensure durability
-	if err := tx.db.pool.FlushAll(); err != nil {
-		return fmt.Errorf("failed to flush buffer pool: %w", err)
 	}
 
 	// If the catalog already committed the shared manager transaction,
