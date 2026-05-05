@@ -10,6 +10,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
+	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
 
 // updateEntry tracks a row to be updated
@@ -43,6 +44,24 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	// Handle UPDATE with JOIN
 	if stmt.From != nil || len(stmt.Joins) > 0 {
 		return c.updateWithJoinLocked(ctx, stmt, args)
+	}
+
+	// Determine if we can use buffered writes for this update.
+	hasSecondaryIndexes := false
+	for _, idxDef := range c.indexes {
+		if idxDef.TableName == stmt.Table {
+			hasSecondaryIndexes = true
+			break
+		}
+	}
+	useBuffer := c.isBufferedMode() && !hasSecondaryIndexes && table.Partition == nil
+	if useBuffer {
+		for _, setClause := range stmt.Set {
+			if table.isPrimaryKeyColumn(setClause.Column) {
+				useBuffer = false
+				break
+			}
+		}
 	}
 
 	// Get all trees for scanning (handles partitioned tables)
@@ -140,8 +159,14 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	}
 
 	// Apply collected updates
-	if err := c.applyUpdateEntries(ctx, table, stmt, entries); err != nil {
-		return 0, rowsAffected, err
+	if useBuffer {
+		if err := c.bufferUpdateEntries(table, stmt, entries); err != nil {
+			return 0, rowsAffected, err
+		}
+	} else {
+		if err := c.applyUpdateEntries(ctx, table, stmt, entries); err != nil {
+			return 0, rowsAffected, err
+		}
 	}
 	// Execute AFTER UPDATE triggers (per-row)
 	for _, entry := range entries {
@@ -1101,6 +1126,27 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 				oldValue:     oldValueData,
 				indexChanges: idxChanges,
 			})
+		}
+	}
+	return nil
+}
+
+// bufferUpdateEntries buffers updated rows for commit-time application in
+// MVCC buffered mode. Skips B-tree mutation, WAL, and indexes.
+func (c *Catalog) bufferUpdateEntries(table *TableDef, stmt *query.UpdateStmt, entries []updateEntry) error {
+	for _, entry := range entries {
+		newValueData, err := encodeVersionedRow(entry.newRow, nil)
+		if err != nil {
+			return fmt.Errorf("failed to encode updated row: %w", err)
+		}
+		c.appendPendingWrite(PendingWrite{
+			TreeName: stmt.Table,
+			Key:      entry.key,
+			Value:    newValueData,
+		})
+		if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
+			writeKey := stmt.Table + ":" + string(entry.key)
+			mt.SetWrite(writeKey, newValueData)
 		}
 	}
 	return nil

@@ -744,6 +744,16 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 					break
 				}
 			}
+			// Read-your-writes: pending writes override committed data.
+			if ts := cat.getCurrentTxn(); ts != nil {
+				for _, pw := range ts.pendingWrites {
+					if pw.TreeName == table.Name && string(pw.Key) == pk {
+						valueData = pw.Value
+						found = true
+						break
+					}
+				}
+			}
 			if !found {
 				continue
 			}
@@ -786,20 +796,48 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			}
 		}
 	} else {
-		var allValues [][]byte
+		type kvPair struct {
+			key   string
+			value []byte
+		}
+		var pairs []kvPair
+		seen := make(map[string]int)
+
 		for _, tree := range trees {
 			iter, err := tree.Scan(nil, nil)
 			if err != nil {
 				continue
 			}
 			for iter.HasNext() {
-				_, valueData, err := iter.Next()
+				key, valueData, err := iter.Next()
 				if err != nil {
 					break
 				}
-				allValues = append(allValues, valueData)
+				k := string(key)
+				pairs = append(pairs, kvPair{k, valueData})
+				seen[k] = len(pairs) - 1
 			}
 			iter.Close()
+		}
+
+		// Read-your-writes: overlay buffered writes (INSERT, UPDATE, DELETE).
+		if ts := cat.getCurrentTxn(); ts != nil {
+			for _, pw := range ts.pendingWrites {
+				if pw.TreeName == table.Name {
+					k := string(pw.Key)
+					if idx, ok := seen[k]; ok {
+						pairs[idx].value = pw.Value
+					} else {
+						pairs = append(pairs, kvPair{k, pw.Value})
+						seen[k] = len(pairs) - 1
+					}
+				}
+			}
+		}
+
+		var allValues [][]byte
+		for _, p := range pairs {
+			allValues = append(allValues, p.value)
 		}
 
 		canParallel := cat.parallelWorkers > 0 &&

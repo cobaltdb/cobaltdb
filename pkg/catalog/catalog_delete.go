@@ -10,6 +10,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
+	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
 
 // deleteEntry tracks a row to be deleted
@@ -44,6 +45,16 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 	if len(stmt.Using) > 0 {
 		return c.deleteWithUsingLocked(ctx, stmt, args)
 	}
+
+	// Determine if we can use buffered writes for this delete.
+	hasSecondaryIndexes := false
+	for _, idxDef := range c.indexes {
+		if idxDef.TableName == stmt.Table {
+			hasSecondaryIndexes = true
+			break
+		}
+	}
+	useBuffer := c.isBufferedMode() && !hasSecondaryIndexes && table.Partition == nil
 
 	// Get all trees for scanning (handles partitioned tables)
 	trees, err := c.getTableTreesForScan(table)
@@ -141,8 +152,14 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 	}
 
 	// Apply soft deletes (FK enforcement, index cleanup, WAL, triggers)
-	if _, applyErr := c.applyDeleteEntries(ctx, table, stmt, entries); applyErr != nil {
-		return 0, rowsAffected, applyErr
+	if useBuffer {
+		if err := c.bufferDeleteEntries(ctx, table, stmt, entries); err != nil {
+			return 0, rowsAffected, err
+		}
+	} else {
+		if _, applyErr := c.applyDeleteEntries(ctx, table, stmt, entries); applyErr != nil {
+			return 0, rowsAffected, applyErr
+		}
 	}
 
 	// Invalidate query cache for the affected table
@@ -473,4 +490,55 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 		rowsAffected++
 	}
 	return rowsAffected, nil
+}
+
+// bufferDeleteEntries buffers soft-deleted rows for commit-time application in
+// MVCC buffered mode. Skips B-tree mutation, WAL, and indexes.
+func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt *query.DeleteStmt, entries []deleteEntry) error {
+	fke := NewForeignKeyEnforcer(c)
+	for _, entry := range entries {
+		key := entry.key
+		row := entry.row
+
+		// Enforce foreign key ON DELETE actions (same as direct path).
+		pkValues := make([]interface{}, 0, len(table.PrimaryKey))
+		for _, pkCol := range table.PrimaryKey {
+			pkColIdx := table.GetColumnIndex(pkCol)
+			if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
+				pkValues = append(pkValues, row[pkColIdx])
+			}
+		}
+		if len(pkValues) == len(table.PrimaryKey) && len(pkValues) > 0 {
+			if fkErr := fke.OnDelete(ctx, stmt.Table, pkValues...); fkErr != nil {
+				return fmt.Errorf("foreign key constraint: %w", fkErr)
+			}
+		}
+
+		// Soft-delete encoding.
+		vrow, err := decodeVersionedRow(entry.value, len(table.Columns))
+		if err != nil {
+			continue
+		}
+		vrow.Version.markDeleted(time.Now())
+		deletedValueData, err := json.Marshal(vrow)
+		if err != nil {
+			return fmt.Errorf("failed to encode deleted row: %w", err)
+		}
+
+		c.appendPendingWrite(PendingWrite{
+			TreeName: entry.treeName,
+			Key:      key,
+			Value:    deletedValueData,
+		})
+		if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
+			writeKey := entry.treeName + ":" + string(key)
+			mt.SetWrite(writeKey, deletedValueData)
+		}
+
+		// Execute AFTER DELETE trigger per-row.
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "AFTER", nil, row, table.Columns); trigErr != nil {
+			return fmt.Errorf("AFTER DELETE trigger failed: %w", trigErr)
+		}
+	}
+	return nil
 }
