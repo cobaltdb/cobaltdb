@@ -224,7 +224,6 @@ type catalogTxnState struct {
 	savepoints        []savepointEntry
 	managerTxn        interface{}    // *txn.Transaction when txnManager bridge is active
 	pendingWrites     []PendingWrite // buffered DML for commit-time application
-	holdsBufferedLock bool           // true if this transaction holds bufferedTxnMu
 }
 
 // PendingWrite buffers a DML operation for commit-time application when the
@@ -272,7 +271,7 @@ type Catalog struct {
 	txnManager           interface{}                           // *txn.Manager bridge for MVCC multi-writer (nil = legacy single-writer mode)
 	enableBufferedWrites bool                                  // Enable buffered DML (disabled by default until read-your-writes is fully implemented)
 	savepoints           []savepointEntry                      // Stack of savepoints (legacy)
-	activeTxns           map[uint64]*catalogTxnState           // Per-transaction state for multi-writer support
+	activeTxns           sync.Map                              // Per-transaction state for multi-writer support; key=uint64 txnID, value=*catalogTxnState
 	currentTxnID         uint64                                // ID of the transaction currently executing
 	rlsManager           *security.Manager                     // Row-level security manager
 	enableRLS            bool                                  // Enable row-level security
@@ -291,12 +290,17 @@ type Catalog struct {
 	parallelWorkers   int // 0 = disabled
 	parallelThreshold int // min rows to trigger parallel
 
-	// bufferedTxnMu serializes buffered write transactions to prevent lost
-	// updates. When buffered writes are enabled, each transaction holds this
-	// lock for its entire lifetime, preserving single-writer semantics while
-	// still deferring B-tree mutations to commit time.
-	bufferedTxnMu   sync.Mutex
-	bufferedTxnOwner uint64 // txnID that currently holds bufferedTxnMu
+	// goroutineTxnMap maps goroutine ID -> txnID for active buffered
+	// transactions. It replaces the global c.currentTxnID so multiple writers
+	// can be active concurrently, each seeing their own transaction state via
+	// getCurrentTxn().
+	goroutineTxnMap sync.Map
+
+	// bufferedTxnMu serializes the commit-time application of buffered writes
+	// to B-trees. It is only held during CommitTransaction / RollbackTransaction
+	// to prevent races on B-tree mutation, not across the full transaction
+	// lifetime.
+	bufferedTxnMu sync.Mutex
 }
 
 // savepointEntry records a named savepoint with its undo log position
@@ -339,7 +343,6 @@ func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog
 		queryCache:        NewQueryCache(0, 0), // Disabled by default - enable with EnableQueryCache()
 		deadTuples:        make(map[string]int64),
 		liveTuples:        make(map[string]int64),
-		activeTxns:        make(map[uint64]*catalogTxnState),
 	}
 }
 

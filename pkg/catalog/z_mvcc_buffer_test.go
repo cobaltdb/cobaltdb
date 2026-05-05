@@ -32,7 +32,6 @@ func createCatalogWithTxnManager(t *testing.T) (*Catalog, *txn.Manager) {
 		stats:             make(map[string]*StatsTableStats),
 		deadTuples:        make(map[string]int64),
 		liveTuples:        make(map[string]int64),
-		activeTxns:        make(map[uint64]*catalogTxnState),
 	}
 	mgr := txn.NewManager(pool, nil)
 	c.SetTxnManager(mgr)

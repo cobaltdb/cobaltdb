@@ -114,6 +114,8 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				if pwValue, ok := pendingKeys[pkStr]; ok {
 					valueData = pwValue
 					found = true
+				} else if found {
+					c.recordManagerRead(treeName, key)
 				}
 				if !found {
 					continue
@@ -138,9 +140,11 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				break
 			}
 			k := string(key)
+			fromPending := false
 			if pwValue, ok := pendingKeys[k]; ok {
 				valueData = pwValue
 				seenPending[k] = true
+				fromPending = true
 			}
 
 			// Decode row with version info
@@ -164,6 +168,10 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				if !matched {
 					continue // Skip row that doesn't match WHERE condition
 				}
+			}
+
+			if !fromPending {
+				c.recordManagerRead(treeName, key)
 			}
 
 			if err := c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {

@@ -3,6 +3,8 @@ package catalog
 import (
 	"errors"
 	"fmt"
+	"runtime"
+	"strconv"
 
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -82,12 +84,51 @@ func (c *Catalog) DropRLSPolicy(tableName, policyName string) error {
 // getCurrentTxn returns the active transaction state for the current transaction.
 // If no current transaction is set, it falls back to the legacy single-transaction fields.
 func (c *Catalog) getCurrentTxn() *catalogTxnState {
-	if c.currentTxnID != 0 {
-		if ts, ok := c.activeTxns[c.currentTxnID]; ok {
-			return ts
+	if gidTxnID := c.getGoroutineTxnID(); gidTxnID != 0 {
+		if v, ok := c.activeTxns.Load(gidTxnID); ok {
+			if ts, ok := v.(*catalogTxnState); ok {
+				return ts
+			}
 		}
 	}
 	return nil
+}
+
+// goroutineID extracts the current goroutine ID from runtime.Stack.
+func goroutineID() int64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	s := string(buf[:n])
+	if !strings.HasPrefix(s, "goroutine ") {
+		return 0
+	}
+	s = s[len("goroutine "):]
+	idx := strings.IndexByte(s, ' ')
+	if idx < 0 {
+		idx = strings.IndexByte(s, '\n')
+	}
+	if idx < 0 {
+		return 0
+	}
+	id, _ := strconv.ParseInt(s[:idx], 10, 64)
+	if id == 0 {
+	}
+	return id
+}
+
+func (c *Catalog) registerGoroutineTxn(txnID uint64) {
+	c.goroutineTxnMap.Store(goroutineID(), txnID)
+}
+
+func (c *Catalog) unregisterGoroutineTxn() {
+	c.goroutineTxnMap.Delete(goroutineID())
+}
+
+func (c *Catalog) getGoroutineTxnID() uint64 {
+	if v, ok := c.goroutineTxnMap.Load(goroutineID()); ok {
+		return v.(uint64)
+	}
+	return 0
 }
 
 // getCurrentTxnUndoLog returns the undo log for the current transaction.
@@ -150,18 +191,24 @@ func (c *Catalog) setCurrentTxnSavepoints(sps []savepointEntry) {
 }
 
 func (c *Catalog) BeginTransaction(txnID uint64) {
-	// Create the Manager transaction outside of c.mu so we can decide
-	// whether to acquire bufferedTxnMu BEFORE c.mu. This ordering is
-	// required to avoid deadlock with CommitTransaction/RollbackTransaction
-	// which release bufferedTxnMu while holding c.mu.
+	// Create the Manager transaction outside of c.mu.
 	var managerTxn interface{}
 	if mgr, ok := c.txnManager.(*txn.Manager); ok && mgr != nil {
 		managerTxn = mgr.Begin(txn.DefaultOptions())
 	}
+	c.beginTransactionLocked(txnID, managerTxn)
+}
+
+// BeginTransactionWithTxn begins a catalog transaction using an existing
+// manager transaction (e.g. one created by the engine). This avoids creating
+// a redundant second transaction when the engine and catalog share the same
+// txn.Manager.
+func (c *Catalog) BeginTransactionWithTxn(txnID uint64, managerTxn interface{}) {
+	c.beginTransactionLocked(txnID, managerTxn)
+}
+
+func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 	willBuffer := c.enableBufferedWrites && managerTxn != nil
-	if willBuffer {
-		c.bufferedTxnMu.Lock()
-	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -170,46 +217,27 @@ func (c *Catalog) BeginTransaction(txnID uint64) {
 	c.undoLog = nil    // Clear undo log for new transaction
 	c.savepoints = nil // Clear savepoints
 	c.currentTxnID = txnID
-	if c.activeTxns == nil {
-		c.activeTxns = make(map[uint64]*catalogTxnState)
-	}
 	cs := &catalogTxnState{
 		txnID:     txnID,
 		txnActive: true,
 	}
 	cs.managerTxn = managerTxn
-	// Serialize buffered write transactions to prevent lost updates.
-	// Reads can still proceed via c.mu.RLock, but only one buffered write
-	// transaction runs at a time, preserving single-writer semantics.
+	c.activeTxns.Store(txnID, cs)
+	// Register goroutine-local txn ID so concurrent writers each see their own
+	// transaction state via getCurrentTxn().
 	if willBuffer {
-		if c.bufferedTxnOwner == 0 {
-			c.bufferedTxnOwner = txnID
-			cs.holdsBufferedLock = true
-		}
+		c.registerGoroutineTxn(txnID)
 	}
-	c.activeTxns[txnID] = cs
 }
 
 func (c *Catalog) CommitTransaction() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Capture whether this transaction holds bufferedTxnMu so we always
-	// release it on exit, even on error paths.
-	var needsUnlock bool
-	if ts := c.getCurrentTxn(); ts != nil {
-		needsUnlock = ts.holdsBufferedLock
-	}
-	defer func() {
-		if needsUnlock {
-			c.bufferedTxnOwner = 0
-			c.bufferedTxnMu.Unlock()
-		}
-	}()
-
 	// When a txn.Manager bridge is active, commit through the Manager first.
 	// This performs conflict detection and updates the version store.
-	if ts := c.getCurrentTxn(); ts != nil {
+	ts := c.getCurrentTxn()
+	if ts != nil {
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
 			if err := mt.Commit(); err != nil {
 				return fmt.Errorf("txn manager commit: %w", err)
@@ -234,10 +262,11 @@ func (c *Catalog) CommitTransaction() error {
 	c.txnActive = false
 	c.undoLog = nil    // Discard undo log on successful commit
 	c.savepoints = nil // Clear savepoints
-	if c.currentTxnID != 0 {
-		delete(c.activeTxns, c.currentTxnID)
-		c.currentTxnID = 0
+	if ts != nil {
+		c.activeTxns.Delete(ts.txnID)
 	}
+	c.currentTxnID = 0
+	c.unregisterGoroutineTxn()
 	return nil
 }
 
@@ -260,19 +289,6 @@ func (c *Catalog) flushTableTreesLocked() error {
 func (c *Catalog) RollbackTransaction() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	// Capture whether this transaction holds bufferedTxnMu so we always
-	// release it on exit, even on error paths.
-	var needsUnlock bool
-	if ts := c.getCurrentTxn(); ts != nil {
-		needsUnlock = ts.holdsBufferedLock
-	}
-	defer func() {
-		if needsUnlock {
-			c.bufferedTxnOwner = 0
-			c.bufferedTxnMu.Unlock()
-		}
-	}()
 
 	// Rollback the Manager transaction first if present.
 	if ts := c.getCurrentTxn(); ts != nil {
@@ -298,20 +314,22 @@ func (c *Catalog) RollbackTransaction() error {
 		c.txnActive = false
 		c.undoLog = nil
 		c.savepoints = nil
-		if c.currentTxnID != 0 {
-			delete(c.activeTxns, c.currentTxnID)
-			c.currentTxnID = 0
+		if ts := c.getCurrentTxn(); ts != nil {
+			c.activeTxns.Delete(ts.txnID)
 		}
+		c.currentTxnID = 0
+		c.unregisterGoroutineTxn()
 		return err
 	}
 
 	c.txnActive = false
 	c.undoLog = nil
 	c.savepoints = nil
-	if c.currentTxnID != 0 {
-		delete(c.activeTxns, c.currentTxnID)
-		c.currentTxnID = 0
+	if ts := c.getCurrentTxn(); ts != nil {
+		c.activeTxns.Delete(ts.txnID)
 	}
+	c.currentTxnID = 0
+	c.unregisterGoroutineTxn()
 	return nil
 }
 
@@ -660,6 +678,27 @@ func (c *Catalog) getCurrentManagerTxn() interface{} {
 		return ts.managerTxn
 	}
 	return nil
+}
+
+// recordManagerRead records a read version for the given key in the current
+// txn.Manager transaction's ReadSet. This enables conflict detection for
+// read-modify-write cycles under SnapshotIsolation.
+func (c *Catalog) recordManagerRead(treeName string, key []byte) {
+	if !c.isBufferedMode() {
+		return
+	}
+
+	mt, ok := c.getCurrentManagerTxn().(*txn.Transaction)
+	if !ok || mt == nil {
+		return
+	}
+	mgr, ok := c.txnManager.(*txn.Manager)
+	if !ok || mgr == nil {
+		return
+	}
+	writeKey := treeName + ":" + string(key)
+	ver := mgr.GetCurrentVersion(writeKey)
+	mt.SetReadVersion(writeKey, ver)
 }
 
 // isBufferedMode returns true when the current transaction should buffer

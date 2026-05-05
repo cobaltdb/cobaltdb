@@ -158,20 +158,11 @@ func (t *Transaction) Commit() error {
 
 	startTime := time.Now()
 
-	// For snapshot isolation, check for conflicts
-	if t.Isolation >= SnapshotIsolation {
-		if err := t.manager.detectConflicts(t); err != nil {
-			if rbErr := t.rollbackLocked(); rbErr != nil {
-				return fmt.Errorf("conflict detection failed and rollback failed: %v; %w", rbErr, err)
-			}
-			return err
-		}
-	}
-
-	// Apply writes
-	if err := t.manager.applyWrites(t); err != nil {
+	// Apply writes atomically with conflict detection so no transaction
+	// can sneak in between the read-check and the write.
+	if err := t.manager.commitWithConflictDetection(t); err != nil {
 		if rbErr := t.rollbackLocked(); rbErr != nil {
-			return fmt.Errorf("apply writes failed and rollback failed: %v; %w", rbErr, err)
+			return fmt.Errorf("commit failed and rollback failed: %v; %w", rbErr, err)
 		}
 		return err
 	}
@@ -292,7 +283,8 @@ func (t *Transaction) SetWrite(key string, value []byte) {
 
 // Manager manages all transactions
 type Manager struct {
-	counter     uint64 // atomic, monotonic
+	counter     uint64 // atomic, monotonic transaction IDs
+	commitSeq   uint64 // atomic, monotonic commit sequence numbers (used for versions)
 	active      map[uint64]*Transaction
 	versions    map[string]uint64 // key → latest committed version
 	versionStore *VersionStore    // MVCC version chain storage
@@ -779,16 +771,89 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 	return nil
 }
 
+// commitWithConflictDetection atomically checks for conflicts and applies
+// writes so no other transaction can commit between the check and the write.
+func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if txn.Isolation >= SnapshotIsolation {
+		for key, readVersion := range txn.ReadSet {
+			currentVersion, exists := m.versions[key]
+			if !exists {
+				continue
+			}
+			if currentVersion > readVersion {
+				return ErrConflict
+			}
+		}
+	}
+	// Update versions for all written keys using a monotonically increasing
+	// commit sequence number instead of txn.ID. txn.ID is assigned at BEGIN
+	// time, so a later-beginning transaction can commit before an earlier one,
+	// causing version numbers to decrease and breaking conflict detection.
+	seq := atomic.AddUint64(&m.commitSeq, 1)
+	for key, value := range txn.WriteSet {
+		m.versions[key] = seq
+		if m.versionStore != nil {
+			m.versionStore.Commit(key, value, seq)
+		}
+	}
+
+	// Apply writes to storage via BufferPool if available
+	if m.pool != nil {
+		if bp, ok := m.pool.(*storage.BufferPool); ok && bp != nil {
+			for key, value := range txn.WriteSet {
+				_ = bp
+				_ = key
+				_ = value
+			}
+		}
+	}
+
+	// Mark writes as durable in WAL if available
+	if m.wal != nil {
+		if wal, ok := m.wal.(*storage.WAL); ok && wal != nil {
+			for key, value := range txn.WriteSet {
+				keyBytes := []byte(key)
+				data := make([]byte, 4+len(keyBytes)+len(value))
+				binary.LittleEndian.PutUint32(data[0:4], uint32(len(keyBytes)))
+				copy(data[4:4+len(keyBytes)], keyBytes)
+				copy(data[4+len(keyBytes):], value)
+
+				record := &storage.WALRecord{
+					TxnID: txn.ID,
+					Type:  storage.WALUpdate,
+					Data:  data,
+				}
+				if err := wal.AppendWithoutSync(record); err != nil {
+					return fmt.Errorf("failed to append WAL record: %w", err)
+				}
+			}
+			commitRecord := &storage.WALRecord{
+				TxnID: txn.ID,
+				Type:  storage.WALCommit,
+			}
+			if err := wal.Append(commitRecord); err != nil {
+				return fmt.Errorf("failed to append WAL commit record: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // applyWrites applies all writes from a transaction to actual storage
 func (m *Manager) applyWrites(txn *Transaction) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Update versions for all written keys
+	// Update versions for all written keys using monotonic commit sequence
+	seq := atomic.AddUint64(&m.commitSeq, 1)
 	for key, value := range txn.WriteSet {
-		m.versions[key] = txn.ID
+		m.versions[key] = seq
 		if m.versionStore != nil {
-			m.versionStore.Commit(key, value, txn.ID)
+			m.versionStore.Commit(key, value, seq)
 		}
 	}
 

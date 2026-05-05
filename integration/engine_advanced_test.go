@@ -2,12 +2,15 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
 
 // TestEngineDiskPersistence tests database persistence to disk
@@ -472,30 +475,45 @@ func TestEngineConcurrencyStress(t *testing.T) {
 	const numWorkers = 20
 	const incrementsPerWorker = 50
 
+	var successCount int64
+	var conflictCount int64
+	var otherErrCount int64
+
 	done := make(chan bool, numWorkers)
 	for i := 0; i < numWorkers; i++ {
-		go func() {
+		go func(id int) {
 			defer func() { done <- true }()
 
-			for j := 0; j < incrementsPerWorker; j++ {
+			for j := 0; j < incrementsPerWorker; {
 				tx, err := db.Begin(ctx)
 				if err != nil {
-					t.Logf("Begin error: %v", err)
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("Worker %d Begin error: %v", id, err)
 					return
 				}
 
 				_, err = tx.Exec(ctx, `UPDATE counter SET value = value + 1 WHERE id = 1`)
 				if err != nil {
-					t.Logf("Update error: %v", err)
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("Worker %d Update error: %v", id, err)
 					tx.Rollback()
 					return
 				}
 
 				if err := tx.Commit(); err != nil {
-					t.Logf("Commit error: %v", err)
+					if errors.Is(err, txn.ErrConflict) {
+						atomic.AddInt64(&conflictCount, 1)
+						// MVCC conflict: retry the increment
+						continue
+					}
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("Worker %d Commit error: %v", id, err)
+					return
 				}
+				atomic.AddInt64(&successCount, 1)
+				j++
 			}
-		}()
+		}(i)
 	}
 
 	// Wait with timeout
@@ -516,6 +534,7 @@ func TestEngineConcurrencyStress(t *testing.T) {
 	}
 
 	expected := numWorkers * incrementsPerWorker
+	t.Logf("Success: %d, Conflicts: %d, Other errors: %d, Value: %d", successCount, conflictCount, otherErrCount, value)
 	if value != expected {
 		t.Errorf("Expected counter = %d, got %d", expected, value)
 	} else {

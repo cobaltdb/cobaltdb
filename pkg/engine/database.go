@@ -621,8 +621,10 @@ func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 
 	transaction := db.txnMgr.Begin(opts)
 
-	// Begin transaction in catalog for WAL logging
-	db.catalog.BeginTransaction(transaction.ID)
+	// Begin transaction in catalog for WAL logging.
+	// Pass the engine's manager transaction so the catalog shares the same
+	// txn state for MVCC conflict detection instead of creating a duplicate.
+	db.catalog.BeginTransactionWithTxn(transaction.ID, transaction)
 
 	return &Tx{
 		db:  db,
@@ -2404,7 +2406,12 @@ func (tx *Tx) Commit() error {
 		return fmt.Errorf("failed to flush buffer pool: %w", err)
 	}
 
-	return tx.txn.Commit()
+	// If the catalog already committed the shared manager transaction,
+	// do not attempt to commit it again.
+	if tx.txn.State != txn.TxnCommitted {
+		return tx.txn.Commit()
+	}
+	return nil
 }
 
 // Rollback rolls back the transaction

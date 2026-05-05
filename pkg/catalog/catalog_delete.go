@@ -97,6 +97,8 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 				if pwValue, ok := pendingKeys[pkStr]; ok {
 					valueData = pwValue
 					found = true
+				} else if found {
+					c.recordManagerRead(treeName, key)
 				}
 				if !found {
 					continue
@@ -121,9 +123,11 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 				break
 			}
 			k := string(key)
+			fromPending := false
 			if pwValue, ok := pendingKeys[k]; ok {
 				valueData = pwValue
 				seenPending[k] = true
+				fromPending = true
 			}
 
 			// Decode row with version info
@@ -154,6 +158,10 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 			if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
 				continue
 			}
+
+	if !fromPending {
+					c.recordManagerRead(treeName, key)
+				}
 
 			// Make copies of key and value since iterator may reuse buffers
 			keyCopy := make([]byte, len(key))
