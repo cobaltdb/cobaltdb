@@ -41,11 +41,13 @@ func DefaultOptions() *Options {
 		EnableAutoVacuum:    true,
 		AutoVacuumInterval:  1 * time.Minute,
 		AutoVacuumThreshold: 0.2, // 20% dead tuples triggers vacuum
-		EnableScheduler:     true,
-		AnalyzeInterval:     1 * time.Hour,
-		SchedulerWorkers:    2,
-		ParallelWorkers:     runtime.NumCPU(),
-		ParallelThreshold:   1000,
+		EnableAutoCheckpoint: true,
+		CheckpointInterval:   5 * time.Minute,
+		EnableScheduler:      true,
+		AnalyzeInterval:      1 * time.Hour,
+		SchedulerWorkers:     2,
+		ParallelWorkers:      runtime.NumCPU(),
+		ParallelThreshold:    1000,
 	}
 }
 
@@ -792,6 +794,27 @@ func (db *DB) startScheduler() {
 		db.options.Logger.Warnf("Failed to register auto-analyze job: %v", err)
 	}
 
+	// Register checkpoint job
+	if db.options.EnableAutoCheckpoint {
+		checkpointInterval := db.options.CheckpointInterval
+		if checkpointInterval <= 0 {
+			checkpointInterval = 5 * time.Minute
+		}
+		checkpointJob := &scheduler.Job{
+			ID:       "auto-checkpoint",
+			Name:     "Auto Checkpoint",
+			Type:     scheduler.JobTypeCheckpoint,
+			Interval: checkpointInterval,
+			Enabled:  true,
+			Fn: func(ctx context.Context) error {
+				return db.runCheckpointJob()
+			},
+		}
+		if err := db.scheduler.Register(checkpointJob); err != nil {
+			db.options.Logger.Warnf("Failed to register auto-checkpoint job: %v", err)
+		}
+	}
+
 	db.scheduler.Start()
 }
 
@@ -827,6 +850,22 @@ func (db *DB) runAnalyzeJob() error {
 				db.options.Logger.Infof("AutoAnalyze completed for table %s", tableName)
 			}
 		}
+	}
+	return nil
+}
+
+// runCheckpointJob performs a WAL checkpoint to truncate the log and flush
+// dirty pages.  Called by the scheduler; safe to run concurrently with reads
+// because DB.Checkpoint serializes with transaction commits via flushMu.
+func (db *DB) runCheckpointJob() error {
+	if err := db.Checkpoint(); err != nil {
+		if db.options.Logger != nil {
+			db.options.Logger.Warnf("AutoCheckpoint failed: %v", err)
+		}
+		return err
+	}
+	if db.options.Logger != nil {
+		db.options.Logger.Info("AutoCheckpoint completed")
 	}
 	return nil
 }

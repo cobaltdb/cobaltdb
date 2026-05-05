@@ -160,6 +160,10 @@ type Options struct {
 	AutoVacuumInterval  time.Duration // Interval between auto-vacuum checks (default: 1m)
 	AutoVacuumThreshold float64       // Dead tuple ratio to trigger vacuum (default: 0.2 = 20%)
 
+	// Checkpoint Options
+	EnableAutoCheckpoint  bool          // Enable automatic WAL checkpoint (default: true for disk)
+	CheckpointInterval    time.Duration // Interval between checkpoints (default: 5m)
+
 	// Scheduler Options
 	EnableScheduler       bool          // Enable job scheduler (default: true for disk)
 	AnalyzeInterval       time.Duration // Interval for automatic ANALYZE (default: 1h)

@@ -12,6 +12,7 @@ type JobType string
 const (
 	JobTypeVacuum       JobType = "vacuum"
 	JobTypeAnalyze      JobType = "analyze"
+	JobTypeCheckpoint   JobType = "checkpoint"
 	JobTypeBackupClean  JobType = "backup_cleanup"
 	JobTypeCustom       JobType = "custom"
 )
