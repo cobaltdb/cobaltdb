@@ -2112,15 +2112,16 @@ func (db *DB) executeDescribeQuery(ctx context.Context, stmt *query.DescribeStmt
 func (db *DB) executeExplainQuery(ctx context.Context, stmt *query.ExplainStmt) (*Rows, error) {
 	innerStmt := stmt.Statement
 
+	var plan *QueryPlan
 	switch s := innerStmt.(type) {
 	case *query.SelectStmt:
-		plan := db.buildQueryPlan(s)
-		columns, rows := formatQueryPlan(plan)
-		return &Rows{
-			columns: columns,
-			rows:    rows,
-			pos:     0,
-		}, nil
+		plan = db.buildQueryPlan(s)
+	case *query.InsertStmt:
+		plan = db.buildInsertPlan(s)
+	case *query.UpdateStmt:
+		plan = db.buildUpdatePlan(s)
+	case *query.DeleteStmt:
+		plan = db.buildDeletePlan(s)
 	default:
 		columns := []string{"QUERY PLAN"}
 		rows := [][]interface{}{{fmt.Sprintf("EXPLAIN not supported for %T", innerStmt)}}
@@ -2130,6 +2131,13 @@ func (db *DB) executeExplainQuery(ctx context.Context, stmt *query.ExplainStmt) 
 			pos:     0,
 		}, nil
 	}
+
+	columns, rows := formatQueryPlan(plan)
+	return &Rows{
+		columns: columns,
+		rows:    rows,
+		pos:     0,
+	}, nil
 }
 
 // Result represents the result of an Exec operation

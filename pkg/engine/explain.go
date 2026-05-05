@@ -360,6 +360,82 @@ func isAggregateExpr(expr query.Expression) bool {
 	return false
 }
 
+// buildInsertPlan builds a query plan for an INSERT statement
+func (db *DB) buildInsertPlan(stmt *query.InsertStmt) *QueryPlan {
+	pb := newPlanBuilder(db)
+	tableName := stmt.Table
+	if stmt.Table == "" {
+		tableName = "<unknown>"
+	}
+	rows := int64(1)
+	if len(stmt.Values) > 0 {
+		rows = int64(len(stmt.Values))
+	}
+	cost := float64(rows) * 2.0
+	detail := tableName
+	if len(stmt.Columns) > 0 {
+		detail += " (" + strings.Join(stmt.Columns, ", ") + ")"
+	}
+	pb.addNode(0, "Insert", detail, cost, rows)
+	return &QueryPlan{Nodes: pb.nodes}
+}
+
+// buildUpdatePlan builds a query plan for an UPDATE statement
+func (db *DB) buildUpdatePlan(stmt *query.UpdateStmt) *QueryPlan {
+	pb := newPlanBuilder(db)
+	tableName := stmt.Table
+	if stmt.Table == "" {
+		tableName = "<unknown>"
+	}
+	rows := db.estimateTableRows(tableName)
+	cost := float64(rows) * 2.0
+	if stmt.Where != nil {
+		rows = int64(float64(rows) * 0.1)
+		if rows < 1 {
+			rows = 1
+		}
+		cost = float64(rows) * 3.0
+	}
+	detail := tableName
+	if len(stmt.Set) > 0 {
+		sets := make([]string, 0, len(stmt.Set))
+		for _, sc := range stmt.Set {
+			sets = append(sets, sc.Column)
+		}
+		detail += " SET " + strings.Join(sets, ", ")
+	}
+	pb.addNode(0, "Update", detail, cost, rows)
+	if stmt.Where != nil {
+		filterDetail := expressionToString(stmt.Where)
+		pb.addNode(1, "Filter", filterDetail, float64(rows)*0.5, rows)
+	}
+	return &QueryPlan{Nodes: pb.nodes}
+}
+
+// buildDeletePlan builds a query plan for a DELETE statement
+func (db *DB) buildDeletePlan(stmt *query.DeleteStmt) *QueryPlan {
+	pb := newPlanBuilder(db)
+	tableName := stmt.Table
+	if stmt.Table == "" {
+		tableName = "<unknown>"
+	}
+	rows := db.estimateTableRows(tableName)
+	cost := float64(rows) * 2.0
+	if stmt.Where != nil {
+		rows = int64(float64(rows) * 0.1)
+		if rows < 1 {
+			rows = 1
+		}
+		cost = float64(rows) * 3.0
+	}
+	pb.addNode(0, "Delete", tableName, cost, rows)
+	if stmt.Where != nil {
+		filterDetail := expressionToString(stmt.Where)
+		pb.addNode(1, "Filter", filterDetail, float64(rows)*0.5, rows)
+	}
+	return &QueryPlan{Nodes: pb.nodes}
+}
+
 // max returns the maximum of two int64 values
 func max(a, b int64) int64 {
 	if a > b {
