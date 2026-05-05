@@ -7,12 +7,13 @@ CobaltDB enforces a **single-writer model**:
 - Only one write transaction can proceed at a time.
 - Long-running `SELECT` statements (with `RLock()`) block all writes.
 
-The MVCC version store (`pkg/txn/version_store.go`) already exists:
-- `Commit(key, value, commitTS)` adds a version.
-- `GetAtSnapshot(key, snapshotTS)` reads a consistent snapshot.
-- `Prune(minActiveTS)` garbage-collects old versions.
+**Important finding**: `pkg/txn/manager.go` already contains substantial MVCC infrastructure:
+- `Transaction.ReadSet` and `Transaction.WriteSet` track per-transaction reads/writes
+- `Manager.detectConflicts()` validates snapshot isolation at commit time
+- `Manager.applyWrites()` commits buffered writes to the `VersionStore` and WAL
+- `VersionStore` (`pkg/txn/version_store.go`) maintains per-key version chains
 
-However, this is currently used only for **snapshot isolation of readers** against committed writes, not for concurrent writers.
+The limitation is **not** missing MVCC infrastructure but rather the **Catalog layer** forcing single-writer serialization via `Catalog.mu.Lock()`. All DML operations (`Insert`, `Update`, `Delete`) mutate B-trees directly under the catalog lock instead of buffering writes in `Transaction.WriteSet` and delegating application to `Manager.applyWrites()`.
 
 ## Problem
 
@@ -22,46 +23,30 @@ However, this is currently used only for **snapshot isolation of readers** again
 
 ## Proposed Architecture
 
-### Phase 1: Optimistic Concurrency Control (OCC) for Writers (Target: v3.0)
+### Phase 1: Catalog Refactor to Use Existing MVCC (Target: v3.0)
 
-Allow multiple transactions to acquire "write intents" concurrently, then validate at commit time.
+The `txn.Manager` already supports OCC. The work is to refactor the `Catalog` to use it.
 
-**Key data structures:**
+**Catalog changes needed:**
 
-```go
-// WriteIntent marks a key as being modified by an active transaction
-type WriteIntent struct {
-    TxnID     uint64
-    StartTS   uint64
-    Key       string
-}
+1. **Per-transaction undo logs**: Move `undoLog`, `savepoints`, `txnID`, `txnActive` from `Catalog` fields into a `catalogTxnState` struct. `Catalog` tracks `activeTxns map[uint64]*catalogTxnState`.
+2. **Buffer writes in DML**: 
+   - `Insert`/`Update`/`Delete` should build the new row/value, then add it to `txn.WriteSet` keyed by `"table:pk"`.
+   - Record undo information in the per-txn undo log.
+   - Do NOT call `tree.Put()` or `tree.Delete()` directly.
+3. **Snapshot reads in SELECT**:
+   - `scanTableRows` should read from `versionStore.GetAtSnapshot(key, txn.StartTS)` when inside a transaction.
+   - Fall back to `tree.Get()` for committed data.
+4. **Commit through Manager**:
+   - `Catalog.CommitTransaction(txnID)` calls `txn.Commit()` on the `txn.Manager`.
+   - `Manager.detectConflicts()` validates `ReadSet` against `m.versions`.
+   - `Manager.applyWrites()` applies `WriteSet` to B-trees and WAL.
+   - On success, replay per-txn undo log on rollback.
 
-// TxnManager enhancements
-type TransactionManager struct {
-    // ... existing fields ...
-    activeTxns   map[uint64]*ActiveTxn  // tracks running write transactions
-    intentStore  map[string]*WriteIntent // key -> write intent
-    commitTSGen  atomic.Uint64
-}
-```
-
-**Write transaction lifecycle:**
-
-1. **Begin**: Assign `startTS` and `txnID`. Register in `activeTxns`.
-2. **Read**: Use `versionStore.GetAtSnapshot(key, startTS)` for snapshot reads.
-3. **Write**: Record intent in `intentStore` (no immediate tree mutation). Buffer writes in per-txn write set.
-4. **Commit validation** (critical section):
-   - Acquire `Catalog.mu.Lock()` briefly.
-   - Check if any committed transaction (with `commitTS > startTS`) modified keys in our write set.
-   - If conflict: abort and retry.
-   - If no conflict: assign `commitTS`, write versions to `versionStore`, apply to B-tree, remove intents.
-   - Release `Catalog.mu.Lock()`.
-5. **Rollback**: Remove intents, discard write set.
-
-**Conflict detection:**
-- Write-Write: Two txns modify the same key. Last committer wins; earlier txn gets `ErrWriteConflict`.
-- Write-Read: No conflict (readers use snapshot isolation).
-- Phantom reads: Prevented by range locks or serializable validation (track read ranges and validate no new writes in range).
+**Conflict detection** (already implemented in `txn.Manager`):
+- Write-Write: `detectConflicts` checks if `ReadSet` versions changed.
+- Write-Read: No conflict (readers use snapshot isolation via `VersionStore`).
+- Phantom reads: Requires tracking read ranges in `ReadSet` (enhancement needed).
 
 ### Phase 2: Lock-Free Version Store (Target: v3.1)
 
