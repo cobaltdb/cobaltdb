@@ -160,14 +160,7 @@ func (c *Catalog) BeginTransaction(txnID uint64) {
 	}
 	willBuffer := c.enableBufferedWrites && managerTxn != nil
 	if willBuffer {
-		// If the current transaction already holds bufferedTxnMu, allow
-		// nested begin without reacquiring (prevents self-deadlock).
-		c.mu.Lock()
-		alreadyHolds := c.bufferedTxnOwner != 0 && c.bufferedTxnOwner == c.currentTxnID
-		c.mu.Unlock()
-		if !alreadyHolds {
-			c.bufferedTxnMu.Lock()
-		}
+		c.bufferedTxnMu.Lock()
 	}
 
 	c.mu.Lock()
@@ -201,6 +194,19 @@ func (c *Catalog) CommitTransaction() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Capture whether this transaction holds bufferedTxnMu so we always
+	// release it on exit, even on error paths.
+	var needsUnlock bool
+	if ts := c.getCurrentTxn(); ts != nil {
+		needsUnlock = ts.holdsBufferedLock
+	}
+	defer func() {
+		if needsUnlock {
+			c.bufferedTxnOwner = 0
+			c.bufferedTxnMu.Unlock()
+		}
+	}()
+
 	// When a txn.Manager bridge is active, commit through the Manager first.
 	// This performs conflict detection and updates the version store.
 	if ts := c.getCurrentTxn(); ts != nil {
@@ -229,10 +235,6 @@ func (c *Catalog) CommitTransaction() error {
 	c.undoLog = nil    // Discard undo log on successful commit
 	c.savepoints = nil // Clear savepoints
 	if c.currentTxnID != 0 {
-		if ts := c.activeTxns[c.currentTxnID]; ts != nil && ts.holdsBufferedLock {
-			c.bufferedTxnOwner = 0
-			c.bufferedTxnMu.Unlock()
-		}
 		delete(c.activeTxns, c.currentTxnID)
 		c.currentTxnID = 0
 	}
@@ -259,6 +261,19 @@ func (c *Catalog) RollbackTransaction() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Capture whether this transaction holds bufferedTxnMu so we always
+	// release it on exit, even on error paths.
+	var needsUnlock bool
+	if ts := c.getCurrentTxn(); ts != nil {
+		needsUnlock = ts.holdsBufferedLock
+	}
+	defer func() {
+		if needsUnlock {
+			c.bufferedTxnOwner = 0
+			c.bufferedTxnMu.Unlock()
+		}
+	}()
+
 	// Rollback the Manager transaction first if present.
 	if ts := c.getCurrentTxn(); ts != nil {
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
@@ -284,9 +299,6 @@ func (c *Catalog) RollbackTransaction() error {
 		c.undoLog = nil
 		c.savepoints = nil
 		if c.currentTxnID != 0 {
-			if ts := c.activeTxns[c.currentTxnID]; ts != nil && ts.holdsBufferedLock {
-				c.bufferedTxnMu.Unlock()
-			}
 			delete(c.activeTxns, c.currentTxnID)
 			c.currentTxnID = 0
 		}
@@ -297,10 +309,6 @@ func (c *Catalog) RollbackTransaction() error {
 	c.undoLog = nil
 	c.savepoints = nil
 	if c.currentTxnID != 0 {
-		if ts := c.activeTxns[c.currentTxnID]; ts != nil && ts.holdsBufferedLock {
-			c.bufferedTxnOwner = 0
-			c.bufferedTxnMu.Unlock()
-		}
 		delete(c.activeTxns, c.currentTxnID)
 		c.currentTxnID = 0
 	}
