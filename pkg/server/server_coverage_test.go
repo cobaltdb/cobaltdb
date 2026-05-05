@@ -644,7 +644,7 @@ func TestHandleMsgExecuteCov(t *testing.T) {
 	defer cl.cancel()
 
 	p, _ := wire.Encode(&wire.ExecuteMessage{StmtID: 1})
-	if em, ok := cl.handleMessage(wire.MsgExecute, p).(*wire.ErrorMessage); !ok || em.Code != 3 {
+	if em, ok := cl.handleMessage(wire.MsgExecute, p).(*wire.ErrorMessage); !ok || em.Code != 4 {
 		t.Error("exec")
 	}
 	cl.authed = false
@@ -654,6 +654,48 @@ func TestHandleMsgExecuteCov(t *testing.T) {
 	cl.authed = true
 	if em, ok := cl.handleMessage(wire.MsgExecute, []byte{0xFF}).(*wire.ErrorMessage); !ok || em.Code != 2 {
 		t.Error("decode")
+	}
+}
+
+func TestPreparedStatementHappyPath(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	defer db.Close()
+	s, _ := New(db, DefaultConfig())
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	cl := &ClientConn{ID: 1, Conn: c1, Server: s, authed: true}
+	cl.ctx, cl.cancel = context.WithCancel(context.Background())
+	defer cl.cancel()
+
+	// Prepare a statement
+	prep, _ := wire.Encode(&wire.PrepareMessage{SQL: "SELECT 1 AS one"})
+	res := cl.handleMessage(wire.MsgPrepare, prep)
+	ok, isOK := res.(*wire.OKMessage)
+	if !isOK || ok.StmtID == 0 {
+		t.Fatalf("expected OK with StmtID, got %T %v", res, res)
+	}
+	stmtID := ok.StmtID
+
+	// Execute the prepared statement
+	exec, _ := wire.Encode(&wire.ExecuteMessage{StmtID: stmtID})
+	res2 := cl.handleMessage(wire.MsgExecute, exec)
+	rm, isResult := res2.(*wire.ResultMessage)
+	if !isResult {
+		t.Fatalf("expected ResultMessage, got %T %v", res2, res2)
+	}
+	if len(rm.Columns) != 1 || rm.Columns[0] != "one" {
+		t.Errorf("expected column 'one', got %v", rm.Columns)
+	}
+	if len(rm.Rows) != 1 {
+		t.Errorf("expected 1 row, got %d", len(rm.Rows))
+	}
+
+	// Execute with non-existent stmt ID should fail
+	execBad, _ := wire.Encode(&wire.ExecuteMessage{StmtID: 999})
+	res3 := cl.handleMessage(wire.MsgExecute, execBad)
+	if em, ok := res3.(*wire.ErrorMessage); !ok || em.Code != 4 {
+		t.Errorf("expected error code 4 for missing stmt, got %T %v", res3, res3)
 	}
 }
 

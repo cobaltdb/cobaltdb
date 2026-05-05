@@ -43,8 +43,9 @@ type ResultMessage struct {
 
 // OKMessage represents a successful execution
 type OKMessage struct {
-	LastInsertID int64 `msgpack:"last_insert_id"`
-	RowsAffected int64 `msgpack:"rows_affected"`
+	LastInsertID int64  `msgpack:"last_insert_id"`
+	RowsAffected int64  `msgpack:"rows_affected"`
+	StmtID       uint32 `msgpack:"stmt_id,omitempty"` // Set for prepared statement OK
 }
 
 // ErrorMessage represents an error response

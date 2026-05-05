@@ -295,7 +295,7 @@ func TestForeignKeyEnforcerOnUpdateCascade(t *testing.T) {
 	}, nil)
 
 	// Update parent primary key (should cascade)
-	if err := enforcer.OnUpdate(ctx, "users", 1, 100); err != nil {
+	if err := enforcer.OnUpdate(ctx, "users", []interface{}{1}, []interface{}{100}); err != nil {
 		t.Errorf("Expected cascade update to succeed: %v", err)
 	}
 }
@@ -489,13 +489,12 @@ func TestForeignKeyEnforcerOnUpdateNonExistentTable(t *testing.T) {
 	ctx := context.Background()
 
 	// Try to update non-existent table (should not error, just return)
-	if err := enforcer.OnUpdate(ctx, "non_existent_table", 1, 2); err != nil {
+	if err := enforcer.OnUpdate(ctx, "non_existent_table", []interface{}{1}, []interface{}{2}); err != nil {
 		t.Errorf("Expected no error for non-existent table: %v", err)
 	}
 }
 
 func TestForeignKeyEnforcerCompositeKey(t *testing.T) {
-	t.Skip("Composite key foreign key validation not fully implemented")
 	catalog, enforcer, cleanup := setupForeignKeyTest(t)
 	defer cleanup()
 
@@ -886,7 +885,7 @@ func TestForeignKeyEnforcerOnUpdateNoAction(t *testing.T) {
 	}, nil)
 
 	// Try to update parent PK (should fail with NO ACTION)
-	if err := enforcer.OnUpdate(ctx, "users", 1, 100); err == nil {
+	if err := enforcer.OnUpdate(ctx, "users", []interface{}{1}, []interface{}{100}); err == nil {
 		t.Error("Expected update to fail with NO ACTION policy")
 	}
 }
@@ -933,7 +932,7 @@ func TestForeignKeyEnforcerOnUpdateSetNull(t *testing.T) {
 	}, nil)
 
 	// Update parent PK (should set null)
-	if err := enforcer.OnUpdate(ctx, "users", 1, 100); err != nil {
+	if err := enforcer.OnUpdate(ctx, "users", []interface{}{1}, []interface{}{100}); err != nil {
 		t.Errorf("Expected set null to succeed: %v", err)
 	}
 }

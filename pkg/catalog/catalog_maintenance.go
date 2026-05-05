@@ -50,6 +50,25 @@ func (c *Catalog) Save() error {
 		}
 	}
 
+	// Save vector index definitions
+	for _, vid := range c.vectorIndexes {
+		if err := c.storeVectorIndexDef(vid); err != nil {
+			return fmt.Errorf("failed to save vector index definition %s: %w", vid.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func (c *Catalog) storeVectorIndexDef(vid *VectorIndexDef) error {
+	key := []byte("vec:" + vid.Name)
+	data, err := json.Marshal(vid)
+	if err != nil {
+		return err
+	}
+	if c.tree != nil {
+		return c.tree.Put(key, data)
+	}
 	return nil
 }
 
@@ -119,6 +138,30 @@ func (c *Catalog) Load() error {
 		tableDef.buildColumnIndexCache()
 	}
 
+	// Load vector index definitions from catalog tree
+	vecIter, err := c.tree.Scan([]byte("vec:"), []byte("vec;"))
+	if err == nil {
+		for vecIter.Valid() {
+			key, value, err := vecIter.Next()
+			if err != nil {
+				break
+			}
+			keyStr := string(key)
+			if !strings.HasPrefix(keyStr, "vec:") {
+				continue
+			}
+			var vid VectorIndexDef
+			if err := json.Unmarshal(value, &vid); err != nil {
+				continue
+			}
+			if vid.HNSW != nil {
+				vid.HNSW.RebuildEntryPoint()
+			}
+			c.vectorIndexes[vid.Name] = &vid
+		}
+		vecIter.Close()
+	}
+
 	return nil
 }
 
@@ -135,7 +178,8 @@ func (c *Catalog) SaveData(dir string) error {
 
 	// Export schema
 	schema := map[string]interface{}{
-		"tables": c.tables,
+		"tables":        c.tables,
+		"vectorIndexes": c.vectorIndexes,
 	}
 	schemaData, err := json.MarshalIndent(schema, "", "  ")
 	if err != nil {
@@ -200,7 +244,8 @@ func (c *Catalog) LoadSchema(dir string) error {
 	}
 
 	var schema struct {
-		Tables map[string]*TableDef `json:"tables"`
+		Tables        map[string]*TableDef      `json:"tables"`
+		VectorIndexes map[string]*VectorIndexDef `json:"vectorIndexes"`
 	}
 	if err := json.Unmarshal(data, &schema); err != nil {
 		return fmt.Errorf("load schema: failed to parse %s: %w", schemaPath, err)
@@ -245,6 +290,14 @@ func (c *Catalog) LoadSchema(dir string) error {
 		if c.tree != nil {
 			_ = c.storeTableDef(tableDef)
 		}
+	}
+
+	// Restore vector indexes and rebuild entry points
+	for name, vid := range schema.VectorIndexes {
+		if vid.HNSW != nil {
+			vid.HNSW.RebuildEntryPoint()
+		}
+		c.vectorIndexes[name] = vid
 	}
 
 	return nil

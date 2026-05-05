@@ -544,12 +544,15 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		}
 
 		// Enforce foreign key ON DELETE actions
-		pkColIdx := -1
-		if len(targetTable.PrimaryKey) > 0 {
-			pkColIdx = targetTable.GetColumnIndex(targetTable.PrimaryKey[0])
+		pkValues := make([]interface{}, 0, len(targetTable.PrimaryKey))
+		for _, pkCol := range targetTable.PrimaryKey {
+			pkColIdx := targetTable.GetColumnIndex(pkCol)
+			if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
+				pkValues = append(pkValues, row[pkColIdx])
+			}
 		}
-		if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
-			if fkErr := fke.OnDelete(ctx, stmt.Table, row[pkColIdx]); fkErr != nil {
+		if len(pkValues) == len(targetTable.PrimaryKey) && len(pkValues) > 0 {
+			if fkErr := fke.OnDelete(ctx, stmt.Table, pkValues...); fkErr != nil {
 				return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
 			}
 		}
@@ -948,9 +951,20 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		}
 
 		// Enforce foreign key ON UPDATE actions
-		if pkChanged && pkColIdx >= 0 {
-			if fkErr := fke.OnUpdate(ctx, stmt.Table, entry.oldRow[pkColIdx], entry.newRow[pkColIdx]); fkErr != nil {
-				return fmt.Errorf("foreign key constraint: %w", fkErr)
+		if pkChanged {
+			oldPkValues := make([]interface{}, 0, len(table.PrimaryKey))
+			newPkValues := make([]interface{}, 0, len(table.PrimaryKey))
+			for _, pkCol := range table.PrimaryKey {
+				pkColIdx := table.GetColumnIndex(pkCol)
+				if pkColIdx >= 0 && pkColIdx < len(entry.oldRow) && pkColIdx < len(entry.newRow) {
+					oldPkValues = append(oldPkValues, entry.oldRow[pkColIdx])
+					newPkValues = append(newPkValues, entry.newRow[pkColIdx])
+				}
+			}
+			if len(oldPkValues) == len(table.PrimaryKey) && len(oldPkValues) > 0 {
+				if fkErr := fke.OnUpdate(ctx, stmt.Table, oldPkValues, newPkValues); fkErr != nil {
+					return fmt.Errorf("foreign key constraint: %w", fkErr)
+				}
 			}
 		}
 

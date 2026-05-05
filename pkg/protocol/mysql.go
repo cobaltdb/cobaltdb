@@ -532,7 +532,7 @@ func (c *MySQLClient) handleCommand() error {
 		return c.handleStmtReset(data)
 
 	default:
-		return c.sendErrorPacket(0, "Unsupported command")
+		return c.sendErrorPacket(1047, "Unsupported command")
 	}
 }
 

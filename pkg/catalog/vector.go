@@ -11,28 +11,29 @@ import (
 
 // HNSWIndex represents a Hierarchical Navigable Small World index for vector similarity search
 type HNSWIndex struct {
-	Name       string
-	TableName  string
-	ColumnName string
-	Dimensions int
-	M          int     // Maximum number of connections per element per layer
-	Mmax       int     // Maximum number of connections for the base layer
-	Mmax0      int     // Maximum number of connections for layer 0
-	Ef         int     // Size of dynamic candidate list
-	Ml         float64 // Level generation factor
+	Name       string  `json:"name"`
+	TableName  string  `json:"table_name"`
+	ColumnName string  `json:"column_name"`
+	Dimensions int     `json:"dimensions"`
+	M          int     `json:"m"`      // Maximum number of connections per element per layer
+	Mmax       int     `json:"mmax"`   // Maximum number of connections for the base layer
+	Mmax0      int     `json:"mmax0"`  // Maximum number of connections for layer 0
+	Ef         int     `json:"ef"`     // Size of dynamic candidate list
+	Ml         float64 `json:"ml"`     // Level generation factor
 
-	Nodes      map[string]*HNSWNode // key -> node (key is the primary key value as string)
-	EntryPoint *HNSWNode
-	MaxLevel   int
-	mu         sync.RWMutex
+	Nodes        map[string]*HNSWNode `json:"nodes"`         // key -> node (key is the primary key value as string)
+	EntryPoint   *HNSWNode            `json:"-"`             // Runtime pointer, reconstructed from EntryPointKey
+	EntryPointKey string              `json:"entry_point_key"` // Serialized key for EntryPoint
+	MaxLevel     int                  `json:"max_level"`
+	mu           sync.RWMutex         `json:"-"`
 }
 
 // HNSWNode represents a node in the HNSW graph
 type HNSWNode struct {
-	Key       string
-	Vector    []float64
-	Level     int
-	Neighbors [][]string // Neighbors at each level
+	Key       string     `json:"key"`
+	Vector    []float64  `json:"vector"`
+	Level     int        `json:"level"`
+	Neighbors [][]string `json:"neighbors"` // Neighbors at each level
 }
 
 // NewHNSWIndex creates a new HNSW index
@@ -89,6 +90,7 @@ func (h *HNSWIndex) Insert(key string, vector []float64) error {
 	if h.EntryPoint == nil {
 		h.Nodes[key] = node
 		h.EntryPoint = node
+		h.EntryPointKey = key
 		h.MaxLevel = level
 		return nil
 	}
@@ -143,6 +145,7 @@ func (h *HNSWIndex) Insert(key string, vector []float64) error {
 	// Update entry point if new node has higher level
 	if level > h.MaxLevel {
 		h.EntryPoint = node
+		h.EntryPointKey = key
 		h.MaxLevel = level
 	}
 
@@ -181,6 +184,11 @@ func (h *HNSWIndex) Delete(key string) error {
 			}
 		}
 		h.EntryPoint = maxLevelNode
+		if maxLevelNode != nil {
+			h.EntryPointKey = maxLevelNode.Key
+		} else {
+			h.EntryPointKey = ""
+		}
 		h.MaxLevel = maxLevel
 	}
 
@@ -195,6 +203,19 @@ func (h *HNSWIndex) Update(key string, vector []float64) error {
 		return err
 	}
 	return h.Insert(key, vector)
+}
+
+// RebuildEntryPoint reconstructs the runtime EntryPoint pointer from EntryPointKey after deserialization.
+func (h *HNSWIndex) RebuildEntryPoint() {
+	if h.EntryPointKey == "" {
+		h.EntryPoint = nil
+		return
+	}
+	if node, ok := h.Nodes[h.EntryPointKey]; ok {
+		h.EntryPoint = node
+	} else {
+		h.EntryPoint = nil
+	}
 }
 
 // SearchKNN finds the k nearest neighbors to the query vector
@@ -516,5 +537,5 @@ type VectorIndexDef struct {
 	ColumnName string
 	Dimensions int
 	IndexType  string     // "hnsw", "ivf", etc.
-	HNSW       *HNSWIndex `json:"-"` // Runtime index, not persisted
+	HNSW       *HNSWIndex `json:"hnsw"` // Persisted HNSW index
 }

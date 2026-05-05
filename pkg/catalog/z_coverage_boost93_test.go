@@ -749,7 +749,7 @@ func TestB93_FKEnforcerOnUpdateCascade(t *testing.T) {
 
 	fke := NewForeignKeyEnforcer(c)
 	// OnUpdate CASCADE
-	err := fke.OnUpdate(context.Background(), "fke_parent", float64(1), float64(99))
+	err := fke.OnUpdate(context.Background(), "fke_parent", []interface{}{float64(1)}, []interface{}{float64(99)})
 	_ = err
 
 	// OnDelete
@@ -766,7 +766,7 @@ func TestB93_FKEnforcerOnUpdateSetNull(t *testing.T) {
 	b93Exec(c, "INSERT INTO sn_child VALUES (1, 1)")
 
 	fke := NewForeignKeyEnforcer(c)
-	err := fke.OnUpdate(context.Background(), "sn_parent", float64(1), float64(2))
+	err := fke.OnUpdate(context.Background(), "sn_parent", []interface{}{float64(1)}, []interface{}{float64(2)})
 	_ = err
 }
 
@@ -779,7 +779,7 @@ func TestB93_FKEnforcerOnUpdateRestrict(t *testing.T) {
 	b93Exec(c, "INSERT INTO rst_child VALUES (1, 1)")
 
 	fke := NewForeignKeyEnforcer(c)
-	err := fke.OnUpdate(context.Background(), "rst_parent", float64(1), float64(2))
+	err := fke.OnUpdate(context.Background(), "rst_parent", []interface{}{float64(1)}, []interface{}{float64(2)})
 	if err == nil {
 		t.Log("expected RESTRICT error, got nil (enforcement may vary)")
 	}
@@ -795,7 +795,7 @@ func TestB93_FKEnforcerOnUpdateDefault(t *testing.T) {
 
 	fke := NewForeignKeyEnforcer(c)
 	// Default behavior on update
-	err := fke.OnUpdate(context.Background(), "def_parent", float64(1), float64(2))
+	err := fke.OnUpdate(context.Background(), "def_parent", []interface{}{float64(1)}, []interface{}{float64(2)})
 	_ = err
 }
 

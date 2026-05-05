@@ -24,8 +24,13 @@ func NewForeignKeyEnforcer(catalog *Catalog) *ForeignKeyEnforcer {
 	return &ForeignKeyEnforcer{catalog: catalog}
 }
 
-// OnDelete handles foreign key actions when a row is deleted from the referenced table
-func (fke *ForeignKeyEnforcer) OnDelete(ctx context.Context, tableName string, pkValue interface{}) error {
+// OnDelete handles foreign key actions when a row is deleted from the referenced table.
+// pkValues accepts one value per primary key column (variadic for backward compatibility).
+func (fke *ForeignKeyEnforcer) OnDelete(ctx context.Context, tableName string, pkValues ...interface{}) error {
+	if len(pkValues) == 0 {
+		return nil
+	}
+
 	// Find all tables that reference this table
 	referencingTables := fke.findReferencingTables(tableName)
 
@@ -34,7 +39,7 @@ func (fke *ForeignKeyEnforcer) OnDelete(ctx context.Context, tableName string, p
 		referencingTable := refInfo.TableName
 
 		// Find rows in referencing table that reference the deleted row
-		rows, err := fke.findReferencingRows(referencingTable, fk, pkValue)
+		rows, err := fke.findReferencingRows(referencingTable, fk, pkValues)
 		if err != nil {
 			return err
 		}
@@ -71,8 +76,13 @@ func (fke *ForeignKeyEnforcer) OnDelete(ctx context.Context, tableName string, p
 	return nil
 }
 
-// OnUpdate handles foreign key actions when a primary key is updated in the referenced table
-func (fke *ForeignKeyEnforcer) OnUpdate(ctx context.Context, tableName string, oldPkValue, newPkValue interface{}) error {
+// OnUpdate handles foreign key actions when a primary key is updated in the referenced table.
+// oldPkValues and newPkValues must contain one value per primary key column.
+func (fke *ForeignKeyEnforcer) OnUpdate(ctx context.Context, tableName string, oldPkValues []interface{}, newPkValues []interface{}) error {
+	if len(oldPkValues) == 0 || len(newPkValues) == 0 {
+		return nil
+	}
+
 	// Find all tables that reference this table
 	referencingTables := fke.findReferencingTables(tableName)
 
@@ -81,7 +91,7 @@ func (fke *ForeignKeyEnforcer) OnUpdate(ctx context.Context, tableName string, o
 		referencingTable := refInfo.TableName
 
 		// Find rows in referencing table that reference the updated row
-		rows, err := fke.findReferencingRows(referencingTable, fk, oldPkValue)
+		rows, err := fke.findReferencingRows(referencingTable, fk, oldPkValues)
 		if err != nil {
 			return err
 		}
@@ -89,9 +99,9 @@ func (fke *ForeignKeyEnforcer) OnUpdate(ctx context.Context, tableName string, o
 		// Apply the ON UPDATE action
 		switch fk.OnUpdate {
 		case "CASCADE":
-			// Update all referencing rows with the new value
+			// Update all referencing rows with the new values
 			for _, rowKey := range rows {
-				if err := fke.updateForeignKey(ctx, referencingTable, rowKey, fk.Columns, newPkValue); err != nil {
+				if err := fke.updateForeignKey(ctx, referencingTable, rowKey, fk.Columns, newPkValues); err != nil {
 					return fmt.Errorf("cascade update failed: %w", err)
 				}
 			}
@@ -246,9 +256,10 @@ func (fke *ForeignKeyEnforcer) findReferencingTables(tableName string) []referen
 	return result
 }
 
-// findReferencingRows finds all rows in a table that reference a specific value
-// Returns the primary keys of matching rows
-func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignKeyDef, pkValue interface{}) ([]interface{}, error) {
+// findReferencingRows finds all rows in a table that reference the given primary key values.
+// pkValues must contain one value for each referenced column (in order).
+// Returns the primary keys of matching rows.
+func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignKeyDef, pkValues []interface{}) ([]interface{}, error) {
 	var result []interface{}
 
 	table, err := fke.catalog.getTableLocked(tableName)
@@ -263,7 +274,6 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 	}
 
 	// Get column indices for foreign key columns
-	// Get column indices for foreign key columns
 	fkColIndices := make([]int, len(fk.Columns))
 	for i, col := range fk.Columns {
 		idx := table.GetColumnIndex(col)
@@ -273,15 +283,20 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 		fkColIndices[i] = idx
 	}
 
+	// Ensure pkValues length matches fk columns length
+	if len(pkValues) != len(fk.Columns) {
+		return nil, fmt.Errorf("pkValues length (%d) does not match fk columns length (%d)", len(pkValues), len(fk.Columns))
+	}
+
 	// Try index-based lookup for single-column FK
 	if len(fk.Columns) == 1 {
 		colLower := strings.ToLower(fk.Columns[0])
 		for idxName, idxDef := range fke.catalog.indexes {
 			if idxDef.TableName == tableName && len(idxDef.Columns) == 1 && strings.ToLower(idxDef.Columns[0]) == colLower {
 				if idxTree, ok := fke.catalog.indexTrees[idxName]; ok {
-					idxKey := typeTaggedKey(pkValue)
+					idxKey := typeTaggedKey(pkValues[0])
 					if _, err := idxTree.Get([]byte(idxKey)); err == nil {
-						result = append(result, pkValue)
+						result = append(result, pkValues[0])
 					}
 					return result, nil
 				}
@@ -312,12 +327,12 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 		row := vrow.Data
 
 		matches := true
-		for _, colIdx := range fkColIndices {
+		for i, colIdx := range fkColIndices {
 			if colIdx >= len(row) {
 				matches = false
 				break
 			}
-			if !fke.valuesEqual(row[colIdx], pkValue) {
+			if !fke.valuesEqual(row[colIdx], pkValues[i]) {
 				matches = false
 				break
 			}
@@ -389,8 +404,9 @@ func (fke *ForeignKeyEnforcer) setNull(ctx context.Context, tableName string, ro
 	return fke.updateRowSlice(tableName, rowKey, rowData)
 }
 
-// updateForeignKey updates foreign key columns with a new value
-func (fke *ForeignKeyEnforcer) updateForeignKey(ctx context.Context, tableName string, rowKey interface{}, columns []string, newValue interface{}) error {
+// updateForeignKey updates foreign key columns with new values.
+// newValues must contain one value per column (for composite keys).
+func (fke *ForeignKeyEnforcer) updateForeignKey(ctx context.Context, tableName string, rowKey interface{}, columns []string, newValues []interface{}) error {
 	// Get the current row data
 	rowData, err := fke.getRowSlice(tableName, rowKey)
 	if err != nil {
@@ -403,10 +419,12 @@ func (fke *ForeignKeyEnforcer) updateForeignKey(ctx context.Context, tableName s
 	}
 
 	// Update foreign key columns by index
-	for _, col := range columns {
+	for i, col := range columns {
 		colIdx := table.GetColumnIndex(col)
 		if colIdx >= 0 && colIdx < len(rowData) {
-			rowData[colIdx] = newValue
+			if i < len(newValues) {
+				rowData[colIdx] = newValues[i]
+			}
 		}
 	}
 

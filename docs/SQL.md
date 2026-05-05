@@ -25,8 +25,13 @@ CREATE TABLE users (
 - `INTEGER` - 64-bit signed integer
 - `TEXT` - UTF-8 string
 - `REAL` - 64-bit floating point
+- `BLOB` - Binary large object
 - `BOOLEAN` - Boolean value
 - `JSON` - JSON text
+- `DATE` - Date value
+- `TIMESTAMP` - Timestamp value
+- `DATETIME` - Date and time value
+- `VECTOR(n)` - Vector of n dimensions (for embeddings/AI)
 
 **Constraints:**
 - `PRIMARY KEY` - Primary key (auto-increment if not specified)

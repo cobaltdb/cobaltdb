@@ -282,14 +282,17 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 	// Cascade FK enforcement before deleting
 	if table != nil && len(table.ForeignKeys) > 0 {
 		fke := NewForeignKeyEnforcer(c)
-		pkColIdx := -1
-		if len(table.PrimaryKey) > 0 {
-			pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
-		}
-		if pkColIdx >= 0 {
-			oldRow, decErr := decodeRow(oldData, len(table.Columns))
-			if decErr == nil && pkColIdx < len(oldRow) && oldRow[pkColIdx] != nil {
-				if fkErr := fke.OnDelete(ctx, tableName, oldRow[pkColIdx]); fkErr != nil {
+		oldRow, decErr := decodeRow(oldData, len(table.Columns))
+		if decErr == nil {
+			pkValues := make([]interface{}, 0, len(table.PrimaryKey))
+			for _, pkCol := range table.PrimaryKey {
+				pkColIdx := table.GetColumnIndex(pkCol)
+				if pkColIdx >= 0 && pkColIdx < len(oldRow) && oldRow[pkColIdx] != nil {
+					pkValues = append(pkValues, oldRow[pkColIdx])
+				}
+			}
+			if len(pkValues) == len(table.PrimaryKey) && len(pkValues) > 0 {
+				if fkErr := fke.OnDelete(ctx, tableName, pkValues...); fkErr != nil {
 					return fmt.Errorf("cascade delete: %w", fkErr)
 				}
 			}
@@ -351,13 +354,15 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 		row := vrow.Data
 
 		// Enforce foreign key ON DELETE actions (CASCADE, SET NULL, RESTRICT)
-		// Extract primary key value from the row for FK lookup
-		pkColIdx := -1
-		if len(table.PrimaryKey) > 0 {
-			pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
+		pkValues := make([]interface{}, 0, len(table.PrimaryKey))
+		for _, pkCol := range table.PrimaryKey {
+			pkColIdx := table.GetColumnIndex(pkCol)
+			if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
+				pkValues = append(pkValues, row[pkColIdx])
+			}
 		}
-		if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
-			if fkErr := fke.OnDelete(ctx, stmt.Table, row[pkColIdx]); fkErr != nil {
+		if len(pkValues) == len(table.PrimaryKey) && len(pkValues) > 0 {
+			if fkErr := fke.OnDelete(ctx, stmt.Table, pkValues...); fkErr != nil {
 				return rowsAffected, fmt.Errorf("foreign key constraint: %w", fkErr)
 			}
 		}

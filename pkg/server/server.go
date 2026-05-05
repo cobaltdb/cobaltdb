@@ -303,15 +303,23 @@ func (s *Server) removeClient(id uint64) {
 }
 
 // ClientConn represents a client connection
+// preparedStmt holds a statement prepared via the wire protocol.
+type preparedStmt struct {
+	sql string
+}
+
 type ClientConn struct {
-	ID       uint64
-	Conn     net.Conn
-	Server   *Server
-	reader   *bufio.Reader
-	username string
-	authed   bool
-	ctx      context.Context
-	cancel   context.CancelFunc
+	ID            uint64
+	Conn          net.Conn
+	Server        *Server
+	reader        *bufio.Reader
+	username      string
+	authed        bool
+	ctx           context.Context
+	cancel        context.CancelFunc
+	preparedStmts map[uint32]*preparedStmt
+	nextStmtID    uint32
+	stmtMu        sync.Mutex
 }
 
 // Handle handles client requests
@@ -406,8 +414,7 @@ func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interfa
 			return wire.NewErrorMessage(2, "malformed message")
 		}
 
-		// Prepare is essentially the same as query in our engine (uses cached prepared stmts)
-		return wire.NewOKMessage(0, 0)
+		return c.handlePrepare(ctx, &prepMsg)
 
 	case wire.MsgExecute:
 		if !c.authed {
@@ -419,7 +426,7 @@ func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interfa
 			return wire.NewErrorMessage(2, "malformed message")
 		}
 
-		return wire.NewErrorMessage(3, "prepared statement execution not yet supported via wire protocol")
+		return c.handleExecute(ctx, &execMsg)
 
 	default:
 		return wire.NewErrorMessage(3, fmt.Sprintf("unknown message type: %d", msgType))
@@ -549,6 +556,64 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 	}
 
 	return wire.NewOKMessage(result.LastInsertID, result.RowsAffected)
+}
+
+// handlePrepare parses and caches a prepared statement, returning a statement ID.
+func (c *ClientConn) handlePrepare(ctx context.Context, prep *wire.PrepareMessage) interface{} {
+	if c.Server.db == nil {
+		return wire.NewErrorMessage(1, "database not initialized")
+	}
+	if !c.checkPermission(prep.SQL) {
+		return wire.NewErrorMessage(8, "permission denied")
+	}
+
+	// Validate SQL by parsing it (engine will cache the parsed stmt internally)
+	_, err := c.Server.db.Query(ctx, prep.SQL)
+	if err != nil {
+		// Some DDL (CREATE TABLE) returns ErrTableExists on Query; that's okay for prepare.
+		// For real errors, return them.
+		if !strings.Contains(err.Error(), "table already exists") &&
+			!strings.Contains(err.Error(), "index already exists") {
+			// Try Exec as a fallback for non-query statements
+			_, execErr := c.Server.db.Exec(ctx, prep.SQL)
+			if execErr != nil {
+				return wire.NewErrorMessage(4, sanitizeError(err))
+			}
+		}
+	}
+
+	c.stmtMu.Lock()
+	defer c.stmtMu.Unlock()
+	if c.preparedStmts == nil {
+		c.preparedStmts = make(map[uint32]*preparedStmt)
+	}
+	c.nextStmtID++
+	stmtID := c.nextStmtID
+	c.preparedStmts[stmtID] = &preparedStmt{sql: prep.SQL}
+
+	return &wire.OKMessage{LastInsertID: 0, RowsAffected: 0, StmtID: stmtID}
+}
+
+// handleExecute looks up a prepared statement by ID and executes it with bound parameters.
+func (c *ClientConn) handleExecute(ctx context.Context, exec *wire.ExecuteMessage) interface{} {
+	if c.Server.db == nil {
+		return wire.NewErrorMessage(1, "database not initialized")
+	}
+
+	c.stmtMu.Lock()
+	ps, exists := c.preparedStmts[exec.StmtID]
+	c.stmtMu.Unlock()
+	if !exists {
+		return wire.NewErrorMessage(4, fmt.Sprintf("prepared statement %d not found", exec.StmtID))
+	}
+
+	if !c.checkPermission(ps.sql) {
+		return wire.NewErrorMessage(8, "permission denied")
+	}
+
+	// Reuse handleQuery logic by constructing a QueryMessage
+	qm := &wire.QueryMessage{SQL: ps.sql, Params: exec.Params}
+	return c.handleQuery(ctx, qm)
 }
 
 // sendMessage sends a message to the client
