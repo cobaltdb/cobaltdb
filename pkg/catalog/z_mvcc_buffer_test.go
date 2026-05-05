@@ -148,9 +148,9 @@ func TestBufferedInsert_Savepoint(t *testing.T) {
 	}
 }
 
-// TestBufferedInsert_FallsBackWithIndex verifies that tables with secondary
-// indexes still use the direct mutation path (buffered mode disabled).
-func TestBufferedInsert_FallsBackWithIndex(t *testing.T) {
+// TestBufferedInsert_WithIndex verifies that buffered INSERT works correctly
+// when the table has secondary indexes (index mutations are also deferred).
+func TestBufferedInsert_WithIndex(t *testing.T) {
 	c, _ := createCatalogWithTxnManager(t)
 	_, err := c.ExecuteQuery("CREATE TABLE idx_t (id INTEGER PRIMARY KEY, val TEXT)")
 	if err != nil {
@@ -167,18 +167,52 @@ func TestBufferedInsert_FallsBackWithIndex(t *testing.T) {
 		t.Fatalf("INSERT failed: %v", err)
 	}
 
-	// With secondary indexes, buffered mode is disabled; row is visible immediately.
+	// Row should be visible via read-your-writes (full scan, since index is stale).
 	r, err := c.ExecuteQuery("SELECT * FROM idx_t WHERE id = 1")
 	if err != nil {
 		t.Fatalf("SELECT failed: %v", err)
 	}
 	if len(r.Rows) != 1 {
-		t.Fatalf("expected 1 row (direct path), got %d", len(r.Rows))
+		t.Fatalf("expected 1 row, got %d", len(r.Rows))
 	}
 
 	if err := c.CommitTransaction(); err != nil {
 		t.Fatalf("COMMIT failed: %v", err)
 	}
+
+	// After commit, index scan should work.
+	r, err = c.ExecuteQuery("SELECT * FROM idx_t WHERE val = 'hello'")
+	if err != nil {
+		t.Fatalf("SELECT after commit failed: %v", err)
+	}
+	if len(r.Rows) != 1 {
+		t.Fatalf("expected 1 row after commit, got %d", len(r.Rows))
+	}
+}
+
+// TestBufferedInsert_UniqueIndexConflict verifies that UNIQUE constraint
+// violations are caught in buffered mode before commit.
+func TestBufferedInsert_UniqueIndexConflict(t *testing.T) {
+	c, _ := createCatalogWithTxnManager(t)
+	_, err := c.ExecuteQuery("CREATE TABLE uniq_t (id INTEGER PRIMARY KEY, val TEXT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	_, err = c.ExecuteQuery("CREATE UNIQUE INDEX uniq_t_val ON uniq_t(val)")
+	if err != nil {
+		t.Fatalf("CREATE INDEX failed: %v", err)
+	}
+	_, err = c.ExecuteQuery("INSERT INTO uniq_t VALUES (1, 'hello')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	c.BeginTransaction(1)
+	_, err = c.ExecuteQuery("INSERT INTO uniq_t VALUES (2, 'hello')")
+	if err == nil {
+		t.Fatalf("expected UNIQUE constraint error, got nil")
+	}
+	c.RollbackTransaction()
 }
 
 func toInt64(v interface{}) (int64, bool) {
@@ -348,9 +382,9 @@ func TestBufferedDelete_Rollback(t *testing.T) {
 	}
 }
 
-// TestBufferedDelete_FallsBackWithIndex verifies that tables with secondary
-// indexes still use the direct mutation path for DELETE.
-func TestBufferedDelete_FallsBackWithIndex(t *testing.T) {
+// TestBufferedDelete_WithIndex verifies that buffered DELETE works correctly
+// when the table has secondary indexes (index deletions are also deferred).
+func TestBufferedDelete_WithIndex(t *testing.T) {
 	c, _ := createCatalogWithTxnManager(t)
 	_, err := c.ExecuteQuery("CREATE TABLE del_idx_t (id INTEGER PRIMARY KEY, val TEXT)")
 	if err != nil {
@@ -371,17 +405,26 @@ func TestBufferedDelete_FallsBackWithIndex(t *testing.T) {
 		t.Fatalf("DELETE failed: %v", err)
 	}
 
-	// With secondary indexes, buffered mode is disabled; delete is immediate.
+	// Delete is buffered; row should not be visible via read-your-writes.
 	r, err := c.ExecuteQuery("SELECT * FROM del_idx_t WHERE id = 1")
 	if err != nil {
 		t.Fatalf("SELECT failed: %v", err)
 	}
 	if len(r.Rows) != 0 {
-		t.Fatalf("expected 0 rows (direct path), got %d", len(r.Rows))
+		t.Fatalf("expected 0 rows, got %d", len(r.Rows))
 	}
 
 	if err := c.CommitTransaction(); err != nil {
 		t.Fatalf("COMMIT failed: %v", err)
+	}
+
+	// After commit, index scan should also return nothing.
+	r, err = c.ExecuteQuery("SELECT * FROM del_idx_t WHERE val = 'hello'")
+	if err != nil {
+		t.Fatalf("SELECT after commit failed: %v", err)
+	}
+	if len(r.Rows) != 0 {
+		t.Fatalf("expected 0 rows after commit, got %d", len(r.Rows))
 	}
 }
 

@@ -196,6 +196,17 @@ func (c *Catalog) extractLiteralValue(expr query.Expression, args []interface{})
 }
 
 func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Expression, args []interface{}) (map[string]bool, bool) {
+	// If there are pending buffered writes for this table, the index tree may
+	// be stale (index updates are deferred to commit). Fall back to full scan
+	// so read-your-writes works correctly.
+	if ts := c.getCurrentTxn(); ts != nil && len(ts.pendingWrites) > 0 {
+		for _, pw := range ts.pendingWrites {
+			if pw.TreeName == tableName {
+				return nil, false
+			}
+		}
+	}
+
 	// Only use index for exact equality conditions
 	// Range scans are more complex and can have edge cases with composite keys
 	idxName, _, searchVal := c.findUsableIndexWithArgs(tableName, where, args)

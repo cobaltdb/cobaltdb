@@ -47,14 +47,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	}
 
 	// Determine if we can use buffered writes for this update.
-	hasSecondaryIndexes := false
-	for _, idxDef := range c.indexes {
-		if idxDef.TableName == stmt.Table {
-			hasSecondaryIndexes = true
-			break
-		}
-	}
-	useBuffer := c.isBufferedMode() && !hasSecondaryIndexes && table.Partition == nil
+	useBuffer := c.isBufferedMode() && table.Partition == nil
 	if useBuffer {
 		for _, setClause := range stmt.Set {
 			if table.isPrimaryKeyColumn(setClause.Column) {
@@ -1131,18 +1124,67 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 	return nil
 }
 
-// bufferUpdateEntries buffers updated rows for commit-time application in
-// MVCC buffered mode. Skips B-tree mutation, WAL, and indexes.
+// bufferUpdateEntries buffers updated rows and their index mutations for
+// commit-time application in MVCC buffered mode.
 func (c *Catalog) bufferUpdateEntries(table *TableDef, stmt *query.UpdateStmt, entries []updateEntry) error {
 	for _, entry := range entries {
 		newValueData, err := encodeVersionedRow(entry.newRow, nil)
 		if err != nil {
 			return fmt.Errorf("failed to encode updated row: %w", err)
 		}
+
+		var idxUpdates []PendingIndexUpdate
+		for idxName, idxDef := range c.indexes {
+			if idxDef.TableName != stmt.Table || len(idxDef.Columns) == 0 {
+				continue
+			}
+			oldIndexKey, oldOk := buildCompositeIndexKey(table, idxDef, entry.oldRow)
+			newIndexKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
+
+			if oldOk && oldIndexKey != "" {
+				var oldIdxStorageKey []byte
+				if idxDef.Unique {
+					oldIdxStorageKey = []byte(oldIndexKey)
+				} else {
+					oldIdxStorageKey = []byte(oldIndexKey + "\x00" + string(entry.key))
+				}
+				idxUpdates = append(idxUpdates, PendingIndexUpdate{
+					IndexName: idxName,
+					Key:       oldIdxStorageKey,
+					IsDelete:  true,
+				})
+			}
+
+			if newOk && newIndexKey != "" {
+				if idxDef.Unique && newIndexKey != oldIndexKey {
+					if idxTree, exists := c.indexTrees[idxName]; exists {
+						if _, err := idxTree.Get([]byte(newIndexKey)); err == nil {
+							return fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
+						}
+						if c.indexKeyInPendingWrites(idxName, []byte(newIndexKey)) {
+							return fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
+						}
+					}
+				}
+				var newIdxStorageKey []byte
+				if idxDef.Unique {
+					newIdxStorageKey = []byte(newIndexKey)
+				} else {
+					newIdxStorageKey = []byte(newIndexKey + "\x00" + string(entry.key))
+				}
+				idxUpdates = append(idxUpdates, PendingIndexUpdate{
+					IndexName: idxName,
+					Key:       newIdxStorageKey,
+					Value:     entry.key,
+				})
+			}
+		}
+
 		c.appendPendingWrite(PendingWrite{
-			TreeName: stmt.Table,
-			Key:      entry.key,
-			Value:    newValueData,
+			TreeName:     stmt.Table,
+			Key:          entry.key,
+			Value:        newValueData,
+			IndexUpdates: idxUpdates,
 		})
 		if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
 			writeKey := stmt.Table + ":" + string(entry.key)

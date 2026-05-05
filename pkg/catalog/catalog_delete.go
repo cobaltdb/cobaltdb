@@ -47,14 +47,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 	}
 
 	// Determine if we can use buffered writes for this delete.
-	hasSecondaryIndexes := false
-	for _, idxDef := range c.indexes {
-		if idxDef.TableName == stmt.Table {
-			hasSecondaryIndexes = true
-			break
-		}
-	}
-	useBuffer := c.isBufferedMode() && !hasSecondaryIndexes && table.Partition == nil
+	useBuffer := c.isBufferedMode() && table.Partition == nil
 
 	// Get all trees for scanning (handles partitioned tables)
 	trees, err := c.getTableTreesForScan(table)
@@ -492,8 +485,8 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 	return rowsAffected, nil
 }
 
-// bufferDeleteEntries buffers soft-deleted rows for commit-time application in
-// MVCC buffered mode. Skips B-tree mutation, WAL, and indexes.
+// bufferDeleteEntries buffers soft-deleted rows and their index mutations for
+// commit-time application in MVCC buffered mode.
 func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt *query.DeleteStmt, entries []deleteEntry) error {
 	fke := NewForeignKeyEnforcer(c)
 	for _, entry := range entries {
@@ -525,10 +518,33 @@ func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt
 			return fmt.Errorf("failed to encode deleted row: %w", err)
 		}
 
+		var idxUpdates []PendingIndexUpdate
+		for idxName, idxDef := range c.indexes {
+			if idxDef.TableName != stmt.Table || len(idxDef.Columns) == 0 {
+				continue
+			}
+			indexKey, ok := buildCompositeIndexKey(table, idxDef, entry.row)
+			if !ok || indexKey == "" {
+				continue
+			}
+			var idxStorageKey []byte
+			if idxDef.Unique {
+				idxStorageKey = []byte(indexKey)
+			} else {
+				idxStorageKey = []byte(indexKey + "\x00" + string(key))
+			}
+			idxUpdates = append(idxUpdates, PendingIndexUpdate{
+				IndexName: idxName,
+				Key:       idxStorageKey,
+				IsDelete:  true,
+			})
+		}
+
 		c.appendPendingWrite(PendingWrite{
-			TreeName: entry.treeName,
-			Key:      key,
-			Value:    deletedValueData,
+			TreeName:     entry.treeName,
+			Key:          key,
+			Value:        deletedValueData,
+			IndexUpdates: idxUpdates,
 		})
 		if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
 			writeKey := entry.treeName + ":" + string(key)

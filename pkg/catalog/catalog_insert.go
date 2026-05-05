@@ -285,16 +285,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	var insertErr error
 
 	// Determine if we can use buffered writes for this insert.
-	// Buffered mode is supported only for non-partitioned tables without
-	// secondary indexes in this proof-of-concept phase.
-	hasSecondaryIndexes := false
-	for _, idxDef := range c.indexes {
-		if idxDef.TableName == stmt.Table {
-			hasSecondaryIndexes = true
-			break
-		}
-	}
-	useBuffer := c.isBufferedMode() && !hasSecondaryIndexes && table.Partition == nil
+	// Buffered mode defers B-tree mutation until commit. It supports tables
+	// with secondary indexes as long as we are not doing REPLACE (which
+	// requires immediate mutation of committed data).
+	useBuffer := c.isBufferedMode() && table.Partition == nil && stmt.ConflictAction != query.ConflictReplace
 
 	for _, valueRow := range valueRows {
 		// Validate value count matches column count
@@ -409,11 +403,22 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 				break
 			}
 
+			// Build index updates for commit-time application.
+			idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, []byte(key), rowValues)
+			if idxErr != nil {
+				insertErr = idxErr
+				break
+			}
+			if skipRow {
+				continue
+			}
+
 			// Buffer the write for commit-time application.
 			c.appendPendingWrite(PendingWrite{
-				TreeName: stmt.Table,
-				Key:      []byte(key),
-				Value:    valueData,
+				TreeName:     stmt.Table,
+				Key:          []byte(key),
+				Value:        valueData,
+				IndexUpdates: idxUpdates,
 			})
 
 			// Also buffer in the Manager transaction's WriteSet for conflict detection.
@@ -692,6 +697,50 @@ func (c *Catalog) insertRowIndexes(tree *btree.BTree, table *TableDef, stmt *que
 	return idxChanges, skipRow, nil
 }
 
+// buildBufferedInsertIndexes constructs PendingIndexUpdate entries for a buffered
+// INSERT without mutating index B-trees. It enforces UNIQUE constraints against
+// both committed data and other pending writes in the same transaction.
+func (c *Catalog) buildBufferedInsertIndexes(table *TableDef, stmt *query.InsertStmt, key []byte, rowValues []interface{}) ([]PendingIndexUpdate, bool, error) {
+	var idxUpdates []PendingIndexUpdate
+	for idxName, idxTree := range c.indexTrees {
+		idxDef := c.indexes[idxName]
+		if idxDef.TableName != stmt.Table || len(idxDef.Columns) == 0 {
+			continue
+		}
+		indexKey, ok := buildCompositeIndexKey(table, idxDef, rowValues)
+		if !ok {
+			continue
+		}
+		// Enforce UNIQUE constraint against committed data and buffered writes
+		if idxDef.Unique {
+			if _, err := idxTree.Get([]byte(indexKey)); err == nil {
+				if stmt.ConflictAction == query.ConflictIgnore {
+					return nil, true, nil
+				}
+				return nil, false, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idxName)
+			}
+			if c.indexKeyInPendingWrites(idxName, []byte(indexKey)) {
+				if stmt.ConflictAction == query.ConflictIgnore {
+					return nil, true, nil
+				}
+				return nil, false, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idxName)
+			}
+		}
+		var idxStorageKey []byte
+		if idxDef.Unique {
+			idxStorageKey = []byte(indexKey)
+		} else {
+			idxStorageKey = []byte(indexKey + "\x00" + string(key))
+		}
+		idxUpdates = append(idxUpdates, PendingIndexUpdate{
+			IndexName: idxName,
+			Key:       idxStorageKey,
+			Value:     key,
+		})
+	}
+	return idxUpdates, false, nil
+}
+
 func (c *Catalog) checkUniqueConstraints(tree *btree.BTree, table *TableDef, stmt *query.InsertStmt, rowValues []interface{}) (bool, error) {
 	for i, col := range table.Columns {
 		if !col.Unique || rowValues[i] == nil {
@@ -718,6 +767,25 @@ func (c *Catalog) checkUniqueConstraints(tree *btree.BTree, table *TableDef, stm
 
 		// Fallback: full table scan if no unique index found
 		if !found {
+			// Check pending writes first (buffered mode)
+			if ts := c.getCurrentTxn(); ts != nil {
+				for _, pw := range ts.pendingWrites {
+					if pw.TreeName != stmt.Table {
+						continue
+					}
+					vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
+					if err != nil || vrow.Version.DeletedAt > 0 {
+						continue
+					}
+					existingRow := vrow.Data
+					if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
+						if stmt.ConflictAction == query.ConflictIgnore {
+							return true, nil
+						}
+						return false, fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
+					}
+				}
+			}
 			iter, err := tree.Scan(nil, nil)
 			if err != nil {
 				return false, fmt.Errorf("failed to scan table for UNIQUE check: %w", err)
