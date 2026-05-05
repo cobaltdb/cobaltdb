@@ -272,7 +272,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	// Save AutoIncSeq before insert loop for rollback
 	savedAutoIncSeq := table.AutoIncSeq
 	if c.txnActive {
-		c.undoLog = append(c.undoLog, undoEntry{
+		c.appendUndoEntry(undoEntry{
 			action:        undoAutoIncSeq,
 			tableName:     stmt.Table,
 			oldAutoIncSeq: savedAutoIncSeq,
@@ -437,7 +437,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		// Record undo log entry for rollback (after applying change)
 		if c.txnActive {
 			keyCopy := []byte(key)
-			c.undoLog = append(c.undoLog, undoEntry{
+			c.appendUndoEntry(undoEntry{
 				action:       undoInsert,
 				tableName:    stmt.Table,
 				key:          keyCopy,
@@ -471,8 +471,9 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 		// Inside explicit transaction - remove undo log entries
 		undoToRemove := 1 + len(stmtInserts)
-		if len(c.undoLog) >= undoToRemove {
-			c.undoLog = c.undoLog[:len(c.undoLog)-undoToRemove]
+		undoLog := c.getCurrentTxnUndoLog()
+		if len(undoLog) >= undoToRemove {
+			c.truncateUndoLog(len(undoLog) - undoToRemove)
 		}
 		return 0, 0, insertErr
 	}

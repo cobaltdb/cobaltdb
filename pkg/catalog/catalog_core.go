@@ -216,6 +216,14 @@ type undoEntry struct {
 	oldAutoIncSeq        int64                       // For undoAutoIncSeq: previous AutoIncSeq value
 }
 
+// catalogTxnState holds per-transaction state for multi-transaction support.
+type catalogTxnState struct {
+	txnID      uint64
+	txnActive  bool
+	undoLog    []undoEntry
+	savepoints []savepointEntry
+}
+
 // Catalog manages database schema metadata
 type Catalog struct {
 	mu                   sync.RWMutex
@@ -238,10 +246,12 @@ type Catalog struct {
 	stats                map[string]*StatsTableStats           // Table statistics for ANALYZE
 	cteResults           map[string]*cteResultSet              // Temporary CTE result cache for recursive CTEs
 	keyCounter           int64                                 // For generating unique keys
-	txnID                uint64                                // Current transaction ID
-	txnActive            bool                                  // Is a transaction active
-	undoLog              []undoEntry                           // Undo log for transaction rollback
-	savepoints           []savepointEntry                      // Stack of savepoints
+	txnID                uint64                                // Current transaction ID (legacy; used when activeTxns not yet integrated)
+	txnActive            bool                                  // Is a transaction active (legacy)
+	undoLog              []undoEntry                           // Undo log for transaction rollback (legacy)
+	savepoints           []savepointEntry                      // Stack of savepoints (legacy)
+	activeTxns           map[uint64]*catalogTxnState           // Per-transaction state for multi-writer support
+	currentTxnID         uint64                                // ID of the transaction currently executing
 	rlsManager           *security.Manager                     // Row-level security manager
 	enableRLS            bool                                  // Enable row-level security
 	rlsPolicies          map[string]*security.Policy           // RLS policies: key = "table:policyName"
@@ -299,6 +309,7 @@ func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog
 		queryCache:        NewQueryCache(0, 0), // Disabled by default - enable with EnableQueryCache()
 		deadTuples:        make(map[string]int64),
 		liveTuples:        make(map[string]int64),
+		activeTxns:        make(map[uint64]*catalogTxnState),
 	}
 }
 

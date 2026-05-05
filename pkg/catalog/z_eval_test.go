@@ -4919,7 +4919,7 @@ func TestDropIndex_WithTransaction(t *testing.T) {
 	}
 
 	// Verify undo log was created
-	if len(catalog.undoLog) == 0 {
+	if len(catalog.getCurrentTxnUndoLog()) == 0 {
 		t.Error("Expected undo log entry for DropIndex in transaction")
 	}
 
@@ -5820,7 +5820,7 @@ func TestAlterTableDropColumn(t *testing.T) {
 	}
 
 	// Verify undo log entry was created
-	if len(catalog.undoLog) == 0 {
+	if len(catalog.getCurrentTxnUndoLog()) == 0 {
 		t.Error("expected undo log entry for drop column in transaction")
 	}
 
@@ -6456,11 +6456,12 @@ func TestSavepoint(t *testing.T) {
 	}
 
 	// Verify savepoint exists (savepoints is a slice)
-	if len(catalog.savepoints) != 1 {
-		t.Errorf("expected 1 savepoint, got %d", len(catalog.savepoints))
+	sps := catalog.getCurrentTxnSavepoints()
+	if len(sps) != 1 {
+		t.Errorf("expected 1 savepoint, got %d", len(sps))
 	}
-	if catalog.savepoints[0].name != "sp1" {
-		t.Errorf("expected savepoint name 'sp1', got '%s'", catalog.savepoints[0].name)
+	if sps[0].name != "sp1" {
+		t.Errorf("expected savepoint name 'sp1', got '%s'", sps[0].name)
 	}
 }
 
@@ -7052,8 +7053,8 @@ func TestReleaseSavepoint(t *testing.T) {
 	}
 
 	// Verify savepoint is gone (ReleaseSavepoint removes it from the slice)
-	if len(catalog.savepoints) != 0 {
-		t.Errorf("expected 0 savepoints after release, got %d", len(catalog.savepoints))
+	if len(catalog.getCurrentTxnSavepoints()) != 0 {
+		t.Errorf("expected 0 savepoints after release, got %d", len(catalog.getCurrentTxnSavepoints()))
 	}
 }
 

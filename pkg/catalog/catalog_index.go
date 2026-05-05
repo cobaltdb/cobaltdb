@@ -82,7 +82,7 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 
 	// Record DDL undo entry for transaction rollback
 	if c.txnActive {
-		c.undoLog = append(c.undoLog, undoEntry{
+		c.appendUndoEntry(undoEntry{
 			action:    undoCreateIndex,
 			indexName: stmt.Index,
 		})
@@ -295,7 +295,7 @@ func (c *Catalog) DropIndex(name string) error {
 
 	// Record DDL undo entry for transaction rollback
 	if c.txnActive {
-		c.undoLog = append(c.undoLog, undoEntry{
+		c.appendUndoEntry(undoEntry{
 			action:    undoDropIndex,
 			indexName: name,
 			indexDef:  idxDef,

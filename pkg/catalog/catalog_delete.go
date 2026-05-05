@@ -312,7 +312,7 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 		copy(keyCopy, key)
 		oldCopy := make([]byte, len(oldData))
 		copy(oldCopy, oldData)
-		c.undoLog = append(c.undoLog, undoEntry{
+		c.appendUndoEntry(undoEntry{
 			action:       undoDelete,
 			tableName:    tableName,
 			key:          keyCopy,
@@ -431,7 +431,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 			copy(keyCopy2, key)
 			valueCopy2 := make([]byte, len(entry.value))
 			copy(valueCopy2, entry.value)
-			c.undoLog = append(c.undoLog, undoEntry{
+			c.appendUndoEntry(undoEntry{
 				action:       undoDelete,
 				tableName:    stmt.Table,
 				key:          keyCopy2,

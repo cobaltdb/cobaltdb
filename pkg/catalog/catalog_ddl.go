@@ -236,7 +236,7 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 
 	// Record DDL undo entry for transaction rollback
 	if c.txnActive {
-		c.undoLog = append(c.undoLog, undoEntry{
+		c.appendUndoEntry(undoEntry{
 			action:    undoCreateTable,
 			tableName: stmt.Table,
 		})
@@ -297,7 +297,7 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 				}
 			}
 		}
-		c.undoLog = append(c.undoLog, entry)
+		c.appendUndoEntry(entry)
 	}
 
 	// Clean up table data B-tree
@@ -355,7 +355,7 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 	if c.txnActive {
 		oldCols := make([]ColumnDef, len(table.Columns))
 		copy(oldCols, table.Columns)
-		c.undoLog = append(c.undoLog, undoEntry{
+		c.appendUndoEntry(undoEntry{
 			action:     undoAlterAddColumn,
 			tableName:  stmt.Table,
 			oldColumns: oldCols,
@@ -529,7 +529,7 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 				}
 			}
 		}
-		c.undoLog = append(c.undoLog, entry)
+		c.appendUndoEntry(entry)
 	}
 
 	// Remove column from definition
@@ -619,7 +619,7 @@ func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
 
 	// Save undo entry before modification
 	if c.txnActive {
-		c.undoLog = append(c.undoLog, undoEntry{
+		c.appendUndoEntry(undoEntry{
 			action:    undoAlterRename,
 			tableName: stmt.Table,
 			oldName:   stmt.Table,
@@ -692,7 +692,7 @@ func (c *Catalog) AlterTableRenameColumn(stmt *query.AlterTableStmt) error {
 		if strings.EqualFold(col.Name, stmt.OldName) {
 			// Save undo entry before modification
 			if c.txnActive {
-				c.undoLog = append(c.undoLog, undoEntry{
+				c.appendUndoEntry(undoEntry{
 					action:               undoAlterRenameColumn,
 					tableName:            stmt.Table,
 					oldName:              stmt.OldName,

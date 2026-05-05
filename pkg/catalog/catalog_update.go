@@ -439,7 +439,7 @@ func (c *Catalog) applyJoinUpdateEntries(tableName string, table *TableDef, tree
 			if marshalErr == nil {
 				keyCopy := make([]byte, len(entry.key))
 				copy(keyCopy, entry.key)
-				c.undoLog = append(c.undoLog, undoEntry{
+				c.appendUndoEntry(undoEntry{
 					action:    undoUpdate,
 					tableName: tableName,
 					key:       keyCopy,
@@ -1094,7 +1094,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 			}
 			keyCopy := make([]byte, len(oldKey))
 			copy(keyCopy, oldKey)
-			c.undoLog = append(c.undoLog, undoEntry{
+			c.appendUndoEntry(undoEntry{
 				action:       undoUpdate,
 				tableName:    stmt.Table,
 				key:          keyCopy,

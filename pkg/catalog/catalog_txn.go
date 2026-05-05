@@ -77,6 +77,76 @@ func (c *Catalog) DropRLSPolicy(tableName, policyName string) error {
 	return c.rlsManager.DropPolicy(tableName, policyName)
 }
 
+// getCurrentTxn returns the active transaction state for the current transaction.
+// If no current transaction is set, it falls back to the legacy single-transaction fields.
+func (c *Catalog) getCurrentTxn() *catalogTxnState {
+	if c.currentTxnID != 0 {
+		if ts, ok := c.activeTxns[c.currentTxnID]; ok {
+			return ts
+		}
+	}
+	return nil
+}
+
+// getCurrentTxnUndoLog returns the undo log for the current transaction.
+func (c *Catalog) getCurrentTxnUndoLog() []undoEntry {
+	if ts := c.getCurrentTxn(); ts != nil {
+		return ts.undoLog
+	}
+	return c.undoLog
+}
+
+// getCurrentTxnSavepoints returns the savepoints for the current transaction.
+func (c *Catalog) getCurrentTxnSavepoints() []savepointEntry {
+	if ts := c.getCurrentTxn(); ts != nil {
+		return ts.savepoints
+	}
+	return c.savepoints
+}
+
+// isCurrentTxnActive returns true if the current transaction is active.
+func (c *Catalog) isCurrentTxnActive() bool {
+	if ts := c.getCurrentTxn(); ts != nil {
+		return ts.txnActive
+	}
+	return c.txnActive
+}
+
+// getCurrentTxnID returns the ID of the current transaction.
+func (c *Catalog) getCurrentTxnID() uint64 {
+	if ts := c.getCurrentTxn(); ts != nil {
+		return ts.txnID
+	}
+	return c.txnID
+}
+
+// appendUndoEntry appends an undo entry to the current transaction's undo log.
+func (c *Catalog) appendUndoEntry(entry undoEntry) {
+	if ts := c.getCurrentTxn(); ts != nil {
+		ts.undoLog = append(ts.undoLog, entry)
+		return
+	}
+	c.undoLog = append(c.undoLog, entry)
+}
+
+// truncateUndoLog truncates the current transaction's undo log to the given length.
+func (c *Catalog) truncateUndoLog(length int) {
+	if ts := c.getCurrentTxn(); ts != nil {
+		ts.undoLog = ts.undoLog[:length]
+		return
+	}
+	c.undoLog = c.undoLog[:length]
+}
+
+// setCurrentTxnSavepoints sets the savepoints for the current transaction.
+func (c *Catalog) setCurrentTxnSavepoints(sps []savepointEntry) {
+	if ts := c.getCurrentTxn(); ts != nil {
+		ts.savepoints = sps
+		return
+	}
+	c.savepoints = sps
+}
+
 func (c *Catalog) BeginTransaction(txnID uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -84,6 +154,14 @@ func (c *Catalog) BeginTransaction(txnID uint64) {
 	c.txnActive = true
 	c.undoLog = nil    // Clear undo log for new transaction
 	c.savepoints = nil // Clear savepoints
+	c.currentTxnID = txnID
+	if c.activeTxns == nil {
+		c.activeTxns = make(map[uint64]*catalogTxnState)
+	}
+	c.activeTxns[txnID] = &catalogTxnState{
+		txnID:     txnID,
+		txnActive: true,
+	}
 }
 
 func (c *Catalog) CommitTransaction() error {
@@ -102,6 +180,10 @@ func (c *Catalog) CommitTransaction() error {
 	c.txnActive = false
 	c.undoLog = nil    // Discard undo log on successful commit
 	c.savepoints = nil // Clear savepoints
+	if c.currentTxnID != 0 {
+		delete(c.activeTxns, c.currentTxnID)
+		c.currentTxnID = 0
+	}
 	return nil
 }
 
@@ -134,28 +216,37 @@ func (c *Catalog) RollbackTransaction() error {
 		}
 	}
 
-	if err := c.replayUndoLog(len(c.undoLog)-1, 0, "rollback"); err != nil {
-		c.undoLog = nil
+	undoLog := c.getCurrentTxnUndoLog()
+	if err := c.replayUndoLog(len(undoLog)-1, 0, "rollback"); err != nil {
 		c.txnActive = false
+		c.undoLog = nil
 		c.savepoints = nil
+		if c.currentTxnID != 0 {
+			delete(c.activeTxns, c.currentTxnID)
+			c.currentTxnID = 0
+		}
 		return err
 	}
 
-	c.undoLog = nil
 	c.txnActive = false
+	c.undoLog = nil
 	c.savepoints = nil
+	if c.currentTxnID != 0 {
+		delete(c.activeTxns, c.currentTxnID)
+		c.currentTxnID = 0
+	}
 	return nil
 }
 
-
 // replayUndoLog replays undo log entries in reverse from startIdx down to endIdx (inclusive).
 func (c *Catalog) replayUndoLog(startIdx, endIdx int, errorPrefix string) error {
-	if startIdx < 0 || len(c.undoLog) == 0 {
+	undoLog := c.getCurrentTxnUndoLog()
+	if startIdx < 0 || len(undoLog) == 0 {
 		return nil
 	}
 	var rollbackErr error
 	for i := startIdx; i >= endIdx; i-- {
-		entry := c.undoLog[i]
+		entry := undoLog[i]
 		if err := c.applyUndoEntry(entry, errorPrefix); err != nil && rollbackErr == nil {
 			rollbackErr = err
 		}
@@ -381,33 +472,35 @@ func (c *Catalog) reverseIndexChanges(entry undoEntry, errorPrefix string, rollb
 func (c *Catalog) IsTransactionActive() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.txnActive
+	return c.isCurrentTxnActive()
 }
 
 func (c *Catalog) Savepoint(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.txnActive {
+	if !c.isCurrentTxnActive() {
 		return fmt.Errorf("SAVEPOINT can only be used within a transaction")
 	}
-	c.savepoints = append(c.savepoints, savepointEntry{
+	sps := append(c.getCurrentTxnSavepoints(), savepointEntry{
 		name:    name,
-		undoPos: len(c.undoLog),
+		undoPos: len(c.getCurrentTxnUndoLog()),
 	})
+	c.setCurrentTxnSavepoints(sps)
 	return nil
 }
 
 func (c *Catalog) RollbackToSavepoint(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.txnActive {
+	if !c.isCurrentTxnActive() {
 		return fmt.Errorf("ROLLBACK TO SAVEPOINT can only be used within a transaction")
 	}
 
 	// Find the savepoint
+	sps := c.getCurrentTxnSavepoints()
 	spIdx := -1
-	for i := len(c.savepoints) - 1; i >= 0; i-- {
-		if strings.EqualFold(c.savepoints[i].name, name) {
+	for i := len(sps) - 1; i >= 0; i-- {
+		if strings.EqualFold(sps[i].name, name) {
 			spIdx = i
 			break
 		}
@@ -416,33 +509,34 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 		return fmt.Errorf("savepoint '%s' does not exist", name)
 	}
 
-	undoPos := c.savepoints[spIdx].undoPos
+	undoPos := sps[spIdx].undoPos
 
-	if err := c.replayUndoLog(len(c.undoLog)-1, undoPos, "rollback to savepoint"); err != nil {
-		c.undoLog = c.undoLog[:undoPos]
-		c.savepoints = c.savepoints[:spIdx+1]
+	if err := c.replayUndoLog(len(c.getCurrentTxnUndoLog())-1, undoPos, "rollback to savepoint"); err != nil {
+		c.truncateUndoLog(undoPos)
+		c.setCurrentTxnSavepoints(sps[:spIdx+1])
 		return err
 	}
 
 	// Truncate undo log to savepoint position
-	c.undoLog = c.undoLog[:undoPos]
+	c.truncateUndoLog(undoPos)
 	// Remove savepoints after this one (but keep the current savepoint)
-	c.savepoints = c.savepoints[:spIdx+1]
+	c.setCurrentTxnSavepoints(sps[:spIdx+1])
 	return nil
 }
 
 func (c *Catalog) ReleaseSavepoint(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.txnActive {
+	if !c.isCurrentTxnActive() {
 		return fmt.Errorf("RELEASE SAVEPOINT can only be used within a transaction")
 	}
 
 	// Find and remove the savepoint
-	for i := len(c.savepoints) - 1; i >= 0; i-- {
-		if strings.EqualFold(c.savepoints[i].name, name) {
+	sps := c.getCurrentTxnSavepoints()
+	for i := len(sps) - 1; i >= 0; i-- {
+		if strings.EqualFold(sps[i].name, name) {
 			// Remove this savepoint and all savepoints created after it
-			c.savepoints = c.savepoints[:i]
+			c.setCurrentTxnSavepoints(sps[:i])
 			return nil
 		}
 	}
@@ -452,5 +546,5 @@ func (c *Catalog) ReleaseSavepoint(name string) error {
 func (c *Catalog) TxnID() uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.txnID
+	return c.getCurrentTxnID()
 }
