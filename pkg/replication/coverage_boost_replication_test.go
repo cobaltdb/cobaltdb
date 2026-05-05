@@ -973,3 +973,194 @@ func TestRetainedWALBytesNil(t *testing.T) {
 		t.Fatal("retainedWALBytes(nil) should be 0")
 	}
 }
+
+// TestFilterWALEntriesAfterNil tests filterWALEntriesAfter when all entries are before lastLSN.
+func TestFilterWALEntriesAfterNil(t *testing.T) {
+	entries := []*WALEntry{{LSN: 1}, {LSN: 2}, {LSN: 3}}
+	if filterWALEntriesAfter(entries, 5) != nil {
+		t.Fatal("expected nil when all entries <= lastLSN")
+	}
+}
+
+// TestCanResumeFromLocked tests canResumeFromLocked edge cases.
+func TestCanResumeFromLocked(t *testing.T) {
+	m := NewManager(DefaultConfig())
+
+	// requestedLSN > currentLSN
+	if m.canResumeFromLocked(10, 5) {
+		t.Fatal("expected false when requestedLSN > currentLSN")
+	}
+
+	// empty walBuffer
+	if m.canResumeFromLocked(3, 5) {
+		t.Fatal("expected false when walBuffer is empty")
+	}
+}
+
+// TestSendSnapshotLockedErrors tests sendSnapshotLocked error paths.
+func TestSendSnapshotLockedErrors(t *testing.T) {
+	slave := &SlaveConnection{
+		Writer: bufio.NewWriter(&bytes.Buffer{}),
+	}
+	m := NewManager(DefaultConfig())
+
+	// OnSnapshot nil
+	if err := m.sendSnapshotLocked(slave, 1); err == nil {
+		t.Fatal("expected error when OnSnapshot is nil")
+	}
+
+	// OnSnapshot error
+	m.OnSnapshot = func() ([]byte, error) {
+		return nil, errors.New("snapshot error")
+	}
+	if err := m.sendSnapshotLocked(slave, 1); err == nil {
+		t.Fatal("expected error when OnSnapshot fails")
+	}
+
+	// Snapshot too large
+	m.OnSnapshot = func() ([]byte, error) {
+		return make([]byte, maxReplicationSnapshotSize+1), nil
+	}
+	if err := m.sendSnapshotLocked(slave, 1); err == nil {
+		t.Fatal("expected error when snapshot too large")
+	}
+
+	// WriteString error
+	errWriter := &mockErrorWriter{err: errors.New("write error")}
+	slave2 := &SlaveConnection{Writer: bufio.NewWriterSize(errWriter, 1)}
+	m.OnSnapshot = func() ([]byte, error) { return []byte("x"), nil }
+	if err := m.sendSnapshotLocked(slave2, 1); err == nil {
+		t.Fatal("expected error on WriteString")
+	}
+
+	// Write error
+	errWriter2 := &mockErrorWriter{err: errors.New("write error")}
+	slave3 := &SlaveConnection{Writer: bufio.NewWriterSize(errWriter2, 16)}
+	if err := m.sendSnapshotLocked(slave3, 1); err == nil {
+		t.Fatal("expected error on Write")
+	}
+
+	// Flush error
+	errWriter3 := &mockErrorWriter{err: errors.New("write error")}
+	slave4 := &SlaveConnection{Writer: bufio.NewWriterSize(errWriter3, 100)}
+	if err := m.sendSnapshotLocked(slave4, 1); err == nil {
+		t.Fatal("expected error on Flush")
+	}
+}
+
+type mockErrorWriter struct {
+	err error
+}
+
+func (e *mockErrorWriter) Write(p []byte) (int, error) {
+	return 0, e.err
+}
+
+// TestPrepareSlaveResumeFutureLSN tests prepareSlaveResume with future LSN.
+func TestPrepareSlaveResumeFutureLSN(t *testing.T) {
+	m := NewManager(DefaultConfig())
+	m.OnSnapshot = func() ([]byte, error) { return []byte("data"), nil }
+	slave := &SlaveConnection{}
+
+	// requestedLSN > currentLSN with OnSnapshot set
+	if err := m.prepareSlaveResume(slave, 100); err != nil {
+		t.Fatalf("expected nil when OnSnapshot is set, got %v", err)
+	}
+	if !slave.NeedsSnapshot {
+		t.Fatal("expected slave to need snapshot")
+	}
+
+	// requestedLSN > currentLSN without OnSnapshot
+	m.OnSnapshot = nil
+	slave2 := &SlaveConnection{Writer: bufio.NewWriter(&bytes.Buffer{})}
+	if err := m.prepareSlaveResume(slave2, 100); err == nil {
+		t.Fatal("expected error when OnSnapshot is nil and LSN is future")
+	}
+}
+
+// TestReceiveResumeRequestErrors tests receiveResumeRequest error paths.
+func TestReceiveResumeRequestErrors(t *testing.T) {
+	m := NewManager(DefaultConfig())
+
+	// Invalid RESUME message
+	reader := bufio.NewReader(bytes.NewReader([]byte("INVALID\n")))
+	slave := &SlaveConnection{Reader: reader}
+	_, err := m.receiveResumeRequest(slave)
+	if err == nil {
+		t.Fatal("expected error for invalid RESUME message")
+	}
+
+	// ReadString error
+	errReader := &mockErrorReader{err: errors.New("read error")}
+	slave2 := &SlaveConnection{Reader: bufio.NewReader(errReader)}
+	_, err = m.receiveResumeRequest(slave2)
+	if err == nil {
+		t.Fatal("expected error for read failure")
+	}
+}
+
+type mockErrorReader struct {
+	err error
+}
+
+func (e *mockErrorReader) Read(p []byte) (int, error) {
+	return 0, e.err
+}
+
+// TestSendAckPongNilConn tests sendAck and sendPong with nil masterConn.
+func TestSendAckPongNilConn(t *testing.T) {
+	m := NewManager(DefaultConfig())
+	if err := m.sendAck(); err != nil {
+		t.Fatalf("sendAck with nil conn should return nil, got %v", err)
+	}
+	if err := m.sendPong(); err != nil {
+		t.Fatalf("sendPong with nil conn should return nil, got %v", err)
+	}
+}
+
+// TestDropWALPrefixLockedNoOp tests dropWALPrefixLocked with non-positive dropCount.
+func TestDropWALPrefixLockedNoOp(t *testing.T) {
+	m := NewManager(DefaultConfig())
+	m.walBuffer = []*WALEntry{{LSN: 1}}
+	m.walBufferBytes = 10
+
+	m.dropWALPrefixLocked(0)
+	if len(m.walBuffer) != 1 {
+		t.Fatal("dropWALPrefixLocked(0) should not modify buffer")
+	}
+
+	m.dropWALPrefixLocked(-1)
+	if len(m.walBuffer) != 1 {
+		t.Fatal("dropWALPrefixLocked(-1) should not modify buffer")
+	}
+}
+
+// TestSyncWALDefaultInterval tests syncWAL with default interval when SyncInterval <= 0.
+func TestSyncWALDefaultInterval(t *testing.T) {
+	m := NewManager(DefaultConfig())
+	m.config.SyncInterval = 0
+	m.wg.Add(1)
+	go m.syncWAL()
+	// Let it start and immediately stop
+	time.Sleep(5 * time.Millisecond)
+	close(m.stopCh)
+}
+
+// TestStopWithSlaves tests Stop closes slave connections.
+func TestStopWithSlaves(t *testing.T) {
+	m := NewManager(DefaultConfig())
+	c1, _ := net.Pipe()
+	m.slaves = map[string]*SlaveConnection{"s1": {Conn: c1}}
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+}
+
+// TestStartMasterInvalidAddr tests startMaster with invalid listen address.
+func TestStartMasterInvalidAddr(t *testing.T) {
+	m := NewManager(DefaultConfig())
+	m.config.ListenAddr = "invalid:address:format"
+	if err := m.startMaster(); err == nil {
+		t.Fatal("expected error for invalid listen address")
+	}
+}

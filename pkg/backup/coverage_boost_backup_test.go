@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -1246,6 +1247,148 @@ func TestIncrementalBackupRecordsLatestParent(t *testing.T) {
 	}
 }
 
+// TestIncrementalBackupOnProgress tests copyDatabaseDelta OnProgress callback.
+func TestIncrementalBackupOnProgress(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test content for delta"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+	config.Verify = false
+
+	db := &MockDatabase{dbPath: dbFile}
+	mgr := NewManager(config, db)
+	ctx := context.Background()
+
+	if _, err := mgr.CreateBackup(ctx, TypeFull); err != nil {
+		t.Fatalf("Failed to create full backup: %v", err)
+	}
+
+	// Modify the database so delta has work to do
+	if err := os.WriteFile(dbFile, []byte("modified content here"), 0644); err != nil {
+		t.Fatalf("Failed to modify database: %v", err)
+	}
+
+	var progressCalled bool
+	mgr.OnProgress = func(percent int) {
+		progressCalled = true
+	}
+
+	if _, err := mgr.CreateBackup(ctx, TypeIncremental); err != nil {
+		t.Fatalf("Failed to create incremental backup: %v", err)
+	}
+	if !progressCalled {
+		t.Fatal("expected OnProgress to be called")
+	}
+}
+
+// TestIncrementalBackupWithCompression tests copyDatabaseDelta with valid compression.
+func TestIncrementalBackupWithCompression(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = gzip.BestSpeed
+	config.Verify = false
+
+	db := &MockDatabase{dbPath: dbFile}
+	mgr := NewManager(config, db)
+	ctx := context.Background()
+
+	if _, err := mgr.CreateBackup(ctx, TypeFull); err != nil {
+		t.Fatalf("Failed to create full backup: %v", err)
+	}
+
+	// Modify the database
+	if err := os.WriteFile(dbFile, []byte("modified content here"), 0644); err != nil {
+		t.Fatalf("Failed to modify database: %v", err)
+	}
+
+	if _, err := mgr.CreateBackup(ctx, TypeIncremental); err != nil {
+		t.Fatalf("Failed to create compressed incremental backup: %v", err)
+	}
+}
+
+// TestIncrementalBackupInvalidCompression tests copyDatabaseDelta with invalid compression level.
+func TestIncrementalBackupInvalidCompression(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 5
+	config.Verify = false
+
+	db := &MockDatabase{dbPath: dbFile}
+	mgr := NewManager(config, db)
+	ctx := context.Background()
+
+	if _, err := mgr.CreateBackup(ctx, TypeFull); err != nil {
+		t.Fatalf("Failed to create full backup: %v", err)
+	}
+
+	// Modify the database
+	if err := os.WriteFile(dbFile, []byte("modified content here"), 0644); err != nil {
+		t.Fatalf("Failed to modify database: %v", err)
+	}
+
+	// Set invalid compression level to trigger gzip.NewWriterLevel error in copyDatabaseDelta
+	mgr.config.CompressionLevel = 100
+	if _, err := mgr.CreateBackup(ctx, TypeIncremental); err == nil {
+		t.Fatal("expected error for invalid compression level in incremental backup")
+	}
+}
+
+// TestIncrementalBackupCancelledContext tests copyDatabaseDelta context cancellation.
+func TestIncrementalBackupCancelledContext(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	content := make([]byte, 1024*1024) // 1MB
+	if err := os.WriteFile(dbFile, content, 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+	config.Verify = false
+
+	db := &MockDatabase{dbPath: dbFile}
+	mgr := NewManager(config, db)
+	ctx := context.Background()
+
+	if _, err := mgr.CreateBackup(ctx, TypeFull); err != nil {
+		t.Fatalf("Failed to create full backup: %v", err)
+	}
+
+	// Modify the database
+	if err := os.WriteFile(dbFile, []byte("modified content here"), 0644); err != nil {
+		t.Fatalf("Failed to modify database: %v", err)
+	}
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	if _, err := mgr.CreateBackup(cancelCtx, TypeIncremental); err == nil {
+		t.Fatal("expected error for cancelled context in incremental backup")
+	}
+}
+
 func TestDifferentialBackupRecordsLatestFullParent(t *testing.T) {
 	tempDir := t.TempDir()
 
@@ -1945,5 +2088,128 @@ func TestApplyDeltaPayloadErrors(t *testing.T) {
 	err := mgr.applyDeltaPayload(cancelledCtx, strings.NewReader(validHeader), targetPath)
 	if err != context.Canceled {
 		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+// TestBuildRestoreChainMoreErrors tests additional error paths in buildRestoreChain.
+func TestBuildRestoreChainMoreErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	backupPath := filepath.Join(tempDir, "backup.db")
+	if err := os.WriteFile(backupPath, []byte("backup"), 0644); err != nil {
+		t.Fatalf("failed to create backup file: %v", err)
+	}
+
+	// Full backup with parent
+	mgr.metadata.Backups = []*Backup{
+		{ID: "full", Type: TypeFull, Destination: backupPath, ParentID: "parent"},
+	}
+	if _, err := mgr.buildRestoreChain(mgr.metadata.Backups[0]); err == nil {
+		t.Fatal("expected error for full backup with parent")
+	}
+
+	// Unknown backup type (must have a parent to enter the switch)
+	parentPath2 := filepath.Join(tempDir, "parent2.db")
+	if err := os.WriteFile(parentPath2, []byte("parent2"), 0644); err != nil {
+		t.Fatalf("failed to create parent file: %v", err)
+	}
+	mgr.metadata.Backups = []*Backup{
+		{ID: "parent2", Type: TypeFull, Destination: parentPath2},
+		{ID: "unknown", Type: Type(99), Destination: backupPath, ParentID: "parent2"},
+	}
+	if _, err := mgr.buildRestoreChain(mgr.metadata.Backups[1]); err == nil {
+		t.Fatal("expected error for unknown backup type")
+	}
+
+	// Incremental with differential parent
+	parentPath := filepath.Join(tempDir, "parent.db")
+	if err := os.WriteFile(parentPath, []byte("parent"), 0644); err != nil {
+		t.Fatalf("failed to create parent file: %v", err)
+	}
+	mgr.metadata.Backups = []*Backup{
+		{ID: "parent", Type: TypeDifferential, Destination: parentPath},
+		{ID: "inc", Type: TypeIncremental, Destination: backupPath, ParentID: "parent"},
+	}
+	if _, err := mgr.buildRestoreChain(mgr.metadata.Backups[1]); err == nil {
+		t.Fatal("expected error for incremental with differential parent")
+	}
+
+	// Parent file not found
+	mgr.metadata.Backups = []*Backup{
+		{ID: "parent2", Type: TypeFull, Destination: filepath.Join(tempDir, "nonexistent.db")},
+		{ID: "inc2", Type: TypeIncremental, Destination: backupPath, ParentID: "parent2"},
+	}
+	if _, err := mgr.buildRestoreChain(mgr.metadata.Backups[1]); err == nil {
+		t.Fatal("expected error when parent file not found")
+	}
+}
+
+// TestFindParentBackupIDZeroTime tests findParentBackupID skips backups with zero CompletedAt.
+func TestFindParentBackupIDZeroTime(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	backupPath := filepath.Join(tempDir, "backup.db")
+	if err := os.WriteFile(backupPath, []byte("backup"), 0644); err != nil {
+		t.Fatalf("failed to create backup file: %v", err)
+	}
+
+	mgr.metadata.Backups = []*Backup{
+		{ID: "zero", Type: TypeFull, Destination: backupPath, CompletedAt: time.Time{}},
+	}
+	if id := mgr.findParentBackupID(TypeIncremental); id != "" {
+		t.Fatalf("expected empty parent ID, got %s", id)
+	}
+}
+
+// TestSaveMetadataLockedStatError tests saveMetadataLocked when os.Stat returns a non-IsNotExist error.
+func TestSaveMetadataLockedStatError(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "circular")
+
+	// Create a self-referential symlink so os.Stat returns a symlink loop error
+	if err := os.Symlink(config.BackupDir, config.BackupDir); err != nil {
+		t.Fatalf("failed to create circular symlink: %v", err)
+	}
+
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	if err := mgr.saveMetadataLocked(); err == nil {
+		t.Fatal("expected error for circular symlink backup dir")
+	}
+}
+
+// TestDeleteBackupRemoveError tests DeleteBackup when os.Remove returns a non-IsNotExist error.
+func TestDeleteBackupRemoveError(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = tempDir
+	db := &MockDatabase{}
+	mgr := NewManager(config, db)
+
+	// Create a non-empty directory to act as the backup destination
+	backupDir := filepath.Join(tempDir, "backup_dir")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatalf("failed to create backup dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "file.txt"), []byte("x"), 0644); err != nil {
+		t.Fatalf("failed to create file in backup dir: %v", err)
+	}
+
+	mgr.metadata.Backups = []*Backup{
+		{ID: "del1", Type: TypeFull, Destination: backupDir, CompletedAt: time.Now()},
+	}
+
+	if err := mgr.DeleteBackup("del1"); err == nil {
+		t.Fatal("expected error when removing non-empty directory")
 	}
 }

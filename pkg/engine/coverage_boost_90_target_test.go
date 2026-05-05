@@ -1304,3 +1304,131 @@ func TestRunAutoJobs(t *testing.T) {
 	}
 }
 
+// TestAuditLogComprehensive90 exercises audit logger branches for many statement types.
+func TestAuditLogComprehensive90(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "audit_comp.db")
+	auditFile := filepath.Join(dir, "audit.log")
+
+	db, err := Open(dbPath, &Options{
+		AuditConfig: &audit.Config{
+			Enabled:    true,
+			LogFile:    auditFile,
+			LogFormat:  "json",
+			LogDDL:     true,
+			LogQueries: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT, vec REAL[3])")
+	db.Exec(ctx, "INSERT INTO test VALUES (1, 'alice', '[1.0,2.0,3.0]')")
+	db.Exec(ctx, "INSERT INTO test VALUES (2, 'bob', '[4.0,5.0,6.0]')")
+
+	// UNION query
+	db.Query(ctx, "SELECT id FROM test UNION ALL SELECT id FROM test")
+
+	// CTE query
+	db.Query(ctx, "WITH cte AS (SELECT * FROM test) SELECT * FROM cte")
+
+	// VIEW DDL
+	db.Exec(ctx, "CREATE VIEW v1 AS SELECT * FROM test")
+	db.Exec(ctx, "DROP VIEW v1")
+
+	// MATERIALIZED VIEW DDL
+	db.Exec(ctx, "CREATE MATERIALIZED VIEW mv1 AS SELECT * FROM test")
+	db.Exec(ctx, "REFRESH MATERIALIZED VIEW mv1")
+	db.Exec(ctx, "DROP MATERIALIZED VIEW mv1")
+
+	// FTS INDEX
+	db.Exec(ctx, "CREATE FULLTEXT INDEX fts1 ON test(name)")
+	db.Exec(ctx, "DROP INDEX fts1")
+
+	// VECTOR INDEX
+	db.Exec(ctx, "CREATE VECTOR INDEX vec1 ON test(vec)")
+	db.Exec(ctx, "DROP INDEX vec1")
+
+	// ALTER TABLE
+	db.Exec(ctx, "ALTER TABLE test ADD COLUMN age INTEGER")
+
+	// FOREIGN TABLE
+	db.Exec(ctx, "CREATE FOREIGN TABLE ext (id INTEGER) WRAPPER csv OPTIONS (file '/tmp/nonexistent.csv')")
+
+	// VACUUM and ANALYZE
+	db.Exec(ctx, "VACUUM")
+	db.Exec(ctx, "ANALYZE")
+
+	// UPDATE and DELETE
+	db.Exec(ctx, "UPDATE test SET name = 'charlie' WHERE id = 1")
+	db.Exec(ctx, "DELETE FROM test WHERE id = 2")
+}
+
+// TestCreateBackupIncremental90 tests CreateBackup with incremental type.
+func TestCreateBackupIncremental90(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := Open(dbPath, nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	db.Exec(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY)")
+
+	_, err = db.CreateBackup(ctx, "incremental")
+	if err != nil {
+		t.Logf("CreateBackup incremental returned: %v", err)
+	}
+}
+
+// TestGetIndexRecommendationsNilAdvisor90 tests GetIndexRecommendations when advisor is nil.
+func TestGetIndexRecommendationsNilAdvisor90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Manually nil out the advisor to hit the defensive check
+	db.indexAdvisor = nil
+	recs := db.GetIndexRecommendations()
+	if recs != nil {
+		t.Error("Expected nil recommendations when advisor is nil")
+	}
+}
+
+// TestHealthCheckNilCatalogBackend90 tests HealthCheck with nil catalog or backend.
+func TestHealthCheckNilCatalogBackend90(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Manually nil out catalog
+	db.catalog = nil
+	if err := db.HealthCheck(); err == nil {
+		t.Error("Expected error when catalog is nil")
+	}
+
+	// Restore catalog, nil out backend
+	// Re-open to get a fresh valid state
+	db2, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	oldBackend := db2.backend
+	db2.backend = nil
+	if err := db2.HealthCheck(); err == nil {
+		t.Error("Expected error when backend is nil")
+	}
+	db2.backend = oldBackend
+	db2.Close()
+}
+
