@@ -58,23 +58,30 @@ func (qc *QueryCache) Get(key string) (*QueryCacheEntry, bool) {
 		return nil, false
 	}
 
-	qc.mu.Lock()
-	defer qc.mu.Unlock()
-
+	qc.mu.RLock()
 	entry, exists := qc.entries[key]
 	if !exists {
+		qc.mu.RUnlock()
 		qc.missCount.Add(1)
 		return nil, false
 	}
 
 	// Check if entry has expired
-	if time.Since(entry.Timestamp) > qc.ttl {
+	expired := time.Since(entry.Timestamp) > qc.ttl
+	qc.mu.RUnlock()
+
+	if expired {
 		qc.missCount.Add(1)
 		return nil, false
 	}
 
-	qc.promoteInLRU(key)
 	qc.hitCount.Add(1)
+
+	// Promote in LRU under write lock
+	qc.mu.Lock()
+	qc.promoteInLRU(key)
+	qc.mu.Unlock()
+
 	return entry, true
 }
 
