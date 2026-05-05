@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha1" // #nosec G505 -- MySQL native password protocol requires SHA-1 compatibility.
@@ -48,6 +49,7 @@ const (
 		MySQLComStmtSendLongData byte = 0x18
 		MySQLComStmtClose   byte = 0x19
 		MySQLComStmtReset   byte = 0x1a
+	MySQLComResetConnection byte = 0x1f
 
 	// Server status flags
 	MySQLServerStatusInTrans            uint16 = 0x0001
@@ -244,10 +246,11 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 	}()
 
 	client = &MySQLClient{
-		conn:   conn,
-		reader: bufio.NewReader(conn),
-		server: s,
-		connID: connID,
+		conn:        conn,
+		reader:      bufio.NewReader(conn),
+		server:      s,
+		connID:      connID,
+		connectTime: time.Now(),
 	}
 	client.ctx, client.cancel = context.WithCancel(context.Background())
 
@@ -304,8 +307,9 @@ type MySQLClient struct {
 	authResponse []byte // raw auth response from client handshake
 	scramble     []byte // 20-byte random challenge sent in handshake (FIX-004)
 	sequence     byte   // packet sequence number for proper protocol flow
-		stmts        map[uint32]*preparedStmt
-		nextStmtID   uint32
+	connectTime  time.Time
+	stmts        map[uint32]*preparedStmt
+	nextStmtID   uint32
 }
 
 // sendHandshake sends the initial handshake packet
@@ -530,6 +534,24 @@ func (c *MySQLClient) handleCommand() error {
 
 	case MySQLComStmtReset:
 		return c.handleStmtReset(data)
+
+	case MySQLComStatistics:
+		return c.handleStatistics()
+
+	case MySQLComFieldList:
+		return c.handleFieldList(data)
+
+	case MySQLComProcessInfo:
+		return c.handleProcessInfo()
+
+	case MySQLComResetConnection:
+		return c.handleResetConnection()
+
+	case MySQLComRefresh:
+		return c.sendOKPacket(0, 0)
+
+	case MySQLComShutdown:
+		return c.sendErrorPacket(1047, "SHUTDOWN not supported")
 
 	default:
 		return c.sendErrorPacket(1047, "Unsupported command")
@@ -1108,6 +1130,132 @@ func (c *MySQLClient) handleStmtReset(data []byte) error {
 	if _, ok := c.getStmtMap()[stmtID]; !ok {
 		return c.sendErrorPacket(0, "unknown prepared statement")
 	}
+	return c.sendOKPacket(0, 0)
+}
+
+// handleStatistics returns a simple statistics string for COM_STATISTICS.
+func (c *MySQLClient) handleStatistics() error {
+	stats := fmt.Sprintf("Uptime: %d  Threads: %d  Queries: %d",
+		int64(time.Since(c.connectTime).Seconds()),
+		len(c.server.clients),
+		0, // Query count not tracked per-server in this version
+	)
+	pkt := []byte(stats)
+	return c.writePacket(pkt, 0)
+}
+
+// handleFieldList handles COM_FIELD_LIST by describing table columns.
+// Payload: table_name\0[wildcard]
+func (c *MySQLClient) handleFieldList(data []byte) error {
+	// Extract null-terminated table name
+	nullIdx := bytes.IndexByte(data, 0)
+	if nullIdx < 0 {
+		nullIdx = len(data)
+	}
+	tableName := string(data[:nullIdx])
+	if tableName == "" {
+		return c.sendErrorPacket(1046, "No database selected")
+	}
+
+	baseCtx := c.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+	defer cancel()
+
+	// Use DESCRIBE to get column info
+	rows, err := c.server.db.Query(ctx, "DESCRIBE "+tableName)
+	if err != nil {
+		return c.sendErrorPacket(1, sanitizeMySQLError(err))
+	}
+	defer rows.Close()
+
+	seq := byte(1)
+	for rows.Next() {
+		row := make([]interface{}, 3)
+		dest := make([]interface{}, 3)
+		for i := range dest {
+			dest[i] = &row[i]
+		}
+		if err := rows.Scan(dest...); err != nil {
+			return c.sendErrorPacket(1, sanitizeMySQLError(err))
+		}
+		colName := ""
+		if row[0] != nil {
+			colName = fmt.Sprintf("%v", row[0])
+		}
+		colPkt := c.buildColumnDefPacket(colName)
+		if err := c.writePacket(colPkt, seq); err != nil {
+			return err
+		}
+		seq++
+	}
+
+	return c.sendEOFPacket(seq)
+}
+
+// handleProcessInfo handles COM_PROCESS_INFO by returning active connections.
+func (c *MySQLClient) handleProcessInfo() error {
+	columns := []string{"Id", "User", "Host", "db", "Command", "Time", "State", "Info"}
+	var resultRows [][]interface{}
+
+	c.server.mu.Lock()
+	for id := range c.server.clients {
+		resultRows = append(resultRows, []interface{}{
+			id,      // Id
+			"",      // User
+			"",      // Host
+			"",      // db
+			"Sleep", // Command
+			0,       // Time
+			"",      // State
+			"",      // Info
+		})
+	}
+	c.server.mu.Unlock()
+
+	seq := byte(1)
+
+	// Send column count
+	countPkt := appendLenEncInt(nil, uint64(len(columns)))
+	if err := c.writePacket(countPkt, seq); err != nil {
+		return err
+	}
+	seq++
+
+	// Send column definitions
+	for _, colName := range columns {
+		colPkt := c.buildColumnDefPacket(colName)
+		if err := c.writePacket(colPkt, seq); err != nil {
+			return err
+		}
+		seq++
+	}
+
+	// EOF after columns
+	if err := c.sendEOFPacket(seq); err != nil {
+		return err
+	}
+	seq++
+
+	// Send rows
+	for _, row := range resultRows {
+		rowPkt := c.buildRowPacket(row)
+		if err := c.writePacket(rowPkt, seq); err != nil {
+			return err
+		}
+		seq++
+	}
+
+	return c.sendEOFPacket(seq)
+}
+
+// handleResetConnection handles COM_RESET_CONNECTION by clearing session state.
+func (c *MySQLClient) handleResetConnection() error {
+	c.database = ""
+	c.stmts = make(map[uint32]*preparedStmt)
+	c.nextStmtID = 0
 	return c.sendOKPacket(0, 0)
 }
 
