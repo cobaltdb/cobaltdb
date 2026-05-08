@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc64"
 	"hash/maphash"
 	"sort"
 	"sync"
@@ -60,6 +61,8 @@ type btreeShard struct {
 // in parallel.  A single flushMu serializes flushInternal calls, and lruMu
 // protects the global LRU structures.
 
+var crc64Table = crc64.MakeTable(crc64.ISO)
+
 type BTree struct {
 	flushMu       sync.Mutex // serializes flushInternal and eviction flush
 	rootPageID    uint32
@@ -68,6 +71,7 @@ type BTree struct {
 	shards        [numShards]btreeShard
 	dirty         int32        // atomic: 0 or 1
 	overflowPages []uint32     // IDs of overflow pages used by this tree
+	lastPageHashes []uint64    // hashes of page content from last flush
 
 	// Memory management
 	memoryLimit int64 // atomic
@@ -739,65 +743,114 @@ func (t *BTree) flushInternal() error {
 		t.pool.Unpin(newPage)
 	}
 
-	root, err := t.pool.GetPage(t.rootPageID)
-	if err != nil {
-		return err
-	}
-	defer t.pool.Unpin(root)
+	// Compute hashes for each page so we can skip writing unchanged pages.
+	numPages := 1 + int(overflowCount)
+	newPageHashes := make([]uint64, numPages)
+	h := crc64.New(crc64Table)
+	zeroPad := make([]byte, usablePageSize)
 
-	rootBuf := root.Data()[storage.PageHeaderSize:]
-	for i := range rootBuf {
-		rootBuf[i] = 0
-	}
-
-	binary.LittleEndian.PutUint32(rootBuf[0:4], count)
-	binary.LittleEndian.PutUint32(rootBuf[4:8], overflowCount)
-	for i, pgID := range t.overflowPages {
-		off := 8 + 4*i
-		if off+4 > len(rootBuf) {
-			break
-		}
-		binary.LittleEndian.PutUint32(rootBuf[off:off+4], pgID)
-	}
-
+	// Root page hash.
 	rootHeaderSize = 8 + 4*int(overflowCount)
 	if rootHeaderSize > usablePageSize {
 		rootHeaderSize = usablePageSize
 	}
 	rootDataSpace = usablePageSize - rootHeaderSize
-	dataWritten := 0
 
-	writeLen := rootDataSpace
-	if writeLen > len(kvData) {
-		writeLen = len(kvData)
-	}
-	copy(rootBuf[rootHeaderSize:], kvData[:writeLen])
-	dataWritten += writeLen
-	root.SetDirty(true)
-
+	h.Reset()
+	binary.LittleEndian.PutUint32(lenBuf[:4], count)
+	h.Write(lenBuf[:4])
+	binary.LittleEndian.PutUint32(lenBuf[:4], overflowCount)
+	h.Write(lenBuf[:4])
 	for _, pgID := range t.overflowPages {
-		if dataWritten >= len(kvData) {
-			break
-		}
-		pg, err := t.pool.GetPage(pgID)
-		if err != nil {
-			return fmt.Errorf("failed to get overflow page %d: %w", pgID, err)
-		}
-		pgBuf := pg.Data()[storage.PageHeaderSize:]
-		for i := range pgBuf {
-			pgBuf[i] = 0
-		}
-		writeLen = usablePageSize
+		binary.LittleEndian.PutUint32(lenBuf[:4], pgID)
+		h.Write(lenBuf[:4])
+	}
+	rootDataWriteLen := rootDataSpace
+	if rootDataWriteLen > len(kvData) {
+		rootDataWriteLen = len(kvData)
+	}
+	if rootDataWriteLen > 0 {
+		h.Write(kvData[:rootDataWriteLen])
+	}
+	if pad := rootDataSpace - rootDataWriteLen; pad > 0 {
+		h.Write(zeroPad[:pad])
+	}
+	newPageHashes[0] = h.Sum64()
+
+	// Overflow page hashes.
+	dataWritten := rootDataWriteLen
+	for i := 0; i < int(overflowCount); i++ {
+		h.Reset()
+		writeLen := usablePageSize
 		remaining := len(kvData) - dataWritten
 		if writeLen > remaining {
 			writeLen = remaining
 		}
-		copy(pgBuf, kvData[dataWritten:dataWritten+writeLen])
+		if writeLen > 0 {
+			h.Write(kvData[dataWritten : dataWritten+writeLen])
+		}
+		if pad := usablePageSize - writeLen; pad > 0 {
+			h.Write(zeroPad[:pad])
+		}
+		newPageHashes[i+1] = h.Sum64()
 		dataWritten += writeLen
-		pg.SetDirty(true)
-		t.pool.Unpin(pg)
 	}
 
+	canSkip := len(t.lastPageHashes) == numPages
+
+	// Write root page if changed.
+	if !canSkip || newPageHashes[0] != t.lastPageHashes[0] {
+		root, err := t.pool.GetPage(t.rootPageID)
+		if err != nil {
+			return err
+		}
+		rootBuf := root.Data()[storage.PageHeaderSize:]
+		for i := range rootBuf {
+			rootBuf[i] = 0
+		}
+		binary.LittleEndian.PutUint32(rootBuf[0:4], count)
+		binary.LittleEndian.PutUint32(rootBuf[4:8], overflowCount)
+		for i, pgID := range t.overflowPages {
+			off := 8 + 4*i
+			if off+4 > len(rootBuf) {
+				break
+			}
+			binary.LittleEndian.PutUint32(rootBuf[off:off+4], pgID)
+		}
+		if rootDataWriteLen > 0 {
+			copy(rootBuf[rootHeaderSize:], kvData[:rootDataWriteLen])
+		}
+		root.SetDirty(true)
+		t.pool.Unpin(root)
+	}
+
+	// Write overflow pages if changed.
+	dataWritten = rootDataWriteLen
+	for i, pgID := range t.overflowPages {
+		writeLen := usablePageSize
+		remaining := len(kvData) - dataWritten
+		if writeLen > remaining {
+			writeLen = remaining
+		}
+		if !canSkip || newPageHashes[i+1] != t.lastPageHashes[i+1] {
+			pg, err := t.pool.GetPage(pgID)
+			if err != nil {
+				return fmt.Errorf("failed to get overflow page %d: %w", pgID, err)
+			}
+			pgBuf := pg.Data()[storage.PageHeaderSize:]
+			for j := range pgBuf {
+				pgBuf[j] = 0
+			}
+			if writeLen > 0 {
+				copy(pgBuf, kvData[dataWritten:dataWritten+writeLen])
+			}
+			pg.SetDirty(true)
+			t.pool.Unpin(pg)
+		}
+		dataWritten += writeLen
+	}
+
+	t.lastPageHashes = newPageHashes
 	atomic.StoreInt32(&t.dirty, 0)
 	return nil
 }
