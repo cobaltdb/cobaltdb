@@ -831,68 +831,6 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 	return nil
 }
 
-// applyWrites applies all writes from a transaction to actual storage
-func (m *Manager) applyWrites(txn *Transaction) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Update versions for all written keys using monotonic commit sequence
-	seq := atomic.AddUint64(&m.commitSeq, 1)
-	for key, value := range txn.WriteSet {
-		m.versions[key] = seq
-		if m.versionStore != nil {
-			m.versionStore.Commit(key, value, seq)
-		}
-	}
-
-	// Apply writes to storage via BufferPool if available
-	if m.pool != nil {
-		if bp, ok := m.pool.(*storage.BufferPool); ok && bp != nil {
-			for key, value := range txn.WriteSet {
-				// Parse table name from key (format: "tableName:pk" or similar)
-				// For now, we just update the version tracking
-				// Actual storage write is handled by Catalog layer
-				_ = bp
-				_ = key
-				_ = value
-			}
-		}
-	}
-
-	// Mark writes as durable in WAL if available
-	if m.wal != nil {
-		if wal, ok := m.wal.(*storage.WAL); ok && wal != nil {
-			for key, value := range txn.WriteSet {
-				// Encode key with length prefix to preserve key/value boundary
-				keyBytes := []byte(key)
-				data := make([]byte, 4+len(keyBytes)+len(value))
-				binary.LittleEndian.PutUint32(data[0:4], uint32(len(keyBytes)))
-				copy(data[4:4+len(keyBytes)], keyBytes)
-				copy(data[4+len(keyBytes):], value)
-
-				record := &storage.WALRecord{
-					TxnID: txn.ID,
-					Type:  storage.WALUpdate,
-					Data:  data,
-				}
-				if err := wal.AppendWithoutSync(record); err != nil {
-					return fmt.Errorf("failed to append WAL record: %w", err)
-				}
-			}
-			// Write commit record so crash recovery knows this transaction committed
-			commitRecord := &storage.WALRecord{
-				TxnID: txn.ID,
-				Type:  storage.WALCommit,
-			}
-			if err := wal.Append(commitRecord); err != nil {
-				return fmt.Errorf("failed to append WAL commit record: %w", err)
-			}
-		}
-	}
-
-	return nil
-}
-
 // pruneVersions removes version entries that are no longer needed by any active transaction
 func (m *Manager) pruneVersions() {
 	m.mu.Lock()

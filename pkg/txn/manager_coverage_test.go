@@ -135,7 +135,7 @@ func TestGetTransactionAfterRollback(t *testing.T) {
 	}
 }
 
-// ---- applyWrites tests ----
+// ---- commitWithConflictDetection tests ----
 
 func TestApplyWritesSingleKey(t *testing.T) {
 	mgr := NewManager(nil, nil)
@@ -143,9 +143,9 @@ func TestApplyWritesSingleKey(t *testing.T) {
 	txn := mgr.Begin(nil)
 	txn.SetWrite("testkey", []byte("testvalue"))
 
-	err := mgr.applyWrites(txn)
+	err := mgr.commitWithConflictDetection(txn)
 	if err != nil {
-		t.Fatalf("applyWrites failed: %v", err)
+		t.Fatalf("commitWithConflictDetection failed: %v", err)
 	}
 
 	v := mgr.GetCurrentVersion("testkey")
@@ -154,7 +154,7 @@ func TestApplyWritesSingleKey(t *testing.T) {
 	}
 }
 
-func TestApplyWritesMultipleKeys(t *testing.T) {
+func TestCommitWithConflictDetectionMultipleKeys(t *testing.T) {
 	mgr := NewManager(nil, nil)
 
 	txn := mgr.Begin(nil)
@@ -162,9 +162,9 @@ func TestApplyWritesMultipleKeys(t *testing.T) {
 	txn.SetWrite("key2", []byte("val2"))
 	txn.SetWrite("key3", []byte("val3"))
 
-	err := mgr.applyWrites(txn)
+	err := mgr.commitWithConflictDetection(txn)
 	if err != nil {
-		t.Fatalf("applyWrites failed: %v", err)
+		t.Fatalf("commitWithConflictDetection failed: %v", err)
 	}
 
 	for _, key := range []string{"key1", "key2", "key3"} {
@@ -175,31 +175,31 @@ func TestApplyWritesMultipleKeys(t *testing.T) {
 	}
 }
 
-func TestApplyWritesEmptyWriteSet(t *testing.T) {
+func TestCommitWithConflictDetectionEmptyWriteSet(t *testing.T) {
 	mgr := NewManager(nil, nil)
 
 	txn := mgr.Begin(nil)
 	// No writes
 
-	err := mgr.applyWrites(txn)
+	err := mgr.commitWithConflictDetection(txn)
 	if err != nil {
-		t.Fatalf("applyWrites with empty write set should succeed: %v", err)
+		t.Fatalf("commitWithConflictDetection with empty write set should succeed: %v", err)
 	}
 }
 
-func TestApplyWritesOverwritesVersion(t *testing.T) {
+func TestCommitWithConflictDetectionOverwritesVersion(t *testing.T) {
 	mgr := NewManager(nil, nil)
 
 	// First transaction writes key1
 	txn1 := mgr.Begin(nil)
 	txn1.SetWrite("key1", []byte("val1"))
-	mgr.applyWrites(txn1)
+	mgr.commitWithConflictDetection(txn1)
 	v1 := mgr.GetCurrentVersion("key1")
 
 	// Second transaction overwrites key1
 	txn2 := mgr.Begin(nil)
 	txn2.SetWrite("key1", []byte("val2"))
-	mgr.applyWrites(txn2)
+	mgr.commitWithConflictDetection(txn2)
 	v2 := mgr.GetCurrentVersion("key1")
 
 	if v2 <= v1 {
