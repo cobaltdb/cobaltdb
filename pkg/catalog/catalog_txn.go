@@ -763,26 +763,52 @@ func (c *Catalog) clearPendingWrites() {
 // applyPendingWritesLocked applies buffered DML writes to B-trees at commit time.
 // Must be called with c.mu held.
 func (c *Catalog) applyPendingWritesLocked(ts *catalogTxnState) error {
+	// Batch table writes by tree name to amortize B-tree lock overhead.
+	tableKeys := make(map[string][][]byte)
+	tableVals := make(map[string][][]byte)
+	// Batch index updates by index name.
+	idxPuts := make(map[string][][]byte)
+	idxPutVals := make(map[string][][]byte)
+	idxDels := make(map[string][][]byte)
+
 	for _, pw := range ts.pendingWrites {
-		tree, exists := c.tableTrees[pw.TreeName]
-		if !exists {
-			return fmt.Errorf("partition tree %s not found", pw.TreeName)
-		}
-		if err := tree.Put(pw.Key, pw.Value); err != nil {
-			return fmt.Errorf("failed to apply buffered write to %s: %w", pw.TreeName, err)
-		}
+		tableKeys[pw.TreeName] = append(tableKeys[pw.TreeName], pw.Key)
+		tableVals[pw.TreeName] = append(tableVals[pw.TreeName], pw.Value)
 		for _, idx := range pw.IndexUpdates {
-			idxTree, exists := c.indexTrees[idx.IndexName]
-			if !exists {
-				continue
-			}
 			if idx.IsDelete {
-				_ = idxTree.Delete(idx.Key)
+				idxDels[idx.IndexName] = append(idxDels[idx.IndexName], idx.Key)
 			} else {
-				_ = idxTree.Put(idx.Key, idx.Value)
+				idxPuts[idx.IndexName] = append(idxPuts[idx.IndexName], idx.Key)
+				idxPutVals[idx.IndexName] = append(idxPutVals[idx.IndexName], idx.Value)
 			}
 		}
 	}
+
+	for treeName, keys := range tableKeys {
+		tree, exists := c.tableTrees[treeName]
+		if !exists {
+			return fmt.Errorf("partition tree %s not found", treeName)
+		}
+		if err := tree.PutBatch(keys, tableVals[treeName]); err != nil {
+			return fmt.Errorf("failed to apply buffered writes to %s: %w", treeName, err)
+		}
+	}
+
+	for idxName, keys := range idxPuts {
+		idxTree, exists := c.indexTrees[idxName]
+		if !exists {
+			continue
+		}
+		_ = idxTree.PutBatch(keys, idxPutVals[idxName])
+	}
+	for idxName, keys := range idxDels {
+		idxTree, exists := c.indexTrees[idxName]
+		if !exists {
+			continue
+		}
+		_ = idxTree.DeleteBatch(keys)
+	}
+
 	ts.pendingWrites = nil
 	return nil
 }
