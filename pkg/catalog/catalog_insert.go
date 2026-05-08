@@ -449,7 +449,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			walData := append([]byte(key), 0)
 			walData = append(walData, valueData...)
 			record := &storage.WALRecord{
-				TxnID: c.txnID,
+				TxnID: c.getCurrentTxnID(),
 				Type:  storage.WALInsert,
 				Data:  walData,
 			}

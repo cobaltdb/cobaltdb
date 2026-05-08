@@ -265,7 +265,6 @@ type Catalog struct {
 	stats                map[string]*StatsTableStats           // Table statistics for ANALYZE
 	cteResults           map[string]*cteResultSet              // Temporary CTE result cache for recursive CTEs
 	keyCounter           int64                                 // For generating unique keys
-	txnID                uint64                                // Current transaction ID (legacy; used when activeTxns not yet integrated)
 	undoLog              []undoEntry                           // Undo log for transaction rollback (legacy)
 	txnManager           interface{}                           // *txn.Manager bridge for MVCC multi-writer (nil = legacy single-writer mode)
 	enableBufferedWrites bool                                  // Enable buffered DML (disabled by default until read-your-writes is fully implemented)

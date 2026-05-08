@@ -503,7 +503,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 		if c.wal != nil && c.isCurrentTxnActive() {
 			walData := append([]byte(key), 0)
 			record := &storage.WALRecord{
-				TxnID: c.txnID,
+				TxnID: c.getCurrentTxnID(),
 				Type:  storage.WALDelete,
 				Data:  walData,
 			}

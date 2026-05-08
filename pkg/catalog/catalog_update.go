@@ -744,7 +744,7 @@ func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree 
 		if c.wal != nil && c.isCurrentTxnActive() {
 			walData := append([]byte(entry.key), 0)
 			record := &storage.WALRecord{
-				TxnID: c.txnID,
+				TxnID: c.getCurrentTxnID(),
 				Type:  storage.WALDelete,
 				Data:  walData,
 			}
@@ -1056,7 +1056,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		if c.wal != nil && c.isCurrentTxnActive() {
 			if pkChanged {
 				deleteRecord := &storage.WALRecord{
-					TxnID: c.txnID,
+					TxnID: c.getCurrentTxnID(),
 					Type:  storage.WALDelete,
 					Data:  oldKey,
 				}
@@ -1068,7 +1068,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 				walData = append(walData, 0)
 				walData = append(walData, newValueData...)
 				insertRecord := &storage.WALRecord{
-					TxnID: c.txnID,
+					TxnID: c.getCurrentTxnID(),
 					Type:  storage.WALInsert,
 					Data:  walData,
 				}
@@ -1079,7 +1079,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 				walData := append([]byte(oldKey), 0)
 				walData = append(walData, newValueData...)
 				record := &storage.WALRecord{
-					TxnID: c.txnID,
+					TxnID: c.getCurrentTxnID(),
 					Type:  storage.WALUpdate,
 					Data:  walData,
 				}

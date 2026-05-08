@@ -157,12 +157,14 @@ func (c *Catalog) isCurrentTxnActive() bool {
 	return false
 }
 
-// getCurrentTxnID returns the ID of the current transaction.
+// getCurrentTxnID returns the ID of the current goroutine's active transaction,
+// or 0 if none is active.  Safe under concurrency because it resolves via the
+// goroutine-to-txn map instead of the legacy shared c.txnID field.
 func (c *Catalog) getCurrentTxnID() uint64 {
 	if ts := c.getCurrentTxn(); ts != nil {
 		return ts.txnID
 	}
-	return c.txnID
+	return 0
 }
 
 // appendUndoEntry appends an undo entry to the current transaction's undo log.
@@ -212,7 +214,6 @@ func (c *Catalog) BeginTransactionWithTxn(txnID uint64, managerTxn interface{}) 
 func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.txnID = txnID
 	c.undoLog = nil    // Clear undo log for new transaction
 	c.savepoints = nil // Clear savepoints
 	c.currentTxnID = txnID
