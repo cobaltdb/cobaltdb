@@ -811,8 +811,6 @@ func (c *Catalog) Savepoint(name string) error {
 }
 
 func (c *Catalog) RollbackToSavepoint(name string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !c.isCurrentTxnActive() {
 		return fmt.Errorf("ROLLBACK TO SAVEPOINT can only be used within a transaction")
 	}
@@ -833,13 +831,60 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 	undoPos := sps[spIdx].undoPos
 	pwPos := sps[spIdx].pendingWritePos
 
-	if err := c.replayUndoLog(len(c.getCurrentTxnUndoLog())-1, undoPos, "rollback to savepoint"); err != nil {
-		c.truncateUndoLog(undoPos)
-		if ts := c.getCurrentTxn(); ts != nil {
-			ts.pendingWrites = ts.pendingWrites[:pwPos]
+	undoLog := c.getCurrentTxnUndoLog()
+	if undoPos >= 0 && undoPos < len(undoLog) {
+		// Determine if affected undo entries contain DDL.
+		hasDDL := false
+		for i := len(undoLog) - 1; i >= undoPos; i-- {
+			if isDDLUndo(undoLog[i].action) {
+				hasDDL = true
+				break
+			}
 		}
-		c.setCurrentTxnSavepoints(sps[:spIdx+1])
-		return err
+
+		var rollbackErr error
+		if !hasDDL {
+			// Snapshot tree and table-def references under a brief RLock,
+			// then replay DML undos without holding the catalog lock.
+			c.mu.RLock()
+			tableTrees := make(map[string]*btree.BTree)
+			tableDefs := make(map[string]*TableDef)
+			indexTrees := make(map[string]*btree.BTree)
+			for i := len(undoLog) - 1; i >= undoPos; i-- {
+				e := undoLog[i]
+				if e.tableName != "" {
+					tableTrees[e.tableName] = c.tableTrees[e.tableName]
+					if td, ok := c.tables[e.tableName]; ok {
+						tableDefs[e.tableName] = td
+					}
+				}
+				for _, ic := range e.indexChanges {
+					indexTrees[ic.indexName] = c.indexTrees[ic.indexName]
+				}
+			}
+			c.mu.RUnlock()
+
+			for i := len(undoLog) - 1; i >= undoPos; i-- {
+				entry := undoLog[i]
+				if err := applyDMLUndoEntry(entry, tableTrees, tableDefs, "rollback to savepoint"); err != nil && rollbackErr == nil {
+					rollbackErr = err
+				}
+				rollbackErr = reverseIndexChangesWithMaps(entry, indexTrees, "rollback to savepoint", rollbackErr)
+			}
+		} else {
+			c.mu.Lock()
+			rollbackErr = c.replayUndoLog(len(undoLog)-1, undoPos, "rollback to savepoint")
+			c.mu.Unlock()
+		}
+
+		if rollbackErr != nil {
+			c.truncateUndoLog(undoPos)
+			if ts := c.getCurrentTxn(); ts != nil {
+				ts.pendingWrites = ts.pendingWrites[:pwPos]
+			}
+			c.setCurrentTxnSavepoints(sps[:spIdx+1])
+			return rollbackErr
+		}
 	}
 
 	// Truncate undo log to savepoint position
