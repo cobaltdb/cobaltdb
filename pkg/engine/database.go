@@ -2380,23 +2380,14 @@ func (tx *Tx) Commit() error {
 	}
 	defer tx.db.releaseConnection()
 
-	// Concurrent explicit transactions may flush B-tree pages at the same
-	// time; they serialize on per-tree mutexes inside FlushTableTrees.
-	// BufferPool.FlushAll is deferred to checkpoint/close so it cannot race
-	// with an ongoing btree flush.
+	// Concurrent explicit transactions apply buffered writes inside
+	// CommitTransaction, which serializes on per-tree mutexes.
+	// B-tree flushing is deferred to checkpoint/close; the B-tree
+	// self-flushes before eviction when memory pressure requires it.
 	tx.db.flushMu.RLock()
 	defer tx.db.flushMu.RUnlock()
 
-	// Flush table B+Trees to buffer pool first
-	if err := tx.db.catalog.FlushTableTrees(); err != nil {
-		// Rollback catalog transaction to prevent it from staying active forever
-		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil {
-			_ = rbErr // best-effort rollback; preserve primary error
-		}
-		return fmt.Errorf("failed to flush tables: %w", err)
-	}
-
-	// Commit in catalog first (writes commit record to WAL)
+	// Commit in catalog (conflict detection, WAL write, apply buffered writes)
 	if err := tx.db.catalog.CommitTransaction(); err != nil {
 		// Rollback catalog transaction to prevent it from staying active forever
 		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil {
