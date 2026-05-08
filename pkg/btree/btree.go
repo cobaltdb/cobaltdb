@@ -904,14 +904,13 @@ type Iterator struct {
 
 // Scan returns an iterator for range scanning
 func (t *BTree) Scan(startKey, endKey []byte) (*Iterator, error) {
-	// Acquire all shard RLocks in order for a consistent snapshot.
-	for i := 0; i < numShards; i++ {
-		t.shards[i].mu.RLock()
-	}
-
 	seen := make(map[string]bool)
 	var keys, values [][]byte
+	evicted := make(map[string]bool)
+
+	// Snapshot each shard individually so writers to other shards can proceed.
 	for i := 0; i < numShards; i++ {
+		t.shards[i].mu.RLock()
 		for k, v := range t.shards[i].data {
 			kb := []byte(k)
 			if startKey != nil && bytes.Compare(kb, startKey) < 0 {
@@ -928,17 +927,9 @@ func (t *BTree) Scan(startKey, endKey []byte) (*Iterator, error) {
 			values = append(values, valCopy)
 			seen[k] = true
 		}
-	}
-
-	// Copy evicted key flags before releasing locks.
-	evicted := make(map[string]bool)
-	for i := 0; i < numShards; i++ {
 		for k := range t.shards[i].evicted {
 			evicted[k] = true
 		}
-	}
-
-	for i := 0; i < numShards; i++ {
 		t.shards[i].mu.RUnlock()
 	}
 

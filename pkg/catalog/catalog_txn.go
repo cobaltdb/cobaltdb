@@ -827,7 +827,8 @@ func (c *Catalog) isBufferedMode() bool {
 }
 
 // EnableBufferedWrites turns on the buffered DML path for MVCC multi-writer.
-// This is opt-in until read-your-writes support is fully implemented.
+// Read-your-writes is fully implemented in scan, select, insert, update,
+// delete, and fast-path execution.
 func (c *Catalog) EnableBufferedWrites() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
