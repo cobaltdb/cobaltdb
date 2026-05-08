@@ -216,7 +216,6 @@ func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 	defer c.mu.Unlock()
 	c.undoLog = nil    // Clear undo log for new transaction
 	c.savepoints = nil // Clear savepoints
-	c.currentTxnID = txnID
 	cs := &catalogTxnState{
 		txnID:     txnID,
 		txnActive: true,
@@ -247,7 +246,16 @@ func (c *Catalog) CommitTransaction() error {
 		}
 	}
 
-	if c.wal != nil && ts != nil && ts.txnActive {
+	// Skip writing a second WAL commit record when the txn.Manager already
+	// wrote one for this transaction (both share the same WAL instance).
+	managerHandledCommit := false
+	if ts != nil && ts.managerTxn != nil {
+		if _, ok := ts.managerTxn.(*txn.Transaction); ok {
+			managerHandledCommit = true
+		}
+	}
+
+	if c.wal != nil && ts != nil && ts.txnActive && !managerHandledCommit {
 		// Write commit record to WAL using the transaction's own ID.
 		record := &storage.WALRecord{
 			TxnID: ts.txnID,
@@ -263,7 +271,6 @@ func (c *Catalog) CommitTransaction() error {
 		ts.txnActive = false
 		c.activeTxns.Delete(ts.txnID)
 	}
-	c.currentTxnID = 0
 	c.unregisterGoroutineTxn()
 	return nil
 }
@@ -316,7 +323,6 @@ func (c *Catalog) RollbackTransaction() error {
 			ts.txnActive = false
 			c.activeTxns.Delete(ts.txnID)
 		}
-		c.currentTxnID = 0
 		c.unregisterGoroutineTxn()
 		return err
 	}
@@ -327,7 +333,6 @@ func (c *Catalog) RollbackTransaction() error {
 		ts.txnActive = false
 		c.activeTxns.Delete(ts.txnID)
 	}
-	c.currentTxnID = 0
 	c.unregisterGoroutineTxn()
 	return nil
 }

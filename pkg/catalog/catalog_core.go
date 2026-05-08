@@ -270,7 +270,6 @@ type Catalog struct {
 	enableBufferedWrites bool                                  // Enable buffered DML (disabled by default until read-your-writes is fully implemented)
 	savepoints           []savepointEntry                      // Stack of savepoints (legacy)
 	activeTxns           sync.Map                              // Per-transaction state for multi-writer support; key=uint64 txnID, value=*catalogTxnState
-	currentTxnID         uint64                                // ID of the transaction currently executing
 	rlsManager           *security.Manager                     // Row-level security manager
 	enableRLS            bool                                  // Enable row-level security
 	rlsPolicies          map[string]*security.Policy           // RLS policies: key = "table:policyName"
