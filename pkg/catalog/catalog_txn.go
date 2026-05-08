@@ -299,9 +299,6 @@ func (c *Catalog) flushTableTreesLocked() error {
 }
 
 func (c *Catalog) RollbackTransaction() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	// Rollback the Manager transaction first if present.
 	ts := c.getCurrentTxn()
 	if ts != nil {
@@ -323,19 +320,33 @@ func (c *Catalog) RollbackTransaction() error {
 	}
 
 	undoLog := c.getCurrentTxnUndoLog()
-	if err := c.replayUndoLog(len(undoLog)-1, 0, "rollback"); err != nil {
+	if len(undoLog) > 0 {
+		// Undo replay may modify catalog maps (e.g. DDL undo), so we need
+		// the write lock.  In the MVCC buffered path undoLog is typically
+		// empty, allowing rollback to proceed without locking.
+		c.mu.Lock()
+		err := c.replayUndoLog(len(undoLog)-1, 0, "rollback")
 		c.undoLog = nil
 		c.savepoints = nil
-		if ts != nil {
-			ts.txnActive = false
-			c.activeTxns.Delete(ts.txnID)
+		c.mu.Unlock()
+		if err != nil {
+			if ts != nil {
+				ts.txnActive = false
+				c.activeTxns.Delete(ts.txnID)
+			}
+			c.unregisterGoroutineTxn()
+			return err
 		}
-		c.unregisterGoroutineTxn()
-		return err
 	}
 
-	c.undoLog = nil
-	c.savepoints = nil
+	if ts == nil {
+		// Legacy single-transaction path: clear shared undo state.
+		c.mu.Lock()
+		c.undoLog = nil
+		c.savepoints = nil
+		c.mu.Unlock()
+	}
+
 	if ts != nil {
 		ts.txnActive = false
 		c.activeTxns.Delete(ts.txnID)
