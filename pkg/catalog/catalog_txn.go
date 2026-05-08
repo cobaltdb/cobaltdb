@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"runtime"
@@ -872,4 +873,64 @@ func (c *Catalog) indexKeyInPendingWrites(indexName string, key []byte) bool {
 		}
 	}
 	return false
+}
+
+// ReplayWALOps replays logical WAL operations (from txn.Manager commit) into
+// the primary B-trees.  This is called during database open after the catalog
+// has been loaded.  It restores committed data that may not have been flushed
+// to pages before a crash.
+//
+// NOTE: Index trees are NOT updated here because the WAL logical format only
+// stores primary table key/value pairs.  Indexes should be rebuilt after WAL
+// replay if strict consistency is required.
+func (c *Catalog) ReplayWALOps(ops []storage.WALReplayOp) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, op := range ops {
+		switch op.Type {
+		case storage.WALInsert, storage.WALUpdate:
+			if len(op.Data) < 4 {
+				continue
+			}
+			keyLen := binary.LittleEndian.Uint32(op.Data[0:4])
+			if int(4+keyLen) > len(op.Data) {
+				continue
+			}
+			key := string(op.Data[4 : 4+keyLen])
+			value := op.Data[4+keyLen:]
+
+			// Manager format: "tableName:rowKey"
+			parts := strings.SplitN(key, ":", 2)
+			if len(parts) != 2 {
+				// Legacy format without table prefix — cannot route.
+				continue
+			}
+			tree, exists := c.tableTrees[parts[0]]
+			if !exists {
+				continue
+			}
+			_ = tree.Put([]byte(parts[1]), value)
+
+		case storage.WALDelete:
+			if len(op.Data) < 4 {
+				continue
+			}
+			keyLen := binary.LittleEndian.Uint32(op.Data[0:4])
+			if int(4+keyLen) > len(op.Data) {
+				continue
+			}
+			key := string(op.Data[4 : 4+keyLen])
+			parts := strings.SplitN(key, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			tree, exists := c.tableTrees[parts[0]]
+			if !exists {
+				continue
+			}
+			_ = tree.Delete([]byte(parts[1]))
+		}
+	}
+	return nil
 }

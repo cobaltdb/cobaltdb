@@ -503,6 +503,17 @@ func (db *DB) loadExisting() error {
 		return fmt.Errorf("failed to load catalog: %w", err)
 	}
 
+	// Replay any logical WAL operations that were not flushed to pages before
+	// the last crash.  This restores primary table data; indexes may need
+	// rebuilding if they were updated after the WAL records were written.
+	if db.wal != nil {
+		if ops := db.wal.GetReplayOps(); len(ops) > 0 {
+			if err := db.catalog.ReplayWALOps(ops); err != nil {
+				return fmt.Errorf("failed to replay WAL operations: %w", err)
+			}
+		}
+	}
+
 	// Initialize transaction manager
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
 	db.catalog.SetTxnManager(db.txnMgr)

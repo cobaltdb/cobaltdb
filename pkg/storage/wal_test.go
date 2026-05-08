@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -367,5 +368,60 @@ func TestWALGroupCommitSyncOff(t *testing.T) {
 
 	if wal.LSN() != 1 {
 		t.Fatalf("expected LSN=1, got %d", wal.LSN())
+	}
+}
+
+// TestWALRecoverLogicalRecords verifies that logical WAL records (PageID==0,
+// Offset==0) are buffered in replayOps rather than corrupting page 0.
+func TestWALRecoverLogicalRecords(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "logical.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+
+	// Write a committed logical transaction.
+	txnID := uint64(42)
+	key := []byte("users:row1")
+	val := []byte("value1")
+	data := make([]byte, 4+len(key)+len(val))
+	binary.LittleEndian.PutUint32(data[0:4], uint32(len(key)))
+	copy(data[4:4+len(key)], key)
+	copy(data[4+len(key):], val)
+
+	if err := wal.Append(&WALRecord{TxnID: txnID, Type: WALUpdate, Data: data}); err != nil {
+		t.Fatalf("append data: %v", err)
+	}
+	if err := wal.Append(&WALRecord{TxnID: txnID, Type: WALCommit}); err != nil {
+		t.Fatalf("append commit: %v", err)
+	}
+	wal.Close()
+
+	// Reopen and recover
+	backend := NewMemory()
+	pool := NewBufferPool(4, backend)
+	defer pool.Close()
+
+	wal2, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to reopen WAL: %v", err)
+	}
+	defer wal2.Close()
+
+	if err := wal2.Recover(pool); err != nil {
+		t.Fatalf("Recover failed: %v", err)
+	}
+
+	ops := wal2.GetReplayOps()
+	if len(ops) != 1 {
+		t.Fatalf("expected 1 replay op, got %d", len(ops))
+	}
+	if ops[0].Type != WALUpdate {
+		t.Errorf("expected WALUpdate, got %d", ops[0].Type)
+	}
+	if string(ops[0].Data) != string(data) {
+		t.Errorf("data mismatch: got %q, want %q", ops[0].Data, data)
 	}
 }

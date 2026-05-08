@@ -49,6 +49,15 @@ type WALRecord struct {
 	Data   []byte
 }
 
+// WALReplayOp represents a logical operation recovered from WAL that must be
+// replayed through the catalog/B-tree layer rather than applied directly to
+// raw buffer-pool pages.
+type WALReplayOp struct {
+	TxnID uint64
+	Type  WALRecordType
+	Data  []byte
+}
+
 // WAL (Write-Ahead Log) provides durability and crash recovery
 type WAL struct {
 	file       *os.File
@@ -58,6 +67,10 @@ type WAL struct {
 	checkpoint uint64 // last checkpoint LSN
 	path       string
 	cipher     cipher.AEAD // optional encryption cipher for WAL data
+
+	// Recovered logical operations (PageID/Offset == 0) that the engine must
+	// replay through the catalog after catalog initialization.
+	replayOps []WALReplayOp
 
 	// Group commit fields
 	groupCommitEnabled bool
@@ -533,7 +546,9 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 	return nil
 }
 
-// Recover replays WAL records after a crash
+// Recover replays WAL records after a crash.  Physical records (PageID > 0)
+// are applied directly to the buffer pool; logical records (PageID == 0) are
+// buffered in w.replayOps for catalog-level replay after catalog init.
 func (w *WAL) Recover(bp *BufferPool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -577,7 +592,7 @@ func (w *WAL) Recover(bp *BufferPool) error {
 			// Apply pending records for this transaction
 			if records, ok := pendingTxns[record.TxnID]; ok {
 				for _, r := range records {
-					if err := w.applyRecord(bp, r); err != nil {
+					if err := w.recoverRecord(bp, r); err != nil {
 						return err
 					}
 				}
@@ -590,7 +605,7 @@ func (w *WAL) Recover(bp *BufferPool) error {
 		case WALInsert, WALUpdate, WALDelete:
 			if committedTxns[record.TxnID] {
 				// Transaction already committed, apply immediately
-				if err := w.applyRecord(bp, record); err != nil {
+				if err := w.recoverRecord(bp, record); err != nil {
 					return err
 				}
 			} else {
@@ -604,8 +619,35 @@ func (w *WAL) Recover(bp *BufferPool) error {
 	return bp.FlushAll()
 }
 
-// applyRecord applies a WAL record to the database
+// recoverRecord dispatches a WAL record to either page-level apply or logical
+// replay buffering.
+func (w *WAL) recoverRecord(bp *BufferPool, record *WALRecord) error {
+	if record.PageID == 0 && record.Offset == 0 {
+		// Logical record — buffer for catalog-level replay.
+		w.replayOps = append(w.replayOps, WALReplayOp{
+			TxnID: record.TxnID,
+			Type:  record.Type,
+			Data:  append([]byte(nil), record.Data...),
+		})
+		return nil
+	}
+	return w.applyRecord(bp, record)
+}
+
+// GetReplayOps returns logical WAL operations recovered since the last
+// checkpoint.  The engine/catalog must replay these after catalog init.
+func (w *WAL) GetReplayOps() []WALReplayOp {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.replayOps
+}
+
+// applyRecord applies a physical WAL record to buffer-pool pages.
 func (w *WAL) applyRecord(bp *BufferPool, record *WALRecord) error {
+	if record.PageID == 0 && record.Offset == 0 {
+		// Logical record — should have been handled by recoverRecord.
+		return nil
+	}
 	page, err := bp.GetPage(record.PageID)
 	if err != nil {
 		return err
