@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -636,7 +637,12 @@ func TestBTree_FlushInternal_EvictedKeys(t *testing.T) {
 	}
 
 	// Verify some keys were evicted
-	evictedCount := len(tree.evictedKeys)
+	evictedCount := 0
+	for i := 0; i < numShards; i++ {
+		tree.shards[i].mu.RLock()
+		evictedCount += len(tree.shards[i].evicted)
+		tree.shards[i].mu.RUnlock()
+	}
 	if evictedCount == 0 {
 		t.Log("No eviction occurred")
 	}
@@ -812,9 +818,10 @@ func TestBTree_Get_EvictedKeyNotOnDisk(t *testing.T) {
 	tree, _ := NewBTreeWithLimit(pool, 1024*1024)
 
 	// Manually set an evicted key that doesn't exist on disk
-	tree.mu.Lock()
-	tree.evictedKeys["phantom"] = true
-	tree.mu.Unlock()
+	sh := &tree.shards[shardIndex("phantom")]
+	sh.mu.Lock()
+	sh.evicted["phantom"] = true
+	sh.mu.Unlock()
 
 	_, err := tree.Get([]byte("phantom"))
 	if err != ErrKeyNotFound {
@@ -1371,9 +1378,10 @@ func TestBTree_Scan_EvictedKeyBeyondEndKey(t *testing.T) {
 	tree.Flush()
 
 	// Manually mark some keys as evicted (beyond endKey range) to exercise the filter
-	tree.mu.Lock()
-	tree.evictedKeys["ek9999"] = true // beyond any endKey we'll use
-	tree.mu.Unlock()
+	sh := &tree.shards[shardIndex("ek9999")]
+	sh.mu.Lock()
+	sh.evicted["ek9999"] = true // beyond any endKey we'll use
+	sh.mu.Unlock()
 
 	// Scan with endKey < "ek9999" to exercise the endKey filter on evicted keys
 	iter, err := tree.Scan([]byte("ek0000"), []byte("ek0005"))
@@ -1504,13 +1512,19 @@ func TestBTree_Scan_EvictedAlreadySeen(t *testing.T) {
 
 	// Now some keys are in memStorage AND evictedKeys might overlap after flush.
 	// Manually ensure a key is in both memStorage and evictedKeys to exercise the dedup:
-	tree.mu.Lock()
-	// Pick a key that's in memStorage
-	for k := range tree.memStorage {
-		tree.evictedKeys[k] = true // mark it as also evicted
-		break
+	var foundKey string
+	for i := 0; i < numShards; i++ {
+		tree.shards[i].mu.Lock()
+		for k := range tree.shards[i].data {
+			foundKey = k
+			tree.shards[i].evicted[k] = true
+			break
+		}
+		tree.shards[i].mu.Unlock()
+		if foundKey != "" {
+			break
+		}
 	}
-	tree.mu.Unlock()
 
 	iter, err := tree.Scan(nil, nil)
 	if err != nil {
@@ -1832,9 +1846,7 @@ func TestBTree_EvictToMakeSpace_EmptyLRUBreak(t *testing.T) {
 	// memoryUsed(30) + needed(6) = 36 <= 50, so actually won't enter loop.
 	// Need memoryUsed + needed > 50. So fill more: 8 entries = 48 bytes.
 	// Actually let's just set memoryUsed manually to just under the limit.
-	tree.mu.Lock()
-	tree.memoryUsed = 48 // 48 + 6 = 54 > 50
-	tree.mu.Unlock()
+	atomic.StoreInt64(&tree.memoryUsed, 48) // 48 + 6 = 54 > 50
 
 	// Now inserting "ab" + "cdef" (6 bytes, sizeDelta=6, needed=6):
 	// needed(6) <= limit(50) -> passes first check
@@ -1866,7 +1878,7 @@ func TestBTree_EvictToMakeSpace_FlushDuringEviction(t *testing.T) {
 	tree.Put([]byte("fl3"), []byte("val_padded_03"))
 
 	// tree should be dirty now
-	if !tree.dirty {
+	if atomic.LoadInt32(&tree.dirty) == 0 {
 		t.Log("Tree not dirty - adjusting test")
 	}
 

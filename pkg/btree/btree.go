@@ -6,8 +6,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
@@ -24,6 +26,15 @@ var (
 	MaxKeyLength       = 65535                   // uint16 max - serialization limit
 )
 
+// Number of shards for memStorage. Must be a power of two.
+const numShards = 16
+
+var hashSeed = maphash.MakeSeed()
+
+func shardIndex(key string) int {
+	return int(maphash.String(hashSeed, key)) & (numShards - 1)
+}
+
 // lruEntry tracks memory usage for LRU eviction
 type lruEntry struct {
 	key  string
@@ -31,37 +42,43 @@ type lruEntry struct {
 	elem *list.Element
 }
 
+// btreeShard holds a partition of the in-memory key space with its own lock.
+type btreeShard struct {
+	mu      sync.RWMutex
+	data    map[string][]byte
+	evicted map[string]bool
+}
+
 // BTree represents a disk-based B+Tree index using a hybrid approach:
 // - Each table has its own BTree instance
 // - Data is stored as key-value pairs in pages managed by the buffer pool
 // - The BTree maintains an in-memory sorted structure that flushes to disk pages
 // - Multi-page overflow: data exceeding one page spills to linked overflow pages
+//
+// Concurrency: memStorage is sharded into 16 independently locked partitions
+// so concurrent writes to different keys (or even the same shard) can proceed
+// in parallel.  A single flushMu serializes flushInternal calls, and lruMu
+// protects the global LRU structures.
 
 type BTree struct {
-	mu            sync.RWMutex
+	flushMu       sync.Mutex // serializes flushInternal and eviction flush
 	rootPageID    uint32
 	pool          *storage.BufferPool
 	order         int
-	memStorage    map[string][]byte
-	dirty         bool
-	overflowPages []uint32 // IDs of overflow pages used by this tree
+	shards        [numShards]btreeShard
+	dirty         int32        // atomic: 0 or 1
+	overflowPages []uint32     // IDs of overflow pages used by this tree
 
 	// Memory management
-	memoryLimit int64                // Maximum memory to use (0 = unlimited)
-	memoryUsed  int64                // Current memory usage
-	lruMu       sync.Mutex           // Separate lock for LRU updates (avoids write-locking on reads)
-	lruList     *list.List           // LRU list for eviction
-	lruMap      map[string]*lruEntry // Track entries in LRU
-	evictedKeys map[string]bool      // Keys evicted from memory but preserved on disk
+	memoryLimit int64 // atomic
+	memoryUsed  int64 // atomic
+	lruMu       sync.Mutex
+	lruList     *list.List
+	lruMap      map[string]*lruEntry
 }
 
 // usablePageSize is the space available for data in each page (after header)
 const usablePageSize = storage.PageSize - storage.PageHeaderSize
-
-// Overflow page format:
-// Root page: [totalCount:4][overflowCount:4][overflowIDs:4*N][KV data...]
-// Overflow page: [KV data continuation...]
-// Root header size = 8 bytes + 4*overflowCount
 
 // NewBTree creates a new B+Tree with default memory limit
 func NewBTree(pool *storage.BufferPool) (*BTree, error) {
@@ -77,18 +94,19 @@ func NewBTreeWithLimit(pool *storage.BufferPool, limit int64) (*BTree, error) {
 	}
 	defer pool.Unpin(rootPage)
 
-	return &BTree{
-		rootPageID:  rootPage.ID(),
-		pool:        pool,
-		order:       100,
-		memStorage:  make(map[string][]byte),
-		dirty:       false,
-		memoryLimit: limit,
-		memoryUsed:  0,
-		lruList:     list.New(),
-		lruMap:      make(map[string]*lruEntry),
-		evictedKeys: make(map[string]bool),
-	}, nil
+	t := &BTree{
+		rootPageID: rootPage.ID(),
+		pool:       pool,
+		order:      100,
+		lruList:    list.New(),
+		lruMap:     make(map[string]*lruEntry),
+	}
+	atomic.StoreInt64(&t.memoryLimit, limit)
+	for i := range t.shards {
+		t.shards[i].data = make(map[string][]byte)
+		t.shards[i].evicted = make(map[string]bool)
+	}
+	return t, nil
 }
 
 // OpenBTree opens an existing B+Tree with the given root page ID
@@ -99,25 +117,24 @@ func OpenBTree(pool *storage.BufferPool, rootPageID uint32) *BTree {
 // OpenBTreeWithLimit opens an existing B+Tree with a specified memory limit
 func OpenBTreeWithLimit(pool *storage.BufferPool, rootPageID uint32, limit int64) *BTree {
 	t := &BTree{
-		rootPageID:  rootPageID,
-		pool:        pool,
-		order:       100,
-		memStorage:  make(map[string][]byte),
-		dirty:       false,
-		memoryLimit: limit,
-		memoryUsed:  0,
-		lruList:     list.New(),
-		lruMap:      make(map[string]*lruEntry),
-		evictedKeys: make(map[string]bool),
+		rootPageID: rootPageID,
+		pool:       pool,
+		order:      100,
+		lruList:    list.New(),
+		lruMap:     make(map[string]*lruEntry),
+	}
+	atomic.StoreInt64(&t.memoryLimit, limit)
+	for i := range t.shards {
+		t.shards[i].data = make(map[string][]byte)
+		t.shards[i].evicted = make(map[string]bool)
 	}
 	if err := t.loadFromPages(); err != nil {
-		// Log but continue - tree will appear empty but won't lose data on disk
 		fmt.Printf("btree: warning: failed to load pages for root %d: %v\n", rootPageID, err)
 	}
 	return t
 }
 
-// loadFromPages loads serialized key-value pairs from root + overflow pages into memStorage
+// loadFromPages loads serialized key-value pairs from root + overflow pages into shards
 func (t *BTree) loadFromPages() error {
 	root, err := t.pool.GetPage(t.rootPageID)
 	if err != nil {
@@ -127,7 +144,7 @@ func (t *BTree) loadFromPages() error {
 
 	pageData := root.Data()[storage.PageHeaderSize:]
 	if len(pageData) < 8 {
-		return nil // empty/new page, not an error
+		return nil
 	}
 
 	totalCount := binary.LittleEndian.Uint32(pageData[0:4])
@@ -137,7 +154,6 @@ func (t *BTree) loadFromPages() error {
 		return nil
 	}
 
-	// Read overflow page IDs
 	headerSize := 8 + 4*int(overflowCount)
 	if headerSize > len(pageData) {
 		return fmt.Errorf("corrupt root page %d: header size %d exceeds page data %d", t.rootPageID, headerSize, len(pageData))
@@ -149,10 +165,8 @@ func (t *BTree) loadFromPages() error {
 		t.overflowPages[i] = binary.LittleEndian.Uint32(pageData[off : off+4])
 	}
 
-	// Collect all data from root page + overflow pages
 	var allData []byte
 	allData = append(allData, pageData[headerSize:]...)
-
 	for _, pgID := range t.overflowPages {
 		pg, err := t.pool.GetPage(pgID)
 		if err != nil {
@@ -162,7 +176,6 @@ func (t *BTree) loadFromPages() error {
 		t.pool.Unpin(pg)
 	}
 
-	// Deserialize KV pairs
 	offset := 0
 	for i := uint32(0); i < totalCount; i++ {
 		if offset+2 > len(allData) {
@@ -170,20 +183,17 @@ func (t *BTree) loadFromPages() error {
 		}
 		keyLen := int(binary.LittleEndian.Uint16(allData[offset : offset+2]))
 		offset += 2
-
 		if offset+keyLen > len(allData) {
 			break
 		}
 		key := make([]byte, keyLen)
 		copy(key, allData[offset:offset+keyLen])
 		offset += keyLen
-
 		if offset+4 > len(allData) {
 			break
 		}
 		valLen := int(binary.LittleEndian.Uint32(allData[offset : offset+4]))
 		offset += 4
-
 		if offset+valLen > len(allData) {
 			break
 		}
@@ -191,13 +201,13 @@ func (t *BTree) loadFromPages() error {
 		copy(val, allData[offset:offset+valLen])
 		offset += valLen
 
-		t.memStorage[string(key)] = val
+		keyStr := string(key)
+		t.shards[shardIndex(keyStr)].data[keyStr] = val
 	}
 	return nil
 }
 
-// readKVFromPages reads all key-value pairs from disk pages without modifying memStorage.
-// Used to preserve evicted entries during flush and to serve Get requests for evicted keys.
+// readKVFromPages reads all key-value pairs from disk pages without modifying tree state.
 func (t *BTree) readKVFromPages() map[string][]byte {
 	result := make(map[string][]byte)
 
@@ -232,7 +242,6 @@ func (t *BTree) readKVFromPages() map[string][]byte {
 
 	var allData []byte
 	allData = append(allData, pageData[headerSize:]...)
-
 	for _, pgID := range overflowIDs {
 		pg, err := t.pool.GetPage(pgID)
 		if err != nil {
@@ -249,19 +258,16 @@ func (t *BTree) readKVFromPages() map[string][]byte {
 		}
 		keyLen := int(binary.LittleEndian.Uint16(allData[offset : offset+2]))
 		offset += 2
-
 		if offset+keyLen > len(allData) {
 			break
 		}
 		key := string(allData[offset : offset+keyLen])
 		offset += keyLen
-
 		if offset+4 > len(allData) {
 			break
 		}
 		valLen := int(binary.LittleEndian.Uint32(allData[offset : offset+4]))
 		offset += 4
-
 		if offset+valLen > len(allData) {
 			break
 		}
@@ -271,7 +277,6 @@ func (t *BTree) readKVFromPages() map[string][]byte {
 
 		result[key] = val
 	}
-
 	return result
 }
 
@@ -282,23 +287,17 @@ func (t *BTree) RootPageID() uint32 {
 
 // SetMemoryLimit sets the memory limit for the BTree (0 = unlimited)
 func (t *BTree) SetMemoryLimit(limit int64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.memoryLimit = limit
+	atomic.StoreInt64(&t.memoryLimit, limit)
 }
 
 // MemoryLimit returns the current memory limit
 func (t *BTree) MemoryLimit() int64 {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.memoryLimit
+	return atomic.LoadInt64(&t.memoryLimit)
 }
 
 // MemoryUsed returns the current memory usage
 func (t *BTree) MemoryUsed() int64 {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.memoryUsed
+	return atomic.LoadInt64(&t.memoryUsed)
 }
 
 // Get retrieves a value by key
@@ -307,36 +306,35 @@ func (t *BTree) Get(key []byte) ([]byte, error) {
 		return nil, ErrInvalidKey
 	}
 
-	t.mu.RLock()
 	keyStr := string(key)
-	val, ok := t.memStorage[keyStr]
+	sh := &t.shards[shardIndex(keyStr)]
+	sh.mu.RLock()
+	val, ok := sh.data[keyStr]
 	if ok {
 		result := make([]byte, len(val))
 		copy(result, val)
-		t.mu.RUnlock()
+		sh.mu.RUnlock()
 
-		// Update LRU under its own lock (does not block concurrent readers)
 		t.lruMu.Lock()
 		if entry, ok := t.lruMap[keyStr]; ok {
 			t.lruList.MoveToFront(entry.elem)
 		}
 		t.lruMu.Unlock()
-
 		return result, nil
 	}
 
-	// Check if key was evicted to disk
-	if t.evictedKeys[keyStr] {
+	if sh.evicted[keyStr] {
+		sh.mu.RUnlock()
 		diskData := t.readKVFromPages()
 		if val, ok := diskData[keyStr]; ok {
 			result := make([]byte, len(val))
 			copy(result, val)
-			t.mu.RUnlock()
 			return result, nil
 		}
+		return nil, ErrKeyNotFound
 	}
 
-	t.mu.RUnlock()
+	sh.mu.RUnlock()
 	return nil, ErrKeyNotFound
 }
 
@@ -352,61 +350,62 @@ func (t *BTree) Put(key, value []byte) error {
 		return ErrInvalidValue
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	keyCopy := string(key)
 	valCopy := make([]byte, len(value))
 	copy(valCopy, value)
+	newSize := int64(len(keyCopy) + len(valCopy))
 
-	// If overwriting an evicted key, remove from evicted set
-	delete(t.evictedKeys, keyCopy)
+	sh := &t.shards[shardIndex(keyCopy)]
 
-	// Calculate size change
-	oldSize := int64(0)
-	if oldVal, exists := t.memStorage[keyCopy]; exists {
-		oldSize = int64(len(key) + len(oldVal))
-		// Remove old entry from LRU
+	for {
+		sh.mu.Lock()
+
+		oldSize := int64(0)
+		if oldVal, exists := sh.data[keyCopy]; exists {
+			oldSize = int64(len(keyCopy) + len(oldVal))
+		}
+		delta := newSize - oldSize
+
+		limit := atomic.LoadInt64(&t.memoryLimit)
+		if limit > 0 && atomic.LoadInt64(&t.memoryUsed)+delta > limit {
+			sh.mu.Unlock()
+			if err := t.evictToMakeSpace(delta); err != nil {
+				return err
+			}
+			continue
+		}
+
+		delete(sh.evicted, keyCopy)
+		if oldVal, exists := sh.data[keyCopy]; exists {
+			atomic.AddInt64(&t.memoryUsed, -int64(len(keyCopy)+len(oldVal)))
+			t.lruMu.Lock()
+			if entry, ok := t.lruMap[keyCopy]; ok {
+				t.lruList.Remove(entry.elem)
+				delete(t.lruMap, keyCopy)
+			}
+			t.lruMu.Unlock()
+		}
+		sh.data[keyCopy] = valCopy
+		atomic.AddInt64(&t.memoryUsed, newSize)
+		atomic.StoreInt32(&t.dirty, 1)
+
 		t.lruMu.Lock()
-		if entry, ok := t.lruMap[keyCopy]; ok {
-			t.lruList.Remove(entry.elem)
-			delete(t.lruMap, keyCopy)
+		entry := &lruEntry{
+			key:  keyCopy,
+			size: newSize,
 		}
+		entry.elem = t.lruList.PushFront(entry)
+		t.lruMap[keyCopy] = entry
 		t.lruMu.Unlock()
+
+		sh.mu.Unlock()
+		return nil
 	}
-	newSize := int64(len(key) + len(valCopy))
-	sizeDelta := newSize - oldSize
-
-	// Check memory limit and evict if necessary
-	if t.memoryLimit > 0 && t.memoryUsed+sizeDelta > t.memoryLimit {
-		if err := t.evictToMakeSpace(sizeDelta); err != nil {
-			return err
-		}
-	}
-
-	t.memStorage[keyCopy] = valCopy
-	t.memoryUsed += sizeDelta
-	t.dirty = true
-
-	// Add to LRU front (most recently used)
-	t.lruMu.Lock()
-	entry := &lruEntry{
-		key:  keyCopy,
-		size: newSize,
-	}
-	entry.elem = t.lruList.PushFront(entry)
-	t.lruMap[keyCopy] = entry
-	t.lruMu.Unlock()
-
-	return nil
 }
 
-// PutBatch inserts or updates multiple key-value pairs in a single locked
-// operation.  It amortizes mutex overhead across the batch and is atomic with
-// respect to memory-limit failures (no writes are applied if eviction fails).
-// PutBatch inserts or updates multiple key-value pairs in a single locked
-// operation.  It amortizes mutex overhead across the batch and is atomic with
-// respect to memory-limit failures (no writes are applied if eviction fails).
+// PutBatch inserts or updates multiple key-value pairs.  It groups keys by
+// shard, acquires shard locks in deterministic order to avoid deadlock, and
+// applies writes atomically with respect to memory-limit failures.
 func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 	if len(keys) != len(values) {
 		return errors.New("key and value count mismatch")
@@ -415,8 +414,6 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 		return nil
 	}
 
-	// Pre-allocate copies and validate inputs outside t.mu to shorten the
-	// critical section and reduce writer-writer contention on hot tables.
 	keyCopies := make([]string, len(keys))
 	valCopies := make([][]byte, len(keys))
 	for i, key := range keys {
@@ -434,101 +431,146 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 		copy(valCopies[i], values[i])
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Calculate total size delta.
-	var totalDelta int64
-	for i, key := range keys {
-		oldSize := int64(0)
-		if oldVal, exists := t.memStorage[keyCopies[i]]; exists {
-			oldSize = int64(len(key) + len(oldVal))
-		}
-		newSize := int64(len(key) + len(values[i]))
-		totalDelta += newSize - oldSize
+	// Group indices by shard.
+	type shardWork struct {
+		indices []int
+	}
+	shardWorks := make([]shardWork, numShards)
+	for i, kc := range keyCopies {
+		idx := shardIndex(kc)
+		shardWorks[idx].indices = append(shardWorks[idx].indices, i)
 	}
 
-	// Check memory limit once for the entire batch.
-	if t.memoryLimit > 0 && t.memoryUsed+totalDelta > t.memoryLimit {
-		if err := t.evictToMakeSpace(totalDelta); err != nil {
-			return err
+	neededShards := make([]int, 0, numShards)
+	for i, sw := range shardWorks {
+		if len(sw.indices) > 0 {
+			neededShards = append(neededShards, i)
 		}
 	}
+	sort.Ints(neededShards)
 
-	// Apply all writes and batch LRU updates under a single lruMu lock.
-	t.lruMu.Lock()
-	for i := range keys {
-		keyCopy := keyCopies[i]
-		valCopy := valCopies[i]
+	// Retry loop: compute delta, evict if needed, apply.
+	for {
+		for _, si := range neededShards {
+			t.shards[si].mu.Lock()
+		}
 
-		delete(t.evictedKeys, keyCopy)
-
-		if oldVal, exists := t.memStorage[keyCopy]; exists {
-			t.memoryUsed -= int64(len(keys[i]) + len(oldVal))
-			if entry, ok := t.lruMap[keyCopy]; ok {
-				t.lruList.Remove(entry.elem)
-				delete(t.lruMap, keyCopy)
+		var totalDelta int64
+		for _, si := range neededShards {
+			for _, idx := range shardWorks[si].indices {
+				oldSize := int64(0)
+				if oldVal, exists := t.shards[si].data[keyCopies[idx]]; exists {
+					oldSize = int64(len(keyCopies[idx]) + len(oldVal))
+				}
+				totalDelta += int64(len(keyCopies[idx])+len(valCopies[idx])) - oldSize
 			}
 		}
 
-		t.memStorage[keyCopy] = valCopy
-		t.memoryUsed += int64(len(keyCopy) + len(valCopy))
-		t.dirty = true
-
-		entry := &lruEntry{
-			key:  keyCopy,
-			size: int64(len(keys[i]) + len(valCopy)),
+		limit := atomic.LoadInt64(&t.memoryLimit)
+		if limit > 0 && atomic.LoadInt64(&t.memoryUsed)+totalDelta > limit {
+			for _, si := range neededShards {
+				t.shards[si].mu.Unlock()
+			}
+			if err := t.evictToMakeSpace(totalDelta); err != nil {
+				return err
+			}
+			continue
 		}
-		entry.elem = t.lruList.PushFront(entry)
-		t.lruMap[keyCopy] = entry
-	}
-	t.lruMu.Unlock()
 
-	return nil
+		t.lruMu.Lock()
+		for _, si := range neededShards {
+			for _, idx := range shardWorks[si].indices {
+				kc := keyCopies[idx]
+				vc := valCopies[idx]
+
+				delete(t.shards[si].evicted, kc)
+				if oldVal, exists := t.shards[si].data[kc]; exists {
+					atomic.AddInt64(&t.memoryUsed, -int64(len(kc)+len(oldVal)))
+					if entry, ok := t.lruMap[kc]; ok {
+						t.lruList.Remove(entry.elem)
+						delete(t.lruMap, kc)
+					}
+				}
+				t.shards[si].data[kc] = vc
+				atomic.AddInt64(&t.memoryUsed, int64(len(kc)+len(vc)))
+				atomic.StoreInt32(&t.dirty, 1)
+
+				entry := &lruEntry{
+					key:  kc,
+					size: int64(len(kc) + len(vc)),
+				}
+				entry.elem = t.lruList.PushFront(entry)
+				t.lruMap[kc] = entry
+			}
+		}
+		t.lruMu.Unlock()
+
+		for _, si := range neededShards {
+			t.shards[si].mu.Unlock()
+		}
+		return nil
+	}
 }
-// DeleteBatch removes multiple keys in a single locked operation.
-// DeleteBatch removes multiple keys in a single locked operation.
+
+// DeleteBatch removes multiple keys in a single operation.
 func (t *BTree) DeleteBatch(keys [][]byte) error {
 	if len(keys) == 0 {
 		return nil
 	}
 
-	// Pre-compute key strings outside t.mu to shorten the critical section.
 	keyCopies := make([]string, len(keys))
 	for i, key := range keys {
 		keyCopies[i] = string(key)
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	shardWorks := make([][]string, numShards)
+	for _, kc := range keyCopies {
+		idx := shardIndex(kc)
+		shardWorks[idx] = append(shardWorks[idx], kc)
+	}
 
-	// Batch LRU updates under a single lruMu lock.
-	t.lruMu.Lock()
-	for _, keyStr := range keyCopies {
-		if val, exists := t.memStorage[keyStr]; exists {
-			delete(t.memStorage, keyStr)
-			t.memoryUsed -= int64(len(keyStr) + len(val))
-			t.dirty = true
-			if entry, ok := t.lruMap[keyStr]; ok {
-				t.lruList.Remove(entry.elem)
-				delete(t.lruMap, keyStr)
-			}
+	neededShards := make([]int, 0, numShards)
+	for i, work := range shardWorks {
+		if len(work) > 0 {
+			neededShards = append(neededShards, i)
 		}
-		delete(t.evictedKeys, keyStr)
+	}
+	sort.Ints(neededShards)
+
+	for _, si := range neededShards {
+		t.shards[si].mu.Lock()
+	}
+
+	t.lruMu.Lock()
+	for _, si := range neededShards {
+		for _, kc := range shardWorks[si] {
+			if val, exists := t.shards[si].data[kc]; exists {
+				delete(t.shards[si].data, kc)
+				atomic.AddInt64(&t.memoryUsed, -int64(len(kc)+len(val)))
+				atomic.StoreInt32(&t.dirty, 1)
+				if entry, ok := t.lruMap[kc]; ok {
+					t.lruList.Remove(entry.elem)
+					delete(t.lruMap, kc)
+				}
+			}
+			delete(t.shards[si].evicted, kc)
+		}
 	}
 	t.lruMu.Unlock()
 
+	for _, si := range neededShards {
+		t.shards[si].mu.Unlock()
+	}
 	return nil
 }
+
 func (t *BTree) evictToMakeSpace(needed int64) error {
-	// If we need more space than the limit itself, we can't satisfy
-	if needed > t.memoryLimit {
+	limit := atomic.LoadInt64(&t.memoryLimit)
+	if needed > limit {
 		return ErrMemoryLimit
 	}
 
-	// Keep evicting until we have enough space
-	for t.memoryUsed+needed > t.memoryLimit {
-		// Get least recently used entry
+	for atomic.LoadInt64(&t.memoryUsed)+needed > limit {
 		t.lruMu.Lock()
 		elem := t.lruList.Back()
 		if elem == nil {
@@ -541,62 +583,88 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 		delete(t.lruMap, evictKey)
 		t.lruMu.Unlock()
 
-		// Flush to disk before evicting (only if dirty)
-		if t.dirty {
+		if atomic.LoadInt32(&t.dirty) != 0 {
 			if err := t.flushInternal(); err != nil {
 				return fmt.Errorf("failed to flush during eviction: %w", err)
 			}
 		}
 
-		// Remove from memory but track as evicted (data preserved on disk via flush)
-		if val, ok := t.memStorage[evictKey]; ok {
-			t.memoryUsed -= int64(len(evictKey) + len(val))
-			delete(t.memStorage, evictKey)
-			t.evictedKeys[evictKey] = true
+		sh := &t.shards[shardIndex(evictKey)]
+		sh.mu.Lock()
+		if val, ok := sh.data[evictKey]; ok {
+			atomic.AddInt64(&t.memoryUsed, -int64(len(evictKey)+len(val)))
+			delete(sh.data, evictKey)
+			sh.evicted[evictKey] = true
 		}
+		sh.mu.Unlock()
 	}
 
-	if t.memoryUsed+needed > t.memoryLimit {
+	if atomic.LoadInt64(&t.memoryUsed)+needed > limit {
 		return ErrMemoryLimit
 	}
-
 	return nil
 }
 
-// flushInternal flushes data to disk pages (must be called with lock held)
+// flushInternal flushes data to disk pages.  It acquires all shard RLocks to
+// read the current memStorage snapshot, then writes to the buffer pool.
 func (t *BTree) flushInternal() error {
-	if !t.dirty {
+	if atomic.LoadInt32(&t.dirty) == 0 {
 		return nil
 	}
 
-	// Serialize all key-value pairs.
-	// When there are no evicted keys we stream directly from memStorage to
-	// avoid allocating a second map and copying every entry.
+	t.flushMu.Lock()
+	defer t.flushMu.Unlock()
+
+	// Re-check dirty after acquiring flushMu.
+	if atomic.LoadInt32(&t.dirty) == 0 {
+		return nil
+	}
+
+	// Acquire all shard RLocks in order for a consistent snapshot.
+	for i := 0; i < numShards; i++ {
+		t.shards[i].mu.RLock()
+	}
+
+	// Determine whether any shard has evicted keys.
+	hasEvicted := false
+	memCount := 0
+	for i := 0; i < numShards; i++ {
+		memCount += len(t.shards[i].data)
+		if len(t.shards[i].evicted) > 0 {
+			hasEvicted = true
+		}
+	}
+
 	var kvBuf bytes.Buffer
 	var count uint32
 	var lenBuf [4]byte
 
-	if len(t.evictedKeys) == 0 {
-		count = uint32(len(t.memStorage))
-		for k, v := range t.memStorage {
-			key := []byte(k)
-			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
-			kvBuf.Write(lenBuf[:2])
-			kvBuf.Write(key)
-			binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
-			kvBuf.Write(lenBuf[:4])
-			kvBuf.Write(v)
+	if !hasEvicted {
+		count = uint32(memCount)
+		for i := 0; i < numShards; i++ {
+			for k, v := range t.shards[i].data {
+				key := []byte(k)
+				binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
+				kvBuf.Write(lenBuf[:2])
+				kvBuf.Write(key)
+				binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
+				kvBuf.Write(lenBuf[:4])
+				kvBuf.Write(v)
+			}
 		}
 	} else {
-		toSerialize := make(map[string][]byte, len(t.memStorage)+len(t.evictedKeys))
+		toSerialize := make(map[string][]byte, memCount)
 		diskData := t.readKVFromPages()
 		for k, v := range diskData {
-			if t.evictedKeys[k] {
+			sh := &t.shards[shardIndex(k)]
+			if sh.evicted[k] {
 				toSerialize[k] = v
 			}
 		}
-		for k, v := range t.memStorage {
-			toSerialize[k] = v
+		for i := 0; i < numShards; i++ {
+			for k, v := range t.shards[i].data {
+				toSerialize[k] = v
+			}
 		}
 		count = uint32(len(toSerialize))
 		for k, v := range toSerialize {
@@ -610,12 +678,15 @@ func (t *BTree) flushInternal() error {
 		}
 	}
 
+	for i := 0; i < numShards; i++ {
+		t.shards[i].mu.RUnlock()
+	}
+
 	kvData := kvBuf.Bytes()
 
-	// Calculate how many overflow pages we need
+	// Calculate overflow pages
 	overflowCount := uint32(0)
 	rootHeaderSize := 8
-
 	rootDataSpace := usablePageSize - rootHeaderSize
 	if rootDataSpace < 0 {
 		rootDataSpace = 0
@@ -624,7 +695,6 @@ func (t *BTree) flushInternal() error {
 	if len(kvData) > rootDataSpace {
 		remaining := len(kvData) - rootDataSpace
 		overflowCount = uint32((remaining + usablePageSize - 1) / usablePageSize)
-
 		for {
 			rootHeaderSize = 8 + 4*int(overflowCount)
 			rootDataSpace = usablePageSize - rootHeaderSize
@@ -645,12 +715,9 @@ func (t *BTree) flushInternal() error {
 		}
 	}
 
-	// Release extra overflow pages
 	for len(t.overflowPages) > int(overflowCount) {
 		t.overflowPages = t.overflowPages[:len(t.overflowPages)-1]
 	}
-
-	// Allocate new overflow pages if needed
 	for len(t.overflowPages) < int(overflowCount) {
 		newPage, err := t.pool.NewPage(storage.PageTypeLeaf)
 		if err != nil {
@@ -660,7 +727,6 @@ func (t *BTree) flushInternal() error {
 		t.pool.Unpin(newPage)
 	}
 
-	// Write root page
 	root, err := t.pool.GetPage(t.rootPageID)
 	if err != nil {
 		return err
@@ -683,7 +749,6 @@ func (t *BTree) flushInternal() error {
 	}
 
 	rootHeaderSize = 8 + 4*int(overflowCount)
-	// Cap header size to prevent overflow - only so many page IDs fit in root
 	if rootHeaderSize > usablePageSize {
 		rootHeaderSize = usablePageSize
 	}
@@ -721,7 +786,7 @@ func (t *BTree) flushInternal() error {
 		t.pool.Unpin(pg)
 	}
 
-	t.dirty = false
+	atomic.StoreInt32(&t.dirty, 0)
 	return nil
 }
 
@@ -731,32 +796,28 @@ func (t *BTree) Delete(key []byte) error {
 		return ErrInvalidKey
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	keyStr := string(key)
-	val, ok := t.memStorage[keyStr]
-	if ok {
-		// Update memory tracking
-		t.memoryUsed -= int64(len(keyStr) + len(val))
+	sh := &t.shards[shardIndex(keyStr)]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 
-		// Remove from LRU
+	if val, ok := sh.data[keyStr]; ok {
+		atomic.AddInt64(&t.memoryUsed, -int64(len(keyStr)+len(val)))
+		delete(sh.data, keyStr)
+		atomic.StoreInt32(&t.dirty, 1)
+
 		t.lruMu.Lock()
 		if entry, ok := t.lruMap[keyStr]; ok {
 			t.lruList.Remove(entry.elem)
 			delete(t.lruMap, keyStr)
 		}
 		t.lruMu.Unlock()
-
-		delete(t.memStorage, keyStr)
-		t.dirty = true
 		return nil
 	}
 
-	// Check if key was evicted to disk
-	if t.evictedKeys[keyStr] {
-		delete(t.evictedKeys, keyStr)
-		t.dirty = true
+	if sh.evicted[keyStr] {
+		delete(sh.evicted, keyStr)
+		atomic.StoreInt32(&t.dirty, 1)
 		return nil
 	}
 
@@ -775,36 +836,48 @@ type Iterator struct {
 
 // Scan returns an iterator for range scanning
 func (t *BTree) Scan(startKey, endKey []byte) (*Iterator, error) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+	// Acquire all shard RLocks in order for a consistent snapshot.
+	for i := 0; i < numShards; i++ {
+		t.shards[i].mu.RLock()
+	}
 
 	seen := make(map[string]bool)
 	var keys, values [][]byte
-	for k, v := range t.memStorage {
-		kb := []byte(k)
-
-		if startKey != nil && bytes.Compare(kb, startKey) < 0 {
-			continue
+	for i := 0; i < numShards; i++ {
+		for k, v := range t.shards[i].data {
+			kb := []byte(k)
+			if startKey != nil && bytes.Compare(kb, startKey) < 0 {
+				continue
+			}
+			if endKey != nil && bytes.Compare(kb, endKey) > 0 {
+				continue
+			}
+			keyCopy := make([]byte, len(kb))
+			copy(keyCopy, kb)
+			valCopy := make([]byte, len(v))
+			copy(valCopy, v)
+			keys = append(keys, keyCopy)
+			values = append(values, valCopy)
+			seen[k] = true
 		}
-		if endKey != nil && bytes.Compare(kb, endKey) > 0 {
-			continue
-		}
-
-		keyCopy := make([]byte, len(kb))
-		copy(keyCopy, kb)
-		valCopy := make([]byte, len(v))
-		copy(valCopy, v)
-
-		keys = append(keys, keyCopy)
-		values = append(values, valCopy)
-		seen[k] = true
 	}
 
-	// Include evicted entries from disk
-	if len(t.evictedKeys) > 0 {
+	// Copy evicted key flags before releasing locks.
+	evicted := make(map[string]bool)
+	for i := 0; i < numShards; i++ {
+		for k := range t.shards[i].evicted {
+			evicted[k] = true
+		}
+	}
+
+	for i := 0; i < numShards; i++ {
+		t.shards[i].mu.RUnlock()
+	}
+
+	if len(evicted) > 0 {
 		diskData := t.readKVFromPages()
 		for k, v := range diskData {
-			if !t.evictedKeys[k] || seen[k] {
+			if !evicted[k] || seen[k] {
 				continue
 			}
 			kb := []byte(k)
@@ -823,7 +896,6 @@ func (t *BTree) Scan(startKey, endKey []byte) (*Iterator, error) {
 		}
 	}
 
-	// Sort keys using standard library sort (faster than bubble sort)
 	sortKeyValues(keys, values)
 
 	return &Iterator{
@@ -899,15 +971,24 @@ func (it *Iterator) First() bool {
 
 // Size returns the number of keys in the tree (including evicted keys on disk)
 func (t *BTree) Size() int {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return len(t.memStorage) + len(t.evictedKeys)
+	for i := 0; i < numShards; i++ {
+		t.shards[i].mu.RLock()
+	}
+	defer func() {
+		for i := 0; i < numShards; i++ {
+			t.shards[i].mu.RUnlock()
+		}
+	}()
+
+	sz := 0
+	for i := 0; i < numShards; i++ {
+		sz += len(t.shards[i].data) + len(t.shards[i].evicted)
+	}
+	return sz
 }
 
 // Flush writes all in-memory data to disk pages (with multi-page overflow support)
 func (t *BTree) Flush() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	return t.flushInternal()
 }
 

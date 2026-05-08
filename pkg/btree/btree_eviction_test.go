@@ -33,7 +33,13 @@ func TestEvictionPreservesData(t *testing.T) {
 	}
 
 	// Some entries should have been evicted
-	if len(bt.evictedKeys) == 0 {
+	evictedCount := 0
+	for i := 0; i < numShards; i++ {
+		bt.shards[i].mu.RLock()
+		evictedCount += len(bt.shards[i].evicted)
+		bt.shards[i].mu.RUnlock()
+	}
+	if evictedCount == 0 {
 		t.Log("No eviction occurred - memory limit may be too high")
 	}
 
@@ -123,10 +129,16 @@ func TestEvictionDeleteEvictedKey(t *testing.T) {
 
 	// Find an evicted key
 	var evictedKey string
-	for k := range bt.evictedKeys {
-		evictedKey = k
-		break
+	for i := 0; i < numShards; i++ {
+		bt.shards[i].mu.RLock()
+		for k := range bt.shards[i].evicted {
+			evictedKey = k
+			bt.shards[i].mu.RUnlock()
+			goto found
+		}
+		bt.shards[i].mu.RUnlock()
 	}
+found:
 
 	if evictedKey == "" {
 		t.Skip("No keys were evicted")
@@ -163,10 +175,16 @@ func TestEvictionPutOverwritesEvictedKey(t *testing.T) {
 	}
 
 	var evictedKey string
-	for k := range bt.evictedKeys {
-		evictedKey = k
-		break
+	for i := 0; i < numShards; i++ {
+		bt.shards[i].mu.RLock()
+		for k := range bt.shards[i].evicted {
+			evictedKey = k
+			bt.shards[i].mu.RUnlock()
+			goto found2
+		}
+		bt.shards[i].mu.RUnlock()
 	}
+found2:
 	if evictedKey == "" {
 		t.Skip("No keys were evicted")
 	}
@@ -178,7 +196,11 @@ func TestEvictionPutOverwritesEvictedKey(t *testing.T) {
 	}
 
 	// Should no longer be in evictedKeys
-	if bt.evictedKeys[evictedKey] {
+	sh := &bt.shards[shardIndex(evictedKey)]
+	sh.mu.RLock()
+	stillEvicted := sh.evicted[evictedKey]
+	sh.mu.RUnlock()
+	if stillEvicted {
 		t.Error("Key should not be in evictedKeys after Put overwrite")
 	}
 
