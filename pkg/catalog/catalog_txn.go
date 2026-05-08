@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"runtime"
 	"strconv"
+	"sync"
 
+	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
@@ -290,10 +292,41 @@ func (c *Catalog) FlushTableTrees() error {
 
 // flushTableTreesLocked is the lock-free internal version. Must be called with mu held.
 func (c *Catalog) flushTableTreesLocked() error {
-	for tableName, tree := range c.tableTrees {
-		if err := tree.Flush(); err != nil {
-			return fmt.Errorf("failed to flush table %s: %w", tableName, err)
-		}
+	type item struct {
+		name string
+		tree *btree.BTree
+	}
+	items := make([]item, 0, len(c.tableTrees))
+	for name, tree := range c.tableTrees {
+		items = append(items, item{name, tree})
+	}
+
+	workers := runtime.GOMAXPROCS(0)
+	if workers > len(items) {
+		workers = len(items)
+	}
+
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(items))
+	sem := make(chan struct{}, workers)
+
+	for _, it := range items {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(name string, tree *btree.BTree) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := tree.Flush(); err != nil {
+				errChan <- fmt.Errorf("failed to flush table %s: %w", name, err)
+			}
+		}(it.name, it.tree)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	for err := range errChan {
+		return err
 	}
 	return nil
 }
