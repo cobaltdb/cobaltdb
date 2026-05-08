@@ -792,8 +792,6 @@ func (c *Catalog) IsTransactionActive() bool {
 }
 
 func (c *Catalog) Savepoint(name string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !c.isCurrentTxnActive() {
 		return fmt.Errorf("SAVEPOINT can only be used within a transaction")
 	}
