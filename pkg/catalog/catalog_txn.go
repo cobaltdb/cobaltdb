@@ -899,13 +899,12 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 }
 
 func (c *Catalog) ReleaseSavepoint(name string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !c.isCurrentTxnActive() {
 		return fmt.Errorf("RELEASE SAVEPOINT can only be used within a transaction")
 	}
 
-	// Find and remove the savepoint
+	// Find and remove the savepoint.  All savepoint state lives in the
+	// per-transaction struct (ts.savepoints), so no catalog lock is needed.
 	sps := c.getCurrentTxnSavepoints()
 	for i := len(sps) - 1; i >= 0; i-- {
 		if strings.EqualFold(sps[i].name, name) {
