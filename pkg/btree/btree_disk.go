@@ -3,8 +3,10 @@ package btree
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
@@ -15,19 +17,22 @@ type DiskBTree struct {
 	rootPageID uint32
 	order      int
 	mu         sync.RWMutex
+	size       int64 // atomic: number of entries in the tree
 }
 
 // NewDiskBTree creates a new disk-based B+Tree
 func NewDiskBTree(pm *storage.PageManager) (*DiskBTree, error) {
 	// Check if there's an existing root page
 	meta := pm.GetMeta()
+	tree := &DiskBTree{
+		pm:    pm,
+		order: 100, // Default order
+	}
 	if meta.RootPageID != 0 {
 		// Existing tree
-		return &DiskBTree{
-			pm:         pm,
-			rootPageID: meta.RootPageID,
-			order:      100, // Default order
-		}, nil
+		tree.rootPageID = meta.RootPageID
+		tree.size = int64(tree.countLeafEntries())
+		return tree, nil
 	}
 
 	// Create new root page (leaf)
@@ -43,11 +48,8 @@ func NewDiskBTree(pm *storage.PageManager) (*DiskBTree, error) {
 		return nil, fmt.Errorf("failed to update meta: %w", err)
 	}
 
-	return &DiskBTree{
-		pm:         pm,
-		rootPageID: rootPage.ID(),
-		order:      100,
-	}, nil
+	tree.rootPageID = rootPage.ID()
+	return tree, nil
 }
 
 // Get retrieves a value by key
@@ -220,14 +222,22 @@ func (t *DiskBTree) Put(key, value []byte) error {
 	t.pm.GetPool().Unpin(rootPage)
 
 	// Insert into tree
-	return t.insertIntoPage(t.rootPageID, key, value)
-}
-
-// insertIntoPage inserts a key-value pair into the appropriate page
-func (t *DiskBTree) insertIntoPage(pageID uint32, key, value []byte) error {
-	page, err := t.pm.GetPage(pageID)
+	isNew, err := t.insertIntoPage(t.rootPageID, key, value)
 	if err != nil {
 		return err
+	}
+	if isNew {
+		atomic.AddInt64(&t.size, 1)
+	}
+	return nil
+}
+
+// insertIntoPage inserts a key-value pair into the appropriate page.
+// Returns true if a new key was inserted (not an update).
+func (t *DiskBTree) insertIntoPage(pageID uint32, key, value []byte) (bool, error) {
+	page, err := t.pm.GetPage(pageID)
+	if err != nil {
+		return false, err
 	}
 	defer t.pm.GetPool().Unpin(page)
 
@@ -244,7 +254,7 @@ func (t *DiskBTree) insertIntoPage(pageID uint32, key, value []byte) error {
 	// Check if child needs splitting
 	childPage, err := t.pm.GetPage(childPageID)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	childEntries := t.readEntries(childPage.Data())
@@ -253,13 +263,13 @@ func (t *DiskBTree) insertIntoPage(pageID uint32, key, value []byte) error {
 		newKey, newPageID, err := t.splitChild(page, childPage)
 		if err != nil {
 			t.pm.GetPool().Unpin(childPage)
-			return err
+			return false, err
 		}
 
 		// Update parent with new key
 		if err := t.insertIntoInternal(page, newKey, newPageID); err != nil {
 			t.pm.GetPool().Unpin(childPage)
-			return err
+			return false, err
 		}
 
 		// Determine which child to use
@@ -272,8 +282,9 @@ func (t *DiskBTree) insertIntoPage(pageID uint32, key, value []byte) error {
 	return t.insertIntoPage(childPageID, key, value)
 }
 
-// insertIntoLeaf inserts into a leaf page
-func (t *DiskBTree) insertIntoLeaf(page *storage.CachedPage, key, value []byte) error {
+// insertIntoLeaf inserts into a leaf page.
+// Returns true if a new key was inserted (not an update).
+func (t *DiskBTree) insertIntoLeaf(page *storage.CachedPage, key, value []byte) (bool, error) {
 	entries := t.readEntries(page.Data())
 
 	// Check if key already exists (update)
@@ -281,7 +292,7 @@ func (t *DiskBTree) insertIntoLeaf(page *storage.CachedPage, key, value []byte) 
 		if bytes.Equal(entry.Key, key) {
 			// Update existing entry
 			entries[i].Value = value
-			return t.writeEntries(page, entries)
+			return false, t.writeEntries(page, entries)
 		}
 	}
 
@@ -299,7 +310,7 @@ func (t *DiskBTree) insertIntoLeaf(page *storage.CachedPage, key, value []byte) 
 	// Insert at position
 	entries = append(entries[:insertPos], append([]Entry{newEntry}, entries[insertPos:]...)...)
 
-	return t.writeEntries(page, entries)
+	return true, t.writeEntries(page, entries)
 }
 
 // insertIntoInternal inserts a key into an internal node
@@ -435,14 +446,22 @@ func (t *DiskBTree) Delete(key []byte) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	return t.deleteFromPage(t.rootPageID, key)
-}
-
-// deleteFromPage deletes a key from a page
-func (t *DiskBTree) deleteFromPage(pageID uint32, key []byte) error {
-	page, err := t.pm.GetPage(pageID)
+	deleted, err := t.deleteFromPage(t.rootPageID, key)
 	if err != nil {
 		return err
+	}
+	if deleted {
+		atomic.AddInt64(&t.size, -1)
+	}
+	return nil
+}
+
+// deleteFromPage deletes a key from a page.
+// Returns true if the key was found and deleted.
+func (t *DiskBTree) deleteFromPage(pageID uint32, key []byte) (bool, error) {
+	page, err := t.pm.GetPage(pageID)
+	if err != nil {
+		return false, err
 	}
 	defer t.pm.GetPool().Unpin(page)
 
@@ -458,8 +477,9 @@ func (t *DiskBTree) deleteFromPage(pageID uint32, key []byte) error {
 	return t.deleteFromPage(childPageID, key)
 }
 
-// deleteFromLeaf deletes a key from a leaf page
-func (t *DiskBTree) deleteFromLeaf(page *storage.CachedPage, key []byte) error {
+// deleteFromLeaf deletes a key from a leaf page.
+// Returns true if the key was found and deleted.
+func (t *DiskBTree) deleteFromLeaf(page *storage.CachedPage, key []byte) (bool, error) {
 	entries := t.readEntries(page.Data())
 
 	// Find and remove entry
@@ -467,11 +487,89 @@ func (t *DiskBTree) deleteFromLeaf(page *storage.CachedPage, key []byte) error {
 		if bytes.Equal(entry.Key, key) {
 			// Remove entry
 			entries = append(entries[:i], entries[i+1:]...)
-			return t.writeEntries(page, entries)
+			return true, t.writeEntries(page, entries)
 		}
 	}
 
-	return ErrKeyNotFound
+	return false, ErrKeyNotFound
+}
+
+// PutBatch inserts or updates multiple key-value pairs.
+func (t *DiskBTree) PutBatch(keys [][]byte, values [][]byte) error {
+	if len(keys) != len(values) {
+		return fmt.Errorf("key and value count mismatch")
+	}
+	for i := range keys {
+		if err := t.Put(keys[i], values[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteBatch removes multiple keys from the tree.
+func (t *DiskBTree) DeleteBatch(keys [][]byte) error {
+	for _, key := range keys {
+		if err := t.Delete(key); err != nil && !errors.Is(err, ErrKeyNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
+// Size returns the number of entries in the tree.
+func (t *DiskBTree) Size() int {
+	return int(atomic.LoadInt64(&t.size))
+}
+
+// Flush forces all dirty pages in the underlying buffer pool to disk.
+func (t *DiskBTree) Flush() error {
+	if pool := t.pm.GetPool(); pool != nil {
+		return pool.FlushAll()
+	}
+	return nil
+}
+
+// RootPageID returns the root page ID of the tree.
+func (t *DiskBTree) RootPageID() uint32 {
+	return t.rootPageID
+}
+
+// countLeafEntries traverses all leaf pages to count total entries.
+// Used to initialize size when opening an existing tree.
+func (t *DiskBTree) countLeafEntries() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	pageID := t.rootPageID
+	for {
+		page, err := t.pm.GetPage(pageID)
+		if err != nil {
+			return 0
+		}
+		data := page.Data()
+		pageType := storage.PageType(data[4])
+		if pageType == storage.PageTypeLeaf {
+			t.pm.GetPool().Unpin(page)
+			break
+		}
+		pageID = binary.LittleEndian.Uint32(data[8:12])
+		t.pm.GetPool().Unpin(page)
+	}
+
+	count := 0
+	for pageID != 0 {
+		page, err := t.pm.GetPage(pageID)
+		if err != nil {
+			break
+		}
+		entries := t.readEntries(page.Data())
+		count += len(entries)
+		nextID := binary.LittleEndian.Uint32(page.Data()[12:16])
+		t.pm.GetPool().Unpin(page)
+		pageID = nextID
+	}
+	return count
 }
 
 // Scan returns an iterator for range scanning
@@ -561,6 +659,14 @@ func (it *DiskIterator) Next() ([]byte, []byte, error) {
 // Close closes the iterator
 func (it *DiskIterator) Close() error {
 	return nil
+}
+
+// First resets the iterator to the first entry and returns true if there is one.
+func (it *DiskIterator) First() bool {
+	it.current = 0
+	it.entries = nil
+	it.idx = 0
+	return it.HasNext()
 }
 
 // findStartPage finds the leaf page containing startKey
