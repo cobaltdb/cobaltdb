@@ -640,17 +640,23 @@ func (t *BTree) flushInternal() error {
 	var lenBuf [4]byte
 
 	if !hasEvicted {
-		count = uint32(memCount)
+		keys := make([]string, 0, memCount)
 		for i := 0; i < numShards; i++ {
-			for k, v := range t.shards[i].data {
-				key := []byte(k)
-				binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
-				kvBuf.Write(lenBuf[:2])
-				kvBuf.Write(key)
-				binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
-				kvBuf.Write(lenBuf[:4])
-				kvBuf.Write(v)
+			for k := range t.shards[i].data {
+				keys = append(keys, k)
 			}
+		}
+		sort.Strings(keys)
+		count = uint32(len(keys))
+		for _, k := range keys {
+			v := t.shards[shardIndex(k)].data[k]
+			key := []byte(k)
+			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
+			kvBuf.Write(lenBuf[:2])
+			kvBuf.Write(key)
+			binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
+			kvBuf.Write(lenBuf[:4])
+			kvBuf.Write(v)
 		}
 	} else {
 		toSerialize := make(map[string][]byte, memCount)
@@ -666,8 +672,14 @@ func (t *BTree) flushInternal() error {
 				toSerialize[k] = v
 			}
 		}
-		count = uint32(len(toSerialize))
-		for k, v := range toSerialize {
+		keys := make([]string, 0, len(toSerialize))
+		for k := range toSerialize {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		count = uint32(len(keys))
+		for _, k := range keys {
+			v := toSerialize[k]
 			key := []byte(k)
 			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
 			kvBuf.Write(lenBuf[:2])
