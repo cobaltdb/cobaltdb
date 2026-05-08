@@ -245,6 +245,30 @@ func (bp *BufferPool) FlushAll() error {
 	return bp.backend.Sync()
 }
 
+// FlushDirty writes only dirty pages to disk and syncs the backend.
+// Unlike FlushAll, it does not hold bp.mu during I/O, allowing concurrent
+// GetPage operations while dirty pages are being flushed. This is safe
+// under the checkpoint protocol because flushMu (held by DB.Checkpoint)
+// serializes with writers, so no new page modifications can occur during
+// the flush+sync window.
+func (bp *BufferPool) FlushDirty() error {
+	bp.mu.RLock()
+	dirty := make([]*CachedPage, 0, len(bp.pages))
+	for _, page := range bp.pages {
+		if page.IsDirty() {
+			dirty = append(dirty, page)
+		}
+	}
+	bp.mu.RUnlock()
+
+	for _, page := range dirty {
+		if err := bp.FlushPage(page); err != nil {
+			return err
+		}
+	}
+	return bp.backend.Sync()
+}
+
 // Unpin decrements the pin count of a page
 func (bp *BufferPool) Unpin(page *CachedPage) {
 	page.Unpin()

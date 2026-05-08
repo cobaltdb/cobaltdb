@@ -135,7 +135,7 @@ func (db *DB) Checkpoint() error {
 	if db.wal != nil {
 		return db.wal.Checkpoint(db.pool)
 	}
-	return db.pool.FlushAll()
+	return db.pool.FlushDirty()
 }
 
 // BeginHotBackup starts a hot backup (implements backup.Database)

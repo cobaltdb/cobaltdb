@@ -484,9 +484,10 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 		return ErrWALClosed
 	}
 
-	// 1. Flush all dirty pages from buffer pool
-	if err := bp.FlushAll(); err != nil {
-		return fmt.Errorf("failed to flush pages: %w", err)
+	// 1. Flush dirty pages from buffer pool (incremental — skips clean pages
+	// and does not hold bp.mu during I/O, reducing contention).
+	if err := bp.FlushDirty(); err != nil {
+		return fmt.Errorf("failed to flush dirty pages: %w", err)
 	}
 
 	// 2. Write checkpoint record
