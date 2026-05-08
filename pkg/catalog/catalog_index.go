@@ -323,3 +323,60 @@ func (c *Catalog) DropIndex(name string) error {
 	}
 	return nil
 }
+
+// rebuildTableIndexesLocked rebuilds all regular B-tree indexes for a single
+// table by scanning the table data and repopulating each index.  Must be called
+// with c.mu held.
+func (c *Catalog) rebuildTableIndexesLocked(tableName string) error {
+	table, exists := c.tables[tableName]
+	if !exists {
+		return nil
+	}
+
+	tree, exists := c.tableTrees[tableName]
+	if !exists {
+		return nil
+	}
+
+	for idxName, idxDef := range c.indexes {
+		if idxDef.TableName != tableName {
+			continue
+		}
+
+		// Replace the index tree with a fresh one.
+		newTree, err := btree.NewBTree(c.pool)
+		if err != nil {
+			return fmt.Errorf("failed to create new index tree for %s: %w", idxName, err)
+		}
+
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return fmt.Errorf("failed to scan table %s for index rebuild: %w", tableName, err)
+		}
+		for iter.HasNext() {
+			key, valueData, iterErr := iter.Next()
+			if iterErr != nil {
+				iter.Close()
+				return fmt.Errorf("failed to read row during index rebuild: %w", iterErr)
+			}
+			row, err := decodeRow(valueData, len(table.Columns))
+			if err != nil {
+				continue
+			}
+			indexKey, ok := buildCompositeIndexKey(table, idxDef, row)
+			if ok {
+				if idxDef.Unique {
+					_ = newTree.Put([]byte(indexKey), key)
+				} else {
+					compoundKey := indexKey + "\x00" + string(key)
+					_ = newTree.Put([]byte(compoundKey), key)
+				}
+			}
+		}
+		iter.Close()
+
+		c.indexTrees[idxName] = newTree
+		idxDef.RootPageID = newTree.RootPageID()
+	}
+	return nil
+}

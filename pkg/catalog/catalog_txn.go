@@ -878,14 +878,13 @@ func (c *Catalog) indexKeyInPendingWrites(indexName string, key []byte) bool {
 // ReplayWALOps replays logical WAL operations (from txn.Manager commit) into
 // the primary B-trees.  This is called during database open after the catalog
 // has been loaded.  It restores committed data that may not have been flushed
-// to pages before a crash.
-//
-// NOTE: Index trees are NOT updated here because the WAL logical format only
-// stores primary table key/value pairs.  Indexes should be rebuilt after WAL
-// replay if strict consistency is required.
+// to pages before a crash.  After replay, all indexes for affected tables are
+// rebuilt so that index trees stay consistent with the recovered table data.
 func (c *Catalog) ReplayWALOps(ops []storage.WALReplayOp) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	affectedTables := make(map[string]struct{})
 
 	for _, op := range ops {
 		switch op.Type {
@@ -911,6 +910,7 @@ func (c *Catalog) ReplayWALOps(ops []storage.WALReplayOp) error {
 				continue
 			}
 			_ = tree.Put([]byte(parts[1]), value)
+			affectedTables[parts[0]] = struct{}{}
 
 		case storage.WALDelete:
 			if len(op.Data) < 4 {
@@ -930,6 +930,13 @@ func (c *Catalog) ReplayWALOps(ops []storage.WALReplayOp) error {
 				continue
 			}
 			_ = tree.Delete([]byte(parts[1]))
+			affectedTables[parts[0]] = struct{}{}
+		}
+	}
+
+	for tableName := range affectedTables {
+		if err := c.rebuildTableIndexesLocked(tableName); err != nil {
+			return fmt.Errorf("failed to rebuild indexes for %s: %w", tableName, err)
 		}
 	}
 	return nil
