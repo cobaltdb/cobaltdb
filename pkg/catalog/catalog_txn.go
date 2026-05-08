@@ -231,39 +231,102 @@ func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 }
 
 func (c *Catalog) CommitTransaction() error {
-	// Use RLock because commit only reads catalog maps (tableTrees, indexTrees)
-	// and writes to individual B-trees (each tree has its own mutex).  The
-	// shared legacy undoLog / savepoints are only touched when no per-goroutine
-	// transaction state exists.
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	ts := c.getCurrentTxn()
 
 	// When a txn.Manager bridge is active, commit through the Manager first.
 	// This performs conflict detection and updates the version store.
-	ts := c.getCurrentTxn()
 	if ts != nil {
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
 			if err := mt.Commit(); err != nil {
 				return fmt.Errorf("txn manager commit: %w", err)
 			}
-			// Apply any buffered writes to B-trees after Manager commit succeeds.
-			if err := c.applyPendingWritesLocked(ts); err != nil {
-				return fmt.Errorf("apply buffered writes: %w", err)
+
+			// Build batch maps from pending writes.
+			tableKeys := make(map[string][][]byte)
+			tableVals := make(map[string][][]byte)
+			idxPuts := make(map[string][][]byte)
+			idxPutVals := make(map[string][][]byte)
+			idxDels := make(map[string][][]byte)
+			for _, pw := range ts.pendingWrites {
+				tableKeys[pw.TreeName] = append(tableKeys[pw.TreeName], pw.Key)
+				tableVals[pw.TreeName] = append(tableVals[pw.TreeName], pw.Value)
+				for _, idx := range pw.IndexUpdates {
+					if idx.IsDelete {
+						idxDels[idx.IndexName] = append(idxDels[idx.IndexName], idx.Key)
+					} else {
+						idxPuts[idx.IndexName] = append(idxPuts[idx.IndexName], idx.Key)
+						idxPutVals[idx.IndexName] = append(idxPutVals[idx.IndexName], idx.Value)
+					}
+				}
+			}
+
+			// Snapshot tree references and WAL under a brief RLock.
+			c.mu.RLock()
+			wal := c.wal
+			tableTrees := make(map[string]*btree.BTree, len(tableKeys))
+			for name := range tableKeys {
+				if tree, ok := c.tableTrees[name]; ok {
+					tableTrees[name] = tree
+				}
+			}
+			indexTrees := make(map[string]*btree.BTree, len(idxPuts)+len(idxDels))
+			for name := range idxPuts {
+				if tree, ok := c.indexTrees[name]; ok {
+					indexTrees[name] = tree
+				}
+			}
+			for name := range idxDels {
+				if tree, ok := c.indexTrees[name]; ok {
+					indexTrees[name] = tree
+				}
+			}
+			c.mu.RUnlock()
+
+			// Apply writes without holding the catalog lock so DDL operations
+			// can proceed concurrently with B-tree mutations.
+			for name, keys := range tableKeys {
+				tree, exists := tableTrees[name]
+				if !exists {
+					return fmt.Errorf("partition tree %s not found", name)
+				}
+				if err := tree.PutBatch(keys, tableVals[name]); err != nil {
+					return fmt.Errorf("failed to apply buffered writes to %s: %w", name, err)
+				}
+			}
+			for name, keys := range idxPuts {
+				if tree, ok := indexTrees[name]; ok {
+					_ = tree.PutBatch(keys, idxPutVals[name])
+				}
+			}
+			for name, keys := range idxDels {
+				if tree, ok := indexTrees[name]; ok {
+					_ = tree.DeleteBatch(keys)
+				}
+			}
+			ts.pendingWrites = nil
+
+			// Skip writing a second WAL commit record when the txn.Manager
+			// already wrote one for this transaction.
+			if wal != nil && ts.txnActive {
+				record := &storage.WALRecord{
+					TxnID: ts.txnID,
+					Type:  storage.WALCommit,
+				}
+				if err := wal.Append(record); err != nil {
+					return err
+				}
 			}
 		}
 	}
 
-	// Skip writing a second WAL commit record when the txn.Manager already
-	// wrote one for this transaction (both share the same WAL instance).
+	// Legacy path: write WAL commit record when no Manager handled it.
 	managerHandledCommit := false
 	if ts != nil && ts.managerTxn != nil {
 		if _, ok := ts.managerTxn.(*txn.Transaction); ok {
 			managerHandledCommit = true
 		}
 	}
-
 	if c.wal != nil && ts != nil && ts.txnActive && !managerHandledCommit {
-		// Write commit record to WAL using the transaction's own ID.
 		record := &storage.WALRecord{
 			TxnID: ts.txnID,
 			Type:  storage.WALCommit,
@@ -272,8 +335,8 @@ func (c *Catalog) CommitTransaction() error {
 			return err
 		}
 	}
+
 	if ts == nil {
-		// Legacy single-transaction path: clear shared undo state.
 		c.undoLog = nil
 		c.savepoints = nil
 	}
@@ -792,59 +855,6 @@ func (c *Catalog) clearPendingWrites() {
 	if ts := c.getCurrentTxn(); ts != nil {
 		ts.pendingWrites = nil
 	}
-}
-
-// applyPendingWritesLocked applies buffered DML writes to B-trees at commit time.
-// Must be called with c.mu held.
-func (c *Catalog) applyPendingWritesLocked(ts *catalogTxnState) error {
-	// Batch table writes by tree name to amortize B-tree lock overhead.
-	tableKeys := make(map[string][][]byte)
-	tableVals := make(map[string][][]byte)
-	// Batch index updates by index name.
-	idxPuts := make(map[string][][]byte)
-	idxPutVals := make(map[string][][]byte)
-	idxDels := make(map[string][][]byte)
-
-	for _, pw := range ts.pendingWrites {
-		tableKeys[pw.TreeName] = append(tableKeys[pw.TreeName], pw.Key)
-		tableVals[pw.TreeName] = append(tableVals[pw.TreeName], pw.Value)
-		for _, idx := range pw.IndexUpdates {
-			if idx.IsDelete {
-				idxDels[idx.IndexName] = append(idxDels[idx.IndexName], idx.Key)
-			} else {
-				idxPuts[idx.IndexName] = append(idxPuts[idx.IndexName], idx.Key)
-				idxPutVals[idx.IndexName] = append(idxPutVals[idx.IndexName], idx.Value)
-			}
-		}
-	}
-
-	for treeName, keys := range tableKeys {
-		tree, exists := c.tableTrees[treeName]
-		if !exists {
-			return fmt.Errorf("partition tree %s not found", treeName)
-		}
-		if err := tree.PutBatch(keys, tableVals[treeName]); err != nil {
-			return fmt.Errorf("failed to apply buffered writes to %s: %w", treeName, err)
-		}
-	}
-
-	for idxName, keys := range idxPuts {
-		idxTree, exists := c.indexTrees[idxName]
-		if !exists {
-			continue
-		}
-		_ = idxTree.PutBatch(keys, idxPutVals[idxName])
-	}
-	for idxName, keys := range idxDels {
-		idxTree, exists := c.indexTrees[idxName]
-		if !exists {
-			continue
-		}
-		_ = idxTree.DeleteBatch(keys)
-	}
-
-	ts.pendingWrites = nil
-	return nil
 }
 
 // keyInPendingWrites reports whether the given table/key already exists in the
