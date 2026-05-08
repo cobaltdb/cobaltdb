@@ -410,9 +410,9 @@ func TestCoverage_LoadWithCorruptedIndex(t *testing.T) {
 
 	c := &Catalog{
 		tables:     make(map[string]*TableDef),
-		tableTrees: make(map[string]*btree.BTree),
+		tableTrees: make(map[string]btree.TreeStore),
 		indexes:    make(map[string]*IndexDef),
-		indexTrees: make(map[string]*btree.BTree),
+		indexTrees: make(map[string]btree.TreeStore),
 		tree:       catalogTree,
 		pool:       pool,
 	}
@@ -441,9 +441,9 @@ func TestCoverage_LoadWithMissingTableRef(t *testing.T) {
 
 	c := &Catalog{
 		tables:     make(map[string]*TableDef),
-		tableTrees: make(map[string]*btree.BTree),
+		tableTrees: make(map[string]btree.TreeStore),
 		indexes:    make(map[string]*IndexDef),
-		indexTrees: make(map[string]*btree.BTree),
+		indexTrees: make(map[string]btree.TreeStore),
 		tree:       catalogTree,
 		pool:       pool,
 	}

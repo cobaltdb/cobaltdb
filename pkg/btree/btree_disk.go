@@ -573,7 +573,7 @@ func (t *DiskBTree) countLeafEntries() int {
 }
 
 // Scan returns an iterator for range scanning
-func (t *DiskBTree) Scan(startKey, endKey []byte) (*DiskIterator, error) {
+func (t *DiskBTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 	return &DiskIterator{
 		tree:     t,
 		startKey: startKey,
@@ -592,10 +592,14 @@ type DiskIterator struct {
 	current  uint32 // Current page ID
 	entries  []Entry
 	idx      int
+	done     bool
 }
 
 // HasNext returns true if there are more entries
 func (it *DiskIterator) HasNext() bool {
+	if it.done {
+		return false
+	}
 	if it.idx < len(it.entries) {
 		return true
 	}
@@ -641,7 +645,8 @@ func (it *DiskIterator) HasNext() bool {
 
 // Next returns the next entry
 func (it *DiskIterator) Next() ([]byte, []byte, error) {
-	if it.idx >= len(it.entries) {
+	if it.done || it.idx >= len(it.entries) {
+		it.done = true
 		return nil, nil, fmt.Errorf("no more entries")
 	}
 
@@ -650,6 +655,7 @@ func (it *DiskIterator) Next() ([]byte, []byte, error) {
 
 	// Check if we've passed endKey
 	if it.endKey != nil && bytes.Compare(entry.Key, it.endKey) > 0 {
+		it.done = true
 		return nil, nil, fmt.Errorf("past end key")
 	}
 
@@ -658,6 +664,7 @@ func (it *DiskIterator) Next() ([]byte, []byte, error) {
 
 // Close closes the iterator
 func (it *DiskIterator) Close() error {
+	it.done = true
 	return nil
 }
 
@@ -666,7 +673,13 @@ func (it *DiskIterator) First() bool {
 	it.current = 0
 	it.entries = nil
 	it.idx = 0
+	it.done = false
 	return it.HasNext()
+}
+
+// Valid returns true if the iterator has more items.
+func (it *DiskIterator) Valid() bool {
+	return !it.done
 }
 
 // findStartPage finds the leaf page containing startKey

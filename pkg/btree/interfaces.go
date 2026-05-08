@@ -1,11 +1,24 @@
 package btree
 
-// KVStore defines the interface for key-value storage operations.
-// Both in-memory and disk-backed B-trees implement this interface.
-type KVStore interface {
+// TreeIterator defines the common iterator interface for both BTree and DiskBTree.
+type TreeIterator interface {
+	HasNext() bool
+	Next() ([]byte, []byte, error)
+	Close() error
+	First() bool
+	Valid() bool
+}
+
+// TreeStore defines the full interface for tree storage operations.
+// Both in-memory BTree and disk-based DiskBTree implement this interface.
+type TreeStore interface {
 	Get(key []byte) ([]byte, error)
 	Put(key, value []byte) error
 	Delete(key []byte) error
-	Scan(startKey, endKey []byte) (*Iterator, error)
+	Scan(startKey, endKey []byte) (TreeIterator, error)
+	PutBatch(keys [][]byte, values [][]byte) error
+	DeleteBatch(keys [][]byte) error
 	Size() int
+	Flush() error
+	RootPageID() uint32
 }

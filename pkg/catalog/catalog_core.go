@@ -198,13 +198,13 @@ type undoEntry struct {
 	oldValue     []byte // nil for INSERT undo (just delete the key)
 	indexChanges []indexUndoEntry
 	// DDL undo fields
-	tableDef      *TableDef               // For undoDropTable: original table definition
-	tableTree     *btree.BTree            // For undoDropTable: original table B-tree
-	tableIndexes  map[string]*IndexDef    // For undoDropTable: indexes
-	tableIdxTrees map[string]*btree.BTree // For undoDropTable: index B-trees
-	indexDef      *IndexDef               // For undoDropIndex: original index definition
-	indexTree     *btree.BTree            // For undoDropIndex: original index B-tree
-	indexName     string                  // For undoCreateIndex: index name to drop
+	tableDef      *TableDef                  // For undoDropTable: original table definition
+	tableTree     btree.TreeStore            // For undoDropTable: original table B-tree
+	tableIndexes  map[string]*IndexDef       // For undoDropTable: indexes
+	tableIdxTrees map[string]btree.TreeStore // For undoDropTable: index B-trees
+	indexDef      *IndexDef                  // For undoDropIndex: original index definition
+	indexTree     btree.TreeStore            // For undoDropIndex: original index B-tree
+	indexName     string                     // For undoCreateIndex: index name to drop
 	// ALTER TABLE undo fields
 	oldColumns           []ColumnDef                 // For undoAlterAddColumn/undoAlterDropColumn: original columns
 	oldPrimaryKeyColumns []string                    // For undoAlterRenameColumn: original PK name
@@ -212,7 +212,7 @@ type undoEntry struct {
 	newName              string                      // For undoAlterRename/undoAlterRenameColumn: new name
 	oldRowData           []struct{ key, val []byte } // For undoAlterDropColumn: original row data
 	droppedIndexes       map[string]*IndexDef        // For undoAlterDropColumn: dropped indexes
-	droppedIdxTrees      map[string]*btree.BTree     // For undoAlterDropColumn: dropped index trees
+	droppedIdxTrees      map[string]btree.TreeStore  // For undoAlterDropColumn: dropped index trees
 	oldAutoIncSeq        int64                       // For undoAutoIncSeq: previous AutoIncSeq value
 }
 
@@ -246,14 +246,14 @@ type PendingIndexUpdate struct {
 // Catalog manages database schema metadata
 type Catalog struct {
 	mu                   sync.RWMutex
-	tree                 *btree.BTree
+	tree                 btree.TreeStore
 	tables               map[string]*TableDef
 	foreignTables        map[string]*ForeignTableDef           // Foreign table definitions
 	indexes              map[string]*IndexDef
-	indexTrees           map[string]*btree.BTree // B+Trees for indexes
+	indexTrees           map[string]btree.TreeStore // B+Trees for indexes
 	pool                 *storage.BufferPool
 	wal                  *storage.WAL
-	tableTrees           map[string]*btree.BTree               // Each table has its own B+Tree
+	tableTrees           map[string]btree.TreeStore               // Each table has its own B+Tree
 	fdwRegistry          *fdw.Registry                         // FDW registry for foreign data wrappers
 	views                map[string]*query.SelectStmt          // Views store their SELECT query
 	triggers             map[string]*query.CreateTriggerStmt   // Triggers store their definition
@@ -315,17 +315,17 @@ type cteResultSet struct {
 
 // Query cache types and functions moved to catalog_cache.go
 
-// New creates a new Catalog backed by the given B-tree, buffer pool, and WAL.
-func New(tree *btree.BTree, pool *storage.BufferPool, wal *storage.WAL) *Catalog {
+// New creates a new Catalog backed by the given tree store, buffer pool, and WAL.
+func New(tree btree.TreeStore, pool *storage.BufferPool, wal *storage.WAL) *Catalog {
 	return &Catalog{
 		tree:              tree,
 		tables:            make(map[string]*TableDef),
 		foreignTables:     make(map[string]*ForeignTableDef),
 		indexes:           make(map[string]*IndexDef),
-		indexTrees:        make(map[string]*btree.BTree),
+		indexTrees:        make(map[string]btree.TreeStore),
 		pool:              pool,
 		wal:               wal,
-		tableTrees:        make(map[string]*btree.BTree),
+		tableTrees:        make(map[string]btree.TreeStore),
 		fdwRegistry:       fdw.NewRegistry(),
 		views:             make(map[string]*query.SelectStmt),
 		triggers:          make(map[string]*query.CreateTriggerStmt),
@@ -1333,7 +1333,7 @@ func (t *TableDef) getPartitionTreeNames() []string {
 
 // getTableTreesForScan returns all B-trees for scanning a table
 // For partitioned tables, returns all partition trees; for non-partitioned, returns the single tree
-func (c *Catalog) getTableTreesForScan(table *TableDef) ([]*btree.BTree, error) {
+func (c *Catalog) getTableTreesForScan(table *TableDef) ([]btree.TreeStore, error) {
 	// Foreign table: materialize FDW data into a temporary B-tree
 	if table.Type == "foreign" {
 		ft, ok := c.foreignTables[table.Name]
@@ -1375,7 +1375,7 @@ func (c *Catalog) getTableTreesForScan(table *TableDef) ([]*btree.BTree, error) 
 				return nil, err
 			}
 		}
-		return []*btree.BTree{tmpTree}, nil
+		return []btree.TreeStore{tmpTree}, nil
 	}
 
 	if table.Partition == nil {
@@ -1383,12 +1383,12 @@ func (c *Catalog) getTableTreesForScan(table *TableDef) ([]*btree.BTree, error) 
 		if !exists {
 			return nil, ErrTableNotFound
 		}
-		return []*btree.BTree{tree}, nil
+		return []btree.TreeStore{tree}, nil
 	}
 
 	// Partitioned table - collect all partition trees
 	treeNames := table.getPartitionTreeNames()
-	trees := make([]*btree.BTree, 0, len(treeNames))
+	trees := make([]btree.TreeStore, 0, len(treeNames))
 	for _, name := range treeNames {
 		if tree, exists := c.tableTrees[name]; exists {
 			trees = append(trees, tree)

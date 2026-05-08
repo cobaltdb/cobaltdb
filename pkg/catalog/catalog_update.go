@@ -487,7 +487,7 @@ type joinUpdateEntry struct {
 
 // applyJoinUpdateEntries writes back updated rows, updates indexes, and records
 // undo log entries for a JOIN-based UPDATE.
-func (c *Catalog) applyJoinUpdateEntries(tableName string, table *TableDef, tree *btree.BTree, entries []joinUpdateEntry) error {
+func (c *Catalog) applyJoinUpdateEntries(tableName string, table *TableDef, tree btree.TreeStore, entries []joinUpdateEntry) error {
 	for _, entry := range entries {
 		newValue, err := encodeRow(nil, entry.newRow)
 		if err != nil {
@@ -694,7 +694,7 @@ type joinDelEntry struct {
 
 // softDeleteJoinEntries performs soft deletion of collected entries from a
 // USING-based DELETE: updates indexes, writes WAL records, and marks rows deleted.
-func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree *btree.BTree, entries []joinDelEntry) error {
+func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree btree.TreeStore, entries []joinDelEntry) error {
 	for _, entry := range entries {
 		// Get current value to decode
 		currentData, err := tree.Get(entry.key)
@@ -755,7 +755,7 @@ func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree 
 	}
 	return nil
 }
-func (c *Catalog) processUpdateRow(ctx context.Context, table *TableDef, tree *btree.BTree, treeName string, key []byte, valueData []byte,
+func (c *Catalog) processUpdateRow(ctx context.Context, table *TableDef, tree btree.TreeStore, treeName string, key []byte, valueData []byte,
 	stmt *query.UpdateStmt, args []interface{}, setColumnIndices []int, entries *[]updateEntry, rowsAffected *int64) error {
 	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 	if err != nil {
@@ -780,7 +780,7 @@ func (c *Catalog) processUpdateRow(ctx context.Context, table *TableDef, tree *b
 }
 
 // processUpdateRowData processes a single row update from scan path (row is already decoded)
-func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tree *btree.BTree, treeName string, key []byte, row []interface{},
+func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tree btree.TreeStore, treeName string, key []byte, row []interface{},
 	stmt *query.UpdateStmt, args []interface{}, setColumnIndices []int, entries *[]updateEntry, rowsAffected *int64) error {
 
 	// Apply Row-Level Security check for UPDATE

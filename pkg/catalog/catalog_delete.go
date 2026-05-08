@@ -265,7 +265,7 @@ func (c *Catalog) DeleteRow(ctx context.Context, tableName string, pkValue inter
 }
 
 // processDeleteRow processes a single row deletion from index lookup
-func (c *Catalog) processDeleteRow(ctx context.Context, table *TableDef, tree *btree.BTree, treeName string, key []byte, valueData []byte,
+func (c *Catalog) processDeleteRow(ctx context.Context, table *TableDef, tree btree.TreeStore, treeName string, key []byte, valueData []byte,
 	stmt *query.DeleteStmt, args []interface{}, entries *[]deleteEntry, rowsAffected *int64) error {
 
 	// Decode row with version info

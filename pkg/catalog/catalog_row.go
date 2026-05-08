@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func (c *Catalog) serializePK(pkValue interface{}, tree *btree.BTree) []byte {
+func (c *Catalog) serializePK(pkValue interface{}, tree btree.TreeStore) []byte {
 	switch val := pkValue.(type) {
 	case string:
 		// Try direct string key first

@@ -287,7 +287,7 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 			tableDef:      tableDef,
 			tableTree:     c.tableTrees[stmt.Table],
 			tableIndexes:  make(map[string]*IndexDef),
-			tableIdxTrees: make(map[string]*btree.BTree),
+			tableIdxTrees: make(map[string]btree.TreeStore),
 		}
 		for idxName, idxDef := range c.indexes {
 			if idxDef.TableName == stmt.Table {
@@ -494,7 +494,7 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 			tableName:       stmt.Table,
 			oldColumns:      oldCols,
 			droppedIndexes:  make(map[string]*IndexDef),
-			droppedIdxTrees: make(map[string]*btree.BTree),
+			droppedIdxTrees: make(map[string]btree.TreeStore),
 		}
 		// Save original row data before modification
 		if tree, treeExists := c.tableTrees[stmt.Table]; treeExists {

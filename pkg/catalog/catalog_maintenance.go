@@ -87,7 +87,7 @@ func (c *Catalog) Load() error {
 	}
 	defer iter.Close()
 
-	for iter.Valid() {
+	for iter.HasNext() {
 		key, value, err := iter.Next()
 		if err != nil {
 			break
@@ -141,7 +141,7 @@ func (c *Catalog) Load() error {
 	// Load vector index definitions from catalog tree
 	vecIter, err := c.tree.Scan([]byte("vec:"), []byte("vec;"))
 	if err == nil {
-		for vecIter.Valid() {
+		for vecIter.HasNext() {
 			key, value, err := vecIter.Next()
 			if err != nil {
 				break
@@ -461,7 +461,7 @@ func (c *Catalog) vacuumTreeLocked(name string) error {
 
 // compactIndexTreeLocked rebuilds an index tree.
 // Must be called with c.mu held (write lock).
-func (c *Catalog) compactIndexTreeLocked(name string, tree *btree.BTree) error {
+func (c *Catalog) compactIndexTreeLocked(name string, tree btree.TreeStore) error {
 	iter, err := tree.Scan(nil, nil)
 	if err != nil {
 		return fmt.Errorf("vacuum: failed to scan index %s: %w", name, err)

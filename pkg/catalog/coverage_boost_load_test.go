@@ -11,7 +11,7 @@ import (
 func TestLoadWithNilTree(t *testing.T) {
 	c := &Catalog{
 		tables:     make(map[string]*TableDef),
-		tableTrees: make(map[string]*btree.BTree),
+		tableTrees: make(map[string]btree.TreeStore),
 		tree:       nil,
 		pool:       nil,
 	}
@@ -34,7 +34,7 @@ func TestLoadWithEmptyTree(t *testing.T) {
 
 	c := &Catalog{
 		tables:     make(map[string]*TableDef),
-		tableTrees: make(map[string]*btree.BTree),
+		tableTrees: make(map[string]btree.TreeStore),
 		tree:       catalogTree,
 		pool:       pool,
 	}
@@ -73,7 +73,7 @@ func TestLoadWithCorruptTableDef(t *testing.T) {
 
 	c := &Catalog{
 		tables:     make(map[string]*TableDef),
-		tableTrees: make(map[string]*btree.BTree),
+		tableTrees: make(map[string]btree.TreeStore),
 		tree:       catalogTree,
 		pool:       pool,
 	}
@@ -100,7 +100,7 @@ func TestSaveErrorPaths(t *testing.T) {
 
 	c := &Catalog{
 		tables:     make(map[string]*TableDef),
-		tableTrees: make(map[string]*btree.BTree),
+		tableTrees: make(map[string]btree.TreeStore),
 		tree:       catalogTree,
 		pool:       pool,
 	}
@@ -123,7 +123,7 @@ func TestSaveErrorPaths(t *testing.T) {
 func TestSaveWithNilTree(t *testing.T) {
 	c := &Catalog{
 		tables:     make(map[string]*TableDef),
-		tableTrees: make(map[string]*btree.BTree),
+		tableTrees: make(map[string]btree.TreeStore),
 		tree:       nil,
 		pool:       nil,
 	}
@@ -146,7 +146,7 @@ func TestVacuumErrorPaths(t *testing.T) {
 
 	c := &Catalog{
 		tables:     make(map[string]*TableDef),
-		tableTrees: make(map[string]*btree.BTree),
+		tableTrees: make(map[string]btree.TreeStore),
 		tree:       catalogTree,
 		pool:       pool,
 	}

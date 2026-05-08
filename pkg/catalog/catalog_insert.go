@@ -90,7 +90,7 @@ func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []int
 // if the existing row is soft-deleted and applying the statement conflict action
 // (IGNORE or REPLACE). Returns (true, nil) to skip the row, (false, nil) to
 // proceed with insert, or (false, error) on failure.
-func (c *Catalog) resolvePKConflict(tree *btree.BTree, table *TableDef, stmt *query.InsertStmt, key []byte) (bool, error) {
+func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key []byte) (bool, error) {
 	existingData, err := tree.Get(key)
 	if err != nil {
 		return false, nil // Key does not exist, proceed with insert
@@ -173,7 +173,7 @@ func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insert
 
 // validateInsertRow checks NOT NULL, composite PK, UNIQUE, CHECK, and FK constraints.
 // Returns the (possibly updated) key, whether to skip the row, and any error.
-func (c *Catalog) validateInsertRow(table *TableDef, tree *btree.BTree, stmt *query.InsertStmt, rowValues []interface{}, args []interface{}, compositePK bool, key string) (string, bool, error) {
+func (c *Catalog) validateInsertRow(table *TableDef, tree btree.TreeStore, stmt *query.InsertStmt, rowValues []interface{}, args []interface{}, compositePK bool, key string) (string, bool, error) {
 	// Check NOT NULL constraints
 	for i, col := range table.Columns {
 		if col.NotNull && !col.AutoIncrement && rowValues[i] == nil {
@@ -631,7 +631,7 @@ func (c *Catalog) convertSelectToValueRows(stmt *query.InsertStmt, insertColumns
 // insertRowIndexes updates all indexes for a single inserted row, handling
 // UNIQUE constraint violations with INSERT OR IGNORE/REPLACE conflict resolution.
 // Returns index undo entries, whether the row should be skipped, and any error.
-func (c *Catalog) insertRowIndexes(tree *btree.BTree, table *TableDef, stmt *query.InsertStmt, key []byte, rowValues []interface{}) ([]indexUndoEntry, bool, error) {
+func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key []byte, rowValues []interface{}) ([]indexUndoEntry, bool, error) {
 	var idxChanges []indexUndoEntry
 	skipRow := false
 	for idxName, idxTree := range c.indexTrees {
@@ -751,7 +751,7 @@ func (c *Catalog) buildBufferedInsertIndexes(table *TableDef, stmt *query.Insert
 	return idxUpdates, false, nil
 }
 
-func (c *Catalog) checkUniqueConstraints(tree *btree.BTree, table *TableDef, stmt *query.InsertStmt, rowValues []interface{}) (bool, error) {
+func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, rowValues []interface{}) (bool, error) {
 	for i, col := range table.Columns {
 		if !col.Unique || rowValues[i] == nil {
 			continue
@@ -954,7 +954,7 @@ type stmtIndexKey struct {
 
 // rollbackStatementInserts undoes all successfully inserted rows on statement
 // failure. Inside an explicit transaction it also removes undo-log entries.
-func (c *Catalog) rollbackStatementInserts(tree *btree.BTree, table *TableDef, stmtInserts []stmtInsertEntry, savedAutoIncSeq int64) {
+func (c *Catalog) rollbackStatementInserts(tree btree.TreeStore, table *TableDef, stmtInserts []stmtInsertEntry, savedAutoIncSeq int64) {
 	for i := len(stmtInserts) - 1; i >= 0; i-- {
 		si := stmtInserts[i]
 		_ = tree.Delete(si.key)
@@ -969,7 +969,7 @@ func (c *Catalog) rollbackStatementInserts(tree *btree.BTree, table *TableDef, s
 
 // getInsertTargetTree returns the BTree for inserting a row
 // For partitioned tables, determines the correct partition based on partition key value
-func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, args []interface{}) (*btree.BTree, int, error) {
+func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, args []interface{}) (btree.TreeStore, int, error) {
 	// If table is not partitioned, use the main table tree
 	if table.Partition == nil {
 		tree, exists := c.tableTrees[table.Name]

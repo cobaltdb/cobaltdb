@@ -275,7 +275,7 @@ func TestIteratorNextEdgeCases(t *testing.T) {
 	if key != nil || val != nil || err != nil {
 		t.Error("Expected nil return from Next on empty tree")
 	}
-	if !iter.done {
+	if iter.Valid() {
 		t.Error("Expected iterator to be done after Next on empty tree")
 	}
 	iter.Close()
@@ -285,7 +285,7 @@ func TestIteratorNextEdgeCases(t *testing.T) {
 	iter, _ = tree.Scan(nil, nil)
 	iter.Next() // Get the only item
 	iter.Next() // Try to get next (should return nil and mark done)
-	if !iter.done {
+	if iter.Valid() {
 		t.Error("Expected iterator to be done after exhausting items")
 	}
 	iter.Close()

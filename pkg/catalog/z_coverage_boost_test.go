@@ -16,9 +16,9 @@ func createCatalogForCovBoost(t *testing.T) *Catalog {
 	catalogTree, _ := btree.NewBTree(pool)
 	return &Catalog{
 		tables:            make(map[string]*TableDef),
-		tableTrees:        make(map[string]*btree.BTree),
+		tableTrees:        make(map[string]btree.TreeStore),
 		indexes:           make(map[string]*IndexDef),
-		indexTrees:        make(map[string]*btree.BTree),
+		indexTrees:        make(map[string]btree.TreeStore),
 		tree:              catalogTree,
 		pool:              pool,
 		views:             make(map[string]*query.SelectStmt),

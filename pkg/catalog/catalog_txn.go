@@ -263,13 +263,13 @@ func (c *Catalog) CommitTransaction() error {
 			// Snapshot tree references and WAL under a brief RLock.
 			c.mu.RLock()
 			wal := c.wal
-			tableTrees := make(map[string]*btree.BTree, len(tableKeys))
+			tableTrees := make(map[string]btree.TreeStore, len(tableKeys))
 			for name := range tableKeys {
 				if tree, ok := c.tableTrees[name]; ok {
 					tableTrees[name] = tree
 				}
 			}
-			indexTrees := make(map[string]*btree.BTree, len(idxPuts)+len(idxDels))
+			indexTrees := make(map[string]btree.TreeStore, len(idxPuts)+len(idxDels))
 			for name := range idxPuts {
 				if tree, ok := c.indexTrees[name]; ok {
 					indexTrees[name] = tree
@@ -358,7 +358,7 @@ func (c *Catalog) FlushTableTrees() error {
 func (c *Catalog) flushTableTreesLocked() error {
 	type item struct {
 		name string
-		tree *btree.BTree
+		tree btree.TreeStore
 	}
 	items := make([]item, 0, len(c.tableTrees))
 	for name, tree := range c.tableTrees {
@@ -377,7 +377,7 @@ func (c *Catalog) flushTableTreesLocked() error {
 	for _, it := range items {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(name string, tree *btree.BTree) {
+		go func(name string, tree btree.TreeStore) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			if err := tree.Flush(); err != nil {
@@ -432,9 +432,9 @@ func (c *Catalog) RollbackTransaction() error {
 			// Snapshot tree and table-def references under a brief RLock,
 			// then replay DML undos without holding the catalog lock.
 			c.mu.RLock()
-			tableTrees := make(map[string]*btree.BTree, len(undoLog))
+			tableTrees := make(map[string]btree.TreeStore, len(undoLog))
 			tableDefs := make(map[string]*TableDef, len(undoLog))
-			indexTrees := make(map[string]*btree.BTree)
+			indexTrees := make(map[string]btree.TreeStore)
 			for _, e := range undoLog {
 				if e.tableName != "" {
 					tableTrees[e.tableName] = c.tableTrees[e.tableName]
@@ -736,7 +736,7 @@ func isDDLUndo(a undoAction) bool {
 
 // applyDMLUndoEntry replays a single DML undo entry using snapshotted trees.
 // It must NOT be called with DDL entries.
-func applyDMLUndoEntry(entry undoEntry, tableTrees map[string]*btree.BTree, tableDefs map[string]*TableDef, errorPrefix string) error {
+func applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree.TreeStore, tableDefs map[string]*TableDef, errorPrefix string) error {
 	switch entry.action {
 	case undoInsert:
 		if tree := tableTrees[entry.tableName]; tree != nil {
@@ -765,7 +765,7 @@ func applyDMLUndoEntry(entry undoEntry, tableTrees map[string]*btree.BTree, tabl
 }
 
 // reverseIndexChangesWithMaps replays index changes using snapshotted index trees.
-func reverseIndexChangesWithMaps(entry undoEntry, indexTrees map[string]*btree.BTree, errorPrefix string, rollbackErr error) error {
+func reverseIndexChangesWithMaps(entry undoEntry, indexTrees map[string]btree.TreeStore, errorPrefix string, rollbackErr error) error {
 	for j := len(entry.indexChanges) - 1; j >= 0; j-- {
 		idxChange := entry.indexChanges[j]
 		idxTree := indexTrees[idxChange.indexName]
@@ -845,9 +845,9 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 			// Snapshot tree and table-def references under a brief RLock,
 			// then replay DML undos without holding the catalog lock.
 			c.mu.RLock()
-			tableTrees := make(map[string]*btree.BTree)
+			tableTrees := make(map[string]btree.TreeStore)
 			tableDefs := make(map[string]*TableDef)
-			indexTrees := make(map[string]*btree.BTree)
+			indexTrees := make(map[string]btree.TreeStore)
 			for i := len(undoLog) - 1; i >= undoPos; i-- {
 				e := undoLog[i]
 				if e.tableName != "" {

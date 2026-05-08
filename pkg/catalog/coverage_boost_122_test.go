@@ -26,7 +26,7 @@ func TestLoadWithCorruptData(t *testing.T) {
 
 	c := &Catalog{
 		tables:     make(map[string]*TableDef),
-		tableTrees: make(map[string]*btree.BTree),
+		tableTrees: make(map[string]btree.TreeStore),
 		tree:       catalogTree,
 		pool:       pool,
 	}
@@ -48,7 +48,7 @@ func TestSaveWithMultipleTables(t *testing.T) {
 
 	c := &Catalog{
 		tables:     make(map[string]*TableDef),
-		tableTrees: make(map[string]*btree.BTree),
+		tableTrees: make(map[string]btree.TreeStore),
 		tree:       catalogTree,
 		pool:       pool,
 	}
@@ -70,7 +70,7 @@ func TestSaveWithMultipleTables(t *testing.T) {
 	// Reload and verify
 	c2 := &Catalog{
 		tables:     make(map[string]*TableDef),
-		tableTrees: make(map[string]*btree.BTree),
+		tableTrees: make(map[string]btree.TreeStore),
 		tree:       catalogTree,
 		pool:       pool,
 	}

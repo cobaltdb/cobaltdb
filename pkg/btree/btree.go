@@ -923,7 +923,7 @@ type Iterator struct {
 }
 
 // Scan returns an iterator for range scanning
-func (t *BTree) Scan(startKey, endKey []byte) (*Iterator, error) {
+func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 	seen := make(map[string]bool)
 	var keys, values [][]byte
 	evicted := make(map[string]bool)
@@ -1029,8 +1029,9 @@ func (it *Iterator) Valid() bool {
 }
 
 // Close closes the iterator
-func (it *Iterator) Close() {
+func (it *Iterator) Close() error {
 	it.done = true
+	return nil
 }
 
 // HasNext returns true if there are more items to iterate
