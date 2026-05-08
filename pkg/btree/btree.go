@@ -624,19 +624,27 @@ func (t *BTree) flushInternal() error {
 		return nil
 	}
 
-	// Acquire all shard RLocks in order for a consistent snapshot.
-	for i := 0; i < numShards; i++ {
-		t.shards[i].mu.RLock()
-	}
-
-	// Determine whether any shard has evicted keys.
+	// Snapshot each shard individually so writers to other shards can proceed
+	// while we serialize the flushed data.
+	shardsSnap := make([]map[string][]byte, numShards)
+	evictedSnap := make([]map[string]bool, numShards)
 	hasEvicted := false
 	memCount := 0
 	for i := 0; i < numShards; i++ {
+		t.shards[i].mu.RLock()
+		shardsSnap[i] = make(map[string][]byte, len(t.shards[i].data))
+		for k, v := range t.shards[i].data {
+			shardsSnap[i][k] = v
+		}
+		evictedSnap[i] = make(map[string]bool, len(t.shards[i].evicted))
+		for k := range t.shards[i].evicted {
+			evictedSnap[i][k] = true
+		}
 		memCount += len(t.shards[i].data)
 		if len(t.shards[i].evicted) > 0 {
 			hasEvicted = true
 		}
+		t.shards[i].mu.RUnlock()
 	}
 
 	var kvBuf bytes.Buffer
@@ -646,14 +654,14 @@ func (t *BTree) flushInternal() error {
 	if !hasEvicted {
 		keys := make([]string, 0, memCount)
 		for i := 0; i < numShards; i++ {
-			for k := range t.shards[i].data {
+			for k := range shardsSnap[i] {
 				keys = append(keys, k)
 			}
 		}
 		sort.Strings(keys)
 		count = uint32(len(keys))
 		for _, k := range keys {
-			v := t.shards[shardIndex(k)].data[k]
+			v := shardsSnap[shardIndex(k)][k]
 			key := []byte(k)
 			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
 			kvBuf.Write(lenBuf[:2])
@@ -666,13 +674,12 @@ func (t *BTree) flushInternal() error {
 		toSerialize := make(map[string][]byte, memCount)
 		diskData := t.readKVFromPages()
 		for k, v := range diskData {
-			sh := &t.shards[shardIndex(k)]
-			if sh.evicted[k] {
+			if evictedSnap[shardIndex(k)][k] {
 				toSerialize[k] = v
 			}
 		}
 		for i := 0; i < numShards; i++ {
-			for k, v := range t.shards[i].data {
+			for k, v := range shardsSnap[i] {
 				toSerialize[k] = v
 			}
 		}
@@ -692,10 +699,6 @@ func (t *BTree) flushInternal() error {
 			kvBuf.Write(lenBuf[:4])
 			kvBuf.Write(v)
 		}
-	}
-
-	for i := 0; i < numShards; i++ {
-		t.shards[i].mu.RUnlock()
 	}
 
 	kvData := kvBuf.Bytes()
