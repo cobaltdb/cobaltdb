@@ -771,12 +771,13 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 	return nil
 }
 
-// commitWithConflictDetection atomically checks for conflicts and applies
-// writes so no other transaction can commit between the check and the write.
+// commitWithConflictDetection atomically checks for conflicts and updates
+// versions, then releases the lock before writing WAL records.  This allows
+// other transactions to commit while WAL I/O is in progress, significantly
+// improving concurrency under high write load.
 func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
+	// 1. Critical section: conflict check + version update.
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if txn.Isolation >= SnapshotIsolation {
 		for key, readVersion := range txn.ReadSet {
 			currentVersion, exists := m.versions[key]
@@ -784,14 +785,11 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 				continue
 			}
 			if currentVersion > readVersion {
+				m.mu.Unlock()
 				return ErrConflict
 			}
 		}
 	}
-	// Update versions for all written keys using a monotonically increasing
-	// commit sequence number instead of txn.ID. txn.ID is assigned at BEGIN
-	// time, so a later-beginning transaction can commit before an earlier one,
-	// causing version numbers to decrease and breaking conflict detection.
 	seq := atomic.AddUint64(&m.commitSeq, 1)
 	for key, value := range txn.WriteSet {
 		m.versions[key] = seq
@@ -799,19 +797,9 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 			m.versionStore.Commit(key, value, seq)
 		}
 	}
+	m.mu.Unlock()
 
-	// Apply writes to storage via BufferPool if available
-	if m.pool != nil {
-		if bp, ok := m.pool.(*storage.BufferPool); ok && bp != nil {
-			for key, value := range txn.WriteSet {
-				_ = bp
-				_ = key
-				_ = value
-			}
-		}
-	}
-
-	// Mark writes as durable in WAL if available
+	// 2. WAL durability (outside lock so other commits can proceed).
 	if m.wal != nil {
 		if wal, ok := m.wal.(*storage.WAL); ok && wal != nil {
 			for key, value := range txn.WriteSet {
