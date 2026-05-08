@@ -556,38 +556,45 @@ func (t *BTree) flushInternal() error {
 		return nil
 	}
 
-	// Build the complete data set: memStorage + evicted entries from disk
-	toSerialize := make(map[string][]byte, len(t.memStorage)+len(t.evictedKeys))
+	// Serialize all key-value pairs.
+	// When there are no evicted keys we stream directly from memStorage to
+	// avoid allocating a second map and copying every entry.
+	var kvBuf bytes.Buffer
+	var count uint32
+	var lenBuf [4]byte
 
-	// If there are evicted keys, read their values from disk to preserve them
-	if len(t.evictedKeys) > 0 {
+	if len(t.evictedKeys) == 0 {
+		count = uint32(len(t.memStorage))
+		for k, v := range t.memStorage {
+			key := []byte(k)
+			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
+			kvBuf.Write(lenBuf[:2])
+			kvBuf.Write(key)
+			binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
+			kvBuf.Write(lenBuf[:4])
+			kvBuf.Write(v)
+		}
+	} else {
+		toSerialize := make(map[string][]byte, len(t.memStorage)+len(t.evictedKeys))
 		diskData := t.readKVFromPages()
 		for k, v := range diskData {
 			if t.evictedKeys[k] {
 				toSerialize[k] = v
 			}
 		}
-	}
-
-	// Overlay with current memStorage (in-memory values are authoritative)
-	for k, v := range t.memStorage {
-		toSerialize[k] = v
-	}
-
-	// Serialize all key-value pairs
-	// Format: [keylen:2][key][valuelen:4][value]...
-	var kvBuf bytes.Buffer
-	count := uint32(len(toSerialize))
-
-	var lenBuf [4]byte
-	for k, v := range toSerialize {
-		key := []byte(k)
-		binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
-		kvBuf.Write(lenBuf[:2])
-		kvBuf.Write(key)
-		binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
-		kvBuf.Write(lenBuf[:4])
-		kvBuf.Write(v)
+		for k, v := range t.memStorage {
+			toSerialize[k] = v
+		}
+		count = uint32(len(toSerialize))
+		for k, v := range toSerialize {
+			key := []byte(k)
+			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
+			kvBuf.Write(lenBuf[:2])
+			kvBuf.Write(key)
+			binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
+			kvBuf.Write(lenBuf[:4])
+			kvBuf.Write(v)
+		}
 	}
 
 	kvData := kvBuf.Bytes()
