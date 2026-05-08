@@ -404,6 +404,9 @@ func (t *BTree) Put(key, value []byte) error {
 // PutBatch inserts or updates multiple key-value pairs in a single locked
 // operation.  It amortizes mutex overhead across the batch and is atomic with
 // respect to memory-limit failures (no writes are applied if eviction fails).
+// PutBatch inserts or updates multiple key-value pairs in a single locked
+// operation.  It amortizes mutex overhead across the batch and is atomic with
+// respect to memory-limit failures (no writes are applied if eviction fails).
 func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 	if len(keys) != len(values) {
 		return errors.New("key and value count mismatch")
@@ -412,11 +415,10 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 		return nil
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Validate keys and calculate total size delta under lock.
-	var totalDelta int64
+	// Pre-allocate copies and validate inputs outside t.mu to shorten the
+	// critical section and reduce writer-writer contention on hot tables.
+	keyCopies := make([]string, len(keys))
+	valCopies := make([][]byte, len(keys))
 	for i, key := range keys {
 		if len(key) == 0 {
 			return ErrInvalidKey
@@ -427,9 +429,19 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 		if len(values[i]) == 0 {
 			return ErrInvalidValue
 		}
-		keyCopy := string(key)
+		keyCopies[i] = string(key)
+		valCopies[i] = make([]byte, len(values[i]))
+		copy(valCopies[i], values[i])
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Calculate total size delta.
+	var totalDelta int64
+	for i, key := range keys {
 		oldSize := int64(0)
-		if oldVal, exists := t.memStorage[keyCopy]; exists {
+		if oldVal, exists := t.memStorage[keyCopies[i]]; exists {
 			oldSize = int64(len(key) + len(oldVal))
 		}
 		newSize := int64(len(key) + len(values[i]))
@@ -443,41 +455,37 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 		}
 	}
 
-	// Apply all writes.
-	for i, key := range keys {
-		keyCopy := string(key)
-		valCopy := make([]byte, len(values[i]))
-		copy(valCopy, values[i])
+	// Apply all writes and batch LRU updates under a single lruMu lock.
+	t.lruMu.Lock()
+	for i := range keys {
+		keyCopy := keyCopies[i]
+		valCopy := valCopies[i]
 
 		delete(t.evictedKeys, keyCopy)
 
 		if oldVal, exists := t.memStorage[keyCopy]; exists {
-			t.memoryUsed -= int64(len(key) + len(oldVal))
-			t.lruMu.Lock()
+			t.memoryUsed -= int64(len(keys[i]) + len(oldVal))
 			if entry, ok := t.lruMap[keyCopy]; ok {
 				t.lruList.Remove(entry.elem)
 				delete(t.lruMap, keyCopy)
 			}
-			t.lruMu.Unlock()
 		}
 
 		t.memStorage[keyCopy] = valCopy
-		t.memoryUsed += int64(len(key) + len(valCopy))
+		t.memoryUsed += int64(len(keyCopy) + len(valCopy))
 		t.dirty = true
 
-		t.lruMu.Lock()
 		entry := &lruEntry{
 			key:  keyCopy,
-			size: int64(len(key) + len(valCopy)),
+			size: int64(len(keys[i]) + len(valCopy)),
 		}
 		entry.elem = t.lruList.PushFront(entry)
 		t.lruMap[keyCopy] = entry
-		t.lruMu.Unlock()
 	}
+	t.lruMu.Unlock()
 
 	return nil
 }
-
 // DeleteBatch removes multiple keys in a single locked operation.
 func (t *BTree) DeleteBatch(keys [][]byte) error {
 	if len(keys) == 0 {
