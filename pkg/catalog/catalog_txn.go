@@ -228,8 +228,12 @@ func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 }
 
 func (c *Catalog) CommitTransaction() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Use RLock because commit only reads catalog maps (tableTrees, indexTrees)
+	// and writes to individual B-trees (each tree has its own mutex).  The
+	// shared legacy undoLog / savepoints are only touched when no per-goroutine
+	// transaction state exists.
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
 	// When a txn.Manager bridge is active, commit through the Manager first.
 	// This performs conflict detection and updates the version store.
@@ -265,8 +269,11 @@ func (c *Catalog) CommitTransaction() error {
 			return err
 		}
 	}
-	c.undoLog = nil    // Discard undo log on successful commit
-	c.savepoints = nil // Clear savepoints
+	if ts == nil {
+		// Legacy single-transaction path: clear shared undo state.
+		c.undoLog = nil
+		c.savepoints = nil
+	}
 	if ts != nil {
 		ts.txnActive = false
 		c.activeTxns.Delete(ts.txnID)
