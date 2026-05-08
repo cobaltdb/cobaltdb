@@ -856,7 +856,8 @@ func (db *DB) runAnalyzeJob() error {
 
 // runCheckpointJob performs a WAL checkpoint to truncate the log and flush
 // dirty pages.  Called by the scheduler; safe to run concurrently with reads
-// because DB.Checkpoint serializes with transaction commits via flushMu.
+// and explicit transaction commits because DB.Checkpoint uses flushMu.RLock
+// when WAL is enabled (WAL.Checkpoint serializes its own WAL append via w.mu).
 func (db *DB) runCheckpointJob() error {
 	if err := db.Checkpoint(); err != nil {
 		if db.options.Logger != nil {

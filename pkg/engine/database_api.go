@@ -120,11 +120,20 @@ func (db *DB) GetWALPath() string {
 	return ""
 }
 
-// Checkpoint performs a database checkpoint (implements backup.Database)
+// Checkpoint performs a database checkpoint (implements backup.Database).
+// When WAL is enabled, checkpoint uses flushMu.RLock so explicit transaction
+// commits can proceed concurrently; WAL serialization is handled by w.mu in
+// WAL.Checkpoint.  The no-WAL path keeps flushMu.Lock because there is no
+// recovery log to replay changes that arrive after FlushTableTrees.
 
 func (db *DB) Checkpoint() error {
-	db.flushMu.Lock()
-	defer db.flushMu.Unlock()
+	if db.wal != nil {
+		db.flushMu.RLock()
+		defer db.flushMu.RUnlock()
+	} else {
+		db.flushMu.Lock()
+		defer db.flushMu.Unlock()
+	}
 
 	if db.catalog != nil {
 		if err := db.catalog.FlushTableTrees(); err != nil {
