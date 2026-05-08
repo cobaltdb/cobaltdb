@@ -487,34 +487,39 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 	return nil
 }
 // DeleteBatch removes multiple keys in a single locked operation.
+// DeleteBatch removes multiple keys in a single locked operation.
 func (t *BTree) DeleteBatch(keys [][]byte) error {
 	if len(keys) == 0 {
 		return nil
 	}
 
+	// Pre-compute key strings outside t.mu to shorten the critical section.
+	keyCopies := make([]string, len(keys))
+	for i, key := range keys {
+		keyCopies[i] = string(key)
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	for _, key := range keys {
-		keyStr := string(key)
+	// Batch LRU updates under a single lruMu lock.
+	t.lruMu.Lock()
+	for _, keyStr := range keyCopies {
 		if val, exists := t.memStorage[keyStr]; exists {
 			delete(t.memStorage, keyStr)
 			t.memoryUsed -= int64(len(keyStr) + len(val))
 			t.dirty = true
-			t.lruMu.Lock()
 			if entry, ok := t.lruMap[keyStr]; ok {
 				t.lruList.Remove(entry.elem)
 				delete(t.lruMap, keyStr)
 			}
-			t.lruMu.Unlock()
 		}
 		delete(t.evictedKeys, keyStr)
 	}
+	t.lruMu.Unlock()
 
 	return nil
 }
-
-// evictToMakeSpace evicts entries from LRU until we have enough space
 func (t *BTree) evictToMakeSpace(needed int64) error {
 	// If we need more space than the limit itself, we can't satisfy
 	if needed > t.memoryLimit {
