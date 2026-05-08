@@ -418,21 +418,62 @@ func (c *Catalog) RollbackTransaction() error {
 
 	undoLog := c.getCurrentTxnUndoLog()
 	if len(undoLog) > 0 {
-		// Undo replay may modify catalog maps (e.g. DDL undo), so we need
-		// the write lock.  In the MVCC buffered path undoLog is typically
-		// empty, allowing rollback to proceed without locking.
-		c.mu.Lock()
-		err := c.replayUndoLog(len(undoLog)-1, 0, "rollback")
-		c.undoLog = nil
-		c.savepoints = nil
-		c.mu.Unlock()
-		if err != nil {
+		// Determine if the undo log contains any DDL entries.
+		hasDDL := false
+		for _, e := range undoLog {
+			if isDDLUndo(e.action) {
+				hasDDL = true
+				break
+			}
+		}
+
+		var rollbackErr error
+		if !hasDDL {
+			// Snapshot tree and table-def references under a brief RLock,
+			// then replay DML undos without holding the catalog lock.
+			c.mu.RLock()
+			tableTrees := make(map[string]*btree.BTree, len(undoLog))
+			tableDefs := make(map[string]*TableDef, len(undoLog))
+			indexTrees := make(map[string]*btree.BTree)
+			for _, e := range undoLog {
+				if e.tableName != "" {
+					tableTrees[e.tableName] = c.tableTrees[e.tableName]
+					if td, ok := c.tables[e.tableName]; ok {
+						tableDefs[e.tableName] = td
+					}
+				}
+				for _, ic := range e.indexChanges {
+					indexTrees[ic.indexName] = c.indexTrees[ic.indexName]
+				}
+			}
+			c.mu.RUnlock()
+
+			for i := len(undoLog) - 1; i >= 0; i-- {
+				entry := undoLog[i]
+				if err := applyDMLUndoEntry(entry, tableTrees, tableDefs, "rollback"); err != nil && rollbackErr == nil {
+					rollbackErr = err
+				}
+				rollbackErr = reverseIndexChangesWithMaps(entry, indexTrees, "rollback", rollbackErr)
+			}
+		} else {
+			c.mu.Lock()
+			rollbackErr = c.replayUndoLog(len(undoLog)-1, 0, "rollback")
+			c.mu.Unlock()
+		}
+
+		if ts == nil {
+			c.mu.Lock()
+			c.undoLog = nil
+			c.savepoints = nil
+			c.mu.Unlock()
+		}
+		if rollbackErr != nil {
 			if ts != nil {
 				ts.txnActive = false
 				c.activeTxns.Delete(ts.txnID)
 			}
 			c.unregisterGoroutineTxn()
-			return err
+			return rollbackErr
 		}
 	}
 
@@ -682,6 +723,67 @@ func (c *Catalog) reverseIndexChanges(entry undoEntry, errorPrefix string, rollb
 	return rollbackErr
 }
 
+// isDDLUndo reports whether an undo action modifies catalog metadata maps.
+func isDDLUndo(a undoAction) bool {
+	switch a {
+	case undoCreateTable, undoDropTable, undoCreateIndex, undoDropIndex,
+		undoAlterAddColumn, undoAlterDropColumn, undoAlterRename, undoAlterRenameColumn:
+		return true
+	default:
+		return false
+	}
+}
+
+// applyDMLUndoEntry replays a single DML undo entry using snapshotted trees.
+// It must NOT be called with DDL entries.
+func applyDMLUndoEntry(entry undoEntry, tableTrees map[string]*btree.BTree, tableDefs map[string]*TableDef, errorPrefix string) error {
+	switch entry.action {
+	case undoInsert:
+		if tree := tableTrees[entry.tableName]; tree != nil {
+			if err := tree.Delete(entry.key); err != nil {
+				return fmt.Errorf("%s undoing insert: %w", errorPrefix, err)
+			}
+		}
+	case undoUpdate:
+		if tree := tableTrees[entry.tableName]; tree != nil {
+			if err := tree.Put(entry.key, entry.oldValue); err != nil {
+				return fmt.Errorf("%s undoing update: %w", errorPrefix, err)
+			}
+		}
+	case undoDelete:
+		if tree := tableTrees[entry.tableName]; tree != nil {
+			if err := tree.Put(entry.key, entry.oldValue); err != nil {
+				return fmt.Errorf("%s undoing delete: %w", errorPrefix, err)
+			}
+		}
+	case undoAutoIncSeq:
+		if tbl := tableDefs[entry.tableName]; tbl != nil {
+			tbl.AutoIncSeq = entry.oldAutoIncSeq
+		}
+	}
+	return nil
+}
+
+// reverseIndexChangesWithMaps replays index changes using snapshotted index trees.
+func reverseIndexChangesWithMaps(entry undoEntry, indexTrees map[string]*btree.BTree, errorPrefix string, rollbackErr error) error {
+	for j := len(entry.indexChanges) - 1; j >= 0; j-- {
+		idxChange := entry.indexChanges[j]
+		idxTree := indexTrees[idxChange.indexName]
+		if idxTree == nil {
+			continue
+		}
+		var err error
+		if idxChange.wasAdded {
+			err = idxTree.Delete(idxChange.key)
+		} else {
+			err = idxTree.Put(idxChange.key, idxChange.oldValue)
+		}
+		if err != nil && rollbackErr == nil {
+			rollbackErr = fmt.Errorf("%s undoing index change: %w", errorPrefix, err)
+		}
+	}
+	return rollbackErr
+}
 
 func (c *Catalog) IsTransactionActive() bool {
 	c.mu.RLock()
