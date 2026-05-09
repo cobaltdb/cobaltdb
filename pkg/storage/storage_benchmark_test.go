@@ -106,6 +106,125 @@ func BenchmarkWALAppend(b *testing.B) {
 	}
 }
 
+// BenchmarkWALAppendBatch benchmarks batched WAL AppendWithoutSync operations
+func BenchmarkWALAppendBatch(b *testing.B) {
+	tempDir := b.TempDir()
+	wal, _ := OpenWAL(tempDir + "/test.wal")
+	defer wal.Close()
+
+	const batchSize = 10
+	data := make([]byte, 100)
+	for i := range data {
+		data[i] = byte(i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		records := make([]*WALRecord, batchSize)
+		for j := 0; j < batchSize; j++ {
+			records[j] = &WALRecord{
+				TxnID:  1,
+				Type:   WALInsert,
+				PageID: 1,
+				Data:   data,
+			}
+		}
+		wal.AppendBatchWithoutSync(records)
+	}
+}
+
+// BenchmarkWALAppendWithoutSyncLoop benchmarks N individual AppendWithoutSync
+// calls vs AppendBatchWithoutSync to quantify lock-contention savings.
+func BenchmarkWALAppendWithoutSyncLoop(b *testing.B) {
+	tempDir := b.TempDir()
+	wal, _ := OpenWAL(tempDir + "/test.wal")
+	defer wal.Close()
+
+	const batchSize = 10
+	data := make([]byte, 100)
+	for i := range data {
+		data[i] = byte(i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for j := 0; j < batchSize; j++ {
+			wal.AppendWithoutSync(&WALRecord{
+				TxnID:  1,
+				Type:   WALInsert,
+				PageID: 1,
+				Data:   data,
+			})
+		}
+	}
+}
+
+// BenchmarkWALAppendBatchConcurrent measures batched append under concurrent
+// writers to demonstrate lock-contention reduction.
+func BenchmarkWALAppendBatchConcurrent(b *testing.B) {
+	for _, workers := range []int{1, 4, 8, 16} {
+		b.Run(fmt.Sprintf("Workers_%d", workers), func(b *testing.B) {
+			tempDir := b.TempDir()
+			wal, _ := OpenWAL(tempDir + "/test.wal")
+			defer wal.Close()
+
+			const batchSize = 10
+			data := make([]byte, 100)
+			for i := range data {
+				data[i] = byte(i)
+			}
+
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					records := make([]*WALRecord, batchSize)
+					for j := 0; j < batchSize; j++ {
+						records[j] = &WALRecord{
+							TxnID:  1,
+							Type:   WALInsert,
+							PageID: 1,
+							Data:   data,
+						}
+					}
+					wal.AppendBatchWithoutSync(records)
+				}
+			})
+		})
+	}
+}
+
+// BenchmarkWALAppendWithoutSyncConcurrent is the loop equivalent of the
+// concurrent batch benchmark.
+func BenchmarkWALAppendWithoutSyncConcurrent(b *testing.B) {
+	for _, workers := range []int{1, 4, 8, 16} {
+		b.Run(fmt.Sprintf("Workers_%d", workers), func(b *testing.B) {
+			tempDir := b.TempDir()
+			wal, _ := OpenWAL(tempDir + "/test.wal")
+			defer wal.Close()
+
+			const batchSize = 10
+			data := make([]byte, 100)
+			for i := range data {
+				data[i] = byte(i)
+			}
+
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					for j := 0; j < batchSize; j++ {
+						wal.AppendWithoutSync(&WALRecord{
+							TxnID:  1,
+							Type:   WALInsert,
+							PageID: 1,
+							Data:   data,
+						})
+					}
+				}
+			})
+		})
+	}
+}
+
 // BenchmarkMemoryWriteAt benchmarks Memory backend WriteAt
 func BenchmarkMemoryWriteAt(b *testing.B) {
 	mem := NewMemoryWithLimit(64 * 1024 * 1024) // 64MB cap

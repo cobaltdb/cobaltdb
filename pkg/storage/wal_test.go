@@ -425,3 +425,54 @@ func TestWALRecoverLogicalRecords(t *testing.T) {
 		t.Errorf("data mismatch: got %q, want %q", ops[0].Data, data)
 	}
 }
+
+func TestWALAppendBatchWithoutSync(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "batch.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	records := []*WALRecord{
+		{TxnID: 1, Type: WALInsert, PageID: 1, Data: []byte("row1")},
+		{TxnID: 1, Type: WALInsert, PageID: 2, Data: []byte("row2")},
+		{TxnID: 1, Type: WALUpdate, PageID: 1, Data: []byte("row1_updated")},
+	}
+
+	if err := wal.AppendBatchWithoutSync(records); err != nil {
+		t.Fatalf("AppendBatchWithoutSync failed: %v", err)
+	}
+
+	if wal.LSN() != 3 {
+		t.Fatalf("expected LSN=3, got %d", wal.LSN())
+	}
+
+	// Sync so records are durable for reopen
+	if err := wal.Sync(); err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	wal.Close()
+
+	// Reopen and recover
+	backend := NewMemory()
+	pool := NewBufferPool(4, backend)
+	defer pool.Close()
+
+	wal2, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to reopen WAL: %v", err)
+	}
+	defer wal2.Close()
+
+	if err := wal2.Recover(pool); err != nil {
+		t.Fatalf("Recover failed: %v", err)
+	}
+
+	if wal2.LSN() != 3 {
+		t.Errorf("expected LSN=3 after recover, got %d", wal2.LSN())
+	}
+}

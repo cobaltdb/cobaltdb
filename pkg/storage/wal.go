@@ -273,6 +273,26 @@ func (w *WAL) AppendWithoutSync(record *WALRecord) error {
 	return w.appendInternal(record, false)
 }
 
+// AppendBatchWithoutSync appends multiple records under a single lock
+// acquisition without syncing. This dramatically reduces mutex contention
+// when a transaction produces many WAL records.
+func (w *WAL) AppendBatchWithoutSync(records []*WALRecord) error {
+	for _, r := range records {
+		if err := validateRecordSize(r); err != nil {
+			return err
+		}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for _, r := range records {
+		if err := w.appendInternal(r, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validateRecordSize(record *WALRecord) error {
 	if len(record.Data) > walMaxRecordDataSize {
 		return fmt.Errorf("WAL record data size (%d bytes) exceeds maximum (%d bytes)",
