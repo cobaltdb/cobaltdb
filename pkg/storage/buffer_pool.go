@@ -375,16 +375,45 @@ func (bp *BufferPool) stopBackgroundFlusher() {
 }
 
 func (bp *BufferPool) backgroundFlushLoop() {
-	ticker := time.NewTicker(bp.flushInterval)
-	defer ticker.Stop()
+	fastInterval := 200 * time.Millisecond
+	slowInterval := bp.flushInterval
+	if slowInterval == 0 {
+		slowInterval = 5 * time.Second
+	}
+	const dirtyThreshold = 0.25 // 25% dirty ratio triggers fast flushing
+
 	for {
+		interval := slowInterval
+		if bp.dirtyRatio() > dirtyThreshold {
+			interval = fastInterval
+		}
+
+		timer := time.NewTimer(interval)
 		select {
 		case <-bp.flushDone:
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			bp.flushDirtyPages()
 		}
 	}
+}
+
+// dirtyRatio returns the fraction of cached pages that are dirty.
+func (bp *BufferPool) dirtyRatio() float64 {
+	bp.mu.RLock()
+	defer bp.mu.RUnlock()
+
+	if len(bp.pages) == 0 {
+		return 0
+	}
+	var dirty int
+	for _, page := range bp.pages {
+		if page.IsDirty() {
+			dirty++
+		}
+	}
+	return float64(dirty) / float64(len(bp.pages))
 }
 
 // flushDirtyPages writes dirty unpinned pages to disk without holding the lock during I/O.
