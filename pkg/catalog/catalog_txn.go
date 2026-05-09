@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -90,51 +89,49 @@ func (c *Catalog) DropRLSPolicy(tableName, policyName string) error {
 // getCurrentTxn returns the active transaction state for the current transaction.
 // If no current transaction is set, it falls back to the legacy single-transaction fields.
 func (c *Catalog) getCurrentTxn() *catalogTxnState {
-	if gidTxnID := c.getGoroutineTxnID(); gidTxnID != 0 {
-		if v, ok := c.activeTxns.Load(gidTxnID); ok {
-			if ts, ok := v.(*catalogTxnState); ok {
-				return ts
-			}
-		}
-	}
-	return nil
+	return c.getGoroutineTxnState()
 }
 
-// goroutineID extracts the current goroutine ID from runtime.Stack.
+// goroutineID extracts the current goroutine ID from runtime.Stack using a
+// stack-allocated buffer and direct byte parsing to avoid allocations.
 func goroutineID() int64 {
-	var buf [64]byte
+	var buf [32]byte
 	n := runtime.Stack(buf[:], false)
-	s := string(buf[:n])
-	if !strings.HasPrefix(s, "goroutine ") {
+	if n < 11 {
 		return 0
 	}
-	s = s[len("goroutine "):]
-	idx := strings.IndexByte(s, ' ')
-	if idx < 0 {
-		idx = strings.IndexByte(s, '\n')
+	const prefix = "goroutine "
+	for i := 0; i < 10; i++ {
+		if buf[i] != prefix[i] {
+			return 0
+		}
 	}
-	if idx < 0 {
-		return 0
-	}
-	id, _ := strconv.ParseInt(s[:idx], 10, 64)
-	if id == 0 {
+	var id int64
+	for i := 10; i < n; i++ {
+		c := buf[i]
+		if c < '0' || c > '9' {
+			break
+		}
+		id = id*10 + int64(c-'0')
 	}
 	return id
 }
 
-func (c *Catalog) registerGoroutineTxn(txnID uint64) {
-	c.goroutineTxnMap.Store(goroutineID(), txnID)
+func (c *Catalog) registerGoroutineTxn(ts *catalogTxnState) {
+	c.goroutineTxnMap.Store(goroutineID(), ts)
 }
 
 func (c *Catalog) unregisterGoroutineTxn() {
 	c.goroutineTxnMap.Delete(goroutineID())
 }
 
-func (c *Catalog) getGoroutineTxnID() uint64 {
+func (c *Catalog) getGoroutineTxnState() *catalogTxnState {
 	if v, ok := c.goroutineTxnMap.Load(goroutineID()); ok {
-		return v.(uint64)
+		if ts, ok := v.(*catalogTxnState); ok {
+			return ts
+		}
 	}
-	return 0
+	return nil
 }
 
 // getCurrentTxnUndoLog returns the undo log for the current transaction.
@@ -236,9 +233,9 @@ func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 	}
 	cs.managerTxn = managerTxn
 	c.activeTxns.Store(txnID, cs)
-	// Register goroutine-local txn ID so concurrent writers (including autocommit)
-	// each see their own transaction state via getCurrentTxn().
-	c.registerGoroutineTxn(txnID)
+	// Register goroutine-local txn state so concurrent writers (including autocommit)
+	// each see their own transaction state via getCurrentTxn() without a second map lookup.
+	c.registerGoroutineTxn(cs)
 }
 
 func (c *Catalog) getTreeCommitMu(name string) *sync.Mutex {
