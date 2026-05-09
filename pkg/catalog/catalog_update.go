@@ -116,7 +116,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 					valueData = pwValue
 					found = true
 				} else if found {
-					c.recordManagerRead(treeName, key)
+					c.recordManagerRead(treeName, key, valueData)
 				}
 				if !found {
 					continue
@@ -172,7 +172,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			}
 
 			if !fromPending {
-				c.recordManagerRead(treeName, key)
+				c.recordManagerRead(treeName, key, valueData)
 			}
 
 			if err := c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {

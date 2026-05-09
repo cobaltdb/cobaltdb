@@ -98,7 +98,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 					valueData = pwValue
 					found = true
 				} else if found {
-					c.recordManagerRead(treeName, key)
+					c.recordManagerRead(treeName, key, valueData)
 				}
 				if !found {
 					continue
@@ -159,9 +159,9 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 				continue
 			}
 
-	if !fromPending {
-					c.recordManagerRead(treeName, key)
-				}
+			if !fromPending {
+				c.recordManagerRead(treeName, key, valueData)
+			}
 
 			// Make copies of key and value since iterator may reuse buffers
 			keyCopy := make([]byte, len(key))

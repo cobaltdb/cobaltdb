@@ -1,20 +1,21 @@
 package catalog
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
-	"strings"
-	"time"
 )
 
 func (c *Catalog) EnableRLS() {
@@ -238,7 +239,38 @@ func (c *Catalog) CommitTransaction() error {
 	// This performs conflict detection and updates the version store.
 	if ts != nil {
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
+			// Serialize commit-time application of buffered writes so that no
+			// other transaction can observe a version mismatch between the
+			// B-tree and the txn.Manager version store.
+			c.bufferedTxnMu.Lock()
+
+			// Validate reads: ensure no value we read has changed since we read it.
+			// This closes the race window where another transaction bumps the
+			// version before applying its B-tree writes.
+			if len(ts.readValues) > 0 {
+				c.mu.RLock()
+				for keyStr, originalValue := range ts.readValues {
+					parts := strings.SplitN(keyStr, ":", 2)
+					if len(parts) != 2 {
+						continue
+					}
+					treeName, key := parts[0], []byte(parts[1])
+					tree, exists := c.tableTrees[treeName]
+					if !exists {
+						continue
+					}
+					currentValue, _ := tree.Get(key)
+					if !bytes.Equal(originalValue, currentValue) {
+						c.mu.RUnlock()
+						c.bufferedTxnMu.Unlock()
+						return txn.ErrConflict
+					}
+				}
+				c.mu.RUnlock()
+			}
+
 			if err := mt.Commit(); err != nil {
+				c.bufferedTxnMu.Unlock()
 				return fmt.Errorf("txn manager commit: %w", err)
 			}
 
@@ -288,9 +320,11 @@ func (c *Catalog) CommitTransaction() error {
 			for name, keys := range tableKeys {
 				tree, exists := tableTrees[name]
 				if !exists {
+					c.bufferedTxnMu.Unlock()
 					return fmt.Errorf("partition tree %s not found", name)
 				}
 				if err := tree.PutBatch(keys, tableVals[name]); err != nil {
+					c.bufferedTxnMu.Unlock()
 					return fmt.Errorf("failed to apply buffered writes to %s: %w", name, err)
 				}
 			}
@@ -305,6 +339,7 @@ func (c *Catalog) CommitTransaction() error {
 				}
 			}
 			ts.pendingWrites = nil
+			c.bufferedTxnMu.Unlock()
 
 			// Skip writing a second WAL commit record when the txn.Manager
 			// already wrote one for this transaction.
@@ -944,10 +979,21 @@ func (c *Catalog) getCurrentManagerTxn() interface{} {
 	return nil
 }
 
-// recordManagerRead records a read version for the given key in the current
-// txn.Manager transaction's ReadSet. This enables conflict detection for
-// read-modify-write cycles under SnapshotIsolation.
-func (c *Catalog) recordManagerRead(treeName string, key []byte) {
+// recordManagerRead records a read version and value for the given key in the
+// current txn.Manager transaction's ReadSet. This enables conflict detection
+// for read-modify-write cycles under SnapshotIsolation.
+func (c *Catalog) recordManagerRead(treeName string, key []byte, valueData []byte) {
+	// Snapshot the value we read for commit-time validation.
+	if ts := c.getCurrentTxn(); ts != nil {
+		if ts.readValues == nil {
+			ts.readValues = make(map[string][]byte)
+		}
+		valCopy := make([]byte, len(valueData))
+		copy(valCopy, valueData)
+		writeKey := treeName + ":" + string(key)
+		ts.readValues[writeKey] = valCopy
+	}
+
 	if !c.isBufferedMode() {
 		return
 	}

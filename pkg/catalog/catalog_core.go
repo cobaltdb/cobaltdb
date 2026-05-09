@@ -224,6 +224,7 @@ type catalogTxnState struct {
 	savepoints        []savepointEntry
 	managerTxn        interface{}    // *txn.Transaction when txnManager bridge is active
 	pendingWrites     []PendingWrite // buffered DML for commit-time application
+	readValues        map[string][]byte // key -> value at time of read (for MVCC validation)
 }
 
 // PendingWrite buffers a DML operation for commit-time application when the
