@@ -614,3 +614,299 @@ func TestStress_ConcurrentExplicitTransactions_Conflict(t *testing.T) {
 	}
 	t.Logf("success=%d conflicts=%d value=%d", successCount, conflictCount, value)
 }
+
+// TestStress_ConcurrentExplicitTransactions_Insert validates that concurrent
+// INSERT operations with auto-increment primary keys produce no lost rows or
+// duplicate keys under buffered write mode.
+func TestStress_ConcurrentExplicitTransactions_Insert(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "insert.db"), nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	workers := 4
+	iterations := 25
+
+	var successCount int64
+	var otherErrCount int64
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				tx, err := db.Begin(ctx)
+				if err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Begin error: %v", id, err)
+					return
+				}
+				_, err = tx.Exec(ctx, fmt.Sprintf("INSERT INTO items (name) VALUES ('worker-%d-row-%d')", id, j))
+				if err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Insert error: %v", id, err)
+					tx.Rollback()
+					return
+				}
+				if err := tx.Commit(); err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Commit error: %v", id, err)
+					return
+				}
+				atomic.AddInt64(&successCount, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if otherErrCount > 0 {
+		t.Fatalf("unexpected errors: %d", otherErrCount)
+	}
+	if successCount != int64(workers*iterations) {
+		t.Fatalf("expected %d successes, got %d", workers*iterations, successCount)
+	}
+
+	var count int
+	r := db.QueryRow(ctx, "SELECT COUNT(*) FROM items")
+	if err := r.Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != workers*iterations {
+		t.Fatalf("expected %d rows, got %d", workers*iterations, count)
+	}
+
+	var maxID int
+	r = db.QueryRow(ctx, "SELECT MAX(id) FROM items")
+	if err := r.Scan(&maxID); err != nil {
+		t.Fatalf("max id: %v", err)
+	}
+	if maxID != workers*iterations {
+		t.Fatalf("expected max id %d, got %d", workers*iterations, maxID)
+	}
+	t.Logf("inserted=%d max_id=%d", count, maxID)
+}
+
+// TestStress_ConcurrentExplicitTransactions_Delete validates that concurrent
+// DELETE operations on distinct rows remove exactly the intended rows without
+// conflicts or lost updates.
+func TestStress_ConcurrentExplicitTransactions_Delete(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "delete.db"), nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE del_items (id INTEGER PRIMARY KEY, flag TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	workers := 4
+	iterations := 25
+	totalRows := workers * iterations
+
+	// Seed rows
+	for i := 0; i < totalRows; i++ {
+		if _, err := db.Exec(ctx, fmt.Sprintf("INSERT INTO del_items VALUES (%d, 'row-%d')", i, i)); err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+	}
+
+	var successCount int64
+	var conflictCount int64
+	var otherErrCount int64
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; {
+				tx, err := db.Begin(ctx)
+				if err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Begin error: %v", id, err)
+					return
+				}
+				rowID := id*iterations + j
+				_, err = tx.Exec(ctx, fmt.Sprintf("DELETE FROM del_items WHERE id = %d", rowID))
+				if err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Delete error: %v", id, err)
+					tx.Rollback()
+					return
+				}
+				if err := tx.Commit(); err != nil {
+					if errors.Is(err, txn.ErrConflict) {
+						atomic.AddInt64(&conflictCount, 1)
+						continue
+					}
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Commit error: %v", id, err)
+					return
+				}
+				atomic.AddInt64(&successCount, 1)
+				j++
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if otherErrCount > 0 {
+		t.Fatalf("unexpected errors: %d", otherErrCount)
+	}
+	if successCount != int64(totalRows) {
+		t.Fatalf("expected %d successes, got %d (conflicts=%d)", totalRows, successCount, conflictCount)
+	}
+
+	var count int
+	r := db.QueryRow(ctx, "SELECT COUNT(*) FROM del_items")
+	if err := r.Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 rows, got %d", count)
+	}
+	t.Logf("deleted=%d conflicts=%d remaining=%d", successCount, conflictCount, count)
+}
+
+// TestStress_ConcurrentExplicitTransactions_Mixed runs a mixed workload of
+// INSERT, UPDATE, and DELETE across multiple workers to validate the buffered
+// write path under realistic contention.
+func TestStress_ConcurrentExplicitTransactions_Mixed(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "mixed.db"), nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, amount INTEGER, status TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	// Seed some rows for UPDATE and DELETE
+	for i := 0; i < 20; i++ {
+		if _, err := db.Exec(ctx, fmt.Sprintf("INSERT INTO ledger (amount, status) VALUES (%d, 'active')", i*10)); err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+	}
+
+	workers := 4
+	iterations := 15
+
+	var insertCount int64
+	var updateCount int64
+	var deleteCount int64
+	var conflictCount int64
+	var otherErrCount int64
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; {
+				tx, err := db.Begin(ctx)
+				if err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					return
+				}
+
+				var res Result
+				switch j % 3 {
+				case 0: // INSERT
+					res, err = tx.Exec(ctx, fmt.Sprintf("INSERT INTO ledger (amount, status) VALUES (%d, 'new')", id*1000+j))
+					if err == nil && res.RowsAffected > 0 {
+						atomic.AddInt64(&insertCount, 1)
+					}
+				case 1: // UPDATE
+					rowID := (id+j)%20 + 1
+					res, err = tx.Exec(ctx, fmt.Sprintf("UPDATE ledger SET amount = amount + 1 WHERE id = %d", rowID))
+					if err == nil && res.RowsAffected > 0 {
+						atomic.AddInt64(&updateCount, 1)
+					}
+				case 2: // DELETE
+					rowID := 20 + (id*iterations+j)%10
+					res, err = tx.Exec(ctx, fmt.Sprintf("DELETE FROM ledger WHERE id = %d", rowID))
+					if err == nil && res.RowsAffected > 0 {
+						atomic.AddInt64(&deleteCount, 1)
+					}
+				}
+
+				if err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d op error: %v", id, err)
+					tx.Rollback()
+					return
+				}
+
+				if err := tx.Commit(); err != nil {
+					if errors.Is(err, txn.ErrConflict) {
+						atomic.AddInt64(&conflictCount, 1)
+						continue
+					}
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Commit error: %v", id, err)
+					return
+				}
+				j++
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if otherErrCount > 0 {
+		t.Fatalf("unexpected errors: %d", otherErrCount)
+	}
+
+	// Consistency checks (exact row count is nondeterministic due to
+	// interleaved INSERT/DELETE races, so we verify structural integrity).
+	var remaining int
+	r := db.QueryRow(ctx, "SELECT COUNT(*) FROM ledger")
+	if err := r.Scan(&remaining); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if remaining < 0 {
+		t.Fatalf("negative row count: %d", remaining)
+	}
+
+	// Verify no duplicate IDs and no soft-deleted rows are visible
+	rows, err := db.Query(ctx, "SELECT id, amount, status FROM ledger ORDER BY id")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	seenIDs := make(map[int]bool)
+	for rows.Next() {
+		var id int
+		var amount int
+		var status string
+		if err := rows.Scan(&id, &amount, &status); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if seenIDs[id] {
+			t.Fatalf("duplicate row id: %d", id)
+		}
+		seenIDs[id] = true
+		if status != "active" && status != "new" {
+			t.Fatalf("unexpected status for id %d: %q", id, status)
+		}
+	}
+	if len(seenIDs) != remaining {
+		t.Fatalf("row count mismatch: COUNT(*)=%d but scanned %d rows", remaining, len(seenIDs))
+	}
+
+	t.Logf("inserts=%d updates=%d deletes=%d conflicts=%d remaining=%d",
+		insertCount, updateCount, deleteCount, conflictCount, remaining)
+}
