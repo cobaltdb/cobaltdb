@@ -2,12 +2,16 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
 
 // TestACID_RollbackConsistency verifies that rolled-back changes are invisible.
@@ -434,4 +438,179 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	if rows.Next() {
 		t.Fatal("unexpected extra row")
 	}
+}
+
+// TestStress_ConcurrentExplicitTransactions_MultiTable validates that explicit
+// transactions on independent tables commit in parallel without conflicts.
+func TestStress_ConcurrentExplicitTransactions_MultiTable(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "mvcc_multi.db"), nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE ta (id INTEGER PRIMARY KEY, value INTEGER)"); err != nil {
+		t.Fatalf("create table ta: %v", err)
+	}
+	if _, err := db.Exec(ctx, "CREATE TABLE tb (id INTEGER PRIMARY KEY, value INTEGER)"); err != nil {
+		t.Fatalf("create table tb: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := db.Exec(ctx, fmt.Sprintf("INSERT INTO ta VALUES (%d, 0)", i)); err != nil {
+			t.Fatalf("insert ta: %v", err)
+		}
+		if _, err := db.Exec(ctx, fmt.Sprintf("INSERT INTO tb VALUES (%d, 0)", i)); err != nil {
+			t.Fatalf("insert tb: %v", err)
+		}
+	}
+
+	workers := 4
+	iterations := 25
+
+	var successCount int64
+	var conflictCount int64
+	var otherErrCount int64
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			table := "ta"
+			if id%2 == 1 {
+				table = "tb"
+			}
+			rowID := id / 2 // workers 0,2 -> ta rows 0,1 ; workers 1,3 -> tb rows 0,1
+			for j := 0; j < iterations; {
+				tx, err := db.Begin(ctx)
+				if err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Begin error: %v", id, err)
+					return
+				}
+				_, err = tx.Exec(ctx, fmt.Sprintf("UPDATE %s SET value = value + 1 WHERE id = %d", table, rowID))
+				if err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Update error: %v", id, err)
+					tx.Rollback()
+					return
+				}
+				if err := tx.Commit(); err != nil {
+					if errors.Is(err, txn.ErrConflict) {
+						atomic.AddInt64(&conflictCount, 1)
+						continue
+					}
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Commit error: %v", id, err)
+					return
+				}
+				atomic.AddInt64(&successCount, 1)
+				j++
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if otherErrCount > 0 {
+		t.Fatalf("unexpected errors: %d", otherErrCount)
+	}
+	if successCount != int64(workers*iterations) {
+		t.Fatalf("expected %d successes, got %d (conflicts=%d)", workers*iterations, successCount, conflictCount)
+	}
+
+	for _, table := range []string{"ta", "tb"} {
+		for rowID := 0; rowID < 2; rowID++ {
+			var value int
+			r := db.QueryRow(ctx, fmt.Sprintf("SELECT value FROM %s WHERE id = %d", table, rowID))
+			if err := r.Scan(&value); err != nil {
+				t.Fatalf("read %s[%d]: %v", table, rowID, err)
+			}
+			expected := iterations // one worker per row
+			if value != expected {
+				t.Fatalf("lost update in %s[%d]: expected %d, got %d", table, rowID, expected, value)
+			}
+		}
+	}
+	t.Logf("success=%d conflicts=%d", successCount, conflictCount)
+}
+
+// TestStress_ConcurrentExplicitTransactions_Conflict validates MVCC conflict
+// detection when two explicit transactions compete on the same row.
+func TestStress_ConcurrentExplicitTransactions_Conflict(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "mvcc_conflict.db"), nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE counter (id INTEGER PRIMARY KEY, value INTEGER)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO counter VALUES (1, 0)"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	workers := 2
+	iterations := 10
+
+	var successCount int64
+	var conflictCount int64
+	var otherErrCount int64
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; {
+				tx, err := db.Begin(ctx)
+				if err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Begin error: %v", id, err)
+					return
+				}
+				_, err = tx.Exec(ctx, "UPDATE counter SET value = value + 1 WHERE id = 1")
+				if err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Update error: %v", id, err)
+					tx.Rollback()
+					return
+				}
+				if err := tx.Commit(); err != nil {
+					if errors.Is(err, txn.ErrConflict) {
+						atomic.AddInt64(&conflictCount, 1)
+						continue
+					}
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Commit error: %v", id, err)
+					return
+				}
+				atomic.AddInt64(&successCount, 1)
+				j++
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	var value int
+	r := db.QueryRow(ctx, "SELECT value FROM counter WHERE id = 1")
+	if err := r.Scan(&value); err != nil {
+		t.Fatalf("final read: %v", err)
+	}
+	expected := workers * iterations
+	if value != expected {
+		t.Fatalf("lost update: expected value=%d, got value=%d (success=%d conflicts=%d other=%d)",
+			expected, value, successCount, conflictCount, otherErrCount)
+	}
+	if otherErrCount > 0 {
+		t.Fatalf("unexpected errors: %d", otherErrCount)
+	}
+	if conflictCount == 0 {
+		t.Logf("warning: zero conflicts detected — concurrency may be lower than expected")
+	}
+	t.Logf("success=%d conflicts=%d value=%d", successCount, conflictCount, value)
 }
