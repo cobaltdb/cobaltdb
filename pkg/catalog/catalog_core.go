@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/fdw"
 	"github.com/cobaltdb/cobaltdb/pkg/parallel"
@@ -296,10 +297,20 @@ type Catalog struct {
 	// getCurrentTxn().
 	goroutineTxnMap sync.Map
 
-	// treeCommitMu provides per-tree (table/index) commit locks so that
-	// transactions committing to unrelated trees can proceed concurrently.
-	// The key is the tree name; the value is *sync.Mutex.
-	treeCommitMu sync.Map
+	// commitMu provides 64 sharded row-level commit locks.  Each (tree, key)
+	// hashes to one shard so that transactions touching different rows can
+	// commit concurrently.  The shards are held briefly (validation + WAL
+	// appending) so contention on a single shard is low in practice.
+	commitMu [64]sync.Mutex
+}
+
+// commitLockIdx returns a stable shard index in [0,64) for (treeName,key).
+func (c *Catalog) commitLockIdx(treeName string, key []byte) int {
+	h := fnv.New32a()
+	h.Write([]byte(treeName))
+	h.Write([]byte{':'})
+	h.Write(key)
+	return int(h.Sum32() & 0x3F)
 }
 
 // savepointEntry records a named savepoint with its undo log position

@@ -910,3 +910,99 @@ func TestStress_ConcurrentExplicitTransactions_Mixed(t *testing.T) {
 	t.Logf("inserts=%d updates=%d deletes=%d conflicts=%d remaining=%d",
 		insertCount, updateCount, deleteCount, conflictCount, remaining)
 }
+
+// TestStress_ConcurrentExplicitTransactions_InsertConflict validates MVCC
+// conflict detection when multiple transactions attempt to INSERT the same
+// explicit primary key.
+func TestStress_ConcurrentExplicitTransactions_InsertConflict(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "insert_conflict.db"), nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE kv (id INTEGER PRIMARY KEY, val TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	workers := 4
+	iterations := 10
+
+	var successCount int64
+	var conflictCount int64
+	var otherErrCount int64
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; {
+				tx, err := db.Begin(ctx)
+				if err != nil {
+					atomic.AddInt64(&otherErrCount, 1)
+					return
+				}
+				// All workers compete for the same 5 keys (1-5)
+				key := (j % 5) + 1
+				_, err = tx.Exec(ctx, fmt.Sprintf("INSERT INTO kv VALUES (%d, 'worker-%d-%d')", key, id, j))
+				if err != nil {
+					// Another transaction already inserted this key; treat as conflict
+					// and move to the next key.
+					atomic.AddInt64(&conflictCount, 1)
+					tx.Rollback()
+					j++
+					continue
+				}
+				if err := tx.Commit(); err != nil {
+					if errors.Is(err, txn.ErrConflict) {
+						atomic.AddInt64(&conflictCount, 1)
+						continue
+					}
+					atomic.AddInt64(&otherErrCount, 1)
+					t.Logf("worker %d Commit error: %v", id, err)
+					return
+				}
+				atomic.AddInt64(&successCount, 1)
+				j++
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if otherErrCount > 0 {
+		t.Fatalf("unexpected errors: %d", otherErrCount)
+	}
+
+	// Each of the 5 keys should have exactly one successful insert
+	var count int
+	r := db.QueryRow(ctx, "SELECT COUNT(*) FROM kv")
+	if err := r.Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 5 {
+		t.Fatalf("expected 5 rows (one per key), got %d", count)
+	}
+
+	// Verify no duplicate keys
+	rows, err := db.Query(ctx, "SELECT id FROM kv")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	seen := make(map[int]bool)
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if seen[id] {
+			t.Fatalf("duplicate key: %d", id)
+		}
+		seen[id] = true
+	}
+
+	t.Logf("success=%d conflicts=%d rows=%d", successCount, conflictCount, count)
+}

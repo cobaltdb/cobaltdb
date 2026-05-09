@@ -238,15 +238,6 @@ func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 	c.registerGoroutineTxn(cs)
 }
 
-func (c *Catalog) getTreeCommitMu(name string) *sync.Mutex {
-	if v, ok := c.treeCommitMu.Load(name); ok {
-		return v.(*sync.Mutex)
-	}
-	mu := &sync.Mutex{}
-	actual, _ := c.treeCommitMu.LoadOrStore(name, mu)
-	return actual.(*sync.Mutex)
-}
-
 func (c *Catalog) CommitTransaction() error {
 	ts := c.getCurrentTxn()
 
@@ -254,38 +245,35 @@ func (c *Catalog) CommitTransaction() error {
 	// This performs conflict detection and updates the version store.
 	if ts != nil {
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
-			// Collect every tree touched by reads or writes so we can lock
-			// them individually.  Sorting guarantees a global order and
-			// prevents deadlocks when two transactions touch overlapping
-			// sets of trees.
-			treeNames := make(map[string]struct{})
+			// Collect every (tree,key) touched by reads or writes, hash each to
+			// a shard index, then lock the unique shards in ascending order.
+			// This gives row-level concurrency: transactions touching different
+			// rows (even in the same tree) can commit in parallel.
+			shards := make(map[int]struct{})
 			for keyStr := range ts.readValues {
 				parts := strings.SplitN(keyStr, ":", 2)
 				if len(parts) == 2 {
-					treeNames[parts[0]] = struct{}{}
+					shards[c.commitLockIdx(parts[0], []byte(parts[1]))] = struct{}{}
 				}
 			}
 			for _, pw := range ts.pendingWrites {
-				treeNames[pw.TreeName] = struct{}{}
+				shards[c.commitLockIdx(pw.TreeName, pw.Key)] = struct{}{}
 				for _, idx := range pw.IndexUpdates {
-					treeNames[idx.IndexName] = struct{}{}
+					shards[c.commitLockIdx(idx.IndexName, idx.Key)] = struct{}{}
 				}
 			}
-			sorted := make([]string, 0, len(treeNames))
-			for n := range treeNames {
-				sorted = append(sorted, n)
+			sortedShards := make([]int, 0, len(shards))
+			for s := range shards {
+				sortedShards = append(sortedShards, s)
 			}
-			sort.Strings(sorted)
+			sort.Ints(sortedShards)
 
-			mus := make([]*sync.Mutex, 0, len(sorted))
-			for _, n := range sorted {
-				mu := c.getTreeCommitMu(n)
-				mu.Lock()
-				mus = append(mus, mu)
+			for _, s := range sortedShards {
+				c.commitMu[s].Lock()
 			}
 			defer func() {
-				for i := len(mus) - 1; i >= 0; i-- {
-					mus[i].Unlock()
+				for i := len(sortedShards) - 1; i >= 0; i-- {
+					c.commitMu[sortedShards[i]].Unlock()
 				}
 			}()
 

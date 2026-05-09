@@ -409,6 +409,11 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 				break
 			}
 
+			// Record the non-existence of this key so that if another
+			// transaction inserts it before we commit, conflict detection
+			// catches the race.
+			c.recordManagerRead(stmt.Table, []byte(key), nil)
+
 			// Build index updates for commit-time application.
 			idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, []byte(key), rowValues)
 			if idxErr != nil {
