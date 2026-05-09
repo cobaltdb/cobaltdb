@@ -29,7 +29,7 @@ var (
 )
 
 // Number of shards for memStorage. Must be a power of two.
-const numShards = 16
+const numShards = 256
 
 var hashSeed = maphash.MakeSeed()
 

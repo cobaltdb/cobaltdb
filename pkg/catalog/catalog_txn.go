@@ -246,41 +246,8 @@ func (c *Catalog) CommitTransaction() error {
 			for _, s := range sortedShards {
 				c.commitMu[s].Lock()
 			}
-			defer func() {
-				for i := len(sortedShards) - 1; i >= 0; i-- {
-					c.commitMu[sortedShards[i]].Unlock()
-				}
-			}()
 
-			// Validate reads: ensure no value we read has changed since we read it.
-			// This closes the race window where another transaction bumps the
-			// version before applying its B-tree writes.
-			if len(ts.readValues) > 0 {
-				c.mu.RLock()
-				for keyStr, originalValue := range ts.readValues {
-					parts := strings.SplitN(keyStr, ":", 2)
-					if len(parts) != 2 {
-						continue
-					}
-					treeName, key := parts[0], []byte(parts[1])
-					tree, exists := c.tableTrees[treeName]
-					if !exists {
-						continue
-					}
-					currentValue, _ := tree.Get(key)
-					if !bytes.Equal(originalValue, currentValue) {
-						c.mu.RUnlock()
-						return txn.ErrConflict
-					}
-				}
-				c.mu.RUnlock()
-			}
-
-			if err := mt.Commit(); err != nil {
-				return fmt.Errorf("txn manager commit: %w", err)
-			}
-
-			// Build batch maps from pending writes.
+			// Build batch maps from pending writes before locking commitMu.
 			tableKeys := make(map[string][][]byte)
 			tableVals := make(map[string][][]byte)
 			idxPuts := make(map[string][][]byte)
@@ -299,9 +266,8 @@ func (c *Catalog) CommitTransaction() error {
 				}
 			}
 
-			// Snapshot tree references and WAL under a brief RLock.
+			// Snapshot tree references under a brief RLock before locking commitMu.
 			c.mu.RLock()
-			wal := c.wal
 			tableTrees := make(map[string]btree.TreeStore, len(tableKeys))
 			for name := range tableKeys {
 				if tree, ok := c.tableTrees[name]; ok {
@@ -321,14 +287,55 @@ func (c *Catalog) CommitTransaction() error {
 			}
 			c.mu.RUnlock()
 
-			// Apply writes without holding the catalog lock so DDL operations
-			// can proceed concurrently with B-tree mutations.
+			// Validate reads and commit through the Manager while holding commitMu.
+			// The Manager already appends WAL records and syncs, so we can release
+			// commitMu before applying B-tree writes, shrinking the critical section.
+			if len(ts.readValues) > 0 {
+				c.mu.RLock()
+				for keyStr, originalValue := range ts.readValues {
+					parts := strings.SplitN(keyStr, ":", 2)
+					if len(parts) != 2 {
+						continue
+					}
+					treeName, key := parts[0], []byte(parts[1])
+					tree, exists := c.tableTrees[treeName]
+					if !exists {
+						continue
+					}
+					currentValue, _ := tree.Get(key)
+					if !bytes.Equal(originalValue, currentValue) {
+						c.mu.RUnlock()
+						for _, s := range sortedShards {
+							c.commitMu[s].Unlock()
+						}
+						return txn.ErrConflict
+					}
+				}
+				c.mu.RUnlock()
+			}
+
+			if err := mt.Commit(); err != nil {
+				for _, s := range sortedShards {
+					c.commitMu[s].Unlock()
+				}
+				return fmt.Errorf("txn manager commit: %w", err)
+			}
+
+			// Apply writes while still holding commitMu so that concurrent
+			// transactions cannot observe stale values between validation and
+			// B-tree mutation, preventing lost updates.
 			for name, keys := range tableKeys {
 				tree, exists := tableTrees[name]
 				if !exists {
+					for _, s := range sortedShards {
+						c.commitMu[s].Unlock()
+					}
 					return fmt.Errorf("partition tree %s not found", name)
 				}
 				if err := tree.PutBatch(keys, tableVals[name]); err != nil {
+					for _, s := range sortedShards {
+						c.commitMu[s].Unlock()
+					}
 					return fmt.Errorf("failed to apply buffered writes to %s: %w", name, err)
 				}
 			}
@@ -344,16 +351,8 @@ func (c *Catalog) CommitTransaction() error {
 			}
 			ts.pendingWrites = nil
 
-			// Skip writing a second WAL commit record when the txn.Manager
-			// already wrote one for this transaction.
-			if wal != nil && ts.txnActive {
-				record := &storage.WALRecord{
-					TxnID: ts.txnID,
-					Type:  storage.WALCommit,
-				}
-				if err := wal.Append(record); err != nil {
-					return err
-				}
+			for i := len(sortedShards) - 1; i >= 0; i-- {
+				c.commitMu[sortedShards[i]].Unlock()
 			}
 		}
 	}
