@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -240,6 +241,15 @@ func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 	c.registerGoroutineTxn(txnID)
 }
 
+func (c *Catalog) getTreeCommitMu(name string) *sync.Mutex {
+	if v, ok := c.treeCommitMu.Load(name); ok {
+		return v.(*sync.Mutex)
+	}
+	mu := &sync.Mutex{}
+	actual, _ := c.treeCommitMu.LoadOrStore(name, mu)
+	return actual.(*sync.Mutex)
+}
+
 func (c *Catalog) CommitTransaction() error {
 	ts := c.getCurrentTxn()
 
@@ -247,10 +257,40 @@ func (c *Catalog) CommitTransaction() error {
 	// This performs conflict detection and updates the version store.
 	if ts != nil {
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
-			// Serialize commit-time application of buffered writes so that no
-			// other transaction can observe a version mismatch between the
-			// B-tree and the txn.Manager version store.
-			c.bufferedTxnMu.Lock()
+			// Collect every tree touched by reads or writes so we can lock
+			// them individually.  Sorting guarantees a global order and
+			// prevents deadlocks when two transactions touch overlapping
+			// sets of trees.
+			treeNames := make(map[string]struct{})
+			for keyStr := range ts.readValues {
+				parts := strings.SplitN(keyStr, ":", 2)
+				if len(parts) == 2 {
+					treeNames[parts[0]] = struct{}{}
+				}
+			}
+			for _, pw := range ts.pendingWrites {
+				treeNames[pw.TreeName] = struct{}{}
+				for _, idx := range pw.IndexUpdates {
+					treeNames[idx.IndexName] = struct{}{}
+				}
+			}
+			sorted := make([]string, 0, len(treeNames))
+			for n := range treeNames {
+				sorted = append(sorted, n)
+			}
+			sort.Strings(sorted)
+
+			mus := make([]*sync.Mutex, 0, len(sorted))
+			for _, n := range sorted {
+				mu := c.getTreeCommitMu(n)
+				mu.Lock()
+				mus = append(mus, mu)
+			}
+			defer func() {
+				for i := len(mus) - 1; i >= 0; i-- {
+					mus[i].Unlock()
+				}
+			}()
 
 			// Validate reads: ensure no value we read has changed since we read it.
 			// This closes the race window where another transaction bumps the
@@ -270,7 +310,6 @@ func (c *Catalog) CommitTransaction() error {
 					currentValue, _ := tree.Get(key)
 					if !bytes.Equal(originalValue, currentValue) {
 						c.mu.RUnlock()
-						c.bufferedTxnMu.Unlock()
 						return txn.ErrConflict
 					}
 				}
@@ -278,7 +317,6 @@ func (c *Catalog) CommitTransaction() error {
 			}
 
 			if err := mt.Commit(); err != nil {
-				c.bufferedTxnMu.Unlock()
 				return fmt.Errorf("txn manager commit: %w", err)
 			}
 
@@ -328,11 +366,9 @@ func (c *Catalog) CommitTransaction() error {
 			for name, keys := range tableKeys {
 				tree, exists := tableTrees[name]
 				if !exists {
-					c.bufferedTxnMu.Unlock()
 					return fmt.Errorf("partition tree %s not found", name)
 				}
 				if err := tree.PutBatch(keys, tableVals[name]); err != nil {
-					c.bufferedTxnMu.Unlock()
 					return fmt.Errorf("failed to apply buffered writes to %s: %w", name, err)
 				}
 			}
@@ -347,7 +383,6 @@ func (c *Catalog) CommitTransaction() error {
 				}
 			}
 			ts.pendingWrites = nil
-			c.bufferedTxnMu.Unlock()
 
 			// Skip writing a second WAL commit record when the txn.Manager
 			// already wrote one for this transaction.

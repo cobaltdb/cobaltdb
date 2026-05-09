@@ -296,11 +296,10 @@ type Catalog struct {
 	// getCurrentTxn().
 	goroutineTxnMap sync.Map
 
-	// bufferedTxnMu serializes the commit-time application of buffered writes
-	// to B-trees. It is only held during CommitTransaction / RollbackTransaction
-	// to prevent races on B-tree mutation, not across the full transaction
-	// lifetime.
-	bufferedTxnMu sync.Mutex
+	// treeCommitMu provides per-tree (table/index) commit locks so that
+	// transactions committing to unrelated trees can proceed concurrently.
+	// The key is the tree name; the value is *sync.Mutex.
+	treeCommitMu sync.Map
 }
 
 // savepointEntry records a named savepoint with its undo log position
