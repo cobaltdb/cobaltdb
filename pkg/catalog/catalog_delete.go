@@ -97,7 +97,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 				if pwValue, ok := pendingKeys[pkStr]; ok {
 					valueData = pwValue
 					found = true
-				} else if found {
+				} else if found && useBuffer {
 					c.recordManagerRead(treeName, key, valueData)
 				}
 				if !found {
@@ -159,7 +159,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 				continue
 			}
 
-			if !fromPending {
+			if !fromPending && useBuffer {
 				c.recordManagerRead(treeName, key, valueData)
 			}
 

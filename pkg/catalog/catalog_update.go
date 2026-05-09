@@ -115,7 +115,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				if pwValue, ok := pendingKeys[pkStr]; ok {
 					valueData = pwValue
 					found = true
-				} else if found {
+				} else if found && useBuffer {
 					c.recordManagerRead(treeName, key, valueData)
 				}
 				if !found {
@@ -171,7 +171,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				}
 			}
 
-			if !fromPending {
+			if !fromPending && useBuffer {
 				c.recordManagerRead(treeName, key, valueData)
 			}
 

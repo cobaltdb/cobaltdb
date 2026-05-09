@@ -297,20 +297,20 @@ type Catalog struct {
 	// getCurrentTxn().
 	goroutineTxnMap sync.Map
 
-	// commitMu provides 64 sharded row-level commit locks.  Each (tree, key)
+	// commitMu provides 256 sharded row-level commit locks.  Each (tree, key)
 	// hashes to one shard so that transactions touching different rows can
 	// commit concurrently.  The shards are held briefly (validation + WAL
 	// appending) so contention on a single shard is low in practice.
-	commitMu [64]sync.Mutex
+	commitMu [256]sync.Mutex
 }
 
-// commitLockIdx returns a stable shard index in [0,64) for (treeName,key).
+// commitLockIdx returns a stable shard index in [0,256) for (treeName,key).
 func (c *Catalog) commitLockIdx(treeName string, key []byte) int {
 	h := fnv.New32a()
 	h.Write([]byte(treeName))
 	h.Write([]byte{':'})
 	h.Write(key)
-	return int(h.Sum32() & 0x3F)
+	return int(h.Sum32() & 0xFF)
 }
 
 // savepointEntry records a named savepoint with its undo log position

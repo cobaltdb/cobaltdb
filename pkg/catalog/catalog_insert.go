@@ -409,10 +409,11 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 				break
 			}
 
-			// Record the non-existence of this key so that if another
-			// transaction inserts it before we commit, conflict detection
-			// catches the race.
-			c.recordManagerRead(stmt.Table, []byte(key), nil)
+			// Record the value we read (nil if absent, soft-deleted row if
+			// deleted) so that commit-time validation detects any concurrent
+			// change to this key.
+			existingValue, _ := tree.Get([]byte(key))
+			c.recordManagerRead(stmt.Table, []byte(key), existingValue)
 
 			// Build index updates for commit-time application.
 			idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, []byte(key), rowValues)
@@ -936,6 +937,27 @@ func (c *Catalog) checkForeignKeyConstraints(table *TableDef, rowValues []interf
 				}
 			}
 			refIter.Close()
+
+			// Also check pending writes in the current transaction for
+			// self-referential or same-statement FK references.
+			if !found {
+				if ts := c.getCurrentTxn(); ts != nil {
+					for _, pw := range ts.pendingWrites {
+						if pw.TreeName != fk.ReferencedTable {
+							continue
+						}
+						vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
+						if err != nil || vrow.Version.DeletedAt > 0 {
+							continue
+						}
+						refRow := vrow.Data
+						if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
+							found = true
+							break
+						}
+					}
+				}
+			}
 
 			if !found {
 				return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
