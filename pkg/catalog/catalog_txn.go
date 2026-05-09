@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
@@ -541,7 +542,7 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 		return c.undoDropIndexEntry(entry, errorPrefix)
 	case undoAutoIncSeq:
 		if tbl, exists := c.tables[entry.tableName]; exists {
-			tbl.AutoIncSeq = entry.oldAutoIncSeq
+			atomic.StoreInt64(&tbl.AutoIncSeq, entry.oldAutoIncSeq)
 		}
 	case undoAlterAddColumn:
 		if tbl, exists := c.tables[entry.tableName]; exists {
@@ -758,7 +759,7 @@ func applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree.TreeStore, t
 		}
 	case undoAutoIncSeq:
 		if tbl := tableDefs[entry.tableName]; tbl != nil {
-			tbl.AutoIncSeq = entry.oldAutoIncSeq
+			atomic.StoreInt64(&tbl.AutoIncSeq, entry.oldAutoIncSeq)
 		}
 	}
 	return nil

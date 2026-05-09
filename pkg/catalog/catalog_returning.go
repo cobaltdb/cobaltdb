@@ -97,24 +97,32 @@ func (c *Catalog) getReturningColumns(returningExprs []query.Expression) []strin
 	return columns
 }
 
+// setLastReturning sets the last RETURNING results under returningMu.
+func (c *Catalog) setLastReturning(rows [][]interface{}, cols []string) {
+	c.returningMu.Lock()
+	defer c.returningMu.Unlock()
+	c.lastReturningRows = rows
+	c.lastReturningColumns = cols
+}
+
 // GetLastReturningRows returns the results from the last RETURNING clause
 func (c *Catalog) GetLastReturningRows() [][]interface{} {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.returningMu.Lock()
+	defer c.returningMu.Unlock()
 	return c.lastReturningRows
 }
 
 // GetLastReturningColumns returns the column names from the last RETURNING clause
 func (c *Catalog) GetLastReturningColumns() []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.returningMu.Lock()
+	defer c.returningMu.Unlock()
 	return c.lastReturningColumns
 }
 
 // ClearReturning clears the last RETURNING results
 func (c *Catalog) ClearReturning() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.returningMu.Lock()
+	defer c.returningMu.Unlock()
 	c.lastReturningRows = nil
 	c.lastReturningColumns = nil
 }

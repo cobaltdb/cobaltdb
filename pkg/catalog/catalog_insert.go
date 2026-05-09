@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
@@ -79,8 +80,8 @@ func buildCompositePK(table *TableDef, rowValues []interface{}) (string, bool) {
 }
 
 func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.insertLocked(ctx, stmt, args)
 }
 
@@ -271,7 +272,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	}
 
 	// Save AutoIncSeq before insert loop for rollback
-	savedAutoIncSeq := table.AutoIncSeq
+	savedAutoIncSeq := atomic.LoadInt64(&table.AutoIncSeq)
 	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
 			action:        undoAutoIncSeq,
@@ -328,8 +329,8 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 							pkVal := int64(numLit.Value)
 							key = formatKey(pkVal)
 							// Keep auto-inc counter ahead of explicit values
-							if pkVal > table.AutoIncSeq {
-								table.AutoIncSeq = pkVal
+							if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
+								atomic.StoreInt64(&table.AutoIncSeq, pkVal)
 							}
 						} else {
 							// Non-numeric primary key (TEXT, etc.)
@@ -340,8 +341,8 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 								} else if fVal, ok := toFloat64(val); ok {
 									pkVal := int64(fVal)
 									key = formatKey(pkVal)
-									if pkVal > table.AutoIncSeq {
-										table.AutoIncSeq = pkVal
+									if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
+										atomic.StoreInt64(&table.AutoIncSeq, pkVal)
 									}
 								}
 							}
@@ -355,8 +356,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 		if !compositePK && (!hasPrimaryKey || key == "") {
 			// Generate auto-increment key (per-table counter)
-			table.AutoIncSeq++
-			autoIncValue = table.AutoIncSeq
+			autoIncValue = atomic.AddInt64(&table.AutoIncSeq, 1)
 			key = formatKey(autoIncValue)
 		}
 
@@ -574,8 +574,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	}
 
 	// Store returning rows for retrieval
-	c.lastReturningRows = returningRows
-	c.lastReturningColumns = returningCols
+	c.setLastReturning(returningRows, returningCols)
 
 	// Track live tuples for AutoVacuum
 	if rowsAffected > 0 {
@@ -964,7 +963,7 @@ func (c *Catalog) rollbackStatementInserts(tree btree.TreeStore, table *TableDef
 			}
 		}
 	}
-	table.AutoIncSeq = savedAutoIncSeq
+	atomic.StoreInt64(&table.AutoIncSeq, savedAutoIncSeq)
 }
 
 // getInsertTargetTree returns the BTree for inserting a row
@@ -1028,13 +1027,20 @@ func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, a
 	// Get or create the partition tree
 	tree, exists := c.tableTrees[partitionTreeName]
 	if !exists {
-		// Partition tree doesn't exist yet - create it using the same method as CreateTable
-		newTree, err := btree.NewBTree(c.pool)
-		if err != nil {
-			return nil, -1, fmt.Errorf("failed to create partition tree: %w", err)
+		c.partitionTreeMu.Lock()
+		// Double-check after acquiring lock
+		tree, exists = c.tableTrees[partitionTreeName]
+		if !exists {
+			// Partition tree doesn't exist yet - create it using the same method as CreateTable
+			newTree, err := btree.NewBTree(c.pool)
+			if err != nil {
+				c.partitionTreeMu.Unlock()
+				return nil, -1, fmt.Errorf("failed to create partition tree: %w", err)
+			}
+			tree = newTree
+			c.tableTrees[partitionTreeName] = tree
 		}
-		tree = newTree
-		c.tableTrees[partitionTreeName] = tree
+		c.partitionTreeMu.Unlock()
 	}
 
 	return tree, partitionColIdx, nil

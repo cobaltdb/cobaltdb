@@ -23,8 +23,8 @@ type deleteEntry struct {
 }
 
 func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.deleteLocked(ctx, stmt, args)
 }
 
@@ -252,8 +252,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 	}
 
 	// Store returning rows for retrieval
-	c.lastReturningRows = returningRows
-	c.lastReturningColumns = returningCols
+	c.setLastReturning(returningRows, returningCols)
 
 	return 0, rowsAffected, nil
 }

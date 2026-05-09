@@ -254,6 +254,7 @@ type Catalog struct {
 	pool                 *storage.BufferPool
 	wal                  *storage.WAL
 	tableTrees           map[string]btree.TreeStore               // Each table has its own B+Tree
+	partitionTreeMu      sync.Mutex                               // protects lazy partition tree creation
 	fdwRegistry          *fdw.Registry                         // FDW registry for foreign data wrappers
 	views                map[string]*query.SelectStmt          // Views store their SELECT query
 	triggers             map[string]*query.CreateTriggerStmt   // Triggers store their definition
@@ -275,8 +276,9 @@ type Catalog struct {
 	rlsPolicies          map[string]*security.Policy           // RLS policies: key = "table:policyName"
 	queryCache           *QueryCache                           // Query result cache
 	rlsCtx               context.Context                       // Context for RLS user/role extraction in SELECT
-	lastReturningRows    [][]interface{}                       // Last RETURNING clause results
-	lastReturningColumns []string                              // Column names for RETURNING results
+	lastReturningRows    [][]interface{} // Last RETURNING clause results
+	lastReturningColumns []string        // Column names for RETURNING results
+	returningMu          sync.Mutex      // protects lastReturningRows/lastReturningColumns
 
 	// Dead tuple tracking for AutoVacuum
 	deadTuples map[string]int64 // table name -> count of soft-deleted rows

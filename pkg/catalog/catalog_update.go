@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -23,8 +24,8 @@ type updateEntry struct {
 }
 
 func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.updateLocked(ctx, stmt, args)
 }
 
@@ -254,8 +255,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	}
 
 	// Store returning rows for retrieval
-	c.lastReturningRows = returningRows
-	c.lastReturningColumns = returningCols
+	c.setLastReturning(returningRows, returningCols)
 
 	return 0, rowsAffected, nil
 }
@@ -470,8 +470,7 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 	}
 
 	// Store returning rows for retrieval
-	c.lastReturningRows = returningRows
-	c.lastReturningColumns = returningCols
+	c.setLastReturning(returningRows, returningCols)
 
 	return int64(len(entries)), rowsAffected, nil
 }
@@ -676,8 +675,7 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 	}
 
 	// Store returning rows for retrieval
-	c.lastReturningRows = returningRows
-	c.lastReturningColumns = returningCols
+	c.setLastReturning(returningRows, returningCols)
 
 	return int64(len(entries)), rowsAffected, nil
 }
@@ -1096,8 +1094,8 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 			}
 			if fVal, ok := toFloat64(entry.newRow[pkColIdx]); ok {
 				pkVal := int64(fVal)
-				if pkVal > table.AutoIncSeq {
-					table.AutoIncSeq = pkVal
+				if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
+					atomic.StoreInt64(&table.AutoIncSeq, pkVal)
 				}
 			}
 		} else {
