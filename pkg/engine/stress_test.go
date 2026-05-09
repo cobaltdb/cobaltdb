@@ -1128,7 +1128,11 @@ func TestStress_ConcurrentAutocommit_Mixed(t *testing.T) {
 // operations with varying numbers of goroutines.
 func BenchmarkConcurrentWriters(b *testing.B) {
 	dir := b.TempDir()
-	db, err := Open(filepath.Join(dir, "bench.db"), nil)
+	db, err := Open(filepath.Join(dir, "bench.db"), &Options{
+		EnableScheduler:      false,
+		EnableAutoCheckpoint: false,
+		EnableAutoVacuum:     false,
+	})
 	if err != nil {
 		b.Fatalf("open db: %v", err)
 	}
@@ -1166,7 +1170,11 @@ func BenchmarkConcurrentWriters(b *testing.B) {
 // INSERT operations (multiple rows per statement).
 func BenchmarkConcurrentWritersBatch(b *testing.B) {
 	dir := b.TempDir()
-	db, err := Open(filepath.Join(dir, "bench.db"), nil)
+	db, err := Open(filepath.Join(dir, "bench.db"), &Options{
+		EnableScheduler:      false,
+		EnableAutoCheckpoint: false,
+		EnableAutoVacuum:     false,
+	})
 	if err != nil {
 		b.Fatalf("open db: %v", err)
 	}
