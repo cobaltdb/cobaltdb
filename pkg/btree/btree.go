@@ -11,6 +11,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
@@ -38,9 +39,10 @@ func shardIndex(key string) int {
 
 // lruEntry tracks memory usage for LRU eviction
 type lruEntry struct {
-	key  string
-	size int64
-	elem *list.Element
+	key       string
+	size      int64
+	elem      *list.Element
+	timestamp int64 // unix nano for cross-shard eviction comparison
 }
 
 // btreeShard holds a partition of the in-memory key space with its own lock.
@@ -48,6 +50,9 @@ type btreeShard struct {
 	mu      sync.RWMutex
 	data    map[string][]byte
 	evicted map[string]bool
+	lruMu   sync.Mutex
+	lruList *list.List
+	lruMap  map[string]*lruEntry
 }
 
 // BTree represents a disk-based B+Tree index using a hybrid approach:
@@ -77,9 +82,6 @@ type BTree struct {
 	memoryLimit int64 // atomic
 	memoryUsed  int64 // atomic
 	keyCount    int64 // atomic: logical size (data + evicted)
-	lruMu       sync.Mutex
-	lruList     *list.List
-	lruMap      map[string]*lruEntry
 }
 
 // usablePageSize is the space available for data in each page (after header)
@@ -103,13 +105,13 @@ func NewBTreeWithLimit(pool *storage.BufferPool, limit int64) (*BTree, error) {
 		rootPageID: rootPage.ID(),
 		pool:       pool,
 		order:      100,
-		lruList:    list.New(),
-		lruMap:     make(map[string]*lruEntry),
 	}
 	atomic.StoreInt64(&t.memoryLimit, limit)
 	for i := range t.shards {
 		t.shards[i].data = make(map[string][]byte)
 		t.shards[i].evicted = make(map[string]bool)
+		t.shards[i].lruList = list.New()
+		t.shards[i].lruMap = make(map[string]*lruEntry)
 	}
 	return t, nil
 }
@@ -125,13 +127,13 @@ func OpenBTreeWithLimit(pool *storage.BufferPool, rootPageID uint32, limit int64
 		rootPageID: rootPageID,
 		pool:       pool,
 		order:      100,
-		lruList:    list.New(),
-		lruMap:     make(map[string]*lruEntry),
 	}
 	atomic.StoreInt64(&t.memoryLimit, limit)
 	for i := range t.shards {
 		t.shards[i].data = make(map[string][]byte)
 		t.shards[i].evicted = make(map[string]bool)
+		t.shards[i].lruList = list.New()
+		t.shards[i].lruMap = make(map[string]*lruEntry)
 	}
 	if err := t.loadFromPages(); err != nil {
 		fmt.Printf("btree: warning: failed to load pages for root %d: %v\n", rootPageID, err)
@@ -323,11 +325,11 @@ func (t *BTree) Get(key []byte) ([]byte, error) {
 		copy(result, val)
 		sh.mu.RUnlock()
 
-		t.lruMu.Lock()
-		if entry, ok := t.lruMap[keyStr]; ok {
-			t.lruList.MoveToFront(entry.elem)
+		sh.lruMu.Lock()
+		if entry, ok := sh.lruMap[keyStr]; ok {
+			sh.lruList.MoveToFront(entry.elem)
 		}
-		t.lruMu.Unlock()
+		sh.lruMu.Unlock()
 		return result, nil
 	}
 
@@ -387,12 +389,12 @@ func (t *BTree) Put(key, value []byte) error {
 		delete(sh.evicted, keyCopy)
 		if oldVal, exists := sh.data[keyCopy]; exists {
 			atomic.AddInt64(&t.memoryUsed, -int64(len(keyCopy)+len(oldVal)))
-			t.lruMu.Lock()
-			if entry, ok := t.lruMap[keyCopy]; ok {
-				t.lruList.Remove(entry.elem)
-				delete(t.lruMap, keyCopy)
+			sh.lruMu.Lock()
+			if entry, ok := sh.lruMap[keyCopy]; ok {
+				sh.lruList.Remove(entry.elem)
+				delete(sh.lruMap, keyCopy)
 			}
-			t.lruMu.Unlock()
+			sh.lruMu.Unlock()
 		} else if !wasEvicted {
 			atomic.AddInt64(&t.keyCount, 1)
 		}
@@ -400,14 +402,15 @@ func (t *BTree) Put(key, value []byte) error {
 		atomic.AddInt64(&t.memoryUsed, newSize)
 		atomic.StoreInt32(&t.dirty, 1)
 
-		t.lruMu.Lock()
+		sh.lruMu.Lock()
 		entry := &lruEntry{
-			key:  keyCopy,
-			size: newSize,
+			key:       keyCopy,
+			size:      newSize,
+			timestamp: time.Now().UnixNano(),
 		}
-		entry.elem = t.lruList.PushFront(entry)
-		t.lruMap[keyCopy] = entry
-		t.lruMu.Unlock()
+		entry.elem = sh.lruList.PushFront(entry)
+		sh.lruMap[keyCopy] = entry
+		sh.lruMu.Unlock()
 
 		sh.mu.Unlock()
 		return nil
@@ -488,36 +491,38 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 			continue
 		}
 
-		t.lruMu.Lock()
 		for _, si := range neededShards {
+			sh := &t.shards[si]
+			sh.lruMu.Lock()
 			for _, idx := range shardWorks[si].indices {
 				kc := keyCopies[idx]
 				vc := valCopies[idx]
 
-				wasEvicted := t.shards[si].evicted[kc]
-				delete(t.shards[si].evicted, kc)
-				if oldVal, exists := t.shards[si].data[kc]; exists {
+				wasEvicted := sh.evicted[kc]
+				delete(sh.evicted, kc)
+				if oldVal, exists := sh.data[kc]; exists {
 					atomic.AddInt64(&t.memoryUsed, -int64(len(kc)+len(oldVal)))
-					if entry, ok := t.lruMap[kc]; ok {
-						t.lruList.Remove(entry.elem)
-						delete(t.lruMap, kc)
+					if entry, ok := sh.lruMap[kc]; ok {
+						sh.lruList.Remove(entry.elem)
+						delete(sh.lruMap, kc)
 					}
 				} else if !wasEvicted {
 					atomic.AddInt64(&t.keyCount, 1)
 				}
-				t.shards[si].data[kc] = vc
+				sh.data[kc] = vc
 				atomic.AddInt64(&t.memoryUsed, int64(len(kc)+len(vc)))
 				atomic.StoreInt32(&t.dirty, 1)
 
 				entry := &lruEntry{
-					key:  kc,
-					size: int64(len(kc) + len(vc)),
+					key:       kc,
+					size:      int64(len(kc) + len(vc)),
+					timestamp: time.Now().UnixNano(),
 				}
-				entry.elem = t.lruList.PushFront(entry)
-				t.lruMap[kc] = entry
+				entry.elem = sh.lruList.PushFront(entry)
+				sh.lruMap[kc] = entry
 			}
+			sh.lruMu.Unlock()
 		}
-		t.lruMu.Unlock()
 
 		for _, si := range neededShards {
 			t.shards[si].mu.Unlock()
@@ -552,36 +557,31 @@ func (t *BTree) DeleteBatch(keys [][]byte) error {
 	sort.Ints(neededShards)
 
 	for _, si := range neededShards {
-		t.shards[si].mu.Lock()
-	}
-
-	t.lruMu.Lock()
-	for _, si := range neededShards {
-				for _, kc := range shardWorks[si] {
-					present := false
-					if val, exists := t.shards[si].data[kc]; exists {
-						delete(t.shards[si].data, kc)
-						atomic.AddInt64(&t.memoryUsed, -int64(len(kc)+len(val)))
-						present = true
-						if entry, ok := t.lruMap[kc]; ok {
-							t.lruList.Remove(entry.elem)
-							delete(t.lruMap, kc)
-						}
-					}
-					if t.shards[si].evicted[kc] {
-						delete(t.shards[si].evicted, kc)
-						present = true
-					}
-					if present {
-						atomic.AddInt64(&t.keyCount, -1)
-						atomic.StoreInt32(&t.dirty, 1)
-					}
+		sh := &t.shards[si]
+		sh.mu.Lock()
+		sh.lruMu.Lock()
+		for _, kc := range shardWorks[si] {
+			present := false
+			if val, exists := sh.data[kc]; exists {
+				delete(sh.data, kc)
+				atomic.AddInt64(&t.memoryUsed, -int64(len(kc)+len(val)))
+				present = true
+				if entry, ok := sh.lruMap[kc]; ok {
+					sh.lruList.Remove(entry.elem)
+					delete(sh.lruMap, kc)
 				}
-	}
-	t.lruMu.Unlock()
-
-	for _, si := range neededShards {
-		t.shards[si].mu.Unlock()
+			}
+			if sh.evicted[kc] {
+				delete(sh.evicted, kc)
+				present = true
+			}
+			if present {
+				atomic.AddInt64(&t.keyCount, -1)
+				atomic.StoreInt32(&t.dirty, 1)
+			}
+		}
+		sh.lruMu.Unlock()
+		sh.mu.Unlock()
 	}
 	return nil
 }
@@ -593,17 +593,43 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 	}
 
 	for atomic.LoadInt64(&t.memoryUsed)+needed > limit {
-		t.lruMu.Lock()
-		elem := t.lruList.Back()
-		if elem == nil {
-			t.lruMu.Unlock()
+		// Find the globally oldest entry across all shard LRUs.
+		type candidate struct {
+			shardIdx int
+			key      string
+			ts     int64
+		}
+		var best *candidate
+		for i := 0; i < numShards; i++ {
+			sh := &t.shards[i]
+			sh.lruMu.Lock()
+			if elem := sh.lruList.Back(); elem != nil {
+				entry := elem.Value.(*lruEntry)
+				if best == nil || entry.timestamp < best.ts {
+					best = &candidate{shardIdx: i, key: entry.key, ts: entry.timestamp}
+				}
+			}
+			sh.lruMu.Unlock()
+		}
+		if best == nil {
 			break
 		}
-		entry := elem.Value.(*lruEntry)
-		evictKey := entry.key
-		t.lruList.Remove(elem)
-		delete(t.lruMap, evictKey)
-		t.lruMu.Unlock()
+
+		sh := &t.shards[best.shardIdx]
+		sh.lruMu.Lock()
+		// Verify the back element is still the one we picked (or re-check).
+		elem := sh.lruList.Back()
+		if elem != nil {
+			entry := elem.Value.(*lruEntry)
+			sh.lruList.Remove(elem)
+			delete(sh.lruMap, entry.key)
+		}
+		sh.lruMu.Unlock()
+
+		if elem == nil {
+			continue // Another goroutine evicted it already; retry.
+		}
+		evictKey := best.key
 
 		if atomic.LoadInt32(&t.dirty) != 0 {
 			if err := t.flushInternal(); err != nil {
@@ -611,7 +637,6 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 			}
 		}
 
-		sh := &t.shards[shardIndex(evictKey)]
 		sh.mu.Lock()
 		if val, ok := sh.data[evictKey]; ok {
 			atomic.AddInt64(&t.memoryUsed, -int64(len(evictKey)+len(val)))
@@ -893,12 +918,12 @@ func (t *BTree) Delete(key []byte) error {
 		atomic.AddInt64(&t.keyCount, -1)
 		atomic.StoreInt32(&t.dirty, 1)
 
-		t.lruMu.Lock()
-		if entry, ok := t.lruMap[keyStr]; ok {
-			t.lruList.Remove(entry.elem)
-			delete(t.lruMap, keyStr)
+		sh.lruMu.Lock()
+		if entry, ok := sh.lruMap[keyStr]; ok {
+			sh.lruList.Remove(entry.elem)
+			delete(sh.lruMap, keyStr)
 		}
-		t.lruMu.Unlock()
+		sh.lruMu.Unlock()
 		return nil
 	}
 

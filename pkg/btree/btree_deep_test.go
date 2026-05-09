@@ -601,13 +601,16 @@ func TestBTree_EvictToMakeSpace_EmptyLRUStillOverLimit(t *testing.T) {
 	// Insert a small item
 	tree.Put([]byte("a"), []byte("b"))
 
-	// Manually clear the LRU list to simulate empty LRU scenario
-	tree.lruMu.Lock()
-	tree.lruList.Init()
-	for k := range tree.lruMap {
-		delete(tree.lruMap, k)
+	// Manually clear the per-shard LRU lists to simulate empty LRU scenario
+	for i := range tree.shards {
+		sh := &tree.shards[i]
+		sh.lruMu.Lock()
+		sh.lruList.Init()
+		for k := range sh.lruMap {
+			delete(sh.lruMap, k)
+		}
+		sh.lruMu.Unlock()
 	}
-	tree.lruMu.Unlock()
 
 	// Now try to insert something that needs eviction but LRU is empty
 	err = tree.Put([]byte("cccccccccc"), []byte("dddddddddddd"))
@@ -1833,13 +1836,16 @@ func TestBTree_EvictToMakeSpace_EmptyLRUBreak(t *testing.T) {
 	}
 	t.Logf("memoryUsed after inserts: %d, limit: %d", tree.MemoryUsed(), tree.MemoryLimit())
 
-	// Clear the LRU list but keep memStorage and memoryUsed as-is
-	tree.lruMu.Lock()
-	tree.lruList.Init()
-	for k := range tree.lruMap {
-		delete(tree.lruMap, k)
+	// Clear the per-shard LRU lists but keep memStorage and memoryUsed as-is
+	for i := range tree.shards {
+		sh := &tree.shards[i]
+		sh.lruMu.Lock()
+		sh.lruList.Init()
+		for k := range sh.lruMap {
+			delete(sh.lruMap, k)
+		}
+		sh.lruMu.Unlock()
 	}
-	tree.lruMu.Unlock()
 
 	// Now insert a new entry: "ab" + "cdef" = 6 bytes = sizeDelta.
 	// needed(6) <= memoryLimit(50), so passes first check.

@@ -92,31 +92,6 @@ func (c *Catalog) getCurrentTxn() *catalogTxnState {
 	return c.getGoroutineTxnState()
 }
 
-// goroutineID extracts the current goroutine ID from runtime.Stack using a
-// stack-allocated buffer and direct byte parsing to avoid allocations.
-func goroutineID() int64 {
-	var buf [32]byte
-	n := runtime.Stack(buf[:], false)
-	if n < 11 {
-		return 0
-	}
-	const prefix = "goroutine "
-	for i := 0; i < 10; i++ {
-		if buf[i] != prefix[i] {
-			return 0
-		}
-	}
-	var id int64
-	for i := 10; i < n; i++ {
-		c := buf[i]
-		if c < '0' || c > '9' {
-			break
-		}
-		id = id*10 + int64(c-'0')
-	}
-	return id
-}
-
 func (c *Catalog) registerGoroutineTxn(ts *catalogTxnState) {
 	c.goroutineTxnMap.Store(goroutineID(), ts)
 }
