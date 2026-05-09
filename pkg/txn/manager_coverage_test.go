@@ -56,9 +56,10 @@ func TestPruneVersionsWithActive(t *testing.T) {
 	// The versions map should not have been reset because there is an active txn
 	// (The pruneVersions function only clears if no active transactions)
 	// After prune with active, key1 should still be there
-	mgr.mu.RLock()
-	_, exists := mgr.versions["key1"]
-	mgr.mu.RUnlock()
+	idx := versionShardIdx("key1")
+	mgr.versionShards[idx].mu.Lock()
+	_, exists := mgr.versionShards[idx].versions["key1"]
+	mgr.versionShards[idx].mu.Unlock()
 	if !exists {
 		t.Error("Expected key1 version to still exist with active transaction")
 	}
@@ -74,11 +75,14 @@ func TestPruneVersionsEmpty(t *testing.T) {
 	mgr.pruneVersions()
 
 	// Versions should be empty
-	mgr.mu.RLock()
-	vLen := len(mgr.versions)
-	mgr.mu.RUnlock()
-	if vLen != 0 {
-		t.Errorf("Expected 0 versions, got %d", vLen)
+	total := 0
+	for i := range mgr.versionShards {
+		mgr.versionShards[i].mu.Lock()
+		total += len(mgr.versionShards[i].versions)
+		mgr.versionShards[i].mu.Unlock()
+	}
+	if total != 0 {
+		t.Errorf("Expected 0 versions, got %d", total)
 	}
 }
 

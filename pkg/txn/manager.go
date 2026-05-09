@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -281,13 +283,26 @@ func (t *Transaction) SetWrite(key string, value []byte) {
 	t.WriteSet[key] = value
 }
 
+const numVersionShards = 256
+
+type versionShard struct {
+	mu       sync.Mutex
+	versions map[string]uint64
+}
+
+func versionShardIdx(key string) int {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return int(h.Sum32() & 0xFF)
+}
+
 // Manager manages all transactions
 type Manager struct {
 	counter     uint64 // atomic, monotonic transaction IDs
 	commitSeq   uint64 // atomic, monotonic commit sequence numbers (used for versions)
 	active      map[uint64]*Transaction
-	versions    map[string]uint64 // key → latest committed version
-	versionStore *VersionStore    // MVCC version chain storage
+	versionShards [numVersionShards]versionShard
+	versionStore *VersionStore // MVCC version chain storage
 	mu          sync.RWMutex
 	commitCount atomic.Int64
 	pool        interface{} // BufferPool (using interface{} to avoid import cycle)
@@ -312,13 +327,15 @@ type lockEntry struct {
 func NewManager(pool, wal interface{}) *Manager {
 	m := &Manager{
 		active:                make(map[uint64]*Transaction),
-		versions:              make(map[string]uint64),
 		versionStore:          NewVersionStore(),
 		pool:                  pool,
 		wal:                   wal,
 		deadlockCheckInterval: 100 * time.Millisecond, // Check every 100ms
 		stopDeadlockDetector:  make(chan struct{}),
 		lockEntries:           make(map[string]*lockEntry),
+	}
+	for i := range m.versionShards {
+		m.versionShards[i].versions = make(map[string]uint64)
 	}
 	return m
 }
@@ -754,12 +771,27 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 		return nil
 	}
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	shards := make(map[int]struct{})
+	for key := range txn.ReadSet {
+		shards[versionShardIdx(key)] = struct{}{}
+	}
+	sorted := make([]int, 0, len(shards))
+	for s := range shards {
+		sorted = append(sorted, s)
+	}
+	sort.Ints(sorted)
 
-	// Check if any key we read has been modified by another transaction
+	for _, s := range sorted {
+		m.versionShards[s].mu.Lock()
+	}
+	defer func() {
+		for i := len(sorted) - 1; i >= 0; i-- {
+			m.versionShards[sorted[i]].mu.Unlock()
+		}
+	}()
+
 	for key, readVersion := range txn.ReadSet {
-		currentVersion, exists := m.versions[key]
+		currentVersion, exists := m.versionShards[versionShardIdx(key)].versions[key]
 		if !exists {
 			continue
 		}
@@ -776,30 +808,53 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 // other transactions to commit while WAL I/O is in progress, significantly
 // improving concurrency under high write load.
 func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
-	// 1. Critical section: conflict check + version update.
-	m.mu.Lock()
+	// 1. Collect all version shards touched by this transaction.
+	shards := make(map[int]struct{})
+	for key := range txn.ReadSet {
+		shards[versionShardIdx(key)] = struct{}{}
+	}
+	for key := range txn.WriteSet {
+		shards[versionShardIdx(key)] = struct{}{}
+	}
+	sorted := make([]int, 0, len(shards))
+	for s := range shards {
+		sorted = append(sorted, s)
+	}
+	sort.Ints(sorted)
+
+	// 2. Lock shards in order to avoid deadlocks.
+	for _, s := range sorted {
+		m.versionShards[s].mu.Lock()
+	}
+	defer func() {
+		for i := len(sorted) - 1; i >= 0; i-- {
+			m.versionShards[sorted[i]].mu.Unlock()
+		}
+	}()
+
+	// 3. Conflict detection.
 	if txn.Isolation >= SnapshotIsolation {
 		for key, readVersion := range txn.ReadSet {
-			currentVersion, exists := m.versions[key]
+			currentVersion, exists := m.versionShards[versionShardIdx(key)].versions[key]
 			if !exists {
 				continue
 			}
 			if currentVersion > readVersion {
-				m.mu.Unlock()
 				return ErrConflict
 			}
 		}
 	}
+
+	// 4. Update versions.
 	seq := atomic.AddUint64(&m.commitSeq, 1)
 	for key, value := range txn.WriteSet {
-		m.versions[key] = seq
+		m.versionShards[versionShardIdx(key)].versions[key] = seq
 		if m.versionStore != nil {
 			m.versionStore.Commit(key, value, seq)
 		}
 	}
-	m.mu.Unlock()
 
-	// 2. WAL durability (outside lock so other commits can proceed).
+	// 5. WAL durability (outside version locks so other commits can proceed).
 	if m.wal != nil {
 		if wal, ok := m.wal.(*storage.WAL); ok && wal != nil {
 			for key, value := range txn.WriteSet {
@@ -834,29 +889,31 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 // pruneVersions removes version entries that are no longer needed by any active transaction
 func (m *Manager) pruneVersions() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Find minimum active transaction start timestamp
 	minActive := uint64(math.MaxUint64)
 	for _, txn := range m.active {
 		if txn.StartTS < minActive {
 			minActive = txn.StartTS
 		}
 	}
+	m.mu.Unlock()
 
 	// If no active transactions, we can clear all versions
-		if minActive == math.MaxUint64 {
-			m.versions = make(map[string]uint64)
-			if m.versionStore != nil {
-				m.versionStore = NewVersionStore()
-			}
-			return
+	if minActive == math.MaxUint64 {
+		for i := range m.versionShards {
+			m.versionShards[i].mu.Lock()
+			m.versionShards[i].versions = make(map[string]uint64)
+			m.versionShards[i].mu.Unlock()
 		}
-
-		// Prune old version chain entries
 		if m.versionStore != nil {
-			m.versionStore.Prune(minActive)
+			m.versionStore = NewVersionStore()
 		}
+		return
+	}
+
+	// Prune old version chain entries
+	if m.versionStore != nil {
+		m.versionStore.Prune(minActive)
+	}
 }
 
 // removeActive removes a transaction from the active set
@@ -892,10 +949,10 @@ func (m *Manager) GetTransaction(id uint64) *Transaction {
 
 // GetCurrentVersion returns the current version of a key
 func (m *Manager) GetCurrentVersion(key string) uint64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.versions[key]
+	idx := versionShardIdx(key)
+	m.versionShards[idx].mu.Lock()
+	defer m.versionShards[idx].mu.Unlock()
+	return m.versionShards[idx].versions[key]
 }
 
 // GetVersionStore returns the MVCC version store for snapshot reads.

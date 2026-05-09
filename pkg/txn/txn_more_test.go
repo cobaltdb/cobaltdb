@@ -346,8 +346,9 @@ func TestCommitWithApplyWritesError(t *testing.T) {
 
 	// Verify versions were updated
 	for i := 0; i < 100; i++ {
-		version, exists := mgr.versions[string(rune(i))]
-		if !exists {
+		key := string(rune(i))
+		version := mgr.GetCurrentVersion(key)
+		if version == 0 {
 			t.Errorf("Version not found for key %d", i)
 			continue
 		}
