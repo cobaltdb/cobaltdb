@@ -141,6 +141,8 @@ func (c *Catalog) getCurrentTxnUndoLog() []undoEntry {
 	if ts := c.getCurrentTxn(); ts != nil {
 		return ts.undoLog
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.undoLog
 }
 
@@ -149,6 +151,8 @@ func (c *Catalog) getCurrentTxnSavepoints() []savepointEntry {
 	if ts := c.getCurrentTxn(); ts != nil {
 		return ts.savepoints
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.savepoints
 }
 
@@ -178,6 +182,8 @@ func (c *Catalog) appendUndoEntry(entry undoEntry) {
 		ts.undoLog = append(ts.undoLog, entry)
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.undoLog = append(c.undoLog, entry)
 }
 
@@ -187,6 +193,8 @@ func (c *Catalog) truncateUndoLog(length int) {
 		ts.undoLog = ts.undoLog[:length]
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.undoLog = c.undoLog[:length]
 }
 
@@ -196,6 +204,8 @@ func (c *Catalog) setCurrentTxnSavepoints(sps []savepointEntry) {
 		ts.savepoints = sps
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.savepoints = sps
 }
 
@@ -217,10 +227,8 @@ func (c *Catalog) BeginTransactionWithTxn(txnID uint64, managerTxn interface{}) 
 }
 
 func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.undoLog = nil    // Clear undo log for new transaction
-	c.savepoints = nil // Clear savepoints
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	cs := &catalogTxnState{
 		txnID:     txnID,
 		txnActive: true,
