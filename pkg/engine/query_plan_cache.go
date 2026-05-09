@@ -68,25 +68,33 @@ func NewQueryPlanCache(maxSize int64, maxEntries int) *QueryPlanCache {
 	}
 }
 
-// Get retrieves a cached query plan
+// Get retrieves a cached query plan.  Uses an optimistic read lock for the
+// lookup and only promotes to a write lock when an entry is found and needs
+// its LRU position updated.  This keeps the hot path parallel under high
+// concurrency.
 func (c *QueryPlanCache) Get(sql string, args []interface{}) (*QueryPlanCacheEntry, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	hash := c.hashQuery(sql, args)
+
+	// Fast path: read-only lookup.
+	c.mu.RLock()
 	elem, found := c.entries[hash]
+	c.mu.RUnlock()
+
 	if !found {
+		c.mu.Lock()
 		c.misses++
+		c.mu.Unlock()
 		return nil, false
 	}
 
+	// Slow path: update LRU under write lock.
+	c.mu.Lock()
 	entry := elem.Value.(*QueryPlanCacheEntry)
 	entry.LastAccessed = time.Now()
 	entry.AccessCount++
-
-	// Move to front (most recently used)
 	c.lruList.MoveToFront(elem)
 	c.hits++
+	c.mu.Unlock()
 
 	return entry, true
 }

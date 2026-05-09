@@ -1150,7 +1150,7 @@ func BenchmarkConcurrentWriters(b *testing.B) {
 						defer wg.Done()
 						for j := 0; j < perWorker; j++ {
 							key := base + id*perWorker + j
-							db.Exec(ctx, fmt.Sprintf("INSERT INTO bench VALUES (%d, %d)", key, id))
+							db.Exec(ctx, "INSERT INTO bench VALUES (?, ?)", key, id)
 						}
 					}(w, i*workers*perWorker)
 				}

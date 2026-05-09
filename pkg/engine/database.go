@@ -284,14 +284,16 @@ func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.State
 	db.stmtMu.RUnlock()
 
 	if exists {
-		// Move to front of LRU (most recently used)
-		db.stmtMu.Lock()
-		if c, ok := db.stmtCache[sql]; ok {
-			c.lastUsed = time.Now().Unix()
-			c.useCount++
-			db.stmtLRU.moveToFront(c.elem)
+		// Best-effort LRU update: if the lock is uncontended bump the stats,
+		// otherwise skip rather than serialise every goroutine on stmtMu.
+		if db.stmtMu.TryLock() {
+			if c, ok := db.stmtCache[sql]; ok {
+				c.lastUsed = time.Now().Unix()
+				c.useCount++
+				db.stmtLRU.moveToFront(c.elem)
+			}
+			db.stmtMu.Unlock()
 		}
-		db.stmtMu.Unlock()
 		return cached.stmt, nil
 	}
 
