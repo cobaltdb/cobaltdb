@@ -237,16 +237,6 @@ func (c *Catalog) CommitTransaction() error {
 					shards[c.commitLockIdx(idx.IndexName, idx.Key)] = struct{}{}
 				}
 			}
-			sortedShards := make([]int, 0, len(shards))
-			for s := range shards {
-				sortedShards = append(sortedShards, s)
-			}
-			sort.Ints(sortedShards)
-
-			for _, s := range sortedShards {
-				c.commitMu[s].Lock()
-			}
-
 			// Build batch maps from pending writes before locking commitMu.
 			tableKeys := make(map[string][][]byte)
 			tableVals := make(map[string][][]byte)
@@ -287,9 +277,18 @@ func (c *Catalog) CommitTransaction() error {
 			}
 			c.mu.RUnlock()
 
+			sortedShards := make([]int, 0, len(shards))
+			for s := range shards {
+				sortedShards = append(sortedShards, s)
+			}
+			sort.Ints(sortedShards)
+
+			for _, s := range sortedShards {
+				c.commitMu[s].Lock()
+			}
+
 			// Validate reads and commit through the Manager while holding commitMu.
-			// The Manager already appends WAL records and syncs, so we can release
-			// commitMu before applying B-tree writes, shrinking the critical section.
+			// B-tree writes are also applied under commitMu to prevent lost updates.
 			if len(ts.readValues) > 0 {
 				c.mu.RLock()
 				for keyStr, originalValue := range ts.readValues {
