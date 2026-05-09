@@ -1006,3 +1006,157 @@ func TestStress_ConcurrentExplicitTransactions_InsertConflict(t *testing.T) {
 
 	t.Logf("success=%d conflicts=%d rows=%d", successCount, conflictCount, count)
 }
+
+// TestStress_ConcurrentAutocommit_Insert verifies that multiple goroutines can
+// safely perform autocommit INSERTs concurrently without lost updates.
+func TestStress_ConcurrentAutocommit_Insert(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "autocommit_insert.db"), nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE items (id INT PRIMARY KEY, worker INT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	workers := 4
+	iterations := 25
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				key := id*iterations + j + 1
+				if _, err := db.Exec(ctx, fmt.Sprintf("INSERT INTO items VALUES (%d, %d)", key, id)); err != nil {
+					t.Logf("worker %d insert error: %v", id, err)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	var count int
+	r := db.QueryRow(ctx, "SELECT COUNT(*) FROM items")
+	if err := r.Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	expected := workers * iterations
+	if count != expected {
+		t.Fatalf("expected %d rows, got %d", expected, count)
+	}
+
+	t.Logf("inserted=%d expected=%d", count, expected)
+}
+
+// TestStress_ConcurrentAutocommit_Mixed verifies that concurrent autocommit
+// INSERT, UPDATE, and DELETE operations maintain structural consistency.
+func TestStress_ConcurrentAutocommit_Mixed(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "autocommit_mixed.db"), nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE ledger (id INT PRIMARY KEY, status TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	workers := 4
+	iterations := 10
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				switch j % 3 {
+				case 0:
+					key := id*iterations + j + 1
+					db.Exec(ctx, fmt.Sprintf("INSERT INTO ledger VALUES (%d, 'new')", key))
+				case 1:
+					key := id*iterations + j
+					if key > 0 {
+						db.Exec(ctx, fmt.Sprintf("UPDATE ledger SET status = 'updated' WHERE id = %d", key))
+					}
+				case 2:
+					key := id*iterations + j - 1
+					if key > 0 {
+						db.Exec(ctx, fmt.Sprintf("DELETE FROM ledger WHERE id = %d", key))
+					}
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Verify no duplicate IDs and all statuses are valid.
+	rows, err := db.Query(ctx, "SELECT id, status FROM ledger")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	seen := make(map[int]bool)
+	for rows.Next() {
+		var id int
+		var status string
+		if err := rows.Scan(&id, &status); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if seen[id] {
+			t.Fatalf("duplicate id: %d", id)
+		}
+		seen[id] = true
+		if status != "new" && status != "updated" {
+			t.Fatalf("unexpected status for id %d: %s", id, status)
+		}
+	}
+
+	t.Logf("remaining rows=%d", len(seen))
+}
+
+// BenchmarkConcurrentWriters measures throughput of concurrent INSERT
+// operations with varying numbers of goroutines.
+func BenchmarkConcurrentWriters(b *testing.B) {
+	dir := b.TempDir()
+	db, err := Open(filepath.Join(dir, "bench.db"), nil)
+	if err != nil {
+		b.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE bench (id INT PRIMARY KEY, n INT)"); err != nil {
+		b.Fatalf("create table: %v", err)
+	}
+
+	for _, workers := range []int{1, 2, 4, 8} {
+		b.Run(fmt.Sprintf("workers=%d", workers), func(b *testing.B) {
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var wg sync.WaitGroup
+				perWorker := 100
+				for w := 0; w < workers; w++ {
+					wg.Add(1)
+					go func(id, base int) {
+						defer wg.Done()
+						for j := 0; j < perWorker; j++ {
+							key := base + id*perWorker + j
+							db.Exec(ctx, fmt.Sprintf("INSERT INTO bench VALUES (%d, %d)", key, id))
+						}
+					}(w, i*workers*perWorker)
+				}
+				wg.Wait()
+			}
+			b.ReportMetric(float64(workers*100*b.N)/b.Elapsed().Seconds(), "ops/sec")
+		})
+	}
+}
