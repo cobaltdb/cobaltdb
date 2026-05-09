@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1157,6 +1158,52 @@ func BenchmarkConcurrentWriters(b *testing.B) {
 				wg.Wait()
 			}
 			b.ReportMetric(float64(workers*100*b.N)/b.Elapsed().Seconds(), "ops/sec")
+		})
+	}
+}
+
+// BenchmarkConcurrentWritersBatch measures throughput of concurrent batch
+// INSERT operations (multiple rows per statement).
+func BenchmarkConcurrentWritersBatch(b *testing.B) {
+	dir := b.TempDir()
+	db, err := Open(filepath.Join(dir, "bench.db"), nil)
+	if err != nil {
+		b.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE batch (id INT PRIMARY KEY, n INT)"); err != nil {
+		b.Fatalf("create table: %v", err)
+	}
+
+	for _, workers := range []int{1, 2, 4, 8} {
+		b.Run(fmt.Sprintf("workers=%d", workers), func(b *testing.B) {
+			batchSize := 50
+			perWorker := 10 // 10 batches * 50 rows = 500 rows per worker
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var wg sync.WaitGroup
+				for w := 0; w < workers; w++ {
+					wg.Add(1)
+					go func(id, base int) {
+						defer wg.Done()
+						for j := 0; j < perWorker; j++ {
+							var values []string
+							var args []interface{}
+							for k := 0; k < batchSize; k++ {
+								key := base + id*perWorker*batchSize + j*batchSize + k
+								values = append(values, "(?, ?)")
+								args = append(args, key, id)
+							}
+							sql := "INSERT INTO batch VALUES " + strings.Join(values, ", ")
+							db.Exec(ctx, sql, args...)
+						}
+					}(w, i*workers*perWorker*batchSize)
+				}
+				wg.Wait()
+			}
+			b.ReportMetric(float64(workers*perWorker*batchSize*b.N)/b.Elapsed().Seconds(), "ops/sec")
 		})
 	}
 }

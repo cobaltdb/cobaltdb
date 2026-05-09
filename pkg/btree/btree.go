@@ -592,6 +592,15 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 		return ErrMemoryLimit
 	}
 
+	// If the tree is dirty, flush once before evicting multiple entries.
+	// Previously we flushed inside the loop, which could flush the entire
+	// tree on every single eviction when memory pressure was high.
+	if atomic.LoadInt32(&t.dirty) != 0 {
+		if err := t.flushInternal(); err != nil {
+			return fmt.Errorf("failed to flush during eviction: %w", err)
+		}
+	}
+
 	for atomic.LoadInt64(&t.memoryUsed)+needed > limit {
 		// Find the globally oldest entry across all shard LRUs.
 		type candidate struct {
@@ -630,12 +639,6 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 			continue // Another goroutine evicted it already; retry.
 		}
 		evictKey := best.key
-
-		if atomic.LoadInt32(&t.dirty) != 0 {
-			if err := t.flushInternal(); err != nil {
-				return fmt.Errorf("failed to flush during eviction: %w", err)
-			}
-		}
 
 		sh.mu.Lock()
 		if val, ok := sh.data[evictKey]; ok {
