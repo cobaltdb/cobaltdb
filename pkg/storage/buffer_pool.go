@@ -300,22 +300,42 @@ func (bp *BufferPool) touchLRUUnsafe(page *CachedPage) {
 // evict removes the least recently used unpinned page.
 // NOTE: This is called while holding bp.mu (write lock). If the victim page is
 // dirty, FlushPage performs synchronous I/O under the lock, which can block
-// concurrent GetPage/NewPage callers. This is a known limitation; a background
-// flusher or write-behind queue would avoid holding the lock during I/O but adds
-// significant complexity. In practice the impact is limited because eviction only
-// occurs when the pool is at capacity.
+// concurrent GetPage/NewPage callers. To reduce this, we first scan the LRU
+// tail for a clean unpinned page and only flush a dirty page as a last resort.
 func (bp *BufferPool) evict() error {
+	// First pass: prefer clean pages to avoid synchronous I/O under the lock.
+	// Scan up to 25% of capacity (min 4) looking for a clean, unpinned victim.
+	maxScan := bp.capacity / 4
+	if maxScan < 4 {
+		maxScan = 4
+	}
+	scanned := 0
 	elem := bp.lru.Back()
+	for elem != nil && scanned < maxScan {
+		page := elem.Value.(*CachedPage)
+		if !page.IsPinned() {
+			if !page.IsDirty() {
+				putPageData(page.data)
+				delete(bp.pages, page.id)
+				bp.lru.Remove(elem)
+				bp.stats.recordEviction()
+				return nil
+			}
+			scanned++
+		}
+		elem = elem.Prev()
+	}
+
+	// Second pass: fall back to flushing a dirty page if necessary.
+	elem = bp.lru.Back()
 	for elem != nil {
 		page := elem.Value.(*CachedPage)
 		if !page.IsPinned() {
-			// Flush if dirty
 			if page.IsDirty() {
 				if err := bp.FlushPage(page); err != nil {
 					return err
 				}
 			}
-			// Recycle page data buffer and remove from cache
 			putPageData(page.data)
 			delete(bp.pages, page.id)
 			bp.lru.Remove(elem)
