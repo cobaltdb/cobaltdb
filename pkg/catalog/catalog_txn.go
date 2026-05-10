@@ -227,12 +227,13 @@ func (c *Catalog) CommitTransaction() error {
 			//
 			// Build batch maps from pending writes and collect unique shards for
 			// locking before acquiring any commit lock.
-			tableKeys := make(map[string][][]byte)
-			tableVals := make(map[string][][]byte)
-			idxPuts := make(map[string][][]byte)
-			idxPutVals := make(map[string][][]byte)
-			idxDels := make(map[string][][]byte)
-			shardSet := make(map[int]struct{}, 64)
+			numPW := len(ts.pendingWrites)
+			tableKeys := make(map[string][][]byte, numPW)
+			tableVals := make(map[string][][]byte, numPW)
+			idxPuts := make(map[string][][]byte, numPW)
+			idxPutVals := make(map[string][][]byte, numPW)
+			idxDels := make(map[string][][]byte, numPW)
+			shardSet := make(map[int]struct{}, numPW*2)
 			for _, pw := range ts.pendingWrites {
 				tableKeys[pw.TreeName] = append(tableKeys[pw.TreeName], pw.Key)
 				tableVals[pw.TreeName] = append(tableVals[pw.TreeName], pw.Value)

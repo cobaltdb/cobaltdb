@@ -362,12 +362,22 @@ func (db *DB) acquireConnection(ctx context.Context) error {
 		return nil
 	}
 
+	// Fast path: try to acquire immediately without allocating a timeout context.
+	select {
+	case db.connSem <- struct{}{}:
+		db.activeConns.Add(1)
+		if db.metrics != nil {
+			db.metrics.ConnectionAcquired()
+		}
+		return nil
+	default:
+	}
+
+	// Slow path: wait with timeout.
 	timeout := db.options.ConnectionTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-
-	// Create timeout context if not provided
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -420,11 +430,13 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 		}
 	}()
 
-	// Apply default query timeout if none set
+	// Apply default query timeout only if the caller did not already set one.
 	if db.options.QueryTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, db.options.QueryTimeout)
-		defer cancel()
+		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, db.options.QueryTimeout)
+			defer cancel()
+		}
 	}
 
 	// Acquire connection
@@ -490,11 +502,13 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 			}
 		}
 	}()
-	// Apply default query timeout if none set
+	// Apply default query timeout only if the caller did not already set one.
 	if db.options.QueryTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, db.options.QueryTimeout)
-		defer cancel()
+		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, db.options.QueryTimeout)
+			defer cancel()
+		}
 	}
 
 	// Acquire connection
