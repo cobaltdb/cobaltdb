@@ -292,8 +292,10 @@ type Catalog struct {
 	// goroutineTxnMap maps goroutine ID -> txnID for active buffered
 	// transactions. It replaces the global c.currentTxnID so multiple writers
 	// can be active concurrently, each seeing their own transaction state via
-	// getCurrentTxn().
-	goroutineTxnMap sync.Map
+	// getCurrentTxn(). Using a regular map+mutex instead of sync.Map avoids
+	// per-operation allocations from sync.Map's internal entry nodes.
+	goroutineTxnMap map[uint64]*catalogTxnState
+	goroutineTxnMu  sync.RWMutex
 
 	// commitMu shards the commit critical section by (table,key) hash so that
 	// transactions touching disjoint rows can validate and write in parallel.
@@ -355,6 +357,7 @@ func New(tree btree.TreeStore, pool *storage.BufferPool, wal *storage.WAL) *Cata
 		queryCache:        NewQueryCache(0, 0), // Disabled by default - enable with EnableQueryCache()
 		deadTuples:        make(map[string]int64),
 		liveTuples:        make(map[string]int64),
+		goroutineTxnMap:   make(map[uint64]*catalogTxnState),
 	}
 }
 

@@ -93,20 +93,25 @@ func (c *Catalog) getCurrentTxn() *catalogTxnState {
 }
 
 func (c *Catalog) registerGoroutineTxn(ts *catalogTxnState) {
-	c.goroutineTxnMap.Store(goroutineID(), ts)
+	c.goroutineTxnMu.Lock()
+	if c.goroutineTxnMap == nil {
+		c.goroutineTxnMap = make(map[uint64]*catalogTxnState)
+	}
+	c.goroutineTxnMap[uint64(goroutineID())] = ts
+	c.goroutineTxnMu.Unlock()
 }
 
 func (c *Catalog) unregisterGoroutineTxn() {
-	c.goroutineTxnMap.Delete(goroutineID())
+	c.goroutineTxnMu.Lock()
+	delete(c.goroutineTxnMap, uint64(goroutineID()))
+	c.goroutineTxnMu.Unlock()
 }
 
 func (c *Catalog) getGoroutineTxnState() *catalogTxnState {
-	if v, ok := c.goroutineTxnMap.Load(goroutineID()); ok {
-		if ts, ok := v.(*catalogTxnState); ok {
-			return ts
-		}
-	}
-	return nil
+	c.goroutineTxnMu.RLock()
+	ts := c.goroutineTxnMap[uint64(goroutineID())]
+	c.goroutineTxnMu.RUnlock()
+	return ts
 }
 
 // getTxnState acquires a catalogTxnState from the pool or allocates a new one.
