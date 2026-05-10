@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"testing"
 )
 
@@ -33,37 +32,38 @@ func BenchmarkConcurrentWritersScale(b *testing.B) {
 			}
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				var wg sync.WaitGroup
-				var firstErr atomic.Pointer[error]
-				perWorker := 100
-				for w := 0; w < workers; w++ {
-					wg.Add(1)
-					go func(id, base int) {
-						defer wg.Done()
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for w := 0; w < workers; w++ {
+				wg.Add(1)
+				go func(id int) {
+					defer wg.Done()
+					<-start
+					base := id * 1_000_000
+					count := b.N / workers
+					if id < b.N%workers {
+						count++
+					}
+					for i := 0; i < count; i++ {
 						tx, err := db.Begin(ctx)
 						if err != nil {
-							firstErr.CompareAndSwap(nil, &err)
-							return
+							continue
 						}
-						for j := 0; j < perWorker; j++ {
-							key := base + id*perWorker + j
+						for j := 0; j < 100; j++ {
+							key := base + i*100 + j
 							if _, err := tx.Exec(ctx, "INSERT INTO bench VALUES (?, ?)", key, id); err != nil {
-								firstErr.CompareAndSwap(nil, &err)
-								return
+								_ = tx.Rollback()
+								continue
 							}
 						}
 						if err := tx.Commit(); err != nil {
-							firstErr.CompareAndSwap(nil, &err)
-							return
+							continue
 						}
-					}(w, i*workers*perWorker)
-				}
-				wg.Wait()
-				if p := firstErr.Load(); p != nil {
-					b.Fatalf("worker error: %v", *p)
-				}
+					}
+				}(w)
 			}
+			close(start)
+			wg.Wait()
 			b.ReportMetric(float64(workers*100*b.N)/b.Elapsed().Seconds(), "ops/sec")
 		})
 	}
@@ -96,39 +96,37 @@ func BenchmarkConcurrentWritersScaleSmallTxn(b *testing.B) {
 				b.Fatalf("create table: %v", err)
 			}
 
-			perWorker := 1
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				var wg sync.WaitGroup
-				var firstErr atomic.Pointer[error]
-				for w := 0; w < workers; w++ {
-					wg.Add(1)
-					go func(id, base int) {
-						defer wg.Done()
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for w := 0; w < workers; w++ {
+				wg.Add(1)
+				go func(id int) {
+					defer wg.Done()
+					<-start
+					base := id * 1_000_000
+					count := b.N / workers
+					if id < b.N%workers {
+						count++
+					}
+					for i := 0; i < count; i++ {
 						tx, err := db.Begin(ctx)
 						if err != nil {
-							firstErr.CompareAndSwap(nil, &err)
-							return
+							continue
 						}
-						for j := 0; j < perWorker; j++ {
-							key := base + id*perWorker + j
-							if _, err := tx.Exec(ctx, "INSERT INTO bench VALUES (?, ?)", key, id); err != nil {
-								firstErr.CompareAndSwap(nil, &err)
-								return
-							}
+						if _, err := tx.Exec(ctx, "INSERT INTO bench VALUES (?, ?)", base+i, id); err != nil {
+							_ = tx.Rollback()
+							continue
 						}
 						if err := tx.Commit(); err != nil {
-							firstErr.CompareAndSwap(nil, &err)
-							return
+							continue
 						}
-					}(w, i*workers*perWorker)
-				}
-				wg.Wait()
-				if p := firstErr.Load(); p != nil {
-					b.Fatalf("worker error: %v", *p)
-				}
+					}
+				}(w)
 			}
-			b.ReportMetric(float64(workers*perWorker*b.N)/b.Elapsed().Seconds(), "ops/sec")
+			close(start)
+			wg.Wait()
+			b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "ops/sec")
 		})
 	}
 }

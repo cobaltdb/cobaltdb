@@ -14,11 +14,36 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
 
-// formatKey formats int64 as zero-padded string (20 digits) for consistent key ordering
+// zeroPadding is a lookup table for common zero-padding lengths (0-20).
+var zeroPadding = [21]string{
+	"",
+	"0",
+	"00",
+	"000",
+	"0000",
+	"00000",
+	"000000",
+	"0000000",
+	"00000000",
+	"000000000",
+	"0000000000",
+	"00000000000",
+	"000000000000",
+	"0000000000000",
+	"00000000000000",
+	"000000000000000",
+	"0000000000000000",
+	"00000000000000000",
+	"000000000000000000",
+	"0000000000000000000",
+	"00000000000000000000",
+}
+
+// formatKey formats int64 as zero-padded string (20 digits) for consistent key ordering.
 func formatKey(pkVal int64) string {
 	s := strconv.FormatInt(pkVal, 10)
-	if len(s) < 20 {
-		return strings.Repeat("0", 20-len(s)) + s
+	if n := 20 - len(s); n > 0 {
+		return zeroPadding[n] + s
 	}
 	return s
 }
