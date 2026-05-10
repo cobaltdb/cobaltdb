@@ -190,9 +190,7 @@ func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt 
 	return false, fmt.Errorf("UNIQUE constraint failed: duplicate primary key value")
 }
 
-func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insertColumns []string, valueRow []query.Expression, args []interface{}, autoIncValue int64) ([]interface{}, error) {
-	rowValues := make([]interface{}, len(table.Columns))
-
+func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insertColumns []string, valueRow []query.Expression, args []interface{}, autoIncValue int64, rowValues []interface{}) error {
 	// Set defaults for all columns first.
 	for i, col := range table.Columns {
 		if col.AutoIncrement {
@@ -209,7 +207,7 @@ func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insert
 		if colIdx < len(valueRow) && tableColIdx >= 0 {
 			val, err := evaluateExpression(c, nil, nil, valueRow[colIdx], args)
 			if err != nil {
-				return nil, fmt.Errorf("failed to evaluate value for column '%s': %w", insertColumns[colIdx], err)
+				return fmt.Errorf("failed to evaluate value for column '%s': %w", insertColumns[colIdx], err)
 			}
 			rowValues[tableColIdx] = val
 		}
@@ -222,7 +220,7 @@ func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insert
 		}
 	}
 
-	return rowValues, nil
+	return nil
 }
 
 // validateInsertRow checks NOT NULL, composite PK, UNIQUE, CHECK, and FK constraints.
@@ -416,9 +414,16 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			key = formatKey(autoIncValue)
 		}
 
-		// Build full row with all columns
-		rowValues, buildErr := c.buildInsertRow(table, insertColIndices, insertColumns, valueRow, args, autoIncValue)
-		if buildErr != nil {
+		// Build full row with all columns.
+		// Use a stack-allocated buffer for small tables to avoid one heap alloc.
+		var rowValues []interface{}
+		if n := len(table.Columns); n <= 8 {
+			var rowBuf [8]interface{}
+			rowValues = rowBuf[:n]
+		} else {
+			rowValues = make([]interface{}, n)
+		}
+		if buildErr := c.buildInsertRow(table, insertColIndices, insertColumns, valueRow, args, autoIncValue, rowValues); buildErr != nil {
 			return 0, 0, buildErr
 		}
 

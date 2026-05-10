@@ -25,6 +25,15 @@ var (
 	ErrTxnTimeout       = errors.New("transaction timeout")
 )
 
+// walDataPool reuses small byte buffers for the WAL fast path, eliminating
+// one heap allocation per single-write transaction commit.
+var walDataPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 256)
+		return &b
+	},
+}
+
 // IsolationLevel represents transaction isolation levels
 type IsolationLevel uint8
 
@@ -342,15 +351,15 @@ func versionShardIdx(treeName, key string) int {
 
 // Manager manages all transactions
 type Manager struct {
-	counter     uint64 // atomic, monotonic transaction IDs
-	commitSeq   uint64 // atomic, monotonic commit sequence numbers (used for versions)
-	active      map[uint64]*Transaction
+	counter       uint64 // atomic, monotonic transaction IDs
+	commitSeq     uint64 // atomic, monotonic commit sequence numbers (used for versions)
+	active        map[uint64]*Transaction
 	versionShards [numVersionShards]versionShard
-	versionStore *VersionStore // MVCC version chain storage
-	mu          sync.RWMutex
-	commitCount atomic.Int64
-	pool        interface{} // BufferPool (using interface{} to avoid import cycle)
-	wal         interface{} // WAL
+	versionStore  *VersionStore // MVCC version chain storage
+	mu            sync.RWMutex
+	commitCount   atomic.Int64
+	pool          interface{} // BufferPool (using interface{} to avoid import cycle)
+	wal           interface{} // WAL
 
 	// Deadlock detection
 	deadlockCheckInterval time.Duration
@@ -602,7 +611,7 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 			case <-timer.C:
 				m.lockMu.Lock()
 				txn.SetWaitingFor(0)
-					m.lockMu.Unlock()
+				m.lockMu.Unlock()
 				return fmt.Errorf("lock acquisition timeout")
 			case <-ticker.C:
 				m.lockMu.Lock()
@@ -970,12 +979,25 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 					tnLen := len(wk.TreeName)
 					kLen := len(wk.Key)
 					totalKeyLen := tnLen + 1 + kLen
-					data := make([]byte, 4+totalKeyLen+len(value))
-					binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
-					copy(data[4:4+tnLen], wk.TreeName)
-					data[4+tnLen] = ':'
-					copy(data[4+tnLen+1:], wk.Key)
-					copy(data[4+totalKeyLen:], value)
+					need := 4 + totalKeyLen + len(value)
+					var data []byte
+					if need <= 256 {
+						p := walDataPool.Get().(*[]byte)
+						data = (*p)[:need]
+						binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+						copy(data[4:4+tnLen], wk.TreeName)
+						data[4+tnLen] = ':'
+						copy(data[4+tnLen+1:], wk.Key)
+						copy(data[4+totalKeyLen:], value)
+						walDataPool.Put(p)
+					} else {
+						data = make([]byte, need)
+						binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+						copy(data[4:4+tnLen], wk.TreeName)
+						data[4+tnLen] = ':'
+						copy(data[4+tnLen+1:], wk.Key)
+						copy(data[4+totalKeyLen:], value)
+					}
 
 					recArr[0] = storage.WALRecord{
 						TxnID: txn.ID,
