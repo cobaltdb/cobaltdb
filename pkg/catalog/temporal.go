@@ -28,7 +28,7 @@ func encodeVersionedRow(rowValues []interface{}, asOfTime *time.Time) ([]byte, e
 		createdAt = asOfTime.Unix()
 	}
 
-	if data, ok := encodeVersionedRowFast(rowValues, createdAt); ok {
+	if data, ok := encodeVersionedRowFast(rowValues, createdAt, nil); ok {
 		return data, nil
 	}
 
@@ -43,11 +43,19 @@ func encodeVersionedRow(rowValues []interface{}, asOfTime *time.Time) ([]byte, e
 }
 
 // encodeVersionedRowFast manually builds the JSON {"data":[...],"version":{...}}
-// for common scalar types without reflection. Returns (nil, false) to fall back
-// to json.Marshal for unsupported types or strings that need escaping.
-func encodeVersionedRowFast(rowValues []interface{}, createdAt int64) ([]byte, bool) {
+// for common scalar types without reflection. Appends to dst and returns the
+// updated buffer. Returns (buf, false) to fall back to json.Marshal for
+// unsupported types or strings that need escaping.
+func encodeVersionedRowFast(rowValues []interface{}, createdAt int64, dst []byte) ([]byte, bool) {
 	// Pre-size buffer: ~8 bytes per value + fixed overhead.
-	buf := make([]byte, 0, 64+len(rowValues)*16)
+	need := 64 + len(rowValues)*16
+	var buf []byte
+	if cap(dst)-len(dst) >= need {
+		buf = dst[:len(dst)]
+	} else {
+		buf = make([]byte, len(dst), len(dst)+need)
+		copy(buf, dst)
+	}
 	buf = append(buf, `{"data":[`...)
 
 	for i, v := range rowValues {
@@ -98,13 +106,13 @@ func encodeVersionedRowFast(rowValues []interface{}, createdAt int64) ([]byte, b
 				}
 			}
 			if needsEscape {
-				return nil, false
+				return buf, false
 			}
 			buf = append(buf, '"')
 			buf = append(buf, val...)
 			buf = append(buf, '"')
 		default:
-			return nil, false
+			return buf, false
 		}
 	}
 

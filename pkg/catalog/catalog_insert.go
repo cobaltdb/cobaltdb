@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
@@ -337,8 +338,9 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	var insertErr error
 
 	// Track pending-write start position for statement-level rollback in buffered mode.
+	ts := c.getCurrentTxn()
 	pendingWriteStartPos := 0
-	if ts := c.getCurrentTxn(); ts != nil {
+	if ts != nil {
 		pendingWriteStartPos = len(ts.pendingWrites)
 	}
 
@@ -415,11 +417,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Build full row with all columns.
-		// Use a stack-allocated buffer for small tables to avoid one heap alloc.
+		// Reuse the per-transaction scratch buffer when available to avoid a heap alloc.
 		var rowValues []interface{}
-		if n := len(table.Columns); n <= 8 {
-			var rowBuf [8]interface{}
-			rowValues = rowBuf[:n]
+		if n := len(table.Columns); n <= 8 && ts != nil {
+			rowValues = ts.rowBuf[:n]
 		} else {
 			rowValues = make([]interface{}, n)
 		}
@@ -444,11 +445,32 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			continue
 		}
 
-		// Encode row with temporal versioning
-		valueData, err := encodeVersionedRow(rowValues, nil)
-		if err != nil {
-			insertErr = err
-			break
+		// Encode row with temporal versioning.
+		// Reuse the per-transaction buffer to avoid a heap alloc per row.
+		var valueData []byte
+		if ts != nil {
+			start := len(ts.valueDataBuf)
+			buf, ok := encodeVersionedRowFast(rowValues, time.Now().Unix(), ts.valueDataBuf)
+			if ok {
+				ts.valueDataBuf = buf
+				valueData = ts.valueDataBuf[start:]
+			} else {
+				ts.valueDataBuf = ts.valueDataBuf[:start]
+				data, err := encodeVersionedRow(rowValues, nil)
+				if err != nil {
+					insertErr = err
+					break
+				}
+				ts.valueDataBuf = append(ts.valueDataBuf, data...)
+				valueData = ts.valueDataBuf[start:]
+			}
+		} else {
+			var err error
+			valueData, err = encodeVersionedRow(rowValues, nil)
+			if err != nil {
+				insertErr = err
+				break
+			}
 		}
 
 		if useBuffer {
@@ -541,7 +563,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 		// Store in B+Tree
 		if bt, ok := tree.(*btree.BTree); ok {
-			err = bt.PutStringNoCopy(key, valueData)
+			err = bt.PutString(key, valueData)
 		} else {
 			err = tree.Put([]byte(key), valueData)
 		}

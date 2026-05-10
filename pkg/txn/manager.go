@@ -391,7 +391,7 @@ func NewManager(pool, wal interface{}) *Manager {
 		lockEntries:           make(map[string]*lockEntry),
 	}
 	for i := range m.versionShards {
-		m.versionShards[i].versions = make(map[WriteKey]uint64)
+		m.versionShards[i].versions = make(map[WriteKey]uint64, 128)
 	}
 	return m
 }
@@ -1062,7 +1062,7 @@ func (m *Manager) pruneVersions() {
 	if minActive == math.MaxUint64 {
 		for i := range m.versionShards {
 			m.versionShards[i].mu.Lock()
-			m.versionShards[i].versions = make(map[WriteKey]uint64)
+			m.versionShards[i].versions = make(map[WriteKey]uint64, 128)
 			m.versionShards[i].mu.Unlock()
 		}
 		if m.versionStore != nil {

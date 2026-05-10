@@ -226,6 +226,8 @@ type catalogTxnState struct {
 	managerTxn        interface{}    // *txn.Transaction when txnManager bridge is active
 	pendingWrites     []PendingWrite // buffered DML for commit-time application
 	readValues        map[txn.WriteKey][]byte // key -> value at time of read (for MVCC validation)
+	rowBuf            [8]interface{} // reused per-transaction scratch buffer for INSERT
+	valueDataBuf      []byte         // reused per-transaction buffer for encoded row values
 }
 
 // PendingWrite buffers a DML operation for commit-time application when the

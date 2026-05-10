@@ -133,6 +133,10 @@ func (c *Catalog) putTxnState(ts *catalogTxnState) {
 	for k := range ts.readValues {
 		delete(ts.readValues, k)
 	}
+	for i := range ts.rowBuf {
+		ts.rowBuf[i] = nil
+	}
+	ts.valueDataBuf = ts.valueDataBuf[:0]
 	c.txnStatePool.Put(ts)
 }
 
@@ -287,7 +291,7 @@ func (c *Catalog) CommitTransaction() error {
 				}
 				var putErr error
 				if bt, ok := tree.(*btree.BTree); ok {
-					putErr = bt.PutStringNoCopy(pw.Key, pw.Value)
+					putErr = bt.PutString(pw.Key, pw.Value)
 				} else {
 					putErr = tree.Put([]byte(pw.Key), pw.Value)
 				}
