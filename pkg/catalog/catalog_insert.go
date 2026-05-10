@@ -328,6 +328,9 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	// requires immediate mutation of committed data).
 	useBuffer := c.isBufferedMode() && table.Partition == nil && stmt.ConflictAction != query.ConflictReplace
 
+	// Skip allocating row copies when no triggers or RETURNING clause need them.
+	needsInsertedRows := len(stmt.Returning) > 0 || len(c.getTriggersForTableLocked(stmt.Table, "INSERT")) > 0
+
 	for _, valueRow := range valueRows {
 		// Validate value count matches column count
 		if len(valueRow) != len(insertColumns) {
@@ -474,10 +477,11 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 				mt.SetWrite(stmt.Table, key, valueData)
 			}
 
-			// Save row for trigger execution
-			rowCopy := make([]interface{}, len(rowValues))
-			copy(rowCopy, rowValues)
-			insertedRows = append(insertedRows, rowCopy)
+			if needsInsertedRows {
+				rowCopy := make([]interface{}, len(rowValues))
+				copy(rowCopy, rowValues)
+				insertedRows = append(insertedRows, rowCopy)
+			}
 			rowsAffected++
 			continue
 		}
@@ -568,10 +572,11 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 		stmtInserts = append(stmtInserts, si)
 
-		// Save row for trigger execution
-		rowCopy := make([]interface{}, len(rowValues))
-		copy(rowCopy, rowValues)
-		insertedRows = append(insertedRows, rowCopy)
+		if needsInsertedRows {
+			rowCopy := make([]interface{}, len(rowValues))
+			copy(rowCopy, rowValues)
+			insertedRows = append(insertedRows, rowCopy)
+		}
 
 		rowsAffected++
 	}

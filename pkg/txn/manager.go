@@ -51,14 +51,21 @@ type Options struct {
 	LockWaitTimeout time.Duration // Max time to wait for a lock (0 = default 5s)
 }
 
-// DefaultOptions returns default transaction options
+// defaultOptions is the shared read-only default configuration.
+// Manager.Begin/BeginWithContext use it directly when opts is nil,
+// avoiding a heap allocation on every transaction start.
+var defaultOptions = Options{
+	Isolation:       SnapshotIsolation,
+	ReadOnly:        false,
+	Timeout:         0,               // No default timeout
+	LockWaitTimeout: 5 * time.Second, // 5 second lock wait timeout
+}
+
+// DefaultOptions returns a newly allocated copy of the default transaction
+// options for callers that need to mutate the result.
 func DefaultOptions() *Options {
-	return &Options{
-		Isolation:       SnapshotIsolation,
-		ReadOnly:        false,
-		Timeout:         0,               // No default timeout
-		LockWaitTimeout: 5 * time.Second, // 5 second lock wait timeout
-	}
+	cp := defaultOptions
+	return &cp
 }
 
 // WriteKey is a composite key that avoids string concatenation allocations.
@@ -774,7 +781,7 @@ func (m *Manager) acquireTxn() *Transaction {
 // Begin starts a new transaction
 func (m *Manager) Begin(opts *Options) *Transaction {
 	if opts == nil {
-		opts = DefaultOptions()
+		opts = &defaultOptions
 	}
 
 	id := atomic.AddUint64(&m.counter, 1)
@@ -809,7 +816,7 @@ func (m *Manager) Begin(opts *Options) *Transaction {
 // BeginWithContext starts a new transaction with a user-provided context
 func (m *Manager) BeginWithContext(ctx context.Context, opts *Options) *Transaction {
 	if opts == nil {
-		opts = DefaultOptions()
+		opts = &defaultOptions
 	}
 
 	id := atomic.AddUint64(&m.counter, 1)

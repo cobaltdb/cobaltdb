@@ -625,7 +625,7 @@ func (db *DB) TableSchema(name string) (string, error) {
 // Begin starts a new transaction
 
 func (db *DB) Begin(ctx context.Context) (*Tx, error) {
-	return db.BeginWith(ctx, txn.DefaultOptions())
+	return db.BeginWith(ctx, nil)
 }
 
 // BeginWith starts a new transaction with options
@@ -651,10 +651,7 @@ func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 	// txn state for MVCC conflict detection instead of creating a duplicate.
 	db.catalog.BeginTransactionWithTxn(transaction.ID, transaction)
 
-	return &Tx{
-		db:  db,
-		txn: transaction,
-	}, nil
+	return acquireTx(db, transaction), nil
 }
 
 // auditUser extracts the username from context for audit logging.
@@ -2339,6 +2336,28 @@ func scanValue(src interface{}, dest interface{}) error {
 	return nil
 }
 
+// txPool recycles engine-level Tx wrappers to eliminate one heap allocation
+// per explicit transaction.
+var txPool sync.Pool
+
+func acquireTx(db *DB, txn *txn.Transaction) *Tx {
+	if v := txPool.Get(); v != nil {
+		tx := v.(*Tx)
+		tx.db = db
+		tx.txn = txn
+		tx.done.Store(false)
+		return tx
+	}
+	return &Tx{db: db, txn: txn}
+}
+
+func releaseTx(tx *Tx) {
+	if tx == nil {
+		return
+	}
+	txPool.Put(tx)
+}
+
 // Tx represents a database transaction
 type Tx struct {
 	db   *DB
@@ -2400,6 +2419,9 @@ func (tx *Tx) Commit() error {
 	if !tx.done.CompareAndSwap(false, true) {
 		return errors.New("transaction already completed")
 	}
+	defer func() {
+		releaseTx(tx)
+	}()
 	defer tx.db.releaseConnection()
 	defer func() {
 		if tx.txn != nil {
@@ -2438,6 +2460,9 @@ func (tx *Tx) Rollback() error {
 	if !tx.done.CompareAndSwap(false, true) {
 		return errors.New("transaction already completed")
 	}
+	defer func() {
+		releaseTx(tx)
+	}()
 	defer tx.db.releaseConnection()
 	defer func() {
 		if tx.txn != nil {
