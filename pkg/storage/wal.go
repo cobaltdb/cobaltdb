@@ -323,23 +323,29 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 		record.Data = encrypted
 	}
 
-	// Encode record
-	buf := w.encodeRecord(record)
+	// Write record header and data directly to bufWriter, avoiding the
+	// intermediate allocation from encodeRecord. CRC is computed incrementally.
+	dataLen := len(record.Data)
+	var headerBuf [walHeaderSize]byte
+	writeRecordHeader(headerBuf[:], record, dataLen)
+	crcHash := crc32.ChecksumIEEE(headerBuf[:])
+	if _, err := w.bufWriter.Write(headerBuf[:]); err != nil {
+		return err
+	}
+
+	if dataLen > 0 {
+		crcHash = crc32.Update(crcHash, crc32.IEEETable, record.Data)
+		if _, err := w.bufWriter.Write(record.Data); err != nil {
+			return err
+		}
+	}
 
 	// Restore original data to avoid modifying caller's record
 	record.Data = originalData
 
-	// Calculate and write CRC
-	crc := crc32.ChecksumIEEE(buf)
-
-	// Write record
-	if _, err := w.bufWriter.Write(buf); err != nil {
-		return err
-	}
-
 	// Write CRC (direct encoding avoids binary.Write reflection)
 	var crcBuf [4]byte
-	binary.LittleEndian.PutUint32(crcBuf[:], crc)
+	binary.LittleEndian.PutUint32(crcBuf[:], crcHash)
 	if _, err := w.bufWriter.Write(crcBuf[:]); err != nil {
 		return err
 	}
