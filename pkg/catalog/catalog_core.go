@@ -298,9 +298,7 @@ type Catalog struct {
 
 	// commitMu shards the commit critical section by (table,key) hash so that
 	// transactions touching disjoint rows can validate and write in parallel.
-	// Large transactions fall back to bigCommitMu.
-	commitMu    [64]sync.Mutex
-	bigCommitMu sync.Mutex
+	commitMu [64]sync.Mutex
 }
 
 func (c *Catalog) commitLockIdx(treeName string, key []byte) int {

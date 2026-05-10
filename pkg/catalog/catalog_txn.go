@@ -226,7 +226,7 @@ func (c *Catalog) CommitTransaction() error {
 			// rows (even in the same table) can commit in parallel.
 			//
 			// Build batch maps from pending writes and collect unique shards for
-			// adaptive locking before acquiring any commit lock.
+			// locking before acquiring any commit lock.
 			tableKeys := make(map[string][][]byte)
 			tableVals := make(map[string][][]byte)
 			idxPuts := make(map[string][][]byte)
@@ -275,13 +275,12 @@ func (c *Catalog) CommitTransaction() error {
 			}
 			c.mu.RUnlock()
 
-			// Adaptive locking: small transactions use sharded locks; large
-			// transactions (or empty ones) use the global mutex to avoid excessive
-			// sorting and lock/unlock overhead.
-			useBigLock := len(shardSet) > 32
-			var sortedShards []int
-			if !useBigLock && len(shardSet) > 0 {
-				sortedShards = make([]int, 0, len(shardSet))
+			// Lock all touched shards in sorted order, validate, commit through
+			// the Manager, apply writes, then unlock.  Using an inner function
+			// keeps the critical section explicit and avoids repetitive unlock
+			// boilerplate on every error path.
+			if err := func() error {
+				sortedShards := make([]int, 0, len(shardSet))
 				for s := range shardSet {
 					sortedShards = append(sortedShards, s)
 				}
@@ -289,92 +288,62 @@ func (c *Catalog) CommitTransaction() error {
 				for _, s := range sortedShards {
 					c.commitMu[s].Lock()
 				}
-			} else if useBigLock {
-				c.bigCommitMu.Lock()
-			}
-
-			// Validate reads and commit through the Manager while holding locks.
-			if len(ts.readValues) > 0 {
-				c.mu.RLock()
-				for keyStr, originalValue := range ts.readValues {
-					parts := strings.SplitN(keyStr, ":", 2)
-					if len(parts) != 2 {
-						continue
-					}
-					treeName, key := parts[0], []byte(parts[1])
-					tree, exists := c.tableTrees[treeName]
-					if !exists {
-						continue
-					}
-					currentValue, _ := tree.Get(key)
-					if !bytes.Equal(originalValue, currentValue) {
-						c.mu.RUnlock()
-						if useBigLock {
-							c.bigCommitMu.Unlock()
-						} else {
-							for i := len(sortedShards) - 1; i >= 0; i-- {
-								c.commitMu[sortedShards[i]].Unlock()
-							}
-						}
-						return txn.ErrConflict
-					}
-				}
-				c.mu.RUnlock()
-			}
-
-			if err := mt.Commit(); err != nil {
-				if useBigLock {
-					c.bigCommitMu.Unlock()
-				} else {
+				defer func() {
 					for i := len(sortedShards) - 1; i >= 0; i-- {
 						c.commitMu[sortedShards[i]].Unlock()
 					}
-				}
-				return fmt.Errorf("txn manager commit: %w", err)
-			}
+				}()
 
-			// Apply writes while still holding locks.
-			for name, keys := range tableKeys {
-				tree, exists := tableTrees[name]
-				if !exists {
-					if useBigLock {
-						c.bigCommitMu.Unlock()
-					} else {
-						for i := len(sortedShards) - 1; i >= 0; i-- {
-							c.commitMu[sortedShards[i]].Unlock()
+				// Validate reads and commit through the Manager while holding locks.
+				if len(ts.readValues) > 0 {
+					c.mu.RLock()
+					for keyStr, originalValue := range ts.readValues {
+						parts := strings.SplitN(keyStr, ":", 2)
+						if len(parts) != 2 {
+							continue
+						}
+						treeName, key := parts[0], []byte(parts[1])
+						tree, exists := c.tableTrees[treeName]
+						if !exists {
+							continue
+						}
+						currentValue, _ := tree.Get(key)
+						if !bytes.Equal(originalValue, currentValue) {
+							c.mu.RUnlock()
+							return txn.ErrConflict
 						}
 					}
-					return fmt.Errorf("partition tree %s not found", name)
+					c.mu.RUnlock()
 				}
-				if err := tree.PutBatch(keys, tableVals[name]); err != nil {
-					if useBigLock {
-						c.bigCommitMu.Unlock()
-					} else {
-						for i := len(sortedShards) - 1; i >= 0; i-- {
-							c.commitMu[sortedShards[i]].Unlock()
-						}
-					}
-					return fmt.Errorf("failed to apply buffered writes to %s: %w", name, err)
-				}
-			}
-			for name, keys := range idxPuts {
-				if tree, ok := indexTrees[name]; ok {
-					_ = tree.PutBatch(keys, idxPutVals[name])
-				}
-			}
-			for name, keys := range idxDels {
-				if tree, ok := indexTrees[name]; ok {
-					_ = tree.DeleteBatch(keys)
-				}
-			}
-			ts.pendingWrites = nil
 
-			if useBigLock {
-				c.bigCommitMu.Unlock()
-			} else {
-				for i := len(sortedShards) - 1; i >= 0; i-- {
-					c.commitMu[sortedShards[i]].Unlock()
+				if err := mt.Commit(); err != nil {
+					return fmt.Errorf("txn manager commit: %w", err)
 				}
+
+				// Apply writes while still holding locks.
+				for name, keys := range tableKeys {
+					tree, exists := tableTrees[name]
+					if !exists {
+						return fmt.Errorf("partition tree %s not found", name)
+					}
+					if err := tree.PutBatch(keys, tableVals[name]); err != nil {
+						return fmt.Errorf("failed to apply buffered writes to %s: %w", name, err)
+					}
+				}
+				for name, keys := range idxPuts {
+					if tree, ok := indexTrees[name]; ok {
+						_ = tree.PutBatch(keys, idxPutVals[name])
+					}
+				}
+				for name, keys := range idxDels {
+					if tree, ok := indexTrees[name]; ok {
+						_ = tree.DeleteBatch(keys)
+					}
+				}
+				ts.pendingWrites = nil
+				return nil
+			}(); err != nil {
+				return err
 			}
 		}
 	}
