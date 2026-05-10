@@ -2,7 +2,6 @@ package btree
 
 import (
 	"bytes"
-	"container/list"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -37,13 +36,72 @@ func shardIndex(key string) int {
 	return int(maphash.String(hashSeed, key)) & (numShards - 1)
 }
 
-// lruEntry tracks memory usage for LRU eviction
+// lruEntry tracks memory usage for LRU eviction. It acts as an intrusive
+// doubly-linked list node, eliminating the separate list.Element allocation
+// that container/list required.
 type lruEntry struct {
 	key       string
 	size      int64
-	elem      *list.Element
 	timestamp int64 // unix nano for cross-shard eviction comparison
+	next      *lruEntry
+	prev      *lruEntry
 }
+
+// lruList is a simple doubly-linked list of lruEntry nodes.
+type lruList struct {
+	head *lruEntry
+	tail *lruEntry
+}
+
+func (l *lruList) PushFront(e *lruEntry) {
+	e.next = l.head
+	e.prev = nil
+	if l.head != nil {
+		l.head.prev = e
+	}
+	l.head = e
+	if l.tail == nil {
+		l.tail = e
+	}
+}
+
+func (l *lruList) Remove(e *lruEntry) {
+	if e.prev != nil {
+		e.prev.next = e.next
+	} else {
+		l.head = e.next
+	}
+	if e.next != nil {
+		e.next.prev = e.prev
+	} else {
+		l.tail = e.prev
+	}
+	e.next = nil
+	e.prev = nil
+}
+
+func (l *lruList) MoveToFront(e *lruEntry) {
+	l.Remove(e)
+	l.PushFront(e)
+}
+
+func (l *lruList) Back() *lruEntry {
+	return l.tail
+}
+
+func (l *lruList) Init() {
+	l.head = nil
+	l.tail = nil
+}
+
+func (l *lruList) Len() int {
+	n := 0
+	for e := l.head; e != nil; e = e.next {
+		n++
+	}
+	return n
+}
+
 
 // btreeShard holds a partition of the in-memory key space with its own lock.
 type btreeShard struct {
@@ -51,7 +109,7 @@ type btreeShard struct {
 	data    map[string][]byte
 	evicted map[string]bool
 	lruMu   sync.Mutex
-	lruList *list.List
+	lruList lruList
 	lruMap  map[string]*lruEntry
 }
 
@@ -110,7 +168,7 @@ func NewBTreeWithLimit(pool *storage.BufferPool, limit int64) (*BTree, error) {
 	for i := range t.shards {
 		t.shards[i].data = make(map[string][]byte)
 		t.shards[i].evicted = make(map[string]bool)
-		t.shards[i].lruList = list.New()
+		
 		t.shards[i].lruMap = make(map[string]*lruEntry)
 	}
 	return t, nil
@@ -132,7 +190,7 @@ func OpenBTreeWithLimit(pool *storage.BufferPool, rootPageID uint32, limit int64
 	for i := range t.shards {
 		t.shards[i].data = make(map[string][]byte)
 		t.shards[i].evicted = make(map[string]bool)
-		t.shards[i].lruList = list.New()
+		
 		t.shards[i].lruMap = make(map[string]*lruEntry)
 	}
 	if err := t.loadFromPages(); err != nil {
@@ -335,7 +393,8 @@ func (t *BTree) GetString(keyStr string) ([]byte, error) {
 
 		sh.lruMu.Lock()
 		if entry, ok := sh.lruMap[keyStr]; ok {
-			sh.lruList.MoveToFront(entry.elem)
+						sh.lruList.Remove(entry)
+			sh.lruList.MoveToFront(entry)
 		}
 		sh.lruMu.Unlock()
 		return result, nil
@@ -404,7 +463,7 @@ func (t *BTree) PutString(keyCopy string, value []byte) error {
 			atomic.AddInt64(&t.memoryUsed, -int64(len(keyCopy)+len(oldVal)))
 			sh.lruMu.Lock()
 			if entry, ok := sh.lruMap[keyCopy]; ok {
-				sh.lruList.Remove(entry.elem)
+				sh.lruList.Remove(entry)
 				delete(sh.lruMap, keyCopy)
 			}
 			sh.lruMu.Unlock()
@@ -416,12 +475,11 @@ func (t *BTree) PutString(keyCopy string, value []byte) error {
 		atomic.StoreInt32(&t.dirty, 1)
 
 		sh.lruMu.Lock()
-		entry := &lruEntry{
-			key:       keyCopy,
-			size:      newSize,
-			timestamp: time.Now().UnixNano(),
-		}
-		entry.elem = sh.lruList.PushFront(entry)
+		entry := &lruEntry{}
+								entry.key = keyCopy
+								entry.size = newSize
+								entry.timestamp = time.Now().UnixNano()
+		sh.lruList.PushFront(entry)
 		sh.lruMap[keyCopy] = entry
 		sh.lruMu.Unlock()
 
@@ -516,7 +574,8 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 				if oldVal, exists := sh.data[kc]; exists {
 					atomic.AddInt64(&t.memoryUsed, -int64(len(kc)+len(oldVal)))
 					if entry, ok := sh.lruMap[kc]; ok {
-						sh.lruList.Remove(entry.elem)
+								sh.lruList.Remove(entry)
+						sh.lruList.Remove(entry)
 						delete(sh.lruMap, kc)
 					}
 				} else if !wasEvicted {
@@ -526,12 +585,11 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 				atomic.AddInt64(&t.memoryUsed, int64(len(kc)+len(vc)))
 				atomic.StoreInt32(&t.dirty, 1)
 
-				entry := &lruEntry{
-					key:       kc,
-					size:      int64(len(kc) + len(vc)),
-					timestamp: time.Now().UnixNano(),
-				}
-				entry.elem = sh.lruList.PushFront(entry)
+				entry := &lruEntry{}
+								entry.key = kc
+								entry.size = int64(len(kc) + len(vc))
+								entry.timestamp = time.Now().UnixNano()
+				sh.lruList.PushFront(entry)
 				sh.lruMap[kc] = entry
 			}
 			sh.lruMu.Unlock()
@@ -580,8 +638,9 @@ func (t *BTree) DeleteBatch(keys [][]byte) error {
 				atomic.AddInt64(&t.memoryUsed, -int64(len(kc)+len(val)))
 				present = true
 				if entry, ok := sh.lruMap[kc]; ok {
-					sh.lruList.Remove(entry.elem)
-					delete(sh.lruMap, kc)
+								sh.lruList.Remove(entry)
+					// entry freed for GC
+								delete(sh.lruMap, kc)
 				}
 			}
 			if sh.evicted[kc] {
@@ -625,8 +684,7 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 		for i := 0; i < numShards; i++ {
 			sh := &t.shards[i]
 			sh.lruMu.Lock()
-			if elem := sh.lruList.Back(); elem != nil {
-				entry := elem.Value.(*lruEntry)
+			if entry := sh.lruList.Back(); entry != nil {
 				if best == nil || entry.timestamp < best.ts {
 					best = &candidate{shardIdx: i, key: entry.key, ts: entry.timestamp}
 				}
@@ -640,15 +698,15 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 		sh := &t.shards[best.shardIdx]
 		sh.lruMu.Lock()
 		// Verify the back element is still the one we picked (or re-check).
-		elem := sh.lruList.Back()
-		if elem != nil {
-			entry := elem.Value.(*lruEntry)
-			sh.lruList.Remove(elem)
+		entry := sh.lruList.Back()
+		if entry != nil {
+			sh.lruList.Remove(entry)
 			delete(sh.lruMap, entry.key)
+			// entry freed for GC
 		}
 		sh.lruMu.Unlock()
 
-		if elem == nil {
+		if entry == nil {
 			continue // Another goroutine evicted it already; retry.
 		}
 		evictKey := best.key
@@ -940,8 +998,9 @@ func (t *BTree) DeleteString(keyStr string) error {
 
 		sh.lruMu.Lock()
 		if entry, ok := sh.lruMap[keyStr]; ok {
-			sh.lruList.Remove(entry.elem)
-			delete(sh.lruMap, keyStr)
+						sh.lruList.Remove(entry)
+			// entry freed for GC
+								delete(sh.lruMap, keyStr)
 		}
 		sh.lruMu.Unlock()
 		return nil
