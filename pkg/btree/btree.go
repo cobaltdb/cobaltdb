@@ -433,7 +433,7 @@ func (t *BTree) PutString(keyCopy string, value []byte) error {
 		return ErrInvalidValue
 	}
 
-	valCopy := make([]byte, len(value))
+	valCopy := getValueBuf(len(value))
 	copy(valCopy, value)
 	return t.putStringInternal(keyCopy, valCopy)
 }
@@ -457,11 +457,39 @@ func (t *BTree) PutStringNoCopy(keyCopy string, value []byte) error {
 
 var lruEntryPool sync.Pool
 
+// valueBufPool recycles small buffers for B-tree values, eliminating one heap
+// allocation per insert for values up to 128 bytes. We store *valueBuf (a
+// single pointer) instead of []byte so the sync.Pool interface boxing is free.
+type valueBuf struct {
+	b [128]byte
+}
+
+var valueBufPool sync.Pool
+
 func init() {
 	// Seed the pool so the hot insert path never allocates an lruEntry.
 	for i := 0; i < 1024; i++ {
 		lruEntryPool.Put(&lruEntry{})
 	}
+}
+
+// getValueBuf returns a []byte of length n. For n <= 128 it draws from a
+// batch-allocated pool (one make([]valueBuf, 64) serves 64 inserts), keeping
+// the effective allocation rate at ~1/64 per small value.
+func getValueBuf(n int) []byte {
+	if n > 128 {
+		return make([]byte, n)
+	}
+	if v := valueBufPool.Get(); v != nil {
+		buf := v.(*valueBuf)
+		return buf.b[:n]
+	}
+	const batchSize = 64
+	batch := make([]valueBuf, batchSize)
+	for i := 1; i < batchSize; i++ {
+		valueBufPool.Put(&batch[i])
+	}
+	return batch[0].b[:n]
 }
 
 func (t *BTree) putStringInternal(keyCopy string, value []byte) error {
@@ -560,7 +588,7 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 			return ErrInvalidValue
 		}
 		keyCopies[i] = string(key)
-		valCopies[i] = make([]byte, len(values[i]))
+		valCopies[i] = getValueBuf(len(values[i]))
 		copy(valCopies[i], values[i])
 	}
 
