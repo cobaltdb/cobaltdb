@@ -712,13 +712,12 @@ func (m *Manager) Begin(opts *Options) *Transaction {
 		Isolation: opts.Isolation,
 		ReadOnly:  opts.ReadOnly,
 		StartTS:   id,
-		ReadSet:   make(map[string]uint64),
-		WriteSet:  make(map[string][]byte),
 		manager:   m,
 		ctx:       ctx,
 		cancel:    cancel,
-		// locksHeld is lazily created in AddLockHeld to avoid an allocation
-		// for transactions that never acquire explicit locks.
+		// ReadSet, WriteSet, and locksHeld are lazily created on first use
+		// to avoid allocations for transactions that never read/write/acquire
+		// explicit locks (common for read-only or very short transactions).
 	}
 
 	m.mu.Lock()
@@ -753,12 +752,10 @@ func (m *Manager) BeginWithContext(ctx context.Context, opts *Options) *Transact
 		Isolation: opts.Isolation,
 		ReadOnly:  opts.ReadOnly,
 		StartTS:   id,
-		ReadSet:   make(map[string]uint64),
-		WriteSet:  make(map[string][]byte),
 		manager:   m,
 		ctx:       ctx,
 		cancel:    cancel,
-		// locksHeld is lazily created in AddLockHeld.
+		// ReadSet, WriteSet, and locksHeld are lazily created on first use.
 	}
 
 	m.mu.Lock()
@@ -774,14 +771,23 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 		return nil
 	}
 
-	shards := make(map[int]struct{})
+	var shardArr [8]int
+	shardCount := 0
+	addShard := func(s int) {
+		for i := 0; i < shardCount; i++ {
+			if shardArr[i] == s {
+				return
+			}
+		}
+		if shardCount < len(shardArr) {
+			shardArr[shardCount] = s
+			shardCount++
+		}
+	}
 	for key := range txn.ReadSet {
-		shards[versionShardIdx(key)] = struct{}{}
+		addShard(versionShardIdx(key))
 	}
-	sorted := make([]int, 0, len(shards))
-	for s := range shards {
-		sorted = append(sorted, s)
-	}
+	sorted := shardArr[:shardCount]
 	sort.Ints(sorted)
 
 	for _, s := range sorted {
@@ -812,17 +818,28 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 // improving concurrency under high write load.
 func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 	// 1. Collect all version shards touched by this transaction.
-	shards := make(map[int]struct{})
+	// Use a small stack array for the common case (1-2 shards) to avoid a
+	// map allocation per commit.
+	var shardArr [8]int
+	shardCount := 0
+	addShard := func(s int) {
+		for i := 0; i < shardCount; i++ {
+			if shardArr[i] == s {
+				return
+			}
+		}
+		if shardCount < len(shardArr) {
+			shardArr[shardCount] = s
+			shardCount++
+		}
+	}
 	for key := range txn.ReadSet {
-		shards[versionShardIdx(key)] = struct{}{}
+		addShard(versionShardIdx(key))
 	}
 	for key := range txn.WriteSet {
-		shards[versionShardIdx(key)] = struct{}{}
+		addShard(versionShardIdx(key))
 	}
-	sorted := make([]int, 0, len(shards))
-	for s := range shards {
-		sorted = append(sorted, s)
-	}
+	sorted := shardArr[:shardCount]
 	sort.Ints(sorted)
 
 	// 2. Lock shards in order to avoid deadlocks.

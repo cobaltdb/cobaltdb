@@ -159,7 +159,7 @@ func TestCommitWithTimeout(t *testing.T) {
 	txn := mgr.Begin(opts)
 
 	// Add a write
-	txn.WriteSet["key1"] = []byte("val1")
+	txn.SetWrite("key1", []byte("val1"))
 
 	err := txn.Commit()
 	if err != nil {
