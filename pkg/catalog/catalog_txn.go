@@ -287,7 +287,7 @@ func (c *Catalog) CommitTransaction() error {
 				}
 				var putErr error
 				if bt, ok := tree.(*btree.BTree); ok {
-					putErr = bt.PutString(pw.Key, pw.Value)
+					putErr = bt.PutStringNoCopy(pw.Key, pw.Value)
 				} else {
 					putErr = tree.Put([]byte(pw.Key), pw.Value)
 				}

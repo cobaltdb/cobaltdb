@@ -541,7 +541,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 		// Store in B+Tree
 		if bt, ok := tree.(*btree.BTree); ok {
-			err = bt.PutString(key, valueData)
+			err = bt.PutStringNoCopy(key, valueData)
 		} else {
 			err = tree.Put([]byte(key), valueData)
 		}

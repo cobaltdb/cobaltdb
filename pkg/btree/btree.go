@@ -435,7 +435,28 @@ func (t *BTree) PutString(keyCopy string, value []byte) error {
 
 	valCopy := make([]byte, len(value))
 	copy(valCopy, value)
-	newSize := int64(len(keyCopy) + len(valCopy))
+	return t.putStringInternal(keyCopy, valCopy)
+}
+
+// PutStringNoCopy inserts or updates a key-value pair without copying the
+// value slice. The caller must ensure the value slice is not modified after
+// this call, as the B-tree takes ownership of it.
+func (t *BTree) PutStringNoCopy(keyCopy string, value []byte) error {
+	if len(keyCopy) == 0 {
+		return ErrInvalidKey
+	}
+	if len(keyCopy) > MaxKeyLength {
+		return ErrKeyTooLong
+	}
+	if len(value) == 0 {
+		return ErrInvalidValue
+	}
+
+	return t.putStringInternal(keyCopy, value)
+}
+
+func (t *BTree) putStringInternal(keyCopy string, value []byte) error {
+	newSize := int64(len(keyCopy) + len(value))
 
 	sh := &t.shards[shardIndex(keyCopy)]
 
@@ -470,7 +491,7 @@ func (t *BTree) PutString(keyCopy string, value []byte) error {
 		} else if !wasEvicted {
 			atomic.AddInt64(&t.keyCount, 1)
 		}
-		sh.data[keyCopy] = valCopy
+		sh.data[keyCopy] = value
 		atomic.AddInt64(&t.memoryUsed, newSize)
 		atomic.StoreInt32(&t.dirty, 1)
 
