@@ -18,6 +18,16 @@ type VersionedValue struct {
 	Prev      *VersionedValue
 }
 
+// versionValuePool recycles VersionedValue structs to eliminate one heap
+// allocation per MVCC commit.
+var versionValuePool sync.Pool
+
+func init() {
+	for i := 0; i < 1024; i++ {
+		versionValuePool.Put(&VersionedValue{})
+	}
+}
+
 // VersionStore maintains version chains per key for MVCC snapshot reads.
 type VersionStore struct {
 	mu       sync.RWMutex
@@ -38,11 +48,21 @@ func (vs *VersionStore) Commit(key WriteKey, value []byte, commitTS uint64) {
 	defer vs.mu.Unlock()
 
 	prev := vs.versions[key]
-	vs.versions[key] = &VersionedValue{
-		Value:   value,
-		Version: commitTS,
-		Prev:    prev,
+	var vv *VersionedValue
+	if v := versionValuePool.Get(); v != nil {
+		vv = v.(*VersionedValue)
+		vv.Value = value
+		vv.Version = commitTS
+		vv.Deleted = false
+		vv.Prev = prev
+	} else {
+		vv = &VersionedValue{
+			Value:   value,
+			Version: commitTS,
+			Prev:    prev,
+		}
 	}
+	vs.versions[key] = vv
 	vs.count++
 }
 
@@ -52,12 +72,22 @@ func (vs *VersionStore) Delete(key WriteKey, commitTS uint64) {
 	defer vs.mu.Unlock()
 
 	prev := vs.versions[key]
-	vs.versions[key] = &VersionedValue{
-		Value:   nil,
-		Version: commitTS,
-		Deleted: true,
-		Prev:    prev,
+	var vv *VersionedValue
+	if v := versionValuePool.Get(); v != nil {
+		vv = v.(*VersionedValue)
+		vv.Value = nil
+		vv.Version = commitTS
+		vv.Deleted = true
+		vv.Prev = prev
+	} else {
+		vv = &VersionedValue{
+			Value:   nil,
+			Version: commitTS,
+			Deleted: true,
+			Prev:    prev,
+		}
 	}
+	vs.versions[key] = vv
 	vs.count++
 }
 
@@ -144,6 +174,14 @@ func pruneChain(versions map[WriteKey]*VersionedValue, key WriteKey, head *Versi
 	// If we found a visible version, truncate everything before it
 	if lastVisible != nil && lastVisible.Prev != nil {
 		count := countChain(lastVisible.Prev)
+		// Return pruned nodes to the pool for reuse.
+		for node := lastVisible.Prev; node != nil; {
+			next := node.Prev
+			node.Value = nil
+			node.Prev = nil
+			versionValuePool.Put(node)
+			node = next
+		}
 		lastVisible.Prev = nil
 		pruned += count
 	}

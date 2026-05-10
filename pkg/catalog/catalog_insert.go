@@ -204,13 +204,30 @@ func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insert
 	}
 
 	// Overlay explicit insert values.
-	for colIdx, tableColIdx := range insertColIndices {
-		if colIdx < len(valueRow) && tableColIdx >= 0 {
+	if insertColIndices != nil {
+		for colIdx, tableColIdx := range insertColIndices {
+			if colIdx < len(valueRow) && tableColIdx >= 0 {
+				val, err := evaluateExpression(c, nil, nil, valueRow[colIdx], args)
+				if err != nil {
+					colName := ""
+					if insertColumns != nil {
+						colName = insertColumns[colIdx]
+					} else if colIdx < len(table.Columns) {
+						colName = table.Columns[colIdx].Name
+					}
+					return fmt.Errorf("failed to evaluate value for column '%s': %w", colName, err)
+				}
+				rowValues[tableColIdx] = val
+			}
+		}
+	} else {
+		// Identity mapping: valueRow[i] maps to table.Columns[i].
+		for colIdx := 0; colIdx < len(valueRow) && colIdx < len(table.Columns); colIdx++ {
 			val, err := evaluateExpression(c, nil, nil, valueRow[colIdx], args)
 			if err != nil {
-				return fmt.Errorf("failed to evaluate value for column '%s': %w", insertColumns[colIdx], err)
+				return fmt.Errorf("failed to evaluate value for column '%s': %w", table.Columns[colIdx].Name, err)
 			}
-			rowValues[tableColIdx] = val
+			rowValues[colIdx] = val
 		}
 	}
 
@@ -285,21 +302,31 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		return 0, 0, err
 	}
 
-	// Determine column mapping
-	// If columns are specified in INSERT, use them; otherwise use all table columns
+	// Determine column mapping.
+	// When no columns are specified, all table columns are inserted in order.
+	numInsertCols := len(stmt.Columns)
+	if numInsertCols == 0 {
+		numInsertCols = len(table.Columns)
+	}
+
+	// Pre-calculate insert column indices for performance.
+	// Use a stack-allocated buffer for small tables to avoid a heap alloc.
+	var insertColIndicesBuf [8]int
+	var insertColIndices []int
 	var insertColumns []string
 	if len(stmt.Columns) > 0 {
-		// Validate that all specified column names exist in the table
-		for _, colName := range stmt.Columns {
+		insertColumns = stmt.Columns
+		n := len(stmt.Columns)
+		if n <= 8 {
+			insertColIndices = insertColIndicesBuf[:n]
+		} else {
+			insertColIndices = make([]int, n)
+		}
+		for i, colName := range stmt.Columns {
 			if table.GetColumnIndex(colName) < 0 {
 				return 0, 0, fmt.Errorf("column '%s' does not exist in table '%s'", colName, stmt.Table)
 			}
-		}
-		insertColumns = stmt.Columns
-	} else {
-		// Use all columns from table definition
-		for _, col := range table.Columns {
-			insertColumns = append(insertColumns, col.Name)
+			insertColIndices[i] = table.GetColumnIndex(colName)
 		}
 	}
 
@@ -307,17 +334,11 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	rowsAffected := int64(0)
 	autoIncValue := int64(0)
 
-	// Pre-calculate insert column indices for performance
-	insertColIndices := make([]int, len(insertColumns))
-	for i, colName := range insertColumns {
-		insertColIndices[i] = table.GetColumnIndex(colName)
-	}
-
 	// Handle INSERT...SELECT: execute SELECT and convert to value rows
 	valueRows := stmt.Values
 	if stmt.Select != nil {
 		var err error
-		valueRows, err = c.convertSelectToValueRows(stmt, insertColumns, args)
+		valueRows, err = c.convertSelectToValueRows(stmt, numInsertCols, args)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -355,7 +376,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 	for _, valueRow := range valueRows {
 		// Validate value count matches column count
-		if len(valueRow) != len(insertColumns) {
+		if len(valueRow) != numInsertCols {
 			// Allow one fewer value if there is exactly one AUTO_INCREMENT column
 			autoIncCount := 0
 			for _, col := range table.Columns {
@@ -363,8 +384,8 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 					autoIncCount++
 				}
 			}
-			if !(autoIncCount > 0 && len(valueRow) == len(insertColumns)-autoIncCount) {
-				return 0, 0, fmt.Errorf("INSERT has %d columns but %d values", len(insertColumns), len(valueRow))
+			if !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
+				return 0, 0, fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
 			}
 		}
 
@@ -376,31 +397,46 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		hasPrimaryKey := false
 		compositePK := len(table.PrimaryKey) > 1
 		if !compositePK {
-			for i, colName := range insertColumns {
-				if table.isPrimaryKeyColumn(colName) {
-					hasPrimaryKey = true
-					// Get primary key value from valueRow if provided
-					if i < len(valueRow) {
-						if numLit, ok := valueRow[i].(*query.NumberLiteral); ok {
-							pkVal := int64(numLit.Value)
+			for _, pkColName := range table.PrimaryKey {
+				// Find which valueRow index corresponds to this PK column.
+				valueIdx := -1
+				if insertColIndices != nil {
+					for i, tci := range insertColIndices {
+						if tci >= 0 && strings.EqualFold(table.Columns[tci].Name, pkColName) {
+							valueIdx = i
+							break
+						}
+					}
+				} else {
+					for i := 0; i < numInsertCols && i < len(table.Columns); i++ {
+						if strings.EqualFold(table.Columns[i].Name, pkColName) {
+							valueIdx = i
+							break
+						}
+					}
+				}
+				if valueIdx < 0 || valueIdx >= len(valueRow) {
+					continue
+				}
+				hasPrimaryKey = true
+				if numLit, ok := valueRow[valueIdx].(*query.NumberLiteral); ok {
+					pkVal := int64(numLit.Value)
+					key = formatKey(pkVal)
+					// Keep auto-inc counter ahead of explicit values
+					if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
+						atomic.StoreInt64(&table.AutoIncSeq, pkVal)
+					}
+				} else {
+					// Non-numeric primary key (TEXT, etc.)
+					val, err := evaluateExpression(c, nil, nil, valueRow[valueIdx], args)
+					if err == nil && val != nil {
+						if strVal, ok := val.(string); ok {
+							key = "S:" + strVal // Prefix to distinguish from numeric keys
+						} else if fVal, ok := toFloat64(val); ok {
+							pkVal := int64(fVal)
 							key = formatKey(pkVal)
-							// Keep auto-inc counter ahead of explicit values
 							if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
 								atomic.StoreInt64(&table.AutoIncSeq, pkVal)
-							}
-						} else {
-							// Non-numeric primary key (TEXT, etc.)
-							val, err := evaluateExpression(c, nil, nil, valueRow[i], args)
-							if err == nil && val != nil {
-								if strVal, ok := val.(string); ok {
-									key = "S:" + strVal // Prefix to distinguish from numeric keys
-								} else if fVal, ok := toFloat64(val); ok {
-									pkVal := int64(fVal)
-									key = formatKey(pkVal)
-									if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
-										atomic.StoreInt64(&table.AutoIncSeq, pkVal)
-									}
-								}
 							}
 						}
 					}
@@ -691,13 +727,13 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 // convertSelectToValueRows executes the SELECT part of INSERT...SELECT and
 // converts the result rows into expression rows that the insert loop can process.
-func (c *Catalog) convertSelectToValueRows(stmt *query.InsertStmt, insertColumns []string, args []interface{}) ([][]query.Expression, error) {
+func (c *Catalog) convertSelectToValueRows(stmt *query.InsertStmt, numCols int, args []interface{}) ([][]query.Expression, error) {
 	selectCols, selectRows, err := c.selectLocked(stmt.Select, args)
 	if err != nil {
 		return nil, fmt.Errorf("INSERT...SELECT failed: %w", err)
 	}
-	if len(selectCols) != len(insertColumns) {
-		return nil, fmt.Errorf("INSERT...SELECT column count mismatch: INSERT has %d columns, SELECT returns %d columns", len(insertColumns), len(selectCols))
+	if len(selectCols) != numCols {
+		return nil, fmt.Errorf("INSERT...SELECT column count mismatch: INSERT has %d columns, SELECT returns %d columns", numCols, len(selectCols))
 	}
 	valueRows := make([][]query.Expression, len(selectRows))
 	for i, row := range selectRows {

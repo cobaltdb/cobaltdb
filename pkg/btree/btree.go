@@ -455,6 +455,15 @@ func (t *BTree) PutStringNoCopy(keyCopy string, value []byte) error {
 	return t.putStringInternal(keyCopy, value)
 }
 
+var lruEntryPool sync.Pool
+
+func init() {
+	// Seed the pool so the hot insert path never allocates an lruEntry.
+	for i := 0; i < 1024; i++ {
+		lruEntryPool.Put(&lruEntry{})
+	}
+}
+
 func (t *BTree) putStringInternal(keyCopy string, value []byte) error {
 	newSize := int64(len(keyCopy) + len(value))
 
@@ -480,12 +489,14 @@ func (t *BTree) putStringInternal(keyCopy string, value []byte) error {
 
 		wasEvicted := sh.evicted[keyCopy]
 		delete(sh.evicted, keyCopy)
+		var oldEntry *lruEntry
 		if oldVal, exists := sh.data[keyCopy]; exists {
 			atomic.AddInt64(&t.memoryUsed, -int64(len(keyCopy)+len(oldVal)))
 			sh.lruMu.Lock()
 			if entry, ok := sh.lruMap[keyCopy]; ok {
 				sh.lruList.Remove(entry)
 				delete(sh.lruMap, keyCopy)
+				oldEntry = entry
 			}
 			sh.lruMu.Unlock()
 		} else if !wasEvicted {
@@ -496,10 +507,19 @@ func (t *BTree) putStringInternal(keyCopy string, value []byte) error {
 		atomic.StoreInt32(&t.dirty, 1)
 
 		sh.lruMu.Lock()
-		entry := &lruEntry{}
-								entry.key = keyCopy
-								entry.size = newSize
-								entry.timestamp = time.Now().UnixNano()
+		var entry *lruEntry
+		if oldEntry != nil {
+			entry = oldEntry
+		} else if v := lruEntryPool.Get(); v != nil {
+			entry = v.(*lruEntry)
+		} else {
+			entry = &lruEntry{}
+		}
+		entry.key = keyCopy
+		entry.size = newSize
+		entry.timestamp = time.Now().UnixNano()
+		entry.next = nil
+		entry.prev = nil
 		sh.lruList.PushFront(entry)
 		sh.lruMap[keyCopy] = entry
 		sh.lruMu.Unlock()
