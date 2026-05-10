@@ -862,11 +862,11 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 		if wal, ok := m.wal.(*storage.WAL); ok && wal != nil {
 			records := make([]*storage.WALRecord, 0, len(txn.WriteSet)+1)
 			for key, value := range txn.WriteSet {
-				keyBytes := []byte(key)
-				data := make([]byte, 4+len(keyBytes)+len(value))
-				binary.LittleEndian.PutUint32(data[0:4], uint32(len(keyBytes)))
-				copy(data[4:4+len(keyBytes)], keyBytes)
-				copy(data[4+len(keyBytes):], value)
+				keyLen := len(key)
+				data := make([]byte, 4+keyLen+len(value))
+				binary.LittleEndian.PutUint32(data[0:4], uint32(keyLen))
+				copy(data[4:4+keyLen], key)
+				copy(data[4+keyLen:], value)
 
 				records = append(records, &storage.WALRecord{
 					TxnID: txn.ID,

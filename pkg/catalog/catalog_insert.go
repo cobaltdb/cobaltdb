@@ -116,8 +116,14 @@ func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []int
 // if the existing row is soft-deleted and applying the statement conflict action
 // (IGNORE or REPLACE). Returns (true, nil) to skip the row, (false, nil) to
 // proceed with insert, or (false, error) on failure.
-func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key []byte) (bool, error) {
-	existingData, err := tree.Get(key)
+func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key string) (bool, error) {
+	var existingData []byte
+	var err error
+	if bt, ok := tree.(*btree.BTree); ok {
+		existingData, err = bt.GetString(key)
+	} else {
+		existingData, err = tree.Get([]byte(key))
+	}
 	if err != nil {
 		return false, nil // Key does not exist, proceed with insert
 	}
@@ -148,7 +154,7 @@ func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt 
 				}
 			}
 		}
-		if err := tree.Delete(key); err != nil {
+		if err := tree.Delete([]byte(key)); err != nil {
 			return false, fmt.Errorf("failed to delete row for REPLACE: %w", err)
 		}
 		return false, nil // Proceed with insert after cleanup
@@ -420,7 +426,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			// Skip WAL — txn.Manager handles durability at commit.
 
 			// Check PK conflict against committed data AND buffered writes.
-			if skip, err := c.resolvePKConflict(tree, table, stmt, []byte(key)); err != nil {
+			if skip, err := c.resolvePKConflict(tree, table, stmt, key); err != nil {
 				insertErr = err
 				break
 			} else if skip {
@@ -437,8 +443,13 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			// Record the value we read (nil if absent, soft-deleted row if
 			// deleted) so that commit-time validation detects any concurrent
 			// change to this key.
-			existingValue, _ := tree.Get([]byte(key))
-			c.recordManagerRead(stmt.Table, []byte(key), existingValue)
+			var existingValue []byte
+			if bt, ok := tree.(*btree.BTree); ok {
+				existingValue, _ = bt.GetString(key)
+			} else {
+				existingValue, _ = tree.Get([]byte(key))
+			}
+			writeKey := c.recordManagerRead(stmt.Table, []byte(key), existingValue)
 
 			// Build index updates for commit-time application.
 			idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, []byte(key), rowValues)
@@ -460,7 +471,6 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 			// Also buffer in the Manager transaction's WriteSet for conflict detection.
 			if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
-				writeKey := stmt.Table + ":" + key
 				mt.SetWrite(writeKey, valueData)
 			}
 
@@ -491,7 +501,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Enforce PRIMARY KEY uniqueness - check if key already exists
-		if skip, err := c.resolvePKConflict(tree, table, stmt, []byte(key)); err != nil {
+		if skip, err := c.resolvePKConflict(tree, table, stmt, key); err != nil {
 			insertErr = err
 			break
 		} else if skip {

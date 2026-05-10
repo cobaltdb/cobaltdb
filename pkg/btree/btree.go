@@ -315,8 +315,16 @@ func (t *BTree) Get(key []byte) ([]byte, error) {
 	if len(key) == 0 {
 		return nil, ErrInvalidKey
 	}
+	return t.GetString(string(key))
+}
 
-	keyStr := string(key)
+// GetString is identical to Get but accepts a string key, avoiding an
+// allocation when the caller already holds the key as a string.
+func (t *BTree) GetString(keyStr string) ([]byte, error) {
+	if len(keyStr) == 0 {
+		return nil, ErrInvalidKey
+	}
+
 	sh := &t.shards[shardIndex(keyStr)]
 	sh.mu.RLock()
 	val, ok := sh.data[keyStr]

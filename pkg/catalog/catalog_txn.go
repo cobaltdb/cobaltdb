@@ -1005,8 +1005,9 @@ func (c *Catalog) getCurrentManagerTxn() interface{} {
 
 // recordManagerRead records a read version and value for the given key in the
 // current txn.Manager transaction's ReadSet. This enables conflict detection
-// for read-modify-write cycles under SnapshotIsolation.
-func (c *Catalog) recordManagerRead(treeName string, key []byte, valueData []byte) {
+// for read-modify-write cycles under SnapshotIsolation. Returns the composed
+// writeKey so callers can reuse it for SetWrite without allocating again.
+func (c *Catalog) recordManagerRead(treeName string, key []byte, valueData []byte) string {
 	writeKey := treeName + ":" + string(key)
 
 	// Snapshot the value we read for commit-time validation.
@@ -1023,19 +1024,20 @@ func (c *Catalog) recordManagerRead(treeName string, key []byte, valueData []byt
 	}
 
 	if !c.isBufferedMode() {
-		return
+		return writeKey
 	}
 
 	mt, ok := c.getCurrentManagerTxn().(*txn.Transaction)
 	if !ok || mt == nil {
-		return
+		return writeKey
 	}
 	mgr, ok := c.txnManager.(*txn.Manager)
 	if !ok || mgr == nil {
-		return
+		return writeKey
 	}
 	ver := mgr.GetCurrentVersion(writeKey)
 	mt.SetReadVersion(writeKey, ver)
+	return writeKey
 }
 
 // isBufferedMode returns true when the current transaction should buffer
@@ -1079,11 +1081,13 @@ func (c *Catalog) clearPendingWrites() {
 // keyInPendingWrites reports whether the given table/key already exists in the
 // current transaction's pending write buffer.
 func (c *Catalog) keyInPendingWrites(tableName string, key []byte) bool {
-	if ts := c.getCurrentTxn(); ts != nil {
-		for _, pw := range ts.pendingWrites {
-			if pw.TreeName == tableName && string(pw.Key) == string(key) {
-				return true
-			}
+	ts := c.getCurrentTxn()
+	if ts == nil || len(ts.pendingWrites) == 0 {
+		return false
+	}
+	for _, pw := range ts.pendingWrites {
+		if pw.TreeName == tableName && string(pw.Key) == string(key) {
+			return true
 		}
 	}
 	return false
@@ -1092,12 +1096,14 @@ func (c *Catalog) keyInPendingWrites(tableName string, key []byte) bool {
 // indexKeyInPendingWrites reports whether the given index key already exists in
 // the current transaction's pending write buffer (for unique constraint checks).
 func (c *Catalog) indexKeyInPendingWrites(indexName string, key []byte) bool {
-	if ts := c.getCurrentTxn(); ts != nil {
-		for _, pw := range ts.pendingWrites {
-			for _, idx := range pw.IndexUpdates {
-				if idx.IndexName == indexName && string(idx.Key) == string(key) && !idx.IsDelete {
-					return true
-				}
+	ts := c.getCurrentTxn()
+	if ts == nil || len(ts.pendingWrites) == 0 {
+		return false
+	}
+	for _, pw := range ts.pendingWrites {
+		for _, idx := range pw.IndexUpdates {
+			if idx.IndexName == indexName && string(idx.Key) == string(key) && !idx.IsDelete {
+				return true
 			}
 		}
 	}
