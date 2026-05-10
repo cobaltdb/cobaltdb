@@ -954,12 +954,12 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 	}
 
 	// 4. Update versions.
+	// Note: VersionStore is write-only in production (no callers of
+	// GetAtSnapshot / GetCurrent / GetLatestVersion outside tests),
+	// so we skip the per-commit allocation entirely.
 	seq := atomic.AddUint64(&m.commitSeq, 1)
-	for wk, value := range txn.WriteSet {
+	for wk := range txn.WriteSet {
 		m.versionShards[versionShardIdx(wk.TreeName, wk.Key)].versions[wk] = seq
-		if m.versionStore != nil {
-			m.versionStore.Commit(wk, value, seq)
-		}
 	}
 
 	// Release version locks before WAL append so other commits can proceed.
