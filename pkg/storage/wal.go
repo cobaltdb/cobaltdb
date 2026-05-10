@@ -72,6 +72,10 @@ type WAL struct {
 	// replay through the catalog after catalog initialization.
 	replayOps []WALReplayOp
 
+	// Reusable buffer for appendInternal to avoid per-record stack-array
+	// escapes caused by bufio.Writer.Write. Protected by mu.
+	appendBuf [walHeaderSize + 4]byte
+
 	// Group commit fields
 	groupCommitEnabled bool
 	groupCommitMu      sync.Mutex
@@ -325,11 +329,12 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 
 	// Write record header and data directly to bufWriter, avoiding the
 	// intermediate allocation from encodeRecord. CRC is computed incrementally.
+	// Use the reusable appendBuf so the arrays don't escape to heap.
 	dataLen := len(record.Data)
-	var headerBuf [walHeaderSize]byte
-	writeRecordHeader(headerBuf[:], record, dataLen)
-	crcHash := crc32.ChecksumIEEE(headerBuf[:])
-	if _, err := w.bufWriter.Write(headerBuf[:]); err != nil {
+	buf := w.appendBuf[:]
+	writeRecordHeader(buf[:walHeaderSize], record, dataLen)
+	crcHash := crc32.ChecksumIEEE(buf[:walHeaderSize])
+	if _, err := w.bufWriter.Write(buf[:walHeaderSize]); err != nil {
 		return err
 	}
 
@@ -344,9 +349,8 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 	record.Data = originalData
 
 	// Write CRC (direct encoding avoids binary.Write reflection)
-	var crcBuf [4]byte
-	binary.LittleEndian.PutUint32(crcBuf[:], crcHash)
-	if _, err := w.bufWriter.Write(crcBuf[:]); err != nil {
+	binary.LittleEndian.PutUint32(buf[walHeaderSize:walHeaderSize+4], crcHash)
+	if _, err := w.bufWriter.Write(buf[walHeaderSize : walHeaderSize+4]); err != nil {
 		return err
 	}
 

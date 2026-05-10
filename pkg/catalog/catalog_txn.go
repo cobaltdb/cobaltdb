@@ -152,8 +152,8 @@ func (c *Catalog) getCurrentTxnSavepoints() []savepointEntry {
 }
 
 // isCurrentTxnActive returns true if the current goroutine has an active
-// transaction.  It walks the goroutine-to-txn map and activeTxns store so it
-// is safe under concurrent transactions (unlike the legacy c.txnActive bool).
+// transaction.  It resolves via the goroutine-to-txn map so it is safe under
+// concurrent transactions (unlike the legacy c.txnActive bool).
 func (c *Catalog) isCurrentTxnActive() bool {
 	if ts := c.getCurrentTxn(); ts != nil {
 		return ts.txnActive
@@ -228,7 +228,6 @@ func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 	cs.txnID = txnID
 	cs.txnActive = true
 	cs.managerTxn = managerTxn
-	c.activeTxns.Store(txnID, cs)
 	// Register goroutine-local txn state so concurrent writers (including autocommit)
 	// each see their own transaction state via getCurrentTxn() without a second map lookup.
 	c.registerGoroutineTxn(cs)
@@ -436,7 +435,6 @@ func (c *Catalog) CommitTransaction() error {
 	}
 	if ts != nil {
 		ts.txnActive = false
-		c.activeTxns.Delete(ts.txnID)
 	}
 	c.unregisterGoroutineTxn()
 	if ts != nil {
@@ -567,7 +565,6 @@ func (c *Catalog) RollbackTransaction() error {
 		if rollbackErr != nil {
 			if ts != nil {
 				ts.txnActive = false
-				c.activeTxns.Delete(ts.txnID)
 			}
 			c.unregisterGoroutineTxn()
 			if ts != nil {
@@ -587,7 +584,6 @@ func (c *Catalog) RollbackTransaction() error {
 
 	if ts != nil {
 		ts.txnActive = false
-		c.activeTxns.Delete(ts.txnID)
 	}
 	c.unregisterGoroutineTxn()
 	if ts != nil {

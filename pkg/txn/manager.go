@@ -880,26 +880,55 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 	// 5. WAL durability (outside version locks so other commits can proceed).
 	if m.wal != nil {
 		if wal, ok := m.wal.(*storage.WAL); ok && wal != nil {
-			records := make([]*storage.WALRecord, 0, len(txn.WriteSet)+1)
-			for key, value := range txn.WriteSet {
-				keyLen := len(key)
-				data := make([]byte, 4+keyLen+len(value))
-				binary.LittleEndian.PutUint32(data[0:4], uint32(keyLen))
-				copy(data[4:4+keyLen], key)
-				copy(data[4+keyLen:], value)
+			// Fast path: single-write transaction with stack-allocated records.
+			// This avoids two heap-allocated WALRecord structs for the common case.
+			if len(txn.WriteSet) == 1 {
+				var recArr [2]storage.WALRecord
+				var records [2]*storage.WALRecord
+				for key, value := range txn.WriteSet {
+					keyLen := len(key)
+					data := make([]byte, 4+keyLen+len(value))
+					binary.LittleEndian.PutUint32(data[0:4], uint32(keyLen))
+					copy(data[4:4+keyLen], key)
+					copy(data[4+keyLen:], value)
 
+					recArr[0] = storage.WALRecord{
+						TxnID: txn.ID,
+						Type:  storage.WALUpdate,
+						Data:  data,
+					}
+					records[0] = &recArr[0]
+				}
+				recArr[1] = storage.WALRecord{
+					TxnID: txn.ID,
+					Type:  storage.WALCommit,
+				}
+				records[1] = &recArr[1]
+				if err := wal.AppendBatchWithoutSync(records[:]); err != nil {
+					return fmt.Errorf("failed to append WAL records: %w", err)
+				}
+			} else {
+				records := make([]*storage.WALRecord, 0, len(txn.WriteSet)+1)
+				for key, value := range txn.WriteSet {
+					keyLen := len(key)
+					data := make([]byte, 4+keyLen+len(value))
+					binary.LittleEndian.PutUint32(data[0:4], uint32(keyLen))
+					copy(data[4:4+keyLen], key)
+					copy(data[4+keyLen:], value)
+
+					records = append(records, &storage.WALRecord{
+						TxnID: txn.ID,
+						Type:  storage.WALUpdate,
+						Data:  data,
+					})
+				}
 				records = append(records, &storage.WALRecord{
 					TxnID: txn.ID,
-					Type:  storage.WALUpdate,
-					Data:  data,
+					Type:  storage.WALCommit,
 				})
-			}
-			records = append(records, &storage.WALRecord{
-				TxnID: txn.ID,
-				Type:  storage.WALCommit,
-			})
-			if err := wal.AppendBatchWithoutSync(records); err != nil {
-				return fmt.Errorf("failed to append WAL records: %w", err)
+				if err := wal.AppendBatchWithoutSync(records); err != nil {
+					return fmt.Errorf("failed to append WAL records: %w", err)
+				}
 			}
 		}
 	}
