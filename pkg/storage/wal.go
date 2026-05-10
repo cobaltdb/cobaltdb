@@ -479,9 +479,7 @@ func (w *WAL) groupCommitLoop(interval time.Duration) {
 			return
 		case <-ticker.C:
 			w.groupCommitMu.Lock()
-			if len(w.pendingSyncs) > 0 {
-				w.flushPendingLocked()
-			}
+			w.flushPendingLocked()
 			w.groupCommitMu.Unlock()
 		}
 	}

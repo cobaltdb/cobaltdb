@@ -860,7 +860,7 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 	// 5. WAL durability (outside version locks so other commits can proceed).
 	if m.wal != nil {
 		if wal, ok := m.wal.(*storage.WAL); ok && wal != nil {
-			records := make([]*storage.WALRecord, 0, len(txn.WriteSet))
+			records := make([]*storage.WALRecord, 0, len(txn.WriteSet)+1)
 			for key, value := range txn.WriteSet {
 				keyBytes := []byte(key)
 				data := make([]byte, 4+len(keyBytes)+len(value))
@@ -874,15 +874,12 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 					Data:  data,
 				})
 			}
-			if err := wal.AppendBatchWithoutSync(records); err != nil {
-				return fmt.Errorf("failed to append WAL records: %w", err)
-			}
-			commitRecord := &storage.WALRecord{
+			records = append(records, &storage.WALRecord{
 				TxnID: txn.ID,
 				Type:  storage.WALCommit,
-			}
-			if err := wal.Append(commitRecord); err != nil {
-				return fmt.Errorf("failed to append WAL commit record: %w", err)
+			})
+			if err := wal.AppendBatchWithoutSync(records); err != nil {
+				return fmt.Errorf("failed to append WAL records: %w", err)
 			}
 		}
 	}
