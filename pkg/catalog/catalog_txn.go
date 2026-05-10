@@ -977,14 +977,18 @@ func (c *Catalog) getCurrentManagerTxn() interface{} {
 // current txn.Manager transaction's ReadSet. This enables conflict detection
 // for read-modify-write cycles under SnapshotIsolation.
 func (c *Catalog) recordManagerRead(treeName string, key []byte, valueData []byte) {
+	writeKey := treeName + ":" + string(key)
+
 	// Snapshot the value we read for commit-time validation.
 	if ts := c.getCurrentTxn(); ts != nil {
 		if ts.readValues == nil {
 			ts.readValues = make(map[string][]byte)
 		}
-		valCopy := make([]byte, len(valueData))
-		copy(valCopy, valueData)
-		writeKey := treeName + ":" + string(key)
+		var valCopy []byte
+		if len(valueData) > 0 {
+			valCopy = make([]byte, len(valueData))
+			copy(valCopy, valueData)
+		}
 		ts.readValues[writeKey] = valCopy
 	}
 
@@ -1000,7 +1004,6 @@ func (c *Catalog) recordManagerRead(treeName string, key []byte, valueData []byt
 	if !ok || mgr == nil {
 		return
 	}
-	writeKey := treeName + ":" + string(key)
 	ver := mgr.GetCurrentVersion(writeKey)
 	mt.SetReadVersion(writeKey, ver)
 }

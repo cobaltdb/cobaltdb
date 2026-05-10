@@ -19,11 +19,17 @@ type VersionedRow struct {
 	Version RowVersion    `json:"version"` // Temporal metadata
 }
 
-// encodeVersionedRow encodes row values with temporal metadata
+// encodeVersionedRow encodes row values with temporal metadata.
+// Uses a zero-reflection fast path for common scalar types, falling back to
+// json.Marshal for edge cases (complex strings, nested objects, etc.).
 func encodeVersionedRow(rowValues []interface{}, asOfTime *time.Time) ([]byte, error) {
 	createdAt := time.Now().Unix()
 	if asOfTime != nil {
 		createdAt = asOfTime.Unix()
+	}
+
+	if data, ok := encodeVersionedRowFast(rowValues, createdAt); ok {
+		return data, nil
 	}
 
 	vrow := VersionedRow{
@@ -34,6 +40,78 @@ func encodeVersionedRow(rowValues []interface{}, asOfTime *time.Time) ([]byte, e
 		},
 	}
 	return json.Marshal(vrow)
+}
+
+// encodeVersionedRowFast manually builds the JSON {"data":[...],"version":{...}}
+// for common scalar types without reflection. Returns (nil, false) to fall back
+// to json.Marshal for unsupported types or strings that need escaping.
+func encodeVersionedRowFast(rowValues []interface{}, createdAt int64) ([]byte, bool) {
+	// Pre-size buffer: ~8 bytes per value + fixed overhead.
+	buf := make([]byte, 0, 64+len(rowValues)*16)
+	buf = append(buf, `{"data":[`...)
+
+	for i, v := range rowValues {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		switch val := v.(type) {
+		case nil:
+			buf = append(buf, "null"...)
+		case int:
+			buf = strconv.AppendInt(buf, int64(val), 10)
+		case int8:
+			buf = strconv.AppendInt(buf, int64(val), 10)
+		case int16:
+			buf = strconv.AppendInt(buf, int64(val), 10)
+		case int32:
+			buf = strconv.AppendInt(buf, int64(val), 10)
+		case int64:
+			buf = strconv.AppendInt(buf, val, 10)
+		case uint:
+			buf = strconv.AppendUint(buf, uint64(val), 10)
+		case uint8:
+			buf = strconv.AppendUint(buf, uint64(val), 10)
+		case uint16:
+			buf = strconv.AppendUint(buf, uint64(val), 10)
+		case uint32:
+			buf = strconv.AppendUint(buf, uint64(val), 10)
+		case uint64:
+			buf = strconv.AppendUint(buf, val, 10)
+		case float64:
+			buf = strconv.AppendFloat(buf, val, 'g', -1, 64)
+		case float32:
+			buf = strconv.AppendFloat(buf, float64(val), 'g', -1, 32)
+		case bool:
+			if val {
+				buf = append(buf, "true"...)
+			} else {
+				buf = append(buf, "false"...)
+			}
+		case string:
+			// Fast path only for strings without quotes/backslashes/control chars.
+			needsEscape := false
+			for j := 0; j < len(val); j++ {
+				c := val[j]
+				if c == '"' || c == '\\' || c < 0x20 {
+					needsEscape = true
+					break
+				}
+			}
+			if needsEscape {
+				return nil, false
+			}
+			buf = append(buf, '"')
+			buf = append(buf, val...)
+			buf = append(buf, '"')
+		default:
+			return nil, false
+		}
+	}
+
+	buf = append(buf, `],"version":{"created_at":`...)
+	buf = strconv.AppendInt(buf, createdAt, 10)
+	buf = append(buf, `,"deleted_at":0}}`...)
+	return buf, true
 }
 
 // decodeVersionedRow decodes versioned row data.
