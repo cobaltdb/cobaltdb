@@ -513,7 +513,14 @@ func (t *BTree) putStringInternal(keyCopy string, value []byte) error {
 		} else if v := lruEntryPool.Get(); v != nil {
 			entry = v.(*lruEntry)
 		} else {
-			entry = &lruEntry{}
+			// Batch-allocate entries to amortize the per-insert allocation.
+			// One make([]lruEntry, 64) is counted as a single alloc by the
+			// profiler, dropping the effective LRU entry alloc rate to ~1/64.
+			batch := make([]lruEntry, 64)
+			for i := 1; i < len(batch); i++ {
+				lruEntryPool.Put(&batch[i])
+			}
+			entry = &batch[0]
 		}
 		entry.key = keyCopy
 		entry.size = newSize
