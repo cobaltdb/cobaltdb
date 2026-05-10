@@ -728,7 +728,9 @@ func (c *Catalog) buildBufferedInsertIndexes(table *TableDef, stmt *query.Insert
 		}
 		// Enforce UNIQUE constraint against committed data and buffered writes
 		if idxDef.Unique {
-			if _, err := idxTree.Get([]byte(indexKey)); err == nil {
+			idxVal, err := idxTree.Get([]byte(indexKey))
+			c.recordManagerRead(idxName, []byte(indexKey), idxVal)
+			if err == nil {
 				if stmt.ConflictAction == query.ConflictIgnore {
 					return nil, true, nil
 				}

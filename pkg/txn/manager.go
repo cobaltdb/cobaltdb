@@ -826,11 +826,6 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 	for _, s := range sorted {
 		m.versionShards[s].mu.Lock()
 	}
-	defer func() {
-		for i := len(sorted) - 1; i >= 0; i-- {
-			m.versionShards[sorted[i]].mu.Unlock()
-		}
-	}()
 
 	// 3. Conflict detection.
 	if txn.Isolation >= SnapshotIsolation {
@@ -840,6 +835,9 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 				continue
 			}
 			if currentVersion > readVersion {
+				for i := len(sorted) - 1; i >= 0; i-- {
+					m.versionShards[sorted[i]].mu.Unlock()
+				}
 				return ErrConflict
 			}
 		}
@@ -852,6 +850,11 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 		if m.versionStore != nil {
 			m.versionStore.Commit(key, value, seq)
 		}
+	}
+
+	// Release version locks before WAL append so other commits can proceed.
+	for i := len(sorted) - 1; i >= 0; i-- {
+		m.versionShards[sorted[i]].mu.Unlock()
 	}
 
 	// 5. WAL durability (outside version locks so other commits can proceed).

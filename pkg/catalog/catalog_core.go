@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/fdw"
 	"github.com/cobaltdb/cobaltdb/pkg/parallel"
@@ -297,20 +296,22 @@ type Catalog struct {
 	// getCurrentTxn().
 	goroutineTxnMap sync.Map
 
-	// commitMu provides 1024 sharded row-level commit locks.  Each (tree, key)
-	// hashes to one shard so that transactions touching different rows can
-	// commit concurrently.  The shards are held briefly (validation + WAL
-	// appending) so contention on a single shard is low in practice.
-	commitMu [1024]sync.Mutex
+	// commitMu shards the commit critical section by (table,key) hash so that
+	// transactions touching disjoint rows can validate and write in parallel.
+	// Large transactions fall back to bigCommitMu.
+	commitMu    [64]sync.Mutex
+	bigCommitMu sync.Mutex
 }
 
-// commitLockIdx returns a stable shard index in [0,1024) for (treeName,key).
 func (c *Catalog) commitLockIdx(treeName string, key []byte) int {
-	h := fnv.New32a()
-	h.Write([]byte(treeName))
-	h.Write([]byte{':'})
-	h.Write(key)
-	return int(h.Sum32() & 0x3FF)
+	h := uint32(0)
+	for i := 0; i < len(treeName); i++ {
+		h = h*31 + uint32(treeName[i])
+	}
+	for i := 0; i < len(key); i++ {
+		h = h*31 + uint32(key[i])
+	}
+	return int(h) % len(c.commitMu)
 }
 
 // savepointEntry records a named savepoint with its undo log position
