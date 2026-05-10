@@ -109,6 +109,28 @@ func (c *Catalog) getGoroutineTxnState() *catalogTxnState {
 	return nil
 }
 
+// getTxnState acquires a catalogTxnState from the pool or allocates a new one.
+func (c *Catalog) getTxnState() *catalogTxnState {
+	if v := c.txnStatePool.Get(); v != nil {
+		return v.(*catalogTxnState)
+	}
+	return &catalogTxnState{}
+}
+
+// putTxnState resets and returns a catalogTxnState to the pool for reuse.
+func (c *Catalog) putTxnState(ts *catalogTxnState) {
+	ts.txnID = 0
+	ts.txnActive = false
+	ts.undoLog = ts.undoLog[:0]
+	ts.savepoints = ts.savepoints[:0]
+	ts.managerTxn = nil
+	ts.pendingWrites = ts.pendingWrites[:0]
+	for k := range ts.readValues {
+		delete(ts.readValues, k)
+	}
+	c.txnStatePool.Put(ts)
+}
+
 // getCurrentTxnUndoLog returns the undo log for the current transaction.
 func (c *Catalog) getCurrentTxnUndoLog() []undoEntry {
 	if ts := c.getCurrentTxn(); ts != nil {
@@ -202,10 +224,9 @@ func (c *Catalog) BeginTransactionWithTxn(txnID uint64, managerTxn interface{}) 
 func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	cs := &catalogTxnState{
-		txnID:     txnID,
-		txnActive: true,
-	}
+	cs := c.getTxnState()
+	cs.txnID = txnID
+	cs.txnActive = true
 	cs.managerTxn = managerTxn
 	c.activeTxns.Store(txnID, cs)
 	// Register goroutine-local txn state so concurrent writers (including autocommit)
@@ -375,6 +396,9 @@ func (c *Catalog) CommitTransaction() error {
 		c.activeTxns.Delete(ts.txnID)
 	}
 	c.unregisterGoroutineTxn()
+	if ts != nil {
+		c.putTxnState(ts)
+	}
 	return nil
 }
 
@@ -503,6 +527,9 @@ func (c *Catalog) RollbackTransaction() error {
 				c.activeTxns.Delete(ts.txnID)
 			}
 			c.unregisterGoroutineTxn()
+			if ts != nil {
+				c.putTxnState(ts)
+			}
 			return rollbackErr
 		}
 	}
@@ -520,6 +547,9 @@ func (c *Catalog) RollbackTransaction() error {
 		c.activeTxns.Delete(ts.txnID)
 	}
 	c.unregisterGoroutineTxn()
+	if ts != nil {
+		c.putTxnState(ts)
+	}
 	return nil
 }
 

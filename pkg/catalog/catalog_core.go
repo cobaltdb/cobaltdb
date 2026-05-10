@@ -299,6 +299,10 @@ type Catalog struct {
 	// commitMu shards the commit critical section by (table,key) hash so that
 	// transactions touching disjoint rows can validate and write in parallel.
 	commitMu [64]sync.Mutex
+
+	// txnStatePool recycles per-transaction state structs to reduce GC pressure
+	// from high-frequency Begin/Commit cycles.
+	txnStatePool sync.Pool
 }
 
 func (c *Catalog) commitLockIdx(treeName string, key []byte) int {
