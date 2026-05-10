@@ -36,7 +36,7 @@ func TestExecuteWithAutocommitWAL(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: true})
+	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestCreateNewWithAllOptions(t *testing.T) {
 	backupDir := filepath.Join(dir, "backups")
 
 	db, err := Open(dbPath, &Options{
-		WALEnabled:          true,
+		WALEnabled: BoolPtr(true),
 		EnableRLS:           true,
 		EnableQueryCache:    true,
 		QueryCacheSize:      1024,
@@ -282,7 +282,7 @@ func TestLoadExistingWithAllOptions(t *testing.T) {
 
 	// Reopen with various options
 	db2, err := Open(dbPath, &Options{
-		WALEnabled:          true,
+		WALEnabled: BoolPtr(true),
 		EnableRLS:           true,
 		EnableQueryCache:    true,
 		QueryCacheSize:      1024,
@@ -440,7 +440,7 @@ func TestWALOperations(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: true})
+	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

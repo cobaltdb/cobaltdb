@@ -272,7 +272,7 @@ func TestGetWALPath(t *testing.T) {
 	// With WAL enabled
 	options := &Options{
 		CacheSize:  256,
-		WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 	}
 
 	dbPath2 := filepath.Join(tempDir, "test_wal_path2.db")
@@ -293,7 +293,7 @@ func TestCheckpoint(t *testing.T) {
 
 	options := &Options{
 		CacheSize:  256,
-		WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 	}
 
 	db, err := Open(dbPath, options)
@@ -342,7 +342,7 @@ func TestGetCurrentLSN(t *testing.T) {
 	// With WAL enabled
 	options := &Options{
 		CacheSize:  256,
-		WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 	}
 
 	dbPath2 := filepath.Join(tempDir, "test_lsn2.db")

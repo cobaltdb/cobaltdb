@@ -45,7 +45,7 @@ func main() {
 
 	db, err := engine.Open(dbPath, &engine.Options{
 		CacheSize:  1024,
-		WALEnabled: true,
+		WALEnabled: engine.BoolPtr(true),
 		InMemory:   dbPath == ":memory:",
 	})
 	if err != nil {

@@ -932,7 +932,7 @@ func TestCoverage_LoadExisting_WithWAL(t *testing.T) {
 	path := filepath.Join(dir, "wal_test.db")
 
 	// Open with WAL enabled (default)
-	db, err := Open(path, &Options{CacheSize: 256, WALEnabled: true})
+	db, err := Open(path, &Options{CacheSize: 256, WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -942,7 +942,7 @@ func TestCoverage_LoadExisting_WithWAL(t *testing.T) {
 	db.Close()
 
 	// Reopen with WAL — loadExisting will try WAL recovery path
-	db2, err := Open(path, &Options{CacheSize: 256, WALEnabled: true})
+	db2, err := Open(path, &Options{CacheSize: 256, WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("reopen with WAL: %v", err)
 	}

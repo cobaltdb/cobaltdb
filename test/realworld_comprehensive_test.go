@@ -33,7 +33,7 @@ func TestRealWorld_DiskPersistence(t *testing.T) {
 		opts := &engine.Options{
 			CacheSize:  1024,
 			InMemory:   false,
-			WALEnabled: true,
+			WALEnabled: engine.BoolPtr(true),
 		}
 
 		db, err := engine.Open(dbPath, opts)
@@ -80,7 +80,7 @@ func TestRealWorld_DiskPersistence(t *testing.T) {
 		opts := &engine.Options{
 			CacheSize:  1024,
 			InMemory:   false,
-			WALEnabled: true,
+			WALEnabled: engine.BoolPtr(true),
 		}
 
 		db, err := engine.Open(dbPath, opts)
@@ -150,7 +150,7 @@ func TestRealWorld_ServerWithDiskDatabase(t *testing.T) {
 	opts := &engine.Options{
 		CacheSize:  1024,
 		InMemory:   false,
-		WALEnabled: true,
+		WALEnabled: engine.BoolPtr(true),
 	}
 
 	db, err := engine.Open(dbPath, opts)
@@ -255,7 +255,7 @@ func TestRealWorld_ConcurrentClients(t *testing.T) {
 	opts := &engine.Options{
 		CacheSize:  1024,
 		InMemory:   true,
-		WALEnabled: false,
+		WALEnabled: engine.BoolPtr(false),
 	}
 
 	db, err := engine.Open(":memory:", opts)
@@ -355,7 +355,7 @@ func TestRealWorld_ComplexQueries(t *testing.T) {
 	opts := &engine.Options{
 		CacheSize:  1024,
 		InMemory:   true,
-		WALEnabled: false,
+		WALEnabled: engine.BoolPtr(false),
 	}
 
 	db, err := engine.Open(":memory:", opts)
@@ -479,7 +479,7 @@ func TestRealWorld_PersistenceAndRecovery(t *testing.T) {
 	opts := &engine.Options{
 		CacheSize:  1024,
 		InMemory:   false,
-		WALEnabled: true,
+		WALEnabled: engine.BoolPtr(true),
 	}
 
 	db, err := engine.Open(dbPath, opts)
@@ -574,7 +574,7 @@ func TestRealWorld_ServerRestartPersistence(t *testing.T) {
 	opts := &engine.Options{
 		CacheSize:  1024,
 		InMemory:   false,
-		WALEnabled: true,
+		WALEnabled: engine.BoolPtr(true),
 	}
 
 	db1, err := engine.Open(dbPath, opts)

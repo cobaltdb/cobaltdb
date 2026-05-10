@@ -127,7 +127,7 @@ func TestLoadExistingWithWALOpenError(t *testing.T) {
 	os.WriteFile(walPath, []byte("invalid wal data"), 0644)
 
 	// Try to open with WAL enabled - may fail
-	db2, err := Open(dbPath, &Options{WALEnabled: true})
+	db2, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Logf("Open with invalid WAL returned: %v", err)
 	} else {
@@ -141,7 +141,7 @@ func TestLoadExistingWithWALRecoverError(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	// Create database with WAL
-	db1, err := Open(dbPath, &Options{WALEnabled: true})
+	db1, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestLoadExistingWithWALRecoverError(t *testing.T) {
 	os.WriteFile(walPath, []byte("corrupted data that should cause recovery to fail"), 0644)
 
 	// Try to reopen - may fail
-	db2, err := Open(dbPath, &Options{WALEnabled: true})
+	db2, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Logf("Open with corrupted WAL returned: %v", err)
 	} else {

@@ -108,7 +108,7 @@ type Config struct {
 	ApplicationName string
 	// Engine-specific options
 	CacheSize  int
-	WALEnabled bool
+	WALEnabled *bool // nil = use default (true)
 	SyncMode   string
 }
 
@@ -125,7 +125,7 @@ func DefaultConfig() *Config {
 		MaxIdleTime:    30 * time.Minute,
 		MaxLifetime:    1 * time.Hour,
 		CacheSize:      1024,
-		WALEnabled:     true,
+		WALEnabled: engine.BoolPtr(true),
 		SyncMode:       "normal",
 	}
 }

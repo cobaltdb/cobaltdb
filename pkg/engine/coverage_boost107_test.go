@@ -94,7 +94,7 @@ func TestCreateNewWithWALAndRecovery(t *testing.T) {
 
 	options := &Options{
 		CacheSize:  256,
-		WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 	}
 
 	db, err := Open(dbPath, options)
@@ -177,7 +177,7 @@ func TestCreateNewWithAllFeaturesSkip(t *testing.T) {
 		EnableQueryCache:       true,
 		QueryCacheSize:         1024,
 		QueryCacheTTL:          60,
-		WALEnabled:             true,
+		WALEnabled: BoolPtr(true),
 		ReplicationRole:        "master",
 		ReplicationMode:        "async",
 		ReplicationListenAddr:  "127.0.0.1:0",

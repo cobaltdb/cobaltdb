@@ -185,7 +185,7 @@ func TestChaosMemoryPressure(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:   true,
 		CacheSize:  64, // Very small cache
-		WALEnabled: false,
+		WALEnabled: engine.BoolPtr(false),
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)

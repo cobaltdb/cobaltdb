@@ -33,7 +33,7 @@ func TestMainFunction(t *testing.T) {
 	opts := &engine.Options{
 		CacheSize:  1024,
 		InMemory:   false,
-		WALEnabled: true,
+		WALEnabled: engine.BoolPtr(true),
 	}
 
 	db, err := engine.Open(dbPath, opts)
@@ -65,7 +65,7 @@ func TestServerWithInMemoryMode(t *testing.T) {
 	opts := &engine.Options{
 		CacheSize:  1024,
 		InMemory:   true,
-		WALEnabled: false,
+		WALEnabled: engine.BoolPtr(false),
 	}
 
 	db, err := engine.Open(":memory:", opts)
@@ -133,7 +133,7 @@ func TestServerConfiguration(t *testing.T) {
 			opts := &engine.Options{
 				CacheSize:  tt.cacheSize,
 				InMemory:   tt.inMemory,
-				WALEnabled: !tt.inMemory,
+				WALEnabled: engine.BoolPtr(!tt.inMemory),
 			}
 
 			if tt.inMemory {
@@ -276,7 +276,7 @@ func TestConcurrentConnections(t *testing.T) {
 	db, err := engine.Open(dbPath, &engine.Options{
 		InMemory:   false,
 		CacheSize:  1024,
-		WALEnabled: true,
+		WALEnabled: engine.BoolPtr(true),
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -402,7 +402,7 @@ func TestWALConfiguration(t *testing.T) {
 
 			opts := &engine.Options{
 				InMemory:   tt.inMemory,
-				WALEnabled: tt.walEnabled,
+				WALEnabled: engine.BoolPtr(tt.walEnabled),
 				CacheSize:  1024,
 			}
 
@@ -430,7 +430,7 @@ func TestDataDirectoryCreation(t *testing.T) {
 	dbPath := dataDir + "/cobalt.cb"
 	db, err := engine.Open(dbPath, &engine.Options{
 		InMemory:   false,
-		WALEnabled: true,
+		WALEnabled: engine.BoolPtr(true),
 		CacheSize:  1024,
 	})
 	if err != nil {

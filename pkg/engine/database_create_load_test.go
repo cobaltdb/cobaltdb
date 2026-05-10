@@ -28,7 +28,7 @@ func TestCreateNewDatabase(t *testing.T) {
 			name:   "create_with_wal",
 			dbName: "wal.db",
 			options: &Options{
-				WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 			},
 			wantErr: false,
 		},
@@ -61,7 +61,7 @@ func TestCreateNewDatabase(t *testing.T) {
 			name:   "create_all_features",
 			dbName: "all.db",
 			options: &Options{
-				WALEnabled:       true,
+				WALEnabled: BoolPtr(true),
 				EnableRLS:        true,
 				EnableQueryCache: true,
 				EncryptionKey:    []byte("0123456789abcdef0123456789abcdef"),
@@ -92,7 +92,7 @@ func TestLoadExistingDatabase(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test.db")
 
 	// Create initial database
-	db1, err := Open(dbPath, &Options{WALEnabled: true})
+	db1, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestLoadExistingDatabase(t *testing.T) {
 	db1.Close()
 
 	// Load existing database
-	db2, err := Open(dbPath, &Options{WALEnabled: true})
+	db2, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("Failed to load database: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestCreateNewWithSyncModes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dbPath := filepath.Join(tempDir, tt.name+".db")
 			opts := &Options{
-				WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 				SyncMode:   tt.syncMode,
 			}
 

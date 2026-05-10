@@ -143,7 +143,7 @@ func (db *DB) resetWALForSnapshotLocked() error {
 		db.wal = nil
 	}
 
-	if !db.options.WALEnabled || db.path == ":memory:" {
+	if db.options.WALEnabled == nil || !*db.options.WALEnabled || db.path == ":memory:" {
 		return nil
 	}
 

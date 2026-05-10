@@ -127,7 +127,7 @@ func TestDBGetCurrentLSN2(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_lsn.db")
 
 	opts := &Options{
-		WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 	}
 
 	db, err := Open(dbPath, opts)
@@ -148,7 +148,7 @@ func TestDBGetWALPath2(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_wal_path.db")
 
 	opts := &Options{
-		WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 	}
 
 	db, err := Open(dbPath, opts)

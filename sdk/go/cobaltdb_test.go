@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+func boolPtr(b bool) *bool { return &b }
+
 func TestParseDSN(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -83,7 +85,7 @@ func TestConfigDSN(t *testing.T) {
 		Username:   "admin",
 		Password:   "secret",
 		CacheSize:  1024,
-		WALEnabled: true,
+		WALEnabled: boolPtr(true),
 	}
 
 	dsn := cfg.FormatDSN()
@@ -136,7 +138,7 @@ func TestOpen(t *testing.T) {
 		Port:       0,
 		Database:   ":memory:",
 		CacheSize:  1024,
-		WALEnabled: false,
+		WALEnabled: boolPtr(false),
 	}
 
 	db, err := Open(cfg)

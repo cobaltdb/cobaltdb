@@ -184,7 +184,7 @@ func TestGetWALPathWithWALEnabled90(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: true})
+	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestCheckpointWithWALEnabled90(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: true})
+	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestGetCurrentLSNWithWAL90(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: true})
+	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

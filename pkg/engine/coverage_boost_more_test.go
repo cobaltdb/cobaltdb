@@ -113,7 +113,7 @@ func TestCheckpointWithoutWALMore(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	// Open without WAL
-	db, err := Open(dbPath, &Options{WALEnabled: false})
+	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestGetCurrentLSNWithoutWALMore(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	// Open without WAL
-	db, err := Open(dbPath, &Options{WALEnabled: false})
+	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestGetWALPathWithoutWALMore(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	// Open without WAL
-	db, err := Open(dbPath, &Options{WALEnabled: false})
+	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestCreateNewWithAllOptions2(t *testing.T) {
 	backupDir := filepath.Join(dir, "backups")
 
 	options := &Options{
-		WALEnabled:          true,
+		WALEnabled: BoolPtr(true),
 		EnableRLS:           true,
 		EnableQueryCache:    true,
 		QueryCacheSize:      1024,
@@ -375,7 +375,7 @@ func TestLoadExistingWithAllOptions2(t *testing.T) {
 
 	// Reopen with options
 	db2, err := Open(dbPath, &Options{
-		WALEnabled:       true,
+		WALEnabled: BoolPtr(true),
 		EnableRLS:        true,
 		EnableQueryCache: true,
 		QueryCacheSize:   1024,

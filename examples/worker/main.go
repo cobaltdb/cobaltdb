@@ -39,7 +39,7 @@ func main() {
 	// Open database
 	db, err := engine.Open("./worker.db", &engine.Options{
 		CacheSize:  1024,
-		WALEnabled: true,
+		WALEnabled: engine.BoolPtr(true),
 	})
 	if err != nil {
 		log.Fatal(err)

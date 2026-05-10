@@ -88,7 +88,7 @@ func main() {
 	opts := &engine.Options{
 		CacheSize:  *cacheSize,
 		InMemory:   *inMemory,
-		WALEnabled: !*inMemory,
+		WALEnabled: engine.BoolPtr(!*inMemory),
 	}
 
 	var dbPath string

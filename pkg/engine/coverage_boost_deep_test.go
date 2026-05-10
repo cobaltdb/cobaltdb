@@ -13,7 +13,7 @@ func TestLoadExistingWithWALRecoveryDeep(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	// Create database with WAL
-	db1, err := Open(dbPath, &Options{WALEnabled: true})
+	db1, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestLoadExistingWithWALRecoveryDeep(t *testing.T) {
 	db1.Close()
 
 	// Reopen - should recover from WAL
-	db2, err := Open(dbPath, &Options{WALEnabled: true})
+	db2, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestGetWALPathNoWALDeep(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: false})
+	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestCheckpointNoWALDeep(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: false})
+	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestGetCurrentLSNNoWALDeep(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: false})
+	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestLoadExistingWithInvalidWALPath(t *testing.T) {
 	db1.Close()
 
 	// Reopen with WAL enabled
-	db2, err := Open(dbPath, &Options{WALEnabled: true})
+	db2, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Logf("Reopen with WAL enabled returned: %v", err)
 	} else {

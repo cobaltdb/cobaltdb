@@ -31,7 +31,7 @@ func DefaultOptions() *Options {
 		PageSize:            storage.PageSize,
 		CacheSize:           1024, // 4MB cache
 		InMemory:            false,
-		WALEnabled:          true,
+		WALEnabled:          BoolPtr(true),
 		SyncMode:            SyncNormal,
 		Logger:              logger.Default(),
 		MaxConnections:      100, // Default max connections
@@ -65,10 +65,12 @@ func Open(path string, opts *Options) (*DB, error) {
 		if opts.CacheSize == 0 {
 			opts.CacheSize = defaults.CacheSize
 		}
-		// InMemory and WALEnabled are booleans, use defaults if not explicitly set
-		// SyncMode defaults to 0 which is SyncOff, but default is SyncNormal
-		// We can't distinguish between unset and explicitly set to 0 for booleans and enums
-		// So we use the default values if they appear to be zero values
+		if opts.WALEnabled == nil {
+			opts.WALEnabled = defaults.WALEnabled
+		}
+		if opts.SyncMode == 0 {
+			opts.SyncMode = defaults.SyncMode
+		}
 		if opts.Logger == nil {
 			opts.Logger = defaults.Logger
 		}
@@ -291,27 +293,9 @@ func (db *DB) createNew() error {
 		return fmt.Errorf("failed to update meta page: %w", err)
 	}
 
-	// Initialize catalog
-	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
-	db.catalog.SetParallelOptions(db.options.ParallelWorkers, db.options.ParallelThreshold)
-
-	// Initialize FDW registry and register built-in wrappers
-	fdwRegistry := fdw.NewRegistry()
-	fdwRegistry.Register("csv", func() fdw.ForeignDataWrapper { return &fdw.CSVWrapper{} })
-	db.catalog.SetFDWRegistry(fdwRegistry)
-
-	// Enable RLS if configured
-	if db.options.EnableRLS {
-		db.catalog.EnableRLS()
-	}
-
-	// Initialize transaction manager
-	db.txnMgr = txn.NewManager(db.pool, db.wal)
-	db.catalog.SetTxnManager(db.txnMgr)
-	db.catalog.EnableBufferedWrites()
-
-	// Initialize WAL for new databases when enabled
-	if db.options.WALEnabled && db.path != ":memory:" && db.wal == nil {
+	// Initialize WAL for new databases when enabled, BEFORE creating the
+	// catalog and transaction manager so they receive a non-nil WAL reference.
+	if db.options.WALEnabled != nil && *db.options.WALEnabled && db.path != ":memory:" && db.wal == nil {
 		walPath := db.path + ".wal"
 		wal, err := storage.OpenWAL(walPath)
 		if err != nil {
@@ -332,6 +316,25 @@ func (db *DB) createNew() error {
 			wal.EnableGroupCommit(0, 0)
 		}
 	}
+
+	// Initialize catalog
+	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
+	db.catalog.SetParallelOptions(db.options.ParallelWorkers, db.options.ParallelThreshold)
+
+	// Initialize FDW registry and register built-in wrappers
+	fdwRegistry := fdw.NewRegistry()
+	fdwRegistry.Register("csv", func() fdw.ForeignDataWrapper { return &fdw.CSVWrapper{} })
+	db.catalog.SetFDWRegistry(fdwRegistry)
+
+	// Enable RLS if configured
+	if db.options.EnableRLS {
+		db.catalog.EnableRLS()
+	}
+
+	// Initialize transaction manager
+	db.txnMgr = txn.NewManager(db.pool, db.wal)
+	db.catalog.SetTxnManager(db.txnMgr)
+	db.catalog.EnableBufferedWrites()
 
 	// Initialize query cache if enabled
 	if db.options.EnableQueryCache {
@@ -448,7 +451,7 @@ func (db *DB) loadExisting() error {
 	}
 
 	// Open WAL if enabled
-	if db.options.WALEnabled && db.path != ":memory:" {
+	if db.options.WALEnabled != nil && *db.options.WALEnabled && db.path != ":memory:" {
 		walPath := db.path + ".wal"
 		wal, err := storage.OpenWAL(walPath)
 		if err != nil {

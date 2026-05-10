@@ -134,7 +134,7 @@ func TestDBUtilityMethods(t *testing.T) {
 	dbPath := dir + "/util_test.db"
 
 	db, err := Open(dbPath, &Options{
-		WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 		CacheSize:  256,
 	})
 	if err != nil {
@@ -376,7 +376,7 @@ func TestDBWithWALMethods(t *testing.T) {
 
 	// Reopen with WAL
 	db, err := Open(dbPath, &Options{
-		WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 		CacheSize:  256,
 	})
 	if err != nil {

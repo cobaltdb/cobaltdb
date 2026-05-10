@@ -989,7 +989,7 @@ func TestOpenFileDatabaseWithWAL(t *testing.T) {
 
 	db, err := Open(tmpFile, &Options{
 		InMemory:   false,
-		WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 		CacheSize:  1024,
 	})
 	if err != nil {
@@ -1007,7 +1007,7 @@ func TestOpenFileDatabaseWithWAL(t *testing.T) {
 
 	db2, err := Open(tmpFile, &Options{
 		InMemory:   false,
-		WALEnabled: true,
+		WALEnabled: BoolPtr(true),
 		CacheSize:  1024,
 	})
 	if err != nil {

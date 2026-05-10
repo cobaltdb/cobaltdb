@@ -110,7 +110,7 @@ type Options struct {
 	PageSize          int
 	CacheSize         int // number of pages
 	InMemory          bool
-	WALEnabled        bool
+	WALEnabled        *bool // nil = use default (true for disk)
 	SyncMode          SyncMode
 	Logger            *logger.Logger            // Optional logger; if nil, uses default
 	MaxConnections    int                       // Maximum concurrent connections (0 = unlimited)
@@ -256,6 +256,12 @@ const (
 	SyncNormal
 	SyncFull
 )
+
+// BoolPtr returns a pointer to the given bool value. Useful for Options
+// literals where *bool fields need an explicit value.
+func BoolPtr(b bool) *bool {
+	return &b
+}
 
 // DefaultOptions returns the default database options
 

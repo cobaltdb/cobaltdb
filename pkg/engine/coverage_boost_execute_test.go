@@ -426,7 +426,7 @@ func TestQueryShowDatabasesCoverage(t *testing.T) {
 // TestExecuteTransactionControl tests transaction control statements
 func TestExecuteTransactionControl(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true, WALEnabled: true})
+	db, err := Open(":memory:", &Options{InMemory: true, WALEnabled: BoolPtr(true)})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
