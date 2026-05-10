@@ -241,81 +241,15 @@ func (c *Catalog) CommitTransaction() error {
 	// This performs conflict detection and updates the version store.
 	if ts != nil {
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
-			// Collect every (tree,key) touched by reads or writes, hash each to
-			// a shard index, then lock the unique shards in ascending order.
-			// This gives row-level concurrency: transactions touching different
-			// rows (even in the same table) can commit in parallel.
-			//
-			// Build batch maps from pending writes and collect unique shards for
-			// locking before acquiring any commit lock.
-			numPW := len(ts.pendingWrites)
-			tableKeys := make(map[string][][]byte, numPW)
-			tableVals := make(map[string][][]byte, numPW)
-			idxPuts := make(map[string][][]byte, numPW)
-			idxPutVals := make(map[string][][]byte, numPW)
-			idxDels := make(map[string][][]byte, numPW)
-			shardSet := make(map[int]struct{}, numPW*2)
-			for _, pw := range ts.pendingWrites {
-				tableKeys[pw.TreeName] = append(tableKeys[pw.TreeName], pw.Key)
-				tableVals[pw.TreeName] = append(tableVals[pw.TreeName], pw.Value)
-				shardSet[c.commitLockIdx(pw.TreeName, pw.Key)] = struct{}{}
-				for _, idx := range pw.IndexUpdates {
-					if idx.IsDelete {
-						idxDels[idx.IndexName] = append(idxDels[idx.IndexName], idx.Key)
-					} else {
-						idxPuts[idx.IndexName] = append(idxPuts[idx.IndexName], idx.Key)
-						idxPutVals[idx.IndexName] = append(idxPutVals[idx.IndexName], idx.Value)
-					}
-					shardSet[c.commitLockIdx(idx.IndexName, idx.Key)] = struct{}{}
-				}
-			}
-			for keyStr := range ts.readValues {
-				if idx := strings.IndexByte(keyStr, ':'); idx >= 0 {
-					shardSet[c.commitLockIdx(keyStr[:idx], []byte(keyStr[idx+1:]))] = struct{}{}
-				}
-			}
+			// Fast path: single-row transaction with no index updates.
+			// Bypass all batch-map allocations for the common case.
+			if len(ts.pendingWrites) == 1 && len(ts.pendingWrites[0].IndexUpdates) == 0 {
+				pw := ts.pendingWrites[0]
+				shard := c.commitLockIdx(pw.TreeName, pw.Key)
+				c.commitMu[shard].Lock()
+				defer c.commitMu[shard].Unlock()
 
-			// Snapshot tree references under a brief RLock before locking commitMu.
-			c.mu.RLock()
-			tableTrees := make(map[string]btree.TreeStore, len(tableKeys))
-			for name := range tableKeys {
-				if tree, ok := c.tableTrees[name]; ok {
-					tableTrees[name] = tree
-				}
-			}
-			indexTrees := make(map[string]btree.TreeStore, len(idxPuts)+len(idxDels))
-			for name := range idxPuts {
-				if tree, ok := c.indexTrees[name]; ok {
-					indexTrees[name] = tree
-				}
-			}
-			for name := range idxDels {
-				if tree, ok := c.indexTrees[name]; ok {
-					indexTrees[name] = tree
-				}
-			}
-			c.mu.RUnlock()
-
-			// Lock all touched shards in sorted order, validate, commit through
-			// the Manager, apply writes, then unlock.  Using an inner function
-			// keeps the critical section explicit and avoids repetitive unlock
-			// boilerplate on every error path.
-			if err := func() error {
-				sortedShards := make([]int, 0, len(shardSet))
-				for s := range shardSet {
-					sortedShards = append(sortedShards, s)
-				}
-				sort.Ints(sortedShards)
-				for _, s := range sortedShards {
-					c.commitMu[s].Lock()
-				}
-				defer func() {
-					for i := len(sortedShards) - 1; i >= 0; i-- {
-						c.commitMu[sortedShards[i]].Unlock()
-					}
-				}()
-
-				// Validate reads and commit through the Manager while holding locks.
+				// Validate reads
 				if len(ts.readValues) > 0 {
 					c.mu.RLock()
 					for keyStr, originalValue := range ts.readValues {
@@ -341,30 +275,140 @@ func (c *Catalog) CommitTransaction() error {
 					return fmt.Errorf("txn manager commit: %w", err)
 				}
 
-				// Apply writes while still holding locks.
-				for name, keys := range tableKeys {
-					tree, exists := tableTrees[name]
-					if !exists {
-						return fmt.Errorf("partition tree %s not found", name)
-					}
-					if err := tree.PutBatch(keys, tableVals[name]); err != nil {
-						return fmt.Errorf("failed to apply buffered writes to %s: %w", name, err)
-					}
+				c.mu.RLock()
+				tree, exists := c.tableTrees[pw.TreeName]
+				c.mu.RUnlock()
+				if !exists {
+					return fmt.Errorf("partition tree %s not found", pw.TreeName)
 				}
-				for name, keys := range idxPuts {
-					if tree, ok := indexTrees[name]; ok {
-						_ = tree.PutBatch(keys, idxPutVals[name])
-					}
+				var putErr error
+				if bt, ok := tree.(*btree.BTree); ok {
+					putErr = bt.PutString(pw.Key, pw.Value)
+				} else {
+					putErr = tree.Put([]byte(pw.Key), pw.Value)
 				}
-				for name, keys := range idxDels {
-					if tree, ok := indexTrees[name]; ok {
-						_ = tree.DeleteBatch(keys)
-					}
+				if putErr != nil {
+					return fmt.Errorf("failed to apply buffered write to %s: %w", pw.TreeName, putErr)
 				}
 				ts.pendingWrites = nil
-				return nil
-			}(); err != nil {
-				return err
+			} else {
+				// General batch path for multi-row or index-updating transactions.
+				numPW := len(ts.pendingWrites)
+				tableKeys := make(map[string][][]byte, numPW)
+				tableVals := make(map[string][][]byte, numPW)
+				idxPuts := make(map[string][][]byte, numPW)
+				idxPutVals := make(map[string][][]byte, numPW)
+				idxDels := make(map[string][][]byte, numPW)
+				shardSet := make(map[int]struct{}, numPW*2)
+				for _, pw := range ts.pendingWrites {
+					tableKeys[pw.TreeName] = append(tableKeys[pw.TreeName], []byte(pw.Key))
+					tableVals[pw.TreeName] = append(tableVals[pw.TreeName], pw.Value)
+					shardSet[c.commitLockIdx(pw.TreeName, pw.Key)] = struct{}{}
+					for _, idx := range pw.IndexUpdates {
+						if idx.IsDelete {
+							idxDels[idx.IndexName] = append(idxDels[idx.IndexName], []byte(idx.Key))
+						} else {
+							idxPuts[idx.IndexName] = append(idxPuts[idx.IndexName], []byte(idx.Key))
+							idxPutVals[idx.IndexName] = append(idxPutVals[idx.IndexName], idx.Value)
+						}
+						shardSet[c.commitLockIdx(idx.IndexName, idx.Key)] = struct{}{}
+					}
+				}
+				for keyStr := range ts.readValues {
+					if idx := strings.IndexByte(keyStr, ':'); idx >= 0 {
+						shardSet[c.commitLockIdx(keyStr[:idx], keyStr[idx+1:])] = struct{}{}
+					}
+				}
+
+				// Snapshot tree references under a brief RLock before locking commitMu.
+				c.mu.RLock()
+				tableTrees := make(map[string]btree.TreeStore, len(tableKeys))
+				for name := range tableKeys {
+					if tree, ok := c.tableTrees[name]; ok {
+						tableTrees[name] = tree
+					}
+				}
+				indexTrees := make(map[string]btree.TreeStore, len(idxPuts)+len(idxDels))
+				for name := range idxPuts {
+					if tree, ok := c.indexTrees[name]; ok {
+						indexTrees[name] = tree
+					}
+				}
+				for name := range idxDels {
+					if tree, ok := c.indexTrees[name]; ok {
+						indexTrees[name] = tree
+					}
+				}
+				c.mu.RUnlock()
+
+				// Lock all touched shards in sorted order, validate, commit through
+				// the Manager, apply writes, then unlock.
+				if err := func() error {
+					sortedShards := make([]int, 0, len(shardSet))
+					for s := range shardSet {
+						sortedShards = append(sortedShards, s)
+					}
+					sort.Ints(sortedShards)
+					for _, s := range sortedShards {
+						c.commitMu[s].Lock()
+					}
+					defer func() {
+						for i := len(sortedShards) - 1; i >= 0; i-- {
+							c.commitMu[sortedShards[i]].Unlock()
+						}
+					}()
+
+					// Validate reads and commit through the Manager while holding locks.
+					if len(ts.readValues) > 0 {
+						c.mu.RLock()
+						for keyStr, originalValue := range ts.readValues {
+							idx := strings.IndexByte(keyStr, ':')
+							if idx < 0 {
+								continue
+							}
+							treeName, key := keyStr[:idx], []byte(keyStr[idx+1:])
+							tree, exists := c.tableTrees[treeName]
+							if !exists {
+								continue
+							}
+							currentValue, _ := tree.Get(key)
+							if !bytes.Equal(originalValue, currentValue) {
+								c.mu.RUnlock()
+								return txn.ErrConflict
+							}
+						}
+						c.mu.RUnlock()
+					}
+
+					if err := mt.Commit(); err != nil {
+						return fmt.Errorf("txn manager commit: %w", err)
+					}
+
+					// Apply writes while still holding locks.
+					for name, keys := range tableKeys {
+						tree, exists := tableTrees[name]
+						if !exists {
+							return fmt.Errorf("partition tree %s not found", name)
+						}
+						if err := tree.PutBatch(keys, tableVals[name]); err != nil {
+							return fmt.Errorf("failed to apply buffered writes to %s: %w", name, err)
+						}
+					}
+					for name, keys := range idxPuts {
+						if tree, ok := indexTrees[name]; ok {
+							_ = tree.PutBatch(keys, idxPutVals[name])
+						}
+					}
+					for name, keys := range idxDels {
+						if tree, ok := indexTrees[name]; ok {
+							_ = tree.DeleteBatch(keys)
+						}
+					}
+					ts.pendingWrites = nil
+					return nil
+				}(); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -1006,8 +1050,8 @@ func (c *Catalog) getCurrentManagerTxn() interface{} {
 // current txn.Manager transaction's ReadSet. This enables conflict detection
 // for read-modify-write cycles under SnapshotIsolation. Returns the composed
 // writeKey so callers can reuse it for SetWrite without allocating again.
-func (c *Catalog) recordManagerRead(treeName string, key []byte, valueData []byte) string {
-	writeKey := treeName + ":" + string(key)
+func (c *Catalog) recordManagerRead(treeName string, key string, valueData []byte) string {
+	writeKey := treeName + ":" + key
 
 	// Snapshot the value we read for commit-time validation.
 	if ts := c.getCurrentTxn(); ts != nil {
@@ -1079,13 +1123,13 @@ func (c *Catalog) clearPendingWrites() {
 
 // keyInPendingWrites reports whether the given table/key already exists in the
 // current transaction's pending write buffer.
-func (c *Catalog) keyInPendingWrites(tableName string, key []byte) bool {
+func (c *Catalog) keyInPendingWrites(tableName string, key string) bool {
 	ts := c.getCurrentTxn()
 	if ts == nil || len(ts.pendingWrites) == 0 {
 		return false
 	}
 	for _, pw := range ts.pendingWrites {
-		if pw.TreeName == tableName && string(pw.Key) == string(key) {
+		if pw.TreeName == tableName && pw.Key == key {
 			return true
 		}
 	}
@@ -1094,14 +1138,14 @@ func (c *Catalog) keyInPendingWrites(tableName string, key []byte) bool {
 
 // indexKeyInPendingWrites reports whether the given index key already exists in
 // the current transaction's pending write buffer (for unique constraint checks).
-func (c *Catalog) indexKeyInPendingWrites(indexName string, key []byte) bool {
+func (c *Catalog) indexKeyInPendingWrites(indexName string, key string) bool {
 	ts := c.getCurrentTxn()
 	if ts == nil || len(ts.pendingWrites) == 0 {
 		return false
 	}
 	for _, pw := range ts.pendingWrites {
 		for _, idx := range pw.IndexUpdates {
-			if idx.IndexName == indexName && string(idx.Key) == string(key) && !idx.IsDelete {
+			if idx.IndexName == indexName && idx.Key == key && !idx.IsDelete {
 				return true
 			}
 		}

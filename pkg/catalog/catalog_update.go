@@ -116,7 +116,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 					valueData = pwValue
 					found = true
 				} else if found && useBuffer {
-					c.recordManagerRead(treeName, key, valueData)
+					c.recordManagerRead(treeName, pkStr, valueData)
 				}
 				if !found {
 					continue
@@ -172,7 +172,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			}
 
 			if !fromPending && useBuffer {
-				c.recordManagerRead(treeName, key, valueData)
+				c.recordManagerRead(treeName, string(key), valueData)
 			}
 
 			if err := c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
@@ -1164,7 +1164,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		}
 
 		// Update vector indexes
-		c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, entry.key)
+		c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, string(entry.key))
 
 		// Record undo log entry for rollback
 		if c.isCurrentTxnActive() {
@@ -1212,7 +1212,7 @@ func (c *Catalog) bufferUpdateEntries(table *TableDef, stmt *query.UpdateStmt, e
 				}
 				idxUpdates = append(idxUpdates, PendingIndexUpdate{
 					IndexName: idxName,
-					Key:       oldIdxStorageKey,
+					Key:       string(oldIdxStorageKey),
 					IsDelete:  true,
 				})
 			}
@@ -1223,7 +1223,7 @@ func (c *Catalog) bufferUpdateEntries(table *TableDef, stmt *query.UpdateStmt, e
 						if _, err := idxTree.Get([]byte(newIndexKey)); err == nil {
 							return fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
 						}
-						if c.indexKeyInPendingWrites(idxName, []byte(newIndexKey)) {
+						if c.indexKeyInPendingWrites(idxName, newIndexKey) {
 							return fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
 						}
 					}
@@ -1236,15 +1236,15 @@ func (c *Catalog) bufferUpdateEntries(table *TableDef, stmt *query.UpdateStmt, e
 				}
 				idxUpdates = append(idxUpdates, PendingIndexUpdate{
 					IndexName: idxName,
-					Key:       newIdxStorageKey,
-					Value:     entry.key,
+					Key:       string(newIdxStorageKey),
+					Value:     []byte(entry.key),
 				})
 			}
 		}
 
 		c.appendPendingWrite(PendingWrite{
 			TreeName:     stmt.Table,
-			Key:          entry.key,
+			Key:          string(entry.key),
 			Value:        newValueData,
 			IndexUpdates: idxUpdates,
 		})

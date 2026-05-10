@@ -98,7 +98,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 					valueData = pwValue
 					found = true
 				} else if found && useBuffer {
-					c.recordManagerRead(treeName, key, valueData)
+					c.recordManagerRead(treeName, pkStr, valueData)
 				}
 				if !found {
 					continue
@@ -160,7 +160,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 			}
 
 			if !fromPending && useBuffer {
-				c.recordManagerRead(treeName, key, valueData)
+				c.recordManagerRead(treeName, string(key), valueData)
 			}
 
 			// Make copies of key and value since iterator may reuse buffers
@@ -496,7 +496,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 		}
 
 		// Update vector indexes - delete the row from vector indexes
-		c.updateVectorIndexesForDelete(stmt.Table, key)
+		c.updateVectorIndexesForDelete(stmt.Table, string(key))
 
 		// Log to WAL before applying change
 		if c.wal != nil && c.isCurrentTxnActive() {
@@ -611,14 +611,14 @@ func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt
 			}
 			idxUpdates = append(idxUpdates, PendingIndexUpdate{
 				IndexName: idxName,
-				Key:       idxStorageKey,
+				Key:       string(idxStorageKey),
 				IsDelete:  true,
 			})
 		}
 
 		c.appendPendingWrite(PendingWrite{
 			TreeName:     entry.treeName,
-			Key:          key,
+			Key:          string(key),
 			Value:        deletedValueData,
 			IndexUpdates: idxUpdates,
 		})

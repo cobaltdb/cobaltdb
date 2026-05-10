@@ -231,7 +231,7 @@ type catalogTxnState struct {
 // txn.Manager bridge is active. This avoids holding Catalog.mu during DML.
 type PendingWrite struct {
 	TreeName     string
-	Key          []byte
+	Key          string
 	Value        []byte
 	IndexUpdates []PendingIndexUpdate
 }
@@ -239,7 +239,7 @@ type PendingWrite struct {
 // PendingIndexUpdate buffers an index mutation for commit-time application.
 type PendingIndexUpdate struct {
 	IndexName string
-	Key       []byte
+	Key       string
 	Value     []byte // nil for delete
 	IsDelete  bool
 }
@@ -305,7 +305,7 @@ type Catalog struct {
 	txnStatePool sync.Pool
 }
 
-func (c *Catalog) commitLockIdx(treeName string, key []byte) int {
+func (c *Catalog) commitLockIdx(treeName string, key string) int {
 	h := uint32(0)
 	for i := 0; i < len(treeName); i++ {
 		h = h*31 + uint32(treeName[i])

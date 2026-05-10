@@ -154,8 +154,14 @@ func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt 
 				}
 			}
 		}
-		if err := tree.Delete([]byte(key)); err != nil {
-			return false, fmt.Errorf("failed to delete row for REPLACE: %w", err)
+		if bt, ok := tree.(*btree.BTree); ok {
+			if err := bt.DeleteString(key); err != nil {
+				return false, fmt.Errorf("failed to delete row for REPLACE: %w", err)
+			}
+		} else {
+			if err := tree.Delete([]byte(key)); err != nil {
+				return false, fmt.Errorf("failed to delete row for REPLACE: %w", err)
+			}
 		}
 		return false, nil // Proceed with insert after cleanup
 	}
@@ -432,7 +438,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			} else if skip {
 				continue
 			}
-			if c.keyInPendingWrites(stmt.Table, []byte(key)) {
+			if c.keyInPendingWrites(stmt.Table, key) {
 				if stmt.ConflictAction == query.ConflictIgnore {
 					continue
 				}
@@ -449,10 +455,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			} else {
 				existingValue, _ = tree.Get([]byte(key))
 			}
-			writeKey := c.recordManagerRead(stmt.Table, []byte(key), existingValue)
+			writeKey := c.recordManagerRead(stmt.Table, key, existingValue)
 
 			// Build index updates for commit-time application.
-			idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, []byte(key), rowValues)
+			idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, key, rowValues)
 			if idxErr != nil {
 				insertErr = idxErr
 				break
@@ -464,7 +470,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			// Buffer the write for commit-time application.
 			c.appendPendingWrite(PendingWrite{
 				TreeName:     stmt.Table,
-				Key:          []byte(key),
+				Key:          key,
 				Value:        valueData,
 				IndexUpdates: idxUpdates,
 			})
@@ -509,19 +515,26 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Store in B+Tree
-		if err := tree.Put([]byte(key), valueData); err != nil {
+		if bt, ok := tree.(*btree.BTree); ok {
+			err = bt.PutString(key, valueData)
+		} else {
+			err = tree.Put([]byte(key), valueData)
+		}
+		if err != nil {
 			insertErr = fmt.Errorf("failed to store row: %w", err)
 			break
 		}
 
 		var idxChanges []indexUndoEntry
 		// Update indexes and track changes for undo
-		idxChanges, skipRow, insertErr = c.insertRowIndexes(tree, table, stmt, []byte(key), rowValues)
+		idxChanges, skipRow, insertErr = c.insertRowIndexes(tree, table, stmt, key, rowValues)
 		if insertErr != nil {
 			// Row was stored but index failed - delete the row and roll back
 			// any index entries that were successfully inserted in this iteration.
-			if err := tree.Delete([]byte(key)); err != nil {
-				_ = err // best-effort cleanup
+			if bt, ok := tree.(*btree.BTree); ok {
+				_ = bt.DeleteString(key)
+			} else {
+				_ = tree.Delete([]byte(key))
 			}
 			for _, undo := range idxChanges {
 				if undo.wasAdded {
@@ -534,7 +547,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Update vector indexes
-		c.updateVectorIndexesForInsert(stmt.Table, rowValues, []byte(key))
+		c.updateVectorIndexesForInsert(stmt.Table, rowValues, key)
 
 		if skipRow {
 			continue
@@ -671,7 +684,7 @@ func (c *Catalog) convertSelectToValueRows(stmt *query.InsertStmt, insertColumns
 // insertRowIndexes updates all indexes for a single inserted row, handling
 // UNIQUE constraint violations with INSERT OR IGNORE/REPLACE conflict resolution.
 // Returns index undo entries, whether the row should be skipped, and any error.
-func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key []byte, rowValues []interface{}) ([]indexUndoEntry, bool, error) {
+func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key string, rowValues []interface{}) ([]indexUndoEntry, bool, error) {
 	var idxChanges []indexUndoEntry
 	skipRow := false
 	for idxName, idxTree := range c.indexTrees {
@@ -688,7 +701,7 @@ func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *
 			if oldPKData, err := idxTree.Get([]byte(indexKey)); err == nil {
 				if stmt.ConflictAction == query.ConflictIgnore {
 					// Delete the already-stored row from the main table
-					_ = tree.Delete(key)
+					_ = tree.Delete([]byte(key))
 					// Undo any index entries already added in this loop iteration
 					for _, undo := range idxChanges {
 						if undo.wasAdded {
@@ -701,7 +714,7 @@ func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *
 					return idxChanges, skipRow, nil
 				} else if stmt.ConflictAction == query.ConflictReplace {
 					oldPK := string(oldPKData)
-					if oldPK != string(key) {
+					if oldPK != key {
 						oldRowData, getErr := tree.Get([]byte(oldPK))
 						if getErr == nil {
 							oldRow, decErr := decodeRow(oldRowData, len(table.Columns))
@@ -731,9 +744,9 @@ func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *
 		if idxDef.Unique {
 			idxStorageKey = []byte(indexKey)
 		} else {
-			idxStorageKey = []byte(indexKey + "\x00" + string(key))
+			idxStorageKey = []byte(indexKey + "\x00" + key)
 		}
-		if err := idxTree.Put(idxStorageKey, key); err != nil {
+		if err := idxTree.Put(idxStorageKey, []byte(key)); err != nil {
 			return idxChanges, skipRow, fmt.Errorf("failed to update index %s: %w", idxName, err)
 		}
 		if c.isCurrentTxnActive() {
@@ -750,7 +763,7 @@ func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *
 // buildBufferedInsertIndexes constructs PendingIndexUpdate entries for a buffered
 // INSERT without mutating index B-trees. It enforces UNIQUE constraints against
 // both committed data and other pending writes in the same transaction.
-func (c *Catalog) buildBufferedInsertIndexes(table *TableDef, stmt *query.InsertStmt, key []byte, rowValues []interface{}) ([]PendingIndexUpdate, bool, error) {
+func (c *Catalog) buildBufferedInsertIndexes(table *TableDef, stmt *query.InsertStmt, key string, rowValues []interface{}) ([]PendingIndexUpdate, bool, error) {
 	var idxUpdates []PendingIndexUpdate
 	for idxName, idxTree := range c.indexTrees {
 		idxDef := c.indexes[idxName]
@@ -764,30 +777,30 @@ func (c *Catalog) buildBufferedInsertIndexes(table *TableDef, stmt *query.Insert
 		// Enforce UNIQUE constraint against committed data and buffered writes
 		if idxDef.Unique {
 			idxVal, err := idxTree.Get([]byte(indexKey))
-			c.recordManagerRead(idxName, []byte(indexKey), idxVal)
+			c.recordManagerRead(idxName, indexKey, idxVal)
 			if err == nil {
 				if stmt.ConflictAction == query.ConflictIgnore {
 					return nil, true, nil
 				}
 				return nil, false, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idxName)
 			}
-			if c.indexKeyInPendingWrites(idxName, []byte(indexKey)) {
+			if c.indexKeyInPendingWrites(idxName, indexKey) {
 				if stmt.ConflictAction == query.ConflictIgnore {
 					return nil, true, nil
 				}
 				return nil, false, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idxName)
 			}
 		}
-		var idxStorageKey []byte
+		var idxStorageKey string
 		if idxDef.Unique {
-			idxStorageKey = []byte(indexKey)
+			idxStorageKey = indexKey
 		} else {
-			idxStorageKey = []byte(indexKey + "\x00" + string(key))
+			idxStorageKey = indexKey + "\x00" + key
 		}
 		idxUpdates = append(idxUpdates, PendingIndexUpdate{
 			IndexName: idxName,
 			Key:       idxStorageKey,
-			Value:     key,
+			Value:     []byte(key),
 		})
 	}
 	return idxUpdates, false, nil

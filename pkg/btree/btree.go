@@ -358,17 +358,22 @@ func (t *BTree) GetString(keyStr string) ([]byte, error) {
 
 // Put inserts or updates a key-value pair
 func (t *BTree) Put(key, value []byte) error {
-	if len(key) == 0 {
+	return t.PutString(string(key), value)
+}
+
+// PutString is identical to Put but accepts a string key, avoiding an
+// unnecessary []byte→string conversion when the caller already has a string.
+func (t *BTree) PutString(keyCopy string, value []byte) error {
+	if len(keyCopy) == 0 {
 		return ErrInvalidKey
 	}
-	if len(key) > MaxKeyLength {
+	if len(keyCopy) > MaxKeyLength {
 		return ErrKeyTooLong
 	}
 	if len(value) == 0 {
 		return ErrInvalidValue
 	}
 
-	keyCopy := string(key)
 	valCopy := make([]byte, len(value))
 	copy(valCopy, value)
 	newSize := int64(len(keyCopy) + len(valCopy))
@@ -914,11 +919,15 @@ func (t *BTree) flushInternal() error {
 
 // Delete removes a key from the tree
 func (t *BTree) Delete(key []byte) error {
-	if len(key) == 0 {
+	return t.DeleteString(string(key))
+}
+
+// DeleteString removes a key from the tree without allocating a string copy.
+func (t *BTree) DeleteString(keyStr string) error {
+	if len(keyStr) == 0 {
 		return ErrInvalidKey
 	}
 
-	keyStr := string(key)
 	sh := &t.shards[shardIndex(keyStr)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()

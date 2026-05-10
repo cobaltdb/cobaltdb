@@ -700,7 +700,8 @@ func (m *Manager) Begin(opts *Options) *Transaction {
 	id := atomic.AddUint64(&m.counter, 1)
 
 	// Create context with timeout if specified
-	ctx, cancel := context.Background(), func() {}
+	var cancel func()
+	ctx := context.Background()
 	if opts.Timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
 	}
@@ -716,7 +717,8 @@ func (m *Manager) Begin(opts *Options) *Transaction {
 		manager:   m,
 		ctx:       ctx,
 		cancel:    cancel,
-		locksHeld: make(map[string]bool),
+		// locksHeld is lazily created in AddLockHeld to avoid an allocation
+		// for transactions that never acquire explicit locks.
 	}
 
 	m.mu.Lock()
@@ -738,10 +740,11 @@ func (m *Manager) BeginWithContext(ctx context.Context, opts *Options) *Transact
 	id := atomic.AddUint64(&m.counter, 1)
 
 	// Use provided context, optionally with timeout
+	var cancel func()
 	if opts.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
-		_ = cancel // Will be called when transaction ends (stored in txn)
+		var c context.CancelFunc
+		ctx, c = context.WithTimeout(ctx, opts.Timeout)
+		cancel = c
 	}
 
 	txn := &Transaction{
@@ -754,8 +757,8 @@ func (m *Manager) BeginWithContext(ctx context.Context, opts *Options) *Transact
 		WriteSet:  make(map[string][]byte),
 		manager:   m,
 		ctx:       ctx,
-		cancel:    func() {}, // No-op since we don't own the context
-		locksHeld: make(map[string]bool),
+		cancel:    cancel,
+		// locksHeld is lazily created in AddLockHeld.
 	}
 
 	m.mu.Lock()

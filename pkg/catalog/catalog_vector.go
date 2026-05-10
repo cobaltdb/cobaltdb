@@ -64,7 +64,7 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 				if err != nil {
 					continue
 				}
-				c.indexRowForVector(vectorIndex, vrow.Data, key, colIdx)
+				c.indexRowForVector(vectorIndex, vrow.Data, string(key), colIdx)
 			}
 		}
 	}
@@ -74,9 +74,7 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 }
 
 // indexRowForVector adds a row to the vector index
-func (c *Catalog) indexRowForVector(vectorIndex *VectorIndexDef, rowSlice []interface{}, key []byte, colIdx int) {
-	// Extract row key as string
-	rowKey := string(key)
+func (c *Catalog) indexRowForVector(vectorIndex *VectorIndexDef, rowSlice []interface{}, rowKey string, colIdx int) {
 
 	// Get the vector value from the row
 	if colIdx >= len(rowSlice) {
@@ -197,7 +195,7 @@ func (c *Catalog) ListVectorIndexes() []string {
 }
 
 // updateVectorIndexesForInsert updates all vector indexes when a row is inserted
-func (c *Catalog) updateVectorIndexesForInsert(tableName string, rowSlice []interface{}, key []byte) {
+func (c *Catalog) updateVectorIndexesForInsert(tableName string, rowSlice []interface{}, key string) {
 	for _, vectorIndex := range c.vectorIndexes {
 		if vectorIndex.TableName != tableName {
 			continue
@@ -218,8 +216,7 @@ func (c *Catalog) updateVectorIndexesForInsert(tableName string, rowSlice []inte
 }
 
 // updateVectorIndexesForDelete updates all vector indexes when a row is deleted
-func (c *Catalog) updateVectorIndexesForDelete(tableName string, key []byte) {
-	rowKey := string(key)
+func (c *Catalog) updateVectorIndexesForDelete(tableName string, rowKey string) {
 	for _, vectorIndex := range c.vectorIndexes {
 		if vectorIndex.TableName != tableName {
 			continue
@@ -231,8 +228,7 @@ func (c *Catalog) updateVectorIndexesForDelete(tableName string, key []byte) {
 }
 
 // updateVectorIndexesForUpdate updates all vector indexes when a row is updated
-func (c *Catalog) updateVectorIndexesForUpdate(tableName string, rowSlice []interface{}, key []byte) {
-	rowKey := string(key)
+func (c *Catalog) updateVectorIndexesForUpdate(tableName string, rowSlice []interface{}, rowKey string) {
 	for _, vectorIndex := range c.vectorIndexes {
 		if vectorIndex.TableName != tableName {
 			continue
@@ -253,6 +249,6 @@ func (c *Catalog) updateVectorIndexesForUpdate(tableName string, rowSlice []inte
 			continue
 		}
 
-		c.indexRowForVector(vectorIndex, rowSlice, key, colIdx)
+		c.indexRowForVector(vectorIndex, rowSlice, rowKey, colIdx)
 	}
 }

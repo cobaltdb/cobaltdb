@@ -340,9 +340,9 @@ func TestComprehensive_VectorPaths(t *testing.T) {
 
 	// Test indexRowForVector with mixed types by directly calling it
 	vidx := &VectorIndexDef{Name: "test", TableName: "vec_t", ColumnName: "emb", Dimensions: 3, HNSW: NewHNSWIndex("test", "vec_t", "emb", 3)}
-	c.indexRowForVector(vidx, []interface{}{1, []interface{}{int(1), int64(2), float32(3)}}, []byte("k1"), 1)
-	c.indexRowForVector(vidx, []interface{}{2, []interface{}{"bad", 2, 3}}, []byte("k2"), 1)
-	c.indexRowForVector(vidx, []interface{}{3, []float64{1, 2}}, []byte("k3"), 1)
+	c.indexRowForVector(vidx, []interface{}{1, []interface{}{int(1), int64(2), float32(3)}}, "k1", 1)
+	c.indexRowForVector(vidx, []interface{}{2, []interface{}{"bad", 2, 3}}, "k2", 1)
+	c.indexRowForVector(vidx, []interface{}{3, []float64{1, 2}}, "k3", 1)
 }
 
 // ── JSON index paths ──

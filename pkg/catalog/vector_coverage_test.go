@@ -197,27 +197,27 @@ func TestIndexRowForVector(t *testing.T) {
 
 	// Test with valid vector
 	rowData := []interface{}{1, []float64{1.0, 2.0, 3.0}}
-	c.indexRowForVector(vidx, rowData, []byte("key1"), 1)
+	c.indexRowForVector(vidx, rowData, "key1", 1)
 
 	// Test with nil vector (should not panic)
 	rowDataNil := []interface{}{2, nil}
-	c.indexRowForVector(vidx, rowDataNil, []byte("key2"), 1)
+	c.indexRowForVector(vidx, rowDataNil, "key2", 1)
 
 	// Test with invalid column index (should not panic)
 	rowDataValid := []interface{}{3, []float64{4.0, 5.0, 6.0}}
-	c.indexRowForVector(vidx, rowDataValid, []byte("key3"), 5) // colIdx out of range
+	c.indexRowForVector(vidx, rowDataValid, "key3", 5) // colIdx out of range
 
 	// Test with wrong type (should not panic)
 	rowDataWrong := []interface{}{4, "not a vector"}
-	c.indexRowForVector(vidx, rowDataWrong, []byte("key4"), 1)
+	c.indexRowForVector(vidx, rowDataWrong, "key4", 1)
 
 	// Test with interface slice
 	rowDataInterface := []interface{}{5, []interface{}{float64(7.0), float64(8.0), float64(9.0)}}
-	c.indexRowForVector(vidx, rowDataInterface, []byte("key5"), 1)
+	c.indexRowForVector(vidx, rowDataInterface, "key5", 1)
 
 	// Test with wrong dimension vector (should not panic)
 	rowDataWrongDim := []interface{}{6, []float64{1.0, 2.0}} // only 2 dimensions
-	c.indexRowForVector(vidx, rowDataWrongDim, []byte("key6"), 1)
+	c.indexRowForVector(vidx, rowDataWrongDim, "key6", 1)
 }
 
 // TestUpdateVectorIndexes tests vector index maintenance during DML operations
