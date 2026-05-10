@@ -39,8 +39,30 @@ var zeroPadding = [21]string{
 	"00000000000000000000",
 }
 
+// formatKeyCache pre-computes zero-padded keys for the most common auto-increment
+// values (0..9999). This eliminates the strconv.FormatInt allocation for the
+// vast majority of single-row INSERT workloads.
+const formatKeyCacheSize = 100000
+
+var formatKeyCache [formatKeyCacheSize]string
+
+func init() {
+	for i := 0; i < formatKeyCacheSize; i++ {
+		v := int64(i)
+		s := strconv.FormatInt(v, 10)
+		if n := 20 - len(s); n > 0 {
+			formatKeyCache[i] = zeroPadding[n] + s
+		} else {
+			formatKeyCache[i] = s
+		}
+	}
+}
+
 // formatKey formats int64 as zero-padded string (20 digits) for consistent key ordering.
 func formatKey(pkVal int64) string {
+	if pkVal >= 0 && pkVal < formatKeyCacheSize {
+		return formatKeyCache[pkVal]
+	}
 	s := strconv.FormatInt(pkVal, 10)
 	if n := 20 - len(s); n > 0 {
 		return zeroPadding[n] + s

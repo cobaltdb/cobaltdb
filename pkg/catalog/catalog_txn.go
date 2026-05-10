@@ -261,7 +261,12 @@ func (c *Catalog) CommitTransaction() error {
 						if !exists {
 							continue
 						}
-						currentValue, _ := tree.Get([]byte(wk.Key))
+						var currentValue []byte
+						if bt, ok := tree.(*btree.BTree); ok {
+							currentValue, _ = bt.GetString(wk.Key)
+						} else {
+							currentValue, _ = tree.Get([]byte(wk.Key))
+						}
 						if !bytes.Equal(originalValue, currentValue) {
 							c.mu.RUnlock()
 							return txn.ErrConflict
@@ -363,7 +368,12 @@ func (c *Catalog) CommitTransaction() error {
 							if !exists {
 								continue
 							}
-							currentValue, _ := tree.Get([]byte(wk.Key))
+							var currentValue []byte
+							if bt, ok := tree.(*btree.BTree); ok {
+								currentValue, _ = bt.GetString(wk.Key)
+							} else {
+								currentValue, _ = tree.Get([]byte(wk.Key))
+							}
 							if !bytes.Equal(originalValue, currentValue) {
 								c.mu.RUnlock()
 								return txn.ErrConflict
