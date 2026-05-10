@@ -24,6 +24,15 @@ func BenchmarkAdHocSmallTxn(b *testing.B) {
 	ctx := context.Background()
 	_, _ = db.Exec(ctx, "CREATE TABLE bench (id INT PRIMARY KEY, n INT)")
 
+	args := make([]interface{}, 2)
+	args[1] = 1
+
+	// Pre-box all integer arguments so the hot loop does not allocate.
+	boxed := make([]interface{}, b.N)
+	for i := range boxed {
+		boxed[i] = i
+	}
+
 	b.ResetTimer()
 	var count atomic.Int64
 	var wg sync.WaitGroup
@@ -36,7 +45,8 @@ func BenchmarkAdHocSmallTxn(b *testing.B) {
 			if err != nil {
 				continue
 			}
-			if _, err := tx.Exec(ctx, "INSERT INTO bench VALUES (?, ?)", i, 1); err != nil {
+			args[0] = boxed[i]
+			if _, err := tx.Exec(ctx, "INSERT INTO bench VALUES (?, ?)", args...); err != nil {
 				_ = tx.Rollback()
 				continue
 			}
