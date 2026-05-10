@@ -270,9 +270,8 @@ func (c *Catalog) CommitTransaction() error {
 				}
 			}
 			for keyStr := range ts.readValues {
-				parts := strings.SplitN(keyStr, ":", 2)
-				if len(parts) == 2 {
-					shardSet[c.commitLockIdx(parts[0], []byte(parts[1]))] = struct{}{}
+				if idx := strings.IndexByte(keyStr, ':'); idx >= 0 {
+					shardSet[c.commitLockIdx(keyStr[:idx], []byte(keyStr[idx+1:]))] = struct{}{}
 				}
 			}
 
@@ -320,11 +319,11 @@ func (c *Catalog) CommitTransaction() error {
 				if len(ts.readValues) > 0 {
 					c.mu.RLock()
 					for keyStr, originalValue := range ts.readValues {
-						parts := strings.SplitN(keyStr, ":", 2)
-						if len(parts) != 2 {
+						idx := strings.IndexByte(keyStr, ':')
+						if idx < 0 {
 							continue
 						}
-						treeName, key := parts[0], []byte(parts[1])
+						treeName, key := keyStr[:idx], []byte(keyStr[idx+1:])
 						tree, exists := c.tableTrees[treeName]
 						if !exists {
 							continue

@@ -24,7 +24,7 @@ var (
 	ErrInvalidValue    = errors.New("invalid value")
 	ErrKeyTooLong      = errors.New("key exceeds maximum length of 65535 bytes")
 	ErrMemoryLimit     = errors.New("memory limit exceeded")
-	DefaultMemoryLimit = int64(64 * 1024 * 1024) // 64MB default
+	DefaultMemoryLimit = int64(256 * 1024 * 1024) // 256MB default
 	MaxKeyLength       = 65535                   // uint16 max - serialization limit
 )
 
