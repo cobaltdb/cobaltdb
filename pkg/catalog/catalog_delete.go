@@ -623,8 +623,7 @@ func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt
 			IndexUpdates: idxUpdates,
 		})
 		if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
-			writeKey := entry.treeName + ":" + string(key)
-			mt.SetWrite(writeKey, deletedValueData)
+			mt.SetWrite(entry.treeName, string(key), deletedValueData)
 		}
 
 		// Execute AFTER DELETE trigger per-row.

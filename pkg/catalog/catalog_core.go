@@ -30,6 +30,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
+	"github.com/cobaltdb/cobaltdb/pkg/txn"
 	"strconv"
 	"strings"
 	"sync"
@@ -224,7 +225,7 @@ type catalogTxnState struct {
 	savepoints        []savepointEntry
 	managerTxn        interface{}    // *txn.Transaction when txnManager bridge is active
 	pendingWrites     []PendingWrite // buffered DML for commit-time application
-	readValues        map[string][]byte // key -> value at time of read (for MVCC validation)
+	readValues        map[txn.WriteKey][]byte // key -> value at time of read (for MVCC validation)
 }
 
 // PendingWrite buffers a DML operation for commit-time application when the

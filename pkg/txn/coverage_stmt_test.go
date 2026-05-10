@@ -14,8 +14,8 @@ func TestGetVersionStore(t *testing.T) {
 	}
 
 	// Verify it's usable
-	vs.Commit("key1", []byte("val1"), 1)
-	val, err := vs.GetCurrent("key1")
+	vs.Commit(WriteKey{Key: "key1"}, []byte("val1"), 1)
+	val, err := vs.GetCurrent(WriteKey{Key: "key1"})
 	if err != nil {
 		t.Fatalf("GetCurrent: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestCommitWithTimeout(t *testing.T) {
 	txn := mgr.Begin(opts)
 
 	// Add a write
-	txn.SetWrite("key1", []byte("val1"))
+	txn.SetWrite("", "key1", []byte("val1"))
 
 	err := txn.Commit()
 	if err != nil {

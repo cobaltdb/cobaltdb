@@ -21,19 +21,19 @@ type VersionedValue struct {
 // VersionStore maintains version chains per key for MVCC snapshot reads.
 type VersionStore struct {
 	mu       sync.RWMutex
-	versions map[string]*VersionedValue // key → head of version chain
+	versions map[WriteKey]*VersionedValue // key → head of version chain
 	count    int64 // total version entries for GC tracking
 }
 
 // NewVersionStore creates a new VersionStore.
 func NewVersionStore() *VersionStore {
 	return &VersionStore{
-		versions: make(map[string]*VersionedValue),
+		versions: make(map[WriteKey]*VersionedValue),
 	}
 }
 
 // Commit adds a new version for a key at the given commit timestamp.
-func (vs *VersionStore) Commit(key string, value []byte, commitTS uint64) {
+func (vs *VersionStore) Commit(key WriteKey, value []byte, commitTS uint64) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -47,7 +47,7 @@ func (vs *VersionStore) Commit(key string, value []byte, commitTS uint64) {
 }
 
 // Delete marks a key as deleted at the given commit timestamp.
-func (vs *VersionStore) Delete(key string, commitTS uint64) {
+func (vs *VersionStore) Delete(key WriteKey, commitTS uint64) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -63,7 +63,7 @@ func (vs *VersionStore) Delete(key string, commitTS uint64) {
 
 // GetAtSnapshot returns the value visible at the given snapshot timestamp.
 // It walks the version chain to find the newest version <= snapshotTS.
-func (vs *VersionStore) GetAtSnapshot(key string, snapshotTS uint64) ([]byte, error) {
+func (vs *VersionStore) GetAtSnapshot(key WriteKey, snapshotTS uint64) ([]byte, error) {
 	vs.mu.RLock()
 	defer vs.mu.RUnlock()
 
@@ -81,7 +81,7 @@ func (vs *VersionStore) GetAtSnapshot(key string, snapshotTS uint64) ([]byte, er
 }
 
 // GetCurrent returns the latest committed value for a key.
-func (vs *VersionStore) GetCurrent(key string) ([]byte, error) {
+func (vs *VersionStore) GetCurrent(key WriteKey) ([]byte, error) {
 	vs.mu.RLock()
 	defer vs.mu.RUnlock()
 
@@ -96,7 +96,7 @@ func (vs *VersionStore) GetCurrent(key string) ([]byte, error) {
 }
 
 // GetLatestVersion returns the latest version timestamp for a key.
-func (vs *VersionStore) GetLatestVersion(key string) uint64 {
+func (vs *VersionStore) GetLatestVersion(key WriteKey) uint64 {
 	vs.mu.RLock()
 	defer vs.mu.RUnlock()
 
@@ -128,7 +128,7 @@ func (vs *VersionStore) Prune(minActiveTS uint64) int {
 	return pruned
 }
 
-func pruneChain(versions map[string]*VersionedValue, key string, head *VersionedValue, minActiveTS uint64, pruned int) int {
+func pruneChain(versions map[WriteKey]*VersionedValue, key WriteKey, head *VersionedValue, minActiveTS uint64, pruned int) int {
 	// Find the oldest version that is still visible to at least one active txn
 	current := head
 	var lastVisible *VersionedValue

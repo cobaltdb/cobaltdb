@@ -1249,8 +1249,7 @@ func (c *Catalog) bufferUpdateEntries(table *TableDef, stmt *query.UpdateStmt, e
 			IndexUpdates: idxUpdates,
 		})
 		if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
-			writeKey := stmt.Table + ":" + string(entry.key)
-			mt.SetWrite(writeKey, newValueData)
+			mt.SetWrite(stmt.Table, string(entry.key), newValueData)
 		}
 	}
 	return nil

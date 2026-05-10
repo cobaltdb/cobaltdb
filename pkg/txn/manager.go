@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/fnv"
+
 	"math"
 	"sort"
 	"sync"
@@ -61,6 +61,12 @@ func DefaultOptions() *Options {
 	}
 }
 
+// WriteKey is a composite key that avoids string concatenation allocations.
+type WriteKey struct {
+	TreeName string
+	Key      string
+}
+
 // Transaction represents a database transaction
 type Transaction struct {
 	ID        uint64
@@ -68,8 +74,8 @@ type Transaction struct {
 	Isolation IsolationLevel
 	ReadOnly  bool
 	StartTS   uint64
-	ReadSet   map[string]uint64 // key → version read
-	WriteSet  map[string][]byte // key → new value (buffered writes)
+	ReadSet   map[WriteKey]uint64 // key → version read
+	WriteSet  map[WriteKey][]byte // key → new value (buffered writes)
 	mu        sync.Mutex
 	manager   *Manager
 
@@ -244,56 +250,65 @@ func (t *Transaction) rollbackLocked() error {
 }
 
 // GetReadVersion returns the version read for a key
-func (t *Transaction) GetReadVersion(key string) (uint64, bool) {
+func (t *Transaction) GetReadVersion(treeName, key string) (uint64, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	v, ok := t.ReadSet[key]
+	v, ok := t.ReadSet[WriteKey{TreeName: treeName, Key: key}]
 	return v, ok
 }
 
 // SetReadVersion records a read version for a key
-func (t *Transaction) SetReadVersion(key string, version uint64) {
+func (t *Transaction) SetReadVersion(treeName, key string, version uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.ReadSet == nil {
-		t.ReadSet = make(map[string]uint64)
+		t.ReadSet = make(map[WriteKey]uint64)
 	}
-	t.ReadSet[key] = version
+	t.ReadSet[WriteKey{TreeName: treeName, Key: key}] = version
 }
 
 // GetWrite returns the buffered write for a key
-func (t *Transaction) GetWrite(key string) ([]byte, bool) {
+func (t *Transaction) GetWrite(treeName, key string) ([]byte, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	v, ok := t.WriteSet[key]
+	v, ok := t.WriteSet[WriteKey{TreeName: treeName, Key: key}]
 	return v, ok
 }
 
 // SetWrite buffers a write for a key
-func (t *Transaction) SetWrite(key string, value []byte) {
+func (t *Transaction) SetWrite(treeName, key string, value []byte) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.WriteSet == nil {
-		t.WriteSet = make(map[string][]byte)
+		t.WriteSet = make(map[WriteKey][]byte)
 	}
-	t.WriteSet[key] = value
+	t.WriteSet[WriteKey{TreeName: treeName, Key: key}] = value
 }
 
 const numVersionShards = 256
 
 type versionShard struct {
 	mu       sync.Mutex
-	versions map[string]uint64
+	versions map[WriteKey]uint64
 }
 
-func versionShardIdx(key string) int {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return int(h.Sum32() & 0xFF)
+// versionShardIdx returns a deterministic shard index for the given treeName+key
+// without allocating. It implements FNV-1a 32-bit inline.
+func versionShardIdx(treeName, key string) int {
+	var h uint32 = 2166136261
+	for i := 0; i < len(treeName); i++ {
+		h ^= uint32(treeName[i])
+		h *= 16777619
+	}
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return int(h & 0xFF)
 }
 
 // Manager manages all transactions
@@ -335,7 +350,7 @@ func NewManager(pool, wal interface{}) *Manager {
 		lockEntries:           make(map[string]*lockEntry),
 	}
 	for i := range m.versionShards {
-		m.versionShards[i].versions = make(map[string]uint64)
+		m.versionShards[i].versions = make(map[WriteKey]uint64)
 	}
 	return m
 }
@@ -715,9 +730,10 @@ func (m *Manager) Begin(opts *Options) *Transaction {
 		manager:   m,
 		ctx:       ctx,
 		cancel:    cancel,
-		// ReadSet, WriteSet, and locksHeld are lazily created on first use
-		// to avoid allocations for transactions that never read/write/acquire
-		// explicit locks (common for read-only or very short transactions).
+		// Pre-allocate maps with capacity 1 for the common single-read/write
+		// case. This avoids a separate bucket allocation on first insert.
+		ReadSet:  make(map[WriteKey]uint64, 1),
+		WriteSet: make(map[WriteKey][]byte, 1),
 	}
 
 	m.mu.Lock()
@@ -784,8 +800,8 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 			shardCount++
 		}
 	}
-	for key := range txn.ReadSet {
-		addShard(versionShardIdx(key))
+	for wk := range txn.ReadSet {
+		addShard(versionShardIdx(wk.TreeName, wk.Key))
 	}
 	sorted := shardArr[:shardCount]
 	sort.Ints(sorted)
@@ -799,8 +815,8 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 		}
 	}()
 
-	for key, readVersion := range txn.ReadSet {
-		currentVersion, exists := m.versionShards[versionShardIdx(key)].versions[key]
+	for wk, readVersion := range txn.ReadSet {
+		currentVersion, exists := m.versionShards[versionShardIdx(wk.TreeName, wk.Key)].versions[wk]
 		if !exists {
 			continue
 		}
@@ -833,11 +849,11 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 			shardCount++
 		}
 	}
-	for key := range txn.ReadSet {
-		addShard(versionShardIdx(key))
+	for wk := range txn.ReadSet {
+		addShard(versionShardIdx(wk.TreeName, wk.Key))
 	}
-	for key := range txn.WriteSet {
-		addShard(versionShardIdx(key))
+	for wk := range txn.WriteSet {
+		addShard(versionShardIdx(wk.TreeName, wk.Key))
 	}
 	sorted := shardArr[:shardCount]
 	sort.Ints(sorted)
@@ -849,8 +865,8 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 
 	// 3. Conflict detection.
 	if txn.Isolation >= SnapshotIsolation {
-		for key, readVersion := range txn.ReadSet {
-			currentVersion, exists := m.versionShards[versionShardIdx(key)].versions[key]
+		for wk, readVersion := range txn.ReadSet {
+			currentVersion, exists := m.versionShards[versionShardIdx(wk.TreeName, wk.Key)].versions[wk]
 			if !exists {
 				continue
 			}
@@ -865,10 +881,10 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 
 	// 4. Update versions.
 	seq := atomic.AddUint64(&m.commitSeq, 1)
-	for key, value := range txn.WriteSet {
-		m.versionShards[versionShardIdx(key)].versions[key] = seq
+	for wk, value := range txn.WriteSet {
+		m.versionShards[versionShardIdx(wk.TreeName, wk.Key)].versions[wk] = seq
 		if m.versionStore != nil {
-			m.versionStore.Commit(key, value, seq)
+			m.versionStore.Commit(wk, value, seq)
 		}
 	}
 
@@ -885,12 +901,16 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 			if len(txn.WriteSet) == 1 {
 				var recArr [2]storage.WALRecord
 				var records [2]*storage.WALRecord
-				for key, value := range txn.WriteSet {
-					keyLen := len(key)
-					data := make([]byte, 4+keyLen+len(value))
-					binary.LittleEndian.PutUint32(data[0:4], uint32(keyLen))
-					copy(data[4:4+keyLen], key)
-					copy(data[4+keyLen:], value)
+				for wk, value := range txn.WriteSet {
+					tnLen := len(wk.TreeName)
+					kLen := len(wk.Key)
+					totalKeyLen := tnLen + 1 + kLen
+					data := make([]byte, 4+totalKeyLen+len(value))
+					binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+					copy(data[4:4+tnLen], wk.TreeName)
+					data[4+tnLen] = ':'
+					copy(data[4+tnLen+1:], wk.Key)
+					copy(data[4+totalKeyLen:], value)
 
 					recArr[0] = storage.WALRecord{
 						TxnID: txn.ID,
@@ -909,12 +929,16 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 				}
 			} else {
 				records := make([]*storage.WALRecord, 0, len(txn.WriteSet)+1)
-				for key, value := range txn.WriteSet {
-					keyLen := len(key)
-					data := make([]byte, 4+keyLen+len(value))
-					binary.LittleEndian.PutUint32(data[0:4], uint32(keyLen))
-					copy(data[4:4+keyLen], key)
-					copy(data[4+keyLen:], value)
+				for wk, value := range txn.WriteSet {
+					tnLen := len(wk.TreeName)
+					kLen := len(wk.Key)
+					totalKeyLen := tnLen + 1 + kLen
+					data := make([]byte, 4+totalKeyLen+len(value))
+					binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+					copy(data[4:4+tnLen], wk.TreeName)
+					data[4+tnLen] = ':'
+					copy(data[4+tnLen+1:], wk.Key)
+					copy(data[4+totalKeyLen:], value)
 
 					records = append(records, &storage.WALRecord{
 						TxnID: txn.ID,
@@ -951,7 +975,7 @@ func (m *Manager) pruneVersions() {
 	if minActive == math.MaxUint64 {
 		for i := range m.versionShards {
 			m.versionShards[i].mu.Lock()
-			m.versionShards[i].versions = make(map[string]uint64)
+			m.versionShards[i].versions = make(map[WriteKey]uint64)
 			m.versionShards[i].mu.Unlock()
 		}
 		if m.versionStore != nil {
@@ -998,11 +1022,12 @@ func (m *Manager) GetTransaction(id uint64) *Transaction {
 }
 
 // GetCurrentVersion returns the current version of a key
-func (m *Manager) GetCurrentVersion(key string) uint64 {
-	idx := versionShardIdx(key)
+func (m *Manager) GetCurrentVersion(treeName, key string) uint64 {
+	wk := WriteKey{TreeName: treeName, Key: key}
+	idx := versionShardIdx(treeName, key)
 	m.versionShards[idx].mu.Lock()
 	defer m.versionShards[idx].mu.Unlock()
-	return m.versionShards[idx].versions[key]
+	return m.versionShards[idx].versions[wk]
 }
 
 // GetVersionStore returns the MVCC version store for snapshot reads.

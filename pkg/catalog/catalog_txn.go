@@ -256,17 +256,12 @@ func (c *Catalog) CommitTransaction() error {
 				// Validate reads
 				if len(ts.readValues) > 0 {
 					c.mu.RLock()
-					for keyStr, originalValue := range ts.readValues {
-						idx := strings.IndexByte(keyStr, ':')
-						if idx < 0 {
-							continue
-						}
-						treeName, key := keyStr[:idx], []byte(keyStr[idx+1:])
-						tree, exists := c.tableTrees[treeName]
+					for wk, originalValue := range ts.readValues {
+						tree, exists := c.tableTrees[wk.TreeName]
 						if !exists {
 							continue
 						}
-						currentValue, _ := tree.Get(key)
+						currentValue, _ := tree.Get([]byte(wk.Key))
 						if !bytes.Equal(originalValue, currentValue) {
 							c.mu.RUnlock()
 							return txn.ErrConflict
@@ -294,7 +289,7 @@ func (c *Catalog) CommitTransaction() error {
 				if putErr != nil {
 					return fmt.Errorf("failed to apply buffered write to %s: %w", pw.TreeName, putErr)
 				}
-				ts.pendingWrites = nil
+				ts.pendingWrites = ts.pendingWrites[:0]
 			} else {
 				// General batch path for multi-row or index-updating transactions.
 				numPW := len(ts.pendingWrites)
@@ -318,10 +313,8 @@ func (c *Catalog) CommitTransaction() error {
 						shardSet[c.commitLockIdx(idx.IndexName, idx.Key)] = struct{}{}
 					}
 				}
-				for keyStr := range ts.readValues {
-					if idx := strings.IndexByte(keyStr, ':'); idx >= 0 {
-						shardSet[c.commitLockIdx(keyStr[:idx], keyStr[idx+1:])] = struct{}{}
-					}
+				for wk := range ts.readValues {
+					shardSet[c.commitLockIdx(wk.TreeName, wk.Key)] = struct{}{}
 				}
 
 				// Snapshot tree references under a brief RLock before locking commitMu.
@@ -365,17 +358,12 @@ func (c *Catalog) CommitTransaction() error {
 					// Validate reads and commit through the Manager while holding locks.
 					if len(ts.readValues) > 0 {
 						c.mu.RLock()
-						for keyStr, originalValue := range ts.readValues {
-							idx := strings.IndexByte(keyStr, ':')
-							if idx < 0 {
-								continue
-							}
-							treeName, key := keyStr[:idx], []byte(keyStr[idx+1:])
-							tree, exists := c.tableTrees[treeName]
+						for wk, originalValue := range ts.readValues {
+							tree, exists := c.tableTrees[wk.TreeName]
 							if !exists {
 								continue
 							}
-							currentValue, _ := tree.Get(key)
+							currentValue, _ := tree.Get([]byte(wk.Key))
 							if !bytes.Equal(originalValue, currentValue) {
 								c.mu.RUnlock()
 								return txn.ErrConflict
@@ -408,7 +396,7 @@ func (c *Catalog) CommitTransaction() error {
 							_ = tree.DeleteBatch(keys)
 						}
 					}
-					ts.pendingWrites = nil
+					ts.pendingWrites = ts.pendingWrites[:0]
 					return nil
 				}(); err != nil {
 					return err
@@ -1049,39 +1037,37 @@ func (c *Catalog) getCurrentManagerTxn() interface{} {
 
 // recordManagerRead records a read version and value for the given key in the
 // current txn.Manager transaction's ReadSet. This enables conflict detection
-// for read-modify-write cycles under SnapshotIsolation. Returns the composed
-// writeKey so callers can reuse it for SetWrite without allocating again.
-func (c *Catalog) recordManagerRead(treeName string, key string, valueData []byte) string {
-	writeKey := treeName + ":" + key
+// for read-modify-write cycles under SnapshotIsolation.
+func (c *Catalog) recordManagerRead(treeName string, key string, valueData []byte) {
+	wk := txn.WriteKey{TreeName: treeName, Key: key}
 
 	// Snapshot the value we read for commit-time validation.
 	if ts := c.getCurrentTxn(); ts != nil {
 		if ts.readValues == nil {
-			ts.readValues = make(map[string][]byte)
+			ts.readValues = make(map[txn.WriteKey][]byte)
 		}
 		var valCopy []byte
 		if len(valueData) > 0 {
 			valCopy = make([]byte, len(valueData))
 			copy(valCopy, valueData)
 		}
-		ts.readValues[writeKey] = valCopy
+		ts.readValues[wk] = valCopy
 	}
 
 	if !c.isBufferedMode() {
-		return writeKey
+		return
 	}
 
 	mt, ok := c.getCurrentManagerTxn().(*txn.Transaction)
 	if !ok || mt == nil {
-		return writeKey
+		return
 	}
 	mgr, ok := c.txnManager.(*txn.Manager)
 	if !ok || mgr == nil {
-		return writeKey
+		return
 	}
-	ver := mgr.GetCurrentVersion(writeKey)
-	mt.SetReadVersion(writeKey, ver)
-	return writeKey
+	ver := mgr.GetCurrentVersion(treeName, key)
+	mt.SetReadVersion(treeName, key, ver)
 }
 
 // isBufferedMode returns true when the current transaction should buffer

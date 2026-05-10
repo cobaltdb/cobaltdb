@@ -170,8 +170,19 @@ func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt 
 
 func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insertColumns []string, valueRow []query.Expression, args []interface{}, autoIncValue int64) ([]interface{}, error) {
 	rowValues := make([]interface{}, len(table.Columns))
-	colSet := make([]bool, len(table.Columns))
 
+	// Set defaults for all columns first.
+	for i, col := range table.Columns {
+		if col.AutoIncrement {
+			rowValues[i] = float64(autoIncValue)
+		} else if col.defaultExpr != nil {
+			if defVal, err := EvalExpression(col.defaultExpr, args); err == nil {
+				rowValues[i] = defVal
+			}
+		}
+	}
+
+	// Overlay explicit insert values.
 	for colIdx, tableColIdx := range insertColIndices {
 		if colIdx < len(valueRow) && tableColIdx >= 0 {
 			val, err := evaluateExpression(c, nil, nil, valueRow[colIdx], args)
@@ -179,27 +190,10 @@ func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insert
 				return nil, fmt.Errorf("failed to evaluate value for column '%s': %w", insertColumns[colIdx], err)
 			}
 			rowValues[tableColIdx] = val
-			colSet[tableColIdx] = true
 		}
 	}
 
-	for i, col := range table.Columns {
-		if !colSet[i] {
-			if col.AutoIncrement {
-				rowValues[i] = float64(autoIncValue)
-				continue
-			}
-			if col.defaultExpr != nil {
-				defVal, err := EvalExpression(col.defaultExpr, args)
-				if err == nil {
-					rowValues[i] = defVal
-					continue
-				}
-			}
-			rowValues[i] = nil
-		}
-	}
-
+	// Ensure primary key is set.
 	for i, col := range table.Columns {
 		if col.PrimaryKey && rowValues[i] == nil && autoIncValue > 0 {
 			rowValues[i] = float64(autoIncValue)
@@ -455,7 +449,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			} else {
 				existingValue, _ = tree.Get([]byte(key))
 			}
-			writeKey := c.recordManagerRead(stmt.Table, key, existingValue)
+			c.recordManagerRead(stmt.Table, key, existingValue)
 
 			// Build index updates for commit-time application.
 			idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, key, rowValues)
@@ -477,7 +471,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 			// Also buffer in the Manager transaction's WriteSet for conflict detection.
 			if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
-				mt.SetWrite(writeKey, valueData)
+				mt.SetWrite(stmt.Table, key, valueData)
 			}
 
 			// Save row for trigger execution

@@ -98,9 +98,9 @@ func TestReadVersion(t *testing.T) {
 	mgr := NewManager(nil, nil)
 	txn := mgr.Begin(nil)
 
-	txn.SetReadVersion("key1", 100)
+	txn.SetReadVersion("", "key1", 100)
 
-	v, ok := txn.GetReadVersion("key1")
+	v, ok := txn.GetReadVersion("", "key1")
 	if !ok {
 		t.Fatal("Read version not found")
 	}
@@ -114,9 +114,9 @@ func TestWrite(t *testing.T) {
 	mgr := NewManager(nil, nil)
 	txn := mgr.Begin(nil)
 
-	txn.SetWrite("key1", []byte("value1"))
+	txn.SetWrite("", "key1", []byte("value1"))
 
-	v, ok := txn.GetWrite("key1")
+	v, ok := txn.GetWrite("", "key1")
 	if !ok {
 		t.Fatal("Write not found")
 	}
@@ -129,7 +129,7 @@ func TestWrite(t *testing.T) {
 func TestGetCurrentVersion(t *testing.T) {
 	mgr := NewManager(nil, nil)
 
-	v := mgr.GetCurrentVersion("nonexistent")
+	v := mgr.GetCurrentVersion("", "nonexistent")
 	if v != 0 {
 		t.Errorf("Expected version 0, got %d", v)
 	}

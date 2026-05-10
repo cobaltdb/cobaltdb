@@ -12,28 +12,28 @@ func TestPruneVersionsNoActive(t *testing.T) {
 
 	// Commit some transactions to populate versions
 	txn1 := mgr.Begin(nil)
-	txn1.SetWrite("key1", []byte("v1"))
+	txn1.SetWrite("", "key1", []byte("v1"))
 	txn1.Commit()
 
 	txn2 := mgr.Begin(nil)
-	txn2.SetWrite("key2", []byte("v2"))
+	txn2.SetWrite("", "key2", []byte("v2"))
 	txn2.Commit()
 
 	// Verify versions are set
-	if mgr.GetCurrentVersion("key1") == 0 {
+	if mgr.GetCurrentVersion("", "key1") == 0 {
 		t.Fatal("Expected version for key1")
 	}
-	if mgr.GetCurrentVersion("key2") == 0 {
+	if mgr.GetCurrentVersion("", "key2") == 0 {
 		t.Fatal("Expected version for key2")
 	}
 
 	// No active transactions, pruneVersions should clear all versions
 	mgr.pruneVersions()
 
-	if mgr.GetCurrentVersion("key1") != 0 {
+	if mgr.GetCurrentVersion("", "key1") != 0 {
 		t.Error("Expected key1 version to be cleared after prune")
 	}
-	if mgr.GetCurrentVersion("key2") != 0 {
+	if mgr.GetCurrentVersion("", "key2") != 0 {
 		t.Error("Expected key2 version to be cleared after prune")
 	}
 }
@@ -43,7 +43,7 @@ func TestPruneVersionsWithActive(t *testing.T) {
 
 	// Commit a transaction to populate versions
 	txn1 := mgr.Begin(nil)
-	txn1.SetWrite("key1", []byte("v1"))
+	txn1.SetWrite("", "key1", []byte("v1"))
 	txn1.Commit()
 
 	// Start a new active transaction
@@ -56,9 +56,9 @@ func TestPruneVersionsWithActive(t *testing.T) {
 	// The versions map should not have been reset because there is an active txn
 	// (The pruneVersions function only clears if no active transactions)
 	// After prune with active, key1 should still be there
-	idx := versionShardIdx("key1")
+	idx := versionShardIdx("", "key1")
 	mgr.versionShards[idx].mu.Lock()
-	_, exists := mgr.versionShards[idx].versions["key1"]
+	_, exists := mgr.versionShards[idx].versions[WriteKey{Key: "key1"}]
 	mgr.versionShards[idx].mu.Unlock()
 	if !exists {
 		t.Error("Expected key1 version to still exist with active transaction")
@@ -145,14 +145,14 @@ func TestApplyWritesSingleKey(t *testing.T) {
 	mgr := NewManager(nil, nil)
 
 	txn := mgr.Begin(nil)
-	txn.SetWrite("testkey", []byte("testvalue"))
+	txn.SetWrite("", "testkey", []byte("testvalue"))
 
 	err := mgr.commitWithConflictDetection(txn)
 	if err != nil {
 		t.Fatalf("commitWithConflictDetection failed: %v", err)
 	}
 
-	v := mgr.GetCurrentVersion("testkey")
+	v := mgr.GetCurrentVersion("", "testkey")
 	if v != txn.ID {
 		t.Errorf("Expected version %d, got %d", txn.ID, v)
 	}
@@ -162,9 +162,9 @@ func TestCommitWithConflictDetectionMultipleKeys(t *testing.T) {
 	mgr := NewManager(nil, nil)
 
 	txn := mgr.Begin(nil)
-	txn.SetWrite("key1", []byte("val1"))
-	txn.SetWrite("key2", []byte("val2"))
-	txn.SetWrite("key3", []byte("val3"))
+	txn.SetWrite("", "key1", []byte("val1"))
+	txn.SetWrite("", "key2", []byte("val2"))
+	txn.SetWrite("", "key3", []byte("val3"))
 
 	err := mgr.commitWithConflictDetection(txn)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestCommitWithConflictDetectionMultipleKeys(t *testing.T) {
 	}
 
 	for _, key := range []string{"key1", "key2", "key3"} {
-		v := mgr.GetCurrentVersion(key)
+		v := mgr.GetCurrentVersion("", key)
 		if v != txn.ID {
 			t.Errorf("Key %s: expected version %d, got %d", key, txn.ID, v)
 		}
@@ -196,15 +196,15 @@ func TestCommitWithConflictDetectionOverwritesVersion(t *testing.T) {
 
 	// First transaction writes key1
 	txn1 := mgr.Begin(nil)
-	txn1.SetWrite("key1", []byte("val1"))
+	txn1.SetWrite("", "key1", []byte("val1"))
 	mgr.commitWithConflictDetection(txn1)
-	v1 := mgr.GetCurrentVersion("key1")
+	v1 := mgr.GetCurrentVersion("", "key1")
 
 	// Second transaction overwrites key1
 	txn2 := mgr.Begin(nil)
-	txn2.SetWrite("key1", []byte("val2"))
+	txn2.SetWrite("", "key1", []byte("val2"))
 	mgr.commitWithConflictDetection(txn2)
-	v2 := mgr.GetCurrentVersion("key1")
+	v2 := mgr.GetCurrentVersion("", "key1")
 
 	if v2 <= v1 {
 		t.Errorf("Expected version to increase: v1=%d, v2=%d", v1, v2)
@@ -227,7 +227,7 @@ func TestConcurrentCommits(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			txn := mgr.Begin(nil)
-			txn.SetWrite(string(rune('a'+i)), []byte("value"))
+			txn.SetWrite("", string(rune('a'+i)), []byte("value"))
 			if err := txn.Commit(); err != nil {
 				errChan <- err
 			}
@@ -249,18 +249,18 @@ func TestConflictDetectionWriteWrite(t *testing.T) {
 
 	// txn1 reads key1 at version 0
 	txn1 := mgr.Begin(&Options{Isolation: SnapshotIsolation})
-	txn1.SetReadVersion("key1", 0)
+	txn1.SetReadVersion("", "key1", 0)
 
 	// txn2 writes key1 and commits, updating the version
 	txn2 := mgr.Begin(&Options{Isolation: SnapshotIsolation})
-	txn2.SetWrite("key1", []byte("new_val"))
+	txn2.SetWrite("", "key1", []byte("new_val"))
 	err := txn2.Commit()
 	if err != nil {
 		t.Fatalf("txn2 commit failed: %v", err)
 	}
 
 	// txn1 should detect a conflict because key1 was modified
-	txn1.SetWrite("key1", []byte("conflicting_val"))
+	txn1.SetWrite("", "key1", []byte("conflicting_val"))
 	err = txn1.Commit()
 	if err == nil {
 		t.Error("Expected conflict error, got nil")
@@ -274,14 +274,14 @@ func TestConflictDetectionNoConflictDifferentKeys(t *testing.T) {
 	mgr := NewManager(nil, nil)
 
 	txn1 := mgr.Begin(&Options{Isolation: SnapshotIsolation})
-	txn1.SetReadVersion("key1", 0)
+	txn1.SetReadVersion("", "key1", 0)
 
 	txn2 := mgr.Begin(&Options{Isolation: SnapshotIsolation})
-	txn2.SetWrite("key2", []byte("val2"))
+	txn2.SetWrite("", "key2", []byte("val2"))
 	txn2.Commit()
 
 	// txn1 writes to a different key, no conflict
-	txn1.SetWrite("key3", []byte("val3"))
+	txn1.SetWrite("", "key3", []byte("val3"))
 	err := txn1.Commit()
 	if err != nil {
 		t.Errorf("Should not conflict on different keys: %v", err)
@@ -293,20 +293,20 @@ func TestConflictDetectionReadCommittedSkipsCheck(t *testing.T) {
 
 	// First populate key1
 	txn0 := mgr.Begin(nil)
-	txn0.SetWrite("key1", []byte("initial"))
+	txn0.SetWrite("", "key1", []byte("initial"))
 	txn0.Commit()
 
 	// ReadCommitted txn reads key1
 	txn1 := mgr.Begin(&Options{Isolation: ReadCommitted})
-	txn1.SetReadVersion("key1", 0)
+	txn1.SetReadVersion("", "key1", 0)
 
 	// Another txn writes key1
 	txn2 := mgr.Begin(nil)
-	txn2.SetWrite("key1", []byte("updated"))
+	txn2.SetWrite("", "key1", []byte("updated"))
 	txn2.Commit()
 
 	// ReadCommitted should not detect conflicts
-	txn1.SetWrite("key1", []byte("rc_write"))
+	txn1.SetWrite("", "key1", []byte("rc_write"))
 	err := txn1.Commit()
 	if err != nil {
 		t.Errorf("ReadCommitted should not detect conflicts: %v", err)
@@ -317,13 +317,13 @@ func TestSerializableConflictDetection(t *testing.T) {
 	mgr := NewManager(nil, nil)
 
 	txn1 := mgr.Begin(&Options{Isolation: Serializable})
-	txn1.SetReadVersion("key1", 0)
+	txn1.SetReadVersion("", "key1", 0)
 
 	txn2 := mgr.Begin(&Options{Isolation: Serializable})
-	txn2.SetWrite("key1", []byte("val"))
+	txn2.SetWrite("", "key1", []byte("val"))
 	txn2.Commit()
 
-	txn1.SetWrite("key1", []byte("conflict"))
+	txn1.SetWrite("", "key1", []byte("conflict"))
 	err := txn1.Commit()
 	if err == nil {
 		t.Error("Serializable should detect conflict")
@@ -373,8 +373,8 @@ func TestSetReadVersionNilReadSet(t *testing.T) {
 	txn.mu.Unlock()
 
 	// Should not panic
-	txn.SetReadVersion("key1", 100)
-	v, ok := txn.GetReadVersion("key1")
+	txn.SetReadVersion("", "key1", 100)
+	v, ok := txn.GetReadVersion("", "key1")
 	if !ok || v != 100 {
 		t.Errorf("Expected version 100, got %d, ok=%v", v, ok)
 	}
@@ -392,8 +392,8 @@ func TestSetWriteNilWriteSet(t *testing.T) {
 	txn.mu.Unlock()
 
 	// Should not panic
-	txn.SetWrite("key1", []byte("val"))
-	v, ok := txn.GetWrite("key1")
+	txn.SetWrite("", "key1", []byte("val"))
+	v, ok := txn.GetWrite("", "key1")
 	if !ok || string(v) != "val" {
 		t.Errorf("Expected val, got %s, ok=%v", v, ok)
 	}
@@ -440,7 +440,7 @@ func TestConcurrentBeginAndCommit(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			txn := mgr.Begin(nil)
-			txn.SetWrite("shared", []byte("value"))
+			txn.SetWrite("", "shared", []byte("value"))
 			txn.Commit()
 		}()
 	}
@@ -463,7 +463,7 @@ func TestDetectConflictsNonExistingKey(t *testing.T) {
 	mgr := NewManager(nil, nil)
 
 	txn := mgr.Begin(&Options{Isolation: SnapshotIsolation})
-	txn.SetReadVersion("nonexistent_key", 100)
+	txn.SetReadVersion("", "nonexistent_key", 100)
 
 	// No conflict because key was never committed
 	err := mgr.detectConflicts(txn)
@@ -479,12 +479,12 @@ func TestDetectConflictsEqualVersion(t *testing.T) {
 
 	// Set a version for key1
 	txn1 := mgr.Begin(nil)
-	txn1.SetWrite("key1", []byte("val"))
+	txn1.SetWrite("", "key1", []byte("val"))
 	txn1.Commit()
 
 	// Read the same version
 	txn2 := mgr.Begin(&Options{Isolation: SnapshotIsolation})
-	txn2.SetReadVersion("key1", txn1.ID) // read at committed version
+	txn2.SetReadVersion("", "key1", txn1.ID) // read at committed version
 
 	err := mgr.detectConflicts(txn2)
 	if err != nil {
