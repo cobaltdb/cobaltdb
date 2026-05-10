@@ -169,7 +169,8 @@ func (t *Transaction) Commit() error {
 	// Apply writes atomically with conflict detection so no transaction
 	// can sneak in between the read-check and the write.
 	if err := t.manager.commitWithConflictDetection(t); err != nil {
-		if rbErr := t.rollbackLocked(); rbErr != nil {
+		rbErr := t.rollbackLocked()
+		if rbErr != nil {
 			return fmt.Errorf("commit failed and rollback failed: %v; %w", rbErr, err)
 		}
 		return err
@@ -226,8 +227,9 @@ func (t *Transaction) rollbackLocked() error {
 	mgr := t.manager
 
 	t.State = TxnAborted
-	t.WriteSet = nil
-	t.ReadSet = nil
+	// Clear maps so the backing storage can be reused by sync.Pool.
+	clear(t.WriteSet)
+	clear(t.ReadSet)
 
 	// Release all locks without holding transaction mutex to avoid deadlock
 	t.mu.Unlock()
@@ -249,12 +251,23 @@ func (t *Transaction) rollbackLocked() error {
 	return nil
 }
 
+// Recycle returns the transaction to its Manager's sync.Pool for reuse.
+// It is safe to call multiple times — subsequent calls are no-ops.
+func (t *Transaction) Recycle() {
+	if t.manager != nil {
+		t.manager.RecycleTxn(t)
+	}
+}
+
 // GetReadVersion returns the version read for a key
 func (t *Transaction) GetReadVersion(treeName, key string) (uint64, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	v, ok := t.ReadSet[WriteKey{TreeName: treeName, Key: key}]
+	var wk WriteKey
+	wk.TreeName = treeName
+	wk.Key = key
+	v, ok := t.ReadSet[wk]
 	return v, ok
 }
 
@@ -266,7 +279,10 @@ func (t *Transaction) SetReadVersion(treeName, key string, version uint64) {
 	if t.ReadSet == nil {
 		t.ReadSet = make(map[WriteKey]uint64)
 	}
-	t.ReadSet[WriteKey{TreeName: treeName, Key: key}] = version
+	var wk WriteKey
+	wk.TreeName = treeName
+	wk.Key = key
+	t.ReadSet[wk] = version
 }
 
 // GetWrite returns the buffered write for a key
@@ -274,7 +290,10 @@ func (t *Transaction) GetWrite(treeName, key string) ([]byte, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	v, ok := t.WriteSet[WriteKey{TreeName: treeName, Key: key}]
+	var wk WriteKey
+	wk.TreeName = treeName
+	wk.Key = key
+	v, ok := t.WriteSet[wk]
 	return v, ok
 }
 
@@ -286,7 +305,10 @@ func (t *Transaction) SetWrite(treeName, key string, value []byte) {
 	if t.WriteSet == nil {
 		t.WriteSet = make(map[WriteKey][]byte)
 	}
-	t.WriteSet[WriteKey{TreeName: treeName, Key: key}] = value
+	var wk WriteKey
+	wk.TreeName = treeName
+	wk.Key = key
+	t.WriteSet[wk] = value
 }
 
 const numVersionShards = 256
@@ -331,6 +353,9 @@ type Manager struct {
 	// Lock management for deadlock detection
 	lockEntries map[string]*lockEntry // key → lock state (shared + exclusive)
 	lockMu      sync.RWMutex
+
+	// Transaction recycling pool to eliminate per-txn heap allocations.
+	txnPool sync.Pool
 }
 
 type lockEntry struct {
@@ -706,6 +731,46 @@ func (m *Manager) ReleaseAllLocks(txnID uint64) {
 	}
 }
 
+// RecycleTxn resets a transaction and returns it to the pool for reuse.
+func (m *Manager) RecycleTxn(txn *Transaction) {
+	if txn == nil || txn.manager == nil {
+		return
+	}
+	// Fields that Begin overwrites are left as-is so that post-commit/rollback
+	// state inspection in tests and callers remains valid.
+	txn.manager = nil
+	if txn.cancel != nil {
+		txn.cancel()
+		txn.cancel = nil
+	}
+	txn.ctx = nil
+	txn.waitingFor = 0
+	txn.waitingSince = time.Time{}
+	if txn.locksHeld != nil {
+		clear(txn.locksHeld)
+	}
+	if txn.ReadSet != nil {
+		clear(txn.ReadSet)
+	}
+	if txn.WriteSet != nil {
+		clear(txn.WriteSet)
+	}
+	m.txnPool.Put(txn)
+}
+
+// acquireTxn retrieves a pooled Transaction or allocates a new one.
+func (m *Manager) acquireTxn() *Transaction {
+	if v := m.txnPool.Get(); v != nil {
+		return v.(*Transaction)
+	}
+	return &Transaction{
+		// Pre-allocate maps with capacity 1 for the common single-read/write
+		// case. This avoids a separate bucket allocation on first insert.
+		ReadSet:  make(map[WriteKey]uint64, 1),
+		WriteSet: make(map[WriteKey][]byte, 1),
+	}
+}
+
 // Begin starts a new transaction
 func (m *Manager) Begin(opts *Options) *Transaction {
 	if opts == nil {
@@ -721,20 +786,15 @@ func (m *Manager) Begin(opts *Options) *Transaction {
 		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
 	}
 
-	txn := &Transaction{
-		ID:        id,
-		State:     TxnActive,
-		Isolation: opts.Isolation,
-		ReadOnly:  opts.ReadOnly,
-		StartTS:   id,
-		manager:   m,
-		ctx:       ctx,
-		cancel:    cancel,
-		// Pre-allocate maps with capacity 1 for the common single-read/write
-		// case. This avoids a separate bucket allocation on first insert.
-		ReadSet:  make(map[WriteKey]uint64, 1),
-		WriteSet: make(map[WriteKey][]byte, 1),
-	}
+	txn := m.acquireTxn()
+	txn.ID = id
+	txn.State = TxnActive
+	txn.Isolation = opts.Isolation
+	txn.ReadOnly = opts.ReadOnly
+	txn.StartTS = id
+	txn.manager = m
+	txn.ctx = ctx
+	txn.cancel = cancel
 
 	m.mu.Lock()
 	m.active[id] = txn
@@ -762,17 +822,15 @@ func (m *Manager) BeginWithContext(ctx context.Context, opts *Options) *Transact
 		cancel = c
 	}
 
-	txn := &Transaction{
-		ID:        id,
-		State:     TxnActive,
-		Isolation: opts.Isolation,
-		ReadOnly:  opts.ReadOnly,
-		StartTS:   id,
-		manager:   m,
-		ctx:       ctx,
-		cancel:    cancel,
-		// ReadSet, WriteSet, and locksHeld are lazily created on first use.
-	}
+	txn := m.acquireTxn()
+	txn.ID = id
+	txn.State = TxnActive
+	txn.Isolation = opts.Isolation
+	txn.ReadOnly = opts.ReadOnly
+	txn.StartTS = id
+	txn.manager = m
+	txn.ctx = ctx
+	txn.cancel = cancel
 
 	m.mu.Lock()
 	m.active[id] = txn
@@ -1023,7 +1081,9 @@ func (m *Manager) GetTransaction(id uint64) *Transaction {
 
 // GetCurrentVersion returns the current version of a key
 func (m *Manager) GetCurrentVersion(treeName, key string) uint64 {
-	wk := WriteKey{TreeName: treeName, Key: key}
+	var wk WriteKey
+	wk.TreeName = treeName
+	wk.Key = key
 	idx := versionShardIdx(treeName, key)
 	m.versionShards[idx].mu.Lock()
 	defer m.versionShards[idx].mu.Unlock()

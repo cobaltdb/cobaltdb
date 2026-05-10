@@ -2401,6 +2401,11 @@ func (tx *Tx) Commit() error {
 		return errors.New("transaction already completed")
 	}
 	defer tx.db.releaseConnection()
+	defer func() {
+		if tx.txn != nil {
+			tx.txn.Recycle()
+		}
+	}()
 
 	// Concurrent explicit transactions apply buffered writes inside
 	// CommitTransaction, which serializes on per-tree mutexes.
@@ -2421,18 +2426,24 @@ func (tx *Tx) Commit() error {
 	// If the catalog already committed the shared manager transaction,
 	// do not attempt to commit it again.
 	if tx.txn.State != txn.TxnCommitted {
-		return tx.txn.Commit()
+		if err := tx.txn.Commit(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 // Rollback rolls back the transaction
-
 func (tx *Tx) Rollback() error {
 	if !tx.done.CompareAndSwap(false, true) {
 		return errors.New("transaction already completed")
 	}
 	defer tx.db.releaseConnection()
+	defer func() {
+		if tx.txn != nil {
+			tx.txn.Recycle()
+		}
+	}()
 
 	// Rollback in catalog first (writes rollback record to WAL)
 	if err := tx.db.catalog.RollbackTransaction(); err != nil {
