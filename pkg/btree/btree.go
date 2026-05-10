@@ -166,10 +166,9 @@ func NewBTreeWithLimit(pool *storage.BufferPool, limit int64) (*BTree, error) {
 	}
 	atomic.StoreInt64(&t.memoryLimit, limit)
 	for i := range t.shards {
-		t.shards[i].data = make(map[string][]byte)
+		t.shards[i].data = make(map[string][]byte, 64)
 		t.shards[i].evicted = make(map[string]bool)
-		
-		t.shards[i].lruMap = make(map[string]*lruEntry)
+		t.shards[i].lruMap = make(map[string]*lruEntry, 64)
 	}
 	return t, nil
 }
@@ -188,10 +187,9 @@ func OpenBTreeWithLimit(pool *storage.BufferPool, rootPageID uint32, limit int64
 	}
 	atomic.StoreInt64(&t.memoryLimit, limit)
 	for i := range t.shards {
-		t.shards[i].data = make(map[string][]byte)
+		t.shards[i].data = make(map[string][]byte, 64)
 		t.shards[i].evicted = make(map[string]bool)
-		
-		t.shards[i].lruMap = make(map[string]*lruEntry)
+		t.shards[i].lruMap = make(map[string]*lruEntry, 64)
 	}
 	if err := t.loadFromPages(); err != nil {
 		fmt.Printf("btree: warning: failed to load pages for root %d: %v\n", rootPageID, err)
@@ -239,6 +237,12 @@ func (t *BTree) loadFromPages() error {
 		}
 		allData = append(allData, pg.Data()[storage.PageHeaderSize:]...)
 		t.pool.Unpin(pg)
+	}
+
+	// Pre-size shard maps to eliminate growth allocations during load.
+	perShard := int(totalCount)/numShards + 1
+	for i := range t.shards {
+		t.shards[i].data = make(map[string][]byte, perShard)
 	}
 
 	offset := 0
