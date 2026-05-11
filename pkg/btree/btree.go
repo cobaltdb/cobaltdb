@@ -831,24 +831,23 @@ func (t *BTree) flushInternal() error {
 
 	// Snapshot each shard individually so writers to other shards can proceed
 	// while we serialize the flushed data.
-	shardsSnap := make([]map[string][]byte, numShards)
+	dataSnap := make(map[string][]byte)
 	evictedSnap := make([]map[string]bool, numShards)
 	hasEvicted := false
 	memCount := 0
 	for i := 0; i < numShards; i++ {
 		t.shards[i].mu.RLock()
-		shardsSnap[i] = make(map[string][]byte, len(t.shards[i].data))
 		for k, v := range t.shards[i].data {
-			shardsSnap[i][k] = v
+			dataSnap[k] = v
 		}
-		evictedSnap[i] = make(map[string]bool, len(t.shards[i].evicted))
-		for k := range t.shards[i].evicted {
-			evictedSnap[i][k] = true
-		}
-		memCount += len(t.shards[i].data)
 		if len(t.shards[i].evicted) > 0 {
 			hasEvicted = true
+			evictedSnap[i] = make(map[string]bool, len(t.shards[i].evicted))
+			for k := range t.shards[i].evicted {
+				evictedSnap[i][k] = true
+			}
 		}
+		memCount += len(t.shards[i].data)
 		t.shards[i].mu.RUnlock()
 	}
 
@@ -858,15 +857,13 @@ func (t *BTree) flushInternal() error {
 
 	if !hasEvicted {
 		keys := make([]string, 0, memCount)
-		for i := 0; i < numShards; i++ {
-			for k := range shardsSnap[i] {
-				keys = append(keys, k)
-			}
+		for k := range dataSnap {
+			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		count = uint32(len(keys))
 		for _, k := range keys {
-			v := shardsSnap[shardIndex(k)][k]
+			v := dataSnap[k]
 			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(k)))
 			t.flushBuf.Write(lenBuf[:2])
 			t.flushBuf.WriteString(k)
@@ -882,10 +879,8 @@ func (t *BTree) flushInternal() error {
 				toSerialize[k] = v
 			}
 		}
-		for i := 0; i < numShards; i++ {
-			for k, v := range shardsSnap[i] {
-				toSerialize[k] = v
-			}
+		for k, v := range dataSnap {
+			toSerialize[k] = v
 		}
 		keys := make([]string, 0, len(toSerialize))
 		for k := range toSerialize {
