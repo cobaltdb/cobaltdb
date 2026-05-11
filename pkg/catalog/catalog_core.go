@@ -937,6 +937,10 @@ func (c *Catalog) getEffectiveTableData(table *TableDef) map[string][]byte {
 			if err != nil {
 				break
 			}
+			if !bytesContainDeletedAt(valueData) {
+				result[string(key)] = valueData
+				continue
+			}
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
 				continue
