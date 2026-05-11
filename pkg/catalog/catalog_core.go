@@ -854,8 +854,8 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 
 		// Read-your-writes: overlay buffered writes (INSERT, UPDATE, DELETE).
 		if ts := cat.getCurrentTxn(); ts != nil {
-			for _, pw := range ts.pendingWrites {
-				if pw.TreeName == table.Name {
+			if m, ok := ts.pendingWriteMap[table.Name]; ok {
+				for _, pw := range m {
 					k := string(pw.Key)
 					if idx, ok := seen[k]; ok {
 						pairs[idx].value = pw.Value

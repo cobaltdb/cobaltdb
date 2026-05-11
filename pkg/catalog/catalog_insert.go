@@ -671,6 +671,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		// Discard buffered writes added by this statement.
 		if ts := c.getCurrentTxn(); ts != nil {
 			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+			rebuildPendingWriteMap(ts)
 		}
 		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
 		if !c.isCurrentTxnActive() {
