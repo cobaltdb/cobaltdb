@@ -212,7 +212,7 @@ func (t *Transaction) Commit() error {
 
 	// Periodically prune versions map to prevent unbounded memory growth
 	if t.manager.commitCount.Add(1)%1000 == 0 {
-		go t.manager.pruneVersions()
+		t.manager.pruneVersions()
 	}
 
 	return nil
