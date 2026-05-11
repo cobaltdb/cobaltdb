@@ -46,7 +46,7 @@ func shardIndex(key string) int {
 type lruEntry struct {
 	key       string
 	size      int64
-	timestamp int64 // unix nano for cross-shard eviction comparison
+	timestamp int64 // monotonic counter for cross-shard eviction comparison
 	next      *lruEntry
 	prev      *lruEntry
 }
