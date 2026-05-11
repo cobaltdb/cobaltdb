@@ -312,7 +312,20 @@ func compareValues(a, b interface{}) int {
 		return -1 // non-NULL sorts before NULL
 	}
 
-	// Handle numeric types
+	// Fast path: both are non-numeric strings (avoids failed ParseFloat)
+	aStr, aIsStr := a.(string)
+	bStr, bIsStr := b.(string)
+	if aIsStr && bIsStr && !looksLikeNumber(aStr) && !looksLikeNumber(bStr) {
+		if aStr < bStr {
+			return -1
+		}
+		if aStr > bStr {
+			return 1
+		}
+		return 0
+	}
+
+	// Handle numeric types (includes string numbers like "123")
 	aNum, aIsNum := toFloat64(a)
 	bNum, bIsNum := toFloat64(b)
 	if aIsNum && bIsNum {
@@ -326,8 +339,6 @@ func compareValues(a, b interface{}) int {
 	}
 
 	// Handle strings
-	aStr, aIsStr := a.(string)
-	bStr, bIsStr := b.(string)
 	if aIsStr && bIsStr {
 		if aStr < bStr {
 			return -1
@@ -773,6 +784,10 @@ func toFloat64(v interface{}) (float64, bool) {
 		}
 		return 0, true
 	case string:
+		// Fast path: skip strings that clearly aren't numbers
+		if !looksLikeNumber(n) {
+			return 0, false
+		}
 		// Try to parse string as number (SQLite-compatible behavior)
 		if f, err := strconv.ParseFloat(n, 64); err == nil {
 			return f, true
@@ -781,6 +796,26 @@ func toFloat64(v interface{}) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// looksLikeNumber quickly rejects strings that cannot be valid numbers,
+// avoiding an expensive strconv.ParseFloat allocation on failure.
+func looksLikeNumber(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	c := s[0]
+	// Allow leading sign or digit or decimal point
+	if c != '+' && c != '-' && c != '.' && (c < '0' || c > '9') {
+		return false
+	}
+	// Must contain at least one digit to be a number
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 // evaluateMatchExpr evaluates MATCH ... AGAINST for full-text search.

@@ -8,6 +8,7 @@ import (
 	"hash/crc64"
 	"hash/maphash"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -1097,50 +1098,74 @@ type Iterator struct {
 
 // Scan returns an iterator for range scanning
 func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
-	seen := make(map[string]bool)
-	var keys, values [][]byte
+	// Pre-size slices to avoid reallocations; t.Size() is an upper bound.
+	approxSize := t.Size()
+	keys := make([][]byte, 0, approxSize)
+	values := make([][]byte, 0, approxSize)
+
+	var seen map[string]bool
 	evicted := make(map[string]bool)
+	hasEvicted := false
+
+	startStr := ""
+	if startKey != nil {
+		startStr = string(startKey)
+	}
+	endStr := ""
+	if endKey != nil {
+		endStr = string(endKey)
+	}
 
 	// Snapshot each shard individually so writers to other shards can proceed.
 	for i := 0; i < numShards; i++ {
 		t.shards[i].mu.RLock()
 		for k, v := range t.shards[i].data {
-			kb := []byte(k)
-			if startKey != nil && bytes.Compare(kb, startKey) < 0 {
+			if startKey != nil && strings.Compare(k, startStr) < 0 {
 				continue
 			}
-			if endKey != nil && bytes.Compare(kb, endKey) > 0 {
+			if endKey != nil && strings.Compare(k, endStr) > 0 {
 				continue
 			}
-			keyCopy := make([]byte, len(kb))
-			copy(keyCopy, kb)
+			keyCopy := make([]byte, len(k))
+			copy(keyCopy, k)
 			valCopy := make([]byte, len(v))
 			copy(valCopy, v)
 			keys = append(keys, keyCopy)
 			values = append(values, valCopy)
-			seen[k] = true
+			if hasEvicted {
+				seen[k] = true
+			}
 		}
-		for k := range t.shards[i].evicted {
-			evicted[k] = true
+		if len(t.shards[i].evicted) > 0 {
+			if !hasEvicted {
+				hasEvicted = true
+				seen = make(map[string]bool, approxSize)
+				// Mark all previously collected keys
+				for j := 0; j < len(keys); j++ {
+					seen[string(keys[j])] = true
+				}
+			}
+			for k := range t.shards[i].evicted {
+				evicted[k] = true
+			}
 		}
 		t.shards[i].mu.RUnlock()
 	}
 
-	if len(evicted) > 0 {
+	if hasEvicted {
 		diskData := t.readKVFromPages()
 		for k, v := range diskData {
 			if !evicted[k] || seen[k] {
 				continue
 			}
-			kb := []byte(k)
-			if startKey != nil && bytes.Compare(kb, startKey) < 0 {
+			if startKey != nil && strings.Compare(k, startStr) < 0 {
 				continue
 			}
-			if endKey != nil && bytes.Compare(kb, endKey) > 0 {
+			if endKey != nil && strings.Compare(k, endStr) > 0 {
 				continue
 			}
-			keyCopy := make([]byte, len(kb))
-			copy(keyCopy, kb)
+			keyCopy := make([]byte, len(k))
+			copy(keyCopy, k)
 			valCopy := make([]byte, len(v))
 			copy(valCopy, v)
 			keys = append(keys, keyCopy)
