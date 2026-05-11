@@ -198,6 +198,24 @@ func countChain(v *VersionedValue) int {
 	return count
 }
 
+// Clear empties the store without deallocating the map buckets.
+func (vs *VersionStore) Clear() {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	for key, head := range vs.versions {
+		// Return chained nodes to the pool for reuse.
+		for node := head; node != nil; {
+			next := node.Prev
+			node.Value = nil
+			node.Prev = nil
+			versionValuePool.Put(node)
+			node = next
+		}
+		delete(vs.versions, key)
+	}
+	vs.count = 0
+}
+
 // Len returns the number of keys in the store.
 func (vs *VersionStore) Len() int {
 	vs.mu.RLock()

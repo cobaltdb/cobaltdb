@@ -46,7 +46,7 @@ func (db *DB) Stats() (*DBStats, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	if db.closed {
+	if db.closed.Load() {
 		return nil, ErrDatabaseClosed
 	}
 
@@ -82,7 +82,7 @@ func (db *DB) HealthCheck() error {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	if db.closed {
+	if db.closed.Load() {
 		return ErrDatabaseClosed
 	}
 
@@ -152,7 +152,7 @@ func (db *DB) Checkpoint() error {
 func (db *DB) BeginHotBackup() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	if db.closed {
+	if db.closed.Load() {
 		return ErrDatabaseClosed
 	}
 
@@ -387,7 +387,7 @@ func (db *DB) GetReplicationManager() *replication.Manager {
 // SearchVectorKNN performs a K-nearest neighbor search on a vector index
 
 func (db *DB) SearchVectorKNN(indexName string, queryVector []float64, k int) ([]string, []float64, error) {
-	if db.closed {
+	if db.closed.Load() {
 		return nil, nil, ErrDatabaseClosed
 	}
 	return db.catalog.SearchVectorKNN(indexName, queryVector, k)
@@ -396,7 +396,7 @@ func (db *DB) SearchVectorKNN(indexName string, queryVector []float64, k int) ([
 // SearchVectorRange performs a range search on a vector index
 
 func (db *DB) SearchVectorRange(indexName string, queryVector []float64, radius float64) ([]string, []float64, error) {
-	if db.closed {
+	if db.closed.Load() {
 		return nil, nil, ErrDatabaseClosed
 	}
 	return db.catalog.SearchVectorRange(indexName, queryVector, radius)

@@ -1757,9 +1757,7 @@ func TestCoverage_TxExec_ClosedDB(t *testing.T) {
 	tx, _ := db.Begin(ctx)
 
 	// Close DB while tx is active
-	db.mu.Lock()
-	db.closed = true
-	db.mu.Unlock()
+	db.closed.Store(true)
 
 	_, err := tx.Exec(ctx, "INSERT INTO txcl VALUES (1)")
 	if !errors.Is(err, ErrDatabaseClosed) {
@@ -1772,9 +1770,7 @@ func TestCoverage_TxExec_ClosedDB(t *testing.T) {
 	}
 
 	// Reset for cleanup
-	db.mu.Lock()
-	db.closed = false
-	db.mu.Unlock()
+	db.closed.Store(false)
 	tx.done.Store(false)
 	tx.Rollback()
 	db.Close()

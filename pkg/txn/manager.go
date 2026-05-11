@@ -1058,15 +1058,15 @@ func (m *Manager) pruneVersions() {
 	}
 	m.mu.Unlock()
 
-	// If no active transactions, we can clear all versions
+	// If no active transactions, clear maps in place instead of reallocating.
 	if minActive == math.MaxUint64 {
 		for i := range m.versionShards {
 			m.versionShards[i].mu.Lock()
-			m.versionShards[i].versions = make(map[WriteKey]uint64, 128)
+			clear(m.versionShards[i].versions)
 			m.versionShards[i].mu.Unlock()
 		}
 		if m.versionStore != nil {
-			m.versionStore = NewVersionStore()
+			m.versionStore.Clear()
 		}
 		return
 	}

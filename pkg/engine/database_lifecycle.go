@@ -660,11 +660,11 @@ func (db *DB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	if db.closed {
+	if db.closed.Load() {
 		return nil
 	}
 
-	db.closed = true
+	db.closed.Store(true)
 
 	// Signal shutdown
 	select {

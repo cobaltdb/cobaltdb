@@ -27,7 +27,7 @@ func (db *DB) createReplicationSnapshot() ([]byte, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	if db.closed {
+	if db.closed.Load() {
 		return nil, ErrDatabaseClosed
 	}
 	if db.catalog == nil || db.backend == nil {
@@ -83,7 +83,7 @@ func (db *DB) applyReplicationSnapshot(data []byte, lsn uint64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	if db.closed {
+	if db.closed.Load() {
 		return ErrDatabaseClosed
 	}
 	if db.backend == nil {

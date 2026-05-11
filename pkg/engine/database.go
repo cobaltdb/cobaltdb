@@ -54,7 +54,7 @@ type DB struct {
 	txnMgr   *txn.Manager
 	rootTree *btree.BTree
 	mu       sync.RWMutex
-	closed   bool
+	closed   atomic.Bool
 	options  *Options
 	// Security components
 	auditLogger *audit.Logger     // Audit logger
@@ -448,7 +448,7 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	if db.closed {
+	if db.closed.Load() {
 		return Result{}, ErrDatabaseClosed
 	}
 
@@ -520,7 +520,7 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	if db.closed {
+	if db.closed.Load() {
 		return nil, ErrDatabaseClosed
 	}
 
@@ -636,10 +636,7 @@ func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 		return nil, err
 	}
 
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	if db.closed {
+	if db.closed.Load() {
 		db.releaseConnection()
 		return nil, ErrDatabaseClosed
 	}
@@ -2372,10 +2369,7 @@ func (tx *Tx) Exec(ctx context.Context, sql string, args ...interface{}) (Result
 		return Result{}, errors.New("transaction already completed")
 	}
 
-	tx.db.mu.RLock()
-	defer tx.db.mu.RUnlock()
-
-	if tx.db.closed {
+	if tx.db.closed.Load() {
 		return Result{}, ErrDatabaseClosed
 	}
 
@@ -2398,10 +2392,7 @@ func (tx *Tx) Query(ctx context.Context, sql string, args ...interface{}) (*Rows
 		return nil, errors.New("transaction already completed")
 	}
 
-	tx.db.mu.RLock()
-	defer tx.db.mu.RUnlock()
-
-	if tx.db.closed {
+	if tx.db.closed.Load() {
 		return nil, ErrDatabaseClosed
 	}
 
