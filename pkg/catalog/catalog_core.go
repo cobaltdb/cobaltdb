@@ -527,11 +527,17 @@ func (cat *Catalog) resolveFromTable(name string) (*TableDef, error) {
 }
 
 func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
-	// Apply query optimization
-	optimizer := query.NewQueryOptimizer()
-	optimizedStmt, err := optimizer.OptimizeSelect(stmt)
-	if err == nil && optimizedStmt != nil {
-		stmt = optimizedStmt
+	// Apply query optimization only when the query has something to optimize.
+	// Skip the expensive allocator for simple SELECTs without WHERE/JOINs/etc.
+	needsOptimize := stmt.Where != nil || len(stmt.Joins) > 0 || stmt.GroupBy != nil ||
+		stmt.Having != nil || len(stmt.OrderBy) > 0 || stmt.Distinct ||
+		len(stmt.Columns) == 0 || stmt.Limit != nil || stmt.Offset != nil ||
+		stmt.AsOf != nil
+	if needsOptimize {
+		optimizer := query.NewQueryOptimizer()
+		if optimizedStmt, err := optimizer.OptimizeSelect(stmt); err == nil && optimizedStmt != nil {
+			stmt = optimizedStmt
+		}
 	}
 
 	// Resolve positional references in GROUP BY and ORDER BY (e.g., GROUP BY 1, ORDER BY 2)
@@ -854,14 +860,35 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 				if hasWindowFuncs && cap(windowFullRows) == 0 {
 					windowFullRows = make([][]interface{}, 0, trees[0].Size())
 				}
+				numCols := len(table.Columns)
+				flatCap := int(trees[0].Size()) * numCols
+				flatBuf := make([]interface{}, 0, flatCap)
+				rowIdx := 0
+
 				for iter.HasNext() {
 					_, valueData, err := iter.NextString()
 					if err != nil {
 						break
 					}
-					vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-					if err != nil {
-						continue
+
+					start := rowIdx * numCols
+					end := start + numCols
+					if end > cap(flatBuf) {
+						grow := end - cap(flatBuf)
+						if grow < numCols*16 {
+							grow = numCols * 16
+						}
+						flatBuf = append(flatBuf, make([]interface{}, grow)...)
+					}
+					flatBuf = flatBuf[:end]
+					row := flatBuf[start:end]
+
+					vrow, ok := decodeVersionedRowFast(valueData, numCols, row)
+					if !ok {
+						vrow, err = decodeVersionedRow(valueData, numCols)
+						if err != nil {
+							continue
+						}
 					}
 					if !vrow.Version.isVisibleAt(queryTime) {
 						continue
@@ -883,6 +910,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 					if earlyLimit > 0 && len(rows) >= earlyLimit {
 						break
 					}
+					rowIdx++
 				}
 				iter.Close()
 			}

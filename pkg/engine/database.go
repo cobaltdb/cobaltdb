@@ -2197,6 +2197,10 @@ func (r *Rows) Scan(dest ...interface{}) error {
 	}
 
 	for i, d := range dest {
+		if di, ok := d.(*interface{}); ok {
+			*di = row[i]
+			continue
+		}
 		if err := scanValue(row[i], d); err != nil {
 			return err
 		}

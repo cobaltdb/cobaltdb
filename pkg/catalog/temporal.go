@@ -165,7 +165,8 @@ func encodeVersionedRowFast(rowValues []interface{}, createdAt int64, dst []byte
 func decodeVersionedRow(data []byte, numCols int) (VersionedRow, error) {
 	// Fast path: custom decoder for known format {"data":[...],"version":{...}}
 	if len(data) > 2 && data[0] == '{' {
-		if vrow, ok := decodeVersionedRowFast(data, numCols); ok {
+		out := make([]interface{}, 0, numCols)
+		if vrow, ok := decodeVersionedRowFast(data, numCols, out); ok {
 			return vrow, nil
 		}
 	}
@@ -208,7 +209,7 @@ func decodeVersionedRow(data []byte, numCols int) (VersionedRow, error) {
 // It parses the known format directly using byte scanning, avoiding
 // json.Unmarshal overhead (reflection, map allocation, etc.).
 // Returns (row, true) on success or (zero value, false) to fall back to slow path.
-func decodeVersionedRowFast(data []byte, numCols int) (VersionedRow, bool) {
+func decodeVersionedRowFast(data []byte, numCols int, out []interface{}) (VersionedRow, bool) {
 	// Find "data":[ array
 	pos := 1 // skip {
 	for pos <= len(data)-len(dataKeyBytes) {
@@ -221,8 +222,8 @@ func decodeVersionedRowFast(data []byte, numCols int) (VersionedRow, bool) {
 	return VersionedRow{}, false
 
 foundData:
-	// Parse the data array elements
-	rowData := make([]interface{}, 0, numCols)
+	// Parse the data array elements into the provided buffer.
+	rowData := out[:0]
 	for pos < len(data) {
 		// Skip whitespace
 		for pos < len(data) && data[pos] <= ' ' {

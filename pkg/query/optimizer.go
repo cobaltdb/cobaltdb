@@ -55,6 +55,15 @@ func (qo *QueryOptimizer) OptimizeSelect(stmt *SelectStmt) (*SelectStmt, error) 
 		return nil, nil
 	}
 
+	// Fast path: nothing to optimize for simple SELECTs without WHERE/JOINs/subqueries.
+	// Skip the expensive copy when no transformation will be applied.
+	if stmt.Where == nil && len(stmt.Joins) == 0 && stmt.GroupBy == nil &&
+		stmt.Having == nil && len(stmt.OrderBy) == 0 && !stmt.Distinct &&
+		len(stmt.Columns) > 0 && stmt.Limit == nil && stmt.Offset == nil &&
+		stmt.AsOf == nil {
+		return stmt, nil
+	}
+
 	// Create a copy to avoid modifying the original
 	optimized := qo.copySelectStmt(stmt)
 

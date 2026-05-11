@@ -100,12 +100,12 @@ func BenchmarkSelectWithScan(b *testing.B) {
 		db.Exec(ctx, `INSERT INTO bench_scan (id, value) VALUES (?, ?)`, i, fmt.Sprintf("value-%d", i))
 	}
 
+	var id interface{}
+	var value interface{}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		rows, _ := db.Query(ctx, `SELECT id, value FROM bench_scan`)
 		for rows.Next() {
-			var id interface{}
-			var value interface{}
 			rows.Scan(&id, &value)
 		}
 		rows.Close()
