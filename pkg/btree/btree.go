@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc64"
 	"hash/maphash"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1086,11 +1087,15 @@ func (t *BTree) DeleteString(keyStr string) error {
 	return ErrKeyNotFound
 }
 
+type kvPair struct {
+	key   []byte
+	value []byte
+}
+
 // Iterator provides range scan capability
 type Iterator struct {
 	tree   *BTree
-	keys   [][]byte
-	values [][]byte
+	pairs  []kvPair
 	idx    int
 	endKey []byte
 	done   bool
@@ -1098,13 +1103,12 @@ type Iterator struct {
 
 // Scan returns an iterator for range scanning
 func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
-	// Pre-size slices to avoid reallocations; t.Size() is an upper bound.
+	// Pre-size slice to avoid reallocations; t.Size() is an upper bound.
 	approxSize := t.Size()
-	keys := make([][]byte, 0, approxSize)
-	values := make([][]byte, 0, approxSize)
+	pairs := make([]kvPair, 0, approxSize)
 
 	var seen map[string]bool
-	evicted := make(map[string]bool)
+	var evicted map[string]bool
 	hasEvicted := false
 
 	startStr := ""
@@ -1130,8 +1134,7 @@ func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 			copy(keyCopy, k)
 			valCopy := make([]byte, len(v))
 			copy(valCopy, v)
-			keys = append(keys, keyCopy)
-			values = append(values, valCopy)
+			pairs = append(pairs, kvPair{keyCopy, valCopy})
 			if hasEvicted {
 				seen[k] = true
 			}
@@ -1141,9 +1144,12 @@ func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 				hasEvicted = true
 				seen = make(map[string]bool, approxSize)
 				// Mark all previously collected keys
-				for j := 0; j < len(keys); j++ {
-					seen[string(keys[j])] = true
+				for j := 0; j < len(pairs); j++ {
+					seen[string(pairs[j].key)] = true
 				}
+			}
+			if evicted == nil {
+				evicted = make(map[string]bool)
 			}
 			for k := range t.shards[i].evicted {
 				evicted[k] = true
@@ -1168,62 +1174,44 @@ func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 			copy(keyCopy, k)
 			valCopy := make([]byte, len(v))
 			copy(valCopy, v)
-			keys = append(keys, keyCopy)
-			values = append(values, valCopy)
+			pairs = append(pairs, kvPair{keyCopy, valCopy})
 		}
 	}
 
-	sortKeyValues(keys, values)
+	slices.SortFunc(pairs, func(a, b kvPair) int {
+		return bytes.Compare(a.key, b.key)
+	})
 
 	return &Iterator{
 		tree:   t,
-		keys:   keys,
-		values: values,
+		pairs:  pairs,
 		idx:    0,
 		endKey: endKey,
 		done:   false,
 	}, nil
 }
 
-// sortKeyValues sorts keys and values together by key
-func sortKeyValues(keys [][]byte, values [][]byte) {
-	sort.Sort(&kvSorter{keys: keys, values: values})
-}
-
-type kvSorter struct {
-	keys   [][]byte
-	values [][]byte
-}
-
-func (s *kvSorter) Len() int           { return len(s.keys) }
-func (s *kvSorter) Less(i, j int) bool { return bytes.Compare(s.keys[i], s.keys[j]) < 0 }
-func (s *kvSorter) Swap(i, j int) {
-	s.keys[i], s.keys[j] = s.keys[j], s.keys[i]
-	s.values[i], s.values[j] = s.values[j], s.values[i]
-}
-
 // Next advances the iterator
 func (it *Iterator) Next() ([]byte, []byte, error) {
-	if it.done || it.idx >= len(it.keys) {
+	if it.done || it.idx >= len(it.pairs) {
 		it.done = true
 		return nil, nil, nil
 	}
 
-	key := it.keys[it.idx]
-	value := it.values[it.idx]
+	p := it.pairs[it.idx]
 	it.idx++
 
-	if it.endKey != nil && bytes.Compare(key, it.endKey) > 0 {
+	if it.endKey != nil && bytes.Compare(p.key, it.endKey) > 0 {
 		it.done = true
 		return nil, nil, nil
 	}
 
-	return key, value, nil
+	return p.key, p.value, nil
 }
 
 // Valid returns true if the iterator has more items
 func (it *Iterator) Valid() bool {
-	return !it.done && it.idx < len(it.keys)
+	return !it.done && it.idx < len(it.pairs)
 }
 
 // Close closes the iterator
@@ -1239,7 +1227,7 @@ func (it *Iterator) HasNext() bool {
 
 // First positions the iterator at the first item
 func (it *Iterator) First() bool {
-	if len(it.keys) == 0 {
+	if len(it.pairs) == 0 {
 		it.done = true
 		return false
 	}
