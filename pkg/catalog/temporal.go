@@ -5,7 +5,34 @@ import (
 	"encoding/json"
 	"strconv"
 	"time"
+	"unsafe"
 )
+
+// parseInt64Fast parses an int64 directly from a byte slice without allocating
+// a temporary string. It handles an optional leading minus sign.
+func parseInt64Fast(b []byte) (int64, bool) {
+	if len(b) == 0 {
+		return 0, false
+	}
+	neg := false
+	i := 0
+	if b[0] == '-' {
+		neg = true
+		i++
+	}
+	var n int64
+	for ; i < len(b); i++ {
+		c := b[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int64(c-'0')
+	}
+	if neg {
+		n = -n
+	}
+	return n, true
+}
 
 // RowVersion stores temporal metadata for a row
 // This enables AS OF SYSTEM TIME queries (time travel)
@@ -223,7 +250,8 @@ foundData:
 						}
 						rowData = append(rowData, s)
 					} else {
-						rowData = append(rowData, string(data[start:pos]))
+						// safe: data is stable for the lifetime of the iterator
+						rowData = append(rowData, unsafe.String(&data[start], pos-start))
 					}
 					pos++
 					goto afterAppend
@@ -290,18 +318,17 @@ foundData:
 					pos++
 				}
 			}
-			numStr := string(data[numStart:pos])
 			if isFloat {
-				fv, err := strconv.ParseFloat(numStr, 64)
+				fv, err := strconv.ParseFloat(unsafe.String(&data[numStart], pos-numStart), 64)
 				if err != nil {
 					return nil, false
 				}
 				rowData = append(rowData, fv)
 			} else {
-				iv, err := strconv.ParseInt(numStr, 10, 64)
-				if err != nil {
+				iv, ok := parseInt64Fast(data[numStart:pos])
+				if !ok {
 					// Might be too large for int64, use float64
-					fv, err2 := strconv.ParseFloat(numStr, 64)
+					fv, err2 := strconv.ParseFloat(unsafe.String(&data[numStart], pos-numStart), 64)
 					if err2 != nil {
 						return nil, false
 					}
@@ -340,7 +367,7 @@ foundData:
 			for numEnd < len(data) && data[numEnd] >= '0' && data[numEnd] <= '9' {
 				numEnd++
 			}
-			if v, err := strconv.ParseInt(string(data[numStart:numEnd]), 10, 64); err == nil {
+			if v, ok := parseInt64Fast(data[numStart:numEnd]); ok {
 				createdAt = v
 			}
 		} else if data[pos] == 'd' && pos > 0 && data[pos-1] == '"' && pos-1+len(daKey) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(daKey)], daKey) {
@@ -355,7 +382,7 @@ foundData:
 			for numEnd < len(data) && data[numEnd] >= '0' && data[numEnd] <= '9' {
 				numEnd++
 			}
-			if v, err := strconv.ParseInt(string(data[numStart:numEnd]), 10, 64); err == nil {
+			if v, ok := parseInt64Fast(data[numStart:numEnd]); ok {
 				deletedAt = v
 			}
 		}
