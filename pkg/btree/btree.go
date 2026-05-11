@@ -870,10 +870,9 @@ func (t *BTree) flushInternal() error {
 		count = uint32(len(keys))
 		for _, k := range keys {
 			v := shardsSnap[shardIndex(k)][k]
-			key := []byte(k)
-			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
+			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(k)))
 			kvBuf.Write(lenBuf[:2])
-			kvBuf.Write(key)
+			kvBuf.WriteString(k)
 			binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
 			kvBuf.Write(lenBuf[:4])
 			kvBuf.Write(v)
@@ -899,10 +898,9 @@ func (t *BTree) flushInternal() error {
 		count = uint32(len(keys))
 		for _, k := range keys {
 			v := toSerialize[k]
-			key := []byte(k)
-			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(key)))
+			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(k)))
 			kvBuf.Write(lenBuf[:2])
-			kvBuf.Write(key)
+			kvBuf.WriteString(k)
 			binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
 			kvBuf.Write(lenBuf[:4])
 			kvBuf.Write(v)
