@@ -10,7 +10,6 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
@@ -26,6 +25,11 @@ var (
 	DefaultMemoryLimit = int64(256 * 1024 * 1024) // 256MB default
 	MaxKeyLength       = 65535                   // uint16 max - serialization limit
 )
+
+// lruTimestamp is a monotonic counter used for LRU ordering.
+// It replaces time.Now().UnixNano() to avoid the overhead of reading
+// the system clock on every insert.
+var lruTimestamp atomic.Int64
 
 // Number of shards for memStorage. Must be a power of two.
 const numShards = 256
@@ -556,7 +560,7 @@ func (t *BTree) putStringInternal(keyCopy string, value []byte) error {
 		}
 		entry.key = keyCopy
 		entry.size = newSize
-		entry.timestamp = time.Now().UnixNano()
+		entry.timestamp = lruTimestamp.Add(1)
 		entry.next = nil
 		entry.prev = nil
 		sh.lruList.PushFront(entry)
@@ -668,7 +672,7 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 				entry := &lruEntry{}
 								entry.key = kc
 								entry.size = int64(len(kc) + len(vc))
-								entry.timestamp = time.Now().UnixNano()
+								entry.timestamp = lruTimestamp.Add(1)
 				sh.lruList.PushFront(entry)
 				sh.lruMap[kc] = entry
 			}
