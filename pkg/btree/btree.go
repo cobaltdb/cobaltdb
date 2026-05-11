@@ -36,11 +36,6 @@ const numShards = 256
 
 var hashSeed = maphash.MakeSeed()
 
-// flushBufPool recycles bytes.Buffer structs used during flushInternal to
-// eliminate the dominant allocation source (bytes.growSlice) under write load.
-var flushBufPool = sync.Pool{
-	New: func() interface{} { return new(bytes.Buffer) },
-}
 
 func shardIndex(key string) int {
 	return int(maphash.String(hashSeed, key)) & (numShards - 1)
@@ -145,6 +140,7 @@ type BTree struct {
 	dirty         int32        // atomic: 0 or 1
 	overflowPages []uint32     // IDs of overflow pages used by this tree
 	lastPageHashes []uint64    // hashes of page content from last flush
+	flushBuf      *bytes.Buffer // reusable serialization buffer (protected by flushMu)
 
 	// Memory management
 	memoryLimit int64 // atomic
@@ -173,6 +169,7 @@ func NewBTreeWithLimit(pool *storage.BufferPool, limit int64) (*BTree, error) {
 		rootPageID: rootPage.ID(),
 		pool:       pool,
 		order:      100,
+		flushBuf:   new(bytes.Buffer),
 	}
 	atomic.StoreInt64(&t.memoryLimit, limit)
 	for i := range t.shards {
@@ -194,6 +191,7 @@ func OpenBTreeWithLimit(pool *storage.BufferPool, rootPageID uint32, limit int64
 		rootPageID: rootPageID,
 		pool:       pool,
 		order:      100,
+		flushBuf:   new(bytes.Buffer),
 	}
 	atomic.StoreInt64(&t.memoryLimit, limit)
 	for i := range t.shards {
@@ -854,8 +852,7 @@ func (t *BTree) flushInternal() error {
 		t.shards[i].mu.RUnlock()
 	}
 
-	kvBuf := flushBufPool.Get().(*bytes.Buffer)
-	kvBuf.Reset()
+	t.flushBuf.Reset()
 	var count uint32
 	var lenBuf [4]byte
 
@@ -871,11 +868,11 @@ func (t *BTree) flushInternal() error {
 		for _, k := range keys {
 			v := shardsSnap[shardIndex(k)][k]
 			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(k)))
-			kvBuf.Write(lenBuf[:2])
-			kvBuf.WriteString(k)
+			t.flushBuf.Write(lenBuf[:2])
+			t.flushBuf.WriteString(k)
 			binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
-			kvBuf.Write(lenBuf[:4])
-			kvBuf.Write(v)
+			t.flushBuf.Write(lenBuf[:4])
+			t.flushBuf.Write(v)
 		}
 	} else {
 		toSerialize := make(map[string][]byte, memCount)
@@ -899,19 +896,15 @@ func (t *BTree) flushInternal() error {
 		for _, k := range keys {
 			v := toSerialize[k]
 			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(k)))
-			kvBuf.Write(lenBuf[:2])
-			kvBuf.WriteString(k)
+			t.flushBuf.Write(lenBuf[:2])
+			t.flushBuf.WriteString(k)
 			binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
-			kvBuf.Write(lenBuf[:4])
-			kvBuf.Write(v)
+			t.flushBuf.Write(lenBuf[:4])
+			t.flushBuf.Write(v)
 		}
 	}
 
-	kvData := kvBuf.Bytes()
-	// Return the buffer to the pool for reuse. We keep a local reference to
-	// kvData (backed by the buffer's internal slice) before resetting.
-	kvBuf.Reset()
-	flushBufPool.Put(kvBuf)
+	kvData := t.flushBuf.Bytes()
 
 	// Calculate overflow pages
 	overflowCount := uint32(0)
