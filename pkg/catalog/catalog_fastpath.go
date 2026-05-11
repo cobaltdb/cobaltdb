@@ -390,7 +390,7 @@ func toFloat64Safe(v interface{}) (float64, bool) {
 
 func bytesContainDeletedAt(data []byte) bool {
 	// Look for "deleted_at": followed by a non-zero digit
-	needle := []byte(`"deleted_at":`)
+	needle := deletedAtKey
 	for i := 0; i <= len(data)-len(needle)-1; i++ {
 		match := true
 		for j := 0; j < len(needle); j++ {

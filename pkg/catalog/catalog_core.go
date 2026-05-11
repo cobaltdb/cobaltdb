@@ -845,7 +845,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			stmt.Limit == nil &&
 			stmt.Offset == nil
 
-		if len(trees) == 1 && !hasPending && !canParallel {
+		if len(trees) == 1 && !hasPending {
 			iter, err := trees[0].Scan(nil, nil)
 			if err == nil {
 				if cap(rows) == 0 {

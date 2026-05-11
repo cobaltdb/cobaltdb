@@ -8,6 +8,14 @@ import (
 	"unsafe"
 )
 
+// Package-level byte slices for JSON key constants — avoids per-call allocation
+// of []byte(stringLiteral) inside hot-path functions.
+var (
+	dataKeyBytes = []byte(`"data":[`)
+	createdAtKey = []byte(`"created_at":`)
+	deletedAtKey = []byte(`"deleted_at":`)
+)
+
 // parseInt64Fast parses an int64 directly from a byte slice without allocating
 // a temporary string. It handles an optional leading minus sign.
 func parseInt64Fast(b []byte) (int64, bool) {
@@ -202,11 +210,10 @@ func decodeVersionedRow(data []byte, numCols int) (VersionedRow, error) {
 // Returns (row, true) on success or (zero value, false) to fall back to slow path.
 func decodeVersionedRowFast(data []byte, numCols int) (VersionedRow, bool) {
 	// Find "data":[ array
-	dataKey := []byte(`"data":[`)
 	pos := 1 // skip {
-	for pos <= len(data)-len(dataKey) {
-		if data[pos] == 'd' && pos+len(dataKey) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(dataKey)], dataKey) {
-			pos = pos - 1 + len(dataKey)
+	for pos <= len(data)-len(dataKeyBytes) {
+		if data[pos] == 'd' && pos+len(dataKeyBytes) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(dataKeyBytes)], dataKeyBytes) {
+			pos = pos - 1 + len(dataKeyBytes)
 			goto foundData
 		}
 		pos++
@@ -352,11 +359,9 @@ foundData:
 
 	// Parse version: find "created_at": and "deleted_at":
 	var createdAt, deletedAt int64
-	caKey := []byte(`"created_at":`)
-	daKey := []byte(`"deleted_at":`)
 	for pos < len(data) {
-		if data[pos] == 'c' && pos > 0 && data[pos-1] == '"' && pos-1+len(caKey) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(caKey)], caKey) {
-			numStart := pos - 1 + len(caKey)
+		if data[pos] == 'c' && pos > 0 && data[pos-1] == '"' && pos-1+len(createdAtKey) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(createdAtKey)], createdAtKey) {
+			numStart := pos - 1 + len(createdAtKey)
 			for numStart < len(data) && data[numStart] <= ' ' {
 				numStart++
 			}
@@ -370,8 +375,8 @@ foundData:
 			if v, ok := parseInt64Fast(data[numStart:numEnd]); ok {
 				createdAt = v
 			}
-		} else if data[pos] == 'd' && pos > 0 && data[pos-1] == '"' && pos-1+len(daKey) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(daKey)], daKey) {
-			numStart := pos - 1 + len(daKey)
+		} else if data[pos] == 'd' && pos > 0 && data[pos-1] == '"' && pos-1+len(deletedAtKey) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(deletedAtKey)], deletedAtKey) {
+			numStart := pos - 1 + len(deletedAtKey)
 			for numStart < len(data) && data[numStart] <= ' ' {
 				numStart++
 			}
@@ -412,11 +417,10 @@ foundData:
 // This is ~10x faster than decodeVersionedRow + toFloat64Safe for single-column access.
 func extractColumnFloat64(data []byte, colIdx int) (float64, bool) {
 	// Find the start of "data":[ array
-	dataKey := []byte(`"data":[`)
 	pos := 0
-	for pos <= len(data)-len(dataKey) {
-		if data[pos] == dataKey[0] && string(data[pos:pos+len(dataKey)]) == string(dataKey) {
-			pos += len(dataKey)
+	for pos <= len(data)-len(dataKeyBytes) {
+		if data[pos] == dataKeyBytes[0] && string(data[pos:pos+len(dataKeyBytes)]) == string(dataKeyBytes) {
+			pos += len(dataKeyBytes)
 			goto foundArray
 		}
 		pos++
