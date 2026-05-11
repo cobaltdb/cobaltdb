@@ -918,20 +918,19 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 		if !found {
 			// Check pending writes first (buffered mode)
 			if ts := c.getCurrentTxn(); ts != nil {
-				for _, pw := range ts.pendingWrites {
-					if pw.TreeName != stmt.Table {
-						continue
-					}
-					vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
-					if err != nil || vrow.Version.DeletedAt > 0 {
-						continue
-					}
-					existingRow := vrow.Data
-					if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
-						if stmt.ConflictAction == query.ConflictIgnore {
-							return true, nil
+				if m, ok := ts.pendingWriteMap[stmt.Table]; ok {
+					for _, pw := range m {
+						vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
+						if err != nil || vrow.Version.DeletedAt > 0 {
+							continue
 						}
-						return false, fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
+						existingRow := vrow.Data
+						if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
+							if stmt.ConflictAction == query.ConflictIgnore {
+								return true, nil
+							}
+							return false, fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
+						}
 					}
 				}
 			}
@@ -1076,18 +1075,17 @@ func (c *Catalog) checkForeignKeyConstraints(table *TableDef, rowValues []interf
 			// self-referential or same-statement FK references.
 			if !found {
 				if ts := c.getCurrentTxn(); ts != nil {
-					for _, pw := range ts.pendingWrites {
-						if pw.TreeName != fk.ReferencedTable {
-							continue
-						}
-						vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
-						if err != nil || vrow.Version.DeletedAt > 0 {
-							continue
-						}
-						refRow := vrow.Data
-						if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
-							found = true
-							break
+					if m, ok := ts.pendingWriteMap[fk.ReferencedTable]; ok {
+						for _, pw := range m {
+							vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
+							if err != nil || vrow.Version.DeletedAt > 0 {
+								continue
+							}
+							refRow := vrow.Data
+							if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
+								found = true
+								break
+							}
 						}
 					}
 				}

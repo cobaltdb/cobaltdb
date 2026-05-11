@@ -280,8 +280,8 @@ func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]inte
 
 	// Read-your-writes: overlay buffered writes (INSERT, UPDATE, DELETE).
 	if ts := c.getCurrentTxn(); ts != nil {
-		for _, pw := range ts.pendingWrites {
-			if pw.TreeName == mainTable.Name {
+		if m, ok := ts.pendingWriteMap[mainTable.Name]; ok {
+			for _, pw := range m {
 				k := string(pw.Key)
 				vrow, err := decodeVersionedRow(pw.Value, len(mainTable.Columns))
 				if err != nil {
@@ -298,7 +298,7 @@ func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]inte
 				} else {
 					intermediateRows = append(intermediateRows, vrow.Data)
 					seen[k] = len(intermediateRows) - 1
-				}
+			}
 			}
 		}
 	}

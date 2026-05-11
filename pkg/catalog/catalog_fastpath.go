@@ -47,10 +47,8 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 	// will miss uncommitted INSERT/UPDATE/DELETE. Fall back to normal scan
 	// so read-your-writes works correctly.
 	if ts := cat.getCurrentTxn(); ts != nil && len(ts.pendingWrites) > 0 {
-		for _, pw := range ts.pendingWrites {
-			if pw.TreeName == stmt.From.Name {
-				return nil, nil, false
-			}
+		if _, ok := ts.pendingWriteMap[stmt.From.Name]; ok {
+			return nil, nil, false
 		}
 	}
 
@@ -208,10 +206,8 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 	// will miss uncommitted INSERT/UPDATE/DELETE. Fall back to normal scan
 	// so read-your-writes works correctly.
 	if ts := cat.getCurrentTxn(); ts != nil && len(ts.pendingWrites) > 0 {
-		for _, pw := range ts.pendingWrites {
-			if pw.TreeName == stmt.From.Name {
-				return nil, nil, false
-			}
+		if _, ok := ts.pendingWriteMap[stmt.From.Name]; ok {
+			return nil, nil, false
 		}
 	}
 

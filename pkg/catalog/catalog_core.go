@@ -225,6 +225,7 @@ type catalogTxnState struct {
 	savepoints        []savepointEntry
 	managerTxn        interface{}    // *txn.Transaction when txnManager bridge is active
 	pendingWrites     []PendingWrite // buffered DML for commit-time application
+	pendingWriteMap   map[string]map[string]PendingWrite // table -> key -> latest write (O(1) lookup)
 	readValues        map[txn.WriteKey][]byte // key -> value at time of read (for MVCC validation)
 	rowBuf            [8]interface{} // reused per-transaction scratch buffer for INSERT
 	valueDataBuf      []byte         // reused per-transaction buffer for encoded row values
@@ -778,11 +779,10 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			}
 			// Read-your-writes: pending writes override committed data.
 			if ts := cat.getCurrentTxn(); ts != nil {
-				for _, pw := range ts.pendingWrites {
-					if pw.TreeName == table.Name && string(pw.Key) == pk {
+				if m, ok := ts.pendingWriteMap[table.Name]; ok {
+					if pw, ok2 := m[pk]; ok2 {
 						valueData = pw.Value
 						found = true
-						break
 					}
 				}
 			}
@@ -948,8 +948,8 @@ func (c *Catalog) getEffectiveTableData(table *TableDef) map[string][]byte {
 		iter.Close()
 	}
 	if ts := c.getCurrentTxn(); ts != nil {
-		for _, pw := range ts.pendingWrites {
-			if pw.TreeName == table.Name {
+		if m, ok := ts.pendingWriteMap[table.Name]; ok {
+			for _, pw := range m {
 				k := string(pw.Key)
 				vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
 				if err != nil {

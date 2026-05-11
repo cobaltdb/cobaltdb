@@ -137,6 +137,7 @@ func (c *Catalog) putTxnState(ts *catalogTxnState) {
 	ts.savepoints = ts.savepoints[:0]
 	ts.managerTxn = nil
 	ts.pendingWrites = ts.pendingWrites[:0]
+	ts.pendingWriteMap = nil
 	for k := range ts.readValues {
 		delete(ts.readValues, k)
 	}
@@ -306,6 +307,7 @@ func (c *Catalog) CommitTransaction() error {
 					return fmt.Errorf("failed to apply buffered write to %s: %w", pw.TreeName, putErr)
 				}
 				ts.pendingWrites = ts.pendingWrites[:0]
+				ts.pendingWriteMap = nil
 			} else {
 				// General batch path for multi-row or index-updating transactions.
 				numPW := len(ts.pendingWrites)
@@ -418,6 +420,7 @@ func (c *Catalog) CommitTransaction() error {
 						}
 					}
 					ts.pendingWrites = ts.pendingWrites[:0]
+					ts.pendingWriteMap = nil
 					return nil
 				}(); err != nil {
 					return err
@@ -992,6 +995,7 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 			c.truncateUndoLog(undoPos)
 			if ts := c.getCurrentTxn(); ts != nil {
 				ts.pendingWrites = ts.pendingWrites[:pwPos]
+				rebuildPendingWriteMap(ts)
 			}
 			c.setCurrentTxnSavepoints(sps[:spIdx+1])
 			return rollbackErr
@@ -1003,6 +1007,7 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 	// Truncate pending writes to savepoint position (buffered mode)
 	if ts := c.getCurrentTxn(); ts != nil {
 		ts.pendingWrites = ts.pendingWrites[:pwPos]
+		rebuildPendingWriteMap(ts)
 	}
 	// Remove savepoints after this one (but keep the current savepoint)
 	c.setCurrentTxnSavepoints(sps[:spIdx+1])
@@ -1120,6 +1125,13 @@ func (c *Catalog) getCurrentTxnPendingWrites() []PendingWrite {
 func (c *Catalog) appendPendingWrite(pw PendingWrite) {
 	if ts := c.getCurrentTxn(); ts != nil {
 		ts.pendingWrites = append(ts.pendingWrites, pw)
+		if ts.pendingWriteMap == nil {
+			ts.pendingWriteMap = make(map[string]map[string]PendingWrite)
+		}
+		if ts.pendingWriteMap[pw.TreeName] == nil {
+			ts.pendingWriteMap[pw.TreeName] = make(map[string]PendingWrite)
+		}
+		ts.pendingWriteMap[pw.TreeName][pw.Key] = pw
 	}
 }
 
@@ -1127,6 +1139,23 @@ func (c *Catalog) appendPendingWrite(pw PendingWrite) {
 func (c *Catalog) clearPendingWrites() {
 	if ts := c.getCurrentTxn(); ts != nil {
 		ts.pendingWrites = nil
+		ts.pendingWriteMap = nil
+	}
+}
+
+// rebuildPendingWriteMap rebuilds the map index from the pendingWrites slice.
+// Call this after rolling back or truncating pending writes.
+func rebuildPendingWriteMap(ts *catalogTxnState) {
+	if len(ts.pendingWrites) == 0 {
+		ts.pendingWriteMap = nil
+		return
+	}
+	ts.pendingWriteMap = make(map[string]map[string]PendingWrite, len(ts.pendingWrites))
+	for _, pw := range ts.pendingWrites {
+		if ts.pendingWriteMap[pw.TreeName] == nil {
+			ts.pendingWriteMap[pw.TreeName] = make(map[string]PendingWrite)
+		}
+		ts.pendingWriteMap[pw.TreeName][pw.Key] = pw
 	}
 }
 
@@ -1135,6 +1164,13 @@ func (c *Catalog) clearPendingWrites() {
 func (c *Catalog) keyInPendingWrites(tableName string, key string) bool {
 	ts := c.getCurrentTxn()
 	if ts == nil || len(ts.pendingWrites) == 0 {
+		return false
+	}
+	if ts.pendingWriteMap != nil {
+		if m, ok := ts.pendingWriteMap[tableName]; ok {
+			_, exists := m[key]
+			return exists
+		}
 		return false
 	}
 	for _, pw := range ts.pendingWrites {

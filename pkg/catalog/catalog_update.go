@@ -96,13 +96,9 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		treeName := treeNames[treeIdx]
 
 		// Collect pending writes for this tree to overlay in scan.
-		pendingKeys := make(map[string][]byte)
+		var pendingKeys map[string]PendingWrite
 		if ts := c.getCurrentTxn(); ts != nil {
-			for _, pw := range ts.pendingWrites {
-				if pw.TreeName == treeName {
-					pendingKeys[string(pw.Key)] = pw.Value
-				}
-			}
+			pendingKeys = ts.pendingWriteMap[treeName]
 		}
 
 		// If we have indexed rows, only process those specific rows
@@ -113,7 +109,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				found := err == nil && valueData != nil
 				// Overlay pending write
 				if pwValue, ok := pendingKeys[pkStr]; ok {
-					valueData = pwValue
+					valueData = pwValue.Value
 					found = true
 				} else if found && useBuffer {
 					c.recordManagerRead(treeName, pkStr, valueData)
@@ -143,7 +139,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			k := string(key)
 			fromPending := false
 			if pwValue, ok := pendingKeys[k]; ok {
-				valueData = pwValue
+				valueData = pwValue.Value
 				seenPending[k] = true
 				fromPending = true
 			}
@@ -191,7 +187,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		sort.Strings(pendingKeyList)
 		for _, k := range pendingKeyList {
 			key := []byte(k)
-			valueData := pendingKeys[k]
+			valueData := pendingKeys[k].Value
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil || vrow.Version.DeletedAt > 0 {
 				continue
