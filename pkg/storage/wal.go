@@ -130,9 +130,11 @@ func OpenWAL(path string) (*WAL, error) {
 		return nil, fmt.Errorf("failed to open WAL file: %w", err)
 	}
 
+	// 64 KiB write buffer cuts write() syscalls by ~16x vs the default 4 KiB,
+	// since each small WAL record (~60-130 B) would otherwise trigger a flush.
 	wal := &WAL{
 		file:      file,
-		bufWriter: bufio.NewWriter(file),
+		bufWriter: bufio.NewWriterSize(file, 64*1024),
 		path:      path,
 	}
 

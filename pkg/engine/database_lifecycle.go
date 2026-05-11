@@ -311,7 +311,7 @@ func (db *DB) createNew() error {
 
 		switch db.options.SyncMode {
 		case SyncNormal:
-			wal.EnableGroupCommit(0, 1*time.Millisecond)
+			wal.EnableGroupCommit(0, 5*time.Millisecond)
 		case SyncOff:
 			wal.EnableGroupCommit(0, 0)
 		}
@@ -469,7 +469,7 @@ func (db *DB) loadExisting() error {
 		// Enable group commit based on SyncMode
 		switch db.options.SyncMode {
 		case SyncNormal:
-			wal.EnableGroupCommit(0, 1*time.Millisecond)
+			wal.EnableGroupCommit(0, 5*time.Millisecond)
 		case SyncOff:
 			wal.EnableGroupCommit(0, 0)
 		default: // SyncFull
