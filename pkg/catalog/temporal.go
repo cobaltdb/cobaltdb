@@ -154,7 +154,7 @@ func encodeVersionedRowFast(rowValues []interface{}, createdAt int64, dst []byte
 // Uses a custom fast decoder for the known JSON format, falling back to
 // json.Unmarshal for edge cases. The fast path avoids reflection and
 // reduces allocations by parsing the "data" array and "version" object directly.
-func decodeVersionedRow(data []byte, numCols int) (*VersionedRow, error) {
+func decodeVersionedRow(data []byte, numCols int) (VersionedRow, error) {
 	// Fast path: custom decoder for known format {"data":[...],"version":{...}}
 	if len(data) > 2 && data[0] == '{' {
 		if vrow, ok := decodeVersionedRowFast(data, numCols); ok {
@@ -168,7 +168,7 @@ func decodeVersionedRow(data []byte, numCols int) (*VersionedRow, error) {
 		// Fallback: try decoding as plain row (backward compatibility)
 		var plainRow []interface{}
 		if err2 := json.Unmarshal(data, &plainRow); err2 != nil {
-			return nil, err
+			return VersionedRow{}, err
 		}
 		vrow = VersionedRow{
 			Data: plainRow,
@@ -193,14 +193,14 @@ func decodeVersionedRow(data []byte, numCols int) (*VersionedRow, error) {
 		vrow.Data = append(vrow.Data, nil)
 	}
 
-	return &vrow, nil
+	return vrow, nil
 }
 
 // decodeVersionedRowFast is a zero-reflection decoder for VersionedRow JSON.
 // It parses the known format directly using byte scanning, avoiding
 // json.Unmarshal overhead (reflection, map allocation, etc.).
-// Returns (row, true) on success or (nil, false) to fall back to slow path.
-func decodeVersionedRowFast(data []byte, numCols int) (*VersionedRow, bool) {
+// Returns (row, true) on success or (zero value, false) to fall back to slow path.
+func decodeVersionedRowFast(data []byte, numCols int) (VersionedRow, bool) {
 	// Find "data":[ array
 	dataKey := []byte(`"data":[`)
 	pos := 1 // skip {
@@ -211,7 +211,7 @@ func decodeVersionedRowFast(data []byte, numCols int) (*VersionedRow, bool) {
 		}
 		pos++
 	}
-	return nil, false
+	return VersionedRow{}, false
 
 foundData:
 	// Parse the data array elements
@@ -222,7 +222,7 @@ foundData:
 			pos++
 		}
 		if pos >= len(data) {
-			return nil, false
+			return VersionedRow{}, false
 		}
 		if data[pos] == ']' {
 			pos++
@@ -246,7 +246,7 @@ foundData:
 						// Has escape sequences — use json.Unmarshal for correctness
 						var s string
 						if err := json.Unmarshal(data[start-1:pos+1], &s); err != nil {
-							return nil, false
+							return VersionedRow{}, false
 						}
 						rowData = append(rowData, s)
 					} else {
@@ -258,7 +258,7 @@ foundData:
 				}
 				pos++
 			}
-			return nil, false
+			return VersionedRow{}, false
 
 		case 'n':
 			if pos+4 <= len(data) && data[pos] == 'n' && data[pos+1] == 'u' && data[pos+2] == 'l' && data[pos+3] == 'l' {
@@ -266,7 +266,7 @@ foundData:
 				pos += 4
 				goto afterAppend
 			}
-			return nil, false
+			return VersionedRow{}, false
 
 		case 't':
 			if pos+4 <= len(data) && data[pos] == 't' && data[pos+1] == 'r' && data[pos+2] == 'u' && data[pos+3] == 'e' {
@@ -274,7 +274,7 @@ foundData:
 				pos += 4
 				goto afterAppend
 			}
-			return nil, false
+			return VersionedRow{}, false
 
 		case 'f':
 			if pos+5 <= len(data) && data[pos] == 'f' && data[pos+1] == 'a' && data[pos+2] == 'l' && data[pos+3] == 's' && data[pos+4] == 'e' {
@@ -282,17 +282,17 @@ foundData:
 				pos += 5
 				goto afterAppend
 			}
-			return nil, false
+			return VersionedRow{}, false
 
 		case '{', '[':
 			// Nested object/array — use json.Unmarshal for this value
 			newPos := skipJSONValue(data, pos)
 			if newPos < 0 {
-				return nil, false
+				return VersionedRow{}, false
 			}
 			var nested interface{}
 			if err := json.Unmarshal(data[pos:newPos], &nested); err != nil {
-				return nil, false
+				return VersionedRow{}, false
 			}
 			rowData = append(rowData, nested)
 			pos = newPos
@@ -321,7 +321,7 @@ foundData:
 			if isFloat {
 				fv, err := strconv.ParseFloat(unsafe.String(&data[numStart], pos-numStart), 64)
 				if err != nil {
-					return nil, false
+					return VersionedRow{}, false
 				}
 				rowData = append(rowData, fv)
 			} else {
@@ -330,7 +330,7 @@ foundData:
 					// Might be too large for int64, use float64
 					fv, err2 := strconv.ParseFloat(unsafe.String(&data[numStart], pos-numStart), 64)
 					if err2 != nil {
-						return nil, false
+						return VersionedRow{}, false
 					}
 					rowData = append(rowData, fv)
 				} else {
@@ -394,7 +394,7 @@ foundData:
 		rowData = append(rowData, nil)
 	}
 
-	return &VersionedRow{
+	return VersionedRow{
 		Data: rowData,
 		Version: RowVersion{
 			CreatedAt: createdAt,

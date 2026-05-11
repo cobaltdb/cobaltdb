@@ -320,7 +320,7 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 	var idxChanges []indexUndoEntry
 	if table != nil {
 		vrow, decErr := decodeVersionedRow(oldData, len(table.Columns))
-		if decErr == nil && vrow != nil {
+		if decErr == nil {
 			oldRow := vrow.Data
 			for idxName, idxTree := range c.indexTrees {
 				idxDef := c.indexes[idxName]
