@@ -36,6 +36,12 @@ const numShards = 256
 
 var hashSeed = maphash.MakeSeed()
 
+// flushBufPool recycles bytes.Buffer structs used during flushInternal to
+// eliminate the dominant allocation source (bytes.growSlice) under write load.
+var flushBufPool = sync.Pool{
+	New: func() interface{} { return new(bytes.Buffer) },
+}
+
 func shardIndex(key string) int {
 	return int(maphash.String(hashSeed, key)) & (numShards - 1)
 }
@@ -848,7 +854,8 @@ func (t *BTree) flushInternal() error {
 		t.shards[i].mu.RUnlock()
 	}
 
-	var kvBuf bytes.Buffer
+	kvBuf := flushBufPool.Get().(*bytes.Buffer)
+	kvBuf.Reset()
 	var count uint32
 	var lenBuf [4]byte
 
@@ -903,6 +910,10 @@ func (t *BTree) flushInternal() error {
 	}
 
 	kvData := kvBuf.Bytes()
+	// Return the buffer to the pool for reuse. We keep a local reference to
+	// kvData (backed by the buffer's internal slice) before resetting.
+	kvBuf.Reset()
+	flushBufPool.Put(kvBuf)
 
 	// Calculate overflow pages
 	overflowCount := uint32(0)
