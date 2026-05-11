@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"encoding/json"
 	"strconv"
 	"time"
@@ -177,7 +178,7 @@ func decodeVersionedRowFast(data []byte, numCols int) (*VersionedRow, bool) {
 	dataKey := []byte(`"data":[`)
 	pos := 1 // skip {
 	for pos <= len(data)-len(dataKey) {
-		if data[pos] == 'd' && pos+len(dataKey) <= len(data) && string(data[pos-1:pos-1+len(dataKey)]) == string(dataKey) {
+		if data[pos] == 'd' && pos+len(dataKey) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(dataKey)], dataKey) {
 			pos = pos - 1 + len(dataKey)
 			goto foundData
 		}
@@ -201,10 +202,6 @@ foundData:
 			break
 		}
 
-		// Parse one value
-		var val interface{}
-		var newPos int
-
 		switch data[pos] {
 		case '"':
 			// String value
@@ -224,52 +221,54 @@ foundData:
 						if err := json.Unmarshal(data[start-1:pos+1], &s); err != nil {
 							return nil, false
 						}
-						val = s
+						rowData = append(rowData, s)
 					} else {
-						val = string(data[start:pos])
+						rowData = append(rowData, string(data[start:pos]))
 					}
 					pos++
-					goto valueReady
+					goto afterAppend
 				}
 				pos++
 			}
 			return nil, false
 
 		case 'n':
-			if pos+4 <= len(data) && string(data[pos:pos+4]) == "null" {
-				val = nil
+			if pos+4 <= len(data) && data[pos] == 'n' && data[pos+1] == 'u' && data[pos+2] == 'l' && data[pos+3] == 'l' {
+				rowData = append(rowData, nil)
 				pos += 4
-				goto valueReady
+				goto afterAppend
 			}
 			return nil, false
 
 		case 't':
-			if pos+4 <= len(data) && string(data[pos:pos+4]) == "true" {
-				val = true
+			if pos+4 <= len(data) && data[pos] == 't' && data[pos+1] == 'r' && data[pos+2] == 'u' && data[pos+3] == 'e' {
+				rowData = append(rowData, true)
 				pos += 4
-				goto valueReady
+				goto afterAppend
 			}
 			return nil, false
 
 		case 'f':
-			if pos+5 <= len(data) && string(data[pos:pos+5]) == "false" {
-				val = false
+			if pos+5 <= len(data) && data[pos] == 'f' && data[pos+1] == 'a' && data[pos+2] == 'l' && data[pos+3] == 's' && data[pos+4] == 'e' {
+				rowData = append(rowData, false)
 				pos += 5
-				goto valueReady
+				goto afterAppend
 			}
 			return nil, false
 
 		case '{', '[':
 			// Nested object/array — use json.Unmarshal for this value
-			newPos = skipJSONValue(data, pos)
+			newPos := skipJSONValue(data, pos)
 			if newPos < 0 {
 				return nil, false
 			}
-			if err := json.Unmarshal(data[pos:newPos], &val); err != nil {
+			var nested interface{}
+			if err := json.Unmarshal(data[pos:newPos], &nested); err != nil {
 				return nil, false
 			}
+			rowData = append(rowData, nested)
 			pos = newPos
-			goto valueReady
+			goto afterAppend
 
 		default:
 			// Number — parse directly, avoiding float64 for integers
@@ -297,7 +296,7 @@ foundData:
 				if err != nil {
 					return nil, false
 				}
-				val = fv
+				rowData = append(rowData, fv)
 			} else {
 				iv, err := strconv.ParseInt(numStr, 10, 64)
 				if err != nil {
@@ -306,17 +305,15 @@ foundData:
 					if err2 != nil {
 						return nil, false
 					}
-					val = fv
+					rowData = append(rowData, fv)
 				} else {
-					val = iv // Direct int64, no float64→int64 conversion needed
+					rowData = append(rowData, iv) // Direct int64, no float64→int64 conversion needed
 				}
 			}
-			goto valueReady
+			goto afterAppend
 		}
 
-	valueReady:
-		rowData = append(rowData, val)
-
+	afterAppend:
 		// Skip whitespace + comma
 		for pos < len(data) && data[pos] <= ' ' {
 			pos++
@@ -331,7 +328,7 @@ foundData:
 	caKey := []byte(`"created_at":`)
 	daKey := []byte(`"deleted_at":`)
 	for pos < len(data) {
-		if data[pos] == 'c' && pos > 0 && data[pos-1] == '"' && pos-1+len(caKey) <= len(data) && string(data[pos-1:pos-1+len(caKey)]) == string(caKey) {
+		if data[pos] == 'c' && pos > 0 && data[pos-1] == '"' && pos-1+len(caKey) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(caKey)], caKey) {
 			numStart := pos - 1 + len(caKey)
 			for numStart < len(data) && data[numStart] <= ' ' {
 				numStart++
@@ -346,7 +343,7 @@ foundData:
 			if v, err := strconv.ParseInt(string(data[numStart:numEnd]), 10, 64); err == nil {
 				createdAt = v
 			}
-		} else if data[pos] == 'd' && pos > 0 && data[pos-1] == '"' && pos-1+len(daKey) <= len(data) && string(data[pos-1:pos-1+len(daKey)]) == string(daKey) {
+		} else if data[pos] == 'd' && pos > 0 && data[pos-1] == '"' && pos-1+len(daKey) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(daKey)], daKey) {
 			numStart := pos - 1 + len(daKey)
 			for numStart < len(data) && data[numStart] <= ' ' {
 				numStart++
