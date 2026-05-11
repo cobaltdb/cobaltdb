@@ -848,6 +848,12 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 		if len(trees) == 1 && !hasPending && !canParallel {
 			iter, err := trees[0].Scan(nil, nil)
 			if err == nil {
+				if cap(rows) == 0 {
+					rows = make([][]interface{}, 0, trees[0].Size())
+				}
+				if hasWindowFuncs && cap(windowFullRows) == 0 {
+					windowFullRows = make([][]interface{}, 0, trees[0].Size())
+				}
 				for iter.HasNext() {
 					_, valueData, err := iter.NextString()
 					if err != nil {
@@ -937,6 +943,12 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 					})
 				rows = append(rows, results...)
 			} else {
+				if cap(rows) == 0 {
+					rows = make([][]interface{}, 0, len(pairs))
+				}
+				if hasWindowFuncs && cap(windowFullRows) == 0 {
+					windowFullRows = make([][]interface{}, 0, len(pairs))
+				}
 				for _, p := range pairs {
 					vrow, err := decodeVersionedRow(p.value, len(table.Columns))
 					if err != nil {
