@@ -828,51 +828,16 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			}
 		}
 	} else {
-		type kvPair struct {
-			key   string
-			value []byte
-		}
-		var pairs []kvPair
-		seen := make(map[string]int)
-
-		for _, tree := range trees {
-			iter, err := tree.Scan(nil, nil)
-			if err != nil {
-				continue
-			}
-			for iter.HasNext() {
-				k, valueData, err := iter.NextString()
-				if err != nil {
-					break
-				}
-				pairs = append(pairs, kvPair{k, valueData})
-				seen[k] = len(pairs) - 1
-			}
-			iter.Close()
-		}
-
-		// Read-your-writes: overlay buffered writes (INSERT, UPDATE, DELETE).
-		if ts := cat.getCurrentTxn(); ts != nil {
-			if m, ok := ts.pendingWriteMap[table.Name]; ok {
-				for _, pw := range m {
-					k := string(pw.Key)
-					if idx, ok := seen[k]; ok {
-						pairs[idx].value = pw.Value
-					} else {
-						pairs = append(pairs, kvPair{k, pw.Value})
-						seen[k] = len(pairs) - 1
-					}
-				}
+		// Fast path: single tree with no pending writes and no parallel execution.
+		// Process rows directly from the iterator, skipping pairs/seen allocation.
+		ts := cat.getCurrentTxn()
+		hasPending := ts != nil
+		if hasPending {
+			if _, ok := ts.pendingWriteMap[table.Name]; !ok {
+				hasPending = false
 			}
 		}
-
-		var allValues [][]byte
-		for _, p := range pairs {
-			allValues = append(allValues, p.value)
-		}
-
 		canParallel := cat.parallelWorkers > 0 &&
-			len(allValues) >= cat.parallelThreshold &&
 			len(stmt.OrderBy) == 0 &&
 			!stmt.Distinct &&
 			!hasWindowFuncs &&
@@ -880,38 +845,123 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			stmt.Limit == nil &&
 			stmt.Offset == nil
 
-		if canParallel {
-			results := parallel.ParallelSelectRows(allValues, cat.parallelWorkers, cat.parallelThreshold,
-				func(chunk [][]byte) [][]interface{} {
-					chunkRows, _ := cat.processRowChunk(chunk, table, selectCols, stmt, args, queryTime, false)
-					return chunkRows
-				})
-			rows = append(rows, results...)
+		if len(trees) == 1 && !hasPending && !canParallel {
+			iter, err := trees[0].Scan(nil, nil)
+			if err == nil {
+				for iter.HasNext() {
+					_, valueData, err := iter.NextString()
+					if err != nil {
+						break
+					}
+					vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+					if err != nil {
+						continue
+					}
+					if !vrow.Version.isVisibleAt(queryTime) {
+						continue
+					}
+					fullRow := vrow.Data
+					if stmt.Where != nil {
+						matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
+						if err != nil || !matched {
+							continue
+						}
+					}
+					selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
+					rows = append(rows, selectedRow)
+					if hasWindowFuncs {
+						fullRowCopy := make([]interface{}, len(fullRow))
+						copy(fullRowCopy, fullRow)
+						windowFullRows = append(windowFullRows, fullRowCopy)
+					}
+					if earlyLimit > 0 && len(rows) >= earlyLimit {
+						break
+					}
+				}
+				iter.Close()
+			}
 		} else {
-			for _, valueData := range allValues {
-				vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			type kvPair struct {
+				key   string
+				value []byte
+			}
+			totalSize := 0
+			for _, tree := range trees {
+				totalSize += tree.Size()
+			}
+			pairs := make([]kvPair, 0, totalSize)
+			seen := make(map[string]int, totalSize)
+
+			for _, tree := range trees {
+				iter, err := tree.Scan(nil, nil)
 				if err != nil {
 					continue
 				}
-				if !vrow.Version.isVisibleAt(queryTime) {
-					continue
+				for iter.HasNext() {
+					k, valueData, err := iter.NextString()
+					if err != nil {
+						break
+					}
+					pairs = append(pairs, kvPair{k, valueData})
+					seen[k] = len(pairs) - 1
 				}
-				fullRow := vrow.Data
-				if stmt.Where != nil {
-					matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-					if err != nil || !matched {
-						continue
+				iter.Close()
+			}
+
+			// Read-your-writes: overlay buffered writes (INSERT, UPDATE, DELETE).
+			if hasPending {
+				if m, ok := ts.pendingWriteMap[table.Name]; ok {
+					for _, pw := range m {
+						k := string(pw.Key)
+						if idx, ok := seen[k]; ok {
+							pairs[idx].value = pw.Value
+						} else {
+							pairs = append(pairs, kvPair{k, pw.Value})
+							seen[k] = len(pairs) - 1
+						}
 					}
 				}
-				selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
-				rows = append(rows, selectedRow)
-				if hasWindowFuncs {
-					fullRowCopy := make([]interface{}, len(fullRow))
-					copy(fullRowCopy, fullRow)
-					windowFullRows = append(windowFullRows, fullRowCopy)
+			}
+
+			canParallel = canParallel && len(pairs) >= cat.parallelThreshold
+
+			if canParallel {
+				values := make([][]byte, len(pairs))
+				for i, p := range pairs {
+					values[i] = p.value
 				}
-				if earlyLimit > 0 && len(rows) >= earlyLimit {
-					break
+				results := parallel.ParallelSelectRows(values, cat.parallelWorkers, cat.parallelThreshold,
+					func(chunk [][]byte) [][]interface{} {
+						chunkRows, _ := cat.processRowChunk(chunk, table, selectCols, stmt, args, queryTime, false)
+						return chunkRows
+					})
+				rows = append(rows, results...)
+			} else {
+				for _, p := range pairs {
+					vrow, err := decodeVersionedRow(p.value, len(table.Columns))
+					if err != nil {
+						continue
+					}
+					if !vrow.Version.isVisibleAt(queryTime) {
+						continue
+					}
+					fullRow := vrow.Data
+					if stmt.Where != nil {
+						matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
+						if err != nil || !matched {
+							continue
+						}
+					}
+					selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
+					rows = append(rows, selectedRow)
+					if hasWindowFuncs {
+						fullRowCopy := make([]interface{}, len(fullRow))
+						copy(fullRowCopy, fullRow)
+						windowFullRows = append(windowFullRows, fullRowCopy)
+					}
+					if earlyLimit > 0 && len(rows) >= earlyLimit {
+						break
+					}
 				}
 			}
 		}

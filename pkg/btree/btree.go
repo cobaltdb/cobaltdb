@@ -1131,9 +1131,7 @@ func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 			if endKey != nil && strings.Compare(k, endStr) > 0 {
 				continue
 			}
-			valCopy := make([]byte, len(v))
-			copy(valCopy, v)
-			pairs = append(pairs, kvPair{k, valCopy})
+			pairs = append(pairs, kvPair{k, v})
 			if hasEvicted {
 				seen[k] = true
 			}
@@ -1169,9 +1167,7 @@ func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 			if endKey != nil && strings.Compare(k, endStr) > 0 {
 				continue
 			}
-			valCopy := make([]byte, len(v))
-			copy(valCopy, v)
-			pairs = append(pairs, kvPair{k, valCopy})
+			pairs = append(pairs, kvPair{k, v})
 		}
 	}
 
