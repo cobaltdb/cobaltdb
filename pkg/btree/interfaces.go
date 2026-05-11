@@ -4,6 +4,7 @@ package btree
 type TreeIterator interface {
 	HasNext() bool
 	Next() ([]byte, []byte, error)
+	NextString() (string, []byte, error)
 	Close() error
 	First() bool
 	Valid() bool

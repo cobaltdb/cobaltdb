@@ -662,6 +662,25 @@ func (it *DiskIterator) Next() ([]byte, []byte, error) {
 	return entry.Key, entry.Value, nil
 }
 
+// NextString returns the next entry with the key as a string.
+func (it *DiskIterator) NextString() (string, []byte, error) {
+	if it.done || it.idx >= len(it.entries) {
+		it.done = true
+		return "", nil, fmt.Errorf("no more entries")
+	}
+
+	entry := it.entries[it.idx]
+	it.idx++
+
+	// Check if we've passed endKey
+	if it.endKey != nil && bytes.Compare(entry.Key, it.endKey) > 0 {
+		it.done = true
+		return "", nil, fmt.Errorf("past end key")
+	}
+
+	return string(entry.Key), entry.Value, nil
+}
+
 // Close closes the iterator
 func (it *DiskIterator) Close() error {
 	it.done = true

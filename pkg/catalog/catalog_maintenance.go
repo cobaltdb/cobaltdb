@@ -88,13 +88,12 @@ func (c *Catalog) Load() error {
 	defer iter.Close()
 
 	for iter.HasNext() {
-		key, value, err := iter.Next()
+		keyStr, value, err := iter.NextString()
 		if err != nil {
 			break
 		}
 
 		// Parse key to get table name
-		keyStr := string(key)
 		if !strings.HasPrefix(keyStr, "tbl:") {
 			continue
 		}

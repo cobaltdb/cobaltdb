@@ -1088,17 +1088,18 @@ func (t *BTree) DeleteString(keyStr string) error {
 }
 
 type kvPair struct {
-	key   []byte
+	key   string
 	value []byte
 }
 
 // Iterator provides range scan capability
 type Iterator struct {
-	tree   *BTree
-	pairs  []kvPair
-	idx    int
-	endKey []byte
-	done   bool
+	tree      *BTree
+	pairs     []kvPair
+	idx       int
+	endKey    string
+	hasEndKey bool
+	done      bool
 }
 
 // Scan returns an iterator for range scanning
@@ -1130,11 +1131,9 @@ func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 			if endKey != nil && strings.Compare(k, endStr) > 0 {
 				continue
 			}
-			keyCopy := make([]byte, len(k))
-			copy(keyCopy, k)
 			valCopy := make([]byte, len(v))
 			copy(valCopy, v)
-			pairs = append(pairs, kvPair{keyCopy, valCopy})
+			pairs = append(pairs, kvPair{k, valCopy})
 			if hasEvicted {
 				seen[k] = true
 			}
@@ -1145,7 +1144,7 @@ func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 				seen = make(map[string]bool, approxSize)
 				// Mark all previously collected keys
 				for j := 0; j < len(pairs); j++ {
-					seen[string(pairs[j].key)] = true
+					seen[pairs[j].key] = true
 				}
 			}
 			if evicted == nil {
@@ -1170,24 +1169,23 @@ func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 			if endKey != nil && strings.Compare(k, endStr) > 0 {
 				continue
 			}
-			keyCopy := make([]byte, len(k))
-			copy(keyCopy, k)
 			valCopy := make([]byte, len(v))
 			copy(valCopy, v)
-			pairs = append(pairs, kvPair{keyCopy, valCopy})
+			pairs = append(pairs, kvPair{k, valCopy})
 		}
 	}
 
 	slices.SortFunc(pairs, func(a, b kvPair) int {
-		return bytes.Compare(a.key, b.key)
+		return strings.Compare(a.key, b.key)
 	})
 
 	return &Iterator{
-		tree:   t,
-		pairs:  pairs,
-		idx:    0,
-		endKey: endKey,
-		done:   false,
+		tree:      t,
+		pairs:     pairs,
+		idx:       0,
+		endKey:    endStr,
+		hasEndKey: endKey != nil,
+		done:      false,
 	}, nil
 }
 
@@ -1201,9 +1199,28 @@ func (it *Iterator) Next() ([]byte, []byte, error) {
 	p := it.pairs[it.idx]
 	it.idx++
 
-	if it.endKey != nil && bytes.Compare(p.key, it.endKey) > 0 {
+	if it.hasEndKey && strings.Compare(p.key, it.endKey) > 0 {
 		it.done = true
 		return nil, nil, nil
+	}
+
+	return []byte(p.key), p.value, nil
+}
+
+// NextString returns the next entry with the key as a string,
+// avoiding an allocation when the caller needs a string key.
+func (it *Iterator) NextString() (string, []byte, error) {
+	if it.done || it.idx >= len(it.pairs) {
+		it.done = true
+		return "", nil, nil
+	}
+
+	p := it.pairs[it.idx]
+	it.idx++
+
+	if it.hasEndKey && strings.Compare(p.key, it.endKey) > 0 {
+		it.done = true
+		return "", nil, nil
 	}
 
 	return p.key, p.value, nil

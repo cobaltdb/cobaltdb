@@ -841,11 +841,10 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 				continue
 			}
 			for iter.HasNext() {
-				key, valueData, err := iter.Next()
+				k, valueData, err := iter.NextString()
 				if err != nil {
 					break
 				}
-				k := string(key)
 				pairs = append(pairs, kvPair{k, valueData})
 				seen[k] = len(pairs) - 1
 			}
@@ -933,12 +932,12 @@ func (c *Catalog) getEffectiveTableData(table *TableDef) map[string][]byte {
 			continue
 		}
 		for iter.HasNext() {
-			key, valueData, err := iter.Next()
+			k, valueData, err := iter.NextString()
 			if err != nil {
 				break
 			}
 			if !bytesContainDeletedAt(valueData) {
-				result[string(key)] = valueData
+				result[k] = valueData
 				continue
 			}
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
@@ -946,7 +945,7 @@ func (c *Catalog) getEffectiveTableData(table *TableDef) map[string][]byte {
 				continue
 			}
 			if vrow.Version.DeletedAt == 0 {
-				result[string(key)] = valueData
+				result[k] = valueData
 			}
 		}
 		iter.Close()
@@ -2079,25 +2078,30 @@ func (cat *Catalog) processRowChunk(
 				continue
 			}
 		}
-		selectedRow := make([]interface{}, len(selectCols))
-		for i, ci := range selectCols {
-			if ci.isWindow {
-				continue
-			}
-			if ci.index >= 0 && ci.index < len(fullRow) {
-				selectedRow[i] = fullRow[ci.index]
-			} else if ci.index == -1 && !ci.isAggregate {
-				if i < len(stmt.Columns) {
-					val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
-					if err == nil {
-						selectedRow[i] = val
-					}
-				} else if len(ci.name) > 10 && ci.name[:10] == "__orderby_" {
-					var obIdx int
-					if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
-						val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
+		var selectedRow []interface{}
+		if isIdentityProjection(selectCols, len(fullRow)) {
+			selectedRow = fullRow
+		} else {
+			selectedRow = make([]interface{}, len(selectCols))
+			for i, ci := range selectCols {
+				if ci.isWindow {
+					continue
+				}
+				if ci.index >= 0 && ci.index < len(fullRow) {
+					selectedRow[i] = fullRow[ci.index]
+				} else if ci.index == -1 && !ci.isAggregate {
+					if i < len(stmt.Columns) {
+						val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
 						if err == nil {
 							selectedRow[i] = val
+						}
+					} else if len(ci.name) > 10 && ci.name[:10] == "__orderby_" {
+						var obIdx int
+						if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
+							val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
+							if err == nil {
+								selectedRow[i] = val
+							}
 						}
 					}
 				}

@@ -114,11 +114,10 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		}
 		seenPending := make(map[string]bool)
 		for iter.HasNext() {
-			key, valueData, err := iter.Next()
+			k, valueData, err := iter.NextString()
 			if err != nil {
 				break
 			}
-			k := string(key)
 			fromPending := false
 			if pwValue, ok := pendingKeys[k]; ok {
 				valueData = pwValue.Value
@@ -156,12 +155,12 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 			}
 
 			if !fromPending && useBuffer {
-				c.recordManagerRead(treeName, string(key), valueData)
+				c.recordManagerRead(treeName, k, valueData)
 			}
 
 			// Make copies of key and value since iterator may reuse buffers
-			keyCopy := make([]byte, len(key))
-			copy(keyCopy, key)
+			keyCopy := make([]byte, len(k))
+			copy(keyCopy, k)
 			valueCopy := make([]byte, len(valueData))
 			copy(valueCopy, valueData)
 

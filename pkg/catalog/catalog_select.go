@@ -1742,9 +1742,25 @@ func computeAggregateValue(ci selectColInfo, values []interface{}, groupRows [][
 	return nil
 }
 
+// isIdentityProjection reports whether selectCols is a 1:1 mapping of fullRow.
+func isIdentityProjection(selectCols []selectColInfo, fullRowLen int) bool {
+	if len(selectCols) != fullRowLen {
+		return false
+	}
+	for i, ci := range selectCols {
+		if ci.index != i || ci.isWindow || ci.isAggregate || ci.hasEmbeddedAgg {
+			return false
+		}
+	}
+	return true
+}
+
 // projectSelectedRow extracts selected column values from a full table row.
 // Handles regular columns, scalar expressions, and hidden ORDER BY expression columns.
 func (cat *Catalog) projectSelectedRow(fullRow []interface{}, selectCols []selectColInfo, stmt *query.SelectStmt, table *TableDef, args []interface{}, hasWindowFuncs bool) []interface{} {
+	if isIdentityProjection(selectCols, len(fullRow)) {
+		return fullRow
+	}
 	selectedRow := make([]interface{}, len(selectCols))
 	for i, ci := range selectCols {
 		if ci.isWindow {

@@ -52,11 +52,11 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 		if err == nil {
 			defer iter.Close()
 			for iter.HasNext() {
-				key, value, iterErr := iter.Next()
+				rowKey, value, iterErr := iter.NextString()
 				if iterErr != nil {
 					break
 				}
-				if key == nil || len(value) == 0 {
+				if rowKey == "" || len(value) == 0 {
 					break
 				}
 				// CobaltDB stores rows as VersionedRow (with []interface{} Data)
@@ -64,7 +64,7 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 				if err != nil {
 					continue
 				}
-				c.indexRowForVector(vectorIndex, vrow.Data, string(key), colIdx)
+				c.indexRowForVector(vectorIndex, vrow.Data, rowKey, colIdx)
 			}
 		}
 	}

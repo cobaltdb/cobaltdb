@@ -708,33 +708,33 @@ func TestBTree_Scan_EvictedKeysInRange(t *testing.T) {
 func TestSortKeyValues_EdgeCases(t *testing.T) {
 	// Empty
 	var pairs []kvPair
-	slices.SortFunc(pairs, func(a, b kvPair) int { return bytes.Compare(a.key, b.key) })
+	slices.SortFunc(pairs, func(a, b kvPair) int { return strings.Compare(a.key, b.key) })
 
 	// Single element
-	pairs = []kvPair{{[]byte("a"), []byte("1")}}
-	slices.SortFunc(pairs, func(a, b kvPair) int { return bytes.Compare(a.key, b.key) })
-	if string(pairs[0].key) != "a" {
+	pairs = []kvPair{{"a", []byte("1")}}
+	slices.SortFunc(pairs, func(a, b kvPair) int { return strings.Compare(a.key, b.key) })
+	if pairs[0].key != "a" {
 		t.Error("Single element sort failed")
 	}
 
 	// Already sorted
-	pairs = []kvPair{{[]byte("a"), []byte("1")}, {[]byte("b"), []byte("2")}, {[]byte("c"), []byte("3")}}
-	slices.SortFunc(pairs, func(a, b kvPair) int { return bytes.Compare(a.key, b.key) })
-	if string(pairs[0].key) != "a" || string(pairs[2].key) != "c" {
+	pairs = []kvPair{{"a", []byte("1")}, {"b", []byte("2")}, {"c", []byte("3")}}
+	slices.SortFunc(pairs, func(a, b kvPair) int { return strings.Compare(a.key, b.key) })
+	if pairs[0].key != "a" || pairs[2].key != "c" {
 		t.Error("Already sorted: order changed")
 	}
 
 	// Reverse sorted
-	pairs = []kvPair{{[]byte("c"), []byte("3")}, {[]byte("b"), []byte("2")}, {[]byte("a"), []byte("1")}}
-	slices.SortFunc(pairs, func(a, b kvPair) int { return bytes.Compare(a.key, b.key) })
-	if string(pairs[0].key) != "a" || string(pairs[0].value) != "1" {
+	pairs = []kvPair{{"c", []byte("3")}, {"b", []byte("2")}, {"a", []byte("1")}}
+	slices.SortFunc(pairs, func(a, b kvPair) int { return strings.Compare(a.key, b.key) })
+	if pairs[0].key != "a" || string(pairs[0].value) != "1" {
 		t.Error("Reverse sort: wrong result")
 	}
 
 	// Duplicates
-	pairs = []kvPair{{[]byte("b"), []byte("2")}, {[]byte("a"), []byte("1")}, {[]byte("b"), []byte("3")}}
-	slices.SortFunc(pairs, func(a, b kvPair) int { return bytes.Compare(a.key, b.key) })
-	if string(pairs[0].key) != "a" {
+	pairs = []kvPair{{"b", []byte("2")}, {"a", []byte("1")}, {"b", []byte("3")}}
+	slices.SortFunc(pairs, func(a, b kvPair) int { return strings.Compare(a.key, b.key) })
+	if pairs[0].key != "a" {
 		t.Error("Duplicate sort: first should be 'a'")
 	}
 }
@@ -1420,14 +1420,15 @@ func TestBTree_Next_EndKeyExceeded(t *testing.T) {
 	iter := &Iterator{
 		tree: tree,
 		pairs: []kvPair{
-			{[]byte("a"), []byte("1")},
-			{[]byte("b"), []byte("2")},
-			{[]byte("c"), []byte("3")},
-			{[]byte("d"), []byte("4")},
+			{"a", []byte("1")},
+			{"b", []byte("2")},
+			{"c", []byte("3")},
+			{"d", []byte("4")},
 		},
-		idx:    0,
-		endKey: []byte("b"),
-		done:   false,
+		idx:       0,
+		endKey:    "b",
+		hasEndKey: true,
+		done:      false,
 	}
 	defer iter.Close()
 
