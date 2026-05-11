@@ -989,7 +989,6 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 						data[4+tnLen] = ':'
 						copy(data[4+tnLen+1:], wk.Key)
 						copy(data[4+totalKeyLen:], value)
-						walDataPool.Put(p)
 					} else {
 						data = make([]byte, need)
 						binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
