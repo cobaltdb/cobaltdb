@@ -856,14 +856,8 @@ func (t *BTree) flushInternal() error {
 	var lenBuf [4]byte
 
 	if !hasEvicted {
-		keys := make([]string, 0, memCount)
-		for k := range dataSnap {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		count = uint32(len(keys))
-		for _, k := range keys {
-			v := dataSnap[k]
+		count = uint32(len(dataSnap))
+		for k, v := range dataSnap {
 			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(k)))
 			t.flushBuf.Write(lenBuf[:2])
 			t.flushBuf.WriteString(k)
@@ -882,14 +876,8 @@ func (t *BTree) flushInternal() error {
 		for k, v := range dataSnap {
 			toSerialize[k] = v
 		}
-		keys := make([]string, 0, len(toSerialize))
-		for k := range toSerialize {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		count = uint32(len(keys))
-		for _, k := range keys {
-			v := toSerialize[k]
+		count = uint32(len(toSerialize))
+		for k, v := range toSerialize {
 			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(k)))
 			t.flushBuf.Write(lenBuf[:2])
 			t.flushBuf.WriteString(k)
