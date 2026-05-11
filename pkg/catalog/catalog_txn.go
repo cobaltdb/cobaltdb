@@ -92,25 +92,32 @@ func (c *Catalog) getCurrentTxn() *catalogTxnState {
 	return c.getGoroutineTxnState()
 }
 
+func goroutineTxnShardIdx(gid int64) int {
+	return int(uint64(gid) & 15)
+}
+
 func (c *Catalog) registerGoroutineTxn(ts *catalogTxnState) {
-	c.goroutineTxnMu.Lock()
-	if c.goroutineTxnMap == nil {
-		c.goroutineTxnMap = make(map[uint64]*catalogTxnState)
+	shard := &c.goroutineTxnShards[goroutineTxnShardIdx(goroutineID())]
+	shard.mu.Lock()
+	if shard.m == nil {
+		shard.m = make(map[uint64]*catalogTxnState)
 	}
-	c.goroutineTxnMap[uint64(goroutineID())] = ts
-	c.goroutineTxnMu.Unlock()
+	shard.m[uint64(goroutineID())] = ts
+	shard.mu.Unlock()
 }
 
 func (c *Catalog) unregisterGoroutineTxn() {
-	c.goroutineTxnMu.Lock()
-	delete(c.goroutineTxnMap, uint64(goroutineID()))
-	c.goroutineTxnMu.Unlock()
+	shard := &c.goroutineTxnShards[goroutineTxnShardIdx(goroutineID())]
+	shard.mu.Lock()
+	delete(shard.m, uint64(goroutineID()))
+	shard.mu.Unlock()
 }
 
 func (c *Catalog) getGoroutineTxnState() *catalogTxnState {
-	c.goroutineTxnMu.RLock()
-	ts := c.goroutineTxnMap[uint64(goroutineID())]
-	c.goroutineTxnMu.RUnlock()
+	shard := &c.goroutineTxnShards[goroutineTxnShardIdx(goroutineID())]
+	shard.mu.RLock()
+	ts := shard.m[uint64(goroutineID())]
+	shard.mu.RUnlock()
 	return ts
 }
 

@@ -292,13 +292,13 @@ type Catalog struct {
 	parallelWorkers   int // 0 = disabled
 	parallelThreshold int // min rows to trigger parallel
 
-	// goroutineTxnMap maps goroutine ID -> txnID for active buffered
-	// transactions. It replaces the global c.currentTxnID so multiple writers
-	// can be active concurrently, each seeing their own transaction state via
-	// getCurrentTxn(). Using a regular map+mutex instead of sync.Map avoids
-	// per-operation allocations from sync.Map's internal entry nodes.
-	goroutineTxnMap map[uint64]*catalogTxnState
-	goroutineTxnMu  sync.RWMutex
+	// goroutineTxnShards maps goroutine ID -> txn state using 16 independently
+	// locked shards. This eliminates the single-RWMutex bottleneck under high
+	// concurrency while avoiding sync.Map's per-operation allocations.
+	goroutineTxnShards [16]struct {
+		mu sync.RWMutex
+		m  map[uint64]*catalogTxnState
+	}
 
 	// commitMu shards the commit critical section by (table,key) hash so that
 	// transactions touching disjoint rows can validate and write in parallel.
@@ -337,7 +337,7 @@ type cteResultSet struct {
 
 // New creates a new Catalog backed by the given tree store, buffer pool, and WAL.
 func New(tree btree.TreeStore, pool *storage.BufferPool, wal *storage.WAL) *Catalog {
-	return &Catalog{
+	c := &Catalog{
 		tree:              tree,
 		tables:            make(map[string]*TableDef),
 		foreignTables:     make(map[string]*ForeignTableDef),
@@ -360,8 +360,11 @@ func New(tree btree.TreeStore, pool *storage.BufferPool, wal *storage.WAL) *Cata
 		queryCache:        NewQueryCache(0, 0), // Disabled by default - enable with EnableQueryCache()
 		deadTuples:        make(map[string]int64),
 		liveTuples:        make(map[string]int64),
-		goroutineTxnMap:   make(map[uint64]*catalogTxnState),
 	}
+	for i := range c.goroutineTxnShards {
+		c.goroutineTxnShards[i].m = make(map[uint64]*catalogTxnState)
+	}
+	return c
 }
 
 func (c *Catalog) SetWAL(wal *storage.WAL) {
