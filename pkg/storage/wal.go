@@ -19,6 +19,15 @@ var (
 	ErrWALClosed    = errors.New("WAL is closed")
 )
 
+// walBatchBufPool provides 2 KB reusable buffers for WAL AppendBatch fast path.
+// This avoids a per-call heap escape from local arrays passed to bufio.Writer.Write.
+var walBatchBufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 2048)
+		return &b
+	},
+}
+
 // WALRecordType represents the type of a WAL record
 type WALRecordType uint8
 
@@ -312,45 +321,49 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 		}
 	}
 
-	// Fast path: ≤2 records, no encryption, total size fits in stack buffer.
-	// Avoids all heap allocations from formatBatch for the common single-write
-	// transaction (one WALUpdate + one WALCommit record).
+	// Fast path: ≤2 records, no encryption, total size fits in pooled buffer.
+	// Uses a sync.Pool buffer to avoid per-call heap escape from local arrays
+	// passed to bufio.Writer.Write (which would allocate 2 KB on every call).
 	if w.cipher == nil && len(records) <= 2 {
-		var stackBuf [2048]byte
+		bp := walBatchBufPool.Get().(*[]byte)
+		batchBuf := *bp
 		var lsnOffs [2]int
 		totalSize := 0
 		for i, r := range records {
 			dataLen := len(r.Data)
 			lsnOffs[i] = totalSize
-			writeRecordHeader(stackBuf[totalSize:], &WALRecord{
+			writeRecordHeader(batchBuf[totalSize:], &WALRecord{
 				TxnID:  r.TxnID,
 				Type:   r.Type,
 				PageID: r.PageID,
 				Offset: r.Offset,
 			}, dataLen)
-			copy(stackBuf[totalSize+walHeaderSize:], r.Data)
-			crcHash := crc32.ChecksumIEEE(stackBuf[totalSize : totalSize+walHeaderSize])
+			copy(batchBuf[totalSize+walHeaderSize:], r.Data)
+			crcHash := crc32.ChecksumIEEE(batchBuf[totalSize : totalSize+walHeaderSize])
 			if dataLen > 0 {
 				crcHash = crc32.Update(crcHash, crc32.IEEETable, r.Data)
 			}
-			binary.LittleEndian.PutUint32(stackBuf[totalSize+walHeaderSize+dataLen:], crcHash)
+			binary.LittleEndian.PutUint32(batchBuf[totalSize+walHeaderSize+dataLen:], crcHash)
 			totalSize += walHeaderSize + dataLen + 4
 		}
-		if totalSize <= len(stackBuf) {
+		if totalSize <= len(batchBuf) {
 			w.mu.Lock()
 			lsn := w.lsn
 			for i := range records {
 				lsn++
-				binary.LittleEndian.PutUint64(stackBuf[lsnOffs[i]:], lsn)
+				binary.LittleEndian.PutUint64(batchBuf[lsnOffs[i]:], lsn)
 			}
-			if _, err := w.bufWriter.Write(stackBuf[:totalSize]); err != nil {
+			if _, err := w.bufWriter.Write(batchBuf[:totalSize]); err != nil {
 				w.mu.Unlock()
+				walBatchBufPool.Put(bp)
 				return err
 			}
 			w.lsn = lsn
 			w.mu.Unlock()
+			walBatchBufPool.Put(bp)
 			return nil
 		}
+		walBatchBufPool.Put(bp)
 	}
 
 	formatted, lsnOffsets, err := w.formatBatch(records)
