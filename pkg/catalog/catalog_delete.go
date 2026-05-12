@@ -23,20 +23,48 @@ type deleteEntry struct {
 }
 
 func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
+	// Fast path: resolve table metadata from schema cache without lock.
+	table, ver, cacheHit := c.getCachedTable(stmt.Table)
+	if !cacheHit {
+		c.mu.RLock()
+		var err error
+		table, err = c.getTableLocked(stmt.Table)
+		if err != nil {
+			c.mu.RUnlock()
+			return 0, 0, err
+		}
+		ver = c.schemaVersion.Load()
+		c.putCachedTable(stmt.Table, table)
+		c.mu.RUnlock()
+	}
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.deleteLocked(ctx, stmt, args)
+	if c.schemaVersion.Load() != ver {
+		var err error
+		table, err = c.getTableLocked(stmt.Table)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	return c.deleteLocked(ctx, stmt, args, table)
 }
 
-func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
+func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args []interface{}, tableArg ...*TableDef) (int64, int64, error) {
 	// Check for INSTEAD OF DELETE trigger first (for views)
 	if trig := c.findInsteadOfTrigger(stmt.Table, "DELETE"); trig != nil {
 		return c.executeInsteadOfDeleteTrigger(ctx, trig, stmt, args)
 	}
 
-	table, err := c.getTableLocked(stmt.Table)
-	if err != nil {
-		return 0, 0, err
+	var table *TableDef
+	if len(tableArg) > 0 && tableArg[0] != nil {
+		table = tableArg[0]
+	} else {
+		var err error
+		table, err = c.getTableLocked(stmt.Table)
+		if err != nil {
+			return 0, 0, err
+		}
 	}
 	if table.Type == "foreign" {
 		return 0, 0, fmt.Errorf("cannot delete from foreign table '%s'", stmt.Table)

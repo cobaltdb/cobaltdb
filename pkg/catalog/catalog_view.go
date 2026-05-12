@@ -38,6 +38,7 @@ func (c *Catalog) CreateMaterializedView(name string, selectStmt *query.SelectSt
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	c.materializedViews[name] = &MaterializedViewDef{
 		Name:        name,
 		Query:       selectStmt,
@@ -51,6 +52,7 @@ func (c *Catalog) CreateMaterializedView(name string, selectStmt *query.SelectSt
 func (c *Catalog) DropMaterializedView(name string, ifExists bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	if _, exists := c.materializedViews[name]; !exists {
 		if ifExists {
 			return nil // Silently succeed
@@ -92,6 +94,7 @@ func (c *Catalog) RefreshMaterializedView(name string) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	mv.Data = data
 	mv.LastRefresh = time.Now()
 

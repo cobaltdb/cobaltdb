@@ -9,6 +9,7 @@ import (
 func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	if _, exists := c.vectorIndexes[name]; exists {
 		return fmt.Errorf("vector index %s already exists", name)
@@ -126,6 +127,7 @@ func (c *Catalog) indexRowForVector(vectorIndex *VectorIndexDef, rowSlice []inte
 func (c *Catalog) DropVectorIndex(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	if _, exists := c.vectorIndexes[name]; !exists {
 		return fmt.Errorf("vector index %s not found", name)

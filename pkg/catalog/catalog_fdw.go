@@ -11,6 +11,7 @@ import (
 func (c *Catalog) CreateForeignTable(stmt *query.CreateForeignTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	if _, exists := c.tables[stmt.Table]; exists {
 		return ErrTableExists
@@ -63,6 +64,7 @@ func (c *Catalog) GetForeignTable(name string) (*ForeignTableDef, error) {
 func (c *Catalog) DropForeignTable(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	if _, exists := c.foreignTables[name]; !exists {
 		return ErrTableNotFound

@@ -12,6 +12,7 @@ import (
 func (c *Catalog) CreateJSONIndex(name, tableName, column, path, dataType string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	if _, exists := c.jsonIndexes[name]; exists {
 		return fmt.Errorf("JSON index '%s' already exists", name)
@@ -159,6 +160,7 @@ func (c *Catalog) indexJSONValue(idx *JSONIndexDef, value interface{}, rowNum in
 func (c *Catalog) DropJSONIndex(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	if _, exists := c.jsonIndexes[name]; !exists {
 		return fmt.Errorf("JSON index '%s' not found", name)

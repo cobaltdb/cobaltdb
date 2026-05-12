@@ -10,6 +10,7 @@ import (
 func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	if !stmt.IfNotExists {
 		if _, exists := c.indexes[stmt.Index]; exists {
 			return ErrIndexExists
@@ -297,6 +298,7 @@ func (c *Catalog) ListIndexesByTable() map[string][][]string {
 func (c *Catalog) DropIndex(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	idxDef, exists := c.indexes[name]
 	if !exists {
 		return ErrIndexNotFound

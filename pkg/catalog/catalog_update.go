@@ -24,20 +24,48 @@ type updateEntry struct {
 }
 
 func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+	// Fast path: resolve table metadata from schema cache without lock.
+	table, ver, cacheHit := c.getCachedTable(stmt.Table)
+	if !cacheHit {
+		c.mu.RLock()
+		var err error
+		table, err = c.getTableLocked(stmt.Table)
+		if err != nil {
+			c.mu.RUnlock()
+			return 0, 0, err
+		}
+		ver = c.schemaVersion.Load()
+		c.putCachedTable(stmt.Table, table)
+		c.mu.RUnlock()
+	}
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.updateLocked(ctx, stmt, args)
+	if c.schemaVersion.Load() != ver {
+		var err error
+		table, err = c.getTableLocked(stmt.Table)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	return c.updateLocked(ctx, stmt, args, table)
 }
 
-func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args []interface{}, tableArg ...*TableDef) (int64, int64, error) {
 	// Check for INSTEAD OF UPDATE trigger first (for views)
 	if trig := c.findInsteadOfTrigger(stmt.Table, "UPDATE"); trig != nil {
 		return c.executeInsteadOfUpdateTrigger(ctx, trig, stmt, args)
 	}
 
-	table, err := c.getTableLocked(stmt.Table)
-	if err != nil {
-		return 0, 0, err
+	var table *TableDef
+	if len(tableArg) > 0 && tableArg[0] != nil {
+		table = tableArg[0]
+	} else {
+		var err error
+		table, err = c.getTableLocked(stmt.Table)
+		if err != nil {
+			return 0, 0, err
+		}
 	}
 	if table.Type == "foreign" {
 		return 0, 0, fmt.Errorf("cannot update foreign table '%s'", stmt.Table)

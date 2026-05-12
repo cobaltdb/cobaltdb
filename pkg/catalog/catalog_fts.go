@@ -8,6 +8,7 @@ import (
 func (c *Catalog) CreateFTSIndex(name, tableName string, columns []string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	if _, exists := c.ftsIndexes[name]; exists {
 		return fmt.Errorf("FTS index %s already exists", name)
 	}
@@ -94,6 +95,7 @@ func (c *Catalog) indexRowForFTS(ftsIndex *FTSIndexDef, row map[string]interface
 func (c *Catalog) DropFTSIndex(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	if _, exists := c.ftsIndexes[name]; !exists {
 		return fmt.Errorf("FTS index %s not found", name)
 	}

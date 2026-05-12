@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -288,6 +289,14 @@ type Catalog struct {
 	deadTuples map[string]int64 // table name -> count of soft-deleted rows
 	liveTuples map[string]int64 // table name -> count of live rows
 	vacuumMu   sync.RWMutex     // protects deadTuples and liveTuples
+
+	// Schema versioning and cache for lock-free metadata lookups.
+	// schemaVersion increments on every DDL; schemaCache stores TableDefs
+	// keyed by lower-case table name. Cache entries are invalidated when
+	// schemaVersion changes, so stale reads are impossible.
+	schemaVersion   atomic.Uint64
+	schemaCache     map[string]*TableDef
+	schemaCacheMu   sync.RWMutex
 
 	// Parallel execution options
 	parallelWorkers   int // 0 = disabled

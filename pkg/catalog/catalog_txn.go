@@ -67,6 +67,7 @@ func (c *Catalog) invalidateQueryCache(tableName string) {
 func (c *Catalog) CreateRLSPolicy(policy *security.Policy) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	if !c.enableRLS {
 		return errors.New("row-level security is not enabled")
@@ -78,6 +79,7 @@ func (c *Catalog) CreateRLSPolicy(policy *security.Policy) error {
 func (c *Catalog) DropRLSPolicy(tableName, policyName string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	if !c.enableRLS {
 		return errors.New("row-level security is not enabled")

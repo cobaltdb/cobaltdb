@@ -88,6 +88,7 @@ func isReservedWord(name string) bool {
 func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	// Validate table name
 	if err := validateTableName(stmt.Table); err != nil {
@@ -262,6 +263,7 @@ func (c *Catalog) storeTableDef(table *TableDef) error {
 func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	if !stmt.IfExists {
 		if _, exists := c.tables[stmt.Table]; !exists {
 			if _, fexists := c.foreignTables[stmt.Table]; !fexists {
@@ -328,6 +330,7 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	// Validate table name
 	if err := validateTableName(stmt.Table); err != nil {
@@ -445,6 +448,7 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	// Validate table name
 	if err := validateTableName(stmt.Table); err != nil {
@@ -597,6 +601,7 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	// Validate old table name
 	if err := validateTableName(stmt.Table); err != nil {
@@ -666,6 +671,7 @@ func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
 func (c *Catalog) AlterTableRenameColumn(stmt *query.AlterTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 
 	// Validate table name
 	if err := validateTableName(stmt.Table); err != nil {
@@ -755,9 +761,44 @@ func (c *Catalog) getTableLocked(name string) (*TableDef, error) {
 	return table, nil
 }
 
+// getCachedTable returns a TableDef from the schema cache without acquiring
+// Catalog.mu. The caller must verify the entry is still valid by comparing
+// the returned version with c.schemaVersion.
+func (c *Catalog) getCachedTable(name string) (*TableDef, uint64, bool) {
+	c.schemaCacheMu.RLock()
+	def, ok := c.schemaCache[name]
+	ver := c.schemaVersion.Load()
+	c.schemaCacheMu.RUnlock()
+	if !ok {
+		return nil, 0, false
+	}
+	return def, ver, true
+}
+
+// putCachedTable stores a TableDef in the schema cache. Must be called while
+// holding Catalog.mu (or after a DDL operation) so the version is consistent.
+func (c *Catalog) putCachedTable(name string, def *TableDef) {
+	c.schemaCacheMu.Lock()
+	if c.schemaCache == nil {
+		c.schemaCache = make(map[string]*TableDef)
+	}
+	c.schemaCache[name] = def
+	c.schemaCacheMu.Unlock()
+}
+
+// invalidateSchemaCache clears all cached entries and bumps schemaVersion.
+// Call after any DDL operation.
+func (c *Catalog) invalidateSchemaCache() {
+	c.schemaVersion.Add(1)
+	c.schemaCacheMu.Lock()
+	c.schemaCache = make(map[string]*TableDef)
+	c.schemaCacheMu.Unlock()
+}
+
 func (c *Catalog) CreateView(name string, query *query.SelectStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	if _, exists := c.views[name]; exists {
 		return ErrTableExists
 	}
@@ -786,6 +827,7 @@ func (c *Catalog) getViewLocked(name string) (*query.SelectStmt, error) {
 func (c *Catalog) DropView(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	if _, exists := c.views[name]; !exists {
 		return ErrTableNotFound
 	}
@@ -804,6 +846,7 @@ func (c *Catalog) HasTableOrView(name string) bool {
 func (c *Catalog) CreateTrigger(stmt *query.CreateTriggerStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	// Check if table or view exists
 	_, tableExists := c.tables[stmt.Table]
 	_, viewExists := c.views[stmt.Table]
@@ -831,6 +874,7 @@ func (c *Catalog) GetTrigger(name string) (*query.CreateTriggerStmt, error) {
 func (c *Catalog) DropTrigger(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	if _, exists := c.triggers[name]; !exists {
 		return fmt.Errorf("trigger %s not found", name)
 	}
@@ -1042,6 +1086,7 @@ func (c *Catalog) resolveTriggerExpr(expr query.Expression, newRow []interface{}
 func (c *Catalog) CreateProcedure(stmt *query.CreateProcedureStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	if _, exists := c.procedures[stmt.Name]; exists {
 		return fmt.Errorf("procedure %s already exists", stmt.Name)
 	}
@@ -1062,6 +1107,7 @@ func (c *Catalog) GetProcedure(name string) (*query.CreateProcedureStmt, error) 
 func (c *Catalog) DropProcedure(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
 	if _, exists := c.procedures[name]; !exists {
 		return fmt.Errorf("procedure %s not found", name)
 	}
