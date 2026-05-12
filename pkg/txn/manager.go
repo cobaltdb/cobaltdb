@@ -862,6 +862,7 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 	}
 
 	var shardArr [8]int
+	var shardExtra []int
 	shardCount := 0
 	addShard := func(s int) {
 		for i := 0; i < shardCount; i++ {
@@ -869,15 +870,29 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 				return
 			}
 		}
+		for i := range shardExtra {
+			if shardExtra[i] == s {
+				return
+			}
+		}
 		if shardCount < len(shardArr) {
 			shardArr[shardCount] = s
 			shardCount++
+		} else {
+			shardExtra = append(shardExtra, s)
 		}
 	}
 	for wk := range txn.ReadSet {
 		addShard(versionShardIdx(wk.TreeName, wk.Key))
 	}
-	sorted := shardArr[:shardCount]
+	var sorted []int
+	if len(shardExtra) == 0 {
+		sorted = shardArr[:shardCount]
+	} else {
+		sorted = make([]int, 0, shardCount+len(shardExtra))
+		sorted = append(sorted, shardArr[:shardCount]...)
+		sorted = append(sorted, shardExtra...)
+	}
 	sort.Ints(sorted)
 
 	for _, s := range sorted {
@@ -911,6 +926,7 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 	// Use a small stack array for the common case (1-2 shards) to avoid a
 	// map allocation per commit.
 	var shardArr [8]int
+	var shardExtra []int
 	shardCount := 0
 	addShard := func(s int) {
 		for i := 0; i < shardCount; i++ {
@@ -918,9 +934,16 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 				return
 			}
 		}
+		for i := range shardExtra {
+			if shardExtra[i] == s {
+				return
+			}
+		}
 		if shardCount < len(shardArr) {
 			shardArr[shardCount] = s
 			shardCount++
+		} else {
+			shardExtra = append(shardExtra, s)
 		}
 	}
 	for wk := range txn.ReadSet {
@@ -929,7 +952,14 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 	for wk := range txn.WriteSet {
 		addShard(versionShardIdx(wk.TreeName, wk.Key))
 	}
-	sorted := shardArr[:shardCount]
+	var sorted []int
+	if len(shardExtra) == 0 {
+		sorted = shardArr[:shardCount]
+	} else {
+		sorted = make([]int, 0, shardCount+len(shardExtra))
+		sorted = append(sorted, shardArr[:shardCount]...)
+		sorted = append(sorted, shardExtra...)
+	}
 	sort.Ints(sorted)
 
 	// 2. Lock shards in order to avoid deadlocks.
