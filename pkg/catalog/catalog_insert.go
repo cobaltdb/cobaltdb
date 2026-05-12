@@ -134,22 +134,26 @@ func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []int
 		c.mu.RLock()
 		var err error
 		table, err = c.getTableLocked(stmt.Table)
-		if err != nil {
+		if err != nil && err != ErrTableNotFound {
 			c.mu.RUnlock()
 			return 0, 0, err
 		}
-		ver = c.schemaVersion.Load()
-		c.putCachedTable(stmt.Table, table)
+		// Don't return ErrTableNotFound here — insertLocked may need to check
+		// for INSTEAD OF triggers on views.
+		if table != nil {
+			ver = c.schemaVersion.Load()
+			c.putCachedTable(stmt.Table, table)
+		}
 		c.mu.RUnlock()
 	}
 
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	// Schema may have changed while we were lock-free; re-resolve if stale.
-	if c.schemaVersion.Load() != ver {
+	if table != nil && c.schemaVersion.Load() != ver {
 		var err error
 		table, err = c.getTableLocked(stmt.Table)
-		if err != nil {
+		if err != nil && err != ErrTableNotFound {
 			return 0, 0, err
 		}
 	}
