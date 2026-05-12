@@ -1075,13 +1075,12 @@ func (c *Catalog) recordManagerRead(treeName string, key string, valueData []byt
 		wk2.Key = key
 		ts.readValues[wk2] = valCopy
 		// Cache tree reference so CommitTransaction doesn't need c.mu.
+		// Caller must hold c.mu for read.
 		if ts.treeCache == nil {
 			ts.treeCache = make(map[string]btree.TreeStore, 4)
 		}
 		if ts.treeCache[treeName] == nil {
-			c.mu.RLock()
 			ts.treeCache[treeName] = c.tableTrees[treeName]
-			c.mu.RUnlock()
 		}
 	}
 
@@ -1142,10 +1141,10 @@ func (c *Catalog) appendPendingWrite(pw PendingWrite) {
 			ts.pendingWriteMap[pw.TreeName][pw.Key] = pw
 		}
 		// Cache tree references so CommitTransaction doesn't need c.mu.
+		// Caller must hold c.mu for read.
 		if ts.treeCache == nil {
 			ts.treeCache = make(map[string]btree.TreeStore, 4)
 		}
-		c.mu.RLock()
 		if ts.treeCache[pw.TreeName] == nil {
 			ts.treeCache[pw.TreeName] = c.tableTrees[pw.TreeName]
 		}
@@ -1154,7 +1153,6 @@ func (c *Catalog) appendPendingWrite(pw PendingWrite) {
 				ts.treeCache[idx.IndexName] = c.indexTrees[idx.IndexName]
 			}
 		}
-		c.mu.RUnlock()
 	}
 }
 
