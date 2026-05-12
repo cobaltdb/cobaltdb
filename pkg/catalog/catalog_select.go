@@ -33,8 +33,8 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 			return entry.Columns, entry.Rows, nil
 		}
 
-		// Execute query
-		columns, rows, err := cat.selectLocked(stmt, args)
+		// Execute query (outermost path may release lock during scan)
+		columns, rows, err := cat.selectLockedInternal(stmt, args, true)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -46,7 +46,7 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 		return columns, rows, nil
 	}
 
-	return cat.selectLocked(stmt, args)
+	return cat.selectLockedInternal(stmt, args, true)
 }
 
 // SetRLSContext sets the context used for RLS user/role extraction in SELECT queries.

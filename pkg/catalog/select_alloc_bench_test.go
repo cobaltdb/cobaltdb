@@ -48,6 +48,44 @@ func BenchmarkSelectDirect(b *testing.B) {
 	b.StopTimer()
 }
 
+func BenchmarkSelectDirectConcurrent(b *testing.B) {
+	pool := storage.NewBufferPool(256, storage.NewMemory())
+	cat := &Catalog{pool: pool}
+	cat.tables = make(map[string]*TableDef)
+	cat.tableTrees = make(map[string]btree.TreeStore)
+	cat.indexes = make(map[string]*IndexDef)
+
+	cat.tables["bench_concurrent"] = &TableDef{
+		Name: "bench_concurrent",
+		Columns: []ColumnDef{
+			{Name: "id", Type: "INTEGER"},
+			{Name: "value", Type: "TEXT"},
+		},
+	}
+
+	tree, _ := btree.NewBTree(pool)
+	cat.tableTrees["bench_concurrent"] = tree
+
+	for i := 0; i < 1000; i++ {
+		row, _ := encodeVersionedRow([]interface{}{int64(i), "value-123"}, nil)
+		tree.Put(int64ToStrBytes(int64(i)), row)
+	}
+
+	parsed, _ := query.Parse("SELECT id, value FROM bench_concurrent")
+	stmt := parsed.(*query.SelectStmt)
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _, err := cat.Select(stmt, nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.StopTimer()
+}
+
 func int64ToStrBytes(n int64) []byte {
 	var buf [20]byte
 	i := 19

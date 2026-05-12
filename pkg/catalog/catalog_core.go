@@ -526,7 +526,18 @@ func (cat *Catalog) resolveFromTable(name string) (*TableDef, error) {
 	return nil, fmt.Errorf("table '%s' not found", name)
 }
 
+// selectLocked executes a SELECT while assuming cat.mu is already held.
+// It never releases the lock; for the outermost Select path that may unlock
+// during the scan, use selectLockedInternal directly.
 func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
+	return cat.selectLockedInternal(stmt, args, false)
+}
+
+// selectLockedInternal is the core SELECT implementation. When canReleaseLock is
+// true and the statement has no subqueries, the catalog read lock is released
+// during the heavy table scan so concurrent writes can proceed. Recursive calls
+// (subqueries, JOIN resolution, views) must pass canReleaseLock=false.
+func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interface{}, canReleaseLock bool) ([]string, [][]interface{}, error) {
 	// Apply query optimization only when the query has something to optimize.
 	// Skip the expensive allocator for simple SELECTs without WHERE/JOINs/etc.
 	needsOptimize := stmt.Where != nil || len(stmt.Joins) > 0 || stmt.GroupBy != nil ||
@@ -704,9 +715,24 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 			break
 		}
 	}
-	// Scan rows from table (index lookup, materialized view, or full table scan)
-	rows, windowFullRows := cat.scanTableRows(table, stmt, args, selectCols, hasWindowFuncs, queryTime)
-
+	// Prepare scan parameters while holding catalog lock
+	trees, _ := cat.getTableTreesForScan(table)
+	var indexMatches map[string]bool
+	var useIndex bool
+	if stmt.Where != nil {
+		indexMatches, useIndex = cat.useIndexForQueryWithArgs(stmt.From.Name, stmt.Where, args)
+	}
+	// For statements without subqueries, release the catalog lock during the
+	// heavy scan so writes can proceed. Subqueries would recursively call
+	// selectLocked, making lock release unsafe (non-reentrant RWMutex).
+	canUnlock := canReleaseLock && !hasSubqueries(stmt)
+	if canUnlock {
+		cat.mu.RUnlock()
+	}
+	rows, windowFullRows := cat.scanTableRows(table, stmt, args, selectCols, hasWindowFuncs, queryTime, trees, indexMatches, useIndex, nil, false, cat.parallelWorkers, cat.parallelThreshold)
+	if canUnlock {
+		cat.mu.RLock()
+	}
 
 	returnColumns, rows = cat.applySelectPostProcess(applySelectPostProcessParams{
 		rows:              rows,
@@ -728,22 +754,11 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 
 
 // scanTableRows reads rows from the table using index lookup, materialized view data, or full scan.
-func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, hasWindowFuncs bool, queryTime time.Time) ([][]interface{}, [][]interface{}) {
+func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, hasWindowFuncs bool, queryTime time.Time, trees []btree.TreeStore, indexMatches map[string]bool, useIndex bool, mvRows [][]interface{}, isMV bool, parallelWorkers int, parallelThreshold int) ([][]interface{}, [][]interface{}) {
 	var rows [][]interface{}
 	var windowFullRows [][]interface{}
 
-	// Check if this is a materialized view with cached data
-	var mvRows [][]interface{}
-	var isMV bool
-	if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
-		mvRows = cteRes.rows
-		isMV = true
-		defer delete(cat.cteResults, toLowerFast(stmt.From.Name))
-	}
-
-	// Get all trees for scanning (handles partitioned tables)
-	trees, err := cat.getTableTreesForScan(table)
-	if err != nil && !isMV {
+	if len(trees) == 0 && !isMV {
 		return nil, nil
 	}
 
@@ -762,13 +777,6 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 				}
 			}
 		}
-	}
-
-	// Try to use index for WHERE clause
-	var useIndex bool
-	var indexMatches map[string]bool
-	if stmt.Where != nil {
-		indexMatches, useIndex = cat.useIndexForQueryWithArgs(stmt.From.Name, stmt.Where, args)
 	}
 
 	if useIndex {
@@ -843,7 +851,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 				hasPending = false
 			}
 		}
-		canParallel := cat.parallelWorkers > 0 &&
+		canParallel := parallelWorkers > 0 &&
 			len(stmt.OrderBy) == 0 &&
 			!stmt.Distinct &&
 			!hasWindowFuncs &&
@@ -957,14 +965,14 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 				}
 			}
 
-			canParallel = canParallel && len(pairs) >= cat.parallelThreshold
+			canParallel = canParallel && len(pairs) >= parallelThreshold
 
 			if canParallel {
 				values := make([][]byte, len(pairs))
 				for i, p := range pairs {
 					values[i] = p.value
 				}
-				results := parallel.ParallelSelectRows(values, cat.parallelWorkers, cat.parallelThreshold,
+				results := parallel.ParallelSelectRows(values, parallelWorkers, parallelThreshold,
 					func(chunk [][]byte) [][]interface{} {
 						chunkRows, _ := cat.processRowChunk(chunk, table, selectCols, stmt, args, queryTime, false)
 						return chunkRows
