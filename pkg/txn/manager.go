@@ -1040,7 +1040,7 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 					Type:  storage.WALCommit,
 				}
 				records[1] = &recArr[1]
-				if err := wal.AppendBatchWithoutSync(records[:]); err != nil {
+				if err := wal.AppendBatch(records[:]); err != nil {
 					return fmt.Errorf("failed to append WAL records: %w", err)
 				}
 			} else {
@@ -1066,7 +1066,7 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 					TxnID: txn.ID,
 					Type:  storage.WALCommit,
 				})
-				if err := wal.AppendBatchWithoutSync(records); err != nil {
+				if err := wal.AppendBatch(records); err != nil {
 					return fmt.Errorf("failed to append WAL records: %w", err)
 				}
 			}
