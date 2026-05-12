@@ -147,6 +147,9 @@ func (c *Catalog) putTxnState(ts *catalogTxnState) {
 		ts.rowBuf[i] = nil
 	}
 	ts.valueDataBuf = ts.valueDataBuf[:0]
+	for k := range ts.treeCache {
+		delete(ts.treeCache, k)
+	}
 	c.txnStatePool.Put(ts)
 }
 
@@ -267,12 +270,11 @@ func (c *Catalog) CommitTransaction() error {
 				c.commitMu[shard].Lock()
 				defer c.commitMu[shard].Unlock()
 
-				// Validate reads
+				// Validate reads using cached tree references (no c.mu needed).
 				if len(ts.readValues) > 0 {
-					c.mu.RLock()
 					for wk, originalValue := range ts.readValues {
-						tree, exists := c.tableTrees[wk.TreeName]
-						if !exists {
+						tree, exists := ts.treeCache[wk.TreeName]
+						if !exists || tree == nil {
 							continue
 						}
 						var currentValue []byte
@@ -282,21 +284,17 @@ func (c *Catalog) CommitTransaction() error {
 							currentValue, _ = tree.Get([]byte(wk.Key))
 						}
 						if !bytes.Equal(originalValue, currentValue) {
-							c.mu.RUnlock()
 							return txn.ErrConflict
 						}
 					}
-					c.mu.RUnlock()
 				}
 
 				if err := mt.Commit(); err != nil {
 					return fmt.Errorf("txn manager commit: %w", err)
 				}
 
-				c.mu.RLock()
-				tree, exists := c.tableTrees[pw.TreeName]
-				c.mu.RUnlock()
-				if !exists {
+				tree, exists := ts.treeCache[pw.TreeName]
+				if !exists || tree == nil {
 					return fmt.Errorf("partition tree %s not found", pw.TreeName)
 				}
 				var putErr error
@@ -337,26 +335,24 @@ func (c *Catalog) CommitTransaction() error {
 					shardSet[c.commitLockIdx(wk.TreeName, wk.Key)] = struct{}{}
 				}
 
-				// Snapshot tree references under a brief RLock before locking commitMu.
-				c.mu.RLock()
+				// Use cached tree references (no c.mu needed).
 				tableTrees := make(map[string]btree.TreeStore, len(tableKeys))
 				for name := range tableKeys {
-					if tree, ok := c.tableTrees[name]; ok {
+					if tree, ok := ts.treeCache[name]; ok && tree != nil {
 						tableTrees[name] = tree
 					}
 				}
 				indexTrees := make(map[string]btree.TreeStore, len(idxPuts)+len(idxDels))
 				for name := range idxPuts {
-					if tree, ok := c.indexTrees[name]; ok {
+					if tree, ok := ts.treeCache[name]; ok && tree != nil {
 						indexTrees[name] = tree
 					}
 				}
 				for name := range idxDels {
-					if tree, ok := c.indexTrees[name]; ok {
+					if tree, ok := ts.treeCache[name]; ok && tree != nil {
 						indexTrees[name] = tree
 					}
 				}
-				c.mu.RUnlock()
 
 				// Lock all touched shards in sorted order, validate, commit through
 				// the Manager, apply writes, then unlock.
@@ -377,10 +373,9 @@ func (c *Catalog) CommitTransaction() error {
 
 					// Validate reads and commit through the Manager while holding locks.
 					if len(ts.readValues) > 0 {
-						c.mu.RLock()
 						for wk, originalValue := range ts.readValues {
-							tree, exists := c.tableTrees[wk.TreeName]
-							if !exists {
+							tree, exists := ts.treeCache[wk.TreeName]
+							if !exists || tree == nil {
 								continue
 							}
 							var currentValue []byte
@@ -390,11 +385,9 @@ func (c *Catalog) CommitTransaction() error {
 								currentValue, _ = tree.Get([]byte(wk.Key))
 							}
 							if !bytes.Equal(originalValue, currentValue) {
-								c.mu.RUnlock()
 								return txn.ErrConflict
 							}
 						}
-						c.mu.RUnlock()
 					}
 
 					if err := mt.Commit(); err != nil {
@@ -1081,6 +1074,15 @@ func (c *Catalog) recordManagerRead(treeName string, key string, valueData []byt
 		wk2.TreeName = treeName
 		wk2.Key = key
 		ts.readValues[wk2] = valCopy
+		// Cache tree reference so CommitTransaction doesn't need c.mu.
+		if ts.treeCache == nil {
+			ts.treeCache = make(map[string]btree.TreeStore, 4)
+		}
+		if ts.treeCache[treeName] == nil {
+			c.mu.RLock()
+			ts.treeCache[treeName] = c.tableTrees[treeName]
+			c.mu.RUnlock()
+		}
 	}
 
 	if !c.isBufferedMode() {
@@ -1139,6 +1141,20 @@ func (c *Catalog) appendPendingWrite(pw PendingWrite) {
 			}
 			ts.pendingWriteMap[pw.TreeName][pw.Key] = pw
 		}
+		// Cache tree references so CommitTransaction doesn't need c.mu.
+		if ts.treeCache == nil {
+			ts.treeCache = make(map[string]btree.TreeStore, 4)
+		}
+		c.mu.RLock()
+		if ts.treeCache[pw.TreeName] == nil {
+			ts.treeCache[pw.TreeName] = c.tableTrees[pw.TreeName]
+		}
+		for _, idx := range pw.IndexUpdates {
+			if ts.treeCache[idx.IndexName] == nil {
+				ts.treeCache[idx.IndexName] = c.indexTrees[idx.IndexName]
+			}
+		}
+		c.mu.RUnlock()
 	}
 }
 

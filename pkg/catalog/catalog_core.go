@@ -239,6 +239,7 @@ type catalogTxnState struct {
 	readValues        map[txn.WriteKey][]byte // key -> value at time of read (for MVCC validation)
 	rowBuf            [8]interface{} // reused per-transaction scratch buffer for INSERT
 	valueDataBuf      []byte         // reused per-transaction buffer for encoded row values
+	treeCache         map[string]btree.TreeStore // cached tree references to avoid c.mu in commit
 }
 
 // getPendingWriteMap returns the pending-write map, building it lazily from
