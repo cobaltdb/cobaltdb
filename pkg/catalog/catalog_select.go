@@ -280,7 +280,7 @@ func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]inte
 
 	// Read-your-writes: overlay buffered writes (INSERT, UPDATE, DELETE).
 	if ts := c.getCurrentTxn(); ts != nil {
-		if m, ok := ts.pendingWriteMap[mainTable.Name]; ok {
+		if m, ok := ts.getPendingWriteMap()[mainTable.Name]; ok {
 			for _, pw := range m {
 				k := string(pw.Key)
 				vrow, err := decodeVersionedRow(pw.Value, len(mainTable.Columns))

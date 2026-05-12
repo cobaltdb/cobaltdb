@@ -241,6 +241,17 @@ type catalogTxnState struct {
 	valueDataBuf      []byte         // reused per-transaction buffer for encoded row values
 }
 
+// getPendingWriteMap returns the pending-write map, building it lazily from
+// the slice if it hasn't been materialised yet. This lets us skip map
+// allocations for single-row autocommit transactions while still supporting
+// read-your-writes.
+func (ts *catalogTxnState) getPendingWriteMap() map[string]map[string]PendingWrite {
+	if ts.pendingWriteMap == nil && len(ts.pendingWrites) > 0 {
+		rebuildPendingWriteMap(ts)
+	}
+	return ts.pendingWriteMap
+}
+
 // PendingWrite buffers a DML operation for commit-time application when the
 // txn.Manager bridge is active. This avoids holding Catalog.mu during DML.
 type PendingWrite struct {
@@ -811,7 +822,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			}
 			// Read-your-writes: pending writes override committed data.
 			if ts := cat.getCurrentTxn(); ts != nil {
-				if m, ok := ts.pendingWriteMap[table.Name]; ok {
+				if m, ok := ts.getPendingWriteMap()[table.Name]; ok {
 					if pw, ok2 := m[pk]; ok2 {
 						valueData = pw.Value
 						found = true
@@ -865,7 +876,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 		ts := cat.getCurrentTxn()
 		hasPending := ts != nil
 		if hasPending {
-			if _, ok := ts.pendingWriteMap[table.Name]; !ok {
+			if _, ok := ts.getPendingWriteMap()[table.Name]; !ok {
 				hasPending = false
 			}
 		}
@@ -970,7 +981,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 
 			// Read-your-writes: overlay buffered writes (INSERT, UPDATE, DELETE).
 			if hasPending {
-				if m, ok := ts.pendingWriteMap[table.Name]; ok {
+				if m, ok := ts.getPendingWriteMap()[table.Name]; ok {
 					for _, pw := range m {
 						k := string(pw.Key)
 						if idx, ok := seen[k]; ok {

@@ -236,7 +236,7 @@ func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Express
 	// be stale (index updates are deferred to commit). Fall back to full scan
 	// so read-your-writes works correctly.
 	if ts := c.getCurrentTxn(); ts != nil && len(ts.pendingWrites) > 0 {
-		if _, ok := ts.pendingWriteMap[tableName]; ok {
+		if _, ok := ts.getPendingWriteMap()[tableName]; ok {
 			return nil, false
 		}
 	}

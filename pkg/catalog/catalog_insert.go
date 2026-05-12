@@ -952,7 +952,7 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 		if !found {
 			// Check pending writes first (buffered mode)
 			if ts := c.getCurrentTxn(); ts != nil {
-				if m, ok := ts.pendingWriteMap[stmt.Table]; ok {
+				if m, ok := ts.getPendingWriteMap()[stmt.Table]; ok {
 					for _, pw := range m {
 						vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
 						if err != nil || vrow.Version.DeletedAt > 0 {
@@ -1109,7 +1109,7 @@ func (c *Catalog) checkForeignKeyConstraints(table *TableDef, rowValues []interf
 			// self-referential or same-statement FK references.
 			if !found {
 				if ts := c.getCurrentTxn(); ts != nil {
-					if m, ok := ts.pendingWriteMap[fk.ReferencedTable]; ok {
+					if m, ok := ts.getPendingWriteMap()[fk.ReferencedTable]; ok {
 						for _, pw := range m {
 							vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
 							if err != nil || vrow.Version.DeletedAt > 0 {

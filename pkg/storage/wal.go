@@ -311,6 +311,47 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 		}
 	}
 
+	// Fast path: ≤2 records, no encryption, total size fits in stack buffer.
+	// Avoids all heap allocations from formatBatch for the common single-write
+	// transaction (one WALUpdate + one WALCommit record).
+	if w.cipher == nil && len(records) <= 2 {
+		var stackBuf [2048]byte
+		var lsnOffs [2]int
+		totalSize := 0
+		for i, r := range records {
+			dataLen := len(r.Data)
+			lsnOffs[i] = totalSize
+			writeRecordHeader(stackBuf[totalSize:], &WALRecord{
+				TxnID:  r.TxnID,
+				Type:   r.Type,
+				PageID: r.PageID,
+				Offset: r.Offset,
+			}, dataLen)
+			copy(stackBuf[totalSize+walHeaderSize:], r.Data)
+			crcHash := crc32.ChecksumIEEE(stackBuf[totalSize : totalSize+walHeaderSize])
+			if dataLen > 0 {
+				crcHash = crc32.Update(crcHash, crc32.IEEETable, r.Data)
+			}
+			binary.LittleEndian.PutUint32(stackBuf[totalSize+walHeaderSize+dataLen:], crcHash)
+			totalSize += walHeaderSize + dataLen + 4
+		}
+		if totalSize <= len(stackBuf) {
+			w.mu.Lock()
+			lsn := w.lsn
+			for i := range records {
+				lsn++
+				binary.LittleEndian.PutUint64(stackBuf[lsnOffs[i]:], lsn)
+			}
+			if _, err := w.bufWriter.Write(stackBuf[:totalSize]); err != nil {
+				w.mu.Unlock()
+				return err
+			}
+			w.lsn = lsn
+			w.mu.Unlock()
+			return nil
+		}
+	}
+
 	formatted, lsnOffsets, err := w.formatBatch(records)
 	if err != nil {
 		return err
@@ -503,7 +544,10 @@ func (w *WAL) DisableGroupCommit() {
 		return
 	}
 	w.groupCommitEnabled = false
+	// flushPendingLocked acquires groupCommitMu itself, so release first.
+	w.groupCommitMu.Unlock()
 	w.flushPendingLocked()
+	w.groupCommitMu.Lock()
 	w.gcOnce.Do(func() {
 		if w.stopGC != nil {
 			close(w.stopGC)
@@ -536,7 +580,12 @@ func (w *WAL) groupCommitAppend(record *WALRecord) error {
 
 	// Trigger immediate sync if batch is full
 	if w.batchSize > 0 && len(w.pendingSyncs) >= w.batchSize {
+		w.groupCommitMu.Unlock()
 		w.flushPendingLocked()
+		if err := <-done; err != nil {
+			return fmt.Errorf("group commit failed: %w", err)
+		}
+		return nil
 	}
 
 	w.groupCommitMu.Unlock()
@@ -549,23 +598,35 @@ func (w *WAL) groupCommitAppend(record *WALRecord) error {
 }
 
 // flushPendingLocked syncs the WAL and signals all pending callers.
-// Must be called with w.groupCommitMu held.
+// It acquires w.groupCommitMu internally so callers need not hold it
+// across the long fsync critical section.
 func (w *WAL) flushPendingLocked() {
 	var flushErr error
+	var file *os.File
 	w.mu.Lock()
 	if w.file != nil {
 		if err := w.bufWriter.Flush(); err != nil {
 			flushErr = fmt.Errorf("WAL flush: %w", err)
-		} else if err := w.file.Sync(); err != nil {
-			flushErr = fmt.Errorf("WAL sync: %w", err)
+		} else {
+			file = w.file
 		}
 	}
 	w.mu.Unlock()
 
-	for _, done := range w.pendingSyncs {
+	if file != nil && flushErr == nil {
+		if err := file.Sync(); err != nil {
+			flushErr = fmt.Errorf("WAL sync: %w", err)
+		}
+	}
+
+	w.groupCommitMu.Lock()
+	pending := w.pendingSyncs
+	w.pendingSyncs = w.pendingSyncs[:0]
+	w.groupCommitMu.Unlock()
+
+	for _, done := range pending {
 		done <- flushErr
 	}
-	w.pendingSyncs = w.pendingSyncs[:0]
 }
 
 // groupCommitLoop runs a ticker that periodically syncs pending records.
@@ -577,9 +638,7 @@ func (w *WAL) groupCommitLoop(interval time.Duration) {
 		case <-w.stopGC:
 			return
 		case <-ticker.C:
-			w.groupCommitMu.Lock()
 			w.flushPendingLocked()
-			w.groupCommitMu.Unlock()
 		}
 	}
 }

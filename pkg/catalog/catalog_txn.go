@@ -1127,13 +1127,18 @@ func (c *Catalog) getCurrentTxnPendingWrites() []PendingWrite {
 func (c *Catalog) appendPendingWrite(pw PendingWrite) {
 	if ts := c.getCurrentTxn(); ts != nil {
 		ts.pendingWrites = append(ts.pendingWrites, pw)
-		if ts.pendingWriteMap == nil {
-			ts.pendingWriteMap = make(map[string]map[string]PendingWrite)
+		// Only build the map index when we have multiple pending writes.
+		// Single-row autocommit transactions never need O(1) key lookup,
+		// so this saves two heap allocations per INSERT.
+		if len(ts.pendingWrites) > 1 {
+			if ts.pendingWriteMap == nil {
+				rebuildPendingWriteMap(ts)
+			}
+			if ts.pendingWriteMap[pw.TreeName] == nil {
+				ts.pendingWriteMap[pw.TreeName] = make(map[string]PendingWrite)
+			}
+			ts.pendingWriteMap[pw.TreeName][pw.Key] = pw
 		}
-		if ts.pendingWriteMap[pw.TreeName] == nil {
-			ts.pendingWriteMap[pw.TreeName] = make(map[string]PendingWrite)
-		}
-		ts.pendingWriteMap[pw.TreeName][pw.Key] = pw
 	}
 }
 
@@ -1168,12 +1173,9 @@ func (c *Catalog) keyInPendingWrites(tableName string, key string) bool {
 	if ts == nil || len(ts.pendingWrites) == 0 {
 		return false
 	}
-	if ts.pendingWriteMap != nil {
-		if m, ok := ts.pendingWriteMap[tableName]; ok {
-			_, exists := m[key]
-			return exists
-		}
-		return false
+	if m, ok := ts.getPendingWriteMap()[tableName]; ok {
+		_, exists := m[key]
+		return exists
 	}
 	for _, pw := range ts.pendingWrites {
 		if pw.TreeName == tableName && pw.Key == key {

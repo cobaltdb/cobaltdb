@@ -130,7 +130,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		// Collect pending writes for this tree to overlay in scan.
 		var pendingKeys map[string]PendingWrite
 		if ts := c.getCurrentTxn(); ts != nil {
-			pendingKeys = ts.pendingWriteMap[treeName]
+			pendingKeys = ts.getPendingWriteMap()[treeName]
 		}
 
 		// If we have indexed rows, only process those specific rows
