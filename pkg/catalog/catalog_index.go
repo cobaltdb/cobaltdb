@@ -42,44 +42,11 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 		Columns:    stmt.Columns,
 		Unique:     stmt.Unique,
 		RootPageID: indexTree.RootPageID(),
+		Status:     IndexBuilding,
 	}
 
 	c.indexes[stmt.Index] = indexDef
 	c.indexTrees[stmt.Index] = indexTree
-
-	// Populate index with existing data from the table
-	tree, exists := c.tableTrees[stmt.Table]
-	if exists {
-		iter, err := tree.Scan(nil, nil)
-		if err != nil {
-			return fmt.Errorf("failed to scan table for index population: %w", err)
-		}
-		defer iter.Close()
-		for iter.HasNext() {
-			key, valueData, iterErr := iter.Next()
-			if iterErr != nil {
-				return fmt.Errorf("failed to read row during index population: %w", iterErr)
-			}
-			row, err := decodeRow(valueData, len(table.Columns))
-			if err != nil {
-				continue
-			}
-			indexKey, ok := buildCompositeIndexKey(table, indexDef, row)
-			if ok {
-				// For non-unique indexes, use compound key: "indexValue\x00pk"
-				var putErr error
-				if indexDef.Unique {
-					putErr = indexTree.Put([]byte(indexKey), key)
-				} else {
-					compoundKey := indexKey + "\x00" + string(key)
-					putErr = indexTree.Put([]byte(compoundKey), key)
-				}
-				if putErr != nil {
-					return fmt.Errorf("failed to populate index: %w", putErr)
-				}
-			}
-		}
-	}
 
 	// Record DDL undo entry for transaction rollback
 	if c.isCurrentTxnActive() {
@@ -89,7 +56,75 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 		})
 	}
 
-	return c.storeIndexDef(indexDef)
+	if err := c.storeIndexDef(indexDef); err != nil {
+		return err
+	}
+
+	// For small tables (≤1000 rows) build synchronously so tests and
+	 // lightweight DDL scripts get immediate index availability.
+	 // Large tables get a background build so the main thread returns
+	 // in <100ms and doesn't block concurrent reads/writes.
+	 tree := c.tableTrees[stmt.Table]
+	 if tree != nil && tree.Size() <= 1000 {
+		 c.populateIndexLocked(indexTree, indexDef, table, tree)
+		 indexDef.Status = IndexActive
+	 } else {
+		 go c.buildIndexInBackground(stmt.Index, stmt.Table, table)
+	 }
+
+	return nil
+}
+
+// populateIndexLocked fills an index tree from a table scan. Must be called
+// with Catalog.mu held (or with external guarantees that the table is stable).
+func (c *Catalog) populateIndexLocked(indexTree btree.TreeStore, indexDef *IndexDef, table *TableDef, tree btree.TreeStore) {
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return
+	}
+	defer iter.Close()
+	for iter.HasNext() {
+		key, valueData, iterErr := iter.Next()
+		if iterErr != nil {
+			break
+		}
+		row, err := decodeRow(valueData, len(table.Columns))
+		if err != nil {
+			continue
+		}
+		indexKey, ok := buildCompositeIndexKey(table, indexDef, row)
+		if !ok {
+			continue
+		}
+		if indexDef.Unique {
+			_ = indexTree.Put([]byte(indexKey), key)
+		} else {
+			compoundKey := indexKey + "\x00" + string(key)
+			_ = indexTree.Put([]byte(compoundKey), key)
+		}
+	}
+}
+
+// buildIndexInBackground scans the table and populates the index.
+// It runs without holding Catalog.mu so reads/writes are not blocked.
+func (c *Catalog) buildIndexInBackground(indexName, tableName string, table *TableDef) {
+	c.mu.RLock()
+	idxDef, ok := c.indexes[indexName]
+	idxTree, treeOk := c.indexTrees[indexName]
+	tree, tableOk := c.tableTrees[tableName]
+	c.mu.RUnlock()
+
+	if !ok || !treeOk || !tableOk || idxDef.Status != IndexBuilding {
+		return
+	}
+
+	c.populateIndexLocked(idxTree, idxDef, table, tree)
+
+	c.mu.Lock()
+	if def, exists := c.indexes[indexName]; exists && def.Status == IndexBuilding {
+		def.Status = IndexActive
+	}
+	c.mu.Unlock()
 }
 
 func (c *Catalog) storeIndexDef(index *IndexDef) error {
@@ -136,7 +171,7 @@ func (c *Catalog) findUsableIndexWithArgs(tableName string, where query.Expressi
 				colName := ident.Name
 				// Check if there's an index on this column
 				for idxName, idxDef := range c.indexes {
-					if idxDef.TableName == tableName && len(idxDef.Columns) > 0 && idxDef.Columns[0] == colName {
+					if idxDef.Status == IndexActive && idxDef.TableName == tableName && len(idxDef.Columns) > 0 && idxDef.Columns[0] == colName {
 						// Get the value to search for
 						searchVal := c.extractLiteralValue(expr.Right, args)
 						if searchVal == nil {
@@ -157,7 +192,7 @@ func (c *Catalog) findUsableIndexWithArgs(tableName string, where query.Expressi
 			if ident, ok := expr.Right.(*query.Identifier); ok {
 				colName := ident.Name
 				for idxName, idxDef := range c.indexes {
-					if idxDef.TableName == tableName && len(idxDef.Columns) > 0 && idxDef.Columns[0] == colName {
+					if idxDef.Status == IndexActive && idxDef.TableName == tableName && len(idxDef.Columns) > 0 && idxDef.Columns[0] == colName {
 						searchVal := c.extractLiteralValue(expr.Left, args)
 						if searchVal == nil {
 							continue

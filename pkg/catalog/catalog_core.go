@@ -111,12 +111,21 @@ type ColumnDef struct {
 }
 
 // IndexDef represents an index definition
+// IndexStatus tracks the lifecycle of an index.
+type IndexStatus int
+
+const (
+	IndexActive   IndexStatus = iota // fully built and usable
+	IndexBuilding                      // metadata created, background population in progress
+)
+
 type IndexDef struct {
-	Name       string   `json:"name"`
-	TableName  string   `json:"table_name"`
-	Columns    []string `json:"columns"`
-	Unique     bool     `json:"unique"`
-	RootPageID uint32   `json:"root_page_id"`
+	Name       string      `json:"name"`
+	TableName  string      `json:"table_name"`
+	Columns    []string    `json:"columns"`
+	Unique     bool        `json:"unique"`
+	RootPageID uint32      `json:"root_page_id"`
+	Status     IndexStatus `json:"status"`
 }
 
 // selectColInfo holds information about selected columns in a query
