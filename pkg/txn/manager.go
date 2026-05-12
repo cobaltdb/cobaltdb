@@ -1005,6 +1005,7 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 			if len(txn.WriteSet) == 1 {
 				var recArr [2]storage.WALRecord
 				var records [2]*storage.WALRecord
+				var walDataBuf *[]byte
 				for wk, value := range txn.WriteSet {
 					tnLen := len(wk.TreeName)
 					kLen := len(wk.Key)
@@ -1012,8 +1013,8 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 					need := 4 + totalKeyLen + len(value)
 					var data []byte
 					if need <= 256 {
-						p := walDataPool.Get().(*[]byte)
-						data = (*p)[:need]
+						walDataBuf = walDataPool.Get().(*[]byte)
+						data = (*walDataBuf)[:need]
 						binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
 						copy(data[4:4+tnLen], wk.TreeName)
 						data[4+tnLen] = ':'
@@ -1030,18 +1031,19 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 
 					recArr[0] = storage.WALRecord{
 						TxnID: txn.ID,
-						Type:  storage.WALUpdate,
+						Type:  storage.WALUpdateCommit,
 						Data:  data,
 					}
 					records[0] = &recArr[0]
 				}
-				recArr[1] = storage.WALRecord{
-					TxnID: txn.ID,
-					Type:  storage.WALCommit,
-				}
-				records[1] = &recArr[1]
-				if err := wal.AppendBatch(records[:]); err != nil {
+				if err := wal.AppendBatch(records[:1]); err != nil {
+					if walDataBuf != nil {
+						walDataPool.Put(walDataBuf)
+					}
 					return fmt.Errorf("failed to append WAL records: %w", err)
+				}
+				if walDataBuf != nil {
+					walDataPool.Put(walDataBuf)
 				}
 			} else {
 				records := make([]*storage.WALRecord, 0, len(txn.WriteSet)+1)

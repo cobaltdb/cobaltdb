@@ -23,20 +23,21 @@ var (
 type WALRecordType uint8
 
 const (
-	WALInsert     WALRecordType = 0x01
-	WALUpdate     WALRecordType = 0x02
-	WALDelete     WALRecordType = 0x03
-	WALCommit     WALRecordType = 0x04
-	WALRollback   WALRecordType = 0x05
-	WALCheckpoint WALRecordType = 0x06
+	WALInsert       WALRecordType = 0x01
+	WALUpdate       WALRecordType = 0x02
+	WALDelete       WALRecordType = 0x03
+	WALCommit       WALRecordType = 0x04
+	WALRollback     WALRecordType = 0x05
+	WALCheckpoint   WALRecordType = 0x06
+	WALUpdateCommit WALRecordType = 0x07
 )
 
 // WAL on-disk format constants.
 //
 //	[LSN:8][TxnID:8][Type:1][PageID:4][Offset:2][Length:2][Data:N][CRC:4]
 const (
-	walHeaderSize        = 25         // bytes preceding the variable-length data payload
-	walMaxRecordDataSize = 1<<16 - 1  // payload length is encoded as uint16
+	walHeaderSize        = 25        // bytes preceding the variable-length data payload
+	walMaxRecordDataSize = 1<<16 - 1 // payload length is encoded as uint16
 )
 
 // WALRecord represents a single write-ahead log record
@@ -787,6 +788,22 @@ func (w *WAL) Recover(bp *BufferPool) error {
 			} else {
 				// Buffer for later
 				pendingTxns[record.TxnID] = append(pendingTxns[record.TxnID], record)
+			}
+
+		case WALUpdateCommit:
+			committedTxns[record.TxnID] = true
+			// Apply pending records for this transaction
+			if records, ok := pendingTxns[record.TxnID]; ok {
+				for _, r := range records {
+					if err := w.recoverRecord(bp, r); err != nil {
+						return err
+					}
+				}
+				delete(pendingTxns, record.TxnID)
+			}
+			// Apply the combined update+commit record immediately
+			if err := w.recoverRecord(bp, record); err != nil {
+				return err
 			}
 		}
 	}

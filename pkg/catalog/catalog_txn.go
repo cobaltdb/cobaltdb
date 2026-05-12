@@ -1229,7 +1229,7 @@ func (c *Catalog) ReplayWALOps(ops []storage.WALReplayOp) error {
 
 	for _, op := range ops {
 		switch op.Type {
-		case storage.WALInsert, storage.WALUpdate:
+		case storage.WALInsert, storage.WALUpdate, storage.WALUpdateCommit:
 			if len(op.Data) < 4 {
 				continue
 			}
