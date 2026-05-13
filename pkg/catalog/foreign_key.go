@@ -465,6 +465,9 @@ func (fke *ForeignKeyEnforcer) updateRowSlice(tableName string, rowKey interface
 		return fmt.Errorf("table %s not found", tableName)
 	}
 
+	ts := fke.catalog.getCurrentTxn()
+	txnActive := ts != nil && ts.txnActive
+
 	key := fke.serializeValue(rowKey)
 
 	// Get old value for undo log and index cleanup
@@ -483,7 +486,7 @@ func (fke *ForeignKeyEnforcer) updateRowSlice(tableName string, rowKey interface
 					// Remove old index entry
 					oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
 					if ok {
-						if fke.catalog.isCurrentTxnActive() {
+						if txnActive {
 							oldIdxVal, _ := idxTree.Get([]byte(oldIdxKey))
 							idxChanges = append(idxChanges, indexUndoEntry{
 								indexName: idxName,
@@ -502,7 +505,7 @@ func (fke *ForeignKeyEnforcer) updateRowSlice(tableName string, rowKey interface
 						if err := idxTree.Put([]byte(newIdxKey), key); err != nil {
 							return fmt.Errorf("index update failed: %w", err)
 						}
-						if fke.catalog.isCurrentTxnActive() {
+						if txnActive {
 							idxChanges = append(idxChanges, indexUndoEntry{
 								indexName: idxName,
 								key:       []byte(newIdxKey),
@@ -516,7 +519,7 @@ func (fke *ForeignKeyEnforcer) updateRowSlice(tableName string, rowKey interface
 	}
 
 	// Record undo log entry for rollback
-	if fke.catalog.isCurrentTxnActive() && getErr == nil {
+	if txnActive && getErr == nil {
 		keyCopy := make([]byte, len(key))
 		copy(keyCopy, key)
 		oldCopy := make([]byte, len(oldData))

@@ -115,7 +115,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 
 		// Collect pending writes for this tree to overlay in scan.
 		var pendingKeys map[string]PendingWrite
-		if ts := c.getCurrentTxn(); ts != nil {
+		if ts != nil {
 			pendingKeys = ts.getPendingWriteMap()[treeName]
 		}
 
@@ -130,7 +130,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 					valueData = pwValue.Value
 					found = true
 				} else if found && useBuffer {
-					c.recordManagerRead(treeName, pkStr, valueData)
+					c.recordManagerReadTs(ts, treeName, pkStr, valueData)
 				}
 				if !found {
 					continue
@@ -191,7 +191,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 			}
 
 			if !fromPending && useBuffer {
-				c.recordManagerRead(treeName, k, valueData)
+				c.recordManagerReadTs(ts, treeName, k, valueData)
 			}
 
 			// Make copies of key and value since iterator may reuse buffers
@@ -341,6 +341,10 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 		return fmt.Errorf("table %s has no data", tableName)
 	}
 
+	// Cache transaction state to avoid repeated goroutine-shard lookups.
+	ts := c.getCurrentTxn()
+	txnActive := ts != nil && ts.txnActive
+
 	// Serialize the primary key using the same format as Insert
 	key := c.serializePK(pkValue, tree)
 
@@ -364,7 +368,7 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 					oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
 					if ok {
 						if idxDef.Unique {
-							if c.isCurrentTxnActive() {
+							if txnActive {
 								// Save old index value for undo
 								oldIdxVal, _ := idxTree.Get([]byte(oldIdxKey))
 								idxChanges = append(idxChanges, indexUndoEntry{
@@ -378,7 +382,7 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 						} else {
 							// For non-unique indexes, delete the compound key "indexValue\x00pk"
 							compoundKey := oldIdxKey + "\x00" + string(key)
-							if c.isCurrentTxnActive() {
+							if txnActive {
 								// Save old index value for undo
 								oldIdxVal, _ := idxTree.Get([]byte(compoundKey))
 								idxChanges = append(idxChanges, indexUndoEntry{
@@ -424,7 +428,7 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 	}
 
 	// Record undo log entry for rollback
-	if c.isCurrentTxnActive() {
+	if txnActive {
 		keyCopy := make([]byte, len(key))
 		copy(keyCopy, key)
 		oldCopy := make([]byte, len(oldData))

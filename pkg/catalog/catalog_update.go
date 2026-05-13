@@ -133,7 +133,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 
 		// Collect pending writes for this tree to overlay in scan.
 		var pendingKeys map[string]PendingWrite
-		if ts := c.getCurrentTxn(); ts != nil {
+		if ts != nil {
 			pendingKeys = ts.getPendingWriteMap()[treeName]
 		}
 
@@ -514,6 +514,8 @@ type joinUpdateEntry struct {
 // applyJoinUpdateEntries writes back updated rows, updates indexes, and records
 // undo log entries for a JOIN-based UPDATE.
 func (c *Catalog) applyJoinUpdateEntries(tableName string, table *TableDef, tree btree.TreeStore, entries []joinUpdateEntry) error {
+	ts := c.getCurrentTxn()
+	txnActive := ts != nil && ts.txnActive
 	for _, entry := range entries {
 		newValue, err := encodeRow(nil, entry.newRow)
 		if err != nil {
@@ -544,7 +546,7 @@ func (c *Catalog) applyJoinUpdateEntries(tableName string, table *TableDef, tree
 		}
 
 		// Record undo log for rollback
-		if c.isCurrentTxnActive() {
+		if txnActive {
 			oldValueData, marshalErr := json.Marshal(entry.oldRow)
 			if marshalErr == nil {
 				keyCopy := make([]byte, len(entry.key))
@@ -720,6 +722,8 @@ type joinDelEntry struct {
 // softDeleteJoinEntries performs soft deletion of collected entries from a
 // USING-based DELETE: updates indexes, writes WAL records, and marks rows deleted.
 func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree btree.TreeStore, entries []joinDelEntry) error {
+	ts := c.getCurrentTxn()
+	txnActive := ts != nil && ts.txnActive
 	for _, entry := range entries {
 		// Get current value to decode
 		currentData, err := tree.Get(entry.key)
@@ -766,10 +770,10 @@ func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree 
 		}
 
 		// Log to WAL before applying change
-		if c.wal != nil && c.isCurrentTxnActive() {
+		if c.wal != nil && txnActive {
 			walData := append([]byte(entry.key), 0)
 			record := &storage.WALRecord{
-				TxnID: c.getCurrentTxnID(),
+				TxnID: ts.txnID,
 				Type:  storage.WALDelete,
 				Data:  walData,
 			}
