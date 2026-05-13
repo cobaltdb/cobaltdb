@@ -116,7 +116,7 @@ type IndexStatus int
 
 const (
 	IndexActive   IndexStatus = iota // fully built and usable
-	IndexBuilding                      // metadata created, background population in progress
+	IndexBuilding                    // metadata created, background population in progress
 )
 
 type IndexDef struct {
@@ -229,17 +229,17 @@ type undoEntry struct {
 
 // catalogTxnState holds per-transaction state for multi-transaction support.
 type catalogTxnState struct {
-	txnID             uint64
-	txnActive         bool
-	undoLog           []undoEntry
-	savepoints        []savepointEntry
-	managerTxn        interface{}    // *txn.Transaction when txnManager bridge is active
-	pendingWrites     []PendingWrite // buffered DML for commit-time application
-	pendingWriteMap   map[string]map[string]PendingWrite // table -> key -> latest write (O(1) lookup)
-	readValues        map[txn.WriteKey][]byte // key -> value at time of read (for MVCC validation)
-	rowBuf            [8]interface{} // reused per-transaction scratch buffer for INSERT
-	valueDataBuf      []byte         // reused per-transaction buffer for encoded row values
-	treeCache         map[string]btree.TreeStore // cached tree references to avoid c.mu in commit
+	txnID           uint64
+	txnActive       bool
+	undoLog         []undoEntry
+	savepoints      []savepointEntry
+	managerTxn      interface{}                        // *txn.Transaction when txnManager bridge is active
+	pendingWrites   []PendingWrite                     // buffered DML for commit-time application
+	pendingWriteMap map[string]map[string]PendingWrite // table -> key -> latest write (O(1) lookup)
+	readValues      map[txn.WriteKey][]byte            // key -> value at time of read (for MVCC validation)
+	rowBuf          [8]interface{}                     // reused per-transaction scratch buffer for INSERT
+	valueDataBuf    []byte                             // reused per-transaction buffer for encoded row values
+	treeCache       map[string]btree.TreeStore         // cached tree references to avoid c.mu in commit
 }
 
 // getPendingWriteMap returns the pending-write map, building it lazily from
@@ -275,13 +275,13 @@ type Catalog struct {
 	mu                   sync.RWMutex
 	tree                 btree.TreeStore
 	tables               map[string]*TableDef
-	foreignTables        map[string]*ForeignTableDef           // Foreign table definitions
+	foreignTables        map[string]*ForeignTableDef // Foreign table definitions
 	indexes              map[string]*IndexDef
 	indexTrees           map[string]btree.TreeStore // B+Trees for indexes
 	pool                 *storage.BufferPool
 	wal                  *storage.WAL
-	tableTrees           map[string]btree.TreeStore               // Each table has its own B+Tree
-	partitionTreeMu      sync.Mutex                               // protects lazy partition tree creation
+	tableTrees           map[string]btree.TreeStore            // Each table has its own B+Tree
+	partitionTreeMu      sync.Mutex                            // protects lazy partition tree creation
 	fdwRegistry          *fdw.Registry                         // FDW registry for foreign data wrappers
 	views                map[string]*query.SelectStmt          // Views store their SELECT query
 	triggers             map[string]*query.CreateTriggerStmt   // Triggers store their definition
@@ -302,9 +302,9 @@ type Catalog struct {
 	rlsPolicies          map[string]*security.Policy           // RLS policies: key = "table:policyName"
 	queryCache           *QueryCache                           // Query result cache
 	rlsCtx               context.Context                       // Context for RLS user/role extraction in SELECT
-	lastReturningRows    [][]interface{} // Last RETURNING clause results
-	lastReturningColumns []string        // Column names for RETURNING results
-	returningMu          sync.Mutex      // protects lastReturningRows/lastReturningColumns
+	lastReturningRows    [][]interface{}                       // Last RETURNING clause results
+	lastReturningColumns []string                              // Column names for RETURNING results
+	returningMu          sync.Mutex                            // protects lastReturningRows/lastReturningColumns
 
 	// Dead tuple tracking for AutoVacuum
 	deadTuples map[string]int64 // table name -> count of soft-deleted rows
@@ -315,9 +315,9 @@ type Catalog struct {
 	// schemaVersion increments on every DDL; schemaCache stores TableDefs
 	// keyed by lower-case table name. Cache entries are invalidated when
 	// schemaVersion changes, so stale reads are impossible.
-	schemaVersion   atomic.Uint64
-	schemaCache     map[string]*TableDef
-	schemaCacheMu   sync.RWMutex
+	schemaVersion atomic.Uint64
+	schemaCache   map[string]*TableDef
+	schemaCacheMu sync.RWMutex
 
 	// Parallel execution options
 	parallelWorkers   int // 0 = disabled
@@ -341,20 +341,24 @@ type Catalog struct {
 }
 
 func (c *Catalog) commitLockIdx(treeName string, key string) int {
-	h := uint32(0)
+	// FNV-1a hash: much better distribution than polynomial hash for
+	// sequential zero-padded keys, eliminating commitMu shard collisions.
+	h := uint32(2166136261)
 	for i := 0; i < len(treeName); i++ {
-		h = h*31 + uint32(treeName[i])
+		h ^= uint32(treeName[i])
+		h *= 16777619
 	}
 	for i := 0; i < len(key); i++ {
-		h = h*31 + uint32(key[i])
+		h ^= uint32(key[i])
+		h *= 16777619
 	}
 	return int(h) % len(c.commitMu)
 }
 
 // savepointEntry records a named savepoint with its undo log position
 type savepointEntry struct {
-	name           string
-	undoPos        int // Position in undoLog at time of savepoint creation
+	name            string
+	undoPos         int // Position in undoLog at time of savepoint creation
 	pendingWritePos int // Position in pendingWrites at time of savepoint creation (buffered mode)
 }
 
@@ -629,15 +633,15 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 		// Fall through to normal JOIN handling
 	}
 
-		// Check if it's a pre-computed CTE result (from recursive CTE execution)
-		if cat.cteResults != nil {
-			if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
-				if result, handled := cat.handleCTEResult(stmt, args, cteRes); handled {
-					return result.cols, result.rows, result.err
-				}
-				// CTE with JOINs: fall through to executeSelectWithJoin
+	// Check if it's a pre-computed CTE result (from recursive CTE execution)
+	if cat.cteResults != nil {
+		if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
+			if result, handled := cat.handleCTEResult(stmt, args, cteRes); handled {
+				return result.cols, result.rows, result.err
 			}
+			// CTE with JOINs: fall through to executeSelectWithJoin
 		}
+	}
 
 	// Check if it's a view first
 	if handled, cols, rows, err := cat.tryViewSelect(stmt, args); handled {
@@ -781,7 +785,6 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 
 	return returnColumns, rows, nil
 }
-
 
 // scanTableRows reads rows from the table using index lookup, materialized view data, or full scan.
 func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, hasWindowFuncs bool, queryTime time.Time, trees []btree.TreeStore, indexMatches map[string]bool, useIndex bool, mvRows [][]interface{}, isMV bool, parallelWorkers int, parallelThreshold int) ([][]interface{}, [][]interface{}) {
@@ -1357,7 +1360,6 @@ func resolveOuterRefsInExpr(expr query.Expression, outerRow []interface{}, outer
 		return e
 	}
 }
-
 
 func tokenTypeToColumnType(t query.TokenType) string {
 	switch t {
