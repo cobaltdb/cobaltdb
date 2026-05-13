@@ -244,8 +244,10 @@ func (c *Catalog) BeginTransactionWithTxn(txnID uint64, managerTxn interface{}) 
 }
 
 func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	// No c.mu needed: getTxnState() uses sync.Pool and registerGoroutineTxn
+	// uses per-shard mutexes. Removing this RLock eliminates a major source
+	// of contention for autocommit workloads where every statement begins a
+	// new catalog transaction.
 	cs := c.getTxnState()
 	cs.txnID = txnID
 	cs.txnActive = true

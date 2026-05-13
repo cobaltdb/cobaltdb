@@ -15,6 +15,648 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
 
+// indexSnapshot holds a single index definition and its tree reference
+// captured under Catalog.mu so the buffered INSERT row loop can run lock-free.
+type indexSnapshot struct {
+	name string
+	def  *IndexDef
+	tree btree.TreeStore
+}
+
+// fkSnapshot holds a referenced table definition and tree for FK validation
+// captured under Catalog.mu so the buffered INSERT row loop can run lock-free.
+type fkSnapshot struct {
+	table *TableDef
+	tree  btree.TreeStore
+}
+
+// insertSnapshot holds all Catalog metadata needed for the buffered INSERT path.
+// It is built under a brief Catalog.mu RLock and then used without the lock.
+type insertSnapshot struct {
+	table     *TableDef
+	tree      btree.TreeStore
+	indexes   []indexSnapshot
+	triggers  []*query.CreateTriggerStmt
+	fkRefs    map[string]fkSnapshot
+}
+
+// buildInsertSnapshot captures table tree, indexes, triggers, and FK references
+// under Catalog.mu so the buffered path can release the lock before the row loop.
+func (c *Catalog) buildInsertSnapshot(table *TableDef, stmt *query.InsertStmt, args []interface{}) (*insertSnapshot, error) {
+	snap := &insertSnapshot{table: table}
+
+	// Table tree (handles partitioned tables too).
+	tree, _, err := c.getInsertTargetTree(table, stmt, args)
+	if err != nil {
+		return nil, err
+	}
+	snap.tree = tree
+
+	// Indexes for this table.
+	for idxName, idxDef := range c.indexes {
+		if idxDef.TableName == table.Name {
+			snap.indexes = append(snap.indexes, indexSnapshot{
+				name: idxName,
+				def:  idxDef,
+				tree: c.indexTrees[idxName],
+			})
+		}
+	}
+
+	// Triggers.
+	snap.triggers = c.getTriggersForTableLocked(table.Name, "INSERT")
+
+	// FK referenced tables.
+	if len(table.ForeignKeys) > 0 {
+		snap.fkRefs = make(map[string]fkSnapshot, len(table.ForeignKeys))
+		for _, fk := range table.ForeignKeys {
+			if _, ok := snap.fkRefs[fk.ReferencedTable]; ok {
+				continue
+			}
+			refTable, err := c.getTableLocked(fk.ReferencedTable)
+			if err != nil {
+				continue
+			}
+			refTree, exists := c.tableTrees[fk.ReferencedTable]
+			if !exists {
+				continue
+			}
+			snap.fkRefs[fk.ReferencedTable] = fkSnapshot{table: refTable, tree: refTree}
+		}
+	}
+
+	return snap, nil
+}
+
+// executeTriggersList is the lock-free variant of executeTriggers that uses a
+// pre-snapshot trigger list instead of reading c.triggers.
+func (c *Catalog) executeTriggersList(ctx context.Context, triggers []*query.CreateTriggerStmt, event string, timing string, newRow []interface{}, oldRow []interface{}, columns []ColumnDef) error {
+	for _, trigger := range triggers {
+		if trigger.Time != timing {
+			continue
+		}
+		if len(trigger.Body) == 0 {
+			continue
+		}
+		if trigger.Condition != nil {
+			resolvedCond := c.resolveTriggerExpr(trigger.Condition, newRow, oldRow, columns)
+			result, err := evaluateExpression(c, nil, nil, resolvedCond, nil)
+			if err != nil {
+				continue
+			}
+			if result == nil {
+				continue
+			}
+			if b, ok := result.(bool); ok && !b {
+				continue
+			}
+			if f, ok := toFloat64(result); ok && f == 0 {
+				continue
+			}
+		}
+		for _, bodyStmt := range trigger.Body {
+			resolved := c.resolveTriggerRefs(bodyStmt, newRow, oldRow, columns)
+			if err := c.executeTriggerStatement(ctx, resolved); err != nil {
+				return fmt.Errorf("trigger %s execution failed: %w", trigger.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// checkUniqueConstraintsSnapshot is the lock-free variant that uses a
+// pre-snapshot index list instead of iterating c.indexes/c.indexTrees.
+func (c *Catalog) checkUniqueConstraintsSnapshot(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, rowValues []interface{}, ts *catalogTxnState, idxSnap []indexSnapshot) (bool, error) {
+	for i, col := range table.Columns {
+		if !col.Unique || rowValues[i] == nil {
+			continue
+		}
+		var duplicateKey []byte
+		colLower := strings.ToLower(col.Name)
+		found := false
+		for _, idx := range idxSnap {
+			if !idx.def.Unique || len(idx.def.Columns) != 1 || strings.ToLower(idx.def.Columns[0]) != colLower {
+				continue
+			}
+			if idx.tree != nil {
+				idxKey := typeTaggedKey(rowValues[i])
+				if _, err := idx.tree.Get([]byte(idxKey)); err == nil {
+					duplicateKey = []byte(idxKey)
+				}
+			}
+			found = true
+			break
+		}
+		if !found {
+			if ts != nil {
+				if m, ok := ts.getPendingWriteMap()[stmt.Table]; ok {
+					for _, pw := range m {
+						vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
+						if err != nil || vrow.Version.DeletedAt > 0 {
+							continue
+						}
+						existingRow := vrow.Data
+						if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
+							if stmt.ConflictAction == query.ConflictIgnore {
+								return true, nil
+							}
+							return false, fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
+						}
+					}
+				}
+			}
+			iter, err := tree.Scan(nil, nil)
+			if err != nil {
+				return false, fmt.Errorf("failed to scan table for UNIQUE check: %w", err)
+			}
+			for iter.HasNext() {
+				k, existingData, err := iter.Next()
+				if err != nil {
+					break
+				}
+				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
+				if err != nil {
+					continue
+				}
+				if vrow.Version.DeletedAt > 0 {
+					continue
+				}
+				existingRow := vrow.Data
+				if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
+					duplicateKey = k
+					break
+				}
+			}
+			iter.Close()
+		}
+		if duplicateKey != nil {
+			if stmt.ConflictAction == query.ConflictIgnore {
+				return true, nil
+			} else if stmt.ConflictAction == query.ConflictReplace {
+				oldData, getErr := tree.Get(duplicateKey)
+				if getErr == nil {
+					oldRow, decErr := decodeRow(oldData, len(table.Columns))
+					if decErr == nil {
+						for _, idx := range idxSnap {
+							if idx.def.TableName != stmt.Table || len(idx.def.Columns) == 0 {
+								continue
+							}
+							oldIdxKey, ok := buildCompositeIndexKey(table, idx.def, oldRow)
+							if ok {
+								if idx.def.Unique {
+									_ = idx.tree.Delete([]byte(oldIdxKey))
+								} else {
+									compoundKey := oldIdxKey + "\x00" + string(duplicateKey)
+									_ = idx.tree.Delete([]byte(compoundKey))
+								}
+							}
+						}
+					}
+				}
+				if bt, ok := tree.(*btree.BTree); ok {
+					_ = bt.DeleteString(string(duplicateKey))
+				} else {
+					_ = tree.Delete(duplicateKey)
+				}
+				return false, nil
+			}
+			return false, fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
+		}
+	}
+	return false, nil
+}
+
+// buildBufferedInsertIndexesSnapshot is the lock-free variant that uses a
+// pre-snapshot index list instead of iterating c.indexes/c.indexTrees.
+func (c *Catalog) buildBufferedInsertIndexesSnapshot(table *TableDef, stmt *query.InsertStmt, key string, rowValues []interface{}, ts *catalogTxnState, idxSnap []indexSnapshot) ([]PendingIndexUpdate, bool, error) {
+	var idxUpdates []PendingIndexUpdate
+	for _, idx := range idxSnap {
+		if idx.def.TableName != stmt.Table || len(idx.def.Columns) == 0 {
+			continue
+		}
+		indexKey, ok := buildCompositeIndexKey(table, idx.def, rowValues)
+		if !ok || indexKey == "" {
+			continue
+		}
+		if idx.def.Unique && idx.tree != nil {
+			idxVal, err := idx.tree.Get([]byte(indexKey))
+			c.recordManagerReadTs(ts, idx.name, indexKey, idxVal)
+			if err == nil {
+				if stmt.ConflictAction == query.ConflictIgnore {
+					return nil, true, nil
+				}
+				return nil, false, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idx.name)
+			}
+			if c.indexKeyInPendingWrites(idx.name, indexKey) {
+				if stmt.ConflictAction == query.ConflictIgnore {
+					return nil, true, nil
+				}
+				return nil, false, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idx.name)
+			}
+		}
+		var idxStorageKey string
+		if idx.def.Unique {
+			idxStorageKey = indexKey
+		} else {
+			idxStorageKey = indexKey + "\x00" + key
+		}
+		idxUpdates = append(idxUpdates, PendingIndexUpdate{
+			IndexName: idx.name,
+			Key:       idxStorageKey,
+			Value:     []byte(key),
+		})
+	}
+	return idxUpdates, false, nil
+}
+
+// checkForeignKeyConstraintsSnapshot is the lock-free variant that uses
+// pre-snapshot referenced tables instead of reading c.tables/c.tableTrees.
+func (c *Catalog) checkForeignKeyConstraintsSnapshot(table *TableDef, rowValues []interface{}, ts *catalogTxnState, fkRefs map[string]fkSnapshot) error {
+	for _, fk := range table.ForeignKeys {
+		for i, colName := range fk.Columns {
+			colIdx := table.GetColumnIndex(colName)
+			if colIdx < 0 || colIdx >= len(rowValues) {
+				continue
+			}
+			fkValue := rowValues[colIdx]
+			if fkValue == nil {
+				continue
+			}
+			refSnap, ok := fkRefs[fk.ReferencedTable]
+			if !ok || refSnap.tree == nil {
+				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
+			}
+			refTable := refSnap.table
+			refTree := refSnap.tree
+			refColIdx := 0
+			if len(fk.ReferencedColumns) > i {
+				refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
+			} else if len(refTable.Columns) > 0 {
+				refColIdx = 0
+			}
+			found := false
+			refIter, err := refTree.Scan(nil, nil)
+			if err != nil {
+				return fmt.Errorf("FOREIGN KEY constraint failed: %w", err)
+			}
+			for refIter.HasNext() {
+				_, refData, err := refIter.Next()
+				if err != nil {
+					break
+				}
+				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
+				if err != nil {
+					continue
+				}
+				refRow := vrow.Data
+				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
+					found = true
+					break
+				}
+			}
+			refIter.Close()
+			if !found && ts != nil {
+				if m, ok := ts.getPendingWriteMap()[fk.ReferencedTable]; ok {
+					for _, pw := range m {
+						vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
+						if err != nil || vrow.Version.DeletedAt > 0 {
+							continue
+						}
+						refRow := vrow.Data
+						if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
+							found = true
+							break
+						}
+					}
+				}
+			}
+			if !found {
+				return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
+			}
+		}
+	}
+	return nil
+}
+
+// resolvePKConflictSnapshot is the lock-free variant of resolvePKConflict.
+// It is identical because it only uses the provided tree and table.
+func (c *Catalog) resolvePKConflictSnapshot(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key string) (bool, error) {
+	return c.resolvePKConflict(tree, table, stmt, key)
+}
+
+// validateInsertRowSnapshot is the lock-free variant of validateInsertRow.
+func (c *Catalog) validateInsertRowSnapshot(table *TableDef, tree btree.TreeStore, stmt *query.InsertStmt, rowValues []interface{}, args []interface{}, compositePK bool, key string, ts *catalogTxnState, idxSnap []indexSnapshot, fkRefs map[string]fkSnapshot) (string, bool, error) {
+	for i, col := range table.Columns {
+		if col.NotNull && !col.AutoIncrement && rowValues[i] == nil {
+			return key, false, fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
+		}
+	}
+	if compositePK {
+		compositeKey, ok := buildCompositePK(table, rowValues)
+		if !ok {
+			return key, false, fmt.Errorf("composite PRIMARY KEY columns must all be non-null")
+		}
+		key = compositeKey
+	}
+	skipRow, err := c.checkUniqueConstraintsSnapshot(tree, table, stmt, rowValues, ts, idxSnap)
+	if err != nil {
+		return key, false, err
+	}
+	if skipRow {
+		return key, true, nil
+	}
+	if err := c.checkInsertConstraints(table, rowValues, args); err != nil {
+		return key, false, err
+	}
+	if err := c.checkForeignKeyConstraintsSnapshot(table, rowValues, ts, fkRefs); err != nil {
+		return key, false, err
+	}
+	return key, false, nil
+}
+
+// insertBufferedLocked executes the buffered INSERT path without holding Catalog.mu.
+// All required metadata is passed via snap.
+func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertStmt, args []interface{}, snap *insertSnapshot) (int64, int64, error) {
+	table := snap.table
+	tree := snap.tree
+	ts := c.getCurrentTxn()
+	txnActive := ts != nil && ts.txnActive
+
+	numInsertCols := len(stmt.Columns)
+	if numInsertCols == 0 {
+		numInsertCols = len(table.Columns)
+	}
+	var insertColIndicesBuf [8]int
+	var insertColIndices []int
+	var insertColumns []string
+	if len(stmt.Columns) > 0 {
+		insertColumns = stmt.Columns
+		n := len(stmt.Columns)
+		if n <= 8 {
+			insertColIndices = insertColIndicesBuf[:n]
+		} else {
+			insertColIndices = make([]int, n)
+		}
+		for i, colName := range stmt.Columns {
+			if table.GetColumnIndex(colName) < 0 {
+				return 0, 0, fmt.Errorf("column '%s' does not exist in table '%s'", colName, stmt.Table)
+			}
+			insertColIndices[i] = table.GetColumnIndex(colName)
+		}
+	}
+
+	rowsAffected := int64(0)
+	autoIncValue := int64(0)
+	valueRows := stmt.Values
+	if stmt.Select != nil {
+		var err error
+		valueRows, err = c.convertSelectToValueRows(stmt, numInsertCols, args)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+
+	savedAutoIncSeq := atomic.LoadInt64(&table.AutoIncSeq)
+	if txnActive {
+		c.appendUndoEntry(undoEntry{
+			action:        undoAutoIncSeq,
+			tableName:     stmt.Table,
+			oldAutoIncSeq: savedAutoIncSeq,
+		})
+	}
+
+	var stmtInserts []stmtInsertEntry
+	var insertedRows [][]interface{}
+	var insertErr error
+	pendingWriteStartPos := 0
+	if ts != nil {
+		pendingWriteStartPos = len(ts.pendingWrites)
+	}
+
+	needsInsertedRows := len(stmt.Returning) > 0 || len(snap.triggers) > 0
+	compositePK := len(table.PrimaryKey) > 1
+
+	for _, valueRow := range valueRows {
+		if len(valueRow) != numInsertCols {
+			autoIncCount := 0
+			for _, col := range table.Columns {
+				if col.AutoIncrement {
+					autoIncCount++
+				}
+			}
+			if !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
+				return 0, 0, fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
+			}
+		}
+
+		var key string
+		hasPrimaryKey := false
+		if !compositePK {
+			for _, pkColName := range table.PrimaryKey {
+				valueIdx := -1
+				if insertColIndices != nil {
+					for i, tci := range insertColIndices {
+						if tci >= 0 && strings.EqualFold(table.Columns[tci].Name, pkColName) {
+							valueIdx = i
+							break
+						}
+					}
+				} else {
+					for i := 0; i < numInsertCols && i < len(table.Columns); i++ {
+						if strings.EqualFold(table.Columns[i].Name, pkColName) {
+							valueIdx = i
+							break
+						}
+					}
+				}
+				if valueIdx < 0 || valueIdx >= len(valueRow) {
+					continue
+				}
+				hasPrimaryKey = true
+				if numLit, ok := valueRow[valueIdx].(*query.NumberLiteral); ok {
+					pkVal := int64(numLit.Value)
+					key = formatKey(pkVal)
+					if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
+						atomic.StoreInt64(&table.AutoIncSeq, pkVal)
+					}
+				} else {
+					val, err := evaluateExpression(c, nil, nil, valueRow[valueIdx], args)
+					if err == nil && val != nil {
+						if strVal, ok := val.(string); ok {
+							key = "S:" + strVal
+						} else if fVal, ok := toFloat64(val); ok {
+							pkVal := int64(fVal)
+							key = formatKey(pkVal)
+							if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
+								atomic.StoreInt64(&table.AutoIncSeq, pkVal)
+							}
+						}
+					}
+				}
+			}
+		} else {
+			hasPrimaryKey = true
+		}
+
+		if !compositePK && (!hasPrimaryKey || key == "") {
+			autoIncValue = atomic.AddInt64(&table.AutoIncSeq, 1)
+			key = formatKey(autoIncValue)
+		}
+
+		var rowValues []interface{}
+		if n := len(table.Columns); n <= 8 && ts != nil {
+			rowValues = ts.rowBuf[:n]
+		} else {
+			rowValues = make([]interface{}, n)
+		}
+		if buildErr := c.buildInsertRow(table, insertColIndices, insertColumns, valueRow, args, autoIncValue, rowValues); buildErr != nil {
+			return 0, 0, buildErr
+		}
+
+		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, rowValues, security.PolicyInsert); rlsErr != nil {
+			return 0, 0, fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
+		} else if !allowed {
+			return 0, 0, fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
+		}
+
+		var skipRow bool
+		key, skipRow, insertErr = c.validateInsertRowSnapshot(table, tree, stmt, rowValues, args, compositePK, key, ts, snap.indexes, snap.fkRefs)
+		if insertErr != nil {
+			break
+		}
+		if skipRow {
+			continue
+		}
+
+		var valueData []byte
+		if ts != nil {
+			start := len(ts.valueDataBuf)
+			buf, ok := encodeVersionedRowFast(rowValues, time.Now().Unix(), ts.valueDataBuf)
+			if ok {
+				ts.valueDataBuf = buf
+				valueData = ts.valueDataBuf[start:]
+			} else {
+				ts.valueDataBuf = ts.valueDataBuf[:start]
+				data, err := encodeVersionedRow(rowValues, nil)
+				if err != nil {
+					insertErr = err
+					break
+				}
+				ts.valueDataBuf = append(ts.valueDataBuf, data...)
+				valueData = ts.valueDataBuf[start:]
+			}
+		} else {
+			var err error
+			valueData, err = encodeVersionedRow(rowValues, nil)
+			if err != nil {
+				insertErr = err
+				break
+			}
+		}
+
+		if skip, err := c.resolvePKConflictSnapshot(tree, table, stmt, key); err != nil {
+			insertErr = err
+			break
+		} else if skip {
+			continue
+		}
+		if c.keyInPendingWrites(stmt.Table, key) {
+			if stmt.ConflictAction == query.ConflictIgnore {
+				continue
+			}
+			insertErr = fmt.Errorf("UNIQUE constraint failed: duplicate primary key value")
+			break
+		}
+
+		var existingValue []byte
+		if bt, ok := tree.(*btree.BTree); ok {
+			existingValue, _ = bt.GetString(key)
+		} else {
+			existingValue, _ = tree.Get([]byte(key))
+		}
+		c.recordManagerReadTs(ts, stmt.Table, key, existingValue)
+
+		idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexesSnapshot(table, stmt, key, rowValues, ts, snap.indexes)
+		if idxErr != nil {
+			insertErr = idxErr
+			break
+		}
+		if skipRow {
+			continue
+		}
+
+		c.appendPendingWriteTs(ts, PendingWrite{
+			TreeName:     stmt.Table,
+			Key:          key,
+			Value:        valueData,
+			IndexUpdates: idxUpdates,
+		})
+		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
+			mt.SetWrite(stmt.Table, key, valueData)
+		}
+
+		if needsInsertedRows {
+			rowCopy := make([]interface{}, len(rowValues))
+			copy(rowCopy, rowValues)
+			insertedRows = append(insertedRows, rowCopy)
+		}
+		rowsAffected++
+	}
+
+	if insertErr != nil {
+		if ts != nil {
+			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+			rebuildPendingWriteMap(ts)
+		}
+		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
+		if !txnActive {
+			return 0, 0, insertErr
+		}
+		undoToRemove := 1 + len(stmtInserts)
+		var undoLog []undoEntry
+		if ts != nil {
+			undoLog = ts.undoLog
+		}
+		if len(undoLog) >= undoToRemove {
+			c.truncateUndoLog(len(undoLog) - undoToRemove)
+		}
+		return 0, 0, insertErr
+	}
+
+	for _, insertedRow := range insertedRows {
+		if trigErr := c.executeTriggersList(ctx, snap.triggers, "INSERT", "AFTER", insertedRow, nil, table.Columns); trigErr != nil {
+			return 0, 0, fmt.Errorf("AFTER INSERT trigger failed: %w", trigErr)
+		}
+	}
+
+	c.invalidateQueryCache(stmt.Table)
+
+	var returningRows [][]interface{}
+	var returningCols []string
+	if len(stmt.Returning) > 0 && rowsAffected > 0 {
+		for _, insertedRow := range insertedRows {
+			returningRow, cols, err := c.evaluateReturning(stmt.Returning, insertedRow, table, args)
+			if err != nil {
+				return 0, 0, fmt.Errorf("RETURNING clause failed: %w", err)
+			}
+			returningRows = append(returningRows, returningRow)
+			if returningCols == nil {
+				returningCols = cols
+			}
+		}
+	}
+	c.setLastReturning(returningRows, returningCols)
+
+	if rowsAffected > 0 {
+		c.ensureVacuumMaps()
+		c.vacuumMu.Lock()
+		c.liveTuples[stmt.Table] += rowsAffected
+		c.vacuumMu.Unlock()
+	}
+
+	return autoIncValue, rowsAffected, nil
+}
+
 // zeroPadding is a lookup table for common zero-padding lengths (0-20).
 var zeroPadding = [21]string{
 	"",
@@ -148,15 +790,40 @@ func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []int
 	}
 
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	// Schema may have changed while we were lock-free; re-resolve if stale.
 	if table != nil && c.schemaVersion.Load() != ver {
 		var err error
 		table, err = c.getTableLocked(stmt.Table)
 		if err != nil && err != ErrTableNotFound {
+			c.mu.RUnlock()
 			return 0, 0, err
 		}
 	}
+
+	// Check INSTEAD OF trigger first (needs lock).
+	if trig := c.findInsteadOfTrigger(stmt.Table, "INSERT"); trig != nil {
+		c.mu.RUnlock()
+		return c.executeInsteadOfTrigger(ctx, trig, stmt, args)
+	}
+
+	// Determine buffered mode.  We can check enableBufferedWrites without the
+	// lock because it is set once at engine open and never changed afterwards.
+	useBuffer := c.isBufferedMode() && table != nil && table.Partition == nil && stmt.ConflictAction != query.ConflictReplace
+
+	if useBuffer {
+		// Snapshot all metadata needed for the buffered row loop, then release
+		// Catalog.mu so concurrent writers and DDL do not block us.
+		snap, err := c.buildInsertSnapshot(table, stmt, args)
+		if err != nil {
+			c.mu.RUnlock()
+			return 0, 0, err
+		}
+		c.mu.RUnlock()
+		return c.insertBufferedLocked(ctx, stmt, args, snap)
+	}
+
+	// Direct mutation path (legacy single-writer or REPLACE).  Keep the lock.
+	defer c.mu.RUnlock()
 	return c.insertLocked(ctx, stmt, args, table)
 }
 
