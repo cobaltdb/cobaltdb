@@ -144,7 +144,7 @@ func OpenWAL(path string) (*WAL, error) {
 	// since each small WAL record (~60-130 B) would otherwise trigger a flush.
 	wal := &WAL{
 		file:      file,
-		bufWriter: bufio.NewWriterSize(file, 64*1024),
+		bufWriter: bufio.NewWriterSize(file, 1024*1024),
 		path:      path,
 	}
 
