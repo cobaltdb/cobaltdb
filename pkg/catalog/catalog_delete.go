@@ -1,10 +1,10 @@
 package catalog
 
 import (
-	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"sort"
 	"time"
 
@@ -81,6 +81,10 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 
 	// Determine if we can use buffered writes for this delete.
 	useBuffer := c.isBufferedMode() && table.Partition == nil
+
+	// Cache transaction state to avoid repeated goroutine-shard lookups.
+	ts := c.getCurrentTxn()
+	txnActive := ts != nil && ts.txnActive
 
 	// Get all trees for scanning (handles partitioned tables)
 	trees, err := c.getTableTreesForScan(table)
@@ -241,20 +245,20 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 
 	// Track pending-write start position for statement-level rollback in buffered mode.
 	pendingWriteStartPos := 0
-	if ts := c.getCurrentTxn(); ts != nil {
+	if ts != nil {
 		pendingWriteStartPos = len(ts.pendingWrites)
 	}
 
 	// Apply soft deletes (FK enforcement, index cleanup, WAL, triggers)
 	if useBuffer {
-		if err := c.bufferDeleteEntries(ctx, table, stmt, entries); err != nil {
-			if ts := c.getCurrentTxn(); ts != nil {
+		if err := c.bufferDeleteEntries(ctx, table, stmt, entries, ts); err != nil {
+			if ts != nil {
 				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 			}
 			return 0, rowsAffected, err
 		}
 	} else {
-		if _, applyErr := c.applyDeleteEntries(ctx, table, stmt, entries); applyErr != nil {
+		if _, applyErr := c.applyDeleteEntries(ctx, table, stmt, entries, ts, txnActive); applyErr != nil {
 			return 0, rowsAffected, applyErr
 		}
 	}
@@ -314,10 +318,10 @@ func (c *Catalog) processDeleteRow(ctx context.Context, table *TableDef, tree bt
 		}
 	}
 
-		// Apply Row-Level Security check for DELETE
-		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
-			return nil
-		}
+	// Apply Row-Level Security check for DELETE
+	if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
+		return nil
+	}
 
 	// Make copies of key and value
 	keyCopy := make([]byte, len(key))
@@ -449,7 +453,7 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 // applyDeleteEntries performs soft deletion of collected entries: FK enforcement,
 // index cleanup, WAL logging, undo tracking, and AFTER DELETE triggers.
 // Returns the number of rows processed and any error encountered.
-func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt *query.DeleteStmt, entries []deleteEntry) (int64, error) {
+func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt *query.DeleteStmt, entries []deleteEntry, ts *catalogTxnState, txnActive bool) (int64, error) {
 	// Foreign key enforcer for CASCADE/RESTRICT actions
 	fke := NewForeignKeyEnforcer(c)
 
@@ -493,7 +497,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 							if delErr := idxTree.Delete([]byte(indexKey)); delErr != nil {
 								return rowsAffected, fmt.Errorf("failed to delete from unique index %s: %w", idxName, delErr)
 							}
-							if c.isCurrentTxnActive() && getErr == nil {
+							if txnActive && getErr == nil {
 								idxChanges = append(idxChanges, indexUndoEntry{
 									indexName: idxName,
 									key:       []byte(indexKey),
@@ -508,7 +512,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 							if delErr := idxTree.Delete([]byte(compoundKey)); delErr != nil {
 								return rowsAffected, fmt.Errorf("failed to delete from index %s: %w", idxName, delErr)
 							}
-							if c.isCurrentTxnActive() && getErr == nil {
+							if txnActive && getErr == nil {
 								idxChanges = append(idxChanges, indexUndoEntry{
 									indexName: idxName,
 									key:       []byte(compoundKey),
@@ -526,10 +530,10 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 		c.updateVectorIndexesForDelete(stmt.Table, string(key))
 
 		// Log to WAL before applying change
-		if c.wal != nil && c.isCurrentTxnActive() {
+		if c.wal != nil && txnActive {
 			walData := append([]byte(key), 0)
 			record := &storage.WALRecord{
-				TxnID: c.getCurrentTxnID(),
+				TxnID: ts.txnID,
 				Type:  storage.WALDelete,
 				Data:  walData,
 			}
@@ -539,7 +543,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 		}
 
 		// Record undo log entry for rollback
-		if c.isCurrentTxnActive() {
+		if txnActive {
 			keyCopy2 := make([]byte, len(key))
 			copy(keyCopy2, key)
 			valueCopy2 := make([]byte, len(entry.value))
@@ -590,7 +594,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 
 // bufferDeleteEntries buffers soft-deleted rows and their index mutations for
 // commit-time application in MVCC buffered mode.
-func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt *query.DeleteStmt, entries []deleteEntry) error {
+func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt *query.DeleteStmt, entries []deleteEntry, ts *catalogTxnState) error {
 	fke := NewForeignKeyEnforcer(c)
 	for _, entry := range entries {
 		key := entry.key
@@ -643,13 +647,13 @@ func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt
 			})
 		}
 
-		c.appendPendingWrite(PendingWrite{
+		c.appendPendingWriteTs(ts, PendingWrite{
 			TreeName:     entry.treeName,
 			Key:          string(key),
 			Value:        deletedValueData,
 			IndexUpdates: idxUpdates,
 		})
-		if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
+		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
 			mt.SetWrite(entry.treeName, string(key), deletedValueData)
 		}
 

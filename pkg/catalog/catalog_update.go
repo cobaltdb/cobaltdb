@@ -1,10 +1,10 @@
 package catalog
 
 import (
-	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -90,6 +90,10 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			}
 		}
 	}
+
+	// Cache transaction state to avoid repeated goroutine-shard lookups.
+	ts := c.getCurrentTxn()
+	txnActive := ts != nil && ts.txnActive
 
 	// Get all trees for scanning (handles partitioned tables)
 	trees, err := c.getTableTreesForScan(table)
@@ -239,20 +243,20 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 
 	// Track pending-write start position for statement-level rollback in buffered mode.
 	pendingWriteStartPos := 0
-	if ts := c.getCurrentTxn(); ts != nil {
+	if ts != nil {
 		pendingWriteStartPos = len(ts.pendingWrites)
 	}
 
 	// Apply collected updates
 	if useBuffer {
-		if err := c.bufferUpdateEntries(table, stmt, entries); err != nil {
-			if ts := c.getCurrentTxn(); ts != nil {
+		if err := c.bufferUpdateEntries(table, stmt, entries, ts); err != nil {
+			if ts != nil {
 				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 			}
 			return 0, rowsAffected, err
 		}
 	} else {
-		if err := c.applyUpdateEntries(ctx, table, stmt, entries); err != nil {
+		if err := c.applyUpdateEntries(ctx, table, stmt, entries, ts, txnActive); err != nil {
 			return 0, rowsAffected, err
 		}
 	}
@@ -395,10 +399,6 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 	// Now update each row
 	rowsAffected := int64(0)
 
-
-
-
-
 	var entries []joinUpdateEntry
 
 	// Pre-calculate column indices for SET clauses
@@ -476,10 +476,10 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		rowsAffected++
 	}
 
-		// Apply all updates
-		if err := c.applyJoinUpdateEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
-			return 0, rowsAffected, err
-		}
+	// Apply all updates
+	if err := c.applyJoinUpdateEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
+		return 0, rowsAffected, err
+	}
 
 	// Handle RETURNING clause
 	var returningRows [][]interface{}
@@ -502,7 +502,6 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 
 	return int64(len(entries)), rowsAffected, nil
 }
-
 
 // joinUpdateEntry is a local entry type used by updateWithJoinLocked to track
 // pending updates discovered through a JOIN.
@@ -681,10 +680,10 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		rowsAffected++
 	}
 
-		// Soft delete collected entries
-		if err := c.softDeleteJoinEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
-			return 0, rowsAffected, err
-		}
+	// Soft delete collected entries
+	if err := c.softDeleteJoinEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
+		return 0, rowsAffected, err
+	}
 
 	// Handle RETURNING clause (returns OLD row values)
 	var returningRows [][]interface{}
@@ -1020,7 +1019,7 @@ func (c *Catalog) updateRowLocked(tableName string, pkValue interface{}, row map
 // applyUpdateEntries applies collected update entries: re-encodes rows, handles
 // PK changes, enforces FK constraints, logs to WAL, updates indexes, and records
 // undo log entries.
-func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt *query.UpdateStmt, entries []updateEntry) error {
+func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt *query.UpdateStmt, entries []updateEntry, ts *catalogTxnState, txnActive bool) error {
 	pkColIdx := -1
 	if len(table.PrimaryKey) > 0 {
 		pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
@@ -1079,10 +1078,10 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		}
 
 		// Log to WAL before applying change
-		if c.wal != nil && c.isCurrentTxnActive() {
+		if c.wal != nil && txnActive {
 			if pkChanged {
 				deleteRecord := &storage.WALRecord{
-					TxnID: c.getCurrentTxnID(),
+					TxnID: ts.txnID,
 					Type:  storage.WALDelete,
 					Data:  oldKey,
 				}
@@ -1094,7 +1093,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 				walData = append(walData, 0)
 				walData = append(walData, newValueData...)
 				insertRecord := &storage.WALRecord{
-					TxnID: c.getCurrentTxnID(),
+					TxnID: ts.txnID,
 					Type:  storage.WALInsert,
 					Data:  walData,
 				}
@@ -1105,7 +1104,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 				walData := append([]byte(oldKey), 0)
 				walData = append(walData, newValueData...)
 				record := &storage.WALRecord{
-					TxnID: c.getCurrentTxnID(),
+					TxnID: ts.txnID,
 					Type:  storage.WALUpdate,
 					Data:  walData,
 				}
@@ -1142,7 +1141,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 					if idxDef.Unique {
 						oldIdxVal, getErr := idxTree.Get([]byte(oldIndexKey))
 						_ = idxTree.Delete([]byte(oldIndexKey))
-						if c.isCurrentTxnActive() && getErr == nil {
+						if txnActive && getErr == nil {
 							idxChanges = append(idxChanges, indexUndoEntry{
 								indexName: idxName,
 								key:       []byte(oldIndexKey),
@@ -1154,7 +1153,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 						compoundKey := oldIndexKey + "\x00" + string(entry.key)
 						oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
 						_ = idxTree.Delete([]byte(compoundKey))
-						if c.isCurrentTxnActive() && getErr == nil {
+						if txnActive && getErr == nil {
 							idxChanges = append(idxChanges, indexUndoEntry{
 								indexName: idxName,
 								key:       []byte(compoundKey),
@@ -1180,7 +1179,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 					if err := idxTree.Put(idxStorageKey, newKey); err != nil {
 						return fmt.Errorf("failed to update index %s: %w", idxName, err)
 					}
-					if c.isCurrentTxnActive() {
+					if txnActive {
 						idxChanges = append(idxChanges, indexUndoEntry{
 							indexName: idxName,
 							key:       idxStorageKey,
@@ -1195,7 +1194,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, string(entry.key))
 
 		// Record undo log entry for rollback
-		if c.isCurrentTxnActive() {
+		if txnActive {
 			oldValueData, marshalErr := json.Marshal(entry.oldRow)
 			if marshalErr != nil {
 				return fmt.Errorf("failed to encode undo log for row: %w", marshalErr)
@@ -1216,7 +1215,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 
 // bufferUpdateEntries buffers updated rows and their index mutations for
 // commit-time application in MVCC buffered mode.
-func (c *Catalog) bufferUpdateEntries(table *TableDef, stmt *query.UpdateStmt, entries []updateEntry) error {
+func (c *Catalog) bufferUpdateEntries(table *TableDef, stmt *query.UpdateStmt, entries []updateEntry, ts *catalogTxnState) error {
 	for _, entry := range entries {
 		newValueData, err := encodeVersionedRow(entry.newRow, nil)
 		if err != nil {
@@ -1270,13 +1269,13 @@ func (c *Catalog) bufferUpdateEntries(table *TableDef, stmt *query.UpdateStmt, e
 			}
 		}
 
-		c.appendPendingWrite(PendingWrite{
+		c.appendPendingWriteTs(ts, PendingWrite{
 			TreeName:     stmt.Table,
 			Key:          string(entry.key),
 			Value:        newValueData,
 			IndexUpdates: idxUpdates,
 		})
-		if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
+		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
 			mt.SetWrite(stmt.Table, string(entry.key), newValueData)
 		}
 	}

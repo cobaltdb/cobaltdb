@@ -1100,6 +1100,45 @@ func (c *Catalog) recordManagerRead(treeName string, key string, valueData []byt
 	mt.SetReadVersion(treeName, key, ver)
 }
 
+// recordManagerReadTs is the ts-cached variant of recordManagerRead.
+func (c *Catalog) recordManagerReadTs(ts *catalogTxnState, treeName string, key string, valueData []byte) {
+	if ts == nil {
+		return
+	}
+	if ts.readValues == nil {
+		ts.readValues = make(map[txn.WriteKey][]byte)
+	}
+	var valCopy []byte
+	if len(valueData) > 0 {
+		valCopy = make([]byte, len(valueData))
+		copy(valCopy, valueData)
+	}
+	var wk2 txn.WriteKey
+	wk2.TreeName = treeName
+	wk2.Key = key
+	ts.readValues[wk2] = valCopy
+	if ts.treeCache == nil {
+		ts.treeCache = make(map[string]btree.TreeStore, 4)
+	}
+	if ts.treeCache[treeName] == nil {
+		ts.treeCache[treeName] = c.tableTrees[treeName]
+	}
+
+	if !c.enableBufferedWrites || c.txnManager == nil || ts.managerTxn == nil || !ts.txnActive {
+		return
+	}
+	mt, ok := ts.managerTxn.(*txn.Transaction)
+	if !ok || mt == nil {
+		return
+	}
+	mgr, ok := c.txnManager.(*txn.Manager)
+	if !ok || mgr == nil {
+		return
+	}
+	ver := mgr.GetCurrentVersion(treeName, key)
+	mt.SetReadVersion(treeName, key, ver)
+}
+
 // isBufferedMode returns true when the current transaction should buffer
 // writes instead of mutating B-trees directly.
 func (c *Catalog) isBufferedMode() bool {
@@ -1152,6 +1191,34 @@ func (c *Catalog) appendPendingWrite(pw PendingWrite) {
 			if ts.treeCache[idx.IndexName] == nil {
 				ts.treeCache[idx.IndexName] = c.indexTrees[idx.IndexName]
 			}
+		}
+	}
+}
+
+// appendPendingWriteTs is the ts-cached variant of appendPendingWrite.
+func (c *Catalog) appendPendingWriteTs(ts *catalogTxnState, pw PendingWrite) {
+	if ts == nil {
+		return
+	}
+	ts.pendingWrites = append(ts.pendingWrites, pw)
+	if len(ts.pendingWrites) > 1 {
+		if ts.pendingWriteMap == nil {
+			rebuildPendingWriteMap(ts)
+		}
+		if ts.pendingWriteMap[pw.TreeName] == nil {
+			ts.pendingWriteMap[pw.TreeName] = make(map[string]PendingWrite)
+		}
+		ts.pendingWriteMap[pw.TreeName][pw.Key] = pw
+	}
+	if ts.treeCache == nil {
+		ts.treeCache = make(map[string]btree.TreeStore, 4)
+	}
+	if ts.treeCache[pw.TreeName] == nil {
+		ts.treeCache[pw.TreeName] = c.tableTrees[pw.TreeName]
+	}
+	for _, idx := range pw.IndexUpdates {
+		if ts.treeCache[idx.IndexName] == nil {
+			ts.treeCache[idx.IndexName] = c.indexTrees[idx.IndexName]
 		}
 	}
 }

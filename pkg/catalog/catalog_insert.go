@@ -270,7 +270,7 @@ func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insert
 
 // validateInsertRow checks NOT NULL, composite PK, UNIQUE, CHECK, and FK constraints.
 // Returns the (possibly updated) key, whether to skip the row, and any error.
-func (c *Catalog) validateInsertRow(table *TableDef, tree btree.TreeStore, stmt *query.InsertStmt, rowValues []interface{}, args []interface{}, compositePK bool, key string) (string, bool, error) {
+func (c *Catalog) validateInsertRow(table *TableDef, tree btree.TreeStore, stmt *query.InsertStmt, rowValues []interface{}, args []interface{}, compositePK bool, key string, ts *catalogTxnState) (string, bool, error) {
 	// Check NOT NULL constraints
 	for i, col := range table.Columns {
 		if col.NotNull && !col.AutoIncrement && rowValues[i] == nil {
@@ -288,7 +288,7 @@ func (c *Catalog) validateInsertRow(table *TableDef, tree btree.TreeStore, stmt 
 	}
 
 	// Check UNIQUE constraints
-	skipRow, err := c.checkUniqueConstraints(tree, table, stmt, rowValues)
+	skipRow, err := c.checkUniqueConstraints(tree, table, stmt, rowValues, ts)
 	if err != nil {
 		return key, false, err
 	}
@@ -302,7 +302,7 @@ func (c *Catalog) validateInsertRow(table *TableDef, tree btree.TreeStore, stmt 
 	}
 
 	// Check FOREIGN KEY constraints
-	if err := c.checkForeignKeyConstraints(table, rowValues); err != nil {
+	if err := c.checkForeignKeyConstraints(table, rowValues, ts); err != nil {
 		return key, false, err
 	}
 
@@ -377,9 +377,13 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 	}
 
+	// Cache transaction state to avoid repeated goroutine-shard lookups.
+	ts := c.getCurrentTxn()
+	txnActive := ts != nil && ts.txnActive
+
 	// Save AutoIncSeq before insert loop for rollback
 	savedAutoIncSeq := atomic.LoadInt64(&table.AutoIncSeq)
-	if c.isCurrentTxnActive() {
+	if txnActive {
 		c.appendUndoEntry(undoEntry{
 			action:        undoAutoIncSeq,
 			tableName:     stmt.Table,
@@ -392,7 +396,6 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	var insertErr error
 
 	// Track pending-write start position for statement-level rollback in buffered mode.
-	ts := c.getCurrentTxn()
 	pendingWriteStartPos := 0
 	if ts != nil {
 		pendingWriteStartPos = len(ts.pendingWrites)
@@ -506,7 +509,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 		// Validate row constraints and resolve key
 		var skipRow bool
-		key, skipRow, insertErr = c.validateInsertRow(table, tree, stmt, rowValues, args, compositePK, key)
+		key, skipRow, insertErr = c.validateInsertRow(table, tree, stmt, rowValues, args, compositePK, key, ts)
 		if insertErr != nil {
 			break
 		}
@@ -570,10 +573,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			} else {
 				existingValue, _ = tree.Get([]byte(key))
 			}
-			c.recordManagerRead(stmt.Table, key, existingValue)
+			c.recordManagerReadTs(ts, stmt.Table, key, existingValue)
 
 			// Build index updates for commit-time application.
-			idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, key, rowValues)
+			idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, key, rowValues, ts)
 			if idxErr != nil {
 				insertErr = idxErr
 				break
@@ -583,7 +586,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			}
 
 			// Buffer the write for commit-time application.
-			c.appendPendingWrite(PendingWrite{
+			c.appendPendingWriteTs(ts, PendingWrite{
 				TreeName:     stmt.Table,
 				Key:          key,
 				Value:        valueData,
@@ -591,7 +594,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			})
 
 			// Also buffer in the Manager transaction's WriteSet for conflict detection.
-			if mt, ok := c.getCurrentManagerTxn().(*txn.Transaction); ok && mt != nil {
+			if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
 				mt.SetWrite(stmt.Table, key, valueData)
 			}
 
@@ -606,13 +609,13 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 		// Direct mutation path (legacy single-writer mode).
 		// Log to WAL before applying change
-		if c.wal != nil && c.isCurrentTxnActive() {
+		if c.wal != nil && txnActive {
 			// For INSERT, we log the key and value
 			// Format: key (null-terminated) + value
 			walData := append([]byte(key), 0)
 			walData = append(walData, valueData...)
 			record := &storage.WALRecord{
-				TxnID: c.getCurrentTxnID(),
+				TxnID: ts.txnID,
 				Type:  storage.WALInsert,
 				Data:  walData,
 			}
@@ -643,7 +646,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 		var idxChanges []indexUndoEntry
 		// Update indexes and track changes for undo
-		idxChanges, skipRow, insertErr = c.insertRowIndexes(tree, table, stmt, key, rowValues)
+		idxChanges, skipRow, insertErr = c.insertRowIndexes(tree, table, stmt, key, rowValues, ts)
 		if insertErr != nil {
 			// Row was stored but index failed - delete the row and roll back
 			// any index entries that were successfully inserted in this iteration.
@@ -670,7 +673,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Record undo log entry for rollback (after applying change)
-		if c.isCurrentTxnActive() {
+		if txnActive {
 			keyCopy := []byte(key)
 			c.appendUndoEntry(undoEntry{
 				action:       undoInsert,
@@ -702,17 +705,20 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	// Statement-level atomicity: undo all inserts on error
 	if insertErr != nil {
 		// Discard buffered writes added by this statement.
-		if ts := c.getCurrentTxn(); ts != nil {
+		if ts != nil {
 			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 			rebuildPendingWriteMap(ts)
 		}
 		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
-		if !c.isCurrentTxnActive() {
+		if !txnActive {
 			return 0, 0, insertErr
 		}
 		// Inside explicit transaction - remove undo log entries
 		undoToRemove := 1 + len(stmtInserts)
-		undoLog := c.getCurrentTxnUndoLog()
+		var undoLog []undoEntry
+		if ts != nil {
+			undoLog = ts.undoLog
+		}
 		if len(undoLog) >= undoToRemove {
 			c.truncateUndoLog(len(undoLog) - undoToRemove)
 		}
@@ -802,9 +808,10 @@ func (c *Catalog) convertSelectToValueRows(stmt *query.InsertStmt, numCols int, 
 // insertRowIndexes updates all indexes for a single inserted row, handling
 // UNIQUE constraint violations with INSERT OR IGNORE/REPLACE conflict resolution.
 // Returns index undo entries, whether the row should be skipped, and any error.
-func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key string, rowValues []interface{}) ([]indexUndoEntry, bool, error) {
+func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key string, rowValues []interface{}, ts *catalogTxnState) ([]indexUndoEntry, bool, error) {
 	var idxChanges []indexUndoEntry
 	skipRow := false
+	txnActive := ts != nil && ts.txnActive
 	for idxName, idxTree := range c.indexTrees {
 		idxDef := c.indexes[idxName]
 		if idxDef.TableName != stmt.Table || len(idxDef.Columns) == 0 {
@@ -867,7 +874,7 @@ func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *
 		if err := idxTree.Put(idxStorageKey, []byte(key)); err != nil {
 			return idxChanges, skipRow, fmt.Errorf("failed to update index %s: %w", idxName, err)
 		}
-		if c.isCurrentTxnActive() {
+		if txnActive {
 			idxChanges = append(idxChanges, indexUndoEntry{
 				indexName: idxName,
 				key:       idxStorageKey,
@@ -881,7 +888,7 @@ func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *
 // buildBufferedInsertIndexes constructs PendingIndexUpdate entries for a buffered
 // INSERT without mutating index B-trees. It enforces UNIQUE constraints against
 // both committed data and other pending writes in the same transaction.
-func (c *Catalog) buildBufferedInsertIndexes(table *TableDef, stmt *query.InsertStmt, key string, rowValues []interface{}) ([]PendingIndexUpdate, bool, error) {
+func (c *Catalog) buildBufferedInsertIndexes(table *TableDef, stmt *query.InsertStmt, key string, rowValues []interface{}, ts *catalogTxnState) ([]PendingIndexUpdate, bool, error) {
 	var idxUpdates []PendingIndexUpdate
 	for idxName, idxTree := range c.indexTrees {
 		idxDef := c.indexes[idxName]
@@ -895,7 +902,7 @@ func (c *Catalog) buildBufferedInsertIndexes(table *TableDef, stmt *query.Insert
 		// Enforce UNIQUE constraint against committed data and buffered writes
 		if idxDef.Unique {
 			idxVal, err := idxTree.Get([]byte(indexKey))
-			c.recordManagerRead(idxName, indexKey, idxVal)
+			c.recordManagerReadTs(ts, idxName, indexKey, idxVal)
 			if err == nil {
 				if stmt.ConflictAction == query.ConflictIgnore {
 					return nil, true, nil
@@ -924,7 +931,7 @@ func (c *Catalog) buildBufferedInsertIndexes(table *TableDef, stmt *query.Insert
 	return idxUpdates, false, nil
 }
 
-func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, rowValues []interface{}) (bool, error) {
+func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, rowValues []interface{}, ts *catalogTxnState) (bool, error) {
 	for i, col := range table.Columns {
 		if !col.Unique || rowValues[i] == nil {
 			continue
@@ -951,7 +958,7 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 		// Fallback: full table scan if no unique index found
 		if !found {
 			// Check pending writes first (buffered mode)
-			if ts := c.getCurrentTxn(); ts != nil {
+			if ts != nil {
 				if m, ok := ts.getPendingWriteMap()[stmt.Table]; ok {
 					for _, pw := range m {
 						vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
@@ -1054,7 +1061,7 @@ func (c *Catalog) checkInsertConstraints(table *TableDef, rowValues []interface{
 
 // checkForeignKeyConstraints validates FOREIGN KEY references for a row.
 // NULL values skip FK checking per SQL standard.
-func (c *Catalog) checkForeignKeyConstraints(table *TableDef, rowValues []interface{}) error {
+func (c *Catalog) checkForeignKeyConstraints(table *TableDef, rowValues []interface{}, ts *catalogTxnState) error {
 	for _, fk := range table.ForeignKeys {
 		for i, colName := range fk.Columns {
 			colIdx := table.GetColumnIndex(colName)
@@ -1107,19 +1114,17 @@ func (c *Catalog) checkForeignKeyConstraints(table *TableDef, rowValues []interf
 
 			// Also check pending writes in the current transaction for
 			// self-referential or same-statement FK references.
-			if !found {
-				if ts := c.getCurrentTxn(); ts != nil {
-					if m, ok := ts.getPendingWriteMap()[fk.ReferencedTable]; ok {
-						for _, pw := range m {
-							vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
-							if err != nil || vrow.Version.DeletedAt > 0 {
-								continue
-							}
-							refRow := vrow.Data
-							if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
-								found = true
-								break
-							}
+			if !found && ts != nil {
+				if m, ok := ts.getPendingWriteMap()[fk.ReferencedTable]; ok {
+					for _, pw := range m {
+						vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
+						if err != nil || vrow.Version.DeletedAt > 0 {
+							continue
+						}
+						refRow := vrow.Data
+						if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
+							found = true
+							break
 						}
 					}
 				}
