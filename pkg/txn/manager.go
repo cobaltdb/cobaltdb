@@ -328,10 +328,20 @@ func (t *Transaction) SetWrite(treeName, key string, value []byte) {
 }
 
 const numVersionShards = 256
+const numActiveShards = 64
 
 type versionShard struct {
 	mu       sync.Mutex
 	versions map[WriteKey]uint64
+}
+
+type activeShard struct {
+	sync.RWMutex
+	m map[uint64]*Transaction
+}
+
+func activeShardIdx(id uint64) int {
+	return int(id & (numActiveShards - 1))
 }
 
 // versionShardIdx returns a deterministic shard index for the given treeName+key
@@ -353,10 +363,9 @@ func versionShardIdx(treeName, key string) int {
 type Manager struct {
 	counter       uint64 // atomic, monotonic transaction IDs
 	commitSeq     uint64 // atomic, monotonic commit sequence numbers (used for versions)
-	active        map[uint64]*Transaction
+	activeShards  [numActiveShards]activeShard
 	versionShards [numVersionShards]versionShard
 	versionStore  *VersionStore // MVCC version chain storage
-	mu            sync.RWMutex
 	commitCount   atomic.Int64
 	pool          interface{} // BufferPool (using interface{} to avoid import cycle)
 	wal           interface{} // WAL
@@ -382,7 +391,6 @@ type lockEntry struct {
 // NewManager creates a new transaction manager
 func NewManager(pool, wal interface{}) *Manager {
 	m := &Manager{
-		active:                make(map[uint64]*Transaction),
 		versionStore:          NewVersionStore(),
 		pool:                  pool,
 		wal:                   wal,
@@ -392,6 +400,9 @@ func NewManager(pool, wal interface{}) *Manager {
 	}
 	for i := range m.versionShards {
 		m.versionShards[i].versions = make(map[WriteKey]uint64, 128)
+	}
+	for i := range m.activeShards {
+		m.activeShards[i].m = make(map[uint64]*Transaction, 64)
 	}
 	return m
 }
@@ -426,15 +437,16 @@ func (m *Manager) deadlockDetector() {
 // checkForDeadlocks detects cycles in the wait-for graph and aborts transactions to break them
 func (m *Manager) checkForDeadlocks() {
 	// Snapshot active transactions and their waiting states
-	m.mu.RLock()
 	activeTxns := make(map[uint64]*Transaction)
 	waitingMap := make(map[uint64]uint64)
-	for id, txn := range m.active {
-		activeTxns[id] = txn
-		// Read waiting state without holding individual lock
-		waitingMap[id] = txn.waitingFor
+	for i := range m.activeShards {
+		m.activeShards[i].RLock()
+		for id, txn := range m.activeShards[i].m {
+			activeTxns[id] = txn
+			waitingMap[id] = txn.waitingFor
+		}
+		m.activeShards[i].RUnlock()
 	}
-	m.mu.RUnlock()
 
 	// Build wait-for graph and detect cycles
 	visited := make(map[uint64]bool)
@@ -555,9 +567,10 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 		}
 		m.lockMu.Unlock()
 
-		m.mu.RLock()
-		txn, exists := m.active[txnID]
-		m.mu.RUnlock()
+		shard := activeShardIdx(txnID)
+		m.activeShards[shard].RLock()
+		txn, exists := m.activeShards[shard].m[txnID]
+		m.activeShards[shard].RUnlock()
 		if exists {
 			txn.AddLockHeld(key)
 		}
@@ -576,10 +589,14 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 		}
 	}
 
-	m.mu.RLock()
-	txn, exists := m.active[txnID]
-	waitingTxn, waitingExists := m.active[blockerID]
-	m.mu.RUnlock()
+	shard := activeShardIdx(txnID)
+	m.activeShards[shard].RLock()
+	txn, exists := m.activeShards[shard].m[txnID]
+	m.activeShards[shard].RUnlock()
+	blockerShard := activeShardIdx(blockerID)
+	m.activeShards[blockerShard].RLock()
+	waitingTxn, waitingExists := m.activeShards[blockerShard].m[blockerID]
+	m.activeShards[blockerShard].RUnlock()
 
 	if !exists {
 		m.lockMu.Unlock()
@@ -669,9 +686,10 @@ func (m *Manager) wouldCauseDeadlock(txnID, ownerID uint64) bool {
 		}
 		visited[current] = true
 
-		m.mu.RLock()
-		txn, exists := m.active[current]
-		m.mu.RUnlock()
+		shard := activeShardIdx(current)
+		m.activeShards[shard].RLock()
+		txn, exists := m.activeShards[shard].m[current]
+		m.activeShards[shard].RUnlock()
 
 		if !exists {
 			return false
@@ -711,9 +729,10 @@ func (m *Manager) ReleaseLock(txnID uint64, key string) {
 			delete(m.lockEntries, key)
 		}
 
-		m.mu.RLock()
-		txn, exists := m.active[txnID]
-		m.mu.RUnlock()
+		shard := activeShardIdx(txnID)
+		m.activeShards[shard].RLock()
+		txn, exists := m.activeShards[shard].m[txnID]
+		m.activeShards[shard].RUnlock()
 		if exists {
 			txn.RemoveLockHeld(key)
 		}
@@ -722,9 +741,10 @@ func (m *Manager) ReleaseLock(txnID uint64, key string) {
 
 // ReleaseAllLocks releases all locks held by a transaction
 func (m *Manager) ReleaseAllLocks(txnID uint64) {
-	m.mu.RLock()
-	txn, exists := m.active[txnID]
-	m.mu.RUnlock()
+	shard := activeShardIdx(txnID)
+	m.activeShards[shard].RLock()
+	txn, exists := m.activeShards[shard].m[txnID]
+	m.activeShards[shard].RUnlock()
 
 	if !exists {
 		m.lockMu.Lock()
@@ -812,9 +832,10 @@ func (m *Manager) Begin(opts *Options) *Transaction {
 	txn.ctx = ctx
 	txn.cancel = cancel
 
-	m.mu.Lock()
-	m.active[id] = txn
-	m.mu.Unlock()
+	shard := activeShardIdx(id)
+	m.activeShards[shard].Lock()
+	m.activeShards[shard].m[id] = txn
+	m.activeShards[shard].Unlock()
 
 	// Record metrics
 	metrics.GetTransactionMetrics().RecordTxnStart()
@@ -848,9 +869,10 @@ func (m *Manager) BeginWithContext(ctx context.Context, opts *Options) *Transact
 	txn.ctx = ctx
 	txn.cancel = cancel
 
-	m.mu.Lock()
-	m.active[id] = txn
-	m.mu.Unlock()
+	shard := activeShardIdx(id)
+	m.activeShards[shard].Lock()
+	m.activeShards[shard].m[id] = txn
+	m.activeShards[shard].Unlock()
 
 	return txn
 }
@@ -1080,14 +1102,16 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 
 // pruneVersions removes version entries that are no longer needed by any active transaction
 func (m *Manager) pruneVersions() {
-	m.mu.Lock()
 	minActive := uint64(math.MaxUint64)
-	for _, txn := range m.active {
-		if txn.StartTS < minActive {
-			minActive = txn.StartTS
+	for i := range m.activeShards {
+		m.activeShards[i].RLock()
+		for _, txn := range m.activeShards[i].m {
+			if txn.StartTS < minActive {
+				minActive = txn.StartTS
+			}
 		}
+		m.activeShards[i].RUnlock()
 	}
-	m.mu.Unlock()
 
 	// If no active transactions, clear maps in place instead of reallocating.
 	if minActive == math.MaxUint64 {
@@ -1110,17 +1134,19 @@ func (m *Manager) pruneVersions() {
 
 // removeActive removes a transaction from the active set
 func (m *Manager) removeActive(id uint64) {
-	m.mu.Lock()
-	delete(m.active, id)
-	m.mu.Unlock()
+	shard := activeShardIdx(id)
+	m.activeShards[shard].Lock()
+	delete(m.activeShards[shard].m, id)
+	m.activeShards[shard].Unlock()
 }
 
 // Get retrieves an active transaction
 func (m *Manager) Get(id uint64) (*Transaction, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	shard := activeShardIdx(id)
+	m.activeShards[shard].RLock()
+	defer m.activeShards[shard].RUnlock()
 
-	txn, ok := m.active[id]
+	txn, ok := m.activeShards[shard].m[id]
 	if !ok {
 		return nil, ErrTxnNotFound
 	}
@@ -1129,10 +1155,11 @@ func (m *Manager) Get(id uint64) (*Transaction, error) {
 
 // GetTransaction retrieves an active transaction (alias for Get)
 func (m *Manager) GetTransaction(id uint64) *Transaction {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	shard := activeShardIdx(id)
+	m.activeShards[shard].RLock()
+	defer m.activeShards[shard].RUnlock()
 
-	txn, ok := m.active[id]
+	txn, ok := m.activeShards[shard].m[id]
 	if !ok {
 		return nil
 	}

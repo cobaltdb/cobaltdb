@@ -115,9 +115,10 @@ func TestReleaseAllLocksForInactiveTxn(t *testing.T) {
 	mgr.AcquireLock(txn.ID, "key2", time.Second)
 
 	// Manually remove from active so ReleaseAllLocks takes the inactive path
-	mgr.mu.Lock()
-	delete(mgr.active, txn.ID)
-	mgr.mu.Unlock()
+	shard := activeShardIdx(txn.ID)
+	mgr.activeShards[shard].Lock()
+	delete(mgr.activeShards[shard].m, txn.ID)
+	mgr.activeShards[shard].Unlock()
 
 	// Should not panic
 	mgr.ReleaseAllLocks(txn.ID)

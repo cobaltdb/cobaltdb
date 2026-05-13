@@ -101,14 +101,18 @@ func TestDeadlockResolution(t *testing.T) {
 	t1Active := false
 	t2Active := false
 
-	m.mu.RLock()
-	if _, ok := m.active[txn1.ID]; ok {
+	shard1 := activeShardIdx(txn1.ID)
+	m.activeShards[shard1].RLock()
+	if _, ok := m.activeShards[shard1].m[txn1.ID]; ok {
 		t1Active = true
 	}
-	if _, ok := m.active[txn2.ID]; ok {
+	m.activeShards[shard1].RUnlock()
+	shard2 := activeShardIdx(txn2.ID)
+	m.activeShards[shard2].RLock()
+	if _, ok := m.activeShards[shard2].m[txn2.ID]; ok {
 		t2Active = true
 	}
-	m.mu.RUnlock()
+	m.activeShards[shard2].RUnlock()
 
 	if t1Active && t2Active {
 		t.Error("At least one transaction should have been aborted to resolve deadlock")
