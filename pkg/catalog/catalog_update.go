@@ -23,6 +23,19 @@ type updateEntry struct {
 	treeName string // which partition tree this entry came from
 }
 
+// updateSnapshot holds all Catalog metadata needed for the buffered UPDATE scan.
+// It is built under a brief Catalog.mu RLock and then used without the lock.
+type updateSnapshot struct {
+	table       *TableDef
+	trees       []btree.TreeStore
+	treeNames   []string
+	indexedRows map[string]bool
+	useIndex    bool
+	indexes     []indexSnapshot
+	fkRefs      map[string]fkSnapshot
+	triggers    []*query.CreateTriggerStmt
+}
+
 func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
 	// Fast path: resolve table metadata from schema cache without lock.
 	table, ver, cacheHit := c.getCachedTable(stmt.Table)
@@ -34,8 +47,6 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 			c.mu.RUnlock()
 			return 0, 0, err
 		}
-		// Don't return ErrTableNotFound here — updateLocked may need to check
-		// for INSTEAD OF triggers on views.
 		if table != nil {
 			ver = c.schemaVersion.Load()
 			c.putCachedTable(stmt.Table, table)
@@ -44,15 +55,484 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 	}
 
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	if table != nil && c.schemaVersion.Load() != ver {
 		var err error
 		table, err = c.getTableLocked(stmt.Table)
 		if err != nil && err != ErrTableNotFound {
+			c.mu.RUnlock()
 			return 0, 0, err
 		}
 	}
-	return c.updateLocked(ctx, stmt, args, table)
+
+	// Check for INSTEAD OF UPDATE trigger first (for views)
+	if trig := c.findInsteadOfTrigger(stmt.Table, "UPDATE"); trig != nil {
+		defer c.mu.RUnlock()
+		return c.executeInsteadOfUpdateTrigger(ctx, trig, stmt, args)
+	}
+
+	if table == nil {
+		var err error
+		table, err = c.getTableLocked(stmt.Table)
+		if err != nil {
+			c.mu.RUnlock()
+			return 0, 0, err
+		}
+	}
+	if table.Type == "foreign" {
+		c.mu.RUnlock()
+		return 0, 0, fmt.Errorf("cannot update foreign table '%s'", stmt.Table)
+	}
+
+	// Handle UPDATE with JOIN
+	if stmt.From != nil || len(stmt.Joins) > 0 {
+		defer c.mu.RUnlock()
+		return c.updateWithJoinLocked(ctx, stmt, args)
+	}
+
+	useBuffer := c.isBufferedMode() && table.Partition == nil
+	if useBuffer {
+		for _, setClause := range stmt.Set {
+			if table.isPrimaryKeyColumn(setClause.Column) {
+				useBuffer = false
+				break
+			}
+		}
+	}
+	ts := c.getCurrentTxn()
+
+	if !useBuffer {
+		defer c.mu.RUnlock()
+		return c.updateLocked(ctx, stmt, args, table)
+	}
+
+	// Buffered path: snapshot and release lock for scan.
+	snap, err := c.buildUpdateSnapshot(table, stmt, args)
+	if err != nil {
+		c.mu.RUnlock()
+		return 0, 0, err
+	}
+	c.mu.RUnlock()
+
+	entries, rowsAffected, err := c.scanUpdateEntries(ctx, stmt, args, snap, ts)
+	if err != nil {
+		return 0, rowsAffected, err
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	pendingWriteStartPos := 0
+	if ts != nil {
+		pendingWriteStartPos = len(ts.pendingWrites)
+	}
+	if err := c.bufferUpdateEntries(table, stmt, entries, ts); err != nil {
+		if ts != nil {
+			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+		}
+		return 0, rowsAffected, err
+	}
+	// Execute AFTER UPDATE triggers (per-row)
+	for _, entry := range entries {
+		if trigErr := c.executeTriggersList(ctx, snap.triggers, "UPDATE", "AFTER", entry.newRow, entry.oldRow, table.Columns); trigErr != nil {
+			return 0, rowsAffected, fmt.Errorf("AFTER UPDATE trigger failed: %w", trigErr)
+		}
+	}
+
+	c.invalidateQueryCache(stmt.Table)
+
+	// Handle RETURNING clause
+	var returningRows [][]interface{}
+	var returningCols []string
+	if len(stmt.Returning) > 0 && rowsAffected > 0 {
+		for _, entry := range entries {
+			returningRow, cols, err := c.evaluateReturning(stmt.Returning, entry.newRow, table, args)
+			if err != nil {
+				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
+			}
+			returningRows = append(returningRows, returningRow)
+			if returningCols == nil {
+				returningCols = cols
+			}
+		}
+	}
+
+	c.setLastReturning(returningRows, returningCols)
+
+	return 0, rowsAffected, nil
+}
+
+func (c *Catalog) buildUpdateSnapshot(table *TableDef, stmt *query.UpdateStmt, args []interface{}) (*updateSnapshot, error) {
+	snap := &updateSnapshot{table: table}
+	trees, err := c.getTableTreesForScan(table)
+	if err != nil {
+		return nil, err
+	}
+	snap.trees = trees
+	snap.treeNames = []string{stmt.Table}
+	if table.Partition != nil {
+		snap.treeNames = table.getPartitionTreeNames()
+	}
+	if stmt.Where != nil {
+		snap.indexedRows, snap.useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+	}
+	for idxName, idxDef := range c.indexes {
+		if idxDef.TableName == table.Name {
+			snap.indexes = append(snap.indexes, indexSnapshot{
+				name: idxName,
+				def:  idxDef,
+				tree: c.indexTrees[idxName],
+			})
+		}
+	}
+	if len(table.ForeignKeys) > 0 {
+		snap.fkRefs = make(map[string]fkSnapshot, len(table.ForeignKeys))
+		for _, fk := range table.ForeignKeys {
+			if _, ok := snap.fkRefs[fk.ReferencedTable]; ok {
+				continue
+			}
+			refTable, err := c.getTableLocked(fk.ReferencedTable)
+			if err != nil {
+				continue
+			}
+			refTree, exists := c.tableTrees[fk.ReferencedTable]
+			if !exists {
+				continue
+			}
+			snap.fkRefs[fk.ReferencedTable] = fkSnapshot{table: refTable, tree: refTree}
+		}
+	}
+	snap.triggers = c.getTriggersForTableLocked(table.Name, "UPDATE")
+	return snap, nil
+}
+
+func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *TableDef, tree btree.TreeStore, treeName string, key []byte, row []interface{},
+	stmt *query.UpdateStmt, args []interface{}, setColumnIndices []int, entries *[]updateEntry, rowsAffected *int64, snap *updateSnapshot, ts *catalogTxnState) error {
+
+	// Apply Row-Level Security check for UPDATE
+	if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyUpdate); rlsErr != nil || !allowed {
+		return nil
+	}
+
+	// Make a copy of the row to update
+	updatedRow := make([]interface{}, len(row))
+	copy(updatedRow, row)
+
+	// Update fields - use pre-calculated column indices
+	for i, setClause := range stmt.Set {
+		colIdx := setColumnIndices[i]
+		if colIdx >= 0 {
+			newVal, err := evaluateExpression(c, row, table.Columns, setClause.Value, args)
+			if err != nil {
+				return fmt.Errorf("failed to evaluate SET expression for column '%s': %w", setClause.Column, err)
+			}
+			updatedRow[colIdx] = newVal
+		}
+	}
+
+	// Make copies since buffers may be reused
+	keyCopy := make([]byte, len(key))
+	copy(keyCopy, key)
+
+	// Check UNIQUE constraints before updating
+	for i, col := range table.Columns {
+		if col.Unique && updatedRow[i] != nil {
+			checkIter, scanErr := tree.Scan(nil, nil)
+			if scanErr != nil {
+				return fmt.Errorf("failed to scan table for UNIQUE check: %w", scanErr)
+			}
+			duplicate := false
+			for checkIter.HasNext() {
+				checkKey, existingData, err := checkIter.Next()
+				if err != nil {
+					break
+				}
+				if string(checkKey) == string(key) {
+					continue
+				}
+				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
+				if err != nil {
+					continue
+				}
+				existingRow := vrow.Data
+				if len(existingRow) > i && compareValues(updatedRow[i], existingRow[i]) == 0 {
+					duplicate = true
+					break
+				}
+			}
+			checkIter.Close()
+			if duplicate {
+				return fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
+			}
+		}
+	}
+
+	// Check UNIQUE INDEX constraints before updating (snapshot version)
+	for _, idx := range snap.indexes {
+		if !idx.def.Unique || len(idx.def.Columns) == 0 {
+			continue
+		}
+		newIdxKey, newOk := buildCompositeIndexKey(table, idx.def, updatedRow)
+		if !newOk {
+			continue
+		}
+		oldIdxKey, _ := buildCompositeIndexKey(table, idx.def, row)
+		if newIdxKey == oldIdxKey {
+			continue
+		}
+		if idx.tree != nil {
+			if _, err := idx.tree.Get([]byte(newIdxKey)); err == nil {
+				return fmt.Errorf("UNIQUE constraint failed: duplicate value in index %s", idx.name)
+			}
+		}
+	}
+
+	// Check NOT NULL constraints before updating
+	for i, col := range table.Columns {
+		if col.NotNull && i < len(updatedRow) && updatedRow[i] == nil {
+			return fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
+		}
+	}
+
+	// Check CHECK constraints before updating
+	for _, col := range table.Columns {
+		if col.Check != nil {
+			result, err := evaluateExpression(c, updatedRow, table.Columns, col.Check, args)
+			if err != nil {
+				return fmt.Errorf("CHECK constraint failed: %w", err)
+			}
+			if result != nil {
+				if resultBool, ok := result.(bool); ok && !resultBool {
+					return fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
+				}
+			}
+		}
+	}
+
+	// Check FOREIGN KEY constraints on updated columns (snapshot version)
+	for _, fk := range table.ForeignKeys {
+		for i, colName := range fk.Columns {
+			colIdx := table.GetColumnIndex(colName)
+			if colIdx < 0 || colIdx >= len(updatedRow) {
+				continue
+			}
+			fkValue := updatedRow[colIdx]
+			if fkValue == nil {
+				continue
+			}
+			if colIdx < len(row) && compareValues(fkValue, row[colIdx]) == 0 {
+				continue
+			}
+			refSnap, ok := snap.fkRefs[fk.ReferencedTable]
+			if !ok || refSnap.tree == nil {
+				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
+			}
+			refTable := refSnap.table
+			refTree := refSnap.tree
+			refColIdx := 0
+			if len(fk.ReferencedColumns) > i {
+				refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
+			}
+			found := false
+			refIter, scanErr := refTree.Scan(nil, nil)
+			if scanErr != nil {
+				return fmt.Errorf("FOREIGN KEY constraint failed: %w", scanErr)
+			}
+			for refIter.HasNext() {
+				_, refData, err := refIter.Next()
+				if err != nil {
+					break
+				}
+				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
+				if err != nil {
+					continue
+				}
+				refRow := vrow.Data
+				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
+					found = true
+					break
+				}
+			}
+			refIter.Close()
+			if !found && ts != nil {
+				if m, ok := ts.getPendingWriteMap()[fk.ReferencedTable]; ok {
+					for _, pw := range m {
+						vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
+						if err != nil || vrow.Version.DeletedAt > 0 {
+							continue
+						}
+						refRow := vrow.Data
+						if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
+							found = true
+							break
+						}
+					}
+				}
+			}
+			if !found {
+				return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
+			}
+		}
+	}
+
+	*entries = append(*entries, updateEntry{
+		key:      keyCopy,
+		oldRow:   row,
+		newRow:   updatedRow,
+		treeName: treeName,
+	})
+	*rowsAffected++
+	return nil
+}
+
+func (c *Catalog) processUpdateRowSnapshot(ctx context.Context, table *TableDef, tree btree.TreeStore, treeName string, key []byte, valueData []byte,
+	stmt *query.UpdateStmt, args []interface{}, setColumnIndices []int, entries *[]updateEntry, rowsAffected *int64, snap *updateSnapshot, ts *catalogTxnState) error {
+
+	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+	if err != nil {
+		return nil
+	}
+	row := vrow.Data
+	if vrow.Version.DeletedAt > 0 {
+		return nil
+	}
+	if stmt.Where != nil {
+		matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+		if err != nil {
+			return fmt.Errorf("WHERE evaluation error: %w", err)
+		}
+		if !matched {
+			return nil
+		}
+	}
+	return c.processUpdateRowDataSnapshot(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, entries, rowsAffected, snap, ts)
+}
+
+func (c *Catalog) scanUpdateEntries(ctx context.Context, stmt *query.UpdateStmt, args []interface{}, snap *updateSnapshot, ts *catalogTxnState) ([]updateEntry, int64, error) {
+	table := snap.table
+	trees := snap.trees
+	treeNames := snap.treeNames
+	indexedRows := snap.indexedRows
+	useIndex := snap.useIndex
+	useBuffer := c.isBufferedMode() && table.Partition == nil
+
+	// Pre-calculate column indices for SET clauses
+	setColumnIndices := make([]int, len(stmt.Set))
+	for i, setClause := range stmt.Set {
+		setColumnIndices[i] = table.GetColumnIndex(setClause.Column)
+		if setColumnIndices[i] < 0 {
+			return nil, 0, fmt.Errorf("column '%s' not found in table '%s'", setClause.Column, stmt.Table)
+		}
+	}
+
+	var entries []updateEntry
+	rowsAffected := int64(0)
+
+	for treeIdx, tree := range trees {
+		treeName := treeNames[treeIdx]
+
+		var pendingKeys map[string]PendingWrite
+		if ts != nil {
+			pendingKeys = ts.getPendingWriteMap()[treeName]
+		}
+
+		if useIndex {
+			for pkStr := range indexedRows {
+				key := []byte(pkStr)
+				valueData, err := tree.Get(key)
+				found := err == nil && valueData != nil
+				if pwValue, ok := pendingKeys[pkStr]; ok {
+					valueData = pwValue.Value
+					found = true
+				} else if found && useBuffer {
+					c.recordManagerRead(treeName, pkStr, valueData)
+				}
+				if !found {
+					continue
+				}
+				if err := c.processUpdateRowSnapshot(ctx, table, tree, treeName, key, valueData, stmt, args, setColumnIndices, &entries, &rowsAffected, snap, ts); err != nil {
+					return entries, rowsAffected, err
+				}
+			}
+			continue
+		}
+
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return entries, 0, fmt.Errorf("failed to scan table for UPDATE: %w", err)
+		}
+		seenPending := make(map[string]bool)
+
+		for iter.HasNext() {
+			key, valueData, err := iter.Next()
+			if err != nil {
+				break
+			}
+			k := string(key)
+			fromPending := false
+			if pwValue, ok := pendingKeys[k]; ok {
+				valueData = pwValue.Value
+				seenPending[k] = true
+				fromPending = true
+			}
+
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil {
+				continue
+			}
+			row := vrow.Data
+
+			if vrow.Version.DeletedAt > 0 {
+				continue
+			}
+
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+				if err != nil {
+					return entries, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+				}
+				if !matched {
+					continue
+				}
+			}
+
+			if !fromPending && useBuffer {
+				c.recordManagerRead(treeName, string(key), valueData)
+			}
+
+			if err := c.processUpdateRowDataSnapshot(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected, snap, ts); err != nil {
+				return entries, rowsAffected, err
+			}
+		}
+		iter.Close()
+
+		var pendingKeyList []string
+		for k := range pendingKeys {
+			if !seenPending[k] {
+				pendingKeyList = append(pendingKeyList, k)
+			}
+		}
+		sort.Strings(pendingKeyList)
+		for _, k := range pendingKeyList {
+			key := []byte(k)
+			valueData := pendingKeys[k].Value
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil || vrow.Version.DeletedAt > 0 {
+				continue
+			}
+			row := vrow.Data
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+				if err != nil || !matched {
+					continue
+				}
+			}
+			if err := c.processUpdateRowDataSnapshot(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected, snap, ts); err != nil {
+				return entries, rowsAffected, err
+			}
+		}
+	}
+
+	return entries, rowsAffected, nil
 }
 
 func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args []interface{}, tableArg ...*TableDef) (int64, int64, error) {
