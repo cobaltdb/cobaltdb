@@ -22,6 +22,16 @@ type deleteEntry struct {
 	treeName string        // which partition tree this entry came from
 }
 
+// deleteSnapshot holds all Catalog metadata needed for the buffered DELETE scan.
+// It is built under a brief Catalog.mu RLock and then used without the lock.
+type deleteSnapshot struct {
+	table       *TableDef
+	trees       []btree.TreeStore
+	treeNames   []string
+	indexedRows map[string]bool
+	useIndex    bool
+}
+
 func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
 	// Fast path: resolve table metadata from schema cache without lock.
 	table, ver, cacheHit := c.getCachedTable(stmt.Table)
@@ -43,15 +53,248 @@ func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []int
 	}
 
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	if table != nil && c.schemaVersion.Load() != ver {
 		var err error
 		table, err = c.getTableLocked(stmt.Table)
 		if err != nil && err != ErrTableNotFound {
+			c.mu.RUnlock()
 			return 0, 0, err
 		}
 	}
-	return c.deleteLocked(ctx, stmt, args, table)
+
+	// Check for INSTEAD OF DELETE trigger first (for views)
+	if trig := c.findInsteadOfTrigger(stmt.Table, "DELETE"); trig != nil {
+		defer c.mu.RUnlock()
+		return c.executeInsteadOfDeleteTrigger(ctx, trig, stmt, args)
+	}
+
+	if table == nil {
+		var err error
+		table, err = c.getTableLocked(stmt.Table)
+		if err != nil {
+			c.mu.RUnlock()
+			return 0, 0, err
+		}
+	}
+	if table.Type == "foreign" {
+		c.mu.RUnlock()
+		return 0, 0, fmt.Errorf("cannot delete from foreign table '%s'", stmt.Table)
+	}
+
+	// Handle DELETE with USING (JOIN)
+	if len(stmt.Using) > 0 {
+		defer c.mu.RUnlock()
+		return c.deleteWithUsingLocked(ctx, stmt, args)
+	}
+
+	useBuffer := c.isBufferedMode() && table.Partition == nil
+	ts := c.getCurrentTxn()
+
+	if !useBuffer {
+		defer c.mu.RUnlock()
+		return c.deleteLocked(ctx, stmt, args, table)
+	}
+
+	// Buffered path: snapshot and release lock for scan.
+	snap, err := c.buildDeleteSnapshot(table, stmt, args)
+	if err != nil {
+		c.mu.RUnlock()
+		return 0, 0, err
+	}
+	c.mu.RUnlock()
+
+	entries, rowsAffected, err := c.scanDeleteEntries(ctx, stmt, args, snap, ts)
+	if err != nil {
+		return 0, rowsAffected, err
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	pendingWriteStartPos := 0
+	if ts != nil {
+		pendingWriteStartPos = len(ts.pendingWrites)
+	}
+	if err := c.bufferDeleteEntries(ctx, table, stmt, entries, ts); err != nil {
+		if ts != nil {
+			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+		}
+		return 0, rowsAffected, err
+	}
+
+	c.invalidateQueryCache(stmt.Table)
+
+	// Handle RETURNING clause (returns OLD row values)
+	var returningRows [][]interface{}
+	var returningCols []string
+	if len(stmt.Returning) > 0 && rowsAffected > 0 {
+		for _, entry := range entries {
+			returningRow, cols, err := c.evaluateReturning(stmt.Returning, entry.row, table, args)
+			if err != nil {
+				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
+			}
+			returningRows = append(returningRows, returningRow)
+			if returningCols == nil {
+				returningCols = cols
+			}
+		}
+	}
+
+	c.setLastReturning(returningRows, returningCols)
+
+	return 0, rowsAffected, nil
+}
+
+func (c *Catalog) buildDeleteSnapshot(table *TableDef, stmt *query.DeleteStmt, args []interface{}) (*deleteSnapshot, error) {
+	snap := &deleteSnapshot{table: table}
+	trees, err := c.getTableTreesForScan(table)
+	if err != nil {
+		return nil, err
+	}
+	snap.trees = trees
+	snap.treeNames = []string{stmt.Table}
+	if table.Partition != nil {
+		snap.treeNames = table.getPartitionTreeNames()
+	}
+	if stmt.Where != nil {
+		snap.indexedRows, snap.useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+	}
+	return snap, nil
+}
+
+func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt, args []interface{}, snap *deleteSnapshot, ts *catalogTxnState) ([]deleteEntry, int64, error) {
+	table := snap.table
+	trees := snap.trees
+	treeNames := snap.treeNames
+	indexedRows := snap.indexedRows
+	useIndex := snap.useIndex
+	useBuffer := c.isBufferedMode() && table.Partition == nil
+
+	var entries []deleteEntry
+	rowsAffected := int64(0)
+
+	for i, tree := range trees {
+		treeName := treeNames[i]
+
+		var pendingKeys map[string]PendingWrite
+		if ts != nil {
+			pendingKeys = ts.getPendingWriteMap()[treeName]
+		}
+
+		if useIndex {
+			for pkStr := range indexedRows {
+				key := []byte(pkStr)
+				valueData, err := tree.Get(key)
+				found := err == nil && valueData != nil
+				if pwValue, ok := pendingKeys[pkStr]; ok {
+					valueData = pwValue.Value
+					found = true
+				} else if found && useBuffer {
+					c.recordManagerReadTs(ts, treeName, pkStr, valueData)
+				}
+				if !found {
+					continue
+				}
+				if err := c.processDeleteRow(ctx, table, tree, treeName, key, valueData, stmt, args, &entries, &rowsAffected); err != nil {
+					return entries, rowsAffected, err
+				}
+			}
+			continue
+		}
+
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return entries, 0, fmt.Errorf("failed to scan table for DELETE: %w", err)
+		}
+		seenPending := make(map[string]bool)
+		for iter.HasNext() {
+			k, valueData, err := iter.NextString()
+			if err != nil {
+				break
+			}
+			fromPending := false
+			if pwValue, ok := pendingKeys[k]; ok {
+				valueData = pwValue.Value
+				seenPending[k] = true
+				fromPending = true
+			}
+
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil {
+				continue
+			}
+			row := vrow.Data
+
+			if vrow.Version.DeletedAt > 0 {
+				continue
+			}
+
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+				if err != nil {
+					iter.Close()
+					return entries, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+				}
+				if !matched {
+					continue
+				}
+			}
+
+			if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
+				continue
+			}
+
+			if !fromPending && useBuffer {
+				c.recordManagerReadTs(ts, treeName, k, valueData)
+			}
+
+			keyCopy := make([]byte, len(k))
+			copy(keyCopy, []byte(k))
+			valueCopy := make([]byte, len(valueData))
+			copy(valueCopy, valueData)
+
+			entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
+			rowsAffected++
+		}
+		iter.Close()
+
+		var pendingKeyList []string
+		for k := range pendingKeys {
+			if !seenPending[k] {
+				pendingKeyList = append(pendingKeyList, k)
+			}
+		}
+		sort.Strings(pendingKeyList)
+		for _, k := range pendingKeyList {
+			key := []byte(k)
+			valueData := pendingKeys[k].Value
+			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			if err != nil || vrow.Version.DeletedAt > 0 {
+				continue
+			}
+			row := vrow.Data
+			if stmt.Where != nil {
+				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+				if err != nil {
+					return entries, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+				}
+				if !matched {
+					continue
+				}
+			}
+			if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
+				continue
+			}
+			keyCopy := make([]byte, len(key))
+			copy(keyCopy, key)
+			valueCopy := make([]byte, len(valueData))
+			copy(valueCopy, valueData)
+			entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
+			rowsAffected++
+		}
+	}
+
+	return entries, rowsAffected, nil
 }
 
 func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args []interface{}, tableArg ...*TableDef) (int64, int64, error) {
@@ -92,10 +335,6 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		return 0, 0, err
 	}
 
-	// Collect keys and row data to delete (need row data for index cleanup)
-	var entries []deleteEntry
-	rowsAffected := int64(0)
-
 	// Scan all partition trees to collect entries to delete
 	// Get tree names for later lookup during deletion
 	treeNames := []string{stmt.Table}
@@ -103,144 +342,17 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		treeNames = table.getPartitionTreeNames()
 	}
 
-	// Check if we can use an index for the WHERE clause
-	var indexedRows map[string]bool
-	useIndex := false
-	if stmt.Where != nil {
-		indexedRows, useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+	snap := &deleteSnapshot{
+		table:     table,
+		trees:     trees,
+		treeNames: treeNames,
 	}
-
-	for i, tree := range trees {
-		treeName := treeNames[i]
-
-		// Collect pending writes for this tree to overlay in scan.
-		var pendingKeys map[string]PendingWrite
-		if ts != nil {
-			pendingKeys = ts.getPendingWriteMap()[treeName]
-		}
-
-		// If we have indexed rows, only process those specific rows
-		if useIndex {
-			for pkStr := range indexedRows {
-				key := []byte(pkStr)
-				valueData, err := tree.Get(key)
-				found := err == nil && valueData != nil
-				// Overlay pending write
-				if pwValue, ok := pendingKeys[pkStr]; ok {
-					valueData = pwValue.Value
-					found = true
-				} else if found && useBuffer {
-					c.recordManagerReadTs(ts, treeName, pkStr, valueData)
-				}
-				if !found {
-					continue
-				}
-				// Process this row
-				if err := c.processDeleteRow(ctx, table, tree, treeName, key, valueData, stmt, args, &entries, &rowsAffected); err != nil {
-					return 0, rowsAffected, err
-				}
-			}
-			continue
-		}
-
-		// Full table scan path
-		iter, err := tree.Scan(nil, nil)
-		if err != nil {
-			return 0, 0, fmt.Errorf("failed to scan table for DELETE: %w", err)
-		}
-		seenPending := make(map[string]bool)
-		for iter.HasNext() {
-			k, valueData, err := iter.NextString()
-			if err != nil {
-				break
-			}
-			fromPending := false
-			if pwValue, ok := pendingKeys[k]; ok {
-				valueData = pwValue.Value
-				seenPending[k] = true
-				fromPending = true
-			}
-
-			// Decode row with version info
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-			if err != nil {
-				continue
-			}
-			row := vrow.Data
-
-			// Skip already deleted rows
-			if vrow.Version.DeletedAt > 0 {
-				continue
-			}
-
-			// Apply WHERE clause if present
-			if stmt.Where != nil {
-				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
-				if err != nil {
-					iter.Close()
-					return 0, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
-				}
-				if !matched {
-					continue // Skip row that doesn't match WHERE condition
-				}
-			}
-
-			// Apply Row-Level Security check for DELETE
-			if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
-				continue
-			}
-
-			if !fromPending && useBuffer {
-				c.recordManagerReadTs(ts, treeName, k, valueData)
-			}
-
-			// Make copies of key and value since iterator may reuse buffers
-			keyCopy := make([]byte, len(k))
-			copy(keyCopy, k)
-			valueCopy := make([]byte, len(valueData))
-			copy(valueCopy, valueData)
-
-			entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
-			rowsAffected++
-		}
-		iter.Close()
-
-		// Process pending inserts/updates not present in B-tree
-		var pendingKeyList []string
-		for k := range pendingKeys {
-			if !seenPending[k] {
-				pendingKeyList = append(pendingKeyList, k)
-			}
-		}
-		sort.Strings(pendingKeyList)
-		for _, k := range pendingKeyList {
-			key := []byte(k)
-			valueData := pendingKeys[k].Value
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-			if err != nil || vrow.Version.DeletedAt > 0 {
-				continue
-			}
-			row := vrow.Data
-			if stmt.Where != nil {
-				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
-				if err != nil {
-					return 0, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
-				}
-				if !matched {
-					continue
-				}
-			}
-			// Apply Row-Level Security check for DELETE
-			if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
-				continue
-			}
-			keyCopy := make([]byte, len(key))
-			copy(keyCopy, key)
-			valueCopy := make([]byte, len(valueData))
-			copy(valueCopy, valueData)
-			entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
-			rowsAffected++
-		}
+	if stmt.Where != nil {
+		snap.indexedRows, snap.useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+	}
+	entries, rowsAffected, err := c.scanDeleteEntries(ctx, stmt, args, snap, ts)
+	if err != nil {
+		return 0, rowsAffected, err
 	}
 
 	// Track pending-write start position for statement-level rollback in buffered mode.
