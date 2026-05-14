@@ -243,18 +243,12 @@ func decodeVersionedRowFastEx(data []byte, numCols int, out []interface{}, strin
 	if cap(out) < numCols {
 		return VersionedRow{}, stringIdx, false
 	}
-	// Find "data":[ array
-	pos := 1 // skip {
-	for pos <= len(data)-len(dataKeyBytes) {
-		if data[pos] == 'd' && pos+len(dataKeyBytes) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(dataKeyBytes)], dataKeyBytes) {
-			pos = pos - 1 + len(dataKeyBytes)
-			goto foundData
-		}
-		pos++
+	// Fast path: the format is always {"data":[...],"version":{...}}
+	// "data":[ starts at index 1 (after {). Unrolled check avoids slice+memcmp.
+	if len(data) < 16 || data[0] != '{' || data[1] != '"' || data[2] != 'd' || data[3] != 'a' || data[4] != 't' || data[5] != 'a' || data[6] != '"' || data[7] != ':' || data[8] != '[' {
+		return VersionedRow{}, stringIdx, false
 	}
-	return VersionedRow{}, stringIdx, false
-
-foundData:
+	pos := 9 // skip {"data":[
 	// Parse the data array elements into the provided buffer.
 	rowData := out[:numCols]
 	colIdx := 0
@@ -415,28 +409,29 @@ foundData:
 
 	// Parse version: find "created_at": and "deleted_at":
 	var createdAt, deletedAt int64
-	for pos < len(data) {
-		if data[pos] == 'c' && pos > 0 && data[pos-1] == '"' && pos-1+len(createdAtKey) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(createdAtKey)], createdAtKey) {
-			numStart := pos - 1 + len(createdAtKey)
+	// Fast path: search for createdAtKey starting from current pos, then deletedAtKey after that.
+	// The format is fixed: ...,"version":{"created_at":N,"deleted_at":M}
+	if ca := bytes.Index(data[pos:], createdAtKey); ca >= 0 {
+		numStart := pos + ca + len(createdAtKey)
+		for numStart < len(data) && data[numStart] <= ' ' {
+			numStart++
+		}
+		numEnd := numStart
+		if numEnd < len(data) && data[numEnd] == '-' {
+			numEnd++
+		}
+		for numEnd < len(data) && data[numEnd] >= '0' && data[numEnd] <= '9' {
+			numEnd++
+		}
+		if v, ok := parseInt64Fast(data[numStart:numEnd]); ok {
+			createdAt = v
+		}
+		if da := bytes.Index(data[numEnd:], deletedAtKey); da >= 0 {
+			numStart = numEnd + da + len(deletedAtKey)
 			for numStart < len(data) && data[numStart] <= ' ' {
 				numStart++
 			}
-			numEnd := numStart
-			if numEnd < len(data) && data[numEnd] == '-' {
-				numEnd++
-			}
-			for numEnd < len(data) && data[numEnd] >= '0' && data[numEnd] <= '9' {
-				numEnd++
-			}
-			if v, ok := parseInt64Fast(data[numStart:numEnd]); ok {
-				createdAt = v
-			}
-		} else if data[pos] == 'd' && pos > 0 && data[pos-1] == '"' && pos-1+len(deletedAtKey) <= len(data) && bytes.Equal(data[pos-1:pos-1+len(deletedAtKey)], deletedAtKey) {
-			numStart := pos - 1 + len(deletedAtKey)
-			for numStart < len(data) && data[numStart] <= ' ' {
-				numStart++
-			}
-			numEnd := numStart
+			numEnd = numStart
 			if numEnd < len(data) && data[numEnd] == '-' {
 				numEnd++
 			}
@@ -447,7 +442,6 @@ foundData:
 				deletedAt = v
 			}
 		}
-		pos++
 	}
 
 	// Pad row to match column count
