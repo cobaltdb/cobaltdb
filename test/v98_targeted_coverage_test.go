@@ -196,7 +196,7 @@ func TestV98_ComplexViewWithAlias(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
-	if rows[0][1] != "Alice" {
+	if fmt.Sprintf("%v", rows[0][1]) != "Alice" {
 		t.Errorf("expected Alice, got %v", rows[0][1])
 	}
 }

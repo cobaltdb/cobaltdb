@@ -463,7 +463,7 @@ func evalStringQuote(evalArgs []interface{}) funcResult {
 	if evalArgs[0] == nil {
 		return funcResult{"NULL", nil}
 	}
-	if s, ok := evalArgs[0].(string); ok {
+	if s, ok := toString(evalArgs[0]); ok {
 		return funcResult{"'" + strings.ReplaceAll(s, "'", "''") + "'", nil}
 	}
 	return funcResult{ValueToStringKey(evalArgs[0]), nil}

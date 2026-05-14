@@ -81,8 +81,8 @@ func TestReal_InsertAndSelect(t *testing.T) {
 		if row[0].(int64) != expected[i].id {
 			t.Errorf("Row %d: expected id %d, got %d", i, expected[i].id, row[0].(int64))
 		}
-		if row[1].(string) != expected[i].name {
-			t.Errorf("Row %d: expected name %s, got %s", i, expected[i].name, row[1].(string))
+		if s, _ := toString(row[1]); s != expected[i].name {
+			t.Errorf("Row %d: expected name %s, got %s", i, expected[i].name, s)
 		}
 		if row[2].(int64) != expected[i].age {
 			t.Errorf("Row %d: expected age %d, got %d", i, expected[i].age, row[2].(int64))
@@ -242,7 +242,7 @@ func TestReal_Join(t *testing.T) {
 	// Verify totals
 	found := make(map[string]int64)
 	for _, row := range rows {
-		name := row[0].(string)
+		name , _ := toString(row[0])
 		total := row[1].(float64)
 		found[name] = int64(total)
 	}
@@ -515,7 +515,7 @@ func TestReal_LeftJoin(t *testing.T) {
 	// Check Marketing department has NULL employee
 	foundMarketingNull := false
 	for _, row := range rows {
-		dept := row[0].(string)
+		dept , _ := toString(row[0])
 		emp := row[1]
 		if dept == "Marketing" && emp == nil {
 			foundMarketingNull = true
@@ -757,8 +757,8 @@ func TestReal_UpdateMultipleColumns(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("Expected 1 row, got %d", len(rows))
 	}
-	if rows[0][0].(string) != "Alicia" {
-		t.Errorf("Expected name Alicia, got %v", rows[0][0])
+	if s, _ := toString(rows[0][0]); s != "Alicia" {
+		t.Errorf("Expected name Alicia, got %v", s)
 	}
 	if rows[0][1].(int64) != 31 {
 		t.Errorf("Expected age 31, got %v", rows[0][1])
@@ -804,8 +804,8 @@ func TestReal_Distinct(t *testing.T) {
 	// Verify A, B, C
 	expected := []string{"A", "B", "C"}
 	for i, row := range rows {
-		if row[0].(string) != expected[i] {
-			t.Errorf("Row %d: expected %s, got %s", i, expected[i], row[0].(string))
+		if s, _ := toString(row[0]); s != expected[i] {
+			t.Errorf("Row %d: expected %s, got %s", i, expected[i], s)
 		}
 	}
 }
@@ -1040,8 +1040,8 @@ func TestReal_CaseExpression(t *testing.T) {
 
 	expected := []string{"A", "B", "C", "C"}
 	for i, row := range rows {
-		if row[1].(string) != expected[i] {
-			t.Errorf("Row %d: expected grade %s, got %s", i, expected[i], row[1].(string))
+		if s, _ := toString(row[1]); s != expected[i] {
+			t.Errorf("Row %d: expected grade %s, got %s", i, expected[i], s)
 		}
 	}
 }

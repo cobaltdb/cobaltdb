@@ -636,7 +636,7 @@ func TestFunctional_UpdateMultipleColumns(t *testing.T) {
 	if fmt.Sprintf("%v", rows[0][0]) != "99" {
 		t.Errorf("expected a=99, got %v", rows[0][0])
 	}
-	if fmt.Sprintf("%v", rows[0][1]) != "new" {
+	if s, _ := toString(rows[0][1]); s != "new" {
 		t.Errorf("expected b='new', got %v", rows[0][1])
 	}
 }

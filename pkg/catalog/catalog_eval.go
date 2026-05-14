@@ -155,7 +155,7 @@ func (ctx *EvalContext) evaluate(expr query.Expression) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-		jsonStr, ok := val.(string)
+		jsonStr, ok := toString(val)
 		if !ok {
 			return nil, nil
 		}
@@ -313,8 +313,8 @@ func compareValues(a, b interface{}) int {
 	}
 
 	// Fast path: both are non-numeric strings (avoids failed ParseFloat)
-	aStr, aIsStr := a.(string)
-	bStr, bIsStr := b.(string)
+	aStr, aIsStr := toString(a)
+	bStr, bIsStr := toString(b)
 	if aIsStr && bIsStr && !looksLikeNumber(aStr) && !looksLikeNumber(bStr) {
 		if aStr < bStr {
 			return -1
@@ -646,7 +646,7 @@ func evaluateCastFunction(funcName string, evalArgs []interface{}) (interface{},
 		if f, ok := toFloat64(evalArgs[0]); ok {
 			return int64(f), true, nil
 		}
-		if s, ok := evalArgs[0].(string); ok {
+		if s, ok := toString(evalArgs[0]); ok {
 			i, err := strconv.ParseInt(s, 10, 64)
 			if err == nil {
 				return i, true, nil
@@ -666,7 +666,7 @@ func evaluateCastFunction(funcName string, evalArgs []interface{}) (interface{},
 		if f, ok := toFloat64(evalArgs[0]); ok {
 			return f, true, nil
 		}
-		if s, ok := evalArgs[0].(string); ok {
+		if s, ok := toString(evalArgs[0]); ok {
 			f, err := strconv.ParseFloat(s, 64)
 			if err == nil {
 				return f, true, nil
@@ -682,7 +682,7 @@ func evaluateCastFunction(funcName string, evalArgs []interface{}) (interface{},
 		if f, ok := toFloat64(evalArgs[0]); ok {
 			return f != 0, true, nil
 		}
-		if s, ok := evalArgs[0].(string); ok {
+		if s, ok := toString(evalArgs[0]); ok {
 			return strings.EqualFold(s, "true") || s == "1", true, nil
 		}
 	}
@@ -790,6 +790,28 @@ func toFloat64(v interface{}) (float64, bool) {
 		}
 		// Try to parse string as number (SQLite-compatible behavior)
 		if f, err := strconv.ParseFloat(n, 64); err == nil {
+			return f, true
+		}
+		return 0, false
+	case *string:
+		if n == nil {
+			return 0, false
+		}
+		if !looksLikeNumber(*n) {
+			return 0, false
+		}
+		if f, err := strconv.ParseFloat(*n, 64); err == nil {
+			return f, true
+		}
+		return 0, false
+	case StringBox:
+		if n.ptr == nil {
+			return 0, false
+		}
+		if !looksLikeNumber(*n.ptr) {
+			return 0, false
+		}
+		if f, err := strconv.ParseFloat(*n.ptr, 64); err == nil {
 			return f, true
 		}
 		return 0, false
@@ -1325,6 +1347,10 @@ func evaluateWhere(c *Catalog, row []interface{}, columns []ColumnDef, where que
 		}
 	case string:
 		return v != "", nil
+	case *string:
+		return v != nil && *v != "", nil
+	case StringBox:
+		return v.String() != "", nil
 	}
 
 	return false, nil

@@ -482,7 +482,7 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 				} else {
 					val, err := evaluateExpression(c, nil, nil, valueRow[valueIdx], args)
 					if err == nil && val != nil {
-						if strVal, ok := val.(string); ok {
+						if strVal, ok := toString(val); ok {
 							key = "S:" + strVal
 						} else if fVal, ok := toFloat64(val); ok {
 							pkVal := int64(fVal)
@@ -1133,7 +1133,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 					// Non-numeric primary key (TEXT, etc.)
 					val, err := evaluateExpression(c, nil, nil, valueRow[valueIdx], args)
 					if err == nil && val != nil {
-						if strVal, ok := val.(string); ok {
+						if strVal, ok := toString(val); ok {
 							key = "S:" + strVal // Prefix to distinguish from numeric keys
 						} else if fVal, ok := toFloat64(val); ok {
 							pkVal := int64(fVal)

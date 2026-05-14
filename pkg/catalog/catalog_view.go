@@ -61,6 +61,10 @@ func (c *Catalog) DropMaterializedView(name string, ifExists bool) error {
 	}
 
 	delete(c.materializedViews, name)
+	// Clear cached query result so subsequent SELECTs fail as expected.
+	if c.cteResults != nil {
+		delete(c.cteResults, toLowerFast(name))
+	}
 	return nil
 }
 
@@ -97,6 +101,10 @@ func (c *Catalog) RefreshMaterializedView(name string) error {
 	defer c.invalidateSchemaCache()
 	mv.Data = data
 	mv.LastRefresh = time.Now()
+	// Clear cached query result so subsequent SELECTs see fresh data.
+	if c.cteResults != nil {
+		delete(c.cteResults, toLowerFast(name))
+	}
 
 	return nil
 }

@@ -876,7 +876,7 @@ func TestB91_InsertWithDefaultValues(t *testing.T) {
 		t.Errorf("Expected 3 rows, got %d", len(result.Rows))
 	}
 	for _, row := range result.Rows {
-		if row[2] != "active" {
+		if s, _ := toString(row[2]); s != "active" {
 			t.Errorf("Expected default status='active', got %v", row[2])
 		}
 	}

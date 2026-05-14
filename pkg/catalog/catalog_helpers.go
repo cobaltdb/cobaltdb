@@ -10,6 +10,35 @@ import (
 	"strconv"
 )
 
+// toString extracts a string value from an interface{}, handling plain string,
+// *string, and StringBox (used by the zero-allocation fast decoder path).
+func toString(v interface{}) (string, bool) {
+	if s, ok := v.(string); ok {
+		return s, true
+	}
+	if ps, ok := v.(*string); ok {
+		return *ps, true
+	}
+	if sb, ok := v.(StringBox); ok {
+		return sb.String(), true
+	}
+	return "", false
+}
+
+// StringBox is a single-word wrapper around a *string that implements
+// fmt.Stringer. Storing it in an interface{} avoids the heap allocation
+// required when boxing a multi-word string value.
+type StringBox struct {
+	ptr *string
+}
+
+func (sb StringBox) String() string {
+	if sb.ptr == nil {
+		return "<nil>"
+	}
+	return *sb.ptr
+}
+
 // isAggregateFuncName reports whether name (already upper-cased) is one of the
 // SQL aggregate functions handled by the engine.
 func isAggregateFuncName(name string) bool {
@@ -73,6 +102,10 @@ func toBool(v interface{}) bool {
 		return val != 0
 	case string:
 		return val != ""
+	case *string:
+		return val != nil && *val != ""
+	case StringBox:
+		return val.String() != ""
 	default:
 		return false
 	}
@@ -162,6 +195,13 @@ func ValueToStringKey(v interface{}) string {
 	switch val := v.(type) {
 	case string:
 		return val
+	case *string:
+		if val == nil {
+			return "<nil>"
+		}
+		return *val
+	case StringBox:
+		return val.String()
 	case []byte:
 		return string(val)
 	case int64:

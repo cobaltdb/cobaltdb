@@ -1532,7 +1532,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 			if compareValues(entry.oldRow[pkColIdx], entry.newRow[pkColIdx]) != 0 {
 				pkChanged = true
 				pkVal := entry.newRow[pkColIdx]
-				if strVal, ok := pkVal.(string); ok {
+				if strVal, ok := toString(pkVal); ok {
 					newKey = []byte("S:" + strVal)
 				} else if fVal, ok := toFloat64(pkVal); ok {
 					newKey = []byte(formatKey(int64(fVal)))

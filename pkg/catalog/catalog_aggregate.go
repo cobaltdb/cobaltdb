@@ -607,14 +607,13 @@ func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectC
 				}
 				continue
 			}
-			switch vi.(type) {
-			case string:
-				viS := vi.(string)
-				vjS := vj.(string)
-				if viS < vjS {
-					return !ob.Desc
-				} else if viS > vjS {
-					return ob.Desc
+			if viS, ok1 := toString(vi); ok1 {
+				if vjS, ok2 := toString(vj); ok2 {
+					if viS < vjS {
+						return !ob.Desc
+					} else if viS > vjS {
+						return ob.Desc
+					}
 				}
 			}
 		}
@@ -695,6 +694,12 @@ func rowKeyForDedup(vals []interface{}) string {
 			switch v := val.(type) {
 			case string:
 				b.WriteString(v)
+			case *string:
+				if v != nil {
+					b.WriteString(*v)
+				}
+			case StringBox:
+				b.WriteString(v.String())
 			case []byte:
 				b.Write(v)
 			case int64:

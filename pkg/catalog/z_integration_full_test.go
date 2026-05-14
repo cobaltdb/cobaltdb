@@ -78,8 +78,8 @@ func TestFullIntegration_Memory(t *testing.T) {
 	// Verify data integrity
 	for i, row := range rows {
 		id := row[0].(int64)
-		name := row[1].(string)
-		email := row[2].(string)
+		name, _ := toString(row[1])
+		email, _ := toString(row[2])
 
 		expectedId := int64(i + 1)
 		if id != expectedId {
@@ -110,7 +110,7 @@ func TestFullIntegration_Memory(t *testing.T) {
 		t.Fatalf("SELECT after UPDATE failed: %v", err)
 	}
 	if len(rows) > 0 {
-		email := rows[0][0].(string)
+		email, _ := toString(rows[0][0])
 		if email != "alice.new@example.com" {
 			t.Errorf("expected updated email 'alice.new@example.com', got '%s'", email)
 		}
@@ -216,7 +216,7 @@ func TestFullIntegration_Memory(t *testing.T) {
 	}
 	for i, row := range rows {
 		if len(row) >= 2 {
-			name := row[0].(string)
+			name , _ := toString(row[0])
 			amount := row[1].(int64)
 			t.Logf("User %s: amount = %v", name, amount)
 		} else if len(row) >= 1 {
@@ -373,7 +373,7 @@ func TestFullIntegration_Disk(t *testing.T) {
 		t.Log("✅ Data persisted after restart!")
 		for _, row := range rows {
 			id := row[0].(int64)
-			name := row[1].(string)
+			name , _ := toString(row[1])
 			price := row[2].(float64)
 			t.Logf("Product: id=%v, name=%s, price=%.2f", id, name, price)
 		}
@@ -475,7 +475,7 @@ func TestFullIntegration_ComplexQueries(t *testing.T) {
 		t.Errorf("expected 2 departments with >= 2 employees, got %d", len(rows))
 	}
 	for _, row := range rows {
-		dept := row[0].(string)
+		dept , _ := toString(row[0])
 		cnt := row[1].(int64)
 		avg := row[2].(float64)
 		t.Logf("Department %s: %v employees, avg salary=%.2f", dept, cnt, avg)
@@ -517,8 +517,8 @@ func TestFullIntegration_ComplexQueries(t *testing.T) {
 		t.Fatalf("Window function failed: %v", err)
 	}
 	for _, row := range rows {
-		name := row[0].(string)
-		dept := row[1].(string)
+		name , _ := toString(row[0])
+		dept , _ := toString(row[1])
 		salary := row[2].(int64)
 		rank := row[3].(int64)
 		t.Logf("%s from %s: salary=%v, rank=%d", name, dept, salary, rank)
@@ -544,8 +544,8 @@ func TestFullIntegration_ComplexQueries(t *testing.T) {
 		t.Fatalf("CASE expression failed: %v", err)
 	}
 	for _, row := range rows {
-		name := row[0].(string)
-		level := row[1].(string)
+		name , _ := toString(row[0])
+		level , _ := toString(row[1])
 		t.Logf("%s: level=%s", name, level)
 	}
 

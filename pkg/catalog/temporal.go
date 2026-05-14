@@ -16,6 +16,26 @@ var (
 	deletedAtKey = []byte(`"deleted_at":`)
 )
 
+// intBoxPool holds pre-boxed int64 interface{} values for the range -32768..32767.
+// Assigning a pre-boxed interface to a []interface{} slot avoids a heap allocation
+// that Go's escape analysis would otherwise force in non-inlined decode paths.
+// Pool size: 65536 entries × 16 bytes = 1 MiB.
+var intBoxPool [65536]interface{}
+
+func init() {
+	for i := 0; i < 65536; i++ {
+		intBoxPool[i] = int64(i - 32768)
+	}
+}
+
+func boxInt64(v int64) interface{} {
+	idx := v + 32768
+	if idx >= 0 && idx < int64(len(intBoxPool)) {
+		return intBoxPool[idx]
+	}
+	return v
+}
+
 // parseInt64Fast parses an int64 directly from a byte slice without allocating
 // a temporary string. It handles an optional leading minus sign.
 func parseInt64Fast(b []byte) (int64, bool) {
@@ -165,7 +185,7 @@ func encodeVersionedRowFast(rowValues []interface{}, createdAt int64, dst []byte
 func decodeVersionedRow(data []byte, numCols int) (VersionedRow, error) {
 	// Fast path: custom decoder for known format {"data":[...],"version":{...}}
 	if len(data) > 2 && data[0] == '{' {
-		out := make([]interface{}, 0, numCols)
+		out := make([]interface{}, numCols)
 		if vrow, ok := decodeVersionedRowFast(data, numCols, out); ok {
 			return vrow, nil
 		}
@@ -210,6 +230,19 @@ func decodeVersionedRow(data []byte, numCols int) (VersionedRow, error) {
 // json.Unmarshal overhead (reflection, map allocation, etc.).
 // Returns (row, true) on success or (zero value, false) to fall back to slow path.
 func decodeVersionedRowFast(data []byte, numCols int, out []interface{}) (VersionedRow, bool) {
+	vrow, _, ok := decodeVersionedRowFastEx(data, numCols, out, nil, 0)
+	return vrow, ok
+}
+
+// decodeVersionedRowFastEx is an extended version of decodeVersionedRowFast that
+// can store decoded strings as *string pointers into a pre-allocated string
+// buffer. A pointer (8 bytes) fits directly into an interface{} slot without
+// the heap allocation that Go requires when boxing a multi-word string value.
+// Returns the updated stringIdx so callers can track consumption.
+func decodeVersionedRowFastEx(data []byte, numCols int, out []interface{}, stringBuf []string, stringIdx int) (VersionedRow, int, bool) {
+	if cap(out) < numCols {
+		return VersionedRow{}, stringIdx, false
+	}
 	// Find "data":[ array
 	pos := 1 // skip {
 	for pos <= len(data)-len(dataKeyBytes) {
@@ -219,22 +252,26 @@ func decodeVersionedRowFast(data []byte, numCols int, out []interface{}) (Versio
 		}
 		pos++
 	}
-	return VersionedRow{}, false
+	return VersionedRow{}, stringIdx, false
 
 foundData:
 	// Parse the data array elements into the provided buffer.
-	rowData := out[:0]
+	rowData := out[:numCols]
+	colIdx := 0
 	for pos < len(data) {
 		// Skip whitespace
 		for pos < len(data) && data[pos] <= ' ' {
 			pos++
 		}
 		if pos >= len(data) {
-			return VersionedRow{}, false
+			return VersionedRow{}, stringIdx, false
 		}
 		if data[pos] == ']' {
 			pos++
 			break
+		}
+		if colIdx >= numCols {
+			return VersionedRow{}, stringIdx, false
 		}
 
 		switch data[pos] {
@@ -254,55 +291,72 @@ foundData:
 						// Has escape sequences — use json.Unmarshal for correctness
 						var s string
 						if err := json.Unmarshal(data[start-1:pos+1], &s); err != nil {
-							return VersionedRow{}, false
+							return VersionedRow{}, stringIdx, false
 						}
-						rowData = append(rowData, s)
+						if stringBuf != nil {
+							stringBuf[stringIdx] = s
+							rowData[colIdx] = StringBox{ptr: &stringBuf[stringIdx]}
+							stringIdx++
+						} else {
+							rowData[colIdx] = s
+						}
 					} else {
 						// safe: data is stable for the lifetime of the iterator
-						rowData = append(rowData, unsafe.String(&data[start], pos-start))
+						if stringBuf != nil {
+							stringBuf[stringIdx] = unsafe.String(&data[start], pos-start)
+							rowData[colIdx] = StringBox{ptr: &stringBuf[stringIdx]}
+							stringIdx++
+						} else {
+							rowData[colIdx] = unsafe.String(&data[start], pos-start)
+						}
 					}
+					colIdx++
 					pos++
 					goto afterAppend
 				}
 				pos++
 			}
-			return VersionedRow{}, false
+			return VersionedRow{}, stringIdx, false
 
 		case 'n':
 			if pos+4 <= len(data) && data[pos] == 'n' && data[pos+1] == 'u' && data[pos+2] == 'l' && data[pos+3] == 'l' {
-				rowData = append(rowData, nil)
+				rowData[colIdx] = nil
+				colIdx++
 				pos += 4
 				goto afterAppend
 			}
-			return VersionedRow{}, false
+			return VersionedRow{}, stringIdx, false
 
 		case 't':
 			if pos+4 <= len(data) && data[pos] == 't' && data[pos+1] == 'r' && data[pos+2] == 'u' && data[pos+3] == 'e' {
-				rowData = append(rowData, true)
+				rowData[colIdx] = true
+				colIdx++
 				pos += 4
 				goto afterAppend
 			}
-			return VersionedRow{}, false
+			return VersionedRow{}, stringIdx, false
 
 		case 'f':
 			if pos+5 <= len(data) && data[pos] == 'f' && data[pos+1] == 'a' && data[pos+2] == 'l' && data[pos+3] == 's' && data[pos+4] == 'e' {
-				rowData = append(rowData, false)
+				rowData[colIdx] = false
+				colIdx++
 				pos += 5
 				goto afterAppend
 			}
-			return VersionedRow{}, false
+			return VersionedRow{}, stringIdx, false
 
 		case '{', '[':
 			// Nested object/array — use json.Unmarshal for this value
 			newPos := skipJSONValue(data, pos)
 			if newPos < 0 {
-				return VersionedRow{}, false
+				return VersionedRow{}, stringIdx, false
 			}
 			var nested interface{}
 			if err := json.Unmarshal(data[pos:newPos], &nested); err != nil {
-				return VersionedRow{}, false
+				return VersionedRow{}, stringIdx, false
 			}
-			rowData = append(rowData, nested)
+			rowData[colIdx] = nested
+			colIdx++
 			pos = newPos
 			goto afterAppend
 
@@ -329,22 +383,23 @@ foundData:
 			if isFloat {
 				fv, err := strconv.ParseFloat(unsafe.String(&data[numStart], pos-numStart), 64)
 				if err != nil {
-					return VersionedRow{}, false
+					return VersionedRow{}, stringIdx, false
 				}
-				rowData = append(rowData, fv)
+				rowData[colIdx] = fv
 			} else {
 				iv, ok := parseInt64Fast(data[numStart:pos])
 				if !ok {
 					// Might be too large for int64, use float64
 					fv, err2 := strconv.ParseFloat(unsafe.String(&data[numStart], pos-numStart), 64)
 					if err2 != nil {
-						return VersionedRow{}, false
+						return VersionedRow{}, stringIdx, false
 					}
-					rowData = append(rowData, fv)
+					rowData[colIdx] = fv
 				} else {
-					rowData = append(rowData, iv) // Direct int64, no float64→int64 conversion needed
+					rowData[colIdx] = boxInt64(iv)
 				}
 			}
+			colIdx++
 			goto afterAppend
 		}
 
@@ -396,8 +451,9 @@ foundData:
 	}
 
 	// Pad row to match column count
-	for len(rowData) < numCols {
-		rowData = append(rowData, nil)
+	for colIdx < numCols {
+		rowData[colIdx] = nil
+		colIdx++
 	}
 
 	return VersionedRow{
@@ -406,7 +462,7 @@ foundData:
 			CreatedAt: createdAt,
 			DeletedAt: deletedAt,
 		},
-	}, true
+	}, stringIdx, true
 }
 
 // extractColumnFloat64 extracts a numeric column value from raw JSON row data

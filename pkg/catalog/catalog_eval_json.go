@@ -4,30 +4,58 @@ import (
 	"fmt"
 )
 
+func jsonArgString(args []interface{}, idx int) (string, bool) {
+	if idx >= len(args) || args[idx] == nil {
+		return "", false
+	}
+	switch v := args[idx].(type) {
+	case string:
+		return v, true
+	case *string:
+		if v == nil {
+			return "", false
+		}
+		return *v, true
+	case StringBox:
+		return v.String(), true
+	default:
+		return "", false
+	}
+}
+
 func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, error) {
 	switch funcName {
 	case "JSON_EXTRACT":
 		if len(args) < 2 {
 			return nil, fmt.Errorf("JSON_EXTRACT requires 2 arguments")
 		}
-		// Handle various argument types
 		var jsonData string
 		var path string
 
-		// First arg - could be string or other
 		switch v := args[0].(type) {
 		case string:
 			jsonData = v
+		case *string:
+			if v != nil {
+				jsonData = *v
+			}
+		case StringBox:
+			jsonData = v.String()
 		default:
 			if args[0] != nil {
 				jsonData = ValueToStringKey(args[0])
 			}
 		}
 
-		// Second arg - could be string or other
 		switch v := args[1].(type) {
 		case string:
 			path = v
+		case *string:
+			if v != nil {
+				path = *v
+			}
+		case StringBox:
+			path = v.String()
 		default:
 			if args[1] != nil {
 				path = ValueToStringKey(args[1])
@@ -40,17 +68,17 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if len(args) < 3 {
 			return nil, fmt.Errorf("JSON_SET requires 3 arguments")
 		}
-		jsonData, _ := args[0].(string)
-		path, _ := args[1].(string)
-		value, _ := args[2].(string)
+		jsonData, _ := jsonArgString(args, 0)
+		path, _ := jsonArgString(args, 1)
+		value, _ := jsonArgString(args, 2)
 		return JSONSet(jsonData, path, value)
 
 	case "JSON_REMOVE":
 		if len(args) < 2 {
 			return nil, fmt.Errorf("JSON_REMOVE requires 2 arguments")
 		}
-		jsonData, _ := args[0].(string)
-		path, _ := args[1].(string)
+		jsonData, _ := jsonArgString(args, 0)
+		path, _ := jsonArgString(args, 1)
 		return JSONRemove(jsonData, path)
 
 	case "JSON_VALID":
@@ -60,7 +88,7 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if args[0] == nil {
 			return false, nil
 		}
-		str, ok := args[0].(string)
+		str, ok := jsonArgString(args, 0)
 		if !ok {
 			return false, nil
 		}
@@ -73,7 +101,7 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if args[0] == nil {
 			return 0, nil
 		}
-		jsonData, ok := args[0].(string)
+		jsonData, ok := jsonArgString(args, 0)
 		if !ok {
 			return 0, nil
 		}
@@ -90,13 +118,13 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if args[0] == nil {
 			return "null", nil
 		}
-		jsonData, ok := args[0].(string)
+		jsonData, ok := jsonArgString(args, 0)
 		if !ok {
 			return "unknown", nil
 		}
 		var path string
 		if len(args) > 1 {
-			path, _ = args[1].(string)
+			path, _ = jsonArgString(args, 1)
 		}
 		return JSONType(jsonData, path)
 
@@ -107,7 +135,7 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if args[0] == nil {
 			return nil, nil
 		}
-		jsonData, ok := args[0].(string)
+		jsonData, ok := jsonArgString(args, 0)
 		if !ok {
 			return nil, nil
 		}
@@ -120,7 +148,7 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if args[0] == nil {
 			return "", nil
 		}
-		jsonData, ok := args[0].(string)
+		jsonData, ok := jsonArgString(args, 0)
 		if !ok {
 			return nil, nil
 		}
@@ -133,7 +161,7 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if args[0] == nil {
 			return "", nil
 		}
-		jsonData, ok := args[0].(string)
+		jsonData, ok := jsonArgString(args, 0)
 		if !ok {
 			return nil, nil
 		}
@@ -143,8 +171,8 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if len(args) < 2 {
 			return nil, fmt.Errorf("JSON_MERGE requires 2 arguments")
 		}
-		json1, _ := args[0].(string)
-		json2, _ := args[1].(string)
+		json1, _ := jsonArgString(args, 0)
+		json2, _ := jsonArgString(args, 1)
 		return JSONMerge(json1, json2)
 
 	case "JSON_QUOTE":
@@ -154,7 +182,7 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if args[0] == nil {
 			return "null", nil
 		}
-		str, ok := args[0].(string)
+		str, ok := jsonArgString(args, 0)
 		if !ok {
 			return nil, nil
 		}
@@ -167,7 +195,7 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if args[0] == nil {
 			return "", nil
 		}
-		str, ok := args[0].(string)
+		str, ok := jsonArgString(args, 0)
 		if !ok {
 			return nil, nil
 		}
@@ -177,8 +205,8 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if len(args) < 2 {
 			return nil, fmt.Errorf("REGEXP_MATCH requires 2 arguments")
 		}
-		str, _ := args[0].(string)
-		pattern, _ := args[1].(string)
+		str, _ := jsonArgString(args, 0)
+		pattern, _ := jsonArgString(args, 1)
 		if str == "" || pattern == "" {
 			return false, nil
 		}
@@ -188,9 +216,9 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if len(args) < 3 {
 			return nil, fmt.Errorf("REGEXP_REPLACE requires 3 arguments")
 		}
-		str, _ := args[0].(string)
-		pattern, _ := args[1].(string)
-		replacement, _ := args[2].(string)
+		str, _ := jsonArgString(args, 0)
+		pattern, _ := jsonArgString(args, 1)
+		replacement, _ := jsonArgString(args, 2)
 		if str == "" || pattern == "" {
 			return str, nil
 		}
@@ -200,8 +228,8 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if len(args) < 2 {
 			return nil, fmt.Errorf("REGEXP_EXTRACT requires 2 arguments")
 		}
-		str, _ := args[0].(string)
-		pattern, _ := args[1].(string)
+		str, _ := jsonArgString(args, 0)
+		pattern, _ := jsonArgString(args, 1)
 		if str == "" || pattern == "" {
 			return []string{}, nil
 		}
@@ -211,4 +239,3 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		return nil, fmt.Errorf("unknown function: %s", funcName)
 	}
 }
-

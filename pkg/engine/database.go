@@ -1799,6 +1799,14 @@ func normalizeRowKey(row []interface{}) string {
 		case string:
 			sb.WriteString("S:")
 			sb.WriteString(val)
+		case *string:
+			if val != nil {
+				sb.WriteString("S:")
+				sb.WriteString(*val)
+			}
+		case catalog.StringBox:
+			sb.WriteString("S:")
+			sb.WriteString(val.String())
 		case bool:
 			if val {
 				sb.WriteString("true")
@@ -1914,6 +1922,86 @@ func (db *DB) compareUnionValues(a, b interface{}) int {
 			}
 			return 0
 		}
+		if bv, ok := b.(*string); ok && bv != nil {
+			if av < *bv {
+				return -1
+			}
+			if av > *bv {
+				return 1
+			}
+			return 0
+		}
+		if bv, ok := b.(catalog.StringBox); ok {
+			if av < bv.String() {
+				return -1
+			}
+			if av > bv.String() {
+				return 1
+			}
+			return 0
+		}
+	case *string:
+		if av == nil {
+			return 1
+		}
+		if bv, ok := b.(string); ok {
+			if *av < bv {
+				return -1
+			}
+			if *av > bv {
+				return 1
+			}
+			return 0
+		}
+		if bv, ok := b.(*string); ok {
+			if bv == nil {
+				return -1
+			}
+			if *av < *bv {
+				return -1
+			}
+			if *av > *bv {
+				return 1
+			}
+			return 0
+		}
+		if bv, ok := b.(catalog.StringBox); ok {
+			if *av < bv.String() {
+				return -1
+			}
+			if *av > bv.String() {
+				return 1
+			}
+			return 0
+		}
+	case catalog.StringBox:
+		if bv, ok := b.(string); ok {
+			if av.String() < bv {
+				return -1
+			}
+			if av.String() > bv {
+				return 1
+			}
+			return 0
+		}
+		if bv, ok := b.(*string); ok && bv != nil {
+			if av.String() < *bv {
+				return -1
+			}
+			if av.String() > *bv {
+				return 1
+			}
+			return 0
+		}
+		if bv, ok := b.(catalog.StringBox); ok {
+			if av.String() < bv.String() {
+				return -1
+			}
+			if av.String() > bv.String() {
+				return 1
+			}
+			return 0
+		}
 	}
 
 	// Fallback: type-aware string conversion to avoid fmt.Sprintf reflection
@@ -1947,6 +2035,13 @@ func valueToStringForCompare(v interface{}) string {
 	switch val := v.(type) {
 	case string:
 		return val
+	case *string:
+		if val == nil {
+			return "<nil>"
+		}
+		return *val
+	case catalog.StringBox:
+		return val.String()
 	case []byte:
 		return string(val)
 	case int64:
@@ -2250,6 +2345,12 @@ func scanValue(src interface{}, dest interface{}) error {
 		switch v := src.(type) {
 		case string:
 			*d = v
+		case *string:
+			if v != nil {
+				*d = *v
+			}
+		case catalog.StringBox:
+			*d = v.String()
 		case []byte:
 			*d = string(v)
 		case int64:
@@ -2282,6 +2383,20 @@ func scanValue(src interface{}, dest interface{}) error {
 					return nil
 				}
 			}
+			// Try *string
+			if ps, ok := src.(*string); ok && ps != nil {
+				if i, err := strconv.ParseInt(*ps, 10, 64); err == nil {
+					*d = int(i)
+					return nil
+				}
+			}
+			// Try StringBox
+			if sb, ok := src.(catalog.StringBox); ok {
+				if i, err := strconv.ParseInt(sb.String(), 10, 64); err == nil {
+					*d = int(i)
+					return nil
+				}
+			}
 			return fmt.Errorf("cannot scan %T into int", src)
 		}
 		*d = int(v)
@@ -2298,6 +2413,19 @@ func scanValue(src interface{}, dest interface{}) error {
 					return nil
 				}
 			}
+			if ps, ok := src.(*string); ok && ps != nil {
+				if i, err := strconv.ParseInt(*ps, 10, 64); err == nil {
+					*d = i
+					return nil
+				}
+			}
+			// Try StringBox
+			if sb, ok := src.(catalog.StringBox); ok {
+				if i, err := strconv.ParseInt(sb.String(), 10, 64); err == nil {
+					*d = i
+					return nil
+				}
+			}
 			return fmt.Errorf("cannot scan %T into int64", src)
 		}
 		*d = v
@@ -2310,6 +2438,18 @@ func scanValue(src interface{}, dest interface{}) error {
 					return nil
 				}
 			}
+			if ps, ok := src.(*string); ok && ps != nil {
+				if f, err := strconv.ParseFloat(*ps, 64); err == nil {
+					*d = f
+					return nil
+				}
+			}
+			if sb, ok := src.(catalog.StringBox); ok {
+				if f, err := strconv.ParseFloat(sb.String(), 64); err == nil {
+					*d = f
+					return nil
+				}
+			}
 			return fmt.Errorf("cannot scan %T into float64", src)
 		}
 		*d = v
@@ -2318,6 +2458,18 @@ func scanValue(src interface{}, dest interface{}) error {
 		if !ok {
 			if s, ok := src.(string); ok {
 				if b, err := strconv.ParseBool(s); err == nil {
+					*d = b
+					return nil
+				}
+			}
+			if ps, ok := src.(*string); ok && ps != nil {
+				if b, err := strconv.ParseBool(*ps); err == nil {
+					*d = b
+					return nil
+				}
+			}
+			if sb, ok := src.(catalog.StringBox); ok {
+				if b, err := strconv.ParseBool(sb.String()); err == nil {
 					*d = b
 					return nil
 				}

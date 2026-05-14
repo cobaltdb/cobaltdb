@@ -583,7 +583,7 @@ func TestV88_CorrelatedSubqueryWithFunction(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	if rows[0][0] != "hello" {
+	if fmt.Sprintf("%v", rows[0][0]) != "hello" {
 		t.Fatalf("expected 'hello', got %v", rows[0][0])
 	}
 }

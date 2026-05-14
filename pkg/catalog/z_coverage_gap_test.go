@@ -445,7 +445,7 @@ func TestCovGap_OrderByPositions(t *testing.T) {
 	if len(result.Rows) != 3 {
 		t.Fatalf("expected 3 rows, got %d", len(result.Rows))
 	}
-	if result.Rows[0][0] != "Alice" {
+	if s, _ := toString(result.Rows[0][0]); s != "Alice" {
 		t.Errorf("expected first row 'Alice', got %v", result.Rows[0][0])
 	}
 }

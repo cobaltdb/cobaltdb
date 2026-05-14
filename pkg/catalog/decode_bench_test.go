@@ -6,7 +6,7 @@ var sampleData = []byte(`{"created_at":1,"deleted_at":0,"data":[1,"value-123"]}`
 var sampleDataInt = []byte(`{"created_at":1,"deleted_at":0,"data":[1,2]}`)
 
 func BenchmarkDecodeOneRowUseIntOnly(b *testing.B) {
-	out := make([]interface{}, 0, 2)
+	out := make([]interface{}, 2)
 	for i := 0; i < b.N; i++ {
 		vrow, ok := decodeVersionedRowFast(sampleData, 2, out)
 		if !ok {
@@ -17,7 +17,7 @@ func BenchmarkDecodeOneRowUseIntOnly(b *testing.B) {
 }
 
 func BenchmarkDecodeOneRowUseStringOnly(b *testing.B) {
-	out := make([]interface{}, 0, 2)
+	out := make([]interface{}, 2)
 	for i := 0; i < b.N; i++ {
 		vrow, ok := decodeVersionedRowFast(sampleData, 2, out)
 		if !ok {
@@ -28,7 +28,7 @@ func BenchmarkDecodeOneRowUseStringOnly(b *testing.B) {
 }
 
 func BenchmarkDecodeOneRowIntRow(b *testing.B) {
-	out := make([]interface{}, 0, 2)
+	out := make([]interface{}, 2)
 	for i := 0; i < b.N; i++ {
 		vrow, ok := decodeVersionedRowFast(sampleDataInt, 2, out)
 		if !ok {

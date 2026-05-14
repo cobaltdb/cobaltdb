@@ -11721,8 +11721,10 @@ func TestUpdateNoWhereClause(t *testing.T) {
 	}
 	_, rows, _ := catalog.Select(selectStmt, nil)
 	for i, row := range rows {
-		if len(row) > 0 && row[0] != "new" {
-			t.Errorf("row %d: expected status 'new', got %v", i, row[0])
+		if len(row) > 0 {
+			if s, _ := toString(row[0]); s != "new" {
+				t.Errorf("row %d: expected status 'new', got %v", i, row[0])
+			}
 		}
 	}
 }
@@ -12281,7 +12283,10 @@ func TestApplyOrderBy(t *testing.T) {
 	}
 
 	// Verify order: Alice, Bob, Charlie
-	if rowsQual[0][1].(string) != "Alice" || rowsQual[1][1].(string) != "Bob" || rowsQual[2][1].(string) != "Charlie" {
+	s0, _ := toString(rowsQual[0][1])
+	s1, _ := toString(rowsQual[1][1])
+	s2, _ := toString(rowsQual[2][1])
+	if s0 != "Alice" || s1 != "Bob" || s2 != "Charlie" {
 		t.Errorf("ORDER BY qualified failed: got %v, %v, %v", rowsQual[0][1], rowsQual[1][1], rowsQual[2][1])
 	}
 }

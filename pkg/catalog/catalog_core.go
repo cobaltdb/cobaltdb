@@ -759,11 +759,21 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	// For statements without subqueries, release the catalog lock during the
 	// heavy scan so writes can proceed. Subqueries would recursively call
 	// selectLocked, making lock release unsafe (non-reentrant RWMutex).
+	// Materialized views have no physical B-tree; resolveFromTable stores
+	// their data in cteResults. Extract rows here while lock is held.
+	var mvRows [][]interface{}
+	var isMV bool
+	if len(trees) == 0 && cat.cteResults != nil {
+		if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
+			mvRows = cteRes.rows
+			isMV = true
+		}
+	}
 	canUnlock := canReleaseLock && !hasSubqueries(stmt)
 	if canUnlock {
 		cat.mu.RUnlock()
 	}
-	rows, windowFullRows := cat.scanTableRows(table, stmt, args, selectCols, hasWindowFuncs, queryTime, trees, indexMatches, useIndex, nil, false, cat.parallelWorkers, cat.parallelThreshold)
+	rows, windowFullRows := cat.scanTableRows(table, stmt, args, selectCols, hasWindowFuncs, queryTime, trees, indexMatches, useIndex, mvRows, isMV, cat.parallelWorkers, cat.parallelThreshold)
 	if canUnlock {
 		cat.mu.RLock()
 	}
@@ -904,7 +914,9 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 				numCols := len(table.Columns)
 				flatCap := int(trees[0].Size()) * numCols
 				flatBuf := make([]interface{}, 0, flatCap)
+				stringBuf := make([]string, flatCap)
 				rowIdx := 0
+				stringIdx := 0
 
 				for iter.HasNext() {
 					_, valueData, err := iter.NextString()
@@ -924,7 +936,8 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 					flatBuf = flatBuf[:end]
 					row := flatBuf[start:end]
 
-					vrow, ok := decodeVersionedRowFast(valueData, numCols, row)
+					vrow, sidx, ok := decodeVersionedRowFastEx(valueData, numCols, row, stringBuf, stringIdx)
+					stringIdx = sidx
 					if !ok {
 						vrow, err = decodeVersionedRow(valueData, numCols)
 						if err != nil {
@@ -1839,7 +1852,7 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			if f, ok := toFloat64(val); ok {
 				return int64(f), nil
 			}
-			if s, ok := val.(string); ok {
+			if s, ok := toString(val); ok {
 				if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 					return i, nil
 				}
@@ -1849,7 +1862,7 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			if f, ok := toFloat64(val); ok {
 				return f, nil
 			}
-			if s, ok := val.(string); ok {
+			if s, ok := toString(val); ok {
 				if f, err := strconv.ParseFloat(s, 64); err == nil {
 					return f, nil
 				}
