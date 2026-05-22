@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 )
+
+const maxInt32 = math.MaxInt32
 
 // Runtime executes compiled WASM queries
 type Runtime struct {
@@ -242,27 +245,59 @@ type StreamingResult struct {
 	resultPtr    int32
 }
 
+// memCheck verifies that [offset, offset+size) lies within rt.Memory bounds.
+// Returns an error rather than panicking on out-of-range or negative inputs.
+func (rt *Runtime) memCheck(offset int32, size int32) error {
+	if offset < 0 || size < 0 {
+		return fmt.Errorf("wasm: negative offset or size (offset=%d size=%d)", offset, size)
+	}
+	end := int64(offset) + int64(size)
+	if end > int64(len(rt.Memory)) {
+		return fmt.Errorf("wasm: memory access out of range (offset=%d size=%d mem_size=%d)", offset, size, len(rt.Memory))
+	}
+	return nil
+}
+
 // writeParams writes query parameters to WASM memory
 func (rt *Runtime) writeParams(ptr int32, args []interface{}) error {
 	offset := ptr
 	for _, arg := range args {
 		switch v := arg.(type) {
 		case int:
+			if err := rt.memCheck(offset, 8); err != nil {
+				return err
+			}
 			binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(v))
 			offset += 8
 		case int64:
+			if err := rt.memCheck(offset, 8); err != nil {
+				return err
+			}
 			binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(v))
 			offset += 8
 		case float64:
+			if err := rt.memCheck(offset, 8); err != nil {
+				return err
+			}
 			binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(v))
 			offset += 8
 		case string:
-			// Write length then data
-			binary.LittleEndian.PutUint32(rt.Memory[offset:], uint32(len(v)))
+			// String length must fit in int32 to avoid overflow when added to offset.
+			if len(v) > maxInt32 {
+				return fmt.Errorf("wasm: string parameter too large (%d bytes)", len(v))
+			}
+			strLen := int32(len(v))
+			if err := rt.memCheck(offset, 4+strLen); err != nil {
+				return err
+			}
+			binary.LittleEndian.PutUint32(rt.Memory[offset:], uint32(strLen))
 			offset += 4
 			copy(rt.Memory[offset:], v)
-			offset += int32(len(v))
+			offset += strLen
 		case nil:
+			if err := rt.memCheck(offset, 4); err != nil {
+				return err
+			}
 			// Null marker: 0xFFFFFFFF
 			binary.LittleEndian.PutUint32(rt.Memory[offset:], 0xFFFFFFFF)
 			offset += 4
@@ -293,30 +328,56 @@ func (rt *Runtime) parseResults(schema []ColumnInfo, ptr int32, rowCount int32) 
 		for j, col := range schema {
 			switch col.Type {
 			case "INTEGER":
+				if err := rt.memCheck(offset, 8); err != nil {
+					return nil, err
+				}
 				val := binary.LittleEndian.Uint64(rt.Memory[offset:])
 				row.Values[j] = int64(val)
 				offset += 8
 			case "REAL":
+				if err := rt.memCheck(offset, 8); err != nil {
+					return nil, err
+				}
 				bits := binary.LittleEndian.Uint64(rt.Memory[offset:])
 				row.Values[j] = bits
 				offset += 8
 			case "TEXT":
+				if err := rt.memCheck(offset, 4); err != nil {
+					return nil, err
+				}
 				length := binary.LittleEndian.Uint32(rt.Memory[offset:])
 				offset += 4
 				if length == 0xFFFFFFFF {
 					row.Values[j] = nil
 				} else {
-					row.Values[j] = string(rt.Memory[offset : offset+int32(length)])
-					offset += int32(length)
+					if length > maxInt32 {
+						return nil, fmt.Errorf("wasm: TEXT length %d exceeds int32 max", length)
+					}
+					strLen := int32(length)
+					if err := rt.memCheck(offset, strLen); err != nil {
+						return nil, err
+					}
+					row.Values[j] = string(rt.Memory[offset : offset+strLen])
+					offset += strLen
 				}
 			default:
+				if err := rt.memCheck(offset, 4); err != nil {
+					return nil, err
+				}
 				length := binary.LittleEndian.Uint32(rt.Memory[offset:])
 				offset += 4
 				if length == 0xFFFFFFFF {
 					row.Values[j] = nil
 				} else {
-					row.Values[j] = string(rt.Memory[offset : offset+int32(length)])
-					offset += int32(length)
+					if length > maxInt32 {
+						return nil, fmt.Errorf("wasm: column length %d exceeds int32 max", length)
+					}
+					strLen := int32(length)
+					if err := rt.memCheck(offset, strLen); err != nil {
+						return nil, err
+					}
+					row.Values[j] = string(rt.Memory[offset : offset+strLen])
+					offset += strLen
 				}
 			}
 		}

@@ -355,6 +355,12 @@ func (h *HNSWIndex) searchLayer(query []float64, entryPoint *HNSWNode, ef, level
 	result := &candidateHeap{}
 	heap.Init(result)
 
+	if ef < 1 {
+		// ef < 1 makes the search degenerate (the result set would be popped
+		// to empty, leaving subsequent index reads panicking). Clamp.
+		ef = 1
+	}
+
 	entryDist := l2Distance(query, entryPoint.Vector)
 	visited[entryPoint.Key] = true
 	heap.Push(candidates, candidate{Key: entryPoint.Key, Distance: entryDist})
@@ -362,6 +368,9 @@ func (h *HNSWIndex) searchLayer(query []float64, entryPoint *HNSWNode, ef, level
 
 	for candidates.Len() > 0 {
 		curr := heap.Pop(candidates).(candidate)
+		if result.Len() == 0 {
+			break
+		}
 		worstResult := (*result)[result.Len()-1]
 
 		if curr.Distance > worstResult.Distance {
@@ -378,9 +387,13 @@ func (h *HNSWIndex) searchLayer(query []float64, entryPoint *HNSWNode, ef, level
 
 					if neighbor, ok := h.Nodes[neighborKey]; ok {
 						d := l2Distance(query, neighbor.Vector)
-						worstResult := (*result)[result.Len()-1]
+						resultLen := result.Len()
+						worstDist := math.Inf(1)
+						if resultLen > 0 {
+							worstDist = (*result)[resultLen-1].Distance
+						}
 
-						if result.Len() < ef || d < worstResult.Distance {
+						if resultLen < ef || d < worstDist {
 							heap.Push(candidates, candidate{Key: neighborKey, Distance: d})
 							heap.Push(result, candidate{Key: neighborKey, Distance: d})
 							if result.Len() > ef {
