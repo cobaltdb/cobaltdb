@@ -77,7 +77,7 @@ func main() {
 				log.Fatalf("Failed to generate random admin password: %v", err)
 			}
 			*adminPass = generated
-			log.Printf("[SECURITY] Auth is enabled by default. Generated admin password for this run: %s", generated)
+			log.Printf("[SECURITY] Auth enabled. Admin user: %s (password generated securely, not displayed)", *adminUser)
 			log.Printf("[SECURITY] Set -admin-pass or COBALTDB_ADMIN_PASSWORD to use a fixed secret.")
 		}
 	} else {

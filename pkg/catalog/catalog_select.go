@@ -401,7 +401,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 		// joinRows is already populated above (from CTE result or B-tree scan)
 		rightRows := joinRows
 
-		newIntermediate = c.executeJoinPass(intermediateRows, rightRows, joinTableCols, combinedColumns, newCombinedColumns, joinCondition, args, isLeftJoin, isRightJoin, isCrossJoin)
+		newIntermediate = c.executeJoinPass(intermediateRows, rightRows, joinTableCols, combinedColumns, newCombinedColumns, joinCondition, args, isLeftJoin, isRightJoin, isCrossJoin, joinAlias)
 
 		intermediateRows = newIntermediate
 		combinedColumns = newCombinedColumns
@@ -897,15 +897,22 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 	return joinTableCols, joinRows
 }
 
-func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows [][]interface{}, joinTableCols []ColumnDef, combinedColumns []ColumnDef, newCombinedColumns []ColumnDef, joinCondition query.Expression, args []interface{}, isLeftJoin, isRightJoin, isCrossJoin bool) [][]interface{} {
+func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows [][]interface{}, joinTableCols []ColumnDef, combinedColumns []ColumnDef, newCombinedColumns []ColumnDef, joinCondition query.Expression, args []interface{}, isLeftJoin, isRightJoin, isCrossJoin bool, joinAlias string) [][]interface{} {
 	var newIntermediate [][]interface{}
 
 	if isCrossJoin {
+		// Pre-calculate total capacity for cross join (leftRows * rightRows)
+		totalEst := len(intermediateRows) * len(rightRows)
+		if totalEst > 0 {
+			newIntermediate = make([][]interface{}, 0, totalEst)
+		}
 		for _, leftRow := range intermediateRows {
+			leftLen := len(leftRow)
+			rightLen := len(rightRows[0]) // assuming uniform right rows
 			for _, joinRow := range rightRows {
-				combined := make([]interface{}, len(leftRow)+len(joinRow))
+				combined := make([]interface{}, leftLen+rightLen)
 				copy(combined, leftRow)
-				copy(combined[len(leftRow):], joinRow)
+				copy(combined[leftLen:], joinRow)
 
 				if joinCondition != nil {
 					ok, err := evaluateWhere(c, combined, newCombinedColumns, joinCondition, args)
@@ -917,7 +924,8 @@ func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows []
 			}
 		}
 	} else {
-		leftColIdx, rightColIdx, canHashJoin := detectEqualityJoinQualified(joinCondition, combinedColumns, joinTableCols, nil, "")
+		// Pass the join alias so detectEqualityJoinQualified can handle qualified identifiers (t.col)
+		leftColIdx, rightColIdx, canHashJoin := detectEqualityJoinQualified(joinCondition, combinedColumns, joinTableCols, nil, joinAlias)
 
 		if !canHashJoin {
 			leftColIdx, rightColIdx, canHashJoin = detectEqualityJoinUnique(joinCondition, combinedColumns, joinTableCols)
@@ -933,13 +941,31 @@ func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows []
 				}
 			}
 
+			// Handle empty rightRows - skip join entirely
+			if len(rightRows) == 0 {
+				if isLeftJoin {
+					return intermediateRows
+				}
+				return nil
+			}
+
+			// Pre-allocate with estimated capacity for hash join
+			// Worst case: all left rows match all right rows
+			leftLen := len(intermediateRows)
+			rightLen := len(rightRows[0])
+			estimatedCombined := leftLen * rightLen
+			if estimatedCombined > 0 && estimatedCombined <= 10000000 { // cap at 10M
+				newIntermediate = make([][]interface{}, 0, estimatedCombined)
+			}
+
 			for _, leftRow := range intermediateRows {
 				matched := false
 				if leftColIdx < len(leftRow) && leftRow[leftColIdx] != nil {
 					key := hashJoinKey(leftRow[leftColIdx])
 					if indices, ok := hashMap[key]; ok {
+						combinedLen := len(leftRow) + rightLen
 						for _, ri := range indices {
-							combined := make([]interface{}, len(leftRow)+len(rightRows[ri]))
+							combined := make([]interface{}, combinedLen)
 							copy(combined, leftRow)
 							copy(combined[len(leftRow):], rightRows[ri])
 							newIntermediate = append(newIntermediate, combined)
@@ -955,6 +981,19 @@ func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows []
 				}
 			}
 		} else {
+			// Handle empty rightRows in nested loop join
+			if len(rightRows) == 0 {
+				if isLeftJoin {
+					return intermediateRows
+				}
+				return nil
+			}
+
+			// Nested loop join - pre-allocate with capacity estimate
+			estimatedCombined := len(intermediateRows) * len(rightRows)
+			if estimatedCombined > 0 && estimatedCombined <= 10000000 {
+				newIntermediate = make([][]interface{}, 0, estimatedCombined)
+			}
 			rightMatched := make([]bool, len(rightRows))
 
 			for _, leftRow := range intermediateRows {
@@ -1098,6 +1137,53 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 				}
 			}
 		} else {
+			// Try hash join first for INNER joins
+			if !isLeftJoin && !isRightJoin && len(rightRows) > 0 {
+				// Detect if we can use hash join
+				leftColIdx, rightColIdx, canHashJoin := detectEqualityJoinQualified(join.Condition, allColumns, joinTableCols, nil, joinAlias)
+				if !canHashJoin {
+					leftColIdx, rightColIdx, canHashJoin = detectEqualityJoinUnique(join.Condition, allColumns, joinTableCols)
+				}
+
+				if canHashJoin {
+					hashMap := make(map[string][]int)
+					for ri, joinRow := range rightRows {
+						if rightColIdx < len(joinRow) && joinRow[rightColIdx] != nil {
+							key := hashJoinKey(joinRow[rightColIdx])
+							existing := hashMap[key]
+							hashMap[key] = append(existing, ri)
+						}
+					}
+
+					if len(intermediateRows) > 0 && len(rightRows) > 0 {
+						rightLen := len(rightRows[0])
+						estimatedCombined := len(intermediateRows) * rightLen
+						if estimatedCombined > 0 && estimatedCombined <= 10000000 {
+							newIntermediate = make([][]interface{}, 0, estimatedCombined)
+						}
+					}
+
+					for _, leftRow := range intermediateRows {
+						if leftColIdx < len(leftRow) && leftRow[leftColIdx] != nil {
+							key := hashJoinKey(leftRow[leftColIdx])
+							if indices, ok := hashMap[key]; ok {
+								for _, ri := range indices {
+									combined := make([]interface{}, len(leftRow)+len(rightRows[ri]))
+									copy(combined, leftRow)
+									copy(combined[len(leftRow):], rightRows[ri])
+									newIntermediate = append(newIntermediate, combined)
+								}
+							}
+						}
+					}
+
+					intermediateRows = newIntermediate
+					allColumns = newAllColumns
+					continue
+				}
+			}
+
+			// Fall back to nested loop join for OUTER joins or non-equality joins
 			rightMatched := make([]bool, len(rightRows))
 
 			for _, leftRow := range intermediateRows {

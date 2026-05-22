@@ -1,10 +1,11 @@
 package catalog
 
 import (
+	"crypto/rand"
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"math"
-	"math/rand"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -529,7 +530,12 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		return evalArgs[2], nil
 
 	case "RANDOM":
-		return float64(rand.Int63()), nil
+		// Use crypto/rand for cryptographic randomness
+		n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 63))
+		if err != nil {
+			return float64(0), nil // fallback on error
+		}
+		return float64(n.Int64()), nil
 
 	case "ZEROBLOB":
 		if len(evalArgs) < 1 {

@@ -19,6 +19,11 @@ func goroutineID() int64 {
 // runtime.Stack on this Go version / architecture.  If the assembly
 // is wrong the binary panics immediately on startup so we catch it
 // in tests rather than silently corrupting the goroutine-to-txn map.
+//
+// This panic is INTENTIONAL and DESIRABLE. If this fails, the binary
+// must NOT run because goroutine ID retrieval is broken on this
+// Go version/architecture combination, which would cause silent
+// data corruption in transaction management.
 func init() {
 	var buf [64]byte
 	n := runtime.Stack(buf[:], false)

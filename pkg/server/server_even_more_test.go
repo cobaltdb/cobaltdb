@@ -2,7 +2,6 @@ package server
 
 import (
 	"bufio"
-	"context"
 	"net"
 	"testing"
 	"time"
@@ -215,7 +214,7 @@ func TestHandleQueryWithNilDB(t *testing.T) {
 		SQL: "SELECT 1",
 	}
 
-	response := client.handleQuery(context.TODO(), query)
+	response := client.handleQuery(t.Context(), query)
 	errMsg, ok := response.(*wire.ErrorMessage)
 	if !ok {
 		t.Fatalf("Expected Error message, got %T", response)
@@ -231,8 +230,8 @@ func TestHandleQueryScanError(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER)")
-	db.Exec(context.TODO(), "INSERT INTO test (id) VALUES (1)")
+	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
+	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (1)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -245,7 +244,7 @@ func TestHandleQueryScanError(t *testing.T) {
 		SQL: "SELECT * FROM test",
 	}
 
-	response := client.handleQuery(context.TODO(), query)
+	response := client.handleQuery(t.Context(), query)
 	// Should succeed with valid data
 	_, ok := response.(*wire.ResultMessage)
 	if !ok {
@@ -337,7 +336,7 @@ func TestHandleQueryExecPath(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER)")
+	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -351,7 +350,7 @@ func TestHandleQueryExecPath(t *testing.T) {
 		SQL: "INSERT INTO test (id) VALUES (1)",
 	}
 
-	response := client.handleQuery(context.TODO(), query)
+	response := client.handleQuery(t.Context(), query)
 	okMsg, ok := response.(*wire.OKMessage)
 	if !ok {
 		t.Fatalf("Expected OK message for INSERT, got %T", response)
@@ -367,9 +366,9 @@ func TestHandleQuerySelectPath(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER)")
-	db.Exec(context.TODO(), "INSERT INTO test (id) VALUES (1)")
-	db.Exec(context.TODO(), "INSERT INTO test (id) VALUES (2)")
+	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
+	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (1)")
+	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (2)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -383,7 +382,7 @@ func TestHandleQuerySelectPath(t *testing.T) {
 		SQL: "SELECT * FROM test",
 	}
 
-	response := client.handleQuery(context.TODO(), query)
+	response := client.handleQuery(t.Context(), query)
 	resultMsg, ok := response.(*wire.ResultMessage)
 	if !ok {
 		t.Fatalf("Expected Result message for SELECT, got %T", response)
@@ -399,7 +398,7 @@ func TestHandleQueryWithLastInsertID(t *testing.T) {
 	defer db.Close()
 
 	// Setup with AUTOINCREMENT
-	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -413,7 +412,7 @@ func TestHandleQueryWithLastInsertID(t *testing.T) {
 		SQL: "INSERT INTO test (name) VALUES ('Alice')",
 	}
 
-	response := client.handleQuery(context.TODO(), query)
+	response := client.handleQuery(t.Context(), query)
 	okMsg, ok := response.(*wire.OKMessage)
 	if !ok {
 		t.Fatalf("Expected OK message, got %T", response)
@@ -512,9 +511,9 @@ func TestHandleQueryWithMultipleParams(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER, name TEXT, age INTEGER)")
-	db.Exec(context.TODO(), "INSERT INTO test (id, name, age) VALUES (1, 'Alice', 25)")
-	db.Exec(context.TODO(), "INSERT INTO test (id, name, age) VALUES (2, 'Bob', 30)")
+	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER, name TEXT, age INTEGER)")
+	db.Exec(t.Context(), "INSERT INTO test (id, name, age) VALUES (1, 'Alice', 25)")
+	db.Exec(t.Context(), "INSERT INTO test (id, name, age) VALUES (2, 'Bob', 30)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -529,7 +528,7 @@ func TestHandleQueryWithMultipleParams(t *testing.T) {
 		Params: []interface{}{"Alice", 25},
 	}
 
-	response := client.handleQuery(context.TODO(), query)
+	response := client.handleQuery(t.Context(), query)
 	resultMsg, ok := response.(*wire.ResultMessage)
 	if !ok {
 		t.Fatalf("Expected Result message, got %T", response)
@@ -544,8 +543,8 @@ func TestHandleQueryWithNoParams(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER)")
-	db.Exec(context.TODO(), "INSERT INTO test (id) VALUES (1)")
+	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
+	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (1)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -560,7 +559,7 @@ func TestHandleQueryWithNoParams(t *testing.T) {
 		Params: []interface{}{},
 	}
 
-	response := client.handleQuery(context.TODO(), query)
+	response := client.handleQuery(t.Context(), query)
 	resultMsg, ok := response.(*wire.ResultMessage)
 	if !ok {
 		t.Fatalf("Expected Result message, got %T", response)
@@ -587,7 +586,7 @@ func TestHandleQuerySyntaxError(t *testing.T) {
 		SQL: "INVALID SQL SYNTAX HERE",
 	}
 
-	response := client.handleQuery(context.TODO(), query)
+	response := client.handleQuery(t.Context(), query)
 	errMsg, ok := response.(*wire.ErrorMessage)
 	if !ok {
 		t.Fatalf("Expected Error message, got %T", response)
@@ -603,8 +602,8 @@ func TestHandleQueryWithNilParams(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER)")
-	db.Exec(context.TODO(), "INSERT INTO test (id) VALUES (1)")
+	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
+	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (1)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -619,7 +618,7 @@ func TestHandleQueryWithNilParams(t *testing.T) {
 		Params: nil,
 	}
 
-	response := client.handleQuery(context.TODO(), query)
+	response := client.handleQuery(t.Context(), query)
 	resultMsg, ok := response.(*wire.ResultMessage)
 	if !ok {
 		t.Fatalf("Expected Result message, got %T", response)
@@ -800,8 +799,8 @@ func TestHandleQueryScanFailure(t *testing.T) {
 	defer db.Close()
 
 	// Setup
-	db.Exec(context.TODO(), "CREATE TABLE test (id INTEGER)")
-	db.Exec(context.TODO(), "INSERT INTO test (id) VALUES (1)")
+	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
+	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (1)")
 
 	srv, _ := New(db, nil)
 	client := &ClientConn{
@@ -815,7 +814,7 @@ func TestHandleQueryScanFailure(t *testing.T) {
 		SQL: "SELECT * FROM test",
 	}
 
-	response := client.handleQuery(context.TODO(), query)
+	response := client.handleQuery(t.Context(), query)
 	resultMsg, ok := response.(*wire.ResultMessage)
 	if !ok {
 		t.Fatalf("Expected Result message, got %T", response)
@@ -842,7 +841,7 @@ func TestHandleQueryExecFailure(t *testing.T) {
 		SQL: "INSERT INTO nonexistent VALUES (1)",
 	}
 
-	response := client.handleQuery(context.TODO(), query)
+	response := client.handleQuery(t.Context(), query)
 	errMsg, ok := response.(*wire.ErrorMessage)
 	if !ok {
 		t.Fatalf("Expected Error message, got %T", response)

@@ -522,7 +522,10 @@ func (m *Manager) verifyBackup(backup *Backup) error {
 
 	// Handle compressed backups
 	if filepath.Ext(backup.Destination) == ".gz" {
-		gzReader, err := gzip.NewReader(file)
+		// Limit reader to prevent zip bomb attacks (100MB max decompressed size)
+		const maxDecompressedSize = 100 * 1024 * 1024
+		limitedReader := io.LimitReader(file, maxDecompressedSize)
+		gzReader, err := gzip.NewReader(limitedReader)
 		if err != nil {
 			return fmt.Errorf("failed to create gzip reader: %w", err)
 		}

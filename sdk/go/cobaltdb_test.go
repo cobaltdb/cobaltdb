@@ -232,7 +232,7 @@ func TestConnectorConnect(t *testing.T) {
 	}
 
 	connector := &connector{cfg: cfg, driver: &Driver{}}
-	conn, err := connector.Connect(context.TODO())
+	conn, err := connector.Connect(t.Context())
 	if err != nil {
 		t.Fatalf("connector.Connect() failed: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestDBPing(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := db.Ping(context.TODO()); err != nil {
+	if err := db.Ping(t.Context()); err != nil {
 		t.Errorf("Ping() failed: %v", err)
 	}
 }
@@ -700,7 +700,7 @@ func TestConnectorConnectWithPrepare(t *testing.T) {
 	}
 
 	// Connect
-	conn, err := connector.Connect(context.TODO())
+	conn, err := connector.Connect(t.Context())
 	if err != nil {
 		t.Fatalf("Connect() failed: %v", err)
 	}
@@ -1122,7 +1122,7 @@ func TestConnectorWithDriver(t *testing.T) {
 	}
 
 	// Connect
-	conn, err := connector.Connect(context.TODO())
+	conn, err := connector.Connect(t.Context())
 	if err != nil {
 		t.Fatalf("Connect() failed: %v", err)
 	}

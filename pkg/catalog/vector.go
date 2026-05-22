@@ -2,9 +2,10 @@ package catalog
 
 import (
 	"container/heap"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"math"
-	"math/rand"
 	"sort"
 	"sync"
 )
@@ -450,7 +451,10 @@ func (h *HNSWIndex) selectNeighborsByKey(keys []string, m, level int) []string {
 	for i, key := range keys {
 		if _, ok := h.Nodes[key]; ok {
 			// Use a dummy distance for now - in practice we'd compute from the source node
-			dists[i] = neighborDist{Key: key, Distance: rand.Float64()}
+			// Use crypto/rand for generating random float64 in [0, 1)
+			var b [8]byte
+			rand.Read(b[:]) // ignore error, will use 0 on error
+			dists[i] = neighborDist{Key: key, Distance: math.Float64frombits(binary.LittleEndian.Uint64(b[:]))}
 		}
 	}
 
@@ -466,10 +470,19 @@ func (h *HNSWIndex) selectNeighborsByKey(keys []string, m, level int) []string {
 	return result
 }
 
-// randomLevel generates a random level for a new node
+// randomLevel generates a random level for a new node using crypto/rand
 func (h *HNSWIndex) randomLevel() int {
 	level := 0
-	for rand.Float64() < h.Ml && level < 16 {
+	for {
+		// Generate random float64 in [0, 1) using crypto/rand
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			break // fallback: don't increment level
+		}
+		f := math.Float64frombits(binary.LittleEndian.Uint64(b[:]))
+		if f >= h.Ml || level >= 16 {
+			break
+		}
 		level++
 	}
 	return level

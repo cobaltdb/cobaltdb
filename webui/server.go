@@ -174,7 +174,12 @@ func main() {
 	fmt.Printf("Bind: %s\n", *addr)
 	if authEnabled {
 		fmt.Printf("Token auth: enabled\n")
-		fmt.Printf("Open http://%s/?token=%s in your browser\n", *addr, apiToken)
+		// Show only first 8 chars to avoid full token in logs/shell history
+		maskedToken := apiToken
+		if len(apiToken) > 8 {
+			maskedToken = apiToken[:8] + "..."
+		}
+		fmt.Printf("Open http://%s/?token=%s in your browser\n", *addr, maskedToken)
 		fmt.Printf("Tip: token query parameter is converted to an HttpOnly cookie automatically\n")
 	} else {
 		fmt.Printf("Token auth: DISABLED (unsafe)\n")

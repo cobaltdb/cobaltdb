@@ -514,8 +514,14 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 	}
 
 	// Determine if this is a query (returns rows) or exec (returns affected count)
-	// by checking the SQL prefix to avoid parsing twice
+	// by checking the SQL prefix. Also blocks multi-statement attacks.
 	sqlTrimmed := strings.TrimSpace(query.SQL)
+
+	// Block multi-statement attacks (e.g., "SELECT; DROP TABLE users")
+	if strings.Contains(sqlTrimmed, ";") {
+		return wire.NewErrorMessage(9, "multi-statement queries are not allowed")
+	}
+
 	isQuery := len(sqlTrimmed) >= 4 && ((len(sqlTrimmed) >= 6 && strings.EqualFold(sqlTrimmed[:6], "SELECT")) ||
 		strings.EqualFold(sqlTrimmed[:4], "WITH") ||
 		strings.EqualFold(sqlTrimmed[:4], "SHOW") ||

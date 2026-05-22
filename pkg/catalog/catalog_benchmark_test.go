@@ -218,7 +218,7 @@ func BenchmarkCatalogSelectJoin(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	// Create orders table
+	// Create orders table with index on user_id for efficient hash join
 	err = cat.CreateTable(&query.CreateTableStmt{
 		Table: "orders",
 		Columns: []*query.ColumnDef{
@@ -231,28 +231,54 @@ func BenchmarkCatalogSelectJoin(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	// Create index on user_id for efficient hash join
+	err = cat.CreateIndex(&query.CreateIndexStmt{
+		Index: "idx_orders_user_id",
+		Table: "orders",
+		Columns: []string{"user_id"},
+		Unique: false,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+
 	ctx := context.Background()
-	for i := 0; i < 1000; i++ {
+
+	// Pre-allocate batch insert for efficiency
+	batchSize := 1000
+	for batchStart := 0; batchStart < batchSize; batchStart += 100 {
+		batchEnd := batchStart + 100
+		if batchEnd > batchSize {
+			batchEnd = batchSize
+		}
+
+		// Batch insert customers
+		customerValues := make([][]query.Expression, batchEnd-batchStart)
+		for i := batchStart; i < batchEnd; i++ {
+			customerValues[i-batchStart] = []query.Expression{
+				&query.NumberLiteral{Value: float64(i)},
+				&query.StringLiteral{Value: fmt.Sprintf("customer-%d", i)},
+			}
+		}
 		cat.Insert(ctx, &query.InsertStmt{
 			Table:   "customers",
 			Columns: []string{"id", "name"},
-			Values: [][]query.Expression{
-				{
-					&query.NumberLiteral{Value: float64(i)},
-					&query.StringLiteral{Value: fmt.Sprintf("customer-%d", i)},
-				},
-			},
+			Values:  customerValues,
 		}, nil)
+
+		// Batch insert orders
+		orderValues := make([][]query.Expression, batchEnd-batchStart)
+		for i := batchStart; i < batchEnd; i++ {
+			orderValues[i-batchStart] = []query.Expression{
+				&query.NumberLiteral{Value: float64(i)},
+				&query.NumberLiteral{Value: float64(i)},
+				&query.NumberLiteral{Value: float64(i) * 1.5},
+			}
+		}
 		cat.Insert(ctx, &query.InsertStmt{
 			Table:   "orders",
 			Columns: []string{"id", "user_id", "total"},
-			Values: [][]query.Expression{
-				{
-					&query.NumberLiteral{Value: float64(i)},
-					&query.NumberLiteral{Value: float64(i)},
-					&query.NumberLiteral{Value: float64(i) * 1.5},
-				},
-			},
+			Values:  orderValues,
 		}, nil)
 	}
 
