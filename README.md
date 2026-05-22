@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go Version">
-  <img src="https://img.shields.io/badge/Version-0.5.0-blue?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/Version-0.6.0-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
   <img src="https://img.shields.io/badge/Coverage-90%2B-brightgreen?style=for-the-badge" alt="Test Coverage">
@@ -941,21 +941,15 @@ go run cmd/demo/main.go
 - [x] **Graceful Shutdown** - Signal handling with drain timeout
 - [x] **Health Checks** - Kubernetes-compatible probes
 
-### ✅ v0.2.22 - WASM & Advanced Features (2026-03-17)
+### ✅ v0.4.0-0.6.0 - Performance & Security (2026-05)
 
-- [x] **WASM Compilation** - Compile SQL queries to WebAssembly bytecode
-- [x] **Query Plan Cache** - LRU cache for parsed query plans with statistics
-- [x] **Vector Support** - VECTOR data type with HNSW index for similarity search
-- [x] **Temporal Queries** - AS OF SYSTEM TIME for time-travel queries
-
-### ✅ v0.3.0 - Security Hardening & Stability (2026-03-20)
-
-- [x] **WAL Encryption** - AEAD encryption for write-ahead log with header authentication
-- [x] **Audit Log Encryption** - AES-256-GCM encrypted audit log entries
-- [x] **RLS Hardening** - Fixed bypass in UPDATE...FROM and DELETE...USING
-- [x] **Auth Hardening** - Password policy, brute force rate limiting, random default password
-- [x] **SQL Injection Protection** - 15 detection patterns (conditional blind, OOB exfil, etc.)
-- [x] **Concurrency Fixes** - Panic recovery, double-close protection, lifecycle tracking
+- [x] **85x JOIN Performance** - Hash join implementation, 103ms → 1.3ms
+- [x] **8 Security Fixes** - Password logging, crypto/rand, SQL injection, TLS hardening
+- [x] **MVCC Multi-Writer** - Concurrent transaction support with adaptive commit locking
+- [x] **Catalog Optimizations** - Reduced lock contention, batch operations, faster scans
+- [x] **WAL Improvements** - 64KB→1MB buffer, 5ms group commit, reduced allocations
+- [x] **BTree Optimizations** - LRU improvements, parallel flush, incremental checkpoint
+- [x] **Go 1.24+ Compatibility** - t.Context() updates, sync.Pool optimizations
 - [x] **7,100+ Test Functions** - 24/24 `pkg` packages above 90% coverage
 
 ### 📋 Planned Features
