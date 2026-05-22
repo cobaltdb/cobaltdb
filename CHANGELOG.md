@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.6.0] - 2026-05-22
+
+### Security Fixes
+
+- **Password logging removed**: Admin password no longer printed to stdout on server startup
+- **Secure randomness**: Replaced `math/rand` with `crypto/rand` in catalog vector and eval packages
+- **TLS hardening**: Removed TLS environment variable override that could bypass configuration
+- **SQL injection protection**: Added multi-statement detection (`;` character blocking) in server
+- **Gzip reader limit**: Added 100MB size limit on gzip decompression in backup package
+- **Token masking**: WebUI tokens now show only first 8 characters instead of full token
+
+### Performance Improvements
+
+- **85x JOIN speedup**: `BenchmarkCatalogSelectJoin` improved from 103ms to 1.3ms
+  - Hash join implementation for catalog selects
+  - Batch insert optimization
+- **MVCC multi-writer**: Concurrent transaction support with adaptive commit locking (256 shards)
+- **Catalog optimizations**: Reduced lock contention, released `Catalog.mu` during SELECT scans
+- **WAL improvements**: Buffer increased 64KB → 1MB, 5ms group commit, reduced per-record allocations
+- **BTree optimizations**: LRU improvements, parallel flush, incremental checkpoint, batch-allocate buffers
+- **Allocation reduction**: StringBox for zero-copy strings, sync.Pool for row encoding buffers
+
+### Code Quality
+
+- **Go 1.24+ compatibility**: Updated `t.Context()` usage across 51 test locations
+- **Race detector clean**: All packages pass `go test -race`
+- **Test coverage**: 24/24 `pkg` packages above 90% coverage, 7,100+ test functions
+
 ## [v0.5.0] - 2026-04-25
 
 ### Production Readiness
