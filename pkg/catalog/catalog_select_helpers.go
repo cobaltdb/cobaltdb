@@ -86,8 +86,7 @@ func (cat *Catalog) applySelectPostProcess(p applySelectPostProcessParams) ([]st
 		if rlsCtx == nil {
 			rlsCtx = context.Background()
 		}
-		user, _ := rlsCtx.Value("cobaltdb_user").(string)
-		roles, _ := rlsCtx.Value("cobaltdb_roles").([]string)
+		user, roles := rlsContext(rlsCtx)
 		if user != "" {
 			cols, filteredRows, rlsErr := cat.applyRLSFilterInternal(rlsCtx, p.stmt.From.Name, returnColumns, rows, user, roles)
 			if rlsErr != nil {

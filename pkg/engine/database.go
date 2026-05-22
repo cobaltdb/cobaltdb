@@ -693,10 +693,14 @@ func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 // auditUser extracts the username from context for audit logging.
 
 func auditUser(ctx context.Context) string {
-	if ctx != nil {
-		if user, ok := ctx.Value("cobaltdb_user").(string); ok && user != "" {
-			return user
-		}
+	if ctx == nil {
+		return "db_user"
+	}
+	if user, ok := ctx.Value(security.RLSUserKey).(string); ok && user != "" {
+		return user
+	}
+	if user, ok := ctx.Value("cobaltdb_user").(string); ok && user != "" {
+		return user
 	}
 	return "db_user"
 }

@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 )
@@ -18,9 +19,25 @@ func rowToMap(columns []ColumnDef, row []interface{}) map[string]interface{} {
 }
 
 // rlsContext extracts user and roles from the context.
+//
+// It prefers the typed keys exported by pkg/security (security.RLSUserKey,
+// security.RLSRolesKey) and falls back to the legacy "cobaltdb_user" /
+// "cobaltdb_roles" string keys for backward compatibility with older callers
+// and tests. Callers should prefer the typed keys.
 func rlsContext(ctx context.Context) (user string, roles []string) {
-	user, _ = ctx.Value("cobaltdb_user").(string)
-	roles, _ = ctx.Value("cobaltdb_roles").([]string)
+	if ctx == nil {
+		return "", nil
+	}
+	if v, ok := ctx.Value(security.RLSUserKey).(string); ok && v != "" {
+		user = v
+	} else {
+		user, _ = ctx.Value("cobaltdb_user").(string)
+	}
+	if v, ok := ctx.Value(security.RLSRolesKey).([]string); ok && len(v) > 0 {
+		roles = v
+	} else {
+		roles, _ = ctx.Value("cobaltdb_roles").([]string)
+	}
 	return
 }
 
@@ -68,12 +85,18 @@ func (c *Catalog) ApplyRLSFilter(ctx context.Context, tableName string, columns 
 		return nil, nil, err
 	}
 
-	// Convert back to row format
+	// Convert back to row format. Fail closed if a column the policy is
+	// supposed to preserve is missing from the filtered map — silently
+	// substituting nil would degrade a policy error into a wrong result.
 	filteredRows := make([][]interface{}, len(filtered))
 	for i, mapRow := range filtered {
 		row := make([]interface{}, len(columns))
 		for j, col := range columns {
-			row[j] = mapRow[col]
+			val, ok := mapRow[col]
+			if !ok {
+				return nil, nil, fmt.Errorf("rls: filtered row %d missing column %q", i, col)
+			}
+			row[j] = val
 		}
 		filteredRows[i] = row
 	}
@@ -155,12 +178,18 @@ func (c *Catalog) applyRLSFilterInternal(ctx context.Context, tableName string, 
 		return nil, nil, err
 	}
 
-	// Convert back to row format
+	// Convert back to row format. Fail closed if a column the policy is
+	// supposed to preserve is missing from the filtered map — silently
+	// substituting nil would degrade a policy error into a wrong result.
 	filteredRows := make([][]interface{}, len(filtered))
 	for i, mapRow := range filtered {
 		row := make([]interface{}, len(columns))
 		for j, col := range columns {
-			row[j] = mapRow[col]
+			val, ok := mapRow[col]
+			if !ok {
+				return nil, nil, fmt.Errorf("rls: filtered row %d missing column %q", i, col)
+			}
+			row[j] = val
 		}
 		filteredRows[i] = row
 	}

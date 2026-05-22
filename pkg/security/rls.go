@@ -50,6 +50,7 @@ func toLowerFast(s string) string {
 type rlsUserKey struct{}
 type rlsTenantKey struct{}
 type rlsRoleKey struct{}
+type rlsRolesKey struct{}
 type rlsSessionUserKey struct{}
 
 // RLSUserKey is the context key for the current user in RLS checks
@@ -58,8 +59,13 @@ var RLSUserKey = rlsUserKey{}
 // RLSTenantKey is the context key for the current tenant in RLS checks
 var RLSTenantKey = rlsTenantKey{}
 
-// RLSRoleKey is the context key for the current role in RLS checks
+// RLSRoleKey is the context key for the current role (single string) in RLS checks
 var RLSRoleKey = rlsRoleKey{}
+
+// RLSRolesKey is the context key for the list of roles ([]string) used by
+// catalog-level row filtering. Distinct from RLSRoleKey which is consumed by
+// SQL-level evaluation (e.g. CURRENT_ROLE()) and carries a single role.
+var RLSRolesKey = rlsRolesKey{}
 
 // RLSSessionUserKey is the context key for the session user in RLS checks
 var RLSSessionUserKey = rlsSessionUserKey{}
