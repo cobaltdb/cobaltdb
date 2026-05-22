@@ -270,7 +270,6 @@ func (c *Catalog) CommitTransaction() error {
 				pw := ts.pendingWrites[0]
 				shard := c.commitLockIdx(pw.TreeName, pw.Key)
 				c.commitMu[shard].Lock()
-				defer c.commitMu[shard].Unlock()
 
 				// Validate reads using cached tree references (no c.mu needed).
 				if len(ts.readValues) > 0 {
@@ -286,17 +285,20 @@ func (c *Catalog) CommitTransaction() error {
 							currentValue, _ = tree.Get([]byte(wk.Key))
 						}
 						if !bytes.Equal(originalValue, currentValue) {
+							c.commitMu[shard].Unlock()
 							return txn.ErrConflict
 						}
 					}
 				}
 
 				if err := mt.Commit(); err != nil {
+					c.commitMu[shard].Unlock()
 					return fmt.Errorf("txn manager commit: %w", err)
 				}
 
 				tree, exists := ts.treeCache[pw.TreeName]
 				if !exists || tree == nil {
+					c.commitMu[shard].Unlock()
 					return fmt.Errorf("partition tree %s not found", pw.TreeName)
 				}
 				var putErr error
@@ -306,8 +308,10 @@ func (c *Catalog) CommitTransaction() error {
 					putErr = tree.Put([]byte(pw.Key), pw.Value)
 				}
 				if putErr != nil {
+					c.commitMu[shard].Unlock()
 					return fmt.Errorf("failed to apply buffered write to %s: %w", pw.TreeName, putErr)
 				}
+				c.commitMu[shard].Unlock()
 				ts.pendingWrites = ts.pendingWrites[:0]
 				ts.pendingWriteMap = nil
 			} else {
@@ -1067,15 +1071,10 @@ func (c *Catalog) recordManagerRead(treeName string, key string, valueData []byt
 		if ts.readValues == nil {
 			ts.readValues = make(map[txn.WriteKey][]byte)
 		}
-		var valCopy []byte
-		if len(valueData) > 0 {
-			valCopy = make([]byte, len(valueData))
-			copy(valCopy, valueData)
-		}
 		var wk2 txn.WriteKey
 		wk2.TreeName = treeName
 		wk2.Key = key
-		ts.readValues[wk2] = valCopy
+		ts.readValues[wk2] = valueData
 		// Cache tree reference so CommitTransaction doesn't need c.mu.
 		// Caller must hold c.mu for read.
 		if ts.treeCache == nil {
@@ -1110,15 +1109,10 @@ func (c *Catalog) recordManagerReadTs(ts *catalogTxnState, treeName string, key 
 	if ts.readValues == nil {
 		ts.readValues = make(map[txn.WriteKey][]byte)
 	}
-	var valCopy []byte
-	if len(valueData) > 0 {
-		valCopy = make([]byte, len(valueData))
-		copy(valCopy, valueData)
-	}
 	var wk2 txn.WriteKey
 	wk2.TreeName = treeName
 	wk2.Key = key
-	ts.readValues[wk2] = valCopy
+	ts.readValues[wk2] = valueData
 	if ts.treeCache == nil {
 		ts.treeCache = make(map[string]btree.TreeStore, 4)
 	}

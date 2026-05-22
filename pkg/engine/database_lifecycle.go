@@ -197,9 +197,9 @@ func Open(path string, opts *Options) (*DB, error) {
 		db.rlsManager = security.NewManager()
 	}
 
-	// Initialize connection semaphore if max connections is set
+	// Initialize connection limiter (atomic fast path; 0 = unlimited).
 	if opts.MaxConnections > 0 {
-		db.connSem = make(chan struct{}, opts.MaxConnections)
+		db.connLimit = int64(opts.MaxConnections)
 	}
 
 	// Start metrics collection

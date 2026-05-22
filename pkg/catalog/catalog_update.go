@@ -29,7 +29,7 @@ type updateSnapshot struct {
 	table       *TableDef
 	trees       []btree.TreeStore
 	treeNames   []string
-	indexedRows map[string]bool
+	indexedRows []string
 	useIndex    bool
 	indexes     []indexSnapshot
 	fkRefs      map[string]fkSnapshot
@@ -106,14 +106,14 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 	}
 
 	// Buffered path: snapshot and release lock for scan.
-	snap, err := c.buildUpdateSnapshot(table, stmt, args)
-	if err != nil {
+	var snap updateSnapshot
+	if err := c.buildUpdateSnapshot(&snap, table, stmt, args); err != nil {
 		c.mu.RUnlock()
 		return 0, 0, err
 	}
 	c.mu.RUnlock()
 
-	entries, rowsAffected, err := c.scanUpdateEntries(ctx, stmt, args, snap, ts)
+	entries, rowsAffected, err := c.scanUpdateEntries(ctx, stmt, args, &snap, ts)
 	if err != nil {
 		return 0, rowsAffected, err
 	}
@@ -161,20 +161,24 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 	return 0, rowsAffected, nil
 }
 
-func (c *Catalog) buildUpdateSnapshot(table *TableDef, stmt *query.UpdateStmt, args []interface{}) (*updateSnapshot, error) {
-	snap := &updateSnapshot{table: table}
+func (c *Catalog) buildUpdateSnapshot(snap *updateSnapshot, table *TableDef, stmt *query.UpdateStmt, args []interface{}) error {
+	snap.table = table
 	trees, err := c.getTableTreesForScan(table)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	snap.trees = trees
-	snap.treeNames = []string{stmt.Table}
+	snap.treeNames = append(snap.treeNames[:0], stmt.Table)
 	if table.Partition != nil {
-		snap.treeNames = table.getPartitionTreeNames()
+		snap.treeNames = append(snap.treeNames[:0], table.getPartitionTreeNames()...)
 	}
 	if stmt.Where != nil {
 		snap.indexedRows, snap.useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+	} else {
+		snap.indexedRows = snap.indexedRows[:0]
+		snap.useIndex = false
 	}
+	snap.indexes = snap.indexes[:0]
 	for idxName, idxDef := range c.indexes {
 		if idxDef.TableName == table.Name {
 			snap.indexes = append(snap.indexes, indexSnapshot{
@@ -185,7 +189,11 @@ func (c *Catalog) buildUpdateSnapshot(table *TableDef, stmt *query.UpdateStmt, a
 		}
 	}
 	if len(table.ForeignKeys) > 0 {
-		snap.fkRefs = make(map[string]fkSnapshot, len(table.ForeignKeys))
+		if snap.fkRefs == nil {
+			snap.fkRefs = make(map[string]fkSnapshot, len(table.ForeignKeys))
+		} else {
+			clear(snap.fkRefs)
+		}
 		for _, fk := range table.ForeignKeys {
 			if _, ok := snap.fkRefs[fk.ReferencedTable]; ok {
 				continue
@@ -200,9 +208,11 @@ func (c *Catalog) buildUpdateSnapshot(table *TableDef, stmt *query.UpdateStmt, a
 			}
 			snap.fkRefs[fk.ReferencedTable] = fkSnapshot{table: refTable, tree: refTree}
 		}
+	} else if snap.fkRefs != nil {
+		clear(snap.fkRefs)
 	}
 	snap.triggers = c.getTriggersForTableLocked(table.Name, "UPDATE")
-	return snap, nil
+	return nil
 }
 
 func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *TableDef, tree btree.TreeStore, treeName string, key []byte, row []interface{},
@@ -228,10 +238,6 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 			updatedRow[colIdx] = newVal
 		}
 	}
-
-	// Make copies since buffers may be reused
-	keyCopy := make([]byte, len(key))
-	copy(keyCopy, key)
 
 	// Check UNIQUE constraints before updating
 	for i, col := range table.Columns {
@@ -375,7 +381,7 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 	}
 
 	*entries = append(*entries, updateEntry{
-		key:      keyCopy,
+		key:      key,
 		oldRow:   row,
 		newRow:   updatedRow,
 		treeName: treeName,
@@ -436,7 +442,7 @@ func (c *Catalog) scanUpdateEntries(ctx context.Context, stmt *query.UpdateStmt,
 		}
 
 		if useIndex {
-			for pkStr := range indexedRows {
+			for _, pkStr := range indexedRows {
 				key := []byte(pkStr)
 				valueData, err := tree.Get(key)
 				found := err == nil && valueData != nil
@@ -601,7 +607,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	}
 
 	// Check if we can use an index for the WHERE clause
-	var indexedRows map[string]bool
+	var indexedRows []string
 	useIndex := false
 	if stmt.Where != nil {
 		indexedRows, useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
@@ -619,7 +625,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 
 		// If we have indexed rows, only process those specific rows
 		if useIndex {
-			for pkStr := range indexedRows {
+			for _, pkStr := range indexedRows {
 				key := []byte(pkStr)
 				valueData, err := tree.Get(key)
 				found := err == nil && valueData != nil
@@ -1313,10 +1319,6 @@ func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tre
 		}
 	}
 
-	// Make copies since buffers may be reused
-	keyCopy := make([]byte, len(key))
-	copy(keyCopy, key)
-
 	// Check UNIQUE constraints before updating
 	for i, col := range table.Columns {
 		if col.Unique && updatedRow[i] != nil {
@@ -1450,7 +1452,7 @@ func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tre
 	}
 
 	*entries = append(*entries, updateEntry{
-		key:      keyCopy,
+		key:      key,
 		oldRow:   row,
 		newRow:   updatedRow,
 		treeName: treeName,

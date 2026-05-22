@@ -944,6 +944,48 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 // other transactions to commit while WAL I/O is in progress, significantly
 // improving concurrency under high write load.
 func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
+	// Fast path: single-shard transaction (the common case for single-row
+	// INSERT, UPDATE, DELETE). Avoids shard-array collection, sorting,
+	// and multi-shard lock/unlock loops.
+	if len(txn.WriteSet) == 1 {
+		var writeWk WriteKey
+		for wk := range txn.WriteSet {
+			writeWk = wk
+		}
+		shard := versionShardIdx(writeWk.TreeName, writeWk.Key)
+
+		if len(txn.ReadSet) == 0 {
+			m.versionShards[shard].mu.Lock()
+			seq := atomic.AddUint64(&m.commitSeq, 1)
+			m.versionShards[shard].versions[writeWk] = seq
+			m.versionShards[shard].mu.Unlock()
+			return m.writeWALForCommit(txn)
+		}
+
+		if len(txn.ReadSet) == 1 {
+			var readWk WriteKey
+			var readVersion uint64
+			for wk, rv := range txn.ReadSet {
+				readWk = wk
+				readVersion = rv
+			}
+			if readWk == writeWk {
+				m.versionShards[shard].mu.Lock()
+				if txn.Isolation >= SnapshotIsolation {
+					currentVersion, exists := m.versionShards[shard].versions[readWk]
+					if exists && currentVersion > readVersion {
+						m.versionShards[shard].mu.Unlock()
+						return ErrConflict
+					}
+				}
+				seq := atomic.AddUint64(&m.commitSeq, 1)
+				m.versionShards[shard].versions[writeWk] = seq
+				m.versionShards[shard].mu.Unlock()
+				return m.writeWALForCommit(txn)
+			}
+		}
+	}
+
 	// 1. Collect all version shards touched by this transaction.
 	// Use a small stack array for the common case (1-2 shards) to avoid a
 	// map allocation per commit.
@@ -1020,83 +1062,92 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 	}
 
 	// 5. WAL durability (outside version locks so other commits can proceed).
-	if m.wal != nil {
-		if wal, ok := m.wal.(*storage.WAL); ok && wal != nil {
-			// Fast path: single-write transaction with stack-allocated records.
-			// This avoids two heap-allocated WALRecord structs for the common case.
-			if len(txn.WriteSet) == 1 {
-				var recArr [2]storage.WALRecord
-				var records [2]*storage.WALRecord
-				var walDataBuf *[]byte
-				for wk, value := range txn.WriteSet {
-					tnLen := len(wk.TreeName)
-					kLen := len(wk.Key)
-					totalKeyLen := tnLen + 1 + kLen
-					need := 4 + totalKeyLen + len(value)
-					var data []byte
-					if need <= 256 {
-						walDataBuf = walDataPool.Get().(*[]byte)
-						data = (*walDataBuf)[:need]
-						binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
-						copy(data[4:4+tnLen], wk.TreeName)
-						data[4+tnLen] = ':'
-						copy(data[4+tnLen+1:], wk.Key)
-						copy(data[4+totalKeyLen:], value)
-					} else {
-						data = make([]byte, need)
-						binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
-						copy(data[4:4+tnLen], wk.TreeName)
-						data[4+tnLen] = ':'
-						copy(data[4+tnLen+1:], wk.Key)
-						copy(data[4+totalKeyLen:], value)
-					}
+	return m.writeWALForCommit(txn)
+}
 
-					recArr[0] = storage.WALRecord{
-						TxnID: txn.ID,
-						Type:  storage.WALUpdateCommit,
-						Data:  data,
-					}
-					records[0] = &recArr[0]
-				}
-				if err := wal.AppendBatch(records[:1]); err != nil {
-					if walDataBuf != nil {
-						walDataPool.Put(walDataBuf)
-					}
-					return fmt.Errorf("failed to append WAL records: %w", err)
-				}
-				if walDataBuf != nil {
-					walDataPool.Put(walDataBuf)
-				}
+// writeWALForCommit writes WAL records for a committed transaction.
+// It is extracted so that both the single-shard fast path and the general
+// path can share the same WAL logic without a goto.
+func (m *Manager) writeWALForCommit(txn *Transaction) error {
+	if m.wal == nil {
+		return nil
+	}
+	wal, ok := m.wal.(*storage.WAL)
+	if !ok || wal == nil {
+		return nil
+	}
+	// Fast path: single-write transaction with stack-allocated records.
+	// This avoids two heap-allocated WALRecord structs for the common case.
+	if len(txn.WriteSet) == 1 {
+		var recArr [2]storage.WALRecord
+		var records [2]*storage.WALRecord
+		var walDataBuf *[]byte
+		for wk, value := range txn.WriteSet {
+			tnLen := len(wk.TreeName)
+			kLen := len(wk.Key)
+			totalKeyLen := tnLen + 1 + kLen
+			need := 4 + totalKeyLen + len(value)
+			var data []byte
+			if need <= 256 {
+				walDataBuf = walDataPool.Get().(*[]byte)
+				data = (*walDataBuf)[:need]
+				binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+				copy(data[4:4+tnLen], wk.TreeName)
+				data[4+tnLen] = ':'
+				copy(data[4+tnLen+1:], wk.Key)
+				copy(data[4+totalKeyLen:], value)
 			} else {
-				records := make([]*storage.WALRecord, 0, len(txn.WriteSet)+1)
-				for wk, value := range txn.WriteSet {
-					tnLen := len(wk.TreeName)
-					kLen := len(wk.Key)
-					totalKeyLen := tnLen + 1 + kLen
-					data := make([]byte, 4+totalKeyLen+len(value))
-					binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
-					copy(data[4:4+tnLen], wk.TreeName)
-					data[4+tnLen] = ':'
-					copy(data[4+tnLen+1:], wk.Key)
-					copy(data[4+totalKeyLen:], value)
-
-					records = append(records, &storage.WALRecord{
-						TxnID: txn.ID,
-						Type:  storage.WALUpdate,
-						Data:  data,
-					})
-				}
-				records = append(records, &storage.WALRecord{
-					TxnID: txn.ID,
-					Type:  storage.WALCommit,
-				})
-				if err := wal.AppendBatch(records); err != nil {
-					return fmt.Errorf("failed to append WAL records: %w", err)
-				}
+				data = make([]byte, need)
+				binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+				copy(data[4:4+tnLen], wk.TreeName)
+				data[4+tnLen] = ':'
+				copy(data[4+tnLen+1:], wk.Key)
+				copy(data[4+totalKeyLen:], value)
 			}
+
+			recArr[0] = storage.WALRecord{
+				TxnID: txn.ID,
+				Type:  storage.WALUpdateCommit,
+				Data:  data,
+			}
+			records[0] = &recArr[0]
+		}
+		if err := wal.AppendBatch(records[:1]); err != nil {
+			if walDataBuf != nil {
+				walDataPool.Put(walDataBuf)
+			}
+			return fmt.Errorf("failed to append WAL records: %w", err)
+		}
+		if walDataBuf != nil {
+			walDataPool.Put(walDataBuf)
+		}
+	} else {
+		records := make([]*storage.WALRecord, 0, len(txn.WriteSet)+1)
+		for wk, value := range txn.WriteSet {
+			tnLen := len(wk.TreeName)
+			kLen := len(wk.Key)
+			totalKeyLen := tnLen + 1 + kLen
+			data := make([]byte, 4+totalKeyLen+len(value))
+			binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+			copy(data[4:4+tnLen], wk.TreeName)
+			data[4+tnLen] = ':'
+			copy(data[4+tnLen+1:], wk.Key)
+			copy(data[4+totalKeyLen:], value)
+
+			records = append(records, &storage.WALRecord{
+				TxnID: txn.ID,
+				Type:  storage.WALUpdate,
+				Data:  data,
+			})
+		}
+		records = append(records, &storage.WALRecord{
+			TxnID: txn.ID,
+			Type:  storage.WALCommit,
+		})
+		if err := wal.AppendBatch(records); err != nil {
+			return fmt.Errorf("failed to append WAL records: %w", err)
 		}
 	}
-
 	return nil
 }
 

@@ -28,7 +28,7 @@ type deleteSnapshot struct {
 	table       *TableDef
 	trees       []btree.TreeStore
 	treeNames   []string
-	indexedRows map[string]bool
+	indexedRows []string
 	useIndex    bool
 }
 
@@ -182,7 +182,7 @@ func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt,
 		}
 
 		if useIndex {
-			for pkStr := range indexedRows {
+			for _, pkStr := range indexedRows {
 				key := []byte(pkStr)
 				valueData, err := tree.Get(key)
 				found := err == nil && valueData != nil

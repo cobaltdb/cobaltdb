@@ -751,7 +751,7 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	}
 	// Prepare scan parameters while holding catalog lock
 	trees, _ := cat.getTableTreesForScan(table)
-	var indexMatches map[string]bool
+	var indexMatches []string
 	var useIndex bool
 	if stmt.Where != nil {
 		indexMatches, useIndex = cat.useIndexForQueryWithArgs(stmt.From.Name, stmt.Where, args)
@@ -797,7 +797,7 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 }
 
 // scanTableRows reads rows from the table using index lookup, materialized view data, or full scan.
-func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, hasWindowFuncs bool, queryTime time.Time, trees []btree.TreeStore, indexMatches map[string]bool, useIndex bool, mvRows [][]interface{}, isMV bool, parallelWorkers int, parallelThreshold int) ([][]interface{}, [][]interface{}) {
+func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, hasWindowFuncs bool, queryTime time.Time, trees []btree.TreeStore, indexMatches []string, useIndex bool, mvRows [][]interface{}, isMV bool, parallelWorkers int, parallelThreshold int) ([][]interface{}, [][]interface{}) {
 	var rows [][]interface{}
 	var windowFullRows [][]interface{}
 
@@ -823,7 +823,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 	}
 
 	if useIndex {
-		for pk := range indexMatches {
+		for _, pk := range indexMatches {
 			var valueData []byte
 			var found bool
 			for _, tree := range trees {

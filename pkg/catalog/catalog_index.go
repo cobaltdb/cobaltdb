@@ -231,7 +231,7 @@ func (c *Catalog) extractLiteralValue(expr query.Expression, args []interface{})
 	}
 }
 
-func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Expression, args []interface{}) (map[string]bool, bool) {
+func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Expression, args []interface{}) ([]string, bool) {
 	// If there are pending buffered writes for this table, the index tree may
 	// be stale (index updates are deferred to commit). Fall back to full scan
 	// so read-your-writes works correctly.
@@ -251,17 +251,15 @@ func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Express
 	return nil, false
 }
 
-func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (map[string]bool, bool) {
+func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) ([]string, bool) {
 	// Special case: PRIMARY KEY lookup
 	if idxName == "__PK__" {
-		result := make(map[string]bool)
 		// Use serializePK format for consistency with table storage
 		pkKey, ok := formatKeyComponent(searchVal)
 		if !ok {
 			pkKey = ValueToStringKey(searchVal)
 		}
-		result[pkKey] = true
-		return result, true
+		return []string{pkKey}, true
 	}
 
 	idxDef, idxExists := c.indexes[idxName]
@@ -275,7 +273,7 @@ func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (
 	}
 
 	indexKey := typeTaggedKey(searchVal)
-	result := make(map[string]bool)
+	var result []string
 
 	if idxDef.Unique {
 		// For unique indexes, just do a point lookup
@@ -284,8 +282,7 @@ func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (
 			// No matching rows
 			return result, true
 		}
-		result[string(pkData)] = true
-		return result, true
+		return []string{string(pkData)}, true
 	}
 
 	// For non-unique indexes, we need to scan the range for matching keys
@@ -304,7 +301,7 @@ func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (
 		if err != nil {
 			break
 		}
-		result[string(pkData)] = true
+		result = append(result, string(pkData))
 	}
 
 	return result, true

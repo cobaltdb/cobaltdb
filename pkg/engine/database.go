@@ -67,7 +67,10 @@ type DB struct {
 	// Metrics collector
 	metrics *metrics.Collector
 	// Connection management
-	connSem      chan struct{} // Connection limit semaphore
+	connLimit    int64         // Maximum concurrent connections (0 = unlimited)
+	connCount    atomic.Int64  // Current acquired connections (atomic semaphore)
+	connWaitMu   sync.Mutex
+	connWaiters  []chan struct{} // Blocked waiters when at limit
 	activeConns  atomic.Int64  // Active connection count
 	shutdownCh   chan struct{} // Shutdown signal
 	shutdownOnce sync.Once
@@ -350,10 +353,10 @@ func (db *DB) evictLRUEntry() {
 	}
 }
 
-// acquireConnection acquires a connection slot with timeout
-
+// acquireConnection acquires a connection slot with timeout.
+// The fast path uses atomics to avoid channel/select overhead.
 func (db *DB) acquireConnection(ctx context.Context) error {
-	if db.connSem == nil {
+	if db.connLimit <= 0 {
 		// No connection limit
 		db.activeConns.Add(1)
 		if db.metrics != nil {
@@ -362,51 +365,87 @@ func (db *DB) acquireConnection(ctx context.Context) error {
 		return nil
 	}
 
-	// Fast path: try to acquire immediately without allocating a timeout context.
-	select {
-	case db.connSem <- struct{}{}:
+	// Fast path: atomic increment if under limit.
+	for {
+		n := db.connCount.Load()
+		if n >= db.connLimit {
+			break
+		}
+		if db.connCount.CompareAndSwap(n, n+1) {
+			db.activeConns.Add(1)
+			if db.metrics != nil {
+				db.metrics.ConnectionAcquired()
+			}
+			return nil
+		}
+	}
+
+	// Slow path: block until a slot opens or context is cancelled.
+	ch := make(chan struct{}, 1)
+	db.connWaitMu.Lock()
+	// Double-check under lock to prevent lost wakeups.
+	if db.connCount.Load() < db.connLimit {
+		db.connCount.Add(1)
+		db.connWaitMu.Unlock()
 		db.activeConns.Add(1)
 		if db.metrics != nil {
 			db.metrics.ConnectionAcquired()
 		}
 		return nil
-	default:
 	}
+	db.connWaiters = append(db.connWaiters, ch)
+	db.connWaitMu.Unlock()
 
-	// Slow path: wait with timeout.
-	timeout := db.options.ConnectionTimeout
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
+	// Apply timeout if the caller context has no deadline.
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		timeout := db.options.ConnectionTimeout
+		if timeout == 0 {
+			timeout = 30 * time.Second
+		}
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
 	select {
-	case db.connSem <- struct{}{}:
+	case <-ch:
 		db.activeConns.Add(1)
 		if db.metrics != nil {
 			db.metrics.ConnectionAcquired()
 		}
 		return nil
 	case <-ctx.Done():
+		db.connWaitMu.Lock()
+		for i, w := range db.connWaiters {
+			if w == ch {
+				db.connWaiters = append(db.connWaiters[:i], db.connWaiters[i+1:]...)
+				break
+			}
+		}
+		db.connWaitMu.Unlock()
 		return fmt.Errorf("connection timeout: %w", ctx.Err())
 	case <-db.shutdownCh:
 		return ErrDatabaseClosed
 	}
 }
 
-// releaseConnection releases a connection slot
-
+// releaseConnection releases a connection slot, waking a waiter if any.
 func (db *DB) releaseConnection() {
-	if db.connSem != nil {
-		select {
-		case <-db.connSem:
-		default:
-			// Should not happen, but handle gracefully
+	if db.connLimit > 0 {
+		db.connWaitMu.Lock()
+		if len(db.connWaiters) > 0 {
+			ch := db.connWaiters[0]
+			db.connWaiters = db.connWaiters[1:]
+			db.connWaitMu.Unlock()
+			ch <- struct{}{}
+			db.activeConns.Add(-1)
+			if db.metrics != nil {
+				db.metrics.ConnectionReleased()
+			}
+			return
 		}
+		db.connWaitMu.Unlock()
+		db.connCount.Add(-1)
 	}
 	db.activeConns.Add(-1)
 	if db.metrics != nil {
