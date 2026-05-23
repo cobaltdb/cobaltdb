@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
 
 func TestPrintHelp(t *testing.T) {
@@ -143,6 +147,73 @@ func TestSqlEscape(t *testing.T) {
 		if result != test.expected {
 			t.Errorf("sqlEscape(%v) = %s, expected %s", test.input, result, test.expected)
 		}
+	}
+}
+
+func TestQuoteSQLIdentifier(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"users", `"users"`},
+		{"rank", `"rank"`},
+		{`users"; DROP TABLE users;--`, `"users\"; DROP TABLE users;--"`},
+		{`path\name`, `"path\\name"`},
+	}
+	for _, test := range tests {
+		result, err := quoteSQLIdentifier(test.input)
+		if err != nil {
+			t.Fatalf("quoteSQLIdentifier(%q) returned error: %v", test.input, err)
+		}
+		if result != test.expected {
+			t.Errorf("quoteSQLIdentifier(%q) = %q, expected %q", test.input, result, test.expected)
+		}
+	}
+
+	if _, err := quoteSQLIdentifier(""); err == nil {
+		t.Error("Expected empty identifier to be rejected")
+	}
+	if _, err := quoteSQLIdentifier("bad\x00name"); err == nil {
+		t.Error("Expected NUL-containing identifier to be rejected")
+	}
+}
+
+func TestImportCSVQuotesReservedColumnNames(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, `CREATE TABLE reserved_import ("rank" TEXT, "key" TEXT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	csvPath := filepath.Join(t.TempDir(), "reserved.csv")
+	if err := os.WriteFile(csvPath, []byte("rank,key\nfirst,alpha\n"), 0600); err != nil {
+		t.Fatalf("write csv: %v", err)
+	}
+
+	if err := importCSV(db, csvPath, "reserved_import"); err != nil {
+		t.Fatalf("importCSV failed: %v", err)
+	}
+
+	rows, err := db.Query(ctx, `SELECT "rank", "key" FROM reserved_import`)
+	if err != nil {
+		t.Fatalf("query imported rows: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatal("expected imported row")
+	}
+	var rank, key interface{}
+	if err := rows.Scan(&rank, &key); err != nil {
+		t.Fatalf("scan row: %v", err)
+	}
+	if formatValue(rank) != "first" || formatValue(key) != "alpha" {
+		t.Fatalf("unexpected imported row: rank=%v key=%v", rank, key)
 	}
 }
 

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -82,5 +84,40 @@ func TestAuthMiddlewareBypassWhenDisabled(t *testing.T) {
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected status %d, got %d", http.StatusNoContent, rec.Code)
+	}
+}
+
+func TestQuoteSQLIdentifier(t *testing.T) {
+	got, err := quoteSQLIdentifier(`users"; DROP TABLE users;--`)
+	if err != nil {
+		t.Fatalf("quoteSQLIdentifier returned error: %v", err)
+	}
+	want := `"users\"; DROP TABLE users;--"`
+	if got != want {
+		t.Fatalf("quoteSQLIdentifier = %q, want %q", got, want)
+	}
+	if _, err := quoteSQLIdentifier(""); err == nil {
+		t.Fatal("expected empty identifier to be rejected")
+	}
+}
+
+func TestHandleUpdateRowRejectsUnsafeIdentifier(t *testing.T) {
+	srv := &Server{}
+	body, err := json.Marshal(map[string]interface{}{
+		"table":  "",
+		"column": "name",
+		"value":  "alice",
+		"where":  map[string]interface{}{"id": 1},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/update-row", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.handleUpdateRow(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
 	}
 }

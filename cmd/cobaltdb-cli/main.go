@@ -521,8 +521,8 @@ func (c *cliCompleter) Do(line []rune, pos int) ([][]rune, int) {
 		switch lastWord {
 		case "FROM", "INTO", "JOIN", "UPDATE", "TABLE", "DROP", "ALTER":
 			suggestions = append(suggestions, c.db.Tables()...)
-			}
 		}
+	}
 
 	// SQL keyword completion
 	for _, kw := range sqlKeywords {
@@ -944,6 +944,11 @@ func runImportCommand(args []string, path string, inMemory bool) {
 }
 
 func importCSV(db *engine.DB, filePath, table string) error {
+	quotedTable, err := quoteSQLIdentifier(table)
+	if err != nil {
+		return fmt.Errorf("invalid table name: %w", err)
+	}
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
@@ -965,6 +970,13 @@ func importCSV(db *engine.DB, filePath, table string) error {
 	for i, h := range headers {
 		headers[i] = strings.TrimSpace(h)
 	}
+	quotedHeaders := make([]string, len(headers))
+	for i, h := range headers {
+		quotedHeaders[i], err = quoteSQLIdentifier(h)
+		if err != nil {
+			return fmt.Errorf("invalid CSV header %q: %w", h, err)
+		}
+	}
 
 	imported := 0
 	for _, row := range records[1:] {
@@ -977,7 +989,7 @@ func importCSV(db *engine.DB, filePath, table string) error {
 			placeholders[i] = "?"
 			values[i] = strings.TrimSpace(v)
 		}
-		sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(headers, ", "), strings.Join(placeholders, ", "))
+		sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quotedTable, strings.Join(quotedHeaders, ", "), strings.Join(placeholders, ", "))
 		_, err := db.Exec(ctx, sql, values...)
 		if err != nil {
 			return fmt.Errorf("insert row %d: %w", imported+1, err)
@@ -1009,7 +1021,11 @@ func runExportCommand(args []string, path string, inMemory bool) {
 
 func exportTable(db *engine.DB, table, filePath, format string) error {
 	ctx := context.Background()
-	rows, err := db.Query(ctx, fmt.Sprintf("SELECT * FROM %s", table))
+	quotedTable, err := quoteSQLIdentifier(table)
+	if err != nil {
+		return fmt.Errorf("invalid table name: %w", err)
+	}
+	rows, err := db.Query(ctx, fmt.Sprintf("SELECT * FROM %s", quotedTable))
 	if err != nil {
 		return fmt.Errorf("query table: %w", err)
 	}
@@ -1126,6 +1142,11 @@ func dumpDatabase(db *engine.DB, filePath string) error {
 	sort.Strings(tables)
 
 	for _, table := range tables {
+		quotedTable, err := quoteSQLIdentifier(table)
+		if err != nil {
+			return fmt.Errorf("invalid table name %q: %w", table, err)
+		}
+
 		schema, err := db.TableSchema(table)
 		if err != nil {
 			return fmt.Errorf("get schema for %s: %w", table, err)
@@ -1133,7 +1154,7 @@ func dumpDatabase(db *engine.DB, filePath string) error {
 		fmt.Fprintln(out, schema)
 		fmt.Fprintln(out)
 
-		rows, err := db.Query(ctx, fmt.Sprintf("SELECT * FROM %s", table))
+		rows, err := db.Query(ctx, fmt.Sprintf("SELECT * FROM %s", quotedTable))
 		if err != nil {
 			return fmt.Errorf("query %s: %w", table, err)
 		}
@@ -1154,8 +1175,16 @@ func dumpDatabase(db *engine.DB, filePath string) error {
 			for i, v := range values {
 				valStrs[i] = sqlEscape(v)
 			}
+			quotedCols := make([]string, len(cols))
+			for i, col := range cols {
+				quotedCols[i], err = quoteSQLIdentifier(col)
+				if err != nil {
+					rows.Close()
+					return fmt.Errorf("invalid column name %q in %s: %w", col, table, err)
+				}
+			}
 			fmt.Fprintf(out, "INSERT INTO %s (%s) VALUES (%s);\n",
-				table, strings.Join(cols, ", "), strings.Join(valStrs, ", "))
+				quotedTable, strings.Join(quotedCols, ", "), strings.Join(valStrs, ", "))
 		}
 		rows.Close()
 		fmt.Fprintln(out)
@@ -1179,6 +1208,15 @@ func sqlEscape(v interface{}) string {
 	default:
 		return fmt.Sprintf("%v", val)
 	}
+}
+
+func quoteSQLIdentifier(identifier string) (string, error) {
+	if identifier == "" || strings.ContainsRune(identifier, 0) {
+		return "", fmt.Errorf("identifier must be non-empty and cannot contain NUL")
+	}
+	escaped := strings.ReplaceAll(identifier, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	return `"` + escaped + `"`, nil
 }
 
 func restoreDatabase(db *engine.DB, filePath string) error {
@@ -1258,4 +1296,3 @@ func splitSQLStatements(sql string) []string {
 	}
 	return statements
 }
-

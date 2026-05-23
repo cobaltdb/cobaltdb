@@ -276,6 +276,15 @@ func secureTokenCompare(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
+func quoteSQLIdentifier(identifier string) (string, error) {
+	if identifier == "" || strings.ContainsRune(identifier, 0) {
+		return "", fmt.Errorf("identifier must be non-empty and cannot contain NUL")
+	}
+	escaped := strings.ReplaceAll(identifier, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	return `"` + escaped + `"`, nil
+}
+
 func (s *Server) writeUnauthorized(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		w.Header().Set("Content-Type", "application/json")
@@ -416,7 +425,11 @@ func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
 
 		// Try to get column info by querying
 		ctx := context.Background()
-		rows, err := s.db.Query(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 0", tableName))
+		quotedTable, err := quoteSQLIdentifier(tableName)
+		if err != nil {
+			continue
+		}
+		rows, err := s.db.Query(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 0", quotedTable))
 		if err == nil && rows != nil {
 			cols := rows.Columns()
 			for _, col := range cols {
@@ -425,6 +438,7 @@ func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
 					Type: "TEXT", // Default type
 				})
 			}
+			rows.Close()
 		}
 
 		schema.Tables = append(schema.Tables, tableInfo)
@@ -449,16 +463,22 @@ func (s *Server) handleTableInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tableName, _ = url.QueryUnescape(tableName)
+	quotedTable, err := quoteSQLIdentifier(tableName)
+	if err != nil {
+		http.Error(w, "invalid table name", http.StatusBadRequest)
+		return
+	}
 
 	// Get column info by querying
 	ctx := context.Background()
-	rows, err := s.db.Query(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 0", tableName))
+	rows, err := s.db.Query(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 0", quotedTable))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
 	cols := rows.Columns()
+	rows.Close()
 	tableInfo := TableInfo{
 		Name:    tableName,
 		Columns: make([]ColumnInfo, 0, len(cols)),
@@ -765,24 +785,43 @@ func (s *Server) handleUpdateRow(w http.ResponseWriter, r *http.Request) {
 	// Build WHERE clause
 	var whereClauses []string
 	var args []interface{}
+	quotedTable, err := quoteSQLIdentifier(req.Table)
+	if err != nil {
+		http.Error(w, "invalid table name", http.StatusBadRequest)
+		return
+	}
+	quotedColumn, err := quoteSQLIdentifier(req.Column)
+	if err != nil {
+		http.Error(w, "invalid column name", http.StatusBadRequest)
+		return
+	}
 
 	for col, val := range req.Where {
-		whereClauses = append(whereClauses, fmt.Sprintf("%s = ?", col))
+		quotedCol, err := quoteSQLIdentifier(col)
+		if err != nil {
+			http.Error(w, "invalid where column name", http.StatusBadRequest)
+			return
+		}
+		whereClauses = append(whereClauses, fmt.Sprintf("%s = ?", quotedCol))
 		args = append(args, val)
+	}
+	if len(whereClauses) == 0 {
+		http.Error(w, "where clause required", http.StatusBadRequest)
+		return
 	}
 
 	whereStr := strings.Join(whereClauses, " AND ")
 
 	// Build UPDATE query
 	query := fmt.Sprintf("UPDATE %s SET %s = ? WHERE %s",
-		req.Table, req.Column, whereStr)
+		quotedTable, quotedColumn, whereStr)
 
 	// Add the new value as first arg
 	args = append([]interface{}{req.Value}, args...)
 
 	// Execute query
 	ctx := context.Background()
-	_, err := s.db.Exec(ctx, query, args...)
+	_, err = s.db.Exec(ctx, query, args...)
 
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
