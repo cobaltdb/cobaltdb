@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -231,6 +232,13 @@ func generateSelfSignedCert(config *TLSConfig) error {
 	return nil
 }
 
+func cleanTLSFilePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", errors.New("TLS file path cannot be empty")
+	}
+	return filepath.Clean(path), nil
+}
+
 // IsTLSEnabled checks if TLS is enabled in the configuration
 func IsTLSEnabled(config *TLSConfig) bool {
 	return config != nil && config.Enabled
@@ -247,12 +255,20 @@ func GetTLSListener(listener net.Listener, tlsConfig *tls.Config) net.Listener {
 // GenerateClientCert generates a client certificate signed by the server CA
 func GenerateClientCert(caCertFile, caKeyFile, clientName string, validDays int) (certPEM, keyPEM []byte, err error) {
 	// Load CA
-	caCertPEM, err := os.ReadFile(caCertFile)
+	caCertFile, err = cleanTLSFilePath(caCertFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	caCertPEM, err := os.ReadFile(caCertFile) // #nosec G304 - CA certificate path is explicit TLS configuration and is cleaned before use.
 	if err != nil {
 		return nil, nil, err
 	}
 
-	caKeyPEM, err := os.ReadFile(caKeyFile)
+	caKeyFile, err = cleanTLSFilePath(caKeyFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	caKeyPEM, err := os.ReadFile(caKeyFile) // #nosec G304 - CA key path is explicit TLS configuration and is cleaned before use.
 	if err != nil {
 		return nil, nil, err
 	}

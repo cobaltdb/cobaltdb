@@ -279,18 +279,24 @@ func loadMigrations(dir string) ([]Migration, error) {
 		}
 
 		// Load up SQL
-		upPath := filepath.Join(dir, name)
-		upSQL, err := os.ReadFile(upPath)
+		upPath, err := migrationFilePath(dir, name)
+		if err != nil {
+			return nil, err
+		}
+		upSQL, err := os.ReadFile(upPath) // #nosec G304 - migration file name comes from ReadDir and is validated to stay inside dir.
 		if err != nil {
 			return nil, fmt.Errorf("failed to read %s: %w", name, err)
 		}
 
 		// Load down SQL
 		downName := strings.Replace(name, "_up.sql", "_down.sql", 1)
-		downPath := filepath.Join(dir, downName)
+		downPath, err := migrationFilePath(dir, downName)
+		if err != nil {
+			return nil, err
+		}
 		downSQL := []byte{}
 		if _, err := os.Stat(downPath); err == nil {
-			downSQL, _ = os.ReadFile(downPath)
+			downSQL, _ = os.ReadFile(downPath) // #nosec G304 - migration file name is validated to stay inside dir.
 		}
 
 		// Extract migration name from filename
@@ -312,6 +318,26 @@ func loadMigrations(dir string) ([]Migration, error) {
 	})
 
 	return migrations, nil
+}
+
+func migrationFilePath(dir, fileName string) (string, error) {
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("migration directory cannot be empty")
+	}
+	if fileName == "" || fileName == "." || fileName == ".." || filepath.IsAbs(fileName) || filepath.Base(fileName) != fileName {
+		return "", fmt.Errorf("invalid migration file name: %q", fileName)
+	}
+
+	cleanDir := filepath.Clean(dir)
+	path := filepath.Join(cleanDir, fileName)
+	rel, err := filepath.Rel(cleanDir, path)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("migration file escapes directory: %s", fileName)
+	}
+	return path, nil
 }
 
 func applyMigration(db *sql.DB, m Migration) error {

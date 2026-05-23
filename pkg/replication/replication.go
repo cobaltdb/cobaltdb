@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -932,7 +933,11 @@ func (m *Manager) loadReplicationState() error {
 		return nil
 	}
 
-	file, err := os.Open(m.config.StateFile)
+	stateFile, err := cleanReplicationStatePath(m.config.StateFile)
+	if err != nil {
+		return err
+	}
+	file, err := os.Open(stateFile) // #nosec G304 - state file path is explicit replication config and is cleaned before use.
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -954,12 +959,17 @@ func (m *Manager) saveReplicationState() error {
 		return nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(m.config.StateFile), replicationStateDirPerm); err != nil {
+	stateFile, err := cleanReplicationStatePath(m.config.StateFile)
+	if err != nil {
 		return err
 	}
 
-	tmpPath := m.config.StateFile + ".tmp"
-	file, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, replicationStateFilePerm)
+	if err := os.MkdirAll(filepath.Dir(stateFile), replicationStateDirPerm); err != nil {
+		return err
+	}
+
+	tmpPath := stateFile + ".tmp"
+	file, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, replicationStateFilePerm) // #nosec G304 - state file path is explicit replication config and is cleaned before use.
 	if err != nil {
 		return err
 	}
@@ -989,12 +999,19 @@ func (m *Manager) saveReplicationState() error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Rename(tmpPath, m.config.StateFile); err != nil {
+	if err := os.Rename(tmpPath, stateFile); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
 
 	return nil
+}
+
+func cleanReplicationStatePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("replication state path cannot be empty")
+	}
+	return filepath.Clean(path), nil
 }
 
 func (m *Manager) sendAck() error {

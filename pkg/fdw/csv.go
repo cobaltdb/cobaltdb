@@ -4,7 +4,9 @@ import (
 	"encoding/csv"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // CSVWrapper is a ForeignDataWrapper that reads data from CSV files.
@@ -23,7 +25,11 @@ func (c *CSVWrapper) Open(options map[string]string) error {
 	if !ok {
 		return fmt.Errorf("csv FDW requires 'file' option")
 	}
-	f, err := os.Open(path)
+	path, err := cleanCSVPath(path)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(path) // #nosec G304 - CSV FDW file is an explicit table option and is cleaned before use.
 	if err != nil {
 		return err
 	}
@@ -38,7 +44,7 @@ func (c *CSVWrapper) Scan(table string, columns []string) ([][]interface{}, erro
 		return nil, fmt.Errorf("csv FDW not opened")
 	}
 	// Re-open for each scan so multiple scans work independently
-	f, err := os.Open(c.file.Name())
+	f, err := os.Open(c.file.Name()) // #nosec G304 - file name was validated in Open before being stored.
 	if err != nil {
 		return nil, err
 	}
@@ -86,4 +92,11 @@ func (c *CSVWrapper) Close() error {
 		return c.file.Close()
 	}
 	return nil
+}
+
+func cleanCSVPath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("csv file path cannot be empty")
+	}
+	return filepath.Clean(path), nil
 }

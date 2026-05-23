@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"golang.org/x/crypto/argon2"
@@ -281,19 +283,25 @@ func PersistSalt(dbPath string, salt []byte) error {
 	if len(salt) == 0 {
 		return nil
 	}
-	saltPath := dbPath + ".salt"
+	saltPath, err := saltSidecarPath(dbPath)
+	if err != nil {
+		return err
+	}
 	data := make([]byte, 0, len(saltFileMarker)+1+len(salt))
 	data = append(data, saltFileMarker...)
 	data = append(data, '\n')
 	data = append(data, salt...)
-	return os.WriteFile(saltPath, data, 0600)
+	return os.WriteFile(saltPath, data, 0600) // #nosec G304 - salt sidecar path is derived from a cleaned database path.
 }
 
 // LoadSalt reads a previously persisted salt from the sidecar file.
 // Returns nil without error if the file does not exist.
 func LoadSalt(dbPath string) ([]byte, error) {
-	saltPath := dbPath + ".salt"
-	data, err := os.ReadFile(saltPath)
+	saltPath, err := saltSidecarPath(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(saltPath) // #nosec G304 - salt sidecar path is derived from a cleaned database path.
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -313,4 +321,11 @@ func LoadSalt(dbPath string) ([]byte, error) {
 		return nil, ErrInvalidSalt
 	}
 	return salt, nil
+}
+
+func saltSidecarPath(dbPath string) (string, error) {
+	if strings.TrimSpace(dbPath) == "" {
+		return "", fmt.Errorf("database path cannot be empty")
+	}
+	return filepath.Clean(dbPath) + ".salt", nil
 }

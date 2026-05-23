@@ -951,7 +951,11 @@ func importCSV(db *engine.DB, filePath, table string) error {
 		return fmt.Errorf("invalid table name: %w", err)
 	}
 
-	file, err := os.Open(filePath)
+	filePath, err = cleanCLIFilePath(filePath)
+	if err != nil {
+		return fmt.Errorf("invalid csv path: %w", err)
+	}
+	file, err := os.Open(filePath) // #nosec G304 - CLI import path is an explicit user argument and is cleaned before use.
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
 	}
@@ -1222,7 +1226,11 @@ func quoteSQLIdentifier(identifier string) (string, error) {
 }
 
 func createSecureOutputFile(path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, cliOutputFilePerm)
+	path, err := cleanCLIFilePath(path)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, cliOutputFilePerm) // #nosec G304 - CLI output path is an explicit user argument and is cleaned before use.
 	if err != nil {
 		return nil, err
 	}
@@ -1234,7 +1242,11 @@ func createSecureOutputFile(path string) (*os.File, error) {
 }
 
 func restoreDatabase(db *engine.DB, filePath string) error {
-	data, err := os.ReadFile(filePath)
+	filePath, err := cleanCLIFilePath(filePath)
+	if err != nil {
+		return fmt.Errorf("invalid restore path: %w", err)
+	}
+	data, err := os.ReadFile(filePath) // #nosec G304 - CLI restore path is an explicit user argument and is cleaned before use.
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
 	}
@@ -1309,4 +1321,11 @@ func splitSQLStatements(sql string) []string {
 		statements = append(statements, current.String())
 	}
 	return statements
+}
+
+func cleanCLIFilePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("path cannot be empty")
+	}
+	return filepath.Clean(path), nil
 }
