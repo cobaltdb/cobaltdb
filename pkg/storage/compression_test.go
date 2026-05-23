@@ -102,6 +102,27 @@ func TestCompressedBackendDisabled(t *testing.T) {
 	}
 }
 
+func TestCompressedBackendNormalizesPartialConfig(t *testing.T) {
+	mem := NewMemory()
+	config := &CompressionConfig{Enabled: true}
+	cb, err := NewCompressedBackend(mem, config)
+	if err != nil {
+		t.Fatalf("failed to create compressed backend: %v", err)
+	}
+	defer cb.Close()
+
+	defaults := DefaultCompressionConfig()
+	if cb.config.Level != defaults.Level {
+		t.Fatalf("Level = %v, want %v", cb.config.Level, defaults.Level)
+	}
+	if cb.config.MinRatio != defaults.MinRatio {
+		t.Fatalf("MinRatio = %v, want %v", cb.config.MinRatio, defaults.MinRatio)
+	}
+	if config.Level != CompressionLevelNone || config.MinRatio != 0 {
+		t.Fatal("NewCompressedBackend should not mutate caller config")
+	}
+}
+
 func TestCompressedBackendMultiplePages(t *testing.T) {
 	mem := NewMemory()
 	config := &CompressionConfig{

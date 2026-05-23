@@ -81,6 +81,8 @@ type CompressedBackend struct {
 func NewCompressedBackend(backend Backend, config *CompressionConfig) (*CompressedBackend, error) {
 	if config == nil {
 		config = DefaultCompressionConfig()
+	} else {
+		config = normalizeCompressionConfig(config)
 	}
 	cb := &CompressedBackend{
 		backend: backend,
@@ -98,6 +100,21 @@ func NewCompressedBackend(backend Backend, config *CompressionConfig) (*Compress
 		return lz4.NewReader(bytes.NewReader(nil))
 	}
 	return cb, nil
+}
+
+func normalizeCompressionConfig(config *CompressionConfig) *CompressionConfig {
+	defaults := DefaultCompressionConfig()
+	normalized := *config
+	if !normalized.Enabled {
+		return &normalized
+	}
+	if normalized.Algorithm == defaults.Algorithm && normalized.Level == CompressionLevelNone && normalized.MinRatio == 0 {
+		normalized.Level = defaults.Level
+	}
+	if normalized.MinRatio <= 0 {
+		normalized.MinRatio = defaults.MinRatio
+	}
+	return &normalized
 }
 
 // magicForAlgorithm returns the magic bytes for the configured algorithm.
