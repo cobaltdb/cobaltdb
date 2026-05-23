@@ -697,3 +697,40 @@ func TestLogAfterClose(t *testing.T) {
 	// Should not panic
 	al.Log(EventQuery, "user1", "SELECT")
 }
+
+func TestAuditLoggerRecordsWriteError(t *testing.T) {
+	tmpFile := t.TempDir() + "/audit_write_error.log"
+	config := &Config{
+		Enabled:   true,
+		LogFile:   tmpFile,
+		LogFormat: "json",
+	}
+	al, err := New(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	al.mu.Lock()
+	if err := al.file.Close(); err != nil {
+		al.mu.Unlock()
+		t.Fatal(err)
+	}
+	al.mu.Unlock()
+
+	al.flushBatch([]*Event{{
+		Timestamp: time.Now().UTC(),
+		Type:      EventQuery,
+		EventID:   "test-event",
+		User:      "user1",
+		Action:    "SELECT",
+		Status:    "SUCCESS",
+		Metadata:  map[string]interface{}{},
+	}})
+
+	if err := al.LastWriteError(); err == nil {
+		t.Fatal("expected last write error")
+	}
+	if err := al.Close(); err == nil {
+		t.Fatal("expected close to return the recorded write error")
+	}
+}

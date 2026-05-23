@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,6 +136,7 @@ type Logger struct {
 	closeMu   sync.RWMutex
 	cipher    cipher.AEAD // optional encryption for log entries
 	lastHash  string      // hash chain anchor for tamper-evident audit logs
+	lastErr   error
 }
 
 // New creates a new audit logger
@@ -271,8 +273,17 @@ func (al *Logger) Log(eventType EventType, user, action string, opts ...LogOptio
 	default:
 		// Channel full — write synchronously under lock to avoid data race on al.file
 		al.mu.Lock()
-		if err := al.writeEvent(event); err != nil && al.logger != nil {
-			al.logger.Errorf("Failed to write audit event (sync fallback): %v", err)
+		var writeErr error
+		if al.file == nil {
+			writeErr = errors.New("audit log file is not open")
+		} else if err := al.writeEvent(event); err != nil {
+			writeErr = fmt.Errorf("failed to write audit event: %w", err)
+		} else if err := al.file.Sync(); err != nil {
+			writeErr = fmt.Errorf("failed to sync audit log: %w", err)
+		}
+		al.lastErr = writeErr
+		if writeErr != nil && al.logger != nil {
+			al.logger.Errorf("Failed to write audit event (sync fallback): %v", writeErr)
 		}
 		al.mu.Unlock()
 	}
@@ -322,17 +333,29 @@ func (al *Logger) flushBatch(events []*Event) {
 		return
 	}
 
+	var flushErr error
 	for _, event := range events {
 		if err := al.writeEvent(event); err != nil {
+			flushErr = errors.Join(flushErr, fmt.Errorf("failed to write audit event: %w", err))
 			if al.logger != nil {
 				al.logger.Errorf("Failed to write audit event: %v", err)
 			}
 		}
 	}
 
-	if err := al.file.Sync(); err != nil && al.logger != nil {
-		al.logger.Errorf("Failed to sync audit log: %v", err)
+	if err := al.file.Sync(); err != nil {
+		flushErr = errors.Join(flushErr, fmt.Errorf("failed to sync audit log: %w", err))
+		if al.logger != nil {
+			al.logger.Errorf("Failed to sync audit log: %v", err)
+		}
 	}
+	al.lastErr = flushErr
+}
+
+func (al *Logger) LastWriteError() error {
+	al.mu.Lock()
+	defer al.mu.Unlock()
+	return al.lastErr
 }
 
 func (al *Logger) writeEvent(event *Event) error {
@@ -680,7 +703,15 @@ func (al *Logger) Close() error {
 		defer al.mu.Unlock()
 
 		if al.file != nil {
-			err = al.file.Close()
+			if syncErr := al.file.Sync(); syncErr != nil {
+				err = errors.Join(err, fmt.Errorf("failed to sync audit log: %w", syncErr))
+			}
+			if closeErr := al.file.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("failed to close audit log: %w", closeErr))
+			}
+		}
+		if al.lastErr != nil {
+			err = errors.Join(al.lastErr, err)
 		}
 	})
 	return err
