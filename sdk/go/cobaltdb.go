@@ -396,6 +396,9 @@ func (c *conn) Close() error {
 
 	c.closed = true
 	if c.connector == nil {
+		if c.db != nil {
+			return c.db.Close()
+		}
 		return nil
 	}
 

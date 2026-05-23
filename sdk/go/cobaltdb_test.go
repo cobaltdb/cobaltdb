@@ -709,10 +709,14 @@ func TestConnClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() failed: %v", err)
 	}
+	rawConn := c.(*conn)
 
 	// Close should not error
 	if err := c.Close(); err != nil {
 		t.Errorf("Close() failed: %v", err)
+	}
+	if !rawConn.db.closed {
+		t.Fatal("direct driver connection should close its underlying database")
 	}
 
 	// Double close should not error
