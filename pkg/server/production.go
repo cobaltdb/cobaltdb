@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 	"github.com/cobaltdb/cobaltdb/pkg/metrics"
 )
 
@@ -33,6 +35,7 @@ type ProductionConfig struct {
 	EnableSQLProtection  bool
 	EnableHealthServer   bool
 	AllowRemoteMetrics   bool
+	Logger               *logger.Logger
 }
 
 // DefaultProductionConfig returns a default production configuration
@@ -66,6 +69,7 @@ type ProductionServer struct {
 	RateLimiter     *RateLimiter
 	SQLProtector    *SQLProtector
 	healthServer    *http.Server
+	logger          *logger.Logger
 	mu              sync.RWMutex
 	running         bool
 	wg              sync.WaitGroup
@@ -76,11 +80,22 @@ func NewProductionServer(db *engine.DB, config *ProductionConfig) *ProductionSer
 	if config == nil {
 		config = DefaultProductionConfig()
 	}
+	if config.Logger != nil {
+		if config.Lifecycle == nil {
+			config.Lifecycle = DefaultLifecycleConfig()
+		}
+		if config.Lifecycle.Logger == nil {
+			lifecycleConfig := *config.Lifecycle
+			lifecycleConfig.Logger = config.Logger
+			config.Lifecycle = &lifecycleConfig
+		}
+	}
 
 	ps := &ProductionServer{
 		DB:        db,
 		Config:    config,
 		Lifecycle: NewLifecycle(config.Lifecycle),
+		logger:    config.Logger,
 	}
 
 	if config.EnableCircuitBreaker {
@@ -97,6 +112,12 @@ func NewProductionServer(db *engine.DB, config *ProductionConfig) *ProductionSer
 	}
 
 	return ps
+}
+
+func (ps *ProductionServer) logErrorf(format string, args ...interface{}) {
+	if ps != nil && ps.logger != nil {
+		ps.logger.Errorf(format, args...)
+	}
 }
 
 // Start starts the production server
@@ -164,7 +185,7 @@ func (ps *ProductionServer) startHealthServer() error {
 	go func() {
 		defer ps.wg.Done()
 		if err := ps.healthServer.Serve(listener); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("health server stopped with error: %v\n", err)
+			ps.logErrorf("health server stopped with error: %v", err)
 		}
 	}()
 
@@ -188,23 +209,25 @@ func (ps *ProductionServer) Stop() error {
 	ps.running = false
 
 	// Shutdown health server
+	var shutdownErr error
 	if ps.healthServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := ps.healthServer.Shutdown(ctx); err != nil {
-			fmt.Printf("health server shutdown error: %v\n", err)
+			shutdownErr = fmt.Errorf("health server shutdown: %w", err)
 		}
 	}
 
 	// Stop lifecycle
+	var lifecycleErr error
 	if err := ps.Lifecycle.Stop(); err != nil {
-		return err
+		lifecycleErr = err
 	}
 
 	// Wait for goroutines
 	ps.wg.Wait()
 
-	return nil
+	return errors.Join(shutdownErr, lifecycleErr)
 }
 
 // IsHealthy returns true if the server is healthy
@@ -265,7 +288,7 @@ func (ps *ProductionServer) healthHandler() http.HandlerFunc {
 		}
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte(`{"status":"healthy"}`)); err != nil {
-			http.Error(w, "failed to write health", http.StatusInternalServerError)
+			ps.logErrorf("failed to write health response: %v", err)
 		}
 	}
 }
@@ -279,12 +302,12 @@ func (ps *ProductionServer) readyHandler() http.HandlerFunc {
 		if ps.IsHealthy() {
 			w.WriteHeader(http.StatusOK)
 			if _, err := w.Write([]byte(`{"ready":true}`)); err != nil {
-				http.Error(w, "failed to write ready", http.StatusInternalServerError)
+				ps.logErrorf("failed to write ready response: %v", err)
 			}
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			if _, err := w.Write([]byte(`{"ready":false}`)); err != nil {
-				http.Error(w, "failed to write ready", http.StatusInternalServerError)
+				ps.logErrorf("failed to write ready response: %v", err)
 			}
 		}
 	}
@@ -310,7 +333,7 @@ func (ps *ProductionServer) statsHandler() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if _, err := w.Write([]byte(`{"stats":{}}`)); err != nil {
-			http.Error(w, "failed to write stats", http.StatusInternalServerError)
+			ps.logErrorf("failed to write stats response: %v", err)
 		}
 	}
 }
@@ -330,7 +353,7 @@ func (ps *ProductionServer) circuitBreakerHandler() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(stats); err != nil {
-			http.Error(w, "failed to encode stats", http.StatusInternalServerError)
+			ps.logErrorf("failed to encode circuit breaker stats: %v", err)
 		}
 	}
 }
@@ -343,7 +366,7 @@ func (ps *ProductionServer) rateLimitsHandler() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if _, err := w.Write([]byte(`{"rate_limits":{}}`)); err != nil {
-			http.Error(w, "failed to write rate limits", http.StatusInternalServerError)
+			ps.logErrorf("failed to write rate limits response: %v", err)
 		}
 	}
 }
@@ -359,7 +382,7 @@ func (ps *ProductionServer) transactionMetricsHandler() http.HandlerFunc {
 		stats := metrics.GetTransactionMetrics().GetStats()
 
 		if err := json.NewEncoder(w).Encode(stats); err != nil {
-			http.Error(w, "failed to encode transaction metrics", http.StatusInternalServerError)
+			ps.logErrorf("failed to encode transaction metrics: %v", err)
 		}
 	}
 }

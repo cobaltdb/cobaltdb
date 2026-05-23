@@ -6,7 +6,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
 // LifecycleConfig configures server lifecycle behavior
@@ -36,6 +36,8 @@ type LifecycleConfig struct {
 
 	// Signals to handle for shutdown
 	ShutdownSignals []os.Signal
+
+	Logger *logger.Logger
 }
 
 // DefaultLifecycleConfig returns sensible defaults
@@ -77,6 +79,8 @@ type Lifecycle struct {
 	// Context for operations
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	logger *logger.Logger
 }
 
 // LifecycleState represents server lifecycle state
@@ -146,6 +150,7 @@ func NewLifecycle(config *LifecycleConfig) *Lifecycle {
 		healthChecks: make(map[string]HealthCheck),
 		ctx:          ctx,
 		cancel:       cancel,
+		logger:       config.Logger,
 	}
 }
 
@@ -168,6 +173,24 @@ func normalizeLifecycleConfig(config *LifecycleConfig) *LifecycleConfig {
 		normalized.ShutdownSignals = defaults.ShutdownSignals
 	}
 	return &normalized
+}
+
+func (l *Lifecycle) logInfof(format string, args ...interface{}) {
+	if l != nil && l.logger != nil {
+		l.logger.Infof(format, args...)
+	}
+}
+
+func (l *Lifecycle) logWarnf(format string, args ...interface{}) {
+	if l != nil && l.logger != nil {
+		l.logger.Warnf(format, args...)
+	}
+}
+
+func (l *Lifecycle) logErrorf(format string, args ...interface{}) {
+	if l != nil && l.logger != nil {
+		l.logger.Errorf(format, args...)
+	}
 }
 
 // RegisterComponent registers a lifecycle-managed component
@@ -284,9 +307,9 @@ func (l *Lifecycle) setupSignalHandling() {
 
 	go func() {
 		sig := <-sigCh
-		fmt.Printf("Received signal %v, initiating graceful shutdown...\n", sig)
+		l.logInfof("received signal %v, initiating graceful shutdown", sig)
 		if err := l.Stop(); err != nil {
-			fmt.Printf("Shutdown error: %v\n", err)
+			l.logErrorf("shutdown error: %v", err)
 		}
 	}()
 }
@@ -323,8 +346,7 @@ func (l *Lifecycle) checkHealth() {
 	for _, comp := range components {
 		health := comp.Health()
 		if !health.Healthy {
-			// Log unhealthy component
-			fmt.Printf("Health check failed for %s: %s\n", comp.Name(), health.Message)
+			l.logWarnf("health check failed for %s: %s", comp.Name(), health.Message)
 		}
 	}
 }
@@ -350,7 +372,7 @@ func (l *Lifecycle) setState(state LifecycleState) {
 			defer l.hookWg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("panic in lifecycle state hook: %v", r)
+					l.logErrorf("panic in lifecycle state hook: %v", r)
 				}
 			}()
 			h()
@@ -416,13 +438,13 @@ func (l *Lifecycle) GracefulShutdownHandler() http.HandlerFunc {
 
 		go func() {
 			if err := l.Stop(); err != nil {
-				fmt.Printf("Graceful shutdown error: %v\n", err)
+				l.logErrorf("graceful shutdown error: %v", err)
 			}
 		}()
 
 		w.WriteHeader(http.StatusAccepted)
 		if _, err := w.Write([]byte(`{"status":"shutting_down"}`)); err != nil {
-			fmt.Printf("failed to write shutdown response: %v\n", err)
+			l.logErrorf("failed to write shutdown response: %v", err)
 		}
 	}
 }
@@ -434,7 +456,7 @@ func (l *Lifecycle) ReadyCheck() http.HandlerFunc {
 		if state == StateRunning {
 			w.WriteHeader(http.StatusOK)
 			if _, err := w.Write([]byte(`{"ready":true}`)); err != nil {
-				fmt.Printf("failed to write ready response: %v\n", err)
+				l.logErrorf("failed to write ready response: %v", err)
 			}
 			return
 		}
@@ -452,14 +474,14 @@ func (l *Lifecycle) LiveCheck() http.HandlerFunc {
 		if state == StateStopped {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			if _, err := w.Write([]byte(`{"alive":false}`)); err != nil {
-				fmt.Printf("failed to write live response: %v\n", err)
+				l.logErrorf("failed to write live response: %v", err)
 			}
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte(`{"alive":true}`)); err != nil {
-			fmt.Printf("failed to write live response: %v\n", err)
+			l.logErrorf("failed to write live response: %v", err)
 		}
 	}
 }

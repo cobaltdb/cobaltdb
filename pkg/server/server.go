@@ -15,6 +15,7 @@ import (
 
 	"github.com/cobaltdb/cobaltdb/pkg/auth"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 	"github.com/cobaltdb/cobaltdb/pkg/wire"
 )
 
@@ -49,6 +50,7 @@ type Server struct {
 	writeTimeout   time.Duration
 	sqlProtector   *SQLProtector  // Optional SQL injection protection
 	clientWg       sync.WaitGroup // Tracks active client handler goroutines
+	logger         *logger.Logger
 }
 
 // Config contains server configuration
@@ -62,6 +64,7 @@ type Config struct {
 	ReadTimeout      int        // Read timeout in seconds (0 = 300s default)
 	WriteTimeout     int        // Write timeout in seconds (0 = 60s default)
 	TLS              *TLSConfig // TLS configuration (nil = disabled)
+	Logger           *logger.Logger
 }
 
 // generateRandomPassword generates a 16-character random alphanumeric password
@@ -126,7 +129,20 @@ func New(db *engine.DB, config *Config) (*Server, error) {
 		maxConnections: config.MaxConnections,
 		readTimeout:    readTimeout,
 		writeTimeout:   writeTimeout,
+		logger:         config.Logger,
 	}, nil
+}
+
+func (s *Server) logWarnf(format string, args ...interface{}) {
+	if s != nil && s.logger != nil {
+		s.logger.Warnf(format, args...)
+	}
+}
+
+func (s *Server) logErrorf(format string, args ...interface{}) {
+	if s != nil && s.logger != nil {
+		s.logger.Errorf(format, args...)
+	}
 }
 
 // GetAuthenticator returns the server's authenticator instance.
@@ -142,7 +158,7 @@ func (s *Server) SetSQLProtector(sp *SQLProtector) {
 // Listen starts the server on the given address
 func (s *Server) Listen(address string, tlsConfig *TLSConfig) error {
 	if s.auth.IsEnabled() && (tlsConfig == nil || !tlsConfig.Enabled) {
-		fmt.Println("WARNING: Authentication is enabled but TLS is disabled. Passwords will be sent in cleartext.")
+		s.logWarnf("authentication is enabled but TLS is disabled; passwords will be sent in cleartext")
 	}
 
 	listener, err := net.Listen("tcp", address)
@@ -241,10 +257,10 @@ func (s *Server) acceptLoop() error {
 		// Set TCP keepalive
 		if tcpConn, ok := conn.(*net.TCPConn); ok {
 			if err := tcpConn.SetKeepAlive(true); err != nil {
-				fmt.Printf("failed to enable keepalive: %v\n", err)
+				s.logWarnf("failed to enable keepalive: %v", err)
 			}
 			if err := tcpConn.SetKeepAlivePeriod(60 * time.Second); err != nil {
-				fmt.Printf("failed to set keepalive period: %v\n", err)
+				s.logWarnf("failed to set keepalive period: %v", err)
 			}
 		}
 
@@ -253,7 +269,7 @@ func (s *Server) acceptLoop() error {
 			defer s.clientWg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					fmt.Printf("[PANIC] client handler recovered: %v\n", r)
+					s.logErrorf("client handler recovered from panic: %v", r)
 				}
 			}()
 			client.Handle()
@@ -273,13 +289,18 @@ func (s *Server) Close() error {
 	s.closed = true
 
 	// Close all client connections
+	var closeErrs []error
 	for _, client := range s.clients {
-		_ = client.Conn.Close()
+		if err := client.Conn.Close(); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("close client %d: %w", client.ID, err))
+		}
 	}
 
 	// Close listener
 	if s.listener != nil {
-		_ = s.listener.Close()
+		if err := s.listener.Close(); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("close listener: %w", err))
+		}
 	}
 
 	s.mu.Unlock()
@@ -291,7 +312,7 @@ func (s *Server) Close() error {
 		s.auth.Stop()
 	}
 
-	return nil
+	return errors.Join(closeErrs...)
 }
 
 // ClientCount returns the current number of connected clients

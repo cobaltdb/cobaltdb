@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	cblogger "github.com/cobaltdb/cobaltdb/pkg/logger"
 	"github.com/cobaltdb/cobaltdb/pkg/protocol"
 	"github.com/cobaltdb/cobaltdb/pkg/server"
 )
@@ -119,6 +120,7 @@ func main() {
 	if *authEnabled && *allowCleartextAuth {
 		log.Printf("[SECURITY WARNING] Cleartext authentication was explicitly allowed. Use this only for local development or trusted private networks.")
 	}
+	serverLogger := cblogger.New(cblogger.InfoLevel, os.Stderr)
 
 	// Open database
 	opts := &engine.Options{
@@ -172,6 +174,7 @@ func main() {
 			HealthCheckInterval:  5 * time.Second,
 			StartupTimeout:       60 * time.Second,
 			EnableSignalHandling: true,
+			Logger:               serverLogger,
 		},
 		CircuitBreaker:       engine.DefaultCircuitBreakerConfig(),
 		Retry:                engine.DefaultRetryConfig(),
@@ -180,6 +183,7 @@ func main() {
 		EnableRetry:          *enableRetry,
 		EnableHealthServer:   *enableHealthServer,
 		AllowRemoteMetrics:   *allowRemoteMetrics,
+		Logger:               serverLogger,
 	}
 
 	prodServer := server.NewProductionServer(db, prodConfig)
@@ -200,6 +204,7 @@ func main() {
 		DefaultAdminUser: finalAdminUser,
 		DefaultAdminPass: finalAdminPass,
 		TLS:              tlsConfig,
+		Logger:           serverLogger,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
