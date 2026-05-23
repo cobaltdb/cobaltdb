@@ -170,7 +170,9 @@ func (s *Server) Listen(address string, tlsConfig *TLSConfig) error {
 	if tlsConfig != nil && tlsConfig.Enabled {
 		tlsConf, err := LoadTLSConfig(tlsConfig)
 		if err != nil {
-			_ = listener.Close()
+			if closeErr := listener.Close(); closeErr != nil {
+				return fmt.Errorf("failed to load TLS config: %w; listener close failed: %v", err, closeErr)
+			}
 			return fmt.Errorf("failed to load TLS config: %w", err)
 		}
 		listener = GetTLSListener(listener, tlsConf)

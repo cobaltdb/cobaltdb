@@ -444,7 +444,9 @@ func (w *WireServerComponent) Start(ctx context.Context) error {
 	if w.tls != nil && w.tls.Enabled {
 		tlsConf, err := server.LoadTLSConfig(w.tls)
 		if err != nil {
-			_ = listener.Close()
+			if closeErr := listener.Close(); closeErr != nil {
+				return fmt.Errorf("failed to load TLS config: %w; listener close failed: %v", err, closeErr)
+			}
 			return fmt.Errorf("failed to load TLS config: %w", err)
 		}
 		listener = server.GetTLSListener(listener, tlsConf)

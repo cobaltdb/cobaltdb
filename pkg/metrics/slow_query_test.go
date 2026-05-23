@@ -3,6 +3,7 @@ package metrics
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,6 +102,32 @@ func TestSlowQueryLogFile(t *testing.T) {
 	}
 	if info.Mode().Perm() != slowQueryLogFilePerm {
 		t.Errorf("Expected log file permissions %o, got %o", slowQueryLogFilePerm, info.Mode().Perm())
+	}
+	if err := sql.LastWriteError(); err != nil {
+		t.Fatalf("expected no slow query log write error, got %v", err)
+	}
+}
+
+func TestSlowQueryLogRecordsFileWriteError(t *testing.T) {
+	tempDir := t.TempDir()
+	parentFile := filepath.Join(tempDir, "not-a-dir")
+	if err := os.WriteFile(parentFile, []byte("file"), 0600); err != nil {
+		t.Fatalf("write parent file: %v", err)
+	}
+
+	sql := NewSlowQueryLog(true, 1*time.Millisecond, 100, filepath.Join(parentFile, "slow.log"))
+	sql.Log("SELECT * FROM users", 100*time.Millisecond, 0, 10)
+
+	err := sql.LastWriteError()
+	if err == nil {
+		t.Fatal("expected slow query log write error")
+	}
+	if !strings.Contains(err.Error(), "create slow query log directory") {
+		t.Fatalf("expected directory creation error, got %v", err)
+	}
+	entries := sql.GetEntries(10)
+	if len(entries) != 1 {
+		t.Fatalf("expected in-memory entry despite file error, got %d", len(entries))
 	}
 }
 

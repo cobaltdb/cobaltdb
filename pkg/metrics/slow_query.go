@@ -25,12 +25,13 @@ type SlowQueryEntry struct {
 
 // SlowQueryLog manages slow query logging
 type SlowQueryLog struct {
-	enabled    bool
-	threshold  time.Duration
-	maxEntries int
-	entries    []SlowQueryEntry
-	mu         sync.RWMutex
-	logFile    string
+	enabled      bool
+	threshold    time.Duration
+	maxEntries   int
+	entries      []SlowQueryEntry
+	mu           sync.RWMutex
+	logFile      string
+	lastWriteErr error
 }
 
 // NewSlowQueryLog creates a new slow query logger
@@ -75,35 +76,53 @@ func (s *SlowQueryLog) Log(sql string, duration time.Duration, rowsAffected, row
 
 	// Write to log file if configured
 	if s.logFile != "" {
-		s.writeToFile(entry)
+		s.lastWriteErr = s.writeToFile(entry)
 	}
 }
 
 // writeToFile appends the entry to the log file
-func (s *SlowQueryLog) writeToFile(entry SlowQueryEntry) {
+func (s *SlowQueryLog) writeToFile(entry SlowQueryEntry) error {
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return
+		return fmt.Errorf("marshal slow query entry: %w", err)
 	}
 
 	// Ensure directory exists
 	dir := filepath.Dir(s.logFile)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, slowQueryLogDirPerm); err != nil {
-			return
+			return fmt.Errorf("create slow query log directory: %w", err)
 		}
 	}
 
 	f, err := os.OpenFile(s.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, slowQueryLogFilePerm)
 	if err != nil {
-		return
+		return fmt.Errorf("open slow query log file: %w", err)
 	}
-	defer f.Close()
 	if err := f.Chmod(slowQueryLogFilePerm); err != nil {
-		return
+		if closeErr := f.Close(); closeErr != nil {
+			return fmt.Errorf("chmod slow query log file: %w; close failed: %v", err, closeErr)
+		}
+		return fmt.Errorf("chmod slow query log file: %w", err)
 	}
 
-	_, _ = fmt.Fprintf(f, "%s\n", data)
+	if _, err := fmt.Fprintf(f, "%s\n", data); err != nil {
+		if closeErr := f.Close(); closeErr != nil {
+			return fmt.Errorf("write slow query log entry: %w; close failed: %v", err, closeErr)
+		}
+		return fmt.Errorf("write slow query log entry: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close slow query log file: %w", err)
+	}
+	return nil
+}
+
+// LastWriteError returns the last file logging error, if any.
+func (s *SlowQueryLog) LastWriteError() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastWriteErr
 }
 
 // GetEntries returns a copy of recent slow query entries
