@@ -718,6 +718,9 @@ func TestConnClose(t *testing.T) {
 	if !rawConn.db.closed {
 		t.Fatal("direct driver connection should close its underlying database")
 	}
+	if _, err := rawConn.ExecContext(t.Context(), "SELECT 1", nil); !errors.Is(err, ErrConnClosed) {
+		t.Fatalf("ExecContext after Close() error = %v, want %v", err, ErrConnClosed)
+	}
 
 	// Double close should not error
 	if err := c.Close(); err != nil {

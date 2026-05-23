@@ -383,7 +383,19 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 }
 
 func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	if err := c.ensureOpen(); err != nil {
+		return nil, err
+	}
 	return &stmt{conn: c, query: query}, nil
+}
+
+func (c *conn) ensureOpen() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return ErrConnClosed
+	}
+	return nil
 }
 
 func (c *conn) Close() error {
@@ -421,6 +433,9 @@ func (c *conn) Begin() (driver.Tx, error) {
 }
 
 func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	if err := c.ensureOpen(); err != nil {
+		return nil, err
+	}
 	_, err := c.db.Exec(ctx, "BEGIN")
 	if err != nil {
 		return nil, err
@@ -429,6 +444,10 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 }
 
 func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if err := c.ensureOpen(); err != nil {
+		return nil, err
+	}
+
 	// Convert NamedValue to interface{}
 	values := make([]interface{}, len(args))
 	for i, arg := range args {
@@ -444,6 +463,10 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 }
 
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if err := c.ensureOpen(); err != nil {
+		return nil, err
+	}
+
 	// Convert NamedValue to interface{}
 	values := make([]interface{}, len(args))
 	for i, arg := range args {
@@ -498,6 +521,9 @@ func (t *tx) Commit() error {
 	if t.done {
 		return errors.New("transaction already completed")
 	}
+	if err := t.conn.ensureOpen(); err != nil {
+		return err
+	}
 	t.done = true
 	_, err := t.conn.db.Exec(context.Background(), "COMMIT")
 	return err
@@ -506,6 +532,9 @@ func (t *tx) Commit() error {
 func (t *tx) Rollback() error {
 	if t.done {
 		return errors.New("transaction already completed")
+	}
+	if err := t.conn.ensureOpen(); err != nil {
+		return err
 	}
 	t.done = true
 	_, err := t.conn.db.Exec(context.Background(), "ROLLBACK")
