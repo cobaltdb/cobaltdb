@@ -95,7 +95,7 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 		MinVersion:               config.MinVersion,
 		MaxVersion:               config.MaxVersion,
 		CipherSuites:             config.CipherSuites,
-		PreferServerCipherSuites: config.PreferServerCipherSuites,
+		PreferServerCipherSuites: true,
 		ClientAuth:               config.ClientAuth,
 	}
 
