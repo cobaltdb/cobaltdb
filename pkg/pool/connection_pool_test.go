@@ -72,6 +72,33 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
+func TestPoolCreationNormalizesPartialConfigDurations(t *testing.T) {
+	dialer := func() (net.Conn, error) {
+		return &mockConn{}, nil
+	}
+
+	config := &Config{MinConns: 0, MaxConns: 1}
+	pool, err := New(config, dialer)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer pool.Close()
+
+	defaults := DefaultConfig()
+	if pool.config.AcquireTimeout != defaults.AcquireTimeout {
+		t.Fatalf("expected default acquire timeout, got %v", pool.config.AcquireTimeout)
+	}
+	if pool.config.HealthCheckInterval != defaults.HealthCheckInterval {
+		t.Fatalf("expected default health check interval, got %v", pool.config.HealthCheckInterval)
+	}
+	if pool.config.HealthCheckTimeout != defaults.HealthCheckTimeout {
+		t.Fatalf("expected default health check timeout, got %v", pool.config.HealthCheckTimeout)
+	}
+	if config.AcquireTimeout != 0 || config.HealthCheckInterval != 0 || config.HealthCheckTimeout != 0 {
+		t.Fatal("New should not mutate caller config")
+	}
+}
+
 func TestPoolCreation(t *testing.T) {
 	connCount := 0
 	dialer := func() (net.Conn, error) {

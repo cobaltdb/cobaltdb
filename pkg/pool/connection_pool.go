@@ -203,6 +203,7 @@ func New(config *Config, dialer func() (net.Conn, error)) (*Pool, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	config = normalizeConfig(config)
 
 	if dialer == nil {
 		return nil, fmt.Errorf("dialer function is required")
@@ -233,6 +234,21 @@ func New(config *Config, dialer func() (net.Conn, error)) (*Pool, error) {
 	go pool.maintainMinConns()
 
 	return pool, nil
+}
+
+func normalizeConfig(config *Config) *Config {
+	defaults := DefaultConfig()
+	normalized := *config
+	if normalized.AcquireTimeout <= 0 {
+		normalized.AcquireTimeout = defaults.AcquireTimeout
+	}
+	if normalized.HealthCheckInterval <= 0 {
+		normalized.HealthCheckInterval = defaults.HealthCheckInterval
+	}
+	if normalized.HealthCheckTimeout <= 0 {
+		normalized.HealthCheckTimeout = defaults.HealthCheckTimeout
+	}
+	return &normalized
 }
 
 // Close shuts down the pool
