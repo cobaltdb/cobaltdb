@@ -25,6 +25,11 @@ var (
 	ErrCertNotYetValid = errors.New("TLS certificate not yet valid")
 )
 
+const (
+	tlsCertFilePerm os.FileMode = 0644
+	tlsKeyFilePerm  os.FileMode = 0600
+)
+
 // TLSConfig holds TLS configuration
 type TLSConfig struct {
 	Enabled                  bool
@@ -175,14 +180,30 @@ func verifyCertificate(cert *tls.Certificate) error {
 
 // generateSelfSignedCert generates a self-signed certificate
 func generateSelfSignedCert(config *TLSConfig) error {
-	// Create certs directory if it doesn't exist
-	certDir := "certs"
-	if err := os.MkdirAll(certDir, 0750); err != nil {
-		return err
+	if config.CertFile == "" {
+		config.CertFile = filepath.Join("certs", "server.crt")
+	}
+	if config.KeyFile == "" {
+		config.KeyFile = filepath.Join("certs", "server.key")
 	}
 
-	config.CertFile = filepath.Join(certDir, "server.crt")
-	config.KeyFile = filepath.Join(certDir, "server.key")
+	certFile, err := cleanTLSFilePath(config.CertFile)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidCert, err)
+	}
+	keyFile, err := cleanTLSFilePath(config.KeyFile)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidKey, err)
+	}
+	config.CertFile = certFile
+	config.KeyFile = keyFile
+
+	if err := os.MkdirAll(filepath.Dir(config.CertFile), 0750); err != nil {
+		return fmt.Errorf("failed to create certificate directory: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(config.KeyFile), 0750); err != nil {
+		return fmt.Errorf("failed to create key directory: %w", err)
+	}
 
 	// Check if certs already exist and are valid
 	if _, err := os.Stat(config.CertFile); err == nil {
@@ -235,34 +256,87 @@ func generateSelfSignedCert(config *TLSConfig) error {
 		return err
 	}
 
-	// Write certificate
-	certOut, err := os.Create(config.CertFile)
-	if err != nil {
-		return err
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	if certPEM == nil {
+		return errors.New("failed to encode certificate PEM")
 	}
-	defer certOut.Close()
-
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
-		return err
-	}
-
-	// Write private key
-	keyOut, err := os.OpenFile(config.KeyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return err
-	}
-	defer keyOut.Close()
 
 	privKey, err := x509.MarshalECPrivateKey(priv)
 	if err != nil {
 		return err
 	}
 
-	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: privKey}); err != nil {
-		return err
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privKey})
+	if keyPEM == nil {
+		return errors.New("failed to encode private key PEM")
+	}
+
+	if err := writeTLSFileAtomic(config.CertFile, certPEM, tlsCertFilePerm); err != nil {
+		return fmt.Errorf("failed to write certificate: %w", err)
+	}
+	if err := writeTLSFileAtomic(config.KeyFile, keyPEM, tlsKeyFilePerm); err != nil {
+		return fmt.Errorf("failed to write private key: %w", err)
 	}
 
 	return nil
+}
+
+func writeTLSFileAtomic(path string, data []byte, perm os.FileMode) error {
+	path = filepath.Clean(path)
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+
+	file, err := os.CreateTemp(dir, "."+base+".tmp-*") // #nosec G304 - path is derived from explicit TLS configuration and cleaned before use.
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	tmpPath := file.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := file.Chmod(perm); err != nil {
+		return fmt.Errorf("failed to set temporary file permissions: %w", err)
+	}
+	if _, err := file.Write(data); err != nil {
+		return fmt.Errorf("failed to write temporary file: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("failed to sync temporary file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary file: %w", err)
+	}
+	closed = true
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to replace file: %w", err)
+	}
+	tmpPath = ""
+
+	if err := syncTLSDir(dir); err != nil {
+		return fmt.Errorf("failed to sync directory: %w", err)
+	}
+
+	return nil
+}
+
+func syncTLSDir(dir string) error {
+	file, err := os.Open(dir) // #nosec G304 - directory path is derived from explicit TLS configuration and cleaned before use.
+	if err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func cleanTLSFilePath(path string) (string, error) {

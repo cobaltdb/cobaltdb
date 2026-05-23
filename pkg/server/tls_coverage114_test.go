@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -48,6 +49,72 @@ func TestGenerateSelfSignedCert114(t *testing.T) {
 	// Verify certificate
 	if err := verifyCertificate(&cert); err != nil {
 		t.Errorf("Certificate verification failed: %v", err)
+	}
+}
+
+func TestGenerateSelfSignedCertHonorsExplicitPathsAndPermissions(t *testing.T) {
+	tempDir := t.TempDir()
+	certPath := filepath.Join(tempDir, "public", "custom.crt")
+	keyPath := filepath.Join(tempDir, "private", "custom.key")
+
+	config := &TLSConfig{
+		CertFile:            certPath,
+		KeyFile:             keyPath,
+		GenerateSelfSigned:  true,
+		SelfSignedOrg:       "Test Org",
+		SelfSignedValidDays: 1,
+	}
+
+	if err := generateSelfSignedCert(config); err != nil {
+		t.Fatalf("Failed to generate self-signed cert: %v", err)
+	}
+
+	if config.CertFile != filepath.Clean(certPath) {
+		t.Fatalf("CertFile was rewritten: got %q, want %q", config.CertFile, filepath.Clean(certPath))
+	}
+	if config.KeyFile != filepath.Clean(keyPath) {
+		t.Fatalf("KeyFile was rewritten: got %q, want %q", config.KeyFile, filepath.Clean(keyPath))
+	}
+
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("Failed to load generated cert: %v", err)
+	}
+	if err := verifyCertificate(&cert); err != nil {
+		t.Fatalf("Certificate verification failed: %v", err)
+	}
+
+	certInfo, err := os.Stat(certPath)
+	if err != nil {
+		t.Fatalf("Failed to stat cert file: %v", err)
+	}
+	if got := certInfo.Mode().Perm(); got != tlsCertFilePerm {
+		t.Fatalf("Cert permissions = %v, want %v", got, tlsCertFilePerm)
+	}
+
+	keyInfo, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Failed to stat key file: %v", err)
+	}
+	if got := keyInfo.Mode().Perm(); got != tlsKeyFilePerm {
+		t.Fatalf("Key permissions = %v, want %v", got, tlsKeyFilePerm)
+	}
+
+	assertNoTLSTempFiles(t, filepath.Dir(certPath))
+	assertNoTLSTempFiles(t, filepath.Dir(keyPath))
+}
+
+func assertNoTLSTempFiles(t *testing.T, dir string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("Failed to read dir %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Fatalf("Found leftover TLS temp file %s in %s", entry.Name(), dir)
+		}
 	}
 }
 
