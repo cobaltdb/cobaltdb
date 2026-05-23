@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
-CobaltDB is a production-ready pure-Go SQL database engine (zero CGO at runtime). It ships in two shapes from the same codebase:
+CobaltDB is a production-oriented pure-Go SQL database engine (zero CGO at runtime). It ships in two shapes from the same codebase:
 - **Embedded library** — `github.com/cobaltdb/cobaltdb/pkg/engine` opened via `engine.Open(path, *engine.Options)` for in-process use (`:memory:` or disk-backed).
 - **Standalone server** — `cmd/cobaltdb-server` speaks the MySQL wire protocol (default port 4200/3307) so any MySQL client or ORM works unchanged.
 
@@ -144,8 +144,9 @@ Three test trees coexist — `./pkg/...` for unit tests, `./integration/...` for
 ### Test Statistics
 - 7,100+ test functions
 - 600+ test files
-- 24 `pkg` packages, all passing
-- Target: %90+ coverage per package (24/24 packages above 90%)
+- All `pkg` packages passing
+- Current `pkg/...` coverage: 86.3% total
+- Target: 90%+ coverage per production-critical package; several packages remain below target
 
 ### Running Benchmarks Safely
 ```bash
@@ -162,7 +163,7 @@ go test ./pkg/query/ -bench=. -benchmem
 
 ### Adding New Features
 1. Add tests first (TDD preferred)
-2. Maintain %90+ test coverage
+2. Keep coverage moving toward the 90%+ package target
 3. Use existing error types (ErrTableExists, ErrTableNotFound, etc.)
 4. Update this document for significant changes
 

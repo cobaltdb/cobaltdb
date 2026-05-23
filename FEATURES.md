@@ -1,8 +1,8 @@
 # CobaltDB v0.6.0 - Feature Status and Working Features Table
 
 > **Verified:** 2026-05-23
-> **Test Coverage:** 86.0% total over `pkg/...` | **Test Functions:** 7,100+ | **Package Status:** all Go packages passing
-> **Readiness:** core embedded/server paths are production-oriented for controlled single-node deployments. Replication, automatic failover, true production Docker posture, crash-recovery certification, and selected WASM paths still need hardening before broad production claims.
+> **Test Coverage:** 86.3% total over `pkg/...` | **Test Functions:** 7,100+ | **Package Status:** all Go packages passing
+> **Readiness:** core embedded/server paths are production-oriented for controlled single-node deployments. A hardened production Docker profile and crash-recovery regression tests now exist; automatic failover, broad soak/fault certification, and selected WASM paths still need hardening before broad production claims.
 
 ---
 
@@ -21,7 +21,7 @@
 | **Views** | ✅ Production-Oriented | 84.8% pkg/catalog | Simple and complex views with aggregates |
 | **CTEs** | ✅ Production-Oriented | 84.8% pkg/catalog | Non-recursive and recursive CTEs |
 | **Triggers** | ✅ Production-Oriented | 84.8% pkg/catalog | BEFORE/AFTER/INSTEAD OF, INSERT/UPDATE/DELETE |
-| **Stored Procedures** | ⚠️ Needs Certification | 80.7% pkg/engine | CREATE PROCEDURE/CALL paths exist; behavior needs stronger conformance tests |
+| **Stored Procedures** | ⚠️ Needs Certification | 80.8% pkg/engine | CREATE PROCEDURE/CALL paths exist; behavior needs stronger conformance tests |
 | **Materialized Views** | ✅ Production-Oriented | 84.8% pkg/catalog | CREATE, DROP, REFRESH, QUERY |
 | **Full-Text Search** | ✅ Production-Oriented | 84.8% pkg/catalog | CREATE FULLTEXT INDEX, MATCH/AGAINST |
 | **Table Partitioning** | ✅ Production-Oriented | 84.8% pkg/catalog | RANGE, HASH partitioning |
@@ -29,11 +29,11 @@
 | **Server** | ✅ Controlled Production Candidate | 90.6% pkg/server | TCP server, MySQL protocol, auth; MySQL listener should stay private or disabled |
 | **Query Cache** | ✅ Production-Oriented | 90.9% pkg/cache | LRU cache with TTL and invalidation |
 | **Query Optimizer** | ✅ Production-Oriented | 93.8% pkg/optimizer | Cost-based optimization, join reordering |
-| **Hot Backup** | ⚠️ Functional | 92% | Full-file online backups with compression; true delta incremental chains are still roadmap |
-| **Replication** | ⚠️ Experimental | 92.2% | Master-slave stream transport exists; automatic full engine apply/failover is not production-grade yet |
+| **Hot Backup** | ⚠️ Functional | 88.2% pkg/backup | Full and delta backup/restore paths exist; long-running restore drills remain needed |
+| **Replication** | ⚠️ Experimental | 88.3% pkg/replication | Master-slave stream transport exists; automatic full engine apply/failover is not production-grade yet |
 | **Connection Pool** | ✅ Production-Oriented | 97.5% pkg/pool | Health checks, dynamic sizing |
-| **WASM Compilation** | ⚠️ Experimental | 91.5% | SQL to WebAssembly bytecode for selected paths; some compiler paths still use simplified placeholders |
-| **Query Plan Cache** | ✅ Production-Oriented | 80.7% pkg/engine | LRU cache with statistics; engine package coverage needs hardening |
+| **WASM Compilation** | ⚠️ Experimental | 84.4% pkg/wasm | SQL to WebAssembly bytecode for selected paths; some compiler paths still use simplified placeholders |
+| **Query Plan Cache** | ✅ Production-Oriented | 80.8% pkg/engine | LRU cache with statistics; engine package coverage needs hardening |
 
 ---
 
@@ -433,14 +433,14 @@
 | `pkg/cache` | 90.9% | 🟢 Excellent |
 | `pkg/audit` | 90.7% | 🟢 Excellent |
 | `pkg/server` | 90.6% | 🟢 Excellent |
-| `pkg/backup` | 88.5% | 🟡 Needs hardening |
+| `pkg/storage` | 88.4% | 🟡 Needs hardening |
 | `pkg/replication` | 88.3% | 🟡 Needs hardening |
+| `pkg/backup` | 88.2% | 🟡 Needs hardening |
 | `pkg/txn` | 87.8% | 🟡 Needs hardening |
 | `pkg/catalog` | 84.8% | 🟡 Needs hardening |
 | `pkg/wasm` | 84.4% | 🟡 Needs hardening |
-| `pkg/storage` | 83.7% | 🟡 Needs hardening |
-| `pkg/protocol` | 82.3% | 🟡 Needs hardening |
-| `pkg/engine` | 80.7% | 🟡 Needs hardening |
+| `pkg/protocol` | 82.7% | 🟡 Needs hardening |
+| `pkg/engine` | 80.8% | 🟡 Needs hardening |
 | `pkg/btree` | 78.2% | 🔴 Priority hardening |
 
 ### Test Statistics
@@ -449,7 +449,7 @@
 - **Total Test Functions:** 7,100+
 - **Package Tests:** 24/24 `pkg` packages passing ✅
 - **Integration Tests:** Passing ✅
-- **Coverage:** 86.0% total over `pkg/...`; several storage, engine, protocol, and replication packages need package-level coverage hardening.
+- **Coverage:** 86.3% total over `pkg/...`; several engine, protocol, catalog, WASM, replication, backup, transaction, and B-tree paths need package-level coverage hardening.
 
 ---
 

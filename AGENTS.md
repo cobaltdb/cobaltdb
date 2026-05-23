@@ -1,7 +1,7 @@
 # CobaltDB Developer Guide
 
 ## Project Overview
-CobaltDB is a production-ready SQL database engine written in Go. It supports standard SQL with extensions for JSON, full-text search, window functions, CTEs, and row-level security.
+CobaltDB is a production-oriented SQL database engine written in Go. It supports standard SQL with extensions for JSON, full-text search, window functions, CTEs, and row-level security, but broad production certification remains active hardening work.
 
 ## Architecture
 
@@ -65,8 +65,9 @@ go tool cover -func=coverage.out
 ### Test Statistics
 - 7,100+ test functions
 - 600+ test files
-- 24 `pkg` packages, all passing
-- Target: %90+ coverage per package (24/24 packages above 90%)
+- All `pkg` packages passing
+- Current `pkg/...` coverage: 86.3% total
+- Target: 90%+ coverage per production-critical package; several packages remain below target
 
 ### Running Benchmarks Safely
 ```bash
@@ -83,7 +84,7 @@ go test ./pkg/query/ -bench=. -benchmem
 
 ### Adding New Features
 1. Add tests first (TDD preferred)
-2. Maintain %90+ test coverage
+2. Keep coverage moving toward the 90%+ package target
 3. Use existing error types (ErrTableExists, ErrTableNotFound, etc.)
 4. Update this document for significant changes
 

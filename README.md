@@ -849,20 +849,20 @@ go run cmd/demo/main.go
 
 | Package | Coverage | Package | Coverage |
 |---------|----------|---------|----------|
-| `pkg/pool` | 98.0% ✅ | `pkg/auth` | 96.8% ✅ |
-| `pkg/fdw` | 96.7% ✅ | `pkg/metrics` | 96.4% ✅ |
-| `pkg/advisor` | 95.8% ✅ | `pkg/wire` | 94.7% ✅ |
-| `pkg/protocol` | 94.2% ✅ | `pkg/logger` | 94.3% ✅ |
-| `pkg/optimizer` | 93.8% ✅ | `pkg/txn` | 93.4% ✅ |
-| `pkg/security` | 93.2% ✅ | `pkg/btree` | 92.7% ✅ |
-| `pkg/backup` | 92.0% ✅ | `pkg/replication` | 92.2% ✅ |
-| `pkg/wasm` | 91.5% ✅ | `pkg/query` | 91.4% ✅ |
-| `pkg/server` | 91.4% ✅ | `pkg/parallel` | 91.2% ✅ |
-| `pkg/engine` | 90.8% ✅ | `pkg/audit` | 90.3% ✅ |
-| `pkg/cache` | 90.9% ✅ | `pkg/catalog` | 90.4% ✅ |
-| `pkg/storage` | 90.9% ✅ |  |  |
+| `pkg/logger` | 100.0% ✅ | `pkg/pool` | 97.5% ✅ |
+| `pkg/advisor` | 96.8% ✅ | `pkg/auth` | 96.8% ✅ |
+| `pkg/wire` | 94.7% ✅ | `pkg/metrics` | 94.3% ✅ |
+| `pkg/fdw` | 93.9% ✅ | `pkg/optimizer` | 93.8% ✅ |
+| `pkg/security` | 93.2% ✅ | `pkg/query` | 91.7% ✅ |
+| `pkg/parallel` | 91.2% ✅ | `pkg/cache` | 90.9% ✅ |
+| `pkg/audit` | 90.7% ✅ | `pkg/server` | 90.6% ✅ |
+| `pkg/storage` | 88.4% ⚠️ | `pkg/replication` | 88.3% ⚠️ |
+| `pkg/backup` | 88.2% ⚠️ | `pkg/txn` | 87.8% ⚠️ |
+| `pkg/catalog` | 84.8% ⚠️ | `pkg/wasm` | 84.4% ⚠️ |
+| `pkg/protocol` | 82.7% ⚠️ | `pkg/engine` | 80.8% ⚠️ |
+| `pkg/btree` | 78.2% ⚠️ |  |  |
 
-> **7,100+ test functions** across 600+ test files, all passing. 24/24 `pkg` packages are above 90% coverage.
+> **7,100+ test functions** across 600+ test files, all passing. Current `pkg/...` coverage is 86.3%; several production-critical packages remain below the 90% package target.
 
 ---
 
@@ -939,7 +939,7 @@ go run cmd/demo/main.go
 - [x] **Auth Hardening** - Password policy, brute force rate limiting, random default password
 - [x] **SQL Injection Protection** - 15 detection patterns (conditional blind, OOB exfil, etc.)
 - [x] **Concurrency Fixes** - Panic recovery, double-close protection, lifecycle tracking
-- [x] **7,100+ Test Functions** - 24/24 `pkg` packages above 90% coverage
+- [x] **7,100+ Test Functions** - all `pkg` packages passing; 86.3% current `pkg/...` coverage
 
 ### ✅ v0.3.1 - Production Readiness Milestone (2026-03-31)
 
@@ -961,7 +961,7 @@ go run cmd/demo/main.go
 - [x] **WAL Improvements** - 64KB→1MB buffer, 5ms group commit, reduced allocations
 - [x] **BTree Optimizations** - LRU improvements, parallel flush, incremental checkpoint
 - [x] **Go 1.24+ Compatibility** - t.Context() updates, sync.Pool optimizations
-- [x] **7,100+ Test Functions** - `pkg/...` coverage currently measures 86.0% overall
+- [x] **7,100+ Test Functions** - `pkg/...` coverage currently measures 86.3% overall
 
 ### 📋 Planned Features
 
@@ -979,7 +979,7 @@ go run cmd/demo/main.go
 4. **🔄 ACID + MVCC** - Snapshot isolation, lock-free reads, WAL durability
 5. **🗂️ SQL + JSON + Vector** - Relational queries, JSONPath, HNSW similarity search
 6. **⚡ Blazing Fast** - 15M+ point lookups/sec, 1.5M+ inserts/sec
-7. **🏭 Production-Oriented Core** - 7,100+ test functions, 86% package coverage, circuit breaker, rate limiter, and health checks
+7. **🏭 Production-Oriented Core** - 7,100+ test functions, 86.3% package coverage, circuit breaker, rate limiter, and health checks
 
 ---
 
