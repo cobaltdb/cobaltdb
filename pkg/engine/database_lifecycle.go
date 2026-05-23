@@ -51,30 +51,48 @@ func DefaultOptions() *Options {
 	}
 }
 
+func normalizeOptions(opts *Options) *Options {
+	defaults := DefaultOptions()
+	if opts == nil {
+		return defaults
+	}
+
+	normalized := *opts
+	if normalized.PageSize == 0 {
+		normalized.PageSize = defaults.PageSize
+	}
+	if normalized.CacheSize == 0 {
+		normalized.CacheSize = defaults.CacheSize
+	}
+	if normalized.WALEnabled == nil {
+		normalized.WALEnabled = defaults.WALEnabled
+	}
+	if normalized.SyncMode == 0 {
+		normalized.SyncMode = defaults.SyncMode
+	}
+	if normalized.Logger == nil {
+		normalized.Logger = defaults.Logger
+	}
+	if len(normalized.EncryptionKey) > 0 {
+		normalized.EncryptionKey = append([]byte(nil), normalized.EncryptionKey...)
+	}
+	if normalized.EncryptionConfig != nil {
+		encConfig := *normalized.EncryptionConfig
+		if len(encConfig.Key) > 0 {
+			encConfig.Key = append([]byte(nil), encConfig.Key...)
+		}
+		if len(encConfig.Salt) > 0 {
+			encConfig.Salt = append([]byte(nil), encConfig.Salt...)
+		}
+		normalized.EncryptionConfig = &encConfig
+	}
+	return &normalized
+}
+
 // Open opens or creates a database at the given path
 
 func Open(path string, opts *Options) (*DB, error) {
-	defaults := DefaultOptions()
-	if opts == nil {
-		opts = defaults
-	} else {
-		// Apply defaults for unspecified options
-		if opts.PageSize == 0 {
-			opts.PageSize = defaults.PageSize
-		}
-		if opts.CacheSize == 0 {
-			opts.CacheSize = defaults.CacheSize
-		}
-		if opts.WALEnabled == nil {
-			opts.WALEnabled = defaults.WALEnabled
-		}
-		if opts.SyncMode == 0 {
-			opts.SyncMode = defaults.SyncMode
-		}
-		if opts.Logger == nil {
-			opts.Logger = defaults.Logger
-		}
-	}
+	opts = normalizeOptions(opts)
 	if opts.CacheSize <= 0 {
 		return nil, fmt.Errorf("cache size must be positive: %d", opts.CacheSize)
 	}

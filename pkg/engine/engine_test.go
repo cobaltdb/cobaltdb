@@ -20,6 +20,29 @@ func TestOpenMemory(t *testing.T) {
 	}
 }
 
+func TestOpenNormalizesOptionsWithoutMutation(t *testing.T) {
+	opts := &Options{InMemory: true}
+	db, err := Open(":memory:", opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	defaults := DefaultOptions()
+	if db.options.CacheSize != defaults.CacheSize {
+		t.Fatalf("CacheSize = %d, want %d", db.options.CacheSize, defaults.CacheSize)
+	}
+	if db.options.PageSize != defaults.PageSize {
+		t.Fatalf("PageSize = %d, want %d", db.options.PageSize, defaults.PageSize)
+	}
+	if db.options.WALEnabled == nil || *db.options.WALEnabled != *defaults.WALEnabled {
+		t.Fatal("WALEnabled was not defaulted")
+	}
+	if opts.CacheSize != 0 || opts.PageSize != 0 || opts.WALEnabled != nil || opts.Logger != nil {
+		t.Fatal("Open should not mutate caller options")
+	}
+}
+
 func TestCreateTable(t *testing.T) {
 	db, err := Open(":memory:", &Options{
 		InMemory:  true,
