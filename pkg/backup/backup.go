@@ -50,7 +50,11 @@ type Config struct {
 	KeyFile string
 }
 
-const metadataFileName = "metadata.json"
+const (
+	metadataFileName = "metadata.json"
+	backupDirPerm    = 0750
+	backupFilePerm   = 0600
+)
 
 const (
 	deltaMagic     = "CBDBDELTA1\n"
@@ -170,7 +174,7 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (*Backup, e
 	}()
 
 	// Create backup directory if not exists
-	if err := os.MkdirAll(m.config.BackupDir, 0755); err != nil {
+	if err := os.MkdirAll(m.config.BackupDir, backupDirPerm); err != nil {
 		return nil, fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
@@ -274,7 +278,7 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 	}
 
 	// Create destination file
-	dstFile, err := os.Create(dstPath)
+	dstFile, err := createSecureFile(dstPath)
 	if err != nil {
 		return fmt.Errorf("failed to create backup file: %w", err)
 	}
@@ -379,7 +383,7 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 	}
 	defer parentFile.Close()
 
-	dstFile, err := os.Create(backup.Destination)
+	dstFile, err := createSecureFile(backup.Destination)
 	if err != nil {
 		return fmt.Errorf("failed to create backup file: %w", err)
 	}
@@ -488,7 +492,7 @@ func (m *Manager) copyWALFiles(ctx context.Context, backup *Backup) error {
 	}
 
 	walBackupDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", backup.ID))
-	if err := os.MkdirAll(walBackupDir, 0755); err != nil {
+	if err := os.MkdirAll(walBackupDir, backupDirPerm); err != nil {
 		return fmt.Errorf("failed to create WAL backup directory: %w", err)
 	}
 
@@ -577,7 +581,7 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 
 	// Create target directory if needed
 	targetDir := filepath.Dir(targetPath)
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
+	if err := os.MkdirAll(targetDir, backupDirPerm); err != nil {
 		return fmt.Errorf("failed to create target directory: %w", err)
 	}
 
@@ -593,7 +597,7 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 		// WAL directory is expected at <db-path>.wal (same convention as engine.GetWALPath)
 		targetWALDir := targetPath + ".wal"
 
-		if err := os.MkdirAll(targetWALDir, 0755); err != nil {
+		if err := os.MkdirAll(targetWALDir, backupDirPerm); err != nil {
 			return fmt.Errorf("failed to create WAL directory: %w", err)
 		}
 
@@ -645,7 +649,7 @@ func (m *Manager) restoreBackupPayload(ctx context.Context, backup *Backup, targ
 		return m.applyDeltaPayload(ctx, reader, targetPath)
 	}
 
-	targetFile, err := os.Create(targetPath)
+	targetFile, err := createSecureFile(targetPath)
 	if err != nil {
 		return fmt.Errorf("failed to create target file: %w", err)
 	}
@@ -909,7 +913,7 @@ func (m *Manager) saveMetadataLocked() error {
 	path := m.metadataPath()
 	tmpPath := path + ".tmp"
 
-	file, err := os.Create(tmpPath)
+	file, err := createSecureFile(tmpPath)
 	if err != nil {
 		return fmt.Errorf("failed to create backup metadata file: %w", err)
 	}
@@ -1090,7 +1094,7 @@ func copyFile(srcPath, dstPath string) error {
 	}
 	defer srcFile.Close()
 
-	dstFile, err := os.Create(dstPath)
+	dstFile, err := createSecureFile(dstPath)
 	if err != nil {
 		return err
 	}
@@ -1100,4 +1104,16 @@ func copyFile(srcPath, dstPath string) error {
 		return err
 	}
 	return dstFile.Sync()
+}
+
+func createSecureFile(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, backupFilePerm)
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Chmod(backupFilePerm); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }

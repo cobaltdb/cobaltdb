@@ -104,8 +104,21 @@ func TestCreateBackup(t *testing.T) {
 	}
 
 	// Verify backup file exists
-	if _, err := os.Stat(backup.Destination); os.IsNotExist(err) {
+	backupInfo, err := os.Stat(backup.Destination)
+	if os.IsNotExist(err) {
 		t.Error("Backup file should exist")
+	} else if err != nil {
+		t.Fatalf("Failed to stat backup file: %v", err)
+	} else if backupInfo.Mode().Perm() != backupFilePerm {
+		t.Errorf("Expected backup file permissions %o, got %o", backupFilePerm, backupInfo.Mode().Perm())
+	}
+
+	metadataInfo, err := os.Stat(mgr.metadataPath())
+	if err != nil {
+		t.Fatalf("Failed to stat metadata file: %v", err)
+	}
+	if metadataInfo.Mode().Perm() != backupFilePerm {
+		t.Errorf("Expected metadata file permissions %o, got %o", backupFilePerm, metadataInfo.Mode().Perm())
 	}
 }
 
