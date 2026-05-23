@@ -20,8 +20,6 @@ var (
 	flagHelp     bool
 	flagInMemory bool
 	flagPath     string
-	flagServer   bool
-	flagPort     int
 	flagVersion  bool
 )
 
@@ -44,8 +42,6 @@ func init() {
 	flag.BoolVar(&flagHelp, "h", false, "Show help (short)")
 	flag.BoolVar(&flagInMemory, "memory", false, "Use in-memory database")
 	flag.StringVar(&flagPath, "path", ":memory:", "Database path (default: :memory:)")
-	flag.BoolVar(&flagServer, "server", false, "Start as server")
-	flag.IntVar(&flagPort, "port", 4200, "Server port")
 	flag.BoolVar(&flagVersion, "version", false, "Print version and exit")
 }
 
@@ -108,8 +104,6 @@ Options:
   -h, -help           Show this help message
   -memory             Use in-memory database (ephemeral)
   -path <path>        Database file path (default: :memory:)
-  -server             Start as TCP server
-  -port <port>        Server port (default: 4200)
 
 Examples:
   # In-memory database
@@ -119,10 +113,7 @@ Examples:
   cobaltdb -path ./mydb.db "SELECT * FROM users"
 
   # Interactive mode
-  cobaltdb -memory
-
-  # Start server
-  cobaltdb -server -port 4200
+  cobaltdb -path ./mydb.db
 
 Subcommands:
   backup create [full|incremental|differential]   Create a database backup
