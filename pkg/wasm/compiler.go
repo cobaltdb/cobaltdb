@@ -40,6 +40,20 @@ type Compiler struct {
 	preparedStmts map[string]*PreparedStatement
 }
 
+func compilerUint32(value int, name string) uint32 {
+	if value < 0 || value > maxUint32 {
+		panic(fmt.Sprintf("wasm compiler: %s overflows uint32: %d", name, value))
+	}
+	return uint32(value) // #nosec G115 - range checked above.
+}
+
+func compilerUint64(value int, name string) uint64 {
+	if value < 0 {
+		panic(fmt.Sprintf("wasm compiler: %s is negative: %d", name, value))
+	}
+	return uint64(value) // #nosec G115 - non-negative int value.
+}
+
 // PreparedStatement represents a prepared SQL statement with parameter placeholders
 type PreparedStatement struct {
 	// Statement ID (unique identifier)
@@ -321,14 +335,14 @@ func (c *Compiler) addRuntimeImports() {
 			Module: "env",
 			Name:   spec.name,
 			Kind:   0x00,
-			Index:  uint32(len(c.types)),
+			Index:  compilerUint32(len(c.types), "type index"),
 		})
 		c.types = append(c.types, FuncType{
 			Params:  spec.params,
 			Results: spec.results,
 		})
 	}
-	c.funcIdx = uint32(len(c.imports))
+	c.funcIdx = compilerUint32(len(c.imports), "import count")
 }
 
 // importSpec describes a single WASM host import.
@@ -391,7 +405,7 @@ var runtimeImportSpecs = []importSpec{
 // compileSelect compiles a SELECT statement
 func (c *Compiler) compileSelect(stmt *query.SelectStmt) (uint32, error) {
 	// Create function type for query entry point
-	funcTypeIdx := uint32(len(c.types))
+	funcTypeIdx := compilerUint32(len(c.types), "type index")
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32},      // params pointer
 		Results: []ValueType{I32, I32}, // result pointer, row count
@@ -427,7 +441,7 @@ func (c *Compiler) compileSelect(stmt *query.SelectStmt) (uint32, error) {
 
 // compileInsert compiles an INSERT statement
 func (c *Compiler) compileInsert(stmt *query.InsertStmt) (uint32, error) {
-	funcTypeIdx := uint32(len(c.types))
+	funcTypeIdx := compilerUint32(len(c.types), "type index")
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32}, // params pointer
 		Results: []ValueType{I64}, // rows affected
@@ -459,7 +473,7 @@ func (c *Compiler) compileInsert(stmt *query.InsertStmt) (uint32, error) {
 
 // compileUpdate compiles an UPDATE statement
 func (c *Compiler) compileUpdate(stmt *query.UpdateStmt) (uint32, error) {
-	funcTypeIdx := uint32(len(c.types))
+	funcTypeIdx := compilerUint32(len(c.types), "type index")
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32}, // params pointer
 		Results: []ValueType{I64}, // rows affected
@@ -487,7 +501,7 @@ func (c *Compiler) compileUpdate(stmt *query.UpdateStmt) (uint32, error) {
 
 // compileDelete compiles a DELETE statement
 func (c *Compiler) compileDelete(stmt *query.DeleteStmt) (uint32, error) {
-	funcTypeIdx := uint32(len(c.types))
+	funcTypeIdx := compilerUint32(len(c.types), "type index")
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32}, // params pointer
 		Results: []ValueType{I64}, // rows affected
@@ -519,7 +533,7 @@ func (c *Compiler) compileDelete(stmt *query.DeleteStmt) (uint32, error) {
 
 // compileUnion compiles a UNION statement
 func (c *Compiler) compileUnion(stmt *query.UnionStmt) (uint32, error) {
-	funcTypeIdx := uint32(len(c.types))
+	funcTypeIdx := compilerUint32(len(c.types), "type index")
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32},      // params pointer
 		Results: []ValueType{I32, I32}, // result pointer, row count
@@ -1079,7 +1093,7 @@ func (c *Compiler) encodeExportSection() []byte {
 // encodeCodeSection encodes the code section
 func (c *Compiler) encodeCodeSection() []byte {
 	buf := new(bytes.Buffer)
-	writeLeb128(buf, uint64(len(c.codes)))
+	writeLeb128(buf, compilerUint64(len(c.codes), "code count"))
 	for _, code := range c.codes {
 		funcBuf := new(bytes.Buffer)
 		// Local declarations
@@ -1091,7 +1105,7 @@ func (c *Compiler) encodeCodeSection() []byte {
 		// Function body
 		funcBuf.Write(code.Body)
 
-		writeLeb128(buf, uint64(funcBuf.Len()))
+		writeLeb128(buf, compilerUint64(funcBuf.Len(), "function body size"))
 		buf.Write(funcBuf.Bytes())
 	}
 	return buf.Bytes()
@@ -1100,7 +1114,7 @@ func (c *Compiler) encodeCodeSection() []byte {
 // encodeDataSection encodes the data section
 func (c *Compiler) encodeDataSection() []byte {
 	buf := new(bytes.Buffer)
-	writeLeb128(buf, uint64(len(c.data)))
+	writeLeb128(buf, compilerUint64(len(c.data), "data segment count"))
 	for _, d := range c.data {
 		buf.WriteByte(0x00) // memory index 0
 		buf.Write(d.Offset)

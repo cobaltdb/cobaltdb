@@ -258,13 +258,21 @@ func (sr *StreamingResult) Next() ([]Row, error) {
 
 	rows := make([]Row, 0, endRow-startRow)
 	rowSize := len(schema) * 8 // Simplified: each column is 8 bytes
+	byteCount, ok := checkedByteCount(endRow, rowSize)
+	if !ok {
+		return nil, fmt.Errorf("wasm: streaming result size overflows int")
+	}
+	resultStart, ok := checkedMemoryRange(sr.Runtime, sr.resultPtr, byteCount)
+	if !ok {
+		return nil, fmt.Errorf("wasm: streaming result memory out of range")
+	}
 
 	for i := startRow; i < endRow; i++ {
-		rowOffset := sr.resultPtr + int32(i*rowSize)
+		rowOffset := resultStart + i*rowSize
 		row := Row{Values: make([]interface{}, len(schema))}
 		for j := range schema {
-			valOffset := rowOffset + int32(j*8)
-			if valOffset+8 <= int32(len(sr.Runtime.Memory)) {
+			valOffset := rowOffset + j*8
+			if valOffset+8 <= len(sr.Runtime.Memory) {
 				val := binary.LittleEndian.Uint64(sr.Runtime.Memory[valOffset:])
 				row.Values[j] = wasmI64Signed(val)
 			}
@@ -333,7 +341,7 @@ func (rt *Runtime) writeParams(ptr int32, args []interface{}) error {
 			if err := rt.memCheck(offset, 8); err != nil {
 				return err
 			}
-			binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(v))
+			binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(int64(v)))
 			offset += 8
 		case int64:
 			if err := rt.memCheck(offset, 8); err != nil {
@@ -345,14 +353,14 @@ func (rt *Runtime) writeParams(ptr int32, args []interface{}) error {
 			if err := rt.memCheck(offset, 8); err != nil {
 				return err
 			}
-			binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(v))
+			binary.LittleEndian.PutUint64(rt.Memory[offset:], math.Float64bits(v))
 			offset += 8
 		case string:
 			// String length must fit in int32 to avoid overflow when added to offset.
 			if len(v) > maxInt32 {
 				return fmt.Errorf("wasm: string parameter too large (%d bytes)", len(v))
 			}
-			strLen := int32(len(v))
+			strLen := int32(len(v)) // #nosec G115 - length checked above.
 			if err := rt.memCheck(offset, 4+strLen); err != nil {
 				return err
 			}
