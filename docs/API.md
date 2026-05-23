@@ -10,13 +10,13 @@ import "github.com/cobaltdb/cobaltdb/pkg/engine"
 // In-memory database
 db, err := engine.Open(":memory:", &engine.Options{
     InMemory:  true,
-    CacheSize: 1024, // Buffer pool size in bytes
+    CacheSize: 1024, // Buffer pool size in pages (1024 pages = 4MB)
 })
 
 // Disk database
 db, err := engine.Open("./mydb.db", &engine.Options{
     InMemory:  false,
-    CacheSize: 1024 * 1024, // 1MB buffer pool
+    CacheSize: 1024, // 4MB buffer pool
 })
 ```
 
@@ -25,7 +25,7 @@ db, err := engine.Open("./mydb.db", &engine.Options{
 ```go
 type Options struct {
     InMemory  bool   // Use in-memory mode (default: false)
-    CacheSize int    // Buffer pool size in bytes (default: 1024)
+    CacheSize int    // Buffer pool size in pages (default: 1024 pages = 4MB)
 }
 ```
 
@@ -202,7 +202,7 @@ value, err := catalog.EvalExpression(expr, []interface{}{args...})
 
 ```go
 backend := storage.NewDisk("./data")
-pool := storage.NewBufferPool(1024*1024, backend) // 1MB
+pool := storage.NewBufferPool(1024, backend) // 1024 pages = 4MB
 ```
 
 ### Memory Backend
