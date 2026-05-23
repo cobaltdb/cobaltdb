@@ -178,16 +178,29 @@ func (w *WAL) readLSN() error {
 
 	reader := bufio.NewReader(w.file)
 	var lastLSN uint64
+	var offset int64
 	var headerBuf [walHeaderSize]byte // reusable header buffer across readRecord calls
 
 	for {
-		record, err := w.readRecord(reader, headerBuf[:])
+		record, recordSize, err := w.readRecord(reader, headerBuf[:])
 		if err != nil {
 			if errors.Is(err, ErrWALCorrupted) {
 				return fmt.Errorf("WAL recovery failed at LSN %d: %w", lastLSN, ErrWALCorrupted)
 			}
-			break // End of file (io.EOF or io.ErrUnexpectedEOF from partial trailing record)
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if stat.Size() > offset {
+					if err := w.file.Truncate(offset); err != nil {
+						return fmt.Errorf("failed to truncate partial WAL tail: %w", err)
+					}
+					if err := w.file.Sync(); err != nil {
+						return fmt.Errorf("failed to sync truncated WAL tail: %w", err)
+					}
+				}
+				break
+			}
+			return fmt.Errorf("WAL recovery failed at offset %d: %w", offset, err)
 		}
+		offset += recordSize
 		lastLSN = record.LSN
 		if record.Type == WALCheckpoint {
 			w.checkpoint = record.LSN
@@ -206,10 +219,10 @@ func (w *WAL) readLSN() error {
 
 // readRecord reads a single WAL record from the reader.
 // header must be a walHeaderSize slice that is reused across calls to avoid per-record allocation.
-func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error) {
+func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, int64, error) {
 	// Read header: [LSN:8][TxnID:8][Type:1][PageID:4][Offset:2][Length:2]
 	if _, err := io.ReadFull(reader, header[:walHeaderSize]); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	record := &WALRecord{
@@ -224,31 +237,32 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error
 	if dataLen > 0 {
 		record.Data = make([]byte, dataLen)
 		if _, err := io.ReadFull(reader, record.Data); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
+	recordSize := int64(walHeaderSize + int(dataLen) + 4)
 
 	// Read and verify CRC (direct read avoids binary.Read reflection)
 	var crcBuf [4]byte
 	if _, err := io.ReadFull(reader, crcBuf[:]); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	storedCRC := binary.LittleEndian.Uint32(crcBuf[:])
 
 	// Calculate CRC from header bytes + data directly (avoids re-encode allocation)
 	crcHash := crc32.NewIEEE()
 	if _, err := crcHash.Write(header[:walHeaderSize]); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(record.Data) > 0 {
 		if _, err := crcHash.Write(record.Data); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	calculatedCRC := crcHash.Sum32()
 
 	if storedCRC != calculatedCRC {
-		return nil, ErrWALCorrupted
+		return nil, 0, ErrWALCorrupted
 	}
 
 	// Decrypt record data if cipher is configured
@@ -256,12 +270,12 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, error
 		// Use header bytes as AAD to verify header integrity
 		decrypted, err := w.decryptData(record.Data, header[:walHeaderSize])
 		if err != nil {
-			return nil, fmt.Errorf("WAL record decryption failed at LSN %d: %w", record.LSN, err)
+			return nil, 0, fmt.Errorf("WAL record decryption failed at LSN %d: %w", record.LSN, err)
 		}
 		record.Data = decrypted
 	}
 
-	return record, nil
+	return record, recordSize, nil
 }
 
 // Append adds a record to the WAL.
@@ -814,9 +828,15 @@ func (w *WAL) Recover(bp *BufferPool) error {
 	// Read all records
 	var lastCheckpointLSN uint64
 	for {
-		record, err := w.readRecord(reader, headerBuf[:])
+		record, _, err := w.readRecord(reader, headerBuf[:])
 		if err != nil {
-			break // End of file
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				break
+			}
+			if errors.Is(err, ErrWALCorrupted) {
+				return ErrWALCorrupted
+			}
+			return fmt.Errorf("failed to read WAL record: %w", err)
 		}
 
 		// Track the latest checkpoint

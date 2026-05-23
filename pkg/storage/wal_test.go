@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -103,6 +104,71 @@ func TestWALAppendBatchLargeRecordCRC(t *testing.T) {
 	defer reopened.Close()
 	if got := reopened.LSN(); got != 1 {
 		t.Fatalf("reopened LSN = %d, want 1", got)
+	}
+}
+
+func TestOpenWALTruncatesPartialTrailingRecord(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "partial-tail.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	if err := wal.Append(&WALRecord{TxnID: 1, Type: WALInsert, Data: []byte("valid")}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	validSize := info.Size()
+
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if _, err := file.Write([]byte{0xde, 0xad, 0xbe, 0xef}); err != nil {
+		_ = file.Close()
+		t.Fatalf("Write partial tail: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close partial tail: %v", err)
+	}
+
+	reopened, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("OpenWAL with partial tail: %v", err)
+	}
+	if got := reopened.LSN(); got != 1 {
+		t.Fatalf("LSN after truncating partial tail = %d, want 1", got)
+	}
+	if err := reopened.Append(&WALRecord{TxnID: 2, Type: WALCommit}); err != nil {
+		t.Fatalf("Append after tail truncation: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("Close reopened WAL: %v", err)
+	}
+
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat after reopen: %v", err)
+	}
+	if info.Size() <= validSize {
+		t.Fatalf("expected appended WAL size > %d, got %d", validSize, info.Size())
+	}
+
+	reopenedAgain, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("OpenWAL after append: %v", err)
+	}
+	defer reopenedAgain.Close()
+	if got := reopenedAgain.LSN(); got != 2 {
+		t.Fatalf("LSN after append = %d, want 2", got)
 	}
 }
 
