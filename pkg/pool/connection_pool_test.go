@@ -125,6 +125,77 @@ func TestPoolCreation(t *testing.T) {
 	}
 }
 
+func TestPoolStatsWhenReleaseServesWaiter(t *testing.T) {
+	dialer := func() (net.Conn, error) {
+		return &mockConn{}, nil
+	}
+
+	config := DefaultConfig()
+	config.MinConns = 1
+	config.MaxConns = 1
+	config.WaitQueueSize = 1
+	config.AcquireTimeout = time.Second
+	config.HealthCheckInterval = time.Hour
+
+	pool, err := New(config, dialer)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer pool.Close()
+
+	first, err := pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("first Acquire failed: %v", err)
+	}
+
+	type acquireResult struct {
+		conn *Conn
+		err  error
+	}
+	done := make(chan acquireResult, 1)
+	go func() {
+		conn, err := pool.Acquire(context.Background())
+		done <- acquireResult{conn: conn, err: err}
+	}()
+
+	deadline := time.After(time.Second)
+	for {
+		if pool.Stats().WaitQueueLen == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for waiter to enqueue")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	first.Release()
+
+	var result acquireResult
+	select {
+	case result = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for waiter acquire")
+	}
+	if result.err != nil {
+		t.Fatalf("waiter Acquire failed: %v", result.err)
+	}
+	defer result.conn.Release()
+
+	stats := pool.Stats()
+	if stats.WaitQueueLen != 0 {
+		t.Fatalf("WaitQueueLen = %d, want 0", stats.WaitQueueLen)
+	}
+	if stats.ActiveConns != 1 {
+		t.Fatalf("ActiveConns = %d, want 1", stats.ActiveConns)
+	}
+	if stats.IdleConns != 0 {
+		t.Fatalf("IdleConns = %d, want 0", stats.IdleConns)
+	}
+}
+
 func TestAcquireRelease(t *testing.T) {
 	dialer := func() (net.Conn, error) {
 		return &mockConn{}, nil

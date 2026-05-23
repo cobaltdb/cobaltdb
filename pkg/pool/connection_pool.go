@@ -354,13 +354,17 @@ func (p *Pool) waitForConnection(ctx context.Context) (*Conn, error) {
 
 	defer func() {
 		p.waitersMu.Lock()
+		removed := false
 		for i, w := range p.waiters {
 			if w == waiter {
 				p.waiters = append(p.waiters[:i], p.waiters[i+1:]...)
+				removed = true
 				break
 			}
 		}
-		atomic.AddInt32(&p.stats.WaitQueueLen, -1)
+		if removed {
+			atomic.AddInt32(&p.stats.WaitQueueLen, -1)
+		}
 		p.waitersMu.Unlock()
 	}()
 
@@ -413,6 +417,7 @@ func (p *Pool) release(conn *Conn) {
 
 		select {
 		case waiter <- conn:
+			atomic.AddInt32(&p.stats.IdleConns, -1)
 			return
 		default:
 			// Waiter timed out, put back in pool
