@@ -222,6 +222,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		queryToken := strings.TrimSpace(r.URL.Query().Get("token"))
 		if secureTokenCompare(queryToken, s.apiToken) {
+			// #nosec G124 -- Secure is set for HTTPS and HTTPS proxy requests; plain HTTP local UI needs a usable cookie.
 			http.SetCookie(w, &http.Cookie{
 				Name:     authCookieName,
 				Value:    s.apiToken,
@@ -446,7 +447,9 @@ func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
 					Type: "TEXT", // Default type
 				})
 			}
-			rows.Close()
+			if err := rows.Close(); err != nil {
+				continue
+			}
 		}
 
 		schema.Tables = append(schema.Tables, tableInfo)
@@ -490,7 +493,10 @@ func (s *Server) handleTableInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cols := rows.Columns()
-	rows.Close()
+	if err := rows.Close(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	tableInfo := TableInfo{
 		Name:    tableName,
 		Columns: make([]ColumnInfo, 0, len(cols)),
