@@ -267,12 +267,12 @@ func (a *Authenticator) UserExists(username string) bool {
 // Authenticate authenticates a user and returns a session token
 func (a *Authenticator) Authenticate(username, password string) (string, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	// Check lockout (lock ordering: mu first, then failedMu)
 	a.failedMu.RLock()
 	if attempt, exists := a.failedAttempts[username]; exists && time.Now().Before(attempt.lockUntil) {
 		a.failedMu.RUnlock()
+		a.mu.Unlock()
 		return "", fmt.Errorf("account temporarily locked due to too many failed attempts")
 	}
 	a.failedMu.RUnlock()
@@ -280,16 +280,16 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 	user, exists := a.users[username]
 	if !exists {
 		count := a.recordFailedAttempt(username)
-		// Progressive rate limiting after failed attempt
-		time.Sleep(time.Duration(min(count, 5)) * 200 * time.Millisecond)
+		a.mu.Unlock()
+		sleepFailedAttempt(count)
 		return "", ErrInvalidCredentials
 	}
 
 	passwordHash := hashPassword(password, user.Salt)
 	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(user.PasswordHash)) != 1 {
 		count := a.recordFailedAttempt(username)
-		// Progressive rate limiting after failed attempt
-		time.Sleep(time.Duration(min(count, 5)) * 200 * time.Millisecond)
+		a.mu.Unlock()
+		sleepFailedAttempt(count)
 		return "", ErrInvalidCredentials
 	}
 
@@ -304,6 +304,7 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 	// Generate session token
 	token, err := generateToken(username)
 	if err != nil {
+		a.mu.Unlock()
 		return "", err
 	}
 	session := &Session{
@@ -314,7 +315,12 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 	}
 
 	a.sessions[token] = session
+	a.mu.Unlock()
 	return token, nil
+}
+
+func sleepFailedAttempt(count int) {
+	time.Sleep(time.Duration(min(count, 5)) * 200 * time.Millisecond)
 }
 
 // recordFailedAttempt records a failed login attempt for brute-force protection.

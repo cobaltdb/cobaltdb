@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -49,6 +50,40 @@ func TestAuthenticate(t *testing.T) {
 	_, err = auth.Authenticate("nonexistent", "password123")
 	if err != ErrInvalidCredentials {
 		t.Errorf("Expected ErrInvalidCredentials, got %v", err)
+	}
+}
+
+func TestFailedAuthenticateDoesNotHoldAuthLockDuringDelay(t *testing.T) {
+	auth := NewAuthenticator()
+	defer auth.Stop()
+
+	authDone := make(chan error, 1)
+	go func() {
+		_, err := auth.Authenticate("missing-user", "password123")
+		if err != ErrInvalidCredentials {
+			authDone <- fmt.Errorf("expected ErrInvalidCredentials, got %v", err)
+			return
+		}
+		authDone <- nil
+	}()
+
+	time.Sleep(25 * time.Millisecond)
+	createDone := make(chan error, 1)
+	go func() {
+		createDone <- auth.CreateUser("newuser", "password123", false)
+	}()
+
+	select {
+	case err := <-createDone:
+		if err != nil {
+			t.Fatalf("CreateUser failed: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("failed authentication delay should not hold authenticator lock")
+	}
+
+	if err := <-authDone; err != nil {
+		t.Fatal(err)
 	}
 }
 
