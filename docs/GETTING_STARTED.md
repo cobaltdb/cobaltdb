@@ -56,19 +56,16 @@ docker pull cobaltdb/cobaltdb:latest
 mkdir -p ./data
 
 # Start server
-cobaltdb-server --data-dir ./data
+cobaltdb-server -data ./data -admin-pass "StrongPass123!"
 ```
 
-The server will start on port `4200` by default.
+The wire protocol starts on port `4200`; the MySQL-compatible protocol starts on port `3307` by default.
 
-### 2. Connect with CLI
+### 2. Connect to the Server
 
 ```bash
-# In a new terminal
-cobaltdb-cli
-
-# Or connect to remote server
-cobaltdb-cli --host localhost --port 4200
+# Use any MySQL-compatible client
+mysql -h 127.0.0.1 -P 3307 -u admin -p
 ```
 
 ### 3. Run Your First Query
@@ -101,14 +98,17 @@ DELETE FROM users WHERE id = 2;
 
 ## Using the CLI
 
-### Connection Options
+### Local Database Options
 
 ```bash
-# Connect with flags
-cobaltdb-cli --host localhost --port 4200 --database mydb
+# Open a local database file interactively
+cobaltdb-cli -path ./mydb.db
 
-# Connect with DSN
-cobaltdb-cli "host=localhost port=4200 database=mydb"
+# Run a single SQL statement against a local database file
+cobaltdb-cli -path ./mydb.db "SELECT * FROM users"
+
+# Use an ephemeral in-memory database
+cobaltdb-cli -memory "CREATE TABLE demo (id INTEGER)"
 ```
 
 ### Interactive Commands
@@ -393,24 +393,18 @@ cobaltdb-cli -path ./data/cobalt.cb backup list
 
 ```bash
 # Stop server
-cobaltdb-cli admin stop
+docker compose stop cobaltdb
 
-# Restore
-cobaltdb-cli restore --from /backups/mydb-20240101.db --to ./data
+# Restore a SQL dump into a local database file
+cobaltdb-cli -path ./data/cobalt.cb restore /backups/mydb-20240101.sql
 
 # Start server
-cobaltdb-server --data-dir ./data
+cobaltdb-server -data ./data -admin-pass "StrongPass123!"
 ```
 
 ### Point-in-Time Recovery
 
-```bash
-# Restore to specific LSN
-cobaltdb-cli restore --from /backups/base.backup --target-lsn 1234567
-
-# Restore to specific time
-cobaltdb-cli restore --from /backups/base.backup --target-time "2024-01-01 12:00:00"
-```
+Point-in-time recovery is handled by the storage/backup APIs. The current CLI exposes full backup create/list/restore/delete commands and SQL dump restore.
 
 ---
 
@@ -445,22 +439,22 @@ cobaltdb-cli restore --from /backups/base.backup --target-time "2024-01-01 12:00
 
 ```bash
 # Start server
-cobaltdb-server --data-dir ./data
+cobaltdb-server -data ./data -admin-pass "StrongPass123!"
 
-# Connect with CLI
-cobaltdb-cli
+# Open local CLI
+cobaltdb-cli -path ./data/cobalt.cb
 
-# Run SQL file
-cobaltdb-cli --file script.sql
+# Restore SQL file
+cobaltdb-cli -path ./data/cobalt.cb restore script.sql
 
 # Check status
-cobaltdb-cli ping
+cobaltdb-cli -path ./data/cobalt.cb status
 
 # Get stats
-cobaltdb-cli stats
+cobaltdb-cli -path ./data/cobalt.cb metrics
 
 # Create backup
-cobaltdb-cli backup create --output backup.db
+cobaltdb-cli -path ./data/cobalt.cb backup create full
 ```
 
 ### Connection Strings

@@ -95,7 +95,7 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 ```bash
 # Start CobaltDB server
-./cobaltdb-server --mysql-addr 127.0.0.1:3307 --admin-pass "StrongPass123!" --data ./mydb.db
+./cobaltdb-server -mysql-addr 127.0.0.1:3307 -admin-pass "StrongPass123!" -data ./data
 
 # Connect with standard MySQL client
 mysql -h 127.0.0.1 -P 3307 -u admin -p
@@ -145,27 +145,35 @@ rows, _ := db.Query(ctx, `SELECT name, JSON_EXTRACT(metadata, '$.role') FROM use
 
 ```bash
 # Interactive shell
-./cobaltdb-cli -i
+./cobaltdb-cli -path ./mydb.db
 
 # Execute SQL directly
 ./cobaltdb-cli -memory "SELECT * FROM users"
 
-# Connect to running server
-./cobaltdb-cli -host localhost:4200
+# Server mode uses the MySQL protocol
+mysql -h 127.0.0.1 -P 3307 -u admin -p
 ```
 
 ### Docker Mode
 
 ```bash
 # Start with Docker Compose (includes Prometheus + Grafana monitoring)
-docker-compose up -d
+export COBALTDB_ADMIN_PASSWORD='change-this-before-production'
+export GRAFANA_ADMIN_PASSWORD='change-this-too'
+docker compose up -d
 
 # Or run standalone
 docker build -t cobaltdb .
-docker run -d -p 4200:4200 -v cobaltdb_data:/data/cobaltdb cobaltdb
+docker run -d \
+  -p 4200:4200 \
+  -p 3307:3307 \
+  -p 8420:8420 \
+  -e COBALTDB_ADMIN_PASSWORD='change-this-before-production' \
+  -v cobaltdb_data:/data/cobaltdb \
+  cobaltdb
 
 # Connect to containerized database
-cobaltdb-cli -host localhost:4200
+mysql -h 127.0.0.1 -P 3307 -u admin -p
 ```
 
 See [DOCKER.md](DOCKER.md) for detailed Docker setup instructions.
