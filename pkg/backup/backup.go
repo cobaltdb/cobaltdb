@@ -12,6 +12,7 @@ import (
 	"hash"
 	"hash/crc32"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -335,7 +336,12 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 	if err != nil {
 		return fmt.Errorf("failed to create backup file: %w", err)
 	}
-	defer dstFile.Close()
+	dstClosed := false
+	defer func() {
+		if !dstClosed {
+			_ = dstFile.Close()
+		}
+	}()
 
 	var writer io.Writer = dstFile
 	var compressor *gzip.Writer
@@ -346,7 +352,6 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 		if err != nil {
 			return fmt.Errorf("failed to create compressor: %w", err)
 		}
-		defer compressor.Close()
 		writer = compressor
 	}
 
@@ -390,6 +395,16 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 		if err := compressor.Close(); err != nil {
 			return fmt.Errorf("failed to finalize compression: %w", err)
 		}
+	}
+	if err := dstFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync backup file: %w", err)
+	}
+	if err := dstFile.Close(); err != nil {
+		return fmt.Errorf("failed to close backup file: %w", err)
+	}
+	dstClosed = true
+	if err := syncParentDir(dstPath); err != nil {
+		return fmt.Errorf("failed to sync backup directory: %w", err)
 	}
 
 	backup.Size = written
@@ -448,7 +463,12 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 	if err != nil {
 		return fmt.Errorf("failed to create backup file: %w", err)
 	}
-	defer dstFile.Close()
+	dstClosed := false
+	defer func() {
+		if !dstClosed {
+			_ = dstFile.Close()
+		}
+	}()
 
 	var writer io.Writer = dstFile
 	var compressor *gzip.Writer
@@ -457,7 +477,6 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 		if err != nil {
 			return fmt.Errorf("failed to create compressor: %w", err)
 		}
-		defer compressor.Close()
 		writer = compressor
 	}
 
@@ -518,6 +537,16 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 		if err := compressor.Close(); err != nil {
 			return fmt.Errorf("failed to finalize compression: %w", err)
 		}
+	}
+	if err := dstFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync backup file: %w", err)
+	}
+	if err := dstFile.Close(); err != nil {
+		return fmt.Errorf("failed to close backup file: %w", err)
+	}
+	dstClosed = true
+	if err := syncParentDir(backup.Destination); err != nil {
+		return fmt.Errorf("failed to sync backup directory: %w", err)
 	}
 
 	backup.Size = payload.written
@@ -605,10 +634,7 @@ func (m *Manager) verifyBackup(backup *Backup) error {
 
 	// Handle compressed backups
 	if filepath.Ext(backup.Destination) == ".gz" {
-		// Limit reader to prevent zip bomb attacks (100MB max decompressed size)
-		const maxDecompressedSize = 100 * 1024 * 1024
-		limitedReader := io.LimitReader(file, maxDecompressedSize)
-		gzReader, err := gzip.NewReader(limitedReader)
+		gzReader, err := gzip.NewReader(file)
 		if err != nil {
 			return fmt.Errorf("failed to create gzip reader: %w", err)
 		}
@@ -617,18 +643,26 @@ func (m *Manager) verifyBackup(backup *Backup) error {
 	}
 
 	// Calculate checksum
+	if backup.Size < 0 || backup.Size == math.MaxInt64 {
+		return fmt.Errorf("invalid backup size: %d", backup.Size)
+	}
 	crc := crc32.NewIEEE()
-	if _, err := io.Copy(crc, reader); err != nil {
+	limitedReader := &io.LimitedReader{R: reader, N: backup.Size + 1}
+	readSize, err := io.Copy(crc, limitedReader)
+	if err != nil {
 		return fmt.Errorf("failed to read backup file: %w", err)
 	}
 
 	calculatedChecksum := crc.Sum32()
-	valid := calculatedChecksum == backup.Checksum
+	valid := readSize == backup.Size && calculatedChecksum == backup.Checksum
 
 	if m.OnVerify != nil {
 		m.OnVerify(backup, valid)
 	}
 
+	if readSize != backup.Size {
+		return fmt.Errorf("backup size mismatch: expected %d, got %d", backup.Size, readSize)
+	}
 	if !valid {
 		return fmt.Errorf("checksum mismatch: expected %d, got %d", backup.Checksum, calculatedChecksum)
 	}
