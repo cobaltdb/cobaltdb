@@ -262,6 +262,17 @@ func TestFlushCSVWriterReturnsBufferedWriteError(t *testing.T) {
 	}
 }
 
+func TestWriteHelpersReturnWriteErrors(t *testing.T) {
+	writeErr := errors.New("write failed")
+
+	if err := writeLine(failingWriter{err: writeErr}, "header"); !errors.Is(err, writeErr) {
+		t.Fatalf("writeLine should return write error, got %v", err)
+	}
+	if err := writeFormat(failingWriter{err: writeErr}, "value=%d", 1); !errors.Is(err, writeErr) {
+		t.Fatalf("writeFormat should return write error, got %v", err)
+	}
+}
+
 func TestStripSQLComments(t *testing.T) {
 	tests := []struct {
 		input    string
