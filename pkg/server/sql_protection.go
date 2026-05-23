@@ -90,6 +90,8 @@ type ProtectionStats struct {
 func NewSQLProtector(config *SQLProtectionConfig) *SQLProtector {
 	if config == nil {
 		config = DefaultSQLProtectionConfig()
+	} else {
+		config = normalizeSQLProtectionConfig(config)
 	}
 
 	sp := &SQLProtector{
@@ -99,6 +101,24 @@ func NewSQLProtector(config *SQLProtectionConfig) *SQLProtector {
 	}
 	sp.stats.ViolationsByType = make(map[string]uint64)
 	return sp
+}
+
+func normalizeSQLProtectionConfig(config *SQLProtectionConfig) *SQLProtectionConfig {
+	defaults := DefaultSQLProtectionConfig()
+	normalized := *config
+	if normalized.MaxQueryLength <= 0 {
+		normalized.MaxQueryLength = defaults.MaxQueryLength
+	}
+	if normalized.MaxORConditions <= 0 {
+		normalized.MaxORConditions = defaults.MaxORConditions
+	}
+	if normalized.MaxUNIONCount <= 0 {
+		normalized.MaxUNIONCount = defaults.MaxUNIONCount
+	}
+	if normalized.SuspiciousThreshold <= 0 {
+		normalized.SuspiciousThreshold = defaults.SuspiciousThreshold
+	}
+	return &normalized
 }
 
 // CheckSQL checks SQL for injection attempts

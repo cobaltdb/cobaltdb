@@ -81,6 +81,36 @@ func TestSQLProtectorQueryLength(t *testing.T) {
 	}
 }
 
+func TestSQLProtectorNormalizesPartialConfigLimits(t *testing.T) {
+	config := &SQLProtectionConfig{
+		Enabled:          true,
+		BlockOnDetection: true,
+	}
+	sp := NewSQLProtector(config)
+
+	defaults := DefaultSQLProtectionConfig()
+	if sp.config.MaxQueryLength != defaults.MaxQueryLength {
+		t.Fatalf("MaxQueryLength = %d, want %d", sp.config.MaxQueryLength, defaults.MaxQueryLength)
+	}
+	if sp.config.MaxORConditions != defaults.MaxORConditions {
+		t.Fatalf("MaxORConditions = %d, want %d", sp.config.MaxORConditions, defaults.MaxORConditions)
+	}
+	if sp.config.MaxUNIONCount != defaults.MaxUNIONCount {
+		t.Fatalf("MaxUNIONCount = %d, want %d", sp.config.MaxUNIONCount, defaults.MaxUNIONCount)
+	}
+	if sp.config.SuspiciousThreshold != defaults.SuspiciousThreshold {
+		t.Fatalf("SuspiciousThreshold = %d, want %d", sp.config.SuspiciousThreshold, defaults.SuspiciousThreshold)
+	}
+	if config.MaxQueryLength != 0 {
+		t.Fatal("normalization mutated caller config")
+	}
+
+	result := sp.CheckSQL("SELECT * FROM users WHERE id = 1")
+	if len(result.Violations) != 0 {
+		t.Fatalf("clean SQL got %d violations with normalized partial config", len(result.Violations))
+	}
+}
+
 func TestSQLProtectorTooManyOR(t *testing.T) {
 	config := DefaultSQLProtectionConfig()
 	sp := NewSQLProtector(config)
