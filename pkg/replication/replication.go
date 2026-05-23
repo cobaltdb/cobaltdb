@@ -40,6 +40,13 @@ const (
 	RoleSlave
 )
 
+func replicationUint32Len(n int, name string) (uint32, error) {
+	if n < 0 || n > 1<<32-1 {
+		return 0, fmt.Errorf("%s exceeds uint32: %d", name, n)
+	}
+	return uint32(n), nil // #nosec G115 - range checked above.
+}
+
 const maxReplicationFrameSize = 64 << 20 // 64 MiB
 
 const defaultMaxWALBufferEntries = 10000
@@ -106,7 +113,11 @@ func (e *WALEntry) Encode() ([]byte, error) {
 	}
 
 	// Write data length and data
-	if err := binary.Write(buf, binary.BigEndian, uint32(len(e.Data))); err != nil {
+	dataLen, err := replicationUint32Len(len(e.Data), "WAL entry data length")
+	if err != nil {
+		return nil, err
+	}
+	if err := binary.Write(buf, binary.BigEndian, dataLen); err != nil {
 		return nil, err
 	}
 	if _, err := buf.Write(e.Data); err != nil {
@@ -681,7 +692,11 @@ func (m *Manager) sendWALToSlave(slave *SlaveConnection, data []byte) error {
 	defer slave.mu.Unlock()
 
 	// Send WAL data
-	if err := binary.Write(slave.Writer, binary.BigEndian, uint32(len(data))); err != nil {
+	dataLen, err := replicationUint32Len(len(data), "WAL frame length")
+	if err != nil {
+		return err
+	}
+	if err := binary.Write(slave.Writer, binary.BigEndian, dataLen); err != nil {
 		return err
 	}
 	if _, err := slave.Writer.Write(data); err != nil {
@@ -1187,7 +1202,11 @@ func encodeWALEntries(entries []*WALEntry) ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	// Write number of entries
-	if err := binary.Write(buf, binary.BigEndian, uint32(len(entries))); err != nil {
+	entryCount, err := replicationUint32Len(len(entries), "WAL entry count")
+	if err != nil {
+		return nil, err
+	}
+	if err := binary.Write(buf, binary.BigEndian, entryCount); err != nil {
 		return nil, err
 	}
 
@@ -1198,7 +1217,11 @@ func encodeWALEntries(entries []*WALEntry) ([]byte, error) {
 			return nil, err
 		}
 
-		if err := binary.Write(buf, binary.BigEndian, uint32(len(data))); err != nil {
+		dataLen, err := replicationUint32Len(len(data), "encoded WAL entry length")
+		if err != nil {
+			return nil, err
+		}
+		if err := binary.Write(buf, binary.BigEndian, dataLen); err != nil {
 			return nil, err
 		}
 
