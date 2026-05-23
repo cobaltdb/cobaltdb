@@ -226,6 +226,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				Name:     authCookieName,
 				Value:    s.apiToken,
 				Path:     "/",
+				Secure:   true,
 				HttpOnly: true,
 				SameSite: http.SameSiteStrictMode,
 			})
@@ -236,7 +237,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				query := cleanURL.Query()
 				query.Del("token")
 				cleanURL.RawQuery = query.Encode()
-				http.Redirect(w, r, cleanURL.String(), http.StatusFound)
+				http.Redirect(w, r, "/", http.StatusFound)
 				return
 			}
 		}
@@ -731,8 +732,12 @@ func (s *Server) handleImportSavedQueries(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	const maxImportSize = 10 << 20
+	r.Body = http.MaxBytesReader(w, r.Body, maxImportSize)
+
 	// Parse multipart form
-	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10 MB max
+	// #nosec G120 -- MaxBytesReader above caps the request body before multipart parsing.
+	if err := r.ParseMultipartForm(maxImportSize); err != nil {
 		http.Error(w, "Failed to parse form", http.StatusBadRequest)
 		return
 	}

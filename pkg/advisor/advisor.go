@@ -2,6 +2,7 @@ package advisor
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -275,17 +276,8 @@ func (a *IndexAdvisor) Reset() {
 
 func (a *IndexAdvisor) hasExactIndex(existing [][]string, cols []string) bool {
 	for _, idx := range existing {
-		if len(idx) == len(cols) {
-			match := true
-			for i := range idx {
-				if !strings.EqualFold(idx[i], cols[i]) {
-					match = false
-					break
-				}
-			}
-			if match {
-				return true
-			}
+		if len(idx) == len(cols) && slices.EqualFunc(idx, cols, strings.EqualFold) {
+			return true
 		}
 	}
 	return false
