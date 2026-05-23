@@ -8,10 +8,10 @@ import (
 	"hash"
 	"strconv"
 	"sync"
-
-	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 	"sync/atomic"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 )
 
 // Entry represents a cached query result
@@ -180,6 +180,21 @@ func (c *Cache) Set(sql string, args []interface{}, columns []string, rows [][]i
 		return
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Remove old entry before capacity checks so replacing an existing key
+	// does not evict an unrelated cached result.
+	if oldEntry, exists := c.entries[key]; exists {
+		if oldElem, ok := c.elemMap[key]; ok {
+			c.lruList.Remove(oldElem)
+			delete(c.elemMap, key)
+		}
+		delete(c.entries, key)
+		atomic.AddInt64(&c.currentSize, -oldEntry.Size)
+		c.untrackTableDeps(key, oldEntry.TableDeps)
+	}
+
 	// Make room if needed
 	for c.config.MaxSize > 0 && atomic.LoadInt64(&c.currentSize)+size > c.config.MaxSize {
 		if !c.evictLRU() {
@@ -200,20 +215,11 @@ func (c *Cache) Set(sql string, args []interface{}, columns []string, rows [][]i
 		TableDeps:  tableDeps,
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Remove old entry if exists
-	if oldElem, exists := c.elemMap[key]; exists {
-		if oldEntry, ok := oldElem.Value.(*Entry); ok {
-			atomic.AddInt64(&c.currentSize, -oldEntry.Size)
-		}
-		c.lruList.Remove(oldElem)
-	}
-
 	// Check max entries limit
-	if c.config.MaxEntries > 0 && len(c.entries) >= c.config.MaxEntries {
-		c.evictLRU()
+	for c.config.MaxEntries > 0 && len(c.entries) >= c.config.MaxEntries {
+		if !c.evictLRU() {
+			break
+		}
 	}
 
 	// Add new entry
@@ -309,7 +315,8 @@ type Stats struct {
 	HitRate     float64 `json:"hit_rate"`
 }
 
-// evictLRU removes the least recently used entry
+// evictLRU removes the least recently used entry.
+// The caller must hold c.mu.
 func (c *Cache) evictLRU() bool {
 	elem := c.lruList.Back()
 	if elem == nil {

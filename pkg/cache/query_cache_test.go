@@ -258,6 +258,34 @@ func TestCacheLRUEviction(t *testing.T) {
 	}
 }
 
+func TestCacheSetExistingDoesNotEvictUnrelatedEntry(t *testing.T) {
+	config := DefaultConfig()
+	config.MaxEntries = 2
+	cache := New(config)
+	defer cache.Close()
+
+	cache.Set("SELECT 1", nil, []string{"c"}, [][]interface{}{{1}}, []string{"one"})
+	cache.Set("SELECT 2", nil, []string{"c"}, [][]interface{}{{2}}, []string{"two"})
+	cache.Set("SELECT 1", nil, []string{"c"}, [][]interface{}{{10}}, []string{"one"})
+
+	entry, found := cache.Get("SELECT 1", nil)
+	if !found {
+		t.Fatal("updated entry should still exist")
+	}
+	if got := entry.Rows[0][0]; got != 10 {
+		t.Fatalf("expected updated row value 10, got %v", got)
+	}
+
+	if _, found := cache.Get("SELECT 2", nil); !found {
+		t.Fatal("updating an existing key should not evict unrelated entries")
+	}
+
+	stats := cache.Stats()
+	if stats.EntryCount != 2 {
+		t.Fatalf("expected 2 entries after replacement, got %d", stats.EntryCount)
+	}
+}
+
 func TestCacheStats(t *testing.T) {
 	config := DefaultConfig()
 	cache := New(config)
