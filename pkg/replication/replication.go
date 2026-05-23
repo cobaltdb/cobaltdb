@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -265,9 +266,14 @@ func (m *Manager) Start() error {
 func (m *Manager) Stop() error {
 	m.stopOnce.Do(func() { close(m.stopCh) })
 
+	var errs []error
+
 	// Close listener first to unblock acceptSlaves()
 	if m.listener != nil {
-		m.listener.Close()
+		if err := m.listener.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close replication listener: %w", err))
+		}
+		m.listener = nil
 	}
 
 	m.wg.Wait()
@@ -275,15 +281,23 @@ func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, slave := range m.slaves {
-		slave.Conn.Close()
+	for id, slave := range m.slaves {
+		if slave.Conn != nil {
+			if err := slave.Conn.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("failed to close slave %s: %w", id, err))
+			}
+		}
+		delete(m.slaves, id)
 	}
 
 	if m.masterConn != nil {
-		m.masterConn.Close()
+		if err := m.masterConn.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close master connection: %w", err))
+		}
+		m.masterConn = nil
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // startMaster initializes master replication

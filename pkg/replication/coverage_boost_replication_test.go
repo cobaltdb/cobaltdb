@@ -678,6 +678,15 @@ func (m *mockConn) Close() error {
 	return nil
 }
 
+type closeErrConn struct {
+	mockConn
+	err error
+}
+
+func (c *closeErrConn) Close() error {
+	return c.err
+}
+
 func (m *mockConn) LocalAddr() net.Addr {
 	return nil
 }
@@ -1153,6 +1162,27 @@ func TestStopWithSlaves(t *testing.T) {
 	m.slaves = map[string]*SlaveConnection{"s1": {Conn: c1}}
 	if err := m.Stop(); err != nil {
 		t.Fatalf("Stop failed: %v", err)
+	}
+}
+
+func TestStopReturnsConnectionCloseErrors(t *testing.T) {
+	m := NewManager(DefaultConfig())
+	slaveErr := errors.New("slave close failed")
+	masterErr := errors.New("master close failed")
+	m.slaves = map[string]*SlaveConnection{
+		"s1": {Conn: &closeErrConn{err: slaveErr}},
+	}
+	m.masterConn = &closeErrConn{err: masterErr}
+
+	err := m.Stop()
+	if !errors.Is(err, slaveErr) {
+		t.Fatalf("expected slave close error, got %v", err)
+	}
+	if !errors.Is(err, masterErr) {
+		t.Fatalf("expected master close error, got %v", err)
+	}
+	if err := m.Stop(); err != nil {
+		t.Fatalf("second Stop should be idempotent, got %v", err)
 	}
 }
 
