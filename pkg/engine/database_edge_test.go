@@ -3,8 +3,10 @@ package engine
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
 
@@ -24,6 +26,38 @@ func TestOpenWithDirectoryCreation(t *testing.T) {
 	_, err = db.Exec(ctx, "CREATE TABLE test (id INTEGER)")
 	if err != nil {
 		t.Fatalf("Failed to create table: %v", err)
+	}
+}
+
+func TestOpenRejectsInvalidStorageOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		opts *Options
+		want string
+	}{
+		{
+			name: "negative cache",
+			opts: &Options{InMemory: true, CacheSize: -1},
+			want: "cache size must be positive",
+		},
+		{
+			name: "unsupported page size",
+			opts: &Options{InMemory: true, CacheSize: 1, PageSize: storage.PageSize * 2},
+			want: "page size",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := Open(":memory:", tt.opts)
+			if err == nil {
+				_ = db.Close()
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
 	}
 }
 

@@ -75,6 +75,12 @@ func Open(path string, opts *Options) (*DB, error) {
 			opts.Logger = defaults.Logger
 		}
 	}
+	if opts.CacheSize <= 0 {
+		return nil, fmt.Errorf("cache size must be positive: %d", opts.CacheSize)
+	}
+	if opts.PageSize != storage.PageSize {
+		return nil, fmt.Errorf("page size %d is unsupported; expected %d", opts.PageSize, storage.PageSize)
+	}
 
 	// Setup logger
 	log := opts.Logger
@@ -206,7 +212,15 @@ func Open(path string, opts *Options) (*DB, error) {
 	go collector.Start(context.Background())
 
 	// Initialize buffer pool
-	db.pool = storage.NewBufferPool(opts.CacheSize, backend)
+	db.pool, err = storage.NewBufferPoolWithError(opts.CacheSize, backend)
+	if err != nil {
+		collector.Stop()
+		if db.auditLogger != nil {
+			err = errors.Join(err, db.auditLogger.Close())
+		}
+		err = errors.Join(err, backend.Close())
+		return nil, fmt.Errorf("failed to initialize buffer pool: %w", err)
+	}
 	db.unregisterStorageStats = metrics.RegisterStorageMetricsProvider(func() metrics.StorageMetrics {
 		stats := db.pool.Stats()
 		return metrics.StorageMetrics{
