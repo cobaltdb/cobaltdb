@@ -32,6 +32,36 @@ func TestPersistLoadSaltRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPersistSaltAtomicReplace(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	first := []byte("first-salt")
+	second := []byte("second-salt")
+
+	if err := PersistSalt(dbPath, first); err != nil {
+		t.Fatalf("PersistSalt first failed: %v", err)
+	}
+	if err := PersistSalt(dbPath, second); err != nil {
+		t.Fatalf("PersistSalt second failed: %v", err)
+	}
+
+	loaded, err := LoadSalt(dbPath)
+	if err != nil {
+		t.Fatalf("LoadSalt failed: %v", err)
+	}
+	if string(loaded) != string(second) {
+		t.Fatalf("salt mismatch after replace: got %q want %q", loaded, second)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "test.db.salt.tmp-*"))
+	if err != nil {
+		t.Fatalf("Glob failed: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary salt files left behind: %v", matches)
+	}
+}
+
 func TestPersistLoadSaltEdges(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "missing.db")

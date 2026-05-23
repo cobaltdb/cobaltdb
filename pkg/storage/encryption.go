@@ -291,7 +291,7 @@ func PersistSalt(dbPath string, salt []byte) error {
 	data = append(data, saltFileMarker...)
 	data = append(data, '\n')
 	data = append(data, salt...)
-	return os.WriteFile(saltPath, data, 0600) // #nosec G304 - salt sidecar path is derived from a cleaned database path.
+	return writeFileAtomic(saltPath, data, 0600)
 }
 
 // LoadSalt reads a previously persisted salt from the sidecar file.
@@ -328,4 +328,60 @@ func saltSidecarPath(dbPath string) (string, error) {
 		return "", fmt.Errorf("database path cannot be empty")
 	}
 	return filepath.Clean(dbPath) + ".salt", nil
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	path = filepath.Clean(path)
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+
+	file, err := os.CreateTemp(dir, base+".tmp-*") // #nosec G304 - caller provides a cleaned sidecar path.
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	tmpPath := file.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := file.Chmod(perm); err != nil {
+		return fmt.Errorf("failed to set temporary file permissions: %w", err)
+	}
+	if _, err := file.Write(data); err != nil {
+		return fmt.Errorf("failed to write temporary file: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("failed to sync temporary file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary file: %w", err)
+	}
+	closed = true
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to replace file: %w", err)
+	}
+	tmpPath = ""
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("failed to sync directory: %w", err)
+	}
+	return nil
+}
+
+func syncDir(dir string) error {
+	file, err := os.Open(dir) // #nosec G304 - caller passes a cleaned directory path.
+	if err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
