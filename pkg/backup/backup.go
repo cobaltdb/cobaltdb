@@ -984,6 +984,9 @@ func (m *Manager) saveMetadataLocked() error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to replace backup metadata: %w", err)
 	}
+	if err := syncParentDir(path); err != nil {
+		return fmt.Errorf("failed to sync backup metadata directory: %w", err)
+	}
 
 	return nil
 }
@@ -1148,12 +1151,19 @@ func copyFile(srcPath, dstPath string) error {
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
 
 	if _, err = io.Copy(dstFile, srcFile); err != nil {
+		_ = dstFile.Close()
 		return err
 	}
-	return dstFile.Sync()
+	if err := dstFile.Sync(); err != nil {
+		_ = dstFile.Close()
+		return err
+	}
+	if err := dstFile.Close(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func createSecureFile(path string) (*os.File, error) {
@@ -1177,4 +1187,18 @@ func cleanBackupFilePath(path string) (string, error) {
 		return "", fmt.Errorf("path cannot be empty")
 	}
 	return filepath.Clean(path), nil
+}
+
+func syncParentDir(path string) error {
+	dir := filepath.Dir(path)
+	// #nosec G304 -- caller path is already validated by the backup path helpers.
+	file, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }

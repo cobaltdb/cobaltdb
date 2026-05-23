@@ -1839,6 +1839,19 @@ func TestSaveMetadataLockedRenameError(t *testing.T) {
 	}
 }
 
+func TestSyncParentDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metadata.json")
+	if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := syncParentDir(path); err != nil {
+		t.Fatalf("syncParentDir failed: %v", err)
+	}
+	if err := syncParentDir(filepath.Join(t.TempDir(), "missing", "metadata.json")); err == nil {
+		t.Fatal("syncParentDir should fail for missing parent directory")
+	}
+}
+
 // TestCopyDatabaseDeltaNoParent tests copyDatabaseDelta when parent backup is missing
 func TestCopyDatabaseDeltaNoParent(t *testing.T) {
 	tempDir := t.TempDir()
@@ -1997,7 +2010,7 @@ type MockReadCloser struct {
 }
 
 func (m *MockReadCloser) Read(p []byte) (int, error) { return 0, io.EOF }
-func (m *MockReadCloser) Close() error                 { return m.errOnClose }
+func (m *MockReadCloser) Close() error               { return m.errOnClose }
 
 // TestMaterializeBackupErrors tests error paths in materializeBackup
 func TestMaterializeBackupErrors(t *testing.T) {

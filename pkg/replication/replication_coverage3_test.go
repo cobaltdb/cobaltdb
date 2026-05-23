@@ -407,6 +407,19 @@ func TestReplicationStateSaveLoad(t *testing.T) {
 	}
 }
 
+func TestSyncReplicationStateDir(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "replication-state.json")
+	if err := os.WriteFile(stateFile, []byte("{}"), replicationStateFilePerm); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := syncReplicationStateDir(stateFile); err != nil {
+		t.Fatalf("syncReplicationStateDir failed: %v", err)
+	}
+	if err := syncReplicationStateDir(filepath.Join(t.TempDir(), "missing", "replication-state.json")); err == nil {
+		t.Fatal("syncReplicationStateDir should fail for missing parent directory")
+	}
+}
+
 func TestApplyWALDataPersistsReplicationState(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "replication-state.json")
 	mgr := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync, StateFile: stateFile})

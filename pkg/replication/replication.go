@@ -1003,6 +1003,9 @@ func (m *Manager) saveReplicationState() error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
+	if err := syncReplicationStateDir(stateFile); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -1012,6 +1015,20 @@ func cleanReplicationStatePath(path string) (string, error) {
 		return "", fmt.Errorf("replication state path cannot be empty")
 	}
 	return filepath.Clean(path), nil
+}
+
+func syncReplicationStateDir(path string) error {
+	dir := filepath.Dir(path)
+	// #nosec G304 -- state path is validated as explicit replication configuration.
+	file, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func (m *Manager) sendAck() error {
