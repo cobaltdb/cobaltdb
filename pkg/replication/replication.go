@@ -230,13 +230,8 @@ type replicationState struct {
 func NewManager(config *Config) *Manager {
 	if config == nil {
 		config = DefaultConfig()
-	}
-
-	if config.MaxWALBufferEntries <= 0 {
-		config.MaxWALBufferEntries = defaultMaxWALBufferEntries
-	}
-	if config.MaxWALBufferBytes <= 0 {
-		config.MaxWALBufferBytes = defaultMaxWALBufferBytes
+	} else {
+		config = normalizeConfig(config)
 	}
 
 	return &Manager{
@@ -248,6 +243,24 @@ func NewManager(config *Config) *Manager {
 		stopCh:      make(chan struct{}),
 		metrics:     &Metrics{},
 	}
+}
+
+func normalizeConfig(config *Config) *Config {
+	defaults := DefaultConfig()
+	normalized := *config
+	if normalized.MaxLag <= 0 {
+		normalized.MaxLag = defaults.MaxLag
+	}
+	if normalized.SyncInterval <= 0 {
+		normalized.SyncInterval = defaults.SyncInterval
+	}
+	if normalized.MaxWALBufferEntries <= 0 {
+		normalized.MaxWALBufferEntries = defaultMaxWALBufferEntries
+	}
+	if normalized.MaxWALBufferBytes <= 0 {
+		normalized.MaxWALBufferBytes = defaultMaxWALBufferBytes
+	}
+	return &normalized
 }
 
 // Start begins replication

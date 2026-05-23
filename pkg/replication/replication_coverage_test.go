@@ -65,6 +65,38 @@ func TestNewManagerWithNilConfig(t *testing.T) {
 	}
 }
 
+func TestNewManagerNormalizesPartialConfigWithoutMutation(t *testing.T) {
+	config := &Config{
+		Role: RoleMaster,
+		Mode: ModeSync,
+	}
+
+	mgr := NewManager(config)
+	if mgr.config.Role != RoleMaster {
+		t.Fatalf("Role = %v, want master", mgr.config.Role)
+	}
+	if mgr.config.Mode != ModeSync {
+		t.Fatalf("Mode = %v, want sync", mgr.config.Mode)
+	}
+	if mgr.config.MaxLag != DefaultConfig().MaxLag {
+		t.Fatalf("MaxLag = %v, want default", mgr.config.MaxLag)
+	}
+	if mgr.config.SyncInterval != DefaultConfig().SyncInterval {
+		t.Fatalf("SyncInterval = %v, want default", mgr.config.SyncInterval)
+	}
+	if mgr.config.MaxWALBufferEntries != defaultMaxWALBufferEntries {
+		t.Fatalf("MaxWALBufferEntries = %d, want %d", mgr.config.MaxWALBufferEntries, defaultMaxWALBufferEntries)
+	}
+	if mgr.config.MaxWALBufferBytes != defaultMaxWALBufferBytes {
+		t.Fatalf("MaxWALBufferBytes = %d, want %d", mgr.config.MaxWALBufferBytes, defaultMaxWALBufferBytes)
+	}
+
+	if config.MaxLag != 0 || config.SyncInterval != 0 ||
+		config.MaxWALBufferEntries != 0 || config.MaxWALBufferBytes != 0 {
+		t.Fatal("NewManager should not mutate caller config")
+	}
+}
+
 func TestWALEntryEncodeDecodeErrors(t *testing.T) {
 	// Test decode with insufficient data
 	entry := &WALEntry{}
