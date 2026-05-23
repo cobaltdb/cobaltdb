@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -265,7 +266,11 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 	srcPath := m.db.GetDatabasePath()
 	dstPath := backup.Destination
 
-	srcFile, err := os.Open(srcPath)
+	srcPath, err := cleanBackupFilePath(srcPath)
+	if err != nil {
+		return fmt.Errorf("invalid source database path: %w", err)
+	}
+	srcFile, err := os.Open(srcPath) // #nosec G304 - source path comes from the configured database and is cleaned before use.
 	if err != nil {
 		return fmt.Errorf("failed to open source database: %w", err)
 	}
@@ -366,7 +371,11 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 		return fmt.Errorf("failed to materialize parent backup: %w", err)
 	}
 
-	srcFile, err := os.Open(m.db.GetDatabasePath())
+	srcPath, err := cleanBackupFilePath(m.db.GetDatabasePath())
+	if err != nil {
+		return fmt.Errorf("invalid source database path: %w", err)
+	}
+	srcFile, err := os.Open(srcPath) // #nosec G304 - source path comes from the configured database and is cleaned before use.
 	if err != nil {
 		return fmt.Errorf("failed to open source database: %w", err)
 	}
@@ -377,7 +386,11 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 		return fmt.Errorf("failed to stat source file: %w", err)
 	}
 
-	parentFile, err := os.Open(parentPath)
+	parentPath, err = cleanBackupFilePath(parentPath)
+	if err != nil {
+		return fmt.Errorf("invalid parent database path: %w", err)
+	}
+	parentFile, err := os.Open(parentPath) // #nosec G304 - parent path is returned by os.CreateTemp and cleaned before use.
 	if err != nil {
 		return fmt.Errorf("failed to open parent database: %w", err)
 	}
@@ -747,7 +760,11 @@ func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targe
 		return fmt.Errorf("invalid delta header")
 	}
 
-	targetFile, err := os.OpenFile(targetPath, os.O_RDWR, 0600)
+	targetPath, err = cleanBackupFilePath(targetPath)
+	if err != nil {
+		return fmt.Errorf("invalid target file path: %w", err)
+	}
+	targetFile, err := os.OpenFile(targetPath, os.O_RDWR, 0600) // #nosec G304 - restore target path is an explicit API argument and is cleaned before use.
 	if err != nil {
 		return fmt.Errorf("failed to open target file for delta restore: %w", err)
 	}
@@ -1091,7 +1108,11 @@ func generateBackupID() string {
 }
 
 func copyFile(srcPath, dstPath string) error {
-	srcFile, err := os.Open(srcPath)
+	srcPath, err := cleanBackupFilePath(srcPath)
+	if err != nil {
+		return err
+	}
+	srcFile, err := os.Open(srcPath) // #nosec G304 - caller supplies a file path that is cleaned before use.
 	if err != nil {
 		return err
 	}
@@ -1110,7 +1131,11 @@ func copyFile(srcPath, dstPath string) error {
 }
 
 func createSecureFile(path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, backupFilePerm)
+	path, err := cleanBackupFilePath(path)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, backupFilePerm) // #nosec G304 - path is cleaned and created with restrictive permissions.
 	if err != nil {
 		return nil, err
 	}
@@ -1119,4 +1144,11 @@ func createSecureFile(path string) (*os.File, error) {
 		return nil, err
 	}
 	return file, nil
+}
+
+func cleanBackupFilePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("path cannot be empty")
+	}
+	return filepath.Clean(path), nil
 }

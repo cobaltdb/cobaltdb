@@ -6,7 +6,6 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -184,7 +183,11 @@ func (c *Catalog) SaveData(dir string) error {
 	if err != nil {
 		return fmt.Errorf("save data: failed to marshal schema: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "schema.json"), schemaData, 0600); err != nil {
+	schemaPath, err := catalogDataFilePath(dir, "schema.json")
+	if err != nil {
+		return fmt.Errorf("save data: invalid schema path: %w", err)
+	}
+	if err := os.WriteFile(schemaPath, schemaData, 0600); err != nil { // #nosec G304 - path is validated to stay inside the export directory.
 		return fmt.Errorf("save data: failed to write schema.json: %w", err)
 	}
 
@@ -219,7 +222,11 @@ func (c *Catalog) SaveData(dir string) error {
 		if err != nil {
 			return fmt.Errorf("save data: failed to marshal table %s: %w", tableName, err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, tableName+".json"), data, 0600); err != nil {
+		dataPath, err := catalogDataFilePath(dir, tableName+".json")
+		if err != nil {
+			return fmt.Errorf("save data: invalid data path for table %s: %w", tableName, err)
+		}
+		if err := os.WriteFile(dataPath, data, 0600); err != nil { // #nosec G304 - path is validated to stay inside the export directory.
 			return fmt.Errorf("save data: failed to write %s.json: %w", tableName, err)
 		}
 	}
@@ -233,8 +240,11 @@ func (c *Catalog) LoadSchema(dir string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	schemaPath := filepath.Join(dir, "schema.json")
-	data, err := os.ReadFile(schemaPath)
+	schemaPath, err := catalogDataFilePath(dir, "schema.json")
+	if err != nil {
+		return fmt.Errorf("load schema: invalid schema path: %w", err)
+	}
+	data, err := os.ReadFile(schemaPath) // #nosec G304 - path is validated to stay inside the import directory.
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil // no schema file, nothing to load
@@ -309,8 +319,11 @@ func (c *Catalog) LoadData(dir string) error {
 	defer c.mu.Unlock()
 
 	for tableName := range c.tables {
-		dataPath := filepath.Join(dir, tableName+".json")
-		data, err := os.ReadFile(dataPath)
+		dataPath, err := catalogDataFilePath(dir, tableName+".json")
+		if err != nil {
+			return fmt.Errorf("load data: invalid data path for table %s: %w", tableName, err)
+		}
+		data, err := os.ReadFile(dataPath) // #nosec G304 - path is validated to stay inside the import directory.
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue // no data file for this table
