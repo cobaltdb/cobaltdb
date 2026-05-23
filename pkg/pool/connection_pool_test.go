@@ -94,7 +94,17 @@ func TestPoolCreationNormalizesPartialConfigDurations(t *testing.T) {
 	if pool.config.HealthCheckTimeout != defaults.HealthCheckTimeout {
 		t.Fatalf("expected default health check timeout, got %v", pool.config.HealthCheckTimeout)
 	}
-	if config.AcquireTimeout != 0 || config.HealthCheckInterval != 0 || config.HealthCheckTimeout != 0 {
+	if pool.config.MaxIdleTime != defaults.MaxIdleTime {
+		t.Fatalf("expected default max idle time, got %v", pool.config.MaxIdleTime)
+	}
+	if pool.config.MaxLifetime != defaults.MaxLifetime {
+		t.Fatalf("expected default max lifetime, got %v", pool.config.MaxLifetime)
+	}
+	if pool.config.WaitQueueSize != defaults.WaitQueueSize {
+		t.Fatalf("expected default wait queue size, got %d", pool.config.WaitQueueSize)
+	}
+	if config.AcquireTimeout != 0 || config.HealthCheckInterval != 0 || config.HealthCheckTimeout != 0 ||
+		config.MaxIdleTime != 0 || config.MaxLifetime != 0 || config.WaitQueueSize != 0 {
 		t.Fatal("New should not mutate caller config")
 	}
 }

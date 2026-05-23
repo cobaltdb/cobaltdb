@@ -239,6 +239,12 @@ func New(config *Config, dialer func() (net.Conn, error)) (*Pool, error) {
 func normalizeConfig(config *Config) *Config {
 	defaults := DefaultConfig()
 	normalized := *config
+	if normalized.MaxIdleTime <= 0 {
+		normalized.MaxIdleTime = defaults.MaxIdleTime
+	}
+	if normalized.MaxLifetime <= 0 {
+		normalized.MaxLifetime = defaults.MaxLifetime
+	}
 	if normalized.AcquireTimeout <= 0 {
 		normalized.AcquireTimeout = defaults.AcquireTimeout
 	}
@@ -247,6 +253,9 @@ func normalizeConfig(config *Config) *Config {
 	}
 	if normalized.HealthCheckTimeout <= 0 {
 		normalized.HealthCheckTimeout = defaults.HealthCheckTimeout
+	}
+	if normalized.WaitQueueSize <= 0 {
+		normalized.WaitQueueSize = defaults.WaitQueueSize
 	}
 	return &normalized
 }
