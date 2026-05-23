@@ -1862,6 +1862,53 @@ func TestCleanupOldBackupsRemoveErrorKeepsMetadata(t *testing.T) {
 	}
 }
 
+func TestCreateBackupRecordsCleanupError(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbPath := filepath.Join(tempDir, "source.db")
+	if err := os.WriteFile(dbPath, []byte("source database"), 0644); err != nil {
+		t.Fatalf("Failed to create source database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.MaxBackups = 1
+	config.RetentionPeriod = 0
+	config.CompressionLevel = 0
+	config.IncludeWAL = false
+	config.Verify = false
+	if err := os.MkdirAll(config.BackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	oldPath := filepath.Join(config.BackupDir, "old.db")
+	if err := os.MkdirAll(filepath.Join(oldPath, "nested"), 0755); err != nil {
+		t.Fatalf("Failed to create undeletable backup path: %v", err)
+	}
+
+	mgr := NewManager(config, &MockDatabase{dbPath: dbPath})
+	mgr.metadata.Backups = append(mgr.metadata.Backups, &Backup{
+		ID:          "old",
+		Type:        TypeFull,
+		Destination: oldPath,
+		CompletedAt: time.Now().Add(-time.Hour),
+	})
+
+	backup, err := mgr.CreateBackup(context.Background(), TypeFull)
+	if err != nil {
+		t.Fatalf("CreateBackup should keep the completed backup when retention cleanup fails: %v", err)
+	}
+	if backup == nil {
+		t.Fatal("CreateBackup returned nil backup")
+	}
+	if mgr.LastCleanupError() == nil {
+		t.Fatal("Expected retention cleanup failure to be recorded")
+	}
+	if mgr.GetBackup("old") == nil {
+		t.Fatal("old backup metadata should remain when cleanup fails")
+	}
+}
+
 type errWriter struct {
 	errAfter int
 	written  int

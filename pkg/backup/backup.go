@@ -124,6 +124,9 @@ type Manager struct {
 	config   *Config
 	metadata *Metadata
 	loadErr  error
+	// lastCleanupErr stores non-fatal retention cleanup failures after a
+	// successful backup, so callers can alert without treating the backup as lost.
+	lastCleanupErr error
 	// Callbacks
 	OnProgress func(percent int)
 	OnComplete func(backup *Backup, err error)
@@ -169,6 +172,21 @@ func NewManager(config *Config, db Database) *Manager {
 // MetadataError returns any metadata load error encountered during manager creation.
 func (m *Manager) MetadataError() error {
 	return m.loadErr
+}
+
+// LastCleanupError returns the most recent non-fatal retention cleanup error.
+func (m *Manager) LastCleanupError() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.lastCleanupErr
+}
+
+func (m *Manager) setLastCleanupError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.lastCleanupErr = err
 }
 
 func (m *Manager) ensureMetadataLoaded() error {
@@ -279,8 +297,9 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (backup *Ba
 
 	// Cleanup old backups
 	if err := m.cleanupOldBackups(); err != nil {
-		// Log error but don't fail
-		fmt.Printf("Warning: failed to cleanup old backups: %v\n", err)
+		m.setLastCleanupError(err)
+	} else {
+		m.setLastCleanupError(nil)
 	}
 
 	return backup, nil
@@ -1063,7 +1082,9 @@ func (m *Manager) DeleteBackup(backupID string) error {
 			// Remove WAL files
 			if len(b.WALFiles) > 0 {
 				walDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", backupID))
-				os.RemoveAll(walDir)
+				if err := os.RemoveAll(walDir); err != nil {
+					return fmt.Errorf("failed to remove backup WAL directory: %w", err)
+				}
 			}
 
 			// Remove from metadata
