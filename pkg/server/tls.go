@@ -68,6 +68,7 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 	if !config.Enabled {
 		return nil, nil
 	}
+	config = normalizeTLSConfig(config)
 
 	// Generate self-signed cert if requested
 	if config.GenerateSelfSigned {
@@ -81,7 +82,15 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 		return nil, ErrInvalidCert
 	}
 
-	cert, err := tls.LoadX509KeyPair(config.CertFile, config.KeyFile)
+	certFile, err := cleanTLSFilePath(config.CertFile)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidCert, err)
+	}
+	keyFile, err := cleanTLSFilePath(config.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidKey, err)
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidCert, err)
 	}
@@ -102,7 +111,11 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 
 	// Load CA for client verification
 	if config.CAFile != "" {
-		caCert, err := os.ReadFile(config.CAFile)
+		caFile, err := cleanTLSFilePath(config.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CA file: %w", err)
+		}
+		caCert, err := os.ReadFile(caFile) // #nosec G304 - CA path is explicit TLS configuration and is cleaned before use.
 		if err != nil {
 			return nil, fmt.Errorf("failed to read CA file: %w", err)
 		}
@@ -116,6 +129,26 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 	}
 
 	return tlsConfig, nil
+}
+
+func normalizeTLSConfig(config *TLSConfig) *TLSConfig {
+	normalized := *config
+	if normalized.MinVersion == 0 {
+		normalized.MinVersion = tls.VersionTLS12
+	}
+	if normalized.MaxVersion == 0 {
+		normalized.MaxVersion = tls.VersionTLS13
+	}
+	if normalized.MinVersion < tls.VersionTLS12 {
+		normalized.MinVersion = tls.VersionTLS12
+	}
+	if normalized.MaxVersion < normalized.MinVersion {
+		normalized.MaxVersion = normalized.MinVersion
+	}
+	if len(normalized.CipherSuites) == 0 {
+		normalized.CipherSuites = DefaultTLSConfig().CipherSuites
+	}
+	return &normalized
 }
 
 // verifyCertificate verifies the certificate is valid

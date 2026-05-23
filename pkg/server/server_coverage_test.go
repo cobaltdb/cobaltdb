@@ -112,6 +112,43 @@ func TestLoadTLSConfigValidCov(t *testing.T) {
 	}
 }
 
+func TestLoadTLSConfigAppliesProductionDefaults(t *testing.T) {
+	cf, kf := generateTestCertHelper(t)
+	tc, err := LoadTLSConfig(&TLSConfig{Enabled: true, CertFile: cf, KeyFile: kf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tc.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("expected TLS 1.2 minimum, got %x", tc.MinVersion)
+	}
+	if tc.MaxVersion != tls.VersionTLS13 {
+		t.Fatalf("expected TLS 1.3 maximum, got %x", tc.MaxVersion)
+	}
+	if len(tc.CipherSuites) == 0 {
+		t.Fatal("expected default cipher suites")
+	}
+}
+
+func TestLoadTLSConfigRaisesWeakMinimumVersion(t *testing.T) {
+	cf, kf := generateTestCertHelper(t)
+	tc, err := LoadTLSConfig(&TLSConfig{
+		Enabled:    true,
+		CertFile:   cf,
+		KeyFile:    kf,
+		MinVersion: tls.VersionTLS10,
+		MaxVersion: tls.VersionTLS10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tc.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("expected weak minimum version to be raised, got %x", tc.MinVersion)
+	}
+	if tc.MaxVersion != tls.VersionTLS12 {
+		t.Fatalf("expected max version to follow raised minimum, got %x", tc.MaxVersion)
+	}
+}
+
 func TestLoadTLSConfigWithCACov(t *testing.T) {
 	cf, kf := generateTestCertHelper(t)
 	tc, err := LoadTLSConfig(&TLSConfig{Enabled: true, CertFile: cf, KeyFile: kf, CAFile: cf})
