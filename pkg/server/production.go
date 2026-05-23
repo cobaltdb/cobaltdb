@@ -118,14 +118,20 @@ func (ps *ProductionServer) Start() error {
 
 	// Start health check server if enabled
 	if ps.Config.EnableHealthServer && ps.Config.HealthAddr != "" {
-		ps.startHealthServer()
+		if err := ps.startHealthServer(); err != nil {
+			ps.running = false
+			if stopErr := ps.Lifecycle.Stop(); stopErr != nil {
+				return fmt.Errorf("failed to start health server: %w; lifecycle stop failed: %v", err, stopErr)
+			}
+			return fmt.Errorf("failed to start health server: %w", err)
+		}
 	}
 
 	return nil
 }
 
 // startHealthServer starts the health check HTTP server
-func (ps *ProductionServer) startHealthServer() {
+func (ps *ProductionServer) startHealthServer() error {
 	mux := http.NewServeMux()
 
 	// Health endpoints
@@ -149,13 +155,20 @@ func (ps *ProductionServer) startHealthServer() {
 		IdleTimeout:       120 * time.Second,
 	}
 
+	listener, err := net.Listen("tcp", ps.Config.HealthAddr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", ps.Config.HealthAddr, err)
+	}
+
 	ps.wg.Add(1)
 	go func() {
 		defer ps.wg.Done()
-		if err := ps.healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := ps.healthServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("health server stopped with error: %v\n", err)
 		}
 	}()
+
+	return nil
 }
 
 // Wait waits for the server to be signaled to stop

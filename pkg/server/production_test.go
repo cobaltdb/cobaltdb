@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,6 +85,36 @@ func TestProductionServerBasic(t *testing.T) {
 	// Check it's stopped
 	if ps.IsRunning() {
 		t.Error("expected server to not be running after stop")
+	}
+}
+
+func TestProductionServerStartReturnsHealthBindError(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	config := DefaultProductionConfig()
+	config.HealthAddr = listener.Addr().String()
+	config.Lifecycle.EnableSignalHandling = false
+
+	ps := NewProductionServer(db, config)
+	err = ps.Start()
+	if err == nil {
+		t.Fatal("expected health bind error")
+	}
+	if !strings.Contains(err.Error(), "failed to start health server") {
+		t.Fatalf("expected health server error, got %v", err)
+	}
+	if ps.IsRunning() {
+		t.Fatal("server should not remain running after health bind failure")
 	}
 }
 
