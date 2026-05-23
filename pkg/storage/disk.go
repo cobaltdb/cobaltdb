@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -127,7 +128,8 @@ func (d *DiskBackend) Close() error {
 		return nil
 	}
 
-	err := d.file.Close()
+	syncErr := d.file.Sync()
+	closeErr := d.file.Close()
 	d.file = nil
-	return err
+	return errors.Join(syncErr, closeErr)
 }

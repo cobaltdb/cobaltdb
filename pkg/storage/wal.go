@@ -940,13 +940,18 @@ func (w *WAL) Close() error {
 		return nil
 	}
 
+	var errs []error
 	if err := w.bufWriter.Flush(); err != nil {
-		return err
+		errs = append(errs, err)
+	} else if err := w.file.Sync(); err != nil {
+		errs = append(errs, err)
 	}
 
-	err := w.file.Close()
+	if err := w.file.Close(); err != nil {
+		errs = append(errs, err)
+	}
 	w.file = nil
-	return err
+	return errors.Join(errs...)
 }
 
 // LSN returns the current log sequence number
