@@ -108,6 +108,9 @@ type Backup struct {
 	Incremental bool
 	ParentID    string // For incremental/differential backups
 	WALFiles    []string
+	// WALPathIsFile is true when the source database exposes WAL as a single
+	// file instead of a directory of segment files.
+	WALPathIsFile bool
 }
 
 // Metadata stores backup metadata
@@ -497,14 +500,14 @@ func writeDeltaRecord(writer io.Writer, offset uint64, data []byte) error {
 
 // copyWALFiles copies WAL files to backup
 func (m *Manager) copyWALFiles(ctx context.Context, backup *Backup) error {
-	walDir := m.db.GetWALPath()
-	if walDir == "" {
+	walPath := m.db.GetWALPath()
+	if walPath == "" {
 		return nil
 	}
 
-	entries, err := os.ReadDir(walDir)
+	walInfo, err := os.Stat(walPath)
 	if err != nil {
-		return fmt.Errorf("failed to read WAL directory: %w", err)
+		return fmt.Errorf("failed to stat WAL path: %w", err)
 	}
 
 	walBackupDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", backup.ID))
@@ -512,12 +515,27 @@ func (m *Manager) copyWALFiles(ctx context.Context, backup *Backup) error {
 		return fmt.Errorf("failed to create WAL backup directory: %w", err)
 	}
 
+	if !walInfo.IsDir() {
+		const walFileName = "wal"
+		if err := copyFile(walPath, filepath.Join(walBackupDir, walFileName)); err != nil {
+			return fmt.Errorf("failed to copy WAL file: %w", err)
+		}
+		backup.WALFiles = append(backup.WALFiles, walFileName)
+		backup.WALPathIsFile = true
+		return nil
+	}
+
+	entries, err := os.ReadDir(walPath)
+	if err != nil {
+		return fmt.Errorf("failed to read WAL directory: %w", err)
+	}
+
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 
-		srcPath := filepath.Join(walDir, entry.Name())
+		srcPath := filepath.Join(walPath, entry.Name())
 		dstPath := filepath.Join(walBackupDir, entry.Name())
 
 		if err := copyFile(srcPath, dstPath); err != nil {
@@ -610,16 +628,24 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 	// Restore WAL files if present
 	if len(backup.WALFiles) > 0 {
 		walBackupDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", backup.ID))
-		// WAL directory is expected at <db-path>.wal (same convention as engine.GetWALPath)
-		targetWALDir := targetPath + ".wal"
+		targetWALPath := targetPath + ".wal"
 
-		if err := os.MkdirAll(targetWALDir, backupDirPerm); err != nil {
+		if backup.WALPathIsFile {
+			if err := copyFile(filepath.Join(walBackupDir, backup.WALFiles[0]), targetWALPath); err != nil {
+				return fmt.Errorf("failed to restore WAL file: %w", err)
+			}
+			return nil
+		}
+
+		// Directory WALs are restored at <db-path>.wal for compatibility with
+		// segmented WAL implementations and existing backup tests.
+		if err := os.MkdirAll(targetWALPath, backupDirPerm); err != nil {
 			return fmt.Errorf("failed to create WAL directory: %w", err)
 		}
 
 		for _, walFile := range backup.WALFiles {
 			srcPath := filepath.Join(walBackupDir, walFile)
-			dstPath := filepath.Join(targetWALDir, walFile)
+			dstPath := filepath.Join(targetWALPath, walFile)
 
 			if err := copyFile(srcPath, dstPath); err != nil {
 				return fmt.Errorf("failed to restore WAL file %s: %w", walFile, err)

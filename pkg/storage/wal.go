@@ -23,7 +23,7 @@ var (
 // This avoids a per-call heap escape from local arrays passed to bufio.Writer.Write.
 var walBatchBufPool = sync.Pool{
 	New: func() interface{} {
-		b := make([]byte, 2048)
+		b := make([]byte, walBatchBufferSize)
 		return &b
 	},
 }
@@ -47,6 +47,7 @@ const (
 const (
 	walHeaderSize        = 25        // bytes preceding the variable-length data payload
 	walMaxRecordDataSize = 1<<16 - 1 // payload length is encoded as uint16
+	walBatchBufferSize   = 2048
 )
 
 // WALRecord represents a single write-ahead log record
@@ -324,14 +325,16 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 	// Fast path: ≤2 records, no encryption, total size fits in pooled buffer.
 	// Uses a sync.Pool buffer to avoid per-call heap escape from local arrays
 	// passed to bufio.Writer.Write (which would allocate 2 KB on every call).
-	if w.cipher == nil && len(records) <= 2 {
+	if w.cipher == nil && len(records) <= 2 && batchRecordsFitPooledBuffer(records) {
 		bp := walBatchBufPool.Get().(*[]byte)
 		batchBuf := *bp
 		var lsnOffs [2]int
+		var dataLens [2]int
 		totalSize := 0
 		for i, r := range records {
 			dataLen := len(r.Data)
 			lsnOffs[i] = totalSize
+			dataLens[i] = dataLen
 			if err := writeRecordHeader(batchBuf[totalSize:], &WALRecord{
 				TxnID:  r.TxnID,
 				Type:   r.Type,
@@ -355,6 +358,12 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 			for i := range records {
 				lsn++
 				binary.LittleEndian.PutUint64(batchBuf[lsnOffs[i]:], lsn)
+				crcOff := lsnOffs[i] + walHeaderSize + dataLens[i]
+				crcHash := crc32.ChecksumIEEE(batchBuf[lsnOffs[i] : lsnOffs[i]+walHeaderSize])
+				if dataLens[i] > 0 {
+					crcHash = crc32.Update(crcHash, crc32.IEEETable, batchBuf[lsnOffs[i]+walHeaderSize:crcOff])
+				}
+				binary.LittleEndian.PutUint32(batchBuf[crcOff:], crcHash)
 			}
 			if _, err := w.bufWriter.Write(batchBuf[:totalSize]); err != nil {
 				w.mu.Unlock()
@@ -364,6 +373,9 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 			w.lsn = lsn
 			w.mu.Unlock()
 			walBatchBufPool.Put(bp)
+			if !w.groupCommitEnabled {
+				return w.Sync()
+			}
 			return nil
 		}
 		walBatchBufPool.Put(bp)
@@ -380,12 +392,25 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 		lsn++
 		binary.LittleEndian.PutUint64(formatted[off:], lsn)
 	}
+	for off := 0; off < len(formatted); {
+		dataLen := int(binary.LittleEndian.Uint16(formatted[off+23 : off+25]))
+		crcOff := off + walHeaderSize + dataLen
+		crcHash := crc32.ChecksumIEEE(formatted[off : off+walHeaderSize])
+		if dataLen > 0 {
+			crcHash = crc32.Update(crcHash, crc32.IEEETable, formatted[off+walHeaderSize:crcOff])
+		}
+		binary.LittleEndian.PutUint32(formatted[crcOff:], crcHash)
+		off = crcOff + 4
+	}
 	if _, err := w.bufWriter.Write(formatted); err != nil {
 		w.mu.Unlock()
 		return err
 	}
 	w.lsn = lsn
 	w.mu.Unlock()
+	if !w.groupCommitEnabled {
+		return w.Sync()
+	}
 	return nil
 }
 
@@ -454,6 +479,14 @@ func validateRecordSize(record *WALRecord) error {
 			len(record.Data), walMaxRecordDataSize)
 	}
 	return nil
+}
+
+func batchRecordsFitPooledBuffer(records []*WALRecord) bool {
+	totalSize := 0
+	for _, r := range records {
+		totalSize += walHeaderSize + len(r.Data) + 4
+	}
+	return totalSize <= walBatchBufferSize
 }
 
 // appendInternal is the internal append implementation
