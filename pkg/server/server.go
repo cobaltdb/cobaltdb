@@ -19,13 +19,21 @@ import (
 )
 
 const (
+	maxPayloadBytes = 16 * 1024 * 1024
 	// maxPayloadSize is the maximum allowed message payload size (16 MB)
-	maxPayloadSize uint32 = 16 * 1024 * 1024
+	maxPayloadSize uint32 = maxPayloadBytes
 )
 
 var (
 	ErrServerClosed = errors.New("server is closed")
 )
+
+func messagePacketLength(payloadLen int) (uint32, error) {
+	if payloadLen < 0 || payloadLen > maxPayloadBytes-1 {
+		return 0, fmt.Errorf("payload too large: %d bytes", payloadLen)
+	}
+	return uint32(payloadLen + 1), nil // #nosec G115 - range checked above.
+}
 
 // Server represents a CobaltDB server
 type Server struct {
@@ -207,15 +215,13 @@ func (s *Server) acceptLoop() error {
 			errMsg := wire.NewErrorMessage(10, "max connections reached")
 			if payload, encErr := wire.Encode(errMsg); encErr == nil {
 				_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-				length := uint32(1 + len(payload))
-				buf := make([]byte, 4+1+len(payload))
-				buf[0] = byte(length)
-				buf[1] = byte(length >> 8)
-				buf[2] = byte(length >> 16)
-				buf[3] = byte(length >> 24)
-				buf[4] = byte(wire.MsgError)
-				copy(buf[5:], payload)
-				_, _ = conn.Write(buf)
+				if length, lenErr := messagePacketLength(len(payload)); lenErr == nil {
+					buf := make([]byte, 4+1+len(payload))
+					binary.LittleEndian.PutUint32(buf[:4], length)
+					buf[4] = byte(wire.MsgError)
+					copy(buf[5:], payload)
+					_, _ = conn.Write(buf)
+				}
 			}
 			_ = conn.Close()
 			continue
@@ -670,7 +676,10 @@ func (c *ClientConn) sendMessage(msg interface{}) error {
 	}
 
 	// Write length
-	length := uint32(1 + len(payData))
+	length, err := messagePacketLength(len(payData))
+	if err != nil {
+		return err
+	}
 	if err := binary.Write(c.Conn, binary.LittleEndian, length); err != nil {
 		return err
 	}
