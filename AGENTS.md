@@ -202,8 +202,13 @@ The following features are fully implemented and integrated in the engine:
 - **Transaction Timeout** - Per-transaction and lock wait timeouts
 - **Transaction Metrics** - Real-time monitoring via HTTP endpoint
 
-## Features Not Implemented
-*(none — all planned features are implemented)*
+## Features Not Implemented / Not Production-Grade
+
+- **Automatic HA failover / clustering** — No built-in sharding, Raft/Paxos, leader election, or split-brain-safe failover.
+- **Broad production certification** — Crash-recovery fault injection, package-level coverage gates, and long-running soak tests remain active hardening work.
+- **Audit log tamper-evidence** — Audit log encryption exists, but append-only HMAC/hash-chain integrity is not yet implemented.
+- **Encryption key rotation workflow** — Storage encryption exists, but operational key rotation is not yet exposed as a production workflow.
+- **WASM as primary execution engine** — WASM execution is functional for selected paths but should be treated as experimental.
 
 **Note:** Deadlock detection is now fully implemented in `pkg/txn/manager.go`.
 Alert system is implemented in `pkg/metrics/alerting.go` (AlertManager with rules, handlers, severity levels).

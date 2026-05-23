@@ -1,8 +1,8 @@
-# CobaltDB v0.5.0 - Feature Status and Working Features Table
+# CobaltDB v0.6.0 - Feature Status and Working Features Table
 
-> **Verified:** 2026-04-30
-> **Test Coverage:** 91.4% total over `pkg/...` | **Test Functions:** 7,100+ | **Package Status:** 24/24 `pkg` packages passing
-> **Core SQL Engine:** Production-oriented | **Advanced Systems:** replication, true incremental backup chains, and some WASM compiler paths still need hardening
+> **Verified:** 2026-05-23
+> **Test Coverage:** 86.0% total over `pkg/...` | **Test Functions:** 7,100+ | **Package Status:** all Go packages passing
+> **Readiness:** core embedded/server paths are production-oriented for controlled single-node deployments. Replication, automatic failover, true production Docker posture, crash-recovery certification, and selected WASM paths still need hardening before broad production claims.
 
 ---
 
@@ -10,34 +10,34 @@
 
 | Category | Status | Coverage | Description |
 |----------|--------|----------|-------------|
-| **Core SQL** | ✅ Production Ready | 95%+ | SELECT, INSERT, UPDATE, DELETE fully supported |
-| **Transactions** | ✅ Production Ready | 90%+ | ACID, MVCC, SAVEPOINT fully supported |
-| **Indexes** | ✅ Production Ready | 92%+ | B+Tree, UNIQUE, multi-column, FULLTEXT supported |
-| **Constraints** | ✅ Production Ready | 88%+ | PK, FK, UNIQUE, CHECK, NOT NULL |
-| **Joins** | ✅ Production Ready | 87%+ | INNER, LEFT, RIGHT, CROSS, NATURAL, FULL OUTER |
-| **Aggregates** | ✅ Production Ready | 91%+ | GROUP BY, HAVING, all functions |
-| **Window Functions** | ✅ Production Ready | 85%+ | ROW_NUMBER, RANK, LAG, LEAD, etc. |
-| **JSON** | ✅ Production Ready | 82%+ | JSON_EXTRACT, JSON_SET, JSON_VALID, operators |
-| **Views** | ✅ Production Ready | 90%+ | Simple and complex views with aggregates |
-| **CTEs** | ✅ Production Ready | 90%+ | Non-recursive and recursive CTEs |
-| **Triggers** | ✅ Production Ready | 85%+ | BEFORE/AFTER/INSTEAD OF, INSERT/UPDATE/DELETE |
-| **Stored Procedures** | ✅ Production Ready | 85%+ | CREATE PROCEDURE, CALL, multi-statement |
-| **Materialized Views** | ✅ Production Ready | 90%+ | CREATE, DROP, REFRESH, QUERY |
-| **Full-Text Search** | ✅ Production Ready | 90%+ | CREATE FULLTEXT INDEX, MATCH/AGAINST |
-| **Table Partitioning** | ✅ Production Ready | 85%+ | RANGE, HASH partitioning |
-| **Security** | ✅ Production Ready | 91%+ | RLS, Audit, TLS, Encryption |
-| **Server** | ✅ Production Ready | 85%+ | TCP server, MySQL protocol, auth |
-| **Query Cache** | ✅ Production Ready | 90%+ | LRU cache with TTL and invalidation |
-| **Query Optimizer** | ✅ Production Ready | 90%+ | Cost-based optimization, join reordering |
+| **Core SQL** | ✅ Production-Oriented | 95%+ | SELECT, INSERT, UPDATE, DELETE broadly supported |
+| **Transactions** | ✅ Production-Oriented | 87.8% pkg/txn | ACID, MVCC, SAVEPOINT support with single-node scope |
+| **Indexes** | ⚠️ Needs Coverage Hardening | 78.2% pkg/btree | B+Tree, UNIQUE, multi-column, FULLTEXT supported; lower storage coverage remains |
+| **Constraints** | ⚠️ Needs Hardening | 84.8% pkg/catalog | PK, FK, UNIQUE, CHECK, NOT NULL; composite edge cases need certification |
+| **Joins** | ✅ Production-Oriented | 84.8% pkg/catalog | INNER, LEFT, RIGHT, CROSS, NATURAL, FULL OUTER |
+| **Aggregates** | ✅ Production-Oriented | 84.8% pkg/catalog | GROUP BY, HAVING, common aggregate functions |
+| **Window Functions** | ✅ Production-Oriented | 84.8% pkg/catalog | ROW_NUMBER, RANK, LAG, LEAD, etc. |
+| **JSON** | ✅ Production-Oriented | 84.8% pkg/catalog | JSON_EXTRACT, JSON_SET, JSON_VALID, operators |
+| **Views** | ✅ Production-Oriented | 84.8% pkg/catalog | Simple and complex views with aggregates |
+| **CTEs** | ✅ Production-Oriented | 84.8% pkg/catalog | Non-recursive and recursive CTEs |
+| **Triggers** | ✅ Production-Oriented | 84.8% pkg/catalog | BEFORE/AFTER/INSTEAD OF, INSERT/UPDATE/DELETE |
+| **Stored Procedures** | ⚠️ Needs Certification | 80.7% pkg/engine | CREATE PROCEDURE/CALL paths exist; behavior needs stronger conformance tests |
+| **Materialized Views** | ✅ Production-Oriented | 84.8% pkg/catalog | CREATE, DROP, REFRESH, QUERY |
+| **Full-Text Search** | ✅ Production-Oriented | 84.8% pkg/catalog | CREATE FULLTEXT INDEX, MATCH/AGAINST |
+| **Table Partitioning** | ✅ Production-Oriented | 84.8% pkg/catalog | RANGE, HASH partitioning |
+| **Security** | ✅ Production-Oriented | scans clean | RLS, audit, TLS, encryption; audit integrity/key rotation remain roadmap |
+| **Server** | ✅ Controlled Production Candidate | 90.6% pkg/server | TCP server, MySQL protocol, auth; MySQL listener should stay private or disabled |
+| **Query Cache** | ✅ Production-Oriented | 90.9% pkg/cache | LRU cache with TTL and invalidation |
+| **Query Optimizer** | ✅ Production-Oriented | 93.8% pkg/optimizer | Cost-based optimization, join reordering |
 | **Hot Backup** | ⚠️ Functional | 92% | Full-file online backups with compression; true delta incremental chains are still roadmap |
 | **Replication** | ⚠️ Experimental | 92.2% | Master-slave stream transport exists; automatic full engine apply/failover is not production-grade yet |
-| **Connection Pool** | ✅ Production Ready | 88%+ | Health checks, dynamic sizing |
+| **Connection Pool** | ✅ Production-Oriented | 97.5% pkg/pool | Health checks, dynamic sizing |
 | **WASM Compilation** | ⚠️ Experimental | 91.5% | SQL to WebAssembly bytecode for selected paths; some compiler paths still use simplified placeholders |
-| **Query Plan Cache** | ✅ Production Ready | 90%+ | LRU cache with statistics |
+| **Query Plan Cache** | ✅ Production-Oriented | 80.7% pkg/engine | LRU cache with statistics; engine package coverage needs hardening |
 
 ---
 
-## ✅ 100% Working Features (Production Ready)
+## ✅ Broadly Working Features
 
 ### 1. Data Manipulation Language (DML)
 
@@ -419,26 +419,29 @@
 
 | Package | Coverage | Status |
 |---------|----------|--------|
+| `pkg/logger` | 100.0% | 🟢 Excellent |
 | `pkg/pool` | 97.5% | 🟢 Excellent |
+| `pkg/advisor` | 96.8% | 🟢 Excellent |
 | `pkg/auth` | 96.8% | 🟢 Excellent |
-| `pkg/cache` | 95.5% | 🟢 Excellent |
-| `pkg/protocol` | 95.4% | 🟢 Excellent |
-| `pkg/metrics` | 94.8% | 🟢 Excellent |
 | `pkg/wire` | 94.7% | 🟢 Excellent |
-| `pkg/logger` | 93.8% | 🟢 Excellent |
+| `pkg/metrics` | 94.3% | 🟢 Excellent |
+| `pkg/fdw` | 93.9% | 🟢 Excellent |
 | `pkg/optimizer` | 93.8% | 🟢 Excellent |
-| `pkg/txn` | 93.5% | 🟢 Excellent |
-| `pkg/wasm` | 93.4% | 🟢 Excellent |
-| `pkg/btree` | 92.4% | 🟢 Excellent |
-| `pkg/backup` | 91.9% | 🟢 Excellent |
-| `pkg/security` | 91.9% | 🟢 Excellent |
-| `pkg/replication` | 92.2% | 🟢 Excellent |
-| `pkg/query` | 90.9% | 🟢 Excellent |
-| `pkg/audit` | 90.9% | 🟢 Excellent |
-| `pkg/storage` | 90.9% | 🟢 Excellent |
-| `pkg/server` | 91.4% | 🟢 Excellent |
-| `pkg/engine` | 90.9% | 🟢 Excellent |
-| `pkg/catalog` | 90.4% | 🟢 Excellent |
+| `pkg/security` | 93.2% | 🟢 Excellent |
+| `pkg/query` | 91.7% | 🟢 Excellent |
+| `pkg/parallel` | 91.2% | 🟢 Excellent |
+| `pkg/cache` | 90.9% | 🟢 Excellent |
+| `pkg/audit` | 90.7% | 🟢 Excellent |
+| `pkg/server` | 90.6% | 🟢 Excellent |
+| `pkg/backup` | 88.5% | 🟡 Needs hardening |
+| `pkg/replication` | 88.3% | 🟡 Needs hardening |
+| `pkg/txn` | 87.8% | 🟡 Needs hardening |
+| `pkg/catalog` | 84.8% | 🟡 Needs hardening |
+| `pkg/wasm` | 84.4% | 🟡 Needs hardening |
+| `pkg/storage` | 83.7% | 🟡 Needs hardening |
+| `pkg/protocol` | 82.3% | 🟡 Needs hardening |
+| `pkg/engine` | 80.7% | 🟡 Needs hardening |
+| `pkg/btree` | 78.2% | 🔴 Priority hardening |
 
 ### Test Statistics
 
@@ -446,13 +449,13 @@
 - **Total Test Functions:** 7,100+
 - **Package Tests:** 24/24 `pkg` packages passing ✅
 - **Integration Tests:** Passing ✅
-- **Coverage:** 91%+ total over `pkg/...` (24/24 packages above 90%)
+- **Coverage:** 86.0% total over `pkg/...`; several storage, engine, protocol, and replication packages need package-level coverage hardening.
 
 ---
 
 ## 🎯 Production Usage Recommendations
 
-### ✅ Safe to Use (All Major Features)
+### ✅ Safe to Use in Controlled Single-Node Deployments
 
 1. **Basic CRUD** - SELECT, INSERT, UPDATE, DELETE
 2. **Transactions** - BEGIN/COMMIT/ROLLBACK with ACID compliance
@@ -465,12 +468,12 @@
 9. **CTEs** - Non-recursive and recursive WITH clauses
 10. **Views** - Simple and complex views with aggregates
 11. **Triggers** - BEFORE/AFTER/INSTEAD OF on INSERT/UPDATE/DELETE
-12. **Stored Procedures** - CREATE PROCEDURE, CALL with parameters
+12. **Stored Procedures** - CREATE PROCEDURE and CALL paths exist; use with conformance tests for your workload
 13. **Materialized Views** - CREATE, DROP, REFRESH, QUERY
 14. **Full-Text Search** - MATCH/AGAINST with inverted indexes
 15. **Table Partitioning** - RANGE, HASH partitioning
 16. **Security** - Encryption, TLS, Auth, RLS, Audit Logging
-17. **Production Features** - Circuit Breaker, Retry, Rate Limiter, Health Checks
+17. **Production-Oriented Features** - Circuit Breaker, Retry, Rate Limiter, Health Checks
 18. **WASM Compilation** - Experimental SQL-to-WebAssembly execution for selected paths
 19. **Query Plan Cache** - LRU cache for parsed query plans with statistics
 20. **Vector Search** - HNSW indexes for high-dimensional similarity search

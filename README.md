@@ -5,9 +5,9 @@
   <img src="https://img.shields.io/badge/Version-0.6.0-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
-  <img src="https://img.shields.io/badge/Coverage-90%2B-brightgreen?style=for-the-badge" alt="Test Coverage">
+  <img src="https://img.shields.io/badge/Coverage-86%25-yellow?style=for-the-badge" alt="Test Coverage">
   <img src="https://img.shields.io/badge/Race-Passing-success?style=for-the-badge" alt="Race Detector">
-  <img src="https://img.shields.io/badge/Production-Ready-success?style=for-the-badge" alt="Production Ready">
+  <img src="https://img.shields.io/badge/Production-Candidate-yellow?style=for-the-badge" alt="Production Candidate">
 </p>
 
 <p align="center">
@@ -115,7 +115,9 @@ mysql> SELECT * FROM users;
 > **Verified working** with `go-sql-driver/mysql`, `mysql` CLI, and standard MySQL wire protocol.
 > Works with **any MySQL-compatible client**: Python (mysql-connector, SQLAlchemy), Node.js (mysql2, Prisma), Java (JDBC), Ruby, PHP, etc.
 
-**Server features:** MySQL protocol, TLS 1.2+, authentication (Argon2id), connection pooling, rate limiting, circuit breaker, health checks, encrypted audit logging, master-slave replication.
+**Server features:** MySQL protocol, TLS 1.2+, authentication (Argon2id), connection pooling, rate limiting, circuit breaker, health checks, encrypted audit logging, and master-slave replication transport.
+
+**Production note:** CobaltDB is a production-oriented single-node database candidate. Use TLS for non-loopback wire access, keep the MySQL listener private or disabled, and do not treat replication as automatic HA/failover infrastructure.
 
 ### 2. Embedded Mode — Use as a Go Library
 
@@ -939,14 +941,14 @@ go run cmd/demo/main.go
 - [x] **Concurrency Fixes** - Panic recovery, double-close protection, lifecycle tracking
 - [x] **7,100+ Test Functions** - 24/24 `pkg` packages above 90% coverage
 
-### ✅ v0.3.1 - Production Ready Release (2026-03-31)
+### ✅ v0.3.1 - Production Readiness Milestone (2026-03-31)
 
 - [x] **Deadlock Detection** - Wait-for graph with automatic cycle detection and resolution
 - [x] **Transaction Timeout** - Configurable per-transaction and lock wait timeouts
 - [x] **Transaction Metrics** - Real-time monitoring of active, committed, aborted transactions
 - [x] **Chaos Engineering** - Comprehensive stress tests for production readiness
 - [x] **Lock Management** - Fine-grained lock tracking with automatic release
-- [x] **Production Readiness Score: 93.5/100**
+- [x] **Production hardening baseline**
 - [x] **Graceful Shutdown** - Signal handling with drain timeout
 - [x] **Health Checks** - Kubernetes-compatible probes
 
@@ -959,12 +961,13 @@ go run cmd/demo/main.go
 - [x] **WAL Improvements** - 64KB→1MB buffer, 5ms group commit, reduced allocations
 - [x] **BTree Optimizations** - LRU improvements, parallel flush, incremental checkpoint
 - [x] **Go 1.24+ Compatibility** - t.Context() updates, sync.Pool optimizations
-- [x] **7,100+ Test Functions** - 24/24 `pkg` packages above 90% coverage
+- [x] **7,100+ Test Functions** - `pkg/...` coverage currently measures 86.0% overall
 
 ### 📋 Planned Features
 
 - [ ] **Distributed mode** - Sharding, consensus, and automatic failover
 - [ ] **Cloud-native operations** - Kubernetes operator and managed backups
+- [ ] **Production certification** - Crash-recovery evidence, stricter release gates, and package-level coverage targets
 
 ---
 
@@ -976,7 +979,7 @@ go run cmd/demo/main.go
 4. **🔄 ACID + MVCC** - Snapshot isolation, lock-free reads, WAL durability
 5. **🗂️ SQL + JSON + Vector** - Relational queries, JSONPath, HNSW similarity search
 6. **⚡ Blazing Fast** - 15M+ point lookups/sec, 1.5M+ inserts/sec
-7. **🏭 Production-Oriented Core** - 7,100+ test functions, 91%+ package coverage, circuit breaker, rate limiter, and health checks
+7. **🏭 Production-Oriented Core** - 7,100+ test functions, 86% package coverage, circuit breaker, rate limiter, and health checks
 
 ---
 

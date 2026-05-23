@@ -153,10 +153,21 @@ docker compose up -d
 
 For production environments:
 
+Use the production compose file instead of the development compose file:
+
+```bash
+export COBALTDB_ADMIN_PASSWORD='use-a-long-random-secret'
+export COBALTDB_CERTS_DIR="$PWD/certs"
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+`docker-compose.prod.yml` enables TLS, disables cleartext authentication, disables the MySQL listener, binds health checks to localhost, and applies container hardening options (`read_only`, `cap_drop`, `no-new-privileges`, and resource limits). The default `docker-compose.yml` is intended for local development and demos.
+
 1. **Set explicit credentials**:
    ```bash
    export COBALTDB_ADMIN_PASSWORD='use-a-long-random-secret'
    export GRAFANA_ADMIN_PASSWORD='use-another-long-random-secret'
+   export COBALTDB_CERTS_DIR="$PWD/certs"
    ```
 
 2. **Enable TLS**:
@@ -171,7 +182,7 @@ For production environments:
      - ./certs:/etc/cobaltdb/certs
    ```
 
-   The default compose file sets `COBALTDB_ALLOW_CLEARTEXT_AUTH=true` for local development because it exposes both wire and MySQL ports without TLS. Remove that override for production. MySQL protocol authentication is cleartext in this server, so bind MySQL to loopback, keep it on a private network, or disable it when exposing the service.
+   The default compose file sets `COBALTDB_ALLOW_CLEARTEXT_AUTH=true` for local development because it exposes both wire and MySQL ports without TLS. Do not use that development override for production. MySQL protocol authentication is cleartext in this server, so bind MySQL to loopback, keep it on a private network, or disable it when exposing the service.
 
 3. **Use external volumes**:
    ```yaml

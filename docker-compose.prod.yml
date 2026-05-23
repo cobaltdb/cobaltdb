@@ -1,0 +1,52 @@
+services:
+  cobaltdb:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4200:4200"
+      - "127.0.0.1:8420:8420"
+    volumes:
+      - cobaltdb_data:/data/cobaltdb
+      - ${COBALTDB_CERTS_DIR:?Set COBALTDB_CERTS_DIR to a directory containing server.crt and server.key}:/etc/cobaltdb/certs:ro
+    environment:
+      - COBALTDB_ADMIN_PASSWORD=${COBALTDB_ADMIN_PASSWORD:?Set COBALTDB_ADMIN_PASSWORD before starting CobaltDB}
+      - COBALTDB_ADDR=:4200
+      - COBALTDB_HEALTH_ADDR=:8420
+      - COBALTDB_DATA_DIR=/data/cobaltdb
+      - COBALTDB_AUTH_ENABLED=true
+      - COBALTDB_TLS_ENABLED=true
+      - COBALTDB_TLS_CERT_FILE=/etc/cobaltdb/certs/server.crt
+      - COBALTDB_TLS_KEY_FILE=/etc/cobaltdb/certs/server.key
+      - COBALTDB_ALLOW_CLEARTEXT_AUTH=false
+      - COBALTDB_MYSQL_ENABLED=false
+      - COBALTDB_REMOTE_METRICS_ENABLED=false
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8420/ready >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+        reservations:
+          memory: 512M
+    networks:
+      - cobaltdb_network
+
+volumes:
+  cobaltdb_data:
+    driver: local
+
+networks:
+  cobaltdb_network:
+    driver: bridge

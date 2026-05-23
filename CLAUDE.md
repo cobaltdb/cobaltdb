@@ -290,9 +290,13 @@ The following features are fully implemented and integrated in the engine:
 - **Parallel Query Execution** (`pkg/parallel/`, `pkg/catalog/catalog_core.go`, `pkg/catalog/catalog_aggregate.go`) - Chunk-based parallel processing for simple SELECT scans and GROUP BY queries. Splits materialized row data across worker goroutines for CPU-bound work (row decoding, WHERE evaluation, projection, grouping). Enabled by default with `runtime.NumCPU()` workers and a threshold of 1000 rows. Configurable via `Options.ParallelWorkers` and `Options.ParallelThreshold`.
 - **Foreign Data Wrappers (FDW)** (`pkg/fdw/`, `pkg/catalog/catalog_fdw.go`, `pkg/engine/database.go`) - Lightweight FDW framework for querying external data sources via SQL. Supports `CREATE FOREIGN TABLE ... WRAPPER ... OPTIONS (...)`. Built-in CSV wrapper reads local CSV files. Foreign tables are materialized into temporary B-trees at scan time, enabling full query engine features (JOIN, GROUP BY, ORDER BY) without changes to scan loops. Foreign tables are read-only in this version.
 
-## Features Not Implemented
-The following features do not exist in the codebase:
-*(none — all planned features are implemented)*
+## Features Not Implemented / Not Production-Grade
+
+- **Automatic HA failover / clustering** — No built-in sharding, Raft/Paxos, leader election, or split-brain-safe failover.
+- **Broad production certification** — Crash-recovery fault injection, package-level coverage gates, and long-running soak tests remain active hardening work.
+- **Audit log tamper-evidence** — Audit log encryption exists, but append-only HMAC/hash-chain integrity is not yet implemented.
+- **Encryption key rotation workflow** — Storage encryption exists, but operational key rotation is not yet exposed as a production workflow.
+- **WASM as primary execution engine** — WASM execution is functional for selected paths but should be treated as experimental.
 
 **Note:** Deadlock detection is now fully implemented in `pkg/txn/manager.go`.
 Alert system is implemented in `pkg/metrics/alerting.go` (AlertManager with rules, handlers, severity levels).
