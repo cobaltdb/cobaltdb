@@ -610,6 +610,52 @@ func TestRestoreWithWAL(t *testing.T) {
 	}
 }
 
+func TestRestoreWithWALReplacesStaleDirectory(t *testing.T) {
+	tempDir := t.TempDir()
+	targetDir := t.TempDir()
+	walDir := filepath.Join(tempDir, "wal")
+	if err := os.MkdirAll(walDir, 0755); err != nil {
+		t.Fatalf("Failed to create WAL dir: %v", err)
+	}
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test database"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(walDir, "wal_1.log"), []byte("wal content 1"), 0644); err != nil {
+		t.Fatalf("Failed to create WAL file: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	db := &MockDatabaseWithWAL{dbPath: dbFile, walPath: walDir, lsn: 100}
+	mgr := NewManager(config, db)
+
+	backup, err := mgr.CreateBackup(context.Background(), TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+
+	targetPath := filepath.Join(targetDir, "restored.db")
+	targetWALDir := targetPath + ".wal"
+	if err := os.MkdirAll(targetWALDir, 0755); err != nil {
+		t.Fatalf("Failed to create stale WAL dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetWALDir, "stale.log"), []byte("stale"), 0644); err != nil {
+		t.Fatalf("Failed to create stale WAL file: %v", err)
+	}
+
+	if err := mgr.Restore(context.Background(), backup.ID, targetPath); err != nil {
+		t.Fatalf("Failed to restore backup with WAL: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetWALDir, "wal_1.log")); os.IsNotExist(err) {
+		t.Fatal("WAL file should have been restored")
+	}
+	if _, err := os.Stat(filepath.Join(targetWALDir, "stale.log")); !os.IsNotExist(err) {
+		t.Fatal("stale WAL file should have been removed")
+	}
+}
+
 // TestRestoreWithCancelledContext tests restore cancellation
 func TestRestoreWithCancelledContext(t *testing.T) {
 	tempDir := t.TempDir()

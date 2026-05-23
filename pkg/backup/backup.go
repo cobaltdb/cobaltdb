@@ -749,17 +749,36 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 
 		// Directory WALs are restored at <db-path>.wal for compatibility with
 		// segmented WAL implementations and existing backup tests.
-		if err := os.MkdirAll(targetWALPath, backupDirPerm); err != nil {
-			return fmt.Errorf("failed to create WAL directory: %w", err)
+		tmpWALPath, err := os.MkdirTemp(filepath.Dir(targetWALPath), ".restore-wal-*")
+		if err != nil {
+			return fmt.Errorf("failed to create temporary WAL restore directory: %w", err)
 		}
+		defer func() {
+			if tmpWALPath != "" {
+				_ = os.RemoveAll(tmpWALPath)
+			}
+		}()
 
 		for _, walFile := range backup.WALFiles {
 			srcPath := filepath.Join(walBackupDir, walFile)
-			dstPath := filepath.Join(targetWALPath, walFile)
+			dstPath := filepath.Join(tmpWALPath, walFile)
 
 			if err := copyFile(srcPath, dstPath); err != nil {
 				return fmt.Errorf("failed to restore WAL file %s: %w", walFile, err)
 			}
+		}
+		if err := syncParentDir(filepath.Join(tmpWALPath, "wal")); err != nil {
+			return fmt.Errorf("failed to sync temporary WAL restore directory: %w", err)
+		}
+		if err := os.RemoveAll(targetWALPath); err != nil {
+			return fmt.Errorf("failed to remove existing WAL directory: %w", err)
+		}
+		if err := os.Rename(tmpWALPath, targetWALPath); err != nil {
+			return fmt.Errorf("failed to replace restored WAL directory: %w", err)
+		}
+		tmpWALPath = ""
+		if err := syncParentDir(targetWALPath); err != nil {
+			return fmt.Errorf("failed to sync restored WAL directory parent: %w", err)
 		}
 	}
 
