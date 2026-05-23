@@ -332,12 +332,15 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 		for i, r := range records {
 			dataLen := len(r.Data)
 			lsnOffs[i] = totalSize
-			writeRecordHeader(batchBuf[totalSize:], &WALRecord{
+			if err := writeRecordHeader(batchBuf[totalSize:], &WALRecord{
 				TxnID:  r.TxnID,
 				Type:   r.Type,
 				PageID: r.PageID,
 				Offset: r.Offset,
-			}, dataLen)
+			}, dataLen); err != nil {
+				walBatchBufPool.Put(bp)
+				return err
+			}
 			copy(batchBuf[totalSize+walHeaderSize:], r.Data)
 			crcHash := crc32.ChecksumIEEE(batchBuf[totalSize : totalSize+walHeaderSize])
 			if dataLen > 0 {
@@ -397,7 +400,9 @@ func (w *WAL) formatBatch(records []*WALRecord) ([]byte, []int, error) {
 		data := r.Data
 		if w.cipher != nil && len(data) > 0 {
 			var headerAAD [walHeaderSize]byte
-			writeRecordHeader(headerAAD[:], r, len(data))
+			if err := writeRecordHeader(headerAAD[:], r, len(data)); err != nil {
+				return nil, nil, err
+			}
 			enc, err := w.encryptData(data, headerAAD[:])
 			if err != nil {
 				return nil, nil, err
@@ -420,13 +425,15 @@ func (w *WAL) formatBatch(records []*WALRecord) ([]byte, []int, error) {
 
 		lsnOffsets = append(lsnOffsets, offset)
 		// Header with LSN=0 – patched under lock.
-		writeRecordHeader(buf[offset:], &WALRecord{
+		if err := writeRecordHeader(buf[offset:], &WALRecord{
 			LSN:    0,
 			TxnID:  r.TxnID,
 			Type:   r.Type,
 			PageID: r.PageID,
 			Offset: r.Offset,
-		}, len(data))
+		}, len(data)); err != nil {
+			return nil, nil, err
+		}
 		copy(buf[offset+walHeaderSize:], data)
 
 		crcHash := crc32.ChecksumIEEE(buf[offset : offset+walHeaderSize])
@@ -462,7 +469,9 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 	originalData := record.Data
 	if w.cipher != nil && len(record.Data) > 0 {
 		var headerAAD [walHeaderSize]byte
-		writeRecordHeader(headerAAD[:], record, len(record.Data))
+		if err := writeRecordHeader(headerAAD[:], record, len(record.Data)); err != nil {
+			return err
+		}
 
 		encrypted, err := w.encryptData(record.Data, headerAAD[:])
 		if err != nil {
@@ -476,7 +485,9 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 	// Use the reusable appendBuf so the arrays don't escape to heap.
 	dataLen := len(record.Data)
 	buf := w.appendBuf[:]
-	writeRecordHeader(buf[:walHeaderSize], record, dataLen)
+	if err := writeRecordHeader(buf[:walHeaderSize], record, dataLen); err != nil {
+		return err
+	}
 	crcHash := crc32.ChecksumIEEE(buf[:walHeaderSize])
 	if _, err := w.bufWriter.Write(buf[:walHeaderSize]); err != nil {
 		return err
@@ -659,23 +670,30 @@ func (w *WAL) groupCommitLoop(interval time.Duration) {
 
 // writeRecordHeader serializes the fixed-size WAL record header into dst[:walHeaderSize].
 // dataLen carries the length of the (possibly encrypted) payload that will follow the header.
-func writeRecordHeader(dst []byte, record *WALRecord, dataLen int) {
+func writeRecordHeader(dst []byte, record *WALRecord, dataLen int) error {
+	dataLen16, err := storageUint16(dataLen, "WAL record data length")
+	if err != nil {
+		return err
+	}
 	binary.LittleEndian.PutUint64(dst[0:8], record.LSN)
 	binary.LittleEndian.PutUint64(dst[8:16], record.TxnID)
 	dst[16] = byte(record.Type)
 	binary.LittleEndian.PutUint32(dst[17:21], record.PageID)
 	binary.LittleEndian.PutUint16(dst[21:23], record.Offset)
-	binary.LittleEndian.PutUint16(dst[23:25], uint16(dataLen))
+	binary.LittleEndian.PutUint16(dst[23:25], dataLen16)
+	return nil
 }
 
 // encodeRecord encodes a WAL record to bytes (without CRC)
 // Format: [LSN:8][TxnID:8][Type:1][PageID:4][Offset:2][Length:2][Data:N]
-func (w *WAL) encodeRecord(record *WALRecord) []byte {
+func (w *WAL) encodeRecord(record *WALRecord) ([]byte, error) {
 	dataLen := len(record.Data)
 	buf := make([]byte, walHeaderSize+dataLen)
-	writeRecordHeader(buf, record, dataLen)
+	if err := writeRecordHeader(buf, record, dataLen); err != nil {
+		return nil, err
+	}
 	copy(buf[walHeaderSize:], record.Data)
-	return buf
+	return buf, nil
 }
 
 // Checkpoint flushes dirty pages to main DB file and truncates WAL
@@ -701,7 +719,10 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 	newLSN := w.lsn + 1
 	checkpointRecord.LSN = newLSN
 
-	buf := w.encodeRecord(checkpointRecord)
+	buf, err := w.encodeRecord(checkpointRecord)
+	if err != nil {
+		return err
+	}
 	crc := crc32.ChecksumIEEE(buf)
 
 	if _, err := w.bufWriter.Write(buf); err != nil {

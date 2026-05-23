@@ -161,7 +161,11 @@ func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 
 	// Decrypt with page offset as authenticated data (AAD)
 	aad := make([]byte, 8)
-	binary.LittleEndian.PutUint64(aad, uint64(offset))
+	aadOffset, err := storageUint64Offset(offset)
+	if err != nil {
+		return 0, err
+	}
+	binary.LittleEndian.PutUint64(aad, aadOffset)
 	plaintext, err := eb.cipher.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrDecryptionFailed, err)
@@ -189,7 +193,11 @@ func (eb *EncryptedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 
 	// Encrypt data with page offset as authenticated data (AAD)
 	aad := make([]byte, 8)
-	binary.LittleEndian.PutUint64(aad, uint64(offset))
+	aadOffset, err := storageUint64Offset(offset)
+	if err != nil {
+		return 0, err
+	}
+	binary.LittleEndian.PutUint64(aad, aadOffset)
 	ciphertext := eb.cipher.Seal(nonce, nonce, buf, aad)
 
 	// Write encrypted data

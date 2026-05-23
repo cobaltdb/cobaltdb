@@ -182,7 +182,11 @@ func (pm *PageManager) saveFreeList() error {
 
 		// Write next page ID and count
 		binary.LittleEndian.PutUint32(data[PageHeaderSize:PageHeaderSize+4], nextID)
-		binary.LittleEndian.PutUint32(data[PageHeaderSize+4:PageHeaderSize+8], uint32(len(slice)))
+		pageCount, err := storageUint32(int64(len(slice)), "page id count")
+		if err != nil {
+			return fmt.Errorf("failed to encode page id count: %w", err)
+		}
+		binary.LittleEndian.PutUint32(data[PageHeaderSize+4:PageHeaderSize+8], pageCount)
 
 		// Write page IDs
 		offset := PageHeaderSize + 8

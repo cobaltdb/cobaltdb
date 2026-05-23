@@ -107,7 +107,11 @@ func NewBufferPool(capacity int, backend Backend) *BufferPool {
 	if backendSize == 0 {
 		bp.nextPageID = 1 // Reserve page 0 for meta page
 	} else {
-		bp.nextPageID = uint32((backendSize + PageSize - 1) / PageSize)
+		pageCount, err := storageUint32((backendSize+PageSize-1)/PageSize, "backend page count")
+		if err != nil {
+			panic(err)
+		}
+		bp.nextPageID = pageCount
 		if bp.nextPageID == 0 {
 			bp.nextPageID = 1
 		}

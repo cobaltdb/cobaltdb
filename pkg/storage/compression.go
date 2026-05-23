@@ -38,9 +38,9 @@ type CompressionLevel int
 
 const (
 	CompressionLevelNone    CompressionLevel = iota // disabled
-	CompressionLevelFast                             // BestSpeed
-	CompressionLevelDefault                          // DefaultCompression
-	CompressionLevelBest                             // BestCompression
+	CompressionLevelFast                            // BestSpeed
+	CompressionLevelDefault                         // DefaultCompression
+	CompressionLevelBest                            // BestCompression
 )
 
 // CompressionConfig holds page-level compression settings.
@@ -193,14 +193,23 @@ func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 
 	// Only store compressed if it meets the minimum ratio threshold.
 	if ratio <= cb.config.MinRatio {
+		originalSize, err := storageUint16(len(buf), "compression original size")
+		if err != nil {
+			return cb.backend.WriteAt(buf, offset)
+		}
+		compressedSize, err := storageUint16(len(compressed), "compression payload size")
+		if err != nil {
+			return cb.backend.WriteAt(buf, offset)
+		}
+
 		// Store compressed with header.
 		writeBuf := cb.getWriteBuf()
 		defer cb.putWriteBuf(writeBuf)
 
 		header := (*writeBuf)[:compressionHeaderSize]
 		copy(header[:4], cb.magicForAlgorithm())
-		binary.LittleEndian.PutUint16(header[4:6], uint16(len(buf)))
-		binary.LittleEndian.PutUint16(header[6:8], uint16(len(compressed)))
+		binary.LittleEndian.PutUint16(header[4:6], originalSize)
+		binary.LittleEndian.PutUint16(header[6:8], compressedSize)
 
 		// Write header + compressed data.
 		n, err := cb.backend.WriteAt(header, offset)
