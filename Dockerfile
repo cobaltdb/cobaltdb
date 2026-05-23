@@ -1,5 +1,8 @@
 # Multi-stage build for CobaltDB
-FROM golang:1.26-alpine AS builder
+ARG GO_IMAGE=golang:1.26-alpine3.23
+ARG RUNTIME_IMAGE=alpine:3.23.4
+
+FROM ${GO_IMAGE} AS builder
 
 ARG VERSION=dev
 ARG BUILD_TIME=unknown
@@ -30,7 +33,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     ./cmd/cobaltdb-cli
 
 # Runtime stage
-FROM alpine:latest
+FROM ${RUNTIME_IMAGE}
 
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata netcat-openbsd su-exec
