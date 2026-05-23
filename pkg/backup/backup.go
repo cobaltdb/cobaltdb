@@ -123,6 +123,7 @@ type Metadata struct {
 type Manager struct {
 	config   *Config
 	metadata *Metadata
+	loadErr  error
 	// Callbacks
 	OnProgress func(percent int)
 	OnComplete func(backup *Backup, err error)
@@ -157,12 +158,28 @@ func NewManager(config *Config, db Database) *Manager {
 		metadata: &Metadata{Backups: make([]*Backup, 0)},
 		db:       db,
 	}
-	_ = m.loadMetadata()
+	m.loadErr = m.loadMetadata()
 	return m
+}
+
+// MetadataError returns any metadata load error encountered during manager creation.
+func (m *Manager) MetadataError() error {
+	return m.loadErr
+}
+
+func (m *Manager) ensureMetadataLoaded() error {
+	if m.loadErr != nil {
+		return fmt.Errorf("backup metadata unavailable: %w", m.loadErr)
+	}
+	return nil
 }
 
 // CreateBackup creates a new backup
 func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (*Backup, error) {
+	if err := m.ensureMetadataLoaded(); err != nil {
+		return nil, err
+	}
+
 	m.mu.Lock()
 	if m.activeBackup {
 		m.mu.Unlock()
@@ -593,6 +610,10 @@ func (m *Manager) verifyBackup(backup *Backup) error {
 
 // Restore restores database from a backup
 func (m *Manager) Restore(ctx context.Context, backupID string, targetPath string) error {
+	if err := m.ensureMetadataLoaded(); err != nil {
+		return err
+	}
+
 	// Find backup
 	m.metadata.mu.RLock()
 	var backup *Backup
@@ -1016,6 +1037,10 @@ func (m *Manager) GetBackup(backupID string) *Backup {
 
 // DeleteBackup deletes a backup
 func (m *Manager) DeleteBackup(backupID string) error {
+	if err := m.ensureMetadataLoaded(); err != nil {
+		return err
+	}
+
 	m.metadata.mu.Lock()
 	defer m.metadata.mu.Unlock()
 
@@ -1046,6 +1071,10 @@ func (m *Manager) DeleteBackup(backupID string) error {
 
 // cleanupOldBackups removes old backups based on retention policy
 func (m *Manager) cleanupOldBackups() error {
+	if err := m.ensureMetadataLoaded(); err != nil {
+		return err
+	}
+
 	if m.config.MaxBackups == 0 && m.config.RetentionPeriod == 0 {
 		return nil
 	}

@@ -1996,6 +1996,42 @@ func TestLoadMetadataErrors(t *testing.T) {
 	}
 }
 
+func TestNewManagerPreservesMetadataLoadError(t *testing.T) {
+	tempDir := t.TempDir()
+	backupDir := filepath.Join(tempDir, "backups")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	metadataPath := filepath.Join(backupDir, metadataFileName)
+	if err := os.WriteFile(metadataPath, []byte("not json"), backupFilePerm); err != nil {
+		t.Fatalf("WriteFile metadata failed: %v", err)
+	}
+
+	dbPath := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbPath, []byte("database"), 0644); err != nil {
+		t.Fatalf("WriteFile db failed: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = backupDir
+	config.CompressionLevel = 0
+	mgr := NewManager(config, &MockDatabase{dbPath: dbPath})
+	if mgr.MetadataError() == nil {
+		t.Fatal("expected metadata load error")
+	}
+	if _, err := mgr.CreateBackup(context.Background(), TypeFull); err == nil {
+		t.Fatal("CreateBackup should fail when metadata failed to load")
+	}
+
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatalf("ReadFile metadata failed: %v", err)
+	}
+	if string(data) != "not json" {
+		t.Fatalf("metadata was overwritten: %q", data)
+	}
+}
+
 // TestCompoundReadCloserError tests Close when a closer returns an error
 func TestCompoundReadCloserError(t *testing.T) {
 	errCloser := &MockReadCloser{errOnClose: errors.New("close error")}
