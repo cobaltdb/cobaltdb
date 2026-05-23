@@ -39,6 +39,9 @@ jobs:
       - name: Race detector (pkg packages)
         run: CGO_ENABLED=1 go test -race ./pkg/... -count=1 -timeout 300s
 
+      - name: Race detector (server and webui)
+        run: CGO_ENABLED=1 go test -race ./cmd/cobaltdb-server ./webui -count=1 -timeout 300s
+
       - name: Test coverage
         run: |
           go test ./pkg/... -coverprofile=coverage.out -count=1
@@ -55,6 +58,21 @@ jobs:
         run: |
           go build -o bin/cobaltdb-server ./cmd/cobaltdb-server
           go build -o bin/cobaltdb-cli ./cmd/cobaltdb-cli
+
+      - name: Docker compose config
+        env:
+          COBALTDB_ADMIN_PASSWORD: ci-admin-password
+          GRAFANA_ADMIN_PASSWORD: ci-grafana-password
+          COBALTDB_CERTS_DIR: /tmp
+        run: |
+          docker compose config >/tmp/cobaltdb-compose.yml
+          docker compose -f docker-compose.prod.yml config >/tmp/cobaltdb-compose-prod.yml
+          grep -q 'COBALTDB_ALLOW_CLEARTEXT_AUTH: "true"' /tmp/cobaltdb-compose.yml
+          grep -q 'COBALTDB_ALLOW_CLEARTEXT_AUTH: "false"' /tmp/cobaltdb-compose-prod.yml
+          grep -q 'COBALTDB_MYSQL_ENABLED: "false"' /tmp/cobaltdb-compose-prod.yml
+
+      - name: Docker build
+        run: docker build -t cobaltdb:ci .
 
       - name: Install security tools
         run: |
