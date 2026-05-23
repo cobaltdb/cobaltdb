@@ -227,6 +227,10 @@ type replicationState struct {
 
 // NewManager creates a new replication manager
 func NewManager(config *Config) *Manager {
+	if config == nil {
+		config = DefaultConfig()
+	}
+
 	if config.MaxWALBufferEntries <= 0 {
 		config.MaxWALBufferEntries = defaultMaxWALBufferEntries
 	}

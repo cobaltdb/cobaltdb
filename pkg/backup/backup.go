@@ -153,6 +153,10 @@ type Database interface {
 
 // NewManager creates a new backup manager
 func NewManager(config *Config, db Database) *Manager {
+	if config == nil {
+		config = DefaultConfig()
+	}
+
 	m := &Manager{
 		config:   config,
 		metadata: &Metadata{Backups: make([]*Backup, 0)},

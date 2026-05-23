@@ -63,6 +63,19 @@ func TestManagerCreation(t *testing.T) {
 	}
 }
 
+func TestManagerCreationWithNilConfig(t *testing.T) {
+	mgr := NewManager(nil, &MockDatabase{dbPath: "/tmp/test.db"})
+	if mgr == nil {
+		t.Fatal("Failed to create manager")
+	}
+	if mgr.config == nil {
+		t.Fatal("Expected default config")
+	}
+	if mgr.config.BackupDir != DefaultConfig().BackupDir {
+		t.Fatalf("BackupDir = %q, want default", mgr.config.BackupDir)
+	}
+}
+
 func TestCreateBackup(t *testing.T) {
 	// Create temp directory
 	tempDir := t.TempDir()

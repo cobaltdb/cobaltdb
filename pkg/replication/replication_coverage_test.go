@@ -46,6 +46,25 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestNewManagerWithNilConfig(t *testing.T) {
+	mgr := NewManager(nil)
+	if mgr == nil {
+		t.Fatal("NewManager returned nil")
+	}
+	if mgr.config == nil {
+		t.Fatal("Expected default config")
+	}
+	if mgr.config.Role != RoleStandalone {
+		t.Fatalf("Role = %v, want standalone", mgr.config.Role)
+	}
+	if mgr.config.MaxWALBufferEntries != defaultMaxWALBufferEntries {
+		t.Fatalf("MaxWALBufferEntries = %d, want %d", mgr.config.MaxWALBufferEntries, defaultMaxWALBufferEntries)
+	}
+	if mgr.config.MaxWALBufferBytes != defaultMaxWALBufferBytes {
+		t.Fatalf("MaxWALBufferBytes = %d, want %d", mgr.config.MaxWALBufferBytes, defaultMaxWALBufferBytes)
+	}
+}
+
 func TestWALEntryEncodeDecodeErrors(t *testing.T) {
 	// Test decode with insufficient data
 	entry := &WALEntry{}
