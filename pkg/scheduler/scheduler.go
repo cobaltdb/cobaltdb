@@ -208,17 +208,18 @@ func (s *Scheduler) dispatchLoop(workCh chan<- *Job) {
 		}
 
 		now := time.Now()
-		s.mu.RLock()
+		s.mu.Lock()
 		var ready []*Job
 		for _, j := range s.jobs {
 			if !j.Enabled || j.Status == JobStatusRunning {
 				continue
 			}
 			if now.After(j.NextRun) || now.Equal(j.NextRun) {
+				j.Status = JobStatusRunning
 				ready = append(ready, j)
 			}
 		}
-		s.mu.RUnlock()
+		s.mu.Unlock()
 
 		for _, j := range ready {
 			select {

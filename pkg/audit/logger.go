@@ -5,7 +5,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -81,6 +83,8 @@ type Event struct {
 	RowsAffected int64                  `json:"rows_affected,omitempty"`
 	Error        string                 `json:"error,omitempty"`
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	PrevHash     string                 `json:"prev_hash,omitempty"`
+	Hash         string                 `json:"hash,omitempty"`
 }
 
 // Config holds audit logging configuration
@@ -131,6 +135,7 @@ type Logger struct {
 	closed    bool
 	closeMu   sync.RWMutex
 	cipher    cipher.AEAD // optional encryption for log entries
+	lastHash  string      // hash chain anchor for tamper-evident audit logs
 }
 
 // New creates a new audit logger
@@ -304,6 +309,7 @@ func (al *Logger) flushBatch(events []*Event) {
 
 func (al *Logger) writeEvent(event *Event) error {
 	var line string
+	var nextHash string
 
 	switch al.config.LogFormat {
 	case "text":
@@ -321,10 +327,25 @@ func (al *Logger) writeEvent(event *Event) error {
 		if event.Error != "" {
 			line += fmt.Sprintf(" error=%q", event.Error)
 		}
+		event.PrevHash = al.lastHash
+		nextHash = hashAuditPayload(event.PrevHash, []byte(line))
+		event.Hash = nextHash
+		if event.PrevHash != "" {
+			line += fmt.Sprintf(" prev_hash=%s", event.PrevHash)
+		}
+		line += fmt.Sprintf(" hash=%s", event.Hash)
 		line += "\n"
 
 	default:
+		event.PrevHash = al.lastHash
+		event.Hash = ""
 		data, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		nextHash = hashAuditPayload(event.PrevHash, data)
+		event.Hash = nextHash
+		data, err = json.Marshal(event)
 		if err != nil {
 			return err
 		}
@@ -341,8 +362,19 @@ func (al *Logger) writeEvent(event *Event) error {
 		line = "ENC:" + base64.StdEncoding.EncodeToString(encrypted) + "\n"
 	}
 
-	_, err := al.file.WriteString(line)
-	return err
+	if _, err := al.file.WriteString(line); err != nil {
+		return err
+	}
+	al.lastHash = nextHash
+	return nil
+}
+
+func hashAuditPayload(prevHash string, payload []byte) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(prevHash))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(payload)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (al *Logger) maskSensitiveData(event *Event) {

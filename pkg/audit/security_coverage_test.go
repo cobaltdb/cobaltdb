@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,66 @@ func TestAuditLogPlaintext(t *testing.T) {
 	content := string(data)
 	if strings.HasPrefix(strings.TrimSpace(content), "ENC:") {
 		t.Error("Plaintext log should not be encrypted")
+	}
+}
+
+func TestAuditLogHashChain(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "chain.log")
+
+	al, err := New(&Config{
+		Enabled:    true,
+		LogFile:    logPath,
+		LogFormat:  "json",
+		LogQueries: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Failed to create audit logger: %v", err)
+	}
+
+	al.Log(EventQuery, "alice", "SELECT", WithQuery("SELECT 1"))
+	al.Log(EventDDL, "bob", "CREATE_TABLE", WithQuery("CREATE TABLE t(id INT)"))
+	if err := al.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read audit log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 audit lines, got %d: %q", len(lines), data)
+	}
+
+	var first, second Event
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("unmarshal first event: %v", err)
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatalf("unmarshal second event: %v", err)
+	}
+	if first.PrevHash != "" {
+		t.Fatalf("first prev hash = %q, want empty", first.PrevHash)
+	}
+	if first.Hash == "" {
+		t.Fatal("first hash should not be empty")
+	}
+	if second.PrevHash != first.Hash {
+		t.Fatalf("second prev hash = %q, want %q", second.PrevHash, first.Hash)
+	}
+	if second.Hash == "" || second.Hash == first.Hash {
+		t.Fatalf("second hash should be non-empty and distinct, got %q", second.Hash)
+	}
+
+	originalHash := second.Hash
+	second.Hash = ""
+	payload, err := json.Marshal(&second)
+	if err != nil {
+		t.Fatalf("marshal second event without hash: %v", err)
+	}
+	if got := hashAuditPayload(second.PrevHash, payload); got != originalHash {
+		t.Fatalf("recomputed second hash = %q, want %q", got, originalHash)
 	}
 }
 

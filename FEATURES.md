@@ -25,7 +25,7 @@
 | **Materialized Views** | ✅ Production-Oriented | 84.8% pkg/catalog | CREATE, DROP, REFRESH, QUERY |
 | **Full-Text Search** | ✅ Production-Oriented | 84.8% pkg/catalog | CREATE FULLTEXT INDEX, MATCH/AGAINST |
 | **Table Partitioning** | ✅ Production-Oriented | 84.8% pkg/catalog | RANGE, HASH partitioning |
-| **Security** | ✅ Production-Oriented | scans clean | RLS, audit, TLS, encryption; audit integrity/key rotation remain roadmap |
+| **Security** | ✅ Production-Oriented | scans clean | RLS, audit, TLS, encryption; audit logs are encrypted and hash-chained; external signing/key rotation remain roadmap |
 | **Server** | ✅ Controlled Production Candidate | 90.6% pkg/server | TCP server, MySQL protocol, auth; MySQL listener should stay private or disabled |
 | **Query Cache** | ✅ Production-Oriented | 90.9% pkg/cache | LRU cache with TTL and invalidation |
 | **Query Optimizer** | ✅ Production-Oriented | 93.8% pkg/optimizer | Cost-based optimization, join reordering |

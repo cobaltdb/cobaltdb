@@ -115,7 +115,7 @@ mysql> SELECT * FROM users;
 > **Verified working** with `go-sql-driver/mysql`, `mysql` CLI, and standard MySQL wire protocol.
 > Works with **any MySQL-compatible client**: Python (mysql-connector, SQLAlchemy), Node.js (mysql2, Prisma), Java (JDBC), Ruby, PHP, etc.
 
-**Server features:** MySQL protocol, TLS 1.2+, authentication (Argon2id), connection pooling, rate limiting, circuit breaker, health checks, encrypted audit logging, and master-slave replication transport.
+**Server features:** MySQL protocol, TLS 1.2+, authentication (Argon2id), connection pooling, rate limiting, circuit breaker, health checks, encrypted tamper-evident audit logging, and master-slave replication transport.
 
 **Production note:** CobaltDB is a production-oriented single-node database candidate. Use TLS for non-loopback wire access, keep the MySQL listener private or disabled, and do not treat replication as automatic HA/failover infrastructure.
 
@@ -364,6 +364,7 @@ db, _ := engine.Open("audited.db", &engine.Options{
 - JSON and text format support
 - Query, DDL, and authentication events
 - Automatic log rotation (100MB default)
+- Hash-chained entries for tamper-evidence
 
 ### Row-Level Security (RLS)
 
@@ -934,7 +935,7 @@ go run cmd/demo/main.go
 ### ✅ v0.3.0 - Security Hardening & Stability (2026-03-20)
 
 - [x] **WAL Encryption** - AEAD encryption for write-ahead log with header authentication
-- [x] **Audit Log Encryption** - AES-256-GCM encrypted audit log entries
+- [x] **Audit Log Encryption** - AES-256-GCM encrypted and hash-chained audit log entries
 - [x] **RLS Hardening** - Fixed bypass in UPDATE...FROM and DELETE...USING
 - [x] **Auth Hardening** - Password policy, brute force rate limiting, random default password
 - [x] **SQL Injection Protection** - 15 detection patterns (conditional blind, OOB exfil, etc.)
