@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
@@ -75,6 +76,16 @@ type AlertHandler interface {
 	Handle(alert Alert) error
 }
 
+type alertRuleSnapshot struct {
+	Name        string
+	Description string
+	Severity    AlertSeverity
+	Condition   func() (bool, float64)
+	Threshold   float64
+	Cooldown    time.Duration
+	lastFired   time.Time
+}
+
 // LogAlertHandler logs alerts to a configured logger.
 type LogAlertHandler struct {
 	Logger *logger.Logger
@@ -134,6 +145,9 @@ func (am *AlertManager) logErrorf(format string, args ...interface{}) {
 
 // RegisterRule registers an alert rule
 func (am *AlertManager) RegisterRule(rule *AlertRule) {
+	if rule == nil {
+		return
+	}
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	am.rules[rule.Name] = rule
@@ -148,6 +162,9 @@ func (am *AlertManager) UnregisterRule(name string) {
 
 // RegisterHandler registers an alert handler
 func (am *AlertManager) RegisterHandler(handler AlertHandler) {
+	if handler == nil {
+		return
+	}
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	am.handlers = append(am.handlers, handler)
@@ -190,19 +207,26 @@ func (am *AlertManager) run() {
 // checkRules evaluates all registered rules
 func (am *AlertManager) checkRules() {
 	am.mu.RLock()
-	rules := make([]*AlertRule, 0, len(am.rules))
+	rules := make([]alertRuleSnapshot, 0, len(am.rules))
 	for _, rule := range am.rules {
-		rules = append(rules, rule)
+		if rule == nil || rule.muted {
+			continue
+		}
+		rules = append(rules, alertRuleSnapshot{
+			Name:        rule.Name,
+			Description: rule.Description,
+			Severity:    rule.Severity,
+			Condition:   rule.Condition,
+			Threshold:   rule.Threshold,
+			Cooldown:    rule.Cooldown,
+			lastFired:   rule.lastFired,
+		})
 	}
 	handlers := make([]AlertHandler, len(am.handlers))
 	copy(handlers, am.handlers)
 	am.mu.RUnlock()
 
 	for _, rule := range rules {
-		if rule.muted {
-			continue
-		}
-
 		// Check cooldown
 		if time.Since(rule.lastFired) < rule.Cooldown {
 			continue
@@ -215,14 +239,23 @@ func (am *AlertManager) checkRules() {
 
 		fired, value := rule.Condition()
 		if fired {
-			rule.lastFired = time.Now()
+			now := time.Now()
+
+			am.mu.Lock()
+			currentRule, ok := am.rules[rule.Name]
+			if !ok || currentRule == nil || currentRule.muted || time.Since(currentRule.lastFired) < currentRule.Cooldown {
+				am.mu.Unlock()
+				continue
+			}
+			currentRule.lastFired = now
+			am.mu.Unlock()
 
 			alert := Alert{
 				ID:        generateAlertID(),
 				RuleName:  rule.Name,
 				Severity:  rule.Severity,
 				Message:   rule.Description,
-				Timestamp: time.Now(),
+				Timestamp: now,
 				Value:     value,
 				Threshold: rule.Threshold,
 			}
@@ -238,7 +271,15 @@ func (am *AlertManager) checkRules() {
 
 			// Notify handlers
 			for _, handler := range handlers {
+				if handler == nil {
+					continue
+				}
 				go func(h AlertHandler, a Alert) {
+					defer func() {
+						if r := recover(); r != nil {
+							am.logErrorf("[ALERT] Handler panic: %v", r)
+						}
+					}()
 					if err := h.Handle(a); err != nil {
 						am.logErrorf("[ALERT] Handler error: %v", err)
 					}
@@ -292,8 +333,8 @@ func (am *AlertManager) UnmuteRule(name string) {
 var alertIDCounter int64
 
 func generateAlertID() string {
-	alertIDCounter++
-	return fmt.Sprintf("ALERT-%d-%d", time.Now().Unix(), alertIDCounter)
+	id := atomic.AddInt64(&alertIDCounter, 1)
+	return fmt.Sprintf("ALERT-%d-%d", time.Now().Unix(), id)
 }
 
 // DefaultAlertRules returns a set of default alert rules for CobaltDB

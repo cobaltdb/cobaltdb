@@ -79,6 +79,18 @@ func TestAlertManagerRegisterRule(t *testing.T) {
 	am.mu.RUnlock()
 }
 
+func TestAlertManagerRegisterNilRule(t *testing.T) {
+	am := NewAlertManager()
+
+	am.RegisterRule(nil)
+
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	if len(am.rules) != 0 {
+		t.Fatalf("expected nil rule to be ignored, got %d rules", len(am.rules))
+	}
+}
+
 // TestAlertManagerUnregisterRule tests unregistering alert rules
 func TestAlertManagerUnregisterRule(t *testing.T) {
 	am := NewAlertManager()
@@ -115,6 +127,18 @@ func TestAlertManagerRegisterHandler(t *testing.T) {
 		t.Errorf("Expected 1 handler, got %d", len(am.handlers))
 	}
 	am.mu.RUnlock()
+}
+
+func TestAlertManagerRegisterNilHandler(t *testing.T) {
+	am := NewAlertManager()
+
+	am.RegisterHandler(nil)
+
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	if len(am.handlers) != 0 {
+		t.Fatalf("expected nil handler to be ignored, got %d handlers", len(am.handlers))
+	}
 }
 
 // TestLogAlertHandlerHandle tests the LogAlertHandler
@@ -165,6 +189,15 @@ type failingAlertHandler struct {
 
 func (h failingAlertHandler) Handle(Alert) error {
 	return h.err
+}
+
+type panickingAlertHandler struct {
+	called chan struct{}
+}
+
+func (h panickingAlertHandler) Handle(Alert) error {
+	close(h.called)
+	panic("handler panic")
 }
 
 type signalWriter struct {
@@ -218,6 +251,48 @@ func TestAlertManagerHandlerErrorUsesConfiguredLogger(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "handler failed") {
 		t.Fatalf("expected handler error log, got %q", logs.String())
+	}
+}
+
+func TestAlertManagerCheckRulesSkipsNilHandlers(t *testing.T) {
+	am := NewAlertManager()
+	am.RegisterRule(&AlertRule{
+		Name:        "test_rule",
+		Description: "Test rule",
+		Severity:    SeverityCritical,
+		Threshold:   1,
+		Condition: func() (bool, float64) {
+			return true, 2
+		},
+	})
+
+	am.mu.Lock()
+	am.handlers = append(am.handlers, nil)
+	am.mu.Unlock()
+
+	am.checkRules()
+}
+
+func TestAlertManagerHandlerPanicIsRecovered(t *testing.T) {
+	am := NewAlertManager()
+	called := make(chan struct{})
+	am.RegisterHandler(panickingAlertHandler{called: called})
+	am.RegisterRule(&AlertRule{
+		Name:        "test_rule",
+		Description: "Test rule",
+		Severity:    SeverityCritical,
+		Threshold:   1,
+		Condition: func() (bool, float64) {
+			return true, 2
+		},
+	})
+
+	am.checkRules()
+
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("expected panicking handler to be called")
 	}
 }
 
@@ -408,5 +483,32 @@ func TestGenerateAlertID(t *testing.T) {
 	}
 	if id1 == id2 {
 		t.Error("Generated IDs should be unique")
+	}
+}
+
+func TestGenerateAlertIDConcurrent(t *testing.T) {
+	const goroutines = 64
+
+	var wg sync.WaitGroup
+	ids := make(chan string, goroutines)
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ids <- generateAlertID()
+		}()
+	}
+	wg.Wait()
+	close(ids)
+
+	seen := make(map[string]struct{}, goroutines)
+	for id := range ids {
+		if _, exists := seen[id]; exists {
+			t.Fatalf("duplicate alert ID generated: %s", id)
+		}
+		seen[id] = struct{}{}
+	}
+	if len(seen) != goroutines {
+		t.Fatalf("expected %d IDs, got %d", goroutines, len(seen))
 	}
 }
