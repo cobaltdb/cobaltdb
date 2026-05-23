@@ -32,6 +32,58 @@ func TestCacheCreation(t *testing.T) {
 	}
 }
 
+func TestCacheCreationNormalizesCleanupInterval(t *testing.T) {
+	config := &Config{
+		MaxSize:    1024 * 1024,
+		MaxEntries: 100,
+		TTL:        time.Minute,
+		Enabled:    true,
+	}
+
+	cache := New(config)
+	defer cache.Close()
+
+	if cache.config.CleanupInterval != DefaultConfig().CleanupInterval {
+		t.Fatalf("CleanupInterval should be defaulted, got %v", cache.config.CleanupInterval)
+	}
+	if config.CleanupInterval != 0 {
+		t.Fatal("New should not mutate caller config")
+	}
+}
+
+func TestCacheZeroMaxSizeMeansUnlimited(t *testing.T) {
+	cache := New(&Config{
+		MaxSize:         0,
+		MaxEntries:      10,
+		TTL:             time.Minute,
+		CleanupInterval: time.Minute,
+		Enabled:         true,
+	})
+	defer cache.Close()
+
+	cache.Set("SELECT * FROM users", nil, []string{"id"}, [][]interface{}{{1}}, []string{"users"})
+	if _, found := cache.Get("SELECT * FROM users", nil); !found {
+		t.Fatal("MaxSize=0 should not reject cache entries")
+	}
+}
+
+func TestCacheZeroTTLMeansNoExpiration(t *testing.T) {
+	cache := New(&Config{
+		MaxSize:         1024 * 1024,
+		MaxEntries:      10,
+		TTL:             0,
+		CleanupInterval: time.Millisecond,
+		Enabled:         true,
+	})
+	defer cache.Close()
+
+	cache.Set("SELECT * FROM users", nil, []string{"id"}, [][]interface{}{{1}}, []string{"users"})
+	time.Sleep(5 * time.Millisecond)
+	if _, found := cache.Get("SELECT * FROM users", nil); !found {
+		t.Fatal("TTL=0 should not expire cache entries")
+	}
+}
+
 func TestCacheGetSet(t *testing.T) {
 	config := DefaultConfig()
 	cache := New(config)

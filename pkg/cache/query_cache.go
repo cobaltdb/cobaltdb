@@ -85,6 +85,8 @@ type Cache struct {
 func New(config *Config) *Cache {
 	if config == nil {
 		config = DefaultConfig()
+	} else {
+		config = normalizeConfig(config)
 	}
 
 	c := &Cache{
@@ -103,6 +105,15 @@ func New(config *Config) *Cache {
 	}
 
 	return c
+}
+
+func normalizeConfig(config *Config) *Config {
+	if config.CleanupInterval > 0 {
+		return config
+	}
+	normalized := *config
+	normalized.CleanupInterval = DefaultConfig().CleanupInterval
+	return &normalized
 }
 
 // Close shuts down the cache
@@ -132,7 +143,7 @@ func (c *Cache) Get(sql string, args []interface{}) (*Entry, bool) {
 	}
 
 	// Check if expired
-	if time.Since(entry.CreatedAt) > c.config.TTL {
+	if c.config.TTL > 0 && time.Since(entry.CreatedAt) > c.config.TTL {
 		c.Delete(key)
 		atomic.AddUint64(&c.misses, 1)
 		return nil, false
@@ -165,12 +176,12 @@ func (c *Cache) Set(sql string, args []interface{}, columns []string, rows [][]i
 	size := estimateSize(columns, rows)
 
 	// Check if entry is too large
-	if size > c.config.MaxSize/10 { // Don't cache if > 10% of max size
+	if c.config.MaxSize > 0 && size > c.config.MaxSize/10 { // Don't cache if > 10% of max size
 		return
 	}
 
 	// Make room if needed
-	for atomic.LoadInt64(&c.currentSize)+size > c.config.MaxSize {
+	for c.config.MaxSize > 0 && atomic.LoadInt64(&c.currentSize)+size > c.config.MaxSize {
 		if !c.evictLRU() {
 			break // Can't evict anything
 		}
@@ -374,7 +385,7 @@ func (c *Cache) cleanupExpired() {
 
 	c.mu.RLock()
 	for key, entry := range c.entries {
-		if now.Sub(entry.CreatedAt) > c.config.TTL {
+		if c.config.TTL > 0 && now.Sub(entry.CreatedAt) > c.config.TTL {
 			toDelete = append(toDelete, key)
 		}
 	}
