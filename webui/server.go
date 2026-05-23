@@ -226,7 +226,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				Name:     authCookieName,
 				Value:    s.apiToken,
 				Path:     "/",
-				Secure:   true,
+				Secure:   requestUsesHTTPS(r),
 				HttpOnly: true,
 				SameSite: http.SameSiteStrictMode,
 			})
@@ -244,6 +244,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requestUsesHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
 }
 
 func (s *Server) extractToken(r *http.Request) string {

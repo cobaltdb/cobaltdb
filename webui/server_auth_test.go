@@ -68,6 +68,51 @@ func TestAuthMiddlewareSetsCookieAndRedirectsWhenTokenInQuery(t *testing.T) {
 	if len(cookies) == 0 || cookies[0].Name != authCookieName {
 		t.Fatalf("expected auth cookie %q to be set", authCookieName)
 	}
+	if cookies[0].Secure {
+		t.Fatal("expected HTTP auth cookie to be usable without Secure flag")
+	}
+	if !cookies[0].HttpOnly {
+		t.Fatal("expected auth cookie to be HttpOnly")
+	}
+}
+
+func TestAuthMiddlewareSetsSecureCookieForHTTPS(t *testing.T) {
+	srv := &Server{
+		apiToken:    "test-token",
+		authEnabled: true,
+	}
+	handler := srv.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/?token=test-token", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 || !cookies[0].Secure {
+		t.Fatal("expected HTTPS auth cookie to include Secure flag")
+	}
+}
+
+func TestAuthMiddlewareSetsSecureCookieBehindHTTPSProxy(t *testing.T) {
+	srv := &Server{
+		apiToken:    "test-token",
+		authEnabled: true,
+	}
+	handler := srv.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/?token=test-token", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 || !cookies[0].Secure {
+		t.Fatal("expected proxied HTTPS auth cookie to include Secure flag")
+	}
 }
 
 func TestAuthMiddlewareBypassWhenDisabled(t *testing.T) {
