@@ -371,7 +371,7 @@ type Collector struct {
 
 // NewCollector creates a new metrics collector
 func NewCollector(interval time.Duration) *Collector {
-	if interval == 0 {
+	if interval <= 0 {
 		interval = 10 * time.Second
 	}
 

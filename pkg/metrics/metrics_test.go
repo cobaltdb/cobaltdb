@@ -330,6 +330,13 @@ func TestDefaultCollectorInterval(t *testing.T) {
 	}
 }
 
+func TestNegativeCollectorIntervalUsesDefault(t *testing.T) {
+	collector := NewCollector(-time.Second)
+	if collector.interval != 10*time.Second {
+		t.Errorf("Expected default interval 10s, got %v", collector.interval)
+	}
+}
+
 func TestConcurrentCounterAccess(t *testing.T) {
 	counter := NewCounter("concurrent", "Concurrent counter", nil)
 
