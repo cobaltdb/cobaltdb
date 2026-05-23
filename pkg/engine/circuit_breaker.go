@@ -92,9 +92,7 @@ type CircuitBreaker struct {
 
 // NewCircuitBreaker creates a new circuit breaker
 func NewCircuitBreaker(config *CircuitBreakerConfig) *CircuitBreaker {
-	if config == nil {
-		config = DefaultCircuitBreakerConfig()
-	}
+	config = normalizeCircuitBreakerConfig(config)
 
 	cb := &CircuitBreaker{
 		config:         config,
@@ -107,6 +105,32 @@ func NewCircuitBreaker(config *CircuitBreakerConfig) *CircuitBreaker {
 	}
 
 	return cb
+}
+
+func normalizeCircuitBreakerConfig(config *CircuitBreakerConfig) *CircuitBreakerConfig {
+	defaults := DefaultCircuitBreakerConfig()
+	if config == nil {
+		return defaults
+	}
+
+	normalized := *config
+	if normalized.MaxFailures <= 0 {
+		normalized.MaxFailures = defaults.MaxFailures
+	}
+	if normalized.MinSuccesses <= 0 {
+		normalized.MinSuccesses = defaults.MinSuccesses
+	}
+	if normalized.ResetTimeout <= 0 {
+		normalized.ResetTimeout = defaults.ResetTimeout
+	}
+	if normalized.MaxConcurrency <= 0 {
+		normalized.MaxConcurrency = defaults.MaxConcurrency
+	}
+	if normalized.HalfOpenMaxRequests <= 0 {
+		normalized.HalfOpenMaxRequests = defaults.HalfOpenMaxRequests
+	}
+
+	return &normalized
 }
 
 // Allow checks if a request should be allowed

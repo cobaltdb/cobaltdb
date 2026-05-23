@@ -132,6 +132,58 @@ func TestCircuitBreakerConcurrencyLimit(t *testing.T) {
 	}
 }
 
+func TestCircuitBreakerNormalizesPartialConfig(t *testing.T) {
+	config := &CircuitBreakerConfig{
+		MaxFailures: 1,
+	}
+
+	cb := NewCircuitBreaker(config)
+	defer cb.Stop()
+
+	if cb.config.MaxFailures != 1 {
+		t.Fatalf("MaxFailures = %d, want 1", cb.config.MaxFailures)
+	}
+	if cb.config.MaxConcurrency != DefaultCircuitBreakerConfig().MaxConcurrency {
+		t.Fatalf("MaxConcurrency = %d, want default", cb.config.MaxConcurrency)
+	}
+	if cb.config.HalfOpenMaxRequests != DefaultCircuitBreakerConfig().HalfOpenMaxRequests {
+		t.Fatalf("HalfOpenMaxRequests = %d, want default", cb.config.HalfOpenMaxRequests)
+	}
+	if err := cb.Allow(); err != nil {
+		t.Fatalf("Allow with partial config: %v", err)
+	}
+	cb.Release()
+	if config.MaxConcurrency != 0 {
+		t.Fatalf("normalization mutated caller config")
+	}
+}
+
+func TestCircuitBreakerNormalizesInvalidConfig(t *testing.T) {
+	cb := NewCircuitBreaker(&CircuitBreakerConfig{
+		MaxFailures:         -1,
+		MinSuccesses:        -1,
+		ResetTimeout:        -time.Second,
+		MaxConcurrency:      -1,
+		HalfOpenMaxRequests: -1,
+	})
+	defer cb.Stop()
+
+	defaults := DefaultCircuitBreakerConfig()
+	if cb.config.MaxFailures != defaults.MaxFailures {
+		t.Fatalf("MaxFailures = %d, want %d", cb.config.MaxFailures, defaults.MaxFailures)
+	}
+	if cb.config.MinSuccesses != defaults.MinSuccesses {
+		t.Fatalf("MinSuccesses = %d, want %d", cb.config.MinSuccesses, defaults.MinSuccesses)
+	}
+	if cb.config.ResetTimeout != defaults.ResetTimeout {
+		t.Fatalf("ResetTimeout = %v, want %v", cb.config.ResetTimeout, defaults.ResetTimeout)
+	}
+	if err := cb.Allow(); err != nil {
+		t.Fatalf("Allow with normalized config: %v", err)
+	}
+	cb.Release()
+}
+
 func TestCircuitBreakerExecute(t *testing.T) {
 	config := DefaultCircuitBreakerConfig()
 	cb := NewCircuitBreaker(config)
