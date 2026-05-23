@@ -80,6 +80,62 @@ func TestCreateBackupWithCompression(t *testing.T) {
 	}
 }
 
+func TestBackupRestoreSingleWALFile(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "source.db")
+	dbContent := []byte("database content")
+	if err := os.WriteFile(dbFile, dbContent, 0600); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	walFile := dbFile + ".wal"
+	walContent := []byte("single wal file content")
+	if err := os.WriteFile(walFile, walContent, 0600); err != nil {
+		t.Fatalf("Failed to create WAL file: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+	config.Verify = true
+
+	db := &MockDatabaseWithWAL{dbPath: dbFile, walPath: walFile, lsn: 42}
+	mgr := NewManager(config, db)
+
+	backup, err := mgr.CreateBackup(context.Background(), TypeFull)
+	if err != nil {
+		t.Fatalf("Failed to create backup: %v", err)
+	}
+	if !backup.WALPathIsFile {
+		t.Fatal("Expected backup to record single-file WAL mode")
+	}
+	if len(backup.WALFiles) != 1 {
+		t.Fatalf("Expected one WAL file, got %d", len(backup.WALFiles))
+	}
+
+	restorePath := filepath.Join(tempDir, "restore", "restored.db")
+	if err := mgr.Restore(context.Background(), backup.ID, restorePath); err != nil {
+		t.Fatalf("Failed to restore backup: %v", err)
+	}
+
+	restoredWALPath := restorePath + ".wal"
+	info, err := os.Stat(restoredWALPath)
+	if err != nil {
+		t.Fatalf("Restored WAL file missing: %v", err)
+	}
+	if info.IsDir() {
+		t.Fatal("Restored WAL path should be a file")
+	}
+	restoredWAL, err := os.ReadFile(restoredWALPath)
+	if err != nil {
+		t.Fatalf("Failed to read restored WAL: %v", err)
+	}
+	if string(restoredWAL) != string(walContent) {
+		t.Fatalf("Restored WAL = %q, want %q", restoredWAL, walContent)
+	}
+}
+
 // TestCreateIncrementalBackup tests incremental backup
 func TestCreateIncrementalBackup(t *testing.T) {
 	tempDir := t.TempDir()

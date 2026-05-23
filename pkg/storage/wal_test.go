@@ -48,6 +48,64 @@ func TestWALAppend(t *testing.T) {
 	}
 }
 
+func TestWALAppendBatchDurableBeforeClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "batch.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	records := []*WALRecord{
+		{TxnID: 1, Type: WALInsert, PageID: 1, Offset: 0, Data: []byte("small")},
+		{TxnID: 1, Type: WALCommit},
+	}
+	if err := wal.AppendBatch(records); err != nil {
+		t.Fatalf("AppendBatch failed: %v", err)
+	}
+
+	reopened, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Reopen after AppendBatch failed: %v", err)
+	}
+	defer reopened.Close()
+	if got := reopened.LSN(); got != 2 {
+		t.Fatalf("reopened LSN = %d, want 2", got)
+	}
+}
+
+func TestWALAppendBatchLargeRecordCRC(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "large-batch.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	largePayload := make([]byte, walBatchBufferSize+512)
+	for i := range largePayload {
+		largePayload[i] = byte(i % 251)
+	}
+	if err := wal.AppendBatch([]*WALRecord{
+		{TxnID: 7, Type: WALInsert, PageID: 1, Offset: 0, Data: largePayload},
+	}); err != nil {
+		t.Fatalf("AppendBatch large record failed: %v", err)
+	}
+
+	reopened, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Reopen after large AppendBatch failed: %v", err)
+	}
+	defer reopened.Close()
+	if got := reopened.LSN(); got != 1 {
+		t.Fatalf("reopened LSN = %d, want 1", got)
+	}
+}
+
 func TestWALMultipleAppends(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "test.wal")
