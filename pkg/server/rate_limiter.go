@@ -66,6 +66,7 @@ type RateLimiter struct {
 	cleanupTicker *time.Ticker
 	stopCh        chan struct{}
 	stopOnce      sync.Once
+	wg            sync.WaitGroup
 	logger        *logger.Logger
 }
 
@@ -108,7 +109,9 @@ func NewRateLimiter(config *RateLimiterConfig) *RateLimiter {
 	}
 
 	// Start cleanup goroutine
+	rl.wg.Add(1)
 	go func() {
+		defer rl.wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				rl.logErrorf("recovered panic in rate limiter cleanup: %v", r)
@@ -151,6 +154,7 @@ func (rl *RateLimiter) logErrorf(format string, args ...interface{}) {
 func (rl *RateLimiter) Stop() {
 	rl.stopOnce.Do(func() { close(rl.stopCh) })
 	rl.cleanupTicker.Stop()
+	rl.wg.Wait()
 }
 
 // Allow checks if a request should be allowed
