@@ -120,6 +120,7 @@ func testWireProtocol() *Stats {
 }
 
 func runWireWorker(workerID int, stats *Stats) {
+	// #nosec G404 -- workload generator randomness is not used for security.
 	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
 
 	addr := net.JoinHostPort(*flagHost, fmt.Sprintf("%d", *flagPort))
@@ -205,6 +206,7 @@ func testMySQLProtocol() *Stats {
 }
 
 func runMySQLWorker(workerID int, stats *Stats) {
+	// #nosec G404 -- workload generator randomness is not used for security.
 	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
 	addr := net.JoinHostPort(*flagHost, fmt.Sprintf("%d", *flagMySQLPort))
 
