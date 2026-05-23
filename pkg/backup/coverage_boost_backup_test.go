@@ -2279,10 +2279,21 @@ func TestNewManagerPreservesMetadataLoadError(t *testing.T) {
 
 // TestCompoundReadCloserError tests Close when a closer returns an error
 func TestCompoundReadCloserError(t *testing.T) {
-	errCloser := &MockReadCloser{errOnClose: errors.New("close error")}
-	crc := &compoundReadCloser{Reader: strings.NewReader("data"), closers: []io.Closer{errCloser}}
-	if err := crc.Close(); err == nil {
-		t.Fatal("expected close error")
+	firstErr := errors.New("first close error")
+	secondErr := errors.New("second close error")
+	crc := &compoundReadCloser{
+		Reader: strings.NewReader("data"),
+		closers: []io.Closer{
+			&MockReadCloser{errOnClose: firstErr},
+			&MockReadCloser{errOnClose: secondErr},
+		},
+	}
+	err := crc.Close()
+	if !errors.Is(err, firstErr) {
+		t.Fatalf("expected first close error, got %v", err)
+	}
+	if !errors.Is(err, secondErr) {
+		t.Fatalf("expected second close error, got %v", err)
 	}
 }
 

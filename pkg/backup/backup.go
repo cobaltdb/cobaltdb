@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"hash/crc32"
@@ -899,13 +900,13 @@ type compoundReadCloser struct {
 }
 
 func (r *compoundReadCloser) Close() error {
-	var closeErr error
+	var closeErrs []error
 	for _, closer := range r.closers {
-		if err := closer.Close(); err != nil && closeErr == nil {
-			closeErr = err
+		if err := closer.Close(); err != nil {
+			closeErrs = append(closeErrs, err)
 		}
 	}
-	return closeErr
+	return errors.Join(closeErrs...)
 }
 
 func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targetPath string) error {
