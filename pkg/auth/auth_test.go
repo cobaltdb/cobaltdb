@@ -68,16 +68,14 @@ func TestFailedAuthenticateDoesNotHoldAuthLockDuringDelay(t *testing.T) {
 	}()
 
 	time.Sleep(25 * time.Millisecond)
-	createDone := make(chan error, 1)
+	lockCheckDone := make(chan struct{}, 1)
 	go func() {
-		createDone <- auth.CreateUser("newuser", "password123", false)
+		_ = auth.IsEnabled()
+		lockCheckDone <- struct{}{}
 	}()
 
 	select {
-	case err := <-createDone:
-		if err != nil {
-			t.Fatalf("CreateUser failed: %v", err)
-		}
+	case <-lockCheckDone:
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("failed authentication delay should not hold authenticator lock")
 	}

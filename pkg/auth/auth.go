@@ -266,30 +266,43 @@ func (a *Authenticator) UserExists(username string) bool {
 
 // Authenticate authenticates a user and returns a session token
 func (a *Authenticator) Authenticate(username, password string) (string, error) {
-	a.mu.Lock()
-
-	// Check lockout (lock ordering: mu first, then failedMu)
+	// Check lockout before expensive password work.
 	a.failedMu.RLock()
 	if attempt, exists := a.failedAttempts[username]; exists && time.Now().Before(attempt.lockUntil) {
 		a.failedMu.RUnlock()
-		a.mu.Unlock()
 		return "", fmt.Errorf("account temporarily locked due to too many failed attempts")
 	}
 	a.failedMu.RUnlock()
 
+	a.mu.RLock()
 	user, exists := a.users[username]
 	if !exists {
+		a.mu.RUnlock()
 		count := a.recordFailedAttempt(username)
-		a.mu.Unlock()
+		sleepFailedAttempt(count)
+		return "", ErrInvalidCredentials
+	}
+	salt := user.Salt
+	passwordHashStored := user.PasswordHash
+	a.mu.RUnlock()
+
+	passwordHash := hashPassword(password, salt)
+	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(passwordHashStored)) != 1 {
+		count := a.recordFailedAttempt(username)
 		sleepFailedAttempt(count)
 		return "", ErrInvalidCredentials
 	}
 
-	passwordHash := hashPassword(password, user.Salt)
-	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(user.PasswordHash)) != 1 {
-		count := a.recordFailedAttempt(username)
+	// Generate session token outside the write lock.
+	token, err := generateToken(username)
+	if err != nil {
+		return "", err
+	}
+
+	a.mu.Lock()
+	user, exists = a.users[username]
+	if !exists || user.Salt != salt || user.PasswordHash != passwordHashStored {
 		a.mu.Unlock()
-		sleepFailedAttempt(count)
 		return "", ErrInvalidCredentials
 	}
 
@@ -301,12 +314,6 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 	// Update last login
 	user.LastLogin = time.Now()
 
-	// Generate session token
-	token, err := generateToken(username)
-	if err != nil {
-		a.mu.Unlock()
-		return "", err
-	}
 	session := &Session{
 		Token:     token,
 		Username:  username,
