@@ -155,6 +155,7 @@ type BTree struct {
 	rootPageID     uint32
 	pool           *storage.BufferPool
 	order          int
+	loadErr        error
 	shards         [numShards]btreeShard
 	dirty          int32         // atomic: 0 or 1
 	overflowPages  []uint32      // IDs of overflow pages used by this tree
@@ -204,8 +205,20 @@ func OpenBTree(pool *storage.BufferPool, rootPageID uint32) *BTree {
 	return OpenBTreeWithLimit(pool, rootPageID, DefaultMemoryLimit)
 }
 
+// OpenBTreeStrict opens an existing B+Tree and returns load errors to callers.
+func OpenBTreeStrict(pool *storage.BufferPool, rootPageID uint32) (*BTree, error) {
+	return OpenBTreeWithLimitStrict(pool, rootPageID, DefaultMemoryLimit)
+}
+
 // OpenBTreeWithLimit opens an existing B+Tree with a specified memory limit
 func OpenBTreeWithLimit(pool *storage.BufferPool, rootPageID uint32, limit int64) *BTree {
+	t, _ := OpenBTreeWithLimitStrict(pool, rootPageID, limit)
+	return t
+}
+
+// OpenBTreeWithLimitStrict opens an existing B+Tree with a specified memory
+// limit and returns any page load error instead of only creating an empty tree.
+func OpenBTreeWithLimitStrict(pool *storage.BufferPool, rootPageID uint32, limit int64) (*BTree, error) {
 	t := &BTree{
 		rootPageID: rootPageID,
 		pool:       pool,
@@ -219,9 +232,18 @@ func OpenBTreeWithLimit(pool *storage.BufferPool, rootPageID uint32, limit int64
 		t.shards[i].lruMap = make(map[string]*lruEntry, 64)
 	}
 	if err := t.loadFromPages(); err != nil {
-		fmt.Printf("btree: warning: failed to load pages for root %d: %v\n", rootPageID, err)
+		t.loadErr = err
+		return t, fmt.Errorf("failed to load B+Tree pages for root %d: %w", rootPageID, err)
 	}
-	return t
+	return t, nil
+}
+
+// LoadError returns any error encountered while opening an existing tree.
+func (t *BTree) LoadError() error {
+	if t == nil {
+		return nil
+	}
+	return t.loadErr
 }
 
 // loadFromPages loads serialized key-value pairs from root + overflow pages into shards

@@ -28,19 +28,19 @@ import (
 
 func DefaultOptions() *Options {
 	return &Options{
-		PageSize:            storage.PageSize,
-		CacheSize:           1024, // 4MB cache
-		InMemory:            false,
-		WALEnabled:          BoolPtr(true),
-		SyncMode:            SyncNormal,
-		Logger:              logger.Default(),
-		MaxConnections:      100, // Default max connections
-		ConnectionTimeout:   30 * time.Second,
-		QueryTimeout:        60 * time.Second,
-		MaxStmtCacheSize:    1000, // Default max cached statements
-		EnableAutoVacuum:    true,
-		AutoVacuumInterval:  1 * time.Minute,
-		AutoVacuumThreshold: 0.2, // 20% dead tuples triggers vacuum
+		PageSize:             storage.PageSize,
+		CacheSize:            1024, // 4MB cache
+		InMemory:             false,
+		WALEnabled:           BoolPtr(true),
+		SyncMode:             SyncNormal,
+		Logger:               logger.Default(),
+		MaxConnections:       100, // Default max connections
+		ConnectionTimeout:    30 * time.Second,
+		QueryTimeout:         60 * time.Second,
+		MaxStmtCacheSize:     1000, // Default max cached statements
+		EnableAutoVacuum:     true,
+		AutoVacuumInterval:   1 * time.Minute,
+		AutoVacuumThreshold:  0.2, // 20% dead tuples triggers vacuum
 		EnableAutoCheckpoint: true,
 		CheckpointInterval:   5 * time.Minute,
 		EnableScheduler:      true,
@@ -485,7 +485,11 @@ func (db *DB) loadExisting() error {
 	}
 
 	// Open root B+Tree
-	db.rootTree = btree.OpenBTree(db.pool, meta.RootPageID)
+	rootTree, err := btree.OpenBTreeStrict(db.pool, meta.RootPageID)
+	if err != nil {
+		return fmt.Errorf("failed to open root B+Tree: %w", err)
+	}
+	db.rootTree = rootTree
 
 	// Load catalog - schema and data are now stored in the B+Tree pages
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)

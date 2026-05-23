@@ -188,7 +188,11 @@ func (db *DB) reloadSnapshotStateLocked() error {
 		db.pool.SetWAL(db.wal)
 	}
 
-	db.rootTree = btree.OpenBTree(db.pool, meta.RootPageID)
+	rootTree, err := btree.OpenBTreeStrict(db.pool, meta.RootPageID)
+	if err != nil {
+		return fmt.Errorf("failed to open snapshot root B+Tree: %w", err)
+	}
+	db.rootTree = rootTree
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
 	db.catalog.SetParallelOptions(db.options.ParallelWorkers, db.options.ParallelThreshold)
 

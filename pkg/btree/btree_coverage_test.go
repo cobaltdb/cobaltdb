@@ -270,9 +270,29 @@ func TestLoadFromPages_InvalidPageID(t *testing.T) {
 	if tree == nil {
 		t.Fatal("OpenBTree returned nil even with invalid page")
 	}
+	if tree.LoadError() == nil {
+		t.Fatal("Expected OpenBTree to record the load error")
+	}
 	// Tree should be empty/usable despite load failure
 	if tree.Size() != 0 {
 		t.Errorf("Expected size 0, got %d", tree.Size())
+	}
+}
+
+func TestOpenBTreeStrictReturnsLoadError(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, err := OpenBTreeStrict(pool, 9999)
+	if err == nil {
+		t.Fatal("Expected strict open to return load error")
+	}
+	if tree == nil {
+		t.Fatal("Expected strict open to return the partially initialized tree")
+	}
+	if tree.LoadError() == nil {
+		t.Fatal("Expected strict open to record the load error")
 	}
 }
 

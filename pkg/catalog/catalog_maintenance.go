@@ -122,7 +122,11 @@ func (c *Catalog) Load() error {
 
 		// Create or open B+Tree for the table
 		if tableDef.RootPageID != 0 {
-			c.tableTrees[tableName] = btree.OpenBTree(c.pool, tableDef.RootPageID)
+			tree, err := btree.OpenBTreeStrict(c.pool, tableDef.RootPageID)
+			if err != nil {
+				return fmt.Errorf("load catalog: failed to open tree for table %s: %w", tableName, err)
+			}
+			c.tableTrees[tableName] = tree
 		} else {
 			tree, err := btree.NewBTree(c.pool)
 			if err != nil {
@@ -280,7 +284,15 @@ func (c *Catalog) LoadSchema(dir string) error {
 
 		// Create or open B+Tree for the table
 		if tableDef.RootPageID != 0 && c.pool != nil {
-			c.tableTrees[name] = btree.OpenBTree(c.pool, tableDef.RootPageID)
+			tree, err := btree.OpenBTreeStrict(c.pool, tableDef.RootPageID)
+			if err != nil {
+				tree, err = btree.NewBTree(c.pool)
+				if err != nil {
+					return fmt.Errorf("load schema: failed to create replacement tree for %s: %w", name, err)
+				}
+				tableDef.RootPageID = tree.RootPageID()
+			}
+			c.tableTrees[name] = tree
 		} else {
 			var tree *btree.BTree
 			if c.pool != nil {
