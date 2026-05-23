@@ -50,6 +50,9 @@ type Job struct {
 
 // Validate checks that the job is well-formed.
 func (j *Job) Validate() error {
+	if j == nil {
+		return fmt.Errorf("job is required")
+	}
 	if j.ID == "" {
 		return fmt.Errorf("job ID is required")
 	}

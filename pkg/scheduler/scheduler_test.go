@@ -197,6 +197,9 @@ func TestSchedulerDuplicateID(t *testing.T) {
 
 func TestSchedulerInvalidJob(t *testing.T) {
 	s := New(1, nil)
+	if err := s.Register(nil); err == nil {
+		t.Fatal("expected nil job validation error")
+	}
 	if err := s.Register(&Job{ID: "bad", Interval: 0, Fn: func(ctx context.Context) error { return nil }}); err == nil {
 		t.Fatal("expected interval validation error")
 	}
