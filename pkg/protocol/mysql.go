@@ -22,34 +22,61 @@ import (
 )
 
 const (
-	// maxMySQLPayloadSize is the maximum allowed MySQL packet payload size (16 MB)
-	maxMySQLPayloadSize = 16 * 1024 * 1024
+	// maxMySQLPayloadSize is the largest value representable by MySQL's 3-byte packet length.
+	maxMySQLPayloadSize = 1<<24 - 1
 )
+
+func mysqlByte(v uint64) byte {
+	return byte(v) // #nosec G115 - callers pass protocol values already narrowed by branch bounds.
+}
+
+func appendUint16LE(dst []byte, v uint16) []byte {
+	var buf [2]byte
+	binary.LittleEndian.PutUint16(buf[:], v)
+	return append(dst, buf[:]...)
+}
+
+func appendUint32LE(dst []byte, v uint32) []byte {
+	var buf [4]byte
+	binary.LittleEndian.PutUint32(buf[:], v)
+	return append(dst, buf[:]...)
+}
+
+func mysqlUint16(n int, name string) (uint16, error) {
+	if n < 0 || n > 1<<16-1 {
+		return 0, fmt.Errorf("%s exceeds uint16: %d", name, n)
+	}
+	return uint16(n), nil // #nosec G115 - range checked above.
+}
+
+func mysqlPacketLength(n int) uint32 {
+	return uint32(n) // #nosec G115 - caller limits n to maxMySQLPayloadSize.
+}
 
 // MySQL protocol constants
 const (
 	// Command types
-	MySQLComQuit        byte = 0x01
-	MySQLComInitDB      byte = 0x02
-	MySQLComQuery       byte = 0x03
-	MySQLComFieldList   byte = 0x04
-	MySQLComCreateDB    byte = 0x05
-	MySQLComDropDB      byte = 0x06
-	MySQLComRefresh     byte = 0x07
-	MySQLComShutdown    byte = 0x08
-	MySQLComStatistics  byte = 0x09
-	MySQLComProcessInfo byte = 0x0a
-	MySQLComConnect     byte = 0x0b
-	MySQLComProcessKill byte = 0x0c
-	MySQLComDebug       byte = 0x0d
-	MySQLComPing        byte = 0x0e
-	MySQLComChangeUser  byte = 0x11
-		MySQLComStmtPrepare byte = 0x16
-		MySQLComStmtExecute byte = 0x17
-		MySQLComStmtSendLongData byte = 0x18
-		MySQLComStmtClose   byte = 0x19
-		MySQLComStmtReset   byte = 0x1a
-	MySQLComResetConnection byte = 0x1f
+	MySQLComQuit             byte = 0x01
+	MySQLComInitDB           byte = 0x02
+	MySQLComQuery            byte = 0x03
+	MySQLComFieldList        byte = 0x04
+	MySQLComCreateDB         byte = 0x05
+	MySQLComDropDB           byte = 0x06
+	MySQLComRefresh          byte = 0x07
+	MySQLComShutdown         byte = 0x08
+	MySQLComStatistics       byte = 0x09
+	MySQLComProcessInfo      byte = 0x0a
+	MySQLComConnect          byte = 0x0b
+	MySQLComProcessKill      byte = 0x0c
+	MySQLComDebug            byte = 0x0d
+	MySQLComPing             byte = 0x0e
+	MySQLComChangeUser       byte = 0x11
+	MySQLComStmtPrepare      byte = 0x16
+	MySQLComStmtExecute      byte = 0x17
+	MySQLComStmtSendLongData byte = 0x18
+	MySQLComStmtClose        byte = 0x19
+	MySQLComStmtReset        byte = 0x1a
+	MySQLComResetConnection  byte = 0x1f
 
 	// Server status flags
 	MySQLServerStatusInTrans            uint16 = 0x0001
@@ -815,32 +842,44 @@ func appendLenEncString(dst []byte, s string) []byte {
 	return append(dst, s...)
 }
 
-//nolint:unused // used by coverage tests
 // writeLenEncString returns a newly allocated length-encoded string.
 // Prefer appendLenEncString for zero-allocation appending.
+//
+//nolint:unused // used by coverage tests
 func writeLenEncString(s string) []byte {
 	return appendLenEncString(nil, s)
 }
 
 // writePacket writes a MySQL protocol packet
 func (c *MySQLClient) writePacket(data []byte, sequence byte) error {
-	// Packet header: 3 bytes length + 1 byte sequence
-	length := len(data)
-	var header [4]byte
-	header[0] = byte(length)
-	header[1] = byte(length >> 8)
-	header[2] = byte(length >> 16)
-	header[3] = sequence
+	offset := 0
+	seq := sequence
+	for {
+		chunkLen := len(data) - offset
+		if chunkLen > maxMySQLPayloadSize {
+			chunkLen = maxMySQLPayloadSize
+		}
 
-	if _, err := c.conn.Write(header[:]); err != nil {
-		return err
+		// Packet header: 3 bytes length + 1 byte sequence.
+		var header [4]byte
+		binary.LittleEndian.PutUint32(header[:], mysqlPacketLength(chunkLen))
+		header[3] = seq
+
+		if _, err := c.conn.Write(header[:]); err != nil {
+			return err
+		}
+		if chunkLen > 0 {
+			if _, err := c.conn.Write(data[offset : offset+chunkLen]); err != nil {
+				return err
+			}
+		}
+
+		offset += chunkLen
+		if offset >= len(data) {
+			return nil
+		}
+		seq++
 	}
-
-	if _, err := c.conn.Write(data); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // sendOKPacket sends an OK packet
@@ -869,7 +908,7 @@ func (c *MySQLClient) sendErrorPacket(code uint16, message string) error {
 	pkt = append(pkt, 0xff)
 
 	// Error code
-	pkt = append(pkt, byte(code), byte(code>>8))
+	pkt = appendUint16LE(pkt, code)
 
 	// SQL state marker
 	pkt = append(pkt, '#')
@@ -955,11 +994,11 @@ func readLenEncInt(data []byte) (uint64, int) {
 func appendLenEncInt(dst []byte, value uint64) []byte {
 	switch {
 	case value < 251:
-		return append(dst, byte(value))
+		return append(dst, mysqlByte(value))
 	case value < 1<<16:
-		return append(dst, 0xfc, byte(value), byte(value>>8))
+		return append(dst, 0xfc, mysqlByte(value), mysqlByte(value>>8))
 	case value < 1<<24:
-		return append(dst, 0xfd, byte(value), byte(value>>8), byte(value>>16))
+		return append(dst, 0xfd, mysqlByte(value), mysqlByte(value>>8), mysqlByte(value>>16))
 	default:
 		buf := make([]byte, 9)
 		buf[0] = 0xfe
@@ -999,11 +1038,12 @@ func containsIgnoreCase(s, substr string) bool {
 	}
 	return false
 }
+
 // preparedStmt holds server-side prepared statement state.
 type preparedStmt struct {
-	id        uint32
-	sql       string
-	numParams int
+	id         uint32
+	sql        string
+	numParams  int
 	numColumns int
 }
 
@@ -1043,8 +1083,12 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 
 	pkt := make([]byte, 0, 64)
 	pkt = append(pkt, 0x00)
-	pkt = append(pkt, byte(stmtID), byte(stmtID>>8), byte(stmtID>>16), byte(stmtID>>24))
-	pkt = append(pkt, byte(numColumns), byte(numColumns>>8))
+	pkt = appendUint32LE(pkt, stmtID)
+	columnCount, err := mysqlUint16(numColumns, "prepared statement column count")
+	if err != nil {
+		return err
+	}
+	pkt = appendUint16LE(pkt, columnCount)
 	pkt = append(pkt, 0x00, 0x00)
 	pkt = append(pkt, 0x00)
 	pkt = append(pkt, 0x00, 0x00)
@@ -1258,4 +1302,3 @@ func (c *MySQLClient) handleResetConnection() error {
 	c.nextStmtID = 0
 	return c.sendOKPacket(0, 0)
 }
-
