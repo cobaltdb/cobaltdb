@@ -116,14 +116,8 @@ func New(db *engine.DB, config *Config) (*Server, error) {
 		}
 	}
 
-	readTimeout := time.Duration(config.ReadTimeout) * time.Second
-	if readTimeout == 0 {
-		readTimeout = 300 * time.Second // 5 minutes default
-	}
-	writeTimeout := time.Duration(config.WriteTimeout) * time.Second
-	if writeTimeout == 0 {
-		writeTimeout = 60 * time.Second // 1 minute default
-	}
+	readTimeout := timeoutSecondsOrDefault(config.ReadTimeout, 300*time.Second)
+	writeTimeout := timeoutSecondsOrDefault(config.WriteTimeout, 60*time.Second)
 
 	return &Server{
 		db:             db,
@@ -134,6 +128,13 @@ func New(db *engine.DB, config *Config) (*Server, error) {
 		writeTimeout:   writeTimeout,
 		logger:         config.Logger,
 	}, nil
+}
+
+func timeoutSecondsOrDefault(seconds int, fallback time.Duration) time.Duration {
+	if seconds <= 0 {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func (s *Server) logWarnf(format string, args ...interface{}) {

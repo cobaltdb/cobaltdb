@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 	"github.com/cobaltdb/cobaltdb/pkg/wire"
@@ -56,6 +57,28 @@ func TestNewRejectsEmptyAdminPassword(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected empty admin password to be rejected")
+	}
+}
+
+func TestNewNormalizesNonpositiveTimeouts(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	server, err := New(db, &Config{ReadTimeout: -1, WriteTimeout: -1})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	if server.readTimeout != 300*time.Second {
+		t.Fatalf("readTimeout = %v, want 300s", server.readTimeout)
+	}
+	if server.writeTimeout != 60*time.Second {
+		t.Fatalf("writeTimeout = %v, want 60s", server.writeTimeout)
 	}
 }
 
