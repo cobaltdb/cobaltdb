@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+const (
+	slowQueryLogDirPerm  = 0750
+	slowQueryLogFilePerm = 0600
+)
+
 // SlowQueryEntry represents a single slow query log entry
 type SlowQueryEntry struct {
 	Timestamp    time.Time     `json:"timestamp"`
@@ -84,16 +89,19 @@ func (s *SlowQueryLog) writeToFile(entry SlowQueryEntry) {
 	// Ensure directory exists
 	dir := filepath.Dir(s.logFile)
 	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, slowQueryLogDirPerm); err != nil {
 			return
 		}
 	}
 
-	f, err := os.OpenFile(s.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(s.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, slowQueryLogFilePerm)
 	if err != nil {
 		return
 	}
 	defer f.Close()
+	if err := f.Chmod(slowQueryLogFilePerm); err != nil {
+		return
+	}
 
 	_, _ = fmt.Fprintf(f, "%s\n", data)
 }

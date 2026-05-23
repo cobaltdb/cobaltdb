@@ -94,6 +94,14 @@ func TestSlowQueryLogFile(t *testing.T) {
 	if len(data) == 0 {
 		t.Error("Log file is empty")
 	}
+
+	info, err := os.Stat(logFile)
+	if err != nil {
+		t.Fatalf("Failed to stat log file: %v", err)
+	}
+	if info.Mode().Perm() != slowQueryLogFilePerm {
+		t.Errorf("Expected log file permissions %o, got %o", slowQueryLogFilePerm, info.Mode().Perm())
+	}
 }
 
 func TestSlowQueryLogStats(t *testing.T) {
