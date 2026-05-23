@@ -34,6 +34,26 @@ func (m *mockConnWithClose) IsClosed() bool {
 	return m.closed
 }
 
+type mockConnWithCloseError struct {
+	mockConnWithClose
+	closeErr error
+	count    int
+}
+
+func (m *mockConnWithCloseError) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed = true
+	m.count++
+	return m.closeErr
+}
+
+func (m *mockConnWithCloseError) CloseCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.count
+}
+
 // TestConfigValidateErrors tests config validation errors
 func TestConfigValidateErrors(t *testing.T) {
 	tests := []struct {
@@ -190,6 +210,50 @@ func TestConnClose(t *testing.T) {
 	// Second close should not error
 	if err := conn.Close(); err != nil {
 		t.Errorf("Second close should not error: %v", err)
+	}
+}
+
+func TestConnCloseReturnsUnderlyingErrorOnce(t *testing.T) {
+	closeErr := errors.New("close failed")
+	rawConn := &mockConnWithCloseError{closeErr: closeErr}
+	conn := newConn(rawConn, nil, 1)
+
+	if err := conn.Close(); !errors.Is(err, closeErr) {
+		t.Fatalf("expected close error, got %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("second close should be idempotent, got %v", err)
+	}
+	if rawConn.CloseCount() != 1 {
+		t.Fatalf("expected underlying close once, got %d", rawConn.CloseCount())
+	}
+}
+
+func TestPoolCloseReturnsUnderlyingErrorsOnce(t *testing.T) {
+	closeErr := errors.New("close failed")
+	rawConn := &mockConnWithCloseError{closeErr: closeErr}
+	dialer := func() (net.Conn, error) {
+		return rawConn, nil
+	}
+
+	config := DefaultConfig()
+	config.MinConns = 1
+	config.MaxConns = 1
+
+	pool, err := New(config, dialer)
+	if err != nil {
+		t.Fatalf("Failed to create pool: %v", err)
+	}
+
+	err = pool.Close()
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected close error, got %v", err)
+	}
+	if rawConn.CloseCount() != 1 {
+		t.Fatalf("expected underlying close once, got %d", rawConn.CloseCount())
+	}
+	if err := pool.Close(); err != nil {
+		t.Fatalf("second pool close should be idempotent, got %v", err)
 	}
 }
 

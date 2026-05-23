@@ -103,8 +103,20 @@ func (c *Conn) Release() {
 
 // Close closes the connection and removes it from the pool
 func (c *Conn) Close() error {
+	if c.pool == nil {
+		if atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
+			return c.Conn.Close()
+		}
+		return nil
+	}
+	if atomic.LoadInt32(&c.closed) == 0 {
+		return c.pool.removeConn(c)
+	}
+	return nil
+}
+
+func (c *Conn) closeUnderlying() error {
 	if atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
-		c.pool.removeConn(c)
 		return c.Conn.Close()
 	}
 	return nil
@@ -236,15 +248,17 @@ func (p *Pool) Close() error {
 	defer p.mu.Unlock()
 
 	// Close all connections
+	var closeErrs []error
 	for _, conn := range p.conns {
-		conn.Conn.Close()
+		if err := conn.closeUnderlying(); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("close connection %d: %w", conn.id, err))
+		}
 	}
 	p.conns = p.conns[:0]
 
 	// Clear available channel
 	close(p.available)
-	for conn := range p.available {
-		conn.Conn.Close()
+	for range p.available {
 	}
 
 	// Notify waiting clients
@@ -255,7 +269,7 @@ func (p *Pool) Close() error {
 	p.waiters = p.waiters[:0]
 	p.waitersMu.Unlock()
 
-	return nil
+	return errors.Join(closeErrs...)
 }
 
 // Acquire gets a connection from the pool
@@ -363,7 +377,7 @@ func (p *Pool) waitForConnection(ctx context.Context) (*Conn, error) {
 // release returns a connection to the pool
 func (p *Pool) release(conn *Conn) {
 	if atomic.LoadInt32(&p.closed) == 1 {
-		conn.Conn.Close()
+		_ = p.removeConn(conn)
 		return
 	}
 
@@ -396,7 +410,7 @@ func (p *Pool) release(conn *Conn) {
 	case p.available <- conn:
 	default:
 		// Channel full, close connection
-		p.removeConn(conn)
+		_ = p.removeConn(conn)
 	}
 }
 
@@ -427,7 +441,7 @@ func (p *Pool) createConnection() error {
 }
 
 // removeConn removes a connection from the pool
-func (p *Pool) removeConn(conn *Conn) {
+func (p *Pool) removeConn(conn *Conn) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -445,7 +459,7 @@ func (p *Pool) removeConn(conn *Conn) {
 		}
 	}
 
-	conn.Conn.Close()
+	return conn.closeUnderlying()
 }
 
 // healthCheckLoop periodically checks connection health
@@ -481,14 +495,14 @@ func (p *Pool) performHealthCheck() {
 	for _, conn := range conns {
 		// Check if connection is expired
 		if conn.IsExpired(p.config.MaxLifetime, p.config.MaxIdleTime) {
-			p.removeConn(conn)
+			_ = p.removeConn(conn)
 			continue
 		}
 
 		// Check health if idle
 		if atomic.LoadInt32(&conn.inUse) == 0 {
 			if !conn.IsHealthy(p.config.HealthCheckTimeout) {
-				p.removeConn(conn)
+				_ = p.removeConn(conn)
 			}
 		}
 	}
