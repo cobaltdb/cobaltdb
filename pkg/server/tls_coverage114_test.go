@@ -209,6 +209,16 @@ func TestLoadTLSConfigDisable114(t *testing.T) {
 	}
 }
 
+func TestLoadTLSConfigNilIsDisabled(t *testing.T) {
+	tlsConfig, err := LoadTLSConfig(nil)
+	if err != nil {
+		t.Fatalf("LoadTLSConfig(nil): %v", err)
+	}
+	if tlsConfig != nil {
+		t.Fatal("expected nil tls.Config for nil config")
+	}
+}
+
 // TestLoadTLSConfigSelfSigned114 tests loading self-signed TLS config
 func TestLoadTLSConfigSelfSigned114(t *testing.T) {
 	// Create temp directory for certs
@@ -236,6 +246,34 @@ func TestLoadTLSConfigSelfSigned114(t *testing.T) {
 	}
 	if len(tlsConfig.Certificates) == 0 {
 		t.Error("Expected at least one certificate")
+	}
+}
+
+func TestLoadTLSConfigSelfSignedDefaultsValidity(t *testing.T) {
+	tempDir := t.TempDir()
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	defer os.Chdir(originalDir)
+
+	config := &TLSConfig{
+		Enabled:            true,
+		GenerateSelfSigned: true,
+	}
+
+	tlsConfig, err := LoadTLSConfig(config)
+	if err != nil {
+		t.Fatalf("LoadTLSConfig: %v", err)
+	}
+	if tlsConfig == nil || len(tlsConfig.Certificates) == 0 {
+		t.Fatal("expected generated certificate")
+	}
+	if config.SelfSignedValidDays != 0 {
+		t.Fatal("LoadTLSConfig should not mutate caller config")
 	}
 }
 

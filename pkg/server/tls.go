@@ -70,6 +70,9 @@ func DefaultTLSConfig() *TLSConfig {
 
 // LoadTLSConfig loads TLS configuration
 func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
+	if config == nil {
+		return nil, nil
+	}
 	if !config.Enabled {
 		return nil, nil
 	}
@@ -152,6 +155,12 @@ func normalizeTLSConfig(config *TLSConfig) *TLSConfig {
 	}
 	if len(normalized.CipherSuites) == 0 {
 		normalized.CipherSuites = DefaultTLSConfig().CipherSuites
+	}
+	if normalized.SelfSignedOrg == "" {
+		normalized.SelfSignedOrg = DefaultTLSConfig().SelfSignedOrg
+	}
+	if normalized.SelfSignedValidDays <= 0 {
+		normalized.SelfSignedValidDays = DefaultTLSConfig().SelfSignedValidDays
 	}
 	return &normalized
 }
