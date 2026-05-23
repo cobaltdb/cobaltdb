@@ -3,9 +3,11 @@ package catalog
 import (
 	"encoding/hex"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 type funcResult struct {
@@ -449,7 +451,9 @@ func evalStringChar(evalArgs []interface{}) funcResult {
 	for _, arg := range evalArgs {
 		if arg != nil {
 			if f, ok := toFloat64(arg); ok {
-				result.WriteRune(rune(int(f)))
+				if f >= 0 && f <= utf8.MaxRune && math.Trunc(f) == f {
+					result.WriteRune(rune(f))
+				}
 			}
 		}
 	}

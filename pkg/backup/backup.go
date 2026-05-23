@@ -469,7 +469,10 @@ func writeDeltaRecord(writer io.Writer, offset uint64, data []byte) error {
 	if err := binary.Write(writer, binary.LittleEndian, offset); err != nil {
 		return fmt.Errorf("failed to write delta offset: %w", err)
 	}
-	length := uint32(len(data))
+	if len(data) > 1<<32-1 {
+		return fmt.Errorf("delta record too large: %d bytes", len(data))
+	}
+	length := uint32(len(data)) // #nosec G115 - range checked above.
 	if err := binary.Write(writer, binary.LittleEndian, length); err != nil {
 		return fmt.Errorf("failed to write delta length: %w", err)
 	}

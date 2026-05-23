@@ -153,7 +153,7 @@ func (sc *StatsCollector) countRows(tableName string) (uint64, error) {
 		}
 	}
 
-	return uint64(count), nil
+	return catalogUint64Count(count, "row count")
 }
 
 // collectColumnStats collects statistics for a column
@@ -177,14 +177,22 @@ func (sc *StatsCollector) collectColumnStats(tableName, columnName string) (*Col
 		return nil, err
 	}
 
-	stats.DistinctCount = uint64(len(result.Rows))
+	distinctCount, err := catalogUint64Len(len(result.Rows), "distinct row count")
+	if err != nil {
+		return nil, err
+	}
+	stats.DistinctCount = distinctCount
 
 	// Count nulls
 	nullQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s IS NULL", qTable, qCol)
 	nullResult, err := sc.catalog.ExecuteQuery(nullQuery)
 	if err == nil && len(nullResult.Rows) > 0 {
 		if count, ok := nullResult.Rows[0][0].(int64); ok {
-			stats.NullCount = uint64(count)
+			nullCount, err := catalogUint64Count(count, "null count")
+			if err != nil {
+				return nil, err
+			}
+			stats.NullCount = nullCount
 		}
 	}
 

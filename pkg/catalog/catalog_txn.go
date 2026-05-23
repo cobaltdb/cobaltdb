@@ -94,31 +94,41 @@ func (c *Catalog) getCurrentTxn() *catalogTxnState {
 	return c.getGoroutineTxnState()
 }
 
-func goroutineTxnShardIdx(gid int64) int {
-	return int(uint64(gid) & 15)
+func goroutineTxnShardIdx(key uint64) int {
+	return int(key & 15) // #nosec G115 - masked shard index is in [0, 15].
+}
+
+func goroutineTxnKey(gid int64) uint64 {
+	if gid < 0 {
+		return uint64(-(gid + 1)) + 1 // #nosec G115 - adjusted before conversion to handle MinInt64.
+	}
+	return uint64(gid) // #nosec G115 - negative values handled above.
 }
 
 func (c *Catalog) registerGoroutineTxn(ts *catalogTxnState) {
-	shard := &c.goroutineTxnShards[goroutineTxnShardIdx(goroutineID())]
+	key := goroutineTxnKey(goroutineID())
+	shard := &c.goroutineTxnShards[goroutineTxnShardIdx(key)]
 	shard.mu.Lock()
 	if shard.m == nil {
 		shard.m = make(map[uint64]*catalogTxnState)
 	}
-	shard.m[uint64(goroutineID())] = ts
+	shard.m[key] = ts
 	shard.mu.Unlock()
 }
 
 func (c *Catalog) unregisterGoroutineTxn() {
-	shard := &c.goroutineTxnShards[goroutineTxnShardIdx(goroutineID())]
+	key := goroutineTxnKey(goroutineID())
+	shard := &c.goroutineTxnShards[goroutineTxnShardIdx(key)]
 	shard.mu.Lock()
-	delete(shard.m, uint64(goroutineID()))
+	delete(shard.m, key)
 	shard.mu.Unlock()
 }
 
 func (c *Catalog) getGoroutineTxnState() *catalogTxnState {
-	shard := &c.goroutineTxnShards[goroutineTxnShardIdx(goroutineID())]
+	key := goroutineTxnKey(goroutineID())
+	shard := &c.goroutineTxnShards[goroutineTxnShardIdx(key)]
 	shard.mu.RLock()
-	ts := shard.m[uint64(goroutineID())]
+	ts := shard.m[key]
 	shard.mu.RUnlock()
 	return ts
 }

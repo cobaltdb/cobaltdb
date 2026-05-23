@@ -628,8 +628,16 @@ func (c *Catalog) Analyze(tableName string) error {
 			valueSet[ValueToStringKey(val)] = true
 		}
 
-		colStats.DistinctCount = uint64(len(valueSet))
-		colStats.NullCount = uint64(nullCounts[col.Name])
+		distinctCount, err := catalogUint64Len(len(valueSet), "distinct value count")
+		if err != nil {
+			return err
+		}
+		nullCount, err := catalogUint64Count(nullCounts[col.Name], "null count")
+		if err != nil {
+			return err
+		}
+		colStats.DistinctCount = distinctCount
+		colStats.NullCount = nullCount
 
 		// Find min/max
 		if len(values) > 0 {
