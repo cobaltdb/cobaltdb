@@ -225,6 +225,36 @@ func TestSchedulerStopIdempotent(t *testing.T) {
 	s.Stop() // should not panic
 }
 
+func TestSchedulerRestartAfterStop(t *testing.T) {
+	var count atomic.Int32
+	s := NewWithInterval(1, nil, 10*time.Millisecond)
+
+	job := &Job{
+		ID:       "restart-job",
+		Name:     "Restart Job",
+		Type:     JobTypeCustom,
+		Interval: 20 * time.Millisecond,
+		Enabled:  true,
+		Fn: func(ctx context.Context) error {
+			count.Add(1)
+			return nil
+		},
+	}
+	if err := s.Register(job); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	s.Start()
+	waitForSchedulerCount(t, &count, 1, time.Second)
+	s.Stop()
+
+	before := count.Load()
+	s.Start()
+	waitForSchedulerCount(t, &count, before+1, time.Second)
+	s.Stop()
+	s.Stop()
+}
+
 func TestSchedulerUnregister(t *testing.T) {
 	s := New(1, nil)
 	j := &Job{ID: "u", Interval: time.Second, Fn: func(ctx context.Context) error { return nil }}
@@ -306,4 +336,16 @@ func TestJobValidateMissingID(t *testing.T) {
 	if err := j.Validate(); err == nil {
 		t.Error("expected error for missing ID")
 	}
+}
+
+func waitForSchedulerCount(t *testing.T, count *atomic.Int32, want int32, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if count.Load() >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("expected at least %d runs, got %d", want, count.Load())
 }

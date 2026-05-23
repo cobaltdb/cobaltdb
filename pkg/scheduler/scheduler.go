@@ -166,10 +166,12 @@ func (s *Scheduler) Start() {
 	s.ticker = time.NewTicker(s.tickInterval)
 
 	workCh := make(chan *Job, s.workers*4)
+	ticker := s.ticker
+	stopCh := s.stopCh
 
 	// Start dispatcher
 	s.wg.Add(1)
-	go s.dispatchLoop(workCh)
+	go s.dispatchLoop(workCh, ticker, stopCh)
 
 	// Start workers
 	for i := 0; i < s.workers; i++ {
@@ -186,25 +188,27 @@ func (s *Scheduler) Stop() {
 		return
 	}
 	s.started = false
-	s.startMu.Unlock()
 
 	close(s.stopCh)
 	if s.ticker != nil {
 		s.ticker.Stop()
+		s.ticker = nil
 	}
 	s.wg.Wait()
+	s.stopCh = make(chan struct{})
+	s.startMu.Unlock()
 	s.logger.Infof("Scheduler stopped")
 }
 
 // dispatchLoop ticks every second and sends overdue jobs to workers.
-func (s *Scheduler) dispatchLoop(workCh chan<- *Job) {
+func (s *Scheduler) dispatchLoop(workCh chan<- *Job, ticker *time.Ticker, stopCh <-chan struct{}) {
 	defer s.wg.Done()
 	for {
 		select {
-		case <-s.stopCh:
+		case <-stopCh:
 			close(workCh)
 			return
-		case <-s.ticker.C:
+		case <-ticker.C:
 		}
 
 		now := time.Now()
@@ -224,7 +228,7 @@ func (s *Scheduler) dispatchLoop(workCh chan<- *Job) {
 		for _, j := range ready {
 			select {
 			case workCh <- j:
-			case <-s.stopCh:
+			case <-stopCh:
 				close(workCh)
 				return
 			}
@@ -243,6 +247,11 @@ func (s *Scheduler) worker(ch <-chan *Job) {
 		enabled := j.Enabled
 		s.mu.RUnlock()
 		if !enabled {
+			s.mu.Lock()
+			if !j.Enabled {
+				j.Status = JobStatusDisabled
+			}
+			s.mu.Unlock()
 			continue
 		}
 		if err := s.runJob(j); err != nil {

@@ -88,14 +88,12 @@ func TestSchedulerCustomJob(t *testing.T) {
 		t.Fatalf("Failed to register custom job: %v", err)
 	}
 
-	time.Sleep(350 * time.Millisecond)
-
-	if count.Load() < 2 {
-		t.Fatalf("Expected at least 2 runs, got %d", count.Load())
-	}
+	waitForIntegrationSchedulerCount(t, &count, 3, time.Second)
 
 	// Disable job and verify it stops
-	sched.Disable("custom-counter")
+	if !sched.Disable("custom-counter") {
+		t.Fatal("failed to disable custom job")
+	}
 	before := count.Load()
 	time.Sleep(300 * time.Millisecond)
 	if count.Load() != before {
@@ -130,4 +128,16 @@ func TestSchedulerDisableScheduler(t *testing.T) {
 	if db.GetScheduler() != nil {
 		t.Fatal("Expected nil scheduler when disabled")
 	}
+}
+
+func waitForIntegrationSchedulerCount(t *testing.T, count *atomic.Int32, want int32, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if count.Load() >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("Expected at least %d runs, got %d", want, count.Load())
 }
