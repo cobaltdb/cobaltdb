@@ -1,6 +1,9 @@
 # Multi-stage build for CobaltDB
 FROM golang:1.26-alpine AS builder
 
+ARG VERSION=dev
+ARG BUILD_TIME=unknown
+
 # Install build dependencies
 RUN apk add --no-cache git make
 
@@ -16,13 +19,13 @@ COPY . .
 
 # Build server binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s -X main.version=$(git describe --tags --always) -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    -ldflags="-w -s -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
     -o /build/cobaltdb-server \
     ./cmd/cobaltdb-server
 
 # Build CLI binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s" \
+    -ldflags="-w -s -X main.version=${VERSION}" \
     -o /build/cobaltdb-cli \
     ./cmd/cobaltdb-cli
 
@@ -30,7 +33,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 FROM alpine:latest
 
 # Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata netcat-openbsd
+RUN apk add --no-cache ca-certificates tzdata netcat-openbsd su-exec
 
 # Create non-root user
 RUN addgroup -g 1000 -S cobaltdb && \
@@ -50,6 +53,7 @@ COPY --from=builder /build/config/cobaltdb.conf /etc/cobaltdb/
 # Create entrypoint script to fix permissions
 RUN printf '%s\n' \
     '#!/bin/sh' \
+    'set -eu' \
     '# Fix ownership of data directory (for volume mounts)' \
     'chown -R cobaltdb:cobaltdb /data/cobaltdb 2>/dev/null || true' \
     'chmod 755 /data/cobaltdb 2>/dev/null || true' \
@@ -58,9 +62,6 @@ RUN printf '%s\n' \
     'exec su-exec cobaltdb:cobaltdb cobaltdb-server "$@"' \
     > /entrypoint.sh \
     && chmod +x /entrypoint.sh
-
-# Install su-exec for user switching
-RUN apk add --no-cache su-exec
 
 # Expose ports: 4200=wire protocol, 3307=MySQL protocol, 8420=health checks
 EXPOSE 4200 3307 8420
@@ -74,4 +75,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Default command
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["-addr", ":4200", "-mysql-addr", ":3307", "-data", "/data/cobaltdb", "-cache", "1024"]
+CMD ["-addr", ":4200", "-mysql-addr", ":3307", "-health-addr", ":8420", "-data", "/data/cobaltdb", "-cache", "1024"]

@@ -274,6 +274,28 @@ func TestLifecycleRegisterHealthCheck(t *testing.T) {
 	}
 }
 
+func TestLifecyclePartialConfigUsesSafeDefaults(t *testing.T) {
+	lifecycle := NewLifecycle(&LifecycleConfig{
+		EnableSignalHandling: true,
+	})
+
+	if lifecycle.config.ShutdownTimeout <= 0 {
+		t.Fatal("expected default shutdown timeout")
+	}
+	if lifecycle.config.DrainTimeout <= 0 {
+		t.Fatal("expected default drain timeout")
+	}
+	if lifecycle.config.HealthCheckInterval <= 0 {
+		t.Fatal("expected default health interval")
+	}
+	if lifecycle.config.StartupTimeout <= 0 {
+		t.Fatal("expected default startup timeout")
+	}
+	if len(lifecycle.config.ShutdownSignals) == 0 {
+		t.Fatal("expected shutdown signals to default to explicit termination signals")
+	}
+}
+
 func TestDBComponent(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
 	if err != nil {

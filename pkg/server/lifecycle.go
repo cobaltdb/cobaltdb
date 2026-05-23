@@ -132,6 +132,8 @@ type HealthCheck func() HealthStatus
 func NewLifecycle(config *LifecycleConfig) *Lifecycle {
 	if config == nil {
 		config = DefaultLifecycleConfig()
+	} else {
+		config = normalizeLifecycleConfig(config)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -145,6 +147,27 @@ func NewLifecycle(config *LifecycleConfig) *Lifecycle {
 		ctx:          ctx,
 		cancel:       cancel,
 	}
+}
+
+func normalizeLifecycleConfig(config *LifecycleConfig) *LifecycleConfig {
+	defaults := DefaultLifecycleConfig()
+	normalized := *config
+	if normalized.ShutdownTimeout <= 0 {
+		normalized.ShutdownTimeout = defaults.ShutdownTimeout
+	}
+	if normalized.DrainTimeout <= 0 {
+		normalized.DrainTimeout = defaults.DrainTimeout
+	}
+	if normalized.HealthCheckInterval <= 0 {
+		normalized.HealthCheckInterval = defaults.HealthCheckInterval
+	}
+	if normalized.StartupTimeout <= 0 {
+		normalized.StartupTimeout = defaults.StartupTimeout
+	}
+	if len(normalized.ShutdownSignals) == 0 {
+		normalized.ShutdownSignals = defaults.ShutdownSignals
+	}
+	return &normalized
 }
 
 // RegisterComponent registers a lifecycle-managed component
