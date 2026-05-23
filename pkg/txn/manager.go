@@ -381,6 +381,7 @@ type Manager struct {
 	deadlockCheckInterval time.Duration
 	stopDeadlockDetector  chan struct{}
 	deadlockDetectorOnce  sync.Once
+	stopOnce              sync.Once
 
 	// Lock management for deadlock detection
 	lockEntries map[string]*lockEntry // key → lock state (shared + exclusive)
@@ -423,7 +424,9 @@ func (m *Manager) Start() {
 
 // Stop stops the deadlock detector
 func (m *Manager) Stop() {
-	close(m.stopDeadlockDetector)
+	m.stopOnce.Do(func() {
+		close(m.stopDeadlockDetector)
+	})
 }
 
 // deadlockDetector runs periodically to detect and resolve deadlocks

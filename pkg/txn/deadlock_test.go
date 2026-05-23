@@ -5,6 +5,14 @@ import (
 	"time"
 )
 
+func TestManagerStopIdempotent(t *testing.T) {
+	m := NewManager(nil, nil)
+	m.Start()
+
+	m.Stop()
+	m.Stop()
+}
+
 // TestDeadlockDetectionTwoTransactions tests basic deadlock between two transactions
 func TestDeadlockDetectionTwoTransactions(t *testing.T) {
 	m := NewManager(nil, nil)
