@@ -29,6 +29,11 @@ func (c *CSVWrapper) Open(options map[string]string) error {
 	if err != nil {
 		return err
 	}
+	if c.file != nil {
+		if err := c.Close(); err != nil {
+			return err
+		}
+	}
 	f, err := os.Open(path) // #nosec G304 - CSV FDW file is an explicit table option and is cleaned before use.
 	if err != nil {
 		return err
@@ -89,7 +94,9 @@ func (c *CSVWrapper) Scan(table string, columns []string) ([][]interface{}, erro
 // Close closes the CSV file handle.
 func (c *CSVWrapper) Close() error {
 	if c.file != nil {
-		return c.file.Close()
+		err := c.file.Close()
+		c.file = nil
+		return err
 	}
 	return nil
 }

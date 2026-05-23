@@ -127,6 +127,62 @@ func TestCSVWrapper_CloseNilFile(t *testing.T) {
 	}
 }
 
+func TestCSVWrapper_CloseIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.csv")
+	if err := os.WriteFile(path, []byte("id\n1\n"), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	if err := csv.Close(); err != nil {
+		t.Fatalf("first close failed: %v", err)
+	}
+	if err := csv.Close(); err != nil {
+		t.Fatalf("second close should not error: %v", err)
+	}
+	if csv.file != nil {
+		t.Fatal("close should clear file handle")
+	}
+}
+
+func TestCSVWrapper_ReopenClosesPreviousHandle(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "first.csv")
+	secondPath := filepath.Join(dir, "second.csv")
+	if err := os.WriteFile(firstPath, []byte("id\n1\n"), 0644); err != nil {
+		t.Fatalf("failed to write first csv: %v", err)
+	}
+	if err := os.WriteFile(secondPath, []byte("id\n2\n"), 0644); err != nil {
+		t.Fatalf("failed to write second csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": firstPath}); err != nil {
+		t.Fatalf("first open failed: %v", err)
+	}
+	firstHandle := csv.file
+	if err := csv.Open(map[string]string{"file": secondPath}); err != nil {
+		t.Fatalf("second open failed: %v", err)
+	}
+	defer csv.Close()
+
+	if _, err := firstHandle.Stat(); err == nil {
+		t.Fatal("expected previous file handle to be closed")
+	}
+
+	rows, err := csv.Scan("test", []string{"id"})
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	if len(rows) != 1 || rows[0][0] != "2" {
+		t.Fatalf("expected reopened file rows, got %v", rows)
+	}
+}
+
 func TestCSVWrapper_OpenMissingFile(t *testing.T) {
 	csv := &CSVWrapper{}
 	err := csv.Open(map[string]string{"file": "/nonexistent/path/file.csv"})
