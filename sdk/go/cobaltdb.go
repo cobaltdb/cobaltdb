@@ -125,9 +125,55 @@ func DefaultConfig() *Config {
 		MaxIdleTime:    30 * time.Minute,
 		MaxLifetime:    1 * time.Hour,
 		CacheSize:      1024,
-		WALEnabled: engine.BoolPtr(true),
+		WALEnabled:     engine.BoolPtr(true),
 		SyncMode:       "normal",
 	}
+}
+
+func normalizeConfig(cfg *Config) *Config {
+	if cfg == nil {
+		return DefaultConfig()
+	}
+
+	defaults := DefaultConfig()
+	normalized := *cfg
+	if normalized.Host == "" {
+		normalized.Host = defaults.Host
+	}
+	if normalized.Port <= 0 {
+		normalized.Port = defaults.Port
+	}
+	if normalized.Database == "" {
+		normalized.Database = defaults.Database
+	}
+	if normalized.SSLMode == "" {
+		normalized.SSLMode = defaults.SSLMode
+	}
+	if normalized.ConnectTimeout <= 0 {
+		normalized.ConnectTimeout = defaults.ConnectTimeout
+	}
+	if normalized.QueryTimeout <= 0 {
+		normalized.QueryTimeout = defaults.QueryTimeout
+	}
+	if normalized.MaxConnections <= 0 {
+		normalized.MaxConnections = defaults.MaxConnections
+	}
+	if normalized.MaxIdleTime <= 0 {
+		normalized.MaxIdleTime = defaults.MaxIdleTime
+	}
+	if normalized.MaxLifetime <= 0 {
+		normalized.MaxLifetime = defaults.MaxLifetime
+	}
+	if normalized.CacheSize <= 0 {
+		normalized.CacheSize = defaults.CacheSize
+	}
+	if normalized.WALEnabled == nil {
+		normalized.WALEnabled = defaults.WALEnabled
+	}
+	if normalized.SyncMode == "" {
+		normalized.SyncMode = defaults.SyncMode
+	}
+	return &normalized
 }
 
 // ParseDSN parses a connection string
@@ -254,9 +300,7 @@ type DB struct {
 
 // Open opens a database connection
 func Open(cfg *Config) (*DB, error) {
-	if cfg == nil {
-		cfg = DefaultConfig()
-	}
+	cfg = normalizeConfig(cfg)
 
 	opts := &engine.Options{
 		CacheSize:         cfg.CacheSize,

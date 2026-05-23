@@ -268,6 +268,35 @@ func TestOpenWithNilConfig(t *testing.T) {
 	}
 }
 
+func TestOpenNormalizesPartialConfigWithoutMutation(t *testing.T) {
+	cfg := &Config{Database: ":memory:"}
+	db, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("Open() failed: %v", err)
+	}
+	defer db.Close()
+
+	defaults := DefaultConfig()
+	if db.cfg.CacheSize != defaults.CacheSize {
+		t.Fatalf("CacheSize = %d, want %d", db.cfg.CacheSize, defaults.CacheSize)
+	}
+	if db.cfg.QueryTimeout != defaults.QueryTimeout {
+		t.Fatalf("QueryTimeout = %v, want %v", db.cfg.QueryTimeout, defaults.QueryTimeout)
+	}
+	if db.cfg.ConnectTimeout != defaults.ConnectTimeout {
+		t.Fatalf("ConnectTimeout = %v, want %v", db.cfg.ConnectTimeout, defaults.ConnectTimeout)
+	}
+	if db.cfg.MaxConnections != defaults.MaxConnections {
+		t.Fatalf("MaxConnections = %d, want %d", db.cfg.MaxConnections, defaults.MaxConnections)
+	}
+	if db.cfg.WALEnabled == nil || *db.cfg.WALEnabled != *defaults.WALEnabled {
+		t.Fatal("WALEnabled was not defaulted")
+	}
+	if cfg.CacheSize != 0 || cfg.QueryTimeout != 0 || cfg.ConnectTimeout != 0 || cfg.MaxConnections != 0 || cfg.WALEnabled != nil {
+		t.Fatal("Open should not mutate caller config")
+	}
+}
+
 func TestDBPing(t *testing.T) {
 	cfg := &Config{
 		Database: ":memory:",
