@@ -77,9 +77,7 @@ func (c *RetryConfig) IsRetryable(err error) bool {
 
 // Retry executes a function with retry logic
 func Retry(ctx context.Context, config *RetryConfig, fn func() error) error {
-	if config == nil {
-		config = DefaultRetryConfig()
-	}
+	config = normalizeRetryConfig(config)
 
 	var lastErr error
 
@@ -123,9 +121,7 @@ func Retry(ctx context.Context, config *RetryConfig, fn func() error) error {
 
 // RetryWithResult executes a function that returns a result with retry logic
 func RetryWithResult[T any](ctx context.Context, config *RetryConfig, fn func() (T, error)) (T, error) {
-	if config == nil {
-		config = DefaultRetryConfig()
-	}
+	config = normalizeRetryConfig(config)
 
 	var lastErr error
 	var zero T
@@ -183,7 +179,39 @@ func calculateDelay(attempt int, config *RetryConfig) time.Duration {
 		}
 	}
 
+	if delay < 0 {
+		delay = 0
+	}
+
 	return time.Duration(delay)
+}
+
+func normalizeRetryConfig(config *RetryConfig) *RetryConfig {
+	defaults := DefaultRetryConfig()
+	if config == nil {
+		return defaults
+	}
+
+	normalized := *config
+	if normalized.MaxAttempts <= 0 {
+		normalized.MaxAttempts = defaults.MaxAttempts
+	}
+	if normalized.InitialDelay < 0 {
+		normalized.InitialDelay = defaults.InitialDelay
+	}
+	if normalized.MaxDelay <= 0 {
+		normalized.MaxDelay = defaults.MaxDelay
+	}
+	if normalized.Multiplier <= 0 {
+		normalized.Multiplier = defaults.Multiplier
+	}
+	if normalized.Jitter < 0 {
+		normalized.Jitter = 0
+	} else if normalized.Jitter > 1 {
+		normalized.Jitter = 1
+	}
+
+	return &normalized
 }
 
 // RetryPolicy defines different retry policies for different scenarios

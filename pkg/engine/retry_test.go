@@ -58,6 +58,30 @@ func TestRetryFailure(t *testing.T) {
 	}
 }
 
+func TestRetryNormalizesInvalidMaxAttempts(t *testing.T) {
+	config := &RetryConfig{
+		MaxAttempts:  0,
+		InitialDelay: time.Millisecond,
+		MaxDelay:     time.Millisecond,
+		Multiplier:   1,
+		Jitter:       0,
+	}
+
+	testErr := errors.New("test error")
+	var callCount int
+
+	err := Retry(context.Background(), config, func() error {
+		callCount++
+		return testErr
+	})
+	if err != testErr {
+		t.Fatalf("expected test error, got %v", err)
+	}
+	if callCount != DefaultRetryConfig().MaxAttempts {
+		t.Fatalf("expected default attempts, got %d", callCount)
+	}
+}
+
 func TestRetryEventualSuccess(t *testing.T) {
 	config := &RetryConfig{
 		MaxAttempts:  5,
@@ -131,6 +155,34 @@ func TestRetryWithResultSuccess(t *testing.T) {
 	}
 	if result != "success" {
 		t.Errorf("expected 'success', got %s", result)
+	}
+}
+
+func TestRetryWithResultNormalizesInvalidConfig(t *testing.T) {
+	config := &RetryConfig{
+		MaxAttempts:  -1,
+		InitialDelay: -time.Millisecond,
+		MaxDelay:     -time.Millisecond,
+		Multiplier:   -1,
+		Jitter:       2,
+	}
+
+	var callCount int
+	result, err := RetryWithResult(context.Background(), config, func() (string, error) {
+		callCount++
+		return "success", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "success" {
+		t.Fatalf("expected success, got %q", result)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected one call, got %d", callCount)
+	}
+	if config.Jitter != 2 {
+		t.Fatalf("normalization mutated caller config")
 	}
 }
 
