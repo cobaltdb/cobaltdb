@@ -744,7 +744,7 @@ func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targe
 		return fmt.Errorf("invalid delta header")
 	}
 
-	targetFile, err := os.OpenFile(targetPath, os.O_RDWR, 0644)
+	targetFile, err := os.OpenFile(targetPath, os.O_RDWR, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open target file for delta restore: %w", err)
 	}

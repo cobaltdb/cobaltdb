@@ -205,7 +205,7 @@ func showStatus(db *sql.DB, dir string) error {
 
 func createMigration(dir, name string) error {
 	// Create migrations directory if needed
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("failed to create migrations directory: %w", err)
 	}
 
@@ -228,13 +228,13 @@ func createMigration(dir, name string) error {
 
 	// Create up file
 	upContent := fmt.Sprintf("-- Migration: %s\n-- Version: %d\n\n", name, version)
-	if err := os.WriteFile(upFile, []byte(upContent), 0644); err != nil {
+	if err := os.WriteFile(upFile, []byte(upContent), 0600); err != nil {
 		return fmt.Errorf("failed to create up file: %w", err)
 	}
 
 	// Create down file
 	downContent := fmt.Sprintf("-- Rollback: %s\n-- Version: %d\n\n", name, version)
-	if err := os.WriteFile(downFile, []byte(downContent), 0644); err != nil {
+	if err := os.WriteFile(downFile, []byte(downContent), 0600); err != nil {
 		return fmt.Errorf("failed to create down file: %w", err)
 	}
 

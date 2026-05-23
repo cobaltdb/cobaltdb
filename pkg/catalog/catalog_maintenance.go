@@ -171,7 +171,7 @@ func (c *Catalog) SaveData(dir string) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("save data: cannot create directory %s: %w", dir, err)
 	}
 
@@ -184,7 +184,7 @@ func (c *Catalog) SaveData(dir string) error {
 	if err != nil {
 		return fmt.Errorf("save data: failed to marshal schema: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "schema.json"), schemaData, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "schema.json"), schemaData, 0600); err != nil {
 		return fmt.Errorf("save data: failed to write schema.json: %w", err)
 	}
 
@@ -219,7 +219,7 @@ func (c *Catalog) SaveData(dir string) error {
 		if err != nil {
 			return fmt.Errorf("save data: failed to marshal table %s: %w", tableName, err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, tableName+".json"), data, 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, tableName+".json"), data, 0600); err != nil {
 			return fmt.Errorf("save data: failed to write %s.json: %w", tableName, err)
 		}
 	}
@@ -243,7 +243,7 @@ func (c *Catalog) LoadSchema(dir string) error {
 	}
 
 	var schema struct {
-		Tables        map[string]*TableDef      `json:"tables"`
+		Tables        map[string]*TableDef       `json:"tables"`
 		VectorIndexes map[string]*VectorIndexDef `json:"vectorIndexes"`
 	}
 	if err := json.Unmarshal(data, &schema); err != nil {
