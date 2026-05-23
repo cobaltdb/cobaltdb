@@ -2,12 +2,13 @@ package metrics
 
 import (
 	"fmt"
-	"log"
 	"math"
 	"runtime"
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
 // AlertSeverity represents the severity of an alert
@@ -63,6 +64,7 @@ type AlertManager struct {
 	mu            sync.RWMutex
 	stopCh        chan struct{}
 	checkInterval time.Duration
+	logger        *logger.Logger
 }
 
 // AlertHandler handles alert notifications
@@ -70,12 +72,21 @@ type AlertHandler interface {
 	Handle(alert Alert) error
 }
 
-// LogAlertHandler logs alerts to standard logger
-type LogAlertHandler struct{}
+// LogAlertHandler logs alerts to a configured logger.
+type LogAlertHandler struct {
+	Logger *logger.Logger
+}
+
+// NewLogAlertHandler creates an alert handler backed by the given logger.
+func NewLogAlertHandler(log *logger.Logger) *LogAlertHandler {
+	return &LogAlertHandler{Logger: log}
+}
 
 func (h *LogAlertHandler) Handle(alert Alert) error {
-	log.Printf("[ALERT] %s | %s | %s | Value: %.2f | Threshold: %.2f",
-		alert.Severity, alert.RuleName, alert.Message, alert.Value, alert.Threshold)
+	if h.Logger != nil {
+		h.Logger.Warnf("[ALERT] %s | %s | %s | Value: %.2f | Threshold: %.2f",
+			alert.Severity, alert.RuleName, alert.Message, alert.Value, alert.Threshold)
+	}
 	return nil
 }
 
@@ -99,6 +110,22 @@ func NewAlertManager() *AlertManager {
 		handlers:      make([]AlertHandler, 0),
 		stopCh:        make(chan struct{}),
 		checkInterval: 10 * time.Second,
+	}
+}
+
+// SetLogger sets the optional logger used for alert manager internal errors.
+func (am *AlertManager) SetLogger(log *logger.Logger) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.logger = log
+}
+
+func (am *AlertManager) logErrorf(format string, args ...interface{}) {
+	am.mu.RLock()
+	log := am.logger
+	am.mu.RUnlock()
+	if log != nil {
+		log.Errorf(format, args...)
 	}
 }
 
@@ -201,7 +228,7 @@ func (am *AlertManager) checkRules() {
 			for _, handler := range handlers {
 				go func(h AlertHandler, a Alert) {
 					if err := h.Handle(a); err != nil {
-						log.Printf("[ALERT] Handler error: %v", err)
+						am.logErrorf("[ALERT] Handler error: %v", err)
 					}
 				}(handler, alert)
 			}
@@ -338,7 +365,7 @@ func GetAlertManager() *AlertManager {
 			globalAlertManager.RegisterRule(rule)
 		}
 		// Register default log handler
-		globalAlertManager.RegisterHandler(&LogAlertHandler{})
+		globalAlertManager.RegisterHandler(NewLogAlertHandler(nil))
 	})
 	return globalAlertManager
 }

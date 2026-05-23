@@ -1,8 +1,14 @@
 package metrics
 
 import (
+	"bytes"
+	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
 // TestAlertSeverityString tests the String method for AlertSeverity
@@ -128,6 +134,90 @@ func TestLogAlertHandlerHandle(t *testing.T) {
 	err := handler.Handle(alert)
 	if err != nil {
 		t.Errorf("Handle returned error: %v", err)
+	}
+}
+
+func TestLogAlertHandlerUsesConfiguredLogger(t *testing.T) {
+	var logs bytes.Buffer
+	handler := NewLogAlertHandler(logger.New(logger.WarnLevel, &logs))
+
+	alert := Alert{
+		ID:        "TEST-LOG",
+		RuleName:  "test_rule",
+		Severity:  SeverityWarning,
+		Message:   "Test message",
+		Timestamp: time.Now(),
+		Value:     50.5,
+		Threshold: 100.0,
+	}
+
+	if err := handler.Handle(alert); err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+	if !strings.Contains(logs.String(), "[ALERT] WARNING | test_rule") {
+		t.Fatalf("expected alert log, got %q", logs.String())
+	}
+}
+
+type failingAlertHandler struct {
+	err error
+}
+
+func (h failingAlertHandler) Handle(Alert) error {
+	return h.err
+}
+
+type signalWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+	ch  chan struct{}
+}
+
+func newSignalWriter() *signalWriter {
+	return &signalWriter{ch: make(chan struct{}, 1)}
+}
+
+func (w *signalWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	n, err := w.buf.Write(p)
+	w.mu.Unlock()
+	select {
+	case w.ch <- struct{}{}:
+	default:
+	}
+	return n, err
+}
+
+func (w *signalWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func TestAlertManagerHandlerErrorUsesConfiguredLogger(t *testing.T) {
+	logs := newSignalWriter()
+	am := NewAlertManager()
+	am.SetLogger(logger.New(logger.ErrorLevel, logs))
+	am.RegisterHandler(failingAlertHandler{err: errors.New("handler failed")})
+	am.RegisterRule(&AlertRule{
+		Name:        "test_rule",
+		Description: "Test rule",
+		Severity:    SeverityCritical,
+		Threshold:   1,
+		Condition: func() (bool, float64) {
+			return true, 2
+		},
+	})
+
+	am.checkRules()
+
+	select {
+	case <-logs.ch:
+	case <-time.After(time.Second):
+		t.Fatalf("expected handler error log, got %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "handler failed") {
+		t.Fatalf("expected handler error log, got %q", logs.String())
 	}
 }
 
