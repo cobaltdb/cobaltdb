@@ -961,6 +961,85 @@ func TestCreateBackupCheckpointError(t *testing.T) {
 	}
 }
 
+func TestCreateBackupOnCompleteReceivesError(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	db := &MockDatabaseWithErrors{
+		MockDatabase:    MockDatabase{dbPath: dbFile},
+		checkpointError: errors.New("checkpoint failed"),
+	}
+	mgr := NewManager(config, db)
+
+	var callbackBackup *Backup
+	var callbackErr error
+	mgr.OnComplete = func(backup *Backup, err error) {
+		callbackBackup = backup
+		callbackErr = err
+	}
+
+	_, err := mgr.CreateBackup(context.Background(), TypeFull)
+	if err == nil {
+		t.Fatal("Expected error when checkpoint fails")
+	}
+	if callbackErr == nil {
+		t.Fatal("expected OnComplete error")
+	}
+	if callbackBackup == nil {
+		t.Fatal("expected OnComplete backup context")
+	}
+	if callbackBackup.ID == "" {
+		t.Fatal("expected backup ID in callback")
+	}
+}
+
+func TestCreateBackupEndHotBackupError(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+	config.IncludeWAL = false
+	config.Verify = false
+	db := &MockDatabaseWithErrors{
+		MockDatabase:   MockDatabase{dbPath: dbFile},
+		endBackupError: errors.New("end failed"),
+	}
+	mgr := NewManager(config, db)
+
+	var callbackBackup *Backup
+	var callbackErr error
+	mgr.OnComplete = func(backup *Backup, err error) {
+		callbackBackup = backup
+		callbackErr = err
+	}
+
+	backup, err := mgr.CreateBackup(context.Background(), TypeFull)
+	if err == nil {
+		t.Fatal("Expected EndHotBackup error")
+	}
+	if backup == nil {
+		t.Fatal("expected backup result to be returned with end error")
+	}
+	if callbackBackup == nil || callbackBackup.ID != backup.ID {
+		t.Fatal("expected OnComplete backup result")
+	}
+	if callbackErr == nil {
+		t.Fatal("expected OnComplete error")
+	}
+}
+
 // TestCreateBackupBeginHotBackupError tests CreateBackup when BeginHotBackup fails
 func TestCreateBackupBeginHotBackupError(t *testing.T) {
 	tempDir := t.TempDir()

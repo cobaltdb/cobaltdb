@@ -179,7 +179,14 @@ func (m *Manager) ensureMetadataLoaded() error {
 }
 
 // CreateBackup creates a new backup
-func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (*Backup, error) {
+func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (backup *Backup, err error) {
+	var callbackBackup *Backup
+	defer func() {
+		if m.OnComplete != nil && (callbackBackup != nil || err != nil) {
+			m.OnComplete(callbackBackup, err)
+		}
+	}()
+
 	if err := m.ensureMetadataLoaded(); err != nil {
 		return nil, err
 	}
@@ -206,13 +213,14 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (*Backup, e
 	// Generate backup ID
 	backupID := generateBackupID()
 
-	backup := &Backup{
+	backup = &Backup{
 		ID:          backupID,
 		Type:        backupType,
 		StartedAt:   time.Now(),
 		Source:      m.db.GetDatabasePath(),
 		Incremental: backupType != TypeFull,
 	}
+	callbackBackup = backup
 	if backup.Incremental {
 		backup.ParentID = m.findParentBackupID(backupType)
 	}
@@ -222,7 +230,9 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (*Backup, e
 		return nil, fmt.Errorf("failed to begin hot backup: %w", err)
 	}
 	defer func() {
-		_ = m.db.EndHotBackup()
+		if endErr := m.db.EndHotBackup(); endErr != nil && err == nil {
+			err = fmt.Errorf("failed to end hot backup: %w", endErr)
+		}
 	}()
 
 	// Perform checkpoint to minimize WAL
@@ -271,11 +281,6 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (*Backup, e
 	if err := m.cleanupOldBackups(); err != nil {
 		// Log error but don't fail
 		fmt.Printf("Warning: failed to cleanup old backups: %v\n", err)
-	}
-
-	// Trigger callback
-	if m.OnComplete != nil {
-		m.OnComplete(backup, nil)
 	}
 
 	return backup, nil
