@@ -675,6 +675,10 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 	if err := m.ensureMetadataLoaded(); err != nil {
 		return err
 	}
+	targetPath, err := cleanBackupFilePath(targetPath)
+	if err != nil {
+		return fmt.Errorf("invalid restore target path: %w", err)
+	}
 
 	// Find backup
 	m.metadata.mu.RLock()
@@ -702,10 +706,33 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 		return fmt.Errorf("failed to create target directory: %w", err)
 	}
 
+	tmpTarget, err := os.CreateTemp(targetDir, ".restore-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary restore file: %w", err)
+	}
+	tmpTargetPath := tmpTarget.Name()
+	if err := tmpTarget.Close(); err != nil {
+		_ = os.Remove(tmpTargetPath)
+		return fmt.Errorf("failed to close temporary restore file: %w", err)
+	}
+	defer func() {
+		if tmpTargetPath != "" {
+			_ = os.Remove(tmpTargetPath)
+		}
+	}()
+
 	for _, chainBackup := range chain {
-		if err := m.restoreBackupPayload(ctx, chainBackup, targetPath); err != nil {
+		if err := m.restoreBackupPayload(ctx, chainBackup, tmpTargetPath); err != nil {
 			return err
 		}
+	}
+
+	if err := os.Rename(tmpTargetPath, targetPath); err != nil {
+		return fmt.Errorf("failed to replace restored database: %w", err)
+	}
+	tmpTargetPath = ""
+	if err := syncParentDir(targetPath); err != nil {
+		return fmt.Errorf("failed to sync restore directory: %w", err)
 	}
 
 	// Restore WAL files if present

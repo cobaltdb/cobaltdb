@@ -746,6 +746,66 @@ func TestRestoreWithCancelledContextDuringCopy(t *testing.T) {
 	}
 }
 
+func TestRestoreFailurePreservesExistingTarget(t *testing.T) {
+	tempDir := t.TempDir()
+	targetDir := t.TempDir()
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	if err := os.MkdirAll(config.BackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	backupPath := filepath.Join(config.BackupDir, "corrupt.db.gz")
+	file, err := os.Create(backupPath)
+	if err != nil {
+		t.Fatalf("Failed to create corrupt backup: %v", err)
+	}
+	gz := gzip.NewWriter(file)
+	payload := []byte(strings.Repeat("restored-data-", 4096))
+	if _, err := gz.Write(payload); err != nil {
+		t.Fatalf("Failed to write gzip payload: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("Failed to close gzip writer: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Failed to close gzip file: %v", err)
+	}
+	raw, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("Failed to read gzip file: %v", err)
+	}
+	if err := os.WriteFile(backupPath, raw[:len(raw)-4], 0600); err != nil {
+		t.Fatalf("Failed to corrupt gzip trailer: %v", err)
+	}
+
+	mgr := NewManager(config, &MockDatabase{dbPath: filepath.Join(tempDir, "source.db")})
+	mgr.metadata.Backups = append(mgr.metadata.Backups, &Backup{
+		ID:          "corrupt",
+		Type:        TypeFull,
+		Destination: backupPath,
+		CompletedAt: time.Now(),
+	})
+
+	targetPath := filepath.Join(targetDir, "restored.db")
+	original := []byte("existing target database")
+	if err := os.WriteFile(targetPath, original, 0644); err != nil {
+		t.Fatalf("Failed to create existing target: %v", err)
+	}
+
+	if err := mgr.Restore(context.Background(), "corrupt", targetPath); err == nil {
+		t.Fatal("Expected restore to fail for corrupt gzip backup")
+	}
+	got, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("Failed to read target after failed restore: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("failed restore should preserve existing target, got %q", string(got))
+	}
+}
+
 // TestRestoreWithWALFilesMissing tests restore when WAL files are missing
 func TestRestoreWithWALFilesMissing(t *testing.T) {
 	tempDir := t.TempDir()
