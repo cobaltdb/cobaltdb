@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -118,6 +119,40 @@ func TestProductionServerWithRetry(t *testing.T) {
 	}
 	if callCount != 2 {
 		t.Errorf("expected 2 calls, got %d", callCount)
+	}
+}
+
+func TestProductionPrometheusMetricsRemoteAccess(t *testing.T) {
+	tests := []struct {
+		name               string
+		allowRemoteMetrics bool
+		wantStatus         int
+	}{
+		{
+			name:               "RemoteDeniedByDefault",
+			allowRemoteMetrics: false,
+			wantStatus:         http.StatusForbidden,
+		},
+		{
+			name:               "RemoteAllowedWhenConfigured",
+			allowRemoteMetrics: true,
+			wantStatus:         http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ps := NewProductionServer(nil, &ProductionConfig{AllowRemoteMetrics: tt.allowRemoteMetrics})
+			req := httptest.NewRequest(http.MethodGet, "/metrics/prometheus", nil)
+			req.RemoteAddr = "10.0.0.42:49152"
+			rr := httptest.NewRecorder()
+
+			ps.prometheusMetricsHandler()(rr, req)
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, rr.Code)
+			}
+		})
 	}
 }
 

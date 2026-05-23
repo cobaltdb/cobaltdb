@@ -16,6 +16,7 @@ services:
       - COBALTDB_HEALTH_ADDR=:8420
       - COBALTDB_DATA_DIR=/data/cobaltdb
       - COBALTDB_AUTH_ENABLED=true
+      - COBALTDB_REMOTE_METRICS_ENABLED=true
     healthcheck:
       test: ["CMD", "sh", "-c", "nc -z localhost 4200 || exit 1"]
       interval: 30s
@@ -57,7 +58,7 @@ services:
       - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
       - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD before starting Grafana}
       - GF_USERS_ALLOW_SIGN_UP=false
     networks:
       - cobaltdb_network

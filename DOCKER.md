@@ -13,6 +13,7 @@ This directory contains Docker configuration for running CobaltDB in containeriz
 ```bash
 # Choose an admin password before first start.
 export COBALTDB_ADMIN_PASSWORD='change-this-before-production'
+export GRAFANA_ADMIN_PASSWORD='change-this-too'
 
 # Build and start all services
 docker compose up -d
@@ -115,7 +116,7 @@ docker exec cobaltdb_backup /scripts/backup.sh
 ## Monitoring
 
 - **Prometheus**: http://localhost:9090
-- **Grafana**: http://localhost:3000 (admin/admin)
+- **Grafana**: http://localhost:3000 (`admin` / `$GRAFANA_ADMIN_PASSWORD`)
 - **CobaltDB Metrics**: http://localhost:8420/metrics
 
 ## Troubleshooting
@@ -200,6 +201,12 @@ For production environments:
 | COBALTDB_TLS_KEY_FILE | - | TLS private key path |
 | COBALTDB_TLS_GEN_CERT | false | Generate a self-signed TLS certificate |
 | COBALTDB_CACHE_SIZE | 1024 | Cache size in pages, not bytes |
+| COBALTDB_REMOTE_METRICS_ENABLED | false | Allow Prometheus metrics scraping from non-loopback clients |
+
+### Grafana
+| Variable | Default | Description |
+|----------|---------|-------------|
+| GRAFANA_ADMIN_PASSWORD | required by compose | Grafana `admin` password |
 
 ### Backup
 | Variable | Default | Description |

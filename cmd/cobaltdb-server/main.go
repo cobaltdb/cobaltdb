@@ -52,6 +52,7 @@ func main() {
 		enableHealthServer   = flag.Bool("health-server", true, "enable health check HTTP server")
 		enableCircuitBreaker = flag.Bool("circuit-breaker", true, "enable circuit breaker")
 		enableRetry          = flag.Bool("retry", true, "enable retry logic")
+		allowRemoteMetrics   = flag.Bool("remote-metrics", false, "allow Prometheus metrics endpoint from non-loopback clients")
 		shutdownTimeout      = flag.Duration("shutdown-timeout", 30*time.Second, "graceful shutdown timeout")
 		drainTimeout         = flag.Duration("drain-timeout", 10*time.Second, "connection drain timeout")
 	)
@@ -78,6 +79,7 @@ func main() {
 		enableHealthServer,
 		enableCircuitBreaker,
 		enableRetry,
+		allowRemoteMetrics,
 		shutdownTimeout,
 		drainTimeout,
 	); err != nil {
@@ -166,6 +168,7 @@ func main() {
 		EnableCircuitBreaker: *enableCircuitBreaker,
 		EnableRetry:          *enableRetry,
 		EnableHealthServer:   *enableHealthServer,
+		AllowRemoteMetrics:   *allowRemoteMetrics,
 	}
 
 	prodServer := server.NewProductionServer(db, prodConfig)
@@ -261,6 +264,7 @@ func applyEnvOverrides(
 	enableHealthServer *bool,
 	enableCircuitBreaker *bool,
 	enableRetry *bool,
+	allowRemoteMetrics *bool,
 	shutdownTimeout *time.Duration,
 	drainTimeout *time.Duration,
 ) error {
@@ -301,6 +305,9 @@ func applyEnvOverrides(
 		return err
 	}
 	if err := envBool("COBALTDB_RETRY_ENABLED", enableRetry); err != nil {
+		return err
+	}
+	if err := envBool("COBALTDB_REMOTE_METRICS_ENABLED", allowRemoteMetrics); err != nil {
 		return err
 	}
 	if err := envDuration("COBALTDB_SHUTDOWN_TIMEOUT", shutdownTimeout); err != nil {

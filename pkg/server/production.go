@@ -32,6 +32,7 @@ type ProductionConfig struct {
 	EnableRateLimiter    bool
 	EnableSQLProtection  bool
 	EnableHealthServer   bool
+	AllowRemoteMetrics   bool
 }
 
 // DefaultProductionConfig returns a default production configuration
@@ -51,6 +52,7 @@ func DefaultProductionConfig() *ProductionConfig {
 		EnableRateLimiter:    false,
 		EnableSQLProtection:  false,
 		EnableHealthServer:   true,
+		AllowRemoteMetrics:   false,
 	}
 }
 
@@ -136,7 +138,7 @@ func (ps *ProductionServer) startHealthServer() {
 	mux.HandleFunc("/circuit-breakers", ps.loopbackOnly(ps.circuitBreakerHandler()))
 	mux.HandleFunc("/rate-limits", ps.loopbackOnly(ps.rateLimitsHandler()))
 	mux.HandleFunc("/transaction-metrics", ps.loopbackOnly(ps.transactionMetricsHandler()))
-	mux.HandleFunc("/metrics/prometheus", ps.loopbackOnly(metrics.GetPrometheusHandler()))
+	mux.HandleFunc("/metrics/prometheus", ps.prometheusMetricsHandler())
 
 	ps.healthServer = &http.Server{
 		Addr:              ps.Config.HealthAddr,
@@ -347,6 +349,14 @@ func (ps *ProductionServer) transactionMetricsHandler() http.HandlerFunc {
 			http.Error(w, "failed to encode transaction metrics", http.StatusInternalServerError)
 		}
 	}
+}
+
+func (ps *ProductionServer) prometheusMetricsHandler() http.HandlerFunc {
+	handler := metrics.GetPrometheusHandler()
+	if ps.Config != nil && ps.Config.AllowRemoteMetrics {
+		return handler
+	}
+	return ps.loopbackOnly(handler)
 }
 
 // loopbackOnly restricts access to loopback addresses only

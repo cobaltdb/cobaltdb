@@ -177,6 +177,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 	t.Setenv("COBALTDB_HEALTH_SERVER_ENABLED", "false")
 	t.Setenv("COBALTDB_CIRCUIT_BREAKER_ENABLED", "false")
 	t.Setenv("COBALTDB_RETRY_ENABLED", "false")
+	t.Setenv("COBALTDB_REMOTE_METRICS_ENABLED", "true")
 	t.Setenv("COBALTDB_SHUTDOWN_TIMEOUT", "45s")
 	t.Setenv("COBALTDB_DRAIN_TIMEOUT", "15s")
 
@@ -195,6 +196,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 	enableHealthServer := true
 	enableCircuitBreaker := true
 	enableRetry := true
+	allowRemoteMetrics := false
 	shutdownTimeout := 30 * time.Second
 	drainTimeout := 10 * time.Second
 
@@ -214,6 +216,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 		&enableHealthServer,
 		&enableCircuitBreaker,
 		&enableRetry,
+		&allowRemoteMetrics,
 		&shutdownTimeout,
 		&drainTimeout,
 	)
@@ -230,7 +233,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 	if !tlsEnabled || tlsCert != "/certs/server.crt" || tlsKey != "/certs/server.key" || !tlsGenCert {
 		t.Fatalf("tls overrides not applied")
 	}
-	if healthAddr != ":18420" || enableHealthServer || enableCircuitBreaker || enableRetry {
+	if healthAddr != ":18420" || enableHealthServer || enableCircuitBreaker || enableRetry || !allowRemoteMetrics {
 		t.Fatalf("production feature overrides not applied")
 	}
 	if shutdownTimeout != 45*time.Second || drainTimeout != 15*time.Second {
@@ -271,6 +274,7 @@ func TestApplyEnvOverridesRejectsInvalidValues(t *testing.T) {
 			enableHealthServer := true
 			enableCircuitBreaker := true
 			enableRetry := true
+			allowRemoteMetrics := false
 			shutdownTimeout := 30 * time.Second
 			drainTimeout := 10 * time.Second
 
@@ -290,6 +294,7 @@ func TestApplyEnvOverridesRejectsInvalidValues(t *testing.T) {
 				&enableHealthServer,
 				&enableCircuitBreaker,
 				&enableRetry,
+				&allowRemoteMetrics,
 				&shutdownTimeout,
 				&drainTimeout,
 			)

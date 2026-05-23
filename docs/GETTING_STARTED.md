@@ -255,6 +255,7 @@ cd cobaltdb
 
 # Set required credentials
 export COBALTDB_ADMIN_PASSWORD='change-this-before-production'
+export GRAFANA_ADMIN_PASSWORD='change-this-too'
 
 # Start all services
 docker compose up -d
@@ -320,6 +321,7 @@ export COBALTDB_MYSQL_ADDR=:3307
 export COBALTDB_HEALTH_ADDR=:8420
 export COBALTDB_STORAGE_DATA_DIR=/data/cobaltdb
 export COBALTDB_SECURITY_AUTH_ENABLED=true
+export COBALTDB_REMOTE_METRICS_ENABLED=true
 export COBALTDB_ADMIN_PASSWORD='change-this-before-production'
 ```
 
@@ -346,7 +348,7 @@ export COBALTDB_ADMIN_PASSWORD='change-this-before-production'
 
 ### Grafana Dashboard
 
-Access Grafana at `http://localhost:3000` (admin/admin)
+Access Grafana at `http://localhost:3000` with username `admin` and `$GRAFANA_ADMIN_PASSWORD`.
 
 Pre-built dashboards:
 - **Overview**: Key metrics and health
