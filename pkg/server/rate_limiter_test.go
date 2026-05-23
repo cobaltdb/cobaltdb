@@ -31,6 +31,71 @@ func TestNewRateLimiter(t *testing.T) {
 	}
 }
 
+func TestNewRateLimiterNormalizesPartialConfig(t *testing.T) {
+	cfg := &RateLimiterConfig{
+		RPS:       50,
+		Burst:     5,
+		PerClient: true,
+	}
+
+	rl := NewRateLimiter(cfg)
+	defer rl.Stop()
+
+	if rl.config.RPS != cfg.RPS {
+		t.Fatalf("RPS should be preserved, got %d", rl.config.RPS)
+	}
+	if rl.config.Burst != cfg.Burst {
+		t.Fatalf("Burst should be preserved, got %d", rl.config.Burst)
+	}
+	if rl.config.CleanupInterval != DefaultRateLimiterConfig().CleanupInterval {
+		t.Fatalf("CleanupInterval should be defaulted, got %v", rl.config.CleanupInterval)
+	}
+	if rl.config.ClientHeader != DefaultRateLimiterConfig().ClientHeader {
+		t.Fatalf("ClientHeader should be defaulted, got %q", rl.config.ClientHeader)
+	}
+	if rl.config.MaxClients != DefaultRateLimiterConfig().MaxClients {
+		t.Fatalf("MaxClients should be defaulted, got %d", rl.config.MaxClients)
+	}
+	if cfg.CleanupInterval != 0 || cfg.ClientHeader != "" || cfg.MaxClients != 0 {
+		t.Fatal("NewRateLimiter should not mutate caller config")
+	}
+}
+
+func TestRateLimiterAllowNRejectsNegativeWithoutAddingTokens(t *testing.T) {
+	rl := NewRateLimiter(&RateLimiterConfig{
+		RPS:             1,
+		Burst:           1,
+		CleanupInterval: time.Minute,
+		MaxClients:      10,
+	})
+	defer rl.Stop()
+
+	if !rl.AllowN("", 1) {
+		t.Fatal("initial token should be available")
+	}
+	if rl.AllowN("", -5) {
+		t.Fatal("negative token request should be rejected")
+	}
+	if rl.AllowN("", 1) {
+		t.Fatal("negative token request should not refill the bucket")
+	}
+}
+
+func TestRateLimiterSmallBurstStillAllowsPerClient(t *testing.T) {
+	rl := NewRateLimiter(&RateLimiterConfig{
+		RPS:             10,
+		Burst:           5,
+		PerClient:       true,
+		CleanupInterval: time.Minute,
+		MaxClients:      10,
+	})
+	defer rl.Stop()
+
+	if !rl.Allow("client-1") {
+		t.Fatal("small burst should still allocate at least one per-client token")
+	}
+}
+
 func TestRateLimiterAllow(t *testing.T) {
 	cfg := &RateLimiterConfig{
 		RPS:             100,

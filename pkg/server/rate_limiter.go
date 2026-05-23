@@ -89,6 +89,8 @@ type clientLimiter struct {
 func NewRateLimiter(config *RateLimiterConfig) *RateLimiter {
 	if config == nil {
 		config = DefaultRateLimiterConfig()
+	} else {
+		config = normalizeRateLimiterConfig(config)
 	}
 
 	rl := &RateLimiter{
@@ -116,6 +118,27 @@ func NewRateLimiter(config *RateLimiterConfig) *RateLimiter {
 	}()
 
 	return rl
+}
+
+func normalizeRateLimiterConfig(config *RateLimiterConfig) *RateLimiterConfig {
+	defaults := DefaultRateLimiterConfig()
+	normalized := *config
+	if normalized.RPS <= 0 {
+		normalized.RPS = defaults.RPS
+	}
+	if normalized.Burst <= 0 {
+		normalized.Burst = defaults.Burst
+	}
+	if normalized.ClientHeader == "" {
+		normalized.ClientHeader = defaults.ClientHeader
+	}
+	if normalized.CleanupInterval <= 0 {
+		normalized.CleanupInterval = defaults.CleanupInterval
+	}
+	if normalized.MaxClients <= 0 {
+		normalized.MaxClients = defaults.MaxClients
+	}
+	return &normalized
 }
 
 func (rl *RateLimiter) logErrorf(format string, args ...interface{}) {
@@ -236,8 +259,8 @@ func (rl *RateLimiter) getClientLimiter(clientID string) *clientLimiter {
 	cl := &clientLimiter{
 		bucket: &tokenBucket{
 			rate:       float64(rl.config.RPS) / 10, // Each client gets 1/10th of global
-			burst:      rl.config.Burst / 10,
-			tokens:     float64(rl.config.Burst / 10),
+			burst:      max(1, rl.config.Burst/10),
+			tokens:     float64(max(1, rl.config.Burst/10)),
 			lastUpdate: time.Now(),
 		},
 		lastAccess: time.Now(),
@@ -291,6 +314,13 @@ func (tb *tokenBucket) allow() bool {
 
 // allowN checks if n tokens are available
 func (tb *tokenBucket) allowN(n int) bool {
+	if n < 0 {
+		return false
+	}
+	if n == 0 {
+		return true
+	}
+
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
