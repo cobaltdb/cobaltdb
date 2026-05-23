@@ -46,6 +46,81 @@ type TxOperation struct {
 	RowIndex int // for update/delete
 }
 
+func checkedHostInt(params []uint64, idx int, name string) (int, bool) {
+	value, err := checkedInt(params[idx], name)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func checkedHostInt32(params []uint64, idx int, name string) (int32, bool) {
+	value, err := checkedInt32(params[idx], name)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func checkedHostInt64(params []uint64, idx int, name string) (int64, bool) {
+	value, err := checkedInt64(params[idx], name)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func checkedMemoryRange(rt *Runtime, ptr int32, byteCount int) (int, bool) {
+	if byteCount < 0 {
+		return 0, false
+	}
+	start := int(ptr)
+	if start > len(rt.Memory) || byteCount > len(rt.Memory)-start {
+		return 0, false
+	}
+	return start, true
+}
+
+func checkedByteCount(count, size int) (int, bool) {
+	if count < 0 || size < 0 {
+		return 0, false
+	}
+	if size != 0 && count > maxInt/size {
+		return 0, false
+	}
+	return count * size, true
+}
+
+func checkedSignedHostInt(value int64) (int, bool) {
+	if value < 0 || value > int64(maxInt) {
+		return 0, false
+	}
+	return int(value), true // #nosec G115 - range checked above.
+}
+
+func checkedHostUint64(value int) (uint64, bool) {
+	if value < 0 {
+		return 0, false
+	}
+	return uint64(value), true // #nosec G115 - non-negative int value.
+}
+
+func hostUint64Result(value int) []uint64 {
+	converted, ok := checkedHostUint64(value)
+	if !ok {
+		return []uint64{0}
+	}
+	return []uint64{converted}
+}
+
+func readMemoryString(rt *Runtime, ptr int32, length int) (string, bool) {
+	start, ok := checkedMemoryRange(rt, ptr, length)
+	if !ok {
+		return "", false
+	}
+	return string(rt.Memory[start : start+length]), true
+}
+
 // NewHostFunctions creates a new host function provider
 func NewHostFunctions() *HostFunctions {
 	hf := &HostFunctions{
@@ -237,10 +312,29 @@ func (h *HostFunctions) rightJoin(rt *Runtime, params []uint64) ([]uint64, error
 		return []uint64{0}, nil
 	}
 
-	leftTableId := int(params[0])
-	rightTableId := int(params[1])
-	outPtr := int32(params[2])
-	maxRows := int(params[3])
+	leftTableId, ok := checkedHostInt(params, 0, "leftTableId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rightTableId, ok := checkedHostInt(params, 1, "rightTableId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 2, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maxRows, ok := checkedHostInt(params, 3, "maxRows")
+	if !ok || maxRows <= 0 {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(maxRows, 16)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, outPtr, byteCount); !ok {
+		return []uint64{0}, nil
+	}
 
 	_ = leftTableId
 	_ = rightTableId
@@ -263,9 +357,9 @@ func (h *HostFunctions) rightJoin(rt *Runtime, params []uint64) ([]uint64, error
 			leftId, _ := leftRow["id"].(int64)
 			rightId, _ := rightRow["id"].(int64)
 			if leftId == rightId {
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(leftId))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(leftId))
 				offset += 8
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(rightId))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(rightId))
 				offset += 8
 				rowCount++
 				matched = true
@@ -277,14 +371,14 @@ func (h *HostFunctions) rightJoin(rt *Runtime, params []uint64) ([]uint64, error
 			binary.LittleEndian.PutUint64(rt.Memory[offset:], 0) // NULL marker
 			offset += 8
 			if id, ok := rightRow["id"].(int64); ok {
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(id))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(id))
 			}
 			offset += 8
 			rowCount++
 		}
 	}
 
-	return []uint64{uint64(rowCount)}, nil
+	return hostUint64Result(rowCount), nil
 }
 
 // fullJoin performs a FULL OUTER JOIN between two tables
@@ -294,10 +388,29 @@ func (h *HostFunctions) fullJoin(rt *Runtime, params []uint64) ([]uint64, error)
 		return []uint64{0}, nil
 	}
 
-	leftTableId := int(params[0])
-	rightTableId := int(params[1])
-	outPtr := int32(params[2])
-	maxRows := int(params[3])
+	leftTableId, ok := checkedHostInt(params, 0, "leftTableId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rightTableId, ok := checkedHostInt(params, 1, "rightTableId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 2, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maxRows, ok := checkedHostInt(params, 3, "maxRows")
+	if !ok || maxRows <= 0 {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(maxRows, 16)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, outPtr, byteCount); !ok {
+		return []uint64{0}, nil
+	}
 
 	_ = leftTableId
 	_ = rightTableId
@@ -322,9 +435,9 @@ func (h *HostFunctions) fullJoin(rt *Runtime, params []uint64) ([]uint64, error)
 			leftId, _ := leftRow["id"].(int64)
 			rightId, _ := rightRow["id"].(int64)
 			if leftId == rightId {
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(leftId))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(leftId))
 				offset += 8
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(rightId))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(rightId))
 				offset += 8
 				rowCount++
 				matchedLeft[li] = true
@@ -340,7 +453,7 @@ func (h *HostFunctions) fullJoin(rt *Runtime, params []uint64) ([]uint64, error)
 		}
 		if !matchedLeft[li] {
 			if id, ok := leftRow["id"].(int64); ok {
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(id))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(id))
 			}
 			offset += 8
 			binary.LittleEndian.PutUint64(rt.Memory[offset:], 0) // NULL marker
@@ -358,14 +471,14 @@ func (h *HostFunctions) fullJoin(rt *Runtime, params []uint64) ([]uint64, error)
 			binary.LittleEndian.PutUint64(rt.Memory[offset:], 0) // NULL marker
 			offset += 8
 			if id, ok := rightRow["id"].(int64); ok {
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(id))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(id))
 			}
 			offset += 8
 			rowCount++
 		}
 	}
 
-	return []uint64{uint64(rowCount)}, nil
+	return hostUint64Result(rowCount), nil
 }
 
 // leftJoin performs a LEFT OUTER JOIN between two tables
@@ -375,10 +488,29 @@ func (h *HostFunctions) leftJoin(rt *Runtime, params []uint64) ([]uint64, error)
 		return []uint64{0}, nil
 	}
 
-	leftTableId := int(params[0])
-	rightTableId := int(params[1])
-	outPtr := int32(params[2])
-	maxRows := int(params[3])
+	leftTableId, ok := checkedHostInt(params, 0, "leftTableId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rightTableId, ok := checkedHostInt(params, 1, "rightTableId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 2, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maxRows, ok := checkedHostInt(params, 3, "maxRows")
+	if !ok || maxRows <= 0 {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(maxRows, 16)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, outPtr, byteCount); !ok {
+		return []uint64{0}, nil
+	}
 
 	_ = leftTableId
 	_ = rightTableId
@@ -401,9 +533,9 @@ func (h *HostFunctions) leftJoin(rt *Runtime, params []uint64) ([]uint64, error)
 			leftId, _ := leftRow["id"].(int64)
 			rightId, _ := rightRow["id"].(int64)
 			if leftId == rightId {
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(leftId))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(leftId))
 				offset += 8
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(rightId))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(rightId))
 				offset += 8
 				rowCount++
 				matched = true
@@ -413,7 +545,7 @@ func (h *HostFunctions) leftJoin(rt *Runtime, params []uint64) ([]uint64, error)
 		// If no match, still include left row with NULL right (simplified: 0)
 		if !matched && rowCount < maxRows {
 			if id, ok := leftRow["id"].(int64); ok {
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(id))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(id))
 			}
 			offset += 8
 			binary.LittleEndian.PutUint64(rt.Memory[offset:], 0) // NULL marker
@@ -422,7 +554,7 @@ func (h *HostFunctions) leftJoin(rt *Runtime, params []uint64) ([]uint64, error)
 		}
 	}
 
-	return []uint64{uint64(rowCount)}, nil
+	return hostUint64Result(rowCount), nil
 }
 
 // innerJoin performs an inner join between two tables
@@ -432,10 +564,29 @@ func (h *HostFunctions) innerJoin(rt *Runtime, params []uint64) ([]uint64, error
 		return []uint64{0}, nil
 	}
 
-	leftTableId := int(params[0])
-	rightTableId := int(params[1])
-	outPtr := int32(params[2])
-	maxRows := int(params[3])
+	leftTableId, ok := checkedHostInt(params, 0, "leftTableId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rightTableId, ok := checkedHostInt(params, 1, "rightTableId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 2, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maxRows, ok := checkedHostInt(params, 3, "maxRows")
+	if !ok || maxRows <= 0 {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(maxRows, 16)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, outPtr, byteCount); !ok {
+		return []uint64{0}, nil
+	}
 
 	_ = leftTableId
 	_ = rightTableId
@@ -454,18 +605,18 @@ func (h *HostFunctions) innerJoin(rt *Runtime, params []uint64) ([]uint64, error
 			}
 			// Write left id and right id
 			if id, ok := leftRow["id"].(int64); ok {
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(id))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(id))
 			}
 			offset += 8
 			if id, ok := rightRow["id"].(int64); ok {
-				binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(id))
+				binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(id))
 			}
 			offset += 8
 			rowCount++
 		}
 	}
 
-	return []uint64{uint64(rowCount)}, nil
+	return hostUint64Result(rowCount), nil
 }
 
 // tableScan scans a table and writes rows to WASM memory
@@ -475,9 +626,25 @@ func (h *HostFunctions) tableScan(rt *Runtime, params []uint64) ([]uint64, error
 		return []uint64{0}, nil
 	}
 
-	tableId := int(params[0])
-	outPtr := int32(params[1])
-	maxRows := int(params[2])
+	tableId, ok := checkedHostInt(params, 0, "tableId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 1, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maxRows, ok := checkedHostInt(params, 2, "maxRows")
+	if !ok || maxRows < 0 {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(maxRows, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, outPtr, byteCount); !ok {
+		return []uint64{0}, nil
+	}
 
 	// Get table by ID (simplified - just use "test" for id 0)
 	tableName := "test"
@@ -496,13 +663,13 @@ func (h *HostFunctions) tableScan(rt *Runtime, params []uint64) ([]uint64, error
 	for _, row := range rows {
 		// Write id (int64)
 		if id, ok := row["id"].(int64); ok {
-			binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(id))
+			binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(id))
 		}
 		offset += 8
 		// Note: name is not written since schema only has id column
 	}
 
-	return []uint64{uint64(len(rows))}, nil
+	return hostUint64Result(len(rows)), nil
 }
 
 // insertRow inserts a row into a table
@@ -545,15 +712,19 @@ func (h *HostFunctions) getTableId(rt *Runtime, params []uint64) ([]uint64, erro
 		return []uint64{^uint64(0)}, nil // -1 as unsigned
 	}
 
-	namePtr := int32(params[0])
-	nameLen := int(params[1])
-
-	// Read table name from memory
-	if int(namePtr)+nameLen > len(rt.Memory) {
+	namePtr, ok := checkedHostInt32(params, 0, "namePtr")
+	if !ok {
+		return []uint64{^uint64(0)}, nil
+	}
+	nameLen, ok := checkedHostInt(params, 1, "nameLen")
+	if !ok {
 		return []uint64{^uint64(0)}, nil
 	}
 
-	tableName := string(rt.Memory[namePtr : namePtr+int32(nameLen)])
+	tableName, ok := readMemoryString(rt, namePtr, nameLen)
+	if !ok {
+		return []uint64{^uint64(0)}, nil
+	}
 
 	// Return 0 for "test" table
 	if tableName == "test" {
@@ -570,13 +741,18 @@ func (h *HostFunctions) getColumnOffset(rt *Runtime, params []uint64) ([]uint64,
 		return []uint64{0}, nil
 	}
 
-	_ = int(params[0]) // tableId
-	columnIdx := int(params[1])
+	if _, ok := checkedHostInt(params, 0, "tableId"); !ok {
+		return []uint64{0}, nil
+	}
+	columnIdx, ok := checkedHostInt(params, 1, "columnIdx")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	// Simplified - assume each column is 8 bytes
 	offset := columnIdx * 8
 
-	return []uint64{uint64(offset)}, nil
+	return hostUint64Result(offset), nil
 }
 
 // executeSubquery executes a subquery and returns the result
@@ -586,9 +762,27 @@ func (h *HostFunctions) executeSubquery(rt *Runtime, params []uint64) ([]uint64,
 		return []uint64{0}, nil
 	}
 
-	_ = int(params[0]) // queryId - identifies which subquery to execute
-	outPtr := int32(params[1])
-	maxRows := int(params[2])
+	if _, ok := checkedHostInt(params, 0, "queryId"); !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 1, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maxRows, ok := checkedHostInt(params, 2, "maxRows")
+	if !ok || maxRows < 0 {
+		return []uint64{0}, nil
+	}
+	if maxRows == maxInt {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(maxRows+1, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, outPtr, byteCount); !ok {
+		return []uint64{0}, nil
+	}
 
 	// Simplified: return count from test table
 	rows := h.tables["test"]
@@ -598,18 +792,18 @@ func (h *HostFunctions) executeSubquery(rt *Runtime, params []uint64) ([]uint64,
 	}
 
 	// Write row count to memory
-	binary.LittleEndian.PutUint64(rt.Memory[outPtr:], uint64(rowCount))
+	binary.LittleEndian.PutUint64(rt.Memory[outPtr:], hostUint64Result(rowCount)[0])
 
 	// Write row ids
 	offset := outPtr + 8
 	for i := 0; i < rowCount; i++ {
 		if id, ok := rows[i]["id"].(int64); ok {
-			binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(id))
+			binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(id))
 		}
 		offset += 8
 	}
 
-	return []uint64{uint64(rowCount)}, nil
+	return hostUint64Result(rowCount), nil
 }
 
 // sortRows sorts rows by a column
@@ -619,28 +813,50 @@ func (h *HostFunctions) sortRows(rt *Runtime, params []uint64) ([]uint64, error)
 		return []uint64{0}, nil
 	}
 
-	inPtr := int32(params[0])
-	rowCount := int(params[1])
-	_ = int(params[2]) // columnIdx
+	inPtr, ok := checkedHostInt32(params, 0, "inPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rowCount, ok := checkedHostInt(params, 1, "rowCount")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedHostInt(params, 2, "columnIdx"); !ok {
+		return []uint64{0}, nil
+	}
 	_ = params[3] != 0 // ascending
-	outPtr := int32(params[4])
+	outPtr, ok := checkedHostInt32(params, 4, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if rowCount <= 0 {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(rowCount, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart, ok := checkedMemoryRange(rt, inPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, byteCount)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
 	// Copy input to output (simplified - no actual sorting for now)
 	// In real implementation, would sort by specified column
 	for i := 0; i < rowCount; i++ {
-		srcOffset := inPtr + int32(i*8)
-		dstOffset := outPtr + int32(i*8)
+		offset := i * 8
 
 		// Copy row id
-		val := binary.LittleEndian.Uint64(rt.Memory[srcOffset:])
-		binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], val)
+		val := binary.LittleEndian.Uint64(rt.Memory[inStart+offset:])
+		binary.LittleEndian.PutUint64(rt.Memory[outStart+offset:], val)
 	}
 
-	return []uint64{uint64(rowCount)}, nil
+	return hostUint64Result(rowCount), nil
 }
 
 // limitOffset applies LIMIT and OFFSET to result set
@@ -650,13 +866,36 @@ func (h *HostFunctions) limitOffset(rt *Runtime, params []uint64) ([]uint64, err
 		return []uint64{0}, nil
 	}
 
-	inPtr := int32(params[0])
-	rowCount := int(params[1])
-	limit := int(params[2])
-	offsetVal := int(params[3])
-	outPtr := int32(params[4])
+	inPtr, ok := checkedHostInt32(params, 0, "inPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rowCount, ok := checkedHostInt(params, 1, "rowCount")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	limit, ok := checkedHostInt(params, 2, "limit")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	offsetVal, ok := checkedHostInt(params, 3, "offset")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 4, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if rowCount <= 0 || limit <= 0 {
+		return []uint64{0}, nil
+	}
+	inputBytes, ok := checkedByteCount(rowCount, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart, ok := checkedMemoryRange(rt, inPtr, inputBytes)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
@@ -674,15 +913,23 @@ func (h *HostFunctions) limitOffset(rt *Runtime, params []uint64) ([]uint64, err
 
 	// Copy rows
 	newRowCount := endIdx - startIdx
+	outputBytes, ok := checkedByteCount(newRowCount, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, outputBytes)
+	if !ok {
+		return []uint64{0}, nil
+	}
 	for i := 0; i < newRowCount; i++ {
-		srcOffset := inPtr + int32((startIdx+i)*8)
-		dstOffset := outPtr + int32(i*8)
+		srcOffset := (startIdx + i) * 8
+		dstOffset := i * 8
 
-		val := binary.LittleEndian.Uint64(rt.Memory[srcOffset:])
-		binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], val)
+		val := binary.LittleEndian.Uint64(rt.Memory[inStart+srcOffset:])
+		binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], val)
 	}
 
-	return []uint64{uint64(newRowCount)}, nil
+	return hostUint64Result(newRowCount), nil
 }
 
 // distinctRows removes duplicate rows from result set
@@ -692,12 +939,36 @@ func (h *HostFunctions) distinctRows(rt *Runtime, params []uint64) ([]uint64, er
 		return []uint64{0}, nil
 	}
 
-	inPtr := int32(params[0])
-	rowCount := int(params[1])
-	rowSize := int(params[2])
-	outPtr := int32(params[3])
+	inPtr, ok := checkedHostInt32(params, 0, "inPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rowCount, ok := checkedHostInt(params, 1, "rowCount")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rowSize, ok := checkedHostInt(params, 2, "rowSize")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 3, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if rowCount <= 0 || rowSize <= 0 {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(rowCount, rowSize)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart, ok := checkedMemoryRange(rt, inPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, byteCount)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
@@ -705,16 +976,16 @@ func (h *HostFunctions) distinctRows(rt *Runtime, params []uint64) ([]uint64, er
 	// In real implementation, would track seen rows and filter duplicates
 	distinctCount := rowCount
 	for i := 0; i < rowCount; i++ {
-		srcOffset := inPtr + int32(i*rowSize)
-		dstOffset := outPtr + int32(i*rowSize)
+		srcOffset := i * rowSize
+		dstOffset := i * rowSize
 
 		// Copy row data
 		for j := 0; j < rowSize; j++ {
-			rt.Memory[dstOffset+int32(j)] = rt.Memory[srcOffset+int32(j)]
+			rt.Memory[outStart+dstOffset+j] = rt.Memory[inStart+srcOffset+j]
 		}
 	}
 
-	return []uint64{uint64(distinctCount)}, nil
+	return hostUint64Result(distinctCount), nil
 }
 
 // unionResults combines two result sets (UNION operation)
@@ -724,30 +995,71 @@ func (h *HostFunctions) unionResults(rt *Runtime, params []uint64) ([]uint64, er
 		return []uint64{0}, nil
 	}
 
-	leftPtr := int32(params[0])
-	leftCount := int(params[1])
-	rightPtr := int32(params[2])
-	rightCount := int(params[3])
-	outPtr := int32(params[4])
+	leftPtr, ok := checkedHostInt32(params, 0, "leftPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	leftCount, ok := checkedHostInt(params, 1, "leftCount")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rightPtr, ok := checkedHostInt32(params, 2, "rightPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rightCount, ok := checkedHostInt(params, 3, "rightCount")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 4, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if leftCount < 0 || rightCount < 0 || leftCount > maxInt-rightCount {
+		return []uint64{0}, nil
+	}
+	leftBytes, ok := checkedByteCount(leftCount, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rightBytes, ok := checkedByteCount(rightCount, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	totalCount := leftCount + rightCount
+	totalBytes, ok := checkedByteCount(totalCount, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	leftStart, ok := checkedMemoryRange(rt, leftPtr, leftBytes)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rightStart, ok := checkedMemoryRange(rt, rightPtr, rightBytes)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, totalBytes)
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	// Copy left results
 	for i := 0; i < leftCount; i++ {
-		srcOffset := leftPtr + int32(i*8)
-		dstOffset := outPtr + int32(i*8)
-		val := binary.LittleEndian.Uint64(rt.Memory[srcOffset:])
-		binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], val)
+		offset := i * 8
+		val := binary.LittleEndian.Uint64(rt.Memory[leftStart+offset:])
+		binary.LittleEndian.PutUint64(rt.Memory[outStart+offset:], val)
 	}
 
 	// Copy right results
 	for i := 0; i < rightCount; i++ {
-		srcOffset := rightPtr + int32(i*8)
-		dstOffset := outPtr + int32((leftCount+i)*8)
-		val := binary.LittleEndian.Uint64(rt.Memory[srcOffset:])
-		binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], val)
+		srcOffset := i * 8
+		dstOffset := (leftCount + i) * 8
+		val := binary.LittleEndian.Uint64(rt.Memory[rightStart+srcOffset:])
+		binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], val)
 	}
 
-	totalCount := leftCount + rightCount
-	return []uint64{uint64(totalCount)}, nil
+	return hostUint64Result(totalCount), nil
 }
 
 // exceptResults returns rows in left but not in right (EXCEPT operation)
@@ -757,21 +1069,45 @@ func (h *HostFunctions) exceptResults(rt *Runtime, params []uint64) ([]uint64, e
 		return []uint64{0}, nil
 	}
 
-	leftPtr := int32(params[0])
-	leftCount := int(params[1])
-	_ = int32(params[2]) // rightPtr
-	_ = int(params[3])   // rightCount
-	outPtr := int32(params[4])
+	leftPtr, ok := checkedHostInt32(params, 0, "leftPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	leftCount, ok := checkedHostInt(params, 1, "leftCount")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedHostInt32(params, 2, "rightPtr"); !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedHostInt(params, 3, "rightCount"); !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 4, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(leftCount, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	leftStart, ok := checkedMemoryRange(rt, leftPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	// Simplified: just copy left results (no actual EXCEPT logic for now)
 	for i := 0; i < leftCount; i++ {
-		srcOffset := leftPtr + int32(i*8)
-		dstOffset := outPtr + int32(i*8)
-		val := binary.LittleEndian.Uint64(rt.Memory[srcOffset:])
-		binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], val)
+		offset := i * 8
+		val := binary.LittleEndian.Uint64(rt.Memory[leftStart+offset:])
+		binary.LittleEndian.PutUint64(rt.Memory[outStart+offset:], val)
 	}
 
-	return []uint64{uint64(leftCount)}, nil
+	return hostUint64Result(leftCount), nil
 }
 
 // intersectResults returns rows common to both sets (INTERSECT operation)
@@ -781,21 +1117,45 @@ func (h *HostFunctions) intersectResults(rt *Runtime, params []uint64) ([]uint64
 		return []uint64{0}, nil
 	}
 
-	leftPtr := int32(params[0])
-	leftCount := int(params[1])
-	_ = int32(params[2]) // rightPtr
-	_ = int(params[3])   // rightCount
-	outPtr := int32(params[4])
+	leftPtr, ok := checkedHostInt32(params, 0, "leftPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	leftCount, ok := checkedHostInt(params, 1, "leftCount")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedHostInt32(params, 2, "rightPtr"); !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedHostInt(params, 3, "rightCount"); !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 4, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(leftCount, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	leftStart, ok := checkedMemoryRange(rt, leftPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	// Simplified: just copy left results (no actual INTERSECT logic for now)
 	for i := 0; i < leftCount; i++ {
-		srcOffset := leftPtr + int32(i*8)
-		dstOffset := outPtr + int32(i*8)
-		val := binary.LittleEndian.Uint64(rt.Memory[srcOffset:])
-		binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], val)
+		offset := i * 8
+		val := binary.LittleEndian.Uint64(rt.Memory[leftStart+offset:])
+		binary.LittleEndian.PutUint64(rt.Memory[outStart+offset:], val)
 	}
 
-	return []uint64{uint64(leftCount)}, nil
+	return hostUint64Result(leftCount), nil
 }
 
 // windowFunction computes window functions like ROW_NUMBER, RANK, LAG, LEAD, etc.
@@ -811,12 +1171,36 @@ func (h *HostFunctions) windowFunction(rt *Runtime, params []uint64) ([]uint64, 
 		return []uint64{0}, nil
 	}
 
-	inPtr := int32(params[0])
-	rowCount := int(params[1])
-	funcType := int(params[2])
-	outPtr := int32(params[3])
+	inPtr, ok := checkedHostInt32(params, 0, "inPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	rowCount, ok := checkedHostInt(params, 1, "rowCount")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	funcType, ok := checkedHostInt(params, 2, "funcType")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 3, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if rowCount <= 0 {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(rowCount, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart, ok := checkedMemoryRange(rt, inPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, byteCount)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
@@ -824,143 +1208,140 @@ func (h *HostFunctions) windowFunction(rt *Runtime, params []uint64) ([]uint64, 
 	arg1 := int64(1) // default offset for LAG/LEAD
 	arg2 := int64(0) // default value for LAG/LEAD
 	if len(params) >= 5 {
-		arg1 = int64(params[4])
+		arg1 = wasmI64Signed(params[4])
 	}
 	if len(params) >= 6 {
-		arg2 = int64(params[5])
+		arg2 = wasmI64Signed(params[5])
 	}
-
-	_ = inPtr // Input pointer - used for partition-aware functions in full implementation
 
 	switch funcType {
 	case 0: // ROW_NUMBER
 		// Assign sequential row numbers starting from 1
 		for i := 0; i < rowCount; i++ {
-			dstOffset := outPtr + int32(i*8)
-			binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], uint64(i+1))
+			dstOffset := i * 8
+			binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], hostUint64Result(i + 1)[0])
 		}
 	case 1: // RANK
 		// Simplified: same as ROW_NUMBER for now
 		for i := 0; i < rowCount; i++ {
-			dstOffset := outPtr + int32(i*8)
-			binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], uint64(i+1))
+			dstOffset := i * 8
+			binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], hostUint64Result(i + 1)[0])
 		}
 	case 2: // DENSE_RANK
 		// Simplified: same as ROW_NUMBER for now
 		for i := 0; i < rowCount; i++ {
-			dstOffset := outPtr + int32(i*8)
-			binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], uint64(i+1))
+			dstOffset := i * 8
+			binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], hostUint64Result(i + 1)[0])
 		}
 	case 3: // LAG
 		// LAG(value, offset, default) - access previous row
-		offset := int(arg1)
+		offset, ok := checkedSignedHostInt(arg1)
+		if !ok {
+			return []uint64{0}, nil
+		}
 		for i := 0; i < rowCount; i++ {
-			dstOffset := outPtr + int32(i*8)
+			dstOffset := i * 8
 			srcIdx := i - offset
 			if srcIdx >= 0 && srcIdx < rowCount {
 				// Read value from source row
-				srcOffset := inPtr + int32(srcIdx*8)
-				val := binary.LittleEndian.Uint64(rt.Memory[srcOffset:])
-				binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], val)
+				srcOffset := srcIdx * 8
+				val := binary.LittleEndian.Uint64(rt.Memory[inStart+srcOffset:])
+				binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], val)
 			} else {
 				// Use default value
-				binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], uint64(arg2))
+				binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], wasmI64Bits(arg2))
 			}
 		}
 	case 4: // LEAD
 		// LEAD(value, offset, default) - access next row
-		offset := int(arg1)
+		offset, ok := checkedSignedHostInt(arg1)
+		if !ok {
+			return []uint64{0}, nil
+		}
 		for i := 0; i < rowCount; i++ {
-			dstOffset := outPtr + int32(i*8)
+			dstOffset := i * 8
 			srcIdx := i + offset
 			if srcIdx >= 0 && srcIdx < rowCount {
 				// Read value from source row
-				srcOffset := inPtr + int32(srcIdx*8)
-				val := binary.LittleEndian.Uint64(rt.Memory[srcOffset:])
-				binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], val)
+				srcOffset := srcIdx * 8
+				val := binary.LittleEndian.Uint64(rt.Memory[inStart+srcOffset:])
+				binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], val)
 			} else {
 				// Use default value
-				binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], uint64(arg2))
+				binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], wasmI64Bits(arg2))
 			}
 		}
 	case 5: // FIRST_VALUE
 		// FIRST_VALUE(value) - value from first row in window
 		if rowCount > 0 {
-			firstOffset := inPtr
-			firstVal := binary.LittleEndian.Uint64(rt.Memory[firstOffset:])
+			firstVal := binary.LittleEndian.Uint64(rt.Memory[inStart:])
 			for i := 0; i < rowCount; i++ {
-				dstOffset := outPtr + int32(i*8)
-				binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], firstVal)
+				dstOffset := i * 8
+				binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], firstVal)
 			}
 		}
 	case 6: // LAST_VALUE
 		// LAST_VALUE(value) - value from last row in window
 		if rowCount > 0 {
-			lastOffset := inPtr + int32((rowCount-1)*8)
-			lastVal := binary.LittleEndian.Uint64(rt.Memory[lastOffset:])
+			lastOffset := (rowCount - 1) * 8
+			lastVal := binary.LittleEndian.Uint64(rt.Memory[inStart+lastOffset:])
 			for i := 0; i < rowCount; i++ {
-				dstOffset := outPtr + int32(i*8)
-				binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], lastVal)
+				dstOffset := i * 8
+				binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], lastVal)
 			}
 		}
 	case 10: // SUM (running/cumulative)
 		// Running sum over the window
 		var sum int64 = 0
 		for i := 0; i < rowCount; i++ {
-			srcOffset := inPtr + int32(i*8)
-			val := int64(binary.LittleEndian.Uint64(rt.Memory[srcOffset:]))
+			offset := i * 8
+			val := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart+offset:]))
 			sum += val
-			dstOffset := outPtr + int32(i*8)
-			binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], uint64(sum))
+			binary.LittleEndian.PutUint64(rt.Memory[outStart+offset:], wasmI64Bits(sum))
 		}
 	case 11: // AVG (running/cumulative)
 		// Running average over the window
 		var sum int64 = 0
 		for i := 0; i < rowCount; i++ {
-			srcOffset := inPtr + int32(i*8)
-			val := int64(binary.LittleEndian.Uint64(rt.Memory[srcOffset:]))
+			offset := i * 8
+			val := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart+offset:]))
 			sum += val
 			avg := sum / int64(i+1)
-			dstOffset := outPtr + int32(i*8)
-			binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], uint64(avg))
+			binary.LittleEndian.PutUint64(rt.Memory[outStart+offset:], wasmI64Bits(avg))
 		}
 	case 12: // MIN (running)
 		// Running minimum over the window
 		if rowCount > 0 {
-			srcOffset := inPtr
-			minVal := int64(binary.LittleEndian.Uint64(rt.Memory[srcOffset:]))
-			binary.LittleEndian.PutUint64(rt.Memory[outPtr:], uint64(minVal))
+			minVal := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart:]))
+			binary.LittleEndian.PutUint64(rt.Memory[outStart:], wasmI64Bits(minVal))
 			for i := 1; i < rowCount; i++ {
-				srcOffset := inPtr + int32(i*8)
-				val := int64(binary.LittleEndian.Uint64(rt.Memory[srcOffset:]))
+				offset := i * 8
+				val := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart+offset:]))
 				if val < minVal {
 					minVal = val
 				}
-				dstOffset := outPtr + int32(i*8)
-				binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], uint64(minVal))
+				binary.LittleEndian.PutUint64(rt.Memory[outStart+offset:], wasmI64Bits(minVal))
 			}
 		}
 	case 13: // MAX (running)
 		// Running maximum over the window
 		if rowCount > 0 {
-			srcOffset := inPtr
-			maxVal := int64(binary.LittleEndian.Uint64(rt.Memory[srcOffset:]))
-			binary.LittleEndian.PutUint64(rt.Memory[outPtr:], uint64(maxVal))
+			maxVal := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart:]))
+			binary.LittleEndian.PutUint64(rt.Memory[outStart:], wasmI64Bits(maxVal))
 			for i := 1; i < rowCount; i++ {
-				srcOffset := inPtr + int32(i*8)
-				val := int64(binary.LittleEndian.Uint64(rt.Memory[srcOffset:]))
+				offset := i * 8
+				val := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart+offset:]))
 				if val > maxVal {
 					maxVal = val
 				}
-				dstOffset := outPtr + int32(i*8)
-				binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], uint64(maxVal))
+				binary.LittleEndian.PutUint64(rt.Memory[outStart+offset:], wasmI64Bits(maxVal))
 			}
 		}
 	case 14: // COUNT (running)
 		// Running count over the window
 		for i := 0; i < rowCount; i++ {
-			dstOffset := outPtr + int32(i*8)
-			binary.LittleEndian.PutUint64(rt.Memory[dstOffset:], uint64(i+1))
+			dstOffset := i * 8
+			binary.LittleEndian.PutUint64(rt.Memory[outStart+dstOffset:], hostUint64Result(i + 1)[0])
 		}
 	}
 
@@ -975,11 +1356,33 @@ func (h *HostFunctions) executeCorrelatedSubquery(rt *Runtime, params []uint64) 
 		return []uint64{0}, nil
 	}
 
-	_ = int(params[0])   // queryId - identifies which subquery to execute
-	_ = int32(params[1]) // outerRowPtr - pointer to outer query row data
-	_ = int(params[2])   // outerRowSize - size of outer row in bytes
-	outPtr := int32(params[3])
-	maxRows := int(params[4])
+	if _, ok := checkedHostInt(params, 0, "queryId"); !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedHostInt32(params, 1, "outerRowPtr"); !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedHostInt(params, 2, "outerRowSize"); !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 3, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maxRows, ok := checkedHostInt(params, 4, "maxRows")
+	if !ok || maxRows < 0 {
+		return []uint64{0}, nil
+	}
+	if maxRows == maxInt {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(maxRows+1, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, outPtr, byteCount); !ok {
+		return []uint64{0}, nil
+	}
 
 	// Simplified: return count from test table (correlated logic would use outerRow data)
 	rows := h.tables["test"]
@@ -989,18 +1392,18 @@ func (h *HostFunctions) executeCorrelatedSubquery(rt *Runtime, params []uint64) 
 	}
 
 	// Write row count to memory
-	binary.LittleEndian.PutUint64(rt.Memory[outPtr:], uint64(rowCount))
+	binary.LittleEndian.PutUint64(rt.Memory[outPtr:], hostUint64Result(rowCount)[0])
 
 	// Write row ids
 	offset := outPtr + 8
 	for i := 0; i < rowCount; i++ {
 		if id, ok := rows[i]["id"].(int64); ok {
-			binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(id))
+			binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(id))
 		}
 		offset += 8
 	}
 
-	return []uint64{uint64(rowCount)}, nil
+	return hostUint64Result(rowCount), nil
 }
 
 // groupBy groups rows by a column value and returns group count
@@ -1010,9 +1413,18 @@ func (h *HostFunctions) groupBy(rt *Runtime, params []uint64) ([]uint64, error) 
 		return []uint64{0}, nil
 	}
 
-	tableId := int(params[0])
-	groupColumnIdx := int(params[1])
-	outPtr := int32(params[2])
+	tableId, ok := checkedHostInt(params, 0, "tableId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	groupColumnIdx, ok := checkedHostInt(params, 1, "groupColumnIdx")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 2, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	// Get table by ID
 	tableName := "test"
@@ -1036,16 +1448,23 @@ func (h *HostFunctions) groupBy(rt *Runtime, params []uint64) ([]uint64, error) 
 
 	// Write group info to memory: [groupCount, group1Count, group2Count, ...]
 	groupCount := len(groups)
-	binary.LittleEndian.PutUint64(rt.Memory[outPtr:], uint64(groupCount))
+	byteCount, ok := checkedByteCount(groupCount+1, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, outPtr, byteCount); !ok {
+		return []uint64{0}, nil
+	}
+	binary.LittleEndian.PutUint64(rt.Memory[outPtr:], hostUint64Result(groupCount)[0])
 
 	// Write group counts
 	offset := outPtr + 8
 	for _, count := range groups {
-		binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(count))
+		binary.LittleEndian.PutUint64(rt.Memory[offset:], hostUint64Result(count)[0])
 		offset += 8
 	}
 
-	return []uint64{uint64(groupCount)}, nil
+	return hostUint64Result(groupCount), nil
 }
 
 // fetchChunk fetches a chunk of rows for streaming results
@@ -1055,14 +1474,20 @@ func (h *HostFunctions) fetchChunk(rt *Runtime, params []uint64) ([]uint64, erro
 		return []uint64{0}, nil
 	}
 
-	_ = int(params[0])   // startRow
-	_ = int(params[1])   // rowCount
-	_ = int32(params[2]) // outPtr
+	if _, ok := checkedHostInt(params, 0, "startRow"); !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedHostInt(params, 1, "rowCount"); !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedHostInt32(params, 2, "outPtr"); !ok {
+		return []uint64{0}, nil
+	}
 
 	// Simplified: return rows from test table
 	// In full implementation, would fetch specific chunk from storage
 	rows := h.tables["test"]
-	return []uint64{uint64(len(rows))}, nil
+	return hostUint64Result(len(rows)), nil
 }
 
 // indexScan scans a table using an index for faster lookups
@@ -1075,12 +1500,30 @@ func (h *HostFunctions) indexScan(rt *Runtime, params []uint64) ([]uint64, error
 		return []uint64{0}, nil
 	}
 
-	tableId := int(params[0])
-	_ = int(params[1])   // indexId - which index to use
-	_ = int64(params[2]) // minVal - minimum value for range
-	_ = int64(params[3]) // maxVal - maximum value for range
-	outPtr := int32(params[4])
-	maxRows := int(params[5])
+	tableId, ok := checkedHostInt(params, 0, "tableId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedHostInt(params, 1, "indexId"); !ok {
+		return []uint64{0}, nil
+	}
+	_ = wasmI64Signed(params[2]) // minVal - minimum value for range
+	_ = wasmI64Signed(params[3]) // maxVal - maximum value for range
+	outPtr, ok := checkedHostInt32(params, 4, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maxRows, ok := checkedHostInt(params, 5, "maxRows")
+	if !ok || maxRows < 0 {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(maxRows, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, outPtr, byteCount); !ok {
+		return []uint64{0}, nil
+	}
 
 	// Get table by ID (simplified - just use "test" for id 0)
 	tableName := "test"
@@ -1099,12 +1542,12 @@ func (h *HostFunctions) indexScan(rt *Runtime, params []uint64) ([]uint64, error
 	for _, row := range rows {
 		// Write id (int64)
 		if id, ok := row["id"].(int64); ok {
-			binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(id))
+			binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(id))
 		}
 		offset += 8
 	}
 
-	return []uint64{uint64(len(rows))}, nil
+	return hostUint64Result(len(rows)), nil
 }
 
 // bindParameter binds a parameter value to a prepared statement slot
@@ -1115,17 +1558,29 @@ func (h *HostFunctions) bindParameter(rt *Runtime, params []uint64) ([]uint64, e
 		return []uint64{0}, nil
 	}
 
-	slotIdx := int(params[0])
-	valuePtr := int32(params[1])
-	valueType := int(params[2])
+	slotIdx, ok := checkedHostInt(params, 0, "slotIdx")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	valuePtr, ok := checkedHostInt32(params, 1, "valuePtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	valueType, ok := checkedHostInt(params, 2, "valueType")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, valuePtr, 8); !ok {
+		return []uint64{0}, nil
+	}
 
 	// Read value from memory based on type
 	var value interface{}
 	switch valueType {
 	case 0: // i32
-		value = int32(binary.LittleEndian.Uint32(rt.Memory[valuePtr:]))
+		value = wasmI32Signed(binary.LittleEndian.Uint32(rt.Memory[valuePtr:]))
 	case 1: // i64
-		value = int64(binary.LittleEndian.Uint64(rt.Memory[valuePtr:]))
+		value = wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[valuePtr:]))
 	case 2: // f32
 		value = float32(binary.LittleEndian.Uint32(rt.Memory[valuePtr:]))
 	case 3: // f64
@@ -1206,7 +1661,11 @@ func (h *HostFunctions) savepoint(rt *Runtime, params []uint64) ([]uint64, error
 	if len(params) < 1 {
 		return []uint64{0}, nil
 	}
-	h.txSavepoint = int(params[0])
+	savepointID, ok := checkedHostInt(params, 0, "savepointId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	h.txSavepoint = savepointID
 	return []uint64{1}, nil
 }
 
@@ -1220,7 +1679,10 @@ func (h *HostFunctions) rollbackToSavepoint(rt *Runtime, params []uint64) ([]uin
 		return []uint64{0}, nil
 	}
 
-	targetSavepoint := int(params[0])
+	targetSavepoint, ok := checkedHostInt(params, 0, "savepointId")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	// In a real implementation, each operation would track savepoint metadata.
 	// For now we only keep the value to preserve behavior without stale loop code.
@@ -1236,30 +1698,47 @@ func (h *HostFunctions) executeUDF(rt *Runtime, params []uint64) ([]uint64, erro
 		return []uint64{0}, nil
 	}
 
-	funcNamePtr := int32(params[0])
-	funcNameLen := int(params[1])
-	argsPtr := int32(params[2])
-	argCount := int(params[3])
-
-	// Read function name from memory
-	if int(funcNamePtr)+funcNameLen > len(rt.Memory) {
+	funcNamePtr, ok := checkedHostInt32(params, 0, "funcNamePtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	funcNameLen, ok := checkedHostInt(params, 1, "funcNameLen")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	argsPtr, ok := checkedHostInt32(params, 2, "argsPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	argCount, ok := checkedHostInt(params, 3, "argCount")
+	if !ok || argCount < 0 {
 		return []uint64{0}, nil
 	}
 
-	// Look up UDF
-	udf, ok := h.udfs[string(rt.Memory[funcNamePtr:funcNamePtr+int32(funcNameLen)])]
+	funcName, ok := readMemoryString(rt, funcNamePtr, funcNameLen)
+	if !ok {
+		return []uint64{0}, nil
+	}
+
+	udf, ok := h.udfs[funcName]
 	if !ok {
 		return []uint64{0}, nil // Function not found
+	}
+	argBytes, ok := checkedByteCount(argCount, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	argStart, ok := checkedMemoryRange(rt, argsPtr, argBytes)
+	if !ok {
+		return []uint64{0}, nil
 	}
 
 	// Read arguments from memory (simplified - assumes int64 args)
 	args := make([]interface{}, argCount)
 	for i := 0; i < argCount && i < udf.ParamCount; i++ {
-		argOffset := argsPtr + int32(i*8)
-		if argOffset+8 <= int32(len(rt.Memory)) {
-			val := binary.LittleEndian.Uint64(rt.Memory[argOffset:])
-			args[i] = int64(val)
-		}
+		argOffset := i * 8
+		val := binary.LittleEndian.Uint64(rt.Memory[argStart+argOffset:])
+		args[i] = wasmI64Signed(val)
 	}
 
 	// Execute UDF
@@ -1271,9 +1750,9 @@ func (h *HostFunctions) executeUDF(rt *Runtime, params []uint64) ([]uint64, erro
 	// Return result (simplified - assumes int64 result)
 	switch v := result.(type) {
 	case int64:
-		return []uint64{uint64(v)}, nil
+		return []uint64{wasmI64Bits(v)}, nil
 	case int:
-		return []uint64{uint64(v)}, nil
+		return []uint64{wasmI64Bits(int64(v))}, nil
 	default:
 		return []uint64{0}, nil
 	}
@@ -1286,22 +1765,28 @@ func (h *HostFunctions) getPartitionCount(rt *Runtime, params []uint64) ([]uint6
 		return []uint64{0}, nil
 	}
 
-	tableNamePtr := int32(params[0])
-	tableNameLen := int(params[1])
+	tableNamePtr, ok := checkedHostInt32(params, 0, "tableNamePtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	tableNameLen, ok := checkedHostInt(params, 1, "tableNameLen")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
-	// Read table name from memory
-	if int(tableNamePtr)+tableNameLen > len(rt.Memory) {
+	tableName, ok := readMemoryString(rt, tableNamePtr, tableNameLen)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
 	// Get partition count
-	partitions, ok := h.partitions[string(rt.Memory[tableNamePtr:tableNamePtr+int32(tableNameLen)])]
+	partitions, ok := h.partitions[tableName]
 	if !ok {
 		// Table not partitioned - return 1 (single implicit partition)
 		return []uint64{1}, nil
 	}
 
-	return []uint64{uint64(len(partitions))}, nil
+	return hostUint64Result(len(partitions)), nil
 }
 
 // partitionScan scans a specific partition of a table
@@ -1311,17 +1796,38 @@ func (h *HostFunctions) partitionScan(rt *Runtime, params []uint64) ([]uint64, e
 		return []uint64{0}, nil
 	}
 
-	tableNamePtr := int32(params[0])
-	tableNameLen := int(params[1])
-	partitionId := int(params[2])
-	outPtr := int32(params[3])
-	maxRows := int(params[4])
-
-	// Read table name from memory
-	if int(tableNamePtr)+tableNameLen > len(rt.Memory) {
+	tableNamePtr, ok := checkedHostInt32(params, 0, "tableNamePtr")
+	if !ok {
 		return []uint64{0}, nil
 	}
-	tableName := string(rt.Memory[tableNamePtr : tableNamePtr+int32(tableNameLen)])
+	tableNameLen, ok := checkedHostInt(params, 1, "tableNameLen")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	partitionId, ok := checkedHostInt(params, 2, "partitionId")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 3, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maxRows, ok := checkedHostInt(params, 4, "maxRows")
+	if !ok || maxRows < 0 {
+		return []uint64{0}, nil
+	}
+	byteCount, ok := checkedByteCount(maxRows, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, outPtr, byteCount); !ok {
+		return []uint64{0}, nil
+	}
+
+	tableName, ok := readMemoryString(rt, tableNamePtr, tableNameLen)
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	// Get partition info
 	partitions, ok := h.partitions[tableName]
@@ -1361,7 +1867,7 @@ func (h *HostFunctions) scanTableRows(rt *Runtime, tableName string, startRow, e
 
 		// Write row id
 		if id, ok := row["id"].(int64); ok {
-			binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(id))
+			binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(id))
 		} else {
 			binary.LittleEndian.PutUint64(rt.Memory[offset:], 0)
 		}
@@ -1370,7 +1876,7 @@ func (h *HostFunctions) scanTableRows(rt *Runtime, tableName string, startRow, e
 		rowCount++
 	}
 
-	return []uint64{uint64(rowCount)}, nil
+	return hostUint64Result(rowCount), nil
 }
 
 // parallelAggregate performs aggregation across all partitions in parallel
@@ -1381,24 +1887,42 @@ func (h *HostFunctions) parallelAggregate(rt *Runtime, params []uint64) ([]uint6
 		return []uint64{0}, nil
 	}
 
-	tableNamePtr := int32(params[0])
-	tableNameLen := int(params[1])
-	aggType := int(params[2])
-	columnNamePtr := int32(params[3])
-	columnNameLen := int(params[4])
-	outPtr := int32(params[5])
-
-	// Read table name
-	if int(tableNamePtr)+tableNameLen > len(rt.Memory) {
+	tableNamePtr, ok := checkedHostInt32(params, 0, "tableNamePtr")
+	if !ok {
 		return []uint64{0}, nil
 	}
-	tableName := string(rt.Memory[tableNamePtr : tableNamePtr+int32(tableNameLen)])
-
-	// Read column name
-	if int(columnNamePtr)+columnNameLen > len(rt.Memory) {
+	tableNameLen, ok := checkedHostInt(params, 1, "tableNameLen")
+	if !ok {
 		return []uint64{0}, nil
 	}
-	columnName := string(rt.Memory[columnNamePtr : columnNamePtr+int32(columnNameLen)])
+	aggType, ok := checkedHostInt(params, 2, "aggType")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	columnNamePtr, ok := checkedHostInt32(params, 3, "columnNamePtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	columnNameLen, ok := checkedHostInt(params, 4, "columnNameLen")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 5, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	if _, ok := checkedMemoryRange(rt, outPtr, 8); !ok {
+		return []uint64{0}, nil
+	}
+
+	tableName, ok := readMemoryString(rt, tableNamePtr, tableNameLen)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	columnName, ok := readMemoryString(rt, columnNamePtr, columnNameLen)
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	// Get rows (across all partitions)
 	rows, ok := h.tables[tableName]
@@ -1454,7 +1978,7 @@ func (h *HostFunctions) parallelAggregate(rt *Runtime, params []uint64) ([]uint6
 	}
 
 	// Write result to memory
-	binary.LittleEndian.PutUint64(rt.Memory[outPtr:], uint64(result))
+	binary.LittleEndian.PutUint64(rt.Memory[outPtr:], wasmI64Bits(result))
 
 	return []uint64{1}, nil
 }
@@ -1466,19 +1990,27 @@ func (h *HostFunctions) repartitionTable(rt *Runtime, params []uint64) ([]uint64
 		return []uint64{0}, nil
 	}
 
-	tableNamePtr := int32(params[0])
-	tableNameLen := int(params[1])
-	partitionCount := int(params[2])
+	tableNamePtr, ok := checkedHostInt32(params, 0, "tableNamePtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	tableNameLen, ok := checkedHostInt(params, 1, "tableNameLen")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	partitionCount, ok := checkedHostInt(params, 2, "partitionCount")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if partitionCount < 1 || partitionCount > 100 {
 		return []uint64{0}, nil // Invalid partition count
 	}
 
-	// Read table name
-	if int(tableNamePtr)+tableNameLen > len(rt.Memory) {
+	tableName, ok := readMemoryString(rt, tableNamePtr, tableNameLen)
+	if !ok {
 		return []uint64{0}, nil
 	}
-	tableName := string(rt.Memory[tableNamePtr : tableNamePtr+int32(tableNameLen)])
 
 	// Get table rows
 	rows, ok := h.tables[tableName]
@@ -1522,30 +2054,51 @@ func (h *HostFunctions) vectorizedAdd(rt *Runtime, params []uint64) ([]uint64, e
 		return []uint64{0}, nil
 	}
 
-	inPtr1 := int32(params[0])
-	inPtr2 := int32(params[1])
-	outPtr := int32(params[2])
-	count := int(params[3])
+	inPtr1, ok := checkedHostInt32(params, 0, "inPtr1")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inPtr2, ok := checkedHostInt32(params, 1, "inPtr2")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 2, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	count, ok := checkedHostInt(params, 3, "count")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if count <= 0 || count > 10000 {
 		return []uint64{0}, nil
 	}
 
-	// Check bounds
-	maxOffset := int32(count * 8)
-	if int(inPtr1)+int(maxOffset) > len(rt.Memory) ||
-		int(inPtr2)+int(maxOffset) > len(rt.Memory) ||
-		int(outPtr)+int(maxOffset) > len(rt.Memory) {
+	byteCount, ok := checkedByteCount(count, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart1, ok := checkedMemoryRange(rt, inPtr1, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart2, ok := checkedMemoryRange(rt, inPtr2, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, byteCount)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
 	// Vectorized addition
 	for i := 0; i < count; i++ {
-		offset := int32(i * 8)
-		val1 := int64(binary.LittleEndian.Uint64(rt.Memory[inPtr1+offset:]))
-		val2 := int64(binary.LittleEndian.Uint64(rt.Memory[inPtr2+offset:]))
+		offset := i * 8
+		val1 := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart1+offset:]))
+		val2 := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart2+offset:]))
 		result := val1 + val2
-		binary.LittleEndian.PutUint64(rt.Memory[outPtr+offset:], uint64(result))
+		binary.LittleEndian.PutUint64(rt.Memory[outStart+offset:], wasmI64Bits(result))
 	}
 
 	return []uint64{1}, nil
@@ -1558,28 +2111,50 @@ func (h *HostFunctions) vectorizedMultiply(rt *Runtime, params []uint64) ([]uint
 		return []uint64{0}, nil
 	}
 
-	inPtr1 := int32(params[0])
-	inPtr2 := int32(params[1])
-	outPtr := int32(params[2])
-	count := int(params[3])
+	inPtr1, ok := checkedHostInt32(params, 0, "inPtr1")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inPtr2, ok := checkedHostInt32(params, 1, "inPtr2")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 2, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	count, ok := checkedHostInt(params, 3, "count")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if count <= 0 || count > 10000 {
 		return []uint64{0}, nil
 	}
 
-	maxOffset := int32(count * 8)
-	if int(inPtr1)+int(maxOffset) > len(rt.Memory) ||
-		int(inPtr2)+int(maxOffset) > len(rt.Memory) ||
-		int(outPtr)+int(maxOffset) > len(rt.Memory) {
+	byteCount, ok := checkedByteCount(count, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart1, ok := checkedMemoryRange(rt, inPtr1, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart2, ok := checkedMemoryRange(rt, inPtr2, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, byteCount)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
 	for i := 0; i < count; i++ {
-		offset := int32(i * 8)
-		val1 := int64(binary.LittleEndian.Uint64(rt.Memory[inPtr1+offset:]))
-		val2 := int64(binary.LittleEndian.Uint64(rt.Memory[inPtr2+offset:]))
+		offset := i * 8
+		val1 := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart1+offset:]))
+		val2 := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart2+offset:]))
 		result := val1 * val2
-		binary.LittleEndian.PutUint64(rt.Memory[outPtr+offset:], uint64(result))
+		binary.LittleEndian.PutUint64(rt.Memory[outStart+offset:], wasmI64Bits(result))
 	}
 
 	return []uint64{1}, nil
@@ -1594,27 +2169,52 @@ func (h *HostFunctions) vectorizedCompare(rt *Runtime, params []uint64) ([]uint6
 		return []uint64{0}, nil
 	}
 
-	inPtr1 := int32(params[0])
-	inPtr2 := int32(params[1])
-	outPtr := int32(params[2])
-	count := int(params[3])
-	op := int(params[4])
+	inPtr1, ok := checkedHostInt32(params, 0, "inPtr1")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inPtr2, ok := checkedHostInt32(params, 1, "inPtr2")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 2, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	count, ok := checkedHostInt(params, 3, "count")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	op, ok := checkedHostInt(params, 4, "op")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if count <= 0 || count > 10000 {
 		return []uint64{0}, nil
 	}
 
-	maxOffset := int32(count * 8)
-	if int(inPtr1)+int(maxOffset) > len(rt.Memory) ||
-		int(inPtr2)+int(maxOffset) > len(rt.Memory) ||
-		int(outPtr)+int(maxOffset) > len(rt.Memory) {
+	byteCount, ok := checkedByteCount(count, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart1, ok := checkedMemoryRange(rt, inPtr1, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart2, ok := checkedMemoryRange(rt, inPtr2, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, byteCount)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
 	for i := 0; i < count; i++ {
-		offset := int32(i * 8)
-		val1 := int64(binary.LittleEndian.Uint64(rt.Memory[inPtr1+offset:]))
-		val2 := int64(binary.LittleEndian.Uint64(rt.Memory[inPtr2+offset:]))
+		offset := i * 8
+		val1 := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart1+offset:]))
+		val2 := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart2+offset:]))
 
 		var result int64
 		switch op {
@@ -1644,7 +2244,7 @@ func (h *HostFunctions) vectorizedCompare(rt *Runtime, params []uint64) ([]uint6
 			}
 		}
 
-		binary.LittleEndian.PutUint64(rt.Memory[outPtr+offset:], uint64(result))
+		binary.LittleEndian.PutUint64(rt.Memory[outStart+offset:], wasmI64Bits(result))
 	}
 
 	return []uint64{1}, nil
@@ -1657,25 +2257,36 @@ func (h *HostFunctions) vectorizedSum(rt *Runtime, params []uint64) ([]uint64, e
 		return []uint64{0}, nil
 	}
 
-	inPtr := int32(params[0])
-	count := int(params[1])
+	inPtr, ok := checkedHostInt32(params, 0, "inPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	count, ok := checkedHostInt(params, 1, "count")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if count <= 0 || count > 10000 {
 		return []uint64{0}, nil
 	}
 
-	if int(inPtr)+int(count*8) > len(rt.Memory) {
+	byteCount, ok := checkedByteCount(count, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart, ok := checkedMemoryRange(rt, inPtr, byteCount)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
 	var sum int64
 	for i := 0; i < count; i++ {
-		offset := int32(i * 8)
-		val := int64(binary.LittleEndian.Uint64(rt.Memory[inPtr+offset:]))
+		offset := i * 8
+		val := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart+offset:]))
 		sum += val
 	}
 
-	return []uint64{uint64(sum)}, nil
+	return []uint64{wasmI64Bits(sum)}, nil
 }
 
 // vectorizedMinMax finds min and max values (reduction operation)
@@ -1685,27 +2296,50 @@ func (h *HostFunctions) vectorizedMinMax(rt *Runtime, params []uint64) ([]uint64
 		return []uint64{0}, nil
 	}
 
-	inPtr := int32(params[0])
-	count := int(params[1])
-	outMinPtr := int32(params[2])
-	outMaxPtr := int32(params[3])
+	inPtr, ok := checkedHostInt32(params, 0, "inPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	count, ok := checkedHostInt(params, 1, "count")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outMinPtr, ok := checkedHostInt32(params, 2, "outMinPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outMaxPtr, ok := checkedHostInt32(params, 3, "outMaxPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if count <= 0 || count > 10000 {
 		return []uint64{0}, nil
 	}
 
-	if int(inPtr)+int(count*8) > len(rt.Memory) ||
-		int(outMinPtr)+8 > len(rt.Memory) ||
-		int(outMaxPtr)+8 > len(rt.Memory) {
+	byteCount, ok := checkedByteCount(count, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart, ok := checkedMemoryRange(rt, inPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outMinStart, ok := checkedMemoryRange(rt, outMinPtr, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outMaxStart, ok := checkedMemoryRange(rt, outMaxPtr, 8)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
-	minVal := int64(^uint64(0) >> 1) // Max int64
-	maxVal := int64(-1 << 63)        // Min int64
+	minVal := int64(1<<63 - 1)
+	maxVal := int64(-1 << 63)
 
 	for i := 0; i < count; i++ {
-		offset := int32(i * 8)
-		val := int64(binary.LittleEndian.Uint64(rt.Memory[inPtr+offset:]))
+		offset := i * 8
+		val := wasmI64Signed(binary.LittleEndian.Uint64(rt.Memory[inStart+offset:]))
 		if val < minVal {
 			minVal = val
 		}
@@ -1714,8 +2348,8 @@ func (h *HostFunctions) vectorizedMinMax(rt *Runtime, params []uint64) ([]uint64
 		}
 	}
 
-	binary.LittleEndian.PutUint64(rt.Memory[outMinPtr:], uint64(minVal))
-	binary.LittleEndian.PutUint64(rt.Memory[outMaxPtr:], uint64(maxVal))
+	binary.LittleEndian.PutUint64(rt.Memory[outMinStart:], wasmI64Bits(minVal))
+	binary.LittleEndian.PutUint64(rt.Memory[outMaxStart:], wasmI64Bits(maxVal))
 
 	return []uint64{1}, nil
 }
@@ -1728,35 +2362,58 @@ func (h *HostFunctions) vectorizedFilter(rt *Runtime, params []uint64) ([]uint64
 		return []uint64{0}, nil
 	}
 
-	inPtr := int32(params[0])
-	maskPtr := int32(params[1])
-	outPtr := int32(params[2])
-	count := int(params[3])
+	inPtr, ok := checkedHostInt32(params, 0, "inPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maskPtr, ok := checkedHostInt32(params, 1, "maskPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outPtr, ok := checkedHostInt32(params, 2, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	count, ok := checkedHostInt(params, 3, "count")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if count <= 0 || count > 10000 {
 		return []uint64{0}, nil
 	}
 
-	if int(inPtr)+int(count*8) > len(rt.Memory) ||
-		int(maskPtr)+int(count*8) > len(rt.Memory) ||
-		int(outPtr)+int(count*8) > len(rt.Memory) {
+	byteCount, ok := checkedByteCount(count, 8)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	inStart, ok := checkedMemoryRange(rt, inPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maskStart, ok := checkedMemoryRange(rt, maskPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, byteCount)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
 	filteredCount := 0
 	for i := 0; i < count; i++ {
-		offset := int32(i * 8)
-		mask := binary.LittleEndian.Uint64(rt.Memory[maskPtr+offset:])
+		offset := i * 8
+		mask := binary.LittleEndian.Uint64(rt.Memory[maskStart+offset:])
 		if mask != 0 {
 			// Include this element
-			val := binary.LittleEndian.Uint64(rt.Memory[inPtr+offset:])
-			outOffset := int32(filteredCount * 8)
-			binary.LittleEndian.PutUint64(rt.Memory[outPtr+outOffset:], val)
+			val := binary.LittleEndian.Uint64(rt.Memory[inStart+offset:])
+			outOffset := filteredCount * 8
+			binary.LittleEndian.PutUint64(rt.Memory[outStart+outOffset:], val)
 			filteredCount++
 		}
 	}
 
-	return []uint64{uint64(filteredCount)}, nil
+	return hostUint64Result(filteredCount), nil
 }
 
 // vectorizedBatchCopy copies a batch of elements
@@ -1766,21 +2423,38 @@ func (h *HostFunctions) vectorizedBatchCopy(rt *Runtime, params []uint64) ([]uin
 		return []uint64{0}, nil
 	}
 
-	srcPtr := int32(params[0])
-	dstPtr := int32(params[1])
-	count := int(params[2])
+	srcPtr, ok := checkedHostInt32(params, 0, "srcPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	dstPtr, ok := checkedHostInt32(params, 1, "dstPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	count, ok := checkedHostInt(params, 2, "count")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if count <= 0 || count > 10000 {
 		return []uint64{0}, nil
 	}
 
-	byteCount := count * 8
-	if int(srcPtr)+byteCount > len(rt.Memory) ||
-		int(dstPtr)+byteCount > len(rt.Memory) {
+	byteCount, ok := checkedByteCount(count, 8)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
-	copy(rt.Memory[dstPtr:dstPtr+int32(byteCount)], rt.Memory[srcPtr:srcPtr+int32(byteCount)])
+	srcStart, ok := checkedMemoryRange(rt, srcPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	dstStart, ok := checkedMemoryRange(rt, dstPtr, byteCount)
+	if !ok {
+		return []uint64{0}, nil
+	}
+
+	copy(rt.Memory[dstStart:dstStart+byteCount], rt.Memory[srcStart:srcStart+byteCount])
 
 	return []uint64{1}, nil
 }
@@ -1793,18 +2467,20 @@ func (h *HostFunctions) getQueryMetrics(rt *Runtime, params []uint64) ([]uint64,
 		return []uint64{0}, nil
 	}
 
-	outPtr := int32(params[0])
-
-	// Check bounds
-	if int(outPtr)+40 > len(rt.Memory) {
+	outPtr, ok := checkedHostInt32(params, 0, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, 40)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
 	// Write sample metrics (in real implementation, these would come from profiler)
 	metrics := []int64{100, 5000000, 10000, 200000, 50000} // execs, total, min, max, avg (ns)
-	offset := outPtr
+	offset := outStart
 	for _, m := range metrics {
-		binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(m))
+		binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(m))
 		offset += 8
 	}
 
@@ -1819,9 +2495,12 @@ func (h *HostFunctions) getMemoryStats(rt *Runtime, params []uint64) ([]uint64, 
 		return []uint64{0}, nil
 	}
 
-	outPtr := int32(params[0])
-
-	if int(outPtr)+32 > len(rt.Memory) {
+	outPtr, ok := checkedHostInt32(params, 0, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, 32)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
@@ -1830,10 +2509,10 @@ func (h *HostFunctions) getMemoryStats(rt *Runtime, params []uint64) ([]uint64, 
 	peakMemory := totalMemory / 2
 	allocCount := int64(42)
 
-	binary.LittleEndian.PutUint64(rt.Memory[outPtr:], uint64(totalMemory))
-	binary.LittleEndian.PutUint64(rt.Memory[outPtr+8:], uint64(usedMemory))
-	binary.LittleEndian.PutUint64(rt.Memory[outPtr+16:], uint64(peakMemory))
-	binary.LittleEndian.PutUint64(rt.Memory[outPtr+24:], uint64(allocCount))
+	binary.LittleEndian.PutUint64(rt.Memory[outStart:], hostUint64Result(totalMemory)[0])
+	binary.LittleEndian.PutUint64(rt.Memory[outStart+8:], hostUint64Result(usedMemory)[0])
+	binary.LittleEndian.PutUint64(rt.Memory[outStart+16:], hostUint64Result(peakMemory)[0])
+	binary.LittleEndian.PutUint64(rt.Memory[outStart+24:], wasmI64Bits(allocCount))
 
 	return []uint64{1}, nil
 }
@@ -1853,9 +2532,13 @@ func (h *HostFunctions) logProfilingEvent(rt *Runtime, params []uint64) ([]uint6
 		return []uint64{0}, nil
 	}
 
-	_ = int(params[0])   // eventType
-	_ = int64(params[1]) // duration
-	_ = int(params[2])   // rowCount
+	if _, ok := checkedHostInt(params, 0, "eventType"); !ok {
+		return []uint64{0}, nil
+	}
+	_ = wasmI64Signed(params[1]) // duration
+	if _, ok := checkedHostInt(params, 2, "rowCount"); !ok {
+		return []uint64{0}, nil
+	}
 
 	// In real implementation, would log to profiler
 	return []uint64{1}, nil
@@ -1868,26 +2551,37 @@ func (h *HostFunctions) getOpcodeStats(rt *Runtime, params []uint64) ([]uint64, 
 		return []uint64{0}, nil
 	}
 
-	outPtr := int32(params[0])
-	maxOpcodes := int(params[1])
+	outPtr, ok := checkedHostInt32(params, 0, "outPtr")
+	if !ok {
+		return []uint64{0}, nil
+	}
+	maxOpcodes, ok := checkedHostInt(params, 1, "maxOpcodes")
+	if !ok {
+		return []uint64{0}, nil
+	}
 
 	if maxOpcodes <= 0 || maxOpcodes > 256 {
 		return []uint64{0}, nil
 	}
 
-	if int(outPtr)+maxOpcodes*16 > len(rt.Memory) {
+	byteCount, ok := checkedByteCount(maxOpcodes, 16)
+	if !ok {
+		return []uint64{0}, nil
+	}
+	outStart, ok := checkedMemoryRange(rt, outPtr, byteCount)
+	if !ok {
 		return []uint64{0}, nil
 	}
 
 	// Write sample opcode stats (opcode byte + count)
 	// Format: [opcode:1 byte, padding:7 bytes, count:8 bytes]
 	for i := 0; i < maxOpcodes && i < 10; i++ {
-		offset := outPtr + int32(i*16)
+		offset := outStart + i*16
 		rt.Memory[offset] = byte(0x20 + i) // Sample opcodes
-		binary.LittleEndian.PutUint64(rt.Memory[offset+8:], uint64(1000*(i+1)))
+		binary.LittleEndian.PutUint64(rt.Memory[offset+8:], hostUint64Result(1000 * (i + 1))[0])
 	}
 
-	return []uint64{uint64(min(maxOpcodes, 10))}, nil
+	return hostUint64Result(min(maxOpcodes, 10)), nil
 }
 
 // min helper
