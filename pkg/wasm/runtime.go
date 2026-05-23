@@ -8,6 +8,56 @@ import (
 )
 
 const maxInt32 = math.MaxInt32
+const maxUint32 = math.MaxUint32
+const maxInt = int(^uint(0) >> 1)
+
+func wasmI32(v uint64) uint32 {
+	// #nosec G115 -- WASM i32 values intentionally wrap to 32 bits.
+	return uint32(v)
+}
+
+func wasmI32Signed(v uint32) int32 {
+	// #nosec G115 -- WASM i32 signed operations use two's-complement reinterpretation.
+	return int32(v)
+}
+
+func wasmI64Bits(v int64) uint64 {
+	// #nosec G115 -- WASM stores signed integers as raw two's-complement bits.
+	return uint64(v)
+}
+
+func wasmI64Signed(v uint64) int64 {
+	// #nosec G115 -- WASM i64 signed values use two's-complement reinterpretation.
+	return int64(v)
+}
+
+func checkedInt(v uint64, name string) (int, error) {
+	if v > uint64(maxInt) {
+		return 0, fmt.Errorf("%s overflows int: %d", name, v)
+	}
+	return int(v), nil
+}
+
+func checkedInt32(v uint64, name string) (int32, error) {
+	if v > math.MaxInt32 {
+		return 0, fmt.Errorf("%s overflows int32: %d", name, v)
+	}
+	return int32(v), nil
+}
+
+func checkedInt64(v uint64, name string) (int64, error) {
+	if v > math.MaxInt64 {
+		return 0, fmt.Errorf("%s overflows int64: %d", name, v)
+	}
+	return int64(v), nil
+}
+
+func checkedUint32(v uint64, name string) (uint32, error) {
+	if v > maxUint32 {
+		return 0, fmt.Errorf("%s overflows uint32: %d", name, v)
+	}
+	return uint32(v), nil
+}
 
 // Runtime executes compiled WASM queries
 type Runtime struct {
@@ -93,8 +143,12 @@ func (rt *Runtime) Execute(compiled *CompiledQuery, args []interface{}) (*QueryR
 	if compiled.ResultSchema == nil {
 		// Non-SELECT query - result is rows affected
 		if len(result) > 0 {
+			rowsAffected, err := checkedInt64(result[0], "rows affected")
+			if err != nil {
+				return nil, err
+			}
 			return &QueryResult{
-				RowsAffected: int64(result[0]),
+				RowsAffected: rowsAffected,
 			}, nil
 		}
 		return &QueryResult{}, nil
@@ -104,8 +158,14 @@ func (rt *Runtime) Execute(compiled *CompiledQuery, args []interface{}) (*QueryR
 	if len(result) < 2 {
 		return &QueryResult{}, nil
 	}
-	resultPtr := int32(result[0])
-	rowCount := int32(result[1])
+	resultPtr, err := checkedInt32(result[0], "result pointer")
+	if err != nil {
+		return nil, err
+	}
+	rowCount, err := checkedInt32(result[1], "row count")
+	if err != nil {
+		return nil, err
+	}
 
 	if rowCount < 0 || rowCount > 100000 {
 		return nil, fmt.Errorf("invalid row count: %d", rowCount)
@@ -150,8 +210,14 @@ func (rt *Runtime) ExecuteStreaming(compiled *CompiledQuery, args []interface{},
 		}, nil
 	}
 
-	resultPtr := int32(result[0])
-	rowCount := int(result[1])
+	resultPtr, err := checkedInt32(result[0], "result pointer")
+	if err != nil {
+		return nil, err
+	}
+	rowCount, err := checkedInt(result[1], "row count")
+	if err != nil {
+		return nil, err
+	}
 
 	if rowCount < 0 || rowCount > 1000000 {
 		return nil, fmt.Errorf("invalid row count: %d", rowCount)
@@ -200,7 +266,7 @@ func (sr *StreamingResult) Next() ([]Row, error) {
 			valOffset := rowOffset + int32(j*8)
 			if valOffset+8 <= int32(len(sr.Runtime.Memory)) {
 				val := binary.LittleEndian.Uint64(sr.Runtime.Memory[valOffset:])
-				row.Values[j] = int64(val)
+				row.Values[j] = wasmI64Signed(val)
 			}
 		}
 		rows = append(rows, row)
@@ -273,7 +339,7 @@ func (rt *Runtime) writeParams(ptr int32, args []interface{}) error {
 			if err := rt.memCheck(offset, 8); err != nil {
 				return err
 			}
-			binary.LittleEndian.PutUint64(rt.Memory[offset:], uint64(v))
+			binary.LittleEndian.PutUint64(rt.Memory[offset:], wasmI64Bits(v))
 			offset += 8
 		case float64:
 			if err := rt.memCheck(offset, 8); err != nil {
@@ -332,7 +398,7 @@ func (rt *Runtime) parseResults(schema []ColumnInfo, ptr int32, rowCount int32) 
 					return nil, err
 				}
 				val := binary.LittleEndian.Uint64(rt.Memory[offset:])
-				row.Values[j] = int64(val)
+				row.Values[j] = wasmI64Signed(val)
 				offset += 8
 			case "REAL":
 				if err := rt.memCheck(offset, 8); err != nil {
@@ -414,7 +480,11 @@ func (rt *Runtime) LoadModule(bytecode []byte) error {
 		sectionSize, n := readLeb128(bytecode, offset)
 		offset += n
 
-		sectionEnd := offset + int(sectionSize)
+		sectionSizeInt, err := checkedInt(sectionSize, "section size")
+		if err != nil {
+			return err
+		}
+		sectionEnd := offset + sectionSizeInt
 		if sectionEnd > len(bytecode) {
 			return fmt.Errorf("section extends past end of module")
 		}
@@ -535,7 +605,11 @@ func (rt *Runtime) parseFunctionSection(data []byte) error {
 		}
 		typeIdx, n := readLeb128(data, offset)
 		offset += n
-		rt.funcTypeIndices = append(rt.funcTypeIndices, uint32(typeIdx))
+		typeIdx32, err := checkedUint32(typeIdx, "function type index")
+		if err != nil {
+			return err
+		}
+		rt.funcTypeIndices = append(rt.funcTypeIndices, typeIdx32)
 	}
 
 	return nil
@@ -551,14 +625,28 @@ func (rt *Runtime) parseImportSection(data []byte) error {
 		// Read module name
 		modLen, n := readLeb128(data, offset)
 		offset += n
-		module := string(data[offset : offset+int(modLen)])
-		offset += int(modLen)
+		modLenInt, err := checkedInt(modLen, "import module name length")
+		if err != nil {
+			return err
+		}
+		if offset+modLenInt > len(data) {
+			return fmt.Errorf("import module name truncated")
+		}
+		module := string(data[offset : offset+modLenInt])
+		offset += modLenInt
 
 		// Read field name
 		fieldLen, n := readLeb128(data, offset)
 		offset += n
-		field := string(data[offset : offset+int(fieldLen)])
-		offset += int(fieldLen)
+		fieldLenInt, err := checkedInt(fieldLen, "import field name length")
+		if err != nil {
+			return err
+		}
+		if offset+fieldLenInt > len(data) {
+			return fmt.Errorf("import field name truncated")
+		}
+		field := string(data[offset : offset+fieldLenInt])
+		offset += fieldLenInt
 
 		// Read import kind
 		kind := data[offset]
@@ -575,15 +663,19 @@ func (rt *Runtime) parseImportSection(data []byte) error {
 		case 0x00: // Function
 			// Get param count from type
 			paramCount := 0
-			if int(idx) < len(rt.Types) {
-				paramCount = len(rt.Types[int(idx)].Params)
+			typeIdx, err := checkedInt(idx, "import type index")
+			if err != nil {
+				return err
+			}
+			if typeIdx < len(rt.Types) {
+				paramCount = len(rt.Types[typeIdx].Params)
 			}
 			// Track import name by function index
 			funcIdx := len(rt.Functions)
 			rt.importNames = append(rt.importNames, importKey)
 			// Create import function stub (no code - will be handled by callImport)
 			rt.Functions = append(rt.Functions, Function{
-				TypeIdx:    int(idx),
+				TypeIdx:    typeIdx,
 				Locals:     nil,
 				Code:       nil, // Import functions have no code
 				IsImport:   true,
@@ -623,7 +715,14 @@ func (rt *Runtime) parseMemorySection(data []byte) error {
 	}
 
 	// Resize memory if needed
-	requiredSize := int(min) * 64 * 1024
+	minPages, err := checkedInt(min, "minimum memory pages")
+	if err != nil {
+		return err
+	}
+	if minPages > maxInt/(64*1024) {
+		return fmt.Errorf("minimum memory pages overflow: %d", min)
+	}
+	requiredSize := minPages * 64 * 1024
 	if len(rt.Memory) < requiredSize {
 		rt.Memory = make([]byte, requiredSize)
 	}
@@ -640,7 +739,14 @@ func (rt *Runtime) parseCodeSection(data []byte) error {
 		funcSize, n := readLeb128(data, offset)
 		offset += n
 
-		funcEnd := offset + int(funcSize)
+		funcSizeInt, err := checkedInt(funcSize, "function body size")
+		if err != nil {
+			return err
+		}
+		funcEnd := offset + funcSizeInt
+		if funcEnd > len(data) {
+			return fmt.Errorf("code section truncated")
+		}
 		funcData := data[offset:funcEnd]
 
 		// Parse local declarations
@@ -799,24 +905,28 @@ func (rt *Runtime) executeFunction(fn Function) error {
 func (rt *Runtime) execCall(code []byte, pc int) (int, error) {
 	funcIdx, n := readLeb128(code, pc)
 	pc += n
-	if int(funcIdx) >= len(rt.Functions) {
+	funcIdxInt, err := checkedInt(funcIdx, "function index")
+	if err != nil {
+		return pc, err
+	}
+	if funcIdxInt >= len(rt.Functions) {
 		return pc, fmt.Errorf("call to invalid function index: %d", funcIdx)
 	}
-	fn := rt.Functions[funcIdx]
+	fn := rt.Functions[funcIdxInt]
 	paramCount := fn.ParamCount
 	var params []uint64
 	if paramCount > 0 && len(rt.Stack) >= paramCount {
 		params = rt.Stack[len(rt.Stack)-paramCount:]
 		rt.Stack = rt.Stack[:len(rt.Stack)-paramCount]
 	}
-	_, err := rt.CallFunction(int(funcIdx), params)
+	_, err = rt.CallFunction(funcIdxInt, params)
 	return pc, err
 }
 
 func (rt *Runtime) execConst(code []byte, pc int) int {
 	val, n := readLeb128Signed(code, pc)
 	pc += n
-	rt.Stack = append(rt.Stack, uint64(val))
+	rt.Stack = append(rt.Stack, wasmI64Bits(val))
 	return pc
 }
 
@@ -833,8 +943,8 @@ func (rt *Runtime) execI32Compare(opcode byte) {
 	if len(rt.Stack) < 2 {
 		return
 	}
-	a := uint32(rt.Stack[len(rt.Stack)-2])
-	b := uint32(rt.Stack[len(rt.Stack)-1])
+	a := wasmI32(rt.Stack[len(rt.Stack)-2])
+	b := wasmI32(rt.Stack[len(rt.Stack)-1])
 	rt.Stack = rt.Stack[:len(rt.Stack)-2]
 	var result uint64
 	switch opcode {
@@ -847,11 +957,11 @@ func (rt *Runtime) execI32Compare(opcode byte) {
 			result = 1
 		}
 	case 0x48: // i32.lt_s
-		if int32(a) < int32(b) {
+		if wasmI32Signed(a) < wasmI32Signed(b) {
 			result = 1
 		}
 	case 0x4d: // i32.gt_s
-		if int32(a) > int32(b) {
+		if wasmI32Signed(a) > wasmI32Signed(b) {
 			result = 1
 		}
 	}
@@ -876,8 +986,8 @@ func (rt *Runtime) execI32Arith(opcode byte) {
 	if len(rt.Stack) < 2 {
 		return
 	}
-	a := uint32(rt.Stack[len(rt.Stack)-2])
-	b := uint32(rt.Stack[len(rt.Stack)-1])
+	a := wasmI32(rt.Stack[len(rt.Stack)-2])
+	b := wasmI32(rt.Stack[len(rt.Stack)-1])
 	rt.Stack = rt.Stack[:len(rt.Stack)-2]
 	var result uint32
 	switch opcode {
@@ -917,14 +1027,15 @@ func (rt *Runtime) execLocal(opcode byte, code []byte, pc int) int {
 		return pc
 	}
 	frame := &rt.CallStack[len(rt.CallStack)-1]
-	if int(localIdx) >= len(frame.Locals) {
+	localIdxInt, err := checkedInt(localIdx, "local index")
+	if err != nil || localIdxInt >= len(frame.Locals) {
 		return pc
 	}
 	if opcode == 0x20 { // local.get
-		rt.Stack = append(rt.Stack, frame.Locals[localIdx])
+		rt.Stack = append(rt.Stack, frame.Locals[localIdxInt])
 	} else { // local.set
 		if len(rt.Stack) > 0 {
-			frame.Locals[localIdx] = rt.Stack[len(rt.Stack)-1]
+			frame.Locals[localIdxInt] = rt.Stack[len(rt.Stack)-1]
 			rt.Stack = rt.Stack[:len(rt.Stack)-1]
 		}
 	}
@@ -941,12 +1052,15 @@ func (rt *Runtime) execLoad(opcode byte, code []byte, pc int) int {
 	if len(rt.Stack) == 0 {
 		return pc
 	}
-	addr := int(rt.Stack[len(rt.Stack)-1])
+	addr, err := checkedInt(rt.Stack[len(rt.Stack)-1], "load address")
+	if err != nil {
+		return pc
+	}
 	rt.Stack = rt.Stack[:len(rt.Stack)-1]
-	if opcode == 0x28 && addr+4 <= len(rt.Memory) { // i32.load
+	if addr >= 0 && opcode == 0x28 && addr+4 <= len(rt.Memory) { // i32.load
 		val := binary.LittleEndian.Uint32(rt.Memory[addr:])
 		rt.Stack = append(rt.Stack, uint64(val))
-	} else if opcode == 0x29 && addr+8 <= len(rt.Memory) { // i64.load
+	} else if addr >= 0 && opcode == 0x29 && addr+8 <= len(rt.Memory) { // i64.load
 		val := binary.LittleEndian.Uint64(rt.Memory[addr:])
 		rt.Stack = append(rt.Stack, val)
 	}
@@ -964,11 +1078,14 @@ func (rt *Runtime) execStore(opcode byte, code []byte, pc int) int {
 		return pc
 	}
 	val := rt.Stack[len(rt.Stack)-1]
-	addr := int(rt.Stack[len(rt.Stack)-2])
+	addr, err := checkedInt(rt.Stack[len(rt.Stack)-2], "store address")
+	if err != nil {
+		return pc
+	}
 	rt.Stack = rt.Stack[:len(rt.Stack)-2]
-	if opcode == 0x36 && addr+4 <= len(rt.Memory) { // i32.store
-		binary.LittleEndian.PutUint32(rt.Memory[addr:], uint32(val))
-	} else if opcode == 0x37 && addr+8 <= len(rt.Memory) { // i64.store
+	if addr >= 0 && opcode == 0x36 && addr+4 <= len(rt.Memory) { // i32.store
+		binary.LittleEndian.PutUint32(rt.Memory[addr:], wasmI32(val))
+	} else if addr >= 0 && opcode == 0x37 && addr+8 <= len(rt.Memory) { // i64.store
 		binary.LittleEndian.PutUint64(rt.Memory[addr:], val)
 	}
 	return pc

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -430,10 +431,17 @@ func (c *Collector) collectRuntimeMetrics() {
 	runtime.ReadMemStats(&m)
 
 	// Register runtime metrics if not already registered
-	c.registry.RegisterGauge("runtime_memory_alloc_bytes", "Allocated memory in bytes", nil).Set(int64(m.Alloc))
-	c.registry.RegisterGauge("runtime_memory_sys_bytes", "System memory in bytes", nil).Set(int64(m.Sys))
-	c.registry.RegisterGauge("runtime_gc_pause_ns", "Last GC pause in nanoseconds", nil).Set(int64(m.PauseNs[(m.NumGC+255)%256]))
+	c.registry.RegisterGauge("runtime_memory_alloc_bytes", "Allocated memory in bytes", nil).Set(clampUint64ToInt64(m.Alloc))
+	c.registry.RegisterGauge("runtime_memory_sys_bytes", "System memory in bytes", nil).Set(clampUint64ToInt64(m.Sys))
+	c.registry.RegisterGauge("runtime_gc_pause_ns", "Last GC pause in nanoseconds", nil).Set(clampUint64ToInt64(m.PauseNs[(m.NumGC+255)%256]))
 	c.registry.RegisterGauge("runtime_goroutines", "Number of goroutines", nil).Set(int64(runtime.NumGoroutine()))
+}
+
+func clampUint64ToInt64(v uint64) int64 {
+	if v > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(v)
 }
 
 // RecordQuery records query metrics
