@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -470,6 +471,44 @@ func TestConcurrentConnections(t *testing.T) {
 
 	if count != 5 {
 		t.Errorf("Expected 5 rows, got %d", count)
+	}
+}
+
+func TestWireServerComponentStartReturnsListenError(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	srv, err := server.New(db, &server.Config{
+		Address: listener.Addr().String(),
+	})
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+	defer srv.Close()
+
+	component := &WireServerComponent{
+		server: srv,
+		addr:   listener.Addr().String(),
+	}
+
+	err = component.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected bind error")
+	}
+	if !strings.Contains(err.Error(), "failed to listen") {
+		t.Fatalf("expected listen error, got %v", err)
 	}
 }
 

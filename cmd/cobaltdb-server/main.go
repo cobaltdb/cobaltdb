@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"time"
@@ -383,14 +384,29 @@ func (w *WireServerComponent) Name() string {
 }
 
 func (w *WireServerComponent) Start(ctx context.Context) error {
-	// Start in a goroutine since Listen blocks
+	if w.server.GetAuthenticator().IsEnabled() && (w.tls == nil || !w.tls.Enabled) {
+		log.Println("WARNING: Authentication is enabled but TLS is disabled. Passwords will be sent in cleartext.")
+	}
+
+	listener, err := net.Listen("tcp", w.addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", w.addr, err)
+	}
+
+	if w.tls != nil && w.tls.Enabled {
+		tlsConf, err := server.LoadTLSConfig(w.tls)
+		if err != nil {
+			_ = listener.Close()
+			return fmt.Errorf("failed to load TLS config: %w", err)
+		}
+		listener = server.GetTLSListener(listener, tlsConf)
+	}
+
 	go func() {
-		if err := w.server.Listen(w.addr, w.tls); err != nil {
+		if err := w.server.ListenOnListener(listener); err != nil {
 			log.Printf("Wire server error: %v", err)
 		}
 	}()
-	// Give it a moment to start
-	time.Sleep(100 * time.Millisecond)
 	return nil
 }
 
