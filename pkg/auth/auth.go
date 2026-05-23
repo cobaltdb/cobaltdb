@@ -575,6 +575,9 @@ func (a *Authenticator) ListUsers() []string {
 // StartSessionCleanup starts a background goroutine that periodically cleans up expired sessions.
 // It stops when stopCh is closed.
 func (a *Authenticator) StartSessionCleanup(interval time.Duration, stopCh <-chan struct{}) {
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()

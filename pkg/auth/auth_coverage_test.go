@@ -224,6 +224,16 @@ func TestStartSessionCleanup(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // let goroutine exit
 }
 
+func TestStartSessionCleanupDefaultsNonpositiveInterval(t *testing.T) {
+	a := NewAuthenticator()
+	a.Stop()
+
+	stopCh := make(chan struct{})
+	a.StartSessionCleanup(0, stopCh)
+	close(stopCh)
+	time.Sleep(10 * time.Millisecond)
+}
+
 // TestBruteForceProtection covers lockout path in Authenticate and recordFailedAttempt (88% → 100%).
 func TestBruteForceProtection(t *testing.T) {
 	a := NewAuthenticator()
