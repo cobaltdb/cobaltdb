@@ -58,6 +58,15 @@ func TestPreparedCacheCleanupLoop(t *testing.T) {
 	}
 }
 
+func TestPreparedCacheCleanupIntervalAndClose(t *testing.T) {
+	cache := NewPreparedCache(10, 100*time.Millisecond)
+	if cache.cleanupInterval != 50*time.Millisecond {
+		t.Fatalf("cleanup interval = %v, want %v", cache.cleanupInterval, 50*time.Millisecond)
+	}
+	cache.Close()
+	cache.Close()
+}
+
 // TestPreparedCacheCleanupPartialExpiry tests cleanup with mixed expired/non-expired
 func TestPreparedCacheCleanupPartialExpiry(t *testing.T) {
 	cache := NewPreparedCache(10, 200*time.Millisecond)

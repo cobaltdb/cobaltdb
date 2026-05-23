@@ -22,12 +22,14 @@ type PreparedStatement struct {
 
 // PreparedCache manages cached prepared statements
 type PreparedCache struct {
-	statements map[string]*PreparedStatement
-	mu         sync.RWMutex
-	maxSize    int
-	ttl        time.Duration
-	stopCh     chan struct{}
-	stopOnce   sync.Once
+	statements      map[string]*PreparedStatement
+	mu              sync.RWMutex
+	maxSize         int
+	ttl             time.Duration
+	cleanupInterval time.Duration
+	stopCh          chan struct{}
+	stopOnce        sync.Once
+	wg              sync.WaitGroup
 }
 
 // NewPreparedCache creates a new prepared statement cache
@@ -38,18 +40,32 @@ func NewPreparedCache(maxSize int, ttl time.Duration) *PreparedCache {
 	if ttl <= 0 {
 		ttl = 30 * time.Minute
 	}
+	cleanupInterval := cleanupIntervalForTTL(ttl)
 
 	cache := &PreparedCache{
-		statements: make(map[string]*PreparedStatement),
-		maxSize:    maxSize,
-		ttl:        ttl,
-		stopCh:     make(chan struct{}),
+		statements:      make(map[string]*PreparedStatement),
+		maxSize:         maxSize,
+		ttl:             ttl,
+		cleanupInterval: cleanupInterval,
+		stopCh:          make(chan struct{}),
 	}
 
 	// Start cleanup goroutine
+	cache.wg.Add(1)
 	go cache.cleanupLoop()
 
 	return cache
+}
+
+func cleanupIntervalForTTL(ttl time.Duration) time.Duration {
+	interval := ttl / 2
+	if interval <= 0 {
+		return time.Millisecond
+	}
+	if interval > 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return interval
 }
 
 // GenerateID generates a unique ID for a SQL statement
@@ -186,7 +202,9 @@ func (pc *PreparedCache) evictLRU() {
 
 // cleanupLoop periodically removes expired statements
 func (pc *PreparedCache) cleanupLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
+	defer pc.wg.Done()
+
+	ticker := time.NewTicker(pc.cleanupInterval)
 	defer ticker.Stop()
 
 	for {
@@ -204,6 +222,7 @@ func (pc *PreparedCache) Close() {
 	pc.stopOnce.Do(func() {
 		close(pc.stopCh)
 	})
+	pc.wg.Wait()
 }
 
 // cleanup removes expired statements
