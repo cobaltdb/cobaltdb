@@ -90,7 +90,8 @@ type BufferPool struct {
 	// Background flusher
 	flushInterval time.Duration
 	flushDone     chan struct{}
-	flushOnce     sync.Once
+	flushMu       sync.Mutex
+	flushRunning  bool
 }
 
 // NewBufferPool creates a new buffer pool.
@@ -406,25 +407,38 @@ func (bp *BufferPool) Close() error {
 // This reduces eviction latency by proactively writing dirty pages to disk
 // instead of flushing them synchronously during eviction under the write lock.
 func (bp *BufferPool) StartBackgroundFlusher(interval time.Duration) {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+
+	bp.flushMu.Lock()
+	defer bp.flushMu.Unlock()
+	if bp.flushRunning {
+		return
+	}
+
 	bp.flushInterval = interval
 	bp.flushDone = make(chan struct{})
-	go bp.backgroundFlushLoop()
+	bp.flushRunning = true
+	go bp.backgroundFlushLoop(bp.flushDone, interval)
 }
 
 func (bp *BufferPool) stopBackgroundFlusher() {
-	bp.flushOnce.Do(func() {
-		if bp.flushDone != nil {
-			close(bp.flushDone)
-		}
-	})
+	bp.flushMu.Lock()
+	if !bp.flushRunning {
+		bp.flushMu.Unlock()
+		return
+	}
+	done := bp.flushDone
+	bp.flushDone = nil
+	bp.flushRunning = false
+	bp.flushMu.Unlock()
+
+	close(done)
 }
 
-func (bp *BufferPool) backgroundFlushLoop() {
+func (bp *BufferPool) backgroundFlushLoop(done <-chan struct{}, slowInterval time.Duration) {
 	fastInterval := 200 * time.Millisecond
-	slowInterval := bp.flushInterval
-	if slowInterval == 0 {
-		slowInterval = 5 * time.Second
-	}
 	const dirtyThreshold = 0.25 // 25% dirty ratio triggers fast flushing
 
 	for {
@@ -435,7 +449,7 @@ func (bp *BufferPool) backgroundFlushLoop() {
 
 		timer := time.NewTimer(interval)
 		select {
-		case <-bp.flushDone:
+		case <-done:
 			timer.Stop()
 			return
 		case <-timer.C:

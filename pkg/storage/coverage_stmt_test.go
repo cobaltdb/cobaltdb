@@ -42,6 +42,38 @@ func TestBackgroundFlusher(t *testing.T) {
 	bp.Close()
 }
 
+func TestBackgroundFlusherDefaultsNonpositiveInterval(t *testing.T) {
+	bp := NewBufferPool(10, NewMemory())
+	defer bp.Close()
+
+	bp.StartBackgroundFlusher(-time.Second)
+	if got, want := bp.flushInterval, 5*time.Second; got != want {
+		t.Fatalf("flush interval = %v, want %v", got, want)
+	}
+}
+
+func TestBackgroundFlusherLifecycleIsIdempotent(t *testing.T) {
+	bp := NewBufferPool(10, NewMemory())
+
+	bp.StartBackgroundFlusher(25 * time.Millisecond)
+	bp.StartBackgroundFlusher(10 * time.Millisecond)
+	if got, want := bp.flushInterval, 25*time.Millisecond; got != want {
+		t.Fatalf("flush interval changed after second start: got %v, want %v", got, want)
+	}
+
+	bp.stopBackgroundFlusher()
+	bp.stopBackgroundFlusher()
+
+	bp.StartBackgroundFlusher(10 * time.Millisecond)
+	if got, want := bp.flushInterval, 10*time.Millisecond; got != want {
+		t.Fatalf("flush interval after restart = %v, want %v", got, want)
+	}
+
+	if err := bp.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 func TestFlushDirtyPages(t *testing.T) {
 	mem := NewMemory()
 	bp := NewBufferPool(100, mem)
