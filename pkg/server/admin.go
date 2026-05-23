@@ -84,10 +84,11 @@ func (a *AdminServer) Start() error {
 	}
 
 	a.server = &http.Server{
-		Handler:      a.authMiddleware(mux),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Handler:           a.authMiddleware(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	a.addr = listener.Addr().String()

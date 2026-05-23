@@ -139,11 +139,12 @@ func (ps *ProductionServer) startHealthServer() {
 	mux.HandleFunc("/metrics/prometheus", ps.loopbackOnly(metrics.GetPrometheusHandler()))
 
 	ps.healthServer = &http.Server{
-		Addr:         ps.Config.HealthAddr,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Addr:              ps.Config.HealthAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	ps.wg.Add(1)

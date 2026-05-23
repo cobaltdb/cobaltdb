@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
@@ -60,9 +61,17 @@ func main() {
 	http.HandleFunc("/task/delete", handleDeleteTask)
 
 	// Start server
+	httpServer := &http.Server{
+		Addr:              ":8080",
+		Handler:           http.DefaultServeMux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() {
-		log.Println("Server starting on :8080")
-		if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Println("Server starting on", httpServer.Addr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
 	}()
@@ -73,6 +82,11 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down...")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(ctx); err != nil {
+		log.Printf("Server shutdown error: %v", err)
+	}
 }
 
 func initSchema() {

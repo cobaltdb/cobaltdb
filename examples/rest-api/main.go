@@ -70,11 +70,12 @@ func main() {
 
 	// HTTP server with timeouts (production-ready)
 	httpServer := &http.Server{
-		Addr:         getEnv("HTTP_ADDR", ":8080"),
-		Handler:      srv.mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Addr:              getEnv("HTTP_ADDR", ":8080"),
+		Handler:           srv.mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	// Start server in goroutine

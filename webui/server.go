@@ -186,7 +186,15 @@ func main() {
 		fmt.Printf("Open http://%s in your browser\n", *addr)
 	}
 
-	if err := http.ListenAndServe(*addr, handler); err != nil {
+	httpServer := &http.Server{
+		Addr:              *addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }
