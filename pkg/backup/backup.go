@@ -332,7 +332,7 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 	}
 
 	// Create destination file
-	dstFile, err := createSecureFile(dstPath)
+	dstFile, tmpPath, err := createSecureTempFile(dstPath)
 	if err != nil {
 		return fmt.Errorf("failed to create backup file: %w", err)
 	}
@@ -340,6 +340,9 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 	defer func() {
 		if !dstClosed {
 			_ = dstFile.Close()
+		}
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
 		}
 	}()
 
@@ -403,9 +406,10 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 		return fmt.Errorf("failed to close backup file: %w", err)
 	}
 	dstClosed = true
-	if err := syncParentDir(dstPath); err != nil {
-		return fmt.Errorf("failed to sync backup directory: %w", err)
+	if err := replaceTempFile(tmpPath, dstPath); err != nil {
+		return fmt.Errorf("failed to replace backup file: %w", err)
 	}
+	tmpPath = ""
 
 	backup.Size = written
 	backup.Checksum = crc.Sum32()
@@ -459,7 +463,7 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 	}
 	defer parentFile.Close()
 
-	dstFile, err := createSecureFile(backup.Destination)
+	dstFile, tmpPath, err := createSecureTempFile(backup.Destination)
 	if err != nil {
 		return fmt.Errorf("failed to create backup file: %w", err)
 	}
@@ -467,6 +471,9 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 	defer func() {
 		if !dstClosed {
 			_ = dstFile.Close()
+		}
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
 		}
 	}()
 
@@ -545,9 +552,10 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 		return fmt.Errorf("failed to close backup file: %w", err)
 	}
 	dstClosed = true
-	if err := syncParentDir(backup.Destination); err != nil {
-		return fmt.Errorf("failed to sync backup directory: %w", err)
+	if err := replaceTempFile(tmpPath, backup.Destination); err != nil {
+		return fmt.Errorf("failed to replace backup file: %w", err)
 	}
+	tmpPath = ""
 
 	backup.Size = payload.written
 	backup.Checksum = crc.Sum32()
@@ -1292,23 +1300,65 @@ func copyFile(srcPath, dstPath string) error {
 	}
 	defer srcFile.Close()
 
-	dstFile, err := createSecureFile(dstPath)
+	dstFile, tmpPath, err := createSecureTempFile(dstPath)
 	if err != nil {
 		return err
 	}
+	dstClosed := false
+	defer func() {
+		if !dstClosed {
+			_ = dstFile.Close()
+		}
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	if _, err = io.Copy(dstFile, srcFile); err != nil {
-		_ = dstFile.Close()
 		return err
 	}
 	if err := dstFile.Sync(); err != nil {
-		_ = dstFile.Close()
 		return err
 	}
 	if err := dstFile.Close(); err != nil {
 		return err
 	}
+	dstClosed = true
+	if err := replaceTempFile(tmpPath, dstPath); err != nil {
+		return err
+	}
+	tmpPath = ""
 	return nil
+}
+
+func createSecureTempFile(path string) (*os.File, string, error) {
+	path, err := cleanBackupFilePath(path)
+	if err != nil {
+		return nil, "", err
+	}
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	file, err := os.CreateTemp(dir, "."+base+".tmp-*") // #nosec G304 - path is cleaned and temp file stays in the destination directory.
+	if err != nil {
+		return nil, "", err
+	}
+	if err := file.Chmod(backupFilePerm); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return nil, "", err
+	}
+	return file, file.Name(), nil
+}
+
+func replaceTempFile(tmpPath, dstPath string) error {
+	dstPath, err := cleanBackupFilePath(dstPath)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		return err
+	}
+	return syncParentDir(dstPath)
 }
 
 func createSecureFile(path string) (*os.File, error) {

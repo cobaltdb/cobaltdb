@@ -2138,6 +2138,8 @@ func TestCopyDatabaseCompressionError(t *testing.T) {
 	if err := mgr.copyDatabase(ctx, backup); err == nil {
 		t.Fatal("expected error for invalid compression level")
 	}
+	assertPathDoesNotExist(t, backup.Destination)
+	assertNoBackupTempFiles(t, tempDir)
 }
 
 // TestCopyDatabaseDeltaContextCancel tests copyDatabaseDelta with cancelled context
@@ -2166,6 +2168,28 @@ func TestCopyDatabaseDeltaContextCancel(t *testing.T) {
 	cancel()
 	if err := mgr.copyDatabaseDelta(ctx, child); err == nil || !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("expected context canceled error, got %v", err)
+	}
+	assertPathDoesNotExist(t, child.Destination)
+	assertNoBackupTempFiles(t, tempDir)
+}
+
+func assertPathDoesNotExist(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to not exist, got err=%v", path, err)
+	}
+}
+
+func assertNoBackupTempFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Fatalf("found leftover backup temp file %s in %s", entry.Name(), dir)
+		}
 	}
 }
 
