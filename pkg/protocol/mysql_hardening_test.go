@@ -50,6 +50,33 @@ func TestMySQLServerCloseReturnsClientCloseErrors(t *testing.T) {
 	}
 }
 
+func TestMySQLServerCloseIgnoresBenignNetworkCloseErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "wrapped net err closed",
+			err:  net.ErrClosed,
+		},
+		{
+			name: "tcp already closed message",
+			err:  errors.New("close tcp 127.0.0.1:1->127.0.0.1:2: use of closed network connection"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := NewMySQLServer(nil, "test")
+			server.clients[7] = &deadlineErrConn{closeErr: tt.err}
+
+			if err := server.Close(); err != nil {
+				t.Fatalf("expected benign close error to be ignored, got %v", err)
+			}
+		})
+	}
+}
+
 func TestMySQLClientHandleCommandReturnsDeadlineError(t *testing.T) {
 	deadlineErr := errors.New("read deadline failed")
 	client := &MySQLClient{

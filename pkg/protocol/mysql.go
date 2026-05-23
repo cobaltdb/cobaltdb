@@ -224,7 +224,7 @@ func (s *MySQLServer) Close() error {
 	// Close all active client connections
 	var closeErrs []error
 	for id, conn := range s.clients {
-		if err := conn.Close(); err != nil {
+		if err := conn.Close(); err != nil && !isBenignMySQLNetworkCloseError(err) {
 			closeErrs = append(closeErrs, fmt.Errorf("close client %d: %w", id, err))
 		}
 		delete(s.clients, id)
@@ -233,12 +233,16 @@ func (s *MySQLServer) Close() error {
 
 	// Wait for all client handlers to finish
 	if s.listener != nil {
-		if err := s.listener.Close(); err != nil {
+		if err := s.listener.Close(); err != nil && !isBenignMySQLNetworkCloseError(err) {
 			closeErrs = append(closeErrs, fmt.Errorf("close listener: %w", err))
 		}
 	}
 	s.wg.Wait()
 	return errors.Join(closeErrs...)
+}
+
+func isBenignMySQLNetworkCloseError(err error) bool {
+	return errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "use of closed network connection")
 }
 
 // acceptLoop accepts incoming connections.
