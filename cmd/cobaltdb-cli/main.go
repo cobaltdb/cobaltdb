@@ -235,7 +235,9 @@ func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
 		}
 		defer rows.Close()
 
-		printRowsWithMode(rows, state)
+		if err := printRowsWithMode(rows, state); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 	} else {
 		result, err := db.Exec(ctx, sql)
 		if err != nil {
@@ -258,15 +260,15 @@ func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
 	}
 }
 
-func printRowsWithMode(rows *engine.Rows, state *sessionState) {
+func printRowsWithMode(rows *engine.Rows, state *sessionState) error {
 	cols := rows.Columns()
 	if len(cols) == 0 {
-		return
+		return nil
 	}
 
 	switch state.mode {
 	case "csv":
-		printRowsCSV(rows, cols, state.headers)
+		return printRowsCSV(rows, cols, state.headers)
 	case "json":
 		printRowsJSON(rows, cols)
 	case "line":
@@ -274,6 +276,7 @@ func printRowsWithMode(rows *engine.Rows, state *sessionState) {
 	default:
 		printRowsTable(rows, cols, state.headers)
 	}
+	return nil
 }
 
 func printRowsTable(rows *engine.Rows, cols []string, headers bool) {
@@ -326,10 +329,12 @@ func printRowsTable(rows *engine.Rows, cols []string, headers bool) {
 	fmt.Printf("(%d rows)\n", count)
 }
 
-func printRowsCSV(rows *engine.Rows, cols []string, headers bool) {
+func printRowsCSV(rows *engine.Rows, cols []string, headers bool) error {
 	writer := csv.NewWriter(os.Stdout)
 	if headers {
-		_ = writer.Write(cols)
+		if err := writer.Write(cols); err != nil {
+			return fmt.Errorf("write csv header: %w", err)
+		}
 	}
 	count := 0
 	colCount := len(cols)
@@ -346,11 +351,21 @@ func printRowsCSV(rows *engine.Rows, cols []string, headers bool) {
 		for i, v := range values {
 			record[i] = formatValue(v)
 		}
-		_ = writer.Write(record)
+		if err := writer.Write(record); err != nil {
+			return fmt.Errorf("write csv row: %w", err)
+		}
 		count++
 	}
-	writer.Flush()
+	if err := flushCSVWriter(writer); err != nil {
+		return fmt.Errorf("flush csv: %w", err)
+	}
 	fmt.Printf("(%d rows)\n", count)
+	return nil
+}
+
+func flushCSVWriter(writer *csv.Writer) error {
+	writer.Flush()
+	return writer.Error()
 }
 
 func printRowsJSON(rows *engine.Rows, cols []string) {
@@ -1082,7 +1097,9 @@ func exportTable(db *engine.DB, table, filePath, format string) error {
 			}
 			exported++
 		}
-		writer.Flush()
+		if err := flushCSVWriter(writer); err != nil {
+			return fmt.Errorf("flush csv: %w", err)
+		}
 	}
 
 	fmt.Printf("Exported %d rows from %s to %s\n", exported, table, filePath)

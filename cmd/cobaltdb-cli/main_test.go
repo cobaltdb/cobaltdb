@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +13,14 @@ import (
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
+
+type failingWriter struct {
+	err error
+}
+
+func (w failingWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
 
 func TestPrintHelp(t *testing.T) {
 	// Capture stdout
@@ -236,6 +246,19 @@ func TestCreateSecureOutputFilePermissions(t *testing.T) {
 	}
 	if info.Mode().Perm() != cliOutputFilePerm {
 		t.Fatalf("Expected output file permissions %o, got %o", cliOutputFilePerm, info.Mode().Perm())
+	}
+}
+
+func TestFlushCSVWriterReturnsBufferedWriteError(t *testing.T) {
+	writeErr := errors.New("write failed")
+	writer := csv.NewWriter(failingWriter{err: writeErr})
+
+	if err := writer.Write([]string{"id", "name"}); err != nil {
+		t.Fatalf("unexpected buffered write error: %v", err)
+	}
+	err := flushCSVWriter(writer)
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("expected buffered write error, got %v", err)
 	}
 }
 
