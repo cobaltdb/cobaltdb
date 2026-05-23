@@ -28,9 +28,9 @@ func TestRLSContext_TypedKeysHonored(t *testing.T) {
 // TestRLSContext_LegacyKeysHonored covers the backward-compat path so existing
 // tests and embedded callers using the legacy string keys keep working.
 func TestRLSContext_LegacyKeysHonored(t *testing.T) {
-	//nolint:staticcheck // intentionally using string keys to verify legacy support
+	//lint:ignore SA1029 intentionally using string keys to verify legacy support
 	ctx := context.WithValue(context.Background(), "cobaltdb_user", "bob")
-	//nolint:staticcheck
+	//lint:ignore SA1029 intentionally using string keys to verify legacy support
 	ctx = context.WithValue(ctx, "cobaltdb_roles", []string{"user"})
 
 	user, roles := rlsContext(ctx)
@@ -46,7 +46,7 @@ func TestRLSContext_LegacyKeysHonored(t *testing.T) {
 func TestRLSContext_TypedKeysWin(t *testing.T) {
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, security.RLSUserKey, "typed")
-	//nolint:staticcheck
+	//lint:ignore SA1029 intentionally using string keys to verify legacy support
 	ctx = context.WithValue(ctx, "cobaltdb_user", "legacy")
 
 	user, _ := rlsContext(ctx)
@@ -57,7 +57,8 @@ func TestRLSContext_TypedKeysWin(t *testing.T) {
 
 // TestRLSContext_NilSafe ensures a nil context doesn't panic.
 func TestRLSContext_NilSafe(t *testing.T) {
-	user, roles := rlsContext(nil) //nolint:staticcheck // exercising nil ctx defense
+	//lint:ignore SA1012 exercising nil ctx defense
+	user, roles := rlsContext(nil)
 	if user != "" || roles != nil {
 		t.Fatalf("nil ctx should yield empty user/roles, got (%q, %v)", user, roles)
 	}

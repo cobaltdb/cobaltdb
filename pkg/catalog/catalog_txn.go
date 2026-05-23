@@ -1150,47 +1150,6 @@ func (c *Catalog) EnableBufferedWrites() {
 	c.enableBufferedWrites = true
 }
 
-// getCurrentTxnPendingWrites returns the pending write buffer for the current
-// transaction, initializing it if necessary.
-func (c *Catalog) getCurrentTxnPendingWrites() []PendingWrite {
-	if ts := c.getCurrentTxn(); ts != nil {
-		return ts.pendingWrites
-	}
-	return nil
-}
-
-// appendPendingWrite adds a buffered write to the current transaction.
-func (c *Catalog) appendPendingWrite(pw PendingWrite) {
-	if ts := c.getCurrentTxn(); ts != nil {
-		ts.pendingWrites = append(ts.pendingWrites, pw)
-		// Only build the map index when we have multiple pending writes.
-		// Single-row autocommit transactions never need O(1) key lookup,
-		// so this saves two heap allocations per INSERT.
-		if len(ts.pendingWrites) > 1 {
-			if ts.pendingWriteMap == nil {
-				rebuildPendingWriteMap(ts)
-			}
-			if ts.pendingWriteMap[pw.TreeName] == nil {
-				ts.pendingWriteMap[pw.TreeName] = make(map[string]PendingWrite)
-			}
-			ts.pendingWriteMap[pw.TreeName][pw.Key] = pw
-		}
-		// Cache tree references so CommitTransaction doesn't need c.mu.
-		// Caller must hold c.mu for read.
-		if ts.treeCache == nil {
-			ts.treeCache = make(map[string]btree.TreeStore, 4)
-		}
-		if ts.treeCache[pw.TreeName] == nil {
-			ts.treeCache[pw.TreeName] = c.tableTrees[pw.TreeName]
-		}
-		for _, idx := range pw.IndexUpdates {
-			if ts.treeCache[idx.IndexName] == nil {
-				ts.treeCache[idx.IndexName] = c.indexTrees[idx.IndexName]
-			}
-		}
-	}
-}
-
 // appendPendingWriteTs is the ts-cached variant of appendPendingWrite.
 func (c *Catalog) appendPendingWriteTs(ts *catalogTxnState, pw PendingWrite) {
 	if ts == nil {
@@ -1216,14 +1175,6 @@ func (c *Catalog) appendPendingWriteTs(ts *catalogTxnState, pw PendingWrite) {
 		if ts.treeCache[idx.IndexName] == nil {
 			ts.treeCache[idx.IndexName] = c.indexTrees[idx.IndexName]
 		}
-	}
-}
-
-// clearPendingWrites discards all buffered writes for the current transaction.
-func (c *Catalog) clearPendingWrites() {
-	if ts := c.getCurrentTxn(); ts != nil {
-		ts.pendingWrites = nil
-		ts.pendingWriteMap = nil
 	}
 }
 

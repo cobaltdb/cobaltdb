@@ -107,7 +107,7 @@ func encodeVersionedRowFast(rowValues []interface{}, createdAt int64, dst []byte
 	need := 64 + len(rowValues)*16
 	var buf []byte
 	if cap(dst)-len(dst) >= need {
-		buf = dst[:len(dst)]
+		buf = dst
 	} else {
 		buf = make([]byte, len(dst), len(dst)+need)
 		copy(buf, dst)
