@@ -44,6 +44,14 @@ var (
 	ErrInvalidPath    = errors.New("invalid database path")
 )
 
+// PanicRecovery records the most recent panic recovered from a public query API.
+type PanicRecovery struct {
+	Operation string
+	Value     string
+	Stack     string
+	At        time.Time
+}
+
 // DB represents a CobaltDB database instance
 type DB struct {
 	path     string
@@ -67,13 +75,14 @@ type DB struct {
 	// Metrics collector
 	metrics *metrics.Collector
 	// Connection management
-	connLimit    int64         // Maximum concurrent connections (0 = unlimited)
-	connCount    atomic.Int64  // Current acquired connections (atomic semaphore)
+	connLimit    int64        // Maximum concurrent connections (0 = unlimited)
+	connCount    atomic.Int64 // Current acquired connections (atomic semaphore)
 	connWaitMu   sync.Mutex
 	connWaiters  []chan struct{} // Blocked waiters when at limit
-	activeConns  atomic.Int64  // Active connection count
-	shutdownCh   chan struct{} // Shutdown signal
+	activeConns  atomic.Int64    // Active connection count
+	shutdownCh   chan struct{}   // Shutdown signal
 	shutdownOnce sync.Once
+	lastPanic    atomic.Value // stores PanicRecovery
 
 	// Query Cache
 	queryCache *cache.Cache
@@ -106,6 +115,31 @@ type DB struct {
 
 	// IndexAdvisor analyzes queries and recommends missing indexes
 	indexAdvisor *advisor.IndexAdvisor
+}
+
+// LastPanicRecovery returns the latest panic recovered from Exec or Query.
+func (db *DB) LastPanicRecovery() *PanicRecovery {
+	if db == nil {
+		return nil
+	}
+	info, ok := db.lastPanic.Load().(PanicRecovery)
+	if !ok {
+		return nil
+	}
+	return &info
+}
+
+func (db *DB) recordRecoveredPanic(operation string, recovered interface{}, stack []byte) {
+	info := PanicRecovery{
+		Operation: operation,
+		Value:     fmt.Sprint(recovered),
+		Stack:     string(stack),
+		At:        time.Now(),
+	}
+	db.lastPanic.Store(info)
+	if db.options != nil && db.options.Logger != nil {
+		db.options.Logger.Errorf("PANIC in %s: %v\n%s", operation, recovered, stack)
+	}
 }
 
 // Options contains database configuration options
@@ -164,8 +198,8 @@ type Options struct {
 	AutoVacuumThreshold float64       // Dead tuple ratio to trigger vacuum (default: 0.2 = 20%)
 
 	// Checkpoint Options
-	EnableAutoCheckpoint  bool          // Enable automatic WAL checkpoint (default: true for disk)
-	CheckpointInterval    time.Duration // Interval between checkpoints (default: 5m)
+	EnableAutoCheckpoint bool          // Enable automatic WAL checkpoint (default: true for disk)
+	CheckpointInterval   time.Duration // Interval between checkpoints (default: 5m)
 
 	// Scheduler Options
 	EnableScheduler       bool          // Enable job scheduler (default: true for disk)
@@ -461,11 +495,7 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 		if r := recover(); r != nil {
 			stack := debug.Stack()
 			err = fmt.Errorf("internal error in Exec: %v", r)
-			if db.options.Logger != nil {
-				db.options.Logger.Errorf("PANIC in Exec: %v\n%s", r, stack)
-			} else {
-				fmt.Printf("PANIC in Exec: %v\n%s\n", r, stack)
-			}
+			db.recordRecoveredPanic("Exec", r, stack)
 		}
 	}()
 
@@ -534,11 +564,7 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 		if r := recover(); r != nil {
 			stack := debug.Stack()
 			err = fmt.Errorf("internal error in Query: %v", r)
-			if db.options.Logger != nil {
-				db.options.Logger.Errorf("PANIC in Query: %v\n%s", r, stack)
-			} else {
-				fmt.Printf("PANIC in Query: %v\n%s\n", r, stack)
-			}
+			db.recordRecoveredPanic("Query", r, stack)
 		}
 	}()
 	// Apply default query timeout only if the caller did not already set one.
