@@ -47,6 +47,8 @@ const defaultMaxWALBufferBytes int64 = 64 << 20 // 64 MiB
 const resumeHandshakeTimeout = 5 * time.Second
 const walEntryMetadataBytes = 24           // LSN + timestamp + data length + checksum
 const maxReplicationSnapshotSize = 1 << 30 // 1 GiB
+const replicationStateDirPerm = 0750
+const replicationStateFilePerm = 0600
 
 // Config holds replication configuration
 type Config struct {
@@ -484,6 +486,7 @@ func (m *Manager) sendResyncRequired(slave *SlaveConnection, currentLSN uint64) 
 }
 
 // authenticateSlave authenticates a slave connection
+//
 //nolint:unused // used by coverage tests
 func (m *Manager) authenticateSlave(conn net.Conn) error {
 	return m.authenticateSlaveWithReader(bufio.NewReader(conn), conn)
@@ -743,6 +746,7 @@ func (m *Manager) startSlave() error {
 }
 
 // replicateFromMaster handles replication stream from master
+//
 //nolint:unused // used by coverage tests
 func (m *Manager) replicateFromMaster() {
 	m.replicateFromMasterWithReader(bufio.NewReader(m.masterConn))
@@ -935,13 +939,18 @@ func (m *Manager) saveReplicationState() error {
 		return nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(m.config.StateFile), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(m.config.StateFile), replicationStateDirPerm); err != nil {
 		return err
 	}
 
 	tmpPath := m.config.StateFile + ".tmp"
-	file, err := os.Create(tmpPath)
+	file, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, replicationStateFilePerm)
 	if err != nil {
+		return err
+	}
+	if err := file.Chmod(replicationStateFilePerm); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmpPath)
 		return err
 	}
 

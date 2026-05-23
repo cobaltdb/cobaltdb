@@ -390,6 +390,13 @@ func TestReplicationStateSaveLoad(t *testing.T) {
 	if err := mgr.saveReplicationState(); err != nil {
 		t.Fatalf("saveReplicationState failed: %v", err)
 	}
+	info, err := os.Stat(stateFile)
+	if err != nil {
+		t.Fatalf("stat replication state failed: %v", err)
+	}
+	if info.Mode().Perm() != replicationStateFilePerm {
+		t.Fatalf("Expected replication state permissions %o, got %o", replicationStateFilePerm, info.Mode().Perm())
+	}
 
 	reloaded := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
 	if err := reloaded.loadReplicationState(); err != nil {
