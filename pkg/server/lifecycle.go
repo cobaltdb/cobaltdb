@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -68,6 +69,10 @@ type Lifecycle struct {
 	// Shutdown coordination
 	shutdownCh   chan struct{}
 	shutdownOnce sync.Once
+	stopMu       sync.Mutex
+	stopStarted  bool
+	stopDone     chan struct{}
+	stopErr      error
 
 	// Hook goroutine tracking
 	hookWg sync.WaitGroup
@@ -147,6 +152,7 @@ func NewLifecycle(config *LifecycleConfig) *Lifecycle {
 		state:        StateInitializing,
 		stateHooks:   make(map[LifecycleState][]func()),
 		shutdownCh:   make(chan struct{}),
+		stopDone:     make(chan struct{}),
 		healthChecks: make(map[string]HealthCheck),
 		ctx:          ctx,
 		cancel:       cancel,
@@ -255,6 +261,20 @@ func (l *Lifecycle) Start() error {
 
 // Stop gracefully shuts down all components
 func (l *Lifecycle) Stop() error {
+	l.stopMu.Lock()
+	if l.stopStarted {
+		done := l.stopDone
+		l.stopMu.Unlock()
+		<-done
+		l.stopMu.Lock()
+		err := l.stopErr
+		l.stopMu.Unlock()
+		return err
+	}
+	l.stopStarted = true
+	done := l.stopDone
+	l.stopMu.Unlock()
+
 	l.shutdownOnce.Do(func() {
 		close(l.shutdownCh)
 	})
@@ -273,6 +293,12 @@ func (l *Lifecycle) Stop() error {
 
 	l.cancel()
 	l.setState(StateStopped)
+
+	l.stopMu.Lock()
+	l.stopErr = err
+	close(done)
+	l.stopMu.Unlock()
+
 	l.hookWg.Wait()
 
 	return err
@@ -294,10 +320,7 @@ func (l *Lifecycle) stopComponents(ctx context.Context) error {
 		}
 	}
 
-	if len(errs) > 0 {
-		return errs[0] // Return first error
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // setupSignalHandling sets up OS signal handling

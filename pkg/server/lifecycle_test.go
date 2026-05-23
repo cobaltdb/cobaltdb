@@ -19,6 +19,7 @@ type MockComponent struct {
 	healthy       bool
 	startCalled   atomic.Bool
 	stopCalled    atomic.Bool
+	stopCount     atomic.Int32
 	healthMessage string
 }
 
@@ -33,6 +34,7 @@ func (m *MockComponent) Start(ctx context.Context) error {
 
 func (m *MockComponent) Stop(ctx context.Context) error {
 	m.stopCalled.Store(true)
+	m.stopCount.Add(1)
 	return m.stopErr
 }
 
@@ -138,6 +140,60 @@ func TestLifecycleStartFailure(t *testing.T) {
 	// comp1's Stop should be called to clean up
 	if !comp1.stopCalled.Load() {
 		t.Error("expected Stop to be called on comp1 for cleanup")
+	}
+}
+
+func TestLifecycleStopIdempotent(t *testing.T) {
+	config := &LifecycleConfig{
+		ShutdownTimeout:      1 * time.Second,
+		DrainTimeout:         1 * time.Millisecond,
+		HealthCheckInterval:  1 * time.Second,
+		StartupTimeout:       1 * time.Second,
+		EnableSignalHandling: false,
+	}
+
+	lifecycle := NewLifecycle(config)
+	comp := &MockComponent{name: "test", healthy: true}
+	lifecycle.RegisterComponent(comp)
+
+	if err := lifecycle.Start(); err != nil {
+		t.Fatalf("failed to start: %v", err)
+	}
+	if err := lifecycle.Stop(); err != nil {
+		t.Fatalf("first stop failed: %v", err)
+	}
+	if err := lifecycle.Stop(); err != nil {
+		t.Fatalf("second stop failed: %v", err)
+	}
+	if got := comp.stopCount.Load(); got != 1 {
+		t.Fatalf("expected component stop once, got %d", got)
+	}
+}
+
+func TestLifecycleStopJoinsComponentErrors(t *testing.T) {
+	firstErr := errors.New("first stop failed")
+	secondErr := errors.New("second stop failed")
+	config := &LifecycleConfig{
+		ShutdownTimeout:      1 * time.Second,
+		DrainTimeout:         1 * time.Millisecond,
+		HealthCheckInterval:  1 * time.Second,
+		StartupTimeout:       1 * time.Second,
+		EnableSignalHandling: false,
+	}
+
+	lifecycle := NewLifecycle(config)
+	lifecycle.RegisterComponent(&MockComponent{name: "first", stopErr: firstErr, healthy: true})
+	lifecycle.RegisterComponent(&MockComponent{name: "second", stopErr: secondErr, healthy: true})
+
+	if err := lifecycle.Start(); err != nil {
+		t.Fatalf("failed to start: %v", err)
+	}
+	err := lifecycle.Stop()
+	if !errors.Is(err, firstErr) {
+		t.Fatalf("expected first stop error, got %v", err)
+	}
+	if !errors.Is(err, secondErr) {
+		t.Fatalf("expected second stop error, got %v", err)
 	}
 }
 
