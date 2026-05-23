@@ -809,7 +809,7 @@ func (m *Manager) materializeBackup(ctx context.Context, backup *Backup, targetP
 	return nil
 }
 
-func (m *Manager) restoreBackupPayload(ctx context.Context, backup *Backup, targetPath string) error {
+func (m *Manager) restoreBackupPayload(ctx context.Context, backup *Backup, targetPath string) (err error) {
 	if _, err := os.Stat(backup.Destination); err != nil {
 		return fmt.Errorf("backup file not found: %w", err)
 	}
@@ -833,7 +833,11 @@ func (m *Manager) restoreBackupPayload(ctx context.Context, backup *Backup, targ
 	if err != nil {
 		return fmt.Errorf("failed to create target file: %w", err)
 	}
-	defer targetFile.Close()
+	defer func() {
+		if closeErr := targetFile.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("failed to close restored file: %w", closeErr)
+		}
+	}()
 
 	if n > 0 {
 		if _, err := targetFile.Write(prefix[:n]); err != nil {
@@ -909,7 +913,7 @@ func (r *compoundReadCloser) Close() error {
 	return errors.Join(closeErrs...)
 }
 
-func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targetPath string) error {
+func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targetPath string) (err error) {
 	buffered := bufio.NewReader(reader)
 	headerLine, err := buffered.ReadBytes('\n')
 	if err != nil {
@@ -932,7 +936,11 @@ func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targe
 	if err != nil {
 		return fmt.Errorf("failed to open target file for delta restore: %w", err)
 	}
-	defer targetFile.Close()
+	defer func() {
+		if closeErr := targetFile.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("failed to close restored file: %w", closeErr)
+		}
+	}()
 
 	for {
 		select {
