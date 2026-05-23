@@ -236,6 +236,104 @@ func TestVerifyLogFileDetectsTampering(t *testing.T) {
 	}
 }
 
+func TestAuditHashChainContinuesAfterRestart(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "restart.log")
+
+	firstLogger, err := New(&Config{
+		Enabled:   true,
+		LogFile:   logPath,
+		LogFormat: "json",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Failed to create first audit logger: %v", err)
+	}
+	firstLogger.Log(EventQuery, "alice", "SELECT", WithQuery("SELECT 1"))
+	if err := firstLogger.Close(); err != nil {
+		t.Fatalf("Close first logger failed: %v", err)
+	}
+
+	secondLogger, err := New(&Config{
+		Enabled:   true,
+		LogFile:   logPath,
+		LogFormat: "json",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Failed to create second audit logger: %v", err)
+	}
+	secondLogger.Log(EventDML, "alice", "UPDATE", WithRowsAffected(1))
+	if err := secondLogger.Close(); err != nil {
+		t.Fatalf("Close second logger failed: %v", err)
+	}
+
+	result, err := VerifyLogFile(logPath, nil)
+	if err != nil {
+		t.Fatalf("VerifyLogFile failed: %v", err)
+	}
+	if result.Entries != 2 {
+		t.Fatalf("entries = %d, want 2", result.Entries)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var first, second Event
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("unmarshal first event: %v", err)
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatalf("unmarshal second event: %v", err)
+	}
+	if second.PrevHash != first.Hash {
+		t.Fatalf("second prev hash = %q, want %q", second.PrevHash, first.Hash)
+	}
+}
+
+func TestEncryptedAuditHashChainContinuesAfterRestart(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "encrypted-restart.log")
+	key := []byte("0123456789abcdef0123456789abcdef")
+
+	firstLogger, err := New(&Config{
+		Enabled:       true,
+		LogFile:       logPath,
+		LogFormat:     "json",
+		EncryptionKey: key,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Failed to create first audit logger: %v", err)
+	}
+	firstLogger.Log(EventQuery, "alice", "SELECT", WithQuery("SELECT 1"))
+	if err := firstLogger.Close(); err != nil {
+		t.Fatalf("Close first logger failed: %v", err)
+	}
+
+	secondLogger, err := New(&Config{
+		Enabled:       true,
+		LogFile:       logPath,
+		LogFormat:     "json",
+		EncryptionKey: key,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Failed to create second audit logger: %v", err)
+	}
+	secondLogger.Log(EventSecurity, "alice", "POLICY_CHECK")
+	if err := secondLogger.Close(); err != nil {
+		t.Fatalf("Close second logger failed: %v", err)
+	}
+
+	result, err := VerifyLogFile(logPath, key)
+	if err != nil {
+		t.Fatalf("VerifyLogFile failed: %v", err)
+	}
+	if result.Entries != 2 {
+		t.Fatalf("entries = %d, want 2", result.Entries)
+	}
+	if result.EncryptedEntries != 2 {
+		t.Fatalf("encrypted entries = %d, want 2", result.EncryptedEntries)
+	}
+}
+
 func TestMaskMetadataValues(t *testing.T) {
 	if maskMetadataValues(nil) != nil {
 		t.Error("nil input should return nil")

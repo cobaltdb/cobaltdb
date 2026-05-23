@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 func TestNewLogger(t *testing.T) {
 	config := &Config{
 		Enabled:   true,
-		LogFile:   "test_audit.log",
+		LogFile:   filepath.Join(t.TempDir(), "test_audit.log"),
 		LogFormat: "json",
 	}
 
@@ -29,7 +30,7 @@ func TestNewLogger(t *testing.T) {
 func TestLogEvent(t *testing.T) {
 	config := &Config{
 		Enabled:   true,
-		LogFile:   "test_audit.log",
+		LogFile:   filepath.Join(t.TempDir(), "test_audit.log"),
 		LogFormat: "text",
 	}
 
@@ -52,7 +53,7 @@ func TestLogEvent(t *testing.T) {
 func TestLogQuery(t *testing.T) {
 	config := &Config{
 		Enabled:    true,
-		LogFile:    "test_audit.log",
+		LogFile:    filepath.Join(t.TempDir(), "test_audit.log"),
 		LogFormat:  "text",
 		LogQueries: true,
 	}
@@ -73,7 +74,7 @@ func TestLogQuery(t *testing.T) {
 func TestLogAuth(t *testing.T) {
 	config := &Config{
 		Enabled:         true,
-		LogFile:         "test_audit.log",
+		LogFile:         filepath.Join(t.TempDir(), "test_audit.log"),
 		LogFormat:       "text",
 		LogFailedLogins: true,
 	}

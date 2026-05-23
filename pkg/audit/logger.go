@@ -2,7 +2,6 @@
 package audit
 
 import (
-	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
@@ -153,13 +152,9 @@ func New(config *Config, log *logger.Logger) (*Logger, error) {
 
 	// Initialize encryption if key provided
 	if len(config.EncryptionKey) > 0 {
-		block, err := aes.NewCipher(config.EncryptionKey)
+		gcm, err := auditLogAEAD(config.EncryptionKey)
 		if err != nil {
-			return nil, fmt.Errorf("audit log encryption setup failed: %w", err)
-		}
-		gcm, err := cipher.NewGCM(block)
-		if err != nil {
-			return nil, fmt.Errorf("audit log GCM setup failed: %w", err)
+			return nil, err
 		}
 		al.cipher = gcm
 	}
@@ -186,12 +181,45 @@ func (al *Logger) openLogFile() error {
 		}
 	}
 
+	if err := al.loadLastHash(); err != nil {
+		return err
+	}
+
 	file, err := os.OpenFile(al.config.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open audit log file: %w", err)
 	}
 
 	al.file = file
+	return nil
+}
+
+func (al *Logger) loadLastHash() error {
+	info, err := os.Stat(al.config.LogFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat audit log file: %w", err)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+
+	if al.config.LogFormat == "text" {
+		lastHash, err := readLastTextAuditHash(al.config.LogFile, al.cipher)
+		if err != nil {
+			return err
+		}
+		al.lastHash = lastHash
+		return nil
+	}
+
+	result, err := VerifyLogFile(al.config.LogFile, al.config.EncryptionKey)
+	if err != nil {
+		return fmt.Errorf("failed to verify existing audit log: %w", err)
+	}
+	al.lastHash = result.LastHash
 	return nil
 }
 
