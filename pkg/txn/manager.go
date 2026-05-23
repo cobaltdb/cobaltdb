@@ -25,6 +25,13 @@ var (
 	ErrTxnTimeout       = errors.New("transaction timeout")
 )
 
+func txnUint32Len(n int, name string) (uint32, error) {
+	if n < 0 || n > 1<<32-1 {
+		return 0, fmt.Errorf("%s exceeds uint32: %d", name, n)
+	}
+	return uint32(n), nil // #nosec G115 - range checked above.
+}
+
 // walDataPool reuses small byte buffers for the WAL fast path, eliminating
 // one heap allocation per single-write transaction commit.
 var walDataPool = sync.Pool{
@@ -1086,19 +1093,23 @@ func (m *Manager) writeWALForCommit(txn *Transaction) error {
 			tnLen := len(wk.TreeName)
 			kLen := len(wk.Key)
 			totalKeyLen := tnLen + 1 + kLen
+			encodedKeyLen, err := txnUint32Len(totalKeyLen, "WAL key length")
+			if err != nil {
+				return err
+			}
 			need := 4 + totalKeyLen + len(value)
 			var data []byte
 			if need <= 256 {
 				walDataBuf = walDataPool.Get().(*[]byte)
 				data = (*walDataBuf)[:need]
-				binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+				binary.LittleEndian.PutUint32(data[0:4], encodedKeyLen)
 				copy(data[4:4+tnLen], wk.TreeName)
 				data[4+tnLen] = ':'
 				copy(data[4+tnLen+1:], wk.Key)
 				copy(data[4+totalKeyLen:], value)
 			} else {
 				data = make([]byte, need)
-				binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+				binary.LittleEndian.PutUint32(data[0:4], encodedKeyLen)
 				copy(data[4:4+tnLen], wk.TreeName)
 				data[4+tnLen] = ':'
 				copy(data[4+tnLen+1:], wk.Key)
@@ -1127,8 +1138,12 @@ func (m *Manager) writeWALForCommit(txn *Transaction) error {
 			tnLen := len(wk.TreeName)
 			kLen := len(wk.Key)
 			totalKeyLen := tnLen + 1 + kLen
+			encodedKeyLen, err := txnUint32Len(totalKeyLen, "WAL key length")
+			if err != nil {
+				return err
+			}
 			data := make([]byte, 4+totalKeyLen+len(value))
-			binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+			binary.LittleEndian.PutUint32(data[0:4], encodedKeyLen)
 			copy(data[4:4+tnLen], wk.TreeName)
 			data[4+tnLen] = ':'
 			copy(data[4+tnLen+1:], wk.Key)
