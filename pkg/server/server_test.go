@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
@@ -86,6 +88,38 @@ func TestServerClose(t *testing.T) {
 	}
 
 	db.Close()
+}
+
+func TestIsBenignNetworkCloseError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "wrapped net err closed",
+			err:  fmt.Errorf("close listener: %w", net.ErrClosed),
+			want: true,
+		},
+		{
+			name: "tcp already closed message",
+			err:  errors.New("close tcp 127.0.0.1:1->127.0.0.1:2: use of closed network connection"),
+			want: true,
+		},
+		{
+			name: "actionable close error",
+			err:  errors.New("permission denied"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isBenignNetworkCloseError(tt.err); got != tt.want {
+				t.Fatalf("isBenignNetworkCloseError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestServerWithNilConfig(t *testing.T) {

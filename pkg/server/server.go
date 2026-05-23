@@ -296,14 +296,14 @@ func (s *Server) Close() error {
 	// Close all client connections
 	var closeErrs []error
 	for _, client := range s.clients {
-		if err := client.Conn.Close(); err != nil {
+		if err := client.Conn.Close(); err != nil && !isBenignNetworkCloseError(err) {
 			closeErrs = append(closeErrs, fmt.Errorf("close client %d: %w", client.ID, err))
 		}
 	}
 
 	// Close listener
 	if s.listener != nil {
-		if err := s.listener.Close(); err != nil {
+		if err := s.listener.Close(); err != nil && !isBenignNetworkCloseError(err) {
 			closeErrs = append(closeErrs, fmt.Errorf("close listener: %w", err))
 		}
 	}
@@ -318,6 +318,10 @@ func (s *Server) Close() error {
 	}
 
 	return errors.Join(closeErrs...)
+}
+
+func isBenignNetworkCloseError(err error) bool {
+	return errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "use of closed network connection")
 }
 
 // ClientCount returns the current number of connected clients
