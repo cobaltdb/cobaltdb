@@ -1042,7 +1042,7 @@ func runExportCommand(args []string, path string, inMemory bool) {
 	}
 }
 
-func exportTable(db *engine.DB, table, filePath, format string) error {
+func exportTable(db *engine.DB, table, filePath, format string) (err error) {
 	ctx := context.Background()
 	quotedTable, err := quoteSQLIdentifier(table)
 	if err != nil {
@@ -1058,7 +1058,11 @@ func exportTable(db *engine.DB, table, filePath, format string) error {
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close export file: %w", closeErr)
+		}
+	}()
 
 	cols := rows.Columns()
 	exported := 0
