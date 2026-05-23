@@ -8,12 +8,14 @@ import (
 	"crypto/sha1" // #nosec G505 -- MySQL native password protocol requires SHA-1 compatibility.
 	"crypto/subtle"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/auth"
@@ -137,6 +139,15 @@ type MySQLServer struct {
 	wg       sync.WaitGroup
 	stopChan chan struct{}
 	closed   bool
+
+	lastPanic atomic.Value
+}
+
+// MySQLPanicRecovery describes the last recovered client-handler panic.
+type MySQLPanicRecovery struct {
+	ConnID    uint32
+	Value     interface{}
+	Timestamp time.Time
 }
 
 // NewMySQLServer creates a new MySQL-compatible server
@@ -157,6 +168,26 @@ func NewMySQLServer(db *engine.DB, version string) *MySQLServer {
 // If not set or not enabled, all connections are accepted (backward compatible).
 func (s *MySQLServer) SetAuthenticator(a *auth.Authenticator) {
 	s.auth = a
+}
+
+// LastPanicRecovery returns the latest recovered client-handler panic, if any.
+func (s *MySQLServer) LastPanicRecovery() *MySQLPanicRecovery {
+	if s == nil {
+		return nil
+	}
+	recovery, _ := s.lastPanic.Load().(*MySQLPanicRecovery)
+	return recovery
+}
+
+func (s *MySQLServer) recordPanic(connID uint32, value interface{}) {
+	if s == nil {
+		return
+	}
+	s.lastPanic.Store(&MySQLPanicRecovery{
+		ConnID:    connID,
+		Value:     value,
+		Timestamp: time.Now().UTC(),
+	})
 }
 
 // Listen starts listening for MySQL connections
@@ -191,18 +222,23 @@ func (s *MySQLServer) Close() error {
 	close(s.stopChan)
 
 	// Close all active client connections
+	var closeErrs []error
 	for id, conn := range s.clients {
-		_ = conn.Close()
+		if err := conn.Close(); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("close client %d: %w", id, err))
+		}
 		delete(s.clients, id)
 	}
 	s.mu.Unlock()
 
 	// Wait for all client handlers to finish
 	if s.listener != nil {
-		_ = s.listener.Close()
+		if err := s.listener.Close(); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("close listener: %w", err))
+		}
 	}
 	s.wg.Wait()
-	return nil
+	return errors.Join(closeErrs...)
 }
 
 // acceptLoop accepts incoming connections.
@@ -264,13 +300,14 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 
 	defer func() {
 		if r := recover(); r != nil {
-			// Prevent a panicking client from crashing the server
-			_ = r
+			s.recordPanic(connID, r)
 		}
 		if client != nil && client.cancel != nil {
 			client.cancel()
 		}
-		_ = conn.Close()
+		if conn != nil {
+			_ = conn.Close()
+		}
 		s.mu.Lock()
 		delete(s.clients, connID)
 		s.mu.Unlock()
@@ -291,7 +328,9 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 	}
 
 	// Read handshake response
-	_ = conn.SetReadDeadline(time.Now().Add(mysqlHandshakeTimeout))
+	if err := conn.SetReadDeadline(time.Now().Add(mysqlHandshakeTimeout)); err != nil {
+		return
+	}
 	if err := client.readHandshakeResponse(); err != nil {
 		return
 	}
@@ -519,7 +558,9 @@ func (c *MySQLClient) verifyMySQLNativeAuth(storedHash []byte) bool {
 // handleCommand handles a MySQL command
 func (c *MySQLClient) handleCommand() error {
 	if c.conn != nil {
-		_ = c.conn.SetReadDeadline(time.Now().Add(mysqlCommandTimeout))
+		if err := c.conn.SetReadDeadline(time.Now().Add(mysqlCommandTimeout)); err != nil {
+			return err
+		}
 	}
 
 	// Read packet header
@@ -865,8 +906,11 @@ func writeLenEncString(s string) []byte {
 
 // writePacket writes a MySQL protocol packet
 func (c *MySQLClient) writePacket(data []byte, sequence byte) error {
-	if c.conn != nil {
-		_ = c.conn.SetWriteDeadline(time.Now().Add(mysqlWriteTimeout))
+	if c.conn == nil {
+		return errors.New("mysql client connection is nil")
+	}
+	if err := c.conn.SetWriteDeadline(time.Now().Add(mysqlWriteTimeout)); err != nil {
+		return err
 	}
 
 	offset := 0
@@ -1085,7 +1129,9 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	rows, err := c.server.db.Query(ctx, sql)
 	if err == nil {
 		numColumns = len(rows.Columns())
-		_ = rows.Close()
+		if err := rows.Close(); err != nil {
+			return err
+		}
 	}
 
 	c.nextStmtID++
