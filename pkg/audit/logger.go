@@ -143,6 +143,8 @@ type Logger struct {
 func New(config *Config, log *logger.Logger) (*Logger, error) {
 	if config == nil {
 		config = DefaultConfig()
+	} else {
+		config = normalizeAuditConfig(config)
 	}
 
 	al := &Logger{
@@ -173,6 +175,29 @@ func New(config *Config, log *logger.Logger) (*Logger, error) {
 	go al.writer()
 
 	return al, nil
+}
+
+func normalizeAuditConfig(config *Config) *Config {
+	defaults := DefaultConfig()
+	normalized := *config
+	if strings.TrimSpace(normalized.LogFile) == "" {
+		normalized.LogFile = defaults.LogFile
+	}
+	switch normalized.LogFormat {
+	case "json", "text":
+	default:
+		normalized.LogFormat = defaults.LogFormat
+	}
+	if normalized.MaxFileSize <= 0 {
+		normalized.MaxFileSize = defaults.MaxFileSize
+	}
+	if normalized.MaxBackups <= 0 {
+		normalized.MaxBackups = defaults.MaxBackups
+	}
+	if normalized.MaxAge <= 0 {
+		normalized.MaxAge = defaults.MaxAge
+	}
+	return &normalized
 }
 
 func (al *Logger) openLogFile() error {

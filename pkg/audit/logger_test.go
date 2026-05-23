@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -24,6 +25,39 @@ func TestNewLogger(t *testing.T) {
 
 	if al == nil {
 		t.Fatal("Audit logger is nil")
+	}
+}
+
+func TestNewLoggerNormalizesPartialConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	defer os.Chdir(originalDir)
+
+	config := &Config{Enabled: true}
+	al, err := New(config, logger.Default())
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer al.Close()
+
+	defaults := DefaultConfig()
+	if al.config.LogFile != defaults.LogFile {
+		t.Fatalf("LogFile = %q, want %q", al.config.LogFile, defaults.LogFile)
+	}
+	if al.config.LogFormat != defaults.LogFormat {
+		t.Fatalf("LogFormat = %q, want %q", al.config.LogFormat, defaults.LogFormat)
+	}
+	if al.config.MaxFileSize != defaults.MaxFileSize {
+		t.Fatalf("MaxFileSize = %d, want %d", al.config.MaxFileSize, defaults.MaxFileSize)
+	}
+	if config.LogFile != "" || config.LogFormat != "" || config.MaxFileSize != 0 {
+		t.Fatal("New should not mutate caller config")
 	}
 }
 
