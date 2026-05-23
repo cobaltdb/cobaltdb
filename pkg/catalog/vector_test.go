@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"math"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -108,6 +109,36 @@ func TestVectorSimilarityFunctions(t *testing.T) {
 	ip = innerProduct(a, c)
 	if ip != 1.0 {
 		t.Errorf("Inner product of identical vectors should be 1, got %v", ip)
+	}
+}
+
+func TestHNSWSelectNeighborsByKeyUsesVectorDistance(t *testing.T) {
+	index := NewHNSWIndex("test_idx", "test_table", "embedding", 2)
+	index.Nodes["near"] = &HNSWNode{Key: "near", Vector: []float64{0.1, 0.1}}
+	index.Nodes["mid"] = &HNSWNode{Key: "mid", Vector: []float64{1.0, 1.0}}
+	index.Nodes["far"] = &HNSWNode{Key: "far", Vector: []float64{10.0, 10.0}}
+
+	got := index.selectNeighborsByKey([]float64{0, 0}, []string{"far", "missing", "mid", "near"}, 2)
+	want := []string{"near", "mid"}
+	if len(got) != len(want) {
+		t.Fatalf("neighbors = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("neighbors = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestRandomUnitFloat64Range(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		f, err := randomUnitFloat64()
+		if err != nil {
+			t.Fatalf("randomUnitFloat64 failed: %v", err)
+		}
+		if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f >= 1 {
+			t.Fatalf("randomUnitFloat64 = %v, want finite value in [0, 1)", f)
+		}
 	}
 }
 

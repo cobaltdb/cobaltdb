@@ -16,17 +16,17 @@ type HNSWIndex struct {
 	TableName  string  `json:"table_name"`
 	ColumnName string  `json:"column_name"`
 	Dimensions int     `json:"dimensions"`
-	M          int     `json:"m"`      // Maximum number of connections per element per layer
-	Mmax       int     `json:"mmax"`   // Maximum number of connections for the base layer
-	Mmax0      int     `json:"mmax0"`  // Maximum number of connections for layer 0
-	Ef         int     `json:"ef"`     // Size of dynamic candidate list
-	Ml         float64 `json:"ml"`     // Level generation factor
+	M          int     `json:"m"`     // Maximum number of connections per element per layer
+	Mmax       int     `json:"mmax"`  // Maximum number of connections for the base layer
+	Mmax0      int     `json:"mmax0"` // Maximum number of connections for layer 0
+	Ef         int     `json:"ef"`    // Size of dynamic candidate list
+	Ml         float64 `json:"ml"`    // Level generation factor
 
-	Nodes        map[string]*HNSWNode `json:"nodes"`         // key -> node (key is the primary key value as string)
-	EntryPoint   *HNSWNode            `json:"-"`             // Runtime pointer, reconstructed from EntryPointKey
-	EntryPointKey string              `json:"entry_point_key"` // Serialized key for EntryPoint
-	MaxLevel     int                  `json:"max_level"`
-	mu           sync.RWMutex         `json:"-"`
+	Nodes         map[string]*HNSWNode `json:"nodes"`           // key -> node (key is the primary key value as string)
+	EntryPoint    *HNSWNode            `json:"-"`               // Runtime pointer, reconstructed from EntryPointKey
+	EntryPointKey string               `json:"entry_point_key"` // Serialized key for EntryPoint
+	MaxLevel      int                  `json:"max_level"`
+	mu            sync.RWMutex         `json:"-"`
 }
 
 // HNSWNode represents a node in the HNSW graph
@@ -130,7 +130,7 @@ func (h *HNSWIndex) Insert(key string, vector []float64) error {
 				neighbor.Neighbors[i] = append(neighbor.Neighbors[i], key)
 				// Shrink connections if needed
 				if len(neighbor.Neighbors[i]) > h.Mmax {
-					neighbor.Neighbors[i] = h.selectNeighborsByKey(neighbor.Neighbors[i], h.Mmax, i)
+					neighbor.Neighbors[i] = h.selectNeighborsByKey(neighbor.Vector, neighbor.Neighbors[i], h.Mmax)
 				}
 			}
 		}
@@ -433,29 +433,29 @@ func (h *HNSWIndex) selectNeighbors(query []float64, candidates []candidate, m i
 	return result
 }
 
-// selectNeighborsByKey selects M neighbors from a list of keys based on distance
-func (h *HNSWIndex) selectNeighborsByKey(keys []string, m, level int) []string {
+// selectNeighborsByKey selects M neighbors closest to source from a list of keys.
+func (h *HNSWIndex) selectNeighborsByKey(source []float64, keys []string, m int) []string {
 	if len(keys) <= m {
 		return keys
 	}
 
-	// Calculate distances from the node to all its neighbors
-	// We need to know which node this is - get it from the first key
-	// This is a simplification; in a real implementation, we'd pass the node
 	type neighborDist struct {
 		Key      string
 		Distance float64
 	}
 
-	dists := make([]neighborDist, len(keys))
-	for i, key := range keys {
-		if _, ok := h.Nodes[key]; ok {
-			// Use a dummy distance for now - in practice we'd compute from the source node
-			// Use crypto/rand for generating random float64 in [0, 1)
-			var b [8]byte
-			rand.Read(b[:]) // ignore error, will use 0 on error
-			dists[i] = neighborDist{Key: key, Distance: math.Float64frombits(binary.LittleEndian.Uint64(b[:]))}
+	dists := make([]neighborDist, 0, len(keys))
+	for _, key := range keys {
+		if node, ok := h.Nodes[key]; ok {
+			dists = append(dists, neighborDist{Key: key, Distance: l2Distance(source, node.Vector)})
 		}
+	}
+	if len(dists) <= m {
+		result := make([]string, len(dists))
+		for i, d := range dists {
+			result[i] = d.Key
+		}
+		return result
 	}
 
 	// Sort by distance
@@ -474,18 +474,25 @@ func (h *HNSWIndex) selectNeighborsByKey(keys []string, m, level int) []string {
 func (h *HNSWIndex) randomLevel() int {
 	level := 0
 	for {
-		// Generate random float64 in [0, 1) using crypto/rand
-		var b [8]byte
-		if _, err := rand.Read(b[:]); err != nil {
+		f, err := randomUnitFloat64()
+		if err != nil {
 			break // fallback: don't increment level
 		}
-		f := math.Float64frombits(binary.LittleEndian.Uint64(b[:]))
 		if f >= h.Ml || level >= 16 {
 			break
 		}
 		level++
 	}
 	return level
+}
+
+func randomUnitFloat64() (float64, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0, err
+	}
+	v := binary.LittleEndian.Uint64(b[:]) >> 11
+	return float64(v) / float64(1<<53), nil
 }
 
 // l2Distance calculates the L2 (Euclidean) distance between two vectors
