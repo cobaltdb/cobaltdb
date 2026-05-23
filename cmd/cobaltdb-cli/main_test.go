@@ -217,6 +217,28 @@ func TestImportCSVQuotesReservedColumnNames(t *testing.T) {
 	}
 }
 
+func TestCreateSecureOutputFilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "export.csv")
+	file, err := createSecureOutputFile(path)
+	if err != nil {
+		t.Fatalf("createSecureOutputFile failed: %v", err)
+	}
+	if _, err := file.WriteString("id,name\n1,Alice\n"); err != nil {
+		t.Fatalf("write output file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close output file: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat output file: %v", err)
+	}
+	if info.Mode().Perm() != cliOutputFilePerm {
+		t.Fatalf("Expected output file permissions %o, got %o", cliOutputFilePerm, info.Mode().Perm())
+	}
+}
+
 func TestStripSQLComments(t *testing.T) {
 	tests := []struct {
 		input    string

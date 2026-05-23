@@ -27,6 +27,8 @@ var (
 
 var version = "dev"
 
+const cliOutputFilePerm = 0600
+
 type sessionState struct {
 	mode    string
 	timer   bool
@@ -1031,7 +1033,7 @@ func exportTable(db *engine.DB, table, filePath, format string) error {
 	}
 	defer rows.Close()
 
-	file, err := os.Create(filePath)
+	file, err := createSecureOutputFile(filePath)
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
@@ -1125,7 +1127,7 @@ func dumpDatabase(db *engine.DB, filePath string) error {
 	var out *os.File
 	if filePath != "" {
 		var err error
-		out, err = os.Create(filePath)
+		out, err = createSecureOutputFile(filePath)
 		if err != nil {
 			return fmt.Errorf("create dump file: %w", err)
 		}
@@ -1217,6 +1219,18 @@ func quoteSQLIdentifier(identifier string) (string, error) {
 	escaped := strings.ReplaceAll(identifier, `\`, `\\`)
 	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 	return `"` + escaped + `"`, nil
+}
+
+func createSecureOutputFile(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, cliOutputFilePerm)
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Chmod(cliOutputFilePerm); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func restoreDatabase(db *engine.DB, filePath string) error {
