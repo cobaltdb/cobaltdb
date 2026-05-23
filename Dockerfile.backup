@@ -1,23 +1,6 @@
-# Multi-stage build for CobaltDB Backup Service
-ARG GO_IMAGE=golang:1.26-alpine3.23
+# CobaltDB filesystem snapshot backup helper.
 ARG RUNTIME_IMAGE=alpine:3.23.4
 
-FROM ${GO_IMAGE} AS builder
-
-RUN apk add --no-cache git make
-
-WORKDIR /build
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-
-# Build CLI binary (used for backup operations)
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s" \
-    -o /build/cobaltdb-cli \
-    ./cmd/cobaltdb-cli
-
-# Runtime stage
 FROM ${RUNTIME_IMAGE}
 
 RUN apk add --no-cache ca-certificates tzdata
@@ -29,8 +12,6 @@ RUN addgroup -g 1000 -S cobaltdb && \
 # Create backup and source directories
 RUN mkdir -p /backups /data/source && \
     chown -R cobaltdb:cobaltdb /backups
-
-COPY --from=builder /build/cobaltdb-cli /usr/local/bin/
 
 # Create backup runner script
 RUN printf '%s\n' \

@@ -272,7 +272,7 @@ docker compose down
 - **cobaltdb**: Database server (port 4200)
 - **prometheus**: Metrics collection (port 9090)
 - **grafana**: Visualization (port 3000)
-- **backup**: Automated backups
+- **backup**: Optional filesystem snapshot helper (`docker compose --profile backup up -d backup`)
 
 ---
 
@@ -361,6 +361,16 @@ Pre-built dashboards:
 
 ### Automated Backups
 
+The Docker backup helper is opt-in and creates filesystem-level snapshots. Use it for controlled snapshot workflows, and use the CobaltDB backup APIs/CLI when you need online-consistent database backups.
+
+```bash
+# Start the optional filesystem snapshot helper
+docker compose --profile backup up -d backup
+
+# Run a manual filesystem snapshot
+docker exec cobaltdb_backup run-backup.sh
+```
+
 ```bash
 # Configure in cobaltdb.conf
 [backup]
@@ -373,10 +383,10 @@ backup_retention_days = 7
 
 ```bash
 # Using CLI
-cobaltdb-cli backup create --output /backups/mydb-$(date +%Y%m%d).db
+cobaltdb-cli -path ./data/cobalt.cb backup create full
 
-# Using Docker
-docker exec cobaltdb cobaltdb-cli backup create --output /backups/backup.db
+# List backups
+cobaltdb-cli -path ./data/cobalt.cb backup list
 ```
 
 ### Restore

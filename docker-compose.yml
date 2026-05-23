@@ -67,6 +67,8 @@ services:
 
   # Backup service
   backup:
+    profiles:
+      - backup
     build:
       context: .
       dockerfile: Dockerfile.backup

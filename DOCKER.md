@@ -15,7 +15,7 @@ This directory contains Docker configuration for running CobaltDB in containeriz
 export COBALTDB_ADMIN_PASSWORD='change-this-before-production'
 export GRAFANA_ADMIN_PASSWORD='change-this-too'
 
-# Build and start all services
+# Build and start database plus monitoring
 docker compose up -d
 
 # View logs
@@ -37,7 +37,7 @@ docker compose down -v
 | cobaltdb | 8420 | Health check / metrics API |
 | prometheus | 9090 | Metrics collection |
 | grafana | 3000 | Metrics visualization |
-| backup | - | Automated backups |
+| backup | - | Optional filesystem snapshot helper (`--profile backup`) |
 
 ## Connecting with MySQL Clients
 
@@ -100,17 +100,22 @@ For best performance on Windows 11:
 
 ## Backup Service
 
-Backups run automatically based on `BACKUP_SCHEDULE` (cron format). Default: daily at 2 AM.
+The backup service is opt-in because it creates a filesystem-level tar snapshot of the data volume. For online-consistent application backups, use CobaltDB's backup APIs/CLI against a controlled database process.
+
+When enabled, filesystem snapshots run automatically based on `BACKUP_INTERVAL_HOURS` (default: 24 hours). `BACKUP_SCHEDULE` is retained as descriptive metadata for operators.
 
 ```bash
+# Start the backup helper
+docker compose --profile backup up -d backup
+
 # View backup logs
-docker-compose logs -f backup
+docker compose logs -f backup
 
 # List backups
 docker exec cobaltdb_backup ls -la /backups
 
 # Manual backup
-docker exec cobaltdb_backup /scripts/backup.sh
+docker exec cobaltdb_backup run-backup.sh
 ```
 
 ## Monitoring
@@ -211,7 +216,7 @@ For production environments:
 ### Backup
 | Variable | Default | Description |
 |----------|---------|-------------|
-| BACKUP_SCHEDULE | 0 2 * * * | Cron schedule format (for reference) |
+| BACKUP_SCHEDULE | 0 2 * * * | Cron schedule format, retained as operator metadata |
 | BACKUP_INTERVAL_HOURS | 24 | Backup interval in hours |
 | BACKUP_RETENTION_DAYS | 7 | Days to keep backups |
 
