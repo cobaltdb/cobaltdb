@@ -409,8 +409,8 @@ func TestReadHandshakeResponse_TooShortPayload(t *testing.T) {
 	}
 
 	err := client.readHandshakeResponse()
-	if err != nil {
-		t.Errorf("expected nil error for short payload, got %v", err)
+	if err == nil {
+		t.Error("expected error for short payload")
 	}
 }
 
@@ -482,12 +482,8 @@ func TestReadHandshakeResponse_AuthResponseTruncated(t *testing.T) {
 	}
 
 	err := client.readHandshakeResponse()
-	if err != nil {
-		t.Fatalf("readHandshakeResponse failed: %v", err)
-	}
-	// Auth response should be empty since data was truncated
-	if len(client.authResponse) != 0 {
-		t.Errorf("expected empty auth response due to truncation, got %d bytes", len(client.authResponse))
+	if err == nil {
+		t.Fatal("expected error for truncated auth response")
 	}
 }
 

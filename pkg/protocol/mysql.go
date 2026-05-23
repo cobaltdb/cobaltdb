@@ -24,6 +24,10 @@ import (
 const (
 	// maxMySQLPayloadSize is the largest value representable by MySQL's 3-byte packet length.
 	maxMySQLPayloadSize = 1<<24 - 1
+
+	mysqlHandshakeTimeout = 10 * time.Second
+	mysqlCommandTimeout   = 5 * time.Minute
+	mysqlWriteTimeout     = 30 * time.Second
 )
 
 func mysqlByte(v uint64) byte {
@@ -287,6 +291,7 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 	}
 
 	// Read handshake response
+	_ = conn.SetReadDeadline(time.Now().Add(mysqlHandshakeTimeout))
 	if err := client.readHandshakeResponse(); err != nil {
 		return
 	}
@@ -436,7 +441,7 @@ func (c *MySQLClient) readHandshakeResponse() error {
 	// Parse handshake response
 	// Format: [capFlags:4][maxPacketSize:4][charset:1][reserved:23][username:NUL][authResp...][database:NUL]
 	if len(payload) < 32 {
-		return nil // Too short, accept anyway
+		return fmt.Errorf("handshake response too short: %d", len(payload))
 	}
 
 	offset := 4 + 4 + 1 + 23 // skip capFlags(4) + maxPacketSize(4) + charset(1) + reserved(23) = 32
@@ -447,6 +452,9 @@ func (c *MySQLClient) readHandshakeResponse() error {
 		for end < len(payload) && payload[end] != 0 {
 			end++
 		}
+		if end == len(payload) {
+			return fmt.Errorf("handshake username is not null-terminated")
+		}
 		c.username = string(payload[offset:end])
 		offset = end + 1 // skip null terminator
 	}
@@ -455,10 +463,11 @@ func (c *MySQLClient) readHandshakeResponse() error {
 	if offset < len(payload) {
 		authLen := int(payload[offset])
 		offset++
-		if offset+authLen <= len(payload) {
-			c.authResponse = make([]byte, authLen)
-			copy(c.authResponse, payload[offset:offset+authLen])
+		if offset+authLen > len(payload) {
+			return fmt.Errorf("handshake auth response truncated")
 		}
+		c.authResponse = make([]byte, authLen)
+		copy(c.authResponse, payload[offset:offset+authLen])
 		offset += authLen
 	}
 
@@ -509,6 +518,10 @@ func (c *MySQLClient) verifyMySQLNativeAuth(storedHash []byte) bool {
 
 // handleCommand handles a MySQL command
 func (c *MySQLClient) handleCommand() error {
+	if c.conn != nil {
+		_ = c.conn.SetReadDeadline(time.Now().Add(mysqlCommandTimeout))
+	}
+
 	// Read packet header
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(c.reader, header); err != nil {
@@ -852,6 +865,10 @@ func writeLenEncString(s string) []byte {
 
 // writePacket writes a MySQL protocol packet
 func (c *MySQLClient) writePacket(data []byte, sequence byte) error {
+	if c.conn != nil {
+		_ = c.conn.SetWriteDeadline(time.Now().Add(mysqlWriteTimeout))
+	}
+
 	offset := 0
 	seq := sequence
 	for {
