@@ -1,9 +1,8 @@
-.PHONY: build test clean install test-coverage bench lint fmt deps run-server run-cli docker-build docker-run race vuln gosec verify verify-security all
+.PHONY: build test clean install test-coverage bench lint staticcheck fmt deps run-server run-cli docker-build docker-run race vuln gosec verify verify-security all
 
 BINARY_SERVER=cobaltdb-server
 BINARY_CLI=cobaltdb-cli
 PKG=github.com/cobaltdb/cobaltdb
-SECURITY_PKGS=./cmd/cobaltdb-server ./pkg/server ./pkg/protocol ./pkg/storage ./pkg/auth ./sdk/go ./pkg/logger ./pkg/query
 VERSION?=$(shell cat VERSION 2>/dev/null || echo dev)
 LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION)"
 
@@ -24,11 +23,11 @@ race:
 
 vuln:
 	@echo "Running govulncheck..."
-	@govulncheck ./...
+	@go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 gosec:
 	@echo "Running gosec..."
-	@gosec -exclude=G115,G118,G304,G301,G306,G401,G402,G505 $(SECURITY_PKGS)
+	@go run github.com/securego/gosec/v2/cmd/gosec@latest -exclude=G104 ./...
 
 test-coverage:
 	@echo "Running tests with coverage..."
@@ -54,7 +53,11 @@ install:
 
 lint:
 	@echo "Running linter..."
-	@golangci-lint run --tests=false --disable-all --enable=errcheck --enable=govet $(SECURITY_PKGS)
+	@golangci-lint run ./...
+
+staticcheck:
+	@echo "Running staticcheck..."
+	@go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 
 fmt:
 	@echo "Formatting code..."
@@ -79,7 +82,7 @@ verify-security:
 	@$(MAKE) race
 	@$(MAKE) vuln
 	@$(MAKE) gosec
-	@$(MAKE) lint
+	@$(MAKE) staticcheck
 
 run-server:
 	@go run ./cmd/$(BINARY_SERVER)
