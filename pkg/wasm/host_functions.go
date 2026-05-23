@@ -62,14 +62,6 @@ func checkedHostInt32(params []uint64, idx int, name string) (int32, bool) {
 	return value, true
 }
 
-func checkedHostInt64(params []uint64, idx int, name string) (int64, bool) {
-	value, err := checkedInt64(params[idx], name)
-	if err != nil {
-		return 0, false
-	}
-	return value, true
-}
-
 func checkedMemoryRange(rt *Runtime, ptr int32, byteCount int) (int, bool) {
 	if byteCount < 0 {
 		return 0, false
