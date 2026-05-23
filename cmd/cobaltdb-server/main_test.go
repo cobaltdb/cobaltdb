@@ -179,6 +179,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 	t.Setenv("COBALTDB_CIRCUIT_BREAKER_ENABLED", "false")
 	t.Setenv("COBALTDB_RETRY_ENABLED", "false")
 	t.Setenv("COBALTDB_REMOTE_METRICS_ENABLED", "true")
+	t.Setenv("COBALTDB_ALLOW_CLEARTEXT_AUTH", "true")
 	t.Setenv("COBALTDB_SHUTDOWN_TIMEOUT", "45s")
 	t.Setenv("COBALTDB_DRAIN_TIMEOUT", "15s")
 
@@ -198,6 +199,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 	enableCircuitBreaker := true
 	enableRetry := true
 	allowRemoteMetrics := false
+	allowCleartextAuth := false
 	shutdownTimeout := 30 * time.Second
 	drainTimeout := 10 * time.Second
 
@@ -218,6 +220,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 		&enableCircuitBreaker,
 		&enableRetry,
 		&allowRemoteMetrics,
+		&allowCleartextAuth,
 		&shutdownTimeout,
 		&drainTimeout,
 	)
@@ -236,6 +239,9 @@ func TestApplyEnvOverrides(t *testing.T) {
 	}
 	if healthAddr != ":18420" || enableHealthServer || enableCircuitBreaker || enableRetry || !allowRemoteMetrics {
 		t.Fatalf("production feature overrides not applied")
+	}
+	if !allowCleartextAuth {
+		t.Fatalf("cleartext auth override not applied")
 	}
 	if shutdownTimeout != 45*time.Second || drainTimeout != 15*time.Second {
 		t.Fatalf("duration overrides not applied: shutdown=%s drain=%s", shutdownTimeout, drainTimeout)
@@ -276,6 +282,7 @@ func TestApplyEnvOverridesRejectsInvalidValues(t *testing.T) {
 			enableCircuitBreaker := true
 			enableRetry := true
 			allowRemoteMetrics := false
+			allowCleartextAuth := false
 			shutdownTimeout := 30 * time.Second
 			drainTimeout := 10 * time.Second
 
@@ -296,9 +303,101 @@ func TestApplyEnvOverridesRejectsInvalidValues(t *testing.T) {
 				&enableCircuitBreaker,
 				&enableRetry,
 				&allowRemoteMetrics,
+				&allowCleartextAuth,
 				&shutdownTimeout,
 				&drainTimeout,
 			)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantError, err.Error())
+			}
+		})
+	}
+}
+
+func TestValidateAuthTransport(t *testing.T) {
+	tests := []struct {
+		name      string
+		wireAddr  string
+		mysqlAddr string
+		auth      bool
+		tls       bool
+		mysql     bool
+		allow     bool
+		wantError string
+	}{
+		{
+			name:      "LoopbackCleartextAllowed",
+			wireAddr:  "127.0.0.1:4200",
+			mysqlAddr: "localhost:3307",
+			auth:      true,
+			mysql:     true,
+		},
+		{
+			name:      "NoAuthAllowsCleartext",
+			wireAddr:  ":4200",
+			mysqlAddr: ":3307",
+			mysql:     true,
+		},
+		{
+			name:      "OverrideAllowsCleartext",
+			wireAddr:  ":4200",
+			mysqlAddr: ":3307",
+			auth:      true,
+			mysql:     true,
+			allow:     true,
+		},
+		{
+			name:      "RejectsNonLoopbackWireWithoutTLS",
+			wireAddr:  ":4200",
+			mysqlAddr: "127.0.0.1:3307",
+			auth:      true,
+			mysql:     true,
+			wantError: "wire address",
+		},
+		{
+			name:      "WireTLSAllowsNonLoopbackWhenMySQLDisabled",
+			wireAddr:  ":4200",
+			mysqlAddr: ":3307",
+			auth:      true,
+			tls:       true,
+		},
+		{
+			name:      "RejectsNonLoopbackMySQL",
+			wireAddr:  "127.0.0.1:4200",
+			mysqlAddr: "0.0.0.0:3307",
+			auth:      true,
+			tls:       true,
+			mysql:     true,
+			wantError: "MySQL authentication",
+		},
+		{
+			name:      "IPv6LoopbackAllowed",
+			wireAddr:  "[::1]:4200",
+			mysqlAddr: "[::1]:3307",
+			auth:      true,
+			mysql:     true,
+		},
+		{
+			name:      "IPv6AnyRejected",
+			wireAddr:  "[::]:4200",
+			mysqlAddr: "127.0.0.1:3307",
+			auth:      true,
+			wantError: "wire address",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAuthTransport(tt.wireAddr, tt.mysqlAddr, tt.auth, tt.tls, tt.mysql, tt.allow)
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
 			if err == nil {
 				t.Fatal("expected error")
 			}

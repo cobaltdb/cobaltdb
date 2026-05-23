@@ -169,6 +169,7 @@ docker run -d \
   -p 3307:3307 \
   -p 8420:8420 \
   -e COBALTDB_ADMIN_PASSWORD='change-this-before-production' \
+  -e COBALTDB_ALLOW_CLEARTEXT_AUTH=true \
   -v cobaltdb_data:/data/cobaltdb \
   cobaltdb
 

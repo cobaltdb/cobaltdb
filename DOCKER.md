@@ -165,9 +165,13 @@ For production environments:
      - COBALTDB_TLS_ENABLED=true
      - COBALTDB_TLS_CERT_FILE=/etc/cobaltdb/certs/server.crt
      - COBALTDB_TLS_KEY_FILE=/etc/cobaltdb/certs/server.key
+     - COBALTDB_ALLOW_CLEARTEXT_AUTH=false
+     - COBALTDB_MYSQL_ENABLED=false
    volumes:
      - ./certs:/etc/cobaltdb/certs
    ```
+
+   The default compose file sets `COBALTDB_ALLOW_CLEARTEXT_AUTH=true` for local development because it exposes both wire and MySQL ports without TLS. Remove that override for production. MySQL protocol authentication is cleartext in this server, so bind MySQL to loopback, keep it on a private network, or disable it when exposing the service.
 
 3. **Use external volumes**:
    ```yaml
@@ -197,6 +201,7 @@ For production environments:
 | COBALTDB_DATA_DIR | /data/cobaltdb | Database storage path |
 | COBALTDB_ADDR | :4200 | Wire protocol listen address |
 | COBALTDB_MYSQL_ADDR | :3307 | MySQL protocol listen address |
+| COBALTDB_MYSQL_ENABLED | true | Enable MySQL protocol listener |
 | COBALTDB_HEALTH_ADDR | :8420 | Health and metrics listen address |
 | COBALTDB_ADMIN_USER | admin | Initial admin username |
 | COBALTDB_ADMIN_PASSWORD | required by compose | Initial admin password |
@@ -205,6 +210,7 @@ For production environments:
 | COBALTDB_TLS_CERT_FILE | - | TLS certificate path |
 | COBALTDB_TLS_KEY_FILE | - | TLS private key path |
 | COBALTDB_TLS_GEN_CERT | false | Generate a self-signed TLS certificate |
+| COBALTDB_ALLOW_CLEARTEXT_AUTH | false | Explicitly allow authenticated non-loopback listeners without encrypted transport |
 | COBALTDB_CACHE_SIZE | 1024 | Cache size in pages, not bytes |
 | COBALTDB_REMOTE_METRICS_ENABLED | false | Allow Prometheus metrics scraping from non-loopback clients |
 
@@ -229,6 +235,9 @@ docker build -t cobaltdb:latest .
 # Backup service
 docker build -t cobaltdb-backup:latest -f Dockerfile.backup .
 
-# Run server
-docker run -d -p 4200:4200 -v cobaltdb_data:/data/cobaltdb cobaltdb:latest
+# Run development server
+docker run -d -p 4200:4200 -v cobaltdb_data:/data/cobaltdb \
+  -e COBALTDB_ADMIN_PASSWORD='change-this-before-production' \
+  -e COBALTDB_ALLOW_CLEARTEXT_AUTH=true \
+  cobaltdb:latest
 ```

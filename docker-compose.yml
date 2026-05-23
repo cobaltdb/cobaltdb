@@ -14,6 +14,7 @@ services:
       - COBALTDB_HEALTH_ADDR=:8420
       - COBALTDB_DATA_DIR=/data/cobaltdb
       - COBALTDB_AUTH_ENABLED=true
+      - COBALTDB_ALLOW_CLEARTEXT_AUTH=true
       - COBALTDB_REMOTE_METRICS_ENABLED=true
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8420/ready >/dev/null || exit 1"]

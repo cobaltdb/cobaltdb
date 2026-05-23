@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
@@ -54,6 +55,7 @@ func main() {
 		enableCircuitBreaker = flag.Bool("circuit-breaker", true, "enable circuit breaker")
 		enableRetry          = flag.Bool("retry", true, "enable retry logic")
 		allowRemoteMetrics   = flag.Bool("remote-metrics", false, "allow Prometheus metrics endpoint from non-loopback clients")
+		allowCleartextAuth   = flag.Bool("allow-cleartext-auth", false, "allow authenticated non-loopback listeners without encrypted transport")
 		shutdownTimeout      = flag.Duration("shutdown-timeout", 30*time.Second, "graceful shutdown timeout")
 		drainTimeout         = flag.Duration("drain-timeout", 10*time.Second, "connection drain timeout")
 	)
@@ -81,6 +83,7 @@ func main() {
 		enableCircuitBreaker,
 		enableRetry,
 		allowRemoteMetrics,
+		allowCleartextAuth,
 		shutdownTimeout,
 		drainTimeout,
 	); err != nil {
@@ -108,6 +111,13 @@ func main() {
 		}
 	} else {
 		log.Printf("[SECURITY WARNING] Authentication is disabled (-auth=false). Do not expose this server publicly.")
+	}
+
+	if err := validateAuthTransport(*address, *mysqlAddr, *authEnabled, *tlsEnabled, *enableMySQL, *allowCleartextAuth); err != nil {
+		log.Fatalf("Invalid security configuration: %v", err)
+	}
+	if *authEnabled && *allowCleartextAuth {
+		log.Printf("[SECURITY WARNING] Cleartext authentication was explicitly allowed. Use this only for local development or trusted private networks.")
 	}
 
 	// Open database
@@ -266,6 +276,7 @@ func applyEnvOverrides(
 	enableCircuitBreaker *bool,
 	enableRetry *bool,
 	allowRemoteMetrics *bool,
+	allowCleartextAuth *bool,
 	shutdownTimeout *time.Duration,
 	drainTimeout *time.Duration,
 ) error {
@@ -311,6 +322,9 @@ func applyEnvOverrides(
 	if err := envBool("COBALTDB_REMOTE_METRICS_ENABLED", allowRemoteMetrics); err != nil {
 		return err
 	}
+	if err := envBool("COBALTDB_ALLOW_CLEARTEXT_AUTH", allowCleartextAuth); err != nil {
+		return err
+	}
 	if err := envDuration("COBALTDB_SHUTDOWN_TIMEOUT", shutdownTimeout); err != nil {
 		return err
 	}
@@ -319,6 +333,35 @@ func applyEnvOverrides(
 	}
 
 	return nil
+}
+
+func validateAuthTransport(wireAddr, mysqlAddr string, authEnabled, tlsEnabled, mysqlEnabled, allowCleartextAuth bool) error {
+	if !authEnabled || allowCleartextAuth {
+		return nil
+	}
+	if !tlsEnabled && !isLoopbackListenAddress(wireAddr) {
+		return fmt.Errorf("authentication without TLS is not allowed on non-loopback wire address %q; enable TLS, bind to loopback, or set -allow-cleartext-auth for development", wireAddr)
+	}
+	if mysqlEnabled && !isLoopbackListenAddress(mysqlAddr) {
+		return fmt.Errorf("MySQL authentication on non-loopback address %q is cleartext; bind MySQL to loopback, disable MySQL, or set -allow-cleartext-auth for development", mysqlAddr)
+	}
+	return nil
+}
+
+func isLoopbackListenAddress(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func envString(name string, target *string) {

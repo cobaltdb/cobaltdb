@@ -243,6 +243,7 @@ docker run -d \
     -p 8420:8420 \
     -v $(pwd)/data:/data/cobaltdb \
     -e COBALTDB_ADMIN_PASSWORD='change-this-before-production' \
+    -e COBALTDB_ALLOW_CLEARTEXT_AUTH=true \
     cobaltdb/cobaltdb:latest
 ```
 
@@ -290,9 +291,10 @@ export COBALTDB_STORAGE_DATA_DIR=/data/cobaltdb
 export COBALTDB_SECURITY_AUTH_ENABLED=true
 export COBALTDB_REMOTE_METRICS_ENABLED=true
 export COBALTDB_ADMIN_PASSWORD='change-this-before-production'
+export COBALTDB_ALLOW_CLEARTEXT_AUTH=true
 ```
 
-Most local options are also available as server flags, for example `-data`, `-addr`, `-mysql-addr`, `-health-addr`, `-cache`, `-auth`, and TLS flags. The sample `config/cobaltdb.conf` in the repository is a reference file and is not loaded automatically by the current server binary.
+Most local options are also available as server flags, for example `-data`, `-addr`, `-mysql-addr`, `-health-addr`, `-cache`, `-auth`, `-allow-cleartext-auth`, and TLS flags. The sample `config/cobaltdb.conf` in the repository is a reference file and is not loaded automatically by the current server binary.
 
 ---
 
