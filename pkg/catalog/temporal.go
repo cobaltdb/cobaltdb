@@ -297,11 +297,11 @@ func decodeVersionedRowFastEx(data []byte, numCols int, out []interface{}, strin
 					} else {
 						// safe: data is stable for the lifetime of the iterator
 						if stringBuf != nil {
-							stringBuf[stringIdx] = unsafe.String(&data[start], pos-start)
+							stringBuf[stringIdx] = unsafe.String(&data[start], pos-start) // #nosec G103 - data is immutable during row decode and copied into the caller-owned string buffer.
 							rowData[colIdx] = StringBox{ptr: &stringBuf[stringIdx]}
 							stringIdx++
 						} else {
-							rowData[colIdx] = unsafe.String(&data[start], pos-start)
+							rowData[colIdx] = unsafe.String(&data[start], pos-start) // #nosec G103 - data is immutable for the decoded row lifetime.
 						}
 					}
 					colIdx++
@@ -375,7 +375,7 @@ func decodeVersionedRowFastEx(data []byte, numCols int, out []interface{}, strin
 				}
 			}
 			if isFloat {
-				fv, err := strconv.ParseFloat(unsafe.String(&data[numStart], pos-numStart), 64)
+				fv, err := strconv.ParseFloat(unsafe.String(&data[numStart], pos-numStart), 64) // #nosec G103 - temporary numeric slice is immutable during parsing.
 				if err != nil {
 					return VersionedRow{}, stringIdx, false
 				}
@@ -384,7 +384,7 @@ func decodeVersionedRowFastEx(data []byte, numCols int, out []interface{}, strin
 				iv, ok := parseInt64Fast(data[numStart:pos])
 				if !ok {
 					// Might be too large for int64, use float64
-					fv, err2 := strconv.ParseFloat(unsafe.String(&data[numStart], pos-numStart), 64)
+					fv, err2 := strconv.ParseFloat(unsafe.String(&data[numStart], pos-numStart), 64) // #nosec G103 - temporary numeric slice is immutable during parsing.
 					if err2 != nil {
 						return VersionedRow{}, stringIdx, false
 					}
