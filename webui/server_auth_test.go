@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 )
 
@@ -164,5 +166,38 @@ func TestHandleUpdateRowRejectsUnsafeIdentifier(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHistoryConcurrentAccess(t *testing.T) {
+	srv := &Server{}
+	var wg sync.WaitGroup
+
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			srv.addToHistory(fmt.Sprintf("SELECT %d", i), "1 ms", 1)
+		}(i)
+	}
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/api/history", nil)
+			rec := httptest.NewRecorder()
+			srv.handleHistory(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Errorf("expected status %d, got %d", http.StatusOK, rec.Code)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
+	if len(srv.history) > 100 {
+		t.Fatalf("expected history cap of 100, got %d", len(srv.history))
 	}
 }

@@ -459,8 +459,12 @@ func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	history := append([]QueryRecord(nil), s.history...)
+	s.mu.RUnlock()
+
 	w.Header().Set("Content-Type", "application/json")
-	writeJSON(w, s.history)
+	writeJSON(w, history)
 }
 
 func (s *Server) handleTableInfo(w http.ResponseWriter, r *http.Request) {
@@ -603,6 +607,9 @@ func (s *Server) addToHistory(query, duration string, rows int) {
 		Duration:  duration,
 		Rows:      rows,
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	s.history = append([]QueryRecord{record}, s.history...)
 
