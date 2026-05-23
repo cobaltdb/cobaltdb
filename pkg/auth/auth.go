@@ -2,7 +2,7 @@ package auth
 
 import (
 	"crypto/rand"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- Required for MySQL native_password protocol compatibility.
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
