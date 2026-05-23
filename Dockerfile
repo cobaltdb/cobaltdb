@@ -50,9 +50,6 @@ RUN mkdir -p /data/cobaltdb /etc/cobaltdb/certs && \
 COPY --from=builder /build/cobaltdb-server /usr/local/bin/
 COPY --from=builder /build/cobaltdb-cli /usr/local/bin/
 
-# Copy default config
-COPY --from=builder /build/config/cobaltdb.conf /etc/cobaltdb/
-
 # Create entrypoint script to fix permissions
 RUN printf '%s\n' \
     '#!/bin/sh' \

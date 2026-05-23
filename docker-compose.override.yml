@@ -7,10 +7,6 @@ services:
     # Use named volumes instead of bind mounts for better Windows performance
     volumes:
       - cobaltdb_data:/data/cobaltdb
-      - type: bind
-        source: ./config
-        target: /etc/cobaltdb
-        read_only: true
 
   backup:
     # Run backup service with local timezone

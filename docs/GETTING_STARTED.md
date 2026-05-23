@@ -278,39 +278,6 @@ docker compose down
 
 ## Configuration
 
-### Configuration File
-
-Create `cobaltdb.conf`:
-
-```toml
-[server]
-host = "0.0.0.0"
-port = 4200
-max_connections = 100
-
-[storage]
-data_dir = "/data/cobaltdb"
-cache_size = 1024
-wal_enabled = true
-
-[performance]
-query_plan_cache_enabled = true
-query_plan_cache_size = 1000
-
-[security]
-auth_enabled = true
-
-[monitoring]
-metrics_enabled = true
-metrics_port = 8420
-slow_query_enabled = true
-slow_query_threshold = "1s"
-
-[logging]
-log_level = "info"
-log_format = "json"
-```
-
 ### Environment Variables
 
 The server supports these production-oriented environment overrides:
@@ -324,6 +291,8 @@ export COBALTDB_SECURITY_AUTH_ENABLED=true
 export COBALTDB_REMOTE_METRICS_ENABLED=true
 export COBALTDB_ADMIN_PASSWORD='change-this-before-production'
 ```
+
+Most local options are also available as server flags, for example `-data`, `-addr`, `-mysql-addr`, `-health-addr`, `-cache`, `-auth`, and TLS flags. The sample `config/cobaltdb.conf` in the repository is a reference file and is not loaded automatically by the current server binary.
 
 ---
 
@@ -371,13 +340,7 @@ docker compose --profile backup up -d backup
 docker compose exec backup run-backup.sh
 ```
 
-```bash
-# Configure in cobaltdb.conf
-[backup]
-backup_enabled = true
-backup_schedule = "0 2 * * *"  # Daily at 2 AM
-backup_retention_days = 7
-```
+Configure the Docker snapshot helper with `BACKUP_INTERVAL_HOURS` and `BACKUP_RETENTION_DAYS` in `docker-compose.yml` or your deployment environment.
 
 ### Manual Backup
 

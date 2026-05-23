@@ -7,7 +7,6 @@ services:
       - "8420:8420"  # Health check / metrics port
     volumes:
       - cobaltdb_data:/data/cobaltdb
-      - ./config:/etc/cobaltdb:ro
     environment:
       - COBALTDB_ADMIN_PASSWORD=${COBALTDB_ADMIN_PASSWORD:?Set COBALTDB_ADMIN_PASSWORD before starting CobaltDB}
       - COBALTDB_ADDR=:4200
