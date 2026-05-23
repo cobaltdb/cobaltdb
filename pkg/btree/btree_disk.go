@@ -171,8 +171,14 @@ func (t *DiskBTree) writeEntries(page *storage.CachedPage, entries []Entry) erro
 			return fmt.Errorf("page overflow")
 		}
 
-		keyLen := uint16(len(entry.Key))
-		valLen := uint16(len(entry.Value))
+		keyLen, err := checkedUint16Len(len(entry.Key), "key length")
+		if err != nil {
+			return err
+		}
+		valLen, err := checkedUint16Len(len(entry.Value), "value length")
+		if err != nil {
+			return err
+		}
 
 		binary.LittleEndian.PutUint16(data[offset:offset+2], keyLen)
 		binary.LittleEndian.PutUint16(data[offset+2:offset+4], valLen)
@@ -184,8 +190,16 @@ func (t *DiskBTree) writeEntries(page *storage.CachedPage, entries []Entry) erro
 	}
 
 	// Update header
-	binary.LittleEndian.PutUint16(data[6:8], uint16(len(entries)))
-	binary.LittleEndian.PutUint16(data[8:10], uint16(offset))
+	entryCount, err := checkedUint16Len(len(entries), "entry count")
+	if err != nil {
+		return err
+	}
+	dataOffset, err := checkedUint16Len(offset, "page data offset")
+	if err != nil {
+		return err
+	}
+	binary.LittleEndian.PutUint16(data[6:8], entryCount)
+	binary.LittleEndian.PutUint16(data[8:10], dataOffset)
 	data[5] = data[5] | 0x01 // Set dirty flag
 
 	page.SetDirty(true)

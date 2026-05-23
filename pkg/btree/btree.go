@@ -25,7 +25,7 @@ var (
 	ErrKeyTooLong      = errors.New("key exceeds maximum length of 65535 bytes")
 	ErrMemoryLimit     = errors.New("memory limit exceeded")
 	DefaultMemoryLimit = int64(256 * 1024 * 1024) // 256MB default
-	MaxKeyLength       = 65535                   // uint16 max - serialization limit
+	MaxKeyLength       = 65535                    // uint16 max - serialization limit
 )
 
 // lruTimestamp is a monotonic counter used for LRU ordering.
@@ -38,9 +38,27 @@ const numShards = 256
 
 var hashSeed = maphash.MakeSeed()
 
-
 func shardIndex(key string) int {
-	return int(maphash.String(hashSeed, key)) & (numShards - 1)
+	idx := maphash.String(hashSeed, key) & uint64(numShards-1)
+	return int(idx) // #nosec G115 - idx is masked to [0, numShards).
+}
+
+func checkedUint16Len(n int, name string) (uint16, error) {
+	if n < 0 || n > 1<<16-1 {
+		return 0, fmt.Errorf("%s exceeds uint16: %d", name, n)
+	}
+	return uint16(n), nil // #nosec G115 - range checked above.
+}
+
+func checkedUint32Len(n int, name string) (uint32, error) {
+	if n < 0 || n > 1<<32-1 {
+		return 0, fmt.Errorf("%s exceeds uint32: %d", name, n)
+	}
+	return uint32(n), nil // #nosec G115 - range checked above.
+}
+
+func checkedUint32PageCount(n int) (uint32, error) {
+	return checkedUint32Len(n, "overflow page count")
 }
 
 // lruEntry tracks memory usage for LRU eviction. It acts as an intrusive
@@ -109,7 +127,6 @@ func (l *lruList) Len() int {
 	return n
 }
 
-
 // btreeShard holds a partition of the in-memory key space with its own lock.
 type btreeShard struct {
 	mu      sync.RWMutex
@@ -134,15 +151,15 @@ type btreeShard struct {
 var crc64Table = crc64.MakeTable(crc64.ISO)
 
 type BTree struct {
-	flushMu       sync.Mutex // serializes flushInternal and eviction flush
-	rootPageID    uint32
-	pool          *storage.BufferPool
-	order         int
-	shards        [numShards]btreeShard
-	dirty         int32        // atomic: 0 or 1
-	overflowPages []uint32     // IDs of overflow pages used by this tree
-	lastPageHashes []uint64    // hashes of page content from last flush
-	flushBuf      *bytes.Buffer // reusable serialization buffer (protected by flushMu)
+	flushMu        sync.Mutex // serializes flushInternal and eviction flush
+	rootPageID     uint32
+	pool           *storage.BufferPool
+	order          int
+	shards         [numShards]btreeShard
+	dirty          int32         // atomic: 0 or 1
+	overflowPages  []uint32      // IDs of overflow pages used by this tree
+	lastPageHashes []uint64      // hashes of page content from last flush
+	flushBuf       *bytes.Buffer // reusable serialization buffer (protected by flushMu)
 
 	// Memory management
 	memoryLimit int64 // atomic
@@ -407,7 +424,7 @@ func (t *BTree) GetString(keyStr string) ([]byte, error) {
 
 		sh.lruMu.Lock()
 		if entry, ok := sh.lruMap[keyStr]; ok {
-						sh.lruList.Remove(entry)
+			sh.lruList.Remove(entry)
 			sh.lruList.MoveToFront(entry)
 		}
 		sh.lruMu.Unlock()
@@ -664,7 +681,7 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 				if oldVal, exists := sh.data[kc]; exists {
 					atomic.AddInt64(&t.memoryUsed, -int64(len(kc)+len(oldVal)))
 					if entry, ok := sh.lruMap[kc]; ok {
-								sh.lruList.Remove(entry)
+						sh.lruList.Remove(entry)
 						sh.lruList.Remove(entry)
 						delete(sh.lruMap, kc)
 					}
@@ -676,9 +693,9 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 				atomic.StoreInt32(&t.dirty, 1)
 
 				entry := &lruEntry{}
-								entry.key = kc
-								entry.size = int64(len(kc) + len(vc))
-								entry.timestamp = lruTimestamp.Add(1)
+				entry.key = kc
+				entry.size = int64(len(kc) + len(vc))
+				entry.timestamp = lruTimestamp.Add(1)
 				sh.lruList.PushFront(entry)
 				sh.lruMap[kc] = entry
 			}
@@ -728,9 +745,9 @@ func (t *BTree) DeleteBatch(keys [][]byte) error {
 				atomic.AddInt64(&t.memoryUsed, -int64(len(kc)+len(val)))
 				present = true
 				if entry, ok := sh.lruMap[kc]; ok {
-								sh.lruList.Remove(entry)
+					sh.lruList.Remove(entry)
 					// entry freed for GC
-								delete(sh.lruMap, kc)
+					delete(sh.lruMap, kc)
 				}
 			}
 			if sh.evicted[kc] {
@@ -768,7 +785,7 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 		type candidate struct {
 			shardIdx int
 			key      string
-			ts     int64
+			ts       int64
 		}
 		var best *candidate
 		for i := 0; i < numShards; i++ {
@@ -856,14 +873,26 @@ func (t *BTree) flushInternal() error {
 	t.flushBuf.Reset()
 	var count uint32
 	var lenBuf [4]byte
+	var err error
 
 	if !hasEvicted {
-		count = uint32(len(dataSnap))
+		count, err = checkedUint32Len(len(dataSnap), "entry count")
+		if err != nil {
+			return err
+		}
 		for k, v := range dataSnap {
-			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(k)))
+			keyLen, err := checkedUint16Len(len(k), "key length")
+			if err != nil {
+				return err
+			}
+			valueLen, err := checkedUint32Len(len(v), "value length")
+			if err != nil {
+				return err
+			}
+			binary.LittleEndian.PutUint16(lenBuf[:2], keyLen)
 			t.flushBuf.Write(lenBuf[:2])
 			t.flushBuf.WriteString(k)
-			binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
+			binary.LittleEndian.PutUint32(lenBuf[:4], valueLen)
 			t.flushBuf.Write(lenBuf[:4])
 			t.flushBuf.Write(v)
 		}
@@ -878,12 +907,23 @@ func (t *BTree) flushInternal() error {
 		for k, v := range dataSnap {
 			toSerialize[k] = v
 		}
-		count = uint32(len(toSerialize))
+		count, err = checkedUint32Len(len(toSerialize), "entry count")
+		if err != nil {
+			return err
+		}
 		for k, v := range toSerialize {
-			binary.LittleEndian.PutUint16(lenBuf[:2], uint16(len(k)))
+			keyLen, err := checkedUint16Len(len(k), "key length")
+			if err != nil {
+				return err
+			}
+			valueLen, err := checkedUint32Len(len(v), "value length")
+			if err != nil {
+				return err
+			}
+			binary.LittleEndian.PutUint16(lenBuf[:2], keyLen)
 			t.flushBuf.Write(lenBuf[:2])
 			t.flushBuf.WriteString(k)
-			binary.LittleEndian.PutUint32(lenBuf[:4], uint32(len(v)))
+			binary.LittleEndian.PutUint32(lenBuf[:4], valueLen)
 			t.flushBuf.Write(lenBuf[:4])
 			t.flushBuf.Write(v)
 		}
@@ -901,7 +941,10 @@ func (t *BTree) flushInternal() error {
 
 	if len(kvData) > rootDataSpace {
 		remaining := len(kvData) - rootDataSpace
-		overflowCount = uint32((remaining + usablePageSize - 1) / usablePageSize)
+		overflowCount, err = checkedUint32PageCount((remaining + usablePageSize - 1) / usablePageSize)
+		if err != nil {
+			return err
+		}
 		for {
 			rootHeaderSize = 8 + 4*int(overflowCount)
 			rootDataSpace = usablePageSize - rootHeaderSize
@@ -913,7 +956,10 @@ func (t *BTree) flushInternal() error {
 				overflowCount = 0
 				break
 			}
-			needed := uint32((remaining + usablePageSize - 1) / usablePageSize)
+			needed, err := checkedUint32PageCount((remaining + usablePageSize - 1) / usablePageSize)
+			if err != nil {
+				return err
+			}
 			if needed <= overflowCount {
 				overflowCount = needed
 				break
@@ -1069,9 +1115,9 @@ func (t *BTree) DeleteString(keyStr string) error {
 
 		sh.lruMu.Lock()
 		if entry, ok := sh.lruMap[keyStr]; ok {
-						sh.lruList.Remove(entry)
+			sh.lruList.Remove(entry)
 			// entry freed for GC
-								delete(sh.lruMap, keyStr)
+			delete(sh.lruMap, keyStr)
 		}
 		sh.lruMu.Unlock()
 		return nil
