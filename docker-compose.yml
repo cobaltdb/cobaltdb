@@ -18,7 +18,7 @@ services:
       - COBALTDB_AUTH_ENABLED=true
       - COBALTDB_REMOTE_METRICS_ENABLED=true
     healthcheck:
-      test: ["CMD", "sh", "-c", "nc -z localhost 4200 || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8420/ready >/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -45,7 +45,8 @@ services:
     networks:
       - cobaltdb_network
     depends_on:
-      - cobaltdb
+      cobaltdb:
+        condition: service_healthy
 
   # Grafana for visualization
   grafana:
@@ -63,7 +64,8 @@ services:
     networks:
       - cobaltdb_network
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
 
   # Backup service
   backup:
@@ -81,7 +83,8 @@ services:
       - BACKUP_INTERVAL_HOURS=24
       - BACKUP_RETENTION_DAYS=7
     depends_on:
-      - cobaltdb
+      cobaltdb:
+        condition: service_healthy
     networks:
       - cobaltdb_network
 
@@ -93,12 +96,12 @@ services:
     container_name: cobaltdb_test
     command: >
       sh -c "echo 'Waiting for CobaltDB...' &&
-             sleep 5 &&
              echo 'Running real-world scenario test...' &&
-             nc -z cobaltdb 4200 &&
+             wget -q -O - http://cobaltdb:8420/ready >/dev/null &&
              echo 'Test completed successfully!'"
     depends_on:
-      - cobaltdb
+      cobaltdb:
+        condition: service_healthy
     networks:
       - cobaltdb_network
     profiles:

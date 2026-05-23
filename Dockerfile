@@ -74,7 +74,7 @@ VOLUME ["/data/cobaltdb"]
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD nc -z localhost 4200 || exit 1
+    CMD wget -q -O - http://127.0.0.1:8420/ready >/dev/null || exit 1
 
 # Default command
 ENTRYPOINT ["/entrypoint.sh"]
