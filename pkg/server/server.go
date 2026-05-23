@@ -107,6 +107,9 @@ func New(db *engine.DB, config *Config) (*Server, error) {
 
 		// Create default admin user if specified
 		if config.DefaultAdminUser != "" {
+			if config.DefaultAdminPass == "" {
+				return nil, fmt.Errorf("default admin password cannot be empty when authentication is enabled")
+			}
 			if err := authenticator.CreateUser(config.DefaultAdminUser, config.DefaultAdminPass, true); err != nil {
 				return nil, fmt.Errorf("failed to create default admin user: %w", err)
 			}

@@ -37,6 +37,26 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestNewRejectsEmptyAdminPassword(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		InMemory:  true,
+		CacheSize: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	_, err = New(db, &Config{
+		AuthEnabled:      true,
+		DefaultAdminUser: "admin",
+		DefaultAdminPass: "",
+	})
+	if err == nil {
+		t.Fatal("expected empty admin password to be rejected")
+	}
+}
+
 func TestServerClose(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		InMemory:  true,
