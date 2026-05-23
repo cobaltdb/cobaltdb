@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	ErrPageNotFound = errors.New("page not found")
-	ErrBufferFull   = errors.New("buffer pool is full")
+	ErrPageNotFound    = errors.New("page not found")
+	ErrBufferFull      = errors.New("buffer pool is full")
+	ErrPageIDExhausted = errors.New("page ID space exhausted")
 )
 
 // lruTouchThreshold controls how often LRU position is updated on cache hits.
@@ -84,6 +85,7 @@ type BufferPool struct {
 	wal        *WAL
 	nextPageID uint32 // next available page ID for allocation
 	stats      *bufferPoolStatsCollector
+	initErr    error
 
 	// Background flusher
 	flushInterval time.Duration
@@ -91,8 +93,36 @@ type BufferPool struct {
 	flushOnce     sync.Once
 }
 
-// NewBufferPool creates a new buffer pool
+// NewBufferPool creates a new buffer pool.
+//
+// Deprecated for callers that need initialization errors: use
+// NewBufferPoolWithError. This compatibility wrapper never panics; if
+// initialization fails, subsequent page operations return the stored error.
 func NewBufferPool(capacity int, backend Backend) *BufferPool {
+	bp, err := NewBufferPoolWithError(capacity, backend)
+	if err != nil {
+		return &BufferPool{
+			capacity: max(1, capacity),
+			pages:    make(map[uint32]*CachedPage),
+			lru:      list.New(),
+			backend:  backend,
+			stats:    newBufferPoolStatsCollector(),
+			initErr:  err,
+		}
+	}
+	return bp
+}
+
+// NewBufferPoolWithError creates a new buffer pool and reports invalid backend
+// state instead of deferring the error to the first page operation.
+func NewBufferPoolWithError(capacity int, backend Backend) (*BufferPool, error) {
+	if capacity <= 0 {
+		return nil, fmt.Errorf("buffer pool capacity must be positive: %d", capacity)
+	}
+	if backend == nil {
+		return nil, errors.New("buffer pool backend cannot be nil")
+	}
+
 	bp := &BufferPool{
 		capacity: capacity,
 		pages:    make(map[uint32]*CachedPage, capacity),
@@ -109,7 +139,7 @@ func NewBufferPool(capacity int, backend Backend) *BufferPool {
 	} else {
 		pageCount, err := storageUint32((backendSize+PageSize-1)/PageSize, "backend page count")
 		if err != nil {
-			panic(err)
+			return nil, fmt.Errorf("%w: %w", ErrPageIDExhausted, err)
 		}
 		bp.nextPageID = pageCount
 		if bp.nextPageID == 0 {
@@ -117,7 +147,7 @@ func NewBufferPool(capacity int, backend Backend) *BufferPool {
 		}
 	}
 
-	return bp
+	return bp, nil
 }
 
 // SetWAL sets the WAL for the buffer pool
@@ -127,6 +157,10 @@ func (bp *BufferPool) SetWAL(wal *WAL) {
 
 // GetPage retrieves a page from the cache or loads it from disk
 func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
+	if bp.initErr != nil {
+		return nil, bp.initErr
+	}
+
 	// Note: pageID 0 is valid (it's the meta page)
 
 	// Fast path: check if page is in cache
@@ -188,10 +222,17 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 
 // NewPage allocates a new page
 func (bp *BufferPool) NewPage(pageType PageType) (*CachedPage, error) {
+	if bp.initErr != nil {
+		return nil, bp.initErr
+	}
+
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 
 	// Use next available page ID
+	if bp.nextPageID == 0 {
+		return nil, ErrPageIDExhausted
+	}
 	pageID := bp.nextPageID
 	bp.nextPageID++
 
