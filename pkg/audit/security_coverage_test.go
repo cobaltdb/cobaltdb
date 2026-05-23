@@ -140,6 +140,102 @@ func TestAuditLogHashChain(t *testing.T) {
 	}
 }
 
+func TestVerifyLogFilePlainJSON(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "chain.log")
+
+	al, err := New(&Config{
+		Enabled:   true,
+		LogFile:   logPath,
+		LogFormat: "json",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Failed to create audit logger: %v", err)
+	}
+	al.Log(EventQuery, "alice", "SELECT", WithQuery("SELECT 1"))
+	al.Log(EventDML, "alice", "UPDATE", WithRowsAffected(1))
+	if err := al.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	result, err := VerifyLogFile(logPath, nil)
+	if err != nil {
+		t.Fatalf("VerifyLogFile failed: %v", err)
+	}
+	if result.Entries != 2 {
+		t.Fatalf("entries = %d, want 2", result.Entries)
+	}
+	if result.EncryptedEntries != 0 {
+		t.Fatalf("encrypted entries = %d, want 0", result.EncryptedEntries)
+	}
+	if result.LastHash == "" {
+		t.Fatal("last hash should not be empty")
+	}
+}
+
+func TestVerifyLogFileEncryptedJSON(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "encrypted-chain.log")
+	key := []byte("0123456789abcdef0123456789abcdef")
+
+	al, err := New(&Config{
+		Enabled:       true,
+		LogFile:       logPath,
+		LogFormat:     "json",
+		EncryptionKey: key,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Failed to create audit logger: %v", err)
+	}
+	al.Log(EventSecurity, "alice", "POLICY_CHECK")
+	al.Log(EventAuth, "bob", "LOGIN")
+	if err := al.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	result, err := VerifyLogFile(logPath, key)
+	if err != nil {
+		t.Fatalf("VerifyLogFile failed: %v", err)
+	}
+	if result.Entries != 2 {
+		t.Fatalf("entries = %d, want 2", result.Entries)
+	}
+	if result.EncryptedEntries != 2 {
+		t.Fatalf("encrypted entries = %d, want 2", result.EncryptedEntries)
+	}
+	if _, err := VerifyLogFile(logPath, nil); err == nil {
+		t.Fatal("expected encrypted log verification without key to fail")
+	}
+}
+
+func TestVerifyLogFileDetectsTampering(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "tampered.log")
+
+	al, err := New(&Config{
+		Enabled:   true,
+		LogFile:   logPath,
+		LogFormat: "json",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Failed to create audit logger: %v", err)
+	}
+	al.Log(EventQuery, "alice", "SELECT", WithQuery("SELECT 1"))
+	if err := al.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	tampered := strings.Replace(string(data), `"action":"SELECT"`, `"action":"DELETE"`, 1)
+	if err := os.WriteFile(logPath, []byte(tampered), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	if _, err := VerifyLogFile(logPath, nil); err == nil {
+		t.Fatal("expected tampered audit log to fail verification")
+	}
+}
+
 func TestMaskMetadataValues(t *testing.T) {
 	if maskMetadataValues(nil) != nil {
 		t.Error("nil input should return nil")

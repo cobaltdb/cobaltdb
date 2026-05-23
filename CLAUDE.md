@@ -295,7 +295,7 @@ The following features are fully implemented and integrated in the engine:
 
 - **Automatic HA failover / clustering** — No built-in sharding, Raft/Paxos, leader election, or split-brain-safe failover.
 - **Broad production certification** — Crash-recovery fault injection, package-level coverage gates, and long-running soak tests remain active hardening work.
-- **Audit log external verification** — Audit logs are encrypted and hash-chained, but external signing/HSM-backed verification is not yet implemented.
+- **Audit log external trust root** — Audit logs are encrypted, hash-chained, and offline-verifiable, but external signing/HSM-backed anchoring is not yet implemented.
 - **Encryption key rotation workflow** — Storage encryption exists, but operational key rotation is not yet exposed as a production workflow.
 - **WASM as primary execution engine** — WASM execution is functional for selected paths but should be treated as experimental.
 

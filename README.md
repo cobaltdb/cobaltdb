@@ -364,7 +364,7 @@ db, _ := engine.Open("audited.db", &engine.Options{
 - JSON and text format support
 - Query, DDL, and authentication events
 - Automatic log rotation (100MB default)
-- Hash-chained entries for tamper-evidence
+- Hash-chained entries with offline verification via `audit.VerifyLogFile`
 
 ### Row-Level Security (RLS)
 
@@ -935,7 +935,7 @@ go run cmd/demo/main.go
 ### ✅ v0.3.0 - Security Hardening & Stability (2026-03-20)
 
 - [x] **WAL Encryption** - AEAD encryption for write-ahead log with header authentication
-- [x] **Audit Log Encryption** - AES-256-GCM encrypted and hash-chained audit log entries
+- [x] **Audit Log Encryption** - AES-256-GCM encrypted, hash-chained, and offline-verifiable audit log entries
 - [x] **RLS Hardening** - Fixed bypass in UPDATE...FROM and DELETE...USING
 - [x] **Auth Hardening** - Password policy, brute force rate limiting, random default password
 - [x] **SQL Injection Protection** - 15 detection patterns (conditional blind, OOB exfil, etc.)
