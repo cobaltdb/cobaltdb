@@ -5,13 +5,16 @@ echo ║     CobaltDB Real-World Production Test (Windows)             ║
 echo ╚═══════════════════════════════════════════════════════════════╝
 echo.
 
+if not defined COBALTDB_ADMIN_PASSWORD set COBALTDB_ADMIN_PASSWORD=realworld-test-password
+if not defined GRAFANA_ADMIN_PASSWORD set GRAFANA_ADMIN_PASSWORD=realworld-grafana-password
+
 echo Starting CobaltDB services...
-docker-compose up -d cobaltdb prometheus grafana
+docker compose up -d cobaltdb prometheus grafana
 echo.
 
 echo Waiting for CobaltDB to be ready...
 :wait_loop
-docker exec cobaltdb sh -c "nc -z localhost 4200" >nul 2>&1
+docker compose exec -T cobaltdb sh -c "wget -q -O - http://127.0.0.1:8420/ready >/dev/null" >nul 2>&1
 if %errorlevel% == 0 goto ready
 echo|set /p=.
 timeout /t 1 /nobreak >nul
@@ -25,7 +28,7 @@ echo.
 echo ═══════════════════════════════════════════════════════════════
 echo TEST 1: Basic Connectivity (Wire Protocol :4200)
 echo ═══════════════════════════════════════════════════════════════
-docker exec cobaltdb sh -c "nc -z localhost 4200" >nul 2>&1
+docker compose exec -T cobaltdb sh -c "nc -z localhost 4200" >nul 2>&1
 if %errorlevel% == 0 (
     echo [OK] Wire protocol port is open
 ) else (
@@ -36,7 +39,7 @@ echo.
 echo ═══════════════════════════════════════════════════════════════
 echo TEST 2: MySQL Protocol (:3307)
 echo ═══════════════════════════════════════════════════════════════
-docker exec cobaltdb sh -c "nc -z localhost 3307" >nul 2>&1
+docker compose exec -T cobaltdb sh -c "nc -z localhost 3307" >nul 2>&1
 if %errorlevel% == 0 (
     echo [OK] MySQL protocol port is open
 ) else (
@@ -60,20 +63,21 @@ echo.
 echo ═══════════════════════════════════════════════════════════════
 echo TEST 4: SQL Operations via CLI
 echo ═══════════════════════════════════════════════════════════════
+docker compose exec -T cobaltdb rm -f /tmp/test.db >nul 2>&1
 echo Creating test table...
-docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "CREATE TABLE IF NOT EXISTS test_users (id INTEGER PRIMARY KEY, email TEXT UNIQUE, name TEXT, age INTEGER)" >nul 2>&1
+docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db "CREATE TABLE IF NOT EXISTS test_users (id INTEGER PRIMARY KEY, email TEXT UNIQUE, name TEXT, age INTEGER)" >nul 2>&1
 echo [OK] Table created
 
 echo Inserting 5 records...
-docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "INSERT INTO test_users (email, name, age) VALUES ('user1@test.com', 'User 1', 25)" >nul 2>&1
-docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "INSERT INTO test_users (email, name, age) VALUES ('user2@test.com', 'User 2', 30)" >nul 2>&1
-docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "INSERT INTO test_users (email, name, age) VALUES ('user3@test.com', 'User 3', 35)" >nul 2>&1
-docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "INSERT INTO test_users (email, name, age) VALUES ('user4@test.com', 'User 4', 40)" >nul 2>&1
-docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "INSERT INTO test_users (email, name, age) VALUES ('user5@test.com', 'User 5', 45)" >nul 2>&1
+docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db "INSERT INTO test_users (email, name, age) VALUES ('user1@test.com', 'User 1', 25)" >nul 2>&1
+docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db "INSERT INTO test_users (email, name, age) VALUES ('user2@test.com', 'User 2', 30)" >nul 2>&1
+docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db "INSERT INTO test_users (email, name, age) VALUES ('user3@test.com', 'User 3', 35)" >nul 2>&1
+docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db "INSERT INTO test_users (email, name, age) VALUES ('user4@test.com', 'User 4', 40)" >nul 2>&1
+docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db "INSERT INTO test_users (email, name, age) VALUES ('user5@test.com', 'User 5', 45)" >nul 2>&1
 echo [OK] Inserted records
 
 echo Running SELECT query...
-docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "SELECT COUNT(*) FROM test_users"
+docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db "SELECT COUNT(*) FROM test_users"
 echo.
 
 echo ═══════════════════════════════════════════════════════════════
@@ -103,7 +107,7 @@ echo   - CobaltDB Wire Protocol: localhost:4200
 echo   - CobaltDB MySQL Protocol: localhost:3307
 echo   - Admin API: http://localhost:8420
 echo   - Prometheus: http://localhost:9090
-echo   - Grafana: http://localhost:3000 (admin/admin)
+echo   - Grafana: http://localhost:3000 (admin / %GRAFANA_ADMIN_PASSWORD%)
 echo.
 echo Running services:
-docker-compose ps --services --filter "status=running"
+docker compose ps --services --filter "status=running"

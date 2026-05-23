@@ -21,15 +21,19 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 
+: "${COBALTDB_ADMIN_PASSWORD:=realworld-test-password}"
+: "${GRAFANA_ADMIN_PASSWORD:=realworld-grafana-password}"
+export COBALTDB_ADMIN_PASSWORD GRAFANA_ADMIN_PASSWORD
+
 # Start services
 echo "Starting CobaltDB services..."
-docker-compose up -d cobaltdb prometheus grafana
+docker compose up -d cobaltdb prometheus grafana
 
 # Wait for CobaltDB to be ready
 echo
 echo "Waiting for CobaltDB to be ready..."
 for i in {1..30}; do
-    if docker exec cobaltdb sh -c "nc -z localhost 4200" 2>/dev/null; then
+    if docker compose exec -T cobaltdb sh -c "wget -q -O - http://127.0.0.1:8420/ready >/dev/null" 2>/dev/null; then
         echo -e "${GREEN}✓ CobaltDB is ready!${NC}"
         break
     fi
@@ -38,9 +42,9 @@ for i in {1..30}; do
 done
 
 # Check if server is actually responding
-if ! docker exec cobaltdb sh -c "nc -z localhost 4200" 2>/dev/null; then
+if ! docker compose exec -T cobaltdb sh -c "wget -q -O - http://127.0.0.1:8420/ready >/dev/null" 2>/dev/null; then
     echo -e "${RED}✗ CobaltDB failed to start${NC}"
-    docker-compose logs cobaltdb
+    docker compose logs cobaltdb
     exit 1
 fi
 
@@ -48,7 +52,7 @@ echo
 echo "═══════════════════════════════════════════════════════════════"
 echo "TEST 1: Basic Connectivity (Wire Protocol :4200)"
 echo "═══════════════════════════════════════════════════════════════"
-if docker exec cobaltdb sh -c "nc -z localhost 4200"; then
+if docker compose exec -T cobaltdb sh -c "nc -z localhost 4200"; then
     echo -e "${GREEN}✓ Wire protocol port is open${NC}"
 else
     echo -e "${RED}✗ Wire protocol connection failed${NC}"
@@ -58,7 +62,7 @@ echo
 echo "═══════════════════════════════════════════════════════════════"
 echo "TEST 2: MySQL Protocol (:3307)"
 echo "═══════════════════════════════════════════════════════════════"
-if docker exec cobaltdb sh -c "nc -z localhost 3307" 2>/dev/null; then
+if docker compose exec -T cobaltdb sh -c "nc -z localhost 3307" 2>/dev/null; then
     echo -e "${GREEN}✓ MySQL protocol port is open${NC}"
 else
     echo -e "${YELLOW}! MySQL protocol port not responding (may not be enabled)${NC}"
@@ -81,9 +85,11 @@ echo "════════════════════════�
 echo "TEST 4: SQL Operations via CLI"
 echo "═══════════════════════════════════════════════════════════════"
 
+docker compose exec -T cobaltdb rm -f /tmp/test.db 2>/dev/null || true
+
 # Create test table
 echo "Creating test table..."
-docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "CREATE TABLE IF NOT EXISTS test_users (
+docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db "CREATE TABLE IF NOT EXISTS test_users (
     id INTEGER PRIMARY KEY,
     email TEXT UNIQUE,
     name TEXT,
@@ -94,19 +100,19 @@ docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "CREATE TABLE IF NOT EXISTS
 # Insert data
 echo "Inserting 100 records..."
 for i in {1..100}; do
-    docker exec cobaltdb cobaltdb-cli -data /tmp/test.db \
+    docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db \
         "INSERT INTO test_users (email, name, age) VALUES ('user$i@test.com', 'User $i', $((20 + i % 50)))" 2>/dev/null
 done
 echo -e "${GREEN}✓ Inserted 100 records${NC}"
 
 # Query data
 echo "Running SELECT query..."
-RESULT=$(docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "SELECT COUNT(*) FROM test_users" 2>/dev/null)
+RESULT=$(docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db "SELECT COUNT(*) FROM test_users" 2>/dev/null)
 echo "Count result: $RESULT"
 
 # Complex query
 echo "Running complex JOIN with GROUP BY..."
-docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "CREATE TABLE IF NOT EXISTS test_orders (
+docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db "CREATE TABLE IF NOT EXISTS test_orders (
     id INTEGER PRIMARY KEY,
     user_id INTEGER,
     amount REAL,
@@ -114,7 +120,7 @@ docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "CREATE TABLE IF NOT EXISTS
 )" 2>/dev/null
 
 for i in {1..50}; do
-    docker exec cobaltdb cobaltdb-cli -data /tmp/test.db \
+    docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db \
         "INSERT INTO test_orders (user_id, amount, status) VALUES ($i, $((RANDOM % 1000)), 'completed')" 2>/dev/null
 done
 
@@ -127,7 +133,7 @@ echo "════════════════════════�
 
 echo "Simulating 10 concurrent connections..."
 for i in {1..10}; do
-    (docker exec cobaltdb cobaltdb-cli -data /tmp/test.db "SELECT * FROM test_users WHERE id = $i" > /dev/null 2>&1) &
+    (docker compose exec -T cobaltdb cobaltdb-cli -path /tmp/test.db "SELECT * FROM test_users WHERE id = $i" > /dev/null 2>&1) &
 done
 wait
 echo -e "${GREEN}✓ Concurrent connections handled${NC}"
@@ -148,10 +154,10 @@ echo "════════════════════════�
 echo "TEST 7: Backup Service"
 echo "═══════════════════════════════════════════════════════════════"
 
-if docker ps | grep -q cobaltdb_backup; then
+if docker compose ps --services --status running | grep -q '^backup$'; then
     echo -e "${GREEN}✓ Backup service is running${NC}"
     echo "Recent backups:"
-    docker exec cobaltdb_backup ls -lh /backups/ 2>/dev/null | tail -5 || echo "  No backups yet"
+    docker compose exec -T backup ls -lh /backups/ 2>/dev/null | tail -5 || echo "  No backups yet"
 else
     echo -e "${YELLOW}! Backup service not running${NC}"
 fi
@@ -162,4 +168,4 @@ echo "║                    TEST SUMMARY                               ║"
 echo "╚═══════════════════════════════════════════════════════════════╝"
 echo
 echo "Services Status:"
-docker-compose ps --services --filter "status=running
+docker compose ps --services --filter "status=running"

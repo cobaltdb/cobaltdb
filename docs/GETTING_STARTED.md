@@ -368,7 +368,7 @@ The Docker backup helper is opt-in and creates filesystem-level snapshots. Use i
 docker compose --profile backup up -d backup
 
 # Run a manual filesystem snapshot
-docker exec cobaltdb_backup run-backup.sh
+docker compose exec backup run-backup.sh
 ```
 
 ```bash

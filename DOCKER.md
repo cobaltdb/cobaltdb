@@ -112,10 +112,10 @@ docker compose --profile backup up -d backup
 docker compose logs -f backup
 
 # List backups
-docker exec cobaltdb_backup ls -la /backups
+docker compose exec backup ls -la /backups
 
 # Manual backup
-docker exec cobaltdb_backup run-backup.sh
+docker compose exec backup run-backup.sh
 ```
 
 ## Monitoring
@@ -145,8 +145,8 @@ sudo chown -R 1000:1000 ./backups
 ### Build fails on Windows
 Try building with no cache:
 ```bash
-docker-compose build --no-cache
-docker-compose up -d
+docker compose build --no-cache
+docker compose up -d
 ```
 
 ## Production Deployment

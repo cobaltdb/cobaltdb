@@ -23,6 +23,10 @@ fi
 
 echo -e "${GREEN}✓ Docker is running${NC}"
 
+: "${COBALTDB_ADMIN_PASSWORD:=docker-build-test-password}"
+: "${GRAFANA_ADMIN_PASSWORD:=docker-build-test-grafana-password}"
+export COBALTDB_ADMIN_PASSWORD GRAFANA_ADMIN_PASSWORD
+
 # Test main Dockerfile
 echo ""
 echo "Testing main Dockerfile..."
@@ -49,10 +53,10 @@ else
     exit 1
 fi
 
-# Test docker-compose config
+# Test Docker Compose config
 echo ""
-echo "Testing docker-compose configuration..."
-if docker-compose config > /tmp/docker-compose-config.log 2>&1; then
+echo "Testing Docker Compose configuration..."
+if docker compose config > /tmp/docker-compose-config.log 2>&1; then
     echo -e "${GREEN}✓ docker-compose.yml is valid${NC}"
 else
     echo -e "${RED}✗ docker-compose.yml is invalid${NC}"
@@ -66,5 +70,5 @@ echo -e "${GREEN}All Docker tests passed!${NC}"
 echo "==================================="
 echo ""
 echo "To start the services, run:"
-echo "  docker-compose up -d"
+echo "  docker compose up -d"
 echo ""
