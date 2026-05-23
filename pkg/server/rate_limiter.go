@@ -6,9 +6,10 @@ package server
 import (
 	"context"
 	"errors"
-	"log"
 	"sync"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
 var (
@@ -34,6 +35,8 @@ type RateLimiterConfig struct {
 
 	// Max clients to track (default: 10000)
 	MaxClients int
+
+	Logger *logger.Logger
 }
 
 // DefaultRateLimiterConfig returns sensible defaults
@@ -63,6 +66,7 @@ type RateLimiter struct {
 	cleanupTicker *time.Ticker
 	stopCh        chan struct{}
 	stopOnce      sync.Once
+	logger        *logger.Logger
 }
 
 // tokenBucket implements the token bucket algorithm
@@ -98,19 +102,26 @@ func NewRateLimiter(config *RateLimiterConfig) *RateLimiter {
 		clients:       make(map[string]*clientLimiter),
 		cleanupTicker: time.NewTicker(config.CleanupInterval),
 		stopCh:        make(chan struct{}),
+		logger:        config.Logger,
 	}
 
 	// Start cleanup goroutine
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("recovered panic in rate limiter cleanup: %v", r)
+				rl.logErrorf("recovered panic in rate limiter cleanup: %v", r)
 			}
 		}()
 		rl.cleanupLoop()
 	}()
 
 	return rl
+}
+
+func (rl *RateLimiter) logErrorf(format string, args ...interface{}) {
+	if rl != nil && rl.logger != nil {
+		rl.logger.Errorf(format, args...)
+	}
 }
 
 // Stop stops the rate limiter

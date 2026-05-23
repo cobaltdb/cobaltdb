@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"runtime"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
 // AdminServer provides HTTP endpoints for monitoring and metrics
@@ -27,6 +27,7 @@ type AdminServer struct {
 	authToken string
 	wg        sync.WaitGroup
 	done      chan struct{}
+	logger    *logger.Logger
 }
 
 // NewAdminServer creates a new admin server
@@ -38,6 +39,31 @@ func NewAdminServer(db *engine.DB, addr string) *AdminServer {
 	return &AdminServer{
 		db:   db,
 		addr: addr,
+	}
+}
+
+// SetLogger sets the optional logger used by the admin server.
+func (a *AdminServer) SetLogger(log *logger.Logger) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.logger = log
+}
+
+func (a *AdminServer) getLogger() *logger.Logger {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.logger
+}
+
+func (a *AdminServer) logInfof(format string, args ...interface{}) {
+	if log := a.getLogger(); log != nil {
+		log.Infof(format, args...)
+	}
+}
+
+func (a *AdminServer) logErrorf(format string, args ...interface{}) {
+	if log := a.getLogger(); log != nil {
+		log.Errorf(format, args...)
 	}
 }
 
@@ -101,12 +127,12 @@ func (a *AdminServer) Start() error {
 		defer a.wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("recovered panic in admin server: %v", r)
+				a.logErrorf("recovered panic in admin server: %v", r)
 			}
 		}()
-		log.Printf("[Admin] Starting admin server on %s", a.addr)
+		a.logInfof("admin server starting on %s", a.addr)
 		if err := a.server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Printf("[Admin] Server error: %v", err)
+			a.logErrorf("admin server error: %v", err)
 		}
 	}()
 
@@ -133,7 +159,7 @@ func (a *AdminServer) Stop() error {
 
 	// Wait for goroutine to finish
 	a.wg.Wait()
-	log.Printf("[Admin] Server stopped")
+	a.logInfof("admin server stopped")
 	return nil
 }
 
@@ -199,7 +225,7 @@ func (a *AdminServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(status); err != nil {
-		log.Printf("failed to encode response: %v", err)
+		a.logErrorf("failed to encode response: %v", err)
 	}
 }
 
@@ -211,7 +237,7 @@ func (a *AdminServer) handleReady(w http.ResponseWriter, r *http.Request) {
 			"status": "not ready",
 			"reason": "database not initialized",
 		}); err != nil {
-			log.Printf("failed to encode response: %v", err)
+			a.logErrorf("failed to encode response: %v", err)
 		}
 		return
 	}
@@ -220,7 +246,7 @@ func (a *AdminServer) handleReady(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(map[string]string{
 		"status": "ready",
 	}); err != nil {
-		log.Printf("failed to encode response: %v", err)
+		a.logErrorf("failed to encode response: %v", err)
 	}
 }
 
@@ -241,7 +267,7 @@ func (a *AdminServer) handlePrometheusMetrics(w http.ResponseWriter, r *http.Req
 
 	if a.db == nil {
 		if _, err := w.Write([]byte(output.String())); err != nil {
-			log.Printf("failed to write response: %v", err)
+			a.logErrorf("failed to write response: %v", err)
 		}
 		return
 	}
@@ -249,7 +275,7 @@ func (a *AdminServer) handlePrometheusMetrics(w http.ResponseWriter, r *http.Req
 	collector := a.db.GetMetricsCollector()
 	if collector == nil {
 		if _, err := w.Write([]byte(output.String())); err != nil {
-			log.Printf("failed to write response: %v", err)
+			a.logErrorf("failed to write response: %v", err)
 		}
 		return
 	}
@@ -330,7 +356,7 @@ func (a *AdminServer) handlePrometheusMetrics(w http.ResponseWriter, r *http.Req
 	output.WriteString(fmt.Sprintf("cobaltdb_buffer_pool_misses %d\n\n", collector.BufferPoolMisses.Get()))
 
 	if _, err := w.Write([]byte(output.String())); err != nil {
-		log.Printf("failed to write response: %v", err)
+		a.logErrorf("failed to write response: %v", err)
 	}
 }
 
@@ -342,7 +368,7 @@ func (a *AdminServer) handleJSONMetrics(w http.ResponseWriter, r *http.Request) 
 		if err := json.NewEncoder(w).Encode(map[string]string{
 			"error": "database not initialized",
 		}); err != nil {
-			log.Printf("failed to encode response: %v", err)
+			a.logErrorf("failed to encode response: %v", err)
 		}
 		return
 	}
@@ -352,7 +378,7 @@ func (a *AdminServer) handleJSONMetrics(w http.ResponseWriter, r *http.Request) 
 		if err := json.NewEncoder(w).Encode(map[string]string{
 			"error": "metrics not enabled",
 		}); err != nil {
-			log.Printf("failed to encode response: %v", err)
+			a.logErrorf("failed to encode response: %v", err)
 		}
 		return
 	}
@@ -391,7 +417,7 @@ func (a *AdminServer) handleJSONMetrics(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := json.NewEncoder(w).Encode(metrics); err != nil {
-		log.Printf("failed to encode response: %v", err)
+		a.logErrorf("failed to encode response: %v", err)
 	}
 }
 
@@ -408,7 +434,7 @@ func (a *AdminServer) handleDBStats(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewEncoder(w).Encode(map[string]string{
 			"error": "database not initialized",
 		}); err != nil {
-			log.Printf("failed to encode response: %v", err)
+			a.logErrorf("failed to encode response: %v", err)
 		}
 		return
 	}
@@ -418,7 +444,7 @@ func (a *AdminServer) handleDBStats(w http.ResponseWriter, r *http.Request) {
 		if encErr := json.NewEncoder(w).Encode(map[string]string{
 			"error": err.Error(),
 		}); encErr != nil {
-			log.Printf("failed to encode response: %v", encErr)
+			a.logErrorf("failed to encode response: %v", encErr)
 		}
 		return
 	}
@@ -429,7 +455,7 @@ func (a *AdminServer) handleDBStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(result); err != nil {
-		log.Printf("failed to encode response: %v", err)
+		a.logErrorf("failed to encode response: %v", err)
 	}
 }
 
@@ -457,7 +483,7 @@ func (a *AdminServer) handleSystem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(info); err != nil {
-		log.Printf("failed to encode response: %v", err)
+		a.logErrorf("failed to encode response: %v", err)
 	}
 }
 

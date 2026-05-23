@@ -104,7 +104,9 @@ func NewProductionServer(db *engine.DB, config *ProductionConfig) *ProductionSer
 	}
 
 	if config.EnableRateLimiter {
-		ps.RateLimiter = NewRateLimiter(DefaultRateLimiterConfig())
+		rateLimiterConfig := DefaultRateLimiterConfig()
+		rateLimiterConfig.Logger = config.Logger
+		ps.RateLimiter = NewRateLimiter(rateLimiterConfig)
 	}
 
 	if config.EnableSQLProtection {

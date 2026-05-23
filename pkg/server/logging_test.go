@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
@@ -104,5 +105,46 @@ func TestProductionServerPropagatesLoggerToLifecycle(t *testing.T) {
 
 	if ps.Lifecycle.logger != log {
 		t.Fatal("expected production logger to be propagated to lifecycle")
+	}
+}
+
+func TestAdminServerUsesConfiguredLogger(t *testing.T) {
+	var logs bytes.Buffer
+	admin := NewAdminServer(nil, "127.0.0.1:0")
+	admin.SetLogger(logger.New(logger.InfoLevel, &logs))
+	admin.SetAuthToken("token")
+
+	if err := admin.Start(); err != nil {
+		t.Fatalf("start admin server: %v", err)
+	}
+	if err := admin.Stop(); err != nil {
+		t.Fatalf("stop admin server: %v", err)
+	}
+
+	output := logs.String()
+	if !strings.Contains(output, "admin server starting") {
+		t.Fatalf("expected admin start log, got %q", output)
+	}
+	if !strings.Contains(output, "admin server stopped") {
+		t.Fatalf("expected admin stop log, got %q", output)
+	}
+}
+
+func TestRateLimiterStoresConfiguredLogger(t *testing.T) {
+	var logs bytes.Buffer
+	log := logger.New(logger.ErrorLevel, &logs)
+	rl := NewRateLimiter(&RateLimiterConfig{
+		RPS:             1,
+		Burst:           1,
+		PerClient:       true,
+		ClientHeader:    "X-Client-ID",
+		CleanupInterval: time.Hour,
+		MaxClients:      10,
+		Logger:          log,
+	})
+	defer rl.Stop()
+
+	if rl.logger != log {
+		t.Fatal("expected rate limiter logger to be stored")
 	}
 }
