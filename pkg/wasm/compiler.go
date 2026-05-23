@@ -40,18 +40,18 @@ type Compiler struct {
 	preparedStmts map[string]*PreparedStatement
 }
 
-func compilerUint32(value int, name string) uint32 {
+func compilerUint32(value int, name string) (uint32, error) {
 	if value < 0 || value > maxUint32 {
-		panic(fmt.Sprintf("wasm compiler: %s overflows uint32: %d", name, value))
+		return 0, fmt.Errorf("wasm compiler: %s overflows uint32: %d", name, value)
 	}
-	return uint32(value) // #nosec G115 - range checked above.
+	return uint32(value), nil // #nosec G115 - range checked above.
 }
 
-func compilerUint64(value int, name string) uint64 {
+func compilerUint64(value int, name string) (uint64, error) {
 	if value < 0 {
-		panic(fmt.Sprintf("wasm compiler: %s is negative: %d", name, value))
+		return 0, fmt.Errorf("wasm compiler: %s is negative: %d", name, value)
 	}
-	return uint64(value) // #nosec G115 - non-negative int value.
+	return uint64(value), nil // #nosec G115 - non-negative int value.
 }
 
 // PreparedStatement represents a prepared SQL statement with parameter placeholders
@@ -206,7 +206,9 @@ func (c *Compiler) CompileQuery(sql string, stmt query.Statement, args []interfa
 	c.reset()
 
 	// Add runtime imports
-	c.addRuntimeImports()
+	if err := c.addRuntimeImports(); err != nil {
+		return nil, err
+	}
 
 	// Compile based on statement type
 	var entryPoint uint32
@@ -232,7 +234,10 @@ func (c *Compiler) CompileQuery(sql string, stmt query.Statement, args []interfa
 	}
 
 	// Generate the WASM module
-	bytecode := c.generateModule()
+	bytecode, err := c.generateModule()
+	if err != nil {
+		return nil, err
+	}
 
 	compiled := &CompiledQuery{
 		SQL:          sql,
@@ -329,20 +334,29 @@ func (c *Compiler) reset() {
 }
 
 // addRuntimeImports adds required runtime imports
-func (c *Compiler) addRuntimeImports() {
+func (c *Compiler) addRuntimeImports() error {
 	for _, spec := range runtimeImportSpecs {
+		typeIndex, err := compilerUint32(len(c.types), "type index")
+		if err != nil {
+			return err
+		}
 		c.imports = append(c.imports, Import{
 			Module: "env",
 			Name:   spec.name,
 			Kind:   0x00,
-			Index:  compilerUint32(len(c.types), "type index"),
+			Index:  typeIndex,
 		})
 		c.types = append(c.types, FuncType{
 			Params:  spec.params,
 			Results: spec.results,
 		})
 	}
-	c.funcIdx = compilerUint32(len(c.imports), "import count")
+	importCount, err := compilerUint32(len(c.imports), "import count")
+	if err != nil {
+		return err
+	}
+	c.funcIdx = importCount
+	return nil
 }
 
 // importSpec describes a single WASM host import.
@@ -405,7 +419,10 @@ var runtimeImportSpecs = []importSpec{
 // compileSelect compiles a SELECT statement
 func (c *Compiler) compileSelect(stmt *query.SelectStmt) (uint32, error) {
 	// Create function type for query entry point
-	funcTypeIdx := compilerUint32(len(c.types), "type index")
+	funcTypeIdx, err := compilerUint32(len(c.types), "type index")
+	if err != nil {
+		return 0, err
+	}
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32},      // params pointer
 		Results: []ValueType{I32, I32}, // result pointer, row count
@@ -441,7 +458,10 @@ func (c *Compiler) compileSelect(stmt *query.SelectStmt) (uint32, error) {
 
 // compileInsert compiles an INSERT statement
 func (c *Compiler) compileInsert(stmt *query.InsertStmt) (uint32, error) {
-	funcTypeIdx := compilerUint32(len(c.types), "type index")
+	funcTypeIdx, err := compilerUint32(len(c.types), "type index")
+	if err != nil {
+		return 0, err
+	}
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32}, // params pointer
 		Results: []ValueType{I64}, // rows affected
@@ -473,7 +493,10 @@ func (c *Compiler) compileInsert(stmt *query.InsertStmt) (uint32, error) {
 
 // compileUpdate compiles an UPDATE statement
 func (c *Compiler) compileUpdate(stmt *query.UpdateStmt) (uint32, error) {
-	funcTypeIdx := compilerUint32(len(c.types), "type index")
+	funcTypeIdx, err := compilerUint32(len(c.types), "type index")
+	if err != nil {
+		return 0, err
+	}
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32}, // params pointer
 		Results: []ValueType{I64}, // rows affected
@@ -501,7 +524,10 @@ func (c *Compiler) compileUpdate(stmt *query.UpdateStmt) (uint32, error) {
 
 // compileDelete compiles a DELETE statement
 func (c *Compiler) compileDelete(stmt *query.DeleteStmt) (uint32, error) {
-	funcTypeIdx := compilerUint32(len(c.types), "type index")
+	funcTypeIdx, err := compilerUint32(len(c.types), "type index")
+	if err != nil {
+		return 0, err
+	}
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32}, // params pointer
 		Results: []ValueType{I64}, // rows affected
@@ -533,7 +559,10 @@ func (c *Compiler) compileDelete(stmt *query.DeleteStmt) (uint32, error) {
 
 // compileUnion compiles a UNION statement
 func (c *Compiler) compileUnion(stmt *query.UnionStmt) (uint32, error) {
-	funcTypeIdx := compilerUint32(len(c.types), "type index")
+	funcTypeIdx, err := compilerUint32(len(c.types), "type index")
+	if err != nil {
+		return 0, err
+	}
 	c.types = append(c.types, FuncType{
 		Params:  []ValueType{I32},      // params pointer
 		Results: []ValueType{I32, I32}, // result pointer, row count
@@ -926,7 +955,7 @@ func (c *Compiler) generateDeleteBody(stmt *query.DeleteStmt) []byte {
 }
 
 // generateModule generates the complete WASM module
-func (c *Compiler) generateModule() []byte {
+func (c *Compiler) generateModule() ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	// Magic number
@@ -986,7 +1015,10 @@ func (c *Compiler) generateModule() []byte {
 	// Code section (section id = 10)
 	if len(c.codes) > 0 {
 		buf.WriteByte(0x0a)
-		section := c.encodeCodeSection()
+		section, err := c.encodeCodeSection()
+		if err != nil {
+			return nil, err
+		}
 		writeLeb128(buf, uint64(len(section)))
 		buf.Write(section)
 	}
@@ -994,12 +1026,15 @@ func (c *Compiler) generateModule() []byte {
 	// Data section (section id = 11)
 	if len(c.data) > 0 {
 		buf.WriteByte(0x0b)
-		section := c.encodeDataSection()
+		section, err := c.encodeDataSection()
+		if err != nil {
+			return nil, err
+		}
 		writeLeb128(buf, uint64(len(section)))
 		buf.Write(section)
 	}
 
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // encodeTypeSection encodes the type section
@@ -1091,9 +1126,13 @@ func (c *Compiler) encodeExportSection() []byte {
 }
 
 // encodeCodeSection encodes the code section
-func (c *Compiler) encodeCodeSection() []byte {
+func (c *Compiler) encodeCodeSection() ([]byte, error) {
 	buf := new(bytes.Buffer)
-	writeLeb128(buf, compilerUint64(len(c.codes), "code count"))
+	codeCount, err := compilerUint64(len(c.codes), "code count")
+	if err != nil {
+		return nil, err
+	}
+	writeLeb128(buf, codeCount)
 	for _, code := range c.codes {
 		funcBuf := new(bytes.Buffer)
 		// Local declarations
@@ -1105,23 +1144,31 @@ func (c *Compiler) encodeCodeSection() []byte {
 		// Function body
 		funcBuf.Write(code.Body)
 
-		writeLeb128(buf, compilerUint64(funcBuf.Len(), "function body size"))
+		bodySize, err := compilerUint64(funcBuf.Len(), "function body size")
+		if err != nil {
+			return nil, err
+		}
+		writeLeb128(buf, bodySize)
 		buf.Write(funcBuf.Bytes())
 	}
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // encodeDataSection encodes the data section
-func (c *Compiler) encodeDataSection() []byte {
+func (c *Compiler) encodeDataSection() ([]byte, error) {
 	buf := new(bytes.Buffer)
-	writeLeb128(buf, compilerUint64(len(c.data), "data segment count"))
+	dataSegmentCount, err := compilerUint64(len(c.data), "data segment count")
+	if err != nil {
+		return nil, err
+	}
+	writeLeb128(buf, dataSegmentCount)
 	for _, d := range c.data {
 		buf.WriteByte(0x00) // memory index 0
 		buf.Write(d.Offset)
 		writeLeb128(buf, uint64(len(d.Data)))
 		buf.Write(d.Data)
 	}
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // compileExpression compiles a SQL expression to WASM bytecode

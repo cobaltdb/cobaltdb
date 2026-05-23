@@ -266,7 +266,10 @@ func TestEncodeGlobalSection(t *testing.T) {
 			Mutable: true,
 			Init:    []byte{0x41, 0x00, 0x0b}, // i32.const 0; end
 		})
-		bytecode := compiler.generateModule()
+		bytecode, err := compiler.generateModule()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(bytecode) < 8 {
 			t.Fatalf("Expected valid module bytecode, got %d bytes", len(bytecode))
 		}
@@ -290,7 +293,10 @@ func TestEncodeGlobalSection(t *testing.T) {
 			Mutable: false,
 			Init:    []byte{0x42, 0x2a, 0x0b}, // i64.const 42; end
 		})
-		bytecode := compiler.generateModule()
+		bytecode, err := compiler.generateModule()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(bytecode) < 8 {
 			t.Fatalf("Expected valid bytecode")
 		}
@@ -305,7 +311,10 @@ func TestEncodeGlobalSection(t *testing.T) {
 				Init:    []byte{0x41, byte(i), 0x0b},
 			})
 		}
-		bytecode := compiler.generateModule()
+		bytecode, err := compiler.generateModule()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(bytecode) < 8 {
 			t.Fatalf("Expected valid bytecode")
 		}
@@ -320,7 +329,10 @@ func TestEncodeDataSection(t *testing.T) {
 			Offset: []byte{0x41, 0x00, 0x0b}, // i32.const 0; end
 			Data:   []byte("hello"),
 		})
-		bytecode := compiler.generateModule()
+		bytecode, err := compiler.generateModule()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(bytecode) < 8 {
 			t.Fatalf("Expected valid module bytecode")
 		}
@@ -347,7 +359,10 @@ func TestEncodeDataSection(t *testing.T) {
 			Offset: []byte{0x41, 0x40, 0x0b}, // offset 64
 			Data:   []byte("segment2"),
 		})
-		bytecode := compiler.generateModule()
+		bytecode, err := compiler.generateModule()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(bytecode) < 8 {
 			t.Fatalf("Expected valid bytecode with 2 data segments")
 		}
