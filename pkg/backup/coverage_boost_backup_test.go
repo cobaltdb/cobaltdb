@@ -1827,6 +1827,41 @@ func TestCleanupOldBackupsPersistsMetadata(t *testing.T) {
 	}
 }
 
+func TestCleanupOldBackupsRemoveErrorKeepsMetadata(t *testing.T) {
+	tempDir := t.TempDir()
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.MaxBackups = 1
+	config.RetentionPeriod = 0
+	if err := os.MkdirAll(config.BackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	oldPath := filepath.Join(config.BackupDir, "old.db")
+	if err := os.MkdirAll(filepath.Join(oldPath, "nested"), 0755); err != nil {
+		t.Fatalf("Failed to create undeletable backup path: %v", err)
+	}
+	newPath := filepath.Join(config.BackupDir, "new.db")
+	if err := os.WriteFile(newPath, []byte("new"), 0644); err != nil {
+		t.Fatalf("Failed to create new backup file: %v", err)
+	}
+
+	mgr := NewManager(config, &MockDatabase{dbPath: filepath.Join(tempDir, "source.db")})
+	now := time.Now()
+	mgr.metadata.Backups = append(mgr.metadata.Backups,
+		&Backup{ID: "old", Type: TypeFull, Destination: oldPath, CompletedAt: now.Add(-time.Hour)},
+		&Backup{ID: "new", Type: TypeFull, Destination: newPath, CompletedAt: now},
+	)
+
+	if err := mgr.cleanupOldBackups(); err == nil {
+		t.Fatal("cleanupOldBackups should fail when an old backup file cannot be removed")
+	}
+	if mgr.GetBackup("old") == nil {
+		t.Fatal("old backup metadata should remain after failed removal")
+	}
+}
+
 type errWriter struct {
 	errAfter int
 	written  int

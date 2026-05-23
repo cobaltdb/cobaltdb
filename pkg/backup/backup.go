@@ -1136,10 +1136,16 @@ func (m *Manager) cleanupOldBackups() error {
 	// Delete marked backups
 	changed := false
 	for _, b := range toDelete {
-		os.Remove(b.Destination)
+		if b.Destination != "" {
+			if err := os.Remove(b.Destination); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("failed to remove old backup file %s: %w", b.Destination, err)
+			}
+		}
 		if len(b.WALFiles) > 0 {
 			walDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", b.ID))
-			os.RemoveAll(walDir)
+			if err := os.RemoveAll(walDir); err != nil {
+				return fmt.Errorf("failed to remove old backup WAL directory %s: %w", walDir, err)
+			}
 		}
 
 		// Remove from metadata
