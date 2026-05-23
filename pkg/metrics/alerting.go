@@ -63,6 +63,9 @@ type AlertManager struct {
 	handlers      []AlertHandler
 	mu            sync.RWMutex
 	stopCh        chan struct{}
+	startOnce     sync.Once
+	stopOnce      sync.Once
+	wg            sync.WaitGroup
 	checkInterval time.Duration
 	logger        *logger.Logger
 }
@@ -152,12 +155,21 @@ func (am *AlertManager) RegisterHandler(handler AlertHandler) {
 
 // Start starts the alert manager
 func (am *AlertManager) Start() {
-	go am.run()
+	am.startOnce.Do(func() {
+		am.wg.Add(1)
+		go func() {
+			defer am.wg.Done()
+			am.run()
+		}()
+	})
 }
 
 // Stop stops the alert manager
 func (am *AlertManager) Stop() {
-	close(am.stopCh)
+	am.stopOnce.Do(func() {
+		close(am.stopCh)
+	})
+	am.wg.Wait()
 }
 
 // run is the main alert checking loop

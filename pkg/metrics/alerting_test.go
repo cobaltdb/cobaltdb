@@ -388,11 +388,13 @@ func TestAlertManagerStartStop(t *testing.T) {
 
 	// Start should not block
 	am.Start()
+	am.Start()
 
 	// Give it a moment to start
 	time.Sleep(10 * time.Millisecond)
 
 	// Stop should not block
+	am.Stop()
 	am.Stop()
 }
 
