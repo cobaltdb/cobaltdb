@@ -242,6 +242,7 @@ docker run -d \
     -p 4200:4200 \
     -p 8420:8420 \
     -v $(pwd)/data:/data/cobaltdb \
+    -e COBALTDB_ADMIN_PASSWORD='change-this-before-production' \
     cobaltdb/cobaltdb:latest
 ```
 
@@ -252,14 +253,17 @@ docker run -d \
 git clone https://github.com/cobaltdb/cobaltdb.git
 cd cobaltdb
 
+# Set required credentials
+export COBALTDB_ADMIN_PASSWORD='change-this-before-production'
+
 # Start all services
-docker-compose up -d
+docker compose up -d
 
 # View logs
-docker-compose logs -f cobaltdb
+docker compose logs -f cobaltdb
 
 # Stop all
-docker-compose down
+docker compose down
 ```
 
 ### Services Included
@@ -293,7 +297,7 @@ query_plan_cache_enabled = true
 query_plan_cache_size = 1000
 
 [security]
-auth_enabled = false
+auth_enabled = true
 
 [monitoring]
 metrics_enabled = true
@@ -308,12 +312,15 @@ log_format = "json"
 
 ### Environment Variables
 
-All config options can be set via environment variables:
+The server supports these production-oriented environment overrides:
 
 ```bash
-export COBALTDB_SERVER_PORT=4200
+export COBALTDB_ADDR=:4200
+export COBALTDB_MYSQL_ADDR=:3307
+export COBALTDB_HEALTH_ADDR=:8420
 export COBALTDB_STORAGE_DATA_DIR=/data/cobaltdb
 export COBALTDB_SECURITY_AUTH_ENABLED=true
+export COBALTDB_ADMIN_PASSWORD='change-this-before-production'
 ```
 
 ---

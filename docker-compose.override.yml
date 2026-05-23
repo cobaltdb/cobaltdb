@@ -4,8 +4,6 @@
 services:
   cobaltdb:
     # Windows-specific settings
-    environment:
-      - COBALTDB_LOG_LEVEL=debug
     # Use named volumes instead of bind mounts for better Windows performance
     volumes:
       - cobaltdb_data:/data/cobaltdb

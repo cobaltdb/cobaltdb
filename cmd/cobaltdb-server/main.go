@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
@@ -59,6 +60,28 @@ func main() {
 	if *showVersion {
 		fmt.Printf("CobaltDB Server %s\n", version)
 		os.Exit(0)
+	}
+
+	if err := applyEnvOverrides(
+		dataDir,
+		address,
+		mysqlAddr,
+		enableMySQL,
+		inMemory,
+		cacheSize,
+		authEnabled,
+		tlsEnabled,
+		tlsCert,
+		tlsKey,
+		tlsGenCert,
+		healthAddr,
+		enableHealthServer,
+		enableCircuitBreaker,
+		enableRetry,
+		shutdownTimeout,
+		drainTimeout,
+	); err != nil {
+		log.Fatalf("Invalid environment configuration: %v", err)
 	}
 
 	// Override admin credentials from environment variables if set.
@@ -220,6 +243,125 @@ func main() {
 	}
 
 	log.Println("Server stopped.")
+}
+
+func applyEnvOverrides(
+	dataDir *string,
+	address *string,
+	mysqlAddr *string,
+	enableMySQL *bool,
+	inMemory *bool,
+	cacheSize *int,
+	authEnabled *bool,
+	tlsEnabled *bool,
+	tlsCert *string,
+	tlsKey *string,
+	tlsGenCert *bool,
+	healthAddr *string,
+	enableHealthServer *bool,
+	enableCircuitBreaker *bool,
+	enableRetry *bool,
+	shutdownTimeout *time.Duration,
+	drainTimeout *time.Duration,
+) error {
+	envString("COBALTDB_DATA_DIR", dataDir)
+	envString("COBALTDB_STORAGE_DATA_DIR", dataDir)
+	envString("COBALTDB_ADDR", address)
+	envString("COBALTDB_SERVER_ADDR", address)
+	envString("COBALTDB_MYSQL_ADDR", mysqlAddr)
+	envString("COBALTDB_HEALTH_ADDR", healthAddr)
+	envString("COBALTDB_TLS_CERT_FILE", tlsCert)
+	envString("COBALTDB_TLS_KEY_FILE", tlsKey)
+
+	if err := envBool("COBALTDB_MYSQL_ENABLED", enableMySQL); err != nil {
+		return err
+	}
+	if err := envBool("COBALTDB_IN_MEMORY", inMemory); err != nil {
+		return err
+	}
+	if err := envInt("COBALTDB_CACHE_SIZE", cacheSize); err != nil {
+		return err
+	}
+	if err := envBool("COBALTDB_AUTH_ENABLED", authEnabled); err != nil {
+		return err
+	}
+	if err := envBool("COBALTDB_SECURITY_AUTH_ENABLED", authEnabled); err != nil {
+		return err
+	}
+	if err := envBool("COBALTDB_TLS_ENABLED", tlsEnabled); err != nil {
+		return err
+	}
+	if err := envBool("COBALTDB_TLS_GEN_CERT", tlsGenCert); err != nil {
+		return err
+	}
+	if err := envBool("COBALTDB_HEALTH_SERVER_ENABLED", enableHealthServer); err != nil {
+		return err
+	}
+	if err := envBool("COBALTDB_CIRCUIT_BREAKER_ENABLED", enableCircuitBreaker); err != nil {
+		return err
+	}
+	if err := envBool("COBALTDB_RETRY_ENABLED", enableRetry); err != nil {
+		return err
+	}
+	if err := envDuration("COBALTDB_SHUTDOWN_TIMEOUT", shutdownTimeout); err != nil {
+		return err
+	}
+	if err := envDuration("COBALTDB_DRAIN_TIMEOUT", drainTimeout); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func envString(name string, target *string) {
+	if value := os.Getenv(name); value != "" {
+		*target = value
+	}
+}
+
+func envBool(name string, target *bool) error {
+	value := os.Getenv(name)
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fmt.Errorf("%s must be a boolean: %w", name, err)
+	}
+	*target = parsed
+	return nil
+}
+
+func envInt(name string, target *int) error {
+	value := os.Getenv(name)
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fmt.Errorf("%s must be an integer: %w", name, err)
+	}
+	if parsed <= 0 {
+		return fmt.Errorf("%s must be greater than zero", name)
+	}
+	*target = parsed
+	return nil
+}
+
+func envDuration(name string, target *time.Duration) error {
+	value := os.Getenv(name)
+	if value == "" {
+		return nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return fmt.Errorf("%s must be a duration: %w", name, err)
+	}
+	if parsed <= 0 {
+		return fmt.Errorf("%s must be greater than zero", name)
+	}
+	*target = parsed
+	return nil
 }
 
 // WireServerComponent wraps the wire protocol server as a lifecycle component

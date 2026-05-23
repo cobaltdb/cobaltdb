@@ -10,7 +10,12 @@ services:
       - cobaltdb_data:/data/cobaltdb
       - ./config:/etc/cobaltdb:ro
     environment:
-      - COBALTDB_LOG_LEVEL=info
+      - COBALTDB_ADMIN_PASSWORD=${COBALTDB_ADMIN_PASSWORD:?Set COBALTDB_ADMIN_PASSWORD before starting CobaltDB}
+      - COBALTDB_ADDR=:4200
+      - COBALTDB_MYSQL_ADDR=:3307
+      - COBALTDB_HEALTH_ADDR=:8420
+      - COBALTDB_DATA_DIR=/data/cobaltdb
+      - COBALTDB_AUTH_ENABLED=true
     healthcheck:
       test: ["CMD", "sh", "-c", "nc -z localhost 4200 || exit 1"]
       interval: 30s

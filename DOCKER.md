@@ -11,17 +11,20 @@ This directory contains Docker configuration for running CobaltDB in containeriz
 ## Quick Start
 
 ```bash
+# Choose an admin password before first start.
+export COBALTDB_ADMIN_PASSWORD='change-this-before-production'
+
 # Build and start all services
-docker-compose up -d
+docker compose up -d
 
 # View logs
-docker-compose logs -f cobaltdb
+docker compose logs -f cobaltdb
 
 # Stop all services
-docker-compose down
+docker compose down
 
 # Stop and remove volumes (WARNING: deletes data)
-docker-compose down -v
+docker compose down -v
 ```
 
 ## Services
@@ -41,15 +44,15 @@ Once the container is running, connect with any MySQL client:
 
 ```bash
 # MySQL CLI
-mysql -h 127.0.0.1 -P 3307 -u admin
+mysql -h 127.0.0.1 -P 3307 -u admin -p
 
 # Python
 import mysql.connector
-conn = mysql.connector.connect(host='127.0.0.1', port=3307, user='admin')
+conn = mysql.connector.connect(host='127.0.0.1', port=3307, user='admin', password='...')
 
 # Node.js
 const mysql = require('mysql2');
-const conn = mysql.createConnection({ host: '127.0.0.1', port: 3307, user: 'admin' });
+const conn = mysql.createConnection({ host: '127.0.0.1', port: 3307, user: 'admin', password: '...' });
 ```
 
 ## Windows-Specific Notes
@@ -144,18 +147,20 @@ docker-compose up -d
 
 For production environments:
 
-1. **Enable TLS**:
+1. **Set explicit credentials**:
+   ```bash
+   export COBALTDB_ADMIN_PASSWORD='use-a-long-random-secret'
+   export GRAFANA_ADMIN_PASSWORD='use-another-long-random-secret'
+   ```
+
+2. **Enable TLS**:
    ```yaml
    environment:
      - COBALTDB_TLS_ENABLED=true
+     - COBALTDB_TLS_CERT_FILE=/etc/cobaltdb/certs/server.crt
+     - COBALTDB_TLS_KEY_FILE=/etc/cobaltdb/certs/server.key
    volumes:
      - ./certs:/etc/cobaltdb/certs
-   ```
-
-2. **Change default passwords**:
-   ```yaml
-   environment:
-     - GF_SECURITY_ADMIN_PASSWORD=strongpassword
    ```
 
 3. **Use external volumes**:
@@ -184,8 +189,17 @@ For production environments:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | COBALTDB_DATA_DIR | /data/cobaltdb | Database storage path |
-| COBALTDB_CONFIG | /etc/cobaltdb/cobaltdb.conf | Config file path |
-| COBALTDB_LOG_LEVEL | info | Logging level |
+| COBALTDB_ADDR | :4200 | Wire protocol listen address |
+| COBALTDB_MYSQL_ADDR | :3307 | MySQL protocol listen address |
+| COBALTDB_HEALTH_ADDR | :8420 | Health and metrics listen address |
+| COBALTDB_ADMIN_USER | admin | Initial admin username |
+| COBALTDB_ADMIN_PASSWORD | required by compose | Initial admin password |
+| COBALTDB_AUTH_ENABLED | true | Enable wire and MySQL authentication |
+| COBALTDB_TLS_ENABLED | false | Enable TLS on the wire protocol |
+| COBALTDB_TLS_CERT_FILE | - | TLS certificate path |
+| COBALTDB_TLS_KEY_FILE | - | TLS private key path |
+| COBALTDB_TLS_GEN_CERT | false | Generate a self-signed TLS certificate |
+| COBALTDB_CACHE_SIZE | 1024 | Cache size in pages, not bytes |
 
 ### Backup
 | Variable | Default | Description |

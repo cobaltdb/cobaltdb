@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,6 +157,148 @@ func TestServerConfiguration(t *testing.T) {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 			defer srv.Close()
+		})
+	}
+}
+
+func TestApplyEnvOverrides(t *testing.T) {
+	t.Setenv("COBALTDB_DATA_DIR", "/var/lib/cobaltdb")
+	t.Setenv("COBALTDB_ADDR", ":14200")
+	t.Setenv("COBALTDB_MYSQL_ADDR", ":13307")
+	t.Setenv("COBALTDB_MYSQL_ENABLED", "false")
+	t.Setenv("COBALTDB_IN_MEMORY", "true")
+	t.Setenv("COBALTDB_CACHE_SIZE", "2048")
+	t.Setenv("COBALTDB_SECURITY_AUTH_ENABLED", "false")
+	t.Setenv("COBALTDB_TLS_ENABLED", "true")
+	t.Setenv("COBALTDB_TLS_CERT_FILE", "/certs/server.crt")
+	t.Setenv("COBALTDB_TLS_KEY_FILE", "/certs/server.key")
+	t.Setenv("COBALTDB_TLS_GEN_CERT", "true")
+	t.Setenv("COBALTDB_HEALTH_ADDR", ":18420")
+	t.Setenv("COBALTDB_HEALTH_SERVER_ENABLED", "false")
+	t.Setenv("COBALTDB_CIRCUIT_BREAKER_ENABLED", "false")
+	t.Setenv("COBALTDB_RETRY_ENABLED", "false")
+	t.Setenv("COBALTDB_SHUTDOWN_TIMEOUT", "45s")
+	t.Setenv("COBALTDB_DRAIN_TIMEOUT", "15s")
+
+	dataDir := "./data"
+	address := "127.0.0.1:4200"
+	mysqlAddr := "127.0.0.1:3307"
+	enableMySQL := true
+	inMemory := false
+	cacheSize := 1024
+	authEnabled := true
+	tlsEnabled := false
+	tlsCert := ""
+	tlsKey := ""
+	tlsGenCert := false
+	healthAddr := "127.0.0.1:8420"
+	enableHealthServer := true
+	enableCircuitBreaker := true
+	enableRetry := true
+	shutdownTimeout := 30 * time.Second
+	drainTimeout := 10 * time.Second
+
+	err := applyEnvOverrides(
+		&dataDir,
+		&address,
+		&mysqlAddr,
+		&enableMySQL,
+		&inMemory,
+		&cacheSize,
+		&authEnabled,
+		&tlsEnabled,
+		&tlsCert,
+		&tlsKey,
+		&tlsGenCert,
+		&healthAddr,
+		&enableHealthServer,
+		&enableCircuitBreaker,
+		&enableRetry,
+		&shutdownTimeout,
+		&drainTimeout,
+	)
+	if err != nil {
+		t.Fatalf("applyEnvOverrides failed: %v", err)
+	}
+
+	if dataDir != "/var/lib/cobaltdb" || address != ":14200" || mysqlAddr != ":13307" {
+		t.Fatalf("string overrides not applied: data=%q addr=%q mysql=%q", dataDir, address, mysqlAddr)
+	}
+	if enableMySQL || !inMemory || cacheSize != 2048 || authEnabled {
+		t.Fatalf("core overrides not applied: mysql=%v memory=%v cache=%d auth=%v", enableMySQL, inMemory, cacheSize, authEnabled)
+	}
+	if !tlsEnabled || tlsCert != "/certs/server.crt" || tlsKey != "/certs/server.key" || !tlsGenCert {
+		t.Fatalf("tls overrides not applied")
+	}
+	if healthAddr != ":18420" || enableHealthServer || enableCircuitBreaker || enableRetry {
+		t.Fatalf("production feature overrides not applied")
+	}
+	if shutdownTimeout != 45*time.Second || drainTimeout != 15*time.Second {
+		t.Fatalf("duration overrides not applied: shutdown=%s drain=%s", shutdownTimeout, drainTimeout)
+	}
+}
+
+func TestApplyEnvOverridesRejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		envName   string
+		envValue  string
+		wantError string
+	}{
+		{name: "InvalidBool", envName: "COBALTDB_TLS_ENABLED", envValue: "definitely", wantError: "boolean"},
+		{name: "InvalidInt", envName: "COBALTDB_CACHE_SIZE", envValue: "large", wantError: "integer"},
+		{name: "ZeroInt", envName: "COBALTDB_CACHE_SIZE", envValue: "0", wantError: "greater than zero"},
+		{name: "InvalidDuration", envName: "COBALTDB_DRAIN_TIMEOUT", envValue: "slow", wantError: "duration"},
+		{name: "ZeroDuration", envName: "COBALTDB_DRAIN_TIMEOUT", envValue: "0s", wantError: "greater than zero"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.envName, tt.envValue)
+
+			dataDir := "./data"
+			address := "127.0.0.1:4200"
+			mysqlAddr := "127.0.0.1:3307"
+			enableMySQL := true
+			inMemory := false
+			cacheSize := 1024
+			authEnabled := true
+			tlsEnabled := false
+			tlsCert := ""
+			tlsKey := ""
+			tlsGenCert := false
+			healthAddr := "127.0.0.1:8420"
+			enableHealthServer := true
+			enableCircuitBreaker := true
+			enableRetry := true
+			shutdownTimeout := 30 * time.Second
+			drainTimeout := 10 * time.Second
+
+			err := applyEnvOverrides(
+				&dataDir,
+				&address,
+				&mysqlAddr,
+				&enableMySQL,
+				&inMemory,
+				&cacheSize,
+				&authEnabled,
+				&tlsEnabled,
+				&tlsCert,
+				&tlsKey,
+				&tlsGenCert,
+				&healthAddr,
+				&enableHealthServer,
+				&enableCircuitBreaker,
+				&enableRetry,
+				&shutdownTimeout,
+				&drainTimeout,
+			)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantError, err.Error())
+			}
 		})
 	}
 }
