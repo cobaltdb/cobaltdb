@@ -51,6 +51,7 @@ func NewEncryptedBackend(backend Backend, config *EncryptionConfig) (*EncryptedB
 	if config == nil {
 		return nil, errors.New("encryption config is nil")
 	}
+	config = cloneEncryptionConfig(config)
 
 	if !config.Enabled {
 		return &EncryptedBackend{backend: backend, config: config}, nil
@@ -83,6 +84,17 @@ func NewEncryptedBackend(backend Backend, config *EncryptionConfig) (*EncryptedB
 
 	eb.cipher = aead
 	return eb, nil
+}
+
+func cloneEncryptionConfig(config *EncryptionConfig) *EncryptionConfig {
+	normalized := *config
+	if len(config.Key) > 0 {
+		normalized.Key = append([]byte(nil), config.Key...)
+	}
+	if len(config.Salt) > 0 {
+		normalized.Salt = append([]byte(nil), config.Salt...)
+	}
+	return &normalized
 }
 
 // deriveKey derives a 32-byte key from the provided key using PBKDF2 or Argon2

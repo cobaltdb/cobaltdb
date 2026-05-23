@@ -58,6 +58,33 @@ func TestNewEncryptedBackendEmptyKey(t *testing.T) {
 	}
 }
 
+func TestEncryptedBackendDoesNotMutateCallerConfig(t *testing.T) {
+	mem := NewMemory()
+	key := []byte("my-secret-password-at-least-long")
+	cfg := &EncryptionConfig{
+		Enabled: true,
+		Key:     key,
+	}
+
+	eb, err := NewEncryptedBackend(mem, cfg)
+	if err != nil {
+		t.Fatalf("NewEncryptedBackend: %v", err)
+	}
+	if len(cfg.Salt) != 0 {
+		t.Fatal("NewEncryptedBackend should not write generated salt into caller config")
+	}
+	if string(cfg.Key) != "my-secret-password-at-least-long" {
+		t.Fatal("NewEncryptedBackend should not mutate caller key")
+	}
+
+	if err := eb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if string(cfg.Key) != "my-secret-password-at-least-long" {
+		t.Fatal("Close should not zero caller key")
+	}
+}
+
 func TestEncryptedBackendPBKDF2(t *testing.T) {
 	mem := NewMemory()
 	cfg := &EncryptionConfig{
