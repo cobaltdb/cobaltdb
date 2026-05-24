@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -102,6 +103,50 @@ func TestMemoryBackend(t *testing.T) {
 	}
 	if string(buf2) != string(data) {
 		t.Fatalf("Expected %q in backend2, got %q", string(data), string(buf2))
+	}
+}
+
+func TestMemoryBackendOperationsAfterClose(t *testing.T) {
+	backend := NewMemory()
+	if _, err := backend.WriteAt([]byte("data"), 0); err != nil {
+		t.Fatalf("WriteAt before close: %v", err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+
+	buf := make([]byte, 4)
+	if _, err := backend.ReadAt(buf, 0); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("ReadAt after close error = %v, want %v", err, ErrBackendClosed)
+	}
+	if _, err := backend.WriteAt([]byte("x"), 0); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("WriteAt after close error = %v, want %v", err, ErrBackendClosed)
+	}
+	if err := backend.Sync(); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("Sync after close error = %v, want %v", err, ErrBackendClosed)
+	}
+	if err := backend.Truncate(0); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("Truncate after close error = %v, want %v", err, ErrBackendClosed)
+	}
+}
+
+func TestMemoryBackendLoadFromDataInitializesSnapshot(t *testing.T) {
+	backend := NewMemory()
+	if err := backend.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	backend.LoadFromData([]byte("snapshot"))
+
+	buf := make([]byte, len("snapshot"))
+	if _, err := backend.ReadAt(buf, 0); err != nil {
+		t.Fatalf("ReadAt after LoadFromData: %v", err)
+	}
+	if string(buf) != "snapshot" {
+		t.Fatalf("LoadFromData content = %q, want snapshot", string(buf))
 	}
 }
 

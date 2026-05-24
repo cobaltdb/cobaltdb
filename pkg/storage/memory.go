@@ -22,6 +22,7 @@ type MemoryBackend struct {
 	data    []byte
 	mu      sync.RWMutex
 	maxSize int64 // 0 means use defaultMaxMemorySize
+	closed  bool
 }
 
 // NewMemory creates a new in-memory storage backend
@@ -49,6 +50,10 @@ func (m *MemoryBackend) ReadAt(buf []byte, offset int64) (int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	if m.closed {
+		return 0, ErrBackendClosed
+	}
+
 	if offset >= int64(len(m.data)) {
 		return 0, io.EOF
 	}
@@ -68,6 +73,10 @@ func (m *MemoryBackend) WriteAt(buf []byte, offset int64) (int, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.closed {
+		return 0, ErrBackendClosed
+	}
 
 	endOffset := offset + int64(len(buf))
 
@@ -111,6 +120,13 @@ func (m *MemoryBackend) WriteAt(buf []byte, offset int64) (int, error) {
 
 // Sync is a no-op for memory backend (data is always "synced")
 func (m *MemoryBackend) Sync() error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.closed {
+		return ErrBackendClosed
+	}
+
 	return nil
 }
 
@@ -129,6 +145,10 @@ func (m *MemoryBackend) Truncate(size int64) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.closed {
+		return ErrBackendClosed
+	}
 
 	// Enforce size limit
 	maxSz := m.maxSize
@@ -173,7 +193,12 @@ func (m *MemoryBackend) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.closed {
+		return nil
+	}
+
 	m.data = nil
+	m.closed = true
 	return nil
 }
 
@@ -194,4 +219,5 @@ func (m *MemoryBackend) LoadFromData(data []byte) {
 
 	m.data = make([]byte, len(data))
 	copy(m.data, data)
+	m.closed = false
 }
