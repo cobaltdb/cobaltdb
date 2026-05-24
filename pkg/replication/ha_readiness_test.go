@@ -5,6 +5,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -292,6 +293,68 @@ func TestRejoinAsReplicaDemotesFencedPrimary(t *testing.T) {
 	}
 	if err := mgr.ReplicateWALEntry([]byte("ignored-on-slave")); err != nil {
 		t.Fatalf("slave ReplicateWALEntry should ignore, got %v", err)
+	}
+}
+
+func TestRejoinAsReplicaRequiresResumeLSNOrSnapshot(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	if err := mgr.ReplicateWALEntry([]byte("possibly-divergent")); err != nil {
+		t.Fatalf("ReplicateWALEntry: %v", err)
+	}
+	if err := mgr.FencePrimary(PrimaryFenceRequest{
+		FencingToken: "tok",
+		Epoch:        7,
+		ExpiresAt:    time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("FencePrimary: %v", err)
+	}
+
+	err := mgr.RejoinAsReplica(RejoinRequest{
+		FencingToken:  "tok",
+		Epoch:         7,
+		NewMasterAddr: "127.0.0.1:9999",
+	})
+	if !errors.Is(err, ErrPromotionRejected) {
+		t.Fatalf("expected ErrPromotionRejected, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "resume LSN") {
+		t.Fatalf("expected resume LSN error, got %v", err)
+	}
+	if got := mgr.GetStatus().Role; got != "master" {
+		t.Fatalf("rejected rejoin changed role to %q", got)
+	}
+}
+
+func TestRejoinAsReplicaCanForceSnapshotRefresh(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	if err := mgr.ReplicateWALEntry([]byte("before-fence")); err != nil {
+		t.Fatalf("ReplicateWALEntry: %v", err)
+	}
+	if err := mgr.FencePrimary(PrimaryFenceRequest{
+		FencingToken: "tok",
+		Epoch:        8,
+		ExpiresAt:    time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("FencePrimary: %v", err)
+	}
+
+	if err := mgr.RejoinAsReplica(RejoinRequest{
+		FencingToken:    "tok",
+		Epoch:           8,
+		NewMasterAddr:   "127.0.0.1:9999",
+		RequireSnapshot: true,
+	}); err != nil {
+		t.Fatalf("RejoinAsReplica: %v", err)
+	}
+	status := mgr.GetStatus()
+	if status.Role != "slave" {
+		t.Fatalf("role = %q, want slave", status.Role)
+	}
+	if status.LastApplied != 0 {
+		t.Fatalf("snapshot refresh rejoin last applied = %d, want 0", status.LastApplied)
+	}
+	if atomic.LoadUint32(&mgr.requireSnapshot) == 0 {
+		t.Fatal("snapshot refresh rejoin did not persist snapshot requirement")
 	}
 }
 

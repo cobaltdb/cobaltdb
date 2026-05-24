@@ -64,9 +64,10 @@ Recent hardening commits:
 | `18e8b94` | FDW memory | Added `max_materialized_bytes` guard for temporary query-engine materialization |
 | `caa1ae3` | HA boundary | Added externally fenced manual promotion contract |
 | `84d87c9` | HA fencing | Added cooperative primary fencing guard for WAL writes |
-| Current iteration | HA drill | Added externally orchestrated failover drill |
+| `060e57d` | HA drill | Added externally orchestrated failover drill |
 | `c9f6864` | HA rejoin | Added fenced former-primary rejoin-as-replica contract |
-| Current iteration | HA rejoin | Added persisted resume-LSN drill for rejoined replicas |
+| `b902229` | HA rejoin | Added persisted resume-LSN drill for rejoined replicas |
+| Current iteration | HA rejoin | Require explicit resume LSN or snapshot refresh for rejoin |
 
 Validation performed during this pass:
 
@@ -149,7 +150,7 @@ Production stance:
 - Use `GetFailoverReadiness` to keep replication transport status separate from HA readiness.
 - Use `PromoteToMasterWithFencing` only from an external HA orchestrator that has already fenced the old primary and supplied an epoch/token/LSN proof.
 - Call `FencePrimary` on reachable old primaries during orchestrated failover, while still relying on infrastructure-level fencing for hard isolation.
-- Use `RejoinAsReplica` only after fencing, then rely on normal slave resume/snapshot validation to reconcile data.
+- Use `RejoinAsReplica` only after fencing with either a validated resume LSN or an explicit snapshot refresh requirement.
 - Do not rely on it as managed automatic failover until consensus and built-in fencing exist.
 - Use `docs/HA_FAILOVER.md` as the current replication and failover boundary.
 

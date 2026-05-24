@@ -57,9 +57,11 @@ storage fencing, or network isolation.
 After the failover decision, `RejoinAsReplica` can demote a fenced former
 primary into a replica of the new master. It clears local master state and WAL
 retention buffers, records the new `MasterAddr`, and persists the replica LSN
-when a state file is configured. It does not perform data reconciliation by
-itself; the normal slave resume/snapshot path must still validate or refresh the
-data set.
+when a state file is configured. Callers must provide either a validated
+`LastAppliedLSN` from the new master's history or set `RequireSnapshot` to force
+the rejoined node to request `RESUME_SNAPSHOT` on its next slave connection. It
+does not perform data reconciliation by itself; the normal slave resume/snapshot
+path must still validate or refresh the data set.
 
 ## Required Failure Drills
 

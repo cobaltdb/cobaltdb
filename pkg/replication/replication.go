@@ -196,8 +196,9 @@ type Manager struct {
 	listener       net.Listener
 
 	// Slave fields
-	masterConn  net.Conn
-	lastApplied uint64
+	masterConn      net.Conn
+	lastApplied     uint64
+	requireSnapshot uint32
 
 	// Common fields
 	stopCh   chan struct{}
@@ -240,8 +241,9 @@ type Metrics struct {
 }
 
 type replicationState struct {
-	LastApplied uint64    `json:"last_applied"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	LastApplied     uint64    `json:"last_applied"`
+	RequireSnapshot bool      `json:"require_snapshot,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // PromotionRequest is the contract an external orchestrator must satisfy before
@@ -266,10 +268,16 @@ type PrimaryFenceRequest struct {
 // RejoinRequest converts a fenced old primary into a replica of the new
 // externally selected master.
 type RejoinRequest struct {
-	FencingToken   string
-	Epoch          uint64
-	NewMasterAddr  string
-	LastAppliedLSN uint64
+	FencingToken    string
+	Epoch           uint64
+	NewMasterAddr   string
+	LastAppliedLSN  uint64
+	RequireSnapshot bool
+}
+
+type resumeRequest struct {
+	LSN             uint64
+	RequireSnapshot bool
 }
 
 func (m *Manager) callOnSnapshot() (data []byte, err error) {
@@ -509,12 +517,12 @@ func (m *Manager) handleSlave(conn net.Conn) {
 		}
 	}
 
-	resumeLSN, err := m.receiveResumeRequest(slave)
+	resumeReq, err := m.receiveResumeRequest(slave)
 	if err != nil {
 		conn.Close()
 		return
 	}
-	if err := m.prepareSlaveResume(slave, resumeLSN); err != nil {
+	if err := m.prepareSlaveResumeRequest(slave, resumeReq); err != nil {
 		conn.Close()
 		return
 	}
@@ -535,7 +543,7 @@ func (m *Manager) handleSlave(conn net.Conn) {
 		m.callOnDisconnect(slaveID, nil)
 	}()
 
-	if err := m.sendInitialSnapshot(slave, resumeLSN); err != nil {
+	if err := m.sendInitialSnapshot(slave, resumeReq.LSN); err != nil {
 		return
 	}
 
@@ -565,28 +573,49 @@ func (m *Manager) handleSlave(conn net.Conn) {
 	}
 }
 
-func (m *Manager) receiveResumeRequest(slave *SlaveConnection) (uint64, error) {
+func (m *Manager) receiveResumeRequest(slave *SlaveConnection) (resumeRequest, error) {
 	if slave.Conn != nil {
 		if err := slave.Conn.SetReadDeadline(time.Now().Add(resumeHandshakeTimeout)); err != nil {
-			return 0, err
+			return resumeRequest{}, err
 		}
 		defer func() { _ = slave.Conn.SetReadDeadline(time.Time{}) }()
 	}
 
 	line, err := slave.Reader.ReadString('\n')
 	if err != nil {
-		return 0, err
+		return resumeRequest{}, err
+	}
+
+	if strings.HasPrefix(line, "RESUME_SNAPSHOT ") {
+		var lsn uint64
+		if _, err := fmt.Sscanf(line, "RESUME_SNAPSHOT %d", &lsn); err != nil {
+			return resumeRequest{}, fmt.Errorf("invalid RESUME_SNAPSHOT message: %w", err)
+		}
+		return resumeRequest{LSN: lsn, RequireSnapshot: true}, nil
 	}
 
 	var lsn uint64
 	if _, err := fmt.Sscanf(line, "RESUME %d", &lsn); err != nil {
-		return 0, fmt.Errorf("invalid RESUME message: %w", err)
+		return resumeRequest{}, fmt.Errorf("invalid RESUME message: %w", err)
 	}
-	return lsn, nil
+	return resumeRequest{LSN: lsn}, nil
 }
 
 func (m *Manager) prepareSlaveResume(slave *SlaveConnection, requestedLSN uint64) error {
+	return m.prepareSlaveResumeRequest(slave, resumeRequest{LSN: requestedLSN})
+}
+
+func (m *Manager) prepareSlaveResumeRequest(slave *SlaveConnection, req resumeRequest) error {
+	requestedLSN := req.LSN
 	currentLSN := atomic.LoadUint64(&m.currentLSN)
+	if req.RequireSnapshot {
+		if m.prepareSlaveSnapshot(slave, currentLSN) {
+			return nil
+		}
+		_ = m.sendResyncRequired(slave, currentLSN)
+		return fmt.Errorf("slave requested snapshot refresh but snapshot provider is not configured")
+	}
+
 	if requestedLSN > currentLSN {
 		if m.prepareSlaveSnapshot(slave, currentLSN) {
 			return nil
@@ -905,7 +934,13 @@ func (m *Manager) startSlave() error {
 		}
 	}
 
-	if _, err := fmt.Fprintf(conn, "RESUME %d\n", atomic.LoadUint64(&m.lastApplied)); err != nil {
+	lastApplied := atomic.LoadUint64(&m.lastApplied)
+	if atomic.LoadUint32(&m.requireSnapshot) > 0 {
+		if _, err := fmt.Fprintf(conn, "RESUME_SNAPSHOT %d\n", lastApplied); err != nil {
+			m.closeMasterConn()
+			return err
+		}
+	} else if _, err := fmt.Fprintf(conn, "RESUME %d\n", lastApplied); err != nil {
 		m.closeMasterConn()
 		return err
 	}
@@ -1000,6 +1035,7 @@ func (m *Manager) handleSnapshotMessage(reader *bufio.Reader, msg string) error 
 	}
 
 	atomic.StoreUint64(&m.lastApplied, lsn)
+	atomic.StoreUint32(&m.requireSnapshot, 0)
 	atomic.StoreInt64(&m.metrics.LastAppliedTime, time.Now().Unix())
 	if err := m.saveReplicationState(); err != nil {
 		return err
@@ -1103,6 +1139,11 @@ func (m *Manager) loadReplicationState() error {
 		return err
 	}
 	atomic.StoreUint64(&m.lastApplied, state.LastApplied)
+	if state.RequireSnapshot {
+		atomic.StoreUint32(&m.requireSnapshot, 1)
+	} else {
+		atomic.StoreUint32(&m.requireSnapshot, 0)
+	}
 	return nil
 }
 
@@ -1132,8 +1173,9 @@ func (m *Manager) saveReplicationState() error {
 	}
 
 	state := replicationState{
-		LastApplied: atomic.LoadUint64(&m.lastApplied),
-		UpdatedAt:   time.Now(),
+		LastApplied:     atomic.LoadUint64(&m.lastApplied),
+		RequireSnapshot: atomic.LoadUint32(&m.requireSnapshot) > 0,
+		UpdatedAt:       time.Now(),
 	}
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
@@ -1737,6 +1779,9 @@ func (m *Manager) RejoinAsReplica(req RejoinRequest) error {
 	if req.Epoch < fencedEpoch {
 		return fmt.Errorf("%w: rejoin epoch %d is older than fenced epoch %d", ErrPromotionRejected, req.Epoch, fencedEpoch)
 	}
+	if req.LastAppliedLSN == 0 && !req.RequireSnapshot {
+		return fmt.Errorf("%w: rejoin requires a validated resume LSN or an explicit snapshot refresh", ErrPromotionRejected)
+	}
 
 	m.mu.Lock()
 	listener := m.listener
@@ -1754,10 +1799,12 @@ func (m *Manager) RejoinAsReplica(req RejoinRequest) error {
 	m.config.MasterAddr = req.NewMasterAddr
 	m.config.ListenAddr = ""
 	lsn := req.LastAppliedLSN
-	if lsn == 0 {
-		lsn = atomic.LoadUint64(&m.currentLSN)
-	}
 	atomic.StoreUint64(&m.lastApplied, lsn)
+	if req.RequireSnapshot {
+		atomic.StoreUint32(&m.requireSnapshot, 1)
+	} else {
+		atomic.StoreUint32(&m.requireSnapshot, 0)
+	}
 	atomic.StoreUint64(&m.currentLSN, 0)
 	atomic.StoreUint64(&m.fencedEpoch, 0)
 	atomic.StoreUint64(&m.promotionEpoch, 0)

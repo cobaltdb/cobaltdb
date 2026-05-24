@@ -368,12 +368,34 @@ func TestReceiveResumeRequest(t *testing.T) {
 		Reader: bufio.NewReader(strings.NewReader("RESUME 17\n")),
 	}
 
-	lsn, err := mgr.receiveResumeRequest(slave)
+	req, err := mgr.receiveResumeRequest(slave)
 	if err != nil {
 		t.Fatalf("receiveResumeRequest failed: %v", err)
 	}
-	if lsn != 17 {
-		t.Fatalf("Expected LSN 17, got %d", lsn)
+	if req.LSN != 17 {
+		t.Fatalf("Expected LSN 17, got %d", req.LSN)
+	}
+	if req.RequireSnapshot {
+		t.Fatal("Expected normal resume request")
+	}
+}
+
+func TestReceiveResumeRequestRequiresSnapshot(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster})
+	slave := &SlaveConnection{
+		ID:     "slave-1",
+		Reader: bufio.NewReader(strings.NewReader("RESUME_SNAPSHOT 0\n")),
+	}
+
+	req, err := mgr.receiveResumeRequest(slave)
+	if err != nil {
+		t.Fatalf("receiveResumeRequest failed: %v", err)
+	}
+	if req.LSN != 0 {
+		t.Fatalf("Expected LSN 0, got %d", req.LSN)
+	}
+	if !req.RequireSnapshot {
+		t.Fatal("Expected snapshot resume request")
 	}
 }
 
