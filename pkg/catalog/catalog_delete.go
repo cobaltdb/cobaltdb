@@ -673,6 +673,10 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 			})
 		}
 
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "BEFORE", nil, row, table.Columns); trigErr != nil {
+			return rowsAffected, fmt.Errorf("BEFORE DELETE trigger failed: %w", trigErr)
+		}
+
 		// Soft delete: mark row as deleted instead of physically deleting
 		deleteTree, exists := c.tableTrees[entry.treeName]
 		if !exists {
@@ -728,6 +732,10 @@ func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt
 			if fkErr := fke.OnDelete(ctx, stmt.Table, pkValues...); fkErr != nil {
 				return fmt.Errorf("foreign key constraint: %w", fkErr)
 			}
+		}
+
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "BEFORE", nil, row, table.Columns); trigErr != nil {
+			return fmt.Errorf("BEFORE DELETE trigger failed: %w", trigErr)
 		}
 
 		// Soft-delete encoding.

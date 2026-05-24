@@ -3027,6 +3027,15 @@ func (p *Parser) parseCall() (*CallProcedureStmt, error) {
 		}
 	}
 
+	placeholderOffset := 0
+	for _, param := range stmt.Params {
+		placeholders := collectPlaceholders(param)
+		for i, ph := range placeholders {
+			ph.Index = placeholderOffset + i
+		}
+		placeholderOffset += len(placeholders)
+	}
+
 	return stmt, nil
 }
 

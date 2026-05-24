@@ -33,11 +33,11 @@ type fkSnapshot struct {
 // insertSnapshot holds all Catalog metadata needed for the buffered INSERT path.
 // It is built under a brief Catalog.mu RLock and then used without the lock.
 type insertSnapshot struct {
-	table     *TableDef
-	tree      btree.TreeStore
-	indexes   []indexSnapshot
-	triggers  []*query.CreateTriggerStmt
-	fkRefs    map[string]fkSnapshot
+	table    *TableDef
+	tree     btree.TreeStore
+	indexes  []indexSnapshot
+	triggers []*query.CreateTriggerStmt
+	fkRefs   map[string]fkSnapshot
 }
 
 // buildInsertSnapshot captures table tree, indexes, triggers, and FK references
@@ -583,6 +583,10 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 		}
 		if skipRow {
 			continue
+		}
+
+		if trigErr := c.executeTriggersList(ctx, snap.triggers, "INSERT", "BEFORE", rowValues, nil, table.Columns); trigErr != nil {
+			return 0, 0, fmt.Errorf("BEFORE INSERT trigger failed: %w", trigErr)
 		}
 
 		c.appendPendingWriteTs(ts, PendingWrite{
@@ -1298,6 +1302,11 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			break
 		} else if skip {
 			continue
+		}
+
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "INSERT", "BEFORE", rowValues, nil, table.Columns); trigErr != nil {
+			insertErr = fmt.Errorf("BEFORE INSERT trigger failed: %w", trigErr)
+			break
 		}
 
 		// Store in B+Tree

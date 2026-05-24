@@ -1,7 +1,7 @@
 # CobaltDB Production Readiness Report
 
 **Date:** 2026-05-24
-**Scope:** Local repository review, test gates, race testing, recovery drills, backup drills, SQL parser hardening, MySQL prepared statement hardening, write-latency benchmark gating, replication disconnect failure injection, vector index persistence certification, FDW materialization limits, and operations documentation.
+**Scope:** Local repository review, test gates, race testing, recovery drills, backup drills, SQL parser hardening, MySQL prepared statement hardening, write-latency benchmark gating, replication disconnect failure injection, vector index persistence certification, FDW materialization limits, procedure/trigger semantics certification, and operations documentation.
 **Status:** Production-oriented single-node candidate. Not yet certified for automated HA/failover or strict MySQL wire compatibility.
 
 ## Executive Summary
@@ -24,11 +24,12 @@ Current readiness estimate:
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
 | Vector index persistence | HNSW metadata persists on create, reopen, and drop |
 | FDW materialization limits | CSV scans are streaming-read and bounded by `max_rows`/`max_bytes` |
+| Procedure/trigger semantics | `CALL` placeholder args, exact arity, complex param substitution, and BEFORE/AFTER trigger row images are covered |
 | Operations runbook | Added |
 | HA/failover certification | Not ready |
 | Strict MySQL protocol compatibility | Not ready |
 
-**Production readiness level:** about **90/100** for single-node production-candidate use, assuming documented constraints are acceptable. It is **not** a 95+/100 database for high-concurrency OLTP, automatic failover, or broad MySQL client compatibility yet.
+**Production readiness level:** about **91/100** for single-node production-candidate use, assuming documented constraints are acceptable. It is **not** a 95+/100 database for high-concurrency OLTP, automatic failover, or broad MySQL client compatibility yet.
 
 ## Work Completed In This Pass
 
@@ -48,7 +49,8 @@ Recent hardening commits:
 | `2e0db02` | Benchmarks | Added write-latency p50/p95/p99 metrics under background readers |
 | `ffef1b4` | Replication | Added master-disconnect failure injection and HA/failover boundary doc |
 | `784c699` | Vector indexes | Added HNSW metadata persistence fixes and reopen/drop drills |
-| Current iteration | FDW | Added CSV streaming-read materialization limits and SQL-level limit drill |
+| `6999583` | FDW | Added CSV streaming-read materialization limits and SQL-level limit drill |
+| Current iteration | Procedures/triggers | Added `CALL` placeholder/arity fixes and BEFORE/AFTER trigger semantics certification |
 
 Validation performed during this pass:
 
@@ -73,6 +75,9 @@ go test -race ./pkg/catalog ./pkg/engine -run 'TestVectorIndexMetadataPersistsOn
 go test ./pkg/fdw -count=1
 go test -race ./pkg/fdw -count=1
 go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL' -count=1
+go test ./pkg/query -run TestParseCallProcedure -count=1
+go test ./test -run 'TestStoredProcedure|TestTrigger_BeforeAfterOrderAndRowImages|TestInsteadOfTrigger' -count=1
+go test ./pkg/catalog -run 'TestExecuteTriggers|TestResolveTriggerRefs|TestResolveTriggerExpr' -count=1
 BENCHTIME=1ms COUNT=1 ./scripts/benchmark-gate.sh /tmp/cobaltdb-bench-smoke
 ```
 
@@ -154,7 +159,7 @@ Some advanced features are broad but need workload-specific certification before
 - WASM SQL execution beyond selected paths.
 - Large-scale Vector/HNSW persistence and rebuild behavior.
 - FDW still materializes rows into the current query engine, but CSV scans now have row and byte limits.
-- Stored procedure execution semantics.
+- Procedure body result-set and mutable `OUT`/`INOUT` parameter semantics beyond the certified DML contract.
 - Composite/advanced constraint cases.
 
 ## Release Gate
@@ -193,11 +198,10 @@ Block release on:
 Priority order:
 
 1. Catalog lock granularity improvements.
-2. Procedure/trigger execution semantics certification.
-3. External MySQL driver/ORM certification runs.
-4. HA consensus, fencing, and promotion certification.
-5. Large-scale Vector/HNSW rebuild and backup/restore certification.
-6. Streaming FDW cursor interface and pushdown support.
+2. External MySQL driver/ORM certification runs.
+3. HA consensus, fencing, and promotion certification.
+4. Large-scale Vector/HNSW rebuild and backup/restore certification.
+5. Streaming FDW cursor interface and pushdown support.
 
 ## Final Decision
 

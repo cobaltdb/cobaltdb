@@ -1147,6 +1147,30 @@ func TestParseCallProcedure(t *testing.T) {
 	}
 }
 
+func TestParseCallProcedurePlaceholderIndexes(t *testing.T) {
+	stmt, err := Parse("CALL test_proc(?, ?, ? + ?)")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	callStmt, ok := stmt.(*CallProcedureStmt)
+	if !ok {
+		t.Fatalf("Expected CallProcedureStmt, got %T", stmt)
+	}
+	if len(callStmt.Params) != 3 {
+		t.Fatalf("Expected 3 params, got %d", len(callStmt.Params))
+	}
+	first := callStmt.Params[0].(*PlaceholderExpr)
+	second := callStmt.Params[1].(*PlaceholderExpr)
+	thirdExpr := callStmt.Params[2].(*BinaryExpr)
+	thirdLeft := thirdExpr.Left.(*PlaceholderExpr)
+	thirdRight := thirdExpr.Right.(*PlaceholderExpr)
+	for i, ph := range []*PlaceholderExpr{first, second, thirdLeft, thirdRight} {
+		if ph.Index != i {
+			t.Fatalf("Expected placeholder %d to have index %d, got %d", i, i, ph.Index)
+		}
+	}
+}
+
 func TestParseDropIndex(t *testing.T) {
 	tests := []struct {
 		sql    string

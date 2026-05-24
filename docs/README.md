@@ -35,6 +35,8 @@ CobaltDB is a lightweight, embeddable database engine written in Go with SQL and
   reopen drills, and remaining vector certification work.
 - [FDW Limits](FDW_LIMITS.md): CSV FDW materialization limits and release
   drills for external data scans.
+- [Procedure And Trigger Semantics](PROCEDURE_TRIGGER_SEMANTICS.md): certified
+  procedure argument handling, trigger timing, and OLD/NEW behavior.
 - [Benchmarks](BENCHMARKS.md): bounded benchmark regression gate and historical
   performance notes.
 

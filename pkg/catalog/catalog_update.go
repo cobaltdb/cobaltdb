@@ -125,6 +125,14 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 	if ts != nil {
 		pendingWriteStartPos = len(ts.pendingWrites)
 	}
+	for _, entry := range entries {
+		if trigErr := c.executeTriggersList(ctx, snap.triggers, "UPDATE", "BEFORE", entry.newRow, entry.oldRow, table.Columns); trigErr != nil {
+			if ts != nil {
+				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+			}
+			return 0, rowsAffected, fmt.Errorf("BEFORE UPDATE trigger failed: %w", trigErr)
+		}
+	}
 	if err := c.bufferUpdateEntries(table, stmt, entries, ts); err != nil {
 		if ts != nil {
 			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
@@ -731,6 +739,14 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	pendingWriteStartPos := 0
 	if ts != nil {
 		pendingWriteStartPos = len(ts.pendingWrites)
+	}
+	for _, entry := range entries {
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "UPDATE", "BEFORE", entry.newRow, entry.oldRow, table.Columns); trigErr != nil {
+			if ts != nil {
+				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+			}
+			return 0, rowsAffected, fmt.Errorf("BEFORE UPDATE trigger failed: %w", trigErr)
+		}
 	}
 
 	// Apply collected updates

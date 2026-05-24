@@ -1519,10 +1519,11 @@ func (db *DB) executeCallProcedure(ctx context.Context, stmt *query.CallProcedur
 		return Result{}, err
 	}
 
-	// Evaluate call arguments from SQL literals (e.g., CALL proc(1, 'hello'))
+	// Evaluate call arguments from SQL literals/placeholders
+	// (e.g., CALL proc(1, 'hello') or CALL proc(?, ?)).
 	callArgs := make([]interface{}, 0, len(stmt.Params))
 	for _, paramExpr := range stmt.Params {
-		val, err := catalog.EvalExpression(paramExpr, nil)
+		val, err := catalog.EvalExpression(paramExpr, args)
 		if err != nil {
 			return Result{}, fmt.Errorf("evaluating procedure argument: %w", err)
 		}
@@ -1533,6 +1534,9 @@ func (db *DB) executeCallProcedure(ctx context.Context, stmt *query.CallProcedur
 	mergedArgs := callArgs
 	if len(mergedArgs) == 0 && len(args) > 0 {
 		mergedArgs = args
+	}
+	if len(mergedArgs) != len(proc.Params) {
+		return Result{}, fmt.Errorf("procedure %s expects %d arguments, got %d", proc.Name, len(proc.Params), len(mergedArgs))
 	}
 
 	// Map procedure parameters to call arguments
@@ -1664,6 +1668,62 @@ func substituteParamsInExpr(expr query.Expression, paramMap map[string]interface
 			Name:     e.Name,
 			Args:     newArgs,
 			Distinct: e.Distinct,
+		}
+	case *query.CaseExpr:
+		newCase := &query.CaseExpr{}
+		if e.Expr != nil {
+			newCase.Expr = substituteParamsInExpr(e.Expr, paramMap)
+		}
+		newCase.Whens = make([]*query.WhenClause, len(e.Whens))
+		for i, when := range e.Whens {
+			newCase.Whens[i] = &query.WhenClause{
+				Condition: substituteParamsInExpr(when.Condition, paramMap),
+				Result:    substituteParamsInExpr(when.Result, paramMap),
+			}
+		}
+		if e.Else != nil {
+			newCase.Else = substituteParamsInExpr(e.Else, paramMap)
+		}
+		return newCase
+	case *query.BetweenExpr:
+		return &query.BetweenExpr{
+			Expr:  substituteParamsInExpr(e.Expr, paramMap),
+			Lower: substituteParamsInExpr(e.Lower, paramMap),
+			Upper: substituteParamsInExpr(e.Upper, paramMap),
+			Not:   e.Not,
+		}
+	case *query.InExpr:
+		newList := make([]query.Expression, len(e.List))
+		for i, item := range e.List {
+			newList[i] = substituteParamsInExpr(item, paramMap)
+		}
+		return &query.InExpr{
+			Expr:     substituteParamsInExpr(e.Expr, paramMap),
+			List:     newList,
+			Not:      e.Not,
+			Subquery: e.Subquery,
+		}
+	case *query.IsNullExpr:
+		return &query.IsNullExpr{
+			Expr: substituteParamsInExpr(e.Expr, paramMap),
+			Not:  e.Not,
+		}
+	case *query.CastExpr:
+		return &query.CastExpr{
+			Expr:     substituteParamsInExpr(e.Expr, paramMap),
+			DataType: e.DataType,
+		}
+	case *query.LikeExpr:
+		return &query.LikeExpr{
+			Expr:    substituteParamsInExpr(e.Expr, paramMap),
+			Pattern: substituteParamsInExpr(e.Pattern, paramMap),
+			Not:     e.Not,
+			Escape:  substituteParamsInExpr(e.Escape, paramMap),
+		}
+	case *query.AliasExpr:
+		return &query.AliasExpr{
+			Expr:  substituteParamsInExpr(e.Expr, paramMap),
+			Alias: e.Alias,
 		}
 	default:
 		return expr
