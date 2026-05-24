@@ -200,6 +200,43 @@ func TestRegistryWithLabels(t *testing.T) {
 	}
 }
 
+func TestRegistryLabelKeysAreDeterministicAndIsolated(t *testing.T) {
+	registry := NewRegistry()
+
+	labels := map[string]string{"method": "GET", "route": "/users"}
+	counter1 := registry.RegisterCounter("requests", "HTTP requests", labels)
+
+	labels["method"] = "POST"
+	counter2 := registry.RegisterCounter("requests", "HTTP requests", map[string]string{
+		"route":  "/users",
+		"method": "GET",
+	})
+	if counter1 != counter2 {
+		t.Fatal("expected equivalent label sets to resolve to the same counter")
+	}
+
+	counter3 := registry.RegisterCounter("requests", "HTTP requests", labels)
+	if counter3 == counter1 {
+		t.Fatal("mutating caller labels should not alter the registered counter key")
+	}
+}
+
+func TestHistogramBucketsAreIsolated(t *testing.T) {
+	buckets := []float64{10}
+	histogram := NewHistogram("latency", "Request latency", nil, buckets)
+
+	buckets[0] = 1
+	histogram.Observe(5)
+
+	snapshot := histogram.GetSnapshot()
+	if snapshot.Buckets["10.00"] != 1 {
+		t.Fatalf("expected original bucket 10.00 to contain observation, got %d", snapshot.Buckets["10.00"])
+	}
+	if _, exists := snapshot.Buckets["1.00"]; exists {
+		t.Fatal("histogram retained caller-owned bucket slice")
+	}
+}
+
 func TestCollector(t *testing.T) {
 	collector := NewCollector(100 * time.Millisecond)
 

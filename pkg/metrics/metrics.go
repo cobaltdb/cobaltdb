@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,7 +45,7 @@ func NewCounter(name, desc string, labels map[string]string) *CounterMetric {
 	return &CounterMetric{
 		name:   name,
 		desc:   desc,
-		labels: labels,
+		labels: cloneStringMap(labels),
 		value:  0,
 	}
 }
@@ -77,7 +78,7 @@ func NewGauge(name, desc string, labels map[string]string) *GaugeMetric {
 	return &GaugeMetric{
 		name:   name,
 		desc:   desc,
-		labels: labels,
+		labels: cloneStringMap(labels),
 		value:  0,
 	}
 }
@@ -126,9 +127,9 @@ func NewHistogram(name, desc string, labels map[string]string, buckets []float64
 	return &HistogramMetric{
 		name:    name,
 		desc:    desc,
-		labels:  labels,
+		labels:  cloneStringMap(labels),
 		values:  make([]float64, 0, 1000),
-		buckets: buckets,
+		buckets: cloneFloat64Slice(buckets),
 	}
 }
 
@@ -294,11 +295,37 @@ func (r *Registry) metricKey(name string, labels map[string]string) string {
 		return name
 	}
 
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
 	key := name
-	for k, v := range labels {
-		key += fmt.Sprintf(";%s=%s", k, v)
+	for _, labelKey := range keys {
+		key += fmt.Sprintf(";%s=%s", labelKey, labels[labelKey])
 	}
 	return key
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneFloat64Slice(values []float64) []float64 {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]float64, len(values))
+	copy(cloned, values)
+	return cloned
 }
 
 // GetAllMetrics returns all metrics as a map
