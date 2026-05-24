@@ -115,22 +115,16 @@ func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []int
 	if ts != nil {
 		pendingWriteStartPos = len(ts.pendingWrites)
 	}
-	if err := c.bufferDeleteEntries(ctx, table, stmt, entries, ts); err != nil {
-		if ts != nil {
-			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
-		}
-		return 0, rowsAffected, err
-	}
 
-	c.invalidateQueryCache(stmt.Table)
-
-	// Handle RETURNING clause (returns OLD row values)
 	var returningRows [][]interface{}
 	var returningCols []string
 	if len(stmt.Returning) > 0 && rowsAffected > 0 {
 		for _, entry := range entries {
 			returningRow, cols, err := c.evaluateReturning(stmt.Returning, entry.row, table, args)
 			if err != nil {
+				if ts != nil {
+					ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+				}
 				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
 			}
 			returningRows = append(returningRows, returningRow)
@@ -139,6 +133,15 @@ func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []int
 			}
 		}
 	}
+
+	if err := c.bufferDeleteEntries(ctx, table, stmt, entries, ts); err != nil {
+		if ts != nil {
+			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+		}
+		return 0, rowsAffected, err
+	}
+
+	c.invalidateQueryCache(stmt.Table)
 
 	c.setLastReturning(returningRows, returningCols)
 
@@ -361,6 +364,24 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		pendingWriteStartPos = len(ts.pendingWrites)
 	}
 
+	var returningRows [][]interface{}
+	var returningCols []string
+	if len(stmt.Returning) > 0 && rowsAffected > 0 {
+		for _, entry := range entries {
+			returningRow, cols, err := c.evaluateReturning(stmt.Returning, entry.row, table, args)
+			if err != nil {
+				if ts != nil {
+					ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+				}
+				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
+			}
+			returningRows = append(returningRows, returningRow)
+			if returningCols == nil {
+				returningCols = cols
+			}
+		}
+	}
+
 	// Apply soft deletes (FK enforcement, index cleanup, WAL, triggers)
 	if useBuffer {
 		if err := c.bufferDeleteEntries(ctx, table, stmt, entries, ts); err != nil {
@@ -377,22 +398,6 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 
 	// Invalidate query cache for the affected table
 	c.invalidateQueryCache(stmt.Table)
-
-	// Handle RETURNING clause (returns OLD row values)
-	var returningRows [][]interface{}
-	var returningCols []string
-	if len(stmt.Returning) > 0 && rowsAffected > 0 {
-		for _, entry := range entries {
-			returningRow, cols, err := c.evaluateReturning(stmt.Returning, entry.row, table, args)
-			if err != nil {
-				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
-			}
-			returningRows = append(returningRows, returningRow)
-			if returningCols == nil {
-				returningCols = cols
-			}
-		}
-	}
 
 	// Store returning rows for retrieval
 	c.setLastReturning(returningRows, returningCols)
