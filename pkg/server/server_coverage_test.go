@@ -129,6 +129,27 @@ func TestLoadTLSConfigAppliesProductionDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadTLSConfigCopiesCipherSuites(t *testing.T) {
+	cf, kf := generateTestCertHelper(t)
+	cipherSuites := []uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256}
+
+	tc, err := LoadTLSConfig(&TLSConfig{
+		Enabled:      true,
+		CertFile:     cf,
+		KeyFile:      kf,
+		CipherSuites: cipherSuites,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cipherSuites[0] = tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+
+	if got, want := tc.CipherSuites[0], uint16(tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256); got != want {
+		t.Fatalf("TLS config cipher suites was mutated through caller slice: got %x, want %x", got, want)
+	}
+}
+
 func TestLoadTLSConfigRaisesWeakMinimumVersion(t *testing.T) {
 	cf, kf := generateTestCertHelper(t)
 	tc, err := LoadTLSConfig(&TLSConfig{

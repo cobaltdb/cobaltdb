@@ -161,6 +161,13 @@ func (s *Server) SetSQLProtector(sp *SQLProtector) {
 
 // Listen starts the server on the given address
 func (s *Server) Listen(address string, tlsConfig *TLSConfig) error {
+	s.mu.RLock()
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
+		return ErrServerClosed
+	}
+
 	if s.auth.IsEnabled() && (tlsConfig == nil || !tlsConfig.Enabled) {
 		s.logWarnf("authentication is enabled but TLS is disabled; passwords will be sent in cleartext")
 	}
@@ -183,6 +190,13 @@ func (s *Server) Listen(address string, tlsConfig *TLSConfig) error {
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		if err := listener.Close(); err != nil && !isBenignNetworkCloseError(err) {
+			return fmt.Errorf("%w: listener close failed: %v", ErrServerClosed, err)
+		}
+		return ErrServerClosed
+	}
 	s.listener = listener
 	s.mu.Unlock()
 	return s.acceptLoop()
@@ -191,6 +205,15 @@ func (s *Server) Listen(address string, tlsConfig *TLSConfig) error {
 // ListenOnListener starts the server using an existing listener
 func (s *Server) ListenOnListener(listener net.Listener) error {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		if listener != nil {
+			if err := listener.Close(); err != nil && !isBenignNetworkCloseError(err) {
+				return fmt.Errorf("%w: listener close failed: %v", ErrServerClosed, err)
+			}
+		}
+		return ErrServerClosed
+	}
 	s.listener = listener
 	s.mu.Unlock()
 	return s.acceptLoop()

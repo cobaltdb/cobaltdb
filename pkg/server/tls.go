@@ -154,7 +154,9 @@ func normalizeTLSConfig(config *TLSConfig) *TLSConfig {
 		normalized.MaxVersion = normalized.MinVersion
 	}
 	if len(normalized.CipherSuites) == 0 {
-		normalized.CipherSuites = DefaultTLSConfig().CipherSuites
+		normalized.CipherSuites = cloneCipherSuites(DefaultTLSConfig().CipherSuites)
+	} else {
+		normalized.CipherSuites = cloneCipherSuites(normalized.CipherSuites)
 	}
 	if normalized.SelfSignedOrg == "" {
 		normalized.SelfSignedOrg = DefaultTLSConfig().SelfSignedOrg
@@ -163,6 +165,15 @@ func normalizeTLSConfig(config *TLSConfig) *TLSConfig {
 		normalized.SelfSignedValidDays = DefaultTLSConfig().SelfSignedValidDays
 	}
 	return &normalized
+}
+
+func cloneCipherSuites(values []uint16) []uint16 {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]uint16, len(values))
+	copy(cloned, values)
+	return cloned
 }
 
 // verifyCertificate verifies the certificate is valid

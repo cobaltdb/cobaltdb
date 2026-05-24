@@ -113,6 +113,55 @@ func TestServerClose(t *testing.T) {
 	db.Close()
 }
 
+type closeTrackingListener struct {
+	closed bool
+}
+
+func (l *closeTrackingListener) Accept() (net.Conn, error) {
+	return nil, net.ErrClosed
+}
+
+func (l *closeTrackingListener) Close() error {
+	l.closed = true
+	return nil
+}
+
+func (l *closeTrackingListener) Addr() net.Addr {
+	return &net.TCPAddr{}
+}
+
+func TestServerRejectsListenAfterClose(t *testing.T) {
+	server, err := New(nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	if err := server.Listen("127.0.0.1:0", nil); !errors.Is(err, ErrServerClosed) {
+		t.Fatalf("expected ErrServerClosed from Listen after Close, got %v", err)
+	}
+}
+
+func TestServerClosesProvidedListenerAfterClose(t *testing.T) {
+	server, err := New(nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	listener := &closeTrackingListener{}
+	if err := server.ListenOnListener(listener); !errors.Is(err, ErrServerClosed) {
+		t.Fatalf("expected ErrServerClosed from ListenOnListener after Close, got %v", err)
+	}
+	if !listener.closed {
+		t.Fatal("ListenOnListener should close a provided listener when server is already closed")
+	}
+}
+
 func TestIsBenignNetworkCloseError(t *testing.T) {
 	tests := []struct {
 		name string
