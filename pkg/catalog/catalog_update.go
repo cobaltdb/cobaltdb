@@ -1007,12 +1007,6 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		rowsAffected++
 	}
 
-	// Apply all updates
-	if err := c.applyJoinUpdateEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
-		return 0, rowsAffected, err
-	}
-
-	// Handle RETURNING clause
 	var returningRows [][]interface{}
 	var returningCols []string
 	if len(stmt.Returning) > 0 && rowsAffected > 0 {
@@ -1026,6 +1020,11 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 				returningCols = cols
 			}
 		}
+	}
+
+	// Apply all updates
+	if err := c.applyJoinUpdateEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
+		return 0, rowsAffected, err
 	}
 
 	// Store returning rows for retrieval
@@ -1213,12 +1212,6 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		rowsAffected++
 	}
 
-	// Soft delete collected entries
-	if err := c.softDeleteJoinEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
-		return 0, rowsAffected, err
-	}
-
-	// Handle RETURNING clause (returns OLD row values)
 	var returningRows [][]interface{}
 	var returningCols []string
 	if len(stmt.Returning) > 0 && rowsAffected > 0 {
@@ -1232,6 +1225,11 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 				returningCols = cols
 			}
 		}
+	}
+
+	// Soft delete collected entries
+	if err := c.softDeleteJoinEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
+		return 0, rowsAffected, err
 	}
 
 	// Store returning rows for retrieval
