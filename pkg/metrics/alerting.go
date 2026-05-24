@@ -150,7 +150,15 @@ func (am *AlertManager) RegisterRule(rule *AlertRule) {
 	}
 	am.mu.Lock()
 	defer am.mu.Unlock()
-	am.rules[rule.Name] = rule
+	am.rules[rule.Name] = cloneAlertRule(rule)
+}
+
+func cloneAlertRule(rule *AlertRule) *AlertRule {
+	if rule == nil {
+		return nil
+	}
+	cloned := *rule
+	return &cloned
 }
 
 // UnregisterRule removes an alert rule

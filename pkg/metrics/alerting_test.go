@@ -91,6 +91,51 @@ func TestAlertManagerRegisterNilRule(t *testing.T) {
 	}
 }
 
+func TestAlertManagerRegisterRuleCopiesInput(t *testing.T) {
+	am := NewAlertManager()
+
+	rule := &AlertRule{
+		Name:        "copy_rule",
+		Description: "original",
+		Severity:    SeverityWarning,
+		Threshold:   100,
+		Cooldown:    time.Minute,
+		Condition: func() (bool, float64) {
+			return false, 0
+		},
+	}
+
+	am.RegisterRule(rule)
+	rule.Description = "mutated"
+	rule.Severity = SeverityCritical
+	rule.Threshold = 1
+	rule.Cooldown = 0
+	rule.Condition = func() (bool, float64) {
+		return true, 999
+	}
+
+	am.mu.RLock()
+	registered := am.rules["copy_rule"]
+	am.mu.RUnlock()
+
+	if registered.Description != "original" {
+		t.Fatalf("registered rule description = %q, want original", registered.Description)
+	}
+	if registered.Severity != SeverityWarning {
+		t.Fatalf("registered rule severity = %v, want %v", registered.Severity, SeverityWarning)
+	}
+	if registered.Threshold != 100 {
+		t.Fatalf("registered rule threshold = %f, want 100", registered.Threshold)
+	}
+	if registered.Cooldown != time.Minute {
+		t.Fatalf("registered rule cooldown = %v, want %v", registered.Cooldown, time.Minute)
+	}
+	fired, value := registered.Condition()
+	if fired || value != 0 {
+		t.Fatalf("registered rule condition was mutated: fired=%v value=%f", fired, value)
+	}
+}
+
 // TestAlertManagerUnregisterRule tests unregistering alert rules
 func TestAlertManagerUnregisterRule(t *testing.T) {
 	am := NewAlertManager()
