@@ -3,6 +3,7 @@ package replication
 import (
 	"errors"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -291,5 +292,36 @@ func TestRejoinAsReplicaDemotesFencedPrimary(t *testing.T) {
 	}
 	if err := mgr.ReplicateWALEntry([]byte("ignored-on-slave")); err != nil {
 		t.Fatalf("slave ReplicateWALEntry should ignore, got %v", err)
+	}
+}
+
+func TestRejoinAsReplicaPersistsResumeLSN(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "replication", "state.json")
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync, StateFile: stateFile})
+	if err := mgr.ReplicateWALEntry([]byte("before-fence")); err != nil {
+		t.Fatalf("ReplicateWALEntry: %v", err)
+	}
+	if err := mgr.FencePrimary(PrimaryFenceRequest{
+		FencingToken: "tok",
+		Epoch:        9,
+		ExpiresAt:    time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("FencePrimary: %v", err)
+	}
+	if err := mgr.RejoinAsReplica(RejoinRequest{
+		FencingToken:   "tok",
+		Epoch:          9,
+		NewMasterAddr:  "127.0.0.1:9999",
+		LastAppliedLSN: 1,
+	}); err != nil {
+		t.Fatalf("RejoinAsReplica: %v", err)
+	}
+
+	reloaded := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync, StateFile: stateFile})
+	if err := reloaded.loadReplicationState(); err != nil {
+		t.Fatalf("loadReplicationState: %v", err)
+	}
+	if got := reloaded.GetStatus().LastApplied; got != 1 {
+		t.Fatalf("reloaded lastApplied = %d, want 1", got)
 	}
 }

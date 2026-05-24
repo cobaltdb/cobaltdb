@@ -66,6 +66,7 @@ data set.
 ```bash
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
 go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary|TestExternallyOrchestratedFailoverDrill|TestRejoinAsReplica' -count=1
+go test ./pkg/replication -run TestRejoinAsReplicaPersistsResumeLSN -count=1
 ```
 
 Operational stance:

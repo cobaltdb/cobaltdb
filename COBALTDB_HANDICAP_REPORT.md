@@ -65,7 +65,8 @@ Recent hardening commits:
 | `caa1ae3` | HA boundary | Added externally fenced manual promotion contract |
 | `84d87c9` | HA fencing | Added cooperative primary fencing guard for WAL writes |
 | Current iteration | HA drill | Added externally orchestrated failover drill |
-| Current iteration | HA rejoin | Added fenced former-primary rejoin-as-replica contract |
+| `c9f6864` | HA rejoin | Added fenced former-primary rejoin-as-replica contract |
+| Current iteration | HA rejoin | Added persisted resume-LSN drill for rejoined replicas |
 
 Validation performed during this pass:
 
@@ -84,8 +85,11 @@ go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE
 go test ./pkg/engine -run '^$' -bench BenchmarkWriteLatencyUnderReaders -benchtime=10x -count=1
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
 go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary|TestExternallyOrchestratedFailoverDrill|TestRejoinAsReplica' -count=1
+go test ./pkg/replication -run TestRejoinAsReplicaPersistsResumeLSN -count=1
+go test -race ./pkg/replication -run 'TestRejoinAsReplica|TestExternallyOrchestratedFailoverDrill|TestFencePrimary|TestPromoteToMasterWithFencing' -count=1
 go test -race ./pkg/replication -run TestSlaveStatusClearsConnectionOnMasterDisconnect -count=1
 go test ./pkg/replication -count=1
+go test ./...
 go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count=1
 go test ./pkg/engine -run 'TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore|TestVectorIndexThousandPlusMixedDMLReopen' -count=1
 go test -race ./pkg/catalog ./pkg/engine -run 'TestVectorIndexMetadataPersistsOnCreateAndDrop|TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore|TestVectorIndexThousandPlusMixedDMLReopen' -count=1
