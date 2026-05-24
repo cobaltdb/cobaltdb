@@ -132,6 +132,7 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 		if trigErr := c.executeTriggersList(ctx, snap.triggers, "UPDATE", "BEFORE", entry.newRow, entry.oldRow, table.Columns); trigErr != nil {
 			if ts != nil {
 				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+				rebuildPendingWriteMap(ts)
 			}
 			return 0, rowsAffected, fmt.Errorf("BEFORE UPDATE trigger failed: %w", trigErr)
 		}
@@ -145,6 +146,7 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 			if err != nil {
 				if ts != nil {
 					ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+					rebuildPendingWriteMap(ts)
 				}
 				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
 			}
@@ -158,12 +160,17 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 	if err := c.bufferUpdateEntries(table, stmt, entries, ts); err != nil {
 		if ts != nil {
 			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+			rebuildPendingWriteMap(ts)
 		}
 		return 0, rowsAffected, err
 	}
 	// Execute AFTER UPDATE triggers (per-row)
 	for _, entry := range entries {
 		if trigErr := c.executeTriggersList(ctx, snap.triggers, "UPDATE", "AFTER", entry.newRow, entry.oldRow, table.Columns); trigErr != nil {
+			if ts != nil {
+				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+				rebuildPendingWriteMap(ts)
+			}
 			return 0, rowsAffected, fmt.Errorf("AFTER UPDATE trigger failed: %w", trigErr)
 		}
 	}
@@ -753,6 +760,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		if trigErr := c.executeTriggers(ctx, stmt.Table, "UPDATE", "BEFORE", entry.newRow, entry.oldRow, table.Columns); trigErr != nil {
 			if ts != nil {
 				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+				rebuildPendingWriteMap(ts)
 			}
 			return 0, rowsAffected, fmt.Errorf("BEFORE UPDATE trigger failed: %w", trigErr)
 		}
@@ -766,6 +774,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			if err != nil {
 				if ts != nil {
 					ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+					rebuildPendingWriteMap(ts)
 				}
 				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
 			}
@@ -781,6 +790,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		if err := c.bufferUpdateEntries(table, stmt, entries, ts); err != nil {
 			if ts != nil {
 				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+				rebuildPendingWriteMap(ts)
 			}
 			return 0, rowsAffected, err
 		}
@@ -792,6 +802,14 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	// Execute AFTER UPDATE triggers (per-row)
 	for _, entry := range entries {
 		if trigErr := c.executeTriggers(ctx, stmt.Table, "UPDATE", "AFTER", entry.newRow, entry.oldRow, table.Columns); trigErr != nil {
+			if useBuffer {
+				if ts != nil {
+					ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+					rebuildPendingWriteMap(ts)
+				}
+			} else if rbErr := c.rollbackAppliedUpdateEntries(table, stmt.Table, entries); rbErr != nil {
+				return 0, rowsAffected, fmt.Errorf("AFTER UPDATE trigger failed: %w; rollback failed: %v", trigErr, rbErr)
+			}
 			return 0, rowsAffected, fmt.Errorf("AFTER UPDATE trigger failed: %w", trigErr)
 		}
 	}
@@ -1726,6 +1744,31 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		}
 	}
 	return nil
+}
+
+func (c *Catalog) rollbackAppliedUpdateEntries(table *TableDef, tableName string, entries []updateEntry) error {
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		updateTree, exists := c.tableTrees[entry.treeName]
+		if !exists {
+			return fmt.Errorf("partition tree %s not found", entry.treeName)
+		}
+
+		if newKey, ok := buildCompositePK(table, entry.newRow); ok && newKey != string(entry.key) {
+			if err := updateTree.Delete([]byte(newKey)); err != nil {
+				return fmt.Errorf("delete updated key %s: %w", newKey, err)
+			}
+		}
+
+		oldValueData, err := encodeVersionedRow(entry.oldRow, nil)
+		if err != nil {
+			return fmt.Errorf("encode old row: %w", err)
+		}
+		if err := updateTree.Put(entry.key, oldValueData); err != nil {
+			return fmt.Errorf("restore row: %w", err)
+		}
+	}
+	return c.rebuildTableIndexesLocked(tableName)
 }
 
 // bufferUpdateEntries buffers updated rows and their index mutations for

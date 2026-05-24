@@ -124,6 +124,7 @@ func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []int
 			if err != nil {
 				if ts != nil {
 					ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+					rebuildPendingWriteMap(ts)
 				}
 				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
 			}
@@ -137,6 +138,7 @@ func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []int
 	if err := c.bufferDeleteEntries(ctx, table, stmt, entries, ts); err != nil {
 		if ts != nil {
 			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+			rebuildPendingWriteMap(ts)
 		}
 		return 0, rowsAffected, err
 	}
@@ -372,6 +374,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 			if err != nil {
 				if ts != nil {
 					ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+					rebuildPendingWriteMap(ts)
 				}
 				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
 			}
@@ -387,11 +390,15 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		if err := c.bufferDeleteEntries(ctx, table, stmt, entries, ts); err != nil {
 			if ts != nil {
 				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+				rebuildPendingWriteMap(ts)
 			}
 			return 0, rowsAffected, err
 		}
 	} else {
 		if _, applyErr := c.applyDeleteEntries(ctx, table, stmt, entries, ts, txnActive); applyErr != nil {
+			if rbErr := c.rollbackAppliedDeleteEntries(stmt.Table, entries); rbErr != nil {
+				return 0, rowsAffected, fmt.Errorf("%w; rollback failed: %v", applyErr, rbErr)
+			}
 			return 0, rowsAffected, applyErr
 		}
 	}
@@ -717,6 +724,20 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 		rowsAffected++
 	}
 	return rowsAffected, nil
+}
+
+func (c *Catalog) rollbackAppliedDeleteEntries(tableName string, entries []deleteEntry) error {
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		deleteTree, exists := c.tableTrees[entry.treeName]
+		if !exists {
+			return fmt.Errorf("partition tree %s not found", entry.treeName)
+		}
+		if err := deleteTree.Put(entry.key, entry.value); err != nil {
+			return fmt.Errorf("restore deleted row: %w", err)
+		}
+	}
+	return c.rebuildTableIndexesLocked(tableName)
 }
 
 // bufferDeleteEntries buffers soft-deleted rows and their index mutations for
