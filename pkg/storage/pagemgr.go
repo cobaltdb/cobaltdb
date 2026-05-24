@@ -2,9 +2,13 @@ package storage
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 )
+
+// ErrPageManagerClosed is returned when a closed page manager is used.
+var ErrPageManagerClosed = errors.New("page manager is closed")
 
 // PageManager handles page allocation, deallocation, and free list management
 type PageManager struct {
@@ -13,6 +17,7 @@ type PageManager struct {
 	mu       sync.RWMutex
 	freeList []uint32 // Cache of free page IDs
 	maxPages uint32   // Maximum allocated page ID
+	closed   bool
 }
 
 // NewPageManager creates a new page manager
@@ -229,6 +234,10 @@ func (pm *PageManager) AllocatePage(pageType PageType) (*CachedPage, error) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	if pm.closed {
+		return nil, ErrPageManagerClosed
+	}
+
 	var pageID uint32
 
 	// Try to reuse a free page first
@@ -281,6 +290,10 @@ func (pm *PageManager) FreePage(pageID uint32) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	if pm.closed {
+		return ErrPageManagerClosed
+	}
+
 	// Add to free list cache
 	pm.freeList = append(pm.freeList, pageID)
 
@@ -296,6 +309,13 @@ func (pm *PageManager) FreePage(pageID uint32) error {
 
 // GetPage retrieves a page by ID
 func (pm *PageManager) GetPage(pageID uint32) (*CachedPage, error) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	if pm.closed {
+		return nil, ErrPageManagerClosed
+	}
+
 	return pm.pool.GetPage(pageID)
 }
 
@@ -308,7 +328,7 @@ func (pm *PageManager) GetPool() *BufferPool {
 func (pm *PageManager) GetMeta() *MetaPage {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
-	return pm.meta
+	return cloneMetaPage(pm.meta)
 }
 
 // UpdateMeta updates the metadata page
@@ -316,8 +336,23 @@ func (pm *PageManager) UpdateMeta(meta *MetaPage) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	pm.meta = meta
+	if pm.closed {
+		return ErrPageManagerClosed
+	}
+	if meta == nil {
+		return fmt.Errorf("meta page is nil")
+	}
+
+	pm.meta = cloneMetaPage(meta)
 	return pm.writeMetaPage()
+}
+
+func cloneMetaPage(meta *MetaPage) *MetaPage {
+	if meta == nil {
+		return nil
+	}
+	cloned := *meta
+	return &cloned
 }
 
 // writeMetaPage writes the metadata page to disk
@@ -350,16 +385,35 @@ func (pm *PageManager) GetFreePageCount() int {
 
 // Sync flushes all dirty pages to disk
 func (pm *PageManager) Sync() error {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	if pm.closed {
+		return ErrPageManagerClosed
+	}
+
 	return pm.pool.FlushAll()
 }
 
 // Close closes the page manager
 func (pm *PageManager) Close() error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if pm.closed {
+		return nil
+	}
+
 	// Save free list
 	if err := pm.saveFreeList(); err != nil {
 		return err
 	}
 
 	// Sync all pages
-	return pm.Sync()
+	if err := pm.pool.FlushAll(); err != nil {
+		return err
+	}
+
+	pm.closed = true
+	return nil
 }

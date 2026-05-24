@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -217,6 +218,19 @@ func TestGetMeta(t *testing.T) {
 	}
 }
 
+func TestGetMetaReturnsCopy(t *testing.T) {
+	pm, _, cleanup := setupPageManager(t)
+	defer cleanup()
+
+	meta := pm.GetMeta()
+	meta.Version = 999
+
+	reloaded := pm.GetMeta()
+	if reloaded.Version == 999 {
+		t.Fatal("GetMeta returned mutable internal metadata")
+	}
+}
+
 func TestUpdateMeta(t *testing.T) {
 	pm, _, cleanup := setupPageManager(t)
 	defer cleanup()
@@ -243,6 +257,58 @@ func TestUpdateMeta(t *testing.T) {
 	// Restore original
 	meta.Version = originalVersion
 	pm.UpdateMeta(meta)
+}
+
+func TestUpdateMetaCopiesInput(t *testing.T) {
+	pm, _, cleanup := setupPageManager(t)
+	defer cleanup()
+
+	meta := pm.GetMeta()
+	meta.TxnCounter = 99
+	if err := pm.UpdateMeta(meta); err != nil {
+		t.Fatalf("UpdateMeta: %v", err)
+	}
+
+	meta.TxnCounter = 100
+	reloaded := pm.GetMeta()
+	if reloaded.TxnCounter != 99 {
+		t.Fatalf("UpdateMeta retained caller-owned metadata pointer: got %d", reloaded.TxnCounter)
+	}
+}
+
+func TestPageManagerOperationsAfterClose(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(16, backend)
+	pm, err := NewPageManager(pool)
+	if err != nil {
+		t.Fatalf("NewPageManager: %v", err)
+	}
+	defer pool.Close()
+	defer backend.Close()
+
+	meta := pm.GetMeta()
+	if err := pm.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := pm.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+
+	if _, err := pm.AllocatePage(PageTypeLeaf); !errors.Is(err, ErrPageManagerClosed) {
+		t.Fatalf("AllocatePage after close error = %v, want %v", err, ErrPageManagerClosed)
+	}
+	if err := pm.FreePage(1); !errors.Is(err, ErrPageManagerClosed) {
+		t.Fatalf("FreePage after close error = %v, want %v", err, ErrPageManagerClosed)
+	}
+	if _, err := pm.GetPage(0); !errors.Is(err, ErrPageManagerClosed) {
+		t.Fatalf("GetPage after close error = %v, want %v", err, ErrPageManagerClosed)
+	}
+	if err := pm.UpdateMeta(meta); !errors.Is(err, ErrPageManagerClosed) {
+		t.Fatalf("UpdateMeta after close error = %v, want %v", err, ErrPageManagerClosed)
+	}
+	if err := pm.Sync(); !errors.Is(err, ErrPageManagerClosed) {
+		t.Fatalf("Sync after close error = %v, want %v", err, ErrPageManagerClosed)
+	}
 }
 
 func TestGetPageCount(t *testing.T) {
