@@ -416,6 +416,15 @@ var runtimeImportSpecs = []importSpec{
 	{"getOpcodeStats", []ValueType{I32, I32}, []ValueType{I32}},
 }
 
+func runtimeImportIndex(name string) uint64 {
+	for i, spec := range runtimeImportSpecs {
+		if spec.name == name {
+			return uint64(i)
+		}
+	}
+	panic(fmt.Sprintf("wasm compiler invariant failed: missing runtime import %q", name))
+}
+
 // compileSelect compiles a SELECT statement
 func (c *Compiler) compileSelect(stmt *query.SelectStmt) (uint32, error) {
 	// Create function type for query entry point
@@ -616,7 +625,7 @@ func (c *Compiler) generateUnionBody(stmt *query.UnionStmt) []byte {
 	buf.WriteByte(0x41) // i32.const 1000 (max rows)
 	writeLeb128(buf, 1000)
 	buf.WriteByte(0x10) // call
-	writeLeb128(buf, 0) // function index 0 (tableScan import)
+	writeLeb128(buf, runtimeImportIndex("tableScan"))
 
 	// Store row count
 	buf.WriteByte(0x21) // local.set
@@ -677,16 +686,14 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 			joinType = stmt.Joins[0].Type
 		}
 
-		// Get function index based on join type
-		// Import indices: 7=innerJoin, 10=leftJoin, 11=rightJoin, 12=fullJoin
-		funcIdx := 7 // default innerJoin
+		joinImport := "innerJoin"
 		switch joinType {
 		case query.TokenLeft:
-			funcIdx = 10 // leftJoin
+			joinImport = "leftJoin"
 		case query.TokenRight:
-			funcIdx = 11 // rightJoin
+			joinImport = "rightJoin"
 		case query.TokenFull:
-			funcIdx = 12 // fullJoin
+			joinImport = "fullJoin"
 		}
 
 		// Call appropriate join host function
@@ -700,7 +707,7 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x41) // i32.const 1000 (max rows)
 		writeLeb128(buf, 1000)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, uint64(funcIdx))
+		writeLeb128(buf, runtimeImportIndex(joinImport))
 
 		// Store row count
 		buf.WriteByte(0x21) // local.set
@@ -715,7 +722,7 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x20) // local.get (resultPtr)
 		buf.WriteByte(resultPtrIdx)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, 6) // function index 6 (groupBy import)
+		writeLeb128(buf, runtimeImportIndex("groupBy"))
 
 		// Store group count as rowCount
 		buf.WriteByte(0x21) // local.set
@@ -731,7 +738,7 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x41) // i32.const 0 (predicate ptr - simplified)
 		buf.WriteByte(0x00)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, 1) // function index 1 (filterRow import)
+		writeLeb128(buf, runtimeImportIndex("filterRow"))
 
 		// Store filtered count as rowCount
 		buf.WriteByte(0x21) // local.set
@@ -745,7 +752,7 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x41)    // i32.const
 		writeLeb128(buf, 1000) // max rows
 		buf.WriteByte(0x10)    // call
-		writeLeb128(buf, 0)    // function index 0 (tableScan import)
+		writeLeb128(buf, runtimeImportIndex("tableScan"))
 
 		// Store row count
 		buf.WriteByte(0x21) // local.set
@@ -763,8 +770,8 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x08)
 		buf.WriteByte(0x20) // local.get (resultPtr)
 		buf.WriteByte(resultPtrIdx)
-		buf.WriteByte(0x10)  // call
-		writeLeb128(buf, 14) // function index 14 (distinctRows import)
+		buf.WriteByte(0x10) // call
+		writeLeb128(buf, runtimeImportIndex("distinctRows"))
 
 		// Store new row count
 		buf.WriteByte(0x21) // local.set
@@ -787,7 +794,7 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x20) // local.get (resultPtr)
 		buf.WriteByte(resultPtrIdx)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, 9) // function index 9 (sortRows import)
+		writeLeb128(buf, runtimeImportIndex("sortRows"))
 
 		// Drop the return value for now
 		buf.WriteByte(0x1a) // drop
@@ -806,8 +813,8 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x00)
 		buf.WriteByte(0x20) // local.get (resultPtr)
 		buf.WriteByte(resultPtrIdx)
-		buf.WriteByte(0x10)  // call
-		writeLeb128(buf, 13) // function index 13 (limitOffset import)
+		buf.WriteByte(0x10) // call
+		writeLeb128(buf, runtimeImportIndex("limitOffset"))
 
 		// Store new row count
 		buf.WriteByte(0x21) // local.set
@@ -865,7 +872,7 @@ func (c *Compiler) generateInsertBody(stmt *query.InsertStmt) []byte {
 		buf.WriteByte(0x20)            // local.get
 		buf.WriteByte(localOffset + 2) // rowDataPtr
 		buf.WriteByte(0x10)            // call
-		writeLeb128(buf, 3)            // function index 3 (insertRow import)
+		writeLeb128(buf, runtimeImportIndex("insertRow"))
 
 		// Drop result for now (in real impl, check success)
 		buf.WriteByte(0x1a) // drop
@@ -935,7 +942,7 @@ func (c *Compiler) generateDeleteBody(stmt *query.DeleteStmt) []byte {
 	buf.WriteByte(0x20)            // local.get
 	buf.WriteByte(localOffset + 2) // rowId
 	buf.WriteByte(0x10)            // call
-	writeLeb128(buf, 5)            // function index 5 (deleteRow import)
+	writeLeb128(buf, runtimeImportIndex("deleteRow"))
 
 	// Check result and increment rowsAffected if success
 	// For now just set rowsAffected = 1
@@ -1284,7 +1291,7 @@ func (c *Compiler) compileExpression(expr query.Expression, buf *bytes.Buffer) (
 		buf.WriteByte(0x41) // i32.const 100 (maxRows)
 		writeLeb128(buf, 100)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, 8) // function index 8 (executeSubquery import)
+		writeLeb128(buf, runtimeImportIndex("executeSubquery"))
 
 		// The result is row count, load first row's first column from memory
 		// For scalar subquery, return the count
@@ -1301,8 +1308,8 @@ func (c *Compiler) compileExpression(expr query.Expression, buf *bytes.Buffer) (
 		buf.WriteByte(0x00)
 		buf.WriteByte(0x41) // i32.const 4096 (outPtr - scratch space)
 		writeLeb128(buf, 4096)
-		buf.WriteByte(0x10)  // call
-		writeLeb128(buf, 16) // function index 16 (windowFunction import)
+		buf.WriteByte(0x10) // call
+		writeLeb128(buf, runtimeImportIndex("windowFunction"))
 
 		// Return success indicator
 		return "INTEGER", nil

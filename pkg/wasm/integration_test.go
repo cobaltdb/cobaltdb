@@ -38,6 +38,31 @@ func TestCompilerModuleGeneration(t *testing.T) {
 	}
 }
 
+func TestRuntimeImportIndexMatchesSpecs(t *testing.T) {
+	seen := make(map[string]struct{}, len(runtimeImportSpecs))
+	for i, spec := range runtimeImportSpecs {
+		if _, exists := seen[spec.name]; exists {
+			t.Fatalf("duplicate runtime import %q", spec.name)
+		}
+		seen[spec.name] = struct{}{}
+		if got := runtimeImportIndex(spec.name); got != uint64(i) {
+			t.Fatalf("runtimeImportIndex(%q) = %d, want %d", spec.name, got, i)
+		}
+	}
+}
+
+func TestCompilerRuntimeImportsHaveRegisteredHostFunctions(t *testing.T) {
+	rt := NewRuntime(1)
+	NewHostFunctions().RegisterAll(rt)
+
+	for _, spec := range runtimeImportSpecs {
+		key := "env:" + spec.name
+		if _, ok := rt.Imports[key]; !ok {
+			t.Fatalf("compiler import %s has no registered host function", key)
+		}
+	}
+}
+
 // TestRuntimeLoadModule tests loading a minimal valid WASM module
 func TestRuntimeLoadModule(t *testing.T) {
 	r := NewRuntime(1)

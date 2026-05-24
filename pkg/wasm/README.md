@@ -129,7 +129,7 @@ Bridge between WASM runtime and database operations.
 | `unionResults` | `(i32, i32, i32, i32, i32) -> i32` | Combine two result sets (UNION) |
 | `exceptResults` | `(i32, i32, i32, i32, i32) -> i32` | Rows in first but not second (EXCEPT) |
 | `intersectResults` | `(i32, i32, i32, i32, i32) -> i32` | Rows common to both (INTERSECT) |
-| `windowFunction` | `(i32, i32, i32, i32, i64, i64) -> i32` | Compute ROW_NUMBER, LAG, LEAD, SUM OVER, etc. |
+| `windowFunction` | `(i32, i32, i32, i32) -> i32` | Compute ROW_NUMBER and basic window operations over an input buffer |
 | `indexScan` | `(i32, i32, i64, i64, i32, i32) -> i32` | Index-based table scan for fast lookups |
 | `bindParameter` | `(i32, i32, i32) -> i32` | Bind parameter value for prepared statements |
 | `beginTransaction` | `() -> i32` | Start a new transaction |
