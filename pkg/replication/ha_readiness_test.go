@@ -190,3 +190,45 @@ func TestFencePrimaryRequiresProof(t *testing.T) {
 		})
 	}
 }
+
+func TestExternallyOrchestratedFailoverDrill(t *testing.T) {
+	oldPrimary := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	if err := oldPrimary.ReplicateWALEntry([]byte("committed-before-failover")); err != nil {
+		t.Fatalf("old primary replicate before failover: %v", err)
+	}
+	requiredLSN := oldPrimary.GetStatus().CurrentMaster
+
+	candidate := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync})
+	candidate.lastApplied = requiredLSN
+
+	if err := oldPrimary.FencePrimary(PrimaryFenceRequest{
+		FencingToken: "orchestrator-fence",
+		Epoch:        11,
+		ExpiresAt:    time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("FencePrimary: %v", err)
+	}
+
+	if err := candidate.PromoteToMasterWithFencing(PromotionRequest{
+		FencingToken:     "orchestrator-fence",
+		Epoch:            11,
+		OldPrimaryFenced: true,
+		ExpiresAt:        time.Now().Add(time.Minute),
+		RequiredLSN:      requiredLSN,
+	}); err != nil {
+		t.Fatalf("PromoteToMasterWithFencing: %v", err)
+	}
+
+	if err := oldPrimary.ReplicateWALEntry([]byte("must-not-commit")); !errors.Is(err, ErrPrimaryFenced) {
+		t.Fatalf("old primary accepted WAL after fencing: %v", err)
+	}
+	if err := candidate.ReplicateWALEntry([]byte("new-primary-commit")); err != nil {
+		t.Fatalf("new primary rejected WAL: %v", err)
+	}
+	if got, want := candidate.GetStatus().CurrentMaster, requiredLSN+1; got != want {
+		t.Fatalf("new primary LSN = %d, want %d", got, want)
+	}
+	if got := oldPrimary.GetStatus().CurrentMaster; got != requiredLSN {
+		t.Fatalf("old primary LSN advanced after fencing to %d, want %d", got, requiredLSN)
+	}
+}

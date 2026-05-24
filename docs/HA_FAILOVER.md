@@ -57,7 +57,7 @@ storage fencing, or network isolation.
 
 ```bash
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
-go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary' -count=1
+go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary|TestExternallyOrchestratedFailoverDrill' -count=1
 ```
 
 Operational stance:

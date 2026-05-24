@@ -63,7 +63,8 @@ Recent hardening commits:
 | `1fc68a4` | FDW pushdown | Added simple projection pushdown with full-row expansion |
 | `18e8b94` | FDW memory | Added `max_materialized_bytes` guard for temporary query-engine materialization |
 | `caa1ae3` | HA boundary | Added externally fenced manual promotion contract |
-| Current iteration | HA fencing | Added cooperative primary fencing guard for WAL writes |
+| `84d87c9` | HA fencing | Added cooperative primary fencing guard for WAL writes |
+| Current iteration | HA drill | Added externally orchestrated failover drill |
 
 Validation performed during this pass:
 
@@ -81,7 +82,7 @@ go test ./test -run TestMySQLPreparedStatementExecuteWithParameters -count=1
 go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE2E' -count=1
 go test ./pkg/engine -run '^$' -bench BenchmarkWriteLatencyUnderReaders -benchtime=10x -count=1
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
-go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary' -count=1
+go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary|TestExternallyOrchestratedFailoverDrill' -count=1
 go test -race ./pkg/replication -run TestSlaveStatusClearsConnectionOnMasterDisconnect -count=1
 go test ./pkg/replication -count=1
 go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count=1
