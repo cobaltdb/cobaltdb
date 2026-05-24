@@ -112,7 +112,11 @@ func (c *Catalog) RefreshMaterializedView(name string) error {
 func (c *Catalog) GetMaterializedView(name string) (*MaterializedViewDef, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.getMaterializedViewLocked(name)
+	mv, err := c.getMaterializedViewLocked(name)
+	if err != nil {
+		return nil, err
+	}
+	return cloneMaterializedViewDef(mv), nil
 }
 
 // getMaterializedViewLocked is the lock-free internal version. Must be called with mu held.

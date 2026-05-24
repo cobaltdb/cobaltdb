@@ -741,7 +741,11 @@ func (c *Catalog) AlterTableRenameColumn(stmt *query.AlterTableStmt) error {
 func (c *Catalog) GetTable(name string) (*TableDef, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.getTableLocked(name)
+	table, err := c.getTableLocked(name)
+	if err != nil {
+		return nil, err
+	}
+	return cloneTableDef(table), nil
 }
 
 func (c *Catalog) getTableLocked(name string) (*TableDef, error) {
@@ -868,7 +872,7 @@ func (c *Catalog) GetTrigger(name string) (*query.CreateTriggerStmt, error) {
 	if !exists {
 		return nil, fmt.Errorf("trigger %s not found", name)
 	}
-	return trigger, nil
+	return cloneCreateTriggerStmt(trigger), nil
 }
 
 func (c *Catalog) DropTrigger(name string) error {
@@ -893,7 +897,7 @@ func (c *Catalog) getTriggersForTableLocked(tableName string, event string) []*q
 	var result []*query.CreateTriggerStmt
 	for _, trigger := range c.triggers {
 		if trigger.Table == tableName && (event == "" || trigger.Event == event) {
-			result = append(result, trigger)
+			result = append(result, cloneCreateTriggerStmt(trigger))
 		}
 	}
 	return result
@@ -1101,7 +1105,7 @@ func (c *Catalog) GetProcedure(name string) (*query.CreateProcedureStmt, error) 
 	if !exists {
 		return nil, fmt.Errorf("procedure %s not found", name)
 	}
-	return proc, nil
+	return cloneCreateProcedureStmt(proc), nil
 }
 
 func (c *Catalog) DropProcedure(name string) error {
@@ -1122,7 +1126,7 @@ func (c *Catalog) GetTableStats(tableName string) (*StatsTableStats, error) {
 	if !exists {
 		return nil, fmt.Errorf("no statistics for table %s", tableName)
 	}
-	return stats, nil
+	return cloneTableStats(stats), nil
 }
 
 // findInsteadOfTrigger finds an INSTEAD OF trigger for a table/view and event

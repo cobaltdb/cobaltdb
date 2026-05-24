@@ -61,16 +61,16 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 	}
 
 	// For small tables (≤1000 rows) build synchronously so tests and
-	 // lightweight DDL scripts get immediate index availability.
-	 // Large tables get a background build so the main thread returns
-	 // in <100ms and doesn't block concurrent reads/writes.
-	 tree := c.tableTrees[stmt.Table]
-	 if tree != nil && tree.Size() <= 1000 {
-		 c.populateIndexLocked(indexTree, indexDef, table, tree)
-		 indexDef.Status = IndexActive
-	 } else {
-		 go c.buildIndexInBackground(stmt.Index, stmt.Table, table)
-	 }
+	// lightweight DDL scripts get immediate index availability.
+	// Large tables get a background build so the main thread returns
+	// in <100ms and doesn't block concurrent reads/writes.
+	tree := c.tableTrees[stmt.Table]
+	if tree != nil && tree.Size() <= 1000 {
+		c.populateIndexLocked(indexTree, indexDef, table, tree)
+		indexDef.Status = IndexActive
+	} else {
+		go c.buildIndexInBackground(stmt.Index, stmt.Table, table)
+	}
 
 	return nil
 }
@@ -147,7 +147,7 @@ func (c *Catalog) GetIndex(name string) (*IndexDef, error) {
 	if !exists {
 		return nil, ErrIndexNotFound
 	}
-	return index, nil
+	return cloneIndexDef(index), nil
 }
 
 func (c *Catalog) findUsableIndexWithArgs(tableName string, where query.Expression, args []interface{}) (string, string, interface{}) {
