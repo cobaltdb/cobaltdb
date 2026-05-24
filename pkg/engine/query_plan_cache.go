@@ -77,7 +77,7 @@ func (c *QueryPlanCache) Get(sql string, args []interface{}) (*QueryPlanCacheEnt
 
 	// Fast path: read-only lookup.
 	c.mu.RLock()
-	elem, found := c.entries[hash]
+	_, found := c.entries[hash]
 	c.mu.RUnlock()
 
 	if !found {
@@ -87,16 +87,24 @@ func (c *QueryPlanCache) Get(sql string, args []interface{}) (*QueryPlanCacheEnt
 		return nil, false
 	}
 
-	// Slow path: update LRU under write lock.
+	// Slow path: update LRU under write lock. Re-read the element because it
+	// may have been invalidated or evicted after the optimistic lookup.
 	c.mu.Lock()
+	elem, found := c.entries[hash]
+	if !found {
+		c.misses++
+		c.mu.Unlock()
+		return nil, false
+	}
 	entry := elem.Value.(*QueryPlanCacheEntry)
 	entry.LastAccessed = time.Now()
 	entry.AccessCount++
 	c.lruList.MoveToFront(elem)
 	c.hits++
+	entryCopy := *entry
 	c.mu.Unlock()
 
-	return entry, true
+	return &entryCopy, true
 }
 
 // Put adds a query plan to the cache
@@ -113,6 +121,7 @@ func (c *QueryPlanCache) Put(sql string, args []interface{}, stmt query.Statemen
 		c.currentSize -= oldEntry.Size
 
 		newEntry := c.createEntry(sql, stmt)
+		newEntry.HashKey = hash
 		elem.Value = newEntry
 		c.lruList.MoveToFront(elem)
 		c.currentSize += newEntry.Size

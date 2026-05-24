@@ -228,6 +228,35 @@ func TestQueryPlanCache_UpdateExistingEntry(t *testing.T) {
 	}
 }
 
+func TestQueryPlanCache_UpdateExistingPreservesHashKeyForEviction(t *testing.T) {
+	cache := NewQueryPlanCache(1024*1024, 1)
+
+	sql1 := "SELECT * FROM users"
+	stmt1, _ := query.Parse(sql1)
+	if err := cache.Put(sql1, nil, stmt1); err != nil {
+		t.Fatalf("first Put failed: %v", err)
+	}
+	if err := cache.Put(sql1, nil, stmt1); err != nil {
+		t.Fatalf("update Put failed: %v", err)
+	}
+
+	sql2 := "SELECT * FROM orders"
+	stmt2, _ := query.Parse(sql2)
+	if err := cache.Put(sql2, nil, stmt2); err != nil {
+		t.Fatalf("second query Put failed: %v", err)
+	}
+
+	if stats := cache.GetStats(); stats.Size != 1 {
+		t.Fatalf("expected maxEntries to hold at 1 after evicting updated entry, got %d", stats.Size)
+	}
+	if _, found := cache.Get(sql1, nil); found {
+		t.Fatal("updated entry should have been evicted when second query was inserted")
+	}
+	if _, found := cache.Get(sql2, nil); !found {
+		t.Fatal("new entry should remain cached")
+	}
+}
+
 // TestQueryPlanCache_ConcurrentAccess tests thread safety of cache
 func TestQueryPlanCache_ConcurrentAccess(t *testing.T) {
 	cache := NewQueryPlanCache(1024*1024, 1000)

@@ -57,6 +57,41 @@ func TestQueryPlanCache_PutAndGet(t *testing.T) {
 	}
 }
 
+func TestQueryPlanCache_GetReturnsEntryCopy(t *testing.T) {
+	cache := NewQueryPlanCache(1024*1024, 100)
+
+	sql := "SELECT * FROM test WHERE id = 1"
+	stmt, err := query.Parse(sql)
+	if err != nil {
+		t.Fatalf("Failed to parse query: %v", err)
+	}
+	if err := cache.Put(sql, nil, stmt); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	entry, found := cache.Get(sql, nil)
+	if !found {
+		t.Fatal("Expected to find cached entry")
+	}
+	entry.SQL = "mutated"
+	entry.HashKey = ""
+	entry.AccessCount = 1000
+
+	entry, found = cache.Get(sql, nil)
+	if !found {
+		t.Fatal("Expected to find cached entry after returned copy mutation")
+	}
+	if entry.SQL != sql {
+		t.Fatalf("cached entry should not reflect returned SQL mutation, got %q", entry.SQL)
+	}
+	if entry.HashKey == "" {
+		t.Fatal("cached entry should keep its hash key after returned copy mutation")
+	}
+	if entry.AccessCount >= 1000 {
+		t.Fatalf("cached entry should not reflect returned access count mutation, got %d", entry.AccessCount)
+	}
+}
+
 func TestQueryPlanCache_GetNotFound(t *testing.T) {
 	cache := NewQueryPlanCache(1024*1024, 100)
 
