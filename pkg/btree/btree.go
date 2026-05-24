@@ -1199,7 +1199,7 @@ func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 			if endKey != nil && strings.Compare(k, endStr) > 0 {
 				continue
 			}
-			pairs = append(pairs, kvPair{k, v})
+			pairs = append(pairs, kvPair{k, cloneBytes(v)})
 			if hasEvicted {
 				seen[k] = true
 			}
@@ -1235,7 +1235,7 @@ func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 			if endKey != nil && strings.Compare(k, endStr) > 0 {
 				continue
 			}
-			pairs = append(pairs, kvPair{k, v})
+			pairs = append(pairs, kvPair{k, cloneBytes(v)})
 		}
 	}
 
@@ -1268,7 +1268,7 @@ func (it *Iterator) Next() ([]byte, []byte, error) {
 		return nil, nil, nil
 	}
 
-	return []byte(p.key), p.value, nil
+	return []byte(p.key), cloneBytes(p.value), nil
 }
 
 // NextString returns the next entry with the key as a string,
@@ -1287,7 +1287,16 @@ func (it *Iterator) NextString() (string, []byte, error) {
 		return "", nil, nil
 	}
 
-	return p.key, p.value, nil
+	return p.key, cloneBytes(p.value), nil
+}
+
+func cloneBytes(value []byte) []byte {
+	if value == nil {
+		return nil
+	}
+	cloned := make([]byte, len(value))
+	copy(cloned, value)
+	return cloned
 }
 
 // Valid returns true if the iterator has more items

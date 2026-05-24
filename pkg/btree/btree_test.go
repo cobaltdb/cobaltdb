@@ -61,6 +61,57 @@ func TestPutGet(t *testing.T) {
 	}
 }
 
+func TestIteratorValuesAreIsolated(t *testing.T) {
+	tree, pool := setupTestTree(t)
+	defer pool.Close()
+
+	if err := tree.Put([]byte("key1"), []byte("value1")); err != nil {
+		t.Fatalf("Failed to put: %v", err)
+	}
+
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	_, value, err := iter.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if err := iter.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	value[0] = 'x'
+	stored, err := tree.Get([]byte("key1"))
+	if err != nil {
+		t.Fatalf("Get after iterator mutation: %v", err)
+	}
+	if string(stored) != "value1" {
+		t.Fatalf("iterator returned mutable tree value: %q", stored)
+	}
+
+	iter, err = tree.Scan(nil, nil)
+	if err != nil {
+		t.Fatalf("Scan second read: %v", err)
+	}
+	_, valueString, err := iter.NextString()
+	if err != nil {
+		t.Fatalf("NextString: %v", err)
+	}
+	valueString[0] = 'y'
+	if err := iter.Close(); err != nil {
+		t.Fatalf("Close second iterator: %v", err)
+	}
+
+	stored, err = tree.Get([]byte("key1"))
+	if err != nil {
+		t.Fatalf("Get after NextString mutation: %v", err)
+	}
+	if string(stored) != "value1" {
+		t.Fatalf("NextString returned mutable tree value: %q", stored)
+	}
+}
+
 func TestGetNonExistent(t *testing.T) {
 	tree, pool := setupTestTree(t)
 	defer pool.Close()
