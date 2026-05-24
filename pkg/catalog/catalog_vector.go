@@ -70,6 +70,10 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 		}
 	}
 
+	if err := c.storeVectorIndexDef(vectorIndex); err != nil {
+		return fmt.Errorf("failed to persist vector index %s: %w", name, err)
+	}
+
 	c.vectorIndexes[name] = vectorIndex
 	return nil
 }
@@ -131,6 +135,12 @@ func (c *Catalog) DropVectorIndex(name string) error {
 
 	if _, exists := c.vectorIndexes[name]; !exists {
 		return fmt.Errorf("vector index %s not found", name)
+	}
+
+	if c.tree != nil {
+		if err := c.tree.Delete([]byte("vec:" + name)); err != nil {
+			return fmt.Errorf("failed to delete vector index %s metadata: %w", name, err)
+		}
 	}
 
 	delete(c.vectorIndexes, name)

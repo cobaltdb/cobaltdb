@@ -31,6 +31,8 @@ CobaltDB is a lightweight, embeddable database engine written in Go with SQL and
   behavior, prepared statement support, and unsupported protocol areas.
 - [HA And Failover](HA_FAILOVER.md): replication guarantees, failure drills,
   and current non-HA boundaries.
+- [Vector Persistence](VECTOR_PERSISTENCE.md): HNSW persistence guarantees,
+  reopen drills, and remaining vector certification work.
 - [Benchmarks](BENCHMARKS.md): bounded benchmark regression gate and historical
   performance notes.
 
