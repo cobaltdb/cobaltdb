@@ -432,6 +432,25 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 	if ts != nil {
 		pendingWriteStartPos = len(ts.pendingWrites)
 	}
+	rollbackInsertErr := func(err error) (int64, int64, error) {
+		if ts != nil {
+			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+			rebuildPendingWriteMap(ts)
+		}
+		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
+		if !txnActive {
+			return 0, 0, err
+		}
+		undoToRemove := 1 + len(stmtInserts)
+		var undoLog []undoEntry
+		if ts != nil {
+			undoLog = ts.undoLog
+		}
+		if len(undoLog) >= undoToRemove {
+			c.truncateUndoLog(len(undoLog) - undoToRemove)
+		}
+		return 0, 0, err
+	}
 
 	needsInsertedRows := len(stmt.Returning) > 0 || len(snap.triggers) > 0
 	compositePK := len(table.PrimaryKey) > 1
@@ -613,32 +632,8 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 	}
 
 	if insertErr != nil {
-		if ts != nil {
-			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
-			rebuildPendingWriteMap(ts)
-		}
-		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
-		if !txnActive {
-			return 0, 0, insertErr
-		}
-		undoToRemove := 1 + len(stmtInserts)
-		var undoLog []undoEntry
-		if ts != nil {
-			undoLog = ts.undoLog
-		}
-		if len(undoLog) >= undoToRemove {
-			c.truncateUndoLog(len(undoLog) - undoToRemove)
-		}
-		return 0, 0, insertErr
+		return rollbackInsertErr(insertErr)
 	}
-
-	for _, insertedRow := range insertedRows {
-		if trigErr := c.executeTriggersList(ctx, snap.triggers, "INSERT", "AFTER", insertedRow, nil, table.Columns); trigErr != nil {
-			return 0, 0, fmt.Errorf("AFTER INSERT trigger failed: %w", trigErr)
-		}
-	}
-
-	c.invalidateQueryCache(stmt.Table)
 
 	var returningRows [][]interface{}
 	var returningCols []string
@@ -646,7 +641,7 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 		for _, insertedRow := range insertedRows {
 			returningRow, cols, err := c.evaluateReturning(stmt.Returning, insertedRow, table, args)
 			if err != nil {
-				return 0, 0, fmt.Errorf("RETURNING clause failed: %w", err)
+				return rollbackInsertErr(fmt.Errorf("RETURNING clause failed: %w", err))
 			}
 			returningRows = append(returningRows, returningRow)
 			if returningCols == nil {
@@ -654,6 +649,15 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 			}
 		}
 	}
+
+	for _, insertedRow := range insertedRows {
+		if trigErr := c.executeTriggersList(ctx, snap.triggers, "INSERT", "AFTER", insertedRow, nil, table.Columns); trigErr != nil {
+			return rollbackInsertErr(fmt.Errorf("AFTER INSERT trigger failed: %w", trigErr))
+		}
+	}
+
+	c.invalidateQueryCache(stmt.Table)
+
 	c.setLastReturning(returningRows, returningCols)
 
 	if rowsAffected > 0 {
@@ -1079,6 +1083,27 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	if ts != nil {
 		pendingWriteStartPos = len(ts.pendingWrites)
 	}
+	rollbackInsertErr := func(err error) (int64, int64, error) {
+		// Discard buffered writes added by this statement.
+		if ts != nil {
+			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
+			rebuildPendingWriteMap(ts)
+		}
+		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
+		if !txnActive {
+			return 0, 0, err
+		}
+		// Inside explicit transaction - remove undo log entries
+		undoToRemove := 1 + len(stmtInserts)
+		var undoLog []undoEntry
+		if ts != nil {
+			undoLog = ts.undoLog
+		}
+		if len(undoLog) >= undoToRemove {
+			c.truncateUndoLog(len(undoLog) - undoToRemove)
+		}
+		return 0, 0, err
+	}
 
 	// Determine if we can use buffered writes for this insert.
 	// Buffered mode defers B-tree mutation until commit. It supports tables
@@ -1398,45 +1423,18 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 	// Statement-level atomicity: undo all inserts on error
 	if insertErr != nil {
-		// Discard buffered writes added by this statement.
-		if ts != nil {
-			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
-			rebuildPendingWriteMap(ts)
-		}
-		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
-		if !txnActive {
-			return 0, 0, insertErr
-		}
-		// Inside explicit transaction - remove undo log entries
-		undoToRemove := 1 + len(stmtInserts)
-		var undoLog []undoEntry
-		if ts != nil {
-			undoLog = ts.undoLog
-		}
-		if len(undoLog) >= undoToRemove {
-			c.truncateUndoLog(len(undoLog) - undoToRemove)
-		}
-		return 0, 0, insertErr
+		return rollbackInsertErr(insertErr)
 	}
 
-	// Execute AFTER INSERT triggers for each inserted row
-	for _, insertedRow := range insertedRows {
-		if trigErr := c.executeTriggers(ctx, stmt.Table, "INSERT", "AFTER", insertedRow, nil, table.Columns); trigErr != nil {
-			return 0, 0, fmt.Errorf("AFTER INSERT trigger failed: %w", trigErr)
-		}
-	}
-
-	// Invalidate query cache for the affected table
-	c.invalidateQueryCache(stmt.Table)
-
-	// Handle RETURNING clause
+	// Handle RETURNING clause before AFTER triggers so RETURNING errors can
+	// abort the statement without leaving trigger side effects behind.
 	var returningRows [][]interface{}
 	var returningCols []string
 	if len(stmt.Returning) > 0 && rowsAffected > 0 {
 		for _, insertedRow := range insertedRows {
 			returningRow, cols, err := c.evaluateReturning(stmt.Returning, insertedRow, table, args)
 			if err != nil {
-				return 0, 0, fmt.Errorf("RETURNING clause failed: %w", err)
+				return rollbackInsertErr(fmt.Errorf("RETURNING clause failed: %w", err))
 			}
 			returningRows = append(returningRows, returningRow)
 			if returningCols == nil {
@@ -1444,6 +1442,16 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			}
 		}
 	}
+
+	// Execute AFTER INSERT triggers for each inserted row
+	for _, insertedRow := range insertedRows {
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "INSERT", "AFTER", insertedRow, nil, table.Columns); trigErr != nil {
+			return rollbackInsertErr(fmt.Errorf("AFTER INSERT trigger failed: %w", trigErr))
+		}
+	}
+
+	// Invalidate query cache for the affected table
+	c.invalidateQueryCache(stmt.Table)
 
 	// Store returning rows for retrieval
 	c.setLastReturning(returningRows, returningCols)

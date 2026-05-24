@@ -63,3 +63,37 @@ func TestMultiInsertRollsBackOnLaterValueCountError(t *testing.T) {
 	}
 	expectRowCount(t, db, "SELECT * FROM multi_insert_atomicity", 0)
 }
+
+func TestMultiInsertRollsBackOnReturningError(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	execSQL(t, db, "CREATE TABLE multi_insert_returning_atomicity (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+
+	rows, err := db.Query(ctx, "INSERT INTO multi_insert_returning_atomicity VALUES (1, 'first'), (2, 'second') RETURNING missing_column")
+	if err == nil {
+		rows.Close()
+		t.Fatal("expected multi-row INSERT RETURNING to fail for an unknown column")
+	}
+	expectRowCount(t, db, "SELECT * FROM multi_insert_returning_atomicity", 0)
+}
+
+func TestMultiInsertRollsBackOnAfterTriggerError(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	execSQL(t, db, "CREATE TABLE multi_insert_trigger_main (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+	execSQL(t, db, "CREATE TABLE multi_insert_trigger_audit (id INTEGER PRIMARY KEY, note TEXT NOT NULL)")
+	execSQL(t, db, `CREATE TRIGGER multi_insert_bad_after
+		AFTER INSERT ON multi_insert_trigger_main
+		BEGIN
+			INSERT INTO multi_insert_trigger_audit VALUES (NEW.id, NULL);
+		END`)
+
+	_, err := db.Exec(ctx, "INSERT INTO multi_insert_trigger_main VALUES (1, 'first'), (2, 'second')")
+	if err == nil {
+		t.Fatal("expected AFTER INSERT trigger failure")
+	}
+	expectRowCount(t, db, "SELECT * FROM multi_insert_trigger_main", 0)
+	expectRowCount(t, db, "SELECT * FROM multi_insert_trigger_audit", 0)
+}
