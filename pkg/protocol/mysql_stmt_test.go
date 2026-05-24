@@ -52,6 +52,7 @@ func TestCountPreparedParams(t *testing.T) {
 		{"SELECT * FROM users WHERE id = ? AND name = ?", 2},
 		{"SELECT '?' AS literal, col FROM users WHERE id = ?", 1},
 		{"INSERT INTO t VALUES (?, '?', ?)", 2},
+		{"INSERT INTO t VALUES (?, ?), (?, ?)", 4},
 		{"SELECT 1", 0},
 	}
 
@@ -424,6 +425,58 @@ func TestHandleStmtExecute(t *testing.T) {
 			t.Fatalf("expected fetch cursor unsupported error packet, got %q", out)
 		}
 	})
+}
+
+func TestHandleStmtExecuteMultiRowParams(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE exec_multi_test (id INT, val TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	client, _ := newTestClient(db)
+	if err := client.handleStmtPrepare("INSERT INTO exec_multi_test (id, val) VALUES (?, ?), (?, ?)"); err != nil {
+		t.Fatalf("prepare multi-row insert: %v", err)
+	}
+
+	var stmtID uint32
+	for id := range client.stmts {
+		stmtID = id
+		break
+	}
+	if stmtID == 0 {
+		t.Fatal("prepared statement ID was not registered")
+	}
+
+	execData := buildStmtExecutePacket(
+		stmtID,
+		[]byte{MySQLTypeLongLong, MySQLTypeVarString, MySQLTypeLongLong, MySQLTypeVarString},
+		[]interface{}{int64(1), "one", int64(2), "two"},
+	)
+	if err := client.handleStmtExecute(execData); err != nil {
+		t.Fatalf("execute multi-row insert: %v", err)
+	}
+
+	var count int64
+	if err := db.QueryRow(ctx, "SELECT COUNT(*) FROM exec_multi_test").Scan(&count); err != nil {
+		t.Fatalf("count inserted rows: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("inserted row count = %d, want 2", count)
+	}
+
+	var got string
+	if err := db.QueryRow(ctx, "SELECT val FROM exec_multi_test WHERE id = ?", 2).Scan(&got); err != nil {
+		t.Fatalf("query second inserted row: %v", err)
+	}
+	if got != "two" {
+		t.Fatalf("second inserted value = %q, want %q", got, "two")
+	}
 }
 
 func buildStmtExecutePacket(stmtID uint32, types []byte, values []interface{}) []byte {
