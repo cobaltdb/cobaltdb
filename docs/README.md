@@ -33,6 +33,8 @@ CobaltDB is a lightweight, embeddable database engine written in Go with SQL and
   and current non-HA boundaries.
 - [Vector Persistence](VECTOR_PERSISTENCE.md): HNSW persistence guarantees,
   reopen drills, and remaining vector certification work.
+- [FDW Limits](FDW_LIMITS.md): CSV FDW materialization limits and release
+  drills for external data scans.
 - [Benchmarks](BENCHMARKS.md): bounded benchmark regression gate and historical
   performance notes.
 

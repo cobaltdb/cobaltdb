@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -228,6 +229,91 @@ func TestCSVWrapper_OpenMissingFile(t *testing.T) {
 	err := csv.Open(map[string]string{"file": "/nonexistent/path/file.csv"})
 	if err == nil {
 		t.Fatal("expected error when file does not exist")
+	}
+}
+
+func TestCSVWrapper_MaxRowsLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.csv")
+	content := "id,name\n1,alice\n2,bob\n3,charlie\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path, "max_rows": "2"}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer csv.Close()
+
+	_, err := csv.Scan("test", []string{"id", "name"})
+	if err == nil {
+		t.Fatal("expected max_rows error")
+	}
+	if !strings.Contains(err.Error(), "row limit exceeded") {
+		t.Fatalf("expected row limit error, got %v", err)
+	}
+}
+
+func TestCSVWrapper_MaxBytesLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.csv")
+	if err := os.WriteFile(path, []byte("id,name\n1,alice\n"), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	err := csv.Open(map[string]string{"file": path, "max_bytes": "4"})
+	if err == nil {
+		t.Fatal("expected max_bytes error")
+	}
+	if !strings.Contains(err.Error(), "exceeds max_bytes") {
+		t.Fatalf("expected max_bytes error, got %v", err)
+	}
+}
+
+func TestCSVWrapper_MaxBytesLimitAtScan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "growing.csv")
+	if err := os.WriteFile(path, []byte("id\n1\n"), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path, "max_bytes": "8"}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer csv.Close()
+
+	if err := os.WriteFile(path, []byte("id\n1\n2\n3\n4\n5\n"), 0644); err != nil {
+		t.Fatalf("failed to grow csv: %v", err)
+	}
+
+	_, err := csv.Scan("test", []string{"id"})
+	if err == nil {
+		t.Fatal("expected max_bytes error after file grew")
+	}
+	if !strings.Contains(err.Error(), "exceeds max_bytes") {
+		t.Fatalf("expected max_bytes error, got %v", err)
+	}
+}
+
+func TestCSVWrapper_InvalidLimitOptions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.csv")
+	if err := os.WriteFile(path, []byte("id\n1\n"), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	tests := []map[string]string{
+		{"file": path, "max_rows": "-1"},
+		{"file": path, "max_bytes": "nope"},
+	}
+	for _, options := range tests {
+		csv := &CSVWrapper{}
+		if err := csv.Open(options); err == nil {
+			t.Fatalf("expected invalid option error for %#v", options)
+		}
 	}
 }
 

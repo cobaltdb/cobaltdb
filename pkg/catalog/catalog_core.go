@@ -749,8 +749,24 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 			break
 		}
 	}
-	// Prepare scan parameters while holding catalog lock
-	trees, _ := cat.getTableTreesForScan(table)
+	// Prepare scan parameters while holding catalog lock.
+	// Materialized views have no physical B-tree; resolveFromTable stores
+	// their data in cteResults, so only suppress missing physical storage when
+	// that materialized-view snapshot is present.
+	var mvRows [][]interface{}
+	var isMV bool
+	trees, err := cat.getTableTreesForScan(table)
+	if err != nil {
+		if cat.cteResults == nil {
+			return nil, nil, err
+		}
+		cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]
+		if !ok {
+			return nil, nil, err
+		}
+		mvRows = cteRes.rows
+		isMV = true
+	}
 	var indexMatches []string
 	var useIndex bool
 	if stmt.Where != nil {
@@ -759,11 +775,7 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	// For statements without subqueries, release the catalog lock during the
 	// heavy scan so writes can proceed. Subqueries would recursively call
 	// selectLocked, making lock release unsafe (non-reentrant RWMutex).
-	// Materialized views have no physical B-tree; resolveFromTable stores
-	// their data in cteResults. Extract rows here while lock is held.
-	var mvRows [][]interface{}
-	var isMV bool
-	if len(trees) == 0 && cat.cteResults != nil {
+	if !isMV && len(trees) == 0 && cat.cteResults != nil {
 		if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
 			mvRows = cteRes.rows
 			isMV = true

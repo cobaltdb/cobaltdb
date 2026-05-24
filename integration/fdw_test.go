@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
@@ -189,5 +190,37 @@ func TestFDWInsertRejection(t *testing.T) {
 	_, err = db.Exec(ctx, `INSERT INTO ext VALUES (2)`)
 	if err == nil {
 		t.Fatal("Expected INSERT into foreign table to fail")
+	}
+}
+
+func TestFDWCSVMaxRowsLimitViaSQL(t *testing.T) {
+	ctx := context.Background()
+	db, err := engine.Open(":memory:", engine.DefaultOptions())
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	dir := t.TempDir()
+	csvPath := filepath.Join(dir, "large.csv")
+	content := "id,name\n1,alice\n2,bob\n3,charlie\n"
+	if err := os.WriteFile(csvPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write CSV: %v", err)
+	}
+
+	_, err = db.Exec(ctx, fmt.Sprintf(
+		`CREATE FOREIGN TABLE ext_limited (id INTEGER, name TEXT) WRAPPER 'csv' OPTIONS (file '%s', max_rows '2')`,
+		csvPath,
+	))
+	if err != nil {
+		t.Fatalf("Failed to create foreign table: %v", err)
+	}
+
+	_, err = db.Query(ctx, `SELECT * FROM ext_limited`)
+	if err == nil {
+		t.Fatal("Expected max_rows error from foreign table query")
+	}
+	if !strings.Contains(err.Error(), "row limit exceeded") {
+		t.Fatalf("Expected row limit error, got %v", err)
 	}
 }

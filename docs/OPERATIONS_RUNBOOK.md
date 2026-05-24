@@ -29,6 +29,8 @@ go test ./test -run 'TestMySQLPreparedStatementExecuteWithParameters|TestMySQL' 
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
 go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count=1
 go test ./pkg/engine -run TestVectorIndexPersistsAcrossReopen -count=1
+go test ./pkg/fdw -count=1
+go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL' -count=1
 ```
 
 Release blockers:
