@@ -73,6 +73,59 @@ func TestWALRecoversCommittedWritesAfterProcessExit(t *testing.T) {
 	assertScalar(t, recovered, "SELECT score FROM durable WHERE name = 'beta'", int64(25))
 }
 
+func TestWALCrashRecoveryIgnoresOpenTransaction(t *testing.T) {
+	if os.Getenv("COBALTDB_WAL_OPEN_TX_HELPER") == "1" {
+		runWALOpenTransactionWriter(t)
+		os.Exit(0)
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "open_tx.db")
+	ctx := context.Background()
+
+	db, err := Open(dbPath, durabilityTestOptions())
+	if err != nil {
+		t.Fatalf("open setup db: %v", err)
+	}
+	if _, err := db.Exec(ctx, "CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance INTEGER)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO accounts VALUES (1, 100)"); err != nil {
+		t.Fatalf("insert account 1: %v", err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO accounts VALUES (2, 200)"); err != nil {
+		t.Fatalf("insert account 2: %v", err)
+	}
+	if err := db.Checkpoint(); err != nil {
+		t.Fatalf("checkpoint setup db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close setup db: %v", err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestWALCrashRecoveryIgnoresOpenTransaction")
+	cmd.Env = append(os.Environ(),
+		"COBALTDB_WAL_OPEN_TX_HELPER=1",
+		"COBALTDB_WAL_CRASH_DB="+dbPath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("open transaction helper failed: %v\n%s", err, out)
+	}
+
+	recovered, err := Open(dbPath, durabilityTestOptions())
+	if err != nil {
+		t.Fatalf("open recovered db: %v", err)
+	}
+	defer recovered.Close()
+
+	assertScalar(t, recovered, "SELECT COUNT(*) FROM accounts", int64(3))
+	assertScalar(t, recovered, "SELECT SUM(balance) FROM accounts", float64(600))
+	assertScalar(t, recovered, "SELECT balance FROM accounts WHERE id = 1", int64(100))
+	assertScalar(t, recovered, "SELECT balance FROM accounts WHERE id = 2", int64(200))
+	assertScalar(t, recovered, "SELECT COUNT(*) FROM accounts WHERE id = 4", int64(0))
+}
+
 func runWALCrashWriter(t *testing.T) {
 	t.Helper()
 
@@ -102,6 +155,42 @@ func runWALCrashWriter(t *testing.T) {
 
 	// Intentionally do not call db.Close or Checkpoint. os.Exit below simulates a
 	// process crash after committed WAL writes but before dirty page flushing.
+}
+
+func runWALOpenTransactionWriter(t *testing.T) {
+	t.Helper()
+
+	dbPath := os.Getenv("COBALTDB_WAL_CRASH_DB")
+	if dbPath == "" {
+		t.Fatal("COBALTDB_WAL_CRASH_DB is required")
+	}
+
+	db, err := Open(dbPath, durabilityTestOptions())
+	if err != nil {
+		t.Fatalf("open crash writer db: %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "INSERT INTO accounts VALUES (3, 300)"); err != nil {
+		t.Fatalf("insert committed account: %v", err)
+	}
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin open transaction: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "UPDATE accounts SET balance = 999 WHERE id = 1"); err != nil {
+		t.Fatalf("update in open transaction: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "DELETE FROM accounts WHERE id = 2"); err != nil {
+		t.Fatalf("delete in open transaction: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "INSERT INTO accounts VALUES (4, 400)"); err != nil {
+		t.Fatalf("insert in open transaction: %v", err)
+	}
+
+	// Intentionally leave tx and db open. The parent process verifies that only
+	// the committed autocommit statement is replayed after the simulated crash.
 }
 
 func TestIncrementalBackupRestoreOpensAsDatabase(t *testing.T) {
