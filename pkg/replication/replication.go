@@ -279,6 +279,29 @@ func (m *Manager) callOnDisconnect(peer string, err error) {
 	m.OnDisconnect(peer, err)
 }
 
+func (m *Manager) setMasterConn(conn net.Conn) {
+	m.mu.Lock()
+	m.masterConn = conn
+	m.mu.Unlock()
+}
+
+func (m *Manager) getMasterConn() net.Conn {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.masterConn
+}
+
+func (m *Manager) closeMasterConn() {
+	m.mu.Lock()
+	conn := m.masterConn
+	m.masterConn = nil
+	m.mu.Unlock()
+
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
 // NewManager creates a new replication manager
 func NewManager(config *Config) *Manager {
 	if config == nil {
@@ -813,31 +836,31 @@ func (m *Manager) startSlave() error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to master: %w", err)
 	}
-	m.masterConn = conn
+	m.setMasterConn(conn)
 	reader := bufio.NewReader(conn)
 
 	// Authenticate
 	if m.config.AuthToken != "" {
 		if _, err := fmt.Fprintf(conn, "%s\n", m.config.AuthToken); err != nil {
-			conn.Close()
+			m.closeMasterConn()
 			return err
 		}
 
 		// Read auth response
 		response, err := reader.ReadString('\n')
 		if err != nil {
-			conn.Close()
+			m.closeMasterConn()
 			return err
 		}
 
 		if response != "AUTH_OK\n" {
-			conn.Close()
+			m.closeMasterConn()
 			return fmt.Errorf("authentication failed")
 		}
 	}
 
 	if _, err := fmt.Fprintf(conn, "RESUME %d\n", atomic.LoadUint64(&m.lastApplied)); err != nil {
-		conn.Close()
+		m.closeMasterConn()
 		return err
 	}
 
@@ -866,6 +889,7 @@ func (m *Manager) replicateFromMasterWithReader(reader *bufio.Reader) {
 		}
 
 		if err := m.readMasterFrame(reader); err != nil {
+			m.closeMasterConn()
 			m.callOnDisconnect("master", err)
 			return
 		}
@@ -1114,18 +1138,20 @@ func syncReplicationStateDir(path string) error {
 }
 
 func (m *Manager) sendAck() error {
-	if m.masterConn == nil {
+	conn := m.getMasterConn()
+	if conn == nil {
 		return nil
 	}
-	_, err := fmt.Fprintf(m.masterConn, "ACK %d\n", atomic.LoadUint64(&m.lastApplied))
+	_, err := fmt.Fprintf(conn, "ACK %d\n", atomic.LoadUint64(&m.lastApplied))
 	return err
 }
 
 func (m *Manager) sendPong() error {
-	if m.masterConn == nil {
+	conn := m.getMasterConn()
+	if conn == nil {
 		return nil
 	}
-	_, err := fmt.Fprintf(m.masterConn, "PONG %d\n", atomic.LoadUint64(&m.lastApplied))
+	_, err := fmt.Fprintf(conn, "PONG %d\n", atomic.LoadUint64(&m.lastApplied))
 	return err
 }
 
@@ -1502,7 +1528,7 @@ func (m *Manager) GetStatus() *ReplicationStatus {
 
 	case RoleSlave:
 		status.Role = "slave"
-		status.Connected = m.masterConn != nil
+		status.Connected = m.getMasterConn() != nil
 	}
 
 	return status

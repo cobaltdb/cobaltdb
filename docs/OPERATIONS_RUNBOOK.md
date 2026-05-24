@@ -26,6 +26,7 @@ go test ./pkg/engine -run 'TestIncrementalBackupRestoreOpensAsDatabase|TestProdu
 go test ./test -run 'TestSQLCompatibility' -count=1
 go test ./pkg/protocol -run 'TestHandleStmt|TestPreparedStmt|TestCountPreparedParams' -count=1
 go test ./test -run 'TestMySQLPreparedStatementExecuteWithParameters|TestMySQL' -count=1
+go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
 ```
 
 Release blockers:
@@ -138,6 +139,16 @@ Alert thresholds should be tuned per workload, but start with:
 - disk free space below 20%.
 
 ## Incident Playbooks
+
+### Replication Disconnect
+
+1. Check master and slave `/metrics/prometheus` and replication status.
+2. Confirm the slave reports `Connected=false` after the disconnect.
+3. Compare slave `last_applied_lsn` with the master's current LSN.
+4. If the retained WAL window no longer covers the slave LSN, run a snapshot or
+   backup restore before resuming traffic.
+5. Do not promote a slave automatically; use an external runbook with fencing
+   until HA consensus and failover certification are implemented.
 
 ### Readiness Failure
 
