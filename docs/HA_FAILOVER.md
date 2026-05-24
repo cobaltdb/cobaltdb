@@ -15,6 +15,8 @@ cluster manager.
 | Disconnect detection | Implemented; slave status clears `Connected` after master disconnect |
 | Async replication | Implemented |
 | Sync/full-sync wait semantics | Implemented for connected slaves |
+| HA readiness API | Implemented; reports explicit blockers and no automatic failover |
+| Unsafe in-process promotion guard | Implemented; `PromoteToMaster` returns an unsupported-failover error |
 
 ## Not Yet HA
 
@@ -31,11 +33,14 @@ cluster manager.
 
 ```bash
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
+go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing' -count=1
 ```
 
 Operational stance:
 
 - Do not advertise CobaltDB replication as automatic HA.
+- Use `GetFailoverReadiness` in operational health surfaces to keep transport
+  status separate from HA readiness.
 - Treat promotion/failover as an external orchestration task until consensus,
   fencing, and promotion drills are implemented.
 - Keep a verified backup/restore path even when replication is enabled.

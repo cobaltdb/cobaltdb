@@ -1,7 +1,7 @@
 # CobaltDB Production Readiness Report
 
 **Date:** 2026-05-24
-**Scope:** Local repository review, test gates, race testing, recovery drills, backup drills, SQL parser hardening, MySQL prepared statement hardening, external MySQL driver certification, write-latency benchmark gating, replication disconnect failure injection, vector index persistence certification, FDW materialization limits, procedure/trigger semantics certification, and operations documentation.
+**Scope:** Local repository review, test gates, race testing, recovery drills, backup drills, SQL parser hardening, MySQL prepared statement hardening, external MySQL driver certification, write-latency benchmark gating, replication disconnect failure injection, HA readiness guards, vector index persistence certification, FDW materialization limits, procedure/trigger semantics certification, and operations documentation.
 **Status:** Production-oriented single-node candidate. Not yet certified for automated HA/failover or strict MySQL wire compatibility.
 
 ## Executive Summary
@@ -23,6 +23,7 @@ Current readiness estimate:
 | External MySQL driver | `database/sql` + `github.com/go-sql-driver/mysql` baseline covered |
 | Benchmark regression gate | Added via `scripts/benchmark-gate.sh`, now including write p95/p99 under readers |
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
+| HA readiness guards | API reports explicit blockers and refuses unsafe in-process promotion |
 | Vector index persistence | HNSW metadata persists on create, reopen, and drop |
 | FDW materialization limits | CSV scans are streaming-read and bounded by `max_rows`/`max_bytes` |
 | Procedure/trigger semantics | `CALL` placeholder args, exact arity, complex param substitution, and BEFORE/AFTER trigger row images are covered |
@@ -52,7 +53,8 @@ Recent hardening commits:
 | `784c699` | Vector indexes | Added HNSW metadata persistence fixes and reopen/drop drills |
 | `6999583` | FDW | Added CSV streaming-read materialization limits and SQL-level limit drill |
 | `1225721` | Procedures/triggers | Added `CALL` placeholder/arity fixes and BEFORE/AFTER trigger semantics certification |
-| Current iteration | MySQL compatibility | Added real Go MySQL driver baseline and fixed prepared-statement packet compatibility |
+| `74437e6` | MySQL compatibility | Added real Go MySQL driver baseline and fixed prepared-statement packet compatibility |
+| Current iteration | HA boundary | Added failover readiness API and unsafe promotion guard |
 
 Validation performed during this pass:
 
@@ -70,6 +72,7 @@ go test ./test -run TestMySQLPreparedStatementExecuteWithParameters -count=1
 go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE2E' -count=1
 go test ./pkg/engine -run '^$' -bench BenchmarkWriteLatencyUnderReaders -benchtime=10x -count=1
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
+go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing' -count=1
 go test -race ./pkg/replication -run TestSlaveStatusClearsConnectionOnMasterDisconnect -count=1
 go test ./pkg/replication -count=1
 go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count=1
@@ -120,12 +123,13 @@ Missing or not certified:
 - Raft/Paxos-style consensus.
 - Automatic leader election.
 - Split-brain protection.
-- Automated failover runbook with proven RPO/RTO.
+- Automated failover implementation with proven RPO/RTO.
 - Cross-node backup/recovery drills.
 
 Production stance:
 
 - Use replication as transport/read scaling where acceptable.
+- Use `GetFailoverReadiness` to keep replication transport status separate from HA readiness.
 - Do not rely on it as managed failover until a dedicated HA certification pass is complete.
 - Use `docs/HA_FAILOVER.md` as the current replication and failover boundary.
 
@@ -203,7 +207,7 @@ Priority order:
 
 1. Catalog lock granularity improvements.
 2. Additional MySQL ORM and non-Go driver certification runs.
-3. HA consensus, fencing, and promotion certification.
+3. Actual HA consensus, fencing, and externally orchestrated promotion implementation.
 4. Large-scale Vector/HNSW rebuild and backup/restore certification.
 5. Streaming FDW cursor interface and pushdown support.
 

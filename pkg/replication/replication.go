@@ -59,6 +59,11 @@ const maxReplicationSnapshotSize = 1 << 30 // 1 GiB
 const replicationStateDirPerm = 0750
 const replicationStateFilePerm = 0600
 
+// ErrAutomaticFailoverUnsupported is returned by APIs that would require
+// consensus, fencing, or safe promotion semantics that this replication
+// transport intentionally does not provide.
+var ErrAutomaticFailoverUnsupported = errors.New("automatic failover is not supported: consensus, fencing, and safe promotion are not implemented")
+
 // Config holds replication configuration
 type Config struct {
 	Role                Role
@@ -1496,6 +1501,18 @@ type SlaveStatus struct {
 	Lag      time.Duration `json:"lag"`
 }
 
+// FailoverReadiness describes whether this replication manager can safely
+// perform automated failover. Today it is deliberately a negative contract:
+// CobaltDB replication is a transport, not a consensus-backed HA manager.
+type FailoverReadiness struct {
+	Role              string   `json:"role"`
+	AutomaticFailover bool     `json:"automatic_failover"`
+	Consensus         bool     `json:"consensus"`
+	Fencing           bool     `json:"fencing"`
+	SafePromotion     bool     `json:"safe_promotion"`
+	Blockers          []string `json:"blockers"`
+}
+
 // GetStatus returns current replication status
 func (m *Manager) GetStatus() *ReplicationStatus {
 	status := &ReplicationStatus{
@@ -1532,6 +1549,36 @@ func (m *Manager) GetStatus() *ReplicationStatus {
 	}
 
 	return status
+}
+
+// GetFailoverReadiness returns the explicit HA readiness contract for this
+// manager. It prevents replication transport health from being mistaken for
+// automatic HA capability.
+func (m *Manager) GetFailoverReadiness() FailoverReadiness {
+	status := m.GetStatus()
+	role := status.Role
+	if role == "" {
+		role = "standalone"
+	}
+	return FailoverReadiness{
+		Role:              role,
+		AutomaticFailover: false,
+		Consensus:         false,
+		Fencing:           false,
+		SafePromotion:     false,
+		Blockers: []string{
+			"leader election is not implemented",
+			"quorum consensus is not implemented",
+			"old primary fencing is not implemented",
+			"safe promotion is not implemented",
+		},
+	}
+}
+
+// PromoteToMaster intentionally refuses unsafe in-process promotion. Operators
+// must use external orchestration with fencing and a validated RPO/RTO plan.
+func (m *Manager) PromoteToMaster() error {
+	return ErrAutomaticFailoverUnsupported
 }
 
 func replicationModeString(mode ReplicationMode) string {
