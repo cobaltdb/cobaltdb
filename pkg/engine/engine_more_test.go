@@ -407,6 +407,75 @@ func TestRowsColumns(t *testing.T) {
 	}
 }
 
+func TestRowsColumnsReturnsCopy(t *testing.T) {
+	rows := &Rows{columns: []string{"id", "payload"}}
+
+	cols := rows.Columns()
+	cols[0] = "mutated"
+
+	if got := rows.Columns()[0]; got != "id" {
+		t.Fatalf("Columns should not expose internal slice, got %q", got)
+	}
+}
+
+func TestRowsScanCopiesMutableValues(t *testing.T) {
+	rows := &Rows{
+		columns: []string{"raw", "payload", "labels", "attrs", "vector"},
+		rows: [][]interface{}{{
+			[]byte("raw"),
+			map[string]interface{}{
+				"nested": []interface{}{[]byte("value")},
+				"meta":   map[string]interface{}{"owner": "db"},
+			},
+			[]string{"alpha", "beta"},
+			map[string]string{"role": "reader"},
+			[]float64{1, 2, 3},
+		}},
+	}
+
+	if !rows.Next() {
+		t.Fatal("expected row")
+	}
+
+	var raw []byte
+	var payload interface{}
+	var labels interface{}
+	var attrs interface{}
+	var vector interface{}
+	if err := rows.Scan(&raw, &payload, &labels, &attrs, &vector); err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+
+	raw[0] = 'X'
+	payload.(map[string]interface{})["nested"].([]interface{})[0].([]byte)[0] = 'X'
+	payload.(map[string]interface{})["meta"].(map[string]interface{})["owner"] = "mutated"
+	labels.([]string)[0] = "mutated"
+	attrs.(map[string]string)["role"] = "mutated"
+	vector.([]float64)[0] = 9
+
+	if err := rows.Scan(&raw, &payload, &labels, &attrs, &vector); err != nil {
+		t.Fatalf("second Scan failed: %v", err)
+	}
+	if got := string(raw); got != "raw" {
+		t.Fatalf("Scan should copy []byte values, got %q", got)
+	}
+	if got := string(payload.(map[string]interface{})["nested"].([]interface{})[0].([]byte)); got != "value" {
+		t.Fatalf("Scan should copy nested []byte values, got %q", got)
+	}
+	if got := payload.(map[string]interface{})["meta"].(map[string]interface{})["owner"]; got != "db" {
+		t.Fatalf("Scan should copy nested maps, got %v", got)
+	}
+	if got := labels.([]string)[0]; got != "alpha" {
+		t.Fatalf("Scan should copy string slices, got %q", got)
+	}
+	if got := attrs.(map[string]string)["role"]; got != "reader" {
+		t.Fatalf("Scan should copy string maps, got %q", got)
+	}
+	if got := vector.([]float64)[0]; got != 1 {
+		t.Fatalf("Scan should copy float slices, got %v", got)
+	}
+}
+
 func TestRowsScanMismatch(t *testing.T) {
 	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
 	defer db.Close()

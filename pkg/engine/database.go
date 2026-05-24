@@ -2369,7 +2369,7 @@ func (r *Rows) Scan(dest ...interface{}) error {
 
 	for i, d := range dest {
 		if di, ok := d.(*interface{}); ok {
-			*di = row[i]
+			*di = cloneScannedValue(row[i])
 			continue
 		}
 		if err := scanValue(row[i], d); err != nil {
@@ -2383,7 +2383,12 @@ func (r *Rows) Scan(dest ...interface{}) error {
 // Columns returns the column names
 
 func (r *Rows) Columns() []string {
-	return r.columns
+	if r == nil || r.columns == nil {
+		return nil
+	}
+	columns := make([]string, len(r.columns))
+	copy(columns, r.columns)
+	return columns
 }
 
 // Close closes the rows
@@ -2416,7 +2421,7 @@ func (r *Row) Scan(dest ...interface{}) error {
 func scanValue(src interface{}, dest interface{}) error {
 	switch d := dest.(type) {
 	case *interface{}:
-		*d = src
+		*d = cloneScannedValue(src)
 	case *string:
 		switch v := src.(type) {
 		case string:
@@ -2558,11 +2563,66 @@ func scanValue(src interface{}, dest interface{}) error {
 		if !ok {
 			return fmt.Errorf("cannot scan %T into []byte", src)
 		}
-		*d = v
+		*d = cloneScannedValue(v).([]byte)
 	default:
 		return fmt.Errorf("unsupported scan destination: %T", dest)
 	}
 	return nil
+}
+
+func cloneScannedValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case []byte:
+		if typed == nil {
+			return []byte(nil)
+		}
+		cloned := make([]byte, len(typed))
+		copy(cloned, typed)
+		return cloned
+	case []interface{}:
+		if typed == nil {
+			return []interface{}(nil)
+		}
+		cloned := make([]interface{}, len(typed))
+		for i, nested := range typed {
+			cloned[i] = cloneScannedValue(nested)
+		}
+		return cloned
+	case []string:
+		if typed == nil {
+			return []string(nil)
+		}
+		cloned := make([]string, len(typed))
+		copy(cloned, typed)
+		return cloned
+	case []float64:
+		if typed == nil {
+			return []float64(nil)
+		}
+		cloned := make([]float64, len(typed))
+		copy(cloned, typed)
+		return cloned
+	case map[string]interface{}:
+		if typed == nil {
+			return map[string]interface{}(nil)
+		}
+		cloned := make(map[string]interface{}, len(typed))
+		for key, nested := range typed {
+			cloned[key] = cloneScannedValue(nested)
+		}
+		return cloned
+	case map[string]string:
+		if typed == nil {
+			return map[string]string(nil)
+		}
+		cloned := make(map[string]string, len(typed))
+		for key, nested := range typed {
+			cloned[key] = nested
+		}
+		return cloned
+	default:
+		return typed
+	}
 }
 
 // txPool recycles engine-level Tx wrappers to eliminate one heap allocation
