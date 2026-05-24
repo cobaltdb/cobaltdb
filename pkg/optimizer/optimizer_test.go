@@ -239,11 +239,18 @@ func TestUpdateStatistics(t *testing.T) {
 	opt := New(DefaultConfig(), nil)
 
 	stats := &TableStatistics{
-		TableName: "users",
-		RowCount:  1000,
+		TableName:   "users",
+		RowCount:    1000,
+		ColumnStats: map[string]*ColumnStatistics{"id": {ColumnName: "id", DistinctValues: 1000}},
+		IndexStats: map[string]*IndexStatistics{
+			"idx_users_id": {IndexName: "idx_users_id", TableName: "users", Columns: []string{"id"}, Selectivity: 0.01},
+		},
 	}
 
 	opt.UpdateStatistics("users", stats)
+	stats.RowCount = 1
+	stats.ColumnStats["id"].DistinctValues = 1
+	stats.IndexStats["idx_users_id"].Columns[0] = "mutated"
 
 	retrieved := opt.GetTableStatistics("users")
 	if retrieved == nil {
@@ -252,5 +259,56 @@ func TestUpdateStatistics(t *testing.T) {
 
 	if retrieved.RowCount != 1000 {
 		t.Errorf("Expected 1000 rows, got %d", retrieved.RowCount)
+	}
+	if retrieved.ColumnStats["id"].DistinctValues != 1000 {
+		t.Errorf("UpdateStatistics retained caller-owned column stats: %+v", retrieved.ColumnStats["id"])
+	}
+	if retrieved.IndexStats["idx_users_id"].Columns[0] != "id" {
+		t.Errorf("UpdateStatistics retained caller-owned index columns: %+v", retrieved.IndexStats["idx_users_id"].Columns)
+	}
+
+	retrieved.RowCount = 2
+	retrieved.ColumnStats["id"].DistinctValues = 2
+	retrieved.IndexStats["idx_users_id"].Columns[0] = "external"
+
+	retrievedAgain := opt.GetTableStatistics("users")
+	if retrievedAgain.RowCount != 1000 {
+		t.Errorf("GetTableStatistics returned mutable stats: got %d", retrievedAgain.RowCount)
+	}
+	if retrievedAgain.ColumnStats["id"].DistinctValues != 1000 {
+		t.Errorf("GetTableStatistics returned mutable column stats: %+v", retrievedAgain.ColumnStats["id"])
+	}
+	if retrievedAgain.IndexStats["idx_users_id"].Columns[0] != "id" {
+		t.Errorf("GetTableStatistics returned mutable index columns: %+v", retrievedAgain.IndexStats["idx_users_id"].Columns)
+	}
+}
+
+func TestNewCopiesConfigAndStatistics(t *testing.T) {
+	config := DefaultConfig()
+	config.EnableJoinReorder = true
+	stats := &Statistics{TableStats: map[string]*TableStatistics{
+		"users": {
+			TableName: "users",
+			RowCount:  500,
+			IndexStats: map[string]*IndexStatistics{
+				"idx": {IndexName: "idx", Columns: []string{"id"}},
+			},
+		},
+	}}
+
+	opt := New(config, stats)
+	config.EnableJoinReorder = false
+	stats.TableStats["users"].RowCount = 1
+	stats.TableStats["users"].IndexStats["idx"].Columns[0] = "mutated"
+
+	if !opt.config.EnableJoinReorder {
+		t.Fatal("New retained caller-owned config")
+	}
+	retrieved := opt.GetTableStatistics("users")
+	if retrieved.RowCount != 500 {
+		t.Fatalf("New retained caller-owned stats: got row count %d", retrieved.RowCount)
+	}
+	if retrieved.IndexStats["idx"].Columns[0] != "id" {
+		t.Fatalf("New retained caller-owned index stats: %v", retrieved.IndexStats["idx"].Columns)
 	}
 }

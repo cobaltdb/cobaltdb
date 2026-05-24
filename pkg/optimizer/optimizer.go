@@ -68,9 +68,13 @@ type Optimizer struct {
 func New(config *Config, stats *Statistics) *Optimizer {
 	if config == nil {
 		config = DefaultConfig()
+	} else {
+		config = cloneConfig(config)
 	}
 	if stats == nil {
 		stats = &Statistics{TableStats: make(map[string]*TableStatistics)}
+	} else {
+		stats = cloneStatistics(stats)
 	}
 	return &Optimizer{config: config, stats: stats}
 }
@@ -225,10 +229,60 @@ func (o *Optimizer) scoreIndex(columns []string, indexStats *IndexStatistics) fl
 
 // UpdateStatistics updates statistics for a table
 func (o *Optimizer) UpdateStatistics(tableName string, stats *TableStatistics) {
-	o.stats.TableStats[tableName] = stats
+	if o.stats.TableStats == nil {
+		o.stats.TableStats = make(map[string]*TableStatistics)
+	}
+	o.stats.TableStats[tableName] = cloneTableStatistics(stats)
 }
 
 // GetTableStatistics returns statistics for a table
 func (o *Optimizer) GetTableStatistics(tableName string) *TableStatistics {
-	return o.stats.TableStats[tableName]
+	return cloneTableStatistics(o.stats.TableStats[tableName])
+}
+
+func cloneConfig(config *Config) *Config {
+	if config == nil {
+		return nil
+	}
+	cloned := *config
+	return &cloned
+}
+
+func cloneStatistics(stats *Statistics) *Statistics {
+	if stats == nil {
+		return nil
+	}
+	cloned := &Statistics{TableStats: make(map[string]*TableStatistics, len(stats.TableStats))}
+	for tableName, tableStats := range stats.TableStats {
+		cloned.TableStats[tableName] = cloneTableStatistics(tableStats)
+	}
+	return cloned
+}
+
+func cloneTableStatistics(stats *TableStatistics) *TableStatistics {
+	if stats == nil {
+		return nil
+	}
+	cloned := *stats
+	cloned.ColumnStats = make(map[string]*ColumnStatistics, len(stats.ColumnStats))
+	for columnName, columnStats := range stats.ColumnStats {
+		if columnStats == nil {
+			continue
+		}
+		copied := *columnStats
+		cloned.ColumnStats[columnName] = &copied
+	}
+	cloned.IndexStats = make(map[string]*IndexStatistics, len(stats.IndexStats))
+	for indexName, indexStats := range stats.IndexStats {
+		if indexStats == nil {
+			continue
+		}
+		copied := *indexStats
+		if indexStats.Columns != nil {
+			copied.Columns = make([]string, len(indexStats.Columns))
+			copy(copied.Columns, indexStats.Columns)
+		}
+		cloned.IndexStats[indexName] = &copied
+	}
+	return &cloned
 }
