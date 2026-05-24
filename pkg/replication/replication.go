@@ -69,6 +69,9 @@ var ErrAutomaticFailoverUnsupported = errors.New("automatic failover is not supp
 // avoid split-brain.
 var ErrPromotionRejected = errors.New("promotion rejected")
 
+// ErrPrimaryFenced is returned when a fenced master is asked to accept new WAL.
+var ErrPrimaryFenced = errors.New("primary is fenced")
+
 // Config holds replication configuration
 type Config struct {
 	Role                Role
@@ -205,6 +208,7 @@ type Manager struct {
 	// promotion. It is intentionally local state; CobaltDB still does not run
 	// consensus or leader election.
 	promotionEpoch uint64
+	fencedEpoch    uint64
 
 	// Callbacks
 	OnApply         func(entry *WALEntry) error
@@ -249,6 +253,14 @@ type PromotionRequest struct {
 	ExpiresAt          time.Time
 	RequiredLSN        uint64
 	AllowConnectedPeer bool
+}
+
+// PrimaryFenceRequest marks a master as fenced by an external HA control plane.
+// A fenced master refuses new WAL replication entries.
+type PrimaryFenceRequest struct {
+	FencingToken string
+	Epoch        uint64
+	ExpiresAt    time.Time
 }
 
 func (m *Manager) callOnSnapshot() (data []byte, err error) {
@@ -1185,9 +1197,15 @@ func (m *Manager) ReplicateWALEntry(data []byte) error {
 	if m.config.Role != RoleMaster {
 		return nil // Not a master, ignore
 	}
+	if atomic.LoadUint64(&m.fencedEpoch) > 0 {
+		return ErrPrimaryFenced
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if atomic.LoadUint64(&m.fencedEpoch) > 0 {
+		return ErrPrimaryFenced
+	}
 
 	entry := &WALEntry{
 		LSN:       atomic.AddUint64(&m.currentLSN, 1),
@@ -1507,10 +1525,12 @@ type ReplicationStatus struct {
 	Role           string        `json:"role"`
 	Mode           string        `json:"mode"`
 	Connected      bool          `json:"connected"`
+	PrimaryFenced  bool          `json:"primary_fenced,omitempty"`
 	ActiveSlaves   int           `json:"active_slaves,omitempty"`
 	LastApplied    uint64        `json:"last_applied_lsn"`
 	CurrentMaster  uint64        `json:"current_master_lsn,omitempty"`
 	PromotionEpoch uint64        `json:"promotion_epoch,omitempty"`
+	FencedEpoch    uint64        `json:"fenced_epoch,omitempty"`
 	Slaves         []SlaveStatus `json:"slaves,omitempty"`
 	Lag            time.Duration `json:"replication_lag,omitempty"`
 }
@@ -1539,7 +1559,9 @@ func (m *Manager) GetStatus() *ReplicationStatus {
 	status := &ReplicationStatus{
 		LastApplied:    atomic.LoadUint64(&m.lastApplied),
 		PromotionEpoch: atomic.LoadUint64(&m.promotionEpoch),
+		FencedEpoch:    atomic.LoadUint64(&m.fencedEpoch),
 	}
+	status.PrimaryFenced = status.FencedEpoch > 0
 
 	switch m.config.Role {
 	case RoleMaster:
@@ -1659,6 +1681,29 @@ func (m *Manager) PromoteToMasterWithFencing(req PromotionRequest) error {
 	if conn != nil {
 		_ = conn.Close()
 	}
+	return nil
+}
+
+// FencePrimary marks this master as fenced. It is a cooperative local guard
+// that complements external fencing systems: after this succeeds, the manager
+// refuses new WAL entries through ReplicateWALEntry.
+func (m *Manager) FencePrimary(req PrimaryFenceRequest) error {
+	if m.role != RoleMaster && m.config.Role != RoleMaster {
+		return fmt.Errorf("%w: only a master can be fenced", ErrPromotionRejected)
+	}
+	if strings.TrimSpace(req.FencingToken) == "" {
+		return fmt.Errorf("%w: fencing token is required", ErrPromotionRejected)
+	}
+	if req.Epoch == 0 {
+		return fmt.Errorf("%w: fencing epoch is required", ErrPromotionRejected)
+	}
+	if currentEpoch := atomic.LoadUint64(&m.fencedEpoch); currentEpoch >= req.Epoch {
+		return fmt.Errorf("%w: fencing epoch %d is not newer than current epoch %d", ErrPromotionRejected, req.Epoch, currentEpoch)
+	}
+	if !req.ExpiresAt.IsZero() && !time.Now().Before(req.ExpiresAt) {
+		return fmt.Errorf("%w: fencing token expired", ErrPromotionRejected)
+	}
+	atomic.StoreUint64(&m.fencedEpoch, req.Epoch)
 	return nil
 }
 

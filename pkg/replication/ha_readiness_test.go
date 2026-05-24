@@ -133,3 +133,60 @@ func TestPromoteToMasterWithFencingRejectsActiveMasterConnection(t *testing.T) {
 	}
 	mgr.closeMasterConn()
 }
+
+func TestFencePrimaryRejectsFutureWrites(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	if err := mgr.ReplicateWALEntry([]byte("before")); err != nil {
+		t.Fatalf("ReplicateWALEntry before fence: %v", err)
+	}
+	if got := mgr.GetStatus().CurrentMaster; got != 1 {
+		t.Fatalf("current LSN before fence = %d, want 1", got)
+	}
+
+	if err := mgr.FencePrimary(PrimaryFenceRequest{
+		FencingToken: "fence-master",
+		Epoch:        3,
+		ExpiresAt:    time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("FencePrimary: %v", err)
+	}
+
+	status := mgr.GetStatus()
+	if !status.PrimaryFenced || status.FencedEpoch != 3 {
+		t.Fatalf("expected fenced status at epoch 3, got %+v", status)
+	}
+	if err := mgr.ReplicateWALEntry([]byte("after")); !errors.Is(err, ErrPrimaryFenced) {
+		t.Fatalf("expected ErrPrimaryFenced, got %v", err)
+	}
+	if got := mgr.GetStatus().CurrentMaster; got != 1 {
+		t.Fatalf("fenced write advanced LSN to %d, want 1", got)
+	}
+}
+
+func TestFencePrimaryRequiresProof(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	tests := []struct {
+		name string
+		req  PrimaryFenceRequest
+		want string
+	}{
+		{name: "missing token", req: PrimaryFenceRequest{Epoch: 1}, want: "fencing token"},
+		{name: "missing epoch", req: PrimaryFenceRequest{FencingToken: "tok"}, want: "epoch"},
+		{name: "expired", req: PrimaryFenceRequest{FencingToken: "tok", Epoch: 1, ExpiresAt: time.Now().Add(-time.Second)}, want: "expired"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := mgr.FencePrimary(tt.req)
+			if !errors.Is(err, ErrPromotionRejected) {
+				t.Fatalf("expected ErrPromotionRejected, got %v", err)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+			if mgr.GetStatus().PrimaryFenced {
+				t.Fatal("rejected fence request marked primary fenced")
+			}
+		})
+	}
+}

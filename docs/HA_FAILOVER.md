@@ -18,6 +18,7 @@ cluster manager.
 | HA readiness API | Implemented; reports explicit blockers and no automatic failover |
 | Unsafe in-process promotion guard | Implemented; `PromoteToMaster` returns an unsupported-failover error |
 | Externally fenced manual promotion | Implemented via `PromoteToMasterWithFencing` |
+| Cooperative primary fencing guard | Implemented via `FencePrimary`; fenced masters reject new WAL entries |
 
 ## Not Yet HA
 
@@ -46,11 +47,17 @@ The legacy `PromoteToMaster` API still refuses promotion because CobaltDB does
 not run leader election or quorum consensus. `PromoteToMasterWithFencing` is for
 externally orchestrated promotion only.
 
+`FencePrimary` is a cooperative local guard for old primaries that are still
+reachable during an orchestrated failover. Once fenced, `ReplicateWALEntry`
+returns `ErrPrimaryFenced` and the manager does not advance its master LSN.
+This does not replace infrastructure-level fencing such as VM power-off,
+storage fencing, or network isolation.
+
 ## Required Failure Drills
 
 ```bash
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
-go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing' -count=1
+go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary' -count=1
 ```
 
 Operational stance:
