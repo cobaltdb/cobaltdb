@@ -30,7 +30,8 @@ go test ./pkg/query/ -bench=. -benchtime=1s -benchmem
 
 `scripts/benchmark-gate.sh` is the canonical bounded benchmark entrypoint for
 release qualification. It runs a representative subset across SQL execution,
-parser, B-tree, storage, WAL, and concurrent writer paths.
+parser, B-tree, storage, WAL, concurrent writer paths, and write latency under
+background readers.
 
 Default settings:
 
@@ -57,6 +58,8 @@ Gate policy:
   in `ns/op` or `B/op`.
 - Treat regressions above 20% in core paths as release blockers unless a
   deliberate tradeoff is documented.
+- Track `BenchmarkWriteLatencyUnderReaders` `p95_ms` and `p99_ms` whenever
+  catalog locking or transaction scheduling changes.
 - Do not compare runs across different machines, CPU governors, Go versions, or
   `GOMAXPROCS` values.
 - Keep `CacheSize` values as page counts. `1024` means 1024 pages, not bytes.

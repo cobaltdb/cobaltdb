@@ -1,7 +1,7 @@
 # CobaltDB Production Readiness Report
 
 **Date:** 2026-05-24
-**Scope:** Local repository review, test gates, race testing, recovery drills, backup drills, SQL parser hardening, MySQL prepared statement hardening, benchmark gate, and operations documentation.
+**Scope:** Local repository review, test gates, race testing, recovery drills, backup drills, SQL parser hardening, MySQL prepared statement hardening, write-latency benchmark gating, and operations documentation.
 **Status:** Production-oriented single-node candidate. Not yet certified for automated HA/failover or strict MySQL wire compatibility.
 
 ## Executive Summary
@@ -20,12 +20,12 @@ Current readiness estimate:
 | SQL compatibility baseline | Added for supported and unsupported syntax surface |
 | Strict SQL parsing mode | Added as opt-in production mode |
 | MySQL prepared statements | Parameterized `COM_STMT_EXECUTE` covered for core scalar types |
-| Benchmark regression gate | Added via `scripts/benchmark-gate.sh` |
+| Benchmark regression gate | Added via `scripts/benchmark-gate.sh`, now including write p95/p99 under readers |
 | Operations runbook | Added |
 | HA/failover certification | Not ready |
 | Strict MySQL protocol compatibility | Not ready |
 
-**Production readiness level:** about **86/100** for single-node production-candidate use, assuming documented constraints are acceptable. It is **not** a 95+/100 database for high-concurrency OLTP, automatic failover, or broad MySQL client compatibility yet.
+**Production readiness level:** about **87/100** for single-node production-candidate use, assuming documented constraints are acceptable. It is **not** a 95+/100 database for high-concurrency OLTP, automatic failover, or broad MySQL client compatibility yet.
 
 ## Work Completed In This Pass
 
@@ -41,7 +41,8 @@ Recent hardening commits:
 | `69d21a1` | Benchmarks | Added bounded benchmark regression gate |
 | `17af3ef` | Operations | Added operational runbook and incident playbooks |
 | `aa3b989` | SQL parser | Added opt-in strict statement-boundary parsing for production deployments |
-| Current iteration | MySQL protocol | Added binary prepared statement parameter decoding and compatibility matrix |
+| `d48b30c` | MySQL protocol | Added binary prepared statement parameter decoding and compatibility matrix |
+| Current iteration | Benchmarks | Added write-latency p50/p95/p99 metrics under background readers |
 
 Validation performed during this pass:
 
@@ -56,6 +57,7 @@ go test ./test -run 'TestSQLCompatibility' -count=1
 go test ./pkg/query ./pkg/engine -run 'TestParseStrict|TestStrictSQL|TestDefaultSQLParsing' -count=1
 go test ./pkg/protocol -run 'TestCountPreparedParams|TestPreparedStmtParseExecuteArgs|TestHandleStmtPrepare|TestHandleStmtExecute' -count=1
 go test ./test -run TestMySQLPreparedStatementExecuteWithParameters -count=1
+go test ./pkg/engine -run '^$' -bench BenchmarkWriteLatencyUnderReaders -benchtime=10x -count=1
 BENCHTIME=1ms COUNT=1 ./scripts/benchmark-gate.sh /tmp/cobaltdb-bench-smoke
 ```
 
@@ -84,7 +86,6 @@ Impact:
 Next work:
 
 - Continue catalog lock granularity work.
-- Add workload-specific contention benchmarks to the benchmark gate.
 - Track p95/p99 write latency under concurrent readers.
 
 ### 2. HA / Clustering Is Not Production-Grade
@@ -175,7 +176,7 @@ Block release on:
 
 Priority order:
 
-1. Catalog lock granularity and p95/p99 write-latency benchmarks.
+1. Catalog lock granularity improvements.
 2. HA/failover design and failure-injection tests.
 3. Vector/HNSW persistence certification.
 4. Large FDW streaming/materialization limits.

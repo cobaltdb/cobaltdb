@@ -39,7 +39,7 @@ run_bench() {
 }
 
 run_bench ./test/ 'Benchmark(Insert$|Select$|Transaction$|ConcurrentInsert$|FullSuite/(Insert|Select|Join|Aggregation|Concurrent))'
-run_bench ./pkg/engine/ 'Benchmark(ExecInsert$|ExecSelect$|ExecSelectIndexed$|TransactionCommit$|PreparedStatement$|ConcurrentWriters$)'
+run_bench ./pkg/engine/ 'Benchmark(ExecInsert$|ExecSelect$|ExecSelectIndexed$|TransactionCommit$|PreparedStatement$|ConcurrentWriters$|WriteLatencyUnderReaders)'
 run_bench ./pkg/query/ 'Benchmark(ParseSelect$|ParseInsert$|ParseComplexSelect$|LexerTokenize$)'
 run_bench ./pkg/btree/ 'Benchmark(BTreePut$|BTreeGet$|BTreeScan$|Put$|Get$|Scan$)'
 run_bench ./pkg/storage/ 'Benchmark(BufferPoolGetPage$|BufferPoolNewPage$|WALAppend$|WALAppendBatch$)'
