@@ -27,7 +27,9 @@ func TestEncodeDecode(t *testing.T) {
 }
 
 func TestNewQueryMessage(t *testing.T) {
-	msg := NewQueryMessage("SELECT * FROM test", "arg1", "arg2")
+	arg := []byte("arg1")
+	msg := NewQueryMessage("SELECT * FROM test", arg, "arg2")
+	arg[0] = 'X'
 
 	if msg.SQL != "SELECT * FROM test" {
 		t.Errorf("Expected SQL 'SELECT * FROM test', got %q", msg.SQL)
@@ -36,19 +38,28 @@ func TestNewQueryMessage(t *testing.T) {
 	if len(msg.Params) != 2 {
 		t.Errorf("Expected 2 params, got %d", len(msg.Params))
 	}
+	if got := string(msg.Params[0].([]byte)); got != "arg1" {
+		t.Fatalf("Params should not alias caller values, got %q", got)
+	}
 }
 
 func TestNewResultMessage(t *testing.T) {
 	columns := []string{"id", "name"}
 	rows := [][]interface{}{
-		{1, "Alice"},
+		{1, []byte("Alice"), map[string]interface{}{"tags": []interface{}{[]byte("admin")}}},
 		{2, "Bob"},
 	}
 
 	msg := NewResultMessage(columns, rows)
+	columns[0] = "mutated"
+	rows[0][1].([]byte)[0] = 'X'
+	rows[0][2].(map[string]interface{})["tags"].([]interface{})[0].([]byte)[0] = 'X'
 
 	if len(msg.Columns) != 2 {
 		t.Errorf("Expected 2 columns, got %d", len(msg.Columns))
+	}
+	if msg.Columns[0] != "id" {
+		t.Fatalf("Columns should not alias caller slice, got %q", msg.Columns[0])
 	}
 
 	if msg.Count != 2 {
@@ -57,6 +68,12 @@ func TestNewResultMessage(t *testing.T) {
 
 	if len(msg.Rows) != 2 {
 		t.Errorf("Expected 2 rows, got %d", len(msg.Rows))
+	}
+	if got := string(msg.Rows[0][1].([]byte)); got != "Alice" {
+		t.Fatalf("Rows should not alias caller values, got %q", got)
+	}
+	if got := string(msg.Rows[0][2].(map[string]interface{})["tags"].([]interface{})[0].([]byte)); got != "admin" {
+		t.Fatalf("Nested rows should not alias caller values, got %q", got)
 	}
 }
 

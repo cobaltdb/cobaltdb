@@ -103,7 +103,7 @@ func DecodeMessage(data []byte) (*Message, error) {
 func NewQueryMessage(sql string, params ...interface{}) *QueryMessage {
 	return &QueryMessage{
 		SQL:    sql,
-		Params: params,
+		Params: cloneValues(params),
 	}
 }
 
@@ -114,10 +114,77 @@ func NewResultMessage(columns []string, rows [][]interface{}) *ResultMessage {
 		types[i] = "unknown"
 	}
 	return &ResultMessage{
-		Columns: columns,
+		Columns: cloneStrings(columns),
 		Types:   types,
-		Rows:    rows,
+		Rows:    cloneRows(rows),
 		Count:   int64(len(rows)),
+	}
+}
+
+func cloneStrings(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func cloneRows(rows [][]interface{}) [][]interface{} {
+	if rows == nil {
+		return nil
+	}
+	cloned := make([][]interface{}, len(rows))
+	for i, row := range rows {
+		cloned[i] = cloneValues(row)
+	}
+	return cloned
+}
+
+func cloneValues(values []interface{}) []interface{} {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]interface{}, len(values))
+	for i, value := range values {
+		cloned[i] = cloneValue(value)
+	}
+	return cloned
+}
+
+func cloneValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case []byte:
+		if typed == nil {
+			return []byte(nil)
+		}
+		cloned := make([]byte, len(typed))
+		copy(cloned, typed)
+		return cloned
+	case []interface{}:
+		return cloneValues(typed)
+	case []string:
+		return cloneStrings(typed)
+	case map[string]interface{}:
+		if typed == nil {
+			return map[string]interface{}(nil)
+		}
+		cloned := make(map[string]interface{}, len(typed))
+		for key, nested := range typed {
+			cloned[key] = cloneValue(nested)
+		}
+		return cloned
+	case map[string]string:
+		if typed == nil {
+			return map[string]string(nil)
+		}
+		cloned := make(map[string]string, len(typed))
+		for key, nested := range typed {
+			cloned[key] = nested
+		}
+		return cloned
+	default:
+		return typed
 	}
 }
 
