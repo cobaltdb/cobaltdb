@@ -317,7 +317,7 @@ func (db *DB) RegisterFDW(name string, factory func() fdw.ForeignDataWrapper) {
 func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.Statement, error) {
 	// First check plan cache if enabled (more sophisticated caching with size limits)
 	if db.planCache != nil {
-		if entry, found := db.planCache.Get(sql, args); found {
+		if entry, found := db.planCache.getShared(sql, args); found {
 			return entry.ParsedStmt, nil
 		}
 	}

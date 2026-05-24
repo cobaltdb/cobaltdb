@@ -92,6 +92,67 @@ func TestQueryPlanCache_GetReturnsEntryCopy(t *testing.T) {
 	}
 }
 
+func TestQueryPlanCache_IsolatesParsedStatementOnPutAndGet(t *testing.T) {
+	cache := NewQueryPlanCache(1024*1024, 100)
+
+	sql := "SELECT * FROM users WHERE id = 1"
+	stmt, err := query.Parse(sql)
+	if err != nil {
+		t.Fatalf("Failed to parse query: %v", err)
+	}
+	if err := cache.Put(sql, nil, stmt); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	stmt.(*query.SelectStmt).From.Name = "caller_mutation"
+
+	entry, found := cache.Get(sql, nil)
+	if !found {
+		t.Fatal("Expected to find cached entry")
+	}
+	cachedSelect := entry.ParsedStmt.(*query.SelectStmt)
+	if cachedSelect.From.Name != "users" {
+		t.Fatalf("cached statement should not reflect caller mutation, got %q", cachedSelect.From.Name)
+	}
+
+	cachedSelect.From.Name = "returned_mutation"
+	entry, found = cache.Get(sql, nil)
+	if !found {
+		t.Fatal("Expected to find cached entry after returned statement mutation")
+	}
+	cachedSelect = entry.ParsedStmt.(*query.SelectStmt)
+	if cachedSelect.From.Name != "users" {
+		t.Fatalf("cached statement should not reflect returned mutation, got %q", cachedSelect.From.Name)
+	}
+}
+
+func TestQueryPlanCache_GetTopQueriesIsolatesParsedStatements(t *testing.T) {
+	cache := NewQueryPlanCache(1024*1024, 100)
+
+	sql := "SELECT * FROM users"
+	stmt, err := query.Parse(sql)
+	if err != nil {
+		t.Fatalf("Failed to parse query: %v", err)
+	}
+	if err := cache.Put(sql, nil, stmt); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	top := cache.GetTopQueries(1)
+	if len(top) != 1 {
+		t.Fatalf("Expected one top query, got %d", len(top))
+	}
+	top[0].ParsedStmt.(*query.SelectStmt).From.Name = "top_mutation"
+
+	entry, found := cache.Get(sql, nil)
+	if !found {
+		t.Fatal("Expected to find cached entry")
+	}
+	if got := entry.ParsedStmt.(*query.SelectStmt).From.Name; got != "users" {
+		t.Fatalf("cached statement should not reflect top query mutation, got %q", got)
+	}
+}
+
 func TestQueryPlanCache_GetNotFound(t *testing.T) {
 	cache := NewQueryPlanCache(1024*1024, 100)
 

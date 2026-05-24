@@ -73,6 +73,14 @@ func NewQueryPlanCache(maxSize int64, maxEntries int) *QueryPlanCache {
 // its LRU position updated.  This keeps the hot path parallel under high
 // concurrency.
 func (c *QueryPlanCache) Get(sql string, args []interface{}) (*QueryPlanCacheEntry, bool) {
+	return c.get(sql, args, true)
+}
+
+func (c *QueryPlanCache) getShared(sql string, args []interface{}) (*QueryPlanCacheEntry, bool) {
+	return c.get(sql, args, false)
+}
+
+func (c *QueryPlanCache) get(sql string, args []interface{}, cloneStmt bool) (*QueryPlanCacheEntry, bool) {
 	hash := c.hashQuery(sql, args)
 
 	// Fast path: read-only lookup.
@@ -101,10 +109,10 @@ func (c *QueryPlanCache) Get(sql string, args []interface{}) (*QueryPlanCacheEnt
 	entry.AccessCount++
 	c.lruList.MoveToFront(elem)
 	c.hits++
-	entryCopy := *entry
+	entryCopy := cloneQueryPlanCacheEntry(entry, cloneStmt)
 	c.mu.Unlock()
 
-	return &entryCopy, true
+	return entryCopy, true
 }
 
 // Put adds a query plan to the cache
@@ -206,8 +214,8 @@ func (c *QueryPlanCache) GetTopQueries(n int) []QueryPlanCacheEntry {
 	// Collect all entries
 	allEntries := make([]QueryPlanCacheEntry, 0, len(c.entries))
 	for elem := c.lruList.Front(); elem != nil; elem = elem.Next() {
-		entry := *elem.Value.(*QueryPlanCacheEntry)
-		allEntries = append(allEntries, entry)
+		entry := cloneQueryPlanCacheEntry(elem.Value.(*QueryPlanCacheEntry), true)
+		allEntries = append(allEntries, *entry)
 	}
 
 	// Sort by access count (simple bubble sort for small n)
@@ -262,12 +270,23 @@ func (c *QueryPlanCache) createEntry(sql string, stmt query.Statement) *QueryPla
 	now := time.Now()
 	return &QueryPlanCacheEntry{
 		SQL:          sql,
-		ParsedStmt:   stmt,
+		ParsedStmt:   query.CloneStatement(stmt),
 		CreatedAt:    now,
 		LastAccessed: now,
 		AccessCount:  1,
 		Size:         c.estimateEntrySize(sql, stmt),
 	}
+}
+
+func cloneQueryPlanCacheEntry(entry *QueryPlanCacheEntry, cloneStmt bool) *QueryPlanCacheEntry {
+	if entry == nil {
+		return nil
+	}
+	entryCopy := *entry
+	if cloneStmt {
+		entryCopy.ParsedStmt = query.CloneStatement(entry.ParsedStmt)
+	}
+	return &entryCopy
 }
 
 // queryPlanSHA256Pool recycles SHA256 hashers for query plan cache keys.
