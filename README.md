@@ -91,7 +91,7 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 ## ⚡ Quick Start
 
-### 1. Server Mode — Connect with Any MySQL Client
+### 1. Server Mode — Connect with MySQL-Compatible Clients
 
 ```bash
 # Start CobaltDB server
@@ -112,8 +112,9 @@ mysql> SELECT * FROM users;
 +----+-------+-------------------+
 ```
 
-> **Verified working** with `go-sql-driver/mysql`, `mysql` CLI, and standard MySQL wire protocol.
-> Works with **any MySQL-compatible client**: Python (mysql-connector, SQLAlchemy), Node.js (mysql2, Prisma), Java (JDBC), Ruby, PHP, etc.
+> The MySQL wire-protocol surface is tested in-repo for handshake, `COM_QUERY`,
+> result sets, and parameterized prepared statement execution. Validate each
+> production driver or ORM against [docs/MYSQL_COMPATIBILITY.md](docs/MYSQL_COMPATIBILITY.md).
 
 **Server features:** MySQL protocol, TLS 1.2+, authentication (Argon2id), connection pooling, rate limiting, circuit breaker, health checks, encrypted tamper-evident audit logging, and master-slave replication transport.
 
@@ -185,7 +186,9 @@ See [DOCKER.md](DOCKER.md) for detailed Docker setup instructions.
 
 ## 🌍 Multi-Language SDKs
 
-CobaltDB speaks the MySQL wire protocol — connect from **any language** using standard MySQL drivers.
+CobaltDB speaks a tested subset of the MySQL wire protocol. Use standard MySQL
+drivers for validated workflows, and run the compatibility checks for each
+production driver or ORM.
 
 ### Go (Embedded)
 ```go
@@ -235,12 +238,13 @@ Connection conn = CobaltDB.connect("127.0.0.1", 3307, "admin", "");
 ResultSet rs = conn.createStatement().executeQuery("SELECT * FROM users");
 ```
 
-### Any MySQL Client
+### MySQL CLI
 ```bash
 mysql -h 127.0.0.1 -P 3307 -u admin -e "SELECT * FROM users"
 ```
 
-> **Tip:** Any MySQL-compatible ORM works too — SQLAlchemy, Prisma, Hibernate, GORM, Sequelize, ActiveRecord, etc.
+See [docs/MYSQL_COMPATIBILITY.md](docs/MYSQL_COMPATIBILITY.md) before relying on
+a specific ORM or advanced MySQL protocol feature in production.
 
 ---
 

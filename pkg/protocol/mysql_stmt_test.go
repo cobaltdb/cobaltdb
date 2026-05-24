@@ -3,6 +3,8 @@ package protocol
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
+	"math"
 	"testing"
 	"time"
 
@@ -41,6 +43,71 @@ func TestGetStmtMap(t *testing.T) {
 	}
 }
 
+func TestCountPreparedParams(t *testing.T) {
+	tests := []struct {
+		sql  string
+		want int
+	}{
+		{"SELECT * FROM users WHERE id = ? AND name = ?", 2},
+		{"SELECT '?' AS literal, col FROM users WHERE id = ?", 1},
+		{"INSERT INTO t VALUES (?, '?', ?)", 2},
+		{"SELECT 1", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			if got := countPreparedParams(tt.sql); got != tt.want {
+				t.Fatalf("countPreparedParams() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPreparedStmtParseExecuteArgs(t *testing.T) {
+	stmt := &preparedStmt{numParams: 3}
+	data := make([]byte, 0, 64)
+	data = append(data, 0x01, 0x00, 0x00, 0x00) // stmt id
+	data = append(data, 0x00)                   // flags
+	data = append(data, 0x01, 0x00, 0x00, 0x00) // iteration count
+	data = append(data, 0x00)                   // null bitmap
+	data = append(data, 0x01)                   // new params bound
+	data = append(data, MySQLTypeLongLong, 0x00)
+	data = append(data, MySQLTypeVarString, 0x00)
+	data = append(data, MySQLTypeDouble, 0x00)
+
+	var intBuf [8]byte
+	binary.LittleEndian.PutUint64(intBuf[:], uint64(42))
+	data = append(data, intBuf[:]...)
+	data = appendLenEncString(data, "hello")
+	var floatBuf [8]byte
+	binary.LittleEndian.PutUint64(floatBuf[:], math.Float64bits(9.5))
+	data = append(data, floatBuf[:]...)
+
+	args, err := stmt.parseExecuteArgs(data)
+	if err != nil {
+		t.Fatalf("parseExecuteArgs: %v", err)
+	}
+	if len(args) != 3 || args[0] != int64(42) || args[1] != "hello" || args[2] != 9.5 {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+
+	reuseTypes := make([]byte, 0, 32)
+	reuseTypes = append(reuseTypes, data[:9]...)
+	reuseTypes = append(reuseTypes, 0x01) // first parameter is NULL
+	reuseTypes = append(reuseTypes, 0x00) // reuse previous parameter types
+	reuseTypes = appendLenEncString(reuseTypes, "again")
+	binary.LittleEndian.PutUint64(floatBuf[:], math.Float64bits(1.25))
+	reuseTypes = append(reuseTypes, floatBuf[:]...)
+
+	args, err = stmt.parseExecuteArgs(reuseTypes)
+	if err != nil {
+		t.Fatalf("parseExecuteArgs with cached types: %v", err)
+	}
+	if args[0] != nil || args[1] != "again" || args[2] != 1.25 {
+		t.Fatalf("unexpected cached-type args: %#v", args)
+	}
+}
+
 func TestHandleStmtPrepare(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
 	if err != nil {
@@ -68,6 +135,23 @@ func TestHandleStmtPrepare(t *testing.T) {
 		// Statement should be stored
 		if len(client.stmts) != 1 {
 			t.Fatalf("expected 1 prepared stmt, got %d", len(client.stmts))
+		}
+	})
+
+	t.Run("PrepareWithParams", func(t *testing.T) {
+		client, _ := newTestClient(db)
+
+		err := client.handleStmtPrepare("SELECT name FROM prep_test WHERE id = ? AND name = ?")
+		if err != nil {
+			t.Fatalf("handleStmtPrepare failed: %v", err)
+		}
+		if len(client.stmts) != 1 {
+			t.Fatalf("expected 1 prepared stmt, got %d", len(client.stmts))
+		}
+		for _, stmt := range client.stmts {
+			if stmt.numParams != 2 {
+				t.Fatalf("expected 2 params, got %d", stmt.numParams)
+			}
 		}
 	})
 
@@ -205,6 +289,58 @@ func TestHandleStmtExecute(t *testing.T) {
 			t.Fatalf("handleStmtExecute: %v", err)
 		}
 	})
+
+	t.Run("ExecuteWithParams", func(t *testing.T) {
+		client, _ := newTestClient(db)
+
+		if err := client.handleStmtPrepare("INSERT INTO exec_test (id, val) VALUES (?, ?)"); err != nil {
+			t.Skipf("prepare failed: %v", err)
+		}
+
+		var stmtID uint32
+		for id := range client.stmts {
+			stmtID = id
+			break
+		}
+
+		execData := buildStmtExecutePacket(stmtID, []byte{MySQLTypeLongLong, MySQLTypeVarString}, []interface{}{int64(3), "bound"})
+		if err := client.handleStmtExecute(execData); err != nil {
+			t.Fatalf("handleStmtExecute: %v", err)
+		}
+
+		var got string
+		if err := db.QueryRow(ctx, "SELECT val FROM exec_test WHERE id = ?", 3).Scan(&got); err != nil {
+			t.Fatalf("query inserted param row: %v", err)
+		}
+		if got != "bound" {
+			t.Fatalf("expected bound value, got %q", got)
+		}
+	})
+}
+
+func buildStmtExecutePacket(stmtID uint32, types []byte, values []interface{}) []byte {
+	data := make([]byte, 0, 64)
+	var stmtIDBuf [4]byte
+	binary.LittleEndian.PutUint32(stmtIDBuf[:], stmtID)
+	data = append(data, stmtIDBuf[:]...)
+	data = append(data, 0x00)
+	data = append(data, 0x01, 0x00, 0x00, 0x00)
+	data = append(data, make([]byte, (len(types)+7)/8)...)
+	data = append(data, 0x01)
+	for _, typ := range types {
+		data = append(data, typ, 0x00)
+	}
+	for i, value := range values {
+		switch types[i] {
+		case MySQLTypeLongLong:
+			var buf [8]byte
+			binary.LittleEndian.PutUint64(buf[:], uint64(value.(int64)))
+			data = append(data, buf[:]...)
+		case MySQLTypeVarString:
+			data = appendLenEncString(data, value.(string))
+		}
+	}
+	return data
 }
 
 func TestHandleStmtClose(t *testing.T) {

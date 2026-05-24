@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/auth"
 	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
 const (
@@ -1106,10 +1108,12 @@ func containsIgnoreCase(s, substr string) bool {
 
 // preparedStmt holds server-side prepared statement state.
 type preparedStmt struct {
-	id         uint32
-	sql        string
-	numParams  int
-	numColumns int
+	id            uint32
+	sql           string
+	numParams     int
+	numColumns    int
+	paramTypes    []byte
+	paramUnsigned []bool
 }
 
 func (c *MySQLClient) getStmtMap() map[uint32]*preparedStmt {
@@ -1119,8 +1123,53 @@ func (c *MySQLClient) getStmtMap() map[uint32]*preparedStmt {
 	return c.stmts
 }
 
+func countPreparedParams(sql string) int {
+	tokens, err := query.Tokenize(sql)
+	if err != nil {
+		return countQuestionMarksOutsideQuotes(sql)
+	}
+
+	count := 0
+	for _, tok := range tokens {
+		if tok.Type == query.TokenQuestion {
+			count++
+		}
+	}
+	return count
+}
+
+func countQuestionMarksOutsideQuotes(sql string) int {
+	var count int
+	var quote rune
+	escaped := false
+	for _, ch := range sql {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			quote = ch
+		case '?':
+			count++
+		}
+	}
+	return count
+}
+
 func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	sql = strings.TrimSpace(sql)
+	numParams := countPreparedParams(sql)
 
 	baseCtx := c.ctx
 	if baseCtx == nil {
@@ -1130,7 +1179,8 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	defer cancel()
 
 	var numColumns int
-	rows, err := c.server.db.Query(ctx, sql)
+	placeholderArgs := make([]interface{}, numParams)
+	rows, err := c.server.db.Query(ctx, sql, placeholderArgs...)
 	if err == nil {
 		numColumns = len(rows.Columns())
 		if err := rows.Close(); err != nil {
@@ -1143,7 +1193,7 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	stmt := &preparedStmt{
 		id:         stmtID,
 		sql:        sql,
-		numParams:  0,
+		numParams:  numParams,
 		numColumns: numColumns,
 	}
 	c.getStmtMap()[stmtID] = stmt
@@ -1156,7 +1206,11 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 		return err
 	}
 	pkt = appendUint16LE(pkt, columnCount)
-	pkt = append(pkt, 0x00, 0x00)
+	paramCount, err := mysqlUint16(numParams, "prepared statement parameter count")
+	if err != nil {
+		return err
+	}
+	pkt = appendUint16LE(pkt, paramCount)
 	pkt = append(pkt, 0x00)
 	pkt = append(pkt, 0x00, 0x00)
 
@@ -1165,6 +1219,20 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 		return err
 	}
 	seq++
+
+	for i := 0; i < numParams; i++ {
+		paramPkt := c.buildColumnDefPacket(fmt.Sprintf("param%d", i+1))
+		if err := c.writePacket(paramPkt, seq); err != nil {
+			return err
+		}
+		seq++
+	}
+	if numParams > 0 {
+		if err := c.sendEOFPacket(seq); err != nil {
+			return err
+		}
+		seq++
+	}
 
 	for i := 0; i < numColumns; i++ {
 		colPkt := c.buildColumnDefPacket(fmt.Sprintf("col%d", i))
@@ -1183,6 +1251,129 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	return nil
 }
 
+func (s *preparedStmt) parseExecuteArgs(data []byte) ([]interface{}, error) {
+	if s.numParams == 0 {
+		return nil, nil
+	}
+
+	offset := 9 // statement id + flags + iteration count
+	nullBitmapLen := (s.numParams + 7) / 8
+	if len(data) < offset+nullBitmapLen+1 {
+		return nil, errors.New("malformed COM_STMT_EXECUTE parameters")
+	}
+
+	nullBitmap := data[offset : offset+nullBitmapLen]
+	offset += nullBitmapLen
+	newParamsBound := data[offset]
+	offset++
+
+	if newParamsBound != 0 {
+		if len(data) < offset+s.numParams*2 {
+			return nil, errors.New("malformed COM_STMT_EXECUTE parameter types")
+		}
+		s.paramTypes = make([]byte, s.numParams)
+		s.paramUnsigned = make([]bool, s.numParams)
+		for i := 0; i < s.numParams; i++ {
+			s.paramTypes[i] = data[offset]
+			s.paramUnsigned[i] = data[offset+1]&0x80 != 0
+			offset += 2
+		}
+	} else if len(s.paramTypes) != s.numParams {
+		return nil, errors.New("COM_STMT_EXECUTE missing parameter types")
+	}
+
+	args := make([]interface{}, s.numParams)
+	for i := 0; i < s.numParams; i++ {
+		if nullBitmap[i/8]&(1<<uint(i%8)) != 0 {
+			args[i] = nil
+			continue
+		}
+		value, next, err := readStmtExecuteValue(data, offset, s.paramTypes[i], s.paramUnsigned[i])
+		if err != nil {
+			return nil, err
+		}
+		args[i] = value
+		offset = next
+	}
+	return args, nil
+}
+
+func readStmtExecuteValue(data []byte, offset int, typ byte, unsigned bool) (interface{}, int, error) {
+	switch typ {
+	case MySQLTypeNull:
+		return nil, offset, nil
+	case MySQLTypeTiny:
+		if len(data) < offset+1 {
+			return nil, offset, errors.New("malformed tinyint parameter")
+		}
+		if unsigned {
+			return uint64(data[offset]), offset + 1, nil
+		}
+		return int64(int8(data[offset])), offset + 1, nil
+	case MySQLTypeShort, MySQLTypeYear:
+		if len(data) < offset+2 {
+			return nil, offset, errors.New("malformed smallint parameter")
+		}
+		raw := binary.LittleEndian.Uint16(data[offset:])
+		if unsigned {
+			return uint64(raw), offset + 2, nil
+		}
+		return int64(int16(raw)), offset + 2, nil
+	case MySQLTypeLong, MySQLTypeInt24:
+		if len(data) < offset+4 {
+			return nil, offset, errors.New("malformed integer parameter")
+		}
+		raw := binary.LittleEndian.Uint32(data[offset:])
+		if unsigned {
+			return uint64(raw), offset + 4, nil
+		}
+		return int64(int32(raw)), offset + 4, nil
+	case MySQLTypeLongLong:
+		if len(data) < offset+8 {
+			return nil, offset, errors.New("malformed bigint parameter")
+		}
+		raw := binary.LittleEndian.Uint64(data[offset:])
+		if unsigned {
+			return raw, offset + 8, nil
+		}
+		return int64(raw), offset + 8, nil
+	case MySQLTypeFloat:
+		if len(data) < offset+4 {
+			return nil, offset, errors.New("malformed float parameter")
+		}
+		raw := binary.LittleEndian.Uint32(data[offset:])
+		return float64(math.Float32frombits(raw)), offset + 4, nil
+	case MySQLTypeDouble:
+		if len(data) < offset+8 {
+			return nil, offset, errors.New("malformed double parameter")
+		}
+		raw := binary.LittleEndian.Uint64(data[offset:])
+		return math.Float64frombits(raw), offset + 8, nil
+	case MySQLTypeDecimal, MySQLTypeNewDecimal, MySQLTypeVarchar, MySQLTypeVarString,
+		MySQLTypeString, MySQLTypeTinyBlob, MySQLTypeMediumBlob, MySQLTypeLongBlob, MySQLTypeBlob,
+		MySQLTypeJSON:
+		value, n, err := readStmtExecuteString(data[offset:])
+		if err != nil {
+			return nil, offset, err
+		}
+		return value, offset + n, nil
+	default:
+		return nil, offset, fmt.Errorf("unsupported prepared statement parameter type 0x%02x", typ)
+	}
+}
+
+func readStmtExecuteString(data []byte) (string, int, error) {
+	length, n := readLenEncInt(data)
+	if n == 0 {
+		return "", 0, errors.New("malformed string parameter")
+	}
+	if length > uint64(len(data)-n) {
+		return "", 0, errors.New("string parameter length exceeds packet")
+	}
+	end := n + int(length)
+	return string(data[n:end]), end, nil
+}
+
 func (c *MySQLClient) handleStmtExecute(data []byte) error {
 	if len(data) < 9 {
 		return c.sendErrorPacket(0, "malformed COM_STMT_EXECUTE")
@@ -1194,6 +1385,11 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 		return c.sendErrorPacket(0, "unknown prepared statement")
 	}
 
+	args, err := stmt.parseExecuteArgs(data)
+	if err != nil {
+		return c.sendErrorPacket(0, err.Error())
+	}
+
 	baseCtx := c.ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -1201,13 +1397,13 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
 	defer cancel()
 
-	rows, err := c.server.db.Query(ctx, stmt.sql)
+	rows, err := c.server.db.Query(ctx, stmt.sql, args...)
 	if err == nil {
 		defer rows.Close()
 		return c.sendResultSetFromRows(rows)
 	}
 
-	result, err := c.server.db.Exec(ctx, stmt.sql)
+	result, err := c.server.db.Exec(ctx, stmt.sql, args...)
 	if err != nil {
 		return c.sendErrorPacket(1, sanitizeMySQLError(err))
 	}

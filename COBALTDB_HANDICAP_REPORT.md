@@ -1,7 +1,7 @@
 # CobaltDB Production Readiness Report
 
 **Date:** 2026-05-24
-**Scope:** Local repository review, test gates, race testing, recovery drills, backup drills, SQL parser hardening, benchmark gate, and operations documentation.
+**Scope:** Local repository review, test gates, race testing, recovery drills, backup drills, SQL parser hardening, MySQL prepared statement hardening, benchmark gate, and operations documentation.
 **Status:** Production-oriented single-node candidate. Not yet certified for automated HA/failover or strict MySQL wire compatibility.
 
 ## Executive Summary
@@ -19,12 +19,13 @@ Current readiness estimate:
 | Bounded soak/load drill | Added, including explicit txns, checkpoint, backup, source reopen, restore reopen |
 | SQL compatibility baseline | Added for supported and unsupported syntax surface |
 | Strict SQL parsing mode | Added as opt-in production mode |
+| MySQL prepared statements | Parameterized `COM_STMT_EXECUTE` covered for core scalar types |
 | Benchmark regression gate | Added via `scripts/benchmark-gate.sh` |
 | Operations runbook | Added |
 | HA/failover certification | Not ready |
 | Strict MySQL protocol compatibility | Not ready |
 
-**Production readiness level:** about **84/100** for single-node production-candidate use, assuming documented constraints are acceptable. It is **not** a 95+/100 database for high-concurrency OLTP, automatic failover, or broad MySQL client compatibility yet.
+**Production readiness level:** about **86/100** for single-node production-candidate use, assuming documented constraints are acceptable. It is **not** a 95+/100 database for high-concurrency OLTP, automatic failover, or broad MySQL client compatibility yet.
 
 ## Work Completed In This Pass
 
@@ -39,7 +40,8 @@ Recent hardening commits:
 | `104bb3a` | SQL compatibility | Added supported/unsupported SQL corpus baseline |
 | `69d21a1` | Benchmarks | Added bounded benchmark regression gate |
 | `17af3ef` | Operations | Added operational runbook and incident playbooks |
-| Current iteration | SQL parser | Added opt-in strict statement-boundary parsing for production deployments |
+| `aa3b989` | SQL parser | Added opt-in strict statement-boundary parsing for production deployments |
+| Current iteration | MySQL protocol | Added binary prepared statement parameter decoding and compatibility matrix |
 
 Validation performed during this pass:
 
@@ -52,6 +54,8 @@ go test ./pkg/engine -run TestProductionSoakBoundedCheckpointBackupReopen -count
 go test -race ./pkg/engine -run TestProductionSoakBoundedCheckpointBackupReopen -count=1
 go test ./test -run 'TestSQLCompatibility' -count=1
 go test ./pkg/query ./pkg/engine -run 'TestParseStrict|TestStrictSQL|TestDefaultSQLParsing' -count=1
+go test ./pkg/protocol -run 'TestCountPreparedParams|TestPreparedStmtParseExecuteArgs|TestHandleStmtPrepare|TestHandleStmtExecute' -count=1
+go test ./test -run TestMySQLPreparedStatementExecuteWithParameters -count=1
 BENCHTIME=1ms COUNT=1 ./scripts/benchmark-gate.sh /tmp/cobaltdb-bench-smoke
 ```
 
@@ -106,7 +110,7 @@ The server supports useful MySQL protocol paths, but broad client compatibility 
 
 Known gaps:
 
-- Prepared statement execution over the wire remains limited.
+- Prepared statement execution now supports core scalar binary parameters, but temporal parameters, long-data streaming, cursors, and binary result rows are not certified.
 - Unsupported MySQL commands return simplified errors.
 - Session variables and advanced MySQL metadata flows are incomplete.
 
@@ -114,6 +118,7 @@ Production stance:
 
 - Keep MySQL listener private or disabled unless the exact client behavior is validated.
 - Prefer native/embedded API paths for production-critical integrations.
+- Use `docs/MYSQL_COMPATIBILITY.md` as the compatibility contract for any MySQL-facing deployment.
 
 ### 4. SQL Parser Strictness
 
@@ -170,12 +175,12 @@ Block release on:
 
 Priority order:
 
-1. MySQL wire prepared statement execution and client compatibility matrix.
-2. Catalog lock granularity and p95/p99 write-latency benchmarks.
-3. HA/failover design and failure-injection tests.
-4. Vector/HNSW persistence certification.
-5. Large FDW streaming/materialization limits.
-6. Procedure/trigger execution semantics certification.
+1. Catalog lock granularity and p95/p99 write-latency benchmarks.
+2. HA/failover design and failure-injection tests.
+3. Vector/HNSW persistence certification.
+4. Large FDW streaming/materialization limits.
+5. Procedure/trigger execution semantics certification.
+6. External MySQL driver/ORM certification runs.
 
 ## Final Decision
 

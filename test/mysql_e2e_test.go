@@ -178,6 +178,97 @@ func (c *mysqlTestClient) sendQuery(sql string) error {
 	return c.writePacket(pkt, 0)
 }
 
+func (c *mysqlTestClient) sendStmtPrepare(sql string) error {
+	var pkt []byte
+	pkt = append(pkt, protocol.MySQLComStmtPrepare)
+	pkt = append(pkt, []byte(sql)...)
+	return c.writePacket(pkt, 0)
+}
+
+func (c *mysqlTestClient) readStmtPrepareOK() (uint32, int, int, error) {
+	payload, _, err := c.readPacket()
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if len(payload) < 12 {
+		return 0, 0, 0, fmt.Errorf("prepare response too short: %d", len(payload))
+	}
+	if payload[0] == 0xff {
+		msg := ""
+		if len(payload) > 9 {
+			msg = string(payload[9:])
+		}
+		return 0, 0, 0, fmt.Errorf("prepare error: %s", msg)
+	}
+	if payload[0] != 0x00 {
+		return 0, 0, 0, fmt.Errorf("unexpected prepare response: 0x%02x", payload[0])
+	}
+
+	stmtID := binary.LittleEndian.Uint32(payload[1:5])
+	numColumns := int(binary.LittleEndian.Uint16(payload[5:7]))
+	numParams := int(binary.LittleEndian.Uint16(payload[7:9]))
+
+	for i := 0; i < numParams; i++ {
+		if _, _, err := c.readPacket(); err != nil {
+			return 0, 0, 0, fmt.Errorf("read parameter definition %d: %w", i, err)
+		}
+	}
+	if numParams > 0 {
+		if _, _, err := c.readPacket(); err != nil {
+			return 0, 0, 0, fmt.Errorf("read parameter EOF: %w", err)
+		}
+	}
+
+	for i := 0; i < numColumns; i++ {
+		if _, _, err := c.readPacket(); err != nil {
+			return 0, 0, 0, fmt.Errorf("read column definition %d: %w", i, err)
+		}
+	}
+	if numColumns > 0 {
+		if _, _, err := c.readPacket(); err != nil {
+			return 0, 0, 0, fmt.Errorf("read column EOF: %w", err)
+		}
+	}
+
+	return stmtID, numColumns, numParams, nil
+}
+
+func (c *mysqlTestClient) sendStmtExecute(stmtID uint32, types []byte, values []interface{}) error {
+	var pkt []byte
+	pkt = append(pkt, protocol.MySQLComStmtExecute)
+	var stmtIDBuf [4]byte
+	binary.LittleEndian.PutUint32(stmtIDBuf[:], stmtID)
+	pkt = append(pkt, stmtIDBuf[:]...)
+	pkt = append(pkt, 0x00)                   // flags
+	pkt = append(pkt, 0x01, 0x00, 0x00, 0x00) // iteration count
+	pkt = append(pkt, make([]byte, (len(types)+7)/8)...)
+	pkt = append(pkt, 0x01) // new params bound
+	for _, typ := range types {
+		pkt = append(pkt, typ, 0x00)
+	}
+	for i, value := range values {
+		switch types[i] {
+		case protocol.MySQLTypeLongLong:
+			var buf [8]byte
+			binary.LittleEndian.PutUint64(buf[:], uint64(value.(int64)))
+			pkt = append(pkt, buf[:]...)
+		case protocol.MySQLTypeVarString:
+			pkt = appendMySQLLenEncString(pkt, value.(string))
+		default:
+			return fmt.Errorf("test encoder does not support type 0x%02x", types[i])
+		}
+	}
+	return c.writePacket(pkt, 0)
+}
+
+func appendMySQLLenEncString(dst []byte, s string) []byte {
+	if len(s) >= 251 {
+		panic("test helper only supports short strings")
+	}
+	dst = append(dst, byte(len(s)))
+	return append(dst, s...)
+}
+
 // sendPing sends a COM_PING command
 func (c *mysqlTestClient) sendPing() error {
 	return c.writePacket([]byte{0x0e}, 0)
@@ -491,6 +582,77 @@ func TestMySQLQueryInsertAndSelect(t *testing.T) {
 	t.Logf("MySQL result set: %d columns, %d rows", len(columns), len(rows))
 	for i, row := range rows {
 		t.Logf("  Row %d: %v", i, row)
+	}
+}
+
+func TestMySQLPreparedStatementExecuteWithParameters(t *testing.T) {
+	addr, _, _ := startMySQLTestServer(t)
+
+	client, err := newMySQLTestClient(addr)
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer client.close()
+
+	client.readHandshake()
+	client.sendHandshakeResponse("test", "")
+	client.readOKOrError()
+
+	client.sendQuery("CREATE TABLE ps_users (id INTEGER PRIMARY KEY, name TEXT)")
+	if ok, msg, err := client.readOKOrError(); err != nil {
+		t.Fatalf("CREATE response failed: %v", err)
+	} else if !ok {
+		t.Fatalf("CREATE expected OK, got: %s", msg)
+	}
+
+	if err := client.sendStmtPrepare("INSERT INTO ps_users (id, name) VALUES (?, ?)"); err != nil {
+		t.Fatalf("send prepare insert: %v", err)
+	}
+	insertStmtID, cols, params, err := client.readStmtPrepareOK()
+	if err != nil {
+		t.Fatalf("read prepare insert: %v", err)
+	}
+	if cols != 0 || params != 2 {
+		t.Fatalf("prepare insert metadata cols=%d params=%d, want cols=0 params=2", cols, params)
+	}
+
+	if err := client.sendStmtExecute(
+		insertStmtID,
+		[]byte{protocol.MySQLTypeLongLong, protocol.MySQLTypeVarString},
+		[]interface{}{int64(1), "Ada"},
+	); err != nil {
+		t.Fatalf("execute insert: %v", err)
+	}
+	if ok, msg, err := client.readOKOrError(); err != nil {
+		t.Fatalf("read execute insert: %v", err)
+	} else if !ok {
+		t.Fatalf("execute insert expected OK, got: %s", msg)
+	}
+
+	if err := client.sendStmtPrepare("SELECT name FROM ps_users WHERE id = ?"); err != nil {
+		t.Fatalf("send prepare select: %v", err)
+	}
+	selectStmtID, cols, params, err := client.readStmtPrepareOK()
+	if err != nil {
+		t.Fatalf("read prepare select: %v", err)
+	}
+	if cols != 1 || params != 1 {
+		t.Fatalf("prepare select metadata cols=%d params=%d, want cols=1 params=1", cols, params)
+	}
+
+	if err := client.sendStmtExecute(
+		selectStmtID,
+		[]byte{protocol.MySQLTypeLongLong},
+		[]interface{}{int64(1)},
+	); err != nil {
+		t.Fatalf("execute select: %v", err)
+	}
+	columns, rows, err := client.readResultSet()
+	if err != nil {
+		t.Fatalf("read prepared select result: %v", err)
+	}
+	if len(columns) != 1 || len(rows) != 1 || rows[0][0] != "Ada" {
+		t.Fatalf("unexpected prepared select result columns=%v rows=%v", columns, rows)
 	}
 }
 

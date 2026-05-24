@@ -27,6 +27,8 @@ CobaltDB is a lightweight, embeddable database engine written in Go with SQL and
 
 - [Operations Runbook](OPERATIONS_RUNBOOK.md): release gates, backup drills,
   recovery drills, monitoring checks, and incident playbooks.
+- [MySQL Compatibility](MYSQL_COMPATIBILITY.md): verified MySQL wire-protocol
+  behavior, prepared statement support, and unsupported protocol areas.
 - [Benchmarks](BENCHMARKS.md): bounded benchmark regression gate and historical
   performance notes.
 
