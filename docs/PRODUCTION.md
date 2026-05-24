@@ -2,7 +2,7 @@
 
 ## Overview
 
-CobaltDB v0.5.0 includes production-oriented features for resilience and observability. Core embedded/server SQL paths are broadly tested; replication, true incremental backup chains, and selected WASM compiler paths still require additional hardening before they should be treated as fully production-grade HA infrastructure.
+CobaltDB v0.5.0 includes production-oriented features for resilience and observability. Core embedded/server SQL paths are broadly tested; incremental and differential backup chains have restore drills, while replication/failover automation, point-in-time recovery, and selected WASM compiler paths still require additional hardening before they should be treated as fully production-grade infrastructure.
 
 ## Table of Contents
 
@@ -676,7 +676,7 @@ docs/PRODUCTION_FEATURES_ADVANCED.md
 - Observability: Tracing, alerting, metrics, health checks
 - Performance: Query cache, connection pool, parallel query, group commit
 - Scalability: partitioning and replication transport; automatic failover/cluster management remains roadmap
-- Data Integrity: WAL and full-file backup/restore; PITR and true incremental backup chains remain roadmap
+- Data Integrity: WAL, full-file backup/restore, and incremental/differential backup chain restore drills; PITR and managed backup operations remain roadmap
 
 **All tests passing in the current verification run.**
 
@@ -877,7 +877,7 @@ CobaltDB now includes the following enterprise features:
 | Alerting System | `pkg/server/alert.go` | ✅ |
 | Request Tracking | `pkg/server/tracing.go` | ✅ |
 
-**Total: 8 production-oriented feature areas. Core tests pass; HA and backup-depth items remain active roadmap work.**
+**Total: 8 production-oriented feature areas. Core tests pass; HA automation, PITR, and backup operations depth remain active roadmap work.**
 
 ---
 
