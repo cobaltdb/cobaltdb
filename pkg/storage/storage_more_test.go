@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -166,15 +167,30 @@ func TestPageDeserializeHeader(t *testing.T) {
 func TestCachedPageSetData(t *testing.T) {
 	page := &CachedPage{
 		id:   1,
-		data: make([]byte, 4096),
+		data: bytes.Repeat([]byte{0xff}, PageSize),
 	}
 
 	newData := []byte("test data")
 	page.SetData(newData)
+	newData[0] = 'X'
 
-	// Verify data was set
-	if string(page.data) != "test data" {
-		t.Errorf("Expected data 'test data', got '%s'", string(page.data))
+	if len(page.data) != PageSize {
+		t.Fatalf("Expected page data length %d, got %d", PageSize, len(page.data))
+	}
+	if string(page.data[:9]) != "test data" {
+		t.Errorf("Expected data prefix 'test data', got %q", string(page.data[:9]))
+	}
+	if page.data[9] != 0 {
+		t.Errorf("Expected stale data to be cleared, got byte %x", page.data[9])
+	}
+
+	empty := &CachedPage{id: 2}
+	empty.SetData([]byte("x"))
+	if len(empty.data) != PageSize {
+		t.Fatalf("Expected empty page data length %d, got %d", PageSize, len(empty.data))
+	}
+	if string(empty.data[:1]) != "x" {
+		t.Errorf("Expected empty page data prefix 'x', got %q", string(empty.data[:1]))
 	}
 }
 

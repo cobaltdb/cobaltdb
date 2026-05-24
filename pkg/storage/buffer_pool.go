@@ -42,9 +42,15 @@ func (p *CachedPage) Data() []byte {
 	return p.data
 }
 
-// SetData sets the page data
+// SetData copies data into the page-sized buffer, clearing any previous bytes.
 func (p *CachedPage) SetData(data []byte) {
-	p.data = data
+	if cap(p.data) < PageSize {
+		p.data = getPageData()
+	} else {
+		p.data = p.data[:PageSize]
+		clear(p.data)
+	}
+	copy(p.data, data)
 }
 
 // IsDirty returns true if the page has been modified
