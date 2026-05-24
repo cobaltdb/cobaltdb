@@ -1,6 +1,7 @@
 package fdw
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -252,6 +253,97 @@ func TestCSVWrapper_MaxRowsLimit(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "row limit exceeded") {
 		t.Fatalf("expected row limit error, got %v", err)
+	}
+}
+
+func TestCSVWrapper_MaxRowsAllowsExactLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "exact.csv")
+	content := "id,name\n1,alice\n2,bob\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path, "max_rows": "2"}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer csv.Close()
+
+	rows, err := csv.Scan("test", []string{"id", "name"})
+	if err != nil {
+		t.Fatalf("scan at exact limit failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+}
+
+func TestCSVWrapper_OpenScanStreamsRows(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stream.csv")
+	content := "id,name\n1,alice\n2,bob\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer csv.Close()
+
+	cursor, err := csv.OpenScan("test", ScanOptions{Columns: []string{"id", "name"}})
+	if err != nil {
+		t.Fatalf("OpenScan failed: %v", err)
+	}
+	defer cursor.Close()
+
+	row, err := cursor.Next()
+	if err != nil {
+		t.Fatalf("first Next failed: %v", err)
+	}
+	if !reflect.DeepEqual(row, []interface{}{"1", "alice"}) {
+		t.Fatalf("unexpected first row: %v", row)
+	}
+	row, err = cursor.Next()
+	if err != nil {
+		t.Fatalf("second Next failed: %v", err)
+	}
+	if !reflect.DeepEqual(row, []interface{}{"2", "bob"}) {
+		t.Fatalf("unexpected second row: %v", row)
+	}
+	if _, err := cursor.Next(); err != io.EOF {
+		t.Fatalf("expected EOF, got %v", err)
+	}
+}
+
+func TestCSVWrapper_OpenScanProjectsHeaderColumns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "project.csv")
+	content := "id,name,score\n1,alice,95\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer csv.Close()
+
+	cursor, err := csv.OpenScan("test", ScanOptions{Columns: []string{"score", "name"}})
+	if err != nil {
+		t.Fatalf("OpenScan failed: %v", err)
+	}
+	defer cursor.Close()
+
+	row, err := cursor.Next()
+	if err != nil {
+		t.Fatalf("Next failed: %v", err)
+	}
+	if !reflect.DeepEqual(row, []interface{}{"95", "alice"}) {
+		t.Fatalf("unexpected projected row: %v", row)
 	}
 }
 

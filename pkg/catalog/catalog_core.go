@@ -31,6 +31,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -1532,28 +1533,62 @@ func (c *Catalog) getTableTreesForScan(table *TableDef) ([]btree.TreeStore, erro
 		if err := wrapper.Open(ft.Options); err != nil {
 			return nil, fmt.Errorf("fdw open failed: %w", err)
 		}
+		defer wrapper.Close()
 		cols := make([]string, len(ft.Columns))
 		for i, col := range ft.Columns {
 			cols[i] = col.Name
 		}
-		rows, err := wrapper.Scan(ft.TableName, cols)
-		if err != nil {
-			wrapper.Close()
-			return nil, fmt.Errorf("fdw scan failed: %w", err)
-		}
-		wrapper.Close()
 
 		tmpTree, err := btree.NewBTree(c.pool)
 		if err != nil {
 			return nil, err
 		}
-		for i, row := range rows {
-			key := []byte("fdw:" + strconv.Itoa(i))
+
+		putRow := func(rowIndex int, row []interface{}) error {
+			key := []byte("fdw:" + strconv.Itoa(rowIndex))
 			val, err := encodeVersionedRow(row, nil)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if err := tmpTree.Put(key, val); err != nil {
+				return err
+			}
+			return nil
+		}
+
+		if streaming, ok := wrapper.(fdw.StreamingForeignDataWrapper); ok {
+			cursor, err := streaming.OpenScan(ft.TableName, fdw.ScanOptions{Columns: cols})
+			if err != nil {
+				return nil, fmt.Errorf("fdw scan failed: %w", err)
+			}
+			rowIndex := 0
+			for {
+				row, err := cursor.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					_ = cursor.Close()
+					return nil, fmt.Errorf("fdw scan failed: %w", err)
+				}
+				if err := putRow(rowIndex, row); err != nil {
+					_ = cursor.Close()
+					return nil, err
+				}
+				rowIndex++
+			}
+			if err := cursor.Close(); err != nil {
+				return nil, fmt.Errorf("fdw cursor close failed: %w", err)
+			}
+			return []btree.TreeStore{tmpTree}, nil
+		}
+
+		rows, err := wrapper.Scan(ft.TableName, cols)
+		if err != nil {
+			return nil, fmt.Errorf("fdw scan failed: %w", err)
+		}
+		for i, row := range rows {
+			if err := putRow(i, row); err != nil {
 				return nil, err
 			}
 		}

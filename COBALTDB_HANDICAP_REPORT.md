@@ -25,7 +25,7 @@ Current readiness estimate:
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
 | HA readiness guards | API reports explicit blockers and refuses unsafe in-process promotion |
 | Vector index persistence | HNSW metadata persists across create, post-index DML, reopen, and backup/restore |
-| FDW materialization limits | CSV scans are streaming-read and bounded by `max_rows`/`max_bytes` |
+| FDW streaming groundwork | CSV scans expose cursor streaming and catalog avoids wrapper-level full-result materialization |
 | Procedure/trigger semantics | `CALL` placeholder args, exact arity, complex param substitution, and BEFORE/AFTER trigger row images are covered |
 | Operations runbook | Added |
 | HA/failover certification | Not ready |
@@ -55,7 +55,8 @@ Recent hardening commits:
 | `1225721` | Procedures/triggers | Added `CALL` placeholder/arity fixes and BEFORE/AFTER trigger semantics certification |
 | `74437e6` | MySQL compatibility | Added real Go MySQL driver baseline and fixed prepared-statement packet compatibility |
 | `825b765` | HA boundary | Added failover readiness API and unsafe promotion guard |
-| Current iteration | Vector indexes | Added post-index DML persistence and backup/restore rebuild drill |
+| `1270975` | Vector indexes | Added post-index DML persistence and backup/restore rebuild drill |
+| Current iteration | FDW | Added streaming cursor API and CSV cursor implementation |
 
 Validation performed during this pass:
 
@@ -167,7 +168,7 @@ Some advanced features are broad but need workload-specific certification before
 
 - WASM SQL execution beyond selected paths.
 - Very large Vector/HNSW rebuild behavior beyond the 512-row backup/restore drill.
-- FDW still materializes rows into the current query engine, but CSV scans now have row and byte limits.
+- FDW still materializes rows into a temporary query-engine B-tree, but CSV scans now stream into that tree and have row/byte limits.
 - Procedure body result-set and mutable `OUT`/`INOUT` parameter semantics beyond the certified DML contract.
 - Composite/advanced constraint cases.
 
@@ -210,7 +211,7 @@ Priority order:
 2. Additional MySQL ORM and non-Go driver certification runs.
 3. Actual HA consensus, fencing, and externally orchestrated promotion implementation.
 4. Thousand-plus vector mixed workload certification.
-5. Streaming FDW cursor interface and pushdown support.
+5. FDW SQL predicate/projection pushdown into the streaming cursor API.
 
 ## Final Decision
 

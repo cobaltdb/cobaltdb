@@ -1,8 +1,10 @@
 # Foreign Data Wrapper Limits
 
-CobaltDB currently materializes FDW scan results into the query engine. The CSV
-FDW therefore has explicit limits so large external files fail predictably
-instead of consuming unbounded memory.
+CobaltDB currently materializes FDW scan results into a temporary query-engine
+B-tree. Wrappers that implement the streaming cursor API avoid building an
+intermediate `[][]interface{}` result inside the wrapper. The CSV FDW implements
+that cursor API and still enforces explicit limits so large external files fail
+predictably.
 
 ## CSV FDW Options
 
@@ -36,6 +38,6 @@ go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL' -coun
 
 Remaining work:
 
-- A streaming FDW cursor interface that avoids materializing all rows.
-- Predicate and projection pushdown for wrappers that support it.
+- Predicate pushdown extraction from SQL `WHERE` clauses into `fdw.ScanOptions`.
+- End-to-end projection pushdown from SELECT lists into `fdw.ScanOptions`.
 - Per-query memory accounting across FDW and local execution.

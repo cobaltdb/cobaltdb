@@ -32,6 +32,7 @@ go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|Tes
 go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count=1
 go test ./pkg/engine -run 'TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore' -count=1
 go test ./pkg/fdw -count=1
+go test -race ./pkg/fdw -count=1
 go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL' -count=1
 go test ./pkg/query -run TestParseCallProcedure -count=1
 go test ./test -run 'TestStoredProcedure|TestTrigger_BeforeAfterOrderAndRowImages|TestInsteadOfTrigger' -count=1

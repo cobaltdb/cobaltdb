@@ -22,6 +22,15 @@ type CSVWrapper struct {
 	maxBytes int64
 }
 
+type csvCursor struct {
+	file       *os.File
+	reader     *csv.Reader
+	maxRows    int
+	returned   int
+	pending    []interface{}
+	projection []int
+}
+
 // Name returns the FDW identifier.
 func (c *CSVWrapper) Name() string {
 	return "csv"
@@ -65,13 +74,10 @@ func (c *CSVWrapper) Open(options map[string]string) error {
 	return nil
 }
 
-// Scan reads CSV rows with bounded materialization.
-// The returned rows contain string values; the query engine handles type coercion.
-func (c *CSVWrapper) Scan(table string, columns []string) ([][]interface{}, error) {
+func (c *CSVWrapper) OpenScan(table string, options ScanOptions) (RowCursor, error) {
 	if c.file == nil {
 		return nil, fmt.Errorf("csv FDW not opened")
 	}
-	// Re-open for each scan so multiple scans work independently
 	path := c.file.Name()
 	if c.maxBytes > 0 {
 		info, err := os.Stat(path)
@@ -87,36 +93,87 @@ func (c *CSVWrapper) Scan(table string, columns []string) ([][]interface{}, erro
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 
 	reader := csv.NewReader(f)
 	first, err := reader.Read()
 	if err == io.EOF {
-		return nil, nil
+		return &csvCursor{file: f, reader: reader, maxRows: c.maxRows}, nil
 	}
 	if err != nil {
+		f.Close()
 		return nil, err
 	}
 
-	var rows [][]interface{}
+	cursor := &csvCursor{
+		file:    f,
+		reader:  reader,
+		maxRows: c.maxRows,
+	}
 	if !looksLikeHeader(first) {
-		rows = append(rows, csvRecordToRow(first))
+		cursor.pending = csvRecordToRow(first)
+		return cursor, nil
 	}
 
+	cursor.projection = csvProjection(first, options.Columns)
+	return cursor, nil
+}
+
+// Scan reads CSV rows with bounded materialization.
+// The returned rows contain string values; the query engine handles type coercion.
+func (c *CSVWrapper) Scan(table string, columns []string) ([][]interface{}, error) {
+	cursor, err := c.OpenScan(table, ScanOptions{Columns: columns})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close()
+
+	var rows [][]interface{}
 	for {
-		record, err := reader.Read()
+		row, err := cursor.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return nil, err
 		}
-		if c.maxRows > 0 && len(rows) >= c.maxRows {
-			return nil, fmt.Errorf("csv FDW row limit exceeded: max_rows=%d", c.maxRows)
-		}
-		rows = append(rows, csvRecordToRow(record))
+		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+func (c *csvCursor) Next() ([]interface{}, error) {
+	if c.pending != nil {
+		if c.maxRows > 0 && c.returned >= c.maxRows {
+			return nil, fmt.Errorf("csv FDW row limit exceeded: max_rows=%d", c.maxRows)
+		}
+		row := c.pending
+		c.pending = nil
+		c.returned++
+		return projectCSVRow(row, c.projection), nil
+	}
+	for {
+		record, err := c.reader.Read()
+		if err == io.EOF {
+			return nil, io.EOF
+		}
+		if err != nil {
+			return nil, err
+		}
+		if c.maxRows > 0 && c.returned >= c.maxRows {
+			return nil, fmt.Errorf("csv FDW row limit exceeded: max_rows=%d", c.maxRows)
+		}
+		c.returned++
+		return projectCSVRow(csvRecordToRow(record), c.projection), nil
+	}
+}
+
+func (c *csvCursor) Close() error {
+	if c.file == nil {
+		return nil
+	}
+	err := c.file.Close()
+	c.file = nil
+	return err
 }
 
 // Close closes the CSV file handle.
@@ -151,6 +208,48 @@ func csvRecordToRow(record []string) []interface{} {
 		row[j] = cell
 	}
 	return row
+}
+
+func csvProjection(header []string, columns []string) []int {
+	if len(columns) == 0 {
+		return nil
+	}
+	indexByName := make(map[string]int, len(header))
+	for i, name := range header {
+		indexByName[name] = i
+	}
+	projection := make([]int, 0, len(columns))
+	for _, col := range columns {
+		idx, ok := indexByName[col]
+		if !ok {
+			return nil
+		}
+		projection = append(projection, idx)
+	}
+	if len(projection) == len(header) {
+		for i, idx := range projection {
+			if idx != i {
+				return projection
+			}
+		}
+		return nil
+	}
+	return projection
+}
+
+func projectCSVRow(row []interface{}, projection []int) []interface{} {
+	if len(projection) == 0 {
+		return row
+	}
+	projected := make([]interface{}, 0, len(projection))
+	for _, idx := range projection {
+		if idx >= 0 && idx < len(row) {
+			projected = append(projected, row[idx])
+		} else {
+			projected = append(projected, nil)
+		}
+	}
+	return projected
 }
 
 func parsePositiveIntOption(options map[string]string, name string, defaultValue int) (int, error) {

@@ -22,6 +22,36 @@ type ForeignDataWrapper interface {
 	Close() error
 }
 
+// Predicate describes a simple remote filter candidate for wrappers that can
+// push predicates into the external source.
+type Predicate struct {
+	Column   string
+	Operator string
+	Value    interface{}
+}
+
+// ScanOptions describes a cursor scan request. Wrappers may ignore fields they
+// do not support and return rows for the query engine to filter locally.
+type ScanOptions struct {
+	Columns    []string
+	Predicates []Predicate
+	Limit      int
+	Offset     int
+}
+
+// RowCursor streams rows from a foreign table. Next returns io.EOF when the
+// cursor is exhausted.
+type RowCursor interface {
+	Next() ([]interface{}, error)
+	Close() error
+}
+
+// StreamingForeignDataWrapper is implemented by wrappers that can stream rows
+// instead of materializing an entire scan result inside the wrapper.
+type StreamingForeignDataWrapper interface {
+	OpenScan(table string, options ScanOptions) (RowCursor, error)
+}
+
 // Registry maintains a collection of named FDW implementations.
 type Registry struct {
 	mu        sync.RWMutex
