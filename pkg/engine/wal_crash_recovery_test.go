@@ -196,7 +196,6 @@ func runWALOpenTransactionWriter(t *testing.T) {
 func TestIncrementalBackupRestoreOpensAsDatabase(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "source.db")
-	restorePath := filepath.Join(dir, "restore", "restored.db")
 	ctx := context.Background()
 
 	db, err := Open(dbPath, durabilityTestOptions())
@@ -241,19 +240,57 @@ func TestIncrementalBackupRestoreOpensAsDatabase(t *testing.T) {
 		t.Fatalf("incremental parent = %q, want %q", incremental.ParentID, full.ID)
 	}
 
-	if err := manager.Restore(ctx, incremental.ID, restorePath); err != nil {
-		t.Fatalf("restore incremental backup: %v", err)
+	if _, err := db.Exec(ctx, "UPDATE accounts SET balance = 75 WHERE id = 2"); err != nil {
+		t.Fatalf("update second row: %v", err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO accounts VALUES (3, 'cara', 25)"); err != nil {
+		t.Fatalf("insert third row: %v", err)
 	}
 
-	restored, err := Open(restorePath, durabilityTestOptions())
+	differential, err := manager.CreateBackup(ctx, backup.TypeDifferential)
 	if err != nil {
-		t.Fatalf("open restored db: %v", err)
+		t.Fatalf("create differential backup: %v", err)
 	}
-	defer restored.Close()
+	if differential.ParentID != full.ID {
+		t.Fatalf("differential parent = %q, want %q", differential.ParentID, full.ID)
+	}
 
-	assertScalar(t, restored, "SELECT COUNT(*) FROM accounts", int64(2))
-	assertScalar(t, restored, "SELECT SUM(balance) FROM accounts", float64(175))
-	assertScalar(t, restored, "SELECT balance FROM accounts WHERE owner = 'alice'", int64(125))
+	restoreAndOpen := func(backupID, name string) *DB {
+		t.Helper()
+		restorePath := filepath.Join(dir, "restore", name+".db")
+		if err := manager.Restore(ctx, backupID, restorePath); err != nil {
+			t.Fatalf("restore %s backup: %v", name, err)
+		}
+
+		restored, err := Open(restorePath, durabilityTestOptions())
+		if err != nil {
+			t.Fatalf("open restored %s db: %v", name, err)
+		}
+		t.Cleanup(func() {
+			if err := restored.Close(); err != nil {
+				t.Fatalf("close restored %s db: %v", name, err)
+			}
+		})
+		return restored
+	}
+
+	restoredFull := restoreAndOpen(full.ID, "full")
+	assertScalar(t, restoredFull, "SELECT COUNT(*) FROM accounts", int64(1))
+	assertScalar(t, restoredFull, "SELECT SUM(balance) FROM accounts", float64(100))
+	assertScalar(t, restoredFull, "SELECT balance FROM accounts WHERE owner = 'alice'", int64(100))
+
+	restoredIncremental := restoreAndOpen(incremental.ID, "incremental")
+	assertScalar(t, restoredIncremental, "SELECT COUNT(*) FROM accounts", int64(2))
+	assertScalar(t, restoredIncremental, "SELECT SUM(balance) FROM accounts", float64(175))
+	assertScalar(t, restoredIncremental, "SELECT balance FROM accounts WHERE owner = 'alice'", int64(125))
+	assertScalar(t, restoredIncremental, "SELECT balance FROM accounts WHERE owner = 'bob'", int64(50))
+
+	restoredDifferential := restoreAndOpen(differential.ID, "differential")
+	assertScalar(t, restoredDifferential, "SELECT COUNT(*) FROM accounts", int64(3))
+	assertScalar(t, restoredDifferential, "SELECT SUM(balance) FROM accounts", float64(225))
+	assertScalar(t, restoredDifferential, "SELECT balance FROM accounts WHERE owner = 'alice'", int64(125))
+	assertScalar(t, restoredDifferential, "SELECT balance FROM accounts WHERE owner = 'bob'", int64(75))
+	assertScalar(t, restoredDifferential, "SELECT balance FROM accounts WHERE owner = 'cara'", int64(25))
 }
 
 func assertScalar(t *testing.T, db *DB, query string, want interface{}) {
