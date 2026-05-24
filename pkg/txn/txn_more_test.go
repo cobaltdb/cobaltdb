@@ -186,6 +186,32 @@ func TestSetWriteOverwrite(t *testing.T) {
 	}
 }
 
+func TestSetWriteCopiesValues(t *testing.T) {
+	mgr := NewManager(nil, nil)
+	txn := mgr.Begin(nil)
+	value := []byte("value1")
+
+	txn.SetWrite("", "key1", value)
+	value[0] = 'x'
+
+	got, ok := txn.GetWrite("", "key1")
+	if !ok {
+		t.Fatal("Write not found")
+	}
+	if string(got) != "value1" {
+		t.Fatalf("SetWrite retained caller-owned value: %q", got)
+	}
+
+	got[0] = 'y'
+	gotAgain, ok := txn.GetWrite("", "key1")
+	if !ok {
+		t.Fatal("Write not found on second read")
+	}
+	if string(gotAgain) != "value1" {
+		t.Fatalf("GetWrite returned mutable value: %q", gotAgain)
+	}
+}
+
 // TestSnapshotIsolation tests snapshot isolation level
 func TestSnapshotIsolation(t *testing.T) {
 	opts := &Options{

@@ -12,10 +12,10 @@ var (
 
 // VersionedValue holds a single version of a key's value.
 type VersionedValue struct {
-	Value     []byte
-	Version   uint64 // commit timestamp (transaction ID)
-	Deleted   bool
-	Prev      *VersionedValue
+	Value   []byte
+	Version uint64 // commit timestamp (transaction ID)
+	Deleted bool
+	Prev    *VersionedValue
 }
 
 // versionValuePool recycles VersionedValue structs to eliminate one heap
@@ -32,7 +32,7 @@ func init() {
 type VersionStore struct {
 	mu       sync.RWMutex
 	versions map[WriteKey]*VersionedValue // key → head of version chain
-	count    int64 // total version entries for GC tracking
+	count    int64                        // total version entries for GC tracking
 }
 
 // NewVersionStore creates a new VersionStore.
@@ -51,13 +51,13 @@ func (vs *VersionStore) Commit(key WriteKey, value []byte, commitTS uint64) {
 	var vv *VersionedValue
 	if v := versionValuePool.Get(); v != nil {
 		vv = v.(*VersionedValue)
-		vv.Value = value
+		vv.Value = cloneBytes(value)
 		vv.Version = commitTS
 		vv.Deleted = false
 		vv.Prev = prev
 	} else {
 		vv = &VersionedValue{
-			Value:   value,
+			Value:   cloneBytes(value),
 			Version: commitTS,
 			Prev:    prev,
 		}
@@ -103,7 +103,7 @@ func (vs *VersionStore) GetAtSnapshot(key WriteKey, snapshotTS uint64) ([]byte, 
 			if chain.Deleted {
 				return nil, ErrKeyDeleted
 			}
-			return chain.Value, nil
+			return cloneBytes(chain.Value), nil
 		}
 		chain = chain.Prev
 	}
@@ -122,7 +122,7 @@ func (vs *VersionStore) GetCurrent(key WriteKey) ([]byte, error) {
 	if head.Deleted {
 		return nil, ErrKeyDeleted
 	}
-	return head.Value, nil
+	return cloneBytes(head.Value), nil
 }
 
 // GetLatestVersion returns the latest version timestamp for a key.
@@ -228,4 +228,13 @@ func (vs *VersionStore) VersionCount() int64 {
 	vs.mu.RLock()
 	defer vs.mu.RUnlock()
 	return vs.count
+}
+
+func cloneBytes(value []byte) []byte {
+	if value == nil {
+		return nil
+	}
+	cloned := make([]byte, len(value))
+	copy(cloned, value)
+	return cloned
 }

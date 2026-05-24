@@ -317,7 +317,7 @@ func (t *Transaction) GetWrite(treeName, key string) ([]byte, bool) {
 	wk.TreeName = treeName
 	wk.Key = key
 	v, ok := t.WriteSet[wk]
-	return v, ok
+	return cloneBytes(v), ok
 }
 
 // SetWrite buffers a write for a key
@@ -331,7 +331,7 @@ func (t *Transaction) SetWrite(treeName, key string, value []byte) {
 	var wk WriteKey
 	wk.TreeName = treeName
 	wk.Key = key
-	t.WriteSet[wk] = value
+	t.WriteSet[wk] = cloneBytes(value)
 }
 
 const numVersionShards = 256

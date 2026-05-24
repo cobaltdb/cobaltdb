@@ -88,6 +88,45 @@ func TestVersionStoreGetCurrent(t *testing.T) {
 	}
 }
 
+func TestVersionStoreCopiesCommittedValues(t *testing.T) {
+	vs := NewVersionStore()
+	key := WriteKey{Key: "key1"}
+	value := []byte("v1")
+
+	vs.Commit(key, value, 1)
+	value[0] = 'x'
+
+	current, err := vs.GetCurrent(key)
+	if err != nil {
+		t.Fatalf("GetCurrent: %v", err)
+	}
+	if string(current) != "v1" {
+		t.Fatalf("Commit retained caller-owned value: %q", current)
+	}
+
+	current[0] = 'y'
+	currentAgain, err := vs.GetCurrent(key)
+	if err != nil {
+		t.Fatalf("GetCurrent second read: %v", err)
+	}
+	if string(currentAgain) != "v1" {
+		t.Fatalf("GetCurrent returned mutable value: %q", currentAgain)
+	}
+
+	snapshot, err := vs.GetAtSnapshot(key, 1)
+	if err != nil {
+		t.Fatalf("GetAtSnapshot: %v", err)
+	}
+	snapshot[0] = 'z'
+	snapshotAgain, err := vs.GetAtSnapshot(key, 1)
+	if err != nil {
+		t.Fatalf("GetAtSnapshot second read: %v", err)
+	}
+	if string(snapshotAgain) != "v1" {
+		t.Fatalf("GetAtSnapshot returned mutable value: %q", snapshotAgain)
+	}
+}
+
 func TestVersionStorePrune(t *testing.T) {
 	vs := NewVersionStore()
 
