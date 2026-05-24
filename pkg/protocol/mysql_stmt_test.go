@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -385,14 +386,41 @@ func TestHandleStmtExecute(t *testing.T) {
 			t.Fatalf("long data was not cleared after execute: %#v", client.stmts[stmtID].longData)
 		}
 	})
+
+	t.Run("ExecuteWithCursorFlagRejected", func(t *testing.T) {
+		client, conn := newTestClient(db)
+
+		if err := client.handleStmtPrepare("SELECT val FROM exec_test WHERE id = ?"); err != nil {
+			t.Skipf("prepare failed: %v", err)
+		}
+
+		var stmtID uint32
+		for id := range client.stmts {
+			stmtID = id
+			break
+		}
+
+		execData := buildStmtExecutePacketWithFlags(stmtID, 0x01, []byte{MySQLTypeLongLong}, []interface{}{int64(1)})
+		if err := client.handleStmtExecute(execData); err != nil {
+			t.Fatalf("handleStmtExecute: %v", err)
+		}
+		out := conn.writeBuf.String()
+		if !strings.Contains(out, "cursor flags are not supported") {
+			t.Fatalf("expected cursor unsupported error packet, got %q", out)
+		}
+	})
 }
 
 func buildStmtExecutePacket(stmtID uint32, types []byte, values []interface{}) []byte {
+	return buildStmtExecutePacketWithFlags(stmtID, 0x00, types, values)
+}
+
+func buildStmtExecutePacketWithFlags(stmtID uint32, flags byte, types []byte, values []interface{}) []byte {
 	data := make([]byte, 0, 64)
 	var stmtIDBuf [4]byte
 	binary.LittleEndian.PutUint32(stmtIDBuf[:], stmtID)
 	data = append(data, stmtIDBuf[:]...)
-	data = append(data, 0x00)
+	data = append(data, flags)
 	data = append(data, 0x01, 0x00, 0x00, 0x00)
 	data = append(data, make([]byte, (len(types)+7)/8)...)
 	data = append(data, 0x01)

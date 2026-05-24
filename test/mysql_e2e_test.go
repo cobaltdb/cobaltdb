@@ -234,12 +234,16 @@ func (c *mysqlTestClient) readStmtPrepareOK() (uint32, int, int, error) {
 }
 
 func (c *mysqlTestClient) sendStmtExecute(stmtID uint32, types []byte, values []interface{}) error {
+	return c.sendStmtExecuteWithFlags(stmtID, 0x00, types, values)
+}
+
+func (c *mysqlTestClient) sendStmtExecuteWithFlags(stmtID uint32, flags byte, types []byte, values []interface{}) error {
 	var pkt []byte
 	pkt = append(pkt, protocol.MySQLComStmtExecute)
 	var stmtIDBuf [4]byte
 	binary.LittleEndian.PutUint32(stmtIDBuf[:], stmtID)
 	pkt = append(pkt, stmtIDBuf[:]...)
-	pkt = append(pkt, 0x00)                   // flags
+	pkt = append(pkt, flags)                  // flags
 	pkt = append(pkt, 0x01, 0x00, 0x00, 0x00) // iteration count
 	pkt = append(pkt, make([]byte, (len(types)+7)/8)...)
 	pkt = append(pkt, 0x01) // new params bound
@@ -881,6 +885,66 @@ func TestMySQLPreparedStatementLongData(t *testing.T) {
 	}
 	if len(columns) != 1 || len(rows) != 1 || rows[0][0] != "chunk-payload" {
 		t.Fatalf("unexpected long data result columns=%v rows=%v", columns, rows)
+	}
+}
+
+func TestMySQLPreparedStatementCursorFlagRejected(t *testing.T) {
+	addr, _, _ := startMySQLTestServer(t)
+
+	client, err := newMySQLTestClient(addr)
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer client.close()
+
+	client.readHandshake()
+	client.sendHandshakeResponse("test", "")
+	client.readOKOrError()
+
+	client.sendQuery("CREATE TABLE ps_cursor (id INTEGER PRIMARY KEY, body TEXT)")
+	if ok, msg, err := client.readOKOrError(); err != nil {
+		t.Fatalf("CREATE response failed: %v", err)
+	} else if !ok {
+		t.Fatalf("CREATE expected OK, got: %s", msg)
+	}
+	client.sendQuery("INSERT INTO ps_cursor VALUES (1, 'row')")
+	if ok, msg, err := client.readOKOrError(); err != nil {
+		t.Fatalf("INSERT response failed: %v", err)
+	} else if !ok {
+		t.Fatalf("INSERT expected OK, got: %s", msg)
+	}
+
+	if err := client.sendStmtPrepare("SELECT body FROM ps_cursor WHERE id = ?"); err != nil {
+		t.Fatalf("send prepare select: %v", err)
+	}
+	stmtID, cols, params, err := client.readStmtPrepareOK()
+	if err != nil {
+		t.Fatalf("read prepare select: %v", err)
+	}
+	if cols != 1 || params != 1 {
+		t.Fatalf("prepare select metadata cols=%d params=%d, want cols=1 params=1", cols, params)
+	}
+
+	if err := client.sendStmtExecuteWithFlags(stmtID, 0x01, []byte{protocol.MySQLTypeLongLong}, []interface{}{int64(1)}); err != nil {
+		t.Fatalf("execute select with cursor flag: %v", err)
+	}
+	ok, msg, err := client.readOKOrError()
+	if err != nil {
+		t.Fatalf("read cursor rejection: %v", err)
+	}
+	if ok || !strings.Contains(msg, "cursor flags are not supported") {
+		t.Fatalf("expected cursor unsupported error, ok=%v msg=%q", ok, msg)
+	}
+
+	if err := client.sendStmtExecute(stmtID, []byte{protocol.MySQLTypeLongLong}, []interface{}{int64(1)}); err != nil {
+		t.Fatalf("execute select without cursor flag: %v", err)
+	}
+	columns, rows, err := client.readResultSet()
+	if err != nil {
+		t.Fatalf("read prepared select result after cursor rejection: %v", err)
+	}
+	if len(columns) != 1 || len(rows) != 1 || rows[0][0] != "row" {
+		t.Fatalf("unexpected prepared select result after cursor rejection columns=%v rows=%v", columns, rows)
 	}
 }
 

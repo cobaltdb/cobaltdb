@@ -1488,6 +1488,11 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 		return c.sendErrorPacket(0, "malformed COM_STMT_EXECUTE")
 	}
 
+	flags := data[4]
+	if flags != 0 {
+		return c.sendErrorPacket(0, "prepared statement cursor flags are not supported")
+	}
+
 	stmtID := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
 	stmt, ok := c.getStmtMap()[stmtID]
 	if !ok {

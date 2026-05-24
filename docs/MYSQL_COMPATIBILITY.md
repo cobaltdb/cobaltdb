@@ -19,6 +19,7 @@ explicit test and operational owner.
 | `COM_RESET_CONNECTION` | Supported | Clears per-client prepared statement state |
 | `COM_STMT_PREPARE` | Supported | Statement IDs, parameter count, basic column count |
 | `COM_STMT_EXECUTE` | Supported | Bound scalar parameters for query and exec statements |
+| `COM_STMT_EXECUTE` cursor flags | Rejected safely | Server-side cursor requests return an explicit unsupported error |
 | Prepared result rows | Supported | Binary row packets for `COM_STMT_EXECUTE` result sets |
 | `COM_STMT_CLOSE` / `COM_STMT_RESET` | Supported | Statement lifecycle |
 | `COM_STMT_SEND_LONG_DATA` | Supported | Chunked prepared TEXT/BLOB parameters |
@@ -46,7 +47,7 @@ packets may reuse the cached parameter types for the same prepared statement.
 
 | Area | Current behavior |
 |---|---|
-| Server-side cursors | Cursor flags are not implemented |
+| Server-side cursor fetch lifecycle | `COM_STMT_FETCH` and incremental cursor result state are not implemented |
 | Rich column metadata | Column definitions use coarse string-like metadata |
 | Session variables | Common initialization queries are handled, broad MySQL semantics are not complete |
 | External client matrix | Go `database/sql` + `go-sql-driver/mysql` is covered; each additional production driver/ORM still needs validation |
