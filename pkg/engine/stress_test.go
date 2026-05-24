@@ -181,6 +181,158 @@ func TestStress_ConcurrentReadsWrites(t *testing.T) {
 	}
 }
 
+func TestProductionSoakBoundedCheckpointBackupReopen(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "soak.db")
+	opts := durabilityTestOptions()
+	opts.BackupDir = filepath.Join(dir, "backups")
+	opts.MaxBackups = 4
+	opts.BackupCompressionLevel = 0
+
+	db, err := Open(dbPath, opts)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, err := db.Exec(ctx, "CREATE TABLE ledger (id INTEGER PRIMARY KEY, account_id INTEGER, amount INTEGER)"); err != nil {
+		t.Fatalf("create ledger: %v", err)
+	}
+	if _, err := db.Exec(ctx, "CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance INTEGER)"); err != nil {
+		t.Fatalf("create accounts: %v", err)
+	}
+
+	const workers = 4
+	const iterations = 25
+	for i := 0; i < workers; i++ {
+		if _, err := db.Exec(ctx, "INSERT INTO accounts VALUES (?, 0)", i); err != nil {
+			t.Fatalf("seed account %d: %v", i, err)
+		}
+	}
+
+	errs := make(chan error, workers*iterations+64)
+	var workload sync.WaitGroup
+	stopCheckpoint := make(chan struct{})
+	var checkpointWG sync.WaitGroup
+
+	checkpointWG.Add(1)
+	go func() {
+		defer checkpointWG.Done()
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCheckpoint:
+				return
+			case <-ticker.C:
+				if err := db.Checkpoint(); err != nil && !errors.Is(err, ErrDatabaseClosed) {
+					errs <- fmt.Errorf("checkpoint: %w", err)
+					return
+				}
+			}
+		}
+	}()
+
+	for worker := 0; worker < workers; worker++ {
+		workload.Add(1)
+		go func(workerID int) {
+			defer workload.Done()
+			amount := workerID + 1
+			for i := 0; i < iterations; i++ {
+				id := workerID*iterations + i + 1
+				tx, err := db.Begin(ctx)
+				if err != nil {
+					errs <- fmt.Errorf("worker %d begin: %w", workerID, err)
+					return
+				}
+				if _, err := tx.Exec(ctx, "INSERT INTO ledger VALUES (?, ?, ?)", id, workerID, amount); err != nil {
+					_ = tx.Rollback()
+					errs <- fmt.Errorf("worker %d insert %d: %w", workerID, id, err)
+					return
+				}
+				if _, err := tx.Exec(ctx, "UPDATE accounts SET balance = balance + ? WHERE id = ?", amount, workerID); err != nil {
+					_ = tx.Rollback()
+					errs <- fmt.Errorf("worker %d update %d: %w", workerID, id, err)
+					return
+				}
+				if err := tx.Commit(); err != nil {
+					errs <- fmt.Errorf("worker %d commit %d: %w", workerID, id, err)
+					return
+				}
+			}
+		}(worker)
+	}
+
+	for reader := 0; reader < 2; reader++ {
+		workload.Add(1)
+		go func(readerID int) {
+			defer workload.Done()
+			for i := 0; i < iterations; i++ {
+				row := db.QueryRow(ctx, "SELECT COUNT(*) FROM ledger")
+				var count int64
+				if err := row.Scan(&count); err != nil {
+					errs <- fmt.Errorf("reader %d count: %w", readerID, err)
+					return
+				}
+				row = db.QueryRow(ctx, "SELECT SUM(balance) FROM accounts")
+				var total float64
+				if err := row.Scan(&total); err != nil && !strings.Contains(err.Error(), "cannot scan <nil>") {
+					errs <- fmt.Errorf("reader %d sum: %w", readerID, err)
+					return
+				}
+			}
+		}(reader)
+	}
+
+	workload.Wait()
+	close(stopCheckpoint)
+	checkpointWG.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	expectedRows := int64(workers * iterations)
+	expectedTotal := float64(iterations * (workers * (workers + 1) / 2))
+	assertScalar(t, db, "SELECT COUNT(*) FROM ledger", expectedRows)
+	assertScalar(t, db, "SELECT SUM(amount) FROM ledger", expectedTotal)
+	assertScalar(t, db, "SELECT SUM(balance) FROM accounts", expectedTotal)
+
+	b, err := db.CreateBackup(ctx, "full")
+	if err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+	restorePath := filepath.Join(dir, "restore", "soak-restored.db")
+	if err := db.backupMgr.Restore(ctx, b.ID, restorePath); err != nil {
+		t.Fatalf("restore backup: %v", err)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close source: %v", err)
+	}
+
+	reopened, err := Open(dbPath, opts)
+	if err != nil {
+		t.Fatalf("reopen source: %v", err)
+	}
+	defer reopened.Close()
+	assertScalar(t, reopened, "SELECT COUNT(*) FROM ledger", expectedRows)
+	assertScalar(t, reopened, "SELECT SUM(balance) FROM accounts", expectedTotal)
+
+	restored, err := Open(restorePath, opts)
+	if err != nil {
+		t.Fatalf("open restored: %v", err)
+	}
+	defer restored.Close()
+	assertScalar(t, restored, "SELECT COUNT(*) FROM ledger", expectedRows)
+	assertScalar(t, restored, "SELECT SUM(amount) FROM ledger", expectedTotal)
+	assertScalar(t, restored, "SELECT SUM(balance) FROM accounts", expectedTotal)
+}
+
 // TestStress_Extended runs concurrent writers and readers for 60 seconds.
 func TestStress_Extended(t *testing.T) {
 	if testing.Short() {
