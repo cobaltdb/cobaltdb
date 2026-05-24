@@ -27,8 +27,27 @@ func TestCacheCreation(t *testing.T) {
 		t.Fatal("Failed to create cache")
 	}
 
-	if cache.config != config {
-		t.Error("Config mismatch")
+	if cache.config == config {
+		t.Fatal("New should copy caller config")
+	}
+
+	config.MaxSize = 1
+	config.MaxEntries = 1
+	config.TTL = time.Nanosecond
+	config.Enabled = false
+
+	defaults := DefaultConfig()
+	if cache.config.MaxSize != defaults.MaxSize {
+		t.Fatalf("MaxSize aliased caller config: %d", cache.config.MaxSize)
+	}
+	if cache.config.MaxEntries != defaults.MaxEntries {
+		t.Fatalf("MaxEntries aliased caller config: %d", cache.config.MaxEntries)
+	}
+	if cache.config.TTL != defaults.TTL {
+		t.Fatalf("TTL aliased caller config: %v", cache.config.TTL)
+	}
+	if cache.config.Enabled != defaults.Enabled {
+		t.Fatalf("Enabled aliased caller config: %v", cache.config.Enabled)
 	}
 }
 

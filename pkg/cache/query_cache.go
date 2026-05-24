@@ -108,11 +108,10 @@ func New(config *Config) *Cache {
 }
 
 func normalizeConfig(config *Config) *Config {
-	if config.CleanupInterval > 0 {
-		return config
-	}
 	normalized := *config
-	normalized.CleanupInterval = DefaultConfig().CleanupInterval
+	if normalized.CleanupInterval <= 0 {
+		normalized.CleanupInterval = DefaultConfig().CleanupInterval
+	}
 	return &normalized
 }
 
