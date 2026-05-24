@@ -756,7 +756,7 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	// that materialized-view snapshot is present.
 	var mvRows [][]interface{}
 	var isMV bool
-	trees, err := cat.getTableTreesForScan(table)
+	trees, err := cat.getTableTreesForScanWithOptions(table, cat.buildFDWScanOptions(stmt, args))
 	if err != nil {
 		if cat.cteResults == nil {
 			return nil, nil, err
@@ -1517,6 +1517,10 @@ func (t *TableDef) getPartitionTreeNames() []string {
 // getTableTreesForScan returns all B-trees for scanning a table
 // For partitioned tables, returns all partition trees; for non-partitioned, returns the single tree
 func (c *Catalog) getTableTreesForScan(table *TableDef) ([]btree.TreeStore, error) {
+	return c.getTableTreesForScanWithOptions(table, fdw.ScanOptions{})
+}
+
+func (c *Catalog) getTableTreesForScanWithOptions(table *TableDef, scanOptions fdw.ScanOptions) ([]btree.TreeStore, error) {
 	// Foreign table: materialize FDW data into a temporary B-tree
 	if table.Type == "foreign" {
 		ft, ok := c.foreignTables[table.Name]
@@ -1538,6 +1542,9 @@ func (c *Catalog) getTableTreesForScan(table *TableDef) ([]btree.TreeStore, erro
 		for i, col := range ft.Columns {
 			cols[i] = col.Name
 		}
+		if len(scanOptions.Columns) == 0 {
+			scanOptions.Columns = cols
+		}
 
 		tmpTree, err := btree.NewBTree(c.pool)
 		if err != nil {
@@ -1557,7 +1564,7 @@ func (c *Catalog) getTableTreesForScan(table *TableDef) ([]btree.TreeStore, erro
 		}
 
 		if streaming, ok := wrapper.(fdw.StreamingForeignDataWrapper); ok {
-			cursor, err := streaming.OpenScan(ft.TableName, fdw.ScanOptions{Columns: cols})
+			cursor, err := streaming.OpenScan(ft.TableName, scanOptions)
 			if err != nil {
 				return nil, fmt.Errorf("fdw scan failed: %w", err)
 			}

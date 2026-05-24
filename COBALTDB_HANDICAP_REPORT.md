@@ -25,7 +25,7 @@ Current readiness estimate:
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
 | HA readiness guards | API reports explicit blockers and refuses unsafe in-process promotion |
 | Vector index persistence | HNSW metadata persists across create, post-index DML, reopen, and backup/restore |
-| FDW streaming groundwork | CSV scans expose cursor streaming and catalog avoids wrapper-level full-result materialization |
+| FDW streaming/pushdown groundwork | CSV scans expose cursor streaming; simple WHERE predicates are sent through `fdw.ScanOptions` |
 | Procedure/trigger semantics | `CALL` placeholder args, exact arity, complex param substitution, and BEFORE/AFTER trigger row images are covered |
 | Operations runbook | Added |
 | HA/failover certification | Not ready |
@@ -56,7 +56,8 @@ Recent hardening commits:
 | `74437e6` | MySQL compatibility | Added real Go MySQL driver baseline and fixed prepared-statement packet compatibility |
 | `825b765` | HA boundary | Added failover readiness API and unsafe promotion guard |
 | `1270975` | Vector indexes | Added post-index DML persistence and backup/restore rebuild drill |
-| Current iteration | FDW | Added streaming cursor API and CSV cursor implementation |
+| `2c67dd6` | FDW | Added streaming cursor API and CSV cursor implementation |
+| Current iteration | FDW pushdown | Added simple WHERE predicate extraction into streaming scan options |
 
 Validation performed during this pass:
 
@@ -82,6 +83,7 @@ go test ./pkg/engine -run 'TestVectorIndexPersistsAcrossReopen|TestVectorIndexLa
 go test -race ./pkg/catalog ./pkg/engine -run 'TestVectorIndexMetadataPersistsOnCreateAndDrop|TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore' -count=1
 go test ./pkg/fdw -count=1
 go test -race ./pkg/fdw -count=1
+go test ./pkg/catalog -run TestFDWScanOptionsCarrySimpleWherePredicates -count=1
 go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL' -count=1
 go test ./pkg/query -run TestParseCallProcedure -count=1
 go test ./test -run 'TestStoredProcedure|TestTrigger_BeforeAfterOrderAndRowImages|TestInsteadOfTrigger' -count=1
@@ -168,7 +170,7 @@ Some advanced features are broad but need workload-specific certification before
 
 - WASM SQL execution beyond selected paths.
 - Very large Vector/HNSW rebuild behavior beyond the 512-row backup/restore drill.
-- FDW still materializes rows into a temporary query-engine B-tree, but CSV scans now stream into that tree and have row/byte limits.
+- FDW still materializes rows into a temporary query-engine B-tree, but CSV scans now stream into that tree, receive advisory simple predicates, and have row/byte limits.
 - Procedure body result-set and mutable `OUT`/`INOUT` parameter semantics beyond the certified DML contract.
 - Composite/advanced constraint cases.
 
@@ -211,7 +213,7 @@ Priority order:
 2. Additional MySQL ORM and non-Go driver certification runs.
 3. Actual HA consensus, fencing, and externally orchestrated promotion implementation.
 4. Thousand-plus vector mixed workload certification.
-5. FDW SQL predicate/projection pushdown into the streaming cursor API.
+5. FDW projection pushdown and wrapper-side predicate filtering for CSV.
 
 ## Final Decision
 

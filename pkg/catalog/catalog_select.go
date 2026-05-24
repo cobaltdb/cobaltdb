@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cobaltdb/cobaltdb/pkg/fdw"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
@@ -228,6 +229,10 @@ func (c *Catalog) executeScalarAggregate(stmt *query.SelectStmt, args []interfac
 // loadMainTableRows resolves the main FROM table reference to column definitions
 // and row data, checking CTE results and B-tree scans.
 func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]interface{}, error) {
+	return c.loadMainTableRowsWithFDWOptions(from, fdw.ScanOptions{})
+}
+
+func (c *Catalog) loadMainTableRowsWithFDWOptions(from *query.TableRef, scanOptions fdw.ScanOptions) ([]ColumnDef, [][]interface{}, error) {
 	// Check if main table is a CTE result
 	if c.cteResults != nil {
 		if cteRes, ok := c.cteResults[toLowerFast(from.Name)]; ok {
@@ -248,7 +253,7 @@ func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]inte
 	}
 
 	// Get all trees for scanning (handles partitioned tables)
-	trees, err := c.getTableTreesForScan(mainTable)
+	trees, err := c.getTableTreesForScanWithOptions(mainTable, scanOptions)
 	if err != nil {
 		return mainTable.Columns, nil, nil
 	}
@@ -298,7 +303,7 @@ func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]inte
 				} else {
 					intermediateRows = append(intermediateRows, vrow.Data)
 					seen[k] = len(intermediateRows) - 1
-			}
+				}
 			}
 		}
 	}
@@ -319,7 +324,7 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 	var intermediateRows [][]interface{}
 
 	// Check if main table is a CTE result
-	mainTableCols, intermediateRows, err := c.loadMainTableRows(stmt.From)
+	mainTableCols, intermediateRows, err := c.loadMainTableRowsWithFDWOptions(stmt.From, c.buildFDWScanOptions(stmt, args))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -608,13 +613,12 @@ func (c *Catalog) projectJoinSelectCols(stmt *query.SelectStmt, intermediateRows
 	return resultRows
 }
 
-
 func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, returnColumns []string) ([]string, [][]interface{}, error) {
 	var mainTableCols []ColumnDef
 	var intermediateRows [][]interface{}
 
 	// Check if main table is a CTE result or derived table
-	mainTableCols, intermediateRows, err := c.loadMainTableRows(stmt.From)
+	mainTableCols, intermediateRows, err := c.loadMainTableRowsWithFDWOptions(stmt.From, c.buildFDWScanOptions(stmt, args))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -845,7 +849,7 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 				joinTableCols = make([]ColumnDef, len(viewCols))
 				for i, col := range viewCols {
 					joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
-			}
+				}
 				joinRows = viewRows
 			}
 		}
@@ -1036,7 +1040,6 @@ func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows []
 
 	return newIntermediate
 }
-
 
 // executeJoinChainForGroupBy chains through JOINs for GROUP BY queries.
 func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []interface{}, intermediateRows [][]interface{}, allColumns []ColumnDef, mainTableCols []ColumnDef) ([][]interface{}, []ColumnDef) {
@@ -1229,7 +1232,6 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 
 	return intermediateRows, allColumns
 }
-
 
 func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo, orderBy []*query.OrderByExpr) [][]interface{} {
 	if len(rows) == 0 || len(orderBy) == 0 {
@@ -1618,7 +1620,6 @@ func hashJoinKey(v interface{}) string {
 	}
 }
 
-
 // computeJoinGroupAggregates computes aggregate results for each group in a
 // JOIN+GROUP BY query. Returns one result row per group with aggregate and
 // non-aggregate column values.
@@ -1918,7 +1919,6 @@ func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, v
 	return cat.applyOuterQueryProjection(stmt, filteredRows, viewCols, columns, args)
 }
 
-
 // applyOuterQueryAggregates handles the aggregate/GROUP BY path of applyOuterQuery.
 func (cat *Catalog) applyOuterQueryAggregates(stmt *query.SelectStmt, filteredRows [][]interface{}, columns []ColumnDef, args []interface{}) ([]string, [][]interface{}, error) {
 	// Build return column names
@@ -2071,159 +2071,159 @@ func (cat *Catalog) applyOuterQueryAggregates(stmt *query.SelectStmt, filteredRo
 
 // applyOuterQueryProjection handles the non-aggregate projection path of applyOuterQuery.
 func (cat *Catalog) applyOuterQueryProjection(stmt *query.SelectStmt, filteredRows [][]interface{}, viewCols []string, columns []ColumnDef, args []interface{}) ([]string, [][]interface{}, error) {
-// Project columns
-var returnCols []string
-var resultRows [][]interface{}
+	// Project columns
+	var returnCols []string
+	var resultRows [][]interface{}
 
-// Build column mapping
-type colMapping struct {
-	name    string
-	viewIdx int // -1 if needs evaluation
-}
-var mappings []colMapping
-
-for _, col := range stmt.Columns {
-	aliasName := ""
-	actual := col
-	if ae, ok := col.(*query.AliasExpr); ok {
-		aliasName = ae.Alias
-		actual = ae.Expr
+	// Build column mapping
+	type colMapping struct {
+		name    string
+		viewIdx int // -1 if needs evaluation
 	}
-	switch c := actual.(type) {
-	case *query.StarExpr:
-		for j, name := range viewCols {
-			mappings = append(mappings, colMapping{name: name, viewIdx: j})
+	var mappings []colMapping
+
+	for _, col := range stmt.Columns {
+		aliasName := ""
+		actual := col
+		if ae, ok := col.(*query.AliasExpr); ok {
+			aliasName = ae.Alias
+			actual = ae.Expr
 		}
-	case *query.Identifier:
-		found := false
-		for j, name := range viewCols {
-			if strings.EqualFold(name, c.Name) {
-				displayName := name
-				if aliasName != "" {
-					displayName = aliasName
-				}
-				mappings = append(mappings, colMapping{name: displayName, viewIdx: j})
-				found = true
-				break
+		switch c := actual.(type) {
+		case *query.StarExpr:
+			for j, name := range viewCols {
+				mappings = append(mappings, colMapping{name: name, viewIdx: j})
 			}
-		}
-		if !found {
-			mappings = append(mappings, colMapping{name: c.Name, viewIdx: -1})
-		}
-	default:
-		name := "expr"
-		if aliasName != "" {
-			name = aliasName
-		}
-		mappings = append(mappings, colMapping{name: name, viewIdx: -1})
-	}
-}
-
-returnCols = make([]string, len(mappings))
-for i, m := range mappings {
-	returnCols[i] = m.name
-}
-
-for _, row := range filteredRows {
-	resultRow := make([]interface{}, len(mappings))
-	for i, m := range mappings {
-		if m.viewIdx >= 0 && m.viewIdx < len(row) {
-			resultRow[i] = row[m.viewIdx]
-		} else {
-			// Evaluate expression against view row
-			val, err := evaluateExpression(cat, row, columns, stmt.Columns[i], args)
-			if err == nil {
-				resultRow[i] = val
-			}
-		}
-	}
-	resultRows = append(resultRows, resultRow)
-}
-
-// Build selectColInfo for ORDER BY
-selectCols := make([]selectColInfo, len(mappings))
-for i, m := range mappings {
-	selectCols[i] = selectColInfo{name: m.name, index: i}
-}
-
-// Add hidden ORDER BY columns from view that aren't in the outer SELECT
-hiddenViewOrderByCols := 0
-if len(stmt.OrderBy) > 0 {
-	for _, ob := range stmt.OrderBy {
-		if ident, ok := ob.Expr.(*query.Identifier); ok {
-			// Check if this column is already in selectCols
+		case *query.Identifier:
 			found := false
-			for _, sc := range selectCols {
-				if strings.EqualFold(sc.name, ident.Name) {
+			for j, name := range viewCols {
+				if strings.EqualFold(name, c.Name) {
+					displayName := name
+					if aliasName != "" {
+						displayName = aliasName
+					}
+					mappings = append(mappings, colMapping{name: displayName, viewIdx: j})
 					found = true
 					break
 				}
 			}
 			if !found {
-				// Check if it's a view column
-				for j, vc := range viewCols {
-					if strings.EqualFold(vc, ident.Name) {
-						// Add as hidden column and append values from view rows
-						selectCols = append(selectCols, selectColInfo{name: vc, index: len(mappings) + hiddenViewOrderByCols})
-						for k := range resultRows {
-							if j < len(filteredRows[k]) {
-								resultRows[k] = append(resultRows[k], filteredRows[k][j])
-							}
-						}
-						hiddenViewOrderByCols++
+				mappings = append(mappings, colMapping{name: c.Name, viewIdx: -1})
+			}
+		default:
+			name := "expr"
+			if aliasName != "" {
+				name = aliasName
+			}
+			mappings = append(mappings, colMapping{name: name, viewIdx: -1})
+		}
+	}
+
+	returnCols = make([]string, len(mappings))
+	for i, m := range mappings {
+		returnCols[i] = m.name
+	}
+
+	for _, row := range filteredRows {
+		resultRow := make([]interface{}, len(mappings))
+		for i, m := range mappings {
+			if m.viewIdx >= 0 && m.viewIdx < len(row) {
+				resultRow[i] = row[m.viewIdx]
+			} else {
+				// Evaluate expression against view row
+				val, err := evaluateExpression(cat, row, columns, stmt.Columns[i], args)
+				if err == nil {
+					resultRow[i] = val
+				}
+			}
+		}
+		resultRows = append(resultRows, resultRow)
+	}
+
+	// Build selectColInfo for ORDER BY
+	selectCols := make([]selectColInfo, len(mappings))
+	for i, m := range mappings {
+		selectCols[i] = selectColInfo{name: m.name, index: i}
+	}
+
+	// Add hidden ORDER BY columns from view that aren't in the outer SELECT
+	hiddenViewOrderByCols := 0
+	if len(stmt.OrderBy) > 0 {
+		for _, ob := range stmt.OrderBy {
+			if ident, ok := ob.Expr.(*query.Identifier); ok {
+				// Check if this column is already in selectCols
+				found := false
+				for _, sc := range selectCols {
+					if strings.EqualFold(sc.name, ident.Name) {
+						found = true
 						break
+					}
+				}
+				if !found {
+					// Check if it's a view column
+					for j, vc := range viewCols {
+						if strings.EqualFold(vc, ident.Name) {
+							// Add as hidden column and append values from view rows
+							selectCols = append(selectCols, selectColInfo{name: vc, index: len(mappings) + hiddenViewOrderByCols})
+							for k := range resultRows {
+								if j < len(filteredRows[k]) {
+									resultRows[k] = append(resultRows[k], filteredRows[k][j])
+								}
+							}
+							hiddenViewOrderByCols++
+							break
+						}
 					}
 				}
 			}
 		}
 	}
-}
 
-// Apply ORDER BY
-if len(stmt.OrderBy) > 0 {
-	resultRows = cat.applyOrderBy(resultRows, selectCols, stmt.OrderBy)
-}
-
-// Strip hidden ORDER BY columns
-if hiddenViewOrderByCols > 0 {
-	visibleCount := len(mappings)
-	for i, row := range resultRows {
-		if len(row) > visibleCount {
-			resultRows[i] = row[:visibleCount]
-		}
+	// Apply ORDER BY
+	if len(stmt.OrderBy) > 0 {
+		resultRows = cat.applyOrderBy(resultRows, selectCols, stmt.OrderBy)
 	}
-}
 
-// Apply DISTINCT
-if stmt.Distinct {
-	resultRows = cat.applyDistinct(resultRows)
-}
-
-// Apply OFFSET
-if stmt.Offset != nil {
-	offsetVal, err := evaluateExpression(cat, nil, nil, stmt.Offset, args)
-	if err == nil {
-		if offset, ok := toInt(offsetVal); ok && offset > 0 {
-			if offset >= len(resultRows) {
-				resultRows = nil
-			} else {
-				resultRows = resultRows[offset:]
+	// Strip hidden ORDER BY columns
+	if hiddenViewOrderByCols > 0 {
+		visibleCount := len(mappings)
+		for i, row := range resultRows {
+			if len(row) > visibleCount {
+				resultRows[i] = row[:visibleCount]
 			}
 		}
 	}
-}
 
-// Apply LIMIT
-if stmt.Limit != nil {
-	limitVal, err := evaluateExpression(cat, nil, nil, stmt.Limit, args)
-	if err == nil {
-		if limit, ok := toInt(limitVal); ok && limit >= 0 && int(limit) <= len(resultRows) {
-			resultRows = resultRows[:limit]
+	// Apply DISTINCT
+	if stmt.Distinct {
+		resultRows = cat.applyDistinct(resultRows)
+	}
+
+	// Apply OFFSET
+	if stmt.Offset != nil {
+		offsetVal, err := evaluateExpression(cat, nil, nil, stmt.Offset, args)
+		if err == nil {
+			if offset, ok := toInt(offsetVal); ok && offset > 0 {
+				if offset >= len(resultRows) {
+					resultRows = nil
+				} else {
+					resultRows = resultRows[offset:]
+				}
+			}
 		}
 	}
-}
 
-return returnCols, resultRows, nil
+	// Apply LIMIT
+	if stmt.Limit != nil {
+		limitVal, err := evaluateExpression(cat, nil, nil, stmt.Limit, args)
+		if err == nil {
+			if limit, ok := toInt(limitVal); ok && limit >= 0 && int(limit) <= len(resultRows) {
+				resultRows = resultRows[:limit]
+			}
+		}
+	}
+
+	return returnCols, resultRows, nil
 }
 
 func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows [][]interface{}, columns []ColumnDef, args []interface{}) interface{} {
@@ -2323,4 +2323,3 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 	}
 	return nil
 }
-

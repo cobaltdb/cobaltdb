@@ -6,6 +6,12 @@ intermediate `[][]interface{}` result inside the wrapper. The CSV FDW implements
 that cursor API and still enforces explicit limits so large external files fail
 predictably.
 
+Simple `WHERE` predicates of the form `column <op> literal_or_placeholder`,
+combined with `AND`, are now passed to streaming wrappers through
+`fdw.ScanOptions.Predicates`. Unsupported expressions are still evaluated by the
+local query engine, so pushdown remains advisory and correctness does not depend
+on wrapper-side filtering.
+
 ## CSV FDW Options
 
 | Option | Default | Meaning |
@@ -38,6 +44,5 @@ go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL' -coun
 
 Remaining work:
 
-- Predicate pushdown extraction from SQL `WHERE` clauses into `fdw.ScanOptions`.
 - End-to-end projection pushdown from SELECT lists into `fdw.ScanOptions`.
 - Per-query memory accounting across FDW and local execution.
