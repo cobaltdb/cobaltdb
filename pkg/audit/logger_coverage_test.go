@@ -93,6 +93,27 @@ func TestWithMetadataNilMap(t *testing.T) {
 	}
 }
 
+func TestWithMetadataCopiesMutableValues(t *testing.T) {
+	payload := []byte("abc")
+	nested := map[string]interface{}{
+		"raw": []byte("nested"),
+	}
+	e := &Event{}
+
+	WithMetadata("payload", payload)(e)
+	WithMetadata("nested", nested)(e)
+
+	payload[0] = 'X'
+	nested["raw"].([]byte)[0] = 'X'
+
+	if got := string(e.Metadata["payload"].([]byte)); got != "abc" {
+		t.Fatalf("metadata payload was mutated through caller slice: got %q", got)
+	}
+	if got := string(e.Metadata["nested"].(map[string]interface{})["raw"].([]byte)); got != "nested" {
+		t.Fatalf("nested metadata was mutated through caller map: got %q", got)
+	}
+}
+
 func TestWithClientIP(t *testing.T) {
 	e := &Event{}
 	opt := WithClientIP("10.0.0.1")

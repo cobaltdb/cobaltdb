@@ -180,6 +180,9 @@ func New(config *Config, log *logger.Logger) (*Logger, error) {
 func normalizeAuditConfig(config *Config) *Config {
 	defaults := DefaultConfig()
 	normalized := *config
+	normalized.Events = append([]EventType(nil), config.Events...)
+	normalized.SensitiveFields = append([]string(nil), config.SensitiveFields...)
+	normalized.EncryptionKey = append([]byte(nil), config.EncryptionKey...)
 	if strings.TrimSpace(normalized.LogFile) == "" {
 		normalized.LogFile = defaults.LogFile
 	}
@@ -455,7 +458,7 @@ func hashAuditPayload(prevHash string, payload []byte) string {
 
 func (al *Logger) maskSensitiveData(event *Event) {
 	// Mask sensitive values in Metadata map
-	event.Metadata = maskMetadataValues(event.Metadata)
+	event.Metadata = maskMetadataValuesWithKeys(event.Metadata, al.config.SensitiveFields)
 
 	if event.Query == "" {
 		return
@@ -570,14 +573,22 @@ func maskKeyValuePair(query, key string) string {
 
 // maskMetadataValues masks values in metadata whose keys match sensitive patterns
 func maskMetadataValues(metadata map[string]interface{}) map[string]interface{} {
+	return maskMetadataValuesWithKeys(metadata, nil)
+}
+
+func maskMetadataValuesWithKeys(metadata map[string]interface{}, extraSensitiveKeys []string) map[string]interface{} {
 	if metadata == nil {
 		return nil
 	}
 	sensitiveKeys := []string{"password", "secret", "token", "key", "credential", "auth"}
+	sensitiveKeys = append(sensitiveKeys, extraSensitiveKeys...)
 	masked := make(map[string]interface{}, len(metadata))
 	for k, v := range metadata {
 		isSensitive := false
 		for _, sk := range sensitiveKeys {
+			if strings.TrimSpace(sk) == "" {
+				continue
+			}
 			if indexIgnoreCase(k, sk) >= 0 {
 				isSensitive = true
 				break
@@ -586,10 +597,39 @@ func maskMetadataValues(metadata map[string]interface{}) map[string]interface{} 
 		if isSensitive {
 			masked[k] = "***MASKED***"
 		} else {
-			masked[k] = v
+			masked[k] = cloneMetadataValue(v)
 		}
 	}
 	return masked
+}
+
+func cloneMetadataValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case []byte:
+		return append([]byte(nil), v...)
+	case []string:
+		return append([]string(nil), v...)
+	case []interface{}:
+		cloned := make([]interface{}, len(v))
+		for i, item := range v {
+			cloned[i] = cloneMetadataValue(item)
+		}
+		return cloned
+	case map[string]interface{}:
+		cloned := make(map[string]interface{}, len(v))
+		for key, item := range v {
+			cloned[key] = cloneMetadataValue(item)
+		}
+		return cloned
+	case map[string]string:
+		cloned := make(map[string]string, len(v))
+		for key, item := range v {
+			cloned[key] = item
+		}
+		return cloned
+	default:
+		return v
+	}
 }
 
 func generateEventID() string {
@@ -653,7 +693,7 @@ func WithMetadata(key string, value interface{}) LogOption {
 		if e.Metadata == nil {
 			e.Metadata = make(map[string]interface{})
 		}
-		e.Metadata[key] = value
+		e.Metadata[key] = cloneMetadataValue(value)
 	}
 }
 

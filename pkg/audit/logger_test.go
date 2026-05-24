@@ -61,6 +61,55 @@ func TestNewLoggerNormalizesPartialConfig(t *testing.T) {
 	}
 }
 
+func TestNewLoggerCopiesMutableConfig(t *testing.T) {
+	events := []EventType{EventQuery}
+	sensitiveFields := []string{"session_id"}
+	encryptionKey := []byte("0123456789abcdef0123456789abcdef")
+
+	al, err := New(&Config{
+		Enabled:         false,
+		Events:          events,
+		SensitiveFields: sensitiveFields,
+		EncryptionKey:   encryptionKey,
+	}, nil)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	events[0] = EventDDL
+	sensitiveFields[0] = "mutated"
+	encryptionKey[0] = 'X'
+
+	if al.config.Events[0] != EventQuery {
+		t.Fatalf("Events was mutated through caller slice: got %v", al.config.Events[0])
+	}
+	if al.config.SensitiveFields[0] != "session_id" {
+		t.Fatalf("SensitiveFields was mutated through caller slice: got %q", al.config.SensitiveFields[0])
+	}
+	if string(al.config.EncryptionKey) != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("EncryptionKey was mutated through caller slice: got %q", al.config.EncryptionKey)
+	}
+}
+
+func TestConfiguredSensitiveFieldsMaskMetadata(t *testing.T) {
+	al := &Logger{config: &Config{SensitiveFields: []string{"session_id"}}}
+	event := &Event{
+		Metadata: map[string]interface{}{
+			"session_id": "abc",
+			"table":      "users",
+		},
+	}
+
+	al.maskSensitiveData(event)
+
+	if event.Metadata["session_id"] != "***MASKED***" {
+		t.Fatalf("configured sensitive field was not masked: %v", event.Metadata["session_id"])
+	}
+	if event.Metadata["table"] != "users" {
+		t.Fatalf("non-sensitive metadata changed: %v", event.Metadata["table"])
+	}
+}
+
 func TestLogEvent(t *testing.T) {
 	config := &Config{
 		Enabled:   true,
