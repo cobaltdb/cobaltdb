@@ -23,7 +23,7 @@ Current readiness estimate:
 | External MySQL driver | `database/sql` + `github.com/go-sql-driver/mysql` baseline covered |
 | Benchmark regression gate | Added via `scripts/benchmark-gate.sh`, now including write p95/p99 under readers |
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
-| HA readiness guards | API reports explicit blockers, refuses unsafe promotion, accepts externally fenced manual promotion, and blocks fenced primaries from new WAL |
+| HA readiness guards | API reports explicit blockers, refuses unsafe promotion, accepts externally fenced manual promotion, blocks fenced primaries from new WAL, and supports fenced-primary rejoin as replica |
 | Vector index persistence | HNSW metadata persists across create, 1024-row mixed DML, reopen, and backup/restore |
 | FDW streaming/pushdown groundwork | CSV scans stream, apply safe simple predicates, receive simple projection columns, and support materialization byte limits |
 | Procedure/trigger semantics | `CALL` placeholder args, exact arity, complex param substitution, and BEFORE/AFTER trigger row images are covered |
@@ -65,6 +65,7 @@ Recent hardening commits:
 | `caa1ae3` | HA boundary | Added externally fenced manual promotion contract |
 | `84d87c9` | HA fencing | Added cooperative primary fencing guard for WAL writes |
 | Current iteration | HA drill | Added externally orchestrated failover drill |
+| Current iteration | HA rejoin | Added fenced former-primary rejoin-as-replica contract |
 
 Validation performed during this pass:
 
@@ -82,7 +83,7 @@ go test ./test -run TestMySQLPreparedStatementExecuteWithParameters -count=1
 go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE2E' -count=1
 go test ./pkg/engine -run '^$' -bench BenchmarkWriteLatencyUnderReaders -benchtime=10x -count=1
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
-go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary|TestExternallyOrchestratedFailoverDrill' -count=1
+go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary|TestExternallyOrchestratedFailoverDrill|TestRejoinAsReplica' -count=1
 go test -race ./pkg/replication -run TestSlaveStatusClearsConnectionOnMasterDisconnect -count=1
 go test ./pkg/replication -count=1
 go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count=1
@@ -144,6 +145,7 @@ Production stance:
 - Use `GetFailoverReadiness` to keep replication transport status separate from HA readiness.
 - Use `PromoteToMasterWithFencing` only from an external HA orchestrator that has already fenced the old primary and supplied an epoch/token/LSN proof.
 - Call `FencePrimary` on reachable old primaries during orchestrated failover, while still relying on infrastructure-level fencing for hard isolation.
+- Use `RejoinAsReplica` only after fencing, then rely on normal slave resume/snapshot validation to reconcile data.
 - Do not rely on it as managed automatic failover until consensus and built-in fencing exist.
 - Use `docs/HA_FAILOVER.md` as the current replication and failover boundary.
 

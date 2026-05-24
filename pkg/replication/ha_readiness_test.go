@@ -232,3 +232,64 @@ func TestExternallyOrchestratedFailoverDrill(t *testing.T) {
 		t.Fatalf("old primary LSN advanced after fencing to %d, want %d", got, requiredLSN)
 	}
 }
+
+func TestRejoinAsReplicaRequiresFencedPrimary(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	err := mgr.RejoinAsReplica(RejoinRequest{
+		FencingToken:  "tok",
+		Epoch:         1,
+		NewMasterAddr: "127.0.0.1:9999",
+	})
+	if !errors.Is(err, ErrPromotionRejected) {
+		t.Fatalf("expected ErrPromotionRejected, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "fenced") {
+		t.Fatalf("expected fenced error, got %v", err)
+	}
+	if got := mgr.GetStatus().Role; got != "master" {
+		t.Fatalf("rejected rejoin changed role to %q", got)
+	}
+}
+
+func TestRejoinAsReplicaDemotesFencedPrimary(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync, ListenAddr: "127.0.0.1:0"})
+	if err := mgr.ReplicateWALEntry([]byte("before-fence")); err != nil {
+		t.Fatalf("ReplicateWALEntry: %v", err)
+	}
+	if err := mgr.FencePrimary(PrimaryFenceRequest{
+		FencingToken: "tok",
+		Epoch:        5,
+		ExpiresAt:    time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("FencePrimary: %v", err)
+	}
+
+	if err := mgr.RejoinAsReplica(RejoinRequest{
+		FencingToken:   "tok",
+		Epoch:          5,
+		NewMasterAddr:  "127.0.0.1:9999",
+		LastAppliedLSN: 1,
+	}); err != nil {
+		t.Fatalf("RejoinAsReplica: %v", err)
+	}
+
+	status := mgr.GetStatus()
+	if status.Role != "slave" {
+		t.Fatalf("role = %q, want slave", status.Role)
+	}
+	if status.PrimaryFenced || status.FencedEpoch != 0 {
+		t.Fatalf("rejoined replica should not remain primary-fenced: %+v", status)
+	}
+	if status.LastApplied != 1 {
+		t.Fatalf("last applied = %d, want 1", status.LastApplied)
+	}
+	if mgr.config.MasterAddr != "127.0.0.1:9999" {
+		t.Fatalf("master addr = %q", mgr.config.MasterAddr)
+	}
+	if len(mgr.walBuffer) != 0 {
+		t.Fatalf("wal buffer length = %d, want 0", len(mgr.walBuffer))
+	}
+	if err := mgr.ReplicateWALEntry([]byte("ignored-on-slave")); err != nil {
+		t.Fatalf("slave ReplicateWALEntry should ignore, got %v", err)
+	}
+}

@@ -19,6 +19,7 @@ cluster manager.
 | Unsafe in-process promotion guard | Implemented; `PromoteToMaster` returns an unsupported-failover error |
 | Externally fenced manual promotion | Implemented via `PromoteToMasterWithFencing` |
 | Cooperative primary fencing guard | Implemented via `FencePrimary`; fenced masters reject new WAL entries |
+| Former primary rejoin as replica | Implemented via `RejoinAsReplica` after fencing |
 
 ## Not Yet HA
 
@@ -53,11 +54,18 @@ returns `ErrPrimaryFenced` and the manager does not advance its master LSN.
 This does not replace infrastructure-level fencing such as VM power-off,
 storage fencing, or network isolation.
 
+After the failover decision, `RejoinAsReplica` can demote a fenced former
+primary into a replica of the new master. It clears local master state and WAL
+retention buffers, records the new `MasterAddr`, and persists the replica LSN
+when a state file is configured. It does not perform data reconciliation by
+itself; the normal slave resume/snapshot path must still validate or refresh the
+data set.
+
 ## Required Failure Drills
 
 ```bash
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
-go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary|TestExternallyOrchestratedFailoverDrill' -count=1
+go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary|TestExternallyOrchestratedFailoverDrill|TestRejoinAsReplica' -count=1
 ```
 
 Operational stance:

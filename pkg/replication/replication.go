@@ -263,6 +263,15 @@ type PrimaryFenceRequest struct {
 	ExpiresAt    time.Time
 }
 
+// RejoinRequest converts a fenced old primary into a replica of the new
+// externally selected master.
+type RejoinRequest struct {
+	FencingToken   string
+	Epoch          uint64
+	NewMasterAddr  string
+	LastAppliedLSN uint64
+}
+
 func (m *Manager) callOnSnapshot() (data []byte, err error) {
 	if m.OnSnapshot == nil {
 		return nil, fmt.Errorf("snapshot provider not configured")
@@ -1704,6 +1713,70 @@ func (m *Manager) FencePrimary(req PrimaryFenceRequest) error {
 		return fmt.Errorf("%w: fencing token expired", ErrPromotionRejected)
 	}
 	atomic.StoreUint64(&m.fencedEpoch, req.Epoch)
+	return nil
+}
+
+// RejoinAsReplica reconfigures a fenced former primary as a slave of the new
+// primary selected by an external orchestrator. It performs only local state
+// transition; callers can subsequently start slave replication using the updated
+// manager config.
+func (m *Manager) RejoinAsReplica(req RejoinRequest) error {
+	if m.role != RoleMaster && m.config.Role != RoleMaster {
+		return fmt.Errorf("%w: only a master can rejoin as replica", ErrPromotionRejected)
+	}
+	if strings.TrimSpace(req.FencingToken) == "" {
+		return fmt.Errorf("%w: fencing token is required", ErrPromotionRejected)
+	}
+	if strings.TrimSpace(req.NewMasterAddr) == "" {
+		return fmt.Errorf("%w: new master address is required", ErrPromotionRejected)
+	}
+	fencedEpoch := atomic.LoadUint64(&m.fencedEpoch)
+	if fencedEpoch == 0 {
+		return fmt.Errorf("%w: primary must be fenced before rejoin", ErrPromotionRejected)
+	}
+	if req.Epoch < fencedEpoch {
+		return fmt.Errorf("%w: rejoin epoch %d is older than fenced epoch %d", ErrPromotionRejected, req.Epoch, fencedEpoch)
+	}
+
+	m.mu.Lock()
+	listener := m.listener
+	m.listener = nil
+	conn := m.masterConn
+	m.masterConn = nil
+	slaves := m.slaves
+	m.slaves = make(map[string]*SlaveConnection)
+	m.slaveWALPos = make(map[string]uint64)
+	clearWALEntries(m.walBuffer)
+	m.walBuffer = m.walBuffer[:0]
+	m.walBufferBytes = 0
+	m.role = RoleSlave
+	m.config.Role = RoleSlave
+	m.config.MasterAddr = req.NewMasterAddr
+	m.config.ListenAddr = ""
+	lsn := req.LastAppliedLSN
+	if lsn == 0 {
+		lsn = atomic.LoadUint64(&m.currentLSN)
+	}
+	atomic.StoreUint64(&m.lastApplied, lsn)
+	atomic.StoreUint64(&m.currentLSN, 0)
+	atomic.StoreUint64(&m.fencedEpoch, 0)
+	atomic.StoreUint64(&m.promotionEpoch, 0)
+	m.mu.Unlock()
+
+	if listener != nil {
+		_ = listener.Close()
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+	for _, slave := range slaves {
+		if slave != nil && slave.Conn != nil {
+			_ = slave.Conn.Close()
+		}
+	}
+	if err := m.saveReplicationState(); err != nil {
+		return err
+	}
 	return nil
 }
 
