@@ -164,6 +164,115 @@ func TestGetPolicy(t *testing.T) {
 	}
 }
 
+func TestPolicyStateIsolation(t *testing.T) {
+	mgr := NewManager()
+	policy := &Policy{
+		Name:       "copy_policy",
+		TableName:  "users",
+		Type:       PolicySelect,
+		Expression: "true",
+		Users:      []string{"alice"},
+		Roles:      []string{"reader"},
+		Metadata: map[string]interface{}{
+			"owner": "security",
+			"nested": map[string]interface{}{
+				"tier": "gold",
+			},
+		},
+	}
+
+	if err := mgr.CreatePolicy(policy); err != nil {
+		t.Fatalf("CreatePolicy: %v", err)
+	}
+
+	policy.Users[0] = "mallory"
+	policy.Roles[0] = "admin"
+	policy.Metadata["owner"] = "mutated"
+	policy.Metadata["nested"].(map[string]interface{})["tier"] = "bronze"
+
+	retrieved, err := mgr.GetPolicy("users", "copy_policy")
+	if err != nil {
+		t.Fatalf("GetPolicy: %v", err)
+	}
+	if retrieved.Users[0] != "alice" || retrieved.Roles[0] != "reader" {
+		t.Fatalf("CreatePolicy retained caller-owned slices: users=%v roles=%v", retrieved.Users, retrieved.Roles)
+	}
+	if retrieved.Metadata["owner"] != "security" {
+		t.Fatalf("CreatePolicy retained caller-owned metadata: %v", retrieved.Metadata["owner"])
+	}
+	if retrieved.Metadata["nested"].(map[string]interface{})["tier"] != "gold" {
+		t.Fatalf("CreatePolicy retained caller-owned nested metadata: %v", retrieved.Metadata["nested"])
+	}
+
+	retrieved.Users[0] = "eve"
+	retrieved.Roles[0] = "writer"
+	retrieved.Metadata["owner"] = "external"
+	retrieved.Metadata["nested"].(map[string]interface{})["tier"] = "silver"
+
+	retrievedAgain, err := mgr.GetPolicy("users", "copy_policy")
+	if err != nil {
+		t.Fatalf("GetPolicy second read: %v", err)
+	}
+	if retrievedAgain.Users[0] != "alice" || retrievedAgain.Roles[0] != "reader" {
+		t.Fatalf("GetPolicy returned mutable slices: users=%v roles=%v", retrievedAgain.Users, retrievedAgain.Roles)
+	}
+	if retrievedAgain.Metadata["owner"] != "security" {
+		t.Fatalf("GetPolicy returned mutable metadata: %v", retrievedAgain.Metadata["owner"])
+	}
+	if retrievedAgain.Metadata["nested"].(map[string]interface{})["tier"] != "gold" {
+		t.Fatalf("GetPolicy returned mutable nested metadata: %v", retrievedAgain.Metadata["nested"])
+	}
+
+	tablePolicies := mgr.GetTablePolicies("users")
+	if len(tablePolicies) != 1 {
+		t.Fatalf("expected 1 table policy, got %d", len(tablePolicies))
+	}
+	tablePolicies[0].Users[0] = "trent"
+	tablePolicyAgain, err := mgr.GetPolicy("users", "copy_policy")
+	if err != nil {
+		t.Fatalf("GetPolicy after GetTablePolicies mutation: %v", err)
+	}
+	if tablePolicyAgain.Users[0] != "alice" {
+		t.Fatalf("GetTablePolicies returned mutable policy: users=%v", tablePolicyAgain.Users)
+	}
+
+	listed := mgr.ListPolicies()
+	if len(listed) != 1 {
+		t.Fatalf("expected 1 listed policy, got %d", len(listed))
+	}
+	listed[0].Roles[0] = "operator"
+	listedAgain, err := mgr.GetPolicy("users", "copy_policy")
+	if err != nil {
+		t.Fatalf("GetPolicy after ListPolicies mutation: %v", err)
+	}
+	if listedAgain.Roles[0] != "reader" {
+		t.Fatalf("ListPolicies returned mutable policy: roles=%v", listedAgain.Roles)
+	}
+}
+
+func TestCreatePolicyInvalidExpressionIsAtomic(t *testing.T) {
+	mgr := NewManager()
+	err := mgr.CreatePolicy(&Policy{
+		Name:       "bad_policy",
+		TableName:  "users",
+		Type:       PolicySelect,
+		Expression: "status ~~ active",
+	})
+	if err == nil {
+		t.Fatal("expected invalid expression error")
+	}
+
+	if mgr.IsEnabled("users") {
+		t.Fatal("CreatePolicy enabled RLS for a rejected policy")
+	}
+	if _, err := mgr.GetPolicy("users", "bad_policy"); err != ErrPolicyNotFound {
+		t.Fatalf("CreatePolicy stored rejected policy, got err=%v", err)
+	}
+	if policies := mgr.GetTablePolicies("users"); len(policies) != 0 {
+		t.Fatalf("CreatePolicy indexed rejected policy: %d policies", len(policies))
+	}
+}
+
 func TestCheckAccessWithRLSDisabled(t *testing.T) {
 	mgr := NewManager()
 	// RLS disabled by default

@@ -162,30 +162,27 @@ func (m *Manager) CreatePolicy(policy *Policy) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	key := m.policyKey(policy.TableName, policy.Name)
+	storedPolicy := clonePolicy(policy)
+	storedPolicy.TableName = strings.ToLower(storedPolicy.TableName)
+	storedPolicy.Name = strings.ToLower(storedPolicy.Name)
+	if storedPolicy.Metadata == nil {
+		storedPolicy.Metadata = make(map[string]interface{})
+	}
+	storedPolicy.Enabled = true
+
+	key := m.policyKey(storedPolicy.TableName, storedPolicy.Name)
 	if _, exists := m.policies[key]; exists {
 		return ErrPolicyAlreadyExists
 	}
 
-	// Normalize
-	policy.TableName = strings.ToLower(policy.TableName)
-	policy.Name = strings.ToLower(policy.Name)
-	if policy.Metadata == nil {
-		policy.Metadata = make(map[string]interface{})
-	}
-	policy.Enabled = true
-
-	// Store policy
-	m.policies[key] = policy
-	m.tablePolicies[policy.TableName] = append(m.tablePolicies[policy.TableName], policy.Name)
-
-	// Enable RLS for table automatically
-	m.enabledTables[policy.TableName] = true
-
-	// Compile expression
-	if err := m.compilePolicy(policy); err != nil {
+	if err := m.compilePolicy(storedPolicy); err != nil {
+		delete(m.compiledExprs, key)
 		return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
+
+	m.policies[key] = storedPolicy
+	m.tablePolicies[storedPolicy.TableName] = append(m.tablePolicies[storedPolicy.TableName], storedPolicy.Name)
+	m.enabledTables[storedPolicy.TableName] = true
 
 	return nil
 }
@@ -231,9 +228,7 @@ func (m *Manager) GetPolicy(tableName, policyName string) (*Policy, error) {
 		return nil, ErrPolicyNotFound
 	}
 
-	// Return copy
-	p := *policy
-	return &p, nil
+	return clonePolicy(policy), nil
 }
 
 // GetTablePolicies returns all policies for a table
@@ -248,8 +243,7 @@ func (m *Manager) GetTablePolicies(tableName string) []*Policy {
 	for _, name := range policyNames {
 		key := m.policyKey(tableName, name)
 		if policy, ok := m.policies[key]; ok && policy.Enabled {
-			p := *policy
-			policies = append(policies, &p)
+			policies = append(policies, clonePolicy(policy))
 		}
 	}
 	return policies
@@ -392,8 +386,7 @@ func (m *Manager) ListPolicies() []*Policy {
 
 	policies := make([]*Policy, 0, len(m.policies))
 	for _, p := range m.policies {
-		policy := *p
-		policies = append(policies, &policy)
+		policies = append(policies, clonePolicy(p))
 	}
 	return policies
 }
@@ -440,6 +433,54 @@ func (m *Manager) DeserializePolicies(data []byte) error {
 
 func (m *Manager) policyKey(tableName, policyName string) string {
 	return strings.ToLower(tableName) + ":" + strings.ToLower(policyName)
+}
+
+func clonePolicy(policy *Policy) *Policy {
+	if policy == nil {
+		return nil
+	}
+	cloned := *policy
+	cloned.Users = cloneStringSlice(policy.Users)
+	cloned.Roles = cloneStringSlice(policy.Roles)
+	cloned.Metadata = cloneMetadata(policy.Metadata)
+	return &cloned
+}
+
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func cloneMetadata(metadata map[string]interface{}) map[string]interface{} {
+	if metadata == nil {
+		return nil
+	}
+	cloned := make(map[string]interface{}, len(metadata))
+	for key, value := range metadata {
+		cloned[key] = cloneMetadataValue(value)
+	}
+	return cloned
+}
+
+func cloneMetadataValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return cloneMetadata(typed)
+	case []interface{}:
+		cloned := make([]interface{}, len(typed))
+		for i, item := range typed {
+			cloned[i] = cloneMetadataValue(item)
+		}
+		return cloned
+	case []string:
+		return cloneStringSlice(typed)
+	default:
+		return typed
+	}
 }
 
 // compilePolicy compiles a policy expression
