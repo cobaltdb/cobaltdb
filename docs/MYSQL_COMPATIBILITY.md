@@ -11,16 +11,16 @@ explicit test and operational owner.
 | Handshake | Supported | Protocol version, server version, connection ID |
 | Authentication | Supported | Optional `mysql_native_password` verification |
 | `COM_QUERY` | Supported | DDL, INSERT, UPDATE, DELETE, SELECT, SHOW, SET, USE |
-| Result sets | Supported | Text result rows, column definitions, EOF packets |
+| Result sets | Supported | Text result rows, value-derived column type hints, EOF packets |
 | Errors | Supported | Error packets and post-error connection reuse |
 | `COM_PING` / `COM_QUIT` | Supported | Liveness and connection shutdown |
-| `COM_FIELD_LIST` | Supported | Basic table column descriptions |
+| `COM_FIELD_LIST` | Supported | Table column descriptions with SQL type, key, nullability, BLOB, and auto-increment metadata |
 | `COM_STATISTICS` / `COM_PROCESS_INFO` | Supported | Basic operational responses |
 | `COM_RESET_CONNECTION` | Supported | Clears per-client prepared statement state |
 | `COM_STMT_PREPARE` | Supported | Statement IDs, parameter count, basic column count |
 | `COM_STMT_EXECUTE` | Supported | Bound scalar parameters for query and exec statements |
 | `COM_STMT_EXECUTE` cursor flags | Rejected safely | Server-side cursor requests return an explicit unsupported error |
-| Prepared result rows | Supported | Binary row packets for `COM_STMT_EXECUTE` result sets |
+| Prepared result rows | Supported | Binary row packets for `COM_STMT_EXECUTE` result sets; metadata remains string-like for driver compatibility |
 | `COM_STMT_CLOSE` / `COM_STMT_RESET` | Supported | Statement lifecycle |
 | `COM_STMT_SEND_LONG_DATA` | Supported | Chunked prepared TEXT/BLOB parameters |
 | Go `database/sql` driver | Supported baseline | `github.com/go-sql-driver/mysql` ping, text query, prepared insert, prepared select |
@@ -48,7 +48,7 @@ packets may reuse the cached parameter types for the same prepared statement.
 | Area | Current behavior |
 |---|---|
 | Server-side cursor fetch lifecycle | `COM_STMT_FETCH` and incremental cursor result state are not implemented |
-| Rich column metadata | Column definitions use coarse string-like metadata |
+| Rich column metadata | Result-set metadata is inferred from materialized values; empty result sets and complex expressions still fall back to string-like metadata |
 | Session variables | Common initialization queries are handled, broad MySQL semantics are not complete |
 | External client matrix | Go `database/sql` + `go-sql-driver/mysql` is covered; each additional production driver/ORM still needs validation |
 

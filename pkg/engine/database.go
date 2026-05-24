@@ -2456,6 +2456,46 @@ func (r *Rows) Columns() []string {
 	return columns
 }
 
+// ColumnTypeHints returns coarse SQL type names inferred from non-NULL row values.
+func (r *Rows) ColumnTypeHints() []string {
+	if r == nil || len(r.columns) == 0 {
+		return nil
+	}
+	hints := make([]string, len(r.columns))
+	for _, row := range r.rows {
+		for i, val := range row {
+			if i >= len(hints) || hints[i] != "" {
+				continue
+			}
+			hints[i] = rowValueTypeHint(val)
+		}
+	}
+	return hints
+}
+
+func rowValueTypeHint(val interface{}) string {
+	switch val.(type) {
+	case nil:
+		return ""
+	case bool:
+		return "BOOLEAN"
+	case int, int8, int16, int32, uint, uint8, uint16, uint32:
+		return "INTEGER"
+	case int64, uint64:
+		return "BIGINT"
+	case float32:
+		return "REAL"
+	case float64:
+		return "DOUBLE"
+	case []byte:
+		return "BLOB"
+	case time.Time:
+		return "DATETIME"
+	default:
+		return "TEXT"
+	}
+}
+
 // Close closes the rows
 
 func (r *Rows) Close() error {

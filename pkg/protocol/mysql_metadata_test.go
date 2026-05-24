@@ -110,6 +110,38 @@ func TestBuildColumnDefPacketWithSQLMetadata(t *testing.T) {
 	}
 }
 
+type fakeColumnTypeHints struct {
+	hints []string
+}
+
+func (f fakeColumnTypeHints) ColumnTypeHints() []string {
+	return append([]string(nil), f.hints...)
+}
+
+func TestBuildColumnDefinitionsForRowsUsesTypeHints(t *testing.T) {
+	client, _ := newTestClient(nil)
+	defs := client.buildColumnDefinitionsForRows(
+		[]string{"id", "name", "score", "payload", "empty"},
+		fakeColumnTypeHints{hints: []string{"BIGINT", "TEXT", "DOUBLE", "BLOB", ""}},
+	)
+
+	if defs[0].typ != MySQLTypeLongLong || defs[0].charset != mysqlCharsetBinary {
+		t.Fatalf("id metadata mismatch: %#v", defs[0])
+	}
+	if defs[1].typ != MySQLTypeVarString || defs[1].charset != mysqlCharsetUTF8GeneralCI {
+		t.Fatalf("name metadata mismatch: %#v", defs[1])
+	}
+	if defs[2].typ != MySQLTypeDouble || defs[2].charset != mysqlCharsetBinary {
+		t.Fatalf("score metadata mismatch: %#v", defs[2])
+	}
+	if defs[3].typ != MySQLTypeBlob || defs[3].flags&mysqlColumnFlagBlob == 0 {
+		t.Fatalf("payload metadata mismatch: %#v", defs[3])
+	}
+	if defs[4].typ != MySQLTypeVarString {
+		t.Fatalf("empty metadata should fall back to string: %#v", defs[4])
+	}
+}
+
 func TestHandleFieldListEmitsDescribeColumnMetadata(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
 	if err != nil {

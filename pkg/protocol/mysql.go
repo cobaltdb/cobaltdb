@@ -152,6 +152,10 @@ type mysqlColumnDefinition struct {
 	decimals byte
 }
 
+type mysqlColumnTypeHintProvider interface {
+	ColumnTypeHints() []string
+}
+
 // MySQLServer implements a MySQL-compatible server
 type MySQLServer struct {
 	db       *engine.DB
@@ -792,8 +796,8 @@ func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
 	seq++
 
 	// 2. Send column definition packets
-	for _, colName := range columns {
-		pkt := c.buildColumnDefPacket(colName)
+	for _, def := range c.buildColumnDefinitionsForRows(columns, rows) {
+		pkt := c.buildColumnDefPacketWithDefinition(def)
 		if err := c.writePacket(pkt, seq); err != nil {
 			return err
 		}
@@ -871,6 +875,22 @@ func mysqlColumnDefinitionFromDescribe(tableName string, row []interface{}) mysq
 		def.flags |= mysqlColumnFlagAutoIncrement
 	}
 	return def
+}
+
+func (c *MySQLClient) buildColumnDefinitionsForRows(columns []string, rows mysqlColumnTypeHintProvider) []mysqlColumnDefinition {
+	defs := make([]mysqlColumnDefinition, len(columns))
+	var hints []string
+	if rows != nil {
+		hints = rows.ColumnTypeHints()
+	}
+	for i, colName := range columns {
+		def := defaultMySQLColumnDefinition(colName)
+		if i < len(hints) && hints[i] != "" {
+			def.typ, def.charset, def.length, def.decimals, def.flags = mysqlColumnTypeForSQL(hints[i])
+		}
+		defs[i] = def
+	}
+	return defs
 }
 
 func mysqlColumnTypeForSQL(sqlType string) (byte, uint16, uint32, byte, uint16) {
@@ -1667,8 +1687,9 @@ func (c *MySQLClient) handleStmtSendLongData(data []byte) error {
 }
 
 // sendBinaryResultSetFromRows sends a MySQL binary-protocol result set for
-// COM_STMT_EXECUTE. Metadata packets match the text protocol; row packets use
-// the binary row header and NULL bitmap required by prepared statements.
+// COM_STMT_EXECUTE. Row packets use the binary row header and NULL bitmap
+// required by prepared statements. Column metadata remains string-like until
+// binary row value encoding is type-aware too.
 func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 	if rows == nil {
 		return c.sendOKPacket(0, 0)
