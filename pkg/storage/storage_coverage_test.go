@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"os"
 	"testing"
 )
@@ -245,6 +246,47 @@ func TestEncryptedBackendCloseClears(t *testing.T) {
 
 	if eb.sessionKey != nil {
 		t.Error("Session key should be nil after close")
+	}
+}
+
+func TestEncryptedBackendOperationsAfterClose(t *testing.T) {
+	mem := NewMemory()
+	cfg := &EncryptionConfig{
+		Enabled:     true,
+		Key:         []byte("closed-test-password-32-bytes!!"),
+		Salt:        []byte("1234567890123456"),
+		PBKDF2Iters: 1000,
+	}
+	eb, err := NewEncryptedBackend(mem, cfg)
+	if err != nil {
+		t.Fatalf("NewEncryptedBackend: %v", err)
+	}
+
+	if err := eb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := eb.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+
+	buf := make([]byte, PageSize)
+	if _, err := eb.ReadAt(buf, 0); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("ReadAt after close error = %v, want %v", err, ErrBackendClosed)
+	}
+	if _, err := eb.WriteAt(buf, 0); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("WriteAt after close error = %v, want %v", err, ErrBackendClosed)
+	}
+	if err := eb.Sync(); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("Sync after close error = %v, want %v", err, ErrBackendClosed)
+	}
+	if err := eb.Truncate(PageSize); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("Truncate after close error = %v, want %v", err, ErrBackendClosed)
+	}
+	if eb.Size() != 0 {
+		t.Fatalf("Size after close = %d, want 0", eb.Size())
+	}
+	if eb.GetCipher() != nil {
+		t.Fatal("GetCipher after close should return nil")
 	}
 }
 

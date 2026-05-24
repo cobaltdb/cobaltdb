@@ -44,6 +44,7 @@ type EncryptedBackend struct {
 	sessionKey []byte
 	mu         sync.RWMutex
 	readPool   sync.Pool // pool for encrypted read buffers
+	closed     bool
 }
 
 // NewEncryptedBackend creates a new encrypted backend wrapper
@@ -132,6 +133,10 @@ func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 	eb.mu.RLock()
 	defer eb.mu.RUnlock()
 
+	if eb.closed {
+		return 0, ErrBackendClosed
+	}
+
 	if !eb.config.Enabled {
 		return eb.backend.ReadAt(buf, offset)
 	}
@@ -195,6 +200,10 @@ func (eb *EncryptedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
+	if eb.closed {
+		return 0, ErrBackendClosed
+	}
+
 	if !eb.config.Enabled {
 		return eb.backend.WriteAt(buf, offset)
 	}
@@ -220,11 +229,25 @@ func (eb *EncryptedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 
 // Sync ensures all data is written to disk
 func (eb *EncryptedBackend) Sync() error {
+	eb.mu.RLock()
+	defer eb.mu.RUnlock()
+
+	if eb.closed {
+		return ErrBackendClosed
+	}
+
 	return eb.backend.Sync()
 }
 
 // Size returns the current data size (unencrypted size)
 func (eb *EncryptedBackend) Size() int64 {
+	eb.mu.RLock()
+	defer eb.mu.RUnlock()
+
+	if eb.closed {
+		return 0
+	}
+
 	size := eb.backend.Size()
 	if !eb.config.Enabled || size == 0 {
 		return size
@@ -238,6 +261,13 @@ func (eb *EncryptedBackend) Size() int64 {
 
 // Truncate resizes the underlying storage
 func (eb *EncryptedBackend) Truncate(size int64) error {
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+
+	if eb.closed {
+		return ErrBackendClosed
+	}
+
 	if !eb.config.Enabled {
 		return eb.backend.Truncate(size)
 	}
@@ -253,6 +283,10 @@ func (eb *EncryptedBackend) Close() error {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
+	if eb.closed {
+		return nil
+	}
+
 	// Clear sensitive data
 	if eb.sessionKey != nil {
 		for i := range eb.sessionKey {
@@ -266,12 +300,21 @@ func (eb *EncryptedBackend) Close() error {
 		eb.config.Key[i] = 0
 	}
 
+	eb.cipher = nil
+	eb.closed = true
 	return eb.backend.Close()
 }
 
 // GetCipher returns the AEAD cipher used for encryption.
 // This can be used to encrypt other data stores (e.g., WAL) with the same key.
 func (eb *EncryptedBackend) GetCipher() cipher.AEAD {
+	eb.mu.RLock()
+	defer eb.mu.RUnlock()
+
+	if eb.closed {
+		return nil
+	}
+
 	return eb.cipher
 }
 
