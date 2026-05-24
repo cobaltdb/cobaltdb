@@ -783,11 +783,12 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 		}
 	}
 	canUnlock := canReleaseLock && !hasSubqueries(stmt)
+	postProcessUnlocked := canUnlock && cat.canApplySelectPostProcessUnlocked()
 	if canUnlock {
 		cat.mu.RUnlock()
 	}
 	rows, windowFullRows := cat.scanTableRows(table, stmt, args, selectCols, hasWindowFuncs, queryTime, trees, indexMatches, useIndex, mvRows, isMV, cat.parallelWorkers, cat.parallelThreshold)
-	if canUnlock {
+	if canUnlock && !postProcessUnlocked {
 		cat.mu.RLock()
 	}
 
@@ -802,11 +803,18 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 		windowFullRows:    windowFullRows,
 		table:             table,
 	})
+	if postProcessUnlocked {
+		cat.mu.RLock()
+	}
 	if rows == nil && returnColumns != nil {
 		return returnColumns, nil, nil
 	}
 
 	return returnColumns, rows, nil
+}
+
+func (cat *Catalog) canApplySelectPostProcessUnlocked() bool {
+	return !cat.enableRLS || cat.rlsManager == nil
 }
 
 // scanTableRows reads rows from the table using index lookup, materialized view data, or full scan.

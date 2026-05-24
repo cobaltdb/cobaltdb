@@ -201,6 +201,76 @@ func BenchmarkWriteLatencyUnderReaders(b *testing.B) {
 	}
 }
 
+func BenchmarkWriteLatencyUnderOrderedReaders(b *testing.B) {
+	for _, readers := range []int{4, 16} {
+		b.Run(fmt.Sprintf("readers=%d", readers), func(b *testing.B) {
+			db := setupBenchDB(b)
+			defer db.Close()
+
+			ctx := context.Background()
+			if _, err := db.Exec(ctx, "CREATE TABLE bench_ordered_latency (id INT PRIMARY KEY, n INT, payload TEXT)"); err != nil {
+				b.Fatalf("create table: %v", err)
+			}
+			for i := 0; i < 2000; i++ {
+				if _, err := db.Exec(ctx, "INSERT INTO bench_ordered_latency VALUES (?, ?, ?)", i, i%97, fmt.Sprintf("payload-%04d", i)); err != nil {
+					b.Fatalf("seed row: %v", err)
+				}
+			}
+
+			var stop atomic.Bool
+			var readErrors atomic.Int64
+			var wg sync.WaitGroup
+			for r := 0; r < readers; r++ {
+				wg.Add(1)
+				go func(id int) {
+					defer wg.Done()
+					for !stop.Load() {
+						rows, err := db.Query(ctx, "SELECT id, n, payload FROM bench_ordered_latency WHERE n >= ? ORDER BY payload DESC, id ASC LIMIT 250", id%10)
+						if err != nil {
+							readErrors.Add(1)
+							continue
+						}
+						for rows.Next() {
+							var rowID int64
+							var n int64
+							var payload string
+							if err := rows.Scan(&rowID, &n, &payload); err != nil {
+								readErrors.Add(1)
+								break
+							}
+						}
+						_ = rows.Close()
+					}
+				}(r)
+			}
+
+			latencies := make([]int64, b.N)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				start := time.Now()
+				if _, err := db.Exec(ctx, "INSERT INTO bench_ordered_latency VALUES (?, ?, ?)", 2_000_000+i, i%97, fmt.Sprintf("new-payload-%04d", i)); err != nil {
+					b.Fatalf("insert: %v", err)
+				}
+				latencies[i] = time.Since(start).Nanoseconds()
+			}
+			b.StopTimer()
+
+			stop.Store(true)
+			wg.Wait()
+			if readErrors.Load() > 0 {
+				b.Fatalf("background ordered reader errors: %d", readErrors.Load())
+			}
+
+			sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+			b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "writes/sec")
+			b.ReportMetric(float64(percentileLatency(latencies, 50))/float64(time.Millisecond), "p50_ms")
+			b.ReportMetric(float64(percentileLatency(latencies, 95))/float64(time.Millisecond), "p95_ms")
+			b.ReportMetric(float64(percentileLatency(latencies, 99))/float64(time.Millisecond), "p99_ms")
+			b.ReportMetric(float64(latencies[len(latencies)-1])/float64(time.Millisecond), "max_ms")
+		})
+	}
+}
+
 func percentileLatency(sorted []int64, percentile int) int64 {
 	if len(sorted) == 0 {
 		return 0
