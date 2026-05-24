@@ -84,6 +84,7 @@ const (
 	MySQLComStmtSendLongData byte = 0x18
 	MySQLComStmtClose        byte = 0x19
 	MySQLComStmtReset        byte = 0x1a
+	MySQLComStmtFetch        byte = 0x1c
 	MySQLComResetConnection  byte = 0x1f
 
 	// Server status flags
@@ -652,6 +653,9 @@ func (c *MySQLClient) handleCommand() error {
 
 	case MySQLComStmtReset:
 		return c.handleStmtReset(data)
+
+	case MySQLComStmtFetch:
+		return c.handleStmtFetch(data)
 
 	case MySQLComStatistics:
 		return c.handleStatistics()
@@ -1776,6 +1780,13 @@ func (c *MySQLClient) handleStmtReset(data []byte) error {
 	}
 	stmt.clearLongData()
 	return c.sendOKPacket(0, 0)
+}
+
+func (c *MySQLClient) handleStmtFetch(data []byte) error {
+	if len(data) < 8 {
+		return c.sendErrorPacket(0, "malformed COM_STMT_FETCH")
+	}
+	return c.sendErrorPacket(0, "prepared statement fetch cursors are not supported")
 }
 
 // handleStatistics returns a simple statistics string for COM_STATISTICS.

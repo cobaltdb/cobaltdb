@@ -409,6 +409,21 @@ func TestHandleStmtExecute(t *testing.T) {
 			t.Fatalf("expected cursor unsupported error packet, got %q", out)
 		}
 	})
+
+	t.Run("StmtFetchRejected", func(t *testing.T) {
+		client, conn := newTestClient(db)
+
+		var data [8]byte
+		binary.LittleEndian.PutUint32(data[:4], 123)
+		binary.LittleEndian.PutUint32(data[4:], 10)
+		if err := client.handleStmtFetch(data[:]); err != nil {
+			t.Fatalf("handleStmtFetch: %v", err)
+		}
+		out := conn.writeBuf.String()
+		if !strings.Contains(out, "fetch cursors are not supported") {
+			t.Fatalf("expected fetch cursor unsupported error packet, got %q", out)
+		}
+	})
 }
 
 func buildStmtExecutePacket(stmtID uint32, types []byte, values []interface{}) []byte {
