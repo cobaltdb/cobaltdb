@@ -58,8 +58,39 @@ func TestManagerCreation(t *testing.T) {
 		t.Fatal("Failed to create manager")
 	}
 
-	if mgr.config != config {
-		t.Error("Config mismatch")
+	if mgr.config == config {
+		t.Fatal("NewManager should copy caller config")
+	}
+
+	config.BackupDir = "/tmp/mutated"
+	config.CompressionLevel = 1
+	config.MaxBackups = 1
+	config.RetentionPeriod = time.Second
+	config.IncludeWAL = false
+	config.Verify = false
+	config.Encrypt = true
+
+	defaults := DefaultConfig()
+	if mgr.config.BackupDir != defaults.BackupDir {
+		t.Fatalf("BackupDir aliased caller config: %q", mgr.config.BackupDir)
+	}
+	if mgr.config.CompressionLevel != defaults.CompressionLevel {
+		t.Fatalf("CompressionLevel aliased caller config: %d", mgr.config.CompressionLevel)
+	}
+	if mgr.config.MaxBackups != defaults.MaxBackups {
+		t.Fatalf("MaxBackups aliased caller config: %d", mgr.config.MaxBackups)
+	}
+	if mgr.config.RetentionPeriod != defaults.RetentionPeriod {
+		t.Fatalf("RetentionPeriod aliased caller config: %v", mgr.config.RetentionPeriod)
+	}
+	if mgr.config.IncludeWAL != defaults.IncludeWAL {
+		t.Fatalf("IncludeWAL aliased caller config: %v", mgr.config.IncludeWAL)
+	}
+	if mgr.config.Verify != defaults.Verify {
+		t.Fatalf("Verify aliased caller config: %v", mgr.config.Verify)
+	}
+	if mgr.config.Encrypt != defaults.Encrypt {
+		t.Fatalf("Encrypt aliased caller config: %v", mgr.config.Encrypt)
 	}
 }
 

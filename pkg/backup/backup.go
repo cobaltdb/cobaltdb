@@ -160,6 +160,8 @@ type Database interface {
 func NewManager(config *Config, db Database) *Manager {
 	if config == nil {
 		config = DefaultConfig()
+	} else {
+		config = cloneConfig(config)
 	}
 
 	m := &Manager{
@@ -169,6 +171,14 @@ func NewManager(config *Config, db Database) *Manager {
 	}
 	m.loadErr = m.loadMetadata()
 	return m
+}
+
+func cloneConfig(config *Config) *Config {
+	if config == nil {
+		return nil
+	}
+	cloned := *config
+	return &cloned
 }
 
 // MetadataError returns any metadata load error encountered during manager creation.
