@@ -158,6 +158,36 @@ func TestListBackups(t *testing.T) {
 	}
 }
 
+func TestListBackupsReturnsIsolatedBackups(t *testing.T) {
+	config := DefaultConfig()
+	db := &MockDatabase{dbPath: "/tmp/test.db"}
+	mgr := NewManager(config, db)
+
+	mgr.metadata.Backups = append(mgr.metadata.Backups, &Backup{
+		ID:       "backup_1",
+		Type:     TypeFull,
+		WALFiles: []string{"wal_1.log"},
+	})
+
+	backups := mgr.ListBackups()
+	if len(backups) != 1 {
+		t.Fatalf("Expected 1 backup, got %d", len(backups))
+	}
+	backups[0].ID = "mutated"
+	backups[0].WALFiles[0] = "mutated.log"
+
+	backup := mgr.GetBackup("backup_1")
+	if backup == nil {
+		t.Fatal("expected original backup to remain addressable")
+	}
+	if backup.ID != "backup_1" {
+		t.Fatalf("ListBackups returned mutable backup pointer: got ID %q", backup.ID)
+	}
+	if backup.WALFiles[0] != "wal_1.log" {
+		t.Fatalf("ListBackups returned mutable WALFiles slice: got %v", backup.WALFiles)
+	}
+}
+
 func TestGetBackup(t *testing.T) {
 	config := DefaultConfig()
 	db := &MockDatabase{dbPath: "/tmp/test.db"}
@@ -168,6 +198,7 @@ func TestGetBackup(t *testing.T) {
 		ID:          "backup_test",
 		Type:        TypeFull,
 		CompletedAt: time.Now(),
+		WALFiles:    []string{"wal_1.log"},
 	})
 
 	backup := mgr.GetBackup("backup_test")
@@ -177,6 +208,19 @@ func TestGetBackup(t *testing.T) {
 
 	if backup.ID != "backup_test" {
 		t.Errorf("Expected ID 'backup_test', got %s", backup.ID)
+	}
+	backup.ID = "mutated"
+	backup.WALFiles[0] = "mutated.log"
+
+	backup = mgr.GetBackup("backup_test")
+	if backup == nil {
+		t.Fatal("Should still find backup after mutating returned copy")
+	}
+	if backup.ID != "backup_test" {
+		t.Fatalf("GetBackup returned mutable backup pointer: got ID %q", backup.ID)
+	}
+	if backup.WALFiles[0] != "wal_1.log" {
+		t.Fatalf("GetBackup returned mutable WALFiles slice: got %v", backup.WALFiles)
 	}
 
 	// Test non-existent backup

@@ -1165,7 +1165,9 @@ func (m *Manager) ListBackups() []*Backup {
 	defer m.metadata.mu.RUnlock()
 
 	result := make([]*Backup, len(m.metadata.Backups))
-	copy(result, m.metadata.Backups)
+	for i, backup := range m.metadata.Backups {
+		result[i] = cloneBackup(backup)
+	}
 	return result
 }
 
@@ -1176,10 +1178,22 @@ func (m *Manager) GetBackup(backupID string) *Backup {
 
 	for _, b := range m.metadata.Backups {
 		if b.ID == backupID {
-			return b
+			return cloneBackup(b)
 		}
 	}
 	return nil
+}
+
+func cloneBackup(backup *Backup) *Backup {
+	if backup == nil {
+		return nil
+	}
+	cloned := *backup
+	if backup.WALFiles != nil {
+		cloned.WALFiles = make([]string, len(backup.WALFiles))
+		copy(cloned.WALFiles, backup.WALFiles)
+	}
+	return &cloned
 }
 
 // DeleteBackup deletes a backup
