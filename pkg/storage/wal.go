@@ -368,6 +368,11 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 		}
 		if totalSize <= len(batchBuf) {
 			w.mu.Lock()
+			if w.file == nil {
+				w.mu.Unlock()
+				walBatchBufPool.Put(bp)
+				return ErrWALClosed
+			}
 			lsn := w.lsn
 			for i := range records {
 				lsn++
@@ -401,6 +406,10 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 	}
 
 	w.mu.Lock()
+	if w.file == nil {
+		w.mu.Unlock()
+		return ErrWALClosed
+	}
 	lsn := w.lsn
 	for _, off := range lsnOffsets {
 		lsn++

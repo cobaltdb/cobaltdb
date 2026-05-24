@@ -370,6 +370,42 @@ func TestWALCloseTwice(t *testing.T) {
 	}
 }
 
+func TestWALAppendBatchAfterCloseReturnsErrWALClosed(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	t.Run("fast path", func(t *testing.T) {
+		path := filepath.Join(tmpDir, "fast.wal")
+		wal, err := OpenWAL(path)
+		if err != nil {
+			t.Fatalf("Failed to open WAL: %v", err)
+		}
+		if err := wal.Close(); err != nil {
+			t.Fatalf("Failed to close WAL: %v", err)
+		}
+
+		err = wal.AppendBatch([]*WALRecord{{Type: WALInsert, Data: []byte("small")}})
+		if !errors.Is(err, ErrWALClosed) {
+			t.Fatalf("expected ErrWALClosed, got %v", err)
+		}
+	})
+
+	t.Run("formatted path", func(t *testing.T) {
+		path := filepath.Join(tmpDir, "formatted.wal")
+		wal, err := OpenWAL(path)
+		if err != nil {
+			t.Fatalf("Failed to open WAL: %v", err)
+		}
+		if err := wal.Close(); err != nil {
+			t.Fatalf("Failed to close WAL: %v", err)
+		}
+
+		err = wal.AppendBatch([]*WALRecord{{Type: WALInsert, Data: make([]byte, walBatchBufferSize)}})
+		if !errors.Is(err, ErrWALClosed) {
+			t.Fatalf("expected ErrWALClosed, got %v", err)
+		}
+	})
+}
+
 func TestWALApplyRecordBoundsCheck(t *testing.T) {
 	backend := NewMemory()
 	pool := NewBufferPool(4, backend)
