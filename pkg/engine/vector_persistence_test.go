@@ -148,6 +148,73 @@ func TestVectorIndexLargeRebuildAndBackupRestore(t *testing.T) {
 	assertScalar(t, restored, "SELECT name FROM docs WHERE id = 128", "doc-128")
 }
 
+func TestVectorIndexThousandPlusMixedDMLReopen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vectors-mixed.db")
+	opts := DefaultOptions()
+	opts.EnableScheduler = false
+	opts.EnableAutoCheckpoint = false
+	opts.EnableAutoVacuum = false
+
+	db, err := Open(path, opts)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	if _, err := db.Exec(ctx, `CREATE TABLE docs (
+		id INTEGER PRIMARY KEY,
+		name TEXT,
+		embedding VECTOR(3)
+	)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	for i := 1; i <= 1024; i++ {
+		sql := fmt.Sprintf(
+			"INSERT INTO docs (id, name, embedding) VALUES (%d, 'doc-%04d', [%.1f, %.1f, %.1f])",
+			i, i, float64(i%31), float64(i%17), float64(i%7),
+		)
+		if _, err := db.Exec(ctx, sql); err != nil {
+			t.Fatalf("insert vector %d: %v", i, err)
+		}
+	}
+	if _, err := db.Exec(ctx, `CREATE VECTOR INDEX idx_docs_embedding ON docs (embedding)`); err != nil {
+		t.Fatalf("create vector index: %v", err)
+	}
+
+	for i := 25; i <= 500; i += 25 {
+		sql := fmt.Sprintf("UPDATE docs SET embedding = [9.0, %.1f, 1.0] WHERE id = %d", float64(i/25), i)
+		if _, err := db.Exec(ctx, sql); err != nil {
+			t.Fatalf("update vector %d: %v", i, err)
+		}
+	}
+	for _, id := range []int{17, 64, 128, 255, 511, 777, 999} {
+		if _, err := db.Exec(ctx, fmt.Sprintf("DELETE FROM docs WHERE id = %d", id)); err != nil {
+			t.Fatalf("delete vector %d: %v", id, err)
+		}
+	}
+
+	wantNodes := 1024 - 7
+	wantKey := fmt.Sprintf("%020d", 500)
+	requireVectorIndexSearchHit(t, db, "idx_docs_embedding", wantNodes, []float64{9.0, 20.0, 1.0}, wantKey)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	for cycle := 1; cycle <= 2; cycle++ {
+		reopened, err := Open(path, opts)
+		if err != nil {
+			t.Fatalf("reopen cycle %d: %v", cycle, err)
+		}
+		requireVectorIndexSearchHit(t, reopened, "idx_docs_embedding", wantNodes, []float64{9.0, 20.0, 1.0}, wantKey)
+		assertScalar(t, reopened, "SELECT COUNT(*) FROM docs", int64(wantNodes))
+		assertScalar(t, reopened, "SELECT name FROM docs WHERE id = 500", "doc-0500")
+		if err := reopened.Close(); err != nil {
+			t.Fatalf("close cycle %d: %v", cycle, err)
+		}
+	}
+}
+
 func requireVectorIndexReady(t *testing.T, db *DB, wantNodes int) string {
 	t.Helper()
 	return requireVectorIndexSearchHit(t, db, "idx_docs_embedding", wantNodes, []float64{1.0, 0.0, 0.0}, "")

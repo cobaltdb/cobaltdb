@@ -24,7 +24,7 @@ Current readiness estimate:
 | Benchmark regression gate | Added via `scripts/benchmark-gate.sh`, now including write p95/p99 under readers |
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
 | HA readiness guards | API reports explicit blockers and refuses unsafe in-process promotion |
-| Vector index persistence | HNSW metadata persists across create, post-index DML, reopen, and backup/restore |
+| Vector index persistence | HNSW metadata persists across create, 1024-row mixed DML, reopen, and backup/restore |
 | FDW streaming/pushdown groundwork | CSV scans expose cursor streaming and apply safe simple predicates |
 | Procedure/trigger semantics | `CALL` placeholder args, exact arity, complex param substitution, and BEFORE/AFTER trigger row images are covered |
 | Operations runbook | Added |
@@ -58,7 +58,8 @@ Recent hardening commits:
 | `1270975` | Vector indexes | Added post-index DML persistence and backup/restore rebuild drill |
 | `2c67dd6` | FDW | Added streaming cursor API and CSV cursor implementation |
 | `fa2a30e` | FDW pushdown | Added simple WHERE predicate extraction into streaming scan options |
-| Current iteration | FDW pushdown | Added safe CSV wrapper-side predicate filtering |
+| `7ac8f1e` | FDW pushdown | Added safe CSV wrapper-side predicate filtering |
+| Current iteration | Vector indexes | Added thousand-plus mixed DML and reopen certification |
 
 Validation performed during this pass:
 
@@ -80,8 +81,8 @@ go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|Tes
 go test -race ./pkg/replication -run TestSlaveStatusClearsConnectionOnMasterDisconnect -count=1
 go test ./pkg/replication -count=1
 go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count=1
-go test ./pkg/engine -run 'TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore' -count=1
-go test -race ./pkg/catalog ./pkg/engine -run 'TestVectorIndexMetadataPersistsOnCreateAndDrop|TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore' -count=1
+go test ./pkg/engine -run 'TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore|TestVectorIndexThousandPlusMixedDMLReopen' -count=1
+go test -race ./pkg/catalog ./pkg/engine -run 'TestVectorIndexMetadataPersistsOnCreateAndDrop|TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore|TestVectorIndexThousandPlusMixedDMLReopen' -count=1
 go test ./pkg/fdw -count=1
 go test -race ./pkg/fdw -count=1
 go test ./pkg/catalog -run TestFDWScanOptionsCarrySimpleWherePredicates -count=1
@@ -170,7 +171,7 @@ Production stance:
 Some advanced features are broad but need workload-specific certification before being treated as primary production pillars:
 
 - WASM SQL execution beyond selected paths.
-- Very large Vector/HNSW rebuild behavior beyond the 512-row backup/restore drill.
+- Very large Vector/HNSW rebuild behavior beyond the 1024-row mixed DML drill.
 - FDW still materializes rows into a temporary query-engine B-tree, but CSV scans now stream into that tree, apply safe advisory simple predicates, and have row/byte limits.
 - Procedure body result-set and mutable `OUT`/`INOUT` parameter semantics beyond the certified DML contract.
 - Composite/advanced constraint cases.
@@ -213,7 +214,7 @@ Priority order:
 1. Catalog lock granularity improvements.
 2. Additional MySQL ORM and non-Go driver certification runs.
 3. Actual HA consensus, fencing, and externally orchestrated promotion implementation.
-4. Thousand-plus vector mixed workload certification.
+4. Tens-of-thousands vector rebuild and concurrent reader certification.
 5. FDW projection pushdown and wrapper-side predicate filtering for CSV.
 
 ## Final Decision
