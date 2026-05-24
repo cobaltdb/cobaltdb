@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -108,6 +110,20 @@ func TestLifecycleBasic(t *testing.T) {
 
 	if !comp.stopCalled.Load() {
 		t.Error("expected Stop to be called on component")
+	}
+}
+
+func TestNewLifecycleCopiesShutdownSignals(t *testing.T) {
+	signals := []os.Signal{syscall.SIGTERM}
+	lifecycle := NewLifecycle(&LifecycleConfig{
+		EnableSignalHandling: false,
+		ShutdownSignals:      signals,
+	})
+
+	signals[0] = syscall.SIGINT
+
+	if lifecycle.config.ShutdownSignals[0] != syscall.SIGTERM {
+		t.Fatalf("ShutdownSignals aliased caller slice: %v", lifecycle.config.ShutdownSignals)
 	}
 }
 

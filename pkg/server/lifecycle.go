@@ -176,9 +176,20 @@ func normalizeLifecycleConfig(config *LifecycleConfig) *LifecycleConfig {
 		normalized.StartupTimeout = defaults.StartupTimeout
 	}
 	if len(normalized.ShutdownSignals) == 0 {
-		normalized.ShutdownSignals = defaults.ShutdownSignals
+		normalized.ShutdownSignals = cloneShutdownSignals(defaults.ShutdownSignals)
+	} else {
+		normalized.ShutdownSignals = cloneShutdownSignals(normalized.ShutdownSignals)
 	}
 	return &normalized
+}
+
+func cloneShutdownSignals(signals []os.Signal) []os.Signal {
+	if signals == nil {
+		return nil
+	}
+	cloned := make([]os.Signal, len(signals))
+	copy(cloned, signals)
+	return cloned
 }
 
 func (l *Lifecycle) logInfof(format string, args ...interface{}) {
