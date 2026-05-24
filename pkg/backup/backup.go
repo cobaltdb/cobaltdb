@@ -198,12 +198,36 @@ func (m *Manager) ensureMetadataLoaded() error {
 	return nil
 }
 
+func (m *Manager) callOnProgress(percent int) {
+	if m.OnProgress == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	m.OnProgress(percent)
+}
+
+func (m *Manager) callOnComplete(backup *Backup, err error) {
+	if m.OnComplete == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	m.OnComplete(backup, err)
+}
+
+func (m *Manager) callOnVerify(backup *Backup, valid bool) {
+	if m.OnVerify == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	m.OnVerify(backup, valid)
+}
+
 // CreateBackup creates a new backup
 func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (backup *Backup, err error) {
 	var callbackBackup *Backup
 	defer func() {
-		if m.OnComplete != nil && (callbackBackup != nil || err != nil) {
-			m.OnComplete(callbackBackup, err)
+		if callbackBackup != nil || err != nil {
+			m.callOnComplete(callbackBackup, err)
 		}
 	}()
 
@@ -381,9 +405,9 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 			written += int64(n)
 
 			// Report progress
-			if m.OnProgress != nil && srcInfo.Size() > 0 {
+			if srcInfo.Size() > 0 {
 				percent := int((written * 100) / srcInfo.Size())
-				m.OnProgress(percent)
+				m.callOnProgress(percent)
 			}
 		}
 		if err == io.EOF {
@@ -528,9 +552,9 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 
 			offset += int64(n)
 			copied += int64(n)
-			if m.OnProgress != nil && srcInfo.Size() > 0 {
+			if srcInfo.Size() > 0 {
 				percent := int((copied * 100) / srcInfo.Size())
-				m.OnProgress(percent)
+				m.callOnProgress(percent)
 			}
 		}
 		if readErr == io.EOF {
@@ -665,9 +689,7 @@ func (m *Manager) verifyBackup(backup *Backup) error {
 	calculatedChecksum := crc.Sum32()
 	valid := readSize == backup.Size && calculatedChecksum == backup.Checksum
 
-	if m.OnVerify != nil {
-		m.OnVerify(backup, valid)
-	}
+	m.callOnVerify(backup, valid)
 
 	if readSize != backup.Size {
 		return fmt.Errorf("backup size mismatch: expected %d, got %d", backup.Size, readSize)
@@ -861,9 +883,9 @@ func (m *Manager) restoreBackupPayload(ctx context.Context, backup *Backup, targ
 			}
 			written += int64(n)
 
-			if m.OnProgress != nil && backup.Size > 0 {
+			if backup.Size > 0 {
 				percent := int((written * 100) / backup.Size)
-				m.OnProgress(percent)
+				m.callOnProgress(percent)
 			}
 		}
 		if err == io.EOF {

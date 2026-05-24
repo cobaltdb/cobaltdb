@@ -12,6 +12,26 @@ import (
 	"time"
 )
 
+func TestManagerCallbackPanicsAreRecovered(t *testing.T) {
+	mgr := NewManager(DefaultConfig(), nil)
+	backup := &Backup{ID: "panic-callback"}
+
+	mgr.OnProgress = func(percent int) {
+		panic("progress panic")
+	}
+	mgr.callOnProgress(50)
+
+	mgr.OnComplete = func(backup *Backup, err error) {
+		panic("complete panic")
+	}
+	mgr.callOnComplete(backup, nil)
+
+	mgr.OnVerify = func(backup *Backup, valid bool) {
+		panic("verify panic")
+	}
+	mgr.callOnVerify(backup, true)
+}
+
 // TestDeleteBackupWithWALFiles tests deleting a backup that has WAL files
 func TestDeleteBackupWithWALFiles(t *testing.T) {
 	tempDir := t.TempDir()
