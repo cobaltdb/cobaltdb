@@ -358,6 +358,64 @@ func TestRejoinAsReplicaCanForceSnapshotRefresh(t *testing.T) {
 	}
 }
 
+func TestRejoinedReplicaRequestsSnapshotOnStart(t *testing.T) {
+	masterConfig := DefaultConfig()
+	masterConfig.Role = RoleMaster
+	masterConfig.ListenAddr = "127.0.0.1:0"
+	masterConfig.SyncInterval = 10 * time.Millisecond
+
+	newPrimary := NewManager(masterConfig)
+	newPrimary.OnSnapshot = func() ([]byte, error) {
+		return []byte("new-primary-snapshot"), nil
+	}
+	if err := newPrimary.Start(); err != nil {
+		t.Fatalf("start new primary: %v", err)
+	}
+	defer newPrimary.Stop()
+
+	oldPrimary := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	if err := oldPrimary.ReplicateWALEntry([]byte("divergent-old-primary-write")); err != nil {
+		t.Fatalf("ReplicateWALEntry: %v", err)
+	}
+	if err := oldPrimary.FencePrimary(PrimaryFenceRequest{
+		FencingToken: "tok",
+		Epoch:        10,
+		ExpiresAt:    time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("FencePrimary: %v", err)
+	}
+	if err := oldPrimary.RejoinAsReplica(RejoinRequest{
+		FencingToken:    "tok",
+		Epoch:           10,
+		NewMasterAddr:   newPrimary.listener.Addr().String(),
+		RequireSnapshot: true,
+	}); err != nil {
+		t.Fatalf("RejoinAsReplica: %v", err)
+	}
+
+	applied := make(chan []byte, 1)
+	oldPrimary.OnApplySnapshot = func(data []byte, lsn uint64) error {
+		applied <- append([]byte(nil), data...)
+		return nil
+	}
+	if err := oldPrimary.Start(); err != nil {
+		t.Fatalf("start rejoined replica: %v", err)
+	}
+	defer oldPrimary.Stop()
+
+	select {
+	case data := <-applied:
+		if string(data) != "new-primary-snapshot" {
+			t.Fatalf("snapshot payload = %q", string(data))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("rejoined replica did not request and apply snapshot")
+	}
+	if atomic.LoadUint32(&oldPrimary.requireSnapshot) != 0 {
+		t.Fatal("snapshot requirement was not cleared after applying snapshot")
+	}
+}
+
 func TestRejoinAsReplicaPersistsResumeLSN(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "replication", "state.json")
 	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync, StateFile: stateFile})
