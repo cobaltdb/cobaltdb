@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1023,5 +1024,51 @@ func TestGetMetricsAppliedEntries(t *testing.T) {
 	metrics := mgr.GetMetrics()
 	if metrics.AppliedEntries != 2 {
 		t.Errorf("Expected 2 applied entries, got %d", metrics.AppliedEntries)
+	}
+	if metrics.LastAppliedTime == 0 {
+		t.Fatal("Expected last applied time to be recorded")
+	}
+
+	previousAppliedTime := metrics.LastAppliedTime
+	if err := mgr.applyWALData(string(data)); err != nil {
+		t.Fatalf("Failed to reapply duplicate WAL data: %v", err)
+	}
+	metrics = mgr.GetMetrics()
+	if metrics.LastAppliedTime != previousAppliedTime {
+		t.Fatalf("Expected duplicate WAL data not to update last applied time, got %d want %d",
+			metrics.LastAppliedTime, previousAppliedTime)
+	}
+}
+
+func TestGetMetricsComputesSlaveReplicationLag(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync})
+	atomic.StoreInt64(&mgr.metrics.LastAppliedTime, time.Now().Add(-2*time.Second).Unix())
+
+	metrics := mgr.GetMetrics()
+	if metrics.LastAppliedTime == 0 {
+		t.Fatal("Expected last applied time to be exposed")
+	}
+	if metrics.ReplicationLag <= 0 {
+		t.Fatalf("Expected positive slave replication lag, got %d", metrics.ReplicationLag)
+	}
+}
+
+func TestGetMetricsComputesMasterReplicationLag(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	atomic.StoreUint64(&mgr.currentLSN, 10)
+	mgr.slaves["s1"] = &SlaveConnection{
+		ID:       "s1",
+		LastLSN:  5,
+		LastPing: time.Now().Add(-2 * time.Second),
+	}
+	mgr.slaves["s2"] = &SlaveConnection{
+		ID:       "s2",
+		LastLSN:  10,
+		LastPing: time.Now().Add(-10 * time.Second),
+	}
+
+	metrics := mgr.GetMetrics()
+	if metrics.ReplicationLag <= 0 {
+		t.Fatalf("Expected positive master replication lag for behind slave, got %d", metrics.ReplicationLag)
 	}
 }

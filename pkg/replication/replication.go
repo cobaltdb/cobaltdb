@@ -954,6 +954,7 @@ func (m *Manager) handleMasterMessage(msg string) error {
 			return fmt.Errorf("invalid START message: %w", err)
 		}
 		atomic.StoreUint64(&m.lastApplied, lsn)
+		atomic.StoreInt64(&m.metrics.LastAppliedTime, time.Now().Unix())
 		return m.saveReplicationState()
 
 	case "PING":
@@ -1001,8 +1002,8 @@ func (m *Manager) applyWALDataBytes(data []byte) error {
 		advanced = true
 	}
 
-	atomic.StoreInt64(&m.metrics.LastAppliedTime, time.Now().Unix())
 	if advanced {
+		atomic.StoreInt64(&m.metrics.LastAppliedTime, time.Now().Unix())
 		return m.saveReplicationState()
 	}
 
@@ -1250,12 +1251,61 @@ func retainedWALBytes(entry *WALEntry) int64 {
 
 // GetMetrics returns current replication metrics
 func (m *Manager) GetMetrics() *Metrics {
+	replicationLag := m.currentReplicationLagMillis(time.Now())
+	atomic.StoreInt64(&m.metrics.ReplicationLag, replicationLag)
+
 	return &Metrics{
 		ReplicatedBytes: atomic.LoadUint64(&m.metrics.ReplicatedBytes),
 		AppliedEntries:  atomic.LoadUint64(&m.metrics.AppliedEntries),
 		ActiveSlaves:    atomic.LoadInt32(&m.metrics.ActiveSlaves),
-		ReplicationLag:  atomic.LoadInt64(&m.metrics.ReplicationLag),
+		ReplicationLag:  replicationLag,
+		LastAppliedTime: atomic.LoadInt64(&m.metrics.LastAppliedTime),
 	}
+}
+
+func (m *Manager) currentReplicationLagMillis(now time.Time) int64 {
+	switch m.role {
+	case RoleMaster:
+		return m.currentMasterLagMillis(now)
+	case RoleSlave:
+		lastApplied := atomic.LoadInt64(&m.metrics.LastAppliedTime)
+		if lastApplied == 0 {
+			return 0
+		}
+		lag := now.Sub(time.Unix(lastApplied, 0))
+		if lag <= 0 {
+			return 0
+		}
+		return lag.Milliseconds()
+	default:
+		return atomic.LoadInt64(&m.metrics.ReplicationLag)
+	}
+}
+
+func (m *Manager) currentMasterLagMillis(now time.Time) int64 {
+	currentLSN := atomic.LoadUint64(&m.currentLSN)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var maxLag time.Duration
+	for _, slave := range m.slaves {
+		slave.mu.Lock()
+		lastLSN := slave.LastLSN
+		lastPing := slave.LastPing
+		slave.mu.Unlock()
+
+		if lastLSN >= currentLSN || lastPing.IsZero() {
+			continue
+		}
+		if lag := now.Sub(lastPing); lag > maxLag {
+			maxLag = lag
+		}
+	}
+	if maxLag <= 0 {
+		return 0
+	}
+	return maxLag.Milliseconds()
 }
 
 // WaitForSlaves blocks until all connected slaves have caught up
