@@ -39,6 +39,10 @@ bench:
 	@echo "Running benchmarks..."
 	@go test -bench=. -benchmem ./...
 
+bench-gate:
+	@echo "Running benchmark regression gate..."
+	@./scripts/benchmark-gate.sh
+
 clean:
 	@echo "Cleaning..."
 	@rm -rf bin/

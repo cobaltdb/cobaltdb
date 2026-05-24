@@ -3,6 +3,12 @@
 ## Running Benchmarks
 
 ```bash
+# Run the bounded regression gate used for releases
+./scripts/benchmark-gate.sh
+
+# Compare against a saved baseline if benchstat is installed
+BASELINE=artifacts/benchmarks/bench-main.txt ./scripts/benchmark-gate.sh
+
 # Run full benchmark suite (safe, bounded memory)
 go test ./test/ -run=^$ -bench=BenchmarkFullSuite -benchtime=500ms -benchmem
 
@@ -19,6 +25,41 @@ go test ./pkg/storage/ -bench=. -benchtime=1s -benchmem
 # Run parser benchmarks
 go test ./pkg/query/ -bench=. -benchtime=1s -benchmem
 ```
+
+## Regression Gate
+
+`scripts/benchmark-gate.sh` is the canonical bounded benchmark entrypoint for
+release qualification. It runs a representative subset across SQL execution,
+parser, B-tree, storage, WAL, and concurrent writer paths.
+
+Default settings:
+
+- `BENCHTIME=500ms`
+- `COUNT=5`
+- output: `artifacts/benchmarks/bench-<timestamp>.txt`
+
+Recommended release flow:
+
+```bash
+# 1. Capture or reuse the baseline from the target branch.
+git checkout main
+./scripts/benchmark-gate.sh artifacts/benchmarks
+cp artifacts/benchmarks/bench-*.txt artifacts/benchmarks/bench-main.txt
+
+# 2. Run the candidate and compare.
+git checkout -
+BASELINE=artifacts/benchmarks/bench-main.txt ./scripts/benchmark-gate.sh artifacts/benchmarks
+```
+
+Gate policy:
+
+- Investigate any statistically significant `benchstat` regression above 10%
+  in `ns/op` or `B/op`.
+- Treat regressions above 20% in core paths as release blockers unless a
+  deliberate tradeoff is documented.
+- Do not compare runs across different machines, CPU governors, Go versions, or
+  `GOMAXPROCS` values.
+- Keep `CacheSize` values as page counts. `1024` means 1024 pages, not bytes.
 
 ## Results
 
