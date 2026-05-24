@@ -23,6 +23,13 @@ CobaltDB is a lightweight, embeddable database engine written in Go with SQL and
 - **WebAssembly Runtime**: Compile and execute SQL via WASM
 - **Zero CGO**: Pure Go implementation
 
+## Operations
+
+- [Operations Runbook](OPERATIONS_RUNBOOK.md): release gates, backup drills,
+  recovery drills, monitoring checks, and incident playbooks.
+- [Benchmarks](BENCHMARKS.md): bounded benchmark regression gate and historical
+  performance notes.
+
 ## Installation
 
 ```bash
