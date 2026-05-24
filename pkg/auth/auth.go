@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -259,7 +260,7 @@ func (a *Authenticator) GetMySQLNativeHash(username string) ([]byte, error) {
 	if !exists {
 		return nil, ErrUserNotFound
 	}
-	return user.MySQLNativeHash, nil
+	return cloneBytes(user.MySQLNativeHash), nil
 }
 
 // UserExists returns true if the given username is known to the authenticator.
@@ -377,7 +378,7 @@ func (a *Authenticator) ValidateToken(token string) (*Session, error) {
 		return nil, ErrTokenExpired
 	}
 
-	return session, nil
+	return cloneSession(session), nil
 }
 
 // Logout invalidates a session token
@@ -458,9 +459,7 @@ func (a *Authenticator) GetUser(username string) (*User, error) {
 		return nil, ErrUserNotFound
 	}
 
-	// Return a copy
-	userCopy := *user
-	return &userCopy, nil
+	return cloneUser(user), nil
 }
 
 // HasPermission checks if a user has a specific permission
@@ -521,6 +520,7 @@ func (a *Authenticator) GrantPermission(username, database, table string, action
 			for a := range actionMap {
 				merged = append(merged, a)
 			}
+			sort.Strings(merged)
 			user.Permissions[i].Actions = merged
 			return nil
 		}
@@ -530,7 +530,7 @@ func (a *Authenticator) GrantPermission(username, database, table string, action
 	user.Permissions = append(user.Permissions, Permission{
 		Database: database,
 		Table:    table,
-		Actions:  actions,
+		Actions:  cloneStringSlice(actions),
 	})
 
 	return nil
@@ -564,6 +564,7 @@ func (a *Authenticator) RevokePermission(username, database, table string, actio
 				for a := range actionMap {
 					merged = append(merged, a)
 				}
+				sort.Strings(merged)
 				user.Permissions[i].Actions = merged
 			}
 			return nil
@@ -571,6 +572,54 @@ func (a *Authenticator) RevokePermission(username, database, table string, actio
 	}
 
 	return nil
+}
+
+func cloneUser(user *User) *User {
+	if user == nil {
+		return nil
+	}
+	cloned := *user
+	cloned.MySQLNativeHash = cloneBytes(user.MySQLNativeHash)
+	cloned.Permissions = clonePermissions(user.Permissions)
+	return &cloned
+}
+
+func cloneSession(session *Session) *Session {
+	if session == nil {
+		return nil
+	}
+	cloned := *session
+	return &cloned
+}
+
+func clonePermissions(permissions []Permission) []Permission {
+	if permissions == nil {
+		return nil
+	}
+	cloned := make([]Permission, len(permissions))
+	for i, permission := range permissions {
+		cloned[i] = permission
+		cloned[i].Actions = cloneStringSlice(permission.Actions)
+	}
+	return cloned
+}
+
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func cloneBytes(values []byte) []byte {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]byte, len(values))
+	copy(cloned, values)
+	return cloned
 }
 
 // ListUsers returns a list of all usernames

@@ -101,6 +101,15 @@ func TestValidateToken(t *testing.T) {
 		t.Errorf("Expected username 'testuser', got %s", session.Username)
 	}
 
+	session.ExpiresAt = time.Now().Add(-time.Hour)
+	sessionAgain, err := auth.ValidateToken(token)
+	if err != nil {
+		t.Fatalf("Token should remain valid after mutating returned session: %v", err)
+	}
+	if sessionAgain.ExpiresAt.Before(time.Now()) {
+		t.Fatal("ValidateToken returned mutable internal session")
+	}
+
 	// Validate invalid token
 	_, err = auth.ValidateToken("invalidtoken")
 	if err != ErrInvalidToken {

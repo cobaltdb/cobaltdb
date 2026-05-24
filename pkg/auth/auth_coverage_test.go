@@ -156,6 +156,15 @@ func TestGetMySQLNativeHash(t *testing.T) {
 		if len(hash) != 20 {
 			t.Fatalf("Expected 20-byte hash, got %d bytes", len(hash))
 		}
+
+		hash[0] ^= 0xFF
+		hashAgain, err := a.GetMySQLNativeHash("hashuser")
+		if err != nil {
+			t.Fatalf("Expected nil error on second hash read, got %v", err)
+		}
+		if hashAgain[0] == hash[0] {
+			t.Fatal("GetMySQLNativeHash returned mutable internal hash")
+		}
 	})
 
 	t.Run("NonExistentUser", func(t *testing.T) {

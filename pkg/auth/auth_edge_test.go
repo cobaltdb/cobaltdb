@@ -53,6 +53,35 @@ func TestGetUser(t *testing.T) {
 			t.Error("GetUser did not return a copy - modification affected other reference")
 		}
 	})
+
+	t.Run("GetUserReturnsDeepCopy", func(t *testing.T) {
+		err := a.CreateUser("deepcopy", "password123", false)
+		if err != nil {
+			t.Fatalf("Failed to create user: %v", err)
+		}
+		if err := a.GrantPermission("deepcopy", "db", "tbl", []string{"SELECT"}); err != nil {
+			t.Fatalf("GrantPermission: %v", err)
+		}
+
+		user1, _ := a.GetUser("deepcopy")
+		user1.MySQLNativeHash[0] ^= 0xFF
+		user1.Permissions[0].Actions[0] = "DROP"
+
+		user2, _ := a.GetUser("deepcopy")
+		if user2.Permissions[0].Actions[0] != "SELECT" {
+			t.Fatalf("GetUser did not deep copy permissions: got %q", user2.Permissions[0].Actions[0])
+		}
+		if a.HasPermission("deepcopy", "db", "tbl", "DROP") {
+			t.Fatal("GetUser returned mutable permission actions")
+		}
+		hash, err := a.GetMySQLNativeHash("deepcopy")
+		if err != nil {
+			t.Fatalf("GetMySQLNativeHash: %v", err)
+		}
+		if user1.MySQLNativeHash[0] == hash[0] {
+			t.Fatal("GetUser returned mutable MySQL native hash")
+		}
+	})
 }
 
 func TestAuthEdgeCases(t *testing.T) {
@@ -282,6 +311,21 @@ func TestPermissionEdgeCases(t *testing.T) {
 		}
 		if !a.HasPermission("permtest", "db2", "table2", "DELETE") {
 			t.Error("Should have DELETE with wildcard")
+		}
+	})
+
+	t.Run("GrantPermissionCopiesActions", func(t *testing.T) {
+		actions := []string{"SELECT"}
+		if err := a.GrantPermission("permtest", "copydb", "copytable", actions); err != nil {
+			t.Fatalf("GrantPermission: %v", err)
+		}
+
+		actions[0] = "DROP"
+		if !a.HasPermission("permtest", "copydb", "copytable", "SELECT") {
+			t.Fatal("expected original SELECT permission to remain")
+		}
+		if a.HasPermission("permtest", "copydb", "copytable", "DROP") {
+			t.Fatal("GrantPermission retained caller-owned actions slice")
 		}
 	})
 
