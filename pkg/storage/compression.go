@@ -68,6 +68,8 @@ func DefaultCompressionConfig() *CompressionConfig {
 type CompressedBackend struct {
 	backend Backend
 	config  *CompressionConfig
+	mu      sync.RWMutex
+	closed  bool
 
 	// Pools reuse buffers, writers, and readers to reduce allocations.
 	writeBufPool sync.Pool
@@ -131,6 +133,13 @@ func (cb *CompressedBackend) magicForAlgorithm() []byte {
 
 // ReadAt reads a page from the backend, decompressing if necessary.
 func (cb *CompressedBackend) ReadAt(buf []byte, offset int64) (int, error) {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+
+	if cb.closed {
+		return 0, ErrBackendClosed
+	}
+
 	if !cb.config.Enabled {
 		return cb.backend.ReadAt(buf, offset)
 	}
@@ -196,6 +205,13 @@ func (cb *CompressedBackend) algorithmFromMagic(magic []byte) CompressionAlgorit
 
 // WriteAt compresses and writes a page to the backend.
 func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+
+	if cb.closed {
+		return 0, ErrBackendClosed
+	}
+
 	if !cb.config.Enabled {
 		return cb.backend.WriteAt(buf, offset)
 	}
@@ -243,21 +259,50 @@ func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 
 // Sync delegates to the underlying backend.
 func (cb *CompressedBackend) Sync() error {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+
+	if cb.closed {
+		return ErrBackendClosed
+	}
+
 	return cb.backend.Sync()
 }
 
 // Size returns the logical (uncompressed) size.
 func (cb *CompressedBackend) Size() int64 {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+
+	if cb.closed {
+		return 0
+	}
+
 	return cb.backend.Size()
 }
 
 // Truncate delegates to the underlying backend.
 func (cb *CompressedBackend) Truncate(size int64) error {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+
+	if cb.closed {
+		return ErrBackendClosed
+	}
+
 	return cb.backend.Truncate(size)
 }
 
 // Close closes the underlying backend.
 func (cb *CompressedBackend) Close() error {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	if cb.closed {
+		return nil
+	}
+
+	cb.closed = true
 	return cb.backend.Close()
 }
 

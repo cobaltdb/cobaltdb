@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -207,6 +208,38 @@ func TestCompressedBackendSyncTruncateClose(t *testing.T) {
 	}
 	if err := cb.Close(); err != nil {
 		t.Fatalf("close failed: %v", err)
+	}
+}
+
+func TestCompressedBackendOperationsAfterClose(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, DefaultCompressionConfig())
+	if err != nil {
+		t.Fatalf("failed to create compressed backend: %v", err)
+	}
+
+	if err := cb.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	if err := cb.Close(); err != nil {
+		t.Fatalf("second close failed: %v", err)
+	}
+
+	buf := make([]byte, PageSize)
+	if _, err := cb.ReadAt(buf, 0); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("ReadAt after close error = %v, want %v", err, ErrBackendClosed)
+	}
+	if _, err := cb.WriteAt(buf, 0); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("WriteAt after close error = %v, want %v", err, ErrBackendClosed)
+	}
+	if err := cb.Sync(); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("Sync after close error = %v, want %v", err, ErrBackendClosed)
+	}
+	if err := cb.Truncate(PageSize); !errors.Is(err, ErrBackendClosed) {
+		t.Fatalf("Truncate after close error = %v, want %v", err, ErrBackendClosed)
+	}
+	if cb.Size() != 0 {
+		t.Fatalf("Size after close = %d, want 0", cb.Size())
 	}
 }
 
