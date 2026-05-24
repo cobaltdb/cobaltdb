@@ -445,7 +445,8 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 				}
 			}
 			if !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
-				return 0, 0, fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
+				insertErr = fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
+				break
 			}
 		}
 
@@ -510,13 +511,16 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 			rowValues = make([]interface{}, n)
 		}
 		if buildErr := c.buildInsertRow(table, insertColIndices, insertColumns, valueRow, args, autoIncValue, rowValues); buildErr != nil {
-			return 0, 0, buildErr
+			insertErr = buildErr
+			break
 		}
 
 		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, rowValues, security.PolicyInsert); rlsErr != nil {
-			return 0, 0, fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
+			insertErr = fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
+			break
 		} else if !allowed {
-			return 0, 0, fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
+			insertErr = fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
+			break
 		}
 
 		var skipRow bool
@@ -586,7 +590,8 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 		}
 
 		if trigErr := c.executeTriggersList(ctx, snap.triggers, "INSERT", "BEFORE", rowValues, nil, table.Columns); trigErr != nil {
-			return 0, 0, fmt.Errorf("BEFORE INSERT trigger failed: %w", trigErr)
+			insertErr = fmt.Errorf("BEFORE INSERT trigger failed: %w", trigErr)
+			break
 		}
 
 		c.appendPendingWriteTs(ts, PendingWrite{
@@ -1098,7 +1103,8 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 				}
 			}
 			if !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
-				return 0, 0, fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
+				insertErr = fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
+				break
 			}
 		}
 
@@ -1174,14 +1180,17 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			rowValues = make([]interface{}, n)
 		}
 		if buildErr := c.buildInsertRow(table, insertColIndices, insertColumns, valueRow, args, autoIncValue, rowValues); buildErr != nil {
-			return 0, 0, buildErr
+			insertErr = buildErr
+			break
 		}
 
 		// Apply Row-Level Security check for INSERT
 		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, rowValues, security.PolicyInsert); rlsErr != nil {
-			return 0, 0, fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
+			insertErr = fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
+			break
 		} else if !allowed {
-			return 0, 0, fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
+			insertErr = fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
+			break
 		}
 
 		// Validate row constraints and resolve key

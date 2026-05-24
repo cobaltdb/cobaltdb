@@ -50,3 +50,16 @@ func TestMultiInsertRowsAffectedAndReturning(t *testing.T) {
 	}
 	expectRowCount(t, db, "SELECT * FROM multi_insert_regression", 5)
 }
+
+func TestMultiInsertRollsBackOnLaterValueCountError(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	execSQL(t, db, "CREATE TABLE multi_insert_atomicity (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+
+	_, err := db.Exec(ctx, "INSERT INTO multi_insert_atomicity VALUES (1, 'first'), (2)")
+	if err == nil {
+		t.Fatal("expected multi-row insert to fail on the second row")
+	}
+	expectRowCount(t, db, "SELECT * FROM multi_insert_atomicity", 0)
+}
