@@ -349,6 +349,42 @@ func TestHandleStmtExecute(t *testing.T) {
 			t.Fatalf("expected bound value, got %q", got)
 		}
 	})
+
+	t.Run("ExecuteWithLongData", func(t *testing.T) {
+		client, _ := newTestClient(db)
+
+		if err := client.handleStmtPrepare("INSERT INTO exec_test (id, val) VALUES (?, ?)"); err != nil {
+			t.Skipf("prepare failed: %v", err)
+		}
+
+		var stmtID uint32
+		for id := range client.stmts {
+			stmtID = id
+			break
+		}
+		if err := client.handleStmtSendLongData(buildStmtLongDataPacket(stmtID, 1, []byte("long-"))); err != nil {
+			t.Fatalf("handleStmtSendLongData chunk 1: %v", err)
+		}
+		if err := client.handleStmtSendLongData(buildStmtLongDataPacket(stmtID, 1, []byte("payload"))); err != nil {
+			t.Fatalf("handleStmtSendLongData chunk 2: %v", err)
+		}
+
+		execData := buildStmtExecutePacket(stmtID, []byte{MySQLTypeLongLong, MySQLTypeLongBlob}, []interface{}{int64(4), nil})
+		if err := client.handleStmtExecute(execData); err != nil {
+			t.Fatalf("handleStmtExecute: %v", err)
+		}
+
+		var got string
+		if err := db.QueryRow(ctx, "SELECT val FROM exec_test WHERE id = ?", 4).Scan(&got); err != nil {
+			t.Fatalf("query inserted long data row: %v", err)
+		}
+		if got != "long-payload" {
+			t.Fatalf("expected long data value, got %q", got)
+		}
+		if len(client.stmts[stmtID].longData) != 0 {
+			t.Fatalf("long data was not cleared after execute: %#v", client.stmts[stmtID].longData)
+		}
+	})
 }
 
 func buildStmtExecutePacket(stmtID uint32, types []byte, values []interface{}) []byte {
@@ -364,6 +400,9 @@ func buildStmtExecutePacket(stmtID uint32, types []byte, values []interface{}) [
 		data = append(data, typ, 0x00)
 	}
 	for i, value := range values {
+		if value == nil {
+			continue
+		}
 		switch types[i] {
 		case MySQLTypeLongLong:
 			var buf [8]byte
@@ -379,6 +418,18 @@ func buildStmtExecutePacket(stmtID uint32, types []byte, values []interface{}) [
 			data = appendStmtExecuteTime(data, value.(time.Duration))
 		}
 	}
+	return data
+}
+
+func buildStmtLongDataPacket(stmtID uint32, paramID uint16, payload []byte) []byte {
+	data := make([]byte, 0, 6+len(payload))
+	var stmtIDBuf [4]byte
+	binary.LittleEndian.PutUint32(stmtIDBuf[:], stmtID)
+	data = append(data, stmtIDBuf[:]...)
+	var paramIDBuf [2]byte
+	binary.LittleEndian.PutUint16(paramIDBuf[:], paramID)
+	data = append(data, paramIDBuf[:]...)
+	data = append(data, payload...)
 	return data
 }
 
@@ -501,7 +552,7 @@ func TestHandleStmtReset(t *testing.T) {
 	t.Run("ValidReset", func(t *testing.T) {
 		conn.writeBuf.Reset()
 		client.stmts = map[uint32]*preparedStmt{
-			42: {id: 42, sql: "SELECT 1"},
+			42: {id: 42, sql: "SELECT 1", longData: map[int][]byte{0: []byte("stale")}},
 		}
 
 		data := []byte{0x2a, 0x00, 0x00, 0x00} // stmtID=42
@@ -512,6 +563,9 @@ func TestHandleStmtReset(t *testing.T) {
 		// Should have sent OK packet
 		if conn.writeBuf.Len() == 0 {
 			t.Error("expected OK response")
+		}
+		if len(client.stmts[42].longData) != 0 {
+			t.Fatalf("reset did not clear long data: %#v", client.stmts[42].longData)
 		}
 	})
 }

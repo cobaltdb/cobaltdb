@@ -617,6 +617,9 @@ func (c *MySQLClient) handleCommand() error {
 	case MySQLComStmtExecute:
 		return c.handleStmtExecute(data)
 
+	case MySQLComStmtSendLongData:
+		return c.handleStmtSendLongData(data)
+
 	case MySQLComStmtClose:
 		return c.handleStmtClose(data)
 
@@ -1115,6 +1118,7 @@ type preparedStmt struct {
 	numColumns    int
 	paramTypes    []byte
 	paramUnsigned []bool
+	longData      map[int][]byte
 }
 
 func (c *MySQLClient) getStmtMap() map[uint32]*preparedStmt {
@@ -1289,6 +1293,10 @@ func (s *preparedStmt) parseExecuteArgs(data []byte) ([]interface{}, error) {
 			args[i] = nil
 			continue
 		}
+		if len(s.longData[i]) > 0 {
+			args[i] = string(s.longData[i])
+			continue
+		}
 		value, next, err := readStmtExecuteValue(data, offset, s.paramTypes[i], s.paramUnsigned[i])
 		if err != nil {
 			return nil, err
@@ -1297,6 +1305,12 @@ func (s *preparedStmt) parseExecuteArgs(data []byte) ([]interface{}, error) {
 		offset = next
 	}
 	return args, nil
+}
+
+func (s *preparedStmt) clearLongData() {
+	for k := range s.longData {
+		delete(s.longData, k)
+	}
 }
 
 func readStmtExecuteValue(data []byte, offset int, typ byte, unsigned bool) (interface{}, int, error) {
@@ -1484,6 +1498,7 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 	if err != nil {
 		return c.sendErrorPacket(0, err.Error())
 	}
+	stmt.clearLongData()
 
 	baseCtx := c.ctx
 	if baseCtx == nil {
@@ -1513,6 +1528,27 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 	}
 
 	return c.sendOKPacket(rowsAffected, lastInsertID)
+}
+
+func (c *MySQLClient) handleStmtSendLongData(data []byte) error {
+	if len(data) < 6 {
+		return c.sendErrorPacket(0, "malformed COM_STMT_SEND_LONG_DATA")
+	}
+
+	stmtID := binary.LittleEndian.Uint32(data[:4])
+	paramID := int(binary.LittleEndian.Uint16(data[4:6]))
+	stmt, ok := c.getStmtMap()[stmtID]
+	if !ok {
+		return c.sendErrorPacket(0, "unknown prepared statement")
+	}
+	if paramID < 0 || paramID >= stmt.numParams {
+		return c.sendErrorPacket(0, "prepared statement long data parameter index out of range")
+	}
+	if stmt.longData == nil {
+		stmt.longData = make(map[int][]byte)
+	}
+	stmt.longData[paramID] = append(stmt.longData[paramID], data[6:]...)
+	return nil
 }
 
 // sendBinaryResultSetFromRows sends a MySQL binary-protocol result set for
@@ -1598,9 +1634,11 @@ func (c *MySQLClient) handleStmtReset(data []byte) error {
 		return c.sendErrorPacket(0, "malformed COM_STMT_RESET")
 	}
 	stmtID := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
-	if _, ok := c.getStmtMap()[stmtID]; !ok {
+	stmt, ok := c.getStmtMap()[stmtID]
+	if !ok {
 		return c.sendErrorPacket(0, "unknown prepared statement")
 	}
+	stmt.clearLongData()
 	return c.sendOKPacket(0, 0)
 }
 

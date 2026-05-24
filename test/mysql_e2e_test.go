@@ -247,6 +247,9 @@ func (c *mysqlTestClient) sendStmtExecute(stmtID uint32, types []byte, values []
 		pkt = append(pkt, typ, 0x00)
 	}
 	for i, value := range values {
+		if value == nil {
+			continue
+		}
 		switch types[i] {
 		case protocol.MySQLTypeLongLong:
 			var buf [8]byte
@@ -264,6 +267,19 @@ func (c *mysqlTestClient) sendStmtExecute(stmtID uint32, types []byte, values []
 			return fmt.Errorf("test encoder does not support type 0x%02x", types[i])
 		}
 	}
+	return c.writePacket(pkt, 0)
+}
+
+func (c *mysqlTestClient) sendStmtLongData(stmtID uint32, paramID uint16, payload []byte) error {
+	var pkt []byte
+	pkt = append(pkt, protocol.MySQLComStmtSendLongData)
+	var stmtIDBuf [4]byte
+	binary.LittleEndian.PutUint32(stmtIDBuf[:], stmtID)
+	pkt = append(pkt, stmtIDBuf[:]...)
+	var paramIDBuf [2]byte
+	binary.LittleEndian.PutUint16(paramIDBuf[:], paramID)
+	pkt = append(pkt, paramIDBuf[:]...)
+	pkt = append(pkt, payload...)
 	return c.writePacket(pkt, 0)
 }
 
@@ -805,6 +821,66 @@ func TestMySQLPreparedStatementTemporalParameters(t *testing.T) {
 		if rows[0][i] != want[i] {
 			t.Fatalf("temporal column %d = %q, want %q; rows=%v", i, rows[0][i], want[i], rows)
 		}
+	}
+}
+
+func TestMySQLPreparedStatementLongData(t *testing.T) {
+	addr, _, _ := startMySQLTestServer(t)
+
+	client, err := newMySQLTestClient(addr)
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer client.close()
+
+	client.readHandshake()
+	client.sendHandshakeResponse("test", "")
+	client.readOKOrError()
+
+	client.sendQuery("CREATE TABLE ps_long_data (id INTEGER PRIMARY KEY, body TEXT)")
+	if ok, msg, err := client.readOKOrError(); err != nil {
+		t.Fatalf("CREATE response failed: %v", err)
+	} else if !ok {
+		t.Fatalf("CREATE expected OK, got: %s", msg)
+	}
+
+	if err := client.sendStmtPrepare("INSERT INTO ps_long_data (id, body) VALUES (?, ?)"); err != nil {
+		t.Fatalf("send prepare insert: %v", err)
+	}
+	insertStmtID, cols, params, err := client.readStmtPrepareOK()
+	if err != nil {
+		t.Fatalf("read prepare insert: %v", err)
+	}
+	if cols != 0 || params != 2 {
+		t.Fatalf("prepare insert metadata cols=%d params=%d, want cols=0 params=2", cols, params)
+	}
+
+	if err := client.sendStmtLongData(insertStmtID, 1, []byte("chunk-")); err != nil {
+		t.Fatalf("send long data chunk 1: %v", err)
+	}
+	if err := client.sendStmtLongData(insertStmtID, 1, []byte("payload")); err != nil {
+		t.Fatalf("send long data chunk 2: %v", err)
+	}
+	if err := client.sendStmtExecute(
+		insertStmtID,
+		[]byte{protocol.MySQLTypeLongLong, protocol.MySQLTypeLongBlob},
+		[]interface{}{int64(1), nil},
+	); err != nil {
+		t.Fatalf("execute insert: %v", err)
+	}
+	if ok, msg, err := client.readOKOrError(); err != nil {
+		t.Fatalf("read execute insert: %v", err)
+	} else if !ok {
+		t.Fatalf("execute insert expected OK, got: %s", msg)
+	}
+
+	client.sendQuery("SELECT body FROM ps_long_data WHERE id = 1")
+	columns, rows, err := client.readResultSet()
+	if err != nil {
+		t.Fatalf("read long data select result: %v", err)
+	}
+	if len(columns) != 1 || len(rows) != 1 || rows[0][0] != "chunk-payload" {
+		t.Fatalf("unexpected long data result columns=%v rows=%v", columns, rows)
 	}
 }
 
