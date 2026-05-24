@@ -129,6 +129,29 @@ const (
 	MySQLTypeGeometry   byte = 0xff
 )
 
+const (
+	mysqlCharsetUTF8GeneralCI uint16 = 33
+	mysqlCharsetBinary        uint16 = 63
+
+	mysqlColumnFlagNotNull       uint16 = 0x0001
+	mysqlColumnFlagPriKey        uint16 = 0x0002
+	mysqlColumnFlagUniqueKey     uint16 = 0x0004
+	mysqlColumnFlagBlob          uint16 = 0x0010
+	mysqlColumnFlagAutoIncrement uint16 = 0x0200
+)
+
+type mysqlColumnDefinition struct {
+	name     string
+	orgName  string
+	table    string
+	orgTable string
+	charset  uint16
+	length   uint32
+	typ      byte
+	flags    uint16
+	decimals byte
+}
+
 // MySQLServer implements a MySQL-compatible server
 type MySQLServer struct {
 	db       *engine.DB
@@ -811,38 +834,125 @@ func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
 
 // buildColumnDefPacket builds a column definition packet
 func (c *MySQLClient) buildColumnDefPacket(name string) []byte {
+	return c.buildColumnDefPacketWithDefinition(defaultMySQLColumnDefinition(name))
+}
+
+func defaultMySQLColumnDefinition(name string) mysqlColumnDefinition {
+	return mysqlColumnDefinition{
+		name:     name,
+		orgName:  name,
+		charset:  mysqlCharsetUTF8GeneralCI,
+		length:   65535,
+		typ:      MySQLTypeVarString,
+		decimals: 0,
+	}
+}
+
+func mysqlColumnDefinitionFromDescribe(tableName string, row []interface{}) mysqlColumnDefinition {
+	name := mysqlValueString(row, 0)
+	def := defaultMySQLColumnDefinition(name)
+	def.orgName = name
+	def.table = tableName
+	def.orgTable = tableName
+
+	sqlType := mysqlValueString(row, 1)
+	def.typ, def.charset, def.length, def.decimals, def.flags = mysqlColumnTypeForSQL(sqlType)
+
+	if strings.EqualFold(mysqlValueString(row, 2), "NO") {
+		def.flags |= mysqlColumnFlagNotNull
+	}
+	switch strings.ToUpper(mysqlValueString(row, 3)) {
+	case "PRI":
+		def.flags |= mysqlColumnFlagPriKey | mysqlColumnFlagNotNull
+	case "UNI":
+		def.flags |= mysqlColumnFlagUniqueKey
+	}
+	if strings.Contains(strings.ToLower(mysqlValueString(row, 5)), "auto_increment") {
+		def.flags |= mysqlColumnFlagAutoIncrement
+	}
+	return def
+}
+
+func mysqlColumnTypeForSQL(sqlType string) (byte, uint16, uint32, byte, uint16) {
+	normalized := strings.ToUpper(strings.TrimSpace(sqlType))
+	if idx := strings.IndexAny(normalized, " ("); idx >= 0 {
+		normalized = normalized[:idx]
+	}
+
+	switch normalized {
+	case "BOOL", "BOOLEAN":
+		return MySQLTypeTiny, mysqlCharsetBinary, 1, 0, 0
+	case "TINYINT":
+		return MySQLTypeTiny, mysqlCharsetBinary, 4, 0, 0
+	case "SMALLINT":
+		return MySQLTypeShort, mysqlCharsetBinary, 6, 0, 0
+	case "INT", "INT4", "INTEGER", "SERIAL":
+		return MySQLTypeLong, mysqlCharsetBinary, 11, 0, 0
+	case "BIGINT", "INT8", "BIGSERIAL":
+		return MySQLTypeLongLong, mysqlCharsetBinary, 20, 0, 0
+	case "FLOAT", "REAL":
+		return MySQLTypeFloat, mysqlCharsetBinary, 12, 31, 0
+	case "DOUBLE":
+		return MySQLTypeDouble, mysqlCharsetBinary, 22, 31, 0
+	case "DECIMAL", "NUMERIC":
+		return MySQLTypeNewDecimal, mysqlCharsetBinary, 65, 31, 0
+	case "DATE":
+		return MySQLTypeDate, mysqlCharsetBinary, 10, 0, 0
+	case "DATETIME":
+		return MySQLTypeDateTime, mysqlCharsetBinary, 19, 0, 0
+	case "TIMESTAMP":
+		return MySQLTypeTimestamp, mysqlCharsetBinary, 19, 0, 0
+	case "TIME":
+		return MySQLTypeTime, mysqlCharsetBinary, 10, 0, 0
+	case "JSON":
+		return MySQLTypeJSON, mysqlCharsetUTF8GeneralCI, 4294967295, 0, 0
+	case "BLOB", "BYTEA", "BINARY", "VARBINARY":
+		return MySQLTypeBlob, mysqlCharsetBinary, 65535, 0, mysqlColumnFlagBlob
+	default:
+		return MySQLTypeVarString, mysqlCharsetUTF8GeneralCI, 65535, 0, 0
+	}
+}
+
+func mysqlValueString(row []interface{}, idx int) string {
+	if idx < 0 || idx >= len(row) || row[idx] == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", row[idx])
+}
+
+func (c *MySQLClient) buildColumnDefPacketWithDefinition(def mysqlColumnDefinition) []byte {
 	var pkt []byte
 
 	// catalog (lenenc_str) - "def"
 	pkt = appendLenEncString(pkt, "def")
 	// schema (lenenc_str) - empty
 	pkt = appendLenEncString(pkt, "")
-	// table (lenenc_str) - empty
-	pkt = appendLenEncString(pkt, "")
-	// org_table (lenenc_str) - empty
-	pkt = appendLenEncString(pkt, "")
+	// table (lenenc_str)
+	pkt = appendLenEncString(pkt, def.table)
+	// org_table (lenenc_str)
+	pkt = appendLenEncString(pkt, def.orgTable)
 	// name (lenenc_str)
-	pkt = appendLenEncString(pkt, name)
+	pkt = appendLenEncString(pkt, def.name)
 	// org_name (lenenc_str)
-	pkt = appendLenEncString(pkt, name)
+	pkt = appendLenEncString(pkt, def.orgName)
 
 	// length of fixed-length fields [0c]
 	pkt = append(pkt, 0x0c)
 
-	// character set (utf8mb4 = 0x2d00)
-	pkt = append(pkt, 0x21, 0x00)
+	// character set
+	pkt = appendUint16LE(pkt, def.charset)
 
 	// column length (4 bytes)
-	pkt = append(pkt, 0xff, 0xff, 0x00, 0x00)
+	pkt = appendUint32LE(pkt, def.length)
 
-	// column type (VARCHAR)
-	pkt = append(pkt, MySQLTypeVarString)
+	// column type
+	pkt = append(pkt, def.typ)
 
 	// flags (2 bytes)
-	pkt = append(pkt, 0x00, 0x00)
+	pkt = appendUint16LE(pkt, def.flags)
 
 	// decimals
-	pkt = append(pkt, 0x00)
+	pkt = append(pkt, def.decimals)
 
 	// filler (2 bytes)
 	pkt = append(pkt, 0x00, 0x00)
@@ -1687,19 +1797,15 @@ func (c *MySQLClient) handleFieldList(data []byte) error {
 
 	seq := byte(1)
 	for rows.Next() {
-		row := make([]interface{}, 3)
-		dest := make([]interface{}, 3)
+		row := make([]interface{}, 6)
+		dest := make([]interface{}, len(row))
 		for i := range dest {
 			dest[i] = &row[i]
 		}
 		if err := rows.Scan(dest...); err != nil {
 			return c.sendErrorPacket(1, sanitizeMySQLError(err))
 		}
-		colName := ""
-		if row[0] != nil {
-			colName = fmt.Sprintf("%v", row[0])
-		}
-		colPkt := c.buildColumnDefPacket(colName)
+		colPkt := c.buildColumnDefPacketWithDefinition(mysqlColumnDefinitionFromDescribe(tableName, row))
 		if err := c.writePacket(colPkt, seq); err != nil {
 			return err
 		}
