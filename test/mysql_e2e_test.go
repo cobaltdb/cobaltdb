@@ -254,6 +254,12 @@ func (c *mysqlTestClient) sendStmtExecute(stmtID uint32, types []byte, values []
 			pkt = append(pkt, buf[:]...)
 		case protocol.MySQLTypeVarString:
 			pkt = appendMySQLLenEncString(pkt, value.(string))
+		case protocol.MySQLTypeDate, protocol.MySQLTypeNewDate:
+			pkt = appendMySQLStmtDate(pkt, value.(time.Time))
+		case protocol.MySQLTypeDateTime, protocol.MySQLTypeTimestamp:
+			pkt = appendMySQLStmtDateTime(pkt, value.(time.Time))
+		case protocol.MySQLTypeTime:
+			pkt = appendMySQLStmtTime(pkt, value.(time.Duration))
 		default:
 			return fmt.Errorf("test encoder does not support type 0x%02x", types[i])
 		}
@@ -267,6 +273,69 @@ func appendMySQLLenEncString(dst []byte, s string) []byte {
 	}
 	dst = append(dst, byte(len(s)))
 	return append(dst, s...)
+}
+
+func appendMySQLStmtDate(dst []byte, value time.Time) []byte {
+	dst = append(dst, 4)
+	var year [2]byte
+	binary.LittleEndian.PutUint16(year[:], uint16(value.Year()))
+	dst = append(dst, year[:]...)
+	dst = append(dst, byte(value.Month()), byte(value.Day()))
+	return dst
+}
+
+func appendMySQLStmtDateTime(dst []byte, value time.Time) []byte {
+	micro := value.Nanosecond() / int(time.Microsecond)
+	if micro == 0 {
+		dst = append(dst, 7)
+	} else {
+		dst = append(dst, 11)
+	}
+	var year [2]byte
+	binary.LittleEndian.PutUint16(year[:], uint16(value.Year()))
+	dst = append(dst, year[:]...)
+	dst = append(dst, byte(value.Month()), byte(value.Day()), byte(value.Hour()), byte(value.Minute()), byte(value.Second()))
+	if micro != 0 {
+		var microBuf [4]byte
+		binary.LittleEndian.PutUint32(microBuf[:], uint32(micro))
+		dst = append(dst, microBuf[:]...)
+	}
+	return dst
+}
+
+func appendMySQLStmtTime(dst []byte, value time.Duration) []byte {
+	negative := value < 0
+	if negative {
+		value = -value
+	}
+	micro := (value % time.Second) / time.Microsecond
+	wholeSeconds := int64(value / time.Second)
+	days := wholeSeconds / (24 * 60 * 60)
+	wholeSeconds %= 24 * 60 * 60
+	hours := wholeSeconds / (60 * 60)
+	wholeSeconds %= 60 * 60
+	minutes := wholeSeconds / 60
+	seconds := wholeSeconds % 60
+	if micro == 0 {
+		dst = append(dst, 8)
+	} else {
+		dst = append(dst, 12)
+	}
+	if negative {
+		dst = append(dst, 1)
+	} else {
+		dst = append(dst, 0)
+	}
+	var daysBuf [4]byte
+	binary.LittleEndian.PutUint32(daysBuf[:], uint32(days))
+	dst = append(dst, daysBuf[:]...)
+	dst = append(dst, byte(hours), byte(minutes), byte(seconds))
+	if micro != 0 {
+		var microBuf [4]byte
+		binary.LittleEndian.PutUint32(microBuf[:], uint32(micro))
+		dst = append(dst, microBuf[:]...)
+	}
+	return dst
 }
 
 // sendPing sends a COM_PING command
@@ -670,6 +739,72 @@ func TestMySQLPreparedStatementExecuteWithParameters(t *testing.T) {
 	}
 	if len(columns) != 1 || len(rows) != 1 || rows[0][0] != "Ada" {
 		t.Fatalf("unexpected prepared select result columns=%v rows=%v", columns, rows)
+	}
+}
+
+func TestMySQLPreparedStatementTemporalParameters(t *testing.T) {
+	addr, _, _ := startMySQLTestServer(t)
+
+	client, err := newMySQLTestClient(addr)
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer client.close()
+
+	client.readHandshake()
+	client.sendHandshakeResponse("test", "")
+	client.readOKOrError()
+
+	client.sendQuery("CREATE TABLE ps_temporal (id INTEGER PRIMARY KEY, d TEXT, dt TEXT, ts TEXT, tm TEXT)")
+	if ok, msg, err := client.readOKOrError(); err != nil {
+		t.Fatalf("CREATE response failed: %v", err)
+	} else if !ok {
+		t.Fatalf("CREATE expected OK, got: %s", msg)
+	}
+
+	if err := client.sendStmtPrepare("INSERT INTO ps_temporal (id, d, dt, ts, tm) VALUES (?, ?, ?, ?, ?)"); err != nil {
+		t.Fatalf("send prepare insert: %v", err)
+	}
+	insertStmtID, cols, params, err := client.readStmtPrepareOK()
+	if err != nil {
+		t.Fatalf("read prepare insert: %v", err)
+	}
+	if cols != 0 || params != 5 {
+		t.Fatalf("prepare insert metadata cols=%d params=%d, want cols=0 params=5", cols, params)
+	}
+
+	if err := client.sendStmtExecute(
+		insertStmtID,
+		[]byte{protocol.MySQLTypeLongLong, protocol.MySQLTypeDate, protocol.MySQLTypeDateTime, protocol.MySQLTypeTimestamp, protocol.MySQLTypeTime},
+		[]interface{}{
+			int64(1),
+			time.Date(2026, 5, 24, 0, 0, 0, 0, time.UTC),
+			time.Date(2026, 5, 24, 18, 45, 30, 123456000, time.UTC),
+			time.Date(2026, 5, 24, 18, 46, 0, 0, time.UTC),
+			26*time.Hour + 3*time.Minute + 4*time.Second + 567*time.Microsecond,
+		},
+	); err != nil {
+		t.Fatalf("execute insert: %v", err)
+	}
+	if ok, msg, err := client.readOKOrError(); err != nil {
+		t.Fatalf("read execute insert: %v", err)
+	} else if !ok {
+		t.Fatalf("execute insert expected OK, got: %s", msg)
+	}
+
+	client.sendQuery("SELECT d, dt, ts, tm FROM ps_temporal WHERE id = 1")
+	columns, rows, err := client.readResultSet()
+	if err != nil {
+		t.Fatalf("read temporal select result: %v", err)
+	}
+	want := []string{"2026-05-24", "2026-05-24 18:45:30.123456", "2026-05-24 18:46:00", "26:03:04.000567"}
+	if len(columns) != 4 || len(rows) != 1 || len(rows[0]) != 4 {
+		t.Fatalf("unexpected temporal result columns=%v rows=%v", columns, rows)
+	}
+	for i := range want {
+		if rows[0][i] != want[i] {
+			t.Fatalf("temporal column %d = %q, want %q; rows=%v", i, rows[0][i], want[i], rows)
+		}
 	}
 }
 

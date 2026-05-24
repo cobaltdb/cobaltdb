@@ -108,6 +108,39 @@ func TestPreparedStmtParseExecuteArgs(t *testing.T) {
 	}
 }
 
+func TestPreparedStmtParseExecuteTemporalArgs(t *testing.T) {
+	stmt := &preparedStmt{numParams: 4}
+	data := buildStmtExecutePacket(
+		77,
+		[]byte{MySQLTypeDate, MySQLTypeDateTime, MySQLTypeTimestamp, MySQLTypeTime},
+		[]interface{}{
+			time.Date(2026, 5, 24, 0, 0, 0, 0, time.UTC),
+			time.Date(2026, 5, 24, 18, 42, 33, 123456000, time.UTC),
+			time.Date(2026, 5, 24, 18, 43, 1, 0, time.UTC),
+			26*time.Hour + 3*time.Minute + 4*time.Second + 567*time.Microsecond,
+		},
+	)
+
+	args, err := stmt.parseExecuteArgs(data)
+	if err != nil {
+		t.Fatalf("parseExecuteArgs: %v", err)
+	}
+	want := []interface{}{
+		"2026-05-24",
+		"2026-05-24 18:42:33.123456",
+		"2026-05-24 18:43:01",
+		"26:03:04.000567",
+	}
+	if len(args) != len(want) {
+		t.Fatalf("len(args) = %d, want %d: %#v", len(args), len(want), args)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("args[%d] = %#v, want %#v; all args=%#v", i, args[i], want[i], args)
+		}
+	}
+}
+
 func TestHandleStmtPrepare(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
 	if err != nil {
@@ -338,9 +371,78 @@ func buildStmtExecutePacket(stmtID uint32, types []byte, values []interface{}) [
 			data = append(data, buf[:]...)
 		case MySQLTypeVarString:
 			data = appendLenEncString(data, value.(string))
+		case MySQLTypeDate, MySQLTypeNewDate:
+			data = appendStmtExecuteDate(data, value.(time.Time))
+		case MySQLTypeDateTime, MySQLTypeTimestamp:
+			data = appendStmtExecuteDateTime(data, value.(time.Time))
+		case MySQLTypeTime:
+			data = appendStmtExecuteTime(data, value.(time.Duration))
 		}
 	}
 	return data
+}
+
+func appendStmtExecuteDate(dst []byte, value time.Time) []byte {
+	dst = append(dst, 4)
+	var year [2]byte
+	binary.LittleEndian.PutUint16(year[:], uint16(value.Year()))
+	dst = append(dst, year[:]...)
+	dst = append(dst, byte(value.Month()), byte(value.Day()))
+	return dst
+}
+
+func appendStmtExecuteDateTime(dst []byte, value time.Time) []byte {
+	micro := value.Nanosecond() / int(time.Microsecond)
+	if micro == 0 {
+		dst = append(dst, 7)
+	} else {
+		dst = append(dst, 11)
+	}
+	var year [2]byte
+	binary.LittleEndian.PutUint16(year[:], uint16(value.Year()))
+	dst = append(dst, year[:]...)
+	dst = append(dst, byte(value.Month()), byte(value.Day()), byte(value.Hour()), byte(value.Minute()), byte(value.Second()))
+	if micro != 0 {
+		var microBuf [4]byte
+		binary.LittleEndian.PutUint32(microBuf[:], uint32(micro))
+		dst = append(dst, microBuf[:]...)
+	}
+	return dst
+}
+
+func appendStmtExecuteTime(dst []byte, value time.Duration) []byte {
+	negative := value < 0
+	if negative {
+		value = -value
+	}
+	micro := (value % time.Second) / time.Microsecond
+	wholeSeconds := int64(value / time.Second)
+	days := wholeSeconds / (24 * 60 * 60)
+	wholeSeconds %= 24 * 60 * 60
+	hours := wholeSeconds / (60 * 60)
+	wholeSeconds %= 60 * 60
+	minutes := wholeSeconds / 60
+	seconds := wholeSeconds % 60
+	if micro == 0 {
+		dst = append(dst, 8)
+	} else {
+		dst = append(dst, 12)
+	}
+	if negative {
+		dst = append(dst, 1)
+	} else {
+		dst = append(dst, 0)
+	}
+	var daysBuf [4]byte
+	binary.LittleEndian.PutUint32(daysBuf[:], uint32(days))
+	dst = append(dst, daysBuf[:]...)
+	dst = append(dst, byte(hours), byte(minutes), byte(seconds))
+	if micro != 0 {
+		var microBuf [4]byte
+		binary.LittleEndian.PutUint32(microBuf[:], uint32(micro))
+		dst = append(dst, microBuf[:]...)
+	}
+	return dst
 }
 
 func TestHandleStmtClose(t *testing.T) {

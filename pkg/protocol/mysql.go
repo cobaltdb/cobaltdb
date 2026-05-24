@@ -1358,6 +1358,24 @@ func readStmtExecuteValue(data []byte, offset int, typ byte, unsigned bool) (int
 			return nil, offset, err
 		}
 		return value, offset + n, nil
+	case MySQLTypeDate, MySQLTypeNewDate:
+		value, n, err := readStmtExecuteDate(data[offset:])
+		if err != nil {
+			return nil, offset, err
+		}
+		return value, offset + n, nil
+	case MySQLTypeDateTime, MySQLTypeTimestamp:
+		value, n, err := readStmtExecuteDateTime(data[offset:])
+		if err != nil {
+			return nil, offset, err
+		}
+		return value, offset + n, nil
+	case MySQLTypeTime:
+		value, n, err := readStmtExecuteTime(data[offset:])
+		if err != nil {
+			return nil, offset, err
+		}
+		return value, offset + n, nil
 	default:
 		return nil, offset, fmt.Errorf("unsupported prepared statement parameter type 0x%02x", typ)
 	}
@@ -1373,6 +1391,82 @@ func readStmtExecuteString(data []byte) (string, int, error) {
 	}
 	end := n + int(length)
 	return string(data[n:end]), end, nil
+}
+
+func readStmtExecuteDate(data []byte) (string, int, error) {
+	if len(data) < 1 {
+		return "", 0, errors.New("malformed date parameter")
+	}
+	length := int(data[0])
+	if length == 0 {
+		return "0000-00-00", 1, nil
+	}
+	if length != 4 || len(data) < 1+length {
+		return "", 0, errors.New("malformed date parameter")
+	}
+	year := binary.LittleEndian.Uint16(data[1:])
+	month := data[3]
+	day := data[4]
+	return fmt.Sprintf("%04d-%02d-%02d", year, month, day), 1 + length, nil
+}
+
+func readStmtExecuteDateTime(data []byte) (string, int, error) {
+	if len(data) < 1 {
+		return "", 0, errors.New("malformed datetime parameter")
+	}
+	length := int(data[0])
+	if length == 0 {
+		return "0000-00-00 00:00:00", 1, nil
+	}
+	if length != 4 && length != 7 && length != 11 {
+		return "", 0, errors.New("malformed datetime parameter")
+	}
+	if len(data) < 1+length {
+		return "", 0, errors.New("malformed datetime parameter")
+	}
+	year := binary.LittleEndian.Uint16(data[1:])
+	month := data[3]
+	day := data[4]
+	if length == 4 {
+		return fmt.Sprintf("%04d-%02d-%02d 00:00:00", year, month, day), 1 + length, nil
+	}
+	hour := data[5]
+	minute := data[6]
+	second := data[7]
+	if length == 7 {
+		return fmt.Sprintf("%04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, minute, second), 1 + length, nil
+	}
+	micro := binary.LittleEndian.Uint32(data[8:])
+	return fmt.Sprintf("%04d-%02d-%02d %02d:%02d:%02d.%06d", year, month, day, hour, minute, second, micro), 1 + length, nil
+}
+
+func readStmtExecuteTime(data []byte) (string, int, error) {
+	if len(data) < 1 {
+		return "", 0, errors.New("malformed time parameter")
+	}
+	length := int(data[0])
+	if length == 0 {
+		return "00:00:00", 1, nil
+	}
+	if length != 8 && length != 12 {
+		return "", 0, errors.New("malformed time parameter")
+	}
+	if len(data) < 1+length {
+		return "", 0, errors.New("malformed time parameter")
+	}
+	sign := ""
+	if data[1] != 0 {
+		sign = "-"
+	}
+	days := binary.LittleEndian.Uint32(data[2:])
+	hours := uint64(days)*24 + uint64(data[6])
+	minute := data[7]
+	second := data[8]
+	if length == 8 {
+		return fmt.Sprintf("%s%02d:%02d:%02d", sign, hours, minute, second), 1 + length, nil
+	}
+	micro := binary.LittleEndian.Uint32(data[9:])
+	return fmt.Sprintf("%s%02d:%02d:%02d.%06d", sign, hours, minute, second, micro), 1 + length, nil
 }
 
 func (c *MySQLClient) handleStmtExecute(data []byte) error {

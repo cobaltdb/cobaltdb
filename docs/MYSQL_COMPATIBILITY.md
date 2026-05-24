@@ -32,6 +32,9 @@ explicit test and operational owner.
 | `NULL` | `nil` |
 | `TINY`, `SHORT`, `LONG`, `INT24`, `LONGLONG`, `YEAR` | `int64` or `uint64` |
 | `FLOAT`, `DOUBLE` | `float64` |
+| `DATE`, `NEWDATE` | `YYYY-MM-DD` string |
+| `DATETIME`, `TIMESTAMP` | `YYYY-MM-DD HH:MM:SS[.ffffff]` string |
+| `TIME` | `[H]HH:MM:SS[.ffffff]` string |
 | `DECIMAL`, `NEWDECIMAL`, `VARCHAR`, `VAR_STRING`, `STRING` | `string` |
 | `TINY_BLOB`, `BLOB`, `MEDIUM_BLOB`, `LONG_BLOB`, `JSON` | `string` |
 
@@ -42,7 +45,6 @@ packets may reuse the cached parameter types for the same prepared statement.
 
 | Area | Current behavior |
 |---|---|
-| Temporal binary parameters | Rejected with an unsupported parameter type error |
 | `COM_STMT_SEND_LONG_DATA` | Unsupported command |
 | Server-side cursors | Cursor flags are not implemented |
 | Rich column metadata | Column definitions use coarse string-like metadata |
