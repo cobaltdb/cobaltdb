@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/cobaltdb/cobaltdb/pkg/fdw"
@@ -94,6 +95,35 @@ func (c *Catalog) GetFDWRegistry() *fdw.Registry {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.fdwRegistry
+}
+
+func parseFDWMaterializedByteLimit(options map[string]string) (int64, error) {
+	raw, ok := options["max_materialized_bytes"]
+	if !ok || strings.TrimSpace(raw) == "" {
+		return 0, nil
+	}
+	limit, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || limit < 0 {
+		return 0, fmt.Errorf("fdw option max_materialized_bytes must be a non-negative integer")
+	}
+	return limit, nil
+}
+
+func estimateFDWRowBytes(row []interface{}) int64 {
+	var size int64
+	for _, value := range row {
+		switch v := value.(type) {
+		case nil:
+			size += 1
+		case string:
+			size += int64(len(v))
+		case []byte:
+			size += int64(len(v))
+		default:
+			size += 16
+		}
+	}
+	return size
 }
 
 func (c *Catalog) buildFDWScanOptions(stmt *query.SelectStmt, args []interface{}) fdw.ScanOptions {

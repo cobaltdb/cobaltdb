@@ -25,7 +25,7 @@ Current readiness estimate:
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
 | HA readiness guards | API reports explicit blockers and refuses unsafe in-process promotion |
 | Vector index persistence | HNSW metadata persists across create, 1024-row mixed DML, reopen, and backup/restore |
-| FDW streaming/pushdown groundwork | CSV scans stream, apply safe simple predicates, and receive simple projection columns |
+| FDW streaming/pushdown groundwork | CSV scans stream, apply safe simple predicates, receive simple projection columns, and support materialization byte limits |
 | Procedure/trigger semantics | `CALL` placeholder args, exact arity, complex param substitution, and BEFORE/AFTER trigger row images are covered |
 | Operations runbook | Added |
 | HA/failover certification | Not ready |
@@ -60,7 +60,8 @@ Recent hardening commits:
 | `fa2a30e` | FDW pushdown | Added simple WHERE predicate extraction into streaming scan options |
 | `7ac8f1e` | FDW pushdown | Added safe CSV wrapper-side predicate filtering |
 | `66ed4fd` | Vector indexes | Added thousand-plus mixed DML and reopen certification |
-| Current iteration | FDW pushdown | Added simple projection pushdown with full-row expansion |
+| `1fc68a4` | FDW pushdown | Added simple projection pushdown with full-row expansion |
+| Current iteration | FDW memory | Added `max_materialized_bytes` guard for temporary query-engine materialization |
 
 Validation performed during this pass:
 
@@ -86,7 +87,7 @@ go test ./pkg/engine -run 'TestVectorIndexPersistsAcrossReopen|TestVectorIndexLa
 go test -race ./pkg/catalog ./pkg/engine -run 'TestVectorIndexMetadataPersistsOnCreateAndDrop|TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore|TestVectorIndexThousandPlusMixedDMLReopen' -count=1
 go test ./pkg/fdw -count=1
 go test -race ./pkg/fdw -count=1
-go test ./pkg/catalog -run 'TestFDWScanOptionsCarrySimpleWherePredicates|TestFDWProjectionPushdownExpandsRowsForLocalEvaluation' -count=1
+go test ./pkg/catalog -run 'TestFDWScanOptionsCarrySimpleWherePredicates|TestFDWProjectionPushdownExpandsRowsForLocalEvaluation|TestFDWMaterializedByteLimit' -count=1
 go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL|TestFDWCSVProjectionPushdownViaSQL' -count=1
 go test ./pkg/query -run TestParseCallProcedure -count=1
 go test ./test -run 'TestStoredProcedure|TestTrigger_BeforeAfterOrderAndRowImages|TestInsteadOfTrigger' -count=1
@@ -173,7 +174,7 @@ Some advanced features are broad but need workload-specific certification before
 
 - WASM SQL execution beyond selected paths.
 - Very large Vector/HNSW rebuild behavior beyond the 1024-row mixed DML drill.
-- FDW still materializes rows into a temporary query-engine B-tree, but CSV scans now stream into that tree, apply safe advisory simple predicates, use simple projection columns, and have row/byte limits.
+- FDW still materializes rows into a temporary query-engine B-tree, but CSV scans now stream into that tree, apply safe advisory simple predicates, use simple projection columns, and have row/file/materialization byte limits.
 - Procedure body result-set and mutable `OUT`/`INOUT` parameter semantics beyond the certified DML contract.
 - Composite/advanced constraint cases.
 
@@ -216,7 +217,7 @@ Priority order:
 2. Additional MySQL ORM and non-Go driver certification runs.
 3. Actual HA consensus, fencing, and externally orchestrated promotion implementation.
 4. Tens-of-thousands vector rebuild and concurrent reader certification.
-5. FDW query-level memory accounting and broader JOIN/GROUP BY projection pushdown.
+5. Global query-level memory accounting and broader JOIN/GROUP BY projection pushdown.
 
 ## Final Decision
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -172,5 +173,51 @@ func TestFDWProjectionPushdownExpandsRowsForLocalEvaluation(t *testing.T) {
 	wantColumns := []string{"name", "score", "id"}
 	if !reflect.DeepEqual(wrapper.options.Columns, wantColumns) {
 		t.Fatalf("scan columns = %v, want %v", wrapper.options.Columns, wantColumns)
+	}
+}
+
+func TestFDWMaterializedByteLimit(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, err := btree.NewBTree(pool)
+	if err != nil {
+		t.Fatalf("new btree: %v", err)
+	}
+	c := New(tree, pool, nil)
+
+	wrapper := &captureStreamingFDW{
+		allColumns: []string{"id", "payload"},
+		rows: [][]interface{}{
+			{int64(1), "12345"},
+			{int64(2), "abcdef"},
+		},
+	}
+	reg := fdw.NewRegistry()
+	reg.Register("capture", func() fdw.ForeignDataWrapper { return wrapper })
+	c.SetFDWRegistry(reg)
+
+	if err := c.CreateForeignTable(&query.CreateForeignTableStmt{
+		Table: "ext_limited",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger},
+			{Name: "payload", Type: query.TokenText},
+		},
+		Wrapper: "capture",
+		Options: map[string]string{"max_materialized_bytes": "24"},
+	}); err != nil {
+		t.Fatalf("CreateForeignTable: %v", err)
+	}
+
+	parsed, err := query.Parse("SELECT * FROM ext_limited")
+	if err != nil {
+		t.Fatalf("parse select: %v", err)
+	}
+	_, _, err = c.Select(parsed.(*query.SelectStmt), nil)
+	if err == nil {
+		t.Fatal("expected materialized byte limit error")
+	}
+	if !strings.Contains(err.Error(), "materialized byte limit exceeded") {
+		t.Fatalf("expected byte limit error, got %v", err)
 	}
 }

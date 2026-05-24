@@ -25,6 +25,7 @@ evaluation, preserving existing query semantics.
 | `file` | required | CSV file path |
 | `max_rows` | `1000000` | Maximum materialized data rows; `0` disables the row limit |
 | `max_bytes` | `268435456` | Maximum CSV file size in bytes; `0` disables the byte limit |
+| `max_materialized_bytes` | `0` | Maximum approximate bytes copied into the query-engine temporary B-tree; `0` disables the limit |
 
 Example:
 
@@ -36,7 +37,8 @@ CREATE FOREIGN TABLE ext_users (
 OPTIONS (
   file '/data/users.csv',
   max_rows '100000',
-  max_bytes '67108864'
+  max_bytes '67108864',
+  max_materialized_bytes '33554432'
 );
 ```
 
@@ -45,11 +47,11 @@ OPTIONS (
 ```bash
 go test ./pkg/fdw -count=1
 go test -race ./pkg/fdw -count=1
-go test ./pkg/catalog -run 'TestFDWScanOptionsCarrySimpleWherePredicates|TestFDWProjectionPushdownExpandsRowsForLocalEvaluation' -count=1
+go test ./pkg/catalog -run 'TestFDWScanOptionsCarrySimpleWherePredicates|TestFDWProjectionPushdownExpandsRowsForLocalEvaluation|TestFDWMaterializedByteLimit' -count=1
 go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL|TestFDWCSVProjectionPushdownViaSQL' -count=1
 ```
 
 Remaining work:
 
 - Broader projection pushdown for JOIN/GROUP BY queries.
-- Per-query memory accounting across FDW and local execution.
+- Global per-query memory accounting across FDW and local execution.

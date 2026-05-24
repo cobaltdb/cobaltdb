@@ -1545,6 +1545,11 @@ func (c *Catalog) getTableTreesForScanWithOptions(table *TableDef, scanOptions f
 		if len(scanOptions.Columns) == 0 {
 			scanOptions.Columns = cols
 		}
+		maxMaterializedBytes, err := parseFDWMaterializedByteLimit(ft.Options)
+		if err != nil {
+			return nil, err
+		}
+		var materializedBytes int64
 
 		tmpTree, err := btree.NewBTree(c.pool)
 		if err != nil {
@@ -1553,6 +1558,12 @@ func (c *Catalog) getTableTreesForScanWithOptions(table *TableDef, scanOptions f
 
 		putRow := func(rowIndex int, row []interface{}) error {
 			row = expandFDWProjectedRow(row, cols, scanOptions.Columns)
+			if maxMaterializedBytes > 0 {
+				materializedBytes += estimateFDWRowBytes(row)
+				if materializedBytes > maxMaterializedBytes {
+					return fmt.Errorf("fdw materialized byte limit exceeded: max_materialized_bytes=%d", maxMaterializedBytes)
+				}
+			}
 			key := []byte("fdw:" + strconv.Itoa(rowIndex))
 			val, err := encodeVersionedRow(row, nil)
 			if err != nil {
