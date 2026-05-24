@@ -17,6 +17,7 @@ cluster manager.
 | Sync/full-sync wait semantics | Implemented for connected slaves |
 | HA readiness API | Implemented; reports explicit blockers and no automatic failover |
 | Unsafe in-process promotion guard | Implemented; `PromoteToMaster` returns an unsupported-failover error |
+| Externally fenced manual promotion | Implemented via `PromoteToMasterWithFencing` |
 
 ## Not Yet HA
 
@@ -26,14 +27,30 @@ cluster manager.
 | Quorum/consensus | Not implemented |
 | Split-brain prevention | Not implemented |
 | Automatic failover | Not implemented |
-| Fencing old primaries | Not implemented |
+| Built-in fencing of old primaries | Not implemented |
 | Cross-node RPO/RTO certification | Not implemented |
+
+## Manual Promotion Contract
+
+CobaltDB can perform a local slave-to-master role transition only when an
+external HA control plane provides a `PromotionRequest` proving:
+
+- a non-empty fencing token,
+- a monotonically increasing fencing epoch,
+- explicit confirmation that the old primary has been fenced,
+- an unexpired token when `ExpiresAt` is set,
+- a replica LSN at or ahead of the requested promotion LSN,
+- no active master connection unless the caller explicitly allows it.
+
+The legacy `PromoteToMaster` API still refuses promotion because CobaltDB does
+not run leader election or quorum consensus. `PromoteToMasterWithFencing` is for
+externally orchestrated promotion only.
 
 ## Required Failure Drills
 
 ```bash
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
-go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing' -count=1
+go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing' -count=1
 ```
 
 Operational stance:
@@ -41,6 +58,6 @@ Operational stance:
 - Do not advertise CobaltDB replication as automatic HA.
 - Use `GetFailoverReadiness` in operational health surfaces to keep transport
   status separate from HA readiness.
-- Treat promotion/failover as an external orchestration task until consensus,
-  fencing, and promotion drills are implemented.
+- Treat promotion/failover as an external orchestration task until consensus and
+  built-in fencing are implemented.
 - Keep a verified backup/restore path even when replication is enabled.

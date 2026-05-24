@@ -23,7 +23,7 @@ Current readiness estimate:
 | External MySQL driver | `database/sql` + `github.com/go-sql-driver/mysql` baseline covered |
 | Benchmark regression gate | Added via `scripts/benchmark-gate.sh`, now including write p95/p99 under readers |
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
-| HA readiness guards | API reports explicit blockers and refuses unsafe in-process promotion |
+| HA readiness guards | API reports explicit blockers, refuses unsafe promotion, and accepts externally fenced manual promotion |
 | Vector index persistence | HNSW metadata persists across create, 1024-row mixed DML, reopen, and backup/restore |
 | FDW streaming/pushdown groundwork | CSV scans stream, apply safe simple predicates, receive simple projection columns, and support materialization byte limits |
 | Procedure/trigger semantics | `CALL` placeholder args, exact arity, complex param substitution, and BEFORE/AFTER trigger row images are covered |
@@ -61,7 +61,8 @@ Recent hardening commits:
 | `7ac8f1e` | FDW pushdown | Added safe CSV wrapper-side predicate filtering |
 | `66ed4fd` | Vector indexes | Added thousand-plus mixed DML and reopen certification |
 | `1fc68a4` | FDW pushdown | Added simple projection pushdown with full-row expansion |
-| Current iteration | FDW memory | Added `max_materialized_bytes` guard for temporary query-engine materialization |
+| `18e8b94` | FDW memory | Added `max_materialized_bytes` guard for temporary query-engine materialization |
+| Current iteration | HA boundary | Added externally fenced manual promotion contract |
 
 Validation performed during this pass:
 
@@ -79,7 +80,7 @@ go test ./test -run TestMySQLPreparedStatementExecuteWithParameters -count=1
 go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE2E' -count=1
 go test ./pkg/engine -run '^$' -bench BenchmarkWriteLatencyUnderReaders -benchtime=10x -count=1
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
-go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing' -count=1
+go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing' -count=1
 go test -race ./pkg/replication -run TestSlaveStatusClearsConnectionOnMasterDisconnect -count=1
 go test ./pkg/replication -count=1
 go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count=1
@@ -132,13 +133,15 @@ Missing or not certified:
 - Automatic leader election.
 - Split-brain protection.
 - Automated failover implementation with proven RPO/RTO.
+- Built-in old-primary fencing.
 - Cross-node backup/recovery drills.
 
 Production stance:
 
 - Use replication as transport/read scaling where acceptable.
 - Use `GetFailoverReadiness` to keep replication transport status separate from HA readiness.
-- Do not rely on it as managed failover until a dedicated HA certification pass is complete.
+- Use `PromoteToMasterWithFencing` only from an external HA orchestrator that has already fenced the old primary and supplied an epoch/token/LSN proof.
+- Do not rely on it as managed automatic failover until consensus and built-in fencing exist.
 - Use `docs/HA_FAILOVER.md` as the current replication and failover boundary.
 
 ### 3. MySQL Wire Compatibility Is Still Narrow

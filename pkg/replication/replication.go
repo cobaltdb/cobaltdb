@@ -64,6 +64,11 @@ const replicationStateFilePerm = 0600
 // transport intentionally does not provide.
 var ErrAutomaticFailoverUnsupported = errors.New("automatic failover is not supported: consensus, fencing, and safe promotion are not implemented")
 
+// ErrPromotionRejected is returned when an externally orchestrated promotion
+// request does not provide the fencing and freshness guarantees required to
+// avoid split-brain.
+var ErrPromotionRejected = errors.New("promotion rejected")
+
 // Config holds replication configuration
 type Config struct {
 	Role                Role
@@ -196,6 +201,10 @@ type Manager struct {
 	stopOnce sync.Once
 	wg       sync.WaitGroup
 	metrics  *Metrics
+	// promotionEpoch is non-zero after a successful externally fenced
+	// promotion. It is intentionally local state; CobaltDB still does not run
+	// consensus or leader election.
+	promotionEpoch uint64
 
 	// Callbacks
 	OnApply         func(entry *WALEntry) error
@@ -229,6 +238,17 @@ type Metrics struct {
 type replicationState struct {
 	LastApplied uint64    `json:"last_applied"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// PromotionRequest is the contract an external orchestrator must satisfy before
+// CobaltDB will perform a manual slave-to-master transition.
+type PromotionRequest struct {
+	FencingToken       string
+	Epoch              uint64
+	OldPrimaryFenced   bool
+	ExpiresAt          time.Time
+	RequiredLSN        uint64
+	AllowConnectedPeer bool
 }
 
 func (m *Manager) callOnSnapshot() (data []byte, err error) {
@@ -1484,14 +1504,15 @@ func calculateCRC32(data []byte) uint32 {
 // JSON helpers for metadata
 
 type ReplicationStatus struct {
-	Role          string        `json:"role"`
-	Mode          string        `json:"mode"`
-	Connected     bool          `json:"connected"`
-	ActiveSlaves  int           `json:"active_slaves,omitempty"`
-	LastApplied   uint64        `json:"last_applied_lsn"`
-	CurrentMaster uint64        `json:"current_master_lsn,omitempty"`
-	Slaves        []SlaveStatus `json:"slaves,omitempty"`
-	Lag           time.Duration `json:"replication_lag,omitempty"`
+	Role           string        `json:"role"`
+	Mode           string        `json:"mode"`
+	Connected      bool          `json:"connected"`
+	ActiveSlaves   int           `json:"active_slaves,omitempty"`
+	LastApplied    uint64        `json:"last_applied_lsn"`
+	CurrentMaster  uint64        `json:"current_master_lsn,omitempty"`
+	PromotionEpoch uint64        `json:"promotion_epoch,omitempty"`
+	Slaves         []SlaveStatus `json:"slaves,omitempty"`
+	Lag            time.Duration `json:"replication_lag,omitempty"`
 }
 
 type SlaveStatus struct {
@@ -1516,7 +1537,8 @@ type FailoverReadiness struct {
 // GetStatus returns current replication status
 func (m *Manager) GetStatus() *ReplicationStatus {
 	status := &ReplicationStatus{
-		LastApplied: atomic.LoadUint64(&m.lastApplied),
+		LastApplied:    atomic.LoadUint64(&m.lastApplied),
+		PromotionEpoch: atomic.LoadUint64(&m.promotionEpoch),
 	}
 
 	switch m.config.Role {
@@ -1560,18 +1582,24 @@ func (m *Manager) GetFailoverReadiness() FailoverReadiness {
 	if role == "" {
 		role = "standalone"
 	}
+	externallyFenced := status.PromotionEpoch > 0
+	blockers := []string{
+		"leader election is not implemented",
+		"quorum consensus is not implemented",
+	}
+	if !externallyFenced {
+		blockers = append(blockers,
+			"old primary fencing is not implemented",
+			"safe promotion is not implemented",
+		)
+	}
 	return FailoverReadiness{
 		Role:              role,
 		AutomaticFailover: false,
 		Consensus:         false,
-		Fencing:           false,
-		SafePromotion:     false,
-		Blockers: []string{
-			"leader election is not implemented",
-			"quorum consensus is not implemented",
-			"old primary fencing is not implemented",
-			"safe promotion is not implemented",
-		},
+		Fencing:           externallyFenced,
+		SafePromotion:     externallyFenced && role == "master",
+		Blockers:          blockers,
 	}
 }
 
@@ -1579,6 +1607,59 @@ func (m *Manager) GetFailoverReadiness() FailoverReadiness {
 // must use external orchestration with fencing and a validated RPO/RTO plan.
 func (m *Manager) PromoteToMaster() error {
 	return ErrAutomaticFailoverUnsupported
+}
+
+// PromoteToMasterWithFencing performs a manual promotion only after an external
+// orchestrator provides proof that the old primary has been fenced. CobaltDB
+// still does not perform leader election or quorum consensus; callers must
+// obtain the epoch and fencing token from their own HA control plane.
+func (m *Manager) PromoteToMasterWithFencing(req PromotionRequest) error {
+	if m.role != RoleSlave && m.config.Role != RoleSlave {
+		return fmt.Errorf("%w: only a slave can be promoted", ErrPromotionRejected)
+	}
+	if strings.TrimSpace(req.FencingToken) == "" {
+		return fmt.Errorf("%w: fencing token is required", ErrPromotionRejected)
+	}
+	if !req.OldPrimaryFenced {
+		return fmt.Errorf("%w: old primary must be fenced before promotion", ErrPromotionRejected)
+	}
+	if req.Epoch == 0 {
+		return fmt.Errorf("%w: fencing epoch is required", ErrPromotionRejected)
+	}
+	if currentEpoch := atomic.LoadUint64(&m.promotionEpoch); currentEpoch >= req.Epoch {
+		return fmt.Errorf("%w: fencing epoch %d is not newer than current epoch %d", ErrPromotionRejected, req.Epoch, currentEpoch)
+	}
+	if !req.ExpiresAt.IsZero() && !time.Now().Before(req.ExpiresAt) {
+		return fmt.Errorf("%w: fencing token expired", ErrPromotionRejected)
+	}
+	lastApplied := atomic.LoadUint64(&m.lastApplied)
+	if req.RequiredLSN > 0 && lastApplied < req.RequiredLSN {
+		return fmt.Errorf("%w: replica LSN %d is behind required LSN %d", ErrPromotionRejected, lastApplied, req.RequiredLSN)
+	}
+	if !req.AllowConnectedPeer && m.getMasterConn() != nil {
+		return fmt.Errorf("%w: master connection is still active", ErrPromotionRejected)
+	}
+
+	m.mu.Lock()
+	conn := m.masterConn
+	m.masterConn = nil
+	m.role = RoleMaster
+	m.config.Role = RoleMaster
+	m.config.MasterAddr = ""
+	if m.slaves == nil {
+		m.slaves = make(map[string]*SlaveConnection)
+	}
+	if m.slaveWALPos == nil {
+		m.slaveWALPos = make(map[string]uint64)
+	}
+	atomic.StoreUint64(&m.currentLSN, lastApplied)
+	atomic.StoreUint64(&m.promotionEpoch, req.Epoch)
+	m.mu.Unlock()
+
+	if conn != nil {
+		_ = conn.Close()
+	}
+	return nil
 }
 
 func replicationModeString(mode ReplicationMode) string {
