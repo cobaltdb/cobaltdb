@@ -478,9 +478,30 @@ func cloneMetadataValue(value interface{}) interface{} {
 		return cloned
 	case []string:
 		return cloneStringSlice(typed)
+	case []byte:
+		return append([]byte(nil), typed...)
+	case map[string]string:
+		return cloneStringStringMap(typed)
+	case []map[string]interface{}:
+		cloned := make([]map[string]interface{}, len(typed))
+		for i, item := range typed {
+			cloned[i] = cloneMetadata(item)
+		}
+		return cloned
 	default:
 		return typed
 	}
+}
+
+func cloneStringStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 // compilePolicy compiles a policy expression

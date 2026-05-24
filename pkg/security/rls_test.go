@@ -178,6 +178,13 @@ func TestPolicyStateIsolation(t *testing.T) {
 			"nested": map[string]interface{}{
 				"tier": "gold",
 			},
+			"bytes": []byte("secret"),
+			"labels": map[string]string{
+				"env": "prod",
+			},
+			"history": []map[string]interface{}{
+				{"version": "v1"},
+			},
 		},
 	}
 
@@ -189,6 +196,9 @@ func TestPolicyStateIsolation(t *testing.T) {
 	policy.Roles[0] = "admin"
 	policy.Metadata["owner"] = "mutated"
 	policy.Metadata["nested"].(map[string]interface{})["tier"] = "bronze"
+	policy.Metadata["bytes"].([]byte)[0] = 'x'
+	policy.Metadata["labels"].(map[string]string)["env"] = "dev"
+	policy.Metadata["history"].([]map[string]interface{})[0]["version"] = "v2"
 
 	retrieved, err := mgr.GetPolicy("users", "copy_policy")
 	if err != nil {
@@ -203,11 +213,23 @@ func TestPolicyStateIsolation(t *testing.T) {
 	if retrieved.Metadata["nested"].(map[string]interface{})["tier"] != "gold" {
 		t.Fatalf("CreatePolicy retained caller-owned nested metadata: %v", retrieved.Metadata["nested"])
 	}
+	if string(retrieved.Metadata["bytes"].([]byte)) != "secret" {
+		t.Fatalf("CreatePolicy retained caller-owned byte metadata: %q", retrieved.Metadata["bytes"])
+	}
+	if retrieved.Metadata["labels"].(map[string]string)["env"] != "prod" {
+		t.Fatalf("CreatePolicy retained caller-owned string map metadata: %v", retrieved.Metadata["labels"])
+	}
+	if retrieved.Metadata["history"].([]map[string]interface{})[0]["version"] != "v1" {
+		t.Fatalf("CreatePolicy retained caller-owned map slice metadata: %v", retrieved.Metadata["history"])
+	}
 
 	retrieved.Users[0] = "eve"
 	retrieved.Roles[0] = "writer"
 	retrieved.Metadata["owner"] = "external"
 	retrieved.Metadata["nested"].(map[string]interface{})["tier"] = "silver"
+	retrieved.Metadata["bytes"].([]byte)[0] = 'y'
+	retrieved.Metadata["labels"].(map[string]string)["env"] = "stage"
+	retrieved.Metadata["history"].([]map[string]interface{})[0]["version"] = "v3"
 
 	retrievedAgain, err := mgr.GetPolicy("users", "copy_policy")
 	if err != nil {
@@ -221,6 +243,15 @@ func TestPolicyStateIsolation(t *testing.T) {
 	}
 	if retrievedAgain.Metadata["nested"].(map[string]interface{})["tier"] != "gold" {
 		t.Fatalf("GetPolicy returned mutable nested metadata: %v", retrievedAgain.Metadata["nested"])
+	}
+	if string(retrievedAgain.Metadata["bytes"].([]byte)) != "secret" {
+		t.Fatalf("GetPolicy returned mutable byte metadata: %q", retrievedAgain.Metadata["bytes"])
+	}
+	if retrievedAgain.Metadata["labels"].(map[string]string)["env"] != "prod" {
+		t.Fatalf("GetPolicy returned mutable string map metadata: %v", retrievedAgain.Metadata["labels"])
+	}
+	if retrievedAgain.Metadata["history"].([]map[string]interface{})[0]["version"] != "v1" {
+		t.Fatalf("GetPolicy returned mutable map slice metadata: %v", retrievedAgain.Metadata["history"])
 	}
 
 	tablePolicies := mgr.GetTablePolicies("users")
