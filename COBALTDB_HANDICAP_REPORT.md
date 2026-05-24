@@ -67,7 +67,8 @@ Recent hardening commits:
 | `060e57d` | HA drill | Added externally orchestrated failover drill |
 | `c9f6864` | HA rejoin | Added fenced former-primary rejoin-as-replica contract |
 | `b902229` | HA rejoin | Added persisted resume-LSN drill for rejoined replicas |
-| Current iteration | HA rejoin | Require explicit resume LSN or snapshot refresh for rejoin |
+| `0ef10cf` | HA rejoin | Require explicit resume LSN or snapshot refresh for rejoin |
+| `6833a69` | HA rejoin | Added TCP snapshot handshake drill for rejoined replicas |
 
 Validation performed during this pass:
 
@@ -87,6 +88,8 @@ go test ./pkg/engine -run '^$' -bench BenchmarkWriteLatencyUnderReaders -benchti
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
 go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary|TestExternallyOrchestratedFailoverDrill|TestRejoinAsReplica' -count=1
 go test ./pkg/replication -run TestRejoinAsReplicaPersistsResumeLSN -count=1
+go test ./pkg/replication -run 'TestRejoinedReplicaRequestsSnapshotOnStart|TestRejoinAsReplica|TestReceiveResumeRequestRequiresSnapshot' -count=1
+go test -race ./pkg/replication -run 'TestRejoinedReplicaRequestsSnapshotOnStart|TestRejoinAsReplica|TestReceiveResumeRequestRequiresSnapshot' -count=1
 go test -race ./pkg/replication -run 'TestRejoinAsReplica|TestExternallyOrchestratedFailoverDrill|TestFencePrimary|TestPromoteToMasterWithFencing' -count=1
 go test -race ./pkg/replication -run TestSlaveStatusClearsConnectionOnMasterDisconnect -count=1
 go test ./pkg/replication -count=1
