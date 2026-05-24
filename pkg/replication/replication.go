@@ -351,7 +351,11 @@ func (m *Manager) acceptSlaves() {
 			continue
 		}
 
-		go m.handleSlave(conn)
+		m.wg.Add(1)
+		go func() {
+			defer m.wg.Done()
+			m.handleSlave(conn)
+		}()
 	}
 }
 
@@ -415,7 +419,9 @@ func (m *Manager) handleSlave(conn net.Conn) {
 	}
 
 	ackDone := make(chan struct{})
+	m.wg.Add(1)
 	go func() {
+		defer m.wg.Done()
 		m.readSlaveAcks(slave)
 		close(ackDone)
 	}()
