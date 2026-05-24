@@ -3,7 +3,9 @@ package fdw
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 )
 
 func TestRegistry_RegisterAndGet(t *testing.T) {
@@ -24,14 +26,52 @@ func TestRegistry_RegisterAndGet(t *testing.T) {
 	}
 }
 
+func TestRegistry_GetDoesNotHoldLockDuringFactory(t *testing.T) {
+	r := NewRegistry()
+	r.Register("recursive", func() ForeignDataWrapper {
+		if !r.Has("recursive") {
+			t.Fatal("expected recursive wrapper to be visible")
+		}
+		return &CSVWrapper{}
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wrapper, ok := r.Get("recursive")
+		if !ok {
+			t.Error("expected recursive wrapper")
+			return
+		}
+		if wrapper == nil {
+			t.Error("expected non-nil wrapper")
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Get deadlocked while factory read from registry")
+	}
+}
+
+func TestRegistry_GetNilFactory(t *testing.T) {
+	r := NewRegistry()
+	r.Register("nil", nil)
+
+	if wrapper, ok := r.Get("nil"); ok || wrapper != nil {
+		t.Fatalf("expected nil factory to be treated as missing, got wrapper=%v ok=%v", wrapper, ok)
+	}
+}
+
 func TestRegistry_List(t *testing.T) {
 	r := NewRegistry()
-	r.Register("csv", func() ForeignDataWrapper { return &CSVWrapper{} })
 	r.Register("http", func() ForeignDataWrapper { return &CSVWrapper{} })
+	r.Register("csv", func() ForeignDataWrapper { return &CSVWrapper{} })
 
 	names := r.List()
-	if len(names) != 2 {
-		t.Fatalf("expected 2 wrappers, got %d", len(names))
+	if want := []string{"csv", "http"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("expected sorted wrappers %v, got %v", want, names)
 	}
 }
 

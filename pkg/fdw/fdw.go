@@ -1,6 +1,7 @@
 package fdw
 
 import (
+	"sort"
 	"sync"
 )
 
@@ -45,9 +46,12 @@ func (r *Registry) Register(name string, factory func() ForeignDataWrapper) {
 // Get looks up an FDW by name and returns a fresh instance.
 func (r *Registry) Get(name string) (ForeignDataWrapper, bool) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	f, ok := r.factories[name]
+	r.mu.RUnlock()
 	if !ok {
+		return nil, false
+	}
+	if f == nil {
 		return nil, false
 	}
 	return f(), true
@@ -69,5 +73,6 @@ func (r *Registry) List() []string {
 	for n := range r.factories {
 		names = append(names, n)
 	}
+	sort.Strings(names)
 	return names
 }
