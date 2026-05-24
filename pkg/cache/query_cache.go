@@ -462,15 +462,40 @@ func cloneRows(rows [][]interface{}) [][]interface{} {
 }
 
 func cloneValue(value interface{}) interface{} {
-	if bytes, ok := value.([]byte); ok {
-		if bytes == nil {
+	switch typed := value.(type) {
+	case []byte:
+		if typed == nil {
 			return []byte(nil)
 		}
-		cloned := make([]byte, len(bytes))
-		copy(cloned, bytes)
+		cloned := make([]byte, len(typed))
+		copy(cloned, typed)
 		return cloned
+	case []interface{}:
+		return cloneValues(typed)
+	case []string:
+		return cloneStrings(typed)
+	case map[string]interface{}:
+		cloned := make(map[string]interface{}, len(typed))
+		for key, mapValue := range typed {
+			cloned[key] = cloneValue(mapValue)
+		}
+		return cloned
+	case map[string]string:
+		return cloneStringMap(typed)
+	default:
+		return typed
 	}
-	return value
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 // sha256Pool recycles SHA256 hashers to avoid allocation per cache key.

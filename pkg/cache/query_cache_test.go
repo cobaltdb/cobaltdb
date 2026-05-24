@@ -139,13 +139,25 @@ func TestCacheCopiesValuesOnSetAndGet(t *testing.T) {
 	sql := "SELECT payload FROM events WHERE id = ?"
 	args := []interface{}{[]byte("arg")}
 	columns := []string{"payload"}
-	rows := [][]interface{}{{[]byte("cached")}}
+	rows := [][]interface{}{{
+		[]byte("cached"),
+		map[string]interface{}{
+			"tags": []interface{}{"alpha", []byte("beta")},
+			"meta": map[string]interface{}{"owner": "db"},
+		},
+		[]string{"one", "two"},
+		map[string]string{"role": "reader"},
+	}}
 	tableDeps := []string{"events"}
 
 	cache.Set(sql, args, columns, rows, tableDeps)
 	args[0].([]byte)[0] = 'X'
 	columns[0] = "mutated"
 	rows[0][0].([]byte)[0] = 'X'
+	rows[0][1].(map[string]interface{})["tags"].([]interface{})[1].([]byte)[0] = 'X'
+	rows[0][1].(map[string]interface{})["meta"].(map[string]interface{})["owner"] = "mutated"
+	rows[0][2].([]string)[0] = "mutated"
+	rows[0][3].(map[string]string)["role"] = "mutated"
 	tableDeps[0] = "mutated"
 
 	entry, found := cache.Get(sql, []interface{}{[]byte("arg")})
@@ -158,9 +170,25 @@ func TestCacheCopiesValuesOnSetAndGet(t *testing.T) {
 	if got := string(entry.Rows[0][0].([]byte)); got != "cached" {
 		t.Fatalf("cached row should not reflect caller mutation, got %q", got)
 	}
+	if got := string(entry.Rows[0][1].(map[string]interface{})["tags"].([]interface{})[1].([]byte)); got != "beta" {
+		t.Fatalf("cached nested row should not reflect caller mutation, got %q", got)
+	}
+	if got := entry.Rows[0][1].(map[string]interface{})["meta"].(map[string]interface{})["owner"]; got != "db" {
+		t.Fatalf("cached nested map should not reflect caller mutation, got %v", got)
+	}
+	if got := entry.Rows[0][2].([]string)[0]; got != "one" {
+		t.Fatalf("cached string slice should not reflect caller mutation, got %q", got)
+	}
+	if got := entry.Rows[0][3].(map[string]string)["role"]; got != "reader" {
+		t.Fatalf("cached string map should not reflect caller mutation, got %q", got)
+	}
 
 	entry.Columns[0] = "changed"
 	entry.Rows[0][0].([]byte)[0] = 'Y'
+	entry.Rows[0][1].(map[string]interface{})["tags"].([]interface{})[1].([]byte)[0] = 'Y'
+	entry.Rows[0][1].(map[string]interface{})["meta"].(map[string]interface{})["owner"] = "changed"
+	entry.Rows[0][2].([]string)[0] = "changed"
+	entry.Rows[0][3].(map[string]string)["role"] = "changed"
 	entry.TableDeps[0] = "changed"
 
 	entry, found = cache.Get(sql, []interface{}{[]byte("arg")})
@@ -172,6 +200,18 @@ func TestCacheCopiesValuesOnSetAndGet(t *testing.T) {
 	}
 	if got := string(entry.Rows[0][0].([]byte)); got != "cached" {
 		t.Fatalf("cache entry should not reflect returned row mutation, got %q", got)
+	}
+	if got := string(entry.Rows[0][1].(map[string]interface{})["tags"].([]interface{})[1].([]byte)); got != "beta" {
+		t.Fatalf("cache entry should not reflect returned nested row mutation, got %q", got)
+	}
+	if got := entry.Rows[0][1].(map[string]interface{})["meta"].(map[string]interface{})["owner"]; got != "db" {
+		t.Fatalf("cache entry should not reflect returned nested map mutation, got %v", got)
+	}
+	if got := entry.Rows[0][2].([]string)[0]; got != "one" {
+		t.Fatalf("cache entry should not reflect returned string slice mutation, got %q", got)
+	}
+	if got := entry.Rows[0][3].(map[string]string)["role"]; got != "reader" {
+		t.Fatalf("cache entry should not reflect returned string map mutation, got %q", got)
 	}
 	if entry.TableDeps[0] != "events" {
 		t.Fatalf("cache entry should not reflect returned deps mutation, got %q", entry.TableDeps[0])
