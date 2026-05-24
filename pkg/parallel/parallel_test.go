@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestParallelSelectRows(t *testing.T) {
@@ -195,4 +196,81 @@ func TestPoolWaitBeforeStart(t *testing.T) {
 
 	// Wait before start should not block forever
 	pool.Wait()
+}
+
+func TestPoolTrySubmitAfterWaitAndClose(t *testing.T) {
+	pool := NewWorkerPool(1)
+	var counter atomic.Int32
+
+	if !pool.TrySubmit(func() { counter.Add(1) }) {
+		t.Fatal("expected first submit to be queued")
+	}
+	pool.WaitAndClose()
+
+	if counter.Load() != 1 {
+		t.Fatalf("expected submitted work to run, got %d", counter.Load())
+	}
+	if pool.TrySubmit(func() { counter.Add(1) }) {
+		t.Fatal("expected submit after close to be rejected")
+	}
+
+	// Submit keeps its historical no-return API and must not panic after close.
+	pool.Submit(func() { counter.Add(1) })
+	if counter.Load() != 1 {
+		t.Fatalf("closed pool should not run later submissions, got %d", counter.Load())
+	}
+}
+
+func TestPoolCloseDrainsQueuedWorkForWait(t *testing.T) {
+	pool := NewWorkerPool(1)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if !pool.TrySubmit(func() {
+		close(started)
+		<-release
+	}) {
+		t.Fatal("expected blocking task to be queued")
+	}
+	<-started
+
+	for i := 0; i < 4; i++ {
+		if !pool.TrySubmit(func() {}) {
+			t.Fatalf("expected queued task %d to be accepted", i)
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		pool.Close()
+		pool.Wait()
+		close(done)
+	}()
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close should drain queued work so Wait can return")
+	}
+}
+
+func TestPoolTaskPanicDoesNotBlockWait(t *testing.T) {
+	pool := NewWorkerPool(1)
+
+	if !pool.TrySubmit(func() { panic("task failed") }) {
+		t.Fatal("expected panicking task to be queued")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		pool.WaitAndClose()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("panicking task should not block WaitAndClose")
+	}
 }

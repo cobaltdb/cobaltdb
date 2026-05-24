@@ -10,6 +10,7 @@ type WorkerPool struct {
 	pending sync.WaitGroup
 	stopCh  chan struct{}
 	started bool
+	closed  bool
 	mu      sync.Mutex
 }
 
@@ -30,9 +31,13 @@ func NewWorkerPool(workers int) *WorkerPool {
 func (p *WorkerPool) Start() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.started {
+	if p.started || p.closed {
 		return
 	}
+	p.startLocked()
+}
+
+func (p *WorkerPool) startLocked() {
 	p.started = true
 	for i := 0; i < p.workers; i++ {
 		p.wg.Add(1)
@@ -40,11 +45,38 @@ func (p *WorkerPool) Start() {
 	}
 }
 
-// Submit sends a work item to the pool. Blocks if the channel is full.
+// Submit sends a work item to the pool. It blocks if the channel is full and
+// returns without queuing when the pool has already been closed.
 func (p *WorkerPool) Submit(fn func()) {
-	p.Start()
+	_ = p.TrySubmit(fn)
+}
+
+// TrySubmit sends a work item to the pool and reports whether it was queued.
+func (p *WorkerPool) TrySubmit(fn func()) bool {
+	if fn == nil {
+		return false
+	}
+
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return false
+	}
+	if !p.started {
+		p.startLocked()
+	}
 	p.pending.Add(1)
-	p.workCh <- fn
+	workCh := p.workCh
+	stopCh := p.stopCh
+	p.mu.Unlock()
+
+	select {
+	case workCh <- fn:
+		return true
+	case <-stopCh:
+		p.pending.Done()
+		return false
+	}
 }
 
 // Wait blocks until all submitted work items have completed.
@@ -54,15 +86,26 @@ func (p *WorkerPool) Wait() {
 
 // WaitAndClose waits for all work to finish and shuts down workers.
 func (p *WorkerPool) WaitAndClose() {
-	p.Wait()
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		p.Wait()
+		return
+	}
+	p.closed = true
 	if !p.started {
+		close(p.stopCh)
 		p.mu.Unlock()
 		return
 	}
-	close(p.workCh)
+	workCh := p.workCh
 	p.mu.Unlock()
+
+	p.Wait()
+	close(workCh)
+	close(p.stopCh)
 	p.wg.Wait()
+
 	p.mu.Lock()
 	p.started = false
 	p.mu.Unlock()
@@ -71,13 +114,41 @@ func (p *WorkerPool) WaitAndClose() {
 // Close immediately signals workers to stop without waiting for queued work.
 func (p *WorkerPool) Close() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.started {
+	if p.closed {
+		p.mu.Unlock()
 		return
 	}
-	close(p.stopCh)
+	p.closed = true
+	if !p.started {
+		close(p.stopCh)
+		p.mu.Unlock()
+		return
+	}
+	stopCh := p.stopCh
+	workCh := p.workCh
+	close(stopCh)
+	p.mu.Unlock()
+
 	p.wg.Wait()
-	p.started = false
+	for {
+		select {
+		case <-workCh:
+			p.pending.Done()
+		default:
+			p.mu.Lock()
+			p.started = false
+			p.mu.Unlock()
+			return
+		}
+	}
+}
+
+func (p *WorkerPool) run(fn func()) {
+	defer func() {
+		_ = recover()
+		p.pending.Done()
+	}()
+	fn()
 }
 
 func (p *WorkerPool) worker() {
@@ -88,8 +159,7 @@ func (p *WorkerPool) worker() {
 			if !ok {
 				return
 			}
-			fn()
-			p.pending.Done()
+			p.run(fn)
 		case <-p.stopCh:
 			return
 		}
