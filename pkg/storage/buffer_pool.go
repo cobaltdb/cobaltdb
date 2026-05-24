@@ -26,10 +26,11 @@ const lruTouchThreshold = 8
 type CachedPage struct {
 	data        []byte        // PageSize bytes (24 bytes: ptr+len+cap)
 	lruElem     *list.Element // 8 bytes pointer
-	id          uint32        // 4 bytes
-	pinned      int32         // 4 bytes, atomic pin count
-	accessCount uint32        // 4 bytes, atomic access counter for probabilistic LRU
-	dirty       uint32        // 4 bytes, atomic: 1 = dirty, 0 = clean
+	mu          sync.RWMutex
+	id          uint32 // 4 bytes
+	pinned      int32  // 4 bytes, atomic pin count
+	accessCount uint32 // 4 bytes, atomic access counter for probabilistic LRU
+	dirty       uint32 // 4 bytes, atomic: 1 = dirty, 0 = clean
 }
 
 // ID returns the page ID
@@ -42,8 +43,27 @@ func (p *CachedPage) Data() []byte {
 	return p.data
 }
 
+// WithDataWrite provides exclusive access to the page buffer while it is mutated.
+func (p *CachedPage) WithDataWrite(fn func([]byte)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fn(p.data)
+}
+
+func (p *CachedPage) dataSnapshot() []byte {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	snapshot := make([]byte, len(p.data))
+	copy(snapshot, p.data)
+	return snapshot
+}
+
 // SetData copies data into the page-sized buffer, clearing any previous bytes.
 func (p *CachedPage) SetData(data []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if cap(p.data) < PageSize {
 		p.data = getPageData()
 	} else {
@@ -285,8 +305,9 @@ func (bp *BufferPool) FlushPage(page *CachedPage) error {
 	}
 
 	offset := int64(page.id) * int64(PageSize)
+	data := page.dataSnapshot()
 	start := time.Now()
-	if _, err := bp.backend.WriteAt(page.data, offset); err != nil {
+	if _, err := bp.backend.WriteAt(data, offset); err != nil {
 		return fmt.Errorf("failed to write page %d: %w", page.id, err)
 	}
 	writeTime := time.Since(start)

@@ -779,16 +779,21 @@ func (m *Manager) ReleaseAllLocks(txnID uint64) {
 
 // RecycleTxn resets a transaction and returns it to the pool for reuse.
 func (m *Manager) RecycleTxn(txn *Transaction) {
-	if txn == nil || txn.manager == nil {
+	if txn == nil {
 		return
 	}
+
+	txn.mu.Lock()
+	if txn.manager == nil {
+		txn.mu.Unlock()
+		return
+	}
+
 	// Fields that Begin overwrites are left as-is so that post-commit/rollback
 	// state inspection in tests and callers remains valid.
 	txn.manager = nil
-	if txn.cancel != nil {
-		txn.cancel()
-		txn.cancel = nil
-	}
+	cancel := txn.cancel
+	txn.cancel = nil
 	txn.ctx = nil
 	txn.waitingFor = 0
 	txn.waitingSince = time.Time{}
@@ -800,6 +805,11 @@ func (m *Manager) RecycleTxn(txn *Transaction) {
 	}
 	if txn.WriteSet != nil {
 		clear(txn.WriteSet)
+	}
+	txn.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
 	m.txnPool.Put(txn)
 }

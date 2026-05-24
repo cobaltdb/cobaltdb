@@ -1063,22 +1063,24 @@ func (t *BTree) flushInternal() error {
 		if err != nil {
 			return err
 		}
-		rootBuf := root.Data()[storage.PageHeaderSize:]
-		for i := range rootBuf {
-			rootBuf[i] = 0
-		}
-		binary.LittleEndian.PutUint32(rootBuf[0:4], count)
-		binary.LittleEndian.PutUint32(rootBuf[4:8], overflowCount)
-		for i, pgID := range t.overflowPages {
-			off := 8 + 4*i
-			if off+4 > len(rootBuf) {
-				break
+		root.WithDataWrite(func(data []byte) {
+			rootBuf := data[storage.PageHeaderSize:]
+			for i := range rootBuf {
+				rootBuf[i] = 0
 			}
-			binary.LittleEndian.PutUint32(rootBuf[off:off+4], pgID)
-		}
-		if rootDataWriteLen > 0 {
-			copy(rootBuf[rootHeaderSize:], kvData[:rootDataWriteLen])
-		}
+			binary.LittleEndian.PutUint32(rootBuf[0:4], count)
+			binary.LittleEndian.PutUint32(rootBuf[4:8], overflowCount)
+			for i, pgID := range t.overflowPages {
+				off := 8 + 4*i
+				if off+4 > len(rootBuf) {
+					break
+				}
+				binary.LittleEndian.PutUint32(rootBuf[off:off+4], pgID)
+			}
+			if rootDataWriteLen > 0 {
+				copy(rootBuf[rootHeaderSize:], kvData[:rootDataWriteLen])
+			}
+		})
 		root.SetDirty(true)
 		t.pool.Unpin(root)
 	}
@@ -1096,13 +1098,15 @@ func (t *BTree) flushInternal() error {
 			if err != nil {
 				return fmt.Errorf("failed to get overflow page %d: %w", pgID, err)
 			}
-			pgBuf := pg.Data()[storage.PageHeaderSize:]
-			for j := range pgBuf {
-				pgBuf[j] = 0
-			}
-			if writeLen > 0 {
-				copy(pgBuf, kvData[dataWritten:dataWritten+writeLen])
-			}
+			pg.WithDataWrite(func(data []byte) {
+				pgBuf := data[storage.PageHeaderSize:]
+				for j := range pgBuf {
+					pgBuf[j] = 0
+				}
+				if writeLen > 0 {
+					copy(pgBuf, kvData[dataWritten:dataWritten+writeLen])
+				}
+			})
 			pg.SetDirty(true)
 			t.pool.Unpin(pg)
 		}
