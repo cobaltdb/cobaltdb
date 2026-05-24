@@ -24,7 +24,7 @@ Current readiness estimate:
 | Benchmark regression gate | Added via `scripts/benchmark-gate.sh`, now including write p95/p99 under readers |
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
 | HA readiness guards | API reports explicit blockers and refuses unsafe in-process promotion |
-| Vector index persistence | HNSW metadata persists on create, reopen, and drop |
+| Vector index persistence | HNSW metadata persists across create, post-index DML, reopen, and backup/restore |
 | FDW materialization limits | CSV scans are streaming-read and bounded by `max_rows`/`max_bytes` |
 | Procedure/trigger semantics | `CALL` placeholder args, exact arity, complex param substitution, and BEFORE/AFTER trigger row images are covered |
 | Operations runbook | Added |
@@ -54,7 +54,8 @@ Recent hardening commits:
 | `6999583` | FDW | Added CSV streaming-read materialization limits and SQL-level limit drill |
 | `1225721` | Procedures/triggers | Added `CALL` placeholder/arity fixes and BEFORE/AFTER trigger semantics certification |
 | `74437e6` | MySQL compatibility | Added real Go MySQL driver baseline and fixed prepared-statement packet compatibility |
-| Current iteration | HA boundary | Added failover readiness API and unsafe promotion guard |
+| `825b765` | HA boundary | Added failover readiness API and unsafe promotion guard |
+| Current iteration | Vector indexes | Added post-index DML persistence and backup/restore rebuild drill |
 
 Validation performed during this pass:
 
@@ -76,8 +77,8 @@ go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|Tes
 go test -race ./pkg/replication -run TestSlaveStatusClearsConnectionOnMasterDisconnect -count=1
 go test ./pkg/replication -count=1
 go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count=1
-go test ./pkg/engine -run TestVectorIndexPersistsAcrossReopen -count=1
-go test -race ./pkg/catalog ./pkg/engine -run 'TestVectorIndexMetadataPersistsOnCreateAndDrop|TestVectorIndexPersistsAcrossReopen' -count=1
+go test ./pkg/engine -run 'TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore' -count=1
+go test -race ./pkg/catalog ./pkg/engine -run 'TestVectorIndexMetadataPersistsOnCreateAndDrop|TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore' -count=1
 go test ./pkg/fdw -count=1
 go test -race ./pkg/fdw -count=1
 go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL' -count=1
@@ -165,7 +166,7 @@ Production stance:
 Some advanced features are broad but need workload-specific certification before being treated as primary production pillars:
 
 - WASM SQL execution beyond selected paths.
-- Large-scale Vector/HNSW persistence and rebuild behavior.
+- Very large Vector/HNSW rebuild behavior beyond the 512-row backup/restore drill.
 - FDW still materializes rows into the current query engine, but CSV scans now have row and byte limits.
 - Procedure body result-set and mutable `OUT`/`INOUT` parameter semantics beyond the certified DML contract.
 - Composite/advanced constraint cases.
@@ -208,7 +209,7 @@ Priority order:
 1. Catalog lock granularity improvements.
 2. Additional MySQL ORM and non-Go driver certification runs.
 3. Actual HA consensus, fencing, and externally orchestrated promotion implementation.
-4. Large-scale Vector/HNSW rebuild and backup/restore certification.
+4. Thousand-plus vector mixed workload certification.
 5. Streaming FDW cursor interface and pushdown support.
 
 ## Final Decision

@@ -813,6 +813,9 @@ func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []int
 	// Determine buffered mode.  We can check enableBufferedWrites without the
 	// lock because it is set once at engine open and never changed afterwards.
 	useBuffer := c.isBufferedMode() && table != nil && table.Partition == nil && stmt.ConflictAction != query.ConflictReplace
+	if useBuffer && c.hasVectorIndexForTableLocked(stmt.Table) {
+		useBuffer = false
+	}
 
 	if useBuffer {
 		// Snapshot all metadata needed for the buffered row loop, then release
@@ -1077,6 +1080,9 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	// with secondary indexes as long as we are not doing REPLACE (which
 	// requires immediate mutation of committed data).
 	useBuffer := c.isBufferedMode() && table.Partition == nil && stmt.ConflictAction != query.ConflictReplace
+	if useBuffer && c.hasVectorIndexForTableLocked(stmt.Table) {
+		useBuffer = false
+	}
 
 	// Skip allocating row copies when no triggers or RETURNING clause need them.
 	needsInsertedRows := len(stmt.Returning) > 0 || len(c.getTriggersForTableLocked(stmt.Table, "INSERT")) > 0
@@ -1342,7 +1348,10 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Update vector indexes
-		c.updateVectorIndexesForInsert(stmt.Table, rowValues, key)
+		if err := c.updateVectorIndexesForInsert(stmt.Table, rowValues, key); err != nil {
+			insertErr = err
+			break
+		}
 
 		if skipRow {
 			continue

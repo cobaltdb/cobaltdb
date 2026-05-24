@@ -91,6 +91,9 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 
 	useBuffer := c.isBufferedMode() && table.Partition == nil
 	if useBuffer {
+		if c.hasVectorIndexForTableLocked(stmt.Table) {
+			useBuffer = false
+		}
 		for _, setClause := range stmt.Set {
 			if table.isPrimaryKeyColumn(setClause.Column) {
 				useBuffer = false
@@ -577,6 +580,9 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	// Determine if we can use buffered writes for this update.
 	useBuffer := c.isBufferedMode() && table.Partition == nil
 	if useBuffer {
+		if c.hasVectorIndexForTableLocked(stmt.Table) {
+			useBuffer = false
+		}
 		for _, setClause := range stmt.Set {
 			if table.isPrimaryKeyColumn(setClause.Column) {
 				useBuffer = false
@@ -1693,7 +1699,9 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		}
 
 		// Update vector indexes
-		c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, string(entry.key))
+		if err := c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, string(entry.key)); err != nil {
+			return err
+		}
 
 		// Record undo log entry for rollback
 		if txnActive {

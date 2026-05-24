@@ -643,7 +643,9 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 		}
 
 		// Update vector indexes - delete the row from vector indexes
-		c.updateVectorIndexesForDelete(stmt.Table, string(key))
+		if err := c.updateVectorIndexesForDelete(stmt.Table, string(key)); err != nil {
+			return rowsAffected, err
+		}
 
 		// Log to WAL before applying change
 		if c.wal != nil && txnActive {
@@ -736,6 +738,10 @@ func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt
 
 		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "BEFORE", nil, row, table.Columns); trigErr != nil {
 			return fmt.Errorf("BEFORE DELETE trigger failed: %w", trigErr)
+		}
+
+		if err := c.updateVectorIndexesForDelete(stmt.Table, string(key)); err != nil {
+			return err
 		}
 
 		// Soft-delete encoding.

@@ -30,7 +30,7 @@ go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
 go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing' -count=1
 go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count=1
-go test ./pkg/engine -run TestVectorIndexPersistsAcrossReopen -count=1
+go test ./pkg/engine -run 'TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore' -count=1
 go test ./pkg/fdw -count=1
 go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL' -count=1
 go test ./pkg/query -run TestParseCallProcedure -count=1

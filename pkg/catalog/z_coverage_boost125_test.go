@@ -1323,20 +1323,29 @@ func TestB125_VectorIndexDirectInsertUpdate(t *testing.T) {
 	// Directly invoke updateVectorIndexesForInsert with []float64 data
 	rowWithVec := []interface{}{int64(1), []float64{1.0, 2.0}}
 	c.mu.Lock()
-	c.updateVectorIndexesForInsert("b125_vi2", rowWithVec, "0000000000000000001")
+	err = c.updateVectorIndexesForInsert("b125_vi2", rowWithVec, "0000000000000000001")
 	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("updateVectorIndexesForInsert: %v", err)
+	}
 
 	// Directly invoke updateVectorIndexesForUpdate
 	rowWithVec2 := []interface{}{int64(1), []float64{3.0, 4.0}}
 	c.mu.Lock()
-	c.updateVectorIndexesForUpdate("b125_vi2", rowWithVec2, "0000000000000000001")
+	err = c.updateVectorIndexesForUpdate("b125_vi2", rowWithVec2, "0000000000000000001")
 	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("updateVectorIndexesForUpdate: %v", err)
+	}
 
 	// With []interface{} vector (covered by indexRowForVector)
 	rowWithVecI := []interface{}{int64(2), []interface{}{float64(5.0), float64(6.0)}}
 	c.mu.Lock()
-	c.updateVectorIndexesForInsert("b125_vi2", rowWithVecI, "0000000000000000002")
+	err = c.updateVectorIndexesForInsert("b125_vi2", rowWithVecI, "0000000000000000002")
 	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("updateVectorIndexesForInsert interface vector: %v", err)
+	}
 
 	// SearchVectorKNN
 	keys, dists, err2 := c.SearchVectorKNN("b125_vi2_idx", []float64{1.0, 2.0}, 5)

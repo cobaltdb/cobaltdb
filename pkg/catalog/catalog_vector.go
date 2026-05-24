@@ -206,8 +206,17 @@ func (c *Catalog) ListVectorIndexes() []string {
 	return names
 }
 
+func (c *Catalog) hasVectorIndexForTableLocked(tableName string) bool {
+	for _, vectorIndex := range c.vectorIndexes {
+		if vectorIndex.TableName == tableName {
+			return true
+		}
+	}
+	return false
+}
+
 // updateVectorIndexesForInsert updates all vector indexes when a row is inserted
-func (c *Catalog) updateVectorIndexesForInsert(tableName string, rowSlice []interface{}, key string) {
+func (c *Catalog) updateVectorIndexesForInsert(tableName string, rowSlice []interface{}, key string) error {
 	for _, vectorIndex := range c.vectorIndexes {
 		if vectorIndex.TableName != tableName {
 			continue
@@ -224,11 +233,15 @@ func (c *Catalog) updateVectorIndexesForInsert(tableName string, rowSlice []inte
 		}
 
 		c.indexRowForVector(vectorIndex, rowSlice, key, colIdx)
+		if err := c.storeVectorIndexDef(vectorIndex); err != nil {
+			return fmt.Errorf("failed to persist vector index %s after insert: %w", vectorIndex.Name, err)
+		}
 	}
+	return nil
 }
 
 // updateVectorIndexesForDelete updates all vector indexes when a row is deleted
-func (c *Catalog) updateVectorIndexesForDelete(tableName string, rowKey string) {
+func (c *Catalog) updateVectorIndexesForDelete(tableName string, rowKey string) error {
 	for _, vectorIndex := range c.vectorIndexes {
 		if vectorIndex.TableName != tableName {
 			continue
@@ -236,11 +249,15 @@ func (c *Catalog) updateVectorIndexesForDelete(tableName string, rowKey string) 
 		if vectorIndex.HNSW != nil {
 			_ = vectorIndex.HNSW.Delete(rowKey)
 		}
+		if err := c.storeVectorIndexDef(vectorIndex); err != nil {
+			return fmt.Errorf("failed to persist vector index %s after delete: %w", vectorIndex.Name, err)
+		}
 	}
+	return nil
 }
 
 // updateVectorIndexesForUpdate updates all vector indexes when a row is updated
-func (c *Catalog) updateVectorIndexesForUpdate(tableName string, rowSlice []interface{}, rowKey string) {
+func (c *Catalog) updateVectorIndexesForUpdate(tableName string, rowSlice []interface{}, rowKey string) error {
 	for _, vectorIndex := range c.vectorIndexes {
 		if vectorIndex.TableName != tableName {
 			continue
@@ -262,5 +279,9 @@ func (c *Catalog) updateVectorIndexesForUpdate(tableName string, rowSlice []inte
 		}
 
 		c.indexRowForVector(vectorIndex, rowSlice, rowKey, colIdx)
+		if err := c.storeVectorIndexDef(vectorIndex); err != nil {
+			return fmt.Errorf("failed to persist vector index %s after update: %w", vectorIndex.Name, err)
+		}
 	}
+	return nil
 }

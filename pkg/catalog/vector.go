@@ -60,14 +60,17 @@ func (h *HNSWIndex) Insert(key string, vector []float64) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	return h.insertLocked(key, vector)
+}
+
+func (h *HNSWIndex) insertLocked(key string, vector []float64) error {
 	// Validate dimensions
 	if len(vector) != h.Dimensions {
 		return fmt.Errorf("vector dimension mismatch: expected %d, got %d", h.Dimensions, len(vector))
 	}
 
-	// Check if already exists
 	if _, exists := h.Nodes[key]; exists {
-		return h.Update(key, vector)
+		h.deleteLocked(key)
 	}
 
 	// Generate random level for the new node
@@ -105,7 +108,7 @@ func (h *HNSWIndex) Insert(key string, vector []float64) error {
 		changed := true
 		for changed {
 			changed = false
-			for _, neighborKey := range entryPoint.Neighbors[i] {
+			for _, neighborKey := range neighborsAtLevel(entryPoint, i) {
 				if neighbor, ok := h.Nodes[neighborKey]; ok {
 					d := l2Distance(vector, neighbor.Vector)
 					if d < currDist {
@@ -127,6 +130,9 @@ func (h *HNSWIndex) Insert(key string, vector []float64) error {
 		node.Neighbors[i] = neighbors
 		for _, neighborKey := range neighbors {
 			if neighbor, ok := h.Nodes[neighborKey]; ok {
+				if i >= len(neighbor.Neighbors) {
+					continue
+				}
 				neighbor.Neighbors[i] = append(neighbor.Neighbors[i], key)
 				// Shrink connections if needed
 				if len(neighbor.Neighbors[i]) > h.Mmax {
@@ -158,6 +164,10 @@ func (h *HNSWIndex) Delete(key string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	return h.deleteLocked(key)
+}
+
+func (h *HNSWIndex) deleteLocked(key string) error {
 	node, exists := h.Nodes[key]
 	if !exists {
 		return nil // Already deleted
@@ -165,8 +175,11 @@ func (h *HNSWIndex) Delete(key string) error {
 
 	// Remove connections from neighbors
 	for level := 0; level <= node.Level; level++ {
-		for _, neighborKey := range node.Neighbors[level] {
+		for _, neighborKey := range neighborsAtLevel(node, level) {
 			if neighbor, ok := h.Nodes[neighborKey]; ok {
+				if level >= len(neighbor.Neighbors) {
+					continue
+				}
 				// Remove key from neighbor's neighbor list
 				neighbor.Neighbors[level] = removeString(neighbor.Neighbors[level], key)
 			}
@@ -199,11 +212,17 @@ func (h *HNSWIndex) Delete(key string) error {
 
 // Update updates a vector in the index
 func (h *HNSWIndex) Update(key string, vector []float64) error {
-	// Delete and re-insert
-	if err := h.Delete(key); err != nil {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if len(vector) != h.Dimensions {
+		return fmt.Errorf("vector dimension mismatch: expected %d, got %d", h.Dimensions, len(vector))
+	}
+
+	if err := h.deleteLocked(key); err != nil {
 		return err
 	}
-	return h.Insert(key, vector)
+	return h.insertLocked(key, vector)
 }
 
 // RebuildEntryPoint reconstructs the runtime EntryPoint pointer from EntryPointKey after deserialization.
@@ -240,7 +259,7 @@ func (h *HNSWIndex) SearchKNN(query []float64, k int) ([]string, []float64, erro
 		changed := true
 		for changed {
 			changed = false
-			for _, neighborKey := range entryPoint.Neighbors[i] {
+			for _, neighborKey := range neighborsAtLevel(entryPoint, i) {
 				if neighbor, ok := h.Nodes[neighborKey]; ok {
 					d := l2Distance(query, neighbor.Vector)
 					if d < currDist {
@@ -293,7 +312,7 @@ func (h *HNSWIndex) SearchRange(query []float64, radius float64) ([]string, []fl
 		changed := true
 		for changed {
 			changed = false
-			for _, neighborKey := range entryPoint.Neighbors[i] {
+			for _, neighborKey := range neighborsAtLevel(entryPoint, i) {
 				if neighbor, ok := h.Nodes[neighborKey]; ok {
 					d := l2Distance(query, neighbor.Vector)
 					if d < currDist {
@@ -414,6 +433,13 @@ func (h *HNSWIndex) searchLayer(query []float64, entryPoint *HNSWNode, ef, level
 	}
 
 	return sorted
+}
+
+func neighborsAtLevel(node *HNSWNode, level int) []string {
+	if node == nil || level < 0 || level >= len(node.Neighbors) {
+		return nil
+	}
+	return node.Neighbors[level]
 }
 
 // selectNeighbors selects the M closest neighbors from candidates

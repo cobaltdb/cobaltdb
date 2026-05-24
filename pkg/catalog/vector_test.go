@@ -130,6 +130,51 @@ func TestHNSWSelectNeighborsByKeyUsesVectorDistance(t *testing.T) {
 	}
 }
 
+func TestHNSWDeleteHandlesUnevenNeighborLevels(t *testing.T) {
+	index := NewHNSWIndex("test_idx", "test_table", "embedding", 3)
+	index.Nodes["high"] = &HNSWNode{
+		Key:       "high",
+		Vector:    []float64{1, 0, 0},
+		Level:     2,
+		Neighbors: [][]string{{"low"}, {"low"}, {"low"}},
+	}
+	index.Nodes["low"] = &HNSWNode{
+		Key:       "low",
+		Vector:    []float64{0, 1, 0},
+		Level:     0,
+		Neighbors: [][]string{{"high"}},
+	}
+	index.EntryPoint = index.Nodes["high"]
+	index.EntryPointKey = "high"
+	index.MaxLevel = 2
+
+	if err := index.Delete("high"); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	if _, ok := index.Nodes["high"]; ok {
+		t.Fatal("deleted node remains in index")
+	}
+	if got := index.Nodes["low"].Neighbors[0]; len(got) != 0 {
+		t.Fatalf("low-level neighbor list = %v, want empty", got)
+	}
+	if index.EntryPoint != index.Nodes["low"] {
+		t.Fatal("entry point was not reassigned to remaining node")
+	}
+}
+
+func TestHNSWUpdateRejectsDimensionMismatchWithoutDeletingNode(t *testing.T) {
+	index := NewHNSWIndex("test_idx", "test_table", "embedding", 3)
+	if err := index.Insert("1", []float64{1, 0, 0}); err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+	if err := index.Update("1", []float64{1, 0}); err == nil {
+		t.Fatal("Update with dimension mismatch succeeded")
+	}
+	if _, ok := index.Nodes["1"]; !ok {
+		t.Fatal("dimension mismatch deleted existing node")
+	}
+}
+
 func TestRandomUnitFloat64Range(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		f, err := randomUnitFloat64()
