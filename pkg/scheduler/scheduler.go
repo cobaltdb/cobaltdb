@@ -74,13 +74,18 @@ func (s *Scheduler) Register(j *Job) error {
 	if _, exists := s.jobs[j.ID]; exists {
 		return fmt.Errorf("job %s already registered", j.ID)
 	}
-	j.Status = JobStatusIdle
-	if !j.Enabled {
-		j.Status = JobStatusDisabled
+	registered := *j
+	registered.LastRun = time.Time{}
+	registered.LastError = nil
+	registered.RunCount = 0
+	registered.FailCount = 0
+	registered.Status = JobStatusIdle
+	if !registered.Enabled {
+		registered.Status = JobStatusDisabled
 	}
-	j.NextRun = time.Now().Add(j.Interval)
-	s.jobs[j.ID] = j
-	s.logger.Infof("Registered job %s (%s) interval=%v", j.ID, j.Name, j.Interval)
+	registered.NextRun = time.Now().Add(registered.Interval)
+	s.jobs[registered.ID] = &registered
+	s.logger.Infof("Registered job %s (%s) interval=%v", registered.ID, registered.Name, registered.Interval)
 	return nil
 }
 

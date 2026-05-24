@@ -195,6 +195,52 @@ func TestSchedulerDuplicateID(t *testing.T) {
 	}
 }
 
+func TestSchedulerRegisterCopiesJob(t *testing.T) {
+	var originalFnCount atomic.Int32
+	var mutatedFnCount atomic.Int32
+	s := New(1, nil)
+	job := &Job{
+		ID:       "copy",
+		Name:     "Copy",
+		Type:     JobTypeCustom,
+		Interval: time.Hour,
+		Enabled:  true,
+		Fn: func(ctx context.Context) error {
+			originalFnCount.Add(1)
+			return nil
+		},
+	}
+
+	if err := s.Register(job); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	job.Name = "mutated"
+	job.Interval = time.Nanosecond
+	job.Enabled = false
+	job.Fn = func(ctx context.Context) error {
+		mutatedFnCount.Add(1)
+		return nil
+	}
+
+	snap, ok := s.Get("copy")
+	if !ok {
+		t.Fatal("expected registered job")
+	}
+	if snap.Name != "Copy" || snap.Interval != time.Hour || !snap.Enabled {
+		t.Fatalf("registered job changed after external mutation: %+v", snap)
+	}
+	if err := s.Trigger("copy"); err != nil {
+		t.Fatalf("trigger failed: %v", err)
+	}
+	if originalFnCount.Load() != 1 {
+		t.Fatalf("expected original job function to run once, got %d", originalFnCount.Load())
+	}
+	if mutatedFnCount.Load() != 0 {
+		t.Fatalf("mutated job function should not run, got %d", mutatedFnCount.Load())
+	}
+}
+
 func TestSchedulerInvalidJob(t *testing.T) {
 	s := New(1, nil)
 	if err := s.Register(nil); err == nil {
