@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	ErrWALCorrupted = errors.New("WAL is corrupted")
-	ErrWALClosed    = errors.New("WAL is closed")
+	ErrWALCorrupted     = errors.New("WAL is corrupted")
+	ErrWALClosed        = errors.New("WAL is closed")
+	ErrInvalidWALRecord = errors.New("invalid WAL record")
 )
 
 // walBatchBufPool provides 2 KB reusable buffers for WAL AppendBatch fast path.
@@ -497,6 +498,9 @@ func (w *WAL) formatBatch(records []*WALRecord) ([]byte, []int, error) {
 }
 
 func validateRecordSize(record *WALRecord) error {
+	if record == nil {
+		return ErrInvalidWALRecord
+	}
 	if len(record.Data) > walMaxRecordDataSize {
 		return fmt.Errorf("WAL record data size (%d bytes) exceeds maximum (%d bytes)",
 			len(record.Data), walMaxRecordDataSize)
@@ -524,6 +528,9 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 	// Encrypt record data if cipher is configured
 	originalData := record.Data
 	if w.cipher != nil && len(record.Data) > 0 {
+		defer func() {
+			record.Data = originalData
+		}()
 		var headerAAD [walHeaderSize]byte
 		if err := writeRecordHeader(headerAAD[:], record, len(record.Data)); err != nil {
 			return err
@@ -556,7 +563,7 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 		}
 	}
 
-	// Restore original data to avoid modifying caller's record
+	// Restore original data to avoid modifying caller's record.
 	record.Data = originalData
 
 	// Write CRC (direct encoding avoids binary.Write reflection)
@@ -928,7 +935,15 @@ func (w *WAL) recoverRecord(bp *BufferPool, record *WALRecord) error {
 func (w *WAL) GetReplayOps() []WALReplayOp {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.replayOps
+	ops := make([]WALReplayOp, len(w.replayOps))
+	for i, op := range w.replayOps {
+		ops[i] = WALReplayOp{
+			TxnID: op.TxnID,
+			Type:  op.Type,
+			Data:  append([]byte(nil), op.Data...),
+		}
+	}
+	return ops
 }
 
 // applyRecord applies a physical WAL record to buffer-pool pages.

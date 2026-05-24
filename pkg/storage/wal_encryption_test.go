@@ -1,12 +1,22 @@
 package storage
 
 import (
+	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+var errFailingWALWriter = errors.New("failing WAL writer")
+
+type failingWALWriter struct{}
+
+func (failingWALWriter) Write([]byte) (int, error) {
+	return 0, errFailingWALWriter
+}
 
 func makeTestCipher(t *testing.T) cipher.AEAD {
 	t.Helper()
@@ -120,6 +130,35 @@ func TestWALEncryptionEmptyData(t *testing.T) {
 	}
 
 	wal.Close()
+}
+
+func TestWALEncryptedAppendRestoresDataOnWriteError(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "restore-on-error.wal")
+	file, err := os.OpenFile(walPath, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer file.Close()
+
+	original := []byte("sensitive payload")
+	record := &WALRecord{
+		Type: WALInsert,
+		Data: append([]byte(nil), original...),
+	}
+	wal := &WAL{
+		file:      file,
+		bufWriter: bufio.NewWriterSize(failingWALWriter{}, 1),
+		cipher:    makeTestCipher(t),
+	}
+
+	err = wal.appendInternal(record, false)
+	if !errors.Is(err, errFailingWALWriter) {
+		t.Fatalf("expected writer error, got %v", err)
+	}
+	if string(record.Data) != string(original) {
+		t.Fatalf("record data was not restored: got %q, want %q", record.Data, original)
+	}
 }
 
 func containsBytes(haystack, needle []byte) bool {

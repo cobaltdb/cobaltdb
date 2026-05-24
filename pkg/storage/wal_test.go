@@ -49,6 +49,35 @@ func TestWALAppend(t *testing.T) {
 	}
 }
 
+func TestWALAppendRejectsNilRecords(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "nil-record.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	tests := []struct {
+		name string
+		fn   func() error
+	}{
+		{"Append", func() error { return wal.Append(nil) }},
+		{"AppendWithoutSync", func() error { return wal.AppendWithoutSync(nil) }},
+		{"AppendBatch", func() error { return wal.AppendBatch([]*WALRecord{nil}) }},
+		{"AppendBatchWithoutSync", func() error { return wal.AppendBatchWithoutSync([]*WALRecord{nil}) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.fn(); !errors.Is(err, ErrInvalidWALRecord) {
+				t.Fatalf("expected ErrInvalidWALRecord, got %v", err)
+			}
+		})
+	}
+}
+
 func TestWALAppendBatchDurableBeforeClose(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "batch.wal")
@@ -583,6 +612,33 @@ func TestWALRecoverLogicalRecords(t *testing.T) {
 	}
 	if string(ops[0].Data) != string(data) {
 		t.Errorf("data mismatch: got %q, want %q", ops[0].Data, data)
+	}
+}
+
+func TestWALGetReplayOpsReturnsIsolatedData(t *testing.T) {
+	wal := &WAL{
+		replayOps: []WALReplayOp{
+			{TxnID: 1, Type: WALUpdate, Data: []byte("logical-row")},
+		},
+	}
+
+	ops := wal.GetReplayOps()
+	ops[0].TxnID = 99
+	ops[0].Data[0] = 'X'
+	ops = append(ops, WALReplayOp{TxnID: 2, Type: WALDelete, Data: []byte("extra")})
+	if len(ops) != 2 {
+		t.Fatalf("expected local replay op append to succeed, got %d ops", len(ops))
+	}
+
+	again := wal.GetReplayOps()
+	if len(again) != 1 {
+		t.Fatalf("expected 1 replay op, got %d", len(again))
+	}
+	if again[0].TxnID != 1 {
+		t.Fatalf("TxnID was mutated through returned slice: got %d", again[0].TxnID)
+	}
+	if string(again[0].Data) != "logical-row" {
+		t.Fatalf("Data was mutated through returned slice: got %q", again[0].Data)
 	}
 }
 
