@@ -40,9 +40,11 @@ Release blockers:
 
 1. Start with WAL enabled for disk databases.
 2. Use a page-count `CacheSize`; `1024` means 1024 pages, not bytes.
-3. Set explicit `BackupDir`, `MaxBackups`, and `BackupRetention` values.
-4. Enable health/admin endpoints on a loopback or protected network interface.
-5. Configure TLS and authentication before exposing wire or MySQL protocol
+3. Enable `StrictSQLParsing` unless the workload depends on legacy permissive
+   parser behavior.
+4. Set explicit `BackupDir`, `MaxBackups`, and `BackupRetention` values.
+5. Enable health/admin endpoints on a loopback or protected network interface.
+6. Configure TLS and authentication before exposing wire or MySQL protocol
    ports outside a trusted network.
 
 Health checks:

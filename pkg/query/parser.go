@@ -3041,6 +3041,36 @@ func Parse(sql string) (Statement, error) {
 	return parser.Parse()
 }
 
+// ParseStrict parses a SQL string and rejects any non-semicolon tokens left
+// after the first statement. This preserves Parse's historical permissive
+// behavior while giving production callers a stricter compatibility gate.
+func ParseStrict(sql string) (Statement, error) {
+	tokens, err := Tokenize(sql)
+	if err != nil {
+		return nil, err
+	}
+
+	parser := NewParser(tokens)
+	stmt, err := parser.Parse()
+	if err != nil {
+		return nil, err
+	}
+	if err := parser.expectStatementEnd(); err != nil {
+		return nil, err
+	}
+	return stmt, nil
+}
+
+func (p *Parser) expectStatementEnd() error {
+	for p.current().Type == TokenSemicolon {
+		p.advance()
+	}
+	if p.current().Type != TokenEOF {
+		return fmt.Errorf("unexpected token after statement: %s", p.current().Literal)
+	}
+	return nil
+}
+
 // ParseExpression parses a single SQL expression string (e.g., "42", "'hello'", "NOW()")
 func ParseExpression(expr string) (Expression, error) {
 	tokens, err := Tokenize("SELECT " + expr)

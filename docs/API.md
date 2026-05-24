@@ -15,8 +15,9 @@ db, err := engine.Open(":memory:", &engine.Options{
 
 // Disk database
 db, err := engine.Open("./mydb.db", &engine.Options{
-    InMemory:  false,
-    CacheSize: 1024, // 4MB buffer pool
+    InMemory:         false,
+    CacheSize:        1024, // 4MB buffer pool
+    StrictSQLParsing: true, // Reject trailing tokens after parsed SQL
 })
 ```
 
@@ -24,10 +25,15 @@ db, err := engine.Open("./mydb.db", &engine.Options{
 
 ```go
 type Options struct {
-    InMemory  bool   // Use in-memory mode (default: false)
-    CacheSize int    // Buffer pool size in pages (default: 1024 pages = 4MB)
+    InMemory         bool // Use in-memory mode (default: false)
+    CacheSize        int  // Buffer pool size in pages (default: 1024 pages = 4MB)
+    StrictSQLParsing bool // Reject trailing tokens after parsed SQL (default: false)
 }
 ```
+
+`StrictSQLParsing` is recommended for production deployments that do not depend
+on legacy permissive parser behavior. It preserves compatibility by remaining
+disabled by default.
 
 ### Database Methods
 

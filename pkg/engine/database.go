@@ -158,6 +158,7 @@ type Options struct {
 	AuditConfig       *audit.Config             // Audit logging configuration (nil = disabled)
 	EnableRLS         bool                      // Enable Row-Level Security by default
 	MaxStmtCacheSize  int                       // Maximum cached prepared statements (default: 1000)
+	StrictSQLParsing  bool                      // Reject trailing tokens after a parsed statement
 
 	// Query Cache Options
 	EnableQueryCache bool          // Enable query result caching
@@ -341,7 +342,11 @@ func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.State
 	}
 
 	// Parse and cache
-	parsedStmt, err := query.Parse(sql)
+	parse := query.Parse
+	if db.options.StrictSQLParsing {
+		parse = query.ParseStrict
+	}
+	parsedStmt, err := parse(sql)
 	if err != nil {
 		return nil, err
 	}
