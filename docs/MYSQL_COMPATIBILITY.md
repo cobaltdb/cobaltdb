@@ -19,7 +19,9 @@ explicit test and operational owner.
 | `COM_RESET_CONNECTION` | Supported | Clears per-client prepared statement state |
 | `COM_STMT_PREPARE` | Supported | Statement IDs, parameter count, basic column count |
 | `COM_STMT_EXECUTE` | Supported | Bound scalar parameters for query and exec statements |
+| Prepared result rows | Supported | Binary row packets for `COM_STMT_EXECUTE` result sets |
 | `COM_STMT_CLOSE` / `COM_STMT_RESET` | Supported | Statement lifecycle |
+| Go `database/sql` driver | Supported baseline | `github.com/go-sql-driver/mysql` ping, text query, prepared insert, prepared select |
 
 ## Prepared Statement Parameters
 
@@ -43,14 +45,14 @@ packets may reuse the cached parameter types for the same prepared statement.
 | Temporal binary parameters | Rejected with an unsupported parameter type error |
 | `COM_STMT_SEND_LONG_DATA` | Unsupported command |
 | Server-side cursors | Cursor flags are not implemented |
-| Binary result-row protocol | Prepared statement results use the existing text result-set path |
 | Rich column metadata | Column definitions use coarse string-like metadata |
 | Session variables | Common initialization queries are handled, broad MySQL semantics are not complete |
-| External client matrix | In-repo protocol/e2e tests exist; each production driver/ORM still needs validation |
+| External client matrix | Go `database/sql` + `go-sql-driver/mysql` is covered; each additional production driver/ORM still needs validation |
 
 ## Release Checks
 
 ```bash
 go test ./pkg/protocol -run 'TestHandleStmt|TestPreparedStmt|TestCountPreparedParams' -count=1
 go test ./test -run 'TestMySQLPreparedStatementExecuteWithParameters|TestMySQL' -count=1
+go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE2E' -count=1
 ```

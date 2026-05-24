@@ -26,6 +26,7 @@ go test ./pkg/engine -run 'TestIncrementalBackupRestoreOpensAsDatabase|TestProdu
 go test ./test -run 'TestSQLCompatibility' -count=1
 go test ./pkg/protocol -run 'TestHandleStmt|TestPreparedStmt|TestCountPreparedParams' -count=1
 go test ./test -run 'TestMySQLPreparedStatementExecuteWithParameters|TestMySQL' -count=1
+go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE2E' -count=1
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
 go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count=1
 go test ./pkg/engine -run TestVectorIndexPersistsAcrossReopen -count=1

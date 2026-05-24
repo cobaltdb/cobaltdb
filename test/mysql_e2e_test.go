@@ -365,11 +365,28 @@ func (c *mysqlTestClient) readResultSet() ([]string, [][]string, error) {
 			break
 		}
 
-		// Parse row data (text protocol - length-encoded strings)
+		// Parse row data. COM_QUERY returns text-protocol rows, while
+		// COM_STMT_EXECUTE returns binary-protocol rows.
 		row := make([]string, 0, colCount)
 		offset := 0
+		nullBitmap := []byte(nil)
+		if rowPayload[0] == 0x00 {
+			nullBitmapLen := (colCount + 7 + 2) / 8
+			if len(rowPayload) < 1+nullBitmapLen {
+				return nil, nil, fmt.Errorf("malformed binary row")
+			}
+			nullBitmap = rowPayload[1 : 1+nullBitmapLen]
+			offset = 1 + nullBitmapLen
+		}
 		for j := 0; j < colCount && offset < len(rowPayload); j++ {
-			if rowPayload[offset] == 0xfb {
+			if nullBitmap != nil {
+				bit := j + 2
+				if nullBitmap[bit/8]&(1<<uint(bit%8)) != 0 {
+					row = append(row, "NULL")
+					continue
+				}
+			}
+			if nullBitmap == nil && rowPayload[offset] == 0xfb {
 				row = append(row, "NULL")
 				offset++
 			} else {

@@ -440,8 +440,9 @@ func (c *MySQLClient) sendHandshake() error {
 	// Status flags
 	pkt = append(pkt, 0x02, 0x00)
 
-	// Capability flags upper
-	pkt = append(pkt, 0xff, 0x81)
+	// Capability flags upper. Do not advertise CLIENT_DEPRECATE_EOF because
+	// this server still terminates metadata/result sets with EOF packets.
+	pkt = append(pkt, 0xff, 0x80)
 
 	// Auth plugin data length
 	pkt = append(pkt, 0x15)
@@ -1214,7 +1215,7 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	pkt = append(pkt, 0x00)
 	pkt = append(pkt, 0x00, 0x00)
 
-	seq := byte(0)
+	seq := c.sequence + 1
 	if err := c.writePacket(pkt, seq); err != nil {
 		return err
 	}
@@ -1400,7 +1401,7 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 	rows, err := c.server.db.Query(ctx, stmt.sql, args...)
 	if err == nil {
 		defer rows.Close()
-		return c.sendResultSetFromRows(rows)
+		return c.sendBinaryResultSetFromRows(rows)
 	}
 
 	result, err := c.server.db.Exec(ctx, stmt.sql, args...)
@@ -1418,6 +1419,75 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 	}
 
 	return c.sendOKPacket(rowsAffected, lastInsertID)
+}
+
+// sendBinaryResultSetFromRows sends a MySQL binary-protocol result set for
+// COM_STMT_EXECUTE. Metadata packets match the text protocol; row packets use
+// the binary row header and NULL bitmap required by prepared statements.
+func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
+	if rows == nil {
+		return c.sendOKPacket(0, 0)
+	}
+	columns := rows.Columns()
+	seq := byte(1)
+
+	countPkt := appendLenEncInt(nil, uint64(len(columns)))
+	if err := c.writePacket(countPkt, seq); err != nil {
+		return err
+	}
+	seq++
+
+	for _, colName := range columns {
+		pkt := c.buildColumnDefPacket(colName)
+		if err := c.writePacket(pkt, seq); err != nil {
+			return err
+		}
+		seq++
+	}
+
+	if err := c.sendEOFPacket(seq); err != nil {
+		return err
+	}
+	seq++
+
+	var scanErrors int
+	for rows.Next() {
+		row := make([]interface{}, len(columns))
+		dest := make([]interface{}, len(columns))
+		for i := range dest {
+			dest[i] = &row[i]
+		}
+		if err := rows.Scan(dest...); err != nil {
+			scanErrors++
+			continue
+		}
+		if err := c.writePacket(c.buildBinaryRowPacket(row), seq); err != nil {
+			return err
+		}
+		seq++
+	}
+	_ = scanErrors
+
+	return c.sendEOFPacket(seq)
+}
+
+func (c *MySQLClient) buildBinaryRowPacket(row []interface{}) []byte {
+	nullBitmapLen := (len(row) + 7 + 2) / 8
+	pkt := make([]byte, 1, 1+nullBitmapLen+len(row)*8)
+	pkt[0] = 0x00
+	nullBitmap := make([]byte, nullBitmapLen)
+	var values []byte
+	for i, val := range row {
+		if val == nil {
+			bit := i + 2
+			nullBitmap[bit/8] |= 1 << uint(bit%8)
+			continue
+		}
+		values = appendLenEncString(values, valueToWireString(val))
+	}
+	pkt = append(pkt, nullBitmap...)
+	pkt = append(pkt, values...)
+	return pkt
 }
 
 func (c *MySQLClient) handleStmtClose(data []byte) error {

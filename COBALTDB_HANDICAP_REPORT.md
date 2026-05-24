@@ -1,7 +1,7 @@
 # CobaltDB Production Readiness Report
 
 **Date:** 2026-05-24
-**Scope:** Local repository review, test gates, race testing, recovery drills, backup drills, SQL parser hardening, MySQL prepared statement hardening, write-latency benchmark gating, replication disconnect failure injection, vector index persistence certification, FDW materialization limits, procedure/trigger semantics certification, and operations documentation.
+**Scope:** Local repository review, test gates, race testing, recovery drills, backup drills, SQL parser hardening, MySQL prepared statement hardening, external MySQL driver certification, write-latency benchmark gating, replication disconnect failure injection, vector index persistence certification, FDW materialization limits, procedure/trigger semantics certification, and operations documentation.
 **Status:** Production-oriented single-node candidate. Not yet certified for automated HA/failover or strict MySQL wire compatibility.
 
 ## Executive Summary
@@ -19,7 +19,8 @@ Current readiness estimate:
 | Bounded soak/load drill | Added, including explicit txns, checkpoint, backup, source reopen, restore reopen |
 | SQL compatibility baseline | Added for supported and unsupported syntax surface |
 | Strict SQL parsing mode | Added as opt-in production mode |
-| MySQL prepared statements | Parameterized `COM_STMT_EXECUTE` covered for core scalar types |
+| MySQL prepared statements | Parameterized `COM_STMT_EXECUTE` covered for core scalar types and binary result rows |
+| External MySQL driver | `database/sql` + `github.com/go-sql-driver/mysql` baseline covered |
 | Benchmark regression gate | Added via `scripts/benchmark-gate.sh`, now including write p95/p99 under readers |
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
 | Vector index persistence | HNSW metadata persists on create, reopen, and drop |
@@ -29,7 +30,7 @@ Current readiness estimate:
 | HA/failover certification | Not ready |
 | Strict MySQL protocol compatibility | Not ready |
 
-**Production readiness level:** about **91/100** for single-node production-candidate use, assuming documented constraints are acceptable. It is **not** a 95+/100 database for high-concurrency OLTP, automatic failover, or broad MySQL client compatibility yet.
+**Production readiness level:** about **92/100** for single-node production-candidate use, assuming documented constraints are acceptable. It is **not** a 95+/100 database for high-concurrency OLTP, automatic failover, or broad MySQL client/ORM compatibility yet.
 
 ## Work Completed In This Pass
 
@@ -50,7 +51,8 @@ Recent hardening commits:
 | `ffef1b4` | Replication | Added master-disconnect failure injection and HA/failover boundary doc |
 | `784c699` | Vector indexes | Added HNSW metadata persistence fixes and reopen/drop drills |
 | `6999583` | FDW | Added CSV streaming-read materialization limits and SQL-level limit drill |
-| Current iteration | Procedures/triggers | Added `CALL` placeholder/arity fixes and BEFORE/AFTER trigger semantics certification |
+| `1225721` | Procedures/triggers | Added `CALL` placeholder/arity fixes and BEFORE/AFTER trigger semantics certification |
+| Current iteration | MySQL compatibility | Added real Go MySQL driver baseline and fixed prepared-statement packet compatibility |
 
 Validation performed during this pass:
 
@@ -65,6 +67,7 @@ go test ./test -run 'TestSQLCompatibility' -count=1
 go test ./pkg/query ./pkg/engine -run 'TestParseStrict|TestStrictSQL|TestDefaultSQLParsing' -count=1
 go test ./pkg/protocol -run 'TestCountPreparedParams|TestPreparedStmtParseExecuteArgs|TestHandleStmtPrepare|TestHandleStmtExecute' -count=1
 go test ./test -run TestMySQLPreparedStatementExecuteWithParameters -count=1
+go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE2E' -count=1
 go test ./pkg/engine -run '^$' -bench BenchmarkWriteLatencyUnderReaders -benchtime=10x -count=1
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
 go test -race ./pkg/replication -run TestSlaveStatusClearsConnectionOnMasterDisconnect -count=1
@@ -132,9 +135,10 @@ The server supports useful MySQL protocol paths, but broad client compatibility 
 
 Known gaps:
 
-- Prepared statement execution now supports core scalar binary parameters, but temporal parameters, long-data streaming, cursors, and binary result rows are not certified.
+- Prepared statement execution now supports core scalar binary parameters and binary result rows, but temporal parameters, long-data streaming, cursors, and richer metadata are not certified.
 - Unsupported MySQL commands return simplified errors.
 - Session variables and advanced MySQL metadata flows are incomplete.
+- The Go MySQL driver is covered; additional ORMs and non-Go drivers still require explicit certification.
 
 Production stance:
 
@@ -198,7 +202,7 @@ Block release on:
 Priority order:
 
 1. Catalog lock granularity improvements.
-2. External MySQL driver/ORM certification runs.
+2. Additional MySQL ORM and non-Go driver certification runs.
 3. HA consensus, fencing, and promotion certification.
 4. Large-scale Vector/HNSW rebuild and backup/restore certification.
 5. Streaming FDW cursor interface and pushdown support.
