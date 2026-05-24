@@ -72,6 +72,7 @@ Recent hardening commits:
 | `ba12f97` | Catalog locking | Released simple SELECT post-processing from the catalog read lock and added ordered-reader latency gate |
 | `3db447c` | MySQL compatibility | Added binary temporal prepared parameter decoding and wire-level e2e coverage |
 | `758cad1` | MySQL compatibility | Added `COM_STMT_SEND_LONG_DATA` support and wire-level prepared long-data coverage |
+| `b53457a` | MySQL compatibility | Reject unsupported prepared cursor flags explicitly and preserve normal re-execute behavior |
 
 Validation performed during this pass:
 
@@ -90,6 +91,7 @@ go test ./pkg/protocol -run 'TestPreparedStmtParseExecuteTemporalArgs|TestPrepar
 go test ./test -run 'TestMySQLPreparedStatement(ExecuteWithParameters|TemporalParameters)|TestMySQL' -count=1
 go test ./pkg/protocol -run 'TestHandleStmtExecute|TestHandleStmtReset|TestPreparedStmtParseExecute' -count=1
 go test ./test -run 'TestMySQLPreparedStatement(ExecuteWithParameters|TemporalParameters|LongData)|TestMySQL' -count=1
+go test ./test -run 'TestMySQLPreparedStatement(CursorFlagRejected|ExecuteWithParameters|TemporalParameters|LongData)|TestMySQL' -count=1
 go test ./pkg/protocol ./test -count=1
 go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE2E' -count=1
 go test ./pkg/engine -run '^$' -bench 'BenchmarkWriteLatencyUnder(Readers|OrderedReaders)' -benchtime=10x -count=1 -benchmem
@@ -173,7 +175,7 @@ The server supports useful MySQL protocol paths, but broad client compatibility 
 
 Known gaps:
 
-- Prepared statement execution now supports core scalar and temporal binary parameters, long-data TEXT/BLOB parameters, and binary result rows, but cursors and richer metadata are not certified.
+- Prepared statement execution now supports core scalar and temporal binary parameters, long-data TEXT/BLOB parameters, and binary result rows; unsupported cursor flags are explicitly rejected, while cursor fetch lifecycle and richer metadata are not certified.
 - Unsupported MySQL commands return simplified errors.
 - Session variables and advanced MySQL metadata flows are incomplete.
 - The Go MySQL driver is covered; additional ORMs and non-Go drivers still require explicit certification.
