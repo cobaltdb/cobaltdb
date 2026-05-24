@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -31,6 +32,37 @@ func TestBufferPoolNewPage(t *testing.T) {
 
 	// Page ID can be 0 (meta page is page 0)
 	// Just verify we got a valid page
+}
+
+func TestBufferPoolOperationsAfterClose(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(10, backend)
+
+	page, err := pool.NewPage(PageTypeLeaf)
+	if err != nil {
+		t.Fatalf("Failed to create page: %v", err)
+	}
+	page.SetDirty(true)
+
+	if err := pool.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if err := pool.Close(); err != nil {
+		t.Fatalf("second Close should be idempotent: %v", err)
+	}
+
+	if _, err := pool.NewPage(PageTypeLeaf); !errors.Is(err, ErrBufferPoolClosed) {
+		t.Fatalf("expected ErrBufferPoolClosed from NewPage after close, got %v", err)
+	}
+	if _, err := pool.GetPage(page.ID()); !errors.Is(err, ErrBufferPoolClosed) {
+		t.Fatalf("expected ErrBufferPoolClosed from GetPage after close, got %v", err)
+	}
+	if err := pool.FlushAll(); !errors.Is(err, ErrBufferPoolClosed) {
+		t.Fatalf("expected ErrBufferPoolClosed from FlushAll after close, got %v", err)
+	}
+	if err := pool.FlushDirty(); !errors.Is(err, ErrBufferPoolClosed) {
+		t.Fatalf("expected ErrBufferPoolClosed from FlushDirty after close, got %v", err)
+	}
 }
 
 func TestBufferPoolGetPage(t *testing.T) {

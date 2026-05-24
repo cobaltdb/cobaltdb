@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	ErrPageNotFound    = errors.New("page not found")
-	ErrBufferFull      = errors.New("buffer pool is full")
-	ErrPageIDExhausted = errors.New("page ID space exhausted")
+	ErrPageNotFound     = errors.New("page not found")
+	ErrBufferFull       = errors.New("buffer pool is full")
+	ErrPageIDExhausted  = errors.New("page ID space exhausted")
+	ErrBufferPoolClosed = errors.New("buffer pool is closed")
 )
 
 // lruTouchThreshold controls how often LRU position is updated on cache hits.
@@ -86,6 +87,7 @@ type BufferPool struct {
 	nextPageID uint32 // next available page ID for allocation
 	stats      *bufferPoolStatsCollector
 	initErr    error
+	closed     bool
 
 	// Background flusher
 	flushInterval time.Duration
@@ -166,6 +168,10 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 
 	// Fast path: check if page is in cache
 	bp.mu.RLock()
+	if bp.closed {
+		bp.mu.RUnlock()
+		return nil, ErrBufferPoolClosed
+	}
 	if p, ok := bp.pages[pageID]; ok {
 		bp.mu.RUnlock()
 		bp.touchLRU(p)
@@ -178,6 +184,10 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 	// Slow path: load from disk
 	bp.stats.recordMiss()
 	bp.mu.Lock()
+	if bp.closed {
+		bp.mu.Unlock()
+		return nil, ErrBufferPoolClosed
+	}
 
 	// Double-check after acquiring write lock
 	if p, ok := bp.pages[pageID]; ok {
@@ -229,6 +239,9 @@ func (bp *BufferPool) NewPage(pageType PageType) (*CachedPage, error) {
 
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
+	if bp.closed {
+		return nil, ErrBufferPoolClosed
+	}
 
 	// Use next available page ID
 	if bp.nextPageID == 0 {
@@ -281,6 +294,9 @@ func (bp *BufferPool) FlushPage(page *CachedPage) error {
 func (bp *BufferPool) FlushAll() error {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
+	if bp.closed {
+		return ErrBufferPoolClosed
+	}
 
 	for _, page := range bp.pages {
 		if err := bp.FlushPage(page); err != nil {
@@ -299,6 +315,10 @@ func (bp *BufferPool) FlushAll() error {
 // the flush+sync window.
 func (bp *BufferPool) FlushDirty() error {
 	bp.mu.RLock()
+	if bp.closed {
+		bp.mu.RUnlock()
+		return ErrBufferPoolClosed
+	}
 	dirty := make([]*CachedPage, 0, len(bp.pages))
 	for _, page := range bp.pages {
 		if page.IsDirty() {
@@ -397,9 +417,20 @@ func (bp *BufferPool) evict() error {
 // Close stops the background flusher, flushes all pages, and closes the buffer pool
 func (bp *BufferPool) Close() error {
 	bp.stopBackgroundFlusher()
-	if err := bp.FlushAll(); err != nil {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	if bp.closed {
+		return nil
+	}
+	for _, page := range bp.pages {
+		if err := bp.FlushPage(page); err != nil {
+			return err
+		}
+	}
+	if err := bp.backend.Sync(); err != nil {
 		return err
 	}
+	bp.closed = true
 	return nil
 }
 
