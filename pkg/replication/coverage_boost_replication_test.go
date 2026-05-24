@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1024,6 +1025,14 @@ func TestSendSnapshotLockedErrors(t *testing.T) {
 	}
 	if err := m.sendSnapshotLocked(slave, 1); err == nil {
 		t.Fatal("expected error when OnSnapshot fails")
+	}
+
+	// OnSnapshot panic
+	m.OnSnapshot = func() ([]byte, error) {
+		panic("snapshot panic")
+	}
+	if err := m.sendSnapshotLocked(slave, 1); err == nil || !strings.Contains(err.Error(), "snapshot callback panic") {
+		t.Fatalf("expected panic error when OnSnapshot panics, got %v", err)
 	}
 
 	// Snapshot too large

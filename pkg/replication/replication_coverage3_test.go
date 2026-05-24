@@ -71,6 +71,27 @@ func TestApplyWALDataWithError(t *testing.T) {
 	}
 }
 
+func TestApplyWALDataCallbackPanicReturnsError(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync})
+
+	entries := []*WALEntry{
+		{LSN: 1, Timestamp: time.Now(), Data: []byte("test1"), Checksum: calculateCRC32([]byte("test1"))},
+	}
+	data, _ := encodeWALEntries(entries)
+
+	mgr.OnApply = func(entry *WALEntry) error {
+		panic("apply panic")
+	}
+
+	err := mgr.applyWALDataBytes(data)
+	if err == nil || !strings.Contains(err.Error(), "apply callback panic") {
+		t.Fatalf("expected callback panic error, got %v", err)
+	}
+	if mgr.lastApplied != 0 {
+		t.Fatalf("lastApplied should not advance after callback panic, got %d", mgr.lastApplied)
+	}
+}
+
 // TestApplyWALDataInvalidData tests applyWALData with invalid data
 func TestApplyWALDataInvalidData(t *testing.T) {
 	mgr := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync})
@@ -301,6 +322,42 @@ func TestReadMasterFrameAppliesSnapshot(t *testing.T) {
 	if got := string(conn.writeData); got != "ACK 13\n" {
 		t.Fatalf("Expected ACK 13, got %q", got)
 	}
+}
+
+func TestReadMasterFrameApplySnapshotPanicReturnsError(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave})
+	mgr.masterConn = &mockConn{}
+	mgr.OnApplySnapshot = func(data []byte, lsn uint64) error {
+		panic("snapshot panic")
+	}
+
+	reader := bufio.NewReader(strings.NewReader("SNAPSHOT 13 7\npayload"))
+	err := mgr.readMasterFrame(reader)
+	if err == nil || !strings.Contains(err.Error(), "apply snapshot callback panic") {
+		t.Fatalf("expected apply snapshot panic error, got %v", err)
+	}
+	if mgr.lastApplied != 0 {
+		t.Fatalf("lastApplied should not advance after snapshot panic, got %d", mgr.lastApplied)
+	}
+}
+
+func TestReplicateWALOnLagPanicRecovered(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	mgr.ReplicateWALEntry([]byte("test"))
+
+	mw := &mockWriter{failAfter: 0}
+	slave := &SlaveConnection{
+		ID:       "lagging-slave",
+		Writer:   bufio.NewWriter(mw),
+		LastLSN:  0,
+		LastPing: time.Now().Add(-time.Hour),
+	}
+	mgr.slaves["lagging-slave"] = slave
+	mgr.OnLag = func(slave string, lag time.Duration) {
+		panic("lag panic")
+	}
+
+	mgr.replicateWAL()
 }
 
 func TestReceiveResumeRequest(t *testing.T) {

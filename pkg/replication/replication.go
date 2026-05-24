@@ -226,6 +226,59 @@ type replicationState struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+func (m *Manager) callOnSnapshot() (data []byte, err error) {
+	if m.OnSnapshot == nil {
+		return nil, fmt.Errorf("snapshot provider not configured")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			data = nil
+			err = fmt.Errorf("replication snapshot callback panic: %v", r)
+		}
+	}()
+	return m.OnSnapshot()
+}
+
+func (m *Manager) callOnApplySnapshot(data []byte, lsn uint64) (err error) {
+	if m.OnApplySnapshot == nil {
+		return nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("replication apply snapshot callback panic: %v", r)
+		}
+	}()
+	return m.OnApplySnapshot(data, lsn)
+}
+
+func (m *Manager) callOnApply(entry *WALEntry) (err error) {
+	if m.OnApply == nil {
+		return nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("replication apply callback panic: %v", r)
+		}
+	}()
+	return m.OnApply(entry)
+}
+
+func (m *Manager) callOnLag(slave string, lag time.Duration) {
+	if m.OnLag == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	m.OnLag(slave, lag)
+}
+
+func (m *Manager) callOnDisconnect(peer string, err error) {
+	if m.OnDisconnect == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	m.OnDisconnect(peer, err)
+}
+
 // NewManager creates a new replication manager
 func NewManager(config *Config) *Manager {
 	if config == nil {
@@ -409,9 +462,7 @@ func (m *Manager) handleSlave(conn net.Conn) {
 		m.mu.Unlock()
 		conn.Close()
 
-		if m.OnDisconnect != nil {
-			m.OnDisconnect(slaveID, nil)
-		}
+		m.callOnDisconnect(slaveID, nil)
 	}()
 
 	if err := m.sendInitialSnapshot(slave, resumeLSN); err != nil {
@@ -587,7 +638,7 @@ func (m *Manager) sendSnapshotLocked(slave *SlaveConnection, lsn uint64) error {
 		return fmt.Errorf("snapshot provider not configured")
 	}
 
-	data, err := m.OnSnapshot()
+	data, err := m.callOnSnapshot()
 	if err != nil {
 		return fmt.Errorf("failed to create replication snapshot: %w", err)
 	}
@@ -705,12 +756,10 @@ func (m *Manager) replicateWAL() {
 		}
 		if err := m.sendWALToSlave(slave, data); err != nil {
 			// Mark slave as lagging
-			if m.OnLag != nil {
-				slave.mu.Lock()
-				lastPing := slave.LastPing
-				slave.mu.Unlock()
-				m.OnLag(slave.ID, time.Since(lastPing))
-			}
+			slave.mu.Lock()
+			lastPing := slave.LastPing
+			slave.mu.Unlock()
+			m.callOnLag(slave.ID, time.Since(lastPing))
 		}
 	}
 }
@@ -816,9 +865,7 @@ func (m *Manager) replicateFromMasterWithReader(reader *bufio.Reader) {
 		}
 
 		if err := m.readMasterFrame(reader); err != nil {
-			if m.OnDisconnect != nil {
-				m.OnDisconnect("master", err)
-			}
+			m.callOnDisconnect("master", err)
 			return
 		}
 	}
@@ -877,10 +924,8 @@ func (m *Manager) handleSnapshotMessage(reader *bufio.Reader, msg string) error 
 		return fmt.Errorf("failed to read replication snapshot: %w", err)
 	}
 
-	if m.OnApplySnapshot != nil {
-		if err := m.OnApplySnapshot(data, lsn); err != nil {
-			return err
-		}
+	if err := m.callOnApplySnapshot(data, lsn); err != nil {
+		return err
 	}
 
 	atomic.StoreUint64(&m.lastApplied, lsn)
@@ -946,10 +991,8 @@ func (m *Manager) applyWALDataBytes(data []byte) error {
 			continue
 		}
 
-		if m.OnApply != nil {
-			if err := m.OnApply(entry); err != nil {
-				return err
-			}
+		if err := m.callOnApply(entry); err != nil {
+			return err
 		}
 
 		atomic.StoreUint64(&m.lastApplied, entry.LSN)
