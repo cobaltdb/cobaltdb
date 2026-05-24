@@ -112,6 +112,53 @@ func TestCacheGetSet(t *testing.T) {
 	}
 }
 
+func TestCacheCopiesValuesOnSetAndGet(t *testing.T) {
+	config := DefaultConfig()
+	cache := New(config)
+	defer cache.Close()
+
+	sql := "SELECT payload FROM events WHERE id = ?"
+	args := []interface{}{[]byte("arg")}
+	columns := []string{"payload"}
+	rows := [][]interface{}{{[]byte("cached")}}
+	tableDeps := []string{"events"}
+
+	cache.Set(sql, args, columns, rows, tableDeps)
+	args[0].([]byte)[0] = 'X'
+	columns[0] = "mutated"
+	rows[0][0].([]byte)[0] = 'X'
+	tableDeps[0] = "mutated"
+
+	entry, found := cache.Get(sql, []interface{}{[]byte("arg")})
+	if !found {
+		t.Fatal("Should find cached entry")
+	}
+	if entry.Columns[0] != "payload" {
+		t.Fatalf("cached columns should not reflect caller mutation, got %q", entry.Columns[0])
+	}
+	if got := string(entry.Rows[0][0].([]byte)); got != "cached" {
+		t.Fatalf("cached row should not reflect caller mutation, got %q", got)
+	}
+
+	entry.Columns[0] = "changed"
+	entry.Rows[0][0].([]byte)[0] = 'Y'
+	entry.TableDeps[0] = "changed"
+
+	entry, found = cache.Get(sql, []interface{}{[]byte("arg")})
+	if !found {
+		t.Fatal("Should still find cached entry")
+	}
+	if entry.Columns[0] != "payload" {
+		t.Fatalf("cache entry should not reflect returned column mutation, got %q", entry.Columns[0])
+	}
+	if got := string(entry.Rows[0][0].([]byte)); got != "cached" {
+		t.Fatalf("cache entry should not reflect returned row mutation, got %q", got)
+	}
+	if entry.TableDeps[0] != "events" {
+		t.Fatalf("cache entry should not reflect returned deps mutation, got %q", entry.TableDeps[0])
+	}
+}
+
 func TestCacheMiss(t *testing.T) {
 	config := DefaultConfig()
 	cache := New(config)

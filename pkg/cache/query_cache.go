@@ -133,24 +133,23 @@ func (c *Cache) Get(sql string, args []interface{}) (*Entry, bool) {
 
 	key := generateKey(sql, args)
 
-	c.mu.RLock()
+	c.mu.Lock()
 	entry, exists := c.entries[key]
-	c.mu.RUnlock()
-
 	if !exists {
+		c.mu.Unlock()
 		atomic.AddUint64(&c.misses, 1)
 		return nil, false
 	}
 
 	// Check if expired
 	if c.config.TTL > 0 && time.Since(entry.CreatedAt) > c.config.TTL {
-		c.Delete(key)
+		c.deleteLocked(key)
+		c.mu.Unlock()
 		atomic.AddUint64(&c.misses, 1)
 		return nil, false
 	}
 
 	// Update access time and hit count
-	c.mu.Lock()
 	entry.AccessedAt = time.Now()
 	entry.HitCount++
 
@@ -158,10 +157,11 @@ func (c *Cache) Get(sql string, args []interface{}) (*Entry, bool) {
 	if elem, ok := c.elemMap[key]; ok {
 		c.lruList.MoveToFront(elem)
 	}
+	entryCopy := cloneEntry(entry)
 	c.mu.Unlock()
 
 	atomic.AddUint64(&c.hits, 1)
-	return entry, true
+	return entryCopy, true
 }
 
 // Set stores a result in the cache
@@ -205,14 +205,14 @@ func (c *Cache) Set(sql string, args []interface{}, columns []string, rows [][]i
 	entry := &Entry{
 		Key:        key,
 		SQL:        sql,
-		Args:       args,
-		Columns:    columns,
-		Rows:       rows,
+		Args:       cloneValues(args),
+		Columns:    cloneStrings(columns),
+		Rows:       cloneRows(rows),
 		Size:       size,
 		CreatedAt:  time.Now(),
 		AccessedAt: time.Now(),
 		HitCount:   0,
-		TableDeps:  tableDeps,
+		TableDeps:  cloneStrings(tableDeps),
 	}
 
 	// Check max entries limit
@@ -236,7 +236,10 @@ func (c *Cache) Set(sql string, args []interface{}, columns []string, rows [][]i
 func (c *Cache) Delete(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.deleteLocked(key)
+}
 
+func (c *Cache) deleteLocked(key string) {
 	if entry, exists := c.entries[key]; exists {
 		if elem, ok := c.elemMap[key]; ok {
 			c.lruList.Remove(elem)
@@ -414,6 +417,61 @@ func (c *Cache) calculateHitRate() float64 {
 	}
 
 	return float64(hits) / float64(total) * 100.0
+}
+
+func cloneEntry(entry *Entry) *Entry {
+	if entry == nil {
+		return nil
+	}
+	copy := *entry
+	copy.Args = cloneValues(entry.Args)
+	copy.Columns = cloneStrings(entry.Columns)
+	copy.Rows = cloneRows(entry.Rows)
+	copy.TableDeps = cloneStrings(entry.TableDeps)
+	return &copy
+}
+
+func cloneStrings(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func cloneValues(values []interface{}) []interface{} {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]interface{}, len(values))
+	for i, value := range values {
+		cloned[i] = cloneValue(value)
+	}
+	return cloned
+}
+
+func cloneRows(rows [][]interface{}) [][]interface{} {
+	if rows == nil {
+		return nil
+	}
+	cloned := make([][]interface{}, len(rows))
+	for i, row := range rows {
+		cloned[i] = cloneValues(row)
+	}
+	return cloned
+}
+
+func cloneValue(value interface{}) interface{} {
+	if bytes, ok := value.([]byte); ok {
+		if bytes == nil {
+			return []byte(nil)
+		}
+		cloned := make([]byte, len(bytes))
+		copy(cloned, bytes)
+		return cloned
+	}
+	return value
 }
 
 // sha256Pool recycles SHA256 hashers to avoid allocation per cache key.
