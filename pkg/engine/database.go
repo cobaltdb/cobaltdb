@@ -355,6 +355,13 @@ func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.State
 
 	// Cache the statement with O(1) LRU eviction
 	db.stmtMu.Lock()
+	if cached, exists := db.stmtCache[sql]; exists {
+		cached.lastUsed = time.Now().Unix()
+		cached.useCount++
+		db.stmtLRU.moveToFront(cached.elem)
+		db.stmtMu.Unlock()
+		return cached.stmt, nil
+	}
 	maxCacheSize := db.options.MaxStmtCacheSize
 	if maxCacheSize <= 0 {
 		maxCacheSize = 1000

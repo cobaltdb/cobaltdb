@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -482,6 +483,54 @@ func TestGetPreparedStatementCacheLimit(t *testing.T) {
 
 	// Cache should have been limited to 1000 entries
 	// Just verify no panic occurred
+}
+
+func TestGetPreparedStatementConcurrentMissKeepsSingleLRUEntry(t *testing.T) {
+	db, err := Open(":memory:", &Options{
+		InMemory:         true,
+		CacheSize:        1024,
+		MaxStmtCacheSize: 100,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	const sql = "SELECT 1"
+	var wg sync.WaitGroup
+	errCh := make(chan error, 64)
+	for i := 0; i < cap(errCh); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := db.getPreparedStatement(sql)
+			errCh <- err
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("getPreparedStatement failed: %v", err)
+		}
+	}
+
+	db.stmtMu.RLock()
+	defer db.stmtMu.RUnlock()
+	if got := len(db.stmtCache); got != 1 {
+		t.Fatalf("expected one cached statement, got %d", got)
+	}
+	nodes := 0
+	for e := db.stmtLRU.head; e != nil; e = e.next {
+		nodes++
+		if e.sql != sql {
+			t.Fatalf("unexpected LRU SQL %q", e.sql)
+		}
+	}
+	if nodes != 1 {
+		t.Fatalf("expected one LRU node for concurrent miss, got %d", nodes)
+	}
 }
 
 // TestOpenDiskBackendError tests Open with disk backend error
