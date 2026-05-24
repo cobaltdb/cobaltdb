@@ -8,9 +8,10 @@ predictably.
 
 Simple `WHERE` predicates of the form `column <op> literal_or_placeholder`,
 combined with `AND`, are now passed to streaming wrappers through
-`fdw.ScanOptions.Predicates`. Unsupported expressions are still evaluated by the
-local query engine, so pushdown remains advisory and correctness does not depend
-on wrapper-side filtering.
+`fdw.ScanOptions.Predicates`. The CSV wrapper applies safe equality and numeric
+range predicates when headers map predicate columns to CSV fields. Unsupported
+expressions are still evaluated by the local query engine, so pushdown remains
+advisory and correctness does not depend on wrapper-side filtering.
 
 ## CSV FDW Options
 

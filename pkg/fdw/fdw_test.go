@@ -347,6 +347,75 @@ func TestCSVWrapper_OpenScanProjectsHeaderColumns(t *testing.T) {
 	}
 }
 
+func TestCSVWrapper_OpenScanAppliesSafePredicates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "predicate.csv")
+	content := "id,name,score\n1,alice,95\n2,bob,87\n3,charlie,92\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer csv.Close()
+
+	cursor, err := csv.OpenScan("test", ScanOptions{
+		Columns: []string{"name"},
+		Predicates: []Predicate{
+			{Column: "score", Operator: ">=", Value: float64(90)},
+			{Column: "name", Operator: "!=", Value: "charlie"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("OpenScan failed: %v", err)
+	}
+	defer cursor.Close()
+
+	row, err := cursor.Next()
+	if err != nil {
+		t.Fatalf("Next failed: %v", err)
+	}
+	if !reflect.DeepEqual(row, []interface{}{"alice"}) {
+		t.Fatalf("unexpected predicate row: %v", row)
+	}
+	if _, err := cursor.Next(); err != io.EOF {
+		t.Fatalf("expected EOF after filtered row, got %v", err)
+	}
+}
+
+func TestCSVWrapper_OpenScanKeepsRowsForUnsafePredicate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unsafe-predicate.csv")
+	content := "id,name\n1,alice\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer csv.Close()
+
+	cursor, err := csv.OpenScan("test", ScanOptions{
+		Predicates: []Predicate{{Column: "name", Operator: ">", Value: float64(10)}},
+	})
+	if err != nil {
+		t.Fatalf("OpenScan failed: %v", err)
+	}
+	defer cursor.Close()
+
+	row, err := cursor.Next()
+	if err != nil {
+		t.Fatalf("unsafe predicate should not filter locally: %v", err)
+	}
+	if !reflect.DeepEqual(row, []interface{}{"1", "alice"}) {
+		t.Fatalf("unexpected row: %v", row)
+	}
+}
+
 func TestCSVWrapper_MaxBytesLimit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "large.csv")

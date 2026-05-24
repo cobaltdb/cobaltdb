@@ -29,6 +29,13 @@ type csvCursor struct {
 	returned   int
 	pending    []interface{}
 	projection []int
+	predicates []csvPredicate
+}
+
+type csvPredicate struct {
+	index    int
+	operator string
+	value    interface{}
 }
 
 // Name returns the FDW identifier.
@@ -115,6 +122,7 @@ func (c *CSVWrapper) OpenScan(table string, options ScanOptions) (RowCursor, err
 	}
 
 	cursor.projection = csvProjection(first, options.Columns)
+	cursor.predicates = csvPredicates(first, options.Predicates)
 	return cursor, nil
 }
 
@@ -159,11 +167,15 @@ func (c *csvCursor) Next() ([]interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
+		row := csvRecordToRow(record)
+		if !matchesCSVPredicates(row, c.predicates) {
+			continue
+		}
 		if c.maxRows > 0 && c.returned >= c.maxRows {
 			return nil, fmt.Errorf("csv FDW row limit exceeded: max_rows=%d", c.maxRows)
 		}
 		c.returned++
-		return projectCSVRow(csvRecordToRow(record), c.projection), nil
+		return projectCSVRow(row, c.projection), nil
 	}
 }
 
@@ -250,6 +262,80 @@ func projectCSVRow(row []interface{}, projection []int) []interface{} {
 		}
 	}
 	return projected
+}
+
+func csvPredicates(header []string, predicates []Predicate) []csvPredicate {
+	if len(predicates) == 0 {
+		return nil
+	}
+	indexByName := make(map[string]int, len(header))
+	for i, name := range header {
+		indexByName[name] = i
+	}
+	result := make([]csvPredicate, 0, len(predicates))
+	for _, predicate := range predicates {
+		idx, ok := indexByName[predicate.Column]
+		if !ok {
+			continue
+		}
+		result = append(result, csvPredicate{
+			index:    idx,
+			operator: predicate.Operator,
+			value:    predicate.Value,
+		})
+	}
+	return result
+}
+
+func matchesCSVPredicates(row []interface{}, predicates []csvPredicate) bool {
+	for _, predicate := range predicates {
+		if predicate.index < 0 || predicate.index >= len(row) {
+			continue
+		}
+		if !matchesCSVPredicate(row[predicate.index], predicate) {
+			return false
+		}
+	}
+	return true
+}
+
+func matchesCSVPredicate(cell interface{}, predicate csvPredicate) bool {
+	left := fmt.Sprint(cell)
+	if predicate.value == nil {
+		switch predicate.operator {
+		case "=":
+			return left == ""
+		case "!=":
+			return left != ""
+		default:
+			return true
+		}
+	}
+	right := fmt.Sprint(predicate.value)
+	switch predicate.operator {
+	case "=":
+		return left == right
+	case "!=":
+		return left != right
+	}
+
+	leftNum, leftErr := strconv.ParseFloat(left, 64)
+	rightNum, rightErr := strconv.ParseFloat(right, 64)
+	if leftErr != nil || rightErr != nil {
+		return true
+	}
+	switch predicate.operator {
+	case "<":
+		return leftNum < rightNum
+	case ">":
+		return leftNum > rightNum
+	case "<=":
+		return leftNum <= rightNum
+	case ">=":
+		return leftNum >= rightNum
+	default:
+		return true
+	}
 }
 
 func parsePositiveIntOption(options map[string]string, name string, defaultValue int) (int, error) {

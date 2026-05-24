@@ -25,7 +25,7 @@ Current readiness estimate:
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
 | HA readiness guards | API reports explicit blockers and refuses unsafe in-process promotion |
 | Vector index persistence | HNSW metadata persists across create, post-index DML, reopen, and backup/restore |
-| FDW streaming/pushdown groundwork | CSV scans expose cursor streaming; simple WHERE predicates are sent through `fdw.ScanOptions` |
+| FDW streaming/pushdown groundwork | CSV scans expose cursor streaming and apply safe simple predicates |
 | Procedure/trigger semantics | `CALL` placeholder args, exact arity, complex param substitution, and BEFORE/AFTER trigger row images are covered |
 | Operations runbook | Added |
 | HA/failover certification | Not ready |
@@ -57,7 +57,8 @@ Recent hardening commits:
 | `825b765` | HA boundary | Added failover readiness API and unsafe promotion guard |
 | `1270975` | Vector indexes | Added post-index DML persistence and backup/restore rebuild drill |
 | `2c67dd6` | FDW | Added streaming cursor API and CSV cursor implementation |
-| Current iteration | FDW pushdown | Added simple WHERE predicate extraction into streaming scan options |
+| `fa2a30e` | FDW pushdown | Added simple WHERE predicate extraction into streaming scan options |
+| Current iteration | FDW pushdown | Added safe CSV wrapper-side predicate filtering |
 
 Validation performed during this pass:
 
@@ -170,7 +171,7 @@ Some advanced features are broad but need workload-specific certification before
 
 - WASM SQL execution beyond selected paths.
 - Very large Vector/HNSW rebuild behavior beyond the 512-row backup/restore drill.
-- FDW still materializes rows into a temporary query-engine B-tree, but CSV scans now stream into that tree, receive advisory simple predicates, and have row/byte limits.
+- FDW still materializes rows into a temporary query-engine B-tree, but CSV scans now stream into that tree, apply safe advisory simple predicates, and have row/byte limits.
 - Procedure body result-set and mutable `OUT`/`INOUT` parameter semantics beyond the certified DML contract.
 - Composite/advanced constraint cases.
 
