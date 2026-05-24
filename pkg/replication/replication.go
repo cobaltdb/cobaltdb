@@ -301,6 +301,7 @@ func NewManager(config *Config) *Manager {
 func normalizeConfig(config *Config) *Config {
 	defaults := DefaultConfig()
 	normalized := *config
+	normalized.Slaves = append([]string(nil), config.Slaves...)
 	if normalized.MaxLag <= 0 {
 		normalized.MaxLag = defaults.MaxLag
 	}
@@ -1139,7 +1140,7 @@ func (m *Manager) ReplicateWALEntry(data []byte) error {
 	entry := &WALEntry{
 		LSN:       atomic.AddUint64(&m.currentLSN, 1),
 		Timestamp: time.Now(),
-		Data:      data,
+		Data:      append([]byte(nil), data...),
 		Checksum:  calculateCRC32(data),
 	}
 

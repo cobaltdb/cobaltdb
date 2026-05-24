@@ -907,6 +907,41 @@ func TestReplicateWALEntryMaster(t *testing.T) {
 	}
 }
 
+func TestReplicateWALEntryCopiesInputData(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+
+	data := []byte("stable data")
+	originalChecksum := calculateCRC32(data)
+	if err := mgr.ReplicateWALEntry(data); err != nil {
+		t.Fatalf("ReplicateWALEntry failed: %v", err)
+	}
+
+	data[0] = 'X'
+
+	entry := mgr.walBuffer[0]
+	if got := string(entry.Data); got != "stable data" {
+		t.Fatalf("entry data was mutated through caller slice: got %q", got)
+	}
+	if entry.Checksum != originalChecksum {
+		t.Fatalf("entry checksum changed: got %d, want %d", entry.Checksum, originalChecksum)
+	}
+}
+
+func TestNewManagerCopiesConfigSlaves(t *testing.T) {
+	slaves := []string{"slave-a"}
+	mgr := NewManager(&Config{
+		Role:   RoleMaster,
+		Mode:   ModeAsync,
+		Slaves: slaves,
+	})
+
+	slaves[0] = "mutated"
+
+	if got := mgr.config.Slaves[0]; got != "slave-a" {
+		t.Fatalf("manager config slaves was mutated through caller slice: got %q", got)
+	}
+}
+
 // TestReplicateWALEntryMultiple tests multiple entries
 func TestReplicateWALEntryMultiple(t *testing.T) {
 	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
