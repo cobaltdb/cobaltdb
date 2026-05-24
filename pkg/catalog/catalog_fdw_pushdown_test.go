@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"fmt"
 	"io"
 	"reflect"
 	"testing"
@@ -12,8 +13,9 @@ import (
 )
 
 type captureStreamingFDW struct {
-	options fdw.ScanOptions
-	rows    [][]interface{}
+	options    fdw.ScanOptions
+	rows       [][]interface{}
+	allColumns []string
 }
 
 func (m *captureStreamingFDW) Name() string { return "capture" }
@@ -25,9 +27,29 @@ func (m *captureStreamingFDW) Scan(table string, columns []string) ([][]interfac
 }
 func (m *captureStreamingFDW) OpenScan(table string, options fdw.ScanOptions) (fdw.RowCursor, error) {
 	m.options = options
-	return &sliceFDWCursor{rows: m.rows}, nil
+	return &sliceFDWCursor{rows: m.projectRows(options.Columns)}, nil
 }
 func (m *captureStreamingFDW) Close() error { return nil }
+
+func (m *captureStreamingFDW) projectRows(columns []string) [][]interface{} {
+	if len(columns) == 0 || len(m.allColumns) == 0 {
+		return m.rows
+	}
+	projected := make([][]interface{}, 0, len(m.rows))
+	for _, row := range m.rows {
+		out := make([]interface{}, 0, len(columns))
+		for _, col := range columns {
+			for idx, allCol := range m.allColumns {
+				if allCol == col && idx < len(row) {
+					out = append(out, row[idx])
+					break
+				}
+			}
+		}
+		projected = append(projected, out)
+	}
+	return projected
+}
 
 type sliceFDWCursor struct {
 	rows [][]interface{}
@@ -55,6 +77,7 @@ func TestFDWScanOptionsCarrySimpleWherePredicates(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	wrapper := &captureStreamingFDW{
+		allColumns: []string{"id", "name", "score"},
 		rows: [][]interface{}{
 			{int64(1), "alice", int64(95)},
 			{int64(2), "bob", int64(87)},
@@ -95,5 +118,59 @@ func TestFDWScanOptionsCarrySimpleWherePredicates(t *testing.T) {
 	}
 	if !reflect.DeepEqual(wrapper.options.Predicates, wantPredicates) {
 		t.Fatalf("predicates = %#v, want %#v", wrapper.options.Predicates, wantPredicates)
+	}
+}
+
+func TestFDWProjectionPushdownExpandsRowsForLocalEvaluation(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(4096, backend)
+	defer pool.Close()
+	tree, err := btree.NewBTree(pool)
+	if err != nil {
+		t.Fatalf("new btree: %v", err)
+	}
+	c := New(tree, pool, nil)
+
+	wrapper := &captureStreamingFDW{
+		allColumns: []string{"id", "name", "score"},
+		rows: [][]interface{}{
+			{int64(1), "alice", int64(95)},
+			{int64(2), "bob", int64(87)},
+		},
+	}
+	reg := fdw.NewRegistry()
+	reg.Register("capture", func() fdw.ForeignDataWrapper { return wrapper })
+	c.SetFDWRegistry(reg)
+
+	if err := c.CreateForeignTable(&query.CreateForeignTableStmt{
+		Table: "ext_users",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger},
+			{Name: "name", Type: query.TokenText},
+			{Name: "score", Type: query.TokenInteger},
+		},
+		Wrapper: "capture",
+	}); err != nil {
+		t.Fatalf("CreateForeignTable: %v", err)
+	}
+
+	parsed, err := query.Parse("SELECT name FROM ext_users WHERE score > 90 ORDER BY id")
+	if err != nil {
+		t.Fatalf("parse select: %v", err)
+	}
+	stmt := parsed.(*query.SelectStmt)
+	cols, rows, err := c.Select(stmt, nil)
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if !reflect.DeepEqual(cols, []string{"name"}) {
+		t.Fatalf("columns = %v, want [name]", cols)
+	}
+	if len(rows) != 1 || len(rows[0]) != 1 || fmt.Sprint(rows[0][0]) != "alice" {
+		t.Fatalf("rows = %v, want [[alice]]", rows)
+	}
+	wantColumns := []string{"name", "score", "id"}
+	if !reflect.DeepEqual(wrapper.options.Columns, wantColumns) {
+		t.Fatalf("scan columns = %v, want %v", wrapper.options.Columns, wantColumns)
 	}
 }

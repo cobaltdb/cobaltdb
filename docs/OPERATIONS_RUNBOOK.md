@@ -33,8 +33,8 @@ go test ./pkg/catalog -run TestVectorIndexMetadataPersistsOnCreateAndDrop -count
 go test ./pkg/engine -run 'TestVectorIndexPersistsAcrossReopen|TestVectorIndexLargeRebuildAndBackupRestore|TestVectorIndexThousandPlusMixedDMLReopen' -count=1
 go test ./pkg/fdw -count=1
 go test -race ./pkg/fdw -count=1
-go test ./pkg/catalog -run TestFDWScanOptionsCarrySimpleWherePredicates -count=1
-go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL' -count=1
+go test ./pkg/catalog -run 'TestFDWScanOptionsCarrySimpleWherePredicates|TestFDWProjectionPushdownExpandsRowsForLocalEvaluation' -count=1
+go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL|TestFDWCSVProjectionPushdownViaSQL' -count=1
 go test ./pkg/query -run TestParseCallProcedure -count=1
 go test ./test -run 'TestStoredProcedure|TestTrigger_BeforeAfterOrderAndRowImages|TestInsteadOfTrigger' -count=1
 ```

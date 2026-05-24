@@ -13,6 +13,11 @@ range predicates when headers map predicate columns to CSV fields. Unsupported
 expressions are still evaluated by the local query engine, so pushdown remains
 advisory and correctness does not depend on wrapper-side filtering.
 
+For simple single-table SELECT queries, the catalog also passes the needed
+SELECT/WHERE/ORDER BY columns through `fdw.ScanOptions.Columns`. Returned
+projected rows are expanded back to the full table shape before local SQL
+evaluation, preserving existing query semantics.
+
 ## CSV FDW Options
 
 | Option | Default | Meaning |
@@ -40,10 +45,11 @@ OPTIONS (
 ```bash
 go test ./pkg/fdw -count=1
 go test -race ./pkg/fdw -count=1
-go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL' -count=1
+go test ./pkg/catalog -run 'TestFDWScanOptionsCarrySimpleWherePredicates|TestFDWProjectionPushdownExpandsRowsForLocalEvaluation' -count=1
+go test ./integration -run 'TestFDWCSVSelect|TestFDWCSVMaxRowsLimitViaSQL|TestFDWCSVProjectionPushdownViaSQL' -count=1
 ```
 
 Remaining work:
 
-- End-to-end projection pushdown from SELECT lists into `fdw.ScanOptions`.
+- Broader projection pushdown for JOIN/GROUP BY queries.
 - Per-query memory accounting across FDW and local execution.

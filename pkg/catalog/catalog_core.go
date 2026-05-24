@@ -1552,6 +1552,7 @@ func (c *Catalog) getTableTreesForScanWithOptions(table *TableDef, scanOptions f
 		}
 
 		putRow := func(rowIndex int, row []interface{}) error {
+			row = expandFDWProjectedRow(row, cols, scanOptions.Columns)
 			key := []byte("fdw:" + strconv.Itoa(rowIndex))
 			val, err := encodeVersionedRow(row, nil)
 			if err != nil {
@@ -1619,6 +1620,37 @@ func (c *Catalog) getTableTreesForScanWithOptions(table *TableDef, scanOptions f
 		}
 	}
 	return trees, nil
+}
+
+func expandFDWProjectedRow(row []interface{}, allColumns []string, scanColumns []string) []interface{} {
+	if len(scanColumns) == 0 || fdwScanColumnsMatchAllColumns(scanColumns, allColumns) {
+		return row
+	}
+	expanded := make([]interface{}, len(allColumns))
+	for i, col := range scanColumns {
+		if i >= len(row) {
+			break
+		}
+		for dst, allCol := range allColumns {
+			if strings.EqualFold(allCol, col) {
+				expanded[dst] = row[i]
+				break
+			}
+		}
+	}
+	return expanded
+}
+
+func fdwScanColumnsMatchAllColumns(scanColumns []string, allColumns []string) bool {
+	if len(scanColumns) != len(allColumns) {
+		return false
+	}
+	for i := range allColumns {
+		if !strings.EqualFold(scanColumns[i], allColumns[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func exprToSQL(expr query.Expression) string {

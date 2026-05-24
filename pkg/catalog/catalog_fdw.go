@@ -101,7 +101,133 @@ func (c *Catalog) buildFDWScanOptions(stmt *query.SelectStmt, args []interface{}
 		return fdw.ScanOptions{}
 	}
 	return fdw.ScanOptions{
+		Columns:    collectFDWProjectionColumns(stmt),
 		Predicates: collectFDWPredicates(stmt.Where, stmt.From, args),
+	}
+}
+
+func collectFDWProjectionColumns(stmt *query.SelectStmt) []string {
+	if stmt == nil || len(stmt.Joins) > 0 || len(stmt.GroupBy) > 0 || stmt.Having != nil || stmt.Distinct {
+		return nil
+	}
+	ordered := make([]string, 0, len(stmt.Columns))
+	seen := make(map[string]struct{})
+	add := func(name string) {
+		if name == "" || name == "*" {
+			return
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		ordered = append(ordered, name)
+	}
+
+	for _, expr := range stmt.Columns {
+		if hasFDWStarExpr(expr) {
+			return nil
+		}
+		collectFDWExprColumns(expr, add)
+	}
+	collectFDWExprColumns(stmt.Where, add)
+	for _, orderBy := range stmt.OrderBy {
+		if orderBy != nil {
+			collectFDWExprColumns(orderBy.Expr, add)
+		}
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+	return ordered
+}
+
+func hasFDWStarExpr(expr query.Expression) bool {
+	switch e := expr.(type) {
+	case nil:
+		return false
+	case *query.StarExpr:
+		return true
+	case *query.AliasExpr:
+		return hasFDWStarExpr(e.Expr)
+	default:
+		return false
+	}
+}
+
+func collectFDWExprColumns(expr query.Expression, add func(string)) {
+	switch e := expr.(type) {
+	case nil:
+	case *query.Identifier:
+		if dotIdx := strings.IndexByte(e.Name, '.'); dotIdx > 0 && dotIdx < len(e.Name)-1 {
+			add(e.Name[dotIdx+1:])
+			return
+		}
+		add(e.Name)
+	case *query.ColumnRef:
+		add(e.Column)
+	case *query.QualifiedIdentifier:
+		add(e.Column)
+	case *query.AliasExpr:
+		collectFDWExprColumns(e.Expr, add)
+	case *query.BinaryExpr:
+		collectFDWExprColumns(e.Left, add)
+		collectFDWExprColumns(e.Right, add)
+	case *query.UnaryExpr:
+		collectFDWExprColumns(e.Expr, add)
+	case *query.FunctionCall:
+		for _, arg := range e.Args {
+			collectFDWExprColumns(arg, add)
+		}
+	case *query.JSONPathExpr:
+		collectFDWExprColumns(e.Column, add)
+	case *query.JSONContainsExpr:
+		collectFDWExprColumns(e.Column, add)
+		collectFDWExprColumns(e.Value, add)
+	case *query.InExpr:
+		collectFDWExprColumns(e.Expr, add)
+		for _, item := range e.List {
+			collectFDWExprColumns(item, add)
+		}
+	case *query.BetweenExpr:
+		collectFDWExprColumns(e.Expr, add)
+		collectFDWExprColumns(e.Lower, add)
+		collectFDWExprColumns(e.Upper, add)
+	case *query.LikeExpr:
+		collectFDWExprColumns(e.Expr, add)
+		collectFDWExprColumns(e.Pattern, add)
+		collectFDWExprColumns(e.Escape, add)
+	case *query.IsNullExpr:
+		collectFDWExprColumns(e.Expr, add)
+	case *query.CastExpr:
+		collectFDWExprColumns(e.Expr, add)
+	case *query.CaseExpr:
+		collectFDWExprColumns(e.Expr, add)
+		for _, when := range e.Whens {
+			if when == nil {
+				continue
+			}
+			collectFDWExprColumns(when.Condition, add)
+			collectFDWExprColumns(when.Result, add)
+		}
+		collectFDWExprColumns(e.Else, add)
+	case *query.WindowExpr:
+		for _, arg := range e.Args {
+			collectFDWExprColumns(arg, add)
+		}
+		for _, expr := range e.PartitionBy {
+			collectFDWExprColumns(expr, add)
+		}
+		for _, orderBy := range e.OrderBy {
+			if orderBy != nil {
+				collectFDWExprColumns(orderBy.Expr, add)
+			}
+		}
+	case *query.MatchExpr:
+		for _, col := range e.Columns {
+			collectFDWExprColumns(col, add)
+		}
+		collectFDWExprColumns(e.Pattern, add)
 	}
 }
 

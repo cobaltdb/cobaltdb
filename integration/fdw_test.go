@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -222,5 +223,48 @@ func TestFDWCSVMaxRowsLimitViaSQL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "row limit exceeded") {
 		t.Fatalf("Expected row limit error, got %v", err)
+	}
+}
+
+func TestFDWCSVProjectionPushdownViaSQL(t *testing.T) {
+	ctx := context.Background()
+	db, err := engine.Open(":memory:", engine.DefaultOptions())
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	dir := t.TempDir()
+	csvPath := filepath.Join(dir, "project.csv")
+	content := "id,name,score\n1,alice,95\n2,bob,87\n3,charlie,92\n"
+	if err := os.WriteFile(csvPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write CSV: %v", err)
+	}
+
+	_, err = db.Exec(ctx, fmt.Sprintf(
+		`CREATE FOREIGN TABLE ext_project (id INTEGER, name TEXT, score INTEGER) WRAPPER 'csv' OPTIONS (file '%s')`,
+		csvPath,
+	))
+	if err != nil {
+		t.Fatalf("Failed to create foreign table: %v", err)
+	}
+
+	rows, err := db.Query(ctx, `SELECT name FROM ext_project WHERE score > 90 ORDER BY id`)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		names = append(names, name)
+	}
+	want := []string{"alice", "charlie"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
 	}
 }
