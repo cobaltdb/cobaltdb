@@ -93,7 +93,7 @@ func (pc *PreparedCache) Get(id string) (*PreparedStatement, bool) {
 	// Update LastUsedAt for LRU tracking
 	stmt.LastUsedAt = time.Now()
 
-	return stmt, true
+	return clonePreparedStatement(stmt), true
 }
 
 // GetBySQL retrieves a prepared statement by its SQL text
@@ -123,7 +123,7 @@ func (pc *PreparedCache) Put(sql string, stmt Statement, paramCount int) *Prepar
 	}
 
 	pc.statements[id] = prepared
-	return prepared
+	return clonePreparedStatement(prepared)
 }
 
 // UpdateStats updates execution statistics for a prepared statement
@@ -178,9 +178,17 @@ func (pc *PreparedCache) GetAll() []*PreparedStatement {
 
 	result := make([]*PreparedStatement, 0, len(pc.statements))
 	for _, stmt := range pc.statements {
-		result = append(result, stmt)
+		result = append(result, clonePreparedStatement(stmt))
 	}
 	return result
+}
+
+func clonePreparedStatement(stmt *PreparedStatement) *PreparedStatement {
+	if stmt == nil {
+		return nil
+	}
+	cloned := *stmt
+	return &cloned
 }
 
 // evictLRU removes the least recently used statement

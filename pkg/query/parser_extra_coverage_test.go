@@ -261,17 +261,25 @@ func TestPreparedCache_UpdateStats(t *testing.T) {
 
 	ps := cache.Put("SELECT 1", &SelectStmt{}, 0)
 	cache.UpdateStats(ps.ID, 100*time.Millisecond)
-	if ps.UseCount != 1 {
-		t.Errorf("expected UseCount 1, got %d", ps.UseCount)
+	updated, ok := cache.Get(ps.ID)
+	if !ok {
+		t.Fatal("expected updated prepared statement")
 	}
-	if ps.AvgExecTime != 100*time.Millisecond {
-		t.Errorf("expected AvgExecTime 100ms, got %v", ps.AvgExecTime)
+	if updated.UseCount != 1 {
+		t.Errorf("expected UseCount 1, got %d", updated.UseCount)
+	}
+	if updated.AvgExecTime != 100*time.Millisecond {
+		t.Errorf("expected AvgExecTime 100ms, got %v", updated.AvgExecTime)
 	}
 
 	// Second update should use exponential moving average
 	cache.UpdateStats(ps.ID, 200*time.Millisecond)
-	if ps.UseCount != 2 {
-		t.Errorf("expected UseCount 2, got %d", ps.UseCount)
+	updated, ok = cache.Get(ps.ID)
+	if !ok {
+		t.Fatal("expected updated prepared statement after second update")
+	}
+	if updated.UseCount != 2 {
+		t.Errorf("expected UseCount 2, got %d", updated.UseCount)
 	}
 
 	// Non-existent ID should be a no-op
@@ -319,6 +327,38 @@ func TestPreparedCache_GetAll(t *testing.T) {
 	all := cache.GetAll()
 	if len(all) != 2 {
 		t.Errorf("expected 2 statements, got %d", len(all))
+	}
+}
+
+func TestPreparedCache_ReturnsIsolatedStatements(t *testing.T) {
+	cache := NewPreparedCache(10, 5*time.Minute)
+	defer cache.Close()
+
+	ps := cache.Put("SELECT 1", &SelectStmt{}, 0)
+	ps.SQL = "corrupted"
+	ps.UseCount = 99
+
+	got, ok := cache.Get(ps.ID)
+	if !ok {
+		t.Fatal("expected cached statement")
+	}
+	if got.SQL != "SELECT 1" {
+		t.Fatalf("Put returned mutable cache entry: SQL = %q", got.SQL)
+	}
+	if got.UseCount != 0 {
+		t.Fatalf("Put returned mutable cache entry: UseCount = %d", got.UseCount)
+	}
+
+	got.SQL = "changed"
+	all := cache.GetAll()
+	all[0].SQL = "changed again"
+
+	got, ok = cache.Get(ps.ID)
+	if !ok {
+		t.Fatal("expected cached statement after mutations")
+	}
+	if got.SQL != "SELECT 1" {
+		t.Fatalf("cache exposed mutable statement pointer: SQL = %q", got.SQL)
 	}
 }
 
