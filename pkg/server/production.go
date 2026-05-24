@@ -77,9 +77,7 @@ type ProductionServer struct {
 
 // NewProductionServer creates a new production server
 func NewProductionServer(db *engine.DB, config *ProductionConfig) *ProductionServer {
-	if config == nil {
-		config = DefaultProductionConfig()
-	}
+	config = cloneProductionConfig(config)
 	if config.Logger != nil {
 		if config.Lifecycle == nil {
 			config.Lifecycle = DefaultLifecycleConfig()
@@ -114,6 +112,43 @@ func NewProductionServer(db *engine.DB, config *ProductionConfig) *ProductionSer
 	}
 
 	return ps
+}
+
+func cloneProductionConfig(config *ProductionConfig) *ProductionConfig {
+	if config == nil {
+		config = DefaultProductionConfig()
+	}
+
+	cloned := *config
+	cloned.Lifecycle = cloneLifecycleConfig(config.Lifecycle)
+	cloned.CircuitBreaker = cloneCircuitBreakerConfig(config.CircuitBreaker)
+	cloned.Retry = cloneRetryConfig(config.Retry)
+	return &cloned
+}
+
+func cloneLifecycleConfig(config *LifecycleConfig) *LifecycleConfig {
+	if config == nil {
+		return nil
+	}
+	return normalizeLifecycleConfig(config)
+}
+
+func cloneCircuitBreakerConfig(config *engine.CircuitBreakerConfig) *engine.CircuitBreakerConfig {
+	if config == nil {
+		return nil
+	}
+	cloned := *config
+	return &cloned
+}
+
+func cloneRetryConfig(config *engine.RetryConfig) *engine.RetryConfig {
+	if config == nil {
+		return nil
+	}
+	cloned := *config
+	cloned.RetryableErrors = append([]error(nil), config.RetryableErrors...)
+	cloned.NonRetryableErrors = append([]error(nil), config.NonRetryableErrors...)
+	return &cloned
 }
 
 func (ps *ProductionServer) logErrorf(format string, args ...interface{}) {

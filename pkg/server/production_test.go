@@ -2,15 +2,24 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
+)
+
+var (
+	errTemporary = errors.New("temporary")
+	errPermanent = errors.New("permanent")
 )
 
 func TestProductionServerBasic(t *testing.T) {
@@ -185,6 +194,85 @@ func TestProductionPrometheusMetricsRemoteAccess(t *testing.T) {
 				t.Fatalf("expected status %d, got %d", tt.wantStatus, rr.Code)
 			}
 		})
+	}
+}
+
+func TestProductionServerConfigIsolation(t *testing.T) {
+	config := &ProductionConfig{
+		Lifecycle: &LifecycleConfig{
+			ShutdownTimeout:      time.Second,
+			DrainTimeout:         time.Second,
+			HealthCheckInterval:  time.Second,
+			StartupTimeout:       time.Second,
+			EnableSignalHandling: false,
+		},
+		CircuitBreaker: &engine.CircuitBreakerConfig{
+			MaxFailures:         2,
+			MinSuccesses:        1,
+			ResetTimeout:        time.Second,
+			MaxConcurrency:      4,
+			HalfOpenMaxRequests: 1,
+		},
+		Retry: &engine.RetryConfig{
+			MaxAttempts:        2,
+			InitialDelay:       time.Millisecond,
+			MaxDelay:           time.Second,
+			Multiplier:         1.5,
+			Jitter:             0.1,
+			RetryableErrors:    []error{errTemporary},
+			NonRetryableErrors: []error{errPermanent},
+		},
+		EnableCircuitBreaker: true,
+		EnableRetry:          true,
+		EnableHealthServer:   false,
+	}
+
+	ps := NewProductionServer(nil, config)
+
+	config.Lifecycle.ShutdownTimeout = 99 * time.Second
+	config.Lifecycle.ShutdownSignals = append(config.Lifecycle.ShutdownSignals, syscall.SIGHUP)
+	config.CircuitBreaker.MaxFailures = 99
+	config.Retry.MaxAttempts = 99
+	config.Retry.RetryableErrors[0] = errPermanent
+	config.Retry.NonRetryableErrors[0] = errTemporary
+
+	if ps.Config == config {
+		t.Fatal("expected production server to store a config copy")
+	}
+	if ps.Config.Lifecycle.ShutdownTimeout != time.Second {
+		t.Fatalf("expected lifecycle config copy, got shutdown timeout %v", ps.Config.Lifecycle.ShutdownTimeout)
+	}
+	if len(ps.Config.Lifecycle.ShutdownSignals) != 2 {
+		t.Fatalf("expected lifecycle signal defaults isolated from caller mutation, got %d", len(ps.Config.Lifecycle.ShutdownSignals))
+	}
+	if ps.Config.CircuitBreaker.MaxFailures != 2 {
+		t.Fatalf("expected circuit breaker config copy, got max failures %d", ps.Config.CircuitBreaker.MaxFailures)
+	}
+	if ps.Config.Retry.MaxAttempts != 2 {
+		t.Fatalf("expected retry config copy, got max attempts %d", ps.Config.Retry.MaxAttempts)
+	}
+	if !errors.Is(ps.Config.Retry.RetryableErrors[0], errTemporary) {
+		t.Fatal("expected retryable errors slice copy")
+	}
+	if !errors.Is(ps.Config.Retry.NonRetryableErrors[0], errPermanent) {
+		t.Fatal("expected non-retryable errors slice copy")
+	}
+}
+
+func TestProductionServerLoggerDoesNotMutateCallerLifecycle(t *testing.T) {
+	log := logger.New(logger.InfoLevel, io.Discard)
+	config := &ProductionConfig{
+		Lifecycle:          nil,
+		EnableHealthServer: false,
+		Logger:             log,
+	}
+
+	ps := NewProductionServer(nil, config)
+	if config.Lifecycle != nil {
+		t.Fatal("expected caller lifecycle config to remain nil")
+	}
+	if ps.Config.Lifecycle == nil || ps.Config.Lifecycle.Logger != log {
+		t.Fatal("expected logger to be applied to cloned lifecycle config")
 	}
 }
 
