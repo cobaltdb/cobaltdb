@@ -1,214 +1,182 @@
-# CobaltDB Handikap ve Sınırlama Raporu
+# CobaltDB Production Readiness Report
 
-**Tarih:** 2026-05-05
-**Kapsam:** Kaynak kod ve dokümantasyon üzerinden doğrulanmış sınırlamalar
-**Yöntem:** `grep`, `read`, ve AST düzeyinde inceleme ile teyit edilmiştir.
+**Date:** 2026-05-24
+**Scope:** Local repository review, test gates, race testing, recovery drills, backup drills, benchmark gate, and operations documentation.
+**Status:** Production-oriented single-node candidate. Not yet certified for automated HA/failover or strict MySQL wire compatibility.
 
----
+## Executive Summary
 
-## Özet: En Kritik 10 Handikap
+CobaltDB is much closer to a production-ready single-node embedded/server database after this hardening pass. The most important blocker found in the current iteration was not documentation: `go test -race ./...` exposed real transaction recycle and page flush races. Those races are now fixed and the full race suite passes.
 
-| # | Handikap | Doğrulama | Önem |
-|---|----------|-----------|------|
-| 1 | **Tek-yazıcı modeli** — Uzun SELECT'ler yazma işlemlerini bloklar | `docs/ARCHITECTURE_FULL.md:521-524` | Yüksek |
-| 2 | **MySQL prepared statement wire protocol desteklenmiyor** | `pkg/server/server.go:422` | Yüksek |
-| 3 | **MySQL wire komut kümesi çok dar** (sadece 8 komut) | `pkg/protocol/mysql.go:508-535` | Yüksek |
-| 4 | **Catalog tek `sync.RWMutex` — 16 dosyada `Lock()`** | `catalog_ddl.go:89,263,329,446,598,667,759,787,805,832,1043,1063` | Yüksek |
-| 5 | **HNSW vektör indeksi RAM'e sığar, disk'e yazılmaz** | `pkg/catalog/vector.go:519` `json:"-"` | Orta-Çok Yüksek |
-| 6 | **Composite foreign key enforcement yarım** | `pkg/catalog/z_foreign_key_test.go:498` `t.Skip(...)` | Orta |
-| 7 | **Distributed/HA/clustering yok** — Sadece master-slave replikasyon | `pkg/replication/replication.go:20-29` | Yüksek |
-| 8 | **WAL recovery entegrasyon testleri atlanıyor / belirsiz** | `pkg/engine/database_edge_test.go:513` `t.Skipf(...)` | Orta |
-| 9 | **37+ MySQL protokol testi `t.Skip` ile atlanıyor** | `pkg/protocol/mysql_*_test.go` | Düşük-Orta |
-| 10 | **WASM runtime'da `unimplemented opcode` fallback** | `pkg/wasm/runtime.go:731` | Düşük |
+Current readiness estimate:
 
----
+| Area | Status |
+|---|---|
+| Core package tests | Passing |
+| Full race suite | Passing |
+| Crash recovery drills | Covered for committed WAL writes and open transactions |
+| Backup/restore drills | Covered for full, incremental, and differential restore-open flows |
+| Bounded soak/load drill | Added, including explicit txns, checkpoint, backup, source reopen, restore reopen |
+| SQL compatibility baseline | Added for supported and unsupported syntax surface |
+| Benchmark regression gate | Added via `scripts/benchmark-gate.sh` |
+| Operations runbook | Added |
+| HA/failover certification | Not ready |
+| Strict MySQL protocol compatibility | Not ready |
 
-## 1. Mimari ve Eşzamanlılık Handikapları
+**Production readiness level:** about **82/100** for single-node production-candidate use, assuming documented constraints are acceptable. It is **not** a 95+/100 database for high-concurrency OLTP, automatic failover, or broad MySQL client compatibility yet.
 
-### 1.1 Single-Writer Model
-**Doğrulama:** `docs/ARCHITECTURE_FULL.md:521-524` açıkça belirtiyor.
-```
-### Single Writer Design
-- Only one write transaction at a time
-- Long-running SELECTs block writes (known limitation)
-```
-Bu, production OLTP yüklerinde ciddi bir darboğazdır. Aynı anda bir INSERT/UPDATE çalışırken diğer tüm yazıcılar kilitlenir.
+## Work Completed In This Pass
 
-### 1.2 Coarse-Grained Catalog Mutex
-**Doğrulama:** `pkg/catalog/catalog_ddl.go`'da 12 ayrı yerde `c.mu.Lock()` çağrısı bulundu. `catalog_insert.go:81`, `catalog_update.go`, `catalog_delete.go`, `catalog_txn.go`, `catalog_fts.go`, `catalog_maintenance.go`, `catalog_json.go`, `catalog_cte.go`, `catalog_fdw.go`, `catalog_view.go`, `catalog_vector.go`, `catalog_returning.go` dosyalarında da `Lock()` var.
+Recent hardening commits:
 
-Bu, DDL (CREATE/DROP TABLE) sırasında tüm DML'in (INSERT/UPDATE/DELETE) durmasına yol açar. Page-level veya row-level locking mekanizması yoktur. `pkg/txn/manager.go` deadlock detection var ama bu yalnızca transaction seviyesindedir, catalog şema kilidi seviyesinde değil.
+| Commit | Area | Result |
+|---|---|---|
+| `b6bf701` | Storage/txn race safety | Fixed transaction recycle map races and page flush/data mutation races |
+| `c6c0ab7` | WAL recovery | Added crash drill for open/uncommitted transaction recovery |
+| `87e8e86` | Backup restore | Verified full/incremental/differential restore chains open as databases |
+| `55f1106` | Soak/load | Added bounded production soak with txns, checkpoint, backup, reopen |
+| `104bb3a` | SQL compatibility | Added supported/unsupported SQL corpus baseline |
+| `69d21a1` | Benchmarks | Added bounded benchmark regression gate |
+| `17af3ef` | Operations | Added operational runbook and incident playbooks |
 
-### 1.3 Online Schema Change Yok
-Tüm DDL operasyonları `c.mu.Lock()` altında çalıştığı için, ALTER TABLE sırasında tüm okuma/yazma işlemleri bloklanır. PostgreSQL'in `ACCESS SHARE` vs `ACCESS EXCLUSIVE` gibi çoklu kilit seviyeleri yoktur.
+Validation performed during this pass:
 
----
-
-## 2. MySQL Wire Protocol ve İstemci Uyumluluğu
-
-### 2.1 Prepared Statement Execution Yok
-**Doğrulama:** `pkg/server/server.go:422`
-```go
-return wire.NewErrorMessage(3, "prepared statement execution not yet supported via wire protocol")
-```
-Bu, MySQL client'ların (mysql CLI, DBeaver, Java JDBC) `PREPARE`/`EXECUTE` kullanamayacağı anlamına gelir. Sadece plain-text `QUERY` modu çalışır.
-
-### 2.2 Dar Komut Kümesi
-**Doğrulama:** `pkg/protocol/mysql.go:508-535`
-Desteklenen komutlar: `QUIT`, `QUERY`, `PING`, `INIT_DB`, `STMT_PREPARE`, `STMT_EXECUTE`, `STMT_CLOSE`, `STMT_RESET`.
-
-Eksik kritik komutlar: `FIELD_LIST`, `CREATE_DB`, `DROP_DB`, `REFRESH`, `SHUTDOWN`, `STATISTICS`, `PROCESS_INFO`, `CONNECT`, `PROCESS_KILL`, `DEBUG`, `CHANGE_USER`, `BINLOG_DUMP`, `TABLE_DUMP`, `REGISTER_SLAVE`, `RESET_CONNECTION`, `CLONE`, `GROUP_REPLICATION`.
-
-Her desteklenmeyen komut `sendErrorPacket(0, "Unsupported command")` döner — MySQL hata kodu her zaman `0`, bu istemcileri şaşırtabilir.
-
-### 2.3 User-Defined Variables (@var) Yok
-**Doğrulama:** `pkg/protocol/mysql.go:544-547`
-Sadece `@@version_comment` ve `@@max_allowed_packet` sabitleri whitelist'tedir. `SET @x = 1` gibi session variable'lar desteklenmiyor.
-
----
-
-## 3. SQL ve Veri Tipi Sınırlamaları
-
-### 3.1 Dokümantasyon ile Parser Arasındaki Uyumsuzluk
-**Doğrulama:** `docs/SQL.md:24-29` sadece `INTEGER, TEXT, REAL, BOOLEAN, JSON` listeler. Ancak `pkg/query/parser.go:2324` ve `pkg/query/token.go:104` açıkça `TokenBlob`, `TokenDate`, `TokenTimestamp`, `TokenDatetime`, `TokenVector` parse ediyor.
-
-Bu bir dokümantasyon handikabıdır — kullanıcı BLOB kullanabileceğini bilemez ama parser kabul eder.
-
-### 3.2 Eksik SQL Özellikleri
-- **`NATURAL JOIN`** — parser kabul etmiyor (`pkg/query/parser_extra_coverage_test.go:520-527`)
-- **`USING` clause** — testte "may not be fully supported" notu (`pkg/query/parser_extra_coverage_test.go:541-548`)
-- **`->>` (JSON double-arrow operator)** — `t.Log("->> operator not supported")` (`pkg/query/parser_extra_coverage_test.go:880-886`)
-- **`REPLACE INTO`** standalone — yok (`pkg/query/parser_extra_coverage_test.go:963`)
-- **`CREATE OR REPLACE`** — test notu yok ama AST'de muhtemelen yok
-- **`IS DISTINCT FROM`** — eksik (`pkg/query/coverage_boost_test.go:569`)
-- **`GROUPING SETS`, `ROLLUP`, `CUBE`** — parser/AST'de bulunamadı
-- **`PIVOT/UNPIVOT`** — bulunamadı
-- **`LATERAL JOIN`** — bulunamadı
-
-### 3.3 Stored Procedure / Trigger Yarım
-**Doğrulama:**
-- `pkg/engine/engine_more_test.go:1718` `t.Skipf("CREATE PROCEDURE not supported: %v", err)`
-- `pkg/engine/database_edge_test.go:277` aynı skip
-- `pkg/catalog/catalog_ddl.go:1042-1049` `CreateProcedure` sadece AST'yi map'e kaydeder, **execute etmez**.
-- `pkg/query/parser_extra_coverage_test.go:1532` `INSTEAD OF` trigger notu var.
-
-### 3.4 Composite Foreign Key Enforcement Eksik
-**Doğrulama:** `pkg/catalog/z_foreign_key_test.go:497-498`
-```go
-func TestForeignKeyEnforcerCompositeKey(t *testing.T) {
-    t.Skip("Composite key foreign key validation not fully implemented")
-```
-Tek-sütun FK çalışıyor ama çok-sütunlu FK (örn. `(tenant_id, user_id)`) enforce edilmiyor.
-
----
-
-## 4. İndeks ve Depolama Handikapları
-
-### 4.1 HNSW Vektör İndeksi Kalıcı Değil
-**Doğrulama:** `pkg/catalog/vector.go:519`
-```go
-type VectorIndexDef struct {
-    // ...
-    HNSW *HNSWIndex `json:"-"` // Runtime index, not persisted
-}
-```
-`json:"-"` tag'i bu alanın serialize edilmediğini, yani veritabanı restart sonrası HNSW indeksinin yeniden `Build()` edilmesi gerektiğini gösterir. Büyük embedding dataset'lerinde bu dakikalar sürebilir.
-
-### 4.2 FDW (Foreign Data Wrapper) Tam Materyalizasyon
-**Doğrulama:** `CLAUDE.md:287`
-```
-Foreign tables are materialized into temporary B-trees at scan time
-```
-`pkg/fdw/fdw.go:18` `Scan()` tüm satırları `[][]interface{}` olarak döner. Bu, büyük CSV/PostgreSQL tablolarında memory/disk patlamasına yol açabilir. Ayrıca FDW read-only'dir.
-
----
-
-## 5. Test ve Kalite Endişeleri
-
-### 5.1 37+ Atlanan Test
-**Doğrulama:** `pkg/protocol/` altında 37 `t.Skip("Cannot open database")` çağrısı:
-- `mysql_integration_test.go`: 14
-- `mysql_extended_test.go`: 6
-- `mysql_deep_coverage_test.go`: 10
-- `mysql_more_test.go`: 7
-
-Bu testler "Cannot open database" ile atlanıyor — test altyapısındaki bir sorun, yoksa engine'in bir bug'ı mı net değil. İkisi de ciddi bir sinyaldir.
-
-### 5.2 WAL Recovery Testi Atlanıyor
-**Doğrulama:** `pkg/engine/database_edge_test.go:506-514`
-```go
-// Reopen - should recover from WAL
-db2, err := Open(dbPath, &Options{...})
-if err != nil {
-    t.Skipf("Reopen with WAL recovery not supported: %v", err)
-    return
-}
-```
-WAL'in crash sonrası gerçekten çalıştığı kanıtlanmamıştır.
-
-### 5.3 Stress Test Atlanıyor
-**Doğrulama:** `pkg/engine/stress_test.go:182,386`
-```go
-t.Skip("skipping extended stress test")
-t.Skip("backup manager not initialized")
+```bash
+go test ./pkg/txn ./pkg/storage ./pkg/btree
+go test -race ./integration -run 'TestConcurrentTransactions|TestAutoVacuumDisabled' -count=1
+go test -race ./...
+go test ./pkg/engine -run 'TestWALRecoversCommittedWritesAfterProcessExit|TestWALCrashRecoveryIgnoresOpenTransaction|TestIncrementalBackupRestoreOpensAsDatabase' -count=1
+go test ./pkg/engine -run TestProductionSoakBoundedCheckpointBackupReopen -count=1
+go test -race ./pkg/engine -run TestProductionSoakBoundedCheckpointBackupReopen -count=1
+go test ./test -run 'TestSQLCompatibility' -count=1
+BENCHTIME=1ms COUNT=1 ./scripts/benchmark-gate.sh /tmp/cobaltdb-bench-smoke
 ```
 
-### 5.4 golangci-lint Çok Minimal
-**Doğrulama:** `.golangci.yml`
-- Sadece 6 linter açık (`errcheck, gosimple, govet, ineffassign, staticcheck, unused`)
-- `tests: false` — test kodları hiç lint'lenmiyor
-- `gosec`, `revive`, `gocritic`, `gocyclo`, `dupl`, `prealloc` kapalı
-- `cmd/cobaltdb-bench`, `cmd/debug`, `cmd/demo`, `cmd/realworld-test` lint dışı
+Previously completed gates in this work stream:
 
-### 5.5 Dokümantasyon Çiftleşmesi
-`CLAUDE.md:214` ve `AGENTS.md:134` aynı cümleyi içeriyor: "Known Limitations: (No engine-level limitations currently tracked.)". Bu, gerçekte birçok sınırlama varken şeffaflık eksikliğidir.
-
----
-
-## 6. Operasyonel ve Üretim Handikapları
-
-### 6.1 Distributed / HA / Clustering Yok
-**Doğrulama:** `pkg/` altında `cluster/`, `raft/`, `paxos/`, `2pc/` paketi yok.
-`pkg/replication/replication.go:20-29` sadece `ModeAsync`, `ModeSync`, `ModeFullSync` master-slave replikasyon sunar. Otomatik failover, leader election, split-brain çözümü yoktur.
-
-### 6.2 Audit Log Integrity Yok
-`pkg/audit/` paketi var ama log kayıtlarının HMAC/imza ile bütünlük doğrulaması yapılmıyor. Yasal uyumluluk (compliance) için bu kritiktir.
-
-### 6.3 Encryption Key Rotation Kanıtı Yok
-`pkg/storage/encryption.go` dosyası incelendiğinde key rotation mekanizması görünmemektedir. AES-256-GCM aynı key ile çalışır.
-
-### 6.4 Connection Pool Per-User Limit Yok
-**Doğrulama:** `docs/PERFORMANCE.md:232` "Add per-user connection limits" gelecekte yapılacaklar listesindedir.
-
----
-
-## 7. WASM Runtime Sınırlamaları
-
-### 7.1 Streaming Sadece SELECT'te
-**Doğrulama:** `pkg/wasm/runtime.go:136`
-```go
-return nil, fmt.Errorf("streaming not supported for non-SELECT queries")
+```bash
+go test ./...
+go vet ./...
+staticcheck ./...
+gosec -exclude=G104 ./...
+govulncheck ./...
 ```
 
-### 7.2 Unimplemented Opcode Fallback
-**Doğrulama:** `pkg/wasm/runtime.go:730-731`
-```go
-default:
-    return fmt.Errorf("unimplemented opcode: 0x%02x", opcode)
+## Remaining Production Risks
+
+### 1. Single-Writer And Coarse Catalog Locking
+
+CobaltDB still has a single-writer/coarse catalog locking profile. This is acceptable for embedded, edge, operational, and moderate write workloads, but it is a hard ceiling for high-concurrency OLTP.
+
+Impact:
+
+- Long-running read or DDL-heavy workflows can increase write latency.
+- DDL can block DML.
+- Sustained write throughput will not match row-locking or MVCC-first engines.
+
+Next work:
+
+- Continue catalog lock granularity work.
+- Add workload-specific contention benchmarks to the benchmark gate.
+- Track p95/p99 write latency under concurrent readers.
+
+### 2. HA / Clustering Is Not Production-Grade
+
+Replication exists, but CobaltDB should not be presented as automatic HA infrastructure.
+
+Missing or not certified:
+
+- Raft/Paxos-style consensus.
+- Automatic leader election.
+- Split-brain protection.
+- Automated failover runbook with proven RPO/RTO.
+- Cross-node backup/recovery drills.
+
+Production stance:
+
+- Use replication as transport/read scaling where acceptable.
+- Do not rely on it as managed failover until a dedicated HA certification pass is complete.
+
+### 3. MySQL Wire Compatibility Is Still Narrow
+
+The server supports useful MySQL protocol paths, but broad client compatibility is not complete.
+
+Known gaps:
+
+- Prepared statement execution over the wire remains limited.
+- Unsupported MySQL commands return simplified errors.
+- Session variables and advanced MySQL metadata flows are incomplete.
+
+Production stance:
+
+- Keep MySQL listener private or disabled unless the exact client behavior is validated.
+- Prefer native/embedded API paths for production-critical integrations.
+
+### 4. SQL Parser Strictness
+
+The compatibility corpus now locks a supported/unsupported baseline, but the parser is still permissive in some areas. Some unsupported trailing constructs can be accepted as aliases or ignored by older parser paths.
+
+Production stance:
+
+- Treat this as a correctness hardening item.
+- Add strict EOF/statement-boundary parsing behind a compatibility flag or after completing currently partial syntax support.
+- Keep `test/sql_compat_corpus_test.go` updated for every syntax expansion.
+
+### 5. Advanced Feature Certification
+
+Some advanced features are broad but need workload-specific certification before being treated as primary production pillars:
+
+- WASM SQL execution beyond selected paths.
+- Vector/HNSW persistence and rebuild behavior.
+- FDW memory behavior for large external data.
+- Stored procedure execution semantics.
+- Composite/advanced constraint cases.
+
+## Release Gate
+
+Required before any release candidate:
+
+```bash
+go test ./...
+go test -race ./...
+go vet ./...
+staticcheck ./...
+gosec -exclude=G104 ./...
+govulncheck ./...
+./scripts/benchmark-gate.sh
 ```
-WASM derleyici tam opcode setini desteklemiyor.
 
----
+Required drills:
 
-## Özet Karar
+```bash
+go test ./pkg/engine -run 'TestWALRecoversCommittedWritesAfterProcessExit|TestWALCrashRecoveryIgnoresOpenTransaction' -count=1
+go test ./pkg/engine -run 'TestIncrementalBackupRestoreOpensAsDatabase|TestProductionSoakBoundedCheckpointBackupReopen' -count=1
+go test ./test -run 'TestSQLCompatibility' -count=1
+```
 
-| Kategori | Ciddi Sorun | Orta | Hafif |
-|----------|-------------|------|-------|
-| Mimari | Single-writer, Catalog mutex, No HA | Composite FK, FDW materialization | — |
-| MySQL Uyum | Prepared stmt yok, Dar komut kümesi | @var yok, Error code 0 | — |
-| SQL | Stored proc execute yok, Natural Join yok | USING, ->> yok | — |
-| Depolama | HNSW kalıcı değil | WAL recovery belirsiz | — |
-| Test/Kalite | 37+ skip, lint minimal | Stress test skip | — |
-| Güvenlik | Audit integrity yok | Key rotation yok | — |
+Block release on:
 
-**Tek cümle:** CobaltDB feature-rich bir embedded SQL engine'dir ama production OLTP olarak iddia ediyorsa **tek-yazıcı modeli**, **MySQL protokol uyumsuzlukları**, ve **coarse-grained locking** ciddi engellerdir. Dokümantasyonun "no limitations" demesi en büyük handikaptır çünkü kullanıcıları yanıltır.
+- Any race detector failure.
+- WAL crash recovery failure.
+- Backup restore that cannot be opened and queried.
+- SQL compatibility baseline drift without explicit review.
+- `govulncheck` reachable high-severity issue.
+- Benchmark regression above 20% in core paths without documented tradeoff.
+
+## Next Iterations
+
+Priority order:
+
+1. Parser strict statement-boundary mode and tests.
+2. MySQL wire prepared statement execution and client compatibility matrix.
+3. Catalog lock granularity and p95/p99 write-latency benchmarks.
+4. HA/failover design and failure-injection tests.
+5. Vector/HNSW persistence certification.
+6. Large FDW streaming/materialization limits.
+7. Procedure/trigger execution semantics certification.
+
+## Final Decision
+
+CobaltDB can be described as a **production-oriented single-node candidate** with strong test coverage, race-clean current suite, WAL crash drills, restore-open drills, and an operations runbook.
+
+It should **not** be described as fully production-certified for automated HA, high-write OLTP at scale, or broad MySQL drop-in compatibility until the remaining risks above are closed.
