@@ -3,6 +3,9 @@ package engine
 import (
 	"context"
 	"testing"
+
+	"github.com/cobaltdb/cobaltdb/pkg/audit"
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
 func TestOpenMemory(t *testing.T) {
@@ -40,6 +43,64 @@ func TestOpenNormalizesOptionsWithoutMutation(t *testing.T) {
 	}
 	if opts.CacheSize != 0 || opts.PageSize != 0 || opts.WALEnabled != nil || opts.Logger != nil {
 		t.Fatal("Open should not mutate caller options")
+	}
+}
+
+func TestOpenCopiesMutableNestedOptions(t *testing.T) {
+	walEnabled := false
+	auditEvents := []audit.EventType{audit.EventQuery}
+	sensitiveFields := []string{"token"}
+	auditKey := []byte("0123456789abcdef0123456789abcdef")
+	compressionConfig := &storage.CompressionConfig{
+		Enabled:   true,
+		Algorithm: storage.CompressionAlgorithmLZ4,
+		Level:     storage.CompressionLevelFast,
+		MinRatio:  0.75,
+	}
+	opts := &Options{
+		InMemory:   true,
+		WALEnabled: &walEnabled,
+		AuditConfig: &audit.Config{
+			Events:          auditEvents,
+			SensitiveFields: sensitiveFields,
+			EncryptionKey:   auditKey,
+		},
+		CompressionConfig: compressionConfig,
+	}
+
+	db, err := Open(":memory:", opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	walEnabled = true
+	auditEvents[0] = audit.EventDDL
+	sensitiveFields[0] = "password"
+	auditKey[0] = 'x'
+	compressionConfig.Level = storage.CompressionLevelBest
+	compressionConfig.MinRatio = 0.25
+
+	if db.options.WALEnabled == opts.WALEnabled || *db.options.WALEnabled {
+		t.Fatal("WALEnabled should be copied from caller options")
+	}
+	if db.options.AuditConfig == opts.AuditConfig {
+		t.Fatal("AuditConfig should be copied from caller options")
+	}
+	if db.options.AuditConfig.Events[0] != audit.EventQuery {
+		t.Fatalf("AuditConfig.Events aliased caller slice: %v", db.options.AuditConfig.Events[0])
+	}
+	if db.options.AuditConfig.SensitiveFields[0] != "token" {
+		t.Fatalf("AuditConfig.SensitiveFields aliased caller slice: %q", db.options.AuditConfig.SensitiveFields[0])
+	}
+	if db.options.AuditConfig.EncryptionKey[0] != '0' {
+		t.Fatal("AuditConfig.EncryptionKey aliased caller slice")
+	}
+	if db.options.CompressionConfig == opts.CompressionConfig {
+		t.Fatal("CompressionConfig should be copied from caller options")
+	}
+	if db.options.CompressionConfig.Level != storage.CompressionLevelFast || db.options.CompressionConfig.MinRatio != 0.75 {
+		t.Fatalf("CompressionConfig aliased caller config: %+v", db.options.CompressionConfig)
 	}
 }
 

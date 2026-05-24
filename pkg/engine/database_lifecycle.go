@@ -65,7 +65,9 @@ func normalizeOptions(opts *Options) *Options {
 		normalized.CacheSize = defaults.CacheSize
 	}
 	if normalized.WALEnabled == nil {
-		normalized.WALEnabled = defaults.WALEnabled
+		normalized.WALEnabled = cloneBoolPtr(defaults.WALEnabled)
+	} else {
+		normalized.WALEnabled = cloneBoolPtr(normalized.WALEnabled)
 	}
 	if normalized.SyncMode == 0 {
 		normalized.SyncMode = defaults.SyncMode
@@ -86,7 +88,32 @@ func normalizeOptions(opts *Options) *Options {
 		}
 		normalized.EncryptionConfig = &encConfig
 	}
+	if normalized.AuditConfig != nil {
+		auditConfig := *normalized.AuditConfig
+		if len(auditConfig.Events) > 0 {
+			auditConfig.Events = append([]audit.EventType(nil), auditConfig.Events...)
+		}
+		if len(auditConfig.SensitiveFields) > 0 {
+			auditConfig.SensitiveFields = append([]string(nil), auditConfig.SensitiveFields...)
+		}
+		if len(auditConfig.EncryptionKey) > 0 {
+			auditConfig.EncryptionKey = append([]byte(nil), auditConfig.EncryptionKey...)
+		}
+		normalized.AuditConfig = &auditConfig
+	}
+	if normalized.CompressionConfig != nil {
+		compressionConfig := *normalized.CompressionConfig
+		normalized.CompressionConfig = &compressionConfig
+	}
 	return &normalized
+}
+
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 // Open opens or creates a database at the given path
