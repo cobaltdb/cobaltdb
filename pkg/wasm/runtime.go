@@ -105,6 +105,9 @@ type ImportFunc func(rt *Runtime, params []uint64) ([]uint64, error)
 
 // NewRuntime creates a new WASM runtime with the given memory size
 func NewRuntime(memoryPages int) *Runtime {
+	if memoryPages < 1 {
+		memoryPages = 1
+	}
 	return &Runtime{
 		Memory:    make([]byte, memoryPages*64*1024),
 		Globals:   make([]uint64, 0),
@@ -122,6 +125,9 @@ func (rt *Runtime) RegisterImport(module, name string, fn ImportFunc) {
 
 // Execute executes a compiled query
 func (rt *Runtime) Execute(compiled *CompiledQuery, args []interface{}) (*QueryResult, error) {
+	if compiled == nil {
+		return nil, fmt.Errorf("compiled query is nil")
+	}
 	// Load the WASM module
 	if err := rt.LoadModule(compiled.Bytecode); err != nil {
 		return nil, fmt.Errorf("failed to load module: %w", err)
@@ -177,6 +183,12 @@ func (rt *Runtime) Execute(compiled *CompiledQuery, args []interface{}) (*QueryR
 // ExecuteStreaming executes a compiled query with streaming results
 // Returns a StreamingResult that can be used to fetch rows incrementally
 func (rt *Runtime) ExecuteStreaming(compiled *CompiledQuery, args []interface{}, chunkSize int) (*StreamingResult, error) {
+	if compiled == nil {
+		return nil, fmt.Errorf("compiled query is nil")
+	}
+	if chunkSize <= 0 {
+		return nil, fmt.Errorf("streaming chunk size must be positive")
+	}
 	// Load the WASM module
 	if err := rt.LoadModule(compiled.Bytecode); err != nil {
 		return nil, fmt.Errorf("failed to load module: %w", err)

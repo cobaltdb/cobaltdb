@@ -17,6 +17,18 @@ func TestNewRuntime(t *testing.T) {
 	}
 }
 
+func TestNewRuntimeClampsInvalidMemoryPages(t *testing.T) {
+	for _, pages := range []int{0, -1} {
+		r := NewRuntime(pages)
+		if r == nil {
+			t.Fatalf("NewRuntime(%d) returned nil", pages)
+		}
+		if len(r.Memory) != 65536 {
+			t.Fatalf("NewRuntime(%d) memory = %d, want one page", pages, len(r.Memory))
+		}
+	}
+}
+
 func TestRuntimeRegisterImport(t *testing.T) {
 	r := NewRuntime(1)
 
@@ -151,6 +163,24 @@ func TestRuntimeMemorySize(t *testing.T) {
 			t.Errorf("NewRuntime(%d) memory = %d, want %d",
 				tt.pages, len(r.Memory), tt.expected)
 		}
+	}
+}
+
+func TestRuntimeExecuteRejectsNilCompiledQuery(t *testing.T) {
+	r := NewRuntime(1)
+	if _, err := r.Execute(nil, nil); err == nil {
+		t.Fatal("Execute(nil) should return an error")
+	}
+	if _, err := r.ExecuteStreaming(nil, nil, 1); err == nil {
+		t.Fatal("ExecuteStreaming(nil) should return an error")
+	}
+}
+
+func TestRuntimeExecuteStreamingRejectsInvalidChunkSize(t *testing.T) {
+	r := NewRuntime(1)
+	compiled := &CompiledQuery{Bytecode: []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}}
+	if _, err := r.ExecuteStreaming(compiled, nil, 0); err == nil {
+		t.Fatal("ExecuteStreaming with zero chunk size should return an error")
 	}
 }
 
