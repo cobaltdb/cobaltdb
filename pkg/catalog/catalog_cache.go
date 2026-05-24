@@ -66,8 +66,10 @@ func (qc *QueryCache) Get(key string) (*QueryCacheEntry, bool) {
 		return nil, false
 	}
 
-	// Check if entry has expired
-	expired := time.Since(entry.Timestamp) > qc.ttl
+	// Check if entry has expired. A non-positive TTL means entries do not
+	// expire by age.
+	expired := qc.ttl > 0 && time.Since(entry.Timestamp) > qc.ttl
+	entryCopy := cloneQueryCacheEntry(entry)
 	qc.mu.RUnlock()
 
 	if expired {
@@ -82,7 +84,7 @@ func (qc *QueryCache) Get(key string) (*QueryCacheEntry, bool) {
 	qc.promoteInLRU(key)
 	qc.mu.Unlock()
 
-	return entry, true
+	return entryCopy, true
 }
 
 // promoteInLRU moves a key to the front of the LRU list (caller must hold at least RLock)
@@ -116,10 +118,10 @@ func (qc *QueryCache) Set(key string, columns []string, rows [][]interface{}, ta
 	}
 
 	qc.entries[key] = &QueryCacheEntry{
-		Columns:   columns,
-		Rows:      rows,
+		Columns:   cloneStringSlice(columns),
+		Rows:      cloneInterfaceRows(rows),
 		Timestamp: time.Now(),
-		Tables:    tables,
+		Tables:    cloneStringSlice(tables),
 	}
 }
 
@@ -172,6 +174,70 @@ func (qc *QueryCache) Stats() (hits, misses int64, size int) {
 	qc.mu.RLock()
 	defer qc.mu.RUnlock()
 	return qc.hitCount.Load(), qc.missCount.Load(), len(qc.entries)
+}
+
+func cloneQueryCacheEntry(entry *QueryCacheEntry) *QueryCacheEntry {
+	if entry == nil {
+		return nil
+	}
+	cloned := *entry
+	cloned.Columns = cloneStringSlice(entry.Columns)
+	cloned.Rows = cloneInterfaceRows(entry.Rows)
+	cloned.Tables = cloneStringSlice(entry.Tables)
+	return &cloned
+}
+
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func cloneInterfaceRows(rows [][]interface{}) [][]interface{} {
+	if rows == nil {
+		return nil
+	}
+	cloned := make([][]interface{}, len(rows))
+	for i, row := range rows {
+		cloned[i] = cloneInterfaceSlice(row)
+	}
+	return cloned
+}
+
+func cloneInterfaceSlice(values []interface{}) []interface{} {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]interface{}, len(values))
+	for i, value := range values {
+		cloned[i] = cloneInterfaceValue(value)
+	}
+	return cloned
+}
+
+func cloneInterfaceValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case []byte:
+		if typed == nil {
+			return []byte(nil)
+		}
+		cloned := make([]byte, len(typed))
+		copy(cloned, typed)
+		return cloned
+	case []interface{}:
+		return cloneInterfaceSlice(typed)
+	case map[string]interface{}:
+		cloned := make(map[string]interface{}, len(typed))
+		for key, mapValue := range typed {
+			cloned[key] = cloneInterfaceValue(mapValue)
+		}
+		return cloned
+	default:
+		return typed
+	}
 }
 
 func generateQueryKey(sql string, args []interface{}) string {
