@@ -69,6 +69,7 @@ Recent hardening commits:
 | `b902229` | HA rejoin | Added persisted resume-LSN drill for rejoined replicas |
 | `0ef10cf` | HA rejoin | Require explicit resume LSN or snapshot refresh for rejoin |
 | `6833a69` | HA rejoin | Added TCP snapshot handshake drill for rejoined replicas |
+| `ba12f97` | Catalog locking | Released simple SELECT post-processing from the catalog read lock and added ordered-reader latency gate |
 
 Validation performed during this pass:
 
@@ -84,7 +85,9 @@ go test ./pkg/query ./pkg/engine -run 'TestParseStrict|TestStrictSQL|TestDefault
 go test ./pkg/protocol -run 'TestCountPreparedParams|TestPreparedStmtParseExecuteArgs|TestHandleStmtPrepare|TestHandleStmtExecute' -count=1
 go test ./test -run TestMySQLPreparedStatementExecuteWithParameters -count=1
 go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE2E' -count=1
-go test ./pkg/engine -run '^$' -bench BenchmarkWriteLatencyUnderReaders -benchtime=10x -count=1
+go test ./pkg/engine -run '^$' -bench 'BenchmarkWriteLatencyUnder(Readers|OrderedReaders)' -benchtime=10x -count=1 -benchmem
+go test ./pkg/catalog ./pkg/engine -run 'Test.*Select|TestProductionSoakBoundedCheckpointBackupReopen' -count=1
+go test -race ./pkg/catalog ./pkg/engine -run 'Test.*Select|TestProductionSoakBoundedCheckpointBackupReopen' -count=1
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
 go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary|TestExternallyOrchestratedFailoverDrill|TestRejoinAsReplica' -count=1
 go test ./pkg/replication -run TestRejoinAsReplicaPersistsResumeLSN -count=1
@@ -121,18 +124,18 @@ govulncheck ./...
 
 ### 1. Single-Writer And Coarse Catalog Locking
 
-CobaltDB still has a single-writer/coarse catalog locking profile. This is acceptable for embedded, edge, operational, and moderate write workloads, but it is a hard ceiling for high-concurrency OLTP.
+CobaltDB still has a single-writer/coarse catalog locking profile, but simple SELECT execution now releases the catalog read lock during both heavy scans and post-scan processing when RLS/subqueries do not require the lock. This is acceptable for embedded, edge, operational, and moderate write workloads, but it remains a hard ceiling for high-concurrency OLTP.
 
 Impact:
 
-- Long-running read or DDL-heavy workflows can increase write latency.
+- Long-running RLS/subquery reads or DDL-heavy workflows can increase write latency.
 - DDL can block DML.
 - Sustained write throughput will not match row-locking or MVCC-first engines.
 
 Next work:
 
-- Continue catalog lock granularity work.
-- Track p95/p99 write latency under concurrent readers.
+- Continue catalog lock granularity work for aggregate/JOIN/RLS/subquery paths.
+- Track p95/p99 write latency under concurrent simple and ordered readers.
 
 ### 2. HA / Clustering Is Not Production-Grade
 
@@ -229,8 +232,8 @@ Block release on:
 
 Priority order:
 
-1. Catalog lock granularity improvements.
-2. Additional MySQL ORM and non-Go driver certification runs.
+1. Additional MySQL ORM and non-Go driver certification runs.
+2. Catalog lock granularity work for aggregate/JOIN/RLS/subquery paths.
 3. Actual HA consensus, fencing, and externally orchestrated promotion implementation.
 4. Tens-of-thousands vector rebuild and concurrent reader certification.
 5. Global query-level memory accounting and broader JOIN/GROUP BY projection pushdown.
