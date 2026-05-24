@@ -19,7 +19,7 @@ Current readiness estimate:
 | Bounded soak/load drill | Added, including explicit txns, checkpoint, backup, source reopen, restore reopen |
 | SQL compatibility baseline | Added for supported and unsupported syntax surface |
 | Strict SQL parsing mode | Added as opt-in production mode |
-| MySQL prepared statements | Parameterized `COM_STMT_EXECUTE` covered for core scalar types and binary result rows |
+| MySQL prepared statements | Parameterized `COM_STMT_EXECUTE` covered for core scalar and temporal types plus binary result rows |
 | External MySQL driver | `database/sql` + `github.com/go-sql-driver/mysql` baseline covered |
 | Benchmark regression gate | Added via `scripts/benchmark-gate.sh`, now including write p95/p99 under readers |
 | Replication disconnect detection | Slave status clears connection state after master disconnect |
@@ -70,6 +70,7 @@ Recent hardening commits:
 | `0ef10cf` | HA rejoin | Require explicit resume LSN or snapshot refresh for rejoin |
 | `6833a69` | HA rejoin | Added TCP snapshot handshake drill for rejoined replicas |
 | `ba12f97` | Catalog locking | Released simple SELECT post-processing from the catalog read lock and added ordered-reader latency gate |
+| `3db447c` | MySQL compatibility | Added binary temporal prepared parameter decoding and wire-level e2e coverage |
 
 Validation performed during this pass:
 
@@ -84,6 +85,9 @@ go test ./test -run 'TestSQLCompatibility' -count=1
 go test ./pkg/query ./pkg/engine -run 'TestParseStrict|TestStrictSQL|TestDefaultSQLParsing' -count=1
 go test ./pkg/protocol -run 'TestCountPreparedParams|TestPreparedStmtParseExecuteArgs|TestHandleStmtPrepare|TestHandleStmtExecute' -count=1
 go test ./test -run TestMySQLPreparedStatementExecuteWithParameters -count=1
+go test ./pkg/protocol -run 'TestPreparedStmtParseExecuteTemporalArgs|TestPreparedStmtParseExecuteArgs|TestHandleStmtExecute' -count=1
+go test ./test -run 'TestMySQLPreparedStatement(ExecuteWithParameters|TemporalParameters)|TestMySQL' -count=1
+go test ./pkg/protocol ./test -count=1
 go test ./integration -run 'TestMySQLGoSQLDriverCompatibility|TestMySQLProtocolE2E' -count=1
 go test ./pkg/engine -run '^$' -bench 'BenchmarkWriteLatencyUnder(Readers|OrderedReaders)' -benchtime=10x -count=1 -benchmem
 go test ./pkg/catalog ./pkg/engine -run 'Test.*Select|TestProductionSoakBoundedCheckpointBackupReopen' -count=1
@@ -166,7 +170,7 @@ The server supports useful MySQL protocol paths, but broad client compatibility 
 
 Known gaps:
 
-- Prepared statement execution now supports core scalar binary parameters and binary result rows, but temporal parameters, long-data streaming, cursors, and richer metadata are not certified.
+- Prepared statement execution now supports core scalar and temporal binary parameters plus binary result rows, but long-data streaming, cursors, and richer metadata are not certified.
 - Unsupported MySQL commands return simplified errors.
 - Session variables and advanced MySQL metadata flows are incomplete.
 - The Go MySQL driver is covered; additional ORMs and non-Go drivers still require explicit certification.
