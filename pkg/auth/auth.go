@@ -70,6 +70,7 @@ type Authenticator struct {
 	enabled               bool
 	stopCh                chan struct{}
 	stopped               bool
+	wg                    sync.WaitGroup
 	failedAttempts        map[string]*loginAttempt
 	failedMu              sync.RWMutex
 	enforcePasswordPolicy bool
@@ -84,6 +85,7 @@ func NewAuthenticator() *Authenticator {
 		stopCh:         make(chan struct{}),
 		failedAttempts: make(map[string]*loginAttempt),
 	}
+	a.wg.Add(1)
 	go a.sessionCleanupLoop()
 	return a
 }
@@ -91,15 +93,19 @@ func NewAuthenticator() *Authenticator {
 // Stop stops the authenticator's background goroutine
 func (a *Authenticator) Stop() {
 	a.mu.Lock()
-	if !a.stopped {
-		a.stopped = true
-		close(a.stopCh)
+	if a.stopped {
+		a.mu.Unlock()
+		return
 	}
+	a.stopped = true
+	close(a.stopCh)
 	a.mu.Unlock()
+	a.wg.Wait()
 }
 
 // sessionCleanupLoop periodically removes expired sessions
 func (a *Authenticator) sessionCleanupLoop() {
+	defer a.wg.Done()
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {
