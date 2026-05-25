@@ -354,28 +354,30 @@ func (c *Catalog) Load() error {
 	}
 
 	foreignTableIter, err := c.tree.Scan([]byte("ft:"), []byte("ft;"))
-	if err == nil {
-		for foreignTableIter.HasNext() {
-			keyStr, value, err := foreignTableIter.NextString()
-			if err != nil {
-				break
-			}
-			if !strings.HasPrefix(keyStr, "ft:") {
-				continue
-			}
-			var ft ForeignTableDef
-			if err := json.Unmarshal(value, &ft); err != nil {
-				continue
-			}
-			if ft.TableName == "" {
-				ft.TableName = strings.TrimPrefix(keyStr, "ft:")
-			}
-			if _, tableExists := c.tables[ft.TableName]; tableExists {
-				continue
-			}
-			c.foreignTables[ft.TableName] = &ft
+	if err != nil {
+		return fmt.Errorf("load catalog: failed to scan foreign table metadata: %w", err)
+	}
+	defer foreignTableIter.Close()
+	for foreignTableIter.HasNext() {
+		keyStr, value, err := foreignTableIter.NextString()
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to read foreign table metadata: %w", err)
 		}
-		foreignTableIter.Close()
+		if !strings.HasPrefix(keyStr, "ft:") {
+			continue
+		}
+		foreignTableName := strings.TrimPrefix(keyStr, "ft:")
+		var ft ForeignTableDef
+		if err := json.Unmarshal(value, &ft); err != nil {
+			return fmt.Errorf("load catalog: failed to parse foreign table metadata %s: %w", foreignTableName, err)
+		}
+		if ft.TableName == "" {
+			ft.TableName = foreignTableName
+		}
+		if _, tableExists := c.tables[ft.TableName]; tableExists {
+			continue
+		}
+		c.foreignTables[ft.TableName] = &ft
 	}
 
 	viewIter, err := c.tree.Scan([]byte("view:"), []byte("view;"))

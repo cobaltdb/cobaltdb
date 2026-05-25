@@ -51,3 +51,25 @@ func TestLoadReturnsCorruptIndexMetadataError(t *testing.T) {
 		t.Fatal("corrupt index should not be loaded after Load failure")
 	}
 }
+
+func TestLoadReturnsCorruptForeignTableMetadataError(t *testing.T) {
+	pool := storage.NewBufferPool(1024, storage.NewMemory())
+	defer pool.Close()
+
+	catalogTree, err := btree.NewBTree(pool)
+	if err != nil {
+		t.Fatalf("NewBTree: %v", err)
+	}
+	if err := catalogTree.Put([]byte("ft:remote_orders"), []byte("not valid json")); err != nil {
+		t.Fatalf("Put corrupt foreign table metadata: %v", err)
+	}
+
+	c := New(catalogTree, pool, nil)
+	err = c.Load()
+	if err == nil || !strings.Contains(err.Error(), "remote_orders") {
+		t.Fatalf("expected corrupt foreign table metadata error, got %v", err)
+	}
+	if _, exists := c.foreignTables["remote_orders"]; exists {
+		t.Fatal("corrupt foreign table should not be loaded after Load failure")
+	}
+}
