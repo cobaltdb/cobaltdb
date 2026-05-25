@@ -1432,11 +1432,11 @@ func (c *Catalog) executeInsteadOfUpdateTrigger(ctx context.Context, trigger *qu
 		for iter.HasNext() {
 			_, valueData, err := iter.Next()
 			if err != nil {
-				break
+				return 0, 0, fmt.Errorf("failed to read row for INSTEAD OF UPDATE: %w", err)
 			}
 			row, err := decodeRow(valueData, len(columns))
 			if err != nil {
-				continue
+				return 0, 0, fmt.Errorf("failed to decode row for INSTEAD OF UPDATE on %s: %w", stmt.Table, err)
 			}
 			rows = append(rows, row)
 		}
@@ -1504,11 +1504,11 @@ func (c *Catalog) executeInsteadOfDeleteTrigger(ctx context.Context, trigger *qu
 		for iter.HasNext() {
 			_, valueData, err := iter.Next()
 			if err != nil {
-				break
+				return 0, 0, fmt.Errorf("failed to read row for INSTEAD OF DELETE: %w", err)
 			}
 			row, err := decodeRow(valueData, len(columns))
 			if err != nil {
-				continue
+				return 0, 0, fmt.Errorf("failed to decode row for INSTEAD OF DELETE on %s: %w", stmt.Table, err)
 			}
 			rows = append(rows, row)
 		}
