@@ -679,7 +679,7 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 	case undoAlterDropColumn:
 		return c.undoAlterDropColumnEntry(entry, errorPrefix)
 	case undoAlterRename:
-		c.undoAlterRenameEntry(entry)
+		return c.undoAlterRenameEntry(entry, errorPrefix)
 	case undoAlterRenameColumn:
 		c.undoAlterRenameColumnEntry(entry)
 	}
@@ -778,10 +778,10 @@ func (c *Catalog) undoAlterDropColumnEntry(entry undoEntry, errorPrefix string) 
 	return nil
 }
 
-func (c *Catalog) undoAlterRenameEntry(entry undoEntry) {
+func (c *Catalog) undoAlterRenameEntry(entry undoEntry, errorPrefix string) error {
 	tbl, exists := c.tables[entry.newName]
 	if !exists {
-		return
+		return nil
 	}
 	delete(c.tables, entry.newName)
 	c.tables[entry.oldName] = tbl
@@ -799,6 +799,15 @@ func (c *Catalog) undoAlterRenameEntry(entry undoEntry) {
 		delete(c.stats, entry.newName)
 		c.stats[entry.oldName] = stats
 	}
+	if c.tree != nil {
+		if err := c.tree.Delete([]byte("tbl:" + entry.newName)); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
+			return fmt.Errorf("%s removing renamed table def %s: %w", errorPrefix, entry.newName, err)
+		}
+		if err := c.storeTableDef(tbl); err != nil {
+			return fmt.Errorf("%s restoring renamed table def %s: %w", errorPrefix, entry.oldName, err)
+		}
+	}
+	return nil
 }
 
 func (c *Catalog) undoAlterRenameColumnEntry(entry undoEntry) {

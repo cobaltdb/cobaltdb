@@ -88,6 +88,57 @@ func TestPersistenceBasic(t *testing.T) {
 	}
 }
 
+func TestPersistenceRollbackAlterTableRename(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "ddl_rollback_rename.db")
+	ctx := context.Background()
+
+	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+
+	_, err = db.Exec(ctx, "CREATE TABLE rename_rollback_old (id INTEGER PRIMARY KEY, name TEXT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "INSERT INTO rename_rollback_old VALUES (1, 'one')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "BEGIN")
+	if err != nil {
+		t.Fatalf("BEGIN failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "ALTER TABLE rename_rollback_old RENAME TO rename_rollback_new")
+	if err != nil {
+		t.Fatalf("ALTER TABLE RENAME failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "ROLLBACK")
+	if err != nil {
+		t.Fatalf("ROLLBACK failed: %v", err)
+	}
+
+	expectSingleValue(t, db, "SELECT COUNT(*) FROM rename_rollback_old", int64(1))
+	if _, err = db.Query(ctx, "SELECT COUNT(*) FROM rename_rollback_new"); err == nil {
+		t.Fatal("renamed table should not exist after rollback")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	if err != nil {
+		t.Fatalf("Reopen failed: %v", err)
+	}
+	defer db2.Close()
+
+	expectSingleValue(t, db2, "SELECT COUNT(*) FROM rename_rollback_old", int64(1))
+	if _, err = db2.Query(ctx, "SELECT COUNT(*) FROM rename_rollback_new"); err == nil {
+		t.Fatal("renamed table should not persist after rollback and reopen")
+	}
+}
+
 func TestPersistenceMultipleTables(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "multi.db")
