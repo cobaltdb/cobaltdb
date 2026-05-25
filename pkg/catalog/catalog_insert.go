@@ -150,7 +150,10 @@ func (c *Catalog) checkUniqueConstraintsSnapshot(tree btree.TreeStore, table *Ta
 				if m, ok := ts.getPendingWriteMap()[stmt.Table]; ok {
 					for _, pw := range m {
 						vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
-						if err != nil || vrow.Version.DeletedAt > 0 {
+						if err != nil {
+							return false, fmt.Errorf("failed to decode pending row for UNIQUE check on table %s: %w", stmt.Table, err)
+						}
+						if vrow.Version.DeletedAt > 0 {
 							continue
 						}
 						existingRow := vrow.Data
@@ -170,11 +173,13 @@ func (c *Catalog) checkUniqueConstraintsSnapshot(tree btree.TreeStore, table *Ta
 			for iter.HasNext() {
 				k, existingData, err := iter.Next()
 				if err != nil {
-					break
+					iter.Close()
+					return false, fmt.Errorf("failed to read row during UNIQUE check on table %s: %w", stmt.Table, err)
 				}
 				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
 				if err != nil {
-					continue
+					iter.Close()
+					return false, fmt.Errorf("failed to decode row during UNIQUE check on table %s: %w", stmt.Table, err)
 				}
 				if vrow.Version.DeletedAt > 0 {
 					continue
@@ -314,11 +319,13 @@ func (c *Catalog) checkForeignKeyConstraintsSnapshot(table *TableDef, rowValues 
 			for refIter.HasNext() {
 				_, refData, err := refIter.Next()
 				if err != nil {
-					break
+					refIter.Close()
+					return fmt.Errorf("FOREIGN KEY constraint failed: failed to read referenced row in table %s: %w", fk.ReferencedTable, err)
 				}
 				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
 				if err != nil {
-					continue
+					refIter.Close()
+					return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode referenced row in table %s: %w", fk.ReferencedTable, err)
 				}
 				refRow := vrow.Data
 				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
@@ -331,7 +338,10 @@ func (c *Catalog) checkForeignKeyConstraintsSnapshot(table *TableDef, rowValues 
 				if m, ok := ts.getPendingWriteMap()[fk.ReferencedTable]; ok {
 					for _, pw := range m {
 						vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
-						if err != nil || vrow.Version.DeletedAt > 0 {
+						if err != nil {
+							return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode pending referenced row in table %s: %w", fk.ReferencedTable, err)
+						}
+						if vrow.Version.DeletedAt > 0 {
 							continue
 						}
 						refRow := vrow.Data
@@ -1671,7 +1681,10 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 				if m, ok := ts.getPendingWriteMap()[stmt.Table]; ok {
 					for _, pw := range m {
 						vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
-						if err != nil || vrow.Version.DeletedAt > 0 {
+						if err != nil {
+							return false, fmt.Errorf("failed to decode pending row for UNIQUE check on table %s: %w", stmt.Table, err)
+						}
+						if vrow.Version.DeletedAt > 0 {
 							continue
 						}
 						existingRow := vrow.Data
@@ -1691,11 +1704,13 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 			for iter.HasNext() {
 				k, existingData, err := iter.Next()
 				if err != nil {
-					break
+					iter.Close()
+					return false, fmt.Errorf("failed to read row during UNIQUE check on table %s: %w", stmt.Table, err)
 				}
 				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
 				if err != nil {
-					continue
+					iter.Close()
+					return false, fmt.Errorf("failed to decode row during UNIQUE check on table %s: %w", stmt.Table, err)
 				}
 				if vrow.Version.DeletedAt > 0 {
 					continue
@@ -1807,11 +1822,13 @@ func (c *Catalog) checkForeignKeyConstraints(table *TableDef, rowValues []interf
 			for refIter.HasNext() {
 				_, refData, err := refIter.Next()
 				if err != nil {
-					break
+					refIter.Close()
+					return fmt.Errorf("FOREIGN KEY constraint failed: failed to read referenced row in table %s: %w", fk.ReferencedTable, err)
 				}
 				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
 				if err != nil {
-					continue
+					refIter.Close()
+					return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode referenced row in table %s: %w", fk.ReferencedTable, err)
 				}
 				refRow := vrow.Data
 				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
@@ -1827,7 +1844,10 @@ func (c *Catalog) checkForeignKeyConstraints(table *TableDef, rowValues []interf
 				if m, ok := ts.getPendingWriteMap()[fk.ReferencedTable]; ok {
 					for _, pw := range m {
 						vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
-						if err != nil || vrow.Version.DeletedAt > 0 {
+						if err != nil {
+							return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode pending referenced row in table %s: %w", fk.ReferencedTable, err)
+						}
+						if vrow.Version.DeletedAt > 0 {
 							continue
 						}
 						refRow := vrow.Data
