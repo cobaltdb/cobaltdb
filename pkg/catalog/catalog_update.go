@@ -1007,6 +1007,12 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		rowsAffected++
 	}
 
+	for _, entry := range entries {
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "UPDATE", "BEFORE", entry.newRow, entry.oldRow, targetTable.Columns); trigErr != nil {
+			return 0, rowsAffected, fmt.Errorf("BEFORE UPDATE trigger failed: %w", trigErr)
+		}
+	}
+
 	var returningRows [][]interface{}
 	var returningCols []string
 	if len(stmt.Returning) > 0 && rowsAffected > 0 {
@@ -1025,6 +1031,15 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 	// Apply all updates
 	if err := c.applyJoinUpdateEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
 		return 0, rowsAffected, err
+	}
+
+	for _, entry := range entries {
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "UPDATE", "AFTER", entry.newRow, entry.oldRow, targetTable.Columns); trigErr != nil {
+			if rbErr := c.rollbackAppliedJoinUpdateEntries(stmt.Table, targetTable, targetTree, entries); rbErr != nil {
+				return 0, rowsAffected, fmt.Errorf("AFTER UPDATE trigger failed: %w; rollback failed: %v", trigErr, rbErr)
+			}
+			return 0, rowsAffected, fmt.Errorf("AFTER UPDATE trigger failed: %w", trigErr)
+		}
 	}
 
 	// Store returning rows for retrieval
@@ -1091,6 +1106,20 @@ func (c *Catalog) applyJoinUpdateEntries(tableName string, table *TableDef, tree
 		}
 	}
 	return nil
+}
+
+func (c *Catalog) rollbackAppliedJoinUpdateEntries(tableName string, table *TableDef, tree btree.TreeStore, entries []joinUpdateEntry) error {
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		oldValue, err := encodeRow(nil, entry.oldRow)
+		if err != nil {
+			return err
+		}
+		if err := tree.Put(entry.key, oldValue); err != nil {
+			return err
+		}
+	}
+	return c.rebuildTableIndexesLocked(tableName)
 }
 
 func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
@@ -1212,6 +1241,12 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		rowsAffected++
 	}
 
+	for _, entry := range entries {
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "BEFORE", nil, entry.row, targetTable.Columns); trigErr != nil {
+			return 0, rowsAffected, fmt.Errorf("BEFORE DELETE trigger failed: %w", trigErr)
+		}
+	}
+
 	var returningRows [][]interface{}
 	var returningCols []string
 	if len(stmt.Returning) > 0 && rowsAffected > 0 {
@@ -1232,6 +1267,15 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		return 0, rowsAffected, err
 	}
 
+	for _, entry := range entries {
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "AFTER", nil, entry.row, targetTable.Columns); trigErr != nil {
+			if rbErr := c.rollbackAppliedJoinDeleteEntries(stmt.Table, targetTree, entries); rbErr != nil {
+				return 0, rowsAffected, fmt.Errorf("AFTER DELETE trigger failed: %w; rollback failed: %v", trigErr, rbErr)
+			}
+			return 0, rowsAffected, fmt.Errorf("AFTER DELETE trigger failed: %w", trigErr)
+		}
+	}
+
 	// Store returning rows for retrieval
 	c.setLastReturning(returningRows, returningCols)
 
@@ -1246,6 +1290,16 @@ type joinDelEntry struct {
 	key   []byte
 	value []byte
 	row   []interface{}
+}
+
+func (c *Catalog) rollbackAppliedJoinDeleteEntries(tableName string, tree btree.TreeStore, entries []joinDelEntry) error {
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if err := tree.Put(entry.key, entry.value); err != nil {
+			return err
+		}
+	}
+	return c.rebuildTableIndexesLocked(tableName)
 }
 
 // softDeleteJoinEntries performs soft deletion of collected entries from a
