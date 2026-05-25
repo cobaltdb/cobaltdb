@@ -339,7 +339,9 @@ func (c *Catalog) Load() error {
 				}
 				indexDef.RootPageID = indexTree.RootPageID()
 				if tableTree := c.tableTrees[indexDef.TableName]; tableTree != nil {
-					c.populateIndexLocked(indexTree, &indexDef, table, tableTree)
+					if err := c.populateIndexLocked(indexTree, &indexDef, table, tableTree); err != nil {
+						return fmt.Errorf("load catalog: failed to populate index %s: %w", indexDef.Name, err)
+					}
 				}
 			}
 

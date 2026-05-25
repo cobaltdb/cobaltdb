@@ -68,7 +68,14 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 	// in <100ms and doesn't block concurrent reads/writes.
 	tree := c.tableTrees[stmt.Table]
 	if tree != nil && tree.Size() <= 1000 {
-		c.populateIndexLocked(indexTree, indexDef, table, tree)
+		if err := c.populateIndexLocked(indexTree, indexDef, table, tree); err != nil {
+			delete(c.indexes, stmt.Index)
+			delete(c.indexTrees, stmt.Index)
+			if deleteErr := c.deleteCatalogDef("idx:" + stmt.Index); deleteErr != nil {
+				return fmt.Errorf("failed to populate index %s: %w; cleanup failed: %v", stmt.Index, err, deleteErr)
+			}
+			return fmt.Errorf("failed to populate index %s: %w", stmt.Index, err)
+		}
 		indexDef.Status = IndexActive
 	} else {
 		go c.buildIndexInBackground(stmt.Index, stmt.Table, table)
@@ -79,16 +86,16 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 
 // populateIndexLocked fills an index tree from a table scan. Must be called
 // with Catalog.mu held (or with external guarantees that the table is stable).
-func (c *Catalog) populateIndexLocked(indexTree btree.TreeStore, indexDef *IndexDef, table *TableDef, tree btree.TreeStore) {
+func (c *Catalog) populateIndexLocked(indexTree btree.TreeStore, indexDef *IndexDef, table *TableDef, tree btree.TreeStore) error {
 	iter, err := tree.Scan(nil, nil)
 	if err != nil {
-		return
+		return err
 	}
 	defer iter.Close()
 	for iter.HasNext() {
 		key, valueData, iterErr := iter.Next()
 		if iterErr != nil {
-			break
+			return iterErr
 		}
 		row, err := decodeRow(valueData, len(table.Columns))
 		if err != nil {
@@ -99,12 +106,17 @@ func (c *Catalog) populateIndexLocked(indexTree btree.TreeStore, indexDef *Index
 			continue
 		}
 		if indexDef.Unique {
-			_ = indexTree.Put([]byte(indexKey), key)
+			if err := indexTree.Put([]byte(indexKey), key); err != nil {
+				return err
+			}
 		} else {
 			compoundKey := indexKey + "\x00" + string(key)
-			_ = indexTree.Put([]byte(compoundKey), key)
+			if err := indexTree.Put([]byte(compoundKey), key); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 // buildIndexInBackground scans the table and populates the index.
@@ -120,7 +132,9 @@ func (c *Catalog) buildIndexInBackground(indexName, tableName string, table *Tab
 		return
 	}
 
-	c.populateIndexLocked(idxTree, idxDef, table, tree)
+	if err := c.populateIndexLocked(idxTree, idxDef, table, tree); err != nil {
+		return
+	}
 
 	c.mu.Lock()
 	if def, exists := c.indexes[indexName]; exists && def.Status == IndexBuilding {
@@ -399,10 +413,16 @@ func (c *Catalog) rebuildTableIndexesLocked(tableName string) error {
 			indexKey, ok := buildCompositeIndexKey(table, idxDef, row)
 			if ok {
 				if idxDef.Unique {
-					_ = newTree.Put([]byte(indexKey), key)
+					if err := newTree.Put([]byte(indexKey), key); err != nil {
+						iter.Close()
+						return fmt.Errorf("failed to write index %s during rebuild: %w", idxName, err)
+					}
 				} else {
 					compoundKey := indexKey + "\x00" + string(key)
-					_ = newTree.Put([]byte(compoundKey), key)
+					if err := newTree.Put([]byte(compoundKey), key); err != nil {
+						iter.Close()
+						return fmt.Errorf("failed to write index %s during rebuild: %w", idxName, err)
+					}
 				}
 			}
 		}
