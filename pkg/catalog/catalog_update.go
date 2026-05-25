@@ -1720,7 +1720,9 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		}
 
 		if pkChanged {
-			_ = updateTree.Delete(oldKey) // best-effort; key may be buffered-only
+			if err := updateTree.Delete(oldKey); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
+				return rollbackApplied(fmt.Errorf("failed to delete old row key during update: %w", err), nil)
+			}
 			if err := updateTree.Put(newKey, newValueData); err != nil {
 				return rollbackApplied(fmt.Errorf("failed to update row with new key: %w", err), &entry)
 			}

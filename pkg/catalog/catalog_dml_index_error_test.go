@@ -81,3 +81,41 @@ func TestDeleteRowIndexDeleteFailureKeepsRow(t *testing.T) {
 		t.Fatalf("index should remain usable after failed delete, got %+v", indexed.Rows)
 	}
 }
+
+func TestUpdatePrimaryKeyDeleteFailureKeepsOldRow(t *testing.T) {
+	c, pool := newMetadataIsolationCatalog(t)
+	defer pool.Close()
+
+	if _, err := c.ExecuteQuery("CREATE TABLE upd_pk_delete_err (id INTEGER PRIMARY KEY, name TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := c.ExecuteQuery("INSERT INTO upd_pk_delete_err (id, name) VALUES (1, 'alice')"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	c.tableTrees["upd_pk_delete_err"] = &deleteFailTree{
+		TreeStore: c.tableTrees["upd_pk_delete_err"],
+		err:       errors.New("delete failed"),
+	}
+
+	_, err := c.ExecuteQuery("UPDATE upd_pk_delete_err SET id = 2 WHERE id = 1")
+	if err == nil || !strings.Contains(err.Error(), "delete failed") {
+		t.Fatalf("expected old key delete failure, got %v", err)
+	}
+
+	oldRow, err := c.ExecuteQuery("SELECT name FROM upd_pk_delete_err WHERE id = 1")
+	if err != nil {
+		t.Fatalf("select old row: %v", err)
+	}
+	if len(oldRow.Rows) != 1 || fmt.Sprint(oldRow.Rows[0][0]) != "alice" {
+		t.Fatalf("old row should remain after failed PK update, got %+v", oldRow.Rows)
+	}
+
+	newRow, err := c.ExecuteQuery("SELECT name FROM upd_pk_delete_err WHERE id = 2")
+	if err != nil {
+		t.Fatalf("select new row: %v", err)
+	}
+	if len(newRow.Rows) != 0 {
+		t.Fatalf("new row should not be written after failed PK update, got %+v", newRow.Rows)
+	}
+}
