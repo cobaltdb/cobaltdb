@@ -44,6 +44,52 @@ func createTriggerSQL(stmt *query.CreateTriggerStmt) string {
 	return strings.Join(parts, " ") + " BEGIN " + strings.Join(body, "; ") + "; END"
 }
 
+func createProcedureSQL(stmt *query.CreateProcedureStmt) string {
+	if stmt == nil {
+		return ""
+	}
+	params := make([]string, 0, len(stmt.Params))
+	for _, param := range stmt.Params {
+		if param == nil {
+			continue
+		}
+		params = append(params, param.Name+" "+procedureParamTypeSQL(param.Type))
+	}
+	body := make([]string, 0, len(stmt.Body))
+	for _, bodyStmt := range stmt.Body {
+		sql := statementToSQL(bodyStmt)
+		if sql != "" {
+			body = append(body, sql)
+		}
+	}
+	return "CREATE PROCEDURE " + stmt.Name + "(" + strings.Join(params, ", ") + ") BEGIN " + strings.Join(body, "; ") + "; END"
+}
+
+func procedureParamTypeSQL(tt query.TokenType) string {
+	switch tt {
+	case query.TokenInteger:
+		return "INTEGER"
+	case query.TokenText:
+		return "TEXT"
+	case query.TokenReal:
+		return "REAL"
+	case query.TokenBlob:
+		return "BLOB"
+	case query.TokenBoolean:
+		return "BOOLEAN"
+	case query.TokenJSON:
+		return "JSON"
+	case query.TokenDate:
+		return "DATE"
+	case query.TokenTimestamp:
+		return "TIMESTAMP"
+	case query.TokenDatetime:
+		return "DATETIME"
+	default:
+		return "TEXT"
+	}
+}
+
 func statementToSQL(stmt query.Statement) string {
 	switch s := stmt.(type) {
 	case *query.SelectStmt:

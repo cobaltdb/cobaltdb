@@ -58,3 +58,32 @@ func TestDropTriggerRollsBack(t *testing.T) {
 	execSQL(t, db, "INSERT INTO ddl_drop_trig_rb_main VALUES (1)")
 	expectSingleValue(t, db, "SELECT COUNT(*) FROM ddl_drop_trig_rb_audit", int64(1))
 }
+
+func TestCreateProcedureRollsBack(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	execSQL(t, db, "BEGIN")
+	execSQL(t, db, "CREATE PROCEDURE ddl_proc_rb() BEGIN SELECT 1; END")
+	execSQL(t, db, "ROLLBACK")
+
+	if _, err := db.Exec(ctx, "CALL ddl_proc_rb()"); err == nil {
+		t.Fatal("procedure created inside rolled-back transaction should not exist")
+	}
+}
+
+func TestDropProcedureRollsBack(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	execSQL(t, db, "CREATE TABLE ddl_drop_proc_rb_log (id INTEGER PRIMARY KEY, msg TEXT)")
+	execSQL(t, db, "CREATE PROCEDURE ddl_drop_proc_rb() BEGIN INSERT INTO ddl_drop_proc_rb_log VALUES (1, 'called'); END")
+	execSQL(t, db, "BEGIN")
+	execSQL(t, db, "DROP PROCEDURE ddl_drop_proc_rb")
+	execSQL(t, db, "ROLLBACK")
+
+	if _, err := db.Exec(ctx, "CALL ddl_drop_proc_rb()"); err != nil {
+		t.Fatalf("procedure dropped inside rolled-back transaction should be restored: %v", err)
+	}
+	expectSingleValue(t, db, "SELECT COUNT(*) FROM ddl_drop_proc_rb_log", int64(1))
+}

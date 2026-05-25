@@ -177,6 +177,39 @@ func TestPersistenceUniqueIndexEnforcedAfterReopen(t *testing.T) {
 	expectSingleValue(t, db2, "SELECT COUNT(*) FROM index_reopen_users", int64(1))
 }
 
+func TestPersistenceProcedureCallableAfterReopen(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "procedure_reopen.db")
+	ctx := context.Background()
+
+	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "CREATE TABLE proc_reopen_log (id INTEGER PRIMARY KEY, msg TEXT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "CREATE PROCEDURE proc_reopen_insert() BEGIN INSERT INTO proc_reopen_log VALUES (1, 'called'); END")
+	if err != nil {
+		t.Fatalf("CREATE PROCEDURE failed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	if err != nil {
+		t.Fatalf("Reopen failed: %v", err)
+	}
+	defer db2.Close()
+
+	if _, err = db2.Exec(ctx, "CALL proc_reopen_insert()"); err != nil {
+		t.Fatalf("CALL after reopen failed: %v", err)
+	}
+	expectSingleValue(t, db2, "SELECT COUNT(*) FROM proc_reopen_log", int64(1))
+}
+
 func TestPersistenceMultipleTables(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "multi.db")

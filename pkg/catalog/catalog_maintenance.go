@@ -56,6 +56,16 @@ func (c *Catalog) Save() error {
 		}
 	}
 
+	for procedureName, procedure := range c.procedures {
+		sql := c.procedureSQL[procedureName]
+		if strings.TrimSpace(sql) == "" {
+			sql = createProcedureSQL(procedure)
+		}
+		if err := c.storeProcedureDef(procedureName, sql); err != nil {
+			return fmt.Errorf("failed to save procedure definition %s: %w", procedureName, err)
+		}
+	}
+
 	// Save vector index definitions
 	for _, vid := range c.vectorIndexes {
 		if err := c.storeVectorIndexDef(vid); err != nil {
@@ -100,6 +110,10 @@ func (c *Catalog) storeViewDef(name string, sql string) error {
 
 func (c *Catalog) storeTriggerDef(name string, sql string) error {
 	return c.storeSQLDef("trg:"+name, name, sql)
+}
+
+func (c *Catalog) storeProcedureDef(name string, sql string) error {
+	return c.storeSQLDef("proc:"+name, name, sql)
 }
 
 func (c *Catalog) storeSQLDef(key string, name string, sql string) error {
@@ -148,6 +162,9 @@ func (c *Catalog) Load() error {
 	}
 	if c.triggers == nil {
 		c.triggers = make(map[string]*query.CreateTriggerStmt)
+	}
+	if c.procedures == nil {
+		c.procedures = make(map[string]*query.CreateProcedureStmt)
 	}
 
 	// Load table definitions from catalog tree
@@ -334,6 +351,42 @@ func (c *Catalog) Load() error {
 			c.triggerSQL[name] = triggerStmt.RawSQL
 		}
 		triggerIter.Close()
+	}
+
+	procedureIter, err := c.tree.Scan([]byte("proc:"), []byte("proc;"))
+	if err == nil {
+		if c.procedureSQL == nil {
+			c.procedureSQL = make(map[string]string)
+		}
+		for procedureIter.HasNext() {
+			keyStr, value, err := procedureIter.NextString()
+			if err != nil {
+				break
+			}
+			if !strings.HasPrefix(keyStr, "proc:") {
+				continue
+			}
+			def := decodePersistedSQLDef(keyStr, "proc:", value)
+			if def.SQL == "" {
+				continue
+			}
+			parsed, err := query.Parse(def.SQL)
+			if err != nil {
+				continue
+			}
+			procedureStmt, ok := parsed.(*query.CreateProcedureStmt)
+			if !ok {
+				continue
+			}
+			name := procedureStmt.Name
+			if name == "" {
+				name = def.Name
+			}
+			procedureStmt.RawSQL = strings.TrimSpace(def.SQL)
+			c.procedures[name] = procedureStmt
+			c.procedureSQL[name] = procedureStmt.RawSQL
+		}
+		procedureIter.Close()
 	}
 
 	// Load vector index definitions from catalog tree

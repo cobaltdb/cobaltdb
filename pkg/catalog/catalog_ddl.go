@@ -1198,13 +1198,32 @@ func (c *Catalog) resolveTriggerExpr(expr query.Expression, newRow []interface{}
 }
 
 func (c *Catalog) CreateProcedure(stmt *query.CreateProcedureStmt) error {
+	return c.CreateProcedureSQL(stmt, "")
+}
+
+func (c *Catalog) CreateProcedureSQL(stmt *query.CreateProcedureStmt, sql string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	defer c.invalidateSchemaCache()
 	if _, exists := c.procedures[stmt.Name]; exists {
 		return fmt.Errorf("procedure %s already exists", stmt.Name)
 	}
+	if c.procedureSQL == nil {
+		c.procedureSQL = make(map[string]string)
+	}
+	if strings.TrimSpace(sql) == "" {
+		sql = createProcedureSQL(stmt)
+	}
+	stmt.RawSQL = strings.TrimSpace(sql)
 	c.procedures[stmt.Name] = stmt
+	c.procedureSQL[stmt.Name] = stmt.RawSQL
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:        undoCreateProcedure,
+			procedureName: stmt.Name,
+			procedureSQL:  stmt.RawSQL,
+		})
+	}
 	return nil
 }
 
@@ -1225,7 +1244,19 @@ func (c *Catalog) DropProcedure(name string) error {
 	if _, exists := c.procedures[name]; !exists {
 		return fmt.Errorf("procedure %s not found", name)
 	}
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:        undoDropProcedure,
+			procedureName: name,
+			procedureStmt: cloneCreateProcedureStmt(c.procedures[name]),
+			procedureSQL:  c.procedureSQL[name],
+		})
+	}
 	delete(c.procedures, name)
+	delete(c.procedureSQL, name)
+	if c.tree != nil {
+		_ = c.tree.Delete([]byte("proc:" + name))
+	}
 	return nil
 }
 

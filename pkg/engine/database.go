@@ -397,6 +397,8 @@ func annotateDDLRawSQL(stmt query.Statement, sql string) {
 		s.RawSQL = normalized
 	case *query.CreateTriggerStmt:
 		s.RawSQL = normalized
+	case *query.CreateProcedureStmt:
+		s.RawSQL = normalized
 	}
 }
 
@@ -1271,7 +1273,7 @@ func (db *DB) executeDropTrigger(ctx context.Context, stmt *query.DropTriggerStm
 // executeCreateProcedure executes CREATE PROCEDURE
 
 func (db *DB) executeCreateProcedure(ctx context.Context, stmt *query.CreateProcedureStmt) (Result, error) {
-	if err := db.catalog.CreateProcedure(stmt); err != nil {
+	if err := db.catalog.CreateProcedureSQL(stmt, stmt.RawSQL); err != nil {
 		if stmt.IfNotExists {
 			return Result{}, nil // Silently succeed
 		}

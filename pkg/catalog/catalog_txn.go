@@ -700,6 +700,10 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 		return c.undoCreateTriggerEntry(entry, errorPrefix)
 	case undoDropTrigger:
 		return c.undoDropTriggerEntry(entry, errorPrefix)
+	case undoCreateProcedure:
+		return c.undoCreateProcedureEntry(entry, errorPrefix)
+	case undoDropProcedure:
+		return c.undoDropProcedureEntry(entry, errorPrefix)
 	}
 	return nil
 }
@@ -922,6 +926,40 @@ func (c *Catalog) undoDropTriggerEntry(entry undoEntry, errorPrefix string) erro
 	return nil
 }
 
+func (c *Catalog) undoCreateProcedureEntry(entry undoEntry, errorPrefix string) error {
+	delete(c.procedures, entry.procedureName)
+	delete(c.procedureSQL, entry.procedureName)
+	if c.tree != nil {
+		if err := c.tree.Delete([]byte("proc:" + entry.procedureName)); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
+			return fmt.Errorf("%s removing procedure %s: %w", errorPrefix, entry.procedureName, err)
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) undoDropProcedureEntry(entry undoEntry, errorPrefix string) error {
+	if c.procedures == nil {
+		c.procedures = make(map[string]*query.CreateProcedureStmt)
+	}
+	if c.procedureSQL == nil {
+		c.procedureSQL = make(map[string]string)
+	}
+	c.procedures[entry.procedureName] = entry.procedureStmt
+	c.procedureSQL[entry.procedureName] = entry.procedureSQL
+	if strings.TrimSpace(c.procedureSQL[entry.procedureName]) == "" {
+		c.procedureSQL[entry.procedureName] = createProcedureSQL(entry.procedureStmt)
+	}
+	if entry.procedureStmt != nil {
+		entry.procedureStmt.RawSQL = c.procedureSQL[entry.procedureName]
+	}
+	if c.tree != nil {
+		if err := c.storeProcedureDef(entry.procedureName, c.procedureSQL[entry.procedureName]); err != nil {
+			return fmt.Errorf("%s restoring procedure %s: %w", errorPrefix, entry.procedureName, err)
+		}
+	}
+	return nil
+}
+
 func (c *Catalog) reverseIndexChanges(entry undoEntry, errorPrefix string, rollbackErr error) error {
 	for j := len(entry.indexChanges) - 1; j >= 0; j-- {
 		idxChange := entry.indexChanges[j]
@@ -947,7 +985,8 @@ func isDDLUndo(a undoAction) bool {
 	switch a {
 	case undoCreateTable, undoDropTable, undoCreateIndex, undoDropIndex,
 		undoAlterAddColumn, undoAlterDropColumn, undoAlterRename, undoAlterRenameColumn,
-		undoCreateView, undoDropView, undoCreateTrigger, undoDropTrigger:
+		undoCreateView, undoDropView, undoCreateTrigger, undoDropTrigger,
+		undoCreateProcedure, undoDropProcedure:
 		return true
 	default:
 		return false

@@ -267,6 +267,7 @@ type CreateProcedureStmt struct {
 	Name        string
 	Params      []*ParamDef
 	Body        []Statement
+	RawSQL      string
 }
 
 func (s *CreateProcedureStmt) nodeType() string { return "CreateProcedureStmt" }

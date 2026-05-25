@@ -196,6 +196,8 @@ const (
 	undoDropView                            // Undo DROP VIEW by restoring the view
 	undoCreateTrigger                       // Undo CREATE TRIGGER by dropping the trigger
 	undoDropTrigger                         // Undo DROP TRIGGER by restoring the trigger
+	undoCreateProcedure                     // Undo CREATE PROCEDURE by dropping the procedure
+	undoDropProcedure                       // Undo DROP PROCEDURE by restoring the procedure
 )
 
 // indexUndoEntry records an index modification for rollback
@@ -236,6 +238,9 @@ type undoEntry struct {
 	triggerName          string                      // For trigger undo actions
 	triggerStmt          *query.CreateTriggerStmt    // For undoDropTrigger: original trigger
 	triggerSQL           string                      // For trigger undo actions
+	procedureName        string                      // For procedure undo actions
+	procedureStmt        *query.CreateProcedureStmt  // For undoDropProcedure: original procedure
+	procedureSQL         string                      // For procedure undo actions
 }
 
 // catalogTxnState holds per-transaction state for multi-transaction support.
@@ -299,6 +304,7 @@ type Catalog struct {
 	triggers             map[string]*query.CreateTriggerStmt   // Triggers store their definition
 	triggerSQL           map[string]string                     // Original CREATE TRIGGER SQL for persistence
 	procedures           map[string]*query.CreateProcedureStmt // Procedures store their definition
+	procedureSQL         map[string]string                     // Original CREATE PROCEDURE SQL for persistence
 	materializedViews    map[string]*MaterializedViewDef       // Materialized views
 	ftsIndexes           map[string]*FTSIndexDef               // Full-text search indexes
 	jsonIndexes          map[string]*JSONIndexDef              // JSON indexes for fast JSON queries
@@ -400,6 +406,7 @@ func New(tree btree.TreeStore, pool *storage.BufferPool, wal *storage.WAL) *Cata
 		triggers:          make(map[string]*query.CreateTriggerStmt),
 		triggerSQL:        make(map[string]string),
 		procedures:        make(map[string]*query.CreateProcedureStmt),
+		procedureSQL:      make(map[string]string),
 		materializedViews: make(map[string]*MaterializedViewDef),
 		ftsIndexes:        make(map[string]*FTSIndexDef),
 		jsonIndexes:       make(map[string]*JSONIndexDef),
