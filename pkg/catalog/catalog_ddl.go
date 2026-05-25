@@ -235,7 +235,21 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 	// Build column index cache for performance
 	tableDef.buildColumnIndexCache()
 
-	// Record DDL undo entry for transaction rollback
+	// Store table definition in catalog tree before exposing the create as
+	// successful. If persistence fails, remove in-memory metadata so callers
+	// do not observe a table that failed CREATE.
+	if err := c.storeTableDef(tableDef); err != nil {
+		delete(c.tables, stmt.Table)
+		delete(c.tableTrees, stmt.Table)
+		for treeName := range c.tableTrees {
+			if strings.HasPrefix(treeName, stmt.Table+":") {
+				delete(c.tableTrees, treeName)
+			}
+		}
+		return err
+	}
+
+	// Record DDL undo entry for transaction rollback after persistence succeeds.
 	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
 			action:    undoCreateTable,
@@ -243,8 +257,7 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 		})
 	}
 
-	// Store table definition in catalog tree
-	return c.storeTableDef(tableDef)
+	return nil
 }
 
 func (c *Catalog) storeTableDef(table *TableDef) error {

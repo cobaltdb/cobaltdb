@@ -18,6 +18,15 @@ func (t *deleteFailTree) Delete(key []byte) error {
 	return t.err
 }
 
+type putFailTree struct {
+	btree.TreeStore
+	err error
+}
+
+func (t *putFailTree) Put(key, value []byte) error {
+	return t.err
+}
+
 func TestDDLDropMetadataDeleteFailureKeepsCatalogState(t *testing.T) {
 	c, pool := newMetadataIsolationCatalog(t)
 	defer pool.Close()
@@ -107,5 +116,58 @@ func TestAlterTableRenameMetadataDeleteFailureKeepsOldName(t *testing.T) {
 	}
 	if _, ok := c.tables["ddl_rename_new"]; ok {
 		t.Fatal("new table name should not appear after metadata delete failure")
+	}
+}
+
+func TestCreateTableMetadataStoreFailureRollsBackCatalogState(t *testing.T) {
+	c, pool := newMetadataIsolationCatalog(t)
+	defer pool.Close()
+
+	c.tree = &putFailTree{TreeStore: c.tree, err: errors.New("put failed")}
+	err := c.CreateTable(&query.CreateTableStmt{
+		Table: "ddl_create_fail",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "put failed") {
+		t.Fatalf("expected metadata store error, got %v", err)
+	}
+	if _, ok := c.tables["ddl_create_fail"]; ok {
+		t.Fatal("table should not remain in catalog after metadata store failure")
+	}
+	if _, ok := c.tableTrees["ddl_create_fail"]; ok {
+		t.Fatal("table tree should not remain after metadata store failure")
+	}
+}
+
+func TestCreateIndexMetadataStoreFailureRollsBackCatalogState(t *testing.T) {
+	c, pool := newMetadataIsolationCatalog(t)
+	defer pool.Close()
+
+	if err := c.CreateTable(&query.CreateTableStmt{
+		Table: "ddl_index_base",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "name", Type: query.TokenText},
+		},
+	}); err != nil {
+		t.Fatalf("CreateTable: %v", err)
+	}
+
+	c.tree = &putFailTree{TreeStore: c.tree, err: errors.New("put failed")}
+	err := c.CreateIndex(&query.CreateIndexStmt{
+		Index:   "ddl_index_fail",
+		Table:   "ddl_index_base",
+		Columns: []string{"name"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "put failed") {
+		t.Fatalf("expected metadata store error, got %v", err)
+	}
+	if _, ok := c.indexes["ddl_index_fail"]; ok {
+		t.Fatal("index should not remain in catalog after metadata store failure")
+	}
+	if _, ok := c.indexTrees["ddl_index_fail"]; ok {
+		t.Fatal("index tree should not remain after metadata store failure")
 	}
 }

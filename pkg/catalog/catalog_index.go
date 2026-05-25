@@ -48,16 +48,18 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 	c.indexes[stmt.Index] = indexDef
 	c.indexTrees[stmt.Index] = indexTree
 
-	// Record DDL undo entry for transaction rollback
+	if err := c.storeIndexDef(indexDef); err != nil {
+		delete(c.indexes, stmt.Index)
+		delete(c.indexTrees, stmt.Index)
+		return err
+	}
+
+	// Record DDL undo entry for transaction rollback after persistence succeeds.
 	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
 			action:    undoCreateIndex,
 			indexName: stmt.Index,
 		})
-	}
-
-	if err := c.storeIndexDef(indexDef); err != nil {
-		return err
 	}
 
 	// For small tables (≤1000 rows) build synchronously so tests and
