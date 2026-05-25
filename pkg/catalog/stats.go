@@ -81,7 +81,7 @@ func (sc *StatsCollector) CollectStats(tableName string) (*TableStats, error) {
 	for _, col := range table.Columns {
 		colStats, err := sc.collectColumnStats(tableName, col.Name)
 		if err != nil {
-			continue // Skip columns that fail
+			return nil, fmt.Errorf("failed to collect stats for column %s.%s: %w", tableName, col.Name, err)
 		}
 		stats.ColumnStats[col.Name] = colStats
 	}
