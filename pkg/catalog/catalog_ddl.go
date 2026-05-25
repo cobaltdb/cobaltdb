@@ -821,6 +821,13 @@ func (c *Catalog) CreateViewSQL(name string, viewQuery *query.SelectStmt, sql st
 		sql = createViewSQL(name, viewQuery)
 	}
 	c.viewSQL[name] = strings.TrimSpace(sql)
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:   undoCreateView,
+			viewName: name,
+			viewSQL:  c.viewSQL[name],
+		})
+	}
 	return nil
 }
 
@@ -845,6 +852,14 @@ func (c *Catalog) DropView(name string) error {
 	defer c.invalidateSchemaCache()
 	if _, exists := c.views[name]; !exists {
 		return ErrTableNotFound
+	}
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:    undoDropView,
+			viewName:  name,
+			viewQuery: cloneSelectStmt(c.views[name]),
+			viewSQL:   c.viewSQL[name],
+		})
 	}
 	delete(c.views, name)
 	delete(c.viewSQL, name)
@@ -889,6 +904,13 @@ func (c *Catalog) CreateTriggerSQL(stmt *query.CreateTriggerStmt, sql string) er
 	stmt.RawSQL = strings.TrimSpace(sql)
 	c.triggers[stmt.Name] = stmt
 	c.triggerSQL[stmt.Name] = stmt.RawSQL
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:      undoCreateTrigger,
+			triggerName: stmt.Name,
+			triggerSQL:  stmt.RawSQL,
+		})
+	}
 	return nil
 }
 
@@ -908,6 +930,14 @@ func (c *Catalog) DropTrigger(name string) error {
 	defer c.invalidateSchemaCache()
 	if _, exists := c.triggers[name]; !exists {
 		return fmt.Errorf("trigger %s not found", name)
+	}
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:      undoDropTrigger,
+			triggerName: name,
+			triggerStmt: cloneCreateTriggerStmt(c.triggers[name]),
+			triggerSQL:  c.triggerSQL[name],
+		})
 	}
 	delete(c.triggers, name)
 	delete(c.triggerSQL, name)

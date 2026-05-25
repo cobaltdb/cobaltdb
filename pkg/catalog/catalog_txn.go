@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
@@ -691,6 +692,14 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 		return c.undoAlterRenameEntry(entry, errorPrefix)
 	case undoAlterRenameColumn:
 		c.undoAlterRenameColumnEntry(entry)
+	case undoCreateView:
+		return c.undoCreateViewEntry(entry, errorPrefix)
+	case undoDropView:
+		return c.undoDropViewEntry(entry, errorPrefix)
+	case undoCreateTrigger:
+		return c.undoCreateTriggerEntry(entry, errorPrefix)
+	case undoDropTrigger:
+		return c.undoDropTriggerEntry(entry, errorPrefix)
 	}
 	return nil
 }
@@ -848,6 +857,71 @@ func (c *Catalog) undoAlterRenameColumnEntry(entry undoEntry) {
 	_ = c.storeTableDef(tbl)
 }
 
+func (c *Catalog) undoCreateViewEntry(entry undoEntry, errorPrefix string) error {
+	delete(c.views, entry.viewName)
+	delete(c.viewSQL, entry.viewName)
+	if c.tree != nil {
+		if err := c.tree.Delete([]byte("view:" + entry.viewName)); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
+			return fmt.Errorf("%s removing view %s: %w", errorPrefix, entry.viewName, err)
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) undoDropViewEntry(entry undoEntry, errorPrefix string) error {
+	if c.views == nil {
+		c.views = make(map[string]*query.SelectStmt)
+	}
+	if c.viewSQL == nil {
+		c.viewSQL = make(map[string]string)
+	}
+	c.views[entry.viewName] = entry.viewQuery
+	c.viewSQL[entry.viewName] = entry.viewSQL
+	if strings.TrimSpace(c.viewSQL[entry.viewName]) == "" {
+		c.viewSQL[entry.viewName] = createViewSQL(entry.viewName, entry.viewQuery)
+	}
+	if c.tree != nil {
+		if err := c.storeViewDef(entry.viewName, c.viewSQL[entry.viewName]); err != nil {
+			return fmt.Errorf("%s restoring view %s: %w", errorPrefix, entry.viewName, err)
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) undoCreateTriggerEntry(entry undoEntry, errorPrefix string) error {
+	delete(c.triggers, entry.triggerName)
+	delete(c.triggerSQL, entry.triggerName)
+	if c.tree != nil {
+		if err := c.tree.Delete([]byte("trg:" + entry.triggerName)); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
+			return fmt.Errorf("%s removing trigger %s: %w", errorPrefix, entry.triggerName, err)
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) undoDropTriggerEntry(entry undoEntry, errorPrefix string) error {
+	if c.triggers == nil {
+		c.triggers = make(map[string]*query.CreateTriggerStmt)
+	}
+	if c.triggerSQL == nil {
+		c.triggerSQL = make(map[string]string)
+	}
+	c.triggers[entry.triggerName] = entry.triggerStmt
+	c.triggerSQL[entry.triggerName] = entry.triggerSQL
+	if strings.TrimSpace(c.triggerSQL[entry.triggerName]) == "" {
+		c.triggerSQL[entry.triggerName] = createTriggerSQL(entry.triggerStmt)
+	}
+	if entry.triggerStmt != nil {
+		entry.triggerStmt.RawSQL = c.triggerSQL[entry.triggerName]
+	}
+	if c.tree != nil {
+		if err := c.storeTriggerDef(entry.triggerName, c.triggerSQL[entry.triggerName]); err != nil {
+			return fmt.Errorf("%s restoring trigger %s: %w", errorPrefix, entry.triggerName, err)
+		}
+	}
+	return nil
+}
+
 func (c *Catalog) reverseIndexChanges(entry undoEntry, errorPrefix string, rollbackErr error) error {
 	for j := len(entry.indexChanges) - 1; j >= 0; j-- {
 		idxChange := entry.indexChanges[j]
@@ -872,7 +946,8 @@ func (c *Catalog) reverseIndexChanges(entry undoEntry, errorPrefix string, rollb
 func isDDLUndo(a undoAction) bool {
 	switch a {
 	case undoCreateTable, undoDropTable, undoCreateIndex, undoDropIndex,
-		undoAlterAddColumn, undoAlterDropColumn, undoAlterRename, undoAlterRenameColumn:
+		undoAlterAddColumn, undoAlterDropColumn, undoAlterRename, undoAlterRenameColumn,
+		undoCreateView, undoDropView, undoCreateTrigger, undoDropTrigger:
 		return true
 	default:
 		return false

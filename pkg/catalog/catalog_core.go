@@ -192,6 +192,10 @@ const (
 	undoAlterRename                         // Undo ALTER TABLE RENAME
 	undoAlterRenameColumn                   // Undo ALTER TABLE RENAME COLUMN
 	undoAutoIncSeq                          // Undo AutoIncSeq change
+	undoCreateView                          // Undo CREATE VIEW by dropping the view
+	undoDropView                            // Undo DROP VIEW by restoring the view
+	undoCreateTrigger                       // Undo CREATE TRIGGER by dropping the trigger
+	undoDropTrigger                         // Undo DROP TRIGGER by restoring the trigger
 )
 
 // indexUndoEntry records an index modification for rollback
@@ -226,6 +230,12 @@ type undoEntry struct {
 	droppedIndexes       map[string]*IndexDef        // For undoAlterDropColumn: dropped indexes
 	droppedIdxTrees      map[string]btree.TreeStore  // For undoAlterDropColumn: dropped index trees
 	oldAutoIncSeq        int64                       // For undoAutoIncSeq: previous AutoIncSeq value
+	viewName             string                      // For view undo actions
+	viewQuery            *query.SelectStmt           // For undoDropView: original view query
+	viewSQL              string                      // For view undo actions
+	triggerName          string                      // For trigger undo actions
+	triggerStmt          *query.CreateTriggerStmt    // For undoDropTrigger: original trigger
+	triggerSQL           string                      // For trigger undo actions
 }
 
 // catalogTxnState holds per-transaction state for multi-transaction support.
