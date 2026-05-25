@@ -734,9 +734,8 @@ func (c *Catalog) LoadSchema(dir string) error {
 		}
 		tableDef.buildColumnIndexCache()
 
-		c.tables[name] = tableDef
-
 		// Create or open B+Tree for the table
+		var tableTree btree.TreeStore
 		if tableDef.RootPageID != 0 && c.pool != nil {
 			tree, err := btree.OpenBTreeStrict(c.pool, tableDef.RootPageID)
 			if err != nil {
@@ -746,7 +745,7 @@ func (c *Catalog) LoadSchema(dir string) error {
 				}
 				tableDef.RootPageID = tree.RootPageID()
 			}
-			c.tableTrees[name] = tree
+			tableTree = tree
 		} else {
 			var tree *btree.BTree
 			if c.pool != nil {
@@ -757,13 +756,20 @@ func (c *Catalog) LoadSchema(dir string) error {
 				tableDef.RootPageID = tree.RootPageID()
 			}
 			if tree != nil {
-				c.tableTrees[name] = tree
+				tableTree = tree
 			}
 		}
 
 		// Persist to catalog tree
 		if c.tree != nil {
-			_ = c.storeTableDef(tableDef)
+			if err := c.storeTableDef(tableDef); err != nil {
+				return fmt.Errorf("load schema: failed to persist table definition %s: %w", name, err)
+			}
+		}
+
+		c.tables[name] = tableDef
+		if tableTree != nil {
+			c.tableTrees[name] = tableTree
 		}
 	}
 
