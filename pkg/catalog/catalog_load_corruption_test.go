@@ -29,3 +29,25 @@ func TestLoadReturnsCorruptTableMetadataError(t *testing.T) {
 		t.Fatal("corrupt table should not be loaded after Load failure")
 	}
 }
+
+func TestLoadReturnsCorruptIndexMetadataError(t *testing.T) {
+	pool := storage.NewBufferPool(1024, storage.NewMemory())
+	defer pool.Close()
+
+	catalogTree, err := btree.NewBTree(pool)
+	if err != nil {
+		t.Fatalf("NewBTree: %v", err)
+	}
+	if err := catalogTree.Put([]byte("idx:corrupt_email_idx"), []byte("not valid json")); err != nil {
+		t.Fatalf("Put corrupt index metadata: %v", err)
+	}
+
+	c := New(catalogTree, pool, nil)
+	err = c.Load()
+	if err == nil || !strings.Contains(err.Error(), "corrupt_email_idx") {
+		t.Fatalf("expected corrupt index metadata error, got %v", err)
+	}
+	if _, exists := c.indexes["corrupt_email_idx"]; exists {
+		t.Fatal("corrupt index should not be loaded after Load failure")
+	}
+}

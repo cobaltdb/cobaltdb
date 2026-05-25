@@ -304,51 +304,53 @@ func (c *Catalog) Load() error {
 	// Load regular B-tree index definitions after tables so orphaned/corrupt
 	// metadata cannot resurrect indexes for missing tables.
 	idxIter, err := c.tree.Scan([]byte("idx:"), []byte("idx;"))
-	if err == nil {
-		for idxIter.HasNext() {
-			keyStr, value, err := idxIter.NextString()
-			if err != nil {
-				break
-			}
-			if !strings.HasPrefix(keyStr, "idx:") {
-				continue
-			}
-
-			var indexDef IndexDef
-			if err := json.Unmarshal(value, &indexDef); err != nil {
-				continue
-			}
-			if indexDef.Name == "" {
-				indexDef.Name = strings.TrimPrefix(keyStr, "idx:")
-			}
-			table, tableExists := c.tables[indexDef.TableName]
-			if !tableExists {
-				continue
-			}
-
-			var indexTree btree.TreeStore
-			if indexDef.RootPageID != 0 {
-				indexTree, err = btree.OpenBTreeStrict(c.pool, indexDef.RootPageID)
-				if err != nil {
-					return fmt.Errorf("load catalog: failed to open index %s: %w", indexDef.Name, err)
-				}
-			} else {
-				indexTree, err = btree.NewBTree(c.pool)
-				if err != nil {
-					return fmt.Errorf("load catalog: failed to create index %s: %w", indexDef.Name, err)
-				}
-				indexDef.RootPageID = indexTree.RootPageID()
-				if tableTree := c.tableTrees[indexDef.TableName]; tableTree != nil {
-					if err := c.populateIndexLocked(indexTree, &indexDef, table, tableTree); err != nil {
-						return fmt.Errorf("load catalog: failed to populate index %s: %w", indexDef.Name, err)
-					}
-				}
-			}
-
-			c.indexes[indexDef.Name] = &indexDef
-			c.indexTrees[indexDef.Name] = indexTree
+	if err != nil {
+		return fmt.Errorf("load catalog: failed to scan index metadata: %w", err)
+	}
+	defer idxIter.Close()
+	for idxIter.HasNext() {
+		keyStr, value, err := idxIter.NextString()
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to read index metadata: %w", err)
 		}
-		idxIter.Close()
+		if !strings.HasPrefix(keyStr, "idx:") {
+			continue
+		}
+
+		indexName := strings.TrimPrefix(keyStr, "idx:")
+		var indexDef IndexDef
+		if err := json.Unmarshal(value, &indexDef); err != nil {
+			return fmt.Errorf("load catalog: failed to parse index metadata %s: %w", indexName, err)
+		}
+		if indexDef.Name == "" {
+			indexDef.Name = indexName
+		}
+		table, tableExists := c.tables[indexDef.TableName]
+		if !tableExists {
+			continue
+		}
+
+		var indexTree btree.TreeStore
+		if indexDef.RootPageID != 0 {
+			indexTree, err = btree.OpenBTreeStrict(c.pool, indexDef.RootPageID)
+			if err != nil {
+				return fmt.Errorf("load catalog: failed to open index %s: %w", indexDef.Name, err)
+			}
+		} else {
+			indexTree, err = btree.NewBTree(c.pool)
+			if err != nil {
+				return fmt.Errorf("load catalog: failed to create index %s: %w", indexDef.Name, err)
+			}
+			indexDef.RootPageID = indexTree.RootPageID()
+			if tableTree := c.tableTrees[indexDef.TableName]; tableTree != nil {
+				if err := c.populateIndexLocked(indexTree, &indexDef, table, tableTree); err != nil {
+					return fmt.Errorf("load catalog: failed to populate index %s: %w", indexDef.Name, err)
+				}
+			}
+		}
+
+		c.indexes[indexDef.Name] = &indexDef
+		c.indexTrees[indexDef.Name] = indexTree
 	}
 
 	foreignTableIter, err := c.tree.Scan([]byte("ft:"), []byte("ft;"))
