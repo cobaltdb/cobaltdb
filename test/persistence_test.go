@@ -139,6 +139,44 @@ func TestPersistenceRollbackAlterTableRename(t *testing.T) {
 	}
 }
 
+func TestPersistenceUniqueIndexEnforcedAfterReopen(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "unique_index_reopen.db")
+	ctx := context.Background()
+
+	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "CREATE TABLE index_reopen_users (id INTEGER PRIMARY KEY, name TEXT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "CREATE UNIQUE INDEX idx_index_reopen_name ON index_reopen_users(name)")
+	if err != nil {
+		t.Fatalf("CREATE UNIQUE INDEX failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "INSERT INTO index_reopen_users VALUES (1, 'alice')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	if err != nil {
+		t.Fatalf("Reopen failed: %v", err)
+	}
+	defer db2.Close()
+
+	_, err = db2.Exec(ctx, "INSERT INTO index_reopen_users VALUES (2, 'alice')")
+	if err == nil {
+		t.Fatal("expected reopened unique index to reject duplicate value")
+	}
+	expectSingleValue(t, db2, "SELECT COUNT(*) FROM index_reopen_users", int64(1))
+}
+
 func TestPersistenceMultipleTables(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "multi.db")

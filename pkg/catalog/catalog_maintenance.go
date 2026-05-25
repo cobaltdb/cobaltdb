@@ -30,6 +30,19 @@ func (c *Catalog) Save() error {
 		}
 	}
 
+	for _, indexDef := range c.indexes {
+		if err := c.storeIndexDef(indexDef); err != nil {
+			return fmt.Errorf("failed to save index definition %s: %w", indexDef.Name, err)
+		}
+	}
+
+	// Save vector index definitions
+	for _, vid := range c.vectorIndexes {
+		if err := c.storeVectorIndexDef(vid); err != nil {
+			return fmt.Errorf("failed to save vector index definition %s: %w", vid.Name, err)
+		}
+	}
+
 	// Flush the catalog B+Tree's in-memory data to its page
 	if c.tree != nil {
 		if err := c.tree.Flush(); err != nil {
@@ -42,17 +55,14 @@ func (c *Catalog) Save() error {
 		return fmt.Errorf("failed to flush table trees: %w", err)
 	}
 
+	if err := c.flushIndexTreesLocked(); err != nil {
+		return fmt.Errorf("failed to flush index trees: %w", err)
+	}
+
 	// Flush buffer pool to ensure all pages are written to disk
 	if c.pool != nil {
 		if err := c.pool.FlushAll(); err != nil {
 			return fmt.Errorf("failed to flush buffer pool: %w", err)
-		}
-	}
-
-	// Save vector index definitions
-	for _, vid := range c.vectorIndexes {
-		if err := c.storeVectorIndexDef(vid); err != nil {
-			return fmt.Errorf("failed to save vector index definition %s: %w", vid.Name, err)
 		}
 	}
 
@@ -138,6 +148,54 @@ func (c *Catalog) Load() error {
 
 		// Build column index cache
 		tableDef.buildColumnIndexCache()
+	}
+
+	// Load regular B-tree index definitions after tables so orphaned/corrupt
+	// metadata cannot resurrect indexes for missing tables.
+	idxIter, err := c.tree.Scan([]byte("idx:"), []byte("idx;"))
+	if err == nil {
+		for idxIter.HasNext() {
+			keyStr, value, err := idxIter.NextString()
+			if err != nil {
+				break
+			}
+			if !strings.HasPrefix(keyStr, "idx:") {
+				continue
+			}
+
+			var indexDef IndexDef
+			if err := json.Unmarshal(value, &indexDef); err != nil {
+				continue
+			}
+			if indexDef.Name == "" {
+				indexDef.Name = strings.TrimPrefix(keyStr, "idx:")
+			}
+			table, tableExists := c.tables[indexDef.TableName]
+			if !tableExists {
+				continue
+			}
+
+			var indexTree btree.TreeStore
+			if indexDef.RootPageID != 0 {
+				indexTree, err = btree.OpenBTreeStrict(c.pool, indexDef.RootPageID)
+				if err != nil {
+					return fmt.Errorf("load catalog: failed to open index %s: %w", indexDef.Name, err)
+				}
+			} else {
+				indexTree, err = btree.NewBTree(c.pool)
+				if err != nil {
+					return fmt.Errorf("load catalog: failed to create index %s: %w", indexDef.Name, err)
+				}
+				indexDef.RootPageID = indexTree.RootPageID()
+				if tableTree := c.tableTrees[indexDef.TableName]; tableTree != nil {
+					c.populateIndexLocked(indexTree, &indexDef, table, tableTree)
+				}
+			}
+
+			c.indexes[indexDef.Name] = &indexDef
+			c.indexTrees[indexDef.Name] = indexTree
+		}
+		idxIter.Close()
 	}
 
 	// Load vector index definitions from catalog tree

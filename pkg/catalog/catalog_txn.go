@@ -479,12 +479,21 @@ func (c *Catalog) FlushTableTrees() error {
 
 // flushTableTreesLocked is the lock-free internal version. Must be called with mu held.
 func (c *Catalog) flushTableTreesLocked() error {
+	return flushTreeStoreMapLocked("table", c.tableTrees)
+}
+
+// flushIndexTreesLocked is the lock-free internal version. Must be called with mu held.
+func (c *Catalog) flushIndexTreesLocked() error {
+	return flushTreeStoreMapLocked("index", c.indexTrees)
+}
+
+func flushTreeStoreMapLocked(kind string, trees map[string]btree.TreeStore) error {
 	type item struct {
 		name string
 		tree btree.TreeStore
 	}
-	items := make([]item, 0, len(c.tableTrees))
-	for name, tree := range c.tableTrees {
+	items := make([]item, 0, len(trees))
+	for name, tree := range trees {
 		items = append(items, item{name, tree})
 	}
 
@@ -504,7 +513,7 @@ func (c *Catalog) flushTableTreesLocked() error {
 			defer wg.Done()
 			defer func() { <-sem }()
 			if err := tree.Flush(); err != nil {
-				errChan <- fmt.Errorf("failed to flush table %s: %w", name, err)
+				errChan <- fmt.Errorf("failed to flush %s %s: %w", kind, name, err)
 			}
 		}(it.name, it.tree)
 	}
