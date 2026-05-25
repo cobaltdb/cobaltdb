@@ -65,7 +65,7 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 			// CobaltDB stores rows as VersionedRow (with []interface{} Data)
 			vrow, err := decodeVersionedRow(value, len(table.Columns))
 			if err != nil {
-				continue
+				return fmt.Errorf("failed to decode row %s for vector index %s: %w", rowKey, name, err)
 			}
 			if err := c.indexRowForVector(vectorIndex, vrow.Data, rowKey, colIdx); err != nil {
 				return fmt.Errorf("failed to add row %s to vector index %s: %w", rowKey, name, err)

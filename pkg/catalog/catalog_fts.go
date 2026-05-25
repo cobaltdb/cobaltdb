@@ -37,31 +37,32 @@ func (c *Catalog) CreateFTSIndex(name, tableName string, columns []string) error
 	tree, exists := c.tableTrees[tableName]
 	if exists {
 		iter, err := tree.Scan(nil, nil)
-		if err == nil {
-			defer iter.Close()
-			for iter.HasNext() {
-				key, value, iterErr := iter.Next()
-				if iterErr != nil {
-					break
-				}
-				if key == nil || len(value) == 0 {
-					break
-				}
-				// CobaltDB stores rows as VersionedRow (with []interface{} Data), not maps
-				vrow, err := decodeVersionedRow(value, len(table.Columns))
-				if err != nil {
-					continue
-				}
-				rowSlice := vrow.Data
-				// Convert to map using column definitions
-				row := make(map[string]interface{})
-				for i, col := range table.Columns {
-					if i < len(rowSlice) {
-						row[col.Name] = rowSlice[i]
-					}
-				}
-				c.indexRowForFTS(ftsIndex, row, key)
+		if err != nil {
+			return fmt.Errorf("failed to scan table %s for FTS index %s: %w", tableName, name, err)
+		}
+		defer iter.Close()
+		for iter.HasNext() {
+			key, value, iterErr := iter.Next()
+			if iterErr != nil {
+				return fmt.Errorf("failed to read row for FTS index %s: %w", name, iterErr)
 			}
+			if key == nil || len(value) == 0 {
+				break
+			}
+			// CobaltDB stores rows as VersionedRow (with []interface{} Data), not maps
+			vrow, err := decodeVersionedRow(value, len(table.Columns))
+			if err != nil {
+				return fmt.Errorf("failed to decode row for FTS index %s: %w", name, err)
+			}
+			rowSlice := vrow.Data
+			// Convert to map using column definitions
+			row := make(map[string]interface{})
+			for i, col := range table.Columns {
+				if i < len(rowSlice) {
+					row[col.Name] = rowSlice[i]
+				}
+			}
+			c.indexRowForFTS(ftsIndex, row, key)
 		}
 	}
 

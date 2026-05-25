@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
 func TestCreateIndexReturnsCorruptRowError(t *testing.T) {
@@ -77,5 +79,53 @@ func TestCreateJSONIndexIndexesVersionedRows(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0] != 0 {
 		t.Fatalf("expected alice at row 0, got %v", rows)
+	}
+}
+
+func TestCreateVectorIndexReturnsCorruptRowError(t *testing.T) {
+	c, pool := newMetadataIsolationCatalog(t)
+	defer pool.Close()
+
+	if err := c.CreateTable(&query.CreateTableStmt{
+		Table: "vec_idx_corrupt_row",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger, PrimaryKey: true},
+			{Name: "embedding", Type: query.TokenVector, Dimensions: 3},
+		},
+	}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	pkKey := fmt.Sprintf("%020d", 1)
+	if err := c.tableTrees["vec_idx_corrupt_row"].Put([]byte(pkKey), []byte("not json")); err != nil {
+		t.Fatalf("put corrupt row: %v", err)
+	}
+
+	err := c.CreateVectorIndex("vec_idx_corrupt_embedding", "vec_idx_corrupt_row", "embedding")
+	if err == nil || !strings.Contains(err.Error(), "failed to decode row") || !strings.Contains(err.Error(), "vec_idx_corrupt_embedding") {
+		t.Fatalf("expected corrupt row vector index error, got %v", err)
+	}
+	if _, exists := c.vectorIndexes["vec_idx_corrupt_embedding"]; exists {
+		t.Fatal("failed vector index should not remain registered")
+	}
+}
+
+func TestCreateFTSIndexReturnsCorruptRowError(t *testing.T) {
+	c, pool := newMetadataIsolationCatalog(t)
+	defer pool.Close()
+
+	if _, err := c.ExecuteQuery("CREATE TABLE fts_idx_corrupt_row (id INTEGER PRIMARY KEY, body TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	pkKey := fmt.Sprintf("%020d", 1)
+	if err := c.tableTrees["fts_idx_corrupt_row"].Put([]byte(pkKey), []byte("not json")); err != nil {
+		t.Fatalf("put corrupt row: %v", err)
+	}
+
+	err := c.CreateFTSIndex("fts_idx_corrupt_body", "fts_idx_corrupt_row", []string{"body"})
+	if err == nil || !strings.Contains(err.Error(), "failed to decode row") || !strings.Contains(err.Error(), "fts_idx_corrupt_body") {
+		t.Fatalf("expected corrupt row FTS index error, got %v", err)
+	}
+	if _, exists := c.ftsIndexes["fts_idx_corrupt_body"]; exists {
+		t.Fatal("failed FTS index should not remain registered")
 	}
 }
