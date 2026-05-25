@@ -142,10 +142,10 @@ func TestBuildJSONIndexWithInvalidRowData(t *testing.T) {
 	// Put invalid JSON bytes directly into the tree to trigger json.Unmarshal error
 	c.tableTrees["json_bad"].Put([]byte{99}, []byte("not json"))
 
-	// CreateJSONIndex should skip the invalid row and succeed
+	// CreateJSONIndex should fail rather than publish a partial JSON index.
 	err := c.CreateJSONIndex("idx_bad", "json_bad", "data", "$.name", "TEXT")
-	if err != nil {
-		t.Errorf("CreateJSONIndex with invalid row data failed: %v", err)
+	if err == nil {
+		t.Fatal("expected CreateJSONIndex with invalid row data to fail")
 	}
 }
 

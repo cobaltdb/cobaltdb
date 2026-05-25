@@ -64,6 +64,14 @@ func (c *Catalog) buildJSONIndex(idx *JSONIndexDef) error {
 	if !exists {
 		return nil
 	}
+	table, exists := c.tables[idx.TableName]
+	if !exists {
+		return ErrTableNotFound
+	}
+	colIdx := table.GetColumnIndex(idx.Column)
+	if colIdx < 0 {
+		return ErrColumnNotFound
+	}
 
 	iter, err := tree.Scan(nil, nil)
 	if err != nil {
@@ -75,16 +83,19 @@ func (c *Catalog) buildJSONIndex(idx *JSONIndexDef) error {
 	for iter.HasNext() {
 		_, valueData, err := iter.Next()
 		if err != nil {
-			continue
+			return fmt.Errorf("failed to read row while building JSON index %s: %w", idx.Name, err)
 		}
 
-		var values []interface{}
-		if err := json.Unmarshal(valueData, &values); err != nil {
-			continue
+		values, err := decodeRow(valueData, len(table.Columns))
+		if err != nil {
+			return fmt.Errorf("failed to decode row in table %s while building JSON index %s: %w", idx.TableName, idx.Name, err)
 		}
 
 		// Extract JSON value using path
-		jsonVal := c.extractJSONValue(values, idx.Column, idx.Path)
+		jsonVal, err := c.extractJSONColumnPath(values, colIdx, idx.Path)
+		if err != nil {
+			return fmt.Errorf("failed to extract JSON path %s from table %s column %s: %w", idx.Path, idx.TableName, idx.Column, err)
+		}
 		if jsonVal != nil {
 			c.indexJSONValue(idx, jsonVal, rowNum)
 		}
@@ -94,34 +105,107 @@ func (c *Catalog) buildJSONIndex(idx *JSONIndexDef) error {
 	return nil
 }
 
+func (c *Catalog) extractJSONColumnPath(row []interface{}, colIdx int, path string) (interface{}, error) {
+	if colIdx < 0 || colIdx >= len(row) {
+		return nil, nil
+	}
+	doc, err := normalizeJSONDocument(row[colIdx])
+	if err != nil {
+		return nil, err
+	}
+	if doc == nil {
+		return nil, nil
+	}
+	return extractJSONPathValue(doc, path), nil
+}
+
+func normalizeJSONDocument(value interface{}) (interface{}, error) {
+	switch v := value.(type) {
+	case nil:
+		return nil, nil
+	case map[string]interface{}, []interface{}:
+		return v, nil
+	case string:
+		var doc interface{}
+		if err := json.Unmarshal([]byte(v), &doc); err != nil {
+			return nil, err
+		}
+		return doc, nil
+	case []byte:
+		var doc interface{}
+		if err := json.Unmarshal(v, &doc); err != nil {
+			return nil, err
+		}
+		return doc, nil
+	default:
+		return v, nil
+	}
+}
+
+func extractJSONPathValue(current interface{}, path string) interface{} {
+	if path == "$" || path == "" {
+		return current
+	}
+	if !strings.HasPrefix(path, "$") {
+		return nil
+	}
+
+	rest := path[1:]
+	for len(rest) > 0 {
+		switch rest[0] {
+		case '.':
+			rest = rest[1:]
+			nextSep := len(rest)
+			for i := 0; i < len(rest); i++ {
+				if rest[i] == '.' || rest[i] == '[' {
+					nextSep = i
+					break
+				}
+			}
+			if nextSep == 0 {
+				return nil
+			}
+			key := rest[:nextSep]
+			obj, ok := current.(map[string]interface{})
+			if !ok {
+				return nil
+			}
+			current, ok = obj[key]
+			if !ok {
+				return nil
+			}
+			rest = rest[nextSep:]
+		case '[':
+			end := strings.IndexByte(rest, ']')
+			if end <= 1 {
+				return nil
+			}
+			idx, err := strconv.Atoi(rest[1:end])
+			if err != nil {
+				return nil
+			}
+			arr, ok := current.([]interface{})
+			if !ok || idx < 0 || idx >= len(arr) {
+				return nil
+			}
+			current = arr[idx]
+			rest = rest[end+1:]
+		default:
+			return nil
+		}
+	}
+	return current
+}
+
 func (c *Catalog) extractJSONValue(row []interface{}, column, path string) interface{} {
 	// Enhanced JSON path resolution supporting nested paths like $.key1.key2.key3
 	for _, val := range row {
-		if jsonMap, ok := val.(map[string]interface{}); ok {
-			// Handle $.key or $.key1.key2.key3 paths
-			if len(path) > 2 && path[0] == '$' && path[1] == '.' {
-				keys := strings.Split(path[2:], ".")
-				var current interface{} = jsonMap
-				for i, key := range keys {
-					switch curr := current.(type) {
-					case map[string]interface{}:
-						next, exists := curr[key]
-						if !exists {
-							current = nil
-							break // Key not found
-						}
-						current = next
-					default:
-						// Can't traverse further if not a map
-						if i < len(keys)-1 {
-							current = nil
-						}
-					}
-				}
-				if current != nil {
-					return current
-				}
-			}
+		doc, err := normalizeJSONDocument(val)
+		if err != nil || doc == nil {
+			continue
+		}
+		if current := extractJSONPathValue(doc, path); current != nil {
+			return current
 		}
 	}
 	return nil

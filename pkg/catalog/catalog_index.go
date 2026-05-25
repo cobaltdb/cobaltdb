@@ -99,7 +99,7 @@ func (c *Catalog) populateIndexLocked(indexTree btree.TreeStore, indexDef *Index
 		}
 		row, err := decodeRow(valueData, len(table.Columns))
 		if err != nil {
-			continue
+			return fmt.Errorf("failed to decode row in table %s while populating index %s: %w", table.Name, indexDef.Name, err)
 		}
 		indexKey, ok := buildCompositeIndexKey(table, indexDef, row)
 		if !ok {
@@ -408,7 +408,8 @@ func (c *Catalog) rebuildTableIndexesLocked(tableName string) error {
 			}
 			row, err := decodeRow(valueData, len(table.Columns))
 			if err != nil {
-				continue
+				iter.Close()
+				return fmt.Errorf("failed to decode row in table %s during index rebuild: %w", tableName, err)
 			}
 			indexKey, ok := buildCompositeIndexKey(table, idxDef, row)
 			if ok {
