@@ -73,3 +73,36 @@ func TestLoadReturnsCorruptForeignTableMetadataError(t *testing.T) {
 		t.Fatal("corrupt foreign table should not be loaded after Load failure")
 	}
 }
+
+func TestLoadReturnsCorruptSQLObjectMetadataError(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{name: "view", key: "view:broken_view", want: "broken_view"},
+		{name: "trigger", key: "trg:broken_trigger", want: "broken_trigger"},
+		{name: "procedure", key: "proc:broken_procedure", want: "broken_procedure"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := storage.NewBufferPool(1024, storage.NewMemory())
+			defer pool.Close()
+
+			catalogTree, err := btree.NewBTree(pool)
+			if err != nil {
+				t.Fatalf("NewBTree: %v", err)
+			}
+			if err := catalogTree.Put([]byte(tt.key), []byte("not valid json")); err != nil {
+				t.Fatalf("Put corrupt SQL object metadata: %v", err)
+			}
+
+			c := New(catalogTree, pool, nil)
+			err = c.Load()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected corrupt SQL object metadata error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}

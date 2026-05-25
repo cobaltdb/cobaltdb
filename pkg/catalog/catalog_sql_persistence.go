@@ -9,16 +9,16 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
-func decodePersistedSQLDef(keyStr string, prefix string, value []byte) persistedSQLDef {
+func decodePersistedSQLDef(keyStr string, prefix string, value []byte) (persistedSQLDef, error) {
 	var def persistedSQLDef
 	if err := json.Unmarshal(value, &def); err != nil {
-		return persistedSQLDef{}
+		return persistedSQLDef{}, err
 	}
 	if def.Name == "" {
 		def.Name = strings.TrimPrefix(keyStr, prefix)
 	}
 	def.SQL = strings.TrimSpace(def.SQL)
-	return def
+	return def, nil
 }
 
 func createViewSQL(name string, stmt *query.SelectStmt) string {

@@ -381,115 +381,130 @@ func (c *Catalog) Load() error {
 	}
 
 	viewIter, err := c.tree.Scan([]byte("view:"), []byte("view;"))
-	if err == nil {
-		if c.viewSQL == nil {
-			c.viewSQL = make(map[string]string)
+	if err != nil {
+		return fmt.Errorf("load catalog: failed to scan view metadata: %w", err)
+	}
+	defer viewIter.Close()
+	if c.viewSQL == nil {
+		c.viewSQL = make(map[string]string)
+	}
+	for viewIter.HasNext() {
+		keyStr, value, err := viewIter.NextString()
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to read view metadata: %w", err)
 		}
-		for viewIter.HasNext() {
-			keyStr, value, err := viewIter.NextString()
-			if err != nil {
-				break
-			}
-			if !strings.HasPrefix(keyStr, "view:") {
-				continue
-			}
-			def := decodePersistedSQLDef(keyStr, "view:", value)
-			if def.SQL == "" {
-				continue
-			}
-			parsed, err := query.Parse(def.SQL)
-			if err != nil {
-				continue
-			}
-			viewStmt, ok := parsed.(*query.CreateViewStmt)
-			if !ok || viewStmt.Query == nil {
-				continue
-			}
-			name := viewStmt.Name
-			if name == "" {
-				name = def.Name
-			}
-			c.views[name] = viewStmt.Query
-			c.viewSQL[name] = strings.TrimSpace(def.SQL)
+		if !strings.HasPrefix(keyStr, "view:") {
+			continue
 		}
-		viewIter.Close()
+		viewName := strings.TrimPrefix(keyStr, "view:")
+		def, err := decodePersistedSQLDef(keyStr, "view:", value)
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to parse view metadata %s: %w", viewName, err)
+		}
+		if def.SQL == "" {
+			return fmt.Errorf("load catalog: missing SQL for view metadata %s", viewName)
+		}
+		parsed, err := query.Parse(def.SQL)
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to parse view SQL %s: %w", viewName, err)
+		}
+		viewStmt, ok := parsed.(*query.CreateViewStmt)
+		if !ok || viewStmt.Query == nil {
+			return fmt.Errorf("load catalog: invalid view metadata %s", viewName)
+		}
+		name := viewStmt.Name
+		if name == "" {
+			name = def.Name
+		}
+		c.views[name] = viewStmt.Query
+		c.viewSQL[name] = strings.TrimSpace(def.SQL)
 	}
 
 	triggerIter, err := c.tree.Scan([]byte("trg:"), []byte("trg;"))
-	if err == nil {
-		if c.triggerSQL == nil {
-			c.triggerSQL = make(map[string]string)
+	if err != nil {
+		return fmt.Errorf("load catalog: failed to scan trigger metadata: %w", err)
+	}
+	defer triggerIter.Close()
+	if c.triggerSQL == nil {
+		c.triggerSQL = make(map[string]string)
+	}
+	for triggerIter.HasNext() {
+		keyStr, value, err := triggerIter.NextString()
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to read trigger metadata: %w", err)
 		}
-		for triggerIter.HasNext() {
-			keyStr, value, err := triggerIter.NextString()
-			if err != nil {
-				break
-			}
-			if !strings.HasPrefix(keyStr, "trg:") {
-				continue
-			}
-			def := decodePersistedSQLDef(keyStr, "trg:", value)
-			if def.SQL == "" {
-				continue
-			}
-			parsed, err := query.Parse(def.SQL)
-			if err != nil {
-				continue
-			}
-			triggerStmt, ok := parsed.(*query.CreateTriggerStmt)
-			if !ok {
-				continue
-			}
-			if _, tableOK := c.tables[triggerStmt.Table]; !tableOK {
-				if _, viewOK := c.views[triggerStmt.Table]; !viewOK {
-					continue
-				}
-			}
-			name := triggerStmt.Name
-			if name == "" {
-				name = def.Name
-			}
-			triggerStmt.RawSQL = strings.TrimSpace(def.SQL)
-			c.triggers[name] = triggerStmt
-			c.triggerSQL[name] = triggerStmt.RawSQL
+		if !strings.HasPrefix(keyStr, "trg:") {
+			continue
 		}
-		triggerIter.Close()
+		triggerName := strings.TrimPrefix(keyStr, "trg:")
+		def, err := decodePersistedSQLDef(keyStr, "trg:", value)
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to parse trigger metadata %s: %w", triggerName, err)
+		}
+		if def.SQL == "" {
+			return fmt.Errorf("load catalog: missing SQL for trigger metadata %s", triggerName)
+		}
+		parsed, err := query.Parse(def.SQL)
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to parse trigger SQL %s: %w", triggerName, err)
+		}
+		triggerStmt, ok := parsed.(*query.CreateTriggerStmt)
+		if !ok {
+			return fmt.Errorf("load catalog: invalid trigger metadata %s", triggerName)
+		}
+		if _, tableOK := c.tables[triggerStmt.Table]; !tableOK {
+			if _, viewOK := c.views[triggerStmt.Table]; !viewOK {
+				return fmt.Errorf("load catalog: trigger %s references missing table or view %s", triggerName, triggerStmt.Table)
+			}
+		}
+		name := triggerStmt.Name
+		if name == "" {
+			name = def.Name
+		}
+		triggerStmt.RawSQL = strings.TrimSpace(def.SQL)
+		c.triggers[name] = triggerStmt
+		c.triggerSQL[name] = triggerStmt.RawSQL
 	}
 
 	procedureIter, err := c.tree.Scan([]byte("proc:"), []byte("proc;"))
-	if err == nil {
-		if c.procedureSQL == nil {
-			c.procedureSQL = make(map[string]string)
+	if err != nil {
+		return fmt.Errorf("load catalog: failed to scan procedure metadata: %w", err)
+	}
+	defer procedureIter.Close()
+	if c.procedureSQL == nil {
+		c.procedureSQL = make(map[string]string)
+	}
+	for procedureIter.HasNext() {
+		keyStr, value, err := procedureIter.NextString()
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to read procedure metadata: %w", err)
 		}
-		for procedureIter.HasNext() {
-			keyStr, value, err := procedureIter.NextString()
-			if err != nil {
-				break
-			}
-			if !strings.HasPrefix(keyStr, "proc:") {
-				continue
-			}
-			def := decodePersistedSQLDef(keyStr, "proc:", value)
-			if def.SQL == "" {
-				continue
-			}
-			parsed, err := query.Parse(def.SQL)
-			if err != nil {
-				continue
-			}
-			procedureStmt, ok := parsed.(*query.CreateProcedureStmt)
-			if !ok {
-				continue
-			}
-			name := procedureStmt.Name
-			if name == "" {
-				name = def.Name
-			}
-			procedureStmt.RawSQL = strings.TrimSpace(def.SQL)
-			c.procedures[name] = procedureStmt
-			c.procedureSQL[name] = procedureStmt.RawSQL
+		if !strings.HasPrefix(keyStr, "proc:") {
+			continue
 		}
-		procedureIter.Close()
+		procedureName := strings.TrimPrefix(keyStr, "proc:")
+		def, err := decodePersistedSQLDef(keyStr, "proc:", value)
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to parse procedure metadata %s: %w", procedureName, err)
+		}
+		if def.SQL == "" {
+			return fmt.Errorf("load catalog: missing SQL for procedure metadata %s", procedureName)
+		}
+		parsed, err := query.Parse(def.SQL)
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to parse procedure SQL %s: %w", procedureName, err)
+		}
+		procedureStmt, ok := parsed.(*query.CreateProcedureStmt)
+		if !ok {
+			return fmt.Errorf("load catalog: invalid procedure metadata %s", procedureName)
+		}
+		name := procedureStmt.Name
+		if name == "" {
+			name = def.Name
+		}
+		procedureStmt.RawSQL = strings.TrimSpace(def.SQL)
+		c.procedures[name] = procedureStmt
+		c.procedureSQL[name] = procedureStmt.RawSQL
 	}
 
 	materializedViewIter, err := c.tree.Scan([]byte("mv:"), []byte("mv;"))
