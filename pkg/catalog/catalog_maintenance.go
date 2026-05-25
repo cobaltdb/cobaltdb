@@ -508,55 +508,57 @@ func (c *Catalog) Load() error {
 	}
 
 	materializedViewIter, err := c.tree.Scan([]byte("mv:"), []byte("mv;"))
-	if err == nil {
-		if c.materializedViewSQL == nil {
-			c.materializedViewSQL = make(map[string]string)
+	if err != nil {
+		return fmt.Errorf("load catalog: failed to scan materialized view metadata: %w", err)
+	}
+	defer materializedViewIter.Close()
+	if c.materializedViewSQL == nil {
+		c.materializedViewSQL = make(map[string]string)
+	}
+	for materializedViewIter.HasNext() {
+		keyStr, value, err := materializedViewIter.NextString()
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to read materialized view metadata: %w", err)
 		}
-		for materializedViewIter.HasNext() {
-			keyStr, value, err := materializedViewIter.NextString()
-			if err != nil {
-				break
-			}
-			if !strings.HasPrefix(keyStr, "mv:") {
-				continue
-			}
-			var def persistedMaterializedViewDef
-			if err := json.Unmarshal(value, &def); err != nil {
-				continue
-			}
-			if def.Name == "" {
-				def.Name = strings.TrimPrefix(keyStr, "mv:")
-			}
-			def.SQL = strings.TrimSpace(def.SQL)
-			if def.SQL == "" {
-				continue
-			}
-			parsed, err := query.Parse(def.SQL)
-			if err != nil {
-				continue
-			}
-			materializedViewStmt, ok := parsed.(*query.CreateMaterializedViewStmt)
-			if !ok || materializedViewStmt.Query == nil {
-				continue
-			}
-			name := materializedViewStmt.Name
-			if name == "" {
-				name = def.Name
-			}
-			lastRefresh := time.Time{}
-			if def.LastRefresh != 0 {
-				lastRefresh = time.Unix(0, def.LastRefresh)
-			}
-			c.materializedViews[name] = &MaterializedViewDef{
-				Name:        name,
-				Columns:     cloneStringSlice(def.Columns),
-				Query:       materializedViewStmt.Query,
-				Data:        def.Data,
-				LastRefresh: lastRefresh,
-			}
-			c.materializedViewSQL[name] = def.SQL
+		if !strings.HasPrefix(keyStr, "mv:") {
+			continue
 		}
-		materializedViewIter.Close()
+		materializedViewName := strings.TrimPrefix(keyStr, "mv:")
+		var def persistedMaterializedViewDef
+		if err := json.Unmarshal(value, &def); err != nil {
+			return fmt.Errorf("load catalog: failed to parse materialized view metadata %s: %w", materializedViewName, err)
+		}
+		if def.Name == "" {
+			def.Name = materializedViewName
+		}
+		def.SQL = strings.TrimSpace(def.SQL)
+		if def.SQL == "" {
+			return fmt.Errorf("load catalog: missing SQL for materialized view metadata %s", materializedViewName)
+		}
+		parsed, err := query.Parse(def.SQL)
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to parse materialized view SQL %s: %w", materializedViewName, err)
+		}
+		materializedViewStmt, ok := parsed.(*query.CreateMaterializedViewStmt)
+		if !ok || materializedViewStmt.Query == nil {
+			return fmt.Errorf("load catalog: invalid materialized view metadata %s", materializedViewName)
+		}
+		name := materializedViewStmt.Name
+		if name == "" {
+			name = def.Name
+		}
+		lastRefresh := time.Time{}
+		if def.LastRefresh != 0 {
+			lastRefresh = time.Unix(0, def.LastRefresh)
+		}
+		c.materializedViews[name] = &MaterializedViewDef{
+			Name:        name,
+			Columns:     cloneStringSlice(def.Columns),
+			Query:       materializedViewStmt.Query,
+			Data:        def.Data,
+			LastRefresh: lastRefresh,
+		}
+		c.materializedViewSQL[name] = def.SQL
 	}
 
 	// Load vector index definitions from catalog tree
