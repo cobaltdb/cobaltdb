@@ -1743,29 +1743,23 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 			if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
 				oldIndexKey, oldOk := buildCompositeIndexKey(table, idxDef, entry.oldRow)
 				if oldOk {
+					var idxStorageKey []byte
 					if idxDef.Unique {
-						oldIdxVal, getErr := idxTree.Get([]byte(oldIndexKey))
-						_ = idxTree.Delete([]byte(oldIndexKey))
-						if txnActive && getErr == nil {
-							idxChanges = append(idxChanges, indexUndoEntry{
-								indexName: idxName,
-								key:       []byte(oldIndexKey),
-								oldValue:  oldIdxVal,
-								wasAdded:  false,
-							})
-						}
+						idxStorageKey = []byte(oldIndexKey)
 					} else {
-						compoundKey := oldIndexKey + "\x00" + string(entry.key)
-						oldIdxVal, getErr := idxTree.Get([]byte(compoundKey))
-						_ = idxTree.Delete([]byte(compoundKey))
-						if txnActive && getErr == nil {
-							idxChanges = append(idxChanges, indexUndoEntry{
-								indexName: idxName,
-								key:       []byte(compoundKey),
-								oldValue:  oldIdxVal,
-								wasAdded:  false,
-							})
-						}
+						idxStorageKey = []byte(oldIndexKey + "\x00" + string(entry.key))
+					}
+					oldIdxVal, getErr := idxTree.Get(idxStorageKey)
+					if err := idxTree.Delete(idxStorageKey); err != nil {
+						return rollbackApplied(fmt.Errorf("failed to delete from index %s: %w", idxName, err), &entry)
+					}
+					if txnActive && getErr == nil {
+						idxChanges = append(idxChanges, indexUndoEntry{
+							indexName: idxName,
+							key:       idxStorageKey,
+							oldValue:  oldIdxVal,
+							wasAdded:  false,
+						})
 					}
 				}
 				newIndexKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)

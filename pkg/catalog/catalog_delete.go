@@ -480,65 +480,59 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 
 	table := c.tables[tableName]
 
-	// Clean up index entries
-	var idxChanges []indexUndoEntry
+	var oldRow []interface{}
 	if table != nil {
 		vrow, decErr := decodeVersionedRow(oldData, len(table.Columns))
 		if decErr == nil {
-			oldRow := vrow.Data
-			for idxName, idxTree := range c.indexTrees {
-				idxDef := c.indexes[idxName]
-				if idxDef != nil && idxDef.TableName == tableName && len(idxDef.Columns) > 0 {
-					oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
-					if ok {
-						if idxDef.Unique {
-							if txnActive {
-								// Save old index value for undo
-								oldIdxVal, _ := idxTree.Get([]byte(oldIdxKey))
-								idxChanges = append(idxChanges, indexUndoEntry{
-									indexName: idxName,
-									key:       []byte(oldIdxKey),
-									oldValue:  oldIdxVal,
-									wasAdded:  false,
-								})
-							}
-							_ = idxTree.Delete([]byte(oldIdxKey)) // best-effort index cleanup during DELETE
-						} else {
-							// For non-unique indexes, delete the compound key "indexValue\x00pk"
-							compoundKey := oldIdxKey + "\x00" + string(key)
-							if txnActive {
-								// Save old index value for undo
-								oldIdxVal, _ := idxTree.Get([]byte(compoundKey))
-								idxChanges = append(idxChanges, indexUndoEntry{
-									indexName: idxName,
-									key:       []byte(compoundKey),
-									oldValue:  oldIdxVal,
-									wasAdded:  false,
-								})
-							}
-							_ = idxTree.Delete([]byte(compoundKey)) // best-effort index cleanup during DELETE
-						}
-					}
-				}
+			oldRow = vrow.Data
+		}
+	}
+
+	// Cascade FK enforcement before deleting indexes or the row.
+	if table != nil && len(table.ForeignKeys) > 0 && oldRow != nil {
+		fke := NewForeignKeyEnforcer(c)
+		pkValues := make([]interface{}, 0, len(table.PrimaryKey))
+		for _, pkCol := range table.PrimaryKey {
+			pkColIdx := table.GetColumnIndex(pkCol)
+			if pkColIdx >= 0 && pkColIdx < len(oldRow) && oldRow[pkColIdx] != nil {
+				pkValues = append(pkValues, oldRow[pkColIdx])
+			}
+		}
+		if len(pkValues) == len(table.PrimaryKey) && len(pkValues) > 0 {
+			if fkErr := fke.OnDelete(ctx, tableName, pkValues...); fkErr != nil {
+				return fmt.Errorf("cascade delete: %w", fkErr)
 			}
 		}
 	}
 
-	// Cascade FK enforcement before deleting
-	if table != nil && len(table.ForeignKeys) > 0 {
-		fke := NewForeignKeyEnforcer(c)
-		oldRow, decErr := decodeRow(oldData, len(table.Columns))
-		if decErr == nil {
-			pkValues := make([]interface{}, 0, len(table.PrimaryKey))
-			for _, pkCol := range table.PrimaryKey {
-				pkColIdx := table.GetColumnIndex(pkCol)
-				if pkColIdx >= 0 && pkColIdx < len(oldRow) && oldRow[pkColIdx] != nil {
-					pkValues = append(pkValues, oldRow[pkColIdx])
+	// Clean up index entries
+	var idxChanges []indexUndoEntry
+	if table != nil && oldRow != nil {
+		for idxName, idxTree := range c.indexTrees {
+			idxDef := c.indexes[idxName]
+			if idxDef != nil && idxDef.TableName == tableName && len(idxDef.Columns) > 0 {
+				oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
+				if !ok {
+					continue
 				}
-			}
-			if len(pkValues) == len(table.PrimaryKey) && len(pkValues) > 0 {
-				if fkErr := fke.OnDelete(ctx, tableName, pkValues...); fkErr != nil {
-					return fmt.Errorf("cascade delete: %w", fkErr)
+				idxStorageKey := []byte(oldIdxKey)
+				if !idxDef.Unique {
+					idxStorageKey = []byte(oldIdxKey + "\x00" + string(key))
+				}
+				oldIdxVal, getErr := idxTree.Get(idxStorageKey)
+				if err := idxTree.Delete(idxStorageKey); err != nil {
+					if rbErr := c.rebuildTableIndexesLocked(tableName); rbErr != nil {
+						return fmt.Errorf("failed to delete from index %s: %w; index rebuild failed: %v", idxName, err, rbErr)
+					}
+					return fmt.Errorf("failed to delete from index %s: %w", idxName, err)
+				}
+				if txnActive && getErr == nil {
+					idxChanges = append(idxChanges, indexUndoEntry{
+						indexName: idxName,
+						key:       idxStorageKey,
+						oldValue:  oldIdxVal,
+						wasAdded:  false,
+					})
 				}
 			}
 		}
