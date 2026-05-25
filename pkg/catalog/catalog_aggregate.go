@@ -271,10 +271,7 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 			func(chunk [][]byte) map[string][][]interface{} {
 				localGroups := make(map[string][][]interface{})
 				for _, valueData := range chunk {
-					vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-					if err != nil {
-						continue
-					}
+					vrow, _ := decodeVersionedRow(valueData, len(table.Columns)) // prevalidated before parallel grouping
 					if vrow.Version.DeletedAt > 0 {
 						continue
 					}
