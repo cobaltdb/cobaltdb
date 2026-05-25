@@ -272,14 +272,16 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 			for checkIter.HasNext() {
 				checkKey, existingData, err := checkIter.Next()
 				if err != nil {
-					break
+					checkIter.Close()
+					return fmt.Errorf("failed to read row during UNIQUE check on table %s: %w", table.Name, err)
 				}
 				if string(checkKey) == string(key) {
 					continue
 				}
 				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
 				if err != nil {
-					continue
+					checkIter.Close()
+					return fmt.Errorf("failed to decode row during UNIQUE check on table %s: %w", table.Name, err)
 				}
 				existingRow := vrow.Data
 				if len(existingRow) > i && compareValues(updatedRow[i], existingRow[i]) == 0 {
@@ -368,11 +370,13 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 			for refIter.HasNext() {
 				_, refData, err := refIter.Next()
 				if err != nil {
-					break
+					refIter.Close()
+					return fmt.Errorf("FOREIGN KEY constraint failed: failed to read referenced row in table %s: %w", fk.ReferencedTable, err)
 				}
 				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
 				if err != nil {
-					continue
+					refIter.Close()
+					return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode referenced row in table %s: %w", fk.ReferencedTable, err)
 				}
 				refRow := vrow.Data
 				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
@@ -385,7 +389,10 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 				if m, ok := ts.getPendingWriteMap()[fk.ReferencedTable]; ok {
 					for _, pw := range m {
 						vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
-						if err != nil || vrow.Version.DeletedAt > 0 {
+						if err != nil {
+							return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode pending referenced row in table %s: %w", fk.ReferencedTable, err)
+						}
+						if vrow.Version.DeletedAt > 0 {
 							continue
 						}
 						refRow := vrow.Data
@@ -1439,7 +1446,8 @@ func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tre
 			for checkIter.HasNext() {
 				checkKey, existingData, err := checkIter.Next()
 				if err != nil {
-					break
+					checkIter.Close()
+					return fmt.Errorf("failed to read row during UNIQUE check on table %s: %w", table.Name, err)
 				}
 				// Skip the current row being updated
 				if string(checkKey) == string(key) {
@@ -1447,7 +1455,8 @@ func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tre
 				}
 				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
 				if err != nil {
-					continue
+					checkIter.Close()
+					return fmt.Errorf("failed to decode row during UNIQUE check on table %s: %w", table.Name, err)
 				}
 				existingRow := vrow.Data
 				if len(existingRow) > i && compareValues(updatedRow[i], existingRow[i]) == 0 {
@@ -1540,11 +1549,13 @@ func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tre
 			for refIter.HasNext() {
 				_, refData, err := refIter.Next()
 				if err != nil {
-					break
+					refIter.Close()
+					return fmt.Errorf("FOREIGN KEY constraint failed: failed to read referenced row in table %s: %w", fk.ReferencedTable, err)
 				}
 				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
 				if err != nil {
-					continue
+					refIter.Close()
+					return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode referenced row in table %s: %w", fk.ReferencedTable, err)
 				}
 				refRow := vrow.Data
 				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
