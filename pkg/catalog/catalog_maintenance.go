@@ -563,26 +563,31 @@ func (c *Catalog) Load() error {
 
 	// Load vector index definitions from catalog tree
 	vecIter, err := c.tree.Scan([]byte("vec:"), []byte("vec;"))
-	if err == nil {
-		for vecIter.HasNext() {
-			key, value, err := vecIter.Next()
-			if err != nil {
-				break
-			}
-			keyStr := string(key)
-			if !strings.HasPrefix(keyStr, "vec:") {
-				continue
-			}
-			var vid VectorIndexDef
-			if err := json.Unmarshal(value, &vid); err != nil {
-				continue
-			}
-			if vid.HNSW != nil {
-				vid.HNSW.RebuildEntryPoint()
-			}
-			c.vectorIndexes[vid.Name] = &vid
+	if err != nil {
+		return fmt.Errorf("load catalog: failed to scan vector index metadata: %w", err)
+	}
+	defer vecIter.Close()
+	for vecIter.HasNext() {
+		key, value, err := vecIter.Next()
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to read vector index metadata: %w", err)
 		}
-		vecIter.Close()
+		keyStr := string(key)
+		if !strings.HasPrefix(keyStr, "vec:") {
+			continue
+		}
+		vectorIndexName := strings.TrimPrefix(keyStr, "vec:")
+		var vid VectorIndexDef
+		if err := json.Unmarshal(value, &vid); err != nil {
+			return fmt.Errorf("load catalog: failed to parse vector index metadata %s: %w", vectorIndexName, err)
+		}
+		if vid.Name == "" {
+			vid.Name = vectorIndexName
+		}
+		if vid.HNSW != nil {
+			vid.HNSW.RebuildEntryPoint()
+		}
+		c.vectorIndexes[vid.Name] = &vid
 	}
 
 	return nil

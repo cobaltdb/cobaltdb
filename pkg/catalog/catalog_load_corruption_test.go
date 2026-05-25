@@ -128,3 +128,25 @@ func TestLoadReturnsCorruptMaterializedViewMetadataError(t *testing.T) {
 		t.Fatal("corrupt materialized view should not be loaded after Load failure")
 	}
 }
+
+func TestLoadReturnsCorruptVectorIndexMetadataError(t *testing.T) {
+	pool := storage.NewBufferPool(1024, storage.NewMemory())
+	defer pool.Close()
+
+	catalogTree, err := btree.NewBTree(pool)
+	if err != nil {
+		t.Fatalf("NewBTree: %v", err)
+	}
+	if err := catalogTree.Put([]byte("vec:broken_vec_idx"), []byte("not valid json")); err != nil {
+		t.Fatalf("Put corrupt vector index metadata: %v", err)
+	}
+
+	c := New(catalogTree, pool, nil)
+	err = c.Load()
+	if err == nil || !strings.Contains(err.Error(), "broken_vec_idx") {
+		t.Fatalf("expected corrupt vector index metadata error, got %v", err)
+	}
+	if _, exists := c.vectorIndexes["broken_vec_idx"]; exists {
+		t.Fatal("corrupt vector index should not be loaded after Load failure")
+	}
+}
