@@ -684,14 +684,16 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 		if tbl, exists := c.tables[entry.tableName]; exists {
 			tbl.Columns = entry.oldColumns
 			tbl.buildColumnIndexCache()
-			_ = c.storeTableDef(tbl)
+			if err := c.storeTableDef(tbl); err != nil {
+				return fmt.Errorf("%s storing table def %s after add column undo: %w", errorPrefix, entry.tableName, err)
+			}
 		}
 	case undoAlterDropColumn:
 		return c.undoAlterDropColumnEntry(entry, errorPrefix)
 	case undoAlterRename:
 		return c.undoAlterRenameEntry(entry, errorPrefix)
 	case undoAlterRenameColumn:
-		c.undoAlterRenameColumnEntry(entry)
+		return c.undoAlterRenameColumnEntry(entry, errorPrefix)
 	case undoCreateView:
 		return c.undoCreateViewEntry(entry, errorPrefix)
 	case undoDropView:
@@ -840,10 +842,10 @@ func (c *Catalog) undoAlterRenameEntry(entry undoEntry, errorPrefix string) erro
 	return nil
 }
 
-func (c *Catalog) undoAlterRenameColumnEntry(entry undoEntry) {
+func (c *Catalog) undoAlterRenameColumnEntry(entry undoEntry, errorPrefix string) error {
 	tbl, exists := c.tables[entry.tableName]
 	if !exists {
-		return
+		return nil
 	}
 	for i, col := range tbl.Columns {
 		if strings.EqualFold(col.Name, entry.newName) {
@@ -866,7 +868,10 @@ func (c *Catalog) undoAlterRenameColumnEntry(entry undoEntry) {
 			}
 		}
 	}
-	_ = c.storeTableDef(tbl)
+	if err := c.storeTableDef(tbl); err != nil {
+		return fmt.Errorf("%s storing table def %s after rename column undo: %w", errorPrefix, entry.tableName, err)
+	}
+	return nil
 }
 
 func (c *Catalog) undoCreateViewEntry(entry undoEntry, errorPrefix string) error {
