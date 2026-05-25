@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
@@ -132,6 +133,16 @@ func (c *Catalog) storeTriggerDef(name string, sql string) error {
 
 func (c *Catalog) storeProcedureDef(name string, sql string) error {
 	return c.storeSQLDef("proc:"+name, name, sql)
+}
+
+func (c *Catalog) deleteCatalogDef(key string) error {
+	if c.tree == nil {
+		return nil
+	}
+	if err := c.tree.Delete([]byte(key)); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
+		return err
+	}
+	return nil
 }
 
 func (c *Catalog) storeMaterializedViewDef(name string, sql string, mv *MaterializedViewDef) error {

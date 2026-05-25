@@ -280,6 +280,11 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 
 	// Check if table actually exists before trying to delete
 	tableDef, exists := c.tables[stmt.Table]
+	if exists {
+		if err := c.deleteCatalogDef("tbl:" + stmt.Table); err != nil {
+			return fmt.Errorf("failed to delete table metadata %s: %w", stmt.Table, err)
+		}
+	}
 
 	// Record DDL undo entry for transaction rollback before deleting
 	if c.isCurrentTxnActive() && exists {
@@ -319,11 +324,6 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 	delete(c.stats, stmt.Table)
 	delete(c.tables, stmt.Table)
 
-	// Remove from catalog tree only if the table existed
-	if c.tree != nil && exists {
-		key := []byte("tbl:" + stmt.Table)
-		return c.tree.Delete(key)
-	}
 	return nil
 }
 
@@ -622,6 +622,10 @@ func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
 		return fmt.Errorf("table '%s' already exists", stmt.NewName)
 	}
 
+	if err := c.deleteCatalogDef("tbl:" + stmt.Table); err != nil {
+		return fmt.Errorf("failed to delete renamed table metadata %s: %w", stmt.Table, err)
+	}
+
 	// Save undo entry before modification
 	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
@@ -656,11 +660,6 @@ func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
 
 	table.Name = stmt.NewName
 
-	// Persist renamed table to catalog B-tree
-	if c.tree != nil {
-		// Best-effort delete of old entry (may not exist if table was only in-memory)
-		_ = c.tree.Delete([]byte("tbl:" + stmt.Table))
-	}
 	if err := c.storeTableDef(table); err != nil {
 		return fmt.Errorf("failed to persist renamed table: %w", err)
 	}
@@ -853,6 +852,9 @@ func (c *Catalog) DropView(name string) error {
 	if _, exists := c.views[name]; !exists {
 		return ErrTableNotFound
 	}
+	if err := c.deleteCatalogDef("view:" + name); err != nil {
+		return fmt.Errorf("failed to delete view metadata %s: %w", name, err)
+	}
 	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
 			action:    undoDropView,
@@ -863,9 +865,6 @@ func (c *Catalog) DropView(name string) error {
 	}
 	delete(c.views, name)
 	delete(c.viewSQL, name)
-	if c.tree != nil {
-		_ = c.tree.Delete([]byte("view:" + name))
-	}
 	return nil
 }
 
@@ -931,6 +930,9 @@ func (c *Catalog) DropTrigger(name string) error {
 	if _, exists := c.triggers[name]; !exists {
 		return fmt.Errorf("trigger %s not found", name)
 	}
+	if err := c.deleteCatalogDef("trg:" + name); err != nil {
+		return fmt.Errorf("failed to delete trigger metadata %s: %w", name, err)
+	}
 	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
 			action:      undoDropTrigger,
@@ -941,9 +943,6 @@ func (c *Catalog) DropTrigger(name string) error {
 	}
 	delete(c.triggers, name)
 	delete(c.triggerSQL, name)
-	if c.tree != nil {
-		_ = c.tree.Delete([]byte("trg:" + name))
-	}
 	return nil
 }
 
@@ -1244,6 +1243,9 @@ func (c *Catalog) DropProcedure(name string) error {
 	if _, exists := c.procedures[name]; !exists {
 		return fmt.Errorf("procedure %s not found", name)
 	}
+	if err := c.deleteCatalogDef("proc:" + name); err != nil {
+		return fmt.Errorf("failed to delete procedure metadata %s: %w", name, err)
+	}
 	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
 			action:        undoDropProcedure,
@@ -1254,9 +1256,6 @@ func (c *Catalog) DropProcedure(name string) error {
 	}
 	delete(c.procedures, name)
 	delete(c.procedureSQL, name)
-	if c.tree != nil {
-		_ = c.tree.Delete([]byte("proc:" + name))
-	}
 	return nil
 }
 

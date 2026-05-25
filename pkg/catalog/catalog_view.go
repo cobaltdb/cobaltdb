@@ -87,6 +87,9 @@ func (c *Catalog) DropMaterializedView(name string, ifExists bool) error {
 		return fmt.Errorf("materialized view %s not found", name)
 	}
 
+	if err := c.deleteCatalogDef("mv:" + name); err != nil {
+		return fmt.Errorf("failed to delete materialized view metadata %s: %w", name, err)
+	}
 	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
 			action:               undoDropMaterializedView,
@@ -97,9 +100,6 @@ func (c *Catalog) DropMaterializedView(name string, ifExists bool) error {
 	}
 	delete(c.materializedViews, name)
 	delete(c.materializedViewSQL, name)
-	if c.tree != nil {
-		_ = c.tree.Delete([]byte("mv:" + name))
-	}
 	// Clear cached query result so subsequent SELECTs fail as expected.
 	if c.cteResults != nil {
 		delete(c.cteResults, toLowerFast(name))

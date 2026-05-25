@@ -335,6 +335,9 @@ func (c *Catalog) DropIndex(name string) error {
 	if !exists {
 		return ErrIndexNotFound
 	}
+	if err := c.deleteCatalogDef("idx:" + name); err != nil {
+		return fmt.Errorf("failed to delete index metadata %s: %w", name, err)
+	}
 
 	// Record DDL undo entry for transaction rollback
 	if c.isCurrentTxnActive() {
@@ -349,10 +352,6 @@ func (c *Catalog) DropIndex(name string) error {
 	delete(c.indexes, name)
 	delete(c.indexTrees, name)
 
-	if c.tree != nil {
-		key := []byte("idx:" + name)
-		return c.tree.Delete(key)
-	}
 	return nil
 }
 
