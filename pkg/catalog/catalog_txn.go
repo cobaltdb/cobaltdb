@@ -1480,7 +1480,9 @@ func (c *Catalog) ReplayWALOps(ops []storage.WALReplayOp) error {
 			if !exists {
 				continue
 			}
-			_ = tree.Put([]byte(parts[1]), value)
+			if err := tree.Put([]byte(parts[1]), value); err != nil {
+				return fmt.Errorf("failed to replay WAL %v for %s: %w", op.Type, key, err)
+			}
 			affectedTables[parts[0]] = struct{}{}
 
 		case storage.WALDelete:
@@ -1500,7 +1502,9 @@ func (c *Catalog) ReplayWALOps(ops []storage.WALReplayOp) error {
 			if !exists {
 				continue
 			}
-			_ = tree.Delete([]byte(parts[1]))
+			if err := tree.Delete([]byte(parts[1])); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
+				return fmt.Errorf("failed to replay WAL delete for %s: %w", key, err)
+			}
 			affectedTables[parts[0]] = struct{}{}
 		}
 	}
