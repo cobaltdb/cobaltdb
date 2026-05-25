@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -286,8 +287,8 @@ func TestLoadDataKeysLongerThanValues(t *testing.T) {
 	}
 
 	err = cat.LoadData(tmpDir)
-	if err != nil {
-		t.Fatalf("LoadData keys>values should succeed, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "mismatched key/value counts") {
+		t.Fatalf("expected mismatched key/value count error, got %v", err)
 	}
 }
 

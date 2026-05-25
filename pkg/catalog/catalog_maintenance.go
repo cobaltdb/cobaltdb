@@ -810,6 +810,14 @@ func (c *Catalog) LoadData(dir string) error {
 		if err := json.Unmarshal(data, &tableData); err != nil {
 			return fmt.Errorf("load data: failed to parse %s: %w", dataPath, err)
 		}
+		if len(tableData.Keys) != len(tableData.Values) {
+			return fmt.Errorf(
+				"load data: mismatched key/value counts for table %s: %d keys, %d values",
+				tableName,
+				len(tableData.Keys),
+				len(tableData.Values),
+			)
+		}
 
 		tree, exists := c.tableTrees[tableName]
 		if !exists {
@@ -826,9 +834,6 @@ func (c *Catalog) LoadData(dir string) error {
 		}
 
 		for i, key := range tableData.Keys {
-			if i >= len(tableData.Values) {
-				break
-			}
 			if err := tree.Put(key, tableData.Values[i]); err != nil {
 				return fmt.Errorf("load data: failed to insert into %s: %w", tableName, err)
 			}
