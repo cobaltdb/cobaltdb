@@ -741,7 +741,7 @@ type mockFDW struct {
 	rows [][]interface{}
 }
 
-func (m *mockFDW) Name() string { return "mock" }
+func (m *mockFDW) Name() string                         { return "mock" }
 func (m *mockFDW) Open(options map[string]string) error { return nil }
 func (m *mockFDW) Scan(table string, columns []string) ([][]interface{}, error) {
 	return m.rows, nil
@@ -1257,18 +1257,22 @@ func TestHasSubqueriesExhaustive(t *testing.T) {
 // mockOpenErrorFDW returns an error on Open.
 type mockOpenErrorFDW struct{}
 
-func (m *mockOpenErrorFDW) Name() string                                     { return "openerr" }
-func (m *mockOpenErrorFDW) Open(options map[string]string) error              { return fmt.Errorf("open error") }
-func (m *mockOpenErrorFDW) Scan(table string, columns []string) ([][]interface{}, error) { return nil, nil }
-func (m *mockOpenErrorFDW) Close() error                                    { return nil }
+func (m *mockOpenErrorFDW) Name() string                         { return "openerr" }
+func (m *mockOpenErrorFDW) Open(options map[string]string) error { return fmt.Errorf("open error") }
+func (m *mockOpenErrorFDW) Scan(table string, columns []string) ([][]interface{}, error) {
+	return nil, nil
+}
+func (m *mockOpenErrorFDW) Close() error { return nil }
 
 // mockScanErrorFDW returns an error on Scan.
 type mockScanErrorFDW struct{}
 
-func (m *mockScanErrorFDW) Name() string                                     { return "scanerr" }
-func (m *mockScanErrorFDW) Open(options map[string]string) error              { return nil }
-func (m *mockScanErrorFDW) Scan(table string, columns []string) ([][]interface{}, error) { return nil, fmt.Errorf("scan error") }
-func (m *mockScanErrorFDW) Close() error                                    { return nil }
+func (m *mockScanErrorFDW) Name() string                         { return "scanerr" }
+func (m *mockScanErrorFDW) Open(options map[string]string) error { return nil }
+func (m *mockScanErrorFDW) Scan(table string, columns []string) ([][]interface{}, error) {
+	return nil, fmt.Errorf("scan error")
+}
+func (m *mockScanErrorFDW) Close() error { return nil }
 
 // TestGetTableTreesForScanErrors tests error paths in getTableTreesForScan.
 func TestGetTableTreesForScanErrors(t *testing.T) {
@@ -1349,15 +1353,18 @@ func TestProcessRowChunkDirect(t *testing.T) {
 
 	// Valid row
 	validRow, _ := encodeVersionedRow([]interface{}{int64(1), "alice"}, nil)
-	rows, _ := c.processRowChunk([][]byte{validRow}, table, selectCols, stmt, nil, now, false)
+	rows, _, err := c.processRowChunk([][]byte{validRow}, table, selectCols, stmt, nil, now, false)
+	if err != nil {
+		t.Fatalf("processRowChunk valid row: %v", err)
+	}
 	if len(rows) != 1 {
 		t.Errorf("Expected 1 row, got %d", len(rows))
 	}
 
-	// Corrupted value (should be skipped)
-	rows, _ = c.processRowChunk([][]byte{[]byte("garbage")}, table, selectCols, stmt, nil, now, false)
-	if len(rows) != 0 {
-		t.Errorf("Expected 0 rows for garbage, got %d", len(rows))
+	// Corrupted value should fail instead of being skipped.
+	_, _, err = c.processRowChunk([][]byte{[]byte("garbage")}, table, selectCols, stmt, nil, now, false)
+	if err == nil {
+		t.Fatal("expected corrupt row error")
 	}
 
 	// Row with WHERE that doesn't match
@@ -1369,7 +1376,10 @@ func TestProcessRowChunkDirect(t *testing.T) {
 			Right:    &query.NumberLiteral{Value: 999},
 		},
 	}
-	rows, _ = c.processRowChunk([][]byte{validRow}, table, selectCols, stmtWithWhere, nil, now, false)
+	rows, _, err = c.processRowChunk([][]byte{validRow}, table, selectCols, stmtWithWhere, nil, now, false)
+	if err != nil {
+		t.Fatalf("processRowChunk WHERE no match: %v", err)
+	}
 	if len(rows) != 0 {
 		t.Errorf("Expected 0 rows after WHERE filter, got %d", len(rows))
 	}
@@ -1377,14 +1387,20 @@ func TestProcessRowChunkDirect(t *testing.T) {
 	// Row with future createdAt (not visible)
 	future := now.Add(time.Hour)
 	futureRow, _ := encodeVersionedRow([]interface{}{int64(2), "bob"}, &future)
-	rows, _ = c.processRowChunk([][]byte{futureRow}, table, selectCols, stmt, nil, now, false)
+	rows, _, err = c.processRowChunk([][]byte{futureRow}, table, selectCols, stmt, nil, now, false)
+	if err != nil {
+		t.Fatalf("processRowChunk future row: %v", err)
+	}
 	if len(rows) != 0 {
 		t.Errorf("Expected 0 rows for future row, got %d", len(rows))
 	}
 
 	// Window functions path
 	windowCols := []selectColInfo{{name: "id", index: 0, isWindow: true}}
-	rows, fullRows := c.processRowChunk([][]byte{validRow}, table, windowCols, stmt, nil, now, true)
+	rows, fullRows, err := c.processRowChunk([][]byte{validRow}, table, windowCols, stmt, nil, now, true)
+	if err != nil {
+		t.Fatalf("processRowChunk window row: %v", err)
+	}
 	if len(rows) != 1 || len(fullRows) != 1 {
 		t.Errorf("Expected 1 row and 1 full row for window funcs, got %d/%d", len(rows), len(fullRows))
 	}
@@ -1394,9 +1410,9 @@ func TestProcessRowChunkDirect(t *testing.T) {
 		Columns: []query.Expression{&query.StarExpr{}},
 		Where:   &query.Identifier{Name: "nonexistent_column"},
 	}
-	rows, _ = c.processRowChunk([][]byte{validRow}, table, selectCols, stmtWhereErr, nil, now, false)
-	if len(rows) != 0 {
-		t.Errorf("Expected 0 rows when WHERE errors, got %d", len(rows))
+	_, _, err = c.processRowChunk([][]byte{validRow}, table, selectCols, stmtWhereErr, nil, now, false)
+	if err == nil {
+		t.Fatal("expected WHERE evaluation error")
 	}
 
 	// Expression evaluation path (ci.index == -1, !isAggregate)
@@ -1404,7 +1420,10 @@ func TestProcessRowChunkDirect(t *testing.T) {
 	stmtExpr := &query.SelectStmt{Columns: []query.Expression{&query.BinaryExpr{
 		Left: &query.Identifier{Name: "id"}, Operator: query.TokenPlus, Right: &query.NumberLiteral{Value: 10},
 	}}}
-	rows, _ = c.processRowChunk([][]byte{validRow}, table, exprCols, stmtExpr, nil, now, false)
+	rows, _, err = c.processRowChunk([][]byte{validRow}, table, exprCols, stmtExpr, nil, now, false)
+	if err != nil {
+		t.Fatalf("processRowChunk expression row: %v", err)
+	}
 	if len(rows) != 1 {
 		t.Errorf("Expected 1 row for expression eval, got %d", len(rows))
 	}
@@ -1415,7 +1434,10 @@ func TestProcessRowChunkDirect(t *testing.T) {
 		Columns: []query.Expression{&query.StarExpr{}},
 		OrderBy: []*query.OrderByExpr{{Expr: &query.Identifier{Name: "id"}}},
 	}
-	rows, _ = c.processRowChunk([][]byte{validRow}, table, orderbyCols, stmtOB, nil, now, false)
+	rows, _, err = c.processRowChunk([][]byte{validRow}, table, orderbyCols, stmtOB, nil, now, false)
+	if err != nil {
+		t.Fatalf("processRowChunk order by row: %v", err)
+	}
 	if len(rows) != 1 {
 		t.Errorf("Expected 1 row for orderby eval, got %d", len(rows))
 	}

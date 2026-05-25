@@ -1080,7 +1080,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 				}
 				results := parallel.ParallelSelectRows(values, parallelWorkers, parallelThreshold,
 					func(chunk [][]byte) [][]interface{} {
-						chunkRows, _ := cat.processRowChunk(chunk, table, selectCols, stmt, args, queryTime, false)
+						chunkRows, _, _ := cat.processRowChunk(chunk, table, selectCols, stmt, args, queryTime, false)
 						return chunkRows
 					})
 				rows = append(rows, results...)
@@ -2364,13 +2364,13 @@ func (cat *Catalog) processRowChunk(
 	args []interface{},
 	queryTime time.Time,
 	hasWindowFuncs bool,
-) ([][]interface{}, [][]interface{}) {
+) ([][]interface{}, [][]interface{}, error) {
 	var rows [][]interface{}
 	var windowFullRows [][]interface{}
 	for _, valueData := range values {
 		vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 		if err != nil {
-			continue
+			return nil, nil, fmt.Errorf("select chunk: failed to decode row in table %s: %w", table.Name, err)
 		}
 		if !vrow.Version.isVisibleAt(queryTime) {
 			continue
@@ -2379,7 +2379,7 @@ func (cat *Catalog) processRowChunk(
 		if stmt.Where != nil {
 			matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
 			if err != nil {
-				continue
+				return nil, nil, fmt.Errorf("select chunk: WHERE evaluation failed for table %s: %w", table.Name, err)
 			}
 			if !matched {
 				continue
@@ -2421,5 +2421,5 @@ func (cat *Catalog) processRowChunk(
 			windowFullRows = append(windowFullRows, fullRowCopy)
 		}
 	}
-	return rows, windowFullRows
+	return rows, windowFullRows, nil
 }
