@@ -640,7 +640,10 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 		allColumns[i].sourceTbl = mainAlias
 	}
 
-	intermediateRows, allColumns = c.executeJoinChainForGroupBy(stmt, args, intermediateRows, allColumns, mainTableCols)
+	intermediateRows, allColumns, err = c.executeJoinChainForGroupBy(stmt, args, intermediateRows, allColumns, mainTableCols)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// Apply WHERE clause to joined rows before GROUP BY
 	if stmt.Where != nil {
@@ -1088,7 +1091,7 @@ func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows []
 }
 
 // executeJoinChainForGroupBy chains through JOINs for GROUP BY queries.
-func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []interface{}, intermediateRows [][]interface{}, allColumns []ColumnDef, mainTableCols []ColumnDef) ([][]interface{}, []ColumnDef) {
+func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []interface{}, intermediateRows [][]interface{}, allColumns []ColumnDef, mainTableCols []ColumnDef) ([][]interface{}, []ColumnDef, error) {
 	for _, join := range stmt.Joins {
 		var joinTableCols []ColumnDef
 		var rightRows [][]interface{}
@@ -1146,17 +1149,17 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 
 			joinIter, err := joinTree.Scan(nil, nil)
 			if err != nil {
-				continue
+				return nil, nil, fmt.Errorf("join group by: failed to scan table %s: %w", joinTable.Name, err)
 			}
 			defer joinIter.Close()
 			for joinIter.HasNext() {
 				_, data, err := joinIter.Next()
 				if err != nil {
-					break
+					return nil, nil, fmt.Errorf("join group by: failed to read row in table %s: %w", joinTable.Name, err)
 				}
 				vrow, err := decodeVersionedRow(data, len(joinTable.Columns))
 				if err != nil {
-					continue
+					return nil, nil, fmt.Errorf("join group by: failed to decode row in table %s: %w", joinTable.Name, err)
 				}
 				if vrow.Version.DeletedAt > 0 {
 					continue
@@ -1282,7 +1285,7 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 		allColumns = newAllColumns
 	}
 
-	return intermediateRows, allColumns
+	return intermediateRows, allColumns, nil
 }
 
 func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo, orderBy []*query.OrderByExpr) [][]interface{} {

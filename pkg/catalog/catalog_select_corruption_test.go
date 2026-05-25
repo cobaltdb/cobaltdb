@@ -102,6 +102,33 @@ func TestGroupBySelectReturnsCorruptRowError(t *testing.T) {
 	}
 }
 
+func TestJoinGroupBySelectReturnsCorruptRightRowError(t *testing.T) {
+	c, pool := newMetadataIsolationCatalog(t)
+	defer pool.Close()
+
+	if _, err := c.ExecuteQuery("CREATE TABLE join_group_clean_main (id INTEGER PRIMARY KEY, region TEXT)"); err != nil {
+		t.Fatalf("create main table: %v", err)
+	}
+	if _, err := c.ExecuteQuery("CREATE TABLE join_group_corrupt_right (id INTEGER PRIMARY KEY, main_id INTEGER, amount INTEGER)"); err != nil {
+		t.Fatalf("create right table: %v", err)
+	}
+	if _, err := c.ExecuteQuery("INSERT INTO join_group_clean_main (id, region) VALUES (1, 'north')"); err != nil {
+		t.Fatalf("insert main: %v", err)
+	}
+	if _, err := c.ExecuteQuery("INSERT INTO join_group_corrupt_right (id, main_id, amount) VALUES (1, 1, 10)"); err != nil {
+		t.Fatalf("insert right: %v", err)
+	}
+	pkKey := fmt.Sprintf("%020d", 1)
+	if err := c.tableTrees["join_group_corrupt_right"].Put([]byte(pkKey), []byte("not json")); err != nil {
+		t.Fatalf("put corrupt right row: %v", err)
+	}
+
+	_, err := c.ExecuteQuery("SELECT join_group_clean_main.region, COUNT(*) FROM join_group_clean_main JOIN join_group_corrupt_right ON join_group_clean_main.id = join_group_corrupt_right.main_id GROUP BY join_group_clean_main.region")
+	if err == nil || !strings.Contains(err.Error(), "failed to decode row") || !strings.Contains(err.Error(), "join_group_corrupt_right") {
+		t.Fatalf("expected corrupt right row join group by error, got %v", err)
+	}
+}
+
 func TestCountFastPathReturnsCorruptRowError(t *testing.T) {
 	c, pool := newMetadataIsolationCatalog(t)
 	defer pool.Close()
