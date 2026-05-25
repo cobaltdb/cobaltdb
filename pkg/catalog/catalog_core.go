@@ -794,7 +794,10 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	var indexMatches []string
 	var useIndex bool
 	if stmt.Where != nil {
-		indexMatches, useIndex = cat.useIndexForQueryWithArgs(stmt.From.Name, stmt.Where, args)
+		indexMatches, useIndex, err = cat.useIndexForQueryWithArgs(stmt.From.Name, stmt.Where, args)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	// For statements without subqueries, release the catalog lock during the
 	// heavy scan so writes can proceed. Subqueries would recursively call

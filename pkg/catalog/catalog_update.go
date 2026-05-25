@@ -195,7 +195,11 @@ func (c *Catalog) buildUpdateSnapshot(snap *updateSnapshot, table *TableDef, stm
 		snap.treeNames = append(snap.treeNames[:0], table.getPartitionTreeNames()...)
 	}
 	if stmt.Where != nil {
-		snap.indexedRows, snap.useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+		indexedRows, useIndex, err := c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+		if err != nil {
+			return err
+		}
+		snap.indexedRows, snap.useIndex = indexedRows, useIndex
 	} else {
 		snap.indexedRows = snap.indexedRows[:0]
 		snap.useIndex = false
@@ -647,7 +651,11 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	var indexedRows []string
 	useIndex := false
 	if stmt.Where != nil {
-		indexedRows, useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+		var idxErr error
+		indexedRows, useIndex, idxErr = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+		if idxErr != nil {
+			return 0, 0, idxErr
+		}
 	}
 
 	// Iterate over all partition trees

@@ -247,13 +247,13 @@ func (c *Catalog) extractLiteralValue(expr query.Expression, args []interface{})
 	}
 }
 
-func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Expression, args []interface{}) ([]string, bool) {
+func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Expression, args []interface{}) ([]string, bool, error) {
 	// If there are pending buffered writes for this table, the index tree may
 	// be stale (index updates are deferred to commit). Fall back to full scan
 	// so read-your-writes works correctly.
 	if ts := c.getCurrentTxn(); ts != nil && len(ts.pendingWrites) > 0 {
 		if _, ok := ts.getPendingWriteMap()[tableName]; ok {
-			return nil, false
+			return nil, false, nil
 		}
 	}
 
@@ -264,10 +264,10 @@ func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Express
 		return c.useIndexForExactMatch(idxName, searchVal)
 	}
 
-	return nil, false
+	return nil, false, nil
 }
 
-func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) ([]string, bool) {
+func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) ([]string, bool, error) {
 	// Special case: PRIMARY KEY lookup
 	if idxName == "__PK__" {
 		// Use serializePK format for consistency with table storage
@@ -275,17 +275,17 @@ func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (
 		if !ok {
 			pkKey = ValueToStringKey(searchVal)
 		}
-		return []string{pkKey}, true
+		return []string{pkKey}, true, nil
 	}
 
 	idxDef, idxExists := c.indexes[idxName]
 	if !idxExists {
-		return nil, false
+		return nil, false, nil
 	}
 
 	indexTree, exists := c.indexTrees[idxName]
 	if !exists {
-		return nil, false
+		return nil, false, nil
 	}
 
 	indexKey := typeTaggedKey(searchVal)
@@ -296,9 +296,9 @@ func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (
 		pkData, err := indexTree.Get([]byte(indexKey))
 		if err != nil {
 			// No matching rows
-			return result, true
+			return result, true, nil
 		}
-		return []string{string(pkData)}, true
+		return []string{string(pkData)}, true, nil
 	}
 
 	// For non-unique indexes, we need to scan the range for matching keys
@@ -308,19 +308,19 @@ func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) (
 
 	iter, err := indexTree.Scan([]byte(startKey), []byte(endKey))
 	if err != nil {
-		return result, true
+		return nil, false, fmt.Errorf("failed to scan index %s: %w", idxName, err)
 	}
 	defer iter.Close()
 
 	for iter.HasNext() {
 		_, pkData, err := iter.Next()
 		if err != nil {
-			break
+			return nil, false, fmt.Errorf("failed to read index %s: %w", idxName, err)
 		}
 		result = append(result, string(pkData))
 	}
 
-	return result, true
+	return result, true, nil
 }
 
 // ListIndexesByTable returns all regular indexes grouped by table name.

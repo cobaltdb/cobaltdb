@@ -162,7 +162,11 @@ func (c *Catalog) buildDeleteSnapshot(table *TableDef, stmt *query.DeleteStmt, a
 		snap.treeNames = table.getPartitionTreeNames()
 	}
 	if stmt.Where != nil {
-		snap.indexedRows, snap.useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+		indexedRows, useIndex, err := c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+		if err != nil {
+			return nil, err
+		}
+		snap.indexedRows, snap.useIndex = indexedRows, useIndex
 	}
 	return snap, nil
 }
@@ -358,7 +362,11 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 		treeNames: treeNames,
 	}
 	if stmt.Where != nil {
-		snap.indexedRows, snap.useIndex = c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+		indexedRows, useIndex, err := c.useIndexForQueryWithArgs(stmt.Table, stmt.Where, args)
+		if err != nil {
+			return 0, 0, err
+		}
+		snap.indexedRows, snap.useIndex = indexedRows, useIndex
 	}
 	entries, rowsAffected, err := c.scanDeleteEntries(ctx, stmt, args, snap, ts)
 	if err != nil {

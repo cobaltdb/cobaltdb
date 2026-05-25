@@ -9060,7 +9060,10 @@ func TestUseIndexForExactMatch(t *testing.T) {
 	}
 
 	// Test index lookup for existing value
-	result, found := catalog.useIndexForExactMatch("idx_name", "Alice")
+	result, found, err := catalog.useIndexForExactMatch("idx_name", "Alice")
+	if err != nil {
+		t.Fatalf("useIndexForExactMatch failed: %v", err)
+	}
 	if !found {
 		t.Error("expected index lookup to succeed")
 	}
@@ -9069,7 +9072,10 @@ func TestUseIndexForExactMatch(t *testing.T) {
 	}
 
 	// Test index lookup for non-existing value
-	result2, found2 := catalog.useIndexForExactMatch("idx_name", "NonExistent")
+	result2, found2, err := catalog.useIndexForExactMatch("idx_name", "NonExistent")
+	if err != nil {
+		t.Fatalf("useIndexForExactMatch missing value failed: %v", err)
+	}
 	if !found2 {
 		t.Error("expected index lookup to succeed even for non-matching value")
 	}
@@ -9078,7 +9084,10 @@ func TestUseIndexForExactMatch(t *testing.T) {
 	}
 
 	// Test index lookup for non-existent index
-	_, found3 := catalog.useIndexForExactMatch("nonexistent_index", "value")
+	_, found3, err := catalog.useIndexForExactMatch("nonexistent_index", "value")
+	if err != nil {
+		t.Fatalf("useIndexForExactMatch nonexistent index failed: %v", err)
+	}
 	if found3 {
 		t.Error("expected false for non-existent index")
 	}
