@@ -50,22 +50,25 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 	tree, exists := c.tableTrees[tableName]
 	if exists {
 		iter, err := tree.Scan(nil, nil)
-		if err == nil {
-			defer iter.Close()
-			for iter.HasNext() {
-				rowKey, value, iterErr := iter.NextString()
-				if iterErr != nil {
-					break
-				}
-				if rowKey == "" || len(value) == 0 {
-					break
-				}
-				// CobaltDB stores rows as VersionedRow (with []interface{} Data)
-				vrow, err := decodeVersionedRow(value, len(table.Columns))
-				if err != nil {
-					continue
-				}
-				c.indexRowForVector(vectorIndex, vrow.Data, rowKey, colIdx)
+		if err != nil {
+			return fmt.Errorf("failed to scan table %s for vector index %s: %w", tableName, name, err)
+		}
+		defer iter.Close()
+		for iter.HasNext() {
+			rowKey, value, iterErr := iter.NextString()
+			if iterErr != nil {
+				return fmt.Errorf("failed to read row for vector index %s: %w", name, iterErr)
+			}
+			if rowKey == "" || len(value) == 0 {
+				break
+			}
+			// CobaltDB stores rows as VersionedRow (with []interface{} Data)
+			vrow, err := decodeVersionedRow(value, len(table.Columns))
+			if err != nil {
+				continue
+			}
+			if err := c.indexRowForVector(vectorIndex, vrow.Data, rowKey, colIdx); err != nil {
+				return fmt.Errorf("failed to add row %s to vector index %s: %w", rowKey, name, err)
 			}
 		}
 	}
@@ -78,17 +81,17 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 	return nil
 }
 
-// indexRowForVector adds a row to the vector index
-func (c *Catalog) indexRowForVector(vectorIndex *VectorIndexDef, rowSlice []interface{}, rowKey string, colIdx int) {
+// indexRowForVector adds a row to the vector index.
+func (c *Catalog) indexRowForVector(vectorIndex *VectorIndexDef, rowSlice []interface{}, rowKey string, colIdx int) error {
 
 	// Get the vector value from the row
 	if colIdx >= len(rowSlice) {
-		return
+		return nil
 	}
 
 	vectorVal := rowSlice[colIdx]
 	if vectorVal == nil {
-		return
+		return nil
 	}
 
 	// Convert vector value to []float64
@@ -109,22 +112,25 @@ func (c *Catalog) indexRowForVector(vectorIndex *VectorIndexDef, rowSlice []inte
 			case float32:
 				vector[i] = float64(fv)
 			default:
-				return // Invalid type
+				return nil // Invalid type
 			}
 		}
 	default:
-		return // Invalid type
+		return nil // Invalid type
 	}
 
 	// Validate dimensions
 	if len(vector) != vectorIndex.Dimensions {
-		return // Dimension mismatch
+		return nil // Dimension mismatch
 	}
 
 	// Insert into HNSW index
 	if vectorIndex.HNSW != nil {
-		_ = vectorIndex.HNSW.Insert(rowKey, vector)
+		if err := vectorIndex.HNSW.Insert(rowKey, vector); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // DropVectorIndex removes a vector index
@@ -232,7 +238,9 @@ func (c *Catalog) updateVectorIndexesForInsert(tableName string, rowSlice []inte
 			continue
 		}
 
-		c.indexRowForVector(vectorIndex, rowSlice, key, colIdx)
+		if err := c.indexRowForVector(vectorIndex, rowSlice, key, colIdx); err != nil {
+			return fmt.Errorf("failed to update vector index %s after insert: %w", vectorIndex.Name, err)
+		}
 		if err := c.storeVectorIndexDef(vectorIndex); err != nil {
 			return fmt.Errorf("failed to persist vector index %s after insert: %w", vectorIndex.Name, err)
 		}
@@ -247,7 +255,9 @@ func (c *Catalog) updateVectorIndexesForDelete(tableName string, rowKey string) 
 			continue
 		}
 		if vectorIndex.HNSW != nil {
-			_ = vectorIndex.HNSW.Delete(rowKey)
+			if err := vectorIndex.HNSW.Delete(rowKey); err != nil {
+				return fmt.Errorf("failed to delete row from vector index %s: %w", vectorIndex.Name, err)
+			}
 		}
 		if err := c.storeVectorIndexDef(vectorIndex); err != nil {
 			return fmt.Errorf("failed to persist vector index %s after delete: %w", vectorIndex.Name, err)
@@ -265,7 +275,9 @@ func (c *Catalog) updateVectorIndexesForUpdate(tableName string, rowSlice []inte
 
 		// Delete old entry
 		if vectorIndex.HNSW != nil {
-			_ = vectorIndex.HNSW.Delete(rowKey)
+			if err := vectorIndex.HNSW.Delete(rowKey); err != nil {
+				return fmt.Errorf("failed to delete row from vector index %s before update: %w", vectorIndex.Name, err)
+			}
 		}
 
 		// Find column index and re-insert
@@ -278,7 +290,9 @@ func (c *Catalog) updateVectorIndexesForUpdate(tableName string, rowSlice []inte
 			continue
 		}
 
-		c.indexRowForVector(vectorIndex, rowSlice, rowKey, colIdx)
+		if err := c.indexRowForVector(vectorIndex, rowSlice, rowKey, colIdx); err != nil {
+			return fmt.Errorf("failed to update vector index %s: %w", vectorIndex.Name, err)
+		}
 		if err := c.storeVectorIndexDef(vectorIndex); err != nil {
 			return fmt.Errorf("failed to persist vector index %s after update: %w", vectorIndex.Name, err)
 		}
