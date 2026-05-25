@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"sort"
@@ -1608,6 +1609,27 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
 	}
 	fke := NewForeignKeyEnforcer(c)
+	appliedEntries := make([]updateEntry, 0, len(entries))
+	undoStart := 0
+	if txnActive {
+		undoStart = len(c.getCurrentTxnUndoLog())
+	}
+	rollbackApplied := func(cause error, current *updateEntry) error {
+		toRollback := appliedEntries
+		if current != nil {
+			toRollback = append(append([]updateEntry{}, appliedEntries...), *current)
+		}
+		if txnActive {
+			c.truncateUndoLog(undoStart)
+		}
+		if len(toRollback) == 0 {
+			return cause
+		}
+		if rbErr := c.rollbackAppliedUpdateEntries(table, stmt.Table, toRollback); rbErr != nil {
+			return fmt.Errorf("%w; rollback failed: %v", cause, rbErr)
+		}
+		return cause
+	}
 
 	for _, entry := range entries {
 		oldKey := entry.key
@@ -1700,7 +1722,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		if pkChanged {
 			_ = updateTree.Delete(oldKey) // best-effort; key may be buffered-only
 			if err := updateTree.Put(newKey, newValueData); err != nil {
-				return fmt.Errorf("failed to update row with new key: %w", err)
+				return rollbackApplied(fmt.Errorf("failed to update row with new key: %w", err), &entry)
 			}
 			if fVal, ok := toFloat64(entry.newRow[pkColIdx]); ok {
 				pkVal := int64(fVal)
@@ -1710,7 +1732,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 			}
 		} else {
 			if err := updateTree.Put(oldKey, newValueData); err != nil {
-				return fmt.Errorf("failed to update row: %w", err)
+				return rollbackApplied(fmt.Errorf("failed to update row: %w", err), nil)
 			}
 		}
 
@@ -1753,14 +1775,14 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 						idxStorageKey = []byte(newIndexKey)
 						if newIndexKey != oldIndexKey {
 							if _, err := idxTree.Get(idxStorageKey); err == nil {
-								return fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
+								return rollbackApplied(fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName), &entry)
 							}
 						}
 					} else {
 						idxStorageKey = []byte(newIndexKey + "\x00" + string(newKey))
 					}
 					if err := idxTree.Put(idxStorageKey, newKey); err != nil {
-						return fmt.Errorf("failed to update index %s: %w", idxName, err)
+						return rollbackApplied(fmt.Errorf("failed to update index %s: %w", idxName, err), &entry)
 					}
 					if txnActive {
 						idxChanges = append(idxChanges, indexUndoEntry{
@@ -1775,14 +1797,14 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 
 		// Update vector indexes
 		if err := c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, string(entry.key)); err != nil {
-			return err
+			return rollbackApplied(err, &entry)
 		}
 
 		// Record undo log entry for rollback
 		if txnActive {
 			oldValueData, marshalErr := json.Marshal(entry.oldRow)
 			if marshalErr != nil {
-				return fmt.Errorf("failed to encode undo log for row: %w", marshalErr)
+				return rollbackApplied(fmt.Errorf("failed to encode undo log for row: %w", marshalErr), &entry)
 			}
 			keyCopy := make([]byte, len(oldKey))
 			copy(keyCopy, oldKey)
@@ -1794,6 +1816,7 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 				indexChanges: idxChanges,
 			})
 		}
+		appliedEntries = append(appliedEntries, entry)
 	}
 	return nil
 }
@@ -1807,7 +1830,7 @@ func (c *Catalog) rollbackAppliedUpdateEntries(table *TableDef, tableName string
 		}
 
 		if newKey, ok := buildCompositePK(table, entry.newRow); ok && newKey != string(entry.key) {
-			if err := updateTree.Delete([]byte(newKey)); err != nil {
+			if err := updateTree.Delete([]byte(newKey)); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
 				return fmt.Errorf("delete updated key %s: %w", newKey, err)
 			}
 		}
