@@ -806,7 +806,13 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	if canUnlock {
 		cat.mu.RUnlock()
 	}
-	rows, windowFullRows := cat.scanTableRows(table, stmt, args, selectCols, hasWindowFuncs, queryTime, trees, indexMatches, useIndex, mvRows, isMV, cat.parallelWorkers, cat.parallelThreshold)
+	rows, windowFullRows, scanErr := cat.scanTableRows(table, stmt, args, selectCols, hasWindowFuncs, queryTime, trees, indexMatches, useIndex, mvRows, isMV, cat.parallelWorkers, cat.parallelThreshold)
+	if scanErr != nil {
+		if canUnlock {
+			cat.mu.RLock()
+		}
+		return returnColumns, nil, scanErr
+	}
 	if canUnlock && !postProcessUnlocked {
 		cat.mu.RLock()
 	}
@@ -837,12 +843,12 @@ func (cat *Catalog) canApplySelectPostProcessUnlocked() bool {
 }
 
 // scanTableRows reads rows from the table using index lookup, materialized view data, or full scan.
-func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, hasWindowFuncs bool, queryTime time.Time, trees []btree.TreeStore, indexMatches []string, useIndex bool, mvRows [][]interface{}, isMV bool, parallelWorkers int, parallelThreshold int) ([][]interface{}, [][]interface{}) {
+func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, hasWindowFuncs bool, queryTime time.Time, trees []btree.TreeStore, indexMatches []string, useIndex bool, mvRows [][]interface{}, isMV bool, parallelWorkers int, parallelThreshold int) ([][]interface{}, [][]interface{}, error) {
 	var rows [][]interface{}
 	var windowFullRows [][]interface{}
 
 	if len(trees) == 0 && !isMV {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Compute early termination limit for LIMIT/OFFSET without ORDER BY/DISTINCT/window.
@@ -888,7 +894,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			}
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
-				continue
+				return nil, nil, fmt.Errorf("select: failed to decode row in table %s: %w", table.Name, err)
 			}
 			if !vrow.Version.isVisibleAt(queryTime) {
 				continue
@@ -944,70 +950,73 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 
 		if len(trees) == 1 && !hasPending {
 			iter, err := trees[0].Scan(nil, nil)
-			if err == nil {
-				if cap(rows) == 0 {
-					rows = make([][]interface{}, 0, trees[0].Size())
-				}
-				if hasWindowFuncs && cap(windowFullRows) == 0 {
-					windowFullRows = make([][]interface{}, 0, trees[0].Size())
-				}
-				numCols := len(table.Columns)
-				flatCap := int(trees[0].Size()) * numCols
-				flatBuf := make([]interface{}, 0, flatCap)
-				stringBuf := make([]string, flatCap)
-				rowIdx := 0
-				stringIdx := 0
+			if err != nil {
+				return nil, nil, fmt.Errorf("select: failed to scan table %s: %w", table.Name, err)
+			}
+			if cap(rows) == 0 {
+				rows = make([][]interface{}, 0, trees[0].Size())
+			}
+			if hasWindowFuncs && cap(windowFullRows) == 0 {
+				windowFullRows = make([][]interface{}, 0, trees[0].Size())
+			}
+			numCols := len(table.Columns)
+			flatCap := int(trees[0].Size()) * numCols
+			flatBuf := make([]interface{}, 0, flatCap)
+			stringBuf := make([]string, flatCap)
+			rowIdx := 0
+			stringIdx := 0
 
-				for iter.HasNext() {
-					_, valueData, err := iter.NextString()
+			for iter.HasNext() {
+				_, valueData, err := iter.NextString()
+				if err != nil {
+					iter.Close()
+					return nil, nil, fmt.Errorf("select: failed to read table %s: %w", table.Name, err)
+				}
+
+				start := rowIdx * numCols
+				end := start + numCols
+				if end > cap(flatBuf) {
+					grow := end - cap(flatBuf)
+					if grow < numCols*16 {
+						grow = numCols * 16
+					}
+					flatBuf = append(flatBuf, make([]interface{}, grow)...)
+				}
+				flatBuf = flatBuf[:end]
+				row := flatBuf[start:end]
+
+				vrow, sidx, ok := decodeVersionedRowFastEx(valueData, numCols, row, stringBuf, stringIdx)
+				stringIdx = sidx
+				if !ok {
+					vrow, err = decodeVersionedRow(valueData, numCols)
 					if err != nil {
-						break
+						iter.Close()
+						return nil, nil, fmt.Errorf("select: failed to decode row in table %s: %w", table.Name, err)
 					}
-
-					start := rowIdx * numCols
-					end := start + numCols
-					if end > cap(flatBuf) {
-						grow := end - cap(flatBuf)
-						if grow < numCols*16 {
-							grow = numCols * 16
-						}
-						flatBuf = append(flatBuf, make([]interface{}, grow)...)
-					}
-					flatBuf = flatBuf[:end]
-					row := flatBuf[start:end]
-
-					vrow, sidx, ok := decodeVersionedRowFastEx(valueData, numCols, row, stringBuf, stringIdx)
-					stringIdx = sidx
-					if !ok {
-						vrow, err = decodeVersionedRow(valueData, numCols)
-						if err != nil {
-							continue
-						}
-					}
-					if !vrow.Version.isVisibleAt(queryTime) {
+				}
+				if !vrow.Version.isVisibleAt(queryTime) {
+					continue
+				}
+				fullRow := vrow.Data
+				if stmt.Where != nil {
+					matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
+					if err != nil || !matched {
 						continue
 					}
-					fullRow := vrow.Data
-					if stmt.Where != nil {
-						matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-						if err != nil || !matched {
-							continue
-						}
-					}
-					selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
-					rows = append(rows, selectedRow)
-					if hasWindowFuncs {
-						fullRowCopy := make([]interface{}, len(fullRow))
-						copy(fullRowCopy, fullRow)
-						windowFullRows = append(windowFullRows, fullRowCopy)
-					}
-					if earlyLimit > 0 && len(rows) >= earlyLimit {
-						break
-					}
-					rowIdx++
 				}
-				iter.Close()
+				selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
+				rows = append(rows, selectedRow)
+				if hasWindowFuncs {
+					fullRowCopy := make([]interface{}, len(fullRow))
+					copy(fullRowCopy, fullRow)
+					windowFullRows = append(windowFullRows, fullRowCopy)
+				}
+				if earlyLimit > 0 && len(rows) >= earlyLimit {
+					break
+				}
+				rowIdx++
 			}
+			iter.Close()
 		} else {
 			type kvPair struct {
 				key   string
@@ -1023,12 +1032,13 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			for _, tree := range trees {
 				iter, err := tree.Scan(nil, nil)
 				if err != nil {
-					continue
+					return nil, nil, fmt.Errorf("select: failed to scan table %s: %w", table.Name, err)
 				}
 				for iter.HasNext() {
 					k, valueData, err := iter.NextString()
 					if err != nil {
-						break
+						iter.Close()
+						return nil, nil, fmt.Errorf("select: failed to read table %s: %w", table.Name, err)
 					}
 					pairs = append(pairs, kvPair{k, valueData})
 					seen[k] = len(pairs) - 1
@@ -1056,6 +1066,9 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			if canParallel {
 				values := make([][]byte, len(pairs))
 				for i, p := range pairs {
+					if _, err := decodeVersionedRow(p.value, len(table.Columns)); err != nil {
+						return nil, nil, fmt.Errorf("select: failed to decode row in table %s: %w", table.Name, err)
+					}
 					values[i] = p.value
 				}
 				results := parallel.ParallelSelectRows(values, parallelWorkers, parallelThreshold,
@@ -1074,7 +1087,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 				for _, p := range pairs {
 					vrow, err := decodeVersionedRow(p.value, len(table.Columns))
 					if err != nil {
-						continue
+						return nil, nil, fmt.Errorf("select: failed to decode row in table %s: %w", table.Name, err)
 					}
 					if !vrow.Version.isVisibleAt(queryTime) {
 						continue
@@ -1101,7 +1114,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 		}
 	}
 
-	return rows, windowFullRows
+	return rows, windowFullRows, nil
 }
 
 // getEffectiveTableData returns all live rows for a table as a map of key to
