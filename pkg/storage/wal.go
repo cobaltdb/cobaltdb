@@ -501,6 +501,11 @@ func validateRecordSize(record *WALRecord) error {
 	if record == nil {
 		return ErrInvalidWALRecord
 	}
+	switch record.Type {
+	case WALInsert, WALUpdate, WALDelete, WALCommit, WALRollback, WALCheckpoint, WALUpdateCommit:
+	default:
+		return fmt.Errorf("%w: unknown WAL record type 0x%02x", ErrInvalidWALRecord, uint8(record.Type))
+	}
 	if len(record.Data) > walMaxRecordDataSize {
 		return fmt.Errorf("WAL record data size (%d bytes) exceeds maximum (%d bytes)",
 			len(record.Data), walMaxRecordDataSize)
