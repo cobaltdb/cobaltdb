@@ -95,7 +95,10 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 		for _, k := range effectiveKeys {
 			allValues = append(allValues, effectiveData[k])
 		}
-		groups, groupOrder = c.buildGroupByGroups(table, stmt, args, groupBySpecs, allValues)
+		groups, groupOrder, err = c.buildGroupByGroups(table, stmt, args, groupBySpecs, allValues)
+		if err != nil {
+			return returnColumns, nil, err
+		}
 	} else if c.cteResults != nil {
 		if cteRes, ok := c.cteResults[toLowerFast(stmt.From.Name)]; ok {
 			groups, groupOrder = c.buildGroupByGroupsFromRows(table, stmt, args, groupBySpecs, cteRes.rows)
@@ -250,7 +253,7 @@ func (c *Catalog) applyGroupByPostProcessing(resultRows [][]interface{}, stmt *q
 }
 
 // buildGroupByGroups scans raw values and groups rows by GROUP BY columns.
-func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, args []interface{}, specs []groupBySpec, allValues [][]byte) (map[string][][]interface{}, []string) {
+func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, args []interface{}, specs []groupBySpec, allValues [][]byte) (map[string][][]interface{}, []string, error) {
 	groups := make(map[string][][]interface{})
 	var groupOrder []string
 
@@ -259,6 +262,11 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 		!hasSubqueries(stmt)
 
 	if canParallel {
+		for _, valueData := range allValues {
+			if _, err := decodeVersionedRow(valueData, len(table.Columns)); err != nil {
+				return nil, nil, fmt.Errorf("group by: failed to decode row in table %s: %w", table.Name, err)
+			}
+		}
 		groups = parallel.ParallelGroupBy(allValues, c.parallelWorkers, c.parallelThreshold,
 			func(chunk [][]byte) map[string][][]interface{} {
 				localGroups := make(map[string][][]interface{})
@@ -307,7 +315,7 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 		for _, valueData := range allValues {
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
-				continue
+				return nil, nil, fmt.Errorf("group by: failed to decode row in table %s: %w", table.Name, err)
 			}
 			if vrow.Version.DeletedAt > 0 {
 				continue
@@ -346,7 +354,7 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 		}
 	}
 
-	return groups, groupOrder
+	return groups, groupOrder, nil
 }
 
 func (c *Catalog) buildGroupByGroupsFromRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, specs []groupBySpec, rows [][]interface{}) (map[string][][]interface{}, []string) {

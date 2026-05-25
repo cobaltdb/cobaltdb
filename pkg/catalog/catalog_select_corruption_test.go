@@ -80,3 +80,24 @@ func TestJoinSelectReturnsCorruptRightRowError(t *testing.T) {
 		t.Fatalf("expected corrupt right row join error, got %v", err)
 	}
 }
+
+func TestGroupBySelectReturnsCorruptRowError(t *testing.T) {
+	c, pool := newMetadataIsolationCatalog(t)
+	defer pool.Close()
+
+	if _, err := c.ExecuteQuery("CREATE TABLE group_corrupt_row (id INTEGER PRIMARY KEY, region TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := c.ExecuteQuery("INSERT INTO group_corrupt_row (id, region) VALUES (1, 'north')"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	pkKey := fmt.Sprintf("%020d", 1)
+	if err := c.tableTrees["group_corrupt_row"].Put([]byte(pkKey), []byte("not json")); err != nil {
+		t.Fatalf("put corrupt row: %v", err)
+	}
+
+	_, err := c.ExecuteQuery("SELECT region, COUNT(*) FROM group_corrupt_row GROUP BY region")
+	if err == nil || !strings.Contains(err.Error(), "failed to decode row") || !strings.Contains(err.Error(), "group_corrupt_row") {
+		t.Fatalf("expected corrupt group by row error, got %v", err)
+	}
+}
