@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -27,6 +28,57 @@ func TestLoadReturnsCorruptTableMetadataError(t *testing.T) {
 	}
 	if _, exists := c.tables["corrupt_users"]; exists {
 		t.Fatal("corrupt table should not be loaded after Load failure")
+	}
+}
+
+func TestLoadReturnsCorruptTableExpressionError(t *testing.T) {
+	tests := []struct {
+		name   string
+		column ColumnDef
+		want   string
+	}{
+		{
+			name:   "default",
+			column: ColumnDef{Name: "status", Type: "TEXT", Default: "@"},
+			want:   "default expression",
+		},
+		{
+			name:   "check",
+			column: ColumnDef{Name: "age", Type: "INTEGER", CheckStr: "age >"},
+			want:   "check expression",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := storage.NewBufferPool(1024, storage.NewMemory())
+			defer pool.Close()
+
+			catalogTree, err := btree.NewBTree(pool)
+			if err != nil {
+				t.Fatalf("NewBTree: %v", err)
+			}
+			tableDef := TableDef{
+				Name:    "users",
+				Columns: []ColumnDef{{Name: "id", Type: "INTEGER"}, tt.column},
+			}
+			data, err := json.Marshal(tableDef)
+			if err != nil {
+				t.Fatalf("Marshal table metadata: %v", err)
+			}
+			if err := catalogTree.Put([]byte("tbl:users"), data); err != nil {
+				t.Fatalf("Put table metadata: %v", err)
+			}
+
+			c := New(catalogTree, pool, nil)
+			err = c.Load()
+			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "users") {
+				t.Fatalf("expected corrupt table expression error containing %q and users, got %v", tt.want, err)
+			}
+			if _, exists := c.tables["users"]; exists {
+				t.Fatal("table with corrupt expression should not be loaded after Load failure")
+			}
+		})
 	}
 }
 

@@ -268,14 +268,28 @@ func (c *Catalog) Load() error {
 		// Restore DEFAULT and CHECK expressions from persisted strings
 		for i := range tableDef.Columns {
 			if tableDef.Columns[i].Default != "" && tableDef.Columns[i].defaultExpr == nil {
-				if parsed, err := query.ParseExpression(tableDef.Columns[i].Default); err == nil {
-					tableDef.Columns[i].defaultExpr = parsed
+				parsed, err := query.ParseExpression(tableDef.Columns[i].Default)
+				if err != nil {
+					return fmt.Errorf(
+						"load catalog: failed to parse default expression for table %s column %s: %w",
+						tableName,
+						tableDef.Columns[i].Name,
+						err,
+					)
 				}
+				tableDef.Columns[i].defaultExpr = parsed
 			}
 			if tableDef.Columns[i].CheckStr != "" && tableDef.Columns[i].Check == nil {
-				if parsed, err := query.ParseExpression(tableDef.Columns[i].CheckStr); err == nil {
-					tableDef.Columns[i].Check = parsed
+				parsed, err := query.ParseExpression(tableDef.Columns[i].CheckStr)
+				if err != nil {
+					return fmt.Errorf(
+						"load catalog: failed to parse check expression for table %s column %s: %w",
+						tableName,
+						tableDef.Columns[i].Name,
+						err,
+					)
 				}
+				tableDef.Columns[i].Check = parsed
 			}
 		}
 
