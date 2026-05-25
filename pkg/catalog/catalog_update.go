@@ -970,7 +970,7 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 
 		row, err := decodeRow(valueData, len(targetTable.Columns))
 		if err != nil {
-			continue
+			return 0, rowsAffected, fmt.Errorf("update join: failed to decode row in table %s: %w", targetTable.Name, err)
 		}
 
 		// Make a copy of the row to update
@@ -1217,7 +1217,7 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 
 		vrow, err := decodeVersionedRow(valueData, len(targetTable.Columns))
 		if err != nil {
-			continue
+			return 0, rowsAffected, fmt.Errorf("delete using: failed to decode row in table %s: %w", targetTable.Name, err)
 		}
 		// Skip already deleted rows
 		if vrow.Version.DeletedAt > 0 {
@@ -1334,7 +1334,7 @@ func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree 
 
 		vrow, err := decodeVersionedRow(currentData, len(table.Columns))
 		if err != nil {
-			continue
+			return fmt.Errorf("delete using: failed to decode row in table %s: %w", table.Name, err)
 		}
 
 		// Remove from indexes first
