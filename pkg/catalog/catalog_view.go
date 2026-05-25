@@ -4,10 +4,15 @@ import (
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"sort"
+	"strings"
 	"time"
 )
 
 func (c *Catalog) CreateMaterializedView(name string, selectStmt *query.SelectStmt, ifNotExists bool) error {
+	return c.CreateMaterializedViewSQL(name, selectStmt, ifNotExists, "")
+}
+
+func (c *Catalog) CreateMaterializedViewSQL(name string, selectStmt *query.SelectStmt, ifNotExists bool, sql string) error {
 	c.mu.Lock()
 	if _, exists := c.materializedViews[name]; exists {
 		c.mu.Unlock()
@@ -39,11 +44,31 @@ func (c *Catalog) CreateMaterializedView(name string, selectStmt *query.SelectSt
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	defer c.invalidateSchemaCache()
+	if _, exists := c.materializedViews[name]; exists {
+		if ifNotExists {
+			return nil
+		}
+		return fmt.Errorf("materialized view %s already exists", name)
+	}
+	if c.materializedViewSQL == nil {
+		c.materializedViewSQL = make(map[string]string)
+	}
+	if strings.TrimSpace(sql) == "" {
+		sql = createMaterializedViewSQL(name, selectStmt)
+	}
 	c.materializedViews[name] = &MaterializedViewDef{
 		Name:        name,
 		Query:       selectStmt,
 		Data:        data,
 		LastRefresh: time.Now(),
+	}
+	c.materializedViewSQL[name] = strings.TrimSpace(sql)
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:               undoCreateMaterializedView,
+			materializedViewName: name,
+			materializedViewSQL:  c.materializedViewSQL[name],
+		})
 	}
 
 	return nil
@@ -53,14 +78,27 @@ func (c *Catalog) DropMaterializedView(name string, ifExists bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	defer c.invalidateSchemaCache()
-	if _, exists := c.materializedViews[name]; !exists {
+	mv, exists := c.materializedViews[name]
+	if !exists {
 		if ifExists {
 			return nil // Silently succeed
 		}
 		return fmt.Errorf("materialized view %s not found", name)
 	}
 
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:               undoDropMaterializedView,
+			materializedViewName: name,
+			materializedViewDef:  cloneMaterializedViewDef(mv),
+			materializedViewSQL:  c.materializedViewSQL[name],
+		})
+	}
 	delete(c.materializedViews, name)
+	delete(c.materializedViewSQL, name)
+	if c.tree != nil {
+		_ = c.tree.Delete([]byte("mv:" + name))
+	}
 	// Clear cached query result so subsequent SELECTs fail as expected.
 	if c.cteResults != nil {
 		delete(c.cteResults, toLowerFast(name))

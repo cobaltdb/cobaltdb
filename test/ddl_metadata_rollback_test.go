@@ -87,3 +87,30 @@ func TestDropProcedureRollsBack(t *testing.T) {
 	}
 	expectSingleValue(t, db, "SELECT COUNT(*) FROM ddl_drop_proc_rb_log", int64(1))
 }
+
+func TestCreateMaterializedViewRollsBack(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	execSQL(t, db, "CREATE TABLE ddl_mv_rb_base (id INTEGER PRIMARY KEY)")
+	execSQL(t, db, "BEGIN")
+	execSQL(t, db, "CREATE MATERIALIZED VIEW ddl_mv_rb AS SELECT * FROM ddl_mv_rb_base")
+	execSQL(t, db, "ROLLBACK")
+
+	if _, err := db.Query(ctx, "SELECT * FROM ddl_mv_rb"); err == nil {
+		t.Fatal("materialized view created inside rolled-back transaction should not exist")
+	}
+}
+
+func TestDropMaterializedViewRollsBack(t *testing.T) {
+	db := newTestDB(t)
+
+	execSQL(t, db, "CREATE TABLE ddl_drop_mv_rb_base (id INTEGER PRIMARY KEY)")
+	execSQL(t, db, "INSERT INTO ddl_drop_mv_rb_base VALUES (1)")
+	execSQL(t, db, "CREATE MATERIALIZED VIEW ddl_drop_mv_rb AS SELECT * FROM ddl_drop_mv_rb_base")
+	execSQL(t, db, "BEGIN")
+	execSQL(t, db, "DROP MATERIALIZED VIEW ddl_drop_mv_rb")
+	execSQL(t, db, "ROLLBACK")
+
+	expectSingleValue(t, db, "SELECT COUNT(*) FROM ddl_drop_mv_rb", int64(1))
+}

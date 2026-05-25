@@ -36,11 +36,6 @@ type groupBySpec struct {
 
 func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, returnColumns []string) ([]string, [][]interface{}, error) {
 	// Check if table exists
-	if _, exists := c.tableTrees[stmt.From.Name]; !exists {
-		// Return empty result for GROUP BY on non-existent table
-		return returnColumns, [][]interface{}{}, nil
-	}
-
 	// Parse GROUP BY column indices (for simple column refs) and expressions
 	groupBySpecs := make([]groupBySpec, len(stmt.GroupBy))
 	for i, gb := range stmt.GroupBy {
@@ -82,20 +77,31 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 		}
 	}
 
-	// Materialize all raw values first, merging committed data with pending
-	// buffered writes for read-your-writes visibility.
-	var allValues [][]byte
-	effectiveData := c.getEffectiveTableData(table)
-	effectiveKeys := make([]string, 0, len(effectiveData))
-	for k := range effectiveData {
-		effectiveKeys = append(effectiveKeys, k)
+	var groups map[string][][]interface{}
+	var groupOrder []string
+	if _, exists := c.tableTrees[stmt.From.Name]; exists {
+		// Materialize all raw values first, merging committed data with pending
+		// buffered writes for read-your-writes visibility.
+		var allValues [][]byte
+		effectiveData := c.getEffectiveTableData(table)
+		effectiveKeys := make([]string, 0, len(effectiveData))
+		for k := range effectiveData {
+			effectiveKeys = append(effectiveKeys, k)
+		}
+		sort.Strings(effectiveKeys)
+		for _, k := range effectiveKeys {
+			allValues = append(allValues, effectiveData[k])
+		}
+		groups, groupOrder = c.buildGroupByGroups(table, stmt, args, groupBySpecs, allValues)
+	} else if c.cteResults != nil {
+		if cteRes, ok := c.cteResults[toLowerFast(stmt.From.Name)]; ok {
+			groups, groupOrder = c.buildGroupByGroupsFromRows(table, stmt, args, groupBySpecs, cteRes.rows)
+		}
 	}
-	sort.Strings(effectiveKeys)
-	for _, k := range effectiveKeys {
-		allValues = append(allValues, effectiveData[k])
+	if groups == nil {
+		// Return empty result for GROUP BY on non-existent table
+		return returnColumns, [][]interface{}{}, nil
 	}
-
-	groups, groupOrder := c.buildGroupByGroups(table, stmt, args, groupBySpecs, allValues)
 
 	// Compute empty-group result (e.g., COUNT(*) = 0 on empty table)
 	resultRows := c.computeEmptyGroupResult(groups, stmt, selectCols, table, args)
@@ -337,6 +343,40 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 		}
 	}
 
+	return groups, groupOrder
+}
+
+func (c *Catalog) buildGroupByGroupsFromRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, specs []groupBySpec, rows [][]interface{}) (map[string][][]interface{}, []string) {
+	groups := make(map[string][][]interface{})
+	var groupOrder []string
+	for _, fullRow := range rows {
+		if stmt.Where != nil {
+			matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
+			if err != nil || !matched {
+				continue
+			}
+		}
+
+		var groupKey strings.Builder
+		for i, spec := range specs {
+			if i > 0 {
+				groupKey.WriteString("\x00")
+			}
+			if spec.index >= 0 && spec.index < len(fullRow) {
+				groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
+			} else if spec.expr != nil {
+				val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
+				if err == nil {
+					groupKey.WriteString(typeTaggedKey(val))
+				}
+			}
+		}
+		key := groupKey.String()
+		if _, exists := groups[key]; !exists {
+			groupOrder = append(groupOrder, key)
+		}
+		groups[key] = append(groups[key], fullRow)
+	}
 	return groups, groupOrder
 }
 

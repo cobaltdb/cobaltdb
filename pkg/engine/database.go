@@ -395,6 +395,8 @@ func annotateDDLRawSQL(stmt query.Statement, sql string) {
 	switch s := stmt.(type) {
 	case *query.CreateViewStmt:
 		s.RawSQL = normalized
+	case *query.CreateMaterializedViewStmt:
+		s.RawSQL = normalized
 	case *query.CreateTriggerStmt:
 		s.RawSQL = normalized
 	case *query.CreateProcedureStmt:
@@ -2259,7 +2261,7 @@ func (db *DB) executeAnalyze(ctx context.Context, stmt *query.AnalyzeStmt) (Resu
 // executeCreateMaterializedView executes CREATE MATERIALIZED VIEW
 
 func (db *DB) executeCreateMaterializedView(ctx context.Context, stmt *query.CreateMaterializedViewStmt) (Result, error) {
-	if err := db.catalog.CreateMaterializedView(stmt.Name, stmt.Query, stmt.IfNotExists); err != nil {
+	if err := db.catalog.CreateMaterializedViewSQL(stmt.Name, stmt.Query, stmt.IfNotExists, stmt.RawSQL); err != nil {
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil

@@ -25,6 +25,10 @@ func createViewSQL(name string, stmt *query.SelectStmt) string {
 	return "CREATE VIEW " + name + " AS " + selectStmtToSQL(stmt)
 }
 
+func createMaterializedViewSQL(name string, stmt *query.SelectStmt) string {
+	return "CREATE MATERIALIZED VIEW " + name + " AS " + selectStmtToSQL(stmt)
+}
+
 func createTriggerSQL(stmt *query.CreateTriggerStmt) string {
 	if stmt == nil {
 		return ""

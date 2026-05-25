@@ -66,6 +66,16 @@ func (c *Catalog) Save() error {
 		}
 	}
 
+	for materializedViewName, materializedView := range c.materializedViews {
+		sql := c.materializedViewSQL[materializedViewName]
+		if strings.TrimSpace(sql) == "" {
+			sql = createMaterializedViewSQL(materializedViewName, materializedView.Query)
+		}
+		if err := c.storeMaterializedViewDef(materializedViewName, sql, materializedView); err != nil {
+			return fmt.Errorf("failed to save materialized view definition %s: %w", materializedViewName, err)
+		}
+	}
+
 	// Save vector index definitions
 	for _, vid := range c.vectorIndexes {
 		if err := c.storeVectorIndexDef(vid); err != nil {
@@ -104,6 +114,13 @@ type persistedSQLDef struct {
 	SQL  string `json:"sql"`
 }
 
+type persistedMaterializedViewDef struct {
+	Name        string                   `json:"name"`
+	SQL         string                   `json:"sql"`
+	Data        []map[string]interface{} `json:"data"`
+	LastRefresh int64                    `json:"last_refresh"`
+}
+
 func (c *Catalog) storeViewDef(name string, sql string) error {
 	return c.storeSQLDef("view:"+name, name, sql)
 }
@@ -114,6 +131,25 @@ func (c *Catalog) storeTriggerDef(name string, sql string) error {
 
 func (c *Catalog) storeProcedureDef(name string, sql string) error {
 	return c.storeSQLDef("proc:"+name, name, sql)
+}
+
+func (c *Catalog) storeMaterializedViewDef(name string, sql string, mv *MaterializedViewDef) error {
+	def := persistedMaterializedViewDef{
+		Name: name,
+		SQL:  strings.TrimSpace(sql),
+	}
+	if mv != nil {
+		def.Data = mv.Data
+		def.LastRefresh = mv.LastRefresh.UnixNano()
+	}
+	data, err := json.Marshal(def)
+	if err != nil {
+		return err
+	}
+	if c.tree != nil {
+		return c.tree.Put([]byte("mv:"+name), data)
+	}
+	return nil
 }
 
 func (c *Catalog) storeSQLDef(key string, name string, sql string) error {
@@ -165,6 +201,9 @@ func (c *Catalog) Load() error {
 	}
 	if c.procedures == nil {
 		c.procedures = make(map[string]*query.CreateProcedureStmt)
+	}
+	if c.materializedViews == nil {
+		c.materializedViews = make(map[string]*MaterializedViewDef)
 	}
 
 	// Load table definitions from catalog tree
@@ -387,6 +426,57 @@ func (c *Catalog) Load() error {
 			c.procedureSQL[name] = procedureStmt.RawSQL
 		}
 		procedureIter.Close()
+	}
+
+	materializedViewIter, err := c.tree.Scan([]byte("mv:"), []byte("mv;"))
+	if err == nil {
+		if c.materializedViewSQL == nil {
+			c.materializedViewSQL = make(map[string]string)
+		}
+		for materializedViewIter.HasNext() {
+			keyStr, value, err := materializedViewIter.NextString()
+			if err != nil {
+				break
+			}
+			if !strings.HasPrefix(keyStr, "mv:") {
+				continue
+			}
+			var def persistedMaterializedViewDef
+			if err := json.Unmarshal(value, &def); err != nil {
+				continue
+			}
+			if def.Name == "" {
+				def.Name = strings.TrimPrefix(keyStr, "mv:")
+			}
+			def.SQL = strings.TrimSpace(def.SQL)
+			if def.SQL == "" {
+				continue
+			}
+			parsed, err := query.Parse(def.SQL)
+			if err != nil {
+				continue
+			}
+			materializedViewStmt, ok := parsed.(*query.CreateMaterializedViewStmt)
+			if !ok || materializedViewStmt.Query == nil {
+				continue
+			}
+			name := materializedViewStmt.Name
+			if name == "" {
+				name = def.Name
+			}
+			lastRefresh := time.Time{}
+			if def.LastRefresh != 0 {
+				lastRefresh = time.Unix(0, def.LastRefresh)
+			}
+			c.materializedViews[name] = &MaterializedViewDef{
+				Name:        name,
+				Query:       materializedViewStmt.Query,
+				Data:        def.Data,
+				LastRefresh: lastRefresh,
+			}
+			c.materializedViewSQL[name] = def.SQL
+		}
+		materializedViewIter.Close()
 	}
 
 	// Load vector index definitions from catalog tree

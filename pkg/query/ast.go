@@ -698,6 +698,7 @@ type CreateMaterializedViewStmt struct {
 	IfNotExists bool
 	Name        string
 	Query       *SelectStmt
+	RawSQL      string
 }
 
 func (s *CreateMaterializedViewStmt) nodeType() string { return "CreateMaterializedViewStmt" }

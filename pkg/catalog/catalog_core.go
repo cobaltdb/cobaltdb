@@ -180,24 +180,26 @@ type JSONIndexDef struct {
 type undoAction int
 
 const (
-	undoInsert            undoAction = iota // Undo an INSERT by deleting the key
-	undoUpdate                              // Undo an UPDATE by restoring the old value
-	undoDelete                              // Undo a DELETE by restoring the key/value
-	undoCreateTable                         // Undo a CREATE TABLE by dropping the table
-	undoDropTable                           // Undo a DROP TABLE by restoring the table
-	undoCreateIndex                         // Undo a CREATE INDEX by dropping the index
-	undoDropIndex                           // Undo a DROP INDEX by restoring the index
-	undoAlterAddColumn                      // Undo ALTER TABLE ADD COLUMN
-	undoAlterDropColumn                     // Undo ALTER TABLE DROP COLUMN
-	undoAlterRename                         // Undo ALTER TABLE RENAME
-	undoAlterRenameColumn                   // Undo ALTER TABLE RENAME COLUMN
-	undoAutoIncSeq                          // Undo AutoIncSeq change
-	undoCreateView                          // Undo CREATE VIEW by dropping the view
-	undoDropView                            // Undo DROP VIEW by restoring the view
-	undoCreateTrigger                       // Undo CREATE TRIGGER by dropping the trigger
-	undoDropTrigger                         // Undo DROP TRIGGER by restoring the trigger
-	undoCreateProcedure                     // Undo CREATE PROCEDURE by dropping the procedure
-	undoDropProcedure                       // Undo DROP PROCEDURE by restoring the procedure
+	undoInsert                 undoAction = iota // Undo an INSERT by deleting the key
+	undoUpdate                                   // Undo an UPDATE by restoring the old value
+	undoDelete                                   // Undo a DELETE by restoring the key/value
+	undoCreateTable                              // Undo a CREATE TABLE by dropping the table
+	undoDropTable                                // Undo a DROP TABLE by restoring the table
+	undoCreateIndex                              // Undo a CREATE INDEX by dropping the index
+	undoDropIndex                                // Undo a DROP INDEX by restoring the index
+	undoAlterAddColumn                           // Undo ALTER TABLE ADD COLUMN
+	undoAlterDropColumn                          // Undo ALTER TABLE DROP COLUMN
+	undoAlterRename                              // Undo ALTER TABLE RENAME
+	undoAlterRenameColumn                        // Undo ALTER TABLE RENAME COLUMN
+	undoAutoIncSeq                               // Undo AutoIncSeq change
+	undoCreateView                               // Undo CREATE VIEW by dropping the view
+	undoDropView                                 // Undo DROP VIEW by restoring the view
+	undoCreateTrigger                            // Undo CREATE TRIGGER by dropping the trigger
+	undoDropTrigger                              // Undo DROP TRIGGER by restoring the trigger
+	undoCreateProcedure                          // Undo CREATE PROCEDURE by dropping the procedure
+	undoDropProcedure                            // Undo DROP PROCEDURE by restoring the procedure
+	undoCreateMaterializedView                   // Undo CREATE MATERIALIZED VIEW by dropping the view
+	undoDropMaterializedView                     // Undo DROP MATERIALIZED VIEW by restoring the view
 )
 
 // indexUndoEntry records an index modification for rollback
@@ -241,6 +243,9 @@ type undoEntry struct {
 	procedureName        string                      // For procedure undo actions
 	procedureStmt        *query.CreateProcedureStmt  // For undoDropProcedure: original procedure
 	procedureSQL         string                      // For procedure undo actions
+	materializedViewName string                      // For materialized view undo actions
+	materializedViewDef  *MaterializedViewDef        // For undoDropMaterializedView: original view
+	materializedViewSQL  string                      // For materialized view undo actions
 }
 
 // catalogTxnState holds per-transaction state for multi-transaction support.
@@ -306,6 +311,7 @@ type Catalog struct {
 	procedures           map[string]*query.CreateProcedureStmt // Procedures store their definition
 	procedureSQL         map[string]string                     // Original CREATE PROCEDURE SQL for persistence
 	materializedViews    map[string]*MaterializedViewDef       // Materialized views
+	materializedViewSQL  map[string]string                     // Original CREATE MATERIALIZED VIEW SQL for persistence
 	ftsIndexes           map[string]*FTSIndexDef               // Full-text search indexes
 	jsonIndexes          map[string]*JSONIndexDef              // JSON indexes for fast JSON queries
 	vectorIndexes        map[string]*VectorIndexDef            // Vector (HNSW) indexes for similarity search
@@ -392,31 +398,32 @@ type cteResultSet struct {
 // New creates a new Catalog backed by the given tree store, buffer pool, and WAL.
 func New(tree btree.TreeStore, pool *storage.BufferPool, wal *storage.WAL) *Catalog {
 	c := &Catalog{
-		tree:              tree,
-		tables:            make(map[string]*TableDef),
-		foreignTables:     make(map[string]*ForeignTableDef),
-		indexes:           make(map[string]*IndexDef),
-		indexTrees:        make(map[string]btree.TreeStore),
-		pool:              pool,
-		wal:               wal,
-		tableTrees:        make(map[string]btree.TreeStore),
-		fdwRegistry:       fdw.NewRegistry(),
-		views:             make(map[string]*query.SelectStmt),
-		viewSQL:           make(map[string]string),
-		triggers:          make(map[string]*query.CreateTriggerStmt),
-		triggerSQL:        make(map[string]string),
-		procedures:        make(map[string]*query.CreateProcedureStmt),
-		procedureSQL:      make(map[string]string),
-		materializedViews: make(map[string]*MaterializedViewDef),
-		ftsIndexes:        make(map[string]*FTSIndexDef),
-		jsonIndexes:       make(map[string]*JSONIndexDef),
-		vectorIndexes:     make(map[string]*VectorIndexDef),
-		stats:             make(map[string]*StatsTableStats),
-		rlsPolicies:       make(map[string]*security.Policy),
-		keyCounter:        0,
-		queryCache:        NewQueryCache(0, 0), // Disabled by default - enable with EnableQueryCache()
-		deadTuples:        make(map[string]int64),
-		liveTuples:        make(map[string]int64),
+		tree:                tree,
+		tables:              make(map[string]*TableDef),
+		foreignTables:       make(map[string]*ForeignTableDef),
+		indexes:             make(map[string]*IndexDef),
+		indexTrees:          make(map[string]btree.TreeStore),
+		pool:                pool,
+		wal:                 wal,
+		tableTrees:          make(map[string]btree.TreeStore),
+		fdwRegistry:         fdw.NewRegistry(),
+		views:               make(map[string]*query.SelectStmt),
+		viewSQL:             make(map[string]string),
+		triggers:            make(map[string]*query.CreateTriggerStmt),
+		triggerSQL:          make(map[string]string),
+		procedures:          make(map[string]*query.CreateProcedureStmt),
+		procedureSQL:        make(map[string]string),
+		materializedViews:   make(map[string]*MaterializedViewDef),
+		materializedViewSQL: make(map[string]string),
+		ftsIndexes:          make(map[string]*FTSIndexDef),
+		jsonIndexes:         make(map[string]*JSONIndexDef),
+		vectorIndexes:       make(map[string]*VectorIndexDef),
+		stats:               make(map[string]*StatsTableStats),
+		rlsPolicies:         make(map[string]*security.Policy),
+		keyCounter:          0,
+		queryCache:          NewQueryCache(0, 0), // Disabled by default - enable with EnableQueryCache()
+		deadTuples:          make(map[string]int64),
+		liveTuples:          make(map[string]int64),
 	}
 	for i := range c.goroutineTxnShards {
 		c.goroutineTxnShards[i].m = make(map[uint64]*catalogTxnState)

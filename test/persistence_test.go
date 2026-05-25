@@ -210,6 +210,40 @@ func TestPersistenceProcedureCallableAfterReopen(t *testing.T) {
 	expectSingleValue(t, db2, "SELECT COUNT(*) FROM proc_reopen_log", int64(1))
 }
 
+func TestPersistenceMaterializedViewQueryableAfterReopen(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "materialized_view_reopen.db")
+	ctx := context.Background()
+
+	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "CREATE TABLE mv_reopen_base (id INTEGER PRIMARY KEY, name TEXT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "INSERT INTO mv_reopen_base VALUES (1, 'alpha'), (2, 'beta')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "CREATE MATERIALIZED VIEW mv_reopen_snapshot AS SELECT * FROM mv_reopen_base")
+	if err != nil {
+		t.Fatalf("CREATE MATERIALIZED VIEW failed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	if err != nil {
+		t.Fatalf("Reopen failed: %v", err)
+	}
+	defer db2.Close()
+
+	expectSingleValue(t, db2, "SELECT COUNT(*) FROM mv_reopen_snapshot", int64(2))
+}
+
 func TestPersistenceMultipleTables(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "multi.db")

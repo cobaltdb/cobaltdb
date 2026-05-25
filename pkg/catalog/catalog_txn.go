@@ -704,6 +704,10 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 		return c.undoCreateProcedureEntry(entry, errorPrefix)
 	case undoDropProcedure:
 		return c.undoDropProcedureEntry(entry, errorPrefix)
+	case undoCreateMaterializedView:
+		return c.undoCreateMaterializedViewEntry(entry, errorPrefix)
+	case undoDropMaterializedView:
+		return c.undoDropMaterializedViewEntry(entry, errorPrefix)
 	}
 	return nil
 }
@@ -960,6 +964,47 @@ func (c *Catalog) undoDropProcedureEntry(entry undoEntry, errorPrefix string) er
 	return nil
 }
 
+func (c *Catalog) undoCreateMaterializedViewEntry(entry undoEntry, errorPrefix string) error {
+	delete(c.materializedViews, entry.materializedViewName)
+	delete(c.materializedViewSQL, entry.materializedViewName)
+	if c.cteResults != nil {
+		delete(c.cteResults, toLowerFast(entry.materializedViewName))
+	}
+	if c.tree != nil {
+		if err := c.tree.Delete([]byte("mv:" + entry.materializedViewName)); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
+			return fmt.Errorf("%s removing materialized view %s: %w", errorPrefix, entry.materializedViewName, err)
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) undoDropMaterializedViewEntry(entry undoEntry, errorPrefix string) error {
+	if c.materializedViews == nil {
+		c.materializedViews = make(map[string]*MaterializedViewDef)
+	}
+	if c.materializedViewSQL == nil {
+		c.materializedViewSQL = make(map[string]string)
+	}
+	c.materializedViews[entry.materializedViewName] = cloneMaterializedViewDef(entry.materializedViewDef)
+	c.materializedViewSQL[entry.materializedViewName] = entry.materializedViewSQL
+	if strings.TrimSpace(c.materializedViewSQL[entry.materializedViewName]) == "" && entry.materializedViewDef != nil {
+		c.materializedViewSQL[entry.materializedViewName] = createMaterializedViewSQL(entry.materializedViewName, entry.materializedViewDef.Query)
+	}
+	if c.cteResults != nil {
+		delete(c.cteResults, toLowerFast(entry.materializedViewName))
+	}
+	if c.tree != nil {
+		if err := c.storeMaterializedViewDef(
+			entry.materializedViewName,
+			c.materializedViewSQL[entry.materializedViewName],
+			c.materializedViews[entry.materializedViewName],
+		); err != nil {
+			return fmt.Errorf("%s restoring materialized view %s: %w", errorPrefix, entry.materializedViewName, err)
+		}
+	}
+	return nil
+}
+
 func (c *Catalog) reverseIndexChanges(entry undoEntry, errorPrefix string, rollbackErr error) error {
 	for j := len(entry.indexChanges) - 1; j >= 0; j-- {
 		idxChange := entry.indexChanges[j]
@@ -986,7 +1031,8 @@ func isDDLUndo(a undoAction) bool {
 	case undoCreateTable, undoDropTable, undoCreateIndex, undoDropIndex,
 		undoAlterAddColumn, undoAlterDropColumn, undoAlterRename, undoAlterRenameColumn,
 		undoCreateView, undoDropView, undoCreateTrigger, undoDropTrigger,
-		undoCreateProcedure, undoDropProcedure:
+		undoCreateProcedure, undoDropProcedure,
+		undoCreateMaterializedView, undoDropMaterializedView:
 		return true
 	default:
 		return false
