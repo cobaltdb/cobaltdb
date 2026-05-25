@@ -86,6 +86,22 @@ func TestMaterializedView_JoinWithTable(t *testing.T) {
 	})
 }
 
+func TestMaterializedView_EmptyJoinDoesNotPanic(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	if err != nil {
+		t.Fatalf("DB open: %v", err)
+	}
+	defer db.Close()
+	ctx := t.Context()
+
+	afExec(t, db, ctx, "CREATE TABLE mv_empty_base (id INTEGER PRIMARY KEY)")
+	afExec(t, db, ctx, "CREATE TABLE mv_empty_left (id INTEGER PRIMARY KEY)")
+	afExec(t, db, ctx, "INSERT INTO mv_empty_left VALUES (1)")
+	afExec(t, db, ctx, "CREATE MATERIALIZED VIEW mv_empty_snapshot AS SELECT * FROM mv_empty_base")
+
+	expectSingleValue(t, db, "SELECT COUNT(*) FROM mv_empty_left l JOIN mv_empty_snapshot m ON l.id = m.id", int64(0))
+}
+
 func TestMaterializedView_IF_NOT_EXISTS(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
 	if err != nil {

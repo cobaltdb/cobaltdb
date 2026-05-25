@@ -795,6 +795,11 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 
 	// Compute aggregates for each group
 	resultRows := c.computeJoinGroupAggregates(stmt, selectCols, mainTableCols, allColumns, groupOrder, groups, args)
+	if len(resultRows) == 0 && len(stmt.GroupBy) == 0 {
+		if emptyRow, ok := emptyJoinAggregateRow(selectCols); ok {
+			resultRows = [][]interface{}{emptyRow}
+		}
+	}
 
 	// Apply HAVING clause to results
 	if stmt.Having != nil {
@@ -858,19 +863,7 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 	if joinTableCols == nil {
 		// Check if it's a materialized view
 		if mv, mvErr := c.getMaterializedViewLocked(join.Table.Name); mvErr == nil {
-			joinTableCols = make([]ColumnDef, 0, len(mv.Data[0]))
-			if len(mv.Data) > 0 {
-				for colName := range mv.Data[0] {
-					joinTableCols = append(joinTableCols, ColumnDef{Name: colName, Type: "TEXT"})
-				}
-			}
-			for _, rowMap := range mv.Data {
-				row := make([]interface{}, len(joinTableCols))
-				for j, col := range joinTableCols {
-					row[j] = rowMap[col.Name]
-				}
-				joinRows = append(joinRows, row)
-			}
+			joinTableCols, joinRows = materializedViewColumnsAndRows(mv)
 		}
 	}
 
@@ -901,10 +894,35 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 	return joinTableCols, joinRows
 }
 
+func materializedViewColumnsAndRows(mv *MaterializedViewDef) ([]ColumnDef, [][]interface{}) {
+	columns := make([]ColumnDef, 0)
+	var rows [][]interface{}
+	if mv == nil {
+		return columns, rows
+	}
+	if len(mv.Data) > 0 {
+		columns = make([]ColumnDef, 0, len(mv.Data[0]))
+		for colName := range mv.Data[0] {
+			columns = append(columns, ColumnDef{Name: colName, Type: "TEXT"})
+		}
+	}
+	for _, rowMap := range mv.Data {
+		row := make([]interface{}, len(columns))
+		for j, col := range columns {
+			row[j] = rowMap[col.Name]
+		}
+		rows = append(rows, row)
+	}
+	return columns, rows
+}
+
 func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows [][]interface{}, joinTableCols []ColumnDef, combinedColumns []ColumnDef, newCombinedColumns []ColumnDef, joinCondition query.Expression, args []interface{}, isLeftJoin, isRightJoin, isCrossJoin bool, joinAlias string) [][]interface{} {
 	var newIntermediate [][]interface{}
 
 	if isCrossJoin {
+		if len(rightRows) == 0 {
+			return nil
+		}
 		// Pre-calculate total capacity for cross join (leftRows * rightRows)
 		totalEst := len(intermediateRows) * len(rightRows)
 		if totalEst > 0 {
@@ -1078,6 +1096,12 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 					}
 					rightRows = viewRows
 				}
+			}
+		}
+
+		if joinTableCols == nil {
+			if mv, mvErr := c.getMaterializedViewLocked(join.Table.Name); mvErr == nil {
+				joinTableCols, rightRows = materializedViewColumnsAndRows(mv)
 			}
 		}
 
@@ -1618,6 +1642,24 @@ func hashJoinKey(v interface{}) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+func emptyJoinAggregateRow(selectCols []selectColInfo) ([]interface{}, bool) {
+	if len(selectCols) == 0 {
+		return nil, false
+	}
+	row := make([]interface{}, len(selectCols))
+	hasAggregate := false
+	for i, ci := range selectCols {
+		if !ci.isAggregate {
+			continue
+		}
+		hasAggregate = true
+		if ci.aggregateType == "COUNT" {
+			row[i] = int64(0)
+		}
+	}
+	return row, hasAggregate
 }
 
 // computeJoinGroupAggregates computes aggregate results for each group in a
