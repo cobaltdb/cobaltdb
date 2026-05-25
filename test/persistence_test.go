@@ -244,6 +244,48 @@ func TestPersistenceMaterializedViewQueryableAfterReopen(t *testing.T) {
 	expectSingleValue(t, db2, "SELECT COUNT(*) FROM mv_reopen_snapshot", int64(2))
 }
 
+func TestPersistenceMaterializedViewJoinAfterReopen(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "materialized_view_join_reopen.db")
+	ctx := context.Background()
+
+	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "CREATE TABLE mv_join_base (id INTEGER PRIMARY KEY, name TEXT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE base failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "CREATE TABLE mv_join_orders (id INTEGER PRIMARY KEY, base_id INTEGER)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE orders failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "INSERT INTO mv_join_base VALUES (1, 'alpha'), (2, 'beta')")
+	if err != nil {
+		t.Fatalf("INSERT base failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "INSERT INTO mv_join_orders VALUES (10, 1), (11, 2)")
+	if err != nil {
+		t.Fatalf("INSERT orders failed: %v", err)
+	}
+	_, err = db.Exec(ctx, "CREATE MATERIALIZED VIEW mv_join_snapshot AS SELECT id, name FROM mv_join_base")
+	if err != nil {
+		t.Fatalf("CREATE MATERIALIZED VIEW failed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	if err != nil {
+		t.Fatalf("Reopen failed: %v", err)
+	}
+	defer db2.Close()
+
+	expectSingleValue(t, db2, "SELECT COUNT(*) FROM mv_join_orders o JOIN mv_join_snapshot m ON o.base_id = m.id", int64(2))
+}
+
 func TestPersistenceMultipleTables(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "multi.db")
