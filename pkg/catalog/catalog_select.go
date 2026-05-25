@@ -351,7 +351,10 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 
 	// Chain through each JOIN
 	for _, join := range stmt.Joins {
-		joinTableCols, joinRows := c.resolveJoinTable(join, args)
+		joinTableCols, joinRows, err := c.resolveJoinTable(join, args)
+		if err != nil {
+			return nil, nil, err
+		}
 
 		isLeftJoin := join.Type == query.TokenLeft || join.Type == query.TokenFull
 		isRightJoin := join.Type == query.TokenRight || join.Type == query.TokenFull
@@ -821,7 +824,7 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 // executeJoinPass performs CROSS, hash, or nested loop join on the given row sets.
 // resolveJoinTable resolves a JOIN table reference to its column definitions and
 // row data by checking subqueries, CTE results, views, and regular tables.
-func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) ([]ColumnDef, [][]interface{}) {
+func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) ([]ColumnDef, [][]interface{}, error) {
 	var joinTableCols []ColumnDef
 	var joinRows [][]interface{}
 
@@ -873,11 +876,14 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 		// Normal table lookup
 		joinTable, err := c.getTableLocked(join.Table.Name)
 		if err != nil {
-			return nil, nil
+			return nil, nil, err
 		}
 
 		joinTableCols = joinTable.Columns
-		effectiveData := c.getEffectiveTableData(joinTable)
+		effectiveData, err := c.getEffectiveTableData(joinTable)
+		if err != nil {
+			return nil, nil, err
+		}
 		effectiveKeys := make([]string, 0, len(effectiveData))
 		for k := range effectiveData {
 			effectiveKeys = append(effectiveKeys, k)
@@ -887,13 +893,13 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 			data := effectiveData[k]
 			vrow, err := decodeVersionedRow(data, len(joinTable.Columns))
 			if err != nil {
-				continue
+				return nil, nil, fmt.Errorf("select: failed to decode row in join table %s: %w", joinTable.Name, err)
 			}
 			joinRows = append(joinRows, vrow.Data)
 		}
 	}
 
-	return joinTableCols, joinRows
+	return joinTableCols, joinRows, nil
 }
 
 func materializedViewColumnsAndRows(mv *MaterializedViewDef) ([]ColumnDef, [][]interface{}) {

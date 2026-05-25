@@ -1120,18 +1120,19 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 // getEffectiveTableData returns all live rows for a table as a map of key to
 // versioned row data, merging committed B-tree data with pending buffered
 // writes for read-your-writes visibility.
-func (c *Catalog) getEffectiveTableData(table *TableDef) map[string][]byte {
+func (c *Catalog) getEffectiveTableData(table *TableDef) (map[string][]byte, error) {
 	result := make(map[string][]byte)
 	trees, _ := c.getTableTreesForScan(table)
 	for _, tree := range trees {
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("select: failed to scan join table %s: %w", table.Name, err)
 		}
 		for iter.HasNext() {
 			k, valueData, err := iter.NextString()
 			if err != nil {
-				break
+				iter.Close()
+				return nil, fmt.Errorf("select: failed to read join table %s: %w", table.Name, err)
 			}
 			if !bytesContainDeletedAt(valueData) {
 				result[k] = valueData
@@ -1139,7 +1140,8 @@ func (c *Catalog) getEffectiveTableData(table *TableDef) map[string][]byte {
 			}
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
-				continue
+				iter.Close()
+				return nil, fmt.Errorf("select: failed to decode row in join table %s: %w", table.Name, err)
 			}
 			if vrow.Version.DeletedAt == 0 {
 				result[k] = valueData
@@ -1153,7 +1155,7 @@ func (c *Catalog) getEffectiveTableData(table *TableDef) map[string][]byte {
 				k := string(pw.Key)
 				vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
 				if err != nil {
-					continue
+					return nil, fmt.Errorf("select: failed to decode pending row in join table %s: %w", table.Name, err)
 				}
 				if vrow.Version.DeletedAt > 0 {
 					delete(result, k)
@@ -1163,7 +1165,7 @@ func (c *Catalog) getEffectiveTableData(table *TableDef) map[string][]byte {
 			}
 		}
 	}
-	return result
+	return result, nil
 }
 
 func resolvePositionalRefs(stmt *query.SelectStmt) *query.SelectStmt {

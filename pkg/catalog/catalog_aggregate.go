@@ -83,7 +83,10 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 		// Materialize all raw values first, merging committed data with pending
 		// buffered writes for read-your-writes visibility.
 		var allValues [][]byte
-		effectiveData := c.getEffectiveTableData(table)
+		effectiveData, err := c.getEffectiveTableData(table)
+		if err != nil {
+			return returnColumns, nil, err
+		}
 		effectiveKeys := make([]string, 0, len(effectiveData))
 		for k := range effectiveData {
 			effectiveKeys = append(effectiveKeys, k)

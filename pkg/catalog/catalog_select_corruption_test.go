@@ -53,3 +53,30 @@ func TestJoinSelectReturnsCorruptMainRowError(t *testing.T) {
 		t.Fatalf("expected corrupt main row join error, got %v", err)
 	}
 }
+
+func TestJoinSelectReturnsCorruptRightRowError(t *testing.T) {
+	c, pool := newMetadataIsolationCatalog(t)
+	defer pool.Close()
+
+	if _, err := c.ExecuteQuery("CREATE TABLE join_clean_main (id INTEGER PRIMARY KEY, name TEXT)"); err != nil {
+		t.Fatalf("create main table: %v", err)
+	}
+	if _, err := c.ExecuteQuery("CREATE TABLE join_corrupt_right (id INTEGER PRIMARY KEY, main_id INTEGER)"); err != nil {
+		t.Fatalf("create right table: %v", err)
+	}
+	if _, err := c.ExecuteQuery("INSERT INTO join_clean_main (id, name) VALUES (1, 'alice')"); err != nil {
+		t.Fatalf("insert main: %v", err)
+	}
+	if _, err := c.ExecuteQuery("INSERT INTO join_corrupt_right (id, main_id) VALUES (1, 1)"); err != nil {
+		t.Fatalf("insert right: %v", err)
+	}
+	pkKey := fmt.Sprintf("%020d", 1)
+	if err := c.tableTrees["join_corrupt_right"].Put([]byte(pkKey), []byte("not json")); err != nil {
+		t.Fatalf("put corrupt right row: %v", err)
+	}
+
+	_, err := c.ExecuteQuery("SELECT join_clean_main.id FROM join_clean_main JOIN join_corrupt_right ON join_clean_main.id = join_corrupt_right.main_id")
+	if err == nil || !strings.Contains(err.Error(), "failed to decode row") || !strings.Contains(err.Error(), "join_corrupt_right") {
+		t.Fatalf("expected corrupt right row join error, got %v", err)
+	}
+}
