@@ -202,6 +202,9 @@ func (w *WAL) readLSN() error {
 			return fmt.Errorf("WAL recovery failed at offset %d: %w", offset, err)
 		}
 		offset += recordSize
+		if !isKnownWALRecordType(record.Type) {
+			return fmt.Errorf("%w: unknown WAL record type 0x%02x at offset %d", ErrInvalidWALRecord, uint8(record.Type), offset-recordSize)
+		}
 		lastLSN = record.LSN
 		if record.Type == WALCheckpoint {
 			w.checkpoint = record.LSN
@@ -501,9 +504,7 @@ func validateRecordSize(record *WALRecord) error {
 	if record == nil {
 		return ErrInvalidWALRecord
 	}
-	switch record.Type {
-	case WALInsert, WALUpdate, WALDelete, WALCommit, WALRollback, WALCheckpoint, WALUpdateCommit:
-	default:
+	if !isKnownWALRecordType(record.Type) {
 		return fmt.Errorf("%w: unknown WAL record type 0x%02x", ErrInvalidWALRecord, uint8(record.Type))
 	}
 	if len(record.Data) > walMaxRecordDataSize {
@@ -511,6 +512,15 @@ func validateRecordSize(record *WALRecord) error {
 			len(record.Data), walMaxRecordDataSize)
 	}
 	return nil
+}
+
+func isKnownWALRecordType(recordType WALRecordType) bool {
+	switch recordType {
+	case WALInsert, WALUpdate, WALDelete, WALCommit, WALRollback, WALCheckpoint, WALUpdateCommit:
+		return true
+	default:
+		return false
+	}
 }
 
 func batchRecordsFitPooledBuffer(records []*WALRecord) bool {

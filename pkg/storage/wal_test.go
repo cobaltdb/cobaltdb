@@ -333,15 +333,7 @@ func TestWALRecoverRejectsUnknownRecordType(t *testing.T) {
 		t.Fatalf("write WAL: %v", err)
 	}
 
-	wal2, err := OpenWAL(path)
-	if err != nil {
-		t.Fatalf("OpenWAL unknown type: %v", err)
-	}
-	defer wal2.Close()
-	pool := NewBufferPool(10, NewMemory())
-	defer pool.Close()
-
-	err = wal2.Recover(pool)
+	_, err := OpenWAL(path)
 	if !errors.Is(err, ErrInvalidWALRecord) {
 		t.Fatalf("expected ErrInvalidWALRecord, got %v", err)
 	}
