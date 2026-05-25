@@ -1084,11 +1084,11 @@ func (c *Catalog) Analyze(tableName string) error {
 		if value == nil {
 			break
 		}
-		rowCount++
 		vrow, err := decodeVersionedRow(value, len(table.Columns))
 		if err != nil {
-			continue
+			return fmt.Errorf("analyze: failed to decode row in table %s: %w", tableName, err)
 		}
+		rowCount++
 		rowSlice := vrow.Data
 		for i, col := range table.Columns {
 			if i >= len(rowSlice) || rowSlice[i] == nil {

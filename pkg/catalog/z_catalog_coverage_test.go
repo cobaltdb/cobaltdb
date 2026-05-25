@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -2392,13 +2393,11 @@ func TestCov_AnalyzeInvalidRow(t *testing.T) {
 	createTestTable(t, c, "t", []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}})
 	c.tableTrees["t"].Put([]byte{1}, []byte("not json"))
 	err := c.Analyze("t")
-	if err != nil {
-		t.Fatalf("Analyze should skip invalid rows, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "failed to decode row") {
+		t.Fatalf("expected Analyze to fail on invalid row data, got %v", err)
 	}
-	stats := c.stats["t"]
-	if stats == nil || stats.RowCount != 1 {
-		// rowCount is incremented before decodeVersionedRow, so the invalid row still counts
-		t.Errorf("expected 1 row counted (invalid row skipped for stats), got %v", stats)
+	if stats := c.stats["t"]; stats != nil {
+		t.Fatalf("Analyze should not publish stats for invalid row data, got %v", stats)
 	}
 }
 
