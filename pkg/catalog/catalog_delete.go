@@ -593,7 +593,7 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 		// Decode row with version info
 		vrow, err := decodeVersionedRow(entry.value, len(table.Columns))
 		if err != nil {
-			continue
+			return rowsAffected, fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
 		}
 		row := vrow.Data
 
@@ -772,7 +772,7 @@ func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt
 		// Soft-delete encoding.
 		vrow, err := decodeVersionedRow(entry.value, len(table.Columns))
 		if err != nil {
-			continue
+			return fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
 		}
 		vrow.Version.markDeleted(time.Now())
 		deletedValueData, err := json.Marshal(vrow)
