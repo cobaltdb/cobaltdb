@@ -908,6 +908,8 @@ func (w *WAL) Recover(bp *BufferPool) error {
 			if err := w.recoverRecord(bp, record); err != nil {
 				return err
 			}
+		default:
+			return fmt.Errorf("%w: unknown WAL record type 0x%02x at LSN %d", ErrInvalidWALRecord, uint8(record.Type), record.LSN)
 		}
 	}
 

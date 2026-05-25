@@ -301,6 +301,35 @@ func TestWALRecover(t *testing.T) {
 	}
 }
 
+func TestWALRecoverRejectsUnknownRecordType(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "test.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	if err := wal.Append(&WALRecord{TxnID: 1, Type: WALRecordType(0xff)}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	wal2, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("OpenWAL corrupted type: %v", err)
+	}
+	defer wal2.Close()
+	pool := NewBufferPool(10, NewMemory())
+	defer pool.Close()
+
+	err = wal2.Recover(pool)
+	if !errors.Is(err, ErrInvalidWALRecord) {
+		t.Fatalf("expected ErrInvalidWALRecord, got %v", err)
+	}
+}
+
 func TestWALLSN(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "test.wal")
