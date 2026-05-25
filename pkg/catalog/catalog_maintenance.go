@@ -250,7 +250,7 @@ func (c *Catalog) Load() error {
 	for iter.HasNext() {
 		keyStr, value, err := iter.NextString()
 		if err != nil {
-			break
+			return fmt.Errorf("load catalog: failed to read table metadata: %w", err)
 		}
 
 		// Parse key to get table name
@@ -262,7 +262,7 @@ func (c *Catalog) Load() error {
 		// Unmarshal table definition
 		var tableDef TableDef
 		if err := json.Unmarshal(value, &tableDef); err != nil {
-			continue
+			return fmt.Errorf("load catalog: failed to parse table metadata %s: %w", tableName, err)
 		}
 
 		// Restore DEFAULT and CHECK expressions from persisted strings

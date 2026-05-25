@@ -79,11 +79,11 @@ func TestLoadWithCorruptTableDef(t *testing.T) {
 	}
 
 	err = c.Load()
-	if err != nil {
-		t.Errorf("Load should continue on corrupted table def: %v", err)
+	if err == nil {
+		t.Fatal("expected Load to fail on corrupted table def")
 	}
 
-	// Corrupted table should be skipped
+	// Corrupted table must not be left in memory after the load failure.
 	if _, exists := c.tables["corrupt"]; exists {
 		t.Error("Corrupted table should not be loaded")
 	}
