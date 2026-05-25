@@ -293,26 +293,27 @@ func (c *Catalog) Load() error {
 			}
 		}
 
-		c.tables[tableName] = &tableDef
-
 		// Create or open B+Tree for the table
+		var tableTree btree.TreeStore
 		if tableDef.RootPageID != 0 {
 			tree, err := btree.OpenBTreeStrict(c.pool, tableDef.RootPageID)
 			if err != nil {
 				return fmt.Errorf("load catalog: failed to open tree for table %s: %w", tableName, err)
 			}
-			c.tableTrees[tableName] = tree
+			tableTree = tree
 		} else {
 			tree, err := btree.NewBTree(c.pool)
 			if err != nil {
-				continue
+				return fmt.Errorf("load catalog: failed to create tree for table %s: %w", tableName, err)
 			}
 			tableDef.RootPageID = tree.RootPageID()
-			c.tableTrees[tableName] = tree
+			tableTree = tree
 		}
 
 		// Build column index cache
 		tableDef.buildColumnIndexCache()
+		c.tables[tableName] = &tableDef
+		c.tableTrees[tableName] = tableTree
 	}
 
 	// Load regular B-tree index definitions after tables so orphaned/corrupt
@@ -829,7 +830,7 @@ func (c *Catalog) LoadData(dir string) error {
 				}
 				c.tableTrees[tableName] = tree
 			} else {
-				continue
+				return fmt.Errorf("load data: table %s has no tree and catalog has no buffer pool", tableName)
 			}
 		}
 

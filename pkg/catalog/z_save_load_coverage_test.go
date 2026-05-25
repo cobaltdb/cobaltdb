@@ -267,10 +267,10 @@ func TestLoadDataWithNilPool(t *testing.T) {
 		t.Fatalf("LoadSchema: %v", err)
 	}
 
-	// LoadData with missing tree and nil pool should continue without error
+	// LoadData with missing tree and nil pool cannot safely import table rows.
 	err = cat2.LoadData(tmpDir)
-	if err != nil {
-		t.Fatalf("LoadData with nil pool should succeed, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "has no tree") {
+		t.Fatalf("expected missing tree error with nil pool, got %v", err)
 	}
 }
 
