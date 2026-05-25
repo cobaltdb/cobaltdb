@@ -5806,8 +5806,16 @@ func TestAlterTableDropColumn(t *testing.T) {
 	catalog.tableTrees[table.Name] = tree
 
 	// Insert some test data
-	tree.Put([]byte("key1"), []byte("value1"))
-	tree.Put([]byte("key2"), []byte("value2"))
+	row1, err := encodeVersionedRow([]interface{}{int64(1), "alice", "tmp1"}, nil)
+	if err != nil {
+		t.Fatalf("encode row1: %v", err)
+	}
+	row2, err := encodeVersionedRow([]interface{}{int64(2), "bob", "tmp2"}, nil)
+	if err != nil {
+		t.Fatalf("encode row2: %v", err)
+	}
+	tree.Put([]byte("key1"), row1)
+	tree.Put([]byte("key2"), row2)
 
 	stmt = &query.AlterTableStmt{
 		Table:   "orders",

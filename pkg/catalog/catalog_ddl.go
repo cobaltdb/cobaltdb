@@ -377,17 +377,6 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 		}
 	}
 
-	// Save undo entry before modification
-	if c.isCurrentTxnActive() {
-		oldCols := make([]ColumnDef, len(table.Columns))
-		copy(oldCols, table.Columns)
-		c.appendUndoEntry(undoEntry{
-			action:     undoAlterAddColumn,
-			tableName:  stmt.Table,
-			oldColumns: oldCols,
-		})
-	}
-
 	newCol := ColumnDef{
 		Name:          stmt.Column.Name,
 		Type:          tokenTypeToColumnType(stmt.Column.Type),
@@ -402,11 +391,13 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 		Dimensions:    stmt.Column.Dimensions,
 	}
 
-	table.Columns = append(table.Columns, newCol)
-	table.buildColumnIndexCache()
-
 	// Backfill existing rows with the default value for the new column
 	tree, treeExists := c.tableTrees[stmt.Table]
+	type rowUpdate struct {
+		key  []byte
+		data []byte
+	}
+	var updates []rowUpdate
 	if treeExists {
 		// Compute default value
 		var defaultVal interface{}
@@ -415,7 +406,8 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 		}
 
 		// Remember the old column count before adding the new column
-		oldColCount := len(table.Columns) - 1
+		oldColCount := len(table.Columns)
+		newColCount := oldColCount + 1
 
 		// Scan all rows and append the default value
 		iter, err := tree.Scan(nil, nil)
@@ -423,39 +415,50 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 			return fmt.Errorf("failed to scan table for ALTER TABLE: %w", err)
 		}
 		defer iter.Close()
-		type rowUpdate struct {
-			key  []byte
-			data []byte
-		}
-		var updates []rowUpdate
 		for iter.HasNext() {
 			key, valueData, err := iter.Next()
 			if err != nil {
-				break
+				return fmt.Errorf("failed to read row during ALTER TABLE backfill: %w", err)
 			}
 			// Use oldColCount to decode to avoid automatic padding with nil
 			vrow, err := decodeVersionedRow(valueData, oldColCount)
 			if err != nil {
-				continue
+				return fmt.Errorf("failed to decode row in table %s during ALTER TABLE ADD COLUMN: %w", stmt.Table, err)
 			}
 			values := vrow.Data
 			// Only update rows that are missing the new column
 			if len(values) <= oldColCount {
-				for len(values) < len(table.Columns) {
+				for len(values) < newColCount {
 					values = append(values, defaultVal)
 				}
 				// Update the VersionedRow and re-encode
 				vrow.Data = values
 				newData, err := json.Marshal(vrow)
 				if err != nil {
-					continue
+					return fmt.Errorf("failed to encode row during ALTER TABLE ADD COLUMN: %w", err)
 				}
 				keyCopy := make([]byte, len(key))
 				copy(keyCopy, key)
 				updates = append(updates, rowUpdate{key: keyCopy, data: newData})
 			}
 		}
+	}
 
+	// Save undo entry before modification
+	if c.isCurrentTxnActive() {
+		oldCols := make([]ColumnDef, len(table.Columns))
+		copy(oldCols, table.Columns)
+		c.appendUndoEntry(undoEntry{
+			action:     undoAlterAddColumn,
+			tableName:  stmt.Table,
+			oldColumns: oldCols,
+		})
+	}
+
+	table.Columns = append(table.Columns, newCol)
+	table.buildColumnIndexCache()
+
+	if treeExists {
 		// Apply updates
 		for _, u := range updates {
 			if err := tree.Put(u.key, u.data); err != nil {
@@ -533,7 +536,7 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 			for iter.HasNext() {
 				key, val, err := iter.Next()
 				if err != nil {
-					break
+					return fmt.Errorf("failed to read row while saving ALTER TABLE DROP COLUMN undo data: %w", err)
 				}
 				keyCopy := make([]byte, len(key))
 				copy(keyCopy, key)
@@ -559,17 +562,14 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 		c.appendUndoEntry(entry)
 	}
 
-	// Remove column from definition
-	table.Columns = append(table.Columns[:colIdx], table.Columns[colIdx+1:]...)
-	table.buildColumnIndexCache()
-
-	// Update all existing rows - remove the dropped column's data
+	// Prepare all row updates before mutating the table definition so corrupt
+	// row failures leave the in-memory schema unchanged.
 	tree, exists := c.tableTrees[stmt.Table]
+	var updates []struct {
+		key []byte
+		val []byte
+	}
 	if exists {
-		var updates []struct {
-			key []byte
-			val []byte
-		}
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
 			return fmt.Errorf("failed to scan table for ALTER TABLE DROP COLUMN backfill: %w", err)
@@ -578,18 +578,18 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 		for iter.HasNext() {
 			key, valueData, err := iter.Next()
 			if err != nil {
-				break
+				return fmt.Errorf("failed to read row during ALTER TABLE DROP COLUMN backfill: %w", err)
 			}
 			row, err := decodeRow(valueData, originalColCount)
 			if err != nil {
-				continue
+				return fmt.Errorf("failed to decode row in table %s during ALTER TABLE DROP COLUMN: %w", stmt.Table, err)
 			}
 			if colIdx < len(row) {
 				row = append(row[:colIdx], row[colIdx+1:]...)
 			}
 			newData, err := json.Marshal(row)
 			if err != nil {
-				continue
+				return fmt.Errorf("failed to encode row during ALTER TABLE DROP COLUMN: %w", err)
 			}
 			keyCopy := make([]byte, len(key))
 			copy(keyCopy, key)
@@ -598,6 +598,14 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 				val []byte
 			}{keyCopy, newData})
 		}
+	}
+
+	// Remove column from definition
+	table.Columns = append(table.Columns[:colIdx], table.Columns[colIdx+1:]...)
+	table.buildColumnIndexCache()
+
+	// Update all existing rows - remove the dropped column's data
+	if exists {
 		for _, u := range updates {
 			if err := tree.Put(u.key, u.val); err != nil {
 				return fmt.Errorf("failed to update row after column drop: %w", err)
