@@ -222,6 +222,7 @@ type CreateViewStmt struct {
 	IfNotExists bool
 	Name        string
 	Query       *SelectStmt
+	RawSQL      string
 }
 
 func (s *CreateViewStmt) nodeType() string { return "CreateViewStmt" }
@@ -245,6 +246,7 @@ type CreateTriggerStmt struct {
 	Event       string     // INSERT, UPDATE, DELETE
 	Condition   Expression // WHEN condition (optional)
 	Body        []Statement
+	RawSQL      string
 }
 
 func (s *CreateTriggerStmt) nodeType() string { return "CreateTriggerStmt" }

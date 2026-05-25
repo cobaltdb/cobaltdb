@@ -800,6 +800,10 @@ func (c *Catalog) invalidateSchemaCache() {
 }
 
 func (c *Catalog) CreateView(name string, query *query.SelectStmt) error {
+	return c.CreateViewSQL(name, query, "")
+}
+
+func (c *Catalog) CreateViewSQL(name string, viewQuery *query.SelectStmt, sql string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	defer c.invalidateSchemaCache()
@@ -809,7 +813,14 @@ func (c *Catalog) CreateView(name string, query *query.SelectStmt) error {
 	if _, exists := c.tables[name]; exists {
 		return ErrTableExists
 	}
-	c.views[name] = query
+	if c.viewSQL == nil {
+		c.viewSQL = make(map[string]string)
+	}
+	c.views[name] = viewQuery
+	if strings.TrimSpace(sql) == "" {
+		sql = createViewSQL(name, viewQuery)
+	}
+	c.viewSQL[name] = strings.TrimSpace(sql)
 	return nil
 }
 
@@ -836,6 +847,10 @@ func (c *Catalog) DropView(name string) error {
 		return ErrTableNotFound
 	}
 	delete(c.views, name)
+	delete(c.viewSQL, name)
+	if c.tree != nil {
+		_ = c.tree.Delete([]byte("view:" + name))
+	}
 	return nil
 }
 
@@ -848,6 +863,10 @@ func (c *Catalog) HasTableOrView(name string) bool {
 }
 
 func (c *Catalog) CreateTrigger(stmt *query.CreateTriggerStmt) error {
+	return c.CreateTriggerSQL(stmt, "")
+}
+
+func (c *Catalog) CreateTriggerSQL(stmt *query.CreateTriggerStmt, sql string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	defer c.invalidateSchemaCache()
@@ -861,7 +880,15 @@ func (c *Catalog) CreateTrigger(stmt *query.CreateTriggerStmt) error {
 	if _, exists := c.triggers[stmt.Name]; exists {
 		return fmt.Errorf("trigger %s already exists", stmt.Name)
 	}
+	if c.triggerSQL == nil {
+		c.triggerSQL = make(map[string]string)
+	}
+	if strings.TrimSpace(sql) == "" {
+		sql = createTriggerSQL(stmt)
+	}
+	stmt.RawSQL = strings.TrimSpace(sql)
 	c.triggers[stmt.Name] = stmt
+	c.triggerSQL[stmt.Name] = stmt.RawSQL
 	return nil
 }
 
@@ -883,6 +910,10 @@ func (c *Catalog) DropTrigger(name string) error {
 		return fmt.Errorf("trigger %s not found", name)
 	}
 	delete(c.triggers, name)
+	delete(c.triggerSQL, name)
+	if c.tree != nil {
+		_ = c.tree.Delete([]byte("trg:" + name))
+	}
 	return nil
 }
 

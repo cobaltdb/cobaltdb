@@ -226,8 +226,7 @@ func TestSaveLoadWithView(t *testing.T) {
 
 	rows, err := db2.Query(ctx, `SELECT * FROM v1`)
 	if err != nil {
-		t.Logf("View query error (may not persist): %v", err)
-		return
+		t.Fatalf("View query after reopen failed: %v", err)
 	}
 	defer rows.Close()
 
@@ -235,7 +234,9 @@ func TestSaveLoadWithView(t *testing.T) {
 	for rows.Next() {
 		count++
 	}
-	t.Logf("View returned %d rows after load", count)
+	if count != 1 {
+		t.Fatalf("Expected 1 view row after load, got %d", count)
+	}
 }
 
 // TestSaveLoadWithTrigger targets Save/Load with triggers
@@ -291,8 +292,12 @@ func TestSaveLoadWithTrigger(t *testing.T) {
 		if rows.Next() {
 			var count int
 			rows.Scan(&count)
-			t.Logf("Audit entries: %d (should be 2)", count)
+			if count != 2 {
+				t.Fatalf("Expected 2 audit entries after trigger fired post-reopen, got %d", count)
+			}
 		}
+	} else {
+		t.Fatal("Audit count query returned nil rows")
 	}
 }
 

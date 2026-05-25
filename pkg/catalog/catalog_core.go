@@ -285,7 +285,9 @@ type Catalog struct {
 	partitionTreeMu      sync.Mutex                            // protects lazy partition tree creation
 	fdwRegistry          *fdw.Registry                         // FDW registry for foreign data wrappers
 	views                map[string]*query.SelectStmt          // Views store their SELECT query
+	viewSQL              map[string]string                     // Original CREATE VIEW SQL for persistence
 	triggers             map[string]*query.CreateTriggerStmt   // Triggers store their definition
+	triggerSQL           map[string]string                     // Original CREATE TRIGGER SQL for persistence
 	procedures           map[string]*query.CreateProcedureStmt // Procedures store their definition
 	materializedViews    map[string]*MaterializedViewDef       // Materialized views
 	ftsIndexes           map[string]*FTSIndexDef               // Full-text search indexes
@@ -384,7 +386,9 @@ func New(tree btree.TreeStore, pool *storage.BufferPool, wal *storage.WAL) *Cata
 		tableTrees:        make(map[string]btree.TreeStore),
 		fdwRegistry:       fdw.NewRegistry(),
 		views:             make(map[string]*query.SelectStmt),
+		viewSQL:           make(map[string]string),
 		triggers:          make(map[string]*query.CreateTriggerStmt),
+		triggerSQL:        make(map[string]string),
 		procedures:        make(map[string]*query.CreateProcedureStmt),
 		materializedViews: make(map[string]*MaterializedViewDef),
 		ftsIndexes:        make(map[string]*FTSIndexDef),
@@ -1678,7 +1682,7 @@ func exprToSQL(expr query.Expression) string {
 	}
 	switch e := expr.(type) {
 	case *query.NumberLiteral:
-		return fmt.Sprintf("%v", e.Value)
+		return numberLiteralSQL(e)
 	case *query.StringLiteral:
 		return fmt.Sprintf("'%s'", strings.ReplaceAll(e.Value, "'", "''"))
 	case *query.BooleanLiteral:
@@ -1692,6 +1696,18 @@ func exprToSQL(expr query.Expression) string {
 		return e.Name
 	case *query.QualifiedIdentifier:
 		return e.Table + "." + e.Column
+	case *query.ColumnRef:
+		if e.Table != "" {
+			return e.Table + "." + e.Column
+		}
+		return e.Column
+	case *query.StarExpr:
+		if e.Table != "" {
+			return e.Table + ".*"
+		}
+		return "*"
+	case *query.AliasExpr:
+		return exprToSQL(e.Expr) + " AS " + e.Alias
 	case *query.BinaryExpr:
 		left := exprToSQL(e.Left)
 		right := exprToSQL(e.Right)
@@ -1725,6 +1741,12 @@ func exprToSQL(expr query.Expression) string {
 			op = "%"
 		case query.TokenConcat:
 			op = "||"
+		case query.TokenLike:
+			op = "LIKE"
+		case query.TokenIn:
+			op = "IN"
+		case query.TokenIs:
+			op = "IS"
 		default:
 			op = "?"
 		}

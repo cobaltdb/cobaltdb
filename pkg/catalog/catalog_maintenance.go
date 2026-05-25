@@ -36,6 +36,26 @@ func (c *Catalog) Save() error {
 		}
 	}
 
+	for viewName, viewQuery := range c.views {
+		sql := c.viewSQL[viewName]
+		if strings.TrimSpace(sql) == "" {
+			sql = createViewSQL(viewName, viewQuery)
+		}
+		if err := c.storeViewDef(viewName, sql); err != nil {
+			return fmt.Errorf("failed to save view definition %s: %w", viewName, err)
+		}
+	}
+
+	for triggerName, trigger := range c.triggers {
+		sql := c.triggerSQL[triggerName]
+		if strings.TrimSpace(sql) == "" {
+			sql = createTriggerSQL(trigger)
+		}
+		if err := c.storeTriggerDef(triggerName, sql); err != nil {
+			return fmt.Errorf("failed to save trigger definition %s: %w", triggerName, err)
+		}
+	}
+
 	// Save vector index definitions
 	for _, vid := range c.vectorIndexes {
 		if err := c.storeVectorIndexDef(vid); err != nil {
@@ -69,6 +89,30 @@ func (c *Catalog) Save() error {
 	return nil
 }
 
+type persistedSQLDef struct {
+	Name string `json:"name"`
+	SQL  string `json:"sql"`
+}
+
+func (c *Catalog) storeViewDef(name string, sql string) error {
+	return c.storeSQLDef("view:"+name, name, sql)
+}
+
+func (c *Catalog) storeTriggerDef(name string, sql string) error {
+	return c.storeSQLDef("trg:"+name, name, sql)
+}
+
+func (c *Catalog) storeSQLDef(key string, name string, sql string) error {
+	data, err := json.Marshal(persistedSQLDef{Name: name, SQL: strings.TrimSpace(sql)})
+	if err != nil {
+		return err
+	}
+	if c.tree != nil {
+		return c.tree.Put([]byte(key), data)
+	}
+	return nil
+}
+
 func (c *Catalog) storeVectorIndexDef(vid *VectorIndexDef) error {
 	key := []byte("vec:" + vid.Name)
 	data, err := json.Marshal(vid)
@@ -86,6 +130,24 @@ func (c *Catalog) Load() error {
 	defer c.mu.Unlock()
 	if c.tree == nil {
 		return nil
+	}
+	if c.tables == nil {
+		c.tables = make(map[string]*TableDef)
+	}
+	if c.tableTrees == nil {
+		c.tableTrees = make(map[string]btree.TreeStore)
+	}
+	if c.indexes == nil {
+		c.indexes = make(map[string]*IndexDef)
+	}
+	if c.indexTrees == nil {
+		c.indexTrees = make(map[string]btree.TreeStore)
+	}
+	if c.views == nil {
+		c.views = make(map[string]*query.SelectStmt)
+	}
+	if c.triggers == nil {
+		c.triggers = make(map[string]*query.CreateTriggerStmt)
 	}
 
 	// Load table definitions from catalog tree
@@ -196,6 +258,82 @@ func (c *Catalog) Load() error {
 			c.indexTrees[indexDef.Name] = indexTree
 		}
 		idxIter.Close()
+	}
+
+	viewIter, err := c.tree.Scan([]byte("view:"), []byte("view;"))
+	if err == nil {
+		if c.viewSQL == nil {
+			c.viewSQL = make(map[string]string)
+		}
+		for viewIter.HasNext() {
+			keyStr, value, err := viewIter.NextString()
+			if err != nil {
+				break
+			}
+			if !strings.HasPrefix(keyStr, "view:") {
+				continue
+			}
+			def := decodePersistedSQLDef(keyStr, "view:", value)
+			if def.SQL == "" {
+				continue
+			}
+			parsed, err := query.Parse(def.SQL)
+			if err != nil {
+				continue
+			}
+			viewStmt, ok := parsed.(*query.CreateViewStmt)
+			if !ok || viewStmt.Query == nil {
+				continue
+			}
+			name := viewStmt.Name
+			if name == "" {
+				name = def.Name
+			}
+			c.views[name] = viewStmt.Query
+			c.viewSQL[name] = strings.TrimSpace(def.SQL)
+		}
+		viewIter.Close()
+	}
+
+	triggerIter, err := c.tree.Scan([]byte("trg:"), []byte("trg;"))
+	if err == nil {
+		if c.triggerSQL == nil {
+			c.triggerSQL = make(map[string]string)
+		}
+		for triggerIter.HasNext() {
+			keyStr, value, err := triggerIter.NextString()
+			if err != nil {
+				break
+			}
+			if !strings.HasPrefix(keyStr, "trg:") {
+				continue
+			}
+			def := decodePersistedSQLDef(keyStr, "trg:", value)
+			if def.SQL == "" {
+				continue
+			}
+			parsed, err := query.Parse(def.SQL)
+			if err != nil {
+				continue
+			}
+			triggerStmt, ok := parsed.(*query.CreateTriggerStmt)
+			if !ok {
+				continue
+			}
+			if _, tableOK := c.tables[triggerStmt.Table]; !tableOK {
+				if _, viewOK := c.views[triggerStmt.Table]; !viewOK {
+					continue
+				}
+			}
+			name := triggerStmt.Name
+			if name == "" {
+				name = def.Name
+			}
+			triggerStmt.RawSQL = strings.TrimSpace(def.SQL)
+			c.triggers[name] = triggerStmt
+			c.triggerSQL[name] = triggerStmt.RawSQL
+		}
+		triggerIter.Close()
 	}
 
 	// Load vector index definitions from catalog tree

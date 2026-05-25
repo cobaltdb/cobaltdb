@@ -350,6 +350,7 @@ func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.State
 	if err != nil {
 		return nil, err
 	}
+	annotateDDLRawSQL(parsedStmt, sql)
 
 	// Cache in plan cache if enabled
 	if db.planCache != nil {
@@ -387,6 +388,16 @@ func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.State
 	db.stmtMu.Unlock()
 
 	return parsedStmt, nil
+}
+
+func annotateDDLRawSQL(stmt query.Statement, sql string) {
+	normalized := strings.TrimSpace(sql)
+	switch s := stmt.(type) {
+	case *query.CreateViewStmt:
+		s.RawSQL = normalized
+	case *query.CreateTriggerStmt:
+		s.RawSQL = normalized
+	}
 }
 
 // evictLRUEntry removes the least recently used entry from the cache
@@ -1218,7 +1229,7 @@ func (db *DB) executeCreateIndex(ctx context.Context, stmt *query.CreateIndexStm
 // executeCreateView executes CREATE VIEW
 
 func (db *DB) executeCreateView(ctx context.Context, stmt *query.CreateViewStmt) (Result, error) {
-	if err := db.catalog.CreateView(stmt.Name, stmt.Query); err != nil {
+	if err := db.catalog.CreateViewSQL(stmt.Name, stmt.Query, stmt.RawSQL); err != nil {
 		if stmt.IfNotExists {
 			return Result{RowsAffected: 0}, nil
 		}
@@ -1242,7 +1253,7 @@ func (db *DB) executeDropView(ctx context.Context, stmt *query.DropViewStmt) (Re
 // executeCreateTrigger executes CREATE TRIGGER
 
 func (db *DB) executeCreateTrigger(ctx context.Context, stmt *query.CreateTriggerStmt) (Result, error) {
-	if err := db.catalog.CreateTrigger(stmt); err != nil {
+	if err := db.catalog.CreateTriggerSQL(stmt, stmt.RawSQL); err != nil {
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
