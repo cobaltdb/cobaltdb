@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -448,7 +449,9 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 			rebuildPendingWriteMap(ts)
 		}
-		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
+		if rbErr := c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq); rbErr != nil {
+			err = fmt.Errorf("%w; rollback failed: %v", err, rbErr)
+		}
 		if !txnActive {
 			return 0, 0, err
 		}
@@ -1088,7 +1091,9 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 			rebuildPendingWriteMap(ts)
 		}
-		c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq)
+		if rbErr := c.rollbackStatementInserts(tree, table, stmtInserts, savedAutoIncSeq); rbErr != nil {
+			err = fmt.Errorf("%w; rollback failed: %v", err, rbErr)
+		}
 		if !txnActive {
 			return 0, 0, err
 		}
@@ -1365,15 +1370,15 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		if insertErr != nil {
 			// Row was stored but index failed - delete the row and roll back
 			// any index entries that were successfully inserted in this iteration.
-			if bt, ok := tree.(*btree.BTree); ok {
-				_ = bt.DeleteString(key)
-			} else {
-				_ = tree.Delete([]byte(key))
+			if rbErr := deleteRowKey(tree, []byte(key)); rbErr != nil && !errors.Is(rbErr, btree.ErrKeyNotFound) {
+				insertErr = fmt.Errorf("%w; row cleanup failed: %v", insertErr, rbErr)
 			}
 			for _, undo := range idxChanges {
 				if undo.wasAdded {
 					if idxTree2, ok := c.indexTrees[undo.indexName]; ok {
-						_ = idxTree2.Delete(undo.key) // best-effort cleanup
+						if rbErr := idxTree2.Delete(undo.key); rbErr != nil && !errors.Is(rbErr, btree.ErrKeyNotFound) {
+							insertErr = fmt.Errorf("%w; index cleanup failed for %s: %v", insertErr, undo.indexName, rbErr)
+						}
 					}
 				}
 			}
@@ -1855,17 +1860,23 @@ type stmtIndexKey struct {
 
 // rollbackStatementInserts undoes all successfully inserted rows on statement
 // failure. Inside an explicit transaction it also removes undo-log entries.
-func (c *Catalog) rollbackStatementInserts(tree btree.TreeStore, table *TableDef, stmtInserts []stmtInsertEntry, savedAutoIncSeq int64) {
+func (c *Catalog) rollbackStatementInserts(tree btree.TreeStore, table *TableDef, stmtInserts []stmtInsertEntry, savedAutoIncSeq int64) error {
+	var rollbackErr error
 	for i := len(stmtInserts) - 1; i >= 0; i-- {
 		si := stmtInserts[i]
-		_ = tree.Delete(si.key)
+		if err := deleteRowKey(tree, si.key); err != nil && !errors.Is(err, btree.ErrKeyNotFound) && rollbackErr == nil {
+			rollbackErr = fmt.Errorf("delete inserted row %s: %w", string(si.key), err)
+		}
 		for _, ik := range si.idxKeys {
 			if idxTree, exists := c.indexTrees[ik.idxName]; exists {
-				_ = idxTree.Delete(ik.key)
+				if err := idxTree.Delete(ik.key); err != nil && !errors.Is(err, btree.ErrKeyNotFound) && rollbackErr == nil {
+					rollbackErr = fmt.Errorf("delete index %s key: %w", ik.idxName, err)
+				}
 			}
 		}
 	}
 	atomic.StoreInt64(&table.AutoIncSeq, savedAutoIncSeq)
+	return rollbackErr
 }
 
 // getInsertTargetTree returns the BTree for inserting a row
