@@ -255,7 +255,7 @@ func (c *Catalog) loadMainTableRowsWithFDWOptions(from *query.TableRef, scanOpti
 	// Get all trees for scanning (handles partitioned tables)
 	trees, err := c.getTableTreesForScanWithOptions(mainTable, scanOptions)
 	if err != nil {
-		return mainTable.Columns, nil, nil
+		return mainTable.Columns, nil, fmt.Errorf("select: failed to get scan trees for table %s: %w", mainTable.Name, err)
 	}
 
 	var intermediateRows [][]interface{}
@@ -263,16 +263,18 @@ func (c *Catalog) loadMainTableRowsWithFDWOptions(from *query.TableRef, scanOpti
 	for _, tree := range trees {
 		mainIter, err := tree.Scan(nil, nil)
 		if err != nil {
-			continue
+			return mainTable.Columns, nil, fmt.Errorf("select: failed to scan table %s: %w", mainTable.Name, err)
 		}
 		for mainIter.HasNext() {
 			key, data, err := mainIter.Next()
 			if err != nil {
-				break
+				mainIter.Close()
+				return mainTable.Columns, nil, fmt.Errorf("select: failed to read table %s: %w", mainTable.Name, err)
 			}
 			vrow, err := decodeVersionedRow(data, len(mainTable.Columns))
 			if err != nil {
-				continue
+				mainIter.Close()
+				return mainTable.Columns, nil, fmt.Errorf("select: failed to decode row in table %s: %w", mainTable.Name, err)
 			}
 			if vrow.Version.DeletedAt > 0 {
 				continue
@@ -290,7 +292,7 @@ func (c *Catalog) loadMainTableRowsWithFDWOptions(from *query.TableRef, scanOpti
 				k := string(pw.Key)
 				vrow, err := decodeVersionedRow(pw.Value, len(mainTable.Columns))
 				if err != nil {
-					continue
+					return mainTable.Columns, nil, fmt.Errorf("select: failed to decode pending row in table %s: %w", mainTable.Name, err)
 				}
 				if vrow.Version.DeletedAt > 0 {
 					if idx, ok := seen[k]; ok {
