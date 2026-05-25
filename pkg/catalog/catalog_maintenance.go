@@ -708,14 +708,28 @@ func (c *Catalog) LoadSchema(dir string) error {
 		// Restore DEFAULT and CHECK expressions from persisted strings
 		for i := range tableDef.Columns {
 			if tableDef.Columns[i].Default != "" && tableDef.Columns[i].defaultExpr == nil {
-				if parsed, parseErr := query.ParseExpression(tableDef.Columns[i].Default); parseErr == nil {
-					tableDef.Columns[i].defaultExpr = parsed
+				parsed, parseErr := query.ParseExpression(tableDef.Columns[i].Default)
+				if parseErr != nil {
+					return fmt.Errorf(
+						"load schema: failed to parse default expression for table %s column %s: %w",
+						name,
+						tableDef.Columns[i].Name,
+						parseErr,
+					)
 				}
+				tableDef.Columns[i].defaultExpr = parsed
 			}
 			if tableDef.Columns[i].CheckStr != "" && tableDef.Columns[i].Check == nil {
-				if parsed, parseErr := query.ParseExpression(tableDef.Columns[i].CheckStr); parseErr == nil {
-					tableDef.Columns[i].Check = parsed
+				parsed, parseErr := query.ParseExpression(tableDef.Columns[i].CheckStr)
+				if parseErr != nil {
+					return fmt.Errorf(
+						"load schema: failed to parse check expression for table %s column %s: %w",
+						name,
+						tableDef.Columns[i].Name,
+						parseErr,
+					)
 				}
+				tableDef.Columns[i].Check = parsed
 			}
 		}
 		tableDef.buildColumnIndexCache()
