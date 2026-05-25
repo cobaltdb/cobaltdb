@@ -148,6 +148,7 @@ type selectColInfo struct {
 // MaterializedViewDef represents a materialized view definition
 type MaterializedViewDef struct {
 	Name        string                   `json:"name"`
+	Columns     []string                 `json:"columns"`
 	Query       *query.SelectStmt        `json:"query"`
 	Data        []map[string]interface{} `json:"data"` // Cached data
 	LastRefresh time.Time                `json:"last_refresh"`
@@ -561,27 +562,13 @@ func (cat *Catalog) resolveFromTable(name string) (*TableDef, error) {
 	// Check for materialized view
 	if mv, mvErr := cat.getMaterializedViewLocked(name); mvErr == nil {
 		table = &TableDef{Name: name}
-		if len(mv.Data) > 0 {
-			for colName := range mv.Data[0] {
-				table.Columns = append(table.Columns, ColumnDef{Name: colName, Type: "TEXT"})
-			}
-		}
+		table.Columns = materializedViewColumnDefs(mv)
 		// Register as temporary CTE-like result for this query
 		if cat.cteResults == nil {
 			cat.cteResults = make(map[string]*cteResultSet)
 		}
-		cols := make([]string, len(table.Columns))
-		for i, col := range table.Columns {
-			cols[i] = col.Name
-		}
-		rows := make([][]interface{}, len(mv.Data))
-		for i, rowMap := range mv.Data {
-			row := make([]interface{}, len(table.Columns))
-			for j, col := range table.Columns {
-				row[j] = rowMap[col.Name]
-			}
-			rows[i] = row
-		}
+		cols := materializedViewColumnNames(mv)
+		_, rows := materializedViewColumnsAndRows(mv)
 		cat.cteResults[toLowerFast(name)] = &cteResultSet{columns: cols, rows: rows}
 		return table, nil
 	}

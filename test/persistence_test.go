@@ -283,6 +283,13 @@ func TestPersistenceMaterializedViewJoinAfterReopen(t *testing.T) {
 	}
 	defer db2.Close()
 
+	rows, err := db2.Query(ctx, "SELECT * FROM mv_join_snapshot")
+	if err != nil {
+		t.Fatalf("SELECT materialized view after reopen failed: %v", err)
+	}
+	expectColumns(t, rows.Columns(), []string{"id", "name"})
+	rows.Close()
+
 	expectSingleValue(t, db2, "SELECT COUNT(*) FROM mv_join_orders o JOIN mv_join_snapshot m ON o.base_id = m.id", int64(2))
 }
 

@@ -117,6 +117,7 @@ type persistedSQLDef struct {
 type persistedMaterializedViewDef struct {
 	Name        string                   `json:"name"`
 	SQL         string                   `json:"sql"`
+	Columns     []string                 `json:"columns"`
 	Data        []map[string]interface{} `json:"data"`
 	LastRefresh int64                    `json:"last_refresh"`
 }
@@ -139,6 +140,7 @@ func (c *Catalog) storeMaterializedViewDef(name string, sql string, mv *Material
 		SQL:  strings.TrimSpace(sql),
 	}
 	if mv != nil {
+		def.Columns = cloneStringSlice(mv.Columns)
 		def.Data = mv.Data
 		def.LastRefresh = mv.LastRefresh.UnixNano()
 	}
@@ -470,6 +472,7 @@ func (c *Catalog) Load() error {
 			}
 			c.materializedViews[name] = &MaterializedViewDef{
 				Name:        name,
+				Columns:     cloneStringSlice(def.Columns),
 				Query:       materializedViewStmt.Query,
 				Data:        def.Data,
 				LastRefresh: lastRefresh,

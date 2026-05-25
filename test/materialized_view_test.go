@@ -6,6 +6,18 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
 
+func expectColumns(t *testing.T, got []string, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("expected columns %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected columns %v, got %v", want, got)
+		}
+	}
+}
+
 func TestMaterializedView_Basic(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
 	if err != nil {
@@ -100,6 +112,27 @@ func TestMaterializedView_EmptyJoinDoesNotPanic(t *testing.T) {
 	afExec(t, db, ctx, "CREATE MATERIALIZED VIEW mv_empty_snapshot AS SELECT * FROM mv_empty_base")
 
 	expectSingleValue(t, db, "SELECT COUNT(*) FROM mv_empty_left l JOIN mv_empty_snapshot m ON l.id = m.id", int64(0))
+}
+
+func TestMaterializedView_ColumnOrder(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	if err != nil {
+		t.Fatalf("DB open: %v", err)
+	}
+	defer db.Close()
+	ctx := t.Context()
+
+	afExec(t, db, ctx, "CREATE TABLE mv_order_base (id INTEGER PRIMARY KEY, name TEXT, amount INTEGER)")
+	afExec(t, db, ctx, "INSERT INTO mv_order_base VALUES (1, 'alpha', 10)")
+	afExec(t, db, ctx, "CREATE MATERIALIZED VIEW mv_order_snapshot AS SELECT name, id, amount FROM mv_order_base")
+
+	rows, err := db.Query(ctx, "SELECT * FROM mv_order_snapshot")
+	if err != nil {
+		t.Fatalf("SELECT materialized view failed: %v", err)
+	}
+	defer rows.Close()
+
+	expectColumns(t, rows.Columns(), []string{"name", "id", "amount"})
 }
 
 func TestMaterializedView_IF_NOT_EXISTS(t *testing.T) {

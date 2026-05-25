@@ -895,16 +895,10 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 }
 
 func materializedViewColumnsAndRows(mv *MaterializedViewDef) ([]ColumnDef, [][]interface{}) {
-	columns := make([]ColumnDef, 0)
+	columns := materializedViewColumnDefs(mv)
 	var rows [][]interface{}
 	if mv == nil {
 		return columns, rows
-	}
-	if len(mv.Data) > 0 {
-		columns = make([]ColumnDef, 0, len(mv.Data[0]))
-		for colName := range mv.Data[0] {
-			columns = append(columns, ColumnDef{Name: colName, Type: "TEXT"})
-		}
 	}
 	for _, rowMap := range mv.Data {
 		row := make([]interface{}, len(columns))
@@ -914,6 +908,32 @@ func materializedViewColumnsAndRows(mv *MaterializedViewDef) ([]ColumnDef, [][]i
 		rows = append(rows, row)
 	}
 	return columns, rows
+}
+
+func materializedViewColumnDefs(mv *MaterializedViewDef) []ColumnDef {
+	names := materializedViewColumnNames(mv)
+	columns := make([]ColumnDef, len(names))
+	for i, name := range names {
+		columns[i] = ColumnDef{Name: name, Type: "TEXT"}
+	}
+	return columns
+}
+
+func materializedViewColumnNames(mv *MaterializedViewDef) []string {
+	if mv == nil {
+		return nil
+	}
+	if len(mv.Columns) > 0 {
+		return cloneStringSlice(mv.Columns)
+	}
+	if len(mv.Data) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(mv.Data[0]))
+	for colName := range mv.Data[0] {
+		names = append(names, colName)
+	}
+	return names
 }
 
 func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows [][]interface{}, joinTableCols []ColumnDef, combinedColumns []ColumnDef, newCombinedColumns []ColumnDef, joinCondition query.Expression, args []interface{}, isLeftJoin, isRightJoin, isCrossJoin bool, joinAlias string) [][]interface{} {

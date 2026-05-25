@@ -63,6 +63,7 @@ func cloneMaterializedViewDef(view *MaterializedViewDef) *MaterializedViewDef {
 		return nil
 	}
 	cloned := *view
+	cloned.Columns = cloneStringSlice(view.Columns)
 	cloned.Query = cloneSelectStmt(view.Query)
 	if view.Data != nil {
 		cloned.Data = make([]map[string]interface{}, len(view.Data))

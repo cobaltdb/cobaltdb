@@ -58,6 +58,7 @@ func (c *Catalog) CreateMaterializedViewSQL(name string, selectStmt *query.Selec
 	}
 	c.materializedViews[name] = &MaterializedViewDef{
 		Name:        name,
+		Columns:     cloneStringSlice(columns),
 		Query:       selectStmt,
 		Data:        data,
 		LastRefresh: time.Now(),
@@ -138,6 +139,7 @@ func (c *Catalog) RefreshMaterializedView(name string) error {
 	defer c.mu.Unlock()
 	defer c.invalidateSchemaCache()
 	mv.Data = data
+	mv.Columns = cloneStringSlice(columns)
 	mv.LastRefresh = time.Now()
 	// Clear cached query result so subsequent SELECTs see fresh data.
 	if c.cteResults != nil {
