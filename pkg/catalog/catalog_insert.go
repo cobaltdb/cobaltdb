@@ -137,8 +137,8 @@ func (c *Catalog) checkUniqueConstraintsSnapshot(tree btree.TreeStore, table *Ta
 			}
 			if idx.tree != nil {
 				idxKey := typeTaggedKey(rowValues[i])
-				if _, err := idx.tree.Get([]byte(idxKey)); err == nil {
-					duplicateKey = []byte(idxKey)
+				if pkData, err := idx.tree.Get([]byte(idxKey)); err == nil {
+					duplicateKey = append([]byte(nil), pkData...)
 				}
 			}
 			found = true
@@ -198,22 +198,17 @@ func (c *Catalog) checkUniqueConstraintsSnapshot(tree btree.TreeStore, table *Ta
 							if idx.def.TableName != stmt.Table || len(idx.def.Columns) == 0 {
 								continue
 							}
-							oldIdxKey, ok := buildCompositeIndexKey(table, idx.def, oldRow)
-							if ok {
-								if idx.def.Unique {
-									_ = idx.tree.Delete([]byte(oldIdxKey))
-								} else {
-									compoundKey := oldIdxKey + "\x00" + string(duplicateKey)
-									_ = idx.tree.Delete([]byte(compoundKey))
-								}
+							if idx.tree == nil {
+								continue
+							}
+							if err := deleteIndexEntryForRow(table, idx.def, idx.tree, oldRow, duplicateKey); err != nil {
+								return false, fmt.Errorf("failed to delete from index %s: %w", idx.name, err)
 							}
 						}
 					}
 				}
-				if bt, ok := tree.(*btree.BTree); ok {
-					_ = bt.DeleteString(string(duplicateKey))
-				} else {
-					_ = tree.Delete(duplicateKey)
+				if err := deleteRowKey(tree, duplicateKey); err != nil {
+					return false, fmt.Errorf("failed to delete duplicate row: %w", err)
 				}
 				return false, nil
 			}
@@ -221,6 +216,25 @@ func (c *Catalog) checkUniqueConstraintsSnapshot(tree btree.TreeStore, table *Ta
 		}
 	}
 	return false, nil
+}
+
+func deleteRowKey(tree btree.TreeStore, key []byte) error {
+	if bt, ok := tree.(*btree.BTree); ok {
+		return bt.DeleteString(string(key))
+	}
+	return tree.Delete(key)
+}
+
+func deleteIndexEntryForRow(table *TableDef, idxDef *IndexDef, idxTree btree.TreeStore, row []interface{}, rowKey []byte) error {
+	indexKey, ok := buildCompositeIndexKey(table, idxDef, row)
+	if !ok {
+		return nil
+	}
+	if idxDef.Unique {
+		return idxTree.Delete([]byte(indexKey))
+	}
+	compoundKey := indexKey + "\x00" + string(rowKey)
+	return idxTree.Delete([]byte(compoundKey))
 }
 
 // buildBufferedInsertIndexesSnapshot is the lock-free variant that uses a
@@ -872,26 +886,14 @@ func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt 
 			for idxName, idxTree := range c.indexTrees {
 				idxDef := c.indexes[idxName]
 				if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
-					oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
-					if ok {
-						if idxDef.Unique {
-							_ = idxTree.Delete([]byte(oldIdxKey))
-						} else {
-							compoundKey := oldIdxKey + "\x00" + string(key)
-							_ = idxTree.Delete([]byte(compoundKey))
-						}
+					if err := deleteIndexEntryForRow(table, idxDef, idxTree, oldRow, []byte(key)); err != nil {
+						return false, fmt.Errorf("failed to delete from index %s for REPLACE: %w", idxName, err)
 					}
 				}
 			}
 		}
-		if bt, ok := tree.(*btree.BTree); ok {
-			if err := bt.DeleteString(key); err != nil {
-				return false, fmt.Errorf("failed to delete row for REPLACE: %w", err)
-			}
-		} else {
-			if err := tree.Delete([]byte(key)); err != nil {
-				return false, fmt.Errorf("failed to delete row for REPLACE: %w", err)
-			}
+		if err := deleteRowKey(tree, []byte(key)); err != nil {
+			return false, fmt.Errorf("failed to delete row for REPLACE: %w", err)
 		}
 		return false, nil // Proceed with insert after cleanup
 	}
@@ -1525,12 +1527,16 @@ func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *
 			if oldPKData, err := idxTree.Get([]byte(indexKey)); err == nil {
 				if stmt.ConflictAction == query.ConflictIgnore {
 					// Delete the already-stored row from the main table
-					_ = tree.Delete([]byte(key))
+					if err := deleteRowKey(tree, []byte(key)); err != nil {
+						return idxChanges, skipRow, fmt.Errorf("failed to delete ignored row: %w", err)
+					}
 					// Undo any index entries already added in this loop iteration
 					for _, undo := range idxChanges {
 						if undo.wasAdded {
 							if idxTree2, ok := c.indexTrees[undo.indexName]; ok {
-								_ = idxTree2.Delete(undo.key)
+								if err := idxTree2.Delete(undo.key); err != nil {
+									return idxChanges, skipRow, fmt.Errorf("failed to rollback index %s for ignored row: %w", undo.indexName, err)
+								}
 							}
 						}
 					}
@@ -1546,9 +1552,8 @@ func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *
 								for otherIdxName, otherIdxTree := range c.indexTrees {
 									otherIdxDef := c.indexes[otherIdxName]
 									if otherIdxDef.TableName == stmt.Table && len(otherIdxDef.Columns) > 0 {
-										oldIdxKey, ok := buildCompositeIndexKey(table, otherIdxDef, oldRow)
-										if ok {
-											_ = otherIdxTree.Delete([]byte(oldIdxKey))
+										if err := deleteIndexEntryForRow(table, otherIdxDef, otherIdxTree, oldRow, []byte(oldPK)); err != nil {
+											return idxChanges, skipRow, fmt.Errorf("failed to delete from index %s for REPLACE: %w", otherIdxName, err)
 										}
 									}
 								}
@@ -1645,8 +1650,8 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 			if idxDef.TableName == stmt.Table && idxDef.Unique && len(idxDef.Columns) == 1 && strings.ToLower(idxDef.Columns[0]) == colLower {
 				if idxTree, ok := c.indexTrees[idxName]; ok {
 					idxKey := typeTaggedKey(rowValues[i])
-					if _, err := idxTree.Get([]byte(idxKey)); err == nil {
-						duplicateKey = []byte(idxKey)
+					if pkData, err := idxTree.Get([]byte(idxKey)); err == nil {
+						duplicateKey = append([]byte(nil), pkData...)
 					}
 				}
 				found = true
