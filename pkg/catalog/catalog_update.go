@@ -417,7 +417,7 @@ func (c *Catalog) processUpdateRowSnapshot(ctx context.Context, table *TableDef,
 
 	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 	if err != nil {
-		return nil
+		return fmt.Errorf("update: failed to decode row in table %s: %w", table.Name, err)
 	}
 	row := vrow.Data
 	if vrow.Version.DeletedAt > 0 {
@@ -493,7 +493,8 @@ func (c *Catalog) scanUpdateEntries(ctx context.Context, stmt *query.UpdateStmt,
 		for iter.HasNext() {
 			key, valueData, err := iter.Next()
 			if err != nil {
-				break
+				iter.Close()
+				return entries, rowsAffected, fmt.Errorf("failed to read table for UPDATE: %w", err)
 			}
 			k := string(key)
 			fromPending := false
@@ -505,7 +506,8 @@ func (c *Catalog) scanUpdateEntries(ctx context.Context, stmt *query.UpdateStmt,
 
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
-				continue
+				iter.Close()
+				return entries, rowsAffected, fmt.Errorf("update: failed to decode row in table %s: %w", table.Name, err)
 			}
 			row := vrow.Data
 
@@ -544,7 +546,10 @@ func (c *Catalog) scanUpdateEntries(ctx context.Context, stmt *query.UpdateStmt,
 			key := []byte(k)
 			valueData := pendingKeys[k].Value
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-			if err != nil || vrow.Version.DeletedAt > 0 {
+			if err != nil {
+				return entries, rowsAffected, fmt.Errorf("update: failed to decode pending row in table %s: %w", table.Name, err)
+			}
+			if vrow.Version.DeletedAt > 0 {
 				continue
 			}
 			row := vrow.Data
@@ -681,7 +686,8 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		for iter.HasNext() {
 			key, valueData, err := iter.Next()
 			if err != nil {
-				break
+				iter.Close()
+				return 0, rowsAffected, fmt.Errorf("failed to read table for UPDATE: %w", err)
 			}
 			k := string(key)
 			fromPending := false
@@ -694,7 +700,8 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			// Decode row with version info
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
-				continue
+				iter.Close()
+				return 0, rowsAffected, fmt.Errorf("update: failed to decode row in table %s: %w", table.Name, err)
 			}
 			row := vrow.Data
 
@@ -736,7 +743,10 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			key := []byte(k)
 			valueData := pendingKeys[k].Value
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-			if err != nil || vrow.Version.DeletedAt > 0 {
+			if err != nil {
+				return 0, rowsAffected, fmt.Errorf("update: failed to decode pending row in table %s: %w", table.Name, err)
+			}
+			if vrow.Version.DeletedAt > 0 {
 				continue
 			}
 			row := vrow.Data
@@ -1372,7 +1382,7 @@ func (c *Catalog) processUpdateRow(ctx context.Context, table *TableDef, tree bt
 	stmt *query.UpdateStmt, args []interface{}, setColumnIndices []int, entries *[]updateEntry, rowsAffected *int64) error {
 	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 	if err != nil {
-		return nil // Skip unparseable rows
+		return fmt.Errorf("update: failed to decode row in table %s: %w", table.Name, err)
 	}
 	row := vrow.Data
 	if vrow.Version.DeletedAt > 0 {

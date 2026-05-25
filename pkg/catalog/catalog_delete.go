@@ -215,7 +215,8 @@ func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt,
 		for iter.HasNext() {
 			k, valueData, err := iter.NextString()
 			if err != nil {
-				break
+				iter.Close()
+				return entries, rowsAffected, fmt.Errorf("failed to read table for DELETE: %w", err)
 			}
 			fromPending := false
 			if pwValue, ok := pendingKeys[k]; ok {
@@ -226,7 +227,8 @@ func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt,
 
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
-				continue
+				iter.Close()
+				return entries, rowsAffected, fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
 			}
 			row := vrow.Data
 
@@ -274,7 +276,10 @@ func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt,
 			key := []byte(k)
 			valueData := pendingKeys[k].Value
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
-			if err != nil || vrow.Version.DeletedAt > 0 {
+			if err != nil {
+				return entries, rowsAffected, fmt.Errorf("delete: failed to decode pending row in table %s: %w", table.Name, err)
+			}
+			if vrow.Version.DeletedAt > 0 {
 				continue
 			}
 			row := vrow.Data
@@ -425,7 +430,7 @@ func (c *Catalog) processDeleteRow(ctx context.Context, table *TableDef, tree bt
 	// Decode row with version info
 	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 	if err != nil {
-		return nil // Skip unparseable rows
+		return fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
 	}
 	row := vrow.Data
 

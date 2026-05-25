@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -192,11 +193,11 @@ func TestProcessUpdateRowDecodeError(t *testing.T) {
 			Right:    &query.NumberLiteral{Value: 1},
 		},
 	}, nil)
-	if err != nil {
-		t.Fatalf("expected no error for decode error skip, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "failed to decode row") {
+		t.Fatalf("expected decode error, got count=%d err=%v", count, err)
 	}
 	if count != 0 {
-		t.Errorf("expected 0 updates for unparseable row, got %d", count)
+		t.Errorf("expected 0 updates after decode error, got %d", count)
 	}
 }
 
