@@ -932,17 +932,66 @@ func (c *Catalog) executeTriggers(ctx context.Context, tableName string, event s
 			}
 		}
 
-		// Execute each statement in the trigger body
-		for _, bodyStmt := range trigger.Body {
-			// Substitute NEW.col and OLD.col references with actual values
-			resolved := c.resolveTriggerRefs(bodyStmt, newRow, oldRow, columns)
-			// Execute the resolved statement
-			if err := c.executeTriggerStatement(ctx, resolved); err != nil {
-				return fmt.Errorf("trigger %s: %w", trigger.Name, err)
-			}
+		if err := c.executeTriggerBody(ctx, trigger.Name, trigger.Body, newRow, oldRow, columns); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (c *Catalog) executeTriggerBody(ctx context.Context, triggerName string, body []query.Statement, newRow []interface{}, oldRow []interface{}, columns []ColumnDef) error {
+	ts := c.getCurrentTxn()
+	createdTxn := false
+	if ts == nil {
+		ts = c.getTxnState()
+		ts.txnActive = true
+		c.registerGoroutineTxn(ts)
+		createdTxn = true
+	}
+
+	undoStart := len(ts.undoLog)
+	pendingStart := len(ts.pendingWrites)
+	finish := func() {
+		if createdTxn {
+			ts.txnActive = false
+			c.unregisterGoroutineTxn()
+			c.putTxnState(ts)
+		}
+	}
+
+	for _, bodyStmt := range body {
+		resolved := c.resolveTriggerRefs(bodyStmt, newRow, oldRow, columns)
+		if err := c.executeTriggerStatement(ctx, resolved); err != nil {
+			rollbackErr := c.rollbackTriggerBodyEffects(ts, undoStart, pendingStart)
+			finish()
+			if rollbackErr != nil {
+				return fmt.Errorf("trigger %s: %w; rollback failed: %v", triggerName, err, rollbackErr)
+			}
+			return fmt.Errorf("trigger %s: %w", triggerName, err)
+		}
+	}
+
+	if createdTxn {
+		ts.undoLog = ts.undoLog[:0]
+		ts.pendingWrites = ts.pendingWrites[:0]
+	}
+	finish()
+	return nil
+}
+
+func (c *Catalog) rollbackTriggerBodyEffects(ts *catalogTxnState, undoStart int, pendingStart int) error {
+	var rollbackErr error
+	for i := len(ts.undoLog) - 1; i >= undoStart; i-- {
+		entry := ts.undoLog[i]
+		if err := c.applyUndoEntry(entry, "trigger rollback"); err != nil && rollbackErr == nil {
+			rollbackErr = err
+		}
+		rollbackErr = c.reverseIndexChanges(entry, "trigger rollback", rollbackErr)
+	}
+	ts.undoLog = ts.undoLog[:undoStart]
+	ts.pendingWrites = ts.pendingWrites[:pendingStart]
+	rebuildPendingWriteMap(ts)
+	return rollbackErr
 }
 
 func (c *Catalog) executeTriggerStatement(ctx context.Context, stmt query.Statement) error {
@@ -1222,13 +1271,8 @@ func (c *Catalog) executeInsteadOfTrigger(ctx context.Context, trigger *query.Cr
 			newRow[i] = val
 		}
 
-		// Execute trigger body
-		for _, bodyStmt := range trigger.Body {
-			// Resolve NEW. references
-			resolved := c.resolveTriggerRefs(bodyStmt, newRow, nil, columns)
-			if err := c.executeTriggerStatement(ctx, resolved); err != nil {
-				return 0, 0, fmt.Errorf("INSTEAD OF INSERT trigger failed: %w", err)
-			}
+		if err := c.executeTriggerBody(ctx, trigger.Name, trigger.Body, newRow, nil, columns); err != nil {
+			return 0, 0, fmt.Errorf("INSTEAD OF INSERT trigger failed: %w", err)
 		}
 		rowsAffected++
 	}
@@ -1299,12 +1343,8 @@ func (c *Catalog) executeInsteadOfUpdateTrigger(ctx context.Context, trigger *qu
 			}
 		}
 
-		// Execute trigger body
-		for _, bodyStmt := range trigger.Body {
-			resolved := c.resolveTriggerRefs(bodyStmt, newRow, row, columns)
-			if err := c.executeTriggerStatement(ctx, resolved); err != nil {
-				return 0, 0, fmt.Errorf("INSTEAD OF UPDATE trigger failed: %w", err)
-			}
+		if err := c.executeTriggerBody(ctx, trigger.Name, trigger.Body, newRow, row, columns); err != nil {
+			return 0, 0, fmt.Errorf("INSTEAD OF UPDATE trigger failed: %w", err)
 		}
 		rowsAffected++
 	}
@@ -1362,12 +1402,8 @@ func (c *Catalog) executeInsteadOfDeleteTrigger(ctx context.Context, trigger *qu
 			}
 		}
 
-		// Execute trigger body with OLD row
-		for _, bodyStmt := range trigger.Body {
-			resolved := c.resolveTriggerRefs(bodyStmt, nil, row, columns)
-			if err := c.executeTriggerStatement(ctx, resolved); err != nil {
-				return 0, 0, fmt.Errorf("INSTEAD OF DELETE trigger failed: %w", err)
-			}
+		if err := c.executeTriggerBody(ctx, trigger.Name, trigger.Body, nil, row, columns); err != nil {
+			return 0, 0, fmt.Errorf("INSTEAD OF DELETE trigger failed: %w", err)
 		}
 		rowsAffected++
 	}

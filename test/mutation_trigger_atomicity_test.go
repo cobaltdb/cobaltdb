@@ -48,6 +48,49 @@ func TestDeleteRollsBackOnAfterTriggerError(t *testing.T) {
 	expectRowCount(t, db, "SELECT * FROM delete_trigger_audit", 0)
 }
 
+func TestInsertTriggerBodyRollsBackSideEffectsOnLaterFailure(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	execSQL(t, db, "CREATE TABLE insert_trigger_body_main (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+	execSQL(t, db, "CREATE TABLE insert_trigger_body_audit (id INTEGER PRIMARY KEY, note TEXT NOT NULL)")
+	execSQL(t, db, `CREATE TRIGGER insert_body_bad_after
+		AFTER INSERT ON insert_trigger_body_main
+		BEGIN
+			INSERT INTO insert_trigger_body_audit VALUES (NEW.id, 'seen');
+			INSERT INTO insert_trigger_body_audit VALUES (NEW.id + 100, NULL);
+		END`)
+
+	_, err := db.Exec(ctx, "INSERT INTO insert_trigger_body_main VALUES (1, 'one')")
+	if err == nil {
+		t.Fatal("expected AFTER INSERT trigger body failure")
+	}
+	expectRowCount(t, db, "SELECT * FROM insert_trigger_body_main", 0)
+	expectRowCount(t, db, "SELECT * FROM insert_trigger_body_audit", 0)
+}
+
+func TestUpdateTriggerBodyRollsBackSideEffectsOnLaterFailure(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	execSQL(t, db, "CREATE TABLE update_trigger_body_main (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+	execSQL(t, db, "CREATE TABLE update_trigger_body_audit (id INTEGER PRIMARY KEY, note TEXT NOT NULL)")
+	execSQL(t, db, "INSERT INTO update_trigger_body_main VALUES (1, 'old')")
+	execSQL(t, db, `CREATE TRIGGER update_body_bad_after
+		AFTER UPDATE ON update_trigger_body_main
+		BEGIN
+			INSERT INTO update_trigger_body_audit VALUES (NEW.id, 'seen');
+			INSERT INTO update_trigger_body_audit VALUES (NEW.id + 100, NULL);
+		END`)
+
+	_, err := db.Exec(ctx, "UPDATE update_trigger_body_main SET name = 'new'")
+	if err == nil {
+		t.Fatal("expected AFTER UPDATE trigger body failure")
+	}
+	expectSingleValue(t, db, "SELECT name FROM update_trigger_body_main WHERE id = 1", "old")
+	expectRowCount(t, db, "SELECT * FROM update_trigger_body_audit", 0)
+}
+
 func TestUpdateFromFiresUpdateTriggers(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

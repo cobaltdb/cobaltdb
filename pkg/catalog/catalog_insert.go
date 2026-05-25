@@ -114,11 +114,8 @@ func (c *Catalog) executeTriggersList(ctx context.Context, triggers []*query.Cre
 				continue
 			}
 		}
-		for _, bodyStmt := range trigger.Body {
-			resolved := c.resolveTriggerRefs(bodyStmt, newRow, oldRow, columns)
-			if err := c.executeTriggerStatement(ctx, resolved); err != nil {
-				return fmt.Errorf("trigger %s execution failed: %w", trigger.Name, err)
-			}
+		if err := c.executeTriggerBody(ctx, trigger.Name, trigger.Body, newRow, oldRow, columns); err != nil {
+			return fmt.Errorf("trigger %s execution failed: %w", trigger.Name, err)
 		}
 	}
 	return nil
