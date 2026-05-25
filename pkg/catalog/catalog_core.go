@@ -624,12 +624,16 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	}
 
 	// Fast path: SELECT COUNT(*) FROM table [WHERE ...] — skip row decoding
-	if cols, rows, ok := cat.tryCountStarFastPath(stmt, args, queryTime); ok {
+	if cols, rows, ok, err := cat.tryCountStarFastPath(stmt, args, queryTime); err != nil {
+		return nil, nil, err
+	} else if ok {
 		return cols, rows, nil
 	}
 
 	// Fast path: SELECT SUM/AVG/MIN/MAX/COUNT(col) FROM table — streaming aggregates
-	if cols, rows, ok := cat.trySimpleAggregateFastPath(stmt, args); ok {
+	if cols, rows, ok, err := cat.trySimpleAggregateFastPath(stmt, args); err != nil {
+		return nil, nil, err
+	} else if ok {
 		return cols, rows, nil
 	}
 

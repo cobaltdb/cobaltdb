@@ -1,19 +1,21 @@
 package catalog
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
-func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interface{}, queryTime time.Time) ([]string, [][]interface{}, bool) {
+func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interface{}, queryTime time.Time) ([]string, [][]interface{}, bool, error) {
 	// Only works for: single COUNT(*), single table, no JOINs, no GROUP BY, no subquery
 	if len(stmt.Columns) != 1 || len(stmt.Joins) > 0 || len(stmt.GroupBy) > 0 || stmt.Having != nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	if stmt.From.Subquery != nil || stmt.From.SubqueryStmt != nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 
 	// Check if it's COUNT(*) or COUNT(*) with alias
@@ -23,24 +25,24 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 	}
 	fc, ok := col.(*query.FunctionCall)
 	if !ok || !strings.EqualFold(fc.Name, "COUNT") || len(fc.Args) != 1 {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	if _, isStar := fc.Args[0].(*query.StarExpr); !isStar {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 
 	// Get table and tree
 	table, err := cat.getTableLocked(stmt.From.Name)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	// Skip fast path for partitioned tables (data spread across partition trees)
 	if table.Partition != nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	tree, exists := cat.tableTrees[stmt.From.Name]
 	if !exists {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 
 	// If there are pending buffered writes for this table, the fast path
@@ -48,14 +50,14 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 	// so read-your-writes works correctly.
 	if ts := cat.getCurrentTxn(); ts != nil && len(ts.pendingWrites) > 0 {
 		if _, ok := ts.getPendingWriteMap()[stmt.From.Name]; ok {
-			return nil, nil, false
+			return nil, nil, false, nil
 		}
 	}
 
 	// Count rows by iterating B-tree keys
 	iter, err := tree.Scan(nil, nil)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, true, fmt.Errorf("count fast path: failed to scan table %s: %w", table.Name, err)
 	}
 
 	count := int64(0)
@@ -64,7 +66,11 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 
 	for iter.HasNext() {
 		key, valueData, err := iter.Next()
-		if err != nil || key == nil {
+		if err != nil {
+			iter.Close()
+			return nil, nil, true, fmt.Errorf("count fast path: failed to read row in table %s: %w", table.Name, err)
+		}
+		if key == nil {
 			break
 		}
 
@@ -72,7 +78,7 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 			// Fast path: no WHERE, no AS OF — skip all decoding, just count keys
 			// Soft-deleted rows still have B-tree entries, so we need a minimal check
 			// But for non-temporal queries, all live rows are visible
-			if len(valueData) > 0 && valueData[0] == '{' {
+			if len(valueData) > 0 && valueData[0] == '{' && json.Valid(valueData) {
 				// Check if row has non-zero DeletedAt via quick byte scan
 				if !bytesContainDeletedAt(valueData) {
 					count++
@@ -82,7 +88,8 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 			// Fallback to full decode for edge cases
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
-				continue
+				iter.Close()
+				return nil, nil, true, fmt.Errorf("count fast path: failed to decode row in table %s: %w", table.Name, err)
 			}
 			if vrow.Version.DeletedAt == 0 {
 				count++
@@ -91,13 +98,18 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 			// WHERE clause requires row data
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
-				continue
+				iter.Close()
+				return nil, nil, true, fmt.Errorf("count fast path: failed to decode row in table %s: %w", table.Name, err)
 			}
 			if !vrow.Version.isVisibleAt(queryTime) {
 				continue
 			}
 			matched, err := evaluateWhere(cat, vrow.Data, table.Columns, stmt.Where, args)
-			if err != nil || !matched {
+			if err != nil {
+				iter.Close()
+				return nil, nil, true, fmt.Errorf("count fast path: failed to evaluate WHERE for table %s: %w", table.Name, err)
+			}
+			if !matched {
 				continue
 			}
 			count++
@@ -105,7 +117,8 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 			// AS OF temporal query — need version check
 			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 			if err != nil {
-				continue
+				iter.Close()
+				return nil, nil, true, fmt.Errorf("count fast path: failed to decode row in table %s: %w", table.Name, err)
 			}
 			if !vrow.Version.isVisibleAt(queryTime) {
 				continue
@@ -120,7 +133,7 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 		colName = ae.Alias
 	}
 
-	return []string{colName}, [][]interface{}{{count}}, true
+	return []string{colName}, [][]interface{}{{count}}, true, nil
 }
 
 // bytesContainDeletedAt quickly checks if JSON data has a non-zero deleted_at.
@@ -129,16 +142,16 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 // trySimpleAggregateFastPath handles SELECT with only simple aggregates
 // (SUM, AVG, MIN, MAX, COUNT) on a single table without GROUP BY/JOIN/subquery.
 // Computes aggregates in a single streaming pass.
-func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, bool) {
+func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, bool, error) {
 	// Requirements: no GROUP BY, no HAVING, no JOINs, no subquery, no ORDER BY, no LIMIT
 	if len(stmt.GroupBy) > 0 || stmt.Having != nil || len(stmt.Joins) > 0 {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	if stmt.From == nil || stmt.From.Subquery != nil || stmt.From.SubqueryStmt != nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	if stmt.AsOf != nil || stmt.Limit != nil || len(stmt.OrderBy) > 0 {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 
 	// All columns must be simple aggregates (no DISTINCT, no expression args)
@@ -159,16 +172,16 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 		}
 		fc, ok := actual.(*query.FunctionCall)
 		if !ok || len(fc.Args) != 1 {
-			return nil, nil, false
+			return nil, nil, false, nil
 		}
 		funcName := toUpperFast(fc.Name)
 		if funcName != "SUM" && funcName != "AVG" && funcName != "MIN" && funcName != "MAX" && funcName != "COUNT" {
-			return nil, nil, false
+			return nil, nil, false, nil
 		}
 
 		// DISTINCT aggregates are complex — fall back to normal path
 		if fc.Distinct {
-			return nil, nil, false
+			return nil, nil, false, nil
 		}
 
 		colName := "*"
@@ -176,7 +189,7 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 			if id, ok := fc.Args[0].(*query.Identifier); ok {
 				colName = id.Name
 			} else {
-				return nil, nil, false // expression arg, too complex
+				return nil, nil, false, nil // expression arg, too complex
 			}
 		}
 		if alias == "" {
@@ -186,20 +199,20 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 	}
 
 	if len(specs) == 0 {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 
 	// Get table
 	table, err := cat.getTableLocked(stmt.From.Name)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	if table.Partition != nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	tree, exists := cat.tableTrees[stmt.From.Name]
 	if !exists {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 
 	// If there are pending buffered writes for this table, the fast path
@@ -207,7 +220,7 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 	// so read-your-writes works correctly.
 	if ts := cat.getCurrentTxn(); ts != nil && len(ts.pendingWrites) > 0 {
 		if _, ok := ts.getPendingWriteMap()[stmt.From.Name]; ok {
-			return nil, nil, false
+			return nil, nil, false, nil
 		}
 	}
 
@@ -216,7 +229,7 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 		if specs[i].colName != "*" {
 			specs[i].colIdx = table.GetColumnIndex(specs[i].colName)
 			if specs[i].colIdx < 0 {
-				return nil, nil, false
+				return nil, nil, false, nil
 			}
 		}
 	}
@@ -232,7 +245,7 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 
 	iter, err := tree.Scan(nil, nil)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, true, fmt.Errorf("aggregate fast path: failed to scan table %s: %w", table.Name, err)
 	}
 
 	// Use byte-level fast path for SUM/AVG without WHERE (skip full JSON decode)
@@ -249,43 +262,51 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 	for iter.HasNext() {
 		_, valueData, err := iter.Next()
 		if err != nil {
-			break
+			iter.Close()
+			return nil, nil, true, fmt.Errorf("aggregate fast path: failed to read row in table %s: %w", table.Name, err)
 		}
 
-		if canUseByteFastPath && len(valueData) > 0 && valueData[0] == '{' {
+		if canUseByteFastPath && len(valueData) > 0 && valueData[0] == '{' && json.Valid(valueData) {
 			if bytesContainDeletedAt(valueData) {
 				continue
 			}
 			// Try byte-level extraction; fall back to full decode on failure
 			allOK := true
+			rowCounts := make([]int64, len(specs))
+			rowSums := make([]float64, len(specs))
+			rowHasVals := make([]bool, len(specs))
 			for i, spec := range specs {
 				if spec.funcName == "COUNT" {
-					states[i].count++
+					rowCounts[i] = 1
 					continue
 				}
 				if fval, ok := extractColumnFloat64(valueData, spec.colIdx); ok {
-					states[i].sum += fval
-					states[i].count++
-					states[i].hasVal = true
+					rowSums[i] = fval
+					rowHasVals[i] = true
+					if spec.funcName == "AVG" {
+						rowCounts[i] = 1
+					}
 				} else {
 					allOK = false
 					break
 				}
 			}
 			if allOK {
-				continue
-			}
-			// Byte extraction failed for this row — undo partial updates and fall through
-			for i, spec := range specs {
-				if spec.funcName == "COUNT" {
-					states[i].count--
+				for i := range specs {
+					states[i].count += rowCounts[i]
+					states[i].sum += rowSums[i]
+					if rowHasVals[i] {
+						states[i].hasVal = true
+					}
 				}
+				continue
 			}
 		}
 
 		vrow, err := decodeVersionedRow(valueData, len(table.Columns))
 		if err != nil {
-			continue
+			iter.Close()
+			return nil, nil, true, fmt.Errorf("aggregate fast path: failed to decode row in table %s: %w", table.Name, err)
 		}
 		if vrow.Version.DeletedAt > 0 {
 			continue
@@ -295,7 +316,11 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 		// Apply WHERE
 		if stmt.Where != nil {
 			matched, err := evaluateWhere(cat, row, table.Columns, stmt.Where, args)
-			if err != nil || !matched {
+			if err != nil {
+				iter.Close()
+				return nil, nil, true, fmt.Errorf("aggregate fast path: failed to evaluate WHERE for table %s: %w", table.Name, err)
+			}
+			if !matched {
 				continue
 			}
 		}
@@ -370,7 +395,7 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 		}
 	}
 
-	return colNames, [][]interface{}{resultRow}, true
+	return colNames, [][]interface{}{resultRow}, true, nil
 }
 
 // toFloat64Safe converts a value to float64, returning (value, true) or (0, false)
@@ -417,4 +442,3 @@ func bytesContainDeletedAt(data []byte) bool {
 	// No deleted_at field found — treat as not deleted (legacy format)
 	return false
 }
-
