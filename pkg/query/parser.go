@@ -2040,14 +2040,7 @@ func (p *Parser) parseCreateForeignTable() (*CreateForeignTableStmt, error) {
 		return nil, err
 	}
 
-	if p.match(TokenIf) {
-		if _, err := p.expect(TokenNot); err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TokenExists); err != nil {
-			return nil, err
-		}
-	}
+	stmt.IfNotExists = p.parseIfNotExists()
 
 	table, err := p.expect(TokenIdentifier)
 	if err != nil {

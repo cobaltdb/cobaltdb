@@ -16,9 +16,15 @@ func (c *Catalog) CreateForeignTable(stmt *query.CreateForeignTableStmt) error {
 	defer c.invalidateSchemaCache()
 
 	if _, exists := c.tables[stmt.Table]; exists {
+		if stmt.IfNotExists {
+			return nil
+		}
 		return ErrTableExists
 	}
 	if _, exists := c.foreignTables[stmt.Table]; exists {
+		if stmt.IfNotExists {
+			return nil
+		}
 		return ErrTableExists
 	}
 
@@ -41,11 +47,28 @@ func (c *Catalog) CreateForeignTable(stmt *query.CreateForeignTableStmt) error {
 		}
 	}
 
-	c.foreignTables[stmt.Table] = &ForeignTableDef{
+	def := &ForeignTableDef{
 		TableName: stmt.Table,
 		Columns:   cols,
 		Wrapper:   stmt.Wrapper,
-		Options:   stmt.Options,
+	}
+	if stmt.Options != nil {
+		def.Options = make(map[string]string, len(stmt.Options))
+		for key, value := range stmt.Options {
+			def.Options[key] = value
+		}
+	}
+	c.foreignTables[stmt.Table] = def
+	if err := c.storeForeignTableDef(def); err != nil {
+		delete(c.foreignTables, stmt.Table)
+		return err
+	}
+
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:           undoCreateForeignTable,
+			foreignTableName: stmt.Table,
+		})
 	}
 	return nil
 }
@@ -59,7 +82,7 @@ func (c *Catalog) GetForeignTable(name string) (*ForeignTableDef, error) {
 	if !exists {
 		return nil, ErrTableNotFound
 	}
-	return ft, nil
+	return cloneForeignTableDef(ft), nil
 }
 
 // DropForeignTable drops a foreign table.
@@ -68,8 +91,19 @@ func (c *Catalog) DropForeignTable(name string) error {
 	defer c.mu.Unlock()
 	defer c.invalidateSchemaCache()
 
-	if _, exists := c.foreignTables[name]; !exists {
+	ft, exists := c.foreignTables[name]
+	if !exists {
 		return ErrTableNotFound
+	}
+	if err := c.deleteCatalogDef("ft:" + name); err != nil {
+		return fmt.Errorf("failed to delete foreign table metadata %s: %w", name, err)
+	}
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:           undoDropForeignTable,
+			foreignTableName: name,
+			foreignTableDef:  cloneForeignTableDef(ft),
+		})
 	}
 	delete(c.foreignTables, name)
 	return nil

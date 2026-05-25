@@ -37,6 +37,12 @@ func (c *Catalog) Save() error {
 		}
 	}
 
+	for foreignTableName, foreignTableDef := range c.foreignTables {
+		if err := c.storeForeignTableDef(foreignTableDef); err != nil {
+			return fmt.Errorf("failed to save foreign table definition %s: %w", foreignTableName, err)
+		}
+	}
+
 	for viewName, viewQuery := range c.views {
 		sql := c.viewSQL[viewName]
 		if strings.TrimSpace(sql) == "" {
@@ -188,6 +194,17 @@ func (c *Catalog) storeVectorIndexDef(vid *VectorIndexDef) error {
 	return nil
 }
 
+func (c *Catalog) storeForeignTableDef(ft *ForeignTableDef) error {
+	data, err := json.Marshal(ft)
+	if err != nil {
+		return err
+	}
+	if c.tree != nil {
+		return c.tree.Put([]byte("ft:"+ft.TableName), data)
+	}
+	return nil
+}
+
 func (c *Catalog) Load() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -217,6 +234,9 @@ func (c *Catalog) Load() error {
 	}
 	if c.materializedViews == nil {
 		c.materializedViews = make(map[string]*MaterializedViewDef)
+	}
+	if c.foreignTables == nil {
+		c.foreignTables = make(map[string]*ForeignTableDef)
 	}
 
 	// Load table definitions from catalog tree
@@ -327,6 +347,31 @@ func (c *Catalog) Load() error {
 			c.indexTrees[indexDef.Name] = indexTree
 		}
 		idxIter.Close()
+	}
+
+	foreignTableIter, err := c.tree.Scan([]byte("ft:"), []byte("ft;"))
+	if err == nil {
+		for foreignTableIter.HasNext() {
+			keyStr, value, err := foreignTableIter.NextString()
+			if err != nil {
+				break
+			}
+			if !strings.HasPrefix(keyStr, "ft:") {
+				continue
+			}
+			var ft ForeignTableDef
+			if err := json.Unmarshal(value, &ft); err != nil {
+				continue
+			}
+			if ft.TableName == "" {
+				ft.TableName = strings.TrimPrefix(keyStr, "ft:")
+			}
+			if _, tableExists := c.tables[ft.TableName]; tableExists {
+				continue
+			}
+			c.foreignTables[ft.TableName] = &ft
+		}
+		foreignTableIter.Close()
 	}
 
 	viewIter, err := c.tree.Scan([]byte("view:"), []byte("view;"))

@@ -44,6 +44,7 @@ func TestDDLDropMetadataDeleteFailureKeepsCatalogState(t *testing.T) {
 	c.procedureSQL["ddl_delete_proc"] = "CREATE PROCEDURE ddl_delete_proc() BEGIN SELECT 1; END"
 	c.materializedViews["ddl_delete_mv"] = &MaterializedViewDef{Name: "ddl_delete_mv"}
 	c.materializedViewSQL["ddl_delete_mv"] = "CREATE MATERIALIZED VIEW ddl_delete_mv AS SELECT 1"
+	c.foreignTables["ddl_delete_ft"] = &ForeignTableDef{TableName: "ddl_delete_ft", Wrapper: "csv"}
 
 	cases := []struct {
 		name      string
@@ -84,6 +85,11 @@ func TestDDLDropMetadataDeleteFailureKeepsCatalogState(t *testing.T) {
 			},
 			stillHere: func() bool { _, ok := c.materializedViews["ddl_delete_mv"]; return ok },
 		},
+		{
+			name:      "foreign table",
+			drop:      func() error { return c.DropForeignTable("ddl_delete_ft") },
+			stillHere: func() bool { _, ok := c.foreignTables["ddl_delete_ft"]; return ok },
+		},
 	}
 
 	for _, tc := range cases {
@@ -94,6 +100,27 @@ func TestDDLDropMetadataDeleteFailureKeepsCatalogState(t *testing.T) {
 		if !tc.stillHere() {
 			t.Fatalf("%s: catalog state was removed after metadata delete failure", tc.name)
 		}
+	}
+}
+
+func TestCreateForeignTableMetadataStoreFailureRollsBackCatalogState(t *testing.T) {
+	c, pool := newMetadataIsolationCatalog(t)
+	defer pool.Close()
+	c.fdwRegistry = nil
+
+	c.tree = &putFailTree{TreeStore: c.tree, err: errors.New("put failed")}
+	err := c.CreateForeignTable(&query.CreateForeignTableStmt{
+		Table:   "ddl_foreign_create_fail",
+		Wrapper: "csv",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "put failed") {
+		t.Fatalf("expected metadata store error, got %v", err)
+	}
+	if _, ok := c.foreignTables["ddl_foreign_create_fail"]; ok {
+		t.Fatal("foreign table should not remain in catalog after metadata store failure")
 	}
 }
 

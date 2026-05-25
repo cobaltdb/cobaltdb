@@ -58,6 +58,21 @@ func cloneIndexDef(index *IndexDef) *IndexDef {
 	return &cloned
 }
 
+func cloneForeignTableDef(foreignTable *ForeignTableDef) *ForeignTableDef {
+	if foreignTable == nil {
+		return nil
+	}
+	cloned := *foreignTable
+	cloned.Columns = cloneColumnDefs(foreignTable.Columns)
+	if foreignTable.Options != nil {
+		cloned.Options = make(map[string]string, len(foreignTable.Options))
+		for key, value := range foreignTable.Options {
+			cloned.Options[key] = value
+		}
+	}
+	return &cloned
+}
+
 func cloneMaterializedViewDef(view *MaterializedViewDef) *MaterializedViewDef {
 	if view == nil {
 		return nil

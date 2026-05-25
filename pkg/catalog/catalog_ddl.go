@@ -286,7 +286,17 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 	}
 
 	// Drop foreign table if present
-	if _, fexists := c.foreignTables[stmt.Table]; fexists {
+	if ft, fexists := c.foreignTables[stmt.Table]; fexists {
+		if err := c.deleteCatalogDef("ft:" + stmt.Table); err != nil {
+			return fmt.Errorf("failed to delete foreign table metadata %s: %w", stmt.Table, err)
+		}
+		if c.isCurrentTxnActive() {
+			c.appendUndoEntry(undoEntry{
+				action:           undoDropForeignTable,
+				foreignTableName: stmt.Table,
+				foreignTableDef:  cloneForeignTableDef(ft),
+			})
+		}
 		delete(c.foreignTables, stmt.Table)
 		return nil
 	}

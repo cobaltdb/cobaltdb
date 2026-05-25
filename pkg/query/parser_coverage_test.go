@@ -1040,6 +1040,20 @@ func TestParseCreateForeignTable(t *testing.T) {
 	}
 }
 
+func TestParseCreateForeignTableIfNotExists(t *testing.T) {
+	stmt, err := Parse("CREATE FOREIGN TABLE IF NOT EXISTS ext (id INTEGER) WRAPPER 'csv'")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	ft, ok := stmt.(*CreateForeignTableStmt)
+	if !ok {
+		t.Fatalf("Expected *CreateForeignTableStmt, got %T", stmt)
+	}
+	if !ft.IfNotExists {
+		t.Fatal("expected IfNotExists")
+	}
+}
+
 func TestParseCreateForeignTableMissingWrapper(t *testing.T) {
 	_, err := Parse("CREATE FOREIGN TABLE ext (id INTEGER)")
 	if err == nil {

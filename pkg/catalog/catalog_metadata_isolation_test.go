@@ -92,6 +92,41 @@ func TestGetIndexReturnsIsolatedDefinition(t *testing.T) {
 	}
 }
 
+func TestGetForeignTableReturnsIsolatedDefinition(t *testing.T) {
+	c, pool := newMetadataIsolationCatalog(t)
+	defer pool.Close()
+	c.fdwRegistry = nil
+
+	if err := c.CreateForeignTable(&query.CreateForeignTableStmt{
+		Table:   "meta_ft",
+		Wrapper: "csv",
+		Columns: []*query.ColumnDef{
+			{Name: "id", Type: query.TokenInteger},
+		},
+		Options: map[string]string{"file": "/tmp/meta.csv"},
+	}); err != nil {
+		t.Fatalf("CreateForeignTable: %v", err)
+	}
+
+	ft, err := c.GetForeignTable("meta_ft")
+	if err != nil {
+		t.Fatalf("GetForeignTable: %v", err)
+	}
+	ft.Columns[0].Name = "mutated"
+	ft.Options["file"] = "/tmp/mutated.csv"
+
+	ftAgain, err := c.GetForeignTable("meta_ft")
+	if err != nil {
+		t.Fatalf("GetForeignTable second read: %v", err)
+	}
+	if ftAgain.Columns[0].Name != "id" {
+		t.Fatalf("GetForeignTable returned mutable columns: %+v", ftAgain.Columns)
+	}
+	if ftAgain.Options["file"] != "/tmp/meta.csv" {
+		t.Fatalf("GetForeignTable returned mutable options: %+v", ftAgain.Options)
+	}
+}
+
 func TestGetMaterializedViewReturnsIsolatedDefinition(t *testing.T) {
 	c, pool := newMetadataIsolationCatalog(t)
 	defer pool.Close()

@@ -708,6 +708,10 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 		return c.undoCreateMaterializedViewEntry(entry, errorPrefix)
 	case undoDropMaterializedView:
 		return c.undoDropMaterializedViewEntry(entry, errorPrefix)
+	case undoCreateForeignTable:
+		return c.undoCreateForeignTableEntry(entry, errorPrefix)
+	case undoDropForeignTable:
+		return c.undoDropForeignTableEntry(entry, errorPrefix)
 	}
 	return nil
 }
@@ -1005,6 +1009,29 @@ func (c *Catalog) undoDropMaterializedViewEntry(entry undoEntry, errorPrefix str
 	return nil
 }
 
+func (c *Catalog) undoCreateForeignTableEntry(entry undoEntry, errorPrefix string) error {
+	delete(c.foreignTables, entry.foreignTableName)
+	if c.tree != nil {
+		if err := c.tree.Delete([]byte("ft:" + entry.foreignTableName)); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
+			return fmt.Errorf("%s removing foreign table %s: %w", errorPrefix, entry.foreignTableName, err)
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) undoDropForeignTableEntry(entry undoEntry, errorPrefix string) error {
+	if c.foreignTables == nil {
+		c.foreignTables = make(map[string]*ForeignTableDef)
+	}
+	c.foreignTables[entry.foreignTableName] = cloneForeignTableDef(entry.foreignTableDef)
+	if c.tree != nil && entry.foreignTableDef != nil {
+		if err := c.storeForeignTableDef(entry.foreignTableDef); err != nil {
+			return fmt.Errorf("%s restoring foreign table %s: %w", errorPrefix, entry.foreignTableName, err)
+		}
+	}
+	return nil
+}
+
 func (c *Catalog) reverseIndexChanges(entry undoEntry, errorPrefix string, rollbackErr error) error {
 	for j := len(entry.indexChanges) - 1; j >= 0; j-- {
 		idxChange := entry.indexChanges[j]
@@ -1032,7 +1059,8 @@ func isDDLUndo(a undoAction) bool {
 		undoAlterAddColumn, undoAlterDropColumn, undoAlterRename, undoAlterRenameColumn,
 		undoCreateView, undoDropView, undoCreateTrigger, undoDropTrigger,
 		undoCreateProcedure, undoDropProcedure,
-		undoCreateMaterializedView, undoDropMaterializedView:
+		undoCreateMaterializedView, undoDropMaterializedView,
+		undoCreateForeignTable, undoDropForeignTable:
 		return true
 	default:
 		return false

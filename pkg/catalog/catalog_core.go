@@ -201,6 +201,8 @@ const (
 	undoDropProcedure                            // Undo DROP PROCEDURE by restoring the procedure
 	undoCreateMaterializedView                   // Undo CREATE MATERIALIZED VIEW by dropping the view
 	undoDropMaterializedView                     // Undo DROP MATERIALIZED VIEW by restoring the view
+	undoCreateForeignTable                       // Undo CREATE FOREIGN TABLE by dropping the foreign table
+	undoDropForeignTable                         // Undo DROP FOREIGN TABLE by restoring the foreign table
 )
 
 // indexUndoEntry records an index modification for rollback
@@ -247,6 +249,8 @@ type undoEntry struct {
 	materializedViewName string                      // For materialized view undo actions
 	materializedViewDef  *MaterializedViewDef        // For undoDropMaterializedView: original view
 	materializedViewSQL  string                      // For materialized view undo actions
+	foreignTableName     string                      // For foreign table undo actions
+	foreignTableDef      *ForeignTableDef            // For undoDropForeignTable: original foreign table
 }
 
 // catalogTxnState holds per-transaction state for multi-transaction support.
