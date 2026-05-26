@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -1959,6 +1961,77 @@ func TestPageManager_LoadFreeList_WithData(t *testing.T) {
 		t.Error("Expected non-zero free page count after reload")
 	}
 	t.Logf("Loaded %d free pages from disk", freeCount)
+}
+
+func TestPageManagerLoadFreeListRejectsCycle(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(16, backend)
+	defer pool.Close()
+
+	pm, err := NewPageManager(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := pm.AllocatePage(PageTypeFreeList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageID := page.ID()
+	binary.LittleEndian.PutUint32(page.Data()[PageHeaderSize:PageHeaderSize+4], pageID)
+	binary.LittleEndian.PutUint32(page.Data()[PageHeaderSize+4:PageHeaderSize+8], 0)
+	page.SetDirty(true)
+	pm.GetPool().Unpin(page)
+
+	meta := pm.GetMeta()
+	meta.FreeListID = pageID
+	if err := pm.UpdateMeta(meta); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewPageManager(pool)
+	if err == nil {
+		t.Fatal("expected free list cycle error")
+	}
+	if !strings.Contains(err.Error(), "free list cycle") {
+		t.Fatalf("expected free list cycle error, got %v", err)
+	}
+}
+
+func TestPageManagerLoadFreeListRejectsOversizedCount(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(16, backend)
+	defer pool.Close()
+
+	pm, err := NewPageManager(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := pm.AllocatePage(PageTypeFreeList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageID := page.ID()
+	maxFreeListEntries := uint32((PageSize - PageHeaderSize - 8) / 4)
+	binary.LittleEndian.PutUint32(page.Data()[PageHeaderSize:PageHeaderSize+4], 0)
+	binary.LittleEndian.PutUint32(page.Data()[PageHeaderSize+4:PageHeaderSize+8], maxFreeListEntries+1)
+	page.SetDirty(true)
+	pm.GetPool().Unpin(page)
+
+	meta := pm.GetMeta()
+	meta.FreeListID = pageID
+	if err := pm.UpdateMeta(meta); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewPageManager(pool)
+	if err == nil {
+		t.Fatal("expected oversized free list count error")
+	}
+	if !strings.Contains(err.Error(), "exceeds page capacity") {
+		t.Fatalf("expected page capacity error, got %v", err)
+	}
 }
 
 // TestBufferPool_GetPage_EvictionAndReload exercises GetPage where the page

@@ -90,7 +90,13 @@ func (pm *PageManager) loadFreeList() error {
 
 	// Traverse free list pages
 	currentID := pm.meta.FreeListID
+	visited := make(map[uint32]struct{})
 	for currentID != 0 {
+		if _, ok := visited[currentID]; ok {
+			return fmt.Errorf("free list cycle detected at page %d", currentID)
+		}
+		visited[currentID] = struct{}{}
+
 		page, err := pm.pool.GetPage(currentID)
 		if err != nil {
 			return err
@@ -111,7 +117,8 @@ func (pm *PageManager) loadFreeList() error {
 		offset := PageHeaderSize + 8
 		for i := uint32(0); i < count; i++ {
 			if offset+4 > len(data) {
-				break
+				pm.pool.Unpin(page)
+				return fmt.Errorf("invalid free list page %d: count %d exceeds page capacity", currentID, count)
 			}
 			pageID := binary.LittleEndian.Uint32(data[offset : offset+4])
 			pm.freeList = append(pm.freeList, pageID)
