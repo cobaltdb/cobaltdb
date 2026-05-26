@@ -765,7 +765,9 @@ func (db *DB) dispatchDDL(ctx context.Context, action, table string, handler fun
 		db.auditLogger.Log(audit.EventDDL, auditUser(ctx), action, opts...)
 	}
 	if err == nil {
-		db.replicateWrite(action, table, nil)
+		if replErr := db.replicateWrite(action, table, nil); replErr != nil {
+			return result, replErr
+		}
 	}
 	return result, err
 }
@@ -825,7 +827,9 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 			db.auditLogger.LogQuery(auditUser(ctx), "INSERT", time.Since(start), result.RowsAffected, err)
 		}
 		if err == nil {
-			db.replicateWrite("INSERT", s.Table, args)
+			if replErr := db.replicateWrite("INSERT", s.Table, args); replErr != nil {
+				return result, replErr
+			}
 		}
 		return result, err
 	case *query.UpdateStmt:
@@ -834,7 +838,9 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 			db.auditLogger.LogQuery(auditUser(ctx), "UPDATE", time.Since(start), result.RowsAffected, err)
 		}
 		if err == nil {
-			db.replicateWrite("UPDATE", s.Table, args)
+			if replErr := db.replicateWrite("UPDATE", s.Table, args); replErr != nil {
+				return result, replErr
+			}
 		}
 		return result, err
 	case *query.DeleteStmt:
@@ -843,7 +849,9 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 			db.auditLogger.LogQuery(auditUser(ctx), "DELETE", time.Since(start), result.RowsAffected, err)
 		}
 		if err == nil {
-			db.replicateWrite("DELETE", s.Table, args)
+			if replErr := db.replicateWrite("DELETE", s.Table, args); replErr != nil {
+				return result, replErr
+			}
 		}
 		return result, err
 	case *query.DropTableStmt:

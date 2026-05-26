@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
 	"github.com/cobaltdb/cobaltdb/pkg/advisor"
 	"github.com/cobaltdb/cobaltdb/pkg/backup"
 	"github.com/cobaltdb/cobaltdb/pkg/cache"
@@ -352,9 +353,9 @@ func (db *DB) UpdateTableStatistics(tableName string, stats *optimizer.TableStat
 // replicateWrite sends write operations to the replication manager
 // This is called automatically after successful write operations (INSERT, UPDATE, DELETE, DDL)
 
-func (db *DB) replicateWrite(operation string, table string, args []interface{}) {
+func (db *DB) replicateWrite(operation string, table string, args []interface{}) error {
 	if db.replicationMgr == nil {
-		return // Replication not enabled
+		return nil // Replication not enabled
 	}
 
 	// Serialize the write operation
@@ -373,7 +374,10 @@ func (db *DB) replicateWrite(operation string, table string, args []interface{})
 
 	// Send to replication manager (async, non-blocking)
 	// The replication manager handles buffering and sending to slaves
-	_ = db.replicationMgr.ReplicateWALEntry([]byte(sb.String()))
+	if err := db.replicationMgr.ReplicateWALEntry([]byte(sb.String())); err != nil {
+		return fmt.Errorf("failed to replicate %s on %s: %w", operation, table, err)
+	}
+	return nil
 }
 
 // Replication methods
@@ -401,5 +405,3 @@ func (db *DB) SearchVectorRange(indexName string, queryVector []float64, radius 
 	}
 	return db.catalog.SearchVectorRange(indexName, queryVector, radius)
 }
-
-

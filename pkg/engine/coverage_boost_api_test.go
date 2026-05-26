@@ -2,10 +2,12 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
+	"github.com/cobaltdb/cobaltdb/pkg/replication"
 )
 
 // TestPathMethod tests the Path() method
@@ -202,6 +204,46 @@ func TestReplicateWriteWithMaster(t *testing.T) {
 	db.Exec(ctx, "DELETE FROM repl_test WHERE id = 1")
 
 	t.Log("Replication write operations completed")
+}
+
+func TestReplicateWriteReturnsFencedPrimaryError(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := dir + "/repl_write_fenced.db"
+
+	db, err := Open(dbPath, &Options{
+		CacheSize:             256,
+		ReplicationRole:       "master",
+		ReplicationMode:       "async",
+		ReplicationListenAddr: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("Failed to open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, "CREATE TABLE repl_fenced (id INTEGER PRIMARY KEY)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if err := db.replicationMgr.FencePrimary(replication.PrimaryFenceRequest{
+		FencingToken: "test-token",
+		Epoch:        1,
+	}); err != nil {
+		t.Fatalf("FencePrimary: %v", err)
+	}
+
+	_, err = db.Exec(ctx, "INSERT INTO repl_fenced VALUES (1)")
+	if !errors.Is(err, replication.ErrPrimaryFenced) {
+		t.Fatalf("expected ErrPrimaryFenced, got %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(ctx, "SELECT COUNT(*) FROM repl_fenced").Scan(&count); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected failed replicated write to rollback, got %d rows", count)
+	}
 }
 
 // TestDBUtilityMethodsInMemory tests utility methods on in-memory DB (no WAL)
