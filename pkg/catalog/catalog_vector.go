@@ -231,11 +231,11 @@ func (c *Catalog) updateVectorIndexesForInsert(tableName string, rowSlice []inte
 		// Find column index
 		table, err := c.getTableLocked(tableName)
 		if err != nil {
-			continue
+			return fmt.Errorf("failed to resolve table %s for vector index %s after insert: %w", tableName, vectorIndex.Name, err)
 		}
 		colIdx := table.GetColumnIndex(vectorIndex.ColumnName)
 		if colIdx == -1 {
-			continue
+			return fmt.Errorf("column %s not found in table %s for vector index %s", vectorIndex.ColumnName, tableName, vectorIndex.Name)
 		}
 
 		if err := c.indexRowForVector(vectorIndex, rowSlice, key, colIdx); err != nil {
@@ -283,11 +283,11 @@ func (c *Catalog) updateVectorIndexesForUpdate(tableName string, rowSlice []inte
 		// Find column index and re-insert
 		table, err := c.getTableLocked(tableName)
 		if err != nil {
-			continue
+			return fmt.Errorf("failed to resolve table %s for vector index %s after update: %w", tableName, vectorIndex.Name, err)
 		}
 		colIdx := table.GetColumnIndex(vectorIndex.ColumnName)
 		if colIdx == -1 {
-			continue
+			return fmt.Errorf("column %s not found in table %s for vector index %s", vectorIndex.ColumnName, tableName, vectorIndex.Name)
 		}
 
 		if err := c.indexRowForVector(vectorIndex, rowSlice, rowKey, colIdx); err != nil {
