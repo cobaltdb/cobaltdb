@@ -651,6 +651,14 @@ func TestWALRecoverLogicalRecords(t *testing.T) {
 	if string(ops[0].Data) != string(data) {
 		t.Errorf("data mismatch: got %q, want %q", ops[0].Data, data)
 	}
+
+	if err := wal2.Recover(pool); err != nil {
+		t.Fatalf("second Recover failed: %v", err)
+	}
+	ops = wal2.GetReplayOps()
+	if len(ops) != 1 {
+		t.Fatalf("expected second recovery to replace replay ops, got %d", len(ops))
+	}
 }
 
 func TestWALGetReplayOpsReturnsIsolatedData(t *testing.T) {

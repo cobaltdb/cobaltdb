@@ -850,6 +850,7 @@ func (w *WAL) Recover(bp *BufferPool) error {
 	if _, err := w.file.Seek(0, 0); err != nil {
 		return err
 	}
+	w.replayOps = nil
 
 	reader := bufio.NewReader(w.file)
 	var committedTxns = make(map[uint64]bool)
