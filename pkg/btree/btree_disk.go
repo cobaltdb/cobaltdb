@@ -31,7 +31,11 @@ func NewDiskBTree(pm *storage.PageManager) (*DiskBTree, error) {
 	if meta.RootPageID != 0 {
 		// Existing tree
 		tree.rootPageID = meta.RootPageID
-		tree.size = int64(tree.countLeafEntries())
+		entryCount, err := tree.countLeafEntries()
+		if err != nil {
+			return nil, fmt.Errorf("failed to count leaf entries: %w", err)
+		}
+		tree.size = int64(entryCount)
 		return tree, nil
 	}
 
@@ -551,7 +555,7 @@ func (t *DiskBTree) RootPageID() uint32 {
 
 // countLeafEntries traverses all leaf pages to count total entries.
 // Used to initialize size when opening an existing tree.
-func (t *DiskBTree) countLeafEntries() int {
+func (t *DiskBTree) countLeafEntries() (int, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
@@ -559,7 +563,7 @@ func (t *DiskBTree) countLeafEntries() int {
 	for {
 		page, err := t.pm.GetPage(pageID)
 		if err != nil {
-			return 0
+			return 0, fmt.Errorf("failed to read page %d while finding first leaf: %w", pageID, err)
 		}
 		data := page.Data()
 		pageType := storage.PageType(data[4])
@@ -575,7 +579,7 @@ func (t *DiskBTree) countLeafEntries() int {
 	for pageID != 0 {
 		page, err := t.pm.GetPage(pageID)
 		if err != nil {
-			break
+			return 0, fmt.Errorf("failed to read leaf page %d: %w", pageID, err)
 		}
 		entries := t.readEntries(page.Data())
 		count += len(entries)
@@ -583,7 +587,7 @@ func (t *DiskBTree) countLeafEntries() int {
 		t.pm.GetPool().Unpin(page)
 		pageID = nextID
 	}
-	return count
+	return count, nil
 }
 
 // Scan returns an iterator for range scanning

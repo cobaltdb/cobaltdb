@@ -2,6 +2,7 @@ package btree
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -48,6 +49,35 @@ func TestNewDiskBTree(t *testing.T) {
 
 	if tree.order != 100 {
 		t.Errorf("Expected order 100, got %d", tree.order)
+	}
+}
+
+func TestNewDiskBTreeReturnsErrorForMissingRootPage(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	pm, err := storage.NewPageManager(pool)
+	if err != nil {
+		t.Fatalf("Failed to create page manager: %v", err)
+	}
+	defer pm.Close()
+
+	meta := pm.GetMeta()
+	meta.RootPageID = 999
+	if err := pm.UpdateMeta(meta); err != nil {
+		t.Fatalf("Failed to update meta: %v", err)
+	}
+
+	_, err = NewDiskBTree(pm)
+	if err == nil {
+		t.Fatal("Expected missing root page error")
+	}
+	if !strings.Contains(err.Error(), "failed to count leaf entries") {
+		t.Fatalf("Expected count leaf entries error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "page 999") {
+		t.Fatalf("Expected missing page ID in error, got %v", err)
 	}
 }
 
