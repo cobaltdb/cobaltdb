@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -8,6 +9,26 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
+
+type failingBatchTreeStore struct {
+	btree.TreeStore
+	putBatchErr error
+	delBatchErr error
+}
+
+func (t *failingBatchTreeStore) PutBatch(keys [][]byte, values [][]byte) error {
+	if t.putBatchErr != nil {
+		return t.putBatchErr
+	}
+	return t.TreeStore.PutBatch(keys, values)
+}
+
+func (t *failingBatchTreeStore) DeleteBatch(keys [][]byte) error {
+	if t.delBatchErr != nil {
+		return t.delBatchErr
+	}
+	return t.TreeStore.DeleteBatch(keys)
+}
 
 // createCatalogWithTxnManager creates a Catalog wired to a txn.Manager for
 // testing the MVCC buffered-write path.
@@ -76,6 +97,33 @@ func TestBufferedInsert_Basic(t *testing.T) {
 	}
 	if len(r.Rows) != 1 {
 		t.Fatalf("expected 1 row after commit, got %d", len(r.Rows))
+	}
+}
+
+func TestBufferedCommitReturnsIndexBatchError(t *testing.T) {
+	c, _ := createCatalogWithTxnManager(t)
+	if _, err := c.ExecuteQuery("CREATE TABLE buf_idx_err (id INTEGER PRIMARY KEY, val TEXT)"); err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	if _, err := c.ExecuteQuery("CREATE INDEX idx_buf_idx_err_val ON buf_idx_err (val)"); err != nil {
+		t.Fatalf("CREATE INDEX failed: %v", err)
+	}
+
+	putErr := errors.New("index put batch failed")
+	originalTree := c.indexTrees["idx_buf_idx_err_val"]
+	c.indexTrees["idx_buf_idx_err_val"] = &failingBatchTreeStore{
+		TreeStore:   originalTree,
+		putBatchErr: putErr,
+	}
+
+	c.BeginTransaction(1)
+	if _, err := c.ExecuteQuery("INSERT INTO buf_idx_err VALUES (1, 'hello')"); err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	err := c.CommitTransaction()
+	if !errors.Is(err, putErr) {
+		t.Fatalf("expected index batch error, got %v", err)
 	}
 }
 

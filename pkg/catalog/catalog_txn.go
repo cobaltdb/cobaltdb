@@ -407,28 +407,43 @@ func (c *Catalog) CommitTransaction() error {
 						}
 					}
 
+					for name := range tableKeys {
+						if _, exists := tableTrees[name]; !exists {
+							return fmt.Errorf("partition tree %s not found", name)
+						}
+					}
+					for name := range idxPuts {
+						if _, exists := indexTrees[name]; !exists {
+							return fmt.Errorf("index tree %s not found", name)
+						}
+					}
+					for name := range idxDels {
+						if _, exists := indexTrees[name]; !exists {
+							return fmt.Errorf("index tree %s not found", name)
+						}
+					}
+
 					if err := mt.Commit(); err != nil {
 						return fmt.Errorf("txn manager commit: %w", err)
 					}
 
 					// Apply writes while still holding locks.
 					for name, keys := range tableKeys {
-						tree, exists := tableTrees[name]
-						if !exists {
-							return fmt.Errorf("partition tree %s not found", name)
-						}
+						tree := tableTrees[name]
 						if err := tree.PutBatch(keys, tableVals[name]); err != nil {
 							return fmt.Errorf("failed to apply buffered writes to %s: %w", name, err)
 						}
 					}
 					for name, keys := range idxPuts {
-						if tree, ok := indexTrees[name]; ok {
-							_ = tree.PutBatch(keys, idxPutVals[name])
+						tree := indexTrees[name]
+						if err := tree.PutBatch(keys, idxPutVals[name]); err != nil {
+							return fmt.Errorf("failed to apply buffered index writes to %s: %w", name, err)
 						}
 					}
 					for name, keys := range idxDels {
-						if tree, ok := indexTrees[name]; ok {
-							_ = tree.DeleteBatch(keys)
+						tree := indexTrees[name]
+						if err := tree.DeleteBatch(keys); err != nil {
+							return fmt.Errorf("failed to apply buffered index deletes to %s: %w", name, err)
 						}
 					}
 					ts.pendingWrites = ts.pendingWrites[:0]
