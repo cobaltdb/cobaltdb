@@ -125,13 +125,26 @@ func (db *DB) applyReplicationSnapshot(data []byte, lsn uint64) error {
 	if err := db.reloadSnapshotStateLocked(); err != nil {
 		return err
 	}
-	if db.wal != nil {
-		_ = db.wal.AppendWithoutSync(&storage.WALRecord{
-			Type: storage.WALCheckpoint,
-			LSN:  lsn,
-		})
+	if err := db.appendSnapshotCheckpointLocked(lsn); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+func (db *DB) appendSnapshotCheckpointLocked(lsn uint64) error {
+	if db.wal == nil {
+		return nil
+	}
+	if err := db.wal.AppendWithoutSync(&storage.WALRecord{
+		Type: storage.WALCheckpoint,
+		LSN:  lsn,
+	}); err != nil {
+		return fmt.Errorf("failed to append snapshot WAL checkpoint: %w", err)
+	}
+	if err := db.wal.Sync(); err != nil {
+		return fmt.Errorf("failed to sync snapshot WAL checkpoint: %w", err)
+	}
 	return nil
 }
 

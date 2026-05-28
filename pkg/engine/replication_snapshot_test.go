@@ -2,8 +2,11 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
 func TestReplicationSnapshotRoundTripReloadsCatalog(t *testing.T) {
@@ -73,5 +76,21 @@ func TestConfigureReplicationCallbacksWiresEngineSnapshots(t *testing.T) {
 	}
 	if mgr.OnApplySnapshot == nil {
 		t.Fatal("expected OnApplySnapshot callback")
+	}
+}
+
+func TestAppendSnapshotCheckpointReturnsWALError(t *testing.T) {
+	wal, err := storage.OpenWAL(filepath.Join(t.TempDir(), "snapshot.wal"))
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatalf("Close WAL: %v", err)
+	}
+
+	db := &DB{wal: wal}
+	err = db.appendSnapshotCheckpointLocked(12)
+	if !errors.Is(err, storage.ErrWALClosed) {
+		t.Fatalf("expected ErrWALClosed, got %v", err)
 	}
 }
