@@ -289,11 +289,10 @@ func (c *Catalog) CommitTransaction() error {
 						if !exists || tree == nil {
 							continue
 						}
-						var currentValue []byte
-						if bt, ok := tree.(*btree.BTree); ok {
-							currentValue, _ = bt.GetString(wk.Key)
-						} else {
-							currentValue, _ = tree.Get([]byte(wk.Key))
+						currentValue, err := readCommitValidationValue(tree, wk.TreeName, wk.Key)
+						if err != nil {
+							c.commitMu[shard].Unlock()
+							return err
 						}
 						if !bytes.Equal(originalValue, currentValue) {
 							c.commitMu[shard].Unlock()
@@ -395,11 +394,9 @@ func (c *Catalog) CommitTransaction() error {
 							if !exists || tree == nil {
 								continue
 							}
-							var currentValue []byte
-							if bt, ok := tree.(*btree.BTree); ok {
-								currentValue, _ = bt.GetString(wk.Key)
-							} else {
-								currentValue, _ = tree.Get([]byte(wk.Key))
+							currentValue, err := readCommitValidationValue(tree, wk.TreeName, wk.Key)
+							if err != nil {
+								return err
 							}
 							if !bytes.Equal(originalValue, currentValue) {
 								return txn.ErrConflict
@@ -485,6 +482,25 @@ func (c *Catalog) CommitTransaction() error {
 		c.putTxnState(ts)
 	}
 	return nil
+}
+
+func readCommitValidationValue(tree btree.TreeStore, treeName, key string) ([]byte, error) {
+	var (
+		currentValue []byte
+		err          error
+	)
+	if bt, ok := tree.(*btree.BTree); ok {
+		currentValue, err = bt.GetString(key)
+	} else {
+		currentValue, err = tree.Get([]byte(key))
+	}
+	if err == nil {
+		return currentValue, nil
+	}
+	if errors.Is(err, btree.ErrKeyNotFound) {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("failed to validate read for %s/%s: %w", treeName, key, err)
 }
 
 func (c *Catalog) FlushTableTrees() error {

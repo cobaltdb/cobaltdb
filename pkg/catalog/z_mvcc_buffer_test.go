@@ -12,8 +12,16 @@ import (
 
 type failingBatchTreeStore struct {
 	btree.TreeStore
+	getErr      error
 	putBatchErr error
 	delBatchErr error
+}
+
+func (t *failingBatchTreeStore) Get(key []byte) ([]byte, error) {
+	if t.getErr != nil {
+		return nil, t.getErr
+	}
+	return t.TreeStore.Get(key)
 }
 
 func (t *failingBatchTreeStore) PutBatch(keys [][]byte, values [][]byte) error {
@@ -124,6 +132,32 @@ func TestBufferedCommitReturnsIndexBatchError(t *testing.T) {
 	err := c.CommitTransaction()
 	if !errors.Is(err, putErr) {
 		t.Fatalf("expected index batch error, got %v", err)
+	}
+}
+
+func TestBufferedCommitReturnsReadValidationError(t *testing.T) {
+	c, _ := createCatalogWithTxnManager(t)
+	if _, err := c.ExecuteQuery("CREATE TABLE buf_read_err (id INTEGER PRIMARY KEY, val TEXT)"); err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+
+	c.BeginTransaction(1)
+	if _, err := c.ExecuteQuery("INSERT INTO buf_read_err VALUES (1, 'hello')"); err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	getErr := errors.New("read validation failed")
+	ts := c.getCurrentTxn()
+	wk := txn.WriteKey{TreeName: "buf_read_err", Key: "read-key"}
+	ts.readValues = map[txn.WriteKey][]byte{wk: []byte("old")}
+	ts.treeCache["buf_read_err"] = &failingBatchTreeStore{
+		TreeStore: ts.treeCache["buf_read_err"],
+		getErr:    getErr,
+	}
+
+	err := c.CommitTransaction()
+	if !errors.Is(err, getErr) {
+		t.Fatalf("expected read validation error, got %v", err)
 	}
 }
 
