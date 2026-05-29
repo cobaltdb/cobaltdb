@@ -1,5 +1,10 @@
 package query
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Node is the base interface for all AST nodes
 type Node interface {
 	nodeType() string
@@ -15,6 +20,33 @@ type Statement interface {
 type Expression interface {
 	Node
 	expressionNode()
+	Evaluate(Evaluator) (interface{}, error)
+}
+
+// Evaluator is implemented by the catalog to evaluate expression AST nodes.
+// Defined in the query package to avoid circular dependencies.
+type Evaluator interface {
+	EvalBinaryExpr(left, right interface{}, op TokenType) (interface{}, error)
+	EvalUnaryExpr(val interface{}, op TokenType) (interface{}, error)
+	EvalIdentifier(name string) (interface{}, error)
+	EvalQualifiedIdentifier(table, column string) (interface{}, error)
+	EvalPlaceholder(index int) (interface{}, error)
+	EvalLike(val, pattern, escape interface{}, not bool) (interface{}, error)
+	EvalIn(val interface{}, list []interface{}, not bool) (bool, error)
+	EvalInSubquery(val interface{}, q *SelectStmt, not bool) (bool, error)
+	EvalBetween(val, lower, upper interface{}, not bool) (bool, error)
+	EvalIsNull(val interface{}, not bool) (bool, error)
+	EvalFunctionCall(name string, args []interface{}, distinct bool) (interface{}, error)
+	EvalAlias(inner interface{}) (interface{}, error)
+	EvalCase(expr interface{}, whens [][2]interface{}, elseVal interface{}) (interface{}, error)
+	EvalCast(val interface{}, dataType TokenType) (interface{}, error)
+	EvalSubquery(q *SelectStmt) (interface{}, error)
+	EvalExists(q *SelectStmt, not bool) (bool, error)
+	EvalJSONPath(jsonVal interface{}, path string, asText bool) (interface{}, error)
+	EvalJSONContains(jsonVal, val interface{}) (bool, error)
+	EvalMatch(expr *MatchExpr, row []interface{}) (interface{}, error)
+	EvalStar(table string) (interface{}, error)
+	EvalColumnRef(table, column string) (interface{}, error)
 }
 
 // TemporalExpr represents AS OF expression for temporal queries
@@ -413,6 +445,12 @@ type Identifier struct {
 
 func (e *Identifier) nodeType() string { return "Identifier" }
 func (e *Identifier) expressionNode()  {}
+func (e *Identifier) Evaluate(ev Evaluator) (interface{}, error) {
+	if dotIdx := strings.IndexByte(e.Name, '.'); dotIdx > 0 && dotIdx < len(e.Name)-1 {
+		return ev.EvalQualifiedIdentifier(e.Name[:dotIdx], e.Name[dotIdx+1:])
+	}
+	return ev.EvalIdentifier(e.Name)
+}
 
 // QualifiedIdentifier represents a qualified identifier (table.column)
 type QualifiedIdentifier struct {
@@ -422,6 +460,9 @@ type QualifiedIdentifier struct {
 
 func (e *QualifiedIdentifier) nodeType() string { return "QualifiedIdentifier" }
 func (e *QualifiedIdentifier) expressionNode()  {}
+func (e *QualifiedIdentifier) Evaluate(ev Evaluator) (interface{}, error) {
+	return ev.EvalQualifiedIdentifier(e.Table, e.Column)
+}
 
 // ColumnRef represents a column reference (can be used for RETURNING *)
 type ColumnRef struct {
@@ -431,6 +472,9 @@ type ColumnRef struct {
 
 func (e *ColumnRef) nodeType() string { return "ColumnRef" }
 func (e *ColumnRef) expressionNode()  {}
+func (e *ColumnRef) Evaluate(ev Evaluator) (interface{}, error) {
+	return ev.EvalColumnRef(e.Table, e.Column)
+}
 
 // StringLiteral represents a string literal
 type StringLiteral struct {
@@ -439,6 +483,7 @@ type StringLiteral struct {
 
 func (e *StringLiteral) nodeType() string { return "StringLiteral" }
 func (e *StringLiteral) expressionNode()  {}
+func (e *StringLiteral) Evaluate(Evaluator) (interface{}, error) { return e.Value, nil }
 
 // NumberLiteral represents a numeric literal
 type NumberLiteral struct {
@@ -448,6 +493,7 @@ type NumberLiteral struct {
 
 func (e *NumberLiteral) nodeType() string { return "NumberLiteral" }
 func (e *NumberLiteral) expressionNode()  {}
+func (e *NumberLiteral) Evaluate(Evaluator) (interface{}, error) { return e.Value, nil }
 
 // BooleanLiteral represents a boolean literal
 type BooleanLiteral struct {
@@ -456,12 +502,14 @@ type BooleanLiteral struct {
 
 func (e *BooleanLiteral) nodeType() string { return "BooleanLiteral" }
 func (e *BooleanLiteral) expressionNode()  {}
+func (e *BooleanLiteral) Evaluate(Evaluator) (interface{}, error) { return e.Value, nil }
 
 // NullLiteral represents NULL
 type NullLiteral struct{}
 
 func (e *NullLiteral) nodeType() string { return "NullLiteral" }
 func (e *NullLiteral) expressionNode()  {}
+func (e *NullLiteral) Evaluate(Evaluator) (interface{}, error) { return nil, nil }
 
 // VectorLiteral represents a vector literal [0.1, 0.2, 0.3, ...]
 type VectorLiteral struct {
@@ -470,6 +518,7 @@ type VectorLiteral struct {
 
 func (e *VectorLiteral) nodeType() string { return "VectorLiteral" }
 func (e *VectorLiteral) expressionNode()  {}
+func (e *VectorLiteral) Evaluate(Evaluator) (interface{}, error) { return e.Values, nil }
 
 // BinaryExpr represents a binary expression
 type BinaryExpr struct {
@@ -480,6 +529,17 @@ type BinaryExpr struct {
 
 func (e *BinaryExpr) nodeType() string { return "BinaryExpr" }
 func (e *BinaryExpr) expressionNode()  {}
+func (e *BinaryExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	left, err := e.Left.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	right, err := e.Right.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	return ev.EvalBinaryExpr(left, right, e.Operator)
+}
 
 // UnaryExpr represents a unary expression
 type UnaryExpr struct {
@@ -489,6 +549,13 @@ type UnaryExpr struct {
 
 func (e *UnaryExpr) nodeType() string { return "UnaryExpr" }
 func (e *UnaryExpr) expressionNode()  {}
+func (e *UnaryExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	val, err := e.Expr.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	return ev.EvalUnaryExpr(val, e.Operator)
+}
 
 // FunctionCall represents a function call
 type FunctionCall struct {
@@ -499,6 +566,17 @@ type FunctionCall struct {
 
 func (e *FunctionCall) nodeType() string { return "FunctionCall" }
 func (e *FunctionCall) expressionNode()  {}
+func (e *FunctionCall) Evaluate(ev Evaluator) (interface{}, error) {
+	args := make([]interface{}, len(e.Args))
+	for i, arg := range e.Args {
+		v, err := arg.Evaluate(ev)
+		if err != nil {
+			return nil, err
+		}
+		args[i] = v
+	}
+	return ev.EvalFunctionCall(e.Name, args, e.Distinct)
+}
 
 // StarExpr represents * in SELECT *
 type StarExpr struct {
@@ -507,6 +585,9 @@ type StarExpr struct {
 
 func (e *StarExpr) nodeType() string { return "StarExpr" }
 func (e *StarExpr) expressionNode()  {}
+func (e *StarExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	return ev.EvalStar(e.Table)
+}
 
 // JSONPathExpr represents a JSON path expression (column->>'path')
 type JSONPathExpr struct {
@@ -517,6 +598,13 @@ type JSONPathExpr struct {
 
 func (e *JSONPathExpr) nodeType() string { return "JSONPathExpr" }
 func (e *JSONPathExpr) expressionNode()  {}
+func (e *JSONPathExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	val, err := e.Column.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	return ev.EvalJSONPath(val, e.Path, e.AsText)
+}
 
 // JSONContainsExpr represents a JSON contains expression (column @> value)
 type JSONContainsExpr struct {
@@ -526,6 +614,18 @@ type JSONContainsExpr struct {
 
 func (e *JSONContainsExpr) nodeType() string { return "JSONContainsExpr" }
 func (e *JSONContainsExpr) expressionNode()  {}
+func (e *JSONContainsExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	jsonVal, err := e.Column.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	val, err := e.Value.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	ok, err := ev.EvalJSONContains(jsonVal, val)
+	return ok, err
+}
 
 // PlaceholderExpr represents a ? placeholder
 type PlaceholderExpr struct {
@@ -534,6 +634,9 @@ type PlaceholderExpr struct {
 
 func (e *PlaceholderExpr) nodeType() string { return "PlaceholderExpr" }
 func (e *PlaceholderExpr) expressionNode()  {}
+func (e *PlaceholderExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	return ev.EvalPlaceholder(e.Index)
+}
 
 // InExpr represents an IN expression
 type InExpr struct {
@@ -545,6 +648,25 @@ type InExpr struct {
 
 func (e *InExpr) nodeType() string { return "InExpr" }
 func (e *InExpr) expressionNode()  {}
+func (e *InExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	val, err := e.Expr.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	if e.Subquery != nil {
+		return ev.EvalInSubquery(val, e.Subquery, e.Not)
+	}
+	list := make([]interface{}, len(e.List))
+	for i, item := range e.List {
+		v, err := item.Evaluate(ev)
+		if err != nil {
+			return nil, err
+		}
+		list[i] = v
+	}
+	ok, err := ev.EvalIn(val, list, e.Not)
+	return ok, err
+}
 
 // BetweenExpr represents a BETWEEN expression
 type BetweenExpr struct {
@@ -556,6 +678,22 @@ type BetweenExpr struct {
 
 func (e *BetweenExpr) nodeType() string { return "BetweenExpr" }
 func (e *BetweenExpr) expressionNode()  {}
+func (e *BetweenExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	val, err := e.Expr.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	lower, err := e.Lower.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	upper, err := e.Upper.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	ok, err := ev.EvalBetween(val, lower, upper, e.Not)
+	return ok, err
+}
 
 // LikeExpr represents a LIKE expression
 type LikeExpr struct {
@@ -567,6 +705,24 @@ type LikeExpr struct {
 
 func (e *LikeExpr) nodeType() string { return "LikeExpr" }
 func (e *LikeExpr) expressionNode()  {}
+func (e *LikeExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	val, err := e.Expr.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	pattern, err := e.Pattern.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	var escape interface{}
+	if e.Escape != nil {
+		escape, err = e.Escape.Evaluate(ev)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ev.EvalLike(val, pattern, escape, e.Not)
+}
 
 // IsNullExpr represents an IS NULL expression
 type IsNullExpr struct {
@@ -576,6 +732,14 @@ type IsNullExpr struct {
 
 func (e *IsNullExpr) nodeType() string { return "IsNullExpr" }
 func (e *IsNullExpr) expressionNode()  {}
+func (e *IsNullExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	val, err := e.Expr.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	ok, err := ev.EvalIsNull(val, e.Not)
+	return ok, err
+}
 
 // CastExpr represents a CAST expression
 type CastExpr struct {
@@ -585,6 +749,13 @@ type CastExpr struct {
 
 func (e *CastExpr) nodeType() string { return "CastExpr" }
 func (e *CastExpr) expressionNode()  {}
+func (e *CastExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	val, err := e.Expr.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	return ev.EvalCast(val, e.DataType)
+}
 
 // CaseExpr represents a CASE expression
 type CaseExpr struct {
@@ -601,6 +772,36 @@ type WhenClause struct {
 
 func (e *CaseExpr) nodeType() string { return "CaseExpr" }
 func (e *CaseExpr) expressionNode()  {}
+func (e *CaseExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	var exprVal interface{}
+	var err error
+	if e.Expr != nil {
+		exprVal, err = e.Expr.Evaluate(ev)
+		if err != nil {
+			return nil, err
+		}
+	}
+	whens := make([][2]interface{}, len(e.Whens))
+	for i, w := range e.Whens {
+		cond, err := w.Condition.Evaluate(ev)
+		if err != nil {
+			return nil, err
+		}
+		result, err := w.Result.Evaluate(ev)
+		if err != nil {
+			return nil, err
+		}
+		whens[i] = [2]interface{}{cond, result}
+	}
+	var elseVal interface{}
+	if e.Else != nil {
+		elseVal, err = e.Else.Evaluate(ev)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ev.EvalCase(exprVal, whens, elseVal)
+}
 
 // SubqueryExpr represents a subquery expression
 type SubqueryExpr struct {
@@ -609,6 +810,9 @@ type SubqueryExpr struct {
 
 func (e *SubqueryExpr) nodeType() string { return "SubqueryExpr" }
 func (e *SubqueryExpr) expressionNode()  {}
+func (e *SubqueryExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	return ev.EvalSubquery(e.Query)
+}
 
 // ExistsExpr represents an EXISTS expression
 type ExistsExpr struct {
@@ -618,6 +822,10 @@ type ExistsExpr struct {
 
 func (e *ExistsExpr) nodeType() string { return "ExistsExpr" }
 func (e *ExistsExpr) expressionNode()  {}
+func (e *ExistsExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	ok, err := ev.EvalExists(e.Subquery, e.Not)
+	return ok, err
+}
 
 // WindowExpr represents a window function expression
 type WindowExpr struct {
@@ -629,6 +837,9 @@ type WindowExpr struct {
 
 func (e *WindowExpr) nodeType() string { return "WindowExpr" }
 func (e *WindowExpr) expressionNode()  {}
+func (e *WindowExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	return nil, fmt.Errorf("window function %s cannot be used in this context", e.Function)
+}
 
 // WindowSpec represents a window specification (OVER clause)
 type WindowSpec struct {
@@ -638,6 +849,9 @@ type WindowSpec struct {
 
 func (e *WindowSpec) nodeType() string { return "WindowSpec" }
 func (e *WindowSpec) expressionNode()  {}
+func (e *WindowSpec) Evaluate(Evaluator) (interface{}, error) {
+	return nil, fmt.Errorf("window spec cannot be used as expression")
+}
 
 // CTEDef represents a CTE (Common Table Expression) definition
 type CTEDef struct {
@@ -693,6 +907,9 @@ type MatchExpr struct {
 
 func (e *MatchExpr) nodeType() string { return "MatchExpr" }
 func (e *MatchExpr) expressionNode()  {}
+func (e *MatchExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	return ev.EvalMatch(e, nil)
+}
 
 // CreateMaterializedViewStmt represents a CREATE MATERIALIZED VIEW statement
 type CreateMaterializedViewStmt struct {
@@ -722,6 +939,13 @@ type AliasExpr struct {
 
 func (e *AliasExpr) nodeType() string { return "AliasExpr" }
 func (e *AliasExpr) expressionNode()  {}
+func (e *AliasExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	inner, err := e.Expr.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	return ev.EvalAlias(inner)
+}
 
 // RefreshMaterializedViewStmt represents a REFRESH MATERIALIZED VIEW statement
 type RefreshMaterializedViewStmt struct {

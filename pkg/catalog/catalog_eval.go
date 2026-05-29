@@ -47,164 +47,356 @@ func evaluateExpression(c *Catalog, row []interface{}, columns []ColumnDef, expr
 	return ctx.evaluate(expr)
 }
 
-// evaluate evaluates an expression using the context
+// evaluate evaluates an expression using the context.
+// Implements the query.Evaluator interface by dispatching to ctx.EvalXxx methods.
 func (ctx *EvalContext) evaluate(expr query.Expression) (interface{}, error) {
-	c := ctx.Catalog
-	row := ctx.Row
-	columns := ctx.Columns
-	args := ctx.Args
-
-	switch e := expr.(type) {
-	case *query.BinaryExpr:
-		return evaluateBinaryExpr(c, row, columns, e, args)
-	case *query.Identifier:
-		// Check if this is a dotted identifier like "table.column"
-		if dotIdx := strings.IndexByte(e.Name, '.'); dotIdx > 0 && dotIdx < len(e.Name)-1 {
-			// Treat as QualifiedIdentifier
-			return evaluateExpression(c, row, columns, &query.QualifiedIdentifier{
-				Table:  e.Name[:dotIdx],
-				Column: e.Name[dotIdx+1:],
-			}, args)
-		}
-		// Find column value (case-insensitive, allocation-free)
-		for i, col := range columns {
-			if strings.EqualFold(col.Name, e.Name) && i < len(row) {
-				return row[i], nil
-			}
-		}
-		return nil, fmt.Errorf("column not found: %s", e.Name)
-	case *query.PlaceholderExpr:
-		if e.Index < len(args) {
-			return args[e.Index], nil
-		}
-		return nil, fmt.Errorf("placeholder index out of range")
-	case *query.StringLiteral:
-		return e.Value, nil
-	case *query.NumberLiteral:
-		return e.Value, nil
-	case *query.BooleanLiteral:
-		return e.Value, nil
-	case *query.NullLiteral:
+	if expr == nil {
 		return nil, nil
-	case *query.QualifiedIdentifier:
-		// table.column format - prefer exact table match using sourceTbl (case-insensitive)
-		for i, col := range columns {
-			if strings.EqualFold(col.Name, e.Column) && strings.EqualFold(col.sourceTbl, e.Table) && i < len(row) {
-				return row[i], nil
-			}
-		}
-		// Fallback: match by column name only (for non-JOIN contexts)
-		for i, col := range columns {
-			if strings.EqualFold(col.Name, e.Column) && i < len(row) {
-				return row[i], nil
-			}
-		}
-		return nil, fmt.Errorf("column not found: %s.%s", e.Table, e.Column)
-	case *query.LikeExpr:
-		return evaluateLike(c, row, columns, e, args)
-	case *query.InExpr:
-		return evaluateIn(c, row, columns, e, args)
-	case *query.BetweenExpr:
-		return evaluateBetween(c, row, columns, e, args)
-	case *query.IsNullExpr:
-		return evaluateIsNull(c, row, columns, e, args)
-	case *query.FunctionCall:
-		return evaluateFunctionCall(c, row, columns, e, args)
-	case *query.AliasExpr:
-		// Unwrap alias and evaluate the underlying expression
-		return evaluateExpression(c, row, columns, e.Expr, args)
-	case *query.CaseExpr:
-		return evaluateCaseExpr(c, row, columns, e, args)
-	case *query.CastExpr:
-		return evaluateCastExpr(c, row, columns, e, args)
-	case *query.VectorLiteral:
-		// Return vector as []float64
-		return e.Values, nil
-	case *query.SubqueryExpr:
-		// Scalar subquery: execute and return first column of first row
-		// Support correlated subqueries by resolving outer references
-		subq := resolveOuterRefsInQuery(e.Query, row, columns)
-		cols, rows, err := c.selectLocked(subq, args)
-		if err != nil {
-			return nil, err
-		}
-		_ = cols
-		if len(rows) == 0 || len(rows[0]) == 0 {
-			return nil, nil
-		}
-		if len(rows) > 1 {
-			return nil, fmt.Errorf("scalar subquery returned %d rows instead of 1", len(rows))
-		}
-		return rows[0][0], nil
-	case *query.ExistsExpr:
-		// Support correlated subqueries by resolving outer references
-		subq := resolveOuterRefsInQuery(e.Subquery, row, columns)
-		_, rows, err := c.selectLocked(subq, args)
-		if err != nil {
-			return nil, err
-		}
-		exists := len(rows) > 0
-		if e.Not {
-			return !exists, nil
-		}
-		return exists, nil
-	case *query.MatchExpr:
-		return evaluateMatchExprLocked(c, row, columns, e, args)
-	case *query.JSONPathExpr:
-		// Evaluate -> (JSON object) and ->> (JSON text) operators
-		val, err := evaluateExpression(c, row, columns, e.Column, args)
-		if err != nil {
-			return nil, err
-		}
-		jsonStr, ok := toString(val)
-		if !ok {
-			return nil, nil
-		}
-		result, err := JSONExtract(jsonStr, e.Path)
-		if err != nil {
-			return nil, err
-		}
-		if result == nil {
-			return nil, nil
-		}
-		if e.AsText {
-			// ->> returns the value as text (unquoted string)
-			switch v := result.(type) {
-			case string:
-				return v, nil
-			default:
-				return ValueToStringKey(v), nil
-			}
-		}
-		// -> returns the raw JSON value
-		return result, nil
-	case *query.UnaryExpr:
-		val, err := evaluateExpression(c, row, columns, e.Expr, args)
-		if err != nil {
-			return nil, err
-		}
-		switch e.Operator {
-		case query.TokenMinus:
-			if f, ok := toFloat64(val); ok {
-				if _, isInt := val.(int); isInt {
-					return int(-f), nil
-				}
-				if _, isInt64 := val.(int64); isInt64 {
-					return int64(-f), nil
-				}
-				return -f, nil
-			}
-			return nil, fmt.Errorf("cannot negate non-numeric value")
-		case query.TokenNot:
-			if val == nil {
-				return nil, nil // NOT NULL = NULL per SQL three-valued logic
-			}
-			return !toBool(val), nil
-		}
-		return val, nil
-	default:
-		return nil, fmt.Errorf("unsupported expression type: %T", expr)
 	}
+	return expr.Evaluate(ctx)
+}
+
+// --- Evaluator interface implementation ---
+
+func (ctx *EvalContext) EvalBinaryExpr(left, right interface{}, op query.TokenType) (interface{}, error) {
+	return applyBinaryOp(left, right, op)
+}
+
+func (ctx *EvalContext) EvalUnaryExpr(val interface{}, op query.TokenType) (interface{}, error) {
+	switch op {
+	case query.TokenMinus:
+		if f, ok := toFloat64(val); ok {
+			if _, isInt := val.(int); isInt {
+				return int(-f), nil
+			}
+			if _, isInt64 := val.(int64); isInt64 {
+				return int64(-f), nil
+			}
+			return -f, nil
+		}
+		return nil, fmt.Errorf("cannot negate non-numeric value")
+	case query.TokenNot:
+		if val == nil {
+			return nil, nil
+		}
+		return !toBool(val), nil
+	}
+	return val, nil
+}
+
+func (ctx *EvalContext) EvalIdentifier(name string) (interface{}, error) {
+	for i, col := range ctx.Columns {
+		if strings.EqualFold(col.Name, name) && i < len(ctx.Row) {
+			return ctx.Row[i], nil
+		}
+	}
+	return nil, fmt.Errorf("column not found: %s", name)
+}
+
+func (ctx *EvalContext) EvalQualifiedIdentifier(table, column string) (interface{}, error) {
+	for i, col := range ctx.Columns {
+		if strings.EqualFold(col.Name, column) && strings.EqualFold(col.sourceTbl, table) && i < len(ctx.Row) {
+			return ctx.Row[i], nil
+		}
+	}
+	for i, col := range ctx.Columns {
+		if strings.EqualFold(col.Name, column) && i < len(ctx.Row) {
+			return ctx.Row[i], nil
+		}
+	}
+	return nil, fmt.Errorf("column not found: %s.%s", table, column)
+}
+
+func (ctx *EvalContext) EvalPlaceholder(index int) (interface{}, error) {
+	if index < len(ctx.Args) {
+		return ctx.Args[index], nil
+	}
+	return nil, fmt.Errorf("placeholder index out of range")
+}
+
+func (ctx *EvalContext) EvalLike(val, pattern, escape interface{}, not bool) (interface{}, error) {
+	if val == nil || pattern == nil {
+		return nil, nil
+	}
+	leftStr := ValueToStringKey(val)
+	patternStr := ValueToStringKey(pattern)
+	escapeChar := byte(0)
+	if escape != nil {
+		escStr := ValueToStringKey(escape)
+		if len(escStr) == 1 {
+			escapeChar = escStr[0]
+		}
+	}
+	var matched bool
+	if escapeChar != 0 {
+		matched = matchLikeSimple(leftStr, patternStr, escapeChar)
+	} else {
+		matched = matchLikeSimple(leftStr, patternStr)
+	}
+	if not {
+		return !matched, nil
+	}
+	return matched, nil
+}
+
+func (ctx *EvalContext) EvalIn(val interface{}, list []interface{}, not bool) (bool, error) {
+	for _, item := range list {
+		if compareValues(val, item) == 0 {
+			return !not, nil
+		}
+	}
+	return not, nil
+}
+
+func (ctx *EvalContext) EvalInSubquery(val interface{}, q *query.SelectStmt, not bool) (bool, error) {
+	subq := resolveOuterRefsInQuery(q, ctx.Row, ctx.Columns)
+	_, rows, err := ctx.Catalog.selectLocked(subq, ctx.Args)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		if len(row) > 0 && compareValues(val, row[0]) == 0 {
+			return !not, nil
+		}
+	}
+	return not, nil
+}
+
+func (ctx *EvalContext) EvalBetween(val, lower, upper interface{}, not bool) (bool, error) {
+	lowCmp := compareValues(val, lower)
+	highCmp := compareValues(val, upper)
+	inRange := lowCmp >= 0 && highCmp <= 0
+	if not {
+		return !inRange, nil
+	}
+	return inRange, nil
+}
+
+func (ctx *EvalContext) EvalIsNull(val interface{}, not bool) (bool, error) {
+	isNull := val == nil
+	if not {
+		return !isNull, nil
+	}
+	return isNull, nil
+}
+
+func (ctx *EvalContext) EvalFunctionCall(name string, args []interface{}, distinct bool) (interface{}, error) {
+	funcName := name
+
+	// Short-circuit evaluation for COALESCE/IFNULL
+	if funcName == "COALESCE" || funcName == "IFNULL" {
+		for _, val := range args {
+			if val != nil {
+				return val, nil
+			}
+		}
+		return nil, nil
+	}
+
+	// Try string functions
+	if result, handled := evaluateStringFunction(funcName, args); handled {
+		return result.val, result.err
+	}
+
+	// Try math functions
+	if val, handled, err := evaluateMathFunction(funcName, args); handled {
+		return val, err
+	}
+
+	// Try vector functions
+	if val, handled, err := evaluateVectorFunction(funcName, args); handled {
+		return val, err
+	}
+
+	// Try CAST
+	if val, handled, err := evaluateCastFunction(funcName, args); handled {
+		return val, err
+	}
+
+	switch funcName {
+	case "NULLIF":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("NULLIF requires 2 arguments")
+		}
+		if args[0] == nil || args[1] == nil {
+			return args[0], nil
+		}
+		if compareValues(args[0], args[1]) == 0 {
+			return nil, nil
+		}
+		return args[0], nil
+	case "DATE", "TIME", "DATETIME":
+		if len(args) < 1 {
+			return nil, nil
+		}
+		return args[0], nil
+	case "NOW", "CURRENT_TIMESTAMP", "CURRENT_TIME", "CURRENT_DATE":
+		return time.Now().Format("2006-01-02 15:04:05"), nil
+	case "STRFTIME":
+		if len(args) < 2 || args[1] == nil {
+			return nil, nil
+		}
+		return ValueToStringKey(args[1]), nil
+	case "GROUP_CONCAT":
+		if len(args) >= 1 && args[0] != nil {
+			return ValueToStringKey(args[0]), nil
+		}
+		return nil, nil
+	case "TYPEOF":
+		if len(args) < 1 {
+			return nil, nil
+		}
+		if args[0] == nil {
+			return "null", nil
+		}
+		return fmt.Sprintf("%T", args[0]), nil
+	default:
+		// Check for JSON functions
+		return evaluateJSONFunction(funcName, args)
+	}
+}
+
+func (ctx *EvalContext) EvalAlias(inner interface{}) (interface{}, error) {
+	return inner, nil
+}
+
+func (ctx *EvalContext) EvalCase(expr interface{}, whens [][2]interface{}, elseVal interface{}) (interface{}, error) {
+	for _, w := range whens {
+		cond, result := w[0], w[1]
+		if cond == true {
+			return result, nil
+		}
+	}
+	return elseVal, nil
+}
+
+func (ctx *EvalContext) EvalCast(val interface{}, dataType query.TokenType) (interface{}, error) {
+	if val == nil {
+		return nil, nil
+	}
+	switch dataType {
+	case query.TokenInteger:
+		if f, ok := toFloat64(val); ok {
+			return int64(f), nil
+		}
+		if s, ok := val.(string); ok {
+			if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+				return i, nil
+			}
+		}
+		return int64(0), nil
+	case query.TokenReal:
+		if f, ok := toFloat64(val); ok {
+			return f, nil
+		}
+		if s, ok := val.(string); ok {
+			if f, err := strconv.ParseFloat(s, 64); err == nil {
+				return f, nil
+			}
+		}
+		return float64(0), nil
+	case query.TokenText:
+		return ValueToStringKey(val), nil
+	case query.TokenBoolean:
+		if b, ok := val.(bool); ok {
+			return b, nil
+		}
+		if f, ok := toFloat64(val); ok {
+			return f != 0, nil
+		}
+		if s, ok := val.(string); ok {
+			return strings.EqualFold(s, "true") || s == "1", nil
+		}
+		return false, nil
+	}
+	return val, nil
+}
+
+func (ctx *EvalContext) EvalSubquery(q *query.SelectStmt) (interface{}, error) {
+	subq := resolveOuterRefsInQuery(q, ctx.Row, ctx.Columns)
+	cols, rows, err := ctx.Catalog.selectLocked(subq, ctx.Args)
+	if err != nil {
+		return nil, err
+	}
+	_ = cols
+	if len(rows) == 0 || len(rows[0]) == 0 {
+		return nil, nil
+	}
+	if len(rows) > 1 {
+		return nil, fmt.Errorf("scalar subquery returned %d rows instead of 1", len(rows))
+	}
+	return rows[0][0], nil
+}
+
+func (ctx *EvalContext) EvalExists(q *query.SelectStmt, not bool) (bool, error) {
+	subq := resolveOuterRefsInQuery(q, ctx.Row, ctx.Columns)
+	_, rows, err := ctx.Catalog.selectLocked(subq, ctx.Args)
+	if err != nil {
+		return false, err
+	}
+	exists := len(rows) > 0
+	if not {
+		return !exists, nil
+	}
+	return exists, nil
+}
+
+func (ctx *EvalContext) EvalJSONPath(jsonVal interface{}, path string, asText bool) (interface{}, error) {
+	jsonStr, ok := toString(jsonVal)
+	if !ok {
+		return nil, nil
+	}
+	result, err := JSONExtract(jsonStr, path)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	if asText {
+		if s, ok := result.(string); ok {
+			return s, nil
+		}
+		return ValueToStringKey(result), nil
+	}
+	return result, nil
+}
+
+func (ctx *EvalContext) EvalJSONContains(jsonVal, val interface{}) (bool, error) {
+	// Simple JSON contains: check if val string is a substring of jsonVal string
+	// This is a simplified implementation; full JSONContains would parse JSON
+	jsonStr, ok := toString(jsonVal)
+	if !ok {
+		return false, nil
+	}
+	valStr, ok := toString(val)
+	if !ok {
+		return false, nil
+	}
+	return strings.Contains(jsonStr, valStr), nil
+}
+
+func (ctx *EvalContext) EvalMatch(expr *query.MatchExpr, row []interface{}) (interface{}, error) {
+	return evaluateMatchExprLocked(ctx.Catalog, ctx.Row, ctx.Columns, expr, ctx.Args)
+}
+
+func (ctx *EvalContext) EvalStar(table string) (interface{}, error) {
+	return nil, fmt.Errorf("invalid use of star expression")
+}
+
+func (ctx *EvalContext) EvalColumnRef(table, column string) (interface{}, error) {
+	// ColumnRef in expression context: resolve to the column value
+	if table != "" {
+		return ctx.EvalQualifiedIdentifier(table, column)
+	}
+	return ctx.EvalIdentifier(column)
+}
+
+func toStringS(v interface{}) string {
+	if s, ok := toString(v); ok {
+		return s
+	}
+	return ""
 }
 
 func evaluateBinaryExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.BinaryExpr, args []interface{}) (interface{}, error) {
@@ -212,44 +404,43 @@ func evaluateBinaryExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr
 	if err != nil {
 		return nil, err
 	}
-
 	right, err := evaluateExpression(c, row, columns, expr.Right, args)
 	if err != nil {
 		return nil, err
 	}
+	return applyBinaryOp(left, right, expr.Operator)
+}
 
+// applyBinaryOp applies a binary operator to pre-evaluated left/right values.
+func applyBinaryOp(left, right interface{}, op query.TokenType) (interface{}, error) {
 	// Handle logical operators first (they have special NULL semantics per SQL standard)
-	// SQL three-valued logic: NULL AND false = false, NULL OR true = true,
-	// NULL AND true = NULL, NULL OR false = NULL
-	switch expr.Operator {
+	switch op {
 	case query.TokenAnd:
 		leftBool, leftIsNil := toBoolNullable(left)
 		rightBool, rightIsNil := toBoolNullable(right)
 		if (!leftIsNil && !leftBool) || (!rightIsNil && !rightBool) {
-			return false, nil // false AND anything = false
+			return false, nil
 		}
 		if leftIsNil || rightIsNil {
-			return nil, nil // NULL AND true = NULL
+			return nil, nil
 		}
 		return leftBool && rightBool, nil
 	case query.TokenOr:
 		leftBool, leftIsNil := toBoolNullable(left)
 		rightBool, rightIsNil := toBoolNullable(right)
 		if (!leftIsNil && leftBool) || (!rightIsNil && rightBool) {
-			return true, nil // true OR anything = true
+			return true, nil
 		}
 		if leftIsNil || rightIsNil {
-			return nil, nil // NULL OR false = NULL
+			return nil, nil
 		}
 		return leftBool || rightBool, nil
 	}
 
 	// Handle NULL comparisons (for non-logical operators)
 	if left == nil || right == nil {
-		switch expr.Operator {
+		switch op {
 		case query.TokenIs:
-			// IS NULL - true if both are nil
-			// IS NOT NULL - true if either is not nil
 			if rightVal, ok := right.(bool); ok {
 				if rightVal {
 					return left == nil, nil
@@ -257,17 +448,15 @@ func evaluateBinaryExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr
 				return left != nil, nil
 			}
 		case query.TokenEq:
-			// SQL standard: NULL = anything (including NULL) is NULL (unknown)
 			return nil, nil
 		case query.TokenNeq:
-			// SQL standard: NULL != anything (including NULL) is NULL (unknown)
 			return nil, nil
 		}
-		return nil, nil // NULL comparison returns NULL per SQL standard
+		return nil, nil
 	}
 
-	// Handle arithmetic operators (+, -, *, /)
-	switch expr.Operator {
+	// Arithmetic operators
+	switch op {
 	case query.TokenPlus:
 		return addValues(left, right)
 	case query.TokenMinus:
@@ -282,8 +471,8 @@ func evaluateBinaryExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr
 		return concatValues(left, right), nil
 	}
 
-	// Compare based on operator
-	switch expr.Operator {
+	// Comparison operators
+	switch op {
 	case query.TokenEq:
 		return compareValues(left, right) == 0, nil
 	case query.TokenNeq:
@@ -297,7 +486,7 @@ func evaluateBinaryExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr
 	case query.TokenGte:
 		return compareValues(left, right) >= 0, nil
 	default:
-		return false, fmt.Errorf("unsupported operator: %v", expr.Operator)
+		return false, fmt.Errorf("unsupported operator: %v", op)
 	}
 }
 
