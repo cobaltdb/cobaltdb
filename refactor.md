@@ -235,7 +235,7 @@ Characteristics observed in samples:
 **P1 — maintainability (1–3 weeks)**
 5. ✅ **DONE (quarantine)** — 207 coverage-padding files gated behind `coverage_padding`; lean=78.4%/full=85.0% measured; helpers centralized; tooling+CI wired (§9). Incremental thin-out remains.
 6. ✅ **DONE** — WASM isolated behind `wasm_experimental` build tag, out of default build/coverage (§8).
-7. Decompose `insertLocked`/`updateLocked` and extract the row-decode helper (§5).
+7. ⏳ **PLANNED — deliberately not rushed.** Decompose `insertLocked`/`updateLocked` and extract the row-decode helper (§5). These are hot *write* paths with tightly-interwoven local state (column indices, undo logging, buffered writes, index updates, triggers all share mutable state inside the row loop), so a mistake means silent data corruption. This should be a dedicated, reviewed pass — ideally after lifting the lean-suite coverage of the insert/update/delete paths first (see §9 item 4) so the refactor has a strong safety net. Suggested order: (a) extract `decodeVisibleRow` and migrate read paths under test; (b) extract `validateRowAgainstConstraints` (shared by insert/update); (c) split `insertLocked` into `validateInsert` / `buildRowWithConstraints` / `recordInsertUndo` / `applyIndexUpdatesForInsert`; (d) the mechanical, compiler-verified `parser.go` file split (no logic change) can be done independently at any time.
 8. Extract shared `runStatement` for Exec/Query and `initializeCommonComponents` for create/load (§7).
 9. Unify the three cache layers (§8) and the duplicated column-extraction logic (§6).
 
