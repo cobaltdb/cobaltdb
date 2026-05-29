@@ -1,4 +1,4 @@
-.PHONY: build test clean install test-coverage bench lint staticcheck fmt fmt-check deps run-server run-cli docker-build docker-run race vuln gosec verify verify-security all
+.PHONY: build test test-full clean install test-coverage bench lint staticcheck fmt fmt-check deps run-server run-cli docker-build docker-run race vuln gosec verify verify-security all
 
 BINARY_SERVER=cobaltdb-server
 BINARY_CLI=cobaltdb-cli
@@ -14,8 +14,12 @@ build:
 	@echo "Build complete!"
 
 test:
-	@echo "Running tests..."
-	@go test -v ./...
+	@echo "Running tests (lean: focused suite, excludes coverage_padding)..."
+	@go test ./...
+
+test-full:
+	@echo "Running full tests (includes coverage_padding tests)..."
+	@go test -tags coverage_padding ./...
 
 race:
 	@echo "Running race detector (requires CGO toolchain)..."
@@ -30,8 +34,8 @@ gosec:
 	@go run github.com/securego/gosec/v2/cmd/gosec@latest -exclude=G104 ./...
 
 test-coverage:
-	@echo "Running tests with coverage..."
-	@go test -coverprofile=coverage.out ./...
+	@echo "Running tests with coverage (full suite, includes coverage_padding)..."
+	@go test -tags coverage_padding -coverprofile=coverage.out ./...
 	@go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated: coverage.html"
 

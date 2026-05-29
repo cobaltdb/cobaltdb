@@ -197,11 +197,14 @@ Characteristics observed in samples:
 
 **Why it matters:** these files inflate the line count 4:1, slow the suite, obscure which tests carry real signal, and make refactoring terrifying (changing a function breaks dozens of brittle boost tests for the wrong reasons). They optimize a coverage *number*, not correctness.
 
-**Recommendation:**
-1. Quarantine the 208 files behind a build tag (`//go:build coverage_padding`) so the default suite runs only meaningful tests; measure the real coverage that remains.
-2. For each package, replace the boost files with a small number of focused, well-asserted table-driven tests targeting the genuinely-uncovered branches.
-3. Centralize test helpers (one `catalog_test_helpers.go`, one `test/helpers.go`) and delete the per-file `boostN*` duplicates.
-4. Set a coverage *floor* per production-critical package (CLAUDE.md targets 90%) but stop rewarding raw line coverage.
+**Action taken (2026-05-29) — quarantine complete:**
+1. ✅ Tagged 207 padding files (~102,125 LOC) behind `//go:build coverage_padding`, excluded from the default `go test ./...`. Shared helpers used across the kept/padding boundary (`numReal`, `strReal`, `createCoverageTestTable`, `colReal`, `mustParseSelect`, `mockConn`, `mockWriter`) were extracted into untagged helper files (`pkg/catalog/shared_literals_test.go`, `pkg/replication/shared_mocks_test.go`) so both suites compile.
+2. ✅ **Measured real coverage:** lean focused suite = **78.4%**; full (`-tags coverage_padding`) = **85.0%**. The padding contributes ~6.6 points — real, but at ~102K LOC of brittle monolithic tests.
+3. ✅ Wired tooling: `make test` (lean, fast) / `make test-full` / `make test-coverage` (full); CI runs both a lean fast-feedback pass and the full tagged pass so no path/coverage is lost.
+
+**Still open (incremental, ongoing):**
+4. Replace the brittle `coverage_padding` tests, package by package, with focused table-driven tests that lift the *lean* number toward 85%+, then delete the padding file once its unique coverage is reclaimed.
+5. Set a coverage *floor* per production-critical package and gate on the lean number, so coverage reflects focused tests, not raw lines.
 
 **Other test concerns:** three test trees (`pkg/`, `integration/`, `test/`) with some duplicated cases (e.g. `TestUpdateWithSubquery` in both `pkg/catalog` and `test/`); document the intended split (unit vs cross-package vs e2e/bench).
 
@@ -230,7 +233,7 @@ Characteristics observed in samples:
 4. ✅ **PARTIAL** — `gofmt -w` applied to the 6 source files (§10). Still open: add `gofmt`/`errcheck`-all CI gates.
 
 **P1 — maintainability (1–3 weeks)**
-5. Quarantine + thin out the 208 coverage-padding test files; centralize helpers (§9).
+5. ✅ **DONE (quarantine)** — 207 coverage-padding files gated behind `coverage_padding`; lean=78.4%/full=85.0% measured; helpers centralized; tooling+CI wired (§9). Incremental thin-out remains.
 6. ✅ **DONE** — WASM isolated behind `wasm_experimental` build tag, out of default build/coverage (§8).
 7. Decompose `insertLocked`/`updateLocked` and extract the row-decode helper (§5).
 8. Extract shared `runStatement` for Exec/Query and `initializeCommonComponents` for create/load (§7).

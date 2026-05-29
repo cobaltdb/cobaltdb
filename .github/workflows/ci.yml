@@ -44,18 +44,21 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Unit + integration tests
+      - name: Unit + integration tests (lean, fast feedback)
         run: go test ./... -count=1 -timeout 300s
 
+      - name: Unit + integration tests (full, includes coverage_padding)
+        run: go test -tags coverage_padding ./... -count=1 -timeout 600s
+
       - name: Race detector (pkg packages)
-        run: CGO_ENABLED=1 go test -race ./pkg/... -count=1 -timeout 300s
+        run: CGO_ENABLED=1 go test -tags coverage_padding -race ./pkg/... -count=1 -timeout 600s
 
       - name: Race detector (server and webui)
         run: CGO_ENABLED=1 go test -race ./cmd/cobaltdb-server ./webui -count=1 -timeout 300s
 
-      - name: Test coverage
+      - name: Test coverage (full suite)
         run: |
-          go test ./pkg/... -coverprofile=coverage.out -count=1
+          go test -tags coverage_padding ./pkg/... -coverprofile=coverage.out -count=1
           go tool cover -func=coverage.out | tail -1
           echo "### Coverage by package" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY

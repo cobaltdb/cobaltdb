@@ -141,12 +141,24 @@ go tool cover -func=coverage.out
 
 Three test trees coexist — `./pkg/...` for unit tests, `./integration/...` for cross-package integration, `./test/...` for benchmarks and large end-to-end suites. `go test ./...` runs all three.
 
+### Lean vs. full suite (`coverage_padding` build tag)
+
+~207 large, low-signal "coverage-boost" test files (~102K LOC) are gated behind the **`coverage_padding`** build tag and are **excluded by default**. This keeps the default suite fast and focused; the padding files remain runnable and are exercised in CI.
+
+```bash
+go test ./...                          # lean/default: focused suite only (faster)
+go test -tags coverage_padding ./...   # full suite: includes the padding tests
+make test          # lean      |  make test-full      # full
+make test-coverage # full coverage profile (uses -tags coverage_padding)
+```
+
+Shared test helpers used across the boundary live in untagged `*_test.go` files (e.g. `pkg/catalog/shared_literals_test.go`, `pkg/replication/shared_mocks_test.go`) so both suites compile. The experimental WASM package is separately gated behind `wasm_experimental` (see the WASM section).
+
 ### Test Statistics
-- 7,100+ test functions
-- 600+ test files
+- 7,100+ test functions across 600+ files
 - All `pkg` packages passing
-- Current `pkg/...` coverage: 86.3% total
-- Target: 90%+ coverage per production-critical package; several packages remain below target
+- `pkg/...` coverage: **78.4%** from the lean focused suite, **85.0%** with the full `coverage_padding` suite — the ~207 padding files add ~6.6 points
+- Direction: replace the brittle, monolithic padding tests with focused table-driven tests so the lean number rises toward the full number; target 90%+ per production-critical package
 
 ### Running Benchmarks Safely
 ```bash

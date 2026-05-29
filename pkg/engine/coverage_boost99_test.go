@@ -1,3 +1,5 @@
+//go:build coverage_padding
+
 package engine
 
 import (
