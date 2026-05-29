@@ -11,24 +11,17 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
-// QueryCacheEntry holds cached query results
+// QueryCacheEntry holds cached query results (used by old catalog.QueryCache, kept for catalog_cache_test.go)
 type QueryCacheEntry struct {
 	Columns   []string
 	Rows      [][]interface{}
 	Timestamp time.Time
-	Tables    []string // Tables involved in the query (for invalidation)
+	Tables    []string
 }
 
-// QueryCacheStore defines the interface for query result caching.
-type QueryCacheStore interface {
-	Get(key string) (*QueryCacheEntry, bool)
-	Set(key string, columns []string, rows [][]interface{}, tables []string)
-	Invalidate(tableName string)
-	InvalidateAll()
-	Stats() (hits, misses int64, size int)
-}
-
-// QueryCache manages cached query results
+// QueryCache manages cached query results.
+// Deprecated: use pkg/cache.Cache instead. This struct is retained only
+// for catalog_cache_test.go which tests the old cache isolation behavior.
 type QueryCache struct {
 	entries   map[string]*QueryCacheEntry
 	lru       *list.List
@@ -41,7 +34,8 @@ type QueryCache struct {
 	mu        sync.RWMutex
 }
 
-// NewQueryCache creates a new LRU query result cache with the given maximum size and TTL.
+// NewQueryCache creates a new LRU query result cache.
+// Deprecated: use cache.New instead.
 func NewQueryCache(maxSize int, ttl time.Duration) *QueryCache {
 	return &QueryCache{
 		entries: make(map[string]*QueryCacheEntry),
@@ -66,8 +60,6 @@ func (qc *QueryCache) Get(key string) (*QueryCacheEntry, bool) {
 		return nil, false
 	}
 
-	// Check if entry has expired. A non-positive TTL means entries do not
-	// expire by age.
 	expired := qc.ttl > 0 && time.Since(entry.Timestamp) > qc.ttl
 	entryCopy := cloneQueryCacheEntry(entry)
 	qc.mu.RUnlock()
@@ -78,8 +70,6 @@ func (qc *QueryCache) Get(key string) (*QueryCacheEntry, bool) {
 	}
 
 	qc.hitCount.Add(1)
-
-	// Promote in LRU under write lock
 	qc.mu.Lock()
 	qc.promoteInLRU(key)
 	qc.mu.Unlock()
@@ -87,8 +77,6 @@ func (qc *QueryCache) Get(key string) (*QueryCacheEntry, bool) {
 	return entryCopy, true
 }
 
-// promoteInLRU moves a key to the front of the LRU list (caller must hold at least RLock)
-// Note: we upgrade to write lock for the LRU mutation
 func (qc *QueryCache) promoteInLRU(key string) {
 	if elem, ok := qc.lruMap[key]; ok {
 		qc.lru.MoveToFront(elem)
@@ -103,13 +91,11 @@ func (qc *QueryCache) Set(key string, columns []string, rows [][]interface{}, ta
 	qc.mu.Lock()
 	defer qc.mu.Unlock()
 
-	// If key already exists, move to front
 	if _, exists := qc.entries[key]; exists {
 		if elem, ok := qc.lruMap[key]; ok {
 			qc.lru.MoveToFront(elem)
 		}
 	} else {
-		// Evict entries if cache is full
 		for len(qc.entries) >= qc.maxSize {
 			qc.evictOne()
 		}
@@ -187,63 +173,10 @@ func cloneQueryCacheEntry(entry *QueryCacheEntry) *QueryCacheEntry {
 	return &cloned
 }
 
-func cloneStringSlice(values []string) []string {
-	if values == nil {
-		return nil
-	}
-	cloned := make([]string, len(values))
-	copy(cloned, values)
-	return cloned
-}
-
-func cloneInterfaceRows(rows [][]interface{}) [][]interface{} {
-	if rows == nil {
-		return nil
-	}
-	cloned := make([][]interface{}, len(rows))
-	for i, row := range rows {
-		cloned[i] = cloneInterfaceSlice(row)
-	}
-	return cloned
-}
-
-func cloneInterfaceSlice(values []interface{}) []interface{} {
-	if values == nil {
-		return nil
-	}
-	cloned := make([]interface{}, len(values))
-	for i, value := range values {
-		cloned[i] = cloneInterfaceValue(value)
-	}
-	return cloned
-}
-
-func cloneInterfaceValue(value interface{}) interface{} {
-	switch typed := value.(type) {
-	case []byte:
-		if typed == nil {
-			return []byte(nil)
-		}
-		cloned := make([]byte, len(typed))
-		copy(cloned, typed)
-		return cloned
-	case []interface{}:
-		return cloneInterfaceSlice(typed)
-	case map[string]interface{}:
-		cloned := make(map[string]interface{}, len(typed))
-		for key, mapValue := range typed {
-			cloned[key] = cloneInterfaceValue(mapValue)
-		}
-		return cloned
-	default:
-		return typed
-	}
-}
-
+// generateQueryKey builds a cache key from a SQL string and query arguments.
 func generateQueryKey(sql string, args []interface{}) string {
-	// Use strings.Builder for efficient concatenation
 	var builder strings.Builder
-	builder.Grow(len(sql) + len(args)*16) // Pre-allocate estimated size
+	builder.Grow(len(sql) + len(args)*16)
 	builder.WriteString(sql)
 	for _, arg := range args {
 		builder.WriteByte('|')
@@ -252,24 +185,21 @@ func generateQueryKey(sql string, args []interface{}) string {
 	return builder.String()
 }
 
+// isCacheableQuery returns true if the SELECT statement is safe to cache.
+// Queries without a FROM clause, with subqueries in SELECT, or with
+// non-deterministic functions are not cached.
 func isCacheableQuery(stmt *query.SelectStmt) bool {
-	// Don't cache queries without a FROM clause (scalar queries might have functions like RANDOM())
 	if stmt.From == nil {
 		return false
 	}
-
-	// Don't cache queries with subqueries in SELECT (they might be non-deterministic)
 	for _, col := range stmt.Columns {
 		if containsSubquery(col) {
 			return false
 		}
 	}
-
-	// Don't cache queries with non-deterministic functions
 	if containsNonDeterministicFunctions(stmt) {
 		return false
 	}
-
 	return true
 }
 
@@ -277,7 +207,6 @@ func containsSubquery(expr query.Expression) bool {
 	if expr == nil {
 		return false
 	}
-
 	switch e := expr.(type) {
 	case *query.SubqueryExpr, *query.ExistsExpr:
 		return true
@@ -298,25 +227,19 @@ func containsSubquery(expr query.Expression) bool {
 }
 
 func containsNonDeterministicFunctions(stmt *query.SelectStmt) bool {
-	// Check columns
 	for _, col := range stmt.Columns {
 		if hasNonDeterministicFunction(col) {
 			return true
 		}
 	}
-
-	// Check WHERE clause
 	if hasNonDeterministicFunction(stmt.Where) {
 		return true
 	}
-
-	// Check ORDER BY
 	for _, ob := range stmt.OrderBy {
 		if hasNonDeterministicFunction(ob.Expr) {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -324,17 +247,14 @@ func hasNonDeterministicFunction(expr query.Expression) bool {
 	if expr == nil {
 		return false
 	}
-
 	switch e := expr.(type) {
 	case *query.FunctionCall:
-		// List of non-deterministic functions
 		nonDetFuncs := []string{"RANDOM", "RAND", "NOW", "CURRENT_TIMESTAMP", "UUID", "NEWID"}
 		for _, ndf := range nonDetFuncs {
 			if strings.EqualFold(e.Name, ndf) {
 				return true
 			}
 		}
-		// Check arguments recursively
 		for _, arg := range e.Args {
 			if hasNonDeterministicFunction(arg) {
 				return true
@@ -347,23 +267,20 @@ func hasNonDeterministicFunction(expr query.Expression) bool {
 	case *query.UnaryExpr:
 		return hasNonDeterministicFunction(e.Expr)
 	}
-
 	return false
 }
 
+// extractTablesFromQuery returns the set of table names referenced by a SELECT.
 func extractTablesFromQuery(stmt *query.SelectStmt) []string {
 	tables := make(map[string]bool)
-
 	if stmt.From != nil {
 		tables[stmt.From.Name] = true
 	}
-
 	for _, join := range stmt.Joins {
 		if join.Table != nil {
 			tables[join.Table.Name] = true
 		}
 	}
-
 	result := make([]string, 0, len(tables))
 	for tbl := range tables {
 		result = append(result, tbl)
@@ -371,27 +288,22 @@ func extractTablesFromQuery(stmt *query.SelectStmt) []string {
 	return result
 }
 
+// queryToSQL produces a rough SQL string from a SELECT statement.
+// This is used for cache key generation and is not a full serializer.
 func queryToSQL(stmt *query.SelectStmt) string {
-	// This is a simplified version - in production you'd want proper SQL generation
-	// For caching purposes, we just need a consistent string representation
 	var parts []string
-
 	parts = append(parts, "SELECT")
 	if stmt.Distinct {
 		parts = append(parts, "DISTINCT")
 	}
-
-	// Columns
 	colParts := make([]string, len(stmt.Columns))
 	for i, col := range stmt.Columns {
 		colParts[i] = exprToString(col)
 	}
 	parts = append(parts, strings.Join(colParts, ", "))
-
 	if stmt.From != nil {
 		parts = append(parts, "FROM", stmt.From.Name)
 	}
-
 	return strings.Join(parts, " ")
 }
 
@@ -399,7 +311,6 @@ func exprToString(expr query.Expression) string {
 	if expr == nil {
 		return ""
 	}
-
 	switch e := expr.(type) {
 	case *query.Identifier:
 		return e.Name

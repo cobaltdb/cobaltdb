@@ -197,10 +197,10 @@ func cloneTableStats(stats *TableStats) *TableStats {
 
 	cloned := &TableStats{
 		TableName:    stats.TableName,
-		RowCount:     stats.RowCount,
-		PageCount:    stats.PageCount,
+		RowCount:    stats.RowCount,
+		PageCount:   stats.PageCount,
 		LastAnalyzed: stats.LastAnalyzed,
-		ColumnStats:  make(map[string]*ColumnStats, len(stats.ColumnStats)),
+		ColumnStats: make(map[string]*ColumnStats, len(stats.ColumnStats)),
 	}
 	for name, columnStats := range stats.ColumnStats {
 		cloned.ColumnStats[name] = cloneColumnStats(columnStats)
@@ -224,4 +224,57 @@ func cloneColumnStats(stats *ColumnStats) *ColumnStats {
 		}
 	}
 	return &cloned
+}
+
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func cloneInterfaceRows(rows [][]interface{}) [][]interface{} {
+	if rows == nil {
+		return nil
+	}
+	cloned := make([][]interface{}, len(rows))
+	for i, row := range rows {
+		cloned[i] = cloneInterfaceSlice(row)
+	}
+	return cloned
+}
+
+func cloneInterfaceSlice(values []interface{}) []interface{} {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]interface{}, len(values))
+	for i, value := range values {
+		cloned[i] = cloneInterfaceValue(value)
+	}
+	return cloned
+}
+
+func cloneInterfaceValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case []byte:
+		if typed == nil {
+			return []byte(nil)
+		}
+		cloned := make([]byte, len(typed))
+		copy(cloned, typed)
+		return cloned
+	case []interface{}:
+		return cloneInterfaceSlice(typed)
+	case map[string]interface{}:
+		cloned := make(map[string]interface{}, len(typed))
+		for key, mapValue := range typed {
+			cloned[key] = cloneInterfaceValue(mapValue)
+		}
+		return cloned
+	default:
+		return typed
+	}
 }
