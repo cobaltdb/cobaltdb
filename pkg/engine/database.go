@@ -83,7 +83,10 @@ type DB struct {
 	shutdownOnce sync.Once
 	lastPanic    atomic.Value // stores PanicRecovery
 
-	// Query Cache — owned by catalog; stats routed through db.GetQueryCacheStats
+	// Protected by mutex; used by runStatement to pass the parsed statement
+	// to the caller before the deferred release-connection is set up.
+	_parsedStmt   query.Statement
+	_parsedStmtMu sync.Mutex
 
 // Query Optimizer
 	optimizer *optimizer.Optimizer
@@ -552,10 +555,68 @@ func (db *DB) releaseConnection() {
 	}
 }
 
+// runStatement does the common setup for Exec and Query: panic recovery,
+// query timeout, connection acquire, db closed check, and statement parsing.
+// It returns the parsed statement and a release-connection func; if err is
+// non-nil the caller should return immediately.
+func (db *DB) runStatement(ctx context.Context, methodName, sql string, args ...interface{}) (_ query.Statement, start time.Time, release func(), err error) {
+	// Apply default query timeout only if the caller did not already set one.
+	if db.options.ConnectionPool.QueryTimeout > 0 {
+		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, db.options.ConnectionPool.QueryTimeout)
+			release = func() {
+				cancel()
+				db.releaseConnection()
+			}
+		} else {
+			release = db.releaseConnection
+		}
+	} else {
+		release = db.releaseConnection
+	}
+
+	// Acquire connection
+	if acquireErr := db.acquireConnection(ctx); acquireErr != nil {
+		return nil, time.Time{}, func() {}, acquireErr
+	}
+
+	if err := func() error {
+		db.mu.RLock()
+		defer db.mu.RUnlock()
+		if db.closed.Load() {
+			return ErrDatabaseClosed
+		}
+		// Try to use cached prepared statement
+		stmt, parseErr := db.getPreparedStatement(sql, args...)
+		if parseErr != nil {
+			return fmt.Errorf("parse error: %w", parseErr)
+		}
+		// Feed statement to index advisor for pattern analysis
+		if db.indexAdvisor != nil {
+			db.indexAdvisor.Analyze(stmt)
+		}
+		// Pass parsed statement via mutex-protected field.
+		db._parsedStmtMu.Lock()
+		db._parsedStmt = stmt
+		db._parsedStmtMu.Unlock()
+		return nil
+	}(); err != nil {
+		release()
+		return nil, time.Time{}, func() {}, err
+	}
+
+	start = time.Now()
+	db._parsedStmtMu.Lock()
+	stmt := db._parsedStmt
+	db._parsedStmt = nil
+	db._parsedStmtMu.Unlock()
+	return stmt, start, release, nil
+}
+
 // Exec executes a SQL statement without returning rows
 
 func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result Result, err error) {
-	// Panic recovery for production safety - always log full stack trace
 	defer func() {
 		if r := recover(); r != nil {
 			stack := debug.Stack()
@@ -564,30 +625,19 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 		}
 	}()
 
-	// Apply default query timeout only if the caller did not already set one.
-	if db.options.ConnectionPool.QueryTimeout > 0 {
-		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, db.options.ConnectionPool.QueryTimeout)
-			defer cancel()
+	stmt, start, release, execErr := db.runStatement(ctx, "Exec", sql, args...)
+	if execErr != nil {
+		if errors.Is(execErr, ErrDatabaseClosed) {
+			return Result{}, execErr
 		}
+		if db.metrics != nil {
+			db.metrics.RecordError()
+		}
+		return Result{}, execErr
 	}
+	defer release()
 
-	// Acquire connection
-	if err := db.acquireConnection(ctx); err != nil {
-		return Result{}, err
-	}
-	defer db.releaseConnection()
-
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	if db.closed.Load() {
-		return Result{}, ErrDatabaseClosed
-	}
-
-	// Record metrics
-	start := time.Now()
+	// Metrics
 	if db.metrics != nil {
 		defer func() {
 			duration := time.Since(start)
@@ -595,36 +645,19 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 		}()
 	}
 
-	// Slow query logging
+	// Slow query logging (Exec passes rows affected to Log)
 	if db.slowQueryLog != nil {
 		defer func() {
-			duration := time.Since(start)
-			db.slowQueryLog.Log(sql, duration, result.RowsAffected, 0)
+			db.slowQueryLog.Log(sql, time.Since(start), result.RowsAffected, 0)
 		}()
 	}
 
-	// Try to use cached prepared statement
-	stmt, err := db.getPreparedStatement(sql, args...)
-	if err != nil {
-		if db.metrics != nil {
-			db.metrics.RecordError()
-		}
-		return Result{}, fmt.Errorf("parse error: %w", err)
-	}
-
-	// Feed statement to index advisor for pattern analysis
-	if db.indexAdvisor != nil {
-		db.indexAdvisor.Analyze(stmt)
-	}
-
-	// Execute statement
 	return db.execute(ctx, stmt, args)
 }
 
 // Query executes a SQL query and returns rows
 
 func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows *Rows, err error) {
-	// Panic recovery for production safety - always log full stack trace
 	defer func() {
 		if r := recover(); r != nil {
 			stack := debug.Stack()
@@ -632,30 +665,20 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 			db.recordRecoveredPanic("Query", r, stack)
 		}
 	}()
-	// Apply default query timeout only if the caller did not already set one.
-	if db.options.ConnectionPool.QueryTimeout > 0 {
-		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, db.options.ConnectionPool.QueryTimeout)
-			defer cancel()
+
+	stmt, start, release, execErr := db.runStatement(ctx, "Query", sql, args...)
+	if execErr != nil {
+		if errors.Is(execErr, ErrDatabaseClosed) {
+			return nil, execErr
 		}
+		if db.metrics != nil {
+			db.metrics.RecordError()
+		}
+		return nil, execErr
 	}
+	defer release()
 
-	// Acquire connection
-	if err := db.acquireConnection(ctx); err != nil {
-		return nil, err
-	}
-	defer db.releaseConnection()
-
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	if db.closed.Load() {
-		return nil, ErrDatabaseClosed
-	}
-
-	// Record metrics
-	start := time.Now()
+	// Metrics
 	if db.metrics != nil {
 		defer func() {
 			duration := time.Since(start)
@@ -663,29 +686,13 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 		}()
 	}
 
-	// Slow query logging
+	// Slow query logging (Query passes rowsAffected=0)
 	if db.slowQueryLog != nil {
 		defer func() {
-			duration := time.Since(start)
-			db.slowQueryLog.Log(sql, duration, 0, 0)
+			db.slowQueryLog.Log(sql, time.Since(start), 0, 0)
 		}()
 	}
 
-	// Try to use cached prepared statement
-	stmt, err := db.getPreparedStatement(sql, args...)
-	if err != nil {
-		if db.metrics != nil {
-			db.metrics.RecordError()
-		}
-		return nil, fmt.Errorf("parse error: %w", err)
-	}
-
-	// Feed statement to index advisor for pattern analysis
-	if db.indexAdvisor != nil {
-		db.indexAdvisor.Analyze(stmt)
-	}
-
-	// Execute query
 	return db.query(ctx, stmt, args)
 }
 
