@@ -12,6 +12,7 @@ type Parser struct {
 	pos              int
 	placeholderCount int // Counter for auto-assigning placeholder indices
 	depth            int
+	strict           bool // When true, expect() errors instead of silently advancing on known-token mismatches
 }
 
 // NewParser creates a new parser for the given tokens
@@ -19,6 +20,16 @@ func NewParser(tokens []Token) *Parser {
 	return &Parser{
 		tokens: tokens,
 		pos:    0,
+	}
+}
+
+// NewParserStrict creates a parser in strict mode that errors on malformed token sequences
+// rather than silently tolerating mismatches.
+func NewParserStrict(tokens []Token) *Parser {
+	return &Parser{
+		tokens: tokens,
+		pos:    0,
+		strict: true,
 	}
 }
 
@@ -144,6 +155,20 @@ func (p *Parser) advance() {
 func (p *Parser) expect(t TokenType) (Token, error) {
 	if p.current().Type != t {
 		return Token{}, fmt.Errorf("expected %s, got %s", TokenTypeString(t), p.current().Literal)
+	}
+	tok := p.current()
+	p.advance()
+	return tok, nil
+}
+
+// strictExpect is like expect but only errors in strict mode; in permissive mode it
+// silently ignores the mismatch, allowing the parse to continue from an unexpected token.
+func (p *Parser) strictExpect(t TokenType) (Token, error) {
+	if p.current().Type != t {
+		if p.strict {
+			return Token{}, fmt.Errorf("expected %s, got %s", TokenTypeString(t), p.current().Literal)
+		}
+		return Token{}, nil
 	}
 	tok := p.current()
 	p.advance()
@@ -650,7 +675,7 @@ func ParseStrict(sql string) (Statement, error) {
 		return nil, err
 	}
 
-	parser := NewParser(tokens)
+	parser := NewParserStrict(tokens)
 	stmt, err := parser.Parse()
 	if err != nil {
 		return nil, err

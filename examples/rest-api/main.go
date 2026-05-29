@@ -44,9 +44,11 @@ func main() {
 	logger.Info("opening database", "path", dbPath)
 
 	db, err := engine.Open(dbPath, &engine.Options{
-		CacheSize:  1024,
-		WALEnabled: engine.BoolPtr(true),
-		InMemory:   dbPath == ":memory:",
+		CoreStorage: engine.CoreStorage{
+			CacheSize:  1024,
+			WALEnabled: engine.BoolPtr(true),
+			InMemory:   dbPath == ":memory:",
+		},
 	})
 	if err != nil {
 		logger.Error("failed to open database", "error", err)

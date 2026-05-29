@@ -173,7 +173,10 @@ Interactive Commands:
 
 func openDB(path string, inMemory bool) *engine.DB {
 	opts := &engine.Options{
-		InMemory: inMemory,
+		CoreStorage: engine.CoreStorage{
+			InMemory:   inMemory,
+			WALEnabled: engine.BoolPtr(!inMemory),
+		},
 	}
 	if !inMemory && path != ":memory:" {
 		opts.InMemory = false

@@ -9,10 +9,7 @@ import (
 )
 
 func TestOpenMemory(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -24,7 +21,7 @@ func TestOpenMemory(t *testing.T) {
 }
 
 func TestOpenNormalizesOptionsWithoutMutation(t *testing.T) {
-	opts := &Options{InMemory: true}
+	opts := &Options{CoreStorage: CoreStorage{InMemory: true}}
 	db, err := Open(":memory:", opts)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -32,16 +29,16 @@ func TestOpenNormalizesOptionsWithoutMutation(t *testing.T) {
 	defer db.Close()
 
 	defaults := DefaultOptions()
-	if db.options.CacheSize != defaults.CacheSize {
-		t.Fatalf("CacheSize = %d, want %d", db.options.CacheSize, defaults.CacheSize)
+	if db.options.CoreStorage.CacheSize != defaults.CoreStorage.CacheSize {
+		t.Fatalf("CacheSize = %d, want %d", db.options.CoreStorage.CacheSize, defaults.CoreStorage.CacheSize)
 	}
-	if db.options.PageSize != defaults.PageSize {
-		t.Fatalf("PageSize = %d, want %d", db.options.PageSize, defaults.PageSize)
+	if db.options.CoreStorage.PageSize != defaults.CoreStorage.PageSize {
+		t.Fatalf("PageSize = %d, want %d", db.options.CoreStorage.PageSize, defaults.CoreStorage.PageSize)
 	}
-	if db.options.WALEnabled == nil || *db.options.WALEnabled != *defaults.WALEnabled {
+	if db.options.CoreStorage.WALEnabled == nil || *db.options.CoreStorage.WALEnabled != *defaults.CoreStorage.WALEnabled {
 		t.Fatal("WALEnabled was not defaulted")
 	}
-	if opts.CacheSize != 0 || opts.PageSize != 0 || opts.WALEnabled != nil || opts.Logger != nil {
+	if opts.CoreStorage.CacheSize != 0 || opts.CoreStorage.PageSize != 0 || opts.CoreStorage.WALEnabled != nil || opts.CoreStorage.Logger != nil {
 		t.Fatal("Open should not mutate caller options")
 	}
 }
@@ -58,14 +55,20 @@ func TestOpenCopiesMutableNestedOptions(t *testing.T) {
 		MinRatio:  0.75,
 	}
 	opts := &Options{
-		InMemory:   true,
-		WALEnabled: &walEnabled,
-		AuditConfig: &audit.Config{
-			Events:          auditEvents,
-			SensitiveFields: sensitiveFields,
-			EncryptionKey:   auditKey,
+		CoreStorage: CoreStorage{
+			InMemory:   true,
+			WALEnabled: &walEnabled,
 		},
-		CompressionConfig: compressionConfig,
+		Security: Security{
+			AuditConfig: &audit.Config{
+				Events:          auditEvents,
+				SensitiveFields: sensitiveFields,
+				EncryptionKey:   auditKey,
+			},
+		},
+		PageCompression: PageCompressionConfig{
+			Config: compressionConfig,
+		},
 	}
 
 	db, err := Open(":memory:", opts)
@@ -81,33 +84,32 @@ func TestOpenCopiesMutableNestedOptions(t *testing.T) {
 	compressionConfig.Level = storage.CompressionLevelBest
 	compressionConfig.MinRatio = 0.25
 
-	if db.options.WALEnabled == opts.WALEnabled || *db.options.WALEnabled {
+	if db.options.CoreStorage.WALEnabled == opts.CoreStorage.WALEnabled || *db.options.CoreStorage.WALEnabled {
 		t.Fatal("WALEnabled should be copied from caller options")
 	}
-	if db.options.AuditConfig == opts.AuditConfig {
+	if db.options.Security.AuditConfig == opts.Security.AuditConfig {
 		t.Fatal("AuditConfig should be copied from caller options")
 	}
-	if db.options.AuditConfig.Events[0] != audit.EventQuery {
-		t.Fatalf("AuditConfig.Events aliased caller slice: %v", db.options.AuditConfig.Events[0])
+	if db.options.Security.AuditConfig.Events[0] != audit.EventQuery {
+		t.Fatalf("AuditConfig.Events aliased caller slice: %v", db.options.Security.AuditConfig.Events[0])
 	}
-	if db.options.AuditConfig.SensitiveFields[0] != "token" {
-		t.Fatalf("AuditConfig.SensitiveFields aliased caller slice: %q", db.options.AuditConfig.SensitiveFields[0])
+	if db.options.Security.AuditConfig.SensitiveFields[0] != "token" {
+		t.Fatalf("AuditConfig.SensitiveFields aliased caller slice: %q", db.options.Security.AuditConfig.SensitiveFields[0])
 	}
-	if db.options.AuditConfig.EncryptionKey[0] != '0' {
+	if db.options.Security.AuditConfig.EncryptionKey[0] != '0' {
 		t.Fatal("AuditConfig.EncryptionKey aliased caller slice")
 	}
-	if db.options.CompressionConfig == opts.CompressionConfig {
+	if db.options.PageCompression.Config == opts.PageCompression.Config {
 		t.Fatal("CompressionConfig should be copied from caller options")
 	}
-	if db.options.CompressionConfig.Level != storage.CompressionLevelFast || db.options.CompressionConfig.MinRatio != 0.75 {
-		t.Fatalf("CompressionConfig aliased caller config: %+v", db.options.CompressionConfig)
+	if db.options.PageCompression.Config.Level != storage.CompressionLevelFast || db.options.PageCompression.Config.MinRatio != 0.75 {
+		t.Fatalf("CompressionConfig aliased caller config: %+v", db.options.PageCompression.Config)
 	}
 }
 
 func TestCreateTable(t *testing.T) {
 	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
+		CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -139,10 +141,7 @@ func TestCreateTable(t *testing.T) {
 }
 
 func TestInsertAndSelect(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -194,10 +193,7 @@ func TestInsertAndSelect(t *testing.T) {
 }
 
 func TestTransaction(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -247,10 +243,7 @@ func TestTransaction(t *testing.T) {
 }
 
 func TestMultipleInserts(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -290,10 +283,7 @@ func TestMultipleInserts(t *testing.T) {
 }
 
 func TestQueryRow(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

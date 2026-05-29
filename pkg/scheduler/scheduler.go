@@ -296,6 +296,10 @@ func (s *Scheduler) runJob(j *Job) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
+	if j.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), j.Timeout)
+		defer cancel()
+	}
 	maxRetries := j.MaxRetries
 	if maxRetries < 0 {
 		maxRetries = 0

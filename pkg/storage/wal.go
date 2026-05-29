@@ -830,6 +830,12 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 	if _, err := w.file.Seek(0, 0); err != nil {
 		return err
 	}
+	// Sync to ensure the truncated state is durable before the bufWriter is
+	// re-created. Without this, a crash on Windows after Truncate can cause
+	// the old WAL content to reappear on disk after restart.
+	if err := w.file.Sync(); err != nil {
+		return err
+	}
 	w.bufWriter = bufio.NewWriter(w.file)
 
 	return nil

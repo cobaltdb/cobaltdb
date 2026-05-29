@@ -53,11 +53,11 @@ func (db *DB) Stats() (*DBStats, error) {
 
 	stats := &DBStats{
 		Path:              db.path,
-		InMemory:          db.options.InMemory,
-		PageSize:          db.options.PageSize,
-		CacheSize:         db.options.CacheSize,
+		InMemory:          db.options.CoreStorage.InMemory,
+		PageSize:          db.options.CoreStorage.PageSize,
+		CacheSize:         db.options.CoreStorage.CacheSize,
 		ActiveConnections: db.activeConns.Load(),
-		MaxConnections:    db.options.MaxConnections,
+		MaxConnections:    db.options.ConnectionPool.MaxConnections,
 		LastCheckTime:     time.Now(),
 		IsHealthy:         true,
 	}

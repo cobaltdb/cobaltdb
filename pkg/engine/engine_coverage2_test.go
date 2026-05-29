@@ -19,7 +19,7 @@ import (
 
 func openCoverageDB(t *testing.T) *DB {
 	t.Helper()
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 256})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 256}})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestCoverage_Open_NilOptions(t *testing.T) {
 func TestCoverage_Open_DiskBased(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")
-	db, err := Open(path, &Options{CacheSize: 256})
+	db, err := Open(path, &Options{CoreStorage: CoreStorage{CacheSize: 256}})
 	if err != nil {
 		t.Fatalf("open disk db: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestCoverage_Open_DiskBased(t *testing.T) {
 	db.Close()
 
 	// Reopen and verify data persisted (covers loadExisting + saveMetaPage)
-	db2, err := Open(path, &Options{CacheSize: 256})
+	db2, err := Open(path, &Options{CoreStorage: CoreStorage{CacheSize: 256}})
 	if err != nil {
 		t.Fatalf("reopen disk db: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestCoverage_Open_WithEncryptionKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "enc.db")
 	key := []byte("0123456789abcdef0123456789abcdef") // 32 bytes for AES-256
-	db, err := Open(path, &Options{CacheSize: 256, EncryptionKey: key})
+	db, err := Open(path, &Options{CoreStorage: CoreStorage{CacheSize: 256}, Security: Security{EncryptionKey: key}})
 	if err != nil {
 		t.Fatalf("open with encryption key: %v", err)
 	}
@@ -298,12 +298,14 @@ func TestCoverage_Open_WithEncryptionConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "enc2.db")
 	db, err := Open(path, &Options{
-		CacheSize: 256,
-		EncryptionConfig: &storage.EncryptionConfig{
-			Enabled:   true,
-			Key:       []byte("0123456789abcdef0123456789abcdef"),
-			Algorithm: "aes-256-gcm",
-			UseArgon2: true,
+		CoreStorage: CoreStorage{CacheSize: 256},
+		Security: Security{
+			EncryptionConfig: &storage.EncryptionConfig{
+				Enabled:   true,
+				Key:       []byte("0123456789abcdef0123456789abcdef"),
+				Algorithm: "aes-256-gcm",
+				UseArgon2: true,
+			},
 		},
 	})
 	if err != nil {
@@ -316,12 +318,8 @@ func TestCoverage_Open_WithAuditConfig(t *testing.T) {
 	dir := t.TempDir()
 	logFile := filepath.Join(dir, "audit.log")
 	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 256,
-		AuditConfig: &audit.Config{
-			Enabled: true,
-			LogFile: logFile,
-		},
+		CoreStorage: CoreStorage{InMemory: true, CacheSize: 256},
+		Security:    Security{AuditConfig: &audit.Config{Enabled: true, LogFile: logFile}},
 	})
 	if err != nil {
 		t.Fatalf("open with audit config: %v", err)
@@ -338,7 +336,7 @@ func TestCoverage_Open_WithAuditConfig(t *testing.T) {
 }
 
 func TestCoverage_Open_WithRLS(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 256, EnableRLS: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 256}, Security: Security{EnableRLS: true}})
 	if err != nil {
 		t.Fatalf("open with RLS: %v", err)
 	}
@@ -347,9 +345,7 @@ func TestCoverage_Open_WithRLS(t *testing.T) {
 
 func TestCoverage_Open_WithMaxConnections(t *testing.T) {
 	db, err := Open(":memory:", &Options{
-		InMemory:       true,
-		CacheSize:      256,
-		MaxConnections: 5,
+		CoreStorage: CoreStorage{InMemory: true, CacheSize: 256}, ConnectionPool: ConnectionPool{MaxConnections: 5},
 	})
 	if err != nil {
 		t.Fatalf("open with max connections: %v", err)
@@ -838,7 +834,7 @@ func TestCoverage_Close_InMemory(t *testing.T) {
 func TestCoverage_Close_DiskBased(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "close_test.db")
-	db, err := Open(path, &Options{CacheSize: 256})
+	db, err := Open(path, &Options{CoreStorage: CoreStorage{CacheSize: 256}})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -871,12 +867,8 @@ func TestCoverage_Close_WithAuditLogger(t *testing.T) {
 	dir := t.TempDir()
 	logFile := filepath.Join(dir, "audit_close.log")
 	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 256,
-		AuditConfig: &audit.Config{
-			Enabled: true,
-			LogFile: logFile,
-		},
+		CoreStorage: CoreStorage{InMemory: true, CacheSize: 256},
+		Security:    Security{AuditConfig: &audit.Config{Enabled: true, LogFile: logFile}},
 	})
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -896,7 +888,7 @@ func TestCoverage_SaveAndLoadMetaPage(t *testing.T) {
 	path := filepath.Join(dir, "meta.db")
 
 	// Create a new database and write data
-	db, err := Open(path, &Options{CacheSize: 256})
+	db, err := Open(path, &Options{CoreStorage: CoreStorage{CacheSize: 256}})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -907,7 +899,7 @@ func TestCoverage_SaveAndLoadMetaPage(t *testing.T) {
 	db.Close()
 
 	// Reopen — this covers loadExisting
-	db2, err := Open(path, &Options{CacheSize: 256})
+	db2, err := Open(path, &Options{CoreStorage: CoreStorage{CacheSize: 256}})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -932,7 +924,7 @@ func TestCoverage_LoadExisting_WithWAL(t *testing.T) {
 	path := filepath.Join(dir, "wal_test.db")
 
 	// Open with WAL enabled (default)
-	db, err := Open(path, &Options{CacheSize: 256, WALEnabled: BoolPtr(true)})
+	db, err := Open(path, &Options{CoreStorage: CoreStorage{CacheSize: 256, WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -942,7 +934,7 @@ func TestCoverage_LoadExisting_WithWAL(t *testing.T) {
 	db.Close()
 
 	// Reopen with WAL — loadExisting will try WAL recovery path
-	db2, err := Open(path, &Options{CacheSize: 256, WALEnabled: BoolPtr(true)})
+	db2, err := Open(path, &Options{CoreStorage: CoreStorage{CacheSize: 256, WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("reopen with WAL: %v", err)
 	}
@@ -971,7 +963,7 @@ func TestCoverage_LoadExisting_CorruptMetaPage(t *testing.T) {
 	if err := os.WriteFile(path, []byte("this is not a valid database"), 0644); err != nil {
 		t.Fatalf("write garbage: %v", err)
 	}
-	_, err := Open(path, &Options{CacheSize: 256})
+	_, err := Open(path, &Options{CoreStorage: CoreStorage{CacheSize: 256}})
 	if err == nil {
 		t.Error("expected error opening corrupt database")
 	}
@@ -1675,7 +1667,7 @@ func TestCoverage_DiskDB_WithRLS(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rls.db")
 
-	db, err := Open(path, &Options{CacheSize: 256, EnableRLS: true})
+	db, err := Open(path, &Options{CoreStorage: CoreStorage{CacheSize: 256}, Security: Security{EnableRLS: true}})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -1685,7 +1677,7 @@ func TestCoverage_DiskDB_WithRLS(t *testing.T) {
 	db.Close()
 
 	// Reopen with RLS
-	db2, err := Open(path, &Options{CacheSize: 256, EnableRLS: true})
+	db2, err := Open(path, &Options{CoreStorage: CoreStorage{CacheSize: 256}, Security: Security{EnableRLS: true}})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -1724,9 +1716,7 @@ func TestCoverage_Use(t *testing.T) {
 
 func TestCoverage_QueryTimeout(t *testing.T) {
 	db, err := Open(":memory:", &Options{
-		InMemory:     true,
-		CacheSize:    256,
-		QueryTimeout: 5 * time.Second,
+		CoreStorage: CoreStorage{InMemory: true, CacheSize: 256}, ConnectionPool: ConnectionPool{QueryTimeout: 5 * time.Second},
 	})
 	if err != nil {
 		t.Fatalf("open: %v", err)

@@ -21,9 +21,10 @@ type BufferPoolStats struct {
 	HitRatio  float64 `json:"hit_ratio"`
 
 	// I/O stats
-	ReadCount     uint64 `json:"read_count"`
-	WriteCount    uint64 `json:"write_count"`
-	EvictionCount uint64 `json:"eviction_count"`
+	ReadCount       uint64 `json:"read_count"`
+	WriteCount      uint64 `json:"write_count"`
+	EvictionCount   uint64 `json:"eviction_count"`
+	FlushErrorCount uint64 `json:"flush_error_count"`
 
 	// Performance
 	AvgReadTime  float64 `json:"avg_read_time_ms"`
@@ -35,15 +36,16 @@ type BufferPoolStats struct {
 
 // bufferPoolStatsCollector collects statistics for the buffer pool
 type bufferPoolStatsCollector struct {
-	hitCount      uint64
-	missCount     uint64
-	readCount     uint64
-	writeCount    uint64
-	evictionCount uint64
-	readTimes     []time.Duration // Circular buffer for recent read times
-	writeTimes    []time.Duration // Circular buffer for recent write times
-	timeIndex     int
-	maxSamples    int
+	hitCount        uint64
+	missCount       uint64
+	readCount       uint64
+	writeCount      uint64
+	evictionCount   uint64
+	flushErrorCount uint64          // total flush errors in background flusher
+	readTimes       []time.Duration // Circular buffer for recent read times
+	writeTimes      []time.Duration // Circular buffer for recent write times
+	timeIndex       int
+	maxSamples      int
 
 	mu sync.RWMutex
 }
@@ -84,6 +86,11 @@ func (sc *bufferPoolStatsCollector) recordEviction() {
 	atomic.AddUint64(&sc.evictionCount, 1)
 }
 
+// recordFlushError records a flush error in the background flusher
+func (sc *bufferPoolStatsCollector) recordFlushError() {
+	atomic.AddUint64(&sc.flushErrorCount, 1)
+}
+
 // addReadTime adds a read time sample (thread-safe with lock)
 func (sc *bufferPoolStatsCollector) addReadTime(d time.Duration) {
 	sc.mu.Lock()
@@ -93,8 +100,8 @@ func (sc *bufferPoolStatsCollector) addReadTime(d time.Duration) {
 		sc.readTimes = append(sc.readTimes, d)
 	} else {
 		sc.readTimes[sc.timeIndex%sc.maxSamples] = d
+		sc.timeIndex++
 	}
-	sc.timeIndex++
 }
 
 // addWriteTime adds a write time sample (thread-safe with lock)
@@ -106,8 +113,8 @@ func (sc *bufferPoolStatsCollector) addWriteTime(d time.Duration) {
 		sc.writeTimes = append(sc.writeTimes, d)
 	} else {
 		sc.writeTimes[sc.timeIndex%sc.maxSamples] = d
+		sc.timeIndex++
 	}
-	sc.timeIndex++
 }
 
 // getAvgReadTime returns average read time in milliseconds
@@ -171,20 +178,21 @@ func (bp *BufferPool) Stats() BufferPoolStats {
 	}
 
 	return BufferPoolStats{
-		Capacity:      bp.capacity,
-		PageCount:     len(bp.pages),
-		DirtyCount:    int(dirtyCount),
-		PinnedCount:   pinnedCount,
-		FreeCount:     bp.capacity - len(bp.pages),
-		HitCount:      atomic.LoadUint64(&bp.stats.hitCount),
-		MissCount:     atomic.LoadUint64(&bp.stats.missCount),
-		HitRatio:      bp.stats.getHitRatio(),
-		ReadCount:     atomic.LoadUint64(&bp.stats.readCount),
-		WriteCount:    atomic.LoadUint64(&bp.stats.writeCount),
-		EvictionCount: atomic.LoadUint64(&bp.stats.evictionCount),
-		AvgReadTime:   bp.stats.getAvgReadTime(),
-		AvgWriteTime:  bp.stats.getAvgWriteTime(),
-		CollectedAt:   time.Now(),
+		Capacity:        bp.capacity,
+		PageCount:       len(bp.pages),
+		DirtyCount:      int(dirtyCount),
+		PinnedCount:     pinnedCount,
+		FreeCount:       bp.capacity - len(bp.pages),
+		HitCount:        atomic.LoadUint64(&bp.stats.hitCount),
+		MissCount:       atomic.LoadUint64(&bp.stats.missCount),
+		HitRatio:        bp.stats.getHitRatio(),
+		ReadCount:       atomic.LoadUint64(&bp.stats.readCount),
+		WriteCount:      atomic.LoadUint64(&bp.stats.writeCount),
+		EvictionCount:   atomic.LoadUint64(&bp.stats.evictionCount),
+		FlushErrorCount: atomic.LoadUint64(&bp.stats.flushErrorCount),
+		AvgReadTime:     bp.stats.getAvgReadTime(),
+		AvgWriteTime:    bp.stats.getAvgWriteTime(),
+		CollectedAt:     time.Now(),
 	}
 }
 
@@ -201,4 +209,9 @@ func (bp *BufferPool) MissCount() uint64 {
 // EvictionCount returns the total number of page evictions
 func (bp *BufferPool) EvictionCount() uint64 {
 	return atomic.LoadUint64(&bp.stats.evictionCount)
+}
+
+// FlushErrorCount returns the total number of flush errors in the background flusher
+func (bp *BufferPool) FlushErrorCount() uint64 {
+	return atomic.LoadUint64(&bp.stats.flushErrorCount)
 }

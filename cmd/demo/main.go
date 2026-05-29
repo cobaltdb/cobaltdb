@@ -14,10 +14,7 @@ func main() {
 	fmt.Println()
 
 	// Open in-memory database
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}

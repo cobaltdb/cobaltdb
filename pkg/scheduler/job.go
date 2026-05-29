@@ -36,6 +36,7 @@ type Job struct {
 	Name       string
 	Type       JobType
 	Interval   time.Duration
+	Timeout    time.Duration // per-job timeout; 0 = use scheduler default (10 min)
 	Enabled    bool
 	Fn         JobFunc
 	LastRun    time.Time

@@ -9,10 +9,12 @@ import (
 func TestSlowQueryLogIntegration(t *testing.T) {
 	// Create database with slow query log enabled
 	options := &Options{
-		InMemory:            true,
-		EnableSlowQueryLog:  true,
-		SlowQueryThreshold:  1 * time.Millisecond,
-		SlowQueryMaxEntries: 100,
+		CoreStorage:  CoreStorage{InMemory: true},
+		SlowQueryLog: SlowQueryLogConfig{
+			EnableSlowQueryLog: true,
+			Threshold:         1 * time.Millisecond,
+			MaxEntries:        100,
+		},
 	}
 
 	db, err := Open(":memory:", options)
@@ -62,9 +64,7 @@ func TestSlowQueryLogIntegration(t *testing.T) {
 
 func TestSlowQueryLogDisabledByDefault(t *testing.T) {
 	// Create database without slow query log
-	options := &Options{
-		InMemory: true,
-	}
+	options := &Options{CoreStorage: CoreStorage{InMemory: true}}
 
 	db, err := Open(":memory:", options)
 	if err != nil {
@@ -84,11 +84,13 @@ func TestSlowQueryLogWithFile(t *testing.T) {
 
 	// Create database with slow query log to file
 	options := &Options{
-		InMemory:            true,
-		EnableSlowQueryLog:  true,
-		SlowQueryThreshold:  1 * time.Millisecond,
-		SlowQueryMaxEntries: 100,
-		SlowQueryLogFile:    logFile,
+		CoreStorage: CoreStorage{InMemory: true},
+		SlowQueryLog: SlowQueryLogConfig{
+			EnableSlowQueryLog: true,
+			Threshold:         1 * time.Millisecond,
+			MaxEntries:        100,
+			LogFile:           logFile,
+		},
 	}
 
 	db, err := Open(":memory:", options)

@@ -38,8 +38,10 @@ func main() {
 
 	// Open database
 	db, err := engine.Open("./worker.db", &engine.Options{
-		CacheSize:  1024,
-		WALEnabled: engine.BoolPtr(true),
+		CoreStorage: engine.CoreStorage{
+			CacheSize:  1024,
+			WALEnabled: engine.BoolPtr(true),
+		},
 	})
 	if err != nil {
 		log.Fatal(err)

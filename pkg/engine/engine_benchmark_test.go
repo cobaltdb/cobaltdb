@@ -8,8 +8,7 @@ import (
 
 func setupBenchDB(b *testing.B) *DB {
 	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 2048,
+		CoreStorage: CoreStorage{InMemory: true, CacheSize: 2048},
 	})
 	if err != nil {
 		b.Fatal(err)

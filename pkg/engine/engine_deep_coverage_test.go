@@ -10,7 +10,7 @@ import (
 // ---- DB Stats/Health/Metrics ----
 
 func TestDBStats(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestDBStats(t *testing.T) {
 }
 
 func TestDBHealthCheck(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestDBHealthCheck(t *testing.T) {
 }
 
 func TestDBStatsAfterClose(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestDBStatsAfterClose(t *testing.T) {
 }
 
 func TestDBGetMetrics(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestDBGetMetrics(t *testing.T) {
 // ---- Shutdown ----
 
 func TestDBShutdown(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestDBShutdown(t *testing.T) {
 }
 
 func TestDBShutdownTimeout(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestNonRetriableErrorUnwrap(t *testing.T) {
 // ---- Execute/Query error paths ----
 
 func TestExecWithCancelledContext(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestExecWithCancelledContext(t *testing.T) {
 }
 
 func TestQueryWithCancelledContext(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestQueryWithCancelledContext(t *testing.T) {
 }
 
 func TestExecShowTablesViaExec(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestExecShowTablesViaExec(t *testing.T) {
 }
 
 func TestExecSetVar(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestExecSetVar(t *testing.T) {
 }
 
 func TestExecUseDb(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestExecUseDb(t *testing.T) {
 }
 
 func TestQueryExplain(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func TestQueryExplain(t *testing.T) {
 }
 
 func TestQueryShowDatabases(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestQueryShowDatabases(t *testing.T) {
 }
 
 func TestQueryDescribe(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestQueryDescribe(t *testing.T) {
 }
 
 func TestQueryShowColumns(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestQueryShowColumns(t *testing.T) {
 }
 
 func TestQueryShowCreateTable(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func TestQueryShowCreateTable(t *testing.T) {
 // ---- ALTER TABLE paths ----
 
 func TestExecAlterTableAddColumn(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestExecAlterTableAddColumn(t *testing.T) {
 }
 
 func TestExecAlterTableDropColumn(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestExecAlterTableDropColumn(t *testing.T) {
 }
 
 func TestExecAlterTableRename(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +426,7 @@ func TestExecAlterTableRename(t *testing.T) {
 }
 
 func TestExecAlterTableRenameColumn(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +444,7 @@ func TestExecAlterTableRenameColumn(t *testing.T) {
 // ---- Drop table, view, trigger, procedure, index via engine ----
 
 func TestExecDropTableIfExists(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestExecDropTableIfExists(t *testing.T) {
 }
 
 func TestExecCreateDropView(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ func TestExecCreateDropView(t *testing.T) {
 }
 
 func TestExecCreateDropTrigger(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestExecCreateDropTrigger(t *testing.T) {
 }
 
 func TestExecCreateDropIndex(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,7 +523,7 @@ func TestExecCreateDropIndex(t *testing.T) {
 // ---- View IF NOT EXISTS ----
 
 func TestExecCreateViewIfNotExists(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +543,7 @@ func TestExecCreateViewIfNotExists(t *testing.T) {
 // ---- Double Close ----
 
 func TestDBDoubleClose(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +560,7 @@ func TestDBDoubleClose(t *testing.T) {
 // ---- Transaction via engine ----
 
 func TestExecBeginCommitRollback(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -612,7 +612,7 @@ func TestExecBeginCommitRollback(t *testing.T) {
 // ---- VACUUM via engine ----
 
 func TestExecVacuum(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +627,7 @@ func TestExecVacuum(t *testing.T) {
 // ---- ANALYZE via engine ----
 
 func TestExecAnalyze(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

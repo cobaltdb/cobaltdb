@@ -254,11 +254,11 @@ func (t *Transaction) rollbackLocked() error {
 	clear(t.WriteSet)
 	clear(t.ReadSet)
 
-	// Release all locks without holding transaction mutex to avoid deadlock
+	// Release all locks under a single lockMu acquisition to avoid per-key
+	// lockMu acquire/release cycles that create a deadlock window with
+	// AcquireLockMode (which holds lockMu and may call SetWaitingFor).
 	t.mu.Unlock()
-	for _, key := range locks {
-		mgr.ReleaseLock(t.ID, key)
-	}
+	mgr.releaseAllLocksUnderLock(t.ID, locks)
 	t.mu.Lock()
 
 	mgr.removeActive(t.ID)
@@ -629,15 +629,18 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 		return ErrTxnNotFound
 	}
 
+	// SetWaitingFor must be called after lockMu is released to maintain the
+	// lock-ordering invariant (lockMu before t.mu). Holding lockMu while
+	// acquiring t.mu would create a deadlock window with rollbackLocked
+	// (which holds t.mu and needs lockMu).
+	if m.wouldCauseDeadlock(txnID, blockerID) {
+		m.lockMu.Unlock()
+		return ErrDeadlockDetected
+	}
+
 	if waitingExists {
 		txn.SetWaitingFor(blockerID)
 		_ = waitingTxn
-	}
-
-	if m.wouldCauseDeadlock(txnID, blockerID) {
-		m.lockMu.Unlock()
-		txn.SetWaitingFor(0)
-		return ErrDeadlockDetected
 	}
 
 	// Wait for the lock with timeout
@@ -790,6 +793,38 @@ func (m *Manager) ReleaseAllLocks(txnID uint64) {
 	locks := txn.GetLocksHeld()
 	for _, key := range locks {
 		m.ReleaseLock(txnID, key)
+	}
+}
+
+// releaseAllLocksUnderLock releases all locks for txnID under an already-held lockMu.
+// Caller must hold lockMu. This is an internal helper used by rollbackLocked to avoid
+// per-key lockMu acquire/release cycles that would create a deadlock window with
+// AcquireLockMode (which holds lockMu and may call SetWaitingFor, which acquires t.mu).
+func (m *Manager) releaseAllLocksUnderLock(txnID uint64, keys []string) {
+	// lockMu is already held by the caller
+	for _, key := range keys {
+		entry := m.lockEntries[key]
+		if entry == nil {
+			continue
+		}
+		if entry.exclusive == txnID {
+			entry.exclusive = 0
+		}
+		if entry.shared[txnID] {
+			delete(entry.shared, txnID)
+		}
+		if entry.exclusive == 0 && len(entry.shared) == 0 {
+			delete(m.lockEntries, key)
+		}
+
+		// Also update the transaction's locksHeld map while we have lockMu.
+		shard := activeShardIdx(txnID)
+		m.activeShards[shard].RLock()
+		txn, exists := m.activeShards[shard].m[txnID]
+		m.activeShards[shard].RUnlock()
+		if exists {
+			txn.RemoveLockHeld(key)
+		}
 	}
 }
 

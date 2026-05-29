@@ -30,8 +30,10 @@ func main() {
 
 	// Open in-memory database (use a file path for persistence)
 	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
+		CoreStorage: engine.CoreStorage{
+			InMemory:  true,
+			CacheSize: 1024,
+		},
 	})
 	if err != nil {
 		log.Fatal(err)

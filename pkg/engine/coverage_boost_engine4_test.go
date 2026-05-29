@@ -167,7 +167,7 @@ func TestDBGetWALPath2(t *testing.T) {
 
 // TestDBCloseTwice tests closing database multiple times
 func TestDBCloseTwice2(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

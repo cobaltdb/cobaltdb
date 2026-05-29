@@ -28,7 +28,7 @@ func TestCreateNewDatabase(t *testing.T) {
 			name:   "create_with_wal",
 			dbName: "wal.db",
 			options: &Options{
-				WALEnabled: BoolPtr(true),
+				CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)},
 			},
 			wantErr: false,
 		},
@@ -36,7 +36,7 @@ func TestCreateNewDatabase(t *testing.T) {
 			name:   "create_with_rls",
 			dbName: "rls.db",
 			options: &Options{
-				EnableRLS: true,
+				Security: Security{EnableRLS: true},
 			},
 			wantErr: false,
 		},
@@ -44,8 +44,7 @@ func TestCreateNewDatabase(t *testing.T) {
 			name:   "create_with_query_cache",
 			dbName: "cache.db",
 			options: &Options{
-				EnableQueryCache: true,
-				QueryCacheSize:   1000,
+				QueryCache: QueryCacheConfig{EnableQueryCache: true, QueryCacheSize: 1000},
 			},
 			wantErr: false,
 		},
@@ -53,7 +52,7 @@ func TestCreateNewDatabase(t *testing.T) {
 			name:   "create_with_encryption",
 			dbName: "encrypted.db",
 			options: &Options{
-				EncryptionKey: []byte("0123456789abcdef0123456789abcdef"), // 32 bytes for AES-256
+				Security: Security{EncryptionKey: []byte("0123456789abcdef0123456789abcdef")}, // 32 bytes for AES-256
 			},
 			wantErr: false,
 		},
@@ -61,10 +60,9 @@ func TestCreateNewDatabase(t *testing.T) {
 			name:   "create_all_features",
 			dbName: "all.db",
 			options: &Options{
-				WALEnabled:       BoolPtr(true),
-				EnableRLS:        true,
-				EnableQueryCache: true,
-				EncryptionKey:    []byte("0123456789abcdef0123456789abcdef"),
+				CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)},
+				Security:    Security{EnableRLS: true, EncryptionKey: []byte("0123456789abcdef0123456789abcdef")},
+				QueryCache:   QueryCacheConfig{EnableQueryCache: true},
 			},
 			wantErr: false,
 		},
@@ -92,7 +90,7 @@ func TestLoadExistingDatabase(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test.db")
 
 	// Create initial database
-	db1, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
+	db1, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
@@ -111,7 +109,7 @@ func TestLoadExistingDatabase(t *testing.T) {
 	db1.Close()
 
 	// Load existing database
-	db2, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
+	db2, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("Failed to load database: %v", err)
 	}
@@ -156,7 +154,7 @@ func TestCreateNewWithCacheSizes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dbPath := filepath.Join(tempDir, tt.name+".db")
 			opts := &Options{
-				CacheSize: tt.cacheSize,
+				CoreStorage: CoreStorage{CacheSize: tt.cacheSize},
 			}
 
 			db, err := Open(dbPath, opts)
@@ -188,8 +186,7 @@ func TestCreateNewWithSyncModes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dbPath := filepath.Join(tempDir, tt.name+".db")
 			opts := &Options{
-				WALEnabled: BoolPtr(true),
-				SyncMode:   tt.syncMode,
+				CoreStorage: CoreStorage{WALEnabled: BoolPtr(true), SyncMode: tt.syncMode},
 			}
 
 			db, err := Open(dbPath, opts)
@@ -305,9 +302,7 @@ func TestQueryPlanCacheInitialization(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "cache.db")
 
 	opts := &Options{
-		EnableQueryCache: true,
-		QueryCacheSize:   100,
-		QueryCacheTTL:    0, // No TTL
+		QueryCache: QueryCacheConfig{EnableQueryCache: true, QueryCacheSize: 100, QueryCacheTTL: 0},
 	}
 
 	db, err := Open(dbPath, opts)
@@ -418,8 +413,10 @@ func TestCreateNewWithReplicationOptions(t *testing.T) {
 	// Only test master - slave requires an actual running master
 	t.Run("replication_master", func(t *testing.T) {
 		opts := &Options{
-			ReplicationRole:       "master",
-			ReplicationListenAddr: "localhost:0", // Let system assign port
+			Replication: ReplicationConfig{
+				Role:       "master",
+				ListenAddr: "localhost:0", // Let system assign port
+			},
 		}
 		dbPath := filepath.Join(tempDir, "replication_master.db")
 
@@ -441,10 +438,12 @@ func TestCreateNewWithBackupOptions(t *testing.T) {
 	backupDir := filepath.Join(tempDir, "backups")
 
 	opts := &Options{
-		BackupDir:              backupDir,
-		BackupRetention:        24 * time.Hour,
-		MaxBackups:             10,
-		BackupCompressionLevel: 6,
+		Backup: BackupConfig{
+			Dir:              backupDir,
+			Retention:        24 * time.Hour,
+			MaxBackups:       10,
+			CompressionLevel: 6,
+		},
 	}
 
 	dbPath := filepath.Join(tempDir, "backup.db")
@@ -461,7 +460,7 @@ func TestCreateNewWithAuditConfig(t *testing.T) {
 
 	// Disabled by default
 	opts := &Options{
-		AuditConfig: nil,
+		Security: Security{AuditConfig: nil},
 	}
 
 	dbPath := filepath.Join(tempDir, "audit.db")

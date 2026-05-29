@@ -38,12 +38,12 @@ func TestOpenRejectsInvalidStorageOptions(t *testing.T) {
 	}{
 		{
 			name: "negative cache",
-			opts: &Options{InMemory: true, CacheSize: -1},
+			opts: &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: -1}},
 			want: "cache size must be positive",
 		},
 		{
 			name: "unsupported page size",
-			opts: &Options{InMemory: true, CacheSize: 1, PageSize: storage.PageSize * 2},
+			opts: &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1, PageSize: storage.PageSize * 2}},
 			want: "page size",
 		},
 	}
@@ -79,9 +79,11 @@ func TestCloseWithWALCheckpoint(t *testing.T) {
 
 	// Create database with WAL enabled
 	db, err := Open(dbPath, &Options{
-		InMemory:   false,
-		WALEnabled: BoolPtr(true),
-		CacheSize:  1024,
+		CoreStorage: CoreStorage{
+			InMemory:  false,
+			WALEnabled: BoolPtr(true),
+			CacheSize: 1024,
+		},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -133,9 +135,11 @@ func TestExecuteAutocommit(t *testing.T) {
 
 	// Open with WAL enabled to trigger autocommit path
 	db, err := Open(dbPath, &Options{
-		InMemory:   false,
-		WALEnabled: BoolPtr(true),
-		CacheSize:  1024,
+		CoreStorage: CoreStorage{
+			InMemory:  false,
+			WALEnabled: BoolPtr(true),
+			CacheSize: 1024,
+		},
 	})
 	if err != nil {
 		t.Skipf("WAL mode not supported: %v", err)
@@ -487,9 +491,8 @@ func TestGetPreparedStatementCacheLimit(t *testing.T) {
 
 func TestGetPreparedStatementConcurrentMissKeepsSingleLRUEntry(t *testing.T) {
 	db, err := Open(":memory:", &Options{
-		InMemory:         true,
-		CacheSize:        1024,
-		MaxStmtCacheSize: 100,
+		CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024},
+		Security:    Security{MaxStmtCacheSize: 100},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -558,9 +561,11 @@ func TestLoadExistingWithWALRecovery(t *testing.T) {
 
 	// Create database with WAL enabled
 	db, err := Open(dbPath, &Options{
-		InMemory:   false,
-		WALEnabled: BoolPtr(true),
-		CacheSize:  1024,
+		CoreStorage: CoreStorage{
+			InMemory:  false,
+			WALEnabled: BoolPtr(true),
+			CacheSize: 1024,
+		},
 	})
 	if err != nil {
 		t.Skipf("WAL mode not supported: %v", err)
@@ -588,9 +593,11 @@ func TestLoadExistingWithWALRecovery(t *testing.T) {
 
 	// Reopen - should recover from WAL
 	db2, err := Open(dbPath, &Options{
-		InMemory:   false,
-		WALEnabled: BoolPtr(true),
-		CacheSize:  1024,
+		CoreStorage: CoreStorage{
+			InMemory:  false,
+			WALEnabled: BoolPtr(true),
+			CacheSize: 1024,
+		},
 	})
 	if err != nil {
 		t.Skipf("Reopen with WAL recovery not supported: %v", err)

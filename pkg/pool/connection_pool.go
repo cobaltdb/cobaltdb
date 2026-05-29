@@ -67,6 +67,21 @@ func (c *Config) Validate() error {
 	if c.MinConns > c.MaxConns {
 		return fmt.Errorf("min connections cannot exceed max connections")
 	}
+	if c.MaxIdleTime <= 0 {
+		return fmt.Errorf("max idle time must be positive")
+	}
+	if c.MaxLifetime <= 0 {
+		return fmt.Errorf("max lifetime must be positive")
+	}
+	if c.HealthCheckInterval <= 0 {
+		return fmt.Errorf("health check interval must be positive")
+	}
+	if c.HealthCheckTimeout <= 0 {
+		return fmt.Errorf("health check timeout must be positive")
+	}
+	if c.AcquireTimeout <= 0 {
+		return fmt.Errorf("acquire timeout must be positive")
+	}
 	return nil
 }
 

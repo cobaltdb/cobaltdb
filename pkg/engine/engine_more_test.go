@@ -10,7 +10,7 @@ func TestDefaultOptions(t *testing.T) {
 	if opts == nil {
 		t.Fatal("DefaultOptions returned nil")
 	}
-	if opts.CacheSize == 0 {
+	if opts.CoreStorage.CacheSize == 0 {
 		t.Error("Expected non-zero cache size")
 	}
 }
@@ -24,7 +24,7 @@ func TestOpenWithNilOptions(t *testing.T) {
 }
 
 func TestDatabaseClosed(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	db.Close()
 
 	ctx := context.Background()
@@ -35,7 +35,7 @@ func TestDatabaseClosed(t *testing.T) {
 }
 
 func TestDatabaseDoubleClose(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 
 	// Close twice - should not error
 	if err := db.Close(); err != nil {
@@ -47,7 +47,7 @@ func TestDatabaseDoubleClose(t *testing.T) {
 }
 
 func TestQueryClosedDatabase(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	db.Close()
 
 	ctx := context.Background()
@@ -58,7 +58,7 @@ func TestQueryClosedDatabase(t *testing.T) {
 }
 
 func TestBeginClosedDatabase(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	db.Close()
 
 	ctx := context.Background()
@@ -69,7 +69,7 @@ func TestBeginClosedDatabase(t *testing.T) {
 }
 
 func TestExecParseError(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -80,7 +80,7 @@ func TestExecParseError(t *testing.T) {
 }
 
 func TestQueryParseError(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -91,7 +91,7 @@ func TestQueryParseError(t *testing.T) {
 }
 
 func TestQueryNonSelect(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -102,7 +102,7 @@ func TestQueryNonSelect(t *testing.T) {
 }
 
 func TestExecBeginStmt(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -115,7 +115,7 @@ func TestExecBeginStmt(t *testing.T) {
 }
 
 func TestExecCommitStmt(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -127,7 +127,7 @@ func TestExecCommitStmt(t *testing.T) {
 }
 
 func TestExecRollbackStmt(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -139,10 +139,7 @@ func TestExecRollbackStmt(t *testing.T) {
 }
 
 func TestExecuteUpdate(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -162,10 +159,7 @@ func TestExecuteUpdate(t *testing.T) {
 }
 
 func TestExecuteDelete(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -185,10 +179,7 @@ func TestExecuteDelete(t *testing.T) {
 }
 
 func TestExecuteDropTable(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -207,10 +198,7 @@ func TestExecuteDropTable(t *testing.T) {
 }
 
 func TestTransactionQuery(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -239,10 +227,7 @@ func TestTransactionQuery(t *testing.T) {
 }
 
 func TestTransactionExec(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -270,10 +255,7 @@ func TestTransactionExec(t *testing.T) {
 }
 
 func TestTransactionRollback(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -301,10 +283,7 @@ func TestTransactionRollback(t *testing.T) {
 }
 
 func TestQueryRowScan(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -330,7 +309,7 @@ func TestQueryRowScan(t *testing.T) {
 }
 
 func TestQueryRowNoRows(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -349,7 +328,7 @@ func TestQueryRowNoRows(t *testing.T) {
 }
 
 func TestQueryRowQueryError(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -363,7 +342,7 @@ func TestQueryRowQueryError(t *testing.T) {
 }
 
 func TestRowsNextAndScan(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -392,7 +371,7 @@ func TestRowsNextAndScan(t *testing.T) {
 }
 
 func TestRowsColumns(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -477,7 +456,7 @@ func TestRowsScanCopiesMutableValues(t *testing.T) {
 }
 
 func TestRowsScanMismatch(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -497,7 +476,7 @@ func TestRowsScanMismatch(t *testing.T) {
 }
 
 func TestRowsScanNoCurrentRow(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -514,7 +493,7 @@ func TestRowsScanNoCurrentRow(t *testing.T) {
 }
 
 func TestScanValueTypes(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -553,7 +532,7 @@ func TestScanValueTypes(t *testing.T) {
 }
 
 func TestScanIntoInterface(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -573,7 +552,7 @@ func TestScanIntoInterface(t *testing.T) {
 
 // TestExecuteCreateViewMore tests CREATE VIEW execution
 func TestExecuteCreateViewMore(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -593,7 +572,7 @@ func TestExecuteCreateViewMore(t *testing.T) {
 
 // TestExecuteDropViewMore tests DROP VIEW execution
 func TestExecuteDropViewMore(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -607,7 +586,7 @@ func TestExecuteDropViewMore(t *testing.T) {
 
 // TestExecuteCreateTriggerMore tests CREATE TRIGGER execution
 func TestExecuteCreateTriggerMore(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -627,7 +606,7 @@ func TestExecuteCreateTriggerMore(t *testing.T) {
 
 // TestExecuteDropTriggerMore tests DROP TRIGGER execution
 func TestExecuteDropTriggerMore(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -641,7 +620,7 @@ func TestExecuteDropTriggerMore(t *testing.T) {
 
 // TestExecuteCreateProcedureMore tests CREATE PROCEDURE execution
 func TestExecuteCreateProcedureMore(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -655,7 +634,7 @@ func TestExecuteCreateProcedureMore(t *testing.T) {
 
 // TestExecuteDropProcedureMore tests DROP PROCEDURE execution
 func TestExecuteDropProcedureMore(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -669,7 +648,7 @@ func TestExecuteDropProcedureMore(t *testing.T) {
 
 // TestExecuteCallProcedure tests CALL procedure execution
 func TestExecuteCallProcedure(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -683,7 +662,7 @@ func TestExecuteCallProcedure(t *testing.T) {
 
 // TestTransactionCommit tests transaction commit
 func TestTransactionCommit(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -715,7 +694,7 @@ func TestTransactionCommit(t *testing.T) {
 
 // TestTransactionRollbackMore tests transaction rollback
 func TestTransactionRollbackMore(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -747,7 +726,7 @@ func TestTransactionRollbackMore(t *testing.T) {
 
 // TestTransactionDoubleCommit tests double commit (should error)
 func TestTransactionDoubleCommit(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -770,7 +749,7 @@ func TestTransactionDoubleCommit(t *testing.T) {
 
 // TestTransactionDoubleRollback tests double rollback
 func TestTransactionDoubleRollback(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -790,7 +769,7 @@ func TestTransactionDoubleRollback(t *testing.T) {
 
 // TestTransactionExecAfterCommit tests exec after commit
 func TestTransactionExecAfterCommit(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -811,10 +790,7 @@ func TestOpenWithFilePath(t *testing.T) {
 	// Use a temporary file path
 	path := ":memory:"
 
-	db, err := Open(path, &Options{
-		InMemory:  false,
-		CacheSize: 1024,
-	})
+	db, err := Open(path, &Options{CoreStorage: CoreStorage{InMemory: false, CacheSize: 1024}})
 	if err != nil {
 		t.Logf("Open with file path error (may use memory): %v", err)
 		return
@@ -824,7 +800,7 @@ func TestOpenWithFilePath(t *testing.T) {
 
 // TestExecuteCreateIndexMore tests CREATE INDEX execution
 func TestExecuteCreateIndexMore(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -844,7 +820,7 @@ func TestExecuteCreateIndexMore(t *testing.T) {
 
 // TestExecuteDropIndex tests DROP INDEX execution
 func TestExecuteDropIndex(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -858,7 +834,7 @@ func TestExecuteDropIndex(t *testing.T) {
 
 // TestRowsCloseMultiple tests closing rows multiple times
 func TestRowsCloseMultiple(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -882,7 +858,7 @@ func TestRowsCloseMultiple(t *testing.T) {
 
 // TestQueryWithContextCancel tests query with cancelled context
 func TestQueryWithContextCancel(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -902,7 +878,7 @@ func TestQueryWithContextCancel(t *testing.T) {
 
 // TestExecWithNilContext tests exec with nil context
 func TestExecWithNilContext(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Exec with nil context
@@ -914,7 +890,7 @@ func TestExecWithNilContext(t *testing.T) {
 
 // TestQueryWithNilContext tests query with nil context
 func TestQueryWithNilContext(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Query with nil context
@@ -925,7 +901,7 @@ func TestQueryWithNilContext(t *testing.T) {
 }
 
 func TestScanIntoInt64(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -947,7 +923,7 @@ func TestScanIntoInt64(t *testing.T) {
 }
 
 func TestScanIntoBytes(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1038,10 +1014,7 @@ func TestOpenFileDatabase(t *testing.T) {
 	// Create temp file
 	tmpFile := t.TempDir() + "/test.db"
 
-	db, err := Open(tmpFile, &Options{
-		InMemory:  false,
-		CacheSize: 1024,
-	})
+	db, err := Open(tmpFile, &Options{CoreStorage: CoreStorage{InMemory: false, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open file database: %v", err)
 	}
@@ -1056,11 +1029,7 @@ func TestOpenFileDatabaseWithWAL(t *testing.T) {
 
 	tmpFile := t.TempDir() + "/test.db"
 
-	db, err := Open(tmpFile, &Options{
-		InMemory:   false,
-		WALEnabled: BoolPtr(true),
-		CacheSize:  1024,
-	})
+	db, err := Open(tmpFile, &Options{CoreStorage: CoreStorage{InMemory: false, WALEnabled: BoolPtr(true), CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database with WAL: %v", err)
 	}
@@ -1074,11 +1043,7 @@ func TestOpenFileDatabaseWithWAL(t *testing.T) {
 	// Close and reopen
 	db.Close()
 
-	db2, err := Open(tmpFile, &Options{
-		InMemory:   false,
-		WALEnabled: BoolPtr(true),
-		CacheSize:  1024,
-	})
+	db2, err := Open(tmpFile, &Options{CoreStorage: CoreStorage{InMemory: false, WALEnabled: BoolPtr(true), CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
@@ -1086,10 +1051,7 @@ func TestOpenFileDatabaseWithWAL(t *testing.T) {
 }
 
 func TestInMemoryDatabaseOperations(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open in-memory database: %v", err)
 	}
@@ -1176,7 +1138,7 @@ func TestRowsNilNext(t *testing.T) {
 }
 
 func TestBeginWithOptions(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1188,7 +1150,7 @@ func TestBeginWithOptions(t *testing.T) {
 }
 
 func TestInsertResult(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1205,7 +1167,7 @@ func TestInsertResult(t *testing.T) {
 }
 
 func TestExecuteCreateIndex(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1224,7 +1186,7 @@ func TestExecuteCreateIndex(t *testing.T) {
 }
 
 func TestExecuteCreateView(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1243,7 +1205,7 @@ func TestExecuteCreateView(t *testing.T) {
 }
 
 func TestExecuteDropView(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1260,7 +1222,7 @@ func TestExecuteDropView(t *testing.T) {
 }
 
 func TestExecuteCreateTrigger(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1279,7 +1241,7 @@ func TestExecuteCreateTrigger(t *testing.T) {
 }
 
 func TestExecuteDropTrigger(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1296,7 +1258,7 @@ func TestExecuteDropTrigger(t *testing.T) {
 }
 
 func TestExecuteCreateProcedure(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1309,7 +1271,7 @@ func TestExecuteCreateProcedure(t *testing.T) {
 }
 
 func TestExecuteDropProcedure(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1326,7 +1288,7 @@ func TestExecuteDropProcedure(t *testing.T) {
 
 // TestExecuteCallProcedureMore tests CALL procedure execution with existing procedure
 func TestExecuteCallProcedureMore(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1358,7 +1320,7 @@ func TestExecuteCallProcedureMore(t *testing.T) {
 
 // TestExecuteCallProcedureNonExistent tests CALL with non-existent procedure
 func TestExecuteCallProcedureNonExistent(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1372,7 +1334,7 @@ func TestExecuteCallProcedureNonExistent(t *testing.T) {
 
 // TestTransactionCommitRollbackInactive tests commit/rollback on inactive transaction
 func TestTransactionCommitRollbackInactive(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1397,7 +1359,7 @@ func TestTransactionCommitRollbackInactive(t *testing.T) {
 
 // TestQueryRowNoResults tests QueryRow with no results
 func TestQueryRowNoResults(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1413,7 +1375,7 @@ func TestQueryRowNoResults(t *testing.T) {
 
 // TestQueryRowInvalidQuery tests QueryRow with error
 func TestQueryRowInvalidQuery(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1507,7 +1469,7 @@ func TestScanValueInt64EdgeCases(t *testing.T) {
 
 // TestPreparedStatementCache tests prepared statement caching
 func TestPreparedStatementCache(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1539,7 +1501,7 @@ func TestPreparedStatementCache(t *testing.T) {
 
 // TestDatabaseCloseMultiple tests closing database multiple times
 func TestDatabaseCloseMultiple(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 
 	// First close should succeed
 	err := db.Close()
@@ -1556,7 +1518,7 @@ func TestDatabaseCloseMultiple(t *testing.T) {
 
 // TestExecUnsupportedStatement tests exec with transaction SQL statements
 func TestExecUnsupportedStatement(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1582,7 +1544,7 @@ func TestExecUnsupportedStatement(t *testing.T) {
 
 // TestQueryUnsupportedStatement tests query with unsupported statement
 func TestQueryUnsupportedStatement(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	ctx := context.Background()
@@ -1596,7 +1558,7 @@ func TestQueryUnsupportedStatement(t *testing.T) {
 
 // TestDatabaseClosedOperations tests operations on closed database
 func TestDatabaseClosedOperations(t *testing.T) {
-	db, _ := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	db.Close()
 
 	ctx := context.Background()

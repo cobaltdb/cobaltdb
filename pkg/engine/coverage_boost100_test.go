@@ -242,7 +242,7 @@ func TestSubstituteParamsInExprNil100(t *testing.T) {
 
 // TestDBGetOptimizer100 tests GetOptimizer
 func TestDBGetOptimizer100(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestDBGetOptimizer100(t *testing.T) {
 
 // TestDBUpdateTableStatistics100 tests UpdateTableStatistics
 func TestDBUpdateTableStatistics100(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestDBUpdateTableStatistics100(t *testing.T) {
 
 // TestDBGetReplicationManager100 tests GetReplicationManager
 func TestDBGetReplicationManager100(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

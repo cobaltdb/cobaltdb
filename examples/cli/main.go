@@ -24,9 +24,11 @@ func main() {
 	fmt.Printf("Opening database: %s\n", dbPath)
 
 	opts := &engine.Options{
-		CacheSize:  1024,
-		WALEnabled: engine.BoolPtr(true),
-		InMemory:   dbPath == ":memory:",
+		CoreStorage: engine.CoreStorage{
+			CacheSize:  1024,
+			WALEnabled:  engine.BoolPtr(true),
+			InMemory:    dbPath == ":memory:",
+		},
 	}
 
 	db, err := engine.Open(dbPath, opts)

@@ -10,7 +10,7 @@ import (
 
 // TestCommitErrorPaths96 targets Commit error paths
 func TestCommitErrorPaths96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestCommitErrorPaths96(t *testing.T) {
 
 // TestRollbackErrorPaths96 targets Rollback error paths
 func TestRollbackErrorPaths96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestRollbackErrorPaths96(t *testing.T) {
 // TestGetMetricsErrorPaths96 targets GetMetrics error paths
 func TestGetMetricsErrorPaths96(t *testing.T) {
 	// Open database without metrics collector
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestGetMetricsErrorPaths96(t *testing.T) {
 
 // TestExecuteVacuum96 targets executeVacuum
 func TestExecuteVacuum96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestExecuteVacuum96(t *testing.T) {
 
 // TestExecuteAnalyze96 targets executeAnalyze
 func TestExecuteAnalyze96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestExecuteAnalyze96(t *testing.T) {
 
 // TestExecuteWithCTE96 targets executeSelectWithCTE
 func TestExecuteWithCTE96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestExecuteWithCTE96(t *testing.T) {
 
 // TestExecuteCreatePolicy96 targets executeCreatePolicy
 func TestExecuteCreatePolicy96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestExecuteCreatePolicy96(t *testing.T) {
 
 // TestExecuteExplainQuery96 targets executeExplainQuery
 func TestExecuteExplainQuery96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestExecuteExplainQuery96(t *testing.T) {
 
 // TestApplyUnionOrderBy96 targets applyUnionOrderBy
 func TestApplyUnionOrderBy96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestApplyUnionOrderBy96(t *testing.T) {
 
 // TestCompareUnionValues96 targets compareUnionValues
 func TestCompareUnionValues96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestCompareUnionValues96(t *testing.T) {
 
 // TestSaveMetaPage96 targets saveMetaPage
 func TestSaveMetaPage96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestSaveMetaPage96(t *testing.T) {
 
 // TestTableSchema96 targets TableSchema
 func TestTableSchema96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestTableSchema96(t *testing.T) {
 
 // TestTableSchemaNotFound96 targets TableSchema with non-existent table
 func TestTableSchemaNotFound96(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

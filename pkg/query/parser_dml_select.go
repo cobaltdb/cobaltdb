@@ -244,35 +244,37 @@ func (p *Parser) parseJoinType(join *JoinClause) {
 	case TokenInner:
 		join.Type = TokenInner
 		p.advance()
-		_, _ = p.expect(TokenJoin)
+		_, _ = p.strictExpect(TokenJoin)
 	case TokenLeft:
 		join.Type = TokenLeft
 		p.advance()
 		_ = p.match(TokenOuter)
-		_, _ = p.expect(TokenJoin)
+		_, _ = p.strictExpect(TokenJoin)
 	case TokenRight:
 		join.Type = TokenRight
 		p.advance()
 		_ = p.match(TokenOuter)
-		_, _ = p.expect(TokenJoin)
+		_, _ = p.strictExpect(TokenJoin)
 	case TokenFull:
 		join.Type = TokenFull
 		p.advance()
 		_ = p.match(TokenOuter)
-		_, _ = p.expect(TokenJoin)
+		_, _ = p.strictExpect(TokenJoin)
 	case TokenOuter:
 		p.advance()
 		join.Type = TokenFull
-		_, _ = p.expect(TokenJoin)
+		_, _ = p.strictExpect(TokenJoin)
 	case TokenCross:
 		join.Type = TokenCross
 		p.advance()
-		_, _ = p.expect(TokenJoin)
+		_, _ = p.strictExpect(TokenJoin)
 	case TokenNatural:
 		join.Natural = true
 		p.advance()
+		// strictExpect only after sub-type parse so strict mode rejects
+		// "NATURAL INNER b" where b is not the JOIN token.
 		p.parseNaturalJoinType(join)
-		_, _ = p.expect(TokenJoin)
+		_, _ = p.strictExpect(TokenJoin)
 	case TokenJoin:
 		join.Type = TokenJoin
 		p.advance()
@@ -326,7 +328,28 @@ func (p *Parser) parseJoinCondition(join *JoinClause) error {
 		}
 		join.Using = columns
 	case join.Natural:
-		// condition determined by common columns
+		// NATURAL: condition from common columns; optionally accept ON / USING.
+		if p.current().Type == TokenOn {
+			p.advance()
+			cond, err := p.parseExpression()
+			if err != nil {
+				return err
+			}
+			join.Condition = cond
+		} else if p.current().Type == TokenUsing {
+			p.advance()
+			if _, err := p.expect(TokenLParen); err != nil {
+				return err
+			}
+			columns, err := p.parseIdentifierList()
+			if err != nil {
+				return fmt.Errorf("USING clause: %w", err)
+			}
+			if _, err := p.expect(TokenRParen); err != nil {
+				return err
+			}
+			join.Using = columns
+		}
 	default:
 		if _, err := p.expect(TokenOn); err != nil {
 			return err

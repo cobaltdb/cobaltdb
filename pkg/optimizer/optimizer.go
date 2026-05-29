@@ -173,12 +173,21 @@ func (o *Optimizer) SelectBestIndex(tableName string, where query.Expression) st
 	return bestIndex
 }
 
-// extractColumnReferences extracts column names from an expression
+// extractColumnReferences extracts column names from an expression.
+// It mirrors the coverage of extractColumnsRecursive in advisor.go:
+// - Identifiers and qualified identifiers
+// - Binary/unary operators
+// - Function arguments, CASE results, subquery columns
+//
+// If you add a case here, check whether advisor.go also needs the same case.
 func (o *Optimizer) extractColumnReferences(expr query.Expression) []string {
 	columns := make([]string, 0)
 
 	var traverse func(query.Expression)
 	traverse = func(e query.Expression) {
+		if e == nil {
+			return
+		}
 		switch v := e.(type) {
 		case *query.Identifier:
 			columns = append(columns, v.Name)
@@ -187,6 +196,42 @@ func (o *Optimizer) extractColumnReferences(expr query.Expression) []string {
 		case *query.BinaryExpr:
 			traverse(v.Left)
 			traverse(v.Right)
+		case *query.UnaryExpr:
+			traverse(v.Expr)
+		case *query.InExpr:
+			traverse(v.Expr)
+			for _, item := range v.List {
+				traverse(item)
+			}
+			if v.Subquery != nil && v.Subquery.Where != nil {
+				traverse(v.Subquery.Where)
+			}
+		case *query.LikeExpr:
+			traverse(v.Expr)
+			traverse(v.Pattern)
+		case *query.IsNullExpr:
+			traverse(v.Expr)
+		case *query.FunctionCall:
+			for _, arg := range v.Args {
+				traverse(arg)
+			}
+		case *query.BetweenExpr:
+			traverse(v.Expr)
+			traverse(v.Lower)
+			traverse(v.Upper)
+		case *query.CastExpr:
+			traverse(v.Expr)
+		case *query.CaseExpr:
+			traverse(v.Expr)
+			for _, w := range v.Whens {
+				traverse(w.Condition)
+				traverse(w.Result)
+			}
+			traverse(v.Else)
+		case *query.ExistsExpr:
+			if v.Subquery != nil && v.Subquery.Where != nil {
+				traverse(v.Subquery.Where)
+			}
 		}
 	}
 

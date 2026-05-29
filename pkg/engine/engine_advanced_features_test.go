@@ -7,7 +7,7 @@ import (
 
 // TestVacuumCommand tests VACUUM SQL command
 func TestVacuumCommand(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestVacuumCommand(t *testing.T) {
 
 // TestAnalyzeCommand tests ANALYZE SQL command
 func TestAnalyzeCommand(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestAnalyzeCommand(t *testing.T) {
 
 // TestMaterializedViewCommand tests materialized view SQL commands
 func TestMaterializedViewCommand(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestMaterializedViewCommand(t *testing.T) {
 
 // TestCTESupport tests Common Table Expressions
 func TestCTESupport(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestCTESupport(t *testing.T) {
 
 // TestFullTextSearch tests FTS SQL commands
 func TestFullTextSearch(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -322,9 +322,8 @@ func TestOpenWithRLS(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "rls_test.db")
 
 	db, err := Open(dbPath, &Options{
-		InMemory:  false,
-		CacheSize: 1024,
-		EnableRLS: true,
+		CoreStorage: CoreStorage{InMemory: false, CacheSize: 1024},
+		Security:    Security{EnableRLS: true},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database with RLS: %v", err)

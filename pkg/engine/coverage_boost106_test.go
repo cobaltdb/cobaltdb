@@ -11,7 +11,7 @@ import (
 func TestTxCommitWithFlushError106(t *testing.T) {
 	// This test is difficult to trigger without mocking
 	// We'll just verify normal commit still works
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestTxCommitWithFlushError106(t *testing.T) {
 
 // TestTxRollbackError106 tests transaction rollback error paths
 func TestTxRollbackError106(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestTxRollbackError106(t *testing.T) {
 
 // TestTxCommitMultiple106 tests committing already completed transaction
 func TestTxCommitMultiple106(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestTxCommitMultiple106(t *testing.T) {
 
 // TestDBGetMetrics106 tests GetMetrics error path
 func TestDBGetMetrics106(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestDBGetMetrics106(t *testing.T) {
 
 // TestDBGetMetricsCollector106 tests GetMetricsCollector
 func TestDBGetMetricsCollector106(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

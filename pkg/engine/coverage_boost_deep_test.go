@@ -15,7 +15,7 @@ func TestLoadExistingWithWALRecoveryDeep(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	// Create database with WAL
-	db1, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
+	db1, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestLoadExistingWithWALRecoveryDeep(t *testing.T) {
 	db1.Close()
 
 	// Reopen - should recover from WAL
-	db2, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
+	db2, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestLoadExistingWithRLSDeep(t *testing.T) {
 	db1.Close()
 
 	// Reopen with RLS
-	db2, err := Open(dbPath, &Options{EnableRLS: true})
+	db2, err := Open(dbPath, &Options{Security: Security{EnableRLS: true}})
 	if err != nil {
 		t.Fatalf("Failed to reopen with RLS: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestLoadExistingWithReplicationDeep(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_repl_load.db")
 
 	// Create and close a database first
-	db, err := Open(dbPath, &Options{CacheSize: 256})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{CacheSize: 256}})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestQueryWithTimeout(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{QueryTimeout: 30})
+	db, err := Open(dbPath, &Options{ConnectionPool: ConnectionPool{QueryTimeout: 30}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestGetWALPathNoWALDeep(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(false)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestCheckpointNoWALDeep(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(false)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestGetCurrentLSNNoWALDeep(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(false)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestLoadExistingWithInvalidWALPath(t *testing.T) {
 	db1.Close()
 
 	// Reopen with WAL enabled
-	db2, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
+	db2, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Logf("Reopen with WAL enabled returned: %v", err)
 	} else {
@@ -541,7 +541,7 @@ func TestStorageBackendErrorDeep(t *testing.T) {
 	}
 
 	// Test opening with valid in-memory path works fine
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("In-memory open failed: %v", err)
 	}

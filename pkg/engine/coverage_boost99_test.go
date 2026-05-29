@@ -22,7 +22,7 @@ func TestNewStmtLRUList99(t *testing.T) {
 
 // TestDBStats99 tests database Stats
 func TestDBStats99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestDBStats99(t *testing.T) {
 
 // TestDBHealthCheck99 tests database HealthCheck
 func TestDBHealthCheck99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestDBHealthCheck99(t *testing.T) {
 
 // TestDBGetCurrentLSN99 tests GetCurrentLSN
 func TestDBGetCurrentLSN99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestDBGetCurrentLSN99(t *testing.T) {
 
 // TestDBBeginHotBackup99 tests BeginHotBackup and EndHotBackup
 func TestDBBeginHotBackup99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestDBBeginHotBackup99(t *testing.T) {
 
 // TestDBGetWALPath99 tests GetWALPath
 func TestDBGetWALPath99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestDBGetWALPath99(t *testing.T) {
 
 // TestDBGetDatabasePath99 tests GetDatabasePath
 func TestDBGetDatabasePath99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestDBGetDatabasePath99(t *testing.T) {
 
 // TestDBIsHealthy99 tests database IsHealthy
 func TestDBIsHealthy99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestDBIsHealthy99(t *testing.T) {
 
 // TestDBCheckpoint99 tests Checkpoint
 func TestDBCheckpoint99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestDBCheckpoint99(t *testing.T) {
 
 // TestDBGetQueryCache99 tests GetQueryCache
 func TestDBGetQueryCache99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestDBGetQueryCache99(t *testing.T) {
 
 // TestDBGetBackupManager99 tests GetBackupManager
 func TestDBGetBackupManager99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestDBGetBackupManager99(t *testing.T) {
 
 // TestTxExec99 tests transaction Exec method
 func TestTxExec99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestTxExec99(t *testing.T) {
 
 // TestTxQuery99 tests transaction Query method
 func TestTxQuery99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestTxQuery99(t *testing.T) {
 
 // TestTxCommitError99 tests transaction commit error on completed transaction
 func TestTxCommitError99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestTxCommitError99(t *testing.T) {
 
 // TestTxRollbackError99 tests transaction rollback error on completed transaction
 func TestTxRollbackError99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestTxRollbackError99(t *testing.T) {
 
 // TestTxExecAfterCommit99 tests Exec after commit
 func TestTxExecAfterCommit99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestTxExecAfterCommit99(t *testing.T) {
 
 // TestTxQueryAfterRollback99 tests Query after rollback
 func TestTxQueryAfterRollback99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -381,7 +381,7 @@ func TestTxQueryAfterRollback99(t *testing.T) {
 
 // TestRow99 tests Row methods
 func TestRow99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestRow99(t *testing.T) {
 
 // TestRowsClose99 tests multiple Close calls
 func TestRowsClose99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -498,7 +498,7 @@ func TestScanValue99(t *testing.T) {
 
 // TestDBCreateBackup99 tests CreateBackup when not initialized
 func TestDBCreateBackup99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestDBCreateBackup99(t *testing.T) {
 
 // TestDBListBackups99 tests ListBackups when not initialized
 func TestDBListBackups99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -528,7 +528,7 @@ func TestDBListBackups99(t *testing.T) {
 
 // TestDBGetBackup99 tests GetBackup when not initialized
 func TestDBGetBackup99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestDBGetBackup99(t *testing.T) {
 
 // TestDBDeleteBackup99 tests DeleteBackup when not initialized
 func TestDBDeleteBackup99(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

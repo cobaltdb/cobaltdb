@@ -8,7 +8,7 @@ import (
 
 // TestExecErrorPaths tests error branches in execute functions
 func TestExecErrorPaths(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestExecErrorPaths(t *testing.T) {
 
 // TestExecAfterClose tests Exec/Query on closed database
 func TestExecAfterClose(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestExecAfterClose(t *testing.T) {
 
 // TestExecContextCanceled tests Exec with canceled context
 func TestExecContextCanceled(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestExecContextCanceled(t *testing.T) {
 
 // TestQueryTimeoutOption tests the query timeout option
 func TestQueryTimeoutOption(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true, QueryTimeout: 5 * time.Second})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}, ConnectionPool: ConnectionPool{QueryTimeout: 5 * time.Second}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestQueryTimeoutOption(t *testing.T) {
 
 // TestTxCommitAndRollbackPaths exercises Tx.Commit and Tx.Rollback
 func TestTxCommitAndRollbackPaths(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestAuditUserContext(t *testing.T) {
 
 // TestShowCommandsCoverage tests SHOW and DESCRIBE query paths
 func TestShowCommandsCoverage(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestShowCommandsCoverage(t *testing.T) {
 
 // TestAnalyzeViaEngine tests ANALYZE via engine
 func TestAnalyzeViaEngine(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +447,7 @@ func TestAnalyzeViaEngine(t *testing.T) {
 
 // TestTriggerViaEngine tests CREATE/DROP TRIGGER through engine API
 func TestTriggerViaEngine(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +500,7 @@ func TestTriggerViaEngine(t *testing.T) {
 
 // TestPolicyViaEngine tests CREATE/DROP POLICY through engine
 func TestPolicyViaEngine(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true, EnableRLS: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}, Security: Security{EnableRLS: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +532,7 @@ func TestPolicyViaEngine(t *testing.T) {
 
 // TestViewViaEngine tests CREATE/DROP VIEW through engine
 func TestViewViaEngine(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -612,7 +612,7 @@ func TestRetryWithResultEdgeCases(t *testing.T) {
 
 // TestSavepointViaEngine tests savepoint operations through engine API
 func TestSavepointViaEngine(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,7 +649,7 @@ func TestSavepointViaEngine(t *testing.T) {
 
 // TestDropTableViaEngine tests DROP TABLE error paths
 func TestDropTableViaEngine(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +681,7 @@ func TestDropTableViaEngine(t *testing.T) {
 
 // TestParseSyntaxError tests parse error path
 func TestParseSyntaxError(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +696,7 @@ func TestParseSyntaxError(t *testing.T) {
 
 // TestTxQueryAfterClose tests Tx.Query after transaction completion
 func TestTxQueryAfterClose(t *testing.T) {
-	db, err := Open("", &Options{InMemory: true})
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

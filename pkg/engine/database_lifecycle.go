@@ -28,26 +28,38 @@ import (
 
 func DefaultOptions() *Options {
 	return &Options{
-		PageSize:             storage.PageSize,
-		CacheSize:            1024, // 4MB cache
-		InMemory:             false,
-		WALEnabled:           BoolPtr(true),
-		SyncMode:             SyncNormal,
-		Logger:               logger.Default(),
-		MaxConnections:       100, // Default max connections
-		ConnectionTimeout:    30 * time.Second,
-		QueryTimeout:         60 * time.Second,
-		MaxStmtCacheSize:     1000, // Default max cached statements
-		EnableAutoVacuum:     true,
-		AutoVacuumInterval:   1 * time.Minute,
-		AutoVacuumThreshold:  0.2, // 20% dead tuples triggers vacuum
-		EnableAutoCheckpoint: true,
-		CheckpointInterval:   5 * time.Minute,
-		EnableScheduler:      true,
-		AnalyzeInterval:      1 * time.Hour,
-		SchedulerWorkers:     2,
-		ParallelWorkers:      runtime.NumCPU(),
-		ParallelThreshold:    1000,
+		CoreStorage: CoreStorage{
+			PageSize:   storage.PageSize,
+			CacheSize:  1024, // 4MB cache
+			InMemory:   false,
+			WALEnabled: BoolPtr(true),
+			SyncMode:   SyncNormal,
+			Logger:     logger.Default(),
+		},
+		ConnectionPool: ConnectionPool{
+			MaxConnections:    100,
+			ConnectionTimeout: 30 * time.Second,
+			QueryTimeout:      60 * time.Second,
+		},
+		Security: Security{
+			MaxStmtCacheSize: 1000,
+		},
+		Maintenance: MaintenanceConfig{
+			EnableAutoVacuum:     true,
+			AutoVacuumInterval:   1 * time.Minute,
+			AutoVacuumThreshold:  0.2,
+			EnableAutoCheckpoint: true,
+			CheckpointInterval:   5 * time.Minute,
+		},
+		Scheduler: SchedulerConfig{
+			EnableScheduler: true,
+			AnalyzeInterval: 1 * time.Hour,
+			Workers:         2,
+		},
+		ParallelQuery: ParallelQueryConfig{
+			Workers:   runtime.NumCPU(),
+			Threshold: 1000,
+		},
 	}
 }
 
@@ -58,38 +70,71 @@ func normalizeOptions(opts *Options) *Options {
 	}
 
 	normalized := *opts
-	if normalized.PageSize == 0 {
-		normalized.PageSize = defaults.PageSize
+	if normalized.CoreStorage.PageSize == 0 {
+		normalized.CoreStorage.PageSize = defaults.CoreStorage.PageSize
 	}
-	if normalized.CacheSize == 0 {
-		normalized.CacheSize = defaults.CacheSize
+	if normalized.CoreStorage.CacheSize == 0 {
+		normalized.CoreStorage.CacheSize = defaults.CoreStorage.CacheSize
 	}
-	if normalized.WALEnabled == nil {
-		normalized.WALEnabled = cloneBoolPtr(defaults.WALEnabled)
+	if normalized.CoreStorage.WALEnabled == nil {
+		normalized.CoreStorage.WALEnabled = cloneBoolPtr(defaults.CoreStorage.WALEnabled)
 	} else {
-		normalized.WALEnabled = cloneBoolPtr(normalized.WALEnabled)
+		normalized.CoreStorage.WALEnabled = cloneBoolPtr(normalized.CoreStorage.WALEnabled)
 	}
-	if normalized.SyncMode == 0 {
-		normalized.SyncMode = defaults.SyncMode
+	if normalized.CoreStorage.SyncMode == 0 {
+		normalized.CoreStorage.SyncMode = defaults.CoreStorage.SyncMode
 	}
-	if normalized.Logger == nil {
-		normalized.Logger = defaults.Logger
+	if normalized.CoreStorage.Logger == nil {
+		normalized.CoreStorage.Logger = defaults.CoreStorage.Logger
 	}
-	if len(normalized.EncryptionKey) > 0 {
-		normalized.EncryptionKey = append([]byte(nil), normalized.EncryptionKey...)
+	if normalized.ConnectionPool.MaxConnections == 0 {
+		normalized.ConnectionPool.MaxConnections = defaults.ConnectionPool.MaxConnections
 	}
-	if normalized.EncryptionConfig != nil {
-		encConfig := *normalized.EncryptionConfig
+	if normalized.ConnectionPool.ConnectionTimeout == 0 {
+		normalized.ConnectionPool.ConnectionTimeout = defaults.ConnectionPool.ConnectionTimeout
+	}
+	if normalized.ConnectionPool.QueryTimeout == 0 {
+		normalized.ConnectionPool.QueryTimeout = defaults.ConnectionPool.QueryTimeout
+	}
+	if normalized.Security.MaxStmtCacheSize == 0 {
+		normalized.Security.MaxStmtCacheSize = defaults.Security.MaxStmtCacheSize
+	}
+	if normalized.Maintenance.AutoVacuumInterval == 0 {
+		normalized.Maintenance.AutoVacuumInterval = defaults.Maintenance.AutoVacuumInterval
+	}
+	if normalized.Maintenance.AutoVacuumThreshold == 0 {
+		normalized.Maintenance.AutoVacuumThreshold = defaults.Maintenance.AutoVacuumThreshold
+	}
+	if normalized.Maintenance.CheckpointInterval == 0 {
+		normalized.Maintenance.CheckpointInterval = defaults.Maintenance.CheckpointInterval
+	}
+	if normalized.Scheduler.AnalyzeInterval == 0 {
+		normalized.Scheduler.AnalyzeInterval = defaults.Scheduler.AnalyzeInterval
+	}
+	if normalized.Scheduler.Workers == 0 {
+		normalized.Scheduler.Workers = defaults.Scheduler.Workers
+	}
+	if normalized.ParallelQuery.Workers == 0 {
+		normalized.ParallelQuery.Workers = defaults.ParallelQuery.Workers
+	}
+	if normalized.ParallelQuery.Threshold == 0 {
+		normalized.ParallelQuery.Threshold = defaults.ParallelQuery.Threshold
+	}
+	if len(normalized.Security.EncryptionKey) > 0 {
+		normalized.Security.EncryptionKey = append([]byte(nil), normalized.Security.EncryptionKey...)
+	}
+	if normalized.Security.EncryptionConfig != nil {
+		encConfig := *normalized.Security.EncryptionConfig
 		if len(encConfig.Key) > 0 {
 			encConfig.Key = append([]byte(nil), encConfig.Key...)
 		}
 		if len(encConfig.Salt) > 0 {
 			encConfig.Salt = append([]byte(nil), encConfig.Salt...)
 		}
-		normalized.EncryptionConfig = &encConfig
+		normalized.Security.EncryptionConfig = &encConfig
 	}
-	if normalized.AuditConfig != nil {
-		auditConfig := *normalized.AuditConfig
+	if normalized.Security.AuditConfig != nil {
+		auditConfig := *normalized.Security.AuditConfig
 		if len(auditConfig.Events) > 0 {
 			auditConfig.Events = append([]audit.EventType(nil), auditConfig.Events...)
 		}
@@ -99,11 +144,11 @@ func normalizeOptions(opts *Options) *Options {
 		if len(auditConfig.EncryptionKey) > 0 {
 			auditConfig.EncryptionKey = append([]byte(nil), auditConfig.EncryptionKey...)
 		}
-		normalized.AuditConfig = &auditConfig
+		normalized.Security.AuditConfig = &auditConfig
 	}
-	if normalized.CompressionConfig != nil {
-		compressionConfig := *normalized.CompressionConfig
-		normalized.CompressionConfig = &compressionConfig
+	if normalized.PageCompression.Config != nil {
+		compressionConfig := *normalized.PageCompression.Config
+		normalized.PageCompression.Config = &compressionConfig
 	}
 	return &normalized
 }
@@ -120,15 +165,15 @@ func cloneBoolPtr(value *bool) *bool {
 
 func Open(path string, opts *Options) (*DB, error) {
 	opts = normalizeOptions(opts)
-	if opts.CacheSize <= 0 {
-		return nil, fmt.Errorf("cache size must be positive: %d", opts.CacheSize)
+	if opts.CoreStorage.CacheSize <= 0 {
+		return nil, fmt.Errorf("cache size must be positive: %d", opts.CoreStorage.CacheSize)
 	}
-	if opts.PageSize != storage.PageSize {
-		return nil, fmt.Errorf("page size %d is unsupported; expected %d", opts.PageSize, storage.PageSize)
+	if opts.CoreStorage.PageSize != storage.PageSize {
+		return nil, fmt.Errorf("page size %d is unsupported; expected %d", opts.CoreStorage.PageSize, storage.PageSize)
 	}
 
 	// Setup logger
-	log := opts.Logger
+	log := opts.CoreStorage.Logger
 	if log == nil {
 		log = logger.Default()
 	}
@@ -137,7 +182,7 @@ func Open(path string, opts *Options) (*DB, error) {
 	var backend storage.Backend
 	var err error
 
-	if opts.InMemory || path == ":memory:" {
+	if opts.CoreStorage.InMemory || path == ":memory:" {
 		log.Infof("Opening in-memory database")
 		backend = storage.NewMemory()
 	} else {
@@ -156,15 +201,15 @@ func Open(path string, opts *Options) (*DB, error) {
 		}
 
 		// Wrap with encryption if encryption key is provided
-		if opts.EncryptionConfig != nil && opts.EncryptionConfig.Enabled {
+		if opts.Security.EncryptionConfig != nil && opts.Security.EncryptionConfig.Enabled {
 			log.Infof("Enabling encryption at rest")
 			// Try to load existing salt for key derivation consistency
-			if len(opts.EncryptionConfig.Salt) == 0 && path != ":memory:" {
+			if len(opts.Security.EncryptionConfig.Salt) == 0 && path != ":memory:" {
 				if salt, loadErr := storage.LoadSalt(path); loadErr == nil && salt != nil {
-					opts.EncryptionConfig.Salt = salt
+					opts.Security.EncryptionConfig.Salt = salt
 				}
 			}
-			backend, err = storage.NewEncryptedBackend(backend, opts.EncryptionConfig)
+			backend, err = storage.NewEncryptedBackend(backend, opts.Security.EncryptionConfig)
 			if err != nil {
 				backend.Close()
 				return nil, fmt.Errorf("failed to setup encryption: %w", err)
@@ -177,11 +222,11 @@ func Open(path string, opts *Options) (*DB, error) {
 					}
 				}
 			}
-		} else if len(opts.EncryptionKey) > 0 {
+		} else if len(opts.Security.EncryptionKey) > 0 {
 			log.Infof("Enabling encryption at rest")
 			encConfig := &storage.EncryptionConfig{
 				Enabled:   true,
-				Key:       opts.EncryptionKey,
+				Key:       opts.Security.EncryptionKey,
 				Algorithm: "aes-256-gcm",
 				UseArgon2: true,
 			}
@@ -207,9 +252,9 @@ func Open(path string, opts *Options) (*DB, error) {
 		}
 
 		// Wrap with page-level compression if configured
-		if opts.CompressionConfig != nil && opts.CompressionConfig.Enabled {
+		if opts.PageCompression.Config != nil && opts.PageCompression.Config.Enabled {
 			log.Infof("Enabling page-level compression")
-			backend, err = storage.NewCompressedBackend(backend, opts.CompressionConfig)
+			backend, err = storage.NewCompressedBackend(backend, opts.PageCompression.Config)
 			if err != nil {
 				backend.Close()
 				return nil, fmt.Errorf("failed to setup compression: %w", err)
@@ -232,9 +277,9 @@ func Open(path string, opts *Options) (*DB, error) {
 	}
 
 	// Initialize audit logger if configured
-	if opts.AuditConfig != nil && opts.AuditConfig.Enabled {
+	if opts.Security.AuditConfig != nil && opts.Security.AuditConfig.Enabled {
 		log.Infof("Initializing audit logging")
-		auditLogger, err := audit.New(opts.AuditConfig, log)
+		auditLogger, err := audit.New(opts.Security.AuditConfig, log)
 		if err != nil {
 			backend.Close()
 			return nil, fmt.Errorf("failed to initialize audit logger: %w", err)
@@ -243,21 +288,21 @@ func Open(path string, opts *Options) (*DB, error) {
 	}
 
 	// Initialize RLS manager if enabled
-	if opts.EnableRLS {
+	if opts.Security.EnableRLS {
 		log.Infof("Initializing row-level security")
 		db.rlsManager = security.NewManager()
 	}
 
 	// Initialize connection limiter (atomic fast path; 0 = unlimited).
-	if opts.MaxConnections > 0 {
-		db.connLimit = int64(opts.MaxConnections)
+	if opts.ConnectionPool.MaxConnections > 0 {
+		db.connLimit = int64(opts.ConnectionPool.MaxConnections)
 	}
 
 	// Start metrics collection
 	go collector.Start(context.Background())
 
 	// Initialize buffer pool
-	db.pool, err = storage.NewBufferPoolWithError(opts.CacheSize, backend)
+	db.pool, err = storage.NewBufferPoolWithError(opts.CoreStorage.CacheSize, backend)
 	if err != nil {
 		collector.Stop()
 		if db.auditLogger != nil {
@@ -303,8 +348,8 @@ func Open(path string, opts *Options) (*DB, error) {
 
 	// Start scheduler for maintenance jobs if enabled.
 	// Auto-vacuum implies the scheduler must be active.
-	if !db.options.InMemory && db.path != ":memory:" {
-		if db.options.EnableScheduler || db.options.EnableAutoVacuum {
+	if !db.options.CoreStorage.InMemory && db.path != ":memory:" {
+		if db.options.Scheduler.EnableScheduler || db.options.Maintenance.EnableAutoVacuum {
 			db.startScheduler()
 		}
 	}
@@ -354,7 +399,7 @@ func (db *DB) createNew() error {
 
 	// Initialize WAL for new databases when enabled, BEFORE creating the
 	// catalog and transaction manager so they receive a non-nil WAL reference.
-	if db.options.WALEnabled != nil && *db.options.WALEnabled && db.path != ":memory:" && db.wal == nil {
+	if db.options.CoreStorage.WALEnabled != nil && *db.options.CoreStorage.WALEnabled && db.path != ":memory:" && db.wal == nil {
 		walPath := db.path + ".wal"
 		wal, err := storage.OpenWAL(walPath)
 		if err != nil {
@@ -368,7 +413,7 @@ func (db *DB) createNew() error {
 
 		db.pool.SetWAL(wal)
 
-		switch db.options.SyncMode {
+		switch db.options.CoreStorage.SyncMode {
 		case SyncNormal:
 			wal.EnableGroupCommit(0, 5*time.Millisecond)
 		case SyncOff:
@@ -378,7 +423,7 @@ func (db *DB) createNew() error {
 
 	// Initialize catalog
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
-	db.catalog.SetParallelOptions(db.options.ParallelWorkers, db.options.ParallelThreshold)
+	db.catalog.SetParallelOptions(db.options.ParallelQuery.Workers, db.options.ParallelQuery.Threshold)
 
 	// Initialize FDW registry and register built-in wrappers
 	fdwRegistry := fdw.NewRegistry()
@@ -386,7 +431,7 @@ func (db *DB) createNew() error {
 	db.catalog.SetFDWRegistry(fdwRegistry)
 
 	// Enable RLS if configured
-	if db.options.EnableRLS {
+	if db.options.Security.EnableRLS {
 		db.catalog.EnableRLS()
 	}
 
@@ -396,10 +441,10 @@ func (db *DB) createNew() error {
 	db.catalog.EnableBufferedWrites()
 
 	// Initialize query cache if enabled
-	if db.options.EnableQueryCache {
+	if db.options.QueryCache.EnableQueryCache {
 		cacheConfig := &cache.Config{
-			MaxSize:         db.options.QueryCacheSize,
-			TTL:             db.options.QueryCacheTTL,
+			MaxSize:         db.options.QueryCache.QueryCacheSize,
+			TTL:             db.options.QueryCache.QueryCacheTTL,
 			Enabled:         true,
 			CleanupInterval: 1 * time.Minute,
 		}
@@ -410,10 +455,10 @@ func (db *DB) createNew() error {
 	db.optimizer = optimizer.New(optimizer.DefaultConfig(), nil)
 
 	// Initialize replication manager if configured
-	if db.options.ReplicationRole != "" {
+	if db.options.Replication.Role != "" {
 		// Parse role
 		var role replication.Role
-		switch db.options.ReplicationRole {
+		switch db.options.Replication.Role {
 		case "master":
 			role = replication.RoleMaster
 		case "slave":
@@ -424,7 +469,7 @@ func (db *DB) createNew() error {
 
 		// Parse mode
 		var mode replication.ReplicationMode
-		switch db.options.ReplicationMode {
+		switch db.options.Replication.Mode {
 		case "sync":
 			mode = replication.ModeSync
 		case "full_sync":
@@ -436,13 +481,13 @@ func (db *DB) createNew() error {
 		replConfig := &replication.Config{
 			Role:       role,
 			Mode:       mode,
-			ListenAddr: db.options.ReplicationListenAddr,
-			MasterAddr: db.options.ReplicationMasterAddr,
-			AuthToken:  db.options.ReplicationAuthToken,
-			SSLCert:    db.options.ReplicationSSLCert,
-			SSLKey:     db.options.ReplicationSSLKey,
-			SSLCA:      db.options.ReplicationSSLCA,
-			StateFile:  db.options.ReplicationStateFile,
+			ListenAddr: db.options.Replication.ListenAddr,
+			MasterAddr: db.options.Replication.MasterAddr,
+			AuthToken:  db.options.Replication.AuthToken,
+			SSLCert:    db.options.Replication.SSLCert,
+			SSLKey:     db.options.Replication.SSLKey,
+			SSLCA:      db.options.Replication.SSLCA,
+			StateFile:  db.options.Replication.StateFile,
 		}
 		db.replicationMgr = replication.NewManager(replConfig)
 		db.configureReplicationCallbacks()
@@ -454,16 +499,16 @@ func (db *DB) createNew() error {
 	db.initializeBackupManager()
 
 	// Initialize slow query log
-	if db.options.EnableSlowQueryLog {
-		threshold := db.options.SlowQueryThreshold
+	if db.options.SlowQueryLog.EnableSlowQueryLog {
+		threshold := db.options.SlowQueryLog.Threshold
 		if threshold == 0 {
 			threshold = 1 * time.Second
 		}
-		maxEntries := db.options.SlowQueryMaxEntries
+		maxEntries := db.options.SlowQueryLog.MaxEntries
 		if maxEntries == 0 {
 			maxEntries = 1000
 		}
-		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
+		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLog.LogFile)
 		db.unregisterSlowQueryLog = metrics.RegisterSlowQueryLog(db.slowQueryLog)
 	}
 
@@ -510,7 +555,7 @@ func (db *DB) loadExisting() error {
 	}
 
 	// Open WAL if enabled
-	if db.options.WALEnabled != nil && *db.options.WALEnabled && db.path != ":memory:" {
+	if db.options.CoreStorage.WALEnabled != nil && *db.options.CoreStorage.WALEnabled && db.path != ":memory:" {
 		walPath := db.path + ".wal"
 		wal, err := storage.OpenWAL(walPath)
 		if err != nil {
@@ -526,7 +571,7 @@ func (db *DB) loadExisting() error {
 		db.pool.SetWAL(wal)
 
 		// Enable group commit based on SyncMode
-		switch db.options.SyncMode {
+		switch db.options.CoreStorage.SyncMode {
 		case SyncNormal:
 			wal.EnableGroupCommit(0, 5*time.Millisecond)
 		case SyncOff:
@@ -552,7 +597,7 @@ func (db *DB) loadExisting() error {
 
 	// Load catalog - schema and data are now stored in the B+Tree pages
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
-	db.catalog.SetParallelOptions(db.options.ParallelWorkers, db.options.ParallelThreshold)
+	db.catalog.SetParallelOptions(db.options.ParallelQuery.Workers, db.options.ParallelQuery.Threshold)
 
 	// Initialize FDW registry and register built-in wrappers
 	fdwRegistry := fdw.NewRegistry()
@@ -560,7 +605,7 @@ func (db *DB) loadExisting() error {
 	db.catalog.SetFDWRegistry(fdwRegistry)
 
 	// Enable RLS if configured
-	if db.options.EnableRLS {
+	if db.options.Security.EnableRLS {
 		db.catalog.EnableRLS()
 	}
 
@@ -586,10 +631,10 @@ func (db *DB) loadExisting() error {
 	db.catalog.EnableBufferedWrites()
 
 	// Initialize query cache if enabled
-	if db.options.EnableQueryCache {
+	if db.options.QueryCache.EnableQueryCache {
 		cacheConfig := &cache.Config{
-			MaxSize:         db.options.QueryCacheSize,
-			TTL:             db.options.QueryCacheTTL,
+			MaxSize:         db.options.QueryCache.QueryCacheSize,
+			TTL:             db.options.QueryCache.QueryCacheTTL,
 			Enabled:         true,
 			CleanupInterval: 1 * time.Minute,
 		}
@@ -600,10 +645,10 @@ func (db *DB) loadExisting() error {
 	db.optimizer = optimizer.New(optimizer.DefaultConfig(), nil)
 
 	// Initialize replication manager if configured
-	if db.options.ReplicationRole != "" {
+	if db.options.Replication.Role != "" {
 		// Parse role
 		var role replication.Role
-		switch db.options.ReplicationRole {
+		switch db.options.Replication.Role {
 		case "master":
 			role = replication.RoleMaster
 		case "slave":
@@ -614,7 +659,7 @@ func (db *DB) loadExisting() error {
 
 		// Parse mode
 		var mode replication.ReplicationMode
-		switch db.options.ReplicationMode {
+		switch db.options.Replication.Mode {
 		case "sync":
 			mode = replication.ModeSync
 		case "full_sync":
@@ -626,13 +671,13 @@ func (db *DB) loadExisting() error {
 		replConfig := &replication.Config{
 			Role:       role,
 			Mode:       mode,
-			ListenAddr: db.options.ReplicationListenAddr,
-			MasterAddr: db.options.ReplicationMasterAddr,
-			AuthToken:  db.options.ReplicationAuthToken,
-			SSLCert:    db.options.ReplicationSSLCert,
-			SSLKey:     db.options.ReplicationSSLKey,
-			SSLCA:      db.options.ReplicationSSLCA,
-			StateFile:  db.options.ReplicationStateFile,
+			ListenAddr: db.options.Replication.ListenAddr,
+			MasterAddr: db.options.Replication.MasterAddr,
+			AuthToken:  db.options.Replication.AuthToken,
+			SSLCert:    db.options.Replication.SSLCert,
+			SSLKey:     db.options.Replication.SSLKey,
+			SSLCA:      db.options.Replication.SSLCA,
+			StateFile:  db.options.Replication.StateFile,
 		}
 		db.replicationMgr = replication.NewManager(replConfig)
 		db.configureReplicationCallbacks()
@@ -644,26 +689,26 @@ func (db *DB) loadExisting() error {
 	db.initializeBackupManager()
 
 	// Initialize slow query log
-	if db.options.EnableSlowQueryLog {
-		threshold := db.options.SlowQueryThreshold
+	if db.options.SlowQueryLog.EnableSlowQueryLog {
+		threshold := db.options.SlowQueryLog.Threshold
 		if threshold == 0 {
 			threshold = 1 * time.Second
 		}
-		maxEntries := db.options.SlowQueryMaxEntries
+		maxEntries := db.options.SlowQueryLog.MaxEntries
 		if maxEntries == 0 {
 			maxEntries = 1000
 		}
-		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLogFile)
+		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLog.LogFile)
 		db.unregisterSlowQueryLog = metrics.RegisterSlowQueryLog(db.slowQueryLog)
 	}
 
 	// Initialize query plan cache
-	if db.options.EnablePlanCache {
-		planCacheSize := db.options.PlanCacheSize
+	if db.options.PlanCache.EnablePlanCache {
+		planCacheSize := db.options.PlanCache.Size
 		if planCacheSize <= 0 {
 			planCacheSize = 32 * 1024 * 1024 // 32MB default
 		}
-		planCacheEntries := db.options.PlanCacheEntries
+		planCacheEntries := db.options.PlanCache.MaxEntries
 		if planCacheEntries <= 0 {
 			planCacheEntries = 1000
 		}
@@ -674,16 +719,16 @@ func (db *DB) loadExisting() error {
 }
 
 func (db *DB) initializeBackupManager() {
-	if db.options.BackupDir == "" && (db.options.InMemory || db.path == ":memory:") {
+	if db.options.Backup.Dir == "" && (db.options.CoreStorage.InMemory || db.path == ":memory:") {
 		db.backupMgr = nil
 		return
 	}
 
 	backupConfig := &backup.Config{
-		BackupDir:        db.options.BackupDir,
-		RetentionPeriod:  db.options.BackupRetention,
-		MaxBackups:       db.options.MaxBackups,
-		CompressionLevel: db.options.BackupCompressionLevel,
+		BackupDir:        db.options.Backup.Dir,
+		RetentionPeriod:  db.options.Backup.Retention,
+		MaxBackups:       db.options.Backup.MaxBackups,
+		CompressionLevel: db.options.Backup.CompressionLevel,
 	}
 	if backupConfig.BackupDir == "" {
 		backupConfig.BackupDir = "./backups"
@@ -760,7 +805,7 @@ func (db *DB) Close() error {
 	db.flushMu.Lock()
 
 	// Save catalog metadata to B+Tree (if not in-memory)
-	if !db.options.InMemory && db.path != ":memory:" {
+	if !db.options.CoreStorage.InMemory && db.path != ":memory:" {
 		if err := db.catalog.Save(); err != nil {
 			errs = append(errs, fmt.Errorf("save catalog: %w", err))
 		}
@@ -817,23 +862,23 @@ func (db *DB) Close() error {
 // default maintenance jobs (auto-vacuum, analyze).
 
 func (db *DB) startScheduler() {
-	workers := db.options.SchedulerWorkers
+	workers := db.options.Scheduler.Workers
 	if workers <= 0 {
 		workers = 2
 	}
-	tick := db.options.SchedulerTickInterval
+	tick := db.options.Scheduler.TickInterval
 	if tick <= 0 {
 		tick = 1 * time.Second
 	}
-	db.scheduler = scheduler.NewWithInterval(workers, db.options.Logger, tick)
+	db.scheduler = scheduler.NewWithInterval(workers, db.options.CoreStorage.Logger, tick)
 
 	// Register auto-vacuum job
-	if db.options.EnableAutoVacuum {
-		interval := db.options.AutoVacuumInterval
+	if db.options.Maintenance.EnableAutoVacuum {
+		interval := db.options.Maintenance.AutoVacuumInterval
 		if interval <= 0 {
 			interval = 1 * time.Minute
 		}
-		threshold := db.options.AutoVacuumThreshold
+		threshold := db.options.Maintenance.AutoVacuumThreshold
 		if threshold <= 0 {
 			threshold = 0.2
 		}
@@ -848,12 +893,12 @@ func (db *DB) startScheduler() {
 			},
 		}
 		if err := db.scheduler.Register(vacuumJob); err != nil {
-			db.options.Logger.Warnf("Failed to register auto-vacuum job: %v", err)
+			db.options.CoreStorage.Logger.Warnf("Failed to register auto-vacuum job: %v", err)
 		}
 	}
 
 	// Register analyze job
-	analyzeInterval := db.options.AnalyzeInterval
+	analyzeInterval := db.options.Scheduler.AnalyzeInterval
 	if analyzeInterval <= 0 {
 		analyzeInterval = 1 * time.Hour
 	}
@@ -868,12 +913,12 @@ func (db *DB) startScheduler() {
 		},
 	}
 	if err := db.scheduler.Register(analyzeJob); err != nil {
-		db.options.Logger.Warnf("Failed to register auto-analyze job: %v", err)
+		db.options.CoreStorage.Logger.Warnf("Failed to register auto-analyze job: %v", err)
 	}
 
 	// Register checkpoint job
-	if db.options.EnableAutoCheckpoint {
-		checkpointInterval := db.options.CheckpointInterval
+	if db.options.Maintenance.EnableAutoCheckpoint {
+		checkpointInterval := db.options.Maintenance.CheckpointInterval
 		if checkpointInterval <= 0 {
 			checkpointInterval = 5 * time.Minute
 		}
@@ -888,7 +933,7 @@ func (db *DB) startScheduler() {
 			},
 		}
 		if err := db.scheduler.Register(checkpointJob); err != nil {
-			db.options.Logger.Warnf("Failed to register auto-checkpoint job: %v", err)
+			db.options.CoreStorage.Logger.Warnf("Failed to register auto-checkpoint job: %v", err)
 		}
 	}
 
@@ -901,12 +946,12 @@ func (db *DB) runAutoVacuumJob(threshold float64) error {
 	tables := db.catalog.ListTablesNeedingVacuum(threshold)
 	for _, tableName := range tables {
 		if err := db.catalog.VacuumTable(tableName); err != nil {
-			if db.options.Logger != nil {
-				db.options.Logger.Warnf("AutoVacuum failed for table %s: %v", tableName, err)
+			if db.options.CoreStorage.Logger != nil {
+				db.options.CoreStorage.Logger.Warnf("AutoVacuum failed for table %s: %v", tableName, err)
 			}
 		} else {
-			if db.options.Logger != nil {
-				db.options.Logger.Infof("AutoVacuum completed for table %s", tableName)
+			if db.options.CoreStorage.Logger != nil {
+				db.options.CoreStorage.Logger.Infof("AutoVacuum completed for table %s", tableName)
 			}
 		}
 	}
@@ -919,12 +964,12 @@ func (db *DB) runAnalyzeJob() error {
 	tables := db.catalog.ListTables()
 	for _, tableName := range tables {
 		if err := db.catalog.Analyze(tableName); err != nil {
-			if db.options.Logger != nil {
-				db.options.Logger.Warnf("AutoAnalyze failed for table %s: %v", tableName, err)
+			if db.options.CoreStorage.Logger != nil {
+				db.options.CoreStorage.Logger.Warnf("AutoAnalyze failed for table %s: %v", tableName, err)
 			}
 		} else {
-			if db.options.Logger != nil {
-				db.options.Logger.Infof("AutoAnalyze completed for table %s", tableName)
+			if db.options.CoreStorage.Logger != nil {
+				db.options.CoreStorage.Logger.Infof("AutoAnalyze completed for table %s", tableName)
 			}
 		}
 	}
@@ -937,13 +982,13 @@ func (db *DB) runAnalyzeJob() error {
 // when WAL is enabled (WAL.Checkpoint serializes its own WAL append via w.mu).
 func (db *DB) runCheckpointJob() error {
 	if err := db.Checkpoint(); err != nil {
-		if db.options.Logger != nil {
-			db.options.Logger.Warnf("AutoCheckpoint failed: %v", err)
+		if db.options.CoreStorage.Logger != nil {
+			db.options.CoreStorage.Logger.Warnf("AutoCheckpoint failed: %v", err)
 		}
 		return err
 	}
-	if db.options.Logger != nil {
-		db.options.Logger.Info("AutoCheckpoint completed")
+	if db.options.CoreStorage.Logger != nil {
+		db.options.CoreStorage.Logger.Info("AutoCheckpoint completed")
 	}
 	return nil
 }

@@ -73,9 +73,7 @@ func runBenchmarks() {
 
 	ctx := context.Background()
 
-	db, err := engine.Open(flagPath, &engine.Options{
-		InMemory: flagInMemory,
-	})
+	db, err := engine.Open(flagPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: flagInMemory}})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)

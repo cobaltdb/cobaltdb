@@ -20,12 +20,12 @@ make build              # builds bin/cobaltdb-server and bin/cobaltdb-cli
 make verify             # go build + go vet + go test ./... (core gate)
 make verify-security    # verify + race + vuln + gosec + lint (needs CGO for -race)
 make race               # CGO_ENABLED=1 go test -race ./...
-make lint               # golangci-lint (errcheck + govet) on security-critical pkgs only
+make lint               # golangci-lint runs globally across all packages (6 linters)
 make test-coverage      # writes coverage.out + coverage.html
 make release            # cross-compiles server+CLI for linux/darwin/windows × amd64/arm64 into dist/
 ```
 
-The `lint` and `gosec` targets intentionally scope to `SECURITY_PKGS` (defined at the top of `Makefile`) — cmd/cobaltdb-server, pkg/server, pkg/protocol, pkg/storage, pkg/auth, sdk/go, pkg/logger, pkg/query. Broader linting is not wired up.
+The `lint` and `gosec` targets run golangci-lint and gosec globally across all packages — there is no per-package security restriction. The `SECURITY_PKGS` note in older docs is stale.
 
 Runtime: `make run-server` / `make run-cli` use `go run`. Binaries already built at repo root (`cobaltdb-server`, `cobaltdb-cli`) are artifacts from prior builds, not canonical — always rebuild via `make build` into `bin/`.
 

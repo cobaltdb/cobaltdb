@@ -137,83 +137,123 @@ func (db *DB) recordRecoveredPanic(operation string, recovered interface{}, stac
 		At:        time.Now(),
 	}
 	db.lastPanic.Store(info)
-	if db.options != nil && db.options.Logger != nil {
-		db.options.Logger.Errorf("PANIC in %s: %v\n%s", operation, recovered, stack)
+	if db.options != nil && db.options.CoreStorage.Logger != nil {
+		db.options.CoreStorage.Logger.Errorf("PANIC in %s: %v\n%s", operation, recovered, stack)
 	}
+}
+
+// CoreStorage contains the fundamental storage engine parameters.
+type CoreStorage struct {
+	PageSize   int              // Database page size (must match storage.PageSize)
+	CacheSize  int              // Number of cached pages
+	InMemory   bool             // Run fully in-memory without persisting
+	WALEnabled *bool            // Enable write-ahead logging (nil = default: true for disk)
+	SyncMode   SyncMode         // Durability vs performance trade-off
+	Logger     *logger.Logger   // Optional custom logger (nil = default)
+}
+
+// ConnectionPool governs how concurrent database connections are managed.
+type ConnectionPool struct {
+	MaxConnections    int           // Maximum concurrent connections (0 = unlimited)
+	ConnectionTimeout time.Duration // Timeout for acquiring a connection
+	QueryTimeout      time.Duration // Default query timeout (0 = no timeout)
+}
+
+// Security governs encryption, auditing, and access control settings.
+type Security struct {
+	EncryptionKey    []byte                     // Encryption key for data at rest (nil = no encryption)
+	EncryptionConfig *storage.EncryptionConfig  // Detailed encryption configuration
+	AuditConfig      *audit.Config             // Audit logging configuration (nil = disabled)
+	EnableRLS        bool                      // Enable Row-Level Security by default
+	MaxStmtCacheSize int                       // Maximum cached prepared statements (default: 1000)
+	StrictSQLParsing bool                      // Reject trailing tokens after a parsed statement
+}
+
+// QueryCacheConfig governs the query result cache.
+type QueryCacheConfig struct {
+	EnableQueryCache bool          // Enable query result caching
+	QueryCacheSize    int64         // Max query cache size in bytes (default: 64MB)
+	QueryCacheTTL     time.Duration // Query cache TTL (default: 5m)
+}
+
+// ReplicationConfig governs the replication subsystem.
+type ReplicationConfig struct {
+	Role            string // "master", "slave", or "" (disabled)
+	ListenAddr      string // Master listen address for slaves to connect to
+	MasterAddr      string // Slave: master address to connect to
+	Mode            string // "async", "sync", or "full_sync"
+	AuthToken       string // Authentication token for replication
+	SSLCert         string // SSL certificate file path
+	SSLKey          string // SSL private key file path
+	SSLCA           string // SSL CA certificate path
+	StateFile       string // Slave resume state file path
+}
+
+// BackupConfig governs backup creation and retention.
+type BackupConfig struct {
+	Dir               string        // Backup directory path
+	Retention         time.Duration // Backup retention period
+	MaxBackups        int           // Maximum number of backups to retain
+	CompressionLevel  int           // Compression level (0-9, 0=disabled)
+}
+
+// SlowQueryLogConfig governs slow query logging.
+type SlowQueryLogConfig struct {
+	EnableSlowQueryLog bool          // Enable slow query logging
+	Threshold          time.Duration // Threshold for slow queries (default: 1s)
+	MaxEntries         int           // Max in-memory entries (default: 1000)
+	LogFile            string        // Log file path (empty = memory only)
+}
+
+// PlanCacheConfig governs the query plan cache.
+type PlanCacheConfig struct {
+	EnablePlanCache bool  // Enable query plan caching
+	Size            int64 // Max plan cache size in bytes (default: 32MB)
+	MaxEntries      int   // Max number of cached plans (default: 1000)
+}
+
+// MaintenanceConfig governs auto-vacuum and checkpoint settings.
+type MaintenanceConfig struct {
+	EnableAutoVacuum    bool          // Enable automatic VACUUM (default: true for disk)
+	AutoVacuumInterval  time.Duration // Interval between auto-vacuum checks (default: 1m)
+	AutoVacuumThreshold float64       // Dead tuple ratio to trigger vacuum (default: 0.2 = 20%)
+	EnableAutoCheckpoint bool          // Enable automatic WAL checkpoint (default: true for disk)
+	CheckpointInterval   time.Duration // Interval between checkpoints (default: 5m)
+}
+
+// SchedulerConfig governs the background job scheduler.
+type SchedulerConfig struct {
+	EnableScheduler    bool          // Enable job scheduler (default: true for disk)
+	AnalyzeInterval    time.Duration // Interval for automatic ANALYZE (default: 1h)
+	Workers            int           // Number of scheduler workers (default: 2)
+	TickInterval       time.Duration // Dispatcher resolution (default: 1s)
+}
+
+// PageCompressionConfig holds page-level compression settings.
+type PageCompressionConfig struct {
+	Config *storage.CompressionConfig // nil = disabled
+}
+
+// ParallelQueryConfig governs parallel query execution.
+type ParallelQueryConfig struct {
+	Workers   int // Number of parallel query workers (0 = disabled, default: NumCPU)
+	Threshold int // Min rows to trigger parallel execution (default: 1000)
 }
 
 // Options contains database configuration options
 type Options struct {
-	PageSize          int
-	CacheSize         int // number of pages
-	InMemory          bool
-	WALEnabled        *bool // nil = use default (true for disk)
-	SyncMode          SyncMode
-	Logger            *logger.Logger            // Optional logger; if nil, uses default
-	MaxConnections    int                       // Maximum concurrent connections (0 = unlimited)
-	ConnectionTimeout time.Duration             // Timeout for acquiring a connection
-	QueryTimeout      time.Duration             // Default query timeout (0 = no timeout)
-	EncryptionKey     []byte                    // Encryption key for data at rest (nil = no encryption)
-	EncryptionConfig  *storage.EncryptionConfig // Detailed encryption configuration
-	AuditConfig       *audit.Config             // Audit logging configuration (nil = disabled)
-	EnableRLS         bool                      // Enable Row-Level Security by default
-	MaxStmtCacheSize  int                       // Maximum cached prepared statements (default: 1000)
-	StrictSQLParsing  bool                      // Reject trailing tokens after a parsed statement
-
-	// Query Cache Options
-	EnableQueryCache bool          // Enable query result caching
-	QueryCacheSize   int64         // Max query cache size in bytes (default: 64MB)
-	QueryCacheTTL    time.Duration // Query cache TTL (default: 5m)
-
-	// Replication Options
-	ReplicationRole       string // "master", "slave", or "" (disabled)
-	ReplicationListenAddr string // Master listen address for slaves
-	ReplicationMasterAddr string // Slave: master address to connect
-	ReplicationMode       string // "async", "sync", "full_sync"
-	ReplicationAuthToken  string // Authentication token for replication
-	ReplicationSSLCert    string // SSL certificate file path
-	ReplicationSSLKey     string // SSL key file path
-	ReplicationSSLCA      string // SSL CA certificate path
-	ReplicationStateFile  string // Slave resume state file path
-
-	// Backup Options
-	BackupDir              string        // Backup directory path
-	BackupRetention        time.Duration // Backup retention period
-	MaxBackups             int           // Maximum number of backups to keep
-	BackupCompressionLevel int           // Compression level (0-9, 0=disabled)
-
-	// Slow Query Log Options
-	EnableSlowQueryLog  bool          // Enable slow query logging
-	SlowQueryThreshold  time.Duration // Threshold for slow queries (default: 1s)
-	SlowQueryMaxEntries int           // Max in-memory entries (default: 1000)
-	SlowQueryLogFile    string        // Log file path (empty = memory only)
-
-	// Query Plan Cache Options
-	EnablePlanCache  bool  // Enable query plan caching
-	PlanCacheSize    int64 // Max plan cache size in bytes (default: 32MB)
-	PlanCacheEntries int   // Max number of cached plans (default: 1000)
-
-	// AutoVacuum Options
-	EnableAutoVacuum    bool          // Enable automatic VACUUM (default: true for disk)
-	AutoVacuumInterval  time.Duration // Interval between auto-vacuum checks (default: 1m)
-	AutoVacuumThreshold float64       // Dead tuple ratio to trigger vacuum (default: 0.2 = 20%)
-
-	// Checkpoint Options
-	EnableAutoCheckpoint bool          // Enable automatic WAL checkpoint (default: true for disk)
-	CheckpointInterval   time.Duration // Interval between checkpoints (default: 5m)
-
-	// Scheduler Options
-	EnableScheduler       bool          // Enable job scheduler (default: true for disk)
-	AnalyzeInterval       time.Duration // Interval for automatic ANALYZE (default: 1h)
-	SchedulerWorkers      int           // Number of scheduler workers (default: 2)
-	SchedulerTickInterval time.Duration // Dispatcher resolution (default: 1s)
-
-	// Compression Options
-	CompressionConfig *storage.CompressionConfig // Page-level compression config (nil = disabled)
-
-	// Parallel Query Execution Options
-	ParallelWorkers   int // Number of parallel query workers (0 = disabled, default: NumCPU)
-	ParallelThreshold int // Min rows to trigger parallel execution (default: 1000)
+	CoreStorage
+	ConnectionPool
+	Security
+	QueryCache      QueryCacheConfig
+	Replication    ReplicationConfig
+	Backup          BackupConfig
+	SlowQueryLog    SlowQueryLogConfig
+	PlanCache       PlanCacheConfig
+	Maintenance     MaintenanceConfig
+	Scheduler       SchedulerConfig
+	PageCompression PageCompressionConfig
+	ParallelQuery   ParallelQueryConfig
 }
 
 // SyncMode controls when data is synced to disk
@@ -343,7 +383,7 @@ func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.State
 
 	// Parse and cache
 	parse := query.Parse
-	if db.options.StrictSQLParsing {
+	if db.options.Security.StrictSQLParsing {
 		parse = query.ParseStrict
 	}
 	parsedStmt, err := parse(sql)
@@ -368,7 +408,7 @@ func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.State
 		db.stmtMu.Unlock()
 		return cached.stmt, nil
 	}
-	maxCacheSize := db.options.MaxStmtCacheSize
+	maxCacheSize := db.options.Security.MaxStmtCacheSize
 	if maxCacheSize <= 0 {
 		maxCacheSize = 1000
 	}
@@ -459,7 +499,7 @@ func (db *DB) acquireConnection(ctx context.Context) error {
 
 	// Apply timeout if the caller context has no deadline.
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		timeout := db.options.ConnectionTimeout
+		timeout := db.options.ConnectionPool.ConnectionTimeout
 		if timeout == 0 {
 			timeout = 30 * time.Second
 		}
@@ -527,10 +567,10 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 	}()
 
 	// Apply default query timeout only if the caller did not already set one.
-	if db.options.QueryTimeout > 0 {
+	if db.options.ConnectionPool.QueryTimeout > 0 {
 		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, db.options.QueryTimeout)
+			ctx, cancel = context.WithTimeout(ctx, db.options.ConnectionPool.QueryTimeout)
 			defer cancel()
 		}
 	}
@@ -595,10 +635,10 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 		}
 	}()
 	// Apply default query timeout only if the caller did not already set one.
-	if db.options.QueryTimeout > 0 {
+	if db.options.ConnectionPool.QueryTimeout > 0 {
 		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, db.options.QueryTimeout)
+			ctx, cancel = context.WithTimeout(ctx, db.options.ConnectionPool.QueryTimeout)
 			defer cancel()
 		}
 	}

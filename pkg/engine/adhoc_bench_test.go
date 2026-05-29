@@ -12,9 +12,9 @@ import (
 func BenchmarkAdHocSmallTxn(b *testing.B) {
 	dir := b.TempDir()
 	opts := DefaultOptions()
-	opts.EnableScheduler = false
-	opts.EnableAutoCheckpoint = false
-	opts.EnableAutoVacuum = false
+	opts.Scheduler.EnableScheduler = false
+	opts.Maintenance.EnableAutoCheckpoint = false
+	opts.Maintenance.EnableAutoVacuum = false
 	db, err := Open(filepath.Join(dir, "bench.db"), opts)
 	if err != nil {
 		b.Fatalf("open db: %v", err)

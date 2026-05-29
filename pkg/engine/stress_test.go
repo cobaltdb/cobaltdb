@@ -185,9 +185,9 @@ func TestProductionSoakBoundedCheckpointBackupReopen(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "soak.db")
 	opts := durabilityTestOptions()
-	opts.BackupDir = filepath.Join(dir, "backups")
-	opts.MaxBackups = 4
-	opts.BackupCompressionLevel = 0
+	opts.Backup.Dir = filepath.Join(dir, "backups")
+	opts.Backup.MaxBackups = 4
+	opts.Backup.CompressionLevel = 0
 
 	db, err := Open(dbPath, opts)
 	if err != nil {
@@ -1281,9 +1281,8 @@ func TestStress_ConcurrentAutocommit_Mixed(t *testing.T) {
 func BenchmarkConcurrentWriters(b *testing.B) {
 	dir := b.TempDir()
 	db, err := Open(filepath.Join(dir, "bench.db"), &Options{
-		EnableScheduler:      false,
-		EnableAutoCheckpoint: false,
-		EnableAutoVacuum:     false,
+		Scheduler:   SchedulerConfig{EnableScheduler: false},
+		Maintenance: MaintenanceConfig{EnableAutoCheckpoint: false, EnableAutoVacuum: false},
 	})
 	if err != nil {
 		b.Fatalf("open db: %v", err)
@@ -1323,9 +1322,8 @@ func BenchmarkConcurrentWriters(b *testing.B) {
 func BenchmarkConcurrentWritersBatch(b *testing.B) {
 	dir := b.TempDir()
 	db, err := Open(filepath.Join(dir, "bench.db"), &Options{
-		EnableScheduler:      false,
-		EnableAutoCheckpoint: false,
-		EnableAutoVacuum:     false,
+		Scheduler:   SchedulerConfig{EnableScheduler: false},
+		Maintenance: MaintenanceConfig{EnableAutoCheckpoint: false, EnableAutoVacuum: false},
 	})
 	if err != nil {
 		b.Fatalf("open db: %v", err)

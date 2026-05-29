@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
 var (
@@ -120,6 +122,8 @@ type BufferPool struct {
 	flushDone     chan struct{}
 	flushMu       sync.Mutex
 	flushRunning  bool
+	flushErrCount int // consecutive flush errors (resets on success)
+	flushErrLimit int // max consecutive errors before halting flusher (default 3)
 }
 
 // NewBufferPool creates a new buffer pool.
@@ -153,11 +157,12 @@ func NewBufferPoolWithError(capacity int, backend Backend) (*BufferPool, error) 
 	}
 
 	bp := &BufferPool{
-		capacity: capacity,
-		pages:    make(map[uint32]*CachedPage, capacity),
-		lru:      list.New(),
-		backend:  backend,
-		stats:    newBufferPoolStatsCollector(),
+		capacity:      capacity,
+		pages:         make(map[uint32]*CachedPage, capacity),
+		lru:           list.New(),
+		backend:       backend,
+		stats:         newBufferPoolStatsCollector(),
+		flushErrLimit: 3, // halt flusher after 3 consecutive flush errors
 	}
 
 	// Initialize nextPageID based on backend size
@@ -534,6 +539,8 @@ func (bp *BufferPool) dirtyRatio() float64 {
 }
 
 // flushDirtyPages writes dirty unpinned pages to disk without holding the lock during I/O.
+// Errors are logged, counted, and used to track consecutive failures. After
+// flushErrLimit consecutive errors the flusher is halted to prevent infinite retry.
 func (bp *BufferPool) flushDirtyPages() {
 	// Collect dirty unpinned pages under read lock
 	bp.mu.RLock()
@@ -545,13 +552,32 @@ func (bp *BufferPool) flushDirtyPages() {
 	}
 	bp.mu.RUnlock()
 
+	hadError := false
 	// Flush each page individually (acquires write lock briefly per page)
 	for _, page := range dirty {
 		if !page.IsDirty() || page.IsPinned() {
 			continue // re-check after lock release
 		}
-		_ = bp.FlushPage(page)
+		if err := bp.FlushPage(page); err != nil {
+			bp.stats.recordFlushError()
+			logger.GetGlobalLogger().Errorf("buffer pool: failed to flush page %d: %v", page.id, err)
+			hadError = true
+		}
 	}
+
+	bp.flushMu.Lock()
+	if hadError {
+		bp.flushErrCount++
+		if bp.flushErrCount >= bp.flushErrLimit {
+			logger.GetGlobalLogger().Errorf("buffer pool: halting flusher after %d consecutive flush errors",
+				bp.flushErrCount)
+			bp.flushRunning = false
+			close(bp.flushDone)
+		}
+	} else {
+		bp.flushErrCount = 0 // reset on success
+	}
+	bp.flushMu.Unlock()
 }
 
 // PageCount returns the number of pages in the cache

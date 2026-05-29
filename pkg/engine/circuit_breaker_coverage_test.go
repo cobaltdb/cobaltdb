@@ -102,7 +102,7 @@ func TestCircuitBreakerAllow_ConcurrencyLimit(t *testing.T) {
 }
 
 func TestQueryContextCancelled(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestQueryContextCancelled(t *testing.T) {
 }
 
 func TestQueryShowStatementsCoverage(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestQueryShowStatementsCoverage(t *testing.T) {
 }
 
 func TestQueryReturning(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestQueryReturning(t *testing.T) {
 }
 
 func TestQueryUnionAndExplain(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestQueryUnionAndExplain(t *testing.T) {
 }
 
 func TestExecuteCreateViewCoverage(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

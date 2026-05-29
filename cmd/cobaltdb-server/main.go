@@ -124,9 +124,11 @@ func main() {
 
 	// Open database
 	opts := &engine.Options{
-		CacheSize:  *cacheSize,
-		InMemory:   *inMemory,
-		WALEnabled: engine.BoolPtr(!*inMemory),
+		CoreStorage: engine.CoreStorage{
+			CacheSize:  *cacheSize,
+			InMemory:   *inMemory,
+			WALEnabled: engine.BoolPtr(!*inMemory),
+		},
 	}
 
 	var dbPath string

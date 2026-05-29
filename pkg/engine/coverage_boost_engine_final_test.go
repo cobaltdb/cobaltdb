@@ -49,7 +49,7 @@ func TestGetCurrentLSNWithClosedDB(t *testing.T) {
 
 // TestGetWALPathWithInMemoryDB tests GetWALPath with in-memory database
 func TestGetWALPathWithInMemoryDB(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open in-memory database: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestOpenWithInMemoryAndPath(t *testing.T) {
 
 // TestOpenInMemory tests Open with in-memory database
 func TestOpenInMemory(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open in-memory database: %v", err)
 	}

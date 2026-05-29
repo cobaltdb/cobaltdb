@@ -17,7 +17,7 @@ func main() {
 	fmt.Println("=== Test: Full CRUD with Disk Persistence ===")
 
 	// Create database
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		log.Fatalf("Failed to open: %v", err)
 	}

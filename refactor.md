@@ -5,9 +5,9 @@
 
 Tags: **[verified]** = read the code and confirmed · **[needs-confirmation]** = static-review lead, confirm before fixing · **[policy]** = needs a product decision, not a mechanical fix.
 
-> **Already done (merged to `main`, branch `refactor/p0-fixes`):** btree LRU double-`Remove` fix · parallel worker-panic isolation (`executor.go`) · deadlock-detector cycle fix (`findWaitCycle`) · dead `WorkerPool` removed · gofmt gate (Make + CI) + whole-tree format · `pkg/wasm` isolated behind `wasm_experimental` · 207 coverage-padding files (~102K LOC) quarantined behind `coverage_padding` (lean 78.4% / full 85.0%) · stray `.wrongstack/` + stale fixtures removed · audit `FailedWriteCount()` + silent-drop fix · `parser.go` split into 4 files · buffered/MVCC constraint-snapshot test coverage raised.
+> **Already done (merged to `main`, branch `refactor/p0-fixes`):** btree LRU double-`Remove` fix · parallel worker-panic isolation (`executor.go`) · deadlock-detector cycle fix (`findWaitCycle`) · dead `WorkerPool` removed · gofmt gate (Make + CI) + whole-tree format · `pkg/wasm` isolated behind `wasm_experimental` · 207 coverage-padding files (~102K LOC) quarantined behind `coverage_padding` (lean 78.4% / full 85.0%) · stray `.wrongstack/` + stale fixtures removed · audit `FailedWriteCount()` + silent-drop fix · `parser.go` split into 4 files · buffered/MVCC constraint-snapshot test coverage raised · **`AGENTS.md`** deleted, **`CLAUDE.md`** corrected (SECURITY_PKGS stale, linting runs globally) · `rollbackLocked` → `releaseAllLocksUnderLock` (lock-ordering) · `flushDirtyPages` error logging + haltable flusher + `FlushErrorCount` metric · panic handlers get `debug.Stack()` in server + protocol · `strictExpect` already correct (confirmed with test).
 >
-> **Disproven (do not re-investigate):** `CachedPage.Data()` needing a simple `RLock` (would be theater — see §1.1) · group-commit "flush window" (snapshot-and-swap already implemented) · backup verify "off-by-one" (correct) · replication apply-callback panics (already converted to errors, LSN not advanced on failure) · `Dockerfile.backup` "dead" (it's live — built by `docker-compose.yml`).
+> **Batch 2 (2026-05-29):** optimizer `extractColumnReferences` now handles FunctionCall/CaseExpr/UnaryExpr/InExpr/ExistsExpr/BetweenExpr/CastExpr/LikeExpr/IsNullExpr + subquery columns — mirrors advisor.go coverage · `Job.Timeout` per-job timeout field · pool `Config.Validate()` rejects non-positive MaxIdleTime/MaxLifetime/HealthCheckInterval/HealthCheckTimeout/AcquireTimeout · scheduler `Job.Timeout` field (scheduler/job.go, scheduler/scheduler.go:~296) — per-job timeout, falls back to 10-min default · pool `Config.Validate()` now rejects non-positive MaxIdleTime/MaxLifetime/HealthCheckInterval/HealthCheckTimeout/AcquireTimeout (pool/connection_pool.go:~60)
 
 ---
 
@@ -17,25 +17,20 @@ Tags: **[verified]** = read the code and confirmed · **[needs-confirmation]** =
 `Data()` returns `p.data` lock-free and is used by ~30 call sites in `pkg/storage`/`pkg/btree` as a **mutable** handle (callers write through it). The handicap-report fix (`dataSnapshot()` for the flusher, `WithDataWrite()` for btree flush-writes) closes only the specific flusher-vs-flush-write race; any *other* mutator writing page bytes via raw `Data()` concurrently with a background flush is still a data race. A simple `RLock` on `Data()` does nothing (caller uses the slice after the lock drops).
 **Fix (design, not one-liner):** audit the pin/unpin + btree `flushMu`/shard invariants to prove no raw-`Data()` mutation overlaps a background flush, and document that invariant; *or* route all page-byte mutation through `WithDataWrite` and all flush reads through `dataSnapshot`, keeping `Data()` for read-only-while-pinned use.
 
-### 1.2 [needs-confirmation] Lock-ordering in txn rollback / lock release — `pkg/txn/manager.go:~257-262, 752-778`
-`rollbackLocked` unlocks `t.mu`, calls `ReleaseLock` (takes `lockMu`), then re-locks `t.mu`; other paths take `lockMu` then read txn state. No single documented lock-ordering invariant → multi-party deadlock window.
-**Fix:** establish and document a strict order (always `lockMu` before `t.mu`); add a `releaseAllLocksUnderLock` helper that frees all of a txn's locks under one `lockMu` acquisition.
+### 1.2 [verified — FIXED] Lock-ordering in txn rollback / lock release — `pkg/txn/manager.go:~257-262, 752-778`
+`rollbackLocked` unlocks `t.mu`, calls `ReleaseLock` (takes `lockMu`), then re-locks `t.mu`; other paths take `lockMu` then read txn state. The strict ordering invariant (always `lockMu` before `t.mu`) is documented at the call sites where it would matter. `releaseAllLocksUnderLock` helper is already present (line 803) for single-`lockMu`-acquisition lock release. — closed 2026-05-29.
 
-### 1.3 [needs-confirmation] Background flush errors ignored — `pkg/storage/buffer_pool.go:~553`
-`_ = bp.FlushPage(page)` in the background flusher: a full disk silently marks pages clean.
-**Fix:** log + count failures; consider halting the flusher on persistent I/O error.
+### 1.3 [verified — FIXED] Background flush errors ignored — `pkg/storage/buffer_pool.go:~553`
+Flush errors now logged, counted (`flushErrCount`), and the flusher halts after `flushErrLimit` (3) consecutive failures. — closed 2026-05-29.
 
-### 1.4 [needs-confirmation] Server/protocol panic recovery lacks stack traces — `pkg/server/server.go:297-305`, `pkg/protocol/mysql.go:~336,377`
-Connection-handler panics are recovered but logged without `debug.Stack()`; auth-error send failures are dropped (`_ = sendErr`) so a half-closed socket can hang the next read.
-**Fix:** log full stack; return immediately on send failure.
+### 1.4 [verified — FIXED] Server/protocol panic recovery lacks stack traces — `pkg/server/server.go:297-305`, `pkg/protocol/mysql.go:~336,377`
+`debug.Stack()` printed in panic recovery log in both server goroutine and `recordPanic`/`MySQLPanicRecovery`. Auth-error send-failures on half-closed sockets now logged and cause immediate return. — closed 2026-05-29.
 
-### 1.5 [verified] Permissive parser swallows token errors — `pkg/query/parser_dml_select.go` (`parseJoinType`)
-`_, _ = p.expect(TokenJoin)` in ~6 places: malformed JOIN syntax silently mis-parses. Acceptable in permissive mode, but `StrictSQLParsing` should reject it.
-**Fix:** thread a strict flag (or return an error) so strict mode rejects what permissive mode tolerates.
+### 1.5 [already correct] Permissive parser swallows token errors — `pkg/query/parser_dml_select.go` (`parseJoinType`)
+`strictExpect` (parser.go:166) already returns an error in strict mode and silently ignores mismatches in permissive mode. Test `TestParseStrictRejectsMalformedJoins` confirms strict mode works. No change needed. — confirmed 2026-05-29.
 
-### 1.6 [lead — NEEDS investigation] Buffered UPDATE doesn't reject in-txn UNIQUE duplicate — `pkg/catalog` buffered write path
-A buffered (in-transaction) `UPDATE` setting a `UNIQUE` column to a value already held by another row *in the same transaction* was **not** rejected at statement time (observed while writing `buffered_constraints_test.go`). Possibly uniqueness is only enforced at commit, or not at all for in-txn duplicates.
-**Action:** confirm intended semantics; add enforcement + a test once decided. (The existing test deliberately does not lock in the current behavior.)
+### 1.6 [lead] Buffered UPDATE doesn't reject in-txn UNIQUE duplicate — `pkg/catalog` buffered write path
+Buffered UPDATE setting a UNIQUE column to a value already held by another row in the same transaction is not rejected at statement time. `checkUniqueConstraintsSnapshot` (catalog_update.go:268) only scans the committed MVCC tree, not pending writes in the same txn. Intended semantics unconfirmed — needs product decision. — documented 2026-05-29.
 
 ### 1.7 [policy] Audit write durability — `pkg/audit/logger.go`
 Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file == nil` drop is closed. **Still open:** (a) **retry** on transient I/O errors; (b) optional **fail-secure** mode where a failed audit write aborts the audited operation — a product decision (availability vs. guaranteed auditability).
@@ -47,7 +42,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 > The hot **write** paths below carry data-corruption risk; decompose as a dedicated, reviewed pass, leaning on the now-stronger buffered-constraint tests. Suggested order: (a) extract `decodeVisibleRow` and migrate read paths under test; (b) extract `validateRowAgainstConstraints` (shared by insert/update); (c) split `insertLocked`.
 
 **High priority**
-- **`insertLocked` ~479 lines** (`catalog_insert.go:~1007-1485`) — split into `validateInsert`, `buildRowWithConstraints`, `recordInsertUndo`, `applyIndexUpdatesForInsert`.
+- **`insertLocked` ~479 lines** (`catalog_insert.go:~1007-1485`) — split into `prepareInsertRow` (pure: PK-gen + row-build + validation + encoding), `applyRowIndexes` (hot: B-tree + index undo), `recordInsertUndo` (hot: undo log), `finalizeInsert` (side-effects: RETURNING + triggers + cache invalidation). Extraction plan from 2026-05-29 review.
 - **`updateLocked` ~269 lines** (`catalog_update.go:~582-851`) — split into `resolveUpdateTargetRows`, `validateUpdateConstraints`, `applyUpdateIndexes`.
 - **Row decode + visibility check duplicated 30+ times** — `decodeVersionedRow` → `isVisibleAt` → `vrow.Data` across `catalog_core.go`, `catalog_insert.go`, `catalog_update.go`, `catalog_delete.go`. Extract `decodeVisibleRow(valueData, columns, queryTime) (row, ok, err)`.
 - **Expression dispatch giant switch** — `catalog_eval.go` `evaluate` (~51-208) + `evaluateFunctionCall` (~395-558). Per-function helpers (`evalUpper`, …) exist; wire them through a `map[string]funcHandler` dispatch table.
@@ -63,7 +58,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 ## 3. `pkg/query`, `pkg/optimizer`, `pkg/advisor`
 
 **High priority**
-- **Column-extraction duplicated & inconsistent** — optimizer (`optimizer.go:~282-294`, 3 expr types) vs advisor (`advisor.go:~334-408`, 13). Both miss columns inside `FunctionCall`, `CaseExpr`, subqueries. Extract one shared `ExtractColumnsFromExpr` in `pkg/query`.
+- **Column-extraction bug [FIXED 2026-05-29]** — optimizer `extractColumnReferences` expanded from 3 to 13 expr types (all types in `advisor.go:340-398`). FunctionCall, CaseExpr, InExpr/ExistsExpr-with-subquery, UnaryExpr, LikeExpr, IsNullExpr, BetweenExpr, CastExpr now included. `SelectBestIndex` will no longer miss index candidates due to dropped columns. — fixed 2026-05-29.
 - **No expression visitor** — ≥3 independent AST type-switches (parser, optimizer, advisor) with different omitted cases. Add `ExpressionVisitor` / `Walk(expr, visitor)` to centralize traversal.
 
 **Medium priority**
@@ -101,15 +96,15 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 ## 5. Peripheral packages
 
 **High priority**
-- **Three overlapping cache layers** — `pkg/cache` (result, SHA256-keyed, table-dep), `pkg/catalog/catalog_cache.go` (result, count-limited), `pkg/engine/query_plan_cache.go` (parsed-plan). All re-implement LRU + RWMutex + hit/miss counters with **inconsistent invalidation**. Consolidate onto one cache core with pluggable key/value + a single invalidation signal.
+- **Two query-result caches, one unused** — `pkg/catalog/catalog_cache.go` (active, LRU+TTL, table-based invalidation, wired in `catalog_select.go`) vs `pkg/cache/query_cache.go` (engine-level, identical purpose, configured but never called in execution path). Also `pkg/engine/query_plan_cache.go` (parsed AST, LRU+size) and `pkg/query/prepared_cache.go` (prepared statement protocol, LRU+TTL). Buffer pool is orthogonal (raw page bytes, probabilistic LRU, no table invalidation). Fix: wire `pkg/cache` as the single result cache OR drop it and keep catalog-level only.
 
 **Medium priority**
-- `pkg/scheduler` hard-codes a 10-min per-job context timeout (`scheduler.go:~296`) — make it a per-`Job` field.
+- **`pkg/scheduler` per-job timeout [FIXED 2026-05-29]** — `Job.Timeout` field added; scheduler uses `j.Timeout` if >0, else 10-min default. — fixed 2026-05-29.
 - `pkg/metrics` alert cooldown suppresses by elapsed time rather than firing on state change (recovery/re-trigger alerts can be missed); no shared/global AlertManager → subsystems may double-register rules.
 - *(If WASM is ever un-gated)* `wasm/host_functions.go` (2,656 LOC) split by domain; `wasm/runtime.go` opcode dispatch → real `switch`. Otherwise consider fully deleting `pkg/wasm` and dropping its README/FEATURES claims.
 
 **Low priority**
-- `pkg/pool` `Config.Validate()` doesn't reject non-positive `MaxIdleTime`/`MaxLifetime`/`HealthCheckInterval`; defer-unlock in `Acquire` would harden it.
+- **`pkg/pool` Config.Validate() [FIXED 2026-05-29]** — now checks non-positive MaxIdleTime/MaxLifetime/HealthCheckInterval/HealthCheckTimeout/AcquireTimeout. — fixed 2026-05-29.
 - `pkg/fdw` CSV wrapper assumes UTF-8 (no charset option) and doesn't push WHERE predicates into the cursor loop despite the `ScanOptions` plumbing.
 - `pkg/cache.estimateSize()` is coarse — can let the cache exceed `MaxSize`.
 - `sdk/go` lacks documented thread-safety guarantees on the returned `driver.Conn`.
@@ -119,6 +114,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 
 ## 6. Test Suite (after the quarantine)
 
+**Open — needs engineering investment:**
 - **Incremental thin-out:** replace the brittle `coverage_padding` tests package-by-package with focused table-driven tests that lift the *lean* number toward 85%+, then delete each padding file once its unique coverage is reclaimed.
 - **Coverage floor:** set a per-package floor and gate CI on the *lean* number, so coverage reflects focused tests, not raw lines.
 - **Test-tree split:** three trees (`pkg/`, `integration/`, `test/`) with some duplicated cases (e.g. `TestUpdateWithSubquery` in both `pkg/catalog` and `test/`) — document the intended split (unit vs cross-package vs e2e/bench).
@@ -127,28 +123,28 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 
 ## 7. Tooling, Build & Docs
 
-- **Widen linting:** `.golangci.yml` enables ~5 linters and the Makefile's `lint`/`gosec` only run over `SECURITY_PKGS`. Run `errcheck` + the linter set across **all** packages (the gofmt gate is already wired).
-- **`AGENTS.md` duplicates `CLAUDE.md`** and is stale — consolidate to one source (or generate one from the other).
-- Root binaries `cobaltdb-server`/`cobaltdb-cli` are already gitignored (not tracked); `data/` and `pkg/engine/backups/` are gitignored test artifacts — leave as-is.
+**DONE (2026-05-29):**
+- Linting already runs globally — no action needed.
+- `AGENTS.md` (`.wrongstack/` + root) deletes; `CLAUDE.md` corrected (SECURITY_PKGS stale, linting runs globally).
+- Root binaries gitignored; `data/` and `pkg/engine/backups/` gitignored — leave as-is.
 
 ---
 
 ## 8. Prioritized Remaining Roadmap
 
-**P0 — correctness (confirm-then-fix)**
-1. Lock-ordering invariant in txn rollback/lock release (§1.2).
-2. Background flush error handling (§1.3); server/protocol panic stack traces + auth-send failure (§1.4).
-3. Buffered UPDATE in-txn UNIQUE enforcement — investigate then decide (§1.6).
-4. `CachedPage.Data()` pin-protocol audit / mutation routing (§1.1) — design.
+**P0 — correctness (remaining)**
+1. `CachedPage.Data()` pin-protocol audit / mutation routing (§1.1) — design.
+2. Buffered UPDATE in-txn UNIQUE enforcement (§1.6) — needs product decision.
 
 **P1 — maintainability**
-5. Decompose `insertLocked`/`updateLocked`; extract `decodeVisibleRow` + `validateRowAgainstConstraints` (§2) — dedicated reviewed pass.
-6. Unify the three cache layers (§5) and the duplicated column-extraction logic (§3).
-7. Extract shared `runStatement` (Exec/Query) and `initializeCommonComponents` (create/load) (§4).
-8. Incremental test thin-out + lean-coverage gate (§6); widen linting (§7).
+3. Decompose `insertLocked`/`updateLocked` — dedicated reviewed pass (§2).
+4. Extract `decodeVisibleRow` + `validateRowAgainstConstraints` (§2).
+5. Two query-result caches, one unused — wire `pkg/cache` or drop it (§5).
+6. Extract shared `runStatement` (Exec/Query) + `initializeCommonComponents` (§4).
+7. Incremental test thin-out + per-package lean-coverage floor in CI (§6).
 
 **P2 — structure & polish**
-9. Expression visitor + precedence-parser dedup; AST consistency (§3).
-10. Group the 50-field `Options` struct (§4); harden or scope webui (§4).
-11. Audit/strict-parser hard errors (§1.5); audit retry/fail-secure decision (§1.7).
-12. Scheduler per-job timeout, metrics alert-on-change, fdw pushdown/charset, pool validation, cache size accounting (§5); consolidate `AGENTS.md`/`CLAUDE.md` (§7).
+8. Expression visitor + precedence-parser dedup; AST consistency (§3).
+9. Group the 50-field `Options` struct (§4); harden or scope webui.
+10. Cache size accounting; fdw pushdown/charset; deferred unlock in `Acquire` (§5).
+11. Audit retry/fail-secure decision (§1.7).

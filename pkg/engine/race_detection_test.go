@@ -160,8 +160,7 @@ func TestCatalogConcurrentAccess(t *testing.T) {
 // TestQueryCacheRace tests for race conditions in query cache
 func TestQueryCacheRace(t *testing.T) {
 	db, err := Open(":memory:", &Options{
-		EnableQueryCache: true,
-		QueryCacheSize:   1000,
+		QueryCache: QueryCacheConfig{EnableQueryCache: true, QueryCacheSize: 1000},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -210,9 +209,7 @@ func TestQueryCacheRace(t *testing.T) {
 
 // TestBufferPoolRace tests for race conditions in buffer pool
 func TestBufferPoolRace(t *testing.T) {
-	db, err := Open(":memory:", &Options{
-		CacheSize: 16,
-	})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{CacheSize: 16}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

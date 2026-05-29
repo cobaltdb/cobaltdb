@@ -152,10 +152,12 @@ func TestCreateBackup(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_backup.db")
 
 	options := &Options{
-		CacheSize:       256,
-		BackupDir:       filepath.Join(tempDir, "backups"),
-		BackupRetention: 7,
-		MaxBackups:      10,
+		CoreStorage: CoreStorage{CacheSize: 256},
+		Backup: Backup{
+			Dir:       filepath.Join(tempDir, "backups"),
+			Retention: 7,
+			MaxBackups: 10,
+		},
 	}
 
 	db, err := Open(dbPath, options)
@@ -193,9 +195,11 @@ func TestListBackups(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_list_backups.db")
 
 	options := &Options{
-		CacheSize:       256,
-		BackupDir:       filepath.Join(tempDir, "backups"),
-		BackupRetention: 7,
+		CoreStorage: CoreStorage{CacheSize: 256},
+		Backup: Backup{
+			Dir:       filepath.Join(tempDir, "backups"),
+			Retention: 7,
+		},
 	}
 
 	db, err := Open(dbPath, options)

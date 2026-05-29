@@ -8,8 +8,8 @@ import (
 
 func TestStrictSQLParsingRejectsTrailingTokens(t *testing.T) {
 	db, err := Open(":memory:", &Options{
-		InMemory:         true,
-		StrictSQLParsing: true,
+		CoreStorage: CoreStorage{InMemory: true},
+		Security:    Security{StrictSQLParsing: true},
 	})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -26,7 +26,7 @@ func TestStrictSQLParsingRejectsTrailingTokens(t *testing.T) {
 }
 
 func TestDefaultSQLParsingRemainsCompatible(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

@@ -14,7 +14,7 @@ import (
 
 // TestPathMethod tests the Path() method
 func TestPathMethod(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestPathMethod(t *testing.T) {
 
 // TestPlanCacheMethods tests plan cache enable/disable/stats/clear methods
 func TestPlanCacheMethods(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestPlanCacheMethods(t *testing.T) {
 
 // TestSearchVectorKNNMethod tests the public SearchVectorKNN method
 func TestSearchVectorKNNMethod(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestSearchVectorKNNMethod(t *testing.T) {
 	}
 
 	// Search on closed DB
-	db2, _ := Open(":memory:", &Options{InMemory: true})
+	db2, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	db2.Close()
 	_, _, err = db2.SearchVectorKNN("test", []float64{1.0}, 1)
 	if err == nil {
@@ -111,7 +111,7 @@ func TestSearchVectorKNNMethod(t *testing.T) {
 
 // TestClosedDBMethods tests methods on a closed database return proper errors
 func TestClosedDBMethods(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestReplicateWriteReturnsFencedPrimaryError(t *testing.T) {
 
 // TestDBUtilityMethodsInMemory tests utility methods on in-memory DB (no WAL)
 func TestDBUtilityMethodsInMemory(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestDBUtilityMethodsInMemory(t *testing.T) {
 
 // TestVacuumAndAnalyze tests VACUUM and ANALYZE via SQL
 func TestVacuumAndAnalyze(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestVacuumAndAnalyze(t *testing.T) {
 
 // TestCreateVectorIndexViaSQL tests CREATE VECTOR INDEX via SQL
 func TestCreateVectorIndexViaSQL(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestCreateVectorIndexViaSQL(t *testing.T) {
 
 // TestCTEViaEngine tests CTE execution through engine
 func TestCTEViaEngine(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestDBWithWALMethods(t *testing.T) {
 	dbPath := dir + "/wal_test.db"
 
 	// Create DB first (no WAL on create)
-	db1, err := Open(dbPath, &Options{CacheSize: 256})
+	db1, err := Open(dbPath, &Options{CoreStorage: CoreStorage{CacheSize: 256}})
 	if err != nil {
 		t.Fatalf("Failed to create: %v", err)
 	}
@@ -505,7 +505,7 @@ func TestOpenWithQueryCacheConfig(t *testing.T) {
 
 // TestSearchVectorRangeMethod tests the public SearchVectorRange method
 func TestSearchVectorRangeMethod(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestSearchVectorRangeMethod(t *testing.T) {
 	}
 
 	// Search on closed DB
-	db2, _ := Open(":memory:", &Options{InMemory: true})
+	db2, _ := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	db2.Close()
 	_, _, err = db2.SearchVectorRange("test", []float64{1.0}, 1.0)
 	if err == nil {

@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/auth"
 	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
@@ -177,6 +179,7 @@ type MySQLServer struct {
 type MySQLPanicRecovery struct {
 	ConnID    uint32
 	Value     interface{}
+	Stack     string
 	Timestamp time.Time
 }
 
@@ -216,6 +219,7 @@ func (s *MySQLServer) recordPanic(connID uint32, value interface{}) {
 	s.lastPanic.Store(&MySQLPanicRecovery{
 		ConnID:    connID,
 		Value:     value,
+		Stack:     string(debug.Stack()),
 		Timestamp: time.Now().UTC(),
 	})
 }
@@ -374,13 +378,15 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 		storedHash, err := s.auth.GetMySQLNativeHash(client.username)
 		if err != nil {
 			if sendErr := client.sendErrorPacket(1045, fmt.Sprintf("Access denied for user '%s'", client.username)); sendErr != nil {
-				_ = sendErr
+				logger.GetGlobalLogger().Errorf("failed to send auth error to client: %v", sendErr)
+				return
 			}
 			return
 		}
 		if !client.verifyMySQLNativeAuth(storedHash) {
 			if sendErr := client.sendErrorPacket(1045, fmt.Sprintf("Access denied for user '%s'", client.username)); sendErr != nil {
-				_ = sendErr
+				logger.GetGlobalLogger().Errorf("failed to send auth error to client: %v", sendErr)
+				return
 			}
 			return
 		}

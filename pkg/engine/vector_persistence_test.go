@@ -11,9 +11,9 @@ func TestVectorIndexPersistsAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "vectors.db")
 	opts := DefaultOptions()
-	opts.EnableScheduler = false
-	opts.EnableAutoCheckpoint = false
-	opts.EnableAutoVacuum = false
+	opts.Scheduler.EnableScheduler = false
+	opts.Maintenance.EnableAutoCheckpoint = false
+	opts.Maintenance.EnableAutoVacuum = false
 
 	db, err := Open(path, opts)
 	if err != nil {
@@ -77,11 +77,11 @@ func TestVectorIndexLargeRebuildAndBackupRestore(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vectors-large.db")
 	opts := DefaultOptions()
-	opts.BackupDir = filepath.Join(dir, "backups")
-	opts.BackupCompressionLevel = 0
-	opts.EnableScheduler = false
-	opts.EnableAutoCheckpoint = false
-	opts.EnableAutoVacuum = false
+	opts.Backup.Dir = filepath.Join(dir, "backups")
+	opts.Backup.CompressionLevel = 0
+	opts.Scheduler.EnableScheduler = false
+	opts.Maintenance.EnableAutoCheckpoint = false
+	opts.Maintenance.EnableAutoVacuum = false
 
 	db, err := Open(path, opts)
 	if err != nil {
@@ -153,9 +153,9 @@ func TestVectorIndexThousandPlusMixedDMLReopen(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vectors-mixed.db")
 	opts := DefaultOptions()
-	opts.EnableScheduler = false
-	opts.EnableAutoCheckpoint = false
-	opts.EnableAutoVacuum = false
+	opts.Scheduler.EnableScheduler = false
+	opts.Maintenance.EnableAutoCheckpoint = false
+	opts.Maintenance.EnableAutoVacuum = false
 
 	db, err := Open(path, opts)
 	if err != nil {

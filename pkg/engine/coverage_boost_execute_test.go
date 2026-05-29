@@ -10,7 +10,7 @@ import (
 // TestExecuteContextCancellation tests execute with cancelled context
 func TestExecuteContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestExecuteContextCancellation(t *testing.T) {
 // TestExecuteCreateViewWithReplace tests CREATE VIEW with IF NOT EXISTS and OR REPLACE
 func TestExecuteCreateViewWithReplace(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestExecuteCreateViewWithReplace(t *testing.T) {
 // TestExecuteCreateProcedureWithReplace tests CREATE PROCEDURE variations
 func TestExecuteCreateProcedureWithReplace(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestExecuteCreateProcedureWithReplace(t *testing.T) {
 // TestExecuteCreatePolicyCoverage tests CREATE POLICY variations
 func TestExecuteCreatePolicyCoverage(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestExecuteCreatePolicyCoverage(t *testing.T) {
 // TestExecuteDropPolicyVariations tests DROP POLICY variations
 func TestExecuteDropPolicyVariations(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestExecuteDropPolicyVariations(t *testing.T) {
 // TestExecuteCreateTriggerVariations tests CREATE TRIGGER variations
 func TestExecuteCreateTriggerVariations(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestExecuteCreateTriggerVariations(t *testing.T) {
 // TestExecuteDropTriggerVariations tests DROP TRIGGER variations
 func TestExecuteDropTriggerVariations(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestExecuteDropTriggerVariations(t *testing.T) {
 // TestExecuteDropProcedureVariations tests DROP PROCEDURE variations
 func TestExecuteDropProcedureVariations(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestExecuteDropProcedureVariations(t *testing.T) {
 // TestExecuteDropViewVariations tests DROP VIEW variations
 func TestExecuteDropViewVariations(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestExecuteDropViewVariations(t *testing.T) {
 // TestQueryShowStatements tests SHOW statements in query function
 func TestQueryShowStatements(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestQueryShowStatements(t *testing.T) {
 // TestQueryShowDatabasesCoverage tests SHOW DATABASES
 func TestQueryShowDatabasesCoverage(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -428,7 +428,7 @@ func TestQueryShowDatabasesCoverage(t *testing.T) {
 // TestExecuteTransactionControl tests transaction control statements
 func TestExecuteTransactionControl(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true, WALEnabled: BoolPtr(true)})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestExecuteTransactionControl(t *testing.T) {
 // TestExecuteTransactionErrors tests transaction error cases
 func TestExecuteTransactionErrors(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -540,7 +540,7 @@ func TestExecuteTransactionErrors(t *testing.T) {
 // TestExecuteReleaseSavepoint tests RELEASE SAVEPOINT
 func TestExecuteReleaseSavepoint(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -582,7 +582,7 @@ func TestExecuteReleaseSavepoint(t *testing.T) {
 // TestExecuteCallProcedureCoverage tests CALL procedure
 func TestExecuteCallProcedureCoverage(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestExecuteCallProcedureCoverage(t *testing.T) {
 // TestExecuteVacuumWithOptions tests VACUUM variations
 func TestExecuteVacuumWithOptions(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestExecuteVacuumWithOptions(t *testing.T) {
 // TestExecuteAnalyzeCoverage tests ANALYZE variations
 func TestExecuteAnalyzeCoverage(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -708,7 +708,7 @@ func TestExecuteAnalyzeCoverage(t *testing.T) {
 // TestQueryReturningVariations tests INSERT/UPDATE/DELETE RETURNING
 func TestQueryReturningVariations(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -770,7 +770,7 @@ func TestQueryReturningVariations(t *testing.T) {
 // TestExecuteAlterTableCoverage tests ALTER TABLE variations
 func TestExecuteAlterTableCoverage(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -11,7 +11,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestAlterTableAddColumn(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestAlterTableAddColumn(t *testing.T) {
 }
 
 func TestAlterTableDropColumn(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestAlterTableDropColumn(t *testing.T) {
 }
 
 func TestAlterTableRenameTable(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestAlterTableRenameTable(t *testing.T) {
 }
 
 func TestAlterTableRenameColumn(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestAlterTableRenameColumn(t *testing.T) {
 }
 
 func TestAlterTableNonExistentTable(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestAlterTableNonExistentTable(t *testing.T) {
 
 func TestCreatePolicyWithRLSDisabled(t *testing.T) {
 	// Open without EnableRLS
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestCreatePolicyWithRLSDisabled(t *testing.T) {
 }
 
 func TestCreateAndDropPolicyWithRLS(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024, EnableRLS: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}, Security: Security{EnableRLS: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestCreateAndDropPolicyWithRLS(t *testing.T) {
 }
 
 func TestCreatePolicyVariousEvents(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024, EnableRLS: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}, Security: Security{EnableRLS: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestCreatePolicyVariousEvents(t *testing.T) {
 }
 
 func TestDropPolicyWithRLSDisabled(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestDropPolicyWithRLSDisabled(t *testing.T) {
 }
 
 func TestDropPolicyIfExists(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024, EnableRLS: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}, Security: Security{EnableRLS: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestDropPolicyIfExists(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUnionBasic(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestUnionBasic(t *testing.T) {
 }
 
 func TestUnionAll(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestUnionAll(t *testing.T) {
 }
 
 func TestUnionWithOrderByAndLimit(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestUnionWithOrderByAndLimit(t *testing.T) {
 }
 
 func TestUnionWithDescOrder(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -480,7 +480,7 @@ func TestUnionWithDescOrder(t *testing.T) {
 }
 
 func TestUnionWithNullDedup(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestUnionWithNullDedup(t *testing.T) {
 }
 
 func TestIntersect(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -557,7 +557,7 @@ func TestIntersect(t *testing.T) {
 }
 
 func TestIntersectAll(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -597,7 +597,7 @@ func TestIntersectAll(t *testing.T) {
 }
 
 func TestExcept(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -634,7 +634,7 @@ func TestExcept(t *testing.T) {
 }
 
 func TestExceptAll(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -673,7 +673,7 @@ func TestExceptAll(t *testing.T) {
 }
 
 func TestUnionWithOffset(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -719,7 +719,7 @@ func TestUnionWithOffset(t *testing.T) {
 }
 
 func TestUnionWithStringValues(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -764,7 +764,7 @@ func TestUnionWithStringValues(t *testing.T) {
 }
 
 func TestUnionOrderByPositional(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -809,7 +809,7 @@ func TestUnionOrderByPositional(t *testing.T) {
 }
 
 func TestUnionLargeOffset(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -849,7 +849,7 @@ func TestUnionLargeOffset(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestShowTables(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -892,7 +892,7 @@ func TestShowTables(t *testing.T) {
 }
 
 func TestShowTablesViaExecFails(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -911,7 +911,7 @@ func TestShowTablesViaExecFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestShowCreateTable(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -956,7 +956,7 @@ func TestShowCreateTable(t *testing.T) {
 }
 
 func TestShowCreateTableNonExistent(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -974,7 +974,7 @@ func TestShowCreateTableNonExistent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestShowColumnsFrom(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1034,7 +1034,7 @@ func TestShowColumnsFrom(t *testing.T) {
 }
 
 func TestShowColumnsNonExistent(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1048,7 +1048,7 @@ func TestShowColumnsNonExistent(t *testing.T) {
 }
 
 func TestShowColumnsViaExecFails(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1068,7 +1068,7 @@ func TestShowColumnsViaExecFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestShowDatabases(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1103,7 +1103,7 @@ func TestShowDatabases(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDescribeTable(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1135,7 +1135,7 @@ func TestDescribeTable(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExplainSelect(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1365,7 +1365,7 @@ func TestStmtLRUListSingleElement(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSetVarCompatibility(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1380,7 +1380,7 @@ func TestSetVarCompatibility(t *testing.T) {
 }
 
 func TestUseCompatibility(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1399,7 +1399,7 @@ func TestUseCompatibility(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDropIndex(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1428,9 +1428,7 @@ func TestDropIndex(t *testing.T) {
 
 func TestPreparedStatementCacheLRUEviction(t *testing.T) {
 	db, err := Open(":memory:", &Options{
-		InMemory:         true,
-		CacheSize:        1024,
-		MaxStmtCacheSize: 3,
+		CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}, Security: Security{MaxStmtCacheSize: 3},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -1467,7 +1465,7 @@ func TestPreparedStatementCacheLRUEviction(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTableSchema(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1499,7 +1497,7 @@ func TestTableSchema(t *testing.T) {
 }
 
 func TestTableSchemaNonExistent(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1516,7 +1514,7 @@ func TestTableSchemaNonExistent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTablesAPI(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1543,7 +1541,7 @@ func TestTablesAPI(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestQueryRowCoverage(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1565,7 +1563,7 @@ func TestQueryRowCoverage(t *testing.T) {
 }
 
 func TestQueryRowNoRowsCoverage(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1586,7 +1584,7 @@ func TestQueryRowNoRowsCoverage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRowsScanBeforeNext(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1611,7 +1609,7 @@ func TestRowsScanBeforeNext(t *testing.T) {
 }
 
 func TestRowsScanColumnMismatch(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1648,7 +1646,7 @@ func TestNilRowsNext(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCreatePolicyWithComplexExpressions(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024, EnableRLS: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}, Security: Security{EnableRLS: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1696,7 +1694,7 @@ func TestCreatePolicyWithComplexExpressions(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUnionOrderByWithNulls(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1738,7 +1736,7 @@ func TestUnionOrderByWithNulls(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateAndDropView(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1788,7 +1786,7 @@ func TestCreateAndDropView(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateAndDropTrigger(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1824,7 +1822,7 @@ func TestCreateAndDropTrigger(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestThreeWayUnion(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1866,7 +1864,7 @@ func TestThreeWayUnion(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestScanValueTypesCoverage(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true, CacheSize: 1024})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

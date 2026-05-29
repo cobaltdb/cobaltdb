@@ -186,7 +186,7 @@ func TestGetWALPathWithWALEnabled90(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestCheckpointWithWALEnabled90(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestGetCurrentLSNWithWAL90(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestCreateNewWithRLSEnabled90(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	db, err := Open(dbPath, &Options{
-		EnableRLS: true,
+		Security: Security{EnableRLS: true},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)

@@ -29,7 +29,7 @@ func TestExecPanicRecoveryRecordsWithoutStdout(t *testing.T) {
 		_ = readPipe.Close()
 	}()
 
-	db := &DB{options: &Options{QueryTimeout: time.Second}}
+	db := &DB{options: &Options{ConnectionPool: ConnectionPool{QueryTimeout: time.Second}}}
 	_, err = db.Exec(panicDeadlineContext{Context: context.Background()}, "SELECT 1")
 
 	if closeErr := writePipe.Close(); closeErr != nil {

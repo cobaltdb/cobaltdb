@@ -115,7 +115,7 @@ func TestCheckpointWithoutWALMore(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	// Open without WAL
-	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(false)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestGetCurrentLSNWithoutWALMore(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	// Open without WAL
-	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(false)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestGetWALPathWithoutWALMore(t *testing.T) {
 	dbPath := filepath.Join(dir, "test.db")
 
 	// Open without WAL
-	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(false)})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(false)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -680,7 +680,7 @@ func TestMaterializedViewOperations(t *testing.T) {
 
 // TestPolicyOperations tests RLS policy operations
 func TestPolicyOperations(t *testing.T) {
-	db, err := Open(":memory:", &Options{EnableRLS: true})
+	db, err := Open(":memory:", &Options{Security: Security{EnableRLS: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

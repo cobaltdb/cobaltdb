@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -298,7 +299,7 @@ func (s *Server) acceptLoop() error {
 			defer s.clientWg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					s.logErrorf("client handler recovered from panic: %v", r)
+					s.logErrorf("client handler recovered from panic: %v\n%v", r, debug.Stack())
 				}
 			}()
 			client.Handle()

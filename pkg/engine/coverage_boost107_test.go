@@ -16,10 +16,12 @@ func TestCreateNewWithQueryCache(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_query_cache.db")
 
 	options := &Options{
-		CacheSize:        256,
-		EnableQueryCache: true,
-		QueryCacheSize:   1024,
-		QueryCacheTTL:    5 * time.Minute,
+		CoreStorage: CoreStorage{CacheSize: 256},
+		QueryCache: QueryCache{
+			EnableQueryCache: true,
+			QueryCacheSize:   1024,
+			QueryCacheTTL:    5 * time.Minute,
+		},
 	}
 
 	db, err := Open(dbPath, options)
@@ -55,10 +57,12 @@ func TestLoadExistingWithQueryCache(t *testing.T) {
 
 	// Create database first
 	options := &Options{
-		CacheSize:        256,
-		EnableQueryCache: true,
-		QueryCacheSize:   1024,
-		QueryCacheTTL:    5 * time.Minute,
+		CoreStorage: CoreStorage{CacheSize: 256},
+		QueryCache: QueryCache{
+			EnableQueryCache: true,
+			QueryCacheSize:   1024,
+			QueryCacheTTL:    5 * time.Minute,
+		},
 	}
 
 	db1, err := Open(dbPath, options)
@@ -95,8 +99,7 @@ func TestCreateNewWithWALAndRecovery(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_wal.db")
 
 	options := &Options{
-		CacheSize:  256,
-		WALEnabled: BoolPtr(true),
+		CoreStorage: CoreStorage{CacheSize: 256, WALEnabled: BoolPtr(true)},
 	}
 
 	db, err := Open(dbPath, options)
@@ -149,10 +152,12 @@ func TestCreateNewWithReplicationSkip(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_repl.db")
 
 	options := &Options{
-		CacheSize:             256,
-		ReplicationRole:       "master",
-		ReplicationMode:       "async",
-		ReplicationListenAddr: "127.0.0.1:0", // Use port 0 for auto-assign
+		CoreStorage: CoreStorage{CacheSize: 256},
+		Replication: Replication{
+			Role:       "master",
+			Mode:       "async",
+			ListenAddr: "127.0.0.1:0",
+		},
 	}
 
 	db, err := Open(dbPath, options)
@@ -174,19 +179,24 @@ func TestCreateNewWithAllFeaturesSkip(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_all_features.db")
 
 	options := &Options{
-		CacheSize:              256,
-		EnableRLS:              true,
-		EnableQueryCache:       true,
-		QueryCacheSize:         1024,
-		QueryCacheTTL:          60,
-		WALEnabled:             BoolPtr(true),
-		ReplicationRole:        "master",
-		ReplicationMode:        "async",
-		ReplicationListenAddr:  "127.0.0.1:0",
-		BackupDir:              filepath.Join(tempDir, "backups"),
-		BackupRetention:        7,
-		MaxBackups:             10,
-		BackupCompressionLevel: 6,
+		CoreStorage: CoreStorage{CacheSize: 256, WALEnabled: BoolPtr(true)},
+		Security:    Security{EnableRLS: true},
+		QueryCache: QueryCache{
+			EnableQueryCache: true,
+			QueryCacheSize:   1024,
+			QueryCacheTTL:    60,
+		},
+		Replication: Replication{
+			Role:       "master",
+			Mode:       "async",
+			ListenAddr: "127.0.0.1:0",
+		},
+		Backup: Backup{
+			Dir:              filepath.Join(tempDir, "backups"),
+			Retention:        7,
+			MaxBackups:       10,
+			CompressionLevel: 6,
+		},
 	}
 
 	db, err := Open(dbPath, options)
@@ -216,14 +226,18 @@ func TestLoadExistingWithAllFeatures(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_load_all.db")
 
 	options := &Options{
-		CacheSize:        256,
-		EnableRLS:        true,
-		EnableQueryCache: true,
-		QueryCacheSize:   1024,
-		QueryCacheTTL:    60,
-		BackupDir:        filepath.Join(tempDir, "backups"),
-		BackupRetention:  7,
-		MaxBackups:       10,
+		CoreStorage: CoreStorage{CacheSize: 256},
+		Security:    Security{EnableRLS: true},
+		QueryCache: QueryCache{
+			EnableQueryCache: true,
+			QueryCacheSize:   1024,
+			QueryCacheTTL:    60,
+		},
+		Backup: Backup{
+			Dir:       filepath.Join(tempDir, "backups"),
+			Retention: 7,
+			MaxBackups: 10,
+		},
 	}
 
 	// Create database
@@ -275,7 +289,7 @@ func TestLoadExistingInvalidMetaPage(t *testing.T) {
 	}
 	os.WriteFile(dbPath, invalidContent, 0644)
 
-	options := &Options{CacheSize: 256}
+	options := &Options{CoreStorage: CoreStorage{CacheSize: 256}}
 	_, err := Open(dbPath, options)
 	if err == nil {
 		t.Error("Should fail with invalid meta page")
@@ -293,7 +307,7 @@ func TestLoadExistingEmptyFileSkip(t *testing.T) {
 	// Create empty file
 	os.WriteFile(dbPath, []byte{}, 0644)
 
-	options := &Options{CacheSize: 256}
+	options := &Options{CoreStorage: CoreStorage{CacheSize: 256}}
 	_, err := Open(dbPath, options)
 	if err == nil {
 		t.Error("Should fail with empty file")

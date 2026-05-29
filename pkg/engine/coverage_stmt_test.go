@@ -40,7 +40,7 @@ func TestCircuitBreakerReportFailureHalfOpen(t *testing.T) {
 }
 
 func TestRunAnalyzeJob(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestRunAnalyzeJob(t *testing.T) {
 }
 
 func TestExecuteCreateViewIfNotExists(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestExecuteCreateViewIfNotExists(t *testing.T) {
 }
 
 func TestExecQueryWithPlanCache(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,10 +110,12 @@ func TestExecQueryWithPlanCache(t *testing.T) {
 
 func TestExecQueryResultCache(t *testing.T) {
 	db, err := Open(":memory:", &Options{
-		InMemory:         true,
-		EnableQueryCache: true,
-		QueryCacheSize:   1024 * 1024,
-		QueryCacheTTL:    5 * time.Minute,
+		CoreStorage: CoreStorage{InMemory: true},
+		QueryCache: QueryCacheConfig{
+			EnableQueryCache: true,
+			QueryCacheSize:   1024 * 1024,
+			QueryCacheTTL:    5 * time.Minute,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +142,7 @@ func TestExecQueryResultCache(t *testing.T) {
 
 func TestExecWithAuditLogger(t *testing.T) {
 	db, err := Open(":memory:", &Options{
-		InMemory: true,
+		CoreStorage: CoreStorage{InMemory: true},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +161,7 @@ func TestExecWithAuditLogger(t *testing.T) {
 }
 
 func TestExecDropViewIfExists(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +185,7 @@ func TestExecDropViewIfExists(t *testing.T) {
 }
 
 func TestExecCreateTrigger(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +202,7 @@ func TestExecCreateTrigger(t *testing.T) {
 }
 
 func TestExecCreateDropProcedure(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +222,7 @@ func TestExecCreateDropProcedure(t *testing.T) {
 }
 
 func TestExecTransactionControl(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +245,7 @@ func TestExecTransactionControl(t *testing.T) {
 }
 
 func TestExecAlterTable(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +268,7 @@ func TestExecAlterTable(t *testing.T) {
 }
 
 func TestExecSavepoint(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +296,7 @@ func TestExecSavepoint(t *testing.T) {
 }
 
 func TestExecContextCancelled(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +335,7 @@ func TestValueToStringForCompare(t *testing.T) {
 }
 
 func TestCompareUnionValues(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +377,7 @@ func TestCompareUnionValues(t *testing.T) {
 }
 
 func TestExecVacuumStmt(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +395,7 @@ func TestExecVacuumStmt(t *testing.T) {
 }
 
 func TestHealthCheckOpen(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +408,7 @@ func TestHealthCheckOpen(t *testing.T) {
 }
 
 func TestExecExplain(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +427,7 @@ func TestExecExplain(t *testing.T) {
 }
 
 func TestExecUnion(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +448,7 @@ func TestExecUnion(t *testing.T) {
 }
 
 func TestExecInsertReturning(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +466,7 @@ func TestExecInsertReturning(t *testing.T) {
 }
 
 func TestExecUpdateReturning(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +485,7 @@ func TestExecUpdateReturning(t *testing.T) {
 }
 
 func TestExecDeleteReturning(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +504,7 @@ func TestExecDeleteReturning(t *testing.T) {
 }
 
 func TestTxDoubleCommit(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +531,7 @@ func TestTxDoubleCommit(t *testing.T) {
 }
 
 func TestTxDoubleRollback(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +558,7 @@ func TestTxDoubleRollback(t *testing.T) {
 }
 
 func TestCompareUnionValuesMixed(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +578,7 @@ func TestCompareUnionValuesMixed(t *testing.T) {
 }
 
 func TestExecAnalyzeAllTables(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +598,7 @@ func TestExecAnalyzeAllTables(t *testing.T) {
 }
 
 func TestExecShowTables(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +616,7 @@ func TestExecShowTables(t *testing.T) {
 }
 
 func TestExecShowCreateTable(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,7 +634,7 @@ func TestExecShowCreateTable(t *testing.T) {
 }
 
 func TestExecShowColumns(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -650,7 +652,7 @@ func TestExecShowColumns(t *testing.T) {
 }
 
 func TestExecSetAndUse(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -672,7 +674,7 @@ func TestExecSetAndUse(t *testing.T) {
 }
 
 func TestExecMaterializedView(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -699,7 +701,7 @@ func TestExecMaterializedView(t *testing.T) {
 }
 
 func TestExecCreateFTSIndex(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +717,7 @@ func TestExecCreateFTSIndex(t *testing.T) {
 }
 
 func TestExecCreateVectorIndex(t *testing.T) {
-	db, err := Open(":memory:", &Options{InMemory: true})
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

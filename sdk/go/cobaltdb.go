@@ -303,22 +303,26 @@ func Open(cfg *Config) (*DB, error) {
 	cfg = normalizeConfig(cfg)
 
 	opts := &engine.Options{
-		CacheSize:         cfg.CacheSize,
-		WALEnabled:        cfg.WALEnabled,
-		MaxConnections:    cfg.MaxConnections,
-		ConnectionTimeout: cfg.ConnectTimeout,
-		QueryTimeout:      cfg.QueryTimeout,
-		InMemory:          cfg.Database == ":memory:",
+		CoreStorage: engine.CoreStorage{
+			CacheSize:  cfg.CacheSize,
+			WALEnabled: cfg.WALEnabled,
+			InMemory:   cfg.Database == ":memory:",
+		},
+		ConnectionPool: engine.ConnectionPool{
+			MaxConnections:    cfg.MaxConnections,
+			ConnectionTimeout: cfg.ConnectTimeout,
+			QueryTimeout:      cfg.QueryTimeout,
+		},
 	}
 
 	// Set sync mode
 	switch cfg.SyncMode {
 	case "off":
-		opts.SyncMode = engine.SyncOff
+		opts.CoreStorage.SyncMode = engine.SyncOff
 	case "full":
-		opts.SyncMode = engine.SyncFull
+		opts.CoreStorage.SyncMode = engine.SyncFull
 	default:
-		opts.SyncMode = engine.SyncNormal
+		opts.CoreStorage.SyncMode = engine.SyncNormal
 	}
 
 	db, err := engine.Open(cfg.Database, opts)

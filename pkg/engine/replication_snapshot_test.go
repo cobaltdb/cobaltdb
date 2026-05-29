@@ -12,7 +12,7 @@ import (
 func TestReplicationSnapshotRoundTripReloadsCatalog(t *testing.T) {
 	ctx := context.Background()
 
-	master, err := Open(":memory:", &Options{InMemory: true, CacheSize: 256})
+	master, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 256}})
 	if err != nil {
 		t.Fatalf("open master: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestReplicationSnapshotRoundTripReloadsCatalog(t *testing.T) {
 		t.Fatal("expected non-empty snapshot")
 	}
 
-	slave, err := Open(":memory:", &Options{InMemory: true, CacheSize: 256})
+	slave, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 256}})
 	if err != nil {
 		t.Fatalf("open slave: %v", err)
 	}
@@ -57,10 +57,12 @@ func TestConfigureReplicationCallbacksWiresEngineSnapshots(t *testing.T) {
 	dbPath := filepath.Join(dir, "master.db")
 
 	db, err := Open(dbPath, &Options{
-		CacheSize:             256,
-		ReplicationRole:       "master",
-		ReplicationListenAddr: "127.0.0.1:0",
-		ReplicationStateFile:  filepath.Join(dir, "replication-state.json"),
+		CoreStorage: CoreStorage{CacheSize: 256},
+		Replication: ReplicationConfig{
+			Role:       "master",
+			ListenAddr: "127.0.0.1:0",
+			StateFile:  filepath.Join(dir, "replication-state.json"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("open replicated db: %v", err)

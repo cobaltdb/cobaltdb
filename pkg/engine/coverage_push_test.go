@@ -225,8 +225,8 @@ func TestOpen_MemoryPath(t *testing.T) {
 func TestExec_SlowQueryLog(t *testing.T) {
 	ctx := context.Background()
 	opts := DefaultOptions()
-	opts.EnableSlowQueryLog = true
-	opts.SlowQueryThreshold = 0
+	opts.SlowQueryLog.EnableSlowQueryLog = true
+	opts.SlowQueryLog.Threshold = 0
 	db, err := Open(":memory:", opts)
 	if err != nil {
 		t.Fatal(err)
@@ -448,7 +448,7 @@ func TestOpen_DiskWithEncryption(t *testing.T) {
 func TestOpen_DiskWithCompression(t *testing.T) {
 	dir := t.TempDir()
 	opts := DefaultOptions()
-	opts.CompressionConfig = &storage.CompressionConfig{
+	opts.PageCompression.Config = &storage.CompressionConfig{
 		Enabled: true,
 	}
 	db, err := Open(dir+"/test.db", opts)

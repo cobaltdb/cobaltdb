@@ -156,7 +156,7 @@ func (db *DB) resetWALForSnapshotLocked() error {
 		db.wal = nil
 	}
 
-	if db.options.WALEnabled == nil || !*db.options.WALEnabled || db.path == ":memory:" {
+	if db.options.CoreStorage.WALEnabled == nil || !*db.options.CoreStorage.WALEnabled || db.path == ":memory:" {
 		return nil
 	}
 
@@ -172,7 +172,7 @@ func (db *DB) resetWALForSnapshotLocked() error {
 	if encBackend, ok := db.backend.(*storage.EncryptedBackend); ok {
 		wal.SetEncryptionCipher(encBackend.GetCipher())
 	}
-	switch db.options.SyncMode {
+	switch db.options.CoreStorage.SyncMode {
 	case SyncNormal:
 		wal.EnableGroupCommit(0, 5*time.Millisecond)
 	case SyncOff:
@@ -196,7 +196,9 @@ func (db *DB) reloadSnapshotStateLocked() error {
 		return fmt.Errorf("invalid snapshot database: %w", err)
 	}
 
-	db.pool = storage.NewBufferPool(db.options.CacheSize, db.backend)
+	// Re-open the buffer pool with the new root so btree operations use the
+	// correct pages after the snapshot was written.
+	db.pool = storage.NewBufferPool(db.options.CoreStorage.CacheSize, db.backend)
 	if db.wal != nil {
 		db.pool.SetWAL(db.wal)
 	}
@@ -207,12 +209,12 @@ func (db *DB) reloadSnapshotStateLocked() error {
 	}
 	db.rootTree = rootTree
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
-	db.catalog.SetParallelOptions(db.options.ParallelWorkers, db.options.ParallelThreshold)
+	db.catalog.SetParallelOptions(db.options.ParallelQuery.Workers, db.options.ParallelQuery.Threshold)
 
 	fdwRegistry := fdw.NewRegistry()
 	fdwRegistry.Register("csv", func() fdw.ForeignDataWrapper { return &fdw.CSVWrapper{} })
 	db.catalog.SetFDWRegistry(fdwRegistry)
-	if db.options.EnableRLS {
+	if db.options.Security.EnableRLS {
 		db.catalog.EnableRLS()
 	}
 	if err := db.catalog.Load(); err != nil {
@@ -220,10 +222,10 @@ func (db *DB) reloadSnapshotStateLocked() error {
 	}
 
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
-	if db.options.EnableQueryCache && db.queryCache == nil {
+	if db.options.QueryCache.EnableQueryCache && db.queryCache == nil {
 		cacheConfig := &cache.Config{
-			MaxSize:         db.options.QueryCacheSize,
-			TTL:             db.options.QueryCacheTTL,
+			MaxSize:         db.options.QueryCache.QueryCacheSize,
+			TTL:             db.options.QueryCache.QueryCacheTTL,
 			Enabled:         true,
 			CleanupInterval: 1 * time.Minute,
 		}

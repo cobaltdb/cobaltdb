@@ -38,7 +38,7 @@ func TestExecuteWithAutocommitWAL(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestWALOperations(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := Open(dbPath, &Options{WALEnabled: BoolPtr(true)})
+	db, err := Open(dbPath, &Options{CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
