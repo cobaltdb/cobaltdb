@@ -96,7 +96,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 ## 5. Peripheral packages
 
 **High priority**
-- **Two query-result caches, one unused** — `pkg/catalog/catalog_cache.go` (active, LRU+TTL, table-based invalidation, wired in `catalog_select.go`) vs `pkg/cache/query_cache.go` (engine-level, identical purpose, configured but never called in execution path). Also `pkg/engine/query_plan_cache.go` (parsed AST, LRU+size) and `pkg/query/prepared_cache.go` (prepared statement protocol, LRU+TTL). Buffer pool is orthogonal (raw page bytes, probabilistic LRU, no table invalidation). Fix: wire `pkg/cache` as the single result cache OR drop it and keep catalog-level only.
+- **Two query-result caches, one unused** — `pkg/catalog/catalog_cache.go` (old `QueryCache`, now superseded by `cache.Cache`) vs `pkg/cache/query_cache.go` (now the canonical cache). Catalog now uses `*cache.Cache` exclusively via `catalog.EnableQueryCache()` / `catalog.GetQueryCache()`; `catalog_cache.go` helpers (`isCacheableQuery`, `extractTablesFromQuery`, `queryToSQL`, `generateQueryKey`) remain live and needed. The old `QueryCache` struct in `catalog_cache.go` is dead code — kept only to avoid breaking the refactor scope; should be deleted in a follow-up that also moves the helper functions into a non-cache package. — addressed 2026-05-29.
 
 **Medium priority**
 - **`pkg/scheduler` per-job timeout [FIXED 2026-05-29]** — `Job.Timeout` field added; scheduler uses `j.Timeout` if >0, else 10-min default. — fixed 2026-05-29.
@@ -139,7 +139,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 **P1 — maintainability**
 3. Decompose `insertLocked`/`updateLocked` — dedicated reviewed pass (§2).
 4. Extract `decodeVisibleRow` + `validateRowAgainstConstraints` (§2).
-5. Two query-result caches, one unused — wire `pkg/cache` or drop it (§5).
+5. Delete dead `catalog.QueryCache` struct; move helpers (`isCacheableQuery`, `extractTablesFromQuery`, `queryToSQL`, `generateQueryKey`) to a non-cache package.
 6. Extract shared `runStatement` (Exec/Query) + `initializeCommonComponents` (§4).
 7. Incremental test thin-out + per-package lean-coverage floor in CI (§6).
 
