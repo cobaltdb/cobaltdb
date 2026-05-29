@@ -1,3 +1,5 @@
+//go:build wasm_experimental
+
 // Package wasm provides WebAssembly compilation and execution for SQL queries.
 // It compiles SQL query plans to WASM bytecode for high-performance execution.
 package wasm

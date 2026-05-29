@@ -166,7 +166,8 @@ The catalog is well-organized by file, but several functions are too large and s
 ## 8. Peripheral packages (`wasm`, `fdw`, `parallel`, `cache`, `pool`, `scheduler`, `metrics`, `logger`, `sdk`)
 
 **High priority**
-- **[verified] `pkg/wasm` is orphaned — 0 imports outside its own package.** ~5,400 LOC of source (compiler.go 1490, runtime.go 1283, host_functions.go 2656) plus ~25 test files, none referenced by `engine`, `catalog`, `server`, or `sdk`. It is a parallel re-implementation of query execution that nothing calls. CLAUDE.md itself marks WASM "experimental." **Decision needed:** delete it, or move it to a separate module / behind a `//go:build wasm_experimental` tag and stop counting it toward coverage. This is the largest single chunk of dead weight in the repo. (See §3.3 — its worker model also swallows panics.)
+- **[verified — RESOLVED] `pkg/wasm` is orphaned — 0 imports outside its own package.** ~13,678 LOC across 28 files (source compiler.go 1490, runtime.go 1283, host_functions.go 2656 + tests incl. a 3,610-line `coverage_boost_test.go`), none referenced by `engine`, `catalog`, `server`, or `sdk`. A parallel, unintegrated reimplementation of query execution.
+  **Action taken (2026-05-29):** isolated behind the `//go:build wasm_experimental` tag (all 28 files), so it is excluded from the default `go build/test/vet ./...` and from coverage, while remaining compilable via `-tags wasm_experimental`. Verified the wildcard build/vet skip it and the tagged build still compiles. CLAUDE.md updated. Chose isolation over deletion because WASM is still advertised in README/FEATURES; **follow-up for the owner:** either add an "experimental/opt-in" caveat to those marketing docs or fully delete the package (recoverable from git history) if the feature claim is being dropped.
 - **Three overlapping cache layers** — `pkg/cache` (result cache, SHA256-keyed, table-dep tracking), `pkg/catalog/catalog_cache.go` (result cache, count-limited), and `pkg/engine/query_plan_cache.go` (parsed-plan cache). All re-implement LRU + RWMutex + hit/miss counters with **inconsistent invalidation** (fine-grained vs full-table vs none). Consolidate onto one cache core with pluggable key/value and a single invalidation signal.
 - **[verified — FIXED] `pkg/parallel` worker panics now isolated** (§3.3). Separately, the unused `WorkerPool` type in `pool.go` (zero non-test callers) is dead code and should be deleted unless a use is planned.
 
@@ -230,7 +231,7 @@ Characteristics observed in samples:
 
 **P1 — maintainability (1–3 weeks)**
 5. Quarantine + thin out the 208 coverage-padding test files; centralize helpers (§9).
-6. Decide WASM's fate: delete or isolate behind a build tag (§8).
+6. ✅ **DONE** — WASM isolated behind `wasm_experimental` build tag, out of default build/coverage (§8).
 7. Decompose `insertLocked`/`updateLocked` and extract the row-decode helper (§5).
 8. Extract shared `runStatement` for Exec/Query and `initializeCommonComponents` for create/load (§7).
 9. Unify the three cache layers (§8) and the duplicated column-extraction logic (§6).

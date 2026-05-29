@@ -229,9 +229,19 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 
 ## WebAssembly (WASM) System (2026-03-18)
 
-Fully functional WASM compiler and runtime for SQL query execution.
+WASM compiler and runtime for SQL query execution.
 
-**Location:** `pkg/wasm/`
+> **Build-gated / experimental (2026-05-29):** `pkg/wasm` is **not** part of the
+> default build, test run, or coverage. It has no production callers — the engine
+> does not route any query through it — so it is isolated behind the
+> `wasm_experimental` build tag to remove it from the maintenance/coverage
+> surface while preserving the code. Build or test it explicitly with
+> `go build -tags wasm_experimental ./pkg/wasm/` /
+> `go test -tags wasm_experimental ./pkg/wasm/`. It is a parallel, unintegrated
+> reimplementation of query execution; treat it as a research prototype, not a
+> supported feature. (See `refactor.md` §8.)
+
+**Location:** `pkg/wasm/` (build tag: `wasm_experimental`)
 
 **Features:**
 - Compiles SQL (SELECT, INSERT, UPDATE, DELETE) to WASM bytecode
