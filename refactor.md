@@ -139,7 +139,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 **P1 — maintainability**
 3. Decompose `insertLocked`/`updateLocked` — dedicated reviewed pass (§2).
 4. Extract `decodeVisibleRow` + `validateRowAgainstConstraints` (§2).
-5. Delete dead `catalog.QueryCache` struct; move helpers (`isCacheableQuery`, `extractTablesFromQuery`, `queryToSQL`, `generateQueryKey`) to a non-cache package.
+5. Delete dead `catalog.QueryCache` struct; move helpers (`isCacheableQuery`, `extractTablesFromQuery`, `queryToSQL`, `generateQueryKey`) to a non-cache package [helpers extracted 2026-05-30; QueryCache marked deprecated, retained for tests].
 6. Extract shared `runStatement` (Exec/Query) + `initializeCommonComponents` (§4) [runStatement FIXED 2026-05-30].
 7. Incremental test thin-out + per-package lean-coverage floor in CI (§6).
 
