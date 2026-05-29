@@ -198,6 +198,7 @@ func (c *Catalog) applyRLSFilterInternal(ctx context.Context, tableName string, 
 }
 
 // checkRLSForInsertInternal is a lock-free version of CheckRLSForInsert.
+//
 //nolint:unused // used by coverage tests
 func (c *Catalog) checkRLSForInsertInternal(ctx context.Context, tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
 	if !c.enableRLS || c.rlsManager == nil {
@@ -212,6 +213,7 @@ func (c *Catalog) checkRLSForInsertInternal(ctx context.Context, tableName strin
 }
 
 // checkRLSForUpdateInternal is a lock-free version of CheckRLSForUpdate.
+//
 //nolint:unused // used by coverage tests
 func (c *Catalog) checkRLSForUpdateInternal(ctx context.Context, tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
 	if !c.enableRLS || c.rlsManager == nil {
@@ -226,6 +228,7 @@ func (c *Catalog) checkRLSForUpdateInternal(ctx context.Context, tableName strin
 }
 
 // checkRLSForDeleteInternal is a lock-free version of CheckRLSForDelete.
+//
 //nolint:unused // used by coverage tests
 func (c *Catalog) checkRLSForDeleteInternal(ctx context.Context, tableName string, row map[string]interface{}, user string, roles []string) (bool, error) {
 	if !c.enableRLS || c.rlsManager == nil {

@@ -265,6 +265,7 @@ func (cat *Catalog) executeCTEWindowQuery(stmt *query.SelectStmt, args []interfa
 
 	return returnColumns, projectedRows, nil
 }
+
 // window functions, and arbitrary expressions.
 func (cat *Catalog) buildSelectColumnInfo(
 	stmt *query.SelectStmt,

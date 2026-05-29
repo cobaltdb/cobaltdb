@@ -124,8 +124,8 @@ func (c *Catalog) evalWindowExprOnRow(expr query.Expression, row []interface{}, 
 }
 
 func (c *Catalog) evalWindowPartitions(rows [][]interface{}, colIdx int, we *query.WindowExpr, partitions map[string][]windowPartEntry, partitionOrder []string, selectCols []selectColInfo, table *TableDef, args []interface{}) {
-		// Process each partition
-		for _, pk := range partitionOrder {
+	// Process each partition
+	for _, pk := range partitionOrder {
 		entries := partitions[pk]
 
 		// Sort within partition by window ORDER BY
@@ -147,17 +147,17 @@ func (c *Catalog) evalWindowPartitions(rows [][]interface{}, colIdx int, we *que
 			})
 		}
 
-			// Compute window function values
-			if c.evalWindowRankFunc(rows, colIdx, entries, we, selectCols, table, args) {
-				continue
-			}
-			if c.evalWindowOffsetFunc(rows, colIdx, entries, we, selectCols, table, args) {
-				continue
-			}
-			if c.evalWindowAggFunc(rows, colIdx, entries, we, selectCols, table, args) {
-				continue
-			}
+		// Compute window function values
+		if c.evalWindowRankFunc(rows, colIdx, entries, we, selectCols, table, args) {
+			continue
 		}
+		if c.evalWindowOffsetFunc(rows, colIdx, entries, we, selectCols, table, args) {
+			continue
+		}
+		if c.evalWindowAggFunc(rows, colIdx, entries, we, selectCols, table, args) {
+			continue
+		}
+	}
 }
 
 // evalWindowRankFunc handles ROW_NUMBER, RANK, DENSE_RANK window functions.
