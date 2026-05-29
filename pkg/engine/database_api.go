@@ -243,10 +243,9 @@ func (db *DB) GetBackupManager() *backup.Manager {
 
 // Query Cache methods
 
-// GetQueryCache returns the query cache
-
+// GetQueryCache returns the catalog's query cache (nil if not enabled).
 func (db *DB) GetQueryCache() *cache.Cache {
-	return db.queryCache
+	return db.catalog.GetQueryCache()
 }
 
 // GetIndexRecommendations returns missing index suggestions based on

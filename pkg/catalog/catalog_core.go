@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"github.com/cobaltdb/cobaltdb/pkg/cache"
 	"github.com/cobaltdb/cobaltdb/pkg/fdw"
 	"github.com/cobaltdb/cobaltdb/pkg/parallel"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
@@ -330,7 +331,7 @@ type Catalog struct {
 	rlsManager           *security.Manager                     // Row-level security manager
 	enableRLS            bool                                  // Enable row-level security
 	rlsPolicies          map[string]*security.Policy           // RLS policies: key = "table:policyName"
-	queryCache           *QueryCache                           // Query result cache
+	queryCache *cache.Cache                             // Query result cache (owned by pkg/cache)
 	rlsCtx               context.Context                       // Context for RLS user/role extraction in SELECT
 	lastReturningRows    [][]interface{}                       // Last RETURNING clause results
 	lastReturningColumns []string                              // Column names for RETURNING results
@@ -426,7 +427,7 @@ func New(tree btree.TreeStore, pool *storage.BufferPool, wal *storage.WAL) *Cata
 		stats:               make(map[string]*StatsTableStats),
 		rlsPolicies:         make(map[string]*security.Policy),
 		keyCounter:          0,
-		queryCache:          NewQueryCache(0, 0), // Disabled by default - enable with EnableQueryCache()
+		queryCache:          nil, // Enabled lazily via EnableQueryCache()
 		deadTuples:          make(map[string]int64),
 		liveTuples:          make(map[string]int64),
 	}

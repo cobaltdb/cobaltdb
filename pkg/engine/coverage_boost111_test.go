@@ -153,7 +153,7 @@ func TestCreateBackup(t *testing.T) {
 
 	options := &Options{
 		CoreStorage: CoreStorage{CacheSize: 256},
-		Backup: Backup{
+		Backup: BackupConfig{
 			Dir:       filepath.Join(tempDir, "backups"),
 			Retention: 7,
 			MaxBackups: 10,
@@ -196,7 +196,7 @@ func TestListBackups(t *testing.T) {
 
 	options := &Options{
 		CoreStorage: CoreStorage{CacheSize: 256},
-		Backup: Backup{
+		Backup: BackupConfig{
 			Dir:       filepath.Join(tempDir, "backups"),
 			Retention: 7,
 		},

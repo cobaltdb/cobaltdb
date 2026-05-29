@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
-	"github.com/cobaltdb/cobaltdb/pkg/cache"
 	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 	"github.com/cobaltdb/cobaltdb/pkg/fdw"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -90,8 +89,8 @@ func (db *DB) applyReplicationSnapshot(data []byte, lsn uint64) error {
 		return fmt.Errorf("backend not initialized")
 	}
 
-	if db.queryCache != nil {
-		db.queryCache.InvalidateAll()
+	if db.catalog.GetQueryCache() != nil {
+		db.catalog.GetQueryCache().InvalidateAll()
 	}
 	if db.planCache != nil {
 		db.planCache.Clear()
@@ -222,14 +221,8 @@ func (db *DB) reloadSnapshotStateLocked() error {
 	}
 
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
-	if db.options.QueryCache.EnableQueryCache && db.queryCache == nil {
-		cacheConfig := &cache.Config{
-			MaxSize:         db.options.QueryCache.QueryCacheSize,
-			TTL:             db.options.QueryCache.QueryCacheTTL,
-			Enabled:         true,
-			CleanupInterval: 1 * time.Minute,
-		}
-		db.queryCache = cache.New(cacheConfig)
+	if db.options.QueryCache.EnableQueryCache {
+		db.catalog.EnableQueryCache(int(db.options.QueryCache.QueryCacheSize), db.options.QueryCache.QueryCacheTTL)
 	}
 
 	return nil

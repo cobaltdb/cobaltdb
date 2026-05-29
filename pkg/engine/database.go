@@ -16,7 +16,6 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/audit"
 	"github.com/cobaltdb/cobaltdb/pkg/backup"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
-	"github.com/cobaltdb/cobaltdb/pkg/cache"
 	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 	"github.com/cobaltdb/cobaltdb/pkg/fdw"
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
@@ -84,10 +83,9 @@ type DB struct {
 	shutdownOnce sync.Once
 	lastPanic    atomic.Value // stores PanicRecovery
 
-	// Query Cache
-	queryCache *cache.Cache
+	// Query Cache — owned by catalog; stats routed through db.GetQueryCacheStats
 
-	// Query Optimizer
+// Query Optimizer
 	optimizer *optimizer.Optimizer
 
 	// Replication Manager

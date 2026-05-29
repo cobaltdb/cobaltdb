@@ -25,12 +25,12 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 	defer cat.mu.RUnlock()
 
 	// Check if this query can be cached
-	if cat.queryCache != nil && cat.queryCache.enabled && isCacheableQuery(stmt) {
-		// Generate cache key from query and args
-		cacheKey := generateQueryKey(queryToSQL(stmt), args)
+	if cat.queryCache != nil && isCacheableQuery(stmt) {
+		// Generate cache key from query and args using the same logic as cache.Cache
+		sql := queryToSQL(stmt)
 
 		// Try to get from cache
-		if entry, found := cat.queryCache.Get(cacheKey); found {
+		if entry, found := cat.queryCache.Get(sql, args); found {
 			return entry.Columns, entry.Rows, nil
 		}
 
@@ -42,7 +42,7 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 
 		// Store in cache
 		tables := extractTablesFromQuery(stmt)
-		cat.queryCache.Set(cacheKey, columns, rows, tables)
+		cat.queryCache.Set(sql, args, columns, rows, tables)
 
 		return columns, rows, nil
 	}

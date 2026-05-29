@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"sort"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"github.com/cobaltdb/cobaltdb/pkg/cache"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -41,13 +43,27 @@ func (c *Catalog) IsRLSEnabled() bool {
 func (c *Catalog) EnableQueryCache(maxSize int, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.queryCache = NewQueryCache(maxSize, ttl)
+	c.queryCache = cache.New(&cache.Config{
+		MaxEntries:      maxSize,
+		MaxSize:         math.MaxInt64, // no byte-level eviction threshold for single entries
+		TTL:             ttl,
+		Enabled:         maxSize > 0,
+		CleanupInterval: 1 * time.Minute,
+	})
 }
 
 func (c *Catalog) DisableQueryCache() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.queryCache = NewQueryCache(0, 0)
+	if c.queryCache != nil {
+		c.queryCache.Close()
+	}
+	c.queryCache = nil
+}
+
+// GetQueryCache returns the catalog's query cache (nil if not enabled).
+func (c *Catalog) GetQueryCache() *cache.Cache {
+	return c.queryCache
 }
 
 func (c *Catalog) GetQueryCacheStats() (hits, misses int64, size int) {
@@ -56,12 +72,13 @@ func (c *Catalog) GetQueryCacheStats() (hits, misses int64, size int) {
 	if c.queryCache == nil {
 		return 0, 0, 0
 	}
-	return c.queryCache.Stats()
+	stats := c.queryCache.Stats()
+	return int64(stats.Hits), int64(stats.Misses), stats.EntryCount
 }
 
 func (c *Catalog) invalidateQueryCache(tableName string) {
 	if c.queryCache != nil {
-		c.queryCache.Invalidate(tableName)
+		c.queryCache.InvalidateTable(tableName)
 	}
 }
 

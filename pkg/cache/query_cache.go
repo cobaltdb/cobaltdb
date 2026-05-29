@@ -5,13 +5,12 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"hash"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 )
 
 // Entry represents a cached query result
@@ -547,7 +546,7 @@ func argToString(v interface{}) string {
 		}
 		return "false"
 	default:
-		return catalog.ValueToStringKey(val)
+		return fmt.Sprintf("%v", val)
 	}
 }
 

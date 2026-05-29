@@ -17,7 +17,7 @@ func TestCreateNewWithQueryCache(t *testing.T) {
 
 	options := &Options{
 		CoreStorage: CoreStorage{CacheSize: 256},
-		QueryCache: QueryCache{
+		QueryCache: QueryCacheConfig{
 			EnableQueryCache: true,
 			QueryCacheSize:   1024,
 			QueryCacheTTL:    5 * time.Minute,
@@ -30,7 +30,7 @@ func TestCreateNewWithQueryCache(t *testing.T) {
 	}
 	defer db.Close()
 
-	if db.queryCache == nil {
+	if db.GetQueryCache() == nil {
 		t.Error("Query cache should be initialized")
 	}
 
@@ -58,7 +58,7 @@ func TestLoadExistingWithQueryCache(t *testing.T) {
 	// Create database first
 	options := &Options{
 		CoreStorage: CoreStorage{CacheSize: 256},
-		QueryCache: QueryCache{
+		QueryCache: QueryCacheConfig{
 			EnableQueryCache: true,
 			QueryCacheSize:   1024,
 			QueryCacheTTL:    5 * time.Minute,
@@ -86,7 +86,7 @@ func TestLoadExistingWithQueryCache(t *testing.T) {
 	}
 	defer db2.Close()
 
-	if db2.queryCache == nil {
+	if db2.GetQueryCache() == nil {
 		t.Error("Query cache should be initialized after load")
 	}
 
@@ -153,7 +153,7 @@ func TestCreateNewWithReplicationSkip(t *testing.T) {
 
 	options := &Options{
 		CoreStorage: CoreStorage{CacheSize: 256},
-		Replication: Replication{
+		Replication: ReplicationConfig{
 			Role:       "master",
 			Mode:       "async",
 			ListenAddr: "127.0.0.1:0",
@@ -181,17 +181,17 @@ func TestCreateNewWithAllFeaturesSkip(t *testing.T) {
 	options := &Options{
 		CoreStorage: CoreStorage{CacheSize: 256, WALEnabled: BoolPtr(true)},
 		Security:    Security{EnableRLS: true},
-		QueryCache: QueryCache{
+		QueryCache: QueryCacheConfig{
 			EnableQueryCache: true,
 			QueryCacheSize:   1024,
 			QueryCacheTTL:    60,
 		},
-		Replication: Replication{
+		Replication: ReplicationConfig{
 			Role:       "master",
 			Mode:       "async",
 			ListenAddr: "127.0.0.1:0",
 		},
-		Backup: Backup{
+		Backup: BackupConfig{
 			Dir:              filepath.Join(tempDir, "backups"),
 			Retention:        7,
 			MaxBackups:       10,
@@ -228,12 +228,12 @@ func TestLoadExistingWithAllFeatures(t *testing.T) {
 	options := &Options{
 		CoreStorage: CoreStorage{CacheSize: 256},
 		Security:    Security{EnableRLS: true},
-		QueryCache: QueryCache{
+		QueryCache: QueryCacheConfig{
 			EnableQueryCache: true,
 			QueryCacheSize:   1024,
 			QueryCacheTTL:    60,
 		},
-		Backup: Backup{
+		Backup: BackupConfig{
 			Dir:       filepath.Join(tempDir, "backups"),
 			Retention: 7,
 			MaxBackups: 10,

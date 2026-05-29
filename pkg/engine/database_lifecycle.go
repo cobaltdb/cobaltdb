@@ -13,7 +13,6 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/audit"
 	"github.com/cobaltdb/cobaltdb/pkg/backup"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
-	"github.com/cobaltdb/cobaltdb/pkg/cache"
 	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 	"github.com/cobaltdb/cobaltdb/pkg/fdw"
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
@@ -442,13 +441,7 @@ func (db *DB) createNew() error {
 
 	// Initialize query cache if enabled
 	if db.options.QueryCache.EnableQueryCache {
-		cacheConfig := &cache.Config{
-			MaxSize:         db.options.QueryCache.QueryCacheSize,
-			TTL:             db.options.QueryCache.QueryCacheTTL,
-			Enabled:         true,
-			CleanupInterval: 1 * time.Minute,
-		}
-		db.queryCache = cache.New(cacheConfig)
+		db.catalog.EnableQueryCache(int(db.options.QueryCache.QueryCacheSize), db.options.QueryCache.QueryCacheTTL)
 	}
 
 	// Initialize query optimizer
@@ -632,13 +625,7 @@ func (db *DB) loadExisting() error {
 
 	// Initialize query cache if enabled
 	if db.options.QueryCache.EnableQueryCache {
-		cacheConfig := &cache.Config{
-			MaxSize:         db.options.QueryCache.QueryCacheSize,
-			TTL:             db.options.QueryCache.QueryCacheTTL,
-			Enabled:         true,
-			CleanupInterval: 1 * time.Minute,
-		}
-		db.queryCache = cache.New(cacheConfig)
+		db.catalog.EnableQueryCache(int(db.options.QueryCache.QueryCacheSize), db.options.QueryCache.QueryCacheTTL)
 	}
 
 	// Initialize query optimizer
