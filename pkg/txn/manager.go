@@ -458,28 +458,47 @@ func (m *Manager) checkForDeadlocks() {
 		m.activeShards[i].RUnlock()
 	}
 
-	// Build wait-for graph and detect cycles
+	// Find a cycle in the wait-for graph and break it by aborting the youngest
+	// transaction on the cycle. Only one deadlock is resolved per pass.
+	if cycle := findWaitCycle(waitingMap); len(cycle) > 0 {
+		m.resolveDeadlock(cycle, activeTxns)
+	}
+}
+
+// findWaitCycle returns the transaction IDs that form a cycle in the wait-for
+// graph (txn -> the txn it is blocked on), or nil if there is none. Only nodes
+// that lie ON the cycle are returned: transactions on a path leading INTO the
+// cycle are excluded, so resolveDeadlock always picks a victim that is actually
+// part of the deadlock. A waiting target of 0 means "not waiting" (a root).
+func findWaitCycle(waitingMap map[uint64]uint64) []uint64 {
 	visited := make(map[uint64]bool)
 	recStack := make(map[uint64]bool)
-
 	var cycle []uint64
-	var detectCycle func(uint64) bool
 
-	detectCycle = func(txnID uint64) bool {
+	var dfs func(uint64) bool
+	dfs = func(txnID uint64) bool {
 		visited[txnID] = true
 		recStack[txnID] = true
 
-		waitingFor := waitingMap[txnID]
-		if waitingFor != 0 {
+		if waitingFor := waitingMap[txnID]; waitingFor != 0 {
 			if !visited[waitingFor] {
-				if detectCycle(waitingFor) {
-					cycle = append(cycle, txnID)
+				if dfs(waitingFor) {
 					return true
 				}
 			} else if recStack[waitingFor] {
-				// Found a cycle
-				cycle = []uint64{waitingFor, txnID}
-				return true
+				// The back-edge txnID -> waitingFor closes a cycle. waitingFor is an
+				// ancestor on the current DFS path, so walking waitingMap from
+				// waitingFor reaches txnID again; those nodes are exactly the cycle.
+				cycle = cycle[:0]
+				for n, steps := waitingFor, 0; steps <= len(waitingMap); n, steps = waitingMap[n], steps+1 {
+					cycle = append(cycle, n)
+					if n == txnID {
+						return true
+					}
+				}
+				// Defensive: malformed graph; treat as no cycle found here.
+				cycle = nil
+				return false
 			}
 		}
 
@@ -487,17 +506,14 @@ func (m *Manager) checkForDeadlocks() {
 		return false
 	}
 
-	// Check for cycles starting from each transaction
-	for txnID := range activeTxns {
+	for txnID := range waitingMap {
 		if !visited[txnID] {
-			cycle = nil
-			if detectCycle(txnID) && len(cycle) > 0 {
-				// Found deadlock - abort the youngest transaction
-				m.resolveDeadlock(cycle, activeTxns)
-				return // Only resolve one deadlock at a time
+			if dfs(txnID) {
+				return cycle
 			}
 		}
 	}
+	return nil
 }
 
 // resolveDeadlock aborts the youngest transaction in the cycle

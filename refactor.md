@@ -72,9 +72,12 @@ What actually exists: the handicap report's race fix added `dataSnapshot()` (RLo
 **Fix applied:** added a `panicCapture` helper to `executor.go` that records the first worker panic and re-raises it on the calling goroutine after `wg.Wait()`, in all three functions (`ParallelSelectRows`, `ParallelGroupBy`, `ParallelAggregate`). The engine's existing query-level `recover` (`engine/database.go:522,591`) then converts it into a failed query instead of a process crash. Added `pkg/parallel/panic_propagation_test.go` proving propagation on both the parallel and serial paths.
 **Follow-up:** `WorkerPool` (pool.go) is unused — delete it, or fix its swallow if a use is planned (see §8).
 
-### 3.4 [needs-confirmation] Deadlock-detector cycle reconstruction is incomplete — `pkg/txn/manager.go:466-488`
-The DFS appends nodes only while unwinding from the detection point, so for a cycle `A→B→C→A` the collected cycle may omit interior nodes (e.g. `{A,C}` without `B`). `resolveDeadlock` then picks the "youngest" victim from an incomplete set and may abort the wrong transaction (or fail to break the cycle).
-**Fix:** reconstruct the full cycle by walking the wait-for map from the detection point back to the repeated node before choosing a victim. Add a unit test with a 3- and 4-node cycle asserting the victim is the highest-`StartTS` member.
+### 3.4 [verified — FIXED, redirected] Deadlock-detector included path-into-cycle nodes as victims — `pkg/txn/manager.go`
+**Correction to the original finding:** the claim that interior nodes are *omitted* (e.g. `{A,C}` without `B`) is **wrong** — the unwind appends actually produce `[A,C,B,A]` for `A→B→C→A`, which contains every member, so victim selection for a *pure* cycle was already correct. The **real** bug: the unwind also appends nodes on a path *leading into* the cycle. For `D→A→B→C→A`, starting DFS at the tail `D` yields `[A,C,B,A,D]`; if `D` (an innocent transaction merely blocked on a cycle member) has the highest `StartTS`, `resolveDeadlock` aborts `D` — which does **not** break the cycle and needlessly kills a transaction.
+**Fix applied:** extracted the graph algorithm into a pure, unit-testable `findWaitCycle(waitingMap)` that, on detecting a back-edge, reconstructs **only** the true cycle members (walking `waitingFor → … → txnID`) and excludes path-into-cycle nodes. `checkForDeadlocks` is now a thin wrapper. Added `pkg/txn/wait_cycle_test.go` with a deterministic 200-iteration tail-exclusion test plus an end-to-end test asserting the victim is a cycle member, not the higher-`StartTS` tail. Existing deadlock tests still pass; `-race` clean.
+
+### 3.5 [corrected] Group-commit flush window is **not** a bug — `pkg/storage/wal.go:681-733`
+The original finding recommended "snapshot-and-swap the pending slice under the lock" as the fix. That pattern is **already implemented**: `flushPendingLocked` re-acquires `groupCommitMu`, snapshots `pending := w.pendingSyncs`, swaps in an empty slice, unlocks, then signals each `done` channel (wal.go:725-732). Every `done` is appended exactly once under the lock and removed exactly once by the atomic swap, so it cannot be lost or double-signalled; `append` growth preserves all elements and happens under the lock. Concurrent flushes (batch-full trigger vs. ticker) are safe and at worst do a redundant fsync. No change needed. (The `DisableGroupCommit` defer-at-top + manual unlock/relock dance at wal.go:643-659 is correct but stylistically confusing — optional cleanup, not a bug.)
 
 ### 3.5 [needs-confirmation] Group-commit flush releases the lock mid-mutation — `pkg/storage/wal.go:681-691`
 `groupCommitAppend` appends a `done` channel to `pendingSyncs`, then unlocks `groupCommitMu` before calling `flushPendingLocked()`. There is a window where another caller can mutate/reallocate `pendingSyncs` between the unlock and the flush.
@@ -222,7 +225,7 @@ Characteristics observed in samples:
 **P0 — correctness (days)**
 1. ✅ **DONE** — Fixed double LRU `Remove` (§3.1). `CachedPage.Data()` (§3.2) re-characterized as a design task, not a one-liner — deferred.
 2. ✅ **DONE** — Parallel worker panics now isolated (§3.3). Still open: audit-write/replication-callback failures (§4).
-3. Verify & fix deadlock-detector cycle reconstruction (§3.4) and group-commit lock window (§3.5).
+3. ✅ **DONE** — Deadlock-detector now excludes path-into-cycle nodes from victim selection (§3.4, fixed + tests). Group-commit lock window (§3.5) investigated and **dismissed as a false positive** (the recommended fix already exists).
 4. ✅ **PARTIAL** — `gofmt -w` applied to the 6 source files (§10). Still open: add `gofmt`/`errcheck`-all CI gates.
 
 **P1 — maintainability (1–3 weeks)**
