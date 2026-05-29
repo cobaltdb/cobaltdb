@@ -67,6 +67,9 @@ dist/data/
 pkg/catalog/schema.json
 /certs/
 
+# Stray agent scratch dir
+.wrongstack/
+
 # Website
 website/node_modules/
 website/dist/

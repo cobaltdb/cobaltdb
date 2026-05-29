@@ -217,7 +217,7 @@ Characteristics observed in samples:
 - **Committed artifacts that should be removed / gitignored:**
   - `cobaltdb-server` (~15 MB binary) and `cobaltdb-cli` at repo root — `git rm --cached` and ignore.
   - Test-generated data: `data/`, `test.cobalt.data/`, and `pkg/engine/backups/` (reported ~18 MB).
-  - `.wrongstack/` (stray agent dir), `Dockerfile.backup` (dead duplicate).
+  - `.wrongstack/` (stray agent dir — removed). **Correction:** `Dockerfile.backup` is **not** dead — `docker-compose.yml` builds the backup service from it and `DOCKER.md`/`scripts/docker-build-test.sh` reference it; keep it.
 - **`AGENTS.md` duplicates `CLAUDE.md`** (CLAUDE.md says so) and is stale. Consolidate to one source, or generate one from the other.
 - **`go.mod` is healthy** — Go 1.25 / toolchain 1.26.3 pinned, only 6 lean direct deps.
 - Multiple large narrative docs (`README.md` ~1000 lines, `CHANGELOG.md` ~1200, `FEATURES.md`, `COBALTDB_HANDICAP_REPORT.md`) — fine, but keep a single source of truth for feature status.
