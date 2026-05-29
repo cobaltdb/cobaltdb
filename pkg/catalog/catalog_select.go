@@ -25,9 +25,9 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 	defer cat.mu.RUnlock()
 
 	// Check if this query can be cached
-	if cat.queryCache != nil && isCacheableQuery(stmt) {
+	if cat.queryCache != nil && query.IsCacheableQuery(stmt) {
 		// Generate cache key from query and args using the same logic as cache.Cache
-		sql := queryToSQL(stmt)
+		sql := query.QueryToSQL(stmt)
 
 		// Try to get from cache
 		if entry, found := cat.queryCache.Get(sql, args); found {
@@ -41,7 +41,7 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 		}
 
 		// Store in cache
-		tables := extractTablesFromQuery(stmt)
+		tables := query.ExtractTablesFromQuery(stmt)
 		cat.queryCache.Set(sql, args, columns, rows, tables)
 
 		return columns, rows, nil

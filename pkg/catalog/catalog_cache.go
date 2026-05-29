@@ -174,139 +174,31 @@ func cloneQueryCacheEntry(entry *QueryCacheEntry) *QueryCacheEntry {
 }
 
 // generateQueryKey builds a cache key from a SQL string and query arguments.
+// Deprecated: use query.GenerateQueryKey.
 func generateQueryKey(sql string, args []interface{}) string {
-	var builder strings.Builder
-	builder.Grow(len(sql) + len(args)*16)
-	builder.WriteString(sql)
-	for _, arg := range args {
-		builder.WriteByte('|')
-		fmt.Fprint(&builder, arg)
-	}
-	return builder.String()
+	return query.GenerateQueryKey(sql, args)
 }
 
 // isCacheableQuery returns true if the SELECT statement is safe to cache.
-// Queries without a FROM clause, with subqueries in SELECT, or with
-// non-deterministic functions are not cached.
+// Deprecated: use query.IsCacheableQuery.
 func isCacheableQuery(stmt *query.SelectStmt) bool {
-	if stmt.From == nil {
-		return false
-	}
-	for _, col := range stmt.Columns {
-		if containsSubquery(col) {
-			return false
-		}
-	}
-	if containsNonDeterministicFunctions(stmt) {
-		return false
-	}
-	return true
-}
-
-func containsSubquery(expr query.Expression) bool {
-	if expr == nil {
-		return false
-	}
-	switch e := expr.(type) {
-	case *query.SubqueryExpr, *query.ExistsExpr:
-		return true
-	case *query.AliasExpr:
-		return containsSubquery(e.Expr)
-	case *query.BinaryExpr:
-		return containsSubquery(e.Left) || containsSubquery(e.Right)
-	case *query.UnaryExpr:
-		return containsSubquery(e.Expr)
-	case *query.FunctionCall:
-		for _, arg := range e.Args {
-			if containsSubquery(arg) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func containsNonDeterministicFunctions(stmt *query.SelectStmt) bool {
-	for _, col := range stmt.Columns {
-		if hasNonDeterministicFunction(col) {
-			return true
-		}
-	}
-	if hasNonDeterministicFunction(stmt.Where) {
-		return true
-	}
-	for _, ob := range stmt.OrderBy {
-		if hasNonDeterministicFunction(ob.Expr) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasNonDeterministicFunction(expr query.Expression) bool {
-	if expr == nil {
-		return false
-	}
-	switch e := expr.(type) {
-	case *query.FunctionCall:
-		nonDetFuncs := []string{"RANDOM", "RAND", "NOW", "CURRENT_TIMESTAMP", "UUID", "NEWID"}
-		for _, ndf := range nonDetFuncs {
-			if strings.EqualFold(e.Name, ndf) {
-				return true
-			}
-		}
-		for _, arg := range e.Args {
-			if hasNonDeterministicFunction(arg) {
-				return true
-			}
-		}
-	case *query.AliasExpr:
-		return hasNonDeterministicFunction(e.Expr)
-	case *query.BinaryExpr:
-		return hasNonDeterministicFunction(e.Left) || hasNonDeterministicFunction(e.Right)
-	case *query.UnaryExpr:
-		return hasNonDeterministicFunction(e.Expr)
-	}
-	return false
+	return query.IsCacheableQuery(stmt)
 }
 
 // extractTablesFromQuery returns the set of table names referenced by a SELECT.
+// Deprecated: use query.ExtractTablesFromQuery.
 func extractTablesFromQuery(stmt *query.SelectStmt) []string {
-	tables := make(map[string]bool)
-	if stmt.From != nil {
-		tables[stmt.From.Name] = true
-	}
-	for _, join := range stmt.Joins {
-		if join.Table != nil {
-			tables[join.Table.Name] = true
-		}
-	}
-	result := make([]string, 0, len(tables))
-	for tbl := range tables {
-		result = append(result, tbl)
-	}
-	return result
+	return query.ExtractTablesFromQuery(stmt)
 }
 
 // queryToSQL produces a rough SQL string from a SELECT statement.
-// This is used for cache key generation and is not a full serializer.
+// Deprecated: use query.QueryToSQL.
 func queryToSQL(stmt *query.SelectStmt) string {
-	var parts []string
-	parts = append(parts, "SELECT")
-	if stmt.Distinct {
-		parts = append(parts, "DISTINCT")
-	}
-	colParts := make([]string, len(stmt.Columns))
-	for i, col := range stmt.Columns {
-		colParts[i] = exprToString(col)
-	}
-	parts = append(parts, strings.Join(colParts, ", "))
-	if stmt.From != nil {
-		parts = append(parts, "FROM", stmt.From.Name)
-	}
-	return strings.Join(parts, " ")
+	return query.QueryToSQL(stmt)
 }
 
+// exprToString is kept for backward compatibility only.
+// Deprecated: use query.ExprToString instead.
 func exprToString(expr query.Expression) string {
 	if expr == nil {
 		return ""
@@ -332,3 +224,12 @@ func exprToString(expr query.Expression) string {
 		return fmt.Sprintf("%T", expr)
 	}
 }
+
+// containsSubquery is exported for test coverage; delegates to query package.
+func containsSubquery(expr query.Expression) bool { return query.ContainsSubquery(expr) }
+
+// hasNonDeterministicFunction is exported for test coverage; delegates to query package.
+func hasNonDeterministicFunction(expr query.Expression) bool { return query.HasNonDeterministicFunction(expr) }
+
+// containsNonDeterministicFunctions is exported for test coverage; delegates to query package.
+func containsNonDeterministicFunctions(stmt *query.SelectStmt) bool { return query.ContainsNonDeterministicFunctions(stmt) }
