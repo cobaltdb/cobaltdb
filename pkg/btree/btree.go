@@ -700,12 +700,13 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 
 				wasEvicted := sh.evicted[kc]
 				delete(sh.evicted, kc)
+				var oldEntry *lruEntry
 				if oldVal, exists := sh.data[kc]; exists {
 					atomic.AddInt64(&t.memoryUsed, -int64(len(kc)+len(oldVal)))
 					if entry, ok := sh.lruMap[kc]; ok {
 						sh.lruList.Remove(entry)
-						sh.lruList.Remove(entry)
 						delete(sh.lruMap, kc)
+						oldEntry = entry
 					}
 				} else if !wasEvicted {
 					atomic.AddInt64(&t.keyCount, 1)
@@ -714,7 +715,12 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 				atomic.AddInt64(&t.memoryUsed, int64(len(kc)+len(vc)))
 				atomic.StoreInt32(&t.dirty, 1)
 
-				entry := &lruEntry{}
+				// Reuse the removed node when updating an existing key, mirroring
+				// the single-key path, to avoid an allocation per batch entry.
+				entry := oldEntry
+				if entry == nil {
+					entry = &lruEntry{}
+				}
 				entry.key = kc
 				entry.size = int64(len(kc) + len(vc))
 				entry.timestamp = lruTimestamp.Add(1)
