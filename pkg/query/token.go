@@ -5,6 +5,17 @@ import "strings"
 // TokenType represents the type of a token
 type TokenType int
 
+// isOneOf returns true if t equals any of the provided token types.
+// Useful for concise multi-token checks in parsers.
+func (t TokenType) isOneOf(ops ...TokenType) bool {
+	for _, op := range ops {
+		if t == op {
+			return true
+		}
+	}
+	return false
+}
+
 const (
 	// Special tokens
 	TokenEOF TokenType = iota

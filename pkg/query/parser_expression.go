@@ -84,40 +84,34 @@ func (p *Parser) parseExpressionWithOffset(offset int) (Expression, error) {
 	return expr, nil
 }
 
-// parseOr parses OR expressions
-func (p *Parser) parseOr() (Expression, error) {
-	left, err := p.parseAnd()
+// parseBinaryOpLevel is a generic helper for binary operator precedence levels.
+// It parses a left-hand side, then consumes operators matching any of `ops`,
+// building left-associative BinaryExpr nodes until no more operators match.
+func (p *Parser) parseBinaryOpLevel(next func() (Expression, error), ops ...TokenType) (Expression, error) {
+	left, err := next()
 	if err != nil {
 		return nil, err
 	}
-
-	for p.match(TokenOr) {
-		right, err := p.parseAnd()
+	for p.current().Type.isOneOf(ops...) {
+		op := p.current().Type
+		p.advance()
+		right, err := next()
 		if err != nil {
 			return nil, err
 		}
-		left = &BinaryExpr{Left: left, Operator: TokenOr, Right: right}
+		left = &BinaryExpr{Left: left, Operator: op, Right: right}
 	}
-
 	return left, nil
+}
+
+// parseOr parses OR expressions
+func (p *Parser) parseOr() (Expression, error) {
+	return p.parseBinaryOpLevel(p.parseAnd, TokenOr)
 }
 
 // parseAnd parses AND expressions
 func (p *Parser) parseAnd() (Expression, error) {
-	left, err := p.parseNot()
-	if err != nil {
-		return nil, err
-	}
-
-	for p.match(TokenAnd) {
-		right, err := p.parseNot()
-		if err != nil {
-			return nil, err
-		}
-		left = &BinaryExpr{Left: left, Operator: TokenAnd, Right: right}
-	}
-
-	return left, nil
+	return p.parseBinaryOpLevel(p.parseNot, TokenAnd)
 }
 
 // parseNot parses NOT expressions
@@ -254,42 +248,12 @@ func (p *Parser) parseBetweenExpr(left Expression, not bool) (Expression, error)
 
 // parseAdditive parses + and - expressions
 func (p *Parser) parseAdditive() (Expression, error) {
-	left, err := p.parseMultiplicative()
-	if err != nil {
-		return nil, err
-	}
-
-	for p.current().Type == TokenPlus || p.current().Type == TokenMinus || p.current().Type == TokenConcat {
-		op := p.current().Type
-		p.advance()
-		right, err := p.parseMultiplicative()
-		if err != nil {
-			return nil, err
-		}
-		left = &BinaryExpr{Left: left, Operator: op, Right: right}
-	}
-
-	return left, nil
+	return p.parseBinaryOpLevel(p.parseMultiplicative, TokenPlus, TokenMinus, TokenConcat)
 }
 
 // parseMultiplicative parses *, /, % expressions
 func (p *Parser) parseMultiplicative() (Expression, error) {
-	left, err := p.parseUnary()
-	if err != nil {
-		return nil, err
-	}
-
-	for p.current().Type == TokenStar || p.current().Type == TokenSlash || p.current().Type == TokenPercent {
-		op := p.current().Type
-		p.advance()
-		right, err := p.parseUnary()
-		if err != nil {
-			return nil, err
-		}
-		left = &BinaryExpr{Left: left, Operator: op, Right: right}
-	}
-
-	return left, nil
+	return p.parseBinaryOpLevel(p.parseUnary, TokenStar, TokenSlash, TokenPercent)
 }
 
 // parseUnary parses unary expressions
