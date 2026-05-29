@@ -1,12 +1,12 @@
 package catalog
 
 import (
-	"strings"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 var (

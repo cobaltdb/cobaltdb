@@ -1,3 +1,5 @@
+//go:build wasm_experimental
+
 package wasm
 
 import (

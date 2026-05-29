@@ -28,6 +28,38 @@ func chunkSize(n, workers int) int {
 	return sz
 }
 
+// panicCapture records the first panic raised by a worker goroutine so the
+// caller can re-raise it on its own goroutine. Without this, a panic inside a
+// worker goroutine (e.g. a bad row decode) is unrecoverable and crashes the
+// whole process. Re-raising on the calling goroutine lets the engine's
+// query-level recover turn it into a failed query instead.
+type panicCapture struct {
+	mu  sync.Mutex
+	val interface{}
+	set bool
+}
+
+// recoverWorker must be deferred inside each worker goroutine.
+func (pc *panicCapture) recoverWorker() {
+	if r := recover(); r != nil {
+		pc.mu.Lock()
+		if !pc.set {
+			pc.val, pc.set = r, true
+		}
+		pc.mu.Unlock()
+	}
+}
+
+// repanic re-raises a captured worker panic on the calling goroutine.
+func (pc *panicCapture) repanic() {
+	pc.mu.Lock()
+	set, val := pc.set, pc.val
+	pc.mu.Unlock()
+	if set {
+		panic(val)
+	}
+}
+
 // ParallelSelectRows splits values into chunks and processes them in parallel.
 // Results are merged in chunk order for deterministic output.
 func ParallelSelectRows(values [][]byte, workers int, threshold int, processFn func([][]byte) [][]interface{}) [][]interface{} {
@@ -42,6 +74,7 @@ func ParallelSelectRows(values [][]byte, workers int, threshold int, processFn f
 	results := make([][][]interface{}, numChunks)
 
 	var wg sync.WaitGroup
+	var pc panicCapture
 	for i := 0; i < numChunks; i++ {
 		start := i * sz
 		end := start + sz
@@ -51,10 +84,12 @@ func ParallelSelectRows(values [][]byte, workers int, threshold int, processFn f
 		wg.Add(1)
 		go func(idx, s, e int) {
 			defer wg.Done()
+			defer pc.recoverWorker()
 			results[idx] = processFn(values[s:e])
 		}(i, start, end)
 	}
 	wg.Wait()
+	pc.repanic()
 
 	// Merge in order
 	var totalLen int
@@ -82,6 +117,7 @@ func ParallelGroupBy(values [][]byte, workers int, threshold int, groupFn func([
 	localMaps := make([]map[string][][]interface{}, numChunks)
 
 	var wg sync.WaitGroup
+	var pc panicCapture
 	for i := 0; i < numChunks; i++ {
 		start := i * sz
 		end := start + sz
@@ -91,10 +127,12 @@ func ParallelGroupBy(values [][]byte, workers int, threshold int, groupFn func([
 		wg.Add(1)
 		go func(idx, s, e int) {
 			defer wg.Done()
+			defer pc.recoverWorker()
 			localMaps[idx] = groupFn(values[s:e])
 		}(i, start, end)
 	}
 	wg.Wait()
+	pc.repanic()
 
 	// Merge maps
 	merged := make(map[string][][]interface{})
@@ -120,6 +158,7 @@ func ParallelAggregate(values [][]byte, workers int, threshold int, partialFn fu
 	partials := make([][]interface{}, numChunks)
 
 	var wg sync.WaitGroup
+	var pc panicCapture
 	for i := 0; i < numChunks; i++ {
 		start := i * sz
 		end := start + sz
@@ -129,10 +168,12 @@ func ParallelAggregate(values [][]byte, workers int, threshold int, partialFn fu
 		wg.Add(1)
 		go func(idx, s, e int) {
 			defer wg.Done()
+			defer pc.recoverWorker()
 			partials[idx] = partialFn(values[s:e])
 		}(i, start, end)
 	}
 	wg.Wait()
+	pc.repanic()
 
 	// Merge partials
 	var result []interface{}

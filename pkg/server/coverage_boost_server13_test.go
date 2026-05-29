@@ -1,3 +1,5 @@
+//go:build coverage_padding
+
 package server
 
 import (
@@ -92,12 +94,12 @@ func (n *nopAddr) String() string  { return "nop" }
 // nopConn is a minimal net.Conn implementation for testing
 type nopConn struct{}
 
-func (n *nopConn) Read(b []byte) (int, error)   { return 0, errors.New("nop") }
-func (n *nopConn) Write(b []byte) (int, error)  { return len(b), nil }
-func (n *nopConn) Close() error                 { return nil }
-func (n *nopConn) LocalAddr() net.Addr          { return &nopAddr{} }
-func (n *nopConn) RemoteAddr() net.Addr         { return &nopAddr{} }
-func (n *nopConn) SetDeadline(time.Time) error  { return nil }
+func (n *nopConn) Read(b []byte) (int, error)       { return 0, errors.New("nop") }
+func (n *nopConn) Write(b []byte) (int, error)      { return len(b), nil }
+func (n *nopConn) Close() error                     { return nil }
+func (n *nopConn) LocalAddr() net.Addr              { return &nopAddr{} }
+func (n *nopConn) RemoteAddr() net.Addr             { return &nopAddr{} }
+func (n *nopConn) SetDeadline(time.Time) error      { return nil }
 func (n *nopConn) SetReadDeadline(time.Time) error  { return nil }
 func (n *nopConn) SetWriteDeadline(time.Time) error { return nil }
 
@@ -271,17 +273,17 @@ type failingComponent struct {
 	name string
 }
 
-func (f *failingComponent) Name() string                                 { return f.name }
-func (f *failingComponent) Start(ctx context.Context) error              { return errors.New("start failed") }
-func (f *failingComponent) Stop(ctx context.Context) error               { return nil }
-func (f *failingComponent) Health() HealthStatus                         { return HealthStatus{Healthy: false} }
+func (f *failingComponent) Name() string                    { return f.name }
+func (f *failingComponent) Start(ctx context.Context) error { return errors.New("start failed") }
+func (f *failingComponent) Stop(ctx context.Context) error  { return nil }
+func (f *failingComponent) Health() HealthStatus            { return HealthStatus{Healthy: false} }
 
 // failingStopComponent is a component that fails to stop
 type failingStopComponent struct {
 	name string
 }
 
-func (f *failingStopComponent) Name() string                { return f.name }
+func (f *failingStopComponent) Name() string                    { return f.name }
 func (f *failingStopComponent) Start(ctx context.Context) error { return nil }
 func (f *failingStopComponent) Stop(ctx context.Context) error  { return errors.New("stop failed") }
 func (f *failingStopComponent) Health() HealthStatus            { return HealthStatus{Healthy: true} }

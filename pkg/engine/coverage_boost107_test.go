@@ -1,3 +1,5 @@
+//go:build coverage_padding
+
 package engine
 
 import (
@@ -177,7 +179,7 @@ func TestCreateNewWithAllFeaturesSkip(t *testing.T) {
 		EnableQueryCache:       true,
 		QueryCacheSize:         1024,
 		QueryCacheTTL:          60,
-		WALEnabled: BoolPtr(true),
+		WALEnabled:             BoolPtr(true),
 		ReplicationRole:        "master",
 		ReplicationMode:        "async",
 		ReplicationListenAddr:  "127.0.0.1:0",

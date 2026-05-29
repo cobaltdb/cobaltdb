@@ -233,10 +233,10 @@ func BenchmarkCatalogSelectJoin(b *testing.B) {
 
 	// Create index on user_id for efficient hash join
 	err = cat.CreateIndex(&query.CreateIndexStmt{
-		Index: "idx_orders_user_id",
-		Table: "orders",
+		Index:   "idx_orders_user_id",
+		Table:   "orders",
 		Columns: []string{"user_id"},
-		Unique: false,
+		Unique:  false,
 	})
 	if err != nil {
 		b.Fatal(err)

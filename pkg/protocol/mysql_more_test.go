@@ -627,7 +627,7 @@ func TestLenEncIntExtended(t *testing.T) {
 
 	t.Run("Write8ByteEncoding", func(t *testing.T) {
 		val := uint64(16777216) // 2^24
-		result := appendLenEncInt(nil,val)
+		result := appendLenEncInt(nil, val)
 		expected := []byte{0xfe, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00}
 		if !bytes.Equal(result, expected) {
 			t.Errorf("appendLenEncInt(nil,%d) = %v; expected %v", val, result, expected)
@@ -636,7 +636,7 @@ func TestLenEncIntExtended(t *testing.T) {
 
 	t.Run("Write8ByteLarge", func(t *testing.T) {
 		val := uint64(0x7fffffffffffffff)
-		result := appendLenEncInt(nil,val)
+		result := appendLenEncInt(nil, val)
 		expected := []byte{0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f}
 		if !bytes.Equal(result, expected) {
 			t.Errorf("appendLenEncInt(nil,%d) = %v; expected %v", val, result, expected)
@@ -651,7 +651,7 @@ func TestLenEncIntExtended(t *testing.T) {
 		}
 
 		for _, val := range testValues {
-			written := appendLenEncInt(nil,val)
+			written := appendLenEncInt(nil, val)
 			read, length := readLenEncInt(written)
 
 			if read != val {

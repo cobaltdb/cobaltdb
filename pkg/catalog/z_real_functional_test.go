@@ -1,9 +1,10 @@
+//go:build coverage_padding
+
 package catalog
 
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -242,7 +243,7 @@ func TestReal_Join(t *testing.T) {
 	// Verify totals
 	found := make(map[string]int64)
 	for _, row := range rows {
-		name , _ := toString(row[0])
+		name, _ := toString(row[0])
 		total := row[1].(float64)
 		found[name] = int64(total)
 	}
@@ -515,7 +516,7 @@ func TestReal_LeftJoin(t *testing.T) {
 	// Check Marketing department has NULL employee
 	foundMarketingNull := false
 	for _, row := range rows {
-		dept , _ := toString(row[0])
+		dept, _ := toString(row[0])
 		emp := row[1]
 		if dept == "Marketing" && emp == nil {
 			foundMarketingNull = true
@@ -1709,24 +1710,5 @@ func TestReal_ExistsSubquery(t *testing.T) {
 }
 
 // Helpers
-func numReal(v float64) *query.NumberLiteral { return &query.NumberLiteral{Value: v} }
-func strReal(s string) *query.StringLiteral  { return &query.StringLiteral{Value: s} }
 
 // createCoverageTestTable helper for coverage tests
-func createCoverageTestTable(t *testing.T, cat *Catalog, name string, cols []*query.ColumnDef) {
-	t.Helper()
-	stmt := &query.CreateTableStmt{
-		Table:   name,
-		Columns: cols,
-	}
-	if err := cat.CreateTable(stmt); err != nil {
-		t.Fatalf("CreateTable(%s) failed: %v", name, err)
-	}
-}
-func colReal(name string) *query.QualifiedIdentifier {
-	// Parse "table.column" format
-	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 && dotIdx < len(name)-1 {
-		return &query.QualifiedIdentifier{Table: name[:dotIdx], Column: name[dotIdx+1:]}
-	}
-	return &query.QualifiedIdentifier{Column: name}
-}

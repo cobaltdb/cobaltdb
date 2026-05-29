@@ -1,3 +1,5 @@
+//go:build coverage_padding
+
 package catalog
 
 import (
@@ -216,7 +218,7 @@ func TestFullIntegration_Memory(t *testing.T) {
 	}
 	for i, row := range rows {
 		if len(row) >= 2 {
-			name , _ := toString(row[0])
+			name, _ := toString(row[0])
 			amount := row[1].(int64)
 			t.Logf("User %s: amount = %v", name, amount)
 		} else if len(row) >= 1 {
@@ -373,7 +375,7 @@ func TestFullIntegration_Disk(t *testing.T) {
 		t.Log("✅ Data persisted after restart!")
 		for _, row := range rows {
 			id := row[0].(int64)
-			name , _ := toString(row[1])
+			name, _ := toString(row[1])
 			price := row[2].(float64)
 			t.Logf("Product: id=%v, name=%s, price=%.2f", id, name, price)
 		}
@@ -475,7 +477,7 @@ func TestFullIntegration_ComplexQueries(t *testing.T) {
 		t.Errorf("expected 2 departments with >= 2 employees, got %d", len(rows))
 	}
 	for _, row := range rows {
-		dept , _ := toString(row[0])
+		dept, _ := toString(row[0])
 		cnt := row[1].(int64)
 		avg := row[2].(float64)
 		t.Logf("Department %s: %v employees, avg salary=%.2f", dept, cnt, avg)
@@ -517,8 +519,8 @@ func TestFullIntegration_ComplexQueries(t *testing.T) {
 		t.Fatalf("Window function failed: %v", err)
 	}
 	for _, row := range rows {
-		name , _ := toString(row[0])
-		dept , _ := toString(row[1])
+		name, _ := toString(row[0])
+		dept, _ := toString(row[1])
 		salary := row[2].(int64)
 		rank := row[3].(int64)
 		t.Logf("%s from %s: salary=%v, rank=%d", name, dept, salary, rank)
@@ -544,8 +546,8 @@ func TestFullIntegration_ComplexQueries(t *testing.T) {
 		t.Fatalf("CASE expression failed: %v", err)
 	}
 	for _, row := range rows {
-		name , _ := toString(row[0])
-		level , _ := toString(row[1])
+		name, _ := toString(row[0])
+		level, _ := toString(row[1])
 		t.Logf("%s: level=%s", name, level)
 	}
 

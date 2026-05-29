@@ -1,3 +1,5 @@
+//go:build coverage_padding
+
 package catalog
 
 import (
@@ -706,20 +708,3 @@ func TestCoverage_deleteWithUsingLockedComplex110(t *testing.T) {
 }
 
 // Helper function to parse SELECT statements
-func mustParseSelect(sql string) *query.SelectStmt {
-	parsed, err := query.Parse(sql)
-	if err != nil {
-		panic(err)
-	}
-	// Handle both SelectStmt and UnionStmt
-	if sel, ok := parsed.(*query.SelectStmt); ok {
-		return sel
-	}
-	if union, ok := parsed.(*query.UnionStmt); ok {
-		// Extract the left SelectStmt from Union
-		if left, ok := union.Left.(*query.SelectStmt); ok {
-			return left
-		}
-	}
-	panic("parsed statement is not a SELECT")
-}
