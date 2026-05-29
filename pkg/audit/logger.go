@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
@@ -137,6 +138,12 @@ type Logger struct {
 	cipher    cipher.AEAD // optional encryption for log entries
 	lastHash  string      // hash chain anchor for tamper-evident audit logs
 	lastErr   error
+
+	// failedWrites counts audit events that could not be durably written
+	// (write or sync error). Audit logging is fire-and-forget, so this counter
+	// is the programmatic signal operators should alert on — a non-zero,
+	// growing value means audit records are being lost. Accessed atomically.
+	failedWrites int64
 }
 
 // New creates a new audit logger
@@ -310,8 +317,11 @@ func (al *Logger) Log(eventType EventType, user, action string, opts ...LogOptio
 			writeErr = fmt.Errorf("failed to sync audit log: %w", err)
 		}
 		al.lastErr = writeErr
-		if writeErr != nil && al.logger != nil {
-			al.logger.Errorf("Failed to write audit event (sync fallback): %v", writeErr)
+		if writeErr != nil {
+			atomic.AddInt64(&al.failedWrites, 1)
+			if al.logger != nil {
+				al.logger.Errorf("Failed to write audit event (sync fallback): %v", writeErr)
+			}
 		}
 		al.mu.Unlock()
 	}
@@ -358,6 +368,12 @@ func (al *Logger) flushBatch(events []*Event) {
 	defer al.mu.Unlock()
 
 	if al.file == nil {
+		// No open file — the whole batch is lost. Count it instead of dropping
+		// silently so operators can detect the condition.
+		if len(events) > 0 {
+			atomic.AddInt64(&al.failedWrites, int64(len(events)))
+			al.lastErr = errors.New("audit log file is not open")
+		}
 		return
 	}
 
@@ -365,6 +381,7 @@ func (al *Logger) flushBatch(events []*Event) {
 	for _, event := range events {
 		if err := al.writeEvent(event); err != nil {
 			flushErr = errors.Join(flushErr, fmt.Errorf("failed to write audit event: %w", err))
+			atomic.AddInt64(&al.failedWrites, 1)
 			if al.logger != nil {
 				al.logger.Errorf("Failed to write audit event: %v", err)
 			}
@@ -372,7 +389,9 @@ func (al *Logger) flushBatch(events []*Event) {
 	}
 
 	if err := al.file.Sync(); err != nil {
+		// A failed sync means the whole batch may not be durable.
 		flushErr = errors.Join(flushErr, fmt.Errorf("failed to sync audit log: %w", err))
+		atomic.AddInt64(&al.failedWrites, int64(len(events)))
 		if al.logger != nil {
 			al.logger.Errorf("Failed to sync audit log: %v", err)
 		}
@@ -384,6 +403,14 @@ func (al *Logger) LastWriteError() error {
 	al.mu.Lock()
 	defer al.mu.Unlock()
 	return al.lastErr
+}
+
+// FailedWriteCount returns the number of audit events that could not be durably
+// written or synced since the logger was created. Audit logging is
+// fire-and-forget, so a non-zero (and especially a growing) value is the signal
+// to alert on: audit records are being dropped. Safe for concurrent use.
+func (al *Logger) FailedWriteCount() int64 {
+	return atomic.LoadInt64(&al.failedWrites)
 }
 
 func (al *Logger) writeEvent(event *Event) error {
