@@ -1,6 +1,6 @@
 # CobaltDB Refactoring & Improvement Report — Remaining Work
 
-**Updated:** 2026-05-29
+**Updated:** 2026-05-30
 **Scope:** Full-repository review of `github.com/cobaltdb/cobaltdb`. This document now tracks only the **open** items. Completed work has been merged to `main` and removed from here.
 
 Tags: **[verified]** = read the code and confirmed · **[needs-confirmation]** = static-review lead, confirm before fixing · **[policy]** = needs a product decision, not a mechanical fix.
@@ -145,6 +145,6 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 
 **P2 — structure & polish**
 8. Expression visitor + precedence-parser dedup; AST consistency (§3).
-9. Group the 50-field `Options` struct (§4); harden or scope webui.
+9. Group the 50-field `Options` struct (§4) [FIXED 2026-05-29]; harden or scope webui.
 10. Cache size accounting; fdw pushdown/charset; deferred unlock in `Acquire` (§5).
 11. Audit retry/fail-secure decision (§1.7).
