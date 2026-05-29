@@ -1,4 +1,4 @@
-.PHONY: build test clean install test-coverage bench lint staticcheck fmt deps run-server run-cli docker-build docker-run race vuln gosec verify verify-security all
+.PHONY: build test clean install test-coverage bench lint staticcheck fmt fmt-check deps run-server run-cli docker-build docker-run race vuln gosec verify verify-security all
 
 BINARY_SERVER=cobaltdb-server
 BINARY_CLI=cobaltdb-cli
@@ -68,6 +68,17 @@ fmt:
 	@go fmt ./...
 	@echo "Format complete!"
 
+fmt-check:
+	@echo "Checking gofmt..."
+	@unformatted="$$(gofmt -l ./pkg ./cmd ./sdk ./integration ./test 2>/dev/null)"; \
+	if [ -n "$$unformatted" ]; then \
+		echo "The following files are not gofmt-clean:"; \
+		echo "$$unformatted"; \
+		echo "Run 'make fmt' to fix."; \
+		exit 1; \
+	fi
+	@echo "gofmt clean."
+
 deps:
 	@echo "Downloading dependencies..."
 	@go mod download
@@ -76,6 +87,7 @@ deps:
 
 verify:
 	@echo "Running core verification..."
+	@$(MAKE) fmt-check
 	@go build ./...
 	@go vet ./...
 	@go test ./...

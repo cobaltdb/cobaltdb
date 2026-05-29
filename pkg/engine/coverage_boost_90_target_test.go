@@ -710,9 +710,9 @@ func TestLoadExistingReopen90(t *testing.T) {
 
 	// Create and populate with slow query log defaults
 	db, err := Open(dbPath, &Options{
-		EnableSlowQueryLog:     true,
-		SlowQueryThreshold:     0,
-		SlowQueryMaxEntries:    0,
+		EnableSlowQueryLog:  true,
+		SlowQueryThreshold:  0,
+		SlowQueryMaxEntries: 0,
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -906,7 +906,7 @@ func TestExecuteWithCancelledContext90(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = db.execute(ctx, &query.InsertStmt{Table: "test", Columns: []string{"id"}, Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}}},}, nil)
+	_, err = db.execute(ctx, &query.InsertStmt{Table: "test", Columns: []string{"id"}, Values: [][]query.Expression{{&query.NumberLiteral{Value: 1}}}}, nil)
 	if err == nil {
 		t.Error("Expected error for cancelled context in execute")
 	}
@@ -1431,4 +1431,3 @@ func TestHealthCheckNilCatalogBackend90(t *testing.T) {
 	db2.backend = oldBackend
 	db2.Close()
 }
-

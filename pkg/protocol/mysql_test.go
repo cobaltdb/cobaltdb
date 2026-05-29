@@ -81,7 +81,7 @@ func TestWriteLenEncInt(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		result := appendLenEncInt(nil,test.value)
+		result := appendLenEncInt(nil, test.value)
 		if len(result) != len(test.expected) {
 			t.Errorf("appendLenEncInt(nil,%d) length = %d; expected %d",
 				test.value, len(result), len(test.expected))

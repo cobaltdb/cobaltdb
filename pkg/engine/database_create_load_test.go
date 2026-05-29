@@ -28,7 +28,7 @@ func TestCreateNewDatabase(t *testing.T) {
 			name:   "create_with_wal",
 			dbName: "wal.db",
 			options: &Options{
-		WALEnabled: BoolPtr(true),
+				WALEnabled: BoolPtr(true),
 			},
 			wantErr: false,
 		},
@@ -61,7 +61,7 @@ func TestCreateNewDatabase(t *testing.T) {
 			name:   "create_all_features",
 			dbName: "all.db",
 			options: &Options{
-				WALEnabled: BoolPtr(true),
+				WALEnabled:       BoolPtr(true),
 				EnableRLS:        true,
 				EnableQueryCache: true,
 				EncryptionKey:    []byte("0123456789abcdef0123456789abcdef"),
@@ -188,7 +188,7 @@ func TestCreateNewWithSyncModes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dbPath := filepath.Join(tempDir, tt.name+".db")
 			opts := &Options{
-		WALEnabled: BoolPtr(true),
+				WALEnabled: BoolPtr(true),
 				SyncMode:   tt.syncMode,
 			}
 

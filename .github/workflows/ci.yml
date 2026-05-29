@@ -21,6 +21,17 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      - name: gofmt check
+        run: |
+          unformatted="$(gofmt -l ./pkg ./cmd ./sdk ./integration ./test)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-clean:"
+            echo "$unformatted"
+            echo "Run 'make fmt' to fix."
+            exit 1
+          fi
+          echo "gofmt clean."
+
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 

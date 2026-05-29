@@ -331,7 +331,7 @@ func TestCreateNewWithAllOptions2(t *testing.T) {
 	backupDir := filepath.Join(dir, "backups")
 
 	options := &Options{
-		WALEnabled: BoolPtr(true),
+		WALEnabled:          BoolPtr(true),
 		EnableRLS:           true,
 		EnableQueryCache:    true,
 		QueryCacheSize:      1024,
@@ -375,7 +375,7 @@ func TestLoadExistingWithAllOptions2(t *testing.T) {
 
 	// Reopen with options
 	db2, err := Open(dbPath, &Options{
-		WALEnabled: BoolPtr(true),
+		WALEnabled:       BoolPtr(true),
 		EnableRLS:        true,
 		EnableQueryCache: true,
 		QueryCacheSize:   1024,

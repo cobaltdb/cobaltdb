@@ -242,7 +242,7 @@ func TestReal_Join(t *testing.T) {
 	// Verify totals
 	found := make(map[string]int64)
 	for _, row := range rows {
-		name , _ := toString(row[0])
+		name, _ := toString(row[0])
 		total := row[1].(float64)
 		found[name] = int64(total)
 	}
@@ -515,7 +515,7 @@ func TestReal_LeftJoin(t *testing.T) {
 	// Check Marketing department has NULL employee
 	foundMarketingNull := false
 	for _, row := range rows {
-		dept , _ := toString(row[0])
+		dept, _ := toString(row[0])
 		emp := row[1]
 		if dept == "Marketing" && emp == nil {
 			foundMarketingNull = true
