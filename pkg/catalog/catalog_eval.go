@@ -13,6 +13,92 @@ import (
 
 const maxStringResultLen = 10 * 1024 * 1024 // 10 MB cap for string functions
 
+// functionHandler is a helper type for function dispatch
+type functionHandler func(args []interface{}) (interface{}, error)
+
+// functionDispatchMap maps function names to their handlers.
+// This replaces the large switch statement in evaluateFunctionCall.
+// Handlers return (value, error). The map covers scalar functions;
+// aggregate, special-syntax, and fallthrough functions remain in the switch.
+var scalarFunctionHandlers = map[string]functionHandler{
+	"NULLIF": func(args []interface{}) (interface{}, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("NULLIF requires 2 arguments")
+		}
+		if args[0] == nil || args[1] == nil {
+			return args[0], nil
+		}
+		if compareValues(args[0], args[1]) == 0 {
+			return nil, nil
+		}
+		return args[0], nil
+	},
+	"ZEROBLOB": func(args []interface{}) (interface{}, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("ZEROBLOB requires 1 argument")
+		}
+		n, _ := toFloat64(args[0])
+		size := int(n)
+		if size <= 0 {
+			return "", nil
+		}
+		if size > maxStringResultLen {
+			return nil, fmt.Errorf("ZEROBLOB size exceeds maximum allowed size (%d bytes)", maxStringResultLen)
+		}
+		return strings.Repeat("\x00", size), nil
+	},
+	"RANDOM": func(args []interface{}) (interface{}, error) {
+		// Use crypto/rand for cryptographic randomness
+		n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 63))
+		if err != nil {
+			return float64(0), nil
+		}
+		return float64(n.Int64()), nil
+	},
+	"IIF": func(args []interface{}) (interface{}, error) {
+		if len(args) < 3 {
+			return nil, fmt.Errorf("IIF requires 3 arguments")
+		}
+		cond := args[0]
+		truthy := false
+		if b, ok := cond.(bool); ok {
+			truthy = b
+		} else if f, ok := toFloat64(cond); ok {
+			truthy = f != 0
+		} else if cond != nil {
+			truthy = true
+		}
+		if truthy {
+			return args[1], nil
+		}
+		return args[2], nil
+	},
+	"TYPEOF": func(args []interface{}) (interface{}, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("TYPEOF requires 1 argument")
+		}
+		if args[0] == nil {
+			return "null", nil
+		}
+		switch args[0].(type) {
+		case int, int64:
+			return "integer", nil
+		case float64:
+			f := args[0].(float64)
+			if f == float64(int64(f)) {
+				return "integer", nil
+			}
+			return "real", nil
+		case string:
+			return "text", nil
+		case bool:
+			return "integer", nil
+		default:
+			return "text", nil
+		}
+	},
+}
+
 // EvalContext bundles common parameters for expression evaluation
 // This reduces parameter count and makes the API cleaner
 type EvalContext struct {
@@ -629,22 +715,15 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 		return val, err
 	}
 
+	// Try dispatch map for scalar functions that moved out of the switch
+	if handler, ok := scalarFunctionHandlers[funcName]; ok {
+		return handler(evalArgs)
+	}
+
 	switch funcName {
 	case "COALESCE", "IFNULL":
 		// Handled above with short-circuit evaluation
 		return nil, nil
-
-	case "NULLIF":
-		if len(evalArgs) < 2 {
-			return nil, fmt.Errorf("NULLIF requires 2 arguments")
-		}
-		if evalArgs[0] == nil || evalArgs[1] == nil {
-			return evalArgs[0], nil
-		}
-		if compareValues(evalArgs[0], evalArgs[1]) == 0 {
-			return nil, nil
-		}
-		return evalArgs[0], nil
 
 	case "DATE", "TIME", "DATETIME":
 		// Simple date/time functions - return current time for now
@@ -675,70 +754,6 @@ func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, ex
 			return ValueToStringKey(evalArgs[0]), nil
 		}
 		return nil, nil
-
-	case "TYPEOF":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("TYPEOF requires 1 argument")
-		}
-		if evalArgs[0] == nil {
-			return "null", nil
-		}
-		switch evalArgs[0].(type) {
-		case int, int64:
-			return "integer", nil
-		case float64:
-			f := evalArgs[0].(float64)
-			if f == float64(int64(f)) {
-				return "integer", nil
-			}
-			return "real", nil
-		case string:
-			return "text", nil
-		case bool:
-			return "integer", nil
-		default:
-			return "text", nil
-		}
-
-	case "IIF":
-		if len(evalArgs) < 3 {
-			return nil, fmt.Errorf("IIF requires 3 arguments")
-		}
-		cond := evalArgs[0]
-		truthy := false
-		if b, ok := cond.(bool); ok {
-			truthy = b
-		} else if f, ok := toFloat64(cond); ok {
-			truthy = f != 0
-		} else if cond != nil {
-			truthy = true
-		}
-		if truthy {
-			return evalArgs[1], nil
-		}
-		return evalArgs[2], nil
-
-	case "RANDOM":
-		// Use crypto/rand for cryptographic randomness
-		n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 63))
-		if err != nil {
-			return float64(0), nil // fallback on error
-		}
-		return float64(n.Int64()), nil
-
-	case "ZEROBLOB":
-		if len(evalArgs) < 1 {
-			return nil, fmt.Errorf("ZEROBLOB requires 1 argument")
-		}
-		n, _ := toFloat64(evalArgs[0])
-		size := int(n)
-		if size <= 0 {
-			return "", nil
-		}
-		if size > maxStringResultLen {
-			return nil, fmt.Errorf("ZEROBLOB size exceeds maximum allowed size (%d bytes)", maxStringResultLen)
-		}
-		return strings.Repeat("\x00", size), nil
 
 	default:
 		// Check for JSON functions

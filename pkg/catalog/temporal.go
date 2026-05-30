@@ -225,6 +225,20 @@ func decodeVersionedRow(data []byte, numCols int) (VersionedRow, error) {
 	return vrow, nil
 }
 
+// decodeVisibleRow decodes a versioned row and checks visibility at the given timestamp.
+// Returns the row data if visible, or (nil, false, nil) if not visible.
+// This consolidates the common pattern of decodeVersionedRow + isVisibleAt into one call.
+func decodeVisibleRow(data []byte, numCols int, queryTime time.Time) ([]interface{}, bool, error) {
+	vrow, err := decodeVersionedRow(data, numCols)
+	if err != nil {
+		return nil, false, err
+	}
+	if !vrow.Version.isVisibleAt(queryTime) {
+		return nil, false, nil
+	}
+	return vrow.Data, true, nil
+}
+
 // decodeVersionedRowFast is a zero-reflection decoder for VersionedRow JSON.
 // It parses the known format directly using byte scanning, avoiding
 // json.Unmarshal overhead (reflection, map allocation, etc.).

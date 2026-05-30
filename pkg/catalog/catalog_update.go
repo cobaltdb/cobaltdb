@@ -265,9 +265,27 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 		}
 	}
 
-	// Check UNIQUE constraints before updating
+	// Check all constraints before applying the update
+	if err := c.checkConstraintsForUpdate(table, tree, key, row, updatedRow, snap, ts, args); err != nil {
+		return err
+	}
+
+	*entries = append(*entries, updateEntry{
+		key:      key,
+		oldRow:   row,
+		newRow:   updatedRow,
+		treeName: treeName,
+	})
+	*rowsAffected++
+	return nil
+}
+
+// checkConstraintsForUpdate validates UNIQUE, NOT NULL, CHECK, and FK constraints
+// for a row update. Returns nil on success, or a descriptive error on constraint failure.
+func (c *Catalog) checkConstraintsForUpdate(table *TableDef, tree btree.TreeStore, key []byte, oldRow, newRow []interface{}, snap *updateSnapshot, ts *catalogTxnState, args []interface{}) error {
+	// Check UNIQUE constraints on table columns
 	for i, col := range table.Columns {
-		if col.Unique && updatedRow[i] != nil {
+		if col.Unique && newRow[i] != nil {
 			checkIter, scanErr := tree.Scan(nil, nil)
 			if scanErr != nil {
 				return fmt.Errorf("failed to scan table for UNIQUE check: %w", scanErr)
@@ -288,7 +306,7 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 					return fmt.Errorf("failed to decode row during UNIQUE check on table %s: %w", table.Name, err)
 				}
 				existingRow := vrow.Data
-				if len(existingRow) > i && compareValues(updatedRow[i], existingRow[i]) == 0 {
+				if len(existingRow) > i && compareValues(newRow[i], existingRow[i]) == 0 {
 					duplicate = true
 					break
 				}
@@ -300,16 +318,16 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 		}
 	}
 
-	// Check UNIQUE INDEX constraints before updating (snapshot version)
+	// Check UNIQUE INDEX constraints using the snapshot index list
 	for _, idx := range snap.indexes {
 		if !idx.def.Unique || len(idx.def.Columns) == 0 {
 			continue
 		}
-		newIdxKey, newOk := buildCompositeIndexKey(table, idx.def, updatedRow)
+		newIdxKey, newOk := buildCompositeIndexKey(table, idx.def, newRow)
 		if !newOk {
 			continue
 		}
-		oldIdxKey, _ := buildCompositeIndexKey(table, idx.def, row)
+		oldIdxKey, _ := buildCompositeIndexKey(table, idx.def, oldRow)
 		if newIdxKey == oldIdxKey {
 			continue
 		}
@@ -320,17 +338,17 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 		}
 	}
 
-	// Check NOT NULL constraints before updating
+	// Check NOT NULL constraints
 	for i, col := range table.Columns {
-		if col.NotNull && i < len(updatedRow) && updatedRow[i] == nil {
+		if col.NotNull && i < len(newRow) && newRow[i] == nil {
 			return fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
 		}
 	}
 
-	// Check CHECK constraints before updating
+	// Check CHECK constraints
 	for _, col := range table.Columns {
 		if col.Check != nil {
-			result, err := evaluateExpression(c, updatedRow, table.Columns, col.Check, args)
+			result, err := evaluateExpression(c, newRow, table.Columns, col.Check, args)
 			if err != nil {
 				return fmt.Errorf("CHECK constraint failed: %w", err)
 			}
@@ -342,18 +360,18 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 		}
 	}
 
-	// Check FOREIGN KEY constraints on updated columns (snapshot version)
+	// Check FOREIGN KEY constraints using the snapshot FK references
 	for _, fk := range table.ForeignKeys {
 		for i, colName := range fk.Columns {
 			colIdx := table.GetColumnIndex(colName)
-			if colIdx < 0 || colIdx >= len(updatedRow) {
+			if colIdx < 0 || colIdx >= len(newRow) {
 				continue
 			}
-			fkValue := updatedRow[colIdx]
+			fkValue := newRow[colIdx]
 			if fkValue == nil {
 				continue
 			}
-			if colIdx < len(row) && compareValues(fkValue, row[colIdx]) == 0 {
+			if colIdx < len(oldRow) && compareValues(fkValue, oldRow[colIdx]) == 0 {
 				continue
 			}
 			refSnap, ok := snap.fkRefs[fk.ReferencedTable]
@@ -413,13 +431,6 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 		}
 	}
 
-	*entries = append(*entries, updateEntry{
-		key:      key,
-		oldRow:   row,
-		newRow:   updatedRow,
-		treeName: treeName,
-	})
-	*rowsAffected++
 	return nil
 }
 

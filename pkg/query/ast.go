@@ -21,6 +21,240 @@ type Expression interface {
 	Node
 	expressionNode()
 	Evaluate(Evaluator) (interface{}, error)
+	// AcceptVisitor dispatches to the appropriate visitor method
+	AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{}
+}
+
+// ExpressionVisitor defines the visitor pattern interface for traversing Expression AST nodes.
+// Each method corresponds to an expression type. Return value allows visitors to short-circuit
+// or transform the AST during traversal.
+type ExpressionVisitor interface {
+	// Visit methods return the modified expression (for transforms) or the original (for traversal).
+	// To skip children, return nil. To continue traversal, return the expression unchanged.
+	VisitBinaryExpr(expr *BinaryExpr, ctx interface{}) interface{}
+	VisitUnaryExpr(expr *UnaryExpr, ctx interface{}) interface{}
+	VisitFunctionCall(expr *FunctionCall, ctx interface{}) interface{}
+	VisitIdentifier(expr *Identifier, ctx interface{}) interface{}
+	VisitQualifiedIdentifier(expr *QualifiedIdentifier, ctx interface{}) interface{}
+	VisitColumnRef(expr *ColumnRef, ctx interface{}) interface{}
+	VisitStringLiteral(expr *StringLiteral, ctx interface{}) interface{}
+	VisitNumberLiteral(expr *NumberLiteral, ctx interface{}) interface{}
+	VisitBooleanLiteral(expr *BooleanLiteral, ctx interface{}) interface{}
+	VisitNullLiteral(expr *NullLiteral, ctx interface{}) interface{}
+	VisitVectorLiteral(expr *VectorLiteral, ctx interface{}) interface{}
+	VisitPlaceholder(expr *PlaceholderExpr, ctx interface{}) interface{}
+	VisitInExpr(expr *InExpr, ctx interface{}) interface{}
+	VisitBetweenExpr(expr *BetweenExpr, ctx interface{}) interface{}
+	VisitLikeExpr(expr *LikeExpr, ctx interface{}) interface{}
+	VisitIsNullExpr(expr *IsNullExpr, ctx interface{}) interface{}
+	VisitCastExpr(expr *CastExpr, ctx interface{}) interface{}
+	VisitCaseExpr(expr *CaseExpr, ctx interface{}) interface{}
+	VisitSubqueryExpr(expr *SubqueryExpr, ctx interface{}) interface{}
+	VisitExistsExpr(expr *ExistsExpr, ctx interface{}) interface{}
+	VisitStarExpr(expr *StarExpr, ctx interface{}) interface{}
+	VisitJSONPathExpr(expr *JSONPathExpr, ctx interface{}) interface{}
+	VisitJSONContainsExpr(expr *JSONContainsExpr, ctx interface{}) interface{}
+	VisitAliasExpr(expr *AliasExpr, ctx interface{}) interface{}
+	VisitMatchExpr(expr *MatchExpr, ctx interface{}) interface{}
+	VisitWindowExpr(expr *WindowExpr, ctx interface{}) interface{}
+	VisitWindowSpec(expr *WindowSpec, ctx interface{}) interface{}
+}
+
+// Walk traverses an Expression AST, calling the appropriate visitor method for each node.
+// The ctx parameter is passed through to visitor methods and can carry state.
+// If a visitor method returns a non-nil expression, Walk uses it instead of the original
+// (enabling in-place transformations). If a visitor method returns nil, children are skipped.
+func Walk(expr Expression, v ExpressionVisitor, ctx interface{}) {
+	if expr == nil {
+		return
+	}
+	result := expr.AcceptVisitor(v, ctx)
+	if result == nil {
+		return // visitor chose to skip children
+	}
+	walkChildren(result, v, ctx)
+}
+
+// walkChildren recursively walks the children of a visited expression node.
+// This is called after AcceptVisitor; the returned expression may be transformed.
+func walkChildren(expr interface{}, v ExpressionVisitor, ctx interface{}) {
+	switch e := expr.(type) {
+	case *BinaryExpr:
+		Walk(e.Left, v, ctx)
+		Walk(e.Right, v, ctx)
+	case *UnaryExpr:
+		Walk(e.Expr, v, ctx)
+	case *FunctionCall:
+		for _, arg := range e.Args {
+			Walk(arg, v, ctx)
+		}
+	case *InExpr:
+		Walk(e.Expr, v, ctx)
+		if e.Subquery == nil {
+			for _, item := range e.List {
+				Walk(item, v, ctx)
+			}
+		}
+	case *BetweenExpr:
+		Walk(e.Expr, v, ctx)
+		Walk(e.Lower, v, ctx)
+		Walk(e.Upper, v, ctx)
+	case *LikeExpr:
+		Walk(e.Expr, v, ctx)
+		Walk(e.Pattern, v, ctx)
+		if e.Escape != nil {
+			Walk(e.Escape, v, ctx)
+		}
+	case *IsNullExpr:
+		Walk(e.Expr, v, ctx)
+	case *CastExpr:
+		Walk(e.Expr, v, ctx)
+	case *CaseExpr:
+		if e.Expr != nil {
+			Walk(e.Expr, v, ctx)
+		}
+		for _, w := range e.Whens {
+			Walk(w.Condition, v, ctx)
+			Walk(w.Result, v, ctx)
+		}
+		if e.Else != nil {
+			Walk(e.Else, v, ctx)
+		}
+	case *SubqueryExpr:
+		if e.Query != nil {
+			WalkSelectStmt(e.Query, v, ctx)
+		}
+	case *ExistsExpr:
+		if e.Subquery != nil {
+			WalkSelectStmt(e.Subquery, v, ctx)
+		}
+	case *AliasExpr:
+		Walk(e.Expr, v, ctx)
+	case *JSONPathExpr:
+		Walk(e.Column, v, ctx)
+	case *JSONContainsExpr:
+		Walk(e.Column, v, ctx)
+		Walk(e.Value, v, ctx)
+	case *MatchExpr:
+		for _, col := range e.Columns {
+			Walk(col, v, ctx)
+		}
+		Walk(e.Pattern, v, ctx)
+	}
+}
+
+// WalkSelectStmt walks all expressions in a SELECT statement.
+func WalkSelectStmt(stmt *SelectStmt, v ExpressionVisitor, ctx interface{}) {
+	if stmt == nil {
+		return
+	}
+	for _, col := range stmt.Columns {
+		Walk(col, v, ctx)
+	}
+	for _, j := range stmt.Joins {
+		Walk(j.Condition, v, ctx)
+	}
+	if stmt.Where != nil {
+		Walk(stmt.Where, v, ctx)
+	}
+	for _, gb := range stmt.GroupBy {
+		Walk(gb, v, ctx)
+	}
+	if stmt.Having != nil {
+		Walk(stmt.Having, v, ctx)
+	}
+	for _, ob := range stmt.OrderBy {
+		Walk(ob.Expr, v, ctx)
+	}
+	if stmt.Limit != nil {
+		Walk(stmt.Limit, v, ctx)
+	}
+	if stmt.Offset != nil {
+		Walk(stmt.Offset, v, ctx)
+	}
+}
+
+// AcceptVisitor implementations for all Expression types
+func (e *BinaryExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitBinaryExpr(e, ctx)
+}
+func (e *UnaryExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitUnaryExpr(e, ctx)
+}
+func (e *FunctionCall) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitFunctionCall(e, ctx)
+}
+func (e *Identifier) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitIdentifier(e, ctx)
+}
+func (e *QualifiedIdentifier) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitQualifiedIdentifier(e, ctx)
+}
+func (e *ColumnRef) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitColumnRef(e, ctx)
+}
+func (e *StringLiteral) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitStringLiteral(e, ctx)
+}
+func (e *NumberLiteral) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitNumberLiteral(e, ctx)
+}
+func (e *BooleanLiteral) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitBooleanLiteral(e, ctx)
+}
+func (e *NullLiteral) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitNullLiteral(e, ctx)
+}
+func (e *VectorLiteral) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitVectorLiteral(e, ctx)
+}
+func (e *PlaceholderExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitPlaceholder(e, ctx)
+}
+func (e *InExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitInExpr(e, ctx)
+}
+func (e *BetweenExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitBetweenExpr(e, ctx)
+}
+func (e *LikeExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitLikeExpr(e, ctx)
+}
+func (e *IsNullExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitIsNullExpr(e, ctx)
+}
+func (e *CastExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitCastExpr(e, ctx)
+}
+func (e *CaseExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitCaseExpr(e, ctx)
+}
+func (e *SubqueryExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitSubqueryExpr(e, ctx)
+}
+func (e *ExistsExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitExistsExpr(e, ctx)
+}
+func (e *StarExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitStarExpr(e, ctx)
+}
+func (e *JSONPathExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitJSONPathExpr(e, ctx)
+}
+func (e *JSONContainsExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitJSONContainsExpr(e, ctx)
+}
+func (e *AliasExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitAliasExpr(e, ctx)
+}
+func (e *MatchExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitMatchExpr(e, ctx)
+}
+func (e *WindowExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitWindowExpr(e, ctx)
+}
+func (e *WindowSpec) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitWindowSpec(e, ctx)
 }
 
 // Evaluator is implemented by the catalog to evaluate expression AST nodes.

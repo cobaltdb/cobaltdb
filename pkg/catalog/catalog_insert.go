@@ -387,7 +387,7 @@ func (c *Catalog) validateInsertRowSnapshot(table *TableDef, tree btree.TreeStor
 	if skipRow {
 		return key, true, nil
 	}
-	if err := c.checkInsertConstraints(table, rowValues, args); err != nil {
+	if err := c.checkInsertConstraints(table, rowValues, nil); err != nil {
 		return key, false, err
 	}
 	if err := c.checkForeignKeyConstraintsSnapshot(table, rowValues, ts, fkRefs); err != nil {
@@ -982,26 +982,40 @@ func (c *Catalog) validateInsertRow(table *TableDef, tree btree.TreeStore, stmt 
 		key = compositeKey
 	}
 
-	// Check UNIQUE constraints
-	skipRow, err := c.checkUniqueConstraints(tree, table, stmt, rowValues, ts)
-	if err != nil {
+	// Check constraints using the consolidated helper
+	if err, skip := c.checkConstraintsForInsert(table, tree, stmt, rowValues, ts); err != nil {
 		return key, false, err
-	}
-	if skipRow {
+	} else if skip {
 		return key, true, nil
 	}
 
+	return key, false, nil
+}
+
+// checkConstraintsForInsert validates UNIQUE, CHECK, and FK constraints for INSERT.
+// Uses the lock-based catalog access (table/index lookups require cat.mu).
+// Returns (nil, true) when a UNIQUE conflict should cause the row to be skipped.
+func (c *Catalog) checkConstraintsForInsert(table *TableDef, tree btree.TreeStore, stmt *query.InsertStmt, rowValues []interface{}, ts *catalogTxnState) (error, bool) {
+	// Check UNIQUE constraints
+	skipRow, err := c.checkUniqueConstraints(tree, table, stmt, rowValues, ts)
+	if err != nil {
+		return err, false
+	}
+	if skipRow {
+		return nil, true // conflict: row should be skipped
+	}
+
 	// Check CHECK constraints
-	if err := c.checkInsertConstraints(table, rowValues, args); err != nil {
-		return key, false, err
+	if err := c.checkInsertConstraints(table, rowValues, nil); err != nil {
+		return err, false
 	}
 
 	// Check FOREIGN KEY constraints
 	if err := c.checkForeignKeyConstraints(table, rowValues, ts); err != nil {
-		return key, false, err
+		return err, false
 	}
 
-	return key, false, nil
+	return nil, false
 }
 
 func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args []interface{}, tableArg ...*TableDef) (int64, int64, error) {

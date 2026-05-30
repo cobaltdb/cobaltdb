@@ -146,6 +146,17 @@ type selectColInfo struct {
 	originalExpr   query.Expression  // the original expression for hasEmbeddedAgg columns
 }
 
+// TableSnapshot holds all SELECT metadata needed to execute a scan without holding Catalog.mu.
+// Captured while the lock is held, then used lock-free during the scan phase.
+type TableSnapshot struct {
+	Def          *TableDef       // table definition
+	Columns      []selectColInfo // column info for projection
+	ReturnCols   []string        // output column names
+	IndexMatches []string        // row keys matching WHERE index lookup
+	UseIndex     bool            // whether index lookup was used
+	SchemaVer    uint64          // schema version at capture time (for cache invalidation)
+}
+
 // MaterializedViewDef represents a materialized view definition
 type MaterializedViewDef struct {
 	Name        string                   `json:"name"`
@@ -803,6 +814,16 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	// For statements without subqueries, release the catalog lock during the
 	// heavy scan so writes can proceed. Subqueries would recursively call
 	// selectLocked, making lock release unsafe (non-reentrant RWMutex).
+	// To enable lock release, we capture all metadata that the scan needs
+	// while the lock is still held. This eliminates the lock-as-read-serialize bottleneck.
+	tableSnapshot := TableSnapshot{
+		Def:         table,
+		Columns:     selectCols,
+		ReturnCols:  returnColumns,
+		IndexMatches: indexMatches,
+		UseIndex:    useIndex,
+		SchemaVer:   cat.schemaVersion.Load(),
+	}
 	if !isMV && len(trees) == 0 && cat.cteResults != nil {
 		if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
 			mvRows = cteRes.rows
@@ -814,7 +835,7 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	if canUnlock {
 		cat.mu.RUnlock()
 	}
-	rows, windowFullRows, scanErr := cat.scanTableRows(table, stmt, args, selectCols, hasWindowFuncs, queryTime, trees, indexMatches, useIndex, mvRows, isMV, cat.parallelWorkers, cat.parallelThreshold)
+	rows, windowFullRows, scanErr := cat.scanTableRowsWithSnapshot(tableSnapshot, stmt, args, hasWindowFuncs, queryTime, trees, mvRows, isMV, cat.parallelWorkers, cat.parallelThreshold)
 	if scanErr != nil {
 		if canUnlock {
 			cat.mu.RLock()
@@ -848,6 +869,14 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 
 func (cat *Catalog) canApplySelectPostProcessUnlocked() bool {
 	return !cat.enableRLS || cat.rlsManager == nil
+}
+
+// scanTableRowsWithSnapshot is a thin wrapper around scanTableRows that accepts
+// a TableSnapshot instead of individual parameters. This enables the caller to
+// capture all needed metadata while holding the lock, then release the lock
+// before scanning.
+func (cat *Catalog) scanTableRowsWithSnapshot(snap TableSnapshot, stmt *query.SelectStmt, args []interface{}, hasWindowFuncs bool, queryTime time.Time, trees []btree.TreeStore, mvRows [][]interface{}, isMV bool, parallelWorkers int, parallelThreshold int) ([][]interface{}, [][]interface{}, error) {
+	return cat.scanTableRows(snap.Def, stmt, args, snap.Columns, hasWindowFuncs, queryTime, trees, snap.IndexMatches, snap.UseIndex, mvRows, isMV, parallelWorkers, parallelThreshold)
 }
 
 // scanTableRows reads rows from the table using index lookup, materialized view data, or full scan.
