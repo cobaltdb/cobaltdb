@@ -408,6 +408,7 @@ func (p *Parser) parseCaseExpr() (Expression, error) {
 	p.advance() // consume CASE
 
 	caseExpr := &CaseExpr{}
+	hasSimpleCase := false
 
 	// Check for simple CASE: CASE expr WHEN ...
 	if p.current().Type != TokenWhen {
@@ -416,6 +417,7 @@ func (p *Parser) parseCaseExpr() (Expression, error) {
 			return nil, err
 		}
 		caseExpr.Expr = expr
+		hasSimpleCase = true
 	}
 
 	// Parse WHEN clauses
@@ -425,6 +427,15 @@ func (p *Parser) parseCaseExpr() (Expression, error) {
 		cond, err := p.parseExpression()
 		if err != nil {
 			return nil, err
+		}
+
+		// For simple CASE, wrap condition as: expr = cond
+		if hasSimpleCase && caseExpr.Expr != nil {
+			cond = &BinaryExpr{
+				Left:     caseExpr.Expr,
+				Operator: TokenEq,
+				Right:    cond,
+			}
 		}
 
 		if p.current().Type != TokenThen {
