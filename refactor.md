@@ -49,7 +49,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 - **Lock release/reacquire in `selectLockedInternal`** (`catalog_core.go:~594-845`) drops and re-takes the read lock mid-function (non-reentrant mutex → fragile). Split into a lock-holding outer entry + a lock-free `selectUnlocked`; simplify `canReleaseLock`.
 
 **Medium priority**
-- Three near-identical scan branches (index / MV / B-tree) in `scanTableRows` (`catalog_core.go:~852-1125`) — extract `filterAndProjectRow`.
+- Three near-identical scan branches (index / MV / B-tree) in `scanTableRows` (`catalog_core.go:~852-1125`) — extract `filterAndProjectRow`. — **DONE (2026-05-30): `filterAndProjectRow` extracted and used in index and general B-tree sequential branches; fast B-tree path intentionally keeps its own optimized `decodeVersionedRowFastEx` buffer-reuse path.**
 - Constraint-checking loops (UNIQUE/FK/CHECK) duplicated across insert and update — extract `validateRowAgainstConstraints`.
 - `fmt.Errorf("...: %v", err)` vs `%w` — **6 vector-function errors in `catalog_eval.go` + 5 DSN-parse errors in `sdk/go/cobaltdb.go` fixed (2026-05-30); remaining occurrences are in test files or for non-error values.**
 

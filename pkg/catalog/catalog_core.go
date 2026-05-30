@@ -929,21 +929,13 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			if !found {
 				continue
 			}
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			selectedRow, fullRow, ok, err := cat.filterAndProjectRow(valueData, table, stmt, selectCols, args, queryTime, hasWindowFuncs)
 			if err != nil {
-				return nil, nil, fmt.Errorf("select: failed to decode row in table %s: %w", table.Name, err)
+				return nil, nil, err
 			}
-			if !vrow.Version.isVisibleAt(queryTime) {
+			if !ok {
 				continue
 			}
-			fullRow := vrow.Data
-			if stmt.Where != nil {
-				matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-				if err != nil || !matched {
-					continue
-				}
-			}
-			selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
 			rows = append(rows, selectedRow)
 			if hasWindowFuncs {
 				fullRowCopy := make([]interface{}, len(fullRow))
@@ -1122,21 +1114,13 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 					windowFullRows = make([][]interface{}, 0, len(pairs))
 				}
 				for _, p := range pairs {
-					vrow, err := decodeVersionedRow(p.value, len(table.Columns))
+					selectedRow, fullRow, ok, err := cat.filterAndProjectRow(p.value, table, stmt, selectCols, args, queryTime, hasWindowFuncs)
 					if err != nil {
-						return nil, nil, fmt.Errorf("select: failed to decode row in table %s: %w", table.Name, err)
+						return nil, nil, err
 					}
-					if !vrow.Version.isVisibleAt(queryTime) {
+					if !ok {
 						continue
 					}
-					fullRow := vrow.Data
-					if stmt.Where != nil {
-						matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-						if err != nil || !matched {
-							continue
-						}
-					}
-					selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
 					rows = append(rows, selectedRow)
 					if hasWindowFuncs {
 						fullRowCopy := make([]interface{}, len(fullRow))
@@ -1152,6 +1136,35 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 	}
 
 	return rows, windowFullRows, nil
+}
+
+// filterAndProjectRow decodes a versioned row, checks visibility at queryTime,
+// evaluates the WHERE clause, and projects the selected columns.
+// Returns (selectedRow, fullRow, ok, err) where:
+//   - selectedRow is the projected row to append to results
+//   - fullRow is the decoded row data (for window function tracking)
+//   - ok=true means the row passed visibility and WHERE filters and should be kept
+//   - err is non-nil only for decode failures (not for invisible/unmatched rows)
+//
+// This consolidates the decode → visibility → WHERE → project pattern used
+// across index scans, MV scans, and B-tree sequential scans.
+func (cat *Catalog) filterAndProjectRow(valueData []byte, table *TableDef, stmt *query.SelectStmt, selectCols []selectColInfo, args []interface{}, queryTime time.Time, hasWindowFuncs bool) (selectedRow []interface{}, fullRow []interface{}, ok bool, err error) {
+	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("select: failed to decode row in table %s: %w", table.Name, err)
+	}
+	if !vrow.Version.isVisibleAt(queryTime) {
+		return nil, nil, false, nil
+	}
+	fullRow = vrow.Data
+	if stmt.Where != nil {
+		matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
+		if err != nil || !matched {
+			return nil, nil, false, nil
+		}
+	}
+	selectedRow = cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
+	return selectedRow, fullRow, true, nil
 }
 
 // getEffectiveTableData returns all live rows for a table as a map of key to

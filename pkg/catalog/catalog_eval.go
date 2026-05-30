@@ -857,59 +857,64 @@ func evaluateCastFunction(funcName string, evalArgs []interface{}) (interface{},
 	if len(evalArgs) < 2 {
 		return nil, true, fmt.Errorf("CAST requires 2 arguments")
 	}
-	if evalArgs[0] == nil {
-		return nil, true, nil
-	}
 	targetType, ok := evalArgs[1].(string)
 	if !ok {
 		targetType = toUpperFast(ValueToStringKey(evalArgs[1]))
 	}
+	result, err := applyCast(evalArgs[0], targetType)
+	return result, true, err
+}
+
+// applyCast converts val to the target type. Used by both evaluateCastFunction
+// (CAST as function call) and evaluateCastExpr (CAST as expression node).
+func applyCast(val interface{}, targetType string) (interface{}, error) {
+	if val == nil {
+		return nil, nil
+	}
 	switch targetType {
 	case "INTEGER", "INT":
-		if f, ok := toFloat64(evalArgs[0]); ok {
-			return int64(f), true, nil
+		if f, ok := toFloat64(val); ok {
+			return int64(f), nil
 		}
-		if s, ok := toString(evalArgs[0]); ok {
-			i, err := strconv.ParseInt(s, 10, 64)
-			if err == nil {
-				return i, true, nil
+		if s, ok := toString(val); ok {
+			if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+				return i, nil
 			}
 			if f, err := strconv.ParseFloat(s, 64); err == nil {
-				return int64(f), true, nil
+				return int64(f), nil
 			}
-			return int64(0), true, nil
+			return int64(0), nil
 		}
-		if b, ok := evalArgs[0].(bool); ok {
+		if b, ok := val.(bool); ok {
 			if b {
-				return int64(1), true, nil
+				return int64(1), nil
 			}
-			return int64(0), true, nil
+			return int64(0), nil
 		}
 	case "REAL", "FLOAT":
-		if f, ok := toFloat64(evalArgs[0]); ok {
-			return f, true, nil
+		if f, ok := toFloat64(val); ok {
+			return f, nil
 		}
-		if s, ok := toString(evalArgs[0]); ok {
-			f, err := strconv.ParseFloat(s, 64)
-			if err == nil {
-				return f, true, nil
+		if s, ok := toString(val); ok {
+			if f, err := strconv.ParseFloat(s, 64); err == nil {
+				return f, nil
 			}
-			return 0.0, true, nil
+			return 0.0, nil
 		}
 	case "TEXT", "STRING":
-		return ValueToStringKey(evalArgs[0]), true, nil
+		return ValueToStringKey(val), nil
 	case "BOOLEAN", "BOOL":
-		if b, ok := evalArgs[0].(bool); ok {
-			return b, true, nil
+		if b, ok := val.(bool); ok {
+			return b, nil
 		}
-		if f, ok := toFloat64(evalArgs[0]); ok {
-			return f != 0, true, nil
+		if f, ok := toFloat64(val); ok {
+			return f != 0, nil
 		}
-		if s, ok := toString(evalArgs[0]); ok {
-			return strings.EqualFold(s, "true") || s == "1", true, nil
+		if s, ok := toString(val); ok {
+			return strings.EqualFold(s, "true") || s == "1", nil
 		}
 	}
-	return evalArgs[0], true, nil
+	return val, nil
 }
 
 // evaluateVectorFunction handles COSINE_SIMILARITY, L2_DISTANCE, INNER_PRODUCT.
@@ -1903,45 +1908,23 @@ func evaluateCastExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *
 	if err != nil {
 		return nil, err
 	}
-	if val == nil {
-		return nil, nil
-	}
-	switch expr.DataType {
+	targetType := castTypeToString(expr.DataType)
+	return applyCast(val, targetType)
+}
+
+func castTypeToString(t query.TokenType) string {
+	switch t {
 	case query.TokenInteger:
-		if f, ok := toFloat64(val); ok {
-			return int64(f), nil
-		}
-		if s, ok := val.(string); ok {
-			if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-				return i, nil
-			}
-		}
-		return int64(0), nil
+		return "INTEGER"
 	case query.TokenReal:
-		if f, ok := toFloat64(val); ok {
-			return f, nil
-		}
-		if s, ok := val.(string); ok {
-			if f, err := strconv.ParseFloat(s, 64); err == nil {
-				return f, nil
-			}
-		}
-		return float64(0), nil
+		return "REAL"
 	case query.TokenText:
-		return ValueToStringKey(val), nil
+		return "TEXT"
 	case query.TokenBoolean:
-		if b, ok := val.(bool); ok {
-			return b, nil
-		}
-		if f, ok := toFloat64(val); ok {
-			return f != 0, nil
-		}
-		if s, ok := val.(string); ok {
-			return strings.EqualFold(s, "true") || s == "1", nil
-		}
-		return false, nil
+		return "BOOLEAN"
+	default:
+		return "TEXT"
 	}
-	return val, nil
 }
 
 func evaluateBetween(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.BetweenExpr, args []interface{}) (interface{}, error) {
