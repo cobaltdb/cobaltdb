@@ -29,7 +29,13 @@ Flush errors now logged, counted (`flushErrCount`), and the flusher halts after 
 ### 1.5 [already correct] Permissive parser swallows token errors — `pkg/query/parser_dml_select.go` (`parseJoinType`)
 `strictExpect` (parser.go:166) already returns an error in strict mode and silently ignores mismatches in permissive mode. Test `TestParseStrictRejectsMalformedJoins` confirms strict mode works. No change needed. — confirmed 2026-05-29.
 
-### 1.6 [lead] Buffered UPDATE doesn't reject in-txn UNIQUE duplicate — `pkg/catalog` buffered write path
+### 1.6 [verified — FIXED] `TestConcurrentTransactions` silently swallowed insert errors — `race_detection_test.go:104`
+The test recorded `txnErrs` but never checked it, masking2/50 concurrent insert failures. Test now asserts `txnErrs == 0` before checking row count. The underlying insert failures are a real concurrency bug (separate item). — fixed 2026-05-30.
+
+### 1.7 [lead] Concurrent INSERT failures — `race_detection_test.go:104`
+`TestConcurrentTransactions` now correctly detects that 2/50 concurrent inserts fail silently. The cause is likely in the connection-acquire / statement-execution path under contention. Investigate `acquireConnection` + `releaseConnection` + `connLimit` under concurrent write load. — open2026-05-30.
+
+### 1.8 [lead] Buffered UPDATE doesn't reject in-txn UNIQUE duplicate — `pkg/catalog` buffered write path
 Buffered UPDATE setting a UNIQUE column to a value already held by another row in the same transaction is not rejected at statement time. `checkUniqueConstraintsSnapshot` (catalog_update.go:268) only scans the committed MVCC tree, not pending writes in the same txn. Intended semantics unconfirmed — needs product decision. — documented 2026-05-29.
 
 ### 1.7 [policy] Audit write durability — `pkg/audit/logger.go`
@@ -84,7 +90,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 **Medium priority**
 - **MySQL param-counting has two implementations** (`mysql.go:~1265-1307`) that must stay in sync — unify to tokenizer-primary, fallback only on tokenizer error. — **FIXED (2026-05-30): `countQuestionMarksOutsideQuotes` inlined as a labeled fallback inside `countPreparedParams`. One function now; no duplication risk.**
 - `cobaltdb-cli/main.go` (1,375 LOC) dense subcommand `switch` — `Command` interface + registry. Confirm `importCSV` callers check returned errors.
-- **Verify** `circuit_breaker.go`/`retry.go` are actually wired into the `Exec`/`Query` path and document the policy (they exist; wiring unconfirmed).
+- **Verify** `circuit_breaker.go`/`retry.go` are actually wired into the `Exec`/`Query` path and document the policy (they exist; wiring unconfirmed). — **CONFIRMED NOT WIRED (2026-05-30):** `CircuitBreakerManager` and `RetryConfig` exist in `ProductionConfig` but are not present in the `DB` struct and are not called from `Exec`/`Query`/`runStatement`. They are standalone utilities. Wiring would require adding them to `DB` struct and wrapping statement execution. Product decision needed: which operations should be wrapped.
 
 **Low priority / hygiene**
 - `cmd/debug`, `cmd/demo`, `cmd/realworld-test` look like throwaway binaries shipped as first-class commands — move to `examples/` or gate out of release builds.

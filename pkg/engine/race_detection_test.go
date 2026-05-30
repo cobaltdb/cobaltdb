@@ -109,6 +109,11 @@ func TestConcurrentTransactions(t *testing.T) {
 
 	wg.Wait()
 
+	// Verify no transaction errors occurred
+	if txnErrs.Load() > 0 {
+		t.Errorf("%d transaction errors during concurrent inserts", txnErrs.Load())
+	}
+
 	// Verify count
 	rows, err := db.Query(ctx, "SELECT COUNT(*) FROM txn_test")
 	if err != nil {
