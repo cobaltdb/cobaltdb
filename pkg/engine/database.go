@@ -83,10 +83,6 @@ type DB struct {
 	shutdownOnce sync.Once
 	lastPanic    atomic.Value // stores PanicRecovery
 
-	// Protected by mutex; used by runStatement to pass the parsed statement
-	// to the caller before the deferred release-connection is set up.
-	_parsedStmt   query.Statement
-	_parsedStmtMu sync.Mutex
 
 // Query Optimizer
 	optimizer *optimizer.Optimizer
@@ -581,6 +577,7 @@ func (db *DB) runStatement(ctx context.Context, methodName, sql string, args ...
 		return nil, time.Time{}, func() {}, acquireErr
 	}
 
+	var stmt query.Statement
 	if err := func() error {
 		db.mu.RLock()
 		defer db.mu.RUnlock()
@@ -588,7 +585,8 @@ func (db *DB) runStatement(ctx context.Context, methodName, sql string, args ...
 			return ErrDatabaseClosed
 		}
 		// Try to use cached prepared statement
-		stmt, parseErr := db.getPreparedStatement(sql, args...)
+		var parseErr error
+		stmt, parseErr = db.getPreparedStatement(sql, args...)
 		if parseErr != nil {
 			return fmt.Errorf("parse error: %w", parseErr)
 		}
@@ -596,10 +594,6 @@ func (db *DB) runStatement(ctx context.Context, methodName, sql string, args ...
 		if db.indexAdvisor != nil {
 			db.indexAdvisor.Analyze(stmt)
 		}
-		// Pass parsed statement via mutex-protected field.
-		db._parsedStmtMu.Lock()
-		db._parsedStmt = stmt
-		db._parsedStmtMu.Unlock()
 		return nil
 	}(); err != nil {
 		release()
@@ -607,10 +601,6 @@ func (db *DB) runStatement(ctx context.Context, methodName, sql string, args ...
 	}
 
 	start = time.Now()
-	db._parsedStmtMu.Lock()
-	stmt := db._parsedStmt
-	db._parsedStmt = nil
-	db._parsedStmtMu.Unlock()
 	return stmt, start, release, nil
 }
 
