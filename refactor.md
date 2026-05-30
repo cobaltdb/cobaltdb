@@ -102,7 +102,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 ## 5. Peripheral packages
 
 **High priority**
-- **Two query-result caches, one unused** — `pkg/catalog/catalog_cache.go` (old `QueryCache`, now superseded by `cache.Cache`) vs `pkg/cache/query_cache.go` (now the canonical cache). Catalog now uses `*cache.Cache` exclusively via `catalog.EnableQueryCache()` / `catalog.GetQueryCache()`; `catalog_cache.go` helpers (`isCacheableQuery`, `extractTablesFromQuery`, `queryToSQL`, `generateQueryKey`) remain live and needed. The old `QueryCache` struct in `catalog_cache.go` is dead code — kept only to avoid breaking the refactor scope; should be deleted in a follow-up that also moves the helper functions into a non-cache package. — addressed 2026-05-29.
+- **Two query-result caches, one unused** — `pkg/catalog/catalog_cache.go` (old `QueryCache`, now superseded by `cache.Cache`) vs `pkg/cache/query_cache.go` (now the canonical cache). Catalog now uses `*cache.Cache` exclusively via `catalog.EnableQueryCache()` / `catalog.GetQueryCache()`; `catalog_cache.go` helpers (`isCacheableQuery`, `extractTablesFromQuery`, `queryToSQL`, `generateQueryKey`) are deprecated wrappers delegating to `pkg/query`. The old `QueryCache` struct is deprecated. Cannot delete helpers until test files (`z_eval_test.go`, `z_catalog_coverage_test.go`, etc.) are updated to import `pkg/query` directly — currently they don't import it. — addressed 2026-05-29; follow-up needed.
 
 **Medium priority**
 - **`pkg/scheduler` per-job timeout [FIXED 2026-05-29]** — `Job.Timeout` field added; scheduler uses `j.Timeout` if >0, else 10-min default. — fixed 2026-05-29.
