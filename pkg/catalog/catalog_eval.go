@@ -97,6 +97,48 @@ var scalarFunctionHandlers = map[string]functionHandler{
 			return "text", nil
 		}
 	},
+	"TIME": func(args []interface{}) (interface{}, error) {
+		if len(args) < 1 {
+			return nil, nil
+		}
+		return args[0], nil
+	},
+	"DATETIME": func(args []interface{}) (interface{}, error) {
+		if len(args) < 1 {
+			return nil, nil
+		}
+		return args[0], nil
+	},
+	"NOW": func(args []interface{}) (interface{}, error) {
+		return time.Now().Format("2006-01-02 15:04:05"), nil
+	},
+	"CURRENT_TIMESTAMP": func(args []interface{}) (interface{}, error) {
+		return time.Now().Format("2006-01-02 15:04:05"), nil
+	},
+	"CURRENT_TIME": func(args []interface{}) (interface{}, error) {
+		return time.Now().Format("15:04:05"), nil
+	},
+	"CURRENT_DATE": func(args []interface{}) (interface{}, error) {
+		return time.Now().Format("2006-01-02"), nil
+	},
+	"STRFTIME": func(args []interface{}) (interface{}, error) {
+		if len(args) < 2 || args[1] == nil {
+			return nil, nil
+		}
+		return ValueToStringKey(args[1]), nil
+	},
+	"GROUP_CONCAT": func(args []interface{}) (interface{}, error) {
+		if len(args) >= 1 && args[0] != nil {
+			return ValueToStringKey(args[0]), nil
+		}
+		return nil, nil
+	},
+	"DATE": func(args []interface{}) (interface{}, error) {
+		if len(args) < 1 {
+			return nil, nil
+		}
+		return args[0], nil
+	},
 }
 
 // EvalContext bundles common parameters for expression evaluation
