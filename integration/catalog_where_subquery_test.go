@@ -9,7 +9,7 @@ import (
 
 // TestWhereWithSubquery targets evaluateWhere with subqueries
 func TestWhereWithSubquery(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestWhereWithSubquery(t *testing.T) {
 
 // TestWhereComplexExpressions targets evaluateWhere with complex boolean logic
 func TestWhereComplexExpressions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestWhereComplexExpressions(t *testing.T) {
 
 // TestWhereWithCase targets evaluateWhere with CASE expressions
 func TestWhereWithCase(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestWhereWithCase(t *testing.T) {
 
 // TestWhereInExpression targets evaluateWhere with IN expressions
 func TestWhereInExpression(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

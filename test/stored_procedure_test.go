@@ -8,7 +8,7 @@ import (
 )
 
 func TestStoredProcedure_Basic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestStoredProcedure_Basic(t *testing.T) {
 }
 
 func TestStoredProcedure_WithParams(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestStoredProcedure_WithParams(t *testing.T) {
 }
 
 func TestStoredProcedure_IF_NOT_EXISTS(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestStoredProcedure_IF_NOT_EXISTS(t *testing.T) {
 }
 
 func TestStoredProcedure_IF_EXISTS(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestStoredProcedure_IF_EXISTS(t *testing.T) {
 }
 
 func TestStoredProcedure_MultipleStatements(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestStoredProcedure_MultipleStatements(t *testing.T) {
 }
 
 func TestStoredProcedure_CallArgumentSemantics(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestStoredProcedure_CallArgumentSemantics(t *testing.T) {
 }
 
 func TestStoredProcedure_ParameterSubstitutionInComplexExpressions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}

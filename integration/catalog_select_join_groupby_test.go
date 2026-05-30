@@ -9,7 +9,7 @@ import (
 
 // TestSelectWithJoinAndGroupBy targets executeSelectWithJoinAndGroupBy
 func TestSelectWithJoinAndGroupBy(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestSelectWithJoinAndGroupBy(t *testing.T) {
 
 // TestJoinWithSubquery targets selectLocked with subquery joins
 func TestJoinWithSubquery(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestJoinWithSubquery(t *testing.T) {
 
 // TestSelectComplexQueryCache targets selectLocked query cache paths
 func TestSelectComplexQueryCache(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestSelectComplexQueryCache(t *testing.T) {
 
 // TestLeftJoinWithNulls targets LEFT JOIN NULL handling
 func TestLeftJoinWithNulls(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestLeftJoinWithNulls(t *testing.T) {
 
 // TestCrossJoin targets CROSS JOIN
 func TestCrossJoin(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

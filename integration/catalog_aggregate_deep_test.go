@@ -9,7 +9,7 @@ import (
 
 // TestComputeAggregatesWithGroupByDeep targets computeAggregatesWithGroupBy
 func TestComputeAggregatesWithGroupByDeep(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestComputeAggregatesWithGroupByDeep(t *testing.T) {
 
 // TestEvaluateExprWithGroupAggregatesDeep targets evaluateExprWithGroupAggregates
 func TestEvaluateExprWithGroupAggregatesDeep(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestEvaluateExprWithGroupAggregatesDeep(t *testing.T) {
 
 // TestApplyGroupByOrderBy targets applyGroupByOrderBy
 func TestApplyGroupByOrderBy(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestApplyGroupByOrderBy(t *testing.T) {
 
 // TestApplyDistinct targets applyDistinct
 func TestApplyDistinct(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestApplyDistinct(t *testing.T) {
 
 // TestDistinctWithJoin targets applyDistinct with JOIN
 func TestDistinctWithJoin(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestDistinctWithJoin(t *testing.T) {
 
 // TestAggregateWithJoinAndGroupBy targets executeSelectWithJoinAndGroupBy
 func TestAggregateWithJoinAndGroupBy(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestAggregateWithJoinAndGroupBy(t *testing.T) {
 
 // TestHavingWithJoin targets HAVING with JOIN
 func TestHavingWithJoin(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestHavingWithJoin(t *testing.T) {
 
 // TestWindowFunctionsBasic targets window function execution
 func TestWindowFunctionsBasic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

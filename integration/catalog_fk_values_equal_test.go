@@ -9,7 +9,7 @@ import (
 
 // TestFKValuesEqualCascade targets valuesEqual in FK cascade operations
 func TestFKValuesEqualCascade(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestFKValuesEqualCascade(t *testing.T) {
 
 // TestFKValuesEqualMultiColumn targets valuesEqual with composite FK
 func TestFKValuesEqualMultiColumn(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestFKValuesEqualMultiColumn(t *testing.T) {
 
 // TestFKValuesEqualNULL targets valuesEqual with NULL values
 func TestFKValuesEqualNULL(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestFKValuesEqualNULL(t *testing.T) {
 
 // TestFKValuesEqualDifferentTypes targets valuesEqual with type coercion
 func TestFKValuesEqualDifferentTypes(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

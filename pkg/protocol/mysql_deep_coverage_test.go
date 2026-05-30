@@ -526,7 +526,7 @@ func TestReadHandshakeResponse_NoDatabase(t *testing.T) {
 // --- handleConnection edge cases ---
 
 func TestHandleConnection_WithAuth_AccessDenied(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -566,7 +566,7 @@ func TestHandleConnection_WithAuth_AccessDenied(t *testing.T) {
 }
 
 func TestHandleConnection_WithAuth_FailedVerification(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -613,7 +613,7 @@ func TestHandleConnection_WithAuth_FailedVerification(t *testing.T) {
 }
 
 func TestHandleConnection_WithQuitCommand(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -651,7 +651,7 @@ func TestHandleConnection_WithQuitCommand(t *testing.T) {
 
 func TestHandleConnection_PanicRecovery(t *testing.T) {
 	// Test that a panicking connection handler doesn't crash
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -667,7 +667,7 @@ func TestHandleConnection_PanicRecovery(t *testing.T) {
 // --- handleQuery with @@variable routing ---
 
 func TestHandleQuery_SelectVariable(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -693,7 +693,7 @@ func TestHandleQuery_SelectVariable(t *testing.T) {
 }
 
 func TestHandleQuery_SelectAtVariable(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -719,7 +719,7 @@ func TestHandleQuery_SelectAtVariable(t *testing.T) {
 }
 
 func TestHandleQuery_NilContext(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -820,7 +820,7 @@ func TestSendEOFPacket(t *testing.T) {
 // --- Full end-to-end with @@variable queries via command ---
 
 func TestHandleCommandQuery_WithSelectVariable(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -860,7 +860,7 @@ func TestHandleCommandQuery_WithSelectVariable(t *testing.T) {
 // --- Addr with listener ---
 
 func TestAddr_WithListener(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -882,7 +882,7 @@ func TestAddr_WithListener(t *testing.T) {
 // --- Full lifecycle with SELECT @@variable ---
 
 func TestFullLifecycleWithSelectVariable(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}

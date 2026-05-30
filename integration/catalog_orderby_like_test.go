@@ -9,7 +9,7 @@ import (
 
 // TestOrderByMultiColumnNulls targets applyOrderBy with multi-column and NULLs
 func TestOrderByMultiColumnNulls(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestOrderByMultiColumnNulls(t *testing.T) {
 
 // TestLikePatterns targets evaluateLike with various patterns
 func TestLikePatterns(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestLikePatterns(t *testing.T) {
 
 // TestLikeEscape targets LIKE with escape character
 func TestLikeEscape(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

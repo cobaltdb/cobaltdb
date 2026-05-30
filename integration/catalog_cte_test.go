@@ -9,7 +9,7 @@ import (
 
 // TestExecuteCTESimple targets ExecuteCTE with simple CTE
 func TestExecuteCTESimple(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestExecuteCTESimple(t *testing.T) {
 
 // TestExecuteCTEMultiple targets ExecuteCTE with multiple CTEs
 func TestExecuteCTEMultiple(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestExecuteCTEMultiple(t *testing.T) {
 
 // TestExecuteCTERecursive targets ExecuteCTE with recursive CTE
 func TestExecuteCTERecursive(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestExecuteCTERecursive(t *testing.T) {
 
 // TestExecuteCTEWithAggregation targets ExecuteCTE with aggregation
 func TestExecuteCTEWithAggregation(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestExecuteCTEWithAggregation(t *testing.T) {
 
 // TestExecuteCTENested targets ExecuteCTE with nested CTE references
 func TestExecuteCTENested(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestExecuteCTENested(t *testing.T) {
 
 // TestExecuteCTEWithJoin targets ExecuteCTE with JOIN
 func TestExecuteCTEWithJoin(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestExecuteCTEWithJoin(t *testing.T) {
 
 // TestExecuteCTEInSubquery targets ExecuteCTE used in subquery
 func TestExecuteCTEInSubquery(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -9,7 +9,7 @@ import (
 
 // TestUpdateReturning tests UPDATE with RETURNING clause
 func TestUpdateReturning(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestUpdateReturning(t *testing.T) {
 
 // TestUpdateReturningColumns tests UPDATE with specific RETURNING columns
 func TestUpdateReturningColumns(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestUpdateReturningColumns(t *testing.T) {
 
 // TestDeleteReturning tests DELETE with RETURNING clause
 func TestDeleteReturning(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestDeleteReturning(t *testing.T) {
 
 // TestDeleteReturningColumns tests DELETE with specific RETURNING columns
 func TestDeleteReturningColumns(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestDeleteReturningColumns(t *testing.T) {
 
 // TestInsertReturningComplete tests INSERT RETURNING more thoroughly
 func TestInsertReturningComplete(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

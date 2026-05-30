@@ -9,7 +9,7 @@ import (
 
 // TestUpdatePlanComplex targets executeUpdatePlan with complex scenarios
 func TestUpdatePlanComplex(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestUpdatePlanComplex(t *testing.T) {
 
 // TestDeletePlanComplex targets executeDeletePlan with complex scenarios
 func TestDeletePlanComplex(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestDeletePlanComplex(t *testing.T) {
 
 // TestUpdateDeleteWithReturnClause targets RETURNING clause
 func TestUpdateDeleteWithReturnClause(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestUpdateDeleteWithReturnClause(t *testing.T) {
 
 // TestUpdateDeleteInTransaction targets plan execution in transaction
 func TestUpdateDeleteInTransaction(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestUpdateDeleteInTransaction(t *testing.T) {
 
 // TestUpdateDeleteWithTriggers targets plan execution with triggers
 func TestUpdateDeleteWithTriggers(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

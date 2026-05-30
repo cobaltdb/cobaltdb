@@ -9,7 +9,7 @@ import (
 
 // TestJSONSetBasic targets JSON Set function
 func TestJSONSetBasic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestJSONSetBasic(t *testing.T) {
 
 // TestJSONGet targets JSON Get operations
 func TestJSONGet(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestJSONGet(t *testing.T) {
 
 // TestJSONModify targets JSON modification functions
 func TestJSONModify(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestJSONModify(t *testing.T) {
 
 // TestJSONValidation targets JSON validation
 func TestJSONValidation(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestJSONValidation(t *testing.T) {
 
 // TestJSONAggregation targets JSON aggregation functions
 func TestJSONAggregation(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -23,7 +23,7 @@ var (
 )
 
 func TestProductionServerBasic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestProductionServerStartReturnsHealthBindError(t *testing.T) {
 	}
 	defer listener.Close()
 
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestProductionServerStartReturnsHealthBindError(t *testing.T) {
 }
 
 func TestProductionServerWithRetry(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestProductionServerLoggerDoesNotMutateCallerLifecycle(t *testing.T) {
 }
 
 func TestProductionServerWithCircuitBreaker(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestProductionServerWithCircuitBreaker(t *testing.T) {
 }
 
 func TestProductionServerStats(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestProductionServerStats(t *testing.T) {
 }
 
 func TestProductionServerDisabledFeatures(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -439,7 +439,7 @@ func TestDefaultProductionConfig(t *testing.T) {
 }
 
 func BenchmarkProductionServerStartStop(b *testing.B) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		b.Fatalf("failed to open database: %v", err)
 	}

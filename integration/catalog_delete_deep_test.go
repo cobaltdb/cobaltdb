@@ -9,7 +9,7 @@ import (
 
 // TestDeleteWithBeforeTrigger targets delete with BEFORE DELETE trigger
 func TestDeleteWithBeforeTrigger(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestDeleteWithBeforeTrigger(t *testing.T) {
 
 // TestDeleteWithAfterTrigger targets delete with AFTER DELETE trigger
 func TestDeleteWithAfterTrigger(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestDeleteWithAfterTrigger(t *testing.T) {
 
 // TestDeleteWithTriggerWhen targets delete trigger with WHEN clause
 func TestDeleteWithTriggerWhen(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestDeleteWithTriggerWhen(t *testing.T) {
 
 // TestDeleteMultipleRowsWithTrigger targets deleting multiple rows with trigger
 func TestDeleteMultipleRowsWithTrigger(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestDeleteMultipleRowsWithTrigger(t *testing.T) {
 
 // TestDeleteWithFKCascade targets delete with CASCADE foreign key
 func TestDeleteWithFKCascade(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestDeleteWithFKCascade(t *testing.T) {
 
 // TestDeleteWithFKSetNull targets delete with SET NULL foreign key
 func TestDeleteWithFKSetNull(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestDeleteWithFKSetNull(t *testing.T) {
 
 // TestDeleteWithRestrictFK targets delete with RESTRICT foreign key
 func TestDeleteWithRestrictFK(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestDeleteWithRestrictFK(t *testing.T) {
 
 // TestDeleteAllRows targets DELETE without WHERE clause
 func TestDeleteAllRows(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestDeleteAllRows(t *testing.T) {
 
 // TestDeleteWithSubquery targets DELETE with subquery in WHERE
 func TestDeleteWithSubquery(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

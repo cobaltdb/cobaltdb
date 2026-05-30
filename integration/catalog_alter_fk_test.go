@@ -9,7 +9,7 @@ import (
 
 // TestAlterTableRenameColumnFull targets AlterTableRenameColumn
 func TestAlterTableRenameColumnFull(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestAlterTableRenameColumnFull(t *testing.T) {
 
 // TestAlterTableRenameTableFull targets AlterTableRename
 func TestAlterTableRenameTableFull(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestAlterTableRenameTableFull(t *testing.T) {
 
 // TestApplyGroupByOrderWithFK targets applyGroupByOrderBy
 func TestApplyGroupByOrderWithFK(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestApplyGroupByOrderWithFK(t *testing.T) {
 
 // TestFKOnDeleteOnUpdate targets OnDelete and OnUpdate
 func TestFKOnDeleteOnUpdate(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestFKOnDeleteOnUpdate(t *testing.T) {
 
 // TestFKOnDeleteSetNull targets ON DELETE SET NULL
 func TestFKOnDeleteSetNull(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestFKOnDeleteSetNull(t *testing.T) {
 
 // TestFKOnDeleteRestrict targets ON DELETE RESTRICT
 func TestFKOnDeleteRestrict(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -9,7 +9,7 @@ import (
 
 // TestRLSInsertPolicy targets checkRLSForInsertInternal
 func TestRLSInsertPolicy(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestRLSInsertPolicy(t *testing.T) {
 
 // TestRLSUpdatePolicy targets checkRLSForUpdateInternal
 func TestRLSUpdatePolicy(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestRLSUpdatePolicy(t *testing.T) {
 
 // TestRLSDeletePolicy targets checkRLSForDeleteInternal
 func TestRLSDeletePolicy(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestRLSDeletePolicy(t *testing.T) {
 
 // TestRLSWithUSINGExpression targets RLS USING clause
 func TestRLSWithUSINGExpression(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestRLSWithUSINGExpression(t *testing.T) {
 
 // TestRLSApplyFilterInternal targets applyRLSFilterInternal
 func TestRLSApplyFilterInternal(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

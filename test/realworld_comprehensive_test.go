@@ -31,9 +31,7 @@ func TestRealWorld_DiskPersistence(t *testing.T) {
 	t.Log("=== AŞAMA 1: Database oluştur ve veri ekle ===")
 	{
 		opts := &engine.Options{
-			CacheSize:  1024,
-			InMemory:   false,
-			WALEnabled: engine.BoolPtr(true),
+			CoreStorage: engine.CoreStorage{CacheSize: 1024, InMemory: false},
 		}
 
 		db, err := engine.Open(dbPath, opts)
@@ -78,9 +76,7 @@ func TestRealWorld_DiskPersistence(t *testing.T) {
 	t.Log("\n=== AŞAMA 2: Database yeniden aç ve veriyi doğrula ===")
 	{
 		opts := &engine.Options{
-			CacheSize:  1024,
-			InMemory:   false,
-			WALEnabled: engine.BoolPtr(true),
+			CoreStorage: engine.CoreStorage{CacheSize: 1024, InMemory: false},
 		}
 
 		db, err := engine.Open(dbPath, opts)
@@ -148,9 +144,7 @@ func TestRealWorld_ServerWithDiskDatabase(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "server.db")
 
 	opts := &engine.Options{
-		CacheSize:  1024,
-		InMemory:   false,
-		WALEnabled: engine.BoolPtr(true),
+		CoreStorage: engine.CoreStorage{CacheSize: 1024, InMemory: false},
 	}
 
 	db, err := engine.Open(dbPath, opts)
@@ -253,9 +247,7 @@ func TestRealWorld_ServerWithDiskDatabase(t *testing.T) {
 // TestRealWorld_ConcurrentClients eşzamanlı client testi
 func TestRealWorld_ConcurrentClients(t *testing.T) {
 	opts := &engine.Options{
-		CacheSize:  1024,
-		InMemory:   true,
-		WALEnabled: engine.BoolPtr(false),
+		CoreStorage: engine.CoreStorage{CacheSize: 1024, InMemory: true},
 	}
 
 	db, err := engine.Open(":memory:", opts)
@@ -353,9 +345,7 @@ func TestRealWorld_ConcurrentClients(t *testing.T) {
 // TestRealWorld_ComplexQueries karmaşık sorgu testi
 func TestRealWorld_ComplexQueries(t *testing.T) {
 	opts := &engine.Options{
-		CacheSize:  1024,
-		InMemory:   true,
-		WALEnabled: engine.BoolPtr(false),
+		CoreStorage: engine.CoreStorage{CacheSize: 1024, InMemory: true},
 	}
 
 	db, err := engine.Open(":memory:", opts)
@@ -477,9 +467,7 @@ func TestRealWorld_PersistenceAndRecovery(t *testing.T) {
 
 	// Veritabanını aç ve veri ekle
 	opts := &engine.Options{
-		CacheSize:  1024,
-		InMemory:   false,
-		WALEnabled: engine.BoolPtr(true),
+		CoreStorage: engine.CoreStorage{CacheSize: 1024, InMemory: false},
 	}
 
 	db, err := engine.Open(dbPath, opts)
@@ -572,9 +560,7 @@ func TestRealWorld_ServerRestartPersistence(t *testing.T) {
 
 	// Server 1 - Veri ekle
 	opts := &engine.Options{
-		CacheSize:  1024,
-		InMemory:   false,
-		WALEnabled: engine.BoolPtr(true),
+		CoreStorage: engine.CoreStorage{CacheSize: 1024, InMemory: false},
 	}
 
 	db1, err := engine.Open(dbPath, opts)

@@ -13,7 +13,7 @@ import (
 // TestListenCoverage tests the Listen function for coverage
 func TestListenCoverage(t *testing.T) {
 	t.Run("ListenSuccess", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -32,7 +32,7 @@ func TestListenCoverage(t *testing.T) {
 	})
 
 	t.Run("ListenFailure", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -49,7 +49,7 @@ func TestListenCoverage(t *testing.T) {
 // TestAcceptLoopCoverage tests the acceptLoop function for coverage
 func TestAcceptLoopCoverage(t *testing.T) {
 	t.Run("AcceptLoopWithConnection", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -81,7 +81,7 @@ func TestAcceptLoopCoverage(t *testing.T) {
 	})
 
 	t.Run("AcceptLoopNilListener", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -100,7 +100,7 @@ func TestAcceptLoopCoverage(t *testing.T) {
 // TestHandleConnectionCoverage tests the handleConnection function for coverage
 func TestHandleConnectionCoverage(t *testing.T) {
 	t.Run("HandleConnectionComplete", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -142,7 +142,7 @@ func TestHandleConnectionCoverage(t *testing.T) {
 	})
 
 	t.Run("HandleConnectionSendHandshakeError", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -157,7 +157,7 @@ func TestHandleConnectionCoverage(t *testing.T) {
 	})
 
 	t.Run("HandleConnectionReadResponseError", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -180,7 +180,7 @@ func TestHandleConnectionCoverage(t *testing.T) {
 // TestHandleQueryCoverage tests the handleQuery function for coverage
 func TestHandleQueryCoverage(t *testing.T) {
 	t.Run("HandleQuerySelect", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -201,7 +201,7 @@ func TestHandleQueryCoverage(t *testing.T) {
 	})
 
 	t.Run("HandleQueryExec", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -222,7 +222,7 @@ func TestHandleQueryCoverage(t *testing.T) {
 	})
 
 	t.Run("HandleQueryWhitespace", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -244,7 +244,7 @@ func TestHandleQueryCoverage(t *testing.T) {
 
 // TestFullServerLifecycle tests a complete server lifecycle
 func TestFullServerLifecycle(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -368,7 +368,7 @@ func TestFullServerLifecycle(t *testing.T) {
 
 // TestServerAddress tests server address methods
 func TestServerAddress(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -396,7 +396,7 @@ func TestServerAddress(t *testing.T) {
 
 // TestConcurrentConnections tests multiple concurrent connections
 func TestConcurrentConnections(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}
@@ -439,7 +439,7 @@ func TestConcurrentConnections(t *testing.T) {
 
 // TestConnectionTimeout tests connection timeout scenarios
 func TestConnectionTimeout(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Skip("Cannot open database:", err)
 	}

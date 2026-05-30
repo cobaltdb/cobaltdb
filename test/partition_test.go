@@ -7,7 +7,7 @@ import (
 )
 
 func TestTablePartitioning_Basic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestTablePartitioning_Basic(t *testing.T) {
 }
 
 func TestTablePartitioning_Hash(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}

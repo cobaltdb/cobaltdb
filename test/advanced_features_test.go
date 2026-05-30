@@ -10,7 +10,9 @@ import (
 
 func af(t *testing.T) (*engine.DB, context.Context) {
 	t.Helper()
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{
+		CoreStorage: engine.CoreStorage{InMemory: true},
+	})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}

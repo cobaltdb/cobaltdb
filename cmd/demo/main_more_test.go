@@ -10,8 +10,8 @@ import (
 // TestDemoMainOperations tests all main demo operations
 func TestDemoMainOperations(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
+		CoreStorage: engine.CoreStorage{InMemory: true,
+		CacheSize: 1024},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -126,8 +126,8 @@ func TestDemoMainOperations(t *testing.T) {
 // TestDemoEdgeCasesMore tests additional edge cases in demo operations
 func TestDemoEdgeCasesMore(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
+		CoreStorage: engine.CoreStorage{InMemory: true,
+		CacheSize: 1024},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)

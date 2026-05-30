@@ -9,7 +9,7 @@ import (
 
 // TestHavingAggregateExpressions targets computeAggregatesWithGroupBy with HAVING
 func TestHavingAggregateExpressions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestHavingAggregateExpressions(t *testing.T) {
 
 // TestHavingWithSubquery targets HAVING with subquery
 func TestHavingWithSubquery(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestHavingWithSubquery(t *testing.T) {
 
 // TestComplexGroupBy targets computeAggregatesWithGroupBy edge cases
 func TestComplexGroupBy(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestComplexGroupBy(t *testing.T) {
 
 // TestDistinctWithGroupBy targets DISTINCT + GROUP BY combination
 func TestDistinctWithGroupBy(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

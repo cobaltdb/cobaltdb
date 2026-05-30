@@ -17,7 +17,7 @@ func TestVacuumWithDeletedData(t *testing.T) {
 
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestVacuumSpecificTable(t *testing.T) {
 
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestVacuumSpecificTable(t *testing.T) {
 
 // TestCountRows targets countRows function
 func TestCountRows(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestCountRows(t *testing.T) {
 
 // TestCountRowsWithJoin targets countRows with JOIN
 func TestCountRowsWithJoin(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestStoreIndexDef(t *testing.T) {
 
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestStoreIndexDef(t *testing.T) {
 	db.Close()
 
 	// Reopen and verify indexes work
-	db2, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to reopen: %v", err)
 	}
@@ -294,11 +294,15 @@ func TestAutoVacuumIntegration(t *testing.T) {
 	ctx := context.Background()
 
 	opts := &engine.Options{
-		InMemory:              false,
-		EnableAutoVacuum:      true,
-		AutoVacuumInterval:    100 * time.Millisecond,
-		AutoVacuumThreshold:   0.15, // 15% to trigger quickly
-		SchedulerTickInterval: 50 * time.Millisecond,
+		CoreStorage: engine.CoreStorage{InMemory: false},
+		Maintenance: engine.MaintenanceConfig{
+			EnableAutoVacuum:    true,
+			AutoVacuumInterval:  100 * time.Millisecond,
+			AutoVacuumThreshold: 0.15, // 15% to trigger quickly
+		},
+		Scheduler: engine.SchedulerConfig{
+			TickInterval: 50 * time.Millisecond,
+		},
 	}
 
 	db, err := engine.Open(dbPath, opts)
@@ -360,10 +364,12 @@ func TestAutoVacuumDisabled(t *testing.T) {
 	ctx := context.Background()
 
 	opts := &engine.Options{
-		InMemory:            false,
-		EnableAutoVacuum:    false,
-		AutoVacuumInterval:  100 * time.Millisecond,
-		AutoVacuumThreshold: 0.01,
+		CoreStorage: engine.CoreStorage{InMemory: false},
+		Maintenance: engine.MaintenanceConfig{
+			EnableAutoVacuum:    false,
+			AutoVacuumInterval:  100 * time.Millisecond,
+			AutoVacuumThreshold: 0.01,
+		},
 	}
 
 	db, err := engine.Open(dbPath, opts)
@@ -401,7 +407,7 @@ func TestAutoVacuumDisabled(t *testing.T) {
 
 // TestAnalyzeTableStats targets Analyze table stats
 func TestAnalyzeTableStats(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

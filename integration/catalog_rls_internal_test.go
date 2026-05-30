@@ -9,7 +9,7 @@ import (
 
 // TestRLSInsertInternal targets checkRLSForInsertInternal
 func TestRLSInsertInternal(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestRLSInsertInternal(t *testing.T) {
 
 // TestRLSUpdateInternal targets checkRLSForUpdateInternal
 func TestRLSUpdateInternal(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestRLSUpdateInternal(t *testing.T) {
 
 // TestRLSDeleteInternal targets checkRLSForDeleteInternal
 func TestRLSDeleteInternal(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestRLSDeleteInternal(t *testing.T) {
 
 // TestRLSApplyRLSFilterInternal targets applyRLSFilterInternal
 func TestRLSApplyRLSFilterInternal(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestRLSApplyRLSFilterInternal(t *testing.T) {
 
 // TestRLSWithExpression targets RLS with complex expressions
 func TestRLSWithExpression(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestRLSWithExpression(t *testing.T) {
 
 // TestRLSMultiplePolicies targets RLS with multiple policies on same table
 func TestRLSMultiplePolicies(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

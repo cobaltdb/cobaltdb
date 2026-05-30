@@ -9,7 +9,7 @@ import (
 
 // TestApplyOrderByMultiColumnDeep targets applyOrderBy with multiple columns
 func TestApplyOrderByMultiColumnDeep(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestApplyOrderByMultiColumnDeep(t *testing.T) {
 
 // TestApplyOrderByWithNULLs targets applyOrderBy with NULL handling
 func TestApplyOrderByWithNULLs(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestApplyOrderByWithNULLs(t *testing.T) {
 
 // TestApplyOrderByExpressions targets applyOrderBy with expressions
 func TestApplyOrderByExpressions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestApplyOrderByExpressions(t *testing.T) {
 
 // TestApplyOrderByWithJOIN targets applyOrderBy with JOIN
 func TestApplyOrderByWithJOIN(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestApplyOrderByWithJOIN(t *testing.T) {
 
 // TestApplyOrderByWithLIMIT targets applyOrderBy with LIMIT/OFFSET
 func TestApplyOrderByWithLIMIT(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestApplyOrderByWithLIMIT(t *testing.T) {
 
 // TestApplyOrderByStringCollations targets applyOrderBy with string ordering
 func TestApplyOrderByStringCollations(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

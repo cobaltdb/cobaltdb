@@ -9,7 +9,7 @@ import (
 
 // TestEvaluateWhereComplexBooleanCoverage targets evaluateWhere with complex boolean logic
 func TestEvaluateWhereComplexBooleanCoverage(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestEvaluateWhereComplexBooleanCoverage(t *testing.T) {
 
 // TestEvaluateWhereWithSubqueryCoverage targets evaluateWhere with subqueries
 func TestEvaluateWhereWithSubqueryCoverage(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestEvaluateWhereWithSubqueryCoverage(t *testing.T) {
 
 // TestEvaluateWhereWithCaseCoverage targets evaluateWhere with CASE expressions
 func TestEvaluateWhereWithCaseCoverage(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestEvaluateWhereWithCaseCoverage(t *testing.T) {
 
 // TestEvaluateHavingComplexCoverage targets evaluateHaving with complex expressions
 func TestEvaluateHavingComplexCoverage(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestEvaluateHavingComplexCoverage(t *testing.T) {
 
 // TestApplyOuterQueryComplexCoverage targets applyOuterQuery with complex views
 func TestApplyOuterQueryComplexCoverage(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestApplyOuterQueryComplexCoverage(t *testing.T) {
 
 // TestApplyOuterQueryWithDistinctCoverage targets applyOuterQuery with DISTINCT views
 func TestApplyOuterQueryWithDistinctCoverage(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestApplyOuterQueryWithDistinctCoverage(t *testing.T) {
 
 // TestApplyRLSFilterInternalCoverage targets applyRLSFilterInternal
 func TestApplyRLSFilterInternalCoverage(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestApplyRLSFilterInternalCoverage(t *testing.T) {
 
 // TestDeleteRowLockedWithTriggerChainCoverage targets deleteRowLocked with trigger chains
 func TestDeleteRowLockedWithTriggerChainCoverage(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestDeleteRowLockedWithTriggerChainCoverage(t *testing.T) {
 
 // TestEvaluateWhereWithNullsCoverage targets evaluateWhere with NULL handling
 func TestEvaluateWhereWithNullsCoverage(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestEvaluateWhereWithNullsCoverage(t *testing.T) {
 
 // TestEvaluateWhereWithBetweenCoverage targets evaluateWhere with BETWEEN
 func TestEvaluateWhereWithBetweenCoverage(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -60,7 +60,7 @@ func TestEngineDiskPersistence(t *testing.T) {
 
 // TestEngineLargeDataset tests handling of large datasets
 func TestEngineLargeDataset(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestEngineAlterTable(t *testing.T) {
 
 // TestEngineConcurrencyStress tests concurrent access under stress
 func TestEngineConcurrencyStress(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

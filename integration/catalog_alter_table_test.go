@@ -9,7 +9,7 @@ import (
 
 // TestAlterTableDropColumnBasic targets AlterTableDropColumn
 func TestAlterTableDropColumnBasic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestAlterTableDropColumnBasic(t *testing.T) {
 
 // TestAlterTableDropColumnWithIndex targets AlterTableDropColumn with index
 func TestAlterTableDropColumnWithIndex(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestAlterTableDropColumnWithIndex(t *testing.T) {
 
 // TestAlterTableDropLastColumn targets dropping last non-PK column
 func TestAlterTableDropLastColumn(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestAlterTableDropLastColumn(t *testing.T) {
 
 // TestAlterTableRename targets AlterTableRename
 func TestAlterTableRename(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestAlterTableRename(t *testing.T) {
 
 // TestAlterTableRenameColumn targets AlterTableRenameColumn
 func TestAlterTableRenameColumn(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestAlterTableRenameColumn(t *testing.T) {
 
 // TestAlterTableAddColumn targets AlterTableAddColumn
 func TestAlterTableAddColumn(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestAlterTableAddColumn(t *testing.T) {
 
 // TestAlterTableMultipleChanges targets multiple ALTER operations
 func TestAlterTableMultipleChanges(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestAlterTableMultipleChanges(t *testing.T) {
 
 // TestAlterTableWithFK targets ALTER TABLE with foreign keys
 func TestAlterTableWithFK(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

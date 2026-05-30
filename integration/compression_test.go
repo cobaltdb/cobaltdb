@@ -15,11 +15,13 @@ func TestPageCompressionRoundTrip(t *testing.T) {
 
 	ctx := context.Background()
 	opts := &engine.Options{
-		InMemory: false,
-		CompressionConfig: &storage.CompressionConfig{
-			Enabled:  true,
-			Level:    storage.CompressionLevelFast,
-			MinRatio: 1.0,
+		CoreStorage: engine.CoreStorage{InMemory: false},
+		PageCompression: engine.PageCompressionConfig{
+			Config: &storage.CompressionConfig{
+				Enabled:  true,
+				Level:    storage.CompressionLevelFast,
+				MinRatio: 1.0,
+			},
 		},
 	}
 
@@ -64,9 +66,11 @@ func TestPageCompressionDisabled(t *testing.T) {
 
 	ctx := context.Background()
 	opts := &engine.Options{
-		InMemory: false,
-		CompressionConfig: &storage.CompressionConfig{
-			Enabled: false,
+		CoreStorage: engine.CoreStorage{InMemory: false},
+		PageCompression: engine.PageCompressionConfig{
+			Config: &storage.CompressionConfig{
+				Enabled: false,
+			},
 		},
 	}
 

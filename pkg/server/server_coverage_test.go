@@ -378,7 +378,7 @@ func TestGenClientCertValidCov(t *testing.T) {
 
 func newTPServer(t *testing.T) *ProductionServer {
 	t.Helper()
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +455,7 @@ func TestCBHandlerCov(t *testing.T) {
 }
 
 func TestCBHandlerDisabledCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	cfg := &ProductionConfig{
 		Lifecycle: &LifecycleConfig{
@@ -577,7 +577,7 @@ func TestReadyHandlerAllCov(t *testing.T) {
 }
 
 func TestReadyHandlerNotRunCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	cfg := &ProductionConfig{
 		Lifecycle: &LifecycleConfig{
@@ -599,7 +599,7 @@ func TestReadyHandlerNotRunCov(t *testing.T) {
 // ============ SERVER.GO TESTS ============
 
 func TestGetAuthenticatorCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	s, _ := New(db, DefaultConfig())
 	if s.GetAuthenticator() == nil {
@@ -608,7 +608,7 @@ func TestGetAuthenticatorCov(t *testing.T) {
 }
 
 func TestSetSQLProtectorCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	s, _ := New(db, DefaultConfig())
 	sp := NewSQLProtector(DefaultSQLProtectionConfig())
@@ -619,7 +619,7 @@ func TestSetSQLProtectorCov(t *testing.T) {
 }
 
 func TestClientCountCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	s, _ := New(db, DefaultConfig())
 	if s.ClientCount() != 0 {
@@ -642,7 +642,7 @@ func TestSanitizeErrorCov(t *testing.T) {
 }
 
 func TestNewServerAuthCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	s, err := New(db, &Config{AuthEnabled: true, DefaultAdminUser: "admin", DefaultAdminPass: "Str0ng!Pass#2024"})
 	if err != nil {
@@ -654,7 +654,7 @@ func TestNewServerAuthCov(t *testing.T) {
 }
 
 func TestNewServerTimeoutCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	s, _ := New(db, &Config{ReadTimeout: 10, WriteTimeout: 5})
 	if s.readTimeout != 10*time.Second {
@@ -666,7 +666,7 @@ func TestNewServerTimeoutCov(t *testing.T) {
 }
 
 func TestHandleMsgPrepareCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	s, _ := New(db, DefaultConfig())
 	c1, c2 := net.Pipe()
@@ -691,7 +691,7 @@ func TestHandleMsgPrepareCov(t *testing.T) {
 }
 
 func TestHandleMsgExecuteCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	s, _ := New(db, DefaultConfig())
 	c1, c2 := net.Pipe()
@@ -716,7 +716,7 @@ func TestHandleMsgExecuteCov(t *testing.T) {
 }
 
 func TestPreparedStatementHappyPath(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	s, _ := New(db, DefaultConfig())
 	c1, c2 := net.Pipe()
@@ -758,7 +758,7 @@ func TestPreparedStatementHappyPath(t *testing.T) {
 }
 
 func TestHandleQuerySQLProtCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	s, _ := New(db, DefaultConfig())
 	sp := NewSQLProtector(&SQLProtectionConfig{
@@ -780,7 +780,7 @@ func TestHandleQuerySQLProtCov(t *testing.T) {
 }
 
 func TestHandleQueryPermCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	s, _ := New(db, &Config{AuthEnabled: true, DefaultAdminUser: "admin", DefaultAdminPass: "Str0ng!Pass#2024"})
 	s.auth.CreateUser("r", "Str0ng!Pass#2024", false)
@@ -796,7 +796,7 @@ func TestHandleQueryPermCov(t *testing.T) {
 }
 
 func TestHandleQueryPrefixesCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	s, _ := New(db, DefaultConfig())
 	c1, c2 := net.Pipe()
@@ -852,7 +852,7 @@ func TestRLAllowNClientCov(t *testing.T) {
 // ============ ADMIN SERVER ADDITIONAL TESTS ============
 
 func TestAdminIsRunCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	a := NewAdminServer(db, "127.0.0.1:0")
 	if a.IsRunning() {
@@ -870,7 +870,7 @@ func TestAdminIsRunCov(t *testing.T) {
 }
 
 func TestAdminDefAddrCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	if a := NewAdminServer(db, ""); a.Addr() != "127.0.0.1:8420" {
 		t.Error(a.Addr())
@@ -878,7 +878,7 @@ func TestAdminDefAddrCov(t *testing.T) {
 }
 
 func TestAdminReadyDBCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	a := NewAdminServer(db, "127.0.0.1:0")
 	w := httptest.NewRecorder()
@@ -907,7 +907,7 @@ func TestAdminHealthNoDBCov(t *testing.T) {
 }
 
 func TestAdminDBStatsCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	a := NewAdminServer(db, "127.0.0.1:0")
 	w := httptest.NewRecorder()
@@ -927,7 +927,7 @@ func TestAdminDBStatsNoDBCov(t *testing.T) {
 }
 
 func TestAdminJSONMetricsDBCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	a := NewAdminServer(db, "127.0.0.1:0")
 	w := httptest.NewRecorder()
@@ -949,7 +949,7 @@ func TestAdminJSONMetricsNoDBCov(t *testing.T) {
 // ============ PRODUCTION SERVER FEATURES ============
 
 func TestProdServerRLSQLCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	cfg := &ProductionConfig{
 		Lifecycle: &LifecycleConfig{
@@ -970,7 +970,7 @@ func TestProdServerRLSQLCov(t *testing.T) {
 }
 
 func TestProdServerNilCfgCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	if ps := NewProductionServer(db, nil); ps.Config == nil {
 		t.Error("nil")
@@ -985,7 +985,7 @@ func TestProdServerStartTwiceCov(t *testing.T) {
 }
 
 func TestProdServerStopNotRunCov(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	cfg := &ProductionConfig{
 		Lifecycle: &LifecycleConfig{

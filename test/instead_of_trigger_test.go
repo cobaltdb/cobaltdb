@@ -7,7 +7,7 @@ import (
 )
 
 func TestInsteadOfTrigger_Insert(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestInsteadOfTrigger_Insert(t *testing.T) {
 }
 
 func TestInsteadOfTrigger_Update(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestInsteadOfTrigger_Update(t *testing.T) {
 }
 
 func TestInsteadOfTrigger_Delete(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestInsteadOfTrigger_Delete(t *testing.T) {
 }
 
 func TestInsteadOfTrigger_MultiStatement(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}

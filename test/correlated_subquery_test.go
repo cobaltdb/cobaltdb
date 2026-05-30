@@ -7,7 +7,7 @@ import (
 )
 
 func TestCorrelatedSubquery_Basic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestCorrelatedSubquery_Basic(t *testing.T) {
 }
 
 func TestCorrelatedSubquery_Complex(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestCorrelatedSubquery_Complex(t *testing.T) {
 }
 
 func TestSubquery_IN_Clause(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}

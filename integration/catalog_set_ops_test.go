@@ -9,7 +9,7 @@ import (
 
 // TestUnionBasic tests basic UNION operation
 func TestUnionBasic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestUnionBasic(t *testing.T) {
 
 // TestUnionDeduplication tests UNION (without ALL) removes duplicates
 func TestUnionDeduplication(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestUnionDeduplication(t *testing.T) {
 
 // TestUnionAll tests UNION ALL keeps duplicates
 func TestUnionAll(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestUnionAll(t *testing.T) {
 
 // TestIntersectBasic tests basic INTERSECT operation
 func TestIntersectBasic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestIntersectBasic(t *testing.T) {
 
 // TestExceptBasic tests basic EXCEPT operation
 func TestExceptBasic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestExceptBasic(t *testing.T) {
 
 // TestUnionWithTables tests UNION with actual table data
 func TestUnionWithTables(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

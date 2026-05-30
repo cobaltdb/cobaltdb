@@ -14,7 +14,7 @@ import (
 
 // TestServerBasicStartup tests basic server startup and shutdown
 func TestServerBasicStartup(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestServerBasicStartup(t *testing.T) {
 
 // TestServerAcceptLoop tests connection acceptance under load
 func TestServerAcceptLoop(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestServerAcceptLoop(t *testing.T) {
 
 // TestServerGracefulShutdown tests graceful shutdown with active connections
 func TestServerGracefulShutdown(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestServerGracefulShutdown(t *testing.T) {
 
 // TestServerConnectionTimeout tests connection timeouts
 func TestServerConnectionTimeout(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestServerConnectionTimeout(t *testing.T) {
 
 // TestServerMaxConnections tests max connection limit
 func TestServerMaxConnections(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestServerSignalHandling(t *testing.T) {
 		t.Skip("Skipping signal tests")
 	}
 
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

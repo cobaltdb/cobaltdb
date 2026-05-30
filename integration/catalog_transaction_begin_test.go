@@ -9,7 +9,7 @@ import (
 
 // TestBeginTransaction targets BeginTransaction with various options
 func TestBeginTransaction(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestBeginTransaction(t *testing.T) {
 
 // TestBeginTransactionWithIsolation targets transaction isolation
 func TestBeginTransactionWithIsolation(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestBeginTransactionWithIsolation(t *testing.T) {
 
 // TestNestedBeginTransaction targets nested transaction handling
 func TestNestedBeginTransaction(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestNestedBeginTransaction(t *testing.T) {
 
 // TestBeginTransactionWithConstraints targets deferred constraints
 func TestBeginTransactionWithConstraints(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

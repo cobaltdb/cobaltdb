@@ -7,7 +7,7 @@ import (
 )
 
 func TestRightJoin_Basic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestRightJoin_Basic(t *testing.T) {
 }
 
 func TestRightJoin_EmptyLeftTable(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestRightJoin_EmptyLeftTable(t *testing.T) {
 }
 
 func TestRightJoin_Chained(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}

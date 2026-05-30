@@ -9,7 +9,7 @@ import (
 
 // Test handleQuery with Exec error path
 func TestHandleQueryExecError(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -48,7 +48,7 @@ func TestServerNilDatabase(t *testing.T) {
 
 // Test handleQuery with scan error simulation
 func TestHandleQueryWithScanError(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -76,7 +76,7 @@ func TestHandleQueryWithScanError(t *testing.T) {
 
 // Test handleQuery with UPDATE - additional test
 func TestHandleQueryUpdateMore(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -108,7 +108,7 @@ func TestHandleQueryUpdateMore(t *testing.T) {
 
 // Test handleQuery with DELETE - additional test
 func TestHandleQueryDeleteMore(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -140,7 +140,7 @@ func TestHandleQueryDeleteMore(t *testing.T) {
 
 // Test handleQuery with DROP TABLE
 func TestHandleQueryDropTable(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -167,7 +167,7 @@ func TestHandleQueryDropTable(t *testing.T) {
 
 // Test handleQuery with CREATE INDEX
 func TestHandleQueryCreateIndex(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -198,7 +198,7 @@ func TestHandleQueryCreateIndex(t *testing.T) {
 
 // Test handleQuery with empty result - additional test
 func TestHandleQueryEmptyResultMore(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -228,7 +228,7 @@ func TestHandleQueryEmptyResultMore(t *testing.T) {
 
 // Test handleQuery with multiple rows - additional test
 func TestHandleQueryMultipleRowsMore(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -261,7 +261,7 @@ func TestHandleQueryMultipleRowsMore(t *testing.T) {
 
 // Test handleQuery with INSERT - additional test
 func TestHandleQueryInsertMore(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -292,7 +292,7 @@ func TestHandleQueryInsertMore(t *testing.T) {
 
 // Test handleQuery with prepared statement params - additional test
 func TestHandleQueryWithParamsMore(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -325,7 +325,7 @@ func TestHandleQueryWithParamsMore(t *testing.T) {
 
 // Test handleQuery with WHERE clause returning no results
 func TestHandleQueryNoResults(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup

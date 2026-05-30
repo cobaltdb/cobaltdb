@@ -13,10 +13,7 @@ import (
 )
 
 func TestNewServer(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -41,10 +38,7 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestNewRejectsEmptyAdminPassword(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -61,10 +55,7 @@ func TestNewRejectsEmptyAdminPassword(t *testing.T) {
 }
 
 func TestNewNormalizesNonpositiveTimeouts(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -83,10 +74,7 @@ func TestNewNormalizesNonpositiveTimeouts(t *testing.T) {
 }
 
 func TestServerClose(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -195,7 +183,7 @@ func TestIsBenignNetworkCloseError(t *testing.T) {
 }
 
 func TestServerWithNilConfig(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, err := New(db, nil)
@@ -208,7 +196,7 @@ func TestServerWithNilConfig(t *testing.T) {
 }
 
 func TestHandlePing(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -225,7 +213,7 @@ func TestHandlePing(t *testing.T) {
 }
 
 func TestHandleUnknownMessage(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -246,7 +234,7 @@ func TestHandleUnknownMessage(t *testing.T) {
 }
 
 func TestHandleQueryCreate(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -272,7 +260,7 @@ func TestHandleQueryCreate(t *testing.T) {
 }
 
 func TestHandleQueryInsert(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Create table first
@@ -301,7 +289,7 @@ func TestHandleQueryInsert(t *testing.T) {
 }
 
 func TestHandleQuerySelect(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -334,7 +322,7 @@ func TestHandleQuerySelect(t *testing.T) {
 }
 
 func TestHandleQueryWithParams(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	db.Exec(context.Background(), "CREATE TABLE test (id INTEGER, name TEXT)")
@@ -364,7 +352,7 @@ func TestHandleQueryWithParams(t *testing.T) {
 }
 
 func TestHandleQueryError(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -390,7 +378,7 @@ func TestHandleQueryError(t *testing.T) {
 }
 
 func TestHandleInvalidQueryMessage(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -412,7 +400,7 @@ func TestHandleInvalidQueryMessage(t *testing.T) {
 }
 
 func TestRemoveClient(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -434,7 +422,7 @@ func TestRemoveClient(t *testing.T) {
 }
 
 func TestHandleQueryUpdate(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -465,7 +453,7 @@ func TestHandleQueryUpdate(t *testing.T) {
 }
 
 func TestHandleQueryDelete(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -497,7 +485,7 @@ func TestHandleQueryDelete(t *testing.T) {
 }
 
 func TestHandleQueryEmptyResult(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -529,7 +517,7 @@ func TestHandleQueryEmptyResult(t *testing.T) {
 }
 
 func TestHandleQueryMultipleRows(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -561,7 +549,7 @@ func TestHandleQueryMultipleRows(t *testing.T) {
 }
 
 func TestHandleQueryWhereCondition(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -595,7 +583,7 @@ func TestHandleQueryWhereCondition(t *testing.T) {
 }
 
 func TestHandleMultipleQueries(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -635,7 +623,7 @@ func TestHandleMultipleQueries(t *testing.T) {
 }
 
 func TestHandleDropTable(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -667,7 +655,7 @@ func TestHandleDropTable(t *testing.T) {
 }
 
 func TestHandleCreateIndex(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup

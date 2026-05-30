@@ -9,7 +9,7 @@ import (
 
 // TestUpdateWithFromClause tests UPDATE with FROM clause
 func TestUpdateWithFromClause(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestUpdateWithFromClause(t *testing.T) {
 
 // TestUpdateWithJoinClause tests UPDATE with JOIN syntax
 func TestUpdateWithJoinClause(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestUpdateWithJoinClause(t *testing.T) {
 
 // TestDeleteWithUsingClause tests DELETE with USING clause
 func TestDeleteWithUsingClause(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

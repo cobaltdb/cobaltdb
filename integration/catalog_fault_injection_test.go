@@ -12,7 +12,7 @@ import (
 
 // TestRLSConcurrentAccess tests RLS with concurrent access
 func TestRLSConcurrentAccess(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestRLSConcurrentAccess(t *testing.T) {
 
 // TestFKCascadeDeep tests deep FK cascade operations
 func TestFKCascadeDeep(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestFKCascadeDeep(t *testing.T) {
 
 // TestTransactionRollbackComplex tests complex transaction rollback scenarios
 func TestTransactionRollbackComplex(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestTransactionRollbackComplex(t *testing.T) {
 
 // TestConcurrentTransactions tests concurrent transaction isolation
 func TestConcurrentTransactions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestConcurrentTransactions(t *testing.T) {
 
 // TestQueryCacheRace tests query cache with concurrent access
 func TestQueryCacheRace(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestQueryCacheRace(t *testing.T) {
 // TestWALRecovery tests WAL recovery after crash simulation
 func TestWALRecovery(t *testing.T) {
 	// This test simulates recovery from WAL
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestWALRecovery(t *testing.T) {
 	}
 
 	// Reopen database (triggers recovery)
-	db2, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db2, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to reopen: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestWALRecovery(t *testing.T) {
 
 // TestDeadlockDetection tests deadlock detection
 func TestDeadlockDetection(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

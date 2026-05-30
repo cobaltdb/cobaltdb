@@ -9,7 +9,7 @@ import (
 
 // TestEvaluateWhereComplexComparisons targets evaluateWhere with complex comparisons
 func TestEvaluateWhereComplexComparisons(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestEvaluateWhereComplexComparisons(t *testing.T) {
 
 // TestEvaluateWhereArithmetic targets evaluateWhere with arithmetic expressions
 func TestEvaluateWhereArithmetic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestEvaluateWhereArithmetic(t *testing.T) {
 
 // TestEvaluateWhereStringOperations targets evaluateWhere with string operations
 func TestEvaluateWhereStringOperations(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestEvaluateWhereStringOperations(t *testing.T) {
 
 // TestEvaluateWhereFunctions targets evaluateWhere with SQL functions
 func TestEvaluateWhereFunctions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestEvaluateWhereFunctions(t *testing.T) {
 
 // TestEvaluateWhereExists targets evaluateWhere with EXISTS subqueries
 func TestEvaluateWhereExists(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestEvaluateWhereExists(t *testing.T) {
 
 // TestEvaluateWhereAllAny targets evaluateWhere with ALL/ANY subqueries
 func TestEvaluateWhereAllAny(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestEvaluateWhereAllAny(t *testing.T) {
 
 // TestEvaluateWhereScalarSubquery targets evaluateWhere with scalar subqueries
 func TestEvaluateWhereScalarSubquery(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestEvaluateWhereScalarSubquery(t *testing.T) {
 
 // TestEvaluateWhereDateTime targets evaluateWhere with datetime functions
 func TestEvaluateWhereDateTime(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -495,7 +495,7 @@ func TestEvaluateWhereDateTime(t *testing.T) {
 
 // TestEvaluateWhereQualifiedNames targets evaluateWhere with qualified column names
 func TestEvaluateWhereQualifiedNames(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

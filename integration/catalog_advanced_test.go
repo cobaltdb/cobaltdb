@@ -9,7 +9,7 @@ import (
 
 // TestDeleteRowLockedWithTrigger targets deleteRowLocked with trigger firing
 func TestDeleteRowLockedWithTrigger(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestDeleteRowLockedWithTrigger(t *testing.T) {
 
 // TestEvaluateWhereWithSubquery targets evaluateWhere with subquery
 func TestEvaluateWhereWithSubquery(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestEvaluateWhereWithSubquery(t *testing.T) {
 
 // TestEvaluateWhereWithExists targets evaluateWhere with EXISTS
 func TestEvaluateWhereWithExists(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestEvaluateWhereWithExists(t *testing.T) {
 
 // TestInsertLockedWithDefaults targets insertLocked with DEFAULT values
 func TestInsertLockedWithDefaults(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestInsertLockedWithDefaults(t *testing.T) {
 
 // TestInsertLockedWithExpression targets insertLocked with expression evaluation
 func TestInsertLockedWithExpression(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestInsertLockedWithExpression(t *testing.T) {
 
 // TestRollbackToSavepointDDL targets RollbackToSavepoint with DDL
 func TestRollbackToSavepointDDL(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestRollbackToSavepointDDL(t *testing.T) {
 
 // TestApplyOrderByMultiColumn targets applyOrderBy with multi-column ordering
 func TestApplyOrderByMultiColumn(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestApplyOrderByMultiColumn(t *testing.T) {
 
 // TestApplyOrderByWithNulls targets applyOrderBy with NULL handling
 func TestApplyOrderByWithNulls(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -397,7 +397,9 @@ func TestApplyOrderByWithNulls(t *testing.T) {
 
 // TestSelectLockedWithQueryCache targets selectLocked with query cache
 func TestSelectLockedWithQueryCache(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, err := engine.Open(":memory:", &engine.Options{
+		CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024},
+	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -430,7 +432,7 @@ func TestSelectLockedWithQueryCache(t *testing.T) {
 
 // TestExecuteSelectWithJoinAndGroupByComplex targets executeSelectWithJoinAndGroupBy
 func TestExecuteSelectWithJoinAndGroupByComplex(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -498,7 +500,7 @@ func TestExecuteSelectWithJoinAndGroupByComplex(t *testing.T) {
 
 // TestApplyOuterQueryWithDistinct targets applyOuterQuery with DISTINCT view
 func TestApplyOuterQueryWithDistinct(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -545,7 +547,7 @@ func TestApplyOuterQueryWithDistinct(t *testing.T) {
 
 // TestResolveAggregateInExprWithArithmetic targets resolveAggregateInExpr with arithmetic
 func TestResolveAggregateInExprWithArithmetic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

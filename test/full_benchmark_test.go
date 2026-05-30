@@ -12,10 +12,7 @@ import (
 // FullBenchmarkSuite runs comprehensive benchmarks across all database operations
 func BenchmarkFullSuite(b *testing.B) {
 	ctx := context.Background()
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 2048, // 2048 pages = 8MB
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 2048}})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -641,7 +638,7 @@ func BenchmarkFullInsert20K(b *testing.B) {
 
 func benchmarkFullInsert(b *testing.B, rows int) {
 	ctx := context.Background()
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 2048})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 2048}})
 	defer db.Close()
 
 	tableName := fmt.Sprintf("bench_insert_%d", rows)
@@ -681,7 +678,7 @@ func BenchmarkFullSelect20K(b *testing.B) {
 
 func benchmarkFullSelect(b *testing.B, rows int) {
 	ctx := context.Background()
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 
 	db.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS bench_select_%d", rows))
@@ -706,7 +703,7 @@ func benchmarkFullSelect(b *testing.B, rows int) {
 // BenchmarkComplexQuery tests complex multi-operation queries
 func BenchmarkComplexQuery(b *testing.B) {
 	ctx := context.Background()
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 
 	// Setup schema

@@ -13,7 +13,7 @@ import (
 )
 
 func TestMySQLGoSQLDriverCompatibility(t *testing.T) {
-	engineDB, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	engineDB, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("engine.Open: %v", err)
 	}

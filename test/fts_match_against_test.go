@@ -7,7 +7,7 @@ import (
 )
 
 func TestFTS_MatchAgainst_Basic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestFTS_MatchAgainst_Basic(t *testing.T) {
 }
 
 func TestFTS_MatchAgainst_MultipleWords(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestFTS_MatchAgainst_MultipleWords(t *testing.T) {
 }
 
 func TestFTS_MatchAgainst_SingleColumn(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}

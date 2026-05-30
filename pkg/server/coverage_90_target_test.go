@@ -12,7 +12,7 @@ import (
 
 // TestHandleDBStatsErrorPath tests handleDBStats when Stats returns error
 func TestHandleDBStatsErrorPath(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestHandleDBStatsErrorPath(t *testing.T) {
 
 // TestHandleJSONMetricsWithCollector tests handleJSONMetrics with metrics collector
 func TestHandleJSONMetricsWithCollector(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestHandleJSONMetricsErrorPaths(t *testing.T) {
 
 	// Test with DB but no collector
 	t.Run("NoCollector", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
 		}
@@ -266,7 +266,7 @@ func TestHandlePrometheusMetricsAllPaths(t *testing.T) {
 	})
 
 	t.Run("WithDBNoCollector", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
 		}
@@ -300,7 +300,7 @@ func TestHandleHealthAllStates(t *testing.T) {
 	})
 
 	t.Run("WithDB", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
 		}
@@ -334,7 +334,7 @@ func TestHandleReadyAllStates(t *testing.T) {
 	})
 
 	t.Run("WithDB", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
 		}

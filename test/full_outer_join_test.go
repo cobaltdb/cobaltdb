@@ -7,7 +7,7 @@ import (
 )
 
 func TestFullOuterJoin_Basic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestFullOuterJoin_Basic(t *testing.T) {
 }
 
 func TestFullOuterJoin_NoMatches(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestFullOuterJoin_NoMatches(t *testing.T) {
 }
 
 func TestFullOuterJoin_AllMatches(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestFullOuterJoin_AllMatches(t *testing.T) {
 }
 
 func TestFullOuterJoin_EmptyTables(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}

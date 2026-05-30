@@ -17,7 +17,7 @@ func TestSaveLoadBasic(t *testing.T) {
 	ctx := context.Background()
 
 	// Create and populate database
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestSaveLoadBasic(t *testing.T) {
 	db.Close()
 
 	// Re-open and verify data persisted
-	db2, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestSaveLoadWithIndex(t *testing.T) {
 
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestSaveLoadWithIndex(t *testing.T) {
 	db.Close()
 
 	// Reopen and verify indexes still work
-	db2, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to reopen: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestSaveLoadWithFK(t *testing.T) {
 
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestSaveLoadWithFK(t *testing.T) {
 	db.Close()
 
 	// Reopen and verify FK still works
-	db2, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to reopen: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestSaveLoadWithView(t *testing.T) {
 
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestSaveLoadWithView(t *testing.T) {
 	db.Close()
 
 	// Reopen and verify view
-	db2, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to reopen: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestSaveLoadWithTrigger(t *testing.T) {
 
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestSaveLoadWithTrigger(t *testing.T) {
 	db.Close()
 
 	// Reopen and verify trigger still works
-	db2, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to reopen: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestLoadEmptyDatabase(t *testing.T) {
 	ctx := context.Background()
 
 	// Create empty database
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestLoadEmptyDatabase(t *testing.T) {
 	}
 
 	// Reopen empty database
-	db2, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to reopen empty database: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestLoadWithCorruptedData(t *testing.T) {
 	}
 
 	// Try to open corrupted database
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Logf("Open corrupted database error (expected): %v", err)
 		return

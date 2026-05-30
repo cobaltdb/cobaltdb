@@ -9,7 +9,7 @@ import (
 
 // TestEvaluateLikePatterns targets evaluateLike with various patterns
 func TestEvaluateLikePatterns(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestEvaluateLikePatterns(t *testing.T) {
 
 // TestEvaluateLikeCaseSensitivity targets evaluateLike case sensitivity
 func TestEvaluateLikeCaseSensitivity(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestEvaluateLikeCaseSensitivity(t *testing.T) {
 
 // TestEvaluateLikeWithNULL targets evaluateLike with NULL values
 func TestEvaluateLikeWithNULL(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestEvaluateLikeWithNULL(t *testing.T) {
 
 // TestEvaluateLikeSpecialChars targets evaluateLike with special characters
 func TestEvaluateLikeSpecialChars(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestEvaluateLikeSpecialChars(t *testing.T) {
 
 // TestEvaluateLikeInComplexQueries targets evaluateLike in complex queries
 func TestEvaluateLikeInComplexQueries(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

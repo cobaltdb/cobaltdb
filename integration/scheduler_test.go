@@ -17,11 +17,15 @@ func TestSchedulerAutoVacuumJob(t *testing.T) {
 
 	ctx := context.Background()
 	opts := &engine.Options{
-		InMemory:              false,
-		EnableAutoVacuum:      true,
-		AutoVacuumInterval:    100 * time.Millisecond,
-		AutoVacuumThreshold:   0.15,
-		SchedulerTickInterval: 50 * time.Millisecond,
+		CoreStorage: engine.CoreStorage{InMemory: false},
+		Maintenance: engine.MaintenanceConfig{
+			EnableAutoVacuum:    true,
+			AutoVacuumInterval:  100 * time.Millisecond,
+			AutoVacuumThreshold: 0.15,
+		},
+		Scheduler: engine.SchedulerConfig{
+			TickInterval: 50 * time.Millisecond,
+		},
 	}
 
 	db, err := engine.Open(dbPath, opts)
@@ -54,10 +58,13 @@ func TestSchedulerCustomJob(t *testing.T) {
 
 	var count atomic.Int32
 	opts := &engine.Options{
-		InMemory:              false,
-		EnableScheduler:       true,
-		EnableAutoVacuum:      false,
-		SchedulerTickInterval: 50 * time.Millisecond,
+		CoreStorage: engine.CoreStorage{InMemory: false},
+		Maintenance: engine.MaintenanceConfig{
+			EnableAutoVacuum: false,
+		},
+		Scheduler: engine.SchedulerConfig{
+			TickInterval: 50 * time.Millisecond,
+		},
 	}
 
 	db, err := engine.Open(dbPath, opts)
@@ -114,9 +121,13 @@ func TestSchedulerDisableScheduler(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "scheduler_off.db")
 
 	opts := &engine.Options{
-		InMemory:         false,
-		EnableScheduler:  false,
-		EnableAutoVacuum: false,
+		CoreStorage: engine.CoreStorage{InMemory: false},
+		Maintenance: engine.MaintenanceConfig{
+			EnableAutoVacuum: false,
+		},
+		Scheduler: engine.SchedulerConfig{
+			TickInterval: 0, // disabled
+		},
 	}
 
 	db, err := engine.Open(dbPath, opts)

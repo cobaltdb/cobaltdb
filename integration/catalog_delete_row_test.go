@@ -9,7 +9,7 @@ import (
 
 // TestDeleteRowWithMultipleTriggers targets deleteRowLocked with multiple triggers
 func TestDeleteRowWithMultipleTriggers(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestDeleteRowWithMultipleTriggers(t *testing.T) {
 
 // TestDeleteRowWithFKCascadeChain targets deleteRowLocked with FK cascade chains
 func TestDeleteRowWithFKCascadeChain(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestDeleteRowWithFKCascadeChain(t *testing.T) {
 
 // TestDeleteRowWithFKSetNullChain targets deleteRowLocked with FK SET NULL chains
 func TestDeleteRowWithFKSetNullChain(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestDeleteRowWithFKSetNullChain(t *testing.T) {
 
 // TestDeleteRowWithMixedFKActions targets deleteRowLocked with mixed FK actions
 func TestDeleteRowWithMixedFKActions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestDeleteRowWithMixedFKActions(t *testing.T) {
 
 // TestDeleteRowWithRLS targets deleteRowLocked with RLS policies
 func TestDeleteRowWithRLS(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestDeleteRowWithRLS(t *testing.T) {
 
 // TestDeleteRowReturning targets deleteRowLocked with RETURNING clause
 func TestDeleteRowReturning(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestDeleteRowReturning(t *testing.T) {
 
 // TestDeleteRowWithComplexWhere targets deleteRowLocked with complex WHERE
 func TestDeleteRowWithComplexWhere(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestDeleteRowWithComplexWhere(t *testing.T) {
 	for _, tt := range queries {
 		t.Run(tt.name, func(t *testing.T) {
 			// Re-create table for each test
-			db2, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+			db2, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 			defer db2.Close()
 
 			db2.Exec(ctx, `CREATE TABLE complex_delete (
@@ -510,7 +510,7 @@ func TestDeleteRowWithComplexWhere(t *testing.T) {
 
 // TestDeleteRowWithSubquery targets deleteRowLocked with subquery
 func TestDeleteRowWithSubquery(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

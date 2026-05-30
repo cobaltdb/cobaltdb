@@ -9,7 +9,7 @@ import (
 
 // TestUpdateLockedBasic targets updateLocked with basic operations
 func TestUpdateLockedBasic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestUpdateLockedBasic(t *testing.T) {
 
 // TestUpdateLockedWithSubquery targets updateLocked with subquery
 func TestUpdateLockedWithSubquery(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestUpdateLockedWithSubquery(t *testing.T) {
 
 // TestUpdateLockedWithJoin targets updateLocked with JOIN
 func TestUpdateLockedWithJoin(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestUpdateLockedWithJoin(t *testing.T) {
 
 // TestUpdateLockedWithFK targets updateLocked with foreign key
 func TestUpdateLockedWithFK(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestUpdateLockedWithFK(t *testing.T) {
 
 // TestUpdateLockedWithTrigger targets updateLocked with triggers
 func TestUpdateLockedWithTrigger(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestUpdateLockedWithTrigger(t *testing.T) {
 
 // TestUpdateLockedReturning targets updateLocked with RETURNING
 func TestUpdateLockedReturning(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestUpdateLockedReturning(t *testing.T) {
 
 // TestUpdateLockedComplexWhere targets updateLocked with complex WHERE
 func TestUpdateLockedComplexWhere(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

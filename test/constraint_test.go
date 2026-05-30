@@ -11,7 +11,7 @@ import (
 // Helper to create an in-memory test database
 func newConstraintTestDB(t *testing.T) *engine.DB {
 	t.Helper()
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to create test DB: %v", err)
 	}

@@ -15,7 +15,7 @@ import (
 func newTestClient(db *engine.DB) (*MySQLClient, *mockConn) {
 	conn := newMockConn()
 	if db == nil {
-		db, _ = engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, _ = engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	}
 	server := NewMySQLServer(db, "5.7.0-CobaltDB")
 	client := &MySQLClient{
@@ -144,7 +144,7 @@ func TestPreparedStmtParseExecuteTemporalArgs(t *testing.T) {
 }
 
 func TestHandleStmtPrepare(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestHandleStmtPrepare(t *testing.T) {
 }
 
 func TestHandleStmtExecute(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ func TestHandleStmtExecute(t *testing.T) {
 }
 
 func TestHandleStmtExecuteMultiRowParams(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

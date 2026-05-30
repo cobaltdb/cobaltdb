@@ -9,7 +9,7 @@ import (
 
 // TestAlterTableDropColumnWithData targets AlterTableDropColumn
 func TestAlterTableDropColumnWithData(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestAlterTableDropColumnWithData(t *testing.T) {
 
 // TestAlterTableDropColumnWithIndexDeep targets dropping column with index
 func TestAlterTableDropColumnWithIndexDeep(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestAlterTableDropColumnWithIndexDeep(t *testing.T) {
 
 // TestAlterTableDropLastNonPKColumn targets dropping last non-PK column
 func TestAlterTableDropLastNonPKColumn(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestAlterTableDropLastNonPKColumn(t *testing.T) {
 
 // TestAlterTableDropColumnWithFK targets dropping column with FK reference
 func TestAlterTableDropColumnWithFK(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestAlterTableDropColumnWithFK(t *testing.T) {
 
 // TestAlterTableDropMultipleColumns targets dropping multiple columns
 func TestAlterTableDropMultipleColumns(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

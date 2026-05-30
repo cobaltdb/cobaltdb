@@ -9,7 +9,7 @@ import (
 
 // TestInsertLockedDefaultsDeep targets insertLocked with DEFAULT values
 func TestInsertLockedDefaultsDeep(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestInsertLockedDefaultsDeep(t *testing.T) {
 
 // TestInsertLockedWithExpressions targets insertLocked with expression evaluation
 func TestInsertLockedWithExpressions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestInsertLockedWithExpressions(t *testing.T) {
 
 // TestInsertLockedAutoIncrement targets insertLocked with AUTOINCREMENT
 func TestInsertLockedAutoIncrement(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestInsertLockedAutoIncrement(t *testing.T) {
 
 // TestInsertLockedMultiRow targets insertLocked with multi-row inserts
 func TestInsertLockedMultiRow(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestInsertLockedMultiRow(t *testing.T) {
 
 // TestInsertLockedWithSubquery targets insertLocked with subquery
 func TestInsertLockedWithSubquery(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestInsertLockedWithSubquery(t *testing.T) {
 
 // TestInsertLockedWithFK targets insertLocked with foreign key checks
 func TestInsertLockedWithFK(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestInsertLockedWithFK(t *testing.T) {
 
 // TestInsertLockedWithTrigger targets insertLocked with triggers
 func TestInsertLockedWithTrigger(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestInsertLockedWithTrigger(t *testing.T) {
 
 // TestInsertLockedUniqueConstraint targets insertLocked with unique constraints
 func TestInsertLockedUniqueConstraint(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -16,7 +16,7 @@ func TestPersistenceBasic(t *testing.T) {
 	ctx := context.Background()
 
 	// Create DB and insert data
-	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestPersistenceBasic(t *testing.T) {
 	}
 
 	// Reopen DB
-	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Reopen failed: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestPersistenceRollbackAlterTableRename(t *testing.T) {
 	dbPath := filepath.Join(dir, "ddl_rollback_rename.db")
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestPersistenceRollbackAlterTableRename(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 
-	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Reopen failed: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestPersistenceUniqueIndexEnforcedAfterReopen(t *testing.T) {
 	dbPath := filepath.Join(dir, "unique_index_reopen.db")
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestPersistenceUniqueIndexEnforcedAfterReopen(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 
-	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Reopen failed: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestPersistenceProcedureCallableAfterReopen(t *testing.T) {
 	dbPath := filepath.Join(dir, "procedure_reopen.db")
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestPersistenceProcedureCallableAfterReopen(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 
-	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Reopen failed: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestPersistenceMaterializedViewQueryableAfterReopen(t *testing.T) {
 	dbPath := filepath.Join(dir, "materialized_view_reopen.db")
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestPersistenceMaterializedViewQueryableAfterReopen(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 
-	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Reopen failed: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestPersistenceMaterializedViewJoinAfterReopen(t *testing.T) {
 	dbPath := filepath.Join(dir, "materialized_view_join_reopen.db")
 	ctx := context.Background()
 
-	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestPersistenceMaterializedViewJoinAfterReopen(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 
-	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Reopen failed: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestPersistenceMultipleTables(t *testing.T) {
 	ctx := context.Background()
 
 	// Create DB with multiple tables
-	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestPersistenceMultipleTables(t *testing.T) {
 	db.Close()
 
 	// Reopen
-	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Reopen failed: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestPersistenceLargeDataset(t *testing.T) {
 	ctx := context.Background()
 
 	// Create DB and insert many rows
-	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 128})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestPersistenceLargeDataset(t *testing.T) {
 	db.Close()
 
 	// Reopen
-	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 128})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Reopen failed: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestPersistenceUpdateDelete(t *testing.T) {
 	ctx := context.Background()
 
 	// Phase 1: Create and insert
-	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestPersistenceUpdateDelete(t *testing.T) {
 	db.Close()
 
 	// Phase 2: Reopen, update and delete
-	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Reopen for update failed: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestPersistenceUpdateDelete(t *testing.T) {
 	db2.Close()
 
 	// Phase 3: Reopen and verify
-	db3, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db3, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Reopen for verify failed: %v", err)
 	}
@@ -564,7 +564,7 @@ func TestPersistenceAutoIncrement(t *testing.T) {
 	ctx := context.Background()
 
 	// Phase 1: Create table with autoincrement and insert
-	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestPersistenceAutoIncrement(t *testing.T) {
 	db.Close()
 
 	// Phase 2: Reopen and insert more (should continue from 4)
-	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 64})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 64}})
 	if err != nil {
 		t.Fatalf("Reopen failed: %v", err)
 	}

@@ -482,7 +482,7 @@ func TestMySQLClientSendResultSet(t *testing.T) {
 func TestMySQLClientHandleQuery(t *testing.T) {
 	t.Run("SimpleQuery", func(t *testing.T) {
 		conn := newMockConn()
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Fatalf("Failed to create DB: %v", err)
 		}
@@ -500,7 +500,7 @@ func TestMySQLClientHandleQuery(t *testing.T) {
 
 	t.Run("EmptyQuery", func(t *testing.T) {
 		conn := newMockConn()
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Fatalf("Failed to create DB: %v", err)
 		}
@@ -667,7 +667,7 @@ func TestLenEncIntExtended(t *testing.T) {
 // TestListen tests the Listen method
 func TestListen(t *testing.T) {
 	t.Run("ListenSuccess", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -686,7 +686,7 @@ func TestListen(t *testing.T) {
 	})
 
 	t.Run("ListenInvalidAddress", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -703,7 +703,7 @@ func TestListen(t *testing.T) {
 // TestAcceptLoop tests acceptLoop behavior
 func TestAcceptLoop(t *testing.T) {
 	t.Run("AcceptLoopStopsOnClose", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -737,7 +737,7 @@ func TestAcceptLoop(t *testing.T) {
 // TestHandleConnection tests handleConnection
 func TestHandleConnection(t *testing.T) {
 	t.Run("HandleConnectionEOF", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -751,7 +751,7 @@ func TestHandleConnection(t *testing.T) {
 	})
 
 	t.Run("HandleConnectionWithResponse", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -792,7 +792,7 @@ func TestHandleConnection(t *testing.T) {
 // TestHandleQuery tests handleQuery
 func TestHandleQuery(t *testing.T) {
 	t.Run("HandleQuerySimple", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -811,7 +811,7 @@ func TestHandleQuery(t *testing.T) {
 	})
 
 	t.Run("HandleQueryExec", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}

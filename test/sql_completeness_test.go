@@ -12,7 +12,7 @@ import (
 // Helper to create a fresh in-memory DB for each test
 func newTestDB(t *testing.T) *engine.DB {
 	t.Helper()
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open db: %v", err)
 	}

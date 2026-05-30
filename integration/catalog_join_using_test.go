@@ -9,7 +9,7 @@ import (
 
 // TestJoinUsingSyntax tests JOIN with USING clause
 func TestJoinUsingSyntax(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

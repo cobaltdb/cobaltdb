@@ -178,7 +178,7 @@ func (c *wireClient) ping() error {
 func startTestServer(t *testing.T) (string, *server.Server, *engine.DB) {
 	t.Helper()
 
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open db: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestWireProtocolComplexQueries(t *testing.T) {
 
 // TestWireProtocolAuth tests authentication
 func TestWireProtocolAuth(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open db: %v", err)
 	}
@@ -589,7 +589,7 @@ func TestWireProtocolAuth(t *testing.T) {
 
 // TestMySQLProtocolBasic tests basic MySQL protocol connectivity
 func TestMySQLProtocolBasic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open db: %v", err)
 	}
@@ -715,7 +715,7 @@ func TestWireProtocolLargeDataset(t *testing.T) {
 
 // TestServerGracefulShutdown tests that server shuts down cleanly
 func TestServerGracefulShutdown(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open db: %v", err)
 	}
@@ -761,7 +761,7 @@ func TestServerGracefulShutdown(t *testing.T) {
 
 // TestDirectDBOperations tests the DB engine API directly for completeness
 func TestDirectDBOperations(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open db: %v", err)
 	}

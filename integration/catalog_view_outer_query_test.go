@@ -9,7 +9,7 @@ import (
 
 // TestViewWithDistinct targets applyOuterQuery with DISTINCT views
 func TestViewWithDistinct(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestViewWithDistinct(t *testing.T) {
 
 // TestViewWithGroupBy targets applyOuterQuery with GROUP BY views
 func TestViewWithGroupBy(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestViewWithGroupBy(t *testing.T) {
 
 // TestViewWithWindowFunctions targets applyOuterQuery with window functions
 func TestViewWithWindowFunctions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestViewWithWindowFunctions(t *testing.T) {
 
 // TestNestedViews targets nested view resolution
 func TestNestedViews(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestNestedViews(t *testing.T) {
 
 // TestDerivedTableWithGroupBy targets applyOuterQuery with derived tables
 func TestDerivedTableWithGroupBy(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

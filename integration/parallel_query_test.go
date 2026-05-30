@@ -49,10 +49,7 @@ func TestParallelSelectSameAsSequential(t *testing.T) {
 	}
 
 	// Re-open with parallel disabled to get sequential results
-	db2, err := engine.Open(":memory:", &engine.Options{
-		ParallelWorkers:   0,
-		ParallelThreshold: 1000,
-	})
+	db2, err := engine.Open(":memory:", &engine.Options{ParallelQuery: engine.ParallelQueryConfig{Workers: 0, Threshold: 1000}})
 	if err != nil {
 		t.Fatalf("Failed to open sequential db: %v", err)
 	}
@@ -137,10 +134,7 @@ func TestParallelGroupBySameAsSequential(t *testing.T) {
 	}
 
 	// Sequential comparison
-	db2, err := engine.Open(":memory:", &engine.Options{
-		ParallelWorkers:   0,
-		ParallelThreshold: 1000,
-	})
+	db2, err := engine.Open(":memory:", &engine.Options{ParallelQuery: engine.ParallelQueryConfig{Workers: 0, Threshold: 1000}})
 	if err != nil {
 		t.Fatalf("Failed to open sequential db: %v", err)
 	}
@@ -192,10 +186,7 @@ func TestParallelThresholdRespected(t *testing.T) {
 	ctx := context.Background()
 
 	// Small table should stay sequential even with parallel enabled
-	db, err := engine.Open(":memory:", &engine.Options{
-		ParallelWorkers:   4,
-		ParallelThreshold: 100,
-	})
+	db, err := engine.Open(":memory:", &engine.Options{ParallelQuery: engine.ParallelQueryConfig{Workers: 0, Threshold: 1000}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

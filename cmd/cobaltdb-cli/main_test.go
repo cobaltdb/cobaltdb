@@ -189,7 +189,7 @@ func TestQuoteSQLIdentifier(t *testing.T) {
 }
 
 func TestImportCSVQuotesReservedColumnNames(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

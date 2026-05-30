@@ -9,7 +9,7 @@ import (
 
 // TestInsertWithDefaults targets insertLocked with DEFAULT values
 func TestInsertWithDefaults(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestInsertWithDefaults(t *testing.T) {
 
 // TestInsertExpressions targets insertLocked with expression evaluation
 func TestInsertExpressions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestInsertExpressions(t *testing.T) {
 
 // TestDeleteWithTriggers targets deleteRowLocked with triggers
 func TestDeleteWithTriggers(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestDeleteWithTriggers(t *testing.T) {
 
 // TestDeleteWithFKCascadeDeep targets deleteRowLocked with FK CASCADE (deep test)
 func TestDeleteWithFKCascadeDeep(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestDeleteWithFKCascadeDeep(t *testing.T) {
 
 // TestDeleteWithFKSetNullDeep targets deleteRowLocked with FK SET NULL (deep test)
 func TestDeleteWithFKSetNullDeep(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestDeleteWithFKSetNullDeep(t *testing.T) {
 
 // TestDeleteWithIndexCleanup targets deleteRowLocked with index maintenance
 func TestDeleteWithIndexCleanup(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestDeleteWithIndexCleanup(t *testing.T) {
 
 // TestDeleteWithUndoLog targets deleteRowLocked with transaction rollback
 func TestDeleteWithUndoLog(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

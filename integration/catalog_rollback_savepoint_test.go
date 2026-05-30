@@ -9,7 +9,7 @@ import (
 
 // TestRollbackToSavepointNested targets RollbackToSavepoint with nested savepoints
 func TestRollbackToSavepointNested(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestRollbackToSavepointNested(t *testing.T) {
 
 // TestRollbackToSavepointDDLOps targets RollbackToSavepoint with DDL operations
 func TestRollbackToSavepointDDLOps(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestRollbackToSavepointDDLOps(t *testing.T) {
 
 // TestRollbackToSavepointIndex targets RollbackToSavepoint with index changes
 func TestRollbackToSavepointIndex(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestRollbackToSavepointIndex(t *testing.T) {
 
 // TestRollbackToSavepointFK targets RollbackToSavepoint with foreign key changes
 func TestRollbackToSavepointFK(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestRollbackToSavepointFK(t *testing.T) {
 
 // TestRollbackToSavepointView targets RollbackToSavepoint with view creation
 func TestRollbackToSavepointView(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestRollbackToSavepointView(t *testing.T) {
 
 // TestRollbackToSavepointTrigger targets RollbackToSavepoint with trigger operations
 func TestRollbackToSavepointTrigger(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

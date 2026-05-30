@@ -9,7 +9,7 @@ import (
 
 // TestCommitTransactionBasic targets CommitTransaction with basic operations
 func TestCommitTransactionBasic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestCommitTransactionBasic(t *testing.T) {
 
 // TestCommitTransactionWithFK targets CommitTransaction with FK checks
 func TestCommitTransactionWithFK(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestCommitTransactionWithFK(t *testing.T) {
 
 // TestCommitTransactionDeferredConstraints targets CommitTransaction with deferred constraints
 func TestCommitTransactionDeferredConstraints(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestCommitTransactionDeferredConstraints(t *testing.T) {
 
 // TestRollbackTransactionBasic targets RollbackTransaction
 func TestRollbackTransactionBasic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestRollbackTransactionBasic(t *testing.T) {
 
 // TestRollbackTransactionWithChanges targets RollbackTransaction with schema changes
 func TestRollbackTransactionWithChanges(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestRollbackTransactionWithChanges(t *testing.T) {
 
 // TestCommitRollbackSequence tests multiple commit/rollback sequences
 func TestCommitRollbackSequence(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

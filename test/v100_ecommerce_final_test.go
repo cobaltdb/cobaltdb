@@ -13,7 +13,7 @@ import (
 // =============================================================================
 
 func TestECommerceCompleteScenario(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestECommerceCompleteScenario(t *testing.T) {
 }
 
 func TestECommerceOrderManagement(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestECommerceOrderManagement(t *testing.T) {
 }
 
 func TestECommerceRollbackScenario(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestECommerceRollbackScenario(t *testing.T) {
 }
 
 func TestECommerceAnalyticsReport(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestECommerceAnalyticsReport(t *testing.T) {
 }
 
 func TestECommerceComplexQueries(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestECommerceComplexQueries(t *testing.T) {
 }
 
 func TestECommerceWindowFunctions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -507,7 +507,7 @@ func TestECommerceWindowFunctions(t *testing.T) {
 }
 
 func TestECommerceViewsAndIndexes(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -585,7 +585,7 @@ func TestECommerceViewsAndIndexes(t *testing.T) {
 }
 
 func TestECommerceStringFunctions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -614,7 +614,7 @@ func TestECommerceStringFunctions(t *testing.T) {
 }
 
 func TestECommerceMathFunctions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestECommerceMathFunctions(t *testing.T) {
 }
 
 func TestECommerceJSONFunctions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestECommerceJSONFunctions(t *testing.T) {
 }
 
 func TestECommerceRealWorldDataVolume(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -740,7 +740,7 @@ func TestECommerceRealWorldDataVolume(t *testing.T) {
 }
 
 func TestECommerceCTEsAndSubqueries(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -824,7 +824,7 @@ func TestECommerceCTEsAndSubqueries(t *testing.T) {
 }
 
 func TestECommerceUNIONAndSetOperations(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -904,7 +904,7 @@ func TestECommerceUNIONAndSetOperations(t *testing.T) {
 }
 
 func TestECommerceLimitAndOffset(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -960,7 +960,7 @@ func TestECommerceLimitAndOffset(t *testing.T) {
 }
 
 func TestECommerceCoalesceAndNullHandling(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -1010,7 +1010,7 @@ func TestECommerceCoalesceAndNullHandling(t *testing.T) {
 }
 
 func TestECommerceCastAndTypeConversion(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -9,7 +9,7 @@ import (
 
 // TestViewWithAggregate tests views containing aggregate functions
 func TestViewWithAggregate(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestViewWithAggregate(t *testing.T) {
 
 // TestViewWithGroupByAndHaving tests views with GROUP BY and HAVING
 func TestViewWithGroupByAndHaving(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestViewWithGroupByAndHaving(t *testing.T) {
 
 // TestViewWithDistinctAggregate tests views with DISTINCT
 func TestViewWithDistinctAggregate(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -7,7 +7,7 @@ import (
 )
 
 func TestNaturalJoin_Basic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestNaturalJoin_Basic(t *testing.T) {
 }
 
 func TestNaturalJoin_WithNulls(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestNaturalJoin_WithNulls(t *testing.T) {
 }
 
 func TestNaturalJoin_MultipleCommonColumns(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestNaturalJoin_MultipleCommonColumns(t *testing.T) {
 }
 
 func TestNaturalJoin_NoCommonColumns(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestNaturalJoin_NoCommonColumns(t *testing.T) {
 }
 
 func TestNaturalJoin_Chained(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}

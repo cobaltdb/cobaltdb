@@ -33,9 +33,11 @@ func TestMainFunction(t *testing.T) {
 
 	// Test in-memory mode
 	opts := &engine.Options{
-		CacheSize:  1024,
-		InMemory:   false,
-		WALEnabled: engine.BoolPtr(true),
+		CoreStorage: engine.CoreStorage{
+			CacheSize:  1024,
+			InMemory:   false,
+			WALEnabled: engine.BoolPtr(true),
+		},
 	}
 
 	db, err := engine.Open(dbPath, opts)
@@ -65,9 +67,11 @@ func TestMainFunction(t *testing.T) {
 // TestServerWithInMemoryMode tests server with in-memory database
 func TestServerWithInMemoryMode(t *testing.T) {
 	opts := &engine.Options{
-		CacheSize:  1024,
-		InMemory:   true,
-		WALEnabled: engine.BoolPtr(false),
+		CoreStorage: engine.CoreStorage{
+			CacheSize:  1024,
+			InMemory:   true,
+			WALEnabled: engine.BoolPtr(false),
+		},
 	}
 
 	db, err := engine.Open(":memory:", opts)
@@ -133,9 +137,11 @@ func TestServerConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var dbPath string
 			opts := &engine.Options{
-				CacheSize:  tt.cacheSize,
-				InMemory:   tt.inMemory,
-				WALEnabled: engine.BoolPtr(!tt.inMemory),
+				CoreStorage: engine.CoreStorage{
+					CacheSize:  tt.cacheSize,
+					InMemory:   tt.inMemory,
+					WALEnabled: engine.BoolPtr(!tt.inMemory),
+				},
 			}
 
 			if tt.inMemory {
@@ -452,8 +458,7 @@ func TestDatabasePathConstruction(t *testing.T) {
 // TestServerLifecycle tests server startup and shutdown
 func TestServerLifecycle(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
+		CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -477,8 +482,7 @@ func TestServerLifecycle(t *testing.T) {
 // TestDatabaseOperations tests various database operations
 func TestDatabaseOperations(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
+		CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -522,9 +526,11 @@ func TestConcurrentConnections(t *testing.T) {
 	dbPath := tmpDir + "/concurrent.cobalt"
 
 	db, err := engine.Open(dbPath, &engine.Options{
-		InMemory:   false,
-		CacheSize:  1024,
-		WALEnabled: engine.BoolPtr(true),
+		CoreStorage: engine.CoreStorage{
+			InMemory:   false,
+			CacheSize:  1024,
+			WALEnabled: engine.BoolPtr(true),
+		},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -581,8 +587,7 @@ func TestWireServerComponentStartReturnsListenError(t *testing.T) {
 	defer listener.Close()
 
 	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
+		CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -616,8 +621,7 @@ func TestSignalHandling(t *testing.T) {
 	// This test verifies the signal handling logic exists
 	// Actual signal testing is complex in unit tests
 	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024,
+		CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -653,8 +657,7 @@ func TestCacheSizeConfiguration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db, err := engine.Open(":memory:", &engine.Options{
-				InMemory:  true,
-				CacheSize: tt.cacheSize,
+				CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: tt.cacheSize},
 			})
 			if err != nil {
 				t.Fatalf("Failed to open database with cache size %d: %v", tt.cacheSize, err)
@@ -687,9 +690,11 @@ func TestWALConfiguration(t *testing.T) {
 			}
 
 			opts := &engine.Options{
-				InMemory:   tt.inMemory,
-				WALEnabled: engine.BoolPtr(tt.walEnabled),
-				CacheSize:  1024,
+				CoreStorage: engine.CoreStorage{
+					InMemory:   tt.inMemory,
+					WALEnabled: engine.BoolPtr(tt.walEnabled),
+					CacheSize:  1024,
+				},
 			}
 
 			db, err := engine.Open(dbPath, opts)
@@ -715,9 +720,11 @@ func TestDataDirectoryCreation(t *testing.T) {
 
 	dbPath := dataDir + "/cobalt.cb"
 	db, err := engine.Open(dbPath, &engine.Options{
-		InMemory:   false,
-		WALEnabled: engine.BoolPtr(true),
-		CacheSize:  1024,
+		CoreStorage: engine.CoreStorage{
+			InMemory:   false,
+			WALEnabled: engine.BoolPtr(true),
+			CacheSize:  1024,
+		},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -740,8 +747,7 @@ func TestServerAddressConfiguration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db, err := engine.Open(":memory:", &engine.Options{
-				InMemory:  true,
-				CacheSize: 1024,
+				CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024},
 			})
 			if err != nil {
 				t.Fatalf("Failed to open database: %v", err)

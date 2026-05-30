@@ -9,7 +9,7 @@ import (
 
 // TestApplyOuterQueryWithViewAndWhere targets applyOuterQuery with view + outer WHERE
 func TestApplyOuterQueryWithViewAndWhere(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestApplyOuterQueryWithViewAndWhere(t *testing.T) {
 
 // TestApplyOuterQueryWithDistinctView targets applyOuterQuery with DISTINCT view
 func TestApplyOuterQueryWithDistinctView(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestApplyOuterQueryWithDistinctView(t *testing.T) {
 
 // TestApplyOuterQueryWithAggregateView targets applyOuterQuery with aggregate view
 func TestApplyOuterQueryWithAggregateView(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestApplyOuterQueryWithAggregateView(t *testing.T) {
 
 // TestApplyOuterQueryWithJoinView targets applyOuterQuery with view containing JOIN
 func TestApplyOuterQueryWithJoinView(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestApplyOuterQueryWithJoinView(t *testing.T) {
 
 // TestApplyOuterQueryWithSubqueryView targets applyOuterQuery with view containing subquery
 func TestApplyOuterQueryWithSubqueryView(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestApplyOuterQueryWithSubqueryView(t *testing.T) {
 
 // TestApplyOuterQueryWithUnionView targets applyOuterQuery with view containing UNION
 func TestApplyOuterQueryWithUnionView(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestApplyOuterQueryWithUnionView(t *testing.T) {
 
 // TestApplyOuterQueryWithWindowView targets applyOuterQuery with view containing window functions
 func TestApplyOuterQueryWithWindowView(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestApplyOuterQueryWithWindowView(t *testing.T) {
 
 // TestApplyOuterQueryWithLimitOffset targets applyOuterQuery with LIMIT/OFFSET
 func TestApplyOuterQueryWithLimitOffset(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

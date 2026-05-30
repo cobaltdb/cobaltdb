@@ -19,7 +19,7 @@ func expectColumns(t *testing.T, got []string, want []string) {
 }
 
 func TestMaterializedView_Basic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestMaterializedView_Basic(t *testing.T) {
 }
 
 func TestMaterializedView_JoinWithTable(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestMaterializedView_JoinWithTable(t *testing.T) {
 }
 
 func TestMaterializedView_EmptyJoinDoesNotPanic(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestMaterializedView_EmptyJoinDoesNotPanic(t *testing.T) {
 }
 
 func TestMaterializedView_ColumnOrder(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestMaterializedView_ColumnOrder(t *testing.T) {
 }
 
 func TestMaterializedView_IF_NOT_EXISTS(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestMaterializedView_IF_NOT_EXISTS(t *testing.T) {
 }
 
 func TestMaterializedView_IF_EXISTS(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}

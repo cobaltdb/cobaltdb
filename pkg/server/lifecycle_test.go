@@ -369,7 +369,7 @@ func TestLifecyclePartialConfigUsesSafeDefaults(t *testing.T) {
 }
 
 func TestDBComponent(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open DB: %v", err)
 	}

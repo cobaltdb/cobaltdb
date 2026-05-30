@@ -10,7 +10,7 @@ import (
 // TestCompositePrimaryKey verifies that a multi-column PRIMARY KEY enforces
 // uniqueness over the tuple of values, not just the last PK column.
 func TestCompositePrimaryKey(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestCompositePrimaryKey(t *testing.T) {
 // TestCompositePrimaryKeyMixedTypes covers a composite PK with int + string
 // components to exercise formatKeyComponent's type dispatch.
 func TestCompositePrimaryKeyMixedTypes(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -11,7 +11,7 @@ import (
 
 // TestRLSPolicyCreateAndApply targets RLS policy creation and application
 func TestRLSPolicyCreateAndApply(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestRLSPolicyCreateAndApply(t *testing.T) {
 
 // TestRLSInsertRestriction targets RLS FOR INSERT policies
 func TestRLSInsertRestriction(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestRLSInsertRestriction(t *testing.T) {
 
 // TestRLSUpdateRestriction targets RLS FOR UPDATE policies
 func TestRLSUpdateRestriction(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestRLSUpdateRestriction(t *testing.T) {
 
 // TestRLSDeleteRestriction targets RLS FOR DELETE policies
 func TestRLSDeleteRestriction(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestSaveAndLoadDatabase(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test.db")
 
 	// Create and populate database
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestSaveAndLoadDatabase(t *testing.T) {
 	db.Close()
 
 	// Re-open and verify data persisted
-	db2, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestVacuumDiskDatabase(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "vacuum_test.db")
 
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestVacuumTable(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "vacuum_table.db")
 
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestVacuumTable(t *testing.T) {
 
 // TestAnalyzeTable targets ANALYZE command
 func TestAnalyzeTable(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

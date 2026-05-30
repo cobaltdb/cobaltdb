@@ -14,7 +14,7 @@ import (
 // TestMySQLServerListenAndClose tests Listen and Close methods
 func TestMySQLServerListenAndClose(t *testing.T) {
 	t.Run("ListenAndClose", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -39,7 +39,7 @@ func TestMySQLServerListenAndClose(t *testing.T) {
 	})
 
 	t.Run("CloseWithoutListen", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -55,7 +55,7 @@ func TestMySQLServerListenAndClose(t *testing.T) {
 	})
 
 	t.Run("DoubleClose", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -680,7 +680,7 @@ func TestReadHandshakeResponseVariations(t *testing.T) {
 // TestAcceptLoopVariations tests acceptLoop scenarios
 func TestAcceptLoopVariations(t *testing.T) {
 	t.Run("AcceptAndClose", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -705,7 +705,7 @@ func TestAcceptLoopVariations(t *testing.T) {
 // TestHandleConnectionVariations tests handleConnection scenarios
 func TestHandleConnectionVariations(t *testing.T) {
 	t.Run("ImmediateEOF", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}
@@ -718,7 +718,7 @@ func TestHandleConnectionVariations(t *testing.T) {
 	})
 
 	t.Run("WithHandshakeResponse", func(t *testing.T) {
-		db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
 			t.Skip("Cannot open database:", err)
 		}

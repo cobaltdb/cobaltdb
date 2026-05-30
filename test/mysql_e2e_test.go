@@ -497,7 +497,7 @@ func (c *mysqlTestClient) readResultSet() ([]string, [][]string, error) {
 func startMySQLTestServer(t *testing.T) (string, *protocol.MySQLServer, *engine.DB) {
 	t.Helper()
 
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open db: %v", err)
 	}

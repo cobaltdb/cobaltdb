@@ -43,7 +43,7 @@ func TestFullCRUD(t *testing.T) {
 	os.Remove(dbPath)
 
 	// Create database
-	db, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestFullCRUD(t *testing.T) {
 
 // TestCRUDWithInMemory tests CRUD operations with in-memory database
 func TestCRUDWithInMemory(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open in-memory database: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestCRUDWithInMemory(t *testing.T) {
 
 // TestPrintUsersFunction tests the printUsers function directly
 func TestPrintUsersFunction(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestDatabasePersistence(t *testing.T) {
 	os.Remove(dbPath)
 
 	// Create and populate database
-	db1, err := engine.Open(dbPath, &engine.Options{InMemory: false})
+	db1, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{InMemory: false}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestDatabasePersistence(t *testing.T) {
 
 // TestEmptyDatabaseOperations tests operations on empty database
 func TestEmptyDatabaseOperations(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestEmptyDatabaseOperations(t *testing.T) {
 
 // TestConcurrentCRUD tests concurrent CRUD operations
 func TestConcurrentCRUD(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

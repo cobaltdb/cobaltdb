@@ -10,7 +10,7 @@ import (
 
 // TestCircuitBreakerStateTransitions tests circuit breaker state changes
 func TestCircuitBreakerStateTransitions(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestCircuitBreakerStateTransitions(t *testing.T) {
 
 // TestCircuitBreakerWithFailures tests circuit breaker with repeated failures
 func TestCircuitBreakerWithFailures(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestRetryWithBackoff(t *testing.T) {
 	ctx := context.Background()
 
 	// Open database
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestRetryWithBackoff(t *testing.T) {
 
 // TestConcurrentAccess tests concurrent database access
 func TestConcurrentAccess(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestConcurrentAccess(t *testing.T) {
 
 // TestTransactionRetry tests transaction retry behavior
 func TestTransactionRetry(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestTransactionRetry(t *testing.T) {
 
 // TestTimeoutHandling tests query timeout behavior
 func TestTimeoutHandling(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

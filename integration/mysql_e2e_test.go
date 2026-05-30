@@ -17,7 +17,7 @@ import (
 // and executes real SQL queries through the MySQL wire protocol.
 func TestMySQLProtocolE2E(t *testing.T) {
 	// 1. Setup: create database with test data
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("engine.Open: %v", err)
 	}
@@ -210,7 +210,7 @@ func readOKPacket(t *testing.T, conn net.Conn) int {
 
 // TestMySQLProtocolPing tests COM_PING through the MySQL wire protocol
 func TestMySQLProtocolPing(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("engine.Open: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestMySQLProtocolPing(t *testing.T) {
 
 // TestMySQLProtocolMultiQuery tests multiple queries in sequence
 func TestMySQLProtocolMultiQuery(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 
 	srv := protocol.NewMySQLServer(db, "5.7.0-CobaltDB")
@@ -309,7 +309,7 @@ func TestMySQLProtocolMultiQuery(t *testing.T) {
 
 // TestMySQLServerVersion verifies the server version string in handshake
 func TestMySQLServerVersion(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 
 	srv := protocol.NewMySQLServer(db, "8.0.32-CobaltDB")

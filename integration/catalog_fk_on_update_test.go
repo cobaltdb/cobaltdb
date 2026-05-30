@@ -9,7 +9,7 @@ import (
 
 // TestFKOnUpdateCascade tests ON UPDATE CASCADE behavior
 func TestFKOnUpdateCascade(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestFKOnUpdateCascade(t *testing.T) {
 
 // TestFKOnUpdateSetNull tests ON UPDATE SET NULL behavior
 func TestFKOnUpdateSetNull(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestFKOnUpdateSetNull(t *testing.T) {
 
 // TestFKOnUpdateRestrict tests ON UPDATE RESTRICT behavior
 func TestFKOnUpdateRestrict(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestFKOnUpdateRestrict(t *testing.T) {
 
 // TestFKOnUpdateNoAction tests ON UPDATE NO ACTION behavior (same as RESTRICT)
 func TestFKOnUpdateNoAction(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestFKOnUpdateNoAction(t *testing.T) {
 
 // TestFKOnUpdateCascadeChain tests cascading updates through multiple levels
 func TestFKOnUpdateCascadeChain(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestFKOnUpdateCascadeChain(t *testing.T) {
 
 // TestFKOnUpdateMultipleFKs tests table with multiple foreign keys
 func TestFKOnUpdateMultipleFKs(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -11,10 +11,7 @@ import (
 )
 
 func TestConcurrentInserts(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024, // 1024 pages = 4MB
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -83,10 +80,7 @@ func TestConcurrentInserts(t *testing.T) {
 }
 
 func TestConcurrentReadWrite(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024, // 1024 pages = 4MB
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -141,10 +135,7 @@ func TestConcurrentReadWrite(t *testing.T) {
 }
 
 func TestTransactionIsolation(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024, // 1024 pages = 4MB
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -206,10 +197,7 @@ func TestLargeDataset(t *testing.T) {
 		t.Skip("Skipping large dataset test in short mode")
 	}
 
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 2048, // 2048 pages = 8MB
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -264,10 +252,7 @@ func TestLargeDataset(t *testing.T) {
 }
 
 func TestBatchInsert(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024, // 1024 pages = 4MB
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -319,10 +304,7 @@ func TestBatchInsert(t *testing.T) {
 }
 
 func TestMultipleTables(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024, // 1024 pages = 4MB
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -369,10 +351,7 @@ func TestMultipleTables(t *testing.T) {
 }
 
 func TestConnectionResilience(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024, // 1024 pages = 4MB
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -421,10 +400,7 @@ func TestConnectionResilience(t *testing.T) {
 
 // TestFullDatabaseWorkflow tests a complete database workflow
 func TestFullDatabaseWorkflow(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024, // 1024 pages = 4MB
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -572,10 +548,7 @@ func TestFullDatabaseWorkflow(t *testing.T) {
 // TestTransactionRollbackIntegrity tests that rollback properly restores state
 func TestTransactionRollbackIntegrity(t *testing.T) {
 
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024, // 1024 pages = 4MB
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -635,10 +608,7 @@ func TestTransactionRollbackIntegrity(t *testing.T) {
 
 // TestIndexUsage tests that indexes are used correctly
 func TestIndexUsage(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{
-		InMemory:  true,
-		CacheSize: 1024, // 1024 pages = 4MB
-	})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

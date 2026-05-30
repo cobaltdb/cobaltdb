@@ -14,7 +14,7 @@ import (
 // Bir e-ticaret sistemi: kullanıcılar, ürünler, siparişler, yorumlar
 // Peş peşe SQL sorguları, her özellik test ediliyor
 func TestRealWorldScenario(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("DB açılamadı: %v", err)
 	}
@@ -626,7 +626,7 @@ func TestDiskPersistenceRealWorld(t *testing.T) {
 
 	t.Log("--- Phase 1: Create and populate ---")
 
-	db, err := engine.Open(dbPath, &engine.Options{CacheSize: 128})
+	db, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 128}})
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -698,7 +698,7 @@ func TestDiskPersistenceRealWorld(t *testing.T) {
 	// Phase 2: Reopen and verify
 	t.Log("--- Phase 2: Reopen and verify ---")
 
-	db2, err := engine.Open(dbPath, &engine.Options{CacheSize: 128})
+	db2, err := engine.Open(dbPath, &engine.Options{CoreStorage: engine.CoreStorage{CacheSize: 128}})
 	if err != nil {
 		t.Fatalf("Reopen failed: %v", err)
 	}

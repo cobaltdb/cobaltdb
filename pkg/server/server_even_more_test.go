@@ -12,7 +12,7 @@ import (
 
 // TestServerListen tests the Listen function
 func TestServerListen(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -37,7 +37,7 @@ func TestServerListen(t *testing.T) {
 
 // TestClientConnHandle tests client connection handling
 func TestClientConnHandle(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -73,7 +73,7 @@ func TestClientConnHandle(t *testing.T) {
 
 // TestSendMessage tests sending different message types
 func TestSendMessage(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -130,7 +130,7 @@ func TestSendMessage(t *testing.T) {
 
 // TestSendMessageUnknownType tests sending unknown message type
 func TestSendMessageUnknownType(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -155,7 +155,7 @@ func TestSendMessageUnknownType(t *testing.T) {
 
 // TestSendError tests the sendError function
 func TestSendError(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -226,7 +226,7 @@ func TestHandleQueryWithNilDB(t *testing.T) {
 
 // TestHandleQueryScanError tests handleQuery with scan error
 func TestHandleQueryScanError(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -255,7 +255,7 @@ func TestHandleQueryScanError(t *testing.T) {
 
 // TestServerCloseWithClients tests closing server with active clients
 func TestServerCloseWithClients(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -289,7 +289,7 @@ func TestServerCloseWithClients(t *testing.T) {
 
 // TestServerDoubleClose tests closing server twice
 func TestServerDoubleClose(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -309,7 +309,7 @@ func TestServerDoubleClose(t *testing.T) {
 
 // TestHandleMessageWithEmptyPayload tests handleMessage with empty payload
 func TestHandleMessageWithEmptyPayload(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -332,7 +332,7 @@ func TestHandleMessageWithEmptyPayload(t *testing.T) {
 
 // TestHandleQueryExecPath tests handleQuery exec path
 func TestHandleQueryExecPath(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -362,7 +362,7 @@ func TestHandleQueryExecPath(t *testing.T) {
 
 // TestHandleQuerySelectPath tests handleQuery select path
 func TestHandleQuerySelectPath(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -394,7 +394,7 @@ func TestHandleQuerySelectPath(t *testing.T) {
 
 // TestHandleQueryWithLastInsertID tests handleQuery returns LastInsertID
 func TestHandleQueryWithLastInsertID(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup with AUTOINCREMENT
@@ -423,7 +423,7 @@ func TestHandleQueryWithLastInsertID(t *testing.T) {
 
 // TestRemoveClientNotExists tests removing a client that doesn't exist
 func TestRemoveClientNotExists(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -434,7 +434,7 @@ func TestRemoveClientNotExists(t *testing.T) {
 
 // TestClientConnHandleEOF tests client Handle with EOF
 func TestClientConnHandleEOF(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -489,7 +489,7 @@ func TestNewServerWithNilDB(t *testing.T) {
 
 // TestNewServerWithCustomConfig tests creating server with custom config
 func TestNewServerWithCustomConfig(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	config := &Config{
@@ -507,7 +507,7 @@ func TestNewServerWithCustomConfig(t *testing.T) {
 
 // TestHandleQueryWithMultipleParams tests handleQuery with multiple parameters
 func TestHandleQueryWithMultipleParams(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -539,7 +539,7 @@ func TestHandleQueryWithMultipleParams(t *testing.T) {
 
 // TestHandleQueryWithNoParams tests handleQuery with no parameters
 func TestHandleQueryWithNoParams(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -571,7 +571,7 @@ func TestHandleQueryWithNoParams(t *testing.T) {
 
 // TestHandleQuerySyntaxError tests handleQuery with syntax error
 func TestHandleQuerySyntaxError(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -598,7 +598,7 @@ func TestHandleQuerySyntaxError(t *testing.T) {
 
 // TestHandleQueryWithNilParams tests handleQuery with nil params
 func TestHandleQueryWithNilParams(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -630,7 +630,7 @@ func TestHandleQueryWithNilParams(t *testing.T) {
 
 // TestSendMessageResult tests sendMessage with ResultMessage
 func TestSendMessageResult(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -681,7 +681,7 @@ func TestSendMessageResult(t *testing.T) {
 
 // TestSendMessageError tests sendMessage with ErrorMessage
 func TestSendMessageError(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -732,7 +732,7 @@ func TestSendMessageError(t *testing.T) {
 
 // TestHandleMessagePing tests handleMessage with Ping
 func TestHandleMessagePing(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -750,7 +750,7 @@ func TestHandleMessagePing(t *testing.T) {
 
 // TestHandleMessageQueryDecodeError tests handleMessage with query decode error
 func TestHandleMessageQueryDecodeError(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -773,7 +773,7 @@ func TestHandleMessageQueryDecodeError(t *testing.T) {
 
 // TestHandleMessageUnknownType tests handleMessage with unknown message type
 func TestHandleMessageUnknownType(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -795,7 +795,7 @@ func TestHandleMessageUnknownType(t *testing.T) {
 
 // TestHandleQueryScanFailure tests handleQuery with scan failure
 func TestHandleQueryScanFailure(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	// Setup
@@ -826,7 +826,7 @@ func TestHandleQueryScanFailure(t *testing.T) {
 
 // TestHandleQueryExecFailure tests handleQuery exec path with error
 func TestHandleQueryExecFailure(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -853,7 +853,7 @@ func TestHandleQueryExecFailure(t *testing.T) {
 
 // TestClientConnHandleReadError tests client Handle with read error
 func TestClientConnHandleReadError(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -895,7 +895,7 @@ func TestClientConnHandleReadError(t *testing.T) {
 
 // TestSendMessageEncodeError tests sendMessage with encode error
 func TestSendMessageEncodeError(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -921,7 +921,7 @@ func TestSendMessageEncodeError(t *testing.T) {
 
 // TestHandleAuthSuccess tests successful authentication
 func TestHandleAuthSuccess(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -963,7 +963,7 @@ func TestHandleAuthSuccess(t *testing.T) {
 
 // TestHandleAuthFailure tests failed authentication
 func TestHandleAuthFailure(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -1002,7 +1002,7 @@ func TestHandleAuthFailure(t *testing.T) {
 
 // TestHandleAuthNonExistentUser tests authentication with non-existent user
 func TestHandleAuthNonExistentUser(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -1035,7 +1035,7 @@ func TestHandleAuthNonExistentUser(t *testing.T) {
 
 // TestCheckPermissionAuthDisabled tests checkPermission when auth is disabled
 func TestCheckPermissionAuthDisabled(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -1061,7 +1061,7 @@ func TestCheckPermissionAuthDisabled(t *testing.T) {
 
 // TestCheckPermissionNotAuthenticated tests checkPermission when not authenticated
 func TestCheckPermissionNotAuthenticated(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -1081,7 +1081,7 @@ func TestCheckPermissionNotAuthenticated(t *testing.T) {
 
 // TestCheckPermissionAdminUser tests checkPermission for admin user
 func TestCheckPermissionAdminUser(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -1121,7 +1121,7 @@ func TestCheckPermissionAdminUser(t *testing.T) {
 
 // TestCheckPermissionRegularUser tests checkPermission for regular user
 func TestCheckPermissionRegularUser(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -1143,7 +1143,7 @@ func TestCheckPermissionRegularUser(t *testing.T) {
 
 // TestCheckPermissionUnknownOperation tests checkPermission with unknown SQL
 func TestCheckPermissionUnknownOperation(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -1165,7 +1165,7 @@ func TestCheckPermissionUnknownOperation(t *testing.T) {
 
 // TestCheckPermissionUserNotFound tests checkPermission when user not found
 func TestCheckPermissionUserNotFound(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -1186,7 +1186,7 @@ func TestCheckPermissionUserNotFound(t *testing.T) {
 
 // TestHandleMessageAuth tests handleMessage with Auth message
 func TestHandleMessageAuth(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)
@@ -1226,7 +1226,7 @@ func TestHandleMessageAuth(t *testing.T) {
 
 // TestHandleMessageAuthDecodeError tests handleMessage with auth decode error
 func TestHandleMessageAuthDecodeError(t *testing.T) {
-	db, _ := engine.Open(":memory:", &engine.Options{InMemory: true, CacheSize: 1024})
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
 	srv, _ := New(db, nil)

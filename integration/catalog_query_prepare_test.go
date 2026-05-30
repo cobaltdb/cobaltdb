@@ -9,7 +9,7 @@ import (
 
 // TestPrepareQuerySimple targets prepareQuery with simple queries
 func TestPrepareQuerySimple(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestPrepareQuerySimple(t *testing.T) {
 
 // TestPrepareQueryJoins targets prepareQuery with JOINs
 func TestPrepareQueryJoins(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestPrepareQueryJoins(t *testing.T) {
 
 // TestAnalyzeSelectComplex targets analyzeSelect with complex queries
 func TestAnalyzeSelectComplex(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestAnalyzeSelectComplex(t *testing.T) {
 
 // TestPrepareQueryWithParams targets prepareQuery with parameters
 func TestPrepareQueryWithParams(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestPrepareQueryWithParams(t *testing.T) {
 
 // TestAnalyzeSelectWithIndex targets analyzeSelect with index usage
 func TestAnalyzeSelectWithIndex(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

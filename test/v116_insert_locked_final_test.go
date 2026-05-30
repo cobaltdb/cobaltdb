@@ -50,7 +50,7 @@ func TestInsertLockedIntBoolTypes(t *testing.T) {
 
 // TestInsertLockedRLS tests Row-Level Security during insert
 func TestInsertLockedRLS(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true, EnableRLS: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}, Security: engine.Security{EnableRLS: true}})
 	if err != nil {
 		t.Fatalf("DB open: %v", err)
 	}
