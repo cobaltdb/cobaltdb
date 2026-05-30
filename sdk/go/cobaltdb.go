@@ -205,7 +205,7 @@ func ParseDSN(dsn string) (*Config, error) {
 			case "port":
 				p, err := strconv.Atoi(value)
 				if err != nil {
-					return nil, fmt.Errorf("invalid port: %v", err)
+					return nil, fmt.Errorf("invalid port: %w", err)
 				}
 				cfg.Port = p
 			case "database", "dbname":
@@ -225,19 +225,19 @@ func ParseDSN(dsn string) (*Config, error) {
 			case "connect_timeout":
 				d, err := time.ParseDuration(value)
 				if err != nil {
-					return nil, fmt.Errorf("invalid connect_timeout: %v", err)
+					return nil, fmt.Errorf("invalid connect_timeout: %w", err)
 				}
 				cfg.ConnectTimeout = d
 			case "query_timeout":
 				d, err := time.ParseDuration(value)
 				if err != nil {
-					return nil, fmt.Errorf("invalid query_timeout: %v", err)
+					return nil, fmt.Errorf("invalid query_timeout: %w", err)
 				}
 				cfg.QueryTimeout = d
 			case "max_conns":
 				n, err := strconv.Atoi(value)
 				if err != nil {
-					return nil, fmt.Errorf("invalid max_conns: %v", err)
+					return nil, fmt.Errorf("invalid max_conns: %w", err)
 				}
 				cfg.MaxConnections = n
 			case "application_name":
@@ -250,7 +250,7 @@ func ParseDSN(dsn string) (*Config, error) {
 	if strings.HasPrefix(dsn, "cobaltdb://") {
 		u, err := url.Parse(dsn)
 		if err != nil {
-			return nil, fmt.Errorf("invalid DSN: %v", err)
+			return nil, fmt.Errorf("invalid DSN: %w", err)
 		}
 		cfg.Host = u.Hostname()
 		if u.Port() != "" {
