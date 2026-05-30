@@ -30,10 +30,10 @@ Flush errors now logged, counted (`flushErrCount`), and the flusher halts after 
 `strictExpect` (parser.go:166) already returns an error in strict mode and silently ignores mismatches in permissive mode. Test `TestParseStrictRejectsMalformedJoins` confirms strict mode works. No change needed. — confirmed 2026-05-29.
 
 ### 1.6 [verified — FIXED] `TestConcurrentTransactions` silently swallowed insert errors — `race_detection_test.go:104`
-The test recorded `txnErrs` but never checked it, masking2/50 concurrent insert failures. Test now asserts `txnErrs == 0` before checking row count. The underlying insert failures are a real concurrency bug (separate item). — fixed 2026-05-30.
+The test recorded `txnErrs` but never checked it, masking concurrent insert failures. Test now asserts `txnErrs == 0` before checking row count. Root cause was the data race in `runStatement` (fixed in §1.7). — fixed 2026-05-30.
 
-### 1.7 [lead] Concurrent INSERT failures — `race_detection_test.go:104`
-`TestConcurrentTransactions` now correctly detects that 2/50 concurrent inserts fail silently. The cause is likely in the connection-acquire / statement-execution path under contention. Investigate `acquireConnection` + `releaseConnection` + `connLimit` under concurrent write load. — open2026-05-30.
+### 1.7 [verified — FIXED] Concurrent INSERT failures — `database.go:runStatement`
+Root cause was a data race in `runStatement`: it stored the parsed statement in a mutex-protected DB field (`_parsedStmt`) and retrieved it after the defer was set up. Concurrent Exec/Query calls from different goroutines would overwrite each other's statements. Fix: stmt is already in closure scope — removed the mutex relay entirely. `_parsedStmt`/`_parsedStmtMu` fields removed from DB struct. TestConcurrentTransactions now passes consistently with `-race`. — fixed 2026-05-30.
 
 ### 1.8 [lead] Buffered UPDATE doesn't reject in-txn UNIQUE duplicate — `pkg/catalog` buffered write path
 Buffered UPDATE setting a UNIQUE column to a value already held by another row in the same transaction is not rejected at statement time. `checkUniqueConstraintsSnapshot` (catalog_update.go:268) only scans the committed MVCC tree, not pending writes in the same txn. Intended semantics unconfirmed — needs product decision. — documented 2026-05-29.
