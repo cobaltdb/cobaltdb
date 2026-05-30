@@ -341,47 +341,21 @@ func (ctx *EvalContext) EvalFunctionCall(name string, args []interface{}, distin
 		return val, err
 	}
 
-	switch funcName {
-	case "NULLIF":
-		if len(args) < 2 {
-			return nil, fmt.Errorf("NULLIF requires 2 arguments")
-		}
-		if args[0] == nil || args[1] == nil {
-			return args[0], nil
-		}
-		if compareValues(args[0], args[1]) == 0 {
-			return nil, nil
-		}
-		return args[0], nil
-	case "DATE", "TIME", "DATETIME":
-		if len(args) < 1 {
-			return nil, nil
-		}
-		return args[0], nil
-	case "NOW", "CURRENT_TIMESTAMP", "CURRENT_TIME", "CURRENT_DATE":
-		return time.Now().Format("2006-01-02 15:04:05"), nil
-	case "STRFTIME":
-		if len(args) < 2 || args[1] == nil {
-			return nil, nil
-		}
-		return ValueToStringKey(args[1]), nil
-	case "GROUP_CONCAT":
+	// GROUP_CONCAT is an aggregate that needs distinct handling — keep inline
+	if funcName == "GROUP_CONCAT" {
 		if len(args) >= 1 && args[0] != nil {
 			return ValueToStringKey(args[0]), nil
 		}
 		return nil, nil
-	case "TYPEOF":
-		if len(args) < 1 {
-			return nil, nil
-		}
-		if args[0] == nil {
-			return "null", nil
-		}
-		return fmt.Sprintf("%T", args[0]), nil
-	default:
-		// Check for JSON functions
-		return evaluateJSONFunction(funcName, args)
 	}
+
+	// Dispatch from the scalar function table (covers NULLIF, TYPEOF, DATE/TIME, etc.)
+	if handler, ok := scalarFunctionHandlers[funcName]; ok {
+		return handler(args)
+	}
+
+	// Check for JSON functions
+	return evaluateJSONFunction(funcName, args)
 }
 
 func (ctx *EvalContext) EvalAlias(inner interface{}) (interface{}, error) {
@@ -947,11 +921,11 @@ func evaluateVectorFunction(funcName string, evalArgs []interface{}) (interface{
 		}
 		v1, err := toVector(evalArgs[0])
 		if err != nil {
-			return nil, true, fmt.Errorf("COSINE_SIMILARITY first argument: %v", err)
+			return nil, true, fmt.Errorf("COSINE_SIMILARITY first argument: %w", err)
 		}
 		v2, err := toVector(evalArgs[1])
 		if err != nil {
-			return nil, true, fmt.Errorf("COSINE_SIMILARITY second argument: %v", err)
+			return nil, true, fmt.Errorf("COSINE_SIMILARITY second argument: %w", err)
 		}
 		return cosineSimilarity(v1, v2), true, nil
 
@@ -961,11 +935,11 @@ func evaluateVectorFunction(funcName string, evalArgs []interface{}) (interface{
 		}
 		v1, err := toVector(evalArgs[0])
 		if err != nil {
-			return nil, true, fmt.Errorf("L2_DISTANCE first argument: %v", err)
+			return nil, true, fmt.Errorf("L2_DISTANCE first argument: %w", err)
 		}
 		v2, err := toVector(evalArgs[1])
 		if err != nil {
-			return nil, true, fmt.Errorf("L2_DISTANCE second argument: %v", err)
+			return nil, true, fmt.Errorf("L2_DISTANCE second argument: %w", err)
 		}
 		return l2Distance(v1, v2), true, nil
 
@@ -975,11 +949,11 @@ func evaluateVectorFunction(funcName string, evalArgs []interface{}) (interface{
 		}
 		v1, err := toVector(evalArgs[0])
 		if err != nil {
-			return nil, true, fmt.Errorf("INNER_PRODUCT first argument: %v", err)
+			return nil, true, fmt.Errorf("INNER_PRODUCT first argument: %w", err)
 		}
 		v2, err := toVector(evalArgs[1])
 		if err != nil {
-			return nil, true, fmt.Errorf("INNER_PRODUCT second argument: %v", err)
+			return nil, true, fmt.Errorf("INNER_PRODUCT second argument: %w", err)
 		}
 		return innerProduct(v1, v2), true, nil
 	}
