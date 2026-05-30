@@ -1271,7 +1271,35 @@ func (c *MySQLClient) getStmtMap() map[uint32]*preparedStmt {
 func countPreparedParams(sql string) int {
 	tokens, err := query.Tokenize(sql)
 	if err != nil {
-		return countQuestionMarksOutsideQuotes(sql)
+		// Fallback: count ? marks outside single/double/backtick quotes.
+		// Only used when tokenizer fails; quote handling must stay in sync
+		// with the tokenizer quote recognition.
+		var count int
+		var quote rune
+		escaped := false
+		for _, ch := range sql {
+			if quote != 0 {
+				if escaped {
+					escaped = false
+					continue
+				}
+				if ch == '\\' {
+					escaped = true
+					continue
+				}
+				if ch == quote {
+					quote = 0
+				}
+				continue
+			}
+			switch ch {
+			case '\'', '"', '`':
+				quote = ch
+			case '?':
+				count++
+			}
+		}
+		return count
 	}
 
 	count := 0
@@ -1283,34 +1311,7 @@ func countPreparedParams(sql string) int {
 	return count
 }
 
-func countQuestionMarksOutsideQuotes(sql string) int {
-	var count int
-	var quote rune
-	escaped := false
-	for _, ch := range sql {
-		if quote != 0 {
-			if escaped {
-				escaped = false
-				continue
-			}
-			if ch == '\\' {
-				escaped = true
-				continue
-			}
-			if ch == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch ch {
-		case '\'', '"', '`':
-			quote = ch
-		case '?':
-			count++
-		}
-	}
-	return count
-}
+
 
 func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	sql = strings.TrimSpace(sql)
