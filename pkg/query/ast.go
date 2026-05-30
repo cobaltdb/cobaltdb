@@ -715,8 +715,8 @@ type StringLiteral struct {
 	Value string
 }
 
-func (e *StringLiteral) nodeType() string { return "StringLiteral" }
-func (e *StringLiteral) expressionNode()  {}
+func (e *StringLiteral) nodeType() string                        { return "StringLiteral" }
+func (e *StringLiteral) expressionNode()                         {}
 func (e *StringLiteral) Evaluate(Evaluator) (interface{}, error) { return e.Value, nil }
 
 // NumberLiteral represents a numeric literal
@@ -725,8 +725,8 @@ type NumberLiteral struct {
 	Raw   string
 }
 
-func (e *NumberLiteral) nodeType() string { return "NumberLiteral" }
-func (e *NumberLiteral) expressionNode()  {}
+func (e *NumberLiteral) nodeType() string                        { return "NumberLiteral" }
+func (e *NumberLiteral) expressionNode()                         {}
 func (e *NumberLiteral) Evaluate(Evaluator) (interface{}, error) { return e.Value, nil }
 
 // BooleanLiteral represents a boolean literal
@@ -734,15 +734,15 @@ type BooleanLiteral struct {
 	Value bool
 }
 
-func (e *BooleanLiteral) nodeType() string { return "BooleanLiteral" }
-func (e *BooleanLiteral) expressionNode()  {}
+func (e *BooleanLiteral) nodeType() string                        { return "BooleanLiteral" }
+func (e *BooleanLiteral) expressionNode()                         {}
 func (e *BooleanLiteral) Evaluate(Evaluator) (interface{}, error) { return e.Value, nil }
 
 // NullLiteral represents NULL
 type NullLiteral struct{}
 
-func (e *NullLiteral) nodeType() string { return "NullLiteral" }
-func (e *NullLiteral) expressionNode()  {}
+func (e *NullLiteral) nodeType() string                        { return "NullLiteral" }
+func (e *NullLiteral) expressionNode()                         {}
 func (e *NullLiteral) Evaluate(Evaluator) (interface{}, error) { return nil, nil }
 
 // VectorLiteral represents a vector literal [0.1, 0.2, 0.3, ...]
@@ -750,8 +750,8 @@ type VectorLiteral struct {
 	Values []float64
 }
 
-func (e *VectorLiteral) nodeType() string { return "VectorLiteral" }
-func (e *VectorLiteral) expressionNode()  {}
+func (e *VectorLiteral) nodeType() string                        { return "VectorLiteral" }
+func (e *VectorLiteral) expressionNode()                         {}
 func (e *VectorLiteral) Evaluate(Evaluator) (interface{}, error) { return e.Values, nil }
 
 // BinaryExpr represents a binary expression

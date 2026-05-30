@@ -14,7 +14,7 @@ import (
 
 // TestChaosConcurrentWrites tests concurrent writes with random delays
 func TestChaosConcurrentWrites(t *testing.T) {
-	db, err := engine.Open(":memory:",&engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestChaosRandomQueryPatterns(t *testing.T) {
 
 // TestChaosLongRunningTransactions tests long-running transactions
 func TestChaosLongRunningTransactions(t *testing.T) {
-	db, err := engine.Open(":memory:",&engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestChaosMemoryPressure(t *testing.T) {
 
 // TestChaosConcurrentConnections tests many concurrent connections
 func TestChaosConcurrentConnections(t *testing.T) {
-	db, err := engine.Open(":memory:",&engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

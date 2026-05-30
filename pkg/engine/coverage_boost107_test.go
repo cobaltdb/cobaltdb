@@ -234,8 +234,8 @@ func TestLoadExistingWithAllFeatures(t *testing.T) {
 			QueryCacheTTL:    60,
 		},
 		Backup: BackupConfig{
-			Dir:       filepath.Join(tempDir, "backups"),
-			Retention: 7,
+			Dir:        filepath.Join(tempDir, "backups"),
+			Retention:  7,
 			MaxBackups: 10,
 		},
 	}

@@ -13,9 +13,9 @@ import (
 
 func durabilityTestOptions() *Options {
 	return &Options{
-		CoreStorage: CoreStorage{CacheSize: 128, WALEnabled: BoolPtr(true), SyncMode: SyncFull},
-		Maintenance: MaintenanceConfig{EnableAutoCheckpoint: false, EnableAutoVacuum: false},
-		Scheduler:   SchedulerConfig{EnableScheduler: false, TickInterval: 0},
+		CoreStorage:   CoreStorage{CacheSize: 128, WALEnabled: BoolPtr(true), SyncMode: SyncFull},
+		Maintenance:   MaintenanceConfig{EnableAutoCheckpoint: false, EnableAutoVacuum: false},
+		Scheduler:     SchedulerConfig{EnableScheduler: false, TickInterval: 0},
 		ParallelQuery: ParallelQueryConfig{Workers: 1, Threshold: 1000},
 	}
 }

@@ -1311,8 +1311,6 @@ func countPreparedParams(sql string) int {
 	return count
 }
 
-
-
 func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	sql = strings.TrimSpace(sql)
 	numParams := countPreparedParams(sql)

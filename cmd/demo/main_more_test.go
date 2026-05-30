@@ -11,7 +11,7 @@ import (
 func TestDemoMainOperations(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		CoreStorage: engine.CoreStorage{InMemory: true,
-		CacheSize: 1024},
+			CacheSize: 1024},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -127,7 +127,7 @@ func TestDemoMainOperations(t *testing.T) {
 func TestDemoEdgeCasesMore(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{
 		CoreStorage: engine.CoreStorage{InMemory: true,
-		CacheSize: 1024},
+			CacheSize: 1024},
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)

@@ -36,7 +36,7 @@ func RunCommand(name string, args []string, path string, inMemory bool) bool {
 
 type backupCommand struct{}
 
-func (c *backupCommand) Name() string   { return "backup" }
+func (c *backupCommand) Name() string { return "backup" }
 func (c *backupCommand) Run(args []string, path string, inMemory bool) {
 	db := openDB(path, inMemory)
 	defer db.Close()

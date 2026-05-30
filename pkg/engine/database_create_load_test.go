@@ -62,7 +62,7 @@ func TestCreateNewDatabase(t *testing.T) {
 			options: &Options{
 				CoreStorage: CoreStorage{WALEnabled: BoolPtr(true)},
 				Security:    Security{EnableRLS: true, EncryptionKey: []byte("0123456789abcdef0123456789abcdef")},
-				QueryCache:   QueryCacheConfig{EnableQueryCache: true},
+				QueryCache:  QueryCacheConfig{EnableQueryCache: true},
 			},
 			wantErr: false,
 		},

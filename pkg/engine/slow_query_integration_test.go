@@ -9,11 +9,11 @@ import (
 func TestSlowQueryLogIntegration(t *testing.T) {
 	// Create database with slow query log enabled
 	options := &Options{
-		CoreStorage:  CoreStorage{InMemory: true},
+		CoreStorage: CoreStorage{InMemory: true},
 		SlowQueryLog: SlowQueryLogConfig{
 			EnableSlowQueryLog: true,
-			Threshold:         1 * time.Millisecond,
-			MaxEntries:        100,
+			Threshold:          1 * time.Millisecond,
+			MaxEntries:         100,
 		},
 	}
 
@@ -87,9 +87,9 @@ func TestSlowQueryLogWithFile(t *testing.T) {
 		CoreStorage: CoreStorage{InMemory: true},
 		SlowQueryLog: SlowQueryLogConfig{
 			EnableSlowQueryLog: true,
-			Threshold:         1 * time.Millisecond,
-			MaxEntries:        100,
-			LogFile:           logFile,
+			Threshold:          1 * time.Millisecond,
+			MaxEntries:         100,
+			LogFile:            logFile,
 		},
 	}
 

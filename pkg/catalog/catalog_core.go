@@ -342,7 +342,7 @@ type Catalog struct {
 	rlsManager           *security.Manager                     // Row-level security manager
 	enableRLS            bool                                  // Enable row-level security
 	rlsPolicies          map[string]*security.Policy           // RLS policies: key = "table:policyName"
-	queryCache *cache.Cache                             // Query result cache (owned by pkg/cache)
+	queryCache           *cache.Cache                          // Query result cache (owned by pkg/cache)
 	rlsCtx               context.Context                       // Context for RLS user/role extraction in SELECT
 	lastReturningRows    [][]interface{}                       // Last RETURNING clause results
 	lastReturningColumns []string                              // Column names for RETURNING results
@@ -817,12 +817,12 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	// To enable lock release, we capture all metadata that the scan needs
 	// while the lock is still held. This eliminates the lock-as-read-serialize bottleneck.
 	tableSnapshot := TableSnapshot{
-		Def:         table,
-		Columns:     selectCols,
-		ReturnCols:  returnColumns,
+		Def:          table,
+		Columns:      selectCols,
+		ReturnCols:   returnColumns,
 		IndexMatches: indexMatches,
-		UseIndex:    useIndex,
-		SchemaVer:   cat.schemaVersion.Load(),
+		UseIndex:     useIndex,
+		SchemaVer:    cat.schemaVersion.Load(),
 	}
 	if !isMV && len(trees) == 0 && cat.cteResults != nil {
 		if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {

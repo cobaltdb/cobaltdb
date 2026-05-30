@@ -80,9 +80,9 @@ func TestCloseWithWALCheckpoint(t *testing.T) {
 	// Create database with WAL enabled
 	db, err := Open(dbPath, &Options{
 		CoreStorage: CoreStorage{
-			InMemory:  false,
+			InMemory:   false,
 			WALEnabled: BoolPtr(true),
-			CacheSize: 1024,
+			CacheSize:  1024,
 		},
 	})
 	if err != nil {
@@ -136,9 +136,9 @@ func TestExecuteAutocommit(t *testing.T) {
 	// Open with WAL enabled to trigger autocommit path
 	db, err := Open(dbPath, &Options{
 		CoreStorage: CoreStorage{
-			InMemory:  false,
+			InMemory:   false,
 			WALEnabled: BoolPtr(true),
-			CacheSize: 1024,
+			CacheSize:  1024,
 		},
 	})
 	if err != nil {
@@ -562,9 +562,9 @@ func TestLoadExistingWithWALRecovery(t *testing.T) {
 	// Create database with WAL enabled
 	db, err := Open(dbPath, &Options{
 		CoreStorage: CoreStorage{
-			InMemory:  false,
+			InMemory:   false,
 			WALEnabled: BoolPtr(true),
-			CacheSize: 1024,
+			CacheSize:  1024,
 		},
 	})
 	if err != nil {
@@ -594,9 +594,9 @@ func TestLoadExistingWithWALRecovery(t *testing.T) {
 	// Reopen - should recover from WAL
 	db2, err := Open(dbPath, &Options{
 		CoreStorage: CoreStorage{
-			InMemory:  false,
+			InMemory:   false,
 			WALEnabled: BoolPtr(true),
-			CacheSize: 1024,
+			CacheSize:  1024,
 		},
 	})
 	if err != nil {

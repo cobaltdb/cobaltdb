@@ -197,10 +197,10 @@ func cloneTableStats(stats *TableStats) *TableStats {
 
 	cloned := &TableStats{
 		TableName:    stats.TableName,
-		RowCount:    stats.RowCount,
-		PageCount:   stats.PageCount,
+		RowCount:     stats.RowCount,
+		PageCount:    stats.PageCount,
 		LastAnalyzed: stats.LastAnalyzed,
-		ColumnStats: make(map[string]*ColumnStats, len(stats.ColumnStats)),
+		ColumnStats:  make(map[string]*ColumnStats, len(stats.ColumnStats)),
 	}
 	for name, columnStats := range stats.ColumnStats {
 		cloned.ColumnStats[name] = cloneColumnStats(columnStats)

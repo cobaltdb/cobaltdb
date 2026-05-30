@@ -229,7 +229,11 @@ func exprToString(expr query.Expression) string {
 func containsSubquery(expr query.Expression) bool { return query.ContainsSubquery(expr) }
 
 // hasNonDeterministicFunction is exported for test coverage; delegates to query package.
-func hasNonDeterministicFunction(expr query.Expression) bool { return query.HasNonDeterministicFunction(expr) }
+func hasNonDeterministicFunction(expr query.Expression) bool {
+	return query.HasNonDeterministicFunction(expr)
+}
 
 // containsNonDeterministicFunctions is exported for test coverage; delegates to query package.
-func containsNonDeterministicFunctions(stmt *query.SelectStmt) bool { return query.ContainsNonDeterministicFunctions(stmt) }
+func containsNonDeterministicFunctions(stmt *query.SelectStmt) bool {
+	return query.ContainsNonDeterministicFunctions(stmt)
+}

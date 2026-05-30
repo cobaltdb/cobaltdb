@@ -28,7 +28,7 @@ func BenchmarkInsert(b *testing.B) {
 }
 
 func BenchmarkInsertBatch(b *testing.B) {
-	db, err := engine.Open(":memory:",&engine.Options{
+	db, err := engine.Open(":memory:", &engine.Options{
 		CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 2048},
 	})
 	if err != nil {
@@ -79,7 +79,7 @@ func BenchmarkSelect(b *testing.B) {
 }
 
 func BenchmarkSelectWithScan(b *testing.B) {
-	db, err := engine.Open(":memory:",&engine.Options{
+	db, err := engine.Open(":memory:", &engine.Options{
 		CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 2048},
 	})
 	if err != nil {
@@ -227,7 +227,7 @@ func BenchmarkSelectWithWhere(b *testing.B) {
 }
 
 func BenchmarkSelectWithWhereAndScan(b *testing.B) {
-	db, err := engine.Open(":memory:",&engine.Options{
+	db, err := engine.Open(":memory:", &engine.Options{
 		CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 2048}, // 2048 pages = 8MB
 	})
 	if err != nil {
@@ -338,7 +338,7 @@ func BenchmarkDelete(b *testing.B) {
 }
 
 func BenchmarkDeleteManyRows(b *testing.B) {
-	db, err := engine.Open(":memory:",&engine.Options{
+	db, err := engine.Open(":memory:", &engine.Options{
 		CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 2048}, // 2048 pages = 8MB
 	})
 	if err != nil {
@@ -366,7 +366,7 @@ func BenchmarkDeleteManyRows(b *testing.B) {
 
 // Large dataset benchmarks
 func BenchmarkInsert10K(b *testing.B) {
-	db, err := engine.Open(":memory:",&engine.Options{
+	db, err := engine.Open(":memory:", &engine.Options{
 		CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 2048}, // 2048 pages = 8MB
 	})
 	if err != nil {
