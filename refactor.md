@@ -68,7 +68,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 
 **Low priority**
 - `clone.go` reflection-based clone is unused vs hand-written optimizer copies — pick one (prefer explicit `Clone()` methods).
-- `canUseIndex` returns true without knowing an index exists → skews cost estimates; pass index metadata in.
+- `canUseIndex` returns true without knowing an index exists → skews cost estimates; pass index metadata in. — Partially addressed: `optimizeProjections` (line 265-276) already checks `qo.stats.IndexStats` before setting `IndexHint = "auto"`. The `canUseIndex` helper itself does not verify index existence; fixing it properly requires wiring catalog index metadata into `qo.stats` (not just `IndexStats` which is never populated in normal use).
 - Audit parsed-but-never-executed AST node types (`SHOW`/`SET`/`DESCRIBE`) — implement or document.
 
 ---
@@ -77,7 +77,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 
 **High priority**
 - **`Options` has 50 fields [FIXED 2026-05-29]** (`engine/database.go`) — split into 12 nested option structs (`CoreStorage`, `ConnectionPool`, `Security`, `QueryCache`, `ReplicationConfig`, `BackupConfig`, `SlowQueryLogConfig`, `PlanCacheConfig`, `MaintenanceConfig`, `SchedulerConfig`, `PageCompressionConfig`, `ParallelQueryConfig`). — fixed 2026-05-29 (cf18d53).
-- **`Exec`/`Query` duplicate ~65 lines each** of panic-recovery + conn acquire/release + timeout + metrics + slow-query (`database.go:~519-652`) — extract one `runStatement(isQuery bool, …)`.
+- **`Exec`/`Query` duplicate ~65 lines each** of panic-recovery + conn acquire/release + timeout + metrics + slow-query (`database.go:~519-652`) — extract one `runStatement(isQuery bool, …)`. — **`runStatement` already extracted and in use; Exec/Query both call it (database.go:558).**
 - **`createNew`/`loadExisting` duplicate ~100+ lines** of component init (`database_lifecycle.go:~330-471` vs `~496-673`) — extract `initializeCommonComponents()`.
 - **webui security** (`webui/server.go`) — `--insecure-no-auth`, startup-printed token with no expiry/rotation, arbitrary SQL with no per-token RBAC/rate-limit/audit. Add expiry/rotation, query audit, rate limiting, optional table allow-listing — or confirm webui isn't for production.
 
