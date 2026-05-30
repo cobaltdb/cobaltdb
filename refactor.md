@@ -89,7 +89,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 
 **Medium priority**
 - **MySQL param-counting has two implementations** (`mysql.go:~1265-1307`) that must stay in sync — unify to tokenizer-primary, fallback only on tokenizer error. — **FIXED (2026-05-30): `countQuestionMarksOutsideQuotes` inlined as a labeled fallback inside `countPreparedParams`. One function now; no duplication risk.**
-- `cobaltdb-cli/main.go` (1,375 LOC) dense subcommand `switch` — `Command` interface + registry. Confirm `importCSV` callers check returned errors.
+- `cobaltdb-cli/main.go` (1,375 LOC) dense subcommand `switch` — `Command` interface + registry. Confirm `importCSV` callers check returned errors. — **importCSV caller check DONE (2026-05-30): `runImportCommand` correctly handles error (stderr + exit 1). Switch→interface refactor remaining.**
 - **Verify** `circuit_breaker.go`/`retry.go` are actually wired into the `Exec`/`Query` path and document the policy (they exist; wiring unconfirmed). — **CONFIRMED NOT WIRED (2026-05-30):** `CircuitBreakerManager` and `RetryConfig` exist in `ProductionConfig` but are not present in the `DB` struct and are not called from `Exec`/`Query`/`runStatement`. They are standalone utilities. Wiring would require adding them to `DB` struct and wrapping statement execution. Product decision needed: which operations should be wrapped.
 
 **Low priority / hygiene**
