@@ -1,6 +1,9 @@
 package catalog
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // These tests exercise the buffered/MVCC write path's constraint-checking
 // helpers (checkUniqueConstraintsSnapshot, checkForeignKeyConstraintsSnapshot,
@@ -120,13 +123,6 @@ func TestBufferedUpdateRollbackDiscards(t *testing.T) {
 
 // Buffered UPDATE that changes a UNIQUE column drives the constraint-recheck
 // branches of processUpdateRowDataSnapshot.
-//
-// NOTE: this asserts only the non-conflicting case, which succeeds. An in-txn
-// UPDATE that sets a UNIQUE column to a value already held by another row in the
-// same buffered transaction is NOT rejected at statement time (observed while
-// writing this test). That is a possible correctness gap in the buffered UPDATE
-// path — see refactor.md §5. It is recorded as a lead rather than asserted as
-// correct here, so this test does not lock in that behavior.
 func TestBufferedUpdateUniqueColumnNonConflicting(t *testing.T) {
 	c, _ := createCatalogWithTxnManager(t)
 	bcExec(t, c, "CREATE TABLE bu_uupd (id INTEGER PRIMARY KEY, code TEXT UNIQUE)")
@@ -147,4 +143,94 @@ func toStr(v interface{}) string {
 		return s
 	}
 	return ""
+}
+
+// countWithCode returns how many result rows have column index 1 equal to want.
+func countWithCode(r *QueryResult, want string) int {
+	n := 0
+	for _, row := range r.Rows {
+		if len(row) > 1 && fmtV(row[1]) == want {
+			n++
+		}
+	}
+	return n
+}
+
+func fmtV(v interface{}) string {
+	return fmt.Sprintf("%v", v)
+}
+
+// Regression for the buffered UPDATE UNIQUE gap (refactor.md §1.8): two rows
+// driven to the same unique value in two statements of one txn must be rejected
+// at statement time, not silently committed as a duplicate.
+func TestBufferedUpdateUniqueConflictCrossStatement(t *testing.T) {
+	c, _ := createCatalogWithTxnManager(t)
+	bcExec(t, c, "CREATE TABLE bu_x (id INTEGER PRIMARY KEY, code TEXT UNIQUE)")
+	bcExec(t, c, "INSERT INTO bu_x VALUES (1, 'A')")
+	bcExec(t, c, "INSERT INTO bu_x VALUES (2, 'B')")
+
+	c.BeginTransaction(2)
+	if _, err := c.ExecuteQuery("UPDATE bu_x SET code = 'C' WHERE id = 1"); err != nil {
+		t.Fatalf("first update should succeed: %v", err)
+	}
+	if _, err := c.ExecuteQuery("UPDATE bu_x SET code = 'C' WHERE id = 2"); err == nil {
+		t.Fatal("expected UNIQUE failure for second row taking the same in-txn value")
+	}
+	_ = c.RollbackTransaction()
+
+	r := bcExec(t, c, "SELECT id, code FROM bu_x ORDER BY id")
+	if got := countWithCode(r, "C"); got != 0 {
+		t.Fatalf("rolled-back txn must leave no 'C' rows, got %d", got)
+	}
+}
+
+// A single UPDATE statement that drives multiple rows to the same unique value
+// must be rejected (both buffered and autocommit paths).
+func TestUpdateUniqueConflictWithinStatement(t *testing.T) {
+	for _, buffered := range []bool{false, true} {
+		c, _ := createCatalogWithTxnManager(t)
+		bcExec(t, c, "CREATE TABLE bu_w (id INTEGER PRIMARY KEY, code TEXT UNIQUE)")
+		bcExec(t, c, "INSERT INTO bu_w VALUES (1, 'A')")
+		bcExec(t, c, "INSERT INTO bu_w VALUES (2, 'B')")
+
+		if buffered {
+			c.BeginTransaction(2)
+		}
+		if _, err := c.ExecuteQuery("UPDATE bu_w SET code = 'C'"); err == nil {
+			t.Fatalf("buffered=%v: expected UNIQUE failure setting all rows to one value", buffered)
+		}
+		if buffered {
+			_ = c.RollbackTransaction()
+		}
+
+		r := bcExec(t, c, "SELECT id, code FROM bu_w ORDER BY id")
+		if got := countWithCode(r, "C"); got != 0 {
+			t.Fatalf("buffered=%v: rejected UPDATE must leave no 'C' rows, got %d", buffered, got)
+		}
+	}
+}
+
+// A legitimate value hand-off (one row vacates a value, another reuses it) within
+// the same transaction must still succeed via read-your-writes.
+func TestBufferedUpdateUniqueValueHandoff(t *testing.T) {
+	c, _ := createCatalogWithTxnManager(t)
+	bcExec(t, c, "CREATE TABLE bu_h (id INTEGER PRIMARY KEY, code TEXT UNIQUE)")
+	bcExec(t, c, "INSERT INTO bu_h VALUES (1, 'A')")
+	bcExec(t, c, "INSERT INTO bu_h VALUES (2, 'B')")
+
+	c.BeginTransaction(2)
+	if _, err := c.ExecuteQuery("UPDATE bu_h SET code = 'X' WHERE id = 1"); err != nil {
+		t.Fatalf("vacating update should succeed: %v", err)
+	}
+	if _, err := c.ExecuteQuery("UPDATE bu_h SET code = 'A' WHERE id = 2"); err != nil {
+		t.Fatalf("reusing the vacated value should succeed: %v", err)
+	}
+	if err := c.CommitTransaction(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	r := bcExec(t, c, "SELECT id, code FROM bu_h ORDER BY id")
+	if len(r.Rows) != 2 || fmtV(r.Rows[0][1]) != "X" || fmtV(r.Rows[1][1]) != "A" {
+		t.Fatalf("expected rows [1=X, 2=A] after hand-off, got %v", r.Rows)
+	}
 }

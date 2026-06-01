@@ -265,8 +265,9 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 		}
 	}
 
-	// Check all constraints before applying the update
-	if err := c.checkConstraintsForUpdate(table, tree, key, row, updatedRow, snap, ts, args); err != nil {
+	// Check all constraints before applying the update. *entries holds the rows
+	// already staged by this statement so within-statement unique collisions are caught.
+	if err := c.checkConstraintsForUpdate(table, tree, key, row, updatedRow, snap, ts, args, treeName, *entries); err != nil {
 		return err
 	}
 
@@ -280,39 +281,105 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 	return nil
 }
 
+// hasUpdateUniqueConflict reports whether assigning newVal to the unique column
+// at colIdx for the row keyed selfKey would duplicate the value held by another
+// live row. It honors read-your-writes so the UPDATE statement and transaction
+// see a consistent view:
+//
+//   - collected: rows already updated earlier in this same statement. Their new
+//     values are the freshest and override everything else.
+//   - pendingKeys: buffered writes from earlier statements in the same txn. They
+//     override the committed tree.
+//   - the committed tree, skipping any key superseded above (and skipping selfKey).
+//
+// This catches duplicates introduced purely among rows mutated in one statement
+// or one transaction — which a committed-tree-only scan misses, silently
+// breaking the UNIQUE invariant.
+func (c *Catalog) hasUpdateUniqueConflict(tree btree.TreeStore, table *TableDef, colIdx int,
+	newVal interface{}, selfKey string, pendingKeys map[string]PendingWrite, collected []updateEntry) (bool, error) {
+
+	numCols := len(table.Columns)
+	overridden := make(map[string]struct{}, len(collected))
+	for i := range collected {
+		ek := string(collected[i].key)
+		overridden[ek] = struct{}{}
+		if ek == selfKey {
+			continue
+		}
+		nr := collected[i].newRow
+		if colIdx < len(nr) && nr[colIdx] != nil && compareValues(newVal, nr[colIdx]) == 0 {
+			return true, nil
+		}
+	}
+	for k, pw := range pendingKeys {
+		if k == selfKey {
+			continue
+		}
+		if _, ok := overridden[k]; ok {
+			continue
+		}
+		vrow, err := decodeVersionedRow(pw.Value, numCols)
+		if err != nil {
+			return false, fmt.Errorf("failed to decode pending row during UNIQUE check on table %s: %w", table.Name, err)
+		}
+		if vrow.Version.DeletedAt > 0 {
+			continue
+		}
+		if colIdx < len(vrow.Data) && vrow.Data[colIdx] != nil && compareValues(newVal, vrow.Data[colIdx]) == 0 {
+			return true, nil
+		}
+	}
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to scan table for UNIQUE check: %w", err)
+	}
+	defer iter.Close()
+	for iter.HasNext() {
+		k, existingData, err := iter.Next()
+		if err != nil {
+			return false, fmt.Errorf("failed to read row during UNIQUE check on table %s: %w", table.Name, err)
+		}
+		ks := string(k)
+		if ks == selfKey {
+			continue
+		}
+		if _, ok := overridden[ks]; ok {
+			continue
+		}
+		if _, ok := pendingKeys[ks]; ok {
+			continue
+		}
+		vrow, err := decodeVersionedRow(existingData, numCols)
+		if err != nil {
+			return false, fmt.Errorf("failed to decode row during UNIQUE check on table %s: %w", table.Name, err)
+		}
+		if vrow.Version.DeletedAt > 0 {
+			continue
+		}
+		if colIdx < len(vrow.Data) && vrow.Data[colIdx] != nil && compareValues(newVal, vrow.Data[colIdx]) == 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // checkConstraintsForUpdate validates UNIQUE, NOT NULL, CHECK, and FK constraints
 // for a row update. Returns nil on success, or a descriptive error on constraint failure.
-func (c *Catalog) checkConstraintsForUpdate(table *TableDef, tree btree.TreeStore, key []byte, oldRow, newRow []interface{}, snap *updateSnapshot, ts *catalogTxnState, args []interface{}) error {
+// collected holds the rows already staged by this UPDATE statement so that two rows
+// driven to the same unique value within one statement (or txn) are rejected.
+func (c *Catalog) checkConstraintsForUpdate(table *TableDef, tree btree.TreeStore, key []byte, oldRow, newRow []interface{}, snap *updateSnapshot, ts *catalogTxnState, args []interface{}, treeName string, collected []updateEntry) error {
 	// Check UNIQUE constraints on table columns
+	var pendingKeys map[string]PendingWrite
+	if ts != nil {
+		pendingKeys = ts.getPendingWriteMap()[treeName]
+	}
 	for i, col := range table.Columns {
 		if col.Unique && newRow[i] != nil {
-			checkIter, scanErr := tree.Scan(nil, nil)
-			if scanErr != nil {
-				return fmt.Errorf("failed to scan table for UNIQUE check: %w", scanErr)
+			conflict, err := c.hasUpdateUniqueConflict(tree, table, i, newRow[i], string(key), pendingKeys, collected)
+			if err != nil {
+				return err
 			}
-			duplicate := false
-			for checkIter.HasNext() {
-				checkKey, existingData, err := checkIter.Next()
-				if err != nil {
-					checkIter.Close()
-					return fmt.Errorf("failed to read row during UNIQUE check on table %s: %w", table.Name, err)
-				}
-				if string(checkKey) == string(key) {
-					continue
-				}
-				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
-				if err != nil {
-					checkIter.Close()
-					return fmt.Errorf("failed to decode row during UNIQUE check on table %s: %w", table.Name, err)
-				}
-				existingRow := vrow.Data
-				if len(existingRow) > i && compareValues(newRow[i], existingRow[i]) == 0 {
-					duplicate = true
-					break
-				}
-			}
-			checkIter.Close()
-			if duplicate {
+			if conflict {
 				return fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
 			}
 		}
@@ -1453,38 +1520,16 @@ func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tre
 		}
 	}
 
-	// Check UNIQUE constraints before updating
+	// Check UNIQUE constraints before updating. *entries holds the rows already
+	// staged by this statement so two rows driven to the same unique value within
+	// one statement are rejected instead of silently committing a duplicate.
 	for i, col := range table.Columns {
 		if col.Unique && updatedRow[i] != nil {
-			// Check if another row (not this one) has the same unique value
-			checkIter, scanErr := tree.Scan(nil, nil)
-			if scanErr != nil {
-				return fmt.Errorf("failed to scan table for UNIQUE check: %w", scanErr)
+			conflict, err := c.hasUpdateUniqueConflict(tree, table, i, updatedRow[i], string(key), nil, *entries)
+			if err != nil {
+				return err
 			}
-			duplicate := false
-			for checkIter.HasNext() {
-				checkKey, existingData, err := checkIter.Next()
-				if err != nil {
-					checkIter.Close()
-					return fmt.Errorf("failed to read row during UNIQUE check on table %s: %w", table.Name, err)
-				}
-				// Skip the current row being updated
-				if string(checkKey) == string(key) {
-					continue
-				}
-				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
-				if err != nil {
-					checkIter.Close()
-					return fmt.Errorf("failed to decode row during UNIQUE check on table %s: %w", table.Name, err)
-				}
-				existingRow := vrow.Data
-				if len(existingRow) > i && compareValues(updatedRow[i], existingRow[i]) == 0 {
-					duplicate = true
-					break
-				}
-			}
-			checkIter.Close()
-			if duplicate {
+			if conflict {
 				return fmt.Errorf("UNIQUE constraint failed: %s", col.Name)
 			}
 		}

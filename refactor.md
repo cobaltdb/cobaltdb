@@ -35,8 +35,8 @@ The test recorded `txnErrs` but never checked it, masking concurrent insert fail
 ### 1.7 [verified — FIXED] Concurrent INSERT failures — `database.go:runStatement`
 Root cause was a data race in `runStatement`: it stored the parsed statement in a mutex-protected DB field (`_parsedStmt`) and retrieved it after the defer was set up. Concurrent Exec/Query calls from different goroutines would overwrite each other's statements. Fix: stmt is already in closure scope — removed the mutex relay entirely. `_parsedStmt`/`_parsedStmtMu` fields removed from DB struct. TestConcurrentTransactions now passes consistently with `-race`. — fixed 2026-05-30.
 
-### 1.8 [lead] Buffered UPDATE doesn't reject in-txn UNIQUE duplicate — `pkg/catalog` buffered write path
-Buffered UPDATE setting a UNIQUE column to a value already held by another row in the same transaction is not rejected at statement time. `checkUniqueConstraintsSnapshot` (catalog_update.go:268) only scans the committed MVCC tree, not pending writes in the same txn. Intended semantics unconfirmed — needs product decision. — documented 2026-05-29.
+### 1.8 [verified — FIXED] UPDATE silently broke UNIQUE among rows mutated together — `pkg/catalog` update path
+Root cause was broader than first logged: the per-row UNIQUE check (`checkConstraintsForUpdate` for the buffered path, the inline loop in `processUpdateRowData` for autocommit) scanned **only the committed B-tree**, ignoring (a) other rows updated earlier in the *same statement* and (b) buffered writes from earlier statements in the *same txn*. Confirmed via probe that `UPDATE t SET code='C'` across two rows, and two `UPDATE`s in one txn, both silently committed duplicate UNIQUE values — even in plain autocommit, not just buffered mode. Fix: extracted `hasUpdateUniqueConflict` (catalog_update.go) which checks the staged statement entries and txn pending-writes (read-your-writes, so a legitimate value hand-off still succeeds) before the committed scan; both update paths call it. Regression tests in `buffered_constraints_test.go` (`TestBufferedUpdateUniqueConflictCrossStatement`, `TestUpdateUniqueConflictWithinStatement`, `TestBufferedUpdateUniqueValueHandoff`). — fixed 2026-06-02.
 
 ### 1.7 [policy] Audit write durability — `pkg/audit/logger.go`
 Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file == nil` drop is closed. **Still open:** (a) **retry** on transient I/O errors; (b) optional **fail-secure** mode where a failed audit write aborts the audited operation — a product decision (availability vs. guaranteed auditability).
@@ -140,7 +140,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 
 **P0 — correctness (remaining)**
 1. `CachedPage.Data()` pin-protocol audit / mutation routing (§1.1) — design.
-2. Buffered UPDATE in-txn UNIQUE enforcement (§1.6) — needs product decision.
+2. ~~Buffered UPDATE in-txn UNIQUE enforcement~~ — FIXED 2026-06-02 (§1.8): turned out to be silent UNIQUE corruption in *all* UPDATE modes, not a semantics decision.
 
 **P1 — maintainability**
 3. Decompose `insertLocked`/`updateLocked` — dedicated reviewed pass (§2).
