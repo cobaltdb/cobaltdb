@@ -267,12 +267,6 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 		return nil, err
 	}
 
-	// Get the table's BTree
-	tree, exists := fke.catalog.tableTrees[tableName]
-	if !exists {
-		return result, nil // Table has no data
-	}
-
 	// Get column indices for foreign key columns
 	fkColIndices := make([]int, len(fk.Columns))
 	for i, col := range fk.Columns {
@@ -288,8 +282,46 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 		return nil, fmt.Errorf("pkValues length (%d) does not match fk columns length (%d)", len(pkValues), len(fk.Columns))
 	}
 
-	// Try index-based lookup for single-column FK
-	if len(fk.Columns) == 1 {
+	rowMatches := func(row []interface{}) bool {
+		for i, colIdx := range fkColIndices {
+			if colIdx >= len(row) || !fke.valuesEqual(row[colIdx], pkValues[i]) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Same-txn pending writes for the referencing table override the committed
+	// state (read-your-writes): a child inserted earlier in this txn must be seen
+	// (else deleting/updating the parent would leave a dangling FK at commit), and
+	// a committed child soft-deleted in this txn must not be counted.
+	var pending map[string]PendingWrite
+	if ts := fke.catalog.getCurrentTxn(); ts != nil {
+		pending = ts.getPendingWriteMap()[tableName]
+	}
+	for k, pw := range pending {
+		vrow, decErr := decodeVersionedRow(pw.Value, len(table.Columns))
+		if decErr != nil {
+			return nil, decErr
+		}
+		if vrow.Version.DeletedAt > 0 {
+			continue
+		}
+		if rowMatches(vrow.Data) {
+			result = append(result, fke.deserializeValue([]byte(k)))
+		}
+	}
+
+	// Get the table's BTree
+	tree, exists := fke.catalog.tableTrees[tableName]
+	if !exists {
+		return result, nil // Table has no committed data
+	}
+
+	// Try index-based lookup for single-column FK. Only safe when there are no
+	// pending overrides to reconcile, since the committed index does not reflect
+	// in-txn inserts/deletes (handled by the pending scan above + skip below).
+	if len(pending) == 0 && len(fk.Columns) == 1 {
 		colLower := strings.ToLower(fk.Columns[0])
 		for idxName, idxDef := range fke.catalog.indexes {
 			if idxDef.TableName == tableName && len(idxDef.Columns) == 1 && strings.ToLower(idxDef.Columns[0]) == colLower {
@@ -304,7 +336,8 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 		}
 	}
 
-	// Fallback: full table scan
+	// Fallback: full table scan, skipping rows superseded by a pending write
+	// (already accounted for above).
 	iter, err := tree.Scan([]byte{}, []byte{0xFF})
 	if err != nil {
 		return nil, err
@@ -316,6 +349,9 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 		if err != nil {
 			return nil, err
 		}
+		if _, overridden := pending[string(key)]; overridden {
+			continue
+		}
 
 		vrow, decErr := decodeVersionedRow(value, len(table.Columns))
 		if decErr != nil {
@@ -324,23 +360,9 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 		if vrow.Version.DeletedAt > 0 {
 			continue
 		}
-		row := vrow.Data
 
-		matches := true
-		for i, colIdx := range fkColIndices {
-			if colIdx >= len(row) {
-				matches = false
-				break
-			}
-			if !fke.valuesEqual(row[colIdx], pkValues[i]) {
-				matches = false
-				break
-			}
-		}
-
-		if matches {
-			pk := fke.deserializeValue(key)
-			result = append(result, pk)
+		if rowMatches(vrow.Data) {
+			result = append(result, fke.deserializeValue(key))
 		}
 	}
 

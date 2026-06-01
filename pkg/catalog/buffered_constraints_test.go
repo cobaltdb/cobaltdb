@@ -210,6 +210,53 @@ func TestUpdateUniqueConflictWithinStatement(t *testing.T) {
 	}
 }
 
+// Read-your-writes FK on DELETE: a child inserted earlier in the same txn must
+// block deleting its parent, otherwise commit leaves a dangling foreign key.
+func TestBufferedDeleteParentWithPendingChildRejected(t *testing.T) {
+	c, _ := createCatalogWithTxnManager(t)
+	bcExec(t, c, "CREATE TABLE fk_p (id INTEGER PRIMARY KEY)")
+	bcExec(t, c, "CREATE TABLE fk_c (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES fk_p(id))")
+	bcExec(t, c, "INSERT INTO fk_p VALUES (1)")
+
+	c.BeginTransaction(2)
+	if _, err := c.ExecuteQuery("INSERT INTO fk_c VALUES (10, 1)"); err != nil {
+		t.Fatalf("child insert should succeed: %v", err)
+	}
+	if _, err := c.ExecuteQuery("DELETE FROM fk_p WHERE id = 1"); err == nil {
+		t.Fatal("expected FK violation deleting a parent referenced by a pending child")
+	}
+	_ = c.RollbackTransaction()
+
+	if r := bcExec(t, c, "SELECT id FROM fk_p"); len(r.Rows) != 1 {
+		t.Fatalf("parent must survive the rejected delete, got %d rows", len(r.Rows))
+	}
+}
+
+// Legitimate: if the referencing child is also removed in the same txn, deleting
+// the parent must succeed (the pending delete supersedes the committed child).
+func TestBufferedDeleteParentAfterChildDeletedAllowed(t *testing.T) {
+	c, _ := createCatalogWithTxnManager(t)
+	bcExec(t, c, "CREATE TABLE fk_p2 (id INTEGER PRIMARY KEY)")
+	bcExec(t, c, "CREATE TABLE fk_c2 (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES fk_p2(id))")
+	bcExec(t, c, "INSERT INTO fk_p2 VALUES (1)")
+	bcExec(t, c, "INSERT INTO fk_c2 VALUES (10, 1)")
+
+	c.BeginTransaction(2)
+	if _, err := c.ExecuteQuery("DELETE FROM fk_c2 WHERE id = 10"); err != nil {
+		t.Fatalf("child delete should succeed: %v", err)
+	}
+	if _, err := c.ExecuteQuery("DELETE FROM fk_p2 WHERE id = 1"); err != nil {
+		t.Fatalf("deleting parent after its only child was removed in-txn should succeed: %v", err)
+	}
+	if err := c.CommitTransaction(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if r := bcExec(t, c, "SELECT id FROM fk_p2"); len(r.Rows) != 0 {
+		t.Fatalf("parent should be deleted, got %d rows", len(r.Rows))
+	}
+}
+
 // A legitimate value hand-off (one row vacates a value, another reuses it) within
 // the same transaction must still succeed via read-your-writes.
 func TestBufferedUpdateUniqueValueHandoff(t *testing.T) {
