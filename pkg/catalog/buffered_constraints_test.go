@@ -210,6 +210,45 @@ func TestUpdateUniqueConflictWithinStatement(t *testing.T) {
 	}
 }
 
+// Read-your-writes PK: deleting a row then re-inserting the same PK in one txn
+// must succeed (the pending delete frees the key), and genuine duplicates must
+// still be rejected.
+func TestBufferedDeleteThenReinsertSamePK(t *testing.T) {
+	c, _ := createCatalogWithTxnManager(t)
+	bcExec(t, c, "CREATE TABLE pk_re (id INTEGER PRIMARY KEY, v TEXT)")
+	bcExec(t, c, "INSERT INTO pk_re VALUES (1, 'old')")
+
+	c.BeginTransaction(2)
+	if _, err := c.ExecuteQuery("DELETE FROM pk_re WHERE id = 1"); err != nil {
+		t.Fatalf("delete should succeed: %v", err)
+	}
+	if _, err := c.ExecuteQuery("INSERT INTO pk_re VALUES (1, 'new')"); err != nil {
+		t.Fatalf("re-inserting a PK freed by a pending delete should succeed: %v", err)
+	}
+	if err := c.CommitTransaction(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	r := bcExec(t, c, "SELECT id, v FROM pk_re ORDER BY id")
+	if len(r.Rows) != 1 || fmtV(r.Rows[0][1]) != "new" {
+		t.Fatalf("expected exactly one row [1 new] after delete+reinsert, got %v", r.Rows)
+	}
+}
+
+func TestBufferedDoubleInsertSamePKRejected(t *testing.T) {
+	c, _ := createCatalogWithTxnManager(t)
+	bcExec(t, c, "CREATE TABLE pk_dup (id INTEGER PRIMARY KEY, v TEXT)")
+
+	c.BeginTransaction(2)
+	if _, err := c.ExecuteQuery("INSERT INTO pk_dup VALUES (1, 'a')"); err != nil {
+		t.Fatalf("first insert should succeed: %v", err)
+	}
+	if _, err := c.ExecuteQuery("INSERT INTO pk_dup VALUES (1, 'b')"); err == nil {
+		t.Fatal("expected duplicate PK rejection for a live pending row")
+	}
+	_ = c.RollbackTransaction()
+}
+
 // Read-your-writes FK on DELETE: a child inserted earlier in the same txn must
 // block deleting its parent, otherwise commit leaves a dangling foreign key.
 func TestBufferedDeleteParentWithPendingChildRejected(t *testing.T) {

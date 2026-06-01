@@ -1477,13 +1477,26 @@ func (c *Catalog) keyInPendingWrites(tableName string, key string) bool {
 	if ts == nil || len(ts.pendingWrites) == 0 {
 		return false
 	}
+	// A pending soft-delete frees the key for re-insert, so it must not count as
+	// a live conflicting pending write.
+	pendingDeleted := func(value []byte) bool {
+		numCols := 0
+		if tbl := c.tables[tableName]; tbl != nil {
+			numCols = len(tbl.Columns)
+		}
+		vrow, err := decodeVersionedRow(value, numCols)
+		return err == nil && vrow.Version.DeletedAt > 0
+	}
 	if m, ok := ts.getPendingWriteMap()[tableName]; ok {
-		_, exists := m[key]
-		return exists
+		pw, exists := m[key]
+		if !exists {
+			return false
+		}
+		return !pendingDeleted(pw.Value)
 	}
 	for _, pw := range ts.pendingWrites {
 		if pw.TreeName == tableName && pw.Key == key {
-			return true
+			return !pendingDeleted(pw.Value)
 		}
 	}
 	return false

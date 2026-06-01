@@ -874,6 +874,21 @@ func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []int
 // (IGNORE or REPLACE). Returns (true, nil) to skip the row, (false, nil) to
 // proceed with insert, or (false, error) on failure.
 func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key string) (bool, error) {
+	// Read-your-writes: a pending write in this txn supersedes the committed tree.
+	// If the key was deleted earlier in this same txn, its PK is free for re-insert
+	// even though the committed tree still holds the (not-yet-applied) live row.
+	if ts := c.getCurrentTxn(); ts != nil && len(ts.pendingWrites) > 0 {
+		if m, ok := ts.getPendingWriteMap()[stmt.Table]; ok {
+			if pw, exists := m[key]; exists {
+				if vrow, decErr := decodeVersionedRow(pw.Value, len(table.Columns)); decErr == nil && vrow.Version.DeletedAt > 0 {
+					return false, nil // pending-deleted in this txn -> PK is free
+				}
+				// A pending live row is a genuine in-txn duplicate; it is rejected by
+				// the keyInPendingWrites guard at the call site.
+			}
+		}
+	}
+
 	var existingData []byte
 	var err error
 	if bt, ok := tree.(*btree.BTree); ok {
