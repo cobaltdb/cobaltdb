@@ -57,6 +57,13 @@ Regression tests `TestBufferedUniqueValueFreedByDelete`, `TestBufferedInsertChil
 
 > **Read-your-writes sweep (2026-06-02):** the buffered/MVCC write path had a systematic "constraint check scans committed state only" weakness. Found and fixed across UPDATE-UNIQUE (§1.8), FK-children on delete/update (§1.9), PK delete+reinsert (§1.10), and UNIQUE/FK-parent vs pending-delete (§1.11). Verified safe: INSERT multi-row UNIQUE/NOT NULL, COUNT(*), indexed SELECT, and auto-increment all already overlay pending writes correctly.
 
+### 1.12 [verified — FIXED] UNIQUE-index DELETE + re-INSERT in one txn — statement check and commit ordering — `pkg/catalog/catalog_insert.go`, `pkg/catalog/catalog_txn.go`
+Probing the §1.11 fix against explicit `CREATE UNIQUE INDEX` (single- and multi-column) surfaced two coupled defects:
+1. **Statement-time:** `buildBufferedInsertIndexes`/`…Snapshot` rejected a re-insert of an index value freed by a pending delete, because they read the committed index tree (`idx.tree.Get`) where the entry is still present (the index delete is only buffered). Fixed by replacing the committed-Get + `indexKeyInPendingWrites` pair with a single net-state check (`indexKeyPendingState`): a committed slot counts only if not freed by a pending delete, and a pending insert always counts.
+2. **Commit-time (latent, surfaced by fix 1):** `CommitTransaction` collected buffered index updates into separate `idxPuts`/`idxDels` batches and applied **all puts then all dels**. A delete+re-insert of the same unique key (del + put) therefore applied the put then the del, wiping the entry — the row existed with no index slot, so later duplicates went undetected and indexed lookups missed it. Fixed by collapsing per-key ops to their net effect (last op in `pendingWrites` order wins, via `pendingIdxOp`) so a key never lands in both batches.
+
+Regression test `TestBufferedUniqueIndexValueFreedByDelete` (covers single/multi-column reuse, the post-commit index integrity via a still-rejected duplicate, and the still-rejected live in-txn duplicate). — fixed 2026-06-02.
+
 ### 1.7 [policy] Audit write durability — `pkg/audit/logger.go`
 Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file == nil` drop is closed. **Still open:** (a) **retry** on transient I/O errors; (b) optional **fail-secure** mode where a failed audit write aborts the audited operation — a product decision (availability vs. guaranteed auditability).
 

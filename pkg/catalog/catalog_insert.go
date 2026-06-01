@@ -265,13 +265,10 @@ func (c *Catalog) buildBufferedInsertIndexesSnapshot(table *TableDef, stmt *quer
 		if idx.def.Unique && idx.tree != nil {
 			idxVal, err := idx.tree.Get([]byte(indexKey))
 			c.recordManagerReadTs(ts, idx.name, indexKey, idxVal)
-			if err == nil {
-				if stmt.ConflictAction == query.ConflictIgnore {
-					return nil, true, nil
-				}
-				return nil, false, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idx.name)
-			}
-			if c.indexKeyInPendingWrites(idx.name, indexKey) {
+			// A committed slot counts only if it was not freed by a pending delete
+			// in this txn; a pending insert always counts (read-your-writes).
+			netState := c.indexKeyPendingState(idx.name, indexKey)
+			if (err == nil && netState != -1) || netState == 1 {
 				if stmt.ConflictAction == query.ConflictIgnore {
 					return nil, true, nil
 				}
@@ -1670,13 +1667,10 @@ func (c *Catalog) buildBufferedInsertIndexes(table *TableDef, stmt *query.Insert
 		if idxDef.Unique {
 			idxVal, err := idxTree.Get([]byte(indexKey))
 			c.recordManagerReadTs(ts, idxName, indexKey, idxVal)
-			if err == nil {
-				if stmt.ConflictAction == query.ConflictIgnore {
-					return nil, true, nil
-				}
-				return nil, false, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, idxName)
-			}
-			if c.indexKeyInPendingWrites(idxName, indexKey) {
+			// A committed slot counts only if it was not freed by a pending delete
+			// in this txn; a pending insert always counts (read-your-writes).
+			netState := c.indexKeyPendingState(idxName, indexKey)
+			if (err == nil && netState != -1) || netState == 1 {
 				if stmt.ConflictAction == query.ConflictIgnore {
 					return nil, true, nil
 				}

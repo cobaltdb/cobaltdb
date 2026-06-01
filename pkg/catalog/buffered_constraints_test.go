@@ -249,6 +249,41 @@ func TestBufferedDoubleInsertSamePKRejected(t *testing.T) {
 	_ = c.RollbackTransaction()
 }
 
+// A UNIQUE INDEX slot (single- and multi-column) freed by a pending delete in
+// the same txn can be reused, while genuine duplicates are still rejected.
+func TestBufferedUniqueIndexValueFreedByDelete(t *testing.T) {
+	for _, idx := range []string{
+		"CREATE UNIQUE INDEX uix_s ON uix(code)",
+		"CREATE UNIQUE INDEX uix_c ON uix(code, grp)",
+	} {
+		c, _ := createCatalogWithTxnManager(t)
+		bcExec(t, c, "CREATE TABLE uix (id INTEGER PRIMARY KEY, code TEXT, grp TEXT)")
+		bcExec(t, c, idx)
+		bcExec(t, c, "INSERT INTO uix VALUES (1, 'A', 'g')")
+
+		c.BeginTransaction(2)
+		if _, err := c.ExecuteQuery("DELETE FROM uix WHERE id = 1"); err != nil {
+			t.Fatalf("%s: delete should succeed: %v", idx, err)
+		}
+		if _, err := c.ExecuteQuery("INSERT INTO uix VALUES (2, 'A', 'g')"); err != nil {
+			t.Fatalf("%s: reusing an index value freed by a pending delete should succeed: %v", idx, err)
+		}
+		if err := c.CommitTransaction(); err != nil {
+			t.Fatalf("%s: commit: %v", idx, err)
+		}
+		if r := bcExec(t, c, "SELECT id FROM uix"); len(r.Rows) != 1 || fmtV(r.Rows[0][0]) != "2" {
+			t.Fatalf("%s: expected one row id=2, got %v", idx, r.Rows)
+		}
+
+		// A live in-txn duplicate is still rejected.
+		c.BeginTransaction(3)
+		if _, err := c.ExecuteQuery("INSERT INTO uix VALUES (3, 'A', 'g')"); err == nil {
+			t.Fatalf("%s: expected duplicate rejection against the live row", idx)
+		}
+		_ = c.RollbackTransaction()
+	}
+}
+
 // A UNIQUE value freed by a pending delete in the same txn can be reused.
 func TestBufferedUniqueValueFreedByDelete(t *testing.T) {
 	c, _ := createCatalogWithTxnManager(t)

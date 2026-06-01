@@ -292,6 +292,14 @@ func (c *Catalog) beginTransactionLocked(txnID uint64, managerTxn interface{}) {
 	c.registerGoroutineTxn(cs)
 }
 
+// pendingIdxOp is the net effect of one transaction's buffered updates on a
+// single index key, used to collapse a delete+re-insert (or insert+delete) of
+// the same key to its last operation before applying at commit.
+type pendingIdxOp struct {
+	isDelete bool
+	value    []byte
+}
+
 func (c *Catalog) CommitTransaction() error {
 	ts := c.getCurrentTxn()
 
@@ -356,21 +364,36 @@ func (c *Catalog) CommitTransaction() error {
 				idxPuts := make(map[string][][]byte, numPW)
 				idxPutVals := make(map[string][][]byte, numPW)
 				idxDels := make(map[string][][]byte, numPW)
+				// Collapse repeated ops on the same index key to their net effect
+				// (last op in pendingWrites order wins), so a delete+re-insert of a
+				// unique key ends with the entry present and an insert+delete with it
+				// absent; the same key must not land in both idxPuts and idxDels.
+				idxNet := make(map[string]map[string]pendingIdxOp, numPW)
 				shardSet := make(map[int]struct{}, numPW*2)
 				for _, pw := range ts.pendingWrites {
 					tableKeys[pw.TreeName] = append(tableKeys[pw.TreeName], []byte(pw.Key))
 					tableVals[pw.TreeName] = append(tableVals[pw.TreeName], pw.Value)
 					shardSet[c.commitLockIdx(pw.TreeName, pw.Key)] = struct{}{}
 					for _, idx := range pw.IndexUpdates {
-						if idx.IsDelete {
-							idxDels[idx.IndexName] = append(idxDels[idx.IndexName], []byte(idx.Key))
-						} else {
-							idxPuts[idx.IndexName] = append(idxPuts[idx.IndexName], []byte(idx.Key))
-							idxPutVals[idx.IndexName] = append(idxPutVals[idx.IndexName], idx.Value)
+						m := idxNet[idx.IndexName]
+						if m == nil {
+							m = make(map[string]pendingIdxOp)
+							idxNet[idx.IndexName] = m
 						}
+						m[idx.Key] = pendingIdxOp{isDelete: idx.IsDelete, value: idx.Value}
 						shardSet[c.commitLockIdx(idx.IndexName, idx.Key)] = struct{}{}
 					}
 				}
+					for idxName, m := range idxNet {
+						for k, op := range m {
+							if op.isDelete {
+								idxDels[idxName] = append(idxDels[idxName], []byte(k))
+							} else {
+								idxPuts[idxName] = append(idxPuts[idxName], []byte(k))
+								idxPutVals[idxName] = append(idxPutVals[idxName], op.value)
+							}
+						}
+					}
 				for wk := range ts.readValues {
 					shardSet[c.commitLockIdx(wk.TreeName, wk.Key)] = struct{}{}
 				}
@@ -1517,6 +1540,31 @@ func (c *Catalog) indexKeyInPendingWrites(indexName string, key string) bool {
 		}
 	}
 	return false
+}
+
+// indexKeyPendingState reports the net effect of this txn's buffered index
+// updates on the given index key: +1 if the last pending op is an insert, -1 if
+// it is a delete, 0 if there is no pending op. Walking in append order makes the
+// last op win, so a unique-index slot freed by a pending delete can be reused
+// while one taken by a pending insert is still rejected (read-your-writes).
+func (c *Catalog) indexKeyPendingState(indexName string, key string) int {
+	ts := c.getCurrentTxn()
+	if ts == nil || len(ts.pendingWrites) == 0 {
+		return 0
+	}
+	state := 0
+	for _, pw := range ts.pendingWrites {
+		for _, idx := range pw.IndexUpdates {
+			if idx.IndexName == indexName && idx.Key == key {
+				if idx.IsDelete {
+					state = -1
+				} else {
+					state = 1
+				}
+			}
+		}
+	}
+	return state
 }
 
 // ReplayWALOps replays logical WAL operations (from txn.Manager commit) into
