@@ -13,9 +13,13 @@ Tags: **[verified]** = read the code and confirmed · **[needs-confirmation]** =
 
 ## 1. Correctness & Concurrency — Open Leads
 
-### 1.1 [verified — design task] `CachedPage.Data()` raw mutable handle — `pkg/storage/buffer_pool.go:41`
-`Data()` returns `p.data` lock-free and is used by ~30 call sites in `pkg/storage`/`pkg/btree` as a **mutable** handle (callers write through it). The handicap-report fix (`dataSnapshot()` for the flusher, `WithDataWrite()` for btree flush-writes) closes only the specific flusher-vs-flush-write race; any *other* mutator writing page bytes via raw `Data()` concurrently with a background flush is still a data race. A simple `RLock` on `Data()` does nothing (caller uses the slice after the lock drops).
-**Fix (design, not one-liner):** audit the pin/unpin + btree `flushMu`/shard invariants to prove no raw-`Data()` mutation overlaps a background flush, and document that invariant; *or* route all page-byte mutation through `WithDataWrite` and all flush reads through `dataSnapshot`, keeping `Data()` for read-only-while-pinned use.
+### 1.1 [verified — RESOLVED BY ANALYSIS: no production race] `CachedPage.Data()` raw mutable handle — `pkg/storage/buffer_pool.go:44`
+Audited 2026-06-02. The **production** storage path is race-safe:
+- The only path the engine wires up is `DiskBackend`/`Memory` → `BufferPool` → `btree.BTree` (`btree.NewBTree(pool)`, `database_lifecycle.go:512`). The background flusher *is* started in production (`database_lifecycle.go:458`, 5 s).
+- In `btree.go`, every raw `Data()` use (lines 257, 287, 341, 371) is **read-only** (it copies bytes *out* of the page). Every page-byte **write** goes through `WithDataWrite` (page `mu.Lock`, lines 1072, 1107). The flusher reads through `dataSnapshot` (page `mu.RLock`). So writer↔flusher is Lock↔RLock (safe) and flusher↔btree-read is read↔read (safe); the catalog's single-writer `RWMutex` serializes btree raw-reads against `WithDataWrite`. `go test -race ./pkg/...` is clean.
+- The lock-free page-byte **mutations** this item worried about (`pagemgr.go:71,196-208,217,265,373`; `btree_disk.go:164,373-386,440-442`) live exclusively in `PageManager` + `DiskBTree`, which have **no production callers** — `NewPageManager`/`NewDiskBTree` are referenced only from `btree_disk.go` itself and tests. The engine never constructs them.
+
+So this is not a production correctness risk; it is a latent footgun in unwired, test-only code. **Recommendation (not done — low priority):** either route those `PageManager`/`DiskBTree` mutations through `WithDataWrite` *if* `DiskBTree` is ever productionised, or delete the unused `DiskBTree`/`PageManager` (cf. the same dead-code question raised for `pkg/wasm`).
 
 ### 1.2 [verified — FIXED] Lock-ordering in txn rollback / lock release — `pkg/txn/manager.go:~257-262, 752-778`
 `rollbackLocked` unlocks `t.mu`, calls `ReleaseLock` (takes `lockMu`), then re-locks `t.mu`; other paths take `lockMu` then read txn state. The strict ordering invariant (always `lockMu` before `t.mu`) is documented at the call sites where it would matter. `releaseAllLocksUnderLock` helper is already present (line 803) for single-`lockMu`-acquisition lock release. — closed 2026-05-29.
@@ -139,8 +143,10 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 ## 8. Prioritized Remaining Roadmap
 
 **P0 — correctness (remaining)**
-1. `CachedPage.Data()` pin-protocol audit / mutation routing (§1.1) — design.
+1. ~~`CachedPage.Data()` pin-protocol audit~~ — RESOLVED BY ANALYSIS 2026-06-02 (§1.1): production path (BufferPool + `btree.BTree`) is race-safe; the lock-free mutations are confined to the unwired `PageManager`/`DiskBTree`. No production race; remaining work is low-priority dead-code hardening or removal.
 2. ~~Buffered UPDATE in-txn UNIQUE enforcement~~ — FIXED 2026-06-02 (§1.8): turned out to be silent UNIQUE corruption in *all* UPDATE modes, not a semantics decision.
+
+With both P0 items closed, there are no known open correctness/concurrency defects on the production path.
 
 **P1 — maintainability**
 3. Decompose `insertLocked`/`updateLocked` — dedicated reviewed pass (§2).
