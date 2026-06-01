@@ -266,9 +266,9 @@ type Evaluator interface {
 	EvalQualifiedIdentifier(table, column string) (interface{}, error)
 	EvalPlaceholder(index int) (interface{}, error)
 	EvalLike(val, pattern, escape interface{}, not bool) (interface{}, error)
-	EvalIn(val interface{}, list []interface{}, not bool) (bool, error)
-	EvalInSubquery(val interface{}, q *SelectStmt, not bool) (bool, error)
-	EvalBetween(val, lower, upper interface{}, not bool) (bool, error)
+	EvalIn(val interface{}, list []interface{}, not bool) (interface{}, error)
+	EvalInSubquery(val interface{}, q *SelectStmt, not bool) (interface{}, error)
+	EvalBetween(val, lower, upper interface{}, not bool) (interface{}, error)
 	EvalIsNull(val interface{}, not bool) (bool, error)
 	EvalFunctionCall(name string, args []interface{}, distinct bool) (interface{}, error)
 	EvalAlias(inner interface{}) (interface{}, error)
@@ -898,8 +898,7 @@ func (e *InExpr) Evaluate(ev Evaluator) (interface{}, error) {
 		}
 		list[i] = v
 	}
-	ok, err := ev.EvalIn(val, list, e.Not)
-	return ok, err
+	return ev.EvalIn(val, list, e.Not)
 }
 
 // BetweenExpr represents a BETWEEN expression
@@ -925,8 +924,7 @@ func (e *BetweenExpr) Evaluate(ev Evaluator) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	ok, err := ev.EvalBetween(val, lower, upper, e.Not)
-	return ok, err
+	return ev.EvalBetween(val, lower, upper, e.Not)
 }
 
 // LikeExpr represents a LIKE expression

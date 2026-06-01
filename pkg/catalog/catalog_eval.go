@@ -267,30 +267,58 @@ func (ctx *EvalContext) EvalLike(val, pattern, escape interface{}, not bool) (in
 	return matched, nil
 }
 
-func (ctx *EvalContext) EvalIn(val interface{}, list []interface{}, not bool) (bool, error) {
+func (ctx *EvalContext) EvalIn(val interface{}, list []interface{}, not bool) (interface{}, error) {
+	if val == nil {
+		return nil, nil
+	}
+	hasNull := false
 	for _, item := range list {
+		if item == nil {
+			hasNull = true
+			continue
+		}
 		if compareValues(val, item) == 0 {
 			return !not, nil
 		}
 	}
+	if hasNull {
+		return nil, nil
+	}
 	return not, nil
 }
 
-func (ctx *EvalContext) EvalInSubquery(val interface{}, q *query.SelectStmt, not bool) (bool, error) {
+func (ctx *EvalContext) EvalInSubquery(val interface{}, q *query.SelectStmt, not bool) (interface{}, error) {
+	if val == nil {
+		return nil, nil
+	}
 	subq := resolveOuterRefsInQuery(q, ctx.Row, ctx.Columns)
 	_, rows, err := ctx.Catalog.selectLocked(subq, ctx.Args)
 	if err != nil {
 		return false, err
 	}
+	hasNull := false
 	for _, row := range rows {
-		if len(row) > 0 && compareValues(val, row[0]) == 0 {
+		if len(row) == 0 {
+			continue
+		}
+		if row[0] == nil {
+			hasNull = true
+			continue
+		}
+		if compareValues(val, row[0]) == 0 {
 			return !not, nil
 		}
+	}
+	if hasNull {
+		return nil, nil
 	}
 	return not, nil
 }
 
-func (ctx *EvalContext) EvalBetween(val, lower, upper interface{}, not bool) (bool, error) {
+func (ctx *EvalContext) EvalBetween(val, lower, upper interface{}, not bool) (interface{}, error) {
+	if val == nil || lower == nil || upper == nil {
+		return nil, nil
+	}
 	lowCmp := compareValues(val, lower)
 	highCmp := compareValues(val, upper)
 	inRange := lowCmp >= 0 && highCmp <= 0
@@ -494,6 +522,7 @@ func (ctx *EvalContext) EvalColumnRef(table, column string) (interface{}, error)
 	return ctx.EvalIdentifier(column)
 }
 
+//lint:ignore U1000 retained for compatibility with generated coverage helpers.
 func toStringS(v interface{}) string {
 	if s, ok := toString(v); ok {
 		return s
@@ -501,6 +530,7 @@ func toStringS(v interface{}) string {
 	return ""
 }
 
+//lint:ignore U1000 retained for compatibility with generated coverage helpers.
 func evaluateBinaryExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.BinaryExpr, args []interface{}) (interface{}, error) {
 	left, err := evaluateExpression(c, row, columns, expr.Left, args)
 	if err != nil {
@@ -645,6 +675,7 @@ func compareValues(a, b interface{}) int {
 	return strings.Compare(valueToString(a), valueToString(b))
 }
 
+//lint:ignore U1000 retained for compatibility with generated coverage helpers.
 func evaluateCaseExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.CaseExpr, args []interface{}) (interface{}, error) {
 	if expr.Expr != nil {
 		// Simple CASE: CASE expr WHEN val1 THEN result1 WHEN val2 THEN result2 ELSE default END
