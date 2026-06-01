@@ -2,6 +2,7 @@ package fdw
 
 import (
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -107,7 +108,7 @@ func (c *CSVWrapper) OpenScan(table string, options ScanOptions) (RowCursor, err
 		return &csvCursor{file: f, reader: reader, maxRows: c.maxRows}, nil
 	}
 	if err != nil {
-		f.Close()
+		err = errors.Join(err, f.Close())
 		return nil, err
 	}
 

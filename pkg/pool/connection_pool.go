@@ -221,7 +221,7 @@ func New(config *Config, dialer func() (net.Conn, error)) (*Pool, error) {
 	// Create minimum connections
 	for i := 0; i < config.MinConns; i++ {
 		if err := pool.createConnection(); err != nil {
-			pool.Close()
+			err = errors.Join(err, pool.Close())
 			return nil, fmt.Errorf("failed to create initial connections: %w", err)
 		}
 	}

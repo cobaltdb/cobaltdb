@@ -512,18 +512,18 @@ func (m *Manager) handleSlave(conn net.Conn) {
 	// Authenticate if needed
 	if m.config.AuthToken != "" {
 		if err := m.authenticateSlaveWithReader(slave.Reader, conn); err != nil {
-			conn.Close()
+			_ = conn.Close()
 			return
 		}
 	}
 
 	resumeReq, err := m.receiveResumeRequest(slave)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 	if err := m.prepareSlaveResumeRequest(slave, resumeReq); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
@@ -538,7 +538,7 @@ func (m *Manager) handleSlave(conn net.Conn) {
 		atomic.AddInt32(&m.metrics.ActiveSlaves, -1)
 		m.pruneWALBufferLocked()
 		m.mu.Unlock()
-		conn.Close()
+		_ = conn.Close()
 
 		m.callOnDisconnect(slaveID, nil)
 	}()
@@ -686,7 +686,7 @@ func (m *Manager) sendResyncRequired(slave *SlaveConnection, currentLSN uint64) 
 
 // authenticateSlave authenticates a slave connection
 //
-//nolint:unused // used by coverage tests
+//lint:ignore U1000 used by coverage tests
 func (m *Manager) authenticateSlave(conn net.Conn) error {
 	return m.authenticateSlaveWithReader(bufio.NewReader(conn), conn)
 }
@@ -954,7 +954,7 @@ func (m *Manager) startSlave() error {
 
 // replicateFromMaster handles replication stream from master
 //
-//nolint:unused // used by coverage tests
+//lint:ignore U1000 used by coverage tests
 func (m *Manager) replicateFromMaster() {
 	m.replicateFromMasterWithReader(bufio.NewReader(m.masterConn))
 }
@@ -1116,7 +1116,7 @@ func (m *Manager) applyWALDataBytes(data []byte) error {
 	return nil
 }
 
-func (m *Manager) loadReplicationState() error {
+func (m *Manager) loadReplicationState() (err error) {
 	if m.config.StateFile == "" {
 		return nil
 	}
@@ -1132,7 +1132,11 @@ func (m *Manager) loadReplicationState() error {
 		}
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
 
 	var state replicationState
 	if err := json.NewDecoder(file).Decode(&state); err != nil {

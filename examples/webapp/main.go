@@ -44,7 +44,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
 
 	// Init schema
 	initSchema()
@@ -52,8 +51,16 @@ func main() {
 	// Load templates
 	tmpl, err = template.ParseFS(templatesFS, "templates/*.html")
 	if err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			log.Printf("failed to close database: %v", closeErr)
+		}
 		log.Fatal(err)
 	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("failed to close database: %v", err)
+		}
+	}()
 
 	// Routes
 	http.HandleFunc("/", handleIndex)
@@ -93,14 +100,16 @@ func main() {
 
 func initSchema() {
 	ctx := context.Background()
-	db.Exec(ctx, `CREATE TABLE IF NOT EXISTS tasks (
+	if _, err := db.Exec(ctx, `CREATE TABLE IF NOT EXISTS tasks (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		title TEXT NOT NULL,
 		description TEXT,
 		status TEXT DEFAULT 'pending',
 		priority INTEGER DEFAULT 1,
 		created_at TEXT DEFAULT CURRENT_TIMESTAMP
-	)`)
+	)`); err != nil {
+		log.Fatalf("failed to initialize schema: %v", err)
+	}
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -111,20 +120,31 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("failed to close task rows: %v", err)
+		}
+	}()
 
 	var tasks []Task
 	for rows.Next() {
 		var t Task
-		rows.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.CreatedAt)
+		if err := rows.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.CreatedAt); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		tasks = append(tasks, t)
 	}
 
-	tmpl.ExecuteTemplate(w, "index.html", tasks)
+	if err := tmpl.ExecuteTemplate(w, "index.html", tasks); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func handleNewTask(w http.ResponseWriter, r *http.Request) {
-	tmpl.ExecuteTemplate(w, "new.html", nil)
+	if err := tmpl.ExecuteTemplate(w, "new.html", nil); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func handleCreateTask(w http.ResponseWriter, r *http.Request) {

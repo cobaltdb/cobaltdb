@@ -441,6 +441,9 @@ func (c *ClientConn) Handle() {
 // handleMessage handles a single message
 func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interface{} {
 	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	switch msgType {
 	case wire.MsgPing:

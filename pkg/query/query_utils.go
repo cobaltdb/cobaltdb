@@ -29,10 +29,7 @@ func IsCacheableQuery(stmt *SelectStmt) bool {
 			return false
 		}
 	}
-	if ContainsNonDeterministicFunctions(stmt) {
-		return false
-	}
-	return true
+	return !ContainsNonDeterministicFunctions(stmt)
 }
 
 // ContainsSubquery reports whether expr contains a subquery expression.

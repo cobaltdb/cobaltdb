@@ -45,7 +45,7 @@ func (c *backupCommand) Run(args []string, path string, inMemory bool) {
 		fmt.Println("       backup list")
 		fmt.Println("       backup restore <id>")
 		fmt.Println("       backup delete <id>")
-		os.Exit(1)
+		closeDBAndExit(db, 1)
 	}
 	handleBackupCommand(args, db)
 }
@@ -59,7 +59,7 @@ func (c *metricsCommand) Run(_ []string, path string, inMemory bool) {
 	data, err := db.GetMetrics()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		closeDBAndExit(db, 1)
 	}
 	fmt.Println(string(data))
 }
@@ -99,7 +99,7 @@ func (c *importCommand) Run(args []string, path string, inMemory bool) {
 	defer db.Close()
 	if err := importCSV(db, args[0], args[1]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		closeDBAndExit(db, 1)
 	}
 }
 

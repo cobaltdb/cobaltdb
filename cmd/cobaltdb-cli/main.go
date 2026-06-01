@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -178,16 +179,21 @@ func openDB(path string, inMemory bool) *engine.DB {
 			WALEnabled: engine.BoolPtr(!inMemory),
 		},
 	}
-	if !inMemory && path != ":memory:" {
-		opts.InMemory = false
-	}
-
 	db, err := engine.Open(path, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
 	}
 	return db
+}
+
+func closeDBAndExit(db *engine.DB, code int) {
+	if db != nil {
+		if err := db.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error closing database: %v\n", err)
+		}
+	}
+	os.Exit(code)
 }
 
 func runCommand(sql, path string, inMemory bool) {
@@ -237,7 +243,11 @@ func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return
 		}
-		defer rows.Close()
+		defer func() {
+			if err := rows.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error closing rows: %v\n", err)
+			}
+		}()
 
 		if err := printRowsWithMode(rows, state); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -834,7 +844,7 @@ func runBackupCommand(args []string, path string, inMemory bool) {
 		fmt.Println("       backup list")
 		fmt.Println("       backup restore <id>")
 		fmt.Println("       backup delete <id>")
-		os.Exit(1)
+		closeDBAndExit(db, 1)
 	}
 	handleBackupCommand(args, db)
 }
@@ -911,7 +921,7 @@ func runMetricsCommand(path string, inMemory bool) {
 	data, err := db.GetMetrics()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		closeDBAndExit(db, 1)
 	}
 	fmt.Println(string(data))
 }
@@ -961,7 +971,7 @@ func runImportCommand(args []string, path string, inMemory bool) {
 
 	if err := importCSV(db, args[0], args[1]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		closeDBAndExit(db, 1)
 	}
 }
 
@@ -1041,7 +1051,7 @@ func runExportCommand(args []string, path string, inMemory bool) {
 
 	if err := exportTable(db, args[0], args[1], format); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		closeDBAndExit(db, 1)
 	}
 }
 
@@ -1055,7 +1065,11 @@ func exportTable(db *engine.DB, table, filePath, format string) (err error) {
 	if err != nil {
 		return fmt.Errorf("query table: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close export rows: %w", closeErr)
+		}
+	}()
 
 	file, err := createSecureOutputFile(filePath)
 	if err != nil {
@@ -1081,7 +1095,7 @@ func exportTable(db *engine.DB, table, filePath, format string) (err error) {
 				rowValues[i] = &values[i]
 			}
 			if err := rows.Scan(rowValues...); err != nil {
-				continue
+				return fmt.Errorf("scan row: %w", err)
 			}
 			rowMap := make(map[string]interface{})
 			for i, c := range cols {
@@ -1104,7 +1118,7 @@ func exportTable(db *engine.DB, table, filePath, format string) (err error) {
 				rowValues[i] = &values[i]
 			}
 			if err := rows.Scan(rowValues...); err != nil {
-				continue
+				return fmt.Errorf("scan row: %w", err)
 			}
 			record := make([]string, len(cols))
 			for i, v := range values {
@@ -1134,7 +1148,7 @@ func runDumpCommand(args []string, path string, inMemory bool) {
 
 	if err := dumpDatabase(db, file); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		closeDBAndExit(db, 1)
 	}
 }
 
@@ -1148,7 +1162,7 @@ func runRestoreCommand(args []string, path string, inMemory bool) {
 
 	if err := restoreDatabase(db, args[0]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		closeDBAndExit(db, 1)
 	}
 }
 
@@ -1215,7 +1229,7 @@ func dumpDatabase(db *engine.DB, filePath string) (err error) {
 				rowValues[i] = &values[i]
 			}
 			if err := rows.Scan(rowValues...); err != nil {
-				rows.Close()
+				err = errors.Join(err, rows.Close())
 				return fmt.Errorf("scan %s: %w", table, err)
 			}
 
@@ -1227,17 +1241,19 @@ func dumpDatabase(db *engine.DB, filePath string) (err error) {
 			for i, col := range cols {
 				quotedCols[i], err = quoteSQLIdentifier(col)
 				if err != nil {
-					rows.Close()
+					err = errors.Join(err, rows.Close())
 					return fmt.Errorf("invalid column name %q in %s: %w", col, table, err)
 				}
 			}
 			if err := writeFormat(out, "INSERT INTO %s (%s) VALUES (%s);\n",
 				quotedTable, strings.Join(quotedCols, ", "), strings.Join(valStrs, ", ")); err != nil {
-				rows.Close()
+				err = errors.Join(err, rows.Close())
 				return fmt.Errorf("write row for %s: %w", table, err)
 			}
 		}
-		rows.Close()
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close rows for %s: %w", table, err)
+		}
 		if err := writeLine(out); err != nil {
 			return fmt.Errorf("write table separator for %s: %w", table, err)
 		}

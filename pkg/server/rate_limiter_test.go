@@ -175,7 +175,7 @@ func TestRateLimiterAllowN(t *testing.T) {
 
 func TestRateLimiterWait(t *testing.T) {
 	cfg := &RateLimiterConfig{
-		RPS:             1000,
+		RPS:             1,
 		Burst:           5,
 		PerClient:       false,
 		CleanupInterval: time.Minute,

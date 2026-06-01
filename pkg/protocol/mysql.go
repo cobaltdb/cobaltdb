@@ -1463,7 +1463,7 @@ func readStmtExecuteValue(data []byte, offset int, typ byte, unsigned bool) (int
 		if unsigned {
 			return uint64(data[offset]), offset + 1, nil
 		}
-		return int64(int8(data[offset])), offset + 1, nil
+		return int64(int8(data[offset])), offset + 1, nil // #nosec G115 -- MySQL signed parameters are encoded as two's-complement bytes.
 	case MySQLTypeShort, MySQLTypeYear:
 		if len(data) < offset+2 {
 			return nil, offset, errors.New("malformed smallint parameter")
@@ -1472,7 +1472,7 @@ func readStmtExecuteValue(data []byte, offset int, typ byte, unsigned bool) (int
 		if unsigned {
 			return uint64(raw), offset + 2, nil
 		}
-		return int64(int16(raw)), offset + 2, nil
+		return int64(int16(raw)), offset + 2, nil // #nosec G115 -- MySQL signed parameters are encoded as two's-complement bytes.
 	case MySQLTypeLong, MySQLTypeInt24:
 		if len(data) < offset+4 {
 			return nil, offset, errors.New("malformed integer parameter")
@@ -1481,7 +1481,7 @@ func readStmtExecuteValue(data []byte, offset int, typ byte, unsigned bool) (int
 		if unsigned {
 			return uint64(raw), offset + 4, nil
 		}
-		return int64(int32(raw)), offset + 4, nil
+		return int64(int32(raw)), offset + 4, nil // #nosec G115 -- MySQL signed parameters are encoded as two's-complement bytes.
 	case MySQLTypeLongLong:
 		if len(data) < offset+8 {
 			return nil, offset, errors.New("malformed bigint parameter")
@@ -1490,7 +1490,7 @@ func readStmtExecuteValue(data []byte, offset int, typ byte, unsigned bool) (int
 		if unsigned {
 			return raw, offset + 8, nil
 		}
-		return int64(raw), offset + 8, nil
+		return int64(raw), offset + 8, nil // #nosec G115 -- MySQL signed parameters are encoded as two's-complement bytes.
 	case MySQLTypeFloat:
 		if len(data) < offset+4 {
 			return nil, offset, errors.New("malformed float parameter")
@@ -1539,10 +1539,10 @@ func readStmtExecuteString(data []byte) (string, int, error) {
 	if n == 0 {
 		return "", 0, errors.New("malformed string parameter")
 	}
-	if length > uint64(len(data)-n) {
+	if length > uint64(len(data)-n) { // #nosec G115 -- len(data)-n is non-negative because n is returned inside data.
 		return "", 0, errors.New("string parameter length exceeds packet")
 	}
-	end := n + int(length)
+	end := n + int(length) // #nosec G115 -- length is bounded by len(data)-n above.
 	return string(data[n:end]), end, nil
 }
 

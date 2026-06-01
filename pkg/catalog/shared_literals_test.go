@@ -21,6 +21,7 @@ func createCoverageTestTable(t *testing.T, cat *Catalog, name string, cols []*qu
 	}
 }
 
+//lint:ignore U1000 retained for generated catalog coverage tests.
 func colReal(name string) *query.QualifiedIdentifier {
 	// Parse "table.column" format
 	if dotIdx := strings.IndexByte(name, '.'); dotIdx > 0 && dotIdx < len(name)-1 {

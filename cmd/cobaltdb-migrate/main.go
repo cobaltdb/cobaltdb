@@ -51,7 +51,7 @@ func main() {
 	// Ensure migrations table exists
 	if err := ensureMigrationsTable(db); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create migrations table: %v\n", err)
-		os.Exit(1)
+		closeSQLDBAndExit(db, 1)
 	}
 
 	switch *command {
@@ -64,18 +64,27 @@ func main() {
 	case "create":
 		if *name == "" {
 			fmt.Fprintf(os.Stderr, "Migration name required\n")
-			os.Exit(1)
+			closeSQLDBAndExit(db, 1)
 		}
 		err = createMigration(*dir, *name)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", *command)
-		os.Exit(1)
+		closeSQLDBAndExit(db, 1)
 	}
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		closeSQLDBAndExit(db, 1)
 	}
+}
+
+func closeSQLDBAndExit(db *sql.DB, code int) {
+	if db != nil {
+		if err := db.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to close database: %v\n", err)
+		}
+	}
+	os.Exit(code)
 }
 
 func ensureMigrationsTable(db *sql.DB) error {

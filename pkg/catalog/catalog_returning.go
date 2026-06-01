@@ -73,7 +73,7 @@ func (c *Catalog) evaluateReturningExpr(expr query.Expression, row []interface{}
 
 // getReturningColumns extracts column names from RETURNING expressions.
 //
-//nolint:unused // retained for RETURNING compatibility tests and future planner hooks.
+//lint:ignore U1000 retained for RETURNING compatibility tests and future planner hooks.
 func (c *Catalog) getReturningColumns(returningExprs []query.Expression) []string {
 	columns := make([]string, len(returningExprs))
 

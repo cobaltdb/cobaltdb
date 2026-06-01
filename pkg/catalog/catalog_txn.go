@@ -73,7 +73,14 @@ func (c *Catalog) GetQueryCacheStats() (hits, misses int64, size int) {
 		return 0, 0, 0
 	}
 	stats := c.queryCache.Stats()
-	return int64(stats.Hits), int64(stats.Misses), stats.EntryCount
+	return clampUint64ToInt64(stats.Hits), clampUint64ToInt64(stats.Misses), stats.EntryCount
+}
+
+func clampUint64ToInt64(v uint64) int64 {
+	if v > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(v)
 }
 
 func (c *Catalog) invalidateQueryCache(tableName string) {

@@ -228,6 +228,8 @@ func (c *Catalog) executeScalarAggregate(stmt *query.SelectStmt, args []interfac
 
 // loadMainTableRows resolves the main FROM table reference to column definitions
 // and row data, checking CTE results and B-tree scans.
+//
+//lint:ignore U1000 retained for older planner entry points and coverage fixtures.
 func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]interface{}, error) {
 	return c.loadMainTableRowsWithFDWOptions(from, fdw.ScanOptions{})
 }

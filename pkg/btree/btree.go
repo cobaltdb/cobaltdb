@@ -1023,22 +1023,22 @@ func (t *BTree) flushInternal() error {
 
 	h.Reset()
 	binary.LittleEndian.PutUint32(lenBuf[:4], count)
-	h.Write(lenBuf[:4])
+	_, _ = h.Write(lenBuf[:4])
 	binary.LittleEndian.PutUint32(lenBuf[:4], overflowCount)
-	h.Write(lenBuf[:4])
+	_, _ = h.Write(lenBuf[:4])
 	for _, pgID := range t.overflowPages {
 		binary.LittleEndian.PutUint32(lenBuf[:4], pgID)
-		h.Write(lenBuf[:4])
+		_, _ = h.Write(lenBuf[:4])
 	}
 	rootDataWriteLen := rootDataSpace
 	if rootDataWriteLen > len(kvData) {
 		rootDataWriteLen = len(kvData)
 	}
 	if rootDataWriteLen > 0 {
-		h.Write(kvData[:rootDataWriteLen])
+		_, _ = h.Write(kvData[:rootDataWriteLen])
 	}
 	if pad := rootDataSpace - rootDataWriteLen; pad > 0 {
-		h.Write(zeroPad[:pad])
+		_, _ = h.Write(zeroPad[:pad])
 	}
 	newPageHashes[0] = h.Sum64()
 
@@ -1052,10 +1052,10 @@ func (t *BTree) flushInternal() error {
 			writeLen = remaining
 		}
 		if writeLen > 0 {
-			h.Write(kvData[dataWritten : dataWritten+writeLen])
+			_, _ = h.Write(kvData[dataWritten : dataWritten+writeLen])
 		}
 		if pad := usablePageSize - writeLen; pad > 0 {
-			h.Write(zeroPad[:pad])
+			_, _ = h.Write(zeroPad[:pad])
 		}
 		newPageHashes[i+1] = h.Sum64()
 		dataWritten += writeLen

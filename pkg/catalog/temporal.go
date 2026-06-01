@@ -228,6 +228,8 @@ func decodeVersionedRow(data []byte, numCols int) (VersionedRow, error) {
 // decodeVisibleRow decodes a versioned row and checks visibility at the given timestamp.
 // Returns the row data if visible, or (nil, false, nil) if not visible.
 // This consolidates the common pattern of decodeVersionedRow + isVisibleAt into one call.
+//
+//lint:ignore U1000 retained for temporal query compatibility hooks.
 func decodeVisibleRow(data []byte, numCols int, queryTime time.Time) ([]interface{}, bool, error) {
 	vrow, err := decodeVersionedRow(data, numCols)
 	if err != nil {

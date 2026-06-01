@@ -46,7 +46,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("failed to close database: %v", err)
+		}
+	}()
 
 	// Initialize schema
 	initSchema(db)
@@ -79,7 +83,7 @@ func initSchema(db *engine.DB) {
 	ctx := context.Background()
 
 	// Jobs table
-	db.Exec(ctx, `CREATE TABLE IF NOT EXISTS jobs (
+	if _, err := db.Exec(ctx, `CREATE TABLE IF NOT EXISTS jobs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		type TEXT NOT NULL,
 		payload TEXT,
@@ -88,29 +92,42 @@ func initSchema(db *engine.DB) {
 		result TEXT,
 		created_at TEXT DEFAULT CURRENT_TIMESTAMP,
 		processed_at TEXT
-	)`)
+	)`); err != nil {
+		log.Fatalf("failed to create jobs table: %v", err)
+	}
 
 	// Job history table
-	db.Exec(ctx, `CREATE TABLE IF NOT EXISTS job_history (
+	if _, err := db.Exec(ctx, `CREATE TABLE IF NOT EXISTS job_history (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		job_id INTEGER,
 		action TEXT,
 		details TEXT,
 		created_at TEXT DEFAULT CURRENT_TIMESTAMP
-	)`)
+	)`); err != nil {
+		log.Fatalf("failed to create job_history table: %v", err)
+	}
 }
 
 func createSampleJobs(db *engine.DB) {
 	ctx := context.Background()
 
 	// Check if we already have jobs
-	rows, _ := db.Query(ctx, "SELECT COUNT(*) FROM jobs")
+	rows, err := db.Query(ctx, "SELECT COUNT(*) FROM jobs")
+	if err != nil {
+		log.Printf("failed to count existing jobs: %v", err)
+		return
+	}
 	var count int
-	if rows != nil {
-		for rows.Next() {
-			rows.Scan(&count)
+	for rows.Next() {
+		if err := rows.Scan(&count); err != nil {
+			log.Printf("failed to scan job count: %v", err)
+			_ = rows.Close()
+			return
 		}
-		rows.Close()
+	}
+	if err := rows.Close(); err != nil {
+		log.Printf("failed to close job count rows: %v", err)
+		return
 	}
 
 	if count > 0 {
@@ -131,9 +148,12 @@ func createSampleJobs(db *engine.DB) {
 	}
 
 	for _, job := range jobs {
-		db.Exec(ctx,
+		if _, err := db.Exec(ctx,
 			"INSERT INTO jobs (type, payload) VALUES (?, ?)",
-			job.Type, job.Payload)
+			job.Type, job.Payload); err != nil {
+			log.Printf("failed to create sample job %s: %v", job.Type, err)
+			return
+		}
 	}
 
 	log.Printf("Created %d sample jobs", len(jobs))
@@ -185,12 +205,19 @@ func (w *Worker) processJobs() {
 		log.Printf("Error fetching jobs: %v", err)
 		return
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("failed to close pending job rows: %v", err)
+		}
+	}()
 
 	var jobs []Job
 	for rows.Next() {
 		var j Job
-		rows.Scan(&j.ID, &j.Type, &j.Payload, &j.Status, &j.Retries)
+		if err := rows.Scan(&j.ID, &j.Type, &j.Payload, &j.Status, &j.Retries); err != nil {
+			log.Printf("failed to scan job: %v", err)
+			return
+		}
 		jobs = append(jobs, j)
 	}
 
@@ -210,7 +237,10 @@ func (w *Worker) executeJob(ctx context.Context, job Job) {
 	log.Printf("Executing job %d: %s (%s)", job.ID, job.Type, job.Payload)
 
 	// Mark as processing
-	w.db.Exec(ctx, "UPDATE jobs SET status = 'processing' WHERE id = ?", job.ID)
+	if _, err := w.db.Exec(ctx, "UPDATE jobs SET status = 'processing' WHERE id = ?", job.ID); err != nil {
+		log.Printf("failed to mark job %d as processing: %v", job.ID, err)
+		return
+	}
 
 	// Execute based on job type
 	var result string
@@ -234,23 +264,31 @@ func (w *Worker) executeJob(ctx context.Context, job Job) {
 
 	if err != nil {
 		log.Printf("Job %d failed: %v", job.ID, err)
-		w.db.Exec(ctx,
+		if _, updateErr := w.db.Exec(ctx,
 			"UPDATE jobs SET status = 'failed', retries = retries + 1, result = ? WHERE id = ?",
-			err.Error(), job.ID)
+			err.Error(), job.ID); updateErr != nil {
+			log.Printf("failed to mark job %d as failed: %v", job.ID, updateErr)
+			return
+		}
 		w.logHistory(ctx, job.ID, "failed", err.Error())
 	} else {
 		log.Printf("Job %d completed: %s", job.ID, result)
-		w.db.Exec(ctx,
+		if _, updateErr := w.db.Exec(ctx,
 			"UPDATE jobs SET status = 'completed', result = ?, processed_at = ? WHERE id = ?",
-			result, now, job.ID)
+			result, now, job.ID); updateErr != nil {
+			log.Printf("failed to mark job %d as completed: %v", job.ID, updateErr)
+			return
+		}
 		w.logHistory(ctx, job.ID, "completed", result)
 	}
 }
 
 func (w *Worker) logHistory(ctx context.Context, jobID int64, action, details string) {
-	w.db.Exec(ctx,
+	if _, err := w.db.Exec(ctx,
 		"INSERT INTO job_history (job_id, action, details) VALUES (?, ?, ?)",
-		jobID, action, details)
+		jobID, action, details); err != nil {
+		log.Printf("failed to write job history for job %d: %v", jobID, err)
+	}
 }
 
 // Job processors

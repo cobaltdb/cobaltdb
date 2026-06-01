@@ -26,11 +26,13 @@ func (m *mockConn) Close() error {
 	return nil
 }
 
+//lint:ignore U1000 retained for replication close-error coverage tests.
 type closeErrConn struct {
 	mockConn
 	err error
 }
 
+//lint:ignore U1000 retained for replication close-error coverage tests.
 func (c *closeErrConn) Close() error {
 	return c.err
 }

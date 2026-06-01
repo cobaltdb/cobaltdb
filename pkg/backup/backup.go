@@ -411,7 +411,7 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 			if _, werr := writer.Write(buf[:n]); werr != nil {
 				return fmt.Errorf("failed to write backup data: %w", werr)
 			}
-			crc.Write(buf[:n])
+			_, _ = crc.Write(buf[:n])
 			written += int64(n)
 
 			// Report progress

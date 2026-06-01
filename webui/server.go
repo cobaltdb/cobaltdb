@@ -129,7 +129,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
 
 	server := &Server{
 		db:           db,
@@ -142,6 +141,9 @@ func main() {
 	// Load templates
 	tmpl, err := template.ParseFiles("webui/templates/index.html")
 	if err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			log.Printf("Failed to close database: %v", closeErr)
+		}
 		log.Fatalf("Failed to load templates: %v", err)
 	}
 	server.tmpl = tmpl
@@ -195,6 +197,9 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 	if err := httpServer.ListenAndServe(); err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			log.Printf("Failed to close database: %v", closeErr)
+		}
 		log.Fatalf("Server error: %v", err)
 	}
 }
@@ -373,6 +378,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 			resp.Success = false
 			resp.Message = err.Error()
 		} else if rows != nil {
+			defer rows.Close()
 			// Get column names
 			resp.Columns = rows.Columns()
 
@@ -387,7 +393,9 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 				}
 
 				if err := rows.Scan(valuePtrs...); err != nil {
-					continue
+					resp.Success = false
+					resp.Message = err.Error()
+					break
 				}
 				resp.Rows = append(resp.Rows, values)
 				rowCount++
@@ -526,6 +534,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer rows.Close()
 
 	columns := rows.Columns()
 
@@ -546,7 +555,8 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := rows.Scan(valuePtrs...); err != nil {
-			continue
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		rowStr := make([]string, len(values))
@@ -562,8 +572,11 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
 	writer.Flush()
+	if err := writer.Error(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
 
 func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
@@ -579,6 +592,7 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer rows.Close()
 
 	columns := rows.Columns()
 	result := make([]map[string]interface{}, 0)
@@ -591,7 +605,8 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := rows.Scan(valuePtrs...); err != nil {
-			continue
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		row := make(map[string]interface{})
@@ -600,7 +615,6 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		result = append(result, row)
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=export.json")
 	writeJSON(w, result)
