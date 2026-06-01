@@ -289,7 +289,10 @@ func (w *WAL) Append(record *WALRecord) error {
 	if err := validateRecordSize(record); err != nil {
 		return err
 	}
-	if w.groupCommitEnabled {
+	w.groupCommitMu.Lock()
+	groupCommitEnabled := w.groupCommitEnabled
+	w.groupCommitMu.Unlock()
+	if groupCommitEnabled {
 		return w.groupCommitAppend(record)
 	}
 	w.mu.Lock()
@@ -662,6 +665,12 @@ func (w *WAL) DisableGroupCommit() {
 // batch sync. Must NOT be called while holding w.mu.
 func (w *WAL) groupCommitAppend(record *WALRecord) error {
 	w.groupCommitMu.Lock()
+	if !w.groupCommitEnabled {
+		w.groupCommitMu.Unlock()
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.appendInternal(record, true)
+	}
 
 	// Write record without syncing
 	w.mu.Lock()
@@ -723,7 +732,8 @@ func (w *WAL) flushPendingLocked() {
 	}
 
 	w.groupCommitMu.Lock()
-	pending := w.pendingSyncs
+	pending := append([]chan error(nil), w.pendingSyncs...)
+	clear(w.pendingSyncs)
 	w.pendingSyncs = w.pendingSyncs[:0]
 	w.groupCommitMu.Unlock()
 
