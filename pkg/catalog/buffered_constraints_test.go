@@ -249,6 +249,47 @@ func TestBufferedDoubleInsertSamePKRejected(t *testing.T) {
 	_ = c.RollbackTransaction()
 }
 
+// A UNIQUE value freed by a pending delete in the same txn can be reused.
+func TestBufferedUniqueValueFreedByDelete(t *testing.T) {
+	c, _ := createCatalogWithTxnManager(t)
+	bcExec(t, c, "CREATE TABLE uq_free (id INTEGER PRIMARY KEY, code TEXT UNIQUE)")
+	bcExec(t, c, "INSERT INTO uq_free VALUES (1, 'A')")
+
+	c.BeginTransaction(2)
+	if _, err := c.ExecuteQuery("DELETE FROM uq_free WHERE id = 1"); err != nil {
+		t.Fatalf("delete should succeed: %v", err)
+	}
+	if _, err := c.ExecuteQuery("INSERT INTO uq_free VALUES (2, 'A')"); err != nil {
+		t.Fatalf("reusing a UNIQUE value freed by a pending delete should succeed: %v", err)
+	}
+	if err := c.CommitTransaction(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	r := bcExec(t, c, "SELECT id, code FROM uq_free ORDER BY id")
+	if len(r.Rows) != 1 || fmtV(r.Rows[0][0]) != "2" || fmtV(r.Rows[0][1]) != "A" {
+		t.Fatalf("expected exactly one row [2 A], got %v", r.Rows)
+	}
+}
+
+// Inserting a child referencing a parent deleted earlier in the same txn must be
+// rejected, otherwise commit leaves a dangling foreign key.
+func TestBufferedInsertChildAfterParentDeletedRejected(t *testing.T) {
+	c, _ := createCatalogWithTxnManager(t)
+	bcExec(t, c, "CREATE TABLE pdp (id INTEGER PRIMARY KEY)")
+	bcExec(t, c, "CREATE TABLE pdc (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES pdp(id))")
+	bcExec(t, c, "INSERT INTO pdp VALUES (1)")
+
+	c.BeginTransaction(2)
+	if _, err := c.ExecuteQuery("DELETE FROM pdp WHERE id = 1"); err != nil {
+		t.Fatalf("parent delete should succeed: %v", err)
+	}
+	if _, err := c.ExecuteQuery("INSERT INTO pdc VALUES (10, 1)"); err == nil {
+		t.Fatal("expected FK violation inserting a child for a parent deleted in this txn")
+	}
+	_ = c.RollbackTransaction()
+}
+
 // Read-your-writes FK on DELETE: a child inserted earlier in the same txn must
 // block deleting its parent, otherwise commit leaves a dangling foreign key.
 func TestBufferedDeleteParentWithPendingChildRejected(t *testing.T) {
