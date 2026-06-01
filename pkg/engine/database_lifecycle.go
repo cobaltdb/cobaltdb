@@ -69,6 +69,129 @@ func normalizeOptions(opts *Options) *Options {
 	}
 
 	normalized := *opts
+	if normalized.InMemory {
+		normalized.CoreStorage.InMemory = true
+	}
+	if normalized.PageSize > 0 && normalized.CoreStorage.PageSize == 0 {
+		normalized.CoreStorage.PageSize = normalized.PageSize
+	}
+	if normalized.CacheSize > 0 && normalized.CoreStorage.CacheSize == 0 {
+		normalized.CoreStorage.CacheSize = normalized.CacheSize
+	}
+	if normalized.WALEnabled != nil && normalized.CoreStorage.WALEnabled == nil {
+		normalized.CoreStorage.WALEnabled = cloneBoolPtr(normalized.WALEnabled)
+	}
+	if normalized.SyncMode != 0 && normalized.CoreStorage.SyncMode == 0 {
+		normalized.CoreStorage.SyncMode = normalized.SyncMode
+	}
+	if normalized.Logger != nil && normalized.CoreStorage.Logger == nil {
+		normalized.CoreStorage.Logger = normalized.Logger
+	}
+	if normalized.MaxConnections > 0 && normalized.ConnectionPool.MaxConnections == 0 {
+		normalized.ConnectionPool.MaxConnections = normalized.MaxConnections
+	}
+	if normalized.ConnectionTimeout > 0 && normalized.ConnectionPool.ConnectionTimeout == 0 {
+		normalized.ConnectionPool.ConnectionTimeout = normalized.ConnectionTimeout
+	}
+	if normalized.QueryTimeout > 0 && normalized.ConnectionPool.QueryTimeout == 0 {
+		normalized.ConnectionPool.QueryTimeout = normalized.QueryTimeout
+	}
+	if len(normalized.EncryptionKey) > 0 && len(normalized.Security.EncryptionKey) == 0 {
+		normalized.Security.EncryptionKey = append([]byte(nil), normalized.EncryptionKey...)
+	}
+	if normalized.EncryptionConfig != nil && normalized.Security.EncryptionConfig == nil {
+		normalized.Security.EncryptionConfig = normalized.EncryptionConfig
+	}
+	if normalized.EnableRLS {
+		normalized.Security.EnableRLS = true
+	}
+	if normalized.AuditConfig != nil && normalized.Security.AuditConfig == nil {
+		normalized.Security.AuditConfig = normalized.AuditConfig
+	}
+	if normalized.MaxStmtCacheSize > 0 && normalized.Security.MaxStmtCacheSize == 0 {
+		normalized.Security.MaxStmtCacheSize = normalized.MaxStmtCacheSize
+	}
+	if normalized.StrictSQLParsing {
+		normalized.Security.StrictSQLParsing = true
+	}
+	if normalized.EnableQueryCache {
+		normalized.QueryCache.EnableQueryCache = true
+	}
+	if normalized.QueryCacheSize > 0 && normalized.QueryCache.QueryCacheSize == 0 {
+		normalized.QueryCache.QueryCacheSize = normalized.QueryCacheSize
+	}
+	if normalized.QueryCacheTTL > 0 && normalized.QueryCache.QueryCacheTTL == 0 {
+		normalized.QueryCache.QueryCacheTTL = normalized.QueryCacheTTL
+	}
+	if normalized.ReplicationRole != "" && normalized.Replication.Role == "" {
+		normalized.Replication.Role = normalized.ReplicationRole
+	}
+	if normalized.ReplicationListenAddr != "" && normalized.Replication.ListenAddr == "" {
+		normalized.Replication.ListenAddr = normalized.ReplicationListenAddr
+	}
+	if normalized.ReplicationMasterAddr != "" && normalized.Replication.MasterAddr == "" {
+		normalized.Replication.MasterAddr = normalized.ReplicationMasterAddr
+	}
+	if normalized.ReplicationMode != "" && normalized.Replication.Mode == "" {
+		normalized.Replication.Mode = normalized.ReplicationMode
+	}
+	if normalized.ReplicationAuthToken != "" && normalized.Replication.AuthToken == "" {
+		normalized.Replication.AuthToken = normalized.ReplicationAuthToken
+	}
+	if normalized.ReplicationSSLCert != "" && normalized.Replication.SSLCert == "" {
+		normalized.Replication.SSLCert = normalized.ReplicationSSLCert
+	}
+	if normalized.ReplicationSSLKey != "" && normalized.Replication.SSLKey == "" {
+		normalized.Replication.SSLKey = normalized.ReplicationSSLKey
+	}
+	if normalized.ReplicationSSLCA != "" && normalized.Replication.SSLCA == "" {
+		normalized.Replication.SSLCA = normalized.ReplicationSSLCA
+	}
+	if normalized.ReplicationStateFile != "" && normalized.Replication.StateFile == "" {
+		normalized.Replication.StateFile = normalized.ReplicationStateFile
+	}
+	if normalized.BackupDir != "" && normalized.Backup.Dir == "" {
+		normalized.Backup.Dir = normalized.BackupDir
+	}
+	if normalized.BackupRetention > 0 && normalized.Backup.Retention == 0 {
+		normalized.Backup.Retention = normalized.BackupRetention
+	}
+	if normalized.MaxBackups > 0 && normalized.Backup.MaxBackups == 0 {
+		normalized.Backup.MaxBackups = normalized.MaxBackups
+	}
+	if normalized.BackupCompressionLevel > 0 && normalized.Backup.CompressionLevel == 0 {
+		normalized.Backup.CompressionLevel = normalized.BackupCompressionLevel
+	}
+	if normalized.EnableSlowQueryLog {
+		normalized.SlowQueryLog.EnableSlowQueryLog = true
+	}
+	if normalized.SlowQueryThreshold > 0 && normalized.SlowQueryLog.Threshold == 0 {
+		normalized.SlowQueryLog.Threshold = normalized.SlowQueryThreshold
+	}
+	if normalized.SlowQueryMaxEntries > 0 && normalized.SlowQueryLog.MaxEntries == 0 {
+		normalized.SlowQueryLog.MaxEntries = normalized.SlowQueryMaxEntries
+	}
+	if normalized.SlowQueryLogFile != "" && normalized.SlowQueryLog.LogFile == "" {
+		normalized.SlowQueryLog.LogFile = normalized.SlowQueryLogFile
+	}
+	if normalized.EnablePlanCache {
+		normalized.PlanCache.EnablePlanCache = true
+	}
+	if normalized.PlanCacheSize > 0 && normalized.PlanCache.Size == 0 {
+		normalized.PlanCache.Size = normalized.PlanCacheSize
+	}
+	if normalized.PlanCacheEntries > 0 && normalized.PlanCache.MaxEntries == 0 {
+		normalized.PlanCache.MaxEntries = normalized.PlanCacheEntries
+	}
+	if normalized.EnableAutoVacuum {
+		normalized.Maintenance.EnableAutoVacuum = true
+	}
+	if normalized.EnableScheduler {
+		normalized.Scheduler.EnableScheduler = true
+	}
+	if normalized.CompressionConfig != nil && normalized.PageCompression.Config == nil {
+		normalized.PageCompression.Config = normalized.CompressionConfig
+	}
 	if normalized.CoreStorage.PageSize == 0 {
 		normalized.CoreStorage.PageSize = defaults.CoreStorage.PageSize
 	}
@@ -112,6 +235,9 @@ func normalizeOptions(opts *Options) *Options {
 	}
 	if normalized.Scheduler.Workers == 0 {
 		normalized.Scheduler.Workers = defaults.Scheduler.Workers
+	}
+	if !normalized.Scheduler.EnableScheduler && normalized.Scheduler.TickInterval > 0 {
+		normalized.Scheduler.EnableScheduler = true
 	}
 	if normalized.ParallelQuery.Workers == 0 {
 		normalized.ParallelQuery.Workers = defaults.ParallelQuery.Workers
@@ -210,7 +336,7 @@ func Open(path string, opts *Options) (*DB, error) {
 			}
 			backend, err = storage.NewEncryptedBackend(backend, opts.Security.EncryptionConfig)
 			if err != nil {
-				backend.Close()
+				err = errors.Join(err, backend.Close())
 				return nil, fmt.Errorf("failed to setup encryption: %w", err)
 			}
 			// Persist salt for future opens
@@ -237,7 +363,7 @@ func Open(path string, opts *Options) (*DB, error) {
 			}
 			backend, err = storage.NewEncryptedBackend(backend, encConfig)
 			if err != nil {
-				backend.Close()
+				err = errors.Join(err, backend.Close())
 				return nil, fmt.Errorf("failed to setup encryption: %w", err)
 			}
 			// Persist salt for future opens
@@ -255,7 +381,7 @@ func Open(path string, opts *Options) (*DB, error) {
 			log.Infof("Enabling page-level compression")
 			backend, err = storage.NewCompressedBackend(backend, opts.PageCompression.Config)
 			if err != nil {
-				backend.Close()
+				err = errors.Join(err, backend.Close())
 				return nil, fmt.Errorf("failed to setup compression: %w", err)
 			}
 		}
@@ -280,7 +406,7 @@ func Open(path string, opts *Options) (*DB, error) {
 		log.Infof("Initializing audit logging")
 		auditLogger, err := audit.New(opts.Security.AuditConfig, log)
 		if err != nil {
-			backend.Close()
+			err = errors.Join(err, backend.Close())
 			return nil, fmt.Errorf("failed to initialize audit logger: %w", err)
 		}
 		db.auditLogger = auditLogger
@@ -336,12 +462,12 @@ func Open(path string, opts *Options) (*DB, error) {
 	if err := db.initialize(); err != nil {
 		collector.Stop() // Stop metrics goroutine to prevent leak
 		if db.auditLogger != nil {
-			db.auditLogger.Close()
+			err = errors.Join(err, db.auditLogger.Close())
 		}
 		if db.wal != nil {
-			db.wal.Close()
+			err = errors.Join(err, db.wal.Close())
 		}
-		backend.Close()
+		err = errors.Join(err, backend.Close())
 		return nil, err
 	}
 

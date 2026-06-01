@@ -241,6 +241,90 @@ type Options struct {
 	CoreStorage
 	ConnectionPool
 	Security
+
+	// Deprecated: use CoreStorage.InMemory.
+	InMemory bool
+	// Deprecated: use CoreStorage.PageSize.
+	PageSize int
+	// Deprecated: use CoreStorage.CacheSize.
+	CacheSize int
+	// Deprecated: use CoreStorage.WALEnabled.
+	WALEnabled *bool
+	// Deprecated: use CoreStorage.SyncMode.
+	SyncMode SyncMode
+	// Deprecated: use CoreStorage.Logger.
+	Logger *logger.Logger
+	// Deprecated: use ConnectionPool.MaxConnections.
+	MaxConnections int
+	// Deprecated: use ConnectionPool.ConnectionTimeout.
+	ConnectionTimeout time.Duration
+	// Deprecated: use ConnectionPool.QueryTimeout.
+	QueryTimeout time.Duration
+	// Deprecated: use Security.EncryptionKey.
+	EncryptionKey []byte
+	// Deprecated: use Security.EncryptionConfig.
+	EncryptionConfig *storage.EncryptionConfig
+	// Deprecated: use Security.EnableRLS.
+	EnableRLS bool
+	// Deprecated: use Security.AuditConfig.
+	AuditConfig *audit.Config
+	// Deprecated: use Security.MaxStmtCacheSize.
+	MaxStmtCacheSize int
+	// Deprecated: use Security.StrictSQLParsing.
+	StrictSQLParsing bool
+	// Deprecated: use QueryCache.EnableQueryCache.
+	EnableQueryCache bool
+	// Deprecated: use QueryCache.QueryCacheSize.
+	QueryCacheSize int64
+	// Deprecated: use QueryCache.QueryCacheTTL.
+	QueryCacheTTL time.Duration
+	// Deprecated: use Replication.Role.
+	ReplicationRole string
+	// Deprecated: use Replication.ListenAddr.
+	ReplicationListenAddr string
+	// Deprecated: use Replication.MasterAddr.
+	ReplicationMasterAddr string
+	// Deprecated: use Replication.Mode.
+	ReplicationMode string
+	// Deprecated: use Replication.AuthToken.
+	ReplicationAuthToken string
+	// Deprecated: use Replication.SSLCert.
+	ReplicationSSLCert string
+	// Deprecated: use Replication.SSLKey.
+	ReplicationSSLKey string
+	// Deprecated: use Replication.SSLCA.
+	ReplicationSSLCA string
+	// Deprecated: use Replication.StateFile.
+	ReplicationStateFile string
+	// Deprecated: use Backup.Dir.
+	BackupDir string
+	// Deprecated: use Backup.Retention.
+	BackupRetention time.Duration
+	// Deprecated: use Backup.MaxBackups.
+	MaxBackups int
+	// Deprecated: use Backup.CompressionLevel.
+	BackupCompressionLevel int
+	// Deprecated: use SlowQueryLog.EnableSlowQueryLog.
+	EnableSlowQueryLog bool
+	// Deprecated: use SlowQueryLog.Threshold.
+	SlowQueryThreshold time.Duration
+	// Deprecated: use SlowQueryLog.MaxEntries.
+	SlowQueryMaxEntries int
+	// Deprecated: use SlowQueryLog.LogFile.
+	SlowQueryLogFile string
+	// Deprecated: use PlanCache.EnablePlanCache.
+	EnablePlanCache bool
+	// Deprecated: use PlanCache.Size.
+	PlanCacheSize int64
+	// Deprecated: use PlanCache.MaxEntries.
+	PlanCacheEntries int
+	// Deprecated: use Maintenance.EnableAutoVacuum.
+	EnableAutoVacuum bool
+	// Deprecated: use Scheduler.EnableScheduler.
+	EnableScheduler bool
+	// Deprecated: use PageCompression.Config.
+	CompressionConfig *storage.CompressionConfig
+
 	QueryCache      QueryCacheConfig
 	Replication     ReplicationConfig
 	Backup          BackupConfig
@@ -555,6 +639,9 @@ func (db *DB) releaseConnection() {
 // It returns the parsed statement and a release-connection func; if err is
 // non-nil the caller should return immediately.
 func (db *DB) runStatement(ctx context.Context, methodName, sql string, args ...interface{}) (_ query.Statement, start time.Time, release func(), err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Apply default query timeout only if the caller did not already set one.
 	if db.options.ConnectionPool.QueryTimeout > 0 {
 		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -694,7 +781,9 @@ func (db *DB) QueryRow(ctx context.Context, sql string, args ...interface{}) *Ro
 	}
 
 	if !rows.Next() {
-		rows.Close()
+		if err := rows.Close(); err != nil {
+			return &Row{err: err}
+		}
 		return &Row{err: errors.New("no rows in result set")}
 	}
 
