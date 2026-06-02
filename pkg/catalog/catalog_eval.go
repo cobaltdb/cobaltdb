@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"math"
@@ -1019,14 +1020,25 @@ func toVector(v interface{}) ([]float64, error) {
 		}
 		return result, nil
 	case string:
-		// Try to parse as JSON array
-		// For now, return error - JSON parsing can be added if needed
-		return nil, fmt.Errorf("cannot convert string to vector")
+		return parseVectorString(vec)
+	case StringBox:
+		return parseVectorString(vec.String())
 	case nil:
 		return nil, fmt.Errorf("cannot convert NULL to vector")
 	default:
 		return nil, fmt.Errorf("cannot convert %T to vector", v)
 	}
+}
+
+// parseVectorString parses a JSON array literal such as "[1, 2.5, 3]" into a
+// float64 vector, so vector functions accept string/JSON literals and
+// string-typed column values, not only already-parsed arrays.
+func parseVectorString(s string) ([]float64, error) {
+	var arr []float64
+	if err := json.Unmarshal([]byte(s), &arr); err != nil {
+		return nil, fmt.Errorf("cannot convert string %q to vector: %w", s, err)
+	}
+	return arr, nil
 }
 
 func toFloat64(v interface{}) (float64, bool) {
