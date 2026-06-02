@@ -64,6 +64,9 @@ Probing the §1.11 fix against explicit `CREATE UNIQUE INDEX` (single- and multi
 
 Regression test `TestBufferedUniqueIndexValueFreedByDelete` (covers single/multi-column reuse, the post-commit index integrity via a still-rejected duplicate, and the still-rejected live in-txn duplicate). — fixed 2026-06-02.
 
+### 1.13 [verified — FIXED] JSON function value/composition bugs — `pkg/catalog/catalog_eval_json.go`
+Probing the JSON builtins found three real bugs, all from the dispatcher coercing arguments through `jsonArgString` (string-only): (1) `JSON_SET(doc,'$.k',31)` dropped non-string scalars to `""` (the number/bool was lost); (2) `JSON_ARRAY_LENGTH(JSON_EXTRACT(...))` returned 0 because `JSON_EXTRACT` returns a native Go slice that the string-only coercion couldn't see; (3) `JSON_TYPE(JSON_EXTRACT(...))` returned "unknown" for the same reason. Fixes: `jsonSetValueArg` renders numbers/bools/composites to JSON text for `JSON_SET`; `jsonDocArg` re-serializes a native (non-string) nested value to JSON text for `JSON_ARRAY_LENGTH`/`JSON_TYPE` while leaving string documents untouched (no double-encoding). Regression tests `TestJSONSetPreservesScalarTypes`, `TestJSONComposedExtract`. (Not changed: `JSON_UNQUOTE` of an already-unquoted scalar still errors — its erroring contract is covered by existing tests and was left intact rather than overreach into changing tested semantics.) — fixed 2026-06-02.
+
 ### 1.7 [policy] Audit write durability — `pkg/audit/logger.go`
 Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file == nil` drop is closed. **Still open:** (a) **retry** on transient I/O errors; (b) optional **fail-secure** mode where a failed audit write aborts the audited operation — a product decision (availability vs. guaranteed auditability).
 

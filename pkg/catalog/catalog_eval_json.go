@@ -1,7 +1,9 @@
 package catalog
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
 func jsonArgString(args []interface{}, idx int) (string, bool) {
@@ -20,6 +22,81 @@ func jsonArgString(args []interface{}, idx int) (string, bool) {
 		return v.String(), true
 	default:
 		return "", false
+	}
+}
+
+// jsonDocArg returns the argument as a JSON document string. String-like values
+// are returned verbatim (they are already JSON text); a native value produced by
+// a nested JSON function (number, bool, array, object from JSON_EXTRACT) is
+// re-serialized to its JSON text so composed calls like
+// JSON_ARRAY_LENGTH(JSON_EXTRACT(...)) work.
+func jsonDocArg(args []interface{}, idx int) (string, bool) {
+	if idx >= len(args) || args[idx] == nil {
+		return "", false
+	}
+	switch v := args[idx].(type) {
+	case string:
+		return v, true
+	case *string:
+		if v == nil {
+			return "", false
+		}
+		return *v, true
+	case StringBox:
+		return v.String(), true
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", false
+		}
+		return string(b), true
+	}
+}
+
+// jsonSetValueArg renders a JSON_SET/JSON_REPLACE value argument as JSON text so
+// JSONSet can parse it back: numbers and bools become their JSON literal,
+// strings are passed through (JSONSet treats an unparsable string as a JSON
+// string), nested composite values are marshaled, and NULL becomes JSON null.
+func jsonSetValueArg(args []interface{}, idx int) string {
+	if idx >= len(args) || args[idx] == nil {
+		return "null"
+	}
+	switch v := args[idx].(type) {
+	case string:
+		return v
+	case *string:
+		if v == nil {
+			return "null"
+		}
+		return *v
+	case StringBox:
+		return v.String()
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(v), 'f', -1, 32)
+	case int:
+		return strconv.FormatInt(int64(v), 10)
+	case int32:
+		return strconv.FormatInt(int64(v), 10)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case uint:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint64:
+		return strconv.FormatUint(v, 10)
+	default:
+		if b, err := json.Marshal(v); err == nil {
+			return string(b)
+		}
+		return fmt.Sprintf("%v", v)
 	}
 }
 
@@ -70,7 +147,7 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		}
 		jsonData, _ := jsonArgString(args, 0)
 		path, _ := jsonArgString(args, 1)
-		value, _ := jsonArgString(args, 2)
+		value := jsonSetValueArg(args, 2)
 		return JSONSet(jsonData, path, value)
 
 	case "JSON_REMOVE":
@@ -101,7 +178,7 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if args[0] == nil {
 			return 0, nil
 		}
-		jsonData, ok := jsonArgString(args, 0)
+		jsonData, ok := jsonDocArg(args, 0)
 		if !ok {
 			return 0, nil
 		}
@@ -118,7 +195,7 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if args[0] == nil {
 			return "null", nil
 		}
-		jsonData, ok := jsonArgString(args, 0)
+		jsonData, ok := jsonDocArg(args, 0)
 		if !ok {
 			return "unknown", nil
 		}
