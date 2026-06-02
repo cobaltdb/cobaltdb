@@ -417,7 +417,12 @@ func (c *Catalog) ExecuteQuery(sql string) (*QueryResult, error) {
 		return &QueryResult{}, err
 	case *query.InsertStmt:
 		_, _, err := c.Insert(ctx, s, nil)
-		return &QueryResult{}, err
+		if err != nil {
+			return nil, err
+		}
+		cols := c.GetLastReturningColumns()
+		rows := c.GetLastReturningRows()
+		return &QueryResult{Columns: cols, Rows: rows}, nil
 	case *query.UpdateStmt:
 		_, _, err := c.Update(ctx, s, nil)
 		if err != nil {
