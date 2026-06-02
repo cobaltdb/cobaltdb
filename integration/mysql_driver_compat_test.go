@@ -66,4 +66,26 @@ func TestMySQLGoSQLDriverCompatibility(t *testing.T) {
 	if name != "bob" || score != 82.25 {
 		t.Fatalf("Unexpected prepared SELECT row: name=%q score=%v", name, score)
 	}
+
+	// A prepared statement must report the real result column names, not
+	// placeholder "col0"/"col1" labels.
+	stmt, err := db.PrepareContext(ctx, "SELECT name, score FROM driver_users WHERE id = ?")
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	defer stmt.Close()
+	rows, err := stmt.QueryContext(ctx, 2)
+	if err != nil {
+		t.Fatalf("prepared query: %v", err)
+	}
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("columns: %v", err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close rows: %v", err)
+	}
+	if len(cols) != 2 || cols[0] != "name" || cols[1] != "score" {
+		t.Fatalf("prepared statement column names = %v, want [name score]", cols)
+	}
 }

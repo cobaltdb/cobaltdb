@@ -1323,10 +1323,12 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	defer cancel()
 
 	var numColumns int
+	var columnNames []string
 	placeholderArgs := make([]interface{}, numParams)
 	rows, err := c.server.db.Query(ctx, sql, placeholderArgs...)
 	if err == nil {
-		numColumns = len(rows.Columns())
+		columnNames = append([]string(nil), rows.Columns()...)
+		numColumns = len(columnNames)
 		if err := rows.Close(); err != nil {
 			return err
 		}
@@ -1379,7 +1381,11 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	}
 
 	for i := 0; i < numColumns; i++ {
-		colPkt := c.buildColumnDefPacket(fmt.Sprintf("col%d", i))
+		name := fmt.Sprintf("col%d", i)
+		if i < len(columnNames) {
+			name = columnNames[i]
+		}
+		colPkt := c.buildColumnDefPacket(name)
 		if err := c.writePacket(colPkt, seq); err != nil {
 			return err
 		}
