@@ -299,9 +299,9 @@ func TestV81TriggerExprDeepCoverage(t *testing.T) {
 		"SELECT JSON_EXTRACT(data, '$.scores[0]') FROM v81_json WHERE id = 1", float64(90))
 	check("JSON table valid",
 		"SELECT JSON_VALID(data) FROM v81_json WHERE id = 1", true)
-	// JSON_ARRAY_LENGTH on nested extract returns 0 (not array string)
+	// JSON_ARRAY_LENGTH composes with JSON_EXTRACT: scores=[90,85,95] -> 3.
 	check("JSON table array length",
-		"SELECT JSON_ARRAY_LENGTH(JSON_EXTRACT(data, '$.scores')) FROM v81_json WHERE id = 1", float64(0))
+		"SELECT JSON_ARRAY_LENGTH(JSON_EXTRACT(data, '$.scores')) FROM v81_json WHERE id = 1", float64(3))
 
 	// ============================================================
 	// === SECTION 4: COMPLEX HAVING WITH JOIN ===
