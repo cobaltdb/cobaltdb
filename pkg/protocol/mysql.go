@@ -1323,12 +1323,12 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	defer cancel()
 
 	var numColumns int
-	var columnNames []string
+	var columnDefs []mysqlColumnDefinition
 	placeholderArgs := make([]interface{}, numParams)
 	rows, err := c.server.db.Query(ctx, sql, placeholderArgs...)
 	if err == nil {
-		columnNames = append([]string(nil), rows.Columns()...)
-		numColumns = len(columnNames)
+		columnDefs = c.buildBinaryColumnDefinitions(rows.Columns(), rows.ColumnTypeHints())
+		numColumns = len(columnDefs)
 		if err := rows.Close(); err != nil {
 			return err
 		}
@@ -1381,11 +1381,12 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 	}
 
 	for i := 0; i < numColumns; i++ {
-		name := fmt.Sprintf("col%d", i)
-		if i < len(columnNames) {
-			name = columnNames[i]
+		var colPkt []byte
+		if i < len(columnDefs) {
+			colPkt = c.buildColumnDefPacketWithDefinition(columnDefs[i])
+		} else {
+			colPkt = c.buildColumnDefPacket(fmt.Sprintf("col%d", i))
 		}
-		colPkt := c.buildColumnDefPacket(name)
 		if err := c.writePacket(colPkt, seq); err != nil {
 			return err
 		}
@@ -1710,6 +1711,8 @@ func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 		return c.sendOKPacket(0, 0)
 	}
 	columns := rows.Columns()
+	defs := c.buildBinaryColumnDefinitions(columns, rows.ColumnTypeHints())
+	colTypes := columnDefTypes(defs)
 	seq := byte(1)
 
 	countPkt := appendLenEncInt(nil, uint64(len(columns)))
@@ -1718,8 +1721,8 @@ func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 	}
 	seq++
 
-	for _, colName := range columns {
-		pkt := c.buildColumnDefPacket(colName)
+	for _, def := range defs {
+		pkt := c.buildColumnDefPacketWithDefinition(def)
 		if err := c.writePacket(pkt, seq); err != nil {
 			return err
 		}
@@ -1742,7 +1745,7 @@ func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 			scanErrors++
 			continue
 		}
-		if err := c.writePacket(c.buildBinaryRowPacket(row), seq); err != nil {
+		if err := c.writePacket(c.buildBinaryRowPacket(row, colTypes), seq); err != nil {
 			return err
 		}
 		seq++
@@ -1752,7 +1755,7 @@ func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 	return c.sendEOFPacket(seq)
 }
 
-func (c *MySQLClient) buildBinaryRowPacket(row []interface{}) []byte {
+func (c *MySQLClient) buildBinaryRowPacket(row []interface{}, colTypes []byte) []byte {
 	nullBitmapLen := (len(row) + 7 + 2) / 8
 	pkt := make([]byte, 1, 1+nullBitmapLen+len(row)*8)
 	pkt[0] = 0x00
@@ -1764,11 +1767,132 @@ func (c *MySQLClient) buildBinaryRowPacket(row []interface{}) []byte {
 			nullBitmap[bit/8] |= 1 << uint(bit%8)
 			continue
 		}
-		values = appendLenEncString(values, valueToWireString(val))
+		typ := MySQLTypeVarString
+		if i < len(colTypes) {
+			typ = colTypes[i]
+		}
+		values = appendBinaryValue(values, val, typ)
 	}
 	pkt = append(pkt, nullBitmap...)
 	pkt = append(pkt, values...)
 	return pkt
+}
+
+// appendBinaryValue encodes a non-NULL value in the MySQL binary result-set
+// format for the given column type. Fixed-width numeric types are written in
+// their native little-endian form; everything else (strings, blobs, decimals,
+// JSON, and the temporal types that the column builder maps to VarString) is
+// length-encoded as a string — which is the correct binary encoding for those
+// types. The declared column type and this encoding are kept in lock-step by
+// buildBinaryColumnDefinitions so a client never misreads a value.
+func appendBinaryValue(dst []byte, val interface{}, typ byte) []byte {
+	switch typ {
+	case MySQLTypeTiny:
+		n, _ := binaryInt64(val)
+		return append(dst, byte(n)) // #nosec G115 -- MySQL TINYINT is a single byte; wrap modulo 2^8
+	case MySQLTypeShort, MySQLTypeYear:
+		n, _ := binaryInt64(val)
+		return binary.LittleEndian.AppendUint16(dst, uint16(n)) // #nosec G115 -- MySQL SMALLINT wraps modulo 2^16
+	case MySQLTypeLong, MySQLTypeInt24:
+		n, _ := binaryInt64(val)
+		return binary.LittleEndian.AppendUint32(dst, uint32(n)) // #nosec G115 -- MySQL INT wraps modulo 2^32
+	case MySQLTypeLongLong:
+		n, _ := binaryInt64(val)
+		return binary.LittleEndian.AppendUint64(dst, uint64(n)) // #nosec G115 -- two's-complement reinterpretation
+	case MySQLTypeFloat:
+		f, _ := binaryFloat64(val)
+		return binary.LittleEndian.AppendUint32(dst, math.Float32bits(float32(f)))
+	case MySQLTypeDouble:
+		f, _ := binaryFloat64(val)
+		return binary.LittleEndian.AppendUint64(dst, math.Float64bits(f))
+	default:
+		return appendLenEncString(dst, valueToWireString(val))
+	}
+}
+
+func binaryInt64(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int16:
+		return int64(n), true
+	case int8:
+		return int64(n), true
+	case uint64:
+		return int64(n), true // #nosec G115 -- two's-complement reinterpretation
+	case uint:
+		return int64(n), true // #nosec G115
+	case uint32:
+		return int64(n), true
+	case uint16:
+		return int64(n), true
+	case uint8:
+		return int64(n), true
+	case bool:
+		if n {
+			return 1, true
+		}
+		return 0, true
+	case float64:
+		return int64(n), true
+	case float32:
+		return int64(n), true
+	default:
+		return 0, false
+	}
+}
+
+func binaryFloat64(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	default:
+		return 0, false
+	}
+}
+
+// buildBinaryColumnDefinitions builds column definitions for a binary result
+// set. It declares real numeric types (so prepared-statement clients see proper
+// metadata) but maps the packed temporal types to VarString, since
+// appendBinaryValue length-encodes those as strings rather than emitting the
+// MySQL packed date/time form.
+func (c *MySQLClient) buildBinaryColumnDefinitions(columns []string, hints []string) []mysqlColumnDefinition {
+	defs := make([]mysqlColumnDefinition, len(columns))
+	for i, colName := range columns {
+		def := defaultMySQLColumnDefinition(colName)
+		if i < len(hints) && hints[i] != "" {
+			typ, charset, length, decimals, flags := mysqlColumnTypeForSQL(hints[i])
+			switch typ {
+			case MySQLTypeDate, MySQLTypeNewDate, MySQLTypeDateTime, MySQLTypeTimestamp, MySQLTypeTime:
+				typ, charset, length, decimals, flags = MySQLTypeVarString, mysqlCharsetUTF8GeneralCI, 65535, 0, 0
+			}
+			def.typ, def.charset, def.length, def.decimals, def.flags = typ, charset, length, decimals, flags
+		}
+		defs[i] = def
+	}
+	return defs
+}
+
+func columnDefTypes(defs []mysqlColumnDefinition) []byte {
+	types := make([]byte, len(defs))
+	for i := range defs {
+		types[i] = defs[i].typ
+	}
+	return types
 }
 
 func (c *MySQLClient) handleStmtClose(data []byte) error {
