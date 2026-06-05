@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and derived-table paths.
 - **Integer precision**: integer literals and unary minus preserve full `int64`
   precision (values above 2^53 are no longer corrupted by a `float64` round-trip).
+- **Backup/restore**: the SQL dump wrote TEXT values unquoted (the engine returns
+  them as a `StringBox` wrapper, not a Go `string`), so any dump containing string
+  data failed to restore ("column not found"). String values are now correctly
+  quoted and escaped; `dump`/`restore` round-trips strings, NULLs, booleans, and
+  large integers.
 - **CLI**: executes every `;`-separated statement (compound-statement-aware splitter),
   returns a non-zero exit code on SQL errors, and routes `EXPLAIN` through the query path.
 - **MySQL wire-protocol server**: failing read queries now surface their real error
