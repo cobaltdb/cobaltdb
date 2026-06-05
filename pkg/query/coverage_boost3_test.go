@@ -41,7 +41,7 @@ func TestCovBoost3_Parser_InsertErrors(t *testing.T) {
 		{"Insert_MissingTable", "INSERT INTO"},
 		{"Insert_MissingValues", "INSERT INTO t (id)"},
 		{"Insert_InvalidValues", "INSERT INTO t VALUES"},
-		{"Insert_InvalidColumn", "INSERT INTO t (@invalid) VALUES (1)"},
+		{"Insert_InvalidColumn", "INSERT INTO t (1+1) VALUES (1)"},
 	}
 
 	for _, tt := range tests {
@@ -103,7 +103,7 @@ func TestCovBoost3_Parser_CreateTableErrors(t *testing.T) {
 		{"Create_MissingTable", "CREATE TABLE"},
 		{"Create_InvalidName", "CREATE TABLE 123abc"},
 		{"Create_MissingColumns", "CREATE TABLE t ()"},
-		{"Create_InvalidColumn", "CREATE TABLE t (@invalid)"},
+		{"Create_InvalidColumn", "CREATE TABLE t (123)"},
 		{"Create_MissingDataType", "CREATE TABLE t (col)"},
 		{"Create_InvalidConstraint", "CREATE TABLE t (id INTEGER CONSTRAINT)"},
 	}

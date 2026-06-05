@@ -37,6 +37,12 @@ func evaluateStringFunction(funcName string, evalArgs []interface{}) (funcResult
 		return evalStringReplace(evalArgs), true
 	case "INSTR":
 		return evalStringInstr(evalArgs), true
+	case "LOCATE", "POSITION":
+		return evalStringLocate(evalArgs), true
+	case "SUBSTRING_INDEX":
+		return evalStringSubstringIndex(evalArgs), true
+	case "ASCII":
+		return evalStringAscii(evalArgs), true
 	case "PRINTF":
 		return evalStringPrintf(evalArgs), true
 	case "REVERSE":
@@ -233,6 +239,83 @@ func evalStringInstr(evalArgs []interface{}) funcResult {
 		return funcResult{float64(0), nil}
 	}
 	return funcResult{float64(idx + 1), nil}
+}
+
+// evalStringLocate implements LOCATE(substr, str [, pos]) and POSITION(substr, str):
+// 1-based index of the first occurrence of substr in str, 0 if not found.
+func evalStringLocate(evalArgs []interface{}) funcResult {
+	if len(evalArgs) < 2 {
+		return funcResult{nil, fmt.Errorf("LOCATE requires at least 2 arguments")}
+	}
+	if evalArgs[0] == nil || evalArgs[1] == nil {
+		return funcResult{nil, nil}
+	}
+	needle, _ := argString(evalArgs, 0)
+	haystack, _ := argString(evalArgs, 1)
+	start := 0
+	if len(evalArgs) >= 3 {
+		if f, ok := toFloat64(evalArgs[2]); ok {
+			start = int(f) - 1
+			if start < 0 {
+				start = 0
+			}
+		}
+	}
+	if start > len(haystack) {
+		return funcResult{float64(0), nil}
+	}
+	idx := strings.Index(haystack[start:], needle)
+	if idx < 0 {
+		return funcResult{float64(0), nil}
+	}
+	return funcResult{float64(start + idx + 1), nil}
+}
+
+// evalStringSubstringIndex implements SUBSTRING_INDEX(str, delim, count): the
+// substring before the count-th delimiter (from the left if count > 0, from the
+// right if count < 0).
+func evalStringSubstringIndex(evalArgs []interface{}) funcResult {
+	if len(evalArgs) < 3 {
+		return funcResult{nil, fmt.Errorf("SUBSTRING_INDEX requires 3 arguments")}
+	}
+	if evalArgs[0] == nil || evalArgs[1] == nil || evalArgs[2] == nil {
+		return funcResult{nil, nil}
+	}
+	str, _ := argString(evalArgs, 0)
+	delim, _ := argString(evalArgs, 1)
+	cf, _ := toFloat64(evalArgs[2])
+	count := int(cf)
+	if delim == "" || count == 0 {
+		return funcResult{"", nil}
+	}
+	parts := strings.Split(str, delim)
+	if count > 0 {
+		if count >= len(parts) {
+			return funcResult{str, nil}
+		}
+		return funcResult{strings.Join(parts[:count], delim), nil}
+	}
+	count = -count
+	if count >= len(parts) {
+		return funcResult{str, nil}
+	}
+	return funcResult{strings.Join(parts[len(parts)-count:], delim), nil}
+}
+
+// evalStringAscii implements ASCII(str): the numeric code of the first byte, 0
+// for an empty string.
+func evalStringAscii(evalArgs []interface{}) funcResult {
+	if len(evalArgs) < 1 {
+		return funcResult{nil, fmt.Errorf("ASCII requires 1 argument")}
+	}
+	if evalArgs[0] == nil {
+		return funcResult{nil, nil}
+	}
+	s := ValueToStringKey(evalArgs[0])
+	if len(s) == 0 {
+		return funcResult{float64(0), nil}
+	}
+	return funcResult{float64(s[0]), nil}
 }
 
 func evalStringPrintf(evalArgs []interface{}) funcResult {

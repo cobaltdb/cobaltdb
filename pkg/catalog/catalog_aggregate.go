@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/parallel"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -410,18 +411,68 @@ func (c *Catalog) computeAggregatesForExpr(expr query.Expression, groupRows [][]
 				}
 			}
 		}
-		aggResults[fc] = reduceBasicAggregate(toUpperFast(fc.Name), values, len(groupRows), isCountStar)
+		aggResults[fc] = reduceBasicAggregate(toUpperFast(fc.Name), values, len(groupRows), isCountStar, fc.Distinct)
 	}
 	return aggResults
 }
 
+// computeStdevVar computes the STDDEV/VARIANCE family over numeric values.
+// _POP/default use the population formula; _SAMP use the sample formula.
+// Returns nil (SQL NULL) when there are too few numeric values.
+func computeStdevVar(values []interface{}, funcName string) interface{} {
+	nums := make([]float64, 0, len(values))
+	for _, v := range values {
+		if v == nil {
+			continue
+		}
+		if f, ok := toFloat64(v); ok {
+			nums = append(nums, f)
+		}
+	}
+	n := len(nums)
+	if n == 0 {
+		return nil
+	}
+	var mean float64
+	for _, x := range nums {
+		mean += x
+	}
+	mean /= float64(n)
+	var ss float64
+	for _, x := range nums {
+		d := x - mean
+		ss += d * d
+	}
+
+	sample := funcName == "STDDEV_SAMP" || funcName == "VAR_SAMP"
+	var variance float64
+	if sample {
+		if n < 2 {
+			return nil
+		}
+		variance = ss / float64(n-1)
+	} else {
+		variance = ss / float64(n)
+	}
+
+	switch funcName {
+	case "VARIANCE", "VAR_POP", "VAR_SAMP":
+		return variance
+	default: // STDDEV, STDDEV_POP, STDDEV_SAMP, STD
+		return math.Sqrt(variance)
+	}
+}
+
 // reduceBasicAggregate applies basic aggregate functions over the supplied values.
-// For unknown function names it returns nil; DISTINCT is handled in the full
-// selectColInfo-driven path.
-func reduceBasicAggregate(funcName string, values []interface{}, groupSize int, isCountStar bool) interface{} {
+// For unknown function names it returns nil. When distinct is set, COUNT/SUM/AVG
+// deduplicate values first (e.g. COUNT(DISTINCT col), SUM(DISTINCT col)).
+func reduceBasicAggregate(funcName string, values []interface{}, groupSize int, isCountStar, distinct bool) interface{} {
+	if distinct && !isCountStar {
+		values = distinctAggregateValues(values)
+	}
 	switch funcName {
 	case "COUNT":
-		if isCountStar {
+		if isCountStar && !distinct {
 			return int64(groupSize)
 		}
 		count := int64(0)
@@ -496,6 +547,8 @@ func reduceBasicAggregate(funcName string, values []interface{}, groupSize int, 
 			return strings.Join(parts, ",")
 		}
 		return nil
+	case "STDDEV", "STDDEV_POP", "STDDEV_SAMP", "STD", "VARIANCE", "VAR_POP", "VAR_SAMP":
+		return computeStdevVar(values, funcName)
 	}
 	return nil
 }
@@ -884,7 +937,7 @@ func collectAggregatesFromExpr(expr query.Expression, result *[]*query.FunctionC
 	}
 	switch e := expr.(type) {
 	case *query.FunctionCall:
-		if strings.EqualFold(e.Name, "COUNT") || strings.EqualFold(e.Name, "SUM") || strings.EqualFold(e.Name, "AVG") || strings.EqualFold(e.Name, "MIN") || strings.EqualFold(e.Name, "MAX") || strings.EqualFold(e.Name, "GROUP_CONCAT") {
+		if isAggregateFuncName(toUpperFast(e.Name)) {
 			*result = append(*result, e)
 		}
 		for _, arg := range e.Args {

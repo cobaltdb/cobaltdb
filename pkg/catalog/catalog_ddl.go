@@ -778,6 +778,20 @@ func (c *Catalog) GetTable(name string) (*TableDef, error) {
 	return cloneTableDef(table), nil
 }
 
+// GetTableIndexes returns copies of the secondary indexes defined on a table,
+// used by SHOW INDEX.
+func (c *Catalog) GetTableIndexes(table string) []IndexDef {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var out []IndexDef
+	for _, idx := range c.indexes {
+		if idx != nil && strings.EqualFold(idx.TableName, table) {
+			out = append(out, *idx)
+		}
+	}
+	return out
+}
+
 func (c *Catalog) getTableLocked(name string) (*TableDef, error) {
 	table, exists := c.tables[name]
 	if !exists {

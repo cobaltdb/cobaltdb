@@ -43,7 +43,9 @@ func (sb StringBox) String() string {
 // SQL aggregate functions handled by the engine.
 func isAggregateFuncName(name string) bool {
 	switch name {
-	case "COUNT", "SUM", "AVG", "MIN", "MAX", "GROUP_CONCAT":
+	case "COUNT", "SUM", "AVG", "MIN", "MAX", "GROUP_CONCAT",
+		"STDDEV", "STDDEV_POP", "STDDEV_SAMP", "STD",
+		"VARIANCE", "VAR_POP", "VAR_SAMP":
 		return true
 	}
 	return false

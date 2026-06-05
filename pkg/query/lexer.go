@@ -83,15 +83,30 @@ func (l *Lexer) NextToken() Token {
 	case '<':
 		if l.peekChar() == '=' {
 			ch := l.ch
-			l.readChar()
-			literal := string(ch) + string(l.ch)
-			tok = Token{Type: TokenLte, Literal: literal, Line: l.line, Column: l.column - 1}
-			l.readChar()
+			l.readChar() // now at '='
+			if l.peekChar() == '>' {
+				// NULL-safe equality <=>
+				eq := l.ch
+				l.readChar() // now at '>'
+				literal := string(ch) + string(eq) + string(l.ch)
+				tok = Token{Type: TokenNullSafeEq, Literal: literal, Line: l.line, Column: l.column - 2}
+				l.readChar()
+			} else {
+				literal := string(ch) + string(l.ch)
+				tok = Token{Type: TokenLte, Literal: literal, Line: l.line, Column: l.column - 1}
+				l.readChar()
+			}
 		} else if l.peekChar() == '>' {
 			ch := l.ch
 			l.readChar()
 			literal := string(ch) + string(l.ch)
 			tok = Token{Type: TokenNeq, Literal: literal, Line: l.line, Column: l.column - 1}
+			l.readChar()
+		} else if l.peekChar() == '<' {
+			ch := l.ch
+			l.readChar()
+			literal := string(ch) + string(l.ch)
+			tok = Token{Type: TokenShiftLeft, Literal: literal, Line: l.line, Column: l.column - 1}
 			l.readChar()
 		} else {
 			tok = newToken(TokenLt, l.ch, l.line, l.column)
@@ -105,20 +120,11 @@ func (l *Lexer) NextToken() Token {
 			tok = Token{Type: TokenGte, Literal: literal, Line: l.line, Column: l.column - 1}
 			l.readChar()
 		} else if l.peekChar() == '>' {
-			// JSON operator ->>
 			ch := l.ch
 			l.readChar()
-			if l.peekChar() == '>' {
-				ch2 := l.ch
-				l.readChar()
-				literal := string(ch) + string(ch2) + string(l.ch)
-				tok = Token{Type: TokenArrow2, Literal: literal, Line: l.line, Column: l.column - 2}
-				l.readChar()
-			} else {
-				literal := string(ch) + string(l.ch)
-				tok = Token{Type: TokenArrow, Literal: literal, Line: l.line, Column: l.column - 1}
-				l.readChar()
-			}
+			literal := string(ch) + string(l.ch)
+			tok = Token{Type: TokenShiftRight, Literal: literal, Line: l.line, Column: l.column - 1}
+			l.readChar()
 		} else {
 			tok = newToken(TokenGt, l.ch, l.line, l.column)
 			l.readChar()
@@ -157,6 +163,19 @@ func (l *Lexer) NextToken() Token {
 			literal := string(ch) + string(l.ch)
 			tok = Token{Type: TokenContains, Literal: literal, Line: l.line, Column: l.column - 1}
 			l.readChar()
+		} else if pk := l.peekChar(); pk == '@' || isLetter(pk) || pk == '_' {
+			// System (@@name) or user (@name) variable, kept as an identifier
+			// whose literal includes the @ prefix; resolved during evaluation.
+			startCol := l.column
+			pos := l.pos
+			l.readChar() // consume first '@'
+			if l.ch == '@' {
+				l.readChar() // consume second '@'
+			}
+			for isLetter(l.ch) || isDigit(l.ch) || l.ch == '_' {
+				l.readChar()
+			}
+			tok = Token{Type: TokenIdentifier, Literal: l.input[pos:l.pos], Line: l.line, Column: startCol}
 		} else {
 			tok = newToken(TokenIllegal, l.ch, l.line, l.column)
 			l.readChar()
@@ -190,6 +209,12 @@ func (l *Lexer) NextToken() Token {
 	case '%':
 		tok = newToken(TokenPercent, l.ch, l.line, l.column)
 		l.readChar()
+	case '&':
+		tok = newToken(TokenBitAnd, l.ch, l.line, l.column)
+		l.readChar()
+	case '^':
+		tok = newToken(TokenBitXor, l.ch, l.line, l.column)
+		l.readChar()
 	case '|':
 		if l.peekChar() == '|' {
 			ch := l.ch
@@ -198,7 +223,7 @@ func (l *Lexer) NextToken() Token {
 			tok = Token{Type: TokenConcat, Literal: literal, Line: l.line, Column: l.column - 1}
 			l.readChar()
 		} else {
-			tok = newToken(TokenIllegal, l.ch, l.line, l.column)
+			tok = newToken(TokenBitOr, l.ch, l.line, l.column)
 			l.readChar()
 		}
 	case '(':

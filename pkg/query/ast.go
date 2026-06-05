@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -281,6 +282,7 @@ type Evaluator interface {
 	EvalMatch(expr *MatchExpr, row []interface{}) (interface{}, error)
 	EvalStar(table string) (interface{}, error)
 	EvalColumnRef(table, column string) (interface{}, error)
+	EvalWindow(w *WindowExpr) (interface{}, error)
 }
 
 // TemporalExpr represents AS OF expression for temporal queries
@@ -344,9 +346,17 @@ type InsertStmt struct {
 	Table          string
 	Columns        []string
 	Values         [][]Expression
-	Select         *SelectStmt    // For INSERT INTO ... SELECT ...
-	ConflictAction ConflictAction // OR REPLACE / OR IGNORE
-	Returning      []Expression   // RETURNING clause expressions
+	Select         *SelectStmt       // For INSERT INTO ... SELECT ...
+	ConflictAction ConflictAction    // OR REPLACE / OR IGNORE
+	OnConflict     *OnConflictClause // ON CONFLICT (...) DO NOTHING|UPDATE
+	Returning      []Expression      // RETURNING clause expressions
+}
+
+// OnConflictClause represents `ON CONFLICT [(cols)] DO NOTHING | DO UPDATE SET ...`.
+// DoUpdate == nil means DO NOTHING; otherwise it holds the UPDATE assignments.
+type OnConflictClause struct {
+	Columns  []string // conflict target columns (optional)
+	DoUpdate []*SetClause
 }
 
 func (s *InsertStmt) nodeType() string { return "InsertStmt" }
@@ -417,6 +427,9 @@ type CreateTableStmt struct {
 	PrimaryKey  []string // Table-level PRIMARY KEY (col1, col2, ...) for composite PK
 	ForeignKeys []*ForeignKeyDef
 	Partition   *PartitionDef // Table partitioning definition
+	AsSelect    Statement     // CREATE TABLE ... AS SELECT ... (CTAS); nil otherwise
+	// UniqueConstraints holds table-level UNIQUE (col, ...) constraint column sets.
+	UniqueConstraints [][]string
 }
 
 func (s *CreateTableStmt) nodeType() string { return "CreateTableStmt" }
@@ -635,8 +648,9 @@ type ColumnDef struct {
 	PrimaryKey    bool
 	AutoIncrement bool
 	Default       Expression
-	Check         Expression // CHECK (expression)
-	Dimensions    int        // For VECTOR type: number of dimensions
+	Check         Expression     // CHECK (expression)
+	Dimensions    int            // For VECTOR type: number of dimensions
+	ForeignKey    *ForeignKeyDef // inline column-level REFERENCES constraint
 }
 
 // ForeignKeyDef represents a foreign key constraint
@@ -670,9 +684,31 @@ type JoinClause struct {
 type OrderByExpr struct {
 	Expr Expression
 	Desc bool
+	// NullsFirst is honored only when NullsSpecified is true; otherwise NULL
+	// placement defaults to last for ASC and first for DESC.
+	NullsFirst     bool
+	NullsSpecified bool
 }
 
 // Identifier represents an identifier expression
+// DefaultExpr is the `DEFAULT` keyword used as a value in INSERT ... VALUES.
+// The insert path resolves it to the column's defined default.
+type DefaultExpr struct{}
+
+func (e *DefaultExpr) nodeType() string { return "DefaultExpr" }
+func (e *DefaultExpr) expressionNode()  {}
+func (e *DefaultExpr) Evaluate(Evaluator) (interface{}, error) {
+	// Resolved by the insert path; evaluating elsewhere yields NULL.
+	return nil, nil
+}
+
+// AcceptVisitor treats DEFAULT as NULL for any visitor; the insert path resolves
+// it to the column default before evaluation, so visitors never see it in
+// practice.
+func (e *DefaultExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return v.VisitNullLiteral(&NullLiteral{}, ctx)
+}
+
 type Identifier struct {
 	Name string
 }
@@ -725,9 +761,19 @@ type NumberLiteral struct {
 	Raw   string
 }
 
-func (e *NumberLiteral) nodeType() string                        { return "NumberLiteral" }
-func (e *NumberLiteral) expressionNode()                         {}
-func (e *NumberLiteral) Evaluate(Evaluator) (interface{}, error) { return e.Value, nil }
+func (e *NumberLiteral) nodeType() string { return "NumberLiteral" }
+func (e *NumberLiteral) expressionNode()  {}
+func (e *NumberLiteral) Evaluate(Evaluator) (interface{}, error) {
+	// Preserve full int64 precision for integer literals; float64 can only hold
+	// integers exactly up to 2^53, so large INTEGER values would otherwise be
+	// silently corrupted.
+	if e.Raw != "" && !strings.ContainsAny(e.Raw, ".eE") {
+		if i, err := strconv.ParseInt(e.Raw, 10, 64); err == nil {
+			return i, nil
+		}
+	}
+	return e.Value, nil
+}
 
 // BooleanLiteral represents a boolean literal
 type BooleanLiteral struct {
@@ -1065,18 +1111,72 @@ type WindowExpr struct {
 	Args        []Expression   // Function arguments
 	PartitionBy []Expression   // PARTITION BY clause
 	OrderBy     []*OrderByExpr // ORDER BY clause
+	Frame       *WindowFrame   // optional ROWS/RANGE frame clause
+}
+
+// WindowFrame represents a window frame clause: ROWS|RANGE BETWEEN start AND end.
+type WindowFrame struct {
+	Mode  string // "ROWS" or "RANGE"
+	Start *WindowFrameBound
+	End   *WindowFrameBound
+}
+
+// WindowFrameBound represents one bound of a window frame.
+type WindowFrameBound struct {
+	// Type is one of: "UNBOUNDED_PRECEDING", "PRECEDING", "CURRENT_ROW",
+	// "FOLLOWING", "UNBOUNDED_FOLLOWING".
+	Type   string
+	Offset int // row offset for PRECEDING/FOLLOWING
 }
 
 func (e *WindowExpr) nodeType() string { return "WindowExpr" }
 func (e *WindowExpr) expressionNode()  {}
 func (e *WindowExpr) Evaluate(ev Evaluator) (interface{}, error) {
-	return nil, fmt.Errorf("window function %s cannot be used in this context", e.Function)
+	return ev.EvalWindow(e)
+}
+
+// CollectWindowExprs appends every WindowExpr nested anywhere within expr to out.
+func CollectWindowExprs(expr Expression, out *[]*WindowExpr) {
+	switch e := expr.(type) {
+	case nil:
+		return
+	case *WindowExpr:
+		*out = append(*out, e)
+	case *AliasExpr:
+		CollectWindowExprs(e.Expr, out)
+	case *BinaryExpr:
+		CollectWindowExprs(e.Left, out)
+		CollectWindowExprs(e.Right, out)
+	case *UnaryExpr:
+		CollectWindowExprs(e.Expr, out)
+	case *FunctionCall:
+		for _, a := range e.Args {
+			CollectWindowExprs(a, out)
+		}
+	case *CastExpr:
+		CollectWindowExprs(e.Expr, out)
+	case *CaseExpr:
+		CollectWindowExprs(e.Expr, out)
+		for _, w := range e.Whens {
+			CollectWindowExprs(w.Condition, out)
+			CollectWindowExprs(w.Result, out)
+		}
+		CollectWindowExprs(e.Else, out)
+	}
+}
+
+// ExprContainsWindow reports whether expr contains a window function anywhere.
+func ExprContainsWindow(expr Expression) bool {
+	var ws []*WindowExpr
+	CollectWindowExprs(expr, &ws)
+	return len(ws) > 0
 }
 
 // WindowSpec represents a window specification (OVER clause)
 type WindowSpec struct {
 	PartitionBy []Expression
 	OrderBy     []*OrderByExpr
+	Frame       *WindowFrame
 }
 
 func (e *WindowSpec) nodeType() string { return "WindowSpec" }
@@ -1220,6 +1320,14 @@ type ShowColumnsStmt struct {
 
 func (s *ShowColumnsStmt) nodeType() string { return "ShowColumnsStmt" }
 func (s *ShowColumnsStmt) statementNode()   {}
+
+// ShowIndexStmt represents SHOW INDEX|INDEXES|KEYS FROM table.
+type ShowIndexStmt struct {
+	Table string
+}
+
+func (s *ShowIndexStmt) nodeType() string { return "ShowIndexStmt" }
+func (s *ShowIndexStmt) statementNode()   {}
 
 // UseStmt represents USE <database>
 type UseStmt struct {

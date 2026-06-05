@@ -63,6 +63,17 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 	}
 	stmt.Table = table.Literal
 
+	// CREATE TABLE name AS SELECT ... (CTAS). The AS keyword is optional.
+	if p.current().Type == TokenAs || p.current().Type == TokenSelect || p.current().Type == TokenWith {
+		p.match(TokenAs)
+		sel, err := p.parseSelect()
+		if err != nil {
+			return nil, err
+		}
+		stmt.AsSelect = sel
+		return stmt, nil
+	}
+
 	if _, err := p.expect(TokenLParen); err != nil {
 		return nil, err
 	}
@@ -112,11 +123,39 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 			continue
 		}
 
+		// Check for table-level UNIQUE (col, ...) constraint.
+		if p.current().Type == TokenUnique && p.peek().Type == TokenLParen {
+			p.advance() // consume UNIQUE
+			p.advance() // consume (
+			var cols []string
+			for {
+				col, err := p.expect(TokenIdentifier)
+				if err != nil {
+					return nil, err
+				}
+				cols = append(cols, col.Literal)
+				if !p.match(TokenComma) {
+					break
+				}
+			}
+			if _, err := p.expect(TokenRParen); err != nil {
+				return nil, err
+			}
+			stmt.UniqueConstraints = append(stmt.UniqueConstraints, cols)
+			if !p.match(TokenComma) {
+				break
+			}
+			continue
+		}
+
 		col, err := p.parseColumnDef()
 		if err != nil {
 			return nil, err
 		}
 		stmt.Columns = append(stmt.Columns, col)
+		if col.ForeignKey != nil {
+			stmt.ForeignKeys = append(stmt.ForeignKeys, col.ForeignKey)
+		}
 
 		if !p.match(TokenComma) {
 			break
@@ -346,14 +385,24 @@ func (p *Parser) parseForeignKeyDef() (*ForeignKeyDef, error) {
 	if _, err := p.expect(TokenRParen); err != nil {
 		return nil, err
 	}
-	if _, err := p.expect(TokenReferences); err != nil {
+	if err := p.parseReferencesClause(fk); err != nil {
 		return nil, err
+	}
+
+	return fk, nil
+}
+
+// parseReferencesClause parses `REFERENCES table[(cols)] [ON DELETE ...] [ON UPDATE ...]`
+// into fk. Shared by table-level FOREIGN KEY and inline column-level REFERENCES.
+func (p *Parser) parseReferencesClause(fk *ForeignKeyDef) error {
+	if _, err := p.expect(TokenReferences); err != nil {
+		return err
 	}
 
 	// Referenced table
 	refTable, err := p.expect(TokenIdentifier)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	fk.ReferencedTable = refTable.Literal
 
@@ -362,7 +411,7 @@ func (p *Parser) parseForeignKeyDef() (*ForeignKeyDef, error) {
 		for {
 			refCol, err := p.expect(TokenIdentifier)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			fk.ReferencedColumns = append(fk.ReferencedColumns, refCol.Literal)
 
@@ -371,7 +420,7 @@ func (p *Parser) parseForeignKeyDef() (*ForeignKeyDef, error) {
 			}
 		}
 		if _, err := p.expect(TokenRParen); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
@@ -405,11 +454,11 @@ func (p *Parser) parseForeignKeyDef() (*ForeignKeyDef, error) {
 				fk.OnUpdate = "NO ACTION"
 			}
 		} else {
-			return nil, fmt.Errorf("expected DELETE or UPDATE after ON")
+			return fmt.Errorf("expected DELETE or UPDATE after ON")
 		}
 	}
 
-	return fk, nil
+	return nil
 }
 
 // parseColumnDef parses a column definition
@@ -493,6 +542,13 @@ func (p *Parser) parseColumnDef() (*ColumnDef, error) {
 				return nil, err
 			}
 			col.Check = checkExpr
+		case TokenReferences:
+			// Inline column-level FK: `col TYPE REFERENCES other(col)`.
+			fk := &ForeignKeyDef{Columns: []string{col.Name}}
+			if err := p.parseReferencesClause(fk); err != nil {
+				return nil, err
+			}
+			col.ForeignKey = fk
 		default:
 			return col, nil
 		}

@@ -86,6 +86,8 @@ func (p *Parser) Parse() (Statement, error) {
 		return p.parseUpdate()
 	case TokenDelete:
 		return p.parseDelete()
+	case TokenTruncate:
+		return p.parseTruncate()
 	case TokenCreate:
 		return p.parseCreate()
 	case TokenDrop:

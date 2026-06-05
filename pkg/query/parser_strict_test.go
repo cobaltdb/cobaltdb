@@ -9,7 +9,9 @@ func TestParseStrictRejectsTrailingTokens(t *testing.T) {
 	tests := []string{
 		"SELECT * FROM users TABLESAMPLE SYSTEM (10)",
 		"SELECT * FROM users MATCH_RECOGNIZE (PARTITION BY id ORDER BY name PATTERN (A))",
-		"SELECT 1 unexpected",
+		// "SELECT 1 alias" is valid (implicit column alias); a second trailing
+		// token after the alias is genuinely unexpected.
+		"SELECT 1 alias unexpected",
 	}
 
 	for _, sql := range tests {

@@ -384,16 +384,16 @@ func (c *Catalog) CommitTransaction() error {
 						shardSet[c.commitLockIdx(idx.IndexName, idx.Key)] = struct{}{}
 					}
 				}
-					for idxName, m := range idxNet {
-						for k, op := range m {
-							if op.isDelete {
-								idxDels[idxName] = append(idxDels[idxName], []byte(k))
-							} else {
-								idxPuts[idxName] = append(idxPuts[idxName], []byte(k))
-								idxPutVals[idxName] = append(idxPutVals[idxName], op.value)
-							}
+				for idxName, m := range idxNet {
+					for k, op := range m {
+						if op.isDelete {
+							idxDels[idxName] = append(idxDels[idxName], []byte(k))
+						} else {
+							idxPuts[idxName] = append(idxPuts[idxName], []byte(k))
+							idxPutVals[idxName] = append(idxPutVals[idxName], op.value)
 						}
 					}
+				}
 				for wk := range ts.readValues {
 					shardSet[c.commitLockIdx(wk.TreeName, wk.Key)] = struct{}{}
 				}

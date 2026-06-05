@@ -144,6 +144,10 @@ type selectColInfo struct {
 	windowExpr     *query.WindowExpr // window function expression
 	hasEmbeddedAgg bool              // true when expression (CASE, etc.) contains aggregate calls
 	originalExpr   query.Expression  // the original expression for hasEmbeddedAgg columns
+
+	// embeddedWindows holds window functions nested inside originalExpr (e.g.
+	// SUM(x) OVER () + 1); they are computed then substituted during projection.
+	embeddedWindows []*query.WindowExpr
 }
 
 // TableSnapshot holds all SELECT metadata needed to execute a scan without holding Catalog.mu.
@@ -780,7 +784,7 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	// Detect window functions early so we can collect full rows for ORDER BY evaluation
 	hasWindowFuncs := false
 	for _, ci := range selectCols {
-		if ci.isWindow {
+		if ci.isWindow || len(ci.embeddedWindows) > 0 {
 			hasWindowFuncs = true
 			break
 		}
@@ -1263,7 +1267,7 @@ func resolvePositionalRefs(stmt *query.SelectStmt) *query.SelectStmt {
 					} else {
 						expr = col
 					}
-					newOrderBy[i] = &query.OrderByExpr{Expr: expr, Desc: ob.Desc}
+					newOrderBy[i] = &query.OrderByExpr{Expr: expr, Desc: ob.Desc, NullsFirst: ob.NullsFirst, NullsSpecified: ob.NullsSpecified}
 					modified = true
 					continue
 				}

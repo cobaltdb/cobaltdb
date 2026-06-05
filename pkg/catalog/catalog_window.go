@@ -55,7 +55,73 @@ func (c *Catalog) evaluateWindowFunctions(rows [][]interface{}, selectCols []sel
 		c.evalWindowPartitions(rows, colIdx, we, partitions, partitionOrder, selectCols, table, args)
 	}
 
+	// Columns that nest window functions inside an expression (e.g.
+	// SUM(x) OVER () + 1): compute each window value, then re-evaluate the
+	// surrounding expression with those values substituted in.
+	for colIdx, ci := range selectCols {
+		if len(ci.embeddedWindows) == 0 || ci.originalExpr == nil {
+			continue
+		}
+		perRow := make(map[*query.WindowExpr][]interface{}, len(ci.embeddedWindows))
+		for _, we := range ci.embeddedWindows {
+			perRow[we] = c.computeWindowExprColumn(we, rows, fullRows, selectCols, table, args)
+		}
+		for i := range rows {
+			evalRow := rows[i]
+			evalCols := table.Columns
+			if i < len(fullRows) && fullRows[i] != nil {
+				evalRow = fullRows[i]
+			}
+			ctx := NewEvalContext(c, evalRow, evalCols, args)
+			wv := make(map[*query.WindowExpr]interface{}, len(ci.embeddedWindows))
+			for _, we := range ci.embeddedWindows {
+				wv[we] = perRow[we][i]
+			}
+			ctx.windowValues = wv
+			if val, err := ctx.evaluate(ci.originalExpr); err == nil {
+				rows[i][colIdx] = val
+			}
+		}
+	}
+
 	return rows
+}
+
+// computeWindowExprColumn computes the per-row values of a single window
+// expression over the given rows, returning a slice indexed by row position.
+func (c *Catalog) computeWindowExprColumn(we *query.WindowExpr, rows, fullRows [][]interface{}, selectCols []selectColInfo, table *TableDef, args []interface{}) []interface{} {
+	partitions := make(map[string][]windowPartEntry)
+	partitionOrder := []string{}
+	for i, row := range rows {
+		var fRow []interface{}
+		if i < len(fullRows) {
+			fRow = fullRows[i]
+		}
+		partKey := ""
+		if len(we.PartitionBy) > 0 {
+			var keyParts []string
+			for _, pExpr := range we.PartitionBy {
+				val := c.evalWindowExprOnRow(pExpr, row, selectCols, table, args, fRow)
+				keyParts = append(keyParts, ValueToStringKey(val))
+			}
+			partKey = strings.Join(keyParts, "|")
+		}
+		if _, exists := partitions[partKey]; !exists {
+			partitionOrder = append(partitionOrder, partKey)
+		}
+		partitions[partKey] = append(partitions[partKey], windowPartEntry{originalIdx: i, row: row, fullRow: fRow})
+	}
+
+	scratch := make([][]interface{}, len(rows))
+	for i := range scratch {
+		scratch[i] = make([]interface{}, 1)
+	}
+	c.evalWindowPartitions(scratch, 0, we, partitions, partitionOrder, selectCols, table, args)
+	out := make([]interface{}, len(rows))
+	for i := range scratch {
+		out[i] = scratch[i][0]
+	}
+	return out
 }
 
 func (c *Catalog) evalWindowExprOnRow(expr query.Expression, row []interface{}, selectCols []selectColInfo, table *TableDef, args []interface{}, fullRowOpt ...[]interface{}) interface{} {
@@ -210,8 +276,53 @@ func (c *Catalog) evalWindowRankFunc(rows [][]interface{}, colIdx int, entries [
 			rows[entry.originalIdx][colIdx] = int64(denseRank)
 		}
 		return true
+
+	case "PERCENT_RANK":
+		// (rank - 1) / (n - 1); 0 for a single row.
+		n := len(entries)
+		rank := 1
+		for i, entry := range entries {
+			if i > 0 && !c.windowSamePeer(we, entries[i-1], entry, selectCols, table, args) {
+				rank = i + 1
+			}
+			var pr float64
+			if n > 1 {
+				pr = float64(rank-1) / float64(n-1)
+			}
+			rows[entry.originalIdx][colIdx] = pr
+		}
+		return true
+
+	case "CUME_DIST":
+		// (rows ordered <= current, i.e. through the last peer) / n.
+		n := len(entries)
+		for i := 0; i < n; {
+			j := i
+			for j+1 < n && c.windowSamePeer(we, entries[i], entries[j+1], selectCols, table, args) {
+				j++
+			}
+			cd := float64(j+1) / float64(n)
+			for k := i; k <= j; k++ {
+				rows[entries[k].originalIdx][colIdx] = cd
+			}
+			i = j + 1
+		}
+		return true
 	}
 	return false
+}
+
+// windowSamePeer reports whether two entries share the same ORDER BY values
+// (i.e. they are peers for ranking purposes). With no ORDER BY, all rows peer.
+func (c *Catalog) windowSamePeer(we *query.WindowExpr, e1, e2 windowPartEntry, selectCols []selectColInfo, table *TableDef, args []interface{}) bool {
+	for _, ob := range we.OrderBy {
+		va := c.evalWindowExprOnRow(ob.Expr, e1.row, selectCols, table, args, e1.fullRow)
+		vb := c.evalWindowExprOnRow(ob.Expr, e2.row, selectCols, table, args, e2.fullRow)
+		if compareValues(va, vb) != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // evalWindowOffsetFunc handles LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTILE, NTH_VALUE window functions.
@@ -319,6 +430,13 @@ func (c *Catalog) evalWindowOffsetFunc(rows [][]interface{}, colIdx int, entries
 
 // evalWindowAggFunc handles COUNT, SUM, AVG, MIN, MAX window aggregate functions.
 func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []windowPartEntry, we *query.WindowExpr, selectCols []selectColInfo, table *TableDef, args []interface{}) bool {
+	// Explicit window frame (ROWS/RANGE BETWEEN ...) takes a dedicated path so
+	// the default (frame-less) running/partition behavior below is untouched.
+	if we.Frame != nil {
+		if c.evalWindowAggFrame(rows, colIdx, entries, we, selectCols, table, args) {
+			return true
+		}
+	}
 	switch we.Function {
 	case "COUNT":
 		if len(we.OrderBy) > 0 {
@@ -508,4 +626,117 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 		return true
 	}
 	return false
+}
+
+// frameRowBound resolves one frame bound to a physical (inclusive) row index for
+// the row at position i within a partition of n rows.
+func frameRowBound(b *query.WindowFrameBound, i, n int) int {
+	if b == nil {
+		return i
+	}
+	switch b.Type {
+	case "UNBOUNDED_PRECEDING":
+		return 0
+	case "PRECEDING":
+		return i - b.Offset
+	case "CURRENT_ROW":
+		return i
+	case "FOLLOWING":
+		return i + b.Offset
+	case "UNBOUNDED_FOLLOWING":
+		return n - 1
+	}
+	return i
+}
+
+// evalWindowAggFrame computes SUM/AVG/COUNT/MIN/MAX over an explicit window frame
+// (ROWS/RANGE BETWEEN ...). RANGE bounds are approximated with physical row
+// offsets. Returns false for functions it does not handle.
+func (c *Catalog) evalWindowAggFrame(rows [][]interface{}, colIdx int, entries []windowPartEntry, we *query.WindowExpr, selectCols []selectColInfo, table *TableDef, args []interface{}) bool {
+	switch we.Function {
+	case "COUNT", "SUM", "AVG", "MIN", "MAX":
+	default:
+		return false
+	}
+
+	n := len(entries)
+	isStar := false
+	if len(we.Args) > 0 {
+		if _, ok := we.Args[0].(*query.StarExpr); ok {
+			isStar = true
+		}
+	}
+
+	// Pre-extract the argument value per ordered entry once.
+	vals := make([]interface{}, n)
+	if len(we.Args) > 0 && !isStar {
+		for i, entry := range entries {
+			vals[i] = c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+		}
+	}
+
+	for i, entry := range entries {
+		start := frameRowBound(we.Frame.Start, i, n)
+		end := frameRowBound(we.Frame.End, i, n)
+		if start < 0 {
+			start = 0
+		}
+		if end > n-1 {
+			end = n - 1
+		}
+
+		var result interface{}
+		switch we.Function {
+		case "COUNT":
+			cnt := int64(0)
+			for j := start; j <= end; j++ {
+				if isStar || len(we.Args) == 0 || vals[j] != nil {
+					cnt++
+				}
+			}
+			result = cnt
+		case "SUM":
+			sum := 0.0
+			has := false
+			for j := start; j <= end; j++ {
+				if vals[j] != nil {
+					if f, ok := toFloat64(vals[j]); ok {
+						sum += f
+						has = true
+					}
+				}
+			}
+			if has {
+				result = sum
+			}
+		case "AVG":
+			sum := 0.0
+			cnt := 0
+			for j := start; j <= end; j++ {
+				if vals[j] != nil {
+					if f, ok := toFloat64(vals[j]); ok {
+						sum += f
+						cnt++
+					}
+				}
+			}
+			if cnt > 0 {
+				result = sum / float64(cnt)
+			}
+		case "MIN":
+			for j := start; j <= end; j++ {
+				if vals[j] != nil && (result == nil || compareValues(vals[j], result) < 0) {
+					result = vals[j]
+				}
+			}
+		case "MAX":
+			for j := start; j <= end; j++ {
+				if vals[j] != nil && (result == nil || compareValues(vals[j], result) > 0) {
+					result = vals[j]
+				}
+			}
+		}
+		rows[entry.originalIdx][colIdx] = result
+	}
+	return true
 }

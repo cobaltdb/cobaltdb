@@ -271,6 +271,31 @@ const (
 	TokenDatabases
 	TokenTables
 	TokenColumns
+
+	// Window frame clause (ROWS/RANGE BETWEEN ... PRECEDING/FOLLOWING)
+	TokenRows
+	TokenPreceding
+	TokenFollowing
+	TokenUnbounded
+	TokenCurrent
+
+	// ON CONFLICT (upsert)
+	TokenConflict
+	TokenDo
+	TokenNothing
+
+	// Bitwise operators
+	TokenBitAnd     // &
+	TokenBitOr      // |
+	TokenBitXor     // ^
+	TokenShiftLeft  // <<
+	TokenShiftRight // >>
+
+	// NULL-safe equality
+	TokenNullSafeEq // <=>
+
+	// TRUNCATE TABLE
+	TokenTruncate
 )
 
 // Token represents a lexical token
@@ -470,8 +495,9 @@ var keywords = map[string]TokenType{
 	"RETURNING": TokenReturning,
 
 	// Maintenance commands
-	"VACUUM":  TokenVacuum,
-	"ANALYZE": TokenAnalyze,
+	"VACUUM":   TokenVacuum,
+	"ANALYZE":  TokenAnalyze,
+	"TRUNCATE": TokenTruncate,
 
 	// Full-text search
 	"MATCH":    TokenMatch,
@@ -505,6 +531,18 @@ var keywords = map[string]TokenType{
 	"LESS":       TokenLess,
 	"THAN":       TokenThan,
 	"PARTITIONS": TokenPartitions,
+
+	// Window frame clause
+	"ROWS":      TokenRows,
+	"PRECEDING": TokenPreceding,
+	"FOLLOWING": TokenFollowing,
+	"UNBOUNDED": TokenUnbounded,
+	"CURRENT":   TokenCurrent,
+
+	// ON CONFLICT (upsert)
+	"CONFLICT": TokenConflict,
+	"DO":       TokenDo,
+	"NOTHING":  TokenNothing,
 
 	// Vector functions
 	"COSINE_SIMILARITY": TokenCosineSimilarity,
