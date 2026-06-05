@@ -1151,7 +1151,12 @@ func (c *MySQLClient) sendErrorPacket(code uint16, message string) error {
 	// Error message
 	pkt = append(pkt, []byte(message)...)
 
-	return c.writePacket(pkt, 0)
+	// The error packet is the response to the current command and must continue
+	// its sequence (command seq + 1); sending seq 0 violates the protocol and
+	// trips a "sequence number" warning/failure on strict clients.
+	seq := c.sequence + 1
+	c.sequence = seq
+	return c.writePacket(pkt, seq)
 }
 
 // scramblePassword scrambles a password using MySQL's algorithm.
@@ -1953,7 +1958,9 @@ func (c *MySQLClient) handleStatistics() error {
 		0, // Query count not tracked per-server in this version
 	)
 	pkt := []byte(stats)
-	return c.writePacket(pkt, 0)
+	seq := c.sequence + 1
+	c.sequence = seq
+	return c.writePacket(pkt, seq)
 }
 
 // handleFieldList handles COM_FIELD_LIST by describing table columns.
