@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -164,5 +165,61 @@ func TestMySQLBinaryProtocolTypeRoundTrip(t *testing.T) {
 	}
 	if idInt != 7 {
 		t.Fatalf("idInt = %d, want 7", idInt)
+	}
+}
+
+// TestMySQLServerErrorRobustness verifies the server returns proper error
+// packets (not a masked "unsupported statement type") for failing read queries
+// and never sends a malformed zero-column result set that crashes the client
+// driver.
+func TestMySQLServerErrorRobustness(t *testing.T) {
+	engineDB, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	if err != nil {
+		t.Fatalf("engine.Open: %v", err)
+	}
+	defer engineDB.Close()
+
+	srv := protocol.NewMySQLServer(engineDB, "5.7.0-CobaltDB-Test")
+	if err := srv.Listen("127.0.0.1:0"); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer srv.Close()
+
+	dsn := fmt.Sprintf("admin@tcp(%s)/?timeout=3s&readTimeout=3s&writeTimeout=3s", srv.Addr().String())
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "CREATE TABLE robust (id INTEGER PRIMARY KEY, v INTEGER)"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	db.ExecContext(ctx, "INSERT INTO robust VALUES (1, 10)")
+
+	// A query on a missing table must surface the real "not found" error.
+	if _, err := db.ExecContext(ctx, "SELECT * FROM does_not_exist"); err == nil {
+		t.Error("expected error for missing table")
+	} else if strings.Contains(err.Error(), "unsupported statement type") {
+		t.Errorf("missing-table error was masked: %v", err)
+	}
+
+	// A reference to a missing column must not crash the driver (zero-column
+	// result handled gracefully) — the call returns without panicking.
+	_, _ = db.ExecContext(ctx, "SELECT missing_col FROM robust")
+
+	// The connection must remain usable after the error cases.
+	var n int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM robust").Scan(&n); err != nil {
+		t.Fatalf("connection unusable after errors: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("count = %d, want 1", n)
 	}
 }

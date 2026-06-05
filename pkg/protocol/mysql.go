@@ -710,6 +710,13 @@ func (c *MySQLClient) handleQuery(sql string) error {
 		return c.sendResultSetFromRows(rows)
 	}
 
+	// A read statement that failed as a query should surface its real error
+	// (e.g. "table not found") instead of falling through to the Exec path,
+	// which would mask it with "unsupported statement type".
+	if isReadStatement(sql) {
+		return c.sendErrorPacket(1, sanitizeMySQLError(err))
+	}
+
 	// Try to execute as exec (INSERT, UPDATE, DELETE, SET, USE, CREATE, etc.)
 	result, err := c.server.db.Exec(ctx, sql)
 	if err != nil {
@@ -726,6 +733,14 @@ func (c *MySQLClient) handleQuery(sql string) error {
 	}
 
 	return c.sendOKPacket(rowsAffected, lastInsertID)
+}
+
+// isReadStatement reports whether sql begins with a read/query keyword, so a
+// failed Query should not be retried as an Exec.
+func isReadStatement(sql string) bool {
+	return hasPrefixIgnoreCase(sql, "SELECT") || hasPrefixIgnoreCase(sql, "WITH") ||
+		hasPrefixIgnoreCase(sql, "SHOW") || hasPrefixIgnoreCase(sql, "DESCRIBE") ||
+		hasPrefixIgnoreCase(sql, "DESC ") || hasPrefixIgnoreCase(sql, "EXPLAIN")
 }
 
 // handleSelectVariable handles SELECT @@variable queries from MySQL clients
@@ -796,6 +811,12 @@ func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
 		return c.sendOKPacket(0, 0)
 	}
 	columns := rows.Columns()
+	if len(columns) == 0 {
+		// A zero-column result set is invalid in the MySQL protocol: the column
+		// count packet (0x00) collides with an OK packet and crashes clients.
+		// Respond with an OK packet instead.
+		return c.sendOKPacket(0, 0)
+	}
 	seq := byte(1)
 
 	// 1. Send column count packet
