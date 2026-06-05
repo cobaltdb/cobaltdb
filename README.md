@@ -968,6 +968,24 @@ go run cmd/demo/main.go
 - [x] **Go 1.24+ Compatibility** - t.Context() updates, sync.Pool optimizations
 - [x] **7,100+ Test Functions** - `pkg/...` coverage currently measures 86.3% overall
 
+### ✅ Unreleased - SQL Compatibility & Wire-Protocol Hardening (2026-06)
+
+- [x] **Broad SQL surface** - window frames & `PERCENT_RANK`/`CUME_DIST`, window
+  functions in expressions/derived tables, `STDDEV`/`VARIANCE`, `ON CONFLICT`
+  upserts, `CREATE TABLE AS SELECT`, `TRUNCATE`, composite `UNIQUE`, qualified
+  star (`table.*`), `EXTRACT`/`POSITION`, bitwise & `<=>` operators
+- [x] **JOIN column-resolution fixes** - unqualified joined columns, CTE-to-CTE,
+  derived-to-derived, and window-over-derived no longer drop columns
+- [x] **Numeric precision** - integer literals & negation preserve full `int64` (>2^53)
+- [x] **Function library** - math/trig/date/string/JSON/session functions expanded
+- [x] **ORM/driver compatibility** - `START TRANSACTION` (`db.Begin()`), `@@variables`,
+  `VERSION()`/`DATABASE()`, `SHOW INDEX`, prepared statements & transactions verified
+  end-to-end over a real `go-sql-driver` connection
+- [x] **Wire-protocol hardening** - correct error packets & sequence numbers,
+  zero-column results no longer crash clients
+- [x] **Security** - Go toolchain 1.26.4 patches three stdlib CVEs; `govulncheck`,
+  `gosec`, and `staticcheck` all clean
+
 ### 📋 Planned Features
 
 - [ ] **Distributed mode** - Sharding, consensus, and automatic failover

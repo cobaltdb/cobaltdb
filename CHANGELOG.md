@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SQL syntax**: implicit column aliases (`SELECT expr alias`), inline column-level
+  `FOREIGN KEY ... REFERENCES`, table-level composite `UNIQUE(a, b)`, `NULLS FIRST/LAST`,
+  window frames (`ROWS`/`RANGE BETWEEN ... PRECEDING/FOLLOWING/CURRENT ROW`),
+  `ON CONFLICT (...) DO NOTHING | DO UPDATE` (incl. `INSERT ... SELECT`),
+  `CREATE TABLE AS SELECT`, `TRUNCATE TABLE`, `EXTRACT(field FROM src)`,
+  `POSITION(substr IN str)`, `CAST` type parameters (`DECIMAL(p,s)`, `VARCHAR(n)`),
+  qualified star (`table.*`), `@@system_variables`, bitwise operators (`& | ^ << >>`),
+  NULL-safe equality (`<=>`), `DEFAULT` keyword in `VALUES`, `SHOW INDEX`/`KEYS`,
+  and `START TRANSACTION` (the form drivers emit for `db.Begin()`).
+- **Window functions**: `PERCENT_RANK`, `CUME_DIST`; window functions nested inside
+  expressions (e.g. `SUM(x) OVER () + 1`) and over derived tables.
+- **Aggregates**: `STDDEV`/`STDDEV_POP`/`STDDEV_SAMP` and `VARIANCE`/`VAR_POP`/`VAR_SAMP`.
+- **Function library**: math (`MOD`, `POWER`, `SQRT`, `SIGN`, `TRUNCATE`, `EXP`, `LN`,
+  `LOG`/`LOG10`/`LOG2`, `PI`, `RADIANS`, `DEGREES`, `GREATEST`, `LEAST`), trigonometric
+  (`SIN`, `COS`, `TAN`, `ASIN`, `ACOS`, `ATAN`, `ATAN2`, `COT`, ...), date
+  (`YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `DAYOFWEEK`, `DAYOFYEAR`,
+  `DATEDIFF`, `DATE_ADD`, `DATE_SUB`), string (`ASCII`, `LOCATE`, `SUBSTRING_INDEX`),
+  `JSON_OBJECT`/`JSON_ARRAY`, a real `STRFTIME`, and MySQL session functions
+  (`VERSION`, `DATABASE`, `USER`, `CONNECTION_ID`).
+
+### Fixed
+
+- **JOIN / outer-query column resolution** (silent column-drop bugs): joining two CTEs,
+  two derived tables, or a CTE/derived table with a real table dropped the second
+  source's columns; window functions over derived tables and nested in expressions
+  returned `NULL`; an **unqualified column reference to a joined table**
+  (`SELECT id, x, y FROM a JOIN b ...` where `y` belongs to `b`) was silently dropped.
+- **`DISTINCT` aggregates** (`SUM`/`AVG`/`COUNT`/`GROUP_CONCAT`) across base, grouped,
+  and derived-table paths.
+- **Integer precision**: integer literals and unary minus preserve full `int64`
+  precision (values above 2^53 are no longer corrupted by a `float64` round-trip).
+- **CLI**: executes every `;`-separated statement (compound-statement-aware splitter),
+  returns a non-zero exit code on SQL errors, and routes `EXPLAIN` through the query path.
+- **MySQL wire-protocol server**: failing read queries now surface their real error
+  (e.g. "table not found") instead of a masked "unsupported statement type"; a
+  zero-column result set no longer crashes client drivers; error and statistics
+  response packets now carry the correct sequence number (was hardcoded `0`), so
+  failing queries no longer trip "unexpected sequence number" warnings/failures.
+
+### Security
+
+- **Go toolchain bumped to 1.26.4**, patching three standard-library CVEs flagged by
+  Dependabot/govulncheck: `GO-2026-5037` (crypto/x509), `GO-2026-5038` (mime),
+  `GO-2026-5039` (net/textproto). `govulncheck` now reports no vulnerabilities.
+
+### Tests
+
+- Added `pkg/engine/regression_fixes_test.go` (32 focused regression tests) and
+  `integration/TestMySQLServerErrorRobustness` (error-packet and zero-column handling
+  over a real `go-sql-driver` connection). All test trees pass; gofmt/vet/gosec/
+  staticcheck clean.
+
 ## [v0.6.0] - 2026-05-22
 
 ### Security Fixes
