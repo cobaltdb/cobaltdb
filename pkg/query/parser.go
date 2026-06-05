@@ -67,6 +67,14 @@ func (p *Parser) Parse() (Statement, error) {
 		return nil, fmt.Errorf("empty statement")
 	}
 
+	// START TRANSACTION is an alias for BEGIN, used by drivers/ORMs (e.g.
+	// go-sql-driver for db.Begin()). START lexes as an identifier; parseBegin
+	// consumes the leading keyword and the TRANSACTION token uniformly.
+	if p.current().Type == TokenIdentifier && toUpperFast(p.current().Literal) == "START" &&
+		p.peek().Type == TokenTransaction {
+		return p.parseBegin()
+	}
+
 	switch p.current().Type {
 	case TokenWith:
 		return p.parseWithCTE()

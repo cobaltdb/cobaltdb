@@ -649,6 +649,30 @@ func TestRegression_MySQLSessionFunctions(t *testing.T) {
 	}
 }
 
+// TestRegression_StartTransaction covers START TRANSACTION (the form drivers
+// and ORMs emit for db.Begin()), previously unrecognized by the parser.
+func TestRegression_StartTransaction(t *testing.T) {
+	db := openRegressionDB(t)
+	defer db.Close()
+	mustExec(t, db, "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
+	mustExec(t, db, "INSERT INTO t VALUES (1,10)")
+
+	mustExec(t, db, "START TRANSACTION")
+	mustExec(t, db, "UPDATE t SET v=99 WHERE id=1")
+	mustExec(t, db, "COMMIT")
+	if got := scalar(t, db, "SELECT v FROM t WHERE id=1"); got != "99" {
+		t.Errorf("after START TRANSACTION/COMMIT v = %s, want 99", got)
+	}
+
+	// Rollback path.
+	mustExec(t, db, "START TRANSACTION")
+	mustExec(t, db, "UPDATE t SET v=0 WHERE id=1")
+	mustExec(t, db, "ROLLBACK")
+	if got := scalar(t, db, "SELECT v FROM t WHERE id=1"); got != "99" {
+		t.Errorf("after ROLLBACK v = %s, want 99", got)
+	}
+}
+
 // TestRegression_Explain covers EXPLAIN returning a plan.
 func TestRegression_Explain(t *testing.T) {
 	db := openRegressionDB(t)
