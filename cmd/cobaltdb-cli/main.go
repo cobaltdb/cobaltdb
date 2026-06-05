@@ -1302,12 +1302,20 @@ func sqlEscape(v interface{}) string {
 		return "NULL"
 	}
 	switch val := v.(type) {
+	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		// Numbers and booleans (true/false) are valid unquoted SQL literals.
+		return fmt.Sprintf("%v", val)
 	case string:
 		return "'" + strings.ReplaceAll(val, "'", "''") + "'"
 	case []byte:
 		return "'" + strings.ReplaceAll(string(val), "'", "''") + "'"
 	default:
-		return fmt.Sprintf("%v", val)
+		// Any other type (e.g. the engine's StringBox string wrapper) is a
+		// string value and MUST be quoted, otherwise the dump cannot be
+		// restored (an unquoted string parses as a column reference).
+		s := fmt.Sprintf("%v", val)
+		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 	}
 }
 

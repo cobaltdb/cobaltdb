@@ -149,8 +149,14 @@ func TestSqlEscape(t *testing.T) {
 		{"it's", "'it''s'"},
 		{[]byte("test"), "'test'"},
 		{123, "123"},
+		{int64(9007199254740993), "9007199254740993"},
 		{3.14, "3.14"},
 		{true, "true"},
+		{false, "false"},
+		// A non-standard string type (like the engine's StringBox) must be
+		// quoted, otherwise the dump cannot be restored.
+		{stringerVal("alice"), "'alice'"},
+		{stringerVal("it's"), "'it''s'"},
 	}
 	for _, test := range tests {
 		result := sqlEscape(test.input)
@@ -159,6 +165,12 @@ func TestSqlEscape(t *testing.T) {
 		}
 	}
 }
+
+// stringerVal mimics the engine's StringBox: a non-string type whose %v form is
+// the underlying text, used to verify sqlEscape quotes it for dump/restore.
+type stringerVal string
+
+func (s stringerVal) String() string { return string(s) }
 
 func TestQuoteSQLIdentifier(t *testing.T) {
 	tests := []struct {
