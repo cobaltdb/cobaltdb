@@ -44,7 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them as a `StringBox` wrapper, not a Go `string`), so any dump containing string
   data failed to restore ("column not found"). String values are now correctly
   quoted and escaped; `dump`/`restore` round-trips strings, NULLs, booleans, and
-  large integers.
+  large integers. The dumped schema now also includes **foreign keys**, **composite
+  primary keys**, and **secondary indexes** (previously dropped on restore), and
+  tables are emitted in **foreign-key dependency order** so referenced tables are
+  created before the tables that reference them.
 - **CLI**: executes every `;`-separated statement (compound-statement-aware splitter),
   returns a non-zero exit code on SQL errors, and routes `EXPLAIN` through the query path.
 - **MySQL wire-protocol server**: failing read queries now surface their real error

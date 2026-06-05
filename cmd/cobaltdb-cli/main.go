@@ -1228,8 +1228,7 @@ func dumpDatabase(db *engine.DB, filePath string) (err error) {
 		return fmt.Errorf("write dump header: %w", err)
 	}
 
-	tables := db.Tables()
-	sort.Strings(tables)
+	tables := orderTablesByDependency(db)
 
 	for _, table := range tables {
 		quotedTable, err := quoteSQLIdentifier(table)
@@ -1291,10 +1290,54 @@ func dumpDatabase(db *engine.DB, filePath string) (err error) {
 		}
 	}
 
+	// Emit secondary indexes after all tables and data, so they survive restore.
+	for _, table := range tables {
+		for _, ddl := range db.TableIndexDDL(table) {
+			if err := writeLine(out, ddl); err != nil {
+				return fmt.Errorf("write index for %s: %w", table, err)
+			}
+		}
+	}
+
 	if closeOut {
 		fmt.Printf("Dumped %d tables to %s\n", len(tables), filePath)
 	}
 	return nil
+}
+
+// orderTablesByDependency returns table names ordered so that a table's
+// foreign-key-referenced tables appear before it (topological order), so a dump
+// restores without "referenced table not found". Falls back to the input order
+// for cycles. Ties are broken alphabetically for stable output.
+func orderTablesByDependency(db *engine.DB) []string {
+	tables := db.Tables()
+	sort.Strings(tables)
+
+	known := make(map[string]bool, len(tables))
+	for _, t := range tables {
+		known[t] = true
+	}
+
+	var ordered []string
+	visited := make(map[string]int) // 0=unseen, 1=visiting, 2=done
+	var visit func(string)
+	visit = func(t string) {
+		if visited[t] == 2 || visited[t] == 1 {
+			return // done, or a cycle — don't recurse further
+		}
+		visited[t] = 1
+		for _, ref := range db.TableForeignKeyRefs(t) {
+			if known[ref] {
+				visit(ref)
+			}
+		}
+		visited[t] = 2
+		ordered = append(ordered, t)
+	}
+	for _, t := range tables {
+		visit(t)
+	}
+	return ordered
 }
 
 func sqlEscape(v interface{}) string {

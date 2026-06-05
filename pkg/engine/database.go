@@ -809,32 +809,86 @@ func (db *DB) TableSchema(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", table.Name))
-	for i, col := range table.Columns {
-		sb.WriteString(fmt.Sprintf("  %s %s", col.Name, col.Type))
-		if col.PrimaryKey {
-			sb.WriteString(" PRIMARY KEY")
+	// A composite (multi-column) primary key is emitted as a table-level
+	// constraint rather than per-column, so the dump restores correctly.
+	compositePK := len(table.PrimaryKey) > 1
+
+	var clauses []string
+	for _, col := range table.Columns {
+		line := fmt.Sprintf("  %s %s", col.Name, col.Type)
+		if col.PrimaryKey && !compositePK {
+			line += " PRIMARY KEY"
 		}
 		if col.AutoIncrement {
-			sb.WriteString(" AUTOINCREMENT")
+			line += " AUTOINCREMENT"
 		}
 		if col.NotNull {
-			sb.WriteString(" NOT NULL")
+			line += " NOT NULL"
 		}
 		if col.Unique {
-			sb.WriteString(" UNIQUE")
+			line += " UNIQUE"
 		}
 		if col.Default != "" {
-			sb.WriteString(fmt.Sprintf(" DEFAULT %s", col.Default))
+			line += fmt.Sprintf(" DEFAULT %s", col.Default)
 		}
-		if i < len(table.Columns)-1 {
-			sb.WriteByte(',')
-		}
-		sb.WriteByte('\n')
+		clauses = append(clauses, line)
 	}
-	sb.WriteString(");")
+	if compositePK {
+		clauses = append(clauses, fmt.Sprintf("  PRIMARY KEY (%s)", strings.Join(table.PrimaryKey, ", ")))
+	}
+	for _, fk := range table.ForeignKeys {
+		clause := fmt.Sprintf("  FOREIGN KEY (%s) REFERENCES %s",
+			strings.Join(fk.Columns, ", "), fk.ReferencedTable)
+		if len(fk.ReferencedColumns) > 0 {
+			clause += fmt.Sprintf(" (%s)", strings.Join(fk.ReferencedColumns, ", "))
+		}
+		if fk.OnDelete != "" {
+			clause += " ON DELETE " + fk.OnDelete
+		}
+		if fk.OnUpdate != "" {
+			clause += " ON UPDATE " + fk.OnUpdate
+		}
+		clauses = append(clauses, clause)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", table.Name))
+	sb.WriteString(strings.Join(clauses, ",\n"))
+	sb.WriteString("\n);")
 	return sb.String(), nil
+}
+
+// TableForeignKeyRefs returns the distinct names of tables referenced by a
+// table's foreign keys, used to order a dump so referenced tables come first.
+func (db *DB) TableForeignKeyRefs(name string) []string {
+	table, err := db.catalog.GetTable(name)
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var refs []string
+	for _, fk := range table.ForeignKeys {
+		if fk.ReferencedTable != "" && !seen[fk.ReferencedTable] && fk.ReferencedTable != name {
+			seen[fk.ReferencedTable] = true
+			refs = append(refs, fk.ReferencedTable)
+		}
+	}
+	return refs
+}
+
+// TableIndexDDL returns CREATE INDEX statements for a table's secondary indexes,
+// used by the SQL dump so indexes survive a restore.
+func (db *DB) TableIndexDDL(name string) []string {
+	var ddl []string
+	for _, idx := range db.catalog.GetTableIndexes(name) {
+		unique := ""
+		if idx.Unique {
+			unique = "UNIQUE "
+		}
+		ddl = append(ddl, fmt.Sprintf("CREATE %sINDEX %s ON %s (%s);",
+			unique, idx.Name, name, strings.Join(idx.Columns, ", ")))
+	}
+	return ddl
 }
 
 // Begin starts a new transaction

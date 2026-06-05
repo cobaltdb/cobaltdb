@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -646,6 +647,49 @@ func TestRegression_MySQLSessionFunctions(t *testing.T) {
 	// PRIMARY + idx_name = 2 rows.
 	if len(rows) != 2 {
 		t.Fatalf("SHOW INDEX returned %d rows, want 2", len(rows))
+	}
+}
+
+// TestRegression_DumpSchemaConstraints covers TableSchema/TableIndexDDL emitting
+// foreign keys, composite primary keys, and secondary indexes so a SQL dump can
+// restore them (previously the dumped schema dropped FKs and indexes).
+func TestRegression_DumpSchemaConstraints(t *testing.T) {
+	db := openRegressionDB(t)
+	defer db.Close()
+	mustExec(t, db, "CREATE TABLE parent (id INTEGER PRIMARY KEY, label TEXT)")
+	mustExec(t, db, "CREATE TABLE child (id INTEGER PRIMARY KEY, pid INTEGER REFERENCES parent(id) ON DELETE CASCADE, data TEXT)")
+	mustExec(t, db, "CREATE INDEX idx_data ON child(data)")
+
+	schema, err := db.TableSchema("child")
+	if err != nil {
+		t.Fatalf("TableSchema: %v", err)
+	}
+	if !strings.Contains(schema, "FOREIGN KEY") || !strings.Contains(schema, "REFERENCES parent") {
+		t.Errorf("schema missing foreign key clause:\n%s", schema)
+	}
+	if !strings.Contains(schema, "ON DELETE CASCADE") {
+		t.Errorf("schema missing referential action:\n%s", schema)
+	}
+
+	idx := db.TableIndexDDL("child")
+	var found bool
+	for _, d := range idx {
+		if strings.Contains(d, "idx_data") && strings.Contains(d, "child") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("TableIndexDDL missing idx_data: %v", idx)
+	}
+
+	// Composite primary key emits a table-level clause.
+	mustExec(t, db, "CREATE TABLE ck (a INTEGER, b INTEGER, v TEXT, PRIMARY KEY (a, b))")
+	cs, err := db.TableSchema("ck")
+	if err != nil {
+		t.Fatalf("TableSchema ck: %v", err)
+	}
+	if !strings.Contains(cs, "PRIMARY KEY (a, b)") {
+		t.Errorf("composite PK not emitted as table-level clause:\n%s", cs)
 	}
 }
 
