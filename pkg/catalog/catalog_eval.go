@@ -99,14 +99,20 @@ var scalarFunctionHandlers = map[string]functionHandler{
 		}
 	},
 	"TIME": func(args []interface{}) (interface{}, error) {
-		if len(args) < 1 {
+		if len(args) < 1 || args[0] == nil {
 			return nil, nil
+		}
+		if t, ok := parseFlexibleTime(ValueToStringKey(args[0])); ok {
+			return t.Format("15:04:05"), nil
 		}
 		return args[0], nil
 	},
 	"DATETIME": func(args []interface{}) (interface{}, error) {
-		if len(args) < 1 {
+		if len(args) < 1 || args[0] == nil {
 			return nil, nil
+		}
+		if t, ok := parseFlexibleTime(ValueToStringKey(args[0])); ok {
+			return t.Format("2006-01-02 15:04:05"), nil
 		}
 		return args[0], nil
 	},
@@ -123,10 +129,14 @@ var scalarFunctionHandlers = map[string]functionHandler{
 		return time.Now().Format("2006-01-02"), nil
 	},
 	"STRFTIME": func(args []interface{}) (interface{}, error) {
-		if len(args) < 2 || args[1] == nil {
+		if len(args) < 2 || args[0] == nil || args[1] == nil {
 			return nil, nil
 		}
-		return ValueToStringKey(args[1]), nil
+		t, ok := parseFlexibleTime(ValueToStringKey(args[1]))
+		if !ok {
+			return nil, nil
+		}
+		return applyStrftime(ValueToStringKey(args[0]), t), nil
 	},
 	"GROUP_CONCAT": func(args []interface{}) (interface{}, error) {
 		if len(args) >= 1 && args[0] != nil {
@@ -135,11 +145,184 @@ var scalarFunctionHandlers = map[string]functionHandler{
 		return nil, nil
 	},
 	"DATE": func(args []interface{}) (interface{}, error) {
-		if len(args) < 1 {
+		if len(args) < 1 || args[0] == nil {
 			return nil, nil
+		}
+		if t, ok := parseFlexibleTime(ValueToStringKey(args[0])); ok {
+			return t.Format("2006-01-02"), nil
 		}
 		return args[0], nil
 	},
+	"YEAR":       dateFieldFunc(func(t time.Time) int64 { return int64(t.Year()) }),
+	"MONTH":      dateFieldFunc(func(t time.Time) int64 { return int64(t.Month()) }),
+	"DAY":        dateFieldFunc(func(t time.Time) int64 { return int64(t.Day()) }),
+	"DAYOFMONTH": dateFieldFunc(func(t time.Time) int64 { return int64(t.Day()) }),
+	"HOUR":       dateFieldFunc(func(t time.Time) int64 { return int64(t.Hour()) }),
+	"MINUTE":     dateFieldFunc(func(t time.Time) int64 { return int64(t.Minute()) }),
+	"SECOND":     dateFieldFunc(func(t time.Time) int64 { return int64(t.Second()) }),
+	"DAYOFYEAR":  dateFieldFunc(func(t time.Time) int64 { return int64(t.YearDay()) }),
+	// MySQL DAYOFWEEK: 1=Sunday..7=Saturday; WEEKDAY: 0=Monday..6=Sunday.
+	"DAYOFWEEK": dateFieldFunc(func(t time.Time) int64 { return int64(t.Weekday()) + 1 }),
+	"WEEKDAY":   dateFieldFunc(func(t time.Time) int64 { return int64((int(t.Weekday()) + 6) % 7) }),
+	"DATE_ADD":  dateAddDays(1),
+	"DATE_SUB":  dateAddDays(-1),
+	// MySQL session/metadata functions (commonly used by ORMs and clients).
+	"VERSION": func(args []interface{}) (interface{}, error) {
+		return "5.7.0-CobaltDB", nil
+	},
+	"DATABASE": func(args []interface{}) (interface{}, error) {
+		return "database", nil
+	},
+	"SCHEMA": func(args []interface{}) (interface{}, error) {
+		return "database", nil
+	},
+	"CONNECTION_ID": func(args []interface{}) (interface{}, error) {
+		return int64(1), nil
+	},
+	"USER": func(args []interface{}) (interface{}, error) {
+		return "root@localhost", nil
+	},
+	"CURRENT_USER": func(args []interface{}) (interface{}, error) {
+		return "root@localhost", nil
+	},
+	"SESSION_USER": func(args []interface{}) (interface{}, error) {
+		return "root@localhost", nil
+	},
+	"SYSTEM_USER": func(args []interface{}) (interface{}, error) {
+		return "root@localhost", nil
+	},
+	"DATEDIFF": func(args []interface{}) (interface{}, error) {
+		// DATEDIFF(end, start) -> whole days between (MySQL: arg1 - arg2).
+		if len(args) < 2 || args[0] == nil || args[1] == nil {
+			return nil, nil
+		}
+		a, aok := parseFlexibleTime(ValueToStringKey(args[0]))
+		b, bok := parseFlexibleTime(ValueToStringKey(args[1]))
+		if !aok || !bok {
+			return nil, nil
+		}
+		da := a.Truncate(24 * time.Hour)
+		db := b.Truncate(24 * time.Hour)
+		return int64(da.Sub(db).Hours() / 24), nil
+	},
+}
+
+// dateAddDays builds a handler for DATE_ADD/DATE_SUB in the simple
+// `(date, days)` form. sign is +1 for ADD and -1 for SUB. The result keeps the
+// date-only format for a date input and includes time for a datetime input.
+func dateAddDays(sign int) functionHandler {
+	return func(args []interface{}) (interface{}, error) {
+		if len(args) < 2 || args[0] == nil || args[1] == nil {
+			return nil, nil
+		}
+		s := ValueToStringKey(args[0])
+		t, ok := parseFlexibleTime(s)
+		if !ok {
+			return nil, nil
+		}
+		days, ok := toFloat64(args[1])
+		if !ok {
+			return nil, nil
+		}
+		res := t.AddDate(0, 0, sign*int(days))
+		// Preserve a date-only result when the input had no time component.
+		if len(s) <= 10 {
+			return res.Format("2006-01-02"), nil
+		}
+		return res.Format("2006-01-02 15:04:05"), nil
+	}
+}
+
+// dateFieldFunc builds a scalar handler that parses arg0 as a date/time and
+// extracts an integer field. Returns NULL on a missing or unparseable argument.
+func dateFieldFunc(extract func(t time.Time) int64) functionHandler {
+	return func(args []interface{}) (interface{}, error) {
+		if len(args) < 1 || args[0] == nil {
+			return nil, nil
+		}
+		t, ok := parseFlexibleTime(ValueToStringKey(args[0]))
+		if !ok {
+			return nil, nil
+		}
+		return extract(t), nil
+	}
+}
+
+// parseFlexibleTime parses common date/datetime string forms (and the SQLite
+// "now" keyword / unix epoch seconds) into a time.Time. Returns false if the
+// input is not a recognizable temporal value.
+func parseFlexibleTime(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	if strings.EqualFold(s, "now") {
+		return time.Now().UTC(), true
+	}
+	formats := []string{
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+		"2006/01/02 15:04:05",
+		"2006/01/02",
+		"2006-01",
+		"2006",
+		"15:04:05",
+		time.RFC3339,
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t, true
+		}
+	}
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return time.Unix(n, 0).UTC(), true
+	}
+	return time.Time{}, false
+}
+
+// applyStrftime renders t using SQLite-style strftime format specifiers.
+func applyStrftime(format string, t time.Time) string {
+	var b strings.Builder
+	for i := 0; i < len(format); i++ {
+		if format[i] != '%' || i+1 >= len(format) {
+			b.WriteByte(format[i])
+			continue
+		}
+		i++
+		switch format[i] {
+		case 'Y':
+			fmt.Fprintf(&b, "%04d", t.Year())
+		case 'm':
+			fmt.Fprintf(&b, "%02d", int(t.Month()))
+		case 'd':
+			fmt.Fprintf(&b, "%02d", t.Day())
+		case 'H':
+			fmt.Fprintf(&b, "%02d", t.Hour())
+		case 'M':
+			fmt.Fprintf(&b, "%02d", t.Minute())
+		case 'S':
+			fmt.Fprintf(&b, "%02d", t.Second())
+		case 'j':
+			fmt.Fprintf(&b, "%03d", t.YearDay())
+		case 'w':
+			fmt.Fprintf(&b, "%d", int(t.Weekday()))
+		case 'W':
+			_, wk := t.ISOWeek()
+			fmt.Fprintf(&b, "%02d", wk)
+		case 's':
+			fmt.Fprintf(&b, "%d", t.Unix())
+		case '%':
+			b.WriteByte('%')
+		default:
+			b.WriteByte('%')
+			b.WriteByte(format[i])
+		}
+	}
+	return b.String()
 }
 
 // EvalContext bundles common parameters for expression evaluation
@@ -151,6 +334,9 @@ type EvalContext struct {
 	Args      []interface{}
 	Table     *TableDef
 	TableName string
+	// windowValues supplies precomputed per-row results for window functions
+	// nested inside a projected expression (e.g. SUM(x) OVER () + 1).
+	windowValues map[*query.WindowExpr]interface{}
 }
 
 // NewEvalContext creates a new evaluation context
@@ -194,13 +380,17 @@ func (ctx *EvalContext) EvalBinaryExpr(left, right interface{}, op query.TokenTy
 func (ctx *EvalContext) EvalUnaryExpr(val interface{}, op query.TokenType) (interface{}, error) {
 	switch op {
 	case query.TokenMinus:
+		// Negate integers directly to preserve int64 precision; routing through
+		// float64 would corrupt values above 2^53.
+		switch v := val.(type) {
+		case int64:
+			return -v, nil
+		case int:
+			return -v, nil
+		case float64:
+			return -v, nil
+		}
 		if f, ok := toFloat64(val); ok {
-			if _, isInt := val.(int); isInt {
-				return int(-f), nil
-			}
-			if _, isInt64 := val.(int64); isInt64 {
-				return int64(-f), nil
-			}
 			return -f, nil
 		}
 		return nil, fmt.Errorf("cannot negate non-numeric value")
@@ -214,12 +404,48 @@ func (ctx *EvalContext) EvalUnaryExpr(val interface{}, op query.TokenType) (inte
 }
 
 func (ctx *EvalContext) EvalIdentifier(name string) (interface{}, error) {
+	// System (@@name) and user (@name) variables resolve outside the row.
+	if strings.HasPrefix(name, "@") {
+		return systemVariableValue(name), nil
+	}
 	for i, col := range ctx.Columns {
 		if strings.EqualFold(col.Name, name) && i < len(ctx.Row) {
 			return ctx.Row[i], nil
 		}
 	}
 	return nil, fmt.Errorf("column not found: %s", name)
+}
+
+// systemVariableValue returns a value for a MySQL @@/@ variable reference.
+// Known server variables get sensible defaults; unknown ones return NULL.
+func systemVariableValue(name string) interface{} {
+	switch strings.ToLower(strings.TrimLeft(name, "@")) {
+	case "version":
+		return "5.7.0-CobaltDB"
+	case "version_comment":
+		return "CobaltDB"
+	case "autocommit":
+		return int64(1)
+	case "sql_mode":
+		return ""
+	case "max_allowed_packet":
+		return int64(67108864)
+	case "character_set_client", "character_set_connection", "character_set_results", "character_set_server", "character_set_database":
+		return "utf8mb4"
+	case "collation_connection", "collation_server", "collation_database":
+		return "utf8mb4_general_ci"
+	case "time_zone":
+		return "SYSTEM"
+	case "tx_isolation", "transaction_isolation":
+		return "READ-COMMITTED"
+	case "lower_case_table_names":
+		return int64(0)
+	case "wait_timeout":
+		return int64(28800)
+	case "interactive_timeout":
+		return int64(28800)
+	}
+	return nil
 }
 
 func (ctx *EvalContext) EvalQualifiedIdentifier(table, column string) (interface{}, error) {
@@ -515,6 +741,17 @@ func (ctx *EvalContext) EvalStar(table string) (interface{}, error) {
 	return nil, fmt.Errorf("invalid use of star expression")
 }
 
+// EvalWindow resolves a window function to its precomputed value for the current
+// row, populated when projecting expressions that nest window functions.
+func (ctx *EvalContext) EvalWindow(w *query.WindowExpr) (interface{}, error) {
+	if ctx.windowValues != nil {
+		if v, ok := ctx.windowValues[w]; ok {
+			return v, nil
+		}
+	}
+	return nil, nil
+}
+
 func (ctx *EvalContext) EvalColumnRef(table, column string) (interface{}, error) {
 	// ColumnRef in expression context: resolve to the column value
 	if table != "" {
@@ -570,6 +807,17 @@ func applyBinaryOp(left, right interface{}, op query.TokenType) (interface{}, er
 		return leftBool || rightBool, nil
 	}
 
+	// NULL-safe equality (<=>): NULL <=> NULL is true, NULL <=> x is false.
+	if op == query.TokenNullSafeEq {
+		if left == nil && right == nil {
+			return true, nil
+		}
+		if left == nil || right == nil {
+			return false, nil
+		}
+		return compareValues(left, right) == 0, nil
+	}
+
 	// Handle NULL comparisons (for non-logical operators)
 	if left == nil || right == nil {
 		switch op {
@@ -602,6 +850,9 @@ func applyBinaryOp(left, right interface{}, op query.TokenType) (interface{}, er
 		return moduloValues(left, right)
 	case query.TokenConcat:
 		return concatValues(left, right), nil
+	case query.TokenBitAnd, query.TokenBitOr, query.TokenBitXor,
+		query.TokenShiftLeft, query.TokenShiftRight:
+		return bitwiseOp(left, right, op)
 	}
 
 	// Comparison operators
@@ -621,6 +872,36 @@ func applyBinaryOp(left, right interface{}, op query.TokenType) (interface{}, er
 	default:
 		return false, fmt.Errorf("unsupported operator: %v", op)
 	}
+}
+
+// bitwiseOp applies an integer bitwise operator. Operands are truncated to
+// int64; a non-numeric operand yields an error.
+func bitwiseOp(left, right interface{}, op query.TokenType) (interface{}, error) {
+	lf, lok := toFloat64(left)
+	rf, rok := toFloat64(right)
+	if !lok || !rok {
+		return nil, fmt.Errorf("bitwise operator requires integer operands")
+	}
+	a, b := int64(lf), int64(rf)
+	switch op {
+	case query.TokenBitAnd:
+		return a & b, nil
+	case query.TokenBitOr:
+		return a | b, nil
+	case query.TokenBitXor:
+		return a ^ b, nil
+	case query.TokenShiftLeft:
+		if b < 0 {
+			return nil, fmt.Errorf("negative shift amount")
+		}
+		return a << uint64(b), nil
+	case query.TokenShiftRight:
+		if b < 0 {
+			return nil, fmt.Errorf("negative shift amount")
+		}
+		return a >> uint64(b), nil
+	}
+	return nil, fmt.Errorf("unsupported bitwise operator: %v", op)
 }
 
 func compareValues(a, b interface{}) int {
@@ -877,6 +1158,236 @@ func evaluateMathFunction(funcName string, evalArgs []interface{}) (interface{},
 			return math.Ceil(f), true, nil
 		}
 		return evalArgs[0], true, nil
+
+	case "MOD":
+		if len(evalArgs) < 2 {
+			return nil, true, fmt.Errorf("MOD requires 2 arguments")
+		}
+		if evalArgs[0] == nil || evalArgs[1] == nil {
+			return nil, true, nil
+		}
+		a, aok := toFloat64(evalArgs[0])
+		b, bok := toFloat64(evalArgs[1])
+		if !aok || !bok {
+			return nil, true, fmt.Errorf("MOD requires numeric arguments")
+		}
+		if b == 0 {
+			// SQL MOD by zero yields NULL rather than an error.
+			return nil, true, nil
+		}
+		r := math.Mod(a, b)
+		// Preserve integer-valued results as int64 to match the % operator.
+		if r == math.Trunc(r) {
+			return int64(r), true, nil
+		}
+		return r, true, nil
+
+	case "POWER", "POW":
+		if len(evalArgs) < 2 {
+			return nil, true, fmt.Errorf("POWER requires 2 arguments")
+		}
+		if evalArgs[0] == nil || evalArgs[1] == nil {
+			return nil, true, nil
+		}
+		base, bok := toFloat64(evalArgs[0])
+		exp, eok := toFloat64(evalArgs[1])
+		if !bok || !eok {
+			return nil, true, fmt.Errorf("POWER requires numeric arguments")
+		}
+		return math.Pow(base, exp), true, nil
+
+	case "SQRT":
+		if len(evalArgs) < 1 {
+			return nil, true, fmt.Errorf("SQRT requires 1 argument")
+		}
+		if evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		f, ok := toFloat64(evalArgs[0])
+		if !ok {
+			return nil, true, fmt.Errorf("SQRT requires a numeric argument")
+		}
+		if f < 0 {
+			return nil, true, fmt.Errorf("SQRT of negative number")
+		}
+		return math.Sqrt(f), true, nil
+
+	case "SIGN":
+		if len(evalArgs) < 1 || evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		f, ok := toFloat64(evalArgs[0])
+		if !ok {
+			return nil, true, fmt.Errorf("SIGN requires a numeric argument")
+		}
+		switch {
+		case f > 0:
+			return int64(1), true, nil
+		case f < 0:
+			return int64(-1), true, nil
+		default:
+			return int64(0), true, nil
+		}
+
+	case "TRUNCATE", "TRUNC":
+		if len(evalArgs) < 1 || evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		f, ok := toFloat64(evalArgs[0])
+		if !ok {
+			return nil, true, fmt.Errorf("TRUNCATE requires a numeric argument")
+		}
+		places := 0
+		if len(evalArgs) >= 2 {
+			if p, ok := toFloat64(evalArgs[1]); ok {
+				places = int(p)
+			}
+		}
+		mult := math.Pow(10, float64(places))
+		return math.Trunc(f*mult) / mult, true, nil
+
+	case "EXP":
+		if len(evalArgs) < 1 || evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return math.Exp(f), true, nil
+		}
+		return nil, true, fmt.Errorf("EXP requires a numeric argument")
+
+	case "LN":
+		if len(evalArgs) < 1 || evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		f, ok := toFloat64(evalArgs[0])
+		if !ok || f <= 0 {
+			return nil, true, nil
+		}
+		return math.Log(f), true, nil
+
+	case "LOG":
+		// LOG(x) is natural log; LOG(b, x) is log base b (MySQL).
+		if len(evalArgs) < 1 || evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		a, ok := toFloat64(evalArgs[0])
+		if !ok {
+			return nil, true, nil
+		}
+		if len(evalArgs) >= 2 && evalArgs[1] != nil {
+			x, ok2 := toFloat64(evalArgs[1])
+			if !ok2 || a <= 0 || a == 1 || x <= 0 {
+				return nil, true, nil
+			}
+			return math.Log(x) / math.Log(a), true, nil
+		}
+		if a <= 0 {
+			return nil, true, nil
+		}
+		return math.Log(a), true, nil
+
+	case "LOG10":
+		if len(evalArgs) < 1 || evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		f, ok := toFloat64(evalArgs[0])
+		if !ok || f <= 0 {
+			return nil, true, nil
+		}
+		return math.Log10(f), true, nil
+
+	case "LOG2":
+		if len(evalArgs) < 1 || evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		f, ok := toFloat64(evalArgs[0])
+		if !ok || f <= 0 {
+			return nil, true, nil
+		}
+		return math.Log2(f), true, nil
+
+	case "PI":
+		return math.Pi, true, nil
+
+	case "RADIANS":
+		if len(evalArgs) < 1 || evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return f * math.Pi / 180.0, true, nil
+		}
+		return nil, true, nil
+
+	case "DEGREES":
+		if len(evalArgs) < 1 || evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		if f, ok := toFloat64(evalArgs[0]); ok {
+			return f * 180.0 / math.Pi, true, nil
+		}
+		return nil, true, nil
+
+	case "GREATEST", "LEAST":
+		if len(evalArgs) == 0 {
+			return nil, true, nil
+		}
+		var best interface{}
+		for _, v := range evalArgs {
+			if v == nil {
+				return nil, true, nil // any NULL yields NULL (MySQL semantics)
+			}
+			if best == nil {
+				best = v
+				continue
+			}
+			cmp := compareValues(v, best)
+			if (funcName == "GREATEST" && cmp > 0) || (funcName == "LEAST" && cmp < 0) {
+				best = v
+			}
+		}
+		return best, true, nil
+
+	case "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "COT", "SINH", "COSH", "TANH":
+		if len(evalArgs) < 1 || evalArgs[0] == nil {
+			return nil, true, nil
+		}
+		f, ok := toFloat64(evalArgs[0])
+		if !ok {
+			return nil, true, fmt.Errorf("%s requires a numeric argument", funcName)
+		}
+		switch funcName {
+		case "SIN":
+			return math.Sin(f), true, nil
+		case "COS":
+			return math.Cos(f), true, nil
+		case "TAN":
+			return math.Tan(f), true, nil
+		case "ASIN":
+			return math.Asin(f), true, nil
+		case "ACOS":
+			return math.Acos(f), true, nil
+		case "ATAN":
+			return math.Atan(f), true, nil
+		case "COT":
+			return 1.0 / math.Tan(f), true, nil
+		case "SINH":
+			return math.Sinh(f), true, nil
+		case "COSH":
+			return math.Cosh(f), true, nil
+		case "TANH":
+			return math.Tanh(f), true, nil
+		}
+
+	case "ATAN2":
+		if len(evalArgs) < 2 || evalArgs[0] == nil || evalArgs[1] == nil {
+			return nil, true, nil
+		}
+		y, yok := toFloat64(evalArgs[0])
+		x, xok := toFloat64(evalArgs[1])
+		if !yok || !xok {
+			return nil, true, fmt.Errorf("ATAN2 requires numeric arguments")
+		}
+		return math.Atan2(y, x), true, nil
 	}
 	return nil, false, nil
 }
@@ -1579,6 +2090,11 @@ func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}
 		}
 		return nil, nil
 	default:
+		// Fall through to the shared math dispatch so functions like
+		// MOD, POWER, SQRT, FLOOR, CEIL work in value-expression context too.
+		if val, handled, err := evaluateMathFunction(funcName, evalArgs); handled {
+			return val, err
+		}
 		return nil, fmt.Errorf("unsupported function in value expression: %s", funcName)
 	}
 }

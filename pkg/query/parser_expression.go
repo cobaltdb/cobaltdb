@@ -23,6 +23,24 @@ func (p *Parser) parseOrderByList() ([]*OrderByExpr, error) {
 			p.match(TokenAsc) // ASC is default
 		}
 
+		// Optional NULLS FIRST / NULLS LAST (NULLS/FIRST/LAST are non-keyword
+		// identifiers in this lexer).
+		if p.current().Type == TokenIdentifier && strings.EqualFold(p.current().Literal, "NULLS") {
+			p.advance() // consume NULLS
+			switch {
+			case p.current().Type == TokenIdentifier && strings.EqualFold(p.current().Literal, "FIRST"):
+				p.advance()
+				orderExpr.NullsFirst = true
+				orderExpr.NullsSpecified = true
+			case p.current().Type == TokenIdentifier && strings.EqualFold(p.current().Literal, "LAST"):
+				p.advance()
+				orderExpr.NullsFirst = false
+				orderExpr.NullsSpecified = true
+			default:
+				return nil, fmt.Errorf("expected FIRST or LAST after NULLS, got %s", p.current().Literal)
+			}
+		}
+
 		exprs = append(exprs, orderExpr)
 
 		if !p.match(TokenComma) {
@@ -135,16 +153,16 @@ func (p *Parser) parseNot() (Expression, error) {
 
 // parseComparison parses comparison expressions
 func (p *Parser) parseComparison() (Expression, error) {
-	left, err := p.parseAdditive()
+	left, err := p.parseBitOr()
 	if err != nil {
 		return nil, err
 	}
 
 	switch p.current().Type {
-	case TokenEq, TokenNeq, TokenLt, TokenGt, TokenLte, TokenGte:
+	case TokenEq, TokenNeq, TokenLt, TokenGt, TokenLte, TokenGte, TokenNullSafeEq:
 		op := p.current().Type
 		p.advance()
-		right, err := p.parseAdditive()
+		right, err := p.parseBitOr()
 		if err != nil {
 			return nil, err
 		}
@@ -247,13 +265,31 @@ func (p *Parser) parseBetweenExpr(left Expression, not bool) (Expression, error)
 }
 
 // parseAdditive parses + and - expressions
+// Bitwise precedence (MySQL): | lower than &, which is lower than << >>,
+// which sits above additive. ^ binds tighter than * / % (just above unary).
+func (p *Parser) parseBitOr() (Expression, error) {
+	return p.parseBinaryOpLevel(p.parseBitAnd, TokenBitOr)
+}
+
+func (p *Parser) parseBitAnd() (Expression, error) {
+	return p.parseBinaryOpLevel(p.parseBitShift, TokenBitAnd)
+}
+
+func (p *Parser) parseBitShift() (Expression, error) {
+	return p.parseBinaryOpLevel(p.parseAdditive, TokenShiftLeft, TokenShiftRight)
+}
+
 func (p *Parser) parseAdditive() (Expression, error) {
 	return p.parseBinaryOpLevel(p.parseMultiplicative, TokenPlus, TokenMinus, TokenConcat)
 }
 
 // parseMultiplicative parses *, /, % expressions
 func (p *Parser) parseMultiplicative() (Expression, error) {
-	return p.parseBinaryOpLevel(p.parseUnary, TokenStar, TokenSlash, TokenPercent)
+	return p.parseBinaryOpLevel(p.parseBitXor, TokenStar, TokenSlash, TokenPercent)
+}
+
+func (p *Parser) parseBitXor() (Expression, error) {
+	return p.parseBinaryOpLevel(p.parseUnary, TokenBitXor)
 }
 
 // parseUnary parses unary expressions
@@ -278,6 +314,10 @@ func (p *Parser) parsePrimary() (Expression, error) {
 		return p.parseNumber()
 	case TokenString:
 		return p.parseString()
+	case TokenDefault:
+		// `DEFAULT` as a value (INSERT ... VALUES (..., DEFAULT)).
+		p.advance()
+		return &DefaultExpr{}, nil
 	case TokenIdentifier:
 		return p.parseIdentifierOrFunction()
 	// JSON functions
@@ -495,6 +535,25 @@ func (p *Parser) parseCast() (Expression, error) {
 	dataType := p.current().Type
 	p.advance()
 
+	// Skip optional type parameters, e.g. DECIMAL(10,2), VARCHAR(255).
+	if p.current().Type == TokenLParen {
+		depth := 0
+		for {
+			switch p.current().Type {
+			case TokenLParen:
+				depth++
+			case TokenRParen:
+				depth--
+			case TokenEOF:
+				return nil, fmt.Errorf("unterminated type parameters in CAST")
+			}
+			p.advance()
+			if depth == 0 {
+				break
+			}
+		}
+	}
+
 	if _, err := p.expect(TokenRParen); err != nil {
 		return nil, err
 	}
@@ -507,8 +566,12 @@ func (p *Parser) parseIdentifierOrFunction() (Expression, error) {
 	tok := p.current()
 	p.advance()
 
-	// Check for qualified identifier (table.column)
+	// Check for qualified identifier (table.column) or qualified star (table.*)
 	if p.match(TokenDot) {
+		if p.current().Type == TokenStar {
+			p.advance()
+			return &StarExpr{Table: tok.Literal}, nil
+		}
 		col, err := p.expect(TokenIdentifier)
 		if err != nil {
 			return nil, err
@@ -539,10 +602,78 @@ func (p *Parser) parseIdentifierOrFunction() (Expression, error) {
 	return &Identifier{Name: tok.Literal}, nil
 }
 
+// extractFieldToFunc maps an EXTRACT() field name to the equivalent scalar
+// date function name.
+func extractFieldToFunc(field string) string {
+	switch field {
+	case "DOW", "DAYOFWEEK":
+		return "DAYOFWEEK"
+	case "DOY", "DAYOFYEAR":
+		return "DAYOFYEAR"
+	default:
+		// YEAR, MONTH, DAY, HOUR, MINUTE, SECOND map by name; unknown fields
+		// fall through and error at evaluation.
+		return field
+	}
+}
+
 // parseFunctionCall parses a function call
 func (p *Parser) parseFunctionCall(name string) (Expression, error) {
 	if _, err := p.expect(TokenLParen); err != nil {
 		return nil, err
+	}
+
+	upperName := toUpperFast(name)
+
+	// EXTRACT(field FROM source) -> the corresponding date-field function.
+	if upperName == "EXTRACT" {
+		field := strings.ToUpper(p.current().Literal)
+		p.advance()
+		if p.current().Type != TokenFrom {
+			return nil, fmt.Errorf("expected FROM in EXTRACT, got %s", p.current().Literal)
+		}
+		p.advance()
+		source, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
+		return &FunctionCall{Name: extractFieldToFunc(field), Args: []Expression{source}}, nil
+	}
+
+	// POSITION(substr IN str) -> LOCATE(substr, str). Parse substr below the
+	// comparison level so the IN keyword is not consumed as an IN-list operator.
+	if upperName == "POSITION" {
+		substr, err := p.parseBitOr()
+		if err != nil {
+			return nil, err
+		}
+		if p.current().Type == TokenIn {
+			p.advance()
+			str, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(TokenRParen); err != nil {
+				return nil, err
+			}
+			return &FunctionCall{Name: "LOCATE", Args: []Expression{substr, str}}, nil
+		}
+		// Otherwise treat as a normal comma-separated argument list.
+		args := []Expression{substr}
+		for p.match(TokenComma) {
+			a, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, a)
+		}
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
+		return &FunctionCall{Name: "LOCATE", Args: args}, nil
 	}
 
 	// Check for DISTINCT keyword (e.g., COUNT(DISTINCT col))

@@ -104,10 +104,6 @@ func TestSQLCompatibilityUnsupportedBaseline(t *testing.T) {
 			name: "revoke",
 			sql:  "REVOKE SELECT ON users FROM analyst",
 		},
-		{
-			name: "truncate",
-			sql:  "TRUNCATE TABLE users",
-		},
 	}
 
 	for _, tc := range unsupported {

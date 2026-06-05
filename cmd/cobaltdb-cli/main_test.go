@@ -300,6 +300,19 @@ func TestSplitSQLStatements(t *testing.T) {
 		{"SELECT 'a;b';", []string{"SELECT 'a;b';"}},
 		{"INSERT INTO t VALUES ('a', 'b');", []string{"INSERT INTO t VALUES ('a', 'b');"}},
 		{"SELECT 1", []string{"SELECT 1"}},
+		// A transaction BEGIN is not a compound body: still splits on ';'.
+		{"BEGIN; UPDATE t SET v=1; COMMIT;", []string{"BEGIN;", " UPDATE t SET v=1;", " COMMIT;"}},
+		// A trigger BEGIN...END body keeps its internal ';' and splits the
+		// trailing statement separately.
+		{
+			"CREATE TRIGGER tg AFTER INSERT ON t BEGIN INSERT INTO l VALUES (1); END; SELECT 1;",
+			[]string{"CREATE TRIGGER tg AFTER INSERT ON t BEGIN INSERT INTO l VALUES (1); END;", " SELECT 1;"},
+		},
+		// CASE...END nested inside a trigger body must not close the block early.
+		{
+			"CREATE TRIGGER tg AFTER INSERT ON t BEGIN INSERT INTO l VALUES (CASE WHEN 1>0 THEN 'a' ELSE 'b' END); END;",
+			[]string{"CREATE TRIGGER tg AFTER INSERT ON t BEGIN INSERT INTO l VALUES (CASE WHEN 1>0 THEN 'a' ELSE 'b' END); END;"},
+		},
 	}
 	for _, test := range tests {
 		result := splitSQLStatements(test.input)

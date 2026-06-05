@@ -71,7 +71,7 @@ func TestV96_FunctionCoverage(t *testing.T) {
 	check("TIME pass-through", "SELECT TIME('12:30:00')", "12:30:00")
 
 	// --- STRFTIME ---
-	check("STRFTIME basic", "SELECT STRFTIME('%Y', '2024-01-01')", "2024-01-01")
+	check("STRFTIME basic", "SELECT STRFTIME('%Y', '2024-01-01')", "2024")
 
 	// --- GROUP_CONCAT in aggregate context ---
 	afExec(t, db, ctx, "CREATE TABLE t96_gc (id INTEGER PRIMARY KEY, val TEXT)")

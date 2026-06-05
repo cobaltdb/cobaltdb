@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 func jsonArgString(args []interface{}, idx int) (string, bool) {
@@ -311,6 +312,40 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 			return []string{}, nil
 		}
 		return RegexExtract(str, pattern)
+
+	case "JSON_OBJECT":
+		if len(args)%2 != 0 {
+			return nil, fmt.Errorf("JSON_OBJECT requires an even number of arguments")
+		}
+		// Preserve key order using ordered marshaling via a manual builder.
+		obj := make([][2]interface{}, 0, len(args)/2)
+		for i := 0; i+1 < len(args); i += 2 {
+			key := ValueToStringKey(args[i])
+			obj = append(obj, [2]interface{}{key, args[i+1]})
+		}
+		var b strings.Builder
+		b.WriteByte('{')
+		for i, kv := range obj {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			kb, _ := json.Marshal(kv[0])
+			vb, _ := json.Marshal(kv[1])
+			b.Write(kb)
+			b.WriteByte(':')
+			b.Write(vb)
+		}
+		b.WriteByte('}')
+		return b.String(), nil
+
+	case "JSON_ARRAY":
+		arr := make([]interface{}, len(args))
+		copy(arr, args)
+		out, err := json.Marshal(arr)
+		if err != nil {
+			return nil, fmt.Errorf("JSON_ARRAY: %w", err)
+		}
+		return string(out), nil
 
 	default:
 		return nil, fmt.Errorf("unknown function: %s", funcName)

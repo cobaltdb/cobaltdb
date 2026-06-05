@@ -723,10 +723,10 @@ func TestV38TrickyEdgeCases(t *testing.T) {
 	checkNoError("I8 INSERT max int64 value succeeds",
 		`INSERT INTO v38_constraint_test VALUES (3, 'max-int', 9223372036854775807)`)
 
-	// I8b: Large int64 values render in scientific notation in this engine.
-	// 9223372036854775807 appears as "9.223372036854776e+18" when formatted.
-	check("I8b max int64 score stored correctly (scientific notation rendering)",
-		`SELECT score FROM v38_constraint_test WHERE id = 3`, "9.223372036854776e+18")
+	// I8b: Large int64 values retain full precision (integer literals evaluate
+	// as int64, so values above 2^53 are not corrupted by a float64 round-trip).
+	check("I8b max int64 score stored correctly",
+		`SELECT score FROM v38_constraint_test WHERE id = 3`, "9223372036854775807")
 
 	// I9: UPDATE SET col = col (a no-op update) must succeed without error.
 	// id=1 still has label='first' since I7 UPDATE was rejected.

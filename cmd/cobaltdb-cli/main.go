@@ -198,13 +198,20 @@ func closeDBAndExit(db *engine.DB, code int) {
 
 func runCommand(sql, path string, inMemory bool) {
 	db := openDB(path, inMemory)
-	defer db.Close()
 
-	executeSQL(db, sql)
+	if executeSQL(db, sql) {
+		// A SQL error in non-interactive mode is a failure: exit non-zero so
+		// scripts and automation can detect it.
+		closeDBAndExit(db, 1)
+	}
+	if err := db.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error closing database: %v\n", err)
+		os.Exit(1)
+	}
 }
 
-func executeSQL(db *engine.DB, sql string) {
-	executeSQLInteractive(db, sql, newSessionState())
+func executeSQL(db *engine.DB, sql string) bool {
+	return executeSQLInteractive(db, sql, newSessionState())
 }
 
 func isQuery(sql string) bool {
@@ -223,16 +230,39 @@ func isQuery(sql string) bool {
 		return true
 	case len(sql) >= 5 && (sql[0] == 'D' || sql[0] == 'd') && strings.EqualFold(sql[:5], "DESC "):
 		return true
+	case len(sql) >= 7 && (sql[0] == 'E' || sql[0] == 'e') && strings.EqualFold(sql[:7], "EXPLAIN"):
+		return true
 	}
 	return false
 }
 
-func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
+// executeSQLInteractive runs each ';'-separated statement and reports whether
+// any of them failed (used by arg mode to set a non-zero exit code).
+func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) bool {
+	// A single input line may contain several ';'-separated statements
+	// (e.g. "BEGIN; UPDATE ...; COMMIT;"). Execute each in sequence on the
+	// same connection so transaction control and multi-statement scripts work
+	// instead of silently dropping everything after the first statement.
+	errored := false
+	for _, stmt := range splitSQLStatements(sql) {
+		stmt = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(stmt), ";"))
+		if stmt == "" {
+			continue
+		}
+		if executeOneStatement(db, stmt, state) {
+			errored = true
+		}
+	}
+	return errored
+}
+
+// executeOneStatement runs a single statement and returns true if it errored.
+func executeOneStatement(db *engine.DB, sql string, state *sessionState) bool {
 	ctx := context.Background()
 	sql = strings.TrimSpace(sql)
 
 	if sql == "" {
-		return
+		return false
 	}
 
 	start := time.Now()
@@ -241,7 +271,7 @@ func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
 		rows, err := db.Query(ctx, sql)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			return
+			return true
 		}
 		defer func() {
 			if err := rows.Close(); err != nil {
@@ -251,12 +281,13 @@ func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
 
 		if err := printRowsWithMode(rows, state); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return true
 		}
 	} else {
 		result, err := db.Exec(ctx, sql)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			return
+			return true
 		}
 		if result.RowsAffected > 0 {
 			fmt.Printf("Rows affected: %d\n", result.RowsAffected)
@@ -272,6 +303,7 @@ func executeSQLInteractive(db *engine.DB, sql string, state *sessionState) {
 	if state.timer {
 		fmt.Printf("Query executed in %s\n", time.Since(start).Round(time.Microsecond))
 	}
+	return false
 }
 
 func printRowsWithMode(rows *engine.Rows, state *sessionState) error {
@@ -1351,30 +1383,83 @@ func stripSQLComments(sql string) string {
 	return result.String()
 }
 
+// splitSQLStatements splits a script into ';'-terminated statements while
+// respecting string literals and compound-statement bodies. A ';' inside a
+// trigger/procedure/function BEGIN...END block (including nested BEGIN and
+// CASE...END) is part of the body, not a statement terminator. A standalone
+// transaction "BEGIN;" still splits normally because it is not a compound
+// CREATE statement.
 func splitSQLStatements(sql string) []string {
 	var statements []string
 	var current strings.Builder
 	inString := false
-	stringChar := rune(0)
+	var stringChar byte
+	inCompound := false // inside a CREATE TRIGGER/PROCEDURE/FUNCTION body
+	blockDepth := 0     // BEGIN/CASE ... END nesting within the body
 
-	for _, ch := range sql {
+	isWordByte := func(b byte) bool {
+		return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+	}
+	isLetter := func(b byte) bool {
+		return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+	}
+
+	n := len(sql)
+	for i := 0; i < n; i++ {
+		ch := sql[i]
 		if inString {
-			current.WriteRune(ch)
+			current.WriteByte(ch)
 			if ch == stringChar {
 				inString = false
 			}
 			continue
 		}
-
 		if ch == '\'' || ch == '"' {
 			inString = true
 			stringChar = ch
-			current.WriteRune(ch)
+			current.WriteByte(ch)
 			continue
 		}
 
-		current.WriteRune(ch)
-		if ch == ';' {
+		// Keyword detection on word boundaries.
+		if isLetter(ch) && (i == 0 || !isWordByte(sql[i-1])) {
+			j := i
+			for j < n && isWordByte(sql[j]) {
+				j++
+			}
+			word := sql[i:j]
+			current.WriteString(word)
+			switch strings.ToUpper(word) {
+			case "BEGIN":
+				if inCompound {
+					blockDepth++
+				} else {
+					up := strings.ToUpper(strings.TrimSpace(current.String()))
+					if strings.HasPrefix(up, "CREATE") &&
+						(strings.Contains(up, "TRIGGER") || strings.Contains(up, "PROCEDURE") || strings.Contains(up, "FUNCTION")) {
+						inCompound = true
+						blockDepth = 1
+					}
+				}
+			case "CASE":
+				if inCompound {
+					blockDepth++
+				}
+			case "END":
+				if inCompound {
+					blockDepth--
+					if blockDepth <= 0 {
+						inCompound = false
+						blockDepth = 0
+					}
+				}
+			}
+			i = j - 1
+			continue
+		}
+
+		current.WriteByte(ch)
+		if ch == ';' && !inCompound {
 			statements = append(statements, current.String())
 			current.Reset()
 		}

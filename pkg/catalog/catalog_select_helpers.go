@@ -113,11 +113,7 @@ func (cat *Catalog) handleCTEResult(stmt *query.SelectStmt, args []interface{}, 
 
 	hasWindowFuncs := false
 	for _, col := range stmt.Columns {
-		actual := col
-		if ae, ok := col.(*query.AliasExpr); ok {
-			actual = ae.Expr
-		}
-		if _, ok := actual.(*query.WindowExpr); ok {
+		if query.ExprContainsWindow(col) {
 			hasWindowFuncs = true
 			break
 		}
@@ -171,7 +167,14 @@ func (cat *Catalog) executeCTEWindowQuery(stmt *query.SelectStmt, args []interfa
 				returnColumns[i] = c.Name
 			}
 		default:
-			selectCols[i] = selectColInfo{name: aliasName}
+			var ews []*query.WindowExpr
+			query.CollectWindowExprs(actual, &ews)
+			selectCols[i] = selectColInfo{
+				name:            aliasName,
+				index:           -1,
+				originalExpr:    actual,
+				embeddedWindows: ews,
+			}
 			if aliasName != "" {
 				returnColumns[i] = aliasName
 			} else {
@@ -288,7 +291,7 @@ func (cat *Catalog) buildSelectColumnInfo(
 		case *query.QualifiedIdentifier:
 			selectCols = cat.resolveQualifiedColumn(c, aliasName, stmt, table, mainTableRef, selectCols)
 		case *query.StarExpr:
-			selectCols = cat.resolveStarColumns(stmt, table, mainTableRef, selectCols)
+			selectCols = cat.resolveStarColumns(c, stmt, table, mainTableRef, selectCols)
 		case *query.FunctionCall:
 			var agg bool
 			selectCols, agg = cat.resolveFunctionColumn(c, aliasName, actualCol, stmt, table, mainTableRef, selectCols)
@@ -347,8 +350,8 @@ func (cat *Catalog) resolveIdentifierColumn(
 					joinAlias = join.Table.Alias
 				}
 				if joinAlias == targetTable || join.Table.Name == targetTable {
-					joinTable, err := cat.getTableLocked(join.Table.Name)
-					if err == nil {
+					joinTable, ok := cat.resolveJoinTableDef(join.Table)
+					if ok {
 						if idx := joinTable.GetColumnIndex(colName); idx >= 0 {
 							displayName := colName
 							if aliasName != "" {
@@ -371,7 +374,83 @@ func (cat *Catalog) resolveIdentifierColumn(
 		}
 		return append(selectCols, selectColInfo{name: displayName, tableName: mainTableRef, index: idx}), false
 	}
+	// Not found in the main table: an unqualified column may belong to a joined
+	// table (e.g. SELECT id, x, y FROM a JOIN b ON ... where y is a column of b).
+	for _, join := range stmt.Joins {
+		joinAlias := join.Table.Name
+		if join.Table.Alias != "" {
+			joinAlias = join.Table.Alias
+		}
+		joinTable, ok := cat.resolveJoinTableDef(join.Table)
+		if ok {
+			if idx := joinTable.GetColumnIndex(c.Name); idx >= 0 {
+				displayName := c.Name
+				if aliasName != "" {
+					displayName = aliasName
+				}
+				return append(selectCols, selectColInfo{name: displayName, tableName: joinAlias, index: idx}), false
+			}
+		}
+	}
 	return selectCols, false
+}
+
+// resolveJoinTableDef returns the column metadata for a joined table, resolving
+// CTE-materialized results (and derived tables) before falling back to the
+// persistent catalog. Without this, JOINs whose table is a CTE silently drop
+// their columns from the projection.
+func (cat *Catalog) resolveJoinTableDef(ref *query.TableRef) (*TableDef, bool) {
+	// Derived table (subquery): infer output column names from its SELECT list
+	// so JOINs against a subquery don't drop the subquery's columns.
+	if ref.Subquery != nil {
+		if names, ok := derivedSelectColumnNames(ref.Subquery); ok {
+			cols := make([]ColumnDef, len(names))
+			for i, n := range names {
+				cols[i] = ColumnDef{Name: n, Type: "TEXT"}
+			}
+			return &TableDef{Name: ref.Alias, Columns: cols}, true
+		}
+	}
+	name := ref.Name
+	if cat.cteResults != nil {
+		if cteRes, ok := cat.cteResults[toLowerFast(name)]; ok {
+			cols := make([]ColumnDef, len(cteRes.columns))
+			for i, col := range cteRes.columns {
+				cols[i] = ColumnDef{Name: col, Type: "TEXT"}
+			}
+			return &TableDef{Name: name, Columns: cols}, true
+		}
+	}
+	if t, err := cat.getTableLocked(name); err == nil {
+		return t, true
+	}
+	return nil, false
+}
+
+// derivedSelectColumnNames infers the output column names of a derived-table
+// subquery from its SELECT list, matching the order executeDerivedTable yields.
+// Returns false when a name can't be inferred (e.g. SELECT *).
+func derivedSelectColumnNames(sel *query.SelectStmt) ([]string, bool) {
+	names := make([]string, 0, len(sel.Columns))
+	for _, col := range sel.Columns {
+		if ae, ok := col.(*query.AliasExpr); ok {
+			names = append(names, ae.Alias)
+			continue
+		}
+		switch c := col.(type) {
+		case *query.Identifier:
+			names = append(names, c.Name)
+		case *query.QualifiedIdentifier:
+			names = append(names, c.Column)
+		case *query.FunctionCall:
+			names = append(names, c.Name+"()")
+		case *query.WindowExpr:
+			names = append(names, c.Function+"()")
+		default:
+			return nil, false
+		}
+	}
+	return names, true
 }
 
 func (cat *Catalog) resolveQualifiedColumn(
@@ -398,8 +477,8 @@ func (cat *Catalog) resolveQualifiedColumn(
 				joinAlias = join.Table.Alias
 			}
 			if joinAlias == targetTable || join.Table.Name == targetTable {
-				joinTable, err := cat.getTableLocked(join.Table.Name)
-				if err == nil {
+				joinTable, ok := cat.resolveJoinTableDef(join.Table)
+				if ok {
 					if idx := joinTable.GetColumnIndex(colName); idx >= 0 {
 						return append(selectCols, selectColInfo{name: colName, tableName: joinAlias, index: idx})
 					}
@@ -412,19 +491,27 @@ func (cat *Catalog) resolveQualifiedColumn(
 }
 
 func (cat *Catalog) resolveStarColumns(
-	stmt *query.SelectStmt, table *TableDef, mainTableRef string,
+	c *query.StarExpr, stmt *query.SelectStmt, table *TableDef, mainTableRef string,
 	selectCols []selectColInfo,
 ) []selectColInfo {
-	for i, tc := range table.Columns {
-		selectCols = append(selectCols, selectColInfo{name: tc.Name, tableName: mainTableRef, index: i})
+	// A qualified star (table.*) restricts expansion to one table; an unqualified
+	// star expands all tables.
+	wantMain := c.Table == "" || c.Table == stmt.From.Name || c.Table == stmt.From.Alias
+	if wantMain {
+		for i, tc := range table.Columns {
+			selectCols = append(selectCols, selectColInfo{name: tc.Name, tableName: mainTableRef, index: i})
+		}
 	}
 	for _, join := range stmt.Joins {
 		joinAlias := join.Table.Name
 		if join.Table.Alias != "" {
 			joinAlias = join.Table.Alias
 		}
-		joinTable, err := cat.getTableLocked(join.Table.Name)
-		if err == nil {
+		if c.Table != "" && c.Table != join.Table.Name && c.Table != join.Table.Alias {
+			continue
+		}
+		joinTable, ok := cat.resolveJoinTableDef(join.Table)
+		if ok {
 			for i, tc := range joinTable.Columns {
 				selectCols = append(selectCols, selectColInfo{name: tc.Name, tableName: joinAlias, index: i})
 			}
@@ -438,7 +525,7 @@ func (cat *Catalog) resolveFunctionColumn(
 	stmt *query.SelectStmt, table *TableDef, mainTableRef string,
 	selectCols []selectColInfo,
 ) ([]selectColInfo, bool) {
-	if strings.EqualFold(c.Name, "COUNT") || strings.EqualFold(c.Name, "SUM") || strings.EqualFold(c.Name, "AVG") || strings.EqualFold(c.Name, "MIN") || strings.EqualFold(c.Name, "MAX") || strings.EqualFold(c.Name, "GROUP_CONCAT") {
+	if isAggregateFuncName(toUpperFast(c.Name)) {
 		colName := "*"
 		aggTableName := mainTableRef
 		var aggExpr query.Expression
@@ -487,12 +574,19 @@ func (cat *Catalog) resolveFunctionColumn(
 
 	var embeddedAggs []*query.FunctionCall
 	collectAggregatesFromExpr(actualCol, &embeddedAggs)
+	var embeddedWindows []*query.WindowExpr
+	query.CollectWindowExprs(actualCol, &embeddedWindows)
+	colName := c.Name + "()"
+	if aliasName != "" {
+		colName = aliasName
+	}
 	return append(selectCols, selectColInfo{
-		name:           c.Name + "()",
-		tableName:      mainTableRef,
-		index:          -1,
-		hasEmbeddedAgg: len(embeddedAggs) > 0,
-		originalExpr:   actualCol,
+		name:            colName,
+		tableName:       mainTableRef,
+		index:           -1,
+		hasEmbeddedAgg:  len(embeddedAggs) > 0,
+		originalExpr:    actualCol,
+		embeddedWindows: embeddedWindows,
 	}), len(embeddedAggs) > 0
 }
 
@@ -519,15 +613,18 @@ func (cat *Catalog) resolveExpressionColumn(
 ) ([]selectColInfo, bool) {
 	var embeddedAggs []*query.FunctionCall
 	collectAggregatesFromExpr(actualCol, &embeddedAggs)
+	var embeddedWindows []*query.WindowExpr
+	query.CollectWindowExprs(actualCol, &embeddedWindows)
 	exprName := "expr"
 	if aliasName != "" {
 		exprName = aliasName
 	}
 	return append(selectCols, selectColInfo{
-		name:           exprName,
-		tableName:      mainTableRef,
-		index:          -1,
-		hasEmbeddedAgg: len(embeddedAggs) > 0,
-		originalExpr:   actualCol,
+		name:            exprName,
+		tableName:       mainTableRef,
+		index:           -1,
+		hasEmbeddedAgg:  len(embeddedAggs) > 0,
+		originalExpr:    actualCol,
+		embeddedWindows: embeddedWindows,
 	}), len(embeddedAggs) > 0
 }

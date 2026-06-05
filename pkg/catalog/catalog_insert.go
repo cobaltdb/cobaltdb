@@ -960,6 +960,10 @@ func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insert
 	if insertColIndices != nil {
 		for colIdx, tableColIdx := range insertColIndices {
 			if colIdx < len(valueRow) && tableColIdx >= 0 {
+				// The DEFAULT keyword leaves the column default (already set above).
+				if _, isDefault := valueRow[colIdx].(*query.DefaultExpr); isDefault {
+					continue
+				}
 				val, err := evaluateExpression(c, nil, nil, valueRow[colIdx], args)
 				if err != nil {
 					colName := ""
@@ -976,6 +980,10 @@ func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insert
 	} else {
 		// Identity mapping: valueRow[i] maps to table.Columns[i].
 		for colIdx := 0; colIdx < len(valueRow) && colIdx < len(table.Columns); colIdx++ {
+			// The DEFAULT keyword leaves the column default (already set above).
+			if _, isDefault := valueRow[colIdx].(*query.DefaultExpr); isDefault {
+				continue
+			}
 			val, err := evaluateExpression(c, nil, nil, valueRow[colIdx], args)
 			if err != nil {
 				return fmt.Errorf("failed to evaluate value for column '%s': %w", table.Columns[colIdx].Name, err)

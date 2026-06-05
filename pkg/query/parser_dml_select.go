@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -139,6 +140,13 @@ func (p *Parser) parseSelectItem() (Expression, error) {
 		if err != nil {
 			return nil, err
 		}
+		expr = &AliasExpr{Expr: expr, Alias: alias.Literal}
+	} else if p.current().Type == TokenIdentifier && !isStructuralKeyword(p.current().Type) {
+		// Implicit alias (no AS keyword): SELECT expr alias.
+		// Identifiers have their own token type, so SQL keywords that legitimately
+		// follow a select item (FROM, comma, etc.) are never matched here.
+		alias := p.current()
+		p.advance()
 		expr = &AliasExpr{Expr: expr, Alias: alias.Literal}
 	}
 
@@ -449,11 +457,90 @@ func (p *Parser) parseWindowExpr(funcName string, args []Expression) (Expression
 		}
 	}
 
+	// Parse optional window frame clause (ROWS/RANGE ...)
+	if p.current().Type == TokenRows || p.current().Type == TokenRange {
+		frame, err := p.parseWindowFrame()
+		if err != nil {
+			return nil, err
+		}
+		windowExpr.Frame = frame
+	}
+
 	if _, err := p.expect(TokenRParen); err != nil {
 		return nil, err
 	}
 
 	return windowExpr, nil
+}
+
+// parseWindowFrame parses ROWS|RANGE [BETWEEN] <bound> [AND <bound>].
+func (p *Parser) parseWindowFrame() (*WindowFrame, error) {
+	frame := &WindowFrame{}
+	if p.current().Type == TokenRange {
+		frame.Mode = "RANGE"
+	} else {
+		frame.Mode = "ROWS"
+	}
+	p.advance() // consume ROWS/RANGE
+
+	if p.match(TokenBetween) {
+		start, err := p.parseWindowFrameBound()
+		if err != nil {
+			return nil, err
+		}
+		frame.Start = start
+		if _, err := p.expect(TokenAnd); err != nil {
+			return nil, err
+		}
+		end, err := p.parseWindowFrameBound()
+		if err != nil {
+			return nil, err
+		}
+		frame.End = end
+	} else {
+		// Single bound form: "ROWS <bound>" means start..CURRENT ROW.
+		start, err := p.parseWindowFrameBound()
+		if err != nil {
+			return nil, err
+		}
+		frame.Start = start
+		frame.End = &WindowFrameBound{Type: "CURRENT_ROW"}
+	}
+	return frame, nil
+}
+
+// parseWindowFrameBound parses one frame bound: UNBOUNDED PRECEDING|FOLLOWING,
+// CURRENT ROW, or <n> PRECEDING|FOLLOWING.
+func (p *Parser) parseWindowFrameBound() (*WindowFrameBound, error) {
+	switch {
+	case p.match(TokenUnbounded):
+		if p.match(TokenPreceding) {
+			return &WindowFrameBound{Type: "UNBOUNDED_PRECEDING"}, nil
+		}
+		if p.match(TokenFollowing) {
+			return &WindowFrameBound{Type: "UNBOUNDED_FOLLOWING"}, nil
+		}
+		return nil, fmt.Errorf("expected PRECEDING or FOLLOWING after UNBOUNDED")
+	case p.match(TokenCurrent):
+		if _, err := p.expect(TokenRow); err != nil {
+			return nil, err
+		}
+		return &WindowFrameBound{Type: "CURRENT_ROW"}, nil
+	case p.current().Type == TokenNumber:
+		offset, err := strconv.Atoi(p.current().Literal)
+		if err != nil {
+			return nil, fmt.Errorf("invalid frame offset: %s", p.current().Literal)
+		}
+		p.advance()
+		if p.match(TokenPreceding) {
+			return &WindowFrameBound{Type: "PRECEDING", Offset: offset}, nil
+		}
+		if p.match(TokenFollowing) {
+			return &WindowFrameBound{Type: "FOLLOWING", Offset: offset}, nil
+		}
+		return nil, fmt.Errorf("expected PRECEDING or FOLLOWING after frame offset")
+	}
+	return nil, fmt.Errorf("invalid window frame bound at %s", p.current().Literal)
 }
 
 // parseInsert parses an INSERT statement
@@ -508,6 +595,9 @@ func (p *Parser) parseInsert() (*InsertStmt, error) {
 			return nil, err
 		}
 		stmt.Select = selectStmt
+		if err := p.parseInsertTail(stmt); err != nil {
+			return nil, err
+		}
 		return stmt, nil
 	}
 
@@ -547,17 +637,85 @@ func (p *Parser) parseInsert() (*InsertStmt, error) {
 		rowCount++
 	}
 
-	// Parse optional RETURNING clause
+	if err := p.parseInsertTail(stmt); err != nil {
+		return nil, err
+	}
+
+	return stmt, nil
+}
+
+// parseInsertTail parses the optional ON CONFLICT and RETURNING clauses that may
+// follow either INSERT ... VALUES or INSERT ... SELECT.
+func (p *Parser) parseInsertTail(stmt *InsertStmt) error {
+	// ON CONFLICT comes before RETURNING per SQL syntax.
+	if p.current().Type == TokenOn && p.peek().Type == TokenConflict {
+		oc, err := p.parseOnConflict()
+		if err != nil {
+			return err
+		}
+		stmt.OnConflict = oc
+		// DO NOTHING reuses the existing ConflictIgnore skip path.
+		if oc.DoUpdate == nil {
+			stmt.ConflictAction = ConflictIgnore
+		}
+	}
+
 	if p.current().Type == TokenReturning {
 		p.advance() // consume RETURNING
 		returning, err := p.parseReturningClause()
 		if err != nil {
-			return nil, err
+			return err
 		}
 		stmt.Returning = returning
 	}
+	return nil
+}
 
-	return stmt, nil
+// parseOnConflict parses `ON CONFLICT [(col, ...)] DO NOTHING | DO UPDATE SET ...`.
+func (p *Parser) parseOnConflict() (*OnConflictClause, error) {
+	p.advance() // consume ON
+	p.advance() // consume CONFLICT
+
+	oc := &OnConflictClause{}
+
+	// Optional conflict target column list.
+	if p.match(TokenLParen) {
+		for {
+			col := p.current()
+			if col.Type != TokenIdentifier && col.Literal == "" {
+				return nil, fmt.Errorf("expected column name in ON CONFLICT target")
+			}
+			oc.Columns = append(oc.Columns, col.Literal)
+			p.advance()
+			if !p.match(TokenComma) {
+				break
+			}
+		}
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
+	}
+
+	if _, err := p.expect(TokenDo); err != nil {
+		return nil, err
+	}
+
+	if p.match(TokenNothing) {
+		return oc, nil // DO NOTHING
+	}
+
+	if _, err := p.expect(TokenUpdate); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokenSet); err != nil {
+		return nil, err
+	}
+	clauses, _, err := p.parseSetClauses()
+	if err != nil {
+		return nil, err
+	}
+	oc.DoUpdate = clauses
+	return oc, nil
 }
 
 // parseReturningClause parses a RETURNING clause (expression list)
@@ -709,6 +867,18 @@ func (p *Parser) parseUpdateFromJoin(stmt *UpdateStmt, whereOffset int) (int, er
 }
 
 // parseDelete parses a DELETE statement
+// parseTruncate parses `TRUNCATE [TABLE] name`, modeled as an unconditional
+// DELETE so it reuses the delete execution path.
+func (p *Parser) parseTruncate() (Statement, error) {
+	p.advance() // consume TRUNCATE
+	p.match(TokenTable)
+	table, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	return &DeleteStmt{Table: table.Literal}, nil
+}
+
 func (p *Parser) parseDelete() (*DeleteStmt, error) {
 	stmt := &DeleteStmt{}
 	p.advance() // consume DELETE
@@ -913,10 +1083,27 @@ func (p *Parser) parseShow() (Statement, error) {
 		p.advance()
 		return &ShowColumnsStmt{Table: tok.Literal}, nil
 
+	case TokenIndex:
+		p.advance() // consume INDEX
+		if _, err := p.expect(TokenFrom); err != nil {
+			return nil, fmt.Errorf("expected FROM after SHOW INDEX")
+		}
+		tok := p.current()
+		p.advance()
+		return &ShowIndexStmt{Table: tok.Literal}, nil
+
 	case TokenIdentifier:
 		varName := p.current().Literal
 		p.advance()
 		upperVar := toUpperFast(varName)
+		if upperVar == "INDEXES" || upperVar == "KEYS" {
+			if _, err := p.expect(TokenFrom); err != nil {
+				return nil, fmt.Errorf("expected FROM after SHOW %s", varName)
+			}
+			tok := p.current()
+			p.advance()
+			return &ShowIndexStmt{Table: tok.Literal}, nil
+		}
 		if upperVar == "STATUS" || upperVar == "VARIABLES" || upperVar == "WARNINGS" || upperVar == "ERRORS" {
 			for p.current().Type != TokenSemicolon && p.current().Type != TokenEOF {
 				p.advance()

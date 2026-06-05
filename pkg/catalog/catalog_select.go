@@ -1371,7 +1371,24 @@ func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo,
 				continue
 			}
 
-			cmp := compareValues(sorted[i][colIdx], sorted[j][colIdx])
+			ai, aj := sorted[i][colIdx], sorted[j][colIdx]
+			if ai == nil || aj == nil {
+				if ai == nil && aj == nil {
+					continue // tie on this key; move to next
+				}
+				// Default NULL placement: last for ASC, first for DESC.
+				// NULLS FIRST/LAST overrides when explicitly specified.
+				nullsFirst := ob.Desc
+				if ob.NullsSpecified {
+					nullsFirst = ob.NullsFirst
+				}
+				if ai == nil {
+					return nullsFirst // i is NULL: place first iff nullsFirst
+				}
+				return !nullsFirst // j is NULL: i (non-NULL) first iff !nullsFirst
+			}
+
+			cmp := compareValues(ai, aj)
 			if cmp != 0 {
 				if ob.Desc {
 					return cmp > 0
@@ -1817,6 +1834,26 @@ func (c *Catalog) resolveJoinAggregateColumn(ci selectColInfo, stmt *query.Selec
 }
 
 // computeAggregateValue computes a single aggregate function result from collected values.
+// distinctAggregateValues returns the values with duplicates removed, keying on
+// the same canonical string form COUNT(DISTINCT ...) uses. NULLs are dropped.
+// Used by SUM(DISTINCT)/AVG(DISTINCT) to dedup before accumulation.
+func distinctAggregateValues(values []interface{}) []interface{} {
+	seen := make(map[string]bool, len(values))
+	out := make([]interface{}, 0, len(values))
+	for _, v := range values {
+		if v == nil {
+			continue
+		}
+		k := ValueToStringKey(v)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, v)
+	}
+	return out
+}
+
 func computeAggregateValue(ci selectColInfo, values []interface{}, groupRows [][]interface{}) interface{} {
 	switch ci.aggregateType {
 	case "COUNT":
@@ -1840,6 +1877,9 @@ func computeAggregateValue(ci selectColInfo, values []interface{}, groupRows [][
 			return count
 		}
 	case "SUM":
+		if ci.isDistinct {
+			values = distinctAggregateValues(values)
+		}
 		var sum float64
 		hasVal := false
 		for _, v := range values {
@@ -1855,6 +1895,9 @@ func computeAggregateValue(ci selectColInfo, values []interface{}, groupRows [][
 		}
 		return nil
 	case "AVG":
+		if ci.isDistinct {
+			values = distinctAggregateValues(values)
+		}
 		var sum float64
 		var count int64
 		for _, v := range values {
@@ -1890,6 +1933,9 @@ func computeAggregateValue(ci selectColInfo, values []interface{}, groupRows [][
 		}
 		return maxVal
 	case "GROUP_CONCAT":
+		if ci.isDistinct {
+			values = distinctAggregateValues(values)
+		}
 		var parts []string
 		for _, v := range values {
 			if v != nil {
@@ -1900,6 +1946,11 @@ func computeAggregateValue(ci selectColInfo, values []interface{}, groupRows [][
 			return strings.Join(parts, ",")
 		}
 		return nil
+	case "STDDEV", "STDDEV_POP", "STDDEV_SAMP", "STD", "VARIANCE", "VAR_POP", "VAR_SAMP":
+		if ci.isDistinct {
+			values = distinctAggregateValues(values)
+		}
+		return computeStdevVar(values, ci.aggregateType)
 	}
 	return nil
 }
@@ -1965,11 +2016,24 @@ func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, v
 			actual = ae.Expr
 		}
 		if fc, ok := actual.(*query.FunctionCall); ok {
-			if strings.EqualFold(fc.Name, "COUNT") || strings.EqualFold(fc.Name, "SUM") || strings.EqualFold(fc.Name, "AVG") || strings.EqualFold(fc.Name, "MIN") || strings.EqualFold(fc.Name, "MAX") || strings.EqualFold(fc.Name, "GROUP_CONCAT") {
+			if isAggregateFuncName(toUpperFast(fc.Name)) {
 				hasAggregates = true
 				break
 			}
 		}
+	}
+
+	// Window functions over a derived-table result use the same window-aware
+	// path as named CTEs; otherwise they would be projected as NULL.
+	hasWindowFuncs := false
+	for _, col := range stmt.Columns {
+		if query.ExprContainsWindow(col) {
+			hasWindowFuncs = true
+			break
+		}
+	}
+	if hasWindowFuncs && !hasAggregates && len(stmt.GroupBy) == 0 {
+		return cat.executeCTEWindowQuery(stmt, args, &cteResultSet{columns: viewCols, rows: viewRows})
 	}
 
 	// Apply WHERE clause
@@ -2302,6 +2366,21 @@ func (cat *Catalog) applyOuterQueryProjection(stmt *query.SelectStmt, filteredRo
 }
 
 func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows [][]interface{}, columns []ColumnDef, args []interface{}) interface{} {
+	// DISTINCT aggregates (e.g. over a derived table): materialize the argument
+	// values and reduce through the shared distinct-aware path so COUNT/SUM/AVG
+	// deduplicate. MIN/MAX are unaffected by dedup; GROUP_CONCAT dedups members.
+	if fc.Distinct && len(fc.Args) > 0 {
+		if _, isStar := fc.Args[0].(*query.StarExpr); !isStar {
+			values := make([]interface{}, 0, len(rows))
+			for _, row := range rows {
+				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
+				if err == nil {
+					values = append(values, val)
+				}
+			}
+			return reduceBasicAggregate(fn, values, len(rows), false, true)
+		}
+	}
 	switch fn {
 	case "COUNT":
 		if len(fc.Args) > 0 {
@@ -2395,6 +2474,17 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 			return strings.Join(parts, ",")
 		}
 		return nil
+	case "STDDEV", "STDDEV_POP", "STDDEV_SAMP", "STD", "VARIANCE", "VAR_POP", "VAR_SAMP":
+		var values []interface{}
+		for _, row := range rows {
+			if len(fc.Args) > 0 {
+				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
+				if err == nil {
+					values = append(values, val)
+				}
+			}
+		}
+		return computeStdevVar(values, fn)
 	}
 	return nil
 }

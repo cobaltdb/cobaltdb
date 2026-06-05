@@ -1188,6 +1188,8 @@ func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{
 		return db.executeShowCreateTableQuery(ctx, s)
 	case *query.ShowColumnsStmt:
 		return db.executeShowColumnsQuery(ctx, s)
+	case *query.ShowIndexStmt:
+		return db.executeShowIndexQuery(ctx, s)
 	case *query.ShowDatabasesStmt:
 		return db.executeShowDatabasesQuery(ctx)
 	case *query.DescribeStmt:
@@ -1217,10 +1219,120 @@ func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{
 // executeCreateTable executes CREATE TABLE
 
 func (db *DB) executeCreateTable(ctx context.Context, stmt *query.CreateTableStmt) (Result, error) {
+	if stmt.AsSelect != nil {
+		return db.executeCreateTableAsSelect(ctx, stmt)
+	}
 	if err := db.catalog.CreateTable(stmt); err != nil {
 		return Result{}, err
 	}
+	// Table-level UNIQUE (col, ...) constraints are enforced via unique indexes.
+	for i, cols := range stmt.UniqueConstraints {
+		idxName := fmt.Sprintf("%s_uniq_%d", stmt.Table, i)
+		idx := &query.CreateIndexStmt{Index: idxName, Table: stmt.Table, Columns: cols, Unique: true, IfNotExists: true}
+		if err := db.catalog.CreateIndex(idx); err != nil {
+			return Result{}, fmt.Errorf("creating unique constraint index: %w", err)
+		}
+	}
 	return Result{RowsAffected: 0}, nil
+}
+
+// executeCreateTableAsSelect implements CREATE TABLE ... AS SELECT (CTAS):
+// materialize the query, infer column types, create the table, insert the rows.
+func (db *DB) executeCreateTableAsSelect(ctx context.Context, stmt *query.CreateTableStmt) (Result, error) {
+	rows, err := db.query(ctx, stmt.AsSelect, nil)
+	if err != nil {
+		return Result{}, err
+	}
+	cols := rows.Columns()
+	var data [][]interface{}
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			_ = rows.Close()
+			return Result{}, err
+		}
+		data = append(data, vals)
+	}
+	if err := rows.Close(); err != nil {
+		return Result{}, err
+	}
+
+	colDefs := make([]*query.ColumnDef, len(cols))
+	for i, name := range cols {
+		colDefs[i] = &query.ColumnDef{Name: name, Type: inferCTASColumnType(data, i)}
+	}
+	createStmt := &query.CreateTableStmt{Table: stmt.Table, IfNotExists: stmt.IfNotExists, Columns: colDefs}
+	if err := db.catalog.CreateTable(createStmt); err != nil {
+		return Result{}, err
+	}
+
+	inserted := int64(0)
+	for _, row := range data {
+		valExprs := make([]query.Expression, len(row))
+		for j, v := range row {
+			valExprs[j] = valueToLiteralExpr(v)
+		}
+		ins := &query.InsertStmt{Table: stmt.Table, Values: [][]query.Expression{valExprs}}
+		if _, n, err := db.catalog.Insert(ctx, ins, nil); err != nil {
+			return Result{}, fmt.Errorf("CTAS insert: %w", err)
+		} else {
+			inserted += n
+		}
+	}
+	return Result{RowsAffected: inserted}, nil
+}
+
+// inferCTASColumnType picks a column type for CTAS from the materialized values.
+func inferCTASColumnType(data [][]interface{}, col int) query.TokenType {
+	allInt, allNum, sawVal := true, true, false
+	for _, row := range data {
+		if col >= len(row) || row[col] == nil {
+			continue
+		}
+		sawVal = true
+		switch row[col].(type) {
+		case int, int64:
+		case float64:
+			allInt = false
+		default:
+			allInt = false
+			allNum = false
+		}
+	}
+	switch {
+	case !sawVal:
+		return query.TokenText
+	case allInt:
+		return query.TokenInteger
+	case allNum:
+		return query.TokenReal
+	default:
+		return query.TokenText
+	}
+}
+
+// valueToLiteralExpr wraps a Go value as the equivalent literal AST node.
+func valueToLiteralExpr(v interface{}) query.Expression {
+	switch val := v.(type) {
+	case nil:
+		return &query.NullLiteral{}
+	case int:
+		return &query.NumberLiteral{Value: float64(val)}
+	case int64:
+		return &query.NumberLiteral{Value: float64(val)}
+	case float64:
+		return &query.NumberLiteral{Value: val}
+	case bool:
+		return &query.BooleanLiteral{Value: val}
+	case string:
+		return &query.StringLiteral{Value: val}
+	default:
+		return &query.StringLiteral{Value: fmt.Sprintf("%v", val)}
+	}
 }
 
 func (db *DB) executeCreateForeignTable(ctx context.Context, stmt *query.CreateForeignTableStmt) (Result, error) {
@@ -1233,11 +1345,123 @@ func (db *DB) executeCreateForeignTable(ctx context.Context, stmt *query.CreateF
 // executeInsert executes INSERT
 
 func (db *DB) executeInsert(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (Result, error) {
+	if stmt.OnConflict != nil && stmt.OnConflict.DoUpdate != nil {
+		return db.executeUpsert(ctx, stmt, args)
+	}
 	lastInsertID, rowsAffected, err := db.catalog.Insert(ctx, stmt, args)
 	if err != nil {
 		return Result{}, err
 	}
 	return Result{LastInsertID: lastInsertID, RowsAffected: rowsAffected}, nil
+}
+
+// executeUpsert implements INSERT ... ON CONFLICT (...) DO UPDATE SET ... by
+// attempting a per-row insert and, on a unique/primary-key conflict, applying
+// the UPDATE assignments to the conflicting row. Safe under the catalog's
+// single-writer model (the conflict check-then-act holds while we run).
+func (db *DB) executeUpsert(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (Result, error) {
+	table, err := db.catalog.GetTable(stmt.Table)
+	if err != nil {
+		return Result{}, err
+	}
+
+	// Source rows come from VALUES, or from a materialized INSERT ... SELECT.
+	valueRows := stmt.Values
+	if stmt.Select != nil {
+		rows, qerr := db.query(ctx, stmt.Select, args)
+		if qerr != nil {
+			return Result{}, qerr
+		}
+		cols := rows.Columns()
+		for rows.Next() {
+			vals := make([]interface{}, len(cols))
+			ptrs := make([]interface{}, len(cols))
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			if scanErr := rows.Scan(ptrs...); scanErr != nil {
+				_ = rows.Close()
+				return Result{}, scanErr
+			}
+			exprs := make([]query.Expression, len(vals))
+			for j, v := range vals {
+				exprs[j] = valueToLiteralExpr(v)
+			}
+			valueRows = append(valueRows, exprs)
+		}
+		if cerr := rows.Close(); cerr != nil {
+			return Result{}, cerr
+		}
+	}
+
+	// Resolve conflict target columns: explicit target, else the primary key.
+	conflictCols := stmt.OnConflict.Columns
+	if len(conflictCols) == 0 {
+		conflictCols = table.PrimaryKey
+	}
+	if len(conflictCols) == 0 {
+		return Result{}, fmt.Errorf("ON CONFLICT DO UPDATE requires a conflict target or primary key")
+	}
+
+	// Map column name -> position within each inserted value row.
+	colPos := make(map[string]int)
+	if len(stmt.Columns) > 0 {
+		for i, c := range stmt.Columns {
+			colPos[strings.ToLower(c)] = i
+		}
+	} else {
+		for i, c := range table.Columns {
+			colPos[strings.ToLower(c.Name)] = i
+		}
+	}
+
+	var result Result
+	for _, row := range valueRows {
+		single := &query.InsertStmt{Table: stmt.Table, Columns: stmt.Columns, Values: [][]query.Expression{row}}
+		lastID, n, insErr := db.catalog.Insert(ctx, single, args)
+		if insErr == nil {
+			result.RowsAffected += n
+			result.LastInsertID = lastID
+			continue
+		}
+		if !isUniqueConflictError(insErr) {
+			return Result{}, insErr
+		}
+
+		// Build WHERE matching the conflict target to this row's values, reusing
+		// the row's own value expressions directly.
+		var where query.Expression
+		for _, cc := range conflictCols {
+			pos, ok := colPos[strings.ToLower(cc)]
+			if !ok || pos >= len(row) {
+				return Result{}, fmt.Errorf("ON CONFLICT target column %q not present in inserted values", cc)
+			}
+			eq := &query.BinaryExpr{Left: &query.Identifier{Name: cc}, Operator: query.TokenEq, Right: row[pos]}
+			if where == nil {
+				where = eq
+			} else {
+				where = &query.BinaryExpr{Left: where, Operator: query.TokenAnd, Right: eq}
+			}
+		}
+
+		upd := &query.UpdateStmt{Table: stmt.Table, Set: stmt.OnConflict.DoUpdate, Where: where}
+		_, n, updErr := db.catalog.Update(ctx, upd, args)
+		if updErr != nil {
+			return Result{}, updErr
+		}
+		result.RowsAffected += n
+	}
+	return result, nil
+}
+
+// isUniqueConflictError reports whether err is a primary-key/unique violation
+// from the insert path (used to trigger ON CONFLICT DO UPDATE).
+func isUniqueConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "UNIQUE constraint failed") || strings.Contains(s, "duplicate primary key")
 }
 
 // executeUpdate executes UPDATE
@@ -2494,6 +2718,42 @@ func (db *DB) executeShowColumnsQuery(ctx context.Context, stmt *query.ShowColum
 		columns: []string{"Field", "Type", "Null", "Key", "Default", "Extra"},
 		rows:    rows,
 	}, nil
+}
+
+// executeShowIndexQuery returns index information for a table (SHOW INDEX).
+func (db *DB) executeShowIndexQuery(ctx context.Context, stmt *query.ShowIndexStmt) (*Rows, error) {
+	table, err := db.catalog.GetTable(stmt.Table)
+	if err != nil {
+		return nil, err
+	}
+	cols := []string{"Table", "Non_unique", "Key_name", "Seq_in_index", "Column_name", "Null", "Index_type"}
+	var rows [][]interface{}
+
+	addIndexRows := func(keyName string, columns []string, nonUnique int64) {
+		for i, c := range columns {
+			nullable := "YES"
+			for _, tc := range table.Columns {
+				if strings.EqualFold(tc.Name, c) && (tc.NotNull || tc.PrimaryKey) {
+					nullable = ""
+				}
+			}
+			rows = append(rows, []interface{}{stmt.Table, nonUnique, keyName, int64(i + 1), c, nullable, "BTREE"})
+		}
+	}
+
+	// PRIMARY KEY first, matching MySQL.
+	if len(table.PrimaryKey) > 0 {
+		addIndexRows("PRIMARY", table.PrimaryKey, 0)
+	}
+	for _, idx := range db.catalog.GetTableIndexes(stmt.Table) {
+		nonUnique := int64(1)
+		if idx.Unique {
+			nonUnique = 0
+		}
+		addIndexRows(idx.Name, idx.Columns, nonUnique)
+	}
+
+	return &Rows{columns: cols, rows: rows}, nil
 }
 
 // executeShowDatabasesQuery returns available databases
