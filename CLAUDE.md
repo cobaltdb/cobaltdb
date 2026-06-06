@@ -230,6 +230,14 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 - **Coarse-grained locking** — Catalog uses a single `sync.RWMutex`; DDL blocks all DML.
 - **HA / clustering** — No built-in sharding, Raft/Paxos, or automatic failover.
 - **WASM streaming** — Streaming results are only supported for SELECT queries.
+- **RLS evaluates post-projection** — Row-level security policies now filter rows by the
+  per-query user (the query context is propagated to the catalog via
+  `Catalog.SelectWithContext`, which holds the exclusive lock so the shared RLS context
+  is per-query-safe under concurrency). However, policies are evaluated against the
+  *projected* columns, so a column referenced by a policy must appear in the `SELECT`
+  list; if it does not, the policy cannot see it and the row is excluded (fail-closed —
+  safe but over-restrictive). Full-row policy evaluation (applying RLS before projection)
+  is scoped follow-up work.
 - **Crash recovery** — Committed writes to a disk database survive an unclean shutdown and
   are replayed from the WAL on reopen (verified end-to-end, including brand-new databases).
   The catalog schema is flushed to disk after each DDL (`DB.persistSchema`, called from

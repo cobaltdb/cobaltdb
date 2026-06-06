@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 )
 
 // TestRegression_CrashRecoveryBrandNewDB verifies that a brand-new disk database
@@ -723,6 +725,52 @@ func TestRegression_MySQLSessionFunctions(t *testing.T) {
 	// PRIMARY + idx_name = 2 rows.
 	if len(rows) != 2 {
 		t.Fatalf("SHOW INDEX returned %d rows, want 2", len(rows))
+	}
+}
+
+// TestRegression_RLSFiltersPerUser verifies that row-level security policies
+// actually filter rows by the per-query user. Previously the engine never
+// propagated the query context to the catalog, so policies never applied.
+func TestRegression_RLSFiltersPerUser(t *testing.T) {
+	db, err := Open(":memory:", &Options{
+		CoreStorage: CoreStorage{InMemory: true},
+		Security:    Security{EnableRLS: true},
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	base := context.Background()
+	mustExec(t, db, "CREATE TABLE docs (id INTEGER PRIMARY KEY, owner TEXT)")
+	mustExec(t, db, "INSERT INTO docs VALUES (1,'alice'),(2,'bob'),(3,'alice')")
+	mustExec(t, db, "CREATE POLICY p1 ON docs FOR ALL USING (owner = current_user())")
+
+	owners := func(user string) string {
+		ctx := context.WithValue(base, security.RLSUserKey, user)
+		// The policy references `owner`, so it must be in the projection: RLS is
+		// evaluated post-projection (see Known Limitations).
+		rows, err := db.Query(ctx, "SELECT id, owner FROM docs ORDER BY id")
+		if err != nil {
+			t.Fatalf("query as %s: %v", user, err)
+		}
+		defer rows.Close()
+		var out string
+		for rows.Next() {
+			var id int
+			var owner string
+			if err := rows.Scan(&id, &owner); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			out += fmt.Sprintf("%d", id)
+		}
+		return out
+	}
+
+	if got := owners("alice"); got != "13" {
+		t.Errorf("alice sees %q, want \"13\"", got)
+	}
+	if got := owners("bob"); got != "2" {
+		t.Errorf("bob sees %q, want \"2\"", got)
 	}
 }
 

@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   left the database unopenable ("page 1: EOF"). WAL logical replay is idempotent against
   already-flushed data pages (verified: no double-apply); schema-flush is skipped for
   `:memory:` databases.
+- **Row-level security now applies**: the engine never propagated the per-query context to
+  the catalog, so RLS policies never filtered — every row was returned regardless of policy
+  (an effective RLS bypass). SELECTs with RLS enabled now run through
+  `Catalog.SelectWithContext`, which holds the exclusive lock so the shared RLS context is
+  per-query-safe (no cross-user leak under concurrency). Policies are evaluated against the
+  projected columns, so a policy's referenced column must be in the `SELECT` list
+  (fail-closed otherwise) — see Known Limitations.
 - **CLI**: executes every `;`-separated statement (compound-statement-aware splitter),
   returns a non-zero exit code on SQL errors, and routes `EXPLAIN` through the query path.
 - **MySQL wire-protocol server**: failing read queries now surface their real error

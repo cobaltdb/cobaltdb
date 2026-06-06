@@ -2198,7 +2198,18 @@ func substituteParamsInExpr(expr query.Expression, paramMap map[string]interface
 // executeSelect executes SELECT
 
 func (db *DB) executeSelect(ctx context.Context, stmt *query.SelectStmt, args []interface{}) (*Rows, error) {
-	columns, rows, err := db.catalog.Select(stmt, args)
+	var columns []string
+	var rows [][]interface{}
+	var err error
+	// Propagate the query context to the catalog only when row-level security is
+	// enabled, so policies see the caller's user/roles. SelectWithContext holds
+	// the exclusive lock to keep the shared RLS context per-query-safe; non-RLS
+	// reads stay on the concurrent Select path.
+	if db.catalog.IsRLSEnabled() {
+		columns, rows, err = db.catalog.SelectWithContext(ctx, stmt, args)
+	} else {
+		columns, rows, err = db.catalog.Select(stmt, args)
+	}
 	if err != nil {
 		return nil, err
 	}

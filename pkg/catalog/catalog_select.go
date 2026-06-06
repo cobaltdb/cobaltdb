@@ -55,6 +55,21 @@ func (cat *Catalog) SetRLSContext(ctx context.Context) {
 	cat.rlsCtx = ctx
 }
 
+// SelectWithContext runs a SELECT with the per-query context used for row-level
+// security user/role extraction. It holds the catalog's exclusive lock for the
+// duration so the shared rlsCtx field cannot be read by a concurrent query with
+// a different user — without this, two users sharing one catalog could see each
+// other's RLS identity (a cross-user data leak). Use only when RLS is enabled;
+// non-RLS reads should use the concurrent Select path.
+func (cat *Catalog) SelectWithContext(ctx context.Context, stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
+	cat.mu.Lock()
+	defer cat.mu.Unlock()
+	prev := cat.rlsCtx
+	cat.rlsCtx = ctx
+	defer func() { cat.rlsCtx = prev }()
+	return cat.selectLockedInternal(stmt, args, false)
+}
+
 func (c *Catalog) executeScalarSelect(stmt *query.SelectStmt, args []interface{}) ([]string, [][]interface{}, error) {
 	// SELECT without FROM - evaluate each expression
 	var returnColumns []string
