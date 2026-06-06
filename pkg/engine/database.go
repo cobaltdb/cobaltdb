@@ -936,6 +936,33 @@ func auditUser(ctx context.Context) string {
 }
 
 // dispatchDDL executes a DDL handler, then logs audit and replicates on success.
+// isSchemaDDL reports whether a statement changes the catalog schema and so
+// should trigger a schema flush to disk for crash durability.
+func isSchemaDDL(stmt query.Statement) bool {
+	switch stmt.(type) {
+	case *query.CreateTableStmt, *query.CreateForeignTableStmt, *query.DropTableStmt,
+		*query.CreateIndexStmt, *query.DropIndexStmt, *query.AlterTableStmt,
+		*query.CreateViewStmt, *query.DropViewStmt:
+		return true
+	}
+	return false
+}
+
+// persistSchema writes the catalog schema to the root B+Tree and flushes it to
+// disk. Without this, schema created before the first checkpoint (clean Close or
+// the background flusher) is lost on an unclean shutdown, leaving the database
+// unopenable and its WAL data un-replayable. It is best-effort: a flush error is
+// returned to the caller but does not roll back the already-committed DDL.
+func (db *DB) persistSchema() error {
+	if db.path == ":memory:" || db.catalog == nil || db.pool == nil {
+		return nil
+	}
+	if err := db.catalog.Save(); err != nil {
+		return err
+	}
+	return db.pool.FlushDirty()
+}
+
 func (db *DB) dispatchDDL(ctx context.Context, action, table string, handler func() (Result, error), opts ...audit.LogOption) (Result, error) {
 	result, err := handler()
 	if db.auditLogger != nil {
@@ -953,6 +980,19 @@ func (db *DB) dispatchDDL(ctx context.Context, action, table string, handler fun
 
 func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interface{}) (result Result, err error) {
 	start := time.Now()
+
+	// Flush the catalog schema to disk after a successful DDL so it survives an
+	// unclean shutdown before the first checkpoint. Registered before the
+	// autocommit defer below so it runs *after* the commit (defers are LIFO).
+	if isSchemaDDL(stmt) {
+		defer func() {
+			if err == nil {
+				if ferr := db.persistSchema(); ferr != nil {
+					err = fmt.Errorf("persist schema: %w", ferr)
+				}
+			}
+		}()
+	}
 
 	// Check for context cancellation
 	if ctx != nil {

@@ -230,15 +230,12 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 - **Coarse-grained locking** — Catalog uses a single `sync.RWMutex`; DDL blocks all DML.
 - **HA / clustering** — No built-in sharding, Raft/Paxos, or automatic failover.
 - **WASM streaming** — Streaming results are only supported for SELECT queries.
-- **First-session crash recovery** — Once a disk database has been checkpointed at least
-  once (a clean `Close()` or the 5s background flusher / 5m auto-checkpoint), committed
-  writes survive an unclean shutdown and are replayed from the WAL on reopen (verified).
-  However, a **brand-new** database that performs DDL+DML and then crashes *before* its
-  first checkpoint is not recoverable: the root B+Tree page (catalog schema) is never
-  written to the data file, so reopen fails reading page 1, and the WAL's logical replay
-  cannot recreate the schema. Durable schema before the first checkpoint requires either
-  WAL-logged DDL or flushing the catalog root tree after schema changes — active hardening
-  work (see also the crash-recovery certification note below).
+- **Crash recovery** — Committed writes to a disk database survive an unclean shutdown and
+  are replayed from the WAL on reopen (verified end-to-end, including brand-new databases).
+  The catalog schema is flushed to disk after each DDL (`DB.persistSchema`, called from
+  `execute`), so a database that performs DDL+DML and then crashes before its first
+  checkpoint is still recoverable; WAL logical replay is idempotent against already-flushed
+  data pages (no double-apply). Schema-flush is skipped for `:memory:` databases.
 
 ## Security Features
 - TLS support for connections

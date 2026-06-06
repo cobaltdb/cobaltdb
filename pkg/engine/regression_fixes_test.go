@@ -3,9 +3,85 @@ package engine
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestRegression_CrashRecoveryBrandNewDB verifies that a brand-new disk database
+// which performs DDL+DML and then "crashes" (no clean Close) before any
+// checkpoint can be reopened with its committed writes replayed from the WAL.
+// The crash is simulated by snapshotting the on-disk data file and WAL after the
+// writes and opening the snapshot, so no clean shutdown flush is involved.
+func TestRegression_CrashRecoveryBrandNewDB(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.db")
+
+	db, err := Open(src, &Options{CoreStorage: CoreStorage{SyncMode: SyncFull}})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	ctx := context.Background()
+	mustExec(t, db, "CREATE TABLE acct (id INTEGER PRIMARY KEY, bal INTEGER)")
+	mustExec(t, db, "INSERT INTO acct VALUES (1,100),(2,200)")
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "UPDATE acct SET bal=999 WHERE id=1"); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	mustExec(t, db, "INSERT INTO acct VALUES (3,300)")
+
+	// Snapshot the on-disk state (simulated crash: no clean Close on this copy).
+	snap := filepath.Join(dir, "snap.db")
+	copyFile(t, src, snap)
+	copyFile(t, src+".wal", snap+".wal")
+	db.Close()
+
+	rdb, err := Open(snap, &Options{CoreStorage: CoreStorage{SyncMode: SyncFull}})
+	if err != nil {
+		t.Fatalf("reopen after crash failed: %v", err)
+	}
+	defer rdb.Close()
+
+	got := map[int]int{}
+	rows, err := rdb.Query(ctx, "SELECT id, bal FROM acct ORDER BY id")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var id, bal int
+		if err := rows.Scan(&id, &bal); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[id] = bal
+		n++
+	}
+	if n != 3 {
+		t.Fatalf("recovered %d rows, want 3 (no double-apply): %v", n, got)
+	}
+	if got[1] != 999 || got[2] != 200 || got[3] != 300 {
+		t.Errorf("recovered values = %v, want map[1:999 2:200 3:300]", got)
+	}
+}
+
+func copyFile(t *testing.T, src, dst string) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", dst, err)
+	}
+}
 
 // openRegressionDB opens an in-memory database for the regression suite.
 func openRegressionDB(t *testing.T) *DB {

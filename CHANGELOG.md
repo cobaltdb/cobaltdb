@@ -48,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   primary keys**, and **secondary indexes** (previously dropped on restore), and
   tables are emitted in **foreign-key dependency order** so referenced tables are
   created before the tables that reference them.
+- **Crash recovery for brand-new databases**: the catalog schema is now flushed to disk
+  after each DDL, so a database that performs DDL+DML and then crashes before its first
+  checkpoint can be reopened with committed writes replayed from the WAL. Previously the
+  root B+Tree page was only written on a clean `Close()`/checkpoint, so an early crash
+  left the database unopenable ("page 1: EOF"). WAL logical replay is idempotent against
+  already-flushed data pages (verified: no double-apply); schema-flush is skipped for
+  `:memory:` databases.
 - **CLI**: executes every `;`-separated statement (compound-statement-aware splitter),
   returns a non-zero exit code on SQL errors, and routes `EXPLAIN` through the query path.
 - **MySQL wire-protocol server**: failing read queries now surface their real error
