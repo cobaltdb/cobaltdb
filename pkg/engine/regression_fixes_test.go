@@ -57,6 +57,36 @@ func TestRegression_EncryptionRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRegression_VectorDistanceFunctions verifies the scalar vector distance
+// functions compute correct values and order nearest-neighbour queries.
+func TestRegression_VectorDistanceFunctions(t *testing.T) {
+	db := openRegressionDB(t)
+	defer db.Close()
+	mustExec(t, db, "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, embedding VECTOR(3))")
+	mustExec(t, db, "INSERT INTO items VALUES (1,'a','[1.0,0.0,0.0]'),(2,'b','[0.0,1.0,0.0]'),(3,'c','[0.9,0.1,0.0]'),(4,'d','[0.0,0.0,1.0]')")
+
+	// L2 distance: exact match is 0, 'c' is the closest non-exact neighbour.
+	rows := queryRows(t, db, "SELECT name FROM items ORDER BY L2_DISTANCE(embedding,'[1.0,0.0,0.0]') LIMIT 2")
+	if len(rows) != 2 || fmt.Sprintf("%v", rows[0][0]) != "a" || fmt.Sprintf("%v", rows[1][0]) != "c" {
+		t.Errorf("L2 nearest order = %v, want [a c]", rows)
+	}
+	// Exact-match L2 distance is 0.
+	if got := scalar(t, db, "SELECT L2_DISTANCE(embedding,'[1.0,0.0,0.0]') FROM items WHERE id=1"); got != "0" {
+		t.Errorf("L2 self-distance = %s, want 0", got)
+	}
+	// Cosine similarity: identical direction is 1, orthogonal is 0.
+	if got := scalar(t, db, "SELECT COSINE_SIMILARITY(embedding,'[1.0,0.0,0.0]') FROM items WHERE id=1"); got != "1" {
+		t.Errorf("cosine self-similarity = %s, want 1", got)
+	}
+	if got := scalar(t, db, "SELECT COSINE_SIMILARITY(embedding,'[1.0,0.0,0.0]') FROM items WHERE id=2"); got != "0" {
+		t.Errorf("cosine orthogonal = %s, want 0", got)
+	}
+	// Dot product.
+	if got := scalar(t, db, "SELECT DOT_PRODUCT(embedding,'[1.0,0.0,0.0]') FROM items WHERE id=3"); got != "0.9" {
+		t.Errorf("dot product = %s, want 0.9", got)
+	}
+}
+
 // TestRegression_EncryptedCrashRecovery verifies that an encrypted database
 // recovers committed writes from its (encrypted) WAL after an unclean shutdown.
 // Previously the WAL record's AAD authenticated the LSN, which is patched on
