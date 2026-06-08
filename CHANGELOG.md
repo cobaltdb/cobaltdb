@@ -36,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source's columns; window functions over derived tables and nested in expressions
   returned `NULL`; an **unqualified column reference to a joined table**
   (`SELECT id, x, y FROM a JOIN b ...` where `y` belongs to `b`) was silently dropped.
+- **Encryption at rest now round-trips** (was completely broken): the encrypted backend
+  wrote each page's larger ciphertext (nonce + data + GCM tag) at the raw logical offset,
+  so encrypted pages overlapped on disk and an encrypted database could be written but never
+  reopened ("message authentication failed"). Offsets are now scaled to the per-page
+  encrypted block size. Additionally, encrypted **crash recovery** failed because the WAL
+  authenticated the record's LSN, which is patched on disk after encryption — the LSN is
+  now excluded from the WAL AAD (CRC still covers it). Encrypted databases now reopen and
+  recover committed writes from the WAL.
 - **`DISTINCT` aggregates** (`SUM`/`AVG`/`COUNT`/`GROUP_CONCAT`) across base, grouped,
   and derived-table paths.
 - **Integer precision**: integer literals and unary minus preserve full `int64`
