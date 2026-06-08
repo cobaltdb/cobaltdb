@@ -57,6 +57,62 @@ func TestRegression_EncryptionRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRegression_EncryptedCrashRecovery verifies that an encrypted database
+// recovers committed writes from its (encrypted) WAL after an unclean shutdown.
+// Previously the WAL record's AAD authenticated the LSN, which is patched on
+// disk after encryption, so recovery failed with "message authentication
+// failed".
+func TestRegression_EncryptedCrashRecovery(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.db")
+	k := make([]byte, 32)
+	for i := range k {
+		k[i] = 7
+	}
+	opts := func() *Options {
+		return &Options{
+			Security:    Security{EncryptionConfig: &storage.EncryptionConfig{Enabled: true, Key: append([]byte(nil), k...), Algorithm: "aes-256-gcm"}},
+			CoreStorage: CoreStorage{SyncMode: SyncFull},
+		}
+	}
+	db, err := Open(src, opts())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	ctx := context.Background()
+	mustExec(t, db, "CREATE TABLE s (id INTEGER PRIMARY KEY, v TEXT)")
+	mustExec(t, db, "INSERT INTO s VALUES (1,'a'),(2,'b')")
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "UPDATE s SET v='committed' WHERE id=1"); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Snapshot data file, WAL, and salt sidecar (simulated crash).
+	snap := filepath.Join(dir, "snap.db")
+	copyFile(t, src, snap)
+	copyFile(t, src+".wal", snap+".wal")
+	copyFile(t, src+".salt", snap+".salt")
+	db.Close()
+
+	rdb, err := Open(snap, opts())
+	if err != nil {
+		t.Fatalf("reopen encrypted db after crash failed: %v", err)
+	}
+	defer rdb.Close()
+	if got := scalar(t, rdb, "SELECT v FROM s WHERE id=1"); got != "committed" {
+		t.Errorf("id=1 recovered as %q, want committed", got)
+	}
+	if got := scalar(t, rdb, "SELECT COUNT(*) FROM s"); got != "2" {
+		t.Errorf("recovered %s rows, want 2", got)
+	}
+}
+
 // TestRegression_CrashRecoveryBrandNewDB verifies that a brand-new disk database
 // which performs DDL+DML and then "crashes" (no clean Close) before any
 // checkpoint can be reopened with its committed writes replayed from the WAL.

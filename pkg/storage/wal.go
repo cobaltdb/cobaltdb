@@ -271,8 +271,12 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, int64
 
 	// Decrypt record data if cipher is configured
 	if w.cipher != nil && len(record.Data) > 0 {
-		// Use header bytes as AAD to verify header integrity
-		decrypted, err := w.decryptData(record.Data, header[:walHeaderSize])
+		// Use header bytes as AAD, with the LSN zeroed to match the encrypt side
+		// (the on-disk LSN is patched after encryption in the group-commit path).
+		var aad [walHeaderSize]byte
+		copy(aad[:], header[:walHeaderSize])
+		zeroWALHeaderLSN(aad[:])
+		decrypted, err := w.decryptData(record.Data, aad[:])
 		if err != nil {
 			return nil, 0, fmt.Errorf("WAL record decryption failed at LSN %d: %w", record.LSN, err)
 		}
@@ -454,10 +458,17 @@ func (w *WAL) formatBatch(records []*WALRecord) ([]byte, []int, error) {
 	for i, r := range records {
 		data := r.Data
 		if w.cipher != nil && len(data) > 0 {
+			// The AAD header must match the header stored on disk and used as the
+			// AAD on read: use the on-disk (ciphertext) data length, and zero the
+			// LSN — in the group-commit path the on-disk LSN is written as 0 and
+			// patched under lock *after* encryption, so the LSN cannot be part of
+			// the authenticated header. CRC still covers the LSN's integrity.
 			var headerAAD [walHeaderSize]byte
-			if err := writeRecordHeader(headerAAD[:], r, len(data)); err != nil {
+			cipherLen := len(data) + w.cipher.NonceSize() + w.cipher.Overhead()
+			if err := writeRecordHeader(headerAAD[:], r, cipherLen); err != nil {
 				return nil, nil, err
 			}
+			zeroWALHeaderLSN(headerAAD[:])
 			enc, err := w.encryptData(data, headerAAD[:])
 			if err != nil {
 				return nil, nil, err
@@ -549,10 +560,14 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 		defer func() {
 			record.Data = originalData
 		}()
+		// Match the read-side AAD: on-disk (ciphertext) data length and a zeroed
+		// LSN (see formatBatch and decode for why the LSN is excluded).
 		var headerAAD [walHeaderSize]byte
-		if err := writeRecordHeader(headerAAD[:], record, len(record.Data)); err != nil {
+		cipherLen := len(record.Data) + w.cipher.NonceSize() + w.cipher.Overhead()
+		if err := writeRecordHeader(headerAAD[:], record, cipherLen); err != nil {
 			return err
 		}
+		zeroWALHeaderLSN(headerAAD[:])
 
 		encrypted, err := w.encryptData(record.Data, headerAAD[:])
 		if err != nil {
@@ -758,6 +773,16 @@ func (w *WAL) groupCommitLoop(interval time.Duration) {
 
 // writeRecordHeader serializes the fixed-size WAL record header into dst[:walHeaderSize].
 // dataLen carries the length of the (possibly encrypted) payload that will follow the header.
+// zeroWALHeaderLSN clears the 8-byte LSN field at the start of a WAL record
+// header so it can be used as encryption AAD consistently on both the write and
+// read sides (the LSN is patched on disk after encryption in the group-commit
+// path, so it must not be authenticated by GCM; CRC still covers it).
+func zeroWALHeaderLSN(header []byte) {
+	if len(header) >= 8 {
+		binary.LittleEndian.PutUint64(header[0:8], 0)
+	}
+}
+
 func writeRecordHeader(dst []byte, record *WALRecord, dataLen int) error {
 	dataLen16, err := storageUint16(dataLen, "WAL record data length")
 	if err != nil {
