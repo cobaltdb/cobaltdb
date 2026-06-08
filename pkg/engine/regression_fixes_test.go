@@ -774,6 +774,44 @@ func TestRegression_RLSFiltersPerUser(t *testing.T) {
 	}
 }
 
+// TestRegression_RLSWriteEnforcement verifies write-side row-level security:
+// INSERT is denied by WITH CHECK and DELETE/UPDATE only affect rows visible
+// under the USING policy.
+func TestRegression_RLSWriteEnforcement(t *testing.T) {
+	db, err := Open(":memory:", &Options{
+		CoreStorage: CoreStorage{InMemory: true},
+		Security:    Security{EnableRLS: true},
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	base := context.Background()
+	mustExec(t, db, "CREATE TABLE docs (id INTEGER PRIMARY KEY, owner TEXT)")
+	mustExec(t, db, "INSERT INTO docs VALUES (1,'alice')")
+	mustExec(t, db, "CREATE POLICY p1 ON docs FOR ALL USING (owner = current_user()) WITH CHECK (owner = current_user())")
+
+	bob := context.WithValue(base, security.RLSUserKey, "bob")
+	alice := context.WithValue(base, security.RLSUserKey, "alice")
+
+	// bob cannot insert a row owned by alice (WITH CHECK).
+	if _, err := db.Exec(bob, "INSERT INTO docs VALUES (2,'alice')"); err == nil {
+		t.Error("expected WITH CHECK to deny bob inserting an alice-owned row")
+	}
+	// bob can insert his own row.
+	if _, err := db.Exec(bob, "INSERT INTO docs VALUES (3,'bob')"); err != nil {
+		t.Errorf("bob inserting his own row should succeed: %v", err)
+	}
+	// alice cannot delete bob's rows (not visible under USING).
+	res, err := db.Exec(alice, "DELETE FROM docs WHERE owner='bob'")
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if res.RowsAffected != 0 {
+		t.Errorf("alice deleted %d of bob's rows, want 0", res.RowsAffected)
+	}
+}
+
 // TestRegression_DumpSchemaConstraints covers TableSchema/TableIndexDDL emitting
 // foreign keys, composite primary keys, and secondary indexes so a SQL dump can
 // restore them (previously the dumped schema dropped FKs and indexes).
