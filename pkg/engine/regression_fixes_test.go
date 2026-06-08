@@ -9,7 +9,53 @@ import (
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/security"
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
+
+// TestRegression_EncryptionRoundTrip verifies that an encrypted disk database
+// can be reopened with the same key and reads back its data. Previously the
+// encrypted backend wrote each page's (larger) ciphertext at the raw logical
+// offset, so encrypted pages overlapped on disk and corrupted each other,
+// making reopen fail with "message authentication failed".
+func TestRegression_EncryptionRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "enc.db")
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = 7
+	}
+	encOpts := func() *Options {
+		return &Options{
+			Security: Security{EncryptionConfig: &storage.EncryptionConfig{
+				Enabled: true, Key: append([]byte(nil), key...), Algorithm: "aes-256-gcm",
+			}},
+		}
+	}
+
+	db, err := Open(path, encOpts())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	mustExec(t, db, "CREATE TABLE secret (id INTEGER PRIMARY KEY, data TEXT)")
+	for i := 1; i <= 30; i++ {
+		mustExec(t, db, fmt.Sprintf("INSERT INTO secret VALUES (%d, 'row-%d')", i, i))
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	rdb, err := Open(path, encOpts())
+	if err != nil {
+		t.Fatalf("reopen encrypted db failed: %v", err)
+	}
+	defer rdb.Close()
+	if got := scalar(t, rdb, "SELECT COUNT(*) FROM secret"); got != "30" {
+		t.Errorf("count after reopen = %s, want 30", got)
+	}
+	if got := scalar(t, rdb, "SELECT data FROM secret WHERE id=25"); got != "row-25" {
+		t.Errorf("row 25 = %q, want row-25", got)
+	}
+}
 
 // TestRegression_CrashRecoveryBrandNewDB verifies that a brand-new disk database
 // which performs DDL+DML and then "crashes" (no clean Close) before any

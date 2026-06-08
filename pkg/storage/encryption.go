@@ -129,6 +129,18 @@ func (eb *EncryptedBackend) deriveKey() error {
 }
 
 // ReadAt reads and decrypts data from the backend
+// physicalOffset maps a page-aligned logical offset to its physical offset in
+// the encrypted backend. Each logical PageSize block is stored as a larger
+// encrypted block (nonce + ciphertext + tag), so physical offsets must be
+// scaled by that block size — otherwise consecutive encrypted pages overlap and
+// corrupt each other on disk (the meta page's tail gets overwritten by page 1),
+// making the database unreadable on reopen. Size()/Truncate() already assume
+// this scaled layout.
+func (eb *EncryptedBackend) physicalOffset(offset int64) int64 {
+	encryptedSize := int64(PageSize + eb.cipher.NonceSize() + eb.cipher.Overhead())
+	return (offset / int64(PageSize)) * encryptedSize
+}
+
 func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 	eb.mu.RLock()
 	defer eb.mu.RUnlock()
@@ -163,7 +175,7 @@ func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 		eb.readPool.Put(&pooled)
 	}()
 
-	n, err := eb.backend.ReadAt(encryptedBuf, offset)
+	n, err := eb.backend.ReadAt(encryptedBuf, eb.physicalOffset(offset))
 	if err != nil {
 		return 0, err
 	}
@@ -223,8 +235,11 @@ func (eb *EncryptedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 	binary.LittleEndian.PutUint64(aad, aadOffset)
 	ciphertext := eb.cipher.Seal(nonce, nonce, buf, aad)
 
-	// Write encrypted data
-	return eb.backend.WriteAt(ciphertext, offset)
+	// Write encrypted data at the scaled physical offset (see physicalOffset).
+	if _, err := eb.backend.WriteAt(ciphertext, eb.physicalOffset(offset)); err != nil {
+		return 0, err
+	}
+	return len(buf), nil
 }
 
 // Sync ensures all data is written to disk
