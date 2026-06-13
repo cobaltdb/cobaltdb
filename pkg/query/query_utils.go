@@ -53,6 +53,33 @@ func ContainsSubquery(expr Expression) bool {
 				return true
 			}
 		}
+		if ContainsSubquery(e.Filter) {
+			return true
+		}
+		for _, ob := range e.OrderBy {
+			if ob != nil && ContainsSubquery(ob.Expr) {
+				return true
+			}
+		}
+	case *WindowExpr:
+		for _, arg := range e.Args {
+			if ContainsSubquery(arg) {
+				return true
+			}
+		}
+		if ContainsSubquery(e.Filter) {
+			return true
+		}
+		for _, partitionExpr := range e.PartitionBy {
+			if ContainsSubquery(partitionExpr) {
+				return true
+			}
+		}
+		for _, ob := range e.OrderBy {
+			if ob != nil && ContainsSubquery(ob.Expr) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -92,6 +119,33 @@ func HasNonDeterministicFunction(expr Expression) bool {
 		}
 		for _, arg := range e.Args {
 			if HasNonDeterministicFunction(arg) {
+				return true
+			}
+		}
+		if HasNonDeterministicFunction(e.Filter) {
+			return true
+		}
+		for _, ob := range e.OrderBy {
+			if ob != nil && HasNonDeterministicFunction(ob.Expr) {
+				return true
+			}
+		}
+	case *WindowExpr:
+		for _, arg := range e.Args {
+			if HasNonDeterministicFunction(arg) {
+				return true
+			}
+		}
+		if HasNonDeterministicFunction(e.Filter) {
+			return true
+		}
+		for _, partitionExpr := range e.PartitionBy {
+			if HasNonDeterministicFunction(partitionExpr) {
+				return true
+			}
+		}
+		for _, ob := range e.OrderBy {
+			if ob != nil && HasNonDeterministicFunction(ob.Expr) {
 				return true
 			}
 		}
@@ -171,7 +225,27 @@ func exprToStringImpl(expr Expression, exported bool) string {
 		for i, arg := range e.Args {
 			args[i] = exprToStringImpl(arg, exported)
 		}
-		return fmt.Sprintf("%s(%s)", e.Name, strings.Join(args, ", "))
+		if len(e.OrderBy) > 0 {
+			orderParts := make([]string, 0, len(e.OrderBy))
+			for _, ob := range e.OrderBy {
+				if ob == nil {
+					continue
+				}
+				part := exprToStringImpl(ob.Expr, exported)
+				if ob.Desc {
+					part += " DESC"
+				} else {
+					part += " ASC"
+				}
+				orderParts = append(orderParts, part)
+			}
+			args = append(args, "ORDER BY "+strings.Join(orderParts, ", "))
+		}
+		result := fmt.Sprintf("%s(%s)", e.Name, strings.Join(args, ", "))
+		if e.Filter != nil {
+			result += " FILTER (WHERE " + exprToStringImpl(e.Filter, exported) + ")"
+		}
+		return result
 	default:
 		return fmt.Sprintf("%T", expr)
 	}

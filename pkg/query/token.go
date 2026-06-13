@@ -88,6 +88,7 @@ const (
 	TokenAsc
 	TokenDesc
 	TokenLike
+	TokenRegexp
 	TokenIn
 	TokenBetween
 	TokenIs
@@ -107,6 +108,7 @@ const (
 	TokenRow
 	TokenTrue
 	TokenFalse
+	TokenUnknown
 
 	// Data types
 	TokenInteger
@@ -145,6 +147,7 @@ const (
 	TokenLte
 	TokenGte
 	TokenConcat
+	TokenFatArrow // =>
 
 	// JSON operators
 	TokenArrow    // ->
@@ -281,6 +284,7 @@ const (
 
 	// ON CONFLICT (upsert)
 	TokenConflict
+	TokenDuplicate
 	TokenDo
 	TokenNothing
 
@@ -288,6 +292,7 @@ const (
 	TokenBitAnd     // &
 	TokenBitOr      // |
 	TokenBitXor     // ^
+	TokenBitNot     // ~
 	TokenShiftLeft  // <<
 	TokenShiftRight // >>
 
@@ -366,7 +371,11 @@ var keywords = map[string]TokenType{
 	"ASC":            TokenAsc,
 	"DESC":           TokenDesc,
 	"LIKE":           TokenLike,
+	"REGEXP":         TokenRegexp,
+	"RLIKE":          TokenRegexp,
 	"IN":             TokenIn,
+	"OUT":            TokenOut,
+	"INOUT":          TokenInout,
 	"BETWEEN":        TokenBetween,
 	"IS":             TokenIs,
 	"BEGIN":          TokenBegin,
@@ -385,6 +394,7 @@ var keywords = map[string]TokenType{
 	"ROW":            TokenRow,
 	"TRUE":           TokenTrue,
 	"FALSE":          TokenFalse,
+	"UNKNOWN":        TokenUnknown,
 
 	// Data types
 	"INTEGER":   TokenInteger,
@@ -540,9 +550,10 @@ var keywords = map[string]TokenType{
 	"CURRENT":   TokenCurrent,
 
 	// ON CONFLICT (upsert)
-	"CONFLICT": TokenConflict,
-	"DO":       TokenDo,
-	"NOTHING":  TokenNothing,
+	"CONFLICT":  TokenConflict,
+	"DUPLICATE": TokenDuplicate,
+	"DO":        TokenDo,
+	"NOTHING":   TokenNothing,
 
 	// Vector functions
 	"COSINE_SIMILARITY": TokenCosineSimilarity,
@@ -612,6 +623,8 @@ func TokenTypeString(t TokenType) string {
 		return "<="
 	case TokenGte:
 		return ">="
+	case TokenFatArrow:
+		return "=>"
 	case TokenLParen:
 		return "("
 	case TokenRParen:
@@ -624,6 +637,32 @@ func TokenTypeString(t TokenType) string {
 		return "."
 	case TokenStar:
 		return "*"
+	case TokenRegexp:
+		return "REGEXP"
+	case TokenInteger:
+		return "INTEGER"
+	case TokenText:
+		return "TEXT"
+	case TokenReal:
+		return "REAL"
+	case TokenBlob:
+		return "BLOB"
+	case TokenBoolean:
+		return "BOOLEAN"
+	case TokenJSON:
+		return "JSON"
+	case TokenDate:
+		return "DATE"
+	case TokenTimestamp:
+		return "TIMESTAMP"
+	case TokenDatetime:
+		return "DATETIME"
+	case TokenVector:
+		return "VECTOR"
+	case TokenUnknown:
+		return "UNKNOWN"
+	case TokenDuplicate:
+		return "DUPLICATE"
 	default:
 		return "UNKNOWN"
 	}

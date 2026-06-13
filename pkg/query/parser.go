@@ -8,11 +8,13 @@ import (
 
 // Parser parses SQL tokens into an AST
 type Parser struct {
-	tokens           []Token
-	pos              int
-	placeholderCount int // Counter for auto-assigning placeholder indices
-	depth            int
-	strict           bool // When true, expect() errors instead of silently advancing on known-token mismatches
+	tokens                 []Token
+	pos                    int
+	placeholderCount       int // Counter for auto-assigning placeholder indices
+	derivedAliasCount      int // Counter for generated aliases on anonymous derived tables
+	depth                  int
+	strict                 bool // When true, expect() errors instead of silently advancing on known-token mismatches
+	stopAtMatchAgainstMode bool
 }
 
 // NewParser creates a new parser for the given tokens
@@ -33,7 +35,10 @@ func NewParserStrict(tokens []Token) *Parser {
 	}
 }
 
-const maxParserDepth = 200
+const (
+	maxParserDepth     = 200
+	maxParserListItems = 4096
+)
 
 // toUpperFast returns an uppercased copy of s only if s contains lowercase
 // letters. This avoids an allocation when s is already uppercase.
@@ -47,10 +52,10 @@ func toUpperFast(s string) string {
 }
 
 func (p *Parser) enterDepth() error {
-	p.depth++
-	if p.depth > maxParserDepth {
+	if p.depth+1 > maxParserDepth {
 		return fmt.Errorf("expression nesting depth exceeds maximum (%d)", maxParserDepth)
 	}
+	p.depth++
 	return nil
 }
 
@@ -62,6 +67,7 @@ func (p *Parser) leaveDepth() {
 func (p *Parser) Parse() (Statement, error) {
 	// Reset placeholder counter for each parse
 	p.placeholderCount = 0
+	p.derivedAliasCount = 0
 
 	if p.current().Type == TokenEOF {
 		return nil, fmt.Errorf("empty statement")
@@ -90,6 +96,8 @@ func (p *Parser) Parse() (Statement, error) {
 		return stmt, nil
 	case TokenInsert:
 		return p.parseInsert()
+	case TokenReplace:
+		return p.parseReplace()
 	case TokenUpdate:
 		return p.parseUpdate()
 	case TokenDelete:
@@ -256,6 +264,25 @@ func applyPlaceholderOffset(expr Expression, offset int) {
 		for _, arg := range e.Args {
 			applyPlaceholderOffset(arg, offset)
 		}
+		applyPlaceholderOffset(e.Filter, offset)
+		for _, ob := range e.OrderBy {
+			if ob != nil {
+				applyPlaceholderOffset(ob.Expr, offset)
+			}
+		}
+	case *WindowExpr:
+		for _, arg := range e.Args {
+			applyPlaceholderOffset(arg, offset)
+		}
+		applyPlaceholderOffset(e.Filter, offset)
+		for _, partitionExpr := range e.PartitionBy {
+			applyPlaceholderOffset(partitionExpr, offset)
+		}
+		for _, ob := range e.OrderBy {
+			if ob != nil {
+				applyPlaceholderOffset(ob.Expr, offset)
+			}
+		}
 	case *InExpr:
 		applyPlaceholderOffset(e.Expr, offset)
 		for _, item := range e.List {
@@ -312,7 +339,10 @@ func (p *Parser) parseMatchAgainst() (Expression, error) {
 	}
 
 	// Parse search pattern
+	prevStopAtMatchAgainstMode := p.stopAtMatchAgainstMode
+	p.stopAtMatchAgainstMode = true
 	pattern, err := p.parseExpression()
+	p.stopAtMatchAgainstMode = prevStopAtMatchAgainstMode
 	if err != nil {
 		return nil, err
 	}
@@ -499,6 +529,25 @@ func collectPlaceholdersRecursive(expr Expression, placeholders *[]*PlaceholderE
 	case *FunctionCall:
 		for _, arg := range e.Args {
 			collectPlaceholdersRecursive(arg, placeholders)
+		}
+		collectPlaceholdersRecursive(e.Filter, placeholders)
+		for _, ob := range e.OrderBy {
+			if ob != nil {
+				collectPlaceholdersRecursive(ob.Expr, placeholders)
+			}
+		}
+	case *WindowExpr:
+		for _, arg := range e.Args {
+			collectPlaceholdersRecursive(arg, placeholders)
+		}
+		collectPlaceholdersRecursive(e.Filter, placeholders)
+		for _, partitionExpr := range e.PartitionBy {
+			collectPlaceholdersRecursive(partitionExpr, placeholders)
+		}
+		for _, ob := range e.OrderBy {
+			if ob != nil {
+				collectPlaceholdersRecursive(ob.Expr, placeholders)
+			}
 		}
 	case *InExpr:
 		collectPlaceholdersRecursive(e.Expr, placeholders)
@@ -745,12 +794,18 @@ func (p *Parser) parseRefresh() (*RefreshMaterializedViewStmt, error) {
 		return nil, err
 	}
 
+	concurrently := false
+	if isKeywordIdentifier(p.current(), "CONCURRENTLY") {
+		concurrently = true
+		p.advance()
+	}
+
 	name, err := p.expect(TokenIdentifier)
 	if err != nil {
 		return nil, err
 	}
 
-	return &RefreshMaterializedViewStmt{Name: name.Literal}, nil
+	return &RefreshMaterializedViewStmt{Name: name.Literal, Concurrently: concurrently}, nil
 }
 
 // parseUse parses USE <database>

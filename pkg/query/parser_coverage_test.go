@@ -514,6 +514,26 @@ func TestLineComment(t *testing.T) {
 	}
 }
 
+func TestLexerSkipsManyCommentsIteratively(t *testing.T) {
+	sql := strings.Repeat("-- comment\n", 20000) +
+		strings.Repeat("/* block comment */ ", 20000) +
+		"SELECT 1"
+
+	tokens, err := Tokenize(sql)
+	if err != nil {
+		t.Fatalf("Tokenize failed: %v", err)
+	}
+	if len(tokens) < 3 {
+		t.Fatalf("expected SELECT, 1, EOF tokens, got %d", len(tokens))
+	}
+	if tokens[0].Type != TokenSelect {
+		t.Fatalf("first token = %v (%q), want SELECT", tokens[0].Type, tokens[0].Literal)
+	}
+	if tokens[1].Type != TokenNumber || tokens[1].Literal != "1" {
+		t.Fatalf("second token = %v (%q), want number 1", tokens[1].Type, tokens[1].Literal)
+	}
+}
+
 // ---- Backtick-quoted identifiers ----
 
 func TestBacktickIdentifier(t *testing.T) {
@@ -959,11 +979,21 @@ func TestLexerContainsOperator(t *testing.T) {
 	}
 }
 
-func TestLexerIllegalChar(t *testing.T) {
-	_, err := Tokenize("SELECT ~")
+func TestLexerBitNot(t *testing.T) {
+	tokens, err := Tokenize("SELECT ~5")
 	if err == nil {
-		t.Error("Expected error for illegal character ~")
+		found := false
+		for _, tok := range tokens {
+			if tok.Type == TokenBitNot {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("Expected ~ to tokenize as TokenBitNot")
+		}
+		return
 	}
+	t.Fatalf("Tokenize failed: %v", err)
 }
 
 func TestLexerSemicolon(t *testing.T) {

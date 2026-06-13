@@ -92,26 +92,21 @@ func TestCovBoost_TemporalExpr(t *testing.T) {
 
 // TestCovBoost_MatchAgainstModes exercises the BOOLEAN MODE and NATURAL LANGUAGE MODE
 // branches in parseMatchAgainst.
-// NOTE: The standard Parse() path cannot exercise these branches because parseExpression
-// greedily consumes the "IN" token as part of an IN expression. These tests verify
-// the error behavior and that the basic MATCH AGAINST (without modes) works.
 func TestCovBoost_MatchAgainstModes(t *testing.T) {
 	tests := []struct {
 		name    string
 		sql     string
 		wantErr bool
 	}{
-		// BOOLEAN MODE fails because parseExpression consumes "IN" as InExpr
-		// then expects "(", but sees "BOOLEAN" -> parser error is expected
 		{
-			"BOOLEAN MODE (parse error expected)",
+			"BOOLEAN MODE",
 			"SELECT * FROM articles WHERE MATCH(title, body) AGAINST('search term' IN BOOLEAN MODE)",
-			true,
+			false,
 		},
 		{
-			"NATURAL LANGUAGE MODE (parse error expected)",
+			"NATURAL LANGUAGE MODE",
 			"SELECT * FROM articles WHERE MATCH(title) AGAINST('search' IN NATURAL LANGUAGE MODE)",
-			true,
+			false,
 		},
 		{
 			"No mode (default) - works fine",
@@ -140,9 +135,6 @@ func TestCovBoost_MatchAgainstModes(t *testing.T) {
 
 // TestCovBoost_MatchAgainstDirectParser exercises parseMatchAgainst error paths
 // directly via the internal Parser API (internal package test).
-// Note: BOOLEAN MODE and NATURAL LANGUAGE MODE branches in parseMatchAgainst are
-// unreachable via standard expression parsing because parseComparison greedily
-// consumes the IN token. These tests cover the error paths that ARE reachable.
 func TestCovBoost_MatchAgainstDirectParser(t *testing.T) {
 	// Test missing AGAINST token
 	noAgainstTokens := []Token{
@@ -198,16 +190,7 @@ func TestCovBoost_MatchAgainstDirectParser(t *testing.T) {
 	// Empty parens - expression parse fails
 	t.Logf("empty cols: %v", err4)
 
-	// Test that the mode branches are covered by injecting a token stream
-	// where after the string, we have IN followed by BOOLEAN directly
-	// (bypassing the expression parser's IN handling by using a non-string token
-	// that parseAdditive returns early on)
-	//
-	// We put a NULL literal as the pattern: NULL IN BOOLEAN MODE
-	// parseAdditive → parsePrimary → returns NullLiteral
-	// parseComparison then sees IN → tries expect(LParen) → sees BOOLEAN → error
-	// This exercises the path through match(TokenIn) but not the BOOLEAN branch.
-	// The branches are dead code in practice but we document this here.
+	// Mode branches are exercised through normal Parse() in TestCovBoost_MatchAgainstModes.
 }
 
 // TestCovBoost_CollectPlaceholders exercises collectPlaceholdersRecursive
@@ -568,8 +551,8 @@ func TestCovBoost_ParseSelectBranches(t *testing.T) {
 		{"ORDER BY ASC DESC", "SELECT * FROM t ORDER BY a ASC, b DESC", false},
 		// SELECT with LIMIT OFFSET
 		{"LIMIT OFFSET", "SELECT * FROM t LIMIT 10 OFFSET 5", false},
-		// IS DISTINCT FROM - not supported by parser (expects NULL after IS)
-		{"IS DISTINCT FROM", "SELECT * FROM t WHERE x IS DISTINCT FROM 1", true},
+		{"IS DISTINCT FROM", "SELECT * FROM t WHERE x IS DISTINCT FROM 1", false},
+		{"IS NOT DISTINCT FROM", "SELECT * FROM t WHERE x IS NOT DISTINCT FROM 1", false},
 	}
 
 	for _, tt := range tests {
@@ -869,9 +852,9 @@ func TestCovBoost_ParseAlterTableBranches(t *testing.T) {
 		sql     string
 		wantErr bool
 	}{
-		// ADD CONSTRAINT is not fully supported - it tries to parse column def with "fk" as column name
-		// which then fails on type parsing. These are error cases.
-		{"ADD CONSTRAINT FK", "ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (col) REFERENCES t2(id)", true},
+		{"ADD CONSTRAINT UNIQUE", "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (col)", false},
+		{"ADD CONSTRAINT FK", "ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (col) REFERENCES t2(id)", false},
+		{"ADD CONSTRAINT CHECK", "ALTER TABLE t ADD CONSTRAINT ck CHECK (col > 0)", false},
 		{"ADD CONSTRAINT PK", "ALTER TABLE t ADD CONSTRAINT pk PRIMARY KEY (id)", true},
 		{"RENAME TO", "ALTER TABLE t RENAME TO new_name", false},
 		{"DROP COLUMN without COLUMN keyword", "ALTER TABLE t DROP col", false},
@@ -962,8 +945,7 @@ func TestCovBoost_ParseInsertBranches(t *testing.T) {
 		sql     string
 		wantErr bool
 	}{
-		// REPLACE INTO is not supported standalone - only INSERT OR REPLACE is
-		{"REPLACE INTO", "REPLACE INTO t (id, name) VALUES (1, 'test')", true},
+		{"REPLACE INTO", "REPLACE INTO t (id, name) VALUES (1, 'test')", false},
 		// INSERT OR ABORT (not supported but tests error path)
 		{"INSERT multi-row", "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')", false},
 		// INSERT SELECT with columns
@@ -1034,8 +1016,7 @@ func TestCovBoost_ParseCreateViewBranches(t *testing.T) {
 		sql     string
 		wantErr bool
 	}{
-		// CREATE OR REPLACE is not supported - should error
-		{"CREATE OR REPLACE VIEW", "CREATE OR REPLACE VIEW v AS SELECT 1 AS x", true},
+		{"CREATE OR REPLACE VIEW", "CREATE OR REPLACE VIEW v AS SELECT 1 AS x", false},
 		{"CREATE VIEW with UNION", "CREATE VIEW v AS SELECT 1 UNION SELECT 2", false},
 		{"CREATE VIEW complex", "CREATE VIEW v AS SELECT a, COUNT(*) AS cnt FROM t GROUP BY a HAVING cnt > 1", false},
 	}
@@ -1090,6 +1071,7 @@ func TestCovBoost_ParseDeleteBranches(t *testing.T) {
 		{"DELETE with alias", "DELETE FROM t AS tbl WHERE tbl.id > 0", false},
 		// DELETE with ORDER BY and LIMIT
 		{"DELETE ORDER BY LIMIT", "DELETE FROM t ORDER BY id DESC LIMIT 5", false},
+		{"DELETE LOW_PRIORITY QUICK", "DELETE LOW_PRIORITY QUICK FROM t WHERE id = 1", false},
 		// DELETE USING with multiple tables
 		{"DELETE USING multi", "DELETE FROM t USING t2, t3 WHERE t.id = t2.id AND t2.ref = t3.id", false},
 	}

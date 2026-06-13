@@ -98,10 +98,13 @@ func TestCovBoostQuery2_CreateTable(t *testing.T) {
 		{"CreateTable_WithoutRowid", "CREATE TABLE t (id INT PRIMARY KEY) WITHOUT ROWID", false},
 		{"CreateTable_Partitioned", "CREATE TABLE t (id INT) PARTITION BY RANGE (id) (PARTITION p0 VALUES LESS THAN (100))", false},
 		{"CreateTable_MultipleConstraints", "CREATE TABLE t (id INT PRIMARY KEY, name TEXT NOT NULL UNIQUE, email TEXT CHECK (email LIKE '%@%'))", false},
+		{"CreateTable_NamedUnique", "CREATE TABLE t (id INT, email TEXT, CONSTRAINT uq_email UNIQUE (email))", false},
+		{"CreateTable_NamedPrimaryKey", "CREATE TABLE t (tenant_id INT, id INT, CONSTRAINT t_pk PRIMARY KEY (tenant_id, id))", false},
+		{"CreateTable_NamedCheck", "CREATE TABLE t (price INT, discount INT, CONSTRAINT discount_ck CHECK (discount <= price))", false},
 		{"CreateTable_DefaultValues", "CREATE TABLE t (id INT DEFAULT 0, name TEXT DEFAULT 'unknown', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", false},
+		{"CreateTable_Temp", "CREATE TEMP TABLE t (id INT)", false},
+		{"CreateTable_Temporary", "CREATE TEMPORARY TABLE t (id INT)", false},
 		// Note: These features not fully supported
-		// {"CreateTable_Temp", "CREATE TEMP TABLE t (id INT)", false},
-		// {"CreateTable_Temporary", "CREATE TEMPORARY TABLE t (id INT)", false},
 		// {"CreateTable_AsSelect", "CREATE TABLE t AS SELECT * FROM t2", false},
 		// {"CreateTable_ForeignKey", "CREATE TABLE t (id INT, ref_id INT REFERENCES t2(id))", false},
 		// {"CreateTable_ForeignKeyOnDelete", "CREATE TABLE t (id INT, ref_id INT REFERENCES t2(id) ON DELETE CASCADE)", false},
@@ -137,9 +140,10 @@ func TestCovBoostQuery2_AlterTable(t *testing.T) {
 		{"AlterTable_DropColumn", "ALTER TABLE t DROP COLUMN col", false},
 		{"AlterTable_RenameColumn", "ALTER TABLE t RENAME COLUMN old TO new", false},
 		{"AlterTable_RenameTo", "ALTER TABLE t RENAME TO new_t", false},
-		// Note: These features not fully supported
-		// {"AlterTable_AddConstraint", "ALTER TABLE t ADD CONSTRAINT pk PRIMARY KEY (id)", false},
-		// {"AlterTable_DropConstraint", "ALTER TABLE t DROP CONSTRAINT pk", false},
+		{"AlterTable_AddUniqueConstraint", "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (email)", false},
+		{"AlterTable_AddForeignKeyConstraint", "ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (ref_id) REFERENCES parent(id)", false},
+		{"AlterTable_AddCheckConstraint", "ALTER TABLE t ADD CONSTRAINT positive_ck CHECK (amount > 0)", false},
+		{"AlterTable_DropConstraint", "ALTER TABLE t DROP CONSTRAINT uq", false},
 		{"AlterTable_MissingTable", "ALTER TABLE ADD COLUMN col INT", true},
 		{"AlterTable_MissingAction", "ALTER TABLE t", true},
 		{"AlterTable_MissingColumnName", "ALTER TABLE t ADD COLUMN", true},
@@ -267,9 +271,9 @@ func TestCovBoostQuery2_FunctionCall(t *testing.T) {
 		{"Func_OverPartition", "SELECT ROW_NUMBER() OVER (PARTITION BY y ORDER BY x) FROM t", false},
 		{"Func_GroupConcat", "SELECT GROUP_CONCAT(x) FROM t", false},
 		{"Func_GroupConcatSeparator", "SELECT GROUP_CONCAT(x, '-') FROM t", false},
+		{"Func_All", "SELECT COUNT(ALL x) FROM t", false},
 		{"Func_MissingRParen", "SELECT COUNT(* FROM t", true},
 		// Note: These features not fully supported
-		// {"Func_All", "SELECT COUNT(ALL x) FROM t", false},
 		// {"Func_Filter", "SELECT COUNT(*) FILTER (WHERE x > 0) FROM t", false},
 		// {"Func_OverFrame", "SELECT SUM(x) OVER (ORDER BY y ROWS UNBOUNDED PRECEDING) FROM t", false},
 		// {"Func_OverRange", "SELECT SUM(x) OVER (ORDER BY y RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t", false},
@@ -365,11 +369,20 @@ func TestCovBoostQuery2_ForeignKey(t *testing.T) {
 		{"FK_MultiCol", "CREATE TABLE t (a INT, b INT, FOREIGN KEY (a, b) REFERENCES t2(x, y))", false},
 		{"FK_OnDeleteCascade", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON DELETE CASCADE)", false},
 		{"FK_OnDeleteSetNull", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON DELETE SET NULL)", false},
+		{"FK_OnDeleteSetDefault", "CREATE TABLE t (id INT, ref INT DEFAULT 0, FOREIGN KEY (ref) REFERENCES t2(id) ON DELETE SET DEFAULT)", false},
 		{"FK_OnDeleteRestrict", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON DELETE RESTRICT)", false},
 		{"FK_OnDeleteNoAction", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON DELETE NO ACTION)", false},
 		{"FK_OnUpdateCascade", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON UPDATE CASCADE)", false},
 		{"FK_OnUpdateSetNull", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON UPDATE SET NULL)", false},
+		{"FK_OnUpdateSetDefault", "CREATE TABLE t (id INT, ref INT DEFAULT 0, FOREIGN KEY (ref) REFERENCES t2(id) ON UPDATE SET DEFAULT)", false},
 		{"FK_BothActions", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON DELETE CASCADE ON UPDATE SET NULL)", false},
+		{"FK_OnDeleteSetMissingNull", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON DELETE SET)", true},
+		{"FK_OnUpdateSetMissingNull", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON UPDATE SET)", true},
+		{"FK_OnDeleteNoMissingAction", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON DELETE NO)", true},
+		{"FK_OnUpdateNoMissingAction", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON UPDATE NO)", true},
+		{"FK_OnDeleteUnknownAction", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON DELETE DEFAULT)", true},
+		{"FK_DuplicateOnDelete", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON DELETE CASCADE ON DELETE RESTRICT)", true},
+		{"FK_DuplicateOnUpdate", "CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES t2(id) ON UPDATE CASCADE ON UPDATE RESTRICT)", true},
 		{"FK_MissingColumns", "CREATE TABLE t (id INT, FOREIGN KEY REFERENCES t2(id))", true},
 		{"FK_MissingReferences", "CREATE TABLE t (id INT, FOREIGN KEY (ref) t2(id))", true},
 		{"FK_MissingRefTable", "CREATE TABLE t (id INT, FOREIGN KEY (ref) REFERENCES)", true},
@@ -401,15 +414,17 @@ func TestCovBoostQuery2_ColumnDef(t *testing.T) {
 		{"Col_PrimaryKey", "CREATE TABLE t (id INTEGER PRIMARY KEY)", false},
 		{"Col_NotNull", "CREATE TABLE t (name TEXT NOT NULL)", false},
 		{"Col_Unique", "CREATE TABLE t (email TEXT UNIQUE)", false},
+		{"Col_NamedUnique", "CREATE TABLE t (email TEXT CONSTRAINT email_uq UNIQUE)", false},
 		{"Col_AutoIncrement", "CREATE TABLE t (id INTEGER AUTOINCREMENT)", false},
 		{"Col_DefaultLiteral", "CREATE TABLE t (status TEXT DEFAULT 'active')", false},
 		{"Col_DefaultNumber", "CREATE TABLE t (count INTEGER DEFAULT 0)", false},
 		{"Col_DefaultNull", "CREATE TABLE t (name TEXT DEFAULT NULL)", false},
 		{"Col_DefaultExpr", "CREATE TABLE t (created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", false},
 		{"Col_Check", "CREATE TABLE t (age INTEGER CHECK (age >= 0))", false},
+		{"Col_NamedCheck", "CREATE TABLE t (age INTEGER CONSTRAINT age_ck CHECK (age >= 0))", false},
 		{"Col_MultipleConstraints", "CREATE TABLE t (id INTEGER PRIMARY KEY NOT NULL AUTOINCREMENT, name TEXT NOT NULL UNIQUE CHECK (LENGTH(name) > 0))", false},
+		{"Col_Collate", "CREATE TABLE t (name TEXT COLLATE NOCASE)", false},
 		// Note: These features not fully supported
-		// {"Col_Collate", "CREATE TABLE t (name TEXT COLLATE NOCASE)", false},
 		// {"Col_Generated", "CREATE TABLE t (a INT, b INT GENERATED ALWAYS AS (a * 2) STORED)", false},
 		// {"Col_Virtual", "CREATE TABLE t (a INT, b INT GENERATED ALWAYS AS (a * 2) VIRTUAL)", false},
 	}
@@ -438,10 +453,10 @@ func TestCovBoostQuery2_Show(t *testing.T) {
 		{"Show_Databases", "SHOW DATABASES", false},
 		{"Show_CreateTable", "SHOW CREATE TABLE t", false},
 		{"Show_Columns", "SHOW COLUMNS FROM t", false},
-		// Note: These features not fully supported
-		// {"Show_ColumnsIn", "SHOW COLUMNS IN t", false},
-		// {"Show_Indexes", "SHOW INDEXES FROM t", false},
-		// {"Show_IndexesIn", "SHOW INDEXES IN t", false},
+		{"Show_ColumnsIn", "SHOW COLUMNS IN t", false},
+		{"Show_Indexes", "SHOW INDEXES FROM t", false},
+		{"Show_IndexesIn", "SHOW INDEXES IN t", false},
+		{"Show_KeysIn", "SHOW KEYS IN t", false},
 		{"Show_Status", "SHOW STATUS", false},
 		{"Show_Variables", "SHOW VARIABLES", false},
 		{"Show_Warnings", "SHOW WARNINGS", false},
@@ -449,6 +464,8 @@ func TestCovBoostQuery2_Show(t *testing.T) {
 		{"Show_Like", "SHOW TABLES LIKE 'user%'", false},
 		{"Show_Where", "SHOW TABLES WHERE Name LIKE 'user%'", false},
 		{"Show_MissingTableName", "SHOW CREATE TABLE", true},
+		{"Show_ColumnsMissingTableName", "SHOW COLUMNS FROM", true},
+		{"Show_IndexMissingTableName", "SHOW INDEX IN", true},
 	}
 
 	for _, tt := range tests {
@@ -471,15 +488,13 @@ func TestCovBoostQuery2_Insert(t *testing.T) {
 		sql     string
 		wantErr bool
 	}{
-		// Note: DEFAULT VALUES not fully supported
-		// {"Insert_DefaultValues", "INSERT INTO t DEFAULT VALUES", false},
+		{"Insert_DefaultValues", "INSERT INTO t DEFAULT VALUES", false},
 		{"Insert_Select", "INSERT INTO t SELECT * FROM t2", false},
 		{"Insert_OnConflictIgnore", "INSERT OR IGNORE INTO t VALUES (1)", false},
 		{"Insert_OnConflictReplace", "INSERT OR REPLACE INTO t VALUES (1)", false},
-		// Note: These features not fully supported
-		// {"Insert_OnConflictRollback", "INSERT OR ROLLBACK INTO t VALUES (1)", false},
-		// {"Insert_OnConflictAbort", "INSERT OR ABORT INTO t VALUES (1)", false},
-		// {"Insert_OnConflictFail", "INSERT OR FAIL INTO t VALUES (1)", false},
+		{"Insert_OnConflictRollback", "INSERT OR ROLLBACK INTO t VALUES (1)", false},
+		{"Insert_OnConflictAbort", "INSERT OR ABORT INTO t VALUES (1)", false},
+		{"Insert_OnConflictFail", "INSERT OR FAIL INTO t VALUES (1)", false},
 		{"Insert_Returning", "INSERT INTO t VALUES (1) RETURNING *", false},
 		{"Insert_ReturningColumns", "INSERT INTO t VALUES (1) RETURNING id, name", false},
 		{"Insert_Upsert", "INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING", false},
@@ -508,12 +523,15 @@ func TestCovBoostQuery2_Update(t *testing.T) {
 		wantErr bool
 	}{
 		{"Update_From", "UPDATE t SET x = 1 FROM t2 WHERE t.id = t2.id", false},
+		{"Update_MySQLJoin", "UPDATE t JOIN u ON t.id = u.id SET t.x = u.x WHERE u.flag = 1", false},
+		{"Update_MySQLJoinTargetAlias", "UPDATE t AS x JOIN u AS y ON x.id = y.id SET x.v = y.v WHERE y.flag = 1", false},
+		{"Update_MySQLCommaJoin", "UPDATE t, u SET t.x = u.x WHERE t.id = u.id", false},
+		{"Update_TargetAlias", "UPDATE t AS x SET x.v = 1 WHERE x.id = 1", false},
 		{"Update_Returning", "UPDATE t SET x = 1 RETURNING *", false},
 		{"Update_ReturningColumns", "UPDATE t SET x = 1 RETURNING id, x", false},
 		{"Update_SetSubquery", "UPDATE t SET x = (SELECT MAX(y) FROM t2)", false},
 		{"Update_SetExpression", "UPDATE t SET x = y + 1, z = y * 2", false},
-		// Note: Multi-column SET not fully supported
-		// {"Update_SetList", "UPDATE t SET (x, y) = (1, 2)", false},
+		{"Update_SetList", "UPDATE t SET (x, y) = (1, 2)", false},
 	}
 
 	for _, tt := range tests {
@@ -542,6 +560,10 @@ func TestCovBoostQuery2_Delete(t *testing.T) {
 		{"Delete_OrderBy", "DELETE FROM t WHERE x > 0 ORDER BY x", false},
 		{"Delete_Limit", "DELETE FROM t WHERE x > 0 LIMIT 10", false},
 		{"Delete_OrderByLimit", "DELETE FROM t WHERE x > 0 ORDER BY x LIMIT 10", false},
+		{"Delete_TargetAlias", "DELETE FROM t AS x WHERE x.id = 1", false},
+		{"Delete_TargetFromJoin", "DELETE t FROM t JOIN u ON t.id = u.id WHERE u.flag = 1", false},
+		{"Delete_TargetFromJoinAlias", "DELETE x FROM t AS x JOIN u AS y ON x.id = y.id WHERE y.flag = 1", false},
+		{"Delete_UsingJoinOn", "DELETE FROM t USING u JOIN v ON u.id = v.u_id WHERE t.id = u.t_id", false},
 	}
 
 	for _, tt := range tests {
@@ -566,19 +588,18 @@ func TestCovBoostQuery2_Select(t *testing.T) {
 	}{
 		{"Select_Distinct", "SELECT DISTINCT x FROM t", false},
 		{"Select_Star", "SELECT * FROM t", false},
-		// Note: Qualified star may not be fully supported
-		// {"Select_QualifiedStar", "SELECT t.* FROM t", false},
+		{"Select_QualifiedStar", "SELECT t.* FROM t", false},
+		{"Select_All", "SELECT ALL x FROM t", false},
 		// Note: These features not fully supported
 		// {"Select_DistinctOn", "SELECT DISTINCT ON (x) x, y FROM t", false},
-		// {"Select_All", "SELECT ALL x FROM t", false},
 		// {"Select_Except", "SELECT * EXCEPT (x) FROM t", false},
 		// {"Select_Replace", "SELECT * REPLACE (y AS x) FROM t", false},
 		// {"Select_Window", "SELECT x, ROW_NUMBER() OVER (w) FROM t WINDOW w AS (ORDER BY x)", false},
-		// {"Select_ForUpdate", "SELECT * FROM t FOR UPDATE", false},
-		// {"Select_ForShare", "SELECT * FROM t FOR SHARE", false},
-		// {"Select_ForUpdateWait", "SELECT * FROM t FOR UPDATE WAIT 10", false},
-		// {"Select_ForUpdateNoWait", "SELECT * FROM t FOR UPDATE NOWAIT", false},
-		// {"Select_ForUpdateSkipLocked", "SELECT * FROM t FOR UPDATE SKIP LOCKED", false},
+		{"Select_ForUpdate", "SELECT * FROM t FOR UPDATE", false},
+		{"Select_ForShare", "SELECT * FROM t FOR SHARE", false},
+		{"Select_ForUpdateWait", "SELECT * FROM t FOR UPDATE WAIT 10", false},
+		{"Select_ForUpdateNoWait", "SELECT * FROM t FOR UPDATE NOWAIT", false},
+		{"Select_ForUpdateSkipLocked", "SELECT * FROM t FOR UPDATE SKIP LOCKED", false},
 	}
 
 	for _, tt := range tests {
@@ -670,11 +691,10 @@ func TestCovBoostQuery2_IdentifierList(t *testing.T) {
 		{"IdList_Single", "CREATE INDEX idx ON t (col)", false},
 		{"IdList_Multi", "CREATE INDEX idx ON t (a, b, c)", false},
 		{"IdList_MissingIdentifier", "CREATE INDEX idx ON t ()", true},
-		// Note: These features not fully supported
-		// {"IdList_OrderedAsc", "CREATE INDEX idx ON t (col ASC)", false},
-		// {"IdList_OrderedDesc", "CREATE INDEX idx ON t (col DESC)", false},
-		// {"IdList_Collate", "CREATE INDEX idx ON t (col COLLATE NOCASE)", false},
-		// {"IdList_OrderedCollate", "CREATE INDEX idx ON t (col ASC COLLATE NOCASE)", false},
+		{"IdList_OrderedAsc", "CREATE INDEX idx ON t (col ASC)", false},
+		{"IdList_OrderedDesc", "CREATE INDEX idx ON t (col DESC)", false},
+		{"IdList_Collate", "CREATE INDEX idx ON t (col COLLATE NOCASE)", false},
+		{"IdList_OrderedCollate", "CREATE INDEX idx ON t (col ASC COLLATE NOCASE)", false},
 	}
 
 	for _, tt := range tests {
@@ -731,9 +751,8 @@ func TestCovBoostQuery2_Not(t *testing.T) {
 		{"Not_Exists", "SELECT * FROM t WHERE NOT EXISTS (SELECT 1 FROM t2)", false},
 		{"Not_Expr", "SELECT * FROM t WHERE NOT x > 0", false},
 		{"Not_Not", "SELECT * FROM t WHERE NOT NOT x > 0", false},
-		// Note: These features not fully supported
 		// {"Not_Regexp", "SELECT * FROM t WHERE x NOT REGEXP 'pattern'", false},
-		// {"Not_Glob", "SELECT * FROM t WHERE x NOT GLOB 'pattern'", false},
+		{"Not_Glob", "SELECT * FROM t WHERE x NOT GLOB 'pattern'", false},
 		// {"Not_Match", "SELECT * FROM t WHERE x NOT MATCH 'pattern'", false},
 	}
 
@@ -794,8 +813,7 @@ func TestCovBoostQuery2_Arithmetic(t *testing.T) {
 		{"Div_Simple", "SELECT 10 / 2 FROM t", false},
 		{"Div_Decimal", "SELECT 10.0 / 3 FROM t", false},
 		{"Mod_Simple", "SELECT 10 % 3 FROM t", false},
-		// Note: MOD keyword not fully supported
-		// {"Modulo_Simple", "SELECT 10 MOD 3 FROM t", false},
+		{"Modulo_Simple", "SELECT 10 MOD 3 FROM t", false},
 		{"Mixed_Arithmetic", "SELECT 1 + 2 * 3 - 4 / 2 FROM t", false},
 		{"Paren_Arithmetic", "SELECT (1 + 2) * (3 - 4) / 2 FROM t", false},
 	}
@@ -825,8 +843,7 @@ func TestCovBoostQuery2_Unary(t *testing.T) {
 		{"Unary_Not", "SELECT NOT x FROM t", false},
 		{"Unary_Nested", "SELECT -+5 FROM t", false},
 		{"Unary_Column", "SELECT -x FROM t", false},
-		// Note: These features not fully supported
-		// {"Unary_Tilde", "SELECT ~5 FROM t", false},
+		{"Unary_Tilde", "SELECT ~5 FROM t", false},
 		// {"Unary_DoubleMinus", "SELECT --5 FROM t", false},
 		{"Unary_Expr", "SELECT -(x + y) FROM t", false},
 	}
@@ -854,12 +871,11 @@ func TestCovBoostQuery2_TableRef(t *testing.T) {
 		{"TableRef_Alias", "SELECT * FROM t AS alias", false},
 		{"TableRef_ImplicitAlias", "SELECT * FROM t alias", false},
 		{"TableRef_Subquery", "SELECT * FROM (SELECT * FROM t) AS sub", false},
-		// Note: Subquery without alias not fully supported
-		// {"TableRef_SubqueryNoAlias", "SELECT * FROM (SELECT * FROM t)", false},
+		{"TableRef_SubqueryNoAlias", "SELECT * FROM (SELECT * FROM t)", false},
 		{"TableRef_Backtick", "SELECT * FROM `my table`", false},
+		{"TableRef_IndexedBy", "SELECT * FROM t INDEXED BY idx", false},
+		{"TableRef_NotIndexed", "SELECT * FROM t NOT INDEXED", false},
 		// Note: These features not fully supported
-		// {"TableRef_IndexedBy", "SELECT * FROM t INDEXED BY idx", false},
-		// {"TableRef_NotIndexed", "SELECT * FROM t NOT INDEXED", false},
 		// {"TableRef_TableFunc", "SELECT * FROM generate_series(1, 10) AS t(x)", false},
 	}
 
@@ -890,8 +906,7 @@ func TestCovBoostQuery2_SelectItem(t *testing.T) {
 		{"SelectItem_ExprAlias", "SELECT x + 1 AS incremented FROM t", false},
 		{"SelectItem_Star", "SELECT * FROM t", false},
 		{"SelectItem_Subquery", "SELECT (SELECT MAX(x) FROM t2) FROM t", false},
-		// Note: Qualified star may not be fully supported
-		// {"SelectItem_QualifiedStar", "SELECT t.* FROM t", false},
+		{"SelectItem_QualifiedStar", "SELECT t.* FROM t", false},
 	}
 
 	for _, tt := range tests {
@@ -943,8 +958,7 @@ func TestCovBoostQuery2_Refresh(t *testing.T) {
 	}{
 		{"Refresh_Simple", "REFRESH MATERIALIZED VIEW mv", false},
 		{"Refresh_MissingName", "REFRESH MATERIALIZED VIEW", true},
-		// Note: CONCURRENTLY not fully supported
-		// {"Refresh_Concurrent", "REFRESH MATERIALIZED VIEW CONCURRENTLY mv", false},
+		{"Refresh_Concurrent", "REFRESH MATERIALIZED VIEW CONCURRENTLY mv", false},
 	}
 
 	for _, tt := range tests {
@@ -972,9 +986,8 @@ func TestCovBoostQuery2_CreateView(t *testing.T) {
 		{"CreateView_MissingName", "CREATE VIEW AS SELECT * FROM t", true},
 		{"CreateView_MissingAs", "CREATE VIEW v SELECT * FROM t", true},
 		{"CreateView_MissingSelect", "CREATE VIEW v AS", true},
-		// Note: These features not fully supported
-		// {"CreateView_Temp", "CREATE TEMP VIEW v AS SELECT * FROM t", false},
-		// {"CreateView_ColumnList", "CREATE VIEW v (a, b, c) AS SELECT x, y, z FROM t", false},
+		{"CreateView_Temp", "CREATE TEMP VIEW v AS SELECT * FROM t", false},
+		{"CreateView_ColumnList", "CREATE VIEW v (a, b, c) AS SELECT x, y, z FROM t", false},
 	}
 
 	for _, tt := range tests {

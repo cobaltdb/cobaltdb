@@ -19,18 +19,16 @@ func TestCovBoostQuery_MatchAgainst(t *testing.T) {
 	}{
 		{"MatchAgainst_Simple", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern')", false},
 		{"MatchAgainst_MultiCol", "SELECT * FROM t WHERE MATCH (col1, col2) AGAINST ('pattern')", false},
-		// Note: IN BOOLEAN MODE and IN NATURAL LANGUAGE MODE not fully supported in current parser
-		// {"MatchAgainst_BooleanMode", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern' IN BOOLEAN MODE)", false},
-		// {"MatchAgainst_NaturalLanguage", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern' IN NATURAL LANGUAGE MODE)", false},
+		{"MatchAgainst_BooleanMode", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern' IN BOOLEAN MODE)", false},
+		{"MatchAgainst_NaturalLanguage", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern' IN NATURAL LANGUAGE MODE)", false},
 		{"MatchAgainst_MissingLParen", "SELECT * FROM t WHERE MATCH col) AGAINST ('pattern')", true},
 		{"MatchAgainst_MissingRParen", "SELECT * FROM t WHERE MATCH (col AGAINST ('pattern')", true},
 		{"MatchAgainst_MissingAgainst", "SELECT * FROM t WHERE MATCH (col) 'pattern'", true},
 		{"MatchAgainst_MissingPatternLParen", "SELECT * FROM t WHERE MATCH (col) AGAINST 'pattern')", true},
 		{"MatchAgainst_MissingPatternRParen", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern'", true},
-		// These test cases are for error paths that may not be reachable with current parser
-		// {"MatchAgainst_BooleanMissingMode", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern' IN BOOLEAN)", true},
-		// {"MatchAgainst_NaturalMissingLanguage", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern' IN NATURAL)", true},
-		// {"MatchAgainst_NaturalMissingMode", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern' IN NATURAL LANGUAGE)", true},
+		{"MatchAgainst_BooleanMissingMode", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern' IN BOOLEAN)", true},
+		{"MatchAgainst_NaturalMissingLanguage", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern' IN NATURAL)", true},
+		{"MatchAgainst_NaturalMissingMode", "SELECT * FROM t WHERE MATCH (col) AGAINST ('pattern' IN NATURAL LANGUAGE)", true},
 	}
 
 	for _, tt := range tests {
@@ -255,8 +253,8 @@ func TestCovBoostQuery_CreateIndex(t *testing.T) {
 		{"CreateIndex_Unique", "CREATE UNIQUE INDEX idx ON t (col)", false},
 		{"CreateIndex_IfNotExists", "CREATE INDEX IF NOT EXISTS idx ON t (col)", false},
 		{"CreateIndex_MultiCol", "CREATE INDEX idx ON t (col1, col2)", false},
-		// Note: DESC in index column list not fully supported
-		// {"CreateIndex_Desc", "CREATE INDEX idx ON t (col DESC)", false},
+		{"CreateIndex_Desc", "CREATE INDEX idx ON t (col DESC)", false},
+		{"CreateIndex_AscCollate", "CREATE INDEX idx ON t (col ASC COLLATE NOCASE)", false},
 		{"CreateIndex_Where", "CREATE INDEX idx ON t (col) WHERE col > 0", false},
 		{"DropIndex_Simple", "DROP INDEX idx ON t", false},
 		{"DropIndex_IfExists", "DROP INDEX IF EXISTS idx ON t", false},
@@ -291,9 +289,8 @@ func TestCovBoostQuery_CreateCollection(t *testing.T) {
 	}{
 		{"CreateCollection_Simple", "CREATE COLLECTION c", false},
 		{"CreateCollection_IfNotExists", "CREATE COLLECTION IF NOT EXISTS c", false},
-		// Note: DROP COLLECTION may not be fully supported
-		// {"DropCollection_Simple", "DROP COLLECTION c", false},
-		// {"DropCollection_IfExists", "DROP COLLECTION IF EXISTS c", false},
+		{"DropCollection_Simple", "DROP COLLECTION c", false},
+		{"DropCollection_IfExists", "DROP COLLECTION IF EXISTS c", false},
 		{"CreateCollection_MissingName", "CREATE COLLECTION", true},
 		{"CreateCollection_MissingIfNot", "CREATE COLLECTION IF EXISTS c", true},
 		{"DropCollection_MissingIfExists", "DROP COLLECTION IF c", true},
@@ -491,8 +488,7 @@ func TestCovBoostQuery_Call(t *testing.T) {
 	}{
 		{"Call_Simple", "CALL p()", false},
 		{"Call_WithArgs", "CALL p(1, 2, 3)", false},
-		// Note: Named arguments with => syntax not fully supported
-		// {"Call_WithNamedArgs", "CALL p(a => 1, b => 2)", false},
+		{"Call_WithNamedArgs", "CALL p(a => 1, b => 2)", false},
 		{"Call_MissingName", "CALL ()", true},
 		{"Call_MissingRParen", "CALL p(", true},
 	}

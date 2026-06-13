@@ -10,14 +10,46 @@ import (
 func (p *Parser) parseCreate() (Statement, error) {
 	p.advance() // consume CREATE
 
+	orReplace := false
+	if p.current().Type == TokenOr {
+		p.advance()
+		if _, err := p.expect(TokenReplace); err != nil {
+			return nil, err
+		}
+		orReplace = true
+	}
+
+	temporary := false
+	if isKeywordIdentifier(p.current(), "TEMP") || isKeywordIdentifier(p.current(), "TEMPORARY") {
+		temporary = true
+		p.advance()
+	}
+	if orReplace && p.current().Type != TokenView {
+		return nil, fmt.Errorf("OR REPLACE is only supported for CREATE VIEW")
+	}
+
 	switch p.current().Type {
 	case TokenTable:
-		return p.parseCreateTable()
+		stmt, err := p.parseCreateTable()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Temporary = temporary
+		return stmt, nil
 	case TokenForeign:
+		if temporary {
+			return nil, fmt.Errorf("TEMPORARY is only supported for CREATE TABLE")
+		}
 		return p.parseCreateForeignTable()
 	case TokenIndex:
+		if temporary {
+			return nil, fmt.Errorf("TEMPORARY is only supported for CREATE TABLE")
+		}
 		return p.parseCreateIndex()
 	case TokenUnique:
+		if temporary {
+			return nil, fmt.Errorf("TEMPORARY is only supported for CREATE TABLE")
+		}
 		// CREATE UNIQUE INDEX ...
 		p.advance() // consume UNIQUE
 		if p.current().Type != TokenIndex {
@@ -30,20 +62,47 @@ func (p *Parser) parseCreate() (Statement, error) {
 		stmt.Unique = true
 		return stmt, nil
 	case TokenCollection:
+		if temporary {
+			return nil, fmt.Errorf("TEMPORARY is only supported for CREATE TABLE")
+		}
 		return p.parseCreateCollection()
 	case TokenView:
-		return p.parseCreateView()
+		stmt, err := p.parseCreateView()
+		if err != nil {
+			return nil, err
+		}
+		stmt.OrReplace = orReplace
+		stmt.Temporary = temporary
+		return stmt, nil
 	case TokenTrigger:
+		if temporary {
+			return nil, fmt.Errorf("TEMPORARY is only supported for CREATE TABLE")
+		}
 		return p.parseCreateTrigger()
 	case TokenProcedure:
+		if temporary {
+			return nil, fmt.Errorf("TEMPORARY is only supported for CREATE TABLE")
+		}
 		return p.parseCreateProcedure()
 	case TokenMaterialized:
+		if temporary {
+			return nil, fmt.Errorf("TEMPORARY is only supported for CREATE TABLE")
+		}
 		return p.parseCreateMaterializedView()
 	case TokenFulltext:
+		if temporary {
+			return nil, fmt.Errorf("TEMPORARY is only supported for CREATE TABLE")
+		}
 		return p.parseCreateFTSIndex()
 	case TokenVector:
+		if temporary {
+			return nil, fmt.Errorf("TEMPORARY is only supported for CREATE TABLE")
+		}
 		return p.parseCreateVectorIndex()
 	case TokenPolicy:
+		if temporary {
+			return nil, fmt.Errorf("TEMPORARY is only supported for CREATE TABLE")
+		}
 		return p.parseCreatePolicy()
 	default:
 		return nil, fmt.Errorf("unexpected token after CREATE: %s", p.current().Literal)
@@ -80,6 +139,16 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 
 	// Column definitions and table constraints
 	for {
+		constraintName := ""
+		if isKeywordIdentifier(p.current(), "CONSTRAINT") {
+			p.advance()
+			nameTok, err := p.expect(TokenIdentifier)
+			if err != nil {
+				return nil, err
+			}
+			constraintName = nameTok.Literal
+		}
+
 		// Check for FOREIGN KEY constraint
 		if p.current().Type == TokenForeign {
 			p.advance() // consume FOREIGN
@@ -87,6 +156,7 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 			if err != nil {
 				return nil, err
 			}
+			fk.Name = constraintName
 			stmt.ForeignKeys = append(stmt.ForeignKeys, fk)
 			if !p.match(TokenComma) {
 				break
@@ -141,7 +211,30 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 			if _, err := p.expect(TokenRParen); err != nil {
 				return nil, err
 			}
-			stmt.UniqueConstraints = append(stmt.UniqueConstraints, cols)
+			if constraintName != "" {
+				stmt.NamedUniqueConstraints = append(stmt.NamedUniqueConstraints, UniqueConstraintDef{Name: constraintName, Columns: cols})
+			} else {
+				stmt.UniqueConstraints = append(stmt.UniqueConstraints, cols)
+			}
+			if !p.match(TokenComma) {
+				break
+			}
+			continue
+		}
+
+		if p.current().Type == TokenCheck {
+			p.advance()
+			if _, err := p.expect(TokenLParen); err != nil {
+				return nil, err
+			}
+			checkExpr, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(TokenRParen); err != nil {
+				return nil, err
+			}
+			stmt.CheckConstraints = append(stmt.CheckConstraints, CheckConstraintDef{Name: constraintName, Expr: checkExpr})
 			if !p.match(TokenComma) {
 				break
 			}
@@ -425,40 +518,63 @@ func (p *Parser) parseReferencesClause(fk *ForeignKeyDef) error {
 	}
 
 	// ON DELETE and ON UPDATE (in any order, both optional)
+	seenDelete := false
+	seenUpdate := false
 	for i := 0; i < 2; i++ {
 		if !p.match(TokenOn) {
 			break
 		}
 		if p.match(TokenDelete) {
-			if p.match(TokenCascade) {
-				fk.OnDelete = "CASCADE"
-			} else if p.match(TokenSet) {
-				p.match(TokenNull)
-				fk.OnDelete = "SET NULL"
-			} else if p.match(TokenRestrict) {
-				fk.OnDelete = "RESTRICT"
-			} else if p.match(TokenNo) {
-				p.match(TokenAction)
-				fk.OnDelete = "NO ACTION"
+			if seenDelete {
+				return fmt.Errorf("duplicate ON DELETE clause in foreign key")
 			}
+			action, err := p.parseForeignKeyAction("DELETE")
+			if err != nil {
+				return err
+			}
+			fk.OnDelete = action
+			seenDelete = true
 		} else if p.match(TokenUpdate) {
-			if p.match(TokenCascade) {
-				fk.OnUpdate = "CASCADE"
-			} else if p.match(TokenSet) {
-				p.match(TokenNull)
-				fk.OnUpdate = "SET NULL"
-			} else if p.match(TokenRestrict) {
-				fk.OnUpdate = "RESTRICT"
-			} else if p.match(TokenNo) {
-				p.match(TokenAction)
-				fk.OnUpdate = "NO ACTION"
+			if seenUpdate {
+				return fmt.Errorf("duplicate ON UPDATE clause in foreign key")
 			}
+			action, err := p.parseForeignKeyAction("UPDATE")
+			if err != nil {
+				return err
+			}
+			fk.OnUpdate = action
+			seenUpdate = true
 		} else {
 			return fmt.Errorf("expected DELETE or UPDATE after ON")
 		}
 	}
 
 	return nil
+}
+
+func (p *Parser) parseForeignKeyAction(kind string) (string, error) {
+	if p.match(TokenCascade) {
+		return "CASCADE", nil
+	}
+	if p.match(TokenSet) {
+		if p.match(TokenNull) {
+			return "SET NULL", nil
+		}
+		if p.match(TokenDefault) {
+			return "SET DEFAULT", nil
+		}
+		return "", fmt.Errorf("expected NULL or DEFAULT after ON %s SET", kind)
+	}
+	if p.match(TokenRestrict) {
+		return "RESTRICT", nil
+	}
+	if p.match(TokenNo) {
+		if _, err := p.expect(TokenAction); err != nil {
+			return "", fmt.Errorf("expected ACTION after ON %s NO", kind)
+		}
+		return "NO ACTION", nil
+	}
+	return "", fmt.Errorf("expected CASCADE, SET NULL, SET DEFAULT, RESTRICT, or NO ACTION after ON %s", kind)
 }
 
 // parseColumnDef parses a column definition
@@ -502,7 +618,17 @@ func (p *Parser) parseColumnDef() (*ColumnDef, error) {
 	}
 
 	// Column constraints
+	pendingConstraintName := ""
 	for {
+		if isKeywordIdentifier(p.current(), "CONSTRAINT") {
+			p.advance()
+			nameTok, err := p.expect(TokenIdentifier)
+			if err != nil {
+				return nil, err
+			}
+			pendingConstraintName = nameTok.Literal
+			continue
+		}
 		switch p.current().Type {
 		case TokenPrimary:
 			p.advance()
@@ -510,18 +636,26 @@ func (p *Parser) parseColumnDef() (*ColumnDef, error) {
 				return nil, err
 			}
 			col.PrimaryKey = true
+			pendingConstraintName = ""
 		case TokenNot:
 			p.advance()
 			if _, err := p.expect(TokenNull); err != nil {
 				return nil, err
 			}
 			col.NotNull = true
+			pendingConstraintName = ""
 		case TokenUnique:
 			p.advance()
-			col.Unique = true
+			if pendingConstraintName != "" {
+				col.UniqueName = pendingConstraintName
+			} else {
+				col.Unique = true
+			}
+			pendingConstraintName = ""
 		case TokenAutoIncrement:
 			p.advance()
 			col.AutoIncrement = true
+			pendingConstraintName = ""
 		case TokenDefault:
 			p.advance()
 			val, err := p.parseExpression()
@@ -529,6 +663,7 @@ func (p *Parser) parseColumnDef() (*ColumnDef, error) {
 				return nil, err
 			}
 			col.Default = val
+			pendingConstraintName = ""
 		case TokenCheck:
 			p.advance()
 			if _, err := p.expect(TokenLParen); err != nil {
@@ -542,13 +677,26 @@ func (p *Parser) parseColumnDef() (*ColumnDef, error) {
 				return nil, err
 			}
 			col.Check = checkExpr
+			col.CheckName = pendingConstraintName
+			pendingConstraintName = ""
 		case TokenReferences:
 			// Inline column-level FK: `col TYPE REFERENCES other(col)`.
-			fk := &ForeignKeyDef{Columns: []string{col.Name}}
+			fk := &ForeignKeyDef{Name: pendingConstraintName, Columns: []string{col.Name}}
 			if err := p.parseReferencesClause(fk); err != nil {
 				return nil, err
 			}
 			col.ForeignKey = fk
+			pendingConstraintName = ""
+		case TokenIdentifier:
+			if !strings.EqualFold(p.current().Literal, "COLLATE") {
+				return col, nil
+			}
+			p.advance()
+			if p.current().Type == TokenRParen || p.current().Type == TokenComma || p.current().Type == TokenEOF {
+				return nil, fmt.Errorf("expected collation name after COLLATE")
+			}
+			col.Collation = p.current().Literal
+			p.advance()
 		default:
 			return col, nil
 		}
@@ -586,7 +734,7 @@ func (p *Parser) parseCreateIndex() (*CreateIndexStmt, error) {
 		return nil, err
 	}
 
-	columns, err := p.parseIdentifierList()
+	columns, err := p.parseIndexColumnList()
 	if err != nil {
 		return nil, err
 	}
@@ -597,6 +745,44 @@ func (p *Parser) parseCreateIndex() (*CreateIndexStmt, error) {
 	}
 
 	return stmt, nil
+}
+
+func (p *Parser) parseIndexColumnList() ([]string, error) {
+	var columns []string
+	for {
+		tok := p.current()
+		if tok.Type != TokenIdentifier && !(tok.Literal != "" && tok.Type != TokenEOF && tok.Type != TokenRParen && tok.Type != TokenComma) {
+			return nil, fmt.Errorf("expected IDENTIFIER, got %s", tok.Literal)
+		}
+		columns = append(columns, tok.Literal)
+		p.advance()
+
+		if err := p.consumeIndexColumnModifiers(); err != nil {
+			return nil, err
+		}
+
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+	return columns, nil
+}
+
+func (p *Parser) consumeIndexColumnModifiers() error {
+	for {
+		switch {
+		case p.current().Type == TokenAsc || p.current().Type == TokenDesc:
+			p.advance()
+		case p.current().Type == TokenIdentifier && strings.EqualFold(p.current().Literal, "COLLATE"):
+			p.advance()
+			if p.current().Type == TokenRParen || p.current().Type == TokenComma || p.current().Type == TokenEOF {
+				return fmt.Errorf("expected collation name after COLLATE")
+			}
+			p.advance()
+		default:
+			return nil
+		}
+	}
 }
 
 // parseCreateCollection parses CREATE COLLECTION
@@ -628,6 +814,17 @@ func (p *Parser) parseCreateView() (*CreateViewStmt, error) {
 	}
 	stmt.Name = name.Literal
 
+	if p.match(TokenLParen) {
+		columns, err := p.parseIdentifierList()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenRParen); err != nil {
+			return nil, err
+		}
+		stmt.Columns = columns
+	}
+
 	// AS SELECT query
 	if _, err := p.expect(TokenAs); err != nil {
 		return nil, err
@@ -636,8 +833,28 @@ func (p *Parser) parseCreateView() (*CreateViewStmt, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse view query: %w", err)
 	}
+	if len(stmt.Columns) > 0 && len(stmt.Columns) != len(stmt.Query.Columns) {
+		return nil, fmt.Errorf("view column list has %d columns but query returns %d columns", len(stmt.Columns), len(stmt.Query.Columns))
+	}
+	applyViewColumnAliases(stmt.Query, stmt.Columns)
 
 	return stmt, nil
+}
+
+func applyViewColumnAliases(sel *SelectStmt, columns []string) {
+	if sel == nil || len(columns) == 0 {
+		return
+	}
+	for i, name := range columns {
+		if i >= len(sel.Columns) {
+			return
+		}
+		if alias, ok := sel.Columns[i].(*AliasExpr); ok {
+			sel.Columns[i] = &AliasExpr{Expr: alias.Expr, Alias: name}
+			continue
+		}
+		sel.Columns[i] = &AliasExpr{Expr: sel.Columns[i], Alias: name}
+	}
 }
 
 // parseDropView parses DROP VIEW
@@ -803,13 +1020,18 @@ func (p *Parser) parseCreateProcedure() (*CreateProcedureStmt, error) {
 	// (parameters)
 	if p.match(TokenLParen) {
 		for !p.match(TokenRParen) {
-			param := &ParamDef{}
+			param := &ParamDef{Mode: TokenIn}
 
 			// Optional IN/OUT/INOUT keyword
 			if p.current().Type == TokenIn {
+				param.Mode = TokenIn
 				p.advance() // consume IN
 			} else if p.current().Type == TokenOut {
+				param.Mode = TokenOut
 				p.advance() // consume OUT
+			} else if p.current().Type == TokenInout {
+				param.Mode = TokenInout
+				p.advance() // consume INOUT
 			}
 
 			paramName, err := p.expect(TokenIdentifier)
@@ -905,6 +1127,8 @@ func (p *Parser) parseDrop() (Statement, error) {
 		return p.parseDropIndex()
 	case TokenView:
 		return p.parseDropView()
+	case TokenCollection:
+		return p.parseDropCollection()
 	case TokenTrigger:
 		return p.parseDropTrigger()
 	case TokenProcedure:
@@ -916,6 +1140,26 @@ func (p *Parser) parseDrop() (Statement, error) {
 	default:
 		return nil, fmt.Errorf("unexpected token after DROP: %s", p.current().Literal)
 	}
+}
+
+// parseDropCollection parses DROP COLLECTION
+func (p *Parser) parseDropCollection() (*DropCollectionStmt, error) {
+	stmt := &DropCollectionStmt{}
+	p.advance() // consume COLLECTION
+
+	if p.match(TokenIf) {
+		if _, err := p.expect(TokenExists); err != nil {
+			return nil, err
+		}
+		stmt.IfExists = true
+	}
+
+	name, err := p.expect(TokenIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	stmt.Name = name.Literal
+	return stmt, nil
 }
 
 // parseDropTable parses DROP TABLE
@@ -982,6 +1226,12 @@ func (p *Parser) parseAlterTable() (*AlterTableStmt, error) {
 	case TokenAdd:
 		// ADD COLUMN
 		p.advance()
+		if isKeywordIdentifier(p.current(), "CONSTRAINT") {
+			if err := p.parseAlterTableAddConstraint(stmt); err != nil {
+				return nil, err
+			}
+			break
+		}
 		p.match(TokenColumn) // COLUMN keyword is optional
 		stmt.Action = "ADD"
 		col, err := p.parseColumnDef()
@@ -993,6 +1243,17 @@ func (p *Parser) parseAlterTable() (*AlterTableStmt, error) {
 	case TokenDrop:
 		// DROP COLUMN
 		p.advance()
+		if isKeywordIdentifier(p.current(), "CONSTRAINT") {
+			p.advance()
+			constraintName := p.current()
+			if constraintName.Type == TokenIdentifier || (constraintName.Literal != "" && constraintName.Type != TokenEOF) {
+				stmt.Action = "DROP_CONSTRAINT"
+				stmt.ConstraintName = constraintName.Literal
+				p.advance()
+				break
+			}
+			return nil, fmt.Errorf("expected constraint name, got %s", constraintName.Literal)
+		}
 		p.match(TokenColumn) // COLUMN keyword is optional
 		stmt.Action = "DROP"
 		colName := p.current()
@@ -1043,11 +1304,102 @@ func (p *Parser) parseAlterTable() (*AlterTableStmt, error) {
 			return nil, fmt.Errorf("expected TO or COLUMN after RENAME, got %s", p.current().Literal)
 		}
 
+	case TokenIdentifier:
+		if !strings.EqualFold(p.current().Literal, "ENABLE") {
+			return nil, fmt.Errorf("expected ADD, DROP, RENAME, or ENABLE, got %s", p.current().Literal)
+		}
+		p.advance()
+		if !strings.EqualFold(p.current().Literal, "ROW") {
+			return nil, fmt.Errorf("expected ROW after ENABLE, got %s", p.current().Literal)
+		}
+		p.advance()
+		if !strings.EqualFold(p.current().Literal, "LEVEL") {
+			return nil, fmt.Errorf("expected LEVEL after ENABLE ROW, got %s", p.current().Literal)
+		}
+		p.advance()
+		if !strings.EqualFold(p.current().Literal, "SECURITY") {
+			return nil, fmt.Errorf("expected SECURITY after ENABLE ROW LEVEL, got %s", p.current().Literal)
+		}
+		p.advance()
+		stmt.Action = "ENABLE_RLS"
+
 	default:
-		return nil, fmt.Errorf("expected ADD, DROP, or RENAME, got %s", p.current().Literal)
+		return nil, fmt.Errorf("expected ADD, DROP, RENAME, or ENABLE, got %s", p.current().Literal)
 	}
 
 	return stmt, nil
+}
+
+func (p *Parser) parseAlterTableAddConstraint(stmt *AlterTableStmt) error {
+	p.advance() // consume CONSTRAINT
+	constraintName := p.current()
+	if constraintName.Type != TokenIdentifier && (constraintName.Literal == "" || constraintName.Type == TokenEOF) {
+		return fmt.Errorf("expected constraint name, got %s", constraintName.Literal)
+	}
+	stmt.Action = "ADD_CONSTRAINT"
+	stmt.ConstraintName = constraintName.Literal
+	p.advance()
+
+	switch p.current().Type {
+	case TokenUnique:
+		p.advance()
+		cols, err := p.parseParenthesizedIdentifierList()
+		if err != nil {
+			return err
+		}
+		stmt.ConstraintType = "UNIQUE"
+		stmt.ConstraintColumns = cols
+		return nil
+	case TokenForeign:
+		p.advance()
+		fk, err := p.parseForeignKeyDef()
+		if err != nil {
+			return err
+		}
+		fk.Name = stmt.ConstraintName
+		stmt.ConstraintType = "FOREIGN KEY"
+		stmt.ConstraintColumns = append([]string(nil), fk.Columns...)
+		stmt.ForeignKey = fk
+		return nil
+	case TokenCheck:
+		p.advance()
+		if _, err := p.expect(TokenLParen); err != nil {
+			return err
+		}
+		checkExpr, err := p.parseExpression()
+		if err != nil {
+			return err
+		}
+		if _, err := p.expect(TokenRParen); err != nil {
+			return err
+		}
+		stmt.ConstraintType = "CHECK"
+		stmt.ConstraintCheck = checkExpr
+		return nil
+	default:
+		return fmt.Errorf("unsupported ALTER TABLE ADD CONSTRAINT type: %s", p.current().Literal)
+	}
+}
+
+func (p *Parser) parseParenthesizedIdentifierList() ([]string, error) {
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, err
+	}
+	var cols []string
+	for {
+		col, err := p.expect(TokenIdentifier)
+		if err != nil {
+			return nil, err
+		}
+		cols = append(cols, col.Literal)
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, err
+	}
+	return cols, nil
 }
 
 // parseCall parses CALL procedure statement
@@ -1066,11 +1418,12 @@ func (p *Parser) parseCall() (*CallProcedureStmt, error) {
 	// Parse arguments
 	if p.match(TokenLParen) {
 		for !p.match(TokenRParen) {
-			arg, err := p.parseExpression()
+			arg, err := p.parseCallArg()
 			if err != nil {
 				return nil, err
 			}
-			stmt.Params = append(stmt.Params, arg)
+			stmt.Args = append(stmt.Args, arg)
+			stmt.Params = append(stmt.Params, arg.Expr)
 			if !p.match(TokenComma) {
 				if _, err := p.expect(TokenRParen); err != nil {
 					return nil, err
@@ -1081,8 +1434,8 @@ func (p *Parser) parseCall() (*CallProcedureStmt, error) {
 	}
 
 	placeholderOffset := 0
-	for _, param := range stmt.Params {
-		placeholders := collectPlaceholders(param)
+	for _, arg := range stmt.Args {
+		placeholders := collectPlaceholders(arg.Expr)
 		for i, ph := range placeholders {
 			ph.Index = placeholderOffset + i
 		}
@@ -1090,6 +1443,25 @@ func (p *Parser) parseCall() (*CallProcedureStmt, error) {
 	}
 
 	return stmt, nil
+}
+
+func (p *Parser) parseCallArg() (CallArg, error) {
+	if p.current().Type == TokenIdentifier && p.peek().Type == TokenFatArrow {
+		name := p.current().Literal
+		p.advance() // consume name
+		p.advance() // consume =>
+		expr, err := p.parseExpression()
+		if err != nil {
+			return CallArg{}, err
+		}
+		return CallArg{Name: name, Expr: expr}, nil
+	}
+
+	expr, err := p.parseExpression()
+	if err != nil {
+		return CallArg{}, err
+	}
+	return CallArg{Expr: expr}, nil
 }
 
 // parseCreateMaterializedView parses CREATE MATERIALIZED VIEW

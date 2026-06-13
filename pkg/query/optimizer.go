@@ -86,7 +86,7 @@ func (qo *QueryOptimizer) pushDownPredicates(stmt *SelectStmt) *SelectStmt {
 	// If there's a subquery, try to push predicates into it
 	if stmt.Where != nil && stmt.From != nil {
 		// Check if we can use an index
-		if qo.canUseIndex(stmt.From.Name, stmt.Where) {
+		if !stmt.From.NotIndexed && qo.canUseIndex(stmt.From.Name, stmt.Where) {
 			// Mark for index usage - store hint in the TableRef
 			if stmt.From.IndexHint == "" {
 				stmt.From.IndexHint = "auto"
@@ -262,7 +262,7 @@ func (qo *QueryOptimizer) optimizeProjections(stmt *SelectStmt) *SelectStmt {
 	}
 
 	// Mark index hints for columns referenced in WHERE that have indexes
-	if stmt.From != nil && stmt.Where != nil {
+	if stmt.From != nil && stmt.Where != nil && !stmt.From.NotIndexed {
 		cols := qo.extractWhereColumns(stmt.Where)
 		for _, col := range cols {
 			key := stmt.From.Name + "." + col

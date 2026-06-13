@@ -123,6 +123,72 @@ func TestParseInSubqueryDeep(t *testing.T) {
 	}
 }
 
+func TestParserRejectsOversizedExpressionLists(t *testing.T) {
+	makeList := func(prefix, item, separator, suffix string, count int) string {
+		var b strings.Builder
+		b.WriteString(prefix)
+		for i := 0; i < count; i++ {
+			if i > 0 {
+				b.WriteString(separator)
+			}
+			b.WriteString(item)
+		}
+		b.WriteString(suffix)
+		return b.String()
+	}
+
+	tests := []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{
+			name: "select columns",
+			sql:  makeList("SELECT ", "1", ",", "", maxParserListItems+1),
+			want: "SELECT column count exceeds maximum",
+		},
+		{
+			name: "in list",
+			sql:  makeList("SELECT * FROM t WHERE x IN (", "1", ",", ")", maxParserListItems+1),
+			want: "expression list count exceeds maximum",
+		},
+		{
+			name: "function args",
+			sql:  makeList("SELECT COALESCE(", "1", ",", ")", maxParserListItems+1),
+			want: "function argument count exceeds maximum",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse(tt.sql)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected parse error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestParserRejectsDeepPrefixOperatorChains(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+	}{
+		{name: "not", prefix: "NOT "},
+		{name: "unary minus", prefix: "- "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql := "SELECT " + strings.Repeat(tt.prefix, maxParserDepth+1) + "1"
+			_, err := Parse(sql)
+			if err == nil || !strings.Contains(err.Error(), "expression nesting depth exceeds maximum") {
+				t.Fatalf("expected parser depth limit error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestParseNotLikeDeep(t *testing.T) {
 	sql := "SELECT * FROM t WHERE name NOT LIKE '%foo%'"
 	stmt, err := Parse(sql)
@@ -210,13 +276,36 @@ func TestParseInsertOrIgnoreDeep(t *testing.T) {
 	}
 }
 
+func TestParseInsertOrRollbackAbortFailDeep(t *testing.T) {
+	tests := []struct {
+		sql  string
+		want ConflictAction
+	}{
+		{"INSERT OR ROLLBACK INTO t (a) VALUES (1)", ConflictRollback},
+		{"INSERT OR ABORT INTO t (a) VALUES (1)", ConflictAbort},
+		{"INSERT OR FAIL INTO t (a) VALUES (1)", ConflictAbort},
+	}
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ins := stmt.(*InsertStmt)
+			if ins.ConflictAction != tt.want {
+				t.Fatalf("ConflictAction = %v, want %v", ins.ConflictAction, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseInsertOrInvalidErrorDeep(t *testing.T) {
 	sql := "INSERT OR FOOBAR INTO t VALUES (1)"
 	_, err := Parse(sql)
 	if err == nil {
 		t.Fatal("expected error for INSERT OR FOOBAR")
 	}
-	if !strings.Contains(err.Error(), "REPLACE or IGNORE") {
+	if !strings.Contains(err.Error(), "REPLACE, IGNORE, ROLLBACK, ABORT, or FAIL") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

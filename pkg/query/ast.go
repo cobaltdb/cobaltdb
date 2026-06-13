@@ -89,6 +89,25 @@ func walkChildren(expr interface{}, v ExpressionVisitor, ctx interface{}) {
 		for _, arg := range e.Args {
 			Walk(arg, v, ctx)
 		}
+		Walk(e.Filter, v, ctx)
+		for _, ob := range e.OrderBy {
+			if ob != nil {
+				Walk(ob.Expr, v, ctx)
+			}
+		}
+	case *WindowExpr:
+		for _, arg := range e.Args {
+			Walk(arg, v, ctx)
+		}
+		Walk(e.Filter, v, ctx)
+		for _, partitionExpr := range e.PartitionBy {
+			Walk(partitionExpr, v, ctx)
+		}
+		for _, ob := range e.OrderBy {
+			if ob != nil {
+				Walk(ob.Expr, v, ctx)
+			}
+		}
 	case *InExpr:
 		Walk(e.Expr, v, ctx)
 		if e.Subquery == nil {
@@ -304,10 +323,19 @@ type SelectStmt struct {
 	Limit    Expression
 	Offset   Expression
 	AsOf     *TemporalExpr // AS OF clause for temporal queries
+	Locking  *SelectLockingClause
 }
 
 func (s *SelectStmt) nodeType() string { return "SelectStmt" }
 func (s *SelectStmt) statementNode()   {}
+
+// SelectLockingClause represents SELECT ... FOR UPDATE/SHARE.
+type SelectLockingClause struct {
+	Mode       string
+	Targets    []string
+	WaitPolicy string
+	WaitValue  Expression
+}
 
 // SetOpType represents the type of set operation
 type SetOpType int
@@ -336,9 +364,10 @@ func (s *UnionStmt) statementNode()   {}
 type ConflictAction int
 
 const (
-	ConflictAbort   ConflictAction = iota // Default: abort on conflict
-	ConflictReplace                       // INSERT OR REPLACE: replace existing row
-	ConflictIgnore                        // INSERT OR IGNORE: skip conflicting row
+	ConflictAbort    ConflictAction = iota // Default: abort on conflict
+	ConflictReplace                        // INSERT OR REPLACE: replace existing row
+	ConflictIgnore                         // INSERT OR IGNORE: skip conflicting row
+	ConflictRollback                       // INSERT OR ROLLBACK: rollback active transaction on conflict
 )
 
 // InsertStmt represents an INSERT statement
@@ -347,7 +376,7 @@ type InsertStmt struct {
 	Columns        []string
 	Values         [][]Expression
 	Select         *SelectStmt       // For INSERT INTO ... SELECT ...
-	ConflictAction ConflictAction    // OR REPLACE / OR IGNORE
+	ConflictAction ConflictAction    // OR REPLACE / OR IGNORE / OR ROLLBACK
 	OnConflict     *OnConflictClause // ON CONFLICT (...) DO NOTHING|UPDATE
 	Returning      []Expression      // RETURNING clause expressions
 }
@@ -365,6 +394,7 @@ func (s *InsertStmt) statementNode()   {}
 // UpdateStmt represents an UPDATE statement
 type UpdateStmt struct {
 	Table     string // Target table to update
+	Alias     string // Optional target table alias
 	Set       []*SetClause
 	From      *TableRef // Optional FROM clause for UPDATE with JOIN
 	Joins     []*JoinClause
@@ -422,6 +452,7 @@ type SinglePartition struct {
 // CreateTableStmt represents a CREATE TABLE statement
 type CreateTableStmt struct {
 	IfNotExists bool
+	Temporary   bool
 	Table       string
 	Columns     []*ColumnDef
 	PrimaryKey  []string // Table-level PRIMARY KEY (col1, col2, ...) for composite PK
@@ -429,11 +460,23 @@ type CreateTableStmt struct {
 	Partition   *PartitionDef // Table partitioning definition
 	AsSelect    Statement     // CREATE TABLE ... AS SELECT ... (CTAS); nil otherwise
 	// UniqueConstraints holds table-level UNIQUE (col, ...) constraint column sets.
-	UniqueConstraints [][]string
+	UniqueConstraints      [][]string
+	NamedUniqueConstraints []UniqueConstraintDef
+	CheckConstraints       []CheckConstraintDef
 }
 
 func (s *CreateTableStmt) nodeType() string { return "CreateTableStmt" }
 func (s *CreateTableStmt) statementNode()   {}
+
+type UniqueConstraintDef struct {
+	Name    string
+	Columns []string
+}
+
+type CheckConstraintDef struct {
+	Name string
+	Expr Expression
+}
 
 // CreateForeignTableStmt represents a CREATE FOREIGN TABLE statement
 type CreateForeignTableStmt struct {
@@ -497,10 +540,22 @@ type CreateCollectionStmt struct {
 func (s *CreateCollectionStmt) nodeType() string { return "CreateCollectionStmt" }
 func (s *CreateCollectionStmt) statementNode()   {}
 
+// DropCollectionStmt represents a DROP COLLECTION statement
+type DropCollectionStmt struct {
+	IfExists bool
+	Name     string
+}
+
+func (s *DropCollectionStmt) nodeType() string { return "DropCollectionStmt" }
+func (s *DropCollectionStmt) statementNode()   {}
+
 // CreateViewStmt represents a CREATE VIEW statement
 type CreateViewStmt struct {
 	IfNotExists bool
+	OrReplace   bool
+	Temporary   bool
 	Name        string
+	Columns     []string
 	Query       *SelectStmt
 	RawSQL      string
 }
@@ -590,16 +645,24 @@ func (s *DropPolicyStmt) statementNode()   {}
 type ParamDef struct {
 	Name string
 	Type TokenType
+	Mode TokenType // TokenIn (default), TokenOut, or TokenInout
 }
 
 // CallProcedureStmt represents a CALL statement
 type CallProcedureStmt struct {
 	Name   string
 	Params []Expression
+	Args   []CallArg
 }
 
 func (s *CallProcedureStmt) nodeType() string { return "CallProcedureStmt" }
 func (s *CallProcedureStmt) statementNode()   {}
+
+// CallArg represents one CALL argument. Name is empty for positional arguments.
+type CallArg struct {
+	Name string
+	Expr Expression
+}
 
 // BeginStmt represents a BEGIN TRANSACTION statement
 type BeginStmt struct {
@@ -645,16 +708,20 @@ type ColumnDef struct {
 	Type          TokenType
 	NotNull       bool
 	Unique        bool
+	UniqueName    string
 	PrimaryKey    bool
 	AutoIncrement bool
 	Default       Expression
 	Check         Expression     // CHECK (expression)
+	CheckName     string         // Optional CHECK constraint name
+	Collation     string         // Optional COLLATE name
 	Dimensions    int            // For VECTOR type: number of dimensions
 	ForeignKey    *ForeignKeyDef // inline column-level REFERENCES constraint
 }
 
 // ForeignKeyDef represents a foreign key constraint
 type ForeignKeyDef struct {
+	Name              string
 	Columns           []string
 	ReferencedTable   string
 	ReferencedColumns []string
@@ -669,6 +736,7 @@ type TableRef struct {
 	Subquery     *SelectStmt // non-nil for derived tables: FROM (SELECT ...) AS alias
 	SubqueryStmt Statement   // non-nil for derived tables with UNION: FROM (SELECT ... UNION ...) AS alias
 	IndexHint    string      // hint for index usage (e.g., "auto", "primary", "idx_name")
+	NotIndexed   bool        // SQLite-style NOT INDEXED table hint
 }
 
 // JoinClause represents a JOIN clause
@@ -842,6 +910,8 @@ type FunctionCall struct {
 	Name     string
 	Args     []Expression
 	Distinct bool // for COUNT(DISTINCT col)
+	OrderBy  []*OrderByExpr
+	Filter   Expression
 }
 
 func (e *FunctionCall) nodeType() string { return "FunctionCall" }
@@ -1109,6 +1179,7 @@ func (e *ExistsExpr) Evaluate(ev Evaluator) (interface{}, error) {
 type WindowExpr struct {
 	Function    string         // ROW_NUMBER, RANK, DENSE_RANK, etc.
 	Args        []Expression   // Function arguments
+	Filter      Expression     // optional FILTER (WHERE ...) predicate
 	PartitionBy []Expression   // PARTITION BY clause
 	OrderBy     []*OrderByExpr // ORDER BY clause
 	Frame       *WindowFrame   // optional ROWS/RANGE frame clause
@@ -1142,6 +1213,18 @@ func CollectWindowExprs(expr Expression, out *[]*WindowExpr) {
 		return
 	case *WindowExpr:
 		*out = append(*out, e)
+		for _, a := range e.Args {
+			CollectWindowExprs(a, out)
+		}
+		CollectWindowExprs(e.Filter, out)
+		for _, p := range e.PartitionBy {
+			CollectWindowExprs(p, out)
+		}
+		for _, ob := range e.OrderBy {
+			if ob != nil {
+				CollectWindowExprs(ob.Expr, out)
+			}
+		}
 	case *AliasExpr:
 		CollectWindowExprs(e.Expr, out)
 	case *BinaryExpr:
@@ -1152,6 +1235,12 @@ func CollectWindowExprs(expr Expression, out *[]*WindowExpr) {
 	case *FunctionCall:
 		for _, a := range e.Args {
 			CollectWindowExprs(a, out)
+		}
+		CollectWindowExprs(e.Filter, out)
+		for _, ob := range e.OrderBy {
+			if ob != nil {
+				CollectWindowExprs(ob.Expr, out)
+			}
 		}
 	case *CastExpr:
 		CollectWindowExprs(e.Expr, out)
@@ -1281,7 +1370,8 @@ func (e *AliasExpr) Evaluate(ev Evaluator) (interface{}, error) {
 
 // RefreshMaterializedViewStmt represents a REFRESH MATERIALIZED VIEW statement
 type RefreshMaterializedViewStmt struct {
-	Name string
+	Name         string
+	Concurrently bool
 }
 
 func (s *RefreshMaterializedViewStmt) nodeType() string { return "RefreshMaterializedViewStmt" }
@@ -1289,11 +1379,16 @@ func (s *RefreshMaterializedViewStmt) statementNode()   {}
 
 // AlterTableStmt represents ALTER TABLE ADD/DROP/RENAME
 type AlterTableStmt struct {
-	Table   string
-	Action  string // "ADD", "DROP", "RENAME_TABLE", "RENAME_COLUMN"
-	Column  ColumnDef
-	OldName string // For RENAME COLUMN: old column name
-	NewName string // For RENAME TABLE/COLUMN: new name
+	Table             string
+	Action            string // "ADD", "DROP", "RENAME_TABLE", "RENAME_COLUMN", "ADD_CONSTRAINT", "DROP_CONSTRAINT"
+	Column            ColumnDef
+	OldName           string // For RENAME COLUMN: old column name
+	NewName           string // For RENAME TABLE/COLUMN or DROP COLUMN: new name / dropped column name
+	ConstraintName    string
+	ConstraintType    string
+	ConstraintColumns []string
+	ConstraintCheck   Expression
+	ForeignKey        *ForeignKeyDef
 }
 
 func (s *AlterTableStmt) nodeType() string { return "AlterTableStmt" }

@@ -26,6 +26,16 @@ func TestParseMatchAgainst111(t *testing.T) {
 			sql:     "SELECT * FROM docs WHERE MATCH(col1, col2, col3) AGAINST('query')",
 			wantErr: false,
 		},
+		{
+			name:    "MATCH in boolean mode",
+			sql:     "SELECT * FROM articles WHERE MATCH(title, content) AGAINST('search term' IN BOOLEAN MODE)",
+			wantErr: false,
+		},
+		{
+			name:    "MATCH in natural language mode",
+			sql:     "SELECT * FROM articles WHERE MATCH(title) AGAINST('word' IN NATURAL LANGUAGE MODE)",
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -38,6 +48,50 @@ func TestParseMatchAgainst111(t *testing.T) {
 			_, err = p.Parse()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Parse() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseMatchAgainstModes111(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+		mode string
+	}{
+		{
+			name: "boolean mode",
+			sql:  "SELECT * FROM articles WHERE MATCH(title, body) AGAINST('search term' IN BOOLEAN MODE)",
+			mode: "BOOLEAN MODE",
+		},
+		{
+			name: "natural language mode",
+			sql:  "SELECT * FROM articles WHERE MATCH(title) AGAINST('search' IN NATURAL LANGUAGE MODE)",
+			mode: "NATURAL LANGUAGE MODE",
+		},
+		{
+			name: "pattern in expression remains valid",
+			sql:  "SELECT * FROM articles WHERE MATCH(title) AGAINST(('search' || ' term') IN BOOLEAN MODE)",
+			mode: "BOOLEAN MODE",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			selectStmt, ok := stmt.(*SelectStmt)
+			if !ok {
+				t.Fatalf("stmt = %T, want *SelectStmt", stmt)
+			}
+			match, ok := selectStmt.Where.(*MatchExpr)
+			if !ok {
+				t.Fatalf("where = %T, want *MatchExpr", selectStmt.Where)
+			}
+			if match.Mode != tt.mode {
+				t.Fatalf("mode = %q, want %q", match.Mode, tt.mode)
 			}
 		})
 	}

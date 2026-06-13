@@ -1171,6 +1171,29 @@ func TestParseCallProcedurePlaceholderIndexes(t *testing.T) {
 	}
 }
 
+func TestParseCallProcedureNamedArgs(t *testing.T) {
+	stmt, err := Parse("CALL test_proc(second => ?, first => ? + 1)")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	callStmt, ok := stmt.(*CallProcedureStmt)
+	if !ok {
+		t.Fatalf("Expected CallProcedureStmt, got %T", stmt)
+	}
+	if len(callStmt.Params) != 2 || len(callStmt.Args) != 2 {
+		t.Fatalf("Expected 2 params/args, got params=%d args=%d", len(callStmt.Params), len(callStmt.Args))
+	}
+	if callStmt.Args[0].Name != "second" || callStmt.Args[1].Name != "first" {
+		t.Fatalf("Named args = %#v, want second then first", callStmt.Args)
+	}
+	first := callStmt.Args[0].Expr.(*PlaceholderExpr)
+	secondExpr := callStmt.Args[1].Expr.(*BinaryExpr)
+	second := secondExpr.Left.(*PlaceholderExpr)
+	if first.Index != 0 || second.Index != 1 {
+		t.Fatalf("Placeholder indexes = %d, %d; want 0, 1", first.Index, second.Index)
+	}
+}
+
 func TestParseDropIndex(t *testing.T) {
 	tests := []struct {
 		sql    string
@@ -1264,6 +1287,35 @@ func TestParseCreateProcedureWithParamsAndBody(t *testing.T) {
 
 	if len(proc.Body) != 2 {
 		t.Errorf("Expected 2 statements in body, got %d", len(proc.Body))
+	}
+}
+
+func TestParseCreateProcedureParamModes(t *testing.T) {
+	stmt, err := Parse(`
+		CREATE PROCEDURE param_modes(IN a INTEGER, OUT b INTEGER, INOUT c INTEGER)
+		BEGIN
+			SET b = a + 1;
+			SET c = c + 1;
+		END
+	`)
+	if err != nil {
+		t.Fatalf("Parse procedure with param modes: %v", err)
+	}
+	proc, ok := stmt.(*CreateProcedureStmt)
+	if !ok {
+		t.Fatalf("Expected CreateProcedureStmt, got %T", stmt)
+	}
+	if len(proc.Params) != 3 {
+		t.Fatalf("Expected 3 params, got %d", len(proc.Params))
+	}
+	if proc.Params[0].Mode != TokenIn {
+		t.Fatalf("IN param mode = %v, want %v", proc.Params[0].Mode, TokenIn)
+	}
+	if proc.Params[1].Mode != TokenOut {
+		t.Fatalf("OUT param mode = %v, want %v", proc.Params[1].Mode, TokenOut)
+	}
+	if proc.Params[2].Mode != TokenInout {
+		t.Fatalf("INOUT param mode = %v, want %v", proc.Params[2].Mode, TokenInout)
 	}
 }
 

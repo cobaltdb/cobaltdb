@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+const (
+	maxSQLInputBytes = 1 << 20
+	maxSQLTokens     = 64 << 10
+)
+
 // Lexer tokenizes SQL input
 type Lexer struct {
 	input   string
@@ -50,25 +55,57 @@ func (l *Lexer) peekChar() byte {
 	return l.input[l.readPos]
 }
 
-// skipWhitespace skips spaces, tabs, newlines
-func (l *Lexer) skipWhitespace() {
-	for l.ch == ' ' || l.ch == '\t' || l.ch == '\n' || l.ch == '\r' {
-		l.readChar()
+func (l *Lexer) skipWhitespaceAndComments() {
+	for {
+		for l.ch == ' ' || l.ch == '\t' || l.ch == '\n' || l.ch == '\r' {
+			l.readChar()
+		}
+		if l.ch == '-' && l.peekChar() == '-' {
+			for l.ch != '\n' && l.ch != 0 {
+				l.readChar()
+			}
+			continue
+		}
+		if l.ch == '/' && l.peekChar() == '*' {
+			l.readChar() // skip /
+			l.readChar() // skip *
+			for {
+				if l.ch == 0 {
+					return
+				}
+				if l.ch == '*' && l.peekChar() == '/' {
+					l.readChar() // skip *
+					l.readChar() // skip /
+					break
+				}
+				l.readChar()
+			}
+			continue
+		}
+		return
 	}
 }
 
 // NextToken returns the next token from the input
 func (l *Lexer) NextToken() Token {
 	var tok Token
-	l.skipWhitespace()
+	l.skipWhitespaceAndComments()
 
 	tok.Line = l.line
 	tok.Column = l.column
 
 	switch l.ch {
 	case '=':
-		tok = newToken(TokenEq, l.ch, l.line, l.column)
-		l.readChar()
+		if l.peekChar() == '>' {
+			ch := l.ch
+			l.readChar()
+			literal := string(ch) + string(l.ch)
+			tok = Token{Type: TokenFatArrow, Literal: literal, Line: l.line, Column: l.column - 1}
+			l.readChar()
+		} else {
+			tok = newToken(TokenEq, l.ch, l.line, l.column)
+			l.readChar()
+		}
 	case '!':
 		if l.peekChar() == '=' {
 			ch := l.ch
@@ -130,13 +167,7 @@ func (l *Lexer) NextToken() Token {
 			l.readChar()
 		}
 	case '-':
-		if l.peekChar() == '-' {
-			// SQL line comment: skip to end of line
-			for l.ch != '\n' && l.ch != 0 {
-				l.readChar()
-			}
-			return l.NextToken()
-		} else if l.peekChar() == '>' {
+		if l.peekChar() == '>' {
 			// JSON operator -> or ->>
 			ch := l.ch
 			l.readChar()
@@ -187,23 +218,6 @@ func (l *Lexer) NextToken() Token {
 		tok = newToken(TokenStar, l.ch, l.line, l.column)
 		l.readChar()
 	case '/':
-		if l.peekChar() == '*' {
-			// SQL block comment: skip until */
-			l.readChar() // skip /
-			l.readChar() // skip *
-			for {
-				if l.ch == 0 {
-					break // EOF
-				}
-				if l.ch == '*' && l.peekChar() == '/' {
-					l.readChar() // skip *
-					l.readChar() // skip /
-					break
-				}
-				l.readChar()
-			}
-			return l.NextToken()
-		}
 		tok = newToken(TokenSlash, l.ch, l.line, l.column)
 		l.readChar()
 	case '%':
@@ -214,6 +228,9 @@ func (l *Lexer) NextToken() Token {
 		l.readChar()
 	case '^':
 		tok = newToken(TokenBitXor, l.ch, l.line, l.column)
+		l.readChar()
+	case '~':
+		tok = newToken(TokenBitNot, l.ch, l.line, l.column)
 		l.readChar()
 	case '|':
 		if l.peekChar() == '|' {
@@ -424,12 +441,18 @@ func newToken(tokenType TokenType, ch byte, line, column int) Token {
 
 // Tokenize tokenizes the entire input and returns all tokens
 func Tokenize(input string) ([]Token, error) {
+	if len(input) > maxSQLInputBytes {
+		return nil, fmt.Errorf("SQL input exceeds maximum size (%d bytes)", maxSQLInputBytes)
+	}
 	l := NewLexer(input)
 	tokens := make([]Token, 0, len(input)/4+10)
 
 	for {
 		tok := l.NextToken()
 		tokens = append(tokens, tok)
+		if len(tokens) > maxSQLTokens {
+			return nil, fmt.Errorf("SQL token count exceeds maximum (%d)", maxSQLTokens)
+		}
 		if tok.Type == TokenEOF {
 			break
 		}

@@ -334,9 +334,12 @@ func TestPreparedCache_ReturnsIsolatedStatements(t *testing.T) {
 	cache := NewPreparedCache(10, 5*time.Minute)
 	defer cache.Close()
 
-	ps := cache.Put("SELECT 1", &SelectStmt{}, 0)
+	stmt := &SelectStmt{Columns: []Expression{&Identifier{Name: "original"}}}
+	ps := cache.Put("SELECT 1", stmt, 0)
 	ps.SQL = "corrupted"
 	ps.UseCount = 99
+	ps.Stmt.(*SelectStmt).Columns[0].(*Identifier).Name = "corrupted-put"
+	stmt.Columns[0].(*Identifier).Name = "corrupted-caller"
 
 	got, ok := cache.Get(ps.ID)
 	if !ok {
@@ -348,10 +351,15 @@ func TestPreparedCache_ReturnsIsolatedStatements(t *testing.T) {
 	if got.UseCount != 0 {
 		t.Fatalf("Put returned mutable cache entry: UseCount = %d", got.UseCount)
 	}
+	if name := got.Stmt.(*SelectStmt).Columns[0].(*Identifier).Name; name != "original" {
+		t.Fatalf("Put returned mutable cached AST: column = %q", name)
+	}
 
 	got.SQL = "changed"
+	got.Stmt.(*SelectStmt).Columns[0].(*Identifier).Name = "corrupted-get"
 	all := cache.GetAll()
 	all[0].SQL = "changed again"
+	all[0].Stmt.(*SelectStmt).Columns[0].(*Identifier).Name = "corrupted-get-all"
 
 	got, ok = cache.Get(ps.ID)
 	if !ok {
@@ -359,6 +367,31 @@ func TestPreparedCache_ReturnsIsolatedStatements(t *testing.T) {
 	}
 	if got.SQL != "SELECT 1" {
 		t.Fatalf("cache exposed mutable statement pointer: SQL = %q", got.SQL)
+	}
+	if name := got.Stmt.(*SelectStmt).Columns[0].(*Identifier).Name; name != "original" {
+		t.Fatalf("cache exposed mutable AST pointer: column = %q", name)
+	}
+}
+
+func TestPreparedCacheTruncatesStoredSQLMetadata(t *testing.T) {
+	cache := NewPreparedCache(10, 5*time.Minute)
+	defer cache.Close()
+
+	longSQL := "SELECT '" + strings.Repeat("x", maxCachedPreparedSQLBytes+1024) + "'"
+	ps := cache.Put(longSQL, &SelectStmt{}, 0)
+	if len(ps.SQL) != maxCachedPreparedSQLBytes {
+		t.Fatalf("returned SQL metadata length = %d, want %d", len(ps.SQL), maxCachedPreparedSQLBytes)
+	}
+
+	got, ok := cache.GetBySQL(longSQL)
+	if !ok {
+		t.Fatal("expected full SQL lookup to use full SQL hash")
+	}
+	if len(got.SQL) != maxCachedPreparedSQLBytes {
+		t.Fatalf("cached SQL metadata length = %d, want %d", len(got.SQL), maxCachedPreparedSQLBytes)
+	}
+	if got.ID != cache.GenerateID(longSQL) {
+		t.Fatal("prepared statement ID should be derived from full SQL")
 	}
 }
 
@@ -525,9 +558,13 @@ func TestParseTableRef_DerivedTableWithUnion(t *testing.T) {
 
 func TestParseTableRef_DerivedTableNoAlias(t *testing.T) {
 	sql := "SELECT * FROM (SELECT 1 AS x)"
-	_, err := Parse(sql)
-	if err == nil {
-		t.Error("expected error for derived table without alias")
+	stmt, err := Parse(sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel := stmt.(*SelectStmt)
+	if sel.From.Alias == "" || sel.From.Name == "" {
+		t.Fatalf("expected generated alias/name for derived table, got %#v", sel.From)
 	}
 }
 
@@ -1010,6 +1047,162 @@ func TestParseAlterTable_DropColumn(t *testing.T) {
 	}
 }
 
+func TestParseAlterTable_AddUniqueConstraint(t *testing.T) {
+	sql := "ALTER TABLE users ADD CONSTRAINT users_email_uq UNIQUE (email)"
+	stmt, err := Parse(sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := stmt.(*AlterTableStmt)
+	if at.Action != "ADD_CONSTRAINT" {
+		t.Errorf("expected ADD_CONSTRAINT, got %q", at.Action)
+	}
+	if at.ConstraintName != "users_email_uq" || at.ConstraintType != "UNIQUE" {
+		t.Errorf("unexpected constraint metadata: name=%q type=%q", at.ConstraintName, at.ConstraintType)
+	}
+	if len(at.ConstraintColumns) != 1 || at.ConstraintColumns[0] != "email" {
+		t.Errorf("unexpected constraint columns: %v", at.ConstraintColumns)
+	}
+}
+
+func TestParseAlterTable_AddForeignKeyConstraint(t *testing.T) {
+	sql := "ALTER TABLE orders ADD CONSTRAINT orders_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE RESTRICT"
+	stmt, err := Parse(sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := stmt.(*AlterTableStmt)
+	if at.Action != "ADD_CONSTRAINT" {
+		t.Errorf("expected ADD_CONSTRAINT, got %q", at.Action)
+	}
+	if at.ConstraintName != "orders_user_fk" || at.ConstraintType != "FOREIGN KEY" {
+		t.Errorf("unexpected constraint metadata: name=%q type=%q", at.ConstraintName, at.ConstraintType)
+	}
+	if at.ForeignKey == nil {
+		t.Fatal("expected foreign key metadata")
+	}
+	if at.ForeignKey.Name != "orders_user_fk" || at.ForeignKey.ReferencedTable != "users" {
+		t.Errorf("unexpected foreign key: %#v", at.ForeignKey)
+	}
+	if at.ForeignKey.OnDelete != "CASCADE" || at.ForeignKey.OnUpdate != "RESTRICT" {
+		t.Errorf("unexpected actions: delete=%q update=%q", at.ForeignKey.OnDelete, at.ForeignKey.OnUpdate)
+	}
+}
+
+func TestParseAlterTable_AddCheckConstraint(t *testing.T) {
+	sql := "ALTER TABLE products ADD CONSTRAINT discount_ck CHECK (discount <= price)"
+	stmt, err := Parse(sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := stmt.(*AlterTableStmt)
+	if at.Action != "ADD_CONSTRAINT" {
+		t.Errorf("expected ADD_CONSTRAINT, got %q", at.Action)
+	}
+	if at.ConstraintName != "discount_ck" || at.ConstraintType != "CHECK" {
+		t.Errorf("unexpected constraint metadata: name=%q type=%q", at.ConstraintName, at.ConstraintType)
+	}
+	if at.ConstraintCheck == nil {
+		t.Fatal("expected CHECK expression")
+	}
+}
+
+func TestParseAlterTable_DropConstraint(t *testing.T) {
+	sql := "ALTER TABLE users DROP CONSTRAINT users_email_uq"
+	stmt, err := Parse(sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := stmt.(*AlterTableStmt)
+	if at.Action != "DROP_CONSTRAINT" {
+		t.Errorf("expected DROP_CONSTRAINT, got %q", at.Action)
+	}
+	if at.ConstraintName != "users_email_uq" {
+		t.Errorf("expected constraint name users_email_uq, got %q", at.ConstraintName)
+	}
+}
+
+func TestParseCreateTable_NamedUniqueConstraint(t *testing.T) {
+	stmt, err := Parse("CREATE TABLE users (id INTEGER, email TEXT, CONSTRAINT users_email_uq UNIQUE (email))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct := stmt.(*CreateTableStmt)
+	if len(ct.NamedUniqueConstraints) != 1 {
+		t.Fatalf("expected one named unique constraint, got %d", len(ct.NamedUniqueConstraints))
+	}
+	uq := ct.NamedUniqueConstraints[0]
+	if uq.Name != "users_email_uq" {
+		t.Errorf("constraint name = %q, want users_email_uq", uq.Name)
+	}
+	if len(uq.Columns) != 1 || uq.Columns[0] != "email" {
+		t.Errorf("constraint columns = %v, want [email]", uq.Columns)
+	}
+}
+
+func TestParseCreateTable_ColumnNamedUniqueConstraint(t *testing.T) {
+	stmt, err := Parse("CREATE TABLE users (email TEXT CONSTRAINT users_email_uq UNIQUE)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct := stmt.(*CreateTableStmt)
+	if len(ct.Columns) != 1 {
+		t.Fatalf("expected one column, got %d", len(ct.Columns))
+	}
+	if ct.Columns[0].UniqueName != "users_email_uq" {
+		t.Fatalf("unique name = %q, want users_email_uq", ct.Columns[0].UniqueName)
+	}
+	if ct.Columns[0].Unique {
+		t.Fatal("named column unique should be enforced via a unique index, not ColumnDef.Unique")
+	}
+}
+
+func TestParseCreateTable_NamedPrimaryKeyConstraint(t *testing.T) {
+	stmt, err := Parse("CREATE TABLE orders (tenant_id INTEGER, id INTEGER, CONSTRAINT orders_pk PRIMARY KEY (tenant_id, id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct := stmt.(*CreateTableStmt)
+	if len(ct.PrimaryKey) != 2 || ct.PrimaryKey[0] != "tenant_id" || ct.PrimaryKey[1] != "id" {
+		t.Fatalf("primary key = %v, want [tenant_id id]", ct.PrimaryKey)
+	}
+}
+
+func TestParseCreateTable_NamedCheckConstraint(t *testing.T) {
+	stmt, err := Parse("CREATE TABLE products (price INTEGER, discount INTEGER, CONSTRAINT price_discount_ck CHECK (discount <= price))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct := stmt.(*CreateTableStmt)
+	if len(ct.CheckConstraints) != 1 {
+		t.Fatalf("expected one check constraint, got %d", len(ct.CheckConstraints))
+	}
+	check := ct.CheckConstraints[0]
+	if check.Name != "price_discount_ck" {
+		t.Errorf("check name = %q, want price_discount_ck", check.Name)
+	}
+	if check.Expr == nil {
+		t.Fatal("expected check expression")
+	}
+}
+
+func TestParseCreateTable_ColumnNamedCheckConstraint(t *testing.T) {
+	stmt, err := Parse("CREATE TABLE users (age INTEGER CONSTRAINT users_age_ck CHECK (age >= 0))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct := stmt.(*CreateTableStmt)
+	if len(ct.Columns) != 1 {
+		t.Fatalf("expected one column, got %d", len(ct.Columns))
+	}
+	if ct.Columns[0].CheckName != "users_age_ck" {
+		t.Fatalf("check name = %q, want users_age_ck", ct.Columns[0].CheckName)
+	}
+	if ct.Columns[0].Check == nil {
+		t.Fatal("expected column check expression")
+	}
+}
+
 func TestParseAlterTable_RenameColumn(t *testing.T) {
 	sql := "ALTER TABLE users RENAME COLUMN old_name TO new_name"
 	stmt, err := Parse(sql)
@@ -1389,9 +1582,13 @@ func TestParseSelectHaving(t *testing.T) {
 
 func TestParseInsertDefaultValues(t *testing.T) {
 	sql := "INSERT INTO t DEFAULT VALUES"
-	_, err := Parse(sql)
+	stmt, err := Parse(sql)
 	if err != nil {
-		t.Logf("INSERT DEFAULT VALUES: %v", err)
+		t.Fatalf("INSERT DEFAULT VALUES should parse: %v", err)
+	}
+	insertStmt := stmt.(*InsertStmt)
+	if len(insertStmt.Values) != 1 || len(insertStmt.Values[0]) != 0 {
+		t.Fatalf("values = %#v, want one empty default row", insertStmt.Values)
 	}
 }
 

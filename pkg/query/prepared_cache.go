@@ -4,9 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"math"
+	"strings"
 	"sync"
 	"time"
 )
+
+const maxCachedPreparedSQLBytes = 64 * 1024
 
 // PreparedStatement represents a cached prepared statement
 type PreparedStatement struct {
@@ -115,8 +118,8 @@ func (pc *PreparedCache) Put(sql string, stmt Statement, paramCount int) *Prepar
 	id := pc.GenerateID(sql)
 	prepared := &PreparedStatement{
 		ID:         id,
-		SQL:        sql,
-		Stmt:       stmt,
+		SQL:        cachePreparedSQL(sql),
+		Stmt:       CloneStatement(stmt),
 		ParamCount: paramCount,
 		CreatedAt:  time.Now(),
 		LastUsedAt: time.Now(),
@@ -124,6 +127,13 @@ func (pc *PreparedCache) Put(sql string, stmt Statement, paramCount int) *Prepar
 
 	pc.statements[id] = prepared
 	return clonePreparedStatement(prepared)
+}
+
+func cachePreparedSQL(sql string) string {
+	if len(sql) > maxCachedPreparedSQLBytes {
+		return strings.Clone(sql[:maxCachedPreparedSQLBytes])
+	}
+	return strings.Clone(sql)
 }
 
 // UpdateStats updates execution statistics for a prepared statement
@@ -188,6 +198,7 @@ func clonePreparedStatement(stmt *PreparedStatement) *PreparedStatement {
 		return nil
 	}
 	cloned := *stmt
+	cloned.Stmt = CloneStatement(stmt.Stmt)
 	return &cloned
 }
 

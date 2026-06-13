@@ -42,6 +42,9 @@ func (p *Parser) parseOrderByList() ([]*OrderByExpr, error) {
 		}
 
 		exprs = append(exprs, orderExpr)
+		if len(exprs) > maxParserListItems {
+			return nil, fmt.Errorf("ORDER BY expression count exceeds maximum (%d)", maxParserListItems)
+		}
 
 		if !p.match(TokenComma) {
 			break
@@ -75,6 +78,9 @@ func (p *Parser) parseExpressionListWithOffset(placeholderOffset int) ([]Express
 		}
 
 		exprs = append(exprs, expr)
+		if len(exprs) > maxParserListItems {
+			return nil, fmt.Errorf("expression list count exceeds maximum (%d)", maxParserListItems)
+		}
 
 		if !p.match(TokenComma) {
 			break
@@ -141,6 +147,10 @@ func (p *Parser) parseNot() (Expression, error) {
 			return p.parseExistsExpr(true)
 		}
 		p.advance() // consume NOT
+		if err := p.enterDepth(); err != nil {
+			return nil, err
+		}
+		defer p.leaveDepth()
 		expr, err := p.parseNot()
 		if err != nil {
 			return nil, err
@@ -176,17 +186,66 @@ func (p *Parser) parseComparison() (Expression, error) {
 		} else if p.peek().Type == TokenLike {
 			p.advance()
 			return p.parseLikeExpr(left, true)
+		} else if p.peek().Type == TokenRegexp {
+			p.advance()
+			return p.parseRegexpExpr(left, true)
+		} else if isKeywordIdentifier(p.peek(), "GLOB") {
+			p.advance()
+			return p.parseGlobExpr(left, true)
 		} else if p.peek().Type == TokenBetween {
 			p.advance()
 			return p.parseBetweenExpr(left, true)
 		}
 	case TokenIn:
+		if p.stopAtMatchAgainstMode && (p.peek().Type == TokenBoolean || p.peek().Type == TokenNatural) {
+			return left, nil
+		}
 		return p.parseInExpr(left, false)
+	case TokenRegexp:
+		return p.parseRegexpExpr(left, false)
+	default:
+		if isKeywordIdentifier(p.current(), "GLOB") {
+			return p.parseGlobExpr(left, false)
+		}
 	case TokenBetween:
 		return p.parseBetweenExpr(left, false)
 	case TokenIs:
 		p.advance()
 		not := p.match(TokenNot)
+		if p.current().Type == TokenDistinct {
+			p.advance()
+			if p.current().Type != TokenFrom {
+				return nil, fmt.Errorf("expected FROM after IS DISTINCT")
+			}
+			p.advance()
+			right, err := p.parseBitOr()
+			if err != nil {
+				return nil, err
+			}
+			expr := &BinaryExpr{Left: left, Operator: TokenNullSafeEq, Right: right}
+			if not {
+				return expr, nil
+			}
+			return &UnaryExpr{Operator: TokenNot, Expr: expr}, nil
+		}
+		if p.current().Type == TokenTrue || p.current().Type == TokenFalse || p.current().Type == TokenUnknown {
+			test := p.current().Type
+			p.advance()
+			var name string
+			switch test {
+			case TokenTrue:
+				name = "IS_TRUE"
+			case TokenFalse:
+				name = "IS_FALSE"
+			case TokenUnknown:
+				name = "IS_UNKNOWN"
+			}
+			expr := &FunctionCall{Name: name, Args: []Expression{left}}
+			if not {
+				return &UnaryExpr{Operator: TokenNot, Expr: expr}, nil
+			}
+			return expr, nil
+		}
 		if !p.match(TokenNull) {
 			return nil, fmt.Errorf("expected NULL after IS")
 		}
@@ -245,6 +304,42 @@ func (p *Parser) parseLikeExpr(left Expression, not bool) (Expression, error) {
 	return &LikeExpr{Expr: left, Pattern: pattern, Not: not, Escape: escape}, nil
 }
 
+func (p *Parser) parseRegexpExpr(left Expression, not bool) (Expression, error) {
+	p.advance() // consume REGEXP/RLIKE
+	pattern, err := p.parseAdditive()
+	if err != nil {
+		return nil, err
+	}
+	expr := &FunctionCall{
+		Name: "REGEXP_LIKE",
+		Args: []Expression{left, pattern},
+	}
+	if not {
+		return &UnaryExpr{Operator: TokenNot, Expr: expr}, nil
+	}
+	return expr, nil
+}
+
+func (p *Parser) parseGlobExpr(left Expression, not bool) (Expression, error) {
+	p.advance() // consume GLOB
+	pattern, err := p.parseAdditive()
+	if err != nil {
+		return nil, err
+	}
+	expr := &FunctionCall{
+		Name: "GLOB",
+		Args: []Expression{pattern, left},
+	}
+	if not {
+		return &UnaryExpr{Operator: TokenNot, Expr: expr}, nil
+	}
+	return expr, nil
+}
+
+func isKeywordIdentifier(tok Token, keyword string) bool {
+	return tok.Type == TokenIdentifier && strings.EqualFold(tok.Literal, keyword)
+}
+
 func (p *Parser) parseBetweenExpr(left Expression, not bool) (Expression, error) {
 	p.advance() // consume BETWEEN
 	if !not {
@@ -285,7 +380,30 @@ func (p *Parser) parseAdditive() (Expression, error) {
 
 // parseMultiplicative parses *, /, % expressions
 func (p *Parser) parseMultiplicative() (Expression, error) {
-	return p.parseBinaryOpLevel(p.parseBitXor, TokenStar, TokenSlash, TokenPercent)
+	left, err := p.parseBitXor()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		op := p.current().Type
+		if op != TokenStar && op != TokenSlash && op != TokenPercent && !isModOperator(p.current()) {
+			break
+		}
+		if isModOperator(p.current()) {
+			op = TokenPercent
+		}
+		p.advance()
+		right, err := p.parseBitXor()
+		if err != nil {
+			return nil, err
+		}
+		left = &BinaryExpr{Left: left, Operator: op, Right: right}
+	}
+	return left, nil
+}
+
+func isModOperator(tok Token) bool {
+	return tok.Type == TokenIdentifier && strings.EqualFold(tok.Literal, "MOD")
 }
 
 func (p *Parser) parseBitXor() (Expression, error) {
@@ -294,9 +412,13 @@ func (p *Parser) parseBitXor() (Expression, error) {
 
 // parseUnary parses unary expressions
 func (p *Parser) parseUnary() (Expression, error) {
-	if p.current().Type == TokenMinus || p.current().Type == TokenPlus {
+	if p.current().Type == TokenMinus || p.current().Type == TokenPlus || p.current().Type == TokenBitNot {
 		op := p.current().Type
 		p.advance()
+		if err := p.enterDepth(); err != nil {
+			return nil, err
+		}
+		defer p.leaveDepth()
 		expr, err := p.parseUnary()
 		if err != nil {
 			return nil, err
@@ -318,6 +440,11 @@ func (p *Parser) parsePrimary() (Expression, error) {
 		// `DEFAULT` as a value (INSERT ... VALUES (..., DEFAULT)).
 		p.advance()
 		return &DefaultExpr{}, nil
+	case TokenValues:
+		if p.peek().Type == TokenLParen {
+			return p.parseIdentifierOrFunction()
+		}
+		return nil, fmt.Errorf("unexpected token: %s", p.current().Literal)
 	case TokenIdentifier:
 		return p.parseIdentifierOrFunction()
 	// JSON functions
@@ -669,6 +796,9 @@ func (p *Parser) parseFunctionCall(name string) (Expression, error) {
 				return nil, err
 			}
 			args = append(args, a)
+			if len(args) > maxParserListItems {
+				return nil, fmt.Errorf("function argument count exceeds maximum (%d)", maxParserListItems)
+			}
 		}
 		if _, err := p.expect(TokenRParen); err != nil {
 			return nil, err
@@ -681,6 +811,14 @@ func (p *Parser) parseFunctionCall(name string) (Expression, error) {
 	if p.current().Type == TokenDistinct {
 		distinct = true
 		p.advance()
+	} else if p.current().Type == TokenAll {
+		// ALL is the default aggregate quantifier; consume it so
+		// COUNT(ALL col) parses the same as COUNT(col).
+		p.advance()
+	}
+
+	if upperName == "GROUP_CONCAT" {
+		return p.parseGroupConcatCall(name, distinct)
 	}
 
 	var args []Expression
@@ -691,6 +829,9 @@ func (p *Parser) parseFunctionCall(name string) (Expression, error) {
 				return nil, err
 			}
 			args = append(args, arg)
+			if len(args) > maxParserListItems {
+				return nil, fmt.Errorf("function argument count exceeds maximum (%d)", maxParserListItems)
+			}
 
 			if !p.match(TokenComma) {
 				break
@@ -702,12 +843,144 @@ func (p *Parser) parseFunctionCall(name string) (Expression, error) {
 		return nil, err
 	}
 
-	// Check for OVER clause (window function)
-	if p.current().Type == TokenOver {
-		return p.parseWindowExpr(toUpperFast(name), args)
+	filter, err := p.parseFunctionFilter()
+	if err != nil {
+		return nil, err
 	}
 
-	return &FunctionCall{Name: toUpperFast(name), Args: args, Distinct: distinct}, nil
+	// Check for OVER clause (window function)
+	if p.current().Type == TokenOver {
+		return p.parseWindowExpr(toUpperFast(name), args, filter)
+	}
+
+	return &FunctionCall{Name: toUpperFast(name), Args: args, Distinct: distinct, Filter: filter}, nil
+}
+
+func (p *Parser) parseGroupConcatCall(name string, distinct bool) (Expression, error) {
+	var args []Expression
+	var orderBy []*OrderByExpr
+	if p.current().Type != TokenRParen {
+		arg, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, arg)
+		if len(args) > maxParserListItems {
+			return nil, fmt.Errorf("function argument count exceeds maximum (%d)", maxParserListItems)
+		}
+
+		if p.current().Type == TokenOrder {
+			p.advance()
+			if _, err := p.expect(TokenBy); err != nil {
+				return nil, err
+			}
+			parsedOrderBy, err := p.parseGroupConcatOrderByList()
+			if err != nil {
+				return nil, err
+			}
+			orderBy = parsedOrderBy
+		}
+
+		if p.current().Type == TokenIdentifier && strings.EqualFold(p.current().Literal, "SEPARATOR") {
+			p.advance()
+			sep, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, sep)
+			if len(args) > maxParserListItems {
+				return nil, fmt.Errorf("function argument count exceeds maximum (%d)", maxParserListItems)
+			}
+		} else {
+			for p.match(TokenComma) {
+				arg, err := p.parseExpression()
+				if err != nil {
+					return nil, err
+				}
+				args = append(args, arg)
+				if len(args) > maxParserListItems {
+					return nil, fmt.Errorf("function argument count exceeds maximum (%d)", maxParserListItems)
+				}
+			}
+		}
+	}
+
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, err
+	}
+
+	filter, err := p.parseFunctionFilter()
+	if err != nil {
+		return nil, err
+	}
+
+	if p.current().Type == TokenOver {
+		return p.parseWindowExpr(toUpperFast(name), args, filter)
+	}
+
+	return &FunctionCall{Name: toUpperFast(name), Args: args, Distinct: distinct, OrderBy: orderBy, Filter: filter}, nil
+}
+
+func (p *Parser) parseFunctionFilter() (Expression, error) {
+	if p.current().Type != TokenIdentifier || !strings.EqualFold(p.current().Literal, "FILTER") {
+		return nil, nil
+	}
+	p.advance()
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokenWhere); err != nil {
+		return nil, err
+	}
+	filter, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, err
+	}
+	return filter, nil
+}
+
+func (p *Parser) parseGroupConcatOrderByList() ([]*OrderByExpr, error) {
+	var exprs []*OrderByExpr
+	for {
+		expr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+
+		orderExpr := &OrderByExpr{Expr: expr}
+		if p.match(TokenDesc) {
+			orderExpr.Desc = true
+		} else {
+			p.match(TokenAsc)
+		}
+		if p.current().Type == TokenIdentifier && strings.EqualFold(p.current().Literal, "NULLS") {
+			p.advance()
+			switch {
+			case p.current().Type == TokenIdentifier && strings.EqualFold(p.current().Literal, "FIRST"):
+				p.advance()
+				orderExpr.NullsFirst = true
+				orderExpr.NullsSpecified = true
+			case p.current().Type == TokenIdentifier && strings.EqualFold(p.current().Literal, "LAST"):
+				p.advance()
+				orderExpr.NullsFirst = false
+				orderExpr.NullsSpecified = true
+			default:
+				return nil, fmt.Errorf("expected FIRST or LAST after NULLS, got %s", p.current().Literal)
+			}
+		}
+		exprs = append(exprs, orderExpr)
+		if len(exprs) > maxParserListItems {
+			return nil, fmt.Errorf("ORDER BY expression count exceeds maximum (%d)", maxParserListItems)
+		}
+
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+	return exprs, nil
 }
 
 // ParseExpression parses a single SQL expression string (e.g., "42", "'hello'", "NOW()")

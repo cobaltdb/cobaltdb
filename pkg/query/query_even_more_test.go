@@ -1,6 +1,7 @@
 package query
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -312,9 +313,13 @@ func TestParseRecursiveCTE(t *testing.T) {
 // TestParseLimitAll tests LIMIT ALL
 func TestParseLimitAll(t *testing.T) {
 	sql := "SELECT * FROM t LIMIT ALL"
-	_, err := Parse(sql)
+	stmt, err := Parse(sql)
 	if err != nil {
-		t.Logf("LIMIT ALL may not be fully supported: %v", err)
+		t.Fatalf("LIMIT ALL should parse: %v", err)
+	}
+	selectStmt := stmt.(*SelectStmt)
+	if selectStmt.Limit != nil {
+		t.Fatalf("LIMIT ALL should not set a numeric limit, got %T", selectStmt.Limit)
 	}
 }
 
@@ -764,6 +769,7 @@ func TestParseComplexExpressions(t *testing.T) {
 		"SELECT (a + b) * (c - d) / e FROM t",
 		"SELECT a + b * c - d / e FROM t",
 		"SELECT -a + +b FROM t",
+		"SELECT ~a & 15 FROM t",
 		"SELECT NOT (a = 1 AND b = 2) OR c = 3 FROM t",
 		"SELECT (a IN (1, 2, 3)) AND (b BETWEEN 1 AND 10) FROM t",
 	}
@@ -949,9 +955,18 @@ func TestParseViewComplex(t *testing.T) {
 
 	for _, sql := range tests {
 		t.Run(sql, func(t *testing.T) {
-			_, err := Parse(sql)
+			stmt, err := Parse(sql)
 			if err != nil {
 				t.Logf("Complex view parsing error: %v", err)
+			}
+			if strings.Contains(sql, "TEMP") {
+				createView, ok := stmt.(*CreateViewStmt)
+				if !ok {
+					t.Fatalf("stmt = %T, want CreateViewStmt", stmt)
+				}
+				if !createView.Temporary {
+					t.Fatalf("Temporary = false, want true for %s", sql)
+				}
 			}
 		})
 	}
@@ -1219,9 +1234,12 @@ func TestParseCreateIndexMore(t *testing.T) {
 		tableName  string
 		unique     bool
 		ifNotExist bool
+		columns    []string
 	}{
-		{"CREATE INDEX idx1 ON users(name)", "idx1", "users", false, false},
-		{"CREATE INDEX IF NOT EXISTS idx3 ON products(price)", "idx3", "products", false, true},
+		{"CREATE INDEX idx1 ON users(name)", "idx1", "users", false, false, []string{"name"}},
+		{"CREATE INDEX IF NOT EXISTS idx3 ON products(price)", "idx3", "products", false, true, []string{"price"}},
+		{"CREATE INDEX idx4 ON users(name DESC, email ASC)", "idx4", "users", false, false, []string{"name", "email"}},
+		{"CREATE INDEX idx5 ON users(name COLLATE NOCASE, email ASC COLLATE BINARY)", "idx5", "users", false, false, []string{"name", "email"}},
 	}
 
 	for _, tt := range tests {
@@ -1248,7 +1266,32 @@ func TestParseCreateIndexMore(t *testing.T) {
 			if idxStmt.IfNotExists != tt.ifNotExist {
 				t.Errorf("Expected IfNotExists %v, got %v", tt.ifNotExist, idxStmt.IfNotExists)
 			}
+			if len(idxStmt.Columns) != len(tt.columns) {
+				t.Fatalf("Expected columns %v, got %v", tt.columns, idxStmt.Columns)
+			}
+			for i, want := range tt.columns {
+				if idxStmt.Columns[i] != want {
+					t.Fatalf("Expected columns %v, got %v", tt.columns, idxStmt.Columns)
+				}
+			}
 		})
+	}
+}
+
+func TestParseColumnCollate(t *testing.T) {
+	stmt, err := Parse("CREATE TABLE users (name TEXT COLLATE NOCASE, email TEXT COLLATE BINARY)")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	createStmt, ok := stmt.(*CreateTableStmt)
+	if !ok {
+		t.Fatalf("Expected CreateTableStmt, got %T", stmt)
+	}
+	if got := createStmt.Columns[0].Collation; got != "NOCASE" {
+		t.Fatalf("name collation = %q, want NOCASE", got)
+	}
+	if got := createStmt.Columns[1].Collation; got != "BINARY" {
+		t.Fatalf("email collation = %q, want BINARY", got)
 	}
 }
 
@@ -1292,6 +1335,34 @@ func TestParseForeignKeyDef(t *testing.T) {
 	}
 }
 
+func TestParseForeignKeySetDefaultAndMalformedActions(t *testing.T) {
+	stmt, err := Parse("CREATE TABLE t (id INT, ref INT DEFAULT 0, FOREIGN KEY (ref) REFERENCES parent(id) ON DELETE SET DEFAULT ON UPDATE SET DEFAULT)")
+	if err != nil {
+		t.Fatalf("SET DEFAULT foreign key actions should parse: %v", err)
+	}
+	createStmt := stmt.(*CreateTableStmt)
+	if len(createStmt.ForeignKeys) != 1 {
+		t.Fatalf("expected 1 foreign key, got %d", len(createStmt.ForeignKeys))
+	}
+	fk := createStmt.ForeignKeys[0]
+	if fk.OnDelete != "SET DEFAULT" || fk.OnUpdate != "SET DEFAULT" {
+		t.Fatalf("unexpected SET DEFAULT actions: delete=%q update=%q", fk.OnDelete, fk.OnUpdate)
+	}
+
+	cases := []string{
+		"CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES parent(id) ON DELETE SET)",
+		"CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES parent(id) ON UPDATE NO)",
+		"CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES parent(id) ON DELETE DEFAULT)",
+		"CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES parent(id) ON DELETE CASCADE ON DELETE RESTRICT)",
+		"CREATE TABLE t (id INT, ref INT, FOREIGN KEY (ref) REFERENCES parent(id) ON UPDATE CASCADE ON UPDATE RESTRICT)",
+	}
+	for _, sql := range cases {
+		if _, err := Parse(sql); err == nil {
+			t.Fatalf("expected malformed foreign key action to fail: %s", sql)
+		}
+	}
+}
+
 // TestParseComparisonMore tests comparison operators
 func TestParseComparisonMore(t *testing.T) {
 	tests := []struct {
@@ -1320,5 +1391,935 @@ func TestParseComparisonMore(t *testing.T) {
 				t.Errorf("Expected operator %q, got %q", tt.operator, TokenTypeString(binaryExpr.Operator))
 			}
 		})
+	}
+}
+
+func TestParseIsDistinctFrom(t *testing.T) {
+	tests := []struct {
+		name    string
+		sql     string
+		wantNot bool
+	}{
+		{
+			name:    "is distinct from",
+			sql:     "SELECT * FROM t WHERE a IS DISTINCT FROM NULL",
+			wantNot: true,
+		},
+		{
+			name:    "is not distinct from",
+			sql:     "SELECT * FROM t WHERE a IS NOT DISTINCT FROM NULL",
+			wantNot: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			selectStmt := stmt.(*SelectStmt)
+			expr := selectStmt.Where
+			if tt.wantNot {
+				unary, ok := expr.(*UnaryExpr)
+				if !ok {
+					t.Fatalf("expected UnaryExpr, got %T", expr)
+				}
+				if unary.Operator != TokenNot {
+					t.Fatalf("expected NOT unary operator, got %s", TokenTypeString(unary.Operator))
+				}
+				expr = unary.Expr
+			}
+			binary, ok := expr.(*BinaryExpr)
+			if !ok {
+				t.Fatalf("expected BinaryExpr, got %T", expr)
+			}
+			if binary.Operator != TokenNullSafeEq {
+				t.Fatalf("expected null-safe equality, got %s", TokenTypeString(binary.Operator))
+			}
+		})
+	}
+}
+
+func TestParseRegexpOperator(t *testing.T) {
+	tests := []struct {
+		name    string
+		sql     string
+		wantNot bool
+	}{
+		{
+			name: "regexp",
+			sql:  "SELECT * FROM t WHERE name REGEXP '^[a-z]+$'",
+		},
+		{
+			name:    "not regexp",
+			sql:     "SELECT * FROM t WHERE name NOT REGEXP '^[a-z]+$'",
+			wantNot: true,
+		},
+		{
+			name: "rlike",
+			sql:  "SELECT * FROM t WHERE name RLIKE '^[a-z]+$'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			selectStmt := stmt.(*SelectStmt)
+			expr := selectStmt.Where
+			if tt.wantNot {
+				unary, ok := expr.(*UnaryExpr)
+				if !ok {
+					t.Fatalf("expected UnaryExpr, got %T", expr)
+				}
+				if unary.Operator != TokenNot {
+					t.Fatalf("expected NOT unary operator, got %s", TokenTypeString(unary.Operator))
+				}
+				expr = unary.Expr
+			}
+			fn, ok := expr.(*FunctionCall)
+			if !ok {
+				t.Fatalf("expected FunctionCall, got %T", expr)
+			}
+			if fn.Name != "REGEXP_LIKE" {
+				t.Fatalf("expected REGEXP_LIKE, got %s", fn.Name)
+			}
+			if len(fn.Args) != 2 {
+				t.Fatalf("expected 2 REGEXP_LIKE args, got %d", len(fn.Args))
+			}
+		})
+	}
+}
+
+func TestParseAllAggregateQuantifier(t *testing.T) {
+	stmt, err := Parse("SELECT COUNT(ALL v), SUM(ALL v), AVG(ALL v) FROM t")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	selectStmt := stmt.(*SelectStmt)
+	if len(selectStmt.Columns) != 3 {
+		t.Fatalf("columns = %d, want 3", len(selectStmt.Columns))
+	}
+	for i, col := range selectStmt.Columns {
+		fn, ok := col.(*FunctionCall)
+		if !ok {
+			t.Fatalf("column %d = %T, want FunctionCall", i, col)
+		}
+		if fn.Distinct {
+			t.Fatalf("column %d distinct = true, want false for ALL", i)
+		}
+		if len(fn.Args) != 1 {
+			t.Fatalf("column %d args = %d, want 1", i, len(fn.Args))
+		}
+		if _, ok := fn.Args[0].(*Identifier); !ok {
+			t.Fatalf("column %d arg = %T, want Identifier", i, fn.Args[0])
+		}
+	}
+}
+
+func TestParseGroupConcatSeparatorSyntax(t *testing.T) {
+	cases := []struct {
+		sql      string
+		distinct bool
+		sep      string
+		orderBy  int
+	}{
+		{"SELECT GROUP_CONCAT(v SEPARATOR '|') FROM t", false, "|", 0},
+		{"SELECT GROUP_CONCAT(DISTINCT v SEPARATOR '') FROM t", true, "", 0},
+		{"SELECT GROUP_CONCAT(v, ':') FROM t", false, ":", 0},
+		{"SELECT GROUP_CONCAT(v ORDER BY id DESC, v ASC SEPARATOR '|') FROM t", false, "|", 2},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.sql, func(t *testing.T) {
+			stmt, err := Parse(tc.sql)
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			selectStmt := stmt.(*SelectStmt)
+			fn, ok := selectStmt.Columns[0].(*FunctionCall)
+			if !ok {
+				t.Fatalf("column = %T, want FunctionCall", selectStmt.Columns[0])
+			}
+			if fn.Name != "GROUP_CONCAT" {
+				t.Fatalf("function = %s, want GROUP_CONCAT", fn.Name)
+			}
+			if fn.Distinct != tc.distinct {
+				t.Fatalf("distinct = %v, want %v", fn.Distinct, tc.distinct)
+			}
+			if len(fn.Args) != 2 {
+				t.Fatalf("args = %d, want 2", len(fn.Args))
+			}
+			sep, ok := fn.Args[1].(*StringLiteral)
+			if !ok {
+				t.Fatalf("separator arg = %T, want StringLiteral", fn.Args[1])
+			}
+			if sep.Value != tc.sep {
+				t.Fatalf("separator = %q, want %q", sep.Value, tc.sep)
+			}
+			if len(fn.OrderBy) != tc.orderBy {
+				t.Fatalf("orderBy = %d, want %d", len(fn.OrderBy), tc.orderBy)
+			}
+			if tc.orderBy > 0 && !fn.OrderBy[0].Desc {
+				t.Fatal("first ORDER BY should be DESC")
+			}
+		})
+	}
+}
+
+func TestParseAggregateFilterClause(t *testing.T) {
+	stmt, err := Parse("SELECT COUNT(*) FILTER (WHERE v > 0), SUM(v) FILTER (WHERE keep = 1), GROUP_CONCAT(v ORDER BY id DESC SEPARATOR '|') FILTER (WHERE g = 'b') FROM t")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	selectStmt := stmt.(*SelectStmt)
+	if len(selectStmt.Columns) != 3 {
+		t.Fatalf("columns = %d, want 3", len(selectStmt.Columns))
+	}
+
+	for i, col := range selectStmt.Columns {
+		fn, ok := col.(*FunctionCall)
+		if !ok {
+			t.Fatalf("column %d = %T, want FunctionCall", i, col)
+		}
+		if fn.Filter == nil {
+			t.Fatalf("column %d filter = nil, want predicate", i)
+		}
+	}
+
+	groupConcat := selectStmt.Columns[2].(*FunctionCall)
+	if groupConcat.Name != "GROUP_CONCAT" {
+		t.Fatalf("function = %s, want GROUP_CONCAT", groupConcat.Name)
+	}
+	if len(groupConcat.OrderBy) != 1 || !groupConcat.OrderBy[0].Desc {
+		t.Fatalf("GROUP_CONCAT orderBy = %#v, want one DESC order expression", groupConcat.OrderBy)
+	}
+}
+
+func TestParseWindowAggregateFilterClause(t *testing.T) {
+	stmt, err := Parse("SELECT COUNT(*) FILTER (WHERE keep = 1) OVER (PARTITION BY g ORDER BY id) FROM t")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	selectStmt := stmt.(*SelectStmt)
+	we, ok := selectStmt.Columns[0].(*WindowExpr)
+	if !ok {
+		t.Fatalf("column = %T, want WindowExpr", selectStmt.Columns[0])
+	}
+	if we.Function != "COUNT" {
+		t.Fatalf("function = %s, want COUNT", we.Function)
+	}
+	if we.Filter == nil {
+		t.Fatal("filter = nil, want predicate")
+	}
+	if len(we.PartitionBy) != 1 || len(we.OrderBy) != 1 {
+		t.Fatalf("partition/order sizes = %d/%d, want 1/1", len(we.PartitionBy), len(we.OrderBy))
+	}
+}
+
+func TestParseCreateOrReplaceView(t *testing.T) {
+	stmt, err := Parse("CREATE OR REPLACE VIEW v AS SELECT id FROM t")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	createView, ok := stmt.(*CreateViewStmt)
+	if !ok {
+		t.Fatalf("stmt = %T, want CreateViewStmt", stmt)
+	}
+	if !createView.OrReplace {
+		t.Fatal("OrReplace = false, want true")
+	}
+	if createView.Name != "v" {
+		t.Fatalf("Name = %s, want v", createView.Name)
+	}
+}
+
+func TestParseJSONAggregates(t *testing.T) {
+	cases := []struct {
+		sql  string
+		name string
+		args int
+	}{
+		{"SELECT JSON_ARRAYAGG(v) FROM t", "JSON_ARRAYAGG", 1},
+		{"SELECT JSON_OBJECTAGG(k, v) FROM t", "JSON_OBJECTAGG", 2},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.sql, func(t *testing.T) {
+			stmt, err := Parse(tc.sql)
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			selectStmt := stmt.(*SelectStmt)
+			fn, ok := selectStmt.Columns[0].(*FunctionCall)
+			if !ok {
+				t.Fatalf("column = %T, want FunctionCall", selectStmt.Columns[0])
+			}
+			if fn.Name != tc.name {
+				t.Fatalf("function = %s, want %s", fn.Name, tc.name)
+			}
+			if len(fn.Args) != tc.args {
+				t.Fatalf("args = %d, want %d", len(fn.Args), tc.args)
+			}
+		})
+	}
+}
+
+func TestParseIsBooleanPredicate(t *testing.T) {
+	tests := []struct {
+		name     string
+		sql      string
+		wantFunc string
+		wantNot  bool
+	}{
+		{
+			name:     "is true",
+			sql:      "SELECT * FROM t WHERE active IS TRUE",
+			wantFunc: "IS_TRUE",
+		},
+		{
+			name:     "is not false",
+			sql:      "SELECT * FROM t WHERE active IS NOT FALSE",
+			wantFunc: "IS_FALSE",
+			wantNot:  true,
+		},
+		{
+			name:     "is unknown",
+			sql:      "SELECT * FROM t WHERE active IS UNKNOWN",
+			wantFunc: "IS_UNKNOWN",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			selectStmt := stmt.(*SelectStmt)
+			expr := selectStmt.Where
+			if tt.wantNot {
+				unary, ok := expr.(*UnaryExpr)
+				if !ok {
+					t.Fatalf("expected UnaryExpr, got %T", expr)
+				}
+				if unary.Operator != TokenNot {
+					t.Fatalf("expected NOT unary operator, got %s", TokenTypeString(unary.Operator))
+				}
+				expr = unary.Expr
+			}
+			fn, ok := expr.(*FunctionCall)
+			if !ok {
+				t.Fatalf("expected FunctionCall, got %T", expr)
+			}
+			if fn.Name != tt.wantFunc {
+				t.Fatalf("expected %s, got %s", tt.wantFunc, fn.Name)
+			}
+			if len(fn.Args) != 1 {
+				t.Fatalf("expected one boolean-test arg, got %d", len(fn.Args))
+			}
+		})
+	}
+}
+
+func TestParseOnDuplicateKeyUpdate(t *testing.T) {
+	stmt, err := Parse("INSERT INTO t (id, v) VALUES (1, 2) ON DUPLICATE KEY UPDATE v = 3")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	insertStmt := stmt.(*InsertStmt)
+	if insertStmt.OnConflict == nil {
+		t.Fatal("expected ON DUPLICATE KEY UPDATE to populate OnConflict")
+	}
+	if insertStmt.OnConflict.DoUpdate == nil || len(insertStmt.OnConflict.DoUpdate) != 1 {
+		t.Fatalf("expected one DO UPDATE assignment, got %#v", insertStmt.OnConflict.DoUpdate)
+	}
+	if insertStmt.OnConflict.DoUpdate[0].Column != "v" {
+		t.Fatalf("expected assignment to v, got %s", insertStmt.OnConflict.DoUpdate[0].Column)
+	}
+}
+
+func TestParseOnDuplicateKeyUpdateValuesFunction(t *testing.T) {
+	stmt, err := Parse("INSERT INTO t (id, v) VALUES (1, 2) ON DUPLICATE KEY UPDATE v = VALUES(v)")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	insertStmt := stmt.(*InsertStmt)
+	fn, ok := insertStmt.OnConflict.DoUpdate[0].Value.(*FunctionCall)
+	if !ok {
+		t.Fatalf("expected VALUES() FunctionCall, got %T", insertStmt.OnConflict.DoUpdate[0].Value)
+	}
+	if fn.Name != "VALUES" || len(fn.Args) != 1 {
+		t.Fatalf("unexpected function call: %#v", fn)
+	}
+	arg, ok := fn.Args[0].(*Identifier)
+	if !ok || arg.Name != "v" {
+		t.Fatalf("expected VALUES(v) argument, got %#v", fn.Args[0])
+	}
+}
+
+func TestParseInsertSetSyntax(t *testing.T) {
+	stmt, err := Parse("INSERT INTO t SET id = 1, name = 'Ada'")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	insertStmt := stmt.(*InsertStmt)
+	if got, want := insertStmt.Columns, []string{"id", "name"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("columns = %#v, want %#v", got, want)
+	}
+	if len(insertStmt.Values) != 1 || len(insertStmt.Values[0]) != 2 {
+		t.Fatalf("values = %#v, want one row with two values", insertStmt.Values)
+	}
+	if _, ok := insertStmt.Values[0][0].(*NumberLiteral); !ok {
+		t.Fatalf("first value = %T, want NumberLiteral", insertStmt.Values[0][0])
+	}
+	if _, ok := insertStmt.Values[0][1].(*StringLiteral); !ok {
+		t.Fatalf("second value = %T, want StringLiteral", insertStmt.Values[0][1])
+	}
+}
+
+func TestParseInsertSetOnDuplicateKeyUpdate(t *testing.T) {
+	stmt, err := Parse("INSERT INTO t SET id = 1, v = 2 ON DUPLICATE KEY UPDATE v = VALUES(v)")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	insertStmt := stmt.(*InsertStmt)
+	if insertStmt.OnConflict == nil || len(insertStmt.OnConflict.DoUpdate) != 1 {
+		t.Fatalf("expected ON DUPLICATE KEY UPDATE clause, got %#v", insertStmt.OnConflict)
+	}
+}
+
+func TestParseReplaceInto(t *testing.T) {
+	stmt, err := Parse("REPLACE INTO t (id, name) VALUES (1, 'Ada')")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	insertStmt := stmt.(*InsertStmt)
+	if insertStmt.ConflictAction != ConflictReplace {
+		t.Fatalf("ConflictAction = %v, want ConflictReplace", insertStmt.ConflictAction)
+	}
+	if insertStmt.Table != "t" {
+		t.Fatalf("Table = %q, want t", insertStmt.Table)
+	}
+	if got, want := insertStmt.Columns, []string{"id", "name"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("columns = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseReplaceSetSyntax(t *testing.T) {
+	stmt, err := Parse("REPLACE t SET id = 1, name = 'Ada'")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	insertStmt := stmt.(*InsertStmt)
+	if insertStmt.ConflictAction != ConflictReplace {
+		t.Fatalf("ConflictAction = %v, want ConflictReplace", insertStmt.ConflictAction)
+	}
+	if len(insertStmt.Values) != 1 || len(insertStmt.Values[0]) != 2 {
+		t.Fatalf("values = %#v, want one row with two values", insertStmt.Values)
+	}
+}
+
+func TestParseInsertIgnoreMySQLSyntax(t *testing.T) {
+	stmt, err := Parse("INSERT IGNORE INTO t (id, name) VALUES (1, 'Ada')")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	insertStmt := stmt.(*InsertStmt)
+	if insertStmt.ConflictAction != ConflictIgnore {
+		t.Fatalf("ConflictAction = %v, want ConflictIgnore", insertStmt.ConflictAction)
+	}
+	if got, want := insertStmt.Columns, []string{"id", "name"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("columns = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseInsertIgnoreSetSyntax(t *testing.T) {
+	stmt, err := Parse("INSERT IGNORE INTO t SET id = 1, name = 'Ada'")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	insertStmt := stmt.(*InsertStmt)
+	if insertStmt.ConflictAction != ConflictIgnore {
+		t.Fatalf("ConflictAction = %v, want ConflictIgnore", insertStmt.ConflictAction)
+	}
+	if len(insertStmt.Values) != 1 || len(insertStmt.Values[0]) != 2 {
+		t.Fatalf("values = %#v, want one row with two values", insertStmt.Values)
+	}
+}
+
+func TestParseInsertMySQLPriorityModifiers(t *testing.T) {
+	tests := []struct {
+		name       string
+		sql        string
+		wantIgnore bool
+	}{
+		{
+			name: "low priority values",
+			sql:  "INSERT LOW_PRIORITY INTO t VALUES (1)",
+		},
+		{
+			name:       "high priority ignore set",
+			sql:        "INSERT HIGH_PRIORITY IGNORE INTO t SET id = 1",
+			wantIgnore: true,
+		},
+		{
+			name: "delayed default values",
+			sql:  "INSERT DELAYED INTO t DEFAULT VALUES",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			insertStmt := stmt.(*InsertStmt)
+			if tt.wantIgnore && insertStmt.ConflictAction != ConflictIgnore {
+				t.Fatalf("ConflictAction = %v, want ConflictIgnore", insertStmt.ConflictAction)
+			}
+		})
+	}
+}
+
+func TestParseReplaceMySQLPriorityModifiers(t *testing.T) {
+	tests := []string{
+		"REPLACE LOW_PRIORITY INTO t VALUES (1)",
+		"REPLACE DELAYED t SET id = 1",
+	}
+	for _, sql := range tests {
+		t.Run(sql, func(t *testing.T) {
+			stmt, err := Parse(sql)
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			insertStmt := stmt.(*InsertStmt)
+			if insertStmt.ConflictAction != ConflictReplace {
+				t.Fatalf("ConflictAction = %v, want ConflictReplace", insertStmt.ConflictAction)
+			}
+		})
+	}
+}
+
+func TestParseModInfixPreservesModFunction(t *testing.T) {
+	stmt, err := Parse("SELECT 10 MOD 3, MOD(10, 4)")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	selectStmt := stmt.(*SelectStmt)
+	if len(selectStmt.Columns) != 2 {
+		t.Fatalf("columns = %d, want 2", len(selectStmt.Columns))
+	}
+	modExpr, ok := selectStmt.Columns[0].(*BinaryExpr)
+	if !ok {
+		t.Fatalf("first column = %T, want *BinaryExpr", selectStmt.Columns[0])
+	}
+	if modExpr.Operator != TokenPercent {
+		t.Fatalf("MOD operator = %v, want TokenPercent", modExpr.Operator)
+	}
+	if _, ok := selectStmt.Columns[1].(*FunctionCall); !ok {
+		t.Fatalf("second column = %T, want *FunctionCall", selectStmt.Columns[1])
+	}
+}
+
+func TestParseGlobOperator(t *testing.T) {
+	tests := []struct {
+		sql string
+		not bool
+	}{
+		{"SELECT * FROM t WHERE name GLOB '*.txt'", false},
+		{"SELECT * FROM t WHERE name NOT GLOB '*.txt'", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := Parse(tt.sql)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			selectStmt := stmt.(*SelectStmt)
+			expr := selectStmt.Where
+			if tt.not {
+				unary, ok := expr.(*UnaryExpr)
+				if !ok || unary.Operator != TokenNot {
+					t.Fatalf("where = %T, want NOT unary", expr)
+				}
+				expr = unary.Expr
+			}
+			fn, ok := expr.(*FunctionCall)
+			if !ok {
+				t.Fatalf("where = %T, want *FunctionCall", expr)
+			}
+			if fn.Name != "GLOB" || len(fn.Args) != 2 {
+				t.Fatalf("GLOB call = %#v", fn)
+			}
+		})
+	}
+}
+
+func TestParseSelectLockingClauses(t *testing.T) {
+	tests := []struct {
+		sql        string
+		mode       string
+		targets    []string
+		waitPolicy string
+		hasWait    bool
+	}{
+		{"SELECT * FROM t FOR UPDATE", "UPDATE", nil, "", false},
+		{"SELECT * FROM t FOR SHARE", "SHARE", nil, "", false},
+		{"SELECT * FROM t FOR UPDATE OF t NOWAIT", "UPDATE", []string{"t"}, "NOWAIT", false},
+		{"SELECT * FROM t FOR UPDATE OF public.t SKIP LOCKED", "UPDATE", []string{"public.t"}, "SKIP LOCKED", false},
+		{"SELECT * FROM t FOR UPDATE WAIT 10", "UPDATE", nil, "WAIT", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := ParseStrict(tt.sql)
+			if err != nil {
+				t.Fatalf("ParseStrict: %v", err)
+			}
+			selectStmt := stmt.(*SelectStmt)
+			if selectStmt.Locking == nil {
+				t.Fatalf("Locking is nil")
+			}
+			if selectStmt.Locking.Mode != tt.mode {
+				t.Fatalf("Mode = %q, want %q", selectStmt.Locking.Mode, tt.mode)
+			}
+			if len(selectStmt.Locking.Targets) != len(tt.targets) {
+				t.Fatalf("Targets = %v, want %v", selectStmt.Locking.Targets, tt.targets)
+			}
+			for i := range tt.targets {
+				if selectStmt.Locking.Targets[i] != tt.targets[i] {
+					t.Fatalf("Targets = %v, want %v", selectStmt.Locking.Targets, tt.targets)
+				}
+			}
+			if selectStmt.Locking.WaitPolicy != tt.waitPolicy {
+				t.Fatalf("WaitPolicy = %q, want %q", selectStmt.Locking.WaitPolicy, tt.waitPolicy)
+			}
+			if tt.hasWait && selectStmt.Locking.WaitValue == nil {
+				t.Fatalf("WaitValue is nil")
+			}
+		})
+	}
+}
+
+func TestParseTableIndexHints(t *testing.T) {
+	tests := []struct {
+		sql        string
+		indexHint  string
+		notIndexed bool
+	}{
+		{"SELECT * FROM t INDEXED BY idx_t_name", "idx_t_name", false},
+		{"SELECT * FROM t AS x INDEXED BY idx_t_name", "idx_t_name", false},
+		{"SELECT * FROM t NOT INDEXED", "", true},
+		{"SELECT * FROM t AS x NOT INDEXED", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := ParseStrict(tt.sql)
+			if err != nil {
+				t.Fatalf("ParseStrict: %v", err)
+			}
+			selectStmt := stmt.(*SelectStmt)
+			if selectStmt.From.IndexHint != tt.indexHint {
+				t.Fatalf("IndexHint = %q, want %q", selectStmt.From.IndexHint, tt.indexHint)
+			}
+			if selectStmt.From.NotIndexed != tt.notIndexed {
+				t.Fatalf("NotIndexed = %v, want %v", selectStmt.From.NotIndexed, tt.notIndexed)
+			}
+		})
+	}
+}
+
+func TestOptimizeSelectRespectsNotIndexedHint(t *testing.T) {
+	stmt, err := ParseStrict("SELECT * FROM t NOT INDEXED WHERE id = 1")
+	if err != nil {
+		t.Fatalf("ParseStrict: %v", err)
+	}
+	selectStmt := stmt.(*SelectStmt)
+	optimized, err := NewQueryOptimizer().OptimizeSelect(selectStmt)
+	if err != nil {
+		t.Fatalf("OptimizeSelect: %v", err)
+	}
+	if optimized.From.IndexHint != "" {
+		t.Fatalf("IndexHint = %q, want empty for NOT INDEXED", optimized.From.IndexHint)
+	}
+	if !optimized.From.NotIndexed {
+		t.Fatal("NotIndexed = false, want true")
+	}
+}
+
+func TestParseRefreshMaterializedViewConcurrently(t *testing.T) {
+	stmt, err := ParseStrict("REFRESH MATERIALIZED VIEW CONCURRENTLY mv")
+	if err != nil {
+		t.Fatalf("ParseStrict: %v", err)
+	}
+	refreshStmt := stmt.(*RefreshMaterializedViewStmt)
+	if refreshStmt.Name != "mv" {
+		t.Fatalf("Name = %q, want mv", refreshStmt.Name)
+	}
+	if !refreshStmt.Concurrently {
+		t.Fatal("Concurrently = false, want true")
+	}
+}
+
+func TestParseDropCollection(t *testing.T) {
+	tests := []struct {
+		sql      string
+		ifExists bool
+	}{
+		{"DROP COLLECTION c", false},
+		{"DROP COLLECTION IF EXISTS c", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := ParseStrict(tt.sql)
+			if err != nil {
+				t.Fatalf("ParseStrict: %v", err)
+			}
+			dropStmt := stmt.(*DropCollectionStmt)
+			if dropStmt.Name != "c" {
+				t.Fatalf("Name = %q, want c", dropStmt.Name)
+			}
+			if dropStmt.IfExists != tt.ifExists {
+				t.Fatalf("IfExists = %v, want %v", dropStmt.IfExists, tt.ifExists)
+			}
+		})
+	}
+}
+
+func TestParseCreateTemporaryTable(t *testing.T) {
+	tests := []string{
+		"CREATE TEMP TABLE t (id INT)",
+		"CREATE TEMPORARY TABLE t (id INT)",
+		"CREATE TEMP TABLE IF NOT EXISTS t (id INT)",
+		"CREATE TEMPORARY TABLE t AS SELECT 1",
+	}
+	for _, sql := range tests {
+		t.Run(sql, func(t *testing.T) {
+			stmt, err := ParseStrict(sql)
+			if err != nil {
+				t.Fatalf("ParseStrict: %v", err)
+			}
+			createStmt, ok := stmt.(*CreateTableStmt)
+			if !ok {
+				t.Fatalf("stmt = %T, want *CreateTableStmt", stmt)
+			}
+			if !createStmt.Temporary {
+				t.Fatalf("Temporary = false, want true")
+			}
+		})
+	}
+}
+
+func TestParseCreateViewColumnList(t *testing.T) {
+	stmt, err := ParseStrict("CREATE VIEW v (a, b) AS SELECT x, y AS old_name FROM t")
+	if err != nil {
+		t.Fatalf("ParseStrict: %v", err)
+	}
+	createStmt := stmt.(*CreateViewStmt)
+	if len(createStmt.Columns) != 2 || createStmt.Columns[0] != "a" || createStmt.Columns[1] != "b" {
+		t.Fatalf("Columns = %#v, want [a b]", createStmt.Columns)
+	}
+	if len(createStmt.Query.Columns) != 2 {
+		t.Fatalf("query columns = %d, want 2", len(createStmt.Query.Columns))
+	}
+	first, ok := createStmt.Query.Columns[0].(*AliasExpr)
+	if !ok || first.Alias != "a" {
+		t.Fatalf("first query column = %#v, want alias a", createStmt.Query.Columns[0])
+	}
+	second, ok := createStmt.Query.Columns[1].(*AliasExpr)
+	if !ok || second.Alias != "b" {
+		t.Fatalf("second query column = %#v, want alias b", createStmt.Query.Columns[1])
+	}
+
+	if _, err := ParseStrict("CREATE VIEW bad (a, b) AS SELECT x FROM t"); err == nil {
+		t.Fatal("expected error for mismatched view column list")
+	}
+}
+
+func TestParseUpdateMySQLLowPriorityModifier(t *testing.T) {
+	stmt, err := Parse("UPDATE LOW_PRIORITY t SET name = 'Ada' WHERE id = 1")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	updateStmt := stmt.(*UpdateStmt)
+	if updateStmt.Table != "t" {
+		t.Fatalf("Table = %q, want t", updateStmt.Table)
+	}
+	if len(updateStmt.Set) != 1 || updateStmt.Set[0].Column != "name" {
+		t.Fatalf("Set = %#v, want assignment to name", updateStmt.Set)
+	}
+	if updateStmt.Where == nil {
+		t.Fatal("expected WHERE expression")
+	}
+}
+
+func TestParseUpdateTargetAlias(t *testing.T) {
+	stmt, err := Parse("UPDATE t AS x SET x.name = 'Ada' WHERE x.id = 1")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	updateStmt := stmt.(*UpdateStmt)
+	if updateStmt.Table != "t" || updateStmt.Alias != "x" {
+		t.Fatalf("target = %s alias %s, want t alias x", updateStmt.Table, updateStmt.Alias)
+	}
+	if len(updateStmt.Set) != 1 || updateStmt.Set[0].Column != "name" {
+		t.Fatalf("Set = %#v, want normalized assignment to name", updateStmt.Set)
+	}
+	if updateStmt.Where == nil {
+		t.Fatal("expected WHERE expression")
+	}
+}
+
+func TestParseUpdateSetList(t *testing.T) {
+	stmt, err := Parse("UPDATE t SET (x, y) = (?, ? + 1) WHERE id = ?")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	updateStmt := stmt.(*UpdateStmt)
+	if len(updateStmt.Set) != 2 {
+		t.Fatalf("Set = %#v, want 2 assignments", updateStmt.Set)
+	}
+	if updateStmt.Set[0].Column != "x" || updateStmt.Set[1].Column != "y" {
+		t.Fatalf("Set columns = %#v, want x/y", updateStmt.Set)
+	}
+	if ph, ok := updateStmt.Set[0].Value.(*PlaceholderExpr); !ok || ph.Index != 0 {
+		t.Fatalf("first SET value = %#v, want placeholder index 0", updateStmt.Set[0].Value)
+	}
+	secondExpr, ok := updateStmt.Set[1].Value.(*BinaryExpr)
+	if !ok {
+		t.Fatalf("second SET value = %#v, want BinaryExpr", updateStmt.Set[1].Value)
+	}
+	if ph, ok := secondExpr.Left.(*PlaceholderExpr); !ok || ph.Index != 1 {
+		t.Fatalf("second SET left = %#v, want placeholder index 1", secondExpr.Left)
+	}
+	where, ok := updateStmt.Where.(*BinaryExpr)
+	if !ok {
+		t.Fatalf("Where = %#v, want BinaryExpr", updateStmt.Where)
+	}
+	if ph, ok := where.Right.(*PlaceholderExpr); !ok || ph.Index != 2 {
+		t.Fatalf("WHERE right = %#v, want placeholder index 2", where.Right)
+	}
+}
+
+func TestParseMySQLUpdateJoin(t *testing.T) {
+	stmt, err := Parse("UPDATE t JOIN u ON t.id = u.id SET t.name = u.name WHERE u.flag = 1")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	updateStmt := stmt.(*UpdateStmt)
+	if updateStmt.Table != "t" {
+		t.Fatalf("Table = %q, want t", updateStmt.Table)
+	}
+	if len(updateStmt.Joins) != 1 || updateStmt.Joins[0].Table.Name != "u" {
+		t.Fatalf("Joins = %#v, want one join to u", updateStmt.Joins)
+	}
+	if updateStmt.Joins[0].Condition == nil {
+		t.Fatal("expected JOIN condition")
+	}
+	if len(updateStmt.Set) != 1 || updateStmt.Set[0].Column != "name" {
+		t.Fatalf("Set = %#v, want assignment to name", updateStmt.Set)
+	}
+	if updateStmt.Where == nil {
+		t.Fatal("expected WHERE expression")
+	}
+}
+
+func TestParseMySQLUpdateJoinTargetAlias(t *testing.T) {
+	stmt, err := Parse("UPDATE t AS x JOIN u AS y ON x.id = y.id SET x.name = y.name WHERE y.flag = 1")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	updateStmt := stmt.(*UpdateStmt)
+	if updateStmt.Table != "t" || updateStmt.Alias != "x" {
+		t.Fatalf("target = %s alias %s, want t alias x", updateStmt.Table, updateStmt.Alias)
+	}
+	if len(updateStmt.Joins) != 1 || updateStmt.Joins[0].Table.Name != "u" || updateStmt.Joins[0].Table.Alias != "y" {
+		t.Fatalf("Joins = %#v, want one join to u alias y", updateStmt.Joins)
+	}
+	if len(updateStmt.Set) != 1 || updateStmt.Set[0].Column != "name" {
+		t.Fatalf("Set = %#v, want assignment to name", updateStmt.Set)
+	}
+	if updateStmt.Where == nil {
+		t.Fatal("expected WHERE expression")
+	}
+}
+
+func TestParseMySQLUpdateCommaJoin(t *testing.T) {
+	stmt, err := Parse("UPDATE t, u SET t.name = u.name WHERE t.id = u.id")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	updateStmt := stmt.(*UpdateStmt)
+	if updateStmt.Table != "t" {
+		t.Fatalf("Table = %q, want t", updateStmt.Table)
+	}
+	if len(updateStmt.Joins) != 1 || updateStmt.Joins[0].Table.Name != "u" {
+		t.Fatalf("Joins = %#v, want one comma source u", updateStmt.Joins)
+	}
+	if updateStmt.Joins[0].Condition != nil {
+		t.Fatalf("comma source should rely on WHERE, got join condition %#v", updateStmt.Joins[0].Condition)
+	}
+	if len(updateStmt.Set) != 1 || updateStmt.Set[0].Column != "name" {
+		t.Fatalf("Set = %#v, want assignment to name", updateStmt.Set)
+	}
+	if updateStmt.Where == nil {
+		t.Fatal("expected WHERE expression")
+	}
+}
+
+func TestParseDeleteMySQLModifiers(t *testing.T) {
+	tests := []string{
+		"DELETE LOW_PRIORITY FROM t WHERE id = 1",
+		"DELETE QUICK FROM t WHERE id = 1",
+		"DELETE LOW_PRIORITY QUICK FROM t WHERE id = 1",
+	}
+	for _, sql := range tests {
+		t.Run(sql, func(t *testing.T) {
+			stmt, err := Parse(sql)
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			deleteStmt := stmt.(*DeleteStmt)
+			if deleteStmt.Table != "t" {
+				t.Fatalf("Table = %q, want t", deleteStmt.Table)
+			}
+			if deleteStmt.Where == nil {
+				t.Fatal("expected WHERE expression")
+			}
+		})
+	}
+}
+
+func TestParseMySQLTargetedDeleteFromJoin(t *testing.T) {
+	stmt, err := Parse("DELETE t FROM t JOIN u ON t.id = u.id WHERE u.flag = 1")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	deleteStmt := stmt.(*DeleteStmt)
+	if deleteStmt.Table != "t" {
+		t.Fatalf("Table = %q, want t", deleteStmt.Table)
+	}
+	if len(deleteStmt.Using) != 1 || deleteStmt.Using[0].Name != "u" {
+		t.Fatalf("Using = %#v, want one source table u", deleteStmt.Using)
+	}
+	if deleteStmt.Where == nil {
+		t.Fatal("expected combined JOIN/WHERE expression")
+	}
+}
+
+func TestParseMySQLTargetedDeleteFromAlias(t *testing.T) {
+	stmt, err := Parse("DELETE x FROM t AS x JOIN u ON x.id = u.id WHERE u.flag = 1")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	deleteStmt := stmt.(*DeleteStmt)
+	if deleteStmt.Table != "t" || deleteStmt.Alias != "x" {
+		t.Fatalf("target = %s alias %s, want t alias x", deleteStmt.Table, deleteStmt.Alias)
+	}
+	if len(deleteStmt.Using) != 1 || deleteStmt.Using[0].Name != "u" {
+		t.Fatalf("Using = %#v, want one source table u", deleteStmt.Using)
 	}
 }

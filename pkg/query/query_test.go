@@ -1,6 +1,7 @@
 package query
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,20 @@ func TestLexer(t *testing.T) {
 				t.Errorf("Token %d: expected literal %q, got %q", i, expected.Literal, tokens[i].Literal)
 			}
 		}
+	}
+}
+
+func TestTokenizeRejectsOversizedInput(t *testing.T) {
+	_, err := Tokenize("SELECT '" + strings.Repeat("x", maxSQLInputBytes) + "'")
+	if err == nil || !strings.Contains(err.Error(), "SQL input exceeds maximum size") {
+		t.Fatalf("expected SQL input size rejection, got %v", err)
+	}
+}
+
+func TestTokenizeRejectsTooManyTokens(t *testing.T) {
+	_, err := Tokenize(strings.Repeat("?", maxSQLTokens+1))
+	if err == nil || !strings.Contains(err.Error(), "SQL token count exceeds maximum") {
+		t.Fatalf("expected SQL token count rejection, got %v", err)
 	}
 }
 
