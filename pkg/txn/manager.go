@@ -23,13 +23,34 @@ var (
 	ErrTxnNotFound      = errors.New("transaction not found")
 	ErrDeadlockDetected = errors.New("deadlock detected")
 	ErrTxnTimeout       = errors.New("transaction timeout")
+	ErrReadOnlyTxn      = errors.New("read-only transaction cannot write")
 )
 
-func txnUint32Len(n int, name string) (uint32, error) {
+func checkedTxnUint32(n int, name string) (uint32, error) {
 	if n < 0 || n > 1<<32-1 {
 		return 0, fmt.Errorf("%s exceeds uint32: %d", name, n)
 	}
 	return uint32(n), nil // #nosec G115 - range checked above.
+}
+
+const maxTxnWALRecordDataBytes = 1<<16 - 1 // storage WAL payload length is uint16
+
+func txnWALRecordDataLen(keyLen, valueLen int) (int, error) {
+	if keyLen < 0 {
+		return 0, fmt.Errorf("WAL key length must be non-negative: %d", keyLen)
+	}
+	if valueLen < 0 {
+		return 0, fmt.Errorf("WAL value length must be non-negative: %d", valueLen)
+	}
+	if keyLen > maxTxnWALRecordDataBytes-4 {
+		return 0, fmt.Errorf("WAL record data size exceeds maximum (%d bytes): key length %d",
+			maxTxnWALRecordDataBytes, keyLen)
+	}
+	if valueLen > maxTxnWALRecordDataBytes-4-keyLen {
+		return 0, fmt.Errorf("WAL record data size exceeds maximum (%d bytes): key length %d, value length %d",
+			maxTxnWALRecordDataBytes, keyLen, valueLen)
+	}
+	return 4 + keyLen + valueLen, nil
 }
 
 // walDataPool reuses small byte buffers for the WAL fast path, eliminating
@@ -137,6 +158,26 @@ func (t *Transaction) AddLockHeld(key string) {
 	t.locksHeld[key] = true
 }
 
+// AddLockHeldIfActive records a lock only while the transaction is still active.
+func (t *Transaction) AddLockHeldIfActive(key string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch t.State {
+	case TxnActive:
+	case TxnCommitted:
+		return ErrTxnCommitted
+	case TxnAborted:
+		return ErrTxnAborted
+	default:
+		return ErrTxnNotFound
+	}
+	if t.locksHeld == nil {
+		t.locksHeld = make(map[string]bool)
+	}
+	t.locksHeld[key] = true
+	return nil
+}
+
 // RemoveLockHeld removes a lock record
 func (t *Transaction) RemoveLockHeld(key string) {
 	t.mu.Lock()
@@ -166,6 +207,22 @@ func (t *Transaction) IsTimedOut() bool {
 		return false
 	}
 	return t.ctx.Err() != nil
+}
+
+func (t *Transaction) activeStateError() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	switch t.State {
+	case TxnActive:
+		return nil
+	case TxnCommitted:
+		return ErrTxnCommitted
+	case TxnAborted:
+		return ErrTxnAborted
+	default:
+		return ErrTxnNotFound
+	}
 }
 
 // Commit commits the transaction
@@ -351,6 +408,14 @@ func activeShardIdx(id uint64) int {
 	return int(id & (numActiveShards - 1))
 }
 
+func (m *Manager) activeTxn(txnID uint64) (*Transaction, bool) {
+	shard := activeShardIdx(txnID)
+	m.activeShards[shard].RLock()
+	txn, exists := m.activeShards[shard].m[txnID]
+	m.activeShards[shard].RUnlock()
+	return txn, exists
+}
+
 // versionShardIdx returns a deterministic shard index for the given treeName+key
 // without allocating. It implements FNV-1a 32-bit inline.
 func versionShardIdx(treeName, key string) int {
@@ -453,7 +518,7 @@ func (m *Manager) checkForDeadlocks() {
 		m.activeShards[i].RLock()
 		for id, txn := range m.activeShards[i].m {
 			activeTxns[id] = txn
-			waitingMap[id] = txn.waitingFor
+			waitingMap[id] = txn.GetWaitingFor()
 		}
 		m.activeShards[i].RUnlock()
 	}
@@ -556,6 +621,14 @@ func (m *Manager) AcquireLock(txnID uint64, key string, timeout time.Duration) e
 
 // AcquireLockMode acquires a lock in the specified mode (shared or exclusive).
 func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeout time.Duration) error {
+	txn, exists := m.activeTxn(txnID)
+	if !exists {
+		return ErrTxnNotFound
+	}
+	if txn.IsTimedOut() {
+		return ErrTxnTimeout
+	}
+
 	m.lockMu.Lock()
 
 	entry := m.lockEntries[key]
@@ -593,12 +666,9 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 		}
 		m.lockMu.Unlock()
 
-		shard := activeShardIdx(txnID)
-		m.activeShards[shard].RLock()
-		txn, exists := m.activeShards[shard].m[txnID]
-		m.activeShards[shard].RUnlock()
-		if exists {
-			txn.AddLockHeld(key)
+		if err := txn.AddLockHeldIfActive(key); err != nil {
+			m.ReleaseLock(txnID, key)
+			return err
 		}
 		return nil
 	}
@@ -615,19 +685,10 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 		}
 	}
 
-	shard := activeShardIdx(txnID)
-	m.activeShards[shard].RLock()
-	txn, exists := m.activeShards[shard].m[txnID]
-	m.activeShards[shard].RUnlock()
 	blockerShard := activeShardIdx(blockerID)
 	m.activeShards[blockerShard].RLock()
 	waitingTxn, waitingExists := m.activeShards[blockerShard].m[blockerID]
 	m.activeShards[blockerShard].RUnlock()
-
-	if !exists {
-		m.lockMu.Unlock()
-		return ErrTxnNotFound
-	}
 
 	// SetWaitingFor must be called after lockMu is released to maintain the
 	// lock-ordering invariant (lockMu before t.mu). Holding lockMu while
@@ -638,28 +699,40 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 		return ErrDeadlockDetected
 	}
 
-	if waitingExists {
-		txn.SetWaitingFor(blockerID)
-		_ = waitingTxn
-	}
-
 	// Wait for the lock with timeout
 	if timeout > 0 {
 		m.lockMu.Unlock()
+		if waitingExists {
+			txn.SetWaitingFor(blockerID)
+			_ = waitingTxn
+		}
+		if err := txn.activeStateError(); err != nil {
+			txn.SetWaitingFor(0)
+			return err
+		}
 		timer := time.NewTimer(timeout)
 		defer timer.Stop()
 
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
+		var txnDone <-chan struct{}
+		if ctx := txn.Context(); ctx != nil {
+			txnDone = ctx.Done()
+		}
 
 		for {
 			select {
-			case <-timer.C:
-				m.lockMu.Lock()
+			case <-txnDone:
 				txn.SetWaitingFor(0)
-				m.lockMu.Unlock()
+				return ErrTxnTimeout
+			case <-timer.C:
+				txn.SetWaitingFor(0)
 				return fmt.Errorf("lock acquisition timeout")
 			case <-ticker.C:
+				if err := txn.activeStateError(); err != nil {
+					txn.SetWaitingFor(0)
+					return err
+				}
 				m.lockMu.Lock()
 				e := m.lockEntries[key]
 				if e == nil {
@@ -687,7 +760,10 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 					}
 					m.lockMu.Unlock()
 					txn.SetWaitingFor(0)
-					txn.AddLockHeld(key)
+					if err := txn.AddLockHeldIfActive(key); err != nil {
+						m.ReleaseLock(txnID, key)
+						return err
+					}
 					return nil
 				}
 				m.lockMu.Unlock()
@@ -1010,11 +1086,14 @@ func (m *Manager) detectConflicts(txn *Transaction) error {
 	return nil
 }
 
-// commitWithConflictDetection atomically checks for conflicts and updates
-// versions, then releases the lock before writing WAL records.  This allows
-// other transactions to commit while WAL I/O is in progress, significantly
-// improving concurrency under high write load.
+// commitWithConflictDetection atomically checks for conflicts, durably writes
+// the WAL, then publishes version state. WAL must succeed before versions are
+// visible; otherwise a failed commit can leave stale conflict state behind.
 func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
+	if txn.ReadOnly && len(txn.WriteSet) > 0 {
+		return ErrReadOnlyTxn
+	}
+
 	// Fast path: single-shard transaction (the common case for single-row
 	// INSERT, UPDATE, DELETE). Avoids shard-array collection, sorting,
 	// and multi-shard lock/unlock loops.
@@ -1027,10 +1106,14 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 
 		if len(txn.ReadSet) == 0 {
 			m.versionShards[shard].mu.Lock()
+			if err := m.writeWALForCommit(txn); err != nil {
+				m.versionShards[shard].mu.Unlock()
+				return err
+			}
 			seq := atomic.AddUint64(&m.commitSeq, 1)
 			m.versionShards[shard].versions[writeWk] = seq
 			m.versionShards[shard].mu.Unlock()
-			return m.writeWALForCommit(txn)
+			return nil
 		}
 
 		if len(txn.ReadSet) == 1 {
@@ -1049,10 +1132,14 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 						return ErrConflict
 					}
 				}
+				if err := m.writeWALForCommit(txn); err != nil {
+					m.versionShards[shard].mu.Unlock()
+					return err
+				}
 				seq := atomic.AddUint64(&m.commitSeq, 1)
 				m.versionShards[shard].versions[writeWk] = seq
 				m.versionShards[shard].mu.Unlock()
-				return m.writeWALForCommit(txn)
+				return nil
 			}
 		}
 	}
@@ -1118,22 +1205,28 @@ func (m *Manager) commitWithConflictDetection(txn *Transaction) error {
 		}
 	}
 
-	// 4. Update versions.
-	// Note: VersionStore is write-only in production (no callers of
-	// GetAtSnapshot / GetCurrent / GetLatestVersion outside tests),
-	// so we skip the per-commit allocation entirely.
+	// 4. WAL durability. Keep version locks held until WAL succeeds so failed
+	// commits cannot publish transient versions into conflict detection state.
+	if err := m.writeWALForCommit(txn); err != nil {
+		for i := len(sorted) - 1; i >= 0; i-- {
+			m.versionShards[sorted[i]].mu.Unlock()
+		}
+		return err
+	}
+
+	// 5. Update versions. VersionStore is write-only in production (no callers
+	// of GetAtSnapshot / GetCurrent / GetLatestVersion outside tests), so we
+	// skip the per-commit allocation entirely.
 	seq := atomic.AddUint64(&m.commitSeq, 1)
 	for wk := range txn.WriteSet {
 		m.versionShards[versionShardIdx(wk.TreeName, wk.Key)].versions[wk] = seq
 	}
 
-	// Release version locks before WAL append so other commits can proceed.
 	for i := len(sorted) - 1; i >= 0; i-- {
 		m.versionShards[sorted[i]].mu.Unlock()
 	}
 
-	// 5. WAL durability (outside version locks so other commits can proceed).
-	return m.writeWALForCommit(txn)
+	return nil
 }
 
 // writeWALForCommit writes WAL records for a committed transaction.
@@ -1157,11 +1250,14 @@ func (m *Manager) writeWALForCommit(txn *Transaction) error {
 			tnLen := len(wk.TreeName)
 			kLen := len(wk.Key)
 			totalKeyLen := tnLen + 1 + kLen
-			encodedKeyLen, err := txnUint32Len(totalKeyLen, "WAL key length")
+			encodedKeyLen, err := checkedTxnUint32(totalKeyLen, "WAL key length")
 			if err != nil {
 				return err
 			}
-			need := 4 + totalKeyLen + len(value)
+			need, err := txnWALRecordDataLen(totalKeyLen, len(value))
+			if err != nil {
+				return err
+			}
 			var data []byte
 			if need <= 256 {
 				walDataBuf = walDataPool.Get().(*[]byte)
@@ -1202,11 +1298,15 @@ func (m *Manager) writeWALForCommit(txn *Transaction) error {
 			tnLen := len(wk.TreeName)
 			kLen := len(wk.Key)
 			totalKeyLen := tnLen + 1 + kLen
-			encodedKeyLen, err := txnUint32Len(totalKeyLen, "WAL key length")
+			encodedKeyLen, err := checkedTxnUint32(totalKeyLen, "WAL key length")
 			if err != nil {
 				return err
 			}
-			data := make([]byte, 4+totalKeyLen+len(value))
+			need, err := txnWALRecordDataLen(totalKeyLen, len(value))
+			if err != nil {
+				return err
+			}
+			data := make([]byte, need)
 			binary.LittleEndian.PutUint32(data[0:4], encodedKeyLen)
 			copy(data[4:4+tnLen], wk.TreeName)
 			data[4+tnLen] = ':'

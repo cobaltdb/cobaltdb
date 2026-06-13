@@ -21,9 +21,15 @@ import (
 var (
 	ErrInvalidKey       = errors.New("invalid encryption key")
 	ErrInvalidSalt      = errors.New("invalid salt")
+	ErrInvalidAlgorithm = errors.New("invalid encryption algorithm")
 	ErrEncryptionFailed = errors.New("encryption failed")
 	ErrDecryptionFailed = errors.New("decryption failed")
 	ErrKeyDerivation    = errors.New("key derivation failed")
+)
+
+const (
+	defaultPBKDF2Iters = 100000
+	maxPBKDF2Iters     = 10_000_000
 )
 
 // EncryptionConfig holds encryption configuration
@@ -58,8 +64,8 @@ func NewEncryptedBackend(backend Backend, config *EncryptionConfig) (*EncryptedB
 		return &EncryptedBackend{backend: backend, config: config}, nil
 	}
 
-	if len(config.Key) == 0 {
-		return nil, ErrInvalidKey
+	if err := validateEncryptionConfig(config); err != nil {
+		return nil, err
 	}
 
 	eb := &EncryptedBackend{
@@ -87,6 +93,24 @@ func NewEncryptedBackend(backend Backend, config *EncryptionConfig) (*EncryptedB
 	return eb, nil
 }
 
+func validateEncryptionConfig(config *EncryptionConfig) error {
+	if len(config.Key) == 0 {
+		return ErrInvalidKey
+	}
+	if config.Algorithm != "" && config.Algorithm != "aes-256-gcm" {
+		return fmt.Errorf("%w: %s", ErrInvalidAlgorithm, config.Algorithm)
+	}
+	if !config.UseArgon2 {
+		if config.PBKDF2Iters < 0 {
+			return fmt.Errorf("%w: PBKDF2 iterations cannot be negative: %d", ErrKeyDerivation, config.PBKDF2Iters)
+		}
+		if config.PBKDF2Iters > maxPBKDF2Iters {
+			return fmt.Errorf("%w: PBKDF2 iterations exceeds maximum (%d): %d", ErrKeyDerivation, maxPBKDF2Iters, config.PBKDF2Iters)
+		}
+	}
+	return nil
+}
+
 func cloneEncryptionConfig(config *EncryptionConfig) *EncryptionConfig {
 	normalized := *config
 	if len(config.Key) > 0 {
@@ -111,6 +135,9 @@ func (eb *EncryptedBackend) deriveKey() error {
 		}
 		eb.config.Salt = salt
 	}
+	if len(salt) > maxEncryptionSaltBytes {
+		return fmt.Errorf("%w: salt is too large: %d bytes (max %d)", ErrInvalidSalt, len(salt), maxEncryptionSaltBytes)
+	}
 
 	// Derive 32-byte key for AES-256
 	if eb.config.UseArgon2 {
@@ -120,7 +147,7 @@ func (eb *EncryptedBackend) deriveKey() error {
 		// PBKDF2 with SHA-256
 		iters := eb.config.PBKDF2Iters
 		if iters == 0 {
-			iters = 100000
+			iters = defaultPBKDF2Iters
 		}
 		eb.sessionKey = pbkdf2.Key(key, salt, iters, 32, sha256.New)
 	}
@@ -141,6 +168,16 @@ func (eb *EncryptedBackend) physicalOffset(offset int64) int64 {
 	return (offset / int64(PageSize)) * encryptedSize
 }
 
+func validateEncryptedPageIO(bufLen int, offset int64) error {
+	if offset < 0 || offset%int64(PageSize) != 0 {
+		return fmt.Errorf("%w: encrypted backend offset must be page-aligned: %d", ErrInvalidOffset, offset)
+	}
+	if bufLen != PageSize {
+		return fmt.Errorf("%w: encrypted backend requires full page I/O: got %d want %d", ErrInvalidSize, bufLen, PageSize)
+	}
+	return nil
+}
+
 func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 	eb.mu.RLock()
 	defer eb.mu.RUnlock()
@@ -151,6 +188,10 @@ func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 
 	if !eb.config.Enabled {
 		return eb.backend.ReadAt(buf, offset)
+	}
+
+	if err := validateEncryptedPageIO(len(buf), offset); err != nil {
+		return 0, err
 	}
 
 	// Read encrypted data (page size + nonce + tag)
@@ -192,7 +233,7 @@ func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 
 	// Decrypt with page offset as authenticated data (AAD)
 	aad := make([]byte, 8)
-	aadOffset, err := storageUint64Offset(offset)
+	aadOffset, err := checkedUint64Offset(offset)
 	if err != nil {
 		return 0, err
 	}
@@ -220,6 +261,10 @@ func (eb *EncryptedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 		return eb.backend.WriteAt(buf, offset)
 	}
 
+	if err := validateEncryptedPageIO(len(buf), offset); err != nil {
+		return 0, err
+	}
+
 	// Generate random nonce
 	nonce := make([]byte, eb.cipher.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
@@ -228,7 +273,7 @@ func (eb *EncryptedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 
 	// Encrypt data with page offset as authenticated data (AAD)
 	aad := make([]byte, 8)
-	aadOffset, err := storageUint64Offset(offset)
+	aadOffset, err := checkedUint64Offset(offset)
 	if err != nil {
 		return 0, err
 	}
@@ -236,7 +281,7 @@ func (eb *EncryptedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 	ciphertext := eb.cipher.Seal(nonce, nonce, buf, aad)
 
 	// Write encrypted data at the scaled physical offset (see physicalOffset).
-	if _, err := eb.backend.WriteAt(ciphertext, eb.physicalOffset(offset)); err != nil {
+	if _, err := WriteFullAt(eb.backend, ciphertext, eb.physicalOffset(offset)); err != nil {
 		return 0, err
 	}
 	return len(buf), nil
@@ -270,7 +315,7 @@ func (eb *EncryptedBackend) Size() int64 {
 
 	// Calculate unencrypted size from encrypted size
 	encryptedSize := PageSize + eb.cipher.NonceSize() + eb.cipher.Overhead()
-	numPages := size / int64(encryptedSize)
+	numPages := (size + int64(encryptedSize) - 1) / int64(encryptedSize)
 	return numPages * PageSize
 }
 
@@ -345,13 +390,19 @@ func (eb *EncryptedBackend) GetSalt() []byte {
 	return salt
 }
 
-const saltFileMarker = "CBLT_SALT_V1"
+const (
+	saltFileMarker         = "CBLT_SALT_V1"
+	maxEncryptionSaltBytes = 4096
+)
 
 // PersistSalt writes the salt to a sidecar file (<dbpath>.salt).
 // This must be called after NewEncryptedBackend when a new salt is generated.
 func PersistSalt(dbPath string, salt []byte) error {
 	if len(salt) == 0 {
 		return nil
+	}
+	if len(salt) > maxEncryptionSaltBytes {
+		return fmt.Errorf("%w: salt is too large: %d bytes (max %d)", ErrInvalidSalt, len(salt), maxEncryptionSaltBytes)
 	}
 	saltPath, err := saltSidecarPath(dbPath)
 	if err != nil {
@@ -371,7 +422,7 @@ func LoadSalt(dbPath string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(saltPath) // #nosec G304 - salt sidecar path is derived from a cleaned database path.
+	data, err := readSaltFile(saltPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -390,7 +441,58 @@ func LoadSalt(dbPath string) ([]byte, error) {
 	if len(salt) == 0 {
 		return nil, ErrInvalidSalt
 	}
+	if len(salt) > maxEncryptionSaltBytes {
+		return nil, fmt.Errorf("%w: salt is too large: %d bytes (max %d)", ErrInvalidSalt, len(salt), maxEncryptionSaltBytes)
+	}
 	return salt, nil
+}
+
+func readSaltFile(path string) ([]byte, error) {
+	path = filepath.Clean(path)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("salt file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("salt file must be a regular file: %s", path)
+	}
+	maxSaltFileBytes := int64(len(saltFileMarker) + 1 + maxEncryptionSaltBytes)
+	if info.Size() > maxSaltFileBytes {
+		return nil, fmt.Errorf("%w: salt file is too large: %d bytes (max %d)", ErrInvalidSalt, info.Size(), maxSaltFileBytes)
+	}
+
+	file, err := os.Open(path) // #nosec G304 - salt sidecar path is derived from a cleaned database path and validated before use.
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("salt file must be a regular file: %s", path)
+	}
+	if openedInfo.Size() > maxSaltFileBytes {
+		return nil, fmt.Errorf("%w: salt file is too large: %d bytes (max %d)", ErrInvalidSalt, openedInfo.Size(), maxSaltFileBytes)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("salt file changed while opening: %s", path)
+	}
+	if err := file.Chmod(0600); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxSaltFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxSaltFileBytes {
+		return nil, fmt.Errorf("%w: salt file is too large: %d bytes (max %d)", ErrInvalidSalt, len(data), maxSaltFileBytes)
+	}
+	return data, nil
 }
 
 func saltSidecarPath(dbPath string) (string, error) {
@@ -404,6 +506,10 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	path = filepath.Clean(path)
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
+
+	if err := prepareAtomicFileDir(dir); err != nil {
+		return err
+	}
 
 	file, err := os.CreateTemp(dir, base+".tmp-*") // #nosec G304 - caller provides a cleaned sidecar path.
 	if err != nil {
@@ -423,7 +529,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := file.Chmod(perm); err != nil {
 		return fmt.Errorf("failed to set temporary file permissions: %w", err)
 	}
-	if _, err := file.Write(data); err != nil {
+	if _, err := writeFileFull(file, data); err != nil {
 		return fmt.Errorf("failed to write temporary file: %w", err)
 	}
 	if err := file.Sync(); err != nil {
@@ -440,6 +546,100 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	tmpPath = ""
 	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("failed to sync directory: %w", err)
+	}
+	return nil
+}
+
+func writeFileFull(writer io.Writer, data []byte) (int, error) {
+	n, err := writer.Write(data)
+	if err != nil {
+		return n, err
+	}
+	if n != len(data) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
+}
+
+func prepareAtomicFileDir(dir string) error {
+	dir = filepath.Clean(dir)
+	if dir == "." {
+		return rejectAtomicFileDirSymlinks(dir)
+	}
+	if err := rejectAtomicFileDirSymlinks(dir); err != nil {
+		return err
+	}
+
+	info, statErr := os.Lstat(dir)
+	preexisting := statErr == nil
+	if statErr != nil {
+		if !os.IsNotExist(statErr) {
+			return fmt.Errorf("failed to stat atomic file directory: %w", statErr)
+		}
+	} else {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("atomic file directory must not be a symlink: %s", dir)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("atomic file directory must be a directory: %s", dir)
+		}
+	}
+
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return fmt.Errorf("failed to create atomic file directory: %w", err)
+	}
+	if !preexisting {
+		if err := os.Chmod(dir, 0750); err != nil {
+			return fmt.Errorf("failed to set atomic file directory permissions: %w", err)
+		}
+	}
+	if err := rejectAtomicFileDirSymlinks(dir); err != nil {
+		return err
+	}
+
+	openedInfo, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !openedInfo.IsDir() {
+		return fmt.Errorf("atomic file directory must be a directory: %s", dir)
+	}
+	if preexisting && !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("atomic file directory changed while opening: %s", dir)
+	}
+	return nil
+}
+
+func rejectAtomicFileDirSymlinks(path string) error {
+	return rejectStoragePathSymlinkComponents(path, "atomic file directory")
+}
+
+func rejectStoragePathSymlinkComponents(path, label string) error {
+	path = filepath.Clean(path)
+	if path == "." || path == string(os.PathSeparator) {
+		return nil
+	}
+
+	current := "."
+	if filepath.IsAbs(path) {
+		current = string(os.PathSeparator)
+		path = strings.TrimPrefix(path, string(os.PathSeparator))
+	}
+	for _, part := range strings.Split(path, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to stat %s component: %w", label, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s component must not be a symlink: %s", label, current)
+		}
 	}
 	return nil
 }

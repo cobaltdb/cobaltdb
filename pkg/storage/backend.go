@@ -2,6 +2,8 @@ package storage
 
 import (
 	"errors"
+	"fmt"
+	"io"
 )
 
 var (
@@ -29,4 +31,28 @@ type Backend interface {
 
 	// Close closes the backend
 	Close() error
+}
+
+func WriteFullAt(backend Backend, buf []byte, offset int64) (int, error) {
+	n, err := backend.WriteAt(buf, offset)
+	if err != nil {
+		return n, err
+	}
+	if n != len(buf) {
+		return n, fmt.Errorf("%w: wrote %d of %d bytes at offset %d", io.ErrShortWrite, n, len(buf), offset)
+	}
+	return n, nil
+}
+
+// ReadFullAt reads exactly len(buf) bytes from the backend at the given offset.
+// It returns an error if the full buffer could not be read.
+func ReadFullAt(backend Backend, buf []byte, offset int64) (int, error) {
+	n, err := backend.ReadAt(buf, offset)
+	if err != nil {
+		return n, err
+	}
+	if n != len(buf) {
+		return n, fmt.Errorf("%w: read %d of %d bytes at offset %d", io.ErrUnexpectedEOF, n, len(buf), offset)
+	}
+	return n, nil
 }

@@ -79,7 +79,40 @@ func ExpectVal(t *testing.T, db *engine.DB, ctx context.Context, query string, e
 	}
 }
 
-// ExpectError asserts that a query fails with the expected error
+// MustExec is a stricter alias for Exec that uses the standard naming convention.
+func MustExec(t *testing.T, db *engine.DB, ctx context.Context, query string, args ...interface{}) {
+	t.Helper()
+	Exec(t, db, ctx, query, args...)
+}
+
+// MustQuery is a stricter alias for Query that uses the standard naming convention.
+func MustQuery(t *testing.T, db *engine.DB, ctx context.Context, query string, args ...interface{}) *engine.Rows {
+	t.Helper()
+	return Query(t, db, ctx, query, args...)
+}
+
+// MustQueryRows executes a query and asserts the expected row count.
+func MustQueryRows(t *testing.T, db *engine.DB, ctx context.Context, query string, expectedCount int, args ...interface{}) {
+	t.Helper()
+	ExpectRows(t, db, ctx, query, expectedCount, args...)
+}
+
+// MustQueryVal is a stricter alias for ExpectVal that uses the standard naming convention.
+func MustQueryVal(t *testing.T, db *engine.DB, ctx context.Context, query string, expected interface{}, args ...interface{}) {
+	t.Helper()
+	ExpectVal(t, db, ctx, query, expected, args...)
+}
+
+// MustFail asserts that a query fails (any error).
+func MustFail(t *testing.T, db *engine.DB, ctx context.Context, query string, args ...interface{}) {
+	t.Helper()
+	_, err := db.Exec(ctx, query, args...)
+	if err == nil {
+		t.Fatalf("Expected query to fail, but it succeeded: %s", query)
+	}
+}
+
+// ExpectError asserts that a query fails with the expected error substring.
 func ExpectError(t *testing.T, db *engine.DB, ctx context.Context, query string, expectedErr string) {
 	t.Helper()
 	_, err := db.Exec(ctx, query)

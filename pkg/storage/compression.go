@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
@@ -66,10 +67,11 @@ func DefaultCompressionConfig() *CompressionConfig {
 // occupy less space (header + compressed payload) creating sparse-file holes
 // on supported filesystems.
 type CompressedBackend struct {
-	backend Backend
-	config  *CompressionConfig
-	mu      sync.RWMutex
-	closed  bool
+	backend     Backend
+	config      *CompressionConfig
+	mu          sync.RWMutex
+	closed      bool
+	logicalSize int64
 
 	// Pools reuse buffers, writers, and readers to reduce allocations.
 	writeBufPool sync.Pool
@@ -84,11 +86,16 @@ func NewCompressedBackend(backend Backend, config *CompressionConfig) (*Compress
 	if config == nil {
 		config = DefaultCompressionConfig()
 	} else {
-		config = normalizeCompressionConfig(config)
+		normalized, err := normalizeCompressionConfig(config)
+		if err != nil {
+			return nil, err
+		}
+		config = normalized
 	}
 	cb := &CompressedBackend{
-		backend: backend,
-		config:  config,
+		backend:     backend,
+		config:      config,
+		logicalSize: compressedLogicalSize(backend.Size()),
 	}
 	cb.writeBufPool.New = func() interface{} {
 		b := make([]byte, PageSize)
@@ -104,19 +111,40 @@ func NewCompressedBackend(backend Backend, config *CompressionConfig) (*Compress
 	return cb, nil
 }
 
-func normalizeCompressionConfig(config *CompressionConfig) *CompressionConfig {
+func compressedLogicalSize(physicalSize int64) int64 {
+	if physicalSize <= 0 {
+		return 0
+	}
+	pageSize := int64(PageSize)
+	return ((physicalSize + pageSize - 1) / pageSize) * pageSize
+}
+
+func normalizeCompressionConfig(config *CompressionConfig) (*CompressionConfig, error) {
 	defaults := DefaultCompressionConfig()
 	normalized := *config
 	if !normalized.Enabled {
-		return &normalized
+		return &normalized, nil
+	}
+	switch normalized.Algorithm {
+	case CompressionAlgorithmZlib, CompressionAlgorithmLZ4, CompressionAlgorithmZstd:
+	default:
+		return nil, fmt.Errorf("invalid compression algorithm: %d", normalized.Algorithm)
+	}
+	switch normalized.Level {
+	case CompressionLevelNone, CompressionLevelFast, CompressionLevelDefault, CompressionLevelBest:
+	default:
+		return nil, fmt.Errorf("invalid compression level: %d", normalized.Level)
+	}
+	if normalized.MinRatio < 0 || normalized.MinRatio > 1 || math.IsNaN(normalized.MinRatio) || math.IsInf(normalized.MinRatio, 0) {
+		return nil, fmt.Errorf("invalid compression min ratio: %v", normalized.MinRatio)
 	}
 	if normalized.Algorithm == defaults.Algorithm && normalized.Level == CompressionLevelNone && normalized.MinRatio == 0 {
 		normalized.Level = defaults.Level
 	}
-	if normalized.MinRatio <= 0 {
+	if normalized.MinRatio == 0 {
 		normalized.MinRatio = defaults.MinRatio
 	}
-	return &normalized
+	return &normalized, nil
 }
 
 // magicForAlgorithm returns the magic bytes for the configured algorithm.
@@ -170,6 +198,10 @@ func (cb *CompressedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 			}
 
 			payload := data[compressionHeaderSize:]
+			if len(payload) < int(payloadSize) {
+				return 0, fmt.Errorf("compressed page payload truncated: header declares %d bytes, found %d",
+					payloadSize, len(payload))
+			}
 			if len(payload) > int(payloadSize) {
 				payload = payload[:payloadSize]
 			}
@@ -205,15 +237,20 @@ func (cb *CompressedBackend) algorithmFromMagic(magic []byte) CompressionAlgorit
 
 // WriteAt compresses and writes a page to the backend.
 func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
-	cb.mu.RLock()
-	defer cb.mu.RUnlock()
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 
 	if cb.closed {
 		return 0, ErrBackendClosed
 	}
+	if err := validateCompressedWriteRange(offset, len(buf)); err != nil {
+		return 0, err
+	}
 
 	if !cb.config.Enabled {
-		return cb.backend.WriteAt(buf, offset)
+		n, err := cb.backend.WriteAt(buf, offset)
+		cb.updateLogicalSize(offset, n, err)
+		return n, err
 	}
 
 	// Attempt compression.
@@ -221,18 +258,24 @@ func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 	if err != nil || len(compressed) >= len(buf) {
 		// Fallback to raw write on compression error or if compression
 		// didn't actually shrink the data.
-		return cb.backend.WriteAt(buf, offset)
+		n, err := WriteFullAt(cb.backend, buf, offset)
+		cb.updateLogicalSize(offset, n, err)
+		return n, err
 	}
 
 	// Only store compressed if it meets the minimum ratio threshold.
 	if ratio <= cb.config.MinRatio {
-		originalSize, err := storageUint16(len(buf), "compression original size")
+		originalSize, err := checkedUint16(len(buf), "compression original size")
 		if err != nil {
-			return cb.backend.WriteAt(buf, offset)
+			n, err := WriteFullAt(cb.backend, buf, offset)
+			cb.updateLogicalSize(offset, n, err)
+			return n, err
 		}
-		compressedSize, err := storageUint16(len(compressed), "compression payload size")
+		compressedSize, err := checkedUint16(len(compressed), "compression payload size")
 		if err != nil {
-			return cb.backend.WriteAt(buf, offset)
+			n, err := WriteFullAt(cb.backend, buf, offset)
+			cb.updateLogicalSize(offset, n, err)
+			return n, err
 		}
 
 		// Store compressed with header.
@@ -245,16 +288,45 @@ func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 		binary.LittleEndian.PutUint16(header[6:8], compressedSize)
 
 		// Write header + compressed data.
-		n, err := cb.backend.WriteAt(header, offset)
+		n, err := WriteFullAt(cb.backend, header, offset)
 		if err != nil {
 			return n, err
 		}
-		n2, err := cb.backend.WriteAt(compressed, offset+int64(compressionHeaderSize))
-		return n + n2, err
+		n2, err := WriteFullAt(cb.backend, compressed, offset+int64(compressionHeaderSize))
+		if err != nil {
+			return n + n2, err
+		}
+		cb.updateLogicalSize(offset, len(buf), nil)
+		return len(buf), nil
 	}
 
 	// Store raw — compression didn't save enough space.
-	return cb.backend.WriteAt(buf, offset)
+	n, err := WriteFullAt(cb.backend, buf, offset)
+	cb.updateLogicalSize(offset, n, err)
+	return n, err
+}
+
+func (cb *CompressedBackend) updateLogicalSize(offset int64, n int, err error) {
+	if err != nil || n <= 0 {
+		return
+	}
+	if int64(n) > maxMemoryOffset-offset {
+		return
+	}
+	end := offset + int64(n)
+	if end > cb.logicalSize {
+		cb.logicalSize = end
+	}
+}
+
+func validateCompressedWriteRange(offset int64, length int) error {
+	if offset < 0 {
+		return ErrInvalidOffset
+	}
+	if int64(length) > maxMemoryOffset-offset {
+		return ErrInvalidSize
+	}
+	return nil
 }
 
 // Sync delegates to the underlying backend.
@@ -278,7 +350,7 @@ func (cb *CompressedBackend) Size() int64 {
 		return 0
 	}
 
-	return cb.backend.Size()
+	return cb.logicalSize
 }
 
 // Truncate delegates to the underlying backend.
@@ -289,8 +361,15 @@ func (cb *CompressedBackend) Truncate(size int64) error {
 	if cb.closed {
 		return ErrBackendClosed
 	}
+	if size < 0 {
+		return ErrInvalidSize
+	}
 
-	return cb.backend.Truncate(size)
+	if err := cb.backend.Truncate(size); err != nil {
+		return err
+	}
+	cb.logicalSize = size
+	return nil
 }
 
 // Close closes the underlying backend.
@@ -451,7 +530,7 @@ func (cb *CompressedBackend) decompressZlib(data []byte, originalSize int) ([]by
 
 	out := make([]byte, originalSize)
 	n, err := io.ReadFull(r, out)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+	if err := requireFullDecompressed(n, originalSize, err); err != nil {
 		return nil, err
 	}
 	return out[:n], nil
@@ -468,7 +547,7 @@ func (cb *CompressedBackend) decompressLZ4(data []byte, originalSize int) ([]byt
 	defer cb.lz4Readers.Put(r)
 	out := make([]byte, originalSize)
 	n, err := io.ReadFull(r, out)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+	if err := requireFullDecompressed(n, originalSize, err); err != nil {
 		return nil, err
 	}
 	return out[:n], nil
@@ -484,10 +563,20 @@ func (cb *CompressedBackend) decompressZstd(data []byte, originalSize int) ([]by
 
 	out := make([]byte, originalSize)
 	n, err := io.ReadFull(r, out)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+	if err := requireFullDecompressed(n, originalSize, err); err != nil {
 		return nil, err
 	}
 	return out[:n], nil
+}
+
+func requireFullDecompressed(n, originalSize int, err error) error {
+	if err != nil {
+		return fmt.Errorf("compressed page produced %d of %d bytes: %w", n, originalSize, err)
+	}
+	if n != originalSize {
+		return fmt.Errorf("compressed page produced %d of %d bytes", n, originalSize)
+	}
+	return nil
 }
 
 // getWriteBuf returns a pooled buffer for writes.

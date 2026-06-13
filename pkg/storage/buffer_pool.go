@@ -23,6 +23,8 @@ var (
 // reducing write lock contention while maintaining approximate LRU behavior.
 const lruTouchThreshold = 8
 
+const maxCachedPagePinCount = int32(1<<31 - 1)
+
 // CachedPage represents a page in the buffer pool
 // Fields ordered by decreasing alignment to minimize padding
 type CachedPage struct {
@@ -91,12 +93,28 @@ func (p *CachedPage) SetDirty(dirty bool) {
 
 // Pin increments the pin count
 func (p *CachedPage) Pin() {
-	atomic.AddInt32(&p.pinned, 1)
+	for {
+		current := atomic.LoadInt32(&p.pinned)
+		if current == maxCachedPagePinCount {
+			return
+		}
+		if atomic.CompareAndSwapInt32(&p.pinned, current, current+1) {
+			return
+		}
+	}
 }
 
 // Unpin decrements the pin count
 func (p *CachedPage) Unpin() {
-	atomic.AddInt32(&p.pinned, -1)
+	for {
+		current := atomic.LoadInt32(&p.pinned)
+		if current <= 0 {
+			return
+		}
+		if atomic.CompareAndSwapInt32(&p.pinned, current, current-1) {
+			return
+		}
+	}
 }
 
 // IsPinned returns true if the page is pinned
@@ -168,10 +186,13 @@ func NewBufferPoolWithError(capacity int, backend Backend) (*BufferPool, error) 
 	// Initialize nextPageID based on backend size
 	// Page 0 is reserved for meta page, so start from 1 if backend is empty
 	backendSize := backend.Size()
+	if backendSize < 0 {
+		return nil, fmt.Errorf("%w: backend size is negative: %d", ErrInvalidSize, backendSize)
+	}
 	if backendSize == 0 {
 		bp.nextPageID = 1 // Reserve page 0 for meta page
 	} else {
-		pageCount, err := storageUint32((backendSize+PageSize-1)/PageSize, "backend page count")
+		pageCount, err := checkedUint32((backendSize+PageSize-1)/PageSize, "backend page count")
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrPageIDExhausted, err)
 		}
@@ -241,12 +262,19 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 	data := getPageData()
 	offset := int64(pageID) * int64(PageSize)
 	start := time.Now()
-	_, err := bp.backend.ReadAt(data, offset)
+	_, err := ReadFullAt(bp.backend, data, offset)
 	readTime := time.Since(start)
 	if err != nil {
 		putPageData(data)
 		bp.mu.Unlock()
 		return nil, fmt.Errorf("failed to read page %d: %w", pageID, err)
+	}
+	if pageID != 0 {
+		if err := validatePageHeader(data, pageID); err != nil {
+			putPageData(data)
+			bp.mu.Unlock()
+			return nil, err
+		}
 	}
 	bp.stats.recordRead(readTime)
 
@@ -312,7 +340,7 @@ func (bp *BufferPool) FlushPage(page *CachedPage) error {
 	offset := int64(page.id) * int64(PageSize)
 	data := page.dataSnapshot()
 	start := time.Now()
-	if _, err := bp.backend.WriteAt(data, offset); err != nil {
+	if _, err := WriteFullAt(bp.backend, data, offset); err != nil {
 		return fmt.Errorf("failed to write page %d: %w", page.id, err)
 	}
 	writeTime := time.Since(start)
@@ -568,11 +596,15 @@ func (bp *BufferPool) flushDirtyPages() {
 	bp.flushMu.Lock()
 	if hadError {
 		bp.flushErrCount++
-		if bp.flushErrCount >= bp.flushErrLimit {
+		if bp.flushErrCount >= bp.flushErrLimit && bp.flushRunning {
 			logger.GetGlobalLogger().Errorf("buffer pool: halting flusher after %d consecutive flush errors",
 				bp.flushErrCount)
+			done := bp.flushDone
 			bp.flushRunning = false
-			close(bp.flushDone)
+			bp.flushDone = nil
+			if done != nil {
+				close(done)
+			}
 		}
 	} else {
 		bp.flushErrCount = 0 // reset on success
@@ -585,4 +617,11 @@ func (bp *BufferPool) PageCount() int {
 	bp.mu.RLock()
 	defer bp.mu.RUnlock()
 	return len(bp.pages)
+}
+
+// AllocatedPageCount returns the number of page IDs allocated by this pool.
+func (bp *BufferPool) AllocatedPageCount() uint32 {
+	bp.mu.RLock()
+	defer bp.mu.RUnlock()
+	return bp.nextPageID
 }

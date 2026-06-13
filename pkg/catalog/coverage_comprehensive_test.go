@@ -186,16 +186,28 @@ func TestComprehensive_SoftDeletedPaths(t *testing.T) {
 	c.ExecuteQuery("INSERT INTO soft_t (id, name) VALUES (2, 'b')")
 
 	// Delete row 1 (soft delete)
-	c.Delete(ctx, mustParseDeleteLM("DELETE FROM soft_t WHERE id = 1"), nil)
+	deleteStmt, err := query.Parse("DELETE FROM soft_t WHERE id = 1")
+	if err != nil {
+		t.Fatalf("parse delete: %v", err)
+	}
+	c.Delete(ctx, deleteStmt.(*query.DeleteStmt), nil)
 
 	// Update all rows - should skip soft-deleted row 1
-	_, _, err := c.Update(ctx, mustParseUpdateLM("UPDATE soft_t SET name = 'z'"), nil)
+	updateStmt, err := query.Parse("UPDATE soft_t SET name = 'z'")
+	if err != nil {
+		t.Fatalf("parse update: %v", err)
+	}
+	_, _, err = c.Update(ctx, updateStmt.(*query.UpdateStmt), nil)
 	if err != nil {
 		t.Logf("Update skip soft-deleted: %v", err)
 	}
 
 	// Delete all rows - should skip already-deleted row 1
-	_, _, err = c.Delete(ctx, mustParseDeleteLM("DELETE FROM soft_t"), nil)
+	deleteStmt2, err := query.Parse("DELETE FROM soft_t")
+	if err != nil {
+		t.Fatalf("parse delete: %v", err)
+	}
+	_, _, err = c.Delete(ctx, deleteStmt2.(*query.DeleteStmt), nil)
 	if err != nil {
 		t.Logf("Delete skip soft-deleted: %v", err)
 	}

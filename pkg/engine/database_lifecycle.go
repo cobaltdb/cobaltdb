@@ -1,12 +1,14 @@
 package engine
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/advisor"
@@ -290,11 +292,8 @@ func cloneBoolPtr(value *bool) *bool {
 
 func Open(path string, opts *Options) (*DB, error) {
 	opts = normalizeOptions(opts)
-	if opts.CoreStorage.CacheSize <= 0 {
-		return nil, fmt.Errorf("cache size must be positive: %d", opts.CoreStorage.CacheSize)
-	}
-	if opts.CoreStorage.PageSize != storage.PageSize {
-		return nil, fmt.Errorf("page size %d is unsupported; expected %d", opts.CoreStorage.PageSize, storage.PageSize)
+	if err := validateOptions(opts); err != nil {
+		return nil, err
 	}
 
 	// Setup logger
@@ -312,12 +311,8 @@ func Open(path string, opts *Options) (*DB, error) {
 		backend = storage.NewMemory()
 	} else {
 		log.Infof("Opening database at %s", path)
-		// Ensure directory exists
-		dir := filepath.Dir(path)
-		if dir != "." && dir != "/" {
-			if err := os.MkdirAll(dir, 0750); err != nil {
-				return nil, fmt.Errorf("failed to create directory: %w", err)
-			}
+		if err := prepareDatabaseParentDir(path); err != nil {
+			return nil, err
 		}
 		backend, err = storage.OpenDisk(path)
 		if err != nil {
@@ -482,6 +477,158 @@ func Open(path string, opts *Options) (*DB, error) {
 	return db, nil
 }
 
+func validateOptions(opts *Options) error {
+	const maxEngineConnections = 100000
+
+	if opts.CoreStorage.CacheSize <= 0 {
+		return fmt.Errorf("cache size must be positive: %d", opts.CoreStorage.CacheSize)
+	}
+	if opts.CoreStorage.PageSize != storage.PageSize {
+		return fmt.Errorf("page size %d is unsupported; expected %d", opts.CoreStorage.PageSize, storage.PageSize)
+	}
+	if opts.ConnectionPool.MaxConnections < 0 {
+		return fmt.Errorf("max connections must be non-negative: %d", opts.ConnectionPool.MaxConnections)
+	}
+	if opts.ConnectionPool.MaxConnections > maxEngineConnections {
+		return fmt.Errorf("max connections exceeds maximum (%d): %d", maxEngineConnections, opts.ConnectionPool.MaxConnections)
+	}
+	if opts.ConnectionPool.ConnectionTimeout < 0 {
+		return fmt.Errorf("connection timeout must be non-negative: %s", opts.ConnectionPool.ConnectionTimeout)
+	}
+	if opts.ConnectionPool.QueryTimeout < 0 {
+		return fmt.Errorf("query timeout must be non-negative: %s", opts.ConnectionPool.QueryTimeout)
+	}
+	if opts.Security.MaxStmtCacheSize < 0 {
+		return fmt.Errorf("max statement cache size must be non-negative: %d", opts.Security.MaxStmtCacheSize)
+	}
+	if opts.QueryCache.QueryCacheSize < 0 {
+		return fmt.Errorf("query cache size must be non-negative: %d", opts.QueryCache.QueryCacheSize)
+	}
+	if opts.QueryCache.QueryCacheTTL < 0 {
+		return fmt.Errorf("query cache TTL must be non-negative: %s", opts.QueryCache.QueryCacheTTL)
+	}
+	if opts.Backup.Retention < 0 {
+		return fmt.Errorf("backup retention must be non-negative: %s", opts.Backup.Retention)
+	}
+	if opts.Backup.MaxBackups < 0 {
+		return fmt.Errorf("max backups must be non-negative: %d", opts.Backup.MaxBackups)
+	}
+	if opts.Backup.CompressionLevel < 0 || opts.Backup.CompressionLevel > gzip.BestCompression {
+		return fmt.Errorf("backup compression level must be between 0 and %d: %d", gzip.BestCompression, opts.Backup.CompressionLevel)
+	}
+	if opts.SlowQueryLog.Threshold < 0 {
+		return fmt.Errorf("slow query threshold must be non-negative: %s", opts.SlowQueryLog.Threshold)
+	}
+	if opts.SlowQueryLog.MaxEntries < 0 {
+		return fmt.Errorf("slow query max entries must be non-negative: %d", opts.SlowQueryLog.MaxEntries)
+	}
+	if opts.PlanCache.Size < 0 {
+		return fmt.Errorf("plan cache size must be non-negative: %d", opts.PlanCache.Size)
+	}
+	if opts.PlanCache.MaxEntries < 0 {
+		return fmt.Errorf("plan cache max entries must be non-negative: %d", opts.PlanCache.MaxEntries)
+	}
+	if opts.Maintenance.AutoVacuumInterval < 0 {
+		return fmt.Errorf("auto-vacuum interval must be non-negative: %s", opts.Maintenance.AutoVacuumInterval)
+	}
+	if opts.Maintenance.AutoVacuumThreshold < 0 || opts.Maintenance.AutoVacuumThreshold > 1 {
+		return fmt.Errorf("auto-vacuum threshold must be between 0 and 1: %v", opts.Maintenance.AutoVacuumThreshold)
+	}
+	if opts.Maintenance.CheckpointInterval < 0 {
+		return fmt.Errorf("checkpoint interval must be non-negative: %s", opts.Maintenance.CheckpointInterval)
+	}
+	if opts.Scheduler.AnalyzeInterval < 0 {
+		return fmt.Errorf("scheduler analyze interval must be non-negative: %s", opts.Scheduler.AnalyzeInterval)
+	}
+	if opts.Scheduler.Workers < 0 {
+		return fmt.Errorf("scheduler workers must be non-negative: %d", opts.Scheduler.Workers)
+	}
+	if opts.Scheduler.TickInterval < 0 {
+		return fmt.Errorf("scheduler tick interval must be non-negative: %s", opts.Scheduler.TickInterval)
+	}
+	if opts.ParallelQuery.Workers < 0 {
+		return fmt.Errorf("parallel query workers must be non-negative: %d", opts.ParallelQuery.Workers)
+	}
+	if opts.ParallelQuery.Threshold < 0 {
+		return fmt.Errorf("parallel query threshold must be non-negative: %d", opts.ParallelQuery.Threshold)
+	}
+	return nil
+}
+
+func prepareDatabaseParentDir(path string) error {
+	dir := filepath.Dir(filepath.Clean(path))
+	if dir == "." || dir == "/" {
+		return nil
+	}
+	if err := rejectDatabaseDirSymlinkPathComponents(dir); err != nil {
+		return err
+	}
+
+	info, statErr := os.Lstat(dir)
+	preexisting := statErr == nil
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return fmt.Errorf("failed to stat database directory: %w", statErr)
+	}
+	if preexisting {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("database directory must not be a symlink: %s", dir)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("database path parent must be a directory: %s", dir)
+		}
+	}
+
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0750); err != nil {
+		return fmt.Errorf("failed to set database directory permissions: %w", err)
+	}
+
+	openedInfo, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("failed to stat database directory after create: %w", err)
+	}
+	if !openedInfo.IsDir() {
+		return fmt.Errorf("database path parent must be a directory: %s", dir)
+	}
+	if preexisting && !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("database directory changed while opening: %s", dir)
+	}
+
+	return nil
+}
+
+func rejectDatabaseDirSymlinkPathComponents(path string) error {
+	path = filepath.Clean(path)
+	if path == "." || path == string(os.PathSeparator) {
+		return nil
+	}
+
+	current := "."
+	if filepath.IsAbs(path) {
+		current = string(os.PathSeparator)
+		path = strings.TrimPrefix(path, string(os.PathSeparator))
+	}
+	for _, part := range strings.Split(path, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to stat database directory component: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("database directory component must not be a symlink: %s", current)
+		}
+	}
+	return nil
+}
+
 // initialize initializes a new database or loads an existing one
 
 func (db *DB) initialize() error {
@@ -504,7 +651,7 @@ func (db *DB) createNew() error {
 	meta.Serialize(metaPage.Data)
 
 	// Write initial meta page
-	if _, err := db.backend.WriteAt(metaPage.Data, 0); err != nil {
+	if _, err := storage.WriteFullAt(db.backend, metaPage.Data, 0); err != nil {
 		return fmt.Errorf("failed to write meta page: %w", err)
 	}
 
@@ -517,8 +664,9 @@ func (db *DB) createNew() error {
 
 	// Update meta page with actual root page ID
 	meta.RootPageID = db.rootTree.RootPageID()
+	db.expandMetaPageCount(meta)
 	meta.Serialize(metaPage.Data)
-	if _, err := db.backend.WriteAt(metaPage.Data, 0); err != nil {
+	if _, err := storage.WriteFullAt(db.backend, metaPage.Data, 0); err != nil {
 		return fmt.Errorf("failed to update meta page: %w", err)
 	}
 
@@ -567,7 +715,7 @@ func (db *DB) createNew() error {
 
 	// Initialize query cache if enabled
 	if db.options.QueryCache.EnableQueryCache {
-		db.catalog.EnableQueryCache(int(db.options.QueryCache.QueryCacheSize), db.options.QueryCache.QueryCacheTTL)
+		db.catalog.EnableQueryCacheWithLimits(db.options.QueryCache.QueryCacheSize, 0, db.options.QueryCache.QueryCacheTTL)
 	}
 
 	// Initialize query optimizer
@@ -639,7 +787,7 @@ func (db *DB) createNew() error {
 func (db *DB) saveMetaPage() error {
 	metaPage := storage.NewPage(0, storage.PageTypeMeta)
 	// Read existing meta page
-	if _, err := db.backend.ReadAt(metaPage.Data, 0); err != nil {
+	if _, err := storage.ReadFullAt(db.backend, metaPage.Data, 0); err != nil {
 		return fmt.Errorf("failed to read meta page: %w", err)
 	}
 	var meta storage.MetaPage
@@ -648,11 +796,28 @@ func (db *DB) saveMetaPage() error {
 	}
 	// Update root page ID
 	meta.RootPageID = db.rootTree.RootPageID()
+	db.expandMetaPageCount(&meta)
 	meta.Serialize(metaPage.Data)
-	if _, err := db.backend.WriteAt(metaPage.Data, 0); err != nil {
+	if _, err := storage.WriteFullAt(db.backend, metaPage.Data, 0); err != nil {
 		return fmt.Errorf("failed to write meta page: %w", err)
 	}
 	return nil
+}
+
+func (db *DB) expandMetaPageCount(meta *storage.MetaPage) {
+	if meta == nil {
+		return
+	}
+	if db.pool != nil {
+		if allocated := db.pool.AllocatedPageCount(); allocated > meta.PageCount {
+			meta.PageCount = allocated
+		}
+	}
+	if db.rootTree != nil {
+		if rootPageCount := db.rootTree.RootPageID() + 1; rootPageCount > meta.PageCount {
+			meta.PageCount = rootPageCount
+		}
+	}
 }
 
 // loadExisting loads an existing database
@@ -660,7 +825,7 @@ func (db *DB) saveMetaPage() error {
 func (db *DB) loadExisting() error {
 	// Read meta page
 	metaPage := storage.NewPage(0, storage.PageTypeMeta)
-	if _, err := db.backend.ReadAt(metaPage.Data, 0); err != nil {
+	if _, err := storage.ReadFullAt(db.backend, metaPage.Data, 0); err != nil {
 		return fmt.Errorf("failed to read meta page: %w", err)
 	}
 
@@ -751,7 +916,7 @@ func (db *DB) loadExisting() error {
 
 	// Initialize query cache if enabled
 	if db.options.QueryCache.EnableQueryCache {
-		db.catalog.EnableQueryCache(int(db.options.QueryCache.QueryCacheSize), db.options.QueryCache.QueryCacheTTL)
+		db.catalog.EnableQueryCacheWithLimits(db.options.QueryCache.QueryCacheSize, 0, db.options.QueryCache.QueryCacheTTL)
 	}
 
 	// Initialize query optimizer
@@ -844,9 +1009,16 @@ func (db *DB) initializeBackupManager() {
 		CompressionLevel: db.options.Backup.CompressionLevel,
 	}
 	if backupConfig.BackupDir == "" {
-		backupConfig.BackupDir = "./backups"
+		backupConfig.BackupDir = defaultBackupDirForDatabase(db.path)
 	}
 	db.backupMgr = backup.NewManager(backupConfig, db)
+}
+
+func defaultBackupDirForDatabase(path string) string {
+	if strings.TrimSpace(path) == "" || path == ":memory:" {
+		return "./backups"
+	}
+	return filepath.Clean(path) + ".backups"
 }
 
 // Close closes the database

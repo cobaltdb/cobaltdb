@@ -31,7 +31,10 @@ func NewPageManager(pool *BufferPool) (*PageManager, error) {
 	// Try to load existing meta page
 	metaPage, err := pool.GetPage(0)
 	if err != nil {
-		// Create new database
+		if pool.backend.Size() != 0 {
+			return nil, fmt.Errorf("failed to read existing meta page: %w", err)
+		}
+		// Create new database only for an empty backend.
 		return pm.initNewDatabase()
 	}
 	defer pool.Unpin(metaPage)
@@ -45,6 +48,9 @@ func NewPageManager(pool *BufferPool) (*PageManager, error) {
 	if err := meta.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid meta page: %w", err)
 	}
+	if err := validateMetaBackendSize(meta, pool.backend.Size(), pool.nextPageID); err != nil {
+		return nil, err
+	}
 
 	pm.meta = meta
 	pm.maxPages = meta.PageCount
@@ -55,6 +61,24 @@ func NewPageManager(pool *BufferPool) (*PageManager, error) {
 	}
 
 	return pm, nil
+}
+
+func validateMetaBackendSize(meta *MetaPage, backendSize int64, nextPageID uint32) error {
+	if meta.PageCount == 0 {
+		return fmt.Errorf("%w: meta page count is zero", ErrPageCorrupted)
+	}
+	if backendSize%int64(PageSize) != 0 {
+		return fmt.Errorf("%w: database file has partial page: size=%d page_size=%d", ErrPageCorrupted, backendSize, PageSize)
+	}
+	backendPages := uint32(backendSize / int64(PageSize))
+	if nextPageID > backendPages {
+		backendPages = nextPageID
+	}
+	if backendPages < meta.PageCount {
+		expectedSize := int64(meta.PageCount) * int64(PageSize)
+		return fmt.Errorf("%w: database file truncated: size=%d expected_at_least=%d", ErrPageCorrupted, backendSize, expectedSize)
+	}
+	return nil
 }
 
 // initNewDatabase initializes a new database file
@@ -91,7 +115,12 @@ func (pm *PageManager) loadFreeList() error {
 	// Traverse free list pages
 	currentID := pm.meta.FreeListID
 	visited := make(map[uint32]struct{})
+	seenFreeIDs := make(map[uint32]struct{})
+	maxFreeListEntries := uint32((PageSize - PageHeaderSize - 8) / 4)
 	for currentID != 0 {
+		if currentID >= pm.meta.PageCount {
+			return fmt.Errorf("%w: free list page ID %d exceeds page count %d", ErrPageCorrupted, currentID, pm.meta.PageCount)
+		}
 		if _, ok := visited[currentID]; ok {
 			return fmt.Errorf("free list cycle detected at page %d", currentID)
 		}
@@ -103,6 +132,10 @@ func (pm *PageManager) loadFreeList() error {
 		}
 
 		data := page.Data()
+		if PageType(data[4]) != PageTypeFreeList {
+			pm.pool.Unpin(page)
+			return fmt.Errorf("%w: page %d is not a free list page", ErrPageCorrupted, currentID)
+		}
 
 		// Free list page format at PageHeaderSize offset: [nextPageID:4][count:4][pageIDs...]
 		if len(data) < PageHeaderSize+8 {
@@ -112,15 +145,32 @@ func (pm *PageManager) loadFreeList() error {
 
 		nextID := binary.LittleEndian.Uint32(data[PageHeaderSize : PageHeaderSize+4])
 		count := binary.LittleEndian.Uint32(data[PageHeaderSize+4 : PageHeaderSize+8])
+		if nextID >= pm.meta.PageCount {
+			pm.pool.Unpin(page)
+			return fmt.Errorf("%w: free list next page ID %d exceeds page count %d", ErrPageCorrupted, nextID, pm.meta.PageCount)
+		}
+		if count > maxFreeListEntries {
+			pm.pool.Unpin(page)
+			return fmt.Errorf("invalid free list page %d: count %d exceeds page capacity", currentID, count)
+		}
 
 		// Read page IDs
 		offset := PageHeaderSize + 8
 		for i := uint32(0); i < count; i++ {
-			if offset+4 > len(data) {
-				pm.pool.Unpin(page)
-				return fmt.Errorf("invalid free list page %d: count %d exceeds page capacity", currentID, count)
-			}
 			pageID := binary.LittleEndian.Uint32(data[offset : offset+4])
+			if pageID == 0 {
+				pm.pool.Unpin(page)
+				return fmt.Errorf("%w: free list contains meta page ID", ErrPageCorrupted)
+			}
+			if pageID >= pm.meta.PageCount {
+				pm.pool.Unpin(page)
+				return fmt.Errorf("%w: free page ID %d exceeds page count %d", ErrPageCorrupted, pageID, pm.meta.PageCount)
+			}
+			if _, ok := seenFreeIDs[pageID]; ok {
+				pm.pool.Unpin(page)
+				return fmt.Errorf("%w: duplicate free page ID %d", ErrPageCorrupted, pageID)
+			}
+			seenFreeIDs[pageID] = struct{}{}
 			pm.freeList = append(pm.freeList, pageID)
 			offset += 4
 		}
@@ -172,6 +222,10 @@ func (pm *PageManager) saveFreeList() error {
 		if err != nil {
 			return fmt.Errorf("failed to allocate free list page: %w", err)
 		}
+		if page.ID() >= pm.maxPages {
+			pm.maxPages = page.ID() + 1
+			pm.meta.PageCount = pm.maxPages
+		}
 
 		if firstPageID == 0 {
 			firstPageID = page.ID()
@@ -194,7 +248,7 @@ func (pm *PageManager) saveFreeList() error {
 
 		// Write next page ID and count
 		binary.LittleEndian.PutUint32(data[PageHeaderSize:PageHeaderSize+4], nextID)
-		pageCount, err := storageUint32(int64(len(slice)), "page id count")
+		pageCount, err := checkedUint32(int64(len(slice)), "page id count")
 		if err != nil {
 			return fmt.Errorf("failed to encode page id count: %w", err)
 		}

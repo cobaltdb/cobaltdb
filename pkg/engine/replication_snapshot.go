@@ -2,7 +2,6 @@ package engine
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"time"
 
@@ -12,6 +11,8 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
+
+const maxEngineReplicationSnapshotSize = 1 << 30 // 1 GiB
 
 func (db *DB) configureReplicationCallbacks() {
 	if db.replicationMgr == nil {
@@ -32,6 +33,9 @@ func (db *DB) createReplicationSnapshot() ([]byte, error) {
 	if db.catalog == nil || db.backend == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
+	if err := validateReplicationSnapshotSize(db.backend.Size()); err != nil {
+		return nil, err
+	}
 
 	db.flushMu.Lock()
 	defer db.flushMu.Unlock()
@@ -51,8 +55,8 @@ func (db *DB) createReplicationSnapshot() ([]byte, error) {
 	}
 
 	size := db.backend.Size()
-	if size < 0 {
-		return nil, fmt.Errorf("invalid backend size: %d", size)
+	if err := validateReplicationSnapshotSize(size); err != nil {
+		return nil, err
 	}
 
 	data := make([]byte, size)
@@ -62,20 +66,42 @@ func (db *DB) createReplicationSnapshot() ([]byte, error) {
 			end = size
 		}
 
-		n, err := db.backend.ReadAt(data[offset:end], offset)
-		if err != nil && err != io.EOF {
+		n, err := storage.ReadFullAt(db.backend, data[offset:end], offset)
+		if err != nil {
 			return nil, fmt.Errorf("failed to read snapshot: %w", err)
-		}
-		if n == 0 && err == io.EOF {
-			break
-		}
-		if n == 0 {
-			return nil, fmt.Errorf("failed to read snapshot: no progress at offset %d", offset)
 		}
 		offset += int64(n)
 	}
 
 	return data, nil
+}
+
+func validateReplicationSnapshotSize(size int64) error {
+	if size < 0 {
+		return fmt.Errorf("invalid backend size: %d", size)
+	}
+	if size > maxEngineReplicationSnapshotSize {
+		return fmt.Errorf("replication snapshot too large: %d bytes", size)
+	}
+	return nil
+}
+
+func validateReplicationSnapshotPayload(data []byte) error {
+	if err := validateReplicationSnapshotSize(int64(len(data))); err != nil {
+		return err
+	}
+	if len(data) < storage.PageSize {
+		return fmt.Errorf("invalid replication snapshot: too small (%d bytes)", len(data))
+	}
+
+	var meta storage.MetaPage
+	if err := meta.Deserialize(data[:storage.PageSize]); err != nil {
+		return fmt.Errorf("failed to deserialize snapshot meta page: %w", err)
+	}
+	if err := meta.Validate(); err != nil {
+		return fmt.Errorf("invalid snapshot database: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) applyReplicationSnapshot(data []byte, lsn uint64) error {
@@ -87,6 +113,9 @@ func (db *DB) applyReplicationSnapshot(data []byte, lsn uint64) error {
 	}
 	if db.backend == nil {
 		return fmt.Errorf("backend not initialized")
+	}
+	if err := validateReplicationSnapshotPayload(data); err != nil {
+		return err
 	}
 
 	if db.catalog.GetQueryCache() != nil {
@@ -108,12 +137,9 @@ func (db *DB) applyReplicationSnapshot(data []byte, lsn uint64) error {
 		if end > int64(len(data)) {
 			end = int64(len(data))
 		}
-		n, err := db.backend.WriteAt(data[offset:end], offset)
+		n, err := storage.WriteFullAt(db.backend, data[offset:end], offset)
 		if err != nil {
 			return fmt.Errorf("failed to write snapshot: %w", err)
-		}
-		if n == 0 {
-			return fmt.Errorf("failed to write snapshot: no progress at offset %d", offset)
 		}
 		offset += int64(n)
 	}
@@ -183,7 +209,7 @@ func (db *DB) resetWALForSnapshotLocked() error {
 
 func (db *DB) reloadSnapshotStateLocked() error {
 	metaPage := storage.NewPage(0, storage.PageTypeMeta)
-	if _, err := db.backend.ReadAt(metaPage.Data, 0); err != nil {
+	if _, err := storage.ReadFullAt(db.backend, metaPage.Data, 0); err != nil {
 		return fmt.Errorf("failed to read snapshot meta page: %w", err)
 	}
 
@@ -222,7 +248,7 @@ func (db *DB) reloadSnapshotStateLocked() error {
 
 	db.txnMgr = txn.NewManager(db.pool, db.wal)
 	if db.options.QueryCache.EnableQueryCache {
-		db.catalog.EnableQueryCache(int(db.options.QueryCache.QueryCacheSize), db.options.QueryCache.QueryCacheTTL)
+		db.catalog.EnableQueryCacheWithLimits(db.options.QueryCache.QueryCacheSize, 0, db.options.QueryCache.QueryCacheTTL)
 	}
 
 	return nil
