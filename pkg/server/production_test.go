@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -97,6 +98,53 @@ func TestProductionServerBasic(t *testing.T) {
 	}
 }
 
+func TestProductionHealthServerSetsHeaderLimit(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	config := DefaultProductionConfig()
+	config.HealthAddr = "127.0.0.1:0"
+	config.Lifecycle.EnableSignalHandling = false
+	ps := NewProductionServer(db, config)
+	if err := ps.Start(); err != nil {
+		t.Fatalf("failed to start production server: %v", err)
+	}
+	defer ps.Stop()
+
+	if ps.healthServer == nil {
+		t.Fatal("health server was not initialized")
+	}
+	if ps.healthServer.MaxHeaderBytes != productionHTTPMaxHeaderBytes {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", ps.healthServer.MaxHeaderBytes, productionHTTPMaxHeaderBytes)
+	}
+}
+
+func TestProductionHealthHandlersSetJSONContentType(t *testing.T) {
+	ps := NewProductionServer(nil, &ProductionConfig{EnableHealthServer: false})
+
+	for _, tt := range []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{name: "health", handler: ps.healthHandler()},
+		{name: "ready", handler: ps.readyHandler()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/"+tt.name, nil)
+			rec := httptest.NewRecorder()
+
+			tt.handler(rec, req)
+
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type = %q, want application/json", got)
+			}
+		})
+	}
+}
+
 func TestProductionServerStartReturnsHealthBindError(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -167,6 +215,8 @@ func TestProductionPrometheusMetricsRemoteAccess(t *testing.T) {
 	tests := []struct {
 		name               string
 		allowRemoteMetrics bool
+		adminToken         string
+		authHeader         string
 		wantStatus         int
 	}{
 		{
@@ -175,17 +225,43 @@ func TestProductionPrometheusMetricsRemoteAccess(t *testing.T) {
 			wantStatus:         http.StatusForbidden,
 		},
 		{
-			name:               "RemoteAllowedWhenConfigured",
+			name:               "RemoteDisabledWithoutAdminToken",
 			allowRemoteMetrics: true,
+			wantStatus:         http.StatusServiceUnavailable,
+		},
+		{
+			name:               "RemoteRequiresAuthorization",
+			allowRemoteMetrics: true,
+			adminToken:         "secret-token",
+			wantStatus:         http.StatusUnauthorized,
+		},
+		{
+			name:               "RemoteRejectsWrongAuthorization",
+			allowRemoteMetrics: true,
+			adminToken:         "secret-token",
+			authHeader:         "Bearer wrong-token",
+			wantStatus:         http.StatusUnauthorized,
+		},
+		{
+			name:               "RemoteAllowedWithAdminToken",
+			allowRemoteMetrics: true,
+			adminToken:         "secret-token",
+			authHeader:         "Bearer secret-token",
 			wantStatus:         http.StatusOK,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ps := NewProductionServer(nil, &ProductionConfig{AllowRemoteMetrics: tt.allowRemoteMetrics})
+			ps := NewProductionServer(nil, &ProductionConfig{
+				AllowRemoteMetrics: tt.allowRemoteMetrics,
+				AdminToken:         tt.adminToken,
+			})
 			req := httptest.NewRequest(http.MethodGet, "/metrics/prometheus", nil)
 			req.RemoteAddr = "10.0.0.42:49152"
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
 			rr := httptest.NewRecorder()
 
 			ps.prometheusMetricsHandler()(rr, req)
@@ -194,6 +270,26 @@ func TestProductionPrometheusMetricsRemoteAccess(t *testing.T) {
 				t.Fatalf("expected status %d, got %d", tt.wantStatus, rr.Code)
 			}
 		})
+	}
+}
+
+func TestProductionServerRejectsRemoteMetricsWithoutAdminToken(t *testing.T) {
+	ps := NewProductionServer(nil, &ProductionConfig{
+		HealthAddr:         "127.0.0.1:0",
+		EnableHealthServer: true,
+		AllowRemoteMetrics: true,
+		Lifecycle: &LifecycleConfig{
+			EnableSignalHandling: false,
+		},
+	})
+
+	err := ps.Start()
+	if err == nil {
+		_ = ps.Stop()
+		t.Fatal("expected remote metrics without admin token to fail startup")
+	}
+	if !strings.Contains(err.Error(), "remote metrics require an admin token") {
+		t.Fatalf("expected remote metrics admin token error, got %v", err)
 	}
 }
 
@@ -222,16 +318,28 @@ func TestProductionServerConfigIsolation(t *testing.T) {
 			RetryableErrors:    []error{errTemporary},
 			NonRetryableErrors: []error{errPermanent},
 		},
+		RateLimiter: &RateLimiterConfig{
+			RPS:             7,
+			Burst:           3,
+			PerClient:       true,
+			ClientHeader:    "X-Test-Client",
+			CleanupInterval: time.Second,
+			MaxClients:      5,
+		},
 		EnableCircuitBreaker: true,
+		EnableRateLimiter:    true,
 		EnableRetry:          true,
 		EnableHealthServer:   false,
 	}
 
 	ps := NewProductionServer(nil, config)
+	defer ps.RateLimiter.Stop()
 
 	config.Lifecycle.ShutdownTimeout = 99 * time.Second
 	config.Lifecycle.ShutdownSignals = append(config.Lifecycle.ShutdownSignals, syscall.SIGHUP)
 	config.CircuitBreaker.MaxFailures = 99
+	config.RateLimiter.RPS = 99
+	config.RateLimiter.ClientHeader = "X-Mutated"
 	config.Retry.MaxAttempts = 99
 	config.Retry.RetryableErrors[0] = errPermanent
 	config.Retry.NonRetryableErrors[0] = errTemporary
@@ -247,6 +355,9 @@ func TestProductionServerConfigIsolation(t *testing.T) {
 	}
 	if ps.Config.CircuitBreaker.MaxFailures != 2 {
 		t.Fatalf("expected circuit breaker config copy, got max failures %d", ps.Config.CircuitBreaker.MaxFailures)
+	}
+	if ps.Config.RateLimiter.RPS != 7 || ps.Config.RateLimiter.ClientHeader != "X-Test-Client" {
+		t.Fatalf("expected rate limiter config copy, got rps=%d header=%q", ps.Config.RateLimiter.RPS, ps.Config.RateLimiter.ClientHeader)
 	}
 	if ps.Config.Retry.MaxAttempts != 2 {
 		t.Fatalf("expected retry config copy, got max attempts %d", ps.Config.Retry.MaxAttempts)
@@ -273,6 +384,270 @@ func TestProductionServerLoggerDoesNotMutateCallerLifecycle(t *testing.T) {
 	}
 	if ps.Config.Lifecycle == nil || ps.Config.Lifecycle.Logger != log {
 		t.Fatal("expected logger to be applied to cloned lifecycle config")
+	}
+}
+
+func TestProductionServerStoresAdminTokenDigest(t *testing.T) {
+	config := &ProductionConfig{
+		AdminToken:         "secret-token",
+		EnableHealthServer: false,
+	}
+	ps := NewProductionServer(nil, config)
+
+	if config.AdminToken != "secret-token" {
+		t.Fatal("constructor mutated caller admin token")
+	}
+	if ps.Config.AdminToken != "" {
+		t.Fatalf("raw admin token retained in production config: %q", ps.Config.AdminToken)
+	}
+	if !ps.adminTokenSet {
+		t.Fatal("expected admin token to be configured")
+	}
+	if ps.adminTokenDigest != adminTokenDigest("secret-token") {
+		t.Fatal("expected admin token digest to match configured token")
+	}
+	if string(ps.adminTokenDigest[:]) == "secret-token" {
+		t.Fatal("raw admin token stored in digest")
+	}
+}
+
+func TestProductionServerRejectsOversizedConfiguredAdminToken(t *testing.T) {
+	config := &ProductionConfig{
+		AdminToken:         strings.Repeat("x", maxAdminTokenBytes+1),
+		EnableHealthServer: false,
+	}
+	ps := NewProductionServer(nil, config)
+
+	if config.AdminToken == "" {
+		t.Fatal("constructor should not mutate caller admin token")
+	}
+	if ps.Config.AdminToken != "" {
+		t.Fatalf("raw admin token retained in production config: %q", ps.Config.AdminToken)
+	}
+	if ps.adminTokenSet {
+		t.Fatal("oversized admin token should not be configured")
+	}
+	if ps.adminTokenDigest != ([sha256.Size]byte{}) {
+		t.Fatal("oversized admin token should leave empty digest")
+	}
+}
+
+func TestProductionAuthRequiredHandlerRequiresConfiguredAdminToken(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	ps := NewProductionServer(nil, &ProductionConfig{})
+	handler := ps.authRequiredHandler(inner)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status = %d, want 405", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec = httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing admin token status = %d, want 503", rec.Code)
+	}
+
+	ps.SetAdminToken("secret-token")
+
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec = httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing Authorization status = %d, want 401", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	rec = httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token status = %d, want 401", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("Authorization", "Bearer "+strings.Repeat("x", maxAdminTokenBytes+1))
+	rec = httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("oversized bearer token status = %d, want 401", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("Authorization", strings.Repeat("x", maxAdminAuthorizationHeaderBytes+1))
+	rec = httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("oversized Authorization status = %d, want 401", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec = httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid bearer token status = %d, want 200", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("Authorization", "secret-token")
+	rec = httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid plain token status = %d, want 200", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = "10.0.0.10:12345"
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec = httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("remote token status = %d, want 403", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = "127.0.0.2:12345"
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec = httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("alternate loopback token status = %d, want 200", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = "not-a-host-port"
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec = httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("malformed remote address status = %d, want 403", rec.Code)
+	}
+}
+
+func TestProductionHealthMuxProtectsAdminStatsEndpoint(t *testing.T) {
+	ps := NewProductionServer(nil, &ProductionConfig{AdminToken: "secret-token"})
+	mux := ps.healthMux()
+
+	req := httptest.NewRequest(http.MethodPost, "/stats", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /stats status = %d, want 405", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing token status = %d, want 401", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid token status = %d, want 200", rec.Code)
+	}
+}
+
+func TestProductionHealthMuxAppliesRateLimiter(t *testing.T) {
+	ps := NewProductionServer(nil, &ProductionConfig{
+		EnableRateLimiter: true,
+		RateLimiter: &RateLimiterConfig{
+			RPS:             1,
+			Burst:           1,
+			PerClient:       false,
+			CleanupInterval: time.Minute,
+			MaxClients:      10,
+		},
+	})
+	defer ps.RateLimiter.Stop()
+	mux := ps.healthMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request status = %d, want 429", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("Retry-After header = %q, want 1", rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestProductionRateLimitsHandlerReturnsStats(t *testing.T) {
+	ps := NewProductionServer(nil, &ProductionConfig{
+		AdminToken:        "secret-token",
+		EnableRateLimiter: true,
+		RateLimiter: &RateLimiterConfig{
+			RPS:             10,
+			Burst:           4,
+			PerClient:       false,
+			CleanupInterval: time.Minute,
+			MaxClients:      10,
+		},
+	})
+	defer ps.RateLimiter.Stop()
+	handler := ps.authRequiredHandler(ps.rateLimitsHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/rate-limits", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rate limits status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"rps":10`) || !strings.Contains(rec.Body.String(), `"burst":4`) {
+		t.Fatalf("rate limits response missing stats: %s", rec.Body.String())
+	}
+}
+
+func TestAdminTokenEqual(t *testing.T) {
+	if !adminTokenEqual("secret-token", "secret-token") {
+		t.Fatal("matching admin tokens should compare equal")
+	}
+	tests := []struct {
+		name     string
+		provided string
+		expected string
+	}{
+		{name: "different content", provided: "secret-tokem", expected: "secret-token"},
+		{name: "shorter", provided: "secret", expected: "secret-token"},
+		{name: "longer", provided: "secret-token-extra", expected: "secret-token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if adminTokenEqual(tt.provided, tt.expected) {
+				t.Fatalf("tokens %q and %q should not compare equal", tt.provided, tt.expected)
+			}
+		})
 	}
 }
 
@@ -424,8 +799,8 @@ func TestDefaultProductionConfig(t *testing.T) {
 	if config.Retry == nil {
 		t.Error("expected Retry config")
 	}
-	if config.HealthAddr != ":8420" {
-		t.Errorf("expected HealthAddr :8420, got %s", config.HealthAddr)
+	if config.HealthAddr != "127.0.0.1:8420" {
+		t.Errorf("expected HealthAddr 127.0.0.1:8420, got %s", config.HealthAddr)
 	}
 	if !config.EnableCircuitBreaker {
 		t.Error("expected EnableCircuitBreaker to be true")
@@ -435,6 +810,9 @@ func TestDefaultProductionConfig(t *testing.T) {
 	}
 	if !config.EnableHealthServer {
 		t.Error("expected EnableHealthServer to be true")
+	}
+	if config.AdminToken != "" {
+		t.Error("expected AdminToken to be empty by default")
 	}
 }
 

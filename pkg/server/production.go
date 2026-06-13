@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +30,7 @@ type ProductionStats struct {
 type ProductionConfig struct {
 	Lifecycle            *LifecycleConfig
 	CircuitBreaker       *engine.CircuitBreakerConfig
+	RateLimiter          *RateLimiterConfig
 	Retry                *engine.RetryConfig
 	HealthAddr           string
 	EnableCircuitBreaker bool
@@ -35,6 +39,7 @@ type ProductionConfig struct {
 	EnableSQLProtection  bool
 	EnableHealthServer   bool
 	AllowRemoteMetrics   bool
+	AdminToken           string
 	Logger               *logger.Logger
 }
 
@@ -48,8 +53,9 @@ func DefaultProductionConfig() *ProductionConfig {
 			StartupTimeout:      30 * time.Second,
 		},
 		CircuitBreaker:       engine.DefaultCircuitBreakerConfig(),
+		RateLimiter:          DefaultRateLimiterConfig(),
 		Retry:                engine.DefaultRetryConfig(),
-		HealthAddr:           ":8420",
+		HealthAddr:           "127.0.0.1:8420",
 		EnableCircuitBreaker: true,
 		EnableRetry:          true,
 		EnableRateLimiter:    false,
@@ -61,23 +67,27 @@ func DefaultProductionConfig() *ProductionConfig {
 
 // ProductionServer provides production-ready features
 type ProductionServer struct {
-	DB              *engine.DB
-	Config          *ProductionConfig
-	Lifecycle       *Lifecycle
-	CircuitBreaker  *engine.CircuitBreaker
-	CircuitBreakers *engine.CircuitBreakerManager
-	RateLimiter     *RateLimiter
-	SQLProtector    *SQLProtector
-	healthServer    *http.Server
-	logger          *logger.Logger
-	mu              sync.RWMutex
-	running         bool
-	wg              sync.WaitGroup
+	DB               *engine.DB
+	Config           *ProductionConfig
+	Lifecycle        *Lifecycle
+	CircuitBreaker   *engine.CircuitBreaker
+	CircuitBreakers  *engine.CircuitBreakerManager
+	RateLimiter      *RateLimiter
+	SQLProtector     *SQLProtector
+	healthServer     *http.Server
+	logger           *logger.Logger
+	adminTokenDigest [sha256.Size]byte
+	adminTokenSet    bool
+	mu               sync.RWMutex
+	running          bool
+	wg               sync.WaitGroup
 }
 
 // NewProductionServer creates a new production server
 func NewProductionServer(db *engine.DB, config *ProductionConfig) *ProductionServer {
 	config = cloneProductionConfig(config)
+	adminToken := config.AdminToken
+	config.AdminToken = ""
 	if config.Logger != nil {
 		if config.Lifecycle == nil {
 			config.Lifecycle = DefaultLifecycleConfig()
@@ -95,6 +105,7 @@ func NewProductionServer(db *engine.DB, config *ProductionConfig) *ProductionSer
 		Lifecycle: NewLifecycle(config.Lifecycle),
 		logger:    config.Logger,
 	}
+	ps.SetAdminToken(adminToken)
 
 	if config.EnableCircuitBreaker {
 		ps.CircuitBreaker = engine.NewCircuitBreaker(config.CircuitBreaker)
@@ -102,8 +113,13 @@ func NewProductionServer(db *engine.DB, config *ProductionConfig) *ProductionSer
 	}
 
 	if config.EnableRateLimiter {
-		rateLimiterConfig := DefaultRateLimiterConfig()
-		rateLimiterConfig.Logger = config.Logger
+		rateLimiterConfig := cloneRateLimiterConfig(config.RateLimiter)
+		if rateLimiterConfig == nil {
+			rateLimiterConfig = DefaultRateLimiterConfig()
+		}
+		if rateLimiterConfig.Logger == nil {
+			rateLimiterConfig.Logger = config.Logger
+		}
 		ps.RateLimiter = NewRateLimiter(rateLimiterConfig)
 	}
 
@@ -114,6 +130,20 @@ func NewProductionServer(db *engine.DB, config *ProductionConfig) *ProductionSer
 	return ps
 }
 
+// SetAdminToken configures the admin API token without retaining the raw secret.
+func (ps *ProductionServer) SetAdminToken(token string) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	token = strings.TrimSpace(token)
+	if token == "" || len(token) > maxAdminTokenBytes {
+		ps.adminTokenDigest = [sha256.Size]byte{}
+		ps.adminTokenSet = false
+		return
+	}
+	ps.adminTokenDigest = adminTokenDigest(token)
+	ps.adminTokenSet = true
+}
+
 func cloneProductionConfig(config *ProductionConfig) *ProductionConfig {
 	if config == nil {
 		config = DefaultProductionConfig()
@@ -122,6 +152,7 @@ func cloneProductionConfig(config *ProductionConfig) *ProductionConfig {
 	cloned := *config
 	cloned.Lifecycle = cloneLifecycleConfig(config.Lifecycle)
 	cloned.CircuitBreaker = cloneCircuitBreakerConfig(config.CircuitBreaker)
+	cloned.RateLimiter = cloneRateLimiterConfig(config.RateLimiter)
 	cloned.Retry = cloneRetryConfig(config.Retry)
 	return &cloned
 }
@@ -134,6 +165,14 @@ func cloneLifecycleConfig(config *LifecycleConfig) *LifecycleConfig {
 }
 
 func cloneCircuitBreakerConfig(config *engine.CircuitBreakerConfig) *engine.CircuitBreakerConfig {
+	if config == nil {
+		return nil
+	}
+	cloned := *config
+	return &cloned
+}
+
+func cloneRateLimiterConfig(config *RateLimiterConfig) *RateLimiterConfig {
 	if config == nil {
 		return nil
 	}
@@ -179,8 +218,10 @@ func (ps *ProductionServer) Start() error {
 		if err := ps.startHealthServer(); err != nil {
 			ps.running = false
 			if stopErr := ps.Lifecycle.Stop(); stopErr != nil {
+				ps.stopRateLimiter()
 				return fmt.Errorf("failed to start health server: %w; lifecycle stop failed: %v", err, stopErr)
 			}
+			ps.stopRateLimiter()
 			return fmt.Errorf("failed to start health server: %w", err)
 		}
 	}
@@ -190,27 +231,18 @@ func (ps *ProductionServer) Start() error {
 
 // startHealthServer starts the health check HTTP server
 func (ps *ProductionServer) startHealthServer() error {
-	mux := http.NewServeMux()
-
-	// Health endpoints
-	mux.HandleFunc("/health", ps.healthHandler())
-	mux.HandleFunc("/ready", ps.readyHandler())
-	mux.HandleFunc("/healthz", ps.healthzHandler())
-
-	// Stats endpoints
-	mux.HandleFunc("/stats", ps.loopbackOnly(ps.statsHandler()))
-	mux.HandleFunc("/circuit-breakers", ps.loopbackOnly(ps.circuitBreakerHandler()))
-	mux.HandleFunc("/rate-limits", ps.loopbackOnly(ps.rateLimitsHandler()))
-	mux.HandleFunc("/transaction-metrics", ps.loopbackOnly(ps.transactionMetricsHandler()))
-	mux.HandleFunc("/metrics/prometheus", ps.prometheusMetricsHandler())
+	if ps.Config.AllowRemoteMetrics && !ps.adminTokenSet {
+		return fmt.Errorf("remote metrics require an admin token")
+	}
 
 	ps.healthServer = &http.Server{
 		Addr:              ps.Config.HealthAddr,
-		Handler:           mux,
+		Handler:           ps.healthMux(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    productionHTTPMaxHeaderBytes,
 	}
 
 	listener, err := net.Listen("tcp", ps.Config.HealthAddr)
@@ -229,6 +261,46 @@ func (ps *ProductionServer) startHealthServer() error {
 	return nil
 }
 
+func (ps *ProductionServer) healthMux() http.Handler {
+	mux := http.NewServeMux()
+
+	// Health endpoints
+	mux.HandleFunc("/health", ps.healthHandler())
+	mux.HandleFunc("/ready", ps.readyHandler())
+	mux.HandleFunc("/healthz", ps.healthzHandler())
+
+	// Admin endpoints
+	mux.HandleFunc("/stats", ps.authRequiredHandler(ps.statsHandler()))
+	mux.HandleFunc("/circuit-breakers", ps.authRequiredHandler(ps.circuitBreakerHandler()))
+	mux.HandleFunc("/rate-limits", ps.authRequiredHandler(ps.rateLimitsHandler()))
+	mux.HandleFunc("/transaction-metrics", ps.authRequiredHandler(ps.transactionMetricsHandler()))
+	mux.HandleFunc("/metrics/prometheus", ps.prometheusMetricsHandler())
+
+	return ps.rateLimitHandler(mux)
+}
+
+func (ps *ProductionServer) rateLimitHandler(next http.Handler) http.Handler {
+	if ps == nil || ps.RateLimiter == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientID := r.Header.Get(ps.RateLimiter.config.ClientHeader)
+		if clientID == "" {
+			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+				clientID = host
+			} else {
+				clientID = r.RemoteAddr
+			}
+		}
+		if !ps.RateLimiter.Allow(clientID) {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Wait waits for the server to be signaled to stop
 func (ps *ProductionServer) Wait() {
 	ps.Lifecycle.Wait()
@@ -240,6 +312,7 @@ func (ps *ProductionServer) Stop() error {
 	defer ps.mu.Unlock()
 
 	if !ps.running {
+		ps.stopRateLimiter()
 		return nil
 	}
 
@@ -261,10 +334,18 @@ func (ps *ProductionServer) Stop() error {
 		lifecycleErr = err
 	}
 
+	ps.stopRateLimiter()
+
 	// Wait for goroutines
 	ps.wg.Wait()
 
 	return errors.Join(shutdownErr, lifecycleErr)
+}
+
+func (ps *ProductionServer) stopRateLimiter() {
+	if ps.RateLimiter != nil {
+		ps.RateLimiter.Stop()
+	}
 }
 
 // IsHealthy returns true if the server is healthy
@@ -323,6 +404,7 @@ func (ps *ProductionServer) healthHandler() http.HandlerFunc {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte(`{"status":"healthy"}`)); err != nil {
 			ps.logErrorf("failed to write health response: %v", err)
@@ -336,6 +418,7 @@ func (ps *ProductionServer) readyHandler() http.HandlerFunc {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		if ps.IsHealthy() {
 			w.WriteHeader(http.StatusOK)
 			if _, err := w.Write([]byte(`{"ready":true}`)); err != nil {
@@ -401,9 +484,13 @@ func (ps *ProductionServer) rateLimitsHandler() http.HandlerFunc {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if ps.RateLimiter == nil {
+			http.Error(w, "Rate limiter disabled", http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		if _, err := w.Write([]byte(`{"rate_limits":{}}`)); err != nil {
-			ps.logErrorf("failed to write rate limits response: %v", err)
+		if err := json.NewEncoder(w).Encode(ps.RateLimiter.GetStats()); err != nil {
+			ps.logErrorf("failed to encode rate limits response: %v", err)
 		}
 	}
 }
@@ -427,7 +514,7 @@ func (ps *ProductionServer) transactionMetricsHandler() http.HandlerFunc {
 func (ps *ProductionServer) prometheusMetricsHandler() http.HandlerFunc {
 	handler := metrics.GetPrometheusHandler()
 	if ps.Config != nil && ps.Config.AllowRemoteMetrics {
-		return handler
+		return ps.adminTokenRequiredHandler(handler, true)
 	}
 	return ps.loopbackOnly(handler)
 }
@@ -435,8 +522,7 @@ func (ps *ProductionServer) prometheusMetricsHandler() http.HandlerFunc {
 // loopbackOnly restricts access to loopback addresses only
 func (ps *ProductionServer) loopbackOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		host, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if host != "127.0.0.1" && host != "::1" {
+		if !isLoopbackRemoteAddr(r.RemoteAddr) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -448,14 +534,68 @@ func (ps *ProductionServer) loopbackOnly(next http.HandlerFunc) http.HandlerFunc
 //
 //nolint:unused // retained for production server compatibility tests.
 func (ps *ProductionServer) authRequiredHandler(next http.HandlerFunc) http.HandlerFunc {
+	return ps.adminTokenRequiredHandler(next, false)
+}
+
+func (ps *ProductionServer) adminTokenRequiredHandler(next http.HandlerFunc, allowRemote bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// In production, this should verify the admin token
-		// For now, just restrict to localhost
-		host := r.RemoteAddr
-		if !strings.HasPrefix(host, "127.0.0.1:") && !strings.HasPrefix(host, "[::1]:") {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !allowRemote && !isLoopbackRemoteAddr(r.RemoteAddr) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
+		ps.mu.RLock()
+		tokenDigest := ps.adminTokenDigest
+		tokenSet := ps.adminTokenSet
+		ps.mu.RUnlock()
+		if !tokenSet {
+			http.Error(w, "admin endpoint disabled until admin token configured", http.StatusServiceUnavailable)
+			return
+		}
+
+		providedToken, ok := adminTokenFromAuthorizationHeader(r.Header.Get("Authorization"))
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		providedDigest := adminTokenDigest(providedToken)
+		if subtle.ConstantTimeCompare(providedDigest[:], tokenDigest[:]) != 1 {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		next(w, r)
 	}
+}
+
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func adminTokenEqual(provided, expected string) bool {
+	providedDigest := adminTokenDigest(provided)
+	expectedDigest := adminTokenDigest(expected)
+	return subtle.ConstantTimeCompare(providedDigest[:], expectedDigest[:]) == 1
+}
+
+func adminTokenDigest(token string) [sha256.Size]byte {
+	var lengthPrefix [8]byte
+	binary.BigEndian.PutUint64(lengthPrefix[:], uint64(len(token)))
+
+	hasher := sha256.New()
+	_, _ = hasher.Write(lengthPrefix[:])
+	_, _ = hasher.Write([]byte(token))
+
+	var digest [sha256.Size]byte
+	copy(digest[:], hasher.Sum(nil))
+	return digest
 }

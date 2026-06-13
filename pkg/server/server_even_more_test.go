@@ -2,6 +2,8 @@ package server
 
 import (
 	"bufio"
+	"encoding/binary"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -69,6 +71,111 @@ func TestClientConnHandle(t *testing.T) {
 
 	// Close connection to stop handler
 	clientConn.Close()
+}
+
+func TestClientConnHandleRejectsOversizedPayloadBeforeRead(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	client := &ClientConn{
+		ID:     1,
+		Conn:   serverConn,
+		Server: srv,
+		authed: true,
+		reader: bufio.NewReader(serverConn),
+	}
+	srv.mu.Lock()
+	srv.clients[1] = client
+	srv.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		client.Handle()
+	}()
+
+	length := uint32(maxWireInboundPayloadFor(wire.MsgQuery) + 2)
+	var header [5]byte
+	binary.LittleEndian.PutUint32(header[:4], length)
+	header[4] = byte(wire.MsgQuery)
+	if _, err := clientConn.Write(header[:]); err != nil {
+		t.Fatalf("write oversized header: %v", err)
+	}
+
+	clientConn.SetReadDeadline(time.Now().Add(time.Second))
+	var responseLen uint32
+	if err := binary.Read(clientConn, binary.LittleEndian, &responseLen); err != nil {
+		t.Fatalf("read error response length: %v", err)
+	}
+	response := make([]byte, responseLen)
+	if _, err := io.ReadFull(clientConn, response); err != nil {
+		t.Fatalf("read error response: %v", err)
+	}
+	if len(response) == 0 || response[0] != byte(wire.MsgError) {
+		t.Fatalf("expected error response, got %#v", response)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not close after oversized payload")
+	}
+}
+
+func TestClientConnHandleRejectsZeroLengthWithoutBlocking(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
+	defer db.Close()
+
+	srv, _ := New(db, nil)
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	client := &ClientConn{
+		ID:     1,
+		Conn:   serverConn,
+		Server: srv,
+		authed: true,
+		reader: bufio.NewReader(serverConn),
+	}
+	srv.mu.Lock()
+	srv.clients[1] = client
+	srv.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		client.Handle()
+	}()
+
+	var header [4]byte
+	if _, err := clientConn.Write(header[:]); err != nil {
+		t.Fatalf("write zero length header: %v", err)
+	}
+
+	clientConn.SetReadDeadline(time.Now().Add(time.Second))
+	var responseLen uint32
+	if err := binary.Read(clientConn, binary.LittleEndian, &responseLen); err != nil {
+		t.Fatalf("read error response length: %v", err)
+	}
+	response := make([]byte, responseLen)
+	if _, err := io.ReadFull(clientConn, response); err != nil {
+		t.Fatalf("read error response: %v", err)
+	}
+	if len(response) == 0 || response[0] != byte(wire.MsgError) {
+		t.Fatalf("expected error response, got %#v", response)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handler blocked after zero length message")
+	}
 }
 
 // TestSendMessage tests sending different message types

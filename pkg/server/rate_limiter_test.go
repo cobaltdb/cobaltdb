@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,6 +79,30 @@ func TestRateLimiterAllowNRejectsNegativeWithoutAddingTokens(t *testing.T) {
 	}
 	if rl.AllowN("", 1) {
 		t.Fatal("negative token request should not refill the bucket")
+	}
+}
+
+func TestRateLimiterRejectsOversizedClientIDTracking(t *testing.T) {
+	rl := NewRateLimiter(&RateLimiterConfig{
+		RPS:             100,
+		Burst:           10,
+		PerClient:       true,
+		CleanupInterval: time.Minute,
+		MaxClients:      10,
+	})
+	defer rl.Stop()
+
+	clientID := strings.Repeat("c", maxRateLimiterClientIDBytes+1)
+	if !rl.Allow(clientID) {
+		t.Fatal("oversized client ID should still be governed by global limiter")
+	}
+	if !rl.AllowN(clientID, 2) {
+		t.Fatal("oversized client ID AllowN should still be governed by global limiter")
+	}
+
+	stats := rl.GetStats()
+	if stats.ClientCount != 0 {
+		t.Fatalf("oversized client ID should not be tracked, got %d clients", stats.ClientCount)
 	}
 }
 

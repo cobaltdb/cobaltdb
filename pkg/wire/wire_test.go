@@ -43,6 +43,33 @@ func TestNewQueryMessage(t *testing.T) {
 	}
 }
 
+func TestNewQueryMessageClonesRecursiveParamsSafely(t *testing.T) {
+	recursiveSlice := []interface{}{nil}
+	recursiveSlice[0] = recursiveSlice
+	recursiveMap := map[string]interface{}{}
+	recursiveMap["self"] = recursiveMap
+
+	msg := NewQueryMessage("SELECT ?, ?", recursiveSlice, recursiveMap)
+
+	if len(msg.Params) != 2 {
+		t.Fatalf("Expected 2 params, got %d", len(msg.Params))
+	}
+	clonedSlice, ok := msg.Params[0].([]interface{})
+	if !ok {
+		t.Fatalf("Expected recursive slice to remain a slice, got %T", msg.Params[0])
+	}
+	if len(clonedSlice) != 1 || clonedSlice[0] != nil {
+		t.Fatalf("Expected recursive slice branch to be cut to nil, got %#v", clonedSlice)
+	}
+	clonedMap, ok := msg.Params[1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected recursive map to remain a map, got %T", msg.Params[1])
+	}
+	if value, exists := clonedMap["self"]; !exists || value != nil {
+		t.Fatalf("Expected recursive map branch to be cut to nil, got %#v", clonedMap)
+	}
+}
+
 func TestNewResultMessage(t *testing.T) {
 	columns := []string{"id", "name"}
 	rows := [][]interface{}{
@@ -74,6 +101,24 @@ func TestNewResultMessage(t *testing.T) {
 	}
 	if got := string(msg.Rows[0][2].(map[string]interface{})["tags"].([]interface{})[0].([]byte)); got != "admin" {
 		t.Fatalf("Nested rows should not alias caller values, got %q", got)
+	}
+}
+
+func TestNewResultMessageClonesRecursiveRowsSafely(t *testing.T) {
+	recursive := map[string]interface{}{}
+	recursive["self"] = recursive
+
+	msg := NewResultMessage([]string{"payload"}, [][]interface{}{{recursive}})
+
+	if len(msg.Rows) != 1 || len(msg.Rows[0]) != 1 {
+		t.Fatalf("Expected one cloned row value, got %#v", msg.Rows)
+	}
+	cloned, ok := msg.Rows[0][0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected recursive row value to remain a map, got %T", msg.Rows[0][0])
+	}
+	if value, exists := cloned["self"]; !exists || value != nil {
+		t.Fatalf("Expected recursive row branch to be cut to nil, got %#v", cloned)
 	}
 }
 

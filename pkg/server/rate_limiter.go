@@ -16,6 +16,8 @@ var (
 	ErrRateLimitExceeded = errors.New("rate limit exceeded")
 )
 
+const maxRateLimiterClientIDBytes = 256
+
 // RateLimiterConfig configures rate limiting behavior
 type RateLimiterConfig struct {
 	// Requests per second (default: 1000)
@@ -165,6 +167,7 @@ func (rl *RateLimiter) Allow(clientID string) bool {
 	}
 
 	// Check per-client limit if enabled
+	clientID = sanitizeRateLimiterClientID(clientID)
 	if rl.config.PerClient && clientID != "" {
 		cl := rl.getClientLimiter(clientID)
 		if !cl.bucket.allow() {
@@ -184,6 +187,7 @@ func (rl *RateLimiter) AllowN(clientID string, n int) bool {
 		return false
 	}
 
+	clientID = sanitizeRateLimiterClientID(clientID)
 	if rl.config.PerClient && clientID != "" {
 		cl := rl.getClientLimiter(clientID)
 		if !cl.bucket.allowN(n) {
@@ -195,6 +199,13 @@ func (rl *RateLimiter) AllowN(clientID string, n int) bool {
 	}
 
 	return true
+}
+
+func sanitizeRateLimiterClientID(clientID string) string {
+	if len(clientID) > maxRateLimiterClientIDBytes {
+		return ""
+	}
+	return clientID
 }
 
 // Wait blocks until the request is allowed or context is cancelled

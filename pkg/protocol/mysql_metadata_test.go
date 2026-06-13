@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
@@ -110,6 +111,39 @@ func TestBuildColumnDefPacketWithSQLMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildColumnDefPacketSanitizesOversizedMetadataNames(t *testing.T) {
+	client, _ := newTestClient(nil)
+	oversized := strings.Repeat("a", maxMySQLIdentifierBytes+128)
+
+	payload := client.buildColumnDefPacketWithDefinition(mysqlColumnDefinition{
+		name:     oversized + "\x00",
+		orgName:  oversized + "\n",
+		table:    oversized + "\x7f",
+		orgTable: oversized + "\r",
+		charset:  mysqlCharsetUTF8GeneralCI,
+		length:   65535,
+		typ:      MySQLTypeVarString,
+	})
+	def := parseColumnDefinitionForTest(t, payload)
+
+	if len(def.name) != maxMySQLIdentifierBytes {
+		t.Fatalf("column name length = %d, want %d", len(def.name), maxMySQLIdentifierBytes)
+	}
+	if len(def.table) != maxMySQLIdentifierBytes {
+		t.Fatalf("table name length = %d, want %d", len(def.table), maxMySQLIdentifierBytes)
+	}
+	if strings.ContainsAny(def.name, "\x00\n\r\x7f") || strings.ContainsAny(def.table, "\x00\n\r\x7f") {
+		t.Fatalf("metadata names contain control characters: name=%q table=%q", def.name, def.table)
+	}
+}
+
+func TestSanitizeMySQLMetadataNameReplacesControlCharacters(t *testing.T) {
+	got := sanitizeMySQLMetadataName("a\x00b\nc\rd\x7f")
+	if got != "a?b?c?d?" {
+		t.Fatalf("sanitizeMySQLMetadataName = %q", got)
+	}
+}
+
 type fakeColumnTypeHints struct {
 	hints []string
 }
@@ -186,4 +220,49 @@ func TestHandleFieldListEmitsDescribeColumnMetadata(t *testing.T) {
 	if packets[4][0] != 0xfe {
 		t.Fatalf("last packet = 0x%02x, want EOF", packets[4][0])
 	}
+}
+
+func TestQuoteMySQLIdentifier(t *testing.T) {
+	got, err := quoteMySQLIdentifier(`users"; DROP TABLE users;--`)
+	if err != nil {
+		t.Fatalf("quoteMySQLIdentifier returned error: %v", err)
+	}
+	want := `"users""; DROP TABLE users;--"`
+	if got != want {
+		t.Fatalf("quoteMySQLIdentifier = %q, want %q", got, want)
+	}
+	if _, err := quoteMySQLIdentifier(""); err == nil {
+		t.Fatal("expected empty identifier to be rejected")
+	}
+	if _, err := quoteMySQLIdentifier(strings.Repeat("a", maxMySQLIdentifierBytes+1)); err == nil {
+		t.Fatal("expected oversized identifier to be rejected")
+	}
+}
+
+func TestHandleFieldListQuotesTableName(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(t.Context(), "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	client, conn := newTestClient(db)
+	err = client.handleFieldList([]byte("users; DROP TABLE users;--\x00"))
+	if err != nil {
+		t.Fatalf("handleFieldList should send an error packet, not return transport error: %v", err)
+	}
+	packets := readWrittenPacketsForTest(t, conn.writeBuf.Bytes())
+	if len(packets) != 1 || len(packets[0]) == 0 || packets[0][0] != 0xff {
+		t.Fatalf("expected one MySQL error packet, got %#v", packets)
+	}
+
+	rows, err := db.Query(t.Context(), "SELECT id, name FROM users")
+	if err != nil {
+		t.Fatalf("users table should remain after malicious field list: %v", err)
+	}
+	rows.Close()
 }

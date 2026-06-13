@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +63,22 @@ func TestAdminServerHealth(t *testing.T) {
 
 	if health["status"] != "healthy" {
 		t.Errorf("Expected status healthy, got %v", health["status"])
+	}
+}
+
+func TestAdminServerSetsProductionHeaderLimit(t *testing.T) {
+	admin := NewAdminServer(nil, "127.0.0.1:0")
+	admin.SetAuthToken("test-token")
+	if err := admin.Start(); err != nil {
+		t.Fatalf("Failed to start admin server: %v", err)
+	}
+	defer admin.Stop()
+
+	if admin.server == nil {
+		t.Fatal("admin server was not initialized")
+	}
+	if admin.server.MaxHeaderBytes != productionHTTPMaxHeaderBytes {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", admin.server.MaxHeaderBytes, productionHTTPMaxHeaderBytes)
 	}
 }
 
@@ -289,6 +308,154 @@ func TestAdminServerAuth(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected 200 with auth, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdminServerSetAuthTokenStoresDigestOnly(t *testing.T) {
+	admin := NewAdminServer(nil, "127.0.0.1:0")
+	admin.SetAuthToken("secret-token")
+
+	if !admin.authTokenConfigured {
+		t.Fatal("admin token should be configured")
+	}
+	if admin.authTokenDigest != adminTokenDigest("secret-token") {
+		t.Fatal("admin token digest not stored")
+	}
+	if string(admin.authTokenDigest[:]) == "secret-token" {
+		t.Fatal("admin token should not be stored as raw bytes")
+	}
+
+	handler := admin.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	validReq := httptest.NewRequest(http.MethodGet, "/health", nil)
+	validReq.Header.Set("Authorization", "Bearer secret-token")
+	validRec := httptest.NewRecorder()
+	handler.ServeHTTP(validRec, validReq)
+	if validRec.Code != http.StatusNoContent {
+		t.Fatalf("valid token status = %d, want %d", validRec.Code, http.StatusNoContent)
+	}
+
+	wrongReq := httptest.NewRequest(http.MethodGet, "/health", nil)
+	wrongReq.Header.Set("Authorization", "Bearer secret-token-extra")
+	wrongRec := httptest.NewRecorder()
+	handler.ServeHTTP(wrongRec, wrongReq)
+	if wrongRec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token status = %d, want %d", wrongRec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAdminServerAuthMiddlewareRejectsOversizedAuthorization(t *testing.T) {
+	admin := NewAdminServer(nil, "127.0.0.1:0")
+	admin.SetAuthToken("secret-token")
+	called := false
+	handler := admin.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("Authorization", "Bearer "+strings.Repeat("x", maxAdminTokenBytes+1))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("oversized token status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if called {
+		t.Fatal("oversized token reached admin handler")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("Authorization", strings.Repeat("x", maxAdminAuthorizationHeaderBytes+1))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("oversized header status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if called {
+		t.Fatal("oversized Authorization header reached admin handler")
+	}
+}
+
+func TestAdminServerSetAuthTokenEmptyDisablesAPI(t *testing.T) {
+	admin := NewAdminServer(nil, "127.0.0.1:0")
+	admin.SetAuthToken("secret-token")
+	admin.SetAuthToken("")
+
+	if admin.authTokenConfigured {
+		t.Fatal("empty token should clear admin token configuration")
+	}
+	if admin.authTokenDigest != ([sha256.Size]byte{}) {
+		t.Fatal("empty token should clear admin token digest")
+	}
+
+	handler := admin.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestAdminServerSetAuthTokenOversizedDisablesAPI(t *testing.T) {
+	admin := NewAdminServer(nil, "127.0.0.1:0")
+	admin.SetAuthToken(strings.Repeat("x", maxAdminTokenBytes+1))
+
+	if admin.authTokenConfigured {
+		t.Fatal("oversized token should not configure admin token")
+	}
+	if admin.authTokenDigest != ([sha256.Size]byte{}) {
+		t.Fatal("oversized token should clear admin token digest")
+	}
+
+	handler := admin.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("oversized configured token should not enable admin handler")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("Authorization", "Bearer "+strings.Repeat("x", maxAdminTokenBytes+1))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestAdminServerAuthMiddlewareRejectsNonGETMethods(t *testing.T) {
+	admin := NewAdminServer(nil, "127.0.0.1:0")
+	admin.SetAuthToken("secret-token")
+	called := false
+
+	handler := admin.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/health", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+	if called {
+		t.Fatal("non-GET request reached admin handler")
+	}
+
+	optionsReq := httptest.NewRequest(http.MethodOptions, "/health", nil)
+	optionsRec := httptest.NewRecorder()
+	handler.ServeHTTP(optionsRec, optionsReq)
+	if optionsRec.Code != http.StatusOK {
+		t.Fatalf("OPTIONS status = %d, want %d", optionsRec.Code, http.StatusOK)
 	}
 }
 

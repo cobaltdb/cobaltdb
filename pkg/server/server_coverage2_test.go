@@ -134,6 +134,9 @@ func TestAdminHandleReadyWithNilDBCov(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected status 503, got %d", w.Code)
 	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("ready Content-Type = %q, want application/json", got)
+	}
 }
 
 // ============================================================

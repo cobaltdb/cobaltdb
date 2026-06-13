@@ -39,6 +39,18 @@ func (c *panicWriteConn) Write([]byte) (int, error) {
 	panic("write panic")
 }
 
+type shortWriteConn struct {
+	deadlineErrConn
+	limit int
+}
+
+func (c *shortWriteConn) Write(p []byte) (int, error) {
+	if len(p) > c.limit {
+		return c.limit, nil
+	}
+	return len(p), nil
+}
+
 func TestMySQLServerCloseReturnsClientCloseErrors(t *testing.T) {
 	closeErr := errors.New("close failed")
 	server := NewMySQLServer(nil, "test")
@@ -106,6 +118,95 @@ func TestMySQLClientWritePacketRejectsNilConnection(t *testing.T) {
 	err := client.writePacket([]byte("payload"), 0)
 	if err == nil || !strings.Contains(err.Error(), "connection is nil") {
 		t.Fatalf("expected nil connection error, got %v", err)
+	}
+}
+
+func TestMySQLClientWritePacketRejectsShortHeaderWrite(t *testing.T) {
+	client := &MySQLClient{conn: &shortWriteConn{limit: 3}}
+
+	err := client.writePacket([]byte("payload"), 0)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writePacket short header write error = %v, want %v", err, io.ErrShortWrite)
+	}
+}
+
+func TestMySQLClientWritePacketRejectsShortPayloadWrite(t *testing.T) {
+	client := &MySQLClient{conn: &shortWriteConn{limit: 4}}
+
+	err := client.writePacket([]byte("payload"), 0)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writePacket short payload write error = %v, want %v", err, io.ErrShortWrite)
+	}
+}
+
+func TestWriteMySQLFullRejectsShortWrite(t *testing.T) {
+	writer := &shortWriteConn{limit: 2}
+
+	n, err := writeMySQLFull(writer, []byte("abcd"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writeMySQLFull short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if n != 2 {
+		t.Fatalf("writeMySQLFull wrote %d bytes, want 2", n)
+	}
+}
+
+func TestMySQLClientWritePacketExactMaxPayloadWritesTerminator(t *testing.T) {
+	conn := newMockConn()
+	client := &MySQLClient{conn: conn}
+	payload := make([]byte, maxMySQLPayloadSize)
+
+	if err := client.writePacket(payload, 7); err != nil {
+		t.Fatalf("writePacket exact max payload failed: %v", err)
+	}
+
+	got := conn.writeBuf.Bytes()
+	wantLen := 4 + maxMySQLPayloadSize + 4
+	if len(got) != wantLen {
+		t.Fatalf("packet bytes = %d, want %d", len(got), wantLen)
+	}
+	firstLen := int(got[0]) | int(got[1])<<8 | int(got[2])<<16
+	if firstLen != maxMySQLPayloadSize {
+		t.Fatalf("first packet length = %d, want %d", firstLen, maxMySQLPayloadSize)
+	}
+	if got[3] != 7 {
+		t.Fatalf("first packet sequence = %d, want 7", got[3])
+	}
+
+	term := got[4+maxMySQLPayloadSize:]
+	if term[0] != 0 || term[1] != 0 || term[2] != 0 {
+		t.Fatalf("terminator length bytes = %v, want zero length", term[:3])
+	}
+	if term[3] != 8 {
+		t.Fatalf("terminator sequence = %d, want 8", term[3])
+	}
+}
+
+func TestMySQLClientReadCommandPacketConsumesExactMaxTerminator(t *testing.T) {
+	var input bytes.Buffer
+	payload := make([]byte, maxMySQLPayloadSize)
+	payload[0] = MySQLComStmtSendLongData
+	for i := 1; i < len(payload); i++ {
+		payload[i] = byte(i)
+	}
+
+	input.Write([]byte{0xff, 0xff, 0xff, 0})
+	input.Write(payload)
+	input.Write([]byte{0, 0, 0, 1})
+
+	client := &MySQLClient{reader: bufio.NewReader(&input)}
+	command, data, err := client.readCommandPacket()
+	if err != nil {
+		t.Fatalf("readCommandPacket exact max payload failed: %v", err)
+	}
+	if command != MySQLComStmtSendLongData {
+		t.Fatalf("command = 0x%02x, want 0x%02x", command, MySQLComStmtSendLongData)
+	}
+	if len(data) != maxMySQLPayloadSize-1 {
+		t.Fatalf("data length = %d, want %d", len(data), maxMySQLPayloadSize-1)
+	}
+	if input.Len() != 0 {
+		t.Fatalf("terminator was not consumed, %d bytes remain", input.Len())
 	}
 }
 

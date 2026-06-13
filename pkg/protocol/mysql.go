@@ -29,7 +29,21 @@ import (
 
 const (
 	// maxMySQLPayloadSize is the largest value representable by MySQL's 3-byte packet length.
-	maxMySQLPayloadSize = 1<<24 - 1
+	maxMySQLPayloadSize           = 1<<24 - 1
+	maxMySQLLongDataBytes         = maxMySQLPayloadSize
+	maxMySQLStmtFetchRows         = 1024
+	maxMySQLPreparedStmts         = 1024
+	maxMySQLPreparedParams        = 1024
+	maxMySQLQueryBytes            = 10000
+	maxMySQLHandshakePayloadBytes = 64 * 1024
+	maxMySQLCommandPayloadBytes   = 1 * 1024 * 1024
+	maxMySQLUsernameBytes         = 256
+	maxMySQLIdentifierBytes       = 256
+	maxMySQLDatabaseBytes         = 1024
+	maxMySQLAuthResponseBytes     = 20
+	maxMySQLResultValueBytes      = 1024 * 1024
+	maxMySQLServerVersionBytes    = 128
+	defaultMaxMySQLConnections    = 1000
 
 	mysqlHandshakeTimeout = 10 * time.Second
 	mysqlCommandTimeout   = 5 * time.Minute
@@ -50,6 +64,16 @@ func appendUint32LE(dst []byte, v uint32) []byte {
 	var buf [4]byte
 	binary.LittleEndian.PutUint32(buf[:], v)
 	return append(dst, buf[:]...)
+}
+
+func quoteMySQLIdentifier(identifier string) (string, error) {
+	if identifier == "" || strings.ContainsRune(identifier, 0) {
+		return "", fmt.Errorf("identifier must be non-empty and cannot contain NUL")
+	}
+	if len(identifier) > maxMySQLIdentifierBytes {
+		return "", fmt.Errorf("identifier too large")
+	}
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`, nil
 }
 
 func mysqlUint16(n int, name string) (uint16, error) {
@@ -143,6 +167,8 @@ const (
 	mysqlColumnFlagAutoIncrement uint16 = 0x0200
 )
 
+var ErrMySQLServerClosed = errors.New("mysql server is closed")
+
 type mysqlColumnDefinition struct {
 	name     string
 	orgName  string
@@ -161,16 +187,18 @@ type mysqlColumnTypeHintProvider interface {
 
 // MySQLServer implements a MySQL-compatible server
 type MySQLServer struct {
-	db       *engine.DB
-	listener net.Listener
-	version  string
-	mu       sync.Mutex
-	clients  map[uint32]net.Conn
-	nextID   uint32
-	auth     *auth.Authenticator
-	wg       sync.WaitGroup
-	stopChan chan struct{}
-	closed   bool
+	db                 *engine.DB
+	listener           net.Listener
+	version            string
+	mu                 sync.Mutex
+	clients            map[uint32]net.Conn
+	nextID             uint32
+	auth               *auth.Authenticator
+	maxConnections     int
+	allowCleartextAuth bool
+	wg                 sync.WaitGroup
+	stopChan           chan struct{}
+	closed             bool
 
 	lastPanic atomic.Value
 }
@@ -185,22 +213,56 @@ type MySQLPanicRecovery struct {
 
 // NewMySQLServer creates a new MySQL-compatible server
 func NewMySQLServer(db *engine.DB, version string) *MySQLServer {
-	if version == "" {
-		version = "5.7.0-CobaltDB"
-	}
 	return &MySQLServer{
-		db:       db,
-		version:  version,
-		clients:  make(map[uint32]net.Conn),
-		stopChan: make(chan struct{}),
+		db:             db,
+		version:        sanitizeMySQLServerVersion(version),
+		clients:        make(map[uint32]net.Conn),
+		maxConnections: defaultMaxMySQLConnections,
+		stopChan:       make(chan struct{}),
 	}
+}
+
+func sanitizeMySQLServerVersion(version string) string {
+	if version == "" {
+		return "5.7.0-CobaltDB"
+	}
+	if len(version) > maxMySQLServerVersionBytes {
+		version = version[:maxMySQLServerVersionBytes]
+	}
+	if strings.IndexFunc(version, func(r rune) bool {
+		return r < 0x20 || r == 0x7f
+	}) == -1 {
+		return version
+	}
+
+	var b strings.Builder
+	b.Grow(len(version))
+	for _, r := range version {
+		if r < 0x20 || r == 0x7f {
+			b.WriteByte('?')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // SetAuthenticator sets the authenticator for the MySQL server.
 // When set and enabled, connections must provide valid credentials.
 // If not set or not enabled, all connections are accepted (backward compatible).
 func (s *MySQLServer) SetAuthenticator(a *auth.Authenticator) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.auth = a
+}
+
+// SetAllowCleartextAuth allows authenticated MySQL listeners on non-loopback
+// addresses. MySQL native password authentication is not transport encrypted,
+// so this should only be used for development or trusted private networks.
+func (s *MySQLServer) SetAllowCleartextAuth(allow bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.allowCleartextAuth = allow
 }
 
 // LastPanicRecovery returns the latest recovered client-handler panic, if any.
@@ -226,20 +288,89 @@ func (s *MySQLServer) recordPanic(connID uint32, value interface{}) {
 
 // Listen starts listening for MySQL connections
 func (s *MySQLServer) Listen(address string) error {
+	authEnabled, allowCleartextAuth := s.authTransportConfig()
+	if err := validateMySQLAuthTransport(address, authEnabled, allowCleartextAuth); err != nil {
+		return err
+	}
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
 	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		if closeErr := listener.Close(); closeErr != nil && !isBenignMySQLNetworkCloseError(closeErr) {
+			return fmt.Errorf("%w: listener close failed: %v", ErrMySQLServerClosed, closeErr)
+		}
+		return ErrMySQLServerClosed
+	}
 	s.listener = listener
+	s.mu.Unlock()
 
 	go s.acceptLoop()
 	return nil
 }
 
+func (s *MySQLServer) authEnabled() bool {
+	authenticator, _ := s.authSnapshot()
+	return authenticator != nil && authenticator.IsEnabled()
+}
+
+func (s *MySQLServer) authTransportConfig() (bool, bool) {
+	if s == nil {
+		return false, false
+	}
+	s.mu.Lock()
+	authenticator := s.auth
+	allowCleartextAuth := s.allowCleartextAuth
+	s.mu.Unlock()
+	return authenticator != nil && authenticator.IsEnabled(), allowCleartextAuth
+}
+
+func (s *MySQLServer) authSnapshot() (*auth.Authenticator, bool) {
+	if s == nil {
+		return nil, false
+	}
+	s.mu.Lock()
+	authenticator := s.auth
+	s.mu.Unlock()
+	if authenticator == nil || !authenticator.IsEnabled() {
+		return authenticator, false
+	}
+	return authenticator, true
+}
+
+func validateMySQLAuthTransport(address string, authEnabled, allowCleartextAuth bool) error {
+	if !authEnabled || allowCleartextAuth || isLoopbackMySQLListenAddress(address) {
+		return nil
+	}
+	return fmt.Errorf("MySQL authentication on non-loopback address %q is cleartext; bind to loopback or call SetAllowCleartextAuth(true) for development", address)
+}
+
+func isLoopbackMySQLListenAddress(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // Addr returns the listener address (useful for tests)
 func (s *MySQLServer) Addr() net.Addr {
-	if s.listener != nil {
-		return s.listener.Addr()
+	s.mu.Lock()
+	listener := s.listener
+	s.mu.Unlock()
+	if listener != nil {
+		return listener.Addr()
 	}
 	return nil
 }
@@ -329,6 +460,14 @@ func (s *MySQLServer) acceptLoop() {
 func (s *MySQLServer) handleConnection(conn net.Conn) {
 	// Register connection
 	s.mu.Lock()
+	if s.maxConnections <= 0 {
+		s.maxConnections = defaultMaxMySQLConnections
+	}
+	if len(s.clients) >= s.maxConnections {
+		s.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
 	s.nextID++
 	connID := s.nextID
 	s.clients[connID] = conn
@@ -374,8 +513,8 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 	}
 
 	// Authenticate if an authenticator is configured and enabled (FIX-004)
-	if s.auth != nil && s.auth.IsEnabled() {
-		storedHash, err := s.auth.GetMySQLNativeHash(client.username)
+	if authenticator, enabled := s.authSnapshot(); enabled {
+		storedHash, err := authenticator.GetMySQLNativeHash(client.username)
 		if err != nil {
 			if sendErr := client.sendErrorPacket(1045, fmt.Sprintf("Access denied for user '%s'", client.username)); sendErr != nil {
 				logger.GetGlobalLogger().Errorf("failed to send auth error to client: %v", sendErr)
@@ -508,7 +647,7 @@ func (c *MySQLClient) readHandshakeResponse() error {
 	c.sequence = header[3] // track sequence from client
 
 	// Validate payload size to prevent DoS via unbounded allocation
-	if length <= 0 || length > maxMySQLPayloadSize {
+	if length <= 0 || length > maxMySQLHandshakePayloadBytes {
 		return fmt.Errorf("invalid handshake payload length: %d", length)
 	}
 
@@ -535,6 +674,9 @@ func (c *MySQLClient) readHandshakeResponse() error {
 		if end == len(payload) {
 			return fmt.Errorf("handshake username is not null-terminated")
 		}
+		if end-offset > maxMySQLUsernameBytes {
+			return fmt.Errorf("handshake username is too long: %d bytes", end-offset)
+		}
 		c.username = string(payload[offset:end])
 		offset = end + 1 // skip null terminator
 	}
@@ -543,6 +685,9 @@ func (c *MySQLClient) readHandshakeResponse() error {
 	if offset < len(payload) {
 		authLen := int(payload[offset])
 		offset++
+		if authLen > maxMySQLAuthResponseBytes {
+			return fmt.Errorf("handshake auth response is too long: %d bytes", authLen)
+		}
 		if offset+authLen > len(payload) {
 			return fmt.Errorf("handshake auth response truncated")
 		}
@@ -558,6 +703,9 @@ func (c *MySQLClient) readHandshakeResponse() error {
 			end++
 		}
 		if end > offset {
+			if end-offset > maxMySQLDatabaseBytes {
+				return fmt.Errorf("handshake database name is too long: %d bytes", end-offset)
+			}
 			c.database = string(payload[offset:end])
 		}
 	}
@@ -604,32 +752,10 @@ func (c *MySQLClient) handleCommand() error {
 		}
 	}
 
-	// Read packet header
-	header := make([]byte, 4)
-	if _, err := io.ReadFull(c.reader, header); err != nil {
+	command, data, err := c.readCommandPacket()
+	if err != nil {
 		return err
 	}
-
-	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
-	c.sequence = header[3] // track command sequence
-
-	// Validate payload size to prevent DoS via unbounded allocation
-	if length <= 0 || length > maxMySQLPayloadSize {
-		return fmt.Errorf("invalid command payload length: %d", length)
-	}
-
-	// Read packet payload
-	payload := make([]byte, length)
-	if _, err := io.ReadFull(c.reader, payload); err != nil {
-		return err
-	}
-
-	if length == 0 {
-		return fmt.Errorf("empty packet")
-	}
-
-	command := payload[0]
-	data := payload[1:]
 
 	switch command {
 	case MySQLComQuit:
@@ -642,6 +768,9 @@ func (c *MySQLClient) handleCommand() error {
 		return c.sendOKPacket(0, 0)
 
 	case MySQLComInitDB:
+		if len(data) > maxMySQLDatabaseBytes {
+			return c.sendErrorPacket(0, "database name too long")
+		}
 		c.database = string(data)
 		return c.sendOKPacket(0, 0)
 
@@ -686,8 +815,95 @@ func (c *MySQLClient) handleCommand() error {
 	}
 }
 
+func (c *MySQLClient) readCommandPacket() (byte, []byte, error) {
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(c.reader, header); err != nil {
+		return 0, nil, err
+	}
+
+	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
+	seq := header[3]
+	c.sequence = seq
+	if length <= 0 || length > maxMySQLPayloadSize {
+		return 0, nil, fmt.Errorf("invalid command payload length: %d", length)
+	}
+
+	var commandBuf [1]byte
+	if _, err := io.ReadFull(c.reader, commandBuf[:]); err != nil {
+		return 0, nil, err
+	}
+	command := commandBuf[0]
+	maxPayload := maxMySQLCommandPayloadFor(command)
+	if length > maxPayload {
+		return 0, nil, fmt.Errorf("command payload too large for 0x%02x: %d bytes exceeds %d", command, length, maxPayload)
+	}
+
+	data := make([]byte, length-1)
+	if len(data) > 0 {
+		if _, err := io.ReadFull(c.reader, data); err != nil {
+			return 0, nil, err
+		}
+	}
+
+	totalPayload := length
+	for length == maxMySQLPayloadSize {
+		if _, err := io.ReadFull(c.reader, header); err != nil {
+			return 0, nil, err
+		}
+		length = int(header[0]) | int(header[1])<<8 | int(header[2])<<16
+		seq++
+		if header[3] != seq {
+			return 0, nil, fmt.Errorf("invalid command packet sequence: got %d want %d", header[3], seq)
+		}
+		if length > maxMySQLPayloadSize {
+			return 0, nil, fmt.Errorf("invalid command payload length: %d", length)
+		}
+		if totalPayload+length > maxPayload {
+			return 0, nil, fmt.Errorf("command payload too large for 0x%02x: %d bytes exceeds %d", command, totalPayload+length, maxPayload)
+		}
+		if length == 0 {
+			break
+		}
+		chunk := make([]byte, length)
+		if _, err := io.ReadFull(c.reader, chunk); err != nil {
+			return 0, nil, err
+		}
+		data = append(data, chunk...)
+		totalPayload += length
+	}
+
+	return command, data, nil
+}
+
+func maxMySQLCommandPayloadFor(command byte) int {
+	switch command {
+	case MySQLComQuery, MySQLComStmtPrepare:
+		return 1 + maxMySQLQueryBytes + 1024
+	case MySQLComInitDB:
+		return 1 + maxMySQLDatabaseBytes + 1024
+	case MySQLComStmtSendLongData:
+		return maxMySQLPayloadSize
+	case MySQLComStmtExecute:
+		return maxMySQLCommandPayloadBytes
+	case MySQLComFieldList:
+		return 1 + maxMySQLIdentifierBytes*2 + 1
+	case MySQLComQuit, MySQLComPing, MySQLComStatistics, MySQLComProcessInfo,
+		MySQLComResetConnection, MySQLComRefresh, MySQLComShutdown:
+		return 1
+	case MySQLComStmtClose, MySQLComStmtReset:
+		return 5
+	case MySQLComStmtFetch:
+		return 9
+	default:
+		return maxMySQLCommandPayloadBytes
+	}
+}
+
 // handleQuery handles a SQL query
 func (c *MySQLClient) handleQuery(sql string) error {
+	if len(sql) > maxMySQLQueryBytes {
+		return c.sendErrorPacket(0, "query too large")
+	}
 	sql = strings.TrimSpace(sql)
 
 	// Handle MySQL client initialization queries that may not parse
@@ -854,6 +1070,9 @@ func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
 			scanErrors++
 			continue
 		}
+		if mysqlRowValueTooLarge(row) {
+			return c.sendErrorPacket(0, "result value too large")
+		}
 
 		pkt := c.buildRowPacket(row)
 		if err := c.writePacket(pkt, seq); err != nil {
@@ -973,19 +1192,23 @@ func mysqlValueString(row []interface{}, idx int) string {
 
 func (c *MySQLClient) buildColumnDefPacketWithDefinition(def mysqlColumnDefinition) []byte {
 	var pkt []byte
+	tableName := sanitizeMySQLMetadataName(def.table)
+	orgTableName := sanitizeMySQLMetadataName(def.orgTable)
+	columnName := sanitizeMySQLMetadataName(def.name)
+	orgColumnName := sanitizeMySQLMetadataName(def.orgName)
 
 	// catalog (lenenc_str) - "def"
 	pkt = appendLenEncString(pkt, "def")
 	// schema (lenenc_str) - empty
 	pkt = appendLenEncString(pkt, "")
 	// table (lenenc_str)
-	pkt = appendLenEncString(pkt, def.table)
+	pkt = appendLenEncString(pkt, tableName)
 	// org_table (lenenc_str)
-	pkt = appendLenEncString(pkt, def.orgTable)
+	pkt = appendLenEncString(pkt, orgTableName)
 	// name (lenenc_str)
-	pkt = appendLenEncString(pkt, def.name)
+	pkt = appendLenEncString(pkt, columnName)
 	// org_name (lenenc_str)
-	pkt = appendLenEncString(pkt, def.orgName)
+	pkt = appendLenEncString(pkt, orgColumnName)
 
 	// length of fixed-length fields [0c]
 	pkt = append(pkt, 0x0c)
@@ -1009,6 +1232,31 @@ func (c *MySQLClient) buildColumnDefPacketWithDefinition(def mysqlColumnDefiniti
 	pkt = append(pkt, 0x00, 0x00)
 
 	return pkt
+}
+
+func sanitizeMySQLMetadataName(name string) string {
+	if name == "" {
+		return ""
+	}
+	if len(name) > maxMySQLIdentifierBytes {
+		name = name[:maxMySQLIdentifierBytes]
+	}
+	if strings.IndexFunc(name, func(r rune) bool {
+		return r == 0 || r < 0x20 || r == 0x7f
+	}) == -1 {
+		return name
+	}
+
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		if r == 0 || r < 0x20 || r == 0x7f {
+			b.WriteByte('?')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // buildRowPacket builds a row data packet (text protocol)
@@ -1053,11 +1301,15 @@ func valueToWireString(v interface{}) string {
 
 // sendEOFPacket sends an EOF packet
 func (c *MySQLClient) sendEOFPacket(seq byte) error {
+	return c.sendEOFPacketWithStatus(seq, MySQLServerStatusAutocommit)
+}
+
+func (c *MySQLClient) sendEOFPacketWithStatus(seq byte, status uint16) error {
 	pkt := []byte{
 		0xfe,       // EOF marker
 		0x00, 0x00, // warnings
-		0x02, 0x00, // status flags (SERVER_STATUS_AUTOCOMMIT)
 	}
+	pkt = appendUint16LE(pkt, status)
 	return c.writePacket(pkt, seq)
 }
 
@@ -1097,21 +1349,45 @@ func (c *MySQLClient) writePacket(data []byte, sequence byte) error {
 		binary.LittleEndian.PutUint32(header[:], mysqlPacketLength(chunkLen))
 		header[3] = seq
 
-		if _, err := c.conn.Write(header[:]); err != nil {
+		if _, err := writeMySQLFull(c.conn, header[:]); err != nil {
 			return err
 		}
 		if chunkLen > 0 {
-			if _, err := c.conn.Write(data[offset : offset+chunkLen]); err != nil {
+			if _, err := writeMySQLFull(c.conn, data[offset:offset+chunkLen]); err != nil {
 				return err
 			}
 		}
 
 		offset += chunkLen
 		if offset >= len(data) {
+			if chunkLen == maxMySQLPayloadSize {
+				seq++
+				if err := c.writeEmptyPacket(seq); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 		seq++
 	}
+}
+
+func (c *MySQLClient) writeEmptyPacket(sequence byte) error {
+	var header [4]byte
+	header[3] = sequence
+	_, err := writeMySQLFull(c.conn, header[:])
+	return err
+}
+
+func writeMySQLFull(writer io.Writer, data []byte) (int, error) {
+	n, err := writer.Write(data)
+	if err != nil {
+		return n, err
+	}
+	if n != len(data) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
 }
 
 // sendOKPacket sends an OK packet
@@ -1285,6 +1561,13 @@ type preparedStmt struct {
 	paramTypes    []byte
 	paramUnsigned []bool
 	longData      map[int][]byte
+	cursor        *stmtCursor
+}
+
+type stmtCursor struct {
+	rows     *engine.Rows
+	colTypes []byte
+	pending  []interface{}
 }
 
 func (c *MySQLClient) getStmtMap() map[uint32]*preparedStmt {
@@ -1338,8 +1621,20 @@ func countPreparedParams(sql string) int {
 }
 
 func (c *MySQLClient) handleStmtPrepare(sql string) error {
+	if len(sql) > maxMySQLQueryBytes {
+		return c.sendErrorPacket(0, "query too large")
+	}
 	sql = strings.TrimSpace(sql)
+	if _, err := query.ParseStrict(sql); err != nil {
+		return c.sendErrorPacket(0, sanitizeMySQLError(err))
+	}
 	numParams := countPreparedParams(sql)
+	if numParams > maxMySQLPreparedParams {
+		return c.sendErrorPacket(0, "too many prepared statement parameters")
+	}
+	if len(c.getStmtMap()) >= maxMySQLPreparedStmts {
+		return c.sendErrorPacket(0, "too many prepared statements")
+	}
 
 	baseCtx := c.ctx
 	if baseCtx == nil {
@@ -1358,6 +1653,8 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 		if err := rows.Close(); err != nil {
 			return err
 		}
+	} else if isReadStatement(sql) {
+		return c.sendErrorPacket(1, sanitizeMySQLError(err))
 	}
 
 	c.nextStmtID++
@@ -1483,6 +1780,13 @@ func (s *preparedStmt) clearLongData() {
 	for k := range s.longData {
 		delete(s.longData, k)
 	}
+}
+
+func (s *preparedStmt) closeCursor() {
+	if s.cursor != nil && s.cursor.rows != nil {
+		_ = s.cursor.rows.Close()
+	}
+	s.cursor = nil
 }
 
 func readStmtExecuteValue(data []byte, offset int, typ byte, unsigned bool) (interface{}, int, error) {
@@ -1661,7 +1965,7 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 	}
 
 	flags := data[4]
-	if flags != 0 {
+	if flags != 0 && flags != 0x01 {
 		return c.sendErrorPacket(0, "prepared statement cursor flags are not supported")
 	}
 
@@ -1670,6 +1974,7 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 	if !ok {
 		return c.sendErrorPacket(0, "unknown prepared statement")
 	}
+	stmt.closeCursor()
 
 	args, err := stmt.parseExecuteArgs(data)
 	if err != nil {
@@ -1686,6 +1991,9 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 
 	rows, err := c.server.db.Query(ctx, stmt.sql, args...)
 	if err == nil {
+		if flags == 0x01 {
+			return c.openStmtCursor(stmt, rows)
+		}
 		defer rows.Close()
 		return c.sendBinaryResultSetFromRows(rows)
 	}
@@ -1724,7 +2032,11 @@ func (c *MySQLClient) handleStmtSendLongData(data []byte) error {
 	if stmt.longData == nil {
 		stmt.longData = make(map[int][]byte)
 	}
-	stmt.longData[paramID] = append(stmt.longData[paramID], data[6:]...)
+	chunk := data[6:]
+	if len(chunk) > maxMySQLLongDataBytes-len(stmt.longData[paramID]) {
+		return c.sendErrorPacket(0, "prepared statement long data too large")
+	}
+	stmt.longData[paramID] = append(stmt.longData[paramID], chunk...)
 	return nil
 }
 
@@ -1739,26 +2051,10 @@ func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 	columns := rows.Columns()
 	defs := c.buildBinaryColumnDefinitions(columns, rows.ColumnTypeHints())
 	colTypes := columnDefTypes(defs)
-	seq := byte(1)
-
-	countPkt := appendLenEncInt(nil, uint64(len(columns)))
-	if err := c.writePacket(countPkt, seq); err != nil {
+	seq, err := c.sendBinaryResultSetMetadata(defs, MySQLServerStatusAutocommit)
+	if err != nil {
 		return err
 	}
-	seq++
-
-	for _, def := range defs {
-		pkt := c.buildColumnDefPacketWithDefinition(def)
-		if err := c.writePacket(pkt, seq); err != nil {
-			return err
-		}
-		seq++
-	}
-
-	if err := c.sendEOFPacket(seq); err != nil {
-		return err
-	}
-	seq++
 
 	var scanErrors int
 	for rows.Next() {
@@ -1771,6 +2067,9 @@ func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 			scanErrors++
 			continue
 		}
+		if mysqlRowValueTooLarge(row) {
+			return c.sendErrorPacket(0, "result value too large")
+		}
 		if err := c.writePacket(c.buildBinaryRowPacket(row, colTypes), seq); err != nil {
 			return err
 		}
@@ -1778,7 +2077,46 @@ func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 	}
 	_ = scanErrors
 
-	return c.sendEOFPacket(seq)
+	return c.sendEOFPacketWithStatus(seq, MySQLServerStatusAutocommit)
+}
+
+func (c *MySQLClient) openStmtCursor(stmt *preparedStmt, rows *engine.Rows) error {
+	if rows == nil {
+		return c.sendOKPacket(0, 0)
+	}
+	columns := rows.Columns()
+	defs := c.buildBinaryColumnDefinitions(columns, rows.ColumnTypeHints())
+	colTypes := columnDefTypes(defs)
+	stmt.cursor = &stmtCursor{rows: rows, colTypes: colTypes}
+	return c.sendBinaryResultSetMetadataOnly(defs, MySQLServerStatusAutocommit|MySQLServerStatusCursorExists)
+}
+
+func (c *MySQLClient) sendBinaryResultSetMetadataOnly(defs []mysqlColumnDefinition, status uint16) error {
+	_, err := c.sendBinaryResultSetMetadata(defs, status)
+	return err
+}
+
+func (c *MySQLClient) sendBinaryResultSetMetadata(defs []mysqlColumnDefinition, status uint16) (byte, error) {
+	seq := byte(1)
+	countPkt := appendLenEncInt(nil, uint64(len(defs)))
+	if err := c.writePacket(countPkt, seq); err != nil {
+		return 0, err
+	}
+	seq++
+
+	for _, def := range defs {
+		pkt := c.buildColumnDefPacketWithDefinition(def)
+		if err := c.writePacket(pkt, seq); err != nil {
+			return 0, err
+		}
+		seq++
+	}
+
+	if err := c.sendEOFPacketWithStatus(seq, status); err != nil {
+		return 0, err
+	}
+	seq++
+	return seq, nil
 }
 
 func (c *MySQLClient) buildBinaryRowPacket(row []interface{}, colTypes []byte) []byte {
@@ -1926,6 +2264,9 @@ func (c *MySQLClient) handleStmtClose(data []byte) error {
 		return nil
 	}
 	stmtID := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
+	if stmt, ok := c.getStmtMap()[stmtID]; ok {
+		stmt.closeCursor()
+	}
 	delete(c.getStmtMap(), stmtID)
 	return nil
 }
@@ -1940,6 +2281,7 @@ func (c *MySQLClient) handleStmtReset(data []byte) error {
 		return c.sendErrorPacket(0, "unknown prepared statement")
 	}
 	stmt.clearLongData()
+	stmt.closeCursor()
 	return c.sendOKPacket(0, 0)
 }
 
@@ -1947,7 +2289,109 @@ func (c *MySQLClient) handleStmtFetch(data []byte) error {
 	if len(data) < 8 {
 		return c.sendErrorPacket(0, "malformed COM_STMT_FETCH")
 	}
-	return c.sendErrorPacket(0, "prepared statement fetch cursors are not supported")
+	stmtID := binary.LittleEndian.Uint32(data[:4])
+	rowCount := binary.LittleEndian.Uint32(data[4:8])
+	stmt, ok := c.getStmtMap()[stmtID]
+	if !ok {
+		return c.sendErrorPacket(0, "unknown prepared statement")
+	}
+	if stmt.cursor == nil || stmt.cursor.rows == nil {
+		return c.sendErrorPacket(0, "prepared statement cursor is not open")
+	}
+	if rowCount == 0 {
+		rowCount = 1
+	}
+	if rowCount > maxMySQLStmtFetchRows {
+		rowCount = maxMySQLStmtFetchRows
+	}
+
+	seq := byte(1)
+	limit := int(rowCount)
+	sent := 0
+	exhausted := false
+	for sent < limit {
+		row, ok, err := stmt.cursor.nextRow()
+		if err != nil {
+			stmt.closeCursor()
+			return c.sendErrorPacket(1, sanitizeMySQLError(err))
+		}
+		if !ok {
+			exhausted = true
+			break
+		}
+		if mysqlRowValueTooLarge(row) {
+			return c.sendErrorPacket(0, "result value too large")
+		}
+		if err := c.writePacket(c.buildBinaryRowPacket(row, stmt.cursor.colTypes), seq); err != nil {
+			return err
+		}
+		seq++
+		sent++
+	}
+	if !exhausted && sent == limit {
+		row, ok, err := stmt.cursor.nextRow()
+		if err != nil {
+			stmt.closeCursor()
+			return c.sendErrorPacket(1, sanitizeMySQLError(err))
+		}
+		if ok {
+			stmt.cursor.pending = row
+		} else {
+			exhausted = true
+		}
+	}
+
+	status := MySQLServerStatusAutocommit | MySQLServerStatusCursorExists
+	if exhausted {
+		status = MySQLServerStatusAutocommit | MySQLServerStatusLastRowSent
+		stmt.closeCursor()
+	}
+	return c.sendEOFPacketWithStatus(seq, status)
+}
+
+func (sc *stmtCursor) nextRow() ([]interface{}, bool, error) {
+	if sc == nil || sc.rows == nil {
+		return nil, false, nil
+	}
+	if sc.pending != nil {
+		row := sc.pending
+		sc.pending = nil
+		return row, true, nil
+	}
+	if !sc.rows.Next() {
+		return nil, false, nil
+	}
+	row := make([]interface{}, len(sc.colTypes))
+	dest := make([]interface{}, len(sc.colTypes))
+	for i := range dest {
+		dest[i] = &row[i]
+	}
+	if err := sc.rows.Scan(dest...); err != nil {
+		return nil, false, err
+	}
+	return row, true, nil
+}
+
+func mysqlRowValueTooLarge(row []interface{}) bool {
+	for _, val := range row {
+		if mysqlWireValueLen(val) > maxMySQLResultValueBytes {
+			return true
+		}
+	}
+	return false
+}
+
+func mysqlWireValueLen(v interface{}) int {
+	switch val := v.(type) {
+	case nil:
+		return 0
+	case string:
+		return len(val)
+	case []byte:
+		return len(val)
+	default:
+		return len(valueToWireString(val))
+	}
 }
 
 // handleStatistics returns a simple statistics string for COM_STATISTICS.
@@ -1972,8 +2416,9 @@ func (c *MySQLClient) handleFieldList(data []byte) error {
 		nullIdx = len(data)
 	}
 	tableName := string(data[:nullIdx])
-	if tableName == "" {
-		return c.sendErrorPacket(1046, "No database selected")
+	quotedTableName, err := quoteMySQLIdentifier(tableName)
+	if err != nil {
+		return c.sendErrorPacket(1046, "invalid table name")
 	}
 
 	baseCtx := c.ctx
@@ -1984,7 +2429,7 @@ func (c *MySQLClient) handleFieldList(data []byte) error {
 	defer cancel()
 
 	// Use DESCRIBE to get column info
-	rows, err := c.server.db.Query(ctx, "DESCRIBE "+tableName)
+	rows, err := c.server.db.Query(ctx, "DESCRIBE "+quotedTableName)
 	if err != nil {
 		return c.sendErrorPacket(1, sanitizeMySQLError(err))
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,30 +127,33 @@ func TestMySQLClientSendHandshake(t *testing.T) {
 }
 
 func TestMySQLClientReadHandshakeResponse(t *testing.T) {
-	t.Run("ValidResponse", func(t *testing.T) {
-		conn := newMockConn()
-
-		// Build a valid handshake response packet
-		payload := []byte{
-			0x85, 0xa2, 0x1a, 0x00, // capability flags
-			0x00, 0x00, 0x00, 0x01, // max packet size
-			0x21,                                                       // character set (utf8mb4)
-			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
-			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
-		}
-		// Add username
-		payload = append(payload, []byte("testuser")...)
-		payload = append(payload, 0x00)
-
-		// Write packet header + payload
+	buildHandshakePacket := func(payload []byte) []byte {
 		header := make([]byte, 4)
 		header[0] = byte(len(payload))
 		header[1] = byte(len(payload) >> 8)
 		header[2] = byte(len(payload) >> 16)
-		header[3] = 1 // sequence
+		header[3] = 1
+		packet := append(header, payload...)
+		return packet
+	}
 
-		conn.readBuf.Write(header)
-		conn.readBuf.Write(payload)
+	baseHandshakePayload := func(username string) []byte {
+		payload := []byte{
+			0x85, 0xa2, 0x1a, 0x00, // capability flags
+			0x00, 0x00, 0x00, 0x01, // max packet size
+			0x21, // character set (utf8mb4)
+		}
+		payload = append(payload, make([]byte, 23)...)
+		payload = append(payload, []byte(username)...)
+		payload = append(payload, 0x00)
+		return payload
+	}
+
+	t.Run("ValidResponse", func(t *testing.T) {
+		conn := newMockConn()
+
+		// Build a valid handshake response packet
+		conn.readBuf.Write(buildHandshakePacket(baseHandshakePayload("testuser")))
 
 		client := &MySQLClient{
 			conn:   conn,
@@ -192,6 +196,81 @@ func TestMySQLClientReadHandshakeResponse(t *testing.T) {
 		err := client.readHandshakeResponse()
 		if err == nil {
 			t.Error("Expected error for EOF")
+		}
+	})
+
+	t.Run("RejectsOversizedPayloadBeforeRead", func(t *testing.T) {
+		conn := newMockConn()
+		length := maxMySQLHandshakePayloadBytes + 1
+		conn.readBuf.Write([]byte{byte(length), byte(length >> 8), byte(length >> 16), 1})
+
+		client := &MySQLClient{
+			conn:   conn,
+			reader: bufio.NewReader(conn),
+			server: NewMySQLServer(&engine.DB{}, "5.7.0"),
+		}
+
+		err := client.readHandshakeResponse()
+		if err == nil || !strings.Contains(err.Error(), "invalid handshake payload length") {
+			t.Fatalf("expected invalid handshake payload length error, got %v", err)
+		}
+	})
+
+	t.Run("RejectsTooLongUsername", func(t *testing.T) {
+		conn := newMockConn()
+		conn.readBuf.Write(buildHandshakePacket(baseHandshakePayload(strings.Repeat("u", maxMySQLUsernameBytes+1))))
+
+		client := &MySQLClient{
+			conn:   conn,
+			reader: bufio.NewReader(conn),
+			server: NewMySQLServer(&engine.DB{}, "5.7.0"),
+		}
+
+		err := client.readHandshakeResponse()
+		if err == nil || !strings.Contains(err.Error(), "username is too long") {
+			t.Fatalf("expected username length error, got %v", err)
+		}
+	})
+
+	t.Run("RejectsTooLongAuthResponse", func(t *testing.T) {
+		conn := newMockConn()
+		payload := baseHandshakePayload("testuser")
+		payload = append(payload, byte(maxMySQLAuthResponseBytes+1))
+		payload = append(payload, bytes.Repeat([]byte{0x42}, maxMySQLAuthResponseBytes+1)...)
+		conn.readBuf.Write(buildHandshakePacket(payload))
+
+		client := &MySQLClient{
+			conn:   conn,
+			reader: bufio.NewReader(conn),
+			server: NewMySQLServer(&engine.DB{}, "5.7.0"),
+		}
+
+		err := client.readHandshakeResponse()
+		if err == nil || !strings.Contains(err.Error(), "auth response is too long") {
+			t.Fatalf("expected auth response length error, got %v", err)
+		}
+		if len(client.authResponse) != 0 {
+			t.Fatalf("auth response was stored after rejection: %d bytes", len(client.authResponse))
+		}
+	})
+
+	t.Run("RejectsTooLongDatabase", func(t *testing.T) {
+		conn := newMockConn()
+		payload := baseHandshakePayload("testuser")
+		payload = append(payload, 0) // empty auth response
+		payload = append(payload, []byte(strings.Repeat("d", maxMySQLDatabaseBytes+1))...)
+		payload = append(payload, 0)
+		conn.readBuf.Write(buildHandshakePacket(payload))
+
+		client := &MySQLClient{
+			conn:   conn,
+			reader: bufio.NewReader(conn),
+			server: NewMySQLServer(&engine.DB{}, "5.7.0"),
+		}
+
+		err := client.readHandshakeResponse()
+		if err == nil || !strings.Contains(err.Error(), "database name is too long") {
+			t.Fatalf("expected database length error, got %v", err)
 		}
 	})
 }
@@ -267,6 +346,47 @@ func TestMySQLClientHandleCommand(t *testing.T) {
 		}
 	})
 
+	t.Run("RejectsTooLongInitDBName", func(t *testing.T) {
+		conn := newMockConn()
+		payload := append([]byte{MySQLComInitDB}, []byte(strings.Repeat("d", maxMySQLDatabaseBytes+1))...)
+		conn.readBuf.Write(buildPacket(payload))
+
+		client := &MySQLClient{
+			conn:   conn,
+			reader: bufio.NewReader(conn),
+			server: NewMySQLServer(&engine.DB{}, "5.7.0"),
+		}
+
+		err := client.handleCommand()
+		if err != nil {
+			t.Fatalf("handleCommand returned transport error: %v", err)
+		}
+		if client.database != "" {
+			t.Fatalf("database changed after rejected INIT_DB: %q", client.database)
+		}
+		if !strings.Contains(conn.writeBuf.String(), "database name too long") {
+			t.Fatalf("expected database length error packet, got %q", conn.writeBuf.String())
+		}
+	})
+
+	t.Run("RejectsOversizedQueryPayloadBeforeRead", func(t *testing.T) {
+		conn := newMockConn()
+		length := maxMySQLCommandPayloadFor(MySQLComQuery) + 1
+		conn.readBuf.Write([]byte{byte(length), byte(length >> 8), byte(length >> 16), 0})
+		conn.readBuf.WriteByte(MySQLComQuery)
+
+		client := &MySQLClient{
+			conn:   conn,
+			reader: bufio.NewReader(conn),
+			server: NewMySQLServer(&engine.DB{}, "5.7.0"),
+		}
+
+		err := client.handleCommand()
+		if err == nil || !strings.Contains(err.Error(), "command payload too large") {
+			t.Fatalf("expected command payload limit error, got %v", err)
+		}
+	})
+
 	t.Run("UnsupportedCommand", func(t *testing.T) {
 		conn := newMockConn()
 		payload := []byte{MySQLComShutdown}
@@ -321,6 +441,18 @@ func TestMySQLClientHandleCommand(t *testing.T) {
 			t.Error("Expected error for short header")
 		}
 	})
+}
+
+func TestMaxMySQLCommandPayloadFor(t *testing.T) {
+	if got := maxMySQLCommandPayloadFor(MySQLComQuery); got <= maxMySQLQueryBytes {
+		t.Fatalf("COM_QUERY max payload = %d, want room for command byte and error-path tolerance", got)
+	}
+	if got := maxMySQLCommandPayloadFor(MySQLComStmtSendLongData); got != maxMySQLPayloadSize {
+		t.Fatalf("COM_STMT_SEND_LONG_DATA max payload = %d, want %d", got, maxMySQLPayloadSize)
+	}
+	if got := maxMySQLCommandPayloadFor(MySQLComPing); got != 1 {
+		t.Fatalf("COM_PING max payload = %d, want 1", got)
+	}
 }
 
 func TestMySQLClientSendOKPacket(t *testing.T) {
@@ -736,6 +868,25 @@ func TestAcceptLoop(t *testing.T) {
 
 // TestHandleConnection tests handleConnection
 func TestHandleConnection(t *testing.T) {
+	t.Run("RejectsConnectionAtLimit", func(t *testing.T) {
+		server := NewMySQLServer(nil, "test")
+		server.maxConnections = 1
+		server.clients[1] = newMockConn()
+
+		conn := newMockConn()
+		server.handleConnection(conn)
+
+		if !conn.closed {
+			t.Fatal("expected over-limit connection to be closed")
+		}
+		if conn.writeBuf.Len() != 0 {
+			t.Fatalf("expected no handshake for over-limit connection, wrote %d bytes", conn.writeBuf.Len())
+		}
+		if len(server.clients) != 1 {
+			t.Fatalf("expected existing clients to remain unchanged, got %d", len(server.clients))
+		}
+	})
+
 	t.Run("HandleConnectionEOF", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
@@ -827,5 +978,28 @@ func TestHandleQuery(t *testing.T) {
 
 		// Test an exec query - may fail but shouldn't panic
 		_ = client.handleQuery("CREATE TABLE test (id INT)")
+	})
+
+	t.Run("RejectsOversizedQuery", func(t *testing.T) {
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+		if err != nil {
+			t.Skip("Cannot open database:", err)
+		}
+		defer db.Close()
+
+		conn := newMockConn()
+		server := NewMySQLServer(db, "test")
+		client := &MySQLClient{
+			conn:   conn,
+			reader: bufio.NewReader(conn),
+			server: server,
+		}
+
+		if err := client.handleQuery(strings.Repeat("x", maxMySQLQueryBytes+1)); err != nil {
+			t.Fatalf("handleQuery returned transport error: %v", err)
+		}
+		if !strings.Contains(conn.writeBuf.String(), "query too large") {
+			t.Fatalf("expected query too large error packet, got %q", conn.writeBuf.String())
+		}
 	})
 }

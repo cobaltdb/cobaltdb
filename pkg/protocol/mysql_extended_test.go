@@ -3,6 +3,7 @@ package protocol
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -75,6 +76,24 @@ func TestMySQLServerListenAndClose(t *testing.T) {
 
 		// Second close may or may not error
 		_ = server.Close()
+	})
+
+	t.Run("ListenAfterCloseRejected", func(t *testing.T) {
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+		if err != nil {
+			t.Skip("Cannot open database:", err)
+		}
+		defer db.Close()
+
+		server := NewMySQLServer(db, "test")
+		if err := server.Close(); err != nil {
+			t.Fatalf("Close failed: %v", err)
+		}
+
+		err = server.Listen("127.0.0.1:0")
+		if !errors.Is(err, ErrMySQLServerClosed) {
+			t.Fatalf("Listen after Close error = %v, want ErrMySQLServerClosed", err)
+		}
 	})
 }
 

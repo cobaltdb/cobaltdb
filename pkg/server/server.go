@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -17,13 +18,23 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/auth"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/wire"
 )
 
 const (
 	maxPayloadBytes = 16 * 1024 * 1024
 	// maxPayloadSize is the maximum allowed message payload size (16 MB)
-	maxPayloadSize uint32 = maxPayloadBytes
+	maxPayloadSize             uint32 = maxPayloadBytes
+	maxWireSQLBytes                   = 10000
+	maxWireInboundPayloadBytes        = 1024 * 1024
+	maxWireAuthPayloadBytes           = 4 * 1024
+	maxWireResultRows                 = 10000
+	maxWireResultValueBytes           = 1024 * 1024
+	maxWireParams                     = 1024
+	maxWireParamBytes                 = 1024 * 1024
+	maxWirePreparedStmts              = 1024
+	maxServerTimeoutSeconds           = int64(1<<63-1) / int64(time.Second)
 )
 
 var (
@@ -39,34 +50,38 @@ func messagePacketLength(payloadLen int) (uint32, error) {
 
 // Server represents a CobaltDB server
 type Server struct {
-	listener       net.Listener
-	db             *engine.DB
-	clients        map[uint64]*ClientConn
-	nextID         uint64
-	mu             sync.RWMutex
-	closed         bool
-	auth           *auth.Authenticator
-	maxConnections int
-	readTimeout    time.Duration
-	writeTimeout   time.Duration
-	sqlProtector   *SQLProtector  // Optional SQL injection protection
-	clientWg       sync.WaitGroup // Tracks active client handler goroutines
-	logger         *logger.Logger
+	listener           net.Listener
+	db                 *engine.DB
+	clients            map[uint64]*ClientConn
+	nextID             uint64
+	mu                 sync.RWMutex
+	closed             bool
+	auth               *auth.Authenticator
+	maxConnections     int
+	readTimeout        time.Duration
+	writeTimeout       time.Duration
+	allowCleartextAuth bool
+	sqlProtector       *SQLProtector  // Optional SQL injection protection
+	clientWg           sync.WaitGroup // Tracks active client handler goroutines
+	logger             *logger.Logger
 }
 
 // Config contains server configuration
 type Config struct {
-	Address          string
-	AuthEnabled      bool
-	RequireAuth      bool
-	DefaultAdminUser string
-	DefaultAdminPass string
-	MaxConnections   int        // Maximum concurrent connections (0 = unlimited)
-	ReadTimeout      int        // Read timeout in seconds (0 = 300s default)
-	WriteTimeout     int        // Write timeout in seconds (0 = 60s default)
-	TLS              *TLSConfig // TLS configuration (nil = disabled)
-	Logger           *logger.Logger
+	Address            string
+	AuthEnabled        bool
+	RequireAuth        bool
+	DefaultAdminUser   string
+	DefaultAdminPass   string
+	MaxConnections     int        // Maximum concurrent connections (0 = production default)
+	ReadTimeout        int        // Read timeout in seconds (0 = 300s default)
+	WriteTimeout       int        // Write timeout in seconds (0 = 60s default)
+	TLS                *TLSConfig // TLS configuration (nil = disabled)
+	AllowCleartextAuth bool       // Allow authenticated non-loopback listeners without TLS (development only)
+	Logger             *logger.Logger
 }
+
+const defaultMaxConnections = 1000
 
 // generateRandomPassword generates a 16-character random alphanumeric password
 // using crypto/rand for secure random generation.
@@ -91,6 +106,7 @@ func DefaultConfig() *Config {
 		RequireAuth:      false,
 		DefaultAdminUser: "admin",
 		DefaultAdminPass: pass,
+		MaxConnections:   defaultMaxConnections,
 	}
 }
 
@@ -99,11 +115,18 @@ func New(db *engine.DB, config *Config) (*Server, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
+	if err := validateServerConfig(config); err != nil {
+		return nil, err
+	}
 
 	authenticator := auth.NewAuthenticator()
 
-	// Enable authentication if configured
-	if config.AuthEnabled {
+	authEnabled := config.AuthEnabled || config.RequireAuth
+
+	// Enable authentication if configured. RequireAuth is kept as an explicit
+	// production safety switch for callers that distinguish config intent from
+	// the lower-level authenticator state.
+	if authEnabled {
 		authenticator.Enable()
 
 		// Create default admin user if specified
@@ -119,16 +142,40 @@ func New(db *engine.DB, config *Config) (*Server, error) {
 
 	readTimeout := timeoutSecondsOrDefault(config.ReadTimeout, 300*time.Second)
 	writeTimeout := timeoutSecondsOrDefault(config.WriteTimeout, 60*time.Second)
+	maxConnections := config.MaxConnections
+	if maxConnections <= 0 {
+		maxConnections = defaultMaxConnections
+	}
 
 	return &Server{
-		db:             db,
-		clients:        make(map[uint64]*ClientConn),
-		auth:           authenticator,
-		maxConnections: config.MaxConnections,
-		readTimeout:    readTimeout,
-		writeTimeout:   writeTimeout,
-		logger:         config.Logger,
+		db:                 db,
+		clients:            make(map[uint64]*ClientConn),
+		auth:               authenticator,
+		maxConnections:     maxConnections,
+		readTimeout:        readTimeout,
+		writeTimeout:       writeTimeout,
+		allowCleartextAuth: config.AllowCleartextAuth,
+		logger:             config.Logger,
 	}, nil
+}
+
+func validateServerConfig(config *Config) error {
+	if config.MaxConnections < 0 {
+		return fmt.Errorf("max connections must be non-negative: %d", config.MaxConnections)
+	}
+	if config.ReadTimeout < 0 {
+		return fmt.Errorf("read timeout must be non-negative: %d", config.ReadTimeout)
+	}
+	if config.WriteTimeout < 0 {
+		return fmt.Errorf("write timeout must be non-negative: %d", config.WriteTimeout)
+	}
+	if int64(config.ReadTimeout) > maxServerTimeoutSeconds {
+		return fmt.Errorf("read timeout too large: %d seconds", config.ReadTimeout)
+	}
+	if int64(config.WriteTimeout) > maxServerTimeoutSeconds {
+		return fmt.Errorf("write timeout too large: %d seconds", config.WriteTimeout)
+	}
+	return nil
 }
 
 func timeoutSecondsOrDefault(seconds int, fallback time.Duration) time.Duration {
@@ -136,6 +183,49 @@ func timeoutSecondsOrDefault(seconds int, fallback time.Duration) time.Duration 
 		return fallback
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func validateWireSQL(sql string) *wire.ErrorMessage {
+	if len(sql) > maxWireSQLBytes {
+		return wire.NewErrorMessage(9, "query too large")
+	}
+	return nil
+}
+
+func validateWireParams(params []interface{}) *wire.ErrorMessage {
+	if len(params) > maxWireParams {
+		return wire.NewErrorMessage(9, "too many parameters")
+	}
+	for _, param := range params {
+		switch v := param.(type) {
+		case nil, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+			continue
+		case string:
+			if len(v) > maxWireParamBytes {
+				return wire.NewErrorMessage(9, "parameter too large")
+			}
+		case []byte:
+			if len(v) > maxWireParamBytes {
+				return wire.NewErrorMessage(9, "parameter too large")
+			}
+		default:
+			return wire.NewErrorMessage(9, "unsupported parameter type")
+		}
+	}
+	return nil
+}
+
+func maxWireInboundPayloadFor(msgType wire.MsgType) int {
+	switch msgType {
+	case wire.MsgPing:
+		return 0
+	case wire.MsgAuth:
+		return maxWireAuthPayloadBytes
+	case wire.MsgQuery, wire.MsgPrepare, wire.MsgExecute:
+		return maxWireInboundPayloadBytes
+	default:
+		return 0
+	}
 }
 
 func (s *Server) logWarnf(format string, args ...interface{}) {
@@ -148,6 +238,36 @@ func (s *Server) logErrorf(format string, args ...interface{}) {
 	if s != nil && s.logger != nil {
 		s.logger.Errorf(format, args...)
 	}
+}
+
+func validateServerAuthTransport(address string, authEnabled, tlsEnabled, allowCleartextAuth bool) error {
+	if !authEnabled || tlsEnabled || allowCleartextAuth || isLoopbackServerListenAddress(address) {
+		return nil
+	}
+	return fmt.Errorf("authentication without TLS is not allowed on non-loopback address %q; enable TLS, bind to loopback, or set AllowCleartextAuth for development", address)
+}
+
+func isLoopbackServerListenAddress(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func isTLSListener(listener net.Listener) bool {
+	if listener == nil {
+		return false
+	}
+	return reflect.TypeOf(listener).String() == "*tls.listener"
 }
 
 // GetAuthenticator returns the server's authenticator instance.
@@ -171,6 +291,9 @@ func (s *Server) Listen(address string, tlsConfig *TLSConfig) error {
 
 	if s.auth.IsEnabled() && (tlsConfig == nil || !tlsConfig.Enabled) {
 		s.logWarnf("authentication is enabled but TLS is disabled; passwords will be sent in cleartext")
+	}
+	if err := validateServerAuthTransport(address, s.auth.IsEnabled(), tlsConfig != nil && tlsConfig.Enabled, s.allowCleartextAuth); err != nil {
+		return err
 	}
 
 	listener, err := net.Listen("tcp", address)
@@ -214,6 +337,17 @@ func (s *Server) ListenOnListener(listener net.Listener) error {
 			}
 		}
 		return ErrServerClosed
+	}
+	if listener == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("listener cannot be nil")
+	}
+	if err := validateServerAuthTransport(listener.Addr().String(), s.auth.IsEnabled(), isTLSListener(listener), s.allowCleartextAuth); err != nil {
+		s.mu.Unlock()
+		if closeErr := listener.Close(); closeErr != nil && !isBenignNetworkCloseError(closeErr) {
+			return fmt.Errorf("%w; listener close failed: %v", err, closeErr)
+		}
+		return err
 	}
 	s.listener = listener
 	s.mu.Unlock()
@@ -408,13 +542,6 @@ func (c *ClientConn) Handle() {
 			return
 		}
 
-		// Read message type (1 byte)
-		msgType, err := c.reader.ReadByte()
-		if err != nil {
-			return // Connection error
-		}
-
-		// Read payload
 		if length < 1 {
 			c.sendError(1, fmt.Sprintf("invalid message length: %d", length))
 			return
@@ -423,7 +550,19 @@ func (c *ClientConn) Handle() {
 			c.sendError(1, "message too large")
 			return // disconnect: payload bytes still on wire would desync the protocol
 		}
-		payload := make([]byte, length-1)
+
+		// Read message type (1 byte)
+		msgType, err := c.reader.ReadByte()
+		if err != nil {
+			return // Connection error
+		}
+
+		payloadLen := int(length - 1)
+		if payloadLen > maxWireInboundPayloadFor(wire.MsgType(msgType)) {
+			c.sendError(1, "message payload too large")
+			return // disconnect: payload bytes still on wire would desync the protocol
+		}
+		payload := make([]byte, payloadLen)
 		if _, err := io.ReadFull(c.reader, payload); err != nil {
 			return // Connection error
 		}
@@ -563,6 +702,12 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 	if c.Server.db == nil {
 		return wire.NewErrorMessage(1, "database not initialized")
 	}
+	if errMsg := validateWireSQL(query.SQL); errMsg != nil {
+		return errMsg
+	}
+	if errMsg := validateWireParams(query.Params); errMsg != nil {
+		return errMsg
+	}
 
 	// Check permissions
 	if !c.checkPermission(query.SQL) {
@@ -603,6 +748,9 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 		var resultRows [][]interface{}
 
 		for rows.Next() {
+			if len(resultRows) >= maxWireResultRows {
+				return wire.NewErrorMessage(9, "result set too large")
+			}
 			row := make([]interface{}, len(columns))
 			dest := make([]interface{}, len(columns))
 			for i := range dest {
@@ -611,6 +759,9 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 
 			if err := rows.Scan(dest...); err != nil {
 				return wire.NewErrorMessage(5, sanitizeError(err))
+			}
+			if wireResultRowValueTooLarge(row) {
+				return wire.NewErrorMessage(9, "result value too large")
 			}
 
 			resultRows = append(resultRows, row)
@@ -633,29 +784,24 @@ func (c *ClientConn) handlePrepare(ctx context.Context, prep *wire.PrepareMessag
 	if c.Server.db == nil {
 		return wire.NewErrorMessage(1, "database not initialized")
 	}
+	if errMsg := validateWireSQL(prep.SQL); errMsg != nil {
+		return errMsg
+	}
 	if !c.checkPermission(prep.SQL) {
 		return wire.NewErrorMessage(8, "permission denied")
 	}
 
-	// Validate SQL by parsing it (engine will cache the parsed stmt internally)
-	_, err := c.Server.db.Query(ctx, prep.SQL)
-	if err != nil {
-		// Some DDL (CREATE TABLE) returns ErrTableExists on Query; that's okay for prepare.
-		// For real errors, return them.
-		if !strings.Contains(err.Error(), "table already exists") &&
-			!strings.Contains(err.Error(), "index already exists") {
-			// Try Exec as a fallback for non-query statements
-			_, execErr := c.Server.db.Exec(ctx, prep.SQL)
-			if execErr != nil {
-				return wire.NewErrorMessage(4, sanitizeError(err))
-			}
-		}
+	if _, err := query.ParseStrict(prep.SQL); err != nil {
+		return wire.NewErrorMessage(4, sanitizeError(err))
 	}
 
 	c.stmtMu.Lock()
 	defer c.stmtMu.Unlock()
 	if c.preparedStmts == nil {
 		c.preparedStmts = make(map[uint32]*preparedStmt)
+	}
+	if len(c.preparedStmts) >= maxWirePreparedStmts {
+		return wire.NewErrorMessage(9, "too many prepared statements")
 	}
 	c.nextStmtID++
 	stmtID := c.nextStmtID
@@ -676,6 +822,9 @@ func (c *ClientConn) handleExecute(ctx context.Context, exec *wire.ExecuteMessag
 	if !exists {
 		return wire.NewErrorMessage(4, fmt.Sprintf("prepared statement %d not found", exec.StmtID))
 	}
+	if errMsg := validateWireParams(exec.Params); errMsg != nil {
+		return errMsg
+	}
 
 	if !c.checkPermission(ps.sql) {
 		return wire.NewErrorMessage(8, "permission denied")
@@ -684,6 +833,55 @@ func (c *ClientConn) handleExecute(ctx context.Context, exec *wire.ExecuteMessag
 	// Reuse handleQuery logic by constructing a QueryMessage
 	qm := &wire.QueryMessage{SQL: ps.sql, Params: exec.Params}
 	return c.handleQuery(ctx, qm)
+}
+
+func wireResultRowValueTooLarge(row []interface{}) bool {
+	for _, value := range row {
+		if wireResultValueSize(value) > maxWireResultValueBytes {
+			return true
+		}
+	}
+	return false
+}
+
+func wireResultValueSize(value interface{}) int {
+	switch v := value.(type) {
+	case nil:
+		return 0
+	case string:
+		return len(v)
+	case []byte:
+		return len(v)
+	case []interface{}:
+		total := 0
+		for _, item := range v {
+			total += wireResultValueSize(item)
+			if total > maxWireResultValueBytes {
+				return total
+			}
+		}
+		return total
+	case map[string]interface{}:
+		total := 0
+		for key, item := range v {
+			total += len(key) + wireResultValueSize(item)
+			if total > maxWireResultValueBytes {
+				return total
+			}
+		}
+		return total
+	case map[interface{}]interface{}:
+		total := 0
+		for key, item := range v {
+			total += wireResultValueSize(key) + wireResultValueSize(item)
+			if total > maxWireResultValueBytes {
+				return total
+			}
+		}
+		return total
+	default:
+		return len(fmt.Sprint(v))
+	}
 }
 
 // sendMessage sends a message to the client
@@ -733,28 +931,31 @@ func (c *ClientConn) sendMessage(msg interface{}) error {
 		return err
 	}
 
-	// Write length
 	length, err := messagePacketLength(len(payData))
 	if err != nil {
 		return err
 	}
-	if err := binary.Write(c.Conn, binary.LittleEndian, length); err != nil {
-		return err
-	}
 
-	// Write message type
-	if err := binary.Write(c.Conn, binary.LittleEndian, msgType); err != nil {
+	packet := make([]byte, 5+len(payData))
+	binary.LittleEndian.PutUint32(packet[:4], length)
+	packet[4] = byte(msgType)
+	copy(packet[5:], payData)
+	if _, err := writeServerFull(c.Conn, packet); err != nil {
 		return err
-	}
-
-	// Write payload
-	if len(payData) > 0 {
-		if _, err := c.Conn.Write(payData); err != nil {
-			return err
-		}
 	}
 
 	return nil
+}
+
+func writeServerFull(writer io.Writer, data []byte) (int, error) {
+	n, err := writer.Write(data)
+	if err != nil {
+		return n, err
+	}
+	if n != len(data) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
 }
 
 // sendError sends an error message

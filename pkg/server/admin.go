@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -17,17 +18,24 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
+const (
+	productionHTTPMaxHeaderBytes     = 1 << 20
+	maxAdminTokenBytes               = 1024
+	maxAdminAuthorizationHeaderBytes = len("Bearer ") + maxAdminTokenBytes
+)
+
 // AdminServer provides HTTP endpoints for monitoring and metrics
 type AdminServer struct {
-	db        *engine.DB
-	server    *http.Server
-	mu        sync.RWMutex
-	started   bool
-	addr      string
-	authToken string
-	wg        sync.WaitGroup
-	done      chan struct{}
-	logger    *logger.Logger
+	db                  *engine.DB
+	server              *http.Server
+	mu                  sync.RWMutex
+	started             bool
+	addr                string
+	authTokenDigest     [sha256.Size]byte
+	authTokenConfigured bool
+	wg                  sync.WaitGroup
+	done                chan struct{}
+	logger              *logger.Logger
 }
 
 // NewAdminServer creates a new admin server
@@ -71,7 +79,13 @@ func (a *AdminServer) logErrorf(format string, args ...interface{}) {
 func (a *AdminServer) SetAuthToken(token string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.authToken = token
+	if token == "" || len(token) > maxAdminTokenBytes {
+		a.authTokenDigest = [sha256.Size]byte{}
+		a.authTokenConfigured = false
+		return
+	}
+	a.authTokenDigest = adminTokenDigest(token)
+	a.authTokenConfigured = true
 }
 
 // Start starts the admin server
@@ -115,6 +129,7 @@ func (a *AdminServer) Start() error {
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    productionHTTPMaxHeaderBytes,
 	}
 
 	a.addr = listener.Addr().String()
@@ -167,7 +182,8 @@ func (a *AdminServer) Stop() error {
 func (a *AdminServer) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.mu.RLock()
-		token := a.authToken
+		tokenDigest := a.authTokenDigest
+		tokenConfigured := a.authTokenConfigured
 		a.mu.RUnlock()
 
 		// If auth token is set, require it
@@ -179,34 +195,45 @@ func (a *AdminServer) authMiddleware(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 
-		if token == "" {
+		if !tokenConfigured {
 			http.Error(w, "admin API disabled until auth token configured", http.StatusServiceUnavailable)
 			return
 		}
 
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
+		providedToken, ok := adminTokenFromAuthorizationHeader(r.Header.Get("Authorization"))
+		if !ok {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		// Support "Bearer <token>" or just "<token>"
-		parts := strings.SplitN(authHeader, " ", 2)
-		var providedToken string
-		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-			providedToken = parts[1]
-		} else {
-			providedToken = authHeader
-		}
-
-		if subtle.ConstantTimeCompare([]byte(providedToken), []byte(token)) != 1 {
+		providedDigest := adminTokenDigest(providedToken)
+		if subtle.ConstantTimeCompare(providedDigest[:], tokenDigest[:]) != 1 {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func adminTokenFromAuthorizationHeader(authHeader string) (string, bool) {
+	if authHeader == "" || len(authHeader) > maxAdminAuthorizationHeaderBytes {
+		return "", false
+	}
+
+	providedToken := authHeader
+	if parts := strings.SplitN(authHeader, " ", 2); len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+		providedToken = parts[1]
+	}
+	if providedToken == "" || len(providedToken) > maxAdminTokenBytes {
+		return "", false
+	}
+	return providedToken, true
 }
 
 // handleHealth returns health status
@@ -231,6 +258,7 @@ func (a *AdminServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleReady returns readiness status
 func (a *AdminServer) handleReady(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	if a.db == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		if err := json.NewEncoder(w).Encode(map[string]string{
@@ -242,7 +270,6 @@ func (a *AdminServer) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]string{
 		"status": "ready",
 	}); err != nil {

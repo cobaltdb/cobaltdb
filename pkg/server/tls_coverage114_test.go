@@ -2,6 +2,8 @@ package server
 
 import (
 	"crypto/tls"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,6 +104,118 @@ func TestGenerateSelfSignedCertHonorsExplicitPathsAndPermissions(t *testing.T) {
 
 	assertNoTLSTempFiles(t, filepath.Dir(certPath))
 	assertNoTLSTempFiles(t, filepath.Dir(keyPath))
+}
+
+func TestGenerateSelfSignedCertRejectsSymlinkDirectory(t *testing.T) {
+	tempDir := t.TempDir()
+	targetDir := filepath.Join(tempDir, "target")
+	linkDir := filepath.Join(tempDir, "certs")
+	if err := os.Mkdir(targetDir, 0750); err != nil {
+		t.Fatalf("Mkdir target: %v", err)
+	}
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	config := &TLSConfig{
+		CertFile:            filepath.Join(linkDir, "server.crt"),
+		KeyFile:             filepath.Join(linkDir, "server.key"),
+		GenerateSelfSigned:  true,
+		SelfSignedOrg:       "Test Org",
+		SelfSignedValidDays: 1,
+	}
+
+	err := generateSelfSignedCert(config)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("generateSelfSignedCert symlink dir error = %v, want symlink rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "server.crt")); !os.IsNotExist(err) {
+		t.Fatalf("certificate was written through symlink, stat err=%v", err)
+	}
+}
+
+func TestPrepareTLSFileDirCreatesRestrictiveDirectory(t *testing.T) {
+	certPath := filepath.Join(t.TempDir(), "nested", "certs", "server.crt")
+	if err := prepareTLSFileDir(certPath); err != nil {
+		t.Fatalf("prepareTLSFileDir: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Dir(certPath))
+	if err != nil {
+		t.Fatalf("Stat TLS dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0750 {
+		t.Fatalf("TLS dir mode = %o, want 750", got)
+	}
+}
+
+func TestWriteTLSFullRejectsShortWrite(t *testing.T) {
+	writer := &shortTLSWriter{limit: 4}
+
+	n, err := writeTLSFull(writer, []byte("abcdef"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writeTLSFull short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if n != 4 {
+		t.Fatalf("writeTLSFull wrote %d bytes, want 4", n)
+	}
+}
+
+func TestGenerateSelfSignedCertRejectsOversizedSubjectAndValidity(t *testing.T) {
+	tempDir := t.TempDir()
+
+	tests := []struct {
+		name      string
+		org       string
+		validDays int
+	}{
+		{
+			name:      "OversizedOrg",
+			org:       strings.Repeat("o", maxTLSSubjectBytes+1),
+			validDays: 1,
+		},
+		{
+			name:      "ZeroValidity",
+			org:       "Test Org",
+			validDays: 0,
+		},
+		{
+			name:      "ExcessiveValidity",
+			org:       "Test Org",
+			validDays: maxTLSCertificateValidDays + 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &TLSConfig{
+				CertFile:            filepath.Join(tempDir, tt.name, "server.crt"),
+				KeyFile:             filepath.Join(tempDir, tt.name, "server.key"),
+				GenerateSelfSigned:  true,
+				SelfSignedOrg:       tt.org,
+				SelfSignedValidDays: tt.validDays,
+			}
+
+			err := generateSelfSignedCert(config)
+			if !errors.Is(err, ErrInvalidCert) {
+				t.Fatalf("expected ErrInvalidCert, got %v", err)
+			}
+			if _, statErr := os.Stat(config.CertFile); !os.IsNotExist(statErr) {
+				t.Fatalf("certificate file should not be created, stat err=%v", statErr)
+			}
+		})
+	}
+}
+
+type shortTLSWriter struct {
+	limit int
+}
+
+func (w *shortTLSWriter) Write(p []byte) (int, error) {
+	if len(p) > w.limit {
+		return w.limit, nil
+	}
+	return len(p), nil
 }
 
 func assertNoTLSTempFiles(t *testing.T, dir string) {
@@ -474,5 +588,38 @@ func TestGenerateClientCertErrors114(t *testing.T) {
 	_, _, err = GenerateClientCert(invalidCertPath, invalidKeyPath, "testclient", 1)
 	if err == nil {
 		t.Error("Expected error for invalid CA cert")
+	}
+}
+
+func TestGenerateClientCertRejectsOversizedSubjectAndValidity(t *testing.T) {
+	tests := []struct {
+		name       string
+		clientName string
+		validDays  int
+	}{
+		{
+			name:       "OversizedClientName",
+			clientName: strings.Repeat("c", maxTLSSubjectBytes+1),
+			validDays:  1,
+		},
+		{
+			name:       "ZeroValidity",
+			clientName: "client",
+			validDays:  0,
+		},
+		{
+			name:       "ExcessiveValidity",
+			clientName: "client",
+			validDays:  maxTLSCertificateValidDays + 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := GenerateClientCert("/missing-ca.crt", "/missing-ca.key", tt.clientName, tt.validDays)
+			if !errors.Is(err, ErrInvalidCert) {
+				t.Fatalf("expected ErrInvalidCert before reading CA files, got %v", err)
+			}
+		})
 	}
 }

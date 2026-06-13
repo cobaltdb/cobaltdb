@@ -165,8 +165,8 @@ func TestCovBoost3_TLSConfig_EnableSelfSigned(t *testing.T) {
 func TestCovBoost3_ProductionConfig_Default(t *testing.T) {
 	config := DefaultProductionConfig()
 
-	if config.HealthAddr != ":8420" {
-		t.Errorf("expected default health address :8420, got %s", config.HealthAddr)
+	if config.HealthAddr != "127.0.0.1:8420" {
+		t.Errorf("expected default health address 127.0.0.1:8420, got %s", config.HealthAddr)
 	}
 	if !config.EnableHealthServer {
 		t.Error("EnableHealthServer should be true by default")

@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -23,11 +24,15 @@ var (
 	ErrInvalidKey      = errors.New("invalid TLS key")
 	ErrCertExpired     = errors.New("TLS certificate expired")
 	ErrCertNotYetValid = errors.New("TLS certificate not yet valid")
+	ErrInsecureTLS     = errors.New("insecure TLS configuration")
 )
 
 const (
-	tlsCertFilePerm os.FileMode = 0644
-	tlsKeyFilePerm  os.FileMode = 0600
+	tlsCertFilePerm            os.FileMode = 0644
+	tlsKeyFilePerm             os.FileMode = 0600
+	maxTLSFileBytes                        = 1 << 20 // 1 MiB
+	maxTLSSubjectBytes                     = 256
+	maxTLSCertificateValidDays             = 397
 )
 
 // TLSConfig holds TLS configuration
@@ -76,7 +81,13 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 	if !config.Enabled {
 		return nil, nil
 	}
+	if config.InsecureSkipVerify {
+		return nil, ErrInsecureTLS
+	}
 	config = normalizeTLSConfig(config)
+	if err := validateTLSCipherSuites(config.CipherSuites); err != nil {
+		return nil, err
+	}
 
 	// Generate self-signed cert if requested
 	if config.GenerateSelfSigned {
@@ -98,7 +109,7 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidKey, err)
 	}
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	cert, err := loadTLSKeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidCert, err)
 	}
@@ -123,7 +134,7 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid CA file: %w", err)
 		}
-		caCert, err := os.ReadFile(caFile) // #nosec G304 - CA path is explicit TLS configuration and is cleaned before use.
+		caCert, err := readRegularTLSFile(caFile, 0)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read CA file: %w", err)
 		}
@@ -167,6 +178,32 @@ func normalizeTLSConfig(config *TLSConfig) *TLSConfig {
 	return &normalized
 }
 
+func validateTLSCipherSuites(cipherSuites []uint16) error {
+	for _, suite := range cipherSuites {
+		if !isSecureTLSCipherSuite(suite) {
+			return fmt.Errorf("%w: weak or unsupported cipher suite %s", ErrInsecureTLS, GetCipherSuiteName(suite))
+		}
+	}
+	return nil
+}
+
+func isSecureTLSCipherSuite(suite uint16) bool {
+	switch suite {
+	case tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+		tls.TLS_AES_256_GCM_SHA384,
+		tls.TLS_AES_128_GCM_SHA256,
+		tls.TLS_CHACHA20_POLY1305_SHA256:
+		return true
+	default:
+		return false
+	}
+}
+
 func cloneCipherSuites(values []uint16) []uint16 {
 	if values == nil {
 		return nil
@@ -206,6 +243,12 @@ func generateSelfSignedCert(config *TLSConfig) error {
 	if config.KeyFile == "" {
 		config.KeyFile = filepath.Join("certs", "server.key")
 	}
+	if err := validateTLSSubject(config.SelfSignedOrg); err != nil {
+		return err
+	}
+	if err := validateTLSValidityDays(config.SelfSignedValidDays); err != nil {
+		return err
+	}
 
 	certFile, err := cleanTLSFilePath(config.CertFile)
 	if err != nil {
@@ -218,18 +261,11 @@ func generateSelfSignedCert(config *TLSConfig) error {
 	config.CertFile = certFile
 	config.KeyFile = keyFile
 
-	if err := os.MkdirAll(filepath.Dir(config.CertFile), 0750); err != nil {
-		return fmt.Errorf("failed to create certificate directory: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(config.KeyFile), 0750); err != nil {
-		return fmt.Errorf("failed to create key directory: %w", err)
-	}
-
 	// Check if certs already exist and are valid
 	if _, err := os.Stat(config.CertFile); err == nil {
 		if _, err := os.Stat(config.KeyFile); err == nil {
 			// Verify existing cert
-			cert, err := tls.LoadX509KeyPair(config.CertFile, config.KeyFile)
+			cert, err := loadTLSKeyPair(config.CertFile, config.KeyFile)
 			if err == nil {
 				if verifyCertificate(&cert) == nil {
 					return nil // Valid certs exist
@@ -301,10 +337,32 @@ func generateSelfSignedCert(config *TLSConfig) error {
 	return nil
 }
 
+func validateTLSSubject(value string) error {
+	if len(value) > maxTLSSubjectBytes {
+		return fmt.Errorf("%w: TLS subject too long", ErrInvalidCert)
+	}
+	return nil
+}
+
+func validateTLSValidityDays(days int) error {
+	if days <= 0 || days > maxTLSCertificateValidDays {
+		return fmt.Errorf("%w: invalid TLS certificate validity days", ErrInvalidCert)
+	}
+	return nil
+}
+
 func writeTLSFileAtomic(path string, data []byte, perm os.FileMode) error {
-	path = filepath.Clean(path)
+	var err error
+	path, err = cleanTLSFilePath(path)
+	if err != nil {
+		return err
+	}
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
+
+	if err := prepareTLSFileDir(path); err != nil {
+		return err
+	}
 
 	file, err := os.CreateTemp(dir, "."+base+".tmp-*") // #nosec G304 - path is derived from explicit TLS configuration and cleaned before use.
 	if err != nil {
@@ -324,7 +382,7 @@ func writeTLSFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := file.Chmod(perm); err != nil {
 		return fmt.Errorf("failed to set temporary file permissions: %w", err)
 	}
-	if _, err := file.Write(data); err != nil {
+	if _, err := writeTLSFull(file, data); err != nil {
 		return fmt.Errorf("failed to write temporary file: %w", err)
 	}
 	if err := file.Sync(); err != nil {
@@ -347,6 +405,96 @@ func writeTLSFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+func writeTLSFull(writer io.Writer, data []byte) (int, error) {
+	n, err := writer.Write(data)
+	if err != nil {
+		return n, err
+	}
+	if n != len(data) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
+}
+
+func prepareTLSFileDir(path string) error {
+	cleanPath, err := cleanTLSFilePath(path)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(cleanPath)
+
+	if err := rejectTLSSymlinkPathComponents(dir); err != nil {
+		return err
+	}
+
+	info, statErr := os.Lstat(dir)
+	preexisting := statErr == nil
+	if statErr != nil {
+		if !os.IsNotExist(statErr) {
+			return fmt.Errorf("failed to stat TLS directory: %w", statErr)
+		}
+	} else {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("TLS directory must not be a symlink: %s", dir)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("TLS directory must be a directory: %s", dir)
+		}
+	}
+
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return fmt.Errorf("failed to create TLS directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0750); err != nil {
+		return fmt.Errorf("failed to set TLS directory permissions: %w", err)
+	}
+	if err := rejectTLSSymlinkPathComponents(dir); err != nil {
+		return err
+	}
+
+	openedInfo, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !openedInfo.IsDir() {
+		return fmt.Errorf("TLS directory must be a directory: %s", dir)
+	}
+	if preexisting && !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("TLS directory changed while opening: %s", dir)
+	}
+	return nil
+}
+
+func rejectTLSSymlinkPathComponents(path string) error {
+	path = filepath.Clean(path)
+	if path == "." || path == string(os.PathSeparator) {
+		return nil
+	}
+
+	current := "."
+	if filepath.IsAbs(path) {
+		current = string(os.PathSeparator)
+		path = strings.TrimPrefix(path, string(os.PathSeparator))
+	}
+	for _, part := range strings.Split(path, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to stat TLS directory component: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("TLS directory component must not be a symlink: %s", current)
+		}
+	}
+	return nil
+}
+
 func syncTLSDir(dir string) error {
 	file, err := os.Open(dir) // #nosec G304 - directory path is derived from explicit TLS configuration and cleaned before use.
 	if err != nil {
@@ -366,6 +514,68 @@ func cleanTLSFilePath(path string) (string, error) {
 	return filepath.Clean(path), nil
 }
 
+func loadTLSKeyPair(certFile, keyFile string) (tls.Certificate, error) {
+	certPEM, err := readRegularTLSFile(certFile, 0)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	keyPEM, err := readRegularTLSFile(keyFile, tlsKeyFilePerm)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+func readRegularTLSFile(path string, perm os.FileMode) ([]byte, error) {
+	path, err := cleanTLSFilePath(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("TLS file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("TLS file must be a regular file: %s", path)
+	}
+
+	file, err := os.Open(path) // #nosec G304 - TLS path is explicit configuration and validated before use.
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("TLS file must be a regular file: %s", path)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("TLS file changed while opening: %s", path)
+	}
+	if openedInfo.Size() > maxTLSFileBytes {
+		return nil, fmt.Errorf("TLS file too large: %s (%d bytes)", path, openedInfo.Size())
+	}
+	if perm != 0 {
+		if err := file.Chmod(perm); err != nil {
+			return nil, err
+		}
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxTLSFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxTLSFileBytes {
+		return nil, fmt.Errorf("TLS file too large: %s", path)
+	}
+	return data, nil
+}
+
 // IsTLSEnabled checks if TLS is enabled in the configuration
 func IsTLSEnabled(config *TLSConfig) bool {
 	return config != nil && config.Enabled
@@ -381,12 +591,19 @@ func GetTLSListener(listener net.Listener, tlsConfig *tls.Config) net.Listener {
 
 // GenerateClientCert generates a client certificate signed by the server CA
 func GenerateClientCert(caCertFile, caKeyFile, clientName string, validDays int) (certPEM, keyPEM []byte, err error) {
+	if err := validateTLSSubject(clientName); err != nil {
+		return nil, nil, err
+	}
+	if err := validateTLSValidityDays(validDays); err != nil {
+		return nil, nil, err
+	}
+
 	// Load CA
 	caCertFile, err = cleanTLSFilePath(caCertFile)
 	if err != nil {
 		return nil, nil, err
 	}
-	caCertPEM, err := os.ReadFile(caCertFile) // #nosec G304 - CA certificate path is explicit TLS configuration and is cleaned before use.
+	caCertPEM, err := readRegularTLSFile(caCertFile, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -395,7 +612,7 @@ func GenerateClientCert(caCertFile, caKeyFile, clientName string, validDays int)
 	if err != nil {
 		return nil, nil, err
 	}
-	caKeyPEM, err := os.ReadFile(caKeyFile) // #nosec G304 - CA key path is explicit TLS configuration and is cleaned before use.
+	caKeyPEM, err := readRegularTLSFile(caKeyFile, tlsKeyFilePerm)
 	if err != nil {
 		return nil, nil, err
 	}

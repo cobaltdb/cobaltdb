@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -193,24 +194,103 @@ func TestHandleStmtPrepare(t *testing.T) {
 	t.Run("PrepareInvalidSQL", func(t *testing.T) {
 		client, conn := newTestClient(db)
 
-		// Invalid SQL should still register a statement with 0 columns
 		err := client.handleStmtPrepare("INVALID SQL !!!")
 		if err != nil {
-			// writePacket may fail on closed conn — that's OK
-			_ = err
+			t.Fatalf("handleStmtPrepare returned transport error: %v", err)
 		}
 
-		// Statement should still be stored (with 0 columns)
+		if len(client.stmts) != 0 {
+			t.Fatalf("invalid SQL registered prepared statements: %d", len(client.stmts))
+		}
+		if !strings.Contains(conn.writeBuf.String(), "syntax") &&
+			!strings.Contains(conn.writeBuf.String(), "unexpected") &&
+			!strings.Contains(conn.writeBuf.String(), "illegal token") {
+			t.Fatalf("expected parse error response, got %q", conn.writeBuf.String())
+		}
+	})
+
+	t.Run("PrepareReadStatementMissingTable", func(t *testing.T) {
+		client, conn := newTestClient(db)
+
+		err := client.handleStmtPrepare("SELECT * FROM missing_prepare_table")
+		if err != nil {
+			t.Fatalf("handleStmtPrepare returned transport error: %v", err)
+		}
+
+		if len(client.stmts) != 0 {
+			t.Fatalf("missing table SELECT registered prepared statements: %d", len(client.stmts))
+		}
+		if !strings.Contains(conn.writeBuf.String(), "not found") &&
+			!strings.Contains(conn.writeBuf.String(), "does not exist") {
+			t.Fatalf("expected missing table error response, got %q", conn.writeBuf.String())
+		}
+	})
+
+	t.Run("PrepareDDLDoesNotExecute", func(t *testing.T) {
+		client, _ := newTestClient(db)
+
+		err := client.handleStmtPrepare("CREATE TABLE mysql_prepare_side_effect (id INT)")
+		if err != nil {
+			t.Fatalf("handleStmtPrepare failed: %v", err)
+		}
+
 		if len(client.stmts) != 1 {
-			t.Fatalf("expected 1 prepared stmt even for invalid SQL, got %d", len(client.stmts))
+			t.Fatalf("expected DDL statement to be registered, got %d", len(client.stmts))
 		}
-		for _, stmt := range client.stmts {
-			if stmt.numColumns != 0 {
-				t.Errorf("expected 0 columns for invalid SQL, got %d", stmt.numColumns)
-			}
+		if _, err := db.Query(ctx, "SELECT * FROM mysql_prepare_side_effect"); err == nil {
+			t.Fatal("prepared DDL was executed during prepare")
+		}
+	})
+
+	t.Run("TooManyPreparedStatements", func(t *testing.T) {
+		client, conn := newTestClient(db)
+		stmts := client.getStmtMap()
+		for i := 0; i < maxMySQLPreparedStmts; i++ {
+			stmts[uint32(i+1)] = &preparedStmt{id: uint32(i + 1), sql: "SELECT 1"}
 		}
 
-		_ = conn
+		err := client.handleStmtPrepare("SELECT 1")
+		if err != nil {
+			t.Fatalf("handleStmtPrepare returned transport error: %v", err)
+		}
+		if len(client.stmts) != maxMySQLPreparedStmts {
+			t.Fatalf("prepared statement count changed: got %d want %d", len(client.stmts), maxMySQLPreparedStmts)
+		}
+		if !strings.Contains(conn.writeBuf.String(), "too many prepared statements") {
+			t.Fatalf("expected error packet to mention statement limit, got %q", conn.writeBuf.String())
+		}
+	})
+
+	t.Run("RejectsOversizedPrepareSQL", func(t *testing.T) {
+		client, conn := newTestClient(db)
+
+		err := client.handleStmtPrepare(strings.Repeat("x", maxMySQLQueryBytes+1))
+		if err != nil {
+			t.Fatalf("handleStmtPrepare returned transport error: %v", err)
+		}
+		if len(client.stmts) != 0 {
+			t.Fatalf("oversized prepare registered statements: %d", len(client.stmts))
+		}
+		if !strings.Contains(conn.writeBuf.String(), "query too large") {
+			t.Fatalf("expected query too large error packet, got %q", conn.writeBuf.String())
+		}
+	})
+
+	t.Run("RejectsTooManyPreparedParams", func(t *testing.T) {
+		client, conn := newTestClient(db)
+		params := strings.Repeat("?,", maxMySQLPreparedParams+1)
+		sql := "SELECT " + strings.TrimSuffix(params, ",")
+
+		err := client.handleStmtPrepare(sql)
+		if err != nil {
+			t.Fatalf("handleStmtPrepare returned transport error: %v", err)
+		}
+		if len(client.stmts) != 0 {
+			t.Fatalf("too many params registered statements: %d", len(client.stmts))
+		}
+		if !strings.Contains(conn.writeBuf.String(), "too many prepared statement parameters") {
+			t.Fatalf("expected parameter limit error packet, got %q", conn.writeBuf.String())
+		}
 	})
 
 	t.Run("ClosedConnection", func(t *testing.T) {
@@ -388,10 +468,36 @@ func TestHandleStmtExecute(t *testing.T) {
 		}
 	})
 
-	t.Run("ExecuteWithCursorFlagRejected", func(t *testing.T) {
+	t.Run("LongDataRejectsUnboundedAccumulation", func(t *testing.T) {
 		client, conn := newTestClient(db)
 
-		if err := client.handleStmtPrepare("SELECT val FROM exec_test WHERE id = ?"); err != nil {
+		if err := client.handleStmtPrepare("INSERT INTO exec_test (id, val) VALUES (?, ?)"); err != nil {
+			t.Skipf("prepare failed: %v", err)
+		}
+
+		var stmtID uint32
+		for id := range client.stmts {
+			stmtID = id
+			break
+		}
+		stmt := client.stmts[stmtID]
+		stmt.longData = map[int][]byte{1: make([]byte, maxMySQLLongDataBytes)}
+
+		if err := client.handleStmtSendLongData(buildStmtLongDataPacket(stmtID, 1, []byte("x"))); err != nil {
+			t.Fatalf("handleStmtSendLongData overflow should write protocol error, got transport error: %v", err)
+		}
+		if len(stmt.longData[1]) != maxMySQLLongDataBytes {
+			t.Fatalf("long data length changed after rejected chunk: got %d", len(stmt.longData[1]))
+		}
+		if !strings.Contains(conn.writeBuf.String(), "long data too large") {
+			t.Fatalf("expected long data error packet, got %q", conn.writeBuf.String())
+		}
+	})
+
+	t.Run("ExecuteWithCursorFlagOpensFetchCursor", func(t *testing.T) {
+		client, conn := newTestClient(db)
+
+		if err := client.handleStmtPrepare("SELECT val FROM exec_test WHERE id > ? ORDER BY id"); err != nil {
 			t.Skipf("prepare failed: %v", err)
 		}
 
@@ -401,28 +507,133 @@ func TestHandleStmtExecute(t *testing.T) {
 			break
 		}
 
-		execData := buildStmtExecutePacketWithFlags(stmtID, 0x01, []byte{MySQLTypeLongLong}, []interface{}{int64(1)})
+		execData := buildStmtExecutePacketWithFlags(stmtID, 0x01, []byte{MySQLTypeLongLong}, []interface{}{int64(0)})
 		if err := client.handleStmtExecute(execData); err != nil {
 			t.Fatalf("handleStmtExecute: %v", err)
 		}
 		out := conn.writeBuf.String()
-		if !strings.Contains(out, "cursor flags are not supported") {
-			t.Fatalf("expected cursor unsupported error packet, got %q", out)
+		if strings.Contains(out, "cursor flags are not supported") {
+			t.Fatalf("cursor flag should be supported, got %q", out)
+		}
+		if client.stmts[stmtID].cursor == nil {
+			t.Fatal("expected cursor to be opened")
 		}
 	})
 
-	t.Run("StmtFetchRejected", func(t *testing.T) {
+	t.Run("StmtFetchReturnsCursorRows", func(t *testing.T) {
 		client, conn := newTestClient(db)
 
+		if err := client.handleStmtPrepare("SELECT val FROM exec_test ORDER BY id"); err != nil {
+			t.Skipf("prepare failed: %v", err)
+		}
+
+		var stmtID uint32
+		for id := range client.stmts {
+			stmtID = id
+			break
+		}
+		execData := buildStmtExecutePacketWithFlags(stmtID, 0x01, nil, nil)
+		if err := client.handleStmtExecute(execData); err != nil {
+			t.Fatalf("handleStmtExecute: %v", err)
+		}
+		conn.writeBuf.Reset()
+
 		var data [8]byte
-		binary.LittleEndian.PutUint32(data[:4], 123)
-		binary.LittleEndian.PutUint32(data[4:], 10)
+		binary.LittleEndian.PutUint32(data[:4], stmtID)
+		binary.LittleEndian.PutUint32(data[4:], 1)
 		if err := client.handleStmtFetch(data[:]); err != nil {
 			t.Fatalf("handleStmtFetch: %v", err)
 		}
 		out := conn.writeBuf.String()
-		if !strings.Contains(out, "fetch cursors are not supported") {
-			t.Fatalf("expected fetch cursor unsupported error packet, got %q", out)
+		if strings.Contains(out, "fetch cursors are not supported") {
+			t.Fatalf("fetch cursor should be supported, got %q", out)
+		}
+		if !strings.Contains(out, "hello") {
+			t.Fatalf("expected first fetched row in packet stream, got %q", out)
+		}
+		if client.stmts[stmtID].cursor == nil {
+			t.Fatal("cursor should remain open after partial fetch")
+		}
+
+		conn.writeBuf.Reset()
+		binary.LittleEndian.PutUint32(data[4:], 100)
+		if err := client.handleStmtFetch(data[:]); err != nil {
+			t.Fatalf("second handleStmtFetch: %v", err)
+		}
+		out = conn.writeBuf.String()
+		if !strings.Contains(out, "bound") || !strings.Contains(out, "long-payload") {
+			t.Fatalf("expected remaining fetched rows in packet stream, got %q", out)
+		}
+		if client.stmts[stmtID].cursor != nil {
+			t.Fatal("cursor should close after final fetch")
+		}
+	})
+
+	t.Run("StmtFetchCapsHugeRowCount", func(t *testing.T) {
+		if _, err := db.Exec(ctx, "CREATE TABLE fetch_cap_test (id INT, val TEXT)"); err != nil {
+			t.Fatalf("create fetch_cap_test: %v", err)
+		}
+		for i := 0; i < maxMySQLStmtFetchRows+1; i++ {
+			if _, err := db.Exec(ctx, "INSERT INTO fetch_cap_test (id, val) VALUES (?, ?)", i, "cap_"+strconv.Itoa(i)); err != nil {
+				t.Fatalf("insert %d: %v", i, err)
+			}
+		}
+
+		client, _ := newTestClient(db)
+		if err := client.handleStmtPrepare("SELECT val FROM fetch_cap_test ORDER BY id"); err != nil {
+			t.Fatalf("prepare fetch_cap_test: %v", err)
+		}
+		var stmtID uint32
+		for id := range client.stmts {
+			stmtID = id
+			break
+		}
+		if err := client.handleStmtExecute(buildStmtExecutePacketWithFlags(stmtID, 0x01, nil, nil)); err != nil {
+			t.Fatalf("handleStmtExecute: %v", err)
+		}
+
+		var data [8]byte
+		binary.LittleEndian.PutUint32(data[:4], stmtID)
+		binary.LittleEndian.PutUint32(data[4:], math.MaxUint32)
+		if err := client.handleStmtFetch(data[:]); err != nil {
+			t.Fatalf("handleStmtFetch huge rowCount: %v", err)
+		}
+		if client.stmts[stmtID].cursor == nil {
+			t.Fatal("cursor closed despite capped fetch leaving one row")
+		}
+
+		binary.LittleEndian.PutUint32(data[4:], 1)
+		if err := client.handleStmtFetch(data[:]); err != nil {
+			t.Fatalf("handleStmtFetch final row: %v", err)
+		}
+		if client.stmts[stmtID].cursor != nil {
+			t.Fatal("cursor should close after fetching final row")
+		}
+	})
+
+	t.Run("BinaryResultRejectsOversizedValue", func(t *testing.T) {
+		if _, err := db.Exec(ctx, "CREATE TABLE binary_limit_test (payload TEXT)"); err != nil {
+			t.Fatalf("create binary_limit_test: %v", err)
+		}
+		if _, err := db.Exec(ctx, "INSERT INTO binary_limit_test VALUES (?)", strings.Repeat("x", maxMySQLResultValueBytes+1)); err != nil {
+			t.Fatalf("insert large binary result value: %v", err)
+		}
+
+		client, conn := newTestClient(db)
+		if err := client.handleStmtPrepare("SELECT payload FROM binary_limit_test"); err != nil {
+			t.Fatalf("prepare binary_limit_test: %v", err)
+		}
+		var stmtID uint32
+		for id := range client.stmts {
+			stmtID = id
+			break
+		}
+
+		if err := client.handleStmtExecute(buildStmtExecutePacketWithFlags(stmtID, 0, nil, nil)); err != nil {
+			t.Fatalf("handleStmtExecute returned transport error: %v", err)
+		}
+		if !strings.Contains(conn.writeBuf.String(), "result value too large") {
+			t.Fatalf("expected result value too large error packet, got %q", conn.writeBuf.String())
 		}
 	})
 }
@@ -730,6 +941,34 @@ func TestSendResultSetFromRows(t *testing.T) {
 		// Should send OK packet
 		if conn.writeBuf.Len() == 0 {
 			t.Error("expected OK packet for nil rows")
+		}
+	})
+
+	t.Run("RejectsOversizedTextValue", func(t *testing.T) {
+		ctx := context.Background()
+		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(ctx, "CREATE TABLE mysql_text_limit (payload TEXT)"); err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+		if _, err := db.Exec(ctx, "INSERT INTO mysql_text_limit VALUES (?)", strings.Repeat("x", maxMySQLResultValueBytes+1)); err != nil {
+			t.Fatalf("insert large value: %v", err)
+		}
+		rows, err := db.Query(ctx, "SELECT payload FROM mysql_text_limit")
+		if err != nil {
+			t.Fatalf("query rows: %v", err)
+		}
+		defer rows.Close()
+
+		client, conn := newTestClient(db)
+		if err := client.sendResultSetFromRows(rows); err != nil {
+			t.Fatalf("sendResultSetFromRows returned transport error: %v", err)
+		}
+		if !strings.Contains(conn.writeBuf.String(), "result value too large") {
+			t.Fatalf("expected result value too large error packet, got %q", conn.writeBuf.String())
 		}
 	})
 }

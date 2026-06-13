@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +37,9 @@ func TestDefaultConfig(t *testing.T) {
 	if config.Address != ":4200" {
 		t.Errorf("Expected address ':4200', got %q", config.Address)
 	}
+	if config.MaxConnections != defaultMaxConnections {
+		t.Errorf("Expected MaxConnections %d, got %d", defaultMaxConnections, config.MaxConnections)
+	}
 }
 
 func TestNewRejectsEmptyAdminPassword(t *testing.T) {
@@ -54,22 +59,140 @@ func TestNewRejectsEmptyAdminPassword(t *testing.T) {
 	}
 }
 
-func TestNewNormalizesNonpositiveTimeouts(t *testing.T) {
+func TestNewRequireAuthEnablesAuthentication(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 	defer db.Close()
 
-	server, err := New(db, &Config{ReadTimeout: -1, WriteTimeout: -1})
+	server, err := New(db, &Config{
+		RequireAuth:      true,
+		DefaultAdminUser: "admin",
+		DefaultAdminPass: "Str0ng!Pass#2026",
+	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
+	}
+
+	if !server.auth.IsEnabled() {
+		t.Fatal("RequireAuth should enable authentication")
+	}
+	if _, err := server.auth.Authenticate("admin", "Str0ng!Pass#2026"); err != nil {
+		t.Fatalf("default admin should be able to authenticate: %v", err)
+	}
+}
+
+func TestNewRejectsInvalidResourceConfig(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	tests := []struct {
+		name   string
+		config *Config
+		want   string
+	}{
+		{
+			name:   "negative max connections",
+			config: &Config{MaxConnections: -1},
+			want:   "max connections must be non-negative",
+		},
+		{
+			name:   "negative read timeout",
+			config: &Config{ReadTimeout: -1},
+			want:   "read timeout must be non-negative",
+		},
+		{
+			name:   "negative write timeout",
+			config: &Config{WriteTimeout: -1},
+			want:   "write timeout must be non-negative",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, err := New(db, tt.config)
+			if err == nil {
+				t.Fatalf("New succeeded with invalid config: %#v", server)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("New error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewRejectsTimeoutOverflow(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("timeout overflow cannot be represented by Config int on this architecture")
+	}
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	tooLarge := int(maxServerTimeoutSeconds + 1)
+	tests := []struct {
+		name   string
+		config *Config
+		want   string
+	}{
+		{
+			name:   "read timeout overflow",
+			config: &Config{ReadTimeout: tooLarge},
+			want:   "read timeout too large",
+		},
+		{
+			name:   "write timeout overflow",
+			config: &Config{WriteTimeout: tooLarge},
+			want:   "write timeout too large",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := New(db, tt.config)
+			if err == nil {
+				t.Fatal("expected invalid timeout to be rejected")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("New error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewDefaultsZeroResourceConfig(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	server, err := New(db, &Config{})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	if server.maxConnections != defaultMaxConnections {
+		t.Fatalf("maxConnections = %d, want %d", server.maxConnections, defaultMaxConnections)
 	}
 	if server.readTimeout != 300*time.Second {
 		t.Fatalf("readTimeout = %v, want 300s", server.readTimeout)
 	}
 	if server.writeTimeout != 60*time.Second {
 		t.Fatalf("writeTimeout = %v, want 60s", server.writeTimeout)
+	}
+
+	server, err = New(db, &Config{MaxConnections: 42})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	if server.maxConnections != 42 {
+		t.Fatalf("explicit maxConnections = %d, want 42", server.maxConnections)
 	}
 }
 
@@ -147,6 +270,128 @@ func TestServerClosesProvidedListenerAfterClose(t *testing.T) {
 	}
 	if !listener.closed {
 		t.Fatal("ListenOnListener should close a provided listener when server is already closed")
+	}
+}
+
+func TestListenOnListenerRejectsNilListener(t *testing.T) {
+	server, err := New(nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	err = server.ListenOnListener(nil)
+	if err == nil {
+		t.Fatal("expected ListenOnListener to reject nil listener")
+	}
+	if !strings.Contains(err.Error(), "listener cannot be nil") {
+		t.Fatalf("expected nil listener error, got %v", err)
+	}
+	if server.listener != nil {
+		t.Fatal("ListenOnListener should not install a nil listener")
+	}
+}
+
+func TestValidateServerAuthTransport(t *testing.T) {
+	tests := []struct {
+		name               string
+		address            string
+		authEnabled        bool
+		tlsEnabled         bool
+		allowCleartextAuth bool
+		wantErr            bool
+	}{
+		{
+			name:        "auth cleartext wildcard rejected",
+			address:     "0.0.0.0:4200",
+			authEnabled: true,
+			wantErr:     true,
+		},
+		{
+			name:        "auth cleartext empty host rejected",
+			address:     ":4200",
+			authEnabled: true,
+			wantErr:     true,
+		},
+		{
+			name:        "auth cleartext loopback allowed",
+			address:     "127.0.0.1:4200",
+			authEnabled: true,
+		},
+		{
+			name:        "auth cleartext localhost allowed",
+			address:     "localhost:4200",
+			authEnabled: true,
+		},
+		{
+			name:        "auth with TLS allowed",
+			address:     "0.0.0.0:4200",
+			authEnabled: true,
+			tlsEnabled:  true,
+		},
+		{
+			name:               "explicit cleartext auth allowed",
+			address:            "0.0.0.0:4200",
+			authEnabled:        true,
+			allowCleartextAuth: true,
+		},
+		{
+			name:    "auth disabled allowed",
+			address: "0.0.0.0:4200",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateServerAuthTransport(tt.address, tt.authEnabled, tt.tlsEnabled, tt.allowCleartextAuth)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected validation to pass, got %v", err)
+			}
+		})
+	}
+}
+
+func TestServerListenRejectsAuthCleartextOnNonLoopback(t *testing.T) {
+	server, err := New(nil, &Config{
+		AuthEnabled:      true,
+		DefaultAdminUser: "admin",
+		DefaultAdminPass: "Str0ng!Pass#2026",
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	err = server.Listen("0.0.0.0:0", nil)
+	if err == nil {
+		t.Fatal("expected Listen to reject authenticated cleartext non-loopback address")
+	}
+	if !strings.Contains(err.Error(), "authentication without TLS") {
+		t.Fatalf("expected auth transport error, got %v", err)
+	}
+}
+
+func TestListenOnListenerRejectsAndClosesAuthCleartextNonLoopback(t *testing.T) {
+	server, err := New(nil, &Config{
+		AuthEnabled:      true,
+		DefaultAdminUser: "admin",
+		DefaultAdminPass: "Str0ng!Pass#2026",
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	listener := &closeTrackingListener{}
+	err = server.ListenOnListener(listener)
+	if err == nil {
+		t.Fatal("expected ListenOnListener to reject authenticated cleartext non-loopback listener")
+	}
+	if !strings.Contains(err.Error(), "authentication without TLS") {
+		t.Fatalf("expected auth transport error, got %v", err)
+	}
+	if !listener.closed {
+		t.Fatal("ListenOnListener should close rejected listener")
 	}
 }
 

@@ -147,6 +147,14 @@ func (sp *SQLProtector) CheckSQL(sql string) *CheckResult {
 			Severity:    ProtectionHigh,
 			Description: "Query exceeds maximum length",
 		})
+		if sp.config.BlockOnDetection {
+			sp.stats.QueriesFlagged.Add(1)
+			sp.recordViolations(result.Violations)
+			result.Allowed = false
+			result.Blocked = true
+			sp.stats.QueriesBlocked.Add(1)
+			return result
+		}
 	}
 
 	// Check for suspicious patterns

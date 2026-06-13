@@ -81,6 +81,37 @@ func TestSQLProtectorQueryLength(t *testing.T) {
 	}
 }
 
+func TestSQLProtectorBlocksOverlongQueryBeforePatternScanning(t *testing.T) {
+	config := &SQLProtectionConfig{
+		Enabled:             true,
+		BlockOnDetection:    true,
+		MaxQueryLength:      20,
+		MaxORConditions:     1,
+		MaxUNIONCount:       1,
+		SuspiciousThreshold: 3,
+	}
+	sp := NewSQLProtector(config)
+
+	result := sp.CheckSQL("SELECT * FROM users UNION SELECT * FROM admins WHERE id = SLEEP(5)")
+	if result.Allowed || !result.Blocked {
+		t.Fatalf("overlong query should be blocked, got allowed=%v blocked=%v", result.Allowed, result.Blocked)
+	}
+	if len(result.Violations) != 1 || result.Violations[0].Type != "query_too_long" {
+		t.Fatalf("expected only query_too_long violation before pattern scan, got %#v", result.Violations)
+	}
+
+	stats := sp.GetStats()
+	if stats.QueriesFlagged != 1 || stats.QueriesBlocked != 1 {
+		t.Fatalf("unexpected stats: flagged=%d blocked=%d", stats.QueriesFlagged, stats.QueriesBlocked)
+	}
+	if stats.PatternsDetected != 0 {
+		t.Fatalf("pattern scan should be skipped for blocked overlong query, got %d detections", stats.PatternsDetected)
+	}
+	if stats.ViolationsByType["query_too_long"] != 1 {
+		t.Fatalf("query_too_long should be recorded once, got %d", stats.ViolationsByType["query_too_long"])
+	}
+}
+
 func TestSQLProtectorNormalizesPartialConfigLimits(t *testing.T) {
 	config := &SQLProtectionConfig{
 		Enabled:          true,

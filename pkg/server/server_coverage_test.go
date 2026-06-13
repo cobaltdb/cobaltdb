@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -24,6 +25,25 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 	"github.com/cobaltdb/cobaltdb/pkg/wire"
 )
+
+type shortServerWriteConn struct {
+	limit int
+}
+
+func (c *shortServerWriteConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (c *shortServerWriteConn) Close() error                     { return nil }
+func (c *shortServerWriteConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (c *shortServerWriteConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (c *shortServerWriteConn) SetDeadline(time.Time) error      { return nil }
+func (c *shortServerWriteConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *shortServerWriteConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (c *shortServerWriteConn) Write(p []byte) (int, error) {
+	if len(p) > c.limit {
+		return c.limit, nil
+	}
+	return len(p), nil
+}
 
 func generateTestCertHelper(t *testing.T) (string, string) {
 	t.Helper()
@@ -87,6 +107,21 @@ func TestLoadTLSConfigDisabledCov(t *testing.T) {
 	}
 }
 
+func TestLoadTLSConfigRejectsInsecureSkipVerify(t *testing.T) {
+	tc, err := LoadTLSConfig(&TLSConfig{Enabled: false, InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("disabled TLS should ignore InsecureSkipVerify: %v", err)
+	}
+	if tc != nil {
+		t.Fatal("expected nil TLS config when disabled")
+	}
+
+	_, err = LoadTLSConfig(&TLSConfig{Enabled: true, InsecureSkipVerify: true})
+	if !errors.Is(err, ErrInsecureTLS) {
+		t.Fatalf("expected ErrInsecureTLS, got %v", err)
+	}
+}
+
 func TestLoadTLSConfigNoCertCov(t *testing.T) {
 	_, err := LoadTLSConfig(&TLSConfig{Enabled: true})
 	if !errors.Is(err, ErrInvalidCert) {
@@ -109,6 +144,63 @@ func TestLoadTLSConfigValidCov(t *testing.T) {
 	}
 	if tc == nil {
 		t.Fatal("nil")
+	}
+}
+
+func TestLoadTLSConfigRejectsUnsafeTLSFiles(t *testing.T) {
+	cf, kf := generateTestCertHelper(t)
+	keyLink := filepath.Join(t.TempDir(), "server-key-link.pem")
+	if err := os.Symlink(kf, keyLink); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := LoadTLSConfig(&TLSConfig{Enabled: true, CertFile: cf, KeyFile: keyLink})
+	if err == nil {
+		t.Fatal("expected symlink key file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+
+	_, err = LoadTLSConfig(&TLSConfig{Enabled: true, CertFile: cf, KeyFile: kf, CAFile: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected directory CA file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected regular file rejection, got %v", err)
+	}
+}
+
+func TestLoadTLSConfigRejectsOversizedTLSFile(t *testing.T) {
+	cf, kf := generateTestCertHelper(t)
+	if err := os.Truncate(cf, maxTLSFileBytes+1); err != nil {
+		t.Fatalf("truncate cert file: %v", err)
+	}
+
+	_, err := LoadTLSConfig(&TLSConfig{Enabled: true, CertFile: cf, KeyFile: kf})
+	if err == nil {
+		t.Fatal("expected oversized TLS file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "TLS file too large") {
+		t.Fatalf("expected oversized TLS file rejection, got %v", err)
+	}
+}
+
+func TestLoadTLSConfigRestrictsPrivateKeyPermissions(t *testing.T) {
+	cf, kf := generateTestCertHelper(t)
+	if err := os.Chmod(kf, 0644); err != nil {
+		t.Fatalf("chmod key: %v", err)
+	}
+
+	if _, err := LoadTLSConfig(&TLSConfig{Enabled: true, CertFile: cf, KeyFile: kf}); err != nil {
+		t.Fatalf("LoadTLSConfig failed: %v", err)
+	}
+	info, err := os.Stat(kf)
+	if err != nil {
+		t.Fatalf("stat key: %v", err)
+	}
+	if info.Mode().Perm() != tlsKeyFilePerm {
+		t.Fatalf("key permissions = %v, want %v", info.Mode().Perm(), tlsKeyFilePerm)
 	}
 }
 
@@ -150,6 +242,33 @@ func TestLoadTLSConfigCopiesCipherSuites(t *testing.T) {
 	}
 }
 
+func TestLoadTLSConfigRejectsWeakCipherSuites(t *testing.T) {
+	tests := []struct {
+		name  string
+		suite uint16
+		want  string
+	}{
+		{name: "cbc", suite: tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, want: "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"},
+		{name: "static-rsa", suite: tls.TLS_RSA_WITH_AES_128_GCM_SHA256, want: "TLS_RSA_WITH_AES_128_GCM_SHA256"},
+		{name: "unknown", suite: 0xffff, want: "Unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadTLSConfig(&TLSConfig{
+				Enabled:      true,
+				CipherSuites: []uint16{tt.suite},
+			})
+			if !errors.Is(err, ErrInsecureTLS) {
+				t.Fatalf("expected ErrInsecureTLS, got %v", err)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error to mention %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
 func TestLoadTLSConfigRaisesWeakMinimumVersion(t *testing.T) {
 	cf, kf := generateTestCertHelper(t)
 	tc, err := LoadTLSConfig(&TLSConfig{
@@ -167,6 +286,30 @@ func TestLoadTLSConfigRaisesWeakMinimumVersion(t *testing.T) {
 	}
 	if tc.MaxVersion != tls.VersionTLS12 {
 		t.Fatalf("expected max version to follow raised minimum, got %x", tc.MaxVersion)
+	}
+}
+
+func TestSendMessageRejectsShortWrite(t *testing.T) {
+	client := &ClientConn{
+		Conn:   &shortServerWriteConn{limit: 4},
+		Server: &Server{writeTimeout: time.Second},
+	}
+
+	err := client.sendMessage(wire.MsgPong)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("sendMessage short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+}
+
+func TestWriteServerFullRejectsShortWrite(t *testing.T) {
+	writer := &shortServerWriteConn{limit: 3}
+
+	n, err := writeServerFull(writer, []byte("abcdef"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writeServerFull short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if n != 3 {
+		t.Fatalf("writeServerFull wrote %d bytes, want 3", n)
 	}
 }
 
@@ -481,7 +624,7 @@ func TestRateLimitsHandlerCov(t *testing.T) {
 	h := ps.rateLimitsHandler()
 	w := httptest.NewRecorder()
 	h(w, httptest.NewRequest(http.MethodGet, "/rl", nil))
-	if w.Code != 200 {
+	if w.Code != 503 {
 		t.Errorf("got %d", w.Code)
 	}
 	w2 := httptest.NewRecorder()
@@ -519,6 +662,22 @@ func TestLoopbackOnlyCov(t *testing.T) {
 	if w3.Code != 403 {
 		t.Errorf("got %d", w3.Code)
 	}
+
+	r4 := httptest.NewRequest(http.MethodGet, "/t", nil)
+	r4.RemoteAddr = "127.0.0.2:1"
+	w4 := httptest.NewRecorder()
+	h(w4, r4)
+	if w4.Code != 200 {
+		t.Errorf("got %d", w4.Code)
+	}
+
+	r5 := httptest.NewRequest(http.MethodGet, "/t", nil)
+	r5.RemoteAddr = "not-a-host-port"
+	w5 := httptest.NewRecorder()
+	h(w5, r5)
+	if w5.Code != 403 {
+		t.Errorf("got %d", w5.Code)
+	}
 }
 
 func TestAuthRequiredHandlerCov(t *testing.T) {
@@ -530,23 +689,35 @@ func TestAuthRequiredHandlerCov(t *testing.T) {
 	r1.RemoteAddr = "127.0.0.1:1"
 	w1 := httptest.NewRecorder()
 	h(w1, r1)
-	if w1.Code != 200 {
+	if w1.Code != http.StatusServiceUnavailable {
 		t.Errorf("got %d", w1.Code)
 	}
+
+	ps.SetAdminToken("secret-token")
 
 	r2 := httptest.NewRequest(http.MethodGet, "/t", nil)
 	r2.RemoteAddr = "[::1]:1"
 	w2 := httptest.NewRecorder()
 	h(w2, r2)
-	if w2.Code != 200 {
+	if w2.Code != http.StatusUnauthorized {
 		t.Errorf("got %d", w2.Code)
+	}
+
+	rValid := httptest.NewRequest(http.MethodGet, "/t", nil)
+	rValid.RemoteAddr = "[::1]:1"
+	rValid.Header.Set("Authorization", "Bearer secret-token")
+	wValid := httptest.NewRecorder()
+	h(wValid, rValid)
+	if wValid.Code != http.StatusOK {
+		t.Errorf("got %d", wValid.Code)
 	}
 
 	r3 := httptest.NewRequest(http.MethodGet, "/t", nil)
 	r3.RemoteAddr = "10.0.0.1:1"
+	r3.Header.Set("Authorization", "Bearer secret-token")
 	w3 := httptest.NewRecorder()
 	h(w3, r3)
-	if w3.Code != 403 {
+	if w3.Code != http.StatusForbidden {
 		t.Errorf("got %d", w3.Code)
 	}
 }
@@ -568,6 +739,9 @@ func TestReadyHandlerAllCov(t *testing.T) {
 	h(w, httptest.NewRequest(http.MethodGet, "/r", nil))
 	if w.Code != 200 {
 		t.Errorf("got %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("ready Content-Type = %q, want application/json", got)
 	}
 	w2 := httptest.NewRecorder()
 	h(w2, httptest.NewRequest(http.MethodPost, "/r", nil))
@@ -593,6 +767,9 @@ func TestReadyHandlerNotRunCov(t *testing.T) {
 	h(w, httptest.NewRequest(http.MethodGet, "/r", nil))
 	if w.Code != 503 {
 		t.Errorf("got %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("ready Content-Type = %q, want application/json", got)
 	}
 }
 
@@ -687,6 +864,293 @@ func TestHandleMsgPrepareCov(t *testing.T) {
 	cl.authed = true
 	if em, ok := cl.handleMessage(wire.MsgPrepare, []byte{0xFF}).(*wire.ErrorMessage); !ok || em.Code != 2 {
 		t.Error("decode")
+	}
+}
+
+func TestWireQueryRejectsOversizedSQL(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	defer db.Close()
+	s, _ := New(db, DefaultConfig())
+	cl := &ClientConn{ID: 1, Server: s, authed: true}
+	cl.ctx, cl.cancel = context.WithCancel(context.Background())
+	defer cl.cancel()
+
+	payload, err := wire.Encode(&wire.QueryMessage{SQL: strings.Repeat("x", maxWireSQLBytes+1)})
+	if err != nil {
+		t.Fatalf("encode query: %v", err)
+	}
+
+	res := cl.handleMessage(wire.MsgQuery, payload)
+	em, ok := res.(*wire.ErrorMessage)
+	if !ok {
+		t.Fatalf("expected ErrorMessage, got %T", res)
+	}
+	if em.Code != 9 || !strings.Contains(em.Message, "too large") {
+		t.Fatalf("unexpected error: code=%d message=%q", em.Code, em.Message)
+	}
+}
+
+func TestWirePrepareRejectsOversizedSQL(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	defer db.Close()
+	s, _ := New(db, DefaultConfig())
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	cl := &ClientConn{ID: 1, Conn: c1, Server: s, authed: true}
+	cl.ctx, cl.cancel = context.WithCancel(context.Background())
+	defer cl.cancel()
+
+	payload, err := wire.Encode(&wire.PrepareMessage{SQL: strings.Repeat("x", maxWireSQLBytes+1)})
+	if err != nil {
+		t.Fatalf("encode prepare: %v", err)
+	}
+
+	res := cl.handleMessage(wire.MsgPrepare, payload)
+	em, ok := res.(*wire.ErrorMessage)
+	if !ok {
+		t.Fatalf("expected ErrorMessage, got %T", res)
+	}
+	if em.Code != 9 || !strings.Contains(em.Message, "too large") {
+		t.Fatalf("unexpected error: code=%d message=%q", em.Code, em.Message)
+	}
+}
+
+func TestWirePrepareRejectsTooManyPreparedStatements(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	defer db.Close()
+	s, _ := New(db, DefaultConfig())
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	cl := &ClientConn{
+		ID:            1,
+		Conn:          c1,
+		Server:        s,
+		authed:        true,
+		preparedStmts: make(map[uint32]*preparedStmt, maxWirePreparedStmts),
+	}
+	for i := 0; i < maxWirePreparedStmts; i++ {
+		cl.preparedStmts[uint32(i+1)] = &preparedStmt{sql: "SELECT 1"}
+	}
+	cl.ctx, cl.cancel = context.WithCancel(context.Background())
+	defer cl.cancel()
+
+	payload, err := wire.Encode(&wire.PrepareMessage{SQL: "SELECT 1"})
+	if err != nil {
+		t.Fatalf("encode prepare: %v", err)
+	}
+
+	res := cl.handleMessage(wire.MsgPrepare, payload)
+	em, ok := res.(*wire.ErrorMessage)
+	if !ok {
+		t.Fatalf("expected ErrorMessage, got %T", res)
+	}
+	if em.Code != 9 || !strings.Contains(em.Message, "too many prepared statements") {
+		t.Fatalf("unexpected error: code=%d message=%q", em.Code, em.Message)
+	}
+}
+
+func TestWirePrepareRejectsInvalidSQLWithoutRegistering(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	defer db.Close()
+	s, _ := New(db, DefaultConfig())
+	cl := &ClientConn{ID: 1, Server: s, authed: true}
+	cl.ctx, cl.cancel = context.WithCancel(context.Background())
+	defer cl.cancel()
+
+	payload, err := wire.Encode(&wire.PrepareMessage{SQL: "INVALID SQL !!!"})
+	if err != nil {
+		t.Fatalf("encode prepare: %v", err)
+	}
+
+	res := cl.handleMessage(wire.MsgPrepare, payload)
+	em, ok := res.(*wire.ErrorMessage)
+	if !ok {
+		t.Fatalf("expected ErrorMessage, got %T", res)
+	}
+	if em.Code != 4 {
+		t.Fatalf("error code = %d, want 4", em.Code)
+	}
+	if len(cl.preparedStmts) != 0 {
+		t.Fatalf("invalid SQL registered prepared statements: %d", len(cl.preparedStmts))
+	}
+}
+
+func TestWirePrepareDoesNotExecuteDDL(t *testing.T) {
+	ctx := context.Background()
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	defer db.Close()
+	s, _ := New(db, DefaultConfig())
+	cl := &ClientConn{ID: 1, Server: s, authed: true}
+	cl.ctx, cl.cancel = context.WithCancel(ctx)
+	defer cl.cancel()
+
+	payload, err := wire.Encode(&wire.PrepareMessage{SQL: "CREATE TABLE prepare_side_effect (id INTEGER)"})
+	if err != nil {
+		t.Fatalf("encode prepare: %v", err)
+	}
+
+	res := cl.handleMessage(wire.MsgPrepare, payload)
+	if ok, isOK := res.(*wire.OKMessage); !isOK || ok.StmtID == 0 {
+		t.Fatalf("expected OK with StmtID, got %T %v", res, res)
+	}
+	if _, err := db.Query(ctx, "SELECT * FROM prepare_side_effect"); err == nil {
+		t.Fatal("prepared DDL was executed during prepare")
+	}
+}
+
+func TestWireQueryRejectsOversizedResultSet(t *testing.T) {
+	ctx := context.Background()
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	defer db.Close()
+	if _, err := db.Exec(ctx, "CREATE TABLE result_limit_test (id INTEGER)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	for i := 0; i <= maxWireResultRows; i++ {
+		if _, err := db.Exec(ctx, "INSERT INTO result_limit_test (id) VALUES (?)", i); err != nil {
+			t.Fatalf("insert row %d: %v", i, err)
+		}
+	}
+
+	s, _ := New(db, DefaultConfig())
+	cl := &ClientConn{ID: 1, Server: s, authed: true}
+	cl.ctx, cl.cancel = context.WithCancel(ctx)
+	defer cl.cancel()
+
+	payload, err := wire.Encode(&wire.QueryMessage{SQL: "SELECT id FROM result_limit_test"})
+	if err != nil {
+		t.Fatalf("encode query: %v", err)
+	}
+
+	res := cl.handleMessage(wire.MsgQuery, payload)
+	em, ok := res.(*wire.ErrorMessage)
+	if !ok {
+		t.Fatalf("expected ErrorMessage, got %T", res)
+	}
+	if em.Code != 9 || !strings.Contains(em.Message, "result set too large") {
+		t.Fatalf("unexpected error: code=%d message=%q", em.Code, em.Message)
+	}
+}
+
+func TestWireQueryRejectsOversizedResultValue(t *testing.T) {
+	ctx := context.Background()
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	defer db.Close()
+	if _, err := db.Exec(ctx, "CREATE TABLE result_value_limit_test (payload TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO result_value_limit_test (payload) VALUES (?)", strings.Repeat("x", maxWireResultValueBytes+1)); err != nil {
+		t.Fatalf("insert oversized value: %v", err)
+	}
+
+	s, _ := New(db, DefaultConfig())
+	cl := &ClientConn{ID: 1, Server: s, authed: true}
+	cl.ctx, cl.cancel = context.WithCancel(ctx)
+	defer cl.cancel()
+
+	payload, err := wire.Encode(&wire.QueryMessage{SQL: "SELECT payload FROM result_value_limit_test"})
+	if err != nil {
+		t.Fatalf("encode query: %v", err)
+	}
+
+	res := cl.handleMessage(wire.MsgQuery, payload)
+	em, ok := res.(*wire.ErrorMessage)
+	if !ok {
+		t.Fatalf("expected ErrorMessage, got %T", res)
+	}
+	if em.Code != 9 || !strings.Contains(em.Message, "result value too large") {
+		t.Fatalf("unexpected error: code=%d message=%q", em.Code, em.Message)
+	}
+}
+
+func TestWireQueryRejectsInvalidParams(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	defer db.Close()
+	s, _ := New(db, DefaultConfig())
+	cl := &ClientConn{ID: 1, Server: s, authed: true}
+	cl.ctx, cl.cancel = context.WithCancel(context.Background())
+	defer cl.cancel()
+
+	tests := []struct {
+		name    string
+		params  []interface{}
+		message string
+	}{
+		{
+			name:    "too many",
+			params:  make([]interface{}, maxWireParams+1),
+			message: "too many parameters",
+		},
+		{
+			name:    "large string",
+			params:  []interface{}{strings.Repeat("x", maxWireParamBytes+1)},
+			message: "parameter too large",
+		},
+		{
+			name:    "nested",
+			params:  []interface{}{[]interface{}{1}},
+			message: "unsupported parameter type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload, err := wire.Encode(&wire.QueryMessage{SQL: "SELECT 1", Params: tt.params})
+			if err != nil {
+				t.Fatalf("encode query: %v", err)
+			}
+
+			res := cl.handleMessage(wire.MsgQuery, payload)
+			em, ok := res.(*wire.ErrorMessage)
+			if !ok {
+				t.Fatalf("expected ErrorMessage, got %T", res)
+			}
+			if em.Code != 9 || !strings.Contains(em.Message, tt.message) {
+				t.Fatalf("unexpected error: code=%d message=%q", em.Code, em.Message)
+			}
+		})
+	}
+}
+
+func TestWireExecuteRejectsInvalidParams(t *testing.T) {
+	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	defer db.Close()
+	s, _ := New(db, DefaultConfig())
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	cl := &ClientConn{ID: 1, Conn: c1, Server: s, authed: true}
+	cl.ctx, cl.cancel = context.WithCancel(context.Background())
+	defer cl.cancel()
+
+	prep, err := wire.Encode(&wire.PrepareMessage{SQL: "SELECT 1"})
+	if err != nil {
+		t.Fatalf("encode prepare: %v", err)
+	}
+	res := cl.handleMessage(wire.MsgPrepare, prep)
+	okMsg, ok := res.(*wire.OKMessage)
+	if !ok {
+		t.Fatalf("expected OKMessage, got %T", res)
+	}
+
+	exec, err := wire.Encode(&wire.ExecuteMessage{
+		StmtID: okMsg.StmtID,
+		Params: []interface{}{
+			strings.Repeat("x", maxWireParamBytes+1),
+		},
+	})
+	if err != nil {
+		t.Fatalf("encode execute: %v", err)
+	}
+
+	res = cl.handleMessage(wire.MsgExecute, exec)
+	em, ok := res.(*wire.ErrorMessage)
+	if !ok {
+		t.Fatalf("expected ErrorMessage, got %T", res)
+	}
+	if em.Code != 9 || !strings.Contains(em.Message, "parameter too large") {
+		t.Fatalf("unexpected error: code=%d message=%q", em.Code, em.Message)
 	}
 }
 

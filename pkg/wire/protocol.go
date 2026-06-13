@@ -1,6 +1,9 @@
 package wire
 
 import (
+	"fmt"
+	"reflect"
+
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -20,6 +23,9 @@ const (
 	MsgAuthSuccess MsgType = 0x31 // Authentication success
 	MsgAuthFailed  MsgType = 0x32 // Authentication failed
 )
+
+const maxWireEncodedMessageBytes = 16 * 1024 * 1024
+const maxWireCloneDepth = 64
 
 // Message represents a protocol message
 type Message struct {
@@ -67,19 +73,35 @@ type ExecuteMessage struct {
 
 // Encode encodes a message using MessagePack
 func Encode(v interface{}) ([]byte, error) {
-	return msgpack.Marshal(v)
+	data, err := msgpack.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxWireEncodedMessageBytes {
+		return nil, fmt.Errorf("encoded value too large: %d bytes", len(data))
+	}
+	return data, nil
 }
 
 // Decode decodes a message using MessagePack
 func Decode(data []byte, v interface{}) error {
+	if len(data) > maxWireEncodedMessageBytes {
+		return fmt.Errorf("encoded value too large: %d bytes", len(data))
+	}
 	return msgpack.Unmarshal(data, v)
 }
 
 // EncodeMessage encodes a complete message with type
 func EncodeMessage(msgType MsgType, payload interface{}) ([]byte, error) {
-	pay, err := Encode(payload)
+	if !isKnownMsgType(msgType) {
+		return nil, fmt.Errorf("unknown message type: 0x%02x", byte(msgType))
+	}
+	pay, err := msgpack.Marshal(payload)
 	if err != nil {
 		return nil, err
+	}
+	if len(pay) > maxWireEncodedMessageBytes {
+		return nil, fmt.Errorf("message payload too large: %d bytes", len(pay))
 	}
 
 	msg := Message{
@@ -87,16 +109,42 @@ func EncodeMessage(msgType MsgType, payload interface{}) ([]byte, error) {
 		Payload: pay,
 	}
 
-	return Encode(msg)
+	data, err := Encode(msg)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxWireEncodedMessageBytes {
+		return nil, fmt.Errorf("encoded message too large: %d bytes", len(data))
+	}
+	return data, nil
 }
 
 // DecodeMessage decodes a complete message
 func DecodeMessage(data []byte) (*Message, error) {
+	if len(data) > maxWireEncodedMessageBytes {
+		return nil, fmt.Errorf("encoded message too large: %d bytes", len(data))
+	}
 	var msg Message
 	if err := Decode(data, &msg); err != nil {
 		return nil, err
 	}
+	if !isKnownMsgType(msg.Type) {
+		return nil, fmt.Errorf("unknown message type: 0x%02x", byte(msg.Type))
+	}
+	if len(msg.Payload) > maxWireEncodedMessageBytes {
+		return nil, fmt.Errorf("message payload too large: %d bytes", len(msg.Payload))
+	}
 	return &msg, nil
+}
+
+func isKnownMsgType(msgType MsgType) bool {
+	switch msgType {
+	case MsgQuery, MsgPrepare, MsgExecute, MsgResult, MsgOK, MsgError,
+		MsgPing, MsgPong, MsgAuth, MsgAuthSuccess, MsgAuthFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 // NewQueryMessage creates a new query message
@@ -136,23 +184,56 @@ func cloneRows(rows [][]interface{}) [][]interface{} {
 	}
 	cloned := make([][]interface{}, len(rows))
 	for i, row := range rows {
-		cloned[i] = cloneValues(row)
+		cloned[i] = cloneValuesWithState(row, 0, make(map[wireCloneVisit]struct{}))
 	}
 	return cloned
 }
 
 func cloneValues(values []interface{}) []interface{} {
+	return cloneValuesWithState(values, 0, make(map[wireCloneVisit]struct{}))
+}
+
+func cloneValuesWithState(values []interface{}, depth int, seen map[wireCloneVisit]struct{}) []interface{} {
 	if values == nil {
 		return nil
 	}
+	if depth > maxWireCloneDepth {
+		return nil
+	}
+	visit := wireCloneVisitFor(values)
+	if visit.ptr != 0 {
+		if _, exists := seen[visit]; exists {
+			return nil
+		}
+		seen[visit] = struct{}{}
+		defer delete(seen, visit)
+	}
 	cloned := make([]interface{}, len(values))
 	for i, value := range values {
-		cloned[i] = cloneValue(value)
+		cloned[i] = cloneValue(value, depth+1, seen)
 	}
 	return cloned
 }
 
-func cloneValue(value interface{}) interface{} {
+type wireCloneVisit struct {
+	kind reflect.Kind
+	ptr  uintptr
+}
+
+func wireCloneVisitFor(value interface{}) wireCloneVisit {
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Map, reflect.Slice:
+		return wireCloneVisit{kind: rv.Kind(), ptr: rv.Pointer()}
+	default:
+		return wireCloneVisit{}
+	}
+}
+
+func cloneValue(value interface{}, depth int, seen map[wireCloneVisit]struct{}) interface{} {
+	if depth > maxWireCloneDepth {
+		return nil
+	}
 	switch typed := value.(type) {
 	case []byte:
 		if typed == nil {
@@ -162,16 +243,33 @@ func cloneValue(value interface{}) interface{} {
 		copy(cloned, typed)
 		return cloned
 	case []interface{}:
-		return cloneValues(typed)
+		if typed == nil {
+			return []interface{}(nil)
+		}
+		visit := wireCloneVisitFor(typed)
+		if visit.ptr != 0 {
+			if _, exists := seen[visit]; exists {
+				return nil
+			}
+		}
+		return cloneValuesWithState(typed, depth, seen)
 	case []string:
 		return cloneStrings(typed)
 	case map[string]interface{}:
 		if typed == nil {
 			return map[string]interface{}(nil)
 		}
+		visit := wireCloneVisitFor(typed)
+		if visit.ptr != 0 {
+			if _, exists := seen[visit]; exists {
+				return nil
+			}
+			seen[visit] = struct{}{}
+			defer delete(seen, visit)
+		}
 		cloned := make(map[string]interface{}, len(typed))
 		for key, nested := range typed {
-			cloned[key] = cloneValue(nested)
+			cloned[key] = cloneValue(nested, depth+1, seen)
 		}
 		return cloned
 	case map[string]string:

@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -13,12 +14,32 @@ func TestNewMySQLServer(t *testing.T) {
 	if server.version != "5.7.0-CobaltDB" {
 		t.Errorf("Expected default version, got %s", server.version)
 	}
+
+	if server.maxConnections != defaultMaxMySQLConnections {
+		t.Errorf("Expected default max connections %d, got %d", defaultMaxMySQLConnections, server.maxConnections)
+	}
 }
 
 func TestNewMySQLServerWithVersion(t *testing.T) {
 	server := NewMySQLServer(nil, "8.0.0-Test")
 	if server.version != "8.0.0-Test" {
 		t.Errorf("Expected version '8.0.0-Test', got %s", server.version)
+	}
+}
+
+func TestNewMySQLServerSanitizesVersion(t *testing.T) {
+	longVersion := strings.Repeat("v", maxMySQLServerVersionBytes+10)
+	server := NewMySQLServer(nil, longVersion)
+	if len(server.version) != maxMySQLServerVersionBytes {
+		t.Fatalf("Expected version length %d, got %d", maxMySQLServerVersionBytes, len(server.version))
+	}
+
+	server = NewMySQLServer(nil, "8.0.0\x00bad\r\n")
+	if strings.ContainsAny(server.version, "\x00\r\n") {
+		t.Fatalf("Expected control characters to be sanitized, got %q", server.version)
+	}
+	if server.version != "8.0.0?bad??" {
+		t.Fatalf("Unexpected sanitized version %q", server.version)
 	}
 }
 

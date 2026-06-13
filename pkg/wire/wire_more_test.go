@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -163,6 +164,54 @@ func TestDecodeMessageWithNilData(t *testing.T) {
 	_, err := DecodeMessage(nil)
 	if err == nil {
 		t.Error("Expected error for nil data")
+	}
+}
+
+func TestEncodeMessageRejectsUnknownType(t *testing.T) {
+	_, err := EncodeMessage(MsgType(0xff), NewQueryMessage("SELECT 1"))
+	if err == nil || !strings.Contains(err.Error(), "unknown message type") {
+		t.Fatalf("EncodeMessage unknown type error = %v, want unknown message type", err)
+	}
+}
+
+func TestDecodeMessageRejectsUnknownType(t *testing.T) {
+	data, err := Encode(Message{Type: MsgType(0xff), Payload: []byte("payload")})
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	_, err = DecodeMessage(data)
+	if err == nil || !strings.Contains(err.Error(), "unknown message type") {
+		t.Fatalf("DecodeMessage unknown type error = %v, want unknown message type", err)
+	}
+}
+
+func TestDecodeMessageRejectsOversizedEncodedMessage(t *testing.T) {
+	_, err := DecodeMessage(make([]byte, maxWireEncodedMessageBytes+1))
+	if err == nil || !strings.Contains(err.Error(), "encoded message too large") {
+		t.Fatalf("DecodeMessage oversized encoded error = %v, want encoded size rejection", err)
+	}
+}
+
+func TestDecodeRejectsOversizedEncodedValue(t *testing.T) {
+	var decoded []byte
+	err := Decode(make([]byte, maxWireEncodedMessageBytes+1), &decoded)
+	if err == nil || !strings.Contains(err.Error(), "encoded value too large") {
+		t.Fatalf("Decode oversized value error = %v, want encoded value size rejection", err)
+	}
+}
+
+func TestEncodeRejectsOversizedEncodedValue(t *testing.T) {
+	_, err := Encode(make([]byte, maxWireEncodedMessageBytes+1))
+	if err == nil || !strings.Contains(err.Error(), "encoded value too large") {
+		t.Fatalf("Encode oversized value error = %v, want encoded value size rejection", err)
+	}
+}
+
+func TestEncodeMessageRejectsOversizedPayload(t *testing.T) {
+	_, err := EncodeMessage(MsgQuery, make([]byte, maxWireEncodedMessageBytes+1))
+	if err == nil || !strings.Contains(err.Error(), "message payload too large") {
+		t.Fatalf("EncodeMessage oversized payload error = %v, want payload size rejection", err)
 	}
 }
 

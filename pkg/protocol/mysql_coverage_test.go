@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/auth"
@@ -18,6 +20,119 @@ func TestSetAuthenticator(t *testing.T) {
 	if server.auth == nil {
 		t.Error("auth should be set")
 	}
+}
+
+func TestSetAllowCleartextAuth(t *testing.T) {
+	server := NewMySQLServer(nil, "")
+	if server.allowCleartextAuth {
+		t.Fatal("cleartext auth should be disabled by default")
+	}
+
+	server.SetAllowCleartextAuth(true)
+	if !server.allowCleartextAuth {
+		t.Fatal("cleartext auth should be enabled after setter")
+	}
+}
+
+func TestValidateMySQLAuthTransport(t *testing.T) {
+	tests := []struct {
+		name               string
+		address            string
+		authEnabled        bool
+		allowCleartextAuth bool
+		wantErr            bool
+	}{
+		{
+			name:        "auth wildcard rejected",
+			address:     "0.0.0.0:3306",
+			authEnabled: true,
+			wantErr:     true,
+		},
+		{
+			name:        "auth empty host rejected",
+			address:     ":3306",
+			authEnabled: true,
+			wantErr:     true,
+		},
+		{
+			name:        "auth loopback allowed",
+			address:     "127.0.0.1:3306",
+			authEnabled: true,
+		},
+		{
+			name:        "auth localhost allowed",
+			address:     "localhost:3306",
+			authEnabled: true,
+		},
+		{
+			name:               "explicit cleartext allowed",
+			address:            "0.0.0.0:3306",
+			authEnabled:        true,
+			allowCleartextAuth: true,
+		},
+		{
+			name:    "auth disabled allowed",
+			address: "0.0.0.0:3306",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMySQLAuthTransport(tt.address, tt.authEnabled, tt.allowCleartextAuth)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected validation to pass, got %v", err)
+			}
+		})
+	}
+}
+
+func TestMySQLListenRejectsAuthenticatedNonLoopbackCleartext(t *testing.T) {
+	server := NewMySQLServer(nil, "")
+	a := auth.NewAuthenticator()
+	a.Enable()
+	server.SetAuthenticator(a)
+
+	err := server.Listen("0.0.0.0:0")
+	if err == nil {
+		t.Fatal("expected Listen to reject authenticated non-loopback cleartext address")
+	}
+	if !strings.Contains(err.Error(), "MySQL authentication on non-loopback") {
+		t.Fatalf("expected auth transport error, got %v", err)
+	}
+	if server.listener != nil {
+		t.Fatal("listener should not be opened after auth transport rejection")
+	}
+}
+
+func TestMySQLServerConcurrentConfigAccess(t *testing.T) {
+	server := NewMySQLServer(nil, "")
+	a := auth.NewAuthenticator()
+	a.Enable()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(4)
+		go func(i int) {
+			defer wg.Done()
+			server.SetAuthenticator(a)
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			server.SetAllowCleartextAuth(i%2 == 0)
+		}(i)
+		go func() {
+			defer wg.Done()
+			_ = server.authEnabled()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = server.Addr()
+		}()
+	}
+	wg.Wait()
 }
 
 func TestAddrNilListener(t *testing.T) {
