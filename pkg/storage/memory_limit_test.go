@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -63,6 +64,21 @@ func TestMemoryWriteAt_GrowthCap(t *testing.T) {
 		t.Errorf("Size: got %d, want %d", mem.Size(), 100*4096)
 	}
 	mem.Close()
+}
+
+func TestMemoryWriteAtRejectsOffsetOverflow(t *testing.T) {
+	mem := NewMemoryWithLimit(1024)
+
+	n, err := mem.WriteAt([]byte("x"), maxMemoryOffset)
+	if !errors.Is(err, ErrInvalidSize) {
+		t.Fatalf("WriteAt overflow error = %v, want %v", err, ErrInvalidSize)
+	}
+	if n != 0 {
+		t.Fatalf("WriteAt overflow wrote %d bytes, want 0", n)
+	}
+	if got := mem.Size(); got != 0 {
+		t.Fatalf("memory size after rejected overflow write = %d, want 0", got)
+	}
 }
 
 func TestMemoryTruncate_WithLimit(t *testing.T) {

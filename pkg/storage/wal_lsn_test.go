@@ -59,6 +59,57 @@ func TestWALLSNPersistence(t *testing.T) {
 	}
 }
 
+func TestWALCheckpointLSNPersistsAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "checkpoint-lsn.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := wal.Append(&WALRecord{
+			TxnID: uint64(i + 1),
+			Type:  WALInsert,
+			Data:  []byte("data"),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pool := NewBufferPool(16, NewMemory())
+	if err := wal.Checkpoint(pool); err != nil {
+		pool.Close()
+		wal.Close()
+		t.Fatalf("Checkpoint: %v", err)
+	}
+	checkpointLSN := wal.CheckpointLSN()
+	if checkpointLSN != 4 {
+		pool.Close()
+		wal.Close()
+		t.Fatalf("checkpoint LSN = %d, want 4", checkpointLSN)
+	}
+	pool.Close()
+	if err := wal.Close(); err != nil {
+		t.Fatalf("Close WAL: %v", err)
+	}
+
+	reopened, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("OpenWAL after checkpoint: %v", err)
+	}
+	defer reopened.Close()
+	if got := reopened.LSN(); got != checkpointLSN {
+		t.Fatalf("LSN after checkpoint reopen = %d, want %d", got, checkpointLSN)
+	}
+
+	if err := reopened.Append(&WALRecord{TxnID: 9, Type: WALCommit}); err != nil {
+		t.Fatalf("Append after checkpoint reopen: %v", err)
+	}
+	if got := reopened.LSN(); got != checkpointLSN+1 {
+		t.Fatalf("LSN after append = %d, want %d", got, checkpointLSN+1)
+	}
+}
+
 // TestWALCommitRecordRecovery verifies that committed transactions
 // are properly recovered after crash (CRITICAL fix: WAL commit records
 // were not being written by the transaction manager)

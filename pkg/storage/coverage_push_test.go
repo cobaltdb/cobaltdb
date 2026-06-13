@@ -10,9 +10,12 @@ func TestFlushDirtyPagesMultiple(t *testing.T) {
 	defer bp.Close()
 
 	// Pre-populate backend so GetPage succeeds
-	for i := 0; i < 5; i++ {
-		empty := make([]byte, PageSize)
-		mem.WriteAt(empty, int64(i*PageSize))
+	for i := uint32(0); i < 5; i++ {
+		pageType := PageTypeLeaf
+		if i == 0 {
+			pageType = PageTypeMeta
+		}
+		writeTestPage(t, mem, i, pageType)
 	}
 
 	// Write multiple pages

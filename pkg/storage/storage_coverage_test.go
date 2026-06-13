@@ -2,6 +2,7 @@ package storage
 
 import (
 	"errors"
+	"io"
 	"os"
 	"testing"
 )
@@ -56,6 +57,51 @@ func TestNewEncryptedBackendEmptyKey(t *testing.T) {
 	_, err := NewEncryptedBackend(mem, cfg)
 	if err != ErrInvalidKey {
 		t.Errorf("Expected ErrInvalidKey, got %v", err)
+	}
+}
+
+func TestNewEncryptedBackendRejectsInvalidConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *EncryptionConfig
+		want error
+	}{
+		{
+			name: "unsupported algorithm",
+			cfg: &EncryptionConfig{
+				Enabled:   true,
+				Key:       []byte("invalid-algorithm-password"),
+				Algorithm: "aes-128-cbc",
+			},
+			want: ErrInvalidAlgorithm,
+		},
+		{
+			name: "negative pbkdf2 iterations",
+			cfg: &EncryptionConfig{
+				Enabled:     true,
+				Key:         []byte("negative-pbkdf2-password"),
+				PBKDF2Iters: -1,
+			},
+			want: ErrKeyDerivation,
+		},
+		{
+			name: "excessive pbkdf2 iterations",
+			cfg: &EncryptionConfig{
+				Enabled:     true,
+				Key:         []byte("excessive-pbkdf2-password"),
+				PBKDF2Iters: maxPBKDF2Iters + 1,
+			},
+			want: ErrKeyDerivation,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewEncryptedBackend(NewMemory(), tt.cfg)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("NewEncryptedBackend error = %v, want %v", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -200,6 +246,126 @@ func TestEncryptedBackendSize(t *testing.T) {
 
 	s := eb.Size()
 	t.Logf("Size after one page write: %d", s)
+}
+
+func TestEncryptedBackendSizeRoundsPartialPhysicalBlockUp(t *testing.T) {
+	mem := NewMemory()
+	cfg := &EncryptionConfig{
+		Enabled:     true,
+		Key:         []byte("partial-size-password-32-bytes"),
+		Salt:        []byte("1234567890123456"),
+		PBKDF2Iters: 1000,
+	}
+	eb, err := NewEncryptedBackend(mem, cfg)
+	if err != nil {
+		t.Fatalf("NewEncryptedBackend: %v", err)
+	}
+	defer eb.Close()
+
+	if _, err := mem.WriteAt([]byte("partial encrypted tail"), 0); err != nil {
+		t.Fatalf("WriteAt partial physical block: %v", err)
+	}
+	if got := eb.Size(); got != int64(PageSize) {
+		t.Fatalf("Size for partial encrypted physical block = %d, want %d", got, PageSize)
+	}
+}
+
+func TestEncryptedBackendRejectsUnalignedOrPartialIO(t *testing.T) {
+	mem := NewMemory()
+	cfg := &EncryptionConfig{
+		Enabled:     true,
+		Key:         []byte("page-io-validation-password-32b"),
+		Salt:        []byte("1234567890123456"),
+		PBKDF2Iters: 1000,
+	}
+	eb, err := NewEncryptedBackend(mem, cfg)
+	if err != nil {
+		t.Fatalf("NewEncryptedBackend: %v", err)
+	}
+	defer eb.Close()
+
+	page := make([]byte, PageSize)
+	if _, err := eb.WriteAt(page, 1); !errors.Is(err, ErrInvalidOffset) {
+		t.Fatalf("WriteAt unaligned offset error = %v, want %v", err, ErrInvalidOffset)
+	}
+	if _, err := eb.ReadAt(page, 1); !errors.Is(err, ErrInvalidOffset) {
+		t.Fatalf("ReadAt unaligned offset error = %v, want %v", err, ErrInvalidOffset)
+	}
+
+	partial := make([]byte, PageSize-1)
+	if _, err := eb.WriteAt(partial, 0); !errors.Is(err, ErrInvalidSize) {
+		t.Fatalf("WriteAt partial page error = %v, want %v", err, ErrInvalidSize)
+	}
+	if _, err := eb.ReadAt(partial, 0); !errors.Is(err, ErrInvalidSize) {
+		t.Fatalf("ReadAt partial page error = %v, want %v", err, ErrInvalidSize)
+	}
+}
+
+func TestEncryptedBackendSecondLogicalPageRoundTrip(t *testing.T) {
+	mem := NewMemory()
+	cfg := &EncryptionConfig{
+		Enabled:     true,
+		Key:         []byte("second-page-roundtrip-password"),
+		Salt:        []byte("1234567890123456"),
+		PBKDF2Iters: 1000,
+	}
+	eb, err := NewEncryptedBackend(mem, cfg)
+	if err != nil {
+		t.Fatalf("NewEncryptedBackend: %v", err)
+	}
+	defer eb.Close()
+
+	page0 := make([]byte, PageSize)
+	page1 := make([]byte, PageSize)
+	page0[0], page0[PageSize-1] = 0x11, 0x22
+	page1[0], page1[PageSize-1] = 0x33, 0x44
+
+	if _, err := eb.WriteAt(page0, 0); err != nil {
+		t.Fatalf("WriteAt page 0: %v", err)
+	}
+	if _, err := eb.WriteAt(page1, int64(PageSize)); err != nil {
+		t.Fatalf("WriteAt page 1: %v", err)
+	}
+
+	got0 := make([]byte, PageSize)
+	got1 := make([]byte, PageSize)
+	if _, err := eb.ReadAt(got0, 0); err != nil {
+		t.Fatalf("ReadAt page 0: %v", err)
+	}
+	if _, err := eb.ReadAt(got1, int64(PageSize)); err != nil {
+		t.Fatalf("ReadAt page 1: %v", err)
+	}
+	if got0[0] != 0x11 || got0[PageSize-1] != 0x22 {
+		t.Fatalf("page 0 mismatch: first=%#x last=%#x", got0[0], got0[PageSize-1])
+	}
+	if got1[0] != 0x33 || got1[PageSize-1] != 0x44 {
+		t.Fatalf("page 1 mismatch: first=%#x last=%#x", got1[0], got1[PageSize-1])
+	}
+	if got := eb.Size(); got != int64(PageSize*2) {
+		t.Fatalf("Size after two encrypted pages = %d, want %d", got, PageSize*2)
+	}
+}
+
+func TestEncryptedBackendRejectsShortPhysicalWrite(t *testing.T) {
+	backend := &shortWriteBackend{
+		Backend: NewMemory(),
+		limit:   PageSize,
+	}
+	cfg := &EncryptionConfig{
+		Enabled:     true,
+		Key:         []byte("short-physical-write-password"),
+		Salt:        []byte("1234567890123456"),
+		PBKDF2Iters: 1000,
+	}
+	eb, err := NewEncryptedBackend(backend, cfg)
+	if err != nil {
+		t.Fatalf("NewEncryptedBackend: %v", err)
+	}
+	defer eb.Close()
+
+	if _, err := eb.WriteAt(make([]byte, PageSize), 0); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("WriteAt short physical write error = %v, want %v", err, io.ErrShortWrite)
+	}
 }
 
 func TestEncryptedBackendTruncate(t *testing.T) {

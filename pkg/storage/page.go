@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"sync"
 )
 
@@ -121,6 +122,30 @@ func (p *Page) DeserializeHeader() {
 	p.Header.RightPtr = binary.LittleEndian.Uint32(p.Data[12:16])
 }
 
+func validPageType(pageType PageType) bool {
+	switch pageType {
+	case PageTypeMeta, PageTypeInternal, PageTypeLeaf, PageTypeOverflow, PageTypeFreeList:
+		return true
+	default:
+		return false
+	}
+}
+
+func validatePageHeader(data []byte, expectedPageID uint32) error {
+	if len(data) < PageHeaderSize {
+		return fmt.Errorf("%w: page %d header too short", ErrPageCorrupted, expectedPageID)
+	}
+	actualPageID := binary.LittleEndian.Uint32(data[0:4])
+	if actualPageID != expectedPageID {
+		return fmt.Errorf("%w: page header ID %d does not match requested page %d", ErrPageCorrupted, actualPageID, expectedPageID)
+	}
+	pageType := PageType(data[4])
+	if !validPageType(pageType) {
+		return fmt.Errorf("%w: page %d has invalid page type %d", ErrPageCorrupted, expectedPageID, pageType)
+	}
+	return nil
+}
+
 // FreeSpace returns the amount of free space in the page
 func (p *Page) FreeSpace() int {
 	return int(p.Header.FreeEnd) - int(p.Header.FreeStart)
@@ -196,7 +221,8 @@ func (m *MetaPage) Serialize(data []byte) {
 	binary.LittleEndian.PutUint32(data[16:20], m.FreeListID)
 	binary.LittleEndian.PutUint32(data[20:24], m.RootPageID)
 	binary.LittleEndian.PutUint64(data[24:32], m.TxnCounter)
-	// Checksum is calculated separately
+	m.Checksum = metaPageChecksum(data)
+	binary.LittleEndian.PutUint32(data[32:36], m.Checksum)
 }
 
 // Deserialize reads the meta page from a page's data
@@ -217,6 +243,9 @@ func (m *MetaPage) Deserialize(data []byte) error {
 	if string(m.Magic[:]) != MagicString {
 		return ErrPageCorrupted
 	}
+	if m.Checksum != 0 && metaPageChecksum(data) != m.Checksum {
+		return fmt.Errorf("%w: meta page checksum mismatch", ErrPageCorrupted)
+	}
 
 	return nil
 }
@@ -232,5 +261,26 @@ func (m *MetaPage) Validate() error {
 	if m.PageSize != PageSize {
 		return errors.New("unsupported page size")
 	}
+	if m.PageCount == 0 {
+		return fmt.Errorf("%w: meta page count is zero", ErrPageCorrupted)
+	}
+	if m.RootPageID >= m.PageCount {
+		return fmt.Errorf("%w: root page ID %d exceeds page count %d", ErrPageCorrupted, m.RootPageID, m.PageCount)
+	}
+	if m.FreeListID >= m.PageCount {
+		return fmt.Errorf("%w: free list page ID %d exceeds page count %d", ErrPageCorrupted, m.FreeListID, m.PageCount)
+	}
 	return nil
+}
+
+func metaPageChecksum(data []byte) uint32 {
+	if len(data) < 36 {
+		return 0
+	}
+	crc := crc32.NewIEEE()
+	_, _ = crc.Write(data[:32])
+	if len(data) > 36 {
+		_, _ = crc.Write(data[36:])
+	}
+	return crc.Sum32()
 }

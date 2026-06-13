@@ -49,10 +49,11 @@ func TestWAL_CheckpointThenMoreRecords(t *testing.T) {
 		t.Error("CheckpointLSN should be non-zero after Checkpoint")
 	}
 
-	// File should be truncated (empty after checkpoint)
+	// File should be compacted to the durable checkpoint marker.
 	stat, _ := os.Stat(walPath)
-	if stat.Size() != 0 {
-		t.Errorf("WAL file should be truncated to 0, got %d", stat.Size())
+	wantCheckpointSize := int64(walHeaderSize + 4)
+	if stat.Size() != wantCheckpointSize {
+		t.Errorf("WAL file should contain only checkpoint marker (%d bytes), got %d", wantCheckpointSize, stat.Size())
 	}
 
 	// Append more records after checkpoint
@@ -1207,8 +1208,10 @@ func TestEncryptedBackend_SizeMultiPage(t *testing.T) {
 	// Write 3 pages
 	data := make([]byte, PageSize)
 	for i := 0; i < 3; i++ {
-		offset := int64(i) * int64(PageSize+eb.cipher.NonceSize()+eb.cipher.Overhead())
-		eb.WriteAt(data, offset)
+		offset := int64(i) * int64(PageSize)
+		if _, err := eb.WriteAt(data, offset); err != nil {
+			t.Fatalf("WriteAt page %d: %v", i, err)
+		}
 	}
 
 	s := eb.Size()
@@ -1560,8 +1563,12 @@ func TestEncryptedBackend_Truncate(t *testing.T) {
 
 	// Write 2 pages
 	data := make([]byte, PageSize)
-	eb.WriteAt(data, 0)
-	eb.WriteAt(data, int64(PageSize+eb.cipher.NonceSize()+eb.cipher.Overhead()))
+	if _, err := eb.WriteAt(data, 0); err != nil {
+		t.Fatalf("WriteAt page 0: %v", err)
+	}
+	if _, err := eb.WriteAt(data, int64(PageSize)); err != nil {
+		t.Fatalf("WriteAt page 1: %v", err)
+	}
 
 	// Truncate to 1 page
 	err = eb.Truncate(int64(PageSize))
@@ -2031,6 +2038,130 @@ func TestPageManagerLoadFreeListRejectsOversizedCount(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeds page capacity") {
 		t.Fatalf("expected page capacity error, got %v", err)
+	}
+}
+
+func TestPageManagerLoadFreeListRejectsWrongPageType(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(16, backend)
+	defer pool.Close()
+
+	pm, err := NewPageManager(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := pm.AllocatePage(PageTypeLeaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageID := page.ID()
+	binary.LittleEndian.PutUint32(page.Data()[PageHeaderSize:PageHeaderSize+4], 0)
+	binary.LittleEndian.PutUint32(page.Data()[PageHeaderSize+4:PageHeaderSize+8], 0)
+	page.SetDirty(true)
+	pm.GetPool().Unpin(page)
+
+	meta := pm.GetMeta()
+	meta.FreeListID = pageID
+	if err := pm.UpdateMeta(meta); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewPageManager(pool)
+	if err == nil {
+		t.Fatal("expected wrong free list page type error")
+	}
+	if !strings.Contains(err.Error(), "not a free list page") {
+		t.Fatalf("expected page type error, got %v", err)
+	}
+}
+
+func TestPageManagerLoadFreeListRejectsInvalidReferences(t *testing.T) {
+	tests := []struct {
+		name      string
+		writeList func(data []byte, freePageID uint32, meta *MetaPage)
+		want      string
+	}{
+		{
+			name: "next page outside page count",
+			writeList: func(data []byte, _ uint32, meta *MetaPage) {
+				binary.LittleEndian.PutUint32(data[PageHeaderSize:PageHeaderSize+4], meta.PageCount)
+				binary.LittleEndian.PutUint32(data[PageHeaderSize+4:PageHeaderSize+8], 0)
+			},
+			want: "free list next page ID",
+		},
+		{
+			name: "meta page listed as free",
+			writeList: func(data []byte, _ uint32, _ *MetaPage) {
+				binary.LittleEndian.PutUint32(data[PageHeaderSize:PageHeaderSize+4], 0)
+				binary.LittleEndian.PutUint32(data[PageHeaderSize+4:PageHeaderSize+8], 1)
+				binary.LittleEndian.PutUint32(data[PageHeaderSize+8:PageHeaderSize+12], 0)
+			},
+			want: "contains meta page ID",
+		},
+		{
+			name: "free page outside page count",
+			writeList: func(data []byte, _ uint32, meta *MetaPage) {
+				binary.LittleEndian.PutUint32(data[PageHeaderSize:PageHeaderSize+4], 0)
+				binary.LittleEndian.PutUint32(data[PageHeaderSize+4:PageHeaderSize+8], 1)
+				binary.LittleEndian.PutUint32(data[PageHeaderSize+8:PageHeaderSize+12], meta.PageCount)
+			},
+			want: "free page ID",
+		},
+		{
+			name: "duplicate free page",
+			writeList: func(data []byte, freePageID uint32, _ *MetaPage) {
+				binary.LittleEndian.PutUint32(data[PageHeaderSize:PageHeaderSize+4], 0)
+				binary.LittleEndian.PutUint32(data[PageHeaderSize+4:PageHeaderSize+8], 2)
+				binary.LittleEndian.PutUint32(data[PageHeaderSize+8:PageHeaderSize+12], freePageID)
+				binary.LittleEndian.PutUint32(data[PageHeaderSize+12:PageHeaderSize+16], freePageID)
+			},
+			want: "duplicate free page ID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := NewMemory()
+			pool := NewBufferPool(16, backend)
+			defer pool.Close()
+
+			pm, err := NewPageManager(pool)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			freeListPage, err := pm.AllocatePage(PageTypeFreeList)
+			if err != nil {
+				t.Fatal(err)
+			}
+			freeListPageID := freeListPage.ID()
+
+			freePage, err := pm.AllocatePage(PageTypeLeaf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			freePageID := freePage.ID()
+			pm.GetPool().Unpin(freePage)
+
+			meta := pm.GetMeta()
+			meta.FreeListID = freeListPageID
+			tt.writeList(freeListPage.Data(), freePageID, meta)
+			freeListPage.SetDirty(true)
+			pm.GetPool().Unpin(freeListPage)
+
+			if err := pm.UpdateMeta(meta); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = NewPageManager(pool)
+			if err == nil {
+				t.Fatal("expected invalid free list reference error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got %v", tt.want, err)
+			}
+		})
 	}
 }
 

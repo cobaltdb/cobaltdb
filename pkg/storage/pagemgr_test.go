@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +98,75 @@ func TestNewPageManagerExistingDB(t *testing.T) {
 	// Should have correct page count
 	if pm.GetPageCount() < 3 {
 		t.Errorf("Expected at least 3 pages, got %d", pm.GetPageCount())
+	}
+}
+
+func TestNewPageManagerRejectsPartialExistingMetaPage(t *testing.T) {
+	backend := NewMemory()
+	if _, err := backend.WriteAt([]byte("partial meta"), 0); err != nil {
+		t.Fatalf("write partial meta: %v", err)
+	}
+	pool := NewBufferPool(10, backend)
+
+	_, err := NewPageManager(pool)
+	if err == nil {
+		t.Fatal("expected partial existing meta page to be rejected")
+	}
+	if !strings.Contains(err.Error(), "failed to read existing meta page") {
+		t.Fatalf("expected existing meta read error, got %v", err)
+	}
+	if got := backend.Size(); got != int64(len("partial meta")) {
+		t.Fatalf("partial backend was overwritten: size = %d", got)
+	}
+}
+
+func TestNewPageManagerRejectsTruncatedDatabaseFile(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(10, backend)
+	pm, err := NewPageManager(pool)
+	if err != nil {
+		t.Fatalf("create page manager: %v", err)
+	}
+	if _, err := pm.AllocatePage(PageTypeLeaf); err != nil {
+		t.Fatalf("allocate page: %v", err)
+	}
+	if _, err := pm.AllocatePage(PageTypeLeaf); err != nil {
+		t.Fatalf("allocate second page: %v", err)
+	}
+	if err := pm.Sync(); err != nil {
+		t.Fatalf("sync page manager: %v", err)
+	}
+	if err := backend.Truncate(int64(PageSize * 2)); err != nil {
+		t.Fatalf("truncate backend: %v", err)
+	}
+
+	_, err = NewPageManager(NewBufferPool(10, backend))
+	if err == nil {
+		t.Fatal("expected truncated database file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "database file truncated") {
+		t.Fatalf("expected truncated database error, got %v", err)
+	}
+}
+
+func TestNewPageManagerRejectsPartialTrailingPage(t *testing.T) {
+	backend := NewMemory()
+	meta := NewMetaPage()
+	page := NewPage(0, PageTypeMeta)
+	meta.Serialize(page.Data)
+	if _, err := backend.WriteAt(page.Data, 0); err != nil {
+		t.Fatalf("write meta page: %v", err)
+	}
+	if err := backend.Truncate(int64(PageSize + 1)); err != nil {
+		t.Fatalf("extend partial trailing page: %v", err)
+	}
+
+	_, err := NewPageManager(NewBufferPool(10, backend))
+	if err == nil {
+		t.Fatal("expected partial trailing page to be rejected")
+	}
+	if !strings.Contains(err.Error(), "partial page") {
+		t.Fatalf("expected partial page error, got %v", err)
 	}
 }
 
@@ -502,6 +572,50 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 	pm2.Close()
 	pool2.Close()
 	backend2.Close()
+}
+
+func TestPageManagerFreeListPagesUpdateMetaPageCount(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(100, backend)
+
+	pm, err := NewPageManager(pool)
+	if err != nil {
+		t.Fatalf("Failed to create page manager: %v", err)
+	}
+
+	page, err := pm.AllocatePage(PageTypeLeaf)
+	if err != nil {
+		t.Fatalf("Failed to allocate page: %v", err)
+	}
+	pageID := page.ID()
+	pool.Unpin(page)
+
+	if err := pm.FreePage(pageID); err != nil {
+		t.Fatalf("Failed to free page: %v", err)
+	}
+	if err := pm.Close(); err != nil {
+		t.Fatalf("Failed to close page manager: %v", err)
+	}
+	pool.Close()
+
+	metaPage := make([]byte, PageSize)
+	if _, err := backend.ReadAt(metaPage, 0); err != nil {
+		t.Fatalf("Failed to read persisted meta page: %v", err)
+	}
+
+	meta := &MetaPage{}
+	if err := meta.Deserialize(metaPage); err != nil {
+		t.Fatalf("Failed to deserialize persisted meta page: %v", err)
+	}
+	if err := meta.Validate(); err != nil {
+		t.Fatalf("Persisted meta page is invalid: %v", err)
+	}
+	if meta.FreeListID == 0 {
+		t.Fatal("Expected persisted free list page ID")
+	}
+	if meta.FreeListID >= meta.PageCount {
+		t.Fatalf("FreeListID %d must be below PageCount %d", meta.FreeListID, meta.PageCount)
+	}
 }
 
 func TestPageManagerFreePageReuse(t *testing.T) {

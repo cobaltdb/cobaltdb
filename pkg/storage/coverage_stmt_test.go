@@ -80,14 +80,15 @@ func TestFlushDirtyPages(t *testing.T) {
 
 	// Write multiple pages to backend first, then load and dirty them
 	for i := uint32(0); i < 3; i++ {
-		data := make([]byte, PageSize)
-		copy(data, []byte("page"))
-		mem.WriteAt(data, int64(i)*int64(PageSize))
+		pageType := PageTypeLeaf
+		if i == 0 {
+			pageType = PageTypeMeta
+		}
+		writeTestPage(t, mem, i, pageType)
 		page, err := bp.GetPage(i)
 		if err != nil {
 			t.Fatalf("GetPage(%d): %v", i, err)
 		}
-		page.SetData(data)
 		page.SetDirty(true)
 	}
 
@@ -575,9 +576,11 @@ func TestBufferPoolEvictionDirty(t *testing.T) {
 	bp := NewBufferPool(3, mem)
 
 	for i := 0; i < 5; i++ {
-		data := make([]byte, PageSize)
-		data[0] = byte(i)
-		mem.WriteAt(data, int64(i)*int64(PageSize))
+		pageType := PageTypeLeaf
+		if i == 0 {
+			pageType = PageTypeMeta
+		}
+		writeTestPage(t, mem, uint32(i), pageType)
 	}
 
 	pages := make([]*CachedPage, 3)
@@ -867,11 +870,9 @@ func TestNewBufferPoolWithExistingData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := make([]byte, PageSize*3)
-	for i := 0; i < 3; i++ {
-		copy(data[i*PageSize:], []byte("page"))
-	}
-	disk.WriteAt(data, 0)
+	writeTestPage(t, disk, 0, PageTypeMeta)
+	writeTestPage(t, disk, 1, PageTypeLeaf)
+	writeTestPage(t, disk, 2, PageTypeLeaf)
 	disk.Close()
 
 	disk2, err := OpenDisk(dbPath)

@@ -132,6 +132,185 @@ func TestWALEncryptionEmptyData(t *testing.T) {
 	wal.Close()
 }
 
+func TestWALEncryptionRejectsCiphertextPayloadOverflow(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "overflow.wal")
+
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	defer wal.Close()
+
+	c := makeTestCipher(t)
+	wal.SetEncryptionCipher(c)
+
+	record := &WALRecord{
+		TxnID: 1,
+		Type:  WALInsert,
+		Data:  make([]byte, walMaxRecordDataSize),
+	}
+	err = wal.Append(record)
+	if err == nil || !errors.Is(err, ErrInvalidWALRecord) && !containsBytes([]byte(err.Error()), []byte("encrypted WAL record data size")) {
+		t.Fatalf("expected encrypted WAL size error, got %v", err)
+	}
+	if record.LSN != 0 {
+		t.Fatalf("rejected record LSN was mutated: %d", record.LSN)
+	}
+	if wal.LSN() != 0 {
+		t.Fatalf("rejected append advanced WAL LSN: %d", wal.LSN())
+	}
+}
+
+func TestWALEncryptionAllowsMaxFittingCiphertextPayload(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "max-fitting.wal")
+
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+
+	c := makeTestCipher(t)
+	wal.SetEncryptionCipher(c)
+	maxPlaintext := walMaxRecordDataSize - c.NonceSize() - c.Overhead()
+	if err := wal.Append(&WALRecord{
+		TxnID: 1,
+		Type:  WALInsert,
+		Data:  make([]byte, maxPlaintext),
+	}); err != nil {
+		t.Fatalf("Append max fitting encrypted record: %v", err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("Reopen WAL: %v", err)
+	}
+	reopened.SetEncryptionCipher(c)
+	defer reopened.Close()
+	if reopened.LSN() != 1 {
+		t.Fatalf("expected reopened LSN 1, got %d", reopened.LSN())
+	}
+}
+
+func TestWALEncryptionBatchRejectsCiphertextPayloadOverflow(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "batch-overflow.wal")
+
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	defer wal.Close()
+
+	wal.SetEncryptionCipher(makeTestCipher(t))
+	err = wal.AppendBatch([]*WALRecord{{
+		TxnID: 1,
+		Type:  WALInsert,
+		Data:  make([]byte, walMaxRecordDataSize),
+	}})
+	if err == nil || !containsBytes([]byte(err.Error()), []byte("encrypted WAL record data size")) {
+		t.Fatalf("expected encrypted batch WAL size error, got %v", err)
+	}
+	if wal.LSN() != 0 {
+		t.Fatalf("rejected batch advanced WAL LSN: %d", wal.LSN())
+	}
+}
+
+func TestWALAppendBatchWithoutSyncEncryptedOverflowIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "batch-without-sync-overflow.wal")
+
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	c := makeTestCipher(t)
+	wal.SetEncryptionCipher(c)
+
+	err = wal.AppendBatchWithoutSync([]*WALRecord{
+		{TxnID: 1, Type: WALInsert, Data: []byte("valid")},
+		{TxnID: 1, Type: WALInsert, Data: make([]byte, walMaxRecordDataSize)},
+	})
+	if err == nil || !containsBytes([]byte(err.Error()), []byte("encrypted WAL record data size")) {
+		t.Fatalf("expected encrypted batch WAL size error, got %v", err)
+	}
+	if wal.LSN() != 0 {
+		t.Fatalf("rejected batch advanced WAL LSN: %d", wal.LSN())
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("Reopen WAL: %v", err)
+	}
+	reopened.SetEncryptionCipher(c)
+	defer reopened.Close()
+	if reopened.LSN() != 0 {
+		t.Fatalf("rejected batch persisted partial record, reopened LSN %d", reopened.LSN())
+	}
+}
+
+func TestWALAppendBatchConcurrentCipherConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "batch-cipher-concurrent.wal")
+
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+
+	c := makeTestCipher(t)
+	wal.SetEncryptionCipher(c)
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				wal.SetEncryptionCipher(c)
+			}
+		}
+	}()
+
+	for i := 0; i < 20; i++ {
+		if err := wal.AppendBatch([]*WALRecord{{
+			TxnID: uint64(i + 1),
+			Type:  WALInsert,
+			Data:  []byte("encrypted batch payload"),
+		}}); err != nil {
+			close(stop)
+			<-done
+			t.Fatalf("AppendBatch %d: %v", i, err)
+		}
+	}
+	close(stop)
+	<-done
+
+	if err := wal.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("Reopen WAL: %v", err)
+	}
+	reopened.SetEncryptionCipher(c)
+	defer reopened.Close()
+	if reopened.LSN() != 20 {
+		t.Fatalf("expected reopened LSN 20, got %d", reopened.LSN())
+	}
+}
+
 func TestWALEncryptedAppendRestoresDataOnWriteError(t *testing.T) {
 	dir := t.TempDir()
 	walPath := filepath.Join(dir, "restore-on-error.wal")
@@ -158,6 +337,12 @@ func TestWALEncryptedAppendRestoresDataOnWriteError(t *testing.T) {
 	}
 	if string(record.Data) != string(original) {
 		t.Fatalf("record data was not restored: got %q, want %q", record.Data, original)
+	}
+	if record.LSN != 0 {
+		t.Fatalf("failed append assigned record LSN: got %d, want 0", record.LSN)
+	}
+	if wal.LSN() != 0 {
+		t.Fatalf("failed append advanced WAL LSN: got %d, want 0", wal.LSN())
 	}
 }
 

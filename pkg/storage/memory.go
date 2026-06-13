@@ -15,6 +15,8 @@ const (
 	// defaultMaxMemorySize is the default maximum size for MemoryBackend (1GB).
 	// Prevents unbounded growth in benchmarks and tests.
 	defaultMaxMemorySize = 1024 * 1024 * 1024
+
+	maxMemoryOffset = int64(1<<63 - 1)
 )
 
 // MemoryBackend implements the Backend interface using in-memory storage
@@ -78,6 +80,9 @@ func (m *MemoryBackend) WriteAt(buf []byte, offset int64) (int, error) {
 		return 0, ErrBackendClosed
 	}
 
+	if int64(len(buf)) > maxMemoryOffset-offset {
+		return 0, ErrInvalidSize
+	}
 	endOffset := offset + int64(len(buf))
 
 	// Enforce size limit

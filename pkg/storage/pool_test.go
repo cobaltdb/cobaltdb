@@ -2,6 +2,8 @@ package storage
 
 import (
 	"errors"
+	"io"
+	"strings"
 	"testing"
 )
 
@@ -86,6 +88,57 @@ func TestBufferPoolGetPage(t *testing.T) {
 
 	if page2.ID() != pageID {
 		t.Errorf("Expected PageID %d, got %d", pageID, page2.ID())
+	}
+}
+
+func TestBufferPoolGetPageRejectsMismatchedPageHeaderID(t *testing.T) {
+	backend := NewMemory()
+	page := NewPage(2, PageTypeLeaf)
+	if _, err := backend.WriteAt(page.Data, int64(PageSize)); err != nil {
+		t.Fatalf("write corrupt page: %v", err)
+	}
+
+	pool, err := NewBufferPoolWithError(10, backend)
+	if err != nil {
+		t.Fatalf("NewBufferPoolWithError: %v", err)
+	}
+	defer pool.Close()
+
+	_, err = pool.GetPage(1)
+	if !errors.Is(err, ErrPageCorrupted) {
+		t.Fatalf("GetPage error = %v, want ErrPageCorrupted", err)
+	}
+	if !strings.Contains(err.Error(), "does not match requested page") {
+		t.Fatalf("expected page ID mismatch error, got %v", err)
+	}
+	if pool.PageCount() != 0 {
+		t.Fatalf("corrupt page should not be cached, cached pages = %d", pool.PageCount())
+	}
+}
+
+func TestBufferPoolGetPageRejectsInvalidPageHeaderType(t *testing.T) {
+	backend := NewMemory()
+	page := NewPage(1, PageTypeLeaf)
+	page.Data[4] = 0xff
+	if _, err := backend.WriteAt(page.Data, int64(PageSize)); err != nil {
+		t.Fatalf("write corrupt page: %v", err)
+	}
+
+	pool, err := NewBufferPoolWithError(10, backend)
+	if err != nil {
+		t.Fatalf("NewBufferPoolWithError: %v", err)
+	}
+	defer pool.Close()
+
+	_, err = pool.GetPage(1)
+	if !errors.Is(err, ErrPageCorrupted) {
+		t.Fatalf("GetPage error = %v, want ErrPageCorrupted", err)
+	}
+	if !strings.Contains(err.Error(), "invalid page type") {
+		t.Fatalf("expected invalid page type error, got %v", err)
+	}
+	if pool.PageCount() != 0 {
+		t.Fatalf("corrupt page should not be cached, cached pages = %d", pool.PageCount())
 	}
 }
 
@@ -207,6 +260,90 @@ func TestBufferPoolPinUnpin(t *testing.T) {
 	page.Pin()
 	if !page.IsPinned() {
 		t.Error("Expected page to be pinned after Pin")
+	}
+}
+
+func TestBufferPoolFlushPageRejectsShortWrite(t *testing.T) {
+	backend := &shortWriteBackend{
+		Backend: NewMemory(),
+		limit:   PageSize - 1,
+	}
+	pool := NewBufferPool(10, backend)
+	defer pool.Close()
+
+	page, err := pool.NewPage(PageTypeLeaf)
+	if err != nil {
+		t.Fatalf("NewPage: %v", err)
+	}
+
+	if err := pool.FlushPage(page); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("FlushPage short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if !page.IsDirty() {
+		t.Fatal("page should remain dirty after failed short write")
+	}
+}
+
+func TestBufferPoolFlushDirtyPagesDoesNotPanicWhenStopped(t *testing.T) {
+	backend := &shortWriteBackend{
+		Backend: NewMemory(),
+		limit:   PageSize - 1,
+	}
+	pool := NewBufferPool(10, backend)
+	pool.flushErrLimit = 1
+
+	page, err := pool.NewPage(PageTypeLeaf)
+	if err != nil {
+		t.Fatalf("NewPage: %v", err)
+	}
+	pool.Unpin(page)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("flushDirtyPages panicked after flusher stopped: %v", r)
+		}
+	}()
+	pool.flushDirtyPages()
+
+	if pool.flushRunning {
+		t.Fatal("flushDirtyPages should not restart a stopped flusher")
+	}
+	if pool.flushDone != nil {
+		t.Fatal("flushDirtyPages should leave stopped flusher channel nil")
+	}
+}
+
+func TestBufferPoolGetPageRejectsShortRead(t *testing.T) {
+	mem := NewMemory()
+	writeTestPage(t, mem, 1, PageTypeLeaf)
+	backend := &shortReadBackend{
+		Backend: mem,
+		limit:   PageSize - 1,
+	}
+	pool := NewBufferPool(10, backend)
+	defer pool.Close()
+
+	_, err := pool.GetPage(1)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("GetPage short read error = %v, want %v", err, io.ErrUnexpectedEOF)
+	}
+	if pool.PageCount() != 0 {
+		t.Fatalf("short-read page should not be cached, cached pages = %d", pool.PageCount())
+	}
+}
+
+func TestCachedPageUnpinDoesNotUnderflow(t *testing.T) {
+	page := &CachedPage{}
+
+	page.Unpin()
+	page.Unpin()
+	if page.IsPinned() {
+		t.Fatal("page should remain unpinned after redundant Unpin calls")
+	}
+
+	page.Pin()
+	if !page.IsPinned() {
+		t.Fatal("page should be pinned after Pin following redundant Unpin calls")
 	}
 }
 

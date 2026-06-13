@@ -237,6 +237,7 @@ func TestMetaPageValidateErrors(t *testing.T) {
 				copy(m.Magic[:], MagicString)
 				m.Version = 999
 				m.PageSize = PageSize
+				m.PageCount = 1
 			},
 			wantValid: false,
 		},
@@ -246,6 +247,39 @@ func TestMetaPageValidateErrors(t *testing.T) {
 				copy(m.Magic[:], MagicString)
 				m.Version = Version
 				m.PageSize = 1024
+				m.PageCount = 1
+			},
+			wantValid: false,
+		},
+		{
+			name: "zero page count",
+			setupFunc: func(m *MetaPage) {
+				copy(m.Magic[:], MagicString)
+				m.Version = Version
+				m.PageSize = PageSize
+				m.PageCount = 0
+			},
+			wantValid: false,
+		},
+		{
+			name: "root page outside page count",
+			setupFunc: func(m *MetaPage) {
+				copy(m.Magic[:], MagicString)
+				m.Version = Version
+				m.PageSize = PageSize
+				m.PageCount = 2
+				m.RootPageID = 2
+			},
+			wantValid: false,
+		},
+		{
+			name: "free list outside page count",
+			setupFunc: func(m *MetaPage) {
+				copy(m.Magic[:], MagicString)
+				m.Version = Version
+				m.PageSize = PageSize
+				m.PageCount = 2
+				m.FreeListID = 2
 			},
 			wantValid: false,
 		},
@@ -743,7 +777,7 @@ func TestDiskTruncateExtended(t *testing.T) {
 	}
 }
 
-// TestCompressedBackendSize tests Size() delegation.
+// TestCompressedBackendSize tests logical size tracking.
 func TestCompressedBackendSize(t *testing.T) {
 	mem := NewMemory()
 	cb, err := NewCompressedBackend(mem, DefaultCompressionConfig())
@@ -752,13 +786,16 @@ func TestCompressedBackendSize(t *testing.T) {
 	}
 	defer cb.Close()
 
-	if cb.Size() != mem.Size() {
-		t.Errorf("Expected Size()=%d, got %d", mem.Size(), cb.Size())
+	if cb.Size() != 0 {
+		t.Errorf("Expected initial Size()=0, got %d", cb.Size())
 	}
 
 	_, _ = cb.WriteAt(make([]byte, PageSize), 0)
-	if cb.Size() != mem.Size() {
-		t.Errorf("Expected Size()=%d after write, got %d", mem.Size(), cb.Size())
+	if cb.Size() != int64(PageSize) {
+		t.Errorf("Expected logical Size()=%d after write, got %d", PageSize, cb.Size())
+	}
+	if mem.Size() >= int64(PageSize) {
+		t.Errorf("expected compressed physical size below %d, got %d", PageSize, mem.Size())
 	}
 }
 

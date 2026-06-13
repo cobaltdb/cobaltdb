@@ -1,12 +1,15 @@
 package storage
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,6 +26,180 @@ func TestOpenWAL(t *testing.T) {
 
 	if wal == nil {
 		t.Fatal("WAL is nil")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Failed to stat WAL: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("WAL permissions = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestOpenWALRestrictsExistingFilePermissions(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "loose.wal")
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatalf("Failed to create loose WAL: %v", err)
+	}
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	defer wal.Close()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Failed to stat WAL: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("WAL permissions = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestOpenWALRejectsSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "target.wal")
+	if err := os.WriteFile(target, nil, 0600); err != nil {
+		t.Fatalf("WriteFile target: %v", err)
+	}
+
+	link := filepath.Join(tmpDir, "link.wal")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := OpenWAL(link)
+	if err == nil {
+		t.Fatal("expected symlink WAL path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestOpenWALRejectsSymlinkParentComponent(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	if err := os.Mkdir(targetDir, 0750); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	linkDir := filepath.Join(tmpDir, "link")
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	walPath := filepath.Join(linkDir, "nested", "test.wal")
+	wal, err := OpenWAL(walPath)
+	if wal != nil {
+		_ = wal.Close()
+	}
+	if err == nil {
+		t.Fatal("expected symlink parent component to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "nested", "test.wal")); !os.IsNotExist(statErr) {
+		t.Fatalf("WAL file should not be created through symlink parent, stat err=%v", statErr)
+	}
+}
+
+func TestOpenWALDoesNotChmodSymlinkRaceTarget(t *testing.T) {
+	tmpDir := t.TempDir()
+	walPath := filepath.Join(tmpDir, "race.wal")
+	targetPath := filepath.Join(tmpDir, "target.wal")
+	if err := os.WriteFile(walPath, nil, 0600); err != nil {
+		t.Fatalf("WriteFile WAL: %v", err)
+	}
+	if err := os.WriteFile(targetPath, nil, 0644); err != nil {
+		t.Fatalf("WriteFile target: %v", err)
+	}
+
+	originalOpenFile := walOpenFile
+	defer func() { walOpenFile = originalOpenFile }()
+
+	swapped := false
+	walOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		if name == filepath.Clean(walPath) && !swapped {
+			swapped = true
+			if err := os.Remove(walPath); err != nil {
+				t.Fatalf("remove WAL: %v", err)
+			}
+			if err := os.Symlink(targetPath, walPath); err != nil {
+				t.Skipf("symlink not supported: %v", err)
+			}
+		}
+		return originalOpenFile(name, flag, perm)
+	}
+
+	wal, err := OpenWAL(walPath)
+	if wal != nil {
+		_ = wal.Close()
+	}
+	if err == nil {
+		t.Fatal("expected raced WAL path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "changed while opening") {
+		t.Fatalf("expected changed-while-opening error, got %v", err)
+	}
+	info, statErr := os.Stat(targetPath)
+	if statErr != nil {
+		t.Fatalf("stat target WAL: %v", statErr)
+	}
+	if info.Mode().Perm() != 0644 {
+		t.Fatalf("race target permissions = %v, want 0644", info.Mode().Perm())
+	}
+}
+
+func TestOpenWALCreateRejectsSymlinkRace(t *testing.T) {
+	tmpDir := t.TempDir()
+	walPath := filepath.Join(tmpDir, "new-race.wal")
+	targetPath := filepath.Join(tmpDir, "target.wal")
+	if err := os.WriteFile(targetPath, nil, 0644); err != nil {
+		t.Fatalf("WriteFile target: %v", err)
+	}
+
+	originalOpenFile := walOpenFile
+	defer func() { walOpenFile = originalOpenFile }()
+
+	swapped := false
+	walOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		if name == filepath.Clean(walPath) && !swapped {
+			swapped = true
+			if err := os.Symlink(targetPath, walPath); err != nil {
+				t.Skipf("symlink not supported: %v", err)
+			}
+		}
+		return originalOpenFile(name, flag, perm)
+	}
+
+	wal, err := OpenWAL(walPath)
+	if wal != nil {
+		_ = wal.Close()
+	}
+	if err == nil {
+		t.Fatal("expected raced WAL create path to be rejected")
+	}
+	info, statErr := os.Stat(targetPath)
+	if statErr != nil {
+		t.Fatalf("stat target WAL: %v", statErr)
+	}
+	if info.Mode().Perm() != 0644 {
+		t.Fatalf("race target permissions = %v, want 0644", info.Mode().Perm())
+	}
+}
+
+func TestOpenWALRejectsNonRegularFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := OpenWAL(tmpDir)
+	if err == nil {
+		t.Fatal("expected directory WAL path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected regular file rejection, got %v", err)
 	}
 }
 
@@ -76,6 +253,32 @@ func TestWALAppendRejectsNilRecords(t *testing.T) {
 				t.Fatalf("expected ErrInvalidWALRecord, got %v", err)
 			}
 		})
+	}
+}
+
+type shortNilWALWriter struct {
+	limit int
+}
+
+func (w shortNilWALWriter) Write(p []byte) (int, error) {
+	if len(p) > w.limit {
+		return w.limit, nil
+	}
+	return len(p), nil
+}
+
+var errWALFlushTest = errors.New("wal flush failed")
+
+type checkpointFailingWALWriter struct{}
+
+func (f checkpointFailingWALWriter) Write(_ []byte) (int, error) {
+	return 0, errWALFlushTest
+}
+
+func TestWriteWALFullRejectsShortWrite(t *testing.T) {
+	err := writeWALFull(shortNilWALWriter{limit: 3}, []byte("abcdef"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writeWALFull short write error = %v, want %v", err, io.ErrShortWrite)
 	}
 }
 
@@ -339,6 +542,38 @@ func TestWALRecoverRejectsUnknownRecordType(t *testing.T) {
 	}
 }
 
+func TestOpenWALRejectsNonMonotonicLSN(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "non-monotonic.wal")
+
+	var walData []byte
+	for _, record := range []*WALRecord{
+		{LSN: 1, TxnID: 1, Type: WALInsert, Data: []byte("first")},
+		{LSN: 1, TxnID: 2, Type: WALInsert, Data: []byte("duplicate-lsn")},
+	} {
+		buf := make([]byte, walHeaderSize+len(record.Data)+4)
+		if err := writeRecordHeader(buf[:walHeaderSize], record, len(record.Data)); err != nil {
+			t.Fatalf("writeRecordHeader: %v", err)
+		}
+		copy(buf[walHeaderSize:], record.Data)
+		crcHash := crc32.ChecksumIEEE(buf[:walHeaderSize])
+		crcHash = crc32.Update(crcHash, crc32.IEEETable, record.Data)
+		binary.LittleEndian.PutUint32(buf[walHeaderSize+len(record.Data):], crcHash)
+		walData = append(walData, buf...)
+	}
+	if err := os.WriteFile(path, walData, 0600); err != nil {
+		t.Fatalf("write WAL: %v", err)
+	}
+
+	_, err := OpenWAL(path)
+	if !errors.Is(err, ErrWALCorrupted) {
+		t.Fatalf("expected ErrWALCorrupted, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "non-monotonic WAL LSN") {
+		t.Fatalf("expected non-monotonic LSN error, got %v", err)
+	}
+}
+
 func TestWALLSN(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "test.wal")
@@ -477,9 +712,7 @@ func TestWALApplyRecordBoundsCheck(t *testing.T) {
 	backend := NewMemory()
 	pool := NewBufferPool(4, backend)
 	defer pool.Close()
-	if _, err := backend.WriteAt(make([]byte, PageSize), int64(PageSize)); err != nil {
-		t.Fatalf("failed to prime test page: %v", err)
-	}
+	writeTestPage(t, backend, 1, PageTypeLeaf)
 
 	wal := &WAL{}
 	record := &WALRecord{
@@ -492,6 +725,86 @@ func TestWALApplyRecordBoundsCheck(t *testing.T) {
 	err := wal.applyRecord(pool, record)
 	if !errors.Is(err, ErrWALCorrupted) {
 		t.Fatalf("expected ErrWALCorrupted, got %v", err)
+	}
+}
+
+func TestWALRecoverRejectsNilBufferPool(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "nil-recovery-target.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	defer wal.Close()
+
+	if err := wal.Recover(nil); !errors.Is(err, ErrInvalidWALRecoveryTarget) {
+		t.Fatalf("expected ErrInvalidWALRecoveryTarget, got %v", err)
+	}
+}
+
+func TestWALApplyRecordRejectsNilInputs(t *testing.T) {
+	wal := &WAL{}
+	record := &WALRecord{Type: WALUpdate, PageID: 1, Data: []byte("data")}
+
+	if err := wal.applyRecord(nil, record); !errors.Is(err, ErrInvalidWALRecoveryTarget) {
+		t.Fatalf("expected ErrInvalidWALRecoveryTarget, got %v", err)
+	}
+
+	backend := NewMemory()
+	pool := NewBufferPool(4, backend)
+	defer pool.Close()
+
+	if err := wal.applyRecord(pool, nil); !errors.Is(err, ErrInvalidWALRecord) {
+		t.Fatalf("expected ErrInvalidWALRecord, got %v", err)
+	}
+}
+
+func TestWALRecoveryBufferTrackerLimitsPendingRecords(t *testing.T) {
+	tracker := walRecoveryBufferTracker{records: walMaxRecoveryPendingRecords - 1}
+
+	if err := tracker.add(&WALRecord{Type: WALInsert, Data: []byte("ok")}); err != nil {
+		t.Fatalf("add at record limit: %v", err)
+	}
+
+	err := tracker.add(&WALRecord{Type: WALInsert})
+	if !errors.Is(err, ErrWALCorrupted) {
+		t.Fatalf("expected WAL corruption at pending record limit, got %v", err)
+	}
+}
+
+func TestWALRecoveryBufferTrackerLimitsPendingBytes(t *testing.T) {
+	tracker := walRecoveryBufferTracker{bytes: walMaxRecoveryPendingBytes - 1}
+
+	if err := tracker.add(&WALRecord{Type: WALInsert, Data: []byte("x")}); err != nil {
+		t.Fatalf("add at byte limit: %v", err)
+	}
+
+	err := tracker.add(&WALRecord{Type: WALInsert, Data: []byte("x")})
+	if !errors.Is(err, ErrWALCorrupted) {
+		t.Fatalf("expected WAL corruption at pending byte limit, got %v", err)
+	}
+}
+
+func TestWALRecoveryBufferTrackerRemoveReleasesPendingBudget(t *testing.T) {
+	tracker := walRecoveryBufferTracker{}
+	records := []*WALRecord{
+		{Type: WALInsert, Data: []byte("abc")},
+		{Type: WALUpdate, Data: []byte("de")},
+	}
+
+	for _, record := range records {
+		if err := tracker.add(record); err != nil {
+			t.Fatalf("add pending record: %v", err)
+		}
+	}
+	tracker.remove(records)
+
+	if tracker.records != 0 || tracker.bytes != 0 {
+		t.Fatalf("pending budget after remove = records:%d bytes:%d, want zero", tracker.records, tracker.bytes)
+	}
+	if err := tracker.add(&WALRecord{Type: WALDelete, Data: []byte("z")}); err != nil {
+		t.Fatalf("add after remove: %v", err)
 	}
 }
 
@@ -595,6 +908,188 @@ func TestWALGroupCommitSyncOff(t *testing.T) {
 
 	if wal.LSN() != 1 {
 		t.Fatalf("expected LSN=1, got %d", wal.LSN())
+	}
+}
+
+func TestWALGroupCommitCanBeReconfiguredAndReenabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "groupcommit_reenable.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	wal.EnableGroupCommit(0, time.Hour)
+	wal.EnableGroupCommit(0, 5*time.Millisecond)
+	if err := wal.Append(&WALRecord{TxnID: 1, Type: WALInsert, Data: []byte("first")}); err != nil {
+		t.Fatalf("append after reconfigure: %v", err)
+	}
+	wal.DisableGroupCommit()
+
+	wal.EnableGroupCommit(0, 5*time.Millisecond)
+	done := make(chan error, 1)
+	go func() {
+		done <- wal.Append(&WALRecord{TxnID: 2, Type: WALInsert, Data: []byte("second")})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("append after re-enable: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("append after re-enable did not complete")
+	}
+	wal.DisableGroupCommit()
+
+	if wal.LSN() != 2 {
+		t.Fatalf("expected LSN=2, got %d", wal.LSN())
+	}
+}
+
+func TestWALCheckpointFlushesPendingGroupCommit(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "groupcommit_checkpoint.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	pool := NewBufferPool(4, NewMemory())
+	defer pool.Close()
+	wal.EnableGroupCommit(2, 0)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- wal.Append(&WALRecord{TxnID: 1, Type: WALInsert, Data: []byte("pending")})
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	if err := wal.Checkpoint(pool); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("pending append returned error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("checkpoint did not flush pending group commit append")
+	}
+	wal.DisableGroupCommit()
+}
+
+func TestWALCheckpointStopsBeforeTruncateOnPendingFlushError(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "checkpoint_flush_error.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	if err := wal.Append(&WALRecord{TxnID: 1, Type: WALInsert, Data: []byte("durable-before-checkpoint")}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat WAL before checkpoint: %v", err)
+	}
+	sizeBefore := info.Size()
+
+	wal.mu.Lock()
+	wal.bufWriter = bufio.NewWriter(checkpointFailingWALWriter{})
+	if _, err := wal.bufWriter.Write([]byte("pending")); err != nil {
+		wal.mu.Unlock()
+		t.Fatalf("buffer pending WAL bytes: %v", err)
+	}
+	wal.mu.Unlock()
+
+	pool := NewBufferPool(4, NewMemory())
+	defer pool.Close()
+
+	err = wal.Checkpoint(pool)
+	if !errors.Is(err, errWALFlushTest) {
+		t.Fatalf("expected checkpoint flush error, got %v", err)
+	}
+
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat WAL after checkpoint: %v", err)
+	}
+	if info.Size() != sizeBefore {
+		t.Fatalf("checkpoint changed WAL size after flush failure: got %d, want %d", info.Size(), sizeBefore)
+	}
+}
+
+func TestWALSyncFlushesPendingGroupCommitCallers(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "groupcommit_sync.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	wal.EnableGroupCommit(2, 0)
+	done := make(chan error, 1)
+	go func() {
+		done <- wal.Append(&WALRecord{TxnID: 1, Type: WALInsert, Data: []byte("pending")})
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	if err := wal.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("pending append returned error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Sync did not release pending group commit append")
+	}
+	wal.DisableGroupCommit()
+}
+
+func TestWALPendingSyncSnapshotDoesNotSignalLaterWaiters(t *testing.T) {
+	wal := &WAL{}
+	first := make(chan error, 1)
+	second := make(chan error, 1)
+
+	wal.groupCommitMu.Lock()
+	wal.pendingSyncs = append(wal.pendingSyncs, first)
+	wal.groupCommitMu.Unlock()
+
+	pending := wal.popPendingSyncs()
+
+	wal.groupCommitMu.Lock()
+	wal.pendingSyncs = append(wal.pendingSyncs, second)
+	wal.groupCommitMu.Unlock()
+
+	signalPendingSyncs(pending, nil)
+
+	select {
+	case err := <-first:
+		if err != nil {
+			t.Fatalf("first pending sync got error: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("first pending sync was not signaled")
+	}
+
+	select {
+	case err := <-second:
+		t.Fatalf("later pending sync was signaled by stale flush result: %v", err)
+	default:
 	}
 }
 

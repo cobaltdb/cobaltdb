@@ -2,7 +2,11 @@ package storage
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"io"
+	"math"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +40,29 @@ func TestCompressedBackendRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(buf, data) {
 		t.Fatal("data mismatch after round-trip")
+	}
+}
+
+func TestCompressedBackendRejectsShortCompressedWrite(t *testing.T) {
+	backend := &shortWriteBackend{
+		Backend: NewMemory(),
+		limit:   compressionHeaderSize - 1,
+	}
+	cb, err := NewCompressedBackend(backend, &CompressionConfig{
+		Enabled:  true,
+		Level:    CompressionLevelFast,
+		MinRatio: 1.0,
+	})
+	if err != nil {
+		t.Fatalf("failed to create compressed backend: %v", err)
+	}
+
+	data := bytes.Repeat([]byte("a"), PageSize)
+	if _, err := cb.WriteAt(data, 0); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("WriteAt short compressed write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if got := cb.Size(); got != 0 {
+		t.Fatalf("logical size after failed short write = %d, want 0", got)
 	}
 }
 
@@ -74,6 +101,73 @@ func TestCompressedBackendRawFallback(t *testing.T) {
 	}
 }
 
+func TestCompressedBackendRejectsShortDecompressedPage(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:  true,
+		Level:    CompressionLevelFast,
+		MinRatio: 1.0,
+	})
+	if err != nil {
+		t.Fatalf("failed to create compressed backend: %v", err)
+	}
+
+	compressed, _, err := cb.compressZlib([]byte("short page"))
+	if err != nil {
+		t.Fatalf("compressZlib failed: %v", err)
+	}
+
+	header := make([]byte, compressionHeaderSize)
+	copy(header[:4], compressionMagicZlib)
+	binary.LittleEndian.PutUint16(header[4:6], uint16(PageSize))
+	binary.LittleEndian.PutUint16(header[6:8], uint16(len(compressed)))
+
+	if _, err := mem.WriteAt(append(header, compressed...), 0); err != nil {
+		t.Fatalf("WriteAt corrupt page failed: %v", err)
+	}
+
+	buf := make([]byte, PageSize)
+	if _, err := cb.ReadAt(buf, 0); err == nil {
+		t.Fatal("expected short decompressed page to be rejected")
+	}
+}
+
+func TestCompressedBackendRejectsTruncatedPayloadFromHeader(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:  true,
+		Level:    CompressionLevelFast,
+		MinRatio: 1.0,
+	})
+	if err != nil {
+		t.Fatalf("failed to create compressed backend: %v", err)
+	}
+
+	compressed, _, err := cb.compressZlib(bytes.Repeat([]byte("a"), PageSize))
+	if err != nil {
+		t.Fatalf("compressZlib failed: %v", err)
+	}
+	if len(compressed) < 2 {
+		t.Fatalf("compressed payload unexpectedly short: %d", len(compressed))
+	}
+
+	header := make([]byte, compressionHeaderSize)
+	copy(header[:4], compressionMagicZlib)
+	binary.LittleEndian.PutUint16(header[4:6], uint16(PageSize))
+	binary.LittleEndian.PutUint16(header[6:8], uint16(len(compressed)))
+
+	truncated := append(header, compressed[:len(compressed)-1]...)
+	if _, err := mem.WriteAt(truncated, 0); err != nil {
+		t.Fatalf("WriteAt corrupt page failed: %v", err)
+	}
+
+	buf := make([]byte, PageSize)
+	_, err = cb.ReadAt(buf, 0)
+	if err == nil || !strings.Contains(err.Error(), "payload truncated") {
+		t.Fatalf("expected truncated payload error, got %v", err)
+	}
+}
+
 func TestCompressedBackendDisabled(t *testing.T) {
 	mem := NewMemory()
 	config := &CompressionConfig{
@@ -103,6 +197,61 @@ func TestCompressedBackendDisabled(t *testing.T) {
 	}
 }
 
+type laxCompressedBackend struct {
+	truncateCalled bool
+	truncateSize   int64
+}
+
+func (b *laxCompressedBackend) ReadAt([]byte, int64) (int, error) { return 0, io.EOF }
+func (b *laxCompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
+	return len(buf), nil
+}
+func (b *laxCompressedBackend) Sync() error  { return nil }
+func (b *laxCompressedBackend) Size() int64  { return 0 }
+func (b *laxCompressedBackend) Close() error { return nil }
+func (b *laxCompressedBackend) Truncate(size int64) error {
+	b.truncateCalled = true
+	b.truncateSize = size
+	return nil
+}
+
+func TestCompressedBackendRejectsWriteOffsetOverflowBeforeBackendWrite(t *testing.T) {
+	backend := &laxCompressedBackend{}
+	cb, err := NewCompressedBackend(backend, &CompressionConfig{Enabled: false})
+	if err != nil {
+		t.Fatalf("failed to create compressed backend: %v", err)
+	}
+
+	n, err := cb.WriteAt([]byte("x"), maxMemoryOffset)
+	if !errors.Is(err, ErrInvalidSize) {
+		t.Fatalf("WriteAt overflow error = %v, want %v", err, ErrInvalidSize)
+	}
+	if n != 0 {
+		t.Fatalf("WriteAt overflow wrote %d bytes, want 0", n)
+	}
+	if got := cb.Size(); got != 0 {
+		t.Fatalf("logical size after overflow write = %d, want 0", got)
+	}
+}
+
+func TestCompressedBackendRejectsNegativeTruncateBeforeBackendCall(t *testing.T) {
+	backend := &laxCompressedBackend{}
+	cb, err := NewCompressedBackend(backend, &CompressionConfig{Enabled: false})
+	if err != nil {
+		t.Fatalf("failed to create compressed backend: %v", err)
+	}
+
+	if err := cb.Truncate(-1); !errors.Is(err, ErrInvalidSize) {
+		t.Fatalf("Truncate negative error = %v, want %v", err, ErrInvalidSize)
+	}
+	if backend.truncateCalled {
+		t.Fatalf("underlying backend Truncate called with %d", backend.truncateSize)
+	}
+	if got := cb.Size(); got != 0 {
+		t.Fatalf("logical size after rejected truncate = %d, want 0", got)
+	}
+}
+
 func TestCompressedBackendNormalizesPartialConfig(t *testing.T) {
 	mem := NewMemory()
 	config := &CompressionConfig{Enabled: true}
@@ -121,6 +270,61 @@ func TestCompressedBackendNormalizesPartialConfig(t *testing.T) {
 	}
 	if config.Level != CompressionLevelNone || config.MinRatio != 0 {
 		t.Fatal("NewCompressedBackend should not mutate caller config")
+	}
+}
+
+func TestCompressedBackendRejectsInvalidConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *CompressionConfig
+		want   string
+	}{
+		{
+			name: "invalid algorithm",
+			config: &CompressionConfig{
+				Enabled:   true,
+				Algorithm: CompressionAlgorithm(99),
+				Level:     CompressionLevelFast,
+				MinRatio:  0.9,
+			},
+			want: "invalid compression algorithm",
+		},
+		{
+			name: "invalid level",
+			config: &CompressionConfig{
+				Enabled:  true,
+				Level:    CompressionLevel(99),
+				MinRatio: 0.9,
+			},
+			want: "invalid compression level",
+		},
+		{
+			name: "ratio above one",
+			config: &CompressionConfig{
+				Enabled:  true,
+				Level:    CompressionLevelFast,
+				MinRatio: 1.1,
+			},
+			want: "invalid compression min ratio",
+		},
+		{
+			name: "nan ratio",
+			config: &CompressionConfig{
+				Enabled:  true,
+				Level:    CompressionLevelFast,
+				MinRatio: math.NaN(),
+			},
+			want: "invalid compression min ratio",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewCompressedBackend(NewMemory(), tt.config)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got %v", tt.want, err)
+			}
+		})
 	}
 }
 
@@ -189,6 +393,40 @@ func TestCompressedBackendSavesSpace(t *testing.T) {
 	// MemoryBackend tracks max written offset.
 	if mem.Size() >= int64(PageSize) {
 		t.Logf("Note: compressed size %d >= PageSize %d (memory backend doesn't track sparse holes)", mem.Size(), PageSize)
+	}
+}
+
+func TestCompressedBackendInitializesLogicalSizeFromPhysicalSize(t *testing.T) {
+	mem := NewMemory()
+	config := &CompressionConfig{
+		Enabled:  true,
+		Level:    CompressionLevelBest,
+		MinRatio: 1.0,
+	}
+	cb, err := NewCompressedBackend(mem, config)
+	if err != nil {
+		t.Fatalf("failed to create compressed backend: %v", err)
+	}
+
+	page := bytes.Repeat([]byte("z"), PageSize)
+	if n, err := cb.WriteAt(page, int64(2*PageSize)); err != nil {
+		t.Fatalf("write failed: %v", err)
+	} else if n != PageSize {
+		t.Fatalf("compressed WriteAt returned %d, want logical %d", n, PageSize)
+	}
+	if got := cb.Size(); got != int64(3*PageSize) {
+		t.Fatalf("logical size after sparse compressed write = %d, want %d", got, 3*PageSize)
+	}
+	if mem.Size() >= int64(3*PageSize) {
+		t.Fatalf("test did not create compressed physical storage: physical=%d", mem.Size())
+	}
+
+	reopened, err := NewCompressedBackend(mem, config)
+	if err != nil {
+		t.Fatalf("failed to reopen compressed backend: %v", err)
+	}
+	if got := reopened.Size(); got != int64(3*PageSize) {
+		t.Fatalf("logical size after reopen = %d, want %d", got, 3*PageSize)
 	}
 }
 
