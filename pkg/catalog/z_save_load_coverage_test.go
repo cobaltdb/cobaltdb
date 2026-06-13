@@ -2,6 +2,8 @@ package catalog
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,24 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
+
+type shortCatalogWriter struct {
+	limit   int
+	written int
+}
+
+func (w *shortCatalogWriter) Write(p []byte) (int, error) {
+	remaining := w.limit - w.written
+	if remaining <= 0 {
+		return 0, nil
+	}
+	if len(p) > remaining {
+		w.written += remaining
+		return remaining, nil
+	}
+	w.written += len(p)
+	return len(p), nil
+}
 
 // newEmptyCatalog creates a catalog with initialized maps for save/load testing
 func newEmptyCatalog() *Catalog {
@@ -42,6 +62,14 @@ func createTestCatalogForSaveLoad(t *testing.T) *Catalog {
 	}
 	usersTable.buildColumnIndexCache()
 	cat.tables["users"] = usersTable
+	usersTree, err := btree.NewBTree(storage.NewBufferPool(4096, storage.NewMemory()))
+	if err != nil {
+		t.Fatalf("failed to create users tree: %v", err)
+	}
+	if err := usersTree.Put([]byte("user:1"), []byte("alice")); err != nil {
+		t.Fatalf("failed to seed users tree: %v", err)
+	}
+	cat.tableTrees["users"] = usersTree
 
 	// Create orders table
 	ordersTable := &TableDef{
@@ -50,6 +78,11 @@ func createTestCatalogForSaveLoad(t *testing.T) *Catalog {
 	}
 	ordersTable.buildColumnIndexCache()
 	cat.tables["orders"] = ordersTable
+	ordersTree, err := btree.NewBTree(storage.NewBufferPool(4096, storage.NewMemory()))
+	if err != nil {
+		t.Fatalf("failed to create orders tree: %v", err)
+	}
+	cat.tableTrees["orders"] = ordersTree
 
 	return cat
 }
@@ -57,6 +90,12 @@ func createTestCatalogForSaveLoad(t *testing.T) *Catalog {
 func TestSaveDataAndLoadSchemaLoadData(t *testing.T) {
 	tmpDir := t.TempDir()
 	cat := createTestCatalogForSaveLoad(t)
+	if err := os.WriteFile(filepath.Join(tmpDir, "schema.json"), []byte("stale"), 0644); err != nil {
+		t.Fatalf("seed schema.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "users.json"), []byte("stale"), 0644); err != nil {
+		t.Fatalf("seed users.json: %v", err)
+	}
 
 	// Save catalog
 	err := cat.SaveData(tmpDir)
@@ -68,9 +107,26 @@ func TestSaveDataAndLoadSchemaLoadData(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tmpDir, "schema.json")); os.IsNotExist(err) {
 		t.Fatal("schema.json not created")
 	}
+	for _, fileName := range []string{"schema.json", "users.json"} {
+		info, err := os.Stat(filepath.Join(tmpDir, fileName))
+		if err != nil {
+			t.Fatalf("stat %s: %v", fileName, err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("%s permissions = %v, want 0600", fileName, info.Mode().Perm())
+		}
+		matches, err := filepath.Glob(filepath.Join(tmpDir, "."+fileName+".tmp-*"))
+		if err != nil {
+			t.Fatalf("glob temp files for %s: %v", fileName, err)
+		}
+		if len(matches) != 0 {
+			t.Fatalf("SaveData left temporary files for %s: %v", fileName, matches)
+		}
+	}
 
 	// Load into fresh catalog
 	cat2 := newEmptyCatalog()
+	cat2.pool = storage.NewBufferPool(4096, storage.NewMemory())
 
 	err = cat2.LoadSchema(tmpDir)
 	if err != nil {
@@ -97,10 +153,22 @@ func TestSaveDataAndLoadSchemaLoadData(t *testing.T) {
 		t.Errorf("expected first column 'id', got %s", users.Columns[0].Name)
 	}
 
-	// LoadData (no table data files) — should succeed
+	// LoadData should import the exported table data files.
 	err = cat2.LoadData(tmpDir)
 	if err != nil {
-		t.Fatalf("LoadData no data: %v", err)
+		t.Fatalf("LoadData: %v", err)
+	}
+}
+
+func TestWriteCatalogDataFullRejectsShortWrite(t *testing.T) {
+	writer := &shortCatalogWriter{limit: 3}
+
+	n, err := writeCatalogDataFull(writer, []byte("abcdef"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writeCatalogDataFull short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if n != 3 {
+		t.Fatalf("writeCatalogDataFull wrote %d bytes, want 3", n)
 	}
 }
 
@@ -137,6 +205,81 @@ func TestSaveDataInvalidDir(t *testing.T) {
 	}
 }
 
+func TestSaveDataRejectsSymlinkDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	linkDir := filepath.Join(tmpDir, "export")
+	if err := os.Mkdir(targetDir, 0750); err != nil {
+		t.Fatalf("Mkdir target: %v", err)
+	}
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	cat := newEmptyCatalog()
+	err := cat.SaveData(linkDir)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("SaveData symlink dir error = %v, want symlink rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "schema.json")); !os.IsNotExist(err) {
+		t.Fatalf("SaveData wrote through symlink, stat error = %v", err)
+	}
+}
+
+func TestLoadSchemaRejectsSymlinkDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	linkDir := filepath.Join(tmpDir, "import")
+	if err := os.Mkdir(targetDir, 0750); err != nil {
+		t.Fatalf("Mkdir target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "schema.json"), []byte(`{"tables":{},"vectorIndexes":{}}`), 0600); err != nil {
+		t.Fatalf("WriteFile schema: %v", err)
+	}
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	cat := newEmptyCatalog()
+	err := cat.LoadSchema(linkDir)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("LoadSchema symlink dir error = %v, want symlink rejection", err)
+	}
+}
+
+func TestLoadDataRejectsSymlinkDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	linkDir := filepath.Join(tmpDir, "import")
+	if err := os.Mkdir(targetDir, 0750); err != nil {
+		t.Fatalf("Mkdir target: %v", err)
+	}
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	cat := createTestCatalogForSaveLoad(t)
+	err := cat.LoadData(linkDir)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("LoadData symlink dir error = %v, want symlink rejection", err)
+	}
+}
+
+func TestPrepareCatalogDataDirCreatesRestrictiveDirectory(t *testing.T) {
+	exportDir := filepath.Join(t.TempDir(), "export")
+	if err := prepareCatalogDataDir(exportDir, true); err != nil {
+		t.Fatalf("prepareCatalogDataDir: %v", err)
+	}
+
+	info, err := os.Stat(exportDir)
+	if err != nil {
+		t.Fatalf("Stat export dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0750 {
+		t.Fatalf("export dir mode = %o, want 750", got)
+	}
+}
+
 func TestLoadSchemaWithDefaults(t *testing.T) {
 	tmpDir := t.TempDir()
 	cat := newEmptyCatalog()
@@ -160,6 +303,7 @@ func TestLoadSchemaWithDefaults(t *testing.T) {
 
 	// Load into fresh catalog
 	cat2 := newEmptyCatalog()
+	cat2.pool = storage.NewBufferPool(4096, storage.NewMemory())
 	err = cat2.LoadSchema(tmpDir)
 	if err != nil {
 		t.Fatalf("LoadSchema: %v", err)
@@ -187,6 +331,7 @@ func TestSaveDataLoadDataRoundTrip(t *testing.T) {
 	}
 
 	cat2 := newEmptyCatalog()
+	cat2.pool = storage.NewBufferPool(4096, storage.NewMemory())
 	err = cat2.LoadSchema(tmpDir)
 	if err != nil {
 		t.Fatalf("LoadSchema: %v", err)
@@ -229,6 +374,150 @@ func TestLoadSchemaCorruptJSON(t *testing.T) {
 	err = cat.LoadSchema(tmpDir)
 	if err == nil {
 		t.Fatal("expected error for corrupt schema.json")
+	}
+}
+
+func TestLoadSchemaRejectsOversizedDataFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	cat := newEmptyCatalog()
+	schemaPath := filepath.Join(tmpDir, "schema.json")
+	file, err := os.OpenFile(schemaPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
+	if err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	if err := file.Truncate(maxCatalogDataFileBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("truncate schema: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close schema: %v", err)
+	}
+
+	err = cat.LoadSchema(tmpDir)
+	if err == nil || !strings.Contains(err.Error(), "catalog data file is too large") {
+		t.Fatalf("expected oversized schema rejection, got %v", err)
+	}
+}
+
+func TestLoadSchemaRejectsUnsafeDataFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	cat := newEmptyCatalog()
+	schemaPath := filepath.Join(tmpDir, "schema.json")
+	targetPath := filepath.Join(tmpDir, "target-schema.json")
+	if err := os.WriteFile(targetPath, []byte(`{"tables":{}}`), 0600); err != nil {
+		t.Fatalf("write target schema: %v", err)
+	}
+	if err := os.Symlink(targetPath, schemaPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	err := cat.LoadSchema(tmpDir)
+	if err == nil {
+		t.Fatal("expected symlink schema file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+
+	if err := os.Remove(schemaPath); err != nil {
+		t.Fatalf("remove schema symlink: %v", err)
+	}
+	if err := os.Mkdir(schemaPath, 0750); err != nil {
+		t.Fatalf("mkdir schema path: %v", err)
+	}
+	err = cat.LoadSchema(tmpDir)
+	if err == nil {
+		t.Fatal("expected directory schema file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected regular file rejection, got %v", err)
+	}
+}
+
+func TestLoadDataRejectsUnsafeDataFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	cat := createTestCatalogForSaveLoad(t)
+	dataPath := filepath.Join(tmpDir, "users.json")
+	targetPath := filepath.Join(tmpDir, "target-users.json")
+	if err := os.WriteFile(targetPath, []byte(`{"keys":[],"values":[]}`), 0600); err != nil {
+		t.Fatalf("write target data: %v", err)
+	}
+	if err := os.Symlink(targetPath, dataPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	err := cat.LoadData(tmpDir)
+	if err == nil {
+		t.Fatal("expected symlink data file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestLoadDataRejectsOversizedDataFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	cat := createTestCatalogForSaveLoad(t)
+	dataPath := filepath.Join(tmpDir, "users.json")
+	file, err := os.OpenFile(dataPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
+	if err != nil {
+		t.Fatalf("create data: %v", err)
+	}
+	if err := file.Truncate(maxCatalogDataFileBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("truncate data: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close data: %v", err)
+	}
+
+	err = cat.LoadData(tmpDir)
+	if err == nil || !strings.Contains(err.Error(), "catalog data file is too large") {
+		t.Fatalf("expected oversized data rejection, got %v", err)
+	}
+}
+
+func TestReadCatalogDataFileUsesValidatedOpenedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataPath := filepath.Join(tmpDir, "data.json")
+	want := []byte(`{"keys":[],"values":[]}`)
+	if err := os.WriteFile(dataPath, want, 0644); err != nil {
+		t.Fatalf("write data file: %v", err)
+	}
+
+	got, err := readCatalogDataFile(dataPath)
+	if err != nil {
+		t.Fatalf("readCatalogDataFile failed: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("readCatalogDataFile = %q, want %q", got, want)
+	}
+	info, err := os.Stat(dataPath)
+	if err != nil {
+		t.Fatalf("stat data file: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("data file permissions = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestLoadDataRestrictsExistingFilePermissions(t *testing.T) {
+	tmpDir := t.TempDir()
+	cat := createTestCatalogForSaveLoad(t)
+	dataPath := filepath.Join(tmpDir, "users.json")
+	if err := os.WriteFile(dataPath, []byte(`{"keys":[],"values":[]}`), 0644); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+
+	if err := cat.LoadData(tmpDir); err != nil {
+		t.Fatalf("LoadData failed: %v", err)
+	}
+	info, err := os.Stat(dataPath)
+	if err != nil {
+		t.Fatalf("stat data: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("data permissions = %v, want 0600", info.Mode().Perm())
 	}
 }
 

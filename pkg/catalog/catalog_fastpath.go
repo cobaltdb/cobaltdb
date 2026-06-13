@@ -27,6 +27,9 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 	if !ok || !strings.EqualFold(fc.Name, "COUNT") || len(fc.Args) != 1 {
 		return nil, nil, false, nil
 	}
+	if fc.Filter != nil {
+		return nil, nil, false, nil
+	}
 	if _, isStar := fc.Args[0].(*query.StarExpr); !isStar {
 		return nil, nil, false, nil
 	}
@@ -172,6 +175,9 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 		}
 		fc, ok := actual.(*query.FunctionCall)
 		if !ok || len(fc.Args) != 1 {
+			return nil, nil, false, nil
+		}
+		if fc.Filter != nil {
 			return nil, nil, false, nil
 		}
 		funcName := toUpperFast(fc.Name)

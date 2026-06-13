@@ -1,9 +1,13 @@
 package catalog
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+
 	"github.com/cobaltdb/cobaltdb/pkg/parallel"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"math"
 	"sort"
 	"strconv"
@@ -168,22 +172,26 @@ func (c *Catalog) computeGroupResultRows(groups map[string][][]interface{}, grou
 		for i, ci := range selectCols {
 			if ci.isAggregate {
 				var values []interface{}
-				for _, row := range groupRows {
-					if ci.aggregateCol == "*" && ci.aggregateExpr == nil {
-						values = append(values, int64(1))
-					} else if ci.aggregateExpr != nil {
-						v, err := evaluateExpression(c, row, table.Columns, ci.aggregateExpr, args)
-						if err == nil {
-							values = append(values, v)
+				aggregateRows := c.aggregateRowsForInfo(ci, groupRows, table.Columns, args)
+				for _, row := range aggregateRows {
+					v, ok := c.collectAggregateInput(ci, row, table.Columns, args, func() (interface{}, bool) {
+						if ci.aggregateCol == "*" && ci.aggregateExpr == nil {
+							return int64(1), true
+						} else if ci.aggregateExpr != nil {
+							v, err := evaluateExpression(c, row, table.Columns, ci.aggregateExpr, args)
+							return v, err == nil
 						}
-					} else {
 						colIdx := table.GetColumnIndex(ci.aggregateCol)
 						if colIdx >= 0 && colIdx < len(row) {
-							values = append(values, row[colIdx])
+							return row[colIdx], true
 						}
+						return nil, false
+					})
+					if ok {
+						values = append(values, v)
 					}
 				}
-				resultRow[i] = computeAggregateValue(ci, values, groupRows)
+				resultRow[i] = computeAggregateValue(c.selectColInfoWithGroupConcatSeparator(ci, aggregateRows, table.Columns, args), values, aggregateRows)
 				if ci.aggregateType == "GROUP_CONCAT" && resultRow[i] != nil {
 					if joined, ok := resultRow[i].(string); ok && len(joined) > maxStringResultLen {
 						resultRow[i] = joined[:maxStringResultLen]
@@ -261,6 +269,12 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 	canParallel := c.parallelWorkers > 0 &&
 		len(allValues) >= c.parallelThreshold &&
 		!hasSubqueries(stmt)
+	rlsCtx := c.rlsCtx
+	if rlsCtx == nil {
+		rlsCtx = context.Background()
+	}
+	rlsUser, _ := rlsContext(rlsCtx)
+	applyRLS := rlsUser != "" && c.enableRLS && c.rlsManager != nil && c.rlsManager.IsEnabled(table.Name)
 
 	if canParallel {
 		for _, valueData := range allValues {
@@ -277,6 +291,12 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 						continue
 					}
 					fullRow := vrow.Data
+					if applyRLS {
+						allowed, err := c.checkRowAccessLocked(rlsCtx, table.Name, table.Columns, fullRow, security.PolicySelect)
+						if err != nil || !allowed {
+							continue
+						}
+					}
 					if stmt.Where != nil {
 						matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
 						if err != nil {
@@ -319,6 +339,13 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 				continue
 			}
 			fullRow := vrow.Data
+
+			if applyRLS {
+				allowed, err := c.checkRowAccessLocked(rlsCtx, table.Name, table.Columns, fullRow, security.PolicySelect)
+				if err != nil || !allowed {
+					continue
+				}
+			}
 
 			if stmt.Where != nil {
 				matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
@@ -401,17 +428,23 @@ func (c *Catalog) computeAggregatesForExpr(expr query.Expression, groupRows [][]
 		isCountStar := len(fc.Args) == 0 || isStarArg(fc.Args[0])
 
 		var values []interface{}
-		for _, row := range groupRows {
-			if isCountStar {
-				values = append(values, int64(1))
-			} else {
-				v, err := evaluateExpression(c, row, exprColumns, fc.Args[0], args)
-				if err == nil {
-					values = append(values, v)
+		aggregateRows := c.aggregateRowsForFunction(fc, groupRows, exprColumns, args)
+		for _, row := range aggregateRows {
+			v, ok := c.collectAggregateInput(selectColInfo{
+				aggregateType: toUpperFast(fc.Name),
+				aggregateArgs: fc.Args,
+			}, row, exprColumns, args, func() (interface{}, bool) {
+				if isCountStar {
+					return int64(1), true
 				}
+				v, err := evaluateExpression(c, row, exprColumns, fc.Args[0], args)
+				return v, err == nil
+			})
+			if ok {
+				values = append(values, v)
 			}
 		}
-		aggResults[fc] = reduceBasicAggregate(toUpperFast(fc.Name), values, len(groupRows), isCountStar, fc.Distinct)
+		aggResults[fc] = reduceBasicAggregateWithSeparator(toUpperFast(fc.Name), values, len(aggregateRows), isCountStar, fc.Distinct, c.groupConcatSeparatorForRows(fc, aggregateRows, exprColumns, args))
 	}
 	return aggResults
 }
@@ -463,10 +496,19 @@ func computeStdevVar(values []interface{}, funcName string) interface{} {
 	}
 }
 
+type jsonObjectAggPair struct {
+	key   string
+	value interface{}
+}
+
 // reduceBasicAggregate applies basic aggregate functions over the supplied values.
 // For unknown function names it returns nil. When distinct is set, COUNT/SUM/AVG
 // deduplicate values first (e.g. COUNT(DISTINCT col), SUM(DISTINCT col)).
 func reduceBasicAggregate(funcName string, values []interface{}, groupSize int, isCountStar, distinct bool) interface{} {
+	return reduceBasicAggregateWithSeparator(funcName, values, groupSize, isCountStar, distinct, ",")
+}
+
+func reduceBasicAggregateWithSeparator(funcName string, values []interface{}, groupSize int, isCountStar, distinct bool, separator string) interface{} {
 	if distinct && !isCountStar {
 		values = distinctAggregateValues(values)
 	}
@@ -544,13 +586,221 @@ func reduceBasicAggregate(funcName string, values []interface{}, groupSize int, 
 			}
 		}
 		if len(parts) > 0 {
-			return strings.Join(parts, ",")
+			return strings.Join(parts, separator)
 		}
 		return nil
+	case "JSON_ARRAYAGG":
+		out, err := json.Marshal(values)
+		if err != nil {
+			return nil
+		}
+		return string(out)
+	case "JSON_OBJECTAGG":
+		obj := make(map[string]interface{})
+		for _, v := range values {
+			pair, ok := v.(jsonObjectAggPair)
+			if !ok {
+				continue
+			}
+			obj[pair.key] = pair.value
+		}
+		out, err := json.Marshal(obj)
+		if err != nil {
+			return nil
+		}
+		return string(out)
 	case "STDDEV", "STDDEV_POP", "STDDEV_SAMP", "STD", "VARIANCE", "VAR_POP", "VAR_SAMP":
 		return computeStdevVar(values, funcName)
 	}
 	return nil
+}
+
+func (c *Catalog) collectAggregateInput(ci selectColInfo, row []interface{}, columns []ColumnDef, args []interface{}, fallback func() (interface{}, bool)) (interface{}, bool) {
+	switch strings.ToUpper(ci.aggregateType) {
+	case "JSON_OBJECTAGG":
+		if len(ci.aggregateArgs) < 2 {
+			return nil, false
+		}
+		key, err := evaluateExpression(c, row, columns, ci.aggregateArgs[0], args)
+		if err != nil || key == nil {
+			return nil, false
+		}
+		val, err := evaluateExpression(c, row, columns, ci.aggregateArgs[1], args)
+		if err != nil {
+			return nil, false
+		}
+		return jsonObjectAggPair{key: ValueToStringKey(key), value: val}, true
+	case "JSON_ARRAYAGG":
+		if len(ci.aggregateArgs) > 0 {
+			val, err := evaluateExpression(c, row, columns, ci.aggregateArgs[0], args)
+			if err != nil {
+				return nil, false
+			}
+			return val, true
+		}
+	}
+	return fallback()
+}
+
+func groupConcatSeparatorFromCall(fc *query.FunctionCall) (string, bool) {
+	if fc == nil || !strings.EqualFold(fc.Name, "GROUP_CONCAT") || len(fc.Args) < 2 {
+		return "", false
+	}
+	return literalStringValue(fc.Args[1])
+}
+
+func groupConcatSeparatorExpr(fc *query.FunctionCall) query.Expression {
+	if fc == nil || !strings.EqualFold(fc.Name, "GROUP_CONCAT") || len(fc.Args) < 2 {
+		return nil
+	}
+	return fc.Args[1]
+}
+
+func groupConcatSeparatorFromCallOrDefault(fc *query.FunctionCall) string {
+	if sep, ok := groupConcatSeparatorFromCall(fc); ok {
+		return sep
+	}
+	return ","
+}
+
+func (c *Catalog) groupConcatSeparatorForRows(fc *query.FunctionCall, rows [][]interface{}, columns []ColumnDef, args []interface{}) string {
+	if sep, ok := groupConcatSeparatorFromCall(fc); ok {
+		return sep
+	}
+	sepExpr := groupConcatSeparatorExpr(fc)
+	if sepExpr == nil || len(rows) == 0 {
+		return ","
+	}
+	sep, err := evaluateExpression(c, rows[0], columns, sepExpr, args)
+	if err != nil {
+		return ","
+	}
+	if sep == nil {
+		return ""
+	}
+	return ValueToStringKey(sep)
+}
+
+func (c *Catalog) selectColInfoWithGroupConcatSeparator(ci selectColInfo, groupRows [][]interface{}, columns []ColumnDef, args []interface{}) selectColInfo {
+	if !strings.EqualFold(ci.aggregateType, "GROUP_CONCAT") || ci.aggregateSepOK || ci.aggregateSepExpr == nil || len(groupRows) == 0 {
+		return ci
+	}
+	sep, err := evaluateExpression(c, groupRows[0], columns, ci.aggregateSepExpr, args)
+	if err != nil {
+		return ci
+	}
+	if sep == nil {
+		ci.aggregateSep = ""
+	} else {
+		ci.aggregateSep = ValueToStringKey(sep)
+	}
+	ci.aggregateSepOK = true
+	return ci
+}
+
+func (c *Catalog) groupConcatOrderedRows(orderBy []*query.OrderByExpr, rows [][]interface{}, columns []ColumnDef, args []interface{}) [][]interface{} {
+	if len(orderBy) == 0 || len(rows) < 2 {
+		return rows
+	}
+	ordered := append([][]interface{}(nil), rows...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		for _, ob := range orderBy {
+			if ob == nil {
+				continue
+			}
+			left, leftErr := evaluateExpression(c, ordered[i], columns, ob.Expr, args)
+			right, rightErr := evaluateExpression(c, ordered[j], columns, ob.Expr, args)
+			if leftErr != nil || rightErr != nil {
+				continue
+			}
+			cmp := compareOrderByValues(left, right, ob)
+			if cmp == 0 {
+				continue
+			}
+			return cmp < 0
+		}
+		return false
+	})
+	return ordered
+}
+
+func (c *Catalog) aggregateRowsForInfo(ci selectColInfo, rows [][]interface{}, columns []ColumnDef, args []interface{}) [][]interface{} {
+	filtered := c.filterAggregateRows(ci.aggregateFilter, rows, columns, args)
+	return c.groupConcatOrderedRows(ci.aggregateOrderBy, filtered, columns, args)
+}
+
+func (c *Catalog) aggregateRowsForFunction(fc *query.FunctionCall, rows [][]interface{}, columns []ColumnDef, args []interface{}) [][]interface{} {
+	if fc == nil {
+		return rows
+	}
+	filtered := c.filterAggregateRows(fc.Filter, rows, columns, args)
+	return c.groupConcatOrderedRows(fc.OrderBy, filtered, columns, args)
+}
+
+func (c *Catalog) filterAggregateRows(filter query.Expression, rows [][]interface{}, columns []ColumnDef, args []interface{}) [][]interface{} {
+	if filter == nil || len(rows) == 0 {
+		return rows
+	}
+	filtered := make([][]interface{}, 0, len(rows))
+	for _, row := range rows {
+		ok, err := evaluateWhere(c, row, columns, filter, args)
+		if err == nil && ok {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func compareOrderByValues(left, right interface{}, ob *query.OrderByExpr) int {
+	if left == nil || right == nil {
+		switch {
+		case left == nil && right == nil:
+			return 0
+		case ob.NullsSpecified && ob.NullsFirst:
+			if left == nil {
+				return -1
+			}
+			return 1
+		case ob.NullsSpecified && !ob.NullsFirst:
+			if left == nil {
+				return 1
+			}
+			return -1
+		}
+	}
+	cmp := compareValues(left, right)
+	if ob.Desc {
+		cmp = -cmp
+	}
+	return cmp
+}
+
+func groupConcatSeparatorFromInfo(ci selectColInfo) string {
+	if ci.aggregateSepOK {
+		return ci.aggregateSep
+	}
+	return ","
+}
+
+func literalStringValue(expr query.Expression) (string, bool) {
+	switch v := expr.(type) {
+	case *query.StringLiteral:
+		return v.Value, true
+	case *query.NumberLiteral:
+		if v.Raw != "" {
+			return v.Raw, true
+		}
+		return strconv.FormatFloat(v.Value, 'f', -1, 64), true
+	case *query.BooleanLiteral:
+		if v.Value {
+			return "true", true
+		}
+		return "false", true
+	case *query.NullLiteral:
+		return "", true
+	default:
+		return "", false
+	}
 }
 
 func (c *Catalog) evaluateExprWithGroupAggregates(expr query.Expression, groupRows [][]interface{}, table *TableDef, args []interface{}) (interface{}, error) {
@@ -848,10 +1098,12 @@ func addHiddenHavingAggregates(having query.Expression, selectCols []selectColIn
 				aggExpr = fc.Args[0]
 			}
 		}
+		sep, sepOK := groupConcatSeparatorFromCall(fc)
+		sepExpr := groupConcatSeparatorExpr(fc)
 		// Check if this aggregate is already in selectCols
 		found := false
 		for _, sc := range selectCols {
-			if sc.isAggregate && strings.EqualFold(sc.aggregateType, funcName) && strings.EqualFold(sc.aggregateCol, colName) {
+			if sc.isAggregate && strings.EqualFold(sc.aggregateType, funcName) && strings.EqualFold(sc.aggregateCol, colName) && aggregateFiltersMatch(sc.aggregateFilter, fc.Filter) {
 				found = true
 				break
 			}
@@ -862,14 +1114,20 @@ func addHiddenHavingAggregates(having query.Expression, selectCols []selectColIn
 				displayName = funcName + "(DISTINCT " + colName + ")"
 			}
 			selectCols = append(selectCols, selectColInfo{
-				name:          displayName,
-				tableName:     aggTableName,
-				index:         -1,
-				isAggregate:   true,
-				aggregateType: funcName,
-				aggregateCol:  colName,
-				aggregateExpr: aggExpr,
-				isDistinct:    fc.Distinct,
+				name:             displayName,
+				tableName:        aggTableName,
+				index:            -1,
+				isAggregate:      true,
+				aggregateType:    funcName,
+				aggregateCol:     colName,
+				aggregateExpr:    aggExpr,
+				aggregateArgs:    fc.Args,
+				aggregateSep:     sep,
+				aggregateSepOK:   sepOK,
+				aggregateSepExpr: sepExpr,
+				aggregateOrderBy: fc.OrderBy,
+				aggregateFilter:  fc.Filter,
+				isDistinct:       fc.Distinct,
 			})
 			added++
 		}
@@ -902,10 +1160,12 @@ func addHiddenOrderByAggregates(orderBy []*query.OrderByExpr, selectCols []selec
 				aggExpr = fc.Args[0]
 			}
 		}
+		sep, sepOK := groupConcatSeparatorFromCall(fc)
+		sepExpr := groupConcatSeparatorExpr(fc)
 		// Check if this aggregate is already in selectCols
 		found := false
 		for _, sc := range selectCols {
-			if sc.isAggregate && strings.EqualFold(sc.aggregateType, funcName) && strings.EqualFold(sc.aggregateCol, colName) {
+			if sc.isAggregate && strings.EqualFold(sc.aggregateType, funcName) && strings.EqualFold(sc.aggregateCol, colName) && aggregateFiltersMatch(sc.aggregateFilter, fc.Filter) {
 				found = true
 				break
 			}
@@ -916,14 +1176,20 @@ func addHiddenOrderByAggregates(orderBy []*query.OrderByExpr, selectCols []selec
 				displayName = funcName + "(DISTINCT " + colName + ")"
 			}
 			selectCols = append(selectCols, selectColInfo{
-				name:          displayName,
-				tableName:     aggTableName,
-				index:         -1,
-				isAggregate:   true,
-				aggregateType: funcName,
-				aggregateCol:  colName,
-				aggregateExpr: aggExpr,
-				isDistinct:    fc.Distinct,
+				name:             displayName,
+				tableName:        aggTableName,
+				index:            -1,
+				isAggregate:      true,
+				aggregateType:    funcName,
+				aggregateCol:     colName,
+				aggregateExpr:    aggExpr,
+				aggregateArgs:    fc.Args,
+				aggregateSep:     sep,
+				aggregateSepOK:   sepOK,
+				aggregateSepExpr: sepExpr,
+				aggregateOrderBy: fc.OrderBy,
+				aggregateFilter:  fc.Filter,
+				isDistinct:       fc.Distinct,
 			})
 			added++
 		}
@@ -937,12 +1203,18 @@ func collectAggregatesFromExpr(expr query.Expression, result *[]*query.FunctionC
 	}
 	switch e := expr.(type) {
 	case *query.FunctionCall:
-		if isAggregateFuncName(toUpperFast(e.Name)) {
+		if isAggregateCall(e) {
 			*result = append(*result, e)
 		}
 		for _, arg := range e.Args {
 			collectAggregatesFromExpr(arg, result)
 		}
+		for _, ob := range e.OrderBy {
+			if ob != nil {
+				collectAggregatesFromExpr(ob.Expr, result)
+			}
+		}
+		collectAggregatesFromExpr(e.Filter, result)
 	case *query.BinaryExpr:
 		collectAggregatesFromExpr(e.Left, result)
 		collectAggregatesFromExpr(e.Right, result)
@@ -976,6 +1248,10 @@ func collectAggregatesFromExpr(expr query.Expression, result *[]*query.FunctionC
 		collectAggregatesFromExpr(e.Expr, result)
 		collectAggregatesFromExpr(e.Pattern, result)
 	}
+}
+
+func aggregateFiltersMatch(left, right query.Expression) bool {
+	return strings.EqualFold(query.ExprToString(left), query.ExprToString(right))
 }
 
 func evaluateHaving(c *Catalog, row []interface{}, selectCols []selectColInfo, columns []ColumnDef, having query.Expression, args []interface{}) (bool, error) {
@@ -1043,7 +1319,7 @@ func resolveAggregateInExpr(expr query.Expression, selectCols []selectColInfo, r
 	case *query.FunctionCall:
 		// Check if this is an aggregate function
 		funcName := toUpperFast(e.Name)
-		if isAggregateFuncName(funcName) {
+		if isAggregateCall(e) {
 			// Find the column name for this aggregate
 			colName := "*"
 			hasExprArg := false
@@ -1076,11 +1352,11 @@ func resolveAggregateInExpr(expr query.Expression, selectCols []selectColInfo, r
 				if sc.isDistinct {
 					scSignature = sc.aggregateType + "(DISTINCT " + sc.aggregateCol + ")"
 				}
-				if strings.EqualFold(aggSignature, scSignature) || sc.name == aggSignature {
+				if aggregateFiltersMatch(sc.aggregateFilter, e.Filter) && (strings.EqualFold(aggSignature, scSignature) || sc.name == aggSignature) {
 					return valueToLiteral(row[i])
 				}
 				// For expression args, match by aggregate type when both have expressions
-				if hasExprArg && sc.aggregateExpr != nil && strings.EqualFold(funcName, sc.aggregateType) {
+				if hasExprArg && sc.aggregateExpr != nil && strings.EqualFold(funcName, sc.aggregateType) && aggregateFiltersMatch(sc.aggregateFilter, e.Filter) {
 					return valueToLiteral(row[i])
 				}
 			}
@@ -1162,11 +1438,29 @@ func replaceAggregatesInExpr(expr query.Expression, aggResults map[*query.Functi
 				changed = true
 			}
 		}
+		newOrderBy := make([]*query.OrderByExpr, len(e.OrderBy))
+		for i, ob := range e.OrderBy {
+			if ob == nil {
+				continue
+			}
+			copied := *ob
+			copied.Expr = replaceAggregatesInExpr(ob.Expr, aggResults)
+			if copied.Expr != ob.Expr {
+				changed = true
+			}
+			newOrderBy[i] = &copied
+		}
+		newFilter := replaceAggregatesInExpr(e.Filter, aggResults)
+		if newFilter != e.Filter {
+			changed = true
+		}
 		if changed {
 			return &query.FunctionCall{
 				Name:     e.Name,
 				Args:     newArgs,
 				Distinct: e.Distinct,
+				OrderBy:  newOrderBy,
+				Filter:   newFilter,
 			}
 		}
 		return e

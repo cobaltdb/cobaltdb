@@ -38,13 +38,12 @@ var scalarFunctionHandlers = map[string]functionHandler{
 		if len(args) < 1 {
 			return nil, fmt.Errorf("ZEROBLOB requires 1 argument")
 		}
-		n, _ := toFloat64(args[0])
-		size := int(n)
+		size, err := boundedStringSizeArg(args[0], "ZEROBLOB", maxStringResultLen)
+		if err != nil {
+			return nil, err
+		}
 		if size <= 0 {
 			return "", nil
-		}
-		if size > maxStringResultLen {
-			return nil, fmt.Errorf("ZEROBLOB size exceeds maximum allowed size (%d bytes)", maxStringResultLen)
 		}
 		return strings.Repeat("\x00", size), nil
 	},
@@ -143,6 +142,12 @@ var scalarFunctionHandlers = map[string]functionHandler{
 			return ValueToStringKey(args[0]), nil
 		}
 		return nil, nil
+	},
+	"MIN": func(args []interface{}) (interface{}, error) {
+		return scalarMinMax(args, false), nil
+	},
+	"MAX": func(args []interface{}) (interface{}, error) {
+		return scalarMinMax(args, true), nil
 	},
 	"DATE": func(args []interface{}) (interface{}, error) {
 		if len(args) < 1 || args[0] == nil {
@@ -339,6 +344,27 @@ type EvalContext struct {
 	windowValues map[*query.WindowExpr]interface{}
 }
 
+func scalarMinMax(args []interface{}, max bool) interface{} {
+	if len(args) == 0 {
+		return nil
+	}
+	best := args[0]
+	for _, arg := range args[1:] {
+		if arg == nil {
+			continue
+		}
+		if best == nil {
+			best = arg
+			continue
+		}
+		cmp := compareValues(arg, best)
+		if (!max && cmp < 0) || (max && cmp > 0) {
+			best = arg
+		}
+	}
+	return best
+}
+
 // NewEvalContext creates a new evaluation context
 func NewEvalContext(c *Catalog, row []interface{}, columns []ColumnDef, args []interface{}) *EvalContext {
 	return &EvalContext{
@@ -399,6 +425,15 @@ func (ctx *EvalContext) EvalUnaryExpr(val interface{}, op query.TokenType) (inte
 			return nil, nil
 		}
 		return !toBool(val), nil
+	case query.TokenBitNot:
+		if val == nil {
+			return nil, nil
+		}
+		f, ok := toFloat64(val)
+		if !ok {
+			return nil, fmt.Errorf("bitwise NOT requires integer operand")
+		}
+		return ^int64(f), nil
 	}
 	return val, nil
 }
@@ -494,6 +529,40 @@ func (ctx *EvalContext) EvalLike(val, pattern, escape interface{}, not bool) (in
 	return matched, nil
 }
 
+func evalRegexpLikeValue(args []interface{}) (interface{}, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("REGEXP_LIKE requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return RegexMatch(ValueToStringKey(args[0]), ValueToStringKey(args[1]))
+}
+
+func evalBooleanTestFunction(funcName string, args []interface{}) (interface{}, bool) {
+	switch funcName {
+	case "IS_TRUE", "IS_FALSE", "IS_UNKNOWN":
+	default:
+		return nil, false
+	}
+
+	var val interface{}
+	if len(args) > 0 {
+		val = args[0]
+	}
+
+	switch funcName {
+	case "IS_TRUE":
+		return val != nil && toBool(val), true
+	case "IS_FALSE":
+		return val != nil && !toBool(val), true
+	case "IS_UNKNOWN":
+		return val == nil, true
+	default:
+		return nil, false
+	}
+}
+
 func (ctx *EvalContext) EvalIn(val interface{}, list []interface{}, not bool) (interface{}, error) {
 	if val == nil {
 		return nil, nil
@@ -565,6 +634,14 @@ func (ctx *EvalContext) EvalIsNull(val interface{}, not bool) (bool, error) {
 
 func (ctx *EvalContext) EvalFunctionCall(name string, args []interface{}, distinct bool) (interface{}, error) {
 	funcName := name
+
+	if val, handled := evalBooleanTestFunction(funcName, args); handled {
+		return val, nil
+	}
+
+	if funcName == "REGEXP_LIKE" {
+		return evalRegexpLikeValue(args)
+	}
 
 	// Short-circuit evaluation for COALESCE/IFNULL
 	if funcName == "COALESCE" || funcName == "IFNULL" {
@@ -1851,7 +1928,13 @@ func evalBinaryExprValue(left, right interface{}, operator query.TokenType) (int
 
 // evalFunctionCallValue evaluates a scalar function call with already-evaluated arguments.
 func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}, error) {
+	if val, handled := evalBooleanTestFunction(funcName, evalArgs); handled {
+		return val, nil
+	}
+
 	switch funcName {
+	case "REGEXP_LIKE":
+		return evalRegexpLikeValue(evalArgs)
 	case "COALESCE":
 		for _, a := range evalArgs {
 			if a != nil {
@@ -2079,14 +2162,18 @@ func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}
 	case "REPEAT":
 		if len(evalArgs) >= 2 && evalArgs[0] != nil && evalArgs[1] != nil {
 			str := ValueToStringKey(evalArgs[0])
-			n, _ := toFloat64(evalArgs[1])
-			if int(n) <= 0 {
+			maxCount := maxStringResultLen
+			if len(str) > 0 {
+				maxCount = maxStringResultLen / len(str)
+			}
+			n, err := boundedStringSizeArg(evalArgs[1], "REPEAT", maxCount)
+			if err != nil {
+				return nil, err
+			}
+			if n <= 0 {
 				return "", nil
 			}
-			if int(n)*len(str) > maxStringResultLen {
-				return nil, fmt.Errorf("REPEAT result exceeds maximum length")
-			}
-			return strings.Repeat(str, int(n)), nil
+			return strings.Repeat(str, n), nil
 		}
 		return nil, nil
 	default:

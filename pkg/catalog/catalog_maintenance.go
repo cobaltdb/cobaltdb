@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"os"
 	"strings"
 	"time"
@@ -26,12 +27,18 @@ func (c *Catalog) Save() error {
 	defer c.mu.Unlock()
 	// Save table definitions to catalog tree
 	for _, tableDef := range c.tables {
+		if tableDef.Temporary {
+			continue
+		}
 		if err := c.storeTableDef(tableDef); err != nil {
 			return fmt.Errorf("failed to save table definition %s: %w", tableDef.Name, err)
 		}
 	}
 
 	for _, indexDef := range c.indexes {
+		if indexDef.Temporary {
+			continue
+		}
 		if err := c.storeIndexDef(indexDef); err != nil {
 			return fmt.Errorf("failed to save index definition %s: %w", indexDef.Name, err)
 		}
@@ -44,6 +51,9 @@ func (c *Catalog) Save() error {
 	}
 
 	for viewName, viewQuery := range c.views {
+		if c.viewTemporary[viewName] {
+			continue
+		}
 		sql := c.viewSQL[viewName]
 		if strings.TrimSpace(sql) == "" {
 			sql = createViewSQL(viewName, viewQuery)
@@ -87,6 +97,19 @@ func (c *Catalog) Save() error {
 	for _, vid := range c.vectorIndexes {
 		if err := c.storeVectorIndexDef(vid); err != nil {
 			return fmt.Errorf("failed to save vector index definition %s: %w", vid.Name, err)
+		}
+	}
+
+	if c.enableRLS && c.rlsManager != nil {
+		for _, tableName := range c.rlsManager.ListEnabledTables() {
+			if err := c.storeRLSEnabledTable(tableName); err != nil {
+				return fmt.Errorf("failed to save RLS enabled table %s: %w", tableName, err)
+			}
+		}
+		for _, policy := range c.rlsManager.ListPolicies() {
+			if err := c.storeRLSPolicyDef(policy); err != nil {
+				return fmt.Errorf("failed to save RLS policy %s on %s: %w", policy.Name, policy.TableName, err)
+			}
 		}
 	}
 
@@ -205,6 +228,28 @@ func (c *Catalog) storeForeignTableDef(ft *ForeignTableDef) error {
 	return nil
 }
 
+func (c *Catalog) storeRLSEnabledTable(tableName string) error {
+	if c.tree != nil {
+		return c.tree.Put([]byte("rlst:"+strings.ToLower(tableName)), []byte(`{"enabled":true}`))
+	}
+	return nil
+}
+
+func (c *Catalog) storeRLSPolicyDef(policy *security.Policy) error {
+	if policy == nil {
+		return nil
+	}
+	data, err := json.Marshal(policy)
+	if err != nil {
+		return err
+	}
+	if c.tree != nil {
+		key := "rlsp:" + strings.ToLower(policy.TableName) + ":" + strings.ToLower(policy.Name)
+		return c.tree.Put([]byte(key), data)
+	}
+	return nil
+}
+
 func (c *Catalog) Load() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -290,6 +335,20 @@ func (c *Catalog) Load() error {
 					)
 				}
 				tableDef.Columns[i].Check = parsed
+			}
+		}
+		for i := range tableDef.Checks {
+			if tableDef.Checks[i].CheckStr != "" && tableDef.Checks[i].Check == nil {
+				parsed, err := query.ParseExpression(tableDef.Checks[i].CheckStr)
+				if err != nil {
+					return fmt.Errorf(
+						"load catalog: failed to parse check constraint for table %s constraint %s: %w",
+						tableName,
+						tableDef.Checks[i].Name,
+						err,
+					)
+				}
+				tableDef.Checks[i].Check = parsed
 			}
 		}
 
@@ -403,6 +462,9 @@ func (c *Catalog) Load() error {
 	if c.viewSQL == nil {
 		c.viewSQL = make(map[string]string)
 	}
+	if c.viewTemporary == nil {
+		c.viewTemporary = make(map[string]bool)
+	}
 	for viewIter.HasNext() {
 		keyStr, value, err := viewIter.NextString()
 		if err != nil {
@@ -433,6 +495,7 @@ func (c *Catalog) Load() error {
 		}
 		c.views[name] = viewStmt.Query
 		c.viewSQL[name] = strings.TrimSpace(def.SQL)
+		c.viewTemporary[name] = false
 	}
 
 	triggerIter, err := c.tree.Scan([]byte("trg:"), []byte("trg;"))
@@ -605,7 +668,75 @@ func (c *Catalog) Load() error {
 		c.vectorIndexes[vid.Name] = &vid
 	}
 
+	rlsTableIter, err := c.tree.Scan([]byte("rlst:"), []byte("rlst;"))
+	if err != nil {
+		return fmt.Errorf("load catalog: failed to scan RLS table metadata: %w", err)
+	}
+	defer rlsTableIter.Close()
+	for rlsTableIter.HasNext() {
+		keyStr, _, err := rlsTableIter.NextString()
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to read RLS table metadata: %w", err)
+		}
+		if !strings.HasPrefix(keyStr, "rlst:") {
+			continue
+		}
+		tableName := strings.TrimPrefix(keyStr, "rlst:")
+		if !c.hasTableLocked(tableName) {
+			continue
+		}
+		if c.rlsManager == nil {
+			c.rlsManager = security.NewManager()
+		}
+		c.enableRLS = true
+		c.rlsManager.EnableTable(tableName)
+	}
+
+	rlsPolicyIter, err := c.tree.Scan([]byte("rlsp:"), []byte("rlsp;"))
+	if err != nil {
+		return fmt.Errorf("load catalog: failed to scan RLS policy metadata: %w", err)
+	}
+	defer rlsPolicyIter.Close()
+	for rlsPolicyIter.HasNext() {
+		keyStr, value, err := rlsPolicyIter.NextString()
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to read RLS policy metadata: %w", err)
+		}
+		if !strings.HasPrefix(keyStr, "rlsp:") {
+			continue
+		}
+		var policy security.Policy
+		if err := json.Unmarshal(value, &policy); err != nil {
+			return fmt.Errorf("load catalog: failed to parse RLS policy metadata %s: %w", keyStr, err)
+		}
+		if policy.Name == "" || policy.TableName == "" {
+			return fmt.Errorf("load catalog: invalid RLS policy metadata %s", keyStr)
+		}
+		if !c.hasTableLocked(policy.TableName) {
+			continue
+		}
+		if c.rlsManager == nil {
+			c.rlsManager = security.NewManager()
+		}
+		c.enableRLS = true
+		if err := c.rlsManager.CreatePolicy(&policy); err != nil {
+			return fmt.Errorf("load catalog: failed to restore RLS policy %s on %s: %w", policy.Name, policy.TableName, err)
+		}
+	}
+
 	return nil
+}
+
+func (c *Catalog) hasTableLocked(tableName string) bool {
+	if _, exists := c.tables[tableName]; exists {
+		return true
+	}
+	for existing := range c.tables {
+		if strings.EqualFold(existing, tableName) {
+			return true
+		}
+	}
+	return false
 }
 
 // SaveData exports all table schemas and row data as JSON files to dir.
@@ -615,7 +746,7 @@ func (c *Catalog) SaveData(dir string) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	if err := os.MkdirAll(dir, 0750); err != nil {
+	if err := prepareCatalogDataDir(dir, true); err != nil {
 		return fmt.Errorf("save data: cannot create directory %s: %w", dir, err)
 	}
 
@@ -632,7 +763,7 @@ func (c *Catalog) SaveData(dir string) error {
 	if err != nil {
 		return fmt.Errorf("save data: invalid schema path: %w", err)
 	}
-	if err := os.WriteFile(schemaPath, schemaData, 0600); err != nil { // #nosec G304 - path is validated to stay inside the export directory.
+	if err := writeCatalogDataFileAtomic(schemaPath, schemaData, 0600); err != nil {
 		return fmt.Errorf("save data: failed to write schema.json: %w", err)
 	}
 
@@ -671,7 +802,7 @@ func (c *Catalog) SaveData(dir string) error {
 		if err != nil {
 			return fmt.Errorf("save data: invalid data path for table %s: %w", tableName, err)
 		}
-		if err := os.WriteFile(dataPath, data, 0600); err != nil { // #nosec G304 - path is validated to stay inside the export directory.
+		if err := writeCatalogDataFileAtomic(dataPath, data, 0600); err != nil {
 			return fmt.Errorf("save data: failed to write %s.json: %w", tableName, err)
 		}
 	}
@@ -685,11 +816,18 @@ func (c *Catalog) LoadSchema(dir string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if err := prepareCatalogDataDir(dir, false); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("load schema: invalid data directory: %w", err)
+	}
+
 	schemaPath, err := catalogDataFilePath(dir, "schema.json")
 	if err != nil {
 		return fmt.Errorf("load schema: invalid schema path: %w", err)
 	}
-	data, err := os.ReadFile(schemaPath) // #nosec G304 - path is validated to stay inside the import directory.
+	data, err := readCatalogDataFile(schemaPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil // no schema file, nothing to load
@@ -731,6 +869,20 @@ func (c *Catalog) LoadSchema(dir string) error {
 					)
 				}
 				tableDef.Columns[i].Check = parsed
+			}
+		}
+		for i := range tableDef.Checks {
+			if tableDef.Checks[i].CheckStr != "" && tableDef.Checks[i].Check == nil {
+				parsed, parseErr := query.ParseExpression(tableDef.Checks[i].CheckStr)
+				if parseErr != nil {
+					return fmt.Errorf(
+						"load schema: failed to parse check constraint for table %s constraint %s: %w",
+						name,
+						tableDef.Checks[i].Name,
+						parseErr,
+					)
+				}
+				tableDef.Checks[i].Check = parsed
 			}
 		}
 		tableDef.buildColumnIndexCache()
@@ -791,12 +943,19 @@ func (c *Catalog) LoadData(dir string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if err := prepareCatalogDataDir(dir, false); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("load data: invalid data directory: %w", err)
+	}
+
 	for tableName := range c.tables {
 		dataPath, err := catalogDataFilePath(dir, tableName+".json")
 		if err != nil {
 			return fmt.Errorf("load data: invalid data path for table %s: %w", tableName, err)
 		}
-		data, err := os.ReadFile(dataPath) // #nosec G304 - path is validated to stay inside the import directory.
+		data, err := readCatalogDataFile(dataPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue // no data file for this table

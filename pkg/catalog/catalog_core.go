@@ -73,10 +73,18 @@ type TableDef struct {
 	CreatedAt   int64           `json:"created_at"`
 	RootPageID  uint32          `json:"root_page_id"`
 	ForeignKeys []ForeignKeyDef `json:"foreign_keys,omitempty"`
+	Checks      []CheckDef      `json:"check_constraints,omitempty"`
 	AutoIncSeq  int64           `json:"auto_inc_seq"`        // Per-table auto-increment counter
 	Partition   *PartitionInfo  `json:"partition,omitempty"` // Table partitioning info
+	Temporary   bool            `json:"-"`                   // Session-local table, not persisted
 	// Performance: cache column indices (not persisted)
 	columnIndices map[string]int `json:"-"`
+}
+
+type CheckDef struct {
+	Name     string           `json:"name,omitempty"`
+	CheckStr string           `json:"check_str"`
+	Check    query.Expression `json:"-"`
 }
 
 // ForeignTableDef represents a foreign table definition
@@ -89,11 +97,12 @@ type ForeignTableDef struct {
 
 // ForeignKeyDef represents a foreign key constraint
 type ForeignKeyDef struct {
+	Name              string   `json:"name,omitempty"`
 	Columns           []string `json:"columns"`
 	ReferencedTable   string   `json:"referenced_table"`
 	ReferencedColumns []string `json:"referenced_columns"`
-	OnDelete          string   `json:"on_delete"` // NO ACTION, CASCADE, SET NULL, RESTRICT
-	OnUpdate          string   `json:"on_update"` // NO ACTION, CASCADE, SET NULL, RESTRICT
+	OnDelete          string   `json:"on_delete"` // NO ACTION, CASCADE, SET NULL, SET DEFAULT, RESTRICT
+	OnUpdate          string   `json:"on_update"` // NO ACTION, CASCADE, SET NULL, SET DEFAULT, RESTRICT
 }
 
 // ColumnDef represents a column definition
@@ -106,9 +115,11 @@ type ColumnDef struct {
 	AutoIncrement bool             `json:"auto_increment"`
 	Default       string           `json:"default,omitempty"`
 	CheckStr      string           `json:"check_str,omitempty"`  // CHECK expression as SQL text (persisted)
+	CheckName     string           `json:"check_name,omitempty"` // Optional CHECK constraint name
 	Check         query.Expression `json:"-"`                    // Parsed CHECK expression (not persisted)
 	defaultExpr   query.Expression `json:"-"`                    // Parsed DEFAULT expression (not persisted)
 	sourceTbl     string           `json:"-"`                    // Source table name for JOIN column disambiguation
+	Collation     string           `json:"collation,omitempty"`  // Optional column collation name
 	Dimensions    int              `json:"dimensions,omitempty"` // For VECTOR type: number of dimensions
 }
 
@@ -128,22 +139,29 @@ type IndexDef struct {
 	Unique     bool        `json:"unique"`
 	RootPageID uint32      `json:"root_page_id"`
 	Status     IndexStatus `json:"status"`
+	Temporary  bool        `json:"-"`
 }
 
 // selectColInfo holds information about selected columns in a query
 type selectColInfo struct {
-	name           string
-	tableName      string // table name for JOINs
-	index          int
-	isAggregate    bool
-	aggregateType  string            // COUNT, SUM, AVG, MIN, MAX
-	aggregateCol   string            // column name for SUM, AVG, MIN, MAX
-	aggregateExpr  query.Expression  // full expression for SUM(expr), AVG(expr), etc.
-	isDistinct     bool              // for COUNT(DISTINCT col)
-	isWindow       bool              // true for window functions
-	windowExpr     *query.WindowExpr // window function expression
-	hasEmbeddedAgg bool              // true when expression (CASE, etc.) contains aggregate calls
-	originalExpr   query.Expression  // the original expression for hasEmbeddedAgg columns
+	name             string
+	tableName        string // table name for JOINs
+	index            int
+	isAggregate      bool
+	aggregateType    string           // COUNT, SUM, AVG, MIN, MAX
+	aggregateCol     string           // column name for SUM, AVG, MIN, MAX
+	aggregateExpr    query.Expression // full expression for SUM(expr), AVG(expr), etc.
+	aggregateArgs    []query.Expression
+	aggregateSep     string           // GROUP_CONCAT separator
+	aggregateSepOK   bool             // true when GROUP_CONCAT separator was explicit
+	aggregateSepExpr query.Expression // GROUP_CONCAT separator expression
+	aggregateOrderBy []*query.OrderByExpr
+	aggregateFilter  query.Expression
+	isDistinct       bool              // for COUNT(DISTINCT col)
+	isWindow         bool              // true for window functions
+	windowExpr       *query.WindowExpr // window function expression
+	hasEmbeddedAgg   bool              // true when expression (CASE, etc.) contains aggregate calls
+	originalExpr     query.Expression  // the original expression for hasEmbeddedAgg columns
 
 	// embeddedWindows holds window functions nested inside originalExpr (e.g.
 	// SUM(x) OVER () + 1); they are computed then substituted during projection.
@@ -204,10 +222,16 @@ const (
 	undoDropTable                                // Undo a DROP TABLE by restoring the table
 	undoCreateIndex                              // Undo a CREATE INDEX by dropping the index
 	undoDropIndex                                // Undo a DROP INDEX by restoring the index
+	undoCreateFTSIndex                           // Undo a CREATE FULLTEXT INDEX by dropping the index
+	undoDropFTSIndex                             // Undo DROP INDEX for a full-text index by restoring it
+	undoCreateVectorIndex                        // Undo a CREATE VECTOR INDEX by dropping the index
+	undoDropVectorIndex                          // Undo DROP INDEX for a vector index by restoring it
 	undoAlterAddColumn                           // Undo ALTER TABLE ADD COLUMN
 	undoAlterDropColumn                          // Undo ALTER TABLE DROP COLUMN
 	undoAlterRename                              // Undo ALTER TABLE RENAME
 	undoAlterRenameColumn                        // Undo ALTER TABLE RENAME COLUMN
+	undoAlterForeignKeys                         // Undo ALTER TABLE ADD/DROP FOREIGN KEY constraint
+	undoAlterChecks                              // Undo ALTER TABLE ADD/DROP CHECK constraint
 	undoAutoIncSeq                               // Undo AutoIncSeq change
 	undoCreateView                               // Undo CREATE VIEW by dropping the view
 	undoDropView                                 // Undo DROP VIEW by restoring the view
@@ -219,6 +243,9 @@ const (
 	undoDropMaterializedView                     // Undo DROP MATERIALIZED VIEW by restoring the view
 	undoCreateForeignTable                       // Undo CREATE FOREIGN TABLE by dropping the foreign table
 	undoDropForeignTable                         // Undo DROP FOREIGN TABLE by restoring the foreign table
+	undoEnableRLSTable                           // Undo ALTER TABLE ENABLE ROW LEVEL SECURITY
+	undoCreateRLSPolicy                          // Undo CREATE POLICY by dropping the policy
+	undoDropRLSPolicy                            // Undo DROP POLICY by restoring the policy
 )
 
 // indexUndoEntry records an index modification for rollback
@@ -237,15 +264,19 @@ type undoEntry struct {
 	oldValue     []byte // nil for INSERT undo (just delete the key)
 	indexChanges []indexUndoEntry
 	// DDL undo fields
-	tableDef      *TableDef                  // For undoDropTable: original table definition
-	tableTree     btree.TreeStore            // For undoDropTable: original table B-tree
-	tableIndexes  map[string]*IndexDef       // For undoDropTable: indexes
-	tableIdxTrees map[string]btree.TreeStore // For undoDropTable: index B-trees
-	indexDef      *IndexDef                  // For undoDropIndex: original index definition
-	indexTree     btree.TreeStore            // For undoDropIndex: original index B-tree
-	indexName     string                     // For undoCreateIndex: index name to drop
+	tableDef       *TableDef                  // For undoDropTable: original table definition
+	tableTree      btree.TreeStore            // For undoDropTable: original table B-tree
+	tableIndexes   map[string]*IndexDef       // For undoDropTable: indexes
+	tableIdxTrees  map[string]btree.TreeStore // For undoDropTable: index B-trees
+	indexDef       *IndexDef                  // For undoDropIndex: original index definition
+	indexTree      btree.TreeStore            // For undoDropIndex: original index B-tree
+	indexName      string                     // For undoCreateIndex: index name to drop
+	ftsIndexDef    *FTSIndexDef               // For undoDropFTSIndex: original full-text index definition
+	vectorIndexDef *VectorIndexDef            // For undoDropVectorIndex: original vector index definition
 	// ALTER TABLE undo fields
 	oldColumns           []ColumnDef                 // For undoAlterAddColumn/undoAlterDropColumn: original columns
+	oldForeignKeys       []ForeignKeyDef             // For undoAlterForeignKeys: original foreign keys
+	oldChecks            []CheckDef                  // For undoAlterChecks: original check constraints
 	oldPrimaryKeyColumns []string                    // For undoAlterRenameColumn: original PK name
 	oldName              string                      // For undoAlterRename/undoAlterRenameColumn: original name
 	newName              string                      // For undoAlterRename/undoAlterRenameColumn: new name
@@ -256,6 +287,7 @@ type undoEntry struct {
 	viewName             string                      // For view undo actions
 	viewQuery            *query.SelectStmt           // For undoDropView: original view query
 	viewSQL              string                      // For view undo actions
+	viewTemporary        bool                        // For temporary view undo actions
 	triggerName          string                      // For trigger undo actions
 	triggerStmt          *query.CreateTriggerStmt    // For undoDropTrigger: original trigger
 	triggerSQL           string                      // For trigger undo actions
@@ -267,6 +299,11 @@ type undoEntry struct {
 	materializedViewSQL  string                      // For materialized view undo actions
 	foreignTableName     string                      // For foreign table undo actions
 	foreignTableDef      *ForeignTableDef            // For undoDropForeignTable: original foreign table
+	rlsTableName         string                      // For RLS undo actions
+	rlsPolicyName        string                      // For RLS policy undo actions
+	rlsPolicy            *security.Policy            // For undoDropRLSPolicy: original policy
+	rlsPolicies          []*security.Policy          // For undoDropTable: original table policies
+	rlsTableWasEnabled   bool                        // For undoEnableRLSTable: previous table state
 }
 
 // catalogTxnState holds per-transaction state for multi-transaction support.
@@ -327,6 +364,7 @@ type Catalog struct {
 	fdwRegistry          *fdw.Registry                         // FDW registry for foreign data wrappers
 	views                map[string]*query.SelectStmt          // Views store their SELECT query
 	viewSQL              map[string]string                     // Original CREATE VIEW SQL for persistence
+	viewTemporary        map[string]bool                       // Session-local views, not persisted
 	triggers             map[string]*query.CreateTriggerStmt   // Triggers store their definition
 	triggerSQL           map[string]string                     // Original CREATE TRIGGER SQL for persistence
 	procedures           map[string]*query.CreateProcedureStmt // Procedures store their definition
@@ -430,6 +468,7 @@ func New(tree btree.TreeStore, pool *storage.BufferPool, wal *storage.WAL) *Cata
 		fdwRegistry:         fdw.NewRegistry(),
 		views:               make(map[string]*query.SelectStmt),
 		viewSQL:             make(map[string]string),
+		viewTemporary:       make(map[string]bool),
 		triggers:            make(map[string]*query.CreateTriggerStmt),
 		triggerSQL:          make(map[string]string),
 		procedures:          make(map[string]*query.CreateProcedureStmt),
@@ -608,6 +647,10 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 // during the heavy table scan so concurrent writes can proceed. Recursive calls
 // (subqueries, JOIN resolution, views) must pass canReleaseLock=false.
 func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interface{}, canReleaseLock bool) ([]string, [][]interface{}, error) {
+	if err := validateSelectBounds(cat, stmt, args); err != nil {
+		return nil, nil, err
+	}
+
 	// Apply query optimization only when the query has something to optimize.
 	// Skip the expensive allocator for simple SELECTs without WHERE/JOINs/etc.
 	needsOptimize := stmt.Where != nil || len(stmt.Joins) > 0 || stmt.GroupBy != nil ||
@@ -639,18 +682,24 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 		return cat.executeScalarSelect(stmt, args)
 	}
 
+	rlsNeedsBaseRows := cat.selectNeedsFullRowsForRLS(stmt.From.Name)
+
 	// Fast path: SELECT COUNT(*) FROM table [WHERE ...] — skip row decoding
-	if cols, rows, ok, err := cat.tryCountStarFastPath(stmt, args, queryTime); err != nil {
-		return nil, nil, err
-	} else if ok {
-		return cols, rows, nil
+	if !rlsNeedsBaseRows {
+		if cols, rows, ok, err := cat.tryCountStarFastPath(stmt, args, queryTime); err != nil {
+			return nil, nil, err
+		} else if ok {
+			return cols, rows, nil
+		}
 	}
 
 	// Fast path: SELECT SUM/AVG/MIN/MAX/COUNT(col) FROM table — streaming aggregates
-	if cols, rows, ok, err := cat.trySimpleAggregateFastPath(stmt, args); err != nil {
-		return nil, nil, err
-	} else if ok {
-		return cols, rows, nil
+	if !rlsNeedsBaseRows {
+		if cols, rows, ok, err := cat.trySimpleAggregateFastPath(stmt, args); err != nil {
+			return nil, nil, err
+		} else if ok {
+			return cols, rows, nil
+		}
 	}
 
 	// Handle derived tables: FROM (SELECT ...) AS alias or FROM (SELECT ... UNION ...) AS alias
@@ -789,6 +838,7 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 			break
 		}
 	}
+	collectFullRows := hasWindowFuncs || rlsNeedsBaseRows
 	// Prepare scan parameters while holding catalog lock.
 	// Materialized views have no physical B-tree; resolveFromTable stores
 	// their data in cteResults, so only suppress missing physical storage when
@@ -839,7 +889,7 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	if canUnlock {
 		cat.mu.RUnlock()
 	}
-	rows, windowFullRows, scanErr := cat.scanTableRowsWithSnapshot(tableSnapshot, stmt, args, hasWindowFuncs, queryTime, trees, mvRows, isMV, cat.parallelWorkers, cat.parallelThreshold)
+	rows, windowFullRows, scanErr := cat.scanTableRowsWithSnapshot(tableSnapshot, stmt, args, collectFullRows, queryTime, trees, mvRows, isMV, cat.parallelWorkers, cat.parallelThreshold)
 	if scanErr != nil {
 		if canUnlock {
 			cat.mu.RLock()
@@ -873,6 +923,18 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 
 func (cat *Catalog) canApplySelectPostProcessUnlocked() bool {
 	return !cat.enableRLS || cat.rlsManager == nil
+}
+
+func (cat *Catalog) selectNeedsFullRowsForRLS(tableName string) bool {
+	if !cat.enableRLS || cat.rlsManager == nil || !cat.rlsManager.IsEnabled(tableName) {
+		return false
+	}
+	rlsCtx := cat.rlsCtx
+	if rlsCtx == nil {
+		return false
+	}
+	user, _ := rlsContext(rlsCtx)
+	return user != ""
 }
 
 // scanTableRowsWithSnapshot is a thin wrapper around scanTableRows that accepts
@@ -1423,8 +1485,24 @@ func resolveOuterRefsInExpr(expr query.Expression, outerRow []interface{}, outer
 				changed = true
 			}
 		}
+		newOrderBy := make([]*query.OrderByExpr, len(e.OrderBy))
+		for i, ob := range e.OrderBy {
+			if ob == nil {
+				continue
+			}
+			copied := *ob
+			copied.Expr = resolveOuterRefsInExpr(ob.Expr, outerRow, outerColumns, innerTables)
+			if copied.Expr != ob.Expr {
+				changed = true
+			}
+			newOrderBy[i] = &copied
+		}
+		newFilter := resolveOuterRefsInExpr(e.Filter, outerRow, outerColumns, innerTables)
+		if newFilter != e.Filter {
+			changed = true
+		}
 		if changed {
-			return &query.FunctionCall{Name: e.Name, Args: newArgs, Distinct: e.Distinct}
+			return &query.FunctionCall{Name: e.Name, Args: newArgs, Distinct: e.Distinct, OrderBy: newOrderBy, Filter: newFilter}
 		}
 		return e
 	case *query.InExpr:
@@ -1842,6 +1920,9 @@ func exprToSQL(expr query.Expression) string {
 		}
 		if e.Operator == query.TokenMinus {
 			return fmt.Sprintf("-%s", val)
+		}
+		if e.Operator == query.TokenBitNot {
+			return fmt.Sprintf("~%s", val)
 		}
 		return val
 	case *query.FunctionCall:
@@ -2346,6 +2427,34 @@ func hasSubqueriesInExpr(expr query.Expression) bool {
 	case *query.FunctionCall:
 		for _, arg := range e.Args {
 			if hasSubqueriesInExpr(arg) {
+				return true
+			}
+		}
+		if hasSubqueriesInExpr(e.Filter) {
+			return true
+		}
+		for _, ob := range e.OrderBy {
+			if ob != nil && hasSubqueriesInExpr(ob.Expr) {
+				return true
+			}
+		}
+		return false
+	case *query.WindowExpr:
+		for _, arg := range e.Args {
+			if hasSubqueriesInExpr(arg) {
+				return true
+			}
+		}
+		if hasSubqueriesInExpr(e.Filter) {
+			return true
+		}
+		for _, partitionExpr := range e.PartitionBy {
+			if hasSubqueriesInExpr(partitionExpr) {
+				return true
+			}
+		}
+		for _, ob := range e.OrderBy {
+			if ob != nil && hasSubqueriesInExpr(ob.Expr) {
 				return true
 			}
 		}

@@ -15,6 +15,17 @@ type funcResult struct {
 	err error
 }
 
+func boundedStringSizeArg(arg interface{}, functionName string, max int) (int, error) {
+	n, ok := toFloat64(arg)
+	if !ok || n <= 0 {
+		return 0, nil
+	}
+	if math.IsNaN(n) || math.IsInf(n, 0) || n > float64(max) {
+		return 0, fmt.Errorf("%s result exceeds maximum allowed size (%d bytes)", functionName, maxStringResultLen)
+	}
+	return int(n), nil
+}
+
 // evaluateStringFunction handles all string-related SQL functions.
 // Returns (result, true) if the function was handled, (zero, false) otherwise.
 func evaluateStringFunction(funcName string, evalArgs []interface{}) (funcResult, bool) {
@@ -388,14 +399,18 @@ func evalStringRepeat(evalArgs []interface{}) funcResult {
 		return funcResult{nil, nil}
 	}
 	str := ValueToStringKey(evalArgs[0])
-	count, _ := toFloat64(evalArgs[1])
+	maxCount := maxStringResultLen
+	if len(str) > 0 {
+		maxCount = maxStringResultLen / len(str)
+	}
+	count, err := boundedStringSizeArg(evalArgs[1], "REPEAT", maxCount)
+	if err != nil {
+		return funcResult{nil, err}
+	}
 	if count <= 0 {
 		return funcResult{"", nil}
 	}
-	if int(count) > maxStringResultLen/(len(str)+1) {
-		return funcResult{nil, fmt.Errorf("REPEAT result exceeds maximum allowed size (%d bytes)", maxStringResultLen)}
-	}
-	return funcResult{strings.Repeat(str, int(count)), nil}
+	return funcResult{strings.Repeat(str, count), nil}
 }
 
 func evalStringLeft(evalArgs []interface{}) funcResult {
@@ -444,14 +459,13 @@ func evalStringLPad(evalArgs []interface{}) funcResult {
 		return funcResult{nil, nil}
 	}
 	str := ValueToStringKey(evalArgs[0])
-	targetLen, _ := toFloat64(evalArgs[1])
 	pad := ValueToStringKey(evalArgs[2])
-	ti := int(targetLen)
+	ti, err := boundedStringSizeArg(evalArgs[1], "LPAD", maxStringResultLen)
+	if err != nil {
+		return funcResult{nil, err}
+	}
 	if ti <= 0 {
 		return funcResult{"", nil}
-	}
-	if ti > maxStringResultLen {
-		return funcResult{nil, fmt.Errorf("LPAD result exceeds maximum allowed size (%d bytes)", maxStringResultLen)}
 	}
 	if len(pad) == 0 {
 		if len(str) >= ti {
@@ -476,14 +490,13 @@ func evalStringRPad(evalArgs []interface{}) funcResult {
 		return funcResult{nil, nil}
 	}
 	str := ValueToStringKey(evalArgs[0])
-	targetLen, _ := toFloat64(evalArgs[1])
 	pad := ValueToStringKey(evalArgs[2])
-	ti := int(targetLen)
+	ti, err := boundedStringSizeArg(evalArgs[1], "RPAD", maxStringResultLen)
+	if err != nil {
+		return funcResult{nil, err}
+	}
 	if ti <= 0 {
 		return funcResult{"", nil}
-	}
-	if ti > maxStringResultLen {
-		return funcResult{nil, fmt.Errorf("RPAD result exceeds maximum allowed size (%d bytes)", maxStringResultLen)}
 	}
 	if len(pad) == 0 {
 		if len(str) >= ti {

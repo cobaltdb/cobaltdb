@@ -57,7 +57,7 @@ func createProcedureSQL(stmt *query.CreateProcedureStmt) string {
 		if param == nil {
 			continue
 		}
-		params = append(params, param.Name+" "+procedureParamTypeSQL(param.Type))
+		params = append(params, procedureParamModeSQL(param.Mode)+" "+param.Name+" "+procedureParamTypeSQL(param.Type))
 	}
 	body := make([]string, 0, len(stmt.Body))
 	for _, bodyStmt := range stmt.Body {
@@ -67,6 +67,17 @@ func createProcedureSQL(stmt *query.CreateProcedureStmt) string {
 		}
 	}
 	return "CREATE PROCEDURE " + stmt.Name + "(" + strings.Join(params, ", ") + ") BEGIN " + strings.Join(body, "; ") + "; END"
+}
+
+func procedureParamModeSQL(tt query.TokenType) string {
+	switch tt {
+	case query.TokenOut:
+		return "OUT"
+	case query.TokenInout:
+		return "INOUT"
+	default:
+		return "IN"
+	}
 }
 
 func procedureParamTypeSQL(tt query.TokenType) string {
@@ -168,6 +179,8 @@ func insertStmtToSQL(stmt *query.InsertStmt) string {
 		parts = append(parts, "OR REPLACE")
 	case query.ConflictIgnore:
 		parts = append(parts, "OR IGNORE")
+	case query.ConflictRollback:
+		parts = append(parts, "OR ROLLBACK")
 	}
 	parts = append(parts, "INTO", stmt.Table)
 	if len(stmt.Columns) > 0 {
@@ -199,7 +212,11 @@ func updateStmtToSQL(stmt *query.UpdateStmt) string {
 		}
 		sets = append(sets, set.Column+" = "+exprToSQL(set.Value))
 	}
-	parts := []string{"UPDATE", stmt.Table, "SET", strings.Join(sets, ", ")}
+	parts := []string{"UPDATE", stmt.Table}
+	if stmt.Alias != "" {
+		parts = append(parts, "AS", stmt.Alias)
+	}
+	parts = append(parts, "SET", strings.Join(sets, ", "))
 	if stmt.From != nil {
 		parts = append(parts, "FROM", tableRefToSQL(stmt.From))
 	}

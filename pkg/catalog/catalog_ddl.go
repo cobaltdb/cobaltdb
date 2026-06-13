@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"regexp"
 	"strconv"
 	"strings"
@@ -121,6 +122,8 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 		CreatedAt:   time.Now().UnixNano(),
 		RootPageID:  tree.RootPageID(),
 		ForeignKeys: make([]ForeignKeyDef, len(stmt.ForeignKeys)),
+		Checks:      make([]CheckDef, len(stmt.CheckConstraints)),
+		Temporary:   stmt.Temporary,
 	}
 
 	// Handle partitioning if specified
@@ -182,8 +185,10 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 			AutoIncrement: col.AutoIncrement,
 			Default:       exprToSQL(col.Default),
 			CheckStr:      exprToSQL(col.Check),
+			CheckName:     col.CheckName,
 			Check:         col.Check,
 			defaultExpr:   col.Default,
+			Collation:     col.Collation,
 			Dimensions:    col.Dimensions,
 		}
 		if col.PrimaryKey {
@@ -218,22 +223,27 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 		}
 	}
 
-	// Copy foreign key definitions
+	// Build column index cache before validating constraints that resolve column names.
+	tableDef.buildColumnIndexCache()
+
+	// Copy and validate foreign key definitions
 	for i, fk := range stmt.ForeignKeys {
-		tableDef.ForeignKeys[i] = ForeignKeyDef{
-			Columns:           fk.Columns,
-			ReferencedTable:   fk.ReferencedTable,
-			ReferencedColumns: fk.ReferencedColumns,
-			OnDelete:          fk.OnDelete,
-			OnUpdate:          fk.OnUpdate,
+		normalizedFK, err := c.validateForeignKeyDefLocked(tableDef, fk, true)
+		if err != nil {
+			return err
+		}
+		tableDef.ForeignKeys[i] = normalizedFK
+	}
+	for i, check := range stmt.CheckConstraints {
+		tableDef.Checks[i] = CheckDef{
+			Name:     check.Name,
+			CheckStr: exprToSQL(check.Expr),
+			Check:    check.Expr,
 		}
 	}
 
 	c.tables[stmt.Table] = tableDef
 	c.tableTrees[stmt.Table] = tree // Store the tree for data operations
-
-	// Build column index cache for performance
-	tableDef.buildColumnIndexCache()
 
 	// Store table definition in catalog tree before exposing the create as
 	// successful. If persistence fails, remove in-memory metadata so callers
@@ -260,7 +270,74 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 	return nil
 }
 
+func (c *Catalog) CreateCollection(stmt *query.CreateCollectionStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
+
+	if err := validateTableName(stmt.Name); err != nil {
+		return err
+	}
+	if _, exists := c.tables[stmt.Name]; exists {
+		if stmt.IfNotExists {
+			return nil
+		}
+		return ErrTableExists
+	}
+	if _, exists := c.foreignTables[stmt.Name]; exists {
+		if stmt.IfNotExists {
+			return nil
+		}
+		return ErrTableExists
+	}
+
+	tree, err := btree.NewBTree(c.pool)
+	if err != nil {
+		return err
+	}
+	tableDef := &TableDef{
+		Name:       stmt.Name,
+		Type:       "collection",
+		Columns:    []ColumnDef{},
+		CreatedAt:  time.Now().UnixNano(),
+		RootPageID: tree.RootPageID(),
+	}
+	c.tables[stmt.Name] = tableDef
+	c.tableTrees[stmt.Name] = tree
+	if err := c.storeTableDef(tableDef); err != nil {
+		delete(c.tables, stmt.Name)
+		delete(c.tableTrees, stmt.Name)
+		return err
+	}
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:    undoCreateTable,
+			tableName: stmt.Name,
+		})
+	}
+	return nil
+}
+
+func (c *Catalog) DropCollection(stmt *query.DropCollectionStmt) error {
+	c.mu.RLock()
+	tableDef, exists := c.tables[stmt.Name]
+	c.mu.RUnlock()
+	if !exists {
+		if stmt.IfExists {
+			return nil
+		}
+		return ErrTableNotFound
+	}
+	if tableDef.Type != "collection" {
+		return fmt.Errorf("%s is not a collection", stmt.Name)
+	}
+	return c.DropTable(&query.DropTableStmt{Table: stmt.Name, IfExists: stmt.IfExists})
+}
+
 func (c *Catalog) storeTableDef(table *TableDef) error {
+	if table.Temporary {
+		return nil
+	}
 	key := []byte("tbl:" + table.Name)
 	data, err := json.Marshal(table)
 	if err != nil {
@@ -270,6 +347,299 @@ func (c *Catalog) storeTableDef(table *TableDef) error {
 	if c.tree != nil {
 		return c.tree.Put(key, data)
 	}
+	return nil
+}
+
+func cloneForeignKeys(fks []ForeignKeyDef) []ForeignKeyDef {
+	if len(fks) == 0 {
+		return nil
+	}
+	out := make([]ForeignKeyDef, len(fks))
+	copy(out, fks)
+	for i := range out {
+		out[i].Columns = append([]string(nil), fks[i].Columns...)
+		out[i].ReferencedColumns = append([]string(nil), fks[i].ReferencedColumns...)
+	}
+	return out
+}
+
+func queryForeignKeyToCatalog(fk *query.ForeignKeyDef) ForeignKeyDef {
+	if fk == nil {
+		return ForeignKeyDef{}
+	}
+	return ForeignKeyDef{
+		Name:              fk.Name,
+		Columns:           append([]string(nil), fk.Columns...),
+		ReferencedTable:   fk.ReferencedTable,
+		ReferencedColumns: append([]string(nil), fk.ReferencedColumns...),
+		OnDelete:          fk.OnDelete,
+		OnUpdate:          fk.OnUpdate,
+	}
+}
+
+func (c *Catalog) validateForeignKeyDefLocked(table *TableDef, fk *query.ForeignKeyDef, allowUnresolvedReference bool) (ForeignKeyDef, error) {
+	if fk == nil {
+		return ForeignKeyDef{}, fmt.Errorf("missing FOREIGN KEY definition")
+	}
+	if len(fk.Columns) == 0 {
+		return ForeignKeyDef{}, fmt.Errorf("foreign key must include at least one column")
+	}
+	if fk.ReferencedTable == "" {
+		return ForeignKeyDef{}, fmt.Errorf("foreign key referenced table is required")
+	}
+	seenLocal := make(map[string]struct{}, len(fk.Columns))
+	for _, col := range fk.Columns {
+		if _, exists := seenLocal[strings.ToLower(col)]; exists {
+			return ForeignKeyDef{}, fmt.Errorf("duplicate foreign key column '%s'", col)
+		}
+		seenLocal[strings.ToLower(col)] = struct{}{}
+		if table.GetColumnIndex(col) < 0 {
+			return ForeignKeyDef{}, fmt.Errorf("foreign key column '%s' not found in table '%s'", col, table.Name)
+		}
+	}
+
+	refTable := table
+	if !strings.EqualFold(fk.ReferencedTable, table.Name) {
+		var err error
+		refTable, err = c.getTableLocked(fk.ReferencedTable)
+		if err != nil {
+			if allowUnresolvedReference {
+				if len(fk.ReferencedColumns) > 0 && len(fk.ReferencedColumns) != len(fk.Columns) {
+					return ForeignKeyDef{}, fmt.Errorf("foreign key column count mismatch: %d referencing columns, %d referenced columns", len(fk.Columns), len(fk.ReferencedColumns))
+				}
+				return queryForeignKeyToCatalog(fk), nil
+			}
+			return ForeignKeyDef{}, fmt.Errorf("FOREIGN KEY constraint failed: referenced table '%s' not found", fk.ReferencedTable)
+		}
+	}
+	refColumns := append([]string(nil), fk.ReferencedColumns...)
+	if len(refColumns) == 0 {
+		refColumns = append([]string(nil), refTable.PrimaryKey...)
+		if len(refColumns) == 0 {
+			return ForeignKeyDef{}, fmt.Errorf("foreign key referenced columns omitted but table '%s' has no PRIMARY KEY", fk.ReferencedTable)
+		}
+	}
+	if len(refColumns) != len(fk.Columns) {
+		return ForeignKeyDef{}, fmt.Errorf("foreign key column count mismatch: %d referencing columns, %d referenced columns", len(fk.Columns), len(refColumns))
+	}
+	seenRef := make(map[string]struct{}, len(refColumns))
+	for _, col := range refColumns {
+		if _, exists := seenRef[strings.ToLower(col)]; exists {
+			return ForeignKeyDef{}, fmt.Errorf("duplicate foreign key referenced column '%s'", col)
+		}
+		seenRef[strings.ToLower(col)] = struct{}{}
+		if refTable.GetColumnIndex(col) < 0 {
+			return ForeignKeyDef{}, fmt.Errorf("foreign key referenced column '%s' not found in table '%s'", col, fk.ReferencedTable)
+		}
+	}
+
+	out := queryForeignKeyToCatalog(fk)
+	out.Columns = append([]string(nil), fk.Columns...)
+	out.ReferencedColumns = refColumns
+	return out, nil
+}
+
+func (c *Catalog) AlterTableAddForeignKeyConstraint(ctx context.Context, stmt *query.AlterTableStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
+
+	table, err := c.getTableLocked(stmt.Table)
+	if err != nil {
+		return err
+	}
+	if stmt.ForeignKey == nil {
+		return fmt.Errorf("missing FOREIGN KEY definition")
+	}
+	if stmt.ConstraintName == "" {
+		return fmt.Errorf("foreign key constraint name is required")
+	}
+	for _, existing := range table.ForeignKeys {
+		if strings.EqualFold(existing.Name, stmt.ConstraintName) {
+			return fmt.Errorf("constraint %s already exists", stmt.ConstraintName)
+		}
+	}
+	normalizedFK, err := c.validateForeignKeyDefLocked(table, stmt.ForeignKey, false)
+	if err != nil {
+		return err
+	}
+	normalizedFK.Name = stmt.ConstraintName
+
+	oldFKs := cloneForeignKeys(table.ForeignKeys)
+	table.ForeignKeys = append(table.ForeignKeys, normalizedFK)
+	if err := NewForeignKeyEnforcer(c).CheckForeignKeyConstraints(ctx, stmt.Table); err != nil {
+		table.ForeignKeys = oldFKs
+		return err
+	}
+	if err := c.storeTableDef(table); err != nil {
+		table.ForeignKeys = oldFKs
+		return err
+	}
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:         undoAlterForeignKeys,
+			tableName:      stmt.Table,
+			oldForeignKeys: oldFKs,
+		})
+	}
+	return nil
+}
+
+func (c *Catalog) AlterTableAddCheckConstraint(stmt *query.AlterTableStmt) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
+
+	table, err := c.getTableLocked(stmt.Table)
+	if err != nil {
+		return err
+	}
+	if stmt.ConstraintName == "" {
+		return fmt.Errorf("check constraint name is required")
+	}
+	if stmt.ConstraintCheck == nil {
+		return fmt.Errorf("missing CHECK constraint expression")
+	}
+	for _, existing := range table.Checks {
+		if strings.EqualFold(existing.Name, stmt.ConstraintName) {
+			return fmt.Errorf("constraint %s already exists", stmt.ConstraintName)
+		}
+	}
+
+	oldChecks := cloneCheckDefs(table.Checks)
+	table.Checks = append(table.Checks, CheckDef{
+		Name:     stmt.ConstraintName,
+		CheckStr: exprToSQL(stmt.ConstraintCheck),
+		Check:    stmt.ConstraintCheck,
+	})
+	if err := c.validateCheckConstraintsLocked(table); err != nil {
+		table.Checks = oldChecks
+		return err
+	}
+	if err := c.storeTableDef(table); err != nil {
+		table.Checks = oldChecks
+		return err
+	}
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:    undoAlterChecks,
+			tableName: stmt.Table,
+			oldChecks: oldChecks,
+		})
+	}
+	return nil
+}
+
+func (c *Catalog) validateCheckConstraintsLocked(table *TableDef) error {
+	tree := c.tableTrees[table.Name]
+	if tree != nil {
+		iter, err := tree.Scan(nil, nil)
+		if err != nil {
+			return err
+		}
+		defer iter.Close()
+		for iter.HasNext() {
+			_, value, err := iter.Next()
+			if err != nil {
+				return err
+			}
+			row, err := decodeRow(value, len(table.Columns))
+			if err != nil {
+				return err
+			}
+			if err := c.checkRowConstraints(table, row, nil); err != nil {
+				return err
+			}
+		}
+	}
+	if ts := c.getCurrentTxn(); ts != nil {
+		if pending := ts.getPendingWriteMap()[table.Name]; len(pending) > 0 {
+			for _, pw := range pending {
+				vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
+				if err != nil {
+					return err
+				}
+				if vrow.Version.DeletedAt > 0 {
+					continue
+				}
+				if err := c.checkRowConstraints(table, vrow.Data, nil); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) DropTableConstraint(tableName, constraintName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
+
+	table, err := c.getTableLocked(tableName)
+	if err != nil {
+		return err
+	}
+	for i, fk := range table.ForeignKeys {
+		if strings.EqualFold(fk.Name, constraintName) {
+			oldFKs := cloneForeignKeys(table.ForeignKeys)
+			table.ForeignKeys = append(table.ForeignKeys[:i], table.ForeignKeys[i+1:]...)
+			if err := c.storeTableDef(table); err != nil {
+				table.ForeignKeys = oldFKs
+				return err
+			}
+			if c.isCurrentTxnActive() {
+				c.appendUndoEntry(undoEntry{
+					action:         undoAlterForeignKeys,
+					tableName:      tableName,
+					oldForeignKeys: oldFKs,
+				})
+			}
+			return nil
+		}
+	}
+	for i, check := range table.Checks {
+		if strings.EqualFold(check.Name, constraintName) {
+			oldChecks := cloneCheckDefs(table.Checks)
+			table.Checks = append(table.Checks[:i], table.Checks[i+1:]...)
+			if err := c.storeTableDef(table); err != nil {
+				table.Checks = oldChecks
+				return err
+			}
+			if c.isCurrentTxnActive() {
+				c.appendUndoEntry(undoEntry{
+					action:    undoAlterChecks,
+					tableName: tableName,
+					oldChecks: oldChecks,
+				})
+			}
+			return nil
+		}
+	}
+
+	idxDef, exists := c.indexes[constraintName]
+	if !exists {
+		return ErrIndexNotFound
+	}
+	if idxDef.TableName != tableName {
+		return fmt.Errorf("constraint %s not found on table %s", constraintName, tableName)
+	}
+	if !idxDef.Unique {
+		return fmt.Errorf("constraint %s is not a UNIQUE constraint", constraintName)
+	}
+	if err := c.deleteCatalogDef("idx:" + constraintName); err != nil {
+		return fmt.Errorf("failed to delete constraint metadata %s: %w", constraintName, err)
+	}
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:    undoDropIndex,
+			indexName: constraintName,
+			indexDef:  idxDef,
+			indexTree: c.indexTrees[constraintName],
+		})
+	}
+	delete(c.indexes, constraintName)
+	delete(c.indexTrees, constraintName)
 	return nil
 }
 
@@ -283,6 +653,10 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 				return ErrTableNotFound
 			}
 		}
+	}
+
+	if err := c.ensureTableNotReferencedByForeignKeyLocked(stmt.Table); err != nil {
+		return err
 	}
 
 	// Drop foreign table if present
@@ -303,8 +677,80 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 
 	// Check if table actually exists before trying to delete
 	tableDef, exists := c.tables[stmt.Table]
+	tableIndexes := make(map[string]*IndexDef)
+	tableIdxTrees := make(map[string]btree.TreeStore)
+	var tableRLSPolicies []*security.Policy
+	tableRLSWasEnabled := false
 	if exists {
+		for idxName, idxDef := range c.indexes {
+			if idxDef.TableName == stmt.Table {
+				tableIndexes[idxName] = idxDef
+				if tree, ok := c.indexTrees[idxName]; ok {
+					tableIdxTrees[idxName] = tree
+				}
+			}
+		}
+		if c.enableRLS && c.rlsManager != nil {
+			tableRLSWasEnabled = c.rlsManager.IsEnabled(stmt.Table)
+			tableRLSPolicies = c.rlsManager.GetTablePolicies(stmt.Table)
+		}
+		var deletedIndexes []string
+		for idxName, idxDef := range tableIndexes {
+			if idxDef.Temporary {
+				continue
+			}
+			if err := c.deleteCatalogDef("idx:" + idxName); err != nil {
+				return fmt.Errorf("failed to delete index metadata %s for dropped table %s: %w", idxName, stmt.Table, err)
+			}
+			deletedIndexes = append(deletedIndexes, idxName)
+		}
+		for _, policy := range tableRLSPolicies {
+			key := "rlsp:" + strings.ToLower(policy.TableName) + ":" + strings.ToLower(policy.Name)
+			if err := c.deleteCatalogDef(key); err != nil {
+				for _, idxName := range deletedIndexes {
+					if restoreErr := c.storeIndexDef(tableIndexes[idxName]); restoreErr != nil {
+						return fmt.Errorf("failed to delete RLS policy metadata %s for dropped table %s: %w; restoring index metadata %s failed: %v", policy.Name, stmt.Table, err, idxName, restoreErr)
+					}
+				}
+				for _, restorePolicy := range tableRLSPolicies {
+					if restoreErr := c.storeRLSPolicyDef(restorePolicy); restoreErr != nil {
+						return fmt.Errorf("failed to delete RLS policy metadata %s for dropped table %s: %w; restoring RLS policy metadata %s failed: %v", policy.Name, stmt.Table, err, restorePolicy.Name, restoreErr)
+					}
+				}
+				return fmt.Errorf("failed to delete RLS policy metadata %s for dropped table %s: %w", policy.Name, stmt.Table, err)
+			}
+		}
+		if tableRLSWasEnabled {
+			if err := c.deleteCatalogDef("rlst:" + strings.ToLower(stmt.Table)); err != nil {
+				for _, idxName := range deletedIndexes {
+					if restoreErr := c.storeIndexDef(tableIndexes[idxName]); restoreErr != nil {
+						return fmt.Errorf("failed to delete RLS table metadata %s: %w; restoring index metadata %s failed: %v", stmt.Table, err, idxName, restoreErr)
+					}
+				}
+				for _, policy := range tableRLSPolicies {
+					if restoreErr := c.storeRLSPolicyDef(policy); restoreErr != nil {
+						return fmt.Errorf("failed to delete RLS table metadata %s: %w; restoring RLS policy metadata %s failed: %v", stmt.Table, err, policy.Name, restoreErr)
+					}
+				}
+				return fmt.Errorf("failed to delete RLS table metadata %s: %w", stmt.Table, err)
+			}
+		}
 		if err := c.deleteCatalogDef("tbl:" + stmt.Table); err != nil {
+			for _, idxName := range deletedIndexes {
+				if restoreErr := c.storeIndexDef(tableIndexes[idxName]); restoreErr != nil {
+					return fmt.Errorf("failed to delete table metadata %s: %w; restoring index metadata %s failed: %v", stmt.Table, err, idxName, restoreErr)
+				}
+			}
+			for _, policy := range tableRLSPolicies {
+				if restoreErr := c.storeRLSPolicyDef(policy); restoreErr != nil {
+					return fmt.Errorf("failed to delete table metadata %s: %w; restoring RLS policy metadata %s failed: %v", stmt.Table, err, policy.Name, restoreErr)
+				}
+			}
+			if tableRLSWasEnabled {
+				if restoreErr := c.storeRLSEnabledTable(stmt.Table); restoreErr != nil {
+					return fmt.Errorf("failed to delete table metadata %s: %w; restoring RLS table metadata failed: %v", stmt.Table, err, restoreErr)
+				}
+			}
 			return fmt.Errorf("failed to delete table metadata %s: %w", stmt.Table, err)
 		}
 	}
@@ -312,20 +758,21 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 	// Record DDL undo entry for transaction rollback before deleting
 	if c.isCurrentTxnActive() && exists {
 		entry := undoEntry{
-			action:        undoDropTable,
-			tableName:     stmt.Table,
-			tableDef:      tableDef,
-			tableTree:     c.tableTrees[stmt.Table],
-			tableIndexes:  make(map[string]*IndexDef),
-			tableIdxTrees: make(map[string]btree.TreeStore),
+			action:             undoDropTable,
+			tableName:          stmt.Table,
+			tableDef:           tableDef,
+			tableTree:          c.tableTrees[stmt.Table],
+			tableIndexes:       make(map[string]*IndexDef),
+			tableIdxTrees:      make(map[string]btree.TreeStore),
+			rlsPolicies:        tableRLSPolicies,
+			rlsTableName:       stmt.Table,
+			rlsTableWasEnabled: tableRLSWasEnabled,
 		}
-		for idxName, idxDef := range c.indexes {
-			if idxDef.TableName == stmt.Table {
-				entry.tableIndexes[idxName] = idxDef
-				if tree, ok := c.indexTrees[idxName]; ok {
-					entry.tableIdxTrees[idxName] = tree
-				}
-			}
+		for idxName, idxDef := range tableIndexes {
+			entry.tableIndexes[idxName] = idxDef
+		}
+		for idxName, idxTree := range tableIdxTrees {
+			entry.tableIdxTrees[idxName] = idxTree
 		}
 		c.appendUndoEntry(entry)
 	}
@@ -342,12 +789,394 @@ func (c *Catalog) DropTable(stmt *query.DropTableStmt) error {
 			}
 		}
 	}
+	if c.rlsManager != nil {
+		for _, policy := range tableRLSPolicies {
+			_ = c.rlsManager.DropPolicy(policy.TableName, policy.Name)
+		}
+		if tableRLSWasEnabled {
+			c.rlsManager.DisableTable(stmt.Table)
+		}
+	}
 
 	// Clean up views that reference this table (triggers, FTS indexes, stats)
 	delete(c.stats, stmt.Table)
 	delete(c.tables, stmt.Table)
 
 	return nil
+}
+
+func (c *Catalog) ensureTableNotReferencedByForeignKeyLocked(tableName string) error {
+	for refTableName, table := range c.tables {
+		if strings.EqualFold(refTableName, tableName) {
+			continue
+		}
+		for _, fk := range table.ForeignKeys {
+			if strings.EqualFold(fk.ReferencedTable, tableName) {
+				constraint := fk.Name
+				if constraint == "" {
+					constraint = "<unnamed>"
+				}
+				return fmt.Errorf("cannot drop table %s: referenced by foreign key %s on table %s", tableName, constraint, refTableName)
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) ensureColumnNotUsedByForeignKeyLocked(tableName, colName string) error {
+	table, exists := c.tables[tableName]
+	if !exists {
+		return ErrTableNotFound
+	}
+	for _, fk := range table.ForeignKeys {
+		for _, fkCol := range fk.Columns {
+			if strings.EqualFold(fkCol, colName) {
+				constraint := fk.Name
+				if constraint == "" {
+					constraint = "<unnamed>"
+				}
+				return fmt.Errorf("cannot drop column %s.%s: used by foreign key %s", tableName, colName, constraint)
+			}
+		}
+	}
+	for refTableName, refTable := range c.tables {
+		for _, fk := range refTable.ForeignKeys {
+			if !strings.EqualFold(fk.ReferencedTable, tableName) {
+				continue
+			}
+			for _, refCol := range fk.ReferencedColumns {
+				if strings.EqualFold(refCol, colName) {
+					constraint := fk.Name
+					if constraint == "" {
+						constraint = "<unnamed>"
+					}
+					return fmt.Errorf("cannot drop column %s.%s: referenced by foreign key %s on table %s", tableName, colName, constraint, refTableName)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func renameForeignKeyColumns(fks []ForeignKeyDef, oldName, newName string) bool {
+	changed := false
+	for i := range fks {
+		for j, col := range fks[i].Columns {
+			if strings.EqualFold(col, oldName) {
+				fks[i].Columns[j] = newName
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func renameReferencedForeignKeyColumns(fks []ForeignKeyDef, referencedTable, oldName, newName string) bool {
+	changed := false
+	for i := range fks {
+		if !strings.EqualFold(fks[i].ReferencedTable, referencedTable) {
+			continue
+		}
+		for j, col := range fks[i].ReferencedColumns {
+			if strings.EqualFold(col, oldName) {
+				fks[i].ReferencedColumns[j] = newName
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+type checkColumnRefVisitor struct {
+	oldName string
+	newName string
+	rename  bool
+	changed bool
+	found   bool
+}
+
+func (v *checkColumnRefVisitor) matchName(name string) bool {
+	if strings.EqualFold(name, v.oldName) {
+		return true
+	}
+	if dot := strings.LastIndexByte(name, '.'); dot >= 0 && dot < len(name)-1 {
+		return strings.EqualFold(name[dot+1:], v.oldName)
+	}
+	return false
+}
+
+func (v *checkColumnRefVisitor) renameName(name string) string {
+	if strings.EqualFold(name, v.oldName) {
+		return v.newName
+	}
+	if dot := strings.LastIndexByte(name, '.'); dot >= 0 && dot < len(name)-1 && strings.EqualFold(name[dot+1:], v.oldName) {
+		return name[:dot+1] + v.newName
+	}
+	return name
+}
+
+func (v *checkColumnRefVisitor) VisitIdentifier(expr *query.Identifier, ctx interface{}) interface{} {
+	if v.matchName(expr.Name) {
+		v.found = true
+		if v.rename {
+			expr.Name = v.renameName(expr.Name)
+			v.changed = true
+		}
+	}
+	return expr
+}
+
+func (v *checkColumnRefVisitor) VisitQualifiedIdentifier(expr *query.QualifiedIdentifier, ctx interface{}) interface{} {
+	if strings.EqualFold(expr.Column, v.oldName) {
+		v.found = true
+		if v.rename {
+			expr.Column = v.newName
+			v.changed = true
+		}
+	}
+	return expr
+}
+
+func (v *checkColumnRefVisitor) VisitColumnRef(expr *query.ColumnRef, ctx interface{}) interface{} {
+	if strings.EqualFold(expr.Column, v.oldName) {
+		v.found = true
+		if v.rename {
+			expr.Column = v.newName
+			v.changed = true
+		}
+	}
+	return expr
+}
+
+func (v *checkColumnRefVisitor) VisitBinaryExpr(expr *query.BinaryExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitUnaryExpr(expr *query.UnaryExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitFunctionCall(expr *query.FunctionCall, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitStringLiteral(expr *query.StringLiteral, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitNumberLiteral(expr *query.NumberLiteral, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitBooleanLiteral(expr *query.BooleanLiteral, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitNullLiteral(expr *query.NullLiteral, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitVectorLiteral(expr *query.VectorLiteral, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitPlaceholder(expr *query.PlaceholderExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitInExpr(expr *query.InExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitBetweenExpr(expr *query.BetweenExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitLikeExpr(expr *query.LikeExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitIsNullExpr(expr *query.IsNullExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitCastExpr(expr *query.CastExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitCaseExpr(expr *query.CaseExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitSubqueryExpr(expr *query.SubqueryExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitExistsExpr(expr *query.ExistsExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitStarExpr(expr *query.StarExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitJSONPathExpr(expr *query.JSONPathExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitJSONContainsExpr(expr *query.JSONContainsExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitAliasExpr(expr *query.AliasExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitMatchExpr(expr *query.MatchExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitWindowExpr(expr *query.WindowExpr, ctx interface{}) interface{} {
+	return expr
+}
+func (v *checkColumnRefVisitor) VisitWindowSpec(expr *query.WindowSpec, ctx interface{}) interface{} {
+	return expr
+}
+
+func checkExpressionReferencesColumn(expr query.Expression, colName string) bool {
+	visitor := &checkColumnRefVisitor{oldName: colName}
+	query.Walk(expr, visitor, nil)
+	return visitor.found
+}
+
+func renameExpressionColumnReferences(expr query.Expression, oldName, newName string) bool {
+	visitor := &checkColumnRefVisitor{oldName: oldName, newName: newName, rename: true}
+	query.Walk(expr, visitor, nil)
+	return visitor.changed
+}
+
+func checkConstraintLabel(name string, fallback string) string {
+	if name != "" {
+		return name
+	}
+	return fallback
+}
+
+func ensureColumnNotUsedByCheck(table *TableDef, colName string, dropColIdx int) error {
+	for i, col := range table.Columns {
+		if i == dropColIdx || col.Check == nil {
+			continue
+		}
+		if checkExpressionReferencesColumn(col.Check, colName) {
+			return fmt.Errorf("cannot drop column %s.%s: referenced by CHECK constraint %s", table.Name, colName, checkConstraintLabel(col.CheckName, col.Name))
+		}
+	}
+	for i, check := range table.Checks {
+		if check.Check == nil {
+			continue
+		}
+		if checkExpressionReferencesColumn(check.Check, colName) {
+			return fmt.Errorf("cannot drop column %s.%s: referenced by CHECK constraint %s", table.Name, colName, checkConstraintLabel(check.Name, fmt.Sprintf("#%d", i+1)))
+		}
+	}
+	return nil
+}
+
+func renameCheckColumnReferences(table *TableDef, oldName, newName string) bool {
+	changed := false
+	for i := range table.Columns {
+		if table.Columns[i].Check == nil {
+			continue
+		}
+		if renameExpressionColumnReferences(table.Columns[i].Check, oldName, newName) {
+			table.Columns[i].CheckStr = exprToSQL(table.Columns[i].Check)
+			changed = true
+		}
+	}
+	for i := range table.Checks {
+		if table.Checks[i].Check == nil {
+			continue
+		}
+		if renameExpressionColumnReferences(table.Checks[i].Check, oldName, newName) {
+			table.Checks[i].CheckStr = exprToSQL(table.Checks[i].Check)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// CleanupFailedCreateTable removes table/index metadata created by a CREATE
+// TABLE statement whose follow-up constraint/index creation failed. It does not
+// record undo entries because the statement itself never succeeded.
+func (c *Catalog) CleanupFailedCreateTable(tableName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
+
+	var indexNames []string
+	for idxName, idxDef := range c.indexes {
+		if idxDef != nil && idxDef.TableName == tableName {
+			indexNames = append(indexNames, idxName)
+		}
+	}
+	for _, idxName := range indexNames {
+		if err := c.deleteCatalogDef("idx:" + idxName); err != nil {
+			return fmt.Errorf("failed to delete index metadata %s during CREATE TABLE cleanup: %w", idxName, err)
+		}
+	}
+	if _, exists := c.tables[tableName]; exists {
+		if err := c.deleteCatalogDef("tbl:" + tableName); err != nil {
+			return fmt.Errorf("failed to delete table metadata %s during CREATE TABLE cleanup: %w", tableName, err)
+		}
+	}
+
+	delete(c.tableTrees, tableName)
+	for treeName := range c.tableTrees {
+		if strings.HasPrefix(treeName, tableName+":") {
+			delete(c.tableTrees, treeName)
+		}
+	}
+	for _, idxName := range indexNames {
+		delete(c.indexes, idxName)
+		delete(c.indexTrees, idxName)
+	}
+	delete(c.stats, tableName)
+	delete(c.tables, tableName)
+	c.pruneFailedCreateTableUndoLocked(tableName, indexNames)
+	return nil
+}
+
+func (c *Catalog) pruneFailedCreateTableUndoLocked(tableName string, indexNames []string) {
+	indexSet := make(map[string]struct{}, len(indexNames))
+	for _, idxName := range indexNames {
+		indexSet[idxName] = struct{}{}
+	}
+	prune := func(undoLog []undoEntry) ([]undoEntry, []int) {
+		if len(undoLog) == 0 {
+			return undoLog, nil
+		}
+		out := undoLog[:0]
+		var removed []int
+		for pos, entry := range undoLog {
+			remove := false
+			switch entry.action {
+			case undoCreateTable:
+				remove = entry.tableName == tableName
+			case undoCreateIndex:
+				_, remove = indexSet[entry.indexName]
+			}
+			if remove {
+				removed = append(removed, pos)
+				continue
+			}
+			out = append(out, entry)
+		}
+		return out, removed
+	}
+	adjustSavepoints := func(savepoints []savepointEntry, removed []int) {
+		if len(removed) == 0 {
+			return
+		}
+		for i := range savepoints {
+			shift := 0
+			for _, pos := range removed {
+				if pos < savepoints[i].undoPos {
+					shift++
+				}
+			}
+			savepoints[i].undoPos -= shift
+			if savepoints[i].undoPos < 0 {
+				savepoints[i].undoPos = 0
+			}
+		}
+	}
+	if ts := c.getCurrentTxn(); ts != nil {
+		var removed []int
+		ts.undoLog, removed = prune(ts.undoLog)
+		adjustSavepoints(ts.savepoints, removed)
+		return
+	}
+	var removed []int
+	c.undoLog, removed = prune(c.undoLog)
+	adjustSavepoints(c.savepoints, removed)
 }
 
 func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
@@ -386,6 +1215,7 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 		AutoIncrement: stmt.Column.AutoIncrement,
 		Default:       exprToSQL(stmt.Column.Default),
 		CheckStr:      exprToSQL(stmt.Column.Check),
+		CheckName:     stmt.Column.CheckName,
 		Check:         stmt.Column.Check,
 		defaultExpr:   stmt.Column.Default,
 		Dimensions:    stmt.Column.Dimensions,
@@ -514,8 +1344,30 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 	if table.isPrimaryKeyColumn(table.Columns[colIdx].Name) {
 		return fmt.Errorf("cannot drop PRIMARY KEY column '%s'", colName)
 	}
+	if err := c.ensureColumnNotUsedByForeignKeyLocked(stmt.Table, colName); err != nil {
+		return err
+	}
+	if err := ensureColumnNotUsedByCheck(table, colName, colIdx); err != nil {
+		return err
+	}
 
-	// Save undo entry before modification
+	dropIndexes := make(map[string]*IndexDef)
+	dropIdxTrees := make(map[string]btree.TreeStore)
+	for idxName, idxDef := range c.indexes {
+		if idxDef.TableName != stmt.Table {
+			continue
+		}
+		for _, idxCol := range idxDef.Columns {
+			if strings.EqualFold(idxCol, colName) {
+				dropIndexes[idxName] = idxDef
+				if idxTree, ok := c.indexTrees[idxName]; ok {
+					dropIdxTrees[idxName] = idxTree
+				}
+				break
+			}
+		}
+	}
+	var undo *undoEntry
 	if c.isCurrentTxnActive() {
 		oldCols := make([]ColumnDef, len(table.Columns))
 		copy(oldCols, table.Columns)
@@ -545,21 +1397,13 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 				entry.oldRowData = append(entry.oldRowData, struct{ key, val []byte }{keyCopy, valCopy})
 			}
 		}
-		// Save indexes that will be dropped
-		for idxName, idxDef := range c.indexes {
-			if idxDef.TableName == stmt.Table {
-				for _, idxCol := range idxDef.Columns {
-					if strings.EqualFold(idxCol, colName) {
-						entry.droppedIndexes[idxName] = idxDef
-						if idxTree, ok := c.indexTrees[idxName]; ok {
-							entry.droppedIdxTrees[idxName] = idxTree
-						}
-						break
-					}
-				}
-			}
+		for idxName, idxDef := range dropIndexes {
+			entry.droppedIndexes[idxName] = idxDef
 		}
-		c.appendUndoEntry(entry)
+		for idxName, idxTree := range dropIdxTrees {
+			entry.droppedIdxTrees[idxName] = idxTree
+		}
+		undo = &entry
 	}
 
 	// Prepare all row updates before mutating the table definition so corrupt
@@ -600,6 +1444,28 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 		}
 	}
 
+	var deletedIndexNames []string
+	for idxName, idxDef := range dropIndexes {
+		if idxDef.Temporary {
+			continue
+		}
+		if err := c.deleteCatalogDef("idx:" + idxName); err != nil {
+			return fmt.Errorf("failed to delete index metadata %s for dropped column %s.%s: %w", idxName, stmt.Table, colName, err)
+		}
+		deletedIndexNames = append(deletedIndexNames, idxName)
+	}
+	restoreDroppedIndexMetadata := func(primary error) error {
+		for _, idxName := range deletedIndexNames {
+			if restoreErr := c.storeIndexDef(dropIndexes[idxName]); restoreErr != nil {
+				return fmt.Errorf("%w; restoring index metadata %s failed: %v", primary, idxName, restoreErr)
+			}
+		}
+		return primary
+	}
+	if undo != nil {
+		c.appendUndoEntry(*undo)
+	}
+
 	// Remove column from definition
 	table.Columns = append(table.Columns[:colIdx], table.Columns[colIdx+1:]...)
 	table.buildColumnIndexCache()
@@ -608,25 +1474,21 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 	if exists {
 		for _, u := range updates {
 			if err := tree.Put(u.key, u.val); err != nil {
-				return fmt.Errorf("failed to update row after column drop: %w", err)
+				return restoreDroppedIndexMetadata(fmt.Errorf("failed to update row after column drop: %w", err))
 			}
 		}
 	}
 
 	// Drop any indexes on the dropped column
-	for idxName, idxDef := range c.indexes {
-		if idxDef.TableName == stmt.Table {
-			for _, idxCol := range idxDef.Columns {
-				if strings.EqualFold(idxCol, colName) {
-					delete(c.indexes, idxName)
-					delete(c.indexTrees, idxName)
-					break
-				}
-			}
-		}
+	for idxName := range dropIndexes {
+		delete(c.indexes, idxName)
+		delete(c.indexTrees, idxName)
 	}
 
-	return c.storeTableDef(table)
+	if err := c.storeTableDef(table); err != nil {
+		return restoreDroppedIndexMetadata(err)
+	}
+	return nil
 }
 
 func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
@@ -677,9 +1539,21 @@ func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
 	}
 
 	// Update index references
+	var changedIndexes []*IndexDef
 	for _, idxDef := range c.indexes {
 		if idxDef.TableName == stmt.Table {
 			idxDef.TableName = stmt.NewName
+			changedIndexes = append(changedIndexes, idxDef)
+		}
+	}
+
+	changedFKTables := make(map[string]*TableDef)
+	for tableName, tbl := range c.tables {
+		for i := range tbl.ForeignKeys {
+			if strings.EqualFold(tbl.ForeignKeys[i].ReferencedTable, stmt.Table) {
+				tbl.ForeignKeys[i].ReferencedTable = stmt.NewName
+				changedFKTables[tableName] = tbl
+			}
 		}
 	}
 
@@ -693,6 +1567,19 @@ func (c *Catalog) AlterTableRename(stmt *query.AlterTableStmt) error {
 
 	if err := c.storeTableDef(table); err != nil {
 		return fmt.Errorf("failed to persist renamed table: %w", err)
+	}
+	for _, idxDef := range changedIndexes {
+		if err := c.storeIndexDef(idxDef); err != nil {
+			return fmt.Errorf("failed to store index metadata %s after renaming table %s to %s: %w", idxDef.Name, stmt.Table, stmt.NewName, err)
+		}
+	}
+	for tableName, tbl := range changedFKTables {
+		if tableName == stmt.NewName {
+			continue
+		}
+		if err := c.storeTableDef(tbl); err != nil {
+			return fmt.Errorf("failed to store foreign key metadata for table %s after renaming referenced table %s to %s: %w", tableName, stmt.Table, stmt.NewName, err)
+		}
 	}
 
 	return nil
@@ -753,19 +1640,47 @@ func (c *Catalog) AlterTableRenameColumn(stmt *query.AlterTableStmt) error {
 	}
 
 	table.buildColumnIndexCache()
+	renameCheckColumnReferences(table, stmt.OldName, stmt.NewName)
 
 	// Update index column references
+	var changedIndexes []*IndexDef
 	for _, idxDef := range c.indexes {
 		if idxDef.TableName == stmt.Table {
 			for i, idxCol := range idxDef.Columns {
 				if strings.EqualFold(idxCol, stmt.OldName) {
 					idxDef.Columns[i] = stmt.NewName
+					changedIndexes = append(changedIndexes, idxDef)
 				}
 			}
 		}
 	}
+	changedFKTables := make(map[string]*TableDef)
+	if renameForeignKeyColumns(table.ForeignKeys, stmt.OldName, stmt.NewName) {
+		changedFKTables[stmt.Table] = table
+	}
+	for tableName, tbl := range c.tables {
+		if renameReferencedForeignKeyColumns(tbl.ForeignKeys, stmt.Table, stmt.OldName, stmt.NewName) {
+			changedFKTables[tableName] = tbl
+		}
+	}
 
-	return c.storeTableDef(table)
+	if err := c.storeTableDef(table); err != nil {
+		return err
+	}
+	for _, idxDef := range changedIndexes {
+		if err := c.storeIndexDef(idxDef); err != nil {
+			return fmt.Errorf("failed to store index metadata %s after renaming column %s.%s: %w", idxDef.Name, stmt.Table, stmt.OldName, err)
+		}
+	}
+	for tableName, tbl := range changedFKTables {
+		if tableName == stmt.Table {
+			continue
+		}
+		if err := c.storeTableDef(tbl); err != nil {
+			return fmt.Errorf("failed to store foreign key metadata for table %s after renaming column %s.%s: %w", tableName, stmt.Table, stmt.OldName, err)
+		}
+	}
+	return nil
 }
 
 func (c *Catalog) GetTable(name string) (*TableDef, error) {
@@ -848,6 +1763,14 @@ func (c *Catalog) CreateView(name string, query *query.SelectStmt) error {
 }
 
 func (c *Catalog) CreateViewSQL(name string, viewQuery *query.SelectStmt, sql string) error {
+	return c.createViewSQL(name, viewQuery, sql, false)
+}
+
+func (c *Catalog) CreateTemporaryViewSQL(name string, viewQuery *query.SelectStmt, sql string) error {
+	return c.createViewSQL(name, viewQuery, sql, true)
+}
+
+func (c *Catalog) createViewSQL(name string, viewQuery *query.SelectStmt, sql string, temporary bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	defer c.invalidateSchemaCache()
@@ -860,17 +1783,78 @@ func (c *Catalog) CreateViewSQL(name string, viewQuery *query.SelectStmt, sql st
 	if c.viewSQL == nil {
 		c.viewSQL = make(map[string]string)
 	}
+	if c.viewTemporary == nil {
+		c.viewTemporary = make(map[string]bool)
+	}
 	c.views[name] = viewQuery
 	if strings.TrimSpace(sql) == "" {
 		sql = createViewSQL(name, viewQuery)
 	}
 	c.viewSQL[name] = strings.TrimSpace(sql)
+	c.viewTemporary[name] = temporary
 	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
-			action:   undoCreateView,
-			viewName: name,
-			viewSQL:  c.viewSQL[name],
+			action:        undoCreateView,
+			viewName:      name,
+			viewSQL:       c.viewSQL[name],
+			viewTemporary: temporary,
 		})
+	}
+	return nil
+}
+
+func (c *Catalog) CreateOrReplaceViewSQL(name string, viewQuery *query.SelectStmt, sql string) error {
+	return c.createOrReplaceViewSQL(name, viewQuery, sql, false)
+}
+
+func (c *Catalog) CreateOrReplaceTemporaryViewSQL(name string, viewQuery *query.SelectStmt, sql string) error {
+	return c.createOrReplaceViewSQL(name, viewQuery, sql, true)
+}
+
+func (c *Catalog) createOrReplaceViewSQL(name string, viewQuery *query.SelectStmt, sql string, temporary bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
+	if _, exists := c.tables[name]; exists {
+		return ErrTableExists
+	}
+	if c.viewSQL == nil {
+		c.viewSQL = make(map[string]string)
+	}
+	if c.viewTemporary == nil {
+		c.viewTemporary = make(map[string]bool)
+	}
+	oldQuery, existed := c.views[name]
+	oldSQL := c.viewSQL[name]
+	oldTemporary := c.viewTemporary[name]
+	if strings.TrimSpace(sql) == "" {
+		sql = createViewSQL(name, viewQuery)
+	}
+	c.views[name] = viewQuery
+	c.viewSQL[name] = strings.TrimSpace(sql)
+	c.viewTemporary[name] = temporary
+	if temporary && existed && !oldTemporary {
+		if err := c.deleteCatalogDef("view:" + name); err != nil {
+			return fmt.Errorf("failed to delete replaced view metadata %s: %w", name, err)
+		}
+	}
+	if c.isCurrentTxnActive() {
+		if existed {
+			c.appendUndoEntry(undoEntry{
+				action:        undoDropView,
+				viewName:      name,
+				viewQuery:     cloneSelectStmt(oldQuery),
+				viewSQL:       oldSQL,
+				viewTemporary: oldTemporary,
+			})
+		} else {
+			c.appendUndoEntry(undoEntry{
+				action:        undoCreateView,
+				viewName:      name,
+				viewSQL:       c.viewSQL[name],
+				viewTemporary: temporary,
+			})
+		}
 	}
 	return nil
 }
@@ -879,6 +1863,21 @@ func (c *Catalog) GetView(name string) (*query.SelectStmt, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.getViewLocked(name)
+}
+
+// ListViewSQL returns persisted CREATE VIEW statements keyed by view name.
+func (c *Catalog) ListViewSQL() map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	out := make(map[string]string, len(c.viewSQL))
+	for name, sql := range c.viewSQL {
+		if c.viewTemporary[name] {
+			continue
+		}
+		out[name] = sql
+	}
+	return out
 }
 
 // getViewLocked is the lock-free internal version. Must be called with mu held.
@@ -897,19 +1896,24 @@ func (c *Catalog) DropView(name string) error {
 	if _, exists := c.views[name]; !exists {
 		return ErrTableNotFound
 	}
-	if err := c.deleteCatalogDef("view:" + name); err != nil {
-		return fmt.Errorf("failed to delete view metadata %s: %w", name, err)
+	temporary := c.viewTemporary[name]
+	if !temporary {
+		if err := c.deleteCatalogDef("view:" + name); err != nil {
+			return fmt.Errorf("failed to delete view metadata %s: %w", name, err)
+		}
 	}
 	if c.isCurrentTxnActive() {
 		c.appendUndoEntry(undoEntry{
-			action:    undoDropView,
-			viewName:  name,
-			viewQuery: cloneSelectStmt(c.views[name]),
-			viewSQL:   c.viewSQL[name],
+			action:        undoDropView,
+			viewName:      name,
+			viewQuery:     cloneSelectStmt(c.views[name]),
+			viewSQL:       c.viewSQL[name],
+			viewTemporary: temporary,
 		})
 	}
 	delete(c.views, name)
 	delete(c.viewSQL, name)
+	delete(c.viewTemporary, name)
 	return nil
 }
 
@@ -966,6 +1970,18 @@ func (c *Catalog) GetTrigger(name string) (*query.CreateTriggerStmt, error) {
 		return nil, fmt.Errorf("trigger %s not found", name)
 	}
 	return cloneCreateTriggerStmt(trigger), nil
+}
+
+// ListTriggerSQL returns persisted CREATE TRIGGER statements keyed by trigger name.
+func (c *Catalog) ListTriggerSQL() map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	out := make(map[string]string, len(c.triggerSQL))
+	for name, sql := range c.triggerSQL {
+		out[name] = sql
+	}
+	return out
 }
 
 func (c *Catalog) DropTrigger(name string) error {
@@ -1186,7 +2202,16 @@ func (c *Catalog) resolveTriggerExpr(expr query.Expression, newRow []interface{}
 		for i, arg := range e.Args {
 			newArgs[i] = c.resolveTriggerExpr(arg, newRow, oldRow, columns)
 		}
-		return &query.FunctionCall{Name: e.Name, Args: newArgs, Distinct: e.Distinct}
+		newOrderBy := make([]*query.OrderByExpr, len(e.OrderBy))
+		for i, ob := range e.OrderBy {
+			if ob == nil {
+				continue
+			}
+			copied := *ob
+			copied.Expr = c.resolveTriggerExpr(ob.Expr, newRow, oldRow, columns)
+			newOrderBy[i] = &copied
+		}
+		return &query.FunctionCall{Name: e.Name, Args: newArgs, Distinct: e.Distinct, OrderBy: newOrderBy, Filter: c.resolveTriggerExpr(e.Filter, newRow, oldRow, columns)}
 	case *query.CaseExpr:
 		newCase := &query.CaseExpr{}
 		if e.Expr != nil {
@@ -1279,6 +2304,18 @@ func (c *Catalog) GetProcedure(name string) (*query.CreateProcedureStmt, error) 
 		return nil, fmt.Errorf("procedure %s not found", name)
 	}
 	return cloneCreateProcedureStmt(proc), nil
+}
+
+// ListProcedureSQL returns persisted CREATE PROCEDURE statements keyed by procedure name.
+func (c *Catalog) ListProcedureSQL() map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	out := make(map[string]string, len(c.procedureSQL))
+	for name, sql := range c.procedureSQL {
+		out[name] = sql
+	}
+	return out
 }
 
 func (c *Catalog) DropProcedure(name string) error {

@@ -3,6 +3,8 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 )
@@ -53,6 +55,48 @@ func (c *Catalog) checkRowAccessLocked(ctx context.Context, tableName string, co
 	}
 	rowMap := rowToMap(columns, row)
 	return c.rlsManager.CheckAccess(ctx, tableName, operation, rowMap, user, roles)
+}
+
+func (c *Catalog) filterRowsForSelectRLSLocked(ctx context.Context, tableName string, columns []ColumnDef, rows [][]interface{}) ([][]interface{}, error) {
+	if !c.enableRLS || c.rlsManager == nil || !c.rlsManager.IsEnabled(tableName) {
+		return rows, nil
+	}
+	if ctx == nil {
+		ctx = c.rlsCtx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	user, _ := rlsContext(ctx)
+	if user == "" {
+		return rows, nil
+	}
+
+	filtered := make([][]interface{}, 0, len(rows))
+	for _, row := range rows {
+		allowed, err := c.checkRowAccessLocked(ctx, tableName, columns, row, security.PolicySelect)
+		if err != nil {
+			return nil, err
+		}
+		if allowed {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered, nil
+}
+
+// checkRowCheckLocked checks RLS WITH CHECK predicates for rows being written.
+// Caller must hold the catalog lock.
+func (c *Catalog) checkRowCheckLocked(ctx context.Context, tableName string, columns []ColumnDef, row []interface{}, operation security.PolicyType) (bool, error) {
+	if !c.enableRLS || c.rlsManager == nil {
+		return true, nil
+	}
+	user, roles := rlsContext(ctx)
+	if user == "" {
+		return true, nil
+	}
+	rowMap := rowToMap(columns, row)
+	return c.rlsManager.CheckAccessWithCheck(ctx, tableName, operation, rowMap, user, roles)
 }
 
 func (c *Catalog) ApplyRLSFilter(ctx context.Context, tableName string, columns []string, rows [][]interface{}, user string, roles []string) ([]string, [][]interface{}, error) {
@@ -147,6 +191,33 @@ func (c *Catalog) CheckRLSForDelete(ctx context.Context, tableName string, row m
 	}
 
 	return c.rlsManager.CheckAccess(ctx, tableName, security.PolicyDelete, row, user, roles)
+}
+
+func (c *Catalog) ListRLSPolicies() []*security.Policy {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.enableRLS || c.rlsManager == nil {
+		return nil
+	}
+	policies := c.rlsManager.ListPolicies()
+	sort.Slice(policies, func(i, j int) bool {
+		leftTable := strings.ToLower(policies[i].TableName)
+		rightTable := strings.ToLower(policies[j].TableName)
+		if leftTable != rightTable {
+			return leftTable < rightTable
+		}
+		return strings.ToLower(policies[i].Name) < strings.ToLower(policies[j].Name)
+	})
+	return policies
+}
+
+func (c *Catalog) ListRLSEnabledTables() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.enableRLS || c.rlsManager == nil {
+		return nil
+	}
+	return c.rlsManager.ListEnabledTables()
 }
 
 // applyRLSFilterInternal is a lock-free version of ApplyRLSFilter for use

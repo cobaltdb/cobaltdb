@@ -44,11 +44,23 @@ func (sb StringBox) String() string {
 func isAggregateFuncName(name string) bool {
 	switch name {
 	case "COUNT", "SUM", "AVG", "MIN", "MAX", "GROUP_CONCAT",
+		"JSON_ARRAYAGG", "JSON_OBJECTAGG",
 		"STDDEV", "STDDEV_POP", "STDDEV_SAMP", "STD",
 		"VARIANCE", "VAR_POP", "VAR_SAMP":
 		return true
 	}
 	return false
+}
+
+func isAggregateCall(fc *query.FunctionCall) bool {
+	if fc == nil {
+		return false
+	}
+	name := toUpperFast(fc.Name)
+	if (name == "MIN" || name == "MAX") && len(fc.Args) > 1 {
+		return false
+	}
+	return isAggregateFuncName(name)
 }
 
 func toInt(v interface{}) (int, bool) {

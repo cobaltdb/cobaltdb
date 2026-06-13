@@ -203,6 +203,7 @@ func (c *Catalog) checkUniqueConstraintsSnapshot(tree btree.TreeStore, table *Ta
 			if stmt.ConflictAction == query.ConflictIgnore {
 				return true, nil
 			} else if stmt.ConflictAction == query.ConflictReplace {
+				var deletedIndexEntries []deletedIndexEntry
 				oldData, getErr := tree.Get(duplicateKey)
 				if getErr == nil {
 					oldRow, decErr := decodeRow(oldData, len(table.Columns))
@@ -214,13 +215,23 @@ func (c *Catalog) checkUniqueConstraintsSnapshot(tree btree.TreeStore, table *Ta
 							if idx.tree == nil {
 								continue
 							}
-							if err := deleteIndexEntryForRow(table, idx.def, idx.tree, oldRow, duplicateKey); err != nil {
+							deletedEntry, err := deleteIndexEntryForRowTracked(idx.name, table, idx.def, idx.tree, oldRow, duplicateKey)
+							if err != nil {
+								if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+									return false, fmt.Errorf("failed to delete from index %s: %w; failed to restore deleted index entries: %v", idx.name, err, restoreErr)
+								}
 								return false, fmt.Errorf("failed to delete from index %s: %w", idx.name, err)
+							}
+							if deletedEntry != nil {
+								deletedIndexEntries = append(deletedIndexEntries, *deletedEntry)
 							}
 						}
 					}
 				}
 				if err := deleteRowKey(tree, duplicateKey); err != nil {
+					if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+						return false, fmt.Errorf("failed to delete duplicate row: %w; failed to restore deleted index entries: %v", err, restoreErr)
+					}
 					return false, fmt.Errorf("failed to delete duplicate row: %w", err)
 				}
 				return false, nil
@@ -239,15 +250,53 @@ func deleteRowKey(tree btree.TreeStore, key []byte) error {
 }
 
 func deleteIndexEntryForRow(table *TableDef, idxDef *IndexDef, idxTree btree.TreeStore, row []interface{}, rowKey []byte) error {
+	_, err := deleteIndexEntryForRowTracked("", table, idxDef, idxTree, row, rowKey)
+	return err
+}
+
+type deletedIndexEntry struct {
+	indexName string
+	tree      btree.TreeStore
+	key       []byte
+	value     []byte
+}
+
+func deleteIndexEntryForRowTracked(indexName string, table *TableDef, idxDef *IndexDef, idxTree btree.TreeStore, row []interface{}, rowKey []byte) (*deletedIndexEntry, error) {
 	indexKey, ok := buildCompositeIndexKey(table, idxDef, row)
 	if !ok {
-		return nil
+		return nil, nil
 	}
+	var storageKey []byte
 	if idxDef.Unique {
-		return idxTree.Delete([]byte(indexKey))
+		storageKey = []byte(indexKey)
+	} else {
+		storageKey = []byte(indexKey + "\x00" + string(rowKey))
 	}
-	compoundKey := indexKey + "\x00" + string(rowKey)
-	return idxTree.Delete([]byte(compoundKey))
+	if err := idxTree.Delete(storageKey); err != nil {
+		return nil, err
+	}
+	return &deletedIndexEntry{
+		indexName: indexName,
+		tree:      idxTree,
+		key:       append([]byte(nil), storageKey...),
+		value:     append([]byte(nil), rowKey...),
+	}, nil
+}
+
+func restoreDeletedIndexEntries(entries []deletedIndexEntry) error {
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if entry.tree == nil {
+			continue
+		}
+		if err := entry.tree.Put(entry.key, entry.value); err != nil {
+			if entry.indexName != "" {
+				return fmt.Errorf("%s: %w", entry.indexName, err)
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // buildBufferedInsertIndexesSnapshot is the lock-free variant that uses a
@@ -290,87 +339,129 @@ func (c *Catalog) buildBufferedInsertIndexesSnapshot(table *TableDef, stmt *quer
 	return idxUpdates, false, nil
 }
 
+func foreignKeyValuesForRow(table *TableDef, fk ForeignKeyDef, row []interface{}) ([]interface{}, bool) {
+	values := make([]interface{}, len(fk.Columns))
+	for i, colName := range fk.Columns {
+		colIdx := table.GetColumnIndex(colName)
+		if colIdx < 0 || colIdx >= len(row) {
+			return nil, true
+		}
+		values[i] = row[colIdx]
+		if values[i] == nil {
+			return nil, true
+		}
+	}
+	return values, false
+}
+
+func foreignKeyColumnsChanged(table *TableDef, fk ForeignKeyDef, oldRow, newRow []interface{}) bool {
+	for _, colName := range fk.Columns {
+		colIdx := table.GetColumnIndex(colName)
+		if colIdx < 0 || colIdx >= len(newRow) {
+			continue
+		}
+		if colIdx >= len(oldRow) || compareValues(newRow[colIdx], oldRow[colIdx]) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func referencedColumnsForTable(refTable *TableDef, fk ForeignKeyDef) []string {
+	if len(fk.ReferencedColumns) > 0 {
+		return fk.ReferencedColumns
+	}
+	if refTable == nil {
+		return nil
+	}
+	return refTable.PrimaryKey
+}
+
+func rowMatchesReferencedValues(refTable *TableDef, row []interface{}, refColumns []string, values []interface{}) bool {
+	if len(refColumns) != len(values) {
+		return false
+	}
+	for i, refCol := range refColumns {
+		refColIdx := refTable.GetColumnIndex(refCol)
+		if refColIdx < 0 || refColIdx >= len(row) || compareValues(values[i], row[refColIdx]) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func referencedRowExistsSnapshot(refTable *TableDef, refTree btree.TreeStore, pendingParents map[string]PendingWrite, refColumns []string, values []interface{}) (bool, error) {
+	if refTable == nil || refTree == nil {
+		return false, nil
+	}
+	if len(refColumns) == 0 {
+		refColumns = refTable.PrimaryKey
+	}
+	if len(refColumns) != len(values) {
+		return false, fmt.Errorf("referenced column count (%d) does not match value count (%d)", len(refColumns), len(values))
+	}
+	for _, pw := range pendingParents {
+		vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
+		if err != nil {
+			return false, err
+		}
+		if vrow.Version.DeletedAt > 0 {
+			continue
+		}
+		if rowMatchesReferencedValues(refTable, vrow.Data, refColumns, values) {
+			return true, nil
+		}
+	}
+	refIter, err := refTree.Scan(nil, nil)
+	if err != nil {
+		return false, err
+	}
+	defer refIter.Close()
+	for refIter.HasNext() {
+		refKey, refData, err := refIter.Next()
+		if err != nil {
+			return false, err
+		}
+		if _, overridden := pendingParents[string(refKey)]; overridden {
+			continue
+		}
+		vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
+		if err != nil {
+			return false, err
+		}
+		if vrow.Version.DeletedAt > 0 {
+			continue
+		}
+		if rowMatchesReferencedValues(refTable, vrow.Data, refColumns, values) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // checkForeignKeyConstraintsSnapshot is the lock-free variant that uses
 // pre-snapshot referenced tables instead of reading c.tables/c.tableTrees.
 func (c *Catalog) checkForeignKeyConstraintsSnapshot(table *TableDef, rowValues []interface{}, ts *catalogTxnState, fkRefs map[string]fkSnapshot) error {
 	for _, fk := range table.ForeignKeys {
-		for i, colName := range fk.Columns {
-			colIdx := table.GetColumnIndex(colName)
-			if colIdx < 0 || colIdx >= len(rowValues) {
-				continue
-			}
-			fkValue := rowValues[colIdx]
-			if fkValue == nil {
-				continue
-			}
-			refSnap, ok := fkRefs[fk.ReferencedTable]
-			if !ok || refSnap.tree == nil {
-				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
-			}
-			refTable := refSnap.table
-			refTree := refSnap.tree
-			refColIdx := 0
-			if len(fk.ReferencedColumns) > i {
-				refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
-			} else if len(refTable.Columns) > 0 {
-				refColIdx = 0
-			}
-			// Read-your-writes: pending writes in this txn supersede the committed
-			// parent tree. A parent deleted earlier in this txn must not satisfy the
-			// reference (else commit leaves a dangling FK), and a parent inserted
-			// earlier in this txn must satisfy it.
-			var pendingParents map[string]PendingWrite
-			if ts != nil {
-				pendingParents = ts.getPendingWriteMap()[fk.ReferencedTable]
-			}
-			found := false
-			refIter, err := refTree.Scan(nil, nil)
-			if err != nil {
-				return fmt.Errorf("FOREIGN KEY constraint failed: %w", err)
-			}
-			for refIter.HasNext() {
-				refKey, refData, err := refIter.Next()
-				if err != nil {
-					refIter.Close()
-					return fmt.Errorf("FOREIGN KEY constraint failed: failed to read referenced row in table %s: %w", fk.ReferencedTable, err)
-				}
-				if _, overridden := pendingParents[string(refKey)]; overridden {
-					continue // pending value supersedes committed (checked below)
-				}
-				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
-				if err != nil {
-					refIter.Close()
-					return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode referenced row in table %s: %w", fk.ReferencedTable, err)
-				}
-				if vrow.Version.DeletedAt > 0 {
-					continue
-				}
-				refRow := vrow.Data
-				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
-					found = true
-					break
-				}
-			}
-			refIter.Close()
-			if !found {
-				for _, pw := range pendingParents {
-					vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
-					if err != nil {
-						return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode pending referenced row in table %s: %w", fk.ReferencedTable, err)
-					}
-					if vrow.Version.DeletedAt > 0 {
-						continue
-					}
-					refRow := vrow.Data
-					if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
-						found = true
-						break
-					}
-				}
-			}
-			if !found {
-				return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
-			}
+		fkValues, skip := foreignKeyValuesForRow(table, fk, rowValues)
+		if skip {
+			continue
+		}
+		refSnap, ok := fkRefs[fk.ReferencedTable]
+		if !ok || refSnap.tree == nil {
+			return fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
+		}
+		var pendingParents map[string]PendingWrite
+		if ts != nil {
+			pendingParents = ts.getPendingWriteMap()[fk.ReferencedTable]
+		}
+		refColumns := referencedColumnsForTable(refSnap.table, fk)
+		found, err := referencedRowExistsSnapshot(refSnap.table, refSnap.tree, pendingParents, refColumns, fkValues)
+		if err != nil {
+			return fmt.Errorf("FOREIGN KEY constraint failed: failed to scan referenced table %s: %w", fk.ReferencedTable, err)
+		}
+		if !found {
+			return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValues, fk.ReferencedTable)
 		}
 	}
 	return nil
@@ -503,7 +594,8 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 					autoIncCount++
 				}
 			}
-			if !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
+			defaultValuesRow := len(valueRow) == 0 && len(stmt.Columns) == 0
+			if !defaultValuesRow && !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
 				insertErr = fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
 				break
 			}
@@ -574,7 +666,7 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 			break
 		}
 
-		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, rowValues, security.PolicyInsert); rlsErr != nil {
+		if allowed, rlsErr := c.checkRowCheckLocked(ctx, stmt.Table, table.Columns, rowValues, security.PolicyInsert); rlsErr != nil {
 			insertErr = fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
 			break
 		} else if !allowed {
@@ -925,18 +1017,29 @@ func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt 
 	if stmt.ConflictAction == query.ConflictIgnore {
 		return true, nil // Skip this row
 	} else if stmt.ConflictAction == query.ConflictReplace {
+		var deletedIndexEntries []deletedIndexEntry
 		oldRow, decErr := decodeRow(existingData, len(table.Columns))
 		if decErr == nil {
 			for idxName, idxTree := range c.indexTrees {
 				idxDef := c.indexes[idxName]
 				if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
-					if err := deleteIndexEntryForRow(table, idxDef, idxTree, oldRow, []byte(key)); err != nil {
+					deletedEntry, err := deleteIndexEntryForRowTracked(idxName, table, idxDef, idxTree, oldRow, []byte(key))
+					if err != nil {
+						if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+							return false, fmt.Errorf("failed to delete from index %s for REPLACE: %w; failed to restore deleted index entries: %v", idxName, err, restoreErr)
+						}
 						return false, fmt.Errorf("failed to delete from index %s for REPLACE: %w", idxName, err)
+					}
+					if deletedEntry != nil {
+						deletedIndexEntries = append(deletedIndexEntries, *deletedEntry)
 					}
 				}
 			}
 		}
 		if err := deleteRowKey(tree, []byte(key)); err != nil {
+			if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+				return false, fmt.Errorf("failed to delete row for REPLACE: %w; failed to restore deleted index entries: %v", err, restoreErr)
+			}
 			return false, fmt.Errorf("failed to delete row for REPLACE: %w", err)
 		}
 		return false, nil // Proceed with insert after cleanup
@@ -1194,7 +1297,8 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 					autoIncCount++
 				}
 			}
-			if !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
+			defaultValuesRow := len(valueRow) == 0 && len(stmt.Columns) == 0
+			if !defaultValuesRow && !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
 				insertErr = fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
 				break
 			}
@@ -1277,7 +1381,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Apply Row-Level Security check for INSERT
-		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, rowValues, security.PolicyInsert); rlsErr != nil {
+		if allowed, rlsErr := c.checkRowCheckLocked(ctx, stmt.Table, table.Columns, rowValues, security.PolicyInsert); rlsErr != nil {
 			insertErr = fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
 			break
 		} else if !allowed {
@@ -1388,10 +1492,11 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		// Direct mutation path (legacy single-writer mode).
 		// Log to WAL before applying change
 		if c.wal != nil && txnActive {
-			// For INSERT, we log the key and value
-			// Format: key (null-terminated) + value
-			walData := append([]byte(key), 0)
-			walData = append(walData, valueData...)
+			walData, err := encodeLogicalWALData(stmt.Table, []byte(key), valueData)
+			if err != nil {
+				insertErr = err
+				break
+			}
 			record := &storage.WALRecord{
 				TxnID: ts.txnID,
 				Type:  storage.WALInsert,
@@ -1778,6 +1883,7 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 			if stmt.ConflictAction == query.ConflictIgnore {
 				return true, nil
 			} else if stmt.ConflictAction == query.ConflictReplace {
+				var deletedIndexEntries []deletedIndexEntry
 				oldData, getErr := tree.Get(duplicateKey)
 				if getErr == nil {
 					oldRow, decErr := decodeRow(oldData, len(table.Columns))
@@ -1785,24 +1891,24 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 						for idxName, idxTree := range c.indexTrees {
 							idxDef := c.indexes[idxName]
 							if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
-								oldIdxKey, ok := buildCompositeIndexKey(table, idxDef, oldRow)
-								if ok {
-									var delErr error
-									if idxDef.Unique {
-										delErr = idxTree.Delete([]byte(oldIdxKey))
-									} else {
-										compoundKey := oldIdxKey + "\x00" + string(duplicateKey)
-										delErr = idxTree.Delete([]byte(compoundKey))
+								deletedEntry, delErr := deleteIndexEntryForRowTracked(idxName, table, idxDef, idxTree, oldRow, duplicateKey)
+								if delErr != nil {
+									if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+										return false, fmt.Errorf("failed to delete from index %s: %w; failed to restore deleted index entries: %v", idxName, delErr, restoreErr)
 									}
-									if delErr != nil {
-										return false, fmt.Errorf("failed to delete from index %s: %w", idxName, delErr)
-									}
+									return false, fmt.Errorf("failed to delete from index %s: %w", idxName, delErr)
+								}
+								if deletedEntry != nil {
+									deletedIndexEntries = append(deletedIndexEntries, *deletedEntry)
 								}
 							}
 						}
 					}
 				}
-				if delErr := tree.Delete(duplicateKey); delErr != nil {
+				if delErr := deleteRowKey(tree, duplicateKey); delErr != nil {
+					if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+						return false, fmt.Errorf("failed to delete duplicate row: %w; failed to restore deleted index entries: %v", delErr, restoreErr)
+					}
 					return false, fmt.Errorf("failed to delete duplicate row: %w", delErr)
 				}
 			} else {
@@ -1816,6 +1922,10 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 // checkInsertConstraints evaluates CHECK constraints for a row being inserted.
 // Per SQL standard, NULL (unknown) passes; only explicit false fails.
 func (c *Catalog) checkInsertConstraints(table *TableDef, rowValues []interface{}, args []interface{}) error {
+	return c.checkRowConstraints(table, rowValues, args)
+}
+
+func (c *Catalog) checkRowConstraints(table *TableDef, rowValues []interface{}, args []interface{}) error {
 	for _, col := range table.Columns {
 		if col.Check == nil {
 			continue
@@ -1830,88 +1940,41 @@ func (c *Catalog) checkInsertConstraints(table *TableDef, rowValues []interface{
 			}
 		}
 	}
+	for _, check := range table.Checks {
+		if check.Check == nil {
+			continue
+		}
+		result, err := evaluateExpression(c, rowValues, table.Columns, check.Check, args)
+		if err != nil {
+			return fmt.Errorf("CHECK constraint failed: %w", err)
+		}
+		if result != nil {
+			if resultBool, ok := result.(bool); ok && !resultBool {
+				if check.Name != "" {
+					return fmt.Errorf("CHECK constraint failed: %s", check.Name)
+				}
+				return fmt.Errorf("CHECK constraint failed")
+			}
+		}
+	}
 	return nil
 }
 
 // checkForeignKeyConstraints validates FOREIGN KEY references for a row.
 // NULL values skip FK checking per SQL standard.
 func (c *Catalog) checkForeignKeyConstraints(table *TableDef, rowValues []interface{}, ts *catalogTxnState) error {
+	fke := NewForeignKeyEnforcer(c)
 	for _, fk := range table.ForeignKeys {
-		for i, colName := range fk.Columns {
-			colIdx := table.GetColumnIndex(colName)
-			if colIdx < 0 || colIdx >= len(rowValues) {
-				continue
-			}
-			fkValue := rowValues[colIdx]
-			if fkValue == nil {
-				continue
-			}
-
-			refTable, err := c.getTableLocked(fk.ReferencedTable)
-			if err != nil {
-				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
-			}
-
-			refColIdx := 0
-			if len(fk.ReferencedColumns) > i {
-				refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
-			} else if len(refTable.Columns) > 0 {
-				refColIdx = 0
-			}
-
-			refTree, exists := c.tableTrees[fk.ReferencedTable]
-			if !exists {
-				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
-			}
-
-			found := false
-			refIter, err := refTree.Scan(nil, nil)
-			if err != nil {
-				return fmt.Errorf("FOREIGN KEY constraint failed: %w", err)
-			}
-			for refIter.HasNext() {
-				_, refData, err := refIter.Next()
-				if err != nil {
-					refIter.Close()
-					return fmt.Errorf("FOREIGN KEY constraint failed: failed to read referenced row in table %s: %w", fk.ReferencedTable, err)
-				}
-				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
-				if err != nil {
-					refIter.Close()
-					return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode referenced row in table %s: %w", fk.ReferencedTable, err)
-				}
-				refRow := vrow.Data
-				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
-					found = true
-					break
-				}
-			}
-			refIter.Close()
-
-			// Also check pending writes in the current transaction for
-			// self-referential or same-statement FK references.
-			if !found && ts != nil {
-				if m, ok := ts.getPendingWriteMap()[fk.ReferencedTable]; ok {
-					for _, pw := range m {
-						vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
-						if err != nil {
-							return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode pending referenced row in table %s: %w", fk.ReferencedTable, err)
-						}
-						if vrow.Version.DeletedAt > 0 {
-							continue
-						}
-						refRow := vrow.Data
-						if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
-							found = true
-							break
-						}
-					}
-				}
-			}
-
-			if !found {
-				return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
-			}
+		fkValues, skip := foreignKeyValuesForRow(table, fk, rowValues)
+		if skip {
+			continue
+		}
+		found, err := fke.referencedRowExists(fk.ReferencedTable, fk.ReferencedColumns, fkValues)
+		if err != nil {
+			return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode referenced row in table %s: %w", fk.ReferencedTable, err)
+		}
+		if !found {
+			return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValues, fk.ReferencedTable)
 		}
 	}
 	return nil

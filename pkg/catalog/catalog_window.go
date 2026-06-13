@@ -439,47 +439,39 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 	}
 	switch we.Function {
 	case "COUNT":
+		isStar := len(we.Args) == 0
+		if len(we.Args) > 0 {
+			_, isStar = we.Args[0].(*query.StarExpr)
+		}
 		if len(we.OrderBy) > 0 {
-			if len(we.Args) > 0 {
-				if _, isStar := we.Args[0].(*query.StarExpr); isStar {
-					for i, entry := range entries {
-						rows[entry.originalIdx][colIdx] = int64(i + 1)
-					}
-				} else {
-					count := int64(0)
-					for _, entry := range entries {
+			count := int64(0)
+			for _, entry := range entries {
+				if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
+					if isStar {
+						count++
+					} else {
 						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
 						if val != nil {
 							count++
 						}
-						rows[entry.originalIdx][colIdx] = count
 					}
 				}
-			} else {
-				for i, entry := range entries {
-					rows[entry.originalIdx][colIdx] = int64(i + 1)
-				}
+				rows[entry.originalIdx][colIdx] = count
 			}
-		} else if len(we.Args) > 0 {
-			if _, isStar := we.Args[0].(*query.StarExpr); isStar {
-				count := int64(len(entries))
-				for _, entry := range entries {
-					rows[entry.originalIdx][colIdx] = count
-				}
-			} else {
-				count := int64(0)
-				for _, entry := range entries {
+		} else {
+			count := int64(0)
+			for _, entry := range entries {
+				if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
+					if isStar {
+						count++
+						continue
+					}
 					val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
 					if val != nil {
 						count++
 					}
 				}
-				for _, entry := range entries {
-					rows[entry.originalIdx][colIdx] = count
-				}
 			}
-		} else {
-			count := int64(len(entries))
 			for _, entry := range entries {
 				rows[entry.originalIdx][colIdx] = count
 			}
@@ -492,11 +484,13 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 				sum := 0.0
 				hasVal := false
 				for _, entry := range entries {
-					val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-					if val != nil {
-						if v, ok := toFloat64(val); ok {
-							sum += v
-							hasVal = true
+					if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil {
+							if v, ok := toFloat64(val); ok {
+								sum += v
+								hasVal = true
+							}
 						}
 					}
 					if hasVal {
@@ -509,11 +503,13 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 				sum := 0.0
 				hasVal := false
 				for _, entry := range entries {
-					val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-					if val != nil {
-						if v, ok := toFloat64(val); ok {
-							sum += v
-							hasVal = true
+					if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil {
+							if v, ok := toFloat64(val); ok {
+								sum += v
+								hasVal = true
+							}
 						}
 					}
 				}
@@ -534,11 +530,13 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 				sum := 0.0
 				count := 0
 				for _, entry := range entries {
-					val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-					if val != nil {
-						if v, ok := toFloat64(val); ok {
-							sum += v
-							count++
+					if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil {
+							if v, ok := toFloat64(val); ok {
+								sum += v
+								count++
+							}
 						}
 					}
 					if count > 0 {
@@ -551,11 +549,13 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 				sum := 0.0
 				count := 0
 				for _, entry := range entries {
-					val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-					if val != nil {
-						if v, ok := toFloat64(val); ok {
-							sum += v
-							count++
+					if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil {
+							if v, ok := toFloat64(val); ok {
+								sum += v
+								count++
+							}
 						}
 					}
 				}
@@ -578,17 +578,22 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 			if len(we.OrderBy) > 0 {
 				var minVal interface{}
 				for _, entry := range entries {
-					val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-					if val != nil && (minVal == nil || compareValues(val, minVal) < 0) {
-						minVal = val
+					if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil && (minVal == nil || compareValues(val, minVal) < 0) {
+							minVal = val
+						}
 					}
 					rows[entry.originalIdx][colIdx] = minVal
 				}
 			} else {
-				minVal := c.evalWindowExprOnRow(we.Args[0], entries[0].row, selectCols, table, args, entries[0].fullRow)
-				for _, entry := range entries[1:] {
+				var minVal interface{}
+				for _, entry := range entries {
+					if !c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
+						continue
+					}
 					val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-					if compareValues(val, minVal) < 0 {
+					if val != nil && (minVal == nil || compareValues(val, minVal) < 0) {
 						minVal = val
 					}
 				}
@@ -604,17 +609,22 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 			if len(we.OrderBy) > 0 {
 				var maxVal interface{}
 				for _, entry := range entries {
-					val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-					if val != nil && (maxVal == nil || compareValues(val, maxVal) > 0) {
-						maxVal = val
+					if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
+						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
+						if val != nil && (maxVal == nil || compareValues(val, maxVal) > 0) {
+							maxVal = val
+						}
 					}
 					rows[entry.originalIdx][colIdx] = maxVal
 				}
 			} else {
-				maxVal := c.evalWindowExprOnRow(we.Args[0], entries[0].row, selectCols, table, args, entries[0].fullRow)
-				for _, entry := range entries[1:] {
+				var maxVal interface{}
+				for _, entry := range entries {
+					if !c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
+						continue
+					}
 					val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-					if compareValues(val, maxVal) > 0 {
+					if val != nil && (maxVal == nil || compareValues(val, maxVal) > 0) {
 						maxVal = val
 					}
 				}
@@ -626,6 +636,14 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 		return true
 	}
 	return false
+}
+
+func (c *Catalog) windowEntryPassesFilter(we *query.WindowExpr, entry windowPartEntry, selectCols []selectColInfo, table *TableDef, args []interface{}) bool {
+	if we.Filter == nil {
+		return true
+	}
+	val := c.evalWindowExprOnRow(we.Filter, entry.row, selectCols, table, args, entry.fullRow)
+	return val != nil && toBool(val)
 }
 
 // frameRowBound resolves one frame bound to a physical (inclusive) row index for
@@ -669,10 +687,14 @@ func (c *Catalog) evalWindowAggFrame(rows [][]interface{}, colIdx int, entries [
 
 	// Pre-extract the argument value per ordered entry once.
 	vals := make([]interface{}, n)
+	filtered := make([]bool, n)
 	if len(we.Args) > 0 && !isStar {
 		for i, entry := range entries {
 			vals[i] = c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
 		}
+	}
+	for i, entry := range entries {
+		filtered[i] = c.windowEntryPassesFilter(we, entry, selectCols, table, args)
 	}
 
 	for i, entry := range entries {
@@ -690,6 +712,9 @@ func (c *Catalog) evalWindowAggFrame(rows [][]interface{}, colIdx int, entries [
 		case "COUNT":
 			cnt := int64(0)
 			for j := start; j <= end; j++ {
+				if !filtered[j] {
+					continue
+				}
 				if isStar || len(we.Args) == 0 || vals[j] != nil {
 					cnt++
 				}
@@ -699,6 +724,9 @@ func (c *Catalog) evalWindowAggFrame(rows [][]interface{}, colIdx int, entries [
 			sum := 0.0
 			has := false
 			for j := start; j <= end; j++ {
+				if !filtered[j] {
+					continue
+				}
 				if vals[j] != nil {
 					if f, ok := toFloat64(vals[j]); ok {
 						sum += f
@@ -713,6 +741,9 @@ func (c *Catalog) evalWindowAggFrame(rows [][]interface{}, colIdx int, entries [
 			sum := 0.0
 			cnt := 0
 			for j := start; j <= end; j++ {
+				if !filtered[j] {
+					continue
+				}
 				if vals[j] != nil {
 					if f, ok := toFloat64(vals[j]); ok {
 						sum += f
@@ -725,12 +756,18 @@ func (c *Catalog) evalWindowAggFrame(rows [][]interface{}, colIdx int, entries [
 			}
 		case "MIN":
 			for j := start; j <= end; j++ {
+				if !filtered[j] {
+					continue
+				}
 				if vals[j] != nil && (result == nil || compareValues(vals[j], result) < 0) {
 					result = vals[j]
 				}
 			}
 		case "MAX":
 			for j := start; j <= end; j++ {
+				if !filtered[j] {
+					continue
+				}
 				if vals[j] != nil && (result == nil || compareValues(vals[j], result) > 0) {
 					result = vals[j]
 				}

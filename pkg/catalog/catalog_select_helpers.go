@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 )
 
 type applySelectPostProcessParams struct {
@@ -25,6 +26,32 @@ type applySelectPostProcessParams struct {
 func (cat *Catalog) applySelectPostProcess(p applySelectPostProcessParams) ([]string, [][]interface{}) {
 	rows := p.rows
 	returnColumns := p.returnColumns
+	fullRowRLSApplied := false
+
+	if cat.enableRLS && cat.rlsManager != nil && p.stmt.From != nil && p.table != nil && len(p.windowFullRows) == len(rows) {
+		rlsCtx := cat.rlsCtx
+		if rlsCtx == nil {
+			rlsCtx = context.Background()
+		}
+		user, _ := rlsContext(rlsCtx)
+		if user != "" && cat.rlsManager.IsEnabled(p.stmt.From.Name) {
+			filteredRows := make([][]interface{}, 0, len(rows))
+			filteredFullRows := make([][]interface{}, 0, len(p.windowFullRows))
+			for i, fullRow := range p.windowFullRows {
+				allowed, err := cat.checkRowAccessLocked(rlsCtx, p.stmt.From.Name, p.table.Columns, fullRow, security.PolicySelect)
+				if err != nil {
+					return nil, nil
+				}
+				if allowed {
+					filteredRows = append(filteredRows, rows[i])
+					filteredFullRows = append(filteredFullRows, fullRow)
+				}
+			}
+			rows = filteredRows
+			p.windowFullRows = filteredFullRows
+			fullRowRLSApplied = true
+		}
+	}
 
 	if p.hasWindowFuncs {
 		rows = cat.evaluateWindowFunctions(rows, p.selectCols, p.table, p.stmt, p.args, p.windowFullRows)
@@ -81,7 +108,7 @@ func (cat *Catalog) applySelectPostProcess(p applySelectPostProcessParams) ([]st
 		}
 	}
 
-	if cat.enableRLS && cat.rlsManager != nil && p.stmt.From != nil {
+	if !fullRowRLSApplied && cat.enableRLS && cat.rlsManager != nil && p.stmt.From != nil {
 		rlsCtx := cat.rlsCtx
 		if rlsCtx == nil {
 			rlsCtx = context.Background()
@@ -525,7 +552,7 @@ func (cat *Catalog) resolveFunctionColumn(
 	stmt *query.SelectStmt, table *TableDef, mainTableRef string,
 	selectCols []selectColInfo,
 ) ([]selectColInfo, bool) {
-	if isAggregateFuncName(toUpperFast(c.Name)) {
+	if isAggregateCall(c) {
 		colName := "*"
 		aggTableName := mainTableRef
 		var aggExpr query.Expression
@@ -556,19 +583,27 @@ func (cat *Catalog) resolveFunctionColumn(
 				aggExpr = c.Args[0]
 			}
 		}
+		sep, sepOK := groupConcatSeparatorFromCall(c)
+		sepExpr := groupConcatSeparatorExpr(c)
 		displayName := c.Name + "(" + colName + ")"
 		if c.Distinct {
 			displayName = c.Name + "(DISTINCT " + colName + ")"
 		}
 		return append(selectCols, selectColInfo{
-			name:          displayName,
-			tableName:     aggTableName,
-			index:         -1,
-			isAggregate:   true,
-			aggregateType: c.Name,
-			aggregateCol:  colName,
-			aggregateExpr: aggExpr,
-			isDistinct:    c.Distinct,
+			name:             displayName,
+			tableName:        aggTableName,
+			index:            -1,
+			isAggregate:      true,
+			aggregateType:    c.Name,
+			aggregateCol:     colName,
+			aggregateExpr:    aggExpr,
+			aggregateArgs:    c.Args,
+			aggregateSep:     sep,
+			aggregateSepOK:   sepOK,
+			aggregateSepExpr: sepExpr,
+			aggregateOrderBy: c.OrderBy,
+			aggregateFilter:  c.Filter,
+			isDistinct:       c.Distinct,
 		}), true
 	}
 

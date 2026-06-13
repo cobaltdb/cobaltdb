@@ -1019,12 +1019,15 @@ func TestUnitUpdateRowSlice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var decoded []interface{}
-	if err := json.Unmarshal(val, &decoded); err != nil {
+	decoded, err := decodeVersionedRow(val, len(table.Columns))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded[1] != "updated" {
-		t.Fatalf("expected updated, got %v", decoded[1])
+	if decoded.Version.CreatedAt == 0 {
+		t.Fatal("expected updateRowSlice to write versioned row data")
+	}
+	if decoded.Data[1] != "updated" {
+		t.Fatalf("expected updated, got %v", decoded.Data[1])
 	}
 }
 
@@ -1083,8 +1086,8 @@ func TestUnitUpdateRowSlice_WithIndex(t *testing.T) {
 		t.Fatal("old index entry should be deleted")
 	}
 
-	// New index entry should exist
-	newIdxKey := typeTaggedKey("new")
+	// New index entry should exist in the standard non-unique compound-key format.
+	newIdxKey := typeTaggedKey("new") + "\x00" + string(key)
 	_, getErr = idxTree.Get([]byte(newIdxKey))
 	if getErr != nil {
 		t.Fatal("new index entry should exist")

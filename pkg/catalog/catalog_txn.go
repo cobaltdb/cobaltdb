@@ -25,7 +25,9 @@ func (c *Catalog) EnableRLS() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.enableRLS = true
-	c.rlsManager = security.NewManager()
+	if c.rlsManager == nil {
+		c.rlsManager = security.NewManager()
+	}
 }
 
 func (c *Catalog) GetRLSManager() *security.Manager {
@@ -41,13 +43,28 @@ func (c *Catalog) IsRLSEnabled() bool {
 }
 
 func (c *Catalog) EnableQueryCache(maxSize int, ttl time.Duration) {
+	c.enableQueryCache(cache.DefaultConfig().MaxSize, maxSize, ttl)
+}
+
+func (c *Catalog) EnableQueryCacheWithLimits(maxBytes int64, maxEntries int, ttl time.Duration) {
+	defaults := cache.DefaultConfig()
+	if maxBytes <= 0 {
+		maxBytes = defaults.MaxSize
+	}
+	if maxEntries <= 0 {
+		maxEntries = defaults.MaxEntries
+	}
+	c.enableQueryCache(maxBytes, maxEntries, ttl)
+}
+
+func (c *Catalog) enableQueryCache(maxBytes int64, maxEntries int, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.queryCache = cache.New(&cache.Config{
-		MaxEntries:      maxSize,
-		MaxSize:         math.MaxInt64, // no byte-level eviction threshold for single entries
+		MaxEntries:      maxEntries,
+		MaxSize:         maxBytes,
 		TTL:             ttl,
-		Enabled:         maxSize > 0,
+		Enabled:         maxBytes > 0 && maxEntries > 0,
 		CleanupInterval: 1 * time.Minute,
 	})
 }
@@ -97,8 +114,24 @@ func (c *Catalog) CreateRLSPolicy(policy *security.Policy) error {
 	if !c.enableRLS {
 		return errors.New("row-level security is not enabled")
 	}
+	if policy == nil {
+		return security.ErrInvalidPolicy
+	}
 
-	return c.rlsManager.CreatePolicy(policy)
+	if c.rlsManager == nil {
+		c.rlsManager = security.NewManager()
+	}
+	if err := c.rlsManager.CreatePolicy(policy); err != nil {
+		return err
+	}
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:        undoCreateRLSPolicy,
+			rlsTableName:  policy.TableName,
+			rlsPolicyName: policy.Name,
+		})
+	}
+	return nil
 }
 
 func (c *Catalog) DropRLSPolicy(tableName, policyName string) error {
@@ -110,7 +143,53 @@ func (c *Catalog) DropRLSPolicy(tableName, policyName string) error {
 		return errors.New("row-level security is not enabled")
 	}
 
-	return c.rlsManager.DropPolicy(tableName, policyName)
+	if c.rlsManager == nil {
+		return security.ErrPolicyNotFound
+	}
+	dropped, err := c.rlsManager.GetPolicy(tableName, policyName)
+	if err != nil {
+		return err
+	}
+	if err := c.rlsManager.DropPolicy(tableName, policyName); err != nil {
+		return err
+	}
+	if err := c.deleteCatalogDef("rlsp:" + strings.ToLower(tableName) + ":" + strings.ToLower(policyName)); err != nil {
+		_ = c.rlsManager.CreatePolicy(dropped)
+		return fmt.Errorf("failed to delete RLS policy metadata %s on %s: %w", policyName, tableName, err)
+	}
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:        undoDropRLSPolicy,
+			rlsTableName:  tableName,
+			rlsPolicyName: policyName,
+			rlsPolicy:     dropped,
+		})
+	}
+	return nil
+}
+
+func (c *Catalog) EnableRLSTable(tableName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
+
+	if !c.hasTableLocked(tableName) {
+		return fmt.Errorf("table %s does not exist", tableName)
+	}
+	if c.rlsManager == nil {
+		c.rlsManager = security.NewManager()
+	}
+	wasEnabled := c.enableRLS && c.rlsManager.IsEnabled(tableName)
+	c.enableRLS = true
+	c.rlsManager.EnableTable(tableName)
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:             undoEnableRLSTable,
+			rlsTableName:       tableName,
+			rlsTableWasEnabled: wasEnabled,
+		})
+	}
+	return nil
 }
 
 // getCurrentTxn returns the active transaction state for the current transaction.
@@ -754,6 +833,27 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 		return c.undoCreateIndexEntry(entry, errorPrefix)
 	case undoDropIndex:
 		return c.undoDropIndexEntry(entry, errorPrefix)
+	case undoCreateFTSIndex:
+		delete(c.ftsIndexes, entry.indexName)
+	case undoDropFTSIndex:
+		if entry.ftsIndexDef != nil {
+			c.ftsIndexes[entry.indexName] = cloneFTSIndexDef(entry.ftsIndexDef)
+		}
+	case undoCreateVectorIndex:
+		delete(c.vectorIndexes, entry.indexName)
+		if c.tree != nil {
+			if err := c.tree.Delete([]byte("vec:" + entry.indexName)); err != nil {
+				return fmt.Errorf("%s dropping vector index %s: %w", errorPrefix, entry.indexName, err)
+			}
+		}
+	case undoDropVectorIndex:
+		if entry.vectorIndexDef != nil {
+			cloned := cloneVectorIndexDef(entry.vectorIndexDef)
+			c.vectorIndexes[entry.indexName] = cloned
+			if err := c.storeVectorIndexDef(cloned); err != nil {
+				return fmt.Errorf("%s restoring vector index def %s: %w", errorPrefix, entry.indexName, err)
+			}
+		}
 	case undoAutoIncSeq:
 		if tbl, exists := c.tables[entry.tableName]; exists {
 			atomic.StoreInt64(&tbl.AutoIncSeq, entry.oldAutoIncSeq)
@@ -772,6 +872,20 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 		return c.undoAlterRenameEntry(entry, errorPrefix)
 	case undoAlterRenameColumn:
 		return c.undoAlterRenameColumnEntry(entry, errorPrefix)
+	case undoAlterForeignKeys:
+		if tbl, exists := c.tables[entry.tableName]; exists {
+			tbl.ForeignKeys = cloneForeignKeys(entry.oldForeignKeys)
+			if err := c.storeTableDef(tbl); err != nil {
+				return fmt.Errorf("%s storing table def %s after foreign key undo: %w", errorPrefix, entry.tableName, err)
+			}
+		}
+	case undoAlterChecks:
+		if tbl, exists := c.tables[entry.tableName]; exists {
+			tbl.Checks = cloneCheckDefs(entry.oldChecks)
+			if err := c.storeTableDef(tbl); err != nil {
+				return fmt.Errorf("%s storing table def %s after check constraint undo: %w", errorPrefix, entry.tableName, err)
+			}
+		}
 	case undoCreateView:
 		return c.undoCreateViewEntry(entry, errorPrefix)
 	case undoDropView:
@@ -792,6 +906,37 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 		return c.undoCreateForeignTableEntry(entry, errorPrefix)
 	case undoDropForeignTable:
 		return c.undoDropForeignTableEntry(entry, errorPrefix)
+	case undoEnableRLSTable:
+		if c.rlsManager != nil && !entry.rlsTableWasEnabled {
+			c.rlsManager.DisableTable(entry.rlsTableName)
+			if err := c.deleteCatalogDef("rlst:" + strings.ToLower(entry.rlsTableName)); err != nil {
+				return fmt.Errorf("%s removing RLS table metadata %s: %w", errorPrefix, entry.rlsTableName, err)
+			}
+		}
+	case undoCreateRLSPolicy:
+		if c.rlsManager != nil {
+			if err := c.rlsManager.DropPolicy(entry.rlsTableName, entry.rlsPolicyName); err != nil && !errors.Is(err, security.ErrPolicyNotFound) {
+				return fmt.Errorf("%s dropping RLS policy %s on %s: %w", errorPrefix, entry.rlsPolicyName, entry.rlsTableName, err)
+			}
+			if err := c.deleteCatalogDef("rlsp:" + strings.ToLower(entry.rlsTableName) + ":" + strings.ToLower(entry.rlsPolicyName)); err != nil {
+				return fmt.Errorf("%s removing RLS policy metadata %s on %s: %w", errorPrefix, entry.rlsPolicyName, entry.rlsTableName, err)
+			}
+		}
+	case undoDropRLSPolicy:
+		if c.rlsManager == nil {
+			c.rlsManager = security.NewManager()
+		}
+		if entry.rlsPolicy != nil {
+			if err := c.rlsManager.CreatePolicy(entry.rlsPolicy); err != nil && !errors.Is(err, security.ErrPolicyAlreadyExists) {
+				return fmt.Errorf("%s restoring RLS policy %s on %s: %w", errorPrefix, entry.rlsPolicyName, entry.rlsTableName, err)
+			}
+			if err := c.storeRLSEnabledTable(entry.rlsPolicy.TableName); err != nil {
+				return fmt.Errorf("%s restoring RLS table metadata %s: %w", errorPrefix, entry.rlsPolicy.TableName, err)
+			}
+			if err := c.storeRLSPolicyDef(entry.rlsPolicy); err != nil {
+				return fmt.Errorf("%s restoring RLS policy metadata %s on %s: %w", errorPrefix, entry.rlsPolicyName, entry.rlsTableName, err)
+			}
+		}
 	}
 	return nil
 }
@@ -831,6 +976,39 @@ func (c *Catalog) undoDropTableEntry(entry undoEntry, errorPrefix string) error 
 	if entry.tableDef != nil {
 		if err := c.storeTableDef(entry.tableDef); err != nil {
 			return fmt.Errorf("%s restoring table def %s: %w", errorPrefix, entry.tableName, err)
+		}
+	}
+	for idxName, idxDef := range entry.tableIndexes {
+		if idxDef == nil {
+			continue
+		}
+		if err := c.storeIndexDef(idxDef); err != nil {
+			return fmt.Errorf("%s restoring index def %s: %w", errorPrefix, idxName, err)
+		}
+	}
+	if entry.rlsTableWasEnabled {
+		if c.rlsManager == nil {
+			c.rlsManager = security.NewManager()
+		}
+		c.enableRLS = true
+		c.rlsManager.EnableTable(entry.tableName)
+		if err := c.storeRLSEnabledTable(entry.tableName); err != nil {
+			return fmt.Errorf("%s restoring RLS table metadata %s: %w", errorPrefix, entry.tableName, err)
+		}
+	}
+	for _, policy := range entry.rlsPolicies {
+		if policy == nil {
+			continue
+		}
+		if c.rlsManager == nil {
+			c.rlsManager = security.NewManager()
+		}
+		c.enableRLS = true
+		if err := c.rlsManager.CreatePolicy(policy); err != nil && !errors.Is(err, security.ErrPolicyAlreadyExists) {
+			return fmt.Errorf("%s restoring RLS policy %s on %s: %w", errorPrefix, policy.Name, policy.TableName, err)
+		}
+		if err := c.storeRLSPolicyDef(policy); err != nil {
+			return fmt.Errorf("%s restoring RLS policy metadata %s on %s: %w", errorPrefix, policy.Name, policy.TableName, err)
 		}
 	}
 	return nil
@@ -885,6 +1063,14 @@ func (c *Catalog) undoAlterDropColumnEntry(entry undoEntry, errorPrefix string) 
 	if err := c.storeTableDef(tbl); err != nil {
 		return fmt.Errorf("%s storing table def %s: %w", errorPrefix, entry.tableName, err)
 	}
+	for idxName, idxDef := range entry.droppedIndexes {
+		if idxDef == nil {
+			continue
+		}
+		if err := c.storeIndexDef(idxDef); err != nil {
+			return fmt.Errorf("%s restoring dropped index def %s: %w", errorPrefix, idxName, err)
+		}
+	}
 	return nil
 }
 
@@ -905,6 +1091,15 @@ func (c *Catalog) undoAlterRenameEntry(entry undoEntry, errorPrefix string) erro
 			idxDef.TableName = entry.oldName
 		}
 	}
+	changedFKTables := make(map[string]*TableDef)
+	for tableName, tbl := range c.tables {
+		for i := range tbl.ForeignKeys {
+			if strings.EqualFold(tbl.ForeignKeys[i].ReferencedTable, entry.newName) {
+				tbl.ForeignKeys[i].ReferencedTable = entry.oldName
+				changedFKTables[tableName] = tbl
+			}
+		}
+	}
 	if stats, sExists := c.stats[entry.newName]; sExists {
 		delete(c.stats, entry.newName)
 		c.stats[entry.oldName] = stats
@@ -915,6 +1110,21 @@ func (c *Catalog) undoAlterRenameEntry(entry undoEntry, errorPrefix string) erro
 		}
 		if err := c.storeTableDef(tbl); err != nil {
 			return fmt.Errorf("%s restoring renamed table def %s: %w", errorPrefix, entry.oldName, err)
+		}
+	}
+	for idxName, idxDef := range c.indexes {
+		if idxDef.TableName == entry.oldName {
+			if err := c.storeIndexDef(idxDef); err != nil {
+				return fmt.Errorf("%s storing index def %s after rename table undo: %w", errorPrefix, idxName, err)
+			}
+		}
+	}
+	for tableName, tbl := range changedFKTables {
+		if tableName == entry.oldName {
+			continue
+		}
+		if err := c.storeTableDef(tbl); err != nil {
+			return fmt.Errorf("%s storing foreign key metadata for table %s after rename table undo: %w", errorPrefix, tableName, err)
 		}
 	}
 	return nil
@@ -937,6 +1147,7 @@ func (c *Catalog) undoAlterRenameColumnEntry(entry undoEntry, errorPrefix string
 		}
 	}
 	tbl.buildColumnIndexCache()
+	renameCheckColumnReferences(tbl, entry.newName, entry.oldName)
 	for _, idxDef := range c.indexes {
 		if idxDef.TableName == entry.tableName {
 			for i, idxCol := range idxDef.Columns {
@@ -946,8 +1157,32 @@ func (c *Catalog) undoAlterRenameColumnEntry(entry undoEntry, errorPrefix string
 			}
 		}
 	}
+	changedFKTables := make(map[string]*TableDef)
+	if renameForeignKeyColumns(tbl.ForeignKeys, entry.newName, entry.oldName) {
+		changedFKTables[entry.tableName] = tbl
+	}
+	for tableName, table := range c.tables {
+		if renameReferencedForeignKeyColumns(table.ForeignKeys, entry.tableName, entry.newName, entry.oldName) {
+			changedFKTables[tableName] = table
+		}
+	}
 	if err := c.storeTableDef(tbl); err != nil {
 		return fmt.Errorf("%s storing table def %s after rename column undo: %w", errorPrefix, entry.tableName, err)
+	}
+	for idxName, idxDef := range c.indexes {
+		if idxDef.TableName == entry.tableName {
+			if err := c.storeIndexDef(idxDef); err != nil {
+				return fmt.Errorf("%s storing index def %s after rename column undo: %w", errorPrefix, idxName, err)
+			}
+		}
+	}
+	for tableName, table := range changedFKTables {
+		if tableName == entry.tableName {
+			continue
+		}
+		if err := c.storeTableDef(table); err != nil {
+			return fmt.Errorf("%s storing foreign key metadata for table %s after rename column undo: %w", errorPrefix, tableName, err)
+		}
 	}
 	return nil
 }
@@ -955,6 +1190,7 @@ func (c *Catalog) undoAlterRenameColumnEntry(entry undoEntry, errorPrefix string
 func (c *Catalog) undoCreateViewEntry(entry undoEntry, errorPrefix string) error {
 	delete(c.views, entry.viewName)
 	delete(c.viewSQL, entry.viewName)
+	delete(c.viewTemporary, entry.viewName)
 	if c.tree != nil {
 		if err := c.tree.Delete([]byte("view:" + entry.viewName)); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
 			return fmt.Errorf("%s removing view %s: %w", errorPrefix, entry.viewName, err)
@@ -972,10 +1208,14 @@ func (c *Catalog) undoDropViewEntry(entry undoEntry, errorPrefix string) error {
 	}
 	c.views[entry.viewName] = entry.viewQuery
 	c.viewSQL[entry.viewName] = entry.viewSQL
+	if c.viewTemporary == nil {
+		c.viewTemporary = make(map[string]bool)
+	}
+	c.viewTemporary[entry.viewName] = entry.viewTemporary
 	if strings.TrimSpace(c.viewSQL[entry.viewName]) == "" {
 		c.viewSQL[entry.viewName] = createViewSQL(entry.viewName, entry.viewQuery)
 	}
-	if c.tree != nil {
+	if c.tree != nil && !entry.viewTemporary {
 		if err := c.storeViewDef(entry.viewName, c.viewSQL[entry.viewName]); err != nil {
 			return fmt.Errorf("%s restoring view %s: %w", errorPrefix, entry.viewName, err)
 		}
@@ -1139,11 +1379,13 @@ func (c *Catalog) reverseIndexChanges(entry undoEntry, errorPrefix string, rollb
 func isDDLUndo(a undoAction) bool {
 	switch a {
 	case undoCreateTable, undoDropTable, undoCreateIndex, undoDropIndex,
-		undoAlterAddColumn, undoAlterDropColumn, undoAlterRename, undoAlterRenameColumn,
+		undoCreateFTSIndex, undoDropFTSIndex, undoCreateVectorIndex, undoDropVectorIndex,
+		undoAlterAddColumn, undoAlterDropColumn, undoAlterRename, undoAlterRenameColumn, undoAlterForeignKeys, undoAlterChecks,
 		undoCreateView, undoDropView, undoCreateTrigger, undoDropTrigger,
 		undoCreateProcedure, undoDropProcedure,
 		undoCreateMaterializedView, undoDropMaterializedView,
-		undoCreateForeignTable, undoDropForeignTable:
+		undoCreateForeignTable, undoDropForeignTable,
+		undoEnableRLSTable, undoCreateRLSPolicy, undoDropRLSPolicy:
 		return true
 	default:
 		return false
@@ -1581,52 +1823,43 @@ func (c *Catalog) ReplayWALOps(ops []storage.WALReplayOp) error {
 	for _, op := range ops {
 		switch op.Type {
 		case storage.WALInsert, storage.WALUpdate, storage.WALUpdateCommit:
-			if len(op.Data) < 4 {
-				continue
+			key, value, err := parseReplayWALKeyValue(op.Data)
+			if err != nil {
+				return fmt.Errorf("invalid WAL replay data for txn %d type %v: %w", op.TxnID, op.Type, err)
 			}
-			keyLen := binary.LittleEndian.Uint32(op.Data[0:4])
-			if int(4+keyLen) > len(op.Data) {
-				continue
-			}
-			key := string(op.Data[4 : 4+keyLen])
-			value := op.Data[4+keyLen:]
 
-			// Manager format: "tableName:rowKey"
-			parts := strings.SplitN(key, ":", 2)
-			if len(parts) != 2 {
-				// Legacy format without table prefix — cannot route.
-				continue
+			tableName, rowKey, err := parseReplayWALKey(key)
+			if err != nil {
+				return fmt.Errorf("invalid WAL replay key for txn %d: %w", op.TxnID, err)
 			}
-			tree, exists := c.tableTrees[parts[0]]
+			tree, exists := c.tableTrees[tableName]
 			if !exists {
 				continue
 			}
-			if err := tree.Put([]byte(parts[1]), value); err != nil {
+			if err := tree.Put([]byte(rowKey), value); err != nil {
 				return fmt.Errorf("failed to replay WAL %v for %s: %w", op.Type, key, err)
 			}
-			affectedTables[parts[0]] = struct{}{}
+			affectedTables[tableName] = struct{}{}
 
 		case storage.WALDelete:
-			if len(op.Data) < 4 {
-				continue
+			key, _, err := parseReplayWALKeyValue(op.Data)
+			if err != nil {
+				return fmt.Errorf("invalid WAL replay delete data for txn %d: %w", op.TxnID, err)
 			}
-			keyLen := binary.LittleEndian.Uint32(op.Data[0:4])
-			if int(4+keyLen) > len(op.Data) {
-				continue
+			tableName, rowKey, err := parseReplayWALKey(key)
+			if err != nil {
+				return fmt.Errorf("invalid WAL replay delete key for txn %d: %w", op.TxnID, err)
 			}
-			key := string(op.Data[4 : 4+keyLen])
-			parts := strings.SplitN(key, ":", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			tree, exists := c.tableTrees[parts[0]]
+			tree, exists := c.tableTrees[tableName]
 			if !exists {
 				continue
 			}
-			if err := tree.Delete([]byte(parts[1])); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
+			if err := tree.Delete([]byte(rowKey)); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
 				return fmt.Errorf("failed to replay WAL delete for %s: %w", key, err)
 			}
-			affectedTables[parts[0]] = struct{}{}
+			affectedTables[tableName] = struct{}{}
+		default:
+			return fmt.Errorf("invalid WAL replay record type %v for txn %d", op.Type, op.TxnID)
 		}
 	}
 
@@ -1636,4 +1869,59 @@ func (c *Catalog) ReplayWALOps(ops []storage.WALReplayOp) error {
 		}
 	}
 	return nil
+}
+
+func parseReplayWALKeyValue(data []byte) (string, []byte, error) {
+	if len(data) < 4 {
+		return "", nil, fmt.Errorf("record too short: %d bytes", len(data))
+	}
+	keyLen := binary.LittleEndian.Uint32(data[0:4])
+	keyEnd := uint64(4) + uint64(keyLen)
+	if keyEnd > uint64(len(data)) {
+		return "", nil, fmt.Errorf("key length %d exceeds record size %d", keyLen, len(data))
+	}
+	keyEndInt := int(keyEnd)
+	return string(data[4:keyEndInt]), data[keyEndInt:], nil
+}
+
+const maxCatalogLogicalWALDataBytes = 1<<16 - 1 // storage WAL payload length is uint16
+
+func encodeLogicalWALData(treeName string, key []byte, value []byte) ([]byte, error) {
+	if treeName == "" {
+		return nil, fmt.Errorf("WAL tree name cannot be empty")
+	}
+	if len(key) == 0 {
+		return nil, fmt.Errorf("WAL row key cannot be empty")
+	}
+	keyLen := len(treeName) + 1 + len(key)
+	if keyLen > maxCatalogLogicalWALDataBytes-4 {
+		return nil, fmt.Errorf("WAL record data size exceeds maximum (%d bytes): key length %d",
+			maxCatalogLogicalWALDataBytes, keyLen)
+	}
+	if len(value) > maxCatalogLogicalWALDataBytes-4-keyLen {
+		return nil, fmt.Errorf("WAL record data size exceeds maximum (%d bytes): key length %d, value length %d",
+			maxCatalogLogicalWALDataBytes, keyLen, len(value))
+	}
+	data := make([]byte, 4+keyLen+len(value))
+	binary.LittleEndian.PutUint32(data[:4], uint32(keyLen)) // #nosec G115 - keyLen range checked above.
+	copy(data[4:], treeName)
+	data[4+len(treeName)] = ':'
+	copy(data[4+len(treeName)+1:], key)
+	copy(data[4+keyLen:], value)
+	return data, nil
+}
+
+func parseReplayWALKey(key string) (string, string, error) {
+	// Manager format: "tableName:rowKey".
+	parts := strings.SplitN(key, ":", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("missing table prefix")
+	}
+	if parts[0] == "" {
+		return "", "", fmt.Errorf("empty table name")
+	}
+	if parts[1] == "" {
+		return "", "", fmt.Errorf("empty row key")
+	}
+	return parts[0], parts[1], nil
 }

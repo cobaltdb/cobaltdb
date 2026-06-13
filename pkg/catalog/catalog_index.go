@@ -43,6 +43,7 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 		Unique:     stmt.Unique,
 		RootPageID: indexTree.RootPageID(),
 		Status:     IndexBuilding,
+		Temporary:  table.Temporary,
 	}
 
 	c.indexes[stmt.Index] = indexDef
@@ -54,21 +55,14 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 		return err
 	}
 
-	// Record DDL undo entry for transaction rollback after persistence succeeds.
-	if c.isCurrentTxnActive() {
-		c.appendUndoEntry(undoEntry{
-			action:    undoCreateIndex,
-			indexName: stmt.Index,
-		})
-	}
-
 	// For small tables (≤1000 rows) build synchronously so tests and
 	// lightweight DDL scripts get immediate index availability.
 	// Large tables get a background build so the main thread returns
 	// in <100ms and doesn't block concurrent reads/writes.
 	tree := c.tableTrees[stmt.Table]
-	if tree != nil && tree.Size() <= 1000 {
-		if err := c.populateIndexLocked(indexTree, indexDef, table, tree); err != nil {
+	pendingWrites := c.pendingWritesForTable(stmt.Table)
+	if tree != nil && (tree.Size() <= 1000 || len(pendingWrites) > 0) {
+		if err := c.populateIndexVisibleRowsLocked(indexTree, indexDef, table, tree, pendingWrites); err != nil {
 			delete(c.indexes, stmt.Index)
 			delete(c.indexTrees, stmt.Index)
 			if deleteErr := c.deleteCatalogDef("idx:" + stmt.Index); deleteErr != nil {
@@ -81,7 +75,71 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 		go c.buildIndexInBackground(stmt.Index, stmt.Table, table)
 	}
 
+	// Record DDL undo only after the index has been created successfully.
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:    undoCreateIndex,
+			indexName: stmt.Index,
+		})
+	}
+
 	return nil
+}
+
+func (c *Catalog) pendingWritesForTable(tableName string) map[string]PendingWrite {
+	ts := c.getCurrentTxn()
+	if ts == nil || len(ts.pendingWrites) == 0 {
+		return nil
+	}
+	return ts.getPendingWriteMap()[tableName]
+}
+
+func (c *Catalog) populateIndexVisibleRowsLocked(indexTree btree.TreeStore, indexDef *IndexDef, table *TableDef, tree btree.TreeStore, pendingWrites map[string]PendingWrite) error {
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	for iter.HasNext() {
+		key, valueData, iterErr := iter.Next()
+		if iterErr != nil {
+			return iterErr
+		}
+		if _, shadowed := pendingWrites[string(key)]; shadowed {
+			continue
+		}
+		if err := c.addIndexRowLocked(indexTree, indexDef, table, key, valueData); err != nil {
+			return err
+		}
+	}
+	for key, pw := range pendingWrites {
+		if pw.Value == nil {
+			continue
+		}
+		if err := c.addIndexRowLocked(indexTree, indexDef, table, []byte(key), pw.Value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) addIndexRowLocked(indexTree btree.TreeStore, indexDef *IndexDef, table *TableDef, key, valueData []byte) error {
+	row, err := decodeRow(valueData, len(table.Columns))
+	if err != nil {
+		return fmt.Errorf("failed to decode row in table %s while populating index %s: %w", table.Name, indexDef.Name, err)
+	}
+	indexKey, ok := buildCompositeIndexKey(table, indexDef, row)
+	if !ok {
+		return nil
+	}
+	if indexDef.Unique {
+		if existingKey, err := indexTree.Get([]byte(indexKey)); err == nil && string(existingKey) != string(key) {
+			return fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, indexDef.Name)
+		}
+		return indexTree.Put([]byte(indexKey), key)
+	}
+	compoundKey := indexKey + "\x00" + string(key)
+	return indexTree.Put([]byte(compoundKey), key)
 }
 
 // populateIndexLocked fills an index tree from a table scan. Must be called
@@ -106,6 +164,9 @@ func (c *Catalog) populateIndexLocked(indexTree btree.TreeStore, indexDef *Index
 			continue
 		}
 		if indexDef.Unique {
+			if existingKey, err := indexTree.Get([]byte(indexKey)); err == nil && string(existingKey) != string(key) {
+				return fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", indexKey, indexDef.Name)
+			}
 			if err := indexTree.Put([]byte(indexKey), key); err != nil {
 				return err
 			}
@@ -144,6 +205,9 @@ func (c *Catalog) buildIndexInBackground(indexName, tableName string, table *Tab
 }
 
 func (c *Catalog) storeIndexDef(index *IndexDef) error {
+	if index.Temporary {
+		return nil
+	}
 	key := []byte("idx:" + index.Name)
 	data, err := json.Marshal(index)
 	if err != nil {
@@ -368,6 +432,35 @@ func (c *Catalog) DropIndex(name string) error {
 	delete(c.indexes, name)
 	delete(c.indexTrees, name)
 
+	return nil
+}
+
+func (c *Catalog) DropUniqueConstraint(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	defer c.invalidateSchemaCache()
+	idxDef, exists := c.indexes[name]
+	if !exists {
+		return ErrIndexNotFound
+	}
+	if !idxDef.Unique {
+		return fmt.Errorf("constraint %s is not a UNIQUE constraint", name)
+	}
+	if err := c.deleteCatalogDef("idx:" + name); err != nil {
+		return fmt.Errorf("failed to delete constraint metadata %s: %w", name, err)
+	}
+
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:    undoDropIndex,
+			indexName: name,
+			indexDef:  idxDef,
+			indexTree: c.indexTrees[name],
+		})
+	}
+
+	delete(c.indexes, name)
+	delete(c.indexTrees, name)
 	return nil
 }
 

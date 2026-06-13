@@ -29,13 +29,14 @@ func (c *Catalog) CreateFTSIndex(name, tableName string, columns []string) error
 	ftsIndex := &FTSIndexDef{
 		Name:      name,
 		TableName: tableName,
-		Columns:   columns,
+		Columns:   cloneStringSlice(columns),
 		Index:     make(map[string][]int64),
 	}
 
 	// Build the index from existing data
 	tree, exists := c.tableTrees[tableName]
 	if exists {
+		pendingWrites := c.pendingWritesForTable(tableName)
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
 			return fmt.Errorf("failed to scan table %s for FTS index %s: %w", tableName, name, err)
@@ -49,24 +50,48 @@ func (c *Catalog) CreateFTSIndex(name, tableName string, columns []string) error
 			if key == nil || len(value) == 0 {
 				break
 			}
-			// CobaltDB stores rows as VersionedRow (with []interface{} Data), not maps
-			vrow, err := decodeVersionedRow(value, len(table.Columns))
-			if err != nil {
+			if _, shadowed := pendingWrites[string(key)]; shadowed {
+				continue
+			}
+			if err := c.addRowToFTSIndexLocked(ftsIndex, table, key, value); err != nil {
 				return fmt.Errorf("failed to decode row for FTS index %s: %w", name, err)
 			}
-			rowSlice := vrow.Data
-			// Convert to map using column definitions
-			row := make(map[string]interface{})
-			for i, col := range table.Columns {
-				if i < len(rowSlice) {
-					row[col.Name] = rowSlice[i]
-				}
+		}
+		for key, pw := range pendingWrites {
+			if pw.Value == nil {
+				continue
 			}
-			c.indexRowForFTS(ftsIndex, row, key)
+			if err := c.addRowToFTSIndexLocked(ftsIndex, table, []byte(key), pw.Value); err != nil {
+				return fmt.Errorf("failed to decode pending row for FTS index %s: %w", name, err)
+			}
 		}
 	}
 
 	c.ftsIndexes[name] = ftsIndex
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:    undoCreateFTSIndex,
+			indexName: name,
+		})
+	}
+	return nil
+}
+
+func (c *Catalog) addRowToFTSIndexLocked(ftsIndex *FTSIndexDef, table *TableDef, key, value []byte) error {
+	vrow, err := decodeVersionedRow(value, len(table.Columns))
+	if err != nil {
+		return err
+	}
+	if vrow.Version.DeletedAt > 0 {
+		return nil
+	}
+	row := make(map[string]interface{}, len(table.Columns))
+	for i, col := range table.Columns {
+		if i < len(vrow.Data) {
+			row[col.Name] = vrow.Data[i]
+		}
+	}
+	c.indexRowForFTS(ftsIndex, row, key)
 	return nil
 }
 
@@ -97,10 +122,18 @@ func (c *Catalog) DropFTSIndex(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	defer c.invalidateSchemaCache()
-	if _, exists := c.ftsIndexes[name]; !exists {
+	ftsIndex, exists := c.ftsIndexes[name]
+	if !exists {
 		return fmt.Errorf("FTS index %s not found", name)
 	}
 
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:      undoDropFTSIndex,
+			indexName:   name,
+			ftsIndexDef: cloneFTSIndexDef(ftsIndex),
+		})
+	}
 	delete(c.ftsIndexes, name)
 	return nil
 }
@@ -152,6 +185,45 @@ func (c *Catalog) GetFTSIndex(name string) (*FTSIndexDef, error) {
 		return nil, fmt.Errorf("FTS index %s not found", name)
 	}
 	return ftsIndex, nil
+}
+
+func (c *Catalog) ListFTSIndexDefs() []FTSIndexDef {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	defs := make([]FTSIndexDef, 0, len(c.ftsIndexes))
+	for _, idx := range c.ftsIndexes {
+		if idx == nil {
+			continue
+		}
+		defs = append(defs, FTSIndexDef{
+			Name:      idx.Name,
+			TableName: idx.TableName,
+			Columns:   cloneStringSlice(idx.Columns),
+		})
+	}
+	sort.Slice(defs, func(i, j int) bool {
+		return toLowerFast(defs[i].Name) < toLowerFast(defs[j].Name)
+	})
+	return defs
+}
+
+func cloneFTSIndexDef(idx *FTSIndexDef) *FTSIndexDef {
+	if idx == nil {
+		return nil
+	}
+	cloned := &FTSIndexDef{
+		Name:      idx.Name,
+		TableName: idx.TableName,
+		Columns:   cloneStringSlice(idx.Columns),
+	}
+	if idx.Index != nil {
+		cloned.Index = make(map[string][]int64, len(idx.Index))
+		for word, rows := range idx.Index {
+			cloned.Index[word] = append([]int64(nil), rows...)
+		}
+	}
+	return cloned
 }
 
 func (c *Catalog) ListFTSIndexes() []string {

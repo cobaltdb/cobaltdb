@@ -10,9 +10,19 @@ func cloneTableDef(table *TableDef) *TableDef {
 	cloned.Columns = cloneColumnDefs(table.Columns)
 	cloned.PrimaryKey = cloneStringSlice(table.PrimaryKey)
 	cloned.ForeignKeys = cloneForeignKeyDefs(table.ForeignKeys)
+	cloned.Checks = cloneCheckDefs(table.Checks)
 	cloned.Partition = clonePartitionInfo(table.Partition)
 	cloned.buildColumnIndexCache()
 	return &cloned
+}
+
+func cloneCheckDefs(checks []CheckDef) []CheckDef {
+	if checks == nil {
+		return nil
+	}
+	cloned := make([]CheckDef, len(checks))
+	copy(cloned, checks)
+	return cloned
 }
 
 func cloneColumnDefs(columns []ColumnDef) []ColumnDef {

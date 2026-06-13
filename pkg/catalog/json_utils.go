@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -9,19 +10,91 @@ import (
 	"sync"
 )
 
-// regexpCache caches compiled regexps for GLOB and similar per-row operations (FIX-069).
-var regexpCache sync.Map // string → *regexp.Regexp
+const (
+	maxJSONDocumentBytes    = maxStringResultLen
+	maxJSONPathBytes        = 16 << 10
+	maxJSONPathSegments     = 256
+	maxJSONPathSegmentBytes = 1024
+	maxCachedRegexps        = 1024
+	maxCachedJSONPaths      = 1024
+)
+
+var errJSONInputTooLarge = errors.New("JSON input too large")
+
+// regexpCache caches compiled regexps for GLOB and similar per-row operations.
+var regexpCache = newBoundedRegexpCache(maxCachedRegexps)
 
 func getCachedRegexp(pattern string) (*regexp.Regexp, error) {
-	if v, ok := regexpCache.Load(pattern); ok {
-		return v.(*regexp.Regexp), nil
+	if re, ok := regexpCache.get(pattern); ok {
+		return re, nil
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return nil, err
 	}
-	regexpCache.Store(pattern, re)
+	regexpCache.set(pattern, re)
 	return re, nil
+}
+
+type boundedRegexpCache struct {
+	mu    sync.Mutex
+	limit int
+	order []string
+	items map[string]*regexp.Regexp
+}
+
+func newBoundedRegexpCache(limit int) *boundedRegexpCache {
+	return &boundedRegexpCache{
+		limit: limit,
+		order: make([]string, 0, limit),
+		items: make(map[string]*regexp.Regexp),
+	}
+}
+
+func (c *boundedRegexpCache) get(key string) (*regexp.Regexp, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	re, ok := c.items[key]
+	return re, ok
+}
+
+func (c *boundedRegexpCache) set(key string, value *regexp.Regexp) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.items[key]; exists {
+		c.items[key] = value
+		return
+	}
+	c.evictIfFull()
+	c.items[key] = value
+	c.order = append(c.order, key)
+}
+
+func (c *boundedRegexpCache) evictIfFull() {
+	if c.limit <= 0 {
+		clear(c.items)
+		c.order = c.order[:0]
+		return
+	}
+	for len(c.items) >= c.limit && len(c.order) > 0 {
+		key := c.order[0]
+		copy(c.order, c.order[1:])
+		c.order = c.order[:len(c.order)-1]
+		delete(c.items, key)
+	}
+}
+
+func (c *boundedRegexpCache) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.items)
+}
+
+func unmarshalJSONInput(input string, target interface{}) error {
+	if len(input) > maxJSONDocumentBytes {
+		return fmt.Errorf("%w: maximum allowed size is %d bytes", errJSONInputTooLarge, maxJSONDocumentBytes)
+	}
+	return json.Unmarshal([]byte(input), target)
 }
 
 // JSONPath represents a parsed JSON path
@@ -32,6 +105,9 @@ type JSONPath struct {
 // ParseJSONPath parses a JSON path string like '$.foo.bar[0].baz'
 func ParseJSONPath(path string) (*JSONPath, error) {
 	path = strings.TrimSpace(path)
+	if len(path) > maxJSONPathBytes {
+		return nil, fmt.Errorf("JSON path too large: maximum allowed size is %d bytes", maxJSONPathBytes)
+	}
 
 	// Empty path is invalid
 	if path == "" {
@@ -67,7 +143,9 @@ func ParseJSONPath(path string) (*JSONPath, error) {
 			if end == 0 {
 				return nil, fmt.Errorf("invalid JSON path: empty key")
 			}
-			segments = append(segments, remaining[:end])
+			if err := appendJSONPathSegment(&segments, remaining[:end]); err != nil {
+				return nil, err
+			}
 			remaining = remaining[end:]
 		} else if remaining[0] == '[' {
 			// Bracket notation: [0] or ["key"] or ['key']
@@ -90,7 +168,9 @@ func ParseJSONPath(path string) (*JSONPath, error) {
 				if end >= len(remaining) {
 					return nil, fmt.Errorf("unclosed string in JSON path")
 				}
-				segments = append(segments, remaining[:end])
+				if err := appendJSONPathSegment(&segments, remaining[:end]); err != nil {
+					return nil, err
+				}
 				remaining = remaining[end+1:]
 				if len(remaining) == 0 || remaining[0] != ']' {
 					return nil, fmt.Errorf("expected ] in JSON path")
@@ -111,13 +191,17 @@ func ParseJSONPath(path string) (*JSONPath, error) {
 				indexStr := remaining[:end]
 				// Check if it's a wildcard *
 				if indexStr == "*" {
-					segments = append(segments, "*")
+					if err := appendJSONPathSegment(&segments, "*"); err != nil {
+						return nil, err
+					}
 				} else {
 					idx, err := strconv.Atoi(indexStr)
 					if err != nil {
 						return nil, fmt.Errorf("invalid array index: %s", indexStr)
 					}
-					segments = append(segments, fmt.Sprintf("[%d]", idx))
+					if err := appendJSONPathSegment(&segments, fmt.Sprintf("[%d]", idx)); err != nil {
+						return nil, err
+					}
 				}
 				remaining = remaining[end+1:]
 			}
@@ -127,6 +211,17 @@ func ParseJSONPath(path string) (*JSONPath, error) {
 	}
 
 	return &JSONPath{Segments: segments}, nil
+}
+
+func appendJSONPathSegment(segments *[]string, segment string) error {
+	if len(segment) > maxJSONPathSegmentBytes {
+		return fmt.Errorf("JSON path segment too large: maximum allowed size is %d bytes", maxJSONPathSegmentBytes)
+	}
+	if len(*segments) >= maxJSONPathSegments {
+		return fmt.Errorf("JSON path segment count exceeds maximum (%d)", maxJSONPathSegments)
+	}
+	*segments = append(*segments, segment)
+	return nil
 }
 
 // Get retrieves a value from data using the JSON path
@@ -190,18 +285,72 @@ func (jp *JSONPath) Get(data interface{}) (interface{}, error) {
 }
 
 // jsonPathCache caches parsed JSONPath objects for reuse across rows.
-var jsonPathCache sync.Map // string → *JSONPath
+var jsonPathCache = newBoundedJSONPathCache(maxCachedJSONPaths)
 
 func getCachedJSONPath(path string) (*JSONPath, error) {
-	if v, ok := jsonPathCache.Load(path); ok {
-		return v.(*JSONPath), nil
+	if jp, ok := jsonPathCache.get(path); ok {
+		return jp, nil
 	}
 	jp, err := ParseJSONPath(path)
 	if err != nil {
 		return nil, err
 	}
-	jsonPathCache.Store(path, jp)
+	jsonPathCache.set(path, jp)
 	return jp, nil
+}
+
+type boundedJSONPathCache struct {
+	mu    sync.Mutex
+	limit int
+	order []string
+	items map[string]*JSONPath
+}
+
+func newBoundedJSONPathCache(limit int) *boundedJSONPathCache {
+	return &boundedJSONPathCache{
+		limit: limit,
+		order: make([]string, 0, limit),
+		items: make(map[string]*JSONPath),
+	}
+}
+
+func (c *boundedJSONPathCache) get(key string) (*JSONPath, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	jp, ok := c.items[key]
+	return jp, ok
+}
+
+func (c *boundedJSONPathCache) set(key string, value *JSONPath) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.items[key]; exists {
+		c.items[key] = value
+		return
+	}
+	c.evictIfFull()
+	c.items[key] = value
+	c.order = append(c.order, key)
+}
+
+func (c *boundedJSONPathCache) evictIfFull() {
+	if c.limit <= 0 {
+		clear(c.items)
+		c.order = c.order[:0]
+		return
+	}
+	for len(c.items) >= c.limit && len(c.order) > 0 {
+		key := c.order[0]
+		copy(c.order, c.order[1:])
+		c.order = c.order[:len(c.order)-1]
+		delete(c.items, key)
+	}
+}
+
+func (c *boundedJSONPathCache) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.items)
 }
 
 // JSONExtract extracts a value from JSON using a path
@@ -216,7 +365,7 @@ func JSONExtract(jsonData, path string) (interface{}, error) {
 	}
 
 	var data interface{}
-	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+	if err := unmarshalJSONInput(jsonData, &data); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -229,7 +378,7 @@ func JSONSet(jsonData, path, value string) (string, error) {
 	if jsonData == "" {
 		data = make(map[string]interface{})
 	} else {
-		if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+		if err := unmarshalJSONInput(jsonData, &data); err != nil {
 			return "", fmt.Errorf("invalid JSON: %w", err)
 		}
 	}
@@ -241,7 +390,10 @@ func JSONSet(jsonData, path, value string) (string, error) {
 
 	// Parse the value
 	var newValue interface{}
-	if err := json.Unmarshal([]byte(value), &newValue); err != nil {
+	if err := unmarshalJSONInput(value, &newValue); err != nil {
+		if errors.Is(err, errJSONInputTooLarge) {
+			return "", fmt.Errorf("invalid JSON value: %w", err)
+		}
 		// If it fails, treat as string
 		newValue = value
 	}
@@ -337,7 +489,7 @@ func JSONRemove(jsonData, path string) (string, error) {
 		return "", nil
 	}
 
-	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+	if err := unmarshalJSONInput(jsonData, &data); err != nil {
 		return "", fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -458,7 +610,7 @@ func JSONArrayLength(jsonData string) (int, error) {
 	}
 
 	var data interface{}
-	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+	if err := unmarshalJSONInput(jsonData, &data); err != nil {
 		return 0, fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -477,7 +629,7 @@ func JSONKeys(jsonData string) ([]string, error) {
 	}
 
 	var data interface{}
-	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+	if err := unmarshalJSONInput(jsonData, &data); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -500,7 +652,7 @@ func JSONPretty(jsonData string) (string, error) {
 	}
 
 	var data interface{}
-	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+	if err := unmarshalJSONInput(jsonData, &data); err != nil {
 		return "", fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -518,7 +670,7 @@ func JSONMinify(jsonData string) (string, error) {
 	}
 
 	var data interface{}
-	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+	if err := unmarshalJSONInput(jsonData, &data); err != nil {
 		return "", fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -534,13 +686,13 @@ func JSONMerge(json1, json2 string) (string, error) {
 	var data1, data2 interface{}
 
 	if json1 != "" {
-		if err := json.Unmarshal([]byte(json1), &data1); err != nil {
+		if err := unmarshalJSONInput(json1, &data1); err != nil {
 			return "", fmt.Errorf("invalid JSON: %w", err)
 		}
 	}
 
 	if json2 != "" {
-		if err := json.Unmarshal([]byte(json2), &data2); err != nil {
+		if err := unmarshalJSONInput(json2, &data2); err != nil {
 			return "", fmt.Errorf("invalid JSON: %w", err)
 		}
 	}
@@ -596,7 +748,7 @@ func JSONEach(jsonData string) (map[string]interface{}, error) {
 	}
 
 	var data interface{}
-	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+	if err := unmarshalJSONInput(jsonData, &data); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -616,7 +768,7 @@ func JSONType(jsonData, path string) (string, error) {
 		return "null", nil
 	}
 
-	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+	if err := unmarshalJSONInput(jsonData, &data); err != nil {
 		return "", fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -670,7 +822,7 @@ func JSONUnquote(value string) (string, error) {
 
 	// Check if it's a quoted string
 	var result string
-	if err := json.Unmarshal([]byte(value), &result); err != nil {
+	if err := unmarshalJSONInput(value, &result); err != nil {
 		return "", fmt.Errorf("invalid JSON string: %w", err)
 	}
 	return result, nil
@@ -682,7 +834,7 @@ func IsValidJSON(jsonData string) bool {
 		return false
 	}
 	var data interface{}
-	return json.Unmarshal([]byte(jsonData), &data) == nil
+	return unmarshalJSONInput(jsonData, &data) == nil
 }
 
 // RegexMatch checks if a string matches a regex pattern (uses package-level cache)

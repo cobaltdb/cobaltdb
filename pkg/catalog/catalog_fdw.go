@@ -85,6 +85,20 @@ func (c *Catalog) GetForeignTable(name string) (*ForeignTableDef, error) {
 	return cloneForeignTableDef(ft), nil
 }
 
+// ListForeignTables returns all foreign table definitions.
+func (c *Catalog) ListForeignTables() []ForeignTableDef {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	out := make([]ForeignTableDef, 0, len(c.foreignTables))
+	for _, ft := range c.foreignTables {
+		if cloned := cloneForeignTableDef(ft); cloned != nil {
+			out = append(out, *cloned)
+		}
+	}
+	return out
+}
+
 // DropForeignTable drops a foreign table.
 func (c *Catalog) DropForeignTable(name string) error {
 	c.mu.Lock()

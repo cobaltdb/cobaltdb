@@ -5,6 +5,11 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
 
+const (
+	maxRecursiveCTEDepth = 1000
+	maxRecursiveCTERows  = 100000
+)
+
 func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) ([]string, [][]interface{}, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -46,6 +51,7 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 					for _, name := range createdCTEResults {
 						delete(c.cteResults, name)
 					}
+					delete(c.cteResults, cteName)
 					return nil, nil, fmt.Errorf("recursive CTE %s: %w", cte.Name, err)
 				}
 				createdCTEResults = append(createdCTEResults, cteName)
@@ -217,8 +223,6 @@ func (c *Catalog) executeCTEUnion(stmt *query.UnionStmt, args []interface{}) ([]
 }
 
 func (c *Catalog) executeRecursiveCTE(name string, nameLower string, cteColumns []string, unionStmt *query.UnionStmt, args []interface{}) error {
-	const maxDepth = 1000
-
 	// The left side is the anchor member
 	anchorStmt, ok := unionStmt.Left.(*query.SelectStmt)
 	if !ok {
@@ -232,6 +236,9 @@ func (c *Catalog) executeRecursiveCTE(name string, nameLower string, cteColumns 
 	anchorCols, anchorRows, err := c.selectLocked(anchorStmt, args)
 	if err != nil {
 		return fmt.Errorf("anchor member: %w", err)
+	}
+	if len(anchorRows) > maxRecursiveCTERows {
+		return fmt.Errorf("recursive CTE row limit exceeded: %d > %d", len(anchorRows), maxRecursiveCTERows)
 	}
 
 	// Use CTE-defined column names if provided, otherwise use anchor's column names
@@ -249,9 +256,11 @@ func (c *Catalog) executeRecursiveCTE(name string, nameLower string, cteColumns 
 
 	// Working table: rows from the last iteration
 	workingRows := anchorRows
+	completed := false
 
-	for depth := 0; depth < maxDepth; depth++ {
+	for depth := 0; depth < maxRecursiveCTEDepth; depth++ {
 		if len(workingRows) == 0 {
+			completed = true
 			break
 		}
 
@@ -268,11 +277,18 @@ func (c *Catalog) executeRecursiveCTE(name string, nameLower string, cteColumns 
 		}
 
 		if len(newRows) == 0 {
+			completed = true
 			break
+		}
+		if len(allRows)+len(newRows) > maxRecursiveCTERows {
+			return fmt.Errorf("recursive CTE row limit exceeded: %d > %d", len(allRows)+len(newRows), maxRecursiveCTERows)
 		}
 
 		allRows = append(allRows, newRows...)
 		workingRows = newRows
+	}
+	if !completed {
+		return fmt.Errorf("recursive CTE depth limit exceeded: %d", maxRecursiveCTEDepth)
 	}
 
 	// Store final accumulated results

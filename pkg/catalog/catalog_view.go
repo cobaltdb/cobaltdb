@@ -75,6 +75,18 @@ func (c *Catalog) CreateMaterializedViewSQL(name string, selectStmt *query.Selec
 	return nil
 }
 
+// ListMaterializedViewSQL returns persisted CREATE MATERIALIZED VIEW statements keyed by view name.
+func (c *Catalog) ListMaterializedViewSQL() map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	out := make(map[string]string, len(c.materializedViewSQL))
+	for name, sql := range c.materializedViewSQL {
+		out[name] = sql
+	}
+	return out
+}
+
 func (c *Catalog) DropMaterializedView(name string, ifExists bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

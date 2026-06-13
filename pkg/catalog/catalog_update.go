@@ -84,8 +84,9 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 		return 0, 0, fmt.Errorf("cannot update foreign table '%s'", stmt.Table)
 	}
 
-	// Handle UPDATE with JOIN
-	if stmt.From != nil || len(stmt.Joins) > 0 {
+	// Handle UPDATE with JOIN or target alias. The join path models the target
+	// table as a SELECT source, which lets qualified alias references resolve.
+	if stmt.Alias != "" || stmt.From != nil || len(stmt.Joins) > 0 {
 		defer c.mu.RUnlock()
 		return c.updateWithJoinLocked(ctx, stmt, args)
 	}
@@ -158,7 +159,7 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 		}
 	}
 
-	if err := c.bufferUpdateEntries(table, stmt, entries, ts); err != nil {
+	if err := c.bufferUpdateEntries(ctx, table, stmt, entries, ts); err != nil {
 		if ts != nil {
 			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 			rebuildPendingWriteMap(ts)
@@ -264,6 +265,11 @@ func (c *Catalog) processUpdateRowDataSnapshot(ctx context.Context, table *Table
 			updatedRow[colIdx] = newVal
 		}
 	}
+	if allowed, rlsErr := c.checkRowCheckLocked(ctx, stmt.Table, table.Columns, updatedRow, security.PolicyUpdate); rlsErr != nil {
+		return fmt.Errorf("RLS WITH CHECK failed for UPDATE: %w", rlsErr)
+	} else if !allowed {
+		return nil
+	}
 
 	// Check all constraints before applying the update. *entries holds the rows
 	// already staged by this statement so within-statement unique collisions are caught.
@@ -368,6 +374,8 @@ func (c *Catalog) hasUpdateUniqueConflict(tree btree.TreeStore, table *TableDef,
 // collected holds the rows already staged by this UPDATE statement so that two rows
 // driven to the same unique value within one statement (or txn) are rejected.
 func (c *Catalog) checkConstraintsForUpdate(table *TableDef, tree btree.TreeStore, key []byte, oldRow, newRow []interface{}, snap *updateSnapshot, ts *catalogTxnState, args []interface{}, treeName string, collected []updateEntry) error {
+	applySelfReferentialUpdateCascades(table, oldRow, newRow)
+
 	// Check UNIQUE constraints on table columns
 	var pendingKeys map[string]PendingWrite
 	if ts != nil {
@@ -413,88 +421,38 @@ func (c *Catalog) checkConstraintsForUpdate(table *TableDef, tree btree.TreeStor
 	}
 
 	// Check CHECK constraints
-	for _, col := range table.Columns {
-		if col.Check != nil {
-			result, err := evaluateExpression(c, newRow, table.Columns, col.Check, args)
-			if err != nil {
-				return fmt.Errorf("CHECK constraint failed: %w", err)
-			}
-			if result != nil {
-				if resultBool, ok := result.(bool); ok && !resultBool {
-					return fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
-				}
-			}
-		}
+	if err := c.checkRowConstraints(table, newRow, args); err != nil {
+		return err
 	}
 
 	// Check FOREIGN KEY constraints using the snapshot FK references
 	for _, fk := range table.ForeignKeys {
-		for i, colName := range fk.Columns {
-			colIdx := table.GetColumnIndex(colName)
-			if colIdx < 0 || colIdx >= len(newRow) {
-				continue
+		if !foreignKeyColumnsChanged(table, fk, oldRow, newRow) {
+			continue
+		}
+		fkValues, skip := foreignKeyValuesForRow(table, fk, newRow)
+		if skip {
+			continue
+		}
+		refSnap, ok := snap.fkRefs[fk.ReferencedTable]
+		if !ok || refSnap.tree == nil {
+			return fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
+		}
+		var pendingParents map[string]PendingWrite
+		if ts != nil {
+			pendingParents = ts.getPendingWriteMap()[fk.ReferencedTable]
+		}
+		refColumns := referencedColumnsForTable(refSnap.table, fk)
+		found := selfUpdatedRowSatisfiesForeignKey(table, fk, newRow, fkValues)
+		if !found {
+			var err error
+			found, err = referencedRowExistsSnapshot(refSnap.table, refSnap.tree, pendingParents, refColumns, fkValues)
+			if err != nil {
+				return fmt.Errorf("FOREIGN KEY constraint failed: failed to scan referenced table %s: %w", fk.ReferencedTable, err)
 			}
-			fkValue := newRow[colIdx]
-			if fkValue == nil {
-				continue
-			}
-			if colIdx < len(oldRow) && compareValues(fkValue, oldRow[colIdx]) == 0 {
-				continue
-			}
-			refSnap, ok := snap.fkRefs[fk.ReferencedTable]
-			if !ok || refSnap.tree == nil {
-				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table not found")
-			}
-			refTable := refSnap.table
-			refTree := refSnap.tree
-			refColIdx := 0
-			if len(fk.ReferencedColumns) > i {
-				refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
-			}
-			found := false
-			refIter, scanErr := refTree.Scan(nil, nil)
-			if scanErr != nil {
-				return fmt.Errorf("FOREIGN KEY constraint failed: %w", scanErr)
-			}
-			for refIter.HasNext() {
-				_, refData, err := refIter.Next()
-				if err != nil {
-					refIter.Close()
-					return fmt.Errorf("FOREIGN KEY constraint failed: failed to read referenced row in table %s: %w", fk.ReferencedTable, err)
-				}
-				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
-				if err != nil {
-					refIter.Close()
-					return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode referenced row in table %s: %w", fk.ReferencedTable, err)
-				}
-				refRow := vrow.Data
-				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
-					found = true
-					break
-				}
-			}
-			refIter.Close()
-			if !found && ts != nil {
-				if m, ok := ts.getPendingWriteMap()[fk.ReferencedTable]; ok {
-					for _, pw := range m {
-						vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
-						if err != nil {
-							return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode pending referenced row in table %s: %w", fk.ReferencedTable, err)
-						}
-						if vrow.Version.DeletedAt > 0 {
-							continue
-						}
-						refRow := vrow.Data
-						if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
-							found = true
-							break
-						}
-					}
-				}
-			}
-			if !found {
-				return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
-			}
+		}
+		if !found {
+			return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValues, fk.ReferencedTable)
 		}
 	}
 
@@ -677,8 +635,9 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		return 0, 0, fmt.Errorf("cannot update foreign table '%s'", stmt.Table)
 	}
 
-	// Handle UPDATE with JOIN
-	if stmt.From != nil || len(stmt.Joins) > 0 {
+	// Handle UPDATE with JOIN or target alias. The join path models the target
+	// table as a SELECT source, which lets qualified alias references resolve.
+	if stmt.Alias != "" || stmt.From != nil || len(stmt.Joins) > 0 {
 		return c.updateWithJoinLocked(ctx, stmt, args)
 	}
 
@@ -891,7 +850,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 
 	// Apply collected updates
 	if useBuffer {
-		if err := c.bufferUpdateEntries(table, stmt, entries, ts); err != nil {
+		if err := c.bufferUpdateEntries(ctx, table, stmt, entries, ts); err != nil {
 			if ts != nil {
 				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 				rebuildPendingWriteMap(ts)
@@ -944,10 +903,14 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 	// (e.g. UPDATE t SET x = s.y FROM s WHERE t.id = s.id).
 	var selectColumns []query.Expression
 	var joinedColDefs []ColumnDef
+	targetAlias := stmt.Table
+	if stmt.Alias != "" {
+		targetAlias = stmt.Alias
+	}
 	for _, col := range targetTable.Columns {
-		selectColumns = append(selectColumns, &query.QualifiedIdentifier{Table: stmt.Table, Column: col.Name})
+		selectColumns = append(selectColumns, &query.QualifiedIdentifier{Table: targetAlias, Column: col.Name})
 		cd := col
-		cd.sourceTbl = stmt.Table
+		cd.sourceTbl = targetAlias
 		joinedColDefs = append(joinedColDefs, cd)
 	}
 
@@ -980,7 +943,7 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 
 	selectStmt := &query.SelectStmt{
 		Columns: selectColumns,
-		From:    &query.TableRef{Name: stmt.Table},
+		From:    &query.TableRef{Name: stmt.Table, Alias: stmt.Alias},
 		Joins:   stmt.Joins,
 		Where:   stmt.Where,
 	}
@@ -991,7 +954,7 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		// Add target table as first join with no condition
 		selectStmt.Joins = append([]*query.JoinClause{{
 			Type:  query.TokenJoin,
-			Table: &query.TableRef{Name: stmt.Table},
+			Table: &query.TableRef{Name: stmt.Table, Alias: stmt.Alias},
 		}}, stmt.Joins...)
 	}
 
@@ -1095,6 +1058,11 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 		} else if !allowed {
 			continue
 		}
+		if allowed, rlsErr := c.checkRowCheckLocked(ctx, stmt.Table, targetTable.Columns, updatedRow, security.PolicyUpdate); rlsErr != nil {
+			return 0, rowsAffected, fmt.Errorf("RLS WITH CHECK failed for UPDATE: %w", rlsErr)
+		} else if !allowed {
+			continue
+		}
 
 		// Check constraints (simplified - full checks in actual implementation)
 		for i, col := range targetTable.Columns {
@@ -1134,6 +1102,9 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 
 	// Apply all updates
 	if err := c.applyJoinUpdateEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
+		if rbErr := c.rollbackAppliedJoinUpdateEntries(stmt.Table, targetTable, targetTree, entries); rbErr != nil {
+			return 0, rowsAffected, fmt.Errorf("%w; rollback failed: %v", err, rbErr)
+		}
 		return 0, rowsAffected, err
 	}
 
@@ -1170,27 +1141,60 @@ func (c *Catalog) applyJoinUpdateEntries(tableName string, table *TableDef, tree
 		if err != nil {
 			return err
 		}
+		if c.wal != nil && txnActive {
+			walData, err := encodeLogicalWALData(tableName, entry.key, newValue)
+			if err != nil {
+				return fmt.Errorf("failed to encode WAL update record: %w", err)
+			}
+			record := &storage.WALRecord{
+				TxnID: ts.txnID,
+				Type:  storage.WALUpdate,
+				Data:  walData,
+			}
+			if err := c.wal.Append(record); err != nil {
+				return fmt.Errorf("failed to append WAL record: %w", err)
+			}
+		}
 		if err := tree.Put(entry.key, newValue); err != nil {
 			return err
 		}
 
 		// Update indexes
+		var deletedIndexEntries []deletedIndexEntry
 		for idxName, idxDef := range c.indexes {
-			if idxDef.TableName == tableName {
-				oldIdxKey, _ := buildCompositeIndexKey(table, idxDef, entry.oldRow)
-				newIdxKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
-				if idxTree, exists := c.indexTrees[idxName]; exists {
-					if oldIdxKey != "" {
-						if err := idxTree.Delete([]byte(oldIdxKey)); err != nil {
-							return fmt.Errorf("failed to delete old index entry: %w", err)
-						}
-					}
-					if newOk && newIdxKey != "" {
-						if err := idxTree.Put([]byte(newIdxKey), entry.key); err != nil {
-							return fmt.Errorf("failed to insert new index entry: %w", err)
-						}
-					}
+			if idxDef.TableName != tableName || len(idxDef.Columns) == 0 {
+				continue
+			}
+			idxTree, exists := c.indexTrees[idxName]
+			if !exists {
+				continue
+			}
+			deletedEntry, err := deleteIndexEntryForRowTracked(idxName, table, idxDef, idxTree, entry.oldRow, entry.key)
+			if err != nil {
+				if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+					return fmt.Errorf("failed to delete old index entry: %w; failed to restore deleted index entries: %v", err, restoreErr)
 				}
+				return fmt.Errorf("failed to delete old index entry: %w", err)
+			}
+			if deletedEntry != nil {
+				deletedIndexEntries = append(deletedIndexEntries, *deletedEntry)
+			}
+
+			newIdxKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
+			if !newOk || newIdxKey == "" {
+				continue
+			}
+			var newStorageKey []byte
+			if idxDef.Unique {
+				newStorageKey = []byte(newIdxKey)
+			} else {
+				newStorageKey = []byte(newIdxKey + "\x00" + string(entry.key))
+			}
+			if err := idxTree.Put(newStorageKey, entry.key); err != nil {
+				if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+					return fmt.Errorf("failed to insert new index entry: %w; failed to restore deleted index entries: %v", err, restoreErr)
+				}
+				return fmt.Errorf("failed to insert new index entry: %w", err)
 			}
 		}
 
@@ -1240,13 +1244,17 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 	// Build a SELECT statement to execute the join
 	// Select all columns from target table to get the primary key
 	var columns []query.Expression
+	targetAlias := stmt.Table
+	if stmt.Alias != "" {
+		targetAlias = stmt.Alias
+	}
 	for _, col := range targetTable.Columns {
-		columns = append(columns, &query.QualifiedIdentifier{Table: stmt.Table, Column: col.Name})
+		columns = append(columns, &query.QualifiedIdentifier{Table: targetAlias, Column: col.Name})
 	}
 
 	selectStmt := &query.SelectStmt{
 		Columns: columns,
-		From:    &query.TableRef{Name: stmt.Table},
+		From:    &query.TableRef{Name: stmt.Table, Alias: stmt.Alias},
 		Where:   stmt.Where,
 	}
 
@@ -1319,17 +1327,8 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		}
 
 		// Enforce foreign key ON DELETE actions
-		pkValues := make([]interface{}, 0, len(targetTable.PrimaryKey))
-		for _, pkCol := range targetTable.PrimaryKey {
-			pkColIdx := targetTable.GetColumnIndex(pkCol)
-			if pkColIdx >= 0 && pkColIdx < len(row) && row[pkColIdx] != nil {
-				pkValues = append(pkValues, row[pkColIdx])
-			}
-		}
-		if len(pkValues) == len(targetTable.PrimaryKey) && len(pkValues) > 0 {
-			if fkErr := fke.OnDelete(ctx, stmt.Table, pkValues...); fkErr != nil {
-				return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
-			}
+		if fkErr := fke.OnDeleteRow(ctx, stmt.Table, row); fkErr != nil {
+			return 0, 0, fmt.Errorf("foreign key constraint: %w", fkErr)
 		}
 
 		keyCopy := make([]byte, len(key))
@@ -1368,6 +1367,9 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 
 	// Soft delete collected entries
 	if err := c.softDeleteJoinEntries(stmt.Table, targetTable, targetTree, entries); err != nil {
+		if rbErr := c.rollbackAppliedJoinDeleteEntries(stmt.Table, targetTree, entries); rbErr != nil {
+			return 0, rowsAffected, fmt.Errorf("%w; rollback failed: %v", err, rbErr)
+		}
 		return 0, rowsAffected, err
 	}
 
@@ -1424,21 +1426,19 @@ func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree 
 		}
 
 		// Remove from indexes first
+		var deletedIndexEntries []deletedIndexEntry
 		for idxName, idxTree := range c.indexTrees {
 			idxDef := c.indexes[idxName]
 			if idxDef.TableName == tableName && len(idxDef.Columns) > 0 {
-				indexKey, ok := buildCompositeIndexKey(table, idxDef, entry.row)
-				if ok {
-					if idxDef.Unique {
-						if err := idxTree.Delete([]byte(indexKey)); err != nil {
-							return fmt.Errorf("failed to delete index entry: %w", err)
-						}
-					} else {
-						compoundKey := indexKey + "\x00" + string(entry.key)
-						if err := idxTree.Delete([]byte(compoundKey)); err != nil {
-							return fmt.Errorf("failed to delete compound index entry: %w", err)
-						}
+				deletedEntry, err := deleteIndexEntryForRowTracked(idxName, table, idxDef, idxTree, entry.row, entry.key)
+				if err != nil {
+					if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+						return fmt.Errorf("failed to delete index entry: %w; failed to restore deleted index entries: %v", err, restoreErr)
 					}
+					return fmt.Errorf("failed to delete index entry: %w", err)
+				}
+				if deletedEntry != nil {
+					deletedIndexEntries = append(deletedIndexEntries, *deletedEntry)
 				}
 			}
 		}
@@ -1449,24 +1449,39 @@ func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree 
 		// Re-encode and store
 		deletedValueData, err := json.Marshal(vrow)
 		if err != nil {
+			if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+				return fmt.Errorf("failed to encode deleted row: %w; failed to restore deleted index entries: %v", err, restoreErr)
+			}
 			return fmt.Errorf("failed to encode deleted row: %w", err)
-		}
-
-		if err := tree.Put(entry.key, deletedValueData); err != nil {
-			return fmt.Errorf("failed to soft delete row: %w", err)
 		}
 
 		// Log to WAL before applying change
 		if c.wal != nil && txnActive {
-			walData := append([]byte(entry.key), 0)
+			walData, err := encodeLogicalWALData(tableName, entry.key, nil)
+			if err != nil {
+				if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+					return fmt.Errorf("failed to encode WAL delete record: %w; failed to restore deleted index entries: %v", err, restoreErr)
+				}
+				return fmt.Errorf("failed to encode WAL delete record: %w", err)
+			}
 			record := &storage.WALRecord{
 				TxnID: ts.txnID,
 				Type:  storage.WALDelete,
 				Data:  walData,
 			}
 			if err := c.wal.Append(record); err != nil {
+				if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+					return fmt.Errorf("failed to append WAL record: %w; failed to restore deleted index entries: %v", err, restoreErr)
+				}
 				return fmt.Errorf("failed to append WAL record: %w", err)
 			}
+		}
+
+		if err := tree.Put(entry.key, deletedValueData); err != nil {
+			if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
+				return fmt.Errorf("failed to soft delete row: %w; failed to restore deleted index entries: %v", err, restoreErr)
+			}
+			return fmt.Errorf("failed to soft delete row: %w", err)
 		}
 	}
 	return nil
@@ -1519,10 +1534,17 @@ func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tre
 			updatedRow[colIdx] = newVal
 		}
 	}
+	if allowed, rlsErr := c.checkRowCheckLocked(ctx, stmt.Table, table.Columns, updatedRow, security.PolicyUpdate); rlsErr != nil {
+		return fmt.Errorf("RLS WITH CHECK failed for UPDATE: %w", rlsErr)
+	} else if !allowed {
+		return nil
+	}
 
 	// Check UNIQUE constraints before updating. *entries holds the rows already
 	// staged by this statement so two rows driven to the same unique value within
 	// one statement are rejected instead of silently committing a duplicate.
+	applySelfReferentialUpdateCascades(table, row, updatedRow)
+
 	for i, col := range table.Columns {
 		if col.Unique && updatedRow[i] != nil {
 			conflict, err := c.hasUpdateUniqueConflict(tree, table, i, updatedRow[i], string(key), nil, *entries)
@@ -1562,75 +1584,30 @@ func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tre
 	}
 
 	// Check CHECK constraints before updating
-	for _, col := range table.Columns {
-		if col.Check != nil {
-			result, err := evaluateExpression(c, updatedRow, table.Columns, col.Check, args)
-			if err != nil {
-				return fmt.Errorf("CHECK constraint failed: %w", err)
-			}
-			// Per SQL standard, NULL (unknown) passes CHECK constraint; only explicit false fails
-			if result != nil {
-				if resultBool, ok := result.(bool); ok && !resultBool {
-					return fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
-				}
-			}
-		}
+	if err := c.checkRowConstraints(table, updatedRow, args); err != nil {
+		return err
 	}
 
 	// Check FOREIGN KEY constraints on updated columns
+	fke := NewForeignKeyEnforcer(c)
 	for _, fk := range table.ForeignKeys {
-		for i, colName := range fk.Columns {
-			colIdx := table.GetColumnIndex(colName)
-			if colIdx < 0 || colIdx >= len(updatedRow) {
-				continue
-			}
-			fkValue := updatedRow[colIdx]
-			if fkValue == nil {
-				continue // NULL values skip FK check
-			}
-			// Only check if the FK column value actually changed
-			if colIdx < len(row) && compareValues(fkValue, row[colIdx]) == 0 {
-				continue // Value didn't change, skip check
-			}
-			// Check if referenced row exists
-			refTable, err := c.getTableLocked(fk.ReferencedTable)
+		if !foreignKeyColumnsChanged(table, fk, row, updatedRow) {
+			continue
+		}
+		fkValues, skip := foreignKeyValuesForRow(table, fk, updatedRow)
+		if skip {
+			continue
+		}
+		found := selfUpdatedRowSatisfiesForeignKey(table, fk, updatedRow, fkValues)
+		if !found {
+			var err error
+			found, err = fke.referencedRowExists(fk.ReferencedTable, fk.ReferencedColumns, fkValues)
 			if err != nil {
-				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table '%s' not found", fk.ReferencedTable)
+				return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode referenced row in table %s: %w", fk.ReferencedTable, err)
 			}
-			refColIdx := 0
-			if len(fk.ReferencedColumns) > i {
-				refColIdx = refTable.GetColumnIndex(fk.ReferencedColumns[i])
-			}
-			refTree, exists := c.tableTrees[fk.ReferencedTable]
-			if !exists {
-				return fmt.Errorf("FOREIGN KEY constraint failed: referenced table '%s' not found", fk.ReferencedTable)
-			}
-			found := false
-			refIter, scanErr := refTree.Scan(nil, nil)
-			if scanErr != nil {
-				return fmt.Errorf("FOREIGN KEY constraint failed: %w", scanErr)
-			}
-			for refIter.HasNext() {
-				_, refData, err := refIter.Next()
-				if err != nil {
-					refIter.Close()
-					return fmt.Errorf("FOREIGN KEY constraint failed: failed to read referenced row in table %s: %w", fk.ReferencedTable, err)
-				}
-				vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
-				if err != nil {
-					refIter.Close()
-					return fmt.Errorf("FOREIGN KEY constraint failed: failed to decode referenced row in table %s: %w", fk.ReferencedTable, err)
-				}
-				refRow := vrow.Data
-				if refColIdx < len(refRow) && compareValues(fkValue, refRow[refColIdx]) == 0 {
-					found = true
-					break
-				}
-			}
-			refIter.Close()
-			if !found {
-				return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValue, fk.ReferencedTable)
-			}
+		}
+		if !found {
+			return fmt.Errorf("FOREIGN KEY constraint failed: key %v not found in referenced table %s", fkValues, fk.ReferencedTable)
 		}
 	}
 
@@ -1648,6 +1625,84 @@ func (c *Catalog) UpdateRow(tableName string, pkValue interface{}, row map[strin
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.updateRowLocked(tableName, pkValue, row)
+}
+
+func applySelfReferentialUpdateCascades(table *TableDef, oldRow, newRow []interface{}) {
+	if table == nil {
+		return
+	}
+	for _, fk := range table.ForeignKeys {
+		if fk.OnUpdate != "CASCADE" || fk.ReferencedTable != table.Name {
+			continue
+		}
+		refColumns := referencedColumnsForTable(table, fk)
+		if len(refColumns) != len(fk.Columns) {
+			continue
+		}
+		oldRefValues, ok := rowColumnValues(table, oldRow, refColumns)
+		if !ok || valuesContainNil(oldRefValues) {
+			continue
+		}
+		newRefValues, ok := rowColumnValues(table, newRow, refColumns)
+		if !ok || valuesSliceCompareEqual(oldRefValues, newRefValues) {
+			continue
+		}
+		oldLocalValues, ok := rowColumnValues(table, oldRow, fk.Columns)
+		if !ok || !valuesSliceCompareEqual(oldLocalValues, oldRefValues) {
+			continue
+		}
+		for i, colName := range fk.Columns {
+			colIdx := table.GetColumnIndex(colName)
+			if colIdx >= 0 && colIdx < len(newRow) {
+				newRow[colIdx] = newRefValues[i]
+			}
+		}
+	}
+}
+
+func selfUpdatedRowSatisfiesForeignKey(table *TableDef, fk ForeignKeyDef, row []interface{}, fkValues []interface{}) bool {
+	if table == nil || fk.ReferencedTable != table.Name {
+		return false
+	}
+	refColumns := referencedColumnsForTable(table, fk)
+	refValues, ok := rowColumnValues(table, row, refColumns)
+	return ok && valuesSliceCompareEqual(refValues, fkValues)
+}
+
+func rowColumnValues(table *TableDef, row []interface{}, columns []string) ([]interface{}, bool) {
+	if len(columns) == 0 {
+		return nil, false
+	}
+	values := make([]interface{}, len(columns))
+	for i, colName := range columns {
+		colIdx := table.GetColumnIndex(colName)
+		if colIdx < 0 || colIdx >= len(row) {
+			return nil, false
+		}
+		values[i] = row[colIdx]
+	}
+	return values, true
+}
+
+func valuesContainNil(values []interface{}) bool {
+	for _, value := range values {
+		if value == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func valuesSliceCompareEqual(left, right []interface{}) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if compareValues(left[i], right[i]) != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // updateRowLocked is the lock-free internal version. Must be called with mu held.
@@ -1694,23 +1749,41 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		pkColIdx = table.GetColumnIndex(table.PrimaryKey[0])
 	}
 	fke := NewForeignKeyEnforcer(c)
+	untrackReferenceRows := fke.trackUpdatingReferenceRows(stmt.Table, entries)
+	defer untrackReferenceRows()
 	appliedEntries := make([]updateEntry, 0, len(entries))
 	undoStart := 0
 	if txnActive {
 		undoStart = len(c.getCurrentTxnUndoLog())
 	}
 	rollbackApplied := func(cause error, current *updateEntry) error {
-		toRollback := appliedEntries
-		if current != nil {
-			toRollback = append(append([]updateEntry{}, appliedEntries...), *current)
-		}
 		if txnActive {
+			undoEnd := len(c.getCurrentTxnUndoLog()) - 1
+			if undoEnd >= undoStart {
+				if rbErr := c.replayUndoLog(undoEnd, undoStart, "statement rollback"); rbErr != nil {
+					c.truncateUndoLog(undoStart)
+					return fmt.Errorf("%w; rollback failed: %v", cause, rbErr)
+				}
+			}
 			c.truncateUndoLog(undoStart)
 		}
+		toRollback := appliedEntries
+		if txnActive {
+			toRollback = nil
+		}
+		if current != nil {
+			toRollback = append(append([]updateEntry{}, toRollback...), *current)
+		}
 		if len(toRollback) == 0 {
+			if rbErr := fke.rollbackAppliedUpdates(); rbErr != nil {
+				return fmt.Errorf("%w; rollback failed: %v", cause, rbErr)
+			}
 			return cause
 		}
 		if rbErr := c.rollbackAppliedUpdateEntries(table, stmt.Table, toRollback); rbErr != nil {
+			return fmt.Errorf("%w; rollback failed: %v", cause, rbErr)
+		}
+		if rbErr := fke.rollbackAppliedUpdates(); rbErr != nil {
 			return fmt.Errorf("%w; rollback failed: %v", cause, rbErr)
 		}
 		return cause
@@ -1722,13 +1795,13 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		// Re-encode row with new timestamp
 		newValueData, err := encodeVersionedRow(entry.newRow, nil)
 		if err != nil {
-			return fmt.Errorf("failed to encode updated row: %w", err)
+			return rollbackApplied(fmt.Errorf("failed to encode updated row: %w", err), nil)
 		}
 
 		// Get the tree for this entry
 		updateTree, exists := c.tableTrees[entry.treeName]
 		if !exists {
-			return fmt.Errorf("partition tree %s not found", entry.treeName)
+			return rollbackApplied(fmt.Errorf("partition tree %s not found", entry.treeName), nil)
 		}
 
 		// Check if PRIMARY KEY was changed
@@ -1744,62 +1817,56 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 					newKey = []byte(formatKey(int64(fVal)))
 				}
 				if existingData, err := updateTree.Get(newKey); err == nil && existingData != nil {
-					return fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal)
+					return rollbackApplied(fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal), nil)
 				}
 			}
 		}
 
-		// Enforce foreign key ON UPDATE actions
-		if pkChanged {
-			oldPkValues := make([]interface{}, 0, len(table.PrimaryKey))
-			newPkValues := make([]interface{}, 0, len(table.PrimaryKey))
-			for _, pkCol := range table.PrimaryKey {
-				pkColIdx := table.GetColumnIndex(pkCol)
-				if pkColIdx >= 0 && pkColIdx < len(entry.oldRow) && pkColIdx < len(entry.newRow) {
-					oldPkValues = append(oldPkValues, entry.oldRow[pkColIdx])
-					newPkValues = append(newPkValues, entry.newRow[pkColIdx])
-				}
-			}
-			if len(oldPkValues) == len(table.PrimaryKey) && len(oldPkValues) > 0 {
-				if fkErr := fke.OnUpdate(ctx, stmt.Table, oldPkValues, newPkValues); fkErr != nil {
-					return fmt.Errorf("foreign key constraint: %w", fkErr)
-				}
-			}
+		// Enforce foreign key ON UPDATE actions for any referenced column, not
+		// only primary-key columns.
+		if fkErr := fke.OnUpdateRow(ctx, stmt.Table, entry.oldRow, entry.newRow); fkErr != nil {
+			return rollbackApplied(fmt.Errorf("foreign key constraint: %w", fkErr), nil)
 		}
 
 		// Log to WAL before applying change
 		if c.wal != nil && txnActive {
 			if pkChanged {
+				deleteData, err := encodeLogicalWALData(entry.treeName, oldKey, nil)
+				if err != nil {
+					return rollbackApplied(err, nil)
+				}
 				deleteRecord := &storage.WALRecord{
 					TxnID: ts.txnID,
 					Type:  storage.WALDelete,
-					Data:  oldKey,
+					Data:  deleteData,
 				}
 				if err := c.wal.Append(deleteRecord); err != nil {
-					return err
+					return rollbackApplied(err, nil)
 				}
-				walData := make([]byte, 0, len(newKey)+1+len(newValueData))
-				walData = append(walData, newKey...)
-				walData = append(walData, 0)
-				walData = append(walData, newValueData...)
+				walData, err := encodeLogicalWALData(entry.treeName, newKey, newValueData)
+				if err != nil {
+					return rollbackApplied(err, nil)
+				}
 				insertRecord := &storage.WALRecord{
 					TxnID: ts.txnID,
 					Type:  storage.WALInsert,
 					Data:  walData,
 				}
 				if err := c.wal.Append(insertRecord); err != nil {
-					return err
+					return rollbackApplied(err, nil)
 				}
 			} else {
-				walData := append([]byte(oldKey), 0)
-				walData = append(walData, newValueData...)
+				walData, err := encodeLogicalWALData(entry.treeName, oldKey, newValueData)
+				if err != nil {
+					return rollbackApplied(err, nil)
+				}
 				record := &storage.WALRecord{
 					TxnID: ts.txnID,
 					Type:  storage.WALUpdate,
 					Data:  walData,
 				}
 				if err := c.wal.Append(record); err != nil {
-					return err
+					return rollbackApplied(err, nil)
 				}
 			}
 		}
@@ -1929,8 +1996,15 @@ func (c *Catalog) rollbackAppliedUpdateEntries(table *TableDef, tableName string
 
 // bufferUpdateEntries buffers updated rows and their index mutations for
 // commit-time application in MVCC buffered mode.
-func (c *Catalog) bufferUpdateEntries(table *TableDef, stmt *query.UpdateStmt, entries []updateEntry, ts *catalogTxnState) error {
+func (c *Catalog) bufferUpdateEntries(ctx context.Context, table *TableDef, stmt *query.UpdateStmt, entries []updateEntry, ts *catalogTxnState) error {
+	fke := NewForeignKeyEnforcer(c)
+	untrackReferenceRows := fke.trackUpdatingReferenceRows(stmt.Table, entries)
+	defer untrackReferenceRows()
 	for _, entry := range entries {
+		if fkErr := fke.OnUpdateRow(ctx, stmt.Table, entry.oldRow, entry.newRow); fkErr != nil {
+			return fmt.Errorf("foreign key constraint: %w", fkErr)
+		}
+
 		newValueData, err := encodeVersionedRow(entry.newRow, nil)
 		if err != nil {
 			return fmt.Errorf("failed to encode updated row: %w", err)

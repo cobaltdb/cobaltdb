@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 )
@@ -49,6 +50,7 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 	// Build the index from existing data
 	tree, exists := c.tableTrees[tableName]
 	if exists {
+		pendingWrites := c.pendingWritesForTable(tableName)
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
 			return fmt.Errorf("failed to scan table %s for vector index %s: %w", tableName, name, err)
@@ -62,13 +64,19 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 			if rowKey == "" || len(value) == 0 {
 				break
 			}
-			// CobaltDB stores rows as VersionedRow (with []interface{} Data)
-			vrow, err := decodeVersionedRow(value, len(table.Columns))
-			if err != nil {
-				return fmt.Errorf("failed to decode row %s for vector index %s: %w", rowKey, name, err)
+			if _, shadowed := pendingWrites[rowKey]; shadowed {
+				continue
 			}
-			if err := c.indexRowForVector(vectorIndex, vrow.Data, rowKey, colIdx); err != nil {
+			if err := c.addRowToVectorIndexLocked(vectorIndex, table, value, rowKey, colIdx); err != nil {
 				return fmt.Errorf("failed to add row %s to vector index %s: %w", rowKey, name, err)
+			}
+		}
+		for rowKey, pw := range pendingWrites {
+			if pw.Value == nil {
+				continue
+			}
+			if err := c.addRowToVectorIndexLocked(vectorIndex, table, pw.Value, rowKey, colIdx); err != nil {
+				return fmt.Errorf("failed to add pending row %s to vector index %s: %w", rowKey, name, err)
 			}
 		}
 	}
@@ -78,7 +86,24 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 	}
 
 	c.vectorIndexes[name] = vectorIndex
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:    undoCreateVectorIndex,
+			indexName: name,
+		})
+	}
 	return nil
+}
+
+func (c *Catalog) addRowToVectorIndexLocked(vectorIndex *VectorIndexDef, table *TableDef, value []byte, rowKey string, colIdx int) error {
+	vrow, err := decodeVersionedRow(value, len(table.Columns))
+	if err != nil {
+		return fmt.Errorf("failed to decode row %s: %w", rowKey, err)
+	}
+	if vrow.Version.DeletedAt > 0 {
+		return nil
+	}
+	return c.indexRowForVector(vectorIndex, vrow.Data, rowKey, colIdx)
 }
 
 // indexRowForVector adds a row to the vector index.
@@ -94,29 +119,9 @@ func (c *Catalog) indexRowForVector(vectorIndex *VectorIndexDef, rowSlice []inte
 		return nil
 	}
 
-	// Convert vector value to []float64
-	var vector []float64
-	switch v := vectorVal.(type) {
-	case []float64:
-		vector = v
-	case []interface{}:
-		vector = make([]float64, len(v))
-		for i, val := range v {
-			switch fv := val.(type) {
-			case float64:
-				vector[i] = fv
-			case int:
-				vector[i] = float64(fv)
-			case int64:
-				vector[i] = float64(fv)
-			case float32:
-				vector[i] = float64(fv)
-			default:
-				return nil // Invalid type
-			}
-		}
-	default:
-		return nil // Invalid type
+	vector, err := toVector(vectorVal)
+	if err != nil {
+		return nil
 	}
 
 	// Validate dimensions
@@ -139,10 +144,18 @@ func (c *Catalog) DropVectorIndex(name string) error {
 	defer c.mu.Unlock()
 	defer c.invalidateSchemaCache()
 
-	if _, exists := c.vectorIndexes[name]; !exists {
+	vectorIndex, exists := c.vectorIndexes[name]
+	if !exists {
 		return fmt.Errorf("vector index %s not found", name)
 	}
 
+	if c.isCurrentTxnActive() {
+		c.appendUndoEntry(undoEntry{
+			action:         undoDropVectorIndex,
+			indexName:      name,
+			vectorIndexDef: cloneVectorIndexDef(vectorIndex),
+		})
+	}
 	if c.tree != nil {
 		if err := c.tree.Delete([]byte("vec:" + name)); err != nil {
 			return fmt.Errorf("failed to delete vector index %s metadata: %w", name, err)
@@ -197,6 +210,59 @@ func (c *Catalog) GetVectorIndex(name string) (*VectorIndexDef, error) {
 		return nil, fmt.Errorf("vector index %s not found", name)
 	}
 	return vectorIndex, nil
+}
+
+func (c *Catalog) ListVectorIndexDefs() []VectorIndexDef {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	defs := make([]VectorIndexDef, 0, len(c.vectorIndexes))
+	for _, idx := range c.vectorIndexes {
+		if idx == nil {
+			continue
+		}
+		defs = append(defs, VectorIndexDef{
+			Name:       idx.Name,
+			TableName:  idx.TableName,
+			ColumnName: idx.ColumnName,
+			Dimensions: idx.Dimensions,
+			IndexType:  idx.IndexType,
+		})
+	}
+	sort.Slice(defs, func(i, j int) bool {
+		return toLowerFast(defs[i].Name) < toLowerFast(defs[j].Name)
+	})
+	return defs
+}
+
+func cloneVectorIndexDef(idx *VectorIndexDef) *VectorIndexDef {
+	if idx == nil {
+		return nil
+	}
+	data, err := json.Marshal(idx)
+	if err != nil {
+		return &VectorIndexDef{
+			Name:       idx.Name,
+			TableName:  idx.TableName,
+			ColumnName: idx.ColumnName,
+			Dimensions: idx.Dimensions,
+			IndexType:  idx.IndexType,
+		}
+	}
+	var cloned VectorIndexDef
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		return &VectorIndexDef{
+			Name:       idx.Name,
+			TableName:  idx.TableName,
+			ColumnName: idx.ColumnName,
+			Dimensions: idx.Dimensions,
+			IndexType:  idx.IndexType,
+		}
+	}
+	if cloned.HNSW != nil {
+		cloned.HNSW.RebuildEntryPoint()
+	}
+	return &cloned
 }
 
 // ListVectorIndexes returns a sorted list of all vector index names

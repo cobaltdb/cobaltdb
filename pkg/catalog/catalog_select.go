@@ -90,7 +90,7 @@ func (c *Catalog) executeScalarSelect(stmt *query.SelectStmt, args []interface{}
 			actual = ae.Expr
 		}
 		if fc, ok := actual.(*query.FunctionCall); ok {
-			if isAggregateFuncName(toUpperFast(fc.Name)) {
+			if isAggregateCall(fc) {
 				hasAggregate = true
 			}
 		}
@@ -333,6 +333,11 @@ func (c *Catalog) loadMainTableRowsWithFDWOptions(from *query.TableRef, scanOpti
 		if row != nil {
 			filtered = append(filtered, row)
 		}
+	}
+
+	filtered, err = c.filterRowsForSelectRLSLocked(nil, mainTable.Name, mainTable.Columns, filtered)
+	if err != nil {
+		return mainTable.Columns, nil, err
 	}
 
 	return mainTable.Columns, filtered, nil
@@ -917,6 +922,10 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 			}
 			joinRows = append(joinRows, vrow.Data)
 		}
+		joinRows, err = c.filterRowsForSelectRLSLocked(nil, joinTable.Name, joinTable.Columns, joinRows)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	return joinTableCols, joinRows, nil
@@ -1182,6 +1191,10 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 					continue
 				}
 				rightRows = append(rightRows, vrow.Data)
+			}
+			rightRows, err = c.filterRowsForSelectRLSLocked(nil, joinTable.Name, joinTable.Columns, rightRows)
+			if err != nil {
+				return nil, nil, err
 			}
 		}
 
@@ -1743,23 +1756,27 @@ func (c *Catalog) computeJoinGroupAggregates(stmt *query.SelectStmt, selectCols 
 		for i, ci := range selectCols {
 			if ci.isAggregate {
 				var values []interface{}
-				for _, row := range groupRows {
-					if ci.aggregateCol == "*" && ci.aggregateExpr == nil {
-						values = append(values, int64(1))
-					} else if ci.aggregateExpr != nil {
-						v, err := evaluateExpression(c, row, allColumns, ci.aggregateExpr, args)
-						if err == nil {
-							values = append(values, v)
+				aggregateRows := c.aggregateRowsForInfo(ci, groupRows, allColumns, args)
+				for _, row := range aggregateRows {
+					v, ok := c.collectAggregateInput(ci, row, allColumns, args, func() (interface{}, bool) {
+						if ci.aggregateCol == "*" && ci.aggregateExpr == nil {
+							return int64(1), true
+						} else if ci.aggregateExpr != nil {
+							v, err := evaluateExpression(c, row, allColumns, ci.aggregateExpr, args)
+							return v, err == nil
 						}
-					} else {
 						colIdx := c.resolveJoinAggregateColumn(ci, stmt, mainTableCols, len(row))
 						if colIdx >= 0 && colIdx < len(row) {
-							values = append(values, row[colIdx])
+							return row[colIdx], true
 						}
+						return nil, false
+					})
+					if ok {
+						values = append(values, v)
 					}
 				}
 
-				resultRow[i] = computeAggregateValue(ci, values, groupRows)
+				resultRow[i] = computeAggregateValue(c.selectColInfoWithGroupConcatSeparator(ci, aggregateRows, allColumns, args), values, aggregateRows)
 			} else {
 				colIdx := -1
 				if ci.tableName != "" {
@@ -1958,9 +1975,11 @@ func computeAggregateValue(ci selectColInfo, values []interface{}, groupRows [][
 			}
 		}
 		if len(parts) > 0 {
-			return strings.Join(parts, ",")
+			return strings.Join(parts, groupConcatSeparatorFromInfo(ci))
 		}
 		return nil
+	case "JSON_ARRAYAGG", "JSON_OBJECTAGG":
+		return reduceBasicAggregate(ci.aggregateType, values, len(groupRows), false, ci.isDistinct)
 	case "STDDEV", "STDDEV_POP", "STDDEV_SAMP", "STD", "VARIANCE", "VAR_POP", "VAR_SAMP":
 		if ci.isDistinct {
 			values = distinctAggregateValues(values)
@@ -2031,7 +2050,7 @@ func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, v
 			actual = ae.Expr
 		}
 		if fc, ok := actual.(*query.FunctionCall); ok {
-			if isAggregateFuncName(toUpperFast(fc.Name)) {
+			if isAggregateCall(fc) {
 				hasAggregates = true
 				break
 			}
@@ -2381,30 +2400,31 @@ func (cat *Catalog) applyOuterQueryProjection(stmt *query.SelectStmt, filteredRo
 }
 
 func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows [][]interface{}, columns []ColumnDef, args []interface{}) interface{} {
+	aggregateRows := cat.aggregateRowsForFunction(fc, rows, columns, args)
 	// DISTINCT aggregates (e.g. over a derived table): materialize the argument
 	// values and reduce through the shared distinct-aware path so COUNT/SUM/AVG
 	// deduplicate. MIN/MAX are unaffected by dedup; GROUP_CONCAT dedups members.
 	if fc.Distinct && len(fc.Args) > 0 {
 		if _, isStar := fc.Args[0].(*query.StarExpr); !isStar {
-			values := make([]interface{}, 0, len(rows))
-			for _, row := range rows {
+			values := make([]interface{}, 0, len(aggregateRows))
+			for _, row := range aggregateRows {
 				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
 				if err == nil {
 					values = append(values, val)
 				}
 			}
-			return reduceBasicAggregate(fn, values, len(rows), false, true)
+			return reduceBasicAggregateWithSeparator(fn, values, len(aggregateRows), false, true, cat.groupConcatSeparatorForRows(fc, aggregateRows, columns, args))
 		}
 	}
 	switch fn {
 	case "COUNT":
 		if len(fc.Args) > 0 {
 			if _, ok := fc.Args[0].(*query.StarExpr); ok {
-				return int64(len(rows))
+				return int64(len(aggregateRows))
 			}
 			// COUNT(col) - count non-null
 			count := int64(0)
-			for _, row := range rows {
+			for _, row := range aggregateRows {
 				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
 				if err == nil && val != nil {
 					count++
@@ -2412,11 +2432,11 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 			}
 			return count
 		}
-		return int64(len(rows))
+		return int64(len(aggregateRows))
 	case "SUM":
 		sum := float64(0)
 		hasVal := false
-		for _, row := range rows {
+		for _, row := range aggregateRows {
 			if len(fc.Args) > 0 {
 				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
 				if err == nil && val != nil {
@@ -2434,7 +2454,7 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 	case "AVG":
 		sum := float64(0)
 		count := 0
-		for _, row := range rows {
+		for _, row := range aggregateRows {
 			if len(fc.Args) > 0 {
 				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
 				if err == nil && val != nil {
@@ -2451,7 +2471,7 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 		return nil
 	case "MIN":
 		var minVal interface{}
-		for _, row := range rows {
+		for _, row := range aggregateRows {
 			if len(fc.Args) > 0 {
 				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
 				if err == nil && val != nil {
@@ -2464,7 +2484,7 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 		return minVal
 	case "MAX":
 		var maxVal interface{}
-		for _, row := range rows {
+		for _, row := range aggregateRows {
 			if len(fc.Args) > 0 {
 				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
 				if err == nil && val != nil {
@@ -2477,7 +2497,7 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 		return maxVal
 	case "GROUP_CONCAT":
 		var parts []string
-		for _, row := range rows {
+		for _, row := range aggregateRows {
 			if len(fc.Args) > 0 {
 				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
 				if err == nil && val != nil {
@@ -2486,12 +2506,37 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 			}
 		}
 		if len(parts) > 0 {
-			return strings.Join(parts, ",")
+			return strings.Join(parts, cat.groupConcatSeparatorForRows(fc, aggregateRows, columns, args))
 		}
 		return nil
+	case "JSON_ARRAYAGG":
+		values := make([]interface{}, 0, len(aggregateRows))
+		for _, row := range aggregateRows {
+			if len(fc.Args) > 0 {
+				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
+				if err == nil {
+					values = append(values, val)
+				}
+			}
+		}
+		return reduceBasicAggregate(fn, values, len(aggregateRows), false, false)
+	case "JSON_OBJECTAGG":
+		values := make([]interface{}, 0, len(aggregateRows))
+		for _, row := range aggregateRows {
+			val, ok := cat.collectAggregateInput(selectColInfo{
+				aggregateType: "JSON_OBJECTAGG",
+				aggregateArgs: fc.Args,
+			}, row, columns, args, func() (interface{}, bool) {
+				return nil, false
+			})
+			if ok {
+				values = append(values, val)
+			}
+		}
+		return reduceBasicAggregate(fn, values, len(aggregateRows), false, false)
 	case "STDDEV", "STDDEV_POP", "STDDEV_SAMP", "STD", "VARIANCE", "VAR_POP", "VAR_SAMP":
 		var values []interface{}
-		for _, row := range rows {
+		for _, row := range aggregateRows {
 			if len(fc.Args) > 0 {
 				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
 				if err == nil {
