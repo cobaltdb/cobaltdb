@@ -27,7 +27,12 @@ var (
 
 var version = "dev"
 
-const cliOutputFilePerm = 0600
+const (
+	cliOutputFilePerm     = 0600
+	maxCLIRestoreFileSize = 256 << 20
+	maxCLIImportColumns   = 1024
+	maxCLIImportFieldSize = 1 << 20
+)
 
 type sessionState struct {
 	mode    string
@@ -1017,24 +1022,25 @@ func importCSV(db *engine.DB, filePath, table string) error {
 	if err != nil {
 		return fmt.Errorf("invalid csv path: %w", err)
 	}
-	file, err := os.Open(filePath) // #nosec G304 - CLI import path is an explicit user argument and is cleaned before use.
+	file, err := openCLIImportCSVFile(filePath)
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
 	}
 	defer file.Close()
 
 	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
+	headers, err := reader.Read()
 	if err != nil {
-		return fmt.Errorf("read csv: %w", err)
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("empty csv file")
+		}
+		return fmt.Errorf("read csv header: %w", err)
 	}
-
-	if len(records) == 0 {
-		return fmt.Errorf("empty csv file")
+	if err := validateCSVRecord(headers); err != nil {
+		return fmt.Errorf("invalid csv header: %w", err)
 	}
 
 	ctx := context.Background()
-	headers := records[0]
 	for i, h := range headers {
 		headers[i] = strings.TrimSpace(h)
 	}
@@ -1046,26 +1052,85 @@ func importCSV(db *engine.DB, filePath, table string) error {
 		}
 	}
 
+	placeholders := make([]string, len(headers))
+	for i := range placeholders {
+		placeholders[i] = "?"
+	}
+	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quotedTable, strings.Join(quotedHeaders, ", "), strings.Join(placeholders, ", "))
+
 	imported := 0
-	for _, row := range records[1:] {
+	rowNumber := 1
+	for {
+		row, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		rowNumber++
+		if err != nil {
+			return fmt.Errorf("read csv row %d: %w", rowNumber, err)
+		}
+		if err := validateCSVRecord(row); err != nil {
+			return fmt.Errorf("invalid csv row %d: %w", rowNumber, err)
+		}
 		if len(row) != len(headers) {
 			continue
 		}
-		placeholders := make([]string, len(headers))
 		values := make([]interface{}, len(headers))
 		for i, v := range row {
-			placeholders[i] = "?"
 			values[i] = strings.TrimSpace(v)
 		}
-		sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quotedTable, strings.Join(quotedHeaders, ", "), strings.Join(placeholders, ", "))
-		_, err := db.Exec(ctx, sql, values...)
+		_, err = db.Exec(ctx, sql, values...)
 		if err != nil {
-			return fmt.Errorf("insert row %d: %w", imported+1, err)
+			return fmt.Errorf("insert row %d: %w", rowNumber, err)
 		}
 		imported++
 	}
 
 	fmt.Printf("Imported %d rows into %s\n", imported, table)
+	return nil
+}
+
+func openCLIImportCSVFile(path string) (*os.File, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat csv file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("csv file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("csv file must be a regular file: %s", path)
+	}
+
+	file, err := os.Open(path) // #nosec G304 - CLI import path is an explicit user argument and is validated before use.
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, statErr := file.Stat()
+	if statErr != nil {
+		_ = file.Close()
+		return nil, statErr
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("csv file must be a regular file: %s", path)
+	}
+	if !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return nil, fmt.Errorf("csv file changed while opening: %s", path)
+	}
+	return file, nil
+}
+
+func validateCSVRecord(record []string) error {
+	if len(record) > maxCLIImportColumns {
+		return fmt.Errorf("too many columns: %d (max %d)", len(record), maxCLIImportColumns)
+	}
+	for i, field := range record {
+		if len(field) > maxCLIImportFieldSize {
+			return fmt.Errorf("field %d too large: %d bytes (max %d)", i+1, len(field), maxCLIImportFieldSize)
+		}
+	}
 	return nil
 }
 
@@ -1108,8 +1173,14 @@ func exportTable(db *engine.DB, table, filePath, format string) (err error) {
 		return fmt.Errorf("create file: %w", err)
 	}
 	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("close export file: %w", closeErr)
+		if err == nil {
+			if commitErr := file.Commit(); commitErr != nil {
+				err = fmt.Errorf("commit export file: %w", commitErr)
+			}
+			return
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close export file: %w", closeErr))
 		}
 	}()
 
@@ -1200,18 +1271,24 @@ func runRestoreCommand(args []string, path string, inMemory bool) {
 
 func dumpDatabase(db *engine.DB, filePath string) (err error) {
 	ctx := context.Background()
-	var out *os.File
-	closeOut := false
+	var out io.Writer
+	var outputFile *cliOutputFile
 	if filePath != "" {
 		var err error
-		out, err = createSecureOutputFile(filePath)
+		outputFile, err = createSecureOutputFile(filePath)
 		if err != nil {
 			return fmt.Errorf("create dump file: %w", err)
 		}
-		closeOut = true
+		out = outputFile
 		defer func() {
-			if closeErr := out.Close(); err == nil && closeErr != nil {
-				err = fmt.Errorf("close dump file: %w", closeErr)
+			if err == nil {
+				if commitErr := outputFile.Commit(); commitErr != nil {
+					err = fmt.Errorf("commit dump file: %w", commitErr)
+				}
+				return
+			}
+			if closeErr := outputFile.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("close dump file: %w", closeErr))
 			}
 		}()
 	} else {
@@ -1228,6 +1305,15 @@ func dumpDatabase(db *engine.DB, filePath string) (err error) {
 		return fmt.Errorf("write dump header: %w", err)
 	}
 
+	for _, ddl := range db.ForeignTableDDL() {
+		if err := writeLine(out, ddl); err != nil {
+			return fmt.Errorf("write foreign table schema: %w", err)
+		}
+		if err := writeLine(out); err != nil {
+			return fmt.Errorf("write foreign table separator: %w", err)
+		}
+	}
+
 	tables := orderTablesByDependency(db)
 
 	for _, table := range tables {
@@ -1236,7 +1322,7 @@ func dumpDatabase(db *engine.DB, filePath string) (err error) {
 			return fmt.Errorf("invalid table name %q: %w", table, err)
 		}
 
-		schema, err := db.TableSchema(table)
+		schema, err := db.TableSchemaWithoutForeignKeys(table)
 		if err != nil {
 			return fmt.Errorf("get schema for %s: %w", table, err)
 		}
@@ -1253,6 +1339,16 @@ func dumpDatabase(db *engine.DB, filePath string) (err error) {
 		}
 
 		cols := rows.Columns()
+		quotedCols := make([]string, len(cols))
+		for i, col := range cols {
+			quotedCols[i], err = quoteSQLIdentifier(col)
+			if err != nil {
+				err = errors.Join(err, rows.Close())
+				return fmt.Errorf("invalid column name %q in %s: %w", col, table, err)
+			}
+		}
+		bufferRows := len(db.TableSelfForeignKeyRefs(table)) > 0
+		var dumpRows []dumpRow
 		for rows.Next() {
 			values := make([]interface{}, len(cols))
 			rowValues := make([]interface{}, len(cols))
@@ -1263,21 +1359,11 @@ func dumpDatabase(db *engine.DB, filePath string) (err error) {
 				err = errors.Join(err, rows.Close())
 				return fmt.Errorf("scan %s: %w", table, err)
 			}
-
-			valStrs := make([]string, len(cols))
-			for i, v := range values {
-				valStrs[i] = sqlEscape(v)
+			if bufferRows {
+				dumpRows = append(dumpRows, dumpRow{values: values})
+				continue
 			}
-			quotedCols := make([]string, len(cols))
-			for i, col := range cols {
-				quotedCols[i], err = quoteSQLIdentifier(col)
-				if err != nil {
-					err = errors.Join(err, rows.Close())
-					return fmt.Errorf("invalid column name %q in %s: %w", col, table, err)
-				}
-			}
-			if err := writeFormat(out, "INSERT INTO %s (%s) VALUES (%s);\n",
-				quotedTable, strings.Join(quotedCols, ", "), strings.Join(valStrs, ", ")); err != nil {
+			if err := writeDumpInsert(out, quotedTable, quotedCols, values); err != nil {
 				err = errors.Join(err, rows.Close())
 				return fmt.Errorf("write row for %s: %w", table, err)
 			}
@@ -1285,9 +1371,36 @@ func dumpDatabase(db *engine.DB, filePath string) (err error) {
 		if err := rows.Close(); err != nil {
 			return fmt.Errorf("close rows for %s: %w", table, err)
 		}
+		if bufferRows {
+			dumpRows = orderDumpRowsForSelfReferences(db, table, cols, dumpRows)
+			for _, row := range dumpRows {
+				if err := writeDumpInsert(out, quotedTable, quotedCols, row.values); err != nil {
+					return fmt.Errorf("write row for %s: %w", table, err)
+				}
+			}
+		}
 		if err := writeLine(out); err != nil {
 			return fmt.Errorf("write table separator for %s: %w", table, err)
 		}
+	}
+
+	// Emit foreign keys after all table data. This lets restores handle
+	// self-references and cross-table FK cycles, then validates the loaded data.
+	for _, table := range tables {
+		fks := db.TableForeignKeys(table)
+		usedNames := foreignKeyConstraintNames(fks)
+		for i, fk := range fks {
+			ddl, err := foreignKeyAlterDDL(table, i, fk, usedNames)
+			if err != nil {
+				return fmt.Errorf("build foreign key for %s: %w", table, err)
+			}
+			if err := writeLine(out, ddl); err != nil {
+				return fmt.Errorf("write foreign key for %s: %w", table, err)
+			}
+		}
+	}
+	if err := writeLine(out); err != nil {
+		return fmt.Errorf("write foreign key separator: %w", err)
 	}
 
 	// Emit secondary indexes after all tables and data, so they survive restore.
@@ -1298,8 +1411,71 @@ func dumpDatabase(db *engine.DB, filePath string) (err error) {
 			}
 		}
 	}
+	if err := writeLine(out); err != nil {
+		return fmt.Errorf("write index separator: %w", err)
+	}
 
-	if closeOut {
+	for _, ddl := range db.FTSIndexDDL() {
+		if err := writeLine(out, ddl); err != nil {
+			return fmt.Errorf("write full-text index schema: %w", err)
+		}
+	}
+	if err := writeLine(out); err != nil {
+		return fmt.Errorf("write full-text index separator: %w", err)
+	}
+
+	for _, ddl := range db.VectorIndexDDL() {
+		if err := writeLine(out, ddl); err != nil {
+			return fmt.Errorf("write vector index schema: %w", err)
+		}
+	}
+	if err := writeLine(out); err != nil {
+		return fmt.Errorf("write vector index separator: %w", err)
+	}
+
+	for _, ddl := range db.RLSPolicyDDL() {
+		if err := writeLine(out, ddl); err != nil {
+			return fmt.Errorf("write RLS policy schema: %w", err)
+		}
+	}
+	if err := writeLine(out); err != nil {
+		return fmt.Errorf("write RLS policy separator: %w", err)
+	}
+
+	for _, ddl := range db.ViewDDL() {
+		if err := writeLine(out, ddl); err != nil {
+			return fmt.Errorf("write view schema: %w", err)
+		}
+	}
+	if err := writeLine(out); err != nil {
+		return fmt.Errorf("write view separator: %w", err)
+	}
+
+	for _, ddl := range db.MaterializedViewDDL() {
+		if err := writeLine(out, ddl); err != nil {
+			return fmt.Errorf("write materialized view schema: %w", err)
+		}
+	}
+	if err := writeLine(out); err != nil {
+		return fmt.Errorf("write materialized view separator: %w", err)
+	}
+
+	for _, ddl := range db.TriggerDDL() {
+		if err := writeLine(out, ddl); err != nil {
+			return fmt.Errorf("write trigger schema: %w", err)
+		}
+	}
+	if err := writeLine(out); err != nil {
+		return fmt.Errorf("write trigger separator: %w", err)
+	}
+
+	for _, ddl := range db.ProcedureDDL() {
+		if err := writeLine(out, ddl); err != nil {
+			return fmt.Errorf("write procedure schema: %w", err)
+		}
+	}
+
+	if outputFile != nil {
 		fmt.Printf("Dumped %d tables to %s\n", len(tables), filePath)
 	}
 	return nil
@@ -1340,6 +1516,200 @@ func orderTablesByDependency(db *engine.DB) []string {
 	return ordered
 }
 
+func foreignKeyConstraintNames(fks []engine.TableForeignKeyRef) map[string]bool {
+	names := make(map[string]bool, len(fks))
+	for _, fk := range fks {
+		if fk.Name != "" {
+			names[strings.ToLower(fk.Name)] = true
+		}
+	}
+	return names
+}
+
+func foreignKeyAlterDDL(table string, ordinal int, fk engine.TableForeignKeyRef, usedNames map[string]bool) (string, error) {
+	quotedTable, err := quoteSQLIdentifier(table)
+	if err != nil {
+		return "", err
+	}
+	constraintName := fk.Name
+	if constraintName == "" {
+		constraintName = syntheticForeignKeyName(table, ordinal, usedNames)
+	}
+	usedNames[strings.ToLower(constraintName)] = true
+	quotedConstraint, err := quoteSQLIdentifier(constraintName)
+	if err != nil {
+		return "", err
+	}
+	quotedColumns, err := quoteSQLIdentifierList(fk.Columns)
+	if err != nil {
+		return "", err
+	}
+	quotedRefTable, err := quoteSQLIdentifier(fk.ReferencedTable)
+	if err != nil {
+		return "", err
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s",
+		quotedTable, quotedConstraint, strings.Join(quotedColumns, ", "), quotedRefTable)
+	if len(fk.ReferencedColumns) > 0 {
+		quotedRefColumns, err := quoteSQLIdentifierList(fk.ReferencedColumns)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&sb, " (%s)", strings.Join(quotedRefColumns, ", "))
+	}
+	if fk.OnDelete != "" {
+		sb.WriteString(" ON DELETE ")
+		sb.WriteString(fk.OnDelete)
+	}
+	if fk.OnUpdate != "" {
+		sb.WriteString(" ON UPDATE ")
+		sb.WriteString(fk.OnUpdate)
+	}
+	sb.WriteString(";")
+	return sb.String(), nil
+}
+
+func syntheticForeignKeyName(table string, ordinal int, usedNames map[string]bool) string {
+	for suffix := ordinal + 1; ; suffix++ {
+		name := fmt.Sprintf("%s_fk_%d", table, suffix)
+		if !usedNames[strings.ToLower(name)] {
+			return name
+		}
+	}
+}
+
+func quoteSQLIdentifierList(identifiers []string) ([]string, error) {
+	quoted := make([]string, len(identifiers))
+	for i, identifier := range identifiers {
+		var err error
+		quoted[i], err = quoteSQLIdentifier(identifier)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return quoted, nil
+}
+
+type dumpRow struct {
+	values []interface{}
+}
+
+func writeDumpInsert(out io.Writer, quotedTable string, quotedCols []string, values []interface{}) error {
+	valStrs := make([]string, len(values))
+	for i, v := range values {
+		valStrs[i] = sqlEscape(v)
+	}
+	return writeFormat(out, "INSERT INTO %s (%s) VALUES (%s);\n",
+		quotedTable, strings.Join(quotedCols, ", "), strings.Join(valStrs, ", "))
+}
+
+func orderDumpRowsForSelfReferences(db *engine.DB, table string, cols []string, rows []dumpRow) []dumpRow {
+	refs := db.TableSelfForeignKeyRefs(table)
+	if len(refs) == 0 || len(rows) < 2 {
+		return rows
+	}
+	colIndex := make(map[string]int, len(cols))
+	for i, col := range cols {
+		colIndex[strings.ToLower(col)] = i
+	}
+
+	children := make([][]int, len(rows))
+	indegree := make([]int, len(rows))
+	seenEdges := make(map[[2]int]struct{})
+	for _, ref := range refs {
+		localIdx, ok := dumpColumnIndexes(colIndex, ref.Columns)
+		if !ok {
+			continue
+		}
+		parentIdx, ok := dumpColumnIndexes(colIndex, ref.ReferencedColumns)
+		if !ok {
+			continue
+		}
+		parentByKey := make(map[string]int, len(rows))
+		for i, row := range rows {
+			key, ok := dumpTupleKey(row.values, parentIdx)
+			if ok {
+				parentByKey[key] = i
+			}
+		}
+		for child, row := range rows {
+			key, ok := dumpTupleKey(row.values, localIdx)
+			if !ok {
+				continue
+			}
+			parent, exists := parentByKey[key]
+			if !exists || parent == child {
+				continue
+			}
+			edge := [2]int{parent, child}
+			if _, duplicate := seenEdges[edge]; duplicate {
+				continue
+			}
+			seenEdges[edge] = struct{}{}
+			children[parent] = append(children[parent], child)
+			indegree[child]++
+		}
+	}
+	if len(seenEdges) == 0 {
+		return rows
+	}
+
+	queue := make([]int, 0, len(rows))
+	for i := range rows {
+		if indegree[i] == 0 {
+			queue = append(queue, i)
+		}
+	}
+	var ordered []dumpRow
+	emitted := make([]bool, len(rows))
+	for len(queue) > 0 {
+		idx := queue[0]
+		queue = queue[1:]
+		if emitted[idx] {
+			continue
+		}
+		emitted[idx] = true
+		ordered = append(ordered, rows[idx])
+		for _, child := range children[idx] {
+			indegree[child]--
+			if indegree[child] == 0 {
+				queue = append(queue, child)
+			}
+		}
+	}
+	for i, row := range rows {
+		if !emitted[i] {
+			ordered = append(ordered, row)
+		}
+	}
+	return ordered
+}
+
+func dumpColumnIndexes(colIndex map[string]int, columns []string) ([]int, bool) {
+	indexes := make([]int, len(columns))
+	for i, col := range columns {
+		idx, ok := colIndex[strings.ToLower(col)]
+		if !ok {
+			return nil, false
+		}
+		indexes[i] = idx
+	}
+	return indexes, true
+}
+
+func dumpTupleKey(values []interface{}, indexes []int) (string, bool) {
+	parts := make([]string, len(indexes))
+	for i, idx := range indexes {
+		if idx < 0 || idx >= len(values) || values[idx] == nil {
+			return "", false
+		}
+		parts[i] = fmt.Sprintf("%T:%v", values[idx], values[idx])
+	}
+	return strings.Join(parts, "\x00"), true
+}
+
 func sqlEscape(v interface{}) string {
 	if v == nil {
 		return "NULL"
@@ -1353,6 +1723,13 @@ func sqlEscape(v interface{}) string {
 		return "'" + strings.ReplaceAll(val, "'", "''") + "'"
 	case []byte:
 		return "'" + strings.ReplaceAll(string(val), "'", "''") + "'"
+	case []float64, []float32, []int, []int64, []interface{}:
+		data, err := json.Marshal(val)
+		if err != nil {
+			s := fmt.Sprintf("%v", val)
+			return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+		}
+		return "'" + strings.ReplaceAll(string(data), "'", "''") + "'"
 	default:
 		// Any other type (e.g. the engine's StringBox string wrapper) is a
 		// string value and MUST be quoted, otherwise the dump cannot be
@@ -1371,20 +1748,87 @@ func quoteSQLIdentifier(identifier string) (string, error) {
 	return `"` + escaped + `"`, nil
 }
 
-func createSecureOutputFile(path string) (*os.File, error) {
+type cliOutputFile struct {
+	*os.File
+	finalPath string
+	tmpPath   string
+	committed bool
+}
+
+func createSecureOutputFile(path string) (*cliOutputFile, error) {
 	path, err := cleanCLIFilePath(path)
 	if err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, cliOutputFilePerm) // #nosec G304 - CLI output path is an explicit user argument and is cleaned before use.
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	file, err := os.CreateTemp(dir, "."+base+".tmp-*") // #nosec G304 - CLI output path is an explicit user argument and is cleaned before use.
 	if err != nil {
 		return nil, err
 	}
 	if err := file.Chmod(cliOutputFilePerm); err != nil {
 		_ = file.Close()
+		_ = os.Remove(file.Name())
 		return nil, err
 	}
-	return file, nil
+	return &cliOutputFile{File: file, finalPath: path, tmpPath: file.Name()}, nil
+}
+
+func (f *cliOutputFile) Commit() error {
+	if f == nil || f.committed {
+		return nil
+	}
+	if f.File == nil {
+		return fmt.Errorf("output file is closed")
+	}
+	if err := f.File.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.File.Close(); err != nil {
+		f.File = nil
+		_ = os.Remove(f.tmpPath)
+		return err
+	}
+	f.File = nil
+	if err := os.Rename(f.tmpPath, f.finalPath); err != nil {
+		_ = os.Remove(f.tmpPath)
+		return err
+	}
+	f.tmpPath = ""
+	f.committed = true
+	if err := syncCLIOutputDir(filepath.Dir(f.finalPath)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (f *cliOutputFile) Close() error {
+	if f == nil {
+		return nil
+	}
+	var closeErr error
+	if f.File != nil {
+		closeErr = f.File.Close()
+		f.File = nil
+	}
+	if !f.committed && f.tmpPath != "" {
+		_ = os.Remove(f.tmpPath)
+		f.tmpPath = ""
+	}
+	return closeErr
+}
+
+func syncCLIOutputDir(dir string) error {
+	file, err := os.Open(dir) // #nosec G304 - directory comes from a cleaned output path.
+	if err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func restoreDatabase(db *engine.DB, filePath string) error {
@@ -1392,34 +1836,121 @@ func restoreDatabase(db *engine.DB, filePath string) error {
 	if err != nil {
 		return fmt.Errorf("invalid restore path: %w", err)
 	}
-	data, err := os.ReadFile(filePath) // #nosec G304 - CLI restore path is an explicit user argument and is cleaned before use.
+	data, err := readCLIRestoreInputFile(filePath)
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
 	}
 
 	ctx := context.Background()
 	statements := splitSQLStatements(string(data))
-	executed := 0
+	executable := make([]string, 0, len(statements))
+	hasTxnControl := false
 	for _, stmt := range statements {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
 		}
 		stmt = stripSQLComments(stmt)
+		stmt = strings.TrimSpace(stmt)
 		stmt = strings.TrimSuffix(stmt, ";")
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
 		}
+		if isRestoreTransactionControl(stmt) {
+			hasTxnControl = true
+		}
+		executable = append(executable, stmt)
+	}
+
+	autoTxn := !hasTxnControl && len(executable) > 0
+	if autoTxn {
+		if _, err := db.Exec(ctx, "BEGIN"); err != nil {
+			return fmt.Errorf("begin restore transaction: %w", err)
+		}
+	}
+	rollback := func() {
+		if autoTxn {
+			_, _ = db.Exec(ctx, "ROLLBACK")
+		}
+	}
+	executed := 0
+	for _, stmt := range executable {
 		_, err := db.Exec(ctx, stmt)
 		if err != nil {
+			rollback()
 			return fmt.Errorf("execute statement: %s: %w", stmt, err)
 		}
 		executed++
 	}
+	if autoTxn {
+		if _, err := db.Exec(ctx, "COMMIT"); err != nil {
+			rollback()
+			return fmt.Errorf("commit restore transaction: %w", err)
+		}
+	}
 
 	fmt.Printf("Restored %d statements from %s\n", executed, filePath)
 	return nil
+}
+
+func readCLIRestoreInputFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat restore file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("restore file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("restore file must be a regular file: %s", path)
+	}
+	if info.Size() > maxCLIRestoreFileSize {
+		return nil, fmt.Errorf("restore file %s is too large: %d bytes (max %d)", path, info.Size(), maxCLIRestoreFileSize)
+	}
+
+	file, err := os.Open(path) // #nosec G304 - CLI restore path is an explicit user argument and is validated before use.
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("restore file must be a regular file: %s", path)
+	}
+	if openedInfo.Size() > maxCLIRestoreFileSize {
+		return nil, fmt.Errorf("restore file %s is too large: %d bytes (max %d)", path, openedInfo.Size(), maxCLIRestoreFileSize)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("restore file changed while opening: %s", path)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxCLIRestoreFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxCLIRestoreFileSize {
+		return nil, fmt.Errorf("restore file %s is too large: %d bytes (max %d)", path, len(data), maxCLIRestoreFileSize)
+	}
+	return data, nil
+}
+
+func isRestoreTransactionControl(stmt string) bool {
+	fields := strings.Fields(strings.ToUpper(strings.TrimSpace(stmt)))
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE":
+		return true
+	case "END":
+		return true
+	}
+	return false
 }
 
 func stripSQLComments(sql string) string {

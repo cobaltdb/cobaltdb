@@ -2,6 +2,7 @@ package test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +52,22 @@ func TestV67NullDedupEdge(t *testing.T) {
 		_, err := db.Exec(ctx, sql)
 		if err != nil {
 			t.Errorf("[FAIL] %s: %v", desc, err)
+			return
+		}
+		pass++
+	}
+
+	checkQueryError := func(desc string, sql string, want string) {
+		t.Helper()
+		total++
+		rows, err := db.Query(ctx, sql)
+		if err == nil {
+			rows.Close()
+			t.Errorf("[FAIL] %s: expected error containing %q", desc, want)
+			return
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("[FAIL] %s: expected error containing %q, got %v", desc, want, err)
 			return
 		}
 		pass++
@@ -201,9 +218,9 @@ func TestV67NullDedupEdge(t *testing.T) {
 	checkRowCount("LO7 LIMIT 0 OFFSET 2",
 		"SELECT * FROM v67_lo LIMIT 0 OFFSET 2", 0)
 
-	// LO8: Negative LIMIT (treated as no limit per SQLite behavior)
-	checkRowCount("LO8 negative LIMIT",
-		"SELECT * FROM v67_lo LIMIT -1", 5)
+	// LO8: Negative LIMIT is rejected instead of silently behaving as no limit.
+	checkQueryError("LO8 negative LIMIT",
+		"SELECT * FROM v67_lo LIMIT -1", "LIMIT must be a non-negative integer")
 
 	// LO9: LIMIT with expression
 	checkRowCount("LO9 LIMIT expression",

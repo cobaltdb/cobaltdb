@@ -548,7 +548,7 @@ config := &server.ProductionConfig{
     EnableRateLimiter:    true,
     EnableSQLProtection:  true,
     EnableHealthServer:   true,
-    HealthAddr:           ":8420",
+    HealthAddr:           "127.0.0.1:8420",
 }
 
 ps := server.NewProductionServer(db, config)

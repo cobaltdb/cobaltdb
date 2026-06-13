@@ -56,6 +56,20 @@ func TestFTS_MatchAgainst_Basic(t *testing.T) {
 			t.Errorf("Expected id=3, got %v", rows[0][0])
 		}
 	})
+
+	t.Run("MATCH AGAINST boolean mode", func(t *testing.T) {
+		rows := afQuery(t, db, ctx, "SELECT * FROM docs WHERE MATCH(title, content) AGAINST('hello' IN BOOLEAN MODE)")
+		if len(rows) != 2 {
+			t.Errorf("Expected 2 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("MATCH AGAINST natural language mode", func(t *testing.T) {
+		rows := afQuery(t, db, ctx, "SELECT * FROM docs WHERE MATCH(title, content) AGAINST('programming' IN NATURAL LANGUAGE MODE)")
+		if len(rows) != 2 {
+			t.Errorf("Expected 2 rows, got %d", len(rows))
+		}
+	})
 }
 
 func TestFTS_MatchAgainst_MultipleWords(t *testing.T) {

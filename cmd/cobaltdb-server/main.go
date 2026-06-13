@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -56,6 +57,7 @@ func main() {
 		enableCircuitBreaker = flag.Bool("circuit-breaker", true, "enable circuit breaker")
 		enableRetry          = flag.Bool("retry", true, "enable retry logic")
 		allowRemoteMetrics   = flag.Bool("remote-metrics", false, "allow Prometheus metrics endpoint from non-loopback clients")
+		adminToken           = flag.String("admin-token", "", "admin API bearer token for protected health server endpoints")
 		allowCleartextAuth   = flag.Bool("allow-cleartext-auth", false, "allow authenticated non-loopback listeners without encrypted transport")
 		shutdownTimeout      = flag.Duration("shutdown-timeout", 30*time.Second, "graceful shutdown timeout")
 		drainTimeout         = flag.Duration("drain-timeout", 10*time.Second, "connection drain timeout")
@@ -84,6 +86,7 @@ func main() {
 		enableCircuitBreaker,
 		enableRetry,
 		allowRemoteMetrics,
+		adminToken,
 		allowCleartextAuth,
 		shutdownTimeout,
 		drainTimeout,
@@ -114,6 +117,9 @@ func main() {
 		log.Printf("[SECURITY WARNING] Authentication is disabled (-auth=false). Do not expose this server publicly.")
 	}
 
+	if err := validateAdminCredentials(*authEnabled, *adminUser, *adminPass); err != nil {
+		log.Fatalf("Invalid security configuration: %v", err)
+	}
 	if err := validateAuthTransport(*address, *mysqlAddr, *authEnabled, *tlsEnabled, *enableMySQL, *allowCleartextAuth); err != nil {
 		log.Fatalf("Invalid security configuration: %v", err)
 	}
@@ -135,11 +141,12 @@ func main() {
 	if *inMemory {
 		dbPath = ":memory:"
 	} else {
-		// Ensure data directory exists
-		if err := os.MkdirAll(*dataDir, 0750); err != nil {
+		cleanDataDir, err := prepareDataDir(*dataDir)
+		if err != nil {
 			log.Fatalf("Failed to create data directory: %v", err)
 		}
-		dbPath = fmt.Sprintf("%s/cobalt.cb", *dataDir)
+		*dataDir = cleanDataDir
+		dbPath = filepath.Join(cleanDataDir, "cobalt.cb")
 	}
 
 	db, err := engine.Open(dbPath, opts)
@@ -185,6 +192,7 @@ func main() {
 		EnableRetry:          *enableRetry,
 		EnableHealthServer:   *enableHealthServer,
 		AllowRemoteMetrics:   *allowRemoteMetrics,
+		AdminToken:           *adminToken,
 		Logger:               serverLogger,
 	}
 
@@ -193,20 +201,16 @@ func main() {
 	finalAdminUser := *adminUser
 	finalAdminPass := *adminPass
 
-	// Warn if using default credentials with auth enabled
-	if *authEnabled && finalAdminPass == "admin" {
-		log.Println("WARNING: Using default admin credentials is insecure. Set COBALTDB_ADMIN_PASSWORD environment variable.")
-	}
-
 	// Create wire protocol server
 	srv, err := server.New(db, &server.Config{
-		Address:          *address,
-		AuthEnabled:      *authEnabled,
-		RequireAuth:      *authEnabled,
-		DefaultAdminUser: finalAdminUser,
-		DefaultAdminPass: finalAdminPass,
-		TLS:              tlsConfig,
-		Logger:           serverLogger,
+		Address:            *address,
+		AuthEnabled:        *authEnabled,
+		RequireAuth:        *authEnabled,
+		DefaultAdminUser:   finalAdminUser,
+		DefaultAdminPass:   finalAdminPass,
+		TLS:                tlsConfig,
+		AllowCleartextAuth: *allowCleartextAuth,
+		Logger:             serverLogger,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
@@ -227,6 +231,7 @@ func main() {
 		// Share the wire server's authenticator so both protocols use the same user store
 		if *authEnabled {
 			mysqlSrv.SetAuthenticator(srv.GetAuthenticator())
+			mysqlSrv.SetAllowCleartextAuth(*allowCleartextAuth)
 		}
 		mysqlComponent = &MySQLServerComponent{
 			server: mysqlSrv,
@@ -283,6 +288,7 @@ func applyEnvOverrides(
 	enableCircuitBreaker *bool,
 	enableRetry *bool,
 	allowRemoteMetrics *bool,
+	adminToken *string,
 	allowCleartextAuth *bool,
 	shutdownTimeout *time.Duration,
 	drainTimeout *time.Duration,
@@ -295,6 +301,7 @@ func applyEnvOverrides(
 	envString("COBALTDB_HEALTH_ADDR", healthAddr)
 	envString("COBALTDB_TLS_CERT_FILE", tlsCert)
 	envString("COBALTDB_TLS_KEY_FILE", tlsKey)
+	envString("COBALTDB_ADMIN_TOKEN", adminToken)
 
 	if err := envBool("COBALTDB_MYSQL_ENABLED", enableMySQL); err != nil {
 		return err
@@ -342,6 +349,84 @@ func applyEnvOverrides(
 	return nil
 }
 
+func prepareDataDir(path string) (string, error) {
+	cleanPath := filepath.Clean(strings.TrimSpace(path))
+	if cleanPath == "" || cleanPath == "." {
+		return "", fmt.Errorf("data directory must be explicit")
+	}
+	if err := rejectDataDirSymlinkPathComponents(cleanPath); err != nil {
+		return "", err
+	}
+
+	info, statErr := os.Lstat(cleanPath)
+	preexisting := statErr == nil
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return "", fmt.Errorf("failed to stat data directory: %w", statErr)
+	}
+	if preexisting {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("data directory must not be a symlink: %s", cleanPath)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("data path must be a directory: %s", cleanPath)
+		}
+	}
+
+	if err := os.MkdirAll(cleanPath, 0750); err != nil {
+		return "", err
+	}
+	if err := rejectDataDirSymlinkPathComponents(cleanPath); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(cleanPath, 0750); err != nil {
+		return "", fmt.Errorf("failed to set data directory permissions: %w", err)
+	}
+
+	openedInfo, err := os.Stat(cleanPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to stat data directory after create: %w", err)
+	}
+	if !openedInfo.IsDir() {
+		return "", fmt.Errorf("data path must be a directory: %s", cleanPath)
+	}
+	if preexisting && !os.SameFile(info, openedInfo) {
+		return "", fmt.Errorf("data directory changed while opening: %s", cleanPath)
+	}
+
+	return cleanPath, nil
+}
+
+func rejectDataDirSymlinkPathComponents(path string) error {
+	path = filepath.Clean(path)
+	if path == "." || path == string(os.PathSeparator) {
+		return nil
+	}
+
+	current := "."
+	if filepath.IsAbs(path) {
+		current = string(os.PathSeparator)
+		path = strings.TrimPrefix(path, string(os.PathSeparator))
+	}
+
+	for _, part := range strings.Split(path, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to stat data directory component: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("data directory component must not be a symlink: %s", current)
+		}
+	}
+	return nil
+}
+
 func validateAuthTransport(wireAddr, mysqlAddr string, authEnabled, tlsEnabled, mysqlEnabled, allowCleartextAuth bool) error {
 	if !authEnabled || allowCleartextAuth {
 		return nil
@@ -351,6 +436,22 @@ func validateAuthTransport(wireAddr, mysqlAddr string, authEnabled, tlsEnabled, 
 	}
 	if mysqlEnabled && !isLoopbackListenAddress(mysqlAddr) {
 		return fmt.Errorf("MySQL authentication on non-loopback address %q is cleartext; bind MySQL to loopback, disable MySQL, or set -allow-cleartext-auth for development", mysqlAddr)
+	}
+	return nil
+}
+
+func validateAdminCredentials(authEnabled bool, adminUser, adminPass string) error {
+	if !authEnabled {
+		return nil
+	}
+	if strings.TrimSpace(adminUser) == "" {
+		return fmt.Errorf("admin username cannot be empty when authentication is enabled")
+	}
+	if adminPass == "" {
+		return fmt.Errorf("admin password cannot be empty when authentication is enabled")
+	}
+	if adminUser == "admin" && adminPass == "admin" {
+		return fmt.Errorf("default admin credentials are not allowed; set -admin-pass or COBALTDB_ADMIN_PASSWORD to a unique secret")
 	}
 	return nil
 }

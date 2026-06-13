@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -185,6 +186,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 	t.Setenv("COBALTDB_CIRCUIT_BREAKER_ENABLED", "false")
 	t.Setenv("COBALTDB_RETRY_ENABLED", "false")
 	t.Setenv("COBALTDB_REMOTE_METRICS_ENABLED", "true")
+	t.Setenv("COBALTDB_ADMIN_TOKEN", "admin-secret")
 	t.Setenv("COBALTDB_ALLOW_CLEARTEXT_AUTH", "true")
 	t.Setenv("COBALTDB_SHUTDOWN_TIMEOUT", "45s")
 	t.Setenv("COBALTDB_DRAIN_TIMEOUT", "15s")
@@ -205,6 +207,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 	enableCircuitBreaker := true
 	enableRetry := true
 	allowRemoteMetrics := false
+	adminToken := ""
 	allowCleartextAuth := false
 	shutdownTimeout := 30 * time.Second
 	drainTimeout := 10 * time.Second
@@ -226,6 +229,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 		&enableCircuitBreaker,
 		&enableRetry,
 		&allowRemoteMetrics,
+		&adminToken,
 		&allowCleartextAuth,
 		&shutdownTimeout,
 		&drainTimeout,
@@ -248,6 +252,9 @@ func TestApplyEnvOverrides(t *testing.T) {
 	}
 	if !allowCleartextAuth {
 		t.Fatalf("cleartext auth override not applied")
+	}
+	if adminToken != "admin-secret" {
+		t.Fatalf("admin token override not applied: %q", adminToken)
 	}
 	if shutdownTimeout != 45*time.Second || drainTimeout != 15*time.Second {
 		t.Fatalf("duration overrides not applied: shutdown=%s drain=%s", shutdownTimeout, drainTimeout)
@@ -288,6 +295,7 @@ func TestApplyEnvOverridesRejectsInvalidValues(t *testing.T) {
 			enableCircuitBreaker := true
 			enableRetry := true
 			allowRemoteMetrics := false
+			adminToken := ""
 			allowCleartextAuth := false
 			shutdownTimeout := 30 * time.Second
 			drainTimeout := 10 * time.Second
@@ -309,6 +317,7 @@ func TestApplyEnvOverridesRejectsInvalidValues(t *testing.T) {
 				&enableCircuitBreaker,
 				&enableRetry,
 				&allowRemoteMetrics,
+				&adminToken,
 				&allowCleartextAuth,
 				&shutdownTimeout,
 				&drainTimeout,
@@ -321,6 +330,98 @@ func TestApplyEnvOverridesRejectsInvalidValues(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPrepareDataDir(t *testing.T) {
+	t.Run("CreatesMissingDirectory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "nested", "data")
+
+		cleanPath, err := prepareDataDir(path)
+		if err != nil {
+			t.Fatalf("prepareDataDir failed: %v", err)
+		}
+		if cleanPath != filepath.Clean(path) {
+			t.Fatalf("clean path = %q, want %q", cleanPath, filepath.Clean(path))
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat data dir: %v", err)
+		}
+		if !info.IsDir() {
+			t.Fatal("expected data path to be a directory")
+		}
+		if info.Mode().Perm() != 0750 {
+			t.Fatalf("data dir permissions = %v, want 0750", info.Mode().Perm())
+		}
+	})
+
+	t.Run("RejectsSymlink", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "target")
+		if err := os.Mkdir(target, 0750); err != nil {
+			t.Fatalf("mkdir target: %v", err)
+		}
+		link := filepath.Join(dir, "link")
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("symlink not supported: %v", err)
+		}
+
+		_, err := prepareDataDir(link)
+		if err == nil {
+			t.Fatal("expected symlink data directory to be rejected")
+		}
+		if !strings.Contains(err.Error(), "must not be a symlink") {
+			t.Fatalf("expected symlink rejection, got %v", err)
+		}
+	})
+
+	t.Run("RejectsSymlinkParentComponent", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "target")
+		if err := os.Mkdir(target, 0750); err != nil {
+			t.Fatalf("mkdir target: %v", err)
+		}
+		link := filepath.Join(dir, "link")
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("symlink not supported: %v", err)
+		}
+
+		_, err := prepareDataDir(filepath.Join(link, "nested", "data"))
+		if err == nil {
+			t.Fatal("expected symlink data directory component to be rejected")
+		}
+		if !strings.Contains(err.Error(), "must not be a symlink") {
+			t.Fatalf("expected symlink rejection, got %v", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(target, "nested", "data")); !os.IsNotExist(statErr) {
+			t.Fatalf("data directory should not be created through symlink parent, stat err=%v", statErr)
+		}
+	})
+
+	t.Run("RejectsFile", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "data-file")
+		if err := os.WriteFile(path, []byte("not a directory"), 0600); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		_, err := prepareDataDir(path)
+		if err == nil {
+			t.Fatal("expected file data path to be rejected")
+		}
+		if !strings.Contains(err.Error(), "must be a directory") {
+			t.Fatalf("expected directory rejection, got %v", err)
+		}
+	})
+
+	t.Run("RejectsEmptyPath", func(t *testing.T) {
+		_, err := prepareDataDir(" ")
+		if err == nil {
+			t.Fatal("expected empty data path to be rejected")
+		}
+		if !strings.Contains(err.Error(), "must be explicit") {
+			t.Fatalf("expected explicit path error, got %v", err)
+		}
+	})
 }
 
 func TestValidateAuthTransport(t *testing.T) {
@@ -398,6 +499,67 @@ func TestValidateAuthTransport(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateAuthTransport(tt.wireAddr, tt.mysqlAddr, tt.auth, tt.tls, tt.mysql, tt.allow)
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantError, err.Error())
+			}
+		})
+	}
+}
+
+func TestValidateAdminCredentials(t *testing.T) {
+	tests := []struct {
+		name      string
+		auth      bool
+		user      string
+		password  string
+		wantError string
+	}{
+		{
+			name:     "AuthDisabledAllowsEmptyDefaults",
+			user:     "admin",
+			password: "admin",
+		},
+		{
+			name:     "StrongPasswordAllowed",
+			auth:     true,
+			user:     "admin",
+			password: "Str0ng!Pass#2026",
+		},
+		{
+			name:      "RejectsDefaultAdminPassword",
+			auth:      true,
+			user:      "admin",
+			password:  "admin",
+			wantError: "default admin credentials",
+		},
+		{
+			name:      "RejectsEmptyUser",
+			auth:      true,
+			user:      " ",
+			password:  "Str0ng!Pass#2026",
+			wantError: "admin username",
+		},
+		{
+			name:      "RejectsEmptyPassword",
+			auth:      true,
+			user:      "admin",
+			password:  "",
+			wantError: "admin password",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAdminCredentials(tt.auth, tt.user, tt.password)
 			if tt.wantError == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)

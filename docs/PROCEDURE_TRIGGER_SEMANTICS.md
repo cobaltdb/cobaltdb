@@ -13,11 +13,16 @@ Certified behavior:
 - Parameter substitution in `INSERT`, `UPDATE`, and `DELETE` procedure body statements.
 - Parameter substitution inside common expression forms including binary expressions, function calls, `CASE`, `BETWEEN`, `IN`, `IS NULL`, `CAST`, `LIKE`, and aliases.
 - Multi-statement procedure bodies.
+- `OUT` and `INOUT` parameter modes are preserved by parsing/persistence.
+- `SET out_param = expr` and `SET inout_param = expr` inside a procedure body update output parameter values.
+- `Query("CALL proc(...)")` returns one row containing `OUT`/`INOUT` values, in procedure parameter order.
+- `Query("CALL proc(...)")` returns the final result-producing statement when a procedure body contains `SELECT`/SHOW-like result statements; DML side effects before the final result are preserved.
 
 Current limits:
 
-- Procedure body execution is certified for DML statements. Result-returning procedure semantics are not a compatibility contract.
-- `OUT` and `INOUT` parameters parse, but mutable output-parameter behavior is not certified.
+- `Exec("CALL proc(...)")` is certified for DML and output-parameter assignment procedures. Use `Query("CALL proc(...)")` for result-returning procedure bodies.
+- Output parameter assignment is certified for scalar expressions that can be parsed through the current expression parser; broader MySQL session-variable binding semantics are not implemented.
+- Multiple result sets from one procedure call are not implemented; if a procedure body contains multiple result-producing statements, `Query("CALL ...")` returns the last one.
 
 ## Triggers
 
@@ -37,7 +42,7 @@ Current limits:
 ## Release Drill
 
 ```bash
-go test ./pkg/query -run TestParseCallProcedure -count=1
+go test ./pkg/query -run 'TestParseCallProcedure|TestParseCreateProcedureParamModes' -count=1
 go test ./test -run 'TestStoredProcedure|TestTrigger_BeforeAfterOrderAndRowImages|TestInsteadOfTrigger' -count=1
 go test ./pkg/catalog -run 'TestExecuteTriggers|TestResolveTriggerRefs|TestResolveTriggerExpr' -count=1
 ```

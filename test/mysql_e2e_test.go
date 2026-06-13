@@ -233,6 +233,32 @@ func (c *mysqlTestClient) readStmtPrepareOK() (uint32, int, int, error) {
 	return stmtID, numColumns, numParams, nil
 }
 
+func (c *mysqlTestClient) readStmtExecuteCursorMetadata(numColumns int) error {
+	payload, _, err := c.readPacket()
+	if err != nil {
+		return fmt.Errorf("read cursor column count: %w", err)
+	}
+	if len(payload) == 0 || payload[0] == 0xff {
+		return fmt.Errorf("unexpected cursor execute response: %q", string(payload))
+	}
+	if int(payload[0]) != numColumns {
+		return fmt.Errorf("cursor column count = %d, want %d", int(payload[0]), numColumns)
+	}
+	for i := 0; i < numColumns; i++ {
+		if _, _, err := c.readPacket(); err != nil {
+			return fmt.Errorf("read cursor column definition %d: %w", i, err)
+		}
+	}
+	eof, _, err := c.readPacket()
+	if err != nil {
+		return fmt.Errorf("read cursor metadata EOF: %w", err)
+	}
+	if len(eof) == 0 || eof[0] != 0xfe {
+		return fmt.Errorf("expected cursor metadata EOF, got %q", string(eof))
+	}
+	return nil
+}
+
 func (c *mysqlTestClient) sendStmtExecute(stmtID uint32, types []byte, values []interface{}) error {
 	return c.sendStmtExecuteWithFlags(stmtID, 0x00, types, values)
 }
@@ -271,6 +297,17 @@ func (c *mysqlTestClient) sendStmtExecuteWithFlags(stmtID uint32, flags byte, ty
 			return fmt.Errorf("test encoder does not support type 0x%02x", types[i])
 		}
 	}
+	return c.writePacket(pkt, 0)
+}
+
+func (c *mysqlTestClient) sendStmtFetch(stmtID uint32, rowCount uint32) error {
+	var pkt []byte
+	pkt = append(pkt, protocol.MySQLComStmtFetch)
+	var buf [4]byte
+	binary.LittleEndian.PutUint32(buf[:], stmtID)
+	pkt = append(pkt, buf[:]...)
+	binary.LittleEndian.PutUint32(buf[:], rowCount)
+	pkt = append(pkt, buf[:]...)
 	return c.writePacket(pkt, 0)
 }
 
@@ -888,7 +925,7 @@ func TestMySQLPreparedStatementLongData(t *testing.T) {
 	}
 }
 
-func TestMySQLPreparedStatementCursorFlagRejected(t *testing.T) {
+func TestMySQLPreparedStatementCursorFetch(t *testing.T) {
 	addr, _, _ := startMySQLTestServer(t)
 
 	client, err := newMySQLTestClient(addr)
@@ -928,12 +965,26 @@ func TestMySQLPreparedStatementCursorFlagRejected(t *testing.T) {
 	if err := client.sendStmtExecuteWithFlags(stmtID, 0x01, []byte{protocol.MySQLTypeLongLong}, []interface{}{int64(1)}); err != nil {
 		t.Fatalf("execute select with cursor flag: %v", err)
 	}
-	ok, msg, err := client.readOKOrError()
-	if err != nil {
-		t.Fatalf("read cursor rejection: %v", err)
+	if err := client.readStmtExecuteCursorMetadata(cols); err != nil {
+		t.Fatalf("read cursor execute metadata: %v", err)
 	}
-	if ok || !strings.Contains(msg, "cursor flags are not supported") {
-		t.Fatalf("expected cursor unsupported error, ok=%v msg=%q", ok, msg)
+
+	if err := client.sendStmtFetch(stmtID, 1); err != nil {
+		t.Fatalf("fetch cursor row: %v", err)
+	}
+	rowPayload, _, err := client.readPacket()
+	if err != nil {
+		t.Fatalf("read cursor row packet: %v", err)
+	}
+	if !strings.Contains(string(rowPayload), "row") {
+		t.Fatalf("expected fetched binary row packet to contain row value, got %q", string(rowPayload))
+	}
+	eofPayload, _, err := client.readPacket()
+	if err != nil {
+		t.Fatalf("read cursor EOF packet: %v", err)
+	}
+	if len(eofPayload) == 0 || eofPayload[0] != 0xfe {
+		t.Fatalf("expected cursor EOF packet, got %q", string(eofPayload))
 	}
 
 	if err := client.sendStmtExecute(stmtID, []byte{protocol.MySQLTypeLongLong}, []interface{}{int64(1)}); err != nil {
@@ -941,10 +992,10 @@ func TestMySQLPreparedStatementCursorFlagRejected(t *testing.T) {
 	}
 	columns, rows, err := client.readResultSet()
 	if err != nil {
-		t.Fatalf("read prepared select result after cursor rejection: %v", err)
+		t.Fatalf("read prepared select result after cursor fetch: %v", err)
 	}
 	if len(columns) != 1 || len(rows) != 1 || rows[0][0] != "row" {
-		t.Fatalf("unexpected prepared select result after cursor rejection columns=%v rows=%v", columns, rows)
+		t.Fatalf("unexpected prepared select result after cursor fetch columns=%v rows=%v", columns, rows)
 	}
 }
 

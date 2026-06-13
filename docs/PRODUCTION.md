@@ -241,7 +241,7 @@ config := &server.ProductionConfig{
     },
     CircuitBreaker:       engine.DefaultCircuitBreakerConfig(),
     Retry:                engine.DefaultRetryConfig(),
-    HealthAddr:           ":8420",
+    HealthAddr:           "127.0.0.1:8420",
     EnableCircuitBreaker: true,
     EnableRetry:          true,
     EnableHealthServer:   true,
@@ -612,7 +612,7 @@ config := &server.ProductionConfig{
 
     // Health Server
     EnableHealthServer: true,
-    HealthAddr:         ":8420",
+    HealthAddr:         "127.0.0.1:8420",
 }
 
 ps := server.NewProductionServer(db, config)

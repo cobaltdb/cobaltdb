@@ -212,3 +212,87 @@ func TestStoredProcedure_ParameterSubstitutionInComplexExpressions(t *testing.T)
 		t.Fatalf("Expected id=2 flag low, got %v", rows)
 	}
 }
+
+func TestStoredProcedure_OutAndInoutParameters(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	if err != nil {
+		t.Fatalf("DB open: %v", err)
+	}
+	defer db.Close()
+	ctx := t.Context()
+
+	afExec(t, db, ctx, `CREATE PROCEDURE calc_proc(IN input INTEGER, OUT doubled INTEGER, INOUT running INTEGER)
+		BEGIN
+			SET doubled = input * 2;
+			SET running = running + doubled;
+		END`)
+
+	rows, err := db.Query(ctx, "CALL calc_proc(?, ?, ?)", 7, 0, 3)
+	if err != nil {
+		t.Fatalf("Query CALL with OUT/INOUT failed: %v", err)
+	}
+	defer rows.Close()
+
+	cols := rows.Columns()
+	if len(cols) != 2 || cols[0] != "doubled" || cols[1] != "running" {
+		t.Fatalf("Unexpected OUT columns: %v", cols)
+	}
+	if !rows.Next() {
+		t.Fatal("Expected one OUT result row")
+	}
+	var doubled, running interface{}
+	if err := rows.Scan(&doubled, &running); err != nil {
+		t.Fatalf("Scan OUT row: %v", err)
+	}
+	if !compareValues(doubled, int64(14)) || !compareValues(running, int64(17)) {
+		t.Fatalf("Unexpected OUT values: doubled=%v running=%v", doubled, running)
+	}
+	if rows.Next() {
+		t.Fatal("Expected only one OUT result row")
+	}
+}
+
+func TestStoredProcedure_QueryCallReturnsFinalSelect(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	if err != nil {
+		t.Fatalf("DB open: %v", err)
+	}
+	defer db.Close()
+	ctx := t.Context()
+
+	afExec(t, db, ctx, "CREATE TABLE proc_result (id INTEGER PRIMARY KEY, label TEXT, score INTEGER)")
+	afExec(t, db, ctx, "INSERT INTO proc_result VALUES (1, 'old', 5)")
+	afExec(t, db, ctx, `CREATE PROCEDURE bump_and_get(p_id INTEGER, p_delta INTEGER)
+		BEGIN
+			UPDATE proc_result SET score = score + p_delta WHERE id = p_id;
+			SELECT label, score, score + p_delta AS projected FROM proc_result WHERE id = p_id;
+		END`)
+
+	rows, err := db.Query(ctx, "CALL bump_and_get(?, ?)", 1, 7)
+	if err != nil {
+		t.Fatalf("Query CALL with final SELECT failed: %v", err)
+	}
+	defer rows.Close()
+	cols := rows.Columns()
+	if len(cols) != 3 || cols[0] != "label" || cols[1] != "score" || cols[2] != "projected" {
+		t.Fatalf("Unexpected result columns: %v", cols)
+	}
+	if !rows.Next() {
+		t.Fatal("Expected one result row")
+	}
+	var label, score, projected interface{}
+	if err := rows.Scan(&label, &score, &projected); err != nil {
+		t.Fatalf("Scan result row: %v", err)
+	}
+	if label != "old" || !compareValues(score, int64(12)) || !compareValues(projected, int64(19)) {
+		t.Fatalf("Unexpected result row: label=%v score=%v projected=%v", label, score, projected)
+	}
+	if rows.Next() {
+		t.Fatal("Expected only one result row")
+	}
+
+	after := afQuery(t, db, ctx, "SELECT score FROM proc_result WHERE id = 1")
+	if len(after) != 1 || !compareValues(after[0][0], int64(12)) {
+		t.Fatalf("Procedure DML side effect was not preserved, got %v", after)
+	}
+}

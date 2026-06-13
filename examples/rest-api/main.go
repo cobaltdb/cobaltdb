@@ -4,7 +4,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 )
+
+const maxRESTJSONBodyBytes = 1 << 20
 
 // User represents a user in the system
 type User struct {
@@ -221,8 +225,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		Name   string `json:"name"`
 		Active bool   `json:"active"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.respondError(w, http.StatusBadRequest, "invalid JSON")
+	if !s.decodeJSONRequest(w, r, &req) {
 		return
 	}
 
@@ -288,8 +291,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request, id int64) {
 		Name   string `json:"name"`
 		Active *bool  `json:"active,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.respondError(w, http.StatusBadRequest, "invalid JSON")
+	if !s.decodeJSONRequest(w, r, &req) {
 		return
 	}
 
@@ -359,6 +361,25 @@ func (s *Server) respondJSON(w http.ResponseWriter, status int, data interface{}
 
 func (s *Server) respondError(w http.ResponseWriter, status int, message string) {
 	s.respondJSON(w, status, map[string]string{"error": message})
+}
+
+func (s *Server) decodeJSONRequest(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRESTJSONBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(dst); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			s.respondError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return false
+		}
+		s.respondError(w, http.StatusBadRequest, "invalid JSON")
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		s.respondError(w, http.StatusBadRequest, "request body must contain a single JSON document")
+		return false
+	}
+	return true
 }
 
 func joinClauses(clauses []string) string {
