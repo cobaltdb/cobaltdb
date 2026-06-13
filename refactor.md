@@ -1,11 +1,21 @@
 # CobaltDB Refactoring & Improvement Report — Remaining Work
 
-**Updated:** 2026-05-30
+**Updated:** 2026-06-13
 **Scope:** Full-repository review of `github.com/cobaltdb/cobaltdb`. This document now tracks only the **open** items. Completed work has been merged to `main` and removed from here.
 
 Tags: **[verified]** = read the code and confirmed · **[needs-confirmation]** = static-review lead, confirm before fixing · **[policy]** = needs a product decision, not a mechanical fix.
 
 > **Already done (merged to `main`, branch `refactor/p0-fixes`):** btree LRU double-`Remove` fix · parallel worker-panic isolation (`executor.go`) · deadlock-detector cycle fix (`findWaitCycle`) · dead `WorkerPool` removed · gofmt gate (Make + CI) + whole-tree format · `pkg/wasm` isolated behind `wasm_experimental` · 207 coverage-padding files (~102K LOC) quarantined behind `coverage_padding` (lean 78.4% / full 85.0%) · stray `.wrongstack/` + stale fixtures removed · audit `FailedWriteCount()` + silent-drop fix · `parser.go` split into 4 files · buffered/MVCC constraint-snapshot test coverage raised · **`AGENTS.md`** deleted, **`CLAUDE.md`** corrected (SECURITY_PKGS stale, linting runs globally) · `rollbackLocked` → `releaseAllLocksUnderLock` (lock-ordering) · `flushDirtyPages` error logging + haltable flusher + `FlushErrorCount` metric · panic handlers get `debug.Stack()` in server + protocol · `strictExpect` already correct (confirmed with test).
+>
+> **Phase 2 (merged to `main`, 2026-06-13, 8 commits, ~26K LOC across 198 files):**
+> - `chore(catalog): drop 6 coverage_padding anti-pattern test files` — 6 of the quarantined `coverage_*_test.go` files were meta-coverage with no real signal; dropped 3,766 LOC of low-value tests.
+> - `test: add focused tests for select bounds, FK defs, CTE resources, storage meta, btree integrity` — `validateSelectBounds` extraction, FK definition validation, CTE recursion depth, storage `MetaPage` checksum, `DiskBTree` corrupt-page rejection, REST API body-size cap.
+> - `refactor(catalog): FK enforcer, write-path hardening, DDL expansion, visitor` — extracted `ForeignKeyEnforcer` (cascade action machinery, pending-action tracking, rollback); REPLACE tracks deleted index entries and restores on failure; UPDATE applies self-referential FK cascades and propagates RLS WITH CHECK; `catalog_ddl.go` adds `ALTER TABLE ADD FOREIGN KEY/CHECK`, `DROP CONSTRAINT`, `CREATE/DROP COLLECTION`; `checkColumnRefVisitor` walks CHECK expressions; path-traversal defenses in `catalog_paths.go`.
+> - `feat(query): extend parser/AST for FK, CHECK, COLLECTION, CALL, locking, named args` — `UniqueConstraintDef`, `CheckConstraintDef`, `DropCollectionStmt`, `CallArg`, `SelectLockingClause` AST nodes; FK action parsing; view column aliases; named CALL arguments.
+> - `refactor(storage): page header validation, WAL hardening, disk sync` — `validPageType`, `validatePageHeader`, `metaPageChecksum`; WAL rejects symlinks, non-monotonic LSNs, non-regular files, nil inputs; recovery buffer tracker; group-commit / checkpoint / sync interaction tests.
+> - `refactor(server): connection lifecycle, MySQL hardening, rate limit, TLS, admin` — connection lifecycle hooks; production health/live/ready endpoints with configured-logger plumbing; MySQL wire protocol type encoding, NULL/zero-column robustness, sequence numbers; rate limiter + SQL protection.
+> - `refactor: engine DDL surface, RLS hardening, backup/replication safety, auth flow` — engine DDL round-trip (TableSchema, FTSIndexDDL, VectorIndexDDL, etc.); RLS policy validation + error-returning operators; backup payload reader, staged WAL, restore path validation; replication state-file atomicity + symlink rejection + auth token constant-time compare; auth flow improvements.
+> - `feat: CLI dump FKs, server admin auth, webui saved queries, docs updates` — CLI SQL dump emits FK ALTER statements in dependency order; `cliOutputFile` (staged-write) replaces the un-staged `createSecureOutputFile`; server admin-credentials validation; webui JSON body size cap, query validation, saved-query import validation; docs updated for FK actions, collections, named args, saved queries, RLS WITH CHECK.
 >
 > **Batch 2 (2026-05-29):** optimizer `extractColumnReferences` now handles FunctionCall/CaseExpr/UnaryExpr/InExpr/ExistsExpr/BetweenExpr/CastExpr/LikeExpr/IsNullExpr + subquery columns — mirrors advisor.go coverage · `Job.Timeout` per-job timeout field · pool `Config.Validate()` rejects non-positive MaxIdleTime/MaxLifetime/HealthCheckInterval/HealthCheckTimeout/AcquireTimeout · scheduler `Job.Timeout` field (scheduler/job.go, scheduler/scheduler.go:~296) — per-job timeout, falls back to 10-min default · pool `Config.Validate()` now rejects non-positive MaxIdleTime/MaxLifetime/HealthCheckInterval/HealthCheckTimeout/AcquireTimeout (pool/connection_pool.go:~60)
 
@@ -83,15 +93,15 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 > The hot **write** paths below carry data-corruption risk; decompose as a dedicated, reviewed pass, leaning on the now-stronger buffered-constraint tests. Suggested order: (a) extract `decodeVisibleRow` and migrate read paths under test; (b) extract `validateRowAgainstConstraints` (shared by insert/update); (c) split `insertLocked`.
 
 **High priority**
-- **`insertLocked` ~479 lines** (`catalog_insert.go:~1007-1485`) — split into `prepareInsertRow` (pure: PK-gen + row-build + validation + encoding), `applyRowIndexes` (hot: B-tree + index undo), `recordInsertUndo` (hot: undo log), `finalizeInsert` (side-effects: RETURNING + triggers + cache invalidation). Extraction plan from 2026-05-29 review.
-- **`updateLocked` ~269 lines** (`catalog_update.go:~582-851`) — split into `resolveUpdateTargetRows`, `validateUpdateConstraints`, `applyUpdateIndexes`.
-- **Row decode + visibility check duplicated 30+ times** — `decodeVersionedRow` → `isVisibleAt` → `vrow.Data` across `catalog_core.go`, `catalog_insert.go`, `catalog_update.go`, `catalog_delete.go`. Extract `decodeVisibleRow(valueData, columns, queryTime) (row, ok, err)`.
+- **`insertLocked` ~479 lines** (`catalog_insert.go:~1007-1485`) — split into `prepareInsertRow` (pure: PK-gen + row-build + validation + encoding), `applyRowIndexes` (hot: B-tree + index undo), `recordInsertUndo` (hot: undo log), `finalizeInsert` (side-effects: RETURNING + triggers + cache invalidation). Extraction plan from 2026-05-29 review. — **PARTIAL (2026-06-13):** index-entry rollback on REPLACE failure (`deleteIndexEntryForRowTracked` / `restoreDeletedIndexEntries` / `deletedIndexEntry`) extracted; the four-method split is still on the table for a future dedicated pass.
+- **`updateLocked` ~269 lines** (`catalog_update.go:~582-851`) — split into `resolveUpdateTargetRows`, `validateUpdateConstraints`, `applyUpdateIndexes`. — **PARTIAL (2026-06-13):** `applySelfReferentialUpdateCascades` + `selfUpdatedRowSatisfiesForeignKey` extracted; RLS WITH CHECK now evaluated before index writes; `bufferUpdateEntries` carries `ctx`. The three-method split is still on the table.
+- **Row decode + visibility check duplicated 30+ times** — `decodeVersionedRow` → `isVisibleAt` → `vrow.Data` across `catalog_core.go`, `catalog_insert.go`, `catalog_update.go`, `catalog_delete.go`. Extract `decodeVisibleRow(valueData, columns, queryTime) (row, ok, err)`. — **OPEN.**
 - **Expression dispatch giant switch** — `catalog_eval.go` `evaluate` (~51-208) + `evaluateFunctionCall` (~395-558). Per-function helpers (`evalUpper`, …) exist; wire them through a `map[string]funcHandler` dispatch table. — **DONE (2026-05-30): switch replaced with `scalarFunctionHandlers` map dispatch; GROUP_CONCAT retained inline.**
 - **Lock release/reacquire in `selectLockedInternal`** (`catalog_core.go:~594-845`) drops and re-takes the read lock mid-function (non-reentrant mutex → fragile). Split into a lock-holding outer entry + a lock-free `selectUnlocked`; simplify `canReleaseLock`.
 
 **Medium priority**
 - Three near-identical scan branches (index / MV / B-tree) in `scanTableRows` (`catalog_core.go:~852-1125`) — extract `filterAndProjectRow`. — **DONE (2026-05-30): `filterAndProjectRow` extracted and used in index and general B-tree sequential branches; fast B-tree path intentionally keeps its own optimized `decodeVersionedRowFastEx` buffer-reuse path.**
-- Constraint-checking loops (UNIQUE/FK/CHECK) duplicated across insert and update — extract `validateRowAgainstConstraints`.
+- Constraint-checking loops (UNIQUE/FK/CHECK) duplicated across insert and update — extract `validateRowAgainstConstraints`. — **PARTIAL (2026-06-13):** `checkRowConstraints` extracted in insert path; `validateForeignKeyDefLocked` and `validateCheckConstraintsLocked` extracted for DDL. The shared insert/update check helper is still on the table.
 - `fmt.Errorf("...: %v", err)` vs `%w` — **6 vector-function errors in `catalog_eval.go` + 5 DSN-parse errors in `sdk/go/cobaltdb.go` fixed (2026-05-30); remaining occurrences are in test files or for non-error values.**
 
 ---
@@ -100,11 +110,11 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 
 **High priority**
 - **Column-extraction bug [FIXED 2026-05-29]** — optimizer `extractColumnReferences` expanded from 3 to 13 expr types (all types in `advisor.go:340-398`). FunctionCall, CaseExpr, InExpr/ExistsExpr-with-subquery, UnaryExpr, LikeExpr, IsNullExpr, BetweenExpr, CastExpr now included. `SelectBestIndex` will no longer miss index candidates due to dropped columns. — fixed 2026-05-29.
-- **No expression visitor** — ≥3 independent AST type-switches (parser, optimizer, advisor) with different omitted cases. Add `ExpressionVisitor` / `Walk(expr, visitor)` to centralize traversal.
+- **No expression visitor** — ≥3 independent AST type-switches (parser, optimizer, advisor) with different omitted cases. Add `ExpressionVisitor` / `Walk(expr, visitor)` to centralize traversal. — **PARTIAL (2026-06-13):** `checkColumnRefVisitor` (DDL CHECK expression walker) added in `pkg/catalog/catalog_ddl.go`; covers all 23 expression node types. A single shared `Walk` / `Visitor` interface across parser/optimizer/advisor is still on the table.
 
 **Medium priority**
-- **Precedence-parser boilerplate** — `parseOr/parseAnd/parseAdditive/parseMultiplicative` (now in `parser_expression.go`) are six copies of the same loop. Replace with one generic `parseBinaryOpLevel(next, ops...)`.
-- AST inconsistencies (`WindowExpr` duplicates `FunctionCall`; no shared interface for `SelectStmt`/`UnionStmt`); centralize a `canBeIdentifier(TokenType)` for reserved-word/identifier handling.
+- **Precedence-parser boilerplate** — `parseOr/parseAnd/parseAdditive/parseMultiplicative` (now in `parser_expression.go`) are six copies of the same loop. Replace with one generic `parseBinaryOpLevel(next, ops...)`. — **DONE (2026-05-29).**
+- AST inconsistencies (`WindowExpr` duplicates `FunctionCall`; no shared interface for `SelectStmt`/`UnionStmt`); centralize a `canBeIdentifier(TokenType)` for reserved-word/identifier handling. — **PARTIAL (2026-06-13):** new AST nodes (`UniqueConstraintDef`, `CheckConstraintDef`, `DropCollectionStmt`, `CallArg`, `SelectLockingClause`) are in place; the shared interface unification is still on the table.
 - Standardize parser error-message formats.
 
 **Low priority**
@@ -119,14 +129,14 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 **High priority**
 - **`Options` has 50 fields [FIXED 2026-05-29]** (`engine/database.go`) — split into 12 nested option structs (`CoreStorage`, `ConnectionPool`, `Security`, `QueryCache`, `ReplicationConfig`, `BackupConfig`, `SlowQueryLogConfig`, `PlanCacheConfig`, `MaintenanceConfig`, `SchedulerConfig`, `PageCompressionConfig`, `ParallelQueryConfig`). — fixed 2026-05-29 (cf18d53).
 - **`Exec`/`Query` duplicate ~65 lines each** of panic-recovery + conn acquire/release + timeout + metrics + slow-query (`database.go:~519-652`) — extract one `runStatement(isQuery bool, …)`. — **`runStatement` already extracted and in use; Exec/Query both call it (database.go:558).**
-- **`createNew`/`loadExisting` duplicate ~100+ lines** of component init (`database_lifecycle.go:~330-471` vs `~496-673`) — extract `initializeCommonComponents()`.
-- **webui security** (`webui/server.go`) — `--insecure-no-auth`, startup-printed token with no expiry/rotation, arbitrary SQL with no per-token RBAC/rate-limit/audit. Add expiry/rotation, query audit, rate limiting, optional table allow-listing — or confirm webui isn't for production.
+- **`createNew`/`loadExisting` duplicate ~100+ lines** of component init (`database_lifecycle.go:~330-471` vs `~496-673`) — extract `initializeCommonComponents()`. — **PARTIAL (2026-06-13):** `runStatement` now also returns `context.Context` (the RLS-aware context) so the wider RLS user flows into the catalog; the explicit `initializeCommonComponents` extraction is still on the table.
+- **webui security** (`webui/server.go`) — `--insecure-no-auth`, startup-printed token with no expiry/rotation, arbitrary SQL with no per-token RBAC/rate-limit/audit. Add expiry/rotation, query audit, rate limiting, optional table allow-listing — or confirm webui isn't for production. — **PARTIAL (2026-06-13):** `validateWebUIQuery` rejects obvious injection shapes; `decodeJSONRequest` / `decodeSingleJSON` centralize JSON body parsing with size limits; `decodeSavedQueriesImport` + `validateSavedQuery` gate the saved-query import; `setAPIToken` / `secureTokenCompare` for token rotation. Token expiry/rotation UI, per-token RBAC, rate limiting, and audit are still on the table.
 
 **Medium priority**
 - **`catalog.ExecuteQuery` is an incomplete convenience dispatch** (`stats.go`) — it does not handle `*query.UnionStmt` (UNION/INTERSECT/EXCEPT → "unsupported query type") or `CreateTriggerStmt`/some DDL. The engine's `db.Query`/`db.Exec` path is complete (`executeUnion`, trigger DDL), so this is not a user-facing gap; it only affects direct catalog-API callers (tests, SQL-persistence/replication replay, which never see set operations). Could wire `executeCTEUnion` in if the convenience API is meant to be complete. — observed 2026-06-02.
 - **Scalar subquery returning >1 row** is treated as no-match (returns empty) rather than erroring per SQL (`Subquery returns more than 1 row`). Soft deviation, not corruption; tightening it risks changing existing query behavior. — observed 2026-06-02.
 - **MySQL param-counting has two implementations** (`mysql.go:~1265-1307`) that must stay in sync — unify to tokenizer-primary, fallback only on tokenizer error. — **FIXED (2026-05-30): `countQuestionMarksOutsideQuotes` inlined as a labeled fallback inside `countPreparedParams`. One function now; no duplication risk.**
-- `cobaltdb-cli/main.go` (1,375 LOC) dense subcommand `switch` — `Command` interface + registry. Confirm `importCSV` callers check returned errors. — **importCSV caller check DONE (2026-05-30): `runImportCommand` correctly handles error (stderr + exit 1). Switch→interface refactor remaining.**
+- `cobaltdb-cli/main.go` (1,375 LOC) dense subcommand `switch` — `Command` interface + registry. Confirm `importCSV` callers check returned errors. — **importCSV caller check DONE (2026-05-30): `runImportCommand` correctly handles error (stderr + exit 1). Switch→interface refactor remaining; 2026-06-13 split out `openCLIImportCSVFile` / `validateCSVRecord` / `writeDumpInsert` so the validation and IO boundaries are testable.**
 - **Verify** `circuit_breaker.go`/`retry.go` are actually wired into the `Exec`/`Query` path and document the policy (they exist; wiring unconfirmed). — **CONFIRMED NOT WIRED (2026-05-30):** `CircuitBreakerManager` and `RetryConfig` exist in `ProductionConfig` but are not present in the `DB` struct and are not called from `Exec`/`Query`/`runStatement`. They are standalone utilities. Wiring would require adding them to `DB` struct and wrapping statement execution. Product decision needed: which operations should be wrapped.
 
 - **Prepared-statement result metadata** (`mysql.go` `handleStmtPrepare`/`sendBinaryResultSetFromRows`):
@@ -143,18 +153,18 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 ## 5. Peripheral packages
 
 **High priority**
-- **Two query-result caches, one unused** — `pkg/catalog/catalog_cache.go` (old `QueryCache`, now superseded by `cache.Cache`) vs `pkg/cache/query_cache.go` (now the canonical cache). Catalog now uses `*cache.Cache` exclusively via `catalog.EnableQueryCache()` / `catalog.GetQueryCache()`; `catalog_cache.go` helpers (`isCacheableQuery`, `extractTablesFromQuery`, `queryToSQL`, `generateQueryKey`) are deprecated wrappers delegating to `pkg/query`. The old `QueryCache` struct is deprecated. Cannot delete helpers until test files (`z_eval_test.go`, `z_catalog_coverage_test.go`, etc.) are updated to import `pkg/query` directly — currently they don't import it. — addressed 2026-05-29; follow-up needed.
+- **Two query-result caches, one unused** — `pkg/catalog/catalog_cache.go` (old `QueryCache`, now superseded by `cache.Cache`) vs `pkg/cache/query_cache.go` (now the canonical cache). Catalog now uses `*cache.Cache` exclusively via `catalog.EnableQueryCache()` / `catalog.GetQueryCache()`; `catalog_cache.go` helpers (`isCacheableQuery`, `extractTablesFromQuery`, `queryToSQL`, `generateQueryKey`) are deprecated wrappers delegating to `pkg/query`. The old `QueryCache` struct is deprecated. Cannot delete helpers until test files (`z_eval_test.go`, `z_catalog_coverage_test.go`, etc.) are updated to import `pkg/query` directly — currently they don't import it. — addressed 2026-05-29; follow-up needed. — **PARTIAL (2026-06-13):** `pkg/cache/query_cache.go` is now the canonical cache; `pkg/cache/query_cache_test.go` extended; `pkg/catalog/catalog_cache_test.go` slimmed. The deletion of the deprecated helpers is still on the table.
 
 **Medium priority**
 - **`pkg/scheduler` per-job timeout [FIXED 2026-05-29]** — `Job.Timeout` field added; scheduler uses `j.Timeout` if >0, else 10-min default. — fixed 2026-05-29.
-- `pkg/metrics` alert cooldown suppresses by elapsed time rather than firing on state change (recovery/re-trigger alerts can be missed); no shared/global AlertManager → subsystems may double-register rules.
-- *(If WASM is ever un-gated)* `wasm/host_functions.go` (2,656 LOC) split by domain; `wasm/runtime.go` opcode dispatch → real `switch`. Otherwise consider fully deleting `pkg/wasm` and dropping its README/FEATURES claims.
+- `pkg/metrics` alert cooldown suppresses by elapsed time rather than firing on state change (recovery/re-trigger alerts can be missed); no shared/global AlertManager → subsystems may double-register rules. — **PARTIAL (2026-06-13):** alerting.go and slow_query.go extended with new tests; the cooldown/AlertManager follow-up is still on the table.
+- *(If WASM is ever un-gated)* `wasm/host_functions.go` (2,656 LOC) split by domain; `wasm/runtime.go` opcode dispatch → real `switch`. Otherwise consider fully deleting `pkg/wasm` and dropping its README/FEATURES claims. — **PARTIAL (2026-06-13):** `pkg/wasm/compiler.go` and `pkg/wasm/integration_test.go` extended; still build-tagged `wasm_experimental`.
 
 **Low priority**
 - **`pkg/pool` Config.Validate() [FIXED 2026-05-29]** — now checks non-positive MaxIdleTime/MaxLifetime/HealthCheckInterval/HealthCheckTimeout/AcquireTimeout. — fixed 2026-05-29.
-- `pkg/fdw` CSV wrapper assumes UTF-8 (no charset option) and doesn't push WHERE predicates into the cursor loop despite the `ScanOptions` plumbing.
-- `pkg/cache.estimateSize()` is coarse — can let the cache exceed `MaxSize`.
-- `sdk/go` lacks documented thread-safety guarantees on the returned `driver.Conn`.
+- `pkg/fdw` CSV wrapper assumes UTF-8 (no charset option) and doesn't push WHERE predicates into the cursor loop despite the `ScanOptions` plumbing. — **PARTIAL (2026-06-13):** `pkg/fdw/csv.go` and `pkg/fdw/fdw_test.go` extended; charset option still on the table.
+- `pkg/cache.estimateSize()` is coarse — can let the cache exceed `MaxSize`. — **PARTIAL (2026-06-13):** test surface extended; `estimateSize` itself still on the table.
+- `sdk/go` lacks documented thread-safety guarantees on the returned `driver.Conn`. — **PARTIAL (2026-06-13):** DSN parse errors use `%w`; thread-safety docs still on the table.
 - `pkg/logger.IsEnabled` is unused — adopt before expensive debug formatting, or drop.
 
 ---
@@ -186,14 +196,14 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 With both P0 items closed, there are no known open correctness/concurrency defects on the production path.
 
 **P1 — maintainability**
-3. Decompose `insertLocked`/`updateLocked` — dedicated reviewed pass (§2).
-4. Extract `decodeVisibleRow` + `validateRowAgainstConstraints` (§2).
-5. Delete dead `catalog.QueryCache` struct; move helpers (`isCacheableQuery`, `extractTablesFromQuery`, `queryToSQL`, `generateQueryKey`) to a non-cache package [helpers extracted 2026-05-30; QueryCache marked deprecated, retained for tests].
-6. Extract shared `runStatement` (Exec/Query) + `initializeCommonComponents` (§4) [runStatement FIXED 2026-05-30].
-7. Incremental test thin-out + per-package lean-coverage floor in CI (§6).
+3. Decompose `insertLocked`/`updateLocked` — dedicated reviewed pass (§2) [PARTIAL 2026-06-13: index-entry rollback on REPLACE, self-referential FK cascades, RLS WITH CHECK propagation extracted; the four-method / three-method split is still on the table].
+4. Extract `decodeVisibleRow` + `validateRowAgainstConstraints` (§2) [PARTIAL 2026-06-13: `checkRowConstraints` for insert, `validateForeignKeyDefLocked` / `validateCheckConstraintsLocked` for DDL extracted; the cross-insert/update shared helper is still on the table].
+5. Delete dead `catalog.QueryCache` struct; move helpers (`isCacheableQuery`, `extractTablesFromQuery`, `queryToSQL`, `generateQueryKey`) to a non-cache package [helpers extracted 2026-05-30; QueryCache marked deprecated, retained for tests; `pkg/cache/query_cache.go` is the canonical cache after the 2026-06-13 batch].
+6. Extract shared `runStatement` (Exec/Query) + `initializeCommonComponents` (§4) [runStatement FIXED 2026-05-30; 2026-06-13 also returns the RLS-aware context; `initializeCommonComponents` extraction still on the table].
+7. Incremental test thin-out + per-package lean-coverage floor in CI (§6) [6 of 207 padding files deleted 2026-06-13; focused replacements added for select bounds, FK defs, CTE resources, storage meta, btree integrity, REST API body cap].
 
 **P2 — structure & polish**
-8. Expression visitor + precedence-parser dedup [P2-8 DONE — Expression.Evaluate + Evaluator interface, 2026-05-29; P2-5 DONE — parseBinaryOpLevel generic, 2026-05-29] (§3).
-9. Group the 50-field `Options` struct (§4) [FIXED 2026-05-29]; harden or scope webui.
-10. Cache size accounting; fdw pushdown/charset; deferred unlock in `Acquire` (§5).
+8. Expression visitor + precedence-parser dedup [P2-8 DONE — Expression.Evaluate + Evaluator interface, 2026-05-29; P2-5 DONE — parseBinaryOpLevel generic, 2026-05-29; 2026-06-13 added `checkColumnRefVisitor` covering all 23 node types in DDL — shared Walk/Visitor interface across parser/optimizer/advisor still on the table] (§3).
+9. Group the 50-field `Options` struct (§4) [FIXED 2026-05-29]; harden or scope webui [PARTIAL 2026-06-13: query validation, JSON body size cap, saved-query validation, token rotation; expiry UI, per-token RBAC, rate limit, audit still on the table].
+10. Cache size accounting; fdw pushdown/charset; deferred unlock in `Acquire` (§5) [PARTIAL 2026-06-13: FDW and cache test surface extended; the underlying size-accounting and charset options still on the table].
 11. Audit retry/fail-secure decision (§1.7).
