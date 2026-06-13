@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -138,6 +139,23 @@ func TestExecErrorPaths(t *testing.T) {
 	}
 }
 
+func TestPublicQueryAPIsRejectOversizedSQL(t *testing.T) {
+	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	oversized := "SELECT '" + strings.Repeat("x", 1<<20) + "'"
+
+	if _, err := db.Exec(context.Background(), oversized); err == nil || !strings.Contains(err.Error(), "SQL input exceeds maximum size") {
+		t.Fatalf("Exec oversized SQL error = %v", err)
+	}
+	if _, err := db.Query(context.Background(), oversized); err == nil || !strings.Contains(err.Error(), "SQL input exceeds maximum size") {
+		t.Fatalf("Query oversized SQL error = %v", err)
+	}
+}
+
 // TestExecAfterClose tests Exec/Query on closed database
 func TestExecAfterClose(t *testing.T) {
 	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})
@@ -193,6 +211,31 @@ func TestQueryTimeoutOption(t *testing.T) {
 	_, err = db.Exec(ctx, "INSERT INTO qt2 VALUES (1)")
 	if err != nil {
 		t.Errorf("should succeed within timeout: %v", err)
+	}
+}
+
+func TestRunStatementReturnsQueryTimeoutContext(t *testing.T) {
+	db, err := Open("", &Options{
+		CoreStorage:    CoreStorage{InMemory: true},
+		ConnectionPool: ConnectionPool{QueryTimeout: 50 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	runCtx, stmt, _, release, err := db.runStatement(context.Background(), "Exec", "CREATE TABLE timeout_ctx (id INTEGER)")
+	if err != nil {
+		t.Fatalf("runStatement: %v", err)
+	}
+	defer release()
+	if _, ok := runCtx.Deadline(); !ok {
+		t.Fatal("expected runStatement to attach a query timeout deadline")
+	}
+
+	<-runCtx.Done()
+	if _, err := db.execute(runCtx, stmt, nil); err == nil {
+		t.Fatal("expected execution with expired query timeout context to fail")
 	}
 }
 

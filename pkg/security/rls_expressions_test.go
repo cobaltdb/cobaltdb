@@ -3,6 +3,7 @@ package security
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +99,22 @@ func TestExpressionParser(t *testing.T) {
 			wantErr:    false,
 		},
 		{
+			name:       "NOT IN operator true",
+			expression: "status NOT IN ('active', 'pending')",
+			row:        map[string]interface{}{"status": "disabled"},
+			ctx:        context.Background(),
+			want:       true,
+			wantErr:    false,
+		},
+		{
+			name:       "NOT IN operator false",
+			expression: "status NOT IN ('active', 'pending')",
+			row:        map[string]interface{}{"status": "active"},
+			ctx:        context.Background(),
+			want:       false,
+			wantErr:    false,
+		},
+		{
 			name:       "LIKE operator",
 			expression: "name LIKE 'John%'",
 			row:        map[string]interface{}{"name": "Johnson"},
@@ -106,9 +123,65 @@ func TestExpressionParser(t *testing.T) {
 			wantErr:    false,
 		},
 		{
+			name:       "NOT LIKE operator true",
+			expression: "name NOT LIKE 'John%'",
+			row:        map[string]interface{}{"name": "Alice"},
+			ctx:        context.Background(),
+			want:       true,
+			wantErr:    false,
+		},
+		{
+			name:       "NOT LIKE operator false",
+			expression: "name NOT LIKE 'John%'",
+			row:        map[string]interface{}{"name": "Johnson"},
+			ctx:        context.Background(),
+			want:       false,
+			wantErr:    false,
+		},
+		{
 			name:       "LIKE underscore wildcard",
 			expression: "code LIKE 'A_'",
 			row:        map[string]interface{}{"code": "A1"},
+			ctx:        context.Background(),
+			want:       true,
+			wantErr:    false,
+		},
+		{
+			name:       "BETWEEN numeric inclusive",
+			expression: "score BETWEEN 10 AND 20",
+			row:        map[string]interface{}{"score": 10},
+			ctx:        context.Background(),
+			want:       true,
+			wantErr:    false,
+		},
+		{
+			name:       "BETWEEN numeric false",
+			expression: "score BETWEEN 10 AND 20",
+			row:        map[string]interface{}{"score": 25},
+			ctx:        context.Background(),
+			want:       false,
+			wantErr:    false,
+		},
+		{
+			name:       "NOT BETWEEN numeric true",
+			expression: "score NOT BETWEEN 10 AND 20",
+			row:        map[string]interface{}{"score": 25},
+			ctx:        context.Background(),
+			want:       true,
+			wantErr:    false,
+		},
+		{
+			name:       "NOT BETWEEN numeric false",
+			expression: "score NOT BETWEEN 10 AND 20",
+			row:        map[string]interface{}{"score": 15},
+			ctx:        context.Background(),
+			want:       false,
+			wantErr:    false,
+		},
+		{
+			name:       "BETWEEN strings",
+			expression: "region BETWEEN 'A' AND 'M'",
+			row:        map[string]interface{}{"region": "K"},
 			ctx:        context.Background(),
 			want:       true,
 			wantErr:    false,
@@ -215,6 +288,51 @@ func TestExpressionParser(t *testing.T) {
 
 			if got != tt.want {
 				t.Errorf("CheckAccess() = %v, want %v for expression: %s", got, tt.want, tt.expression)
+			}
+		})
+	}
+}
+
+func TestPolicyExpressionResourceLimits(t *testing.T) {
+	tests := []struct {
+		name       string
+		expression string
+		want       string
+	}{
+		{
+			name:       "expression too large",
+			expression: strings.Repeat("x", maxPolicyExpressionBytes+1),
+			want:       "policy expression too large",
+		},
+		{
+			name:       "LIKE pattern too large",
+			expression: "name LIKE '" + strings.Repeat("x", maxPolicyLikePatternBytes+1) + "'",
+			want:       "policy LIKE pattern too large",
+		},
+		{
+			name:       "IN list too large",
+			expression: "status IN ('" + strings.Join(make([]string, maxPolicyInListValues+1), "','") + "')",
+			want:       "policy IN list has too many values",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := NewManager()
+			err := mgr.CreatePolicy(&Policy{
+				Name:       "limit_policy",
+				TableName:  "documents",
+				Type:       PolicySelect,
+				Expression: tt.expression,
+			})
+			if err == nil {
+				t.Fatal("expected oversized policy expression to be rejected")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got %v", tt.want, err)
+			}
+			if policies := mgr.GetTablePolicies("documents"); len(policies) != 0 {
+				t.Fatalf("rejected policy was indexed: %d policies", len(policies))
 			}
 		})
 	}

@@ -2,14 +2,121 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
 )
+
+func TestAcquireConnectionRejectsCancelledContext(t *testing.T) {
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := db.Exec(ctx, "CREATE TABLE cancelled_exec (id INTEGER)"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Exec error = %v, want context.Canceled", err)
+	}
+	if got := db.activeConns.Load(); got != 0 {
+		t.Fatalf("cancelled Exec leaked active connection count: %d", got)
+	}
+
+	tx, err := db.Begin(ctx)
+	if err == nil {
+		_ = tx.Rollback()
+		t.Fatal("Begin with cancelled context unexpectedly succeeded")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Begin error = %v, want context.Canceled", err)
+	}
+	if got := db.activeConns.Load(); got != 0 {
+		t.Fatalf("cancelled Begin leaked active connection count: %d", got)
+	}
+}
+
+func TestReleasedTxClearsReferences(t *testing.T) {
+	tests := []struct {
+		name   string
+		finish func(*Tx) error
+	}{
+		{name: "commit", finish: (*Tx).Commit},
+		{name: "rollback", finish: (*Tx).Rollback},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
+			if err != nil {
+				t.Fatalf("open db: %v", err)
+			}
+			defer db.Close()
+
+			tx, err := db.Begin(context.Background())
+			if err != nil {
+				t.Fatalf("begin tx: %v", err)
+			}
+
+			if err := tt.finish(tx); err != nil {
+				t.Fatalf("finish tx: %v", err)
+			}
+			if tx.db != nil {
+				t.Fatal("released Tx retained DB reference")
+			}
+			if tx.txn != nil {
+				t.Fatal("released Tx retained transaction reference")
+			}
+
+			if _, err := tx.Exec(context.Background(), "SELECT 1"); err == nil || !strings.Contains(err.Error(), "transaction already completed") {
+				t.Fatalf("Exec after release error = %v, want transaction already completed", err)
+			}
+			if err := tx.Commit(); err == nil || !strings.Contains(err.Error(), "transaction already completed") {
+				t.Fatalf("Commit after release error = %v, want transaction already completed", err)
+			}
+			if err := tx.Rollback(); err == nil || !strings.Contains(err.Error(), "transaction already completed") {
+				t.Fatalf("Rollback after release error = %v, want transaction already completed", err)
+			}
+		})
+	}
+}
+
+func TestCompletedTxHandleIsNotReusedForNewTransaction(t *testing.T) {
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true}})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	tx1, err := db.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin tx1: %v", err)
+	}
+	if err := tx1.Commit(); err != nil {
+		t.Fatalf("commit tx1: %v", err)
+	}
+
+	tx2, err := db.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+	defer tx2.Rollback()
+
+	if tx1 == tx2 {
+		t.Fatal("completed transaction handle was reused for a new active transaction")
+	}
+	if _, err := tx1.Exec(context.Background(), "SELECT 1"); err == nil || !strings.Contains(err.Error(), "transaction already completed") {
+		t.Fatalf("Exec on completed tx error = %v, want transaction already completed", err)
+	}
+}
 
 // TestOpenWithDirectoryCreation tests opening database with directory creation
 func TestOpenWithDirectoryCreation(t *testing.T) {
@@ -30,6 +137,87 @@ func TestOpenWithDirectoryCreation(t *testing.T) {
 	}
 }
 
+func TestOpenSecuresDatabaseParentDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := Open(dbPath, nil)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat database dir: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatal("expected parent path to be a directory")
+	}
+	if info.Mode().Perm() != 0750 {
+		t.Fatalf("database dir permissions = %v, want 0750", info.Mode().Perm())
+	}
+}
+
+func TestOpenRejectsSymlinkDatabaseParentDirectory(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0750); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := Open(filepath.Join(link, "test.db"), nil)
+	if err == nil {
+		t.Fatal("expected symlink database parent directory to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestOpenRejectsSymlinkDatabaseParentComponent(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0750); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := Open(filepath.Join(link, "nested", "test.db"), nil)
+	if err == nil {
+		t.Fatal("expected symlink database parent component to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(target, "nested", "test.db")); !os.IsNotExist(statErr) {
+		t.Fatalf("database was created through symlink component, stat err=%v", statErr)
+	}
+}
+
+func TestOpenRejectsFileDatabaseParentDirectory(t *testing.T) {
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(parent, []byte("file"), 0600); err != nil {
+		t.Fatalf("write file parent: %v", err)
+	}
+
+	_, err := Open(filepath.Join(parent, "test.db"), nil)
+	if err == nil {
+		t.Fatal("expected file database parent to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must be a directory") {
+		t.Fatalf("expected directory rejection, got %v", err)
+	}
+}
+
 func TestOpenRejectsInvalidStorageOptions(t *testing.T) {
 	tests := []struct {
 		name string
@@ -45,6 +233,182 @@ func TestOpenRejectsInvalidStorageOptions(t *testing.T) {
 			name: "unsupported page size",
 			opts: &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1, PageSize: storage.PageSize * 2}},
 			want: "page size",
+		},
+		{
+			name: "negative max connections",
+			opts: &Options{
+				CoreStorage:    CoreStorage{InMemory: true},
+				ConnectionPool: ConnectionPool{MaxConnections: -1},
+			},
+			want: "max connections must be non-negative",
+		},
+		{
+			name: "max connections too large",
+			opts: &Options{
+				CoreStorage:    CoreStorage{InMemory: true},
+				ConnectionPool: ConnectionPool{MaxConnections: 100001},
+			},
+			want: "max connections exceeds maximum",
+		},
+		{
+			name: "negative connection timeout",
+			opts: &Options{
+				CoreStorage:    CoreStorage{InMemory: true},
+				ConnectionPool: ConnectionPool{ConnectionTimeout: -time.Second},
+			},
+			want: "connection timeout must be non-negative",
+		},
+		{
+			name: "negative query timeout",
+			opts: &Options{
+				CoreStorage:    CoreStorage{InMemory: true},
+				ConnectionPool: ConnectionPool{QueryTimeout: -time.Second},
+			},
+			want: "query timeout must be non-negative",
+		},
+		{
+			name: "negative statement cache",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				Security:    Security{MaxStmtCacheSize: -1},
+			},
+			want: "max statement cache size must be non-negative",
+		},
+		{
+			name: "negative query cache size",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				QueryCache:  QueryCacheConfig{QueryCacheSize: -1},
+			},
+			want: "query cache size must be non-negative",
+		},
+		{
+			name: "negative query cache ttl",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				QueryCache:  QueryCacheConfig{QueryCacheTTL: -time.Second},
+			},
+			want: "query cache TTL must be non-negative",
+		},
+		{
+			name: "negative backup retention",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				Backup:      BackupConfig{Retention: -time.Second},
+			},
+			want: "backup retention must be non-negative",
+		},
+		{
+			name: "negative max backups",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				Backup:      BackupConfig{MaxBackups: -1},
+			},
+			want: "max backups must be non-negative",
+		},
+		{
+			name: "invalid backup compression",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				Backup:      BackupConfig{CompressionLevel: 10},
+			},
+			want: "backup compression level must be between 0 and 9",
+		},
+		{
+			name: "negative slow query threshold",
+			opts: &Options{
+				CoreStorage:  CoreStorage{InMemory: true},
+				SlowQueryLog: SlowQueryLogConfig{Threshold: -time.Second},
+			},
+			want: "slow query threshold must be non-negative",
+		},
+		{
+			name: "negative slow query max entries",
+			opts: &Options{
+				CoreStorage:  CoreStorage{InMemory: true},
+				SlowQueryLog: SlowQueryLogConfig{MaxEntries: -1},
+			},
+			want: "slow query max entries must be non-negative",
+		},
+		{
+			name: "negative plan cache size",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				PlanCache:   PlanCacheConfig{Size: -1},
+			},
+			want: "plan cache size must be non-negative",
+		},
+		{
+			name: "negative plan cache entries",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				PlanCache:   PlanCacheConfig{MaxEntries: -1},
+			},
+			want: "plan cache max entries must be non-negative",
+		},
+		{
+			name: "negative auto vacuum interval",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				Maintenance: MaintenanceConfig{AutoVacuumInterval: -time.Second},
+			},
+			want: "auto-vacuum interval must be non-negative",
+		},
+		{
+			name: "invalid auto vacuum threshold",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				Maintenance: MaintenanceConfig{AutoVacuumThreshold: 1.1},
+			},
+			want: "auto-vacuum threshold must be between 0 and 1",
+		},
+		{
+			name: "negative checkpoint interval",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				Maintenance: MaintenanceConfig{CheckpointInterval: -time.Second},
+			},
+			want: "checkpoint interval must be non-negative",
+		},
+		{
+			name: "negative scheduler analyze interval",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				Scheduler:   SchedulerConfig{AnalyzeInterval: -time.Second},
+			},
+			want: "scheduler analyze interval must be non-negative",
+		},
+		{
+			name: "negative scheduler workers",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				Scheduler:   SchedulerConfig{Workers: -1},
+			},
+			want: "scheduler workers must be non-negative",
+		},
+		{
+			name: "negative scheduler tick interval",
+			opts: &Options{
+				CoreStorage: CoreStorage{InMemory: true},
+				Scheduler:   SchedulerConfig{TickInterval: -time.Second},
+			},
+			want: "scheduler tick interval must be non-negative",
+		},
+		{
+			name: "negative parallel query workers",
+			opts: &Options{
+				CoreStorage:   CoreStorage{InMemory: true},
+				ParallelQuery: ParallelQueryConfig{Workers: -1},
+			},
+			want: "parallel query workers must be non-negative",
+		},
+		{
+			name: "negative parallel query threshold",
+			opts: &Options{
+				CoreStorage:   CoreStorage{InMemory: true},
+				ParallelQuery: ParallelQueryConfig{Threshold: -1},
+			},
+			want: "parallel query threshold must be non-negative",
 		},
 	}
 

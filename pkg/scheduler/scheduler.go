@@ -22,6 +22,8 @@ type Scheduler struct {
 	startMu      sync.Mutex
 }
 
+const maxSchedulerWorkers = 1024
+
 // Logger is a minimal logging interface.
 type Logger interface {
 	Infof(format string, args ...interface{})
@@ -47,6 +49,9 @@ func New(workers int, log Logger) *Scheduler {
 func NewWithInterval(workers int, log Logger, tick time.Duration) *Scheduler {
 	if workers <= 0 {
 		workers = 2
+	}
+	if workers > maxSchedulerWorkers {
+		workers = maxSchedulerWorkers
 	}
 	if log == nil {
 		log = &noopLogger{}
@@ -147,12 +152,19 @@ func (s *Scheduler) Disable(jobID string) bool {
 
 // Trigger executes a job immediately, outside its normal schedule.
 func (s *Scheduler) Trigger(jobID string) error {
-	s.mu.RLock()
+	s.mu.Lock()
 	j, ok := s.jobs[jobID]
-	s.mu.RUnlock()
 	if !ok {
+		s.mu.Unlock()
 		return fmt.Errorf("job %s not found", jobID)
 	}
+	if j.Status == JobStatusRunning {
+		s.mu.Unlock()
+		return fmt.Errorf("job %s is already running", jobID)
+	}
+	j.Status = JobStatusRunning
+	s.mu.Unlock()
+
 	return s.runJob(j)
 }
 

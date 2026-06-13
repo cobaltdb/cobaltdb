@@ -21,6 +21,8 @@ const (
 	SeverityCritical
 )
 
+const maxConcurrentAlertHandlers = 64
+
 func (s AlertSeverity) String() string {
 	switch s {
 	case SeverityInfo:
@@ -69,6 +71,7 @@ type AlertManager struct {
 	wg            sync.WaitGroup
 	checkInterval time.Duration
 	logger        *logger.Logger
+	handlerSem    chan struct{}
 }
 
 // AlertHandler handles alert notifications
@@ -124,6 +127,7 @@ func NewAlertManager() *AlertManager {
 		handlers:      make([]AlertHandler, 0),
 		stopCh:        make(chan struct{}),
 		checkInterval: 10 * time.Second,
+		handlerSem:    make(chan struct{}, maxConcurrentAlertHandlers),
 	}
 }
 
@@ -277,24 +281,51 @@ func (am *AlertManager) checkRules() {
 			}
 			am.mu.Unlock()
 
-			// Notify handlers
-			for _, handler := range handlers {
-				if handler == nil {
-					continue
-				}
-				go func(h AlertHandler, a Alert) {
-					defer func() {
-						if r := recover(); r != nil {
-							am.logErrorf("[ALERT] Handler panic: %v", r)
-						}
-					}()
-					if err := h.Handle(a); err != nil {
-						am.logErrorf("[ALERT] Handler error: %v", err)
-					}
-				}(handler, alert)
-			}
+			am.notifyHandlers(alert, handlers)
 		}
 	}
+}
+
+func (am *AlertManager) notifyHandlers(alert Alert, handlers []AlertHandler) {
+	for _, handler := range handlers {
+		if handler == nil {
+			continue
+		}
+		if !am.tryAcquireHandlerSlot() {
+			am.logErrorf("[ALERT] Dropping handler notification for %s: handler concurrency limit reached", alert.RuleName)
+			continue
+		}
+		go func(h AlertHandler, a Alert) {
+			defer am.releaseHandlerSlot()
+			defer func() {
+				if r := recover(); r != nil {
+					am.logErrorf("[ALERT] Handler panic: %v", r)
+				}
+			}()
+			if err := h.Handle(a); err != nil {
+				am.logErrorf("[ALERT] Handler error: %v", err)
+			}
+		}(handler, alert)
+	}
+}
+
+func (am *AlertManager) tryAcquireHandlerSlot() bool {
+	if am == nil || am.handlerSem == nil {
+		return true
+	}
+	select {
+	case am.handlerSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (am *AlertManager) releaseHandlerSlot() {
+	if am == nil || am.handlerSem == nil {
+		return
+	}
+	<-am.handlerSem
 }
 
 // GetAlerts returns recent alerts

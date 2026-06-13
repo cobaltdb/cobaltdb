@@ -12,25 +12,31 @@ import (
 )
 
 const (
-	defaultCSVMaxRows  = 1_000_000
-	defaultCSVMaxBytes = 256 << 20 // 256 MiB
+	defaultCSVMaxRows       = 1_000_000
+	defaultCSVMaxBytes      = 256 << 20 // 256 MiB
+	defaultCSVMaxFieldBytes = 1 << 20   // 1 MiB
+	defaultCSVMaxColumns    = 4096
 )
 
 // CSVWrapper is a ForeignDataWrapper that reads data from CSV files.
 type CSVWrapper struct {
-	file     *os.File
-	maxRows  int
-	maxBytes int64
+	file          *os.File
+	maxRows       int
+	maxBytes      int64
+	maxFieldBytes int
+	maxColumns    int
 }
 
 type csvCursor struct {
-	file       *os.File
-	reader     *csv.Reader
-	maxRows    int
-	returned   int
-	pending    []interface{}
-	projection []int
-	predicates []csvPredicate
+	file          *os.File
+	reader        *csv.Reader
+	maxRows       int
+	maxFieldBytes int
+	maxColumns    int
+	returned      int
+	pending       []interface{}
+	projection    []int
+	predicates    []csvPredicate
 }
 
 type csvPredicate struct {
@@ -62,23 +68,29 @@ func (c *CSVWrapper) Open(options map[string]string) error {
 	if err != nil {
 		return err
 	}
-	if info, err := os.Stat(path); err != nil {
+	maxFieldBytes, err := parsePositiveIntOption(options, "max_field_bytes", defaultCSVMaxFieldBytes)
+	if err != nil {
 		return err
-	} else if maxBytes > 0 && info.Size() > maxBytes {
-		return fmt.Errorf("csv FDW file exceeds max_bytes: size=%d max_bytes=%d", info.Size(), maxBytes)
+	}
+	maxColumns, err := parsePositiveIntOption(options, "max_columns", defaultCSVMaxColumns)
+	if err != nil {
+		return err
+	}
+	f, err := openCSVRegularFile(path, maxBytes)
+	if err != nil {
+		return err
 	}
 	if c.file != nil {
 		if err := c.Close(); err != nil {
+			_ = f.Close()
 			return err
 		}
-	}
-	f, err := os.Open(path) // #nosec G304 - CSV FDW file is an explicit table option and is cleaned before use.
-	if err != nil {
-		return err
 	}
 	c.file = f
 	c.maxRows = maxRows
 	c.maxBytes = maxBytes
+	c.maxFieldBytes = maxFieldBytes
+	c.maxColumns = maxColumns
 	return nil
 }
 
@@ -87,17 +99,7 @@ func (c *CSVWrapper) OpenScan(table string, options ScanOptions) (RowCursor, err
 		return nil, fmt.Errorf("csv FDW not opened")
 	}
 	path := c.file.Name()
-	if c.maxBytes > 0 {
-		info, err := os.Stat(path)
-		if err != nil {
-			return nil, err
-		}
-		if info.Size() > c.maxBytes {
-			return nil, fmt.Errorf("csv FDW file exceeds max_bytes: size=%d max_bytes=%d", info.Size(), c.maxBytes)
-		}
-	}
-
-	f, err := os.Open(path) // #nosec G304 - file name was validated in Open before being stored.
+	f, err := openCSVRegularFile(path, c.maxBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -111,11 +113,17 @@ func (c *CSVWrapper) OpenScan(table string, options ScanOptions) (RowCursor, err
 		err = errors.Join(err, f.Close())
 		return nil, err
 	}
+	if err := validateCSVRecord(first, c.maxColumns, c.maxFieldBytes); err != nil {
+		err = errors.Join(err, f.Close())
+		return nil, err
+	}
 
 	cursor := &csvCursor{
-		file:    f,
-		reader:  reader,
-		maxRows: c.maxRows,
+		file:          f,
+		reader:        reader,
+		maxRows:       c.maxRows,
+		maxFieldBytes: c.maxFieldBytes,
+		maxColumns:    c.maxColumns,
 	}
 	if !looksLikeHeader(first) {
 		cursor.pending = csvRecordToRow(first)
@@ -168,6 +176,9 @@ func (c *csvCursor) Next() ([]interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := validateCSVRecord(record, c.maxColumns, c.maxFieldBytes); err != nil {
+			return nil, err
+		}
 		row := csvRecordToRow(record)
 		if !matchesCSVPredicates(row, c.predicates) {
 			continue
@@ -206,6 +217,45 @@ func cleanCSVPath(path string) (string, error) {
 	return filepath.Clean(path), nil
 }
 
+func openCSVRegularFile(path string, maxBytes int64) (*os.File, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("csv FDW file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("csv FDW file must be a regular file: %s", path)
+	}
+	if maxBytes > 0 && info.Size() > maxBytes {
+		return nil, fmt.Errorf("csv FDW file exceeds max_bytes: size=%d max_bytes=%d", info.Size(), maxBytes)
+	}
+
+	f, err := os.Open(path) // #nosec G304 - CSV FDW file is an explicit table option and is validated before use.
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, fmt.Errorf("csv FDW file must be a regular file: %s", path)
+	}
+	if !os.SameFile(info, openedInfo) {
+		_ = f.Close()
+		return nil, fmt.Errorf("csv FDW file changed while opening: %s", path)
+	}
+	if maxBytes > 0 && openedInfo.Size() > maxBytes {
+		_ = f.Close()
+		return nil, fmt.Errorf("csv FDW file exceeds max_bytes: size=%d max_bytes=%d", openedInfo.Size(), maxBytes)
+	}
+	return f, nil
+}
+
 func looksLikeHeader(record []string) bool {
 	for _, cell := range record {
 		if _, err := strconv.ParseFloat(cell, 64); err != nil {
@@ -221,6 +271,20 @@ func csvRecordToRow(record []string) []interface{} {
 		row[j] = cell
 	}
 	return row
+}
+
+func validateCSVRecord(record []string, maxColumns, maxFieldBytes int) error {
+	if maxColumns > 0 && len(record) > maxColumns {
+		return fmt.Errorf("csv FDW column limit exceeded: columns=%d max_columns=%d", len(record), maxColumns)
+	}
+	if maxFieldBytes > 0 {
+		for i, field := range record {
+			if len(field) > maxFieldBytes {
+				return fmt.Errorf("csv FDW field exceeds max_field_bytes: column=%d size=%d max_field_bytes=%d", i, len(field), maxFieldBytes)
+			}
+		}
+	}
+	return nil
 }
 
 func csvProjection(header []string, columns []string) []int {

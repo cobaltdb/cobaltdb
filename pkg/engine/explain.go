@@ -354,7 +354,7 @@ func isAggregateExpr(expr query.Expression) bool {
 		return false
 	}
 	switch strings.ToUpper(fc.Name) {
-	case "COUNT", "SUM", "AVG", "MIN", "MAX", "GROUP_CONCAT":
+	case "COUNT", "SUM", "AVG", "MIN", "MAX", "GROUP_CONCAT", "JSON_ARRAYAGG", "JSON_OBJECTAGG":
 		return true
 	}
 	return false

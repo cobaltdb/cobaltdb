@@ -3,6 +3,7 @@ package audit
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -354,8 +355,128 @@ func TestRotate(t *testing.T) {
 	al.Close()
 
 	// Verify new log file exists
-	if _, err := os.Stat(tmpFile); os.IsNotExist(err) {
+	if info, err := os.Stat(tmpFile); os.IsNotExist(err) {
 		t.Error("New log file should exist after rotation")
+	} else if err != nil {
+		t.Fatalf("stat new log file: %v", err)
+	} else if info.Mode().Perm() != 0600 {
+		t.Fatalf("new log file permissions = %v, want 0600", info.Mode().Perm())
+	}
+
+	matches, err := filepath.Glob(tmpFile + ".*")
+	if err != nil {
+		t.Fatalf("glob rotated audit logs: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one rotated audit log, got %d: %v", len(matches), matches)
+	}
+	if info, err := os.Stat(matches[0]); err != nil {
+		t.Fatalf("stat rotated audit log: %v", err)
+	} else if info.Mode().Perm() != 0600 {
+		t.Fatalf("rotated log file permissions = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestWriteEventRotatesWhenMaxFileSizeWouldBeExceeded(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "audit_auto_rotate.log")
+	config := &Config{
+		Enabled:         true,
+		LogFile:         tmpFile,
+		LogFormat:       "text",
+		RotationEnabled: true,
+		MaxFileSize:     260,
+	}
+	al, err := New(config, logger.Default())
+	if err != nil {
+		t.Fatalf("New audit logger: %v", err)
+	}
+	defer al.Close()
+
+	first := &Event{
+		Timestamp: time.Now().UTC(),
+		Type:      EventQuery,
+		EventID:   "first",
+		User:      "user1",
+		Action:    "SELECT",
+		Status:    "SUCCESS",
+		Query:     strings.Repeat("a", 150),
+	}
+	second := &Event{
+		Timestamp: time.Now().UTC(),
+		Type:      EventQuery,
+		EventID:   "second",
+		User:      "user2",
+		Action:    "SELECT",
+		Status:    "SUCCESS",
+		Query:     strings.Repeat("b", 150),
+	}
+
+	al.mu.Lock()
+	if err := al.writeEvent(first); err != nil {
+		al.mu.Unlock()
+		t.Fatalf("write first event: %v", err)
+	}
+	if err := al.writeEvent(second); err != nil {
+		al.mu.Unlock()
+		t.Fatalf("write second event: %v", err)
+	}
+	al.mu.Unlock()
+
+	current, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("read current audit log: %v", err)
+	}
+	if !strings.Contains(string(current), "second") || strings.Contains(string(current), "first") {
+		t.Fatalf("current log should contain only second event, got %q", string(current))
+	}
+	matches, err := filepath.Glob(tmpFile + ".*")
+	if err != nil {
+		t.Fatalf("glob rotated audit logs: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one rotated audit log, got %d: %v", len(matches), matches)
+	}
+	rotated, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read rotated audit log: %v", err)
+	}
+	if !strings.Contains(string(rotated), "first") {
+		t.Fatalf("rotated log should contain first event, got %q", string(rotated))
+	}
+}
+
+func TestWriteEventRejectsOversizedAuditLine(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "audit_oversized.log")
+	config := &Config{
+		Enabled:   true,
+		LogFile:   tmpFile,
+		LogFormat: "text",
+	}
+	al, err := New(config, logger.Default())
+	if err != nil {
+		t.Fatalf("New audit logger: %v", err)
+	}
+	defer al.Close()
+
+	err = al.writeEvent(&Event{
+		Timestamp: time.Now().UTC(),
+		Type:      EventQuery,
+		EventID:   "oversized",
+		User:      "user1",
+		Action:    "SELECT",
+		Status:    "SUCCESS",
+		Query:     strings.Repeat("x", maxAuditLogLineSize),
+	})
+	if err == nil || !strings.Contains(err.Error(), "audit log event line too large") {
+		t.Fatalf("expected oversized audit line error, got %v", err)
+	}
+	info, statErr := os.Stat(tmpFile)
+	if statErr != nil {
+		t.Fatalf("stat audit log: %v", statErr)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("oversized audit event should not be written, file size=%d", info.Size())
 	}
 }
 

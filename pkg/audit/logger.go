@@ -211,10 +211,40 @@ func normalizeAuditConfig(config *Config) *Config {
 }
 
 func (al *Logger) openLogFile() error {
-	dir := filepath.Dir(al.config.LogFile)
+	cleanPath := filepath.Clean(al.config.LogFile)
+	dir := filepath.Dir(cleanPath)
 	if dir != "" && dir != "." {
+		if err := rejectAuditLogDirSymlinkPathComponents(dir); err != nil {
+			return err
+		}
+		info, statErr := os.Lstat(dir)
+		preexisting := statErr == nil
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return fmt.Errorf("failed to stat audit log directory: %w", statErr)
+		}
+		if preexisting {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("audit log directory must not be a symlink: %s", dir)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("audit log parent must be a directory: %s", dir)
+			}
+		}
 		if err := os.MkdirAll(dir, 0750); err != nil {
 			return fmt.Errorf("failed to create audit log directory: %w", err)
+		}
+		if err := os.Chmod(dir, 0750); err != nil {
+			return fmt.Errorf("failed to set audit log directory permissions: %w", err)
+		}
+		openedInfo, err := os.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("failed to stat audit log directory after create: %w", err)
+		}
+		if !openedInfo.IsDir() {
+			return fmt.Errorf("audit log parent must be a directory: %s", dir)
+		}
+		if preexisting && !os.SameFile(info, openedInfo) {
+			return fmt.Errorf("audit log directory changed while opening: %s", dir)
 		}
 	}
 
@@ -222,13 +252,116 @@ func (al *Logger) openLogFile() error {
 		return err
 	}
 
-	file, err := os.OpenFile(al.config.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	file, err := openAuditLogForAppend(al.config.LogFile)
 	if err != nil {
 		return fmt.Errorf("failed to open audit log file: %w", err)
+	}
+	if err := syncAuditLogParentDir(al.config.LogFile); err != nil {
+		closeErr := file.Close()
+		if closeErr != nil {
+			return fmt.Errorf("failed to sync audit log directory: %w; close failed: %v", err, closeErr)
+		}
+		return fmt.Errorf("failed to sync audit log directory: %w", err)
 	}
 
 	al.file = file
 	return nil
+}
+
+func rejectAuditLogDirSymlinkPathComponents(path string) error {
+	path = filepath.Clean(path)
+	if path == "." || path == string(os.PathSeparator) {
+		return nil
+	}
+
+	current := "."
+	if filepath.IsAbs(path) {
+		current = string(os.PathSeparator)
+		path = strings.TrimPrefix(path, string(os.PathSeparator))
+	}
+	for _, part := range strings.Split(path, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to stat audit log directory component: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("audit log directory component must not be a symlink: %s", current)
+		}
+	}
+	return nil
+}
+
+func openAuditLogForAppend(path string) (*os.File, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("audit log path cannot be empty")
+	}
+	cleanPath := filepath.Clean(path)
+	info, err := os.Lstat(cleanPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		file, createErr := os.OpenFile(cleanPath, os.O_APPEND|os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 - path is explicit audit configuration and cleaned before use.
+		if createErr != nil {
+			if os.IsExist(createErr) {
+				return openAuditLogForAppend(cleanPath)
+			}
+			return nil, createErr
+		}
+		if chmodErr := file.Chmod(0600); chmodErr != nil {
+			_ = file.Close()
+			_ = os.Remove(cleanPath)
+			return nil, chmodErr
+		}
+		openedInfo, statErr := file.Stat()
+		if statErr != nil {
+			_ = file.Close()
+			_ = os.Remove(cleanPath)
+			return nil, statErr
+		}
+		if !openedInfo.Mode().IsRegular() {
+			_ = file.Close()
+			_ = os.Remove(cleanPath)
+			return nil, fmt.Errorf("audit log must be a regular file: %s", cleanPath)
+		}
+		return file, nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("audit log must not be a symlink: %s", cleanPath)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("audit log must be a regular file: %s", cleanPath)
+	}
+
+	file, err := os.OpenFile(cleanPath, os.O_APPEND|os.O_WRONLY, 0600) // #nosec G304 - path is explicit audit configuration and validated before use.
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("audit log must be a regular file: %s", cleanPath)
+	}
+	if !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return nil, fmt.Errorf("audit log changed while opening: %s", cleanPath)
+	}
+	if err := file.Chmod(0600); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func (al *Logger) loadLastHash() error {
@@ -466,6 +599,19 @@ func (al *Logger) writeEvent(event *Event) error {
 		}
 		encrypted := al.cipher.Seal(nonce, nonce, []byte(line), nil)
 		line = "ENC:" + base64.StdEncoding.EncodeToString(encrypted) + "\n"
+	}
+
+	if len(line) > maxAuditLogLineSize {
+		return fmt.Errorf("audit log event line too large: %d bytes (max %d)", len(line), maxAuditLogLineSize)
+	}
+	if al.config.RotationEnabled && al.config.MaxFileSize > 0 {
+		if info, err := al.file.Stat(); err != nil {
+			return fmt.Errorf("failed to stat audit log before write: %w", err)
+		} else if info.Size() > 0 && info.Size()+int64(len(line)) > al.config.MaxFileSize {
+			if err := al.rotateLocked(); err != nil {
+				return err
+			}
+		}
 	}
 
 	if _, err := al.file.WriteString(line); err != nil {
@@ -814,10 +960,17 @@ func (al *Logger) Rotate() error {
 	al.mu.Lock()
 	defer al.mu.Unlock()
 
+	return al.rotateLocked()
+}
+
+func (al *Logger) rotateLocked() error {
 	if al.file == nil {
 		return nil
 	}
 
+	if err := al.file.Sync(); err != nil {
+		return fmt.Errorf("failed to sync log file for rotation: %w", err)
+	}
 	if err := al.file.Close(); err != nil {
 		return fmt.Errorf("failed to close log file for rotation: %w", err)
 	}
@@ -830,6 +983,23 @@ func (al *Logger) Rotate() error {
 		_ = al.openLogFile()
 		return fmt.Errorf("failed to rename log file: %w", err)
 	}
+	if err := syncAuditLogParentDir(al.config.LogFile); err != nil {
+		_ = al.openLogFile()
+		return fmt.Errorf("failed to sync audit log directory after rotation: %w", err)
+	}
 
 	return al.openLogFile()
+}
+
+func syncAuditLogParentDir(path string) error {
+	dir := filepath.Dir(path)
+	if dir == "" {
+		dir = "."
+	}
+	file, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return file.Sync()
 }

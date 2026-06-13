@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -245,6 +246,17 @@ func (h panickingAlertHandler) Handle(Alert) error {
 	panic("handler panic")
 }
 
+type blockingAlertHandler struct {
+	started *int64
+	release <-chan struct{}
+}
+
+func (h blockingAlertHandler) Handle(Alert) error {
+	atomic.AddInt64(h.started, 1)
+	<-h.release
+	return nil
+}
+
 type signalWriter struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -338,6 +350,45 @@ func TestAlertManagerHandlerPanicIsRecovered(t *testing.T) {
 	case <-called:
 	case <-time.After(time.Second):
 		t.Fatal("expected panicking handler to be called")
+	}
+}
+
+func TestAlertManagerLimitsConcurrentHandlers(t *testing.T) {
+	am := NewAlertManager()
+	am.handlerSem = make(chan struct{}, 2)
+	release := make(chan struct{})
+	defer close(release)
+
+	var started int64
+	for i := 0; i < 10; i++ {
+		am.RegisterHandler(blockingAlertHandler{
+			started: &started,
+			release: release,
+		})
+	}
+	am.RegisterRule(&AlertRule{
+		Name:        "test_rule",
+		Description: "Test rule",
+		Severity:    SeverityCritical,
+		Threshold:   1,
+		Condition: func() (bool, float64) {
+			return true, 2
+		},
+	})
+
+	am.checkRules()
+
+	deadline := time.Now().Add(time.Second)
+	for atomic.LoadInt64(&started) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := atomic.LoadInt64(&started); got != 2 {
+		t.Fatalf("expected exactly 2 handlers to start, got %d", got)
+	}
+
+	time.Sleep(25 * time.Millisecond)
+	if got := atomic.LoadInt64(&started); got != 2 {
+		t.Fatalf("handler concurrency limit was exceeded, got %d started handlers", got)
 	}
 }
 

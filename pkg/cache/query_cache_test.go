@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,6 +71,36 @@ func TestCacheCreationNormalizesCleanupInterval(t *testing.T) {
 	}
 }
 
+func TestCacheCreationNormalizesNegativeLimits(t *testing.T) {
+	config := &Config{
+		MaxSize:         -1,
+		MaxEntries:      -1,
+		TTL:             -time.Second,
+		CleanupInterval: -time.Second,
+		Enabled:         true,
+	}
+
+	cache := New(config)
+	defer cache.Close()
+
+	defaults := DefaultConfig()
+	if cache.config.MaxSize != defaults.MaxSize {
+		t.Fatalf("MaxSize = %d, want %d", cache.config.MaxSize, defaults.MaxSize)
+	}
+	if cache.config.MaxEntries != defaults.MaxEntries {
+		t.Fatalf("MaxEntries = %d, want %d", cache.config.MaxEntries, defaults.MaxEntries)
+	}
+	if cache.config.TTL != defaults.TTL {
+		t.Fatalf("TTL = %v, want %v", cache.config.TTL, defaults.TTL)
+	}
+	if cache.config.CleanupInterval != defaults.CleanupInterval {
+		t.Fatalf("CleanupInterval = %v, want %v", cache.config.CleanupInterval, defaults.CleanupInterval)
+	}
+	if config.MaxSize != -1 || config.MaxEntries != -1 || config.TTL != -time.Second || config.CleanupInterval != -time.Second {
+		t.Fatal("New should not mutate caller config")
+	}
+}
+
 func TestCacheZeroMaxSizeMeansUnlimited(t *testing.T) {
 	cache := New(&Config{
 		MaxSize:         0,
@@ -103,6 +134,75 @@ func TestCacheZeroTTLMeansNoExpiration(t *testing.T) {
 	}
 }
 
+func TestCacheEntrySizeIncludesSQLArgsAndDependencies(t *testing.T) {
+	cache := New(&Config{
+		MaxSize:         10 * 1024,
+		MaxEntries:      10,
+		TTL:             time.Minute,
+		CleanupInterval: time.Minute,
+		Enabled:         true,
+	})
+	defer cache.Close()
+
+	sql := "SELECT * FROM events WHERE payload = ?" + strings.Repeat("x", 1200)
+	args := []interface{}{strings.Repeat("a", 1200)}
+	tableDeps := []string{strings.Repeat("t", 1200)}
+	cache.Set(sql, args, []string{"id"}, [][]interface{}{{1}}, tableDeps)
+
+	if _, found := cache.Get(sql, args); found {
+		t.Fatal("entry with oversized SQL/args/deps should not be cached")
+	}
+	if stats := cache.Stats(); stats.EntryCount != 0 || stats.CurrentSize != 0 {
+		t.Fatalf("oversized metadata should not affect cache stats: %+v", stats)
+	}
+}
+
+func TestCacheRejectsRecursiveArgumentValues(t *testing.T) {
+	cache := New(&Config{
+		MaxSize:         0,
+		MaxEntries:      10,
+		TTL:             time.Minute,
+		CleanupInterval: time.Minute,
+		Enabled:         true,
+	})
+	defer cache.Close()
+
+	cyclic := map[string]interface{}{}
+	cyclic["self"] = cyclic
+
+	cache.Set("SELECT ?", []interface{}{cyclic}, []string{"id"}, [][]interface{}{{1}}, []string{"events"})
+
+	if _, found := cache.Get("SELECT ?", []interface{}{cyclic}); found {
+		t.Fatal("cyclic argument value should not be cached")
+	}
+	if stats := cache.Stats(); stats.EntryCount != 0 || stats.CurrentSize != 0 {
+		t.Fatalf("cyclic argument should not affect cache stats: %+v", stats)
+	}
+}
+
+func TestCacheRejectsRecursiveRowValues(t *testing.T) {
+	cache := New(&Config{
+		MaxSize:         0,
+		MaxEntries:      10,
+		TTL:             time.Minute,
+		CleanupInterval: time.Minute,
+		Enabled:         true,
+	})
+	defer cache.Close()
+
+	cyclic := make([]interface{}, 1)
+	cyclic[0] = cyclic
+
+	cache.Set("SELECT payload FROM events", nil, []string{"payload"}, [][]interface{}{{cyclic}}, []string{"events"})
+
+	if _, found := cache.Get("SELECT payload FROM events", nil); found {
+		t.Fatal("cyclic row value should not be cached")
+	}
+	if stats := cache.Stats(); stats.EntryCount != 0 || stats.CurrentSize != 0 {
+		t.Fatalf("cyclic row should not affect cache stats: %+v", stats)
+	}
+}
+
 func TestCacheGetSet(t *testing.T) {
 	config := DefaultConfig()
 	cache := New(config)
@@ -128,6 +228,32 @@ func TestCacheGetSet(t *testing.T) {
 
 	if len(entry.Rows) != 1 {
 		t.Errorf("Expected 1 row, got %d", len(entry.Rows))
+	}
+}
+
+func TestCacheStringAndByteArgsDoNotCollide(t *testing.T) {
+	config := DefaultConfig()
+	cache := New(config)
+	defer cache.Close()
+
+	sql := "SELECT payload FROM events WHERE id = ?"
+	cache.Set(sql, []interface{}{"1"}, []string{"payload"}, [][]interface{}{{"string"}}, []string{"events"})
+	cache.Set(sql, []interface{}{[]byte("1")}, []string{"payload"}, [][]interface{}{{"bytes"}}, []string{"events"})
+
+	entry, found := cache.Get(sql, []interface{}{"1"})
+	if !found {
+		t.Fatal("string arg entry should be cached")
+	}
+	if got := entry.Rows[0][0]; got != "string" {
+		t.Fatalf("string arg cache entry collided, got %v", got)
+	}
+
+	entry, found = cache.Get(sql, []interface{}{[]byte("1")})
+	if !found {
+		t.Fatal("byte arg entry should be cached")
+	}
+	if got := entry.Rows[0][0]; got != "bytes" {
+		t.Fatalf("byte arg cache entry collided, got %v", got)
 	}
 }
 
@@ -453,6 +579,26 @@ func TestGenerateKey(t *testing.T) {
 	// Key should not be empty
 	if len(key1) == 0 {
 		t.Error("Key should not be empty")
+	}
+}
+
+func TestGenerateKeyDistinguishesArgTypes(t *testing.T) {
+	sql := "SELECT * FROM users WHERE id = ?"
+	keys := []string{
+		generateKey(sql, []interface{}{"1"}),
+		generateKey(sql, []interface{}{[]byte("1")}),
+		generateKey(sql, []interface{}{1}),
+		generateKey(sql, []interface{}{int64(1)}),
+		generateKey(sql, []interface{}{true}),
+		generateKey(sql, []interface{}{nil}),
+	}
+
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if _, exists := seen[key]; exists {
+			t.Fatalf("different argument types should produce unique cache keys: %v", keys)
+		}
+		seen[key] = struct{}{}
 	}
 }
 

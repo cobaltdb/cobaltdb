@@ -56,8 +56,23 @@ func TestConfigValidation(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "max conns too large",
+			config:  &Config{MinConns: 0, MaxConns: maxPoolConnections + 1},
+			wantErr: true,
+		},
+		{
 			name:    "min greater than max",
 			config:  &Config{MinConns: 100, MaxConns: 50},
+			wantErr: true,
+		},
+		{
+			name:    "negative acquire timeout",
+			config:  &Config{MinConns: 0, MaxConns: 1, AcquireTimeout: -time.Second},
+			wantErr: true,
+		},
+		{
+			name:    "wait queue too large",
+			config:  &Config{MinConns: 0, MaxConns: 1, WaitQueueSize: maxPoolWaiters + 1},
 			wantErr: true,
 		},
 	}

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -105,6 +106,64 @@ func TestSchedulerTrigger(t *testing.T) {
 
 	if count.Load() != 1 {
 		t.Fatalf("expected 1 run, got %d", count.Load())
+	}
+}
+
+func TestSchedulerTriggerRejectsAlreadyRunningJob(t *testing.T) {
+	var count atomic.Int32
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	s := New(1, nil)
+
+	job := &Job{
+		ID:       "trigger-running-job",
+		Name:     "Trigger Running Job",
+		Type:     JobTypeCustom,
+		Interval: time.Hour,
+		Enabled:  true,
+		Fn: func(ctx context.Context) error {
+			count.Add(1)
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+			return nil
+		},
+	}
+
+	if err := s.Register(job); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.Trigger("trigger-running-job")
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("job did not start")
+	}
+
+	err := s.Trigger("trigger-running-job")
+	if err == nil {
+		close(release)
+		t.Fatal("expected already-running trigger to fail")
+	}
+	if !strings.Contains(err.Error(), "already running") {
+		close(release)
+		t.Fatalf("expected already-running error, got %v", err)
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("first trigger failed: %v", err)
+	}
+	if got := count.Load(); got != 1 {
+		t.Fatalf("expected one job execution, got %d", got)
 	}
 }
 
@@ -360,6 +419,11 @@ func TestSchedulerNewWithIntervalDefaults(t *testing.T) {
 	s := NewWithInterval(0, nil, 100*time.Millisecond)
 	if s.workers != 2 {
 		t.Errorf("expected workers=2, got %d", s.workers)
+	}
+
+	sMax := NewWithInterval(maxSchedulerWorkers+1, nil, 100*time.Millisecond)
+	if sMax.workers != maxSchedulerWorkers {
+		t.Errorf("expected workers capped at %d, got %d", maxSchedulerWorkers, sMax.workers)
 	}
 
 	// tick <= 0 should default to 1s

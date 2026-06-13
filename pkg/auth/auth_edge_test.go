@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -89,30 +90,30 @@ func TestAuthEdgeCases(t *testing.T) {
 
 	t.Run("EmptyUsername", func(t *testing.T) {
 		err := a.CreateUser("", "password123", false)
-		if err != nil {
-			t.Fatalf("Failed to create user with empty username: %v", err)
+		if err != ErrInvalidUsername {
+			t.Fatalf("expected ErrInvalidUsername, got %v", err)
 		}
 
 		_, err = a.Authenticate("", "password123")
-		if err != nil {
-			t.Errorf("Failed to authenticate user with empty username: %v", err)
+		if err != ErrInvalidCredentials {
+			t.Errorf("expected ErrInvalidCredentials, got %v", err)
 		}
 	})
 
 	t.Run("EmptyPassword", func(t *testing.T) {
 		err := a.CreateUser("emptypass", "", false)
-		if err != nil {
-			t.Fatalf("Failed to create user with empty password: %v", err)
+		if err != ErrInvalidPassword {
+			t.Fatalf("expected ErrInvalidPassword, got %v", err)
 		}
 
 		_, err = a.Authenticate("emptypass", "")
-		if err != nil {
-			t.Errorf("Failed to authenticate with empty password: %v", err)
+		if err != ErrInvalidCredentials {
+			t.Errorf("expected ErrInvalidCredentials, got %v", err)
 		}
 	})
 
-	t.Run("LongUsername", func(t *testing.T) {
-		longUsername := strings.Repeat("a", 1000)
+	t.Run("MaxLengthUsername", func(t *testing.T) {
+		longUsername := strings.Repeat("a", maxUsernameBytes)
 		err := a.CreateUser(longUsername, "password123", false)
 		if err != nil {
 			t.Fatalf("Failed to create user with long username: %v", err)
@@ -121,6 +122,19 @@ func TestAuthEdgeCases(t *testing.T) {
 		_, err = a.Authenticate(longUsername, "password123")
 		if err != nil {
 			t.Errorf("Failed to authenticate with long username: %v", err)
+		}
+	})
+
+	t.Run("TooLongUsername", func(t *testing.T) {
+		tooLongUsername := strings.Repeat("a", maxUsernameBytes+1)
+		err := a.CreateUser(tooLongUsername, "password123", false)
+		if err != ErrInvalidUsername {
+			t.Fatalf("expected ErrInvalidUsername, got %v", err)
+		}
+
+		_, err = a.Authenticate(tooLongUsername, "password123")
+		if err != ErrInvalidCredentials {
+			t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 		}
 	})
 
@@ -134,6 +148,34 @@ func TestAuthEdgeCases(t *testing.T) {
 		_, err = a.Authenticate("longpass", longPassword)
 		if err != nil {
 			t.Errorf("Failed to authenticate with long password: %v", err)
+		}
+	})
+
+	t.Run("TooLongPassword", func(t *testing.T) {
+		tooLongPassword := strings.Repeat("b", maxPasswordBytes+1)
+		err := a.CreateUser("toolongpass", tooLongPassword, false)
+		if err != ErrInvalidPassword {
+			t.Fatalf("expected ErrInvalidPassword, got %v", err)
+		}
+
+		_, err = a.Authenticate("longpass", tooLongPassword)
+		if err != ErrInvalidCredentials {
+			t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+		}
+	})
+
+	t.Run("RejectedCredentialsDoNotRecordFailedAttempts", func(t *testing.T) {
+		tooLongUsername := strings.Repeat("a", maxUsernameBytes+1)
+		_, err := a.Authenticate(tooLongUsername, "password123")
+		if err != ErrInvalidCredentials {
+			t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+		}
+
+		a.failedMu.RLock()
+		_, recorded := a.failedAttempts[tooLongUsername]
+		a.failedMu.RUnlock()
+		if recorded {
+			t.Fatal("over-limit username was recorded in failed attempts")
 		}
 	})
 
@@ -226,6 +268,13 @@ func TestSessionEdgeCases(t *testing.T) {
 		}
 	})
 
+	t.Run("OversizedToken", func(t *testing.T) {
+		_, err := a.ValidateToken(strings.Repeat("x", maxSessionTokenBytes+1))
+		if err != ErrInvalidToken {
+			t.Errorf("Expected ErrInvalidToken for oversized token, got %v", err)
+		}
+	})
+
 	t.Run("LogoutEmptyToken", func(t *testing.T) {
 		// Should not panic
 		a.Logout("")
@@ -234,6 +283,19 @@ func TestSessionEdgeCases(t *testing.T) {
 	t.Run("LogoutInvalidToken", func(t *testing.T) {
 		// Should not panic
 		a.Logout("nonexistenttoken")
+	})
+
+	t.Run("LogoutOversizedTokenDoesNotAffectSessions", func(t *testing.T) {
+		token, err := a.Authenticate("sessiontest", "password123")
+		if err != nil {
+			t.Fatalf("Authenticate failed: %v", err)
+		}
+
+		a.Logout(strings.Repeat("x", maxSessionTokenBytes+1))
+
+		if _, err := a.ValidateToken(token); err != nil {
+			t.Fatalf("valid token should survive oversized logout input: %v", err)
+		}
 	})
 
 	t.Run("MultipleLogins", func(t *testing.T) {
@@ -285,14 +347,18 @@ func TestPermissionEdgeCases(t *testing.T) {
 	}
 
 	t.Run("EmptyPermissionActions", func(t *testing.T) {
-		err := a.GrantPermission("permtest", "db1", "table1", []string{})
-		if err != nil {
-			t.Fatalf("Failed to grant empty permissions: %v", err)
+		err := a.GrantPermission("permtest", "db1", "table1", nil)
+		if err != ErrInvalidPermission {
+			t.Fatalf("expected ErrInvalidPermission for nil actions, got %v", err)
+		}
+		err = a.GrantPermission("permtest", "db1", "table1", []string{})
+		if err != ErrInvalidPermission {
+			t.Fatalf("expected ErrInvalidPermission for empty actions, got %v", err)
 		}
 
 		hasPerm := a.HasPermission("permtest", "db1", "table1", "SELECT")
 		if hasPerm {
-			t.Error("Should not have permission with empty actions list")
+			t.Error("empty action grant should not create a permission")
 		}
 	})
 
@@ -402,6 +468,84 @@ func TestPermissionEdgeCases(t *testing.T) {
 			t.Error("Should have INSERT permission")
 		}
 	})
+
+	t.Run("RejectsOversizedPermissionTargets", func(t *testing.T) {
+		tooLong := strings.Repeat("d", maxPermissionTargetBytes+1)
+		if err := a.GrantPermission("permtest", tooLong, "table", []string{"SELECT"}); err != ErrInvalidPermission {
+			t.Fatalf("expected ErrInvalidPermission for oversized database, got %v", err)
+		}
+		if err := a.GrantPermission("permtest", "db", tooLong, []string{"SELECT"}); err != ErrInvalidPermission {
+			t.Fatalf("expected ErrInvalidPermission for oversized table, got %v", err)
+		}
+		if a.HasPermission("permtest", tooLong, "table", "SELECT") {
+			t.Fatal("oversized permission target should not match")
+		}
+	})
+
+	t.Run("RejectsOversizedPermissionActions", func(t *testing.T) {
+		tooLong := strings.Repeat("A", maxPermissionActionBytes+1)
+		if err := a.GrantPermission("permtest", "db5", "table5", []string{tooLong}); err != ErrInvalidPermission {
+			t.Fatalf("expected ErrInvalidPermission for oversized action, got %v", err)
+		}
+		if err := a.GrantPermission("permtest", "db5", "table5", []string{""}); err != ErrInvalidPermission {
+			t.Fatalf("expected ErrInvalidPermission for empty action, got %v", err)
+		}
+		if a.HasPermission("permtest", "db5", "table5", tooLong) {
+			t.Fatal("oversized action should not match")
+		}
+	})
+
+	t.Run("RejectsEmptyRevokeActionListWithoutMutation", func(t *testing.T) {
+		if err := a.GrantPermission("permtest", "revempty", "table", []string{"SELECT"}); err != nil {
+			t.Fatalf("GrantPermission failed: %v", err)
+		}
+		if err := a.RevokePermission("permtest", "revempty", "table", nil); err != ErrInvalidPermission {
+			t.Fatalf("expected ErrInvalidPermission for nil revoke actions, got %v", err)
+		}
+		if err := a.RevokePermission("permtest", "revempty", "table", []string{}); err != ErrInvalidPermission {
+			t.Fatalf("expected ErrInvalidPermission for empty revoke actions, got %v", err)
+		}
+		if !a.HasPermission("permtest", "revempty", "table", "SELECT") {
+			t.Fatal("empty revoke action list should not remove existing permission")
+		}
+	})
+
+	t.Run("RejectsTooManyPermissionActionsWithoutMutation", func(t *testing.T) {
+		actions := make([]string, maxPermissionActions)
+		for i := range actions {
+			actions[i] = fmt.Sprintf("ACTION_%d", i)
+		}
+		if err := a.GrantPermission("permtest", "mergecap", "table", actions); err != nil {
+			t.Fatalf("GrantPermission at action cap failed: %v", err)
+		}
+		if err := a.GrantPermission("permtest", "mergecap", "table", []string{"ACTION_OVERFLOW"}); err != ErrInvalidPermission {
+			t.Fatalf("expected ErrInvalidPermission when merged actions exceed cap, got %v", err)
+		}
+		if a.HasPermission("permtest", "mergecap", "table", "ACTION_OVERFLOW") {
+			t.Fatal("overflow action should not be granted after rejected merge")
+		}
+		if !a.HasPermission("permtest", "mergecap", "table", "ACTION_0") {
+			t.Fatal("existing action should remain after rejected merge")
+		}
+	})
+
+	t.Run("RejectsTooManyPermissionsPerUser", func(t *testing.T) {
+		const username = "permcap"
+		if err := a.CreateUser(username, "password123", false); err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+		for i := 0; i < maxPermissionsPerUser; i++ {
+			if err := a.GrantPermission(username, fmt.Sprintf("db_%d", i), "table", []string{"SELECT"}); err != nil {
+				t.Fatalf("GrantPermission %d failed: %v", i, err)
+			}
+		}
+		if err := a.GrantPermission(username, "overflow_db", "table", []string{"SELECT"}); err != ErrInvalidPermission {
+			t.Fatalf("expected ErrInvalidPermission after permission cap, got %v", err)
+		}
+		if a.HasPermission(username, "overflow_db", "table", "SELECT") {
+			t.Fatal("overflow permission should not be granted after cap is reached")
+		}
+	})
 }
 
 func TestChangePasswordEdgeCases(t *testing.T) {
@@ -455,6 +599,13 @@ func TestChangePasswordEdgeCases(t *testing.T) {
 		_, err = a.Authenticate("passtest", "newpassword123")
 		if err != nil {
 			t.Errorf("New password should work: %v", err)
+		}
+	})
+
+	t.Run("RejectEmptyNewPassword", func(t *testing.T) {
+		err := a.ChangePassword("passtest", "newpassword123", "")
+		if err != ErrInvalidPassword {
+			t.Fatalf("expected ErrInvalidPassword, got %v", err)
 		}
 	})
 }

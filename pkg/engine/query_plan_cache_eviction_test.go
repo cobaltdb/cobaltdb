@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -42,8 +43,8 @@ func TestQueryPlanCache_Eviction(t *testing.T) {
 
 // TestQueryPlanCache_EvictionBySize tests eviction by total size limit
 func TestQueryPlanCache_EvictionBySize(t *testing.T) {
-	// Very small max size to trigger size-based eviction
-	cache := NewQueryPlanCache(100, 100)
+	// Small but valid max size to trigger size-based eviction between entries.
+	cache := NewQueryPlanCache(1200, 100)
 
 	// Add a large query that takes most of the space
 	sql1 := "SELECT * FROM very_long_table_name_that_takes_up_space WHERE column1 = 'value' AND column2 = 'value'"
@@ -66,6 +67,9 @@ func TestQueryPlanCache_EvictionBySize(t *testing.T) {
 	stats := cache.GetStats()
 	if stats.Size == 0 {
 		t.Error("Cache should not be empty after eviction")
+	}
+	if stats.CurrentBytes > stats.MaxBytes {
+		t.Fatalf("cache bytes %d exceeded max %d", stats.CurrentBytes, stats.MaxBytes)
 	}
 	t.Logf("Cache size after eviction: %d (was %d)", stats.Size, size1)
 }
@@ -104,6 +108,31 @@ func TestQueryPlanCache_LRUOrder(t *testing.T) {
 	_, found = cache.Get(sqls[1], nil)
 	if found {
 		t.Error("Expected 'second' to be evicted (least recently used)")
+	}
+}
+
+func TestQueryPlanCacheTopQueriesCapsResultCount(t *testing.T) {
+	cache := NewQueryPlanCache(2*1024*1024, maxQueryPlanTopQueries+50)
+
+	for i := 0; i < maxQueryPlanTopQueries+50; i++ {
+		sql := fmt.Sprintf("SELECT %d FROM capped_top_queries", i)
+		stmt, _ := query.Parse(sql)
+		if err := cache.Put(sql, nil, stmt); err != nil {
+			t.Fatalf("Put %d failed: %v", i, err)
+		}
+		for j := 0; j < i; j++ {
+			cache.Get(sql, nil)
+		}
+	}
+
+	top := cache.GetTopQueries(maxQueryPlanTopQueries + 1000)
+	if len(top) != maxQueryPlanTopQueries {
+		t.Fatalf("top query count = %d, want %d", len(top), maxQueryPlanTopQueries)
+	}
+	for i := 0; i < len(top)-1; i++ {
+		if top[i].AccessCount < top[i+1].AccessCount {
+			t.Fatalf("top queries not sorted at %d: %d < %d", i, top[i].AccessCount, top[i+1].AccessCount)
+		}
 	}
 }
 
@@ -186,9 +215,37 @@ func TestQueryPlanCache_TooLargeEntry(t *testing.T) {
 	stmt, _ := query.Parse(sql)
 	err := cache.Put(sql, nil, stmt)
 
-	// Should handle gracefully (either reject or accept)
-	if err != nil {
-		t.Logf("Large entry was rejected as expected: %v", err)
+	if !errors.Is(err, ErrQueryPlanCacheEntryTooLarge) {
+		t.Fatalf("expected ErrQueryPlanCacheEntryTooLarge, got %v", err)
+	}
+	stats := cache.GetStats()
+	if stats.Size != 0 || stats.CurrentBytes != 0 {
+		t.Fatalf("oversized entry should not be cached, stats=%+v", stats)
+	}
+}
+
+func TestQueryPlanCache_UpdateRejectsOversizedReplacement(t *testing.T) {
+	cache := NewQueryPlanCache(700, 10)
+
+	sql := "SELECT * FROM test"
+	stmt, _ := query.Parse(sql)
+	if err := cache.Put(sql, nil, stmt); err != nil {
+		t.Fatalf("initial Put failed: %v", err)
+	}
+
+	cache.maxSize = 100
+	replacementStmt, _ := query.Parse(sql)
+	err := cache.Put(sql, nil, replacementStmt)
+	if !errors.Is(err, ErrQueryPlanCacheEntryTooLarge) {
+		t.Fatalf("expected oversized replacement error, got %v", err)
+	}
+
+	entry, found := cache.Get(sql, nil)
+	if !found {
+		t.Fatal("existing entry should remain after oversized replacement is rejected")
+	}
+	if entry.SQL != sql {
+		t.Fatalf("existing entry SQL changed after rejected replacement: %q", entry.SQL)
 	}
 }
 

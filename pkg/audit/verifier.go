@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -28,8 +29,7 @@ type VerificationResult struct {
 // same key is provided. Text-format audit logs are intentionally rejected
 // because their line format is not a stable canonical payload.
 func VerifyLogFile(path string, encryptionKey []byte) (*VerificationResult, error) {
-	// #nosec G304 -- Audit verification intentionally opens caller-supplied log paths.
-	file, err := os.Open(path)
+	file, err := openAuditLogForRead(path)
 	if err != nil {
 		return nil, fmt.Errorf("open audit log: %w", err)
 	}
@@ -135,8 +135,7 @@ func decryptAuditLogLine(aead cipher.AEAD, line []byte) ([]byte, error) {
 }
 
 func readLastTextAuditHash(path string, aead cipher.AEAD) (string, error) {
-	// #nosec G304 -- Audit logger intentionally reopens its configured log path.
-	file, err := os.Open(path)
+	file, err := openAuditLogForRead(path)
 	if err != nil {
 		return "", fmt.Errorf("open audit log: %w", err)
 	}
@@ -171,6 +170,47 @@ func readLastTextAuditHash(path string, aead cipher.AEAD) (string, error) {
 		return "", fmt.Errorf("read audit log: %w", err)
 	}
 	return lastHash, nil
+}
+
+func openAuditLogForRead(path string) (*os.File, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("audit log path cannot be empty")
+	}
+	cleanPath := filepath.Clean(path)
+
+	info, err := os.Lstat(cleanPath)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("audit log must not be a symlink: %s", cleanPath)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("audit log must be a regular file: %s", cleanPath)
+	}
+
+	file, err := os.Open(cleanPath) // #nosec G304 - path is explicit audit configuration/input and validated before use.
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("audit log must be a regular file: %s", cleanPath)
+	}
+	if !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return nil, fmt.Errorf("audit log changed while opening: %s", cleanPath)
+	}
+	if err := file.Chmod(0600); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func extractTextAuditHash(line string) (string, bool) {

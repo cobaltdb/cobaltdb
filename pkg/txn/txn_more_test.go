@@ -212,6 +212,37 @@ func TestSetWriteCopiesValues(t *testing.T) {
 	}
 }
 
+func TestTxnWALRecordDataLenBounds(t *testing.T) {
+	got, err := txnWALRecordDataLen(10, 20)
+	if err != nil {
+		t.Fatalf("unexpected error for small WAL record data: %v", err)
+	}
+	if got != 34 {
+		t.Fatalf("expected WAL data length 34, got %d", got)
+	}
+
+	got, err = txnWALRecordDataLen(10, maxTxnWALRecordDataBytes-4-10)
+	if err != nil {
+		t.Fatalf("unexpected error at max WAL record data boundary: %v", err)
+	}
+	if got != maxTxnWALRecordDataBytes {
+		t.Fatalf("expected max WAL data length %d, got %d", maxTxnWALRecordDataBytes, got)
+	}
+
+	if _, err := txnWALRecordDataLen(10, maxTxnWALRecordDataBytes-4-10+1); err == nil {
+		t.Fatal("expected oversized WAL value to be rejected")
+	}
+	if _, err := txnWALRecordDataLen(maxTxnWALRecordDataBytes-3, 0); err == nil {
+		t.Fatal("expected oversized WAL key to be rejected")
+	}
+	if _, err := txnWALRecordDataLen(-1, 0); err == nil {
+		t.Fatal("expected negative WAL key length to be rejected")
+	}
+	if _, err := txnWALRecordDataLen(0, -1); err == nil {
+		t.Fatal("expected negative WAL value length to be rejected")
+	}
+}
+
 // TestSnapshotIsolation tests snapshot isolation level
 func TestSnapshotIsolation(t *testing.T) {
 	opts := &Options{
@@ -418,6 +449,64 @@ func TestApplyWritesWithWAL(t *testing.T) {
 	}
 	if mgr.GetCurrentVersion("", "key2") == 0 {
 		t.Error("expected version for key2")
+	}
+}
+
+func TestCommitWALFailureDoesNotPublishVersions(t *testing.T) {
+	dir := t.TempDir()
+	wal, err := storage.OpenWAL(dir + "/test.wal")
+	if err != nil {
+		t.Fatalf("OpenWAL failed: %v", err)
+	}
+	defer wal.Close()
+
+	mgr := NewManager(nil, wal)
+	txn := mgr.Begin(nil)
+	key := WriteKey{TreeName: "table", Key: "key"}
+	txn.SetWrite(key.TreeName, key.Key, make([]byte, maxTxnWALRecordDataBytes))
+
+	if err := txn.Commit(); err == nil {
+		t.Fatal("expected commit to fail when WAL record is too large")
+	}
+
+	shard := versionShardIdx(key.TreeName, key.Key)
+	mgr.versionShards[shard].mu.Lock()
+	_, exists := mgr.versionShards[shard].versions[key]
+	mgr.versionShards[shard].mu.Unlock()
+	if exists {
+		t.Fatal("failed WAL commit published version state")
+	}
+}
+
+func TestMultiWriteCommitWALFailureDoesNotPublishVersions(t *testing.T) {
+	dir := t.TempDir()
+	wal, err := storage.OpenWAL(dir + "/test.wal")
+	if err != nil {
+		t.Fatalf("OpenWAL failed: %v", err)
+	}
+	defer wal.Close()
+
+	mgr := NewManager(nil, wal)
+	txn := mgr.Begin(nil)
+	keys := []WriteKey{
+		{TreeName: "table", Key: "key1"},
+		{TreeName: "table", Key: "key2"},
+	}
+	txn.SetWrite(keys[0].TreeName, keys[0].Key, []byte("ok"))
+	txn.SetWrite(keys[1].TreeName, keys[1].Key, make([]byte, maxTxnWALRecordDataBytes))
+
+	if err := txn.Commit(); err == nil {
+		t.Fatal("expected commit to fail when one WAL record is too large")
+	}
+
+	for _, key := range keys {
+		shard := versionShardIdx(key.TreeName, key.Key)
+		mgr.versionShards[shard].mu.Lock()
+		_, exists := mgr.versionShards[shard].versions[key]
+		mgr.versionShards[shard].mu.Unlock()
+		if exists {
+			t.Fatalf("failed WAL commit published version state for %+v", key)
+		}
 	}
 }
 

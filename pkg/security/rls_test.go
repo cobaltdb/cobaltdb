@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -304,6 +305,102 @@ func TestCreatePolicyInvalidExpressionIsAtomic(t *testing.T) {
 	}
 }
 
+func TestCreatePolicyResourceLimitsAreAtomic(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy *Policy
+		want   string
+	}{
+		{
+			name: "policy name too large",
+			policy: &Policy{
+				Name:      strings.Repeat("p", maxPolicyIdentifierBytes+1),
+				TableName: "limited",
+				Type:      PolicySelect,
+			},
+			want: "policy identifier too large",
+		},
+		{
+			name: "table name too large",
+			policy: &Policy{
+				Name:      "too_large_table",
+				TableName: strings.Repeat("t", maxPolicyIdentifierBytes+1),
+				Type:      PolicySelect,
+			},
+			want: "policy identifier too large",
+		},
+		{
+			name: "too many users",
+			policy: &Policy{
+				Name:      "too_many_users",
+				TableName: "limited",
+				Type:      PolicySelect,
+				Users:     make([]string, maxPolicyPrincipals+1),
+			},
+			want: "too many policy principals",
+		},
+		{
+			name: "role name too large",
+			policy: &Policy{
+				Name:      "role_too_large",
+				TableName: "limited",
+				Type:      PolicySelect,
+				Roles:     []string{strings.Repeat("r", maxPolicyPrincipalBytes+1)},
+			},
+			want: "invalid security policy",
+		},
+		{
+			name: "metadata too large",
+			policy: &Policy{
+				Name:      "metadata_too_large",
+				TableName: "limited",
+				Type:      PolicySelect,
+				Metadata: map[string]interface{}{
+					"payload": strings.Repeat("m", maxPolicyMetadataBytes+1),
+				},
+			},
+			want: "policy metadata too large",
+		},
+		{
+			name: "metadata not serializable",
+			policy: &Policy{
+				Name:      "metadata_invalid",
+				TableName: "limited",
+				Type:      PolicySelect,
+				Metadata: map[string]interface{}{
+					"bad": func() {},
+				},
+			},
+			want: "invalid policy metadata",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := NewManager()
+			if tt.policy.Users != nil {
+				for i := range tt.policy.Users {
+					tt.policy.Users[i] = "user"
+				}
+			}
+
+			err := mgr.CreatePolicy(tt.policy)
+			if err == nil {
+				t.Fatal("expected oversized policy to be rejected")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got %v", tt.want, err)
+			}
+			if mgr.IsEnabled("limited") {
+				t.Fatal("CreatePolicy enabled RLS for a rejected policy")
+			}
+			if policies := mgr.GetTablePolicies("limited"); len(policies) != 0 {
+				t.Fatalf("rejected policy was indexed: %d policies", len(policies))
+			}
+		})
+	}
+}
+
 func TestCheckAccessWithRLSDisabled(t *testing.T) {
 	mgr := NewManager()
 	// RLS disabled by default
@@ -345,6 +442,66 @@ func TestCheckAccessWithNoPolicies(t *testing.T) {
 
 	if canAccess {
 		t.Error("Expected CheckAccess to return false when RLS enabled but no policies")
+	}
+}
+
+func TestRestrictivePolicyNarrowsPermissiveAccess(t *testing.T) {
+	mgr := NewManager()
+	if err := mgr.CreatePolicy(&Policy{
+		Name:       "allow_all",
+		TableName:  "documents",
+		Type:       PolicySelect,
+		Expression: "true",
+	}); err != nil {
+		t.Fatalf("CreatePolicy permissive: %v", err)
+	}
+	if err := mgr.CreatePolicy(&Policy{
+		Name:        "owner_guard",
+		TableName:   "documents",
+		Type:        PolicySelect,
+		Expression:  "owner = current_user",
+		Restrictive: true,
+	}); err != nil {
+		t.Fatalf("CreatePolicy restrictive: %v", err)
+	}
+
+	ctx := context.WithValue(context.Background(), RLSUserKey, "alice")
+	allowed, err := mgr.CheckAccess(ctx, "documents", PolicySelect, map[string]interface{}{"owner": "alice"}, "alice", nil)
+	if err != nil {
+		t.Fatalf("CheckAccess owner row: %v", err)
+	}
+	if !allowed {
+		t.Fatal("restrictive policy denied a row that passed both policies")
+	}
+
+	allowed, err = mgr.CheckAccess(ctx, "documents", PolicySelect, map[string]interface{}{"owner": "bob"}, "alice", nil)
+	if err != nil {
+		t.Fatalf("CheckAccess other row: %v", err)
+	}
+	if allowed {
+		t.Fatal("restrictive policy failed to narrow a permissive allow-all policy")
+	}
+}
+
+func TestRestrictivePolicyAloneDoesNotGrantAccess(t *testing.T) {
+	mgr := NewManager()
+	if err := mgr.CreatePolicy(&Policy{
+		Name:        "owner_guard",
+		TableName:   "documents",
+		Type:        PolicySelect,
+		Expression:  "owner = current_user",
+		Restrictive: true,
+	}); err != nil {
+		t.Fatalf("CreatePolicy restrictive: %v", err)
+	}
+
+	ctx := context.WithValue(context.Background(), RLSUserKey, "alice")
+	allowed, err := mgr.CheckAccess(ctx, "documents", PolicySelect, map[string]interface{}{"owner": "alice"}, "alice", nil)
+	if err != nil {
+		t.Fatalf("CheckAccess: %v", err)
+	}
+	if allowed {
+		t.Fatal("restrictive-only policy granted access without a permissive policy")
 	}
 }
 
@@ -597,6 +754,46 @@ func TestSerializeDeserializePolicies(t *testing.T) {
 	}
 }
 
+func TestDeserializePoliciesRejectsInvalidStructureWithoutMutatingState(t *testing.T) {
+	mgr := NewManager()
+	if err := mgr.CreatePolicy(&Policy{
+		Name:       "existing_policy",
+		TableName:  "users",
+		Type:       PolicySelect,
+		Expression: "TRUE",
+	}); err != nil {
+		t.Fatalf("CreatePolicy: %v", err)
+	}
+
+	err := mgr.DeserializePolicies([]byte(`{"users:nil_policy":null}`))
+	if err == nil {
+		t.Fatal("expected nil policy to be rejected")
+	}
+	if !strings.Contains(err.Error(), "nil policy") {
+		t.Fatalf("expected nil policy error, got %v", err)
+	}
+
+	if _, getErr := mgr.GetPolicy("users", "existing_policy"); getErr != nil {
+		t.Fatalf("DeserializePolicies mutated existing state after invalid input: %v", getErr)
+	}
+}
+
+func TestDeserializePoliciesRejectsOversizedPayload(t *testing.T) {
+	mgr := NewManager()
+
+	payload := []byte(`{"users:p":{"name":"p","table_name":"users","expression":"TRUE","enabled":true,"metadata":"`)
+	payload = append(payload, strings.Repeat("x", maxSerializedPoliciesBytes)...)
+	payload = append(payload, []byte(`"}}`)...)
+
+	err := mgr.DeserializePolicies(payload)
+	if err == nil {
+		t.Fatal("expected oversized serialized policies to be rejected")
+	}
+	if !strings.Contains(err.Error(), "serialized policies too large") {
+		t.Fatalf("expected oversized policies error, got %v", err)
+	}
+}
+
 func TestForceRow(t *testing.T) {
 	mgr := NewManager()
 
@@ -704,6 +901,27 @@ func TestCheckAccessWithRoles(t *testing.T) {
 	}
 	if canAccess {
 		t.Error("Regular user should not have access")
+	}
+}
+
+func TestCheckAccessWithPublicRole(t *testing.T) {
+	mgr := NewManager()
+	if err := mgr.CreatePolicy(&Policy{
+		Name:       "public_policy",
+		TableName:  "documents",
+		Type:       PolicySelect,
+		Expression: "visible = true",
+		Roles:      []string{"PUBLIC"},
+	}); err != nil {
+		t.Fatalf("CreatePolicy: %v", err)
+	}
+
+	allowed, err := mgr.CheckAccess(context.Background(), "documents", PolicySelect, map[string]interface{}{"visible": true}, "alice", nil)
+	if err != nil {
+		t.Fatalf("CheckAccess: %v", err)
+	}
+	if !allowed {
+		t.Fatal("PUBLIC policy did not apply to a user without explicit roles")
 	}
 }
 

@@ -1,7 +1,10 @@
 package auth
 
 import (
+	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -330,7 +333,7 @@ func TestExpiredTokenValidation(t *testing.T) {
 
 	// Manually expire the session
 	a.mu.Lock()
-	if s, ok := a.sessions[token]; ok {
+	if s, ok := a.sessions[sessionTokenKey(token)]; ok {
 		s.ExpiresAt = time.Now().Add(-1 * time.Second)
 	}
 	a.mu.Unlock()
@@ -339,6 +342,67 @@ func TestExpiredTokenValidation(t *testing.T) {
 	_, err = a.ValidateToken(token)
 	if err != ErrTokenExpired {
 		t.Fatalf("Expected ErrTokenExpired, got %v", err)
+	}
+}
+
+func TestAuthenticateRejectsSessionSaturation(t *testing.T) {
+	a := NewAuthenticator()
+	if err := a.CreateUser("sessioncap", "Password1", false); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+
+	a.mu.Lock()
+	for i := 0; i < maxActiveSessions; i++ {
+		a.sessions[fmt.Sprintf("active-%d", i)] = &Session{
+			Username:  "other",
+			CreatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(time.Hour),
+		}
+	}
+	a.mu.Unlock()
+
+	_, err := a.Authenticate("sessioncap", "Password1")
+	if !errors.Is(err, ErrTooManySessions) {
+		t.Fatalf("Authenticate saturated sessions error = %v, want ErrTooManySessions", err)
+	}
+
+	a.mu.RLock()
+	sessionCount := len(a.sessions)
+	a.mu.RUnlock()
+	if sessionCount != maxActiveSessions {
+		t.Fatalf("session count changed after rejected auth: got %d, want %d", sessionCount, maxActiveSessions)
+	}
+}
+
+func TestAuthenticatePrunesExpiredSessionsBeforeCap(t *testing.T) {
+	a := NewAuthenticator()
+	if err := a.CreateUser("sessionprune", "Password1", false); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+
+	a.mu.Lock()
+	for i := 0; i < maxActiveSessions; i++ {
+		a.sessions[fmt.Sprintf("expired-%d", i)] = &Session{
+			Username:  "other",
+			CreatedAt: time.Now().Add(-2 * time.Hour),
+			ExpiresAt: time.Now().Add(-time.Hour),
+		}
+	}
+	a.mu.Unlock()
+
+	token, err := a.Authenticate("sessionprune", "Password1")
+	if err != nil {
+		t.Fatalf("Authenticate should prune expired sessions before cap: %v", err)
+	}
+	if _, err := a.ValidateToken(token); err != nil {
+		t.Fatalf("new token should be valid after pruning expired sessions: %v", err)
+	}
+
+	a.mu.RLock()
+	sessionCount := len(a.sessions)
+	a.mu.RUnlock()
+	if sessionCount != 1 {
+		t.Fatalf("expected only the new session after pruning, got %d", sessionCount)
 	}
 }
 
@@ -371,6 +435,64 @@ func TestCleanupStaleFailedAttempts(t *testing.T) {
 	}
 	if !hasFresh {
 		t.Fatal("Fresh failed attempt should NOT have been cleaned up")
+	}
+}
+
+func TestRecordFailedAttemptCapsUniqueUsers(t *testing.T) {
+	a := NewAuthenticator()
+	defer a.Stop()
+
+	now := time.Now()
+	a.failedMu.Lock()
+	for i := 0; i < maxFailedAttemptEntries; i++ {
+		a.failedAttempts[fmt.Sprintf("flood-%d", i)] = &loginAttempt{
+			count:    1,
+			lastFail: now,
+		}
+	}
+	a.failedMu.Unlock()
+
+	count := a.recordFailedAttempt("overflow-user")
+	if count != maxLoginAttempts {
+		t.Fatalf("expected saturated failed-attempt count %d, got %d", maxLoginAttempts, count)
+	}
+
+	a.failedMu.RLock()
+	defer a.failedMu.RUnlock()
+	if len(a.failedAttempts) != maxFailedAttemptEntries {
+		t.Fatalf("failed-attempt map grew past cap: got %d, want %d", len(a.failedAttempts), maxFailedAttemptEntries)
+	}
+	if _, exists := a.failedAttempts["overflow-user"]; exists {
+		t.Fatal("overflow username should not be tracked when failed-attempt map is saturated")
+	}
+}
+
+func TestRecordFailedAttemptPrunesStaleEntriesAtCap(t *testing.T) {
+	a := NewAuthenticator()
+	defer a.Stop()
+
+	stale := time.Now().Add(-attemptResetAfter - time.Minute)
+	a.failedMu.Lock()
+	for i := 0; i < maxFailedAttemptEntries; i++ {
+		a.failedAttempts[fmt.Sprintf("stale-flood-%d", i)] = &loginAttempt{
+			count:    1,
+			lastFail: stale,
+		}
+	}
+	a.failedMu.Unlock()
+
+	count := a.recordFailedAttempt("fresh-after-prune")
+	if count != 1 {
+		t.Fatalf("expected first tracked attempt after pruning, got %d", count)
+	}
+
+	a.failedMu.RLock()
+	defer a.failedMu.RUnlock()
+	if len(a.failedAttempts) != 1 {
+		t.Fatalf("expected stale entries to be pruned before tracking new attempt, got %d entries", len(a.failedAttempts))
+	}
+	if _, exists := a.failedAttempts["fresh-after-prune"]; !exists {
+		t.Fatal("new username should be tracked after stale entries are pruned")
 	}
 }
 
@@ -424,6 +546,53 @@ func TestChangePasswordInvalidatesSessions(t *testing.T) {
 	_, err = a.Authenticate("cptest", "NewPass1")
 	if err != nil {
 		t.Fatalf("New password should work: %v", err)
+	}
+}
+
+func TestConcurrentChangePasswordAllowsSingleOldPasswordUse(t *testing.T) {
+	a := NewAuthenticator()
+	if err := a.CreateUser("cprace", "OldPass1", false); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+
+	const attempts = 2
+	start := make(chan struct{})
+	results := make(chan struct {
+		password string
+		err      error
+	}, attempts)
+
+	var wg sync.WaitGroup
+	for _, newPassword := range []string{"NewPass1", "OtherPass1"} {
+		wg.Add(1)
+		go func(password string) {
+			defer wg.Done()
+			<-start
+			results <- struct {
+				password string
+				err      error
+			}{password: password, err: a.ChangePassword("cprace", "OldPass1", password)}
+		}(newPassword)
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var successful []string
+	for result := range results {
+		if result.err == nil {
+			successful = append(successful, result.password)
+		}
+	}
+	if len(successful) != 1 {
+		t.Fatalf("expected exactly one concurrent password change to succeed, got %d (%v)", len(successful), successful)
+	}
+	if _, err := a.Authenticate("cprace", successful[0]); err != nil {
+		t.Fatalf("successful new password should authenticate: %v", err)
+	}
+	if _, err := a.Authenticate("cprace", "OldPass1"); err == nil {
+		t.Fatal("old password should not authenticate after password change")
 	}
 }
 

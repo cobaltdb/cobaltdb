@@ -80,12 +80,38 @@ func TestConfigValidateErrors(t *testing.T) {
 			wantErr: "max connections must be positive",
 		},
 		{
+			name: "max connections too large",
+			config: &Config{
+				MinConns: 0,
+				MaxConns: maxPoolConnections + 1,
+			},
+			wantErr: "max connections exceeds maximum (100000)",
+		},
+		{
 			name: "min greater than max",
 			config: &Config{
 				MinConns: 10,
 				MaxConns: 5,
 			},
 			wantErr: "min connections cannot exceed max connections",
+		},
+		{
+			name: "negative acquire timeout",
+			config: &Config{
+				MinConns:       0,
+				MaxConns:       1,
+				AcquireTimeout: -time.Second,
+			},
+			wantErr: "acquire timeout cannot be negative",
+		},
+		{
+			name: "wait queue too large",
+			config: &Config{
+				MinConns:      0,
+				MaxConns:      1,
+				WaitQueueSize: maxPoolWaiters + 1,
+			},
+			wantErr: "wait queue size exceeds maximum (1000000)",
 		},
 	}
 

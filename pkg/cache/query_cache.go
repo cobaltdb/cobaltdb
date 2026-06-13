@@ -4,14 +4,18 @@ package cache
 import (
 	"container/list"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"hash"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+const maxCacheValueDepth = 64
 
 // Entry represents a cached query result
 type Entry struct {
@@ -107,9 +111,19 @@ func New(config *Config) *Cache {
 }
 
 func normalizeConfig(config *Config) *Config {
+	defaults := DefaultConfig()
 	normalized := *config
+	if normalized.MaxSize < 0 {
+		normalized.MaxSize = defaults.MaxSize
+	}
+	if normalized.MaxEntries < 0 {
+		normalized.MaxEntries = defaults.MaxEntries
+	}
+	if normalized.TTL < 0 {
+		normalized.TTL = defaults.TTL
+	}
 	if normalized.CleanupInterval <= 0 {
-		normalized.CleanupInterval = DefaultConfig().CleanupInterval
+		normalized.CleanupInterval = defaults.CleanupInterval
 	}
 	return &normalized
 }
@@ -125,6 +139,10 @@ func (c *Cache) Close() {
 // Get retrieves a cached result
 func (c *Cache) Get(sql string, args []interface{}) (*Entry, bool) {
 	if !c.config.Enabled {
+		atomic.AddUint64(&c.misses, 1)
+		return nil, false
+	}
+	if !cacheArgsWithinResourceLimits(args) {
 		atomic.AddUint64(&c.misses, 1)
 		return nil, false
 	}
@@ -168,10 +186,14 @@ func (c *Cache) Set(sql string, args []interface{}, columns []string, rows [][]i
 		return
 	}
 
+	if !cacheValuesWithinResourceLimits(args, rows) {
+		return
+	}
+
 	key := generateKey(sql, args)
 
 	// Calculate entry size
-	size := estimateSize(columns, rows)
+	size := estimateEntrySize(sql, args, columns, rows, tableDeps)
 
 	// Check if entry is too large
 	if c.config.MaxSize > 0 && size > c.config.MaxSize/10 { // Don't cache if > 10% of max size
@@ -202,7 +224,7 @@ func (c *Cache) Set(sql string, args []interface{}, columns []string, rows [][]i
 
 	entry := &Entry{
 		Key:        key,
-		SQL:        sql,
+		SQL:        strings.Clone(sql),
 		Args:       cloneValues(args),
 		Columns:    cloneStrings(columns),
 		Rows:       cloneRows(rows),
@@ -228,6 +250,50 @@ func (c *Cache) Set(sql string, args []interface{}, columns []string, rows [][]i
 
 	// Track table dependencies
 	c.trackTableDeps(key, tableDeps)
+}
+
+func cacheValuesWithinResourceLimits(args []interface{}, rows [][]interface{}) bool {
+	if !cacheArgsWithinResourceLimits(args) {
+		return false
+	}
+	for _, row := range rows {
+		for _, value := range row {
+			if !cacheValueWithinDepth(value, 0) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func cacheArgsWithinResourceLimits(args []interface{}) bool {
+	for _, arg := range args {
+		if !cacheValueWithinDepth(arg, 0) {
+			return false
+		}
+	}
+	return true
+}
+
+func cacheValueWithinDepth(value interface{}, depth int) bool {
+	if depth > maxCacheValueDepth {
+		return false
+	}
+	switch typed := value.(type) {
+	case []interface{}:
+		for _, nested := range typed {
+			if !cacheValueWithinDepth(nested, depth+1) {
+				return false
+			}
+		}
+	case map[string]interface{}:
+		for _, nested := range typed {
+			if !cacheValueWithinDepth(nested, depth+1) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Delete removes an entry from the cache
@@ -510,10 +576,9 @@ func generateKey(sql string, args []interface{}) string {
 	h := sha256Pool.Get().(hash.Hash)
 	h.Reset()
 
-	h.Write([]byte(sql))
+	writeStringToHash(h, 'q', sql)
 	for _, arg := range args {
-		h.Write([]byte("|"))
-		h.Write([]byte(argToString(arg)))
+		writeArgToHash(h, arg)
 	}
 
 	var sumBuf [32]byte
@@ -525,29 +590,50 @@ func generateKey(sql string, args []interface{}) string {
 	return string(hexBuf[:])
 }
 
-func argToString(v interface{}) string {
-	if v == nil {
-		return "<nil>"
-	}
+func writeArgToHash(h hash.Hash, v interface{}) {
 	switch val := v.(type) {
+	case nil:
+		writeBytesToHash(h, 'n', nil)
 	case string:
-		return val
+		writeStringToHash(h, 's', val)
 	case []byte:
-		return string(val)
+		writeBytesToHash(h, 'b', val)
 	case int64:
-		return strconv.FormatInt(val, 10)
+		var buf [32]byte
+		writeBytesToHash(h, 'l', strconv.AppendInt(buf[:0], val, 10))
 	case int:
-		return strconv.Itoa(val)
+		var buf [32]byte
+		writeBytesToHash(h, 'i', strconv.AppendInt(buf[:0], int64(val), 10))
 	case float64:
-		return strconv.FormatFloat(val, 'f', -1, 64)
+		var buf [32]byte
+		writeBytesToHash(h, 'f', strconv.AppendFloat(buf[:0], val, 'g', -1, 64))
 	case bool:
 		if val {
-			return "true"
+			writeBytesToHash(h, 'o', []byte{1})
+			return
 		}
-		return "false"
+		writeBytesToHash(h, 'o', []byte{0})
 	default:
-		return fmt.Sprintf("%v", val)
+		writeStringToHash(h, 't', fmt.Sprintf("%T", val))
+		writeStringToHash(h, 'v', fmt.Sprint(val))
 	}
+}
+
+func writeStringToHash(h hash.Hash, kind byte, value string) {
+	writeHashHeader(h, kind, len(value))
+	h.Write([]byte(value))
+}
+
+func writeBytesToHash(h hash.Hash, kind byte, value []byte) {
+	writeHashHeader(h, kind, len(value))
+	h.Write(value)
+}
+
+func writeHashHeader(h hash.Hash, kind byte, length int) {
+	var header [9]byte
+	header[0] = kind
+	binary.BigEndian.PutUint64(header[1:], uint64(length))
+	h.Write(header[:])
 }
 
 // estimateSize estimates the memory size of cached data
@@ -579,4 +665,53 @@ func estimateSize(columns []string, rows [][]interface{}) int64 {
 	size += 256
 
 	return size
+}
+
+func estimateEntrySize(sql string, args []interface{}, columns []string, rows [][]interface{}, tableDeps []string) int64 {
+	size := estimateSize(columns, rows)
+	size += int64(len(sql))
+	for _, arg := range args {
+		size += estimateValueSize(arg)
+	}
+	for _, table := range tableDeps {
+		size += int64(len(table))
+	}
+	return size
+}
+
+func estimateValueSize(value interface{}) int64 {
+	switch typed := value.(type) {
+	case string:
+		return int64(len(typed))
+	case []byte:
+		return int64(len(typed))
+	case []interface{}:
+		var size int64
+		for _, nested := range typed {
+			size += estimateValueSize(nested)
+		}
+		return size
+	case []string:
+		var size int64
+		for _, nested := range typed {
+			size += int64(len(nested))
+		}
+		return size
+	case map[string]interface{}:
+		var size int64
+		for key, nested := range typed {
+			size += int64(len(key)) + estimateValueSize(nested)
+		}
+		return size
+	case map[string]string:
+		var size int64
+		for key, nested := range typed {
+			size += int64(len(key) + len(nested))
+		}
+		return size
+	case nil:
+		return 8
+	default:
+		return 16
+	}
 }

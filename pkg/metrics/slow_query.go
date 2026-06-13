@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -12,6 +13,7 @@ import (
 const (
 	slowQueryLogDirPerm  = 0750
 	slowQueryLogFilePerm = 0600
+	maxSlowQuerySQLBytes = 10000
 )
 
 // SlowQueryEntry represents a single slow query log entry
@@ -21,6 +23,37 @@ type SlowQueryEntry struct {
 	Duration     time.Duration `json:"duration_ms"`
 	RowsAffected int64         `json:"rows_affected,omitempty"`
 	RowsReturned int64         `json:"rows_returned,omitempty"`
+}
+
+type slowQueryEntryJSON struct {
+	Timestamp    time.Time `json:"timestamp"`
+	SQL          string    `json:"sql"`
+	DurationMS   int64     `json:"duration_ms"`
+	RowsAffected int64     `json:"rows_affected,omitempty"`
+	RowsReturned int64     `json:"rows_returned,omitempty"`
+}
+
+func (e SlowQueryEntry) MarshalJSON() ([]byte, error) {
+	return json.Marshal(slowQueryEntryJSON{
+		Timestamp:    e.Timestamp,
+		SQL:          e.SQL,
+		DurationMS:   e.Duration.Milliseconds(),
+		RowsAffected: e.RowsAffected,
+		RowsReturned: e.RowsReturned,
+	})
+}
+
+func (e *SlowQueryEntry) UnmarshalJSON(data []byte) error {
+	var entry slowQueryEntryJSON
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return err
+	}
+	e.Timestamp = entry.Timestamp
+	e.SQL = entry.SQL
+	e.Duration = time.Duration(entry.DurationMS) * time.Millisecond
+	e.RowsAffected = entry.RowsAffected
+	e.RowsReturned = entry.RowsReturned
+	return nil
 }
 
 // SlowQueryLog manages slow query logging
@@ -36,6 +69,9 @@ type SlowQueryLog struct {
 
 // NewSlowQueryLog creates a new slow query logger
 func NewSlowQueryLog(enabled bool, threshold time.Duration, maxEntries int, logFile string) *SlowQueryLog {
+	if maxEntries < 0 {
+		maxEntries = 0
+	}
 	return &SlowQueryLog{
 		enabled:    enabled,
 		threshold:  threshold,
@@ -57,7 +93,7 @@ func (s *SlowQueryLog) Log(sql string, duration time.Duration, rowsAffected, row
 
 	entry := SlowQueryEntry{
 		Timestamp:    time.Now().UTC(),
-		SQL:          sql,
+		SQL:          truncateSlowQuerySQL(sql),
 		Duration:     duration,
 		RowsAffected: rowsAffected,
 		RowsReturned: rowsReturned,
@@ -90,20 +126,20 @@ func (s *SlowQueryLog) writeToFile(entry SlowQueryEntry) error {
 	// Ensure directory exists
 	dir := filepath.Dir(s.logFile)
 	if dir != "" && dir != "." {
+		if err := rejectSlowQueryLogDirSymlinks(dir); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(dir, slowQueryLogDirPerm); err != nil {
 			return fmt.Errorf("create slow query log directory: %w", err)
 		}
+		if err := rejectSlowQueryLogDirSymlinks(dir); err != nil {
+			return err
+		}
 	}
 
-	f, err := os.OpenFile(s.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, slowQueryLogFilePerm)
+	f, created, err := openSlowQueryLogFile(s.logFile)
 	if err != nil {
 		return fmt.Errorf("open slow query log file: %w", err)
-	}
-	if err := f.Chmod(slowQueryLogFilePerm); err != nil {
-		if closeErr := f.Close(); closeErr != nil {
-			return fmt.Errorf("chmod slow query log file: %w; close failed: %v", err, closeErr)
-		}
-		return fmt.Errorf("chmod slow query log file: %w", err)
 	}
 
 	if _, err := fmt.Fprintf(f, "%s\n", data); err != nil {
@@ -112,10 +148,118 @@ func (s *SlowQueryLog) writeToFile(entry SlowQueryEntry) error {
 		}
 		return fmt.Errorf("write slow query log entry: %w", err)
 	}
+	if err := f.Sync(); err != nil {
+		if closeErr := f.Close(); closeErr != nil {
+			return fmt.Errorf("sync slow query log file: %w; close failed: %v", err, closeErr)
+		}
+		return fmt.Errorf("sync slow query log file: %w", err)
+	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close slow query log file: %w", err)
 	}
+	if created {
+		if err := syncSlowQueryLogParentDir(s.logFile); err != nil {
+			return fmt.Errorf("sync slow query log directory: %w", err)
+		}
+	}
 	return nil
+}
+
+func truncateSlowQuerySQL(sql string) string {
+	if len(sql) <= maxSlowQuerySQLBytes {
+		return sql
+	}
+	return sql[:maxSlowQuerySQLBytes]
+}
+
+func openSlowQueryLogFile(path string) (*os.File, bool, error) {
+	cleanPath := filepath.Clean(path)
+	if err := rejectSlowQueryLogDirSymlinks(filepath.Dir(cleanPath)); err != nil {
+		return nil, false, err
+	}
+	info, statErr := os.Lstat(cleanPath)
+	created := os.IsNotExist(statErr)
+	if statErr != nil && !created {
+		return nil, false, statErr
+	}
+	if !created {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, false, fmt.Errorf("slow query log file must not be a symlink: %s", cleanPath)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, false, fmt.Errorf("slow query log file must be a regular file: %s", cleanPath)
+		}
+	}
+
+	f, err := os.OpenFile(cleanPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, slowQueryLogFilePerm)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := f.Chmod(slowQueryLogFilePerm); err != nil {
+		closeErr := f.Close()
+		if closeErr != nil {
+			return nil, false, fmt.Errorf("chmod slow query log file: %w; close failed: %v", err, closeErr)
+		}
+		return nil, false, fmt.Errorf("chmod slow query log file: %w", err)
+	}
+	openedInfo, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, false, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, false, fmt.Errorf("slow query log file must be a regular file: %s", cleanPath)
+	}
+	if !created && !os.SameFile(info, openedInfo) {
+		_ = f.Close()
+		return nil, false, fmt.Errorf("slow query log file changed while opening: %s", cleanPath)
+	}
+	return f, created, nil
+}
+
+func rejectSlowQueryLogDirSymlinks(path string) error {
+	path = filepath.Clean(path)
+	if path == "." || path == string(os.PathSeparator) {
+		return nil
+	}
+
+	current := "."
+	if filepath.IsAbs(path) {
+		current = string(os.PathSeparator)
+		path = strings.TrimPrefix(path, string(os.PathSeparator))
+	}
+
+	for _, part := range strings.Split(path, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to stat slow query log directory component: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("slow query log directory component must not be a symlink: %s", current)
+		}
+	}
+	return nil
+}
+
+func syncSlowQueryLogParentDir(path string) error {
+	dir := filepath.Dir(path)
+	if dir == "" {
+		dir = "."
+	}
+	file, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return file.Sync()
 }
 
 // LastWriteError returns the last file logging error, if any.

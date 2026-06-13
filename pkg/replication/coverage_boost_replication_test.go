@@ -1054,6 +1054,14 @@ func TestReceiveResumeRequestErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for read failure")
 	}
+
+	// Oversized control line
+	oversized := strings.Repeat("A", maxReplicationControlLineBytes+1) + "\n"
+	slave3 := &SlaveConnection{Reader: bufio.NewReader(strings.NewReader(oversized))}
+	_, err = m.receiveResumeRequest(slave3)
+	if err == nil || !strings.Contains(err.Error(), "control line too large") {
+		t.Fatalf("expected oversized control line error, got %v", err)
+	}
 }
 
 type mockErrorReader struct {

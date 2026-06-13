@@ -418,13 +418,22 @@ var runtimeImportSpecs = []importSpec{
 	{"getOpcodeStats", []ValueType{I32, I32}, []ValueType{I32}},
 }
 
-func runtimeImportIndex(name string) uint64 {
+func runtimeImportIndex(name string) (uint64, error) {
 	for i, spec := range runtimeImportSpecs {
 		if spec.name == name {
-			return uint64(i)
+			return uint64(i), nil
 		}
 	}
-	panic(fmt.Sprintf("wasm compiler invariant failed: missing runtime import %q", name))
+	return 0, fmt.Errorf("wasm compiler invariant failed: missing runtime import %q", name)
+}
+
+func writeRuntimeImportCall(buf *bytes.Buffer, name string) error {
+	idx, err := runtimeImportIndex(name)
+	if err != nil {
+		return err
+	}
+	writeLeb128(buf, idx)
+	return nil
 }
 
 // compileSelect compiles a SELECT statement
@@ -447,7 +456,10 @@ func (c *Compiler) compileSelect(stmt *query.SelectStmt) (uint32, error) {
 	// Generate function body
 	// Function has 1 parameter (params pointer = local 0)
 	// Plus 2 locals: rowCount (local 1), resultPtr (local 2)
-	body := c.generateSelectBody(stmt, 1) // 1 = first local index after params
+	body, err := c.generateSelectBody(stmt, 1) // 1 = first local index after params
+	if err != nil {
+		return 0, err
+	}
 
 	// Add code section with locals: rowCount, resultPtr (both i32)
 	c.codes = append(c.codes, Code{
@@ -482,7 +494,10 @@ func (c *Compiler) compileInsert(stmt *query.InsertStmt) (uint32, error) {
 	c.funcs = append(c.funcs, funcTypeIdx)
 	c.funcIdx++
 
-	body := c.generateInsertBody(stmt)
+	body, err := c.generateInsertBody(stmt)
+	if err != nil {
+		return 0, err
+	}
 
 	// Locals: rowsAffected (i64), tableId (i32), rowDataPtr (i32)
 	c.codes = append(c.codes, Code{
@@ -548,7 +563,10 @@ func (c *Compiler) compileDelete(stmt *query.DeleteStmt) (uint32, error) {
 	c.funcs = append(c.funcs, funcTypeIdx)
 	c.funcIdx++
 
-	body := c.generateDeleteBody(stmt)
+	body, err := c.generateDeleteBody(stmt)
+	if err != nil {
+		return 0, err
+	}
 
 	// Locals: rowsAffected (i64), tableId (i32), rowId (i64)
 	c.codes = append(c.codes, Code{
@@ -584,7 +602,10 @@ func (c *Compiler) compileUnion(stmt *query.UnionStmt) (uint32, error) {
 	c.funcIdx++
 
 	// Generate function body for UNION
-	body := c.generateUnionBody(stmt)
+	body, err := c.generateUnionBody(stmt)
+	if err != nil {
+		return 0, err
+	}
 
 	// Locals: rowCount (i32), leftCount (i32), rightCount (i32)
 	c.codes = append(c.codes, Code{
@@ -604,7 +625,7 @@ func (c *Compiler) compileUnion(stmt *query.UnionStmt) (uint32, error) {
 }
 
 // generateUnionBody generates WASM bytecode for a UNION statement
-func (c *Compiler) generateUnionBody(stmt *query.UnionStmt) []byte {
+func (c *Compiler) generateUnionBody(stmt *query.UnionStmt) ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	// For simplified UNION, just do a table scan (assuming both sides are the same table)
@@ -627,7 +648,9 @@ func (c *Compiler) generateUnionBody(stmt *query.UnionStmt) []byte {
 	buf.WriteByte(0x41) // i32.const 1000 (max rows)
 	writeLeb128(buf, 1000)
 	buf.WriteByte(0x10) // call
-	writeLeb128(buf, runtimeImportIndex("tableScan"))
+	if err := writeRuntimeImportCall(buf, "tableScan"); err != nil {
+		return nil, err
+	}
 
 	// Store row count
 	buf.WriteByte(0x21) // local.set
@@ -642,12 +665,12 @@ func (c *Compiler) generateUnionBody(stmt *query.UnionStmt) []byte {
 	// End function
 	buf.WriteByte(0x0b) // end
 
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // generateSelectBody generates WASM bytecode for a SELECT statement
 // Supports WHERE clause filtering, GROUP BY, and HAVING if present
-func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) []byte {
+func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	// Local indices (offset by parameter count)
@@ -709,7 +732,9 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x41) // i32.const 1000 (max rows)
 		writeLeb128(buf, 1000)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, runtimeImportIndex(joinImport))
+		if err := writeRuntimeImportCall(buf, joinImport); err != nil {
+			return nil, err
+		}
 
 		// Store row count
 		buf.WriteByte(0x21) // local.set
@@ -724,7 +749,9 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x20) // local.get (resultPtr)
 		buf.WriteByte(resultPtrIdx)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, runtimeImportIndex("groupBy"))
+		if err := writeRuntimeImportCall(buf, "groupBy"); err != nil {
+			return nil, err
+		}
 
 		// Store group count as rowCount
 		buf.WriteByte(0x21) // local.set
@@ -740,7 +767,9 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x41) // i32.const 0 (predicate ptr - simplified)
 		buf.WriteByte(0x00)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, runtimeImportIndex("filterRow"))
+		if err := writeRuntimeImportCall(buf, "filterRow"); err != nil {
+			return nil, err
+		}
 
 		// Store filtered count as rowCount
 		buf.WriteByte(0x21) // local.set
@@ -754,7 +783,9 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x41)    // i32.const
 		writeLeb128(buf, 1000) // max rows
 		buf.WriteByte(0x10)    // call
-		writeLeb128(buf, runtimeImportIndex("tableScan"))
+		if err := writeRuntimeImportCall(buf, "tableScan"); err != nil {
+			return nil, err
+		}
 
 		// Store row count
 		buf.WriteByte(0x21) // local.set
@@ -773,7 +804,9 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x20) // local.get (resultPtr)
 		buf.WriteByte(resultPtrIdx)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, runtimeImportIndex("distinctRows"))
+		if err := writeRuntimeImportCall(buf, "distinctRows"); err != nil {
+			return nil, err
+		}
 
 		// Store new row count
 		buf.WriteByte(0x21) // local.set
@@ -796,7 +829,9 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x20) // local.get (resultPtr)
 		buf.WriteByte(resultPtrIdx)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, runtimeImportIndex("sortRows"))
+		if err := writeRuntimeImportCall(buf, "sortRows"); err != nil {
+			return nil, err
+		}
 
 		// Drop the return value for now
 		buf.WriteByte(0x1a) // drop
@@ -816,7 +851,9 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 		buf.WriteByte(0x20) // local.get (resultPtr)
 		buf.WriteByte(resultPtrIdx)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, runtimeImportIndex("limitOffset"))
+		if err := writeRuntimeImportCall(buf, "limitOffset"); err != nil {
+			return nil, err
+		}
 
 		// Store new row count
 		buf.WriteByte(0x21) // local.set
@@ -832,12 +869,12 @@ func (c *Compiler) generateSelectBody(stmt *query.SelectStmt, localOffset byte) 
 	// End function
 	buf.WriteByte(0x0b) // end
 
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // generateInsertBody generates WASM bytecode for an INSERT statement
 // Returns: i64 (rows affected)
-func (c *Compiler) generateInsertBody(stmt *query.InsertStmt) []byte {
+func (c *Compiler) generateInsertBody(stmt *query.InsertStmt) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	localOffset := byte(1) // After params pointer
 
@@ -874,7 +911,9 @@ func (c *Compiler) generateInsertBody(stmt *query.InsertStmt) []byte {
 		buf.WriteByte(0x20)            // local.get
 		buf.WriteByte(localOffset + 2) // rowDataPtr
 		buf.WriteByte(0x10)            // call
-		writeLeb128(buf, runtimeImportIndex("insertRow"))
+		if err := writeRuntimeImportCall(buf, "insertRow"); err != nil {
+			return nil, err
+		}
 
 		// Drop result for now (in real impl, check success)
 		buf.WriteByte(0x1a) // drop
@@ -892,7 +931,7 @@ func (c *Compiler) generateInsertBody(stmt *query.InsertStmt) []byte {
 
 	buf.WriteByte(0x0b) // end
 
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // generateUpdateBody generates WASM bytecode for an UPDATE statement
@@ -910,7 +949,7 @@ func (c *Compiler) generateUpdateBody(stmt *query.UpdateStmt) []byte {
 
 // generateDeleteBody generates WASM bytecode for a DELETE statement
 // Returns: i64 (rows affected)
-func (c *Compiler) generateDeleteBody(stmt *query.DeleteStmt) []byte {
+func (c *Compiler) generateDeleteBody(stmt *query.DeleteStmt) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	localOffset := byte(1) // After params pointer
 
@@ -944,7 +983,9 @@ func (c *Compiler) generateDeleteBody(stmt *query.DeleteStmt) []byte {
 	buf.WriteByte(0x20)            // local.get
 	buf.WriteByte(localOffset + 2) // rowId
 	buf.WriteByte(0x10)            // call
-	writeLeb128(buf, runtimeImportIndex("deleteRow"))
+	if err := writeRuntimeImportCall(buf, "deleteRow"); err != nil {
+		return nil, err
+	}
 
 	// Check result and increment rowsAffected if success
 	// For now just set rowsAffected = 1
@@ -960,7 +1001,7 @@ func (c *Compiler) generateDeleteBody(stmt *query.DeleteStmt) []byte {
 
 	buf.WriteByte(0x0b) // end
 
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // generateModule generates the complete WASM module
@@ -1293,7 +1334,9 @@ func (c *Compiler) compileExpression(expr query.Expression, buf *bytes.Buffer) (
 		buf.WriteByte(0x41) // i32.const 100 (maxRows)
 		writeLeb128(buf, 100)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, runtimeImportIndex("executeSubquery"))
+		if err := writeRuntimeImportCall(buf, "executeSubquery"); err != nil {
+			return "", err
+		}
 
 		// The result is row count, load first row's first column from memory
 		// For scalar subquery, return the count
@@ -1311,7 +1354,9 @@ func (c *Compiler) compileExpression(expr query.Expression, buf *bytes.Buffer) (
 		buf.WriteByte(0x41) // i32.const 4096 (outPtr - scratch space)
 		writeLeb128(buf, 4096)
 		buf.WriteByte(0x10) // call
-		writeLeb128(buf, runtimeImportIndex("windowFunction"))
+		if err := writeRuntimeImportCall(buf, "windowFunction"); err != nil {
+			return "", err
+		}
 
 		// Return success indicator
 		return "INTEGER", nil

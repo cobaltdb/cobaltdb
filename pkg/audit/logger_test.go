@@ -3,6 +3,7 @@ package audit
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,95 @@ func TestNewLogger(t *testing.T) {
 
 	if al == nil {
 		t.Fatal("Audit logger is nil")
+	}
+}
+
+func TestNewLoggerRestrictsExistingLogPermissions(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.log")
+	if err := os.WriteFile(logPath, []byte{}, 0644); err != nil {
+		t.Fatalf("write existing audit log: %v", err)
+	}
+
+	al, err := New(&Config{
+		Enabled:   true,
+		LogFile:   logPath,
+		LogFormat: "json",
+	}, logger.Default())
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer al.Close()
+
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat audit log: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("audit log permissions = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestNewLoggerRejectsUnsafeLogPath(t *testing.T) {
+	tempDir := t.TempDir()
+	targetPath := filepath.Join(tempDir, "target.log")
+	linkPath := filepath.Join(tempDir, "audit.log")
+	if err := os.WriteFile(targetPath, nil, 0600); err != nil {
+		t.Fatalf("write target audit log: %v", err)
+	}
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := New(&Config{
+		Enabled:   true,
+		LogFile:   linkPath,
+		LogFormat: "json",
+	}, logger.Default())
+	if err == nil {
+		t.Fatal("expected symlink audit log path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+
+	_, err = New(&Config{
+		Enabled:   true,
+		LogFile:   tempDir,
+		LogFormat: "json",
+	}, logger.Default())
+	if err == nil {
+		t.Fatal("expected directory audit log path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected regular file rejection, got %v", err)
+	}
+}
+
+func TestNewLoggerRejectsSymlinkLogParentComponent(t *testing.T) {
+	tempDir := t.TempDir()
+	targetDir := filepath.Join(tempDir, "target")
+	if err := os.Mkdir(targetDir, 0750); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	linkDir := filepath.Join(tempDir, "link")
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	logPath := filepath.Join(linkDir, "nested", "audit.log")
+	_, err := New(&Config{
+		Enabled:   true,
+		LogFile:   logPath,
+		LogFormat: "json",
+	}, logger.Default())
+	if err == nil {
+		t.Fatal("expected symlink audit log parent component to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "nested", "audit.log")); !os.IsNotExist(statErr) {
+		t.Fatalf("audit log should not be created through symlink parent, stat err=%v", statErr)
 	}
 }
 

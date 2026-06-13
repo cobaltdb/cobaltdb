@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"sync"
@@ -11,6 +12,10 @@ import (
 
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
+
+var ErrQueryPlanCacheEntryTooLarge = errors.New("query plan cache entry too large")
+
+const maxQueryPlanTopQueries = 100
 
 // QueryPlanCacheEntry represents a cached query plan
 type QueryPlanCacheEntry struct {
@@ -121,6 +126,10 @@ func (c *QueryPlanCache) Put(sql string, args []interface{}, stmt query.Statemen
 	defer c.mu.Unlock()
 
 	hash := c.hashQuery(sql, args)
+	entrySize := c.estimateEntrySize(sql, stmt)
+	if entrySize > c.maxSize {
+		return fmt.Errorf("%w: entry size %d exceeds max cache size %d", ErrQueryPlanCacheEntryTooLarge, entrySize, c.maxSize)
+	}
 
 	// Check if entry already exists
 	if elem, exists := c.entries[hash]; exists {
@@ -137,7 +146,6 @@ func (c *QueryPlanCache) Put(sql string, args []interface{}, stmt query.Statemen
 	}
 
 	// Evict entries if necessary
-	entrySize := c.estimateEntrySize(sql, stmt)
 	for (c.currentSize+entrySize > c.maxSize || len(c.entries) >= c.maxEntries) && c.lruList.Len() > 0 {
 		c.evictLRU()
 	}
@@ -210,27 +218,34 @@ func (c *QueryPlanCache) GetTopQueries(n int) []QueryPlanCacheEntry {
 	if n <= 0 {
 		n = 10
 	}
-
-	// Collect all entries
-	allEntries := make([]QueryPlanCacheEntry, 0, len(c.entries))
-	for elem := c.lruList.Front(); elem != nil; elem = elem.Next() {
-		entry := cloneQueryPlanCacheEntry(elem.Value.(*QueryPlanCacheEntry), true)
-		allEntries = append(allEntries, *entry)
+	if n > maxQueryPlanTopQueries {
+		n = maxQueryPlanTopQueries
 	}
 
-	// Sort by access count (simple bubble sort for small n)
-	for i := 0; i < len(allEntries) && i < n; i++ {
-		for j := i + 1; j < len(allEntries); j++ {
-			if allEntries[j].AccessCount > allEntries[i].AccessCount {
-				allEntries[i], allEntries[j] = allEntries[j], allEntries[i]
+	topEntries := make([]QueryPlanCacheEntry, 0, min(n, len(c.entries)))
+	for elem := c.lruList.Front(); elem != nil; elem = elem.Next() {
+		entry := elem.Value.(*QueryPlanCacheEntry)
+		insertAt := len(topEntries)
+		for i := range topEntries {
+			if entry.AccessCount > topEntries[i].AccessCount {
+				insertAt = i
+				break
 			}
+		}
+		if insertAt >= n {
+			continue
+		}
+
+		entryCopy := cloneQueryPlanCacheEntry(entry, true)
+		topEntries = append(topEntries, QueryPlanCacheEntry{})
+		copy(topEntries[insertAt+1:], topEntries[insertAt:])
+		topEntries[insertAt] = *entryCopy
+		if len(topEntries) > n {
+			topEntries = topEntries[:n]
 		}
 	}
 
-	if len(allEntries) > n {
-		return allEntries[:n]
-	}
-	return allEntries
+	return topEntries
 }
 
 // WarmCache pre-populates the cache with common queries

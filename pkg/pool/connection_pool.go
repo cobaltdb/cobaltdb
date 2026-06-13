@@ -22,6 +22,11 @@ var (
 	ErrTimeout = errors.New("connection acquire timeout")
 )
 
+const (
+	maxPoolConnections = 100000
+	maxPoolWaiters     = 1000000
+)
+
 // Config holds pool configuration
 type Config struct {
 	// MinConns is the minimum number of connections to maintain
@@ -64,8 +69,32 @@ func (c *Config) Validate() error {
 	if c.MaxConns <= 0 {
 		return fmt.Errorf("max connections must be positive")
 	}
+	if c.MaxConns > maxPoolConnections {
+		return fmt.Errorf("max connections exceeds maximum (%d)", maxPoolConnections)
+	}
 	if c.MinConns > c.MaxConns {
 		return fmt.Errorf("min connections cannot exceed max connections")
+	}
+	if c.MaxIdleTime < 0 {
+		return fmt.Errorf("max idle time cannot be negative")
+	}
+	if c.MaxLifetime < 0 {
+		return fmt.Errorf("max lifetime cannot be negative")
+	}
+	if c.HealthCheckInterval < 0 {
+		return fmt.Errorf("health check interval cannot be negative")
+	}
+	if c.HealthCheckTimeout < 0 {
+		return fmt.Errorf("health check timeout cannot be negative")
+	}
+	if c.AcquireTimeout < 0 {
+		return fmt.Errorf("acquire timeout cannot be negative")
+	}
+	if c.WaitQueueSize < 0 {
+		return fmt.Errorf("wait queue size cannot be negative")
+	}
+	if c.WaitQueueSize > maxPoolWaiters {
+		return fmt.Errorf("wait queue size exceeds maximum (%d)", maxPoolWaiters)
 	}
 	return nil
 }

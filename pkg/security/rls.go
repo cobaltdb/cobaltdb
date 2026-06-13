@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,8 +21,21 @@ var (
 	ErrInvalidExpression   = errors.New("invalid policy expression")
 
 	// Pre-compiled regex patterns for performance
-	inRegex   = regexp.MustCompile(`(?i)^(.+?)\s+IN\s*\((.+?)\)$`)
-	likeRegex = regexp.MustCompile(`(?i)^(.+?)\s+LIKE\s+['"](.+?)['"]$`)
+	inRegex      = regexp.MustCompile(`(?i)^(.+?)\s+(NOT\s+)?IN\s*\((.+?)\)$`)
+	likeRegex    = regexp.MustCompile(`(?i)^(.+?)\s+(NOT\s+)?LIKE\s+['"](.+?)['"]$`)
+	betweenRegex = regexp.MustCompile(`(?i)^(.+?)\s+(NOT\s+)?BETWEEN\s+(.+?)\s+AND\s+(.+?)$`)
+)
+
+const (
+	maxSerializedPoliciesBytes = 1 << 20
+	maxSerializedPolicyCount   = 10000
+	maxPolicyExpressionBytes   = 16 << 10
+	maxPolicyLikePatternBytes  = 4 << 10
+	maxPolicyInListValues      = 1024
+	maxPolicyIdentifierBytes   = 256
+	maxPolicyPrincipals        = 1024
+	maxPolicyPrincipalBytes    = 256
+	maxPolicyMetadataBytes     = 64 << 10
 )
 
 // toUpperFast returns an uppercased copy of s only if s contains lowercase
@@ -103,32 +117,36 @@ type PolicyExpr func(ctx context.Context, row map[string]interface{}) (bool, err
 
 // Policy defines a row-level security policy
 type Policy struct {
-	Name       string                 `json:"name"`
-	TableName  string                 `json:"table_name"`
-	Type       PolicyType             `json:"type"`
-	Expression string                 `json:"expression"` // SQL expression
-	Users      []string               `json:"users"`      // Apply to specific users (empty = all)
-	Roles      []string               `json:"roles"`      // Apply to specific roles
-	Enabled    bool                   `json:"enabled"`
-	Metadata   map[string]interface{} `json:"metadata,omitempty"`
+	Name            string                 `json:"name"`
+	TableName       string                 `json:"table_name"`
+	Type            PolicyType             `json:"type"`
+	Expression      string                 `json:"expression"`       // USING expression
+	CheckExpression string                 `json:"check_expression"` // WITH CHECK expression
+	Restrictive     bool                   `json:"restrictive,omitempty"`
+	Users           []string               `json:"users"` // Apply to specific users (empty = all)
+	Roles           []string               `json:"roles"` // Apply to specific roles
+	Enabled         bool                   `json:"enabled"`
+	Metadata        map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // Manager manages row-level security policies
 type Manager struct {
-	policies      map[string]*Policy    // key: "tableName:policyName"
-	tablePolicies map[string][]string   // key: tableName, value: []policyNames
-	enabledTables map[string]bool       // Tables with RLS enabled
-	compiledExprs map[string]PolicyExpr // Compiled expressions
-	mu            sync.RWMutex
+	policies           map[string]*Policy    // key: "tableName:policyName"
+	tablePolicies      map[string][]string   // key: tableName, value: []policyNames
+	enabledTables      map[string]bool       // Tables with RLS enabled
+	compiledExprs      map[string]PolicyExpr // Compiled USING expressions
+	compiledCheckExprs map[string]PolicyExpr // Compiled WITH CHECK expressions
+	mu                 sync.RWMutex
 }
 
 // NewManager creates a new RLS manager
 func NewManager() *Manager {
 	return &Manager{
-		policies:      make(map[string]*Policy),
-		tablePolicies: make(map[string][]string),
-		enabledTables: make(map[string]bool),
-		compiledExprs: make(map[string]PolicyExpr),
+		policies:           make(map[string]*Policy),
+		tablePolicies:      make(map[string][]string),
+		enabledTables:      make(map[string]bool),
+		compiledExprs:      make(map[string]PolicyExpr),
+		compiledCheckExprs: make(map[string]PolicyExpr),
 	}
 }
 
@@ -153,10 +171,27 @@ func (m *Manager) IsEnabled(tableName string) bool {
 	return m.enabledTables[strings.ToLower(tableName)]
 }
 
+// ListEnabledTables returns all tables with row-level security enabled.
+func (m *Manager) ListEnabledTables() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tables := make([]string, 0, len(m.enabledTables))
+	for tableName, enabled := range m.enabledTables {
+		if enabled {
+			tables = append(tables, tableName)
+		}
+	}
+	sort.Strings(tables)
+	return tables
+}
+
 // CreatePolicy creates a new security policy
 func (m *Manager) CreatePolicy(policy *Policy) error {
 	if policy == nil || policy.Name == "" || policy.TableName == "" {
 		return ErrInvalidPolicy
+	}
+	if err := validatePolicyDefinition(policy); err != nil {
+		return err
 	}
 
 	m.mu.Lock()
@@ -177,6 +212,7 @@ func (m *Manager) CreatePolicy(policy *Policy) error {
 
 	if err := m.compilePolicy(storedPolicy); err != nil {
 		delete(m.compiledExprs, key)
+		delete(m.compiledCheckExprs, key)
 		return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
 
@@ -202,6 +238,7 @@ func (m *Manager) DropPolicy(tableName, policyName string) error {
 
 	delete(m.policies, key)
 	delete(m.compiledExprs, key)
+	delete(m.compiledCheckExprs, key)
 
 	// Remove from table policies
 	if policies, ok := m.tablePolicies[tableName]; ok {
@@ -253,7 +290,18 @@ func (m *Manager) GetTablePolicies(tableName string) []*Policy {
 func (m *Manager) CheckAccess(ctx context.Context, tableName string, policyType PolicyType, row map[string]interface{}, user string, roles []string) (bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.checkAccessLocked(ctx, tableName, policyType, row, user, roles, false)
+}
 
+// CheckAccessWithCheck checks a row against WITH CHECK expressions when a policy
+// defines one, falling back to USING expressions for backward compatibility.
+func (m *Manager) CheckAccessWithCheck(ctx context.Context, tableName string, policyType PolicyType, row map[string]interface{}, user string, roles []string) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.checkAccessLocked(ctx, tableName, policyType, row, user, roles, true)
+}
+
+func (m *Manager) checkAccessLocked(ctx context.Context, tableName string, policyType PolicyType, row map[string]interface{}, user string, roles []string, useCheck bool) (bool, error) {
 	tableName = strings.ToLower(tableName)
 
 	// If RLS not enabled for table, allow access
@@ -267,7 +315,9 @@ func (m *Manager) CheckAccess(ctx context.Context, tableName string, policyType 
 		return false, nil
 	}
 
-	// Check applicable policies
+	foundPermissive := false
+	allowedPermissive := false
+
 	for _, name := range policyNames {
 		key := m.policyKey(tableName, name)
 		policy, ok := m.policies[key]
@@ -298,6 +348,10 @@ func (m *Manager) CheckAccess(ctx context.Context, tableName string, policyType 
 		if len(policy.Roles) > 0 {
 			found := false
 			for _, policyRole := range policy.Roles {
+				if strings.EqualFold(policyRole, "PUBLIC") {
+					found = true
+					break
+				}
 				for _, userRole := range roles {
 					if strings.EqualFold(policyRole, userRole) {
 						found = true
@@ -315,6 +369,9 @@ func (m *Manager) CheckAccess(ctx context.Context, tableName string, policyType 
 
 		// Evaluate policy expression
 		expr, ok := m.compiledExprs[key]
+		if useCheck && policy.CheckExpression != "" {
+			expr, ok = m.compiledCheckExprs[key]
+		}
 		if !ok {
 			continue
 		}
@@ -323,13 +380,24 @@ func (m *Manager) CheckAccess(ctx context.Context, tableName string, policyType 
 		if err != nil {
 			return false, err
 		}
+		if policy.Restrictive {
+			if !allowed {
+				return false, nil
+			}
+			continue
+		}
+
+		foundPermissive = true
 		if allowed {
-			return true, nil
+			allowedPermissive = true
 		}
 	}
 
-	// No policy allowed access
-	return false, nil
+	// Restrictive policies only narrow access granted by permissive policies.
+	if !foundPermissive {
+		return false, nil
+	}
+	return allowedPermissive, nil
 }
 
 // FilterRows filters a slice of rows based on RLS policies
@@ -404,30 +472,124 @@ func (m *Manager) DeserializePolicies(data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if len(data) > maxSerializedPoliciesBytes {
+		return fmt.Errorf("%w: serialized policies too large: %d bytes", ErrInvalidPolicy, len(data))
+	}
+
 	var policies map[string]*Policy
 	if err := json.Unmarshal(data, &policies); err != nil {
 		return err
 	}
+	if len(policies) > maxSerializedPolicyCount {
+		return fmt.Errorf("%w: too many policies: %d", ErrInvalidPolicy, len(policies))
+	}
 
-	m.policies = policies
-
-	// Rebuild indexes
-	m.tablePolicies = make(map[string][]string)
-	m.enabledTables = make(map[string]bool)
+	stagedPolicies := make(map[string]*Policy, len(policies))
+	stagedTablePolicies := make(map[string][]string)
+	stagedEnabledTables := make(map[string]bool)
+	stagedCompiledExprs := make(map[string]PolicyExpr)
+	stagedCompiledCheckExprs := make(map[string]PolicyExpr)
 
 	for key, policy := range policies {
-		m.tablePolicies[policy.TableName] = append(m.tablePolicies[policy.TableName], policy.Name)
+		normalized, normalizedKey, err := normalizeDeserializedPolicy(key, policy)
+		if err != nil {
+			return err
+		}
+		if _, exists := stagedPolicies[normalizedKey]; exists {
+			return fmt.Errorf("%w: duplicate policy %q", ErrInvalidPolicy, normalizedKey)
+		}
+
+		stagedPolicies[normalizedKey] = normalized
+		stagedTablePolicies[normalized.TableName] = append(stagedTablePolicies[normalized.TableName], normalized.Name)
 		if policy.Enabled {
-			m.enabledTables[policy.TableName] = true
+			stagedEnabledTables[normalized.TableName] = true
 		}
 
 		// Recompile expression
-		if err := m.compilePolicy(policy); err != nil {
+		if err := compilePolicyInto(normalized, stagedCompiledExprs, stagedCompiledCheckExprs, m.parseExpression); err != nil {
 			// Log error but continue
-			delete(m.compiledExprs, key)
+			delete(stagedCompiledExprs, normalizedKey)
+			delete(stagedCompiledCheckExprs, normalizedKey)
 		}
 	}
 
+	m.policies = stagedPolicies
+	m.tablePolicies = stagedTablePolicies
+	m.enabledTables = stagedEnabledTables
+	m.compiledExprs = stagedCompiledExprs
+	m.compiledCheckExprs = stagedCompiledCheckExprs
+	return nil
+}
+
+func normalizeDeserializedPolicy(key string, policy *Policy) (*Policy, string, error) {
+	if policy == nil {
+		return nil, "", fmt.Errorf("%w: nil policy for key %q", ErrInvalidPolicy, key)
+	}
+
+	normalized := clonePolicy(policy)
+	if normalized.TableName == "" || normalized.Name == "" {
+		tableName, policyName, ok := strings.Cut(key, ":")
+		if !ok {
+			return nil, "", fmt.Errorf("%w: policy key %q must be table:policy", ErrInvalidPolicy, key)
+		}
+		if normalized.TableName == "" {
+			normalized.TableName = tableName
+		}
+		if normalized.Name == "" {
+			normalized.Name = policyName
+		}
+	}
+	normalized.TableName = strings.ToLower(strings.TrimSpace(normalized.TableName))
+	normalized.Name = strings.ToLower(strings.TrimSpace(normalized.Name))
+	if normalized.TableName == "" || normalized.Name == "" {
+		return nil, "", ErrInvalidPolicy
+	}
+	if err := validatePolicyDefinition(normalized); err != nil {
+		return nil, "", err
+	}
+	if normalized.Metadata == nil {
+		normalized.Metadata = make(map[string]interface{})
+	}
+	return normalized, normalized.TableName + ":" + normalized.Name, nil
+}
+
+func validatePolicyDefinition(policy *Policy) error {
+	if policy == nil {
+		return ErrInvalidPolicy
+	}
+	if strings.TrimSpace(policy.Name) == "" || strings.TrimSpace(policy.TableName) == "" {
+		return ErrInvalidPolicy
+	}
+	if len(policy.Name) > maxPolicyIdentifierBytes || len(policy.TableName) > maxPolicyIdentifierBytes {
+		return fmt.Errorf("%w: policy identifier too large", ErrInvalidPolicy)
+	}
+	if len(policy.Users) > maxPolicyPrincipals || len(policy.Roles) > maxPolicyPrincipals {
+		return fmt.Errorf("%w: too many policy principals", ErrInvalidPolicy)
+	}
+	if err := validatePolicyPrincipals(policy.Users); err != nil {
+		return err
+	}
+	if err := validatePolicyPrincipals(policy.Roles); err != nil {
+		return err
+	}
+	if policy.Metadata != nil {
+		encoded, err := json.Marshal(policy.Metadata)
+		if err != nil {
+			return fmt.Errorf("%w: invalid policy metadata: %v", ErrInvalidPolicy, err)
+		}
+		if len(encoded) > maxPolicyMetadataBytes {
+			return fmt.Errorf("%w: policy metadata too large: %d bytes", ErrInvalidPolicy, len(encoded))
+		}
+	}
+	return nil
+}
+
+func validatePolicyPrincipals(values []string) error {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" || len(value) > maxPolicyPrincipalBytes {
+			return ErrInvalidPolicy
+		}
+	}
 	return nil
 }
 
@@ -506,30 +668,47 @@ func cloneStringStringMap(values map[string]string) map[string]string {
 
 // compilePolicy compiles a policy expression
 func (m *Manager) compilePolicy(policy *Policy) error {
-	key := m.policyKey(policy.TableName, policy.Name)
+	return compilePolicyInto(policy, m.compiledExprs, m.compiledCheckExprs, m.parseExpression)
+}
+
+func compilePolicyInto(policy *Policy, compiledExprs, compiledCheckExprs map[string]PolicyExpr, parse func(string) (PolicyExpr, error)) error {
+	key := strings.ToLower(policy.TableName) + ":" + strings.ToLower(policy.Name)
 
 	// Default expression that allows all
 	expr := func(ctx context.Context, row map[string]interface{}) (bool, error) {
 		return true, nil
 	}
+	checkExpr := expr
 
 	// If expression is provided, try to parse it
 	if policy.Expression != "" {
-		compiledExpr, err := m.parseExpression(policy.Expression)
+		compiledExpr, err := parse(policy.Expression)
 		if err != nil {
 			return err
 		}
 		expr = compiledExpr
 	}
+	if policy.CheckExpression != "" {
+		compiledExpr, err := parse(policy.CheckExpression)
+		if err != nil {
+			return err
+		}
+		checkExpr = compiledExpr
+	}
 
-	m.compiledExprs[key] = expr
+	compiledExprs[key] = expr
+	compiledCheckExprs[key] = checkExpr
 	return nil
 }
 
 // parseExpression parses a SQL expression and returns an evaluator
-// Supports: =, !=, <>, <, >, <=, >=, AND, OR, NOT, IN, LIKE, IS NULL, IS NOT NULL
+// Supports: =, !=, <>, <, >, <=, >=, AND, OR, NOT, IN, NOT IN,
+// LIKE, NOT LIKE, BETWEEN, NOT BETWEEN, IS NULL, IS NOT NULL
 func (m *Manager) parseExpression(expr string) (PolicyExpr, error) {
 	expr = strings.TrimSpace(expr)
+	if len(expr) > maxPolicyExpressionBytes {
+		return nil, fmt.Errorf("%w: policy expression too large: %d bytes", ErrInvalidExpression, len(expr))
+	}
 	if expr == "" {
 		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 			return true, nil
@@ -676,13 +855,22 @@ func (m *Manager) parseSimpleExpression(expr string) (PolicyExpr, error) {
 	}
 
 	// Check for IN operator
-	if inExpr := parseInOperator(expr); inExpr != nil {
+	if inExpr, err := parseInOperator(expr); err != nil {
+		return nil, err
+	} else if inExpr != nil {
 		return inExpr, nil
 	}
 
 	// Check for LIKE operator
-	if likeExpr := parseLikeOperator(expr); likeExpr != nil {
+	if likeExpr, err := parseLikeOperator(expr); err != nil {
+		return nil, err
+	} else if likeExpr != nil {
 		return likeExpr, nil
+	}
+
+	// Check for BETWEEN operator
+	if betweenExpr := m.parseBetweenOperator(expr); betweenExpr != nil {
+		return betweenExpr, nil
 	}
 
 	// Parse comparison operators - check for >=, <=, <>, != first (before single char ops)
@@ -836,6 +1024,45 @@ func (m *Manager) createComparisonEvaluator(left, op, right string) PolicyExpr {
 	}
 }
 
+func (m *Manager) parseBetweenOperator(expr string) PolicyExpr {
+	expr = strings.TrimSpace(expr)
+	matches := betweenRegex.FindStringSubmatch(expr)
+	if len(matches) != 5 {
+		return nil
+	}
+
+	valueExpr := strings.TrimSpace(matches[1])
+	not := strings.TrimSpace(matches[2]) != ""
+	lowerExpr := strings.TrimSpace(matches[3])
+	upperExpr := strings.TrimSpace(matches[4])
+
+	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+		value := m.getValue(valueExpr, ctx, row)
+		lower := m.getValue(lowerExpr, ctx, row)
+		upper := m.getValue(upperExpr, ctx, row)
+		if value == nil || lower == nil || upper == nil {
+			return false, nil
+		}
+
+		var result bool
+		valueNum, valueIsNum := ToFloat64(value)
+		lowerNum, lowerIsNum := ToFloat64(lower)
+		upperNum, upperIsNum := ToFloat64(upper)
+		if valueIsNum && lowerIsNum && upperIsNum {
+			result = valueNum >= lowerNum && valueNum <= upperNum
+		} else {
+			valueStr := valueToString(value)
+			lowerStr := valueToString(lower)
+			upperStr := valueToString(upper)
+			result = valueStr >= lowerStr && valueStr <= upperStr
+		}
+		if not {
+			return !result, nil
+		}
+		return result, nil
+	}
+}
+
 // isContextFunction checks if expr is a context function like current_user
 func isContextFunction(expr string) bool {
 	upperExpr := strings.ToUpper(strings.TrimSpace(expr))
@@ -952,22 +1179,26 @@ func parseNullCheck(expr string) PolicyExpr {
 }
 
 // parseInOperator parses IN operator expressions
-func parseInOperator(expr string) PolicyExpr {
+func parseInOperator(expr string) (PolicyExpr, error) {
 	expr = strings.TrimSpace(expr)
 
-	// Match pattern: column IN (value1, value2, ...)
+	// Match pattern: column [NOT] IN (value1, value2, ...)
 	// Uses pre-compiled package-level regex
 	matches := inRegex.FindStringSubmatch(expr)
-	if len(matches) != 3 {
-		return nil
+	if len(matches) != 4 {
+		return nil, nil
 	}
 
 	columnName := strings.TrimSpace(matches[1])
 	lowerCol := toLowerFast(columnName)
-	valuesStr := matches[2]
+	not := strings.TrimSpace(matches[2]) != ""
+	valuesStr := matches[3]
 
 	// Parse values
 	values := parseValueList(valuesStr)
+	if len(values) > maxPolicyInListValues {
+		return nil, fmt.Errorf("%w: policy IN list has too many values: %d", ErrInvalidExpression, len(values))
+	}
 
 	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 		rowValue, ok := row[columnName]
@@ -976,35 +1207,44 @@ func parseInOperator(expr string) PolicyExpr {
 		}
 
 		rowStr := valueToString(rowValue)
+		found := false
 		for _, v := range values {
 			if rowStr == v {
-				return true, nil
+				found = true
+				break
 			}
 		}
-		return false, nil
-	}
+		if not {
+			return !found, nil
+		}
+		return found, nil
+	}, nil
 }
 
 // parseLikeOperator parses LIKE operator expressions
-func parseLikeOperator(expr string) PolicyExpr {
+func parseLikeOperator(expr string) (PolicyExpr, error) {
 	expr = strings.TrimSpace(expr)
 
-	// Match pattern: column LIKE 'pattern'
+	// Match pattern: column [NOT] LIKE 'pattern'
 	// Uses pre-compiled package-level regex
 	matches := likeRegex.FindStringSubmatch(expr)
-	if len(matches) != 3 {
-		return nil
+	if len(matches) != 4 {
+		return nil, nil
 	}
 
 	columnName := strings.TrimSpace(matches[1])
 	lowerCol := toLowerFast(columnName)
-	pattern := matches[2]
+	not := strings.TrimSpace(matches[2]) != ""
+	pattern := matches[3]
+	if len(pattern) > maxPolicyLikePatternBytes {
+		return nil, fmt.Errorf("%w: policy LIKE pattern too large: %d bytes", ErrInvalidExpression, len(pattern))
+	}
 
 	// Convert SQL LIKE pattern to regex
 	regexPattern := likeToRegex(pattern)
 	re, err := regexp.Compile(regexPattern)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
@@ -1013,8 +1253,12 @@ func parseLikeOperator(expr string) PolicyExpr {
 			rowValue = row[lowerCol]
 		}
 
-		return re.MatchString(valueToString(rowValue)), nil
-	}
+		matched := re.MatchString(valueToString(rowValue))
+		if not {
+			return !matched, nil
+		}
+		return matched, nil
+	}, nil
 }
 
 // ToFloat64 converts a value to float64

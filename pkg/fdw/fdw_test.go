@@ -233,6 +233,40 @@ func TestCSVWrapper_OpenMissingFile(t *testing.T) {
 	}
 }
 
+func TestCSVWrapper_OpenRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.csv")
+	link := filepath.Join(dir, "link.csv")
+	if err := os.WriteFile(target, []byte("id\n1\n"), 0644); err != nil {
+		t.Fatalf("failed to write target csv: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	err := csv.Open(map[string]string{"file": link})
+	if err == nil {
+		t.Fatal("expected symlink csv path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestCSVWrapper_OpenRejectsNonRegularFile(t *testing.T) {
+	dir := t.TempDir()
+
+	csv := &CSVWrapper{}
+	err := csv.Open(map[string]string{"file": dir})
+	if err == nil {
+		t.Fatal("expected directory csv path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected regular file rejection, got %v", err)
+	}
+}
+
 func TestCSVWrapper_MaxRowsLimit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "large.csv")
@@ -459,6 +493,44 @@ func TestCSVWrapper_MaxBytesLimitAtScan(t *testing.T) {
 	}
 }
 
+func TestCSVWrapper_MaxColumnsLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wide.csv")
+	if err := os.WriteFile(path, []byte("a,b,c\n1,2,3\n"), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path, "max_columns": "2"}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer csv.Close()
+
+	_, err := csv.Scan("test", nil)
+	if err == nil || !strings.Contains(err.Error(), "column limit exceeded") {
+		t.Fatalf("expected column limit error, got %v", err)
+	}
+}
+
+func TestCSVWrapper_MaxFieldBytesLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large-field.csv")
+	if err := os.WriteFile(path, []byte("id,name\n1,"+strings.Repeat("x", 8)+"\n"), 0644); err != nil {
+		t.Fatalf("failed to write csv: %v", err)
+	}
+
+	csv := &CSVWrapper{}
+	if err := csv.Open(map[string]string{"file": path, "max_field_bytes": "4"}); err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer csv.Close()
+
+	_, err := csv.Scan("test", nil)
+	if err == nil || !strings.Contains(err.Error(), "max_field_bytes") {
+		t.Fatalf("expected max_field_bytes error, got %v", err)
+	}
+}
+
 func TestCSVWrapper_InvalidLimitOptions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "data.csv")
@@ -469,6 +541,8 @@ func TestCSVWrapper_InvalidLimitOptions(t *testing.T) {
 	tests := []map[string]string{
 		{"file": path, "max_rows": "-1"},
 		{"file": path, "max_bytes": "nope"},
+		{"file": path, "max_field_bytes": "-1"},
+		{"file": path, "max_columns": "nope"},
 	}
 	for _, options := range tests {
 		csv := &CSVWrapper{}

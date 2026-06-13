@@ -54,14 +54,19 @@ type Config struct {
 }
 
 const (
-	metadataFileName = "metadata.json"
-	backupDirPerm    = 0750
-	backupFilePerm   = 0600
+	metadataFileName       = "metadata.json"
+	backupDirPerm          = 0750
+	backupFilePerm         = 0600
+	maxBackupMetadataBytes = 4 << 20
+	maxBackupMetadataItems = 100000
+	maxBackupMetadataField = 4096
+	maxBackupMetadataWALs  = 4096
 )
 
 const (
-	deltaMagic     = "CBDBDELTA1\n"
-	deltaChunkSize = 64 * 1024
+	deltaMagic            = "CBDBDELTA1\n"
+	deltaChunkSize        = 64 * 1024
+	maxDeltaHeaderLineLen = 4 << 10
 )
 
 type deltaHeader struct {
@@ -81,7 +86,51 @@ func (w *payloadWriter) Write(p []byte) (int, error) {
 		_, _ = w.crc.Write(p[:n])
 		w.written += int64(n)
 	}
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
 	return n, err
+}
+
+type payloadReader struct {
+	reader io.Reader
+	crc    hash.Hash32
+	read   int64
+}
+
+func (r *payloadReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		_, _ = r.crc.Write(p[:n])
+		r.read += int64(n)
+	}
+	return n, err
+}
+
+type offsetWriter interface {
+	WriteAt([]byte, int64) (int, error)
+}
+
+func writeFull(writer io.Writer, data []byte) (int, error) {
+	n, err := writer.Write(data)
+	if err != nil {
+		return n, err
+	}
+	if n != len(data) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
+}
+
+func writeFullAt(writer offsetWriter, data []byte, offset int64) (int, error) {
+	n, err := writer.WriteAt(data, offset)
+	if err != nil {
+		return n, err
+	}
+	if n != len(data) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
 }
 
 // DefaultConfig returns default backup configuration
@@ -259,8 +308,7 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (backup *Ba
 		m.mu.Unlock()
 	}()
 
-	// Create backup directory if not exists
-	if err := os.MkdirAll(m.config.BackupDir, backupDirPerm); err != nil {
+	if err := prepareBackupDir(m.config.BackupDir, true); err != nil {
 		return nil, fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
@@ -354,7 +402,7 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 	if err != nil {
 		return fmt.Errorf("invalid source database path: %w", err)
 	}
-	srcFile, err := os.Open(srcPath) // #nosec G304 - source path comes from the configured database and is cleaned before use.
+	srcFile, err := openRegularBackupFile(srcPath)
 	if err != nil {
 		return fmt.Errorf("failed to open source database: %w", err)
 	}
@@ -408,7 +456,7 @@ func (m *Manager) copyDatabase(ctx context.Context, backup *Backup) error {
 
 		n, err := srcFile.Read(buf)
 		if n > 0 {
-			if _, werr := writer.Write(buf[:n]); werr != nil {
+			if _, werr := writeFull(writer, buf[:n]); werr != nil {
 				return fmt.Errorf("failed to write backup data: %w", werr)
 			}
 			_, _ = crc.Write(buf[:n])
@@ -477,7 +525,7 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 	if err != nil {
 		return fmt.Errorf("invalid source database path: %w", err)
 	}
-	srcFile, err := os.Open(srcPath) // #nosec G304 - source path comes from the configured database and is cleaned before use.
+	srcFile, err := openRegularBackupFile(srcPath)
 	if err != nil {
 		return fmt.Errorf("failed to open source database: %w", err)
 	}
@@ -492,7 +540,7 @@ func (m *Manager) copyDatabaseDelta(ctx context.Context, backup *Backup) error {
 	if err != nil {
 		return fmt.Errorf("invalid parent database path: %w", err)
 	}
-	parentFile, err := os.Open(parentPath) // #nosec G304 - parent path is returned by os.CreateTemp and cleaned before use.
+	parentFile, err := openRegularBackupFile(parentPath)
 	if err != nil {
 		return fmt.Errorf("failed to open parent database: %w", err)
 	}
@@ -609,7 +657,7 @@ func writeDeltaRecord(writer io.Writer, offset uint64, data []byte) error {
 	if err := binary.Write(writer, binary.LittleEndian, length); err != nil {
 		return fmt.Errorf("failed to write delta length: %w", err)
 	}
-	if _, err := writer.Write(data); err != nil {
+	if _, err := writeFull(writer, data); err != nil {
 		return fmt.Errorf("failed to write delta data: %w", err)
 	}
 	return nil
@@ -622,13 +670,19 @@ func (m *Manager) copyWALFiles(ctx context.Context, backup *Backup) error {
 		return nil
 	}
 
-	walInfo, err := os.Stat(walPath)
+	walInfo, err := os.Lstat(walPath)
 	if err != nil {
 		return fmt.Errorf("failed to stat WAL path: %w", err)
 	}
+	if walInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("WAL path must not be a symlink: %s", walPath)
+	}
 
-	walBackupDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", backup.ID))
-	if err := os.MkdirAll(walBackupDir, backupDirPerm); err != nil {
+	walBackupDir, err := m.backupWALDir(backup.ID)
+	if err != nil {
+		return err
+	}
+	if err := prepareBackupDir(walBackupDir, true); err != nil {
 		return fmt.Errorf("failed to create WAL backup directory: %w", err)
 	}
 
@@ -667,7 +721,11 @@ func (m *Manager) copyWALFiles(ctx context.Context, backup *Backup) error {
 
 // verifyBackup verifies the integrity of a backup
 func (m *Manager) verifyBackup(backup *Backup) error {
-	file, err := os.Open(backup.Destination)
+	path, err := m.managedBackupFilePath(backup.Destination)
+	if err != nil {
+		return fmt.Errorf("invalid backup file: %w", err)
+	}
+	file, err := os.Open(path) // #nosec G304 - backup path is validated under BackupDir before opening.
 	if err != nil {
 		return fmt.Errorf("failed to open backup file: %w", err)
 	}
@@ -676,7 +734,7 @@ func (m *Manager) verifyBackup(backup *Backup) error {
 	var reader io.Reader = file
 
 	// Handle compressed backups
-	if filepath.Ext(backup.Destination) == ".gz" {
+	if filepath.Ext(path) == ".gz" {
 		gzReader, err := gzip.NewReader(file)
 		if err != nil {
 			return fmt.Errorf("failed to create gzip reader: %w", err)
@@ -741,10 +799,12 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 		return err
 	}
 
-	// Create target directory if needed
 	targetDir := filepath.Dir(targetPath)
-	if err := os.MkdirAll(targetDir, backupDirPerm); err != nil {
+	if err := prepareRestoreDir(targetDir, true); err != nil {
 		return fmt.Errorf("failed to create target directory: %w", err)
+	}
+	if err := validateRestoreTargetPath(targetPath); err != nil {
+		return fmt.Errorf("invalid restore target path: %w", err)
 	}
 
 	tmpTarget, err := os.CreateTemp(targetDir, ".restore-*.tmp")
@@ -768,6 +828,12 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 		}
 	}
 
+	stagedWAL, err := m.stageRestoreWAL(backup, targetPath)
+	if err != nil {
+		return err
+	}
+	defer stagedWAL.cleanup()
+
 	if err := os.Rename(tmpTargetPath, targetPath); err != nil {
 		return fmt.Errorf("failed to replace restored database: %w", err)
 	}
@@ -776,53 +842,164 @@ func (m *Manager) Restore(ctx context.Context, backupID string, targetPath strin
 		return fmt.Errorf("failed to sync restore directory: %w", err)
 	}
 
-	// Restore WAL files if present
-	if len(backup.WALFiles) > 0 {
-		walBackupDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", backup.ID))
-		targetWALPath := targetPath + ".wal"
-
-		if backup.WALPathIsFile {
-			if err := copyFile(filepath.Join(walBackupDir, backup.WALFiles[0]), targetWALPath); err != nil {
-				return fmt.Errorf("failed to restore WAL file: %w", err)
-			}
-			return nil
-		}
-
-		// Directory WALs are restored at <db-path>.wal for compatibility with
-		// segmented WAL implementations and existing backup tests.
-		tmpWALPath, err := os.MkdirTemp(filepath.Dir(targetWALPath), ".restore-wal-*")
-		if err != nil {
-			return fmt.Errorf("failed to create temporary WAL restore directory: %w", err)
-		}
-		defer func() {
-			if tmpWALPath != "" {
-				_ = os.RemoveAll(tmpWALPath)
-			}
-		}()
-
-		for _, walFile := range backup.WALFiles {
-			srcPath := filepath.Join(walBackupDir, walFile)
-			dstPath := filepath.Join(tmpWALPath, walFile)
-
-			if err := copyFile(srcPath, dstPath); err != nil {
-				return fmt.Errorf("failed to restore WAL file %s: %w", walFile, err)
-			}
-		}
-		if err := syncParentDir(filepath.Join(tmpWALPath, "wal")); err != nil {
-			return fmt.Errorf("failed to sync temporary WAL restore directory: %w", err)
-		}
-		if err := os.RemoveAll(targetWALPath); err != nil {
-			return fmt.Errorf("failed to remove existing WAL directory: %w", err)
-		}
-		if err := os.Rename(tmpWALPath, targetWALPath); err != nil {
-			return fmt.Errorf("failed to replace restored WAL directory: %w", err)
-		}
-		tmpWALPath = ""
-		if err := syncParentDir(targetWALPath); err != nil {
-			return fmt.Errorf("failed to sync restored WAL directory parent: %w", err)
-		}
+	if err := stagedWAL.commit(); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+func validateRestoreTargetPath(path string) error {
+	path, err := cleanBackupFilePath(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("restore target must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("restore target must be a regular file: %s", path)
+	}
+	return nil
+}
+
+type stagedRestoreWAL struct {
+	path       string
+	targetPath string
+	isDir      bool
+}
+
+func (s *stagedRestoreWAL) cleanup() {
+	if s == nil || s.path == "" {
+		return
+	}
+	if s.isDir {
+		_ = os.RemoveAll(s.path)
+		return
+	}
+	_ = os.Remove(s.path)
+}
+
+func (s *stagedRestoreWAL) commit() error {
+	if s == nil {
+		return nil
+	}
+	if s.isDir {
+		if err := os.RemoveAll(s.targetPath); err != nil {
+			return fmt.Errorf("failed to remove existing WAL directory: %w", err)
+		}
+		if err := os.Rename(s.path, s.targetPath); err != nil {
+			return fmt.Errorf("failed to replace restored WAL directory: %w", err)
+		}
+		s.path = ""
+		if err := syncParentDir(s.targetPath); err != nil {
+			return fmt.Errorf("failed to sync restored WAL directory parent: %w", err)
+		}
+		return nil
+	}
+	if err := os.Rename(s.path, s.targetPath); err != nil {
+		return fmt.Errorf("failed to replace restored WAL file: %w", err)
+	}
+	s.path = ""
+	if err := syncParentDir(s.targetPath); err != nil {
+		return fmt.Errorf("failed to sync restored WAL file parent: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) stageRestoreWAL(backup *Backup, targetPath string) (*stagedRestoreWAL, error) {
+	if len(backup.WALFiles) == 0 {
+		return nil, nil
+	}
+
+	walBackupDir, err := m.backupWALDir(backup.ID)
+	if err != nil {
+		return nil, err
+	}
+	targetWALPath := targetPath + ".wal"
+
+	if backup.WALPathIsFile {
+		if err := validateRestoreWALFileTarget(targetWALPath); err != nil {
+			return nil, err
+		}
+		if len(backup.WALFiles) != 1 {
+			return nil, fmt.Errorf("single-file WAL backup %s must contain exactly one WAL file, got %d", backup.ID, len(backup.WALFiles))
+		}
+		tmpWALFile, err := os.CreateTemp(filepath.Dir(targetWALPath), ".restore-wal-*.tmp")
+		if err != nil {
+			return nil, fmt.Errorf("failed to create temporary WAL restore file: %w", err)
+		}
+		tmpWALPath := tmpWALFile.Name()
+		if err := tmpWALFile.Close(); err != nil {
+			_ = os.Remove(tmpWALPath)
+			return nil, fmt.Errorf("failed to close temporary WAL restore file: %w", err)
+		}
+		staged := &stagedRestoreWAL{path: tmpWALPath, targetPath: targetWALPath}
+		srcPath, err := safeChildPath(walBackupDir, backup.WALFiles[0])
+		if err != nil {
+			staged.cleanup()
+			return nil, fmt.Errorf("invalid WAL file name: %w", err)
+		}
+		if err := copyFile(srcPath, tmpWALPath); err != nil {
+			staged.cleanup()
+			return nil, fmt.Errorf("failed to restore WAL file: %w", err)
+		}
+		return staged, nil
+	}
+
+	// Directory WALs are restored at <db-path>.wal for compatibility with
+	// segmented WAL implementations and existing backup tests.
+	tmpWALPath, err := os.MkdirTemp(filepath.Dir(targetWALPath), ".restore-wal-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temporary WAL restore directory: %w", err)
+	}
+	staged := &stagedRestoreWAL{path: tmpWALPath, targetPath: targetWALPath, isDir: true}
+
+	for _, walFile := range backup.WALFiles {
+		srcPath, err := safeChildPath(walBackupDir, walFile)
+		if err != nil {
+			staged.cleanup()
+			return nil, fmt.Errorf("invalid WAL file name %s: %w", walFile, err)
+		}
+		dstPath := filepath.Join(tmpWALPath, walFile)
+
+		if err := copyFile(srcPath, dstPath); err != nil {
+			staged.cleanup()
+			return nil, fmt.Errorf("failed to restore WAL file %s: %w", walFile, err)
+		}
+	}
+	if err := syncParentDir(filepath.Join(tmpWALPath, "wal")); err != nil {
+		staged.cleanup()
+		return nil, fmt.Errorf("failed to sync temporary WAL restore directory: %w", err)
+	}
+	return staged, nil
+}
+
+func validateRestoreWALFileTarget(path string) error {
+	path, err := cleanBackupFilePath(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("restore WAL target must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("restore WAL target must be a regular file: %s", path)
+	}
 	return nil
 }
 
@@ -842,6 +1019,9 @@ func (m *Manager) materializeBackup(ctx context.Context, backup *Backup, targetP
 }
 
 func (m *Manager) restoreBackupPayload(ctx context.Context, backup *Backup, targetPath string) (err error) {
+	if _, err := m.managedBackupFilePath(backup.Destination); err != nil {
+		return fmt.Errorf("invalid backup file: %w", err)
+	}
 	if _, err := os.Stat(backup.Destination); err != nil {
 		return fmt.Errorf("backup file not found: %w", err)
 	}
@@ -851,14 +1031,18 @@ func (m *Manager) restoreBackupPayload(ctx context.Context, backup *Backup, targ
 		return err
 	}
 	defer reader.Close()
+	payload := &payloadReader{reader: reader, crc: crc32.NewIEEE()}
 
 	prefix := make([]byte, len(deltaMagic))
-	n, err := io.ReadFull(reader, prefix)
+	n, err := io.ReadFull(payload, prefix)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 		return fmt.Errorf("failed to read backup file: %w", err)
 	}
 	if backup.Incremental && backup.ParentID != "" && string(prefix[:n]) == deltaMagic {
-		return m.applyDeltaPayload(ctx, reader, targetPath)
+		if err := m.applyDeltaPayload(ctx, payload, targetPath); err != nil {
+			return err
+		}
+		return verifyRestoredPayload(backup, payload)
 	}
 
 	targetFile, err := createSecureFile(targetPath)
@@ -872,7 +1056,7 @@ func (m *Manager) restoreBackupPayload(ctx context.Context, backup *Backup, targ
 	}()
 
 	if n > 0 {
-		if _, err := targetFile.Write(prefix[:n]); err != nil {
+		if _, err := writeFull(targetFile, prefix[:n]); err != nil {
 			return fmt.Errorf("failed to write target file: %w", err)
 		}
 	}
@@ -886,9 +1070,9 @@ func (m *Manager) restoreBackupPayload(ctx context.Context, backup *Backup, targ
 		default:
 		}
 
-		n, err := reader.Read(buf)
+		n, err := payload.Read(buf)
 		if n > 0 {
-			if _, werr := targetFile.Write(buf[:n]); werr != nil {
+			if _, werr := writeFull(targetFile, buf[:n]); werr != nil {
 				return fmt.Errorf("failed to write target file: %w", werr)
 			}
 			written += int64(n)
@@ -906,19 +1090,39 @@ func (m *Manager) restoreBackupPayload(ctx context.Context, backup *Backup, targ
 		}
 	}
 
+	if err := verifyRestoredPayload(backup, payload); err != nil {
+		return err
+	}
 	if err := targetFile.Sync(); err != nil {
 		return fmt.Errorf("failed to sync restored file: %w", err)
 	}
 	return nil
 }
 
+func verifyRestoredPayload(backup *Backup, payload *payloadReader) error {
+	if backup.Size < 0 {
+		return fmt.Errorf("invalid restored backup size: %d", backup.Size)
+	}
+	if payload.read != backup.Size {
+		return fmt.Errorf("restored backup size mismatch: expected %d, got %d", backup.Size, payload.read)
+	}
+	if checksum := payload.crc.Sum32(); checksum != backup.Checksum {
+		return fmt.Errorf("restored backup checksum mismatch: expected %d, got %d", backup.Checksum, checksum)
+	}
+	return nil
+}
+
 func (m *Manager) openBackupReader(backup *Backup) (io.ReadCloser, error) {
-	file, err := os.Open(backup.Destination)
+	path, err := m.managedBackupFilePath(backup.Destination)
+	if err != nil {
+		return nil, fmt.Errorf("invalid backup file: %w", err)
+	}
+	file, err := openRegularBackupFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open backup file: %w", err)
 	}
 
-	if filepath.Ext(backup.Destination) != ".gz" {
+	if filepath.Ext(path) != ".gz" {
 		return file, nil
 	}
 
@@ -946,8 +1150,8 @@ func (r *compoundReadCloser) Close() error {
 }
 
 func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targetPath string) (err error) {
-	buffered := bufio.NewReader(reader)
-	headerLine, err := buffered.ReadBytes('\n')
+	buffered := bufio.NewReaderSize(reader, maxDeltaHeaderLineLen+1)
+	headerLine, err := readDeltaHeaderLine(buffered)
 	if err != nil {
 		return fmt.Errorf("failed to read delta header: %w", err)
 	}
@@ -956,7 +1160,7 @@ func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targe
 	if err := json.Unmarshal(bytes.TrimSpace(headerLine), &header); err != nil {
 		return fmt.Errorf("failed to decode delta header: %w", err)
 	}
-	if header.ChunkSize <= 0 || header.TargetSize < 0 {
+	if header.ChunkSize <= 0 || header.ChunkSize > deltaChunkSize || header.TargetSize < 0 {
 		return fmt.Errorf("invalid delta header")
 	}
 
@@ -964,7 +1168,7 @@ func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targe
 	if err != nil {
 		return fmt.Errorf("invalid target file path: %w", err)
 	}
-	targetFile, err := os.OpenFile(targetPath, os.O_RDWR, 0600) // #nosec G304 - restore target path is an explicit API argument and is cleaned before use.
+	targetFile, err := openRestoreTargetForDelta(targetPath)
 	if err != nil {
 		return fmt.Errorf("failed to open target file for delta restore: %w", err)
 	}
@@ -997,12 +1201,15 @@ func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targe
 		if int(length) > header.ChunkSize {
 			return fmt.Errorf("delta record length %d exceeds chunk size %d", length, header.ChunkSize)
 		}
+		if uint64(header.TargetSize) < offset || uint64(header.TargetSize)-offset < uint64(length) {
+			return fmt.Errorf("delta record at offset %d with length %d exceeds target size %d", offset, length, header.TargetSize)
+		}
 
 		data := make([]byte, length)
 		if _, err := io.ReadFull(buffered, data); err != nil {
 			return fmt.Errorf("failed to read delta data: %w", err)
 		}
-		if _, err := targetFile.WriteAt(data, int64(offset)); err != nil {
+		if _, err := writeFullAt(targetFile, data, int64(offset)); err != nil {
 			return fmt.Errorf("failed to apply delta data: %w", err)
 		}
 	}
@@ -1015,6 +1222,57 @@ func (m *Manager) applyDeltaPayload(ctx context.Context, reader io.Reader, targe
 	}
 
 	return nil
+}
+
+func readDeltaHeaderLine(buffered *bufio.Reader) ([]byte, error) {
+	headerLine, err := buffered.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) || len(headerLine) > maxDeltaHeaderLineLen {
+		return nil, fmt.Errorf("delta header too large")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return headerLine, nil
+}
+
+func openRestoreTargetForDelta(path string) (*os.File, error) {
+	path, err := cleanBackupFilePath(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("restore target must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("restore target must be a regular file: %s", path)
+	}
+
+	file, err := os.OpenFile(path, os.O_RDWR, backupFilePerm) // #nosec G304 - restore target path is an explicit API argument and is validated before use.
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("restore target must be a regular file: %s", path)
+	}
+	if !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return nil, fmt.Errorf("restore target changed while opening: %s", path)
+	}
+	if err := file.Chmod(backupFilePerm); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func (m *Manager) findParentBackupID(backupType Type) string {
@@ -1066,7 +1324,11 @@ func (m *Manager) buildRestoreChain(backup *Backup) ([]*Backup, error) {
 		if seen[parent.ID] {
 			return nil, fmt.Errorf("backup chain contains a cycle at %s", parent.ID)
 		}
-		if _, err := os.Stat(parent.Destination); err != nil {
+		parentDestination, err := m.managedBackupFilePath(parent.Destination)
+		if err != nil {
+			return nil, fmt.Errorf("backup %s parent has invalid destination: %w", current.ID, err)
+		}
+		if _, err := os.Stat(parentDestination); err != nil {
 			return nil, fmt.Errorf("backup %s parent file not found: %w", current.ID, err)
 		}
 
@@ -1101,8 +1363,76 @@ func (m *Manager) metadataPath() string {
 	return filepath.Join(m.config.BackupDir, metadataFileName)
 }
 
+func (m *Manager) managedBackupFilePath(path string) (string, error) {
+	path, err := cleanBackupFilePath(path)
+	if err != nil {
+		return "", err
+	}
+	if err := rejectSymlinkPathComponents(filepath.Dir(path)); err != nil {
+		return "", err
+	}
+	backupDir, err := filepath.Abs(filepath.Clean(m.config.BackupDir))
+	if err != nil {
+		return "", err
+	}
+	backupPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(backupDir, backupPath)
+	if err != nil {
+		return "", err
+	}
+	if rel == "." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || rel == ".." || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("backup file must be inside backup directory: %s", path)
+	}
+
+	info, err := os.Lstat(backupPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return backupPath, nil
+		}
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("backup file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("backup file must be a regular file: %s", path)
+	}
+	return backupPath, nil
+}
+
+func (m *Manager) backupWALDir(backupID string) (string, error) {
+	if strings.TrimSpace(backupID) == "" {
+		return "", fmt.Errorf("backup ID cannot be empty")
+	}
+	return safeChildPath(m.config.BackupDir, fmt.Sprintf("%s_wal", backupID))
+}
+
+func safeChildPath(parent, name string) (string, error) {
+	parent, err := cleanBackupFilePath(parent)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(name) == "" {
+		return "", fmt.Errorf("path name cannot be empty")
+	}
+	cleanName := filepath.Clean(name)
+	if filepath.IsAbs(name) || cleanName == "." || cleanName == ".." || cleanName != name || cleanName != filepath.Base(name) {
+		return "", fmt.Errorf("path name must not be absolute, dot, or contain directory components: %s", name)
+	}
+	return filepath.Join(parent, name), nil
+}
+
 func (m *Manager) loadMetadata() error {
-	file, err := os.Open(m.metadataPath())
+	if err := prepareBackupDir(m.config.BackupDir, false); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("invalid backup directory: %w", err)
+	}
+	file, err := openBackupMetadataFile(m.metadataPath())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -1112,11 +1442,14 @@ func (m *Manager) loadMetadata() error {
 	defer file.Close()
 
 	var metadata Metadata
-	if err := json.NewDecoder(file).Decode(&metadata); err != nil {
+	if err := decodeBackupMetadata(file, &metadata); err != nil {
 		return fmt.Errorf("failed to decode backup metadata: %w", err)
 	}
 	if metadata.Backups == nil {
 		metadata.Backups = make([]*Backup, 0)
+	}
+	if err := m.validateLoadedMetadata(&metadata); err != nil {
+		return fmt.Errorf("invalid backup metadata: %w", err)
 	}
 
 	m.metadata.mu.Lock()
@@ -1126,18 +1459,155 @@ func (m *Manager) loadMetadata() error {
 	return nil
 }
 
+func decodeBackupMetadata(reader io.Reader, metadata *Metadata) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, maxBackupMetadataBytes+1))
+	if err := decoder.Decode(metadata); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("backup metadata contains trailing JSON value")
+		}
+		return fmt.Errorf("backup metadata contains trailing data: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) validateLoadedMetadata(metadata *Metadata) error {
+	if metadata == nil {
+		return fmt.Errorf("metadata cannot be nil")
+	}
+	if len(metadata.Backups) > maxBackupMetadataItems {
+		return fmt.Errorf("too many backup metadata entries: %d (max %d)", len(metadata.Backups), maxBackupMetadataItems)
+	}
+
+	seen := make(map[string]struct{}, len(metadata.Backups))
+	for i, backup := range metadata.Backups {
+		if backup == nil {
+			return fmt.Errorf("backup entry %d cannot be nil", i)
+		}
+		if err := validateBackupMetadataField(backup.ID, "ID", false); err != nil {
+			return fmt.Errorf("backup entry %d has invalid ID: %w", i, err)
+		}
+		if strings.TrimSpace(backup.ID) == "" {
+			return fmt.Errorf("backup entry %d has empty ID", i)
+		}
+		if _, ok := seen[backup.ID]; ok {
+			return fmt.Errorf("duplicate backup ID %q", backup.ID)
+		}
+		seen[backup.ID] = struct{}{}
+		if err := validateBackupMetadataField(backup.ParentID, "parent ID", true); err != nil {
+			return fmt.Errorf("backup %s has invalid parent ID: %w", backup.ID, err)
+		}
+		if err := validateBackupMetadataField(backup.Source, "source", true); err != nil {
+			return fmt.Errorf("backup %s has invalid source: %w", backup.ID, err)
+		}
+		if err := validateBackupMetadataField(backup.Destination, "destination", true); err != nil {
+			return fmt.Errorf("backup %s has invalid destination: %w", backup.ID, err)
+		}
+
+		switch backup.Type {
+		case TypeFull, TypeIncremental, TypeDifferential:
+		default:
+			return fmt.Errorf("backup %s has invalid type %v", backup.ID, backup.Type)
+		}
+		if backup.Size < 0 {
+			return fmt.Errorf("backup %s has invalid size %d", backup.ID, backup.Size)
+		}
+		if !backup.StartedAt.IsZero() && !backup.CompletedAt.IsZero() && backup.CompletedAt.Before(backup.StartedAt) {
+			return fmt.Errorf("backup %s completed before it started", backup.ID)
+		}
+		if backup.Destination == "" {
+			return fmt.Errorf("backup %s has empty destination", backup.ID)
+		}
+		if _, err := m.managedBackupFilePath(backup.Destination); err != nil {
+			return fmt.Errorf("backup %s has invalid destination: %w", backup.ID, err)
+		}
+		if len(backup.WALFiles) > maxBackupMetadataWALs {
+			return fmt.Errorf("backup %s has too many WAL files: %d (max %d)", backup.ID, len(backup.WALFiles), maxBackupMetadataWALs)
+		}
+		if backup.WALPathIsFile && len(backup.WALFiles) != 1 {
+			return fmt.Errorf("backup %s single-file WAL metadata must contain exactly one WAL file, got %d", backup.ID, len(backup.WALFiles))
+		}
+		for _, walFile := range backup.WALFiles {
+			if err := validateBackupMetadataField(walFile, "WAL file name", false); err != nil {
+				return fmt.Errorf("backup %s has invalid WAL file name %q: %w", backup.ID, walFile, err)
+			}
+			if _, err := safeChildPath("wal", walFile); err != nil {
+				return fmt.Errorf("backup %s has invalid WAL file name %q: %w", backup.ID, walFile, err)
+			}
+		}
+	}
+	return nil
+}
+
+func validateBackupMetadataField(value string, name string, allowEmpty bool) error {
+	if !allowEmpty && strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s cannot be empty", name)
+	}
+	if len(value) > maxBackupMetadataField {
+		return fmt.Errorf("%s is too large: %d bytes (max %d)", name, len(value), maxBackupMetadataField)
+	}
+	return nil
+}
+
+func openBackupMetadataFile(path string) (*os.File, error) {
+	path, err := cleanBackupFilePath(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("backup metadata must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("backup metadata must be a regular file: %s", path)
+	}
+	if info.Size() > maxBackupMetadataBytes {
+		return nil, fmt.Errorf("backup metadata is too large: %d bytes (max %d)", info.Size(), maxBackupMetadataBytes)
+	}
+
+	file, err := os.Open(path) // #nosec G304 - metadata path is derived from explicit backup configuration and validated before use.
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("backup metadata must be a regular file: %s", path)
+	}
+	if openedInfo.Size() > maxBackupMetadataBytes {
+		_ = file.Close()
+		return nil, fmt.Errorf("backup metadata is too large: %d bytes (max %d)", openedInfo.Size(), maxBackupMetadataBytes)
+	}
+	if !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return nil, fmt.Errorf("backup metadata changed while opening: %s", path)
+	}
+	if err := file.Chmod(backupFilePerm); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
 func (m *Manager) saveMetadataLocked() error {
-	if _, err := os.Stat(m.config.BackupDir); err != nil {
+	if err := prepareBackupDir(m.config.BackupDir, false); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("failed to stat backup directory: %w", err)
+		return fmt.Errorf("failed to validate backup directory: %w", err)
 	}
 
 	path := m.metadataPath()
-	tmpPath := path + ".tmp"
-
-	file, err := createSecureFile(tmpPath)
+	file, tmpPath, err := createSecureTempFile(path)
 	if err != nil {
 		return fmt.Errorf("failed to create backup metadata file: %w", err)
 	}
@@ -1217,14 +1687,29 @@ func (m *Manager) DeleteBackup(backupID string) error {
 
 	for i, b := range m.metadata.Backups {
 		if b.ID == backupID {
+			if dependent := findDependentBackupLocked(m.metadata.Backups, backupID); dependent != "" {
+				return fmt.Errorf("cannot delete backup %s: required by backup %s", backupID, dependent)
+			}
+
+			destination, err := m.managedBackupFilePath(b.Destination)
+			if err != nil {
+				return fmt.Errorf("invalid backup file: %w", err)
+			}
+			var walDir string
+			if len(b.WALFiles) > 0 {
+				walDir, err = m.backupWALDir(backupID)
+				if err != nil {
+					return err
+				}
+			}
+
 			// Remove backup file
-			if err := os.Remove(b.Destination); err != nil && !os.IsNotExist(err) {
+			if err := os.Remove(destination); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("failed to remove backup file: %w", err)
 			}
 
 			// Remove WAL files
-			if len(b.WALFiles) > 0 {
-				walDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", backupID))
+			if walDir != "" {
 				if err := os.RemoveAll(walDir); err != nil {
 					return fmt.Errorf("failed to remove backup WAL directory: %w", err)
 				}
@@ -1296,19 +1781,45 @@ func (m *Manager) cleanupOldBackups() error {
 			}
 		}
 	}
+	toDelete = filterRequiredBackupDeletes(m.metadata.Backups, toDelete)
 
 	// Delete marked backups
-	changed := false
+	type cleanupTarget struct {
+		backup      *Backup
+		destination string
+		walDir      string
+	}
+	targets := make([]cleanupTarget, 0, len(toDelete))
 	for _, b := range toDelete {
+		target := cleanupTarget{backup: b}
 		if b.Destination != "" {
-			if err := os.Remove(b.Destination); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("failed to remove old backup file %s: %w", b.Destination, err)
+			destination, err := m.managedBackupFilePath(b.Destination)
+			if err != nil {
+				return fmt.Errorf("invalid old backup file %s: %w", b.Destination, err)
 			}
+			target.destination = destination
 		}
 		if len(b.WALFiles) > 0 {
-			walDir := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s_wal", b.ID))
-			if err := os.RemoveAll(walDir); err != nil {
-				return fmt.Errorf("failed to remove old backup WAL directory %s: %w", walDir, err)
+			walDir, err := m.backupWALDir(b.ID)
+			if err != nil {
+				return err
+			}
+			target.walDir = walDir
+		}
+		targets = append(targets, target)
+	}
+
+	changed := false
+	for _, target := range targets {
+		b := target.backup
+		if target.destination != "" {
+			if err := os.Remove(target.destination); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("failed to remove old backup file %s: %w", target.destination, err)
+			}
+		}
+		if target.walDir != "" {
+			if err := os.RemoveAll(target.walDir); err != nil {
+				return fmt.Errorf("failed to remove old backup WAL directory %s: %w", target.walDir, err)
 			}
 		}
 
@@ -1331,6 +1842,69 @@ func (m *Manager) cleanupOldBackups() error {
 	return nil
 }
 
+func findDependentBackupLocked(backups []*Backup, backupID string) string {
+	for _, backup := range backups {
+		if backup != nil && backup.ParentID == backupID {
+			return backup.ID
+		}
+	}
+	return ""
+}
+
+func filterRequiredBackupDeletes(backups []*Backup, toDelete []*Backup) []*Backup {
+	if len(toDelete) == 0 {
+		return toDelete
+	}
+
+	deleteIDs := make(map[string]struct{}, len(toDelete))
+	backupsByID := make(map[string]*Backup, len(backups))
+	for _, backup := range backups {
+		if backup == nil {
+			continue
+		}
+		backupsByID[backup.ID] = backup
+	}
+	for _, backup := range toDelete {
+		if backup == nil {
+			continue
+		}
+		deleteIDs[backup.ID] = struct{}{}
+	}
+
+	required := make(map[string]struct{})
+	for _, backup := range backups {
+		if backup == nil {
+			continue
+		}
+		if _, deleting := deleteIDs[backup.ID]; deleting {
+			continue
+		}
+		for parentID := backup.ParentID; parentID != ""; {
+			if _, requiredAlready := required[parentID]; requiredAlready {
+				break
+			}
+			parent, ok := backupsByID[parentID]
+			if !ok {
+				break
+			}
+			required[parentID] = struct{}{}
+			parentID = parent.ParentID
+		}
+	}
+
+	filtered := toDelete[:0]
+	for _, backup := range toDelete {
+		if backup == nil {
+			continue
+		}
+		if _, needed := required[backup.ID]; needed {
+			continue
+		}
+		filtered = append(filtered, backup)
+	}
+	return filtered
+}
+
 // IsBackupInProgress returns true if a backup is currently running
 func (m *Manager) IsBackupInProgress() bool {
 	m.mu.Lock()
@@ -1349,7 +1923,7 @@ func copyFile(srcPath, dstPath string) error {
 	if err != nil {
 		return err
 	}
-	srcFile, err := os.Open(srcPath) // #nosec G304 - caller supplies a file path that is cleaned before use.
+	srcFile, err := openRegularBackupFile(srcPath)
 	if err != nil {
 		return err
 	}
@@ -1386,12 +1960,146 @@ func copyFile(srcPath, dstPath string) error {
 	return nil
 }
 
+func openRegularBackupFile(path string) (*os.File, error) {
+	path, err := cleanBackupFilePath(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("backup source must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("backup source must be a regular file: %s", path)
+	}
+
+	file, err := os.Open(path) // #nosec G304 - path is cleaned and validated as a regular file before use.
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("backup source must be a regular file: %s", path)
+	}
+	if !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return nil, fmt.Errorf("backup source changed while opening: %s", path)
+	}
+	return file, nil
+}
+
+func prepareBackupDir(path string, create bool) error {
+	return prepareSecureDir(path, create, "backup directory")
+}
+
+func prepareRestoreDir(path string, create bool) error {
+	return prepareSecureDir(path, create, "restore directory")
+}
+
+func prepareSecureDir(path string, create bool, label string) error {
+	path, err := cleanBackupFilePath(path)
+	if err != nil {
+		return err
+	}
+	if err := rejectSymlinkPathComponents(path); err != nil {
+		return err
+	}
+
+	info, statErr := os.Lstat(path)
+	preexisting := statErr == nil
+	if statErr != nil {
+		if os.IsNotExist(statErr) && !create {
+			return statErr
+		}
+		if !os.IsNotExist(statErr) {
+			return fmt.Errorf("failed to stat %s: %w", label, statErr)
+		}
+	}
+	if preexisting {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s must not be a symlink: %s", label, path)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s must be a directory: %s", label, path)
+		}
+	}
+
+	if create {
+		if err := os.MkdirAll(path, backupDirPerm); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, backupDirPerm); err != nil {
+			return err
+		}
+	}
+
+	openedInfo, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !openedInfo.IsDir() {
+		return fmt.Errorf("%s must be a directory: %s", label, path)
+	}
+	if preexisting && !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("%s changed while opening: %s", label, path)
+	}
+	return nil
+}
+
+func rejectSymlinkPathComponents(path string) error {
+	path = filepath.Clean(path)
+	if path == "." || path == string(os.PathSeparator) {
+		return nil
+	}
+
+	var current string
+	if filepath.IsAbs(path) {
+		current = string(os.PathSeparator)
+		path = strings.TrimPrefix(path, string(os.PathSeparator))
+	} else {
+		current = "."
+	}
+
+	for _, part := range strings.Split(path, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		if current == string(os.PathSeparator) {
+			current = filepath.Join(current, part)
+		} else {
+			current = filepath.Join(current, part)
+		}
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to stat backup directory component: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("backup directory component must not be a symlink: %s", current)
+		}
+	}
+	return nil
+}
+
 func createSecureTempFile(path string) (*os.File, string, error) {
 	path, err := cleanBackupFilePath(path)
 	if err != nil {
 		return nil, "", err
 	}
 	dir := filepath.Dir(path)
+	if err := rejectSymlinkPathComponents(dir); err != nil {
+		return nil, "", err
+	}
 	base := filepath.Base(path)
 	file, err := os.CreateTemp(dir, "."+base+".tmp-*") // #nosec G304 - path is cleaned and temp file stays in the destination directory.
 	if err != nil {
@@ -1421,9 +2129,40 @@ func createSecureFile(path string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := rejectSymlinkPathComponents(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+
+	info, statErr := os.Lstat(path)
+	preexisting := statErr == nil
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return nil, statErr
+	}
+	if preexisting {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("target file must not be a symlink: %s", path)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("target file must be a regular file: %s", path)
+		}
+	}
+
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, backupFilePerm) // #nosec G304 - path is cleaned and created with restrictive permissions.
 	if err != nil {
 		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("target file must be a regular file: %s", path)
+	}
+	if preexisting && !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return nil, fmt.Errorf("target file changed while opening: %s", path)
 	}
 	if err := file.Chmod(backupFilePerm); err != nil {
 		_ = file.Close()

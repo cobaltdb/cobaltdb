@@ -128,6 +128,10 @@ func (db *DB) GetWALPath() string {
 // recovery log to replay changes that arrive after FlushTableTrees.
 
 func (db *DB) Checkpoint() error {
+	if db.closed.Load() {
+		return ErrDatabaseClosed
+	}
+
 	if db.wal != nil {
 		db.flushMu.RLock()
 		defer db.flushMu.RUnlock()
@@ -175,6 +179,9 @@ func (db *DB) BeginHotBackup() error {
 func (db *DB) EndHotBackup() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	if db.closed.Load() {
+		return ErrDatabaseClosed
+	}
 	// Re-enable checkpoints
 	return nil
 }
@@ -193,6 +200,9 @@ func (db *DB) GetCurrentLSN() uint64 {
 // CreateBackup creates a new backup
 
 func (db *DB) CreateBackup(ctx context.Context, backupType string) (*backup.Backup, error) {
+	if db.closed.Load() {
+		return nil, ErrDatabaseClosed
+	}
 	if db.backupMgr == nil {
 		return nil, fmt.Errorf("backup manager not initialized")
 	}
@@ -229,6 +239,9 @@ func (db *DB) GetBackup(id string) *backup.Backup {
 // DeleteBackup deletes a backup by ID
 
 func (db *DB) DeleteBackup(id string) error {
+	if db.closed.Load() {
+		return ErrDatabaseClosed
+	}
 	if db.backupMgr == nil {
 		return fmt.Errorf("backup manager not initialized")
 	}
@@ -280,18 +293,26 @@ func (db *DB) ResetIndexAdvisor() {
 // Returns nil if plan cache is not enabled
 
 func (db *DB) GetPlanCacheStats() *QueryPlanCacheStats {
-	if db.planCache == nil {
+	db.mu.RLock()
+	planCache := db.planCache
+	db.mu.RUnlock()
+
+	if planCache == nil {
 		return nil
 	}
-	stats := db.planCache.GetStats()
+	stats := planCache.GetStats()
 	return &stats
 }
 
 // ClearPlanCache clears all entries from the query plan cache
 
 func (db *DB) ClearPlanCache() {
-	if db.planCache != nil {
-		db.planCache.Clear()
+	db.mu.RLock()
+	planCache := db.planCache
+	db.mu.RUnlock()
+
+	if planCache != nil {
+		planCache.Clear()
 	}
 }
 
@@ -330,6 +351,8 @@ func (db *DB) DisablePlanCache() {
 // IsPlanCacheEnabled returns true if plan cache is enabled
 
 func (db *DB) IsPlanCacheEnabled() bool {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 	return db.planCache != nil
 }
 

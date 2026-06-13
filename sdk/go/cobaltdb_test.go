@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,6 +61,39 @@ func TestParseDSN(t *testing.T) {
 			}
 			if !tt.wantErr && cfg == nil {
 				t.Error("ParseDSN() returned nil config without error")
+			}
+		})
+	}
+}
+
+func TestParseDSNRejectsInvalidAndOversizedInputs(t *testing.T) {
+	tests := []struct {
+		name string
+		dsn  string
+		want string
+	}{
+		{
+			name: "oversized dsn",
+			dsn:  strings.Repeat("x", maxDSNBytes+1),
+			want: "DSN too large",
+		},
+		{
+			name: "key value port out of range",
+			dsn:  "host=localhost port=70000",
+			want: "invalid port",
+		},
+		{
+			name: "url port not numeric",
+			dsn:  "cobaltdb://localhost:notaport/testdb",
+			want: "invalid port",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseDSN(tt.dsn)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got %v", tt.want, err)
 			}
 		})
 	}

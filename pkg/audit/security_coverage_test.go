@@ -172,6 +172,61 @@ func TestVerifyLogFilePlainJSON(t *testing.T) {
 	}
 }
 
+func TestVerifyLogFileRejectsUnsafePath(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "audit.log")
+	linkPath := filepath.Join(tempDir, "audit-link.log")
+	if err := os.WriteFile(logPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.Symlink(logPath, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if _, err := VerifyLogFile(linkPath, nil); err == nil {
+		t.Fatal("expected symlink audit log to be rejected")
+	} else if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+
+	if _, err := VerifyLogFile(tempDir, nil); err == nil {
+		t.Fatal("expected directory audit log to be rejected")
+	} else if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected regular file rejection, got %v", err)
+	}
+}
+
+func TestVerifyLogFileRestrictsExistingPermissions(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "chain.log")
+
+	al, err := New(&Config{
+		Enabled:   true,
+		LogFile:   logPath,
+		LogFormat: "json",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Failed to create audit logger: %v", err)
+	}
+	al.Log(EventQuery, "alice", "SELECT", WithQuery("SELECT 1"))
+	if err := al.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if err := os.Chmod(logPath, 0644); err != nil {
+		t.Fatalf("Chmod failed: %v", err)
+	}
+
+	if _, err := VerifyLogFile(logPath, nil); err != nil {
+		t.Fatalf("VerifyLogFile failed: %v", err)
+	}
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("Stat failed: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("audit log permissions = %v, want 0600", info.Mode().Perm())
+	}
+}
+
 func TestVerifyLogFileEncryptedJSON(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "encrypted-chain.log")
 	key := []byte("0123456789abcdef0123456789abcdef")

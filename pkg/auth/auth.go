@@ -3,7 +3,9 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha1" // #nosec G505 -- Required for MySQL native_password protocol compatibility.
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -21,6 +23,10 @@ var (
 	ErrUnauthorized       = errors.New("unauthorized")
 	ErrTokenExpired       = errors.New("token expired")
 	ErrInvalidToken       = errors.New("invalid token")
+	ErrInvalidUsername    = errors.New("invalid username")
+	ErrInvalidPassword    = errors.New("invalid password")
+	ErrInvalidPermission  = errors.New("invalid permission")
+	ErrTooManySessions    = errors.New("too many active sessions")
 )
 
 // User represents a database user
@@ -61,6 +67,17 @@ const (
 	maxLoginAttempts  = 5
 	lockoutDuration   = 5 * time.Minute
 	attemptResetAfter = 15 * time.Minute
+	maxUsernameBytes  = 256
+	maxPasswordBytes  = 1024
+	// Bound failed-attempt tracking so unauthenticated clients cannot grow
+	// memory usage indefinitely with unique usernames.
+	maxFailedAttemptEntries  = 4096
+	maxPermissionTargetBytes = 256
+	maxPermissionActionBytes = 64
+	maxPermissionActions     = 64
+	maxPermissionsPerUser    = 1024
+	maxSessionTokenBytes     = 512
+	maxActiveSessions        = 4096
 )
 
 // Authenticator handles user authentication
@@ -155,6 +172,8 @@ func hashPassword(password, salt string) string {
 	return hex.EncodeToString(hash)
 }
 
+var passwordHasher = hashPassword
+
 // generateSalt generates a cryptographically secure random salt
 func generateSalt() (string, error) {
 	b := make([]byte, 32)
@@ -193,21 +212,67 @@ func validatePasswordStrength(password string) error {
 	return nil
 }
 
-// CreateUser creates a new user
-func (a *Authenticator) CreateUser(username, password string, isAdmin bool) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	return a.createUserLocked(username, password, isAdmin)
+func validateUsername(username string) error {
+	if username == "" || len(username) > maxUsernameBytes {
+		return ErrInvalidUsername
+	}
+	return nil
 }
 
-// createUserLocked creates a user (must be called with lock held)
-func (a *Authenticator) createUserLocked(username, password string, isAdmin bool) error {
-	if _, exists := a.users[username]; exists {
-		return ErrUserExists
+func validatePasswordRequired(password string) error {
+	if password == "" || len(password) > maxPasswordBytes {
+		return ErrInvalidPassword
+	}
+	return nil
+}
+
+func validateCredentialInput(username, password string) error {
+	if validateUsername(username) != nil || validatePasswordRequired(password) != nil {
+		return ErrInvalidCredentials
+	}
+	return nil
+}
+
+func validatePermissionInput(database, table string, actions []string) error {
+	if len(database) > maxPermissionTargetBytes || len(table) > maxPermissionTargetBytes {
+		return ErrInvalidPermission
+	}
+	if len(actions) == 0 || len(actions) > maxPermissionActions {
+		return ErrInvalidPermission
+	}
+	for _, action := range actions {
+		if action == "" || len(action) > maxPermissionActionBytes {
+			return ErrInvalidPermission
+		}
+	}
+	return nil
+}
+
+func validateSessionTokenInput(token string) error {
+	if token == "" || len(token) > maxSessionTokenBytes {
+		return ErrInvalidToken
+	}
+	return nil
+}
+
+// CreateUser creates a new user
+func (a *Authenticator) CreateUser(username, password string, isAdmin bool) error {
+	if err := validateUsername(username); err != nil {
+		return err
+	}
+	if err := validatePasswordRequired(password); err != nil {
+		return err
 	}
 
-	if a.enforcePasswordPolicy {
+	a.mu.RLock()
+	if _, exists := a.users[username]; exists {
+		a.mu.RUnlock()
+		return ErrUserExists
+	}
+	enforcePasswordPolicy := a.enforcePasswordPolicy
+	a.mu.RUnlock()
+
+	if enforcePasswordPolicy {
 		if err := validatePasswordStrength(password); err != nil {
 			return err
 		}
@@ -217,13 +282,26 @@ func (a *Authenticator) createUserLocked(username, password string, isAdmin bool
 	if err != nil {
 		return err
 	}
-	passwordHash := hashPassword(password, salt)
+	passwordHash := passwordHasher(password, salt)
+	mysqlHash := mysqlNativeHash(password)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if _, exists := a.users[username]; exists {
+		return ErrUserExists
+	}
+	if a.enforcePasswordPolicy && !enforcePasswordPolicy {
+		if err := validatePasswordStrength(password); err != nil {
+			return err
+		}
+	}
 
 	a.users[username] = &User{
 		Username:        username,
 		PasswordHash:    passwordHash,
 		Salt:            salt,
-		MySQLNativeHash: mysqlNativeHash(password),
+		MySQLNativeHash: mysqlHash,
 		IsAdmin:         isAdmin,
 		CreatedAt:       time.Now(),
 		Permissions:     make([]Permission, 0),
@@ -235,16 +313,22 @@ func (a *Authenticator) createUserLocked(username, password string, isAdmin bool
 // ValidateCredentials checks if the username and password are valid without
 // creating a session. Returns nil on success or ErrInvalidCredentials.
 func (a *Authenticator) ValidateCredentials(username, password string) error {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-
-	user, exists := a.users[username]
-	if !exists {
-		return ErrInvalidCredentials
+	if err := validateCredentialInput(username, password); err != nil {
+		return err
 	}
 
-	passwordHash := hashPassword(password, user.Salt)
-	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(user.PasswordHash)) != 1 {
+	a.mu.RLock()
+	user, exists := a.users[username]
+	if !exists {
+		a.mu.RUnlock()
+		return ErrInvalidCredentials
+	}
+	salt := user.Salt
+	passwordHashStored := user.PasswordHash
+	a.mu.RUnlock()
+
+	passwordHash := passwordHasher(password, salt)
+	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(passwordHashStored)) != 1 {
 		return ErrInvalidCredentials
 	}
 
@@ -273,6 +357,10 @@ func (a *Authenticator) UserExists(username string) bool {
 
 // Authenticate authenticates a user and returns a session token
 func (a *Authenticator) Authenticate(username, password string) (string, error) {
+	if err := validateCredentialInput(username, password); err != nil {
+		return "", err
+	}
+
 	// Check lockout before expensive password work.
 	a.failedMu.RLock()
 	if attempt, exists := a.failedAttempts[username]; exists && time.Now().Before(attempt.lockUntil) {
@@ -293,7 +381,7 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 	passwordHashStored := user.PasswordHash
 	a.mu.RUnlock()
 
-	passwordHash := hashPassword(password, salt)
+	passwordHash := passwordHasher(password, salt)
 	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(passwordHashStored)) != 1 {
 		count := a.recordFailedAttempt(username)
 		sleepFailedAttempt(count)
@@ -313,22 +401,30 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 		return "", ErrInvalidCredentials
 	}
 
+	now := time.Now()
+	if len(a.sessions) >= maxActiveSessions {
+		a.cleanupExpiredSessionsLocked(now)
+		if len(a.sessions) >= maxActiveSessions {
+			a.mu.Unlock()
+			return "", ErrTooManySessions
+		}
+	}
+
 	// Clear failed attempts on success
 	a.failedMu.Lock()
 	delete(a.failedAttempts, username)
 	a.failedMu.Unlock()
 
 	// Update last login
-	user.LastLogin = time.Now()
+	user.LastLogin = now
 
 	session := &Session{
-		Token:     token,
 		Username:  username,
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(24 * time.Hour), // 24 hour expiration
+		CreatedAt: now,
+		ExpiresAt: now.Add(24 * time.Hour), // 24 hour expiration
 	}
 
-	a.sessions[token] = session
+	a.sessions[sessionTokenKey(token)] = session
 	a.mu.Unlock()
 	return token, nil
 }
@@ -340,18 +436,35 @@ func sleepFailedAttempt(count int) {
 // recordFailedAttempt records a failed login attempt for brute-force protection.
 // Returns the current attempt count for the user.
 func (a *Authenticator) recordFailedAttempt(username string) int {
+	now := time.Now()
+
 	a.failedMu.Lock()
 	if a.failedAttempts[username] == nil {
+		if len(a.failedAttempts) >= maxFailedAttemptEntries {
+			a.pruneFailedAttemptsLocked(now)
+		}
+		if len(a.failedAttempts) >= maxFailedAttemptEntries {
+			a.failedMu.Unlock()
+			return maxLoginAttempts
+		}
 		a.failedAttempts[username] = &loginAttempt{}
 	}
 	a.failedAttempts[username].count++
-	a.failedAttempts[username].lastFail = time.Now()
+	a.failedAttempts[username].lastFail = now
 	if a.failedAttempts[username].count >= maxLoginAttempts {
-		a.failedAttempts[username].lockUntil = time.Now().Add(lockoutDuration)
+		a.failedAttempts[username].lockUntil = now.Add(lockoutDuration)
 	}
 	count := a.failedAttempts[username].count
 	a.failedMu.Unlock()
 	return count
+}
+
+func (a *Authenticator) pruneFailedAttemptsLocked(now time.Time) {
+	for username, attempt := range a.failedAttempts {
+		if now.After(attempt.lastFail.Add(attemptResetAfter)) {
+			delete(a.failedAttempts, username)
+		}
+	}
 }
 
 // generateToken generates a cryptographically secure session token
@@ -364,12 +477,34 @@ func generateToken(username string) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+func sessionTokenKey(token string) string {
+	digest := sessionTokenDigest(token)
+	return hex.EncodeToString(digest[:])
+}
+
+func sessionTokenDigest(token string) [sha256.Size]byte {
+	var lengthPrefix [8]byte
+	binary.BigEndian.PutUint64(lengthPrefix[:], uint64(len(token)))
+
+	h := sha256.New()
+	_, _ = h.Write(lengthPrefix[:])
+	_, _ = h.Write([]byte(token))
+
+	var digest [sha256.Size]byte
+	copy(digest[:], h.Sum(nil))
+	return digest
+}
+
 // ValidateToken validates a session token
 func (a *Authenticator) ValidateToken(token string) (*Session, error) {
+	if err := validateSessionTokenInput(token); err != nil {
+		return nil, err
+	}
+
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	session, exists := a.sessions[token]
+	session, exists := a.sessions[sessionTokenKey(token)]
 	if !exists {
 		return nil, ErrInvalidToken
 	}
@@ -378,45 +513,84 @@ func (a *Authenticator) ValidateToken(token string) (*Session, error) {
 		return nil, ErrTokenExpired
 	}
 
-	return cloneSession(session), nil
+	cloned := cloneSession(session)
+	cloned.Token = token
+	return cloned, nil
 }
 
 // Logout invalidates a session token
 func (a *Authenticator) Logout(token string) {
+	if validateSessionTokenInput(token) != nil {
+		return
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	delete(a.sessions, token)
+	delete(a.sessions, sessionTokenKey(token))
 }
 
 // ChangePassword changes a user's password
 func (a *Authenticator) ChangePassword(username, oldPassword, newPassword string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	user, exists := a.users[username]
-	if !exists {
-		return ErrUserNotFound
+	if err := validateUsername(username); err != nil {
+		return err
+	}
+	if err := validatePasswordRequired(newPassword); err != nil {
+		return err
 	}
 
-	passwordHash := hashPassword(oldPassword, user.Salt)
-	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(user.PasswordHash)) != 1 {
+	a.mu.RLock()
+	user, exists := a.users[username]
+	if !exists {
+		a.mu.RUnlock()
+		return ErrUserNotFound
+	}
+	oldSalt := user.Salt
+	passwordHashStored := user.PasswordHash
+	enforcePasswordPolicy := a.enforcePasswordPolicy
+	a.mu.RUnlock()
+
+	if err := validateCredentialInput(username, oldPassword); err != nil {
 		return ErrInvalidCredentials
 	}
 
-	if a.enforcePasswordPolicy {
+	passwordHash := passwordHasher(oldPassword, oldSalt)
+	if subtle.ConstantTimeCompare([]byte(passwordHash), []byte(passwordHashStored)) != 1 {
+		return ErrInvalidCredentials
+	}
+
+	if enforcePasswordPolicy {
 		if err := validatePasswordStrength(newPassword); err != nil {
 			return err
 		}
 	}
 
-	// Generate new salt and hash
-	salt, err := generateSalt()
+	// Generate and hash outside the write lock; Argon2 is intentionally expensive.
+	newSalt, err := generateSalt()
 	if err != nil {
 		return err
 	}
-	user.Salt = salt
-	user.PasswordHash = hashPassword(newPassword, salt)
-	user.MySQLNativeHash = mysqlNativeHash(newPassword)
+	newPasswordHash := passwordHasher(newPassword, newSalt)
+	newMySQLNativeHash := mysqlNativeHash(newPassword)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	user, exists = a.users[username]
+	if !exists {
+		return ErrUserNotFound
+	}
+	if user.Salt != oldSalt || user.PasswordHash != passwordHashStored {
+		return ErrInvalidCredentials
+	}
+	if a.enforcePasswordPolicy && !enforcePasswordPolicy {
+		if err := validatePasswordStrength(newPassword); err != nil {
+			return err
+		}
+	}
+
+	user.Salt = newSalt
+	user.PasswordHash = newPasswordHash
+	user.MySQLNativeHash = newMySQLNativeHash
 
 	// Invalidate all active sessions for this user
 	for token, sess := range a.sessions {
@@ -464,6 +638,14 @@ func (a *Authenticator) GetUser(username string) (*User, error) {
 
 // HasPermission checks if a user has a specific permission
 func (a *Authenticator) HasPermission(username, database, table, action string) bool {
+	if validateUsername(username) != nil ||
+		len(database) > maxPermissionTargetBytes ||
+		len(table) > maxPermissionTargetBytes ||
+		action == "" ||
+		len(action) > maxPermissionActionBytes {
+		return false
+	}
+
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
@@ -497,6 +679,13 @@ func (a *Authenticator) HasPermission(username, database, table, action string) 
 
 // GrantPermission grants a permission to a user
 func (a *Authenticator) GrantPermission(username, database, table string, actions []string) error {
+	if err := validateUsername(username); err != nil {
+		return err
+	}
+	if err := validatePermissionInput(database, table, actions); err != nil {
+		return err
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -516,6 +705,9 @@ func (a *Authenticator) GrantPermission(username, database, table string, action
 			for _, a := range actions {
 				actionMap[a] = true
 			}
+			if len(actionMap) > maxPermissionActions {
+				return ErrInvalidPermission
+			}
 			merged := make([]string, 0, len(actionMap))
 			for a := range actionMap {
 				merged = append(merged, a)
@@ -527,6 +719,9 @@ func (a *Authenticator) GrantPermission(username, database, table string, action
 	}
 
 	// Add new permission
+	if len(user.Permissions) >= maxPermissionsPerUser {
+		return ErrInvalidPermission
+	}
 	user.Permissions = append(user.Permissions, Permission{
 		Database: database,
 		Table:    table,
@@ -538,6 +733,13 @@ func (a *Authenticator) GrantPermission(username, database, table string, action
 
 // RevokePermission revokes a permission from a user
 func (a *Authenticator) RevokePermission(username, database, table string, actions []string) error {
+	if err := validateUsername(username); err != nil {
+		return err
+	}
+	if err := validatePermissionInput(database, table, actions); err != nil {
+		return err
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -622,6 +824,14 @@ func cloneBytes(values []byte) []byte {
 	return cloned
 }
 
+func (a *Authenticator) cleanupExpiredSessionsLocked(now time.Time) {
+	for token, session := range a.sessions {
+		if now.After(session.ExpiresAt) {
+			delete(a.sessions, token)
+		}
+	}
+}
+
 // ListUsers returns a list of all usernames
 func (a *Authenticator) ListUsers() []string {
 	a.mu.RLock()
@@ -660,18 +870,10 @@ func (a *Authenticator) CleanupExpiredSessions() {
 	defer a.mu.Unlock()
 
 	now := time.Now()
-	for token, session := range a.sessions {
-		if now.After(session.ExpiresAt) {
-			delete(a.sessions, token)
-		}
-	}
+	a.cleanupExpiredSessionsLocked(now)
 
 	// Clean up stale failed login attempt records (lock ordering: mu first, then failedMu)
 	a.failedMu.Lock()
-	for username, attempt := range a.failedAttempts {
-		if now.After(attempt.lastFail.Add(attemptResetAfter)) {
-			delete(a.failedAttempts, username)
-		}
-	}
+	a.pruneFailedAttemptsLocked(now)
 	a.failedMu.Unlock()
 }

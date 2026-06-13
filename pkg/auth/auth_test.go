@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -85,6 +86,92 @@ func TestFailedAuthenticateDoesNotHoldAuthLockDuringDelay(t *testing.T) {
 	}
 }
 
+func TestCreateUserDoesNotHoldAuthLockDuringHash(t *testing.T) {
+	auth := NewAuthenticator()
+	defer auth.Stop()
+
+	hashStarted, releaseHash := blockPasswordHasher(t)
+
+	createDone := make(chan error, 1)
+	go func() {
+		createDone <- auth.CreateUser("hashcreate", "password123", false)
+	}()
+
+	<-hashStarted
+	lockCheckDone := make(chan struct{}, 1)
+	go func() {
+		_ = auth.IsEnabled()
+		lockCheckDone <- struct{}{}
+	}()
+
+	select {
+	case <-lockCheckDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("user creation hashing should not hold authenticator lock")
+	}
+
+	close(releaseHash)
+	if err := <-createDone; err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+}
+
+func TestValidateCredentialsDoesNotHoldAuthLockDuringHash(t *testing.T) {
+	auth := NewAuthenticator()
+	defer auth.Stop()
+
+	if err := auth.CreateUser("hashvalidate", "password123", false); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+
+	hashStarted, releaseHash := blockPasswordHasher(t)
+
+	validateDone := make(chan error, 1)
+	go func() {
+		validateDone <- auth.ValidateCredentials("hashvalidate", "password123")
+	}()
+
+	<-hashStarted
+	lockCheckDone := make(chan struct{}, 1)
+	go func() {
+		_ = auth.IsEnabled()
+		lockCheckDone <- struct{}{}
+	}()
+
+	select {
+	case <-lockCheckDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("credential validation hashing should not hold authenticator lock")
+	}
+
+	close(releaseHash)
+	if err := <-validateDone; err != nil {
+		t.Fatalf("ValidateCredentials failed: %v", err)
+	}
+}
+
+func blockPasswordHasher(t *testing.T) (<-chan struct{}, chan<- struct{}) {
+	t.Helper()
+
+	originalHasher := passwordHasher
+	hashStarted := make(chan struct{})
+	releaseHash := make(chan struct{})
+	var once sync.Once
+
+	passwordHasher = func(password, salt string) string {
+		once.Do(func() {
+			close(hashStarted)
+		})
+		<-releaseHash
+		return originalHasher(password, salt)
+	}
+	t.Cleanup(func() {
+		passwordHasher = originalHasher
+	})
+
+	return hashStarted, releaseHash
+}
+
 func TestValidateToken(t *testing.T) {
 	auth := NewAuthenticator()
 
@@ -100,6 +187,9 @@ func TestValidateToken(t *testing.T) {
 	if session.Username != "testuser" {
 		t.Errorf("Expected username 'testuser', got %s", session.Username)
 	}
+	if session.Token != token {
+		t.Fatal("ValidateToken should return the client token without storing it internally")
+	}
 
 	session.ExpiresAt = time.Now().Add(-time.Hour)
 	sessionAgain, err := auth.ValidateToken(token)
@@ -114,6 +204,41 @@ func TestValidateToken(t *testing.T) {
 	_, err = auth.ValidateToken("invalidtoken")
 	if err != ErrInvalidToken {
 		t.Errorf("Expected ErrInvalidToken, got %v", err)
+	}
+}
+
+func TestAuthenticateStoresOnlySessionTokenDigest(t *testing.T) {
+	auth := NewAuthenticator()
+
+	if err := auth.CreateUser("digestuser", "password123", false); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	token, err := auth.Authenticate("digestuser", "password123")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	auth.mu.RLock()
+	_, rawKeyExists := auth.sessions[token]
+	session, digestKeyExists := auth.sessions[sessionTokenKey(token)]
+	auth.mu.RUnlock()
+
+	if rawKeyExists {
+		t.Fatal("raw session token should not be used as the sessions map key")
+	}
+	if !digestKeyExists {
+		t.Fatal("session should be stored under the session token digest")
+	}
+	if session.Token != "" {
+		t.Fatal("raw session token should not be stored in the internal session")
+	}
+
+	validated, err := auth.ValidateToken(token)
+	if err != nil {
+		t.Fatalf("ValidateToken: %v", err)
+	}
+	if validated.Token != token {
+		t.Fatal("validated session should expose the client token for API compatibility")
 	}
 }
 
@@ -301,7 +426,7 @@ func TestCleanupExpiredSessions(t *testing.T) {
 
 	// Manually expire the session
 	auth.mu.Lock()
-	if session, exists := auth.sessions[token]; exists {
+	if session, exists := auth.sessions[sessionTokenKey(token)]; exists {
 		session.ExpiresAt = time.Now().Add(-1 * time.Hour) // Expired 1 hour ago
 	}
 	auth.mu.Unlock()

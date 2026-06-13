@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -325,6 +327,16 @@ func TestReadMasterFrameAppliesSnapshot(t *testing.T) {
 	}
 }
 
+func TestReadMasterFrameRejectsOversizedControlLine(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave})
+	line := "PING " + strings.Repeat("1", maxReplicationControlLineBytes) + "\n"
+
+	err := mgr.readMasterFrame(bufio.NewReader(strings.NewReader(line)))
+	if err == nil || !strings.Contains(err.Error(), "control line too large") {
+		t.Fatalf("expected oversized control line error, got %v", err)
+	}
+}
+
 func TestReadMasterFrameApplySnapshotPanicReturnsError(t *testing.T) {
 	mgr := NewManager(&Config{Role: RoleSlave})
 	mgr.masterConn = &mockConn{}
@@ -339,6 +351,24 @@ func TestReadMasterFrameApplySnapshotPanicReturnsError(t *testing.T) {
 	}
 	if mgr.lastApplied != 0 {
 		t.Fatalf("lastApplied should not advance after snapshot panic, got %d", mgr.lastApplied)
+	}
+}
+
+func TestReadMasterFrameRequiresSnapshotApplier(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave})
+	conn := &mockConn{}
+	mgr.masterConn = conn
+
+	reader := bufio.NewReader(strings.NewReader("SNAPSHOT 13 7\npayload"))
+	err := mgr.readMasterFrame(reader)
+	if err == nil || !strings.Contains(err.Error(), "snapshot applier not configured") {
+		t.Fatalf("expected missing snapshot applier error, got %v", err)
+	}
+	if mgr.lastApplied != 0 {
+		t.Fatalf("lastApplied should not advance without snapshot applier, got %d", mgr.lastApplied)
+	}
+	if got := string(conn.writeData); got != "" {
+		t.Fatalf("snapshot without applier should not be acknowledged, got %q", got)
 	}
 }
 
@@ -396,6 +426,17 @@ func TestReceiveResumeRequestRequiresSnapshot(t *testing.T) {
 	}
 	if !req.RequireSnapshot {
 		t.Fatal("Expected snapshot resume request")
+	}
+}
+
+func TestReceiveResumeRequestRejectsOversizedControlLine(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster})
+	line := "RESUME " + strings.Repeat("1", maxReplicationControlLineBytes) + "\n"
+	slave := &SlaveConnection{Reader: bufio.NewReader(strings.NewReader(line))}
+
+	_, err := mgr.receiveResumeRequest(slave)
+	if err == nil || !strings.Contains(err.Error(), "control line too large") {
+		t.Fatalf("expected oversized control line error, got %v", err)
 	}
 }
 
@@ -487,6 +528,174 @@ func TestReplicationStateSaveLoad(t *testing.T) {
 	}
 }
 
+func TestSaveReplicationStateIgnoresLegacyTempSymlink(t *testing.T) {
+	tempDir := t.TempDir()
+	stateFile := filepath.Join(tempDir, "replication-state.json")
+	legacyTempPath := stateFile + ".tmp"
+	victimPath := filepath.Join(tempDir, "victim")
+	original := []byte("do not overwrite")
+
+	if err := os.WriteFile(victimPath, original, replicationStateFilePerm); err != nil {
+		t.Fatalf("WriteFile victim failed: %v", err)
+	}
+	if err := os.Symlink(victimPath, legacyTempPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	mgr := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
+	mgr.lastApplied = 77
+	if err := mgr.saveReplicationState(); err != nil {
+		t.Fatalf("saveReplicationState failed: %v", err)
+	}
+
+	victimContent, err := os.ReadFile(victimPath)
+	if err != nil {
+		t.Fatalf("ReadFile victim failed: %v", err)
+	}
+	if !bytes.Equal(victimContent, original) {
+		t.Fatalf("legacy temp symlink target was overwritten: got %q", victimContent)
+	}
+
+	reloaded := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
+	if err := reloaded.loadReplicationState(); err != nil {
+		t.Fatalf("loadReplicationState failed: %v", err)
+	}
+	if reloaded.lastApplied != 77 {
+		t.Fatalf("Expected lastApplied=77, got %d", reloaded.lastApplied)
+	}
+}
+
+func TestSaveReplicationStateRejectsSymlinkDirectory(t *testing.T) {
+	tempDir := t.TempDir()
+	targetDir := filepath.Join(tempDir, "target")
+	linkDir := filepath.Join(tempDir, "state")
+	if err := os.Mkdir(targetDir, replicationStateDirPerm); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	stateFile := filepath.Join(linkDir, "replication-state.json")
+	mgr := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
+	mgr.lastApplied = 42
+	err := mgr.saveReplicationState()
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("saveReplicationState symlink dir error = %v, want symlink rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "replication-state.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("state was written through symlink, stat err=%v", err)
+	}
+}
+
+func TestPrepareReplicationStateDirCreatesRestrictiveDirectory(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "nested", "state", "replication-state.json")
+	if err := prepareReplicationStateDir(stateFile); err != nil {
+		t.Fatalf("prepareReplicationStateDir: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Dir(stateFile))
+	if err != nil {
+		t.Fatalf("stat state dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != replicationStateDirPerm {
+		t.Fatalf("replication state dir mode = %o, want %o", got, replicationStateDirPerm)
+	}
+}
+
+func TestWriteReplicationStateFullRejectsShortWrite(t *testing.T) {
+	writer := &shortReplicationStateWriter{limit: 6}
+
+	n, err := writeReplicationStateFull(writer, []byte("abcdefghi"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writeReplicationStateFull short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if n != 6 {
+		t.Fatalf("writeReplicationStateFull wrote %d bytes, want 6", n)
+	}
+}
+
+func TestLoadReplicationStateRejectsUnsafeFile(t *testing.T) {
+	tempDir := t.TempDir()
+	stateFile := filepath.Join(tempDir, "replication-state.json")
+	linkFile := filepath.Join(tempDir, "replication-state-link.json")
+	if err := os.WriteFile(stateFile, []byte(`{"last_applied":42}`), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.Symlink(stateFile, linkFile); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	mgr := NewManager(&Config{Role: RoleSlave, StateFile: linkFile})
+	err := mgr.loadReplicationState()
+	if err == nil {
+		t.Fatal("Expected symlink state file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("Expected symlink rejection, got %v", err)
+	}
+
+	mgr = NewManager(&Config{Role: RoleSlave, StateFile: tempDir})
+	err = mgr.loadReplicationState()
+	if err == nil {
+		t.Fatal("Expected directory state file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("Expected regular file rejection, got %v", err)
+	}
+}
+
+func TestLoadReplicationStateRestrictsFilePermissions(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "replication-state.json")
+	if err := os.WriteFile(stateFile, []byte(`{"last_applied":42}`), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	mgr := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
+	if err := mgr.loadReplicationState(); err != nil {
+		t.Fatalf("loadReplicationState failed: %v", err)
+	}
+	info, err := os.Stat(stateFile)
+	if err != nil {
+		t.Fatalf("stat replication state failed: %v", err)
+	}
+	if info.Mode().Perm() != replicationStateFilePerm {
+		t.Fatalf("Expected replication state permissions %o, got %o", replicationStateFilePerm, info.Mode().Perm())
+	}
+}
+
+func TestLoadReplicationStateRejectsOversizedFile(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "replication-state.json")
+	if err := os.WriteFile(stateFile, []byte(strings.Repeat("x", maxReplicationStateFileBytes+1)), replicationStateFilePerm); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	mgr := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
+	err := mgr.loadReplicationState()
+	if err == nil {
+		t.Fatal("Expected oversized replication state file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("Expected too large error, got %v", err)
+	}
+}
+
+func TestLoadReplicationStateRejectsTrailingData(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "replication-state.json")
+	if err := os.WriteFile(stateFile, []byte(`{"last_applied":42} {"last_applied":43}`), replicationStateFilePerm); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	mgr := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
+	err := mgr.loadReplicationState()
+	if err == nil {
+		t.Fatal("Expected trailing replication state JSON to be rejected")
+	}
+	if !strings.Contains(err.Error(), "trailing") {
+		t.Fatalf("Expected trailing data error, got %v", err)
+	}
+}
+
 func TestSyncReplicationStateDir(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "replication-state.json")
 	if err := os.WriteFile(stateFile, []byte("{}"), replicationStateFilePerm); err != nil {
@@ -539,6 +748,226 @@ func TestStartMessagePersistsReplicationState(t *testing.T) {
 	}
 	if !strings.Contains(string(content), `"last_applied": 11`) {
 		t.Fatalf("Expected persisted last_applied 11, got %s", string(content))
+	}
+}
+
+type shortReplicationStateWriter struct {
+	limit int
+}
+
+func (w *shortReplicationStateWriter) Write(p []byte) (int, error) {
+	if len(p) > w.limit {
+		return w.limit, nil
+	}
+	return len(p), nil
+}
+
+func TestWriteReplicationFullRejectsShortWrite(t *testing.T) {
+	writer := &shortReplicationWriter{limit: 4}
+
+	n, err := writeReplicationFull(writer, []byte("abcdef"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writeReplicationFull short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if n != 4 {
+		t.Fatalf("writeReplicationFull wrote %d bytes, want 4", n)
+	}
+}
+
+func TestAuthenticateSlaveRejectsShortSuccessWrite(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, AuthToken: "secret"})
+	conn := &shortReplicationConn{limit: 3}
+
+	err := mgr.authenticateSlaveWithReader(bufio.NewReader(strings.NewReader("secret\n")), conn)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("authenticateSlaveWithReader short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+}
+
+type authDeadlineConn struct {
+	mockConn
+	deadlines      []time.Time
+	writeDeadlines []time.Time
+	readData       []byte
+}
+
+func (c *authDeadlineConn) Read(p []byte) (int, error) {
+	if len(c.readData) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, c.readData)
+	c.readData = c.readData[n:]
+	return n, nil
+}
+
+func (c *authDeadlineConn) SetReadDeadline(t time.Time) error {
+	c.deadlines = append(c.deadlines, t)
+	return nil
+}
+
+func (c *authDeadlineConn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadlines = append(c.writeDeadlines, t)
+	return nil
+}
+
+func TestAuthenticateSlaveSetsReadDeadline(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, AuthToken: "secret"})
+	conn := &authDeadlineConn{}
+
+	if err := mgr.authenticateSlaveWithReader(bufio.NewReader(strings.NewReader("secret\n")), conn); err != nil {
+		t.Fatalf("authenticateSlaveWithReader failed: %v", err)
+	}
+	if len(conn.deadlines) != 2 {
+		t.Fatalf("expected auth deadline set and cleared, got %d calls", len(conn.deadlines))
+	}
+	if conn.deadlines[0].IsZero() {
+		t.Fatal("expected non-zero auth read deadline")
+	}
+	if !conn.deadlines[1].IsZero() {
+		t.Fatalf("expected auth read deadline to be cleared, got %v", conn.deadlines[1])
+	}
+	if got := string(conn.writeData); got != "AUTH_OK\n" {
+		t.Fatalf("expected AUTH_OK response, got %q", got)
+	}
+}
+
+func TestStartSlaveUsesDialTimeoutAndHandshakeDeadlines(t *testing.T) {
+	originalDial := replicationDial
+	defer func() { replicationDial = originalDial }()
+
+	conn := &authDeadlineConn{readData: []byte("AUTH_OK\n")}
+	var gotNetwork, gotAddress string
+	var gotTimeout time.Duration
+	replicationDial = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		gotNetwork = network
+		gotAddress = address
+		gotTimeout = timeout
+		return conn, nil
+	}
+
+	mgr := NewManager(&Config{
+		Role:       RoleSlave,
+		MasterAddr: "127.0.0.1:9999",
+		AuthToken:  "secret",
+	})
+	if err := mgr.startSlave(); err != nil {
+		t.Fatalf("startSlave failed: %v", err)
+	}
+	if gotNetwork != "tcp" || gotAddress != "127.0.0.1:9999" {
+		t.Fatalf("dial called with network=%q address=%q", gotNetwork, gotAddress)
+	}
+	if gotTimeout != replicationAuthTimeout {
+		t.Fatalf("dial timeout = %v, want %v", gotTimeout, replicationAuthTimeout)
+	}
+	if len(conn.deadlines) != 2 {
+		t.Fatalf("expected slave auth deadline set and cleared, got %d calls", len(conn.deadlines))
+	}
+	if conn.deadlines[0].IsZero() {
+		t.Fatal("expected non-zero slave auth read deadline")
+	}
+	if !conn.deadlines[1].IsZero() {
+		t.Fatalf("expected slave auth read deadline to be cleared, got %v", conn.deadlines[1])
+	}
+	if !strings.Contains(string(conn.writeData), "secret\n") {
+		t.Fatalf("expected slave to send auth token, writes=%q", string(conn.writeData))
+	}
+	if !strings.Contains(string(conn.writeData), "RESUME 0\n") {
+		t.Fatalf("expected slave to send resume request, writes=%q", string(conn.writeData))
+	}
+	if len(conn.writeDeadlines) != 4 {
+		t.Fatalf("expected auth and resume write deadlines set and cleared, got %d calls", len(conn.writeDeadlines))
+	}
+	if conn.writeDeadlines[0].IsZero() || conn.writeDeadlines[2].IsZero() {
+		t.Fatalf("expected non-zero write deadlines, got %v", conn.writeDeadlines)
+	}
+	if !conn.writeDeadlines[1].IsZero() || !conn.writeDeadlines[3].IsZero() {
+		t.Fatalf("expected write deadlines to be cleared, got %v", conn.writeDeadlines)
+	}
+	mgr.Stop()
+}
+
+func TestSendWALToSlaveRejectsShortWrite(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	writer := &shortReplicationWriter{limit: 4}
+	slave := &SlaveConnection{
+		ID:       "short-writer",
+		Writer:   bufio.NewWriterSize(writer, 1024),
+		LastPing: time.Now(),
+	}
+
+	err := mgr.sendWALToSlave(slave, []byte("abcdef"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("sendWALToSlave short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+}
+
+func TestSendWALToSlaveSetsWriteDeadline(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	conn := &authDeadlineConn{}
+	slave := &SlaveConnection{
+		ID:       "deadline-writer",
+		Conn:     conn,
+		Writer:   bufio.NewWriter(conn),
+		LastPing: time.Now(),
+	}
+
+	if err := mgr.sendWALToSlave(slave, []byte("abcdef")); err != nil {
+		t.Fatalf("sendWALToSlave failed: %v", err)
+	}
+	if len(conn.writeDeadlines) != 2 {
+		t.Fatalf("expected write deadline set and cleared, got %d calls", len(conn.writeDeadlines))
+	}
+	if conn.writeDeadlines[0].IsZero() {
+		t.Fatal("expected non-zero replication write deadline")
+	}
+	if !conn.writeDeadlines[1].IsZero() {
+		t.Fatalf("expected replication write deadline to be cleared, got %v", conn.writeDeadlines[1])
+	}
+}
+
+func TestSendAckSetsWriteDeadline(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave})
+	conn := &authDeadlineConn{}
+	mgr.setMasterConn(conn)
+	atomic.StoreUint64(&mgr.lastApplied, 12)
+
+	if err := mgr.sendAck(); err != nil {
+		t.Fatalf("sendAck failed: %v", err)
+	}
+	if len(conn.writeDeadlines) != 2 {
+		t.Fatalf("expected ACK write deadline set and cleared, got %d calls", len(conn.writeDeadlines))
+	}
+	if conn.writeDeadlines[0].IsZero() {
+		t.Fatal("expected non-zero ACK write deadline")
+	}
+	if !conn.writeDeadlines[1].IsZero() {
+		t.Fatalf("expected ACK write deadline to be cleared, got %v", conn.writeDeadlines[1])
+	}
+	if got := string(conn.writeData); got != "ACK 12\n" {
+		t.Fatalf("expected ACK write, got %q", got)
+	}
+}
+
+func TestReadMasterFrameSetsReadDeadline(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave})
+	conn := &authDeadlineConn{}
+	mgr.setMasterConn(conn)
+
+	reader := bufio.NewReader(strings.NewReader("PING 7\n"))
+	if err := mgr.readMasterFrame(reader); err != nil {
+		t.Fatalf("readMasterFrame failed: %v", err)
+	}
+	if len(conn.deadlines) != 2 {
+		t.Fatalf("expected stream read deadline set and cleared, got %d calls", len(conn.deadlines))
+	}
+	if conn.deadlines[0].IsZero() {
+		t.Fatal("expected non-zero stream read deadline")
+	}
+	if !conn.deadlines[1].IsZero() {
+		t.Fatalf("expected stream read deadline to be cleared, got %v", conn.deadlines[1])
+	}
+	if got := string(conn.writeData); got != "PONG 0\n" {
+		t.Fatalf("expected PONG response, got %q", got)
 	}
 }
 
@@ -801,6 +1230,14 @@ func TestDecodeWALEntriesErrorCases(t *testing.T) {
 			data: []byte{0x00, 0x00}, // Only 2 bytes, need 4 for numEntries
 		},
 		{
+			name: "entry count exceeds remaining payload",
+			data: func() []byte {
+				buf := new(bytes.Buffer)
+				binary.Write(buf, binary.BigEndian, uint32(1000)) // 1000 entries
+				return buf.Bytes()
+			}(),
+		},
+		{
 			name: "invalid entry length",
 			data: func() []byte {
 				buf := new(bytes.Buffer)
@@ -818,6 +1255,18 @@ func TestDecodeWALEntriesErrorCases(t *testing.T) {
 				t.Error("Expected error for invalid data")
 			}
 		})
+	}
+}
+
+func TestDecodeWALEntriesRejectsOversizedEntryLengthBeforeAllocation(t *testing.T) {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, uint32(1))  // 1 entry
+	binary.Write(buf, binary.BigEndian, ^uint32(0)) // Impossible entry length
+	buf.Write([]byte("short"))                      // Small payload
+
+	_, err := decodeWALEntries(buf.Bytes())
+	if err == nil || !strings.Contains(err.Error(), "exceeds remaining payload") {
+		t.Fatalf("expected oversized entry length error, got %v", err)
 	}
 }
 
@@ -885,6 +1334,24 @@ func TestWALEntryDecodeErrors(t *testing.T) {
 				t.Error("Expected error for invalid data")
 			}
 		})
+	}
+}
+
+func TestWALEntryDecodeRejectsOversizedDataLengthBeforeAllocation(t *testing.T) {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, uint64(1))                    // LSN
+	binary.Write(buf, binary.BigEndian, int64(time.Now().UnixNano())) // Timestamp
+	binary.Write(buf, binary.BigEndian, ^uint32(0))                   // Impossible data length
+	buf.Write([]byte("short"))
+	binary.Write(buf, binary.BigEndian, uint32(0)) // Checksum bytes are present
+
+	entry := &WALEntry{}
+	err := entry.Decode(buf.Bytes())
+	if err == nil || !strings.Contains(err.Error(), "WAL entry data too large") {
+		t.Fatalf("expected oversized data length error, got %v", err)
+	}
+	if entry.Data != nil {
+		t.Fatalf("entry data should not be allocated on invalid length, got %d bytes", len(entry.Data))
 	}
 }
 

@@ -537,6 +537,13 @@ func (db *DB) evictLRUEntry() {
 // acquireConnection acquires a connection slot with timeout.
 // The fast path uses atomics to avoid channel/select overhead.
 func (db *DB) acquireConnection(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("connection timeout: %w", err)
+	}
+
 	if db.connLimit <= 0 {
 		// No connection limit
 		db.activeConns.Add(1)
@@ -636,9 +643,9 @@ func (db *DB) releaseConnection() {
 
 // runStatement does the common setup for Exec and Query: panic recovery,
 // query timeout, connection acquire, db closed check, and statement parsing.
-// It returns the parsed statement and a release-connection func; if err is
-// non-nil the caller should return immediately.
-func (db *DB) runStatement(ctx context.Context, methodName, sql string, args ...interface{}) (_ query.Statement, start time.Time, release func(), err error) {
+// It returns the execution context, parsed statement, and a release-connection
+// func; if err is non-nil the caller should return immediately.
+func (db *DB) runStatement(ctx context.Context, methodName, sql string, args ...interface{}) (_ context.Context, _ query.Statement, start time.Time, release func(), err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -660,7 +667,7 @@ func (db *DB) runStatement(ctx context.Context, methodName, sql string, args ...
 
 	// Acquire connection
 	if acquireErr := db.acquireConnection(ctx); acquireErr != nil {
-		return nil, time.Time{}, func() {}, acquireErr
+		return ctx, nil, time.Time{}, func() {}, acquireErr
 	}
 
 	var stmt query.Statement
@@ -683,11 +690,11 @@ func (db *DB) runStatement(ctx context.Context, methodName, sql string, args ...
 		return nil
 	}(); err != nil {
 		release()
-		return nil, time.Time{}, func() {}, err
+		return ctx, nil, time.Time{}, func() {}, err
 	}
 
 	start = time.Now()
-	return stmt, start, release, nil
+	return ctx, stmt, start, release, nil
 }
 
 // Exec executes a SQL statement without returning rows
@@ -701,7 +708,7 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 		}
 	}()
 
-	stmt, start, release, execErr := db.runStatement(ctx, "Exec", sql, args...)
+	runCtx, stmt, start, release, execErr := db.runStatement(ctx, "Exec", sql, args...)
 	if execErr != nil {
 		if errors.Is(execErr, ErrDatabaseClosed) {
 			return Result{}, execErr
@@ -728,7 +735,7 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 		}()
 	}
 
-	return db.execute(ctx, stmt, args)
+	return db.execute(runCtx, stmt, args)
 }
 
 // Query executes a SQL query and returns rows
@@ -742,7 +749,7 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 		}
 	}()
 
-	stmt, start, release, execErr := db.runStatement(ctx, "Query", sql, args...)
+	runCtx, stmt, start, release, execErr := db.runStatement(ctx, "Query", sql, args...)
 	if execErr != nil {
 		if errors.Is(execErr, ErrDatabaseClosed) {
 			return nil, execErr
@@ -769,7 +776,7 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 		}()
 	}
 
-	return db.query(ctx, stmt, args)
+	return db.query(runCtx, stmt, args)
 }
 
 // QueryRow executes a SQL query and returns a single row
@@ -802,9 +809,18 @@ func (db *DB) Path() string {
 	return db.path
 }
 
-// TableSchema returns a human-readable schema for a table
-
+// TableSchema returns a human-readable schema for a table.
 func (db *DB) TableSchema(name string) (string, error) {
+	return db.tableSchema(name, true, false)
+}
+
+// TableSchemaWithoutForeignKeys returns a table schema with foreign key
+// constraints omitted, so dumps can restore data before validating FKs.
+func (db *DB) TableSchemaWithoutForeignKeys(name string) (string, error) {
+	return db.tableSchema(name, false, true)
+}
+
+func (db *DB) tableSchema(name string, includeForeignKeys, quoteIdentifiers bool) (string, error) {
 	table, err := db.catalog.GetTable(name)
 	if err != nil {
 		return "", err
@@ -815,7 +831,10 @@ func (db *DB) TableSchema(name string) (string, error) {
 
 	var clauses []string
 	for _, col := range table.Columns {
-		line := fmt.Sprintf("  %s %s", col.Name, col.Type)
+		line := fmt.Sprintf("  %s %s", schemaIdentifier(col.Name, quoteIdentifiers), schemaColumnType(col))
+		if col.Collation != "" {
+			line += fmt.Sprintf(" COLLATE %s", col.Collation)
+		}
 		if col.PrimaryKey && !compositePK {
 			line += " PRIMARY KEY"
 		}
@@ -831,31 +850,83 @@ func (db *DB) TableSchema(name string) (string, error) {
 		if col.Default != "" {
 			line += fmt.Sprintf(" DEFAULT %s", col.Default)
 		}
+		if col.CheckStr != "" {
+			line += " "
+			if col.CheckName != "" {
+				line += fmt.Sprintf("CONSTRAINT %s ", schemaIdentifier(col.CheckName, quoteIdentifiers))
+			}
+			line += fmt.Sprintf("CHECK (%s)", schemaCheckExpr(col.CheckStr))
+		}
 		clauses = append(clauses, line)
 	}
 	if compositePK {
-		clauses = append(clauses, fmt.Sprintf("  PRIMARY KEY (%s)", strings.Join(table.PrimaryKey, ", ")))
+		clauses = append(clauses, fmt.Sprintf("  PRIMARY KEY (%s)", strings.Join(schemaIdentifierList(table.PrimaryKey, quoteIdentifiers), ", ")))
 	}
-	for _, fk := range table.ForeignKeys {
-		clause := fmt.Sprintf("  FOREIGN KEY (%s) REFERENCES %s",
-			strings.Join(fk.Columns, ", "), fk.ReferencedTable)
-		if len(fk.ReferencedColumns) > 0 {
-			clause += fmt.Sprintf(" (%s)", strings.Join(fk.ReferencedColumns, ", "))
+	for _, check := range table.Checks {
+		clause := "  "
+		if check.Name != "" {
+			clause += fmt.Sprintf("CONSTRAINT %s ", schemaIdentifier(check.Name, quoteIdentifiers))
 		}
-		if fk.OnDelete != "" {
-			clause += " ON DELETE " + fk.OnDelete
-		}
-		if fk.OnUpdate != "" {
-			clause += " ON UPDATE " + fk.OnUpdate
-		}
+		clause += fmt.Sprintf("CHECK (%s)", schemaCheckExpr(check.CheckStr))
 		clauses = append(clauses, clause)
+	}
+	if includeForeignKeys {
+		for _, fk := range table.ForeignKeys {
+			clause := "  "
+			if fk.Name != "" {
+				clause += fmt.Sprintf("CONSTRAINT %s ", schemaIdentifier(fk.Name, quoteIdentifiers))
+			}
+			clause += fmt.Sprintf("FOREIGN KEY (%s) REFERENCES %s",
+				strings.Join(schemaIdentifierList(fk.Columns, quoteIdentifiers), ", "),
+				schemaIdentifier(fk.ReferencedTable, quoteIdentifiers))
+			if len(fk.ReferencedColumns) > 0 {
+				clause += fmt.Sprintf(" (%s)", strings.Join(schemaIdentifierList(fk.ReferencedColumns, quoteIdentifiers), ", "))
+			}
+			if fk.OnDelete != "" {
+				clause += " ON DELETE " + fk.OnDelete
+			}
+			if fk.OnUpdate != "" {
+				clause += " ON UPDATE " + fk.OnUpdate
+			}
+			clauses = append(clauses, clause)
+		}
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", table.Name))
+	sb.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", schemaIdentifier(table.Name, quoteIdentifiers)))
 	sb.WriteString(strings.Join(clauses, ",\n"))
 	sb.WriteString("\n);")
 	return sb.String(), nil
+}
+
+func schemaColumnType(col catalog.ColumnDef) string {
+	if strings.EqualFold(col.Type, "VECTOR") && col.Dimensions > 0 {
+		return fmt.Sprintf("VECTOR(%d)", col.Dimensions)
+	}
+	return col.Type
+}
+
+func schemaIdentifier(name string, quote bool) string {
+	if !quote {
+		return name
+	}
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+func schemaIdentifierList(names []string, quote bool) []string {
+	out := make([]string, len(names))
+	for i, name := range names {
+		out[i] = schemaIdentifier(name, quote)
+	}
+	return out
+}
+
+func schemaCheckExpr(expr string) string {
+	expr = strings.TrimSpace(expr)
+	if len(expr) >= 2 && expr[0] == '(' && expr[len(expr)-1] == ')' {
+		return strings.TrimSpace(expr[1 : len(expr)-1])
+	}
+	return expr
 }
 
 // TableForeignKeyRefs returns the distinct names of tables referenced by a
@@ -876,6 +947,61 @@ func (db *DB) TableForeignKeyRefs(name string) []string {
 	return refs
 }
 
+// TableForeignKeyRef describes a foreign key from a table to another table.
+type TableForeignKeyRef struct {
+	Name              string
+	Columns           []string
+	ReferencedTable   string
+	ReferencedColumns []string
+	OnDelete          string
+	OnUpdate          string
+}
+
+// TableForeignKeys returns foreign key definitions declared on a table.
+func (db *DB) TableForeignKeys(name string) []TableForeignKeyRef {
+	table, err := db.catalog.GetTable(name)
+	if err != nil {
+		return nil
+	}
+	refs := make([]TableForeignKeyRef, 0, len(table.ForeignKeys))
+	for _, fk := range table.ForeignKeys {
+		refs = append(refs, TableForeignKeyRef{
+			Name:              fk.Name,
+			Columns:           append([]string(nil), fk.Columns...),
+			ReferencedTable:   fk.ReferencedTable,
+			ReferencedColumns: append([]string(nil), fk.ReferencedColumns...),
+			OnDelete:          fk.OnDelete,
+			OnUpdate:          fk.OnUpdate,
+		})
+	}
+	return refs
+}
+
+// TableSelfForeignKeyRefs returns self-referential foreign keys for a table.
+// It is used by SQL dumps to emit self-referenced rows in restore-safe order.
+func (db *DB) TableSelfForeignKeyRefs(name string) []TableForeignKeyRef {
+	table, err := db.catalog.GetTable(name)
+	if err != nil {
+		return nil
+	}
+	var refs []TableForeignKeyRef
+	for _, fk := range table.ForeignKeys {
+		if !strings.EqualFold(fk.ReferencedTable, name) {
+			continue
+		}
+		refColumns := fk.ReferencedColumns
+		if len(refColumns) == 0 {
+			refColumns = table.PrimaryKey
+		}
+		refs = append(refs, TableForeignKeyRef{
+			Columns:           append([]string(nil), fk.Columns...),
+			ReferencedTable:   fk.ReferencedTable,
+			ReferencedColumns: append([]string(nil), refColumns...),
+		})
+	}
+	return refs
+}
+
 // TableIndexDDL returns CREATE INDEX statements for a table's secondary indexes,
 // used by the SQL dump so indexes survive a restore.
 func (db *DB) TableIndexDDL(name string) []string {
@@ -886,7 +1012,250 @@ func (db *DB) TableIndexDDL(name string) []string {
 			unique = "UNIQUE "
 		}
 		ddl = append(ddl, fmt.Sprintf("CREATE %sINDEX %s ON %s (%s);",
-			unique, idx.Name, name, strings.Join(idx.Columns, ", ")))
+			unique,
+			schemaIdentifier(idx.Name, true),
+			schemaIdentifier(name, true),
+			strings.Join(schemaIdentifierList(idx.Columns, true), ", ")))
+	}
+	return ddl
+}
+
+// FTSIndexDDL returns CREATE FULLTEXT INDEX statements for SQL dumps.
+func (db *DB) FTSIndexDDL() []string {
+	indexes := db.catalog.ListFTSIndexDefs()
+	ddl := make([]string, 0, len(indexes))
+	for _, idx := range indexes {
+		ddl = append(ddl, fmt.Sprintf("CREATE FULLTEXT INDEX %s ON %s (%s);",
+			schemaIdentifier(idx.Name, true),
+			schemaIdentifier(idx.TableName, true),
+			strings.Join(schemaIdentifierList(idx.Columns, true), ", ")))
+	}
+	return ddl
+}
+
+// VectorIndexDDL returns CREATE VECTOR INDEX statements for SQL dumps.
+func (db *DB) VectorIndexDDL() []string {
+	indexes := db.catalog.ListVectorIndexDefs()
+	ddl := make([]string, 0, len(indexes))
+	for _, idx := range indexes {
+		ddl = append(ddl, fmt.Sprintf("CREATE VECTOR INDEX %s ON %s (%s);",
+			schemaIdentifier(idx.Name, true),
+			schemaIdentifier(idx.TableName, true),
+			schemaIdentifier(idx.ColumnName, true)))
+	}
+	return ddl
+}
+
+// RLSPolicyDDL returns ALTER TABLE and CREATE POLICY statements for SQL dumps.
+func (db *DB) RLSPolicyDDL() []string {
+	tables := db.catalog.ListRLSEnabledTables()
+	policies := db.catalog.ListRLSPolicies()
+	if len(tables) == 0 && len(policies) == 0 {
+		return nil
+	}
+	ddl := make([]string, 0, len(tables)+len(policies))
+	enabledTables := make(map[string]bool)
+	for _, tableName := range tables {
+		tableKey := strings.ToLower(tableName)
+		if enabledTables[tableKey] {
+			continue
+		}
+		ddl = append(ddl, fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY;", schemaIdentifier(tableName, true)))
+		enabledTables[tableKey] = true
+	}
+	for _, policy := range policies {
+		tableKey := strings.ToLower(policy.TableName)
+		if !enabledTables[tableKey] {
+			ddl = append(ddl, fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY;", schemaIdentifier(policy.TableName, true)))
+			enabledTables[tableKey] = true
+		}
+
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "CREATE POLICY %s ON %s",
+			schemaIdentifier(policy.Name, true),
+			schemaIdentifier(policy.TableName, true))
+		if policy.Restrictive {
+			sb.WriteString(" AS RESTRICTIVE")
+		}
+		fmt.Fprintf(&sb, " FOR %s", policy.Type.String())
+		if len(policy.Roles) > 0 {
+			sb.WriteString(" TO ")
+			sb.WriteString(strings.Join(schemaIdentifierList(policy.Roles, true), ", "))
+		}
+		if strings.TrimSpace(policy.Expression) != "" {
+			fmt.Fprintf(&sb, " USING (%s)", policy.Expression)
+		}
+		if strings.TrimSpace(policy.CheckExpression) != "" {
+			fmt.Fprintf(&sb, " WITH CHECK (%s)", policy.CheckExpression)
+		}
+		sb.WriteString(";")
+		ddl = append(ddl, sb.String())
+	}
+	return ddl
+}
+
+// ForeignTableDDL returns CREATE FOREIGN TABLE statements for SQL dumps.
+func (db *DB) ForeignTableDDL() []string {
+	foreignTables := db.catalog.ListForeignTables()
+	sort.Slice(foreignTables, func(i, j int) bool {
+		return strings.ToLower(foreignTables[i].TableName) < strings.ToLower(foreignTables[j].TableName)
+	})
+	ddl := make([]string, 0, len(foreignTables))
+	for _, ft := range foreignTables {
+		ddl = append(ddl, foreignTableDDL(ft))
+	}
+	return ddl
+}
+
+func foreignTableDDL(ft catalog.ForeignTableDef) string {
+	columns := make([]string, len(ft.Columns))
+	for i, col := range ft.Columns {
+		line := fmt.Sprintf("%s %s", schemaIdentifier(col.Name, true), col.Type)
+		if col.Collation != "" {
+			line += fmt.Sprintf(" COLLATE %s", col.Collation)
+		}
+		if col.PrimaryKey {
+			line += " PRIMARY KEY"
+		}
+		if col.AutoIncrement {
+			line += " AUTOINCREMENT"
+		}
+		if col.NotNull {
+			line += " NOT NULL"
+		}
+		if col.Unique {
+			line += " UNIQUE"
+		}
+		if col.Default != "" {
+			line += fmt.Sprintf(" DEFAULT %s", col.Default)
+		}
+		if col.CheckStr != "" {
+			line += " "
+			if col.CheckName != "" {
+				line += fmt.Sprintf("CONSTRAINT %s ", schemaIdentifier(col.CheckName, true))
+			}
+			line += fmt.Sprintf("CHECK (%s)", schemaCheckExpr(col.CheckStr))
+		}
+		columns[i] = line
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "CREATE FOREIGN TABLE %s (\n  %s\n) WRAPPER %s",
+		schemaIdentifier(ft.TableName, true),
+		strings.Join(columns, ",\n  "),
+		schemaStringLiteral(ft.Wrapper))
+	if len(ft.Options) > 0 {
+		keys := make([]string, 0, len(ft.Options))
+		for key := range ft.Options {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		options := make([]string, len(keys))
+		for i, key := range keys {
+			options[i] = fmt.Sprintf("%s %s", schemaIdentifier(key, true), schemaStringLiteral(ft.Options[key]))
+		}
+		fmt.Fprintf(&sb, " OPTIONS (%s)", strings.Join(options, ", "))
+	}
+	sb.WriteString(";")
+	return sb.String()
+}
+
+func schemaStringLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+// ViewDDL returns persisted CREATE VIEW statements for SQL dumps.
+func (db *DB) ViewDDL() []string {
+	views := db.catalog.ListViewSQL()
+	names := make([]string, 0, len(views))
+	for name := range views {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return strings.ToLower(names[i]) < strings.ToLower(names[j])
+	})
+	ddl := make([]string, 0, len(names))
+	for _, name := range names {
+		sql := strings.TrimSpace(views[name])
+		if sql == "" {
+			continue
+		}
+		if !strings.HasSuffix(sql, ";") {
+			sql += ";"
+		}
+		ddl = append(ddl, sql)
+	}
+	return ddl
+}
+
+// MaterializedViewDDL returns persisted CREATE MATERIALIZED VIEW statements for SQL dumps.
+func (db *DB) MaterializedViewDDL() []string {
+	views := db.catalog.ListMaterializedViewSQL()
+	names := make([]string, 0, len(views))
+	for name := range views {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return strings.ToLower(names[i]) < strings.ToLower(names[j])
+	})
+	ddl := make([]string, 0, len(names))
+	for _, name := range names {
+		sql := strings.TrimSpace(views[name])
+		if sql == "" {
+			continue
+		}
+		if !strings.HasSuffix(sql, ";") {
+			sql += ";"
+		}
+		ddl = append(ddl, sql)
+	}
+	return ddl
+}
+
+// TriggerDDL returns persisted CREATE TRIGGER statements for SQL dumps.
+func (db *DB) TriggerDDL() []string {
+	triggers := db.catalog.ListTriggerSQL()
+	names := make([]string, 0, len(triggers))
+	for name := range triggers {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return strings.ToLower(names[i]) < strings.ToLower(names[j])
+	})
+	ddl := make([]string, 0, len(names))
+	for _, name := range names {
+		sql := strings.TrimSpace(triggers[name])
+		if sql == "" {
+			continue
+		}
+		if !strings.HasSuffix(sql, ";") {
+			sql += ";"
+		}
+		ddl = append(ddl, sql)
+	}
+	return ddl
+}
+
+// ProcedureDDL returns persisted CREATE PROCEDURE statements for SQL dumps.
+func (db *DB) ProcedureDDL() []string {
+	procedures := db.catalog.ListProcedureSQL()
+	names := make([]string, 0, len(procedures))
+	for name := range procedures {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return strings.ToLower(names[i]) < strings.ToLower(names[j])
+	})
+	ddl := make([]string, 0, len(names))
+	for _, name := range names {
+		sql := strings.TrimSpace(procedures[name])
+		if sql == "" {
+			continue
+		}
+		if !strings.HasSuffix(sql, ";") {
+			sql += ";"
+		}
+		ddl = append(ddl, sql)
 	}
 	return ddl
 }
@@ -1038,8 +1407,16 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 			db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "CREATE_FOREIGN_TABLE", audit.WithTable(s.Table))
 		}
 		return result, err
+	case *query.CreateCollectionStmt:
+		return db.dispatchDDL(ctx, "CREATE_COLLECTION", s.Name, func() (Result, error) { return db.executeCreateCollection(ctx, s) }, audit.WithTable(s.Name))
 	case *query.InsertStmt:
+		explicitTxnActive := db.catalog.IsTransactionActive() && !autocommit
 		result, err := db.executeInsert(ctx, s, args)
+		if err != nil && s.ConflictAction == query.ConflictRollback && explicitTxnActive {
+			if rbErr := db.catalog.RollbackTransaction(); rbErr != nil {
+				err = fmt.Errorf("%w; rollback failed: %v", err, rbErr)
+			}
+		}
 		if db.auditLogger != nil {
 			db.auditLogger.LogQuery(auditUser(ctx), "INSERT", time.Since(start), result.RowsAffected, err)
 		}
@@ -1073,6 +1450,8 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		return result, err
 	case *query.DropTableStmt:
 		return db.dispatchDDL(ctx, "DROP_TABLE", s.Table, func() (Result, error) { return db.executeDropTable(ctx, s) }, audit.WithTable(s.Table))
+	case *query.DropCollectionStmt:
+		return db.dispatchDDL(ctx, "DROP_COLLECTION", s.Name, func() (Result, error) { return db.executeDropCollection(ctx, s) }, audit.WithTable(s.Name))
 	case *query.CreateIndexStmt:
 		return db.dispatchDDL(ctx, "CREATE_INDEX", s.Table, func() (Result, error) { return db.executeCreateIndex(ctx, s) }, audit.WithTable(s.Table))
 	case *query.CreateViewStmt:
@@ -1218,6 +1597,15 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 			}
 			return Result{RowsAffected: 0}, nil
 		}
+		if _, err := db.catalog.GetVectorIndex(s.Index); err == nil {
+			if err := db.catalog.DropVectorIndex(s.Index); err != nil {
+				return Result{}, err
+			}
+			if db.auditLogger != nil {
+				db.auditLogger.Log(audit.EventDDL, auditUser(ctx), "DROP_INDEX")
+			}
+			return Result{RowsAffected: 0}, nil
+		}
 		// Try regular index
 		if err := db.catalog.DropIndex(s.Index); err != nil {
 			return Result{}, err
@@ -1305,6 +1693,8 @@ func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{
 			return db.executeDeleteReturning(ctx, s, args)
 		}
 		return nil, fmt.Errorf("not a query statement: %T", stmt)
+	case *query.CallProcedureStmt:
+		return db.queryCallProcedure(ctx, s, args)
 	default:
 		return nil, fmt.Errorf("not a query statement: %T", stmt)
 	}
@@ -1316,16 +1706,51 @@ func (db *DB) executeCreateTable(ctx context.Context, stmt *query.CreateTableStm
 	if stmt.AsSelect != nil {
 		return db.executeCreateTableAsSelect(ctx, stmt)
 	}
+	if stmt.IfNotExists {
+		if _, err := db.catalog.GetTable(stmt.Table); err == nil {
+			return Result{RowsAffected: 0}, nil
+		}
+	}
+	cleanupOnError := func(primary error) error {
+		if cleanupErr := db.catalog.CleanupFailedCreateTable(stmt.Table); cleanupErr != nil {
+			return fmt.Errorf("%w; cleanup failed: %v", primary, cleanupErr)
+		}
+		return primary
+	}
 	if err := db.catalog.CreateTable(stmt); err != nil {
 		return Result{}, err
+	}
+	// Named column-level UNIQUE constraints are represented as unique indexes so
+	// ALTER TABLE ... DROP CONSTRAINT removes enforcement by dropping the index.
+	for _, col := range stmt.Columns {
+		if col.UniqueName == "" {
+			continue
+		}
+		idx := &query.CreateIndexStmt{Index: col.UniqueName, Table: stmt.Table, Columns: []string{col.Name}, Unique: true}
+		if err := db.catalog.CreateIndex(idx); err != nil {
+			return Result{}, cleanupOnError(fmt.Errorf("creating unique constraint %s: %w", col.UniqueName, err))
+		}
 	}
 	// Table-level UNIQUE (col, ...) constraints are enforced via unique indexes.
 	for i, cols := range stmt.UniqueConstraints {
 		idxName := fmt.Sprintf("%s_uniq_%d", stmt.Table, i)
 		idx := &query.CreateIndexStmt{Index: idxName, Table: stmt.Table, Columns: cols, Unique: true, IfNotExists: true}
 		if err := db.catalog.CreateIndex(idx); err != nil {
-			return Result{}, fmt.Errorf("creating unique constraint index: %w", err)
+			return Result{}, cleanupOnError(fmt.Errorf("creating unique constraint index: %w", err))
 		}
+	}
+	for _, constraint := range stmt.NamedUniqueConstraints {
+		idx := &query.CreateIndexStmt{Index: constraint.Name, Table: stmt.Table, Columns: constraint.Columns, Unique: true}
+		if err := db.catalog.CreateIndex(idx); err != nil {
+			return Result{}, cleanupOnError(fmt.Errorf("creating unique constraint %s: %w", constraint.Name, err))
+		}
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
+func (db *DB) executeCreateCollection(ctx context.Context, stmt *query.CreateCollectionStmt) (Result, error) {
+	if err := db.catalog.CreateCollection(stmt); err != nil {
+		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
 }
@@ -1488,13 +1913,15 @@ func (db *DB) executeUpsert(ctx context.Context, stmt *query.InsertStmt, args []
 		}
 	}
 
-	// Resolve conflict target columns: explicit target, else the primary key.
-	conflictCols := stmt.OnConflict.Columns
-	if len(conflictCols) == 0 {
-		conflictCols = table.PrimaryKey
+	// Resolve conflict target columns. Explicit ON CONFLICT targets use that
+	// one target; MySQL-style ON DUPLICATE KEY UPDATE has no target, so try the
+	// primary key followed by known UNIQUE constraints/indexes.
+	conflictTargets := [][]string{stmt.OnConflict.Columns}
+	if len(stmt.OnConflict.Columns) == 0 {
+		conflictTargets = db.upsertConflictTargets(stmt.Table, table)
 	}
-	if len(conflictCols) == 0 {
-		return Result{}, fmt.Errorf("ON CONFLICT DO UPDATE requires a conflict target or primary key")
+	if len(conflictTargets) == 0 {
+		return Result{}, fmt.Errorf("ON CONFLICT DO UPDATE requires a conflict target, primary key, or unique key")
 	}
 
 	// Map column name -> position within each inserted value row.
@@ -1522,30 +1949,295 @@ func (db *DB) executeUpsert(ctx context.Context, stmt *query.InsertStmt, args []
 			return Result{}, insErr
 		}
 
-		// Build WHERE matching the conflict target to this row's values, reusing
-		// the row's own value expressions directly.
-		var where query.Expression
-		for _, cc := range conflictCols {
-			pos, ok := colPos[strings.ToLower(cc)]
-			if !ok || pos >= len(row) {
-				return Result{}, fmt.Errorf("ON CONFLICT target column %q not present in inserted values", cc)
+		updated := false
+		for _, conflictCols := range conflictTargets {
+			// Build WHERE matching the conflict target to this row's values,
+			// reusing the row's own value expressions directly.
+			var where query.Expression
+			missingTarget := ""
+			for _, cc := range conflictCols {
+				pos, ok := colPos[strings.ToLower(cc)]
+				if !ok || pos >= len(row) {
+					missingTarget = cc
+					break
+				}
+				eq := &query.BinaryExpr{Left: &query.Identifier{Name: cc}, Operator: query.TokenEq, Right: row[pos]}
+				if where == nil {
+					where = eq
+				} else {
+					where = &query.BinaryExpr{Left: where, Operator: query.TokenAnd, Right: eq}
+				}
 			}
-			eq := &query.BinaryExpr{Left: &query.Identifier{Name: cc}, Operator: query.TokenEq, Right: row[pos]}
-			if where == nil {
-				where = eq
-			} else {
-				where = &query.BinaryExpr{Left: where, Operator: query.TokenAnd, Right: eq}
+			if missingTarget != "" {
+				if len(stmt.OnConflict.Columns) > 0 {
+					return Result{}, fmt.Errorf("ON CONFLICT target column %q not present in inserted values", missingTarget)
+				}
+				continue
 			}
-		}
 
-		upd := &query.UpdateStmt{Table: stmt.Table, Set: stmt.OnConflict.DoUpdate, Where: where}
-		_, n, updErr := db.catalog.Update(ctx, upd, args)
-		if updErr != nil {
-			return Result{}, updErr
+			updateSet, substErr := substituteUpsertValuesInSetClauses(stmt.OnConflict.DoUpdate, colPos, row)
+			if substErr != nil {
+				return Result{}, substErr
+			}
+			upd := &query.UpdateStmt{Table: stmt.Table, Set: updateSet, Where: where}
+			_, n, updErr := db.catalog.Update(ctx, upd, args)
+			if updErr != nil {
+				return Result{}, updErr
+			}
+			if n > 0 {
+				result.RowsAffected += n
+				updated = true
+				break
+			}
 		}
-		result.RowsAffected += n
+		if !updated {
+			return Result{}, insErr
+		}
 	}
 	return result, nil
+}
+
+func (db *DB) upsertConflictTargets(tableName string, table *catalog.TableDef) [][]string {
+	var targets [][]string
+	seen := make(map[string]bool)
+	add := func(cols []string) {
+		if len(cols) == 0 {
+			return
+		}
+		keyParts := make([]string, len(cols))
+		for i, col := range cols {
+			keyParts[i] = strings.ToLower(col)
+		}
+		key := strings.Join(keyParts, "\x00")
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		targets = append(targets, append([]string(nil), cols...))
+	}
+
+	add(table.PrimaryKey)
+	for _, col := range table.Columns {
+		if col.Unique {
+			add([]string{col.Name})
+		}
+	}
+	for _, idx := range db.catalog.GetTableIndexes(tableName) {
+		if idx.Unique {
+			add(idx.Columns)
+		}
+	}
+	return targets
+}
+
+func substituteUpsertValuesInSetClauses(set []*query.SetClause, colPos map[string]int, row []query.Expression) ([]*query.SetClause, error) {
+	result := make([]*query.SetClause, len(set))
+	for i, clause := range set {
+		newClause := *clause
+		value, err := substituteUpsertValuesExpr(clause.Value, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		newClause.Value = value
+		result[i] = &newClause
+	}
+	return result, nil
+}
+
+func substituteUpsertValuesExpr(expr query.Expression, colPos map[string]int, row []query.Expression) (query.Expression, error) {
+	if expr == nil {
+		return nil, nil
+	}
+
+	switch e := expr.(type) {
+	case *query.FunctionCall:
+		if strings.EqualFold(e.Name, "VALUES") {
+			if len(e.Args) != 1 {
+				return nil, fmt.Errorf("VALUES() in ON DUPLICATE KEY UPDATE requires one column argument")
+			}
+			col, ok := upsertValuesColumnName(e.Args[0])
+			if !ok {
+				return nil, fmt.Errorf("VALUES() in ON DUPLICATE KEY UPDATE requires a column argument")
+			}
+			pos, ok := colPos[strings.ToLower(col)]
+			if !ok || pos >= len(row) {
+				return nil, fmt.Errorf("VALUES(%s) column not present in inserted values", col)
+			}
+			return query.CloneExpression(row[pos]), nil
+		}
+		args := make([]query.Expression, len(e.Args))
+		for i, arg := range e.Args {
+			v, err := substituteUpsertValuesExpr(arg, colPos, row)
+			if err != nil {
+				return nil, err
+			}
+			args[i] = v
+		}
+		orderBy, err := substituteUpsertValuesOrderBy(e.OrderBy, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		filter, err := substituteUpsertValuesExpr(e.Filter, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		return &query.FunctionCall{Name: e.Name, Args: args, Distinct: e.Distinct, OrderBy: orderBy, Filter: filter}, nil
+	case *query.BinaryExpr:
+		left, err := substituteUpsertValuesExpr(e.Left, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		right, err := substituteUpsertValuesExpr(e.Right, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		return &query.BinaryExpr{Left: left, Operator: e.Operator, Right: right}, nil
+	case *query.UnaryExpr:
+		v, err := substituteUpsertValuesExpr(e.Expr, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		return &query.UnaryExpr{Operator: e.Operator, Expr: v}, nil
+	case *query.CaseExpr:
+		newCase := &query.CaseExpr{}
+		var err error
+		if e.Expr != nil {
+			newCase.Expr, err = substituteUpsertValuesExpr(e.Expr, colPos, row)
+			if err != nil {
+				return nil, err
+			}
+		}
+		newCase.Whens = make([]*query.WhenClause, len(e.Whens))
+		for i, when := range e.Whens {
+			cond, err := substituteUpsertValuesExpr(when.Condition, colPos, row)
+			if err != nil {
+				return nil, err
+			}
+			res, err := substituteUpsertValuesExpr(when.Result, colPos, row)
+			if err != nil {
+				return nil, err
+			}
+			newCase.Whens[i] = &query.WhenClause{Condition: cond, Result: res}
+		}
+		if e.Else != nil {
+			newCase.Else, err = substituteUpsertValuesExpr(e.Else, colPos, row)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return newCase, nil
+	case *query.BetweenExpr:
+		ex, err := substituteUpsertValuesExpr(e.Expr, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		lower, err := substituteUpsertValuesExpr(e.Lower, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		upper, err := substituteUpsertValuesExpr(e.Upper, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		return &query.BetweenExpr{Expr: ex, Lower: lower, Upper: upper, Not: e.Not}, nil
+	case *query.InExpr:
+		ex, err := substituteUpsertValuesExpr(e.Expr, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		list := make([]query.Expression, len(e.List))
+		for i, item := range e.List {
+			v, err := substituteUpsertValuesExpr(item, colPos, row)
+			if err != nil {
+				return nil, err
+			}
+			list[i] = v
+		}
+		return &query.InExpr{Expr: ex, List: list, Not: e.Not, Subquery: e.Subquery}, nil
+	case *query.LikeExpr:
+		ex, err := substituteUpsertValuesExpr(e.Expr, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		pattern, err := substituteUpsertValuesExpr(e.Pattern, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		escape, err := substituteUpsertValuesExpr(e.Escape, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		return &query.LikeExpr{Expr: ex, Pattern: pattern, Not: e.Not, Escape: escape}, nil
+	case *query.IsNullExpr:
+		ex, err := substituteUpsertValuesExpr(e.Expr, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		return &query.IsNullExpr{Expr: ex, Not: e.Not}, nil
+	case *query.CastExpr:
+		ex, err := substituteUpsertValuesExpr(e.Expr, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		return &query.CastExpr{Expr: ex, DataType: e.DataType}, nil
+	case *query.AliasExpr:
+		ex, err := substituteUpsertValuesExpr(e.Expr, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		return &query.AliasExpr{Expr: ex, Alias: e.Alias}, nil
+	case *query.JSONPathExpr:
+		col, err := substituteUpsertValuesExpr(e.Column, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		return &query.JSONPathExpr{Column: col, Path: e.Path, AsText: e.AsText}, nil
+	case *query.JSONContainsExpr:
+		col, err := substituteUpsertValuesExpr(e.Column, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		val, err := substituteUpsertValuesExpr(e.Value, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		return &query.JSONContainsExpr{Column: col, Value: val}, nil
+	default:
+		return query.CloneExpression(expr), nil
+	}
+}
+
+func substituteUpsertValuesOrderBy(orderBy []*query.OrderByExpr, colPos map[string]int, row []query.Expression) ([]*query.OrderByExpr, error) {
+	if len(orderBy) == 0 {
+		return nil, nil
+	}
+	out := make([]*query.OrderByExpr, len(orderBy))
+	for i, ob := range orderBy {
+		if ob == nil {
+			continue
+		}
+		expr, err := substituteUpsertValuesExpr(ob.Expr, colPos, row)
+		if err != nil {
+			return nil, err
+		}
+		copied := *ob
+		copied.Expr = expr
+		out[i] = &copied
+	}
+	return out, nil
+}
+
+func upsertValuesColumnName(expr query.Expression) (string, bool) {
+	switch e := expr.(type) {
+	case *query.Identifier:
+		return e.Name, true
+	case *query.QualifiedIdentifier:
+		return e.Column, true
+	case *query.ColumnRef:
+		return e.Column, e.Column != ""
+	default:
+		return "", false
+	}
 }
 
 // isUniqueConflictError reports whether err is a primary-key/unique violation
@@ -1643,6 +2335,17 @@ func (db *DB) executeAlterTable(ctx context.Context, stmt *query.AlterTableStmt)
 		if err := db.catalog.AlterTableAddColumn(stmt); err != nil {
 			return Result{}, err
 		}
+		if stmt.Column.UniqueName != "" {
+			idx := &query.CreateIndexStmt{
+				Index:   stmt.Column.UniqueName,
+				Table:   stmt.Table,
+				Columns: []string{stmt.Column.Name},
+				Unique:  true,
+			}
+			if err := db.catalog.CreateIndex(idx); err != nil {
+				return Result{}, fmt.Errorf("creating unique constraint %s: %w", stmt.Column.UniqueName, err)
+			}
+		}
 	case "DROP":
 		if err := db.catalog.AlterTableDropColumn(stmt); err != nil {
 			return Result{}, err
@@ -1653,6 +2356,39 @@ func (db *DB) executeAlterTable(ctx context.Context, stmt *query.AlterTableStmt)
 		}
 	case "RENAME_COLUMN":
 		if err := db.catalog.AlterTableRenameColumn(stmt); err != nil {
+			return Result{}, err
+		}
+	case "ADD_CONSTRAINT":
+		if strings.EqualFold(stmt.ConstraintType, "FOREIGN KEY") {
+			if err := db.catalog.AlterTableAddForeignKeyConstraint(ctx, stmt); err != nil {
+				return Result{}, err
+			}
+			break
+		}
+		if strings.EqualFold(stmt.ConstraintType, "CHECK") {
+			if err := db.catalog.AlterTableAddCheckConstraint(stmt); err != nil {
+				return Result{}, err
+			}
+			break
+		}
+		if !strings.EqualFold(stmt.ConstraintType, "UNIQUE") {
+			return Result{}, fmt.Errorf("unsupported ALTER TABLE constraint type: %s", stmt.ConstraintType)
+		}
+		idx := &query.CreateIndexStmt{
+			Index:   stmt.ConstraintName,
+			Table:   stmt.Table,
+			Columns: stmt.ConstraintColumns,
+			Unique:  true,
+		}
+		if err := db.catalog.CreateIndex(idx); err != nil {
+			return Result{}, err
+		}
+	case "DROP_CONSTRAINT":
+		if err := db.catalog.DropTableConstraint(stmt.Table, stmt.ConstraintName); err != nil {
+			return Result{}, err
+		}
+	case "ENABLE_RLS":
+		if err := db.catalog.EnableRLSTable(stmt.Table); err != nil {
 			return Result{}, err
 		}
 	default:
@@ -1670,6 +2406,13 @@ func (db *DB) executeDropTable(ctx context.Context, stmt *query.DropTableStmt) (
 	return Result{RowsAffected: 0}, nil
 }
 
+func (db *DB) executeDropCollection(ctx context.Context, stmt *query.DropCollectionStmt) (Result, error) {
+	if err := db.catalog.DropCollection(stmt); err != nil {
+		return Result{}, err
+	}
+	return Result{RowsAffected: 0}, nil
+}
+
 // executeCreateIndex executes CREATE INDEX
 
 func (db *DB) executeCreateIndex(ctx context.Context, stmt *query.CreateIndexStmt) (Result, error) {
@@ -1682,13 +2425,59 @@ func (db *DB) executeCreateIndex(ctx context.Context, stmt *query.CreateIndexStm
 // executeCreateView executes CREATE VIEW
 
 func (db *DB) executeCreateView(ctx context.Context, stmt *query.CreateViewStmt) (Result, error) {
-	if err := db.catalog.CreateViewSQL(stmt.Name, stmt.Query, stmt.RawSQL); err != nil {
+	viewQuery, err := applyCreateViewColumnList(stmt)
+	if err != nil {
+		return Result{}, err
+	}
+	if stmt.OrReplace {
+		var err error
+		if stmt.Temporary {
+			err = db.catalog.CreateOrReplaceTemporaryViewSQL(stmt.Name, viewQuery, stmt.RawSQL)
+		} else {
+			err = db.catalog.CreateOrReplaceViewSQL(stmt.Name, viewQuery, stmt.RawSQL)
+		}
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{RowsAffected: 0}, nil
+	}
+	if stmt.Temporary {
+		err = db.catalog.CreateTemporaryViewSQL(stmt.Name, viewQuery, stmt.RawSQL)
+	} else {
+		err = db.catalog.CreateViewSQL(stmt.Name, viewQuery, stmt.RawSQL)
+	}
+	if err != nil {
 		if stmt.IfNotExists {
 			return Result{RowsAffected: 0}, nil
 		}
 		return Result{}, err
 	}
 	return Result{RowsAffected: 0}, nil
+}
+
+func applyCreateViewColumnList(stmt *query.CreateViewStmt) (*query.SelectStmt, error) {
+	if stmt == nil || len(stmt.Columns) == 0 {
+		if stmt == nil {
+			return nil, fmt.Errorf("nil CREATE VIEW statement")
+		}
+		return stmt.Query, nil
+	}
+	if stmt.Query == nil {
+		return nil, fmt.Errorf("CREATE VIEW %s has no query", stmt.Name)
+	}
+	if len(stmt.Columns) != len(stmt.Query.Columns) {
+		return nil, fmt.Errorf("view column list has %d columns but query returns %d columns", len(stmt.Columns), len(stmt.Query.Columns))
+	}
+	viewQuery := *stmt.Query
+	viewQuery.Columns = make([]query.Expression, len(stmt.Query.Columns))
+	for i, col := range stmt.Query.Columns {
+		if alias, ok := col.(*query.AliasExpr); ok {
+			viewQuery.Columns[i] = &query.AliasExpr{Expr: alias.Expr, Alias: stmt.Columns[i]}
+			continue
+		}
+		viewQuery.Columns[i] = &query.AliasExpr{Expr: col, Alias: stmt.Columns[i]}
+	}
+	return &viewQuery, nil
 }
 
 // executeDropView executes DROP VIEW
@@ -1752,6 +2541,9 @@ func (db *DB) executeCreatePolicy(ctx context.Context, stmt *query.CreatePolicyS
 	if !db.catalog.IsRLSEnabled() {
 		return Result{}, errors.New("row-level security is not enabled for this database")
 	}
+	if _, err := db.catalog.GetTable(stmt.Table); err != nil {
+		return Result{}, err
+	}
 
 	// Convert Event string to PolicyType
 	var policyType security.PolicyType
@@ -1775,19 +2567,25 @@ func (db *DB) executeCreatePolicy(ctx context.Context, stmt *query.CreatePolicyS
 	if stmt.Using != nil {
 		usingExpr = expressionToString(stmt.Using)
 	}
+	checkExpr := ""
+	if stmt.WithCheck != nil {
+		checkExpr = expressionToString(stmt.WithCheck)
+	}
 	if usingExpr == "" {
 		usingExpr = "TRUE" // Default to allowing all if no expression
 	}
 
 	// Create the policy
 	policy := &security.Policy{
-		Name:       stmt.Name,
-		TableName:  stmt.Table,
-		Type:       policyType,
-		Expression: usingExpr,
-		Users:      nil, // Could be extracted from ForRoles
-		Roles:      stmt.ForRoles,
-		Enabled:    true,
+		Name:            stmt.Name,
+		TableName:       stmt.Table,
+		Type:            policyType,
+		Expression:      usingExpr,
+		CheckExpression: checkExpr,
+		Restrictive:     !stmt.Permissive,
+		Users:           nil, // Could be extracted from ForRoles
+		Roles:           stmt.ForRoles,
+		Enabled:         true,
 	}
 
 	if err := db.catalog.CreateRLSPolicy(policy); err != nil {
@@ -1977,50 +2775,189 @@ func (db *DB) executeDropPolicy(ctx context.Context, stmt *query.DropPolicyStmt)
 // executeCallProcedure executes CALL procedure_name(params)
 
 func (db *DB) executeCallProcedure(ctx context.Context, stmt *query.CallProcedureStmt, args []interface{}) (Result, error) {
+	result, _, _, _, err := db.runCallProcedure(ctx, stmt, args, false)
+	return result, err
+}
+
+func (db *DB) queryCallProcedure(ctx context.Context, stmt *query.CallProcedureStmt, args []interface{}) (*Rows, error) {
+	_, resultRows, columns, values, err := db.runCallProcedure(ctx, stmt, args, true)
+	if err != nil {
+		return nil, err
+	}
+	if resultRows != nil {
+		return resultRows, nil
+	}
+	if len(columns) == 0 {
+		return &Rows{columns: []string{}, rows: [][]interface{}{}}, nil
+	}
+	return &Rows{columns: columns, rows: [][]interface{}{values}}, nil
+}
+
+func (db *DB) runCallProcedure(ctx context.Context, stmt *query.CallProcedureStmt, args []interface{}, captureResultRows bool) (Result, *Rows, []string, []interface{}, error) {
 	// Get the procedure from catalog
 	proc, err := db.catalog.GetProcedure(stmt.Name)
 	if err != nil {
-		return Result{}, err
-	}
-
-	// Evaluate call arguments from SQL literals/placeholders
-	// (e.g., CALL proc(1, 'hello') or CALL proc(?, ?)).
-	callArgs := make([]interface{}, 0, len(stmt.Params))
-	for _, paramExpr := range stmt.Params {
-		val, err := catalog.EvalExpression(paramExpr, args)
-		if err != nil {
-			return Result{}, fmt.Errorf("evaluating procedure argument: %w", err)
-		}
-		callArgs = append(callArgs, val)
-	}
-
-	// Merge: SQL literal args take precedence, then positional Go args fill remaining
-	mergedArgs := callArgs
-	if len(mergedArgs) == 0 && len(args) > 0 {
-		mergedArgs = args
-	}
-	if len(mergedArgs) != len(proc.Params) {
-		return Result{}, fmt.Errorf("procedure %s expects %d arguments, got %d", proc.Name, len(proc.Params), len(mergedArgs))
+		return Result{}, nil, nil, nil, err
 	}
 
 	// Map procedure parameters to call arguments
 	paramMap := make(map[string]interface{})
-	for i, param := range proc.Params {
-		if i < len(mergedArgs) {
-			paramMap[param.Name] = mergedArgs[i]
-		}
+	paramDefs := make(map[string]*query.ParamDef)
+	for _, param := range proc.Params {
+		paramDefs[param.Name] = param
+	}
+	if err := evaluateProcedureCallArgs(stmt, proc, args, paramMap); err != nil {
+		return Result{}, nil, nil, nil, err
 	}
 
 	var totalRowsAffected int64
+	var resultRows *Rows
 	for _, bodyStmt := range proc.Body {
+		if setStmt, ok := bodyStmt.(*query.SetVarStmt); ok && isProcedureOutputParam(setStmt.Variable, paramDefs) {
+			val, err := evalProcedureSetValue(setStmt.Value, paramMap)
+			if err != nil {
+				return Result{}, nil, nil, nil, fmt.Errorf("setting OUT parameter %s: %w", setStmt.Variable, err)
+			}
+			paramMap[strings.TrimSpace(setStmt.Variable)] = val
+			continue
+		}
+		if captureResultRows && isProcedureResultStatement(bodyStmt) {
+			substitutedStmt := substituteParamsInStatement(bodyStmt, paramMap)
+			rows, err := db.query(ctx, substitutedStmt, nil)
+			if err != nil {
+				return Result{}, nil, nil, nil, err
+			}
+			if resultRows != nil {
+				_ = resultRows.Close()
+			}
+			resultRows = rows
+			continue
+		}
 		result, err := db.executeWithParams(ctx, bodyStmt, paramMap)
 		if err != nil {
-			return Result{}, err
+			if resultRows != nil {
+				_ = resultRows.Close()
+			}
+			return Result{}, nil, nil, nil, err
 		}
 		totalRowsAffected += result.RowsAffected
 	}
 
-	return Result{RowsAffected: totalRowsAffected}, nil
+	outColumns, outValues := procedureOutputValues(proc.Params, paramMap)
+	return Result{RowsAffected: totalRowsAffected}, resultRows, outColumns, outValues, nil
+}
+
+func evaluateProcedureCallArgs(stmt *query.CallProcedureStmt, proc *query.CreateProcedureStmt, args []interface{}, paramMap map[string]interface{}) error {
+	callArgs := stmt.Args
+	if len(callArgs) == 0 && len(stmt.Params) > 0 {
+		callArgs = make([]query.CallArg, len(stmt.Params))
+		for i, paramExpr := range stmt.Params {
+			callArgs[i] = query.CallArg{Expr: paramExpr}
+		}
+	}
+	if len(callArgs) == 0 && len(args) > 0 {
+		if len(args) != len(proc.Params) {
+			return fmt.Errorf("procedure %s expects %d arguments, got %d", proc.Name, len(proc.Params), len(args))
+		}
+		for i, param := range proc.Params {
+			paramMap[param.Name] = args[i]
+		}
+		return nil
+	}
+	if len(callArgs) != len(proc.Params) {
+		return fmt.Errorf("procedure %s expects %d arguments, got %d", proc.Name, len(proc.Params), len(callArgs))
+	}
+
+	procParamByName := make(map[string]*query.ParamDef, len(proc.Params))
+	for _, param := range proc.Params {
+		procParamByName[strings.ToLower(param.Name)] = param
+	}
+	nextPositional := 0
+	for _, callArg := range callArgs {
+		if callArg.Expr == nil {
+			return fmt.Errorf("procedure %s has nil call argument", proc.Name)
+		}
+		val, err := catalog.EvalExpression(callArg.Expr, args)
+		if err != nil {
+			return fmt.Errorf("evaluating procedure argument: %w", err)
+		}
+		if callArg.Name == "" {
+			if nextPositional >= len(proc.Params) {
+				return fmt.Errorf("procedure %s expects %d arguments, got too many positional arguments", proc.Name, len(proc.Params))
+			}
+			target := proc.Params[nextPositional]
+			if _, exists := paramMap[target.Name]; exists {
+				return fmt.Errorf("procedure %s argument %s assigned more than once", proc.Name, target.Name)
+			}
+			paramMap[target.Name] = val
+			nextPositional++
+			continue
+		}
+
+		target := procParamByName[strings.ToLower(strings.TrimSpace(callArg.Name))]
+		if target == nil {
+			return fmt.Errorf("procedure %s has no parameter named %s", proc.Name, callArg.Name)
+		}
+		if _, exists := paramMap[target.Name]; exists {
+			return fmt.Errorf("procedure %s argument %s assigned more than once", proc.Name, target.Name)
+		}
+		paramMap[target.Name] = val
+	}
+	for _, param := range proc.Params {
+		if _, exists := paramMap[param.Name]; !exists {
+			return fmt.Errorf("procedure %s missing argument %s", proc.Name, param.Name)
+		}
+	}
+	return nil
+}
+
+func isProcedureResultStatement(stmt query.Statement) bool {
+	switch stmt.(type) {
+	case *query.SelectStmt, *query.UnionStmt, *query.SelectStmtWithCTE,
+		*query.ShowTablesStmt, *query.ShowCreateTableStmt, *query.ShowColumnsStmt,
+		*query.ShowDatabasesStmt, *query.DescribeStmt, *query.ExplainStmt:
+		return true
+	default:
+		return false
+	}
+}
+
+func isProcedureOutputParam(name string, params map[string]*query.ParamDef) bool {
+	param := params[strings.TrimSpace(name)]
+	if param == nil {
+		return false
+	}
+	return param.Mode == query.TokenOut || param.Mode == query.TokenInout
+}
+
+func procedureOutputValues(params []*query.ParamDef, paramMap map[string]interface{}) ([]string, []interface{}) {
+	var columns []string
+	var values []interface{}
+	for _, param := range params {
+		if param == nil || (param.Mode != query.TokenOut && param.Mode != query.TokenInout) {
+			continue
+		}
+		columns = append(columns, param.Name)
+		values = append(values, paramMap[param.Name])
+	}
+	return columns, values
+}
+
+func evalProcedureSetValue(valueSQL string, paramMap map[string]interface{}) (interface{}, error) {
+	valueSQL = strings.TrimSpace(valueSQL)
+	if valueSQL == "" {
+		return nil, errors.New("empty SET value")
+	}
+	stmt, err := query.Parse("SELECT " + valueSQL)
+	if err != nil {
+		return nil, err
+	}
+	selectStmt, ok := stmt.(*query.SelectStmt)
+	if !ok || len(selectStmt.Columns) == 0 {
+		return nil, fmt.Errorf("SET value did not parse as a scalar expression")
+	}
+	expr := substituteParamsInExpr(selectStmt.Columns[0], paramMap)
+	return catalog.EvalExpression(expr, nil)
 }
 
 // executeWithParams executes a statement with parameter substitution
@@ -2054,9 +2991,63 @@ func substituteParamsInStatement(stmt query.Statement, paramMap map[string]inter
 			newStmt.Where = substituteParamsInExpr(s.Where, paramMap)
 		}
 		return &newStmt
+	case *query.SelectStmt:
+		return substituteParamsInSelectStmt(s, paramMap)
 	default:
 		return stmt
 	}
+}
+
+func substituteParamsInSelectStmt(stmt *query.SelectStmt, paramMap map[string]interface{}) *query.SelectStmt {
+	if stmt == nil {
+		return nil
+	}
+	newStmt := *stmt
+	newStmt.Columns = substituteParamsInExprs(stmt.Columns, paramMap)
+	newStmt.Where = substituteParamsInExpr(stmt.Where, paramMap)
+	newStmt.GroupBy = substituteParamsInExprs(stmt.GroupBy, paramMap)
+	newStmt.Having = substituteParamsInExpr(stmt.Having, paramMap)
+	newStmt.Limit = substituteParamsInExpr(stmt.Limit, paramMap)
+	newStmt.Offset = substituteParamsInExpr(stmt.Offset, paramMap)
+	if stmt.OrderBy != nil {
+		newStmt.OrderBy = make([]*query.OrderByExpr, len(stmt.OrderBy))
+		for i, order := range stmt.OrderBy {
+			if order == nil {
+				continue
+			}
+			copied := *order
+			copied.Expr = substituteParamsInExpr(order.Expr, paramMap)
+			newStmt.OrderBy[i] = &copied
+		}
+	}
+	return &newStmt
+}
+
+func substituteParamsInExprs(exprs []query.Expression, paramMap map[string]interface{}) []query.Expression {
+	if exprs == nil {
+		return nil
+	}
+	result := make([]query.Expression, len(exprs))
+	for i, expr := range exprs {
+		result[i] = substituteParamsInExpr(expr, paramMap)
+	}
+	return result
+}
+
+func substituteParamsInOrderBy(orderBy []*query.OrderByExpr, paramMap map[string]interface{}) []*query.OrderByExpr {
+	if len(orderBy) == 0 {
+		return nil
+	}
+	result := make([]*query.OrderByExpr, len(orderBy))
+	for i, ob := range orderBy {
+		if ob == nil {
+			continue
+		}
+		copied := *ob
+		copied.Expr = substituteParamsInExpr(ob.Expr, paramMap)
+		result[i] = &copied
+	}
+	return result
 }
 
 // substituteParamsInValues replaces params in VALUES clause
@@ -2132,6 +3123,25 @@ func substituteParamsInExpr(expr query.Expression, paramMap map[string]interface
 			Name:     e.Name,
 			Args:     newArgs,
 			Distinct: e.Distinct,
+			OrderBy:  substituteParamsInOrderBy(e.OrderBy, paramMap),
+			Filter:   substituteParamsInExpr(e.Filter, paramMap),
+		}
+	case *query.WindowExpr:
+		newArgs := make([]query.Expression, len(e.Args))
+		for i, arg := range e.Args {
+			newArgs[i] = substituteParamsInExpr(arg, paramMap)
+		}
+		partitionBy := make([]query.Expression, len(e.PartitionBy))
+		for i, expr := range e.PartitionBy {
+			partitionBy[i] = substituteParamsInExpr(expr, paramMap)
+		}
+		return &query.WindowExpr{
+			Function:    e.Function,
+			Args:        newArgs,
+			Filter:      substituteParamsInExpr(e.Filter, paramMap),
+			PartitionBy: partitionBy,
+			OrderBy:     substituteParamsInOrderBy(e.OrderBy, paramMap),
+			Frame:       e.Frame,
 		}
 	case *query.CaseExpr:
 		newCase := &query.CaseExpr{}
@@ -2919,12 +3929,13 @@ type Rows struct {
 	columns []string
 	rows    [][]interface{}
 	pos     int
+	closed  bool
 }
 
 // Next advances to the next row
 
 func (r *Rows) Next() bool {
-	if r == nil {
+	if r == nil || r.closed {
 		return false
 	}
 	r.pos++
@@ -2934,6 +3945,12 @@ func (r *Rows) Next() bool {
 // Scan copies column values into dest
 
 func (r *Rows) Scan(dest ...interface{}) error {
+	if r == nil {
+		return errors.New("rows is nil")
+	}
+	if r.closed {
+		return errors.New("rows are closed")
+	}
 	if r.pos == 0 || r.pos > len(r.rows) {
 		return errors.New("no current row")
 	}
@@ -2959,7 +3976,7 @@ func (r *Rows) Scan(dest ...interface{}) error {
 // Columns returns the column names
 
 func (r *Rows) Columns() []string {
-	if r == nil || r.columns == nil {
+	if r == nil || r.closed || r.columns == nil {
 		return nil
 	}
 	columns := make([]string, len(r.columns))
@@ -2969,7 +3986,7 @@ func (r *Rows) Columns() []string {
 
 // ColumnTypeHints returns coarse SQL type names inferred from non-NULL row values.
 func (r *Rows) ColumnTypeHints() []string {
-	if r == nil || len(r.columns) == 0 {
+	if r == nil || r.closed || len(r.columns) == 0 {
 		return nil
 	}
 	hints := make([]string, len(r.columns))
@@ -3010,6 +4027,13 @@ func rowValueTypeHint(val interface{}) string {
 // Close closes the rows
 
 func (r *Rows) Close() error {
+	if r == nil || r.closed {
+		return nil
+	}
+	r.closed = true
+	r.columns = nil
+	r.rows = nil
+	r.pos = 0
 	return nil
 }
 
@@ -3241,18 +4265,7 @@ func cloneScannedValue(value interface{}) interface{} {
 	}
 }
 
-// txPool recycles engine-level Tx wrappers to eliminate one heap allocation
-// per explicit transaction.
-var txPool sync.Pool
-
 func acquireTx(db *DB, txn *txn.Transaction) *Tx {
-	if v := txPool.Get(); v != nil {
-		tx := v.(*Tx)
-		tx.db = db
-		tx.txn = txn
-		tx.done.Store(false)
-		return tx
-	}
 	return &Tx{db: db, txn: txn}
 }
 
@@ -3260,7 +4273,8 @@ func releaseTx(tx *Tx) {
 	if tx == nil {
 		return
 	}
-	txPool.Put(tx)
+	tx.db = nil
+	tx.txn = nil
 }
 
 // Tx represents a database transaction

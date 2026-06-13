@@ -112,6 +112,8 @@ type Config struct {
 	SyncMode   string
 }
 
+const maxDSNBytes = 16 << 10
+
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
 	return &Config{
@@ -180,6 +182,10 @@ func normalizeConfig(cfg *Config) *Config {
 func ParseDSN(dsn string) (*Config, error) {
 	cfg := DefaultConfig()
 
+	if len(dsn) > maxDSNBytes {
+		return nil, fmt.Errorf("DSN too large: maximum allowed size is %d bytes", maxDSNBytes)
+	}
+
 	// Handle :memory: database
 	if dsn == ":memory:" {
 		cfg.Database = ":memory:"
@@ -203,7 +209,7 @@ func ParseDSN(dsn string) (*Config, error) {
 			case "host", "hostname":
 				cfg.Host = value
 			case "port":
-				p, err := strconv.Atoi(value)
+				p, err := parsePort(value)
 				if err != nil {
 					return nil, fmt.Errorf("invalid port: %w", err)
 				}
@@ -254,7 +260,13 @@ func ParseDSN(dsn string) (*Config, error) {
 		}
 		cfg.Host = u.Hostname()
 		if u.Port() != "" {
-			cfg.Port, _ = strconv.Atoi(u.Port())
+			port, err := parsePort(u.Port())
+			if err != nil {
+				return nil, fmt.Errorf("invalid port: %w", err)
+			}
+			cfg.Port = port
+		} else if hasInvalidURLPort(u.Host) {
+			return nil, fmt.Errorf("invalid port")
 		}
 		cfg.Database = strings.TrimPrefix(u.Path, "/")
 		if u.User != nil {
@@ -269,6 +281,28 @@ func ParseDSN(dsn string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func parsePort(value string) (int, error) {
+	p, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	if p < 1 || p > 65535 {
+		return 0, fmt.Errorf("port out of range")
+	}
+	return p, nil
+}
+
+func hasInvalidURLPort(host string) bool {
+	if host == "" {
+		return false
+	}
+	if strings.HasPrefix(host, "[") {
+		end := strings.LastIndex(host, "]")
+		return end >= 0 && len(host) > end+1 && host[end+1] == ':'
+	}
+	return strings.Count(host, ":") == 1
 }
 
 // FormatDSN formats a Config into a DSN string

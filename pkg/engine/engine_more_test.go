@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -66,6 +67,61 @@ func TestBeginClosedDatabase(t *testing.T) {
 	if err != ErrDatabaseClosed {
 		t.Errorf("Expected ErrDatabaseClosed, got %v", err)
 	}
+}
+
+func TestClosedDatabaseMaintenanceOperationsReturnErrDatabaseClosed(t *testing.T) {
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := db.Checkpoint(); err != ErrDatabaseClosed {
+		t.Fatalf("Checkpoint on closed database error = %v, want %v", err, ErrDatabaseClosed)
+	}
+	if _, err := db.CreateBackup(context.Background(), "full"); err != ErrDatabaseClosed {
+		t.Fatalf("CreateBackup on closed database error = %v, want %v", err, ErrDatabaseClosed)
+	}
+	if err := db.DeleteBackup("missing"); err != ErrDatabaseClosed {
+		t.Fatalf("DeleteBackup on closed database error = %v, want %v", err, ErrDatabaseClosed)
+	}
+	if err := db.EndHotBackup(); err != ErrDatabaseClosed {
+		t.Fatalf("EndHotBackup on closed database error = %v, want %v", err, ErrDatabaseClosed)
+	}
+}
+
+func TestPlanCacheHelpersConcurrentEnableDisable(t *testing.T) {
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				db.EnablePlanCache(1024*1024, 128)
+				db.DisablePlanCache()
+			}
+		}()
+	}
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = db.IsPlanCacheEnabled()
+				_ = db.GetPlanCacheStats()
+				db.ClearPlanCache()
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestExecParseError(t *testing.T) {
@@ -853,6 +909,51 @@ func TestRowsCloseMultiple(t *testing.T) {
 	err = rows.Close()
 	if err != nil {
 		t.Logf("Second close error (may be expected): %v", err)
+	}
+}
+
+func TestRowsCloseReleasesResultDataAndStopsIteration(t *testing.T) {
+	db, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 1024}})
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, `CREATE TABLE test (id INTEGER, name TEXT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO test (id, name) VALUES (1, 'one')`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	rows, err := db.Query(ctx, `SELECT id, name FROM test`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got := rows.Columns(); len(got) != 2 {
+		t.Fatalf("columns before close = %v, want 2 columns", got)
+	}
+
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close rows: %v", err)
+	}
+	if rows.Next() {
+		t.Fatal("closed rows should not advance")
+	}
+	var id int
+	var name string
+	if err := rows.Scan(&id, &name); err == nil {
+		t.Fatal("expected Scan on closed rows to fail")
+	}
+	if got := rows.Columns(); got != nil {
+		t.Fatalf("closed rows columns = %v, want nil", got)
+	}
+	if got := rows.ColumnTypeHints(); got != nil {
+		t.Fatalf("closed rows type hints = %v, want nil", got)
+	}
+	if rows.rows != nil || rows.columns != nil {
+		t.Fatalf("Close should release row and column storage, rows=%v columns=%v", rows.rows, rows.columns)
 	}
 }
 

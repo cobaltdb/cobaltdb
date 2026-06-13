@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
 // TestCreateNewDatabase tests the createNew function paths
@@ -81,6 +83,64 @@ func TestCreateNewDatabase(t *testing.T) {
 				db.Close()
 			}
 		})
+	}
+}
+
+func TestCreateNewQueryCacheUsesConfiguredByteLimit(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cache_limit.db")
+	db, err := Open(dbPath, &Options{
+		QueryCache: QueryCacheConfig{
+			EnableQueryCache: true,
+			QueryCacheSize:   4096,
+			QueryCacheTTL:    time.Minute,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	queryCache := db.GetQueryCache()
+	if queryCache == nil {
+		t.Fatal("expected query cache to be enabled")
+	}
+	stats := queryCache.Stats()
+	if stats.MaxSize != 4096 {
+		t.Fatalf("query cache MaxSize = %d, want 4096", stats.MaxSize)
+	}
+}
+
+func TestCreateNewPersistsMetaPageCountForRoot(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta-root.db")
+
+	db, err := Open(dbPath, &Options{})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Failed to close database: %v", err)
+	}
+
+	data, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to read database file: %v", err)
+	}
+	if len(data) < storage.PageSize {
+		t.Fatalf("Database file too small: got %d bytes", len(data))
+	}
+
+	var meta storage.MetaPage
+	if err := meta.Deserialize(data[:storage.PageSize]); err != nil {
+		t.Fatalf("Failed to deserialize meta page: %v", err)
+	}
+	if err := meta.Validate(); err != nil {
+		t.Fatalf("Persisted meta page is invalid: %v", err)
+	}
+	if meta.RootPageID == 0 {
+		t.Fatal("Expected persisted root page ID")
+	}
+	if meta.RootPageID >= meta.PageCount {
+		t.Fatalf("RootPageID %d must be below PageCount %d", meta.RootPageID, meta.PageCount)
 	}
 }
 
@@ -452,6 +512,56 @@ func TestCreateNewWithBackupOptions(t *testing.T) {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 	db.Close()
+}
+
+func TestDefaultBackupDirIsDatabaseScoped(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	db1, err := Open("one.db", nil)
+	if err != nil {
+		t.Fatalf("open first database: %v", err)
+	}
+	if _, err := db1.Exec(context.Background(), "CREATE TABLE t (id INTEGER PRIMARY KEY)"); err != nil {
+		_ = db1.Close()
+		t.Fatalf("create table in first database: %v", err)
+	}
+	if _, err := db1.CreateBackup(context.Background(), "full"); err != nil {
+		_ = db1.Close()
+		t.Fatalf("create first backup: %v", err)
+	}
+	if err := db1.Close(); err != nil {
+		t.Fatalf("close first database: %v", err)
+	}
+
+	db2, err := Open("two.db", nil)
+	if err != nil {
+		t.Fatalf("open second database: %v", err)
+	}
+	if _, err := db2.Exec(context.Background(), "CREATE TABLE t (id INTEGER PRIMARY KEY)"); err != nil {
+		_ = db2.Close()
+		t.Fatalf("create table in second database: %v", err)
+	}
+	if _, err := db2.CreateBackup(context.Background(), "full"); err != nil {
+		_ = db2.Close()
+		t.Fatalf("create second backup: %v", err)
+	}
+	if err := db2.Close(); err != nil {
+		t.Fatalf("close second database: %v", err)
+	}
+
+	for _, dir := range []string{"one.db.backups", "two.db.backups"} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("expected scoped backup directory %s: %v", dir, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("%s is not a directory", dir)
+		}
+	}
+	if _, err := os.Stat("backups"); !os.IsNotExist(err) {
+		t.Fatalf("default backup should not create shared ./backups directory, stat err=%v", err)
+	}
 }
 
 // TestCreateNewWithAuditConfig tests audit configuration

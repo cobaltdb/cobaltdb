@@ -73,20 +73,29 @@ func (t *DiskBTree) getFromPage(pageID uint32, key []byte) ([]byte, error) {
 	defer t.pm.GetPool().Unpin(page)
 
 	data := page.Data()
-	pageType := storage.PageType(data[4])
+	pageType, err := validateDiskBTreePage(data, pageID)
+	if err != nil {
+		return nil, err
+	}
 
 	if pageType == storage.PageTypeLeaf {
 		return t.searchLeafPage(data, key)
 	}
 
 	// Internal node - find child page
-	childPageID := t.findChildPage(data, key)
+	childPageID, err := t.findChildPage(data, key)
+	if err != nil {
+		return nil, err
+	}
 	return t.getFromPage(childPageID, key)
 }
 
 // searchLeafPage searches for a key in a leaf page
 func (t *DiskBTree) searchLeafPage(data []byte, key []byte) ([]byte, error) {
-	entries := t.readEntries(data)
+	entries, err := t.readEntriesStrict(data)
+	if err != nil {
+		return nil, err
+	}
 	for _, entry := range entries {
 		if bytes.Equal(entry.Key, key) {
 			return entry.Value, nil
@@ -96,8 +105,11 @@ func (t *DiskBTree) searchLeafPage(data []byte, key []byte) ([]byte, error) {
 }
 
 // findChildPage finds the child page ID for a key in an internal node
-func (t *DiskBTree) findChildPage(data []byte, key []byte) uint32 {
-	entries := t.readEntries(data)
+func (t *DiskBTree) findChildPage(data []byte, key []byte) (uint32, error) {
+	entries, err := t.readEntriesStrict(data)
+	if err != nil {
+		return 0, err
+	}
 
 	// Find the first entry with key >= search key
 	// The value contains the child page ID
@@ -107,13 +119,21 @@ func (t *DiskBTree) findChildPage(data []byte, key []byte) uint32 {
 			if i == 0 {
 				// First key is greater, use leftmost child (stored in rightPtr)
 				rightPtr := binary.LittleEndian.Uint32(data[12:16])
-				return rightPtr
+				if rightPtr == 0 {
+					return 0, fmt.Errorf("%w: internal page has empty leftmost child pointer", storage.ErrPageCorrupted)
+				}
+				return rightPtr, nil
 			}
 			// Get child from previous entry
 			prevEntry := entries[i-1]
 			if len(prevEntry.Value) == 4 {
-				return binary.LittleEndian.Uint32(prevEntry.Value)
+				childID := binary.LittleEndian.Uint32(prevEntry.Value)
+				if childID == 0 {
+					return 0, fmt.Errorf("%w: internal page entry has empty child pointer", storage.ErrPageCorrupted)
+				}
+				return childID, nil
 			}
+			return 0, fmt.Errorf("%w: internal page entry has %d-byte child pointer", storage.ErrPageCorrupted, len(prevEntry.Value))
 		}
 	}
 
@@ -121,30 +141,51 @@ func (t *DiskBTree) findChildPage(data []byte, key []byte) uint32 {
 	if len(entries) > 0 {
 		lastEntry := entries[len(entries)-1]
 		if len(lastEntry.Value) == 4 {
-			return binary.LittleEndian.Uint32(lastEntry.Value)
+			childID := binary.LittleEndian.Uint32(lastEntry.Value)
+			if childID == 0 {
+				return 0, fmt.Errorf("%w: internal page entry has empty child pointer", storage.ErrPageCorrupted)
+			}
+			return childID, nil
 		}
+		return 0, fmt.Errorf("%w: internal page entry has %d-byte child pointer", storage.ErrPageCorrupted, len(lastEntry.Value))
 	}
 	// Fallback to leftmost child pointer (empty internal node)
-	return binary.LittleEndian.Uint32(data[12:16])
+	childID := binary.LittleEndian.Uint32(data[12:16])
+	if childID == 0 {
+		return 0, fmt.Errorf("%w: internal page has empty leftmost child pointer", storage.ErrPageCorrupted)
+	}
+	return childID, nil
 }
 
 // readEntries reads all entries from a page
 func (t *DiskBTree) readEntries(data []byte) []Entry {
+	entries, _ := t.readEntriesStrict(data)
+	return entries
+}
+
+func (t *DiskBTree) readEntriesStrict(data []byte) ([]Entry, error) {
 	var entries []Entry
 	offset := storage.PageHeaderSize
 
+	if len(data) < storage.PageHeaderSize {
+		return nil, fmt.Errorf("%w: page data is too short: %d bytes", storage.ErrPageCorrupted, len(data))
+	}
 	cellCount := binary.LittleEndian.Uint16(data[6:8])
+	freeStart := binary.LittleEndian.Uint16(data[8:10])
+	if freeStart < storage.PageHeaderSize || int(freeStart) > len(data) {
+		return nil, fmt.Errorf("%w: page has invalid free start offset %d", storage.ErrPageCorrupted, freeStart)
+	}
 
 	for i := 0; i < int(cellCount); i++ {
-		if offset+4 > len(data) {
-			break
+		if offset+4 > int(freeStart) {
+			return nil, fmt.Errorf("%w: entry %d header extends past used page data", storage.ErrPageCorrupted, i)
 		}
 
 		keyLen := binary.LittleEndian.Uint16(data[offset : offset+2])
 		valLen := binary.LittleEndian.Uint16(data[offset+2 : offset+4])
 
-		if offset+4+int(keyLen)+int(valLen) > len(data) {
-			break
+		if offset+4+int(keyLen)+int(valLen) > int(freeStart) {
+			return nil, fmt.Errorf("%w: entry %d payload extends past used page data", storage.ErrPageCorrupted, i)
 		}
 
 		key := make([]byte, keyLen)
@@ -156,7 +197,30 @@ func (t *DiskBTree) readEntries(data []byte) []Entry {
 		offset += 4 + int(keyLen) + int(valLen)
 	}
 
-	return entries
+	return entries, nil
+}
+
+func validateDiskBTreePage(data []byte, expectedPageID uint32) (storage.PageType, error) {
+	if len(data) < storage.PageHeaderSize {
+		return 0, fmt.Errorf("%w: page %d data is too short: %d bytes", storage.ErrPageCorrupted, expectedPageID, len(data))
+	}
+	pageID := binary.LittleEndian.Uint32(data[0:4])
+	if pageID != expectedPageID {
+		return 0, fmt.Errorf("%w: page header ID %d does not match requested page %d", storage.ErrPageCorrupted, pageID, expectedPageID)
+	}
+	pageType := storage.PageType(data[4])
+	if pageType != storage.PageTypeLeaf && pageType != storage.PageTypeInternal {
+		return 0, fmt.Errorf("%w: page %d has invalid BTree page type %d", storage.ErrPageCorrupted, expectedPageID, pageType)
+	}
+	freeStart := binary.LittleEndian.Uint16(data[8:10])
+	freeEnd := binary.LittleEndian.Uint16(data[10:12])
+	if freeStart < storage.PageHeaderSize || int(freeStart) > len(data) {
+		return 0, fmt.Errorf("%w: page %d has invalid free start offset %d", storage.ErrPageCorrupted, expectedPageID, freeStart)
+	}
+	if int(freeEnd) > len(data) || freeEnd < freeStart {
+		return 0, fmt.Errorf("%w: page %d has invalid free end offset %d", storage.ErrPageCorrupted, expectedPageID, freeEnd)
+	}
+	return pageType, nil
 }
 
 // writeEntries writes entries to a page
@@ -229,7 +293,15 @@ func (t *DiskBTree) Put(key, value []byte) error {
 		return err
 	}
 
-	entries := t.readEntries(rootPage.Data())
+	if _, err := validateDiskBTreePage(rootPage.Data(), t.rootPageID); err != nil {
+		t.pm.GetPool().Unpin(rootPage)
+		return err
+	}
+	entries, err := t.readEntriesStrict(rootPage.Data())
+	if err != nil {
+		t.pm.GetPool().Unpin(rootPage)
+		return err
+	}
 	if len(entries) >= t.order {
 		// Split root
 		if err := t.splitRoot(); err != nil {
@@ -260,14 +332,20 @@ func (t *DiskBTree) insertIntoPage(pageID uint32, key, value []byte) (bool, erro
 	defer t.pm.GetPool().Unpin(page)
 
 	data := page.Data()
-	pageType := storage.PageType(data[4])
+	pageType, err := validateDiskBTreePage(data, pageID)
+	if err != nil {
+		return false, err
+	}
 
 	if pageType == storage.PageTypeLeaf {
 		return t.insertIntoLeaf(page, key, value)
 	}
 
 	// Internal node - find child and insert there
-	childPageID := t.findChildPage(data, key)
+	childPageID, err := t.findChildPage(data, key)
+	if err != nil {
+		return false, err
+	}
 
 	// Check if child needs splitting
 	childPage, err := t.pm.GetPage(childPageID)
@@ -275,7 +353,15 @@ func (t *DiskBTree) insertIntoPage(pageID uint32, key, value []byte) (bool, erro
 		return false, err
 	}
 
-	childEntries := t.readEntries(childPage.Data())
+	if _, err := validateDiskBTreePage(childPage.Data(), childPageID); err != nil {
+		t.pm.GetPool().Unpin(childPage)
+		return false, err
+	}
+	childEntries, err := t.readEntriesStrict(childPage.Data())
+	if err != nil {
+		t.pm.GetPool().Unpin(childPage)
+		return false, err
+	}
 	if len(childEntries) >= t.order {
 		// Split child
 		newKey, newPageID, err := t.splitChild(page, childPage)
@@ -303,7 +389,10 @@ func (t *DiskBTree) insertIntoPage(pageID uint32, key, value []byte) (bool, erro
 // insertIntoLeaf inserts into a leaf page.
 // Returns true if a new key was inserted (not an update).
 func (t *DiskBTree) insertIntoLeaf(page *storage.CachedPage, key, value []byte) (bool, error) {
-	entries := t.readEntries(page.Data())
+	entries, err := t.readEntriesStrict(page.Data())
+	if err != nil {
+		return false, err
+	}
 
 	// Check if key already exists (update)
 	for i, entry := range entries {
@@ -333,7 +422,10 @@ func (t *DiskBTree) insertIntoLeaf(page *storage.CachedPage, key, value []byte) 
 
 // insertIntoInternal inserts a key into an internal node
 func (t *DiskBTree) insertIntoInternal(page *storage.CachedPage, key []byte, childPageID uint32) error {
-	entries := t.readEntries(page.Data())
+	entries, err := t.readEntriesStrict(page.Data())
+	if err != nil {
+		return err
+	}
 
 	// Create entry with child page ID as value
 	childIDBytes := make([]byte, 4)
@@ -407,11 +499,20 @@ func (t *DiskBTree) splitRoot() error {
 // splitChild splits a child node and returns the new key and page ID
 func (t *DiskBTree) splitChild(parent, child *storage.CachedPage) ([]byte, uint32, error) {
 	childData := child.Data()
-	entries := t.readEntries(childData)
+	if _, err := validateDiskBTreePage(parent.Data(), parent.ID()); err != nil {
+		return nil, 0, err
+	}
+	childType, err := validateDiskBTreePage(childData, child.ID())
+	if err != nil {
+		return nil, 0, err
+	}
+	entries, err := t.readEntriesStrict(childData)
+	if err != nil {
+		return nil, 0, err
+	}
 	mid := len(entries) / 2
 
 	// Create new page for right half
-	childType := storage.PageType(childData[4])
 	newPage, err := t.pm.AllocatePage(childType)
 	if err != nil {
 		return nil, 0, err
@@ -484,21 +585,30 @@ func (t *DiskBTree) deleteFromPage(pageID uint32, key []byte) (bool, error) {
 	defer t.pm.GetPool().Unpin(page)
 
 	data := page.Data()
-	pageType := storage.PageType(data[4])
+	pageType, err := validateDiskBTreePage(data, pageID)
+	if err != nil {
+		return false, err
+	}
 
 	if pageType == storage.PageTypeLeaf {
 		return t.deleteFromLeaf(page, key)
 	}
 
 	// Find child and delete from there
-	childPageID := t.findChildPage(data, key)
+	childPageID, err := t.findChildPage(data, key)
+	if err != nil {
+		return false, err
+	}
 	return t.deleteFromPage(childPageID, key)
 }
 
 // deleteFromLeaf deletes a key from a leaf page.
 // Returns true if the key was found and deleted.
 func (t *DiskBTree) deleteFromLeaf(page *storage.CachedPage, key []byte) (bool, error) {
-	entries := t.readEntries(page.Data())
+	entries, err := t.readEntriesStrict(page.Data())
+	if err != nil {
+		return false, err
+	}
 
 	// Find and remove entry
 	for i, entry := range entries {
@@ -566,12 +676,21 @@ func (t *DiskBTree) countLeafEntries() (int, error) {
 			return 0, fmt.Errorf("failed to read page %d while finding first leaf: %w", pageID, err)
 		}
 		data := page.Data()
-		pageType := storage.PageType(data[4])
+		pageType, err := validateDiskBTreePage(data, pageID)
+		if err != nil {
+			t.pm.GetPool().Unpin(page)
+			return 0, err
+		}
 		if pageType == storage.PageTypeLeaf {
 			t.pm.GetPool().Unpin(page)
 			break
 		}
-		pageID = binary.LittleEndian.Uint32(data[8:12])
+		childID, err := t.findChildPage(data, nil)
+		if err != nil {
+			t.pm.GetPool().Unpin(page)
+			return 0, err
+		}
+		pageID = childID
 		t.pm.GetPool().Unpin(page)
 	}
 
@@ -581,7 +700,18 @@ func (t *DiskBTree) countLeafEntries() (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("failed to read leaf page %d: %w", pageID, err)
 		}
-		entries := t.readEntries(page.Data())
+		if pageType, err := validateDiskBTreePage(page.Data(), pageID); err != nil {
+			t.pm.GetPool().Unpin(page)
+			return 0, err
+		} else if pageType != storage.PageTypeLeaf {
+			t.pm.GetPool().Unpin(page)
+			return 0, fmt.Errorf("%w: expected leaf page %d, got type %d", storage.ErrPageCorrupted, pageID, pageType)
+		}
+		entries, err := t.readEntriesStrict(page.Data())
+		if err != nil {
+			t.pm.GetPool().Unpin(page)
+			return 0, err
+		}
 		count += len(entries)
 		nextID := binary.LittleEndian.Uint32(page.Data()[12:16])
 		t.pm.GetPool().Unpin(page)
@@ -632,6 +762,11 @@ func (it *DiskIterator) HasNext() bool {
 		if err != nil {
 			return false
 		}
+		if pageType, err := validateDiskBTreePage(page.Data(), it.current); err != nil || pageType != storage.PageTypeLeaf {
+			it.done = true
+			it.tree.pm.GetPool().Unpin(page)
+			return false
+		}
 		it.current = binary.LittleEndian.Uint32(page.Data()[12:16])
 		it.tree.pm.GetPool().Unpin(page)
 	}
@@ -646,7 +781,18 @@ func (it *DiskIterator) HasNext() bool {
 		return false
 	}
 
-	it.entries = it.tree.readEntries(page.Data())
+	if pageType, err := validateDiskBTreePage(page.Data(), it.current); err != nil || pageType != storage.PageTypeLeaf {
+		it.done = true
+		it.tree.pm.GetPool().Unpin(page)
+		return false
+	}
+	entries, err := it.tree.readEntriesStrict(page.Data())
+	if err != nil {
+		it.done = true
+		it.tree.pm.GetPool().Unpin(page)
+		return false
+	}
+	it.entries = entries
 	it.idx = 0
 
 	// Skip entries before startKey
@@ -730,14 +876,22 @@ func (it *DiskIterator) findStartPage() uint32 {
 		}
 
 		data := page.Data()
-		pageType := storage.PageType(data[4])
+		pageType, err := validateDiskBTreePage(data, pageID)
+		if err != nil {
+			it.tree.pm.GetPool().Unpin(page)
+			return 0
+		}
 
 		if pageType == storage.PageTypeLeaf {
 			it.tree.pm.GetPool().Unpin(page)
 			return pageID
 		}
 
-		childID := it.tree.findChildPage(data, it.startKey)
+		childID, err := it.tree.findChildPage(data, it.startKey)
+		if err != nil {
+			it.tree.pm.GetPool().Unpin(page)
+			return 0
+		}
 		it.tree.pm.GetPool().Unpin(page)
 		pageID = childID
 	}

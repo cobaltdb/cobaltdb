@@ -305,7 +305,10 @@ func TestReadKVFromPages(t *testing.T) {
 	}
 
 	// Read from pages directly
-	diskData := bt.readKVFromPages()
+	diskData, err := bt.readKVFromPages()
+	if err != nil {
+		t.Fatalf("readKVFromPages: %v", err)
+	}
 	if len(diskData) != 5 {
 		t.Errorf("readKVFromPages returned %d entries, want 5", len(diskData))
 	}
@@ -324,7 +327,10 @@ func TestReadKVFromPages(t *testing.T) {
 // TestReadKVFromPagesEmpty verifies the disk read helper with empty tree
 func TestReadKVFromPagesEmpty(t *testing.T) {
 	bt := newTestBTree(t, 0)
-	diskData := bt.readKVFromPages()
+	diskData, err := bt.readKVFromPages()
+	if err != nil {
+		t.Fatalf("readKVFromPages: %v", err)
+	}
 	if len(diskData) != 0 {
 		t.Errorf("readKVFromPages on empty tree returned %d entries", len(diskData))
 	}

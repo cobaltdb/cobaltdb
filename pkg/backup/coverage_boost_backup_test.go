@@ -855,9 +855,21 @@ func TestRestoreWithWALFilesMissing(t *testing.T) {
 	backup.WALFiles = []string{"missing_wal.log"}
 
 	targetPath := filepath.Join(targetDir, "restored.db")
+	original := []byte("existing target database")
+	if err := os.WriteFile(targetPath, original, 0644); err != nil {
+		t.Fatalf("Failed to create existing target: %v", err)
+	}
+
 	err = mgr.Restore(ctx, backup.ID, targetPath)
 	if err == nil {
 		t.Error("Expected error when WAL files are missing")
+	}
+	got, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("Failed to read target after failed restore: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("failed WAL restore should preserve existing target, got %q", string(got))
 	}
 }
 
@@ -2004,6 +2016,39 @@ func (e *errWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+type shortNilWriter struct {
+	limit   int
+	written int
+}
+
+func (w *shortNilWriter) Write(p []byte) (int, error) {
+	remaining := w.limit - w.written
+	if remaining <= 0 {
+		return 0, nil
+	}
+	if len(p) > remaining {
+		w.written += remaining
+		return remaining, nil
+	}
+	w.written += len(p)
+	return len(p), nil
+}
+
+func TestPayloadWriterRejectsShortWrite(t *testing.T) {
+	pw := &payloadWriter{writer: &shortNilWriter{limit: 3}, crc: crc32.NewIEEE()}
+
+	n, err := pw.Write([]byte("abcdef"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("payloadWriter short write error = %v, want %v", err, io.ErrShortWrite)
+	}
+	if n != 3 {
+		t.Fatalf("payloadWriter wrote %d bytes, want 3", n)
+	}
+	if pw.written != 3 {
+		t.Fatalf("payloadWriter recorded %d bytes, want 3", pw.written)
+	}
+}
+
 // TestWriteDeltaRecordErrors tests error paths in writeDeltaRecord
 func TestWriteDeltaRecordErrors(t *testing.T) {
 	tests := []struct {
@@ -2023,6 +2068,14 @@ func TestWriteDeltaRecordErrors(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestWriteDeltaRecordRejectsShortDataWrite(t *testing.T) {
+	w := &shortNilWriter{limit: 12}
+	err := writeDeltaRecord(w, 42, []byte("hello"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writeDeltaRecord short data write error = %v, want %v", err, io.ErrShortWrite)
 	}
 }
 
@@ -2395,8 +2448,10 @@ func TestApplyDeltaPayloadErrors(t *testing.T) {
 	}{
 		{"invalid json header", "not json\n", "failed to decode delta header"},
 		{"invalid chunk size", `{"chunk_size":0,"target_size":100}` + "\n", "invalid delta header"},
+		{"oversized chunk size", `{"chunk_size":65537,"target_size":100}` + "\n", "invalid delta header"},
 		{"short offset", `{"chunk_size":1024,"target_size":100}` + "\nABCD", "failed to read delta offset"},
 		{"length exceeds chunk", `{"chunk_size":2,"target_size":100}` + "\n\x00\x00\x00\x00\x00\x00\x00\x00\x10\x00\x00\x00", "delta record length"},
+		{"record exceeds target size", `{"chunk_size":1024,"target_size":4}` + "\n\x03\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00AB", "exceeds target size"},
 		{"short data", `{"chunk_size":1024,"target_size":100}` + "\n\x00\x00\x00\x00\x00\x00\x00\x00\x05\x00\x00\x00AB", "failed to read delta data"},
 	}
 	for _, tt := range tests {

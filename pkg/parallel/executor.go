@@ -5,12 +5,20 @@ import (
 	"sync"
 )
 
+const maxParallelWorkers = 1024
+
 // defaultWorkers returns a sensible worker count.
 func defaultWorkers(requested int) int {
 	if requested > 0 {
+		if requested > maxParallelWorkers {
+			return maxParallelWorkers
+		}
 		return requested
 	}
 	if n := runtime.NumCPU(); n > 1 {
+		if n > maxParallelWorkers {
+			return maxParallelWorkers
+		}
 		return n
 	}
 	return 1
@@ -21,7 +29,7 @@ func chunkSize(n, workers int) int {
 	if workers <= 1 {
 		return n
 	}
-	sz := n / workers
+	sz := (n + workers - 1) / workers
 	if sz < 1 {
 		sz = 1
 	}

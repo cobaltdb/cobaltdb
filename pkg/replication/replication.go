@@ -4,6 +4,8 @@ package replication
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -53,9 +55,15 @@ const maxReplicationFrameSize = 64 << 20 // 64 MiB
 
 const defaultMaxWALBufferEntries = 10000
 const defaultMaxWALBufferBytes int64 = 64 << 20 // 64 MiB
+const replicationAuthTimeout = 5 * time.Second
+const replicationReadTimeout = 30 * time.Second
+const replicationWriteTimeout = 5 * time.Second
 const resumeHandshakeTimeout = 5 * time.Second
-const walEntryMetadataBytes = 24           // LSN + timestamp + data length + checksum
+const walEntryMetadataBytes = 24 // LSN + timestamp + data length + checksum
+const maxWALEntryDataBytes = maxReplicationFrameSize - walEntryMetadataBytes
 const maxReplicationSnapshotSize = 1 << 30 // 1 GiB
+const maxReplicationControlLineBytes = 4096
+const maxReplicationStateFileBytes = 4096
 const replicationStateDirPerm = 0750
 const replicationStateFilePerm = 0600
 
@@ -63,6 +71,8 @@ const replicationStateFilePerm = 0600
 // consensus, fencing, or safe promotion semantics that this replication
 // transport intentionally does not provide.
 var ErrAutomaticFailoverUnsupported = errors.New("automatic failover is not supported: consensus, fencing, and safe promotion are not implemented")
+
+var replicationDial = net.DialTimeout
 
 // ErrPromotionRejected is returned when an externally orchestrated promotion
 // request does not provide the fencing and freshness guarantees required to
@@ -114,6 +124,10 @@ type WALEntry struct {
 
 // Encode serializes the WAL entry
 func (e *WALEntry) Encode() ([]byte, error) {
+	if len(e.Data) > maxWALEntryDataBytes {
+		return nil, fmt.Errorf("WAL entry data too large: %d bytes (max %d)", len(e.Data), maxWALEntryDataBytes)
+	}
+
 	buf := new(bytes.Buffer)
 
 	// Write LSN
@@ -168,7 +182,19 @@ func (e *WALEntry) Decode(data []byte) error {
 	if err := binary.Read(buf, binary.BigEndian, &dataLen); err != nil {
 		return err
 	}
-	e.Data = make([]byte, dataLen)
+
+	remaining := buf.Len()
+	if remaining < 4 {
+		return fmt.Errorf("WAL entry truncated before checksum")
+	}
+	if dataLen > maxWALEntryDataBytes {
+		return fmt.Errorf("WAL entry data too large: %d bytes (max %d)", dataLen, maxWALEntryDataBytes)
+	}
+	if uint64(dataLen) > uint64(remaining-4) {
+		return fmt.Errorf("WAL entry data length %d exceeds remaining payload %d", dataLen, remaining-4)
+	}
+
+	e.Data = make([]byte, int(dataLen))
 	if _, err := io.ReadFull(buf, e.Data); err != nil {
 		return err
 	}
@@ -176,6 +202,9 @@ func (e *WALEntry) Decode(data []byte) error {
 	// Read checksum
 	if err := binary.Read(buf, binary.BigEndian, &e.Checksum); err != nil {
 		return err
+	}
+	if buf.Len() != 0 {
+		return fmt.Errorf("WAL entry contains trailing data: %d bytes", buf.Len())
 	}
 
 	return nil
@@ -295,7 +324,7 @@ func (m *Manager) callOnSnapshot() (data []byte, err error) {
 
 func (m *Manager) callOnApplySnapshot(data []byte, lsn uint64) (err error) {
 	if m.OnApplySnapshot == nil {
-		return nil
+		return fmt.Errorf("snapshot applier not configured")
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -446,6 +475,10 @@ func (m *Manager) Stop() error {
 
 // startMaster initializes master replication
 func (m *Manager) startMaster() error {
+	if m.config.AuthToken == "" && replicationListenAddressRequiresAuth(m.config.ListenAddr) {
+		return fmt.Errorf("replication auth token is required for non-loopback listen address %q", m.config.ListenAddr)
+	}
+
 	// Start listening for slave connections
 	listener, err := net.Listen("tcp", m.config.ListenAddr)
 	if err != nil {
@@ -461,6 +494,24 @@ func (m *Manager) startMaster() error {
 	go m.syncWAL()
 
 	return nil
+}
+
+func replicationListenAddressRequiresAuth(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return true
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true
+	}
+	return !ip.IsLoopback()
 }
 
 // acceptSlaves accepts incoming slave connections
@@ -581,7 +632,7 @@ func (m *Manager) receiveResumeRequest(slave *SlaveConnection) (resumeRequest, e
 		defer func() { _ = slave.Conn.SetReadDeadline(time.Time{}) }()
 	}
 
-	line, err := slave.Reader.ReadString('\n')
+	line, err := readReplicationControlLine(slave.Reader)
 	if err != nil {
 		return resumeRequest{}, err
 	}
@@ -678,7 +729,7 @@ func (m *Manager) sendResyncRequired(slave *SlaveConnection, currentLSN uint64) 
 	slave.mu.Lock()
 	defer slave.mu.Unlock()
 
-	if _, err := slave.Writer.WriteString(fmt.Sprintf("RESYNC %d\n", currentLSN)); err != nil {
+	if _, err := writeReplicationFull(slave.Writer, []byte(fmt.Sprintf("RESYNC %d\n", currentLSN))); err != nil {
 		return err
 	}
 	return slave.Writer.Flush()
@@ -692,22 +743,60 @@ func (m *Manager) authenticateSlave(conn net.Conn) error {
 }
 
 func (m *Manager) authenticateSlaveWithReader(reader *bufio.Reader, conn net.Conn) error {
+	if conn != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(replicationAuthTimeout)); err != nil {
+			return err
+		}
+		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+	}
+
 	// Simple token-based auth
-	token, err := reader.ReadString('\n')
+	token, err := readReplicationControlLine(reader)
 	if err != nil {
 		return err
 	}
 
-	token = token[:len(token)-1] // Remove newline
-	if token != m.config.AuthToken {
-		if _, writeErr := conn.Write([]byte("AUTH_FAILED\n")); writeErr != nil {
+	token = strings.TrimSuffix(token, "\n")
+	token = strings.TrimSuffix(token, "\r")
+	if !replicationAuthTokenEqual(token, m.config.AuthToken) {
+		if _, writeErr := writeReplicationFull(conn, []byte("AUTH_FAILED\n")); writeErr != nil {
 			return fmt.Errorf("authentication failed: %w", writeErr)
 		}
 		return fmt.Errorf("authentication failed")
 	}
 
-	_, err = conn.Write([]byte("AUTH_OK\n"))
+	_, err = writeReplicationFull(conn, []byte("AUTH_OK\n"))
 	return err
+}
+
+func replicationAuthTokenEqual(provided, expected string) bool {
+	providedDigest := replicationAuthTokenDigest(provided)
+	expectedDigest := replicationAuthTokenDigest(expected)
+	return subtle.ConstantTimeCompare(providedDigest[:], expectedDigest[:]) == 1
+}
+
+func replicationAuthTokenDigest(token string) [sha256.Size]byte {
+	var lengthPrefix [8]byte
+	binary.BigEndian.PutUint64(lengthPrefix[:], uint64(len(token)))
+
+	hasher := sha256.New()
+	_, _ = hasher.Write(lengthPrefix[:])
+	_, _ = hasher.Write([]byte(token))
+
+	var digest [sha256.Size]byte
+	copy(digest[:], hasher.Sum(nil))
+	return digest
+}
+
+func writeReplicationFull(writer io.Writer, data []byte) (int, error) {
+	n, err := writer.Write(data)
+	if err != nil {
+		return n, err
+	}
+	if n != len(data) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
 }
 
 // sendInitialSnapshot sends current database state to a new slave
@@ -719,9 +808,15 @@ func (m *Manager) sendInitialSnapshot(slave *SlaveConnection, startLSN uint64) e
 		return m.sendSnapshotLocked(slave, atomic.LoadUint64(&m.currentLSN))
 	}
 
+	clearDeadline, err := setReplicationWriteDeadline(slave.Conn)
+	if err != nil {
+		return err
+	}
+	defer clearDeadline()
+
 	// Send START message with LSN
 	msg := fmt.Sprintf("START %d\n", startLSN)
-	if _, err := slave.Writer.WriteString(msg); err != nil {
+	if _, err := writeReplicationFull(slave.Writer, []byte(msg)); err != nil {
 		return err
 	}
 	if err := slave.Writer.Flush(); err != nil {
@@ -745,10 +840,16 @@ func (m *Manager) sendSnapshotLocked(slave *SlaveConnection, lsn uint64) error {
 		return fmt.Errorf("replication snapshot too large: %d bytes", len(data))
 	}
 
-	if _, err := slave.Writer.WriteString(fmt.Sprintf("SNAPSHOT %d %d\n", lsn, len(data))); err != nil {
+	clearDeadline, err := setReplicationWriteDeadline(slave.Conn)
+	if err != nil {
 		return err
 	}
-	if _, err := slave.Writer.Write(data); err != nil {
+	defer clearDeadline()
+
+	if _, err := writeReplicationFull(slave.Writer, []byte(fmt.Sprintf("SNAPSHOT %d %d\n", lsn, len(data)))); err != nil {
+		return err
+	}
+	if _, err := writeReplicationFull(slave.Writer, data); err != nil {
 		return err
 	}
 	if err := slave.Writer.Flush(); err != nil {
@@ -767,8 +868,14 @@ func (m *Manager) sendHeartbeat(slave *SlaveConnection) error {
 	slave.mu.Lock()
 	defer slave.mu.Unlock()
 
+	clearDeadline, err := setReplicationWriteDeadline(slave.Conn)
+	if err != nil {
+		return err
+	}
+	defer clearDeadline()
+
 	msg := fmt.Sprintf("PING %d\n", slave.LastLSN)
-	if _, err := slave.Writer.WriteString(msg); err != nil {
+	if _, err := writeReplicationFull(slave.Writer, []byte(msg)); err != nil {
 		return err
 	}
 	return slave.Writer.Flush()
@@ -778,7 +885,7 @@ func (m *Manager) sendHeartbeat(slave *SlaveConnection) error {
 // master's view of the slave's applied LSN.
 func (m *Manager) readSlaveAcks(slave *SlaveConnection) {
 	for {
-		line, err := slave.Reader.ReadString('\n')
+		line, err := readReplicationControlLine(slave.Reader)
 		if err != nil {
 			return
 		}
@@ -877,15 +984,20 @@ func (m *Manager) sendWALToSlave(slave *SlaveConnection, data []byte) error {
 	slave.mu.Lock()
 	defer slave.mu.Unlock()
 
-	// Send WAL data
+	clearDeadline, err := setReplicationWriteDeadline(slave.Conn)
+	if err != nil {
+		return err
+	}
+	defer clearDeadline()
+
 	dataLen, err := replicationUint32Len(len(data), "WAL frame length")
 	if err != nil {
 		return err
 	}
-	if err := binary.Write(slave.Writer, binary.BigEndian, dataLen); err != nil {
-		return err
-	}
-	if _, err := slave.Writer.Write(data); err != nil {
+	frame := make([]byte, 4+len(data))
+	binary.BigEndian.PutUint32(frame[:4], dataLen)
+	copy(frame[4:], data)
+	if _, err := writeReplicationFull(slave.Writer, frame); err != nil {
 		return err
 	}
 
@@ -907,7 +1019,7 @@ func (m *Manager) startSlave() error {
 	}
 
 	// Connect to master
-	conn, err := net.Dial("tcp", m.config.MasterAddr)
+	conn, err := replicationDial("tcp", m.config.MasterAddr, replicationAuthTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to connect to master: %w", err)
 	}
@@ -916,13 +1028,18 @@ func (m *Manager) startSlave() error {
 
 	// Authenticate
 	if m.config.AuthToken != "" {
-		if _, err := fmt.Fprintf(conn, "%s\n", m.config.AuthToken); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(replicationAuthTimeout)); err != nil {
+			m.closeMasterConn()
+			return err
+		}
+		if err := writeReplicationControl(conn, "%s\n", m.config.AuthToken); err != nil {
 			m.closeMasterConn()
 			return err
 		}
 
 		// Read auth response
-		response, err := reader.ReadString('\n')
+		response, err := readReplicationControlLine(reader)
+		_ = conn.SetReadDeadline(time.Time{})
 		if err != nil {
 			m.closeMasterConn()
 			return err
@@ -936,11 +1053,11 @@ func (m *Manager) startSlave() error {
 
 	lastApplied := atomic.LoadUint64(&m.lastApplied)
 	if atomic.LoadUint32(&m.requireSnapshot) > 0 {
-		if _, err := fmt.Fprintf(conn, "RESUME_SNAPSHOT %d\n", lastApplied); err != nil {
+		if err := writeReplicationControl(conn, "RESUME_SNAPSHOT %d\n", lastApplied); err != nil {
 			m.closeMasterConn()
 			return err
 		}
-	} else if _, err := fmt.Fprintf(conn, "RESUME %d\n", lastApplied); err != nil {
+	} else if err := writeReplicationControl(conn, "RESUME %d\n", lastApplied); err != nil {
 		m.closeMasterConn()
 		return err
 	}
@@ -980,6 +1097,12 @@ func (m *Manager) replicateFromMasterWithReader(reader *bufio.Reader) {
 // readMasterFrame reads either a text control message or a length-prefixed WAL
 // frame from the master.
 func (m *Manager) readMasterFrame(reader *bufio.Reader) error {
+	clearDeadline, err := setReplicationReadDeadline(m.getMasterConn())
+	if err != nil {
+		return err
+	}
+	defer clearDeadline()
+
 	next, err := reader.Peek(1)
 	if err != nil {
 		return err
@@ -987,7 +1110,7 @@ func (m *Manager) readMasterFrame(reader *bufio.Reader) error {
 
 	switch next[0] {
 	case 'S', 'P', 'R':
-		line, err := reader.ReadString('\n')
+		line, err := readReplicationControlLine(reader)
 		if err != nil {
 			return err
 		}
@@ -1012,6 +1135,26 @@ func (m *Manager) readMasterFrame(reader *bufio.Reader) error {
 			return err
 		}
 		return m.sendAck()
+	}
+}
+
+func readReplicationControlLine(reader *bufio.Reader) (string, error) {
+	var line []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if len(chunk) > 0 {
+			if len(line)+len(chunk) > maxReplicationControlLineBytes {
+				return "", fmt.Errorf("replication control line too large")
+			}
+			line = append(line, chunk...)
+		}
+		if err == nil {
+			return string(line), nil
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		return "", err
 	}
 }
 
@@ -1125,7 +1268,7 @@ func (m *Manager) loadReplicationState() (err error) {
 	if err != nil {
 		return err
 	}
-	file, err := os.Open(stateFile) // #nosec G304 - state file path is explicit replication config and is cleaned before use.
+	file, err := openReplicationStateFile(stateFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -1139,8 +1282,15 @@ func (m *Manager) loadReplicationState() (err error) {
 	}()
 
 	var state replicationState
-	if err := json.NewDecoder(file).Decode(&state); err != nil {
+	decoder := json.NewDecoder(io.LimitReader(file, maxReplicationStateFileBytes+1))
+	if err := decoder.Decode(&state); err != nil {
 		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("replication state contains trailing JSON value")
+		}
+		return fmt.Errorf("replication state contains trailing data: %w", err)
 	}
 	atomic.StoreUint64(&m.lastApplied, state.LastApplied)
 	if state.RequireSnapshot {
@@ -1161,29 +1311,39 @@ func (m *Manager) saveReplicationState() error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(stateFile), replicationStateDirPerm); err != nil {
+	state := replicationState{
+		LastApplied:     atomic.LoadUint64(&m.lastApplied),
+		RequireSnapshot: atomic.LoadUint32(&m.requireSnapshot) > 0,
+		UpdatedAt:       time.Now(),
+	}
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(state); err != nil {
+		return err
+	}
+	return writeReplicationStateFileAtomic(stateFile, buf.Bytes())
+}
+
+func writeReplicationStateFileAtomic(stateFile string, data []byte) error {
+	if err := prepareReplicationStateDir(stateFile); err != nil {
 		return err
 	}
 
-	tmpPath := stateFile + ".tmp"
-	file, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, replicationStateFilePerm) // #nosec G304 - state file path is explicit replication config and is cleaned before use.
+	dir := filepath.Dir(stateFile)
+	base := filepath.Base(stateFile)
+	file, err := os.CreateTemp(dir, "."+base+".tmp-*") // #nosec G304 - state file path is explicit replication config and directory is validated before use.
 	if err != nil {
 		return err
 	}
+	tmpPath := file.Name()
 	if err := file.Chmod(replicationStateFilePerm); err != nil {
 		_ = file.Close()
 		_ = os.Remove(tmpPath)
 		return err
 	}
 
-	state := replicationState{
-		LastApplied:     atomic.LoadUint64(&m.lastApplied),
-		RequireSnapshot: atomic.LoadUint32(&m.requireSnapshot) > 0,
-		UpdatedAt:       time.Now(),
-	}
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(state); err != nil {
+	if _, err := writeReplicationStateFull(file, data); err != nil {
 		_ = file.Close()
 		_ = os.Remove(tmpPath)
 		return err
@@ -1208,11 +1368,141 @@ func (m *Manager) saveReplicationState() error {
 	return nil
 }
 
+func writeReplicationStateFull(writer io.Writer, data []byte) (int, error) {
+	n, err := writer.Write(data)
+	if err != nil {
+		return n, err
+	}
+	if n != len(data) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
+}
+
+func prepareReplicationStateDir(stateFile string) error {
+	dir := filepath.Dir(stateFile)
+	if err := rejectReplicationStateDirSymlinks(dir); err != nil {
+		return err
+	}
+
+	info, statErr := os.Lstat(dir)
+	preexisting := statErr == nil
+	if statErr != nil {
+		if !os.IsNotExist(statErr) {
+			return fmt.Errorf("failed to stat replication state directory: %w", statErr)
+		}
+	} else {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("replication state directory must not be a symlink: %s", dir)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("replication state directory must be a directory: %s", dir)
+		}
+	}
+
+	if err := os.MkdirAll(dir, replicationStateDirPerm); err != nil {
+		return err
+	}
+	if !preexisting {
+		if err := os.Chmod(dir, replicationStateDirPerm); err != nil {
+			return err
+		}
+	}
+	if err := rejectReplicationStateDirSymlinks(dir); err != nil {
+		return err
+	}
+
+	openedInfo, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !openedInfo.IsDir() {
+		return fmt.Errorf("replication state directory must be a directory: %s", dir)
+	}
+	if preexisting && !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("replication state directory changed while opening: %s", dir)
+	}
+	return nil
+}
+
+func rejectReplicationStateDirSymlinks(path string) error {
+	path = filepath.Clean(path)
+	if path == "." || path == string(os.PathSeparator) {
+		return nil
+	}
+
+	current := "."
+	if filepath.IsAbs(path) {
+		current = string(os.PathSeparator)
+		path = strings.TrimPrefix(path, string(os.PathSeparator))
+	}
+	for _, part := range strings.Split(path, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to stat replication state directory component: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("replication state directory component must not be a symlink: %s", current)
+		}
+	}
+	return nil
+}
+
 func cleanReplicationStatePath(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("replication state path cannot be empty")
 	}
 	return filepath.Clean(path), nil
+}
+
+func openReplicationStateFile(path string) (*os.File, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("replication state file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("replication state file must be a regular file: %s", path)
+	}
+	if info.Size() > maxReplicationStateFileBytes {
+		return nil, fmt.Errorf("replication state file is too large: %d bytes (max %d)", info.Size(), maxReplicationStateFileBytes)
+	}
+
+	file, err := os.Open(path) // #nosec G304 - state file path is explicit replication config and validated before use.
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("replication state file must be a regular file: %s", path)
+	}
+	if openedInfo.Size() > maxReplicationStateFileBytes {
+		_ = file.Close()
+		return nil, fmt.Errorf("replication state file is too large: %d bytes (max %d)", openedInfo.Size(), maxReplicationStateFileBytes)
+	}
+	if !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return nil, fmt.Errorf("replication state file changed while opening: %s", path)
+	}
+	if err := file.Chmod(replicationStateFilePerm); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func syncReplicationStateDir(path string) error {
@@ -1234,8 +1524,7 @@ func (m *Manager) sendAck() error {
 	if conn == nil {
 		return nil
 	}
-	_, err := fmt.Fprintf(conn, "ACK %d\n", atomic.LoadUint64(&m.lastApplied))
-	return err
+	return writeReplicationControl(conn, "ACK %d\n", atomic.LoadUint64(&m.lastApplied))
 }
 
 func (m *Manager) sendPong() error {
@@ -1243,8 +1532,38 @@ func (m *Manager) sendPong() error {
 	if conn == nil {
 		return nil
 	}
-	_, err := fmt.Fprintf(conn, "PONG %d\n", atomic.LoadUint64(&m.lastApplied))
+	return writeReplicationControl(conn, "PONG %d\n", atomic.LoadUint64(&m.lastApplied))
+}
+
+func writeReplicationControl(conn net.Conn, format string, args ...any) error {
+	clearDeadline, err := setReplicationWriteDeadline(conn)
+	if err != nil {
+		return err
+	}
+	defer clearDeadline()
+	msg := fmt.Sprintf(format, args...)
+	_, err = writeReplicationFull(conn, []byte(msg))
 	return err
+}
+
+func setReplicationWriteDeadline(conn net.Conn) (func(), error) {
+	if conn == nil {
+		return func() {}, nil
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(replicationWriteTimeout)); err != nil {
+		return nil, err
+	}
+	return func() { _ = conn.SetWriteDeadline(time.Time{}) }, nil
+}
+
+func setReplicationReadDeadline(conn net.Conn) (func(), error) {
+	if conn == nil {
+		return func() {}, nil
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(replicationReadTimeout)); err != nil {
+		return nil, err
+	}
+	return func() { _ = conn.SetReadDeadline(time.Time{}) }, nil
 }
 
 // ReplicateWALEntry adds a WAL entry for replication (called by master)
@@ -1531,6 +1850,10 @@ func decodeWALEntries(data []byte) ([]*WALEntry, error) {
 		return nil, err
 	}
 
+	if uint64(numEntries) > uint64(buf.Len())/4 {
+		return nil, fmt.Errorf("WAL entry count %d exceeds remaining payload %d", numEntries, buf.Len())
+	}
+
 	entries := make([]*WALEntry, numEntries)
 
 	for i := uint32(0); i < numEntries; i++ {
@@ -1539,9 +1862,12 @@ func decodeWALEntries(data []byte) ([]*WALEntry, error) {
 		if err := binary.Read(buf, binary.BigEndian, &entryLen); err != nil {
 			return nil, err
 		}
+		if uint64(entryLen) > uint64(buf.Len()) {
+			return nil, fmt.Errorf("WAL entry length %d exceeds remaining payload %d", entryLen, buf.Len())
+		}
 
 		// Read entry data
-		entryData := make([]byte, entryLen)
+		entryData := make([]byte, int(entryLen))
 		if _, err := io.ReadFull(buf, entryData); err != nil {
 			return nil, err
 		}
@@ -1553,6 +1879,10 @@ func decodeWALEntries(data []byte) ([]*WALEntry, error) {
 		}
 
 		entries[i] = entry
+	}
+
+	if buf.Len() != 0 {
+		return nil, fmt.Errorf("WAL entries payload contains trailing data: %d bytes", buf.Len())
 	}
 
 	return entries, nil

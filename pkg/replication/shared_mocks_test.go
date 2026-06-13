@@ -70,3 +70,26 @@ func (m *mockWriter) Write(p []byte) (n int, err error) {
 	m.writeCount++
 	return len(p), nil
 }
+
+type shortReplicationWriter struct {
+	limit int
+}
+
+func (w *shortReplicationWriter) Write(p []byte) (int, error) {
+	if len(p) > w.limit {
+		return w.limit, nil
+	}
+	return len(p), nil
+}
+
+type shortReplicationConn struct {
+	mockConn
+	limit int
+}
+
+func (c *shortReplicationConn) Write(p []byte) (int, error) {
+	if len(p) > c.limit {
+		return c.limit, nil
+	}
+	return len(p), nil
+}

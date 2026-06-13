@@ -288,6 +288,12 @@ func (t *BTree) loadFromPages() error {
 		t.pool.Unpin(pg)
 	}
 
+	const minSerializedEntrySize = 2 + 4 // keyLen uint16 + valLen uint32
+	maxPossibleEntries := len(allData) / minSerializedEntrySize
+	if int64(totalCount) > int64(maxPossibleEntries) {
+		return fmt.Errorf("corrupt root page %d: entry count %d exceeds maximum possible entries %d for %d bytes", t.rootPageID, totalCount, maxPossibleEntries, len(allData))
+	}
+
 	// Pre-size shard maps to eliminate growth allocations during load.
 	perShard := int(totalCount)/numShards + 1
 	for i := range t.shards {
@@ -298,23 +304,26 @@ func (t *BTree) loadFromPages() error {
 	loadedCount := int64(0)
 	for i := uint32(0); i < totalCount; i++ {
 		if offset+2 > len(allData) {
-			break
+			return fmt.Errorf("corrupt root page %d: truncated key length for entry %d", t.rootPageID, i)
 		}
 		keyLen := int(binary.LittleEndian.Uint16(allData[offset : offset+2]))
 		offset += 2
+		if keyLen == 0 {
+			return fmt.Errorf("corrupt root page %d: empty key for entry %d", t.rootPageID, i)
+		}
 		if offset+keyLen > len(allData) {
-			break
+			return fmt.Errorf("corrupt root page %d: key length %d for entry %d exceeds remaining data %d", t.rootPageID, keyLen, i, len(allData)-offset)
 		}
 		key := make([]byte, keyLen)
 		copy(key, allData[offset:offset+keyLen])
 		offset += keyLen
 		if offset+4 > len(allData) {
-			break
+			return fmt.Errorf("corrupt root page %d: truncated value length for entry %d", t.rootPageID, i)
 		}
 		valLen := int(binary.LittleEndian.Uint32(allData[offset : offset+4]))
 		offset += 4
 		if offset+valLen > len(allData) {
-			break
+			return fmt.Errorf("corrupt root page %d: value length %d for entry %d exceeds remaining data %d", t.rootPageID, valLen, i, len(allData)-offset)
 		}
 		val := make([]byte, valLen)
 		copy(val, allData[offset:offset+valLen])
@@ -329,30 +338,30 @@ func (t *BTree) loadFromPages() error {
 }
 
 // readKVFromPages reads all key-value pairs from disk pages without modifying tree state.
-func (t *BTree) readKVFromPages() map[string][]byte {
+func (t *BTree) readKVFromPages() (map[string][]byte, error) {
 	result := make(map[string][]byte)
 
 	root, err := t.pool.GetPage(t.rootPageID)
 	if err != nil {
-		return result
+		return result, err
 	}
 	defer t.pool.Unpin(root)
 
 	pageData := root.Data()[storage.PageHeaderSize:]
 	if len(pageData) < 8 {
-		return result
+		return result, fmt.Errorf("corrupt root page %d: header too short", t.rootPageID)
 	}
 
 	totalCount := binary.LittleEndian.Uint32(pageData[0:4])
 	overflowCount := binary.LittleEndian.Uint32(pageData[4:8])
 
 	if totalCount == 0 {
-		return result
+		return result, nil
 	}
 
 	headerSize := 8 + 4*int(overflowCount)
 	if headerSize > len(pageData) {
-		return result
+		return result, fmt.Errorf("corrupt root page %d: header size %d exceeds page data %d", t.rootPageID, headerSize, len(pageData))
 	}
 
 	overflowIDs := make([]uint32, overflowCount)
@@ -366,31 +375,40 @@ func (t *BTree) readKVFromPages() map[string][]byte {
 	for _, pgID := range overflowIDs {
 		pg, err := t.pool.GetPage(pgID)
 		if err != nil {
-			return result
+			return result, fmt.Errorf("failed to load overflow page %d: %w", pgID, err)
 		}
 		allData = append(allData, pg.Data()[storage.PageHeaderSize:]...)
 		t.pool.Unpin(pg)
 	}
 
+	const minSerializedEntrySize = 2 + 4 // keyLen uint16 + valLen uint32
+	maxPossibleEntries := len(allData) / minSerializedEntrySize
+	if int64(totalCount) > int64(maxPossibleEntries) {
+		return result, fmt.Errorf("corrupt root page %d: entry count %d exceeds maximum possible entries %d for %d bytes", t.rootPageID, totalCount, maxPossibleEntries, len(allData))
+	}
+
 	offset := 0
 	for i := uint32(0); i < totalCount; i++ {
 		if offset+2 > len(allData) {
-			break
+			return result, fmt.Errorf("corrupt root page %d: truncated key length for entry %d", t.rootPageID, i)
 		}
 		keyLen := int(binary.LittleEndian.Uint16(allData[offset : offset+2]))
 		offset += 2
+		if keyLen == 0 {
+			return result, fmt.Errorf("corrupt root page %d: empty key for entry %d", t.rootPageID, i)
+		}
 		if offset+keyLen > len(allData) {
-			break
+			return result, fmt.Errorf("corrupt root page %d: key length %d for entry %d exceeds remaining data %d", t.rootPageID, keyLen, i, len(allData)-offset)
 		}
 		key := string(allData[offset : offset+keyLen])
 		offset += keyLen
 		if offset+4 > len(allData) {
-			break
+			return result, fmt.Errorf("corrupt root page %d: truncated value length for entry %d", t.rootPageID, i)
 		}
 		valLen := int(binary.LittleEndian.Uint32(allData[offset : offset+4]))
 		offset += 4
 		if offset+valLen > len(allData) {
-			break
+			return result, fmt.Errorf("corrupt root page %d: value length %d for entry %d exceeds remaining data %d", t.rootPageID, valLen, i, len(allData)-offset)
 		}
 		val := make([]byte, valLen)
 		copy(val, allData[offset:offset+valLen])
@@ -398,7 +416,7 @@ func (t *BTree) readKVFromPages() map[string][]byte {
 
 		result[key] = val
 	}
-	return result
+	return result, nil
 }
 
 // RootPageID returns the root page ID of the tree
@@ -455,7 +473,10 @@ func (t *BTree) GetString(keyStr string) ([]byte, error) {
 
 	if sh.evicted[keyStr] {
 		sh.mu.RUnlock()
-		diskData := t.readKVFromPages()
+		diskData, err := t.readKVFromPages()
+		if err != nil {
+			return nil, err
+		}
 		if val, ok := diskData[keyStr]; ok {
 			result := make([]byte, len(val))
 			copy(result, val)
@@ -926,7 +947,10 @@ func (t *BTree) flushInternal() error {
 		}
 	} else {
 		toSerialize := make(map[string][]byte, memCount)
-		diskData := t.readKVFromPages()
+		diskData, err := t.readKVFromPages()
+		if err != nil {
+			return err
+		}
 		for k, v := range diskData {
 			if evictedSnap[shardIndex(k)][k] {
 				toSerialize[k] = v
@@ -1234,7 +1258,10 @@ func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
 	}
 
 	if hasEvicted {
-		diskData := t.readKVFromPages()
+		diskData, err := t.readKVFromPages()
+		if err != nil {
+			return nil, err
+		}
 		for k, v := range diskData {
 			if !evicted[k] || seen[k] {
 				continue

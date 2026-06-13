@@ -1,6 +1,9 @@
 package replication
 
 import (
+	"bytes"
+	"encoding/binary"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,6 +39,92 @@ func TestWALEntryEncodeDecode(t *testing.T) {
 	}
 }
 
+func TestWALEntryDecodeRejectsTrailingData(t *testing.T) {
+	entry := &WALEntry{
+		LSN:       12345,
+		Timestamp: time.Now(),
+		Data:      []byte("test data for WAL entry"),
+		Checksum:  calculateCRC32([]byte("test data for WAL entry")),
+	}
+
+	encoded, err := entry.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	encoded = append(encoded, 0xde, 0xad, 0xbe, 0xef)
+
+	var decoded WALEntry
+	err = decoded.Decode(encoded)
+	if err == nil {
+		t.Fatal("expected trailing WAL entry data to be rejected")
+	}
+	if !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("expected trailing data error, got %v", err)
+	}
+}
+
+func TestWALEntryEncodeRejectsOversizedData(t *testing.T) {
+	entry := &WALEntry{
+		LSN:       1,
+		Timestamp: time.Now(),
+		Data:      make([]byte, maxWALEntryDataBytes+1),
+	}
+
+	_, err := entry.Encode()
+	if err == nil {
+		t.Fatal("expected oversized WAL entry data to be rejected")
+	}
+	if !strings.Contains(err.Error(), "WAL entry data too large") {
+		t.Fatalf("expected WAL entry size error, got %v", err)
+	}
+}
+
+func TestWALEntryDecodeRejectsOversizedDataBeforeAllocation(t *testing.T) {
+	buf := new(bytes.Buffer)
+	if err := binary.Write(buf, binary.BigEndian, uint64(1)); err != nil {
+		t.Fatalf("write LSN: %v", err)
+	}
+	if err := binary.Write(buf, binary.BigEndian, time.Now().UnixNano()); err != nil {
+		t.Fatalf("write timestamp: %v", err)
+	}
+	if err := binary.Write(buf, binary.BigEndian, uint32(maxWALEntryDataBytes+1)); err != nil {
+		t.Fatalf("write data length: %v", err)
+	}
+	buf.Write(make([]byte, 4))
+
+	var decoded WALEntry
+	err := decoded.Decode(buf.Bytes())
+	if err == nil {
+		t.Fatal("expected oversized WAL entry data to be rejected")
+	}
+	if !strings.Contains(err.Error(), "WAL entry data too large") {
+		t.Fatalf("expected WAL entry size error, got %v", err)
+	}
+}
+
+func TestDecodeWALEntriesRejectsTrailingPayload(t *testing.T) {
+	entry := &WALEntry{
+		LSN:       12345,
+		Timestamp: time.Now(),
+		Data:      []byte("replicated payload"),
+		Checksum:  calculateCRC32([]byte("replicated payload")),
+	}
+
+	encoded, err := encodeWALEntries([]*WALEntry{entry})
+	if err != nil {
+		t.Fatalf("encodeWALEntries: %v", err)
+	}
+	encoded = append(encoded, 0xde, 0xad, 0xbe, 0xef)
+
+	_, err = decodeWALEntries(encoded)
+	if err == nil {
+		t.Fatal("expected trailing WAL entries payload to be rejected")
+	}
+	if !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("expected trailing data error, got %v", err)
+	}
+}
+
 func TestManagerCreation(t *testing.T) {
 	config := DefaultConfig()
 	config.Role = RoleMaster
@@ -48,6 +137,70 @@ func TestManagerCreation(t *testing.T) {
 
 	if mgr.config.Role != RoleMaster {
 		t.Errorf("Role mismatch: got %v, want %v", mgr.config.Role, RoleMaster)
+	}
+}
+
+func TestReplicationListenAddressRequiresAuth(t *testing.T) {
+	tests := []struct {
+		address string
+		want    bool
+	}{
+		{"127.0.0.1:0", false},
+		{"[::1]:0", false},
+		{"localhost:0", false},
+		{":0", true},
+		{"0.0.0.0:0", true},
+		{"[::]:0", true},
+		{"192.0.2.10:9000", true},
+		{"replica.example.com:9000", true},
+		{"invalid:address:format", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.address, func(t *testing.T) {
+			if got := replicationListenAddressRequiresAuth(tt.address); got != tt.want {
+				t.Fatalf("replicationListenAddressRequiresAuth(%q) = %v, want %v", tt.address, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStartMasterRejectsUnauthenticatedNonLoopbackListener(t *testing.T) {
+	config := DefaultConfig()
+	config.Role = RoleMaster
+	config.ListenAddr = "0.0.0.0:0"
+
+	mgr := NewManager(config)
+	err := mgr.startMaster()
+	if err == nil {
+		_ = mgr.Stop()
+		t.Fatal("expected unauthenticated non-loopback listener to be rejected")
+	}
+	if !strings.Contains(err.Error(), "auth token is required") {
+		t.Fatalf("expected auth token error, got %v", err)
+	}
+}
+
+func TestReplicationAuthTokenEqual(t *testing.T) {
+	if !replicationAuthTokenEqual("secret-token", "secret-token") {
+		t.Fatal("matching tokens should authenticate")
+	}
+
+	tests := []struct {
+		name     string
+		provided string
+		expected string
+	}{
+		{name: "different content", provided: "secret-tokem", expected: "secret-token"},
+		{name: "shorter provided", provided: "secret", expected: "secret-token"},
+		{name: "longer provided", provided: "secret-token-extra", expected: "secret-token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if replicationAuthTokenEqual(tt.provided, tt.expected) {
+				t.Fatalf("tokens %q and %q should not authenticate", tt.provided, tt.expected)
+			}
+		})
 	}
 }
 

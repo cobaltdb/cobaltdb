@@ -472,7 +472,10 @@ func TestBTree_ReadKVFromPages_WithOverflow(t *testing.T) {
 	}
 	tree.Flush()
 
-	diskData := tree.readKVFromPages()
+	diskData, err := tree.readKVFromPages()
+	if err != nil {
+		t.Fatalf("readKVFromPages: %v", err)
+	}
 	if len(diskData) != 300 {
 		t.Errorf("readKVFromPages: expected 300 entries, got %d", len(diskData))
 	}
@@ -1299,8 +1302,8 @@ func TestBTree_ReadKVFromPages_AllTruncationPaths(t *testing.T) {
 			rootPage.SetDirty(true)
 			pool.Unpin(rootPage)
 
-			diskData := tree.readKVFromPages()
-			t.Logf("readKVFromPages returned %d entries", len(diskData))
+			diskData, err := tree.readKVFromPages()
+			t.Logf("readKVFromPages returned %d entries, err=%v", len(diskData), err)
 		})
 	}
 }
@@ -1325,9 +1328,10 @@ func TestBTree_ReadKVFromPages_CorruptedData(t *testing.T) {
 	rootPage.SetDirty(true)
 	pool.Unpin(rootPage)
 
-	// readKVFromPages should handle this gracefully
-	diskData := tree.readKVFromPages()
-	t.Logf("readKVFromPages with corrupt count returned %d entries", len(diskData))
+	_, err := tree.readKVFromPages()
+	if err == nil {
+		t.Fatal("expected corrupt entry count to fail")
+	}
 }
 
 // TestBTree_EvictToMakeSpace_FinalCheck exercises the post-eviction check
@@ -1920,9 +1924,10 @@ func TestBTree_ReadKVFromPages_OverflowGetPageError(t *testing.T) {
 	rootPage.SetDirty(true)
 	pool.Unpin(rootPage)
 
-	// readKVFromPages should handle the error gracefully
-	diskData := tree.readKVFromPages()
-	t.Logf("readKVFromPages with bad overflow returned %d entries", len(diskData))
+	_, err := tree.readKVFromPages()
+	if err == nil {
+		t.Fatal("expected bad overflow page to fail")
+	}
 }
 
 // TestBTree_ReadKVFromPages_PageDataTooSmall exercises the len(pageData) < 8 check.
@@ -1936,7 +1941,10 @@ func TestBTree_ReadKVFromPages_PageDataTooSmall(t *testing.T) {
 	// But we can test by calling readKVFromPages directly on a freshly created tree
 	// where no data has been flushed yet.
 	tree, _ := NewBTreeWithLimit(pool, 0)
-	diskData := tree.readKVFromPages()
+	diskData, err := tree.readKVFromPages()
+	if err != nil {
+		t.Fatalf("readKVFromPages: %v", err)
+	}
 	if len(diskData) != 0 {
 		t.Errorf("Expected 0 entries from unflushed tree, got %d", len(diskData))
 	}
@@ -2095,10 +2103,9 @@ func TestBTree_ReadKVFromPages_TruncatedDeserialization(t *testing.T) {
 	rootPage.SetDirty(true)
 	pool.Unpin(rootPage)
 
-	diskData := tree.readKVFromPages()
-	// Should have read just the 1 valid entry before hitting truncation
-	if len(diskData) > 100 {
-		t.Error("Should not have more entries than actually serialized")
+	_, err := tree.readKVFromPages()
+	if err == nil {
+		t.Fatal("expected corrupt entry count to fail")
 	}
 }
 
@@ -2116,10 +2123,9 @@ func TestBTree_ReadKVFromPages_RootGetPageError(t *testing.T) {
 	// Set rootPageID to an invalid page
 	tree.rootPageID = 99999
 
-	// readKVFromPages should return empty map when GetPage fails
-	diskData := tree.readKVFromPages()
-	if len(diskData) != 0 {
-		t.Errorf("Expected 0 entries for invalid root, got %d", len(diskData))
+	_, err := tree.readKVFromPages()
+	if err == nil {
+		t.Fatal("expected invalid root page to fail")
 	}
 }
 

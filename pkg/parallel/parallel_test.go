@@ -136,6 +136,9 @@ func TestChunkSize(t *testing.T) {
 	if chunkSize(100, 4) != 25 {
 		t.Fatalf("expected 25, got %d", chunkSize(100, 4))
 	}
+	if chunkSize(10, 4) != 3 {
+		t.Fatalf("expected 3, got %d", chunkSize(10, 4))
+	}
 	if chunkSize(5, 10) != 1 {
 		t.Fatalf("expected 1, got %d", chunkSize(5, 10))
 	}
@@ -148,10 +151,38 @@ func TestDefaultWorkers(t *testing.T) {
 	if defaultWorkers(4) != 4 {
 		t.Fatalf("expected 4, got %d", defaultWorkers(4))
 	}
+	if defaultWorkers(maxParallelWorkers+1) != maxParallelWorkers {
+		t.Fatalf("expected worker count to be capped at %d, got %d", maxParallelWorkers, defaultWorkers(maxParallelWorkers+1))
+	}
 	if defaultWorkers(0) < 1 {
 		t.Fatalf("expected >=1, got %d", defaultWorkers(0))
 	}
 	if defaultWorkers(-1) < 1 {
 		t.Fatalf("expected >=1, got %d", defaultWorkers(-1))
+	}
+}
+
+func TestParallelSelectRowsCapsExcessiveWorkers(t *testing.T) {
+	values := make([][]byte, maxParallelWorkers+1)
+	for i := range values {
+		values[i] = []byte(fmt.Sprintf("row-%d", i))
+	}
+
+	var calls atomic.Int32
+	processFn := func(chunk [][]byte) [][]interface{} {
+		calls.Add(1)
+		result := make([][]interface{}, len(chunk))
+		for i, v := range chunk {
+			result[i] = []interface{}{string(v)}
+		}
+		return result
+	}
+
+	result := ParallelSelectRows(values, maxParallelWorkers*16, 1, processFn)
+	if len(result) != len(values) {
+		t.Fatalf("expected %d rows, got %d", len(values), len(result))
+	}
+	if calls.Load() > maxParallelWorkers {
+		t.Fatalf("expected at most %d worker calls, got %d", maxParallelWorkers, calls.Load())
 	}
 }

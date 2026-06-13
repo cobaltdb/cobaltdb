@@ -47,9 +47,19 @@ func TestRuntimeImportIndexMatchesSpecs(t *testing.T) {
 			t.Fatalf("duplicate runtime import %q", spec.name)
 		}
 		seen[spec.name] = struct{}{}
-		if got := runtimeImportIndex(spec.name); got != uint64(i) {
+		got, err := runtimeImportIndex(spec.name)
+		if err != nil {
+			t.Fatalf("runtimeImportIndex(%q) returned error: %v", spec.name, err)
+		}
+		if got != uint64(i) {
 			t.Fatalf("runtimeImportIndex(%q) = %d, want %d", spec.name, got, i)
 		}
+	}
+}
+
+func TestRuntimeImportIndexReturnsErrorForMissingImport(t *testing.T) {
+	if _, err := runtimeImportIndex("missingRuntimeImport"); err == nil {
+		t.Fatal("expected missing runtime import to return an error")
 	}
 }
 

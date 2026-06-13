@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +74,16 @@ func TestSlowQueryLogMaxEntries(t *testing.T) {
 	}
 }
 
+func TestSlowQueryLogNegativeMaxEntriesDoesNotPanic(t *testing.T) {
+	sql := NewSlowQueryLog(true, 1*time.Millisecond, -1, "")
+
+	sql.Log("SELECT * FROM users", 10*time.Millisecond, 0, 1)
+
+	if entries := sql.GetEntries(10); len(entries) != 0 {
+		t.Fatalf("expected negative maxEntries to retain no entries, got %d", len(entries))
+	}
+}
+
 func TestSlowQueryLogFile(t *testing.T) {
 	tempDir := t.TempDir()
 	logFile := filepath.Join(tempDir, "slow_queries.log")
@@ -105,6 +116,167 @@ func TestSlowQueryLogFile(t *testing.T) {
 	}
 	if err := sql.LastWriteError(); err != nil {
 		t.Fatalf("expected no slow query log write error, got %v", err)
+	}
+}
+
+func TestSlowQueryEntryJSONUsesMilliseconds(t *testing.T) {
+	entry := SlowQueryEntry{
+		Timestamp:    time.Unix(1700000000, 0).UTC(),
+		SQL:          "SELECT pg_sleep(1)",
+		Duration:     1500 * time.Millisecond,
+		RowsReturned: 1,
+	}
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal slow query entry: %v", err)
+	}
+	if !strings.Contains(string(data), `"duration_ms":1500`) {
+		t.Fatalf("expected duration_ms to be encoded as milliseconds, got %s", data)
+	}
+
+	var decoded SlowQueryEntry
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal slow query entry: %v", err)
+	}
+	if decoded.Duration != 1500*time.Millisecond {
+		t.Fatalf("decoded duration = %v, want 1500ms", decoded.Duration)
+	}
+}
+
+func TestSlowQueryLogFileDurationIsMilliseconds(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "slow_queries.log")
+	sql := NewSlowQueryLog(true, 1*time.Millisecond, 100, logFile)
+
+	sql.Log("SELECT * FROM users", 250*time.Millisecond, 0, 10)
+	if err := sql.LastWriteError(); err != nil {
+		t.Fatalf("expected no slow query log write error, got %v", err)
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read slow query log: %v", err)
+	}
+	if !strings.Contains(string(data), `"duration_ms":250`) {
+		t.Fatalf("expected file duration_ms to be milliseconds, got %s", data)
+	}
+}
+
+func TestSlowQueryLogTruncatesOversizedSQLInMemoryAndFile(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "slow_queries.log")
+	sql := NewSlowQueryLog(true, 1*time.Millisecond, 100, logFile)
+	oversized := strings.Repeat("x", maxSlowQuerySQLBytes+128)
+
+	sql.Log(oversized, 100*time.Millisecond, 0, 1)
+
+	entries := sql.GetEntries(1)
+	if len(entries) != 1 {
+		t.Fatalf("expected one slow query entry, got %d", len(entries))
+	}
+	if len(entries[0].SQL) != maxSlowQuerySQLBytes {
+		t.Fatalf("in-memory SQL length = %d, want %d", len(entries[0].SQL), maxSlowQuerySQLBytes)
+	}
+	if entries[0].SQL != oversized[:maxSlowQuerySQLBytes] {
+		t.Fatal("in-memory SQL was not truncated deterministically")
+	}
+	if err := sql.LastWriteError(); err != nil {
+		t.Fatalf("expected no slow query log write error, got %v", err)
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read slow query log: %v", err)
+	}
+	var logged SlowQueryEntry
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &logged); err != nil {
+		t.Fatalf("decode slow query log entry: %v", err)
+	}
+	if len(logged.SQL) != maxSlowQuerySQLBytes {
+		t.Fatalf("logged SQL length = %d, want %d", len(logged.SQL), maxSlowQuerySQLBytes)
+	}
+}
+
+func TestSlowQueryLogRestrictsExistingFilePermissions(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "slow_queries.log")
+	if err := os.WriteFile(logFile, []byte{}, 0644); err != nil {
+		t.Fatalf("write existing log file: %v", err)
+	}
+
+	sql := NewSlowQueryLog(true, 1*time.Millisecond, 100, logFile)
+	sql.Log("SELECT * FROM users", 100*time.Millisecond, 0, 10)
+
+	if err := sql.LastWriteError(); err != nil {
+		t.Fatalf("expected no slow query log write error, got %v", err)
+	}
+	info, err := os.Stat(logFile)
+	if err != nil {
+		t.Fatalf("stat log file: %v", err)
+	}
+	if info.Mode().Perm() != slowQueryLogFilePerm {
+		t.Fatalf("log file permissions = %v, want %v", info.Mode().Perm(), slowQueryLogFilePerm)
+	}
+}
+
+func TestSlowQueryLogRejectsSymlinkFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.log")
+	link := filepath.Join(dir, "link.log")
+	if err := os.WriteFile(target, []byte{}, slowQueryLogFilePerm); err != nil {
+		t.Fatalf("write target log: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	sql := NewSlowQueryLog(true, 1*time.Millisecond, 100, link)
+	sql.Log("SELECT * FROM users", 100*time.Millisecond, 0, 10)
+
+	err := sql.LastWriteError()
+	if err == nil {
+		t.Fatal("expected symlink slow query log write error")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestSlowQueryLogRejectsSymlinkParentComponent(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "target")
+	if err := os.Mkdir(targetDir, 0750); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	linkDir := filepath.Join(dir, "link")
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	logFile := filepath.Join(linkDir, "nested", "slow.log")
+	sql := NewSlowQueryLog(true, 1*time.Millisecond, 100, logFile)
+	sql.Log("SELECT * FROM users", 100*time.Millisecond, 0, 10)
+
+	err := sql.LastWriteError()
+	if err == nil {
+		t.Fatal("expected symlink parent slow query log write error")
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "nested", "slow.log")); !os.IsNotExist(statErr) {
+		t.Fatalf("slow query log should not be created through symlink parent, stat err=%v", statErr)
+	}
+}
+
+func TestSlowQueryLogRejectsNonRegularFile(t *testing.T) {
+	sql := NewSlowQueryLog(true, 1*time.Millisecond, 100, t.TempDir())
+	sql.Log("SELECT * FROM users", 100*time.Millisecond, 0, 10)
+
+	err := sql.LastWriteError()
+	if err == nil {
+		t.Fatal("expected directory slow query log write error")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected regular file rejection, got %v", err)
 	}
 }
 
