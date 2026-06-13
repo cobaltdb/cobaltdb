@@ -231,14 +231,12 @@ func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt,
 				fromPending = true
 			}
 
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			row, live, err := decodeLiveRow(valueData, len(table.Columns))
 			if err != nil {
 				iter.Close()
 				return entries, rowsAffected, fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
 			}
-			row := vrow.Data
-
-			if vrow.Version.DeletedAt > 0 {
+			if !live {
 				continue
 			}
 
@@ -281,14 +279,13 @@ func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt,
 		for _, k := range pendingKeyList {
 			key := []byte(k)
 			valueData := pendingKeys[k].Value
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			row, live, err := decodeLiveRow(valueData, len(table.Columns))
 			if err != nil {
 				return entries, rowsAffected, fmt.Errorf("delete: failed to decode pending row in table %s: %w", table.Name, err)
 			}
-			if vrow.Version.DeletedAt > 0 {
+			if !live {
 				continue
 			}
-			row := vrow.Data
 			if stmt.Where != nil {
 				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
 				if err != nil {
@@ -440,14 +437,13 @@ func (c *Catalog) processDeleteRow(ctx context.Context, table *TableDef, tree bt
 	stmt *query.DeleteStmt, args []interface{}, entries *[]deleteEntry, rowsAffected *int64) error {
 
 	// Decode row with version info
-	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+	row, live, err := decodeLiveRow(valueData, len(table.Columns))
 	if err != nil {
 		return fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
 	}
-	row := vrow.Data
 
 	// Skip already deleted rows
-	if vrow.Version.DeletedAt > 0 {
+	if !live {
 		return nil
 	}
 

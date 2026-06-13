@@ -155,14 +155,13 @@ func (c *Catalog) checkUniqueConstraintsSnapshot(tree btree.TreeStore, table *Ta
 				pendingMap = ts.getPendingWriteMap()[stmt.Table]
 			}
 			for _, pw := range pendingMap {
-				vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
+				existingRow, live, err := decodeLiveRow(pw.Value, len(table.Columns))
 				if err != nil {
 					return false, fmt.Errorf("failed to decode pending row for UNIQUE check on table %s: %w", stmt.Table, err)
 				}
-				if vrow.Version.DeletedAt > 0 {
+				if !live {
 					continue
 				}
-				existingRow := vrow.Data
 				if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
 					if stmt.ConflictAction == query.ConflictIgnore {
 						return true, nil
@@ -183,15 +182,14 @@ func (c *Catalog) checkUniqueConstraintsSnapshot(tree btree.TreeStore, table *Ta
 				if _, overridden := pendingMap[string(k)]; overridden {
 					continue // pending value supersedes committed (handled above)
 				}
-				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
+				existingRow, live, err := decodeLiveRow(existingData, len(table.Columns))
 				if err != nil {
 					iter.Close()
 					return false, fmt.Errorf("failed to decode row during UNIQUE check on table %s: %w", stmt.Table, err)
 				}
-				if vrow.Version.DeletedAt > 0 {
+				if !live {
 					continue
 				}
-				existingRow := vrow.Data
 				if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
 					duplicateKey = k
 					break
@@ -401,14 +399,14 @@ func referencedRowExistsSnapshot(refTable *TableDef, refTree btree.TreeStore, pe
 		return false, fmt.Errorf("referenced column count (%d) does not match value count (%d)", len(refColumns), len(values))
 	}
 	for _, pw := range pendingParents {
-		vrow, err := decodeVersionedRow(pw.Value, len(refTable.Columns))
+		refRow, live, err := decodeLiveRow(pw.Value, len(refTable.Columns))
 		if err != nil {
 			return false, err
 		}
-		if vrow.Version.DeletedAt > 0 {
+		if !live {
 			continue
 		}
-		if rowMatchesReferencedValues(refTable, vrow.Data, refColumns, values) {
+		if rowMatchesReferencedValues(refTable, refRow, refColumns, values) {
 			return true, nil
 		}
 	}
@@ -425,14 +423,14 @@ func referencedRowExistsSnapshot(refTable *TableDef, refTree btree.TreeStore, pe
 		if _, overridden := pendingParents[string(refKey)]; overridden {
 			continue
 		}
-		vrow, err := decodeVersionedRow(refData, len(refTable.Columns))
+		refRow, live, err := decodeLiveRow(refData, len(refTable.Columns))
 		if err != nil {
 			return false, err
 		}
-		if vrow.Version.DeletedAt > 0 {
+		if !live {
 			continue
 		}
-		if rowMatchesReferencedValues(refTable, vrow.Data, refColumns, values) {
+		if rowMatchesReferencedValues(refTable, refRow, refColumns, values) {
 			return true, nil
 		}
 	}
@@ -1835,14 +1833,13 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 			if ts != nil {
 				if m, ok := ts.getPendingWriteMap()[stmt.Table]; ok {
 					for _, pw := range m {
-						vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
+						existingRow, live, err := decodeLiveRow(pw.Value, len(table.Columns))
 						if err != nil {
 							return false, fmt.Errorf("failed to decode pending row for UNIQUE check on table %s: %w", stmt.Table, err)
 						}
-						if vrow.Version.DeletedAt > 0 {
+						if !live {
 							continue
 						}
-						existingRow := vrow.Data
 						if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
 							if stmt.ConflictAction == query.ConflictIgnore {
 								return true, nil
@@ -1862,15 +1859,14 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 					iter.Close()
 					return false, fmt.Errorf("failed to read row during UNIQUE check on table %s: %w", stmt.Table, err)
 				}
-				vrow, err := decodeVersionedRow(existingData, len(table.Columns))
+				existingRow, live, err := decodeLiveRow(existingData, len(table.Columns))
 				if err != nil {
 					iter.Close()
 					return false, fmt.Errorf("failed to decode row during UNIQUE check on table %s: %w", stmt.Table, err)
 				}
-				if vrow.Version.DeletedAt > 0 {
+				if !live {
 					continue
 				}
-				existingRow := vrow.Data
 				if len(existingRow) > i && compareValues(rowValues[i], existingRow[i]) == 0 {
 					duplicateKey = k
 					break

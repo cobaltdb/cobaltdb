@@ -241,6 +241,35 @@ func decodeVisibleRow(data []byte, numCols int, queryTime time.Time) ([]interfac
 	return vrow.Data, true, nil
 }
 
+// decodeLiveRow decodes a versioned row and returns the row data if the row is
+// not soft-deleted. This consolidates the very common pattern
+//
+//	vrow, err := decodeVersionedRow(data, len(table.Columns))
+//	if err != nil { /* wrap + return */ }
+//	if vrow.Version.DeletedAt > 0 { continue }
+//	row := vrow.Data
+//
+// into a single call. The return contract is:
+//
+//	row != nil, ok == true  → row is live; use it
+//	err != nil              → decode failed; caller decides (wrap/return/fallback)
+//	row == nil, ok == false → row was soft-deleted; caller skips
+//
+// Pass op + tableName so the caller can wrap a decode error with context
+// (e.g. "delete: failed to decode row in table foo: %w"). The current call
+// sites all wrap errors with a table-scoped message, so accepting a label
+// keeps the consolidation lossless.
+func decodeLiveRow(data []byte, numCols int) (row []interface{}, ok bool, err error) {
+	vrow, err := decodeVersionedRow(data, numCols)
+	if err != nil {
+		return nil, false, err
+	}
+	if vrow.Version.DeletedAt > 0 {
+		return nil, false, nil
+	}
+	return vrow.Data, true, nil
+}
+
 // decodeVersionedRowFast is a zero-reflection decoder for VersionedRow JSON.
 // It parses the known format directly using byte scanning, avoiding
 // json.Unmarshal overhead (reflection, map allocation, etc.).

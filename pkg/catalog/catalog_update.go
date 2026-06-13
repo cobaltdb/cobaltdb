@@ -324,14 +324,14 @@ func (c *Catalog) hasUpdateUniqueConflict(tree btree.TreeStore, table *TableDef,
 		if _, ok := overridden[k]; ok {
 			continue
 		}
-		vrow, err := decodeVersionedRow(pw.Value, numCols)
+		vrow, live, err := decodeLiveRow(pw.Value, numCols)
 		if err != nil {
 			return false, fmt.Errorf("failed to decode pending row during UNIQUE check on table %s: %w", table.Name, err)
 		}
-		if vrow.Version.DeletedAt > 0 {
+		if !live {
 			continue
 		}
-		if colIdx < len(vrow.Data) && vrow.Data[colIdx] != nil && compareValues(newVal, vrow.Data[colIdx]) == 0 {
+		if colIdx < len(vrow) && vrow[colIdx] != nil && compareValues(newVal, vrow[colIdx]) == 0 {
 			return true, nil
 		}
 	}
@@ -355,14 +355,14 @@ func (c *Catalog) hasUpdateUniqueConflict(tree btree.TreeStore, table *TableDef,
 		if _, ok := pendingKeys[ks]; ok {
 			continue
 		}
-		vrow, err := decodeVersionedRow(existingData, numCols)
+		vrow, live, err := decodeLiveRow(existingData, numCols)
 		if err != nil {
 			return false, fmt.Errorf("failed to decode row during UNIQUE check on table %s: %w", table.Name, err)
 		}
-		if vrow.Version.DeletedAt > 0 {
+		if !live {
 			continue
 		}
-		if colIdx < len(vrow.Data) && vrow.Data[colIdx] != nil && compareValues(newVal, vrow.Data[colIdx]) == 0 {
+		if colIdx < len(vrow) && vrow[colIdx] != nil && compareValues(newVal, vrow[colIdx]) == 0 {
 			return true, nil
 		}
 	}
@@ -462,12 +462,11 @@ func (c *Catalog) checkConstraintsForUpdate(table *TableDef, tree btree.TreeStor
 func (c *Catalog) processUpdateRowSnapshot(ctx context.Context, table *TableDef, tree btree.TreeStore, treeName string, key []byte, valueData []byte,
 	stmt *query.UpdateStmt, args []interface{}, setColumnIndices []int, entries *[]updateEntry, rowsAffected *int64, snap *updateSnapshot, ts *catalogTxnState) error {
 
-	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+	row, live, err := decodeLiveRow(valueData, len(table.Columns))
 	if err != nil {
 		return fmt.Errorf("update: failed to decode row in table %s: %w", table.Name, err)
 	}
-	row := vrow.Data
-	if vrow.Version.DeletedAt > 0 {
+	if !live {
 		return nil
 	}
 	if stmt.Where != nil {
@@ -551,14 +550,12 @@ func (c *Catalog) scanUpdateEntries(ctx context.Context, stmt *query.UpdateStmt,
 				fromPending = true
 			}
 
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			row, live, err := decodeLiveRow(valueData, len(table.Columns))
 			if err != nil {
 				iter.Close()
 				return entries, rowsAffected, fmt.Errorf("update: failed to decode row in table %s: %w", table.Name, err)
 			}
-			row := vrow.Data
-
-			if vrow.Version.DeletedAt > 0 {
+			if !live {
 				continue
 			}
 
@@ -592,14 +589,13 @@ func (c *Catalog) scanUpdateEntries(ctx context.Context, stmt *query.UpdateStmt,
 		for _, k := range pendingKeyList {
 			key := []byte(k)
 			valueData := pendingKeys[k].Value
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			row, live, err := decodeLiveRow(valueData, len(table.Columns))
 			if err != nil {
 				return entries, rowsAffected, fmt.Errorf("update: failed to decode pending row in table %s: %w", table.Name, err)
 			}
-			if vrow.Version.DeletedAt > 0 {
+			if !live {
 				continue
 			}
-			row := vrow.Data
 			if stmt.Where != nil {
 				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
 				if err != nil || !matched {
@@ -750,15 +746,13 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			}
 
 			// Decode row with version info
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			row, live, err := decodeLiveRow(valueData, len(table.Columns))
 			if err != nil {
 				iter.Close()
 				return 0, rowsAffected, fmt.Errorf("update: failed to decode row in table %s: %w", table.Name, err)
 			}
-			row := vrow.Data
-
-			// Skip soft-deleted rows
-			if vrow.Version.DeletedAt > 0 {
+			// Skip soft-deleted rows (decodeLiveRow already filters; if !live, continue)
+			if !live {
 				continue
 			}
 
@@ -794,14 +788,13 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		for _, k := range pendingKeyList {
 			key := []byte(k)
 			valueData := pendingKeys[k].Value
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			row, live, err := decodeLiveRow(valueData, len(table.Columns))
 			if err != nil {
 				return 0, rowsAffected, fmt.Errorf("update: failed to decode pending row in table %s: %w", table.Name, err)
 			}
-			if vrow.Version.DeletedAt > 0 {
+			if !live {
 				continue
 			}
-			row := vrow.Data
 			if stmt.Where != nil {
 				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
 				if err != nil || !matched {
@@ -1309,15 +1302,14 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 			continue // Row may have been deleted
 		}
 
-		vrow, err := decodeVersionedRow(valueData, len(targetTable.Columns))
+		row, live, err := decodeLiveRow(valueData, len(targetTable.Columns))
 		if err != nil {
 			return 0, rowsAffected, fmt.Errorf("delete using: failed to decode row in table %s: %w", targetTable.Name, err)
 		}
 		// Skip already deleted rows
-		if vrow.Version.DeletedAt > 0 {
+		if !live {
 			continue
 		}
-		row := vrow.Data
 
 		// Check RLS policy for DELETE on this row
 		if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, targetTable.Columns, row, security.PolicyDelete); rlsErr != nil {
@@ -1488,12 +1480,11 @@ func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree 
 }
 func (c *Catalog) processUpdateRow(ctx context.Context, table *TableDef, tree btree.TreeStore, treeName string, key []byte, valueData []byte,
 	stmt *query.UpdateStmt, args []interface{}, setColumnIndices []int, entries *[]updateEntry, rowsAffected *int64) error {
-	vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+	row, live, err := decodeLiveRow(valueData, len(table.Columns))
 	if err != nil {
 		return fmt.Errorf("update: failed to decode row in table %s: %w", table.Name, err)
 	}
-	row := vrow.Data
-	if vrow.Version.DeletedAt > 0 {
+	if !live {
 		return nil // Skip soft-deleted rows
 	}
 	// Index may return superset of matching rows (e.g. composite index prefix match),

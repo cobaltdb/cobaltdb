@@ -89,12 +89,12 @@ func (cat *Catalog) tryCountStarFastPath(stmt *query.SelectStmt, args []interfac
 				}
 			}
 			// Fallback to full decode for edge cases
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			_, live, err := decodeLiveRow(valueData, len(table.Columns))
 			if err != nil {
 				iter.Close()
 				return nil, nil, true, fmt.Errorf("count fast path: failed to decode row in table %s: %w", table.Name, err)
 			}
-			if vrow.Version.DeletedAt == 0 {
+			if live {
 				count++
 			}
 		} else if hasWhere {
@@ -309,15 +309,14 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 			}
 		}
 
-		vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+		row, live, err := decodeLiveRow(valueData, len(table.Columns))
 		if err != nil {
 			iter.Close()
 			return nil, nil, true, fmt.Errorf("aggregate fast path: failed to decode row in table %s: %w", table.Name, err)
 		}
-		if vrow.Version.DeletedAt > 0 {
+		if !live {
 			continue
 		}
-		row := vrow.Data
 
 		// Apply WHERE
 		if stmt.Where != nil {

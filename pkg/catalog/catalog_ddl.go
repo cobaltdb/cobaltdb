@@ -555,14 +555,14 @@ func (c *Catalog) validateCheckConstraintsLocked(table *TableDef) error {
 	if ts := c.getCurrentTxn(); ts != nil {
 		if pending := ts.getPendingWriteMap()[table.Name]; len(pending) > 0 {
 			for _, pw := range pending {
-				vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
+				pendingRow, live, err := decodeLiveRow(pw.Value, len(table.Columns))
 				if err != nil {
 					return err
 				}
-				if vrow.Version.DeletedAt > 0 {
+				if !live {
 					continue
 				}
-				if err := c.checkRowConstraints(table, vrow.Data, nil); err != nil {
+				if err := c.checkRowConstraints(table, pendingRow, nil); err != nil {
 					return err
 				}
 			}

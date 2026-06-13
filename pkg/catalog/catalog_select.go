@@ -288,15 +288,15 @@ func (c *Catalog) loadMainTableRowsWithFDWOptions(from *query.TableRef, scanOpti
 				mainIter.Close()
 				return mainTable.Columns, nil, fmt.Errorf("select: failed to read table %s: %w", mainTable.Name, err)
 			}
-			vrow, err := decodeVersionedRow(data, len(mainTable.Columns))
+			row, live, err := decodeLiveRow(data, len(mainTable.Columns))
 			if err != nil {
 				mainIter.Close()
 				return mainTable.Columns, nil, fmt.Errorf("select: failed to decode row in table %s: %w", mainTable.Name, err)
 			}
-			if vrow.Version.DeletedAt > 0 {
+			if !live {
 				continue
 			}
-			intermediateRows = append(intermediateRows, vrow.Data)
+			intermediateRows = append(intermediateRows, row)
 			seen[string(key)] = len(intermediateRows) - 1
 		}
 		mainIter.Close()
@@ -1183,14 +1183,14 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 				if err != nil {
 					return nil, nil, fmt.Errorf("join group by: failed to read row in table %s: %w", joinTable.Name, err)
 				}
-				vrow, err := decodeVersionedRow(data, len(joinTable.Columns))
+				rightRow, live, err := decodeLiveRow(data, len(joinTable.Columns))
 				if err != nil {
 					return nil, nil, fmt.Errorf("join group by: failed to decode row in table %s: %w", joinTable.Name, err)
 				}
-				if vrow.Version.DeletedAt > 0 {
+				if !live {
 					continue
 				}
-				rightRows = append(rightRows, vrow.Data)
+				rightRows = append(rightRows, rightRow)
 			}
 			rightRows, err = c.filterRowsForSelectRLSLocked(nil, joinTable.Name, joinTable.Columns, rightRows)
 			if err != nil {

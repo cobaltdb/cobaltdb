@@ -584,18 +584,18 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 		pending = ts.getPendingWriteMap()[tableName]
 	}
 	for k, pw := range pending {
-		vrow, decErr := decodeVersionedRow(pw.Value, len(table.Columns))
+		pendingRow, live, decErr := decodeLiveRow(pw.Value, len(table.Columns))
 		if decErr != nil {
 			return nil, decErr
 		}
-		if vrow.Version.DeletedAt > 0 {
+		if !live {
 			continue
 		}
-		if rowMatches(vrow.Data) {
+		if rowMatches(pendingRow) {
 			result = append(result, referencingRowMatch{
 				key:     k,
 				rowKey:  fke.deserializeValue([]byte(k)),
-				row:     append([]interface{}(nil), vrow.Data...),
+				row:     append([]interface{}(nil), pendingRow...),
 				pending: true,
 			})
 		}
@@ -624,19 +624,19 @@ func (fke *ForeignKeyEnforcer) findReferencingRows(tableName string, fk ForeignK
 			continue
 		}
 
-		vrow, decErr := decodeVersionedRow(value, len(table.Columns))
+		row, live, decErr := decodeLiveRow(value, len(table.Columns))
 		if decErr != nil {
 			return nil, decErr
 		}
-		if vrow.Version.DeletedAt > 0 {
+		if !live {
 			continue
 		}
 
-		if rowMatches(vrow.Data) {
+		if rowMatches(row) {
 			result = append(result, referencingRowMatch{
 				key:    string(key),
 				rowKey: fke.deserializeValue(key),
-				row:    append([]interface{}(nil), vrow.Data...),
+				row:    append([]interface{}(nil), row...),
 			})
 		}
 	}
@@ -817,14 +817,14 @@ func (fke *ForeignKeyEnforcer) referencedRowExists(tableName string, columns []s
 	if ts := fke.catalog.getCurrentTxn(); ts != nil {
 		pending = ts.getPendingWriteMap()[tableName]
 		for _, pw := range pending {
-			vrow, decErr := decodeVersionedRow(pw.Value, len(table.Columns))
+			pendingRow, live, decErr := decodeLiveRow(pw.Value, len(table.Columns))
 			if decErr != nil {
 				return false, decErr
 			}
-			if vrow.Version.DeletedAt > 0 {
+			if !live {
 				continue
 			}
-			if rowMatches(vrow.Data) {
+			if rowMatches(pendingRow) {
 				return true, nil
 			}
 		}
@@ -1055,15 +1055,15 @@ func (fke *ForeignKeyEnforcer) actionRowConflicts(tableName, selfKey string, tab
 }
 
 func decodeActionConstraintRow(data []byte, numCols int) ([]interface{}, bool, error) {
-	vrow, err := decodeVersionedRow(data, numCols)
+	row, live, err := decodeLiveRow(data, numCols)
 	if err == nil {
-		return vrow.Data, vrow.Version.DeletedAt > 0, nil
+		return row, !live, nil
 	}
-	row, rowErr := decodeRow(data, numCols)
+	plainRow, rowErr := decodeRow(data, numCols)
 	if rowErr != nil {
 		return nil, false, err
 	}
-	return row, false, nil
+	return plainRow, false, nil
 }
 
 // getRowSlice retrieves a row as a slice

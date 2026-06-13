@@ -286,11 +286,10 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 			func(chunk [][]byte) map[string][][]interface{} {
 				localGroups := make(map[string][][]interface{})
 				for _, valueData := range chunk {
-					vrow, _ := decodeVersionedRow(valueData, len(table.Columns)) // prevalidated before parallel grouping
-					if vrow.Version.DeletedAt > 0 {
+					fullRow, live, _ := decodeLiveRow(valueData, len(table.Columns)) // prevalidated before parallel grouping
+					if !live {
 						continue
 					}
-					fullRow := vrow.Data
 					if applyRLS {
 						allowed, err := c.checkRowAccessLocked(rlsCtx, table.Name, table.Columns, fullRow, security.PolicySelect)
 						if err != nil || !allowed {
@@ -331,14 +330,13 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 		}
 	} else {
 		for _, valueData := range allValues {
-			vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+			fullRow, live, err := decodeLiveRow(valueData, len(table.Columns))
 			if err != nil {
 				return nil, nil, fmt.Errorf("group by: failed to decode row in table %s: %w", table.Name, err)
 			}
-			if vrow.Version.DeletedAt > 0 {
+			if !live {
 				continue
 			}
-			fullRow := vrow.Data
 
 			if applyRLS {
 				allowed, err := c.checkRowAccessLocked(rlsCtx, table.Name, table.Columns, fullRow, security.PolicySelect)
