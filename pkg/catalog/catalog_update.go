@@ -413,15 +413,11 @@ func (c *Catalog) checkConstraintsForUpdate(table *TableDef, tree btree.TreeStor
 		}
 	}
 
-	// Check NOT NULL constraints
-	for i, col := range table.Columns {
-		if col.NotNull && i < len(newRow) && newRow[i] == nil {
-			return fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
-		}
-	}
-
-	// Check CHECK constraints
-	if err := c.checkRowConstraints(table, newRow, args); err != nil {
+	// Check NOT NULL + CHECK via the shared non-FK validator. The FK check
+	// below uses snap.fkRefs (snapshot-aware, lock-free); the shared
+	// validateRowAgainstConstraints uses the lock-based live FK table, so
+	// we can't reuse it here.
+	if err := c.validateRowNonFKConstraints(table, newRow, args); err != nil {
 		return err
 	}
 
@@ -1567,15 +1563,10 @@ func (c *Catalog) processUpdateRowData(ctx context.Context, table *TableDef, tre
 		}
 	}
 
-	// Check NOT NULL constraints before updating
-	for i, col := range table.Columns {
-		if col.NotNull && i < len(updatedRow) && updatedRow[i] == nil {
-			return fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
-		}
-	}
-
-	// Check CHECK constraints before updating
-	if err := c.checkRowConstraints(table, updatedRow, args); err != nil {
+	// Check NOT NULL + CHECK constraints before updating. The FK check
+	// below uses the ForeignKeyEnforcer (which can short-circuit on
+	// unchanged columns), so we use the non-FK variant here.
+	if err := c.validateRowNonFKConstraints(table, updatedRow, args); err != nil {
 		return err
 	}
 

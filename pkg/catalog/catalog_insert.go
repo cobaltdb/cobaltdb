@@ -1145,13 +1145,16 @@ func (c *Catalog) checkConstraintsForInsert(table *TableDef, tree btree.TreeStor
 		return nil, true // conflict: row should be skipped
 	}
 
-	// Check CHECK constraints
-	if err := c.checkInsertConstraints(table, rowValues, nil); err != nil {
-		return err, false
-	}
-
-	// Check FOREIGN KEY constraints
-	if err := c.checkForeignKeyConstraints(table, rowValues, ts); err != nil {
+	// Check NOT NULL + CHECK + FOREIGN KEY via the shared row-validator.
+	// The legacy (lock-based) path can use validateRowAgainstConstraints
+	// directly because it holds c.mu; the snapshot path (validateInsertRow
+	// in catalog_insert.go) cannot — it uses checkForeignKeyConstraintsSnapshot
+	// with pre-captured FK refs.
+	//
+	// validateRowAgainstConstraints also covers NOT NULL, but
+	// buildInsertRow + validateInsertRow already enforced NOT NULL before
+	// this point, so the additional check is a no-op.
+	if err := c.validateRowAgainstConstraints(table, rowValues, nil); err != nil {
 		return err, false
 	}
 
@@ -1987,7 +1990,66 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 
 // checkInsertConstraints evaluates CHECK constraints for a row being inserted.
 // Per SQL standard, NULL (unknown) passes; only explicit false fails.
+//
+// Deprecated: prefer validateRowAgainstConstraints which covers NOT NULL +
+// CHECK + FOREIGN KEY in one call and is the cross-insert/update shared
+// helper. Kept for callers that only need CHECK evaluation.
 func (c *Catalog) checkInsertConstraints(table *TableDef, rowValues []interface{}, args []interface{}) error {
+	return c.checkRowConstraints(table, rowValues, args)
+}
+
+// validateRowAgainstConstraints runs the row-level constraint checks
+// (NOT NULL, CHECK, FOREIGN KEY) that must hold for any INSERT or UPDATE
+// of a row. Returns a wrapped error on the first failure; the caller
+// surfaces this to the user.
+//
+// This is the cross-insert/update shared helper that consolidates the
+// NOT NULL/CHECK/FK checks previously inlined at each call site:
+//
+//   - INSERT (lock-free path): checkRowConstraints + checkForeignKeyConstraintsSnapshot
+//   - INSERT (legacy path):     checkRowConstraints + checkForeignKeyConstraints
+//   - UPDATE (snapshot path):   NOT NULL loop + checkRowConstraints + FK loop
+//
+// All four used to be separate code blocks; this helper extracts the
+// three that don't depend on the lock state. UNIQUE constraints are
+// deliberately NOT here because they require a B-tree handle and the
+// pending-write map (callers already have those, and the conflict
+// detection semantics are different — INSERT can return skipRow, UPDATE
+// can compare against collected entries).
+//
+// Args: rowValues is the candidate row; args is the bound-args slice
+// for evaluating CHECK expressions. Pass nil for the simple case where
+// the row has no parameter placeholders.
+func (c *Catalog) validateRowAgainstConstraints(table *TableDef, rowValues []interface{}, args []interface{}) error {
+	// NOT NULL — column-level.
+	for i, col := range table.Columns {
+		if col.NotNull && i < len(rowValues) && rowValues[i] == nil {
+			return fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
+		}
+	}
+	// CHECK — column-level + table-level (NULL passes, false fails).
+	if err := c.checkRowConstraints(table, rowValues, args); err != nil {
+		return err
+	}
+	// FOREIGN KEY — NULL values skip per SQL standard.
+	return c.checkForeignKeyConstraints(table, rowValues, nil)
+}
+
+// validateRowNonFKConstraints is a focused variant of
+// validateRowAgainstConstraints that runs only the NOT NULL and CHECK
+// checks. Use this when the caller is going to run a separate, more
+// specialized FK check (e.g. the snapshot-aware FK loop in
+// checkConstraintsForUpdate, or the FK-enforcer's validateActionRow).
+// Avoids duplicate FK work and lets each caller choose the right
+// FK-validation strategy for its lock state.
+func (c *Catalog) validateRowNonFKConstraints(table *TableDef, rowValues []interface{}, args []interface{}) error {
+	// NOT NULL — column-level.
+	for i, col := range table.Columns {
+		if col.NotNull && i < len(rowValues) && rowValues[i] == nil {
+			return fmt.Errorf("NOT NULL constraint failed: column '%s' cannot be null", col.Name)
+		}
+	}
+	// CHECK — column-level + table-level.
 	return c.checkRowConstraints(table, rowValues, args)
 }
 
