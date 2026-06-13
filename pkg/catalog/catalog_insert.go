@@ -1505,42 +1505,12 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		return rollbackInsertErr(insertErr)
 	}
 
-	// Handle RETURNING clause before AFTER triggers so RETURNING errors can
-	// abort the statement without leaving trigger side effects behind.
-	var returningRows [][]interface{}
-	var returningCols []string
-	if len(stmt.Returning) > 0 && rowsAffected > 0 {
-		for _, insertedRow := range insertedRows {
-			returningRow, cols, err := c.evaluateReturning(stmt.Returning, insertedRow, table, args)
-			if err != nil {
-				return rollbackInsertErr(fmt.Errorf("RETURNING clause failed: %w", err))
-			}
-			returningRows = append(returningRows, returningRow)
-			if returningCols == nil {
-				returningCols = cols
-			}
-		}
-	}
-
-	// Execute AFTER INSERT triggers for each inserted row
-	for _, insertedRow := range insertedRows {
-		if trigErr := c.executeTriggers(ctx, stmt.Table, "INSERT", "AFTER", insertedRow, nil, table.Columns); trigErr != nil {
-			return rollbackInsertErr(fmt.Errorf("AFTER INSERT trigger failed: %w", trigErr))
-		}
-	}
-
-	// Invalidate query cache for the affected table
-	c.invalidateQueryCache(stmt.Table)
-
-	// Store returning rows for retrieval
-	c.setLastReturning(returningRows, returningCols)
-
-	// Track live tuples for AutoVacuum
-	if rowsAffected > 0 {
-		c.ensureVacuumMaps()
-		c.vacuumMu.Lock()
-		c.liveTuples[stmt.Table] += rowsAffected
-		c.vacuumMu.Unlock()
+	// Finalize the INSERT: RETURNING → AFTER triggers → cache invalidation →
+	// store RETURNING → vacuum bookkeeping. Any error here is reported
+	// through the same rollback path so a RETURNING/trigger failure does
+	// not leave the B-tree in a partially-applied state.
+	if err := c.finalizeInsert(ctx, stmt, table, insertedRows, args, rowsAffected); err != nil {
+		return rollbackInsertErr(err)
 	}
 
 	return lastAutoIncValue, rowsAffected, nil
@@ -1671,6 +1641,70 @@ func (c *Catalog) prepareInsertRow(
 	// Validate row constraints and resolve key
 	key, skipRow, err = c.validateInsertRow(table, tree, stmt, rowValues, args, compositePK, key, ts)
 	return rowValues, key, autoIncValue, skipRow, err
+}
+
+// finalizeInsert runs the post-apply bookkeeping for a successful INSERT
+// statement: evaluate RETURNING, fire AFTER triggers, invalidate the
+// query cache, store the RETURNING rows, and update the AutoVacuum live
+// tuple counter. Any error returned here is a statement-level error —
+// the caller is expected to roll back the entire statement so a
+// RETURNING/trigger failure does not leave the B-tree in a partially
+// applied state.
+//
+// Order matters:
+//   1. RETURNING runs *before* AFTER triggers so a RETURNING error can
+//      abort the statement without leaving trigger side effects behind.
+//   2. AFTER triggers run before setLastReturning so the caller's next
+//      call (which reads LastReturning) sees a consistent view.
+//   3. Cache invalidation + setLastReturning + vacuum counter are
+//      bookkeeping that only runs on a clean apply.
+func (c *Catalog) finalizeInsert(
+	ctx context.Context,
+	stmt *query.InsertStmt,
+	table *TableDef,
+	insertedRows [][]interface{},
+	args []interface{},
+	rowsAffected int64,
+) error {
+	// Handle RETURNING clause before AFTER triggers so RETURNING errors can
+	// abort the statement without leaving trigger side effects behind.
+	var returningRows [][]interface{}
+	var returningCols []string
+	if len(stmt.Returning) > 0 && rowsAffected > 0 {
+		for _, insertedRow := range insertedRows {
+			returningRow, cols, err := c.evaluateReturning(stmt.Returning, insertedRow, table, args)
+			if err != nil {
+				return fmt.Errorf("RETURNING clause failed: %w", err)
+			}
+			returningRows = append(returningRows, returningRow)
+			if returningCols == nil {
+				returningCols = cols
+			}
+		}
+	}
+
+	// Execute AFTER INSERT triggers for each inserted row
+	for _, insertedRow := range insertedRows {
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "INSERT", "AFTER", insertedRow, nil, table.Columns); trigErr != nil {
+			return fmt.Errorf("AFTER INSERT trigger failed: %w", trigErr)
+		}
+	}
+
+	// Invalidate query cache for the affected table
+	c.invalidateQueryCache(stmt.Table)
+
+	// Store returning rows for retrieval
+	c.setLastReturning(returningRows, returningCols)
+
+	// Track live tuples for AutoVacuum
+	if rowsAffected > 0 {
+		c.ensureVacuumMaps()
+		c.vacuumMu.Lock()
+		c.liveTuples[stmt.Table] += rowsAffected
+		c.vacuumMu.Unlock()
+	}
+
+	return nil
 }
 
 // convertSelectToValueRows executes the SELECT part of INSERT...SELECT and
