@@ -1214,7 +1214,6 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 
 	// Insert each row
 	rowsAffected := int64(0)
-	autoIncValue := int64(0)
 
 	// Handle INSERT...SELECT: execute SELECT and convert to value rows
 	valueRows := stmt.Values
@@ -1285,116 +1284,26 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	// Skip allocating row copies when no triggers or RETURNING clause need them.
 	needsInsertedRows := len(stmt.Returning) > 0 || len(c.getTriggersForTableLocked(stmt.Table, "INSERT")) > 0
 
+	// Track the last generated auto-increment value so we can return it.
+	// (Multi-row INSERTs return the last generated id, matching MySQL semantics.)
+	var lastAutoIncValue int64
+
+	compositePK := len(table.PrimaryKey) > 1
+
 	for _, valueRow := range valueRows {
-		// Validate value count matches column count
-		if len(valueRow) != numInsertCols {
-			// Allow one fewer value if there is exactly one AUTO_INCREMENT column
-			autoIncCount := 0
-			for _, col := range table.Columns {
-				if col.AutoIncrement {
-					autoIncCount++
-				}
-			}
-			defaultValuesRow := len(valueRow) == 0 && len(stmt.Columns) == 0
-			if !defaultValuesRow && !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
-				insertErr = fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
-				break
-			}
-		}
-
-		// Generate unique key (use auto-increment if primary key exists).
-		// For composite primary keys we defer key generation until after
-		// rowValues have been evaluated (the composite key is built from
-		// all PK column values together).
-		var key string
-		hasPrimaryKey := false
-		compositePK := len(table.PrimaryKey) > 1
-		if !compositePK {
-			for _, pkColName := range table.PrimaryKey {
-				// Find which valueRow index corresponds to this PK column.
-				valueIdx := -1
-				if insertColIndices != nil {
-					for i, tci := range insertColIndices {
-						if tci >= 0 && strings.EqualFold(table.Columns[tci].Name, pkColName) {
-							valueIdx = i
-							break
-						}
-					}
-				} else {
-					for i := 0; i < numInsertCols && i < len(table.Columns); i++ {
-						if strings.EqualFold(table.Columns[i].Name, pkColName) {
-							valueIdx = i
-							break
-						}
-					}
-				}
-				if valueIdx < 0 || valueIdx >= len(valueRow) {
-					continue
-				}
-				hasPrimaryKey = true
-				if numLit, ok := valueRow[valueIdx].(*query.NumberLiteral); ok {
-					pkVal := int64(numLit.Value)
-					key = formatKey(pkVal)
-					// Keep auto-inc counter ahead of explicit values
-					if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
-						atomic.StoreInt64(&table.AutoIncSeq, pkVal)
-					}
-				} else {
-					// Non-numeric primary key (TEXT, etc.)
-					val, err := evaluateExpression(c, nil, nil, valueRow[valueIdx], args)
-					if err == nil && val != nil {
-						if strVal, ok := toString(val); ok {
-							key = "S:" + strVal // Prefix to distinguish from numeric keys
-						} else if fVal, ok := toFloat64(val); ok {
-							pkVal := int64(fVal)
-							key = formatKey(pkVal)
-							if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
-								atomic.StoreInt64(&table.AutoIncSeq, pkVal)
-							}
-						}
-					}
-				}
-			}
-		} else {
-			hasPrimaryKey = true // composite PKs are always present
-		}
-
-		if !compositePK && (!hasPrimaryKey || key == "") {
-			// Generate auto-increment key (per-table counter)
-			autoIncValue = atomic.AddInt64(&table.AutoIncSeq, 1)
-			key = formatKey(autoIncValue)
-		}
-
-		// Build full row with all columns.
-		// Reuse the per-transaction scratch buffer when available to avoid a heap alloc.
-		var rowValues []interface{}
-		if n := len(table.Columns); n <= 8 && ts != nil {
-			rowValues = ts.rowBuf[:n]
-		} else {
-			rowValues = make([]interface{}, n)
-		}
-		if buildErr := c.buildInsertRow(table, insertColIndices, insertColumns, valueRow, args, autoIncValue, rowValues); buildErr != nil {
-			insertErr = buildErr
-			break
-		}
-
-		// Apply Row-Level Security check for INSERT
-		if allowed, rlsErr := c.checkRowCheckLocked(ctx, stmt.Table, table.Columns, rowValues, security.PolicyInsert); rlsErr != nil {
-			insertErr = fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
-			break
-		} else if !allowed {
-			insertErr = fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
-			break
-		}
-
-		// Validate row constraints and resolve key
-		var skipRow bool
-		key, skipRow, insertErr = c.validateInsertRow(table, tree, stmt, rowValues, args, compositePK, key, ts)
-		if insertErr != nil {
+		rowValues, key, autoIncValue, skipRow, rowErr := c.prepareInsertRow(
+			ctx, table, stmt, args, valueRow, numInsertCols,
+			insertColIndices, insertColumns, compositePK, ts, tree,
+		)
+		if rowErr != nil {
+			insertErr = rowErr
 			break
 		}
 		if skipRow {
 			continue
+		}
+		if autoIncValue > 0 {
+			lastAutoIncValue = autoIncValue
 		}
 
 		// Encode row with temporal versioning.
@@ -1634,7 +1543,134 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		c.vacuumMu.Unlock()
 	}
 
-	return autoIncValue, rowsAffected, nil
+	return lastAutoIncValue, rowsAffected, nil
+}
+
+// prepareInsertRow is the per-row pre-flight for insertLocked. It performs
+// the validation, key generation, row build, RLS check, and constraint
+// resolution steps, then returns the row, the resolved key, the auto-inc
+// value (if generated), a skip flag, and any error. The caller is
+// responsible for encoding the row and applying it (buffered or direct
+// path). This extraction keeps insertLocked focused on the apply loop
+// and gives prepareInsertRow a clear input/output contract that is
+// independently testable.
+//
+// Returns:
+//   - rowValues: the built row, suitable for encoding
+//   - key:       the resolved B-tree key (after auto-inc if applicable)
+//   - autoInc:   the auto-increment value generated for this row (0 if N/A)
+//   - skipRow:   true if the row should be skipped (IGNORE/REPLACE behavior)
+//   - err:       any validation/RLS/constraint error
+func (c *Catalog) prepareInsertRow(
+	ctx context.Context,
+	table *TableDef,
+	stmt *query.InsertStmt,
+	args []interface{},
+	valueRow []query.Expression,
+	numInsertCols int,
+	insertColIndices []int,
+	insertColumns []string,
+	compositePK bool,
+	ts *catalogTxnState,
+	tree btree.TreeStore,
+) (rowValues []interface{}, key string, autoIncValue int64, skipRow bool, err error) {
+	// Validate value count matches column count
+	if len(valueRow) != numInsertCols {
+		// Allow one fewer value if there is exactly one AUTO_INCREMENT column
+		autoIncCount := 0
+		for _, col := range table.Columns {
+			if col.AutoIncrement {
+				autoIncCount++
+			}
+		}
+		defaultValuesRow := len(valueRow) == 0 && len(stmt.Columns) == 0
+		if !defaultValuesRow && !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
+			return nil, "", 0, false, fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
+		}
+	}
+
+	// Generate unique key (use auto-increment if primary key exists).
+	// For composite primary keys we defer key generation until after
+	// rowValues have been evaluated (the composite key is built from
+	// all PK column values together).
+	hasPrimaryKey := false
+	if !compositePK {
+		for _, pkColName := range table.PrimaryKey {
+			// Find which valueRow index corresponds to this PK column.
+			valueIdx := -1
+			if insertColIndices != nil {
+				for i, tci := range insertColIndices {
+					if tci >= 0 && strings.EqualFold(table.Columns[tci].Name, pkColName) {
+						valueIdx = i
+						break
+					}
+				}
+			} else {
+				for i := 0; i < numInsertCols && i < len(table.Columns); i++ {
+					if strings.EqualFold(table.Columns[i].Name, pkColName) {
+						valueIdx = i
+						break
+					}
+				}
+			}
+			if valueIdx < 0 || valueIdx >= len(valueRow) {
+				continue
+			}
+			hasPrimaryKey = true
+			if numLit, ok := valueRow[valueIdx].(*query.NumberLiteral); ok {
+				pkVal := int64(numLit.Value)
+				key = formatKey(pkVal)
+				// Keep auto-inc counter ahead of explicit values
+				if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
+					atomic.StoreInt64(&table.AutoIncSeq, pkVal)
+				}
+			} else {
+				// Non-numeric primary key (TEXT, etc.)
+				val, evErr := evaluateExpression(c, nil, nil, valueRow[valueIdx], args)
+				if evErr == nil && val != nil {
+					if strVal, ok := toString(val); ok {
+						key = "S:" + strVal // Prefix to distinguish from numeric keys
+					} else if fVal, ok := toFloat64(val); ok {
+						pkVal := int64(fVal)
+						key = formatKey(pkVal)
+						if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
+							atomic.StoreInt64(&table.AutoIncSeq, pkVal)
+						}
+					}
+				}
+			}
+		}
+	} else {
+		hasPrimaryKey = true // composite PKs are always present
+	}
+
+	if !compositePK && (!hasPrimaryKey || key == "") {
+		// Generate auto-increment key (per-table counter)
+		autoIncValue = atomic.AddInt64(&table.AutoIncSeq, 1)
+		key = formatKey(autoIncValue)
+	}
+
+	// Build full row with all columns.
+	// Reuse the per-transaction scratch buffer when available to avoid a heap alloc.
+	if n := len(table.Columns); n <= 8 && ts != nil {
+		rowValues = ts.rowBuf[:n]
+	} else {
+		rowValues = make([]interface{}, n)
+	}
+	if buildErr := c.buildInsertRow(table, insertColIndices, insertColumns, valueRow, args, autoIncValue, rowValues); buildErr != nil {
+		return nil, "", 0, false, buildErr
+	}
+
+	// Apply Row-Level Security check for INSERT
+	if allowed, rlsErr := c.checkRowCheckLocked(ctx, stmt.Table, table.Columns, rowValues, security.PolicyInsert); rlsErr != nil {
+		return nil, "", 0, false, fmt.Errorf("RLS policy check failed for INSERT: %w", rlsErr)
+	} else if !allowed {
+		return nil, "", 0, false, fmt.Errorf("RLS policy denied INSERT on table '%s'", stmt.Table)
+	}
+
+	// Validate row constraints and resolve key
+	key, skipRow, err = c.validateInsertRow(table, tree, stmt, rowValues, args, compositePK, key, ts)
+	return rowValues, key, autoIncValue, skipRow, err
 }
 
 // convertSelectToValueRows executes the SELECT part of INSERT...SELECT and
