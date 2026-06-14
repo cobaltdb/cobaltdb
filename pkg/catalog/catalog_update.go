@@ -663,10 +663,6 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		treeNames = table.getPartitionTreeNames()
 	}
 
-	// Collect entries to update (need old row for index cleanup)
-	var entries []updateEntry
-	rowsAffected := int64(0)
-
 	// Pre-calculate column indices for SET clauses
 	setColumnIndices := make([]int, len(stmt.Set))
 	for i, setClause := range stmt.Set {
@@ -687,7 +683,84 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		}
 	}
 
-	// Iterate over all partition trees
+	// Phase 1: resolve which rows match the WHERE clause and build
+	// the per-row update entries. This is the heaviest phase in
+	// updateLocked: it walks all partition trees, overlays pending
+	// writes, decodes rows, evaluates WHERE, and produces
+	// (entries, rowsAffected).
+	entries, rowsAffected, err := c.resolveUpdateTargetRows(
+		ctx, stmt, table, trees, treeNames, indexedRows, useIndex,
+		setColumnIndices, ts, useBuffer, args,
+	)
+	if err != nil {
+		return 0, rowsAffected, err
+	}
+
+	// Track pending-write start position for statement-level rollback
+	// in buffered mode. Both phase 2 and phase 3 may need to roll
+	// pending writes back to this marker.
+	pendingWriteStartPos := 0
+	if ts != nil {
+		pendingWriteStartPos = len(ts.pendingWrites)
+	}
+
+	// Phase 2: validate constraints — execute BEFORE UPDATE triggers
+	// and evaluate the RETURNING projection. Both run before the
+	// mutations are committed so a trigger failure or RETURNING
+	// error can short-circuit cleanly with a pending-write rollback.
+	returningRows, returningCols, err := c.validateUpdateConstraints(
+		ctx, stmt, table, entries, rowsAffected, ts, pendingWriteStartPos, args,
+	)
+	if err != nil {
+		return 0, rowsAffected, err
+	}
+
+	// Phase 3: apply the collected updates to the storage layer,
+	// execute AFTER UPDATE triggers, invalidate the query cache, and
+	// publish the RETURNING result for the executor.
+	if err := c.applyUpdateIndexes(
+		ctx, stmt, table, entries, ts, txnActive, useBuffer,
+		pendingWriteStartPos, returningRows, returningCols,
+	); err != nil {
+		return 0, rowsAffected, err
+	}
+
+	return 0, rowsAffected, nil
+}
+
+// resolveUpdateTargetRows is phase 1 of updateLocked: it walks every
+// partition tree, overlays pending writes (so buffered-mode updates see
+// their own prior mutations), evaluates the WHERE clause, and assembles
+// the per-row updateEntry slice. It also counts rowsAffected.
+//
+// Two scan paths are supported:
+//   - Index path: when the WHERE clause is index-eligible, the helper
+//     restricts itself to indexedRows and overlays each row's pending
+//     write before re-checking WHERE (the index may return a superset
+//     for composite prefix matches).
+//   - Full-scan path: a TreeIterator walks the entire B-tree. Pending
+//     writes that were not visited during the scan are processed in
+//     deterministic key order afterwards so buffered-mode updates
+//     correctly pick up prior inserts/updates from the same txn.
+//
+// Returns the entries slice and the running rowsAffected count. Any
+// error short-circuits the caller with the current count.
+func (c *Catalog) resolveUpdateTargetRows(
+	ctx context.Context,
+	stmt *query.UpdateStmt,
+	table *TableDef,
+	trees []btree.TreeStore,
+	treeNames []string,
+	indexedRows []string,
+	useIndex bool,
+	setColumnIndices []int,
+	ts *catalogTxnState,
+	useBuffer bool,
+	args []interface{},
+) ([]updateEntry, int64, error) {
+	var entries []updateEntry
+	rowsAffected := int64(0)
+
 	for treeIdx, tree := range trees {
 		treeName := treeNames[treeIdx]
 
@@ -714,7 +787,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 					continue
 				}
 				if err := c.processUpdateRow(ctx, table, tree, treeName, key, valueData, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
-					return 0, rowsAffected, err
+					return nil, rowsAffected, err
 				}
 			}
 			continue
@@ -723,7 +796,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		// Full table scan path
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
-			return 0, 0, fmt.Errorf("failed to scan table for UPDATE: %w", err)
+			return nil, 0, fmt.Errorf("failed to scan table for UPDATE: %w", err)
 		}
 		seenPending := make(map[string]bool)
 
@@ -731,7 +804,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			key, valueData, err := iter.Next()
 			if err != nil {
 				iter.Close()
-				return 0, rowsAffected, fmt.Errorf("failed to read table for UPDATE: %w", err)
+				return nil, rowsAffected, fmt.Errorf("failed to read table for UPDATE: %w", err)
 			}
 			k := string(key)
 			fromPending := false
@@ -745,7 +818,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			row, live, err := decodeLiveRow(valueData, len(table.Columns))
 			if err != nil {
 				iter.Close()
-				return 0, rowsAffected, fmt.Errorf("update: failed to decode row in table %s: %w", table.Name, err)
+				return nil, rowsAffected, fmt.Errorf("update: failed to decode row in table %s: %w", table.Name, err)
 			}
 			// Skip soft-deleted rows (decodeLiveRow already filters; if !live, continue)
 			if !live {
@@ -756,7 +829,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			if stmt.Where != nil {
 				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
 				if err != nil {
-					return 0, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+					return nil, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
 				}
 				if !matched {
 					continue // Skip row that doesn't match WHERE condition
@@ -768,7 +841,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			}
 
 			if err := c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
-				return 0, rowsAffected, err
+				return nil, rowsAffected, err
 			}
 		}
 		iter.Close()
@@ -786,7 +859,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			valueData := pendingKeys[k].Value
 			row, live, err := decodeLiveRow(valueData, len(table.Columns))
 			if err != nil {
-				return 0, rowsAffected, fmt.Errorf("update: failed to decode pending row in table %s: %w", table.Name, err)
+				return nil, rowsAffected, fmt.Errorf("update: failed to decode pending row in table %s: %w", table.Name, err)
 			}
 			if !live {
 				continue
@@ -798,23 +871,44 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				}
 			}
 			if err := c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
-				return 0, rowsAffected, err
+				return nil, rowsAffected, err
 			}
 		}
 	}
+	return entries, rowsAffected, nil
+}
 
-	// Track pending-write start position for statement-level rollback in buffered mode.
-	pendingWriteStartPos := 0
-	if ts != nil {
-		pendingWriteStartPos = len(ts.pendingWrites)
-	}
+// validateUpdateConstraints is phase 2 of updateLocked: it runs the
+// BEFORE UPDATE triggers and evaluates the RETURNING projection. Both
+// run before the mutations are committed, so a trigger failure or
+// RETURNING error can short-circuit with a pending-write rollback to
+// the marker captured at the start of the UPDATE.
+//
+// BEFORE triggers see entry.newRow so they can reject the planned
+// mutation. RETURNING runs only when rowsAffected > 0 — projecting
+// from an empty entry list is a no-op (we still return an empty
+// projection and let the caller publish it).
+//
+// On error, the helper rolls back pending writes to pendingWriteStartPos
+// before returning. The caller decides whether to propagate the error
+// or continue with another path.
+func (c *Catalog) validateUpdateConstraints(
+	ctx context.Context,
+	stmt *query.UpdateStmt,
+	table *TableDef,
+	entries []updateEntry,
+	rowsAffected int64,
+	ts *catalogTxnState,
+	pendingWriteStartPos int,
+	args []interface{},
+) ([][]interface{}, []string, error) {
 	for _, entry := range entries {
 		if trigErr := c.executeTriggers(ctx, stmt.Table, "UPDATE", "BEFORE", entry.newRow, entry.oldRow, table.Columns); trigErr != nil {
 			if ts != nil {
 				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 				rebuildPendingWriteMap(ts)
 			}
-			return 0, rowsAffected, fmt.Errorf("BEFORE UPDATE trigger failed: %w", trigErr)
+			return nil, nil, fmt.Errorf("BEFORE UPDATE trigger failed: %w", trigErr)
 		}
 	}
 
@@ -828,7 +922,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 					ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 					rebuildPendingWriteMap(ts)
 				}
-				return 0, rowsAffected, fmt.Errorf("RETURNING clause failed: %w", err)
+				return nil, nil, fmt.Errorf("RETURNING clause failed: %w", err)
 			}
 			returningRows = append(returningRows, returningRow)
 			if returningCols == nil {
@@ -836,7 +930,31 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 			}
 		}
 	}
+	return returningRows, returningCols, nil
+}
 
+// applyUpdateIndexes is phase 3 of updateLocked: it dispatches the
+// collected entries to either the buffered path (bufferUpdateEntries)
+// or the direct path (applyUpdateEntries), runs the AFTER UPDATE
+// triggers, invalidates the query cache for the affected table, and
+// publishes the RETURNING result for the executor.
+//
+// The buffered path uses pending-write rollback on trigger failure,
+// while the direct path replays the undo log (applyUpdateEntries owns
+// its own rollback). The helper centralises that asymmetry so
+// updateLocked is left with a single linear call sequence.
+func (c *Catalog) applyUpdateIndexes(
+	ctx context.Context,
+	stmt *query.UpdateStmt,
+	table *TableDef,
+	entries []updateEntry,
+	ts *catalogTxnState,
+	txnActive bool,
+	useBuffer bool,
+	pendingWriteStartPos int,
+	returningRows [][]interface{},
+	returningCols []string,
+) error {
 	// Apply collected updates
 	if useBuffer {
 		if err := c.bufferUpdateEntries(ctx, table, stmt, entries, ts); err != nil {
@@ -844,11 +962,11 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 				rebuildPendingWriteMap(ts)
 			}
-			return 0, rowsAffected, err
+			return err
 		}
 	} else {
 		if err := c.applyUpdateEntries(ctx, table, stmt, entries, ts, txnActive); err != nil {
-			return 0, rowsAffected, err
+			return err
 		}
 	}
 	// Execute AFTER UPDATE triggers (per-row)
@@ -860,9 +978,9 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 					rebuildPendingWriteMap(ts)
 				}
 			} else if rbErr := c.rollbackAppliedUpdateEntries(table, stmt.Table, entries); rbErr != nil {
-				return 0, rowsAffected, fmt.Errorf("AFTER UPDATE trigger failed: %w; rollback failed: %v", trigErr, rbErr)
+				return fmt.Errorf("AFTER UPDATE trigger failed: %w; rollback failed: %v", trigErr, rbErr)
 			}
-			return 0, rowsAffected, fmt.Errorf("AFTER UPDATE trigger failed: %w", trigErr)
+			return fmt.Errorf("AFTER UPDATE trigger failed: %w", trigErr)
 		}
 	}
 
@@ -872,7 +990,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	// Store returning rows for retrieval
 	c.setLastReturning(returningRows, returningCols)
 
-	return 0, rowsAffected, nil
+	return nil
 }
 
 func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
