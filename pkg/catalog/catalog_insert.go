@@ -1358,106 +1358,20 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		}
 
 		// Direct mutation path (legacy single-writer mode).
-		// Log to WAL before applying change
-		if c.wal != nil && txnActive {
-			walData, err := encodeLogicalWALData(stmt.Table, []byte(key), valueData)
-			if err != nil {
-				insertErr = err
-				break
-			}
-			record := &storage.WALRecord{
-				TxnID: ts.txnID,
-				Type:  storage.WALInsert,
-				Data:  walData,
-			}
-			if err := c.wal.Append(record); err != nil {
-				insertErr = err
-				break
-			}
-		}
-
-		// Enforce PRIMARY KEY uniqueness - check if key already exists
-		if skip, err := c.resolvePKConflict(tree, table, stmt, key); err != nil {
-			insertErr = err
-			break
-		} else if skip {
-			continue
-		}
-
-		if trigErr := c.executeTriggers(ctx, stmt.Table, "INSERT", "BEFORE", rowValues, nil, table.Columns); trigErr != nil {
-			insertErr = fmt.Errorf("BEFORE INSERT trigger failed: %w", trigErr)
+		insertedRow, stmtInsert, skipRow, directErr := c.applyInsertRowDirect(
+			ctx, stmt, table, tree, ts, txnActive, rowValues, key, valueData, needsInsertedRows,
+		)
+		if directErr != nil {
+			insertErr = directErr
 			break
 		}
-
-		// Store in B+Tree
-		if bt, ok := tree.(*btree.BTree); ok {
-			err = bt.PutString(key, valueData)
-		} else {
-			err = tree.Put([]byte(key), valueData)
-		}
-		if err != nil {
-			insertErr = fmt.Errorf("failed to store row: %w", err)
-			break
-		}
-
-		var idxChanges []indexUndoEntry
-		// Update indexes and track changes for undo
-		idxChanges, skipRow, insertErr = c.insertRowIndexes(tree, table, stmt, key, rowValues, ts)
-		if insertErr != nil {
-			// Row was stored but index failed - delete the row and roll back
-			// any index entries that were successfully inserted in this iteration.
-			if rbErr := deleteRowKey(tree, []byte(key)); rbErr != nil && !errors.Is(rbErr, btree.ErrKeyNotFound) {
-				insertErr = fmt.Errorf("%w; row cleanup failed: %v", insertErr, rbErr)
-			}
-			for _, undo := range idxChanges {
-				if undo.wasAdded {
-					if idxTree2, ok := c.indexTrees[undo.indexName]; ok {
-						if rbErr := idxTree2.Delete(undo.key); rbErr != nil && !errors.Is(rbErr, btree.ErrKeyNotFound) {
-							insertErr = fmt.Errorf("%w; index cleanup failed for %s: %v", insertErr, undo.indexName, rbErr)
-						}
-					}
-				}
-			}
-			break
-		}
-
-		// Update vector indexes
-		if err := c.updateVectorIndexesForInsert(stmt.Table, rowValues, key); err != nil {
-			insertErr = err
-			break
-		}
-
 		if skipRow {
 			continue
 		}
-
-		// Record undo log entry for rollback (after applying change)
-		if txnActive {
-			keyCopy := []byte(key)
-			c.appendUndoEntry(undoEntry{
-				action:       undoInsert,
-				tableName:    stmt.Table,
-				key:          keyCopy,
-				indexChanges: idxChanges,
-			})
+		stmtInserts = append(stmtInserts, stmtInsert)
+		if insertedRow != nil {
+			insertedRows = append(insertedRows, insertedRow)
 		}
-
-		// Track for statement-level atomicity
-		si := stmtInsertEntry{key: []byte(key)}
-		for _, ic := range idxChanges {
-			si.idxKeys = append(si.idxKeys, struct {
-				idxName string
-				key     []byte
-			}{ic.indexName, ic.key})
-		}
-		stmtInserts = append(stmtInserts, si)
-
-		if needsInsertedRows {
-			rowCopy := make([]interface{}, len(rowValues))
-			copy(rowCopy, rowValues)
-			insertedRows = append(insertedRows, rowCopy)
-		}
-
 		rowsAffected++
 	}
 
@@ -1749,6 +1663,148 @@ func (c *Catalog) applyInsertRowBuffered(
 		return rowCopy, false, nil
 	}
 	return nil, false, nil
+}
+
+// applyInsertRowDirect is the per-row extraction of the legacy single-writer
+// INSERT path. Unlike the buffered path it commits the B-tree mutation
+// immediately and records the WAL entry before applying the change. The
+// helper encapsulates the full per-row contract — WAL append, PK conflict
+// resolution, BEFORE trigger execution, B-tree store, secondary-index
+// update with rollback-on-failure, vector index update, undo log entry,
+// and statement-level tracking — so insertLocked is left as a thin loop
+// that dispatches to either the buffered or direct apply path.
+//
+// The trickiest concern is the index-update-failure rollback: by the time
+// insertRowIndexes reports failure, the row has already been Put into the
+// B-tree. We must therefore (a) delete the row, and (b) walk back any
+// index entries that were successfully added during the failed
+// insertRowIndexes call. Both cleanups tolerate ErrKeyNotFound because
+// either tree may have been touched multiple times during a single
+// index-update cycle. Cleanup errors are wrapped into the original
+// failure so the caller still sees the root cause.
+//
+// Returns:
+//   - insertedRow: a defensive copy of rowValues when the caller needs it
+//     for RETURNING or AFTER triggers; nil otherwise.
+//   - stmtInsert:  the per-statement tracker entry the caller must append
+//     to stmtInserts for statement-level rollback.
+//   - skipRow:     true when the row was already taken by a conflicting
+//     statement (IGNORE semantics) — caller should not count it.
+//   - err:         any unrecoverable error. Caller breaks the loop and
+//     rolls back the statement.
+func (c *Catalog) applyInsertRowDirect(
+	ctx context.Context,
+	stmt *query.InsertStmt,
+	table *TableDef,
+	tree btree.TreeStore,
+	ts *catalogTxnState,
+	txnActive bool,
+	rowValues []interface{},
+	key string,
+	valueData []byte,
+	needsInsertedRows bool,
+) (insertedRow []interface{}, stmtInsert stmtInsertEntry, skipRow bool, err error) {
+	// Log to WAL before applying change (mirrors the buffered path's
+	// skip-WAL rationale in reverse: here durability is per-statement,
+	// so a crash mid-loop is recoverable from the WAL).
+	if c.wal != nil && txnActive {
+		walData, walErr := encodeLogicalWALData(stmt.Table, []byte(key), valueData)
+		if walErr != nil {
+			return nil, stmtInsertEntry{}, false, walErr
+		}
+		record := &storage.WALRecord{
+			TxnID: ts.txnID,
+			Type:  storage.WALInsert,
+			Data:  walData,
+		}
+		if appendErr := c.wal.Append(record); appendErr != nil {
+			return nil, stmtInsertEntry{}, false, appendErr
+		}
+	}
+
+	// Enforce PRIMARY KEY uniqueness - check if key already exists.
+	if pkSkip, pkErr := c.resolvePKConflict(tree, table, stmt, key); pkErr != nil {
+		return nil, stmtInsertEntry{}, false, pkErr
+	} else if pkSkip {
+		return nil, stmtInsertEntry{}, true, nil
+	}
+
+	if trigErr := c.executeTriggers(ctx, stmt.Table, "INSERT", "BEFORE", rowValues, nil, table.Columns); trigErr != nil {
+		return nil, stmtInsertEntry{}, false, fmt.Errorf("BEFORE INSERT trigger failed: %w", trigErr)
+	}
+
+	// Store in B+Tree.
+	var putErr error
+	if bt, ok := tree.(*btree.BTree); ok {
+		putErr = bt.PutString(key, valueData)
+	} else {
+		putErr = tree.Put([]byte(key), valueData)
+	}
+	if putErr != nil {
+		return nil, stmtInsertEntry{}, false, fmt.Errorf("failed to store row: %w", putErr)
+	}
+
+	// Update indexes and track changes for undo.
+	idxChanges, idxSkip, idxErr := c.insertRowIndexes(tree, table, stmt, key, rowValues, ts)
+	if idxErr != nil {
+		// Row was stored but index failed - delete the row and roll back
+		// any index entries that were successfully inserted in this iteration.
+		// Cleanup errors are wrapped into the original failure but do not
+		// shadow it, preserving the root cause for diagnostics.
+		if rbErr := deleteRowKey(tree, []byte(key)); rbErr != nil && !errors.Is(rbErr, btree.ErrKeyNotFound) {
+			idxErr = fmt.Errorf("%w; row cleanup failed: %v", idxErr, rbErr)
+		}
+		for _, undo := range idxChanges {
+			if !undo.wasAdded {
+				continue
+			}
+			idxTree2, ok := c.indexTrees[undo.indexName]
+			if !ok {
+				continue
+			}
+			if rbErr := idxTree2.Delete(undo.key); rbErr != nil && !errors.Is(rbErr, btree.ErrKeyNotFound) {
+				idxErr = fmt.Errorf("%w; index cleanup failed for %s: %v", idxErr, undo.indexName, rbErr)
+			}
+		}
+		return nil, stmtInsertEntry{}, false, idxErr
+	}
+	if idxSkip {
+		return nil, stmtInsertEntry{}, true, nil
+	}
+
+	// Update vector indexes.
+	if vErr := c.updateVectorIndexesForInsert(stmt.Table, rowValues, key); vErr != nil {
+		return nil, stmtInsertEntry{}, false, vErr
+	}
+
+	// Record undo log entry for rollback (after applying change).
+	if txnActive {
+		keyCopy := []byte(key)
+		c.appendUndoEntry(undoEntry{
+			action:       undoInsert,
+			tableName:    stmt.Table,
+			key:          keyCopy,
+			indexChanges: idxChanges,
+		})
+	}
+
+	// Build the per-statement tracker entry. The caller appends this to
+	// stmtInserts so rollbackStatementInserts can walk back the keys
+	// added by this statement on error.
+	si := stmtInsertEntry{key: []byte(key)}
+	for _, ic := range idxChanges {
+		si.idxKeys = append(si.idxKeys, struct {
+			idxName string
+			key     []byte
+		}{ic.indexName, ic.key})
+	}
+
+	var rowCopy []interface{}
+	if needsInsertedRows {
+		rowCopy = make([]interface{}, len(rowValues))
+		copy(rowCopy, rowValues)
+	}
+	return rowCopy, si, false, nil
 }
 
 // convertSelectToValueRows executes the SELECT part of INSERT...SELECT and
