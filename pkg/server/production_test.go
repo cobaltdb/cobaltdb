@@ -836,8 +836,7 @@ func BenchmarkProductionServerStartStop(b *testing.B) {
 }
 
 // TestProductionTransactionMetricsHandler exercises the
-// transactionMetricsHandler GET/POST contract. This was previously
-// covered by a coverage_padding-tagged file. The handler must return
+// transactionMetricsHandler GET/POST contract. The handler must return
 // 200 with JSON on GET and reject POST with 405.
 func TestProductionTransactionMetricsHandler(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})

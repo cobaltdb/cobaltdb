@@ -13,10 +13,9 @@
 | Toplam Paketler | 24 |
 | Üretim Kod Dosyaları | 107 |
 | Toplam Üretim Kod | **68,942 satır** |
-| Test Dosyaları | 600+ |
-| Test Fonksiyonları | 7,100+ |
-| Test Coverage (lean) | **78.4%** |
-| Test Coverage (full +coverage_padding) | **85.0%** |
+| Test Dosyaları | 470+ (Phase 3 sonrası) |
+| Test Fonksiyonları | 5,800+ (Phase 3 sonrası) |
+| Test Coverage | **69.3%** (tek kaynak — lean/full ayrımı kalktı) |
 | Go Versiyonu | 1.25.0 → toolchain 1.26.3 |
 
 ---
@@ -192,8 +191,8 @@ commitMu[64] — sharded commit locks by (table, key) hash
 ## 4. Test Suite Durumu
 
 ### İyileştirmeler (2026-05-29)
-- `coverage_padding` build tag ile 207 dosya (~102K LOC) karantinaya alındı
-- Lean coverage: **78.4%** → Full coverage: **85.0%**
+- ~~`coverage_padding` build tag ile 207 dosya (~102K LOC) karantinaya alındı~~ — Phase 3'te kaldırıldı
+- ~~Lean coverage: **78.4%** → Full coverage: **85.0%**~~ — Phase 3'te ayrım kalktı, tek coverage: **69.3%**
 
 ### Açık İşler
 - **Incremental thin-out:** Karantina testlerini table-driven test'lerle değiştir → lean 85%+'a çıkar
@@ -266,9 +265,8 @@ toolchain: go1.26.3
 ```
 
 ### Build Tags
-- `coverage_padding` — 207 coverage dosyasını etkinleştirir
 - `wasm_experimental` — WASM paketini etkinleştirir
-- `lean` — Sadece focused test'leri çalıştırır
+- ~~`coverage_padding`~~ — Phase 3'te kaldırıldı (tüm padding dosyaları gereksizdi)
 
 ### CI/CD
 - `make verify` — build + vet + test (core gate)
@@ -314,7 +312,7 @@ toolchain: go1.26.3
 
 1. **Expression visitor** — Merkezi AST traversal ekle (parser/optimizer/advisor)
 2. **`decodeVisibleRow` extraction** — Kod tekrarını azalt
-3. **Test thin-out** — coverage_padding dosyalarını table-driven test'lerle değiştirmeye başla
+3. ~~**Test thin-out** — coverage_padding dosyalarını table-driven test'lerle değiştirmeye başla~~ — Phase 3'te tamamlandı (padding tamamen kaldırıldı)
 4. **Lock ordering audit** — `txn/manager.go`'daki lock ordering invariant'ı doğrula
 
 ### Kısa Vadeli (1-2 Sprint)
