@@ -1340,60 +1340,18 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		if useBuffer {
 			// Buffered write path: defer B-tree mutation to commit time.
 			// Skip WAL — txn.Manager handles durability at commit.
-
-			// Check PK conflict against committed data AND buffered writes.
-			if skip, err := c.resolvePKConflict(tree, table, stmt, key); err != nil {
-				insertErr = err
-				break
-			} else if skip {
-				continue
-			}
-			if c.keyInPendingWrites(stmt.Table, key) {
-				if stmt.ConflictAction == query.ConflictIgnore {
-					continue
-				}
-				insertErr = fmt.Errorf("UNIQUE constraint failed: duplicate primary key value")
-				break
-			}
-
-			// Record the value we read (nil if absent, soft-deleted row if
-			// deleted) so that commit-time validation detects any concurrent
-			// change to this key.
-			var existingValue []byte
-			if bt, ok := tree.(*btree.BTree); ok {
-				existingValue, _ = bt.GetString(key)
-			} else {
-				existingValue, _ = tree.Get([]byte(key))
-			}
-			c.recordManagerReadTs(ts, stmt.Table, key, existingValue)
-
-			// Build index updates for commit-time application.
-			idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, key, rowValues, ts)
-			if idxErr != nil {
-				insertErr = idxErr
+			bufferedRow, skipRow, bufferedErr := c.applyInsertRowBuffered(
+				stmt, table, tree, ts, rowValues, key, valueData, needsInsertedRows,
+			)
+			if bufferedErr != nil {
+				insertErr = bufferedErr
 				break
 			}
 			if skipRow {
 				continue
 			}
-
-			// Buffer the write for commit-time application.
-			c.appendPendingWriteTs(ts, PendingWrite{
-				TreeName:     stmt.Table,
-				Key:          key,
-				Value:        valueData,
-				IndexUpdates: idxUpdates,
-			})
-
-			// Also buffer in the Manager transaction's WriteSet for conflict detection.
-			if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
-				mt.SetWrite(stmt.Table, key, valueData)
-			}
-
-			if needsInsertedRows {
-				rowCopy := make([]interface{}, len(rowValues))
-				copy(rowCopy, rowValues)
-				insertedRows = append(insertedRows, rowCopy)
+			if bufferedRow != nil {
+				insertedRows = append(insertedRows, bufferedRow)
 			}
 			rowsAffected++
 			continue
@@ -1708,6 +1666,89 @@ func (c *Catalog) finalizeInsert(
 	}
 
 	return nil
+}
+
+// applyInsertRowBuffered buffers a single INSERT row for commit-time
+// application. Returns:
+//
+//   - insertedRow: a defensive copy of rowValues if needsInsertedRows is
+//     true and the row was actually buffered; nil otherwise (skipped,
+//     conflict, or no caller wanted a copy).
+//   - skipRow:     true if the caller should `continue` to the next row
+//     (IGNORE/REPLACE skip, PK conflict, index-skip). The caller must
+//     still pass a non-nil skipRow=true back up so finalizeInsert does
+//     not see the row.
+//   - err:         a statement-level error; the caller must `break` the
+//     per-row loop and roll back.
+//
+// This is the per-row extraction of the buffered INSERT path that was
+// previously inline in insertLocked. It defers all B-tree and index
+// mutations to commit time; WAL is skipped because the txn.Manager
+// handles durability at commit. The PK conflict and pending-write
+// checks here use the post-prepare values (committed tree + buffered
+// writes) so the row is consistent with the in-txn view.
+func (c *Catalog) applyInsertRowBuffered(
+	stmt *query.InsertStmt,
+	table *TableDef,
+	tree btree.TreeStore,
+	ts *catalogTxnState,
+	rowValues []interface{},
+	key string,
+	valueData []byte,
+	needsInsertedRows bool,
+) (insertedRow []interface{}, skipRow bool, err error) {
+	// Check PK conflict against committed data AND buffered writes.
+	if skip, err := c.resolvePKConflict(tree, table, stmt, key); err != nil {
+		return nil, false, err
+	} else if skip {
+		return nil, true, nil
+	}
+	if c.keyInPendingWrites(stmt.Table, key) {
+		if stmt.ConflictAction == query.ConflictIgnore {
+			return nil, true, nil
+		}
+		return nil, false, fmt.Errorf("UNIQUE constraint failed: duplicate primary key value")
+	}
+
+	// Record the value we read (nil if absent, soft-deleted row if
+	// deleted) so that commit-time validation detects any concurrent
+	// change to this key.
+	var existingValue []byte
+	if bt, ok := tree.(*btree.BTree); ok {
+		existingValue, _ = bt.GetString(key)
+	} else {
+		existingValue, _ = tree.Get([]byte(key))
+	}
+	c.recordManagerReadTs(ts, stmt.Table, key, existingValue)
+
+	// Build index updates for commit-time application.
+	idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, key, rowValues, ts)
+	if idxErr != nil {
+		return nil, false, idxErr
+	}
+	if skipRow {
+		return nil, true, nil
+	}
+
+	// Buffer the write for commit-time application.
+	c.appendPendingWriteTs(ts, PendingWrite{
+		TreeName:     stmt.Table,
+		Key:          key,
+		Value:        valueData,
+		IndexUpdates: idxUpdates,
+	})
+
+	// Also buffer in the Manager transaction's WriteSet for conflict detection.
+	if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
+		mt.SetWrite(stmt.Table, key, valueData)
+	}
+
+	if needsInsertedRows {
+		rowCopy := make([]interface{}, len(rowValues))
+		copy(rowCopy, rowValues)
+		return rowCopy, false, nil
+	}
+	return nil, false, nil
 }
 
 // convertSelectToValueRows executes the SELECT part of INSERT...SELECT and
