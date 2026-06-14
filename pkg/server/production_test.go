@@ -834,3 +834,126 @@ func BenchmarkProductionServerStartStop(b *testing.B) {
 		ps.Stop()
 	}
 }
+
+// TestProductionTransactionMetricsHandler exercises the
+// transactionMetricsHandler GET/POST contract. This was previously
+// covered by a coverage_padding-tagged file. The handler must return
+// 200 with JSON on GET and reject POST with 405.
+func TestProductionTransactionMetricsHandler(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	config := &ProductionConfig{
+		Lifecycle: &LifecycleConfig{
+			ShutdownTimeout:      1 * time.Second,
+			DrainTimeout:         100 * time.Millisecond,
+			HealthCheckInterval:  500 * time.Millisecond,
+			StartupTimeout:       1 * time.Second,
+			EnableSignalHandling: false,
+		},
+		HealthAddr:         ":18421",
+		EnableHealthServer: true,
+	}
+
+	ps := NewProductionServer(db, config)
+	handler := ps.transactionMetricsHandler()
+
+	// GET should succeed with JSON.
+	req := httptest.NewRequest(http.MethodGet, "/transaction-metrics", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET: expected status 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("GET: expected Content-Type application/json, got %s", got)
+	}
+
+	// POST should be rejected.
+	req2 := httptest.NewRequest(http.MethodPost, "/transaction-metrics", nil)
+	w2 := httptest.NewRecorder()
+	handler(w2, req2)
+
+	resp2 := w2.Result()
+	if resp2.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST: expected status 405, got %d", resp2.StatusCode)
+	}
+}
+
+// TestProductionServerWait covers ProductionServer.Wait: it must
+// return after Stop() is called. Ported from the
+// coverage_boost_server3_test.go padding file.
+func TestProductionServerWait(t *testing.T) {
+	db, err := engine.Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &ProductionConfig{
+		Lifecycle: &LifecycleConfig{
+			ShutdownTimeout:      100 * time.Millisecond,
+			DrainTimeout:         50 * time.Millisecond,
+			HealthCheckInterval:  500 * time.Millisecond,
+			StartupTimeout:       1 * time.Second,
+			EnableSignalHandling: false,
+		},
+		EnableHealthServer: false,
+	}
+
+	ps := NewProductionServer(db, cfg)
+	if err := ps.Start(); err != nil {
+		t.Fatalf("Failed to start: %v", err)
+	}
+
+	done := make(chan bool)
+	go func() {
+		ps.Wait()
+		done <- true
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	go ps.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("Wait() did not return after Stop()")
+	}
+}
+
+// TestLifecycleWaitDirect covers Lifecycle.Wait in isolation from the
+// ProductionServer wrapper. Ported from coverage_boost_server3_test.go.
+func TestLifecycleWaitDirect(t *testing.T) {
+	lc := NewLifecycle(&LifecycleConfig{
+		ShutdownTimeout:      100 * time.Millisecond,
+		DrainTimeout:         50 * time.Millisecond,
+		HealthCheckInterval:  500 * time.Millisecond,
+		StartupTimeout:       1 * time.Second,
+		EnableSignalHandling: false,
+	})
+
+	if err := lc.Start(); err != nil {
+		t.Fatalf("Failed to start lifecycle: %v", err)
+	}
+
+	done := make(chan bool)
+	go func() {
+		lc.Wait()
+		done <- true
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	go lc.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("Lifecycle.Wait() did not return after Stop()")
+	}
+}
