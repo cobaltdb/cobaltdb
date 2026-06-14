@@ -93,3 +93,21 @@ func (c *shortReplicationConn) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// mockErrorReader returns the configured error from every Read call.
+type mockErrorReader struct {
+	err error
+}
+
+func (e *mockErrorReader) Read(p []byte) (int, error) {
+	return 0, e.err
+}
+
+// mockErrorWriter returns the configured error from every Write call.
+type mockErrorWriter struct {
+	err error
+}
+
+func (e *mockErrorWriter) Write(p []byte) (int, error) {
+	return 0, e.err
+}
