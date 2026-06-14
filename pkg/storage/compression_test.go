@@ -526,3 +526,146 @@ func TestCompressedBackendCompressNone(t *testing.T) {
 		t.Fatal("data mismatch")
 	}
 }
+
+// TestCompressedBackendLZ4NoneLevelRoundTrip covers compressLZ4 with
+// CompressionLevelNone — must return the original data unchanged.
+// Ported from coverage_boost_storage_test.go. Note: coverage_push_test.go
+// already exercises LZ4+NoneLevel in a parametric loop, but this test
+// keeps the LZ4 contract explicit in compression_test.go and asserts
+// the ratio is exactly 1.0.
+func TestCompressedBackendLZ4NoneLevelRoundTrip(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:   true,
+		Algorithm: CompressionAlgorithmLZ4,
+		Level:     CompressionLevelNone,
+		MinRatio:  1.0,
+	})
+	if err != nil {
+		t.Fatalf("NewCompressedBackend: %v", err)
+	}
+
+	data := bytes.Repeat([]byte("hello world "), 350)[:PageSize]
+	compressed, ratio, err := cb.compressLZ4(data)
+	if err != nil {
+		t.Fatalf("compressLZ4: %v", err)
+	}
+	if !bytes.Equal(compressed, data) {
+		t.Error("CompressionLevelNone should return original data")
+	}
+	if ratio != 1.0 {
+		t.Errorf("Expected ratio 1.0, got %f", ratio)
+	}
+}
+
+// TestCompressedBackendZstdNoneLevelRoundTrip covers compressZstd with
+// CompressionLevelNone. coverage_push_test.go exercises this case, but
+// we keep the explicit contract test in compression_test.go for parity
+// with the LZ4/Zlib variants. Ported from coverage_boost_storage_test.go.
+func TestCompressedBackendZstdNoneLevelRoundTrip(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:   true,
+		Algorithm: CompressionAlgorithmZstd,
+		Level:     CompressionLevelNone,
+		MinRatio:  1.0,
+	})
+	if err != nil {
+		t.Fatalf("NewCompressedBackend: %v", err)
+	}
+
+	data := bytes.Repeat([]byte("hello world "), 350)[:PageSize]
+	compressed, ratio, err := cb.compressZstd(data)
+	if err != nil {
+		t.Fatalf("compressZstd: %v", err)
+	}
+	if !bytes.Equal(compressed, data) {
+		t.Error("CompressionLevelNone should return original data")
+	}
+	if ratio != 1.0 {
+		t.Errorf("Expected ratio 1.0, got %f", ratio)
+	}
+}
+
+// TestCompressedBackendZlibNoneLevelRoundTrip covers compressZlib with
+// CompressionLevelNone. This is unique — coverage_push_test.go
+// exercises zlib with Fast/Default/Best but not NoneLevel. Ported
+// from coverage_boost_storage_test.go.
+func TestCompressedBackendZlibNoneLevelRoundTrip(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:   true,
+		Algorithm: CompressionAlgorithmZlib,
+		Level:     CompressionLevelNone,
+		MinRatio:  1.0,
+	})
+	if err != nil {
+		t.Fatalf("NewCompressedBackend: %v", err)
+	}
+
+	data := bytes.Repeat([]byte("hello world "), 350)[:PageSize]
+	compressed, ratio, err := cb.compressZlib(data)
+	if err != nil {
+		t.Fatalf("compressZlib: %v", err)
+	}
+	if !bytes.Equal(compressed, data) {
+		t.Error("CompressionLevelNone should return original data")
+	}
+	if ratio != 1.0 {
+		t.Errorf("Expected ratio 1.0, got %f", ratio)
+	}
+}
+
+// TestCompressedBackendDecompressZlibInvalid covers decompressZlib
+// with non-zlib input. Ported from coverage_boost_storage_test.go —
+// no untagged test exercised the decompressZlib error path.
+func TestCompressedBackendDecompressZlibInvalid(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, DefaultCompressionConfig())
+	if err != nil {
+		t.Fatalf("NewCompressedBackend: %v", err)
+	}
+
+	_, err = cb.decompressZlib([]byte("not valid zlib"), PageSize)
+	if err == nil {
+		t.Error("Expected error for invalid zlib data")
+	}
+}
+
+// TestCompressedBackendDecompressLZ4Invalid covers decompressLZ4 with
+// non-LZ4 input. Ported from coverage_boost_storage_test.go.
+func TestCompressedBackendDecompressLZ4Invalid(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:   true,
+		Algorithm: CompressionAlgorithmLZ4,
+		Level:     CompressionLevelFast,
+	})
+	if err != nil {
+		t.Fatalf("NewCompressedBackend: %v", err)
+	}
+
+	_, err = cb.decompressLZ4([]byte("not valid lz4"), PageSize)
+	if err == nil {
+		t.Error("Expected error for invalid LZ4 data")
+	}
+}
+
+// TestCompressedBackendDecompressZstdInvalid covers decompressZstd
+// with non-Zstd input. Ported from coverage_boost_storage_test.go.
+func TestCompressedBackendDecompressZstdInvalid(t *testing.T) {
+	mem := NewMemory()
+	cb, err := NewCompressedBackend(mem, &CompressionConfig{
+		Enabled:   true,
+		Algorithm: CompressionAlgorithmZstd,
+		Level:     CompressionLevelFast,
+	})
+	if err != nil {
+		t.Fatalf("NewCompressedBackend: %v", err)
+	}
+
+	_, err = cb.decompressZstd([]byte("not valid zstd"), PageSize)
+	if err == nil {
+		t.Error("Expected error for invalid zstd data")
+	}
+}

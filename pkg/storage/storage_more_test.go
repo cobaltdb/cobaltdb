@@ -237,3 +237,53 @@ func TestPageSetPinned(t *testing.T) {
 		t.Error("Page should not be pinned after SetPinned(false)")
 	}
 }
+
+// TestOpenDiskInvalidPath covers OpenDisk with a path that cannot be
+// created (nonexistent parent). Ported from coverage_boost_storage_test.go
+// — no untagged test exercised OpenDisk with an invalid path.
+func TestOpenDiskInvalidPath(t *testing.T) {
+	_, err := OpenDisk("/nonexistent/path/that/cannot/be/created/test.db")
+	if err == nil {
+		t.Error("Expected error for invalid disk path")
+	}
+}
+
+// TestOpenWALInvalidPath covers OpenWAL with an invalid path.
+// Ported from coverage_boost_storage_test.go.
+func TestOpenWALInvalidPath(t *testing.T) {
+	_, err := OpenWAL("/nonexistent/path/that/cannot/be/created/test.wal")
+	if err == nil {
+		t.Error("Expected error for invalid WAL path")
+	}
+}
+
+// TestDiskBackendCloseIdempotent covers calling Close twice on a
+// disk backend. The second close should not panic. Ported from
+// coverage_boost_storage_test.go.
+func TestDiskBackendCloseIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	backend, err := OpenDisk(path)
+	if err != nil {
+		t.Fatalf("OpenDisk: %v", err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("First close: %v", err)
+	}
+	// Second close should not panic
+	if err := backend.Close(); err != nil {
+		t.Logf("Second close returned error (expected): %v", err)
+	}
+}
+
+// TestMemoryBackendCloseIdempotent covers double-close on a memory
+// backend. Ported from coverage_boost_storage_test.go.
+func TestMemoryBackendCloseIdempotent(t *testing.T) {
+	mem := NewMemory()
+	if err := mem.Close(); err != nil {
+		t.Fatalf("First close: %v", err)
+	}
+	if err := mem.Close(); err != nil {
+		t.Logf("Second close returned error (expected): %v", err)
+	}
+}

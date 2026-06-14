@@ -361,3 +361,98 @@ func containsBytes(haystack, needle []byte) bool {
 	}
 	return false
 }
+
+// TestWALDecryptDataShortCiphertext covers decryptData when the input
+// is shorter than the nonce. Ported from coverage_boost_storage_test.go
+// — the padding file targeted encryptData/decryptData edge cases that
+// no untagged test exercised.
+func TestWALDecryptDataShortCiphertext(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	defer wal.Close()
+
+	c := makeTestCipher(t)
+	wal.SetEncryptionCipher(c)
+
+	_, err = wal.decryptData([]byte{0x01}, nil)
+	if err == nil {
+		t.Error("Expected error for short ciphertext")
+	}
+}
+
+// TestWALEncryptDataEmptyPlaintext covers encryptData with empty input.
+// Ported from coverage_boost_storage_test.go.
+func TestWALEncryptDataEmptyPlaintext(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	defer wal.Close()
+
+	c := makeTestCipher(t)
+	wal.SetEncryptionCipher(c)
+
+	out, err := wal.encryptData([]byte{}, nil)
+	if err != nil {
+		t.Fatalf("encryptData empty: %v", err)
+	}
+	if len(out) != 0 {
+		t.Errorf("Expected empty output, got %d bytes", len(out))
+	}
+}
+
+// TestWALDecryptDataEmptyCiphertext covers decryptData with empty input.
+// Ported from coverage_boost_storage_test.go.
+func TestWALDecryptDataEmptyCiphertext(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	defer wal.Close()
+
+	c := makeTestCipher(t)
+	wal.SetEncryptionCipher(c)
+
+	out, err := wal.decryptData([]byte{}, nil)
+	if err != nil {
+		t.Fatalf("decryptData empty: %v", err)
+	}
+	if len(out) != 0 {
+		t.Errorf("Expected empty output, got %d bytes", len(out))
+	}
+}
+
+// TestWALDecryptDataCorrupted covers decryptData with non-empty but
+// undecryptable ciphertext. The padding file used a pattern of
+// incremental bytes; here we use a fixed-size buffer filled with
+// bytes that will fail the AEAD authentication check.
+// Ported from coverage_boost_storage_test.go.
+func TestWALDecryptDataCorrupted(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	defer wal.Close()
+
+	c := makeTestCipher(t)
+	wal.SetEncryptionCipher(c)
+
+	corrupted := make([]byte, c.NonceSize()+16)
+	for i := range corrupted {
+		corrupted[i] = byte(i)
+	}
+	_, err = wal.decryptData(corrupted, nil)
+	if err == nil {
+		t.Error("Expected error for corrupted ciphertext")
+	}
+}

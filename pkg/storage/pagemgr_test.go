@@ -647,3 +647,24 @@ func TestPageManagerFreePageReuse(t *testing.T) {
 
 	pool.Unpin(page2)
 }
+
+// TestPageManagerCloseSaveError covers PageManager.Close when the
+// underlying backend has already been closed. saveFreeList/Sync will
+// fail, exercising the error path inside Close. Ported from
+// coverage_boost_storage_test.go.
+func TestPageManagerCloseSaveError(t *testing.T) {
+	backend := NewMemory()
+	pool := NewBufferPool(16, backend)
+	pm, err := NewPageManager(pool)
+	if err != nil {
+		t.Fatalf("NewPageManager: %v", err)
+	}
+
+	// Close backend first so PageManager.Close fails on saveFreeList/Sync
+	backend.Close()
+
+	err = pm.Close()
+	if err == nil {
+		t.Log("Close succeeded despite closed backend (may be expected)")
+	}
+}

@@ -1233,3 +1233,107 @@ func TestWALAppendBatchWithoutSync(t *testing.T) {
 		t.Errorf("expected LSN=3 after recover, got %d", wal2.LSN())
 	}
 }
+
+// TestWALCheckpointClosed covers Checkpoint on a closed WAL.
+// Ported from coverage_boost_storage_test.go — no untagged test
+// exercised the closed-WAL path for Checkpoint.
+func TestWALCheckpointClosed(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+
+	backend := NewMemory()
+	pool := NewBufferPool(16, backend)
+	defer pool.Close()
+
+	wal.Close()
+
+	err = wal.Checkpoint(pool)
+	if err != ErrWALClosed {
+		t.Errorf("Expected ErrWALClosed, got %v", err)
+	}
+}
+
+// TestWALAppendInternalClosed covers the Append path on a closed WAL.
+// TestWALAppendBatchAfterCloseReturnsErrWALClosed exercises the batch
+// form; this is the single-record form via the public Append entry.
+// Ported from coverage_boost_storage_test.go.
+func TestWALAppendInternalClosed(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	wal.Close()
+
+	err = wal.Append(&WALRecord{
+		TxnID:  1,
+		Type:   WALInsert,
+		PageID: 1,
+		Data:   []byte("test"),
+	})
+	if err != ErrWALClosed {
+		t.Errorf("Expected ErrWALClosed, got %v", err)
+	}
+}
+
+// TestWALAppendWithoutSyncClosed covers AppendWithoutSync on a closed
+// WAL. Ported from coverage_boost_storage_test.go.
+func TestWALAppendWithoutSyncClosed(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	wal.Close()
+
+	err = wal.AppendWithoutSync(&WALRecord{
+		TxnID:  1,
+		Type:   WALInsert,
+		PageID: 1,
+		Data:   []byte("test"),
+	})
+	if err != ErrWALClosed {
+		t.Errorf("Expected ErrWALClosed, got %v", err)
+	}
+}
+
+// TestWALReadLSNClosed covers readLSN on a closed WAL. Ported from
+// coverage_boost_storage_test.go.
+func TestWALReadLSNClosed(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	wal.Close()
+
+	err = wal.readLSN()
+	if err == nil {
+		t.Error("Expected error for readLSN on closed WAL")
+	}
+}
+
+// TestWALCloseIdempotent covers calling Close twice on a WAL.
+// Ported from coverage_boost_storage_test.go — the existing untagged
+// tests always call Close once.
+func TestWALCloseIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("OpenWAL: %v", err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatalf("First close: %v", err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Logf("Second close returned error (expected): %v", err)
+	}
+}
