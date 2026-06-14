@@ -815,70 +815,109 @@ func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt
 	fke := NewForeignKeyEnforcer(c)
 	untrackReferenceRows := fke.trackDeletingReferenceRows(stmt.Table, entries)
 	defer untrackReferenceRows()
-	for _, entry := range entries {
-		key := entry.key
-		row := entry.row
+	for i := range entries {
+		entry := &entries[i]
 
-		// Enforce foreign key ON DELETE actions (same as direct path).
-		if fkErr := fke.OnDeleteRow(ctx, stmt.Table, row); fkErr != nil {
+		// Enforce foreign key ON DELETE before any side effect. The
+		// per-row buffered-write helper takes it from here.
+		if fkErr := fke.OnDeleteRow(ctx, stmt.Table, entry.row); fkErr != nil {
 			return fmt.Errorf("foreign key constraint: %w", fkErr)
 		}
 
-		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "BEFORE", nil, row, table.Columns); trigErr != nil {
-			return fmt.Errorf("BEFORE DELETE trigger failed: %w", trigErr)
-		}
-
-		if err := c.updateVectorIndexesForDelete(stmt.Table, string(key)); err != nil {
+		if err := c.applyDeleteEntryBuffered(ctx, table, stmt, entry, ts); err != nil {
 			return err
 		}
-
-		// Soft-delete encoding.
-		vrow, err := decodeVersionedRow(entry.value, len(table.Columns))
-		if err != nil {
-			return fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
-		}
-		vrow.Version.markDeleted(time.Now())
-		deletedValueData, err := json.Marshal(vrow)
-		if err != nil {
-			return fmt.Errorf("failed to encode deleted row: %w", err)
-		}
-
-		var idxUpdates []PendingIndexUpdate
-		for idxName, idxDef := range c.indexes {
-			if idxDef.TableName != stmt.Table || len(idxDef.Columns) == 0 {
-				continue
-			}
-			indexKey, ok := buildCompositeIndexKey(table, idxDef, entry.row)
-			if !ok || indexKey == "" {
-				continue
-			}
-			var idxStorageKey []byte
-			if idxDef.Unique {
-				idxStorageKey = []byte(indexKey)
-			} else {
-				idxStorageKey = []byte(indexKey + "\x00" + string(key))
-			}
-			idxUpdates = append(idxUpdates, PendingIndexUpdate{
-				IndexName: idxName,
-				Key:       string(idxStorageKey),
-				IsDelete:  true,
-			})
-		}
-
-		c.appendPendingWriteTs(ts, PendingWrite{
-			TreeName:     entry.treeName,
-			Key:          string(key),
-			Value:        deletedValueData,
-			IndexUpdates: idxUpdates,
-		})
-		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
-			mt.SetWrite(entry.treeName, string(key), deletedValueData)
-		}
-
-		// Execute AFTER DELETE trigger per-row.
-		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "AFTER", nil, row, table.Columns); trigErr != nil {
-			return fmt.Errorf("AFTER DELETE trigger failed: %w", trigErr)
-		}
 	}
+	return nil
+}
+
+// applyDeleteEntryBuffered is the per-row extraction of the
+// buffered (MVCC) delete path. The caller has already constructed
+// the FK enforcer, started the untrackReferenceRows tracker, and
+// run the FK ON DELETE check. The helper runs BEFORE/AFTER DELETE
+// triggers, updates vector indexes, soft-encodes the row, builds
+// the per-row index updates, and appends the row to
+// ts.pendingWrites (plus the manager txn's WriteSet for conflict
+// detection).
+//
+// Unlike the direct path, this helper does NOT touch the B-tree
+// or append a WAL entry: the buffered write is deferred to
+// commit time so the B-tree mutation and WAL append happen as a
+// single batched operation. The per-row side effect is just the
+// in-memory pendingWrites list plus the manager txn's WriteSet.
+//
+// Returns:
+//   - err: any unrecoverable error. Caller breaks the loop and
+//     rolls back the pending writes.
+func (c *Catalog) applyDeleteEntryBuffered(
+	ctx context.Context,
+	table *TableDef,
+	stmt *query.DeleteStmt,
+	entry *deleteEntry,
+	ts *catalogTxnState,
+) error {
+	key := entry.key
+	row := entry.row
+
+	if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "BEFORE", nil, row, table.Columns); trigErr != nil {
+		return fmt.Errorf("BEFORE DELETE trigger failed: %w", trigErr)
+	}
+
+	if err := c.updateVectorIndexesForDelete(stmt.Table, string(key)); err != nil {
+		return err
+	}
+
+	// Soft-delete encoding: decode → mark deleted → re-encode.
+	vrow, err := decodeVersionedRow(entry.value, len(table.Columns))
+	if err != nil {
+		return fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
+	}
+	vrow.Version.markDeleted(time.Now())
+	deletedValueData, err := json.Marshal(vrow)
+	if err != nil {
+		return fmt.Errorf("failed to encode deleted row: %w", err)
+	}
+
+	// Build the per-row index updates. These are applied at commit
+	// time alongside the B-tree mutation.
+	var idxUpdates []PendingIndexUpdate
+	for idxName, idxDef := range c.indexes {
+		if idxDef.TableName != stmt.Table || len(idxDef.Columns) == 0 {
+			continue
+		}
+		indexKey, ok := buildCompositeIndexKey(table, idxDef, row)
+		if !ok || indexKey == "" {
+			continue
+		}
+		var idxStorageKey []byte
+		if idxDef.Unique {
+			idxStorageKey = []byte(indexKey)
+		} else {
+			idxStorageKey = []byte(indexKey + "\x00" + string(key))
+		}
+		idxUpdates = append(idxUpdates, PendingIndexUpdate{
+			IndexName: idxName,
+			Key:       string(idxStorageKey),
+			IsDelete:  true,
+		})
+	}
+
+	// Buffer the write for commit-time application.
+	c.appendPendingWriteTs(ts, PendingWrite{
+		TreeName:     entry.treeName,
+		Key:          string(key),
+		Value:        deletedValueData,
+		IndexUpdates: idxUpdates,
+	})
+	// Also buffer in the Manager transaction's WriteSet for conflict detection.
+	if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
+		mt.SetWrite(entry.treeName, string(key), deletedValueData)
+	}
+
+	// Execute AFTER DELETE trigger per-row.
+	if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "AFTER", nil, row, table.Columns); trigErr != nil {
+		return fmt.Errorf("AFTER DELETE trigger failed: %w", trigErr)
+	}
+
 	return nil
 }
