@@ -1889,7 +1889,8 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 		return cause
 	}
 
-	for _, entry := range entries {
+	for i := range entries {
+		entry := &entries[i]
 		oldKey := entry.key
 
 		// Re-encode row with new timestamp
@@ -1928,131 +1929,18 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 			return rollbackApplied(fmt.Errorf("foreign key constraint: %w", fkErr), nil)
 		}
 
-		// Log to WAL before applying change
-		if c.wal != nil && txnActive {
-			if pkChanged {
-				deleteData, err := encodeLogicalWALData(entry.treeName, oldKey, nil)
-				if err != nil {
-					return rollbackApplied(err, nil)
-				}
-				deleteRecord := &storage.WALRecord{
-					TxnID: ts.txnID,
-					Type:  storage.WALDelete,
-					Data:  deleteData,
-				}
-				if err := c.wal.Append(deleteRecord); err != nil {
-					return rollbackApplied(err, nil)
-				}
-				walData, err := encodeLogicalWALData(entry.treeName, newKey, newValueData)
-				if err != nil {
-					return rollbackApplied(err, nil)
-				}
-				insertRecord := &storage.WALRecord{
-					TxnID: ts.txnID,
-					Type:  storage.WALInsert,
-					Data:  walData,
-				}
-				if err := c.wal.Append(insertRecord); err != nil {
-					return rollbackApplied(err, nil)
-				}
-			} else {
-				walData, err := encodeLogicalWALData(entry.treeName, oldKey, newValueData)
-				if err != nil {
-					return rollbackApplied(err, nil)
-				}
-				record := &storage.WALRecord{
-					TxnID: ts.txnID,
-					Type:  storage.WALUpdate,
-					Data:  walData,
-				}
-				if err := c.wal.Append(record); err != nil {
-					return rollbackApplied(err, nil)
-				}
-			}
-		}
-
-		if pkChanged {
-			if err := updateTree.Delete(oldKey); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
-				return rollbackApplied(fmt.Errorf("failed to delete old row key during update: %w", err), nil)
-			}
-			if err := updateTree.Put(newKey, newValueData); err != nil {
-				return rollbackApplied(fmt.Errorf("failed to update row with new key: %w", err), &entry)
-			}
-			if fVal, ok := toFloat64(entry.newRow[pkColIdx]); ok {
-				pkVal := int64(fVal)
-				if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
-					atomic.StoreInt64(&table.AutoIncSeq, pkVal)
-				}
-			}
-		} else {
-			if err := updateTree.Put(oldKey, newValueData); err != nil {
-				return rollbackApplied(fmt.Errorf("failed to update row: %w", err), nil)
-			}
-		}
-
-		// Update indexes: remove old entries and add new ones, track for undo
-		var idxChanges []indexUndoEntry
-		for idxName, idxTree := range c.indexTrees {
-			idxDef := c.indexes[idxName]
-			if idxDef.TableName == stmt.Table && len(idxDef.Columns) > 0 {
-				oldIndexKey, oldOk := buildCompositeIndexKey(table, idxDef, entry.oldRow)
-				if oldOk {
-					var idxStorageKey []byte
-					if idxDef.Unique {
-						idxStorageKey = []byte(oldIndexKey)
-					} else {
-						idxStorageKey = []byte(oldIndexKey + "\x00" + string(entry.key))
-					}
-					oldIdxVal, getErr := idxTree.Get(idxStorageKey)
-					if err := idxTree.Delete(idxStorageKey); err != nil {
-						return rollbackApplied(fmt.Errorf("failed to delete from index %s: %w", idxName, err), &entry)
-					}
-					if txnActive && getErr == nil {
-						idxChanges = append(idxChanges, indexUndoEntry{
-							indexName: idxName,
-							key:       idxStorageKey,
-							oldValue:  oldIdxVal,
-							wasAdded:  false,
-						})
-					}
-				}
-				newIndexKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
-				if newOk {
-					var idxStorageKey []byte
-					if idxDef.Unique {
-						idxStorageKey = []byte(newIndexKey)
-						if newIndexKey != oldIndexKey {
-							if _, err := idxTree.Get(idxStorageKey); err == nil {
-								return rollbackApplied(fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName), &entry)
-							}
-						}
-					} else {
-						idxStorageKey = []byte(newIndexKey + "\x00" + string(newKey))
-					}
-					if err := idxTree.Put(idxStorageKey, newKey); err != nil {
-						return rollbackApplied(fmt.Errorf("failed to update index %s: %w", idxName, err), &entry)
-					}
-					if txnActive {
-						idxChanges = append(idxChanges, indexUndoEntry{
-							indexName: idxName,
-							key:       idxStorageKey,
-							wasAdded:  true,
-						})
-					}
-				}
-			}
-		}
-
-		// Update vector indexes
-		if err := c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, string(entry.key)); err != nil {
-			return rollbackApplied(err, &entry)
+		idxChanges, directErr := c.applyUpdateEntryDirect(
+			table, stmt, entry, oldKey, newKey, pkChanged, pkColIdx, ts, txnActive, newValueData,
+		)
+		if directErr != nil {
+			return rollbackApplied(directErr, entry)
 		}
 
 		// Record undo log entry for rollback
 		if txnActive {
 			oldValueData, marshalErr := json.Marshal(entry.oldRow)
 			if marshalErr != nil {
-				return rollbackApplied(fmt.Errorf("failed to encode undo log for row: %w", marshalErr), &entry)
+				return rollbackApplied(fmt.Errorf("failed to encode undo log for row: %w", marshalErr), entry)
 			}
 			keyCopy := make([]byte, len(oldKey))
 			copy(keyCopy, oldKey)
@@ -2064,9 +1952,175 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 				indexChanges: idxChanges,
 			})
 		}
-		appliedEntries = append(appliedEntries, entry)
+		appliedEntries = append(appliedEntries, *entry)
 	}
 	return nil
+}
+
+// applyUpdateEntryDirect is the per-row extraction of the legacy direct
+// update path. The caller has already computed the B-tree tree, detected
+// a PK change (if any), and produced the encoded new value. This helper
+// owns: WAL append, B-tree mutation, secondary-index update with
+// rollback-on-failure, and vector-index update.
+//
+// The trickiest concern is the secondary-index update: each index must
+// be deleted from the old position and inserted at the new position,
+// with a UNIQUE check on the new key for unique indexes. The helper
+// builds the idxChanges slice that the caller records in the undo
+// log entry, since undo-log recording is per-row and belongs at the
+// caller level. Errors from any of these sub-steps propagate up so
+// the caller's rollbackApplied closure can replay the undo log and
+// undo the FK tracker.
+//
+// Returns:
+//   - idxChanges: the per-index undo entries for this row, suitable
+//     for the undoLog.indexChanges field.
+//   - err: any unrecoverable error. Caller breaks the loop and rolls
+//     back the statement.
+func (c *Catalog) applyUpdateEntryDirect(
+	table *TableDef,
+	stmt *query.UpdateStmt,
+	entry *updateEntry,
+	oldKey, newKey []byte,
+	pkChanged bool,
+	pkColIdx int,
+	ts *catalogTxnState,
+	txnActive bool,
+	newValueData []byte,
+) ([]indexUndoEntry, error) {
+	// Log to WAL before applying change.
+	if c.wal != nil && txnActive {
+		if pkChanged {
+			deleteData, err := encodeLogicalWALData(entry.treeName, oldKey, nil)
+			if err != nil {
+				return nil, err
+			}
+			deleteRecord := &storage.WALRecord{
+				TxnID: ts.txnID,
+				Type:  storage.WALDelete,
+				Data:  deleteData,
+			}
+			if err := c.wal.Append(deleteRecord); err != nil {
+				return nil, err
+			}
+			walData, err := encodeLogicalWALData(entry.treeName, newKey, newValueData)
+			if err != nil {
+				return nil, err
+			}
+			insertRecord := &storage.WALRecord{
+				TxnID: ts.txnID,
+				Type:  storage.WALInsert,
+				Data:  walData,
+			}
+			if err := c.wal.Append(insertRecord); err != nil {
+				return nil, err
+			}
+		} else {
+			walData, err := encodeLogicalWALData(entry.treeName, oldKey, newValueData)
+			if err != nil {
+				return nil, err
+			}
+			record := &storage.WALRecord{
+				TxnID: ts.txnID,
+				Type:  storage.WALUpdate,
+				Data:  walData,
+			}
+			if err := c.wal.Append(record); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// B-tree mutation: delete + put on PK change, plain put otherwise.
+	updateTree, exists := c.tableTrees[entry.treeName]
+	if !exists {
+		return nil, fmt.Errorf("partition tree %s not found", entry.treeName)
+	}
+	if pkChanged {
+		if err := updateTree.Delete(oldKey); err != nil && !errors.Is(err, btree.ErrKeyNotFound) {
+			return nil, fmt.Errorf("failed to delete old row key during update: %w", err)
+		}
+		if err := updateTree.Put(newKey, newValueData); err != nil {
+			return nil, fmt.Errorf("failed to update row with new key: %w", err)
+		}
+		// Keep the auto-increment sequence at least as large as the
+		// new PK so future INSERTs that don't supply a PK value don't
+		// collide with the one we just used.
+		if pkColIdx >= 0 && pkColIdx < len(entry.newRow) {
+			if fVal, ok := toFloat64(entry.newRow[pkColIdx]); ok {
+				pkVal := int64(fVal)
+				if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
+					atomic.StoreInt64(&table.AutoIncSeq, pkVal)
+				}
+			}
+		}
+	} else {
+		if err := updateTree.Put(oldKey, newValueData); err != nil {
+			return nil, fmt.Errorf("failed to update row: %w", err)
+		}
+	}
+
+	// Update indexes: remove old entries and add new ones, track for undo.
+	var idxChanges []indexUndoEntry
+	for idxName, idxTree := range c.indexTrees {
+		idxDef := c.indexes[idxName]
+		if idxDef.TableName != stmt.Table || len(idxDef.Columns) == 0 {
+			continue
+		}
+		oldIndexKey, oldOk := buildCompositeIndexKey(table, idxDef, entry.oldRow)
+		if oldOk {
+			var idxStorageKey []byte
+			if idxDef.Unique {
+				idxStorageKey = []byte(oldIndexKey)
+			} else {
+				idxStorageKey = []byte(oldIndexKey + "\x00" + string(entry.key))
+			}
+			oldIdxVal, getErr := idxTree.Get(idxStorageKey)
+			if err := idxTree.Delete(idxStorageKey); err != nil {
+				return nil, fmt.Errorf("failed to delete from index %s: %w", idxName, err)
+			}
+			if txnActive && getErr == nil {
+				idxChanges = append(idxChanges, indexUndoEntry{
+					indexName: idxName,
+					key:       idxStorageKey,
+					oldValue:  oldIdxVal,
+					wasAdded:  false,
+				})
+			}
+		}
+		newIndexKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
+		if newOk {
+			var idxStorageKey []byte
+			if idxDef.Unique {
+				idxStorageKey = []byte(newIndexKey)
+				if newIndexKey != oldIndexKey {
+					if _, err := idxTree.Get(idxStorageKey); err == nil {
+						return nil, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
+					}
+				}
+			} else {
+				idxStorageKey = []byte(newIndexKey + "\x00" + string(newKey))
+			}
+			if err := idxTree.Put(idxStorageKey, newKey); err != nil {
+				return nil, fmt.Errorf("failed to update index %s: %w", idxName, err)
+			}
+			if txnActive {
+				idxChanges = append(idxChanges, indexUndoEntry{
+					indexName: idxName,
+					key:       idxStorageKey,
+					wasAdded:  true,
+				})
+			}
+		}
+	}
+
+	// Update vector indexes. Vector-index errors propagate so the
+	// caller can roll back the FK tracker.
+	if err := c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, string(entry.key)); err != nil {
+		return nil, err
+	}
+
+	return idxChanges, nil
 }
 
 func (c *Catalog) rollbackAppliedUpdateEntries(table *TableDef, tableName string, entries []updateEntry) error {
