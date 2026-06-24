@@ -432,6 +432,18 @@ func (p *Pool) waitForConnection(ctx context.Context) (*Conn, error) {
 	}
 }
 
+// sendToWaiter attempts a non-blocking send on the waiter channel.
+// Returns true if the waiter received the connection; false if the waiter
+// has already timed out (no receiver on the channel).
+func (p *Pool) sendToWaiter(waiter chan *Conn, conn *Conn) bool {
+	select {
+	case waiter <- conn:
+		return true
+	default:
+		return false
+	}
+}
+
 // release returns a connection to the pool
 func (p *Pool) release(conn *Conn) {
 	if atomic.LoadInt32(&p.closed) == 1 {
@@ -453,13 +465,16 @@ func (p *Pool) release(conn *Conn) {
 		atomic.AddInt32(&p.stats.WaitQueueLen, -1)
 		p.waitersMu.Unlock()
 
-		select {
-		case waiter <- conn:
+		// Non-blocking send: if the waiter timed out its goroutine has exited
+		// and there is no receiver for this channel. In that case, fall through
+		// to re-queue the connection.
+		if p.sendToWaiter(waiter, conn) {
+			// Waiter received the connection; decrement IdleConns since the
+			// connection is now in use (waiter will set inUse=1).
 			atomic.AddInt32(&p.stats.IdleConns, -1)
-			return
-		default:
-			// Waiter timed out, put back in pool
 		}
+		// If the waiter timed out, IdleConns (incremented above) is correct and
+		// the connection will be re-queued below.
 	} else {
 		p.waitersMu.Unlock()
 	}
