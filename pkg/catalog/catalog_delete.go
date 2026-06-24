@@ -276,34 +276,36 @@ func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt,
 			}
 		}
 		sort.Strings(pendingKeyList)
-		for _, k := range pendingKeyList {
-			key := []byte(k)
-			valueData := pendingKeys[k].Value
-			row, live, err := decodeLiveRow(valueData, len(table.Columns))
-			if err != nil {
-				return entries, rowsAffected, fmt.Errorf("delete: failed to decode pending row in table %s: %w", table.Name, err)
-			}
-			if !live {
-				continue
-			}
-			if stmt.Where != nil {
-				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+		if pendingKeys != nil {
+			for _, k := range pendingKeyList {
+				key := []byte(k)
+				valueData := pendingKeys[k].Value
+				row, live, err := decodeLiveRow(valueData, len(table.Columns))
 				if err != nil {
-					return entries, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+					return entries, rowsAffected, fmt.Errorf("delete: failed to decode pending row in table %s: %w", table.Name, err)
 				}
-				if !matched {
+				if !live {
 					continue
 				}
+				if stmt.Where != nil {
+					matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+					if err != nil {
+						return entries, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+					}
+					if !matched {
+						continue
+					}
+				}
+				if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
+					continue
+				}
+				keyCopy := make([]byte, len(key))
+				copy(keyCopy, key)
+				valueCopy := make([]byte, len(valueData))
+				copy(valueCopy, valueData)
+				entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
+				rowsAffected++
 			}
-			if allowed, rlsErr := c.checkRowAccessLocked(ctx, stmt.Table, table.Columns, row, security.PolicyDelete); rlsErr != nil || !allowed {
-				continue
-			}
-			keyCopy := make([]byte, len(key))
-			copy(keyCopy, key)
-			valueCopy := make([]byte, len(valueData))
-			copy(valueCopy, valueData)
-			entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
-			rowsAffected++
 		}
 	}
 

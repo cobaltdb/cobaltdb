@@ -582,24 +582,26 @@ func (c *Catalog) scanUpdateEntries(ctx context.Context, stmt *query.UpdateStmt,
 			}
 		}
 		sort.Strings(pendingKeyList)
-		for _, k := range pendingKeyList {
-			key := []byte(k)
-			valueData := pendingKeys[k].Value
-			row, live, err := decodeLiveRow(valueData, len(table.Columns))
-			if err != nil {
-				return entries, rowsAffected, fmt.Errorf("update: failed to decode pending row in table %s: %w", table.Name, err)
-			}
-			if !live {
-				continue
-			}
-			if stmt.Where != nil {
-				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
-				if err != nil || !matched {
+		if pendingKeys != nil {
+			for _, k := range pendingKeyList {
+				key := []byte(k)
+				valueData := pendingKeys[k].Value
+				row, live, err := decodeLiveRow(valueData, len(table.Columns))
+				if err != nil {
+					return entries, rowsAffected, fmt.Errorf("update: failed to decode pending row in table %s: %w", table.Name, err)
+				}
+				if !live {
 					continue
 				}
-			}
-			if err := c.processUpdateRowDataSnapshot(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected, snap, ts); err != nil {
-				return entries, rowsAffected, err
+				if stmt.Where != nil {
+					matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+					if err != nil || !matched {
+						continue
+					}
+				}
+				if err := c.processUpdateRowDataSnapshot(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected, snap, ts); err != nil {
+					return entries, rowsAffected, err
+				}
 			}
 		}
 	}
@@ -854,24 +856,26 @@ func (c *Catalog) resolveUpdateTargetRows(
 			}
 		}
 		sort.Strings(pendingKeyList)
-		for _, k := range pendingKeyList {
-			key := []byte(k)
-			valueData := pendingKeys[k].Value
-			row, live, err := decodeLiveRow(valueData, len(table.Columns))
-			if err != nil {
-				return nil, rowsAffected, fmt.Errorf("update: failed to decode pending row in table %s: %w", table.Name, err)
-			}
-			if !live {
-				continue
-			}
-			if stmt.Where != nil {
-				matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
-				if err != nil || !matched {
+		if pendingKeys != nil {
+			for _, k := range pendingKeyList {
+				key := []byte(k)
+				valueData := pendingKeys[k].Value
+				row, live, err := decodeLiveRow(valueData, len(table.Columns))
+				if err != nil {
+					return nil, rowsAffected, fmt.Errorf("update: failed to decode pending row in table %s: %w", table.Name, err)
+				}
+				if !live {
 					continue
 				}
-			}
-			if err := c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
-				return nil, rowsAffected, err
+				if stmt.Where != nil {
+					matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
+					if err != nil || !matched {
+						continue
+					}
+				}
+				if err := c.processUpdateRowData(ctx, table, tree, treeName, key, row, stmt, args, setColumnIndices, &entries, &rowsAffected); err != nil {
+					return nil, rowsAffected, err
+				}
 			}
 		}
 	}

@@ -1,4 +1,6 @@
-// REST API Example - Production-ready CobaltDB usage
+// REST API Example - for local development only.
+// WARNING: This example has no authentication. Do not use in production.
+// For production use, add JWT, Bearer token, or session-based auth.
 package main
 
 import (

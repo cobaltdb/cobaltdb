@@ -73,6 +73,11 @@ func quoteMySQLIdentifier(identifier string) (string, error) {
 	if len(identifier) > maxMySQLIdentifierBytes {
 		return "", fmt.Errorf("identifier too large")
 	}
+	// Reject SQL LIKE wildcard characters to prevent schema enumeration
+	// attacks via DESCRIBE table% or DESCRIBE table_
+	if strings.ContainsAny(identifier, "%_") {
+		return "", fmt.Errorf("identifier cannot contain wildcard characters")
+	}
 	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`, nil
 }
 

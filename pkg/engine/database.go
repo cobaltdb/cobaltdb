@@ -30,12 +30,19 @@ import (
 )
 
 func toUpperFast(s string) string {
+	// Fast path: scan for any lowercase character, then call ToUpper once.
+	// Avoids strings.ToUpper scanning the string twice when all caps.
+	hasLower := false
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 'a' && s[i] <= 'z' {
-			return strings.ToUpper(s)
+			hasLower = true
+			break
 		}
 	}
-	return s
+	if !hasLower {
+		return s
+	}
+	return strings.ToUpper(s)
 }
 
 var (
