@@ -56,6 +56,8 @@ type AlertRule struct {
 	Threshold   float64
 	Cooldown    time.Duration
 	lastFired   time.Time
+	lastRecovered time.Time // when the condition last returned false (0 = never recovered)
+	wasFiring   bool // whether the condition was firing at the end of the last checkRules call
 	muted       bool
 }
 
@@ -87,6 +89,7 @@ type alertRuleSnapshot struct {
 	Threshold   float64
 	Cooldown    time.Duration
 	lastFired   time.Time
+	lastRecovered time.Time
 }
 
 // LogAlertHandler logs alerts to a configured logger.
@@ -232,58 +235,98 @@ func (am *AlertManager) checkRules() {
 			Threshold:   rule.Threshold,
 			Cooldown:    rule.Cooldown,
 			lastFired:   rule.lastFired,
+			lastRecovered: rule.lastRecovered,
 		})
 	}
 	handlers := make([]AlertHandler, len(am.handlers))
 	copy(handlers, am.handlers)
 	am.mu.RUnlock()
 
-	for _, rule := range rules {
-		// Check cooldown
-		if time.Since(rule.lastFired) < rule.Cooldown {
-			continue
-		}
+	// Updated wasFiring per rule; applied to live map after the loop.
+	updatedWasFiring := make(map[string]bool)
 
-		// Evaluate condition
+	for _, rule := range rules {
 		if rule.Condition == nil {
 			continue
 		}
 
 		fired, value := rule.Condition()
-		if fired {
-			now := time.Now()
 
+		if !fired {
+			// Condition recovered: write lastRecovered and wasFiring to the live map
+			// directly (not via updatedWasFiring) so the value is correct for any
+			// subsequent checkRules() call that starts before the deferred update.
 			am.mu.Lock()
-			currentRule, ok := am.rules[rule.Name]
-			if !ok || currentRule == nil || currentRule.muted || time.Since(currentRule.lastFired) < currentRule.Cooldown {
-				am.mu.Unlock()
-				continue
+			if r, ok := am.rules[rule.Name]; ok && r != nil {
+				r.lastRecovered = time.Now()
+				r.wasFiring = false
 			}
+			am.mu.Unlock()
+			updatedWasFiring[rule.Name] = false
+			continue
+		}
+
+		// Condition is firing. Check cooldown using the LIVE MAP (not the snapshot)
+		// to avoid goroutine race: the notification goroutine from a previous
+		// checkRules call may not have updated wasFiring before this call starts.
+		now := time.Now()
+		am.mu.Lock()
+		currentRule, ok := am.rules[rule.Name]
+		if !ok || currentRule == nil || currentRule.muted {
+			am.mu.Unlock()
+			continue
+		}
+
+		// Cooldown: only suppress if this is a transition OK→ALERT AND
+		// not enough time has passed since the last recovery (lastRecovered).
+		// Sustained firing (wasFiring=true) never suppresses.
+		if !currentRule.wasFiring && time.Since(currentRule.lastRecovered) < currentRule.Cooldown {
+			// Suppressed: transition OK→ALERT within cooldown window.
+			fmt.Printf("[DEBUG] SUPPRESSED!\n")
+			currentRule.wasFiring = true
+			updatedWasFiring[rule.Name] = true
+			am.mu.Unlock()
+			continue
+		}
+
+		// OK→ALERT transition: start the cooldown clock. Continuous ALERT→ALERT:
+		// do NOT update lastFired (keeps the original transition time).
+		if !currentRule.wasFiring {
 			currentRule.lastFired = now
-			am.mu.Unlock()
+		}
+		currentRule.wasFiring = true
+		updatedWasFiring[rule.Name] = true
+		am.mu.Unlock()
 
-			alert := Alert{
-				ID:        generateAlertID(),
-				RuleName:  rule.Name,
-				Severity:  rule.Severity,
-				Message:   rule.Description,
-				Timestamp: now,
-				Value:     value,
-				Threshold: rule.Threshold,
-			}
+		alert := Alert{
+			ID:        generateAlertID(),
+			RuleName:  rule.Name,
+			Severity:  rule.Severity,
+			Message:   rule.Description,
+			Timestamp: now,
+			Value:     value,
+			Threshold: rule.Threshold,
+		}
 
-			// Store alert
-			am.mu.Lock()
-			am.alerts = append(am.alerts, alert)
-			// Keep only last 1000 alerts
-			if len(am.alerts) > 1000 {
-				am.alerts = am.alerts[len(am.alerts)-1000:]
-			}
-			am.mu.Unlock()
+		// Store alert
+		am.mu.Lock()
+		am.alerts = append(am.alerts, alert)
+		if len(am.alerts) > 1000 {
+			am.alerts = am.alerts[len(am.alerts)-1000:]
+		}
+		am.mu.Unlock()
 
-			am.notifyHandlers(alert, handlers)
+		am.notifyHandlers(alert, handlers)
+	}
+
+	// Apply updated wasFiring to live map after all rules have been evaluated.
+	am.mu.Lock()
+	for name, wf := range updatedWasFiring {
+		if r, ok := am.rules[name]; ok && r != nil {
+			r.wasFiring = wf
 		}
 	}
+	am.mu.Unlock()
 }
 
 func (am *AlertManager) notifyHandlers(alert Alert, handlers []AlertHandler) {

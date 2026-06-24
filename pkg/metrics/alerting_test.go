@@ -608,3 +608,149 @@ func TestGenerateAlertIDConcurrent(t *testing.T) {
 		t.Fatalf("expected %d IDs, got %d", goroutines, len(seen))
 	}
 }
+
+// countingAlertHandler counts invocations and signals a WaitGroup when Handle is called.
+type countingAlertHandler struct {
+	wg   *sync.WaitGroup
+	n    *int64
+}
+
+func (h *countingAlertHandler) Handle(Alert) error {
+	atomic.AddInt64(h.n, 1)
+	if h.wg != nil {
+		h.wg.Done()
+	}
+	return nil
+}
+
+// TestAlertManagerCooldownSustainedFiring verifies that the cooldown does NOT suppress
+// alerts when the condition keeps firing continuously. The cooldown should only suppress
+// rapid re-triggering AFTER a recovery, not during sustained firing.
+// Bug: the original code set lastFired on every fire but never reset it on recovery,
+// so sustained firing incorrectly appeared to "cooldown" and subsequent evaluations
+// would be suppressed until the cooldown elapsed.
+func TestAlertManagerCooldownSustainedFiring(t *testing.T) {
+	am := NewAlertManager()
+
+	var n int64
+	var wg sync.WaitGroup
+	h := &countingAlertHandler{wg: &wg, n: &n}
+
+	rule := &AlertRule{
+		Name:        "sustained",
+		Description: "Sustained test rule",
+		Severity:    SeverityWarning,
+		Condition:   func() (bool, float64) { return true, 1.0 },
+		Threshold:   0,
+		Cooldown:    5 * time.Minute, // deliberately long; should never suppress
+	}
+	am.RegisterRule(rule)
+	am.handlers = []AlertHandler{h}
+
+	// 10 evaluations with condition always firing
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		am.checkRules()
+		wg.Wait() // wait for goroutines to finish
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Original bug: only 1 alert would fire because lastFired was set on every fire
+	// but never reset on recovery, so time.Since(lastFired) stayed small and
+	// subsequent fires were suppressed by the long cooldown.
+	// Fix: wasFiring tracks whether the condition was firing in the previous
+	// evaluation; continuous firing bypasses the cooldown check.
+	if got := atomic.LoadInt64(&n); got < 5 {
+		t.Errorf("expected ≥5 alerts during sustained firing, got %d", got)
+	}
+}
+
+// TestAlertManagerCooldownSuppressesRapidReTrigger verifies that the cooldown DOES
+// suppress rapid re-triggering when the condition oscillates ALERT→OK→ALERT within
+// the cooldown window.
+func TestAlertManagerCooldownSuppressesRapidReTrigger(t *testing.T) {
+	am := NewAlertManager()
+
+	var n int64
+	var wg sync.WaitGroup
+	h := &countingAlertHandler{wg: &wg, n: &n}
+
+	rule := &AlertRule{
+		Name:        "rapid",
+		Description: "Rapid oscillation test rule",
+		Severity:    SeverityWarning,
+		Condition:   func() (bool, float64) { return true, 1.0 },
+		Threshold:   0,
+		Cooldown:    1 * time.Second,
+	}
+	am.RegisterRule(rule)
+	am.handlers = []AlertHandler{h}
+
+	// First fire
+	wg.Add(1)
+	am.checkRules()
+	wg.Wait()
+
+	// Recover immediately: must update am.rules["rapid"] (clone) not local rule.
+	am.mu.Lock()
+	am.rules["rapid"].Condition = func() (bool, float64) { return false, 0 }
+	am.mu.Unlock()
+	am.checkRules()
+
+	// Fire again immediately (within cooldown window) — should be suppressed
+	am.mu.Lock()
+	am.rules["rapid"].Condition = func() (bool, float64) { return true, 1.0 }
+	am.mu.Unlock()
+	am.checkRules() // no wg.Add: if suppressed no goroutine runs; if fired goroutine is orphaned
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt64(&n); got != 1 {
+		t.Errorf("rapid re-trigger within cooldown: got %d alerts, want 1 (suppressed)", got)
+	}
+}
+
+// TestAlertManagerCooldownAllowsFireAfterCooldown verifies that after the cooldown
+// elapses, the alert fires normally.
+func TestAlertManagerCooldownAllowsFireAfterCooldown(t *testing.T) {
+	am := NewAlertManager()
+
+	var n int64
+	var wg sync.WaitGroup
+	h := &countingAlertHandler{wg: &wg, n: &n}
+
+	rule := &AlertRule{
+		Name:        "after",
+		Description: "Fire after cooldown test rule",
+		Severity:    SeverityWarning,
+		Condition:   func() (bool, float64) { return true, 1.0 },
+		Threshold:   0,
+		Cooldown:    50 * time.Millisecond,
+	}
+	am.RegisterRule(rule)
+	am.handlers = []AlertHandler{h}
+
+	// First fire
+	wg.Add(1)
+	am.checkRules()
+	wg.Wait()
+
+	// Recover (no alert fires, no goroutine)
+	am.mu.Lock()
+	am.rules["after"].Condition = func() (bool, float64) { return false, 0 }
+	am.mu.Unlock()
+	am.checkRules()
+
+	// Wait for cooldown to elapse
+	time.Sleep(75 * time.Millisecond)
+
+	// Fire again after cooldown — should fire
+	am.mu.Lock()
+	am.rules["after"].Condition = func() (bool, float64) { return true, 1.0 }
+	am.mu.Unlock()
+	wg.Add(1)
+	am.checkRules()
+	wg.Wait()
+
+	if got := atomic.LoadInt64(&n); got != 2 {
+		t.Errorf("fire after cooldown elapsed: got %d alerts, want 2", got)
+	}
+}
