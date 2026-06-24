@@ -498,81 +498,7 @@ func (c *Catalog) CommitTransaction() error {
 
 				// Lock all touched shards in sorted order, validate, commit through
 				// the Manager, apply writes, then unlock.
-				if err := func() error {
-					sortedShards := make([]int, 0, len(shardSet))
-					for s := range shardSet {
-						sortedShards = append(sortedShards, s)
-					}
-					sort.Ints(sortedShards)
-					for _, s := range sortedShards {
-						c.commitMu[s].Lock()
-					}
-					defer func() {
-						for i := len(sortedShards) - 1; i >= 0; i-- {
-							c.commitMu[sortedShards[i]].Unlock()
-						}
-					}()
-
-					// Validate reads and commit through the Manager while holding locks.
-					if len(ts.readValues) > 0 {
-						for wk, originalValue := range ts.readValues {
-							tree, exists := ts.treeCache[wk.TreeName]
-							if !exists || tree == nil {
-								continue
-							}
-							currentValue, err := readCommitValidationValue(tree, wk.TreeName, wk.Key)
-							if err != nil {
-								return err
-							}
-							if !bytes.Equal(originalValue, currentValue) {
-								return txn.ErrConflict
-							}
-						}
-					}
-
-					for name := range tableKeys {
-						if _, exists := tableTrees[name]; !exists {
-							return fmt.Errorf("partition tree %s not found", name)
-						}
-					}
-					for name := range idxPuts {
-						if _, exists := indexTrees[name]; !exists {
-							return fmt.Errorf("index tree %s not found", name)
-						}
-					}
-					for name := range idxDels {
-						if _, exists := indexTrees[name]; !exists {
-							return fmt.Errorf("index tree %s not found", name)
-						}
-					}
-
-					if err := mt.Commit(); err != nil {
-						return fmt.Errorf("txn manager commit: %w", err)
-					}
-
-					// Apply writes while still holding locks.
-					for name, keys := range tableKeys {
-						tree := tableTrees[name]
-						if err := tree.PutBatch(keys, tableVals[name]); err != nil {
-							return fmt.Errorf("failed to apply buffered writes to %s: %w", name, err)
-						}
-					}
-					for name, keys := range idxPuts {
-						tree := indexTrees[name]
-						if err := tree.PutBatch(keys, idxPutVals[name]); err != nil {
-							return fmt.Errorf("failed to apply buffered index writes to %s: %w", name, err)
-						}
-					}
-					for name, keys := range idxDels {
-						tree := indexTrees[name]
-						if err := tree.DeleteBatch(keys); err != nil {
-							return fmt.Errorf("failed to apply buffered index deletes to %s: %w", name, err)
-						}
-					}
-					ts.pendingWrites = ts.pendingWrites[:0]
-					ts.pendingWriteMap = nil
-					return nil
-				}(); err != nil {
+				if err := c.applyCommittedBatchWrites(ts, mt, tableKeys, tableVals, idxPuts, idxPutVals, idxDels, tableTrees, indexTrees, shardSet); err != nil {
 					return err
 				}
 			}
@@ -607,6 +533,97 @@ func (c *Catalog) CommitTransaction() error {
 	if ts != nil {
 		c.putTxnState(ts)
 	}
+	return nil
+}
+
+// applyCommittedBatchWrites acquires all shards in sorted order, validates reads
+// (SSI), commits through the Manager, applies the batch of table/index writes,
+// and clears pending writes while holding the locks. The deferred unlock runs in
+// reverse shard order. Callers hold no catalog locks on entry.
+func (c *Catalog) applyCommittedBatchWrites(
+	ts *catalogTxnState,
+	mt *txn.Transaction,
+	tableKeys map[string][][]byte,
+	tableVals map[string][][]byte,
+	idxPuts map[string][][]byte,
+	idxPutVals map[string][][]byte,
+	idxDels map[string][][]byte,
+	tableTrees map[string]btree.TreeStore,
+	indexTrees map[string]btree.TreeStore,
+	shardSet map[int]struct{},
+) error {
+	sortedShards := make([]int, 0, len(shardSet))
+	for s := range shardSet {
+		sortedShards = append(sortedShards, s)
+	}
+	sort.Ints(sortedShards)
+	for _, s := range sortedShards {
+		c.commitMu[s].Lock()
+	}
+	defer func() {
+		for i := len(sortedShards) - 1; i >= 0; i-- {
+			c.commitMu[sortedShards[i]].Unlock()
+		}
+	}()
+
+	// Validate reads and commit through the Manager while holding locks.
+	if len(ts.readValues) > 0 {
+		for wk, originalValue := range ts.readValues {
+			tree, exists := ts.treeCache[wk.TreeName]
+			if !exists || tree == nil {
+				continue
+			}
+			currentValue, err := readCommitValidationValue(tree, wk.TreeName, wk.Key)
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(originalValue, currentValue) {
+				return txn.ErrConflict
+			}
+		}
+	}
+
+	for name := range tableKeys {
+		if _, exists := tableTrees[name]; !exists {
+			return fmt.Errorf("partition tree %s not found", name)
+		}
+	}
+	for name := range idxPuts {
+		if _, exists := indexTrees[name]; !exists {
+			return fmt.Errorf("index tree %s not found", name)
+		}
+	}
+	for name := range idxDels {
+		if _, exists := indexTrees[name]; !exists {
+			return fmt.Errorf("index tree %s not found", name)
+		}
+	}
+
+	if err := mt.Commit(); err != nil {
+		return fmt.Errorf("txn manager commit: %w", err)
+	}
+
+	// Apply writes while still holding locks.
+	for name, keys := range tableKeys {
+		tree := tableTrees[name]
+		if err := tree.PutBatch(keys, tableVals[name]); err != nil {
+			return fmt.Errorf("failed to apply buffered writes to %s: %w", name, err)
+		}
+	}
+	for name, keys := range idxPuts {
+		tree := indexTrees[name]
+		if err := tree.PutBatch(keys, idxPutVals[name]); err != nil {
+			return fmt.Errorf("failed to apply buffered index writes to %s: %w", name, err)
+		}
+	}
+	for name, keys := range idxDels {
+		tree := indexTrees[name]
+		if err := tree.DeleteBatch(keys); err != nil {
+			return fmt.Errorf("failed to apply buffered index deletes to %s: %w", name, err)
+		}
+	}
+	ts.pendingWrites = ts.pendingWrites[:0]
+	ts.pendingWriteMap = nil
 	return nil
 }
 
