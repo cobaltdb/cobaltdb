@@ -165,6 +165,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 
 **Low priority**
 - **`pkg/pool` Config.Validate() [FIXED 2026-05-29]** — now checks non-positive MaxIdleTime/MaxLifetime/HealthCheckInterval/HealthCheckTimeout/AcquireTimeout. — fixed 2026-05-29.
+- **`pkg/pool` release() deadlock [FIXED 2026-06-24]** — `Pool.release()` used a blocking send on an unbuffered waiter channel. If the waiter goroutine timed out before the release goroutine could send, the send would block forever (deadlock). Fixed with non-blocking `sendToWaiter` helper using `select`+`default`. Test: `TestPoolStatsWhenReleaseServesWaiter`.
 - `pkg/fdw` CSV wrapper assumes UTF-8 (no charset option). — **PARTIAL (2026-06-13):** WHERE predicate pushdown works via the `StreamingForeignDataWrapper.OpenScan` path; the fallback `Scan` method (no pushdown) is never called for CSV since it implements the streaming interface. Charset option still on the table.
 - `pkg/cache.estimateSize()` is coarse — can let the cache exceed `MaxSize`. — **PARTIAL (2026-06-13):** test surface extended; `estimateSize` itself still on the table.
 - `sdk/go` lacks documented thread-safety guarantees on the returned `driver.Conn`. — **DONE (2026-06-24):** `ExecContext`, `QueryContext`, and `BeginTx` now hold `c.mu` for the full operation (not just the `ensureOpen` check), eliminating the Close-race. `DB` and `conn` types documented as thread-safe for concurrent use per the `database/sql` contract.
