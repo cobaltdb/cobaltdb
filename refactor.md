@@ -167,7 +167,7 @@ Done: failures are logged, counted (`FailedWriteCount()`), and the silent `file 
 - **`pkg/pool` Config.Validate() [FIXED 2026-05-29]** — now checks non-positive MaxIdleTime/MaxLifetime/HealthCheckInterval/HealthCheckTimeout/AcquireTimeout. — fixed 2026-05-29.
 - `pkg/fdw` CSV wrapper assumes UTF-8 (no charset option) and doesn't push WHERE predicates into the cursor loop despite the `ScanOptions` plumbing. — **PARTIAL (2026-06-13):** `pkg/fdw/csv.go` and `pkg/fdw/fdw_test.go` extended; charset option still on the table.
 - `pkg/cache.estimateSize()` is coarse — can let the cache exceed `MaxSize`. — **PARTIAL (2026-06-13):** test surface extended; `estimateSize` itself still on the table.
-- `sdk/go` lacks documented thread-safety guarantees on the returned `driver.Conn`. — **PARTIAL (2026-06-13):** DSN parse errors use `%w`; thread-safety docs still on the table.
+- `sdk/go` lacks documented thread-safety guarantees on the returned `driver.Conn`. — **DONE (2026-06-24):** `ExecContext`, `QueryContext`, and `BeginTx` now hold `c.mu` for the full operation (not just the `ensureOpen` check), eliminating the Close-race. `DB` and `conn` types documented as thread-safe for concurrent use per the `database/sql` contract.
 - `pkg/logger.IsEnabled` is unused — adopt before expensive debug formatting, or drop.
 
 ---

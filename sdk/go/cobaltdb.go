@@ -324,7 +324,15 @@ func (cfg *Config) FormatDSN() string {
 	return strings.Join(parts, " ")
 }
 
-// DB represents a database connection
+// DB represents a database connection. It is safe for concurrent use
+// by multiple goroutines: all exported methods hold internal locks as
+// needed. DB may be shared across goroutines. Callers should use
+// *DB directly (not *engine.DB) for all database operations.
+//
+// The embedded *engine.DB is also safe for concurrent use; the SDK DB
+// adds an additional closed check on top of engine.DB's own shutdown
+// guard. To close the database cleanly, call DB.Close and wait for it
+// to return before discarding the DB.
 type DB struct {
 	*engine.DB
 	cfg    *Config
@@ -407,7 +415,13 @@ type Stats struct {
 	WaitDuration    time.Duration
 }
 
-// conn implements driver.Conn
+// conn implements driver.Conn. Per the database/sql/driver.Conn contract,
+// a single *conn is NOT safe for concurrent use by multiple goroutines.
+// All exported methods (ExecContext, QueryContext, BeginTx, Close) hold
+// an internal mutex for the duration of the operation to prevent racing
+// with concurrent Close calls. Callers must not share a single *conn
+// across goroutines; instead, each goroutine should obtain its own
+// connection via DB.Query or DB.Exec (which manages a connection pool).
 type conn struct {
 	db        *DB
 	cfg       *Config
@@ -471,8 +485,11 @@ func (c *conn) Begin() (driver.Tx, error) {
 }
 
 func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	if err := c.ensureOpen(); err != nil {
-		return nil, err
+	// Hold lock for the entire operation to avoid racing with Close.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil, ErrConnClosed
 	}
 	_, err := c.db.Exec(ctx, "BEGIN")
 	if err != nil {
@@ -482,8 +499,13 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 }
 
 func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if err := c.ensureOpen(); err != nil {
-		return nil, err
+	// Hold lock for the entire operation to avoid racing with Close.
+	// c.closed is set before c.db.Close() is called, so checking
+	// c.closed here prevents Exec on a closed connection.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil, ErrConnClosed
 	}
 
 	// Convert NamedValue to interface{}
@@ -501,8 +523,11 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 }
 
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if err := c.ensureOpen(); err != nil {
-		return nil, err
+	// Hold lock for the entire operation to avoid racing with Close.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil, ErrConnClosed
 	}
 
 	// Convert NamedValue to interface{}
