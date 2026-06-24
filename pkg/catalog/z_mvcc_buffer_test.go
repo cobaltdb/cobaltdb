@@ -62,7 +62,7 @@ func createCatalogWithTxnManager(t *testing.T) (*Catalog, *txn.Manager) {
 		deadTuples:        make(map[string]int64),
 		liveTuples:        make(map[string]int64),
 	}
-	mgr := txn.NewManager(pool, nil)
+	mgr := txn.NewManager(nil)
 	c.SetTxnManager(mgr)
 	c.EnableBufferedWrites()
 	return c, mgr

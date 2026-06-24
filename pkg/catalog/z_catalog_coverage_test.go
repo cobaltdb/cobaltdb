@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"github.com/cobaltdb/cobaltdb/pkg/cache"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -1102,16 +1103,16 @@ func TestCov_ExprToSQL(t *testing.T) {
 }
 
 func TestCov_CacheUtils(t *testing.T) {
-	if containsSubquery(nil) {
+	if query.ContainsSubquery(nil) {
 		t.Fatal()
 	}
-	if !containsSubquery(&query.SubqueryExpr{}) {
+	if !query.ContainsSubquery(&query.SubqueryExpr{}) {
 		t.Fatal()
 	}
-	if !isCacheableQuery(&query.SelectStmt{Columns: []query.Expression{star()}, From: tref("t")}) {
+	if !query.IsCacheableQuery(&query.SelectStmt{Columns: []query.Expression{star()}, From: tref("t")}) {
 		t.Fatal()
 	}
-	if !containsNonDeterministicFunctions(&query.SelectStmt{Columns: []query.Expression{fn("RANDOM")}, From: tref("t")}) {
+	if !query.ContainsNonDeterministicFunctions(&query.SelectStmt{Columns: []query.Expression{fn("RANDOM")}, From: tref("t")}) {
 		t.Fatal()
 	}
 }
@@ -1753,30 +1754,29 @@ func TestCov_ReleaseSavepointNotFound(t *testing.T) {
 
 // ── QueryCache ───────────────────────────────────────────────────────
 func TestCov_QueryCacheEviction(t *testing.T) {
-	qc := NewQueryCache(2, time.Minute)
-	qc.Set("k1", nil, nil, []string{"t"})
-	qc.Set("k2", nil, nil, []string{"t"})
-	qc.Set("k3", nil, nil, []string{"t"})
-	_, ok := qc.Get("k1")
+	c := cache.New(&cache.Config{MaxSize: 65536, MaxEntries: 2, TTL: time.Minute, Enabled: true})
+	c.Set("k1", nil, []string{"id"}, [][]interface{}{{int64(1)}}, []string{"t"})
+	c.Set("k2", nil, []string{"id"}, [][]interface{}{{int64(2)}}, []string{"t"})
+	c.Set("k3", nil, []string{"id"}, [][]interface{}{{int64(3)}}, []string{"t"})
+	_, ok := c.Get("k1", nil)
 	if ok {
 		t.Fatal("expected eviction")
 	}
-	_, ok = qc.Get("k3")
+	_, ok = c.Get("k3", nil)
 	if !ok {
 		t.Fatal("k3 should exist")
 	}
-	qc.InvalidateAll()
-	_, _, statsSize := qc.Stats()
-	if statsSize != 0 {
-		t.Fatal(statsSize)
+	c.InvalidateAll()
+	if stats := c.Stats(); stats.EntryCount != 0 {
+		t.Fatal(stats.EntryCount)
 	}
 }
 
 func TestCov_QueryCacheStale(t *testing.T) {
-	qc := NewQueryCache(10, time.Millisecond)
-	qc.Set("k1", nil, nil, []string{"t"})
+	c := cache.New(&cache.Config{MaxSize: 65536, MaxEntries: 10, TTL: time.Millisecond, Enabled: true})
+	c.Set("k1", nil, []string{"id"}, [][]interface{}{{int64(1)}}, []string{"t"})
 	time.Sleep(5 * time.Millisecond)
-	_, ok := qc.Get("k1")
+	_, ok := c.Get("k1", nil)
 	if ok {
 		t.Fatal("expected stale")
 	}
@@ -1818,40 +1818,40 @@ func TestCov_QualifiedIdentFallback(t *testing.T) {
 
 // ── containsSubquery branches ────────────────────────────────────────
 func TestCov_ContainsSubquery(t *testing.T) {
-	if containsSubquery(nil) {
+	if query.ContainsSubquery(nil) {
 		t.Fatal()
 	}
-	if !containsSubquery(&query.SubqueryExpr{}) {
+	if !query.ContainsSubquery(&query.SubqueryExpr{}) {
 		t.Fatal()
 	}
-	if !containsSubquery(&query.ExistsExpr{}) {
+	if !query.ContainsSubquery(&query.ExistsExpr{}) {
 		t.Fatal()
 	}
-	if containsSubquery(nr(1)) {
+	if query.ContainsSubquery(nr(1)) {
 		t.Fatal()
 	}
-	if !containsSubquery(binop(&query.SubqueryExpr{}, query.TokenEq, nr(1))) {
+	if !query.ContainsSubquery(binop(&query.SubqueryExpr{}, query.TokenEq, nr(1))) {
 		t.Fatal()
 	}
-	if containsSubquery(&query.InExpr{Subquery: &query.SelectStmt{}}) {
+	if query.ContainsSubquery(&query.InExpr{Subquery: &query.SelectStmt{}}) {
 		t.Fatal()
 	}
-	if containsSubquery(&query.InExpr{List: []query.Expression{nr(1)}}) {
+	if query.ContainsSubquery(&query.InExpr{List: []query.Expression{nr(1)}}) {
 		t.Fatal()
 	}
 }
 
 func TestCov_HasNonDeterministicFn(t *testing.T) {
-	if !hasNonDeterministicFunction(fn("RANDOM")) {
+	if !query.HasNonDeterministicFunction(fn("RANDOM")) {
 		t.Fatal()
 	}
-	if !hasNonDeterministicFunction(fn("NOW")) {
+	if !query.HasNonDeterministicFunction(fn("NOW")) {
 		t.Fatal()
 	}
-	if hasNonDeterministicFunction(fn("UPPER", sr("x"))) {
+	if query.HasNonDeterministicFunction(fn("UPPER", sr("x"))) {
 		t.Fatal()
 	}
-	if !hasNonDeterministicFunction(binop(fn("RANDOM"), query.TokenPlus, nr(1))) {
+	if !query.HasNonDeterministicFunction(binop(fn("RANDOM"), query.TokenPlus, nr(1))) {
 		t.Fatal()
 	}
 }
@@ -2433,9 +2433,9 @@ func TestCov_VacuumWithEmptyIndexTree(t *testing.T) {
 
 // ── QueryCache disabled paths ────────────────────────────────────────
 func TestCov_QueryCacheDisabled(t *testing.T) {
-	qc := NewQueryCache(0, 0)
-	qc.Get("key")
-	qc.Set("key", []string{"a"}, [][]interface{}{{1}}, []string{"t"})
-	qc.InvalidateAll()
-	_, _, _ = qc.Stats()
+	c := cache.New(&cache.Config{Enabled: false})
+	c.Get("key", nil)
+	c.Set("key", nil, []string{"a"}, [][]interface{}{{1}}, []string{"t"})
+	c.InvalidateAll()
+	_ = c.Stats()
 }

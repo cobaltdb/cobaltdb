@@ -8,7 +8,7 @@ import (
 // ---- pruneVersions tests ----
 
 func TestPruneVersionsNoActive(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Commit some transactions to populate versions
 	txn1 := mgr.Begin(nil)
@@ -39,7 +39,7 @@ func TestPruneVersionsNoActive(t *testing.T) {
 }
 
 func TestPruneVersionsWithActive(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Commit a transaction to populate versions
 	txn1 := mgr.Begin(nil)
@@ -69,7 +69,7 @@ func TestPruneVersionsWithActive(t *testing.T) {
 }
 
 func TestPruneVersionsEmpty(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Prune on empty manager should not panic
 	mgr.pruneVersions()
@@ -89,7 +89,7 @@ func TestPruneVersionsEmpty(t *testing.T) {
 // ---- GetTransaction tests ----
 
 func TestGetTransactionExisting(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn := mgr.Begin(nil)
 	id := txn.ID
@@ -104,7 +104,7 @@ func TestGetTransactionExisting(t *testing.T) {
 }
 
 func TestGetTransactionNonExisting(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	got := mgr.GetTransaction(99999)
 	if got != nil {
@@ -113,7 +113,7 @@ func TestGetTransactionNonExisting(t *testing.T) {
 }
 
 func TestGetTransactionAfterCommit(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn := mgr.Begin(nil)
 	id := txn.ID
@@ -127,7 +127,7 @@ func TestGetTransactionAfterCommit(t *testing.T) {
 }
 
 func TestGetTransactionAfterRollback(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn := mgr.Begin(nil)
 	id := txn.ID
@@ -142,7 +142,7 @@ func TestGetTransactionAfterRollback(t *testing.T) {
 // ---- commitWithConflictDetection tests ----
 
 func TestApplyWritesSingleKey(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn := mgr.Begin(nil)
 	txn.SetWrite("", "testkey", []byte("testvalue"))
@@ -159,7 +159,7 @@ func TestApplyWritesSingleKey(t *testing.T) {
 }
 
 func TestCommitWithConflictDetectionMultipleKeys(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn := mgr.Begin(nil)
 	txn.SetWrite("", "key1", []byte("val1"))
@@ -180,7 +180,7 @@ func TestCommitWithConflictDetectionMultipleKeys(t *testing.T) {
 }
 
 func TestCommitWithConflictDetectionEmptyWriteSet(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn := mgr.Begin(nil)
 	// No writes
@@ -192,7 +192,7 @@ func TestCommitWithConflictDetectionEmptyWriteSet(t *testing.T) {
 }
 
 func TestCommitWithConflictDetectionOverwritesVersion(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// First transaction writes key1
 	txn1 := mgr.Begin(nil)
@@ -217,7 +217,7 @@ func TestCommitWithConflictDetectionOverwritesVersion(t *testing.T) {
 // ---- Concurrent commit scenarios ----
 
 func TestConcurrentCommits(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	var wg sync.WaitGroup
 	errChan := make(chan error, 10)
@@ -245,7 +245,7 @@ func TestConcurrentCommits(t *testing.T) {
 // ---- Conflict detection tests ----
 
 func TestConflictDetectionWriteWrite(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// txn1 reads key1 at version 0
 	txn1 := mgr.Begin(&Options{Isolation: SnapshotIsolation})
@@ -271,7 +271,7 @@ func TestConflictDetectionWriteWrite(t *testing.T) {
 }
 
 func TestConflictDetectionNoConflictDifferentKeys(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn1 := mgr.Begin(&Options{Isolation: SnapshotIsolation})
 	txn1.SetReadVersion("", "key1", 0)
@@ -289,7 +289,7 @@ func TestConflictDetectionNoConflictDifferentKeys(t *testing.T) {
 }
 
 func TestConflictDetectionReadCommittedSkipsCheck(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// First populate key1
 	txn0 := mgr.Begin(nil)
@@ -314,7 +314,7 @@ func TestConflictDetectionReadCommittedSkipsCheck(t *testing.T) {
 }
 
 func TestSerializableConflictDetection(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn1 := mgr.Begin(&Options{Isolation: Serializable})
 	txn1.SetReadVersion("", "key1", 0)
@@ -333,7 +333,7 @@ func TestSerializableConflictDetection(t *testing.T) {
 // ---- Double rollback ----
 
 func TestDoubleRollback(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	err1 := txn.Rollback()
@@ -350,7 +350,7 @@ func TestDoubleRollback(t *testing.T) {
 // ---- Rollback after commit ----
 
 func TestRollbackAfterCommit(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	txn.Commit()
@@ -364,7 +364,7 @@ func TestRollbackAfterCommit(t *testing.T) {
 // ---- SetReadVersion on nil ReadSet ----
 
 func TestSetReadVersionNilReadSet(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	// Force nil ReadSet
@@ -383,7 +383,7 @@ func TestSetReadVersionNilReadSet(t *testing.T) {
 // ---- SetWrite on nil WriteSet ----
 
 func TestSetWriteNilWriteSet(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	// Force nil WriteSet
@@ -402,7 +402,7 @@ func TestSetWriteNilWriteSet(t *testing.T) {
 // ---- Manager Begin with all isolation levels ----
 
 func TestBeginAllIsolationLevels(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	levels := []IsolationLevel{ReadCommitted, SnapshotIsolation, Serializable}
 	for _, lvl := range levels {
@@ -417,7 +417,7 @@ func TestBeginAllIsolationLevels(t *testing.T) {
 // ---- removeActive is idempotent ----
 
 func TestRemoveActiveIdempotent(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn := mgr.Begin(nil)
 	id := txn.ID
@@ -432,7 +432,7 @@ func TestRemoveActiveIdempotent(t *testing.T) {
 // ---- Concurrent begin and commit ----
 
 func TestConcurrentBeginAndCommit(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -450,7 +450,7 @@ func TestConcurrentBeginAndCommit(t *testing.T) {
 // ---- Verify StartTS equals ID ----
 
 func TestStartTSEqualsID(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 	if txn.StartTS != txn.ID {
 		t.Errorf("Expected StartTS=%d to equal ID=%d", txn.StartTS, txn.ID)
@@ -460,7 +460,7 @@ func TestStartTSEqualsID(t *testing.T) {
 // ---- detectConflicts with non-existing key in versions ----
 
 func TestDetectConflictsNonExistingKey(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn := mgr.Begin(&Options{Isolation: SnapshotIsolation})
 	txn.SetReadVersion("", "nonexistent_key", 100)
@@ -475,7 +475,7 @@ func TestDetectConflictsNonExistingKey(t *testing.T) {
 // ---- detectConflicts with read version equal to current version ----
 
 func TestDetectConflictsEqualVersion(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Set a version for key1
 	txn1 := mgr.Begin(nil)

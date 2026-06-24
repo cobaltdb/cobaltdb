@@ -73,7 +73,7 @@ func TestFindWaitCycle_SelfLoop(t *testing.T) {
 // "youngest victim"), the detector must still abort a transaction that is on the
 // real cycle, not the innocent tail.
 func TestDeadlockResolutionAbortsCycleMemberNotTail(t *testing.T) {
-	m := NewManager(nil, nil)
+	m := NewManager(nil)
 	m.Start()
 	defer m.Stop()
 

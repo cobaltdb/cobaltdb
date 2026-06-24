@@ -307,20 +307,20 @@ func (c *Catalog) loadMainTableRowsWithFDWOptions(from *query.TableRef, scanOpti
 		if m, ok := ts.getPendingWriteMap()[mainTable.Name]; ok {
 			for _, pw := range m {
 				k := string(pw.Key)
-				vrow, err := decodeVersionedRow(pw.Value, len(mainTable.Columns))
+				rowData, _, ok, err := decodeLiveRowFull(pw.Value, len(mainTable.Columns))
 				if err != nil {
 					return mainTable.Columns, nil, fmt.Errorf("select: failed to decode pending row in table %s: %w", mainTable.Name, err)
 				}
-				if vrow.Version.DeletedAt > 0 {
+				if !ok {
 					if idx, ok := seen[k]; ok {
 						intermediateRows[idx] = nil
 					}
 					continue
 				}
 				if idx, ok := seen[k]; ok {
-					intermediateRows[idx] = vrow.Data
+					intermediateRows[idx] = rowData
 				} else {
-					intermediateRows = append(intermediateRows, vrow.Data)
+					intermediateRows = append(intermediateRows, rowData)
 					seen[k] = len(intermediateRows) - 1
 				}
 			}

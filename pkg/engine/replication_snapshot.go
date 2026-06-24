@@ -246,7 +246,7 @@ func (db *DB) reloadSnapshotStateLocked() error {
 		return fmt.Errorf("failed to load snapshot catalog: %w", err)
 	}
 
-	db.txnMgr = txn.NewManager(db.pool, db.wal)
+	db.txnMgr = txn.NewManager(db.wal)
 	if db.options.QueryCache.EnableQueryCache {
 		db.catalog.EnableQueryCacheWithLimits(db.options.QueryCache.QueryCacheSize, 0, db.options.QueryCache.QueryCacheTTL)
 	}

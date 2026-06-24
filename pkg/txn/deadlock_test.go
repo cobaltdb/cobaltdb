@@ -6,7 +6,7 @@ import (
 )
 
 func TestManagerStopIdempotent(t *testing.T) {
-	m := NewManager(nil, nil)
+	m := NewManager(nil)
 	m.Start()
 
 	m.Stop()
@@ -15,7 +15,7 @@ func TestManagerStopIdempotent(t *testing.T) {
 
 // TestDeadlockDetectionTwoTransactions tests basic deadlock between two transactions
 func TestDeadlockDetectionTwoTransactions(t *testing.T) {
-	m := NewManager(nil, nil)
+	m := NewManager(nil)
 	m.Start()
 	defer m.Stop()
 
@@ -57,7 +57,7 @@ func TestDeadlockDetectionTwoTransactions(t *testing.T) {
 
 // TestDeadlockDetectionThreeTransactions tests deadlock cycle with three transactions
 func TestDeadlockDetectionThreeTransactions(t *testing.T) {
-	m := NewManager(nil, nil)
+	m := NewManager(nil)
 	m.Start()
 	defer m.Stop()
 
@@ -84,7 +84,7 @@ func TestDeadlockDetectionThreeTransactions(t *testing.T) {
 
 // TestDeadlockResolution tests that deadlocks are automatically resolved
 func TestDeadlockResolution(t *testing.T) {
-	m := NewManager(nil, nil)
+	m := NewManager(nil)
 	m.Start()
 	defer m.Stop()
 
@@ -136,7 +136,7 @@ func TestDeadlockResolution(t *testing.T) {
 
 // TestLockTimeout tests lock acquisition timeout
 func TestLockTimeout(t *testing.T) {
-	m := NewManager(nil, nil)
+	m := NewManager(nil)
 	m.Start()
 	defer m.Stop()
 
@@ -161,7 +161,7 @@ func TestLockTimeout(t *testing.T) {
 
 // TestNoDeadlockFalsePositive ensures no false positives on non-deadlock scenarios
 func TestNoDeadlockFalsePositive(t *testing.T) {
-	m := NewManager(nil, nil)
+	m := NewManager(nil)
 	m.Start()
 	defer m.Stop()
 
@@ -188,7 +188,7 @@ func TestNoDeadlockFalsePositive(t *testing.T) {
 
 // TestTransactionTimeout tests transaction-level timeout
 func TestTransactionTimeout(t *testing.T) {
-	m := NewManager(nil, nil)
+	m := NewManager(nil)
 	m.Start()
 	defer m.Stop()
 
@@ -211,7 +211,7 @@ func TestTransactionTimeout(t *testing.T) {
 
 // TestLockReleaseOnRollback tests that locks are released when transaction rolls back
 func TestLockReleaseOnRollback(t *testing.T) {
-	m := NewManager(nil, nil)
+	m := NewManager(nil)
 	m.Start()
 	defer m.Stop()
 
@@ -238,7 +238,7 @@ func TestLockReleaseOnRollback(t *testing.T) {
 
 // TestDeadlockDetectorPerformance tests that deadlock detection doesn't cause performance issues
 func TestDeadlockDetectorPerformance(t *testing.T) {
-	m := NewManager(nil, nil)
+	m := NewManager(nil)
 	m.Start()
 	defer m.Stop()
 

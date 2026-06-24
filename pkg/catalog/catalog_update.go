@@ -159,7 +159,7 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 		}
 	}
 
-	if err := c.bufferUpdateEntries(ctx, table, stmt, entries, ts); err != nil {
+	if err := c.bufferUpdateEntries(table, stmt, entries, ts); err != nil {
 		if ts != nil {
 			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 			rebuildPendingWriteMap(ts)
@@ -961,7 +961,7 @@ func (c *Catalog) applyUpdateIndexes(
 ) error {
 	// Apply collected updates
 	if useBuffer {
-		if err := c.bufferUpdateEntries(ctx, table, stmt, entries, ts); err != nil {
+		if err := c.bufferUpdateEntries(table, stmt, entries, ts); err != nil {
 			if ts != nil {
 				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 				rebuildPendingWriteMap(ts)
@@ -1420,7 +1420,7 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 			continue // Row may have been deleted
 		}
 
-		row, live, err := decodeLiveRow(valueData, len(targetTable.Columns))
+		row, version, live, err := decodeLiveRowFull(valueData, len(targetTable.Columns))
 		if err != nil {
 			return 0, rowsAffected, fmt.Errorf("delete using: failed to decode row in table %s: %w", targetTable.Name, err)
 		}
@@ -1447,9 +1447,10 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 		copy(valueCopy, valueData)
 
 		entries = append(entries, joinDelEntry{
-			key:   keyCopy,
-			value: valueCopy,
-			row:   row,
+			key:     keyCopy,
+			value:   valueCopy,
+			row:     row,
+			version: version,
 		})
 		rowsAffected++
 	}
@@ -1503,9 +1504,10 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 // joinDelEntry is a local entry type used by deleteWithUsingLocked to track
 // pending deletions discovered through a JOIN.
 type joinDelEntry struct {
-	key   []byte
-	value []byte
-	row   []interface{}
+	key     []byte
+	value   []byte
+	row     []interface{}
+	version RowVersion // captured at scan time; avoids re-decode in softDeleteJoinEntries
 }
 
 func (c *Catalog) rollbackAppliedJoinDeleteEntries(tableName string, tree btree.TreeStore, entries []joinDelEntry) error {
@@ -1524,18 +1526,9 @@ func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree 
 	ts := c.getCurrentTxn()
 	txnActive := ts != nil && ts.txnActive
 	for _, entry := range entries {
-		// Get current value to decode
-		currentData, err := tree.Get(entry.key)
-		if err != nil {
-			continue // Row may have been deleted
-		}
-
-		vrow, err := decodeVersionedRow(currentData, len(table.Columns))
-		if err != nil {
-			return fmt.Errorf("delete using: failed to decode row in table %s: %w", table.Name, err)
-		}
-
-		// Remove from indexes first
+		// Remove from indexes first (before soft deleting the row), tracking
+		// for rollback. Uses entry.row which was decoded and visibility-checked
+		// during scan in deleteWithUsingLocked.
 		var deletedIndexEntries []deletedIndexEntry
 		for idxName, idxTree := range c.indexTrees {
 			idxDef := c.indexes[idxName]
@@ -1553,7 +1546,8 @@ func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree 
 			}
 		}
 
-		// Soft delete: mark as deleted
+		// Soft delete: use entry.version (captured at scan time) for re-encode.
+		vrow := VersionedRow{Data: entry.row, Version: entry.version}
 		vrow.Version.markDeleted(time.Now())
 
 		// Re-encode and store
@@ -2152,77 +2146,95 @@ func (c *Catalog) rollbackAppliedUpdateEntries(table *TableDef, tableName string
 	return c.rebuildTableIndexesLocked(tableName)
 }
 
+// bufferUpdateEntry is the per-row extraction of the buffered update path.
+// The caller handles FK enforcement; this helper owns: row encoding,
+// secondary-index update key building, pending-write recording, and
+// managerTxn write tracking.
+//
+// Unlike applyUpdateEntryDirect (which writes B-tree + WAL immediately),
+// buffered mode records the mutations in ts.pendingWrites for commit-time
+// application. Errors from UNIQUE constraint checks propagate to the caller
+// so the pending-write slice can be truncated.
+func (c *Catalog) bufferUpdateEntry(table *TableDef, stmt *query.UpdateStmt, entry *updateEntry, ts *catalogTxnState) ([]byte, []PendingIndexUpdate, error) {
+	newValueData, err := encodeVersionedRow(entry.newRow, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to encode updated row: %w", err)
+	}
+
+	var idxUpdates []PendingIndexUpdate
+	for idxName, idxDef := range c.indexes {
+		if idxDef.TableName != stmt.Table || len(idxDef.Columns) == 0 {
+			continue
+		}
+		oldIndexKey, oldOk := buildCompositeIndexKey(table, idxDef, entry.oldRow)
+		newIndexKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
+
+		if oldOk && oldIndexKey != "" {
+			var oldIdxStorageKey []byte
+			if idxDef.Unique {
+				oldIdxStorageKey = []byte(oldIndexKey)
+			} else {
+				oldIdxStorageKey = []byte(oldIndexKey + "\x00" + string(entry.key))
+			}
+			idxUpdates = append(idxUpdates, PendingIndexUpdate{
+				IndexName: idxName,
+				Key:       string(oldIdxStorageKey),
+				IsDelete:  true,
+			})
+		}
+
+		if newOk && newIndexKey != "" {
+			if idxDef.Unique && newIndexKey != oldIndexKey {
+				if idxTree, exists := c.indexTrees[idxName]; exists {
+					if _, err := idxTree.Get([]byte(newIndexKey)); err == nil {
+						return nil, nil, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
+					}
+					if c.indexKeyInPendingWrites(idxName, newIndexKey) {
+						return nil, nil, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
+					}
+				}
+			}
+			var newIdxStorageKey []byte
+			if idxDef.Unique {
+				newIdxStorageKey = []byte(newIndexKey)
+			} else {
+				newIdxStorageKey = []byte(newIndexKey + "\x00" + string(entry.key))
+			}
+			idxUpdates = append(idxUpdates, PendingIndexUpdate{
+				IndexName: idxName,
+				Key:       string(newIdxStorageKey),
+				Value:     []byte(entry.key),
+			})
+		}
+	}
+
+	c.appendPendingWriteTs(ts, PendingWrite{
+		TreeName:     stmt.Table,
+		Key:          string(entry.key),
+		Value:        newValueData,
+		IndexUpdates: idxUpdates,
+	})
+	if ts != nil {
+		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
+			mt.SetWrite(stmt.Table, string(entry.key), newValueData)
+		}
+	}
+
+	return newValueData, idxUpdates, nil
+}
+
 // bufferUpdateEntries buffers updated rows and their index mutations for
 // commit-time application in MVCC buffered mode.
-func (c *Catalog) bufferUpdateEntries(ctx context.Context, table *TableDef, stmt *query.UpdateStmt, entries []updateEntry, ts *catalogTxnState) error {
+func (c *Catalog) bufferUpdateEntries(table *TableDef, stmt *query.UpdateStmt, entries []updateEntry, ts *catalogTxnState) error {
 	fke := NewForeignKeyEnforcer(c)
 	untrackReferenceRows := fke.trackUpdatingReferenceRows(stmt.Table, entries)
 	defer untrackReferenceRows()
 	for _, entry := range entries {
-		if fkErr := fke.OnUpdateRow(ctx, stmt.Table, entry.oldRow, entry.newRow); fkErr != nil {
+		if fkErr := fke.OnUpdateRow(context.Background(), stmt.Table, entry.oldRow, entry.newRow); fkErr != nil {
 			return fmt.Errorf("foreign key constraint: %w", fkErr)
 		}
-
-		newValueData, err := encodeVersionedRow(entry.newRow, nil)
-		if err != nil {
-			return fmt.Errorf("failed to encode updated row: %w", err)
-		}
-
-		var idxUpdates []PendingIndexUpdate
-		for idxName, idxDef := range c.indexes {
-			if idxDef.TableName != stmt.Table || len(idxDef.Columns) == 0 {
-				continue
-			}
-			oldIndexKey, oldOk := buildCompositeIndexKey(table, idxDef, entry.oldRow)
-			newIndexKey, newOk := buildCompositeIndexKey(table, idxDef, entry.newRow)
-
-			if oldOk && oldIndexKey != "" {
-				var oldIdxStorageKey []byte
-				if idxDef.Unique {
-					oldIdxStorageKey = []byte(oldIndexKey)
-				} else {
-					oldIdxStorageKey = []byte(oldIndexKey + "\x00" + string(entry.key))
-				}
-				idxUpdates = append(idxUpdates, PendingIndexUpdate{
-					IndexName: idxName,
-					Key:       string(oldIdxStorageKey),
-					IsDelete:  true,
-				})
-			}
-
-			if newOk && newIndexKey != "" {
-				if idxDef.Unique && newIndexKey != oldIndexKey {
-					if idxTree, exists := c.indexTrees[idxName]; exists {
-						if _, err := idxTree.Get([]byte(newIndexKey)); err == nil {
-							return fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
-						}
-						if c.indexKeyInPendingWrites(idxName, newIndexKey) {
-							return fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
-						}
-					}
-				}
-				var newIdxStorageKey []byte
-				if idxDef.Unique {
-					newIdxStorageKey = []byte(newIndexKey)
-				} else {
-					newIdxStorageKey = []byte(newIndexKey + "\x00" + string(entry.key))
-				}
-				idxUpdates = append(idxUpdates, PendingIndexUpdate{
-					IndexName: idxName,
-					Key:       string(newIdxStorageKey),
-					Value:     []byte(entry.key),
-				})
-			}
-		}
-
-		c.appendPendingWriteTs(ts, PendingWrite{
-			TreeName:     stmt.Table,
-			Key:          string(entry.key),
-			Value:        newValueData,
-			IndexUpdates: idxUpdates,
-		})
-		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
-			mt.SetWrite(stmt.Table, string(entry.key), newValueData)
+		if _, _, err := c.bufferUpdateEntry(table, stmt, &entry, ts); err != nil {
+			return err
 		}
 	}
 	return nil

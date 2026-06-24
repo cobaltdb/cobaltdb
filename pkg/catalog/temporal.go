@@ -270,6 +270,27 @@ func decodeLiveRow(data []byte, numCols int) (row []interface{}, ok bool, err er
 	return vrow.Data, true, nil
 }
 
+// decodeLiveRowFull decodes a versioned row and returns both the row data and
+// version metadata. Returns (row, version, ok, err) where:
+//   - row is the decoded row data (nil if !ok or err)
+//   - version is the RowVersion (zero value if !ok or err)
+//   - ok == false means the row was soft-deleted; caller should skip
+//   - err != nil means decode failed; caller should handle the error
+//
+// This consolidates the common pattern of decodeVersionedRow + DeletedAt check +
+// vrow.Data access into a single call, eliminating the double-decode that occurred
+// when callers needed both the row data and the version metadata.
+func decodeLiveRowFull(data []byte, numCols int) (row []interface{}, version RowVersion, ok bool, err error) {
+	vrow, err := decodeVersionedRow(data, numCols)
+	if err != nil {
+		return nil, RowVersion{}, false, err
+	}
+	if vrow.Version.DeletedAt > 0 {
+		return nil, RowVersion{}, false, nil
+	}
+	return vrow.Data, vrow.Version, true, nil
+}
+
 // decodeVersionedRowFast is a zero-reflection decoder for VersionedRow JSON.
 // It parses the known format directly using byte scanning, avoiding
 // json.Unmarshal overhead (reflection, map allocation, etc.).

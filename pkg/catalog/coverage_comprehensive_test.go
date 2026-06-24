@@ -1116,24 +1116,24 @@ func TestComprehensive_EmbeddedAggPaths(t *testing.T) {
 
 // ── catalog_core.go containsSubquery paths ──
 func TestComprehensive_ContainsSubqueryPaths(t *testing.T) {
-	if !containsSubquery(&query.SubqueryExpr{Query: &query.SelectStmt{}}) {
+	if !query.ContainsSubquery(&query.SubqueryExpr{Query: &query.SelectStmt{}}) {
 		t.Error("Expected containsSubquery true for SubqueryExpr")
 	}
-	if !containsSubquery(&query.ExistsExpr{Subquery: &query.SelectStmt{}}) {
+	if !query.ContainsSubquery(&query.ExistsExpr{Subquery: &query.SelectStmt{}}) {
 		t.Error("Expected containsSubquery true for ExistsExpr")
 	}
-	if containsSubquery(&query.NumberLiteral{Value: 1}) {
+	if query.ContainsSubquery(&query.NumberLiteral{Value: 1}) {
 		t.Error("Expected containsSubquery false for NumberLiteral")
 	}
 }
 
 // ── catalog_core.go hasNonDeterministicFunction paths ──
 func TestComprehensive_NonDeterministicPaths(t *testing.T) {
-	if !hasNonDeterministicFunction(&query.FunctionCall{Name: "NOW"}) {
+	if !query.HasNonDeterministicFunction(&query.FunctionCall{Name: "NOW"}) {
 		t.Error("Expected hasNonDeterministicFunction true for NOW")
 	}
 
-	if hasNonDeterministicFunction(&query.NumberLiteral{Value: 1}) {
+	if query.HasNonDeterministicFunction(&query.NumberLiteral{Value: 1}) {
 		t.Error("Expected hasNonDeterministicFunction false for literal")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"github.com/cobaltdb/cobaltdb/pkg/cache"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
@@ -741,7 +742,7 @@ func TestResolveAggregateInExpr(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := resolveAggregateInExpr(tt.expr, selectCols, row)
-			resultStr := exprToString(result)
+			resultStr := query.ExprToString(result)
 			if resultStr != tt.expected {
 				t.Errorf("expected %q, got %q", tt.expected, resultStr)
 			}
@@ -918,7 +919,7 @@ func TestReplaceAggregatesInExpr(t *testing.T) {
 					t.Errorf("replaceAggregatesInExpr(%s) check failed, got %v", tt.name, result)
 				}
 			} else {
-				resultStr := exprToString(result)
+				resultStr := query.ExprToString(result)
 				if resultStr != tt.expected {
 					t.Errorf("expected %q, got %q", tt.expected, resultStr)
 				}
@@ -1349,16 +1350,16 @@ func TestApplyGroupByOrderBy_NilRows(t *testing.T) {
 
 // Query Cache Tests
 func TestQueryCache_Basic(t *testing.T) {
-	cache := NewQueryCache(10, time.Minute)
+	c := cache.New(&cache.Config{MaxSize: 65536, MaxEntries: 10, TTL: time.Minute, Enabled: true})
 
 	key := "test-key"
 	rows := [][]interface{}{{int64(1), "a"}}
 	columns := []string{"id", "name"}
 	tables := []string{"users"}
 
-	cache.Set(key, columns, rows, tables)
+	c.Set(key, nil, columns, rows, tables)
 
-	entry, found := cache.Get(key)
+	entry, found := c.Get(key, nil)
 	if !found {
 		t.Fatal("expected to find cached value")
 	}
@@ -1371,87 +1372,89 @@ func TestQueryCache_Basic(t *testing.T) {
 }
 
 func TestQueryCache_NotFound(t *testing.T) {
-	cache := NewQueryCache(10, time.Minute)
+	c := cache.New(&cache.Config{MaxSize: 65536, MaxEntries: 10, TTL: time.Minute, Enabled: true})
 
-	_, found := cache.Get("nonexistent")
+	_, found := c.Get("nonexistent", nil)
 	if found {
 		t.Error("expected not found for nonexistent key")
 	}
 }
 
 func TestQueryCache_Invalidate(t *testing.T) {
-	cache := NewQueryCache(10, time.Minute)
+	c := cache.New(&cache.Config{MaxSize: 65536, MaxEntries: 10, TTL: time.Minute, Enabled: true})
 
-	cache.Set("key1", []string{"id"}, [][]interface{}{{int64(1)}}, []string{"users"})
-	cache.Set("key2", []string{"id"}, [][]interface{}{{int64(2)}}, []string{"orders"})
+	c.Set("key1", nil, []string{"id"}, [][]interface{}{{int64(1)}}, []string{"users"})
+	c.Set("key2", nil, []string{"id"}, [][]interface{}{{int64(2)}}, []string{"orders"})
 
-	cache.Invalidate("users")
+	c.InvalidateTable("users")
 
-	_, found := cache.Get("key1")
+	_, found := c.Get("key1", nil)
 	if found {
 		t.Error("expected key1 to be invalidated")
 	}
 
-	_, found = cache.Get("key2")
+	_, found = c.Get("key2", nil)
 	if !found {
 		t.Error("expected key2 to still exist")
 	}
 }
 
 func TestQueryCache_InvalidateAll(t *testing.T) {
-	cache := NewQueryCache(10, time.Minute)
+	c := cache.New(&cache.Config{MaxSize: 65536, MaxEntries: 10, TTL: time.Minute, Enabled: true})
 
-	cache.Set("key1", []string{"id"}, [][]interface{}{{int64(1)}}, []string{"users"})
-	cache.Set("key2", []string{"id"}, [][]interface{}{{int64(2)}}, []string{"orders"})
+	c.Set("key1", nil, []string{"id"}, [][]interface{}{{int64(1)}}, []string{"users"})
+	c.Set("key2", nil, []string{"id"}, [][]interface{}{{int64(2)}}, []string{"orders"})
 
-	cache.InvalidateAll()
+	c.InvalidateAll()
 
-	_, found := cache.Get("key1")
+	_, found := c.Get("key1", nil)
 	if found {
 		t.Error("expected all keys to be invalidated")
 	}
 }
 
 func TestQueryCache_Stats(t *testing.T) {
-	cache := NewQueryCache(10, time.Minute)
+	c := cache.New(&cache.Config{MaxSize: 65536, MaxEntries: 10, TTL: time.Minute, Enabled: true})
 
-	cache.Set("key1", []string{"id"}, [][]interface{}{{int64(1)}}, []string{"users"})
-	cache.Get("key1")
-	cache.Get("key1")
-	cache.Get("nonexistent")
+	c.Set("key1", nil, []string{"id"}, [][]interface{}{{int64(1)}}, []string{"users"})
+	c.Get("key1", nil)
+	c.Get("key1", nil)
+	c.Get("nonexistent", nil)
 
-	hits, misses, _ := cache.Stats()
-	if hits+misses != 3 {
-		t.Errorf("expected 3 total lookups, got %d", hits+misses)
+	stats := c.Stats()
+	if stats.Hits+stats.Misses != 3 {
+		t.Errorf("expected 3 total lookups, got %d", stats.Hits+stats.Misses)
 	}
-	if hits != 2 {
-		t.Errorf("expected 2 hits, got %d", hits)
+	if stats.Hits != 2 {
+		t.Errorf("expected 2 hits, got %d", stats.Hits)
 	}
-	if misses != 1 {
-		t.Errorf("expected 1 miss, got %d", misses)
+	if stats.Misses != 1 {
+		t.Errorf("expected 1 miss, got %d", stats.Misses)
 	}
 }
 
 func TestQueryCache_Eviction(t *testing.T) {
-	cache := NewQueryCache(2, time.Minute) // Small capacity
+	// MaxEntries=2 triggers LRU eviction when 3rd entry is inserted.
+	// MaxSize=65536 is large enough to hold all entries (no size-based eviction).
+	c := cache.New(&cache.Config{MaxSize: 65536, MaxEntries: 2, TTL: time.Minute, Enabled: true})
 
-	cache.Set("key1", []string{"id"}, [][]interface{}{{int64(1)}}, []string{"users"})
+	c.Set("key1", nil, []string{"id"}, [][]interface{}{{int64(1)}}, []string{"users"})
 	time.Sleep(time.Millisecond) // Ensure different timestamps
-	cache.Set("key2", []string{"id"}, [][]interface{}{{int64(2)}}, []string{"orders"})
-	// Add key3 - should evict key1 (oldest by timestamp)
-	cache.Set("key3", []string{"id"}, [][]interface{}{{int64(3)}}, []string{"products"})
+	c.Set("key2", nil, []string{"id"}, [][]interface{}{{int64(2)}}, []string{"orders"})
+	// Add key3 - should evict key1 (oldest by LRU)
+	c.Set("key3", nil, []string{"id"}, [][]interface{}{{int64(3)}}, []string{"products"})
 
-	_, found := cache.Get("key1")
+	_, found := c.Get("key1", nil)
 	if found {
 		t.Error("expected key1 to be evicted (was oldest)")
 	}
 
-	_, found = cache.Get("key2")
+	_, found = c.Get("key2", nil)
 	if !found {
 		t.Error("expected key2 to still exist")
 	}
 
-	_, found = cache.Get("key3")
+	_, found = c.Get("key3", nil)
 	if !found {
 		t.Error("expected key3 to exist")
 	}
@@ -1471,7 +1474,7 @@ func TestIsCacheableQuery(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isCacheableQuery(tt.stmt)
+			result := query.IsCacheableQuery(tt.stmt)
 			if result != tt.expected {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -1492,7 +1495,7 @@ func TestContainsSubquery(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := containsSubquery(tt.expr)
+			result := query.ContainsSubquery(tt.expr)
 			if result != tt.expected {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -1516,7 +1519,7 @@ func TestHasNonDeterministicFunction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := hasNonDeterministicFunction(tt.expr)
+			result := query.HasNonDeterministicFunction(tt.expr)
 			if result != tt.expected {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -1542,7 +1545,7 @@ func TestExprToString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := exprToString(tt.expr)
+			result := query.ExprToString(tt.expr)
 			if result != tt.expected {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
@@ -1567,7 +1570,7 @@ func TestExtractTablesFromQuery(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tables := extractTablesFromQuery(tt.stmt)
+			tables := query.ExtractTablesFromQuery(tt.stmt)
 			if len(tables) != tt.expected {
 				t.Errorf("expected %d tables, got %d", tt.expected, len(tables))
 			}
@@ -1581,7 +1584,7 @@ func TestQueryToSQL(t *testing.T) {
 		From:    &query.TableRef{Name: "users"},
 	}
 
-	sql := queryToSQL(stmt)
+	sql := query.QueryToSQL(stmt)
 	if sql == "" {
 		t.Error("expected non-empty SQL string")
 	}
@@ -1600,7 +1603,7 @@ func TestContainsNonDeterministicFunctions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := containsNonDeterministicFunctions(tt.stmt)
+			result := query.ContainsNonDeterministicFunctions(tt.stmt)
 			if result != tt.expected {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -1822,19 +1825,19 @@ func TestToInt(t *testing.T) {
 }
 
 func TestGenerateQueryKey(t *testing.T) {
-	key := generateQueryKey("SELECT * FROM users", []interface{}{int64(1), "test"})
+	key := query.GenerateQueryKey("SELECT * FROM users", []interface{}{int64(1), "test"})
 	if key == "" {
 		t.Error("expected non-empty key")
 	}
 
 	// Same query with same args should produce same key
-	key2 := generateQueryKey("SELECT * FROM users", []interface{}{int64(1), "test"})
+	key2 := query.GenerateQueryKey("SELECT * FROM users", []interface{}{int64(1), "test"})
 	if key != key2 {
 		t.Error("expected same key for same query and args")
 	}
 
 	// Different args should produce different key
-	key3 := generateQueryKey("SELECT * FROM users", []interface{}{int64(2), "test"})
+	key3 := query.GenerateQueryKey("SELECT * FROM users", []interface{}{int64(2), "test"})
 	if key == key3 {
 		t.Error("expected different key for different args")
 	}

@@ -96,14 +96,14 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 }
 
 func (c *Catalog) addRowToVectorIndexLocked(vectorIndex *VectorIndexDef, table *TableDef, value []byte, rowKey string, colIdx int) error {
-	vrow, err := decodeVersionedRow(value, len(table.Columns))
+	row, ok, err := decodeLiveRow(value, len(table.Columns))
 	if err != nil {
 		return fmt.Errorf("failed to decode row %s: %w", rowKey, err)
 	}
-	if vrow.Version.DeletedAt > 0 {
+	if !ok {
 		return nil
 	}
-	return c.indexRowForVector(vectorIndex, vrow.Data, rowKey, colIdx)
+	return c.indexRowForVector(vectorIndex, row, rowKey, colIdx)
 }
 
 // indexRowForVector adds a row to the vector index.

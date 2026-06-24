@@ -19,7 +19,8 @@ type deleteEntry struct {
 	key      []byte
 	value    []byte
 	row      []interface{} // decoded row for RETURNING clause
-	treeName string        // which partition tree this entry came from
+	version  RowVersion    // decoded version for soft-delete re-encode (avoids double-decode)
+	treeName string       // which partition tree this entry came from
 }
 
 // deleteSnapshot holds all Catalog metadata needed for the buffered DELETE scan.
@@ -231,7 +232,7 @@ func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt,
 				fromPending = true
 			}
 
-			row, live, err := decodeLiveRow(valueData, len(table.Columns))
+			row, version, live, err := decodeLiveRowFull(valueData, len(table.Columns))
 			if err != nil {
 				iter.Close()
 				return entries, rowsAffected, fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
@@ -264,7 +265,7 @@ func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt,
 			valueCopy := make([]byte, len(valueData))
 			copy(valueCopy, valueData)
 
-			entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
+			entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, version: version, treeName: treeName})
 			rowsAffected++
 		}
 		iter.Close()
@@ -280,7 +281,7 @@ func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt,
 			for _, k := range pendingKeyList {
 				key := []byte(k)
 				valueData := pendingKeys[k].Value
-				row, live, err := decodeLiveRow(valueData, len(table.Columns))
+				row, version, live, err := decodeLiveRowFull(valueData, len(table.Columns))
 				if err != nil {
 					return entries, rowsAffected, fmt.Errorf("delete: failed to decode pending row in table %s: %w", table.Name, err)
 				}
@@ -303,7 +304,7 @@ func (c *Catalog) scanDeleteEntries(ctx context.Context, stmt *query.DeleteStmt,
 				copy(keyCopy, key)
 				valueCopy := make([]byte, len(valueData))
 				copy(valueCopy, valueData)
-				entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
+				entries = append(entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, version: version, treeName: treeName})
 				rowsAffected++
 			}
 		}
@@ -439,7 +440,7 @@ func (c *Catalog) processDeleteRow(ctx context.Context, table *TableDef, tree bt
 	stmt *query.DeleteStmt, args []interface{}, entries *[]deleteEntry, rowsAffected *int64) error {
 
 	// Decode row with version info
-	row, live, err := decodeLiveRow(valueData, len(table.Columns))
+	row, version, live, err := decodeLiveRowFull(valueData, len(table.Columns))
 	if err != nil {
 		return fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
 	}
@@ -468,7 +469,7 @@ func (c *Catalog) processDeleteRow(ctx context.Context, table *TableDef, tree bt
 	valueCopy := make([]byte, len(valueData))
 	copy(valueCopy, valueData)
 
-	*entries = append(*entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, treeName: treeName})
+	*entries = append(*entries, deleteEntry{key: keyCopy, value: valueCopy, row: row, version: version, treeName: treeName})
 	*rowsAffected++
 	return nil
 }
@@ -496,10 +497,12 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 	table := c.tables[tableName]
 
 	var oldRow []interface{}
+	var oldVersion RowVersion
 	if table != nil {
 		vrow, decErr := decodeVersionedRow(oldData, len(table.Columns))
 		if decErr == nil {
 			oldRow = vrow.Data
+			oldVersion = vrow.Version
 		}
 	}
 
@@ -540,24 +543,11 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 		}
 	}
 
-	// Decode row with version info
-	vrow, err := decodeVersionedRow(oldData, len(table.Columns))
-	if err != nil {
-		// If we can't decode, fall back to physical delete
-		if err := tree.Delete(key); err != nil {
-			if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
-				return fmt.Errorf("failed to delete row: %w; failed to restore deleted index entries: %v", err, restoreErr)
-			}
-			return err
-		}
-		return nil
-	}
-
 	// Soft delete: mark row as deleted instead of physically deleting
-	vrow.Version.markDeleted(time.Now())
+	oldVersion.markDeleted(time.Now())
 
 	// Re-encode and store the soft-deleted row
-	deletedValueData, err := json.Marshal(vrow)
+	deletedValueData, err := json.Marshal(VersionedRow{Data: oldRow, Version: oldVersion})
 	if err != nil {
 		if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
 			return fmt.Errorf("failed to encode deleted row: %w; failed to restore deleted index entries: %v", err, restoreErr)
@@ -621,13 +611,9 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 	for i := range entries {
 		entry := &entries[i]
 
-		// Decode + run FK ON DELETE before any side effect. The
+		// Run FK ON DELETE before any side effect. The
 		// per-row mutation helper takes it from here.
-		vrow, decErr := decodeVersionedRow(entry.value, len(table.Columns))
-		if decErr != nil {
-			return rowsAffected, fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, decErr)
-		}
-		if fkErr := fke.OnDeleteRow(ctx, stmt.Table, vrow.Data); fkErr != nil {
+		if fkErr := fke.OnDeleteRow(ctx, stmt.Table, entry.row); fkErr != nil {
 			return rowsAffected, rollbackFKActions(fmt.Errorf("foreign key constraint: %w", fkErr))
 		}
 
@@ -671,13 +657,8 @@ func (c *Catalog) applyDeleteEntryDirect(
 	txnActive bool,
 ) error {
 	key := entry.key
-
-	// Decode row with version info.
-	vrow, err := decodeVersionedRow(entry.value, len(table.Columns))
-	if err != nil {
-		return fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
-	}
-	row := vrow.Data
+	row := entry.row
+	version := entry.version
 
 	// Remove from indexes first (before soft deleting the row), track for undo.
 	var idxChanges []indexUndoEntry
@@ -771,10 +752,10 @@ func (c *Catalog) applyDeleteEntryDirect(
 	}
 
 	// Mark as deleted with current timestamp.
-	vrow.Version.markDeleted(time.Now())
+	version.markDeleted(time.Now())
 
 	// Re-encode and store the soft-deleted row.
-	deletedValueData, err := json.Marshal(vrow)
+	deletedValueData, err := json.Marshal(VersionedRow{Data: row, Version: version})
 	if err != nil {
 		return fmt.Errorf("failed to encode deleted row: %w", err)
 	}
@@ -860,6 +841,7 @@ func (c *Catalog) applyDeleteEntryBuffered(
 ) error {
 	key := entry.key
 	row := entry.row
+	version := entry.version
 
 	if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "BEFORE", nil, row, table.Columns); trigErr != nil {
 		return fmt.Errorf("BEFORE DELETE trigger failed: %w", trigErr)
@@ -869,12 +851,9 @@ func (c *Catalog) applyDeleteEntryBuffered(
 		return err
 	}
 
-	// Soft-delete encoding: decode → mark deleted → re-encode.
-	vrow, err := decodeVersionedRow(entry.value, len(table.Columns))
-	if err != nil {
-		return fmt.Errorf("delete: failed to decode row in table %s: %w", table.Name, err)
-	}
-	vrow.Version.markDeleted(time.Now())
+	// Soft-delete encoding: mark deleted → re-encode.
+	version.markDeleted(time.Now())
+	vrow := VersionedRow{Data: row, Version: version}
 	deletedValueData, err := json.Marshal(vrow)
 	if err != nil {
 		return fmt.Errorf("failed to encode deleted row: %w", err)

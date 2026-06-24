@@ -642,6 +642,58 @@ func (cat *Catalog) selectLocked(stmt *query.SelectStmt, args []interface{}) ([]
 	return cat.selectLockedInternal(stmt, args, false)
 }
 
+// selectUnlocked performs the table scan and post-processing for a SELECT.
+// The catalog read lock may be released during the scan to allow concurrent
+// writes. The caller is responsible for ensuring recursive calls (subqueries,
+// JOIN resolution, views) do not unlock mid-execution.
+//
+// The canUnlock flag tells selectUnlocked whether the lock was released before
+// entry. When canUnlock is false the lock is already held by the caller and
+// must NOT be re-acquired. When canUnlock is true the lock was released and
+// this function re-acquires it as needed per the postProcessUnlocked state.
+//
+// Lock contract on entry/exit (when canUnlock=true):
+//   - scan error: lock is reacquired before return
+//   - postProcessUnlocked=false (RLS enabled): lock held during post-process, held on exit
+//   - postProcessUnlocked=true (RLS disabled): lock released during post-process, reacquired before exit
+//
+// When canUnlock=false, the lock is never touched by this function.
+func (cat *Catalog) selectUnlocked(snap TableSnapshot, stmt *query.SelectStmt, args []interface{}, collectFullRows bool, queryTime time.Time, trees []btree.TreeStore, mvRows [][]interface{}, isMV bool, parallelWorkers int, parallelThreshold int, returnColumns []string, hiddenOrderByCols int, hasWindowFuncs bool, canUnlock bool) ([]string, [][]interface{}, error) {
+	rows, windowFullRows, scanErr := cat.scanTableRowsWithSnapshot(snap, stmt, args, collectFullRows, queryTime, trees, mvRows, isMV, parallelWorkers, parallelThreshold)
+	if scanErr != nil {
+		if canUnlock {
+			cat.mu.RLock()
+		}
+		return returnColumns, nil, scanErr
+	}
+
+	postProcessUnlocked := cat.canApplySelectPostProcessUnlocked()
+	if canUnlock && !postProcessUnlocked {
+		cat.mu.RLock()
+	}
+
+	returnColumns, rows = cat.applySelectPostProcess(applySelectPostProcessParams{
+		rows:              rows,
+		selectCols:        snap.Columns,
+		stmt:              stmt,
+		args:              args,
+		returnColumns:     returnColumns,
+		hiddenOrderByCols: hiddenOrderByCols,
+		hasWindowFuncs:    hasWindowFuncs,
+		windowFullRows:    windowFullRows,
+		table:             snap.Def,
+	})
+
+	if canUnlock && postProcessUnlocked {
+		cat.mu.RLock()
+	}
+	if rows == nil && returnColumns != nil {
+		return returnColumns, nil, nil
+	}
+
+	return returnColumns, rows, nil
+}
+
 // selectLockedInternal is the core SELECT implementation. When canReleaseLock is
 // true and the statement has no subqueries, the catalog read lock is released
 // during the heavy table scan so concurrent writes can proceed. Recursive calls
@@ -885,40 +937,10 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 		}
 	}
 	canUnlock := canReleaseLock && !hasSubqueries(stmt)
-	postProcessUnlocked := canUnlock && cat.canApplySelectPostProcessUnlocked()
 	if canUnlock {
 		cat.mu.RUnlock()
 	}
-	rows, windowFullRows, scanErr := cat.scanTableRowsWithSnapshot(tableSnapshot, stmt, args, collectFullRows, queryTime, trees, mvRows, isMV, cat.parallelWorkers, cat.parallelThreshold)
-	if scanErr != nil {
-		if canUnlock {
-			cat.mu.RLock()
-		}
-		return returnColumns, nil, scanErr
-	}
-	if canUnlock && !postProcessUnlocked {
-		cat.mu.RLock()
-	}
-
-	returnColumns, rows = cat.applySelectPostProcess(applySelectPostProcessParams{
-		rows:              rows,
-		selectCols:        selectCols,
-		stmt:              stmt,
-		args:              args,
-		returnColumns:     returnColumns,
-		hiddenOrderByCols: hiddenOrderByCols,
-		hasWindowFuncs:    hasWindowFuncs,
-		windowFullRows:    windowFullRows,
-		table:             table,
-	})
-	if postProcessUnlocked {
-		cat.mu.RLock()
-	}
-	if rows == nil && returnColumns != nil {
-		return returnColumns, nil, nil
-	}
-
-	return returnColumns, rows, nil
+	return cat.selectUnlocked(tableSnapshot, stmt, args, collectFullRows, queryTime, trees, mvRows, isMV, cat.parallelWorkers, cat.parallelThreshold, returnColumns, hiddenOrderByCols, hasWindowFuncs, canUnlock)
 }
 
 func (cat *Catalog) canApplySelectPostProcessUnlocked() bool {

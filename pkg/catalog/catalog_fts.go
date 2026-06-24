@@ -78,17 +78,17 @@ func (c *Catalog) CreateFTSIndex(name, tableName string, columns []string) error
 }
 
 func (c *Catalog) addRowToFTSIndexLocked(ftsIndex *FTSIndexDef, table *TableDef, key, value []byte) error {
-	vrow, err := decodeVersionedRow(value, len(table.Columns))
+	rowData, ok, err := decodeLiveRow(value, len(table.Columns))
 	if err != nil {
 		return err
 	}
-	if vrow.Version.DeletedAt > 0 {
+	if !ok {
 		return nil
 	}
 	row := make(map[string]interface{}, len(table.Columns))
 	for i, col := range table.Columns {
-		if i < len(vrow.Data) {
-			row[col.Name] = vrow.Data[i]
+		if i < len(rowData) {
+			row[col.Name] = rowData[i]
 		}
 	}
 	c.indexRowForFTS(ftsIndex, row, key)

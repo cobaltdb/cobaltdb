@@ -677,32 +677,32 @@ func TestUnitEncodeRow_FallbackToEval(t *testing.T) {
 
 func TestUnitContainsSubquery(t *testing.T) {
 	// nil
-	if containsSubquery(nil) {
+	if query.ContainsSubquery(nil) {
 		t.Fatal("nil should not contain subquery")
 	}
 
 	// Simple literal
-	if containsSubquery(&query.NumberLiteral{Value: 1}) {
+	if query.ContainsSubquery(&query.NumberLiteral{Value: 1}) {
 		t.Fatal("literal should not contain subquery")
 	}
 
 	// SubqueryExpr
-	if !containsSubquery(&query.SubqueryExpr{Query: &query.SelectStmt{}}) {
+	if !query.ContainsSubquery(&query.SubqueryExpr{Query: &query.SelectStmt{}}) {
 		t.Fatal("SubqueryExpr should be detected")
 	}
 
 	// ExistsExpr
-	if !containsSubquery(&query.ExistsExpr{Subquery: &query.SelectStmt{}}) {
+	if !query.ContainsSubquery(&query.ExistsExpr{Subquery: &query.SelectStmt{}}) {
 		t.Fatal("ExistsExpr should be detected")
 	}
 
 	// Alias wrapping subquery
-	if !containsSubquery(&query.AliasExpr{Expr: &query.SubqueryExpr{Query: &query.SelectStmt{}}}) {
+	if !query.ContainsSubquery(&query.AliasExpr{Expr: &query.SubqueryExpr{Query: &query.SelectStmt{}}}) {
 		t.Fatal("AliasExpr wrapping SubqueryExpr should be detected")
 	}
 
 	// Binary with subquery on right
-	if !containsSubquery(&query.BinaryExpr{
+	if !query.ContainsSubquery(&query.BinaryExpr{
 		Left:     &query.NumberLiteral{Value: 1},
 		Operator: query.TokenEq,
 		Right:    &query.SubqueryExpr{Query: &query.SelectStmt{}},
@@ -711,7 +711,7 @@ func TestUnitContainsSubquery(t *testing.T) {
 	}
 
 	// Binary without subquery
-	if containsSubquery(&query.BinaryExpr{
+	if query.ContainsSubquery(&query.BinaryExpr{
 		Left:     &query.NumberLiteral{Value: 1},
 		Operator: query.TokenEq,
 		Right:    &query.NumberLiteral{Value: 2},
@@ -720,7 +720,7 @@ func TestUnitContainsSubquery(t *testing.T) {
 	}
 
 	// Unary with subquery
-	if !containsSubquery(&query.UnaryExpr{
+	if !query.ContainsSubquery(&query.UnaryExpr{
 		Operator: query.TokenNot,
 		Expr:     &query.ExistsExpr{Subquery: &query.SelectStmt{}},
 	}) {
@@ -728,7 +728,7 @@ func TestUnitContainsSubquery(t *testing.T) {
 	}
 
 	// FunctionCall with subquery arg
-	if !containsSubquery(&query.FunctionCall{
+	if !query.ContainsSubquery(&query.FunctionCall{
 		Name: "COALESCE",
 		Args: []query.Expression{
 			&query.SubqueryExpr{Query: &query.SelectStmt{}},
@@ -738,7 +738,7 @@ func TestUnitContainsSubquery(t *testing.T) {
 	}
 
 	// FunctionCall without subquery
-	if containsSubquery(&query.FunctionCall{
+	if query.ContainsSubquery(&query.FunctionCall{
 		Name: "ABS",
 		Args: []query.Expression{&query.NumberLiteral{Value: 5}},
 	}) {
@@ -753,7 +753,7 @@ func TestUnitContainsNonDeterministicFunctions(t *testing.T) {
 	stmt := &query.SelectStmt{
 		Columns: []query.Expression{&query.NumberLiteral{Value: 1}},
 	}
-	if containsNonDeterministicFunctions(stmt) {
+	if query.ContainsNonDeterministicFunctions(stmt) {
 		t.Fatal("simple literal should not be non-deterministic")
 	}
 
@@ -761,7 +761,7 @@ func TestUnitContainsNonDeterministicFunctions(t *testing.T) {
 	stmt = &query.SelectStmt{
 		Columns: []query.Expression{&query.FunctionCall{Name: "RANDOM"}},
 	}
-	if !containsNonDeterministicFunctions(stmt) {
+	if !query.ContainsNonDeterministicFunctions(stmt) {
 		t.Fatal("RANDOM in columns should be detected")
 	}
 
@@ -770,7 +770,7 @@ func TestUnitContainsNonDeterministicFunctions(t *testing.T) {
 		Columns: []query.Expression{&query.NumberLiteral{Value: 1}},
 		Where:   &query.FunctionCall{Name: "NOW"},
 	}
-	if !containsNonDeterministicFunctions(stmt) {
+	if !query.ContainsNonDeterministicFunctions(stmt) {
 		t.Fatal("NOW in WHERE should be detected")
 	}
 
@@ -781,24 +781,24 @@ func TestUnitContainsNonDeterministicFunctions(t *testing.T) {
 			{Expr: &query.FunctionCall{Name: "UUID"}},
 		},
 	}
-	if !containsNonDeterministicFunctions(stmt) {
+	if !query.ContainsNonDeterministicFunctions(stmt) {
 		t.Fatal("UUID in ORDER BY should be detected")
 	}
 }
 
 func TestUnitHasNonDeterministicFunction(t *testing.T) {
 	// nil
-	if hasNonDeterministicFunction(nil) {
+	if query.HasNonDeterministicFunction(nil) {
 		t.Fatal("nil should not be non-deterministic")
 	}
 
 	// Deterministic function
-	if hasNonDeterministicFunction(&query.FunctionCall{Name: "ABS", Args: []query.Expression{&query.NumberLiteral{Value: 1}}}) {
+	if query.HasNonDeterministicFunction(&query.FunctionCall{Name: "ABS", Args: []query.Expression{&query.NumberLiteral{Value: 1}}}) {
 		t.Fatal("ABS should not be non-deterministic")
 	}
 
 	// Non-deterministic in nested binary
-	if !hasNonDeterministicFunction(&query.BinaryExpr{
+	if !query.HasNonDeterministicFunction(&query.BinaryExpr{
 		Left:     &query.FunctionCall{Name: "RANDOM"},
 		Operator: query.TokenPlus,
 		Right:    &query.NumberLiteral{Value: 1},
@@ -807,14 +807,14 @@ func TestUnitHasNonDeterministicFunction(t *testing.T) {
 	}
 
 	// Non-deterministic in alias
-	if !hasNonDeterministicFunction(&query.AliasExpr{
+	if !query.HasNonDeterministicFunction(&query.AliasExpr{
 		Expr: &query.FunctionCall{Name: "RAND"},
 	}) {
 		t.Fatal("RAND in alias should be detected")
 	}
 
 	// Non-deterministic in unary
-	if !hasNonDeterministicFunction(&query.UnaryExpr{
+	if !query.HasNonDeterministicFunction(&query.UnaryExpr{
 		Operator: query.TokenMinus,
 		Expr:     &query.FunctionCall{Name: "RANDOM"},
 	}) {
@@ -822,7 +822,7 @@ func TestUnitHasNonDeterministicFunction(t *testing.T) {
 	}
 
 	// Non-deterministic nested in function args
-	if !hasNonDeterministicFunction(&query.FunctionCall{
+	if !query.HasNonDeterministicFunction(&query.FunctionCall{
 		Name: "ABS",
 		Args: []query.Expression{&query.FunctionCall{Name: "RANDOM"}},
 	}) {
@@ -831,7 +831,7 @@ func TestUnitHasNonDeterministicFunction(t *testing.T) {
 
 	// All non-det function names
 	for _, name := range []string{"RANDOM", "RAND", "NOW", "CURRENT_TIMESTAMP", "UUID", "NEWID"} {
-		if !hasNonDeterministicFunction(&query.FunctionCall{Name: name}) {
+		if !query.HasNonDeterministicFunction(&query.FunctionCall{Name: name}) {
 			t.Fatalf("%s should be non-deterministic", name)
 		}
 	}

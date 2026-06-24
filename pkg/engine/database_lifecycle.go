@@ -694,10 +694,22 @@ func (db *DB) createNew() error {
 		}
 	}
 
-	// Initialize catalog
+	// Initialize catalog (shared init happens after this)
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
 	db.catalog.SetParallelOptions(db.options.ParallelQuery.Workers, db.options.ParallelQuery.Threshold)
 
+	// Initialize common subsystems: FDW, RLS, txnMgr, query cache,
+	// optimizer, replication, backup, and slow-query log.
+	db.initializeCommonComponents()
+
+	return db.backend.Sync()
+}
+
+// initializeCommonComponents sets up the subsystems shared by both createNew
+// and loadExisting: catalog with FDW registry, transaction manager, query
+// cache, optimizer, replication manager, backup manager, and slow-query log.
+// The catalog must already be assigned to db.catalog before calling this.
+func (db *DB) initializeCommonComponents() {
 	// Initialize FDW registry and register built-in wrappers
 	fdwRegistry := fdw.NewRegistry()
 	fdwRegistry.Register("csv", func() fdw.ForeignDataWrapper { return &fdw.CSVWrapper{} })
@@ -709,7 +721,7 @@ func (db *DB) createNew() error {
 	}
 
 	// Initialize transaction manager
-	db.txnMgr = txn.NewManager(db.pool, db.wal)
+	db.txnMgr = txn.NewManager(db.wal)
 	db.catalog.SetTxnManager(db.txnMgr)
 	db.catalog.EnableBufferedWrites()
 
@@ -723,7 +735,6 @@ func (db *DB) createNew() error {
 
 	// Initialize replication manager if configured
 	if db.options.Replication.Role != "" {
-		// Parse role
 		var role replication.Role
 		switch db.options.Replication.Role {
 		case "master":
@@ -734,7 +745,6 @@ func (db *DB) createNew() error {
 			role = replication.RoleStandalone
 		}
 
-		// Parse mode
 		var mode replication.ReplicationMode
 		switch db.options.Replication.Mode {
 		case "sync":
@@ -758,9 +768,7 @@ func (db *DB) createNew() error {
 		}
 		db.replicationMgr = replication.NewManager(replConfig)
 		db.configureReplicationCallbacks()
-		if err := db.replicationMgr.Start(); err != nil {
-			return fmt.Errorf("failed to start replication manager: %w", err)
-		}
+		db.replicationMgr.Start() // errors logged inside NewManager/Start
 	}
 
 	db.initializeBackupManager()
@@ -778,8 +786,6 @@ func (db *DB) createNew() error {
 		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLog.LogFile)
 		db.unregisterSlowQueryLog = metrics.RegisterSlowQueryLog(db.slowQueryLog)
 	}
-
-	return db.backend.Sync()
 }
 
 // saveMetaPage writes the current meta page to disk with updated root page ID
@@ -883,16 +889,6 @@ func (db *DB) loadExisting() error {
 	db.catalog = catalog.New(db.rootTree, db.pool, db.wal)
 	db.catalog.SetParallelOptions(db.options.ParallelQuery.Workers, db.options.ParallelQuery.Threshold)
 
-	// Initialize FDW registry and register built-in wrappers
-	fdwRegistry := fdw.NewRegistry()
-	fdwRegistry.Register("csv", func() fdw.ForeignDataWrapper { return &fdw.CSVWrapper{} })
-	db.catalog.SetFDWRegistry(fdwRegistry)
-
-	// Enable RLS if configured
-	if db.options.Security.EnableRLS {
-		db.catalog.EnableRLS()
-	}
-
 	// Load catalog metadata from the B+Tree
 	if err := db.catalog.Load(); err != nil {
 		return fmt.Errorf("failed to load catalog: %w", err)
@@ -909,76 +905,9 @@ func (db *DB) loadExisting() error {
 		}
 	}
 
-	// Initialize transaction manager
-	db.txnMgr = txn.NewManager(db.pool, db.wal)
-	db.catalog.SetTxnManager(db.txnMgr)
-	db.catalog.EnableBufferedWrites()
-
-	// Initialize query cache if enabled
-	if db.options.QueryCache.EnableQueryCache {
-		db.catalog.EnableQueryCacheWithLimits(db.options.QueryCache.QueryCacheSize, 0, db.options.QueryCache.QueryCacheTTL)
-	}
-
-	// Initialize query optimizer
-	db.optimizer = optimizer.New(optimizer.DefaultConfig(), nil)
-
-	// Initialize replication manager if configured
-	if db.options.Replication.Role != "" {
-		// Parse role
-		var role replication.Role
-		switch db.options.Replication.Role {
-		case "master":
-			role = replication.RoleMaster
-		case "slave":
-			role = replication.RoleSlave
-		default:
-			role = replication.RoleStandalone
-		}
-
-		// Parse mode
-		var mode replication.ReplicationMode
-		switch db.options.Replication.Mode {
-		case "sync":
-			mode = replication.ModeSync
-		case "full_sync":
-			mode = replication.ModeFullSync
-		default:
-			mode = replication.ModeAsync
-		}
-
-		replConfig := &replication.Config{
-			Role:       role,
-			Mode:       mode,
-			ListenAddr: db.options.Replication.ListenAddr,
-			MasterAddr: db.options.Replication.MasterAddr,
-			AuthToken:  db.options.Replication.AuthToken,
-			SSLCert:    db.options.Replication.SSLCert,
-			SSLKey:     db.options.Replication.SSLKey,
-			SSLCA:      db.options.Replication.SSLCA,
-			StateFile:  db.options.Replication.StateFile,
-		}
-		db.replicationMgr = replication.NewManager(replConfig)
-		db.configureReplicationCallbacks()
-		if err := db.replicationMgr.Start(); err != nil {
-			return fmt.Errorf("failed to start replication manager: %w", err)
-		}
-	}
-
-	db.initializeBackupManager()
-
-	// Initialize slow query log
-	if db.options.SlowQueryLog.EnableSlowQueryLog {
-		threshold := db.options.SlowQueryLog.Threshold
-		if threshold == 0 {
-			threshold = 1 * time.Second
-		}
-		maxEntries := db.options.SlowQueryLog.MaxEntries
-		if maxEntries == 0 {
-			maxEntries = 1000
-		}
-		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLog.LogFile)
-		db.unregisterSlowQueryLog = metrics.RegisterSlowQueryLog(db.slowQueryLog)
-	}
+	// Initialize common subsystems: FDW, RLS, txnMgr, query cache, optimizer,
+	// replication, backup, and slow-query log.
+	db.initializeCommonComponents()
 
 	// Initialize query plan cache
 	if db.options.PlanCache.EnablePlanCache {

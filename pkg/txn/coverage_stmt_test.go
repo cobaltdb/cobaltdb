@@ -8,7 +8,7 @@ import (
 )
 
 func TestGetVersionStore(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	vs := mgr.GetVersionStore()
 	if vs == nil {
 		t.Fatal("expected non-nil version store")
@@ -26,7 +26,7 @@ func TestGetVersionStore(t *testing.T) {
 }
 
 func TestAcquireLockModeShared(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn1 := mgr.Begin(nil)
 	txn2 := mgr.Begin(nil)
 
@@ -47,7 +47,7 @@ func TestAcquireLockModeShared(t *testing.T) {
 }
 
 func TestAcquireLockModeSharedBlockedByExclusive(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn1 := mgr.Begin(nil)
 	txn2 := mgr.Begin(nil)
 
@@ -68,7 +68,7 @@ func TestAcquireLockModeSharedBlockedByExclusive(t *testing.T) {
 }
 
 func TestAcquireLockModeReturnsOnTransactionTimeout(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	holder := mgr.Begin(nil)
 	waiter := mgr.Begin(&Options{Timeout: 25 * time.Millisecond})
 
@@ -97,7 +97,7 @@ func TestAcquireLockModeReturnsOnTransactionTimeout(t *testing.T) {
 }
 
 func TestAcquireLockModeReturnsWhenWaitingTransactionAborts(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	holder := mgr.Begin(nil)
 	waiter := mgr.Begin(nil)
 
@@ -142,7 +142,7 @@ func TestAcquireLockModeReturnsWhenWaitingTransactionAborts(t *testing.T) {
 }
 
 func TestAcquireLockModeLockUpgrade(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn1 := mgr.Begin(nil)
 
 	// First acquire shared
@@ -161,7 +161,7 @@ func TestAcquireLockModeLockUpgrade(t *testing.T) {
 }
 
 func TestAcquireLockModeExclusiveBlockedByShared(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn1 := mgr.Begin(nil)
 	txn2 := mgr.Begin(nil)
 
@@ -182,7 +182,7 @@ func TestAcquireLockModeExclusiveBlockedByShared(t *testing.T) {
 }
 
 func TestReleaseAllLocksForInactiveTxn(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	// Acquire some locks
@@ -230,7 +230,7 @@ func TestIsTimedOutDetailed(t *testing.T) {
 }
 
 func TestCommitWithTimeout(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	opts := &Options{Timeout: 10 * time.Second}
 	txn := mgr.Begin(opts)
 
@@ -247,7 +247,7 @@ func TestCommitWithTimeout(t *testing.T) {
 }
 
 func TestReadOnlyTransactionRejectsWritesOnCommit(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(&Options{ReadOnly: true})
 	txn.SetWrite("", "readonly-key", []byte("value"))
 
@@ -267,7 +267,7 @@ func TestReadOnlyTransactionRejectsWritesOnCommit(t *testing.T) {
 }
 
 func TestAcquireLockModeTxnNotFound(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn1 := mgr.Begin(nil)
 
 	// txn1 holds exclusive lock
@@ -281,7 +281,7 @@ func TestAcquireLockModeTxnNotFound(t *testing.T) {
 }
 
 func TestAcquireLockRejectsInactiveTxnWithoutLeakingLock(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	if err := mgr.AcquireLock(99999, "empty-key", time.Second); err != ErrTxnNotFound {
 		t.Fatalf("expected ErrTxnNotFound for inactive transaction, got %v", err)
@@ -298,7 +298,7 @@ func TestAcquireLockRejectsInactiveTxnWithoutLeakingLock(t *testing.T) {
 }
 
 func TestAcquireLockNoWaitFailureClearsWaitingFor(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn1 := mgr.Begin(nil)
 	txn2 := mgr.Begin(nil)
 

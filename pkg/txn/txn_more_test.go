@@ -9,7 +9,7 @@ import (
 
 // TestManagerGet tests Manager.Get function
 func TestManagerGet(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Get non-existent transaction
 	txn, err := mgr.Get(999)
@@ -35,7 +35,7 @@ func TestManagerGet(t *testing.T) {
 
 // TestCommitWithNoWrites tests committing a read-only transaction
 func TestCommitWithNoWrites(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Read-only transaction with no writes
 	txn := mgr.Begin(&Options{ReadOnly: true})
@@ -52,7 +52,7 @@ func TestCommitWithNoWrites(t *testing.T) {
 
 // TestRollbackWithWrites tests rollback with pending writes
 func TestRollbackWithWrites(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn := mgr.Begin(nil)
 	txn.SetWrite("", "key1", []byte("value1"))
@@ -76,7 +76,7 @@ func TestRollbackWithWrites(t *testing.T) {
 
 // TestMultipleTransactions tests multiple concurrent transactions
 func TestMultipleTransactions(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Begin multiple transactions
 	txn1 := mgr.Begin(nil)
@@ -107,7 +107,7 @@ func TestMultipleTransactions(t *testing.T) {
 
 // TestTransactionStateTransitions tests state transitions
 func TestTransactionStateTransitions(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Active -> Committed
 	txn := mgr.Begin(nil)
@@ -130,7 +130,7 @@ func TestTransactionStateTransitions(t *testing.T) {
 
 // TestGetReadVersionNotFound tests GetReadVersion when key not found
 func TestGetReadVersionNotFound(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	_, ok := txn.GetReadVersion("", "nonexistent")
@@ -141,7 +141,7 @@ func TestGetReadVersionNotFound(t *testing.T) {
 
 // TestGetWriteNotFound tests GetWrite when key not found
 func TestGetWriteNotFound(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	_, ok := txn.GetWrite("", "nonexistent")
@@ -152,7 +152,7 @@ func TestGetWriteNotFound(t *testing.T) {
 
 // TestSetReadVersionOverwrite tests overwriting read version
 func TestSetReadVersionOverwrite(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	txn.SetReadVersion("", "key1", 100)
@@ -170,7 +170,7 @@ func TestSetReadVersionOverwrite(t *testing.T) {
 
 // TestSetWriteOverwrite tests overwriting write
 func TestSetWriteOverwrite(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	txn.SetWrite("", "key1", []byte("value1"))
@@ -187,7 +187,7 @@ func TestSetWriteOverwrite(t *testing.T) {
 }
 
 func TestSetWriteCopiesValues(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 	value := []byte("value1")
 
@@ -250,7 +250,7 @@ func TestSnapshotIsolation(t *testing.T) {
 		ReadOnly:  false,
 	}
 
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(opts)
 
 	if txn.Isolation != SnapshotIsolation {
@@ -265,7 +265,7 @@ func TestSerializableIsolation(t *testing.T) {
 		ReadOnly:  false,
 	}
 
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(opts)
 
 	if txn.Isolation != Serializable {
@@ -280,7 +280,7 @@ func TestReadCommittedIsolation(t *testing.T) {
 		ReadOnly:  false,
 	}
 
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(opts)
 
 	if txn.Isolation != ReadCommitted {
@@ -290,7 +290,7 @@ func TestReadCommittedIsolation(t *testing.T) {
 
 // TestTransactionIDIncrement tests that transaction IDs increment
 func TestTransactionIDIncrement(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	var lastID uint64 = 0
 	for i := 0; i < 10; i++ {
@@ -304,7 +304,7 @@ func TestTransactionIDIncrement(t *testing.T) {
 
 // TestGetNonExistentTransaction tests getting a non-existent transaction
 func TestGetNonExistentTransaction(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	_, err := mgr.Get(99999)
 	if err != ErrTxnNotFound {
@@ -314,7 +314,7 @@ func TestGetNonExistentTransaction(t *testing.T) {
 
 // TestDetectConflicts tests conflict detection with SnapshotIsolation
 func TestDetectConflicts(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Begin first transaction with SnapshotIsolation
 	opts1 := &Options{Isolation: SnapshotIsolation}
@@ -346,7 +346,7 @@ func TestDetectConflicts(t *testing.T) {
 
 // TestDetectConflictsNoConflict tests conflict detection when no conflict exists
 func TestDetectConflictsNoConflict(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Begin transaction with SnapshotIsolation
 	opts := &Options{Isolation: SnapshotIsolation}
@@ -367,7 +367,7 @@ func TestDetectConflictsNoConflict(t *testing.T) {
 
 // TestDetectConflictsLowerIsolation tests that conflicts are not detected at lower isolation levels
 func TestDetectConflictsLowerIsolation(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Begin transaction with ReadCommitted (no conflict detection)
 	opts := &Options{Isolation: ReadCommitted}
@@ -385,7 +385,7 @@ func TestDetectConflictsLowerIsolation(t *testing.T) {
 
 // TestCommitWithApplyWritesError tests commit when applyWrites might fail
 func TestCommitWithApplyWritesError(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	// Begin transaction
 	txn := mgr.Begin(nil)
@@ -433,7 +433,7 @@ func TestApplyWritesWithWAL(t *testing.T) {
 	}
 	defer wal.Close()
 
-	mgr := NewManager(pool, wal)
+	mgr := NewManager(wal)
 
 	txn := mgr.Begin(nil)
 	txn.SetWrite("", "key1", []byte("value1"))
@@ -460,7 +460,7 @@ func TestCommitWALFailureDoesNotPublishVersions(t *testing.T) {
 	}
 	defer wal.Close()
 
-	mgr := NewManager(nil, wal)
+	mgr := NewManager(wal)
 	txn := mgr.Begin(nil)
 	key := WriteKey{TreeName: "table", Key: "key"}
 	txn.SetWrite(key.TreeName, key.Key, make([]byte, maxTxnWALRecordDataBytes))
@@ -486,7 +486,7 @@ func TestMultiWriteCommitWALFailureDoesNotPublishVersions(t *testing.T) {
 	}
 	defer wal.Close()
 
-	mgr := NewManager(nil, wal)
+	mgr := NewManager(wal)
 	txn := mgr.Begin(nil)
 	keys := []WriteKey{
 		{TreeName: "table", Key: "key1"},
@@ -515,7 +515,7 @@ func TestApplyWritesWithPool(t *testing.T) {
 	pool := storage.NewBufferPool(1024, storage.NewMemory())
 	defer pool.Close()
 
-	mgr := NewManager(pool, nil)
+	mgr := NewManager(nil)
 
 	txn := mgr.Begin(nil)
 	txn.SetWrite("", "test:1", []byte("data"))
@@ -543,7 +543,7 @@ func TestApplyWritesWithPoolAndWAL(t *testing.T) {
 	}
 	defer wal.Close()
 
-	mgr := NewManager(pool, wal)
+	mgr := NewManager(wal)
 
 	// Multiple transactions
 	for i := 0; i < 5; i++ {
@@ -577,7 +577,7 @@ func TestCommitConflictWithWAL(t *testing.T) {
 	}
 	defer wal.Close()
 
-	mgr := NewManager(pool, wal)
+	mgr := NewManager(wal)
 
 	// Transaction 1 reads a key
 	txn1 := mgr.Begin(nil)

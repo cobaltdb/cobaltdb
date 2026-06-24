@@ -438,9 +438,8 @@ type Manager struct {
 	activeShards  [numActiveShards]activeShard
 	versionShards [numVersionShards]versionShard
 	versionStore  *VersionStore // MVCC version chain storage
-	commitCount   atomic.Int64
-	pool          interface{} // BufferPool (using interface{} to avoid import cycle)
-	wal           interface{} // WAL
+	commitCount atomic.Int64
+	wal         interface{} // WAL
 
 	// Deadlock detection
 	deadlockCheckInterval time.Duration
@@ -462,11 +461,10 @@ type lockEntry struct {
 }
 
 // NewManager creates a new transaction manager
-func NewManager(pool, wal interface{}) *Manager {
+func NewManager(wal interface{}) *Manager {
 	m := &Manager{
-		versionStore:          NewVersionStore(),
-		pool:                  pool,
-		wal:                   wal,
+		versionStore:           NewVersionStore(),
+		wal:                    wal,
 		deadlockCheckInterval: 100 * time.Millisecond, // Check every 100ms
 		stopDeadlockDetector:  make(chan struct{}),
 		lockEntries:           make(map[string]*lockEntry),

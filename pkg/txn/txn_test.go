@@ -5,14 +5,14 @@ import (
 )
 
 func TestNewManager(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	if mgr == nil {
 		t.Fatal("Manager is nil")
 	}
 }
 
 func TestBegin(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	txn := mgr.Begin(nil)
 	if txn == nil {
@@ -25,7 +25,7 @@ func TestBegin(t *testing.T) {
 }
 
 func TestBeginWithOptions(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	opts := &Options{
 		Isolation: SnapshotIsolation,
@@ -43,7 +43,7 @@ func TestBeginWithOptions(t *testing.T) {
 }
 
 func TestCommit(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	err := txn.Commit()
@@ -57,7 +57,7 @@ func TestCommit(t *testing.T) {
 }
 
 func TestRollback(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	err := txn.Rollback()
@@ -71,7 +71,7 @@ func TestRollback(t *testing.T) {
 }
 
 func TestDoubleCommit(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	txn.Commit()
@@ -83,7 +83,7 @@ func TestDoubleCommit(t *testing.T) {
 }
 
 func TestCommitAfterRollback(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	txn.Rollback()
@@ -95,7 +95,7 @@ func TestCommitAfterRollback(t *testing.T) {
 }
 
 func TestReadVersion(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	txn.SetReadVersion("", "key1", 100)
@@ -111,7 +111,7 @@ func TestReadVersion(t *testing.T) {
 }
 
 func TestWrite(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 	txn := mgr.Begin(nil)
 
 	txn.SetWrite("", "key1", []byte("value1"))
@@ -127,7 +127,7 @@ func TestWrite(t *testing.T) {
 }
 
 func TestGetCurrentVersion(t *testing.T) {
-	mgr := NewManager(nil, nil)
+	mgr := NewManager(nil)
 
 	v := mgr.GetCurrentVersion("", "nonexistent")
 	if v != 0 {

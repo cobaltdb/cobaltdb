@@ -8,20 +8,21 @@ import (
 )
 
 func TestQueryCacheReturnsIsolatedEntries(t *testing.T) {
-	cache := NewQueryCache(10, time.Minute)
+	cfg := &cache.Config{MaxSize: 65536, MaxEntries: 10, TTL: time.Minute, Enabled: true}
+	c := cache.New(cfg)
 	columns := []string{"id", "payload"}
 	rows := [][]interface{}{
 		{int64(1), []byte("alpha"), map[string]interface{}{"tags": []interface{}{"hot"}}},
 	}
 	tables := []string{"users"}
 
-	cache.Set("key", columns, rows, tables)
+	c.Set("key", nil, columns, rows, tables)
 	columns[0] = "mutated"
 	rows[0][1].([]byte)[0] = 'z'
 	rows[0][2].(map[string]interface{})["tags"].([]interface{})[0] = "cold"
 	tables[0] = "orders"
 
-	entry, ok := cache.Get("key")
+	entry, ok := c.Get("key", nil)
 	if !ok {
 		t.Fatal("expected cached entry")
 	}
@@ -34,16 +35,16 @@ func TestQueryCacheReturnsIsolatedEntries(t *testing.T) {
 	if entry.Rows[0][2].(map[string]interface{})["tags"].([]interface{})[0] != "hot" {
 		t.Fatalf("Set retained caller-owned nested row value: %v", entry.Rows[0][2])
 	}
-	if entry.Tables[0] != "users" {
-		t.Fatalf("Set retained caller-owned tables: %v", entry.Tables)
+	if entry.TableDeps[0] != "users" {
+		t.Fatalf("Set retained caller-owned table deps: %v", entry.TableDeps)
 	}
 
 	entry.Columns[0] = "external"
 	entry.Rows[0][1].([]byte)[0] = 'x'
 	entry.Rows[0][2].(map[string]interface{})["tags"].([]interface{})[0] = "warm"
-	entry.Tables[0] = "external_table"
+	entry.TableDeps[0] = "external_table"
 
-	entryAgain, ok := cache.Get("key")
+	entryAgain, ok := c.Get("key", nil)
 	if !ok {
 		t.Fatal("expected cached entry on second get")
 	}
@@ -56,18 +57,19 @@ func TestQueryCacheReturnsIsolatedEntries(t *testing.T) {
 	if entryAgain.Rows[0][2].(map[string]interface{})["tags"].([]interface{})[0] != "hot" {
 		t.Fatalf("Get returned mutable nested row value: %v", entryAgain.Rows[0][2])
 	}
-	if entryAgain.Tables[0] != "users" {
-		t.Fatalf("Get returned mutable tables: %v", entryAgain.Tables)
+	if entryAgain.TableDeps[0] != "users" {
+		t.Fatalf("Get returned mutable table deps: %v", entryAgain.TableDeps)
 	}
 }
 
 func TestQueryCacheZeroTTLDoesNotExpireByAge(t *testing.T) {
-	cache := NewQueryCache(10, 0)
-	cache.Set("key", []string{"id"}, [][]interface{}{{int64(1)}}, []string{"users"})
+	cfg := &cache.Config{MaxSize: 65536, MaxEntries: 10, TTL: 0, Enabled: true}
+	c := cache.New(cfg)
+	c.Set("key", nil, []string{"id"}, [][]interface{}{{int64(1)}}, []string{"users"})
 
 	time.Sleep(time.Millisecond)
 
-	if _, ok := cache.Get("key"); !ok {
+	if _, ok := c.Get("key", nil); !ok {
 		t.Fatal("expected zero TTL cache entry to remain valid")
 	}
 }
@@ -105,5 +107,14 @@ func TestCatalogEnableQueryCacheWithLimitsUsesByteLimit(t *testing.T) {
 	stats = c.queryCache.Stats()
 	if stats.EntryCount > 7 {
 		t.Fatalf("EntryCount = %d, want <= 7", stats.EntryCount)
+	}
+}
+
+func TestCatalogDisableQueryCacheSetsNil(t *testing.T) {
+	c := &Catalog{}
+	c.EnableQueryCache(10, time.Minute)
+	c.DisableQueryCache()
+	if c.queryCache != nil {
+		t.Fatal("expected query cache to be nil after DisableQueryCache")
 	}
 }
