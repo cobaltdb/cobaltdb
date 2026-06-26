@@ -2,7 +2,6 @@ package catalog
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"sort"
@@ -546,8 +545,8 @@ func (c *Catalog) deleteRowLocked(ctx context.Context, tableName string, pkValue
 	// Soft delete: mark row as deleted instead of physically deleting
 	oldVersion.markDeleted(time.Now())
 
-	// Re-encode and store the soft-deleted row
-	deletedValueData, err := json.Marshal(VersionedRow{Data: oldRow, Version: oldVersion})
+	// Re-encode and store the soft-deleted row (binary-safe).
+	deletedValueData, err := encodeVersionedRowFull(oldRow, oldVersion)
 	if err != nil {
 		if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
 			return fmt.Errorf("failed to encode deleted row: %w; failed to restore deleted index entries: %v", err, restoreErr)
@@ -760,8 +759,8 @@ func (c *Catalog) applyDeleteEntryDirect(
 	// Mark as deleted with current timestamp.
 	version.markDeleted(time.Now())
 
-	// Re-encode and store the soft-deleted row.
-	deletedValueData, err := json.Marshal(VersionedRow{Data: row, Version: version})
+	// Re-encode and store the soft-deleted row (binary-safe).
+	deletedValueData, err := encodeVersionedRowFull(row, version)
 	if err != nil {
 		return fmt.Errorf("failed to encode deleted row: %w", err)
 	}
@@ -864,8 +863,7 @@ func (c *Catalog) applyDeleteEntryBuffered(
 
 	// Soft-delete encoding: mark deleted → re-encode.
 	version.markDeleted(time.Now())
-	vrow := VersionedRow{Data: row, Version: version}
-	deletedValueData, err := json.Marshal(vrow)
+	deletedValueData, err := encodeVersionedRowFull(row, version)
 	if err != nil {
 		return fmt.Errorf("failed to encode deleted row: %w", err)
 	}

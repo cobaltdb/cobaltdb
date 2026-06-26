@@ -1285,9 +1285,9 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 				for len(values) < newColCount {
 					values = append(values, defaultVal)
 				}
-				// Update the VersionedRow and re-encode
+				// Update the VersionedRow and re-encode (binary-safe).
 				vrow.Data = values
-				newData, err := json.Marshal(vrow)
+				newData, err := encodeVersionedRowFull(vrow.Data, vrow.Version)
 				if err != nil {
 					return fmt.Errorf("failed to encode row during ALTER TABLE ADD COLUMN: %w", err)
 				}
@@ -1462,7 +1462,7 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 				row = append(row[:colIdx], row[colIdx+1:]...)
 			}
 			vrow.Data = row
-			newData, err := json.Marshal(vrow)
+			newData, err := encodeVersionedRowFull(vrow.Data, vrow.Version)
 			if err != nil {
 				return fmt.Errorf("failed to encode row during ALTER TABLE DROP COLUMN: %w", err)
 			}

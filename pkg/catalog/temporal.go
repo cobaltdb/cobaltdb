@@ -2,11 +2,21 @@ package catalog
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"strconv"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 )
+
+// binRowMarker prefixes the encoding of a row that contains binary values
+// ([]byte or a non-UTF-8 string). JSON cannot hold arbitrary bytes, so such
+// values are base64-encoded and their positions recorded in VersionedRow.Bin;
+// the marker (a byte that a normal row — always starting with '{' — never
+// begins with) routes decoding to decodeBinaryVersionedRow. Old data never
+// starts with this byte, so the format is backward-compatible.
+const binRowMarker = 0x01
 
 // Package-level byte slices for JSON key constants — avoids per-call allocation
 // of []byte(stringLiteral) inside hot-path functions.
@@ -71,8 +81,9 @@ type RowVersion struct {
 
 // VersionedRow wraps row data with versioning metadata
 type VersionedRow struct {
-	Data    []interface{} `json:"data"`    // The actual row data
-	Version RowVersion    `json:"version"` // Temporal metadata
+	Data    []interface{} `json:"data"`          // The actual row data
+	Version RowVersion    `json:"version"`       // Temporal metadata
+	Bin     []int         `json:"bin,omitempty"` // indices of Data that are base64-encoded binary ([]byte)
 }
 
 // encodeVersionedRow encodes row values with temporal metadata.
@@ -88,14 +99,114 @@ func encodeVersionedRow(rowValues []interface{}, asOfTime *time.Time) ([]byte, e
 		return data, nil
 	}
 
-	vrow := VersionedRow{
-		Data: rowValues,
-		Version: RowVersion{
-			CreatedAt: createdAt,
-			DeletedAt: 0,
-		},
+	// If any value is binary ([]byte or non-UTF-8 string), JSON cannot hold it
+	// safely — base64-encode those positions and record them in Bin behind the
+	// binary-row marker.
+	return encodeVersionedRowFull(rowValues, RowVersion{CreatedAt: createdAt, DeletedAt: 0})
+}
+
+// encodeVersionedRowFull encodes row data with an explicit version, choosing the
+// binary-safe path when any value is binary. Used by re-encode paths (soft
+// delete, ALTER TABLE) so a []byte / non-UTF-8 value is not corrupted by a bare
+// json.Marshal (which base64s []byte and mangles invalid UTF-8 to U+FFFD).
+func encodeVersionedRowFull(rowValues []interface{}, version RowVersion) ([]byte, error) {
+	if rowHasBinaryValue(rowValues) {
+		return encodeBinaryVersionedRow(rowValues, version)
 	}
-	return json.Marshal(vrow)
+	return json.Marshal(VersionedRow{Data: rowValues, Version: version})
+}
+
+// rowHasBinaryValue reports whether any value cannot be represented losslessly
+// as a JSON string: a []byte, or a string that is not valid UTF-8.
+func rowHasBinaryValue(rowValues []interface{}) bool {
+	for _, v := range rowValues {
+		switch val := v.(type) {
+		case []byte:
+			return true
+		case string:
+			if !utf8.ValidString(val) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// encodeBinaryVersionedRow encodes a row containing binary values: each []byte
+// or non-UTF-8 string is base64-encoded into Data and its index recorded in Bin.
+// The output is prefixed with binRowMarker so decoding routes to the binary
+// path (and the fast decoder, which requires a leading '{', rejects it).
+func encodeBinaryVersionedRow(rowValues []interface{}, version RowVersion) ([]byte, error) {
+	encoded := make([]interface{}, len(rowValues))
+	var bin []int
+	for i, v := range rowValues {
+		switch val := v.(type) {
+		case []byte:
+			encoded[i] = base64.StdEncoding.EncodeToString(val)
+			bin = append(bin, i)
+		case string:
+			if !utf8.ValidString(val) {
+				encoded[i] = base64.StdEncoding.EncodeToString([]byte(val))
+				bin = append(bin, i)
+			} else {
+				encoded[i] = val
+			}
+		default:
+			encoded[i] = v
+		}
+	}
+	vrow := VersionedRow{
+		Data:    encoded,
+		Version: version,
+		Bin:     bin,
+	}
+	jsonData, err := json.Marshal(vrow)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(jsonData)+1)
+	out = append(out, binRowMarker)
+	out = append(out, jsonData...)
+	return out, nil
+}
+
+// decodeBinaryVersionedRow decodes a row written by encodeBinaryVersionedRow
+// (data is the JSON payload, without the leading marker byte).
+func decodeBinaryVersionedRow(data []byte, numCols int) (VersionedRow, error) {
+	var vrow VersionedRow
+	if err := json.Unmarshal(data, &vrow); err != nil {
+		return VersionedRow{}, err
+	}
+	binSet := make(map[int]struct{}, len(vrow.Bin))
+	for _, idx := range vrow.Bin {
+		binSet[idx] = struct{}{}
+		if idx >= 0 && idx < len(vrow.Data) {
+			if s, ok := vrow.Data[idx].(string); ok {
+				if b, derr := base64.StdEncoding.DecodeString(s); derr == nil {
+					vrow.Data[idx] = b
+				}
+			}
+		}
+	}
+	vrow.Bin = nil
+	// Restore integer types lost by JSON unmarshaling (skip binary positions).
+	for i, v := range vrow.Data {
+		if _, isBin := binSet[i]; isBin {
+			continue
+		}
+		if f, ok := v.(float64); ok {
+			if f == float64(int64(f)) && f >= -1e15 && f <= 1e15 {
+				vrow.Data[i] = int64(f)
+			}
+		}
+	}
+	for len(vrow.Data) < numCols {
+		vrow.Data = append(vrow.Data, nil)
+	}
+	if len(vrow.Data) > numCols {
+		vrow.Data = vrow.Data[:numCols]
+	}
+	return vrow, nil
 }
 
 // encodeVersionedRowFast manually builds the JSON {"data":[...],"version":{...}}
@@ -152,7 +263,11 @@ func encodeVersionedRowFast(rowValues []interface{}, createdAt int64, dst []byte
 				buf = append(buf, "false"...)
 			}
 		case string:
-			// Fast path only for strings without quotes/backslashes/control chars.
+			// Fast path only for valid-UTF-8 strings without quotes/backslashes/
+			// control chars. Valid multibyte UTF-8 (bytes >= 0x80) is fine to
+			// write raw (it is valid JSON); only INVALID UTF-8 (binary data) must
+			// take the slow binary path, where it is base64-tagged — writing it
+			// raw would yield invalid JSON that json.Unmarshal corrupts to U+FFFD.
 			needsEscape := false
 			for j := 0; j < len(val); j++ {
 				c := val[j]
@@ -161,7 +276,7 @@ func encodeVersionedRowFast(rowValues []interface{}, createdAt int64, dst []byte
 					break
 				}
 			}
-			if needsEscape {
+			if needsEscape || !utf8.ValidString(val) {
 				return buf, false
 			}
 			buf = append(buf, '"')
@@ -183,6 +298,12 @@ func encodeVersionedRowFast(rowValues []interface{}, createdAt int64, dst []byte
 // json.Unmarshal for edge cases. The fast path avoids reflection and
 // reduces allocations by parsing the "data" array and "version" object directly.
 func decodeVersionedRow(data []byte, numCols int) (VersionedRow, error) {
+	// Binary rows (containing []byte / non-UTF-8 values) are prefixed with the
+	// marker and base64-encode their binary positions.
+	if len(data) > 0 && data[0] == binRowMarker {
+		return decodeBinaryVersionedRow(data[1:], numCols)
+	}
+
 	// Fast path: custom decoder for known format {"data":[...],"version":{...}}
 	if len(data) > 2 && data[0] == '{' {
 		out := make([]interface{}, numCols)

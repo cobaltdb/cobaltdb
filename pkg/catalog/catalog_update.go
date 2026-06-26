@@ -1547,11 +1547,11 @@ func (c *Catalog) softDeleteJoinEntries(tableName string, table *TableDef, tree 
 		}
 
 		// Soft delete: use entry.version (captured at scan time) for re-encode.
-		vrow := VersionedRow{Data: entry.row, Version: entry.version}
-		vrow.Version.markDeleted(time.Now())
+		ver := entry.version
+		ver.markDeleted(time.Now())
 
-		// Re-encode and store
-		deletedValueData, err := json.Marshal(vrow)
+		// Re-encode and store (binary-safe).
+		deletedValueData, err := encodeVersionedRowFull(entry.row, ver)
 		if err != nil {
 			if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
 				return fmt.Errorf("failed to encode deleted row: %w; failed to restore deleted index entries: %v", err, restoreErr)
