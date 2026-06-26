@@ -560,6 +560,84 @@ func TestReplicateFromMasterReadError(t *testing.T) {
 	}
 }
 
+// TestReplicateWALGapForcesResync verifies that when WAL retention has evicted
+// entries a still-connected lagging slave needs, the master does NOT silently
+// stream the surviving suffix (which would diverge the slave); instead it flags
+// the slave for a snapshot resync and sends a RESYNC control message.
+func TestReplicateWALGapForcesResync(t *testing.T) {
+	config := DefaultConfig()
+	config.Role = RoleMaster
+	m := NewManager(config)
+
+	// Buffer retains LSN 5,6,7 — entries 1..4 were pruned by retention.
+	m.walBuffer = []*WALEntry{
+		{LSN: 5, Data: []byte("e5")},
+		{LSN: 6, Data: []byte("e6")},
+		{LSN: 7, Data: []byte("e7")},
+	}
+	m.currentLSN = 7
+
+	var buf bytes.Buffer
+	slave := &SlaveConnection{
+		ID:       "lagging",
+		Writer:   bufio.NewWriter(&buf),
+		LastLSN:  2, // needs entry 3, which was pruned -> gap
+		LastPing: time.Now(),
+	}
+	m.slaves = map[string]*SlaveConnection{slave.ID: slave}
+
+	m.replicateWAL()
+
+	slave.mu.Lock()
+	needsSnap := slave.NeedsSnapshot
+	slave.mu.Unlock()
+	if !needsSnap {
+		t.Fatal("expected slave to be flagged NeedsSnapshot after a WAL gap")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "RESYNC") {
+		t.Fatalf("expected a RESYNC control message, got %q", out)
+	}
+	if strings.Contains(out, "e5") || strings.Contains(out, "e6") || strings.Contains(out, "e7") {
+		t.Fatalf("gapped WAL data must not be streamed to the slave, got %q", out)
+	}
+}
+
+// TestReplicateWALContiguousNoResync verifies the gap guard does NOT fire for a
+// slave whose next-needed entry is still retained (normal streaming).
+func TestReplicateWALContiguousNoResync(t *testing.T) {
+	config := DefaultConfig()
+	config.Role = RoleMaster
+	m := NewManager(config)
+
+	m.walBuffer = []*WALEntry{
+		{LSN: 3, Data: []byte("e3")},
+		{LSN: 4, Data: []byte("e4")},
+	}
+	m.currentLSN = 4
+
+	var buf bytes.Buffer
+	slave := &SlaveConnection{
+		ID:       "caught-up",
+		Writer:   bufio.NewWriter(&buf),
+		LastLSN:  2, // needs entry 3, which IS retained -> no gap
+		LastPing: time.Now(),
+	}
+	m.slaves = map[string]*SlaveConnection{slave.ID: slave}
+
+	m.replicateWAL()
+
+	slave.mu.Lock()
+	needsSnap := slave.NeedsSnapshot
+	slave.mu.Unlock()
+	if needsSnap {
+		t.Fatal("gap guard fired for a slave with no gap")
+	}
+	if strings.Contains(buf.String(), "RESYNC") {
+		t.Fatalf("unexpected RESYNC for a contiguous slave: %q", buf.String())
+	}
+}
+
 // TestSendHeartbeatError covers sendHeartbeat with a writer that
 // fails immediately. Ported from coverage_boost_replication_test.go.
 func TestSendHeartbeatError(t *testing.T) {

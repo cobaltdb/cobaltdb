@@ -956,6 +956,22 @@ func (m *Manager) replicateWAL() {
 			continue
 		}
 
+		// Gap guard: if the earliest pending entry is past the slave's
+		// next-needed LSN, intermediate entries were evicted from the WAL buffer
+		// by retention while the slave was still connected (lagging). Streaming
+		// this suffix would silently skip the pruned entries and diverge the
+		// slave from the master. Force a snapshot resync instead — same recovery
+		// the connect-time `canResumeFromLocked` path uses for an out-of-window
+		// request.
+		if pending[0].LSN > lastLSN+1 {
+			slave.mu.Lock()
+			slave.NeedsSnapshot = true
+			slave.LastLSN = 0
+			slave.mu.Unlock()
+			_ = m.sendResyncRequired(slave, atomic.LoadUint64(&m.currentLSN))
+			continue
+		}
+
 		data, err := encodeWALEntries(pending)
 		if err != nil {
 			continue
