@@ -208,6 +208,54 @@ func TestCreateBackup(t *testing.T) {
 	}
 }
 
+// TestIncrementalAfterDifferentialIsRestorable verifies that creating an
+// incremental backup after a differential does not pick the differential as its
+// parent (which restore rejects), keeping create and restore consistent so the
+// incremental is actually restorable.
+func TestIncrementalAfterDifferentialIsRestorable(t *testing.T) {
+	tempDir := t.TempDir()
+	dbFile := filepath.Join(tempDir, "test.db")
+	if err := os.WriteFile(dbFile, []byte("test database content"), 0644); err != nil {
+		t.Fatalf("create db: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.CompressionLevel = 0
+
+	db := &MockDatabase{dbPath: dbFile, lsn: 100}
+	mgr := NewManager(config, db)
+	ctx := context.Background()
+
+	if _, err := mgr.CreateBackup(ctx, TypeFull); err != nil {
+		t.Fatalf("full: %v", err)
+	}
+	if _, err := mgr.CreateBackup(ctx, TypeDifferential); err != nil {
+		t.Fatalf("differential: %v", err)
+	}
+	inc, err := mgr.CreateBackup(ctx, TypeIncremental)
+	if err != nil {
+		t.Fatalf("incremental: %v", err)
+	}
+
+	// The incremental's parent must be a Full or Incremental, never the
+	// Differential — otherwise the restore chain is rejected.
+	if inc.ParentID != "" {
+		parent := mgr.GetBackup(inc.ParentID)
+		if parent == nil {
+			t.Fatalf("incremental parent %s not found", inc.ParentID)
+		}
+		if parent.Type == TypeDifferential {
+			t.Fatalf("incremental picked a differential parent (unrestorable): %v", parent.Type)
+		}
+	}
+
+	// And the restore chain must build without error (restorable).
+	if _, err := mgr.buildRestoreChain(inc); err != nil {
+		t.Fatalf("incremental backup is not restorable: %v", err)
+	}
+}
+
 func TestSaveMetadataLockedUsesRandomTempFile(t *testing.T) {
 	tempDir := t.TempDir()
 	config := DefaultConfig()

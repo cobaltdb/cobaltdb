@@ -1287,6 +1287,13 @@ func (m *Manager) findParentBackupID(backupType Type) string {
 		if backupType == TypeDifferential && backup.Type != TypeFull {
 			continue
 		}
+		// An incremental's parent must be a Full or Incremental (see
+		// buildRestoreChain); never a Differential, or the backup would be
+		// created successfully but be unrestorable. Keep parent selection in
+		// lock-step with the restore-chain validation.
+		if backupType == TypeIncremental && backup.Type == TypeDifferential {
+			continue
+		}
 		if parent == nil || backup.CompletedAt.After(parent.CompletedAt) {
 			parent = backup
 		}
