@@ -1192,6 +1192,19 @@ func (c *Catalog) vacuumTreeLocked(name string) error {
 
 	c.tableTrees[name] = newTree
 
+	// Persist the new root page. Vacuum allocates a fresh tree (new root page),
+	// but Load() reopens a table from its persisted TableDef.RootPageID. Without
+	// updating + persisting the root, a reopen loads the OLD pre-vacuum tree —
+	// resurrecting soft-deleted rows and losing every write made after the
+	// vacuum (AutoVacuum is on by default, so this happens silently). Only the
+	// non-partitioned single-tree case is keyed in c.tables here.
+	if td, ok := c.tables[name]; ok {
+		td.RootPageID = newTree.RootPageID()
+		if err := c.storeTableDef(td); err != nil {
+			return fmt.Errorf("vacuum: failed to persist new root for table %s: %w", name, err)
+		}
+	}
+
 	c.ensureVacuumMaps()
 	c.vacuumMu.Lock()
 	c.deadTuples[name] = 0
@@ -1242,6 +1255,13 @@ func (c *Catalog) compactIndexTreeLocked(name string, tree btree.TreeStore) erro
 	}
 
 	c.indexTrees[name] = newTree
+	// Persist the new index root page (same reopen hazard as table vacuum).
+	if idx, ok := c.indexes[name]; ok {
+		idx.RootPageID = newTree.RootPageID()
+		if err := c.storeIndexDef(idx); err != nil {
+			return fmt.Errorf("vacuum: failed to persist new root for index %s: %w", name, err)
+		}
+	}
 	return nil
 }
 
