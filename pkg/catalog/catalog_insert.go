@@ -586,14 +586,13 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 
 	for _, valueRow := range valueRows {
 		if len(valueRow) != numInsertCols {
-			autoIncCount := 0
-			for _, col := range table.Columns {
-				if col.AutoIncrement {
-					autoIncCount++
-				}
-			}
+			// Only `INSERT ... DEFAULT VALUES` may omit values. A short value
+			// list without an explicit column list is rejected (as MySQL does):
+			// the previous AUTO_INCREMENT relaxation positionally misaligned the
+			// row — e.g. `INSERT INTO t VALUES ('alice')` on t(id AUTO_INCREMENT,
+			// name) stored 'alice' in id and NULLed name (silent corruption).
 			defaultValuesRow := len(valueRow) == 0 && len(stmt.Columns) == 0
-			if !defaultValuesRow && !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
+			if !defaultValuesRow {
 				insertErr = fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
 				break
 			}
@@ -624,10 +623,10 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 				}
 				hasPrimaryKey = true
 				if numLit, ok := valueRow[valueIdx].(*query.NumberLiteral); ok {
-					pkVal := int64(numLit.Value)
-					key = formatKey(pkVal)
-					if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
-						atomic.StoreInt64(&table.AutoIncSeq, pkVal)
+					k, iv, whole := formatFloatKey(numLit.Value)
+					key = k
+					if whole && iv > atomic.LoadInt64(&table.AutoIncSeq) {
+						atomic.StoreInt64(&table.AutoIncSeq, iv)
 					}
 				} else {
 					val, err := evaluateExpression(c, nil, nil, valueRow[valueIdx], args)
@@ -635,10 +634,10 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 						if strVal, ok := toString(val); ok {
 							key = "S:" + strVal
 						} else if fVal, ok := toFloat64(val); ok {
-							pkVal := int64(fVal)
-							key = formatKey(pkVal)
-							if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
-								atomic.StoreInt64(&table.AutoIncSeq, pkVal)
+							k, iv, whole := formatFloatKey(fVal)
+							key = k
+							if whole && iv > atomic.LoadInt64(&table.AutoIncSeq) {
+								atomic.StoreInt64(&table.AutoIncSeq, iv)
 							}
 						}
 					}
@@ -854,6 +853,21 @@ func formatKey(pkVal int64) string {
 		return zeroPadding[n] + s
 	}
 	return s
+}
+
+// formatFloatKey builds the B-tree key for a numeric primary key value. A whole
+// number uses the integer key (preserving on-disk format and the AUTO_INCREMENT
+// interaction); a fractional value uses an "F:"-tagged exact float string so
+// distinct floats (e.g. 1.2 and 1.8) do NOT collide on int64(value) — which
+// previously truncated them to the same key, causing spurious UNIQUE failures /
+// silent overwrites. It must stay consistent with serializePK's float branch.
+// Returns (key, intValue, isWholeNumber).
+func formatFloatKey(f float64) (string, int64, bool) {
+	if f == float64(int64(f)) {
+		iv := int64(f)
+		return formatKey(iv), iv, true
+	}
+	return "F:" + strconv.FormatFloat(f, 'g', -1, 64), 0, false
 }
 
 // compositeKeySep separates columns in a composite primary key. 0x00 is safe:
@@ -1419,17 +1433,13 @@ func (c *Catalog) prepareInsertRow(
 	ts *catalogTxnState,
 	tree btree.TreeStore,
 ) (rowValues []interface{}, key string, autoIncValue int64, skipRow bool, err error) {
-	// Validate value count matches column count
+	// Validate value count matches column count. Only DEFAULT VALUES may omit
+	// values; a short value list without an explicit column list is rejected (as
+	// MySQL does). The previous AUTO_INCREMENT relaxation positionally misaligned
+	// the row (the value landed in the autoinc column, NULLing the real target).
 	if len(valueRow) != numInsertCols {
-		// Allow one fewer value if there is exactly one AUTO_INCREMENT column
-		autoIncCount := 0
-		for _, col := range table.Columns {
-			if col.AutoIncrement {
-				autoIncCount++
-			}
-		}
 		defaultValuesRow := len(valueRow) == 0 && len(stmt.Columns) == 0
-		if !defaultValuesRow && !(autoIncCount > 0 && len(valueRow) == numInsertCols-autoIncCount) {
+		if !defaultValuesRow {
 			return nil, "", 0, false, fmt.Errorf("INSERT has %d columns but %d values", numInsertCols, len(valueRow))
 		}
 	}
@@ -1463,11 +1473,11 @@ func (c *Catalog) prepareInsertRow(
 			}
 			hasPrimaryKey = true
 			if numLit, ok := valueRow[valueIdx].(*query.NumberLiteral); ok {
-				pkVal := int64(numLit.Value)
-				key = formatKey(pkVal)
-				// Keep auto-inc counter ahead of explicit values
-				if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
-					atomic.StoreInt64(&table.AutoIncSeq, pkVal)
+				k, iv, whole := formatFloatKey(numLit.Value)
+				key = k
+				// Keep auto-inc counter ahead of explicit (integer) values.
+				if whole && iv > atomic.LoadInt64(&table.AutoIncSeq) {
+					atomic.StoreInt64(&table.AutoIncSeq, iv)
 				}
 			} else {
 				// Non-numeric primary key (TEXT, etc.)
@@ -1476,10 +1486,10 @@ func (c *Catalog) prepareInsertRow(
 					if strVal, ok := toString(val); ok {
 						key = "S:" + strVal // Prefix to distinguish from numeric keys
 					} else if fVal, ok := toFloat64(val); ok {
-						pkVal := int64(fVal)
-						key = formatKey(pkVal)
-						if pkVal > atomic.LoadInt64(&table.AutoIncSeq) {
-							atomic.StoreInt64(&table.AutoIncSeq, pkVal)
+						k, iv, whole := formatFloatKey(fVal)
+						key = k
+						if whole && iv > atomic.LoadInt64(&table.AutoIncSeq) {
+							atomic.StoreInt64(&table.AutoIncSeq, iv)
 						}
 					}
 				}

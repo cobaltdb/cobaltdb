@@ -40,11 +40,18 @@ func (c *Catalog) serializePK(pkValue interface{}, tree btree.TreeStore) []byte 
 		}
 		return []byte(s)
 	case float64:
-		s := strconv.FormatInt(int64(val), 10)
-		if len(s) < 20 {
-			s = strings.Repeat("0", 20-len(s)) + s
+		// Must match formatFloatKey: a whole number uses the integer key; a
+		// fractional value uses the "F:"-tagged exact float so distinct floats
+		// don't collide on int64(val) (which lost the fractional part and made
+		// e.g. 1.2 and 1.8 read/write the same row).
+		if val == float64(int64(val)) {
+			s := strconv.FormatInt(int64(val), 10)
+			if len(s) < 20 {
+				s = strings.Repeat("0", 20-len(s)) + s
+			}
+			return []byte(s)
 		}
-		return []byte(s)
+		return []byte("F:" + strconv.FormatFloat(val, 'g', -1, 64))
 	default:
 		return []byte(ValueToStringKey(val))
 	}
