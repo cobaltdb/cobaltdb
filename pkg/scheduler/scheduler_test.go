@@ -38,6 +38,54 @@ func TestSchedulerRegisterAndRun(t *testing.T) {
 	}
 }
 
+// TestSchedulerStopCancelsRunningJob verifies that Stop() cancels the context
+// of an in-flight job so a long-running job aborts promptly instead of blocking
+// shutdown for its full timeout.
+func TestSchedulerStopCancelsRunningJob(t *testing.T) {
+	started := make(chan struct{})
+	var ctxErr atomic.Value
+	s := NewWithInterval(1, nil, 20*time.Millisecond)
+
+	job := &Job{
+		ID:       "long-job",
+		Name:     "Long Job",
+		Type:     JobTypeCustom,
+		Interval: 20 * time.Millisecond,
+		Enabled:  true,
+		Timeout:  10 * time.Minute, // long timeout; only cancellation should end it
+		Fn: func(ctx context.Context) error {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-ctx.Done() // block until cancelled
+			ctxErr.Store(ctx.Err())
+			return ctx.Err()
+		},
+	}
+	if err := s.Register(job); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	s.Start()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job did not start")
+	}
+
+	done := make(chan struct{})
+	go func() { s.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() blocked: in-flight job was not cancelled")
+	}
+	if got, _ := ctxErr.Load().(error); got != context.Canceled {
+		t.Fatalf("job ctx error = %v, want context.Canceled", got)
+	}
+}
+
 func TestSchedulerDisableEnable(t *testing.T) {
 	var count atomic.Int32
 	s := NewWithInterval(1, nil, 50*time.Millisecond)

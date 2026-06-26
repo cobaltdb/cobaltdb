@@ -20,6 +20,11 @@ type Scheduler struct {
 	logger       Logger
 	started      bool
 	startMu      sync.Mutex
+	// runCtx is cancelled by Stop() so in-flight job functions (and the retry
+	// backoff) abort promptly instead of blocking shutdown for up to a job's
+	// full timeout plus retry delays.
+	runCtx    context.Context
+	runCancel context.CancelFunc
 }
 
 const maxSchedulerWorkers = 1024
@@ -177,6 +182,7 @@ func (s *Scheduler) Start() {
 		return
 	}
 	s.started = true
+	s.runCtx, s.runCancel = context.WithCancel(context.Background())
 
 	// Use a configurable resolution ticker — coarse enough to be cheap,
 	// fine enough for typical maintenance intervals (minutes+).
@@ -207,6 +213,9 @@ func (s *Scheduler) Stop() {
 	s.started = false
 
 	close(s.stopCh)
+	if s.runCancel != nil {
+		s.runCancel() // signal in-flight job functions to abort
+	}
 	if s.ticker != nil {
 		s.ticker.Stop()
 		s.ticker = nil
@@ -305,13 +314,20 @@ func (s *Scheduler) runJob(j *Job) (err error) {
 		s.mu.Unlock()
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// Derive from runCtx so Stop() cancellation propagates into the job and the
+	// retry backoff. Fall back to Background if the scheduler was not started
+	// via Start() (e.g. RunNow in tests).
+	parent := s.runCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	timeout := 10 * time.Minute
+	if j.Timeout > 0 {
+		timeout = j.Timeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	if j.Timeout > 0 {
-		ctx, cancel = context.WithTimeout(context.Background(), j.Timeout)
-		defer cancel()
-	}
 	maxRetries := j.MaxRetries
 	if maxRetries < 0 {
 		maxRetries = 0
@@ -323,7 +339,11 @@ func (s *Scheduler) runJob(j *Job) (err error) {
 		}
 		if attempt < maxRetries {
 			s.logger.Warnf("Job %s attempt %d failed, retrying in %v: %v", j.ID, attempt+1, j.RetryDelay, err)
-			time.Sleep(j.RetryDelay)
+			select {
+			case <-time.After(j.RetryDelay):
+			case <-ctx.Done():
+				return err // shutdown or timeout: stop retrying
+			}
 		}
 	}
 	return err
