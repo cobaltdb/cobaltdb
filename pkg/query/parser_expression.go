@@ -161,98 +161,142 @@ func (p *Parser) parseNot() (Expression, error) {
 	return p.parseComparison()
 }
 
-// parseComparison parses comparison expressions
+// parseComparison parses comparison expressions left-associatively, so a
+// chained predicate like `a = b = c` parses as `(a = b) = c` (standard SQL)
+// rather than dropping the trailing `= c` — which, under the permissive parser,
+// silently changed the meaning of the WHERE clause. Each recognized operator
+// folds the prior result into the new left operand; the loop ends when the next
+// token is not a comparison/postfix operator.
 func (p *Parser) parseComparison() (Expression, error) {
 	left, err := p.parseBitOr()
 	if err != nil {
 		return nil, err
 	}
 
-	switch p.current().Type {
-	case TokenEq, TokenNeq, TokenLt, TokenGt, TokenLte, TokenGte, TokenNullSafeEq:
-		op := p.current().Type
+	for {
+		switch p.current().Type {
+		case TokenEq, TokenNeq, TokenLt, TokenGt, TokenLte, TokenGte, TokenNullSafeEq:
+			op := p.current().Type
+			p.advance()
+			right, rerr := p.parseBitOr()
+			if rerr != nil {
+				return nil, rerr
+			}
+			left = &BinaryExpr{Left: left, Operator: op, Right: right}
+			continue
+		case TokenLike:
+			if left, err = p.parseLikeExpr(left, false); err != nil {
+				return nil, err
+			}
+			continue
+		case TokenNot:
+			var next Expression
+			matched := true
+			switch {
+			case p.peek().Type == TokenIn:
+				p.advance()
+				next, err = p.parseInExpr(left, true)
+			case p.peek().Type == TokenLike:
+				p.advance()
+				next, err = p.parseLikeExpr(left, true)
+			case p.peek().Type == TokenRegexp:
+				p.advance()
+				next, err = p.parseRegexpExpr(left, true)
+			case isKeywordIdentifier(p.peek(), "GLOB"):
+				p.advance()
+				next, err = p.parseGlobExpr(left, true)
+			case p.peek().Type == TokenBetween:
+				p.advance()
+				next, err = p.parseBetweenExpr(left, true)
+			default:
+				matched = false
+			}
+			if !matched {
+				return left, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			left = next
+			continue
+		case TokenIn:
+			if p.stopAtMatchAgainstMode && (p.peek().Type == TokenBoolean || p.peek().Type == TokenNatural) {
+				return left, nil
+			}
+			if left, err = p.parseInExpr(left, false); err != nil {
+				return nil, err
+			}
+			continue
+		case TokenRegexp:
+			if left, err = p.parseRegexpExpr(left, false); err != nil {
+				return nil, err
+			}
+			continue
+		case TokenBetween:
+			if left, err = p.parseBetweenExpr(left, false); err != nil {
+				return nil, err
+			}
+			continue
+		case TokenIs:
+			if left, err = p.parseIsTail(left); err != nil {
+				return nil, err
+			}
+			continue
+		default:
+			if isKeywordIdentifier(p.current(), "GLOB") {
+				if left, err = p.parseGlobExpr(left, false); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return left, nil
+		}
+	}
+}
+
+// parseIsTail parses the tail of an `IS [NOT] {NULL | TRUE | FALSE | UNKNOWN |
+// DISTINCT FROM expr}` predicate, with `left` as the already-parsed operand.
+func (p *Parser) parseIsTail(left Expression) (Expression, error) {
+	p.advance() // consume IS
+	not := p.match(TokenNot)
+	if p.current().Type == TokenDistinct {
+		p.advance()
+		if p.current().Type != TokenFrom {
+			return nil, fmt.Errorf("expected FROM after IS DISTINCT")
+		}
 		p.advance()
 		right, err := p.parseBitOr()
 		if err != nil {
 			return nil, err
 		}
-		return &BinaryExpr{Left: left, Operator: op, Right: right}, nil
-	case TokenLike:
-		return p.parseLikeExpr(left, false)
-	case TokenNot:
-		if p.peek().Type == TokenIn {
-			p.advance()
-			return p.parseInExpr(left, true)
-		} else if p.peek().Type == TokenLike {
-			p.advance()
-			return p.parseLikeExpr(left, true)
-		} else if p.peek().Type == TokenRegexp {
-			p.advance()
-			return p.parseRegexpExpr(left, true)
-		} else if isKeywordIdentifier(p.peek(), "GLOB") {
-			p.advance()
-			return p.parseGlobExpr(left, true)
-		} else if p.peek().Type == TokenBetween {
-			p.advance()
-			return p.parseBetweenExpr(left, true)
-		}
-	case TokenIn:
-		if p.stopAtMatchAgainstMode && (p.peek().Type == TokenBoolean || p.peek().Type == TokenNatural) {
-			return left, nil
-		}
-		return p.parseInExpr(left, false)
-	case TokenRegexp:
-		return p.parseRegexpExpr(left, false)
-	default:
-		if isKeywordIdentifier(p.current(), "GLOB") {
-			return p.parseGlobExpr(left, false)
-		}
-	case TokenBetween:
-		return p.parseBetweenExpr(left, false)
-	case TokenIs:
-		p.advance()
-		not := p.match(TokenNot)
-		if p.current().Type == TokenDistinct {
-			p.advance()
-			if p.current().Type != TokenFrom {
-				return nil, fmt.Errorf("expected FROM after IS DISTINCT")
-			}
-			p.advance()
-			right, err := p.parseBitOr()
-			if err != nil {
-				return nil, err
-			}
-			expr := &BinaryExpr{Left: left, Operator: TokenNullSafeEq, Right: right}
-			if not {
-				return expr, nil
-			}
-			return &UnaryExpr{Operator: TokenNot, Expr: expr}, nil
-		}
-		if p.current().Type == TokenTrue || p.current().Type == TokenFalse || p.current().Type == TokenUnknown {
-			test := p.current().Type
-			p.advance()
-			var name string
-			switch test {
-			case TokenTrue:
-				name = "IS_TRUE"
-			case TokenFalse:
-				name = "IS_FALSE"
-			case TokenUnknown:
-				name = "IS_UNKNOWN"
-			}
-			expr := &FunctionCall{Name: name, Args: []Expression{left}}
-			if not {
-				return &UnaryExpr{Operator: TokenNot, Expr: expr}, nil
-			}
+		expr := &BinaryExpr{Left: left, Operator: TokenNullSafeEq, Right: right}
+		if not {
 			return expr, nil
 		}
-		if !p.match(TokenNull) {
-			return nil, fmt.Errorf("expected NULL after IS")
-		}
-		return &IsNullExpr{Expr: left, Not: not}, nil
+		return &UnaryExpr{Operator: TokenNot, Expr: expr}, nil
 	}
-
-	return left, nil
+	if p.current().Type == TokenTrue || p.current().Type == TokenFalse || p.current().Type == TokenUnknown {
+		test := p.current().Type
+		p.advance()
+		var name string
+		switch test {
+		case TokenTrue:
+			name = "IS_TRUE"
+		case TokenFalse:
+			name = "IS_FALSE"
+		case TokenUnknown:
+			name = "IS_UNKNOWN"
+		}
+		expr := &FunctionCall{Name: name, Args: []Expression{left}}
+		if not {
+			return &UnaryExpr{Operator: TokenNot, Expr: expr}, nil
+		}
+		return expr, nil
+	}
+	if !p.match(TokenNull) {
+		return nil, fmt.Errorf("expected NULL after IS")
+	}
+	return &IsNullExpr{Expr: left, Not: not}, nil
 }
 
 func (p *Parser) parseInExpr(left Expression, not bool) (Expression, error) {

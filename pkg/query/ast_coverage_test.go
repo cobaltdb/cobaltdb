@@ -311,3 +311,46 @@ func TestParseExpressionStandalone(t *testing.T) {
 		}
 	}
 }
+
+// TestParseChainedComparisonLeftAssociative verifies that a chained comparison
+// folds left-associatively (a = b = c -> (a = b) = c) instead of silently
+// dropping the trailing operator, which previously changed the meaning of a
+// WHERE clause under the permissive parser.
+func TestParseChainedComparisonLeftAssociative(t *testing.T) {
+	expr, err := ParseExpression("a = b = c")
+	if err != nil {
+		t.Fatalf("ParseExpression: %v", err)
+	}
+	outer, ok := expr.(*BinaryExpr)
+	if !ok {
+		t.Fatalf("expected outer *BinaryExpr, got %T", expr)
+	}
+	if outer.Operator != TokenEq {
+		t.Fatalf("expected outer operator '=', got %v", outer.Operator)
+	}
+	// Right operand must be the final identifier `c`.
+	rc, ok := outer.Right.(*Identifier)
+	if !ok || rc.Name != "c" {
+		t.Fatalf("expected right operand identifier 'c', got %T %+v", outer.Right, outer.Right)
+	}
+	// Left operand must itself be the (a = b) comparison — proving `= c` was not
+	// dropped and the chain is left-associative.
+	inner, ok := outer.Left.(*BinaryExpr)
+	if !ok {
+		t.Fatalf("expected inner *BinaryExpr (a = b), got %T", outer.Left)
+	}
+	la, _ := inner.Left.(*Identifier)
+	lb, _ := inner.Right.(*Identifier)
+	if la == nil || lb == nil || la.Name != "a" || lb.Name != "b" || inner.Operator != TokenEq {
+		t.Fatalf("expected inner (a = b), got %+v", inner)
+	}
+
+	// A postfix predicate after a comparison must also be consumed, not dropped.
+	expr2, err := ParseExpression("a = b IS NULL")
+	if err != nil {
+		t.Fatalf("ParseExpression IS NULL chain: %v", err)
+	}
+	if _, ok := expr2.(*IsNullExpr); !ok {
+		t.Fatalf("expected outer *IsNullExpr for `a = b IS NULL`, got %T", expr2)
+	}
+}
