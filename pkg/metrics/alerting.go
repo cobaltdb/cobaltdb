@@ -49,16 +49,16 @@ type Alert struct {
 
 // AlertRule defines a rule for generating alerts
 type AlertRule struct {
-	Name        string
-	Description string
-	Severity    AlertSeverity
-	Condition   func() (bool, float64)
-	Threshold   float64
-	Cooldown    time.Duration
-	lastFired   time.Time
+	Name          string
+	Description   string
+	Severity      AlertSeverity
+	Condition     func() (bool, float64)
+	Threshold     float64
+	Cooldown      time.Duration
+	lastFired     time.Time
 	lastRecovered time.Time // when the condition last returned false (0 = never recovered)
-	wasFiring   bool // whether the condition was firing at the end of the last checkRules call
-	muted       bool
+	wasFiring     bool      // whether the condition was firing at the end of the last checkRules call
+	muted         bool
 }
 
 // AlertManager manages alerting rules and notifications
@@ -82,13 +82,13 @@ type AlertHandler interface {
 }
 
 type alertRuleSnapshot struct {
-	Name        string
-	Description string
-	Severity    AlertSeverity
-	Condition   func() (bool, float64)
-	Threshold   float64
-	Cooldown    time.Duration
-	lastFired   time.Time
+	Name          string
+	Description   string
+	Severity      AlertSeverity
+	Condition     func() (bool, float64)
+	Threshold     float64
+	Cooldown      time.Duration
+	lastFired     time.Time
 	lastRecovered time.Time
 }
 
@@ -228,13 +228,13 @@ func (am *AlertManager) checkRules() {
 			continue
 		}
 		rules = append(rules, alertRuleSnapshot{
-			Name:        rule.Name,
-			Description: rule.Description,
-			Severity:    rule.Severity,
-			Condition:   rule.Condition,
-			Threshold:   rule.Threshold,
-			Cooldown:    rule.Cooldown,
-			lastFired:   rule.lastFired,
+			Name:          rule.Name,
+			Description:   rule.Description,
+			Severity:      rule.Severity,
+			Condition:     rule.Condition,
+			Threshold:     rule.Threshold,
+			Cooldown:      rule.Cooldown,
+			lastFired:     rule.lastFired,
 			lastRecovered: rule.lastRecovered,
 		})
 	}
@@ -282,7 +282,6 @@ func (am *AlertManager) checkRules() {
 		// Sustained firing (wasFiring=true) never suppresses.
 		if !currentRule.wasFiring && time.Since(currentRule.lastRecovered) < currentRule.Cooldown {
 			// Suppressed: transition OK→ALERT within cooldown window.
-			fmt.Printf("[DEBUG] SUPPRESSED!\n")
 			currentRule.wasFiring = true
 			updatedWasFiring[rule.Name] = true
 			am.mu.Unlock()

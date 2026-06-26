@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,15 +57,20 @@ func (e *SlowQueryEntry) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// SlowQueryLog manages slow query logging
+// SlowQueryLog manages slow query logging.
+//
+// enabled and thresholdNanos are accessed atomically: Log() reads them on the
+// per-query hot path without taking the mutex, while Enable/Disable/SetThreshold
+// mutate them concurrently. The mutex still guards the entries buffer and file
+// write.
 type SlowQueryLog struct {
-	enabled      bool
-	threshold    time.Duration
-	maxEntries   int
-	entries      []SlowQueryEntry
-	mu           sync.RWMutex
-	logFile      string
-	lastWriteErr error
+	enabled        atomic.Bool
+	thresholdNanos atomic.Int64
+	maxEntries     int
+	entries        []SlowQueryEntry
+	mu             sync.RWMutex
+	logFile        string
+	lastWriteErr   error
 }
 
 // NewSlowQueryLog creates a new slow query logger
@@ -72,22 +78,23 @@ func NewSlowQueryLog(enabled bool, threshold time.Duration, maxEntries int, logF
 	if maxEntries < 0 {
 		maxEntries = 0
 	}
-	return &SlowQueryLog{
-		enabled:    enabled,
-		threshold:  threshold,
+	s := &SlowQueryLog{
 		maxEntries: maxEntries,
 		entries:    make([]SlowQueryEntry, 0),
 		logFile:    logFile,
 	}
+	s.enabled.Store(enabled)
+	s.thresholdNanos.Store(int64(threshold))
+	return s
 }
 
 // Log logs a slow query if it exceeds the threshold
 func (s *SlowQueryLog) Log(sql string, duration time.Duration, rowsAffected, rowsReturned int64) {
-	if !s.enabled {
+	if !s.enabled.Load() {
 		return
 	}
 
-	if duration < s.threshold {
+	if duration < time.Duration(s.thresholdNanos.Load()) {
 		return
 	}
 
@@ -311,28 +318,20 @@ func (s *SlowQueryLog) Clear() {
 
 // SetThreshold updates the threshold dynamically
 func (s *SlowQueryLog) SetThreshold(threshold time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.threshold = threshold
+	s.thresholdNanos.Store(int64(threshold))
 }
 
 // IsEnabled returns whether slow query logging is enabled
 func (s *SlowQueryLog) IsEnabled() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.enabled
+	return s.enabled.Load()
 }
 
 // Enable enables slow query logging
 func (s *SlowQueryLog) Enable() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.enabled = true
+	s.enabled.Store(true)
 }
 
 // Disable disables slow query logging
 func (s *SlowQueryLog) Disable() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.enabled = false
+	s.enabled.Store(false)
 }
