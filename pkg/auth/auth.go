@@ -174,6 +174,12 @@ func hashPassword(password, salt string) string {
 
 var passwordHasher = hashPassword
 
+// authDecoySalt is a fixed salt used to compute a throwaway Argon2 hash on the
+// unknown-user authentication path, so it takes the same time as the
+// wrong-password path and does not leak username existence via timing. Argon2's
+// cost is independent of the salt's content, so a constant is sufficient.
+const authDecoySalt = "cobaltdb-auth-timing-decoy-salt"
+
 // generateSalt generates a cryptographically secure random salt
 func generateSalt() (string, error) {
 	b := make([]byte, 32)
@@ -373,6 +379,10 @@ func (a *Authenticator) Authenticate(username, password string) (string, error) 
 	user, exists := a.users[username]
 	if !exists {
 		a.mu.RUnlock()
+		// Compute a throwaway Argon2 hash so the unknown-user path costs the
+		// same as the wrong-password path below, preventing username
+		// enumeration via response timing.
+		_ = passwordHasher(password, authDecoySalt)
 		count := a.recordFailedAttempt(username)
 		sleepFailedAttempt(count)
 		return "", ErrInvalidCredentials
@@ -444,8 +454,14 @@ func (a *Authenticator) recordFailedAttempt(username string) int {
 			a.pruneFailedAttemptsLocked(now)
 		}
 		if len(a.failedAttempts) >= maxFailedAttemptEntries {
-			a.failedMu.Unlock()
-			return maxLoginAttempts
+			// Table still full of fresh entries. Evict the least-recently-failed
+			// entry to make room instead of returning early WITHOUT recording
+			// the failure — the old behavior failed open: an attacker who filled
+			// the table with fresh bogus usernames silently disabled per-account
+			// lockout for every new (possibly targeted) username. LRU eviction
+			// keeps actively-attacked accounts tracked (their lastFail stays
+			// fresh, so they are never the eviction victim).
+			a.evictOldestFailedAttemptLocked()
 		}
 		a.failedAttempts[username] = &loginAttempt{}
 	}
@@ -464,6 +480,24 @@ func (a *Authenticator) pruneFailedAttemptsLocked(now time.Time) {
 		if now.After(attempt.lastFail.Add(attemptResetAfter)) {
 			delete(a.failedAttempts, username)
 		}
+	}
+}
+
+// evictOldestFailedAttemptLocked removes the entry with the oldest lastFail so a
+// new username can be tracked when the table is saturated with fresh entries.
+func (a *Authenticator) evictOldestFailedAttemptLocked() {
+	var oldestUser string
+	var oldestTime time.Time
+	first := true
+	for u, att := range a.failedAttempts {
+		if first || att.lastFail.Before(oldestTime) {
+			oldestUser = u
+			oldestTime = att.lastFail
+			first = false
+		}
+	}
+	if !first {
+		delete(a.failedAttempts, oldestUser)
 	}
 }
 

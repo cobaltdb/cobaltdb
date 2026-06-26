@@ -452,9 +452,12 @@ func TestRecordFailedAttemptCapsUniqueUsers(t *testing.T) {
 	}
 	a.failedMu.Unlock()
 
+	// When the table is saturated with fresh entries, a new username must still
+	// be tracked (LRU eviction makes room) rather than failing open, which would
+	// silently disable per-account lockout for new/targeted usernames.
 	count := a.recordFailedAttempt("overflow-user")
-	if count != maxLoginAttempts {
-		t.Fatalf("expected saturated failed-attempt count %d, got %d", maxLoginAttempts, count)
+	if count != 1 {
+		t.Fatalf("expected new user's first failure to be recorded (count 1), got %d", count)
 	}
 
 	a.failedMu.RLock()
@@ -462,8 +465,8 @@ func TestRecordFailedAttemptCapsUniqueUsers(t *testing.T) {
 	if len(a.failedAttempts) != maxFailedAttemptEntries {
 		t.Fatalf("failed-attempt map grew past cap: got %d, want %d", len(a.failedAttempts), maxFailedAttemptEntries)
 	}
-	if _, exists := a.failedAttempts["overflow-user"]; exists {
-		t.Fatal("overflow username should not be tracked when failed-attempt map is saturated")
+	if _, exists := a.failedAttempts["overflow-user"]; !exists {
+		t.Fatal("overflow username must be tracked (LRU eviction), not failed open")
 	}
 }
 
@@ -709,5 +712,36 @@ func TestMySQLNativeHashUpdatedOnPasswordChange(t *testing.T) {
 	}
 	if same {
 		t.Fatal("MySQL native hash should change when password changes")
+	}
+}
+
+// TestLockoutNotBypassedBySaturatedTable verifies that flooding the failed-
+// attempt table with fresh entries does NOT disable per-account lockout for a
+// new target username (the fail-open bypass).
+func TestLockoutNotBypassedBySaturatedTable(t *testing.T) {
+	a := NewAuthenticator()
+	defer a.Stop()
+
+	now := time.Now()
+	a.failedMu.Lock()
+	for i := 0; i < maxFailedAttemptEntries; i++ {
+		a.failedAttempts[fmt.Sprintf("flood-%d", i)] = &loginAttempt{count: 1, lastFail: now}
+	}
+	a.failedMu.Unlock()
+
+	// Hammer a target username; it must reach lockout despite the saturated table.
+	var last int
+	for i := 0; i < maxLoginAttempts; i++ {
+		last = a.recordFailedAttempt("target")
+	}
+	if last < maxLoginAttempts {
+		t.Fatalf("target reached count %d, expected >= %d (lockout disabled by saturation)", last, maxLoginAttempts)
+	}
+	a.failedMu.RLock()
+	att, exists := a.failedAttempts["target"]
+	locked := exists && time.Now().Before(att.lockUntil)
+	a.failedMu.RUnlock()
+	if !locked {
+		t.Fatal("target account was not locked out under a saturated failed-attempt table")
 	}
 }
