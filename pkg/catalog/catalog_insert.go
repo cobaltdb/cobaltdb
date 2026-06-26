@@ -1527,12 +1527,12 @@ func (c *Catalog) prepareInsertRow(
 // applied state.
 //
 // Order matters:
-//   1. RETURNING runs *before* AFTER triggers so a RETURNING error can
-//      abort the statement without leaving trigger side effects behind.
-//   2. AFTER triggers run before setLastReturning so the caller's next
-//      call (which reads LastReturning) sees a consistent view.
-//   3. Cache invalidation + setLastReturning + vacuum counter are
-//      bookkeeping that only runs on a clean apply.
+//  1. RETURNING runs *before* AFTER triggers so a RETURNING error can
+//     abort the statement without leaving trigger side effects behind.
+//  2. AFTER triggers run before setLastReturning so the caller's next
+//     call (which reads LastReturning) sees a consistent view.
+//  3. Cache invalidation + setLastReturning + vacuum counter are
+//     bookkeeping that only runs on a clean apply.
 func (c *Catalog) finalizeInsert(
 	ctx context.Context,
 	stmt *query.InsertStmt,
@@ -1887,14 +1887,24 @@ func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *
 					oldPK := string(oldPKData)
 					if oldPK != key {
 						oldRowData, getErr := tree.Get([]byte(oldPK))
+						var evictedIdxUndo []indexUndoEntry
 						if getErr == nil {
 							oldRow, decErr := decodeRow(oldRowData, len(table.Columns))
 							if decErr == nil {
 								for otherIdxName, otherIdxTree := range c.indexTrees {
 									otherIdxDef := c.indexes[otherIdxName]
 									if otherIdxDef.TableName == stmt.Table && len(otherIdxDef.Columns) > 0 {
-										if err := deleteIndexEntryForRow(table, otherIdxDef, otherIdxTree, oldRow, []byte(oldPK)); err != nil {
-											return idxChanges, skipRow, fmt.Errorf("failed to delete from index %s for REPLACE: %w", otherIdxName, err)
+										del, derr := deleteIndexEntryForRowTracked(otherIdxName, table, otherIdxDef, otherIdxTree, oldRow, []byte(oldPK))
+										if derr != nil {
+											return idxChanges, skipRow, fmt.Errorf("failed to delete from index %s for REPLACE: %w", otherIdxName, derr)
+										}
+										if del != nil {
+											evictedIdxUndo = append(evictedIdxUndo, indexUndoEntry{
+												indexName: del.indexName,
+												key:       del.key,
+												oldValue:  del.value,
+												wasAdded:  false,
+											})
 										}
 									}
 								}
@@ -1902,6 +1912,19 @@ func (c *Catalog) insertRowIndexes(tree btree.TreeStore, table *TableDef, stmt *
 						}
 						if err := tree.Delete([]byte(oldPK)); err != nil {
 							return idxChanges, skipRow, fmt.Errorf("failed to delete old row for index REPLACE: %w", err)
+						}
+						// Record an undo entry so a transaction ROLLBACK restores the
+						// row this REPLACE evicted (via a UNIQUE secondary index) and
+						// its index entries. Without it the evicted, previously
+						// committed row was permanently lost when the txn aborted.
+						if getErr == nil && ts != nil && ts.txnActive {
+							c.appendUndoEntry(undoEntry{
+								action:       undoDelete,
+								tableName:    stmt.Table,
+								key:          append([]byte(nil), oldPK...),
+								oldValue:     append([]byte(nil), oldRowData...),
+								indexChanges: evictedIdxUndo,
+							})
 						}
 					}
 				} else {
