@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1786,6 +1787,13 @@ func (c *Catalog) invalidateSchemaCache() {
 	c.schemaCacheMu.Lock()
 	c.schemaCache = make(map[string]*TableDef)
 	c.schemaCacheMu.Unlock()
+	// DDL changes the schema, so any cached query results may now be stale or
+	// reference a dropped/altered table. The query result cache only tracked DML
+	// invalidation; DDL must flush it too (otherwise a SELECT could serve rows
+	// from a table that was just DROPped or ALTERed). DDL is rare, so flush all.
+	if c.queryCache != nil {
+		c.queryCache.InvalidateAll()
+	}
 }
 
 func (c *Catalog) CreateView(name string, query *query.SelectStmt) error {
@@ -2043,6 +2051,12 @@ func (c *Catalog) GetTriggersForTable(tableName string, event string) []*query.C
 	return c.getTriggersForTableLocked(tableName, event)
 }
 
+// maxTriggerRecursionDepth bounds cascading/recursive trigger execution so a
+// self-referential or mutually-recursive trigger returns an error instead of
+// overflowing the goroutine stack (a fatal, unrecoverable crash). Matches
+// SQLite's default recursive-trigger limit.
+const maxTriggerRecursionDepth = 1000
+
 // getTriggersForTableLocked is the lock-free internal version. Must be called with mu held.
 func (c *Catalog) getTriggersForTableLocked(tableName string, event string) []*query.CreateTriggerStmt {
 	var result []*query.CreateTriggerStmt
@@ -2051,6 +2065,9 @@ func (c *Catalog) getTriggersForTableLocked(tableName string, event string) []*q
 			result = append(result, cloneCreateTriggerStmt(trigger))
 		}
 	}
+	// Go map iteration is randomized; sort by trigger name so multiple triggers
+	// on the same table/event fire in a deterministic order (run-to-run stable).
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result
 }
 
@@ -2091,6 +2108,16 @@ func (c *Catalog) executeTriggers(ctx context.Context, tableName string, event s
 }
 
 func (c *Catalog) executeTriggerBody(ctx context.Context, triggerName string, body []query.Statement, newRow []interface{}, oldRow []interface{}, columns []ColumnDef) error {
+	// Bound recursion: a trigger body re-enters insert/update/deleteLocked,
+	// which fire triggers again. Without this, a self-referential or
+	// mutually-recursive trigger overflows the stack (fatal crash). Guarded by
+	// c.mu, which is held throughout trigger execution.
+	if c.triggerDepth >= maxTriggerRecursionDepth {
+		return fmt.Errorf("trigger recursion depth exceeded (%d) executing trigger %s", maxTriggerRecursionDepth, triggerName)
+	}
+	c.triggerDepth++
+	defer func() { c.triggerDepth-- }()
+
 	ts := c.getCurrentTxn()
 	createdTxn := false
 	if ts == nil {

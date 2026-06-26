@@ -368,6 +368,7 @@ type Catalog struct {
 	viewTemporary        map[string]bool                       // Session-local views, not persisted
 	triggers             map[string]*query.CreateTriggerStmt   // Triggers store their definition
 	triggerSQL           map[string]string                     // Original CREATE TRIGGER SQL for persistence
+	triggerDepth         int                                   // current trigger recursion depth (guarded by c.mu)
 	procedures           map[string]*query.CreateProcedureStmt // Procedures store their definition
 	procedureSQL         map[string]string                     // Original CREATE PROCEDURE SQL for persistence
 	materializedViews    map[string]*MaterializedViewDef       // Materialized views
