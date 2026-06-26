@@ -90,9 +90,19 @@ func (h *HNSWIndex) insertLocked(key string, vector []float64) error {
 		node.Neighbors[i] = make([]string, 0, h.M)
 	}
 
+	// Register the node in h.Nodes BEFORE wiring its neighbors. The bidirectional
+	// back-link below appends this node's key to each chosen neighbor's list and
+	// may trigger pruning (selectNeighborsByKey), which looks every key up in
+	// h.Nodes. If this node is not registered yet, the just-added back-link is
+	// silently dropped during pruning — which left the graph connected in only
+	// one direction (downward), so searches could not reach a query's true
+	// neighborhood and KNN recall collapsed. The node is unreachable via graph
+	// edges until its links are added, so registering it early does not affect
+	// its own neighbor search.
+	h.Nodes[key] = node
+
 	// First node becomes entry point
 	if h.EntryPoint == nil {
-		h.Nodes[key] = node
 		h.EntryPoint = node
 		h.EntryPointKey = key
 		h.MaxLevel = level
@@ -147,7 +157,7 @@ func (h *HNSWIndex) insertLocked(key string, vector []float64) error {
 		}
 	}
 
-	h.Nodes[key] = node
+	// (node was already registered in h.Nodes before neighbor wiring above)
 
 	// Update entry point if new node has higher level
 	if level > h.MaxLevel {
@@ -352,7 +362,9 @@ type candidate struct {
 	Distance float64
 }
 
-// candidateHeap is a min-heap for candidates
+// candidateHeap is a min-heap for candidates (closest at the root). Used for
+// the HNSW "candidates to explore" set, so the nearest unexplored node is
+// popped first.
 type candidateHeap []candidate
 
 func (h candidateHeap) Len() int            { return len(h) }
@@ -367,12 +379,31 @@ func (h *candidateHeap) Pop() interface{} {
 	return x
 }
 
+// maxCandidateHeap is a max-heap for candidates (farthest at the root). Used for
+// the HNSW result/W set so the farthest member can be peeked at index 0 and
+// evicted in O(log n) once the set exceeds ef. Using a min-heap here (the prior
+// bug) made eviction drop the NEAREST neighbor and reversed the result order,
+// so KNN returned the farthest neighbors instead of the nearest.
+type maxCandidateHeap []candidate
+
+func (h maxCandidateHeap) Len() int            { return len(h) }
+func (h maxCandidateHeap) Less(i, j int) bool  { return h[i].Distance > h[j].Distance }
+func (h maxCandidateHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *maxCandidateHeap) Push(x interface{}) { *h = append(*h, x.(candidate)) }
+func (h *maxCandidateHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
 // searchLayer searches a single layer for nearest neighbors
 func (h *HNSWIndex) searchLayer(query []float64, entryPoint *HNSWNode, ef, level int) []candidate {
 	visited := make(map[string]bool)
 	candidates := &candidateHeap{}
 	heap.Init(candidates)
-	result := &candidateHeap{}
+	result := &maxCandidateHeap{} // max-heap: farthest neighbor at the root
 	heap.Init(result)
 
 	if ef < 1 {
@@ -391,7 +422,7 @@ func (h *HNSWIndex) searchLayer(query []float64, entryPoint *HNSWNode, ef, level
 		if result.Len() == 0 {
 			break
 		}
-		worstResult := (*result)[result.Len()-1]
+		worstResult := (*result)[0] // max-heap root = farthest in the result set
 
 		if curr.Distance > worstResult.Distance {
 			break
@@ -410,14 +441,14 @@ func (h *HNSWIndex) searchLayer(query []float64, entryPoint *HNSWNode, ef, level
 						resultLen := result.Len()
 						worstDist := math.Inf(1)
 						if resultLen > 0 {
-							worstDist = (*result)[resultLen-1].Distance
+							worstDist = (*result)[0].Distance // max-heap root = farthest
 						}
 
 						if resultLen < ef || d < worstDist {
 							heap.Push(candidates, candidate{Key: neighborKey, Distance: d})
 							heap.Push(result, candidate{Key: neighborKey, Distance: d})
 							if result.Len() > ef {
-								heap.Pop(result)
+								heap.Pop(result) // evict the farthest
 							}
 						}
 					}

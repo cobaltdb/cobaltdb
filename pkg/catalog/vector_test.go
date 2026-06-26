@@ -1,7 +1,9 @@
 package catalog
 
 import (
+	"fmt"
 	"math"
+	"sort"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
@@ -322,4 +324,85 @@ func TestVectorFunctions(t *testing.T) {
 
 	// Clean up
 	_ = c
+}
+
+// TestHNSWSearchKNNRecall verifies that HNSW KNN returns the NEAREST neighbors
+// (high recall vs brute force) and in ascending-distance order. The prior bug
+// used a min-heap for the result set, so eviction dropped the nearest neighbors
+// and the output was reversed — KNN returned the farthest neighbors (recall ~0).
+func TestHNSWSearchKNNRecall(t *testing.T) {
+	const dim = 8
+	const n = 1500
+	const k = 10
+	index := NewHNSWIndex("recall_idx", "t", "v", dim)
+
+	// Deterministic pseudo-random vectors via a simple LCG (no global rand).
+	lcg := uint64(0x9e3779b97f4a7c15)
+	nextFloat := func() float64 {
+		lcg = lcg*6364136223846793005 + 1442695040888963407
+		return float64(lcg>>11) / float64(uint64(1)<<53)
+	}
+
+	vectors := make(map[string][]float64, n)
+	for i := 0; i < n; i++ {
+		v := make([]float64, dim)
+		for d := 0; d < dim; d++ {
+			v[d] = nextFloat()
+		}
+		key := fmt.Sprintf("k%d", i)
+		vectors[key] = v
+		if err := index.Insert(key, v); err != nil {
+			t.Fatalf("insert %s: %v", key, err)
+		}
+	}
+
+	const queries = 50
+	totalRecall := 0.0
+	for q := 0; q < queries; q++ {
+		query := make([]float64, dim)
+		for d := 0; d < dim; d++ {
+			query[d] = nextFloat()
+		}
+
+		// Brute-force ground truth: the k nearest by L2.
+		type kd struct {
+			key  string
+			dist float64
+		}
+		all := make([]kd, 0, n)
+		for key, v := range vectors {
+			all = append(all, kd{key, l2Distance(query, v)})
+		}
+		sort.Slice(all, func(i, j int) bool { return all[i].dist < all[j].dist })
+		truth := make(map[string]bool, k)
+		for i := 0; i < k; i++ {
+			truth[all[i].key] = true
+		}
+
+		keys, dists, err := index.SearchKNN(query, k)
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if len(keys) != k {
+			t.Fatalf("expected %d results, got %d", k, len(keys))
+		}
+		// Results must be ascending by distance (closest first).
+		for i := 1; i < len(dists); i++ {
+			if dists[i] < dists[i-1] {
+				t.Fatalf("results not ascending by distance: %v", dists)
+			}
+		}
+		hit := 0
+		for _, key := range keys {
+			if truth[key] {
+				hit++
+			}
+		}
+		totalRecall += float64(hit) / float64(k)
+	}
+
+	avgRecall := totalRecall / float64(queries)
+	if avgRecall < 0.6 {
+		t.Fatalf("HNSW KNN recall too low: %.3f (want >= 0.6); search likely returning farthest neighbors", avgRecall)
+	}
 }
