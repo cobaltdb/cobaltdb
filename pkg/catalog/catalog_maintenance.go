@@ -100,6 +100,19 @@ func (c *Catalog) Save() error {
 		}
 	}
 
+	// Save full-text and JSON index definitions (incl. their inverted indexes),
+	// otherwise they were silently lost on disk reopen.
+	for _, fts := range c.ftsIndexes {
+		if err := c.storeFTSIndexDef(fts); err != nil {
+			return fmt.Errorf("failed to save full-text index definition %s: %w", fts.Name, err)
+		}
+	}
+	for _, ji := range c.jsonIndexes {
+		if err := c.storeJSONIndexDef(ji); err != nil {
+			return fmt.Errorf("failed to save JSON index definition %s: %w", ji.Name, err)
+		}
+	}
+
 	if c.enableRLS && c.rlsManager != nil {
 		for _, tableName := range c.rlsManager.ListEnabledTables() {
 			if err := c.storeRLSEnabledTable(tableName); err != nil {
@@ -213,6 +226,28 @@ func (c *Catalog) storeVectorIndexDef(vid *VectorIndexDef) error {
 	}
 	if c.tree != nil {
 		return c.tree.Put(key, data)
+	}
+	return nil
+}
+
+func (c *Catalog) storeFTSIndexDef(fts *FTSIndexDef) error {
+	data, err := json.Marshal(fts)
+	if err != nil {
+		return err
+	}
+	if c.tree != nil {
+		return c.tree.Put([]byte("fts:"+fts.Name), data)
+	}
+	return nil
+}
+
+func (c *Catalog) storeJSONIndexDef(ji *JSONIndexDef) error {
+	data, err := json.Marshal(ji)
+	if err != nil {
+		return err
+	}
+	if c.tree != nil {
+		return c.tree.Put([]byte("json:"+ji.Name), data)
 	}
 	return nil
 }
@@ -666,6 +701,64 @@ func (c *Catalog) Load() error {
 			vid.HNSW.RebuildEntryPoint()
 		}
 		c.vectorIndexes[vid.Name] = &vid
+	}
+
+	// Load full-text index definitions.
+	ftsIter, err := c.tree.Scan([]byte("fts:"), []byte("fts;"))
+	if err != nil {
+		return fmt.Errorf("load catalog: failed to scan full-text index metadata: %w", err)
+	}
+	defer ftsIter.Close()
+	for ftsIter.HasNext() {
+		key, value, err := ftsIter.Next()
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to read full-text index metadata: %w", err)
+		}
+		keyStr := string(key)
+		if !strings.HasPrefix(keyStr, "fts:") {
+			continue
+		}
+		name := strings.TrimPrefix(keyStr, "fts:")
+		var fts FTSIndexDef
+		if err := json.Unmarshal(value, &fts); err != nil {
+			return fmt.Errorf("load catalog: failed to parse full-text index metadata %s: %w", name, err)
+		}
+		if fts.Name == "" {
+			fts.Name = name
+		}
+		if fts.Index == nil {
+			fts.Index = make(map[string][]int64)
+		}
+		c.ftsIndexes[fts.Name] = &fts
+	}
+
+	// Load JSON index definitions.
+	jsonIter, err := c.tree.Scan([]byte("json:"), []byte("json;"))
+	if err != nil {
+		return fmt.Errorf("load catalog: failed to scan JSON index metadata: %w", err)
+	}
+	defer jsonIter.Close()
+	for jsonIter.HasNext() {
+		key, value, err := jsonIter.Next()
+		if err != nil {
+			return fmt.Errorf("load catalog: failed to read JSON index metadata: %w", err)
+		}
+		keyStr := string(key)
+		if !strings.HasPrefix(keyStr, "json:") {
+			continue
+		}
+		name := strings.TrimPrefix(keyStr, "json:")
+		var ji JSONIndexDef
+		if err := json.Unmarshal(value, &ji); err != nil {
+			return fmt.Errorf("load catalog: failed to parse JSON index metadata %s: %w", name, err)
+		}
+		if ji.Name == "" {
+			ji.Name = name
+		}
+		if ji.Index == nil {
+			ji.Index = make(map[string][]int64)
+		}
+		c.jsonIndexes[ji.Name] = &ji
 	}
 
 	rlsTableIter, err := c.tree.Scan([]byte("rlst:"), []byte("rlst;"))
