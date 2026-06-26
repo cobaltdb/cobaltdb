@@ -420,9 +420,9 @@ func TestJSONPathRemove(t *testing.T) {
 	}{
 		{`{"name":"John","age":30}`, "$.age", `{"name":"John"}`},
 		{`{"a":1,"b":2}`, "$.a", `{"b":2}`},
-		// Array removal - shifts elements and appends null
-		{`[1,2,3]`, "$[1]", `[1,3,null]`},
-		{`{"items":[1,2,3]}`, "$.items[0]", `{"items":[2,3,null]}`},
+		// Array removal splices the element out (no spurious trailing null).
+		{`[1,2,3]`, "$[1]", `[1,3]`},
+		{`{"items":[1,2,3]}`, "$.items[0]", `{"items":[2,3]}`},
 	}
 
 	for _, tt := range tests {

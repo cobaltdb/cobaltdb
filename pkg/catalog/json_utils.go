@@ -587,15 +587,26 @@ func (jp *JSONPath) Remove(dataPtr *interface{}) error {
 
 	parent := parents[len(parents)-1]
 	if parent.isArr {
-		// Remove array element by creating new slice
+		// Splice the element out into a genuinely shorter slice and write that
+		// shorter slice back into the array's own container (the grandparent, or
+		// the document root). Shifting in place and nil-ing the tail (the old
+		// behavior) left a spurious trailing null, e.g.
+		// JSON_REMOVE('[1,2,3]','$[0]') -> "[2,3,null]".
 		arr := parent.arr
 		idx := parent.index
-		copy(arr[idx:], arr[idx+1:])
-		arr[len(arr)-1] = nil
-		// We cannot resize the slice in place, but the caller will use Marshal
-		// which will see the nil at the end. We need to handle this differently.
-		// Actually, let's set a special marker or use the parent's parent to update
-		// For now, we'll handle this at the top level in JSONRemove
+		newArr := make([]interface{}, 0, len(arr)-1)
+		newArr = append(newArr, arr[:idx]...)
+		newArr = append(newArr, arr[idx+1:]...)
+		if len(parents) >= 2 {
+			gp := parents[len(parents)-2]
+			if gp.isArr {
+				gp.arr[gp.index] = newArr
+			} else {
+				gp.obj[gp.key] = newArr
+			}
+		} else {
+			*dataPtr = newArr
+		}
 	} else {
 		delete(parent.obj, parent.key)
 	}
