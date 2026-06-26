@@ -249,6 +249,26 @@ func (c *Catalog) executeRecursiveCTE(name string, nameLower string, cteColumns 
 		copy(cteCols, cteColumns)
 	}
 
+	// UNION (without ALL) requires the recursive member's output to be
+	// deduplicated against all rows already produced, and the recursion to stop
+	// once no NEW distinct rows appear. Without this, a cyclic/convergent
+	// recursive UNION never terminates (it re-derives already-seen rows every
+	// iteration) and hits the depth limit, or emits duplicate rows.
+	distinct := !unionStmt.All
+	var seen map[string]bool
+	if distinct {
+		seen = make(map[string]bool, len(anchorRows))
+		deduped := make([][]interface{}, 0, len(anchorRows))
+		for _, row := range anchorRows {
+			key := rowKeyForDedup(row)
+			if !seen[key] {
+				seen[key] = true
+				deduped = append(deduped, row)
+			}
+		}
+		anchorRows = deduped
+	}
+
 	// Step 2: Iteratively execute recursive member
 	// Accumulate all results
 	allRows := make([][]interface{}, len(anchorRows))
@@ -274,6 +294,20 @@ func (c *Catalog) executeRecursiveCTE(name string, nameLower string, cteColumns 
 		_, newRows, err := c.selectLocked(recursiveStmt, args)
 		if err != nil {
 			return fmt.Errorf("recursive member (depth %d): %w", depth, err)
+		}
+
+		if distinct {
+			// Keep only rows not seen before; these become the next working set
+			// so the recursion converges (UNION semantics).
+			fresh := make([][]interface{}, 0, len(newRows))
+			for _, row := range newRows {
+				key := rowKeyForDedup(row)
+				if !seen[key] {
+					seen[key] = true
+					fresh = append(fresh, row)
+				}
+			}
+			newRows = fresh
 		}
 
 		if len(newRows) == 0 {
