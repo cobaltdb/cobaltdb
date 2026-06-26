@@ -320,6 +320,22 @@ func Open(path string, opts *Options) (*DB, error) {
 			return nil, fmt.Errorf("failed to open database: %w", err)
 		}
 
+		// Encryption-at-rest and page compression are mutually incompatible: the
+		// compressed backend issues sub-page (8-byte header + payload) writes,
+		// while the encrypted backend requires full, page-aligned I/O and rejects
+		// them. Enabling both would silently fail on the first compressible page.
+		// Reject the combination up front with a clear error.
+		encryptionEnabled := (opts.Security.EncryptionConfig != nil && opts.Security.EncryptionConfig.Enabled) ||
+			len(opts.Security.EncryptionKey) > 0
+		compressionEnabled := opts.PageCompression.Config != nil && opts.PageCompression.Config.Enabled
+		if encryptionEnabled && compressionEnabled {
+			cerr := backend.Close()
+			return nil, errors.Join(
+				fmt.Errorf("encryption at rest and page compression cannot be enabled together (the compressed backend issues sub-page writes that the encrypted backend rejects)"),
+				cerr,
+			)
+		}
+
 		// Wrap with encryption if encryption key is provided
 		if opts.Security.EncryptionConfig != nil && opts.Security.EncryptionConfig.Enabled {
 			log.Infof("Enabling encryption at rest")
