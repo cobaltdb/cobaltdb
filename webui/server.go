@@ -558,6 +558,21 @@ func (s *Server) handleTableInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, tableInfo)
 }
 
+// sanitizeCSVField neutralizes CSV/spreadsheet formula injection (CWE-1236).
+// A cell whose first character is one of =, +, -, @, or a control character is
+// interpreted as a formula by Excel/LibreOffice/Sheets; prefix it with a single
+// quote so it is treated as literal text on import.
+func sanitizeCSVField(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r', '\n':
+		return "'" + s
+	}
+	return s
+}
+
 func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("query"))
 	if err := validateWebUIQuery(query); err != nil {
@@ -582,7 +597,11 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 
 	var buf bytes.Buffer
 	writer := csv.NewWriter(&buf)
-	if err := writer.Write(columns); err != nil {
+	headerRow := make([]string, len(columns))
+	for i, col := range columns {
+		headerRow[i] = sanitizeCSVField(col)
+	}
+	if err := writer.Write(headerRow); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -593,7 +612,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 			if v == nil {
 				rowStr[i] = "NULL"
 			} else {
-				rowStr[i] = fmt.Sprintf("%v", v)
+				rowStr[i] = sanitizeCSVField(fmt.Sprintf("%v", v))
 			}
 		}
 		if err := writer.Write(rowStr); err != nil {
