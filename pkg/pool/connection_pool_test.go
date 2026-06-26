@@ -3,6 +3,8 @@ package pool
 import (
 	"context"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -219,6 +221,102 @@ func TestPoolStatsWhenReleaseServesWaiter(t *testing.T) {
 	if stats.IdleConns != 0 {
 		t.Fatalf("IdleConns = %d, want 0", stats.IdleConns)
 	}
+}
+
+// TestPoolNoConnLossUnderAbandon stresses the timeout/reclaim path: many
+// goroutines contend for a single connection with short acquire timeouts while
+// the holder releases. A connection handed to an already-timed-out waiter must
+// be reclaimed, never lost. After the storm, the single connection must still
+// be acquirable and stats must be consistent.
+func TestPoolNoConnLossUnderAbandon(t *testing.T) {
+	dialer := func() (net.Conn, error) { return &mockConn{}, nil }
+
+	config := DefaultConfig()
+	config.MinConns = 1
+	config.MaxConns = 1
+	config.WaitQueueSize = 64
+	config.AcquireTimeout = 2 * time.Millisecond
+	config.HealthCheckInterval = time.Hour
+
+	pool, err := New(config, dialer)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer pool.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, err := pool.Acquire(context.Background())
+			if err != nil {
+				return // timeout/exhausted is fine under contention
+			}
+			// Hold briefly then release, sometimes racing the timeout window.
+			time.Sleep(time.Millisecond)
+			conn.Release()
+		}()
+	}
+	wg.Wait()
+
+	// The single connection must not have leaked out of circulation.
+	conn, err := pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("connection lost from circulation after abandon storm: %v", err)
+	}
+	conn.Release()
+
+	stats := pool.Stats()
+	if stats.ActiveConns != 0 {
+		t.Errorf("ActiveConns = %d, want 0", stats.ActiveConns)
+	}
+	if stats.IdleConns != 1 {
+		t.Errorf("IdleConns = %d, want 1", stats.IdleConns)
+	}
+	if stats.WaitQueueLen != 0 {
+		t.Errorf("WaitQueueLen = %d, want 0", stats.WaitQueueLen)
+	}
+}
+
+// TestPoolNoDoubleIssue verifies a single connection is never handed to two
+// acquirers at once (the release()-hands-off-to-waiter-AND-available bug).
+func TestPoolNoDoubleIssue(t *testing.T) {
+	dialer := func() (net.Conn, error) { return &mockConn{}, nil }
+
+	config := DefaultConfig()
+	config.MinConns = 1
+	config.MaxConns = 1
+	config.WaitQueueSize = 32
+	config.AcquireTimeout = time.Second
+	config.HealthCheckInterval = time.Hour
+
+	pool, err := New(config, dialer)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer pool.Close()
+
+	var concurrent int32
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				conn, err := pool.Acquire(context.Background())
+				if err != nil {
+					continue
+				}
+				if n := atomic.AddInt32(&concurrent, 1); n > 1 {
+					t.Errorf("connection issued to %d holders simultaneously", n)
+				}
+				atomic.AddInt32(&concurrent, -1)
+				conn.Release()
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestAcquireRelease(t *testing.T) {

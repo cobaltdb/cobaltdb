@@ -310,10 +310,22 @@ func (p *Pool) Close() error {
 	}
 	p.conns = p.conns[:0]
 
-	// Clear available channel
-	close(p.available)
-	for range p.available {
+	// Drain the available channel WITHOUT closing it. release() and
+	// createConnection() may still send here from caller goroutines that
+	// Close() does not wait for (p.wg only tracks background loops); closing
+	// would panic those sends ("send on closed channel"). They instead observe
+	// the closed flag and route through removeConn().
+	for {
+		select {
+		case conn := <-p.available:
+			if conn != nil {
+				_ = conn.closeUnderlying()
+			}
+		default:
+			goto availableDrained
+		}
 	}
+availableDrained:
 
 	// Notify waiting clients
 	p.waitersMu.Lock()
@@ -390,22 +402,6 @@ func (p *Pool) waitForConnection(ctx context.Context) (*Conn, error) {
 	atomic.AddInt32(&p.stats.WaitQueueLen, 1)
 	p.waitersMu.Unlock()
 
-	defer func() {
-		p.waitersMu.Lock()
-		removed := false
-		for i, w := range p.waiters {
-			if w == waiter {
-				p.waiters = append(p.waiters[:i], p.waiters[i+1:]...)
-				removed = true
-				break
-			}
-		}
-		if removed {
-			atomic.AddInt32(&p.stats.WaitQueueLen, -1)
-		}
-		p.waitersMu.Unlock()
-	}()
-
 	// Wait with timeout
 	timeout := p.config.AcquireTimeout
 	if deadline, ok := ctx.Deadline(); ok {
@@ -414,22 +410,61 @@ func (p *Pool) waitForConnection(ctx context.Context) (*Conn, error) {
 			timeout = remaining
 		}
 	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
 	select {
 	case conn := <-waiter:
+		// release() (or Close()) popped us from p.waiters and decremented
+		// WaitQueueLen, then delivered this connection (nil from Close()). The
+		// connection is counted as idle; transition it to active.
 		if conn == nil {
 			return nil, ErrPoolClosed
 		}
 		atomic.StoreInt32(&conn.inUse, 1)
 		atomic.StoreInt64(&conn.lastUsedAtNano, time.Now().UnixNano())
+		atomic.AddInt32(&p.stats.IdleConns, -1)
 		atomic.AddInt32(&p.stats.ActiveConns, 1)
 		return conn, nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		atomic.AddUint64(&p.stats.TotalTimeouts, 1)
-		return nil, ErrTimeout
+		return nil, p.abandonWaiter(waiter, ErrTimeout)
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, p.abandonWaiter(waiter, ctx.Err())
 	}
+}
+
+// abandonWaiter removes a timed-out / cancelled waiter from the queue. If a
+// concurrent release() already popped this waiter (and therefore will deliver a
+// connection into its buffered channel), abandonWaiter blocks to reclaim that
+// connection and returns it to the pool so it is not lost from circulation.
+func (p *Pool) abandonWaiter(waiter chan *Conn, err error) error {
+	p.waitersMu.Lock()
+	removed := false
+	for i, w := range p.waiters {
+		if w == waiter {
+			p.waiters = append(p.waiters[:i], p.waiters[i+1:]...)
+			removed = true
+			break
+		}
+	}
+	p.waitersMu.Unlock()
+
+	if removed {
+		// No release() popped us, so no connection is in flight to this waiter.
+		atomic.AddInt32(&p.stats.WaitQueueLen, -1)
+		return err
+	}
+
+	// A release() (or Close()) already popped us under waitersMu and will send
+	// exactly one value into the buffered waiter channel (a connection, or nil
+	// from Close()); it already adjusted WaitQueueLen. The connection is counted
+	// as idle — re-queue it (without re-running release()'s active accounting)
+	// so it is not lost from circulation.
+	if conn := <-waiter; conn != nil {
+		p.requeueIdleConn(conn)
+	}
+	return err
 }
 
 // sendToWaiter attempts a non-blocking send on the waiter channel.
@@ -457,33 +492,42 @@ func (p *Pool) release(conn *Conn) {
 	atomic.AddInt32(&p.stats.IdleConns, 1)
 	atomic.AddUint64(&p.stats.TotalReleases, 1)
 
-	// Try to give to a waiting client first
+	// The connection is now idle (counted in IdleConns). Hand it off — to a
+	// waiter, or to the idle channel — but never to both.
+	p.requeueIdleConn(conn)
+}
+
+// requeueIdleConn places an already-idle connection (counted in IdleConns,
+// inUse==0) either directly into a waiting client or back into the idle
+// channel. It must hand the connection to exactly one destination. A waiter
+// that receives it transitions it idle->active; a waiter that has abandoned
+// reclaims and re-queues it via this same path.
+func (p *Pool) requeueIdleConn(conn *Conn) {
+	if atomic.LoadInt32(&p.closed) == 1 {
+		_ = p.removeConn(conn) // inUse==0 -> decrements IdleConns
+		return
+	}
+
+	// Try to give to a waiting client first.
 	p.waitersMu.Lock()
 	if len(p.waiters) > 0 {
 		waiter := p.waiters[0]
 		p.waiters = p.waiters[1:]
 		atomic.AddInt32(&p.stats.WaitQueueLen, -1)
 		p.waitersMu.Unlock()
-
-		// Non-blocking send: if the waiter timed out its goroutine has exited
-		// and there is no receiver for this channel. In that case, fall through
-		// to re-queue the connection.
-		if p.sendToWaiter(waiter, conn) {
-			// Waiter received the connection; decrement IdleConns since the
-			// connection is now in use (waiter will set inUse=1).
-			atomic.AddInt32(&p.stats.IdleConns, -1)
-		}
-		// If the waiter timed out, IdleConns (incremented above) is correct and
-		// the connection will be re-queued below.
-	} else {
-		p.waitersMu.Unlock()
+		// The waiter channel is buffered (cap 1) so this always succeeds and
+		// the connection is now owned exclusively by that waiter. Do NOT also
+		// place it in the idle channel.
+		p.sendToWaiter(waiter, conn)
+		return
 	}
+	p.waitersMu.Unlock()
 
-	// Put back in available channel
+	// No waiters: return to the idle channel.
 	select {
 	case p.available <- conn:
 	default:
-		// Channel full, close connection
+		// Channel full: drop the connection (removeConn decrements IdleConns).
 		_ = p.removeConn(conn)
 	}
 }
