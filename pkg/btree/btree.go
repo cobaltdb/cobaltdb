@@ -865,7 +865,13 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 		if entry == nil {
 			continue // Another goroutine evicted it already; retry.
 		}
-		evictKey := best.key
+		// Evict the data for the LRU node we actually removed (entry), NOT
+		// best.key: a concurrent eviction on this shard may have changed which
+		// node is at the back between picking `best` and re-locking, so
+		// lruList.Back() can return a different node. Using best.key here would
+		// delete the wrong key's data and orphan entry.key (data with no LRU
+		// node, never reclaimable, still counted in memoryUsed).
+		evictKey := entry.key
 
 		sh.mu.Lock()
 		if val, ok := sh.data[evictKey]; ok {
