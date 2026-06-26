@@ -1980,13 +1980,6 @@ func typeTaggedKey(v interface{}) string {
 		return "\x01NULL\x01"
 	}
 	switch val := v.(type) {
-	case int64:
-		return "I:" + strconv.FormatInt(val, 10)
-	case float64:
-		if val == float64(int64(val)) && val >= -1e15 && val <= 1e15 {
-			return "I:" + strconv.FormatInt(int64(val), 10)
-		}
-		return "F:" + strconv.FormatFloat(val, 'g', -1, 64)
 	case bool:
 		if val {
 			return "B:1"
@@ -1997,7 +1990,26 @@ func typeTaggedKey(v interface{}) string {
 		return "S:" + string(val)
 	case string:
 		return "S:" + val
+	case float64:
+		if val == float64(int64(val)) && val >= -1e15 && val <= 1e15 {
+			return "I:" + strconv.FormatInt(int64(val), 10)
+		}
+		return "F:" + strconv.FormatFloat(val, 'g', -1, 64)
+	case float32:
+		f := float64(val)
+		if f == float64(int64(f)) && f >= -1e15 && f <= 1e15 {
+			return "I:" + strconv.FormatInt(int64(f), 10)
+		}
+		return "F:" + strconv.FormatFloat(f, 'g', -1, 64)
 	default:
+		// All integer kinds (int, int8..int64, uint8..uint64) must produce the
+		// same "I:" key as the stored value, which is always int64 (from
+		// decodeRow). Previously only int64 had a case, so a Go int/int32 query
+		// arg produced "S:100" and the secondary-index exact-match lookup found
+		// 0 rows — a silent wrong result for the idiomatic `db.Query(..., 5)`.
+		if iv, ok := compareAsInt64(v); ok {
+			return "I:" + strconv.FormatInt(iv, 10)
+		}
 		return "S:" + ValueToStringKey(v)
 	}
 }
