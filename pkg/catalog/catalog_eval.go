@@ -1274,10 +1274,10 @@ func evaluateMathFunction(funcName string, evalArgs []interface{}) (interface{},
 				precision = int(p)
 			}
 		}
-		divisor := 1.0
-		for i := 0; i < precision; i++ {
-			divisor *= 10
-		}
+		// math.Pow handles negative precision (rounding to the left of the
+		// decimal point); the old counting loop ran zero times for negative
+		// precision, so ROUND(123.456, -1) wrongly returned 123 instead of 120.
+		divisor := math.Pow(10, float64(precision))
 		result := math.Round(f*divisor) / divisor
 		if precision == 0 {
 			return float64(int64(result)), true, nil
