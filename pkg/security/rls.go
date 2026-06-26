@@ -373,6 +373,15 @@ func (m *Manager) checkAccessLocked(ctx context.Context, tableName string, polic
 			expr, ok = m.compiledCheckExprs[key]
 		}
 		if !ok {
+			// An enabled policy with no compiled expression (e.g. its expression
+			// failed to recompile during DeserializePolicies) has no evaluator.
+			// Skipping a RESTRICTIVE policy would silently drop its restriction
+			// and leak rows it was meant to hide (fail-open). Deny instead
+			// (fail-closed). A permissive policy with no evaluator grants
+			// nothing, so skipping it is safe.
+			if policy.Restrictive {
+				return false, nil
+			}
 			continue
 		}
 

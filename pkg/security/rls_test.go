@@ -955,3 +955,54 @@ func TestPolicyKeyNormalization(t *testing.T) {
 		t.Errorf("Expected normalized table 'mytable', got '%s'", retrieved.TableName)
 	}
 }
+
+// TestRLSRestrictivePolicyFailsClosedWhenExprUncompilable verifies that a
+// restrictive policy whose expression fails to recompile on load (via
+// DeserializePolicies) denies access (fail-closed) instead of being silently
+// skipped, which would leak rows it was meant to hide (fail-open).
+func TestRLSRestrictivePolicyFailsClosedWhenExprUncompilable(t *testing.T) {
+	// Build a valid permissive(grant-all) + restrictive policy set and serialize.
+	src := NewManager()
+	if err := src.CreatePolicy(&Policy{
+		Name: "allow_all", TableName: "docs", Type: PolicySelect,
+		Expression: "true", Enabled: true,
+	}); err != nil {
+		t.Fatalf("create permissive: %v", err)
+	}
+	if err := src.CreatePolicy(&Policy{
+		Name: "hide_secret", TableName: "docs", Type: PolicySelect,
+		Expression: "owner_id = 12345", Restrictive: true, Enabled: true,
+	}); err != nil {
+		t.Fatalf("create restrictive: %v", err)
+	}
+	blob, err := src.SerializePolicies()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+
+	// Corrupt only the restrictive policy's expression into one that cannot be
+	// compiled (simulating version/format skew or a hand-edited blob).
+	corrupted := strings.Replace(string(blob), "owner_id = 12345", "status ~~ active", 1)
+	if corrupted == string(blob) {
+		t.Fatal("test setup: restrictive expression not found in serialized blob")
+	}
+
+	// Reload. DeserializePolicies tolerates the compile failure (logs+continues),
+	// leaving the restrictive policy enabled but without a compiled expression.
+	dst := NewManager()
+	if err := dst.DeserializePolicies([]byte(corrupted)); err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+
+	// The permissive policy would grant this row; the restrictive policy must
+	// still hide it. With the uncompiled restrictive policy, access must be
+	// DENIED (fail-closed), not allowed.
+	row := map[string]interface{}{"owner_id": float64(1), "status": "secret"}
+	allowed, err := dst.CheckAccess(context.Background(), "docs", PolicySelect, row, "someuser", nil)
+	if err != nil {
+		t.Fatalf("CheckAccess: %v", err)
+	}
+	if allowed {
+		t.Fatal("restrictive policy with an uncompilable expression leaked the row (fail-open)")
+	}
+}
