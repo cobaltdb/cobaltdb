@@ -978,6 +978,15 @@ func (p *Parser) parseCreateTrigger() (*CreateTriggerStmt, error) {
 		if p.current().Type == TokenEnd {
 			p.advance() // consume END
 		}
+	} else if p.current().Type != TokenEOF && p.current().Type != TokenSemicolon {
+		// Single-statement trigger body without BEGIN ... END (valid SQL).
+		// Without this, the body is left empty and the trigger silently never
+		// fires (executeTriggers skips a zero-length body).
+		bodyStmt, err := p.Parse()
+		if err != nil {
+			return nil, fmt.Errorf("trigger body: %w", err)
+		}
+		stmt.Body = append(stmt.Body, bodyStmt)
 	}
 
 	return stmt, nil

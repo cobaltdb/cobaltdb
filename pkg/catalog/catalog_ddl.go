@@ -4,13 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/cobaltdb/cobaltdb/pkg/btree"
-	"github.com/cobaltdb/cobaltdb/pkg/query"
-	"github.com/cobaltdb/cobaltdb/pkg/security"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/btree"
+	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 )
 
 // validIdentifierName checks if a table or column name is valid
@@ -86,6 +88,19 @@ func isReservedWord(name string) bool {
 	return reservedWords[toUpperFast(name)]
 }
 
+// isMaxValuePartitionBound reports whether a RANGE partition bound expression is
+// the MAXVALUE sentinel (`VALUES LESS THAN (MAXVALUE)`), which the parser emits
+// as a bare identifier rather than a numeric literal.
+func isMaxValuePartitionBound(expr query.Expression) bool {
+	switch e := expr.(type) {
+	case *query.Identifier:
+		return strings.EqualFold(e.Name, "MAXVALUE")
+	case *query.ColumnRef:
+		return strings.EqualFold(e.Column, "MAXVALUE")
+	}
+	return false
+}
+
 func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -144,6 +159,14 @@ func (c *Catalog) CreateTable(stmt *query.CreateTableStmt) error {
 			if len(sp.Values) >= 1 {
 				if nl, ok := sp.Values[0].(*query.NumberLiteral); ok {
 					pd.MaxValue = int64(nl.Value)
+					pd.MinValue = prevMax
+					prevMax = pd.MaxValue
+				} else if isMaxValuePartitionBound(sp.Values[0]) {
+					// VALUES LESS THAN (MAXVALUE) is the catch-all upper bound;
+					// parsed as a bare identifier, not a number. Without this it
+					// kept MinValue=MaxValue=0 (a dead partition) and every value
+					// above the previous bound was rejected at INSERT time.
+					pd.MaxValue = math.MaxInt64
 					pd.MinValue = prevMax
 					prevMax = pd.MaxValue
 				}
