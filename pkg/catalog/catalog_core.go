@@ -525,7 +525,13 @@ func (cat *Catalog) tryViewSelect(stmt *query.SelectStmt, args []interface{}) (b
 		return false, nil, nil, nil
 	}
 
-	viewIsComplex := view.Distinct || len(view.GroupBy) > 0 || view.Having != nil || view.From == nil
+	// A view that carries its own ORDER BY / LIMIT / OFFSET must be evaluated as
+	// a derived table (the "complex" path), not inlined: the merge path copies
+	// only the OUTER query's ORDER BY/LIMIT, so inlining would silently drop the
+	// view's own ordering and row limit (e.g. CREATE VIEW top3 AS ... ORDER BY x
+	// DESC LIMIT 3 would return every row).
+	viewIsComplex := view.Distinct || len(view.GroupBy) > 0 || view.Having != nil ||
+		view.From == nil || len(view.OrderBy) > 0 || view.Limit != nil || view.Offset != nil
 	if !viewIsComplex {
 		for _, col := range view.Columns {
 			actual := col
