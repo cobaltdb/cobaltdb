@@ -611,17 +611,46 @@ func (db *DB) acquireConnection(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		db.connWaitMu.Lock()
+		found := false
 		for i, w := range db.connWaiters {
 			if w == ch {
 				db.connWaiters = append(db.connWaiters[:i], db.connWaiters[i+1:]...)
+				found = true
 				break
 			}
 		}
 		db.connWaitMu.Unlock()
+		if !found {
+			// A releaseConnection already popped this waiter and handed it a
+			// slot (the buffered channel send always succeeds, even though we
+			// timed out). Reclaim the slot so connCount is not leaked — without
+			// this, every timeout-racing-handoff permanently burns a slot and
+			// the limiter eventually wedges. Every pop is followed by exactly
+			// one send, so this receive cannot block forever.
+			<-ch
+			db.releaseHandedOffSlot()
+		}
 		return fmt.Errorf("connection timeout: %w", ctx.Err())
 	case <-db.shutdownCh:
 		return ErrDatabaseClosed
 	}
+}
+
+// releaseHandedOffSlot returns a connection slot that releaseConnection handed
+// to a waiter which then abandoned it (timeout). It passes the slot to the next
+// waiter, or decrements connCount if none. It must NOT touch activeConns: the
+// releasing side already decremented it and this waiter never incremented it.
+func (db *DB) releaseHandedOffSlot() {
+	db.connWaitMu.Lock()
+	if len(db.connWaiters) > 0 {
+		next := db.connWaiters[0]
+		db.connWaiters = db.connWaiters[1:]
+		db.connWaitMu.Unlock()
+		next <- struct{}{} // buffered cap-1; hand the slot to the next waiter
+		return
+	}
+	db.connWaitMu.Unlock()
+	db.connCount.Add(-1)
 }
 
 // releaseConnection releases a connection slot, waking a waiter if any.
