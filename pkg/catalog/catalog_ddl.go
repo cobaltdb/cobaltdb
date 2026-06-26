@@ -1447,14 +1447,21 @@ func (c *Catalog) AlterTableDropColumn(stmt *query.AlterTableStmt) error {
 			if err != nil {
 				return fmt.Errorf("failed to read row during ALTER TABLE DROP COLUMN backfill: %w", err)
 			}
-			row, err := decodeRow(valueData, originalColCount)
+			// Decode through the versioned path and re-encode the VersionedRow
+			// (mirroring ADD COLUMN). Marshalling the bare data array instead
+			// discarded created_at/deleted_at: soft-deleted tombstones came back
+			// live (resurrected rows, index desync) and live rows lost their
+			// CreatedAt (broken AS OF temporal queries).
+			vrow, err := decodeVersionedRow(valueData, originalColCount)
 			if err != nil {
 				return fmt.Errorf("failed to decode row in table %s during ALTER TABLE DROP COLUMN: %w", stmt.Table, err)
 			}
+			row := vrow.Data
 			if colIdx < len(row) {
 				row = append(row[:colIdx], row[colIdx+1:]...)
 			}
-			newData, err := json.Marshal(row)
+			vrow.Data = row
+			newData, err := json.Marshal(vrow)
 			if err != nil {
 				return fmt.Errorf("failed to encode row during ALTER TABLE DROP COLUMN: %w", err)
 			}
