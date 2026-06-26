@@ -331,22 +331,32 @@ func (bp *BufferPool) NewPage(pageType PageType) (*CachedPage, error) {
 	return cached, nil
 }
 
-// FlushPage writes a dirty page to disk
+// FlushPage writes a dirty page to disk.
+//
+// The dirty bit is cleared BEFORE the page contents are snapshotted. The
+// background flusher does not pin or lock the page across the whole flush, so a
+// concurrent writer may mutate the page (WithDataWrite) and SetDirty(true)
+// while this flush is in flight. Clearing first means any such concurrent write
+// re-sets the dirty bit and the page is re-flushed later; if we cleared the bit
+// AFTER snapshotting, that SetDirty(false) would clobber the writer's
+// SetDirty(true) and silently drop the newer version (lost update). On write
+// failure the bit is restored so the page is retried.
 func (bp *BufferPool) FlushPage(page *CachedPage) error {
 	if !page.IsDirty() {
 		return nil
 	}
 
 	offset := int64(page.id) * int64(PageSize)
+	page.SetDirty(false)
 	data := page.dataSnapshot()
 	start := time.Now()
 	if _, err := WriteFullAt(bp.backend, data, offset); err != nil {
+		page.SetDirty(true) // retry on the next flush cycle
 		return fmt.Errorf("failed to write page %d: %w", page.id, err)
 	}
 	writeTime := time.Since(start)
 	bp.stats.recordWrite(writeTime)
 
-	page.SetDirty(false)
 	return nil
 }
 

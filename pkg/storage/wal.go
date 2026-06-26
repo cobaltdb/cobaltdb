@@ -532,10 +532,7 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 			w.lsn = lsn
 			w.mu.Unlock()
 			walBatchBufPool.Put(bp)
-			if !w.groupCommitEnabled {
-				return w.Sync()
-			}
-			return nil
+			return w.finishBatchSync()
 		}
 		walBatchBufPool.Put(bp)
 	}
@@ -571,8 +568,39 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 	}
 	w.lsn = lsn
 	w.mu.Unlock()
+	return w.finishBatchSync()
+}
+
+// finishBatchSync applies AppendBatch's post-write durability semantics. It
+// mirrors groupCommitAppend so the batch commit path (used by the txn manager
+// for WALCommit/WALUpdateCommit) is as durable as the single-record path:
+// without group commit it fsyncs immediately; with group commit it registers
+// for the batch fsync and blocks until that fsync completes, instead of
+// returning before the commit record is durable. SyncOff (no interval, no batch
+// size) returns immediately. Must be called AFTER w.mu is released and the
+// records are already in w.bufWriter.
+func (w *WAL) finishBatchSync() error {
+	w.groupCommitMu.Lock()
 	if !w.groupCommitEnabled {
+		w.groupCommitMu.Unlock()
 		return w.Sync()
+	}
+	if w.syncInterval <= 0 && w.batchSize <= 0 {
+		w.groupCommitMu.Unlock()
+		return nil // SyncOff: do not wait for a background sync
+	}
+
+	done := make(chan error, 1)
+	w.pendingSyncs = append(w.pendingSyncs, done)
+	if w.batchSize > 0 && len(w.pendingSyncs) >= w.batchSize {
+		w.groupCommitMu.Unlock()
+		_ = w.flushPendingLocked()
+	} else {
+		w.groupCommitMu.Unlock()
+	}
+
+	if err := <-done; err != nil {
+		return fmt.Errorf("group commit failed: %w", err)
 	}
 	return nil
 }

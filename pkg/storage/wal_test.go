@@ -885,6 +885,57 @@ func TestWALGroupCommitBatchSize(t *testing.T) {
 	}
 }
 
+// TestWALAppendBatchGroupCommitWaitsForDurability verifies that AppendBatch
+// (the txn-manager commit path) blocks until the group-commit fsync completes,
+// just like the single-record Append path. Before the fix it returned
+// immediately under group commit, acking commits before they were durable.
+func TestWALAppendBatchGroupCommitWaitsForDurability(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "groupcommit_batch_append.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	// Batch size 2, no ticker: the first batch must block until the second fills
+	// the batch and triggers the fsync.
+	wal.EnableGroupCommit(2, 0)
+
+	done1 := make(chan error, 1)
+	go func() {
+		done1 <- wal.AppendBatch([]*WALRecord{{TxnID: 1, Type: WALInsert, Data: []byte("a")}})
+	}()
+
+	// The first AppendBatch must still be blocked (not yet durable).
+	select {
+	case err := <-done1:
+		t.Fatalf("AppendBatch returned before batch fsync (durability gap): err=%v", err)
+	case <-time.After(50 * time.Millisecond):
+		// expected: still blocked
+	}
+
+	// Second batch fills the batch and triggers the sync, unblocking the first.
+	if err := wal.AppendBatch([]*WALRecord{{TxnID: 2, Type: WALInsert, Data: []byte("b")}}); err != nil {
+		t.Fatalf("second AppendBatch failed: %v", err)
+	}
+
+	select {
+	case err := <-done1:
+		if err != nil {
+			t.Fatalf("first AppendBatch failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first AppendBatch never unblocked after batch filled")
+	}
+
+	wal.DisableGroupCommit()
+	if wal.LSN() != 2 {
+		t.Fatalf("expected LSN=2, got %d", wal.LSN())
+	}
+}
+
 func TestWALGroupCommitSyncOff(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "groupcommit_off.wal")
