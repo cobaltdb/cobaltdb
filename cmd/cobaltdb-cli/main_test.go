@@ -1386,3 +1386,41 @@ func TestStrToRunes(t *testing.T) {
 		t.Errorf("expected SELECT, got %s", string(result[0]))
 	}
 }
+
+// TestSqlEscapeBackslashRoundTrip verifies that values containing backslashes
+// are escaped such that a dumped INSERT round-trips through the engine's
+// lexer/parser intact. Before the fix, sqlEscape left backslashes unescaped and
+// the lexer (which treats `\` as an escape char) corrupted/failed the restore.
+func TestSqlEscapeBackslashRoundTrip(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{
+		CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 256},
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	if _, err := db.Exec(ctx, `CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	values := []string{`C:\`, `a\`, `foo\bar`, `back\slash\end\`, `quote'and\back`}
+	for i, v := range values {
+		insert := fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %s)", i, sqlEscape(v))
+		if _, err := db.Exec(ctx, insert); err != nil {
+			t.Fatalf("restore of escaped value %q failed: %v (stmt=%s)", v, err, insert)
+		}
+	}
+
+	for i, want := range values {
+		row := db.QueryRow(ctx, fmt.Sprintf("SELECT v FROM t WHERE id = %d", i))
+		var got string
+		if err := row.Scan(&got); err != nil {
+			t.Fatalf("scan id=%d: %v", i, err)
+		}
+		if got != want {
+			t.Errorf("round-trip mismatch for id=%d: got %q, want %q", i, got, want)
+		}
+	}
+}

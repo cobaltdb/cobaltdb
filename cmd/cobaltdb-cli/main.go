@@ -1710,6 +1710,20 @@ func dumpTupleKey(values []interface{}, indexes []int) (string, bool) {
 	return strings.Join(parts, "\x00"), true
 }
 
+// quoteSQLStringLiteral renders s as a single-quoted SQL string literal. It
+// escapes backslashes FIRST (the lexer treats `\` as an escape character inside
+// quoted strings, MySQL-style) and then doubles single quotes. Without the
+// backslash escaping, a value containing or ending in `\` (e.g. a Windows path
+// `C:\`) corrupts the dump: on restore the lexer consumes the closing quote as
+// an escaped character, producing an unterminated string or shifting parsing
+// (a dump/restore-corruption and SQL-injection class bug). This mirrors
+// quoteSQLIdentifier, which already escapes `\`.
+func quoteSQLStringLiteral(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "'", "''")
+	return "'" + s + "'"
+}
+
 func sqlEscape(v interface{}) string {
 	if v == nil {
 		return "NULL"
@@ -1720,22 +1734,20 @@ func sqlEscape(v interface{}) string {
 		// Numbers and booleans (true/false) are valid unquoted SQL literals.
 		return fmt.Sprintf("%v", val)
 	case string:
-		return "'" + strings.ReplaceAll(val, "'", "''") + "'"
+		return quoteSQLStringLiteral(val)
 	case []byte:
-		return "'" + strings.ReplaceAll(string(val), "'", "''") + "'"
+		return quoteSQLStringLiteral(string(val))
 	case []float64, []float32, []int, []int64, []interface{}:
 		data, err := json.Marshal(val)
 		if err != nil {
-			s := fmt.Sprintf("%v", val)
-			return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+			return quoteSQLStringLiteral(fmt.Sprintf("%v", val))
 		}
-		return "'" + strings.ReplaceAll(string(data), "'", "''") + "'"
+		return quoteSQLStringLiteral(string(data))
 	default:
 		// Any other type (e.g. the engine's StringBox string wrapper) is a
 		// string value and MUST be quoted, otherwise the dump cannot be
 		// restored (an unquoted string parses as a column reference).
-		s := fmt.Sprintf("%v", val)
-		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+		return quoteSQLStringLiteral(fmt.Sprintf("%v", val))
 	}
 }
 
