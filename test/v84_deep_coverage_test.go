@@ -189,8 +189,8 @@ func TestV84DeepCoverage(t *testing.T) {
 	check("GLOB no match", "SELECT GLOB('*xyz', 'hello')", false)
 
 	// SUBSTR edge cases
-	// SUBSTR with negative start returns full string in CobaltDB
-	check("SUBSTR negative", "SELECT SUBSTR('hello', -2)", "hello")
+	// SUBSTR with a negative start counts from the end (MySQL/SQLite): -2 -> 'lo'
+	check("SUBSTR negative", "SELECT SUBSTR('hello', -2)", "lo")
 	check("SUBSTR zero len", "SELECT SUBSTR('hello', 1, 0)", "")
 
 	// String concat operator

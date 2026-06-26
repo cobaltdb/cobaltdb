@@ -1014,6 +1014,29 @@ func compareAsInt64(v interface{}) (int64, bool) {
 	return 0, false
 }
 
+// wholeInt64 returns v as an int64 when it is an integer-typed value OR a
+// whole-number float64/float32 within the exact-integer range (matching
+// isIntegerType's notion of "integer"). Used by arithmetic so integer operands
+// stay in the int64 domain instead of losing precision through float64, while
+// preserving the prior int-vs-float result-type decision.
+func wholeInt64(v interface{}) (int64, bool) {
+	if i, ok := compareAsInt64(v); ok {
+		return i, true
+	}
+	switch n := v.(type) {
+	case float64:
+		if n == float64(int64(n)) && n >= -1e15 && n <= 1e15 {
+			return int64(n), true
+		}
+	case float32:
+		f := float64(n)
+		if f == float64(int64(f)) && f >= -1e15 && f <= 1e15 {
+			return int64(f), true
+		}
+	}
+	return 0, false
+}
+
 func compareValues(a, b interface{}) int {
 	// Handle NULLs: NULLs sort last (after all non-NULL values)
 	if a == nil && b == nil {
@@ -2293,42 +2316,47 @@ func isIntegerType(v interface{}) bool {
 }
 
 func addValues(a, b interface{}) (interface{}, error) {
+	// Integer operands are added in the int64 domain to avoid float64 precision
+	// loss above 2^53 (mirrors the parallel evalBinaryExprValue path).
+	if ai, aok := wholeInt64(a); aok {
+		if bi, bok := wholeInt64(b); bok {
+			return ai + bi, nil
+		}
+	}
 	aNum, aOk := toFloat64(a)
 	bNum, bOk := toFloat64(b)
 	if !aOk || !bOk {
 		return nil, fmt.Errorf("cannot add non-numeric values")
 	}
-	result := aNum + bNum
-	if isIntegerType(a) && isIntegerType(b) {
-		return int64(result), nil
-	}
-	return result, nil
+	return aNum + bNum, nil
 }
 
 func subtractValues(a, b interface{}) (interface{}, error) {
+	if ai, aok := wholeInt64(a); aok {
+		if bi, bok := wholeInt64(b); bok {
+			return ai - bi, nil
+		}
+	}
 	aNum, aOk := toFloat64(a)
 	bNum, bOk := toFloat64(b)
 	if !aOk || !bOk {
 		return nil, fmt.Errorf("cannot subtract non-numeric values")
 	}
-	result := aNum - bNum
-	if isIntegerType(a) && isIntegerType(b) {
-		return int64(result), nil
-	}
-	return result, nil
+	return aNum - bNum, nil
 }
 
 func multiplyValues(a, b interface{}) (interface{}, error) {
+	if ai, aok := wholeInt64(a); aok {
+		if bi, bok := wholeInt64(b); bok {
+			return ai * bi, nil
+		}
+	}
 	aNum, aOk := toFloat64(a)
 	bNum, bOk := toFloat64(b)
 	if !aOk || !bOk {
 		return nil, fmt.Errorf("cannot multiply non-numeric values")
 	}
-	result := aNum * bNum
-	if isIntegerType(a) && isIntegerType(b) {
-		return int64(result), nil
-	}
-	return result, nil
+	return aNum * bNum, nil
 }
 
 func divideValues(a, b interface{}) (interface{}, error) {
@@ -2352,13 +2380,14 @@ func moduloValues(a, b interface{}) (interface{}, error) {
 	if bNum == 0 {
 		return nil, fmt.Errorf("division by zero")
 	}
-	// Use integer modulo if both are ints
-	_, aIsInt := a.(int)
-	_, bIsInt := b.(int)
-	_, aIsInt64 := a.(int64)
-	_, bIsInt64 := b.(int64)
-	if (aIsInt || aIsInt64) && (bIsInt || bIsInt64) {
-		return int64(aNum) % int64(bNum), nil
+	// Use integer modulo directly (no float64 round-trip) when both are ints.
+	if ai, aok := wholeInt64(a); aok {
+		if bi, bok := wholeInt64(b); bok {
+			if bi == 0 {
+				return nil, fmt.Errorf("division by zero")
+			}
+			return ai % bi, nil
+		}
 	}
 	return math.Mod(aNum, bNum), nil
 }

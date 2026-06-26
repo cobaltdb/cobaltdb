@@ -160,7 +160,16 @@ func evalStringSubstr(evalArgs []interface{}) funcResult {
 	}
 	str, _ := argString(evalArgs, 0)
 	start, _ := toFloat64(evalArgs[1])
-	startInt := int(start) - 1
+	p := int(start)
+	var startInt int
+	if p < 0 {
+		// Negative position counts from the end of the string (MySQL/SQLite):
+		// SUBSTR('Hello', -2) -> 'lo'. The old code clamped it to 0 and returned
+		// from the beginning.
+		startInt = len(str) + p
+	} else {
+		startInt = p - 1
+	}
 	if startInt < 0 {
 		startInt = 0
 	}
@@ -185,11 +194,15 @@ func evalStringConcat(evalArgs []interface{}) funcResult {
 	var result strings.Builder
 	result.Grow(len(evalArgs) * 16)
 	for _, arg := range evalArgs {
-		if arg != nil {
-			result.WriteString(ValueToStringKey(arg))
-			if result.Len() > maxStringResultLen {
-				return funcResult{nil, fmt.Errorf("CONCAT result exceeds maximum length")}
-			}
+		// MySQL: CONCAT returns NULL if ANY argument is NULL (unlike CONCAT_WS,
+		// which skips NULLs). The old code skipped NULLs here, diverging from the
+		// MySQL wire-compat target and from the || operator (which returns NULL).
+		if arg == nil {
+			return funcResult{nil, nil}
+		}
+		result.WriteString(ValueToStringKey(arg))
+		if result.Len() > maxStringResultLen {
+			return funcResult{nil, fmt.Errorf("CONCAT result exceeds maximum length")}
 		}
 	}
 	return funcResult{result.String(), nil}
