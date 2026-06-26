@@ -1942,11 +1942,21 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 			}
 			keyCopy := make([]byte, len(oldKey))
 			copy(keyCopy, oldKey)
+			// If the UPDATE changed the primary key, the row was moved to newKey
+			// in the B-tree (old key deleted, new key written). Record newKey so
+			// txn rollback can delete the orphaned new-key row before restoring
+			// the old-key row; otherwise rollback leaves a duplicate.
+			var newKeyCopy []byte
+			if pkChanged && string(oldKey) != string(newKey) {
+				newKeyCopy = make([]byte, len(newKey))
+				copy(newKeyCopy, newKey)
+			}
 			c.appendUndoEntry(undoEntry{
 				action:       undoUpdate,
 				tableName:    stmt.Table,
 				key:          keyCopy,
 				oldValue:     oldValueData,
+				newKey:       newKeyCopy,
 				indexChanges: idxChanges,
 			})
 		}

@@ -832,6 +832,14 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 		}
 	case undoUpdate:
 		if tree != nil {
+			// If the UPDATE moved the row to a new PK key, delete the orphaned
+			// new-key row before restoring the old-key row; otherwise rollback
+			// leaves both rows (the duplicate-orphan corruption).
+			if len(entry.newKey) > 0 && string(entry.newKey) != string(entry.key) {
+				if err := tree.Delete(entry.newKey); err != nil {
+					return fmt.Errorf("%s undoing update (new key): %w", errorPrefix, err)
+				}
+			}
 			if err := tree.Put(entry.key, entry.oldValue); err != nil {
 				return fmt.Errorf("%s undoing update: %w", errorPrefix, err)
 			}
@@ -1421,6 +1429,14 @@ func applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree.TreeStore, t
 		}
 	case undoUpdate:
 		if tree := tableTrees[entry.tableName]; tree != nil {
+			// If the UPDATE moved the row to a new PK key, delete the orphaned
+			// new-key row before restoring the old-key row; otherwise rollback
+			// leaves both rows (the duplicate-orphan corruption).
+			if len(entry.newKey) > 0 && string(entry.newKey) != string(entry.key) {
+				if err := tree.Delete(entry.newKey); err != nil {
+					return fmt.Errorf("%s undoing update (new key): %w", errorPrefix, err)
+				}
+			}
 			if err := tree.Put(entry.key, entry.oldValue); err != nil {
 				return fmt.Errorf("%s undoing update: %w", errorPrefix, err)
 			}

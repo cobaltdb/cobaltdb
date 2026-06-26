@@ -262,6 +262,7 @@ type undoEntry struct {
 	tableName    string
 	key          []byte
 	oldValue     []byte // nil for INSERT undo (just delete the key)
+	newKey       []byte // for undoUpdate that moved the row to a new PK key; delete it on undo
 	indexChanges []indexUndoEntry
 	// DDL undo fields
 	tableDef       *TableDef                  // For undoDropTable: original table definition
