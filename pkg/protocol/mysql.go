@@ -29,8 +29,12 @@ import (
 
 const (
 	// maxMySQLPayloadSize is the largest value representable by MySQL's 3-byte packet length.
-	maxMySQLPayloadSize           = 1<<24 - 1
-	maxMySQLLongDataBytes         = maxMySQLPayloadSize
+	maxMySQLPayloadSize   = 1<<24 - 1
+	maxMySQLLongDataBytes = maxMySQLPayloadSize
+	// maxConnLongDataBytes caps the aggregate long-data buffered across all
+	// prepared statements on a single connection (defense against a client that
+	// streams long data to many parameters/statements without executing them).
+	maxConnLongDataBytes          = 256 * 1024 * 1024
 	maxMySQLStmtFetchRows         = 1024
 	maxMySQLPreparedStmts         = 1024
 	maxMySQLPreparedParams        = 1024
@@ -565,6 +569,12 @@ type MySQLClient struct {
 	connectTime  time.Time
 	stmts        map[uint32]*preparedStmt
 	nextStmtID   uint32
+	// longDataTotal is the running total of bytes buffered via
+	// COM_STMT_SEND_LONG_DATA across all prepared statements on this
+	// connection. It bounds aggregate memory: the per-parameter cap alone
+	// (maxMySQLLongDataBytes) would otherwise let a client buffer
+	// params*stmts*16MB before any EXECUTE/RESET/CLOSE frees it.
+	longDataTotal int
 }
 
 // sendHandshake sends the initial handshake packet
@@ -1781,10 +1791,15 @@ func (s *preparedStmt) parseExecuteArgs(data []byte) ([]interface{}, error) {
 	return args, nil
 }
 
-func (s *preparedStmt) clearLongData() {
-	for k := range s.longData {
+// clearLongData drops all buffered long-data for the statement and returns the
+// number of bytes freed so the connection-level total can be decremented.
+func (s *preparedStmt) clearLongData() int {
+	freed := 0
+	for k, v := range s.longData {
+		freed += len(v)
 		delete(s.longData, k)
 	}
+	return freed
 }
 
 func (s *preparedStmt) closeCursor() {
@@ -1985,7 +2000,7 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 	if err != nil {
 		return c.sendErrorPacket(0, err.Error())
 	}
-	stmt.clearLongData()
+	c.longDataTotal -= stmt.clearLongData()
 
 	baseCtx := c.ctx
 	if baseCtx == nil {
@@ -2041,7 +2056,11 @@ func (c *MySQLClient) handleStmtSendLongData(data []byte) error {
 	if len(chunk) > maxMySQLLongDataBytes-len(stmt.longData[paramID]) {
 		return c.sendErrorPacket(0, "prepared statement long data too large")
 	}
+	if len(chunk) > maxConnLongDataBytes-c.longDataTotal {
+		return c.sendErrorPacket(0, "prepared statement long data exceeds connection limit")
+	}
 	stmt.longData[paramID] = append(stmt.longData[paramID], chunk...)
+	c.longDataTotal += len(chunk)
 	return nil
 }
 
@@ -2061,7 +2080,6 @@ func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 		return err
 	}
 
-	var scanErrors int
 	for rows.Next() {
 		row := make([]interface{}, len(columns))
 		dest := make([]interface{}, len(columns))
@@ -2069,8 +2087,10 @@ func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 			dest[i] = &row[i]
 		}
 		if err := rows.Scan(dest...); err != nil {
-			scanErrors++
-			continue
+			// Surface the scan failure instead of silently dropping the row
+			// (which would return a successful result set with fewer rows than
+			// exist). Matches the cursor/FETCH path's error handling.
+			return c.sendErrorPacket(1, sanitizeMySQLError(err))
 		}
 		if mysqlRowValueTooLarge(row) {
 			return c.sendErrorPacket(0, "result value too large")
@@ -2080,7 +2100,6 @@ func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 		}
 		seq++
 	}
-	_ = scanErrors
 
 	return c.sendEOFPacketWithStatus(seq, MySQLServerStatusAutocommit)
 }
@@ -2271,6 +2290,7 @@ func (c *MySQLClient) handleStmtClose(data []byte) error {
 	stmtID := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
 	if stmt, ok := c.getStmtMap()[stmtID]; ok {
 		stmt.closeCursor()
+		c.longDataTotal -= stmt.clearLongData()
 	}
 	delete(c.getStmtMap(), stmtID)
 	return nil
@@ -2285,7 +2305,7 @@ func (c *MySQLClient) handleStmtReset(data []byte) error {
 	if !ok {
 		return c.sendErrorPacket(0, "unknown prepared statement")
 	}
-	stmt.clearLongData()
+	c.longDataTotal -= stmt.clearLongData()
 	stmt.closeCursor()
 	return c.sendOKPacket(0, 0)
 }
@@ -2325,6 +2345,11 @@ func (c *MySQLClient) handleStmtFetch(data []byte) error {
 			break
 		}
 		if mysqlRowValueTooLarge(row) {
+			// The oversized row was already pulled from the cursor; close it so
+			// the cursor/engine.Rows is not leaked and the client does not
+			// silently resume past the dropped row on the next FETCH (matching
+			// the nextRow error handling above).
+			stmt.closeCursor()
 			return c.sendErrorPacket(0, "result value too large")
 		}
 		if err := c.writePacket(c.buildBinaryRowPacket(row, stmt.cursor.colTypes), seq); err != nil {
