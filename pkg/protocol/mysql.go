@@ -488,6 +488,12 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 		if r := recover(); r != nil {
 			s.recordPanic(connID, r)
 		}
+		// Roll back any transaction the client left open (it must run on this
+		// connection's goroutine, where the txn state lives). Otherwise a client
+		// that BEGINs and drops leaks locks and pins MVCC pruning.
+		if s.db != nil {
+			s.db.AbortConnTransaction()
+		}
 		if client != nil && client.cancel != nil {
 			client.cancel()
 		}

@@ -521,6 +521,13 @@ type ClientConn struct {
 func (c *ClientConn) Handle() {
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	defer func() {
+		// Roll back any transaction left open by the client before teardown.
+		// Must run on this connection's goroutine (txn state is goroutine-local);
+		// otherwise a client that BEGINs and disconnects leaks locks and pins
+		// MVCC version pruning.
+		if c.Server.db != nil {
+			c.Server.db.AbortConnTransaction()
+		}
 		c.cancel() // cancel any in-flight queries on disconnect
 		_ = c.Conn.Close()
 		c.Server.removeClient(c.ID)

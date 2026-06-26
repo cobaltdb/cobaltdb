@@ -1325,6 +1325,21 @@ func (db *DB) BeginWith(ctx context.Context, opts *txn.Options) (*Tx, error) {
 	return acquireTx(db, transaction), nil
 }
 
+// AbortConnTransaction rolls back any transaction left open on the CALLING
+// goroutine — e.g. when a server connection drops mid-transaction (after a wire
+// BEGIN with no COMMIT/ROLLBACK). It is a no-op if no transaction is active.
+// Transaction state is goroutine-local, so this must run on the connection's
+// own handler goroutine. Without it, the abandoned transaction kept its locks
+// (blocking the single writer) and pinned MVCC version pruning.
+func (db *DB) AbortConnTransaction() {
+	if db.closed.Load() || db.catalog == nil {
+		return
+	}
+	if db.catalog.IsTransactionActive() {
+		_ = db.catalog.RollbackTransaction()
+	}
+}
+
 // auditUser extracts the username from context for audit logging.
 
 func auditUser(ctx context.Context) string {
@@ -1520,7 +1535,12 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		if transaction == nil {
 			return Result{}, errors.New("failed to begin transaction")
 		}
-		db.catalog.BeginTransaction(transaction.ID)
+		// Pass the manager transaction into the catalog (as BeginWith does)
+		// rather than calling BeginTransaction, which would begin a SECOND
+		// manager transaction and orphan this one forever — leaking a pooled
+		// Transaction and pinning MVCC pruneVersions' minActive so version-store
+		// memory could never be reclaimed.
+		db.catalog.BeginTransactionWithTxn(transaction.ID, transaction)
 		return Result{}, nil
 	case *query.CommitStmt:
 		if !db.catalog.IsTransactionActive() {
