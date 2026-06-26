@@ -2557,10 +2557,11 @@ func (cat *Catalog) processRowChunk(
 		fullRow := vrow.Data
 		if stmt.Where != nil {
 			matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-			if err != nil {
-				return nil, nil, fmt.Errorf("select chunk: WHERE evaluation failed for table %s: %w", table.Name, err)
-			}
-			if !matched {
+			if err != nil || !matched {
+				// Match the serial scan path (filterAndProjectRow): a WHERE-eval
+				// error skips the row rather than failing the whole query, so
+				// parallel and serial scans return the same result set
+				// regardless of candidate-row count (which selects the path).
 				continue
 			}
 		}

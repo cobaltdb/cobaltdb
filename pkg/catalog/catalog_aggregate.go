@@ -328,6 +328,11 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 		for k := range groups {
 			groupOrder = append(groupOrder, k)
 		}
+		// Go map iteration is randomized, so without this a GROUP BY with no
+		// ORDER BY would emit groups in a different order on every run once the
+		// parallel threshold is crossed. Sort the group keys for a deterministic
+		// (and stable across runs) ordering.
+		sort.Strings(groupOrder)
 	} else {
 		for _, valueData := range allValues {
 			fullRow, live, err := decodeLiveRow(valueData, len(table.Columns))

@@ -1405,14 +1405,19 @@ func TestProcessRowChunkDirect(t *testing.T) {
 		t.Errorf("Expected 1 row and 1 full row for window funcs, got %d/%d", len(rows), len(fullRows))
 	}
 
-	// WHERE evaluation error path
+	// WHERE evaluation error path: a row whose WHERE predicate fails to evaluate
+	// is skipped (no error), matching the serial scan path (filterAndProjectRow)
+	// so parallel and serial scans agree regardless of candidate-row count.
 	stmtWhereErr := &query.SelectStmt{
 		Columns: []query.Expression{&query.StarExpr{}},
 		Where:   &query.Identifier{Name: "nonexistent_column"},
 	}
-	_, _, err = c.processRowChunk([][]byte{validRow}, table, selectCols, stmtWhereErr, nil, now, false)
-	if err == nil {
-		t.Fatal("expected WHERE evaluation error")
+	rows, _, err = c.processRowChunk([][]byte{validRow}, table, selectCols, stmtWhereErr, nil, now, false)
+	if err != nil {
+		t.Fatalf("processRowChunk WHERE error path should skip, not error: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected 0 rows when WHERE eval fails, got %d", len(rows))
 	}
 
 	// Expression evaluation path (ci.index == -1, !isAggregate)
