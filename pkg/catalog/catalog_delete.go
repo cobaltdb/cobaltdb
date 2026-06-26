@@ -20,7 +20,7 @@ type deleteEntry struct {
 	value    []byte
 	row      []interface{} // decoded row for RETURNING clause
 	version  RowVersion    // decoded version for soft-delete re-encode (avoids double-decode)
-	treeName string       // which partition tree this entry came from
+	treeName string        // which partition tree this entry came from
 }
 
 // deleteSnapshot holds all Catalog metadata needed for the buffered DELETE scan.
@@ -611,6 +611,14 @@ func (c *Catalog) applyDeleteEntries(ctx context.Context, table *TableDef, stmt 
 	for i := range entries {
 		entry := &entries[i]
 
+		// Fire the parent's BEFORE DELETE trigger BEFORE the FK cascade, so it
+		// observes pre-statement state (e.g. children still present), per BEFORE
+		// semantics. Running it after OnDeleteRow let it see already-cascaded
+		// children.
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "BEFORE", nil, entry.row, table.Columns); trigErr != nil {
+			return rowsAffected, rollbackFKActions(fmt.Errorf("BEFORE DELETE trigger failed: %w", trigErr))
+		}
+
 		// Run FK ON DELETE before any side effect. The
 		// per-row mutation helper takes it from here.
 		if fkErr := fke.OnDeleteRow(ctx, stmt.Table, entry.row); fkErr != nil {
@@ -741,9 +749,7 @@ func (c *Catalog) applyDeleteEntryDirect(
 		})
 	}
 
-	if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "BEFORE", nil, row, table.Columns); trigErr != nil {
-		return fmt.Errorf("BEFORE DELETE trigger failed: %w", trigErr)
-	}
+	// (BEFORE DELETE trigger already fired by the caller, ahead of the FK cascade.)
 
 	// Soft delete: mark row as deleted instead of physically deleting.
 	deleteTree, exists := c.tableTrees[entry.treeName]
@@ -801,6 +807,13 @@ func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt
 	for i := range entries {
 		entry := &entries[i]
 
+		// Fire the parent's BEFORE DELETE trigger BEFORE the FK cascade (BEFORE
+		// semantics: it must observe pre-statement state, including children not
+		// yet cascaded).
+		if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "BEFORE", nil, entry.row, table.Columns); trigErr != nil {
+			return fmt.Errorf("BEFORE DELETE trigger failed: %w", trigErr)
+		}
+
 		// Enforce foreign key ON DELETE before any side effect. The
 		// per-row buffered-write helper takes it from here.
 		if fkErr := fke.OnDeleteRow(ctx, stmt.Table, entry.row); fkErr != nil {
@@ -843,9 +856,7 @@ func (c *Catalog) applyDeleteEntryBuffered(
 	row := entry.row
 	version := entry.version
 
-	if trigErr := c.executeTriggers(ctx, stmt.Table, "DELETE", "BEFORE", nil, row, table.Columns); trigErr != nil {
-		return fmt.Errorf("BEFORE DELETE trigger failed: %w", trigErr)
-	}
+	// (BEFORE DELETE trigger already fired by the caller, ahead of the FK cascade.)
 
 	if err := c.updateVectorIndexesForDelete(stmt.Table, string(key)); err != nil {
 		return err
