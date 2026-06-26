@@ -3802,6 +3802,7 @@ func TestEvalExpression_FunctionCall(t *testing.T) {
 				&query.StringLiteral{Value: "world"},
 			},
 		}, nil, "hello world", false},
+		// MySQL: CONCAT returns NULL if any argument is NULL.
 		{"concat_with_null", &query.FunctionCall{
 			Name: "CONCAT",
 			Args: []query.Expression{
@@ -3809,7 +3810,7 @@ func TestEvalExpression_FunctionCall(t *testing.T) {
 				&query.NullLiteral{},
 				&query.StringLiteral{Value: "world"},
 			},
-		}, nil, "helloworld", false},
+		}, nil, nil, false},
 
 		// ROUND
 		{"round", &query.FunctionCall{

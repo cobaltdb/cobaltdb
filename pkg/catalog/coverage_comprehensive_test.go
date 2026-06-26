@@ -1540,14 +1540,14 @@ func TestComprehensive_FunctionEdgePaths(t *testing.T) {
 		t.Logf("CEIL: got %v, %v", val, err)
 	}
 
-	// CONCAT with nil
+	// CONCAT with nil → NULL (MySQL semantics)
 	val, err = EvalExpression(&query.FunctionCall{Name: "CONCAT", Args: []query.Expression{
 		&query.StringLiteral{Value: "a"},
 		&query.NullLiteral{},
 		&query.StringLiteral{Value: "b"},
 	}}, nil)
-	if err != nil || val != "ab" {
-		t.Errorf("CONCAT with nil: got %v, %v", val, err)
+	if err != nil || val != nil {
+		t.Errorf("CONCAT with nil: got %v, %v (want nil)", val, err)
 	}
 
 	// INSTR

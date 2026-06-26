@@ -534,7 +534,10 @@ func evalStringHex(evalArgs []interface{}) funcResult {
 		return funcResult{nil, nil}
 	}
 	if f, ok := toFloat64(evalArgs[0]); ok {
-		return funcResult{strings.ToUpper(strconv.FormatInt(int64(f), 16)), nil}
+		// Numeric HEX treats the value as an unsigned 64-bit integer (MySQL):
+		// HEX(-1) is "FFFFFFFFFFFFFFFF", not "-1". FormatInt base-16 emitted a
+		// signed "-"-prefixed string, which is never valid hex.
+		return funcResult{strings.ToUpper(strconv.FormatUint(uint64(int64(f)), 16)), nil}
 	}
 	str := ValueToStringKey(evalArgs[0])
 	return funcResult{strings.ToUpper(hex.EncodeToString([]byte(str))), nil}

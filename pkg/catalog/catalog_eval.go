@@ -2059,11 +2059,14 @@ func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}
 		var sb strings.Builder
 		sb.Grow(len(evalArgs) * 16)
 		for _, a := range evalArgs {
-			if a != nil {
-				sb.WriteString(ValueToStringKey(a))
-				if sb.Len() > maxStringResultLen {
-					return nil, fmt.Errorf("CONCAT result exceeds maximum length")
-				}
+			// MySQL: CONCAT returns NULL if any argument is NULL (matches the
+			// main eval path and the || operator).
+			if a == nil {
+				return nil, nil
+			}
+			sb.WriteString(ValueToStringKey(a))
+			if sb.Len() > maxStringResultLen {
+				return nil, fmt.Errorf("CONCAT result exceeds maximum length")
 			}
 		}
 		return sb.String(), nil
@@ -2099,7 +2102,15 @@ func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}
 		}
 		str := ValueToStringKey(evalArgs[0])
 		start, _ := toFloat64(evalArgs[1])
-		startInt := int(start) - 1
+		p := int(start)
+		var startInt int
+		if p < 0 {
+			// Negative position counts from the end (MySQL/SQLite), matching the
+			// main eval path.
+			startInt = len(str) + p
+		} else {
+			startInt = p - 1
+		}
 		if startInt < 0 {
 			startInt = 0
 		}
