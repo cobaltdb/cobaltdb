@@ -2252,10 +2252,11 @@ func (cat *Catalog) applyOuterQueryProjection(stmt *query.SelectStmt, filteredRo
 	type colMapping struct {
 		name    string
 		viewIdx int // -1 if needs evaluation
+		srcCol  int // index into stmt.Columns this mapping came from
 	}
 	var mappings []colMapping
 
-	for _, col := range stmt.Columns {
+	for srcIdx, col := range stmt.Columns {
 		aliasName := ""
 		actual := col
 		if ae, ok := col.(*query.AliasExpr); ok {
@@ -2265,7 +2266,7 @@ func (cat *Catalog) applyOuterQueryProjection(stmt *query.SelectStmt, filteredRo
 		switch c := actual.(type) {
 		case *query.StarExpr:
 			for j, name := range viewCols {
-				mappings = append(mappings, colMapping{name: name, viewIdx: j})
+				mappings = append(mappings, colMapping{name: name, viewIdx: j, srcCol: srcIdx})
 			}
 		case *query.Identifier:
 			found := false
@@ -2275,20 +2276,20 @@ func (cat *Catalog) applyOuterQueryProjection(stmt *query.SelectStmt, filteredRo
 					if aliasName != "" {
 						displayName = aliasName
 					}
-					mappings = append(mappings, colMapping{name: displayName, viewIdx: j})
+					mappings = append(mappings, colMapping{name: displayName, viewIdx: j, srcCol: srcIdx})
 					found = true
 					break
 				}
 			}
 			if !found {
-				mappings = append(mappings, colMapping{name: c.Name, viewIdx: -1})
+				mappings = append(mappings, colMapping{name: c.Name, viewIdx: -1, srcCol: srcIdx})
 			}
 		default:
 			name := "expr"
 			if aliasName != "" {
 				name = aliasName
 			}
-			mappings = append(mappings, colMapping{name: name, viewIdx: -1})
+			mappings = append(mappings, colMapping{name: name, viewIdx: -1, srcCol: srcIdx})
 		}
 	}
 
@@ -2302,9 +2303,12 @@ func (cat *Catalog) applyOuterQueryProjection(stmt *query.SelectStmt, filteredRo
 		for i, m := range mappings {
 			if m.viewIdx >= 0 && m.viewIdx < len(row) {
 				resultRow[i] = row[m.viewIdx]
-			} else {
-				// Evaluate expression against view row
-				val, err := evaluateExpression(cat, row, columns, stmt.Columns[i], args)
+			} else if m.srcCol >= 0 && m.srcCol < len(stmt.Columns) {
+				// Evaluate expression against view row. Index stmt.Columns by the
+				// mapping's source-column index, NOT by the mapping index i: a
+				// `*` expands to several mappings, so i can exceed len(stmt.Columns)
+				// (which previously panicked for e.g. `SELECT *, a+b FROM (...)`).
+				val, err := evaluateExpression(cat, row, columns, stmt.Columns[m.srcCol], args)
 				if err == nil {
 					resultRow[i] = val
 				}
