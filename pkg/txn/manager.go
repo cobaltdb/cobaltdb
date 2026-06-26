@@ -391,6 +391,19 @@ func (t *Transaction) SetWrite(treeName, key string, value []byte) {
 	t.WriteSet[wk] = cloneBytes(value)
 }
 
+// RemoveWrite drops a buffered write from the WriteSet. Used by savepoint
+// rollback so a key written only after the savepoint is not WAL-logged or
+// version-published at commit (otherwise a rolled-back row would resurrect on
+// crash recovery).
+func (t *Transaction) RemoveWrite(treeName, key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.WriteSet == nil {
+		return
+	}
+	delete(t.WriteSet, WriteKey{TreeName: treeName, Key: key})
+}
+
 const numVersionShards = 256
 const numActiveShards = 64
 
@@ -438,8 +451,8 @@ type Manager struct {
 	activeShards  [numActiveShards]activeShard
 	versionShards [numVersionShards]versionShard
 	versionStore  *VersionStore // MVCC version chain storage
-	commitCount atomic.Int64
-	wal         interface{} // WAL
+	commitCount   atomic.Int64
+	wal           interface{} // WAL
 
 	// Deadlock detection
 	deadlockCheckInterval time.Duration
@@ -463,8 +476,8 @@ type lockEntry struct {
 // NewManager creates a new transaction manager
 func NewManager(wal interface{}) *Manager {
 	m := &Manager{
-		versionStore:           NewVersionStore(),
-		wal:                    wal,
+		versionStore:          NewVersionStore(),
+		wal:                   wal,
 		deadlockCheckInterval: 100 * time.Millisecond, // Check every 100ms
 		stopDeadlockDetector:  make(chan struct{}),
 		lockEntries:           make(map[string]*lockEntry),

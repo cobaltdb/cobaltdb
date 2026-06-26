@@ -1569,8 +1569,13 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 		if rollbackErr != nil {
 			c.truncateUndoLog(undoPos)
 			if ts := c.getCurrentTxn(); ts != nil {
-				ts.pendingWrites = ts.pendingWrites[:pwPos]
+				var tail []PendingWrite
+				if pwPos >= 0 && pwPos <= len(ts.pendingWrites) {
+					tail = append(tail, ts.pendingWrites[pwPos:]...)
+					ts.pendingWrites = ts.pendingWrites[:pwPos]
+				}
 				rebuildPendingWriteMap(ts)
+				reconcileManagerWriteSetAfterSavepoint(ts, tail)
 			}
 			c.setCurrentTxnSavepoints(sps[:spIdx+1])
 			return rollbackErr
@@ -1579,14 +1584,55 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 
 	// Truncate undo log to savepoint position
 	c.truncateUndoLog(undoPos)
-	// Truncate pending writes to savepoint position (buffered mode)
+	// Truncate pending writes to savepoint position (buffered mode) and
+	// reconcile the manager transaction's WriteSet so rolled-back rows are not
+	// WAL-logged / version-published at commit.
 	if ts := c.getCurrentTxn(); ts != nil {
-		ts.pendingWrites = ts.pendingWrites[:pwPos]
+		var tail []PendingWrite
+		if pwPos >= 0 && pwPos <= len(ts.pendingWrites) {
+			tail = append(tail, ts.pendingWrites[pwPos:]...)
+			ts.pendingWrites = ts.pendingWrites[:pwPos]
+		}
 		rebuildPendingWriteMap(ts)
+		reconcileManagerWriteSetAfterSavepoint(ts, tail)
 	}
 	// Remove savepoints after this one (but keep the current savepoint)
 	c.setCurrentTxnSavepoints(sps[:spIdx+1])
 	return nil
+}
+
+// reconcileManagerWriteSetAfterSavepoint reconciles the manager transaction's
+// WriteSet with the pendingWrites that survive a savepoint rollback. For each
+// key written in the rolled-back tail it restores the last surviving value, or
+// removes the key entirely if it was only written after the savepoint. Without
+// this, a savepoint-rolled-back row stays in the manager WriteSet and is
+// WAL-logged / version-published at COMMIT, so it resurrects on crash recovery.
+func reconcileManagerWriteSetAfterSavepoint(ts *catalogTxnState, tail []PendingWrite) {
+	if ts == nil || len(tail) == 0 {
+		return
+	}
+	mt, ok := ts.managerTxn.(*txn.Transaction)
+	if !ok || mt == nil {
+		return
+	}
+	surviving := make(map[txn.WriteKey][]byte, len(ts.pendingWrites))
+	for i := range ts.pendingWrites {
+		pw := &ts.pendingWrites[i]
+		surviving[txn.WriteKey{TreeName: pw.TreeName, Key: pw.Key}] = pw.Value
+	}
+	handled := make(map[txn.WriteKey]bool, len(tail))
+	for i := range tail {
+		wk := txn.WriteKey{TreeName: tail[i].TreeName, Key: tail[i].Key}
+		if handled[wk] {
+			continue
+		}
+		handled[wk] = true
+		if v, ok := surviving[wk]; ok {
+			mt.SetWrite(wk.TreeName, wk.Key, v)
+		} else {
+			mt.RemoveWrite(wk.TreeName, wk.Key)
+		}
+	}
 }
 
 func (c *Catalog) ReleaseSavepoint(name string) error {
