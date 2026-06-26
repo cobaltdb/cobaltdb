@@ -1213,6 +1213,16 @@ func addHiddenOrderByAggregates(orderBy []*query.OrderByExpr, selectCols []selec
 	return selectCols, added
 }
 
+// exprHasAggregate reports whether an expression contains an aggregate call.
+func exprHasAggregate(expr query.Expression) bool {
+	if expr == nil {
+		return false
+	}
+	var aggs []*query.FunctionCall
+	collectAggregatesFromExpr(expr, &aggs)
+	return len(aggs) > 0
+}
+
 func collectAggregatesFromExpr(expr query.Expression, result *[]*query.FunctionCall) {
 	if expr == nil {
 		return

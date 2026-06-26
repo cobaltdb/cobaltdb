@@ -810,6 +810,15 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 
 	selectCols, returnColumns, hasAggregates := cat.buildSelectColumnInfo(stmt, table, mainTableRef)
 
+	// An aggregate in HAVING (with no aggregate in the SELECT list and no GROUP
+	// BY) still requires the aggregate path — the whole table is one group and
+	// HAVING filters it. Without this, hasAggregates was false, the plain
+	// row-scan path ran, and HAVING was silently dropped (e.g.
+	// `SELECT name FROM t HAVING COUNT(*) > 5` returned every row).
+	if !hasAggregates && exprHasAggregate(stmt.Having) {
+		hasAggregates = true
+	}
+
 	// Handle JOINs if present
 	if len(stmt.Joins) > 0 {
 		// Check if we need GROUP BY or aggregates with JOIN
