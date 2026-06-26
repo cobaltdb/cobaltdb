@@ -945,6 +945,19 @@ func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectC
 				return ob.Desc
 			}
 
+			// Integer-typed values compare directly as int64 (avoid float64
+			// precision loss for values > 2^53; see compareValues).
+			if viI, iok := compareAsInt64(vi); iok {
+				if vjI, jok := compareAsInt64(vj); jok {
+					if viI < vjI {
+						return !ob.Desc
+					} else if viI > vjI {
+						return ob.Desc
+					}
+					continue
+				}
+			}
+
 			// Compare based on type
 			viF, viNum := toFloat64(vi)
 			vjF, vjNum := toFloat64(vj)

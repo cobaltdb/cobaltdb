@@ -981,6 +981,39 @@ func bitwiseOp(left, right interface{}, op query.TokenType) (interface{}, error)
 	return nil, fmt.Errorf("unsupported bitwise operator: %v", op)
 }
 
+// compareAsInt64 returns v as an int64 when it is an integer-typed value (not a
+// float or string). uint64/uint above math.MaxInt64 are excluded so the caller
+// falls back to float comparison.
+func compareAsInt64(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int8:
+		return int64(n), true
+	case int16:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	case uint8:
+		return int64(n), true
+	case uint16:
+		return int64(n), true
+	case uint32:
+		return int64(n), true
+	case uint:
+		if uint64(n) <= math.MaxInt64 {
+			return int64(n), true
+		}
+	case uint64:
+		if n <= math.MaxInt64 {
+			return int64(n), true
+		}
+	}
+	return 0, false
+}
+
 func compareValues(a, b interface{}) int {
 	// Handle NULLs: NULLs sort last (after all non-NULL values)
 	if a == nil && b == nil {
@@ -1004,6 +1037,22 @@ func compareValues(a, b interface{}) int {
 			return 1
 		}
 		return 0
+	}
+
+	// Integer-typed operands are compared directly as int64 to avoid the
+	// precision loss of routing values > 2^53 through float64, which made
+	// ORDER BY, MIN/MAX and comparisons treat distinct big integers as equal.
+	if ai, aok := compareAsInt64(a); aok {
+		if bi, bok := compareAsInt64(b); bok {
+			switch {
+			case ai < bi:
+				return -1
+			case ai > bi:
+				return 1
+			default:
+				return 0
+			}
+		}
 	}
 
 	// Handle numeric types (includes string numbers like "123")
