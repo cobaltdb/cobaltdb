@@ -511,11 +511,14 @@ func TestV84DeepCoverage(t *testing.T) {
 			SELECT id, FIRST_VALUE(salary) OVER (PARTITION BY dept ORDER BY salary DESC) AS fv FROM v84_win
 		) sub WHERE id = 1`, float64(200))
 
-	// LAST_VALUE
+	// LAST_VALUE with the default frame is the running last value. In dept B
+	// ordered by salary DESC, id=4 (300) is the first row, so its frame is just
+	// itself → 300 (matches MySQL/standard SQL). The partition's physical last
+	// (250) would require an explicit ROWS ... UNBOUNDED FOLLOWING frame.
 	check("LAST_VALUE",
 		`SELECT lv FROM (
 			SELECT id, LAST_VALUE(salary) OVER (PARTITION BY dept ORDER BY salary DESC) AS lv FROM v84_win
-		) sub WHERE id = 4`, float64(250))
+		) sub WHERE id = 4`, float64(300))
 
 	// MIN/MAX window
 	check("MIN window",

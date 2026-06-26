@@ -571,9 +571,12 @@ func TestV80MatViewFTSCoverage(t *testing.T) {
 	check("Window FIRST_VALUE",
 		`SELECT fv FROM (SELECT id, FIRST_VALUE(val) OVER (PARTITION BY grp ORDER BY id) AS fv FROM v80_win) sub WHERE id = 3`, float64(10))
 
-	// LAST_VALUE: A group last by id is val=30
+	// LAST_VALUE with the default frame is the running last value. id=1 is the
+	// first row of its partition, so its frame is just itself → val=10 (matches
+	// MySQL/standard SQL; the partition's physical last would require an explicit
+	// ROWS ... UNBOUNDED FOLLOWING frame).
 	check("Window LAST_VALUE",
-		`SELECT lv FROM (SELECT id, LAST_VALUE(val) OVER (PARTITION BY grp ORDER BY id) AS lv FROM v80_win) sub WHERE id = 1`, float64(30))
+		`SELECT lv FROM (SELECT id, LAST_VALUE(val) OVER (PARTITION BY grp ORDER BY id) AS lv FROM v80_win) sub WHERE id = 1`, float64(10))
 
 	// ============================================================
 	// === SECTION 12: TRIGGER WITH EXPRESSIONS IN BODY ===

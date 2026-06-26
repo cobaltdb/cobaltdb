@@ -383,9 +383,27 @@ func (c *Catalog) evalWindowOffsetFunc(rows [][]interface{}, colIdx int, entries
 
 	case "LAST_VALUE":
 		if len(entries) > 0 && len(we.Args) > 0 {
-			lastVal := c.evalWindowExprOnRow(we.Args[0], entries[len(entries)-1].row, selectCols, table, args, entries[len(entries)-1].fullRow)
-			for _, entry := range entries {
-				rows[entry.originalIdx][colIdx] = lastVal
+			if len(we.OrderBy) > 0 && we.Frame == nil {
+				// Default frame is RANGE UNBOUNDED PRECEDING AND CURRENT ROW, so
+				// LAST_VALUE is the running last value: the value of the last peer
+				// of the current row (peers share the ORDER BY key).
+				n := len(entries)
+				for i := 0; i < n; {
+					j := i
+					for j+1 < n && c.windowSamePeer(we, entries[i], entries[j+1], selectCols, table, args) {
+						j++
+					}
+					lastVal := c.evalWindowExprOnRow(we.Args[0], entries[j].row, selectCols, table, args, entries[j].fullRow)
+					for k := i; k <= j; k++ {
+						rows[entries[k].originalIdx][colIdx] = lastVal
+					}
+					i = j + 1
+				}
+			} else {
+				lastVal := c.evalWindowExprOnRow(we.Args[0], entries[len(entries)-1].row, selectCols, table, args, entries[len(entries)-1].fullRow)
+				for _, entry := range entries {
+					rows[entry.originalIdx][colIdx] = lastVal
+				}
 			}
 		}
 		return true
@@ -395,14 +413,20 @@ func (c *Catalog) evalWindowOffsetFunc(rows [][]interface{}, colIdx int, entries
 			if numLit, ok := we.Args[0].(*query.NumberLiteral); ok {
 				numBuckets := int(numLit.Value)
 				if numBuckets > 0 {
-					partitionSize := len(entries) / numBuckets
-					if len(entries)%numBuckets != 0 {
-						partitionSize++
-					}
+					// Standard SQL: the first (n % buckets) buckets are one row
+					// larger than the rest. Distribute the remainder into the
+					// leading buckets instead of using a single ceil-size bucket
+					// (which starves the trailing buckets).
+					n := len(entries)
+					base := n / numBuckets
+					rem := n % numBuckets
+					largeCount := rem * (base + 1) // rows covered by the larger buckets
 					for i, entry := range entries {
-						bucket := int64(i/partitionSize) + 1
-						if bucket > int64(numBuckets) {
-							bucket = int64(numBuckets)
+						var bucket int64
+						if i < largeCount {
+							bucket = int64(i/(base+1)) + 1
+						} else {
+							bucket = int64(rem) + int64((i-largeCount)/base) + 1
 						}
 						rows[entry.originalIdx][colIdx] = bucket
 					}
@@ -417,8 +441,29 @@ func (c *Catalog) evalWindowOffsetFunc(rows [][]interface{}, colIdx int, entries
 				n := int(num.Value)
 				if n >= 1 && n <= len(entries) {
 					nthVal := c.evalWindowExprOnRow(we.Args[0], entries[n-1].row, selectCols, table, args, entries[n-1].fullRow)
-					for _, entry := range entries {
-						rows[entry.originalIdx][colIdx] = nthVal
+					if len(we.OrderBy) > 0 && we.Frame == nil {
+						// Default frame ends at the current row's last peer; the
+						// nth value is only visible once the frame has grown to
+						// include index n-1, otherwise the result is NULL.
+						total := len(entries)
+						for i := 0; i < total; {
+							j := i
+							for j+1 < total && c.windowSamePeer(we, entries[i], entries[j+1], selectCols, table, args) {
+								j++
+							}
+							for k := i; k <= j; k++ {
+								if j >= n-1 {
+									rows[entries[k].originalIdx][colIdx] = nthVal
+								} else {
+									rows[entries[k].originalIdx][colIdx] = nil
+								}
+							}
+							i = j + 1
+						}
+					} else {
+						for _, entry := range entries {
+							rows[entry.originalIdx][colIdx] = nthVal
+						}
 					}
 				}
 			}

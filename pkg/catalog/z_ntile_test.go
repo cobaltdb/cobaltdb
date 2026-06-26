@@ -77,6 +77,74 @@ func TestNtile_Basic(t *testing.T) {
 	}
 }
 
+func TestNtile_RemainderDistribution(t *testing.T) {
+	c := createCatalogForNtile(t)
+
+	if _, err := c.ExecuteQuery("CREATE TABLE ntile_rem (id INTEGER PRIMARY KEY)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	for i := 1; i <= 10; i++ {
+		if _, err := c.ExecuteQuery(fmt.Sprintf("INSERT INTO ntile_rem VALUES (%d)", i)); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	result, err := c.ExecuteQuery("SELECT id, NTILE(4) OVER (ORDER BY id) AS bucket FROM ntile_rem")
+	if err != nil {
+		t.Fatalf("NTILE query: %v", err)
+	}
+	// 10 rows / 4 buckets: remainder 2 → first two buckets have 3 rows, last two have 2.
+	// Expected bucket sequence: 1,1,1,2,2,2,3,3,4,4
+	expected := []int64{1, 1, 1, 2, 2, 2, 3, 3, 4, 4}
+	if len(result.Rows) != len(expected) {
+		t.Fatalf("expected %d rows, got %d", len(expected), len(result.Rows))
+	}
+	for i := range result.Rows {
+		bucketIdx := len(result.Rows[i]) - 1
+		got, ok := result.Rows[i][bucketIdx].(int64)
+		if !ok {
+			t.Fatalf("row %d: expected int64 bucket, got %T", i, result.Rows[i][bucketIdx])
+		}
+		if got != expected[i] {
+			t.Errorf("row %d: expected NTILE=%d, got %d", i, expected[i], got)
+		}
+	}
+}
+
+func TestLastValue_RunningFrame(t *testing.T) {
+	c := createCatalogForNtile(t)
+
+	if _, err := c.ExecuteQuery("CREATE TABLE lv_test (id INTEGER PRIMARY KEY)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	for i := 1; i <= 4; i++ {
+		if _, err := c.ExecuteQuery(fmt.Sprintf("INSERT INTO lv_test VALUES (%d)", i)); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	// With ORDER BY and the default frame, LAST_VALUE is the running last value
+	// (current row), i.e. 1,2,3,4 — not the partition max for every row.
+	result, err := c.ExecuteQuery("SELECT id, LAST_VALUE(id) OVER (ORDER BY id) AS lv FROM lv_test")
+	if err != nil {
+		t.Fatalf("LAST_VALUE query: %v", err)
+	}
+	expected := []int64{1, 2, 3, 4}
+	if len(result.Rows) != len(expected) {
+		t.Fatalf("expected %d rows, got %d", len(expected), len(result.Rows))
+	}
+	for i := range result.Rows {
+		lvIdx := len(result.Rows[i]) - 1
+		got, ok := result.Rows[i][lvIdx].(int64)
+		if !ok {
+			t.Fatalf("row %d: expected int64, got %T", i, result.Rows[i][lvIdx])
+		}
+		if got != expected[i] {
+			t.Errorf("row %d: expected LAST_VALUE=%d, got %d", i, expected[i], got)
+		}
+	}
+}
+
 func TestNtile_WithPartition(t *testing.T) {
 	c := createCatalogForNtile(t)
 

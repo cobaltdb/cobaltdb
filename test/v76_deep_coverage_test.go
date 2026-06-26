@@ -200,10 +200,14 @@ func TestV76DeepCoverage(t *testing.T) {
 			SELECT id, val, FIRST_VALUE(val) OVER (ORDER BY id) as fst FROM v76_seq
 		) SELECT fst FROM fv WHERE id = 3`, 10)
 
+	// With the default frame (RANGE UNBOUNDED PRECEDING AND CURRENT ROW),
+	// LAST_VALUE is the running last value: at id=3 the frame is rows 1..3, so
+	// the last value is val(id=3)=30 (matches MySQL/standard SQL). It is NOT the
+	// partition maximum 50 — that would require ROWS ... UNBOUNDED FOLLOWING.
 	check("LAST_VALUE: in partition",
 		`WITH lv AS (
 			SELECT id, val, LAST_VALUE(val) OVER (ORDER BY id) as lst FROM v76_seq
-		) SELECT lst FROM lv WHERE id = 3`, 50)
+		) SELECT lst FROM lv WHERE id = 3`, 30)
 
 	check("NTH_VALUE: 2nd value",
 		`WITH nv AS (
