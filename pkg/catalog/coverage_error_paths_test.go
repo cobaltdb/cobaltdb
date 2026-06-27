@@ -178,7 +178,7 @@ func TestVacuumErrors(t *testing.T) {
 	pool.Close()
 
 	// Vacuum should handle closed pool gracefully
-	err := c.Vacuum()
+	err := c.Vacuum(0)
 	if err != nil {
 		t.Logf("Vacuum with closed pool: %v", err)
 	}

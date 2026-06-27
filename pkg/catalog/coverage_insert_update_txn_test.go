@@ -426,7 +426,7 @@ func TestFlushTableTreesMulti(t *testing.T) {
 	}, nil)
 
 	// Vacuum triggers flush
-	c.Vacuum()
+	c.Vacuum(0)
 }
 
 // TestSaveWithIndex tests Save with indexes
@@ -538,7 +538,7 @@ func TestVacuumWithIndexes(t *testing.T) {
 		},
 	}, nil)
 
-	err := c.Vacuum()
+	err := c.Vacuum(0)
 	if err != nil {
 		t.Errorf("Vacuum with indexes failed: %v", err)
 	}

@@ -1135,7 +1135,7 @@ func TestCov_Vacuum(t *testing.T) {
 	c := newTestCatalog(t)
 	createTestTable(t, c, "t", []*query.ColumnDef{{Name: "id", Type: query.TokenInteger, PrimaryKey: true}})
 	insertTestRow(t, c, "t", []query.Expression{nr(1)})
-	if err := c.Vacuum(); err != nil {
+	if err := c.Vacuum(0); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1425,7 +1425,7 @@ func TestCov_VacuumWithData(t *testing.T) {
 	insertTestRow(t, c, "t", []query.Expression{nr(1), sr("a")})
 	insertTestRow(t, c, "t", []query.Expression{nr(2), sr("b")})
 	c.CreateIndex(&query.CreateIndexStmt{Index: "idx_vac", Table: "t", Columns: []string{"name"}})
-	if err := c.Vacuum(); err != nil {
+	if err := c.Vacuum(0); err != nil {
 		t.Fatal(err)
 	}
 	_, rows := sel(t, c, &query.SelectStmt{Columns: []query.Expression{star()}, From: tref("t")})
@@ -2411,7 +2411,7 @@ func TestCov_VacuumWithIndexTree(t *testing.T) {
 	}
 	insertTestRow(t, c, "t", []query.Expression{nr(1), sr("a")})
 	insertTestRow(t, c, "t", []query.Expression{nr(2), sr("b")})
-	err = c.Vacuum()
+	err = c.Vacuum(0)
 	if err != nil {
 		t.Fatalf("Vacuum failed: %v", err)
 	}
@@ -2425,7 +2425,7 @@ func TestCov_VacuumWithEmptyIndexTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = c.Vacuum()
+	err = c.Vacuum(0)
 	if err != nil {
 		t.Fatalf("Vacuum with empty index tree failed: %v", err)
 	}

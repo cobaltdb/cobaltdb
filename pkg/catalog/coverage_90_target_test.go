@@ -188,7 +188,7 @@ func TestVacuumWithLargeData(t *testing.T) {
 	}, nil)
 
 	// Vacuum
-	err := c.Vacuum()
+	err := c.Vacuum(0)
 	if err != nil {
 		t.Errorf("Vacuum failed: %v", err)
 	}
@@ -1017,7 +1017,7 @@ func TestVacuumTableAndStats(t *testing.T) {
 	}, nil)
 
 	// Vacuum specific table
-	err := c.VacuumTable("vacuum_stats")
+	err := c.VacuumTable("vacuum_stats", 0)
 	if err != nil {
 		t.Errorf("VacuumTable failed: %v", err)
 	}

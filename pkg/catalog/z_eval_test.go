@@ -10314,7 +10314,7 @@ func TestVacuum(t *testing.T) {
 	}
 
 	// Vacuum should succeed
-	if err := catalog.Vacuum(); err != nil {
+	if err := catalog.Vacuum(0); err != nil {
 		t.Errorf("Vacuum failed: %v", err)
 	}
 

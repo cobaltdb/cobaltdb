@@ -805,7 +805,7 @@ func TestComprehensive_MaintenancePaths(t *testing.T) {
 	c := New(tree, pool, nil)
 
 	// Vacuum empty catalog
-	err := c.Vacuum()
+	err := c.Vacuum(0)
 	if err != nil {
 		t.Logf("Vacuum empty: %v", err)
 	}
