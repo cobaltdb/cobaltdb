@@ -1045,18 +1045,39 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 		return fmt.Errorf("failed to flush dirty pages: %w", err)
 	}
 
-	// 2. Truncate old WAL contents before writing a durable checkpoint marker.
-	// Keeping the marker preserves LSN continuity across restart while still
-	// discarding records that are already represented in the main DB file.
+	// 2. Truncate the WAL file. Any concurrent Append calls that arrived during
+	// step 1 have their records buffered in bufWriter. New writes after this
+	// point are blocked by w.mu and will go into the NEW bufWriter created below.
 	if err := w.file.Truncate(0); err != nil {
 		return err
 	}
 	if _, err := w.file.Seek(0, 0); err != nil {
 		return err
 	}
-	w.bufWriter = bufio.NewWriter(w.file)
 
-	// 3. Write checkpoint record
+	// 3. Flush the old bufWriter (with buffered records from concurrent writes
+	// that arrived during FlushDirty) and sync to disk. The flush writes these
+	// records AT POSITION 0 of the now-truncated file. New writes are blocked
+	// by w.mu so they cannot interleave during this window. After this step,
+	// all records from before the truncation are durable on disk.
+	if err := w.bufWriter.Flush(); err != nil {
+		return fmt.Errorf("WAL pre-truncate flush: %w", err)
+	}
+	if err := w.file.Sync(); err != nil {
+		return fmt.Errorf("WAL pre-truncate sync: %w", err)
+	}
+
+	// 4. Replace bufWriter with a new one. Seek to the end of the file so that
+	// writeWALFull(bufWriter, ...) for the checkpoint marker appends (rather than
+	// overwriting the flushed records at position 0). Without the Seek, bufWriter
+	// writes its internal buffer at position 0 after Flush(), overwriting the
+	// buffered records that were just synced.
+	w.bufWriter = bufio.NewWriter(w.file)
+	if _, err := w.file.Seek(0, 2); err != nil {
+		return err
+	}
+
+	// 5. Write checkpoint record
 	checkpointRecord := &WALRecord{
 		TxnID: 0,
 		Type:  WALCheckpoint,
