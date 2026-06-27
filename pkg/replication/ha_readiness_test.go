@@ -365,8 +365,8 @@ func TestRejoinedReplicaRequestsSnapshotOnStart(t *testing.T) {
 	masterConfig.SyncInterval = 10 * time.Millisecond
 
 	newPrimary := NewManager(masterConfig)
-	newPrimary.OnSnapshot = func() ([]byte, error) {
-		return []byte("new-primary-snapshot"), nil
+	newPrimary.OnSnapshot = func() ([]byte, uint64, error) {
+		return []byte("new-primary-snapshot"), 0, nil
 	}
 	if err := newPrimary.Start(); err != nil {
 		t.Fatalf("start new primary: %v", err)

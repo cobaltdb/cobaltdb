@@ -241,8 +241,8 @@ func TestPrepareSlaveResumeUsesSnapshotForGap(t *testing.T) {
 		Mode:                ModeAsync,
 		MaxWALBufferEntries: 2,
 	})
-	mgr.OnSnapshot = func() ([]byte, error) {
-		return []byte("snapshot"), nil
+	mgr.OnSnapshot = func() ([]byte, uint64, error) {
+		return []byte("snapshot"), 0, nil
 	}
 	for i := 0; i < 5; i++ {
 		if err := mgr.ReplicateWALEntry([]byte{byte('a' + i)}); err != nil {
@@ -270,8 +270,8 @@ func TestPrepareSlaveResumeUsesSnapshotForGap(t *testing.T) {
 func TestSendInitialSnapshotSendsSnapshotFrame(t *testing.T) {
 	mgr := NewManager(&Config{Role: RoleMaster})
 	mgr.currentLSN = 7
-	mgr.OnSnapshot = func() ([]byte, error) {
-		return []byte("snap"), nil
+	mgr.OnSnapshot = func() ([]byte, uint64, error) {
+		return []byte("snap"), 7, nil
 	}
 
 	var out bytes.Buffer

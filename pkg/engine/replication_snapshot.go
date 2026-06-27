@@ -23,43 +23,47 @@ func (db *DB) configureReplicationCallbacks() {
 	db.replicationMgr.OnApplySnapshot = db.applyReplicationSnapshot
 }
 
-func (db *DB) createReplicationSnapshot() ([]byte, error) {
+func (db *DB) createReplicationSnapshot() (data []byte, lsn uint64, err error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	if db.closed.Load() {
-		return nil, ErrDatabaseClosed
+		return nil, 0, ErrDatabaseClosed
 	}
 	if db.catalog == nil || db.backend == nil {
-		return nil, fmt.Errorf("database not initialized")
+		return nil, 0, fmt.Errorf("database not initialized")
 	}
 	if err := validateReplicationSnapshotSize(db.backend.Size()); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	db.flushMu.Lock()
 	defer db.flushMu.Unlock()
 
 	if err := db.catalog.Save(); err != nil {
-		return nil, fmt.Errorf("failed to save catalog: %w", err)
+		return nil, 0, fmt.Errorf("failed to save catalog: %w", err)
 	}
 	if err := db.saveMetaPage(); err != nil {
-		return nil, fmt.Errorf("failed to save meta page: %w", err)
+		return nil, 0, fmt.Errorf("failed to save meta page: %w", err)
 	}
 	if db.wal != nil {
 		if err := db.wal.Checkpoint(db.pool); err != nil {
-			return nil, fmt.Errorf("failed to checkpoint snapshot: %w", err)
+			return nil, 0, fmt.Errorf("failed to checkpoint snapshot: %w", err)
 		}
+		// Capture the post-checkpoint LSN while still holding flushMu. This is the
+		// LSN that corresponds to the snapshot content — all writes with LSN ≤ this
+		// value are durable on disk and reflected in the snapshot data.
+		lsn = db.wal.LSN()
 	} else if err := db.backend.Sync(); err != nil {
-		return nil, fmt.Errorf("failed to sync snapshot: %w", err)
+		return nil, 0, fmt.Errorf("failed to sync snapshot: %w", err)
 	}
 
 	size := db.backend.Size()
 	if err := validateReplicationSnapshotSize(size); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	data := make([]byte, size)
+	data = make([]byte, size)
 	for offset := int64(0); offset < size; {
 		end := offset + storage.PageSize
 		if end > size {
@@ -68,12 +72,12 @@ func (db *DB) createReplicationSnapshot() ([]byte, error) {
 
 		n, err := storage.ReadFullAt(db.backend, data[offset:end], offset)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read snapshot: %w", err)
+			return nil, 0, fmt.Errorf("failed to read snapshot: %w", err)
 		}
 		offset += int64(n)
 	}
 
-	return data, nil
+	return data, lsn, nil
 }
 
 func validateReplicationSnapshotSize(size int64) error {

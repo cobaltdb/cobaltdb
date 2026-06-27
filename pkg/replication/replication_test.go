@@ -1285,7 +1285,7 @@ func TestCanResumeFromLocked(t *testing.T) {
 // Ported from coverage_boost_replication_test.go.
 func TestPrepareSlaveResumeFutureLSN(t *testing.T) {
 	m := NewManager(DefaultConfig())
-	m.OnSnapshot = func() ([]byte, error) { return []byte("data"), nil }
+	m.OnSnapshot = func() ([]byte, uint64, error) { return []byte("data"), 0, nil }
 	slave := &SlaveConnection{}
 
 	if err := m.prepareSlaveResume(slave, 100); err != nil {
@@ -1429,47 +1429,47 @@ func TestSendSnapshotLockedErrors(t *testing.T) {
 	}
 	m := NewManager(DefaultConfig())
 
-	if err := m.sendSnapshotLocked(slave, 1); err == nil {
+	if err := m.sendSnapshotLocked(slave); err == nil {
 		t.Fatal("expected error when OnSnapshot is nil")
 	}
 
-	m.OnSnapshot = func() ([]byte, error) {
-		return nil, errors.New("snapshot error")
+	m.OnSnapshot = func() ([]byte, uint64, error) {
+		return nil, 0, errors.New("snapshot error")
 	}
-	if err := m.sendSnapshotLocked(slave, 1); err == nil {
+	if err := m.sendSnapshotLocked(slave); err == nil {
 		t.Fatal("expected error when OnSnapshot fails")
 	}
 
-	m.OnSnapshot = func() ([]byte, error) {
+	m.OnSnapshot = func() ([]byte, uint64, error) {
 		panic("snapshot panic")
 	}
-	if err := m.sendSnapshotLocked(slave, 1); err == nil || !strings.Contains(err.Error(), "snapshot callback panic") {
+	if err := m.sendSnapshotLocked(slave); err == nil || !strings.Contains(err.Error(), "snapshot callback panic") {
 		t.Fatalf("expected panic error when OnSnapshot panics, got %v", err)
 	}
 
-	m.OnSnapshot = func() ([]byte, error) {
-		return make([]byte, maxReplicationSnapshotSize+1), nil
+	m.OnSnapshot = func() ([]byte, uint64, error) {
+		return make([]byte, maxReplicationSnapshotSize+1), 0, nil
 	}
-	if err := m.sendSnapshotLocked(slave, 1); err == nil {
+	if err := m.sendSnapshotLocked(slave); err == nil {
 		t.Fatal("expected error when snapshot too large")
 	}
 
 	errWriter := &mockErrorWriter{err: errors.New("write error")}
 	slave2 := &SlaveConnection{Writer: bufio.NewWriterSize(errWriter, 1)}
-	m.OnSnapshot = func() ([]byte, error) { return []byte("x"), nil }
-	if err := m.sendSnapshotLocked(slave2, 1); err == nil {
+	m.OnSnapshot = func() ([]byte, uint64, error) { return []byte("x"), 0, nil }
+	if err := m.sendSnapshotLocked(slave2); err == nil {
 		t.Fatal("expected error on WriteString")
 	}
 
 	errWriter2 := &mockErrorWriter{err: errors.New("write error")}
 	slave3 := &SlaveConnection{Writer: bufio.NewWriterSize(errWriter2, 16)}
-	if err := m.sendSnapshotLocked(slave3, 1); err == nil {
+	if err := m.sendSnapshotLocked(slave3); err == nil {
 		t.Fatal("expected error on Write")
 	}
 
 	errWriter3 := &mockErrorWriter{err: errors.New("write error")}
 	slave4 := &SlaveConnection{Writer: bufio.NewWriterSize(errWriter3, 100)}
-	if err := m.sendSnapshotLocked(slave4, 1); err == nil {
+	if err := m.sendSnapshotLocked(slave4); err == nil {
 		t.Fatal("expected error on Flush")
 	}
 }

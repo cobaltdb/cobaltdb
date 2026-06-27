@@ -241,8 +241,13 @@ type Manager struct {
 	fencedEpoch    uint64
 
 	// Callbacks
-	OnApply         func(entry *WALEntry) error
-	OnSnapshot      func() ([]byte, error)
+	OnApply  func(entry *WALEntry) error
+	// OnSnapshot returns the current database state and the WAL LSN at the moment
+	// the snapshot was captured. Both must be returned atomically — the caller captures
+	// the LSN BEFORE calling this function, so the implementation must return the LSN
+	// that corresponds to the data it returns. Returning the wrong LSN causes slaves
+	// to double-apply or miss writes.
+	OnSnapshot      func() (data []byte, lsn uint64, err error)
 	OnApplySnapshot func(data []byte, lsn uint64) error
 	OnLag           func(slave string, lag time.Duration)
 	OnDisconnect    func(slave string, err error)
@@ -309,13 +314,14 @@ type resumeRequest struct {
 	RequireSnapshot bool
 }
 
-func (m *Manager) callOnSnapshot() (data []byte, err error) {
+func (m *Manager) callOnSnapshot() (data []byte, lsn uint64, err error) {
 	if m.OnSnapshot == nil {
-		return nil, fmt.Errorf("snapshot provider not configured")
+		return nil, 0, fmt.Errorf("snapshot provider not configured")
 	}
 	defer func() {
 		if r := recover(); r != nil {
 			data = nil
+			lsn = 0
 			err = fmt.Errorf("replication snapshot callback panic: %v", r)
 		}
 	}()
@@ -805,7 +811,7 @@ func (m *Manager) sendInitialSnapshot(slave *SlaveConnection, startLSN uint64) e
 	defer slave.mu.Unlock()
 
 	if slave.NeedsSnapshot {
-		return m.sendSnapshotLocked(slave, atomic.LoadUint64(&m.currentLSN))
+		return m.sendSnapshotLocked(slave)
 	}
 
 	clearDeadline, err := setReplicationWriteDeadline(slave.Conn)
@@ -827,12 +833,16 @@ func (m *Manager) sendInitialSnapshot(slave *SlaveConnection, startLSN uint64) e
 	return nil
 }
 
-func (m *Manager) sendSnapshotLocked(slave *SlaveConnection, lsn uint64) error {
+func (m *Manager) sendSnapshotLocked(slave *SlaveConnection) error {
 	if m.OnSnapshot == nil {
 		return fmt.Errorf("snapshot provider not configured")
 	}
 
-	data, err := m.callOnSnapshot()
+	// The LSN returned by callOnSnapshot is captured inside db.mu — it is the LSN at
+	// the moment the snapshot content was taken. This eliminates the race where the
+	// caller samples the LSN before calling the snapshot function (a concurrent write
+	// between sampling and content capture made the snapshot newer than its label).
+	data, snapshotLSN, err := m.callOnSnapshot()
 	if err != nil {
 		return fmt.Errorf("failed to create replication snapshot: %w", err)
 	}
@@ -846,7 +856,7 @@ func (m *Manager) sendSnapshotLocked(slave *SlaveConnection, lsn uint64) error {
 	}
 	defer clearDeadline()
 
-	if _, err := writeReplicationFull(slave.Writer, []byte(fmt.Sprintf("SNAPSHOT %d %d\n", lsn, len(data)))); err != nil {
+	if _, err := writeReplicationFull(slave.Writer, []byte(fmt.Sprintf("SNAPSHOT %d %d\n", snapshotLSN, len(data)))); err != nil {
 		return err
 	}
 	if _, err := writeReplicationFull(slave.Writer, data); err != nil {
@@ -856,7 +866,7 @@ func (m *Manager) sendSnapshotLocked(slave *SlaveConnection, lsn uint64) error {
 		return err
 	}
 
-	slave.LastLSN = lsn
+	slave.LastLSN = snapshotLSN
 	slave.LastPing = time.Now()
 	slave.NeedsSnapshot = false
 	atomic.AddUint64(&m.metrics.ReplicatedBytes, uint64(len(data)))

@@ -62,7 +62,7 @@ func TestReplicationSnapshotRoundTripReloadsCatalog(t *testing.T) {
 		t.Fatalf("insert row: %v", err)
 	}
 
-	snapshot, err := master.createReplicationSnapshot()
+	snapshot, _, err := master.createReplicationSnapshot()
 	if err != nil {
 		t.Fatalf("createReplicationSnapshot: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestCreateReplicationSnapshotRejectsShortBackendRead(t *testing.T) {
 	}
 	db.backend = &shortReadEngineBackend{Backend: db.backend, limit: storage.PageSize - 1}
 
-	_, err = db.createReplicationSnapshot()
+	_, _, err = db.createReplicationSnapshot()
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("createReplicationSnapshot short read error = %v, want %v", err, io.ErrUnexpectedEOF)
 	}
@@ -124,9 +124,14 @@ func TestApplyReplicationSnapshotRejectsShortBackendWrite(t *testing.T) {
 	if _, err := master.Exec(ctx, "INSERT INTO users VALUES (1, 'ada')"); err != nil {
 		t.Fatalf("insert row: %v", err)
 	}
-	snapshot, err := master.createReplicationSnapshot()
+	snapshot, lsn, err := master.createReplicationSnapshot()
 	if err != nil {
 		t.Fatalf("createReplicationSnapshot: %v", err)
+	}
+	// In-memory databases have no WAL, so LSN is 0. With a real WAL-backed
+	// database, this would be non-zero after the checkpoint.
+	if lsn != 0 {
+		t.Logf("snapshot LSN=%d (non-zero indicates WAL-backed DB)", lsn)
 	}
 
 	slave, err := Open(":memory:", &Options{CoreStorage: CoreStorage{InMemory: true, CacheSize: 256}})
@@ -214,7 +219,7 @@ func TestCreateReplicationSnapshotRejectsOversizedBackend(t *testing.T) {
 	}
 
 	db.backend = oversizedSnapshotBackend{}
-	_, err = db.createReplicationSnapshot()
+	_, _, err = db.createReplicationSnapshot()
 	if err == nil || !strings.Contains(err.Error(), "replication snapshot too large") {
 		t.Fatalf("expected oversized snapshot error, got %v", err)
 	}
