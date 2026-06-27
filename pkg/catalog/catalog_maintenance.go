@@ -1096,12 +1096,13 @@ func (c *Catalog) LoadData(dir string) error {
 	return nil
 }
 
-func (c *Catalog) Vacuum() error {
+func (c *Catalog) Vacuum(retentionHorizon time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	horizonNS := time.Now().Add(-retentionHorizon).UnixNano()
 	for name := range c.tableTrees {
-		if err := c.vacuumTreeLocked(name); err != nil {
+		if err := c.vacuumTreeLocked(name, horizonNS); err != nil {
 			return err
 		}
 	}
@@ -1116,8 +1117,9 @@ func (c *Catalog) Vacuum() error {
 	return nil
 }
 
-// VacuumTable vacuums a specific table and its partitions.
-func (c *Catalog) VacuumTable(tableName string) error {
+// VacuumTable vacuums a specific table and its partitions. retentionHorizon specifies
+// the minimum age of a soft-deleted row before it is physically removed.
+func (c *Catalog) VacuumTable(tableName string, retentionHorizon time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1126,18 +1128,63 @@ func (c *Catalog) VacuumTable(tableName string) error {
 		return err
 	}
 
+	horizonNS := time.Now().Add(-retentionHorizon).UnixNano()
 	treeNames := table.getPartitionTreeNames()
 	for _, name := range treeNames {
-		if err := c.vacuumTreeLocked(name); err != nil {
+		if err := c.vacuumTreeLocked(name, horizonNS); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// vacuumTreeLocked rebuilds a single table tree, skipping soft-deleted rows.
+// vacuumExtractDeletedAt extracts the deleted_at timestamp from raw row JSON data
+// without full json.Unmarshal. Returns (deletedAt, true) if found; (0, false) if not.
+func vacuumExtractDeletedAt(data []byte) (int64, bool) {
+	// Search for '"deleted_at":' near the end of data (row format ends with
+	// ...,"version":{"created_at":N,"deleted_at":M}}).
+	idx := len(data) - 1
+	for idx >= 0 && (data[idx] == '}' || data[idx] == '"' || data[idx] <= ' ') {
+		idx--
+	}
+	searchStart := idx - 12
+	if searchStart < 0 {
+		searchStart = 0
+	}
+	keyIdx := -1
+	for i := searchStart; i <= idx-11; i++ {
+		if string(data[i:i+12]) == `"deleted_at":` {
+			keyIdx = i + 12
+			break
+		}
+	}
+	if keyIdx < 0 || keyIdx >= len(data) {
+		return 0, false
+	}
+	for keyIdx < len(data) && data[keyIdx] <= ' ' {
+		keyIdx++
+	}
+	numStart := keyIdx
+	if numStart < len(data) && data[numStart] == '-' {
+		numStart++
+	}
+	numEnd := numStart
+	for numEnd < len(data) && data[numEnd] >= '0' && data[numEnd] <= '9' {
+		numEnd++
+	}
+	if numEnd == numStart || (data[numStart] == '-' && numEnd == numStart+1) {
+		return 0, false
+	}
+	v, ok := parseInt64Fast(data[numStart:numEnd])
+	return v, ok
+}
+
+
+// vacuumTreeLocked rebuilds a single table tree, removing soft-deleted rows whose
+// deleted_at timestamp is at or before horizonNS. Rows deleted more recently are retained
+// for AS OF SYSTEM TIME temporal history.
 // Must be called with c.mu held (write lock).
-func (c *Catalog) vacuumTreeLocked(name string) error {
+func (c *Catalog) vacuumTreeLocked(name string, horizonNS int64) error {
 	tree, exists := c.tableTrees[name]
 	if !exists {
 		return nil
@@ -1163,8 +1210,15 @@ func (c *Catalog) vacuumTreeLocked(name string) error {
 		if key == nil {
 			break
 		}
-		// Skip soft-deleted rows
-		if bytesContainDeletedAt(value) {
+		// Apply retention horizon: rows deleted within the horizon are retained
+		// to protect history needed by AS OF SYSTEM TIME queries.
+		if horizonNS > 0 {
+			deletedAt, ok := vacuumExtractDeletedAt(value)
+			if ok && deletedAt > 0 && deletedAt > horizonNS {
+				continue // retained for temporal history
+			}
+		} else if bytesContainDeletedAt(value) {
+			// Legacy: horizonNS == 0 means remove all dead rows.
 			continue
 		}
 		entries = append(entries, entry{key: key, value: value})

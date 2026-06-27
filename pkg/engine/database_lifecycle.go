@@ -1175,7 +1175,7 @@ func (db *DB) startScheduler() {
 func (db *DB) runAutoVacuumJob(threshold float64) error {
 	tables := db.catalog.ListTablesNeedingVacuum(threshold)
 	for _, tableName := range tables {
-		if err := db.catalog.VacuumTable(tableName); err != nil {
+		if err := db.catalog.VacuumTable(tableName, db.options.Maintenance.AutoVacuumRetention); err != nil {
 			if db.options.CoreStorage.Logger != nil {
 				db.options.CoreStorage.Logger.Warnf("AutoVacuum failed for table %s: %v", tableName, err)
 			}
