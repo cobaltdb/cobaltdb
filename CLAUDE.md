@@ -36,7 +36,7 @@ Runtime: `make run-server` / `make run-cli` use `go run`. Binaries already built
 - `pkg/query` - SQL parser, AST definitions, and query optimizer
 - `pkg/btree` - B-tree storage engine (in-memory and disk-based)
 - `pkg/storage` - Storage layer (buffer pool, WAL, encryption)
-- `pkg/engine` - Database orchestration with circuit breaker, retry, and query plan cache (the public embedded entrypoint)
+- `pkg/engine` - Database orchestration (the public embedded entrypoint); `circuit_breaker.go` and `retry.go` are available in this package but are not yet wired into the Exec/Query path (tracked in `refactor.md`)
 - `pkg/txn` - Transaction manager, lock manager, MVCC, deadlock detection
 - `pkg/wasm` - WebAssembly compiler and runtime for SQL execution
 - `pkg/server` - MySQL protocol server implementation
@@ -71,7 +71,6 @@ The Catalog is the central execution engine. It manages tables, indexes, and exe
 - `catalog_delete.go` - DELETE with soft-delete and FK enforcement
 - `catalog_ddl.go` - DDL operations (CREATE TABLE, indexes, triggers, policies)
 - `catalog_fastpath.go` - COUNT(*) and SUM/AVG streaming fast paths
-- `catalog_cache.go` - Internal query result cache
 - `catalog_rls.go` - Row-level security helpers
 - `catalog_txn.go` - Transaction management, rollback, undo replay
 - `catalog_maintenance.go` - Save/Load, vacuum, analyze
@@ -92,7 +91,7 @@ The Catalog is the central execution engine. It manages tables, indexes, and exe
 - `evaluateFunctionCall` - Function evaluation with dispatch helpers (math, string, vector, CAST)
 
 #### Query Cache
-Simple LRU cache for query results. Enabled via `SetQueryCache(true, maxEntries)`.
+Query results are cached in `pkg/cache` (`cache.Cache`). The catalog exposes `EnableQueryCacheWithLimits(maxBytes, maxEntries, ttl)` and `GetQueryCache()`; `InvalidateAll()` is called on catalog reload. Disabled by default; enable via `Options.QueryCache.EnableQueryCache`.
 
 #### Storage
 - `DiskBackend` - Persistent storage with page manager
@@ -152,9 +151,9 @@ make test-coverage            # coverage profile (no special tag needed)
 Shared test helpers used across the boundary live in untagged `*_test.go` files (e.g. `pkg/catalog/shared_literals_test.go`, `pkg/replication/shared_mocks_test.go`). The experimental WASM package is separately gated behind `wasm_experimental` (see the WASM section).
 
 ### Test Statistics
-- 5,800+ test functions across 470+ test files (after padding removal)
+- ~4,200 test functions across 276 test files (the `coverage_padding` build tag and its ~194 gated files were removed in a prior session; `go test ./...` is the single suite)
 - All `pkg` packages passing
-- `pkg/...` coverage: **69.3%** (single source of truth, no lean/full split)
+- Per-package `go test -cover` reports coverage; overall aggregate varies by package
 - Direction: lift coverage through focused table-driven tests in production-critical packages; target 90%+ per package
 
 ### Running Benchmarks Safely
