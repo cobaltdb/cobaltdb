@@ -1461,7 +1461,7 @@ func TestQueryCache_Eviction(t *testing.T) {
 }
 
 func TestIsCacheableQuery(t *testing.T) {
-	// isCacheableQuery requires a FROM clause and checks for subqueries/non-deterministic functions
+	// query.IsCacheableQuery requires a FROM clause and checks for subqueries/non-deterministic functions
 	tests := []struct {
 		name     string
 		stmt     *query.SelectStmt

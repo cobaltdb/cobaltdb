@@ -454,7 +454,7 @@ type cteResultSet struct {
 	rows    [][]interface{}
 }
 
-// Query cache types and functions moved to catalog_cache.go
+// Query cache uses *cache.Cache from pkg/cache; see catalog_txn.go for EnableQueryCache/DisableQueryCache.
 
 // New creates a new Catalog backed by the given tree store, buffer pool, and WAL.
 func New(tree btree.TreeStore, pool *storage.BufferPool, wal *storage.WAL) *Catalog {
