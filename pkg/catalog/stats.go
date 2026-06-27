@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
@@ -102,9 +101,12 @@ func validateIdentifier(name string) error {
 	if len(name) > 64 {
 		return fmt.Errorf("identifier too long")
 	}
-	// Only allow alphanumeric and underscore
+	// Only allow ASCII letters, digits, and underscore — matching the SQL standard
+	// identifier grammar. Using unicode.IsLetter would accept confusable characters
+	// (e.g. a Cyrillic 'е' instead of ASCII 'e'), which could bypass the keyword
+	// check below if the internal parser performs secondary normalization.
 	for _, r := range name {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
+		if !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' {
 			return fmt.Errorf("invalid character in identifier: %q", r)
 		}
 	}

@@ -1454,6 +1454,9 @@ func TestUnitValidateIdentifier(t *testing.T) {
 		{"contains UPDATE", "UPDATE", true},
 		{"contains UNION", "UNION", true},
 		{"contains comment", "a--b", true},
+		{"non-ASCII Cyrillic", "tаble", true},   // contains Cyrillic 'а' (U+0430), not ASCII 'a'
+		{"non-ASCII Greek", "tαble", true},     // contains Greek 'α' (U+03B1), not ASCII 'a'
+		{"non-ASCII fullwidth", "uｓers", true}, // contains fullwidth 'ｓ' (U+FF53), not ASCII 's'
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
