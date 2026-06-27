@@ -124,6 +124,12 @@ func main() {
 	}
 	flag.Parse()
 
+	if *insecureNoAuth {
+		log.Fatalf("FATAL: --insecure-no-auth is set; the Web UI will accept connections without authentication. " +
+			"This is unsafe and must not be used in production. " +
+			"Either remove the flag or use COBALTDB_WEBUI_TOKEN to set a token.")
+	}
+
 	if flag.NArg() < 1 {
 		flag.Usage()
 		os.Exit(1)
