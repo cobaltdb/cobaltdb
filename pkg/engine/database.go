@@ -78,6 +78,9 @@ type DB struct {
 	stmtMu    sync.RWMutex
 	stmtLRU   *stmtLRUList  // O(1) eviction
 	nextTxnID atomic.Uint64 // Auto-increment transaction ID counter
+	// backupMu serializes hot backup against concurrent checkpoints. Acquiring
+	// backupMu in BeginHotBackup blocks both DB.Checkpoint and WAL auto-checkpoint.
+	backupMu sync.Mutex
 	// Metrics collector
 	metrics *metrics.Collector
 	// Connection management

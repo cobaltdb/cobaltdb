@@ -132,6 +132,13 @@ func (db *DB) Checkpoint() error {
 		return ErrDatabaseClosed
 	}
 
+	// Skip checkpoint if a hot backup is active — backup holds backupMu exclusively
+	// to ensure the file copy is point-in-time consistent.
+	if !db.backupMu.TryLock() {
+		return nil // backup in progress, skip this checkpoint
+	}
+	defer db.backupMu.Unlock()
+
 	if db.wal != nil {
 		db.flushMu.RLock()
 		defer db.flushMu.RUnlock()
@@ -152,8 +159,9 @@ func (db *DB) Checkpoint() error {
 	return db.pool.FlushDirty()
 }
 
-// BeginHotBackup starts a hot backup (implements backup.Database)
-
+// BeginHotBackup starts a hot backup (implements backup.Database).
+// Acquires backupMu (held until EndHotBackup) to serialize against concurrent
+// checkpoints — preventing a fuzzy copy when IncludeWAL=false.
 func (db *DB) BeginHotBackup() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -161,8 +169,10 @@ func (db *DB) BeginHotBackup() error {
 		return ErrDatabaseClosed
 	}
 
-	db.flushMu.Lock()
-	defer db.flushMu.Unlock()
+	// Acquire backupMu and hold it for the duration of the backup. This blocks
+	// both manual and automatic checkpoint paths (DB.Checkpoint and runCheckpointJob).
+	// Release in EndHotBackup.
+	db.backupMu.Lock()
 
 	// Persist catalog metadata and root page ID before copying files
 	if err := db.catalog.Save(); err != nil {
@@ -174,15 +184,15 @@ func (db *DB) BeginHotBackup() error {
 	return nil
 }
 
-// EndHotBackup ends a hot backup (implements backup.Database)
-
+// EndHotBackup ends a hot backup (implements backup.Database).
 func (db *DB) EndHotBackup() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if db.closed.Load() {
 		return ErrDatabaseClosed
 	}
-	// Re-enable checkpoints
+	// Release backupMu — checkpoints are unblocked
+	db.backupMu.Unlock()
 	return nil
 }
 
