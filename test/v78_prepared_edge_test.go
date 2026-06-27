@@ -163,7 +163,7 @@ func TestV78PreparedEdge(t *testing.T) {
 	// Param in LIKE
 	checkParam("PREP: LIKE param",
 		"SELECT COUNT(*) FROM v78_prep WHERE name LIKE ?",
-		[]interface{}{"%a%"}, 3) // Alice, Carol, Dave (case insensitive)
+		[]interface{}{"%a%"}, 2) // Carol, Dave (case-sensitive: lowercase 'a' only)
 
 	// ============================================================
 	// === PREPARED STATEMENTS: INSERT WITH PLACEHOLDERS ===

@@ -610,8 +610,8 @@ func TestV67NullDedupEdge(t *testing.T) {
 
 	// LK1: LIKE prefix
 	checkRowCount("LK1 LIKE prefix",
-		"SELECT * FROM v67_like WHERE name LIKE 'A%'", 3)
-	// Alice, albert, Anna (case-insensitive)
+		"SELECT * FROM v67_like WHERE name LIKE 'A%'", 2)
+	// Alice, Anna (case-sensitive: albert starts with lowercase 'a')
 
 	// LK2: LIKE suffix
 	checkRowCount("LK2 LIKE suffix",

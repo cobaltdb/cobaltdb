@@ -220,20 +220,20 @@ func TestV38TrickyEdgeCases(t *testing.T) {
 	checkRowCount("L2 LIKE '_' matches only single-character values",
 		`SELECT id FROM v38_like_data WHERE word LIKE '_'`, 1)
 
-	// L3: LIKE 'abc' is an exact match (case-insensitive in this engine).
-	// id=3 ('abc') and id=5 ('ABC') should both match.
-	checkRowCount("L3 LIKE 'abc' exact match is case-insensitive (2 rows)",
-		`SELECT id FROM v38_like_data WHERE word LIKE 'abc'`, 2)
+	// L3: LIKE 'abc' is an exact match (case-sensitive in this engine).
+	// id=3 ('abc') matches; id=5 ('ABC') does not.
+	checkRowCount("L3 LIKE 'abc' exact match is case-sensitive (1 row)",
+		`SELECT id FROM v38_like_data WHERE word LIKE 'abc'`, 1)
 
-	// L4: LIKE '%abc%' substring match.
-	// 'abc' (id=3) and 'xabcx' (id=4) and 'ABC' (id=5) match (case-insensitive).
-	checkRowCount("L4 LIKE '%abc%' substring matches abc, xabcx, ABC (3 rows)",
-		`SELECT id FROM v38_like_data WHERE word LIKE '%abc%'`, 3)
+	// L4: LIKE '%abc%' substring match (case-sensitive).
+	// 'abc' (id=3) and 'xabcx' (id=4) match.
+	checkRowCount("L4 LIKE '%abc%' substring matches abc, xabcx (2 rows)",
+		`SELECT id FROM v38_like_data WHERE word LIKE '%abc%'`, 2)
 
 	// L5: NOT LIKE '%abc%' excludes the matching rows.
-	// 8 total rows - 3 matching = 5 rows.
-	checkRowCount("L5 NOT LIKE '%abc%' excludes 3 matches, returns 5 rows",
-		`SELECT id FROM v38_like_data WHERE word NOT LIKE '%abc%'`, 5)
+	// 8 total rows - 2 matching = 6 rows.
+	checkRowCount("L5 NOT LIKE '%abc%' excludes 2 matches, returns 6 rows",
+		`SELECT id FROM v38_like_data WHERE word NOT LIKE '%abc%'`, 6)
 
 	// L6: Matching a literal '%' in data.
 	// The pattern 'LIKE '100%'' (with no escape) will match 'hello world' and others
@@ -250,9 +250,9 @@ func TestV38TrickyEdgeCases(t *testing.T) {
 		`SELECT id FROM v38_like_data WHERE word LIKE 'under_%'`, 1)
 
 	// L8: Case sensitivity check with LIKE.
-	// This engine is case-insensitive, so 'HELLO%' should match 'hello world'.
-	checkRowCount("L8 LIKE 'HELLO%' case-insensitively matches 'hello world'",
-		`SELECT id FROM v38_like_data WHERE word LIKE 'HELLO%'`, 1)
+	// This engine is case-sensitive, so 'HELLO%' does not match 'hello world'.
+	checkRowCount("L8 LIKE 'HELLO%' case-sensitive does not match 'hello world'",
+		`SELECT id FROM v38_like_data WHERE word LIKE 'HELLO%'`, 0)
 
 	// ============================================================
 	// SECTION 4: ORDER BY EDGE CASES

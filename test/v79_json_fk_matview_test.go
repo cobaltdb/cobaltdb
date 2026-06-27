@@ -993,18 +993,18 @@ func TestV79JSONForeignKeyMatView(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO v79_like VALUES (5, '')")
 	afExec(t, db, ctx, "INSERT INTO v79_like VALUES (6, 'h')")
 
-	// LIKE is case-insensitive in CobaltDB
-	checkRowCount("LIKE case insensitive",
-		"SELECT * FROM v79_like WHERE s LIKE 'hello'", 2) // hello, HELLO
+	// LIKE is case-sensitive in CobaltDB (matches compareValues)
+	checkRowCount("LIKE case sensitive",
+		"SELECT * FROM v79_like WHERE s LIKE 'hello'", 1) // only lowercase 'hello'
 
 	checkRowCount("LIKE with %",
-		"SELECT * FROM v79_like WHERE s LIKE 'h%'", 4) // hello, HELLO, he%llo, h
+		"SELECT * FROM v79_like WHERE s LIKE 'h%'", 3) // hello, he%llo, h (case-sensitive: 'H' ≠ 'h')
 
 	checkRowCount("LIKE with _",
-		"SELECT * FROM v79_like WHERE s LIKE 'h____'", 2) // hello, HELLO (5 chars starting with h)
+		"SELECT * FROM v79_like WHERE s LIKE 'h____'", 1) // hello (5 chars starting with lowercase 'h')
 
 	checkRowCount("NOT LIKE",
-		"SELECT * FROM v79_like WHERE s NOT LIKE 'h%'", 2) // world, '' (empty matches nothing)
+		"SELECT * FROM v79_like WHERE s NOT LIKE 'h%'", 3) // world, '', HELLO (case-sensitive)
 
 	// ============================================================
 	// === SECTION 20: TRANSACTION ISOLATION ===

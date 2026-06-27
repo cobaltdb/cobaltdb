@@ -27,7 +27,7 @@ import (
 //   - Integer division yields float64 (e.g., 7/2 = 3.5).
 //   - Large sums may render in scientific notation (e.g., 1.25e+05 for 125000).
 //   - NULL renders as "<nil>" when formatted via fmt.Sprintf("%v", ...).
-//   - LIKE is case-insensitive.
+//   - LIKE is case-sensitive.
 //   - Triggers fire once per statement (statement-level), not once per row.
 func TestV39RegressionStress(t *testing.T) {
 	db, ctx := af(t)

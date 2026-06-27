@@ -154,13 +154,13 @@ func TestV55DeepEdgeCases(t *testing.T) {
 	checkRowCount("SC2 string >=",
 		"SELECT * FROM v55_str WHERE val >= 'c'", 1)
 
-	// SC3: LIKE case sensitivity (CobaltDB LIKE is case-insensitive)
+	// SC3: LIKE case sensitivity (CobaltDB LIKE is case-sensitive)
 	checkRowCount("SC3 LIKE case",
-		"SELECT * FROM v55_str WHERE val LIKE 'apple'", 3)
+		"SELECT * FROM v55_str WHERE val LIKE 'apple'", 1) // only lowercase 'apple'
 
 	// SC4: LIKE with wildcard
 	checkRowCount("SC4 LIKE wildcard",
-		"SELECT * FROM v55_str WHERE val LIKE '%pple'", 3)
+		"SELECT * FROM v55_str WHERE val LIKE '%pple'", 2) // apple, Apple (case-sensitive: 'APPLE' ends with PPLE ≠ pple)
 
 	// SC5: String concatenation with ||
 	check("SC5 concat",

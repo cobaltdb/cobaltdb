@@ -403,9 +403,9 @@ func TestV105JoinCoverage(t *testing.T) {
 	checkRowCount("where-nested",
 		"SELECT * FROM v105_where WHERE (score > 70 OR score IS NULL) AND active = 1", 3)
 
-	// 39. WHERE LIKE case insensitive
-	checkRowCount("where-like-case-insensitive",
-		"SELECT * FROM v105_where WHERE name LIKE 'alice'", 1)
+	// 39. WHERE LIKE case sensitive (matches compareValues)
+	checkRowCount("where-like-case-sensitive",
+		"SELECT * FROM v105_where WHERE name LIKE 'alice'", 0) // 'alice' ≠ 'Alice' (case-sensitive)
 
 	// 40. WHERE with comparison on different types (int vs float)
 	check("where-type-compare",

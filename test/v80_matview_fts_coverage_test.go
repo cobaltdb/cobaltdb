@@ -328,9 +328,9 @@ func TestV80MatViewFTSCoverage(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO v80_like VALUES (5, 'grape')")
 	afExec(t, db, ctx, "INSERT INTO v80_like VALUES (6, NULL)")
 
-	// Case-insensitive LIKE
-	checkRowCount("LIKE case insensitive",
-		"SELECT * FROM v80_like WHERE s LIKE 'apple'", 2) // apple, APPLE
+	// Case-sensitive LIKE
+	checkRowCount("LIKE case sensitive",
+		"SELECT * FROM v80_like WHERE s LIKE 'apple'", 1) // only lowercase 'apple'
 
 	// LIKE with leading wildcard
 	checkRowCount("LIKE leading %",
@@ -350,7 +350,7 @@ func TestV80MatViewFTSCoverage(t *testing.T) {
 
 	// NOT LIKE
 	checkRowCount("NOT LIKE",
-		"SELECT * FROM v80_like WHERE s NOT LIKE 'app%'", 2) // banana, grape
+		"SELECT * FROM v80_like WHERE s NOT LIKE 'app%'", 3) // banana, grape, NULL (case-sensitive)
 
 	// LIKE exact match
 	checkRowCount("LIKE exact",

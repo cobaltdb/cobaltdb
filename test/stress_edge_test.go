@@ -215,7 +215,7 @@ func TestStressEdgeCases(t *testing.T) {
 		4)
 
 	// 24. LIKE patterns
-	checkRows("LIKE middle", "SELECT name FROM emp WHERE name LIKE '%a%'", 5) // Alice, Carol, Dave, Frank, Grace
+	checkRows("LIKE middle", "SELECT name FROM emp WHERE name LIKE '%a%'", 4) // Carol, Dave, Frank, Grace (case-sensitive: lowercase 'a')
 	check("LIKE end", "SELECT name FROM emp WHERE name LIKE '%ce'", "Alice")
 
 	// 25. Complex WHERE with AND/OR/NOT

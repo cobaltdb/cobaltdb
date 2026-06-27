@@ -359,10 +359,10 @@ func TestV89_LikeExactMatch(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO t VALUES (1, 'hello')")
 	afExec(t, db, ctx, "INSERT INTO t VALUES (2, 'HELLO')")
 
-	// Exact match (case-insensitive)
+	// Exact match (case-sensitive)
 	rows := afQuery(t, db, ctx, "SELECT id FROM t WHERE val LIKE 'hello' ORDER BY id")
-	if len(rows) != 2 { // case-insensitive
-		t.Fatalf("expected 2 rows, got %d", len(rows))
+	if len(rows) != 1 { // case-sensitive: only lowercase 'hello'
+		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
 }
 

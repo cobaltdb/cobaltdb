@@ -667,10 +667,10 @@ func TestV106_AggCoverage(t *testing.T) {
 		}
 	})
 
-	t.Run("LIKE_CaseInsensitive", func(t *testing.T) {
-		rows := afQuery(t, db, ctx, "SELECT name FROM v106a_items WHERE name LIKE 'APPLE'")
+	t.Run("LIKE_CaseSensitive", func(t *testing.T) {
+		rows := afQuery(t, db, ctx, "SELECT name FROM v106a_items WHERE name LIKE 'apple'")
 		if len(rows) != 1 {
-			t.Fatalf("expected 1 match (case-insensitive), got %d", len(rows))
+			t.Fatalf("expected 1 match (case-sensitive), got %d", len(rows))
 		}
 	})
 

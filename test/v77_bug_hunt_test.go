@@ -313,23 +313,23 @@ func TestV77BugHunt(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO v77_like VALUES (5, 'under_score')")
 	afExec(t, db, ctx, "INSERT INTO v77_like VALUES (6, '')")
 
-	// Case-insensitive LIKE (CobaltDB behavior)
-	checkRowCount("LIKE: case insensitive",
-		"SELECT * FROM v77_like WHERE val LIKE 'hello'", 2) // 'hello' and 'HELLO'
+	// Case-sensitive LIKE (matches compareValues)
+	checkRowCount("LIKE: case sensitive",
+		"SELECT * FROM v77_like WHERE val LIKE 'hello'", 1) // only lowercase 'hello'
 
 	// Wildcard patterns
 	checkRowCount("LIKE: starts with",
-		"SELECT * FROM v77_like WHERE val LIKE 'hello%'", 3) // hello, HELLO, Hello World
+		"SELECT * FROM v77_like WHERE val LIKE 'hello%'", 1) // hello only (case-sensitive: 'H' ≠ 'h')
 
 	checkRowCount("LIKE: ends with",
-		"SELECT * FROM v77_like WHERE val LIKE '%world'", 1) // Hello World
+		"SELECT * FROM v77_like WHERE val LIKE '%world'", 0) // 'Hello World' ends with 'd', not 'world'
 
 	checkRowCount("LIKE: contains",
-		"SELECT * FROM v77_like WHERE val LIKE '%llo%'", 3) // hello, HELLO, Hello World
+		"SELECT * FROM v77_like WHERE val LIKE '%llo%'", 2) // hello, Hello World (case-sensitive: 'H' ≠ 'h')
 
 	// NOT LIKE
 	checkRowCount("NOT LIKE: basic",
-		"SELECT * FROM v77_like WHERE val NOT LIKE '%hello%'", 3) // %special, under_score, ''
+		"SELECT * FROM v77_like WHERE val NOT LIKE '%hello%'", 5) // %special, under_score, '', HELLO, Hello World (case-sensitive)
 
 	// ============================================================
 	// === UNIQUE CONSTRAINT BEHAVIOR ===

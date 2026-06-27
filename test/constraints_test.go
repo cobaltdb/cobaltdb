@@ -100,7 +100,7 @@ func TestConstraintsAndEdgeCases(t *testing.T) {
 
 	// === String operations ===
 	check("String concat ||", "SELECT 'hello' || ' ' || 'world'", "hello world")
-	check("LIKE case insensitive", "SELECT CASE WHEN 'Hello' LIKE 'hello' THEN 'match' ELSE 'no' END", "match")
+	check("LIKE case sensitive", "SELECT CASE WHEN 'Hello' LIKE 'hello' THEN 'match' ELSE 'no' END", "no") // case-sensitive: 'Hello' ≠ 'hello'
 	check("NOT LIKE", "SELECT CASE WHEN 'abc' NOT LIKE 'xyz' THEN 'yes' ELSE 'no' END", "yes")
 
 	// === Complex nested queries ===

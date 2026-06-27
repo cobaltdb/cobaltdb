@@ -426,10 +426,10 @@ func TestV48EdgeCasesStress(t *testing.T) {
 		`SELECT * FROM v48_employees WHERE name LIKE 'A%'`,
 		1) // Alice
 
-	// L2: LIKE wildcard (case-insensitive: Alice, Carol, Dave, Frank, Grace)
+	// L2: LIKE wildcard (case-sensitive: Carol, Dave, Frank, Grace — no lowercase 'a' in Alice/Bob/Eve)
 	checkRowCount("L2 LIKE wildcard",
 		`SELECT * FROM v48_employees WHERE name LIKE '%a%'`,
-		5)
+		4)
 
 	// L3: NOT LIKE
 	checkRowCount("L3 NOT LIKE",

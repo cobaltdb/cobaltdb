@@ -18,7 +18,7 @@ import (
 // Expected values are derived by hand; arithmetic is shown in inline comments.
 // Division always yields float64 in this engine (e.g. 7/2 = 3.5).
 // Large integer sums may appear in scientific notation (e.g. 1.15e+06).
-// LIKE is case-insensitive in this engine.
+// LIKE is case-sensitive in this engine (matches compareValues).
 // ORDER BY ties always have a secondary sort column to guarantee determinism.
 func TestV36AnalyticalQueries(t *testing.T) {
 	db, ctx := af(t)

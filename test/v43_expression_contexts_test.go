@@ -32,7 +32,7 @@ import (
 //   - Integer division yields float64  (e.g., 7/2 = 3.5, not 3).
 //   - AVG of integers yields float64.
 //   - NULL renders as "<nil>" when formatted via fmt.Sprintf("%v", ...).
-//   - LIKE is case-insensitive.
+//   - LIKE is case-sensitive.
 //   - NULLs sort LAST in ASC, FIRST in DESC.
 //   - CASE with no matching WHEN and no ELSE evaluates to NULL.
 //   - CAST(42 AS TEXT) renders as "42".
@@ -228,7 +228,7 @@ func TestV43ExpressionContexts(t *testing.T) {
 		"SELECT id FROM v43_orders WHERE COALESCE(discount, 0) > 0", 3)
 
 	// WH5: UPPER in WHERE: UPPER(status) = 'ACTIVE'.
-	// LIKE is case-insensitive, UPPER converts to compare exactly.
+	// LIKE is case-sensitive, UPPER converts to compare exactly.
 	// Active rows: id=1,4,5,6 => 4 rows.
 	checkRowCount("WH5 WHERE UPPER(status) = 'ACTIVE': 4 rows",
 		"SELECT id FROM v43_orders WHERE UPPER(status) = 'ACTIVE'", 4)

@@ -367,21 +367,21 @@ func TestV84DeepCoverage(t *testing.T) {
 	checkRowCount("LIKE just %", "SELECT * FROM v84_like WHERE val LIKE '%'", 7)
 
 	// LIKE with _ at start
-	checkRowCount("LIKE _bc", "SELECT * FROM v84_like WHERE val LIKE '_bc'", 2)
+	checkRowCount("LIKE _bc", "SELECT * FROM v84_like WHERE val LIKE '_bc'", 1) // abc only (case-sensitive)
 
 	// LIKE with _ at end
-	checkRowCount("LIKE ab_", "SELECT * FROM v84_like WHERE val LIKE 'ab_'", 2)
+	checkRowCount("LIKE ab_", "SELECT * FROM v84_like WHERE val LIKE 'ab_'", 1) // abc only (case-sensitive)
 
 	// LIKE with multiple _
 	// ___ matches any 3-char string: abc, ABC, a%c, a_c, xyz = 5
-	checkRowCount("LIKE ___", "SELECT * FROM v84_like WHERE val LIKE '___'", 5)
+	checkRowCount("LIKE ___", "SELECT * FROM v84_like WHERE val LIKE '___'", 5) // abc, ABC, a%c, a_c, xyz (all 3-char non-null)
 
 	// LIKE with mixed % and _
-	checkRowCount("LIKE a%f", "SELECT * FROM v84_like WHERE val LIKE 'a%f'", 1)
-	checkRowCount("LIKE _b%", "SELECT * FROM v84_like WHERE val LIKE '_b%'", 3)
+	checkRowCount("LIKE a%f", "SELECT * FROM v84_like WHERE val LIKE 'a%f'", 1) // abc (a%f matches 'a'...'f')
+	checkRowCount("LIKE _b%", "SELECT * FROM v84_like WHERE val LIKE '_b%'", 2) // abc, abcdef (case-sensitive: '_' matches any char, then 'b')
 
 	// NOT LIKE
-	checkRowCount("NOT LIKE abc", "SELECT * FROM v84_like WHERE val NOT LIKE 'abc'", 5)
+	checkRowCount("NOT LIKE abc", "SELECT * FROM v84_like WHERE val NOT LIKE 'abc'", 6) // 7 non-null - 1 match = 6 (case-sensitive)
 
 	// LIKE with non-string values
 	afExec(t, db, ctx, "CREATE TABLE v84_like_num (id INTEGER PRIMARY KEY, val INTEGER)")

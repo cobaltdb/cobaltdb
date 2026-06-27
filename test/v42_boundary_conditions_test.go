@@ -30,7 +30,7 @@ import (
 //   - Integer division yields float64  (e.g., 7/2 = 3.5, not 3).
 //   - AVG of integers yields float64   (e.g., AVG(3,5) = 4 stored as float64).
 //   - NULL renders as "<nil>" when formatted via fmt.Sprintf("%v", ...).
-//   - LIKE is case-insensitive.
+//   - LIKE is case-sensitive (matches compareValues and GROUP BY behavior).
 //   - NULLs sort LAST in ASC, FIRST in DESC order.
 //   - CASE with no matching WHEN and no ELSE evaluates to NULL.
 func TestV42BoundaryConditions(t *testing.T) {

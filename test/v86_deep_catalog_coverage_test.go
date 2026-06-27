@@ -503,7 +503,7 @@ func TestV86_LikeMultipleWildcards(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO lmw VALUES ('hello earth')")
 	afExec(t, db, ctx, "INSERT INTO lmw VALUES ('hi world')")
 
-	// 'h%o%d' matches both 'hello world' and 'hi world' (case-insensitive, h...o...d)
+	// 'h%o%d' matches both 'hello world' and 'hi world' (case-sensitive: lowercase h, o, d)
 	rows := afQuery(t, db, ctx, "SELECT val FROM lmw WHERE val LIKE 'h%o%d'")
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d: %v", len(rows), rows)

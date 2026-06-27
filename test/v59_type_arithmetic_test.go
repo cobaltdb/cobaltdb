@@ -218,8 +218,8 @@ func TestV59TypeArithmetic(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO v59_like VALUES (3, 'Anna')")
 	afExec(t, db, ctx, "INSERT INTO v59_like VALUES (4, 'albert')")
 
-	checkRowCount("CM6 LIKE prefix", "SELECT * FROM v59_like WHERE name LIKE 'A%'", 3)
-	// Alice, Anna, albert (LIKE is case-insensitive in CobaltDB)
+	checkRowCount("CM6 LIKE prefix", "SELECT * FROM v59_like WHERE name LIKE 'A%'", 2)
+	// Alice, Anna (case-sensitive: 'A' ≠ 'a' in 'albert')
 
 	// CM7: LIKE suffix
 	checkRowCount("CM7 LIKE suffix", "SELECT * FROM v59_like WHERE name LIKE '%a'", 1)

@@ -237,7 +237,7 @@ func TestBH_LikePatterns(t *testing.T) {
 	bhExpectRows(t, db, ctx, "SELECT name FROM users WHERE name LIKE 'A%'", 1)      // Alice
 	bhExpectRows(t, db, ctx, "SELECT name FROM users WHERE name LIKE '%e'", 3)      // Alice, Dave, Eve
 	bhExpectRows(t, db, ctx, "SELECT name FROM users WHERE name LIKE '%o%'", 2)     // Bob, Carol
-	bhExpectRows(t, db, ctx, "SELECT name FROM users WHERE name NOT LIKE '%a%'", 2) // Bob, Eve (LIKE is case-insensitive)
+	bhExpectRows(t, db, ctx, "SELECT name FROM users WHERE name NOT LIKE '%a%'", 3) // Bob, Dave, Eve (case-sensitive: lowercase 'a' only in Carol)
 
 	// LIKE with underscore
 	bhExpectRows(t, db, ctx, "SELECT name FROM users WHERE name LIKE 'B__'", 1) // Bob

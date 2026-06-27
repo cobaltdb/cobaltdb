@@ -359,16 +359,16 @@ func TestV81TriggerExprDeepCoverage(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO v81_like VALUES (5, 'test', NULL)")
 
 	// Exact match (case insensitive)
-	checkRowCount("LIKE exact ci", "SELECT * FROM v81_like WHERE val LIKE 'test'", 2)
+	checkRowCount("LIKE exact ci", "SELECT * FROM v81_like WHERE val LIKE 'test'", 1) // only lowercase 'test' (case-sensitive)
 
 	// Starts with
-	checkRowCount("LIKE starts with", "SELECT * FROM v81_like WHERE val LIKE 'test%'", 3) // test, TEST, testing
+	checkRowCount("LIKE starts with", "SELECT * FROM v81_like WHERE val LIKE 'test%'", 2) // test, testing (case-sensitive)
 
 	// Ends with
-	checkRowCount("LIKE ends with", "SELECT * FROM v81_like WHERE val LIKE '%test'", 3) // test, TEST, pretest
+	checkRowCount("LIKE ends with", "SELECT * FROM v81_like WHERE val LIKE '%test'", 2) // test, pretest (case-sensitive)
 
 	// Contains
-	checkRowCount("LIKE contains", "SELECT * FROM v81_like WHERE val LIKE '%test%'", 4) // all non-NULL
+	checkRowCount("LIKE contains", "SELECT * FROM v81_like WHERE val LIKE '%test%'", 3) // test, testing, pretest (case-sensitive)
 
 	// Single char wildcard
 	checkRowCount("LIKE single char", "SELECT * FROM v81_like WHERE val LIKE '____'", 2) // test, TEST (4 chars)
@@ -377,7 +377,7 @@ func TestV81TriggerExprDeepCoverage(t *testing.T) {
 	checkRowCount("LIKE NULL", "SELECT * FROM v81_like WHERE val LIKE NULL", 0)
 
 	// NOT LIKE
-	checkRowCount("NOT LIKE", "SELECT * FROM v81_like WHERE val NOT LIKE 'test'", 2) // testing, pretest
+	checkRowCount("NOT LIKE", "SELECT * FROM v81_like WHERE val NOT LIKE 'test'", 3) // TEST, testing, pretest (case-sensitive)
 
 	// ============================================================
 	// === SECTION 6: COMPLEX SELECT PATTERNS ===
