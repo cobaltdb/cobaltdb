@@ -1323,20 +1323,30 @@ func (c *Catalog) ListTablesNeedingVacuum(threshold float64) []string {
 	return result
 }
 
+// Analyze computes per-column statistics (row count, null count, distinct count,
+// min/max values) for a table. The scan phase runs WITHOUT holding c.mu so that
+// concurrent DML is not blocked. The catalog lock is held only briefly: once to
+// read the tree reference, and once to write the computed stats. The trade-off
+// is that if the table is dropped between the scan and the stats write, the
+// stats write is silently skipped — this is safe because a dropped table's stats
+// are irrelevant.
 func (c *Catalog) Analyze(tableName string) error {
+	// Phase 1: acquire catalog lock to read table/tree reference.
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	table, err := c.getTableLocked(tableName)
 	if err != nil {
+		c.mu.Unlock()
 		return err
 	}
-
 	tree, exists := c.tableTrees[tableName]
 	if !exists {
+		c.mu.Unlock()
 		return fmt.Errorf("table %s has no data", tableName)
 	}
+	columns := table.Columns
+	c.mu.Unlock()
 
-	// Use Scan to iterate over all entries
+	// Phase 2: scan WITHOUT holding c.mu — allows concurrent DML.
 	iter, err := tree.Scan(nil, nil)
 	if err != nil {
 		return err
@@ -1356,13 +1366,13 @@ func (c *Catalog) Analyze(tableName string) error {
 		if value == nil {
 			break
 		}
-		vrow, err := decodeVersionedRow(value, len(table.Columns))
+		vrow, err := decodeVersionedRow(value, len(columns))
 		if err != nil {
 			return fmt.Errorf("analyze: failed to decode row in table %s: %w", tableName, err)
 		}
 		rowCount++
 		rowSlice := vrow.Data
-		for i, col := range table.Columns {
+		for i, col := range columns {
 			if i >= len(rowSlice) || rowSlice[i] == nil {
 				nullCounts[col.Name]++
 			} else {
@@ -1421,6 +1431,13 @@ func (c *Catalog) Analyze(tableName string) error {
 		stats.ColumnStats[col.Name] = colStats
 	}
 
+	// Phase 3: write stats under catalog lock. If the table was dropped while the
+	// scan was running, the tree lookup will fail and we skip the write.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.tableTrees[tableName]; !exists {
+		return nil // table dropped during scan; stats are irrelevant
+	}
 	c.stats[tableName] = stats
 	return nil
 }
