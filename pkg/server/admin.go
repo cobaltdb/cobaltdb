@@ -178,7 +178,19 @@ func (a *AdminServer) Stop() error {
 	return nil
 }
 
-// authMiddleware adds authentication to endpoints
+// unauthenticatedPaths are operational endpoints that do not require auth.
+// These follow standard K8s/Docker conventions: health checks, readiness probes,
+// and Prometheus metrics scraping must work without a token.
+var unauthenticatedPaths = map[string]bool{
+	"/health":             true,
+	"/ready":              true,
+	"/metrics":            true,
+	"/metrics/prometheus": true,
+	"/metrics/json":       true,
+}
+
+// authMiddleware adds authentication to sensitive endpoints while allowing
+// operational endpoints (health, readiness, metrics) to bypass auth.
 func (a *AdminServer) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.mu.RLock()
@@ -186,7 +198,6 @@ func (a *AdminServer) authMiddleware(next http.Handler) http.Handler {
 		tokenConfigured := a.authTokenConfigured
 		a.mu.RUnlock()
 
-		// If auth token is set, require it
 		// CORS headers - restrict to same origin; configure explicitly for cross-origin access
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
@@ -197,6 +208,14 @@ func (a *AdminServer) authMiddleware(next http.Handler) http.Handler {
 		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Allow operational endpoints without auth (health, readiness, metrics).
+		// These expose only operational state (up/down, query latencies, error counts)
+		// and are required for container orchestrators and Prometheus scraping.
+		if unauthenticatedPaths[r.URL.Path] {
+			next.ServeHTTP(w, r)
 			return
 		}
 

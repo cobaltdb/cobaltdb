@@ -287,7 +287,7 @@ func TestAdminServerAuth(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Request without auth should fail
-	resp, err := http.Get("http://" + admin.Addr() + "/health")
+	resp, err := http.Get("http://" + admin.Addr() + "/system")
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestAdminServerAuth(t *testing.T) {
 	}
 
 	// Request with correct auth should succeed
-	req, _ := http.NewRequest(http.MethodGet, "http://"+admin.Addr()+"/health", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://"+admin.Addr()+"/system", nil)
 	req.Header.Set("Authorization", "Bearer secret-token")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -329,7 +329,7 @@ func TestAdminServerSetAuthTokenStoresDigestOnly(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	validReq := httptest.NewRequest(http.MethodGet, "/health", nil)
+	validReq := httptest.NewRequest(http.MethodGet, "/system", nil)
 	validReq.Header.Set("Authorization", "Bearer secret-token")
 	validRec := httptest.NewRecorder()
 	handler.ServeHTTP(validRec, validReq)
@@ -337,7 +337,7 @@ func TestAdminServerSetAuthTokenStoresDigestOnly(t *testing.T) {
 		t.Fatalf("valid token status = %d, want %d", validRec.Code, http.StatusNoContent)
 	}
 
-	wrongReq := httptest.NewRequest(http.MethodGet, "/health", nil)
+	wrongReq := httptest.NewRequest(http.MethodGet, "/system", nil)
 	wrongReq.Header.Set("Authorization", "Bearer secret-token-extra")
 	wrongRec := httptest.NewRecorder()
 	handler.ServeHTTP(wrongRec, wrongReq)
@@ -355,7 +355,7 @@ func TestAdminServerAuthMiddlewareRejectsOversizedAuthorization(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/system", nil)
 	req.Header.Set("Authorization", "Bearer "+strings.Repeat("x", maxAdminTokenBytes+1))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -367,7 +367,7 @@ func TestAdminServerAuthMiddlewareRejectsOversizedAuthorization(t *testing.T) {
 		t.Fatal("oversized token reached admin handler")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/health", nil)
+	req = httptest.NewRequest(http.MethodGet, "/system", nil)
 	req.Header.Set("Authorization", strings.Repeat("x", maxAdminAuthorizationHeaderBytes+1))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -396,7 +396,7 @@ func TestAdminServerSetAuthTokenEmptyDisablesAPI(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
 	req.Header.Set("Authorization", "Bearer secret-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -420,7 +420,7 @@ func TestAdminServerSetAuthTokenOversizedDisablesAPI(t *testing.T) {
 		t.Fatal("oversized configured token should not enable admin handler")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
 	req.Header.Set("Authorization", "Bearer "+strings.Repeat("x", maxAdminTokenBytes+1))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -507,7 +507,7 @@ func TestAdminServerDisabledWithoutToken(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	resp, err := http.Get("http://" + admin.Addr() + "/health")
+	resp, err := http.Get("http://" + admin.Addr() + "/stats")
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
