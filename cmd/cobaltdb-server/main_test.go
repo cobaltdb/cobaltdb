@@ -47,7 +47,8 @@ func TestMainFunction(t *testing.T) {
 	}
 
 	// Create server
-	srv, err := server.New(db, &server.Config{
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, &server.Config{
 		Address: "127.0.0.1:0",
 	})
 	if err != nil {
@@ -81,7 +82,8 @@ func TestServerWithInMemoryMode(t *testing.T) {
 	}
 	defer db.Close()
 
-	srv, err := server.New(db, &server.Config{
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, &server.Config{
 		Address: "127.0.0.1:0",
 	})
 	if err != nil {
@@ -158,7 +160,8 @@ func TestServerConfiguration(t *testing.T) {
 			}
 			defer db.Close()
 
-			srv, err := server.New(db, &server.Config{
+			ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, &server.Config{
 				Address: "127.0.0.1:0",
 			})
 			if err != nil {
@@ -627,7 +630,8 @@ func TestServerLifecycle(t *testing.T) {
 	}
 	defer db.Close()
 
-	srv, err := server.New(db, &server.Config{
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, &server.Config{
 		Address: "127.0.0.1:0",
 	})
 	if err != nil {
@@ -756,7 +760,8 @@ func TestWireServerComponentStartReturnsListenError(t *testing.T) {
 	}
 	defer db.Close()
 
-	srv, err := server.New(db, &server.Config{
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, &server.Config{
 		Address: listener.Addr().String(),
 	})
 	if err != nil {
@@ -790,7 +795,8 @@ func TestSignalHandling(t *testing.T) {
 	}
 	defer db.Close()
 
-	srv, err := server.New(db, &server.Config{
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, &server.Config{
 		Address: "127.0.0.1:0",
 	})
 	if err != nil {
@@ -916,7 +922,8 @@ func TestServerAddressConfiguration(t *testing.T) {
 			}
 			defer db.Close()
 
-			srv, err := server.New(db, &server.Config{
+			ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, &server.Config{
 				Address: tt.address,
 			})
 			if err != nil {

@@ -23,7 +23,8 @@ func TestServerBasicStartup(t *testing.T) {
 	config := server.DefaultConfig()
 	config.Address = "127.0.0.1:0"
 
-	srv, err := server.New(db, config)
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, config)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -66,7 +67,8 @@ func TestServerAcceptLoop(t *testing.T) {
 	}
 	defer db.Close()
 
-	srv, err := server.New(db, server.DefaultConfig())
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, server.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -133,7 +135,8 @@ func TestServerGracefulShutdown(t *testing.T) {
 	}
 	defer db.Close()
 
-	srv, err := server.New(db, server.DefaultConfig())
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, server.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -204,7 +207,8 @@ func TestServerConnectionTimeout(t *testing.T) {
 		WriteTimeout: 1,
 	}
 
-	srv, err := server.New(db, config)
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, config)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -257,7 +261,8 @@ func TestServerMaxConnections(t *testing.T) {
 		MaxConnections: 5,
 	}
 
-	srv, err := server.New(db, config)
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, config)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -321,7 +326,8 @@ func TestServerSignalHandling(t *testing.T) {
 	config := server.DefaultConfig()
 	config.Address = "127.0.0.1:0"
 
-	srv, err := server.New(db, config)
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	srv, err := server.New(ps, config)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}

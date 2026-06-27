@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/auth"
-	"github.com/cobaltdb/cobaltdb/pkg/engine"
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"github.com/cobaltdb/cobaltdb/pkg/wire"
@@ -51,7 +50,7 @@ func messagePacketLength(payloadLen int) (uint32, error) {
 // Server represents a CobaltDB server
 type Server struct {
 	listener           net.Listener
-	db                 *engine.DB
+	prodServer         *ProductionServer
 	clients            map[uint64]*ClientConn
 	nextID             uint64
 	mu                 sync.RWMutex
@@ -110,8 +109,9 @@ func DefaultConfig() *Config {
 	}
 }
 
-// New creates a new server
-func New(db *engine.DB, config *Config) (*Server, error) {
+// New creates a new server backed by a ProductionServer, enabling circuit breaker
+// and retry protection on the query execution path.
+func New(ps *ProductionServer, config *Config) (*Server, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -148,7 +148,7 @@ func New(db *engine.DB, config *Config) (*Server, error) {
 	}
 
 	return &Server{
-		db:                 db,
+		prodServer:         ps,
 		clients:            make(map[uint64]*ClientConn),
 		auth:               authenticator,
 		maxConnections:     maxConnections,
@@ -525,8 +525,8 @@ func (c *ClientConn) Handle() {
 		// Must run on this connection's goroutine (txn state is goroutine-local);
 		// otherwise a client that BEGINs and disconnects leaks locks and pins
 		// MVCC version pruning.
-		if c.Server.db != nil {
-			c.Server.db.AbortConnTransaction()
+		if c.Server.prodServer != nil {
+			c.Server.prodServer.DB().AbortConnTransaction()
 		}
 		c.cancel() // cancel any in-flight queries on disconnect
 		_ = c.Conn.Close()
@@ -706,7 +706,7 @@ func (c *ClientConn) checkPermission(sql string) bool {
 // handleQuery handles a query message
 func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) interface{} {
 	// Check if database is initialized
-	if c.Server.db == nil {
+	if c.Server.prodServer == nil {
 		return wire.NewErrorMessage(1, "database not initialized")
 	}
 	if errMsg := validateWireSQL(query.SQL); errMsg != nil {
@@ -745,7 +745,7 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 		(len(sqlTrimmed) >= 8 && strings.EqualFold(sqlTrimmed[:8], "DESCRIBE")))
 
 	if isQuery {
-		rows, err := c.Server.db.Query(ctx, query.SQL, query.Params...)
+		rows, err := c.Server.prodServer.Query(ctx, query.SQL, query.Params...)
 		if err != nil {
 			return wire.NewErrorMessage(4, sanitizeError(err))
 		}
@@ -778,7 +778,7 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 	}
 
 	// Non-query statement (INSERT, UPDATE, DELETE, CREATE, etc.)
-	result, err := c.Server.db.Exec(ctx, query.SQL, query.Params...)
+	result, err := c.Server.prodServer.Exec(ctx, query.SQL, query.Params...)
 	if err != nil {
 		return wire.NewErrorMessage(4, sanitizeError(err))
 	}
@@ -788,7 +788,7 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 
 // handlePrepare parses and caches a prepared statement, returning a statement ID.
 func (c *ClientConn) handlePrepare(ctx context.Context, prep *wire.PrepareMessage) interface{} {
-	if c.Server.db == nil {
+	if c.Server.prodServer == nil {
 		return wire.NewErrorMessage(1, "database not initialized")
 	}
 	if errMsg := validateWireSQL(prep.SQL); errMsg != nil {
@@ -819,7 +819,7 @@ func (c *ClientConn) handlePrepare(ctx context.Context, prep *wire.PrepareMessag
 
 // handleExecute looks up a prepared statement by ID and executes it with bound parameters.
 func (c *ClientConn) handleExecute(ctx context.Context, exec *wire.ExecuteMessage) interface{} {
-	if c.Server.db == nil {
+	if c.Server.prodServer == nil {
 		return wire.NewErrorMessage(1, "database not initialized")
 	}
 

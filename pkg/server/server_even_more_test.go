@@ -17,7 +17,8 @@ func TestServerListen(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Start server in background
 	go func() {
@@ -42,7 +43,8 @@ func TestClientConnHandle(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Create a pipe for testing
 	clientConn, serverConn := net.Pipe()
@@ -77,7 +79,8 @@ func TestClientConnHandleRejectsOversizedPayloadBeforeRead(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -131,7 +134,8 @@ func TestClientConnHandleRejectsZeroLengthWithoutBlocking(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -183,7 +187,8 @@ func TestSendMessage(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Create a pipe for testing
 	clientConn, serverConn := net.Pipe()
@@ -240,7 +245,8 @@ func TestSendMessageUnknownType(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Create a pipe for testing
 	_, serverConn := net.Pipe()
@@ -265,7 +271,8 @@ func TestSendError(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Create a pipe for testing
 	clientConn, serverConn := net.Pipe()
@@ -340,7 +347,8 @@ func TestHandleQueryScanError(t *testing.T) {
 	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
 	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (1)")
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -365,7 +373,8 @@ func TestServerCloseWithClients(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Create pipes for clients
 	c1, s1 := net.Pipe()
@@ -399,7 +408,8 @@ func TestServerDoubleClose(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// First close
 	err := srv.Close()
@@ -419,7 +429,8 @@ func TestHandleMessageWithEmptyPayload(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -445,7 +456,8 @@ func TestHandleQueryExecPath(t *testing.T) {
 	// Setup
 	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -477,7 +489,8 @@ func TestHandleQuerySelectPath(t *testing.T) {
 	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (1)")
 	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (2)")
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -507,7 +520,8 @@ func TestHandleQueryWithLastInsertID(t *testing.T) {
 	// Setup with AUTOINCREMENT
 	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -533,7 +547,8 @@ func TestRemoveClientNotExists(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Remove a client that doesn't exist - should not panic
 	srv.removeClient(999)
@@ -544,7 +559,8 @@ func TestClientConnHandleEOF(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Create a pipe
 	clientConn, serverConn := net.Pipe()
@@ -589,8 +605,8 @@ func TestNewServerWithNilDB(t *testing.T) {
 	if srv == nil {
 		t.Fatal("Server is nil")
 	}
-	if srv.db != nil {
-		t.Error("Server db should be nil")
+	if srv.prodServer != nil {
+		t.Error("Server prodServer should be nil")
 	}
 }
 
@@ -603,7 +619,8 @@ func TestNewServerWithCustomConfig(t *testing.T) {
 		Address: ":9999",
 	}
 
-	srv, err := New(db, config)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, err := New(ps, config)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -622,7 +639,8 @@ func TestHandleQueryWithMultipleParams(t *testing.T) {
 	db.Exec(t.Context(), "INSERT INTO test (id, name, age) VALUES (1, 'Alice', 25)")
 	db.Exec(t.Context(), "INSERT INTO test (id, name, age) VALUES (2, 'Bob', 30)")
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -653,7 +671,8 @@ func TestHandleQueryWithNoParams(t *testing.T) {
 	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
 	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (1)")
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -681,7 +700,8 @@ func TestHandleQuerySyntaxError(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -712,7 +732,8 @@ func TestHandleQueryWithNilParams(t *testing.T) {
 	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
 	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (1)")
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -740,7 +761,8 @@ func TestSendMessageResult(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Create a pipe for testing
 	clientConn, serverConn := net.Pipe()
@@ -791,7 +813,8 @@ func TestSendMessageError(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Create a pipe for testing
 	clientConn, serverConn := net.Pipe()
@@ -842,7 +865,8 @@ func TestHandleMessagePing(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -860,7 +884,8 @@ func TestHandleMessageQueryDecodeError(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -883,7 +908,8 @@ func TestHandleMessageUnknownType(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -909,7 +935,8 @@ func TestHandleQueryScanFailure(t *testing.T) {
 	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
 	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (1)")
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -936,7 +963,8 @@ func TestHandleQueryExecFailure(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -963,7 +991,8 @@ func TestClientConnHandleReadError(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Create a pipe
 	clientConn, serverConn := net.Pipe()
@@ -1005,7 +1034,8 @@ func TestSendMessageEncodeError(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Create a pipe
 	_, serverConn := net.Pipe()
@@ -1031,7 +1061,8 @@ func TestHandleAuthSuccess(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Enable auth and create a user
 	srv.auth.Enable()
@@ -1073,7 +1104,8 @@ func TestHandleAuthFailure(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Enable auth
 	srv.auth.Enable()
@@ -1112,7 +1144,8 @@ func TestHandleAuthNonExistentUser(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Enable auth but don't create user
 	srv.auth.Enable()
@@ -1145,7 +1178,8 @@ func TestCheckPermissionAuthDisabled(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 
 	// Auth is disabled by default
 	client := &ClientConn{
@@ -1171,7 +1205,8 @@ func TestCheckPermissionNotAuthenticated(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	srv.auth.Enable()
 
 	client := &ClientConn{
@@ -1191,7 +1226,8 @@ func TestCheckPermissionAdminUser(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	srv.auth.Enable()
 	srv.auth.CreateUser("admin", "adminpass", true) // Create admin user
 
@@ -1231,7 +1267,8 @@ func TestCheckPermissionRegularUser(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	srv.auth.Enable()
 	srv.auth.CreateUser("regular", "regularpass", false) // Create regular user
 
@@ -1253,7 +1290,8 @@ func TestCheckPermissionUnknownOperation(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	srv.auth.Enable()
 	srv.auth.CreateUser("testuser", "testpass", false)
 
@@ -1275,7 +1313,8 @@ func TestCheckPermissionUserNotFound(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	srv.auth.Enable()
 
 	client := &ClientConn{
@@ -1296,7 +1335,8 @@ func TestHandleMessageAuth(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	srv.auth.Enable()
 	srv.auth.CreateUser("testuser", "testpass", false)
 
@@ -1336,7 +1376,8 @@ func TestHandleMessageAuthDecodeError(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
-	srv, _ := New(db, nil)
+ ps := NewProductionServer(db, DefaultProductionConfig())
+	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,

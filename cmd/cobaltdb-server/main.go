@@ -202,7 +202,7 @@ func main() {
 	finalAdminPass := *adminPass
 
 	// Create wire protocol server
-	srv, err := server.New(db, &server.Config{
+	srv, err := server.New(prodServer, &server.Config{
 		Address:            *address,
 		AuthEnabled:        *authEnabled,
 		RequireAuth:        *authEnabled,

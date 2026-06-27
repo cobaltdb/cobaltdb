@@ -36,7 +36,7 @@ Runtime: `make run-server` / `make run-cli` use `go run`. Binaries already built
 - `pkg/query` - SQL parser, AST definitions, and query optimizer
 - `pkg/btree` - B-tree storage engine (in-memory and disk-based)
 - `pkg/storage` - Storage layer (buffer pool, WAL, encryption)
-- `pkg/engine` - Database orchestration (the public embedded entrypoint); `circuit_breaker.go` and `retry.go` are available in this package but are not yet wired into the Exec/Query path (tracked in `refactor.md`)
+- `pkg/engine` - Database orchestration (the public embedded entrypoint); `circuit_breaker.go` and `retry.go` are wired into the MySQL wire protocol query path via `pkg/server` (see `refactor.md`)
 - `pkg/txn` - Transaction manager, lock manager, MVCC, deadlock detection
 - `pkg/wasm` - WebAssembly compiler and runtime for SQL execution
 - `pkg/server` - MySQL protocol server implementation

@@ -67,7 +67,7 @@ func DefaultProductionConfig() *ProductionConfig {
 
 // ProductionServer provides production-ready features
 type ProductionServer struct {
-	DB               *engine.DB
+	db               *engine.DB
 	Config           *ProductionConfig
 	Lifecycle        *Lifecycle
 	CircuitBreaker   *engine.CircuitBreaker
@@ -100,7 +100,7 @@ func NewProductionServer(db *engine.DB, config *ProductionConfig) *ProductionSer
 	}
 
 	ps := &ProductionServer{
-		DB:        db,
+		db:        db,
 		Config:    config,
 		Lifecycle: NewLifecycle(config.Lifecycle),
 		logger:    config.Logger,
@@ -388,7 +388,82 @@ func (ps *ProductionServer) ExecuteWithCircuitBreaker(key string, fn func() erro
 	return err
 }
 
-// GetStats returns server statistics
+// DB returns the underlying database instance. Use for operations that should
+// bypass circuit breaker / retry (e.g., internal abort, recovery).
+func (ps *ProductionServer) DB() *engine.DB {
+	return ps.db
+}
+
+// circuitBreakerKey returns the circuit breaker key for a SQL statement.
+func (ps *ProductionServer) circuitBreakerKey(sql string) string {
+	// Use the first meaningful word of the SQL as the key so statements of
+	// the same type share a circuit breaker (e.g., all SELECTs share one,
+// all INSERTs share one, etc.). This prevents a slow DELETE from killing
+// all other queries.
+	if len(sql) == 0 {
+		return "unknown"
+	}
+	i := 0
+	for i < len(sql) && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r') {
+		i++
+	}
+	end := i
+	for end < len(sql) && sql[end] > ' ' {
+		end++
+	}
+	key := sql[i:end]
+	if key == "" {
+		return "unknown"
+	}
+	return key
+}
+
+// Exec executes a SQL statement with circuit breaker and retry protection.
+func (ps *ProductionServer) Exec(ctx context.Context, sql string, args ...interface{}) (engine.Result, error) {
+	key := ps.circuitBreakerKey(sql)
+	var result engine.Result
+	err := ps.ExecuteWithCircuitBreaker(key, func() error {
+		return ps.ExecuteWithRetry(ctx, func() error {
+			res, err := ps.db.Exec(ctx, sql, args...)
+			if err == nil {
+				result = res
+			}
+			return err
+		})
+	})
+	return result, err
+}
+
+// Query executes a SQL query with circuit breaker and retry protection.
+func (ps *ProductionServer) Query(ctx context.Context, sql string, args ...interface{}) (*engine.Rows, error) {
+	key := ps.circuitBreakerKey(sql)
+	var rows *engine.Rows
+	err := ps.ExecuteWithCircuitBreaker(key, func() error {
+		return ps.ExecuteWithRetry(ctx, func() error {
+			r, err := ps.db.Query(ctx, sql, args...)
+			if err == nil {
+				rows = r
+			}
+			return err
+		})
+	})
+	return rows, err
+}
+
+// QueryRow executes a single-row SQL query with circuit breaker and retry protection.
+func (ps *ProductionServer) QueryRow(ctx context.Context, sql string, args ...interface{}) (*engine.Row, error) {
+	key := ps.circuitBreakerKey(sql)
+	var row *engine.Row
+	err := ps.ExecuteWithCircuitBreaker(key, func() error {
+		return ps.ExecuteWithRetry(ctx, func() error {
+			r := ps.db.QueryRow(ctx, sql, args...)
+			row = r
+			return nil
+		})
+	})
+	return row, err
+}
+
 func (ps *ProductionServer) GetStats() ProductionStats {
 	return ProductionStats{
 		IsRunning: ps.IsRunning(),
