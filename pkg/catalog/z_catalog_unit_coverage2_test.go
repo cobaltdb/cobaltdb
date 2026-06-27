@@ -873,7 +873,8 @@ func TestUnitMatchLikeSimple(t *testing.T) {
 		{"a", "", false},
 		{"", "a", false},
 		{"hello", "hello", true},
-		{"hello", "HELLO", true}, // case insensitive
+		{"hello", "HELLO", false}, // case sensitive — matches compareValues
+		{"HELLO", "hello", false}, // case sensitive
 		{"hello", "h%", true},
 		{"hello", "%o", true},
 		{"hello", "%ll%", true},

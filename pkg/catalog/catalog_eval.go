@@ -2482,13 +2482,6 @@ func matchLikeSimple(s, pattern string, escapeChar ...byte) bool {
 		esc = escapeChar[0]
 	}
 
-	// Convert both strings to lower case for case-insensitive matching
-	s = toLowerFast(s)
-	pattern = toLowerFast(pattern)
-	if esc >= 'A' && esc <= 'Z' {
-		esc = esc + 32 // lowercase the escape char too
-	}
-
 	sIdx := 0
 	pIdx := 0
 
