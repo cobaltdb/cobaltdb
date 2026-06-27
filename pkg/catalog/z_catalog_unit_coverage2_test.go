@@ -1317,6 +1317,64 @@ func TestUnitJSONPathGet_WildcardNotArray(t *testing.T) {
 	}
 }
 
+func TestUnitJSONPathGet_WildcardNonTerminal(t *testing.T) {
+	// $.items[*].name on [{"items": [{"name": "a"}, {"name": "b"}]}] should return ["a", "b"]
+	jp := &JSONPath{Segments: []string{"items", "*", "name"}}
+	data := map[string]interface{}{
+		"items": []interface{}{
+			map[string]interface{}{"name": "a"},
+			map[string]interface{}{"name": "b"},
+		},
+	}
+	val, err := jp.Get(data)
+	if err != nil {
+		t.Fatalf("wildcard non-terminal: err %v", err)
+	}
+	arr, ok := val.([]interface{})
+	if !ok {
+		t.Fatalf("wildcard non-terminal: expected []interface{}, got %T", val)
+	}
+	if len(arr) != 2 {
+		t.Fatalf("wildcard non-terminal: expected 2 results, got %d", len(arr))
+	}
+	if arr[0] != "a" || arr[1] != "b" {
+		t.Fatalf("wildcard non-terminal: got %v", arr)
+	}
+
+	// $[*].id on array of objects
+	jp2 := &JSONPath{Segments: []string{"*", "id"}}
+	data2 := []interface{}{
+		map[string]interface{}{"id": 1},
+		map[string]interface{}{"id": 2},
+		map[string]interface{}{"id": 3},
+	}
+	val2, err := jp2.Get(data2)
+	if err != nil {
+		t.Fatalf("wildcard array non-terminal: err %v", err)
+	}
+	arr2, ok := val2.([]interface{})
+	if !ok || len(arr2) != 3 {
+		t.Fatalf("wildcard array non-terminal: got %v", val2)
+	}
+	// Values can be int, int64, or float64 depending on storage
+	for i, v := range arr2 {
+		var n int
+		switch x := v.(type) {
+		case int:
+			n = x
+		case int64:
+			n = int(x)
+		case float64:
+			n = int(x)
+		default:
+			t.Fatalf("wildcard array non-terminal index %d: unexpected type %T", i, v)
+		}
+		if n != i+1 {
+			t.Fatalf("wildcard array non-terminal index %d: got %d, want %d", i, n, i+1)
+		}
+	}
+}
+
 func TestUnitJSONPathGet_ArrayIndexOutOfBounds(t *testing.T) {
 	jp := &JSONPath{Segments: []string{"[99]"}}
 	data := []interface{}{1, 2}

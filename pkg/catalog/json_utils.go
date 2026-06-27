@@ -239,7 +239,7 @@ func (jp *JSONPath) Get(data interface{}) (interface{}, error) {
 				// Return array at final position
 				return current, nil
 			}
-			// For now, just continue with the first element if it's an array
+			// Recursively apply remaining path to each array element
 			arr, ok := current.([]interface{})
 			if !ok {
 				return nil, nil
@@ -247,8 +247,22 @@ func (jp *JSONPath) Get(data interface{}) (interface{}, error) {
 			if len(arr) == 0 {
 				return nil, nil
 			}
-			current = arr[0]
-			continue
+			remaining := jp.Segments[i+1:]
+			result := make([]interface{}, 0, len(arr))
+			for _, elem := range arr {
+				subPath := &JSONPath{Segments: remaining}
+				val, err := subPath.Get(elem)
+				if err != nil {
+					return nil, err
+				}
+				if val != nil {
+					result = append(result, val)
+				}
+			}
+			if len(result) == 0 {
+				return nil, nil
+			}
+			return result, nil
 		}
 
 		// Check if it's an array index
