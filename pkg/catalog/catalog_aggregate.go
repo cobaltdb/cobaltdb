@@ -659,13 +659,6 @@ func groupConcatSeparatorExpr(fc *query.FunctionCall) query.Expression {
 	return fc.Args[1]
 }
 
-func groupConcatSeparatorFromCallOrDefault(fc *query.FunctionCall) string {
-	if sep, ok := groupConcatSeparatorFromCall(fc); ok {
-		return sep
-	}
-	return ","
-}
-
 func (c *Catalog) groupConcatSeparatorForRows(fc *query.FunctionCall, rows [][]interface{}, columns []ColumnDef, args []interface{}) string {
 	if sep, ok := groupConcatSeparatorFromCall(fc); ok {
 		return sep

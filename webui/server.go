@@ -714,7 +714,7 @@ func collectWebUIExportRows(rows *engine.Rows, columnCount int) ([][]interface{}
 
 func validateWebUIQuery(query string) error {
 	if strings.TrimSpace(query) == "" {
-		return fmt.Errorf("Empty query")
+		return fmt.Errorf("empty query")
 	}
 	if len(query) > maxWebUIQueryBytes {
 		return fmt.Errorf("query too large")

@@ -245,17 +245,6 @@ func cloneStringSlice(values []string) []string {
 	return cloned
 }
 
-func cloneInterfaceRows(rows [][]interface{}) [][]interface{} {
-	if rows == nil {
-		return nil
-	}
-	cloned := make([][]interface{}, len(rows))
-	for i, row := range rows {
-		cloned[i] = cloneInterfaceSlice(row)
-	}
-	return cloned
-}
-
 func cloneInterfaceSlice(values []interface{}) []interface{} {
 	if values == nil {
 		return nil

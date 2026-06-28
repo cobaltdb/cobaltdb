@@ -247,11 +247,6 @@ func deleteRowKey(tree btree.TreeStore, key []byte) error {
 	return tree.Delete(key)
 }
 
-func deleteIndexEntryForRow(table *TableDef, idxDef *IndexDef, idxTree btree.TreeStore, row []interface{}, rowKey []byte) error {
-	_, err := deleteIndexEntryForRowTracked("", table, idxDef, idxTree, row, rowKey)
-	return err
-}
-
 type deletedIndexEntry struct {
 	indexName string
 	tree      btree.TreeStore

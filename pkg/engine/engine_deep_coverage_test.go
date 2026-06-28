@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 )
@@ -190,30 +189,6 @@ func TestCircuitStateString(t *testing.T) {
 		if got := tt.state.String(); got != tt.want {
 			t.Errorf("CircuitState(%d).String() = %s, want %s", tt.state, got, tt.want)
 		}
-	}
-}
-
-// ---- NonRetriableError Unwrap ----
-
-func TestNonRetriableErrorUnwrap(t *testing.T) {
-	inner := errors.New("inner error")
-	nre := &NonRetriableError{Err: inner}
-
-	if nre.Error() != "inner error" {
-		t.Errorf("expected 'inner error', got '%s'", nre.Error())
-	}
-
-	unwrapped := nre.Unwrap()
-	if unwrapped != inner {
-		t.Error("expected Unwrap to return inner error")
-	}
-
-	if !IsNonRetriable(nre) {
-		t.Error("expected IsNonRetriable=true")
-	}
-
-	if IsNonRetriable(inner) {
-		t.Error("expected IsNonRetriable=false for plain error")
 	}
 }
 

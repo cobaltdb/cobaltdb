@@ -19,6 +19,27 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/metrics"
 )
 
+const (
+	productionHTTPMaxHeaderBytes     = 1 << 20
+	maxAdminTokenBytes               = 1024
+	maxAdminAuthorizationHeaderBytes = len("Bearer ") + maxAdminTokenBytes
+)
+
+func adminTokenFromAuthorizationHeader(authHeader string) (string, bool) {
+	if authHeader == "" || len(authHeader) > maxAdminAuthorizationHeaderBytes {
+		return "", false
+	}
+
+	providedToken := authHeader
+	if parts := strings.SplitN(authHeader, " ", 2); len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+		providedToken = parts[1]
+	}
+	if providedToken == "" || len(providedToken) > maxAdminTokenBytes {
+		return "", false
+	}
+	return providedToken, true
+}
+
 // ProductionStats holds server statistics
 type ProductionStats struct {
 	IsRunning bool   `json:"is_running"`

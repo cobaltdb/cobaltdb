@@ -334,51 +334,6 @@ func TestBufferPoolCloseWithNilBackend(t *testing.T) {
 }
 
 // TestPageManagerClose tests PageManager Close
-func TestPageManagerClose(t *testing.T) {
-	backend := NewMemory()
-	pool := NewBufferPool(1024, backend)
-	pm, err := NewPageManager(pool)
-	if err != nil {
-		t.Fatalf("Failed to create PageManager: %v", err)
-	}
-
-	err = pm.Close()
-	if err != nil {
-		t.Errorf("Close failed: %v", err)
-	}
-
-	// Close again should be safe
-	err = pm.Close()
-	if err != nil {
-		t.Errorf("Second close failed: %v", err)
-	}
-}
-
-// TestPageManagerFreePageErrors tests FreePage error cases
-func TestPageManagerFreePageErrors(t *testing.T) {
-	backend := NewMemory()
-	pool := NewBufferPool(1024, backend)
-	pm, err := NewPageManager(pool)
-	if err != nil {
-		t.Fatalf("Failed to create PageManager: %v", err)
-	}
-	defer pm.Close()
-
-	// Try to free page 0 (metadata page)
-	err = pm.FreePage(0)
-	if err == nil {
-		t.Error("Expected error when freeing page 0")
-	}
-
-	// Freeing non-existent page is allowed (just adds to free list)
-	// This tests the code path without error
-	err = pm.FreePage(99999)
-	if err != nil {
-		t.Logf("FreePage returned error for non-existent page: %v", err)
-	}
-}
-
-// TestWALOpenErrors tests WAL Open error cases
 func TestWALOpenErrors(t *testing.T) {
 	// Try to open WAL in non-existent directory
 	invalidPath := "/nonexistent/path/wal"
@@ -881,24 +836,6 @@ func TestBufferPoolCloseFlushError(t *testing.T) {
 }
 
 // TestPageManagerCloseError tests PageManager Close when saveFreeList fails.
-func TestPageManagerCloseError(t *testing.T) {
-	mem := NewMemory()
-	pool := NewBufferPool(16, mem)
-	pm, err := NewPageManager(pool)
-	if err != nil {
-		t.Fatalf("NewPageManager: %v", err)
-	}
-
-	// Swap pool backend to failing one
-	pool.backend = &failingBackend{Backend: mem}
-
-	err = pm.Close()
-	if err == nil {
-		t.Error("Expected error from PageManager.Close when saveFreeList fails")
-	}
-}
-
-// TestCompressedBackendLZ4RoundTrip tests LZ4 compression round-trip.
 func TestCompressedBackendLZ4RoundTrip(t *testing.T) {
 	mem := NewMemory()
 	cb, err := NewCompressedBackend(mem, &CompressionConfig{

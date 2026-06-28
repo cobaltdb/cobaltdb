@@ -91,7 +91,7 @@ The Catalog is the central execution engine. It manages tables, indexes, and exe
 - `evaluateFunctionCall` - Function evaluation with dispatch helpers (math, string, vector, CAST)
 
 #### Query Cache
-Query results are cached in `pkg/cache` (`cache.Cache`). The catalog exposes `EnableQueryCacheWithLimits(maxBytes, maxEntries, ttl)` and `GetQueryCache()`; `InvalidateAll()` is called on catalog reload. Disabled by default; enable via `Options.QueryCache.EnableQueryCache`.
+Query results are cached in `pkg/cache` (`cache.Cache`, see `pkg/cache/query_cache.go`). The cache is managed directly through the `Cache` type — the deprecated `catalog.QueryCache` has been removed. Disabled by default.
 
 #### Storage
 - `DiskBackend` - Persistent storage with page manager
@@ -106,7 +106,7 @@ Core interfaces are defined for testability and modularity:
 - `storage.BufferPoolManager` - Buffer pool page management
 - `txn.LockManager` - Lock acquisition/release with shared and exclusive modes
 - `txn.TransactionManager` - Transaction lifecycle
-- `catalog.QueryCacheStore` - Query result caching
+- `cache.Cache` - Query result caching (`pkg/cache/query_cache.go`)
 
 #### MVCC Version Store
 `pkg/txn/version_store.go` provides per-key version chains for snapshot isolation:

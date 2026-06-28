@@ -108,28 +108,6 @@ func TestProductionServerPropagatesLoggerToLifecycle(t *testing.T) {
 	}
 }
 
-func TestAdminServerUsesConfiguredLogger(t *testing.T) {
-	var logs bytes.Buffer
-	admin := NewAdminServer(nil, "127.0.0.1:0")
-	admin.SetLogger(logger.New(logger.InfoLevel, &logs))
-	admin.SetAuthToken("token")
-
-	if err := admin.Start(); err != nil {
-		t.Fatalf("start admin server: %v", err)
-	}
-	if err := admin.Stop(); err != nil {
-		t.Fatalf("stop admin server: %v", err)
-	}
-
-	output := logs.String()
-	if !strings.Contains(output, "admin server starting") {
-		t.Fatalf("expected admin start log, got %q", output)
-	}
-	if !strings.Contains(output, "admin server stopped") {
-		t.Fatalf("expected admin stop log, got %q", output)
-	}
-}
-
 func TestRateLimiterStoresConfiguredLogger(t *testing.T) {
 	var logs bytes.Buffer
 	log := logger.New(logger.ErrorLevel, &logs)

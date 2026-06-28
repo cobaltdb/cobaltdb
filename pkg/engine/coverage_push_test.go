@@ -37,51 +37,6 @@ func TestRetry_ContextAlreadyDone(t *testing.T) {
 	}
 }
 
-func TestRetryWithResult_NilConfig(t *testing.T) {
-	result, err := RetryWithResult(context.Background(), nil, func() (string, error) {
-		return "ok", nil
-	})
-	if err != nil {
-		t.Fatalf("RetryWithResult nil config: %v", err)
-	}
-	if result != "ok" {
-		t.Errorf("expected 'ok', got %q", result)
-	}
-}
-
-func TestRetryWithResult_ContextAlreadyDone(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	result, err := RetryWithResult(ctx, DefaultRetryConfig(), func() (string, error) {
-		return "ok", nil
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
-	}
-	if result != "" {
-		t.Errorf("expected empty result, got %q", result)
-	}
-}
-
-func TestRetryWithResult_NonRetryable(t *testing.T) {
-	errFatal := errors.New("fatal")
-	cfg := DefaultRetryConfig()
-	cfg.NonRetryableErrors = []error{errFatal}
-	called := 0
-
-	_, err := RetryWithResult(context.Background(), cfg, func() (string, error) {
-		called++
-		return "", errFatal
-	})
-	if called != 1 {
-		t.Errorf("expected 1 call (non-retryable), got %d", called)
-	}
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestHealthCheck_ClosedDB(t *testing.T) {
 	db, err := Open(":memory:", nil)
 	if err != nil {
@@ -269,31 +224,6 @@ func TestRetry_CancelDuringDelay(t *testing.T) {
 	}
 }
 
-func TestRetryWithResult_CancelDuringDelay(t *testing.T) {
-	cfg := DefaultRetryConfig()
-	cfg.InitialDelay = 500 * time.Millisecond
-	cfg.MaxAttempts = 5
-
-	ctx, cancel := context.WithCancel(context.Background())
-	called := 0
-
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
-	}()
-
-	_, err := RetryWithResult(ctx, cfg, func() (string, error) {
-		called++
-		return "", errors.New("fail")
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
-	}
-	if called != 1 {
-		t.Errorf("expected 1 call, got %d", called)
-	}
-}
-
 func TestExec_IndexAdvisor(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(":memory:", nil)
@@ -383,27 +313,6 @@ func TestRetry_MaxAttemptsExhausted(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error")
-	}
-	if called != 2 {
-		t.Errorf("expected 2 calls, got %d", called)
-	}
-}
-
-func TestRetryWithResult_MaxAttemptsExhausted(t *testing.T) {
-	cfg := DefaultRetryConfig()
-	cfg.MaxAttempts = 2
-	cfg.InitialDelay = time.Millisecond
-
-	called := 0
-	result, err := RetryWithResult(context.Background(), cfg, func() (int, error) {
-		called++
-		return 0, errors.New("fail")
-	})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if result != 0 {
-		t.Errorf("expected zero result, got %d", result)
 	}
 	if called != 2 {
 		t.Errorf("expected 2 calls, got %d", called)

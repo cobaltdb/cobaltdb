@@ -335,7 +335,7 @@ func (c *Catalog) loadMainTableRowsWithFDWOptions(from *query.TableRef, scanOpti
 		}
 	}
 
-	filtered, err = c.filterRowsForSelectRLSLocked(nil, mainTable.Name, mainTable.Columns, filtered)
+	filtered, err = c.filterRowsForSelectRLSLocked(nil, mainTable.Name, mainTable.Columns, filtered) // nil = fall back to catalog RLS ctx
 	if err != nil {
 		return mainTable.Columns, nil, err
 	}
@@ -922,7 +922,7 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 			}
 			joinRows = append(joinRows, vrow.Data)
 		}
-		joinRows, err = c.filterRowsForSelectRLSLocked(nil, joinTable.Name, joinTable.Columns, joinRows)
+		joinRows, err = c.filterRowsForSelectRLSLocked(nil, joinTable.Name, joinTable.Columns, joinRows) // nil = fall back to catalog RLS ctx
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1192,7 +1192,7 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 				}
 				rightRows = append(rightRows, rightRow)
 			}
-			rightRows, err = c.filterRowsForSelectRLSLocked(nil, joinTable.Name, joinTable.Columns, rightRows)
+			rightRows, err = c.filterRowsForSelectRLSLocked(nil, joinTable.Name, joinTable.Columns, rightRows) // nil = fall back to catalog RLS ctx
 			if err != nil {
 				return nil, nil, err
 			}

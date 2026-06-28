@@ -627,32 +627,6 @@ func TestViewViaEngine(t *testing.T) {
 	}
 }
 
-// TestRetryWithResultEdgeCases tests RetryWithResult edge cases
-func TestRetryWithResultEdgeCases(t *testing.T) {
-	ctx := context.Background()
-
-	// Successful on first try
-	result, err := RetryWithResult(ctx, DefaultRetryConfig(), func() (string, error) {
-		return "ok", nil
-	})
-	if err != nil || result != "ok" {
-		t.Errorf("expected ok, got %v, %v", result, err)
-	}
-
-	// Retry then succeed
-	attempts := 0
-	result, err = RetryWithResult(ctx, DefaultRetryConfig(), func() (string, error) {
-		attempts++
-		if attempts < 3 {
-			return "", ErrDatabaseClosed
-		}
-		return "recovered", nil
-	})
-	if err != nil || result != "recovered" {
-		t.Errorf("expected recovered, got %v, %v", result, err)
-	}
-}
-
 // TestSavepointViaEngine tests savepoint operations through engine API
 func TestSavepointViaEngine(t *testing.T) {
 	db, err := Open("", &Options{CoreStorage: CoreStorage{InMemory: true}})

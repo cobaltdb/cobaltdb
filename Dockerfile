@@ -7,8 +7,8 @@ FROM ${GO_IMAGE} AS builder
 ARG VERSION=dev
 ARG BUILD_TIME=unknown
 
-# Install build dependencies
-RUN apk add --no-cache git make
+# Build dependencies (go is already in the golang base image)
+RUN apk add --no-cache ca-certificates tzdata
 
 # Set working directory
 WORKDIR /build
@@ -36,7 +36,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 FROM ${RUNTIME_IMAGE}
 
 # Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata netcat-openbsd su-exec
+RUN apk add --no-cache ca-certificates tzdata su-exec wget
 
 # Create non-root user
 RUN addgroup -g 1000 -S cobaltdb && \
@@ -70,7 +70,7 @@ EXPOSE 4200 3307 8420
 VOLUME ["/data/cobaltdb"]
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=5 \
     CMD wget -q -O - http://127.0.0.1:8420/ready >/dev/null || exit 1
 
 # Default command

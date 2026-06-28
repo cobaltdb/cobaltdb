@@ -20,8 +20,8 @@ services:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8420/ready >/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 10s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
     networks:
       - cobaltdb_network

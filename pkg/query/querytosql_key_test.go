@@ -36,7 +36,9 @@ func TestQueryToSQLDistinguishesQueries(t *testing.T) {
 	}
 
 	// And the same query must serialize identically (so the cache still hits).
-	if QueryToSQL(mustSelect("SELECT id FROM t WHERE id = 7")) != QueryToSQL(mustSelect("SELECT id FROM t WHERE id = 7")) {
+	keyA := QueryToSQL(mustSelect("SELECT id FROM t WHERE id = 7"))
+	keyB := QueryToSQL(mustSelect("SELECT id FROM t WHERE id = 7"))
+	if keyA != keyB {
 		t.Error("identical queries produced different cache keys (cache would never hit)")
 	}
 }

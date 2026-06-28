@@ -1771,14 +1771,6 @@ func looksLikeNumber(s string) bool {
 	return false
 }
 
-// evaluateMatchExpr evaluates MATCH ... AGAINST for full-text search.
-// It acquires the catalog read lock; use evaluateMatchExprLocked when the caller already holds the lock.
-func evaluateMatchExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.MatchExpr, args []interface{}) (interface{}, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return evaluateMatchExprLocked(c, row, columns, expr, args)
-}
-
 // evaluateMatchExprLocked evaluates MATCH ... AGAINST for full-text search.
 // Caller must hold c.mu (read or write lock).
 func evaluateMatchExprLocked(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.MatchExpr, args []interface{}) (interface{}, error) {
@@ -2407,71 +2399,6 @@ func concatValues(a, b interface{}) string {
 	return ValueToStringKey(a) + ValueToStringKey(b)
 }
 
-func evaluateLike(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.LikeExpr, args []interface{}) (interface{}, error) {
-	left, err := evaluateExpression(c, row, columns, expr.Expr, args)
-	if err != nil {
-		return false, err
-	}
-
-	pattern, err := evaluateExpression(c, row, columns, expr.Pattern, args)
-	if err != nil {
-		return false, err
-	}
-
-	// Handle NULL - SQL three-valued logic: NULL in LIKE → NULL (unknown)
-	if left == nil || pattern == nil {
-		return nil, nil
-	}
-
-	leftStr, ok := left.(string)
-	if !ok {
-		leftStr = ValueToStringKey(left)
-	}
-
-	patternStr, ok := pattern.(string)
-	if !ok {
-		patternStr = ValueToStringKey(pattern)
-	}
-
-	// Handle ESCAPE character
-	escapeChar := byte(0)
-	if expr.Escape != nil {
-		escVal, err := evaluateExpression(c, row, columns, expr.Escape, args)
-		if err == nil && escVal != nil {
-			escStr := ValueToStringKey(escVal)
-			if len(escStr) == 1 {
-				escapeChar = escStr[0]
-			}
-		}
-	}
-
-	var matched bool
-	if escapeChar != 0 {
-		matched = matchLikeSimple(leftStr, patternStr, escapeChar)
-	} else {
-		matched = matchLikeSimple(leftStr, patternStr)
-	}
-
-	// Handle NOT LIKE
-	if expr.Not {
-		return !matched, nil
-	}
-	return matched, nil
-}
-
-func evaluateIsNull(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.IsNullExpr, args []interface{}) (interface{}, error) {
-	val, err := evaluateExpression(c, row, columns, expr.Expr, args)
-	if err != nil {
-		return false, err
-	}
-
-	isNull := val == nil
-	if expr.Not {
-		return !isNull, nil
-	}
-	return isNull, nil
-}
-
 func matchLikeSimple(s, pattern string, escapeChar ...byte) bool {
 	if pattern == "" {
 		return s == ""
@@ -2653,38 +2580,4 @@ func castTypeToString(t query.TokenType) string {
 	default:
 		return "TEXT"
 	}
-}
-
-func evaluateBetween(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.BetweenExpr, args []interface{}) (interface{}, error) {
-	exprVal, err := evaluateExpression(c, row, columns, expr.Expr, args)
-	if err != nil {
-		return false, err
-	}
-
-	lowerVal, err := evaluateExpression(c, row, columns, expr.Lower, args)
-	if err != nil {
-		return false, err
-	}
-
-	upperVal, err := evaluateExpression(c, row, columns, expr.Upper, args)
-	if err != nil {
-		return false, err
-	}
-
-	// Handle NULL - SQL three-valued logic: NULL in BETWEEN → NULL (unknown)
-	if exprVal == nil || lowerVal == nil || upperVal == nil {
-		return nil, nil
-	}
-
-	// Check: lower <= expr <= upper
-	lowCmp := compareValues(exprVal, lowerVal)
-	highCmp := compareValues(exprVal, upperVal)
-
-	result := lowCmp >= 0 && highCmp <= 0
-
-	// Handle NOT BETWEEN
-	if expr.Not {
-		return !result, nil
-	}
-	return result, nil
 }
