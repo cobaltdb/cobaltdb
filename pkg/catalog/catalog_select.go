@@ -460,6 +460,11 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 
 	selectCols, hiddenOrderByCols := c.resolveHiddenJoinOrderByCols(stmt, selectCols, mainTableCols, mainAlias, combinedColumns, tableOffsets)
 
+	// Also resolve hidden columns for window function ORDER BY / PARTITION BY
+	// in JOIN contexts so evalWindowExprOnRow can resolve them from projected rows.
+	hiddenWindowCols := c.resolveHiddenWindowCols(stmt, &selectCols, mainTableCols, mainAlias, combinedColumns, tableOffsets)
+	hiddenOrderByCols += hiddenWindowCols
+
 	resultRows := c.projectJoinSelectCols(stmt, intermediateRows, selectCols, combinedColumns, tableOffsets, args)
 
 	// Evaluate window functions on projected rows
@@ -596,6 +601,90 @@ func (c *Catalog) resolveHiddenJoinOrderByCols(stmt *query.SelectStmt, selectCol
 		}
 	}
 	return selectCols, hiddenOrderByCols
+}
+
+// resolveHiddenWindowCols adds hidden columns for window function PARTITION BY
+// and ORDER BY expressions that reference joined-table columns. Without this,
+// evalWindowExprOnRow cannot resolve them from the projected row, causing
+// incorrect partitioning and peer detection in JOIN contexts.
+func (c *Catalog) resolveHiddenWindowCols(stmt *query.SelectStmt, selectCols *[]selectColInfo, mainTableCols []ColumnDef, mainAlias string, combinedColumns []ColumnDef, tableOffsets []tableOffset) int {
+	hiddenCols := 0
+	for _, ci := range *selectCols {
+		if !ci.isWindow || ci.windowExpr == nil {
+			continue
+		}
+		we := ci.windowExpr
+		// Collect column names/table names from PARTITION BY and ORDER BY expressions.
+		addColumnRef := func(expr query.Expression) {
+			var colName, tblName string
+			switch e := expr.(type) {
+			case *query.QualifiedIdentifier:
+				colName = e.Column
+				tblName = e.Table
+			case *query.Identifier:
+				colName = e.Name
+			default:
+				return
+			}
+			if colName == "" {
+				return
+			}
+			// Skip if already in selectCols.
+			colLower := toLowerFast(colName)
+			tblLower := toLowerFast(tblName)
+			for _, s := range *selectCols {
+				if toLowerFast(s.name) == colLower && (tblName == "" || toLowerFast(s.tableName) == tblLower) {
+					return
+				}
+			}
+			// Resolve against table offsets.
+			if tblName != "" {
+				for _, to := range tableOffsets {
+					if toLowerFast(to.name) == tblLower {
+						for _, col := range combinedColumns {
+							if toLowerFast(col.Name) == colLower && toLowerFast(col.sourceTbl) == tblLower {
+								rawIdx := -1
+								tblDef, tErr := c.getTableLocked(to.name)
+								if tErr == nil {
+									rawIdx = tblDef.GetColumnIndex(colName)
+								}
+								if rawIdx < 0 {
+									for ci, cc := range combinedColumns[to.offset : to.offset+to.count] {
+										if toLowerFast(cc.Name) == colLower {
+											rawIdx = ci
+											break
+										}
+									}
+								}
+								if rawIdx >= 0 {
+									*selectCols = append(*selectCols, selectColInfo{name: colName, tableName: to.name, index: rawIdx, isWindow: false})
+									hiddenCols++
+								}
+								return
+							}
+						}
+						return
+					}
+				}
+			} else {
+				// Unqualified — check combined columns.
+				for ci, col := range combinedColumns {
+					if toLowerFast(col.Name) == colLower {
+						*selectCols = append(*selectCols, selectColInfo{name: colName, tableName: mainAlias, index: ci})
+						hiddenCols++
+						return
+					}
+				}
+			}
+		}
+		for _, p := range we.PartitionBy {
+			addColumnRef(p)
+		}
+		for _, ob := range we.OrderBy {
+			addColumnRef(ob.Expr)
+		}
+	}
+	return hiddenCols
 }
 
 // projectJoinSelectCols projects select columns from joined rows.
