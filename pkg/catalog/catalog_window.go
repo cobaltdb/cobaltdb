@@ -8,9 +8,10 @@ import (
 
 // windowPartEntry tracks a row within a window function partition.
 type windowPartEntry struct {
-	originalIdx int
-	row         []interface{}
-	fullRow     []interface{}
+	originalIdx  int
+	row          []interface{}
+	fullRow      []interface{}
+	orderByVals  []interface{} // pre-computed ORDER BY values for peer detection
 }
 
 func (c *Catalog) evaluateWindowFunctions(rows [][]interface{}, selectCols []selectColInfo, table *TableDef, stmt *query.SelectStmt, args []interface{}, fullRows [][]interface{}) [][]interface{} {
@@ -211,6 +212,15 @@ func (c *Catalog) evalWindowPartitions(rows [][]interface{}, colIdx int, we *que
 				}
 				return false
 			})
+			// Pre-compute ORDER BY values for peer detection. This avoids
+			// re-evaluating ORDER BY expressions in JOIN/CTE contexts where
+			// column resolution may differ from sort-time resolution.
+			for i := range entries {
+				entries[i].orderByVals = make([]interface{}, len(we.OrderBy))
+				for j, ob := range we.OrderBy {
+					entries[i].orderByVals[j] = c.evalWindowExprOnRow(ob.Expr, entries[i].row, selectCols, table, args, entries[i].fullRow)
+				}
+			}
 		}
 
 		// Compute window function values
@@ -240,10 +250,8 @@ func (c *Catalog) evalWindowRankFunc(rows [][]interface{}, colIdx int, entries [
 		for i, entry := range entries {
 			if i > 0 {
 				changed := false
-				for _, ob := range we.OrderBy {
-					va := c.evalWindowExprOnRow(ob.Expr, entries[i-1].row, selectCols, table, args, entries[i-1].fullRow)
-					vb := c.evalWindowExprOnRow(ob.Expr, entry.row, selectCols, table, args, entry.fullRow)
-					if compareValues(va, vb) != 0 {
+				for j := range we.OrderBy {
+					if compareValues(entries[i-1].orderByVals[j], entry.orderByVals[j]) != 0 {
 						changed = true
 						break
 					}
@@ -261,10 +269,8 @@ func (c *Catalog) evalWindowRankFunc(rows [][]interface{}, colIdx int, entries [
 		for i, entry := range entries {
 			if i > 0 {
 				changed := false
-				for _, ob := range we.OrderBy {
-					va := c.evalWindowExprOnRow(ob.Expr, entries[i-1].row, selectCols, table, args, entries[i-1].fullRow)
-					vb := c.evalWindowExprOnRow(ob.Expr, entry.row, selectCols, table, args, entry.fullRow)
-					if compareValues(va, vb) != 0 {
+				for j := range we.OrderBy {
+					if compareValues(entries[i-1].orderByVals[j], entry.orderByVals[j]) != 0 {
 						changed = true
 						break
 					}
@@ -314,11 +320,11 @@ func (c *Catalog) evalWindowRankFunc(rows [][]interface{}, colIdx int, entries [
 
 // windowSamePeer reports whether two entries share the same ORDER BY values
 // (i.e. they are peers for ranking purposes). With no ORDER BY, all rows peer.
+// Uses pre-computed orderByVals captured after sorting, avoiding re-evaluation
+// that can produce wrong results in JOIN/CTE contexts.
 func (c *Catalog) windowSamePeer(we *query.WindowExpr, e1, e2 windowPartEntry, selectCols []selectColInfo, table *TableDef, args []interface{}) bool {
-	for _, ob := range we.OrderBy {
-		va := c.evalWindowExprOnRow(ob.Expr, e1.row, selectCols, table, args, e1.fullRow)
-		vb := c.evalWindowExprOnRow(ob.Expr, e2.row, selectCols, table, args, e2.fullRow)
-		if compareValues(va, vb) != 0 {
+	for i := range we.OrderBy {
+		if compareValues(e1.orderByVals[i], e2.orderByVals[i]) != 0 {
 			return false
 		}
 	}
@@ -490,18 +496,28 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 		}
 		if len(we.OrderBy) > 0 {
 			count := int64(0)
-			for _, entry := range entries {
-				if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
-					if isStar {
-						count++
-					} else {
-						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-						if val != nil {
+			i := 0
+			for i < len(entries) {
+				j := i
+				for j+1 < len(entries) && c.windowSamePeer(we, entries[i], entries[j+1], selectCols, table, args) {
+					j++
+				}
+				for k := i; k <= j; k++ {
+					if c.windowEntryPassesFilter(we, entries[k], selectCols, table, args) {
+						if isStar {
 							count++
+						} else {
+							val := c.evalWindowExprOnRow(we.Args[0], entries[k].row, selectCols, table, args, entries[k].fullRow)
+							if val != nil {
+								count++
+							}
 						}
 					}
 				}
-				rows[entry.originalIdx][colIdx] = count
+				for k := i; k <= j; k++ {
+					rows[entries[k].originalIdx][colIdx] = count
+				}
+				i = j + 1
 			}
 		} else {
 			count := int64(0)
@@ -528,21 +544,31 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 			if len(we.OrderBy) > 0 {
 				sum := 0.0
 				hasVal := false
-				for _, entry := range entries {
-					if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
-						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-						if val != nil {
-							if v, ok := toFloat64(val); ok {
-								sum += v
-								hasVal = true
+				i := 0
+				for i < len(entries) {
+					j := i
+					for j+1 < len(entries) && c.windowSamePeer(we, entries[i], entries[j+1], selectCols, table, args) {
+						j++
+					}
+					for k := i; k <= j; k++ {
+						if c.windowEntryPassesFilter(we, entries[k], selectCols, table, args) {
+							val := c.evalWindowExprOnRow(we.Args[0], entries[k].row, selectCols, table, args, entries[k].fullRow)
+							if val != nil {
+								if v, ok := toFloat64(val); ok {
+									sum += v
+									hasVal = true
+								}
 							}
 						}
 					}
-					if hasVal {
-						rows[entry.originalIdx][colIdx] = sum
-					} else {
-						rows[entry.originalIdx][colIdx] = nil
+					for k := i; k <= j; k++ {
+						if hasVal {
+							rows[entries[k].originalIdx][colIdx] = sum
+						} else {
+							rows[entries[k].originalIdx][colIdx] = nil
+						}
 					}
+					i = j + 1
 				}
 			} else {
 				sum := 0.0
@@ -574,21 +600,31 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 			if len(we.OrderBy) > 0 {
 				sum := 0.0
 				count := 0
-				for _, entry := range entries {
-					if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
-						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-						if val != nil {
-							if v, ok := toFloat64(val); ok {
-								sum += v
-								count++
+				i := 0
+				for i < len(entries) {
+					j := i
+					for j+1 < len(entries) && c.windowSamePeer(we, entries[i], entries[j+1], selectCols, table, args) {
+						j++
+					}
+					for k := i; k <= j; k++ {
+						if c.windowEntryPassesFilter(we, entries[k], selectCols, table, args) {
+							val := c.evalWindowExprOnRow(we.Args[0], entries[k].row, selectCols, table, args, entries[k].fullRow)
+							if val != nil {
+								if v, ok := toFloat64(val); ok {
+									sum += v
+									count++
+								}
 							}
 						}
 					}
-					if count > 0 {
-						rows[entry.originalIdx][colIdx] = sum / float64(count)
-					} else {
-						rows[entry.originalIdx][colIdx] = nil
+					for k := i; k <= j; k++ {
+						if count > 0 {
+							rows[entries[k].originalIdx][colIdx] = sum / float64(count)
+						} else {
+							rows[entries[k].originalIdx][colIdx] = nil
+						}
 					}
+					i = j + 1
 				}
 			} else {
 				sum := 0.0
@@ -622,14 +658,24 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 		if len(we.Args) > 0 && len(entries) > 0 {
 			if len(we.OrderBy) > 0 {
 				var minVal interface{}
-				for _, entry := range entries {
-					if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
-						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-						if val != nil && (minVal == nil || compareValues(val, minVal) < 0) {
-							minVal = val
+				i := 0
+				for i < len(entries) {
+					j := i
+					for j+1 < len(entries) && c.windowSamePeer(we, entries[i], entries[j+1], selectCols, table, args) {
+						j++
+					}
+					for k := i; k <= j; k++ {
+						if c.windowEntryPassesFilter(we, entries[k], selectCols, table, args) {
+							val := c.evalWindowExprOnRow(we.Args[0], entries[k].row, selectCols, table, args, entries[k].fullRow)
+							if val != nil && (minVal == nil || compareValues(val, minVal) < 0) {
+								minVal = val
+							}
 						}
 					}
-					rows[entry.originalIdx][colIdx] = minVal
+					for k := i; k <= j; k++ {
+						rows[entries[k].originalIdx][colIdx] = minVal
+					}
+					i = j + 1
 				}
 			} else {
 				var minVal interface{}
@@ -653,14 +699,24 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 		if len(we.Args) > 0 && len(entries) > 0 {
 			if len(we.OrderBy) > 0 {
 				var maxVal interface{}
-				for _, entry := range entries {
-					if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
-						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-						if val != nil && (maxVal == nil || compareValues(val, maxVal) > 0) {
-							maxVal = val
+				i := 0
+				for i < len(entries) {
+					j := i
+					for j+1 < len(entries) && c.windowSamePeer(we, entries[i], entries[j+1], selectCols, table, args) {
+						j++
+					}
+					for k := i; k <= j; k++ {
+						if c.windowEntryPassesFilter(we, entries[k], selectCols, table, args) {
+							val := c.evalWindowExprOnRow(we.Args[0], entries[k].row, selectCols, table, args, entries[k].fullRow)
+							if val != nil && (maxVal == nil || compareValues(val, maxVal) > 0) {
+								maxVal = val
+							}
 						}
 					}
-					rows[entry.originalIdx][colIdx] = maxVal
+					for k := i; k <= j; k++ {
+						rows[entries[k].originalIdx][colIdx] = maxVal
+					}
+					i = j + 1
 				}
 			} else {
 				var maxVal interface{}
