@@ -1701,6 +1701,40 @@ func parseVectorString(s string) ([]float64, error) {
 	return arr, nil
 }
 
+func toInt64(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int8:
+		return int64(n), true
+	case int16:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	case uint:
+		return int64(n), true
+	case uint8:
+		return int64(n), true
+	case uint16:
+		return int64(n), true
+	case uint32:
+		return int64(n), true
+	case uint64:
+		return int64(n), true
+	case float32:
+		if n == float32(int64(n)) {
+			return int64(n), true
+		}
+	case float64:
+		if n == float64(int64(n)) {
+			return int64(n), true
+		}
+	}
+	return 0, false
+}
+
 func toFloat64(v interface{}) (float64, bool) {
 	switch n := v.(type) {
 	case int:

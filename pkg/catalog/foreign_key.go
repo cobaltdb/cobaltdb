@@ -1430,6 +1430,14 @@ func (fke *ForeignKeyEnforcer) valuesEqual(a, b interface{}) bool {
 		return false
 	}
 
+	// Fast path for identical types — compare as int64 when both are ints,
+	// avoiding float64 coercion that loses precision above 2^53.
+	if ai, aOK := toInt64(a); aOK {
+		if bi, bOK := toInt64(b); bOK {
+			return ai == bi
+		}
+	}
+
 	// Normalize both values to float64 for numeric comparison
 	var aFloat, bFloat float64
 	aIsNum := false

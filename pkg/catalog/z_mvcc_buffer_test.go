@@ -296,18 +296,6 @@ func TestBufferedInsert_UniqueIndexConflict(t *testing.T) {
 	c.RollbackTransaction()
 }
 
-func toInt64(v interface{}) (int64, bool) {
-	switch n := v.(type) {
-	case int:
-		return int64(n), true
-	case int64:
-		return n, true
-	case float64:
-		return int64(n), true
-	}
-	return 0, false
-}
-
 // TestBufferedUpdate_Basic verifies that UPDATE in buffered mode defers B-tree
 // mutation until commit time.
 func TestBufferedUpdate_Basic(t *testing.T) {
