@@ -743,6 +743,210 @@ function renameTab(id) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Admin panel: mint / rotate / revoke scoped tokens + audit log
+// ---------------------------------------------------------------------------
+
+// Detect the current principal and reveal the admin button only for admins.
+async function initAdmin() {
+    try {
+        const res = await fetch('/api/me');
+        if (!res.ok) return;
+        const me = await res.json();
+        if (me && me.isAdmin) {
+            const btn = document.getElementById('adminBtn');
+            if (btn) btn.style.display = '';
+        }
+    } catch (e) {
+        // Non-fatal: if /api/me is unreachable, the panel simply stays hidden.
+    }
+}
+
+function openAdminPanel() {
+    document.getElementById('adminModal').classList.add('active');
+    showAdminTab('tokens');
+    loadAdminTokens();
+}
+
+function closeAdminPanel() {
+    document.getElementById('adminModal').classList.remove('active');
+}
+
+function showAdminTab(which) {
+    const onTokens = which === 'tokens';
+    document.getElementById('adminTokensPane').style.display = onTokens ? '' : 'none';
+    document.getElementById('adminAuditPane').style.display = onTokens ? 'none' : '';
+    document.getElementById('adminTabTokens').classList.toggle('active', onTokens);
+    document.getElementById('adminTabAudit').classList.toggle('active', !onTokens);
+    if (!onTokens) loadAdminAudit();
+}
+
+async function loadAdminTokens() {
+    const wrap = document.getElementById('adminTokensList');
+    wrap.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+    try {
+        const res = await fetch('/api/admin/tokens');
+        if (!res.ok) {
+            wrap.innerHTML = '<div class="empty">Failed to load tokens (' + res.status + ')</div>';
+            return;
+        }
+        const data = await res.json();
+        const tokens = (data && data.tokens) || [];
+        if (tokens.length === 0) {
+            wrap.innerHTML = '<div class="empty">No tokens</div>';
+            return;
+        }
+        let html = '<table class="admin-table"><thead><tr>' +
+            '<th>Name</th><th>Role</th><th>Expires</th><th>Tables</th><th></th>' +
+            '</tr></thead><tbody>';
+        for (const t of tokens) {
+            const isBootstrap = t.id === 'bootstrap';
+            const expires = t.expires_at ? new Date(t.expires_at).toLocaleString() : 'never';
+            const tables = (t.tables && t.tables.length) ? t.tables.join(', ') : '<span class="muted">all</span>';
+            html += '<tr><td>' + escapeHtml(t.name) + '</td>' +
+                '<td><span class="role-badge role-' + escapeHtml(t.role) + '">' + escapeHtml(t.role) + '</span></td>' +
+                '<td>' + escapeHtml(expires) + '</td>' +
+                '<td>' + tables + '</td><td class="admin-actions">';
+            if (isBootstrap) {
+                html += '<span class="muted">bootstrap</span>';
+            } else {
+                const id = escapeHtml(t.id);
+                html += '<button class="btn btn-secondary btn-sm" onclick="rotateToken(\'' + id + '\')">Rotate</button> ' +
+                    '<button class="btn btn-danger btn-sm" onclick="revokeToken(\'' + id + '\', \'' + escapeHtml(t.name) + '\')">Revoke</button>';
+            }
+            html += '</td></tr>';
+        }
+        html += '</tbody></table>';
+        wrap.innerHTML = html;
+    } catch (e) {
+        wrap.innerHTML = '<div class="empty">Error: ' + escapeHtml(e.message) + '</div>';
+    }
+}
+
+function showMintResult(message, token) {
+    const box = document.getElementById('mintResult');
+    box.style.display = '';
+    if (token) {
+        box.className = 'mint-result success';
+        box.innerHTML = '<div><i class="fas fa-check-circle"></i> ' + escapeHtml(message) + '</div>' +
+            '<div class="token-reveal"><code id="newTokenValue">' + escapeHtml(token) + '</code>' +
+            '<button class="btn btn-secondary btn-sm" onclick="copyNewToken()"><i class="fas fa-copy"></i> Copy</button></div>' +
+            '<div class="hint">Copy it now &mdash; it is shown only once and cannot be recovered.</div>';
+    } else {
+        box.className = 'mint-result error';
+        box.innerHTML = '<i class="fas fa-exclamation-triangle"></i> ' + escapeHtml(message);
+    }
+}
+
+function copyNewToken() {
+    const el = document.getElementById('newTokenValue');
+    if (el && navigator.clipboard) navigator.clipboard.writeText(el.textContent);
+}
+
+document.getElementById('mintTokenForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const name = document.getElementById('mintName').value.trim();
+    const role = document.getElementById('mintRole').value;
+    const ttl = document.getElementById('mintTTL').value.trim();
+    const tablesRaw = document.getElementById('mintTables').value.trim();
+    const tables = tablesRaw ? tablesRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+    const body = { name: name, role: role };
+    if (ttl) body.ttl = ttl;
+    if (tables.length) body.tables = tables;
+
+    try {
+        const res = await fetch('/api/admin/tokens', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (res.status === 201) {
+            const data = await res.json();
+            showMintResult('Token "' + name + '" minted (' + role + ').', data.token);
+            document.getElementById('mintTokenForm').reset();
+            loadAdminTokens();
+        } else {
+            const text = await res.text();
+            showMintResult('Mint failed: ' + (text || res.status), null);
+        }
+    } catch (err) {
+        showMintResult('Mint failed: ' + err.message, null);
+    }
+});
+
+async function rotateToken(id) {
+    if (!confirm('Rotate this token? The current value stops working immediately.')) return;
+    try {
+        const res = await fetch('/api/admin/tokens/' + encodeURIComponent(id) + '/rotate', { method: 'POST' });
+        if (res.ok) {
+            const data = await res.json();
+            showMintResult('Token rotated. New value:', data.token);
+            loadAdminTokens();
+        } else {
+            showMintResult('Rotate failed: ' + (await res.text() || res.status), null);
+        }
+    } catch (err) {
+        showMintResult('Rotate failed: ' + err.message, null);
+    }
+}
+
+async function revokeToken(id, name) {
+    if (!confirm('Revoke token "' + name + '"? This cannot be undone.')) return;
+    try {
+        const res = await fetch('/api/admin/tokens/' + encodeURIComponent(id), { method: 'DELETE' });
+        if (res.ok) {
+            loadAdminTokens();
+        } else {
+            alert('Revoke failed: ' + (await res.text() || res.status));
+        }
+    } catch (err) {
+        alert('Revoke failed: ' + err.message);
+    }
+}
+
+async function loadAdminAudit() {
+    const wrap = document.getElementById('adminAuditList');
+    wrap.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+    try {
+        const res = await fetch('/api/admin/audit?limit=100');
+        if (!res.ok) {
+            wrap.innerHTML = '<div class="empty">Failed to load audit log (' + res.status + ')</div>';
+            return;
+        }
+        const data = await res.json();
+        const events = (data && data.events) || [];
+        if (events.length === 0) {
+            wrap.innerHTML = '<div class="empty">No audit events</div>';
+            return;
+        }
+        let html = '<table class="admin-table audit-table"><thead><tr>' +
+            '<th>Time</th><th>Principal</th><th>Outcome</th><th>Action</th><th>SQL</th>' +
+            '</tr></thead><tbody>';
+        for (const ev of events) {
+            const ts = ev.ts ? new Date(ev.ts).toLocaleTimeString() : '';
+            const who = (ev.principal || ev.principal_id || '?') + (ev.role ? ' (' + ev.role + ')' : '');
+            const outcomeClass = ev.outcome === 'allowed' ? 'ok' : (ev.outcome === 'denied' ? 'denied' : 'err');
+            const action = ev.detail || (ev.method + ' ' + ev.path) || '';
+            const sql = ev.sql ? escapeHtml(ev.sql) : '<span class="muted">&mdash;</span>';
+            html += '<tr><td class="nowrap">' + escapeHtml(ts) + '</td>' +
+                '<td>' + escapeHtml(who) + '</td>' +
+                '<td><span class="outcome-badge outcome-' + outcomeClass + '">' + escapeHtml(ev.outcome || '') + '</span></td>' +
+                '<td>' + escapeHtml(action) + '</td>' +
+                '<td class="audit-sql">' + sql + '</td></tr>';
+        }
+        html += '</tbody></table>';
+        wrap.innerHTML = html;
+    } catch (e) {
+        wrap.innerHTML = '<div class="empty">Error: ' + escapeHtml(e.message) + '</div>';
+    }
+}
+
+// Close admin modal on backdrop click.
+document.getElementById('adminModal').addEventListener('click', function(e) {
+    if (e.target === this) closeAdminPanel();
+});
+
 // Initialize on load
 window.addEventListener('DOMContentLoaded', function() {
     loadTheme();
@@ -750,4 +954,5 @@ window.addEventListener('DOMContentLoaded', function() {
     loadHistory();
     loadSavedQueries();
     renderTabs();
+    initAdmin();
 });

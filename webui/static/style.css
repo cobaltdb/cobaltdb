@@ -821,3 +821,235 @@ body {
         font-size: 12px;
     }
 }
+
+/* ---------------------------------------------------------------------------
+   Admin panel (tokens + audit)
+   --------------------------------------------------------------------------- */
+.sidebar-header {
+    position: relative;
+}
+
+.admin-btn {
+    position: absolute;
+    top: 18px;
+    right: 16px;
+    background: none;
+    border: 1px solid var(--border-color);
+    color: var(--accent-color);
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.admin-btn:hover {
+    background: var(--border-color);
+    color: var(--text-primary);
+}
+
+.admin-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.admin-tab {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 14px;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+}
+
+.admin-tab:hover {
+    color: var(--text-primary);
+}
+
+.admin-tab.active {
+    color: var(--accent-color);
+    border-bottom-color: var(--accent-color);
+}
+
+.mint-form {
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.mint-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.mint-row .form-group {
+    flex: 1;
+    min-width: 120px;
+}
+
+.hint {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 400;
+}
+
+.mint-result {
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+    font-size: 13px;
+}
+
+.mint-result.success {
+    background: rgba(16, 185, 129, 0.1);
+    border: 1px solid var(--success-color);
+}
+
+.mint-result.error {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid var(--danger-color);
+}
+
+.token-reveal {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+}
+
+.token-reveal code {
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: 12px;
+    word-break: break-all;
+    flex: 1;
+}
+
+.admin-list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 12px 0 8px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.admin-table-wrap {
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+
+.admin-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.admin-table th,
+.admin-table td {
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: top;
+}
+
+.admin-table th {
+    position: sticky;
+    top: 0;
+    background: var(--panel-bg);
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.admin-table tr:last-child td {
+    border-bottom: none;
+}
+
+.admin-actions {
+    white-space: nowrap;
+}
+
+.btn-sm {
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+.btn-danger {
+    background: var(--danger-color);
+    color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+    background: #dc2626;
+}
+
+.muted {
+    color: var(--text-muted);
+}
+
+.role-badge,
+.outcome-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.role-admin {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+}
+
+.role-readwrite {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+}
+
+.role-readonly {
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+}
+
+.outcome-ok {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+}
+
+.outcome-denied {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+}
+
+.outcome-err {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+}
+
+.audit-table .audit-sql {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: 12px;
+    max-width: 280px;
+    word-break: break-all;
+}
+
+.nowrap {
+    white-space: nowrap;
+}

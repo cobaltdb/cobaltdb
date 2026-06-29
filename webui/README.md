@@ -126,6 +126,18 @@ Audit events carry the principal id/name/role, remote address, method, path,
 query class, the SQL (truncated), and the outcome (`allowed`/`denied`/`error`).
 Token material is never logged.
 
+### Admin UI panel
+
+Admins now get a small shield button in the sidebar that opens a management
+panel for:
+
+- minting scoped tokens (`name`, `role`, optional `ttl`, optional `tables`)
+- rotating and revoking existing non-bootstrap tokens
+- viewing the recent in-memory audit log
+
+The raw token value is shown exactly once after mint/rotate so it can be copied.
+Bootstrap remains non-revocable and is marked as such in the UI.
+
 ## Saved Queries
 
 You can save frequently used queries for quick access:

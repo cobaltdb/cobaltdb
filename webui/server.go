@@ -212,6 +212,8 @@ func main() {
 	mux.HandleFunc("/api/export-saved-queries", server.handleExportSavedQueries)
 	mux.HandleFunc("/api/import-saved-queries", server.handleImportSavedQueries)
 	mux.HandleFunc("/api/update-row", server.handleUpdateRow)
+	// Current principal — lets the UI show admin-only controls.
+	mux.HandleFunc("/api/me", server.handleMe)
 	// Admin-only token management + audit (RBAC enforced inside the handlers).
 	mux.HandleFunc("/api/admin/tokens", server.handleAdminTokens)
 	mux.HandleFunc("/api/admin/tokens/", server.handleAdminToken)
@@ -1277,6 +1279,24 @@ func (s *Server) handleUpdateRow(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	writeJSON(w, map[string]interface{}{
 		"success": true,
+	})
+}
+
+// handleMe reports the current principal so the UI can decide which controls to
+// show (e.g. the admin token panel). It exposes only non-secret metadata.
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	p := s.effectivePrincipal(r)
+	w.Header().Set("Content-Type", "application/json")
+	writeJSON(w, map[string]interface{}{
+		"id":          p.ID,
+		"name":        p.Name,
+		"role":        p.Role,
+		"isAdmin":     p.Role.isAdmin(),
+		"authEnabled": s.authEnabled,
 	})
 }
 

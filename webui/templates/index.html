@@ -17,6 +17,9 @@
             <div class="sidebar-header">
                 <h1><i class="fas fa-database"></i> CobaltDB</h1>
                 <span class="version">{{.Version}}</span>
+                <button id="adminBtn" class="admin-btn" title="Admin: tokens & audit" onclick="openAdminPanel()" style="display: none;">
+                    <i class="fas fa-user-shield"></i>
+                </button>
             </div>
 
             <div class="database-info">
@@ -147,6 +150,74 @@
                             <button type="submit" class="btn btn-primary">Save</button>
                         </div>
                     </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Admin Panel Modal -->
+        <div id="adminModal" class="modal">
+            <div class="modal-content" style="max-width: 820px;">
+                <div class="modal-header">
+                    <h2><i class="fas fa-user-shield"></i> Admin &mdash; Tokens &amp; Audit</h2>
+                    <button class="close-btn" onclick="closeAdminPanel()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="admin-tabs">
+                        <button id="adminTabTokens" class="admin-tab active" onclick="showAdminTab('tokens')">Tokens</button>
+                        <button id="adminTabAudit" class="admin-tab" onclick="showAdminTab('audit')">Audit Log</button>
+                    </div>
+
+                    <!-- Tokens tab -->
+                    <div id="adminTokensPane" class="admin-pane">
+                        <form id="mintTokenForm" class="mint-form">
+                            <div class="mint-row">
+                                <div class="form-group">
+                                    <label for="mintName">Name *</label>
+                                    <input type="text" id="mintName" class="form-input" placeholder="e.g. reporting" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="mintRole">Role</label>
+                                    <select id="mintRole" class="form-input">
+                                        <option value="readonly">readonly</option>
+                                        <option value="readwrite">readwrite</option>
+                                        <option value="admin">admin</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="mintTTL">TTL</label>
+                                    <input type="text" id="mintTTL" class="form-input" placeholder="e.g. 24h, 0">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="mintTables">Table allow-list <span class="hint">(comma-separated, non-admin only; blank = all)</span></label>
+                                <input type="text" id="mintTables" class="form-input" placeholder="users, orders">
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary"><i class="fas fa-plus"></i> Mint token</button>
+                            </div>
+                        </form>
+
+                        <div id="mintResult" class="mint-result" style="display: none;"></div>
+
+                        <div class="admin-list-header">
+                            <span>Existing tokens</span>
+                            <button class="btn btn-secondary btn-sm" onclick="loadAdminTokens()" title="Refresh"><i class="fas fa-sync"></i></button>
+                        </div>
+                        <div id="adminTokensList" class="admin-table-wrap">
+                            <div class="empty">No tokens loaded</div>
+                        </div>
+                    </div>
+
+                    <!-- Audit tab -->
+                    <div id="adminAuditPane" class="admin-pane" style="display: none;">
+                        <div class="admin-list-header">
+                            <span>Recent activity</span>
+                            <button class="btn btn-secondary btn-sm" onclick="loadAdminAudit()" title="Refresh"><i class="fas fa-sync"></i></button>
+                        </div>
+                        <div id="adminAuditList" class="admin-table-wrap">
+                            <div class="empty">No audit events loaded</div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

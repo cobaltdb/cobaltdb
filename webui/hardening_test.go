@@ -520,6 +520,47 @@ func TestAdminAuditRequiresAdmin(t *testing.T) {
 	}
 }
 
+func TestHandleMeReportsAdmin(t *testing.T) {
+	srv := newAuthedServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req = withPrincipal(req, principal{ID: "a", Name: "admin", Role: RoleAdmin})
+	rec := httptest.NewRecorder()
+	srv.handleMe(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleMe status = %d, want 200", rec.Code)
+	}
+	var resp struct {
+		Role    Role `json:"role"`
+		IsAdmin bool `json:"isAdmin"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode /api/me: %v", err)
+	}
+	if !resp.IsAdmin || resp.Role != RoleAdmin {
+		t.Fatalf("unexpected /api/me for admin: %+v", resp)
+	}
+}
+
+func TestHandleMeReportsNonAdmin(t *testing.T) {
+	srv := newAuthedServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req = withPrincipal(req, principal{ID: "r", Name: "ro", Role: RoleReadOnly})
+	rec := httptest.NewRecorder()
+	srv.handleMe(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleMe status = %d, want 200", rec.Code)
+	}
+	var resp struct {
+		IsAdmin bool `json:"isAdmin"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode /api/me: %v", err)
+	}
+	if resp.IsAdmin {
+		t.Fatal("readonly principal must not be reported as admin")
+	}
+}
+
 func newMemDB(t *testing.T) *engine.DB {
 	t.Helper()
 	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
