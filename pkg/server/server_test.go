@@ -21,7 +21,7 @@ func TestNewServer(t *testing.T) {
 	}
 	defer db.Close()
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	server, err := New(ps, DefaultConfig())
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
@@ -50,7 +50,7 @@ func TestNewRejectsEmptyAdminPassword(t *testing.T) {
 	}
 	defer db.Close()
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	_, err = New(ps, &Config{
 		AuthEnabled:      true,
 		DefaultAdminUser: "admin",
@@ -68,7 +68,7 @@ func TestNewRequireAuthEnablesAuthentication(t *testing.T) {
 	}
 	defer db.Close()
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	server, err := New(ps, &Config{
 		RequireAuth:      true,
 		DefaultAdminUser: "admin",
@@ -117,7 +117,7 @@ func TestNewRejectsInvalidResourceConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-   ps := NewProductionServer(db, DefaultProductionConfig())
+			ps := NewProductionServer(db, DefaultProductionConfig())
 			server, err := New(ps, tt.config)
 			if err == nil {
 				t.Fatalf("New succeeded with invalid config: %#v", server)
@@ -159,7 +159,7 @@ func TestNewRejectsTimeoutOverflow(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-   ps := NewProductionServer(db, DefaultProductionConfig())
+			ps := NewProductionServer(db, DefaultProductionConfig())
 			_, err := New(ps, tt.config)
 			if err == nil {
 				t.Fatal("expected invalid timeout to be rejected")
@@ -207,7 +207,7 @@ func TestServerClose(t *testing.T) {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	server, err := New(ps, DefaultConfig())
 	if err != nil {
 		db.Close()
@@ -437,7 +437,7 @@ func TestServerWithNilConfig(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, err := New(ps, nil)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
@@ -451,7 +451,7 @@ func TestHandlePing(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -469,7 +469,7 @@ func TestHandleUnknownMessage(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -491,7 +491,7 @@ func TestHandleQueryCreate(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -521,7 +521,7 @@ func TestHandleQueryInsert(t *testing.T) {
 	// Create table first
 	db.Exec(context.Background(), "CREATE TABLE test (id INTEGER, name TEXT)")
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -552,7 +552,7 @@ func TestHandleQuerySelect(t *testing.T) {
 	db.Exec(context.Background(), "CREATE TABLE test (id INTEGER, name TEXT)")
 	db.Exec(context.Background(), "INSERT INTO test (id, name) VALUES (1, 'Alice')")
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -585,7 +585,7 @@ func TestHandleQueryWithParams(t *testing.T) {
 	db.Exec(context.Background(), "CREATE TABLE test (id INTEGER, name TEXT)")
 	db.Exec(context.Background(), "INSERT INTO test (id, name) VALUES (1, 'Alice')")
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -613,7 +613,7 @@ func TestHandleQueryError(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -640,7 +640,7 @@ func TestHandleInvalidQueryMessage(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -663,7 +663,7 @@ func TestRemoveClient(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 
 	// Add a client manually
@@ -690,7 +690,7 @@ func TestHandleQueryUpdate(t *testing.T) {
 	db.Exec(context.Background(), "CREATE TABLE test (id INTEGER, name TEXT, age INTEGER)")
 	db.Exec(context.Background(), "INSERT INTO test (id, name, age) VALUES (1, 'Alice', 25)")
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -723,7 +723,7 @@ func TestHandleQueryDelete(t *testing.T) {
 	db.Exec(context.Background(), "INSERT INTO test (id, name, age) VALUES (1, 'Alice', 25)")
 	db.Exec(context.Background(), "INSERT INTO test (id, name, age) VALUES (2, 'Bob', 30)")
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -755,7 +755,7 @@ func TestHandleQueryEmptyResult(t *testing.T) {
 	db.Exec(context.Background(), "CREATE TABLE test (id INTEGER, name TEXT)")
 	db.Exec(context.Background(), "INSERT INTO test (id, name) VALUES (1, 'Alice')")
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -790,7 +790,7 @@ func TestHandleQueryMultipleRows(t *testing.T) {
 		db.Exec(context.Background(), "INSERT INTO test (id, name) VALUES (?, ?)", i, fmt.Sprintf("user-%d", i))
 	}
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -823,7 +823,7 @@ func TestHandleQueryWhereCondition(t *testing.T) {
 		db.Exec(context.Background(), "INSERT INTO test (id, age) VALUES (?, ?)", i, i%10)
 	}
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -852,7 +852,7 @@ func TestHandleMultipleQueries(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	defer db.Close()
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -896,7 +896,7 @@ func TestHandleDropTable(t *testing.T) {
 	// Setup
 	db.Exec(context.Background(), "CREATE TABLE test (id INTEGER)")
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,
@@ -929,7 +929,7 @@ func TestHandleCreateIndex(t *testing.T) {
 	// Setup
 	db.Exec(context.Background(), "CREATE TABLE test (id INTEGER, name TEXT)")
 
- ps := NewProductionServer(db, DefaultProductionConfig())
+	ps := NewProductionServer(db, DefaultProductionConfig())
 	srv, _ := New(ps, nil)
 	client := &ClientConn{
 		ID:     1,

@@ -220,16 +220,16 @@ type PlanCacheConfig struct {
 
 // MaintenanceConfig governs auto-vacuum and checkpoint settings.
 type MaintenanceConfig struct {
-	EnableAutoVacuum     bool          // Enable automatic VACUUM (default: true for disk)
-	AutoVacuumInterval   time.Duration // Interval between auto-vacuum checks (default: 1m)
+	EnableAutoVacuum    bool          // Enable automatic VACUUM (default: true for disk)
+	AutoVacuumInterval  time.Duration // Interval between auto-vacuum checks (default: 1m)
 	AutoVacuumThreshold float64       // Dead tuple ratio to trigger vacuum (default: 0.2 = 20%)
 	// AutoVacuumRetention is the minimum age of a soft-deleted row before
 	// AutoVacuum physically removes it. Set to 0 to disable temporal retention
 	// protection (removes all dead rows). Default: 0 (disabled — this is the
 	// pre-fix behavior; set to a duration like 1*time.Hour to protect recent
 	// history needed by AS OF SYSTEM TIME queries).
-	AutoVacuumRetention time.Duration
-	EnableAutoCheckpoint bool        // Enable automatic WAL checkpoint (default: true for disk)
+	AutoVacuumRetention  time.Duration
+	EnableAutoCheckpoint bool          // Enable automatic WAL checkpoint (default: true for disk)
 	CheckpointInterval   time.Duration // Interval between checkpoints (default: 5m)
 }
 

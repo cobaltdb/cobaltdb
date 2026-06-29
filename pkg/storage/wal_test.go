@@ -1062,8 +1062,8 @@ func TestWALCheckpointRetainsBufferedRecords(t *testing.T) {
 	go func() {
 		appendDone <- wal.Append(&WALRecord{
 			TxnID: 1,
-			Type:   WALInsert,
-			Data:   []byte("concurrent-record"),
+			Type:  WALInsert,
+			Data:  []byte("concurrent-record"),
 		})
 	}()
 

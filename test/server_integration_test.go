@@ -183,7 +183,7 @@ func startTestServer(t *testing.T) (string, *server.Server, *engine.DB) {
 		t.Fatalf("Failed to open db: %v", err)
 	}
 
- ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
 	srv, err := server.New(ps, &server.Config{
 		AuthEnabled: false,
 	})
@@ -531,7 +531,7 @@ func TestWireProtocolAuth(t *testing.T) {
 	}
 	defer db.Close()
 
- ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
 	srv, err := server.New(ps, &server.Config{
 		AuthEnabled:      true,
 		RequireAuth:      true,
@@ -723,7 +723,7 @@ func TestServerGracefulShutdown(t *testing.T) {
 	}
 	defer db.Close()
 
- ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
 	srv, err := server.New(ps, nil)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)

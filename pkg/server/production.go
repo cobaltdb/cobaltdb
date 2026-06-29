@@ -419,8 +419,8 @@ func (ps *ProductionServer) DB() *engine.DB {
 func (ps *ProductionServer) circuitBreakerKey(sql string) string {
 	// Use the first meaningful word of the SQL as the key so statements of
 	// the same type share a circuit breaker (e.g., all SELECTs share one,
-// all INSERTs share one, etc.). This prevents a slow DELETE from killing
-// all other queries.
+	// all INSERTs share one, etc.). This prevents a slow DELETE from killing
+	// all other queries.
 	if len(sql) == 0 {
 		return "unknown"
 	}

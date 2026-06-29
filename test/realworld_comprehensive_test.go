@@ -156,7 +156,7 @@ func TestRealWorld_ServerWithDiskDatabase(t *testing.T) {
 	t.Logf("✅ Disk database açıldı: %s", dbPath)
 
 	// Server başlat
- ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
 	srv, err := server.New(ps, &server.Config{
 		Address:     "127.0.0.1:0",
 		AuthEnabled: false,
@@ -257,7 +257,7 @@ func TestRealWorld_ConcurrentClients(t *testing.T) {
 	}
 	defer db.Close()
 
- ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
 	srv, err := server.New(ps, &server.Config{
 		Address:     "127.0.0.1:0",
 		AuthEnabled: false,
@@ -356,7 +356,7 @@ func TestRealWorld_ComplexQueries(t *testing.T) {
 	}
 	defer db.Close()
 
- ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
 	srv, _ := server.New(ps, &server.Config{
 		Address:     "127.0.0.1:0",
 		AuthEnabled: false,

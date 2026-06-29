@@ -1179,7 +1179,6 @@ func vacuumExtractDeletedAt(data []byte) (int64, bool) {
 	return v, ok
 }
 
-
 // vacuumTreeLocked rebuilds a single table tree, removing soft-deleted rows whose
 // deleted_at timestamp is at or before horizonNS. Rows deleted more recently are retained
 // for AS OF SYSTEM TIME temporal history.

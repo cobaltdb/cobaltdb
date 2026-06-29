@@ -611,8 +611,8 @@ func TestGenerateAlertIDConcurrent(t *testing.T) {
 
 // countingAlertHandler counts invocations and signals a WaitGroup when Handle is called.
 type countingAlertHandler struct {
-	wg   *sync.WaitGroup
-	n    *int64
+	wg *sync.WaitGroup
+	n  *int64
 }
 
 func (h *countingAlertHandler) Handle(Alert) error {

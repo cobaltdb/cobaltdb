@@ -8,10 +8,10 @@ import (
 
 // windowPartEntry tracks a row within a window function partition.
 type windowPartEntry struct {
-	originalIdx  int
-	row          []interface{}
-	fullRow      []interface{}
-	orderByVals  []interface{} // pre-computed ORDER BY values for peer detection
+	originalIdx int
+	row         []interface{}
+	fullRow     []interface{}
+	orderByVals []interface{} // pre-computed ORDER BY values for peer detection
 }
 
 func (c *Catalog) evaluateWindowFunctions(rows [][]interface{}, selectCols []selectColInfo, table *TableDef, stmt *query.SelectStmt, args []interface{}, fullRows [][]interface{}) [][]interface{} {

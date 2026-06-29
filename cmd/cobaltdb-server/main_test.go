@@ -161,7 +161,7 @@ func TestServerConfiguration(t *testing.T) {
 			defer db.Close()
 
 			ps := server.NewProductionServer(db, server.DefaultProductionConfig())
-	srv, err := server.New(ps, &server.Config{
+			srv, err := server.New(ps, &server.Config{
 				Address: "127.0.0.1:0",
 			})
 			if err != nil {
@@ -923,7 +923,7 @@ func TestServerAddressConfiguration(t *testing.T) {
 			defer db.Close()
 
 			ps := server.NewProductionServer(db, server.DefaultProductionConfig())
-	srv, err := server.New(ps, &server.Config{
+			srv, err := server.New(ps, &server.Config{
 				Address: tt.address,
 			})
 			if err != nil {

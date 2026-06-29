@@ -26,8 +26,8 @@ func main() {
 	opts := &engine.Options{
 		CoreStorage: engine.CoreStorage{
 			CacheSize:  1024,
-			WALEnabled:  engine.BoolPtr(true),
-			InMemory:    dbPath == ":memory:",
+			WALEnabled: engine.BoolPtr(true),
+			InMemory:   dbPath == ":memory:",
 		},
 	}
 

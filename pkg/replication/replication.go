@@ -241,7 +241,7 @@ type Manager struct {
 	fencedEpoch    uint64
 
 	// Callbacks
-	OnApply  func(entry *WALEntry) error
+	OnApply func(entry *WALEntry) error
 	// OnSnapshot returns the current database state and the WAL LSN at the moment
 	// the snapshot was captured. Both must be returned atomically — the caller captures
 	// the LSN BEFORE calling this function, so the implementation must return the LSN
