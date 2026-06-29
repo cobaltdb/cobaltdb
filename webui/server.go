@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/csv"
 	"encoding/hex"
@@ -18,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,8 +31,10 @@ type Server struct {
 	history      []QueryRecord
 	savedQueries map[string]SavedQuery
 	tmpl         *template.Template
-	apiTokenHash [sha256.Size]byte
-	apiTokenSet  bool
+	tokens       *tokenStore
+	limiter      *rateLimiter
+	audit        *auditLog
+	tokenTTL     time.Duration
 	authEnabled  bool
 	mu           sync.RWMutex
 }
@@ -100,6 +102,16 @@ const (
 	maxWebUISavedDesc     = 2048
 	maxWebUIIdentifier    = 256
 	maxWebUIWhereTerms    = 64
+	maxWebUITokenName     = 256
+
+	// Defaults for the hardening subsystems (overridable via flags).
+	defaultWebUITokenTTL     = 24 * time.Hour
+	defaultWebUIRatePerMin   = 120
+	defaultWebUIRateBurst    = 30
+	webUIAuditRingSize       = 1000
+	webUIAuditMaxSQL         = 4096
+	maxWebUIAdminMintTokens  = 256
+	tokenExpirySweepInterval = 5 * time.Minute
 )
 
 // toUpperFast returns an uppercased copy of s only if s contains lowercase
@@ -115,8 +127,11 @@ func toUpperFast(s string) string {
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
-	tokenFlag := flag.String("token", "", "Web UI access token (defaults to COBALTDB_WEBUI_TOKEN or a generated token)")
+	tokenFlag := flag.String("token", "", "Web UI bootstrap admin token (defaults to COBALTDB_WEBUI_TOKEN or a generated token)")
 	insecureNoAuth := flag.Bool("insecure-no-auth", false, "disable token auth (unsafe; for trusted local development only)")
+	tokenTTL := flag.Duration("token-ttl", defaultWebUITokenTTL, "lifetime of minted tokens (0 = no expiry); the bootstrap token never expires")
+	ratePerMin := flag.Int("rate-limit", defaultWebUIRatePerMin, "max API requests per principal per minute (0 = unlimited)")
+	rateBurst := flag.Int("rate-burst", defaultWebUIRateBurst, "burst allowance for the per-principal rate limiter")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: webui [flags] <database_file>\n\n")
 		flag.PrintDefaults()
@@ -160,9 +175,14 @@ func main() {
 		db:           db,
 		history:      make([]QueryRecord, 0),
 		savedQueries: make(map[string]SavedQuery),
+		tokens:       newTokenStore(),
+		limiter:      newRateLimiter(*ratePerMin, *rateBurst),
+		audit:        newAuditLog(os.Stderr, webUIAuditRingSize, webUIAuditMaxSQL),
 		authEnabled:  authEnabled,
 	}
-	server.setAPIToken(apiToken)
+	// The bootstrap token is an admin credential that never expires, so the
+	// operator is never locked out of token management.
+	server.tokens.setBootstrap(apiToken)
 
 	// Load templates
 	tmpl, err := template.ParseFiles("webui/templates/index.html")
@@ -191,17 +211,28 @@ func main() {
 	mux.HandleFunc("/api/export-saved-queries", server.handleExportSavedQueries)
 	mux.HandleFunc("/api/import-saved-queries", server.handleImportSavedQueries)
 	mux.HandleFunc("/api/update-row", server.handleUpdateRow)
+	// Admin-only token management + audit (RBAC enforced inside the handlers).
+	mux.HandleFunc("/api/admin/tokens", server.handleAdminTokens)
+	mux.HandleFunc("/api/admin/tokens/", server.handleAdminToken)
+	mux.HandleFunc("/api/admin/audit", server.handleAdminAudit)
 
 	handler := http.Handler(mux)
 	if authEnabled {
 		handler = server.authMiddleware(handler)
+		server.startTokenExpirySweeper()
 	}
 
 	fmt.Printf("CobaltDB Web UI starting...\n")
 	fmt.Printf("Database: %s\n", dbPath)
 	fmt.Printf("Bind: %s\n", *addr)
 	if authEnabled {
-		fmt.Printf("Token auth: enabled\n")
+		fmt.Printf("Token auth: enabled (bootstrap admin token; mint scoped tokens via /api/admin/tokens)\n")
+		if server.limiter.enabled() {
+			fmt.Printf("Rate limit: %d req/min per principal (burst %d)\n", *ratePerMin, *rateBurst)
+		}
+		if *tokenTTL > 0 {
+			fmt.Printf("Minted-token TTL: %s\n", *tokenTTL)
+		}
 		// Show only first 8 chars to avoid full token in logs/shell history
 		maskedToken := apiToken
 		if len(apiToken) > 8 {
@@ -213,6 +244,7 @@ func main() {
 		fmt.Printf("Token auth: DISABLED (unsafe)\n")
 		fmt.Printf("Open http://%s in your browser\n", *addr)
 	}
+	server.tokenTTL = *tokenTTL
 
 	httpServer := &http.Server{
 		Addr:              *addr,
@@ -239,15 +271,19 @@ func generateToken(size int) (string, error) {
 	return hex.EncodeToString(tokenBytes), nil
 }
 
-func (s *Server) setAPIToken(token string) {
-	token = strings.TrimSpace(token)
-	if token == "" || len(token) > maxWebUITokenBytes {
-		s.apiTokenHash = [sha256.Size]byte{}
-		s.apiTokenSet = false
+// startTokenExpirySweeper periodically purges expired tokens so the store does
+// not accumulate dead records over a long-lived server.
+func (s *Server) startTokenExpirySweeper() {
+	if s.tokens == nil {
 		return
 	}
-	s.apiTokenHash = sha256.Sum256([]byte(token))
-	s.apiTokenSet = true
+	go func() {
+		ticker := time.NewTicker(tokenExpirySweepInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.tokens.purgeExpired()
+		}
+	}()
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
@@ -258,13 +294,24 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		token := s.extractToken(r)
-		if !s.secureTokenCompare(token) {
+		p, ok := s.tokens.resolve(token)
+		if !ok {
+			s.recordAudit(r, principal{}, classRead, "", "denied", "unauthorized")
 			s.writeUnauthorized(w, r)
 			return
 		}
 
+		// Per-principal rate limiting (keyed by token ID, not raw token).
+		if !s.limiter.allow(p.ID) {
+			s.recordAudit(r, p, classRead, "", "denied", "rate limited")
+			s.writeRateLimited(w, r)
+			return
+		}
+
+		// Convert a query-string token into an HttpOnly cookie and strip it from
+		// the browser URL on the first interactive load.
 		queryToken := strings.TrimSpace(r.URL.Query().Get("token"))
-		if s.secureTokenCompare(queryToken) {
+		if queryToken != "" && subtleConstantEq(queryToken, token) {
 			// #nosec G124 -- Secure is set for HTTPS and HTTPS proxy requests; plain HTTP local UI needs a usable cookie.
 			http.SetCookie(w, &http.Cookie{
 				Name:     authCookieName,
@@ -275,7 +322,6 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				SameSite: http.SameSiteStrictMode,
 			})
 
-			// Strip token from browser URL after first successful auth.
 			if r.Method == http.MethodGet && !strings.HasPrefix(r.URL.Path, "/api/") {
 				cleanURL := *r.URL
 				query := cleanURL.Query()
@@ -286,8 +332,68 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, withPrincipal(r, p))
 	})
+}
+
+// subtleConstantEq compares two strings in constant time.
+func subtleConstantEq(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// effectivePrincipal returns the principal stored by the middleware, or — when
+// auth is disabled — a synthetic admin so handlers behave uniformly.
+func (s *Server) effectivePrincipal(r *http.Request) principal {
+	if p, ok := principalFromRequest(r); ok {
+		return p
+	}
+	return principal{ID: "anonymous", Name: "anonymous", Role: RoleAdmin}
+}
+
+// recordAudit emits one audit event if auditing is configured.
+func (s *Server) recordAudit(r *http.Request, p principal, class queryClass, sql, outcome, detail string) {
+	if s.audit == nil {
+		return
+	}
+	ev := auditEvent{
+		PrincipalID: p.ID,
+		Principal:   p.Name,
+		Role:        p.Role,
+		RemoteAddr:  clientIP(r),
+		Method:      r.Method,
+		Path:        r.URL.Path,
+		Outcome:     outcome,
+		Detail:      detail,
+	}
+	if sql != "" {
+		ev.QueryClass = class.String()
+		ev.SQL = sql
+	}
+	s.audit.record(ev)
+}
+
+// authorizeQuery enforces RBAC for a SQL statement. It returns the statement's
+// class and whether the principal may run it.
+func (s *Server) authorizeQuery(r *http.Request, sql string) (principal, queryClass, bool) {
+	p := s.effectivePrincipal(r)
+	class := classifyQuery(sql)
+	return p, class, p.Role.allows(class)
+}
+
+func clientIP(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if fwd := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); fwd != "" {
+		if i := strings.IndexByte(fwd, ','); i >= 0 {
+			return strings.TrimSpace(fwd[:i])
+		}
+		return fwd
+	}
+	return r.RemoteAddr
 }
 
 func requestUsesHTTPS(r *http.Request) bool {
@@ -318,13 +424,38 @@ func (s *Server) extractToken(r *http.Request) string {
 	return strings.TrimSpace(r.URL.Query().Get("token"))
 }
 
+// setAPIToken installs a single bootstrap admin token. Retained as a
+// convenience for tests and the legacy single-token configuration path; the
+// store underneath supports the full multi-token RBAC model.
+func (s *Server) setAPIToken(token string) {
+	if s.tokens == nil {
+		s.tokens = newTokenStore()
+	}
+	s.tokens.setBootstrap(token)
+}
+
+// secureTokenCompare reports whether the raw token authenticates as any
+// non-expired principal. Kept for backward compatibility with existing tests.
 func (s *Server) secureTokenCompare(token string) bool {
-	token = strings.TrimSpace(token)
-	if !s.apiTokenSet || token == "" || len(token) > maxWebUITokenBytes {
+	if s.tokens == nil {
 		return false
 	}
-	tokenHash := sha256.Sum256([]byte(token))
-	return subtle.ConstantTimeCompare(tokenHash[:], s.apiTokenHash[:]) == 1
+	_, ok := s.tokens.resolve(token)
+	return ok
+}
+
+func (s *Server) writeRateLimited(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Retry-After", "1")
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Rate limit exceeded; slow down and retry",
+		})
+		return
+	}
+	http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 }
 
 func quoteSQLIdentifier(identifier string) (string, error) {
@@ -388,6 +519,21 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewEncoder(w).Encode(QueryResponse{
 			Success: false,
 			Message: err.Error(),
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// RBAC: enforce the principal's role against the statement class.
+	principal, class, allowed := s.authorizeQuery(r, query)
+	if !allowed {
+		s.recordAudit(r, principal, class, query, "denied", "insufficient role")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		if err := json.NewEncoder(w).Encode(QueryResponse{
+			Success: false,
+			Message: fmt.Sprintf("Forbidden: role %q may not run a %s statement", principal.Role, class),
 		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
@@ -465,6 +611,9 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	// Add to history
 	if resp.Success {
 		s.addToHistory(query, resp.Duration, resp.RowCount)
+		s.recordAudit(r, principal, class, query, "allowed", "")
+	} else {
+		s.recordAudit(r, principal, class, query, "error", resp.Message)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -585,6 +734,13 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if p, class, ok := s.authorizeQuery(r, query); !ok {
+		s.recordAudit(r, p, class, query, "denied", "insufficient role")
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	} else {
+		s.recordAudit(r, p, class, query, "allowed", "export csv")
+	}
 
 	ctx := context.Background()
 	rows, err := s.db.Query(ctx, query)
@@ -647,6 +803,13 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 	if err := validateWebUIQuery(query); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if p, class, ok := s.authorizeQuery(r, query); !ok {
+		s.recordAudit(r, p, class, query, "denied", "insufficient role")
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	} else {
+		s.recordAudit(r, p, class, query, "allowed", "export json")
 	}
 
 	ctx := context.Background()
@@ -1007,6 +1170,14 @@ func (s *Server) handleUpdateRow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Inline editing always issues an UPDATE — require write privileges.
+	p := s.effectivePrincipal(r)
+	if !p.Role.allows(classWrite) {
+		s.recordAudit(r, p, classWrite, "UPDATE (inline edit)", "denied", "insufficient role")
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	var req struct {
 		Table  string                 `json:"table"`
 		Column string                 `json:"column"`
@@ -1064,6 +1235,7 @@ func (s *Server) handleUpdateRow(w http.ResponseWriter, r *http.Request) {
 	_, err = s.db.Exec(ctx, query, args...)
 
 	if err != nil {
+		s.recordAudit(r, p, classWrite, query, "error", err.Error())
 		w.Header().Set("Content-Type", "application/json")
 		writeJSON(w, map[string]interface{}{
 			"success": false,
@@ -1072,8 +1244,150 @@ func (s *Server) handleUpdateRow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordAudit(r, p, classWrite, query, "allowed", "inline edit")
 	w.Header().Set("Content-Type", "application/json")
 	writeJSON(w, map[string]interface{}{
 		"success": true,
 	})
+}
+
+// --- Admin: token management + audit log (RBAC: admin only) ---
+
+// requireAdmin returns the principal if it has the admin role, else writes 403.
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (principal, bool) {
+	p := s.effectivePrincipal(r)
+	if !p.Role.isAdmin() {
+		s.recordAudit(r, p, classRead, "", "denied", "admin required")
+		http.Error(w, "forbidden: admin role required", http.StatusForbidden)
+		return principal{}, false
+	}
+	return p, true
+}
+
+// handleAdminTokens lists tokens (GET) or mints a new one (POST).
+func (s *Server) handleAdminTokens(w http.ResponseWriter, r *http.Request) {
+	admin, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/json")
+		writeJSON(w, map[string]interface{}{"tokens": s.tokens.list()})
+
+	case http.MethodPost:
+		var req struct {
+			Name string `json:"name"`
+			Role string `json:"role"`
+			TTL  string `json:"ttl"` // optional Go duration string; empty = server default
+		}
+		if !decodeJSONRequest(w, r, &req) {
+			return
+		}
+		role, err := parseRole(req.Role)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(req.Name) == "" || len(req.Name) > maxWebUITokenName {
+			http.Error(w, "token name required (1..256 bytes)", http.StatusBadRequest)
+			return
+		}
+		ttl := s.tokenTTL
+		if strings.TrimSpace(req.TTL) != "" {
+			parsed, perr := time.ParseDuration(req.TTL)
+			if perr != nil || parsed < 0 {
+				http.Error(w, "invalid ttl (want a Go duration like 1h, 30m, or 0 for no expiry)", http.StatusBadRequest)
+				return
+			}
+			ttl = parsed
+		}
+		if s.tokens.count() >= maxWebUIAdminMintTokens {
+			http.Error(w, "too many tokens", http.StatusBadRequest)
+			return
+		}
+		value, p, err := s.tokens.mint(req.Name, role, ttl)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.recordAudit(r, admin, classDDL, "", "allowed", "mint token "+p.ID+" role="+string(role))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		// The raw token is surfaced exactly once; it cannot be recovered later.
+		writeJSON(w, map[string]interface{}{"token": value, "principal": p})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAdminToken rotates (POST .../rotate) or revokes (DELETE) one token.
+func (s *Server) handleAdminToken(w http.ResponseWriter, r *http.Request) {
+	admin, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+
+	rest := strings.TrimPrefix(r.URL.Path, "/api/admin/tokens/")
+	rest = strings.Trim(rest, "/")
+	id := rest
+	action := ""
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		id = rest[:i]
+		action = rest[i+1:]
+	}
+	id, _ = url.QueryUnescape(id)
+	if id == "" {
+		http.Error(w, "token id required", http.StatusBadRequest)
+		return
+	}
+	if id == bootstrapTokenID {
+		http.Error(w, "the bootstrap token cannot be managed via the API", http.StatusBadRequest)
+		return
+	}
+
+	switch {
+	case r.Method == http.MethodPost && action == "rotate":
+		value, p, found := s.tokens.rotate(id)
+		if !found {
+			http.Error(w, "token not found", http.StatusNotFound)
+			return
+		}
+		s.recordAudit(r, admin, classDDL, "", "allowed", "rotate token "+id)
+		w.Header().Set("Content-Type", "application/json")
+		writeJSON(w, map[string]interface{}{"token": value, "principal": p})
+
+	case r.Method == http.MethodDelete && action == "":
+		if !s.tokens.revoke(id) {
+			http.Error(w, "token not found", http.StatusNotFound)
+			return
+		}
+		s.recordAudit(r, admin, classDDL, "", "allowed", "revoke token "+id)
+		w.Header().Set("Content-Type", "application/json")
+		writeJSON(w, map[string]string{"status": "revoked"})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAdminAudit returns the most recent audit events (admin only).
+func (s *Server) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	limit := 100
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	writeJSON(w, map[string]interface{}{"events": s.audit.recent(limit)})
 }

@@ -57,8 +57,60 @@ The token is converted to an HttpOnly cookie on first load.
 ### Security Flags
 
 - `-addr` (default: `127.0.0.1:8080`) - HTTP bind address
-- `-token` - explicit token value (or set `COBALTDB_WEBUI_TOKEN`)
+- `-token` - bootstrap **admin** token value (or set `COBALTDB_WEBUI_TOKEN`)
+- `-token-ttl` (default: `24h`) - lifetime of minted tokens (`0` = no expiry). The bootstrap token never expires.
+- `-rate-limit` (default: `120`) - max API requests per principal per minute (`0` = unlimited)
+- `-rate-burst` (default: `30`) - burst allowance for the per-principal rate limiter
 - `-insecure-no-auth` - disable auth (unsafe; local trusted development only)
+
+## Authentication, Roles & Rate Limiting
+
+Token auth is on by default. The startup `-token` (or `COBALTDB_WEBUI_TOKEN`) is
+the **bootstrap admin** token — it never expires and cannot be revoked via the
+API, so you are never locked out.
+
+### Role-based access control (RBAC)
+
+Every token carries one role. The role is enforced on every query against the
+statement class:
+
+| Role | Read (`SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN`/`WITH`) | Write (`INSERT`/`UPDATE`/`DELETE`/`REPLACE`) | DDL (`CREATE`/`DROP`/`ALTER`/…) | Admin APIs |
+|------|:--:|:--:|:--:|:--:|
+| `admin` | ✅ | ✅ | ✅ | ✅ |
+| `readwrite` | ✅ | ✅ | ❌ | ❌ |
+| `readonly` | ✅ | ❌ | ❌ | ❌ |
+
+Statements whose leading keyword is unrecognized are classified as DDL
+(fail-closed) — only `admin` may run them. A `403 Forbidden` is returned when a
+role is insufficient, and the attempt is audited.
+
+### Rate limiting
+
+Each principal (keyed by token ID, not the raw token) gets an independent
+token-bucket limiter: `-rate-limit` requests/minute with a `-rate-burst` burst.
+Exceeding it returns `429 Too Many Requests` with a `Retry-After` header.
+
+### Token lifecycle (admin only)
+
+Minted tokens are stored only as SHA-256 digests; the raw value is shown
+exactly once at creation and cannot be recovered. Expired tokens stop
+authenticating immediately and are swept periodically.
+
+- `GET    /api/admin/tokens` - list token metadata (id, name, role, expiry)
+- `POST   /api/admin/tokens` - mint a token: `{"name":"reporting","role":"readonly","ttl":"8h"}` (omit `ttl` to use `-token-ttl`; `"0"` = no expiry) → returns the raw token once
+- `POST   /api/admin/tokens/<id>/rotate` - rotate a token's value (role/expiry preserved) → returns the new raw token
+- `DELETE /api/admin/tokens/<id>` - revoke a token
+
+### Query audit log (admin only)
+
+Every query, export, inline edit, and denied/rate-limited request is recorded to
+a structured JSON audit stream on **stderr** and an in-memory ring buffer:
+
+- `GET /api/admin/audit?limit=100` - most recent events (newest first)
+
+Audit events carry the principal id/name/role, remote address, method, path,
+query class, the SQL (truncated), and the outcome (`allowed`/`denied`/`error`).
+Token material is never logged.
 
 ## Saved Queries
 
@@ -124,7 +176,12 @@ All API endpoints require auth when token auth is enabled (default).
 - `DELETE /api/saved-queries/<name>` - Delete a saved query
 - `GET /api/export-saved-queries` - Export saved queries as JSON
 - `POST /api/import-saved-queries` - Import saved queries from JSON
-- `POST /api/update-row` - Update a row via inline editing
+- `POST /api/update-row` - Update a row via inline editing (requires write role)
+- `GET /api/admin/tokens` - List tokens (admin only)
+- `POST /api/admin/tokens` - Mint a scoped token (admin only)
+- `POST /api/admin/tokens/<id>/rotate` - Rotate a token (admin only)
+- `DELETE /api/admin/tokens/<id>` - Revoke a token (admin only)
+- `GET /api/admin/audit` - Read the recent query audit log (admin only)
 
 ## Technology Stack
 

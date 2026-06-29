@@ -146,7 +146,7 @@ func TestWebUITokenStoredAsDigest(t *testing.T) {
 	srv := &Server{}
 	srv.setAPIToken("test-token")
 
-	if !srv.apiTokenSet {
+	if srv.tokens == nil || srv.tokens.count() == 0 {
 		t.Fatal("expected token to be configured")
 	}
 	if !srv.secureTokenCompare("test-token") {
@@ -155,9 +155,15 @@ func TestWebUITokenStoredAsDigest(t *testing.T) {
 	if srv.secureTokenCompare("wrong-token") {
 		t.Fatal("expected wrong token to be rejected")
 	}
-	if string(srv.apiTokenHash[:]) == "test-token" {
-		t.Fatal("raw token stored in apiTokenHash")
+	// Ensure the raw token is not retained anywhere in the store records.
+	srv.tokens.mu.RLock()
+	for _, rec := range srv.tokens.tokens {
+		if string(rec.hash[:]) == "test-token" {
+			srv.tokens.mu.RUnlock()
+			t.Fatal("raw token stored in digest field")
+		}
 	}
+	srv.tokens.mu.RUnlock()
 }
 
 func TestWebUIRejectsOversizedTokens(t *testing.T) {
@@ -184,7 +190,7 @@ func TestWebUIOversizedConfiguredTokenFailsClosed(t *testing.T) {
 	srv := &Server{}
 	srv.setAPIToken(strings.Repeat("x", maxWebUITokenBytes+1))
 
-	if srv.apiTokenSet {
+	if srv.tokens != nil && srv.tokens.count() != 0 {
 		t.Fatal("oversized configured token should not enable API token auth")
 	}
 	if srv.secureTokenCompare(strings.Repeat("x", maxWebUITokenBytes+1)) {
