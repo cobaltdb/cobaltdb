@@ -70,7 +70,7 @@ func TestTokenStoreExpiry(t *testing.T) {
 	ts := newTokenStore()
 	ts.now = func() time.Time { return now }
 
-	if _, err := ts.addWithID("u1", "tok-1", "user one", RoleReadOnly, time.Minute); err != nil {
+	if _, err := ts.addWithID("u1", "tok-1", "user one", RoleReadOnly, time.Minute, nil); err != nil {
 		t.Fatalf("addWithID: %v", err)
 	}
 	if _, ok := ts.resolve("tok-1"); !ok {
@@ -94,7 +94,7 @@ func TestTokenStoreNoExpiry(t *testing.T) {
 	now := time.Unix(1000, 0)
 	ts := newTokenStore()
 	ts.now = func() time.Time { return now }
-	if _, err := ts.addWithID("u1", "tok-1", "user one", RoleAdmin, 0); err != nil {
+	if _, err := ts.addWithID("u1", "tok-1", "user one", RoleAdmin, 0, nil); err != nil {
 		t.Fatalf("addWithID: %v", err)
 	}
 	now = now.Add(1000 * time.Hour)
@@ -105,7 +105,7 @@ func TestTokenStoreNoExpiry(t *testing.T) {
 
 func TestTokenStoreRotateInvalidatesOld(t *testing.T) {
 	ts := newTokenStore()
-	if _, err := ts.addWithID("u1", "old-token", "user", RoleReadWrite, 0); err != nil {
+	if _, err := ts.addWithID("u1", "old-token", "user", RoleReadWrite, 0, nil); err != nil {
 		t.Fatalf("addWithID: %v", err)
 	}
 	newVal, p, ok := ts.rotate("u1")
@@ -128,7 +128,7 @@ func TestTokenStoreRotateInvalidatesOld(t *testing.T) {
 
 func TestTokenStoreRevoke(t *testing.T) {
 	ts := newTokenStore()
-	if _, err := ts.addWithID("u1", "tok", "user", RoleReadOnly, 0); err != nil {
+	if _, err := ts.addWithID("u1", "tok", "user", RoleReadOnly, 0, nil); err != nil {
 		t.Fatalf("addWithID: %v", err)
 	}
 	if !ts.revoke("u1") {
@@ -144,7 +144,7 @@ func TestTokenStoreRevoke(t *testing.T) {
 
 func TestTokenStoreMintReturnsUsableToken(t *testing.T) {
 	ts := newTokenStore()
-	val, p, err := ts.mint("ci", RoleReadOnly, time.Hour)
+	val, p, err := ts.mint("ci", RoleReadOnly, time.Hour, nil)
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestMiddlewareRejectsExpiredToken(t *testing.T) {
 	now := time.Unix(1000, 0)
 	srv := newAuthedServer(t)
 	srv.tokens.now = func() time.Time { return now }
-	if _, err := srv.tokens.addWithID("u1", "exp-token", "u", RoleReadOnly, time.Minute); err != nil {
+	if _, err := srv.tokens.addWithID("u1", "exp-token", "u", RoleReadOnly, time.Minute, nil); err != nil {
 		t.Fatalf("addWithID: %v", err)
 	}
 
@@ -276,7 +276,7 @@ func TestMiddlewareRateLimits(t *testing.T) {
 	srv := newAuthedServer(t)
 	srv.limiter = newRateLimiter(60, 1)
 	srv.limiter.now = func() time.Time { return now }
-	if _, err := srv.tokens.addWithID("u1", "tok", "u", RoleReadOnly, 0); err != nil {
+	if _, err := srv.tokens.addWithID("u1", "tok", "u", RoleReadOnly, 0, nil); err != nil {
 		t.Fatalf("addWithID: %v", err)
 	}
 
@@ -301,7 +301,7 @@ func TestMiddlewareRateLimits(t *testing.T) {
 
 func TestMiddlewareStashesPrincipal(t *testing.T) {
 	srv := newAuthedServer(t)
-	if _, err := srv.tokens.addWithID("u1", "tok", "alice", RoleReadWrite, 0); err != nil {
+	if _, err := srv.tokens.addWithID("u1", "tok", "alice", RoleReadWrite, 0, nil); err != nil {
 		t.Fatalf("addWithID: %v", err)
 	}
 	var seen principal
@@ -443,7 +443,7 @@ func TestAdminMintRejectsBadRole(t *testing.T) {
 
 func TestAdminRotateAndRevokeToken(t *testing.T) {
 	srv := newAuthedServer(t)
-	if _, err := srv.tokens.addWithID("svc1", "orig", "service", RoleReadWrite, 0); err != nil {
+	if _, err := srv.tokens.addWithID("svc1", "orig", "service", RoleReadWrite, 0, nil); err != nil {
 		t.Fatalf("addWithID: %v", err)
 	}
 

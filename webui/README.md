@@ -84,6 +84,20 @@ Statements whose leading keyword is unrecognized are classified as DDL
 (fail-closed) — only `admin` may run them. A `403 Forbidden` is returned when a
 role is insufficient, and the attempt is audited.
 
+### Per-token table allow-listing (optional)
+
+A non-admin token may additionally be scoped to a set of base tables via the
+`tables` field at mint time. When set, **every** base table the statement
+touches — including tables reached through subqueries, JOINs, CTEs, UNIONs, and
+derived tables — must be in the allow-list, or the request is denied with
+`403 Forbidden`. Table names are matched case-insensitively; CTE aliases are not
+treated as base tables.
+
+Extraction is **fail-closed**: if a restricted token submits a statement whose
+tables cannot be determined (unparseable, or an unsupported shape), the request
+is denied rather than run unchecked. Admin tokens ignore allow-lists entirely;
+applying a `tables` list to an `admin` mint is rejected.
+
 ### Rate limiting
 
 Each principal (keyed by token ID, not the raw token) gets an independent
@@ -97,7 +111,7 @@ exactly once at creation and cannot be recovered. Expired tokens stop
 authenticating immediately and are swept periodically.
 
 - `GET    /api/admin/tokens` - list token metadata (id, name, role, expiry)
-- `POST   /api/admin/tokens` - mint a token: `{"name":"reporting","role":"readonly","ttl":"8h"}` (omit `ttl` to use `-token-ttl`; `"0"` = no expiry) → returns the raw token once
+- `POST   /api/admin/tokens` - mint a token: `{"name":"reporting","role":"readonly","ttl":"8h","tables":["users","orders"]}` (omit `ttl` to use `-token-ttl`, `"0"` = no expiry; omit `tables` for unrestricted) → returns the raw token once
 - `POST   /api/admin/tokens/<id>/rotate` - rotate a token's value (role/expiry preserved) → returns the new raw token
 - `DELETE /api/admin/tokens/<id>` - revoke a token
 

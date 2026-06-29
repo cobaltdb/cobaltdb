@@ -123,11 +123,62 @@ type principal struct {
 	Name      string    `json:"name"`
 	Role      Role      `json:"role"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	// Tables, when non-nil, is an allow-list of base-table names (lower-cased)
+	// this principal may read or write. A nil/empty list means "no table
+	// restriction" (all tables allowed, subject to RBAC). Admins ignore it.
+	Tables []string `json:"tables,omitempty"`
 }
 
 // expired reports whether the principal's token has passed its expiry.
 func (p principal) expired(now time.Time) bool {
 	return !p.ExpiresAt.IsZero() && now.After(p.ExpiresAt)
+}
+
+// tableRestricted reports whether this principal has an active table allow-list.
+func (p principal) tableRestricted() bool {
+	return !p.Role.isAdmin() && len(p.Tables) > 0
+}
+
+// allowsTable reports whether the (lower-cased) table name is permitted. It is
+// only meaningful when tableRestricted() is true.
+func (p principal) allowsTable(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, t := range p.Tables {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeTableList lower-cases, trims, de-dupes, and validates an allow-list.
+func normalizeTableList(in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		t := strings.ToLower(strings.TrimSpace(raw))
+		if t == "" {
+			continue
+		}
+		if len(t) > maxWebUIIdentifier {
+			return nil, fmt.Errorf("table name too long: %q", raw)
+		}
+		if strings.ContainsAny(t, " \t\n\r\"'`;()") {
+			return nil, fmt.Errorf("invalid table name in allow-list: %q", raw)
+		}
+		if _, dup := seen[t]; dup {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	if len(out) > maxWebUIAllowListTables {
+		return nil, fmt.Errorf("allow-list too large (max %d tables)", maxWebUIAllowListTables)
+	}
+	return out, nil
 }
 
 // tokenRecord stores a token digest alongside its principal metadata.
@@ -157,7 +208,7 @@ func (ts *tokenStore) clock() time.Time {
 
 // addWithID stores a token digest under an explicit principal ID, replacing any
 // existing record with that ID. ttl <= 0 means the token never expires.
-func (ts *tokenStore) addWithID(id, value, name string, role Role, ttl time.Duration) (principal, error) {
+func (ts *tokenStore) addWithID(id, value, name string, role Role, ttl time.Duration, tables []string) (principal, error) {
 	value = strings.TrimSpace(value)
 	if value == "" || len(value) > maxWebUITokenBytes {
 		return principal{}, fmt.Errorf("token must be non-empty and at most %d bytes", maxWebUITokenBytes)
@@ -168,7 +219,11 @@ func (ts *tokenStore) addWithID(id, value, name string, role Role, ttl time.Dura
 	if len(name) > maxWebUITokenName {
 		return principal{}, fmt.Errorf("token name too large")
 	}
-	p := principal{ID: id, Name: name, Role: role}
+	normTables, err := normalizeTableList(tables)
+	if err != nil {
+		return principal{}, err
+	}
+	p := principal{ID: id, Name: name, Role: role, Tables: normTables}
 	if ttl > 0 {
 		p.ExpiresAt = ts.clock().Add(ttl)
 	}
@@ -185,7 +240,7 @@ func (ts *tokenStore) addWithID(id, value, name string, role Role, ttl time.Dura
 
 // mint generates a fresh random token, stores its digest, and returns the raw
 // value (which the caller must surface exactly once — it cannot be recovered).
-func (ts *tokenStore) mint(name string, role Role, ttl time.Duration) (string, principal, error) {
+func (ts *tokenStore) mint(name string, role Role, ttl time.Duration, tables []string) (string, principal, error) {
 	id, err := generateToken(8)
 	if err != nil {
 		return "", principal{}, err
@@ -194,7 +249,7 @@ func (ts *tokenStore) mint(name string, role Role, ttl time.Duration) (string, p
 	if err != nil {
 		return "", principal{}, err
 	}
-	p, err := ts.addWithID(id, value, name, role, ttl)
+	p, err := ts.addWithID(id, value, name, role, ttl, tables)
 	if err != nil {
 		return "", principal{}, err
 	}

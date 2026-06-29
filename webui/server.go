@@ -90,19 +90,20 @@ type ColumnInfo struct {
 const (
 	authCookieName = "cobaltdb_webui_token"
 
-	maxWebUIJSONBodyBytes = 1 << 20
-	maxWebUIImportBytes   = 10 << 20
-	maxWebUIHeaderBytes   = 1 << 20
-	maxWebUITokenBytes    = 1024
-	maxWebUIResultRows    = 1000
-	maxWebUIQueryBytes    = 10000
-	maxWebUISavedQueries  = 1000
-	maxWebUISavedName     = 256
-	maxWebUISavedQuery    = 10000
-	maxWebUISavedDesc     = 2048
-	maxWebUIIdentifier    = 256
-	maxWebUIWhereTerms    = 64
-	maxWebUITokenName     = 256
+	maxWebUIJSONBodyBytes   = 1 << 20
+	maxWebUIImportBytes     = 10 << 20
+	maxWebUIHeaderBytes     = 1 << 20
+	maxWebUITokenBytes      = 1024
+	maxWebUIResultRows      = 1000
+	maxWebUIQueryBytes      = 10000
+	maxWebUISavedQueries    = 1000
+	maxWebUISavedName       = 256
+	maxWebUISavedQuery      = 10000
+	maxWebUISavedDesc       = 2048
+	maxWebUIIdentifier      = 256
+	maxWebUIWhereTerms      = 64
+	maxWebUITokenName       = 256
+	maxWebUIAllowListTables = 256
 
 	// Defaults for the hardening subsystems (overridable via flags).
 	defaultWebUITokenTTL     = 24 * time.Hour
@@ -375,12 +376,32 @@ func (s *Server) recordAudit(r *http.Request, p principal, class queryClass, sql
 	s.audit.record(ev)
 }
 
-// authorizeQuery enforces RBAC for a SQL statement. It returns the statement's
-// class and whether the principal may run it.
-func (s *Server) authorizeQuery(r *http.Request, sql string) (principal, queryClass, bool) {
+// authorizeQueryReason enforces, in order: RBAC by statement class, then (for
+// non-admin tokens carrying a table allow-list) that every base table the
+// statement touches is allow-listed. It returns a human-readable denial reason.
+// Table extraction is fail-closed: a statement that cannot be parsed/understood
+// for a restricted principal is denied.
+func (s *Server) authorizeQueryReason(r *http.Request, sql string) (principal, queryClass, string, bool) {
 	p := s.effectivePrincipal(r)
 	class := classifyQuery(sql)
-	return p, class, p.Role.allows(class)
+	if !p.Role.allows(class) {
+		return p, class, "insufficient role", false
+	}
+	if !p.tableRestricted() {
+		return p, class, "", true
+	}
+	tables, err := extractTableRefs(sql)
+	if err != nil {
+		// Fail closed: if we cannot determine which tables are touched, a
+		// table-restricted principal must not run the statement.
+		return p, class, "statement not permitted under table allow-list", false
+	}
+	for _, t := range tables {
+		if !p.allowsTable(t) {
+			return p, class, fmt.Sprintf("table %q is not in this token's allow-list", t), false
+		}
+	}
+	return p, class, "", true
 }
 
 func clientIP(r *http.Request) string {
@@ -525,15 +546,15 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RBAC: enforce the principal's role against the statement class.
-	principal, class, allowed := s.authorizeQuery(r, query)
+	// RBAC + table allow-list: enforce the principal's role and table scope.
+	principal, class, reason, allowed := s.authorizeQueryReason(r, query)
 	if !allowed {
-		s.recordAudit(r, principal, class, query, "denied", "insufficient role")
+		s.recordAudit(r, principal, class, query, "denied", reason)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		if err := json.NewEncoder(w).Encode(QueryResponse{
 			Success: false,
-			Message: fmt.Sprintf("Forbidden: role %q may not run a %s statement", principal.Role, class),
+			Message: "Forbidden: " + reason,
 		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
@@ -734,9 +755,9 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if p, class, ok := s.authorizeQuery(r, query); !ok {
-		s.recordAudit(r, p, class, query, "denied", "insufficient role")
-		http.Error(w, "forbidden", http.StatusForbidden)
+	if p, class, reason, ok := s.authorizeQueryReason(r, query); !ok {
+		s.recordAudit(r, p, class, query, "denied", reason)
+		http.Error(w, "forbidden: "+reason, http.StatusForbidden)
 		return
 	} else {
 		s.recordAudit(r, p, class, query, "allowed", "export csv")
@@ -804,9 +825,9 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if p, class, ok := s.authorizeQuery(r, query); !ok {
-		s.recordAudit(r, p, class, query, "denied", "insufficient role")
-		http.Error(w, "forbidden", http.StatusForbidden)
+	if p, class, reason, ok := s.authorizeQueryReason(r, query); !ok {
+		s.recordAudit(r, p, class, query, "denied", reason)
+		http.Error(w, "forbidden: "+reason, http.StatusForbidden)
 		return
 	} else {
 		s.recordAudit(r, p, class, query, "allowed", "export json")
@@ -1193,6 +1214,14 @@ func (s *Server) handleUpdateRow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Table allow-list: an inline edit targets exactly req.Table.
+	if p.tableRestricted() && !p.allowsTable(req.Table) {
+		s.recordAudit(r, p, classWrite, "UPDATE "+req.Table+" (inline edit)", "denied",
+			fmt.Sprintf("table %q is not in this token's allow-list", strings.ToLower(strings.TrimSpace(req.Table))))
+		http.Error(w, "forbidden: table not in allow-list", http.StatusForbidden)
+		return
+	}
+
 	// Build WHERE clause
 	var whereClauses []string
 	var args []interface{}
@@ -1278,9 +1307,10 @@ func (s *Server) handleAdminTokens(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req struct {
-			Name string `json:"name"`
-			Role string `json:"role"`
-			TTL  string `json:"ttl"` // optional Go duration string; empty = server default
+			Name   string   `json:"name"`
+			Role   string   `json:"role"`
+			TTL    string   `json:"ttl"`    // optional Go duration string; empty = server default
+			Tables []string `json:"tables"` // optional base-table allow-list; empty = unrestricted
 		}
 		if !decodeJSONRequest(w, r, &req) {
 			return
@@ -1303,16 +1333,24 @@ func (s *Server) handleAdminTokens(w http.ResponseWriter, r *http.Request) {
 			}
 			ttl = parsed
 		}
+		if role == RoleAdmin && len(req.Tables) > 0 {
+			http.Error(w, "table allow-list cannot be applied to an admin token", http.StatusBadRequest)
+			return
+		}
 		if s.tokens.count() >= maxWebUIAdminMintTokens {
 			http.Error(w, "too many tokens", http.StatusBadRequest)
 			return
 		}
-		value, p, err := s.tokens.mint(req.Name, role, ttl)
+		value, p, err := s.tokens.mint(req.Name, role, ttl, req.Tables)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		s.recordAudit(r, admin, classDDL, "", "allowed", "mint token "+p.ID+" role="+string(role))
+		auditDetail := "mint token " + p.ID + " role=" + string(role)
+		if len(p.Tables) > 0 {
+			auditDetail += " tables=" + strings.Join(p.Tables, ",")
+		}
+		s.recordAudit(r, admin, classDDL, "", "allowed", auditDetail)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		// The raw token is surfaced exactly once; it cannot be recovered later.
