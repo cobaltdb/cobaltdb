@@ -23,6 +23,16 @@ var (
 	errPermanent = errors.New("permanent")
 )
 
+func fastProductionConfig() *ProductionConfig {
+	config := DefaultProductionConfig()
+	config.Lifecycle.ShutdownTimeout = 200 * time.Millisecond
+	config.Lifecycle.DrainTimeout = time.Millisecond
+	config.Lifecycle.HealthCheckInterval = 10 * time.Millisecond
+	config.Lifecycle.StartupTimeout = time.Second
+	config.Lifecycle.EnableSignalHandling = false
+	return config
+}
+
 func TestProductionServerBasic(t *testing.T) {
 	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
@@ -105,7 +115,7 @@ func TestProductionHealthServerSetsHeaderLimit(t *testing.T) {
 	}
 	defer db.Close()
 
-	config := DefaultProductionConfig()
+	config := fastProductionConfig()
 	config.HealthAddr = "127.0.0.1:0"
 	config.Lifecycle.EnableSignalHandling = false
 	ps := NewProductionServer(db, config)
@@ -158,7 +168,7 @@ func TestProductionServerStartReturnsHealthBindError(t *testing.T) {
 	}
 	defer db.Close()
 
-	config := DefaultProductionConfig()
+	config := fastProductionConfig()
 	config.HealthAddr = listener.Addr().String()
 	config.Lifecycle.EnableSignalHandling = false
 
@@ -182,7 +192,7 @@ func TestProductionServerWithRetry(t *testing.T) {
 	}
 	defer db.Close()
 
-	config := DefaultProductionConfig()
+	config := fastProductionConfig()
 	config.EnableHealthServer = false // Don't start HTTP server for this test
 	config.Lifecycle.EnableSignalHandling = false
 
@@ -279,6 +289,10 @@ func TestProductionServerRejectsRemoteMetricsWithoutAdminToken(t *testing.T) {
 		EnableHealthServer: true,
 		AllowRemoteMetrics: true,
 		Lifecycle: &LifecycleConfig{
+			ShutdownTimeout:      200 * time.Millisecond,
+			DrainTimeout:         time.Millisecond,
+			HealthCheckInterval:  10 * time.Millisecond,
+			StartupTimeout:       time.Second,
 			EnableSignalHandling: false,
 		},
 	})
@@ -658,7 +672,7 @@ func TestProductionServerWithCircuitBreaker(t *testing.T) {
 	}
 	defer db.Close()
 
-	config := DefaultProductionConfig()
+	config := fastProductionConfig()
 	config.EnableHealthServer = false
 	config.Lifecycle.EnableSignalHandling = false
 
@@ -705,7 +719,7 @@ func TestProductionServerStats(t *testing.T) {
 	}
 	defer db.Close()
 
-	config := DefaultProductionConfig()
+	config := fastProductionConfig()
 	config.EnableHealthServer = false
 	config.Lifecycle.EnableSignalHandling = false
 
