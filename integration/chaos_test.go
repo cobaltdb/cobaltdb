@@ -294,10 +294,7 @@ func TestChaosIndexContention(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
 				email := fmt.Sprintf("user%d@test.com", rand.Int())
-				_, err := db.Exec(ctx, `INSERT INTO index_contention VALUES (?, ?, ?)`, j, email, fmt.Sprintf("User %d", j))
-				if err != nil {
-					// Duplicate email or other error - ignore
-				}
+				_, _ = db.Exec(ctx, `INSERT INTO index_contention VALUES (?, ?, ?)`, j, email, fmt.Sprintf("User %d", j))
 				time.Sleep(time.Microsecond * time.Duration(rand.Intn(30)))
 			}
 		}(i)

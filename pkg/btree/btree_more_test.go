@@ -88,10 +88,7 @@ func TestValid(t *testing.T) {
 
 	// After Next with data, should still be valid (has more data or done)
 	iter.Next()
-	// After consuming the only item, iterator should be done
-	if iter.Valid() {
-		// This is ok - depends on implementation
-	}
+	// After consuming the only item, iterator should be done — implementation-dependent.
 }
 
 func TestFirst(t *testing.T) {

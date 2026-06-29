@@ -184,12 +184,9 @@ func TestLexerKeywords(t *testing.T) {
 func TestLexerIllegal(t *testing.T) {
 	// Test that illegal character produces error
 	input := "#"
-	tokens, err := Tokenize(input)
+	_, err := Tokenize(input)
 	if err == nil {
 		t.Error("Expected error for illegal character")
-	}
-	if len(tokens) > 0 && tokens[0].Type != TokenEOF {
-		// Should have encountered illegal token
 	}
 }
 
