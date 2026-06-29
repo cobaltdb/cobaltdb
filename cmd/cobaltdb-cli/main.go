@@ -73,30 +73,12 @@ func main() {
 		return
 	}
 
-	// Check for subcommands
-	switch args[0] {
-	case "backup":
-		runBackupCommand(args[1:], flagPath, flagInMemory)
-	case "metrics":
-		runMetricsCommand(flagPath, flagInMemory)
-	case "status":
-		runStatusCommand(flagPath, flagInMemory)
-	case "vacuum":
-		runVacuumCommand(flagPath, flagInMemory)
-	case "analyze":
-		runAnalyzeCommand(flagPath, flagInMemory)
-	case "import":
-		runImportCommand(args[1:], flagPath, flagInMemory)
-	case "export":
-		runExportCommand(args[1:], flagPath, flagInMemory)
-	case "dump":
-		runDumpCommand(args[1:], flagPath, flagInMemory)
-	case "restore":
-		runRestoreCommand(args[1:], flagPath, flagInMemory)
-	default:
-		// Execute single SQL command
-		runCommand(strings.Join(args, " "), flagPath, flagInMemory)
+	// Check for subcommands (backup, import, export, etc.) via the Command registry
+	if RunCommand(args[0], args[1:], flagPath, flagInMemory) {
+		return
 	}
+	// Execute single SQL command
+	runCommand(strings.Join(args, " "), flagPath, flagInMemory)
 }
 
 func printHelp() {
@@ -872,20 +854,6 @@ func handleMetaCommand(line string, db *engine.DB, state *sessionState) {
 
 // Subcommand handlers
 
-func runBackupCommand(args []string, path string, inMemory bool) {
-	db := openDB(path, inMemory)
-	defer db.Close()
-
-	if len(args) == 0 {
-		fmt.Println("Usage: backup create [full|incremental|differential]")
-		fmt.Println("       backup list")
-		fmt.Println("       backup restore <id>")
-		fmt.Println("       backup delete <id>")
-		closeDBAndExit(db, 1)
-	}
-	handleBackupCommand(args, db)
-}
-
 func handleBackupCommand(args []string, db *engine.DB) {
 	ctx := context.Background()
 	sub := strings.ToLower(args[0])
@@ -951,25 +919,6 @@ func handleBackupCommand(args []string, db *engine.DB) {
 	}
 }
 
-func runMetricsCommand(path string, inMemory bool) {
-	db := openDB(path, inMemory)
-	defer db.Close()
-
-	data, err := db.GetMetrics()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		closeDBAndExit(db, 1)
-	}
-	fmt.Println(string(data))
-}
-
-func runStatusCommand(path string, inMemory bool) {
-	db := openDB(path, inMemory)
-	defer db.Close()
-
-	printStatus(db)
-}
-
 func printStatus(db *engine.DB) {
 	fmt.Printf("Database path: %s\n", db.Path())
 
@@ -981,34 +930,6 @@ func printStatus(db *engine.DB) {
 		fmt.Printf("Scheduler: running\n")
 	} else {
 		fmt.Printf("Scheduler: not running\n")
-	}
-}
-
-func runVacuumCommand(path string, inMemory bool) {
-	db := openDB(path, inMemory)
-	defer db.Close()
-
-	executeSQL(db, "VACUUM")
-}
-
-func runAnalyzeCommand(path string, inMemory bool) {
-	db := openDB(path, inMemory)
-	defer db.Close()
-
-	executeSQL(db, "ANALYZE")
-}
-
-func runImportCommand(args []string, path string, inMemory bool) {
-	if len(args) < 2 {
-		fmt.Println("Usage: import <file.csv> <table>")
-		os.Exit(1)
-	}
-	db := openDB(path, inMemory)
-	defer db.Close()
-
-	if err := importCSV(db, args[0], args[1]); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		closeDBAndExit(db, 1)
 	}
 }
 

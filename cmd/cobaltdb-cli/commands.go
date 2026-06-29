@@ -95,6 +95,10 @@ type importCommand struct{}
 
 func (c *importCommand) Name() string { return "import" }
 func (c *importCommand) Run(args []string, path string, inMemory bool) {
+	if len(args) < 2 {
+		fmt.Println("Usage: import <file.csv> <table>")
+		os.Exit(1)
+	}
 	db := openDB(path, inMemory)
 	defer db.Close()
 	if err := importCSV(db, args[0], args[1]); err != nil {
