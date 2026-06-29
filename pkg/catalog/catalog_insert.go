@@ -2314,7 +2314,15 @@ func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, a
 
 	// If partition value is nil, we can't determine the partition
 	if partitionVal == nil {
-		return nil, -1, fmt.Errorf("partition column '%s' value is NULL, cannot determine partition", table.Partition.Column)
+		// Check if the partition column has a DEFAULT expression.
+		if partitionColIdx >= 0 && partitionColIdx < len(table.Columns) && table.Columns[partitionColIdx].defaultExpr != nil {
+			if defVal, err := EvalExpression(table.Columns[partitionColIdx].defaultExpr, args); err == nil {
+				partitionVal = defVal
+			}
+		}
+		if partitionVal == nil {
+			return nil, -1, fmt.Errorf("partition column '%s' value is NULL, cannot determine partition", table.Partition.Column)
+		}
 	}
 
 	// Get the partition tree name
