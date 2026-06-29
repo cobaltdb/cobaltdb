@@ -632,7 +632,7 @@ func writeBytesToHash(h hash.Hash, kind byte, value []byte) {
 func writeHashHeader(h hash.Hash, kind byte, length int) {
 	var header [9]byte
 	header[0] = kind
-	binary.BigEndian.PutUint64(header[1:], uint64(length))
+	binary.BigEndian.PutUint64(header[1:], uint64(length)) // #nosec G115 -- length is a slice len(), always >= 0
 	h.Write(header[:])
 }
 

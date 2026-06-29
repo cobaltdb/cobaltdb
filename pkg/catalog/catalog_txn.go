@@ -1959,7 +1959,7 @@ func parseReplayWALKeyValue(data []byte) (string, []byte, error) {
 	if keyEnd > uint64(len(data)) {
 		return "", nil, fmt.Errorf("key length %d exceeds record size %d", keyLen, len(data))
 	}
-	keyEndInt := int(keyEnd)
+	keyEndInt := int(keyEnd) // #nosec G115 -- keyEnd is bounds-checked (<= len(data)) above
 	return string(data[4:keyEndInt]), data[keyEndInt:], nil
 }
 

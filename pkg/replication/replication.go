@@ -1876,7 +1876,7 @@ func decodeWALEntries(data []byte) ([]*WALEntry, error) {
 		return nil, err
 	}
 
-	if uint64(numEntries) > uint64(buf.Len())/4 {
+	if uint64(numEntries) > uint64(buf.Len())/4 { // #nosec G115 -- bytes.Reader.Len() is always >= 0; this is the bounds guard itself
 		return nil, fmt.Errorf("WAL entry count %d exceeds remaining payload %d", numEntries, buf.Len())
 	}
 
@@ -1888,7 +1888,7 @@ func decodeWALEntries(data []byte) ([]*WALEntry, error) {
 		if err := binary.Read(buf, binary.BigEndian, &entryLen); err != nil {
 			return nil, err
 		}
-		if uint64(entryLen) > uint64(buf.Len()) {
+		if uint64(entryLen) > uint64(buf.Len()) { // #nosec G115 -- bytes.Reader.Len() is always >= 0; this is the bounds guard itself
 			return nil, fmt.Errorf("WAL entry length %d exceeds remaining payload %d", entryLen, buf.Len())
 		}
 

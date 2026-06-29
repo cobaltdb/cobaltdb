@@ -1714,6 +1714,9 @@ func toInt64(v interface{}) (int64, bool) {
 	case int64:
 		return n, true
 	case uint:
+		if uint64(n) > math.MaxInt64 {
+			return 0, false // overflows int64
+		}
 		return int64(n), true
 	case uint8:
 		return int64(n), true
@@ -1722,6 +1725,9 @@ func toInt64(v interface{}) (int64, bool) {
 	case uint32:
 		return int64(n), true
 	case uint64:
+		if n > math.MaxInt64 {
+			return 0, false // overflows int64
+		}
 		return int64(n), true
 	case float32:
 		if n == float32(int64(n)) {
