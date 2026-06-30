@@ -442,10 +442,10 @@ func prepareTLSFileDir(path string) error {
 		}
 	}
 
-	if err := os.MkdirAll(dir, 0750); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create TLS directory: %w", err)
 	}
-	if err := os.Chmod(dir, 0750); err != nil {
+	if err := os.Chmod(dir, 0700); err != nil { // #nosec G302 -- directory needs owner execute bit for traversal; mode grants no group/other access.
 		return fmt.Errorf("failed to set TLS directory permissions: %w", err)
 	}
 	if err := rejectTLSSymlinkPathComponents(dir); err != nil {
@@ -496,15 +496,35 @@ func rejectTLSSymlinkPathComponents(path string) error {
 }
 
 func syncTLSDir(dir string) error {
-	file, err := os.Open(dir) // #nosec G304 - directory path is derived from explicit TLS configuration and cleaned before use.
+	if err := rejectTLSSymlinkPathComponents(dir); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
 	if err != nil {
 		return err
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("TLS directory must not be a symlink: %s", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("TLS directory must be a directory: %s", dir)
+	}
+	file, err := os.Open(dir) // #nosec G304 -- directory path is derived from explicit TLS configuration and checked against symlink swaps before use.
+	if err != nil {
 		return err
 	}
-	return file.Close()
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !openedInfo.IsDir() {
+		return fmt.Errorf("TLS directory must be a directory: %s", dir)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("TLS directory changed while syncing: %s", dir)
+	}
+	return file.Sync()
 }
 
 func cleanTLSFilePath(path string) (string, error) {

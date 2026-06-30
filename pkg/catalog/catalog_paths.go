@@ -62,7 +62,7 @@ func prepareCatalogDataDir(dir string, create bool) error {
 		if err := os.MkdirAll(cleanDir, 0750); err != nil {
 			return err
 		}
-		if err := os.Chmod(cleanDir, 0750); err != nil {
+		if err := os.Chmod(cleanDir, 0750); err != nil { // #nosec G302 -- directory needs execute bits for traversal; group access is intentional for catalog data administration.
 			return err
 		}
 	}

@@ -233,7 +233,7 @@ func (al *Logger) openLogFile() error {
 		if err := os.MkdirAll(dir, 0750); err != nil {
 			return fmt.Errorf("failed to create audit log directory: %w", err)
 		}
-		if err := os.Chmod(dir, 0750); err != nil {
+		if err := os.Chmod(dir, 0750); err != nil { // #nosec G302 -- directory needs execute bits for traversal; group access is intentional for audit log administration.
 			return fmt.Errorf("failed to set audit log directory permissions: %w", err)
 		}
 		openedInfo, err := os.Stat(dir)
@@ -996,10 +996,33 @@ func syncAuditLogParentDir(path string) error {
 	if dir == "" {
 		dir = "."
 	}
-	file, err := os.Open(dir)
+	if err := rejectAuditLogDirSymlinkPathComponents(dir); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("audit log directory must not be a symlink: %s", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("audit log directory must be a directory: %s", dir)
+	}
+	file, err := os.Open(dir) // #nosec G304 -- directory path is derived from a validated audit log path and checked against symlink swaps before use.
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !openedInfo.IsDir() {
+		return fmt.Errorf("audit log directory must be a directory: %s", dir)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("audit log directory changed while syncing: %s", dir)
+	}
 	return file.Sync()
 }

@@ -597,7 +597,7 @@ func prepareDatabaseParentDir(path string) error {
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
-	if err := os.Chmod(dir, 0750); err != nil {
+	if err := os.Chmod(dir, 0750); err != nil { // #nosec G302 -- directory needs execute bits for traversal; group access is intentional for database directory administration.
 		return fmt.Errorf("failed to set database directory permissions: %w", err)
 	}
 

@@ -585,11 +585,11 @@ func prepareAtomicFileDir(dir string) error {
 		}
 	}
 
-	if err := os.MkdirAll(dir, 0750); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create atomic file directory: %w", err)
 	}
 	if !preexisting {
-		if err := os.Chmod(dir, 0750); err != nil {
+		if err := os.Chmod(dir, 0700); err != nil { // #nosec G302 -- directory needs owner execute bit for traversal; mode grants no group/other access.
 			return fmt.Errorf("failed to set atomic file directory permissions: %w", err)
 		}
 	}
@@ -645,13 +645,33 @@ func rejectStoragePathSymlinkComponents(path, label string) error {
 }
 
 func syncDir(dir string) error {
-	file, err := os.Open(dir) // #nosec G304 - caller passes a cleaned directory path.
+	if err := rejectAtomicFileDirSymlinks(dir); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
 	if err != nil {
 		return err
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("atomic file directory must not be a symlink: %s", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("atomic file directory must be a directory: %s", dir)
+	}
+	file, err := os.Open(dir) // #nosec G304 -- caller passes a cleaned directory path that is checked against symlink swaps before use.
+	if err != nil {
 		return err
 	}
-	return file.Close()
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !openedInfo.IsDir() {
+		return fmt.Errorf("atomic file directory must be a directory: %s", dir)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("atomic file directory changed while syncing: %s", dir)
+	}
+	return file.Sync()
 }

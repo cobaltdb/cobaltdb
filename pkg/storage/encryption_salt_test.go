@@ -95,8 +95,25 @@ func TestPrepareAtomicFileDirCreatesRestrictiveDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat dir: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0750 {
-		t.Fatalf("atomic file dir mode = %o, want 750", got)
+	if got := info.Mode().Perm(); got != 0700 {
+		t.Fatalf("atomic file dir mode = %o, want 700", got)
+	}
+}
+
+func TestSyncDirRejectsSymlinkDirectory(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "target")
+	linkDir := filepath.Join(dir, "sidecars")
+	if err := os.Mkdir(targetDir, 0700); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	err := syncDir(linkDir)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("syncDir symlink error = %v, want symlink rejection", err)
 	}
 }
 

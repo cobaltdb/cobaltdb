@@ -144,8 +144,25 @@ func TestPrepareTLSFileDirCreatesRestrictiveDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat TLS dir: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0750 {
-		t.Fatalf("TLS dir mode = %o, want 750", got)
+	if got := info.Mode().Perm(); got != 0700 {
+		t.Fatalf("TLS dir mode = %o, want 700", got)
+	}
+}
+
+func TestSyncTLSDirRejectsSymlinkDirectory(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "target")
+	linkDir := filepath.Join(dir, "certs")
+	if err := os.Mkdir(targetDir, 0700); err != nil {
+		t.Fatalf("Mkdir target: %v", err)
+	}
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("Symlink: %v", err)
+	}
+
+	err := syncTLSDir(linkDir)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("syncTLSDir symlink error = %v, want symlink rejection", err)
 	}
 }
 

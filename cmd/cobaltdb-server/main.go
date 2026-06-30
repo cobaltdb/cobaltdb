@@ -378,7 +378,7 @@ func prepareDataDir(path string) (string, error) {
 	if err := rejectDataDirSymlinkPathComponents(cleanPath); err != nil {
 		return "", err
 	}
-	if err := os.Chmod(cleanPath, 0750); err != nil {
+	if err := os.Chmod(cleanPath, 0750); err != nil { // #nosec G302 -- directory needs execute bits for traversal; group access is intentional for server data administration.
 		return "", fmt.Errorf("failed to set data directory permissions: %w", err)
 	}
 

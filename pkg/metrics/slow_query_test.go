@@ -119,6 +119,23 @@ func TestSlowQueryLogFile(t *testing.T) {
 	}
 }
 
+func TestSyncSlowQueryLogParentDirRejectsSymlinkDirectory(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "target")
+	linkDir := filepath.Join(dir, "logs")
+	if err := os.Mkdir(targetDir, 0700); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	err := syncSlowQueryLogParentDir(filepath.Join(linkDir, "slow.log"))
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("syncSlowQueryLogParentDir symlink error = %v, want symlink rejection", err)
+	}
+}
+
 func TestSlowQueryEntryJSONUsesMilliseconds(t *testing.T) {
 	entry := SlowQueryEntry{
 		Timestamp:    time.Unix(1700000000, 0).UTC(),

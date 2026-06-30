@@ -86,11 +86,34 @@ func syncDiskParentDir(path string) error {
 	if dir == "" {
 		dir = "."
 	}
-	file, err := os.Open(dir)
+	if err := rejectStoragePathSymlinkComponents(dir, "database directory"); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("database directory must not be a symlink: %s", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("database directory must be a directory: %s", dir)
+	}
+	file, err := os.Open(dir) // #nosec G304 -- directory path is derived from a validated database path and checked against symlink swaps before use.
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !openedInfo.IsDir() {
+		return fmt.Errorf("database directory must be a directory: %s", dir)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("database directory changed while syncing: %s", dir)
+	}
 	return file.Sync()
 }
 

@@ -54,6 +54,23 @@ func TestNewLoggerRestrictsExistingLogPermissions(t *testing.T) {
 	}
 }
 
+func TestSyncAuditLogParentDirRejectsSymlinkDirectory(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "target")
+	linkDir := filepath.Join(dir, "audit")
+	if err := os.Mkdir(targetDir, 0700); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	err := syncAuditLogParentDir(filepath.Join(linkDir, "audit.log"))
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("syncAuditLogParentDir symlink error = %v, want symlink rejection", err)
+	}
+}
+
 func TestNewLoggerRejectsUnsafeLogPath(t *testing.T) {
 	tempDir := t.TempDir()
 	targetPath := filepath.Join(tempDir, "target.log")
