@@ -482,6 +482,12 @@ func Open(path string, opts *Options) (*DB, error) {
 		return nil, err
 	}
 
+	// Start the transaction manager's background deadlock detector.
+	// Start is idempotent; the matching Stop happens in Close.
+	if db.txnMgr != nil {
+		db.txnMgr.Start()
+	}
+
 	// Start scheduler for maintenance jobs if enabled.
 	// Auto-vacuum implies the scheduler must be active.
 	if !db.options.CoreStorage.InMemory && db.path != ":memory:" {
@@ -784,7 +790,9 @@ func (db *DB) initializeCommonComponents() {
 		}
 		db.replicationMgr = replication.NewManager(replConfig)
 		db.configureReplicationCallbacks()
-		db.replicationMgr.Start() // errors logged inside NewManager/Start
+		if err := db.replicationMgr.Start(); err != nil {
+			db.options.Logger.Errorf("Failed to start replication manager: %v", err)
+		}
 	}
 
 	db.initializeBackupManager()
@@ -995,6 +1003,15 @@ func (db *DB) Shutdown(ctx context.Context) error {
 // Close closes the database immediately
 
 func (db *DB) Close() error {
+	// Stop replication BEFORE acquiring db.mu: the slave apply path executes
+	// replicated statements through Exec (db.mu.RLock) and the master snapshot
+	// path takes db.mu.Lock, so stopping the manager while holding db.mu can
+	// deadlock with an in-flight apply/snapshot. Manager.Stop is idempotent.
+	var replicationStopErr error
+	if db.replicationMgr != nil {
+		replicationStopErr = db.replicationMgr.Stop()
+	}
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -1026,6 +1043,22 @@ func (db *DB) Close() error {
 	// Stop scheduler (vacuum, analyze, and other maintenance jobs)
 	if db.scheduler != nil {
 		db.scheduler.Stop()
+	}
+
+	// Stop the transaction manager's deadlock detector goroutine
+	if db.txnMgr != nil {
+		db.txnMgr.Stop()
+	}
+
+	// Stop the query cache's cleanup goroutine (leaks one goroutine per
+	// Open/Close cycle otherwise when EnableQueryCache is set).
+	if db.catalog != nil {
+		db.catalog.DisableQueryCache()
+	}
+
+	// Flush and close the slow query log file handle
+	if db.slowQueryLog != nil {
+		db.slowQueryLog.Close()
 	}
 
 	var errs []error
@@ -1067,11 +1100,10 @@ func (db *DB) Close() error {
 		}
 	}
 
-	// Close replication manager
-	if db.replicationMgr != nil {
-		if err := db.replicationMgr.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("close replication manager: %w", err))
-		}
+	// Replication manager was stopped before db.mu was acquired (see above);
+	// surface any error from that shutdown here.
+	if replicationStopErr != nil {
+		errs = append(errs, fmt.Errorf("close replication manager: %w", replicationStopErr))
 	}
 
 	// Close WAL

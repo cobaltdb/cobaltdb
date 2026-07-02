@@ -105,7 +105,9 @@ func TestApplyWALDataInvalidData(t *testing.T) {
 	}
 }
 
-// TestApplyWALDataNoCallback tests applyWALData without OnApply callback
+// TestApplyWALDataNoCallback tests applyWALData without OnApply callback.
+// Without an apply callback the slave must fail closed: it cannot apply the
+// entry, so it must not advance lastApplied (and consequently must not ACK).
 func TestApplyWALDataNoCallback(t *testing.T) {
 	mgr := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync})
 
@@ -115,15 +117,15 @@ func TestApplyWALDataNoCallback(t *testing.T) {
 
 	data, _ := encodeWALEntries(entries)
 
-	// No OnApply callback set
+	// No OnApply callback set — must error, not silently no-op
 	err := mgr.applyWALData(string(data))
-	if err != nil {
-		t.Errorf("applyWALData failed without callback: %v", err)
+	if err == nil {
+		t.Error("applyWALData without callback should fail closed with an error")
 	}
 
-	// Verify lastApplied was updated
-	if mgr.lastApplied != 1 {
-		t.Errorf("Expected lastApplied=1, got %d", mgr.lastApplied)
+	// Verify lastApplied was NOT advanced
+	if mgr.lastApplied != 0 {
+		t.Errorf("Expected lastApplied=0 (entry not applied), got %d", mgr.lastApplied)
 	}
 }
 
@@ -712,6 +714,7 @@ func TestSyncReplicationStateDir(t *testing.T) {
 func TestApplyWALDataPersistsReplicationState(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "replication-state.json")
 	mgr := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync, StateFile: stateFile})
+	mgr.OnApply = func(entry *WALEntry) error { return nil }
 
 	entries := []*WALEntry{
 		{LSN: 7, Timestamp: time.Now(), Data: []byte("test"), Checksum: calculateCRC32([]byte("test"))},
@@ -1499,6 +1502,7 @@ func TestCalculateCRC32Variations(t *testing.T) {
 // TestGetMetricsAppliedEntries tests GetMetrics with applied entries
 func TestGetMetricsAppliedEntries(t *testing.T) {
 	mgr := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync})
+	mgr.OnApply = func(entry *WALEntry) error { return nil }
 
 	// Apply some entries
 	entries := []*WALEntry{

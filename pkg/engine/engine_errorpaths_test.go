@@ -234,7 +234,7 @@ func TestRunStatementReturnsQueryTimeoutContext(t *testing.T) {
 	}
 
 	<-runCtx.Done()
-	if _, err := db.execute(runCtx, stmt, nil); err == nil {
+	if _, err := db.execute(runCtx, "CREATE TABLE timeout_ctx (id INTEGER)", stmt, nil); err == nil {
 		t.Fatal("expected execution with expired query timeout context to fail")
 	}
 }

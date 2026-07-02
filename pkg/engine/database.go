@@ -81,6 +81,9 @@ type DB struct {
 	// backupMu serializes hot backup against concurrent checkpoints. Acquiring
 	// backupMu in BeginHotBackup blocks both DB.Checkpoint and WAL auto-checkpoint.
 	backupMu sync.Mutex
+	// hotBackupActive (guarded by db.mu) records that BeginHotBackup holds
+	// backupMu, so EndHotBackup only releases when a backup is in progress.
+	hotBackupActive bool
 	// Metrics collector
 	metrics *metrics.Collector
 	// Connection management
@@ -98,6 +101,20 @@ type DB struct {
 
 	// Replication Manager
 	replicationMgr *replication.Manager
+
+	// Master-side replication capture state.
+	// replCaptureMu serializes replication snapshot creation (write lock)
+	// against the commit+capture window of write statements (read lock) so a
+	// snapshot's LSN label exactly matches its contents. Lock ordering:
+	// db.mu -> replCaptureMu -> flushMu.
+	replCaptureMu sync.RWMutex
+	// replMu guards the pending statement buffer used for explicit
+	// transactions (statements are replicated on COMMIT, discarded on
+	// ROLLBACK). A single buffer is sufficient under the engine's
+	// single-writer transaction model.
+	replMu         sync.Mutex
+	replPending    [][]byte
+	replSavepoints map[string]int
 
 	// Backup Manager
 	backupMgr *backup.Manager
@@ -193,6 +210,15 @@ type ReplicationConfig struct {
 	SSLKey     string // SSL private key file path
 	SSLCA      string // SSL CA certificate path
 	StateFile  string // Slave resume state file path
+
+	// SyncTimeout bounds how long a sync/full_sync master write waits for
+	// slave acknowledgements after commit (default 5s).
+	SyncTimeout time.Duration
+	// SyncStrict controls "sync" mode timeout behavior: when true the write
+	// returns an error if no slave acknowledged within SyncTimeout; when
+	// false (default) the write degrades to async with a logged warning.
+	// "full_sync" mode always returns an error on timeout.
+	SyncStrict bool
 }
 
 // BackupConfig governs backup creation and retention.
@@ -780,7 +806,7 @@ func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (result
 		}()
 	}
 
-	return db.execute(runCtx, stmt, args)
+	return db.execute(runCtx, sql, stmt, args)
 }
 
 // Query executes a SQL query and returns rows
@@ -821,7 +847,7 @@ func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (rows 
 		}()
 	}
 
-	return db.query(runCtx, stmt, args)
+	return db.query(runCtx, sql, stmt, args)
 }
 
 // QueryRow executes a SQL query and returns a single row
@@ -1346,6 +1372,7 @@ func (db *DB) AbortConnTransaction() {
 	}
 	if db.catalog.IsTransactionActive() {
 		_ = db.catalog.RollbackTransaction()
+		db.replTxnDiscard()
 	}
 }
 
@@ -1393,21 +1420,20 @@ func (db *DB) persistSchema() error {
 }
 
 func (db *DB) dispatchDDL(ctx context.Context, action, table string, handler func() (Result, error), opts ...audit.LogOption) (Result, error) {
+	_ = table // retained for call-site clarity; replication now ships SQL text via execute()
 	result, err := handler()
 	if db.auditLogger != nil {
 		db.auditLogger.Log(audit.EventDDL, auditUser(ctx), action, opts...)
 	}
-	if err == nil {
-		if replErr := db.replicateWrite(action, table, nil); replErr != nil {
-			return result, replErr
-		}
-	}
 	return result, err
 }
 
-// execute executes a statement
+// execute executes a statement. sqlText is the original SQL of stmt and is
+// used for statement-based replication; internal recursive executions (e.g.
+// statements inside a stored procedure body) pass "" so only the outermost
+// statement is replicated.
 
-func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interface{}) (result Result, err error) {
+func (db *DB) execute(ctx context.Context, sqlText string, stmt query.Statement, args []interface{}) (result Result, err error) {
 	start := time.Now()
 
 	// Flush the catalog schema to disk after a successful DDL so it survives an
@@ -1441,6 +1467,37 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		isTransactionControl = true
 	}
 	autocommit := db.wal != nil && !db.catalog.IsTransactionActive() && !isTransactionControl
+
+	// Statement-based replication capture. Registered BEFORE the autocommit
+	// defer below (defers are LIFO) so it runs AFTER the implicit commit and
+	// only ships statements that actually committed. The capture read-lock is
+	// held across execution+commit+capture so a concurrent replication
+	// snapshot cannot be labeled with an LSN that excludes a write already in
+	// its data (which would make the slave double-apply that write).
+	if sqlText != "" && isReplicatedWriteStmt(stmt) && db.replicationMasterManager() != nil {
+		inExplicitTxn := !autocommit && db.catalog.IsTransactionActive()
+		db.replCaptureMu.RLock()
+		defer func() {
+			if err != nil {
+				db.replCaptureMu.RUnlock()
+				return
+			}
+			needWait, repErr := db.replicateStatement(sqlText, args, inExplicitTxn)
+			// Release the capture lock BEFORE the sync-mode ACK wait: waiting
+			// while holding it can deadlock against a snapshot-sending slave
+			// handler (it holds the slave connection mutex and needs the
+			// capture write lock).
+			db.replCaptureMu.RUnlock()
+			if repErr == nil && needWait {
+				if mgr := db.replicationMasterManager(); mgr != nil {
+					repErr = db.replicationSyncWait(mgr)
+				}
+			}
+			if repErr != nil {
+				err = repErr
+			}
+		}()
+	}
 
 	if autocommit {
 		// Start a transaction for this operation
@@ -1480,32 +1537,17 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		if db.auditLogger != nil {
 			db.auditLogger.LogQuery(auditUser(ctx), "INSERT", time.Since(start), result.RowsAffected, err)
 		}
-		if err == nil {
-			if replErr := db.replicateWrite("INSERT", s.Table, args); replErr != nil {
-				return result, replErr
-			}
-		}
 		return result, err
 	case *query.UpdateStmt:
 		result, err := db.executeUpdate(ctx, s, args)
 		if db.auditLogger != nil {
 			db.auditLogger.LogQuery(auditUser(ctx), "UPDATE", time.Since(start), result.RowsAffected, err)
 		}
-		if err == nil {
-			if replErr := db.replicateWrite("UPDATE", s.Table, args); replErr != nil {
-				return result, replErr
-			}
-		}
 		return result, err
 	case *query.DeleteStmt:
 		result, err := db.executeDelete(ctx, s, args)
 		if db.auditLogger != nil {
 			db.auditLogger.LogQuery(auditUser(ctx), "DELETE", time.Since(start), result.RowsAffected, err)
-		}
-		if err == nil {
-			if replErr := db.replicateWrite("DELETE", s.Table, args); replErr != nil {
-				return result, replErr
-			}
 		}
 		return result, err
 	case *query.DropTableStmt:
@@ -1550,6 +1592,7 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		// Transaction and pinning MVCC pruneVersions' minActive so version-store
 		// memory could never be reclaimed.
 		db.catalog.BeginTransactionWithTxn(transaction.ID, transaction)
+		db.replTxnDiscard() // defensive: start with an empty replication buffer
 		return Result{}, nil
 	case *query.CommitStmt:
 		if !db.catalog.IsTransactionActive() {
@@ -1558,8 +1601,28 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		if err := db.catalog.FlushTableTrees(); err != nil {
 			return Result{}, fmt.Errorf("failed to flush tables: %w", err)
 		}
-		if err := db.catalog.CommitTransaction(); err != nil {
-			return Result{}, err
+		// Hold the replication capture lock across commit+entry-append so a
+		// concurrent replication snapshot cannot observe the committed data
+		// without the corresponding replication entries. The sync-mode ACK
+		// wait runs after the lock is released (see replicateStatement).
+		db.replCaptureMu.RLock()
+		commitErr := db.catalog.CommitTransaction()
+		var needWait bool
+		var replErr error
+		if commitErr == nil {
+			needWait, replErr = db.replTxnFlush()
+		}
+		db.replCaptureMu.RUnlock()
+		if commitErr != nil {
+			return Result{}, commitErr
+		}
+		if replErr == nil && needWait {
+			if mgr := db.replicationMasterManager(); mgr != nil {
+				replErr = db.replicationSyncWait(mgr)
+			}
+		}
+		if replErr != nil {
+			return Result{}, replErr
 		}
 		return Result{}, nil
 	case *query.RollbackStmt:
@@ -1571,11 +1634,13 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 			if err := db.catalog.RollbackToSavepoint(s.ToSavepoint); err != nil {
 				return Result{}, err
 			}
+			db.replTxnRollbackToSavepoint(s.ToSavepoint)
 			return Result{}, nil
 		}
 		if err := db.catalog.RollbackTransaction(); err != nil {
 			return Result{}, err
 		}
+		db.replTxnDiscard()
 		return Result{}, nil
 	case *query.SavepointStmt:
 		if !db.catalog.IsTransactionActive() {
@@ -1584,6 +1649,7 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		if err := db.catalog.Savepoint(s.Name); err != nil {
 			return Result{}, err
 		}
+		db.replTxnMarkSavepoint(s.Name)
 		return Result{}, nil
 	case *query.ReleaseSavepointStmt:
 		if !db.catalog.IsTransactionActive() {
@@ -1592,6 +1658,7 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 		if err := db.catalog.ReleaseSavepoint(s.Name); err != nil {
 			return Result{}, err
 		}
+		db.replTxnReleaseSavepoint(s.Name)
 		return Result{}, nil
 	case *query.VacuumStmt:
 		result, err := db.executeVacuum(ctx, s)
@@ -1684,9 +1751,12 @@ func (db *DB) execute(ctx context.Context, stmt query.Statement, args []interfac
 	}
 }
 
-// query executes a query and returns rows
+// query executes a query and returns rows. sqlText is the original SQL of
+// stmt, used for statement-based replication of write statements that return
+// rows (INSERT/UPDATE/DELETE ... RETURNING, CALL); internal recursive
+// executions pass "".
 
-func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{}) (*Rows, error) {
+func (db *DB) query(ctx context.Context, sqlText string, stmt query.Statement, args []interface{}) (*Rows, error) {
 	start := time.Now()
 
 	// Check for context cancellation
@@ -1745,24 +1815,72 @@ func (db *DB) query(ctx context.Context, stmt query.Statement, args []interface{
 		return db.executeExplainQuery(ctx, s)
 	case *query.InsertStmt:
 		if len(s.Returning) > 0 {
-			return db.executeInsertReturning(ctx, s, args)
+			return db.queryWriteWithReplication(sqlText, args, func() (*Rows, error) {
+				return db.executeInsertReturning(ctx, s, args)
+			})
 		}
 		return nil, fmt.Errorf("not a query statement: %T", stmt)
 	case *query.UpdateStmt:
 		if len(s.Returning) > 0 {
-			return db.executeUpdateReturning(ctx, s, args)
+			return db.queryWriteWithReplication(sqlText, args, func() (*Rows, error) {
+				return db.executeUpdateReturning(ctx, s, args)
+			})
 		}
 		return nil, fmt.Errorf("not a query statement: %T", stmt)
 	case *query.DeleteStmt:
 		if len(s.Returning) > 0 {
-			return db.executeDeleteReturning(ctx, s, args)
+			return db.queryWriteWithReplication(sqlText, args, func() (*Rows, error) {
+				return db.executeDeleteReturning(ctx, s, args)
+			})
 		}
 		return nil, fmt.Errorf("not a query statement: %T", stmt)
 	case *query.CallProcedureStmt:
-		return db.queryCallProcedure(ctx, s, args)
+		return db.queryWriteWithReplication(sqlText, args, func() (*Rows, error) {
+			return db.queryCallProcedure(ctx, s, args)
+		})
 	default:
 		return nil, fmt.Errorf("not a query statement: %T", stmt)
 	}
+}
+
+// queryWriteWithReplication executes a write statement issued through the
+// query path (RETURNING clauses, CALL) and replicates it on success. When a
+// transaction is active the statement joins it and is buffered until COMMIT;
+// otherwise it is shipped immediately under the capture lock.
+func (db *DB) queryWriteWithReplication(sqlText string, args []interface{}, run func() (*Rows, error)) (*Rows, error) {
+	if sqlText == "" || db.replicationMasterManager() == nil {
+		return run()
+	}
+
+	inTxn := db.catalog.IsTransactionActive()
+	var rows *Rows
+	var needWait bool
+	err := func() error {
+		if !inTxn {
+			db.replCaptureMu.RLock()
+			defer db.replCaptureMu.RUnlock()
+		}
+		var runErr error
+		rows, runErr = run()
+		if runErr != nil {
+			return runErr
+		}
+		var repErr error
+		needWait, repErr = db.replicateStatement(sqlText, args, inTxn)
+		return repErr
+	}()
+	if err != nil {
+		return rows, err
+	}
+	// Sync-mode ACK wait outside the capture lock (see replicateStatement).
+	if needWait {
+		if mgr := db.replicationMasterManager(); mgr != nil {
+			if repErr := db.replicationSyncWait(mgr); repErr != nil {
+				return rows, repErr
+			}
+		}
+	}
+	return rows, nil
 }
 
 // executeCreateTable executes CREATE TABLE
@@ -1823,7 +1941,7 @@ func (db *DB) executeCreateCollection(ctx context.Context, stmt *query.CreateCol
 // executeCreateTableAsSelect implements CREATE TABLE ... AS SELECT (CTAS):
 // materialize the query, infer column types, create the table, insert the rows.
 func (db *DB) executeCreateTableAsSelect(ctx context.Context, stmt *query.CreateTableStmt) (Result, error) {
-	rows, err := db.query(ctx, stmt.AsSelect, nil)
+	rows, err := db.query(ctx, "", stmt.AsSelect, nil)
 	if err != nil {
 		return Result{}, err
 	}
@@ -1952,7 +2070,7 @@ func (db *DB) executeUpsert(ctx context.Context, stmt *query.InsertStmt, args []
 	// Source rows come from VALUES, or from a materialized INSERT ... SELECT.
 	valueRows := stmt.Values
 	if stmt.Select != nil {
-		rows, qerr := db.query(ctx, stmt.Select, args)
+		rows, qerr := db.query(ctx, "", stmt.Select, args)
 		if qerr != nil {
 			return Result{}, qerr
 		}
@@ -2888,7 +3006,7 @@ func (db *DB) runCallProcedure(ctx context.Context, stmt *query.CallProcedureStm
 		}
 		if captureResultRows && isProcedureResultStatement(bodyStmt) {
 			substitutedStmt := substituteParamsInStatement(bodyStmt, paramMap)
-			rows, err := db.query(ctx, substitutedStmt, nil)
+			rows, err := db.query(ctx, "", substitutedStmt, nil)
 			if err != nil {
 				return Result{}, nil, nil, nil, err
 			}
@@ -3032,7 +3150,7 @@ func (db *DB) executeWithParams(ctx context.Context, stmt query.Statement, param
 	substitutedStmt := substituteParamsInStatement(stmt, paramMap)
 
 	// Execute the statement (with no additional args since params are substituted)
-	return db.execute(ctx, substitutedStmt, nil)
+	return db.execute(ctx, "", substitutedStmt, nil)
 }
 
 // substituteParamsInStatement replaces parameter references with literal values
@@ -4367,7 +4485,7 @@ func (tx *Tx) Exec(ctx context.Context, sql string, args ...interface{}) (Result
 	}
 
 	// Execute within transaction context
-	return tx.db.execute(ctx, stmt, args)
+	return tx.db.execute(ctx, sql, stmt, args)
 }
 
 // Query executes a query within the transaction.
@@ -4388,7 +4506,7 @@ func (tx *Tx) Query(ctx context.Context, sql string, args ...interface{}) (*Rows
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
 
-	return tx.db.query(ctx, stmt, args)
+	return tx.db.query(ctx, sql, stmt, args)
 }
 
 // Commit commits the transaction
@@ -4407,27 +4525,52 @@ func (tx *Tx) Commit() error {
 		}
 	}()
 
-	// Concurrent explicit transactions apply buffered writes inside
-	// CommitTransaction, which serializes on per-tree mutexes.
-	// B-tree flushing is deferred to checkpoint/close; the B-tree
-	// self-flushes before eviction when memory pressure requires it.
-	tx.db.flushMu.RLock()
-	defer tx.db.flushMu.RUnlock()
+	// Hold the replication capture lock across commit+entry-append so a
+	// concurrent replication snapshot cannot observe the committed data
+	// without the corresponding replication entries. The sync-mode ACK wait
+	// runs after all locks are released. Lock order: replCaptureMu -> flushMu.
+	needWait, err := func() (bool, error) {
+		tx.db.replCaptureMu.RLock()
+		defer tx.db.replCaptureMu.RUnlock()
 
-	// Commit in catalog (conflict detection, WAL write, apply buffered writes)
-	if err := tx.db.catalog.CommitTransaction(); err != nil {
-		// Rollback catalog transaction to prevent it from staying active forever
-		if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil {
-			_ = rbErr // best-effort rollback; preserve primary error
+		// Concurrent explicit transactions apply buffered writes inside
+		// CommitTransaction, which serializes on per-tree mutexes.
+		// B-tree flushing is deferred to checkpoint/close; the B-tree
+		// self-flushes before eviction when memory pressure requires it.
+		tx.db.flushMu.RLock()
+		defer tx.db.flushMu.RUnlock()
+
+		// Commit in catalog (conflict detection, WAL write, apply buffered writes)
+		if err := tx.db.catalog.CommitTransaction(); err != nil {
+			// Rollback catalog transaction to prevent it from staying active forever
+			if rbErr := tx.db.catalog.RollbackTransaction(); rbErr != nil {
+				_ = rbErr // best-effort rollback; preserve primary error
+			}
+			tx.db.replTxnDiscard()
+			return false, fmt.Errorf("commit transaction failed: %w", err)
 		}
-		return fmt.Errorf("commit transaction failed: %w", err)
+
+		// If the catalog already committed the shared manager transaction,
+		// do not attempt to commit it again.
+		if tx.txn.State != txn.TxnCommitted {
+			if err := tx.txn.Commit(); err != nil {
+				return false, err
+			}
+		}
+
+		// Ship statements captured during this transaction to replicas.
+		return tx.db.replTxnFlush()
+	}()
+	if err != nil {
+		return err
 	}
 
-	// If the catalog already committed the shared manager transaction,
-	// do not attempt to commit it again.
-	if tx.txn.State != txn.TxnCommitted {
-		if err := tx.txn.Commit(); err != nil {
-			return err
+	// Sync-mode ACK wait, outside the capture and flush locks. The local
+	// commit is already durable; a sync-mode timeout surfaces as an error so
+	// callers know the replication guarantee was not met.
+	if needWait {
+		if mgr := tx.db.replicationMasterManager(); mgr != nil {
+			return tx.db.replicationSyncWait(mgr)
 		}
 	}
 	return nil
@@ -4447,6 +4590,9 @@ func (tx *Tx) Rollback() error {
 			tx.txn.Recycle()
 		}
 	}()
+
+	// Discard any replication statements captured during this transaction.
+	tx.db.replTxnDiscard()
 
 	// Rollback in catalog first (writes rollback record to WAL)
 	if err := tx.db.catalog.RollbackTransaction(); err != nil {

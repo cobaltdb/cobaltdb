@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	randv2 "math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
@@ -342,7 +343,11 @@ func (m *Manager) callOnApplySnapshot(data []byte, lsn uint64) (err error) {
 
 func (m *Manager) callOnApply(entry *WALEntry) (err error) {
 	if m.OnApply == nil {
-		return nil
+		// Fail closed: without an apply callback the slave must not advance
+		// its position or ACK entries it cannot apply. Silently returning nil
+		// here previously made replication report healthy while applying
+		// nothing.
+		return fmt.Errorf("replication apply callback not configured")
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -448,11 +453,26 @@ func (m *Manager) Stop() error {
 	var errs []error
 
 	// Close listener first to unblock acceptSlaves()
-	if m.listener != nil {
-		if err := m.listener.Close(); err != nil {
+	m.mu.Lock()
+	listener := m.listener
+	m.listener = nil
+	m.mu.Unlock()
+	if listener != nil {
+		if err := listener.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to close replication listener: %w", err))
 		}
-		m.listener = nil
+	}
+
+	// Close the master connection (slave role) before waiting so a slave loop
+	// blocked in a read returns promptly instead of waiting out its deadline.
+	m.mu.Lock()
+	masterConn := m.masterConn
+	m.masterConn = nil
+	m.mu.Unlock()
+	if masterConn != nil {
+		if err := masterConn.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close master connection: %w", err))
+		}
 	}
 
 	m.wg.Wait()
@@ -490,7 +510,9 @@ func (m *Manager) startMaster() error {
 	if err != nil {
 		return fmt.Errorf("failed to start replication listener: %w", err)
 	}
+	m.mu.Lock()
 	m.listener = listener
+	m.mu.Unlock()
 
 	m.wg.Add(1)
 	go m.acceptSlaves()
@@ -520,10 +542,23 @@ func replicationListenAddressRequiresAuth(address string) bool {
 	return !ip.IsLoopback()
 }
 
+const (
+	acceptRetryBaseDelay = 10 * time.Millisecond
+	acceptRetryMaxDelay  = 1 * time.Second
+)
+
 // acceptSlaves accepts incoming slave connections
 func (m *Manager) acceptSlaves() {
 	defer m.wg.Done()
 
+	m.mu.Lock()
+	listener := m.listener
+	m.mu.Unlock()
+	if listener == nil {
+		return
+	}
+
+	var backoff time.Duration
 	for {
 		select {
 		case <-m.stopCh:
@@ -531,13 +566,28 @@ func (m *Manager) acceptSlaves() {
 		default:
 		}
 
-		conn, err := m.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
-			if opErr, ok := err.(*net.OpError); ok && !opErr.Temporary() {
+			if errors.Is(err, net.ErrClosed) {
 				return // Listener closed
+			}
+			// Back off on persistent accept errors instead of spinning.
+			if backoff == 0 {
+				backoff = acceptRetryBaseDelay
+			} else {
+				backoff *= 2
+				if backoff > acceptRetryMaxDelay {
+					backoff = acceptRetryMaxDelay
+				}
+			}
+			select {
+			case <-m.stopCh:
+				return
+			case <-time.After(backoff):
 			}
 			continue
 		}
+		backoff = 0
 
 		m.wg.Add(1)
 		go func() {
@@ -656,10 +706,6 @@ func (m *Manager) receiveResumeRequest(slave *SlaveConnection) (resumeRequest, e
 		return resumeRequest{}, fmt.Errorf("invalid RESUME message: %w", err)
 	}
 	return resumeRequest{LSN: lsn}, nil
-}
-
-func (m *Manager) prepareSlaveResume(slave *SlaveConnection, requestedLSN uint64) error {
-	return m.prepareSlaveResumeRequest(slave, resumeRequest{LSN: requestedLSN})
 }
 
 func (m *Manager) prepareSlaveResumeRequest(slave *SlaveConnection, req resumeRequest) error {
@@ -1038,16 +1084,38 @@ func (m *Manager) sendWALToSlave(slave *SlaveConnection, data []byte) error {
 	return nil
 }
 
+const (
+	slaveReconnectBaseDelay = 50 * time.Millisecond
+	slaveReconnectMaxDelay  = 5 * time.Second
+)
+
 // startSlave initializes slave replication
 func (m *Manager) startSlave() error {
 	if err := m.loadReplicationState(); err != nil {
 		return fmt.Errorf("failed to load replication state: %w", err)
 	}
 
-	// Connect to master
+	// The initial connection must succeed so misconfiguration surfaces
+	// immediately; subsequent drops are handled by the reconnect loop.
+	reader, err := m.connectToMaster()
+	if err != nil {
+		return err
+	}
+
+	// Start replication goroutine with automatic reconnect
+	m.wg.Add(1)
+	go m.runSlaveLoop(reader)
+
+	return nil
+}
+
+// connectToMaster dials the master, authenticates, and performs the resume
+// handshake using the persisted last-applied LSN. On success the connection is
+// stored as the manager's master connection.
+func (m *Manager) connectToMaster() (*bufio.Reader, error) {
 	conn, err := replicationDial("tcp", m.config.MasterAddr, replicationAuthTimeout)
 	if err != nil {
-		return fmt.Errorf("failed to connect to master: %w", err)
+		return nil, fmt.Errorf("failed to connect to master: %w", err)
 	}
 	m.setMasterConn(conn)
 	reader := bufio.NewReader(conn)
@@ -1056,11 +1124,11 @@ func (m *Manager) startSlave() error {
 	if m.config.AuthToken != "" {
 		if err := conn.SetReadDeadline(time.Now().Add(replicationAuthTimeout)); err != nil {
 			m.closeMasterConn()
-			return err
+			return nil, err
 		}
 		if err := writeReplicationControl(conn, "%s\n", m.config.AuthToken); err != nil {
 			m.closeMasterConn()
-			return err
+			return nil, err
 		}
 
 		// Read auth response
@@ -1068,12 +1136,12 @@ func (m *Manager) startSlave() error {
 		_ = conn.SetReadDeadline(time.Time{})
 		if err != nil {
 			m.closeMasterConn()
-			return err
+			return nil, err
 		}
 
 		if response != "AUTH_OK\n" {
 			m.closeMasterConn()
-			return fmt.Errorf("authentication failed")
+			return nil, fmt.Errorf("authentication failed")
 		}
 	}
 
@@ -1081,18 +1149,89 @@ func (m *Manager) startSlave() error {
 	if atomic.LoadUint32(&m.requireSnapshot) > 0 {
 		if err := writeReplicationControl(conn, "RESUME_SNAPSHOT %d\n", lastApplied); err != nil {
 			m.closeMasterConn()
-			return err
+			return nil, err
 		}
 	} else if err := writeReplicationControl(conn, "RESUME %d\n", lastApplied); err != nil {
 		m.closeMasterConn()
-		return err
+		return nil, err
 	}
 
-	// Start replication goroutine
-	m.wg.Add(1)
-	go m.replicateFromMasterWithReader(reader)
+	return reader, nil
+}
 
-	return nil
+// runSlaveLoop streams from the master and transparently reconnects with
+// capped, jittered exponential backoff when the connection drops, resuming
+// from the persisted last-applied LSN (or requesting a snapshot when the
+// master signalled a resync).
+func (m *Manager) runSlaveLoop(reader *bufio.Reader) {
+	defer m.wg.Done()
+
+	for {
+		err := m.streamFromMaster(reader)
+		m.closeMasterConn()
+		if m.stopped() {
+			return
+		}
+		m.callOnDisconnect("master", err)
+
+		backoff := slaveReconnectBaseDelay
+		for {
+			select {
+			case <-m.stopCh:
+				return
+			case <-time.After(jitteredDelay(backoff)):
+			}
+
+			newReader, connErr := m.connectToMaster()
+			if connErr == nil {
+				reader = newReader
+				break
+			}
+			m.callOnDisconnect("master", connErr)
+			backoff *= 2
+			if backoff > slaveReconnectMaxDelay {
+				backoff = slaveReconnectMaxDelay
+			}
+		}
+	}
+}
+
+// jitteredDelay returns d with up to ±25% random jitter to avoid thundering
+// herds of reconnecting replicas.
+func jitteredDelay(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	quarter := int64(d) / 4
+	if quarter <= 0 {
+		return d
+	}
+	// Backoff jitter only; not security-sensitive randomness.
+	return d - time.Duration(quarter) + time.Duration(randv2.Int64N(2*quarter)) // #nosec G404
+}
+
+func (m *Manager) stopped() bool {
+	select {
+	case <-m.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// streamFromMaster reads frames from the master until an error or shutdown.
+func (m *Manager) streamFromMaster(reader *bufio.Reader) error {
+	for {
+		select {
+		case <-m.stopCh:
+			return nil
+		default:
+		}
+
+		if err := m.readMasterFrame(reader); err != nil {
+			return err
+		}
+	}
 }
 
 // replicateFromMaster handles replication stream from master
@@ -1102,21 +1241,14 @@ func (m *Manager) replicateFromMaster() {
 	m.replicateFromMasterWithReader(bufio.NewReader(m.masterConn))
 }
 
+// replicateFromMasterWithReader streams once without reconnecting. Retained
+// for tests; production slaves run runSlaveLoop.
 func (m *Manager) replicateFromMasterWithReader(reader *bufio.Reader) {
 	defer m.wg.Done()
 
-	for {
-		select {
-		case <-m.stopCh:
-			return
-		default:
-		}
-
-		if err := m.readMasterFrame(reader); err != nil {
-			m.closeMasterConn()
-			m.callOnDisconnect("master", err)
-			return
-		}
+	if err := m.streamFromMaster(reader); err != nil {
+		m.closeMasterConn()
+		m.callOnDisconnect("master", err)
 	}
 }
 
@@ -1240,6 +1372,12 @@ func (m *Manager) handleMasterMessage(msg string) error {
 		var lsn uint64
 		if _, err := fmt.Sscanf(msg, "RESYNC %d", &lsn); err != nil {
 			return fmt.Errorf("invalid RESYNC message: %w", err)
+		}
+		// Remember that a snapshot refresh is required so the reconnect loop
+		// requests RESUME_SNAPSHOT instead of resuming from a stale LSN.
+		atomic.StoreUint32(&m.requireSnapshot, 1)
+		if err := m.saveReplicationState(); err != nil {
+			return fmt.Errorf("replication resync required at master LSN %d; failed to persist state: %w", lsn, err)
 		}
 		return fmt.Errorf("replication resync required at master LSN %d", lsn)
 
@@ -1718,6 +1856,69 @@ func retainedWALBytes(entry *WALEntry) int64 {
 	return int64(walEntryMetadataBytes + len(entry.Data))
 }
 
+// Role returns the manager's current replication role.
+func (m *Manager) Role() Role {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.role
+}
+
+// Mode returns the configured replication mode.
+func (m *Manager) Mode() ReplicationMode {
+	return m.config.Mode
+}
+
+// CurrentLSN returns the master's current replication log sequence number
+// (the LSN of the most recently accepted WAL entry).
+func (m *Manager) CurrentLSN() uint64 {
+	return atomic.LoadUint64(&m.currentLSN)
+}
+
+// LastAppliedLSN returns the slave's last applied replication LSN.
+func (m *Manager) LastAppliedLSN() uint64 {
+	return atomic.LoadUint64(&m.lastApplied)
+}
+
+// ListenAddr returns the actual master listen address (useful when the
+// configured address used port 0), or "" when not listening.
+func (m *Manager) ListenAddr() string {
+	m.mu.Lock()
+	listener := m.listener
+	m.mu.Unlock()
+	if listener == nil {
+		return ""
+	}
+	return listener.Addr().String()
+}
+
+// FlushWALBuffer immediately pushes buffered WAL entries to connected slaves
+// instead of waiting for the next SyncInterval tick. Used by sync-mode write
+// paths before waiting for acknowledgements.
+func (m *Manager) FlushWALBuffer() {
+	m.replicateWAL()
+}
+
+// DropConnections forcibly closes the current replication connections without
+// stopping the manager: a slave reconnects with backoff and resumes from its
+// persisted position; a master's slaves are expected to reconnect on their
+// own. Intended for tests and operator-triggered connection recycling.
+func (m *Manager) DropConnections() {
+	m.closeMasterConn()
+
+	m.mu.RLock()
+	conns := make([]net.Conn, 0, len(m.slaves))
+	for _, slave := range m.slaves {
+		if slave.Conn != nil {
+			conns = append(conns, slave.Conn)
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
 // GetMetrics returns current replication metrics
 func (m *Manager) GetMetrics() *Metrics {
 	replicationLag := m.currentReplicationLagMillis(time.Now())
@@ -1811,7 +2012,10 @@ func (m *Manager) slavesCaughtUp() bool {
 	defer m.mu.RUnlock()
 
 	if len(m.slaves) == 0 {
-		return true
+		// No connected slaves: a sync-mode write cannot possibly be
+		// acknowledged, so it is NOT caught up. WaitForSlaves will time out
+		// and callers decide whether to degrade or fail the write.
+		return false
 	}
 
 	caughtUp := 0

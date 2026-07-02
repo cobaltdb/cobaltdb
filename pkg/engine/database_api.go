@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/advisor"
@@ -160,8 +159,18 @@ func (db *DB) Checkpoint() error {
 }
 
 // BeginHotBackup starts a hot backup (implements backup.Database).
-// Acquires backupMu (held until EndHotBackup) to serialize against concurrent
-// checkpoints — preventing a fuzzy copy when IncludeWAL=false.
+//
+// Point-in-time consistency protocol:
+//  1. backupMu is acquired (held until EndHotBackup) to block manual and
+//     automatic checkpoint paths (DB.Checkpoint, runCheckpointJob).
+//  2. The catalog and meta page are persisted, then a full checkpoint runs
+//     (table trees flushed, WAL checkpointed / dirty pages flushed) so the
+//     on-disk file is a complete, consistent image.
+//  3. The buffer pool's dirty-page writers (background flusher and eviction
+//     dirty writes) are paused so nothing mutates the database file while
+//     the backup copies it. Writes continue in memory/WAL during the copy.
+//
+// EndHotBackup resumes flushing and releases backupMu.
 func (db *DB) BeginHotBackup() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -169,10 +178,28 @@ func (db *DB) BeginHotBackup() error {
 		return ErrDatabaseClosed
 	}
 
-	// Acquire backupMu and hold it for the duration of the backup. This blocks
-	// both manual and automatic checkpoint paths (DB.Checkpoint and runCheckpointJob).
-	// Release in EndHotBackup.
+	// Acquire backupMu and hold it for the duration of the backup. Released
+	// in EndHotBackup, or below on error so a failed Begin cannot wedge
+	// every future checkpoint.
 	db.backupMu.Lock()
+
+	if err := db.hotBackupCheckpointLocked(); err != nil {
+		db.backupMu.Unlock()
+		return err
+	}
+
+	// Freeze the database file: no dirty-page writes from the background
+	// flusher or eviction until EndHotBackup.
+	db.pool.PauseBackgroundFlusher()
+	db.hotBackupActive = true
+	return nil
+}
+
+// hotBackupCheckpointLocked persists the catalog/meta page and flushes all
+// dirty state to the database file. Caller must hold db.mu and db.backupMu.
+func (db *DB) hotBackupCheckpointLocked() error {
+	db.flushMu.Lock()
+	defer db.flushMu.Unlock()
 
 	// Persist catalog metadata and root page ID before copying files
 	if err := db.catalog.Save(); err != nil {
@@ -181,18 +208,38 @@ func (db *DB) BeginHotBackup() error {
 	if err := db.saveMetaPage(); err != nil {
 		return fmt.Errorf("failed to save meta page: %w", err)
 	}
-	return nil
+	// Flush table trees and checkpoint so every committed page reaches the
+	// database file before the copy starts. The backup manager's own
+	// Checkpoint() call is a no-op while backupMu is held, so this is the
+	// checkpoint that actually guarantees a consistent on-disk image.
+	if err := db.catalog.FlushTableTrees(); err != nil {
+		return fmt.Errorf("failed to flush table trees: %w", err)
+	}
+	if db.wal != nil {
+		if err := db.wal.Checkpoint(db.pool); err != nil {
+			return fmt.Errorf("failed to checkpoint WAL: %w", err)
+		}
+		return nil
+	}
+	return db.pool.FlushDirty()
 }
 
 // EndHotBackup ends a hot backup (implements backup.Database).
 func (db *DB) EndHotBackup() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	// Resume flushing and release backupMu when a backup is active — even if
+	// the database was closed mid-backup, so checkpoints are never wedged
+	// permanently. Calling EndHotBackup without a matching BeginHotBackup is
+	// a no-op (aside from the closed check).
+	if db.hotBackupActive {
+		db.hotBackupActive = false
+		db.pool.ResumeBackgroundFlusher()
+		db.backupMu.Unlock()
+	}
 	if db.closed.Load() {
 		return ErrDatabaseClosed
 	}
-	// Release backupMu — checkpoints are unblocked
-	db.backupMu.Unlock()
 	return nil
 }
 
@@ -380,36 +427,6 @@ func (db *DB) UpdateTableStatistics(tableName string, stats *optimizer.TableStat
 	if db.optimizer != nil {
 		db.optimizer.UpdateStatistics(tableName, stats)
 	}
-}
-
-// replicateWrite sends write operations to the replication manager
-// This is called automatically after successful write operations (INSERT, UPDATE, DELETE, DDL)
-
-func (db *DB) replicateWrite(operation string, table string, args []interface{}) error {
-	if db.replicationMgr == nil {
-		return nil // Replication not enabled
-	}
-
-	// Serialize the write operation
-	// Format: operation|table|args...
-	var sb strings.Builder
-	sb.WriteString(operation)
-	sb.WriteByte('|')
-	sb.WriteString(table)
-	sb.WriteByte('|')
-	for i, arg := range args {
-		if i > 0 {
-			sb.WriteByte(',')
-		}
-		fmt.Fprintf(&sb, "%v", arg)
-	}
-
-	// Send to replication manager (async, non-blocking)
-	// The replication manager handles buffering and sending to slaves
-	if err := db.replicationMgr.ReplicateWALEntry([]byte(sb.String())); err != nil {
-		return fmt.Errorf("failed to replicate %s on %s: %w", operation, table, err)
-	}
-	return nil
 }
 
 // Replication methods
