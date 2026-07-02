@@ -143,10 +143,10 @@ type btreeShard struct {
 // - The BTree maintains an in-memory sorted structure that flushes to disk pages
 // - Multi-page overflow: data exceeding one page spills to linked overflow pages
 //
-// Concurrency: memStorage is sharded into 16 independently locked partitions
-// so concurrent writes to different keys (or even the same shard) can proceed
-// in parallel.  A single flushMu serializes flushInternal calls, and lruMu
-// protects the global LRU structures.
+// Concurrency: memStorage is sharded into numShards (256) independently locked
+// partitions so concurrent writes to different keys (or even the same shard)
+// can proceed in parallel.  A single flushMu serializes flushInternal calls,
+// and each shard's lruMu protects its LRU structures.
 
 var crc64Table = crc64.MakeTable(crc64.ISO)
 
@@ -166,10 +166,16 @@ type BTree struct {
 	memoryLimit int64 // atomic
 	memoryUsed  int64 // atomic
 	keyCount    int64 // atomic: logical size (data + evicted)
+	lastFlushTS int64 // atomic: lruTimestamp horizon covered by the last successful flush
 }
 
 // usablePageSize is the space available for data in each page (after header)
 const usablePageSize = storage.PageSize - storage.PageHeaderSize
+
+// maxOverflowPages is the largest overflow-page ID list that fits in the root
+// page alongside the 8-byte count header. flushInternal refuses to persist a
+// tree that needs more, rather than writing a silently truncated list.
+const maxOverflowPages = (usablePageSize - 8) / 4
 
 // NewBTree creates a new B+Tree with default memory limit
 func NewBTree(pool *storage.BufferPool) (*BTree, error) {
@@ -453,6 +459,10 @@ func (t *BTree) GetString(keyStr string) ([]byte, error) {
 	if len(keyStr) == 0 {
 		return nil, ErrInvalidKey
 	}
+	if t.loadErr != nil {
+		// A tree that failed to load must not masquerade as an empty tree.
+		return nil, t.loadErr
+	}
 
 	sh := &t.shards[shardIndex(keyStr)]
 	sh.mu.RLock()
@@ -464,7 +474,9 @@ func (t *BTree) GetString(keyStr string) ([]byte, error) {
 
 		sh.lruMu.Lock()
 		if entry, ok := sh.lruMap[keyStr]; ok {
-			sh.lruList.Remove(entry)
+			// MoveToFront removes the entry itself; an extra Remove first
+			// would run Remove twice on a detached node and reset the list's
+			// head/tail, orphaning every other entry in the shard.
 			sh.lruList.MoveToFront(entry)
 		}
 		sh.lruMu.Unlock()
@@ -567,6 +579,12 @@ func getValueBuf(n int) []byte {
 }
 
 func (t *BTree) putStringInternal(keyCopy string, value []byte) error {
+	if t.loadErr != nil {
+		// Never write into (and later flush over) a tree whose on-disk state
+		// could not be loaded — flushing would overwrite the existing root
+		// with only the new data, silently discarding everything else.
+		return t.loadErr
+	}
 	newSize := int64(len(keyCopy) + len(value))
 
 	sh := &t.shards[shardIndex(keyCopy)]
@@ -647,6 +665,9 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 	}
 	if len(keys) == 0 {
 		return nil
+	}
+	if t.loadErr != nil {
+		return t.loadErr
 	}
 
 	keyCopies := make([]string, len(keys))
@@ -738,13 +759,25 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 
 				// Reuse the removed node when updating an existing key, mirroring
 				// the single-key path, to avoid an allocation per batch entry.
+				// New entries draw from lruEntryPool (batch-allocating on miss)
+				// exactly like putStringInternal.
 				entry := oldEntry
 				if entry == nil {
-					entry = &lruEntry{}
+					if v := lruEntryPool.Get(); v != nil {
+						entry = v.(*lruEntry)
+					} else {
+						batch := make([]lruEntry, 64)
+						for i := 1; i < len(batch); i++ {
+							lruEntryPool.Put(&batch[i])
+						}
+						entry = &batch[0]
+					}
 				}
 				entry.key = kc
 				entry.size = int64(len(kc) + len(vc))
 				entry.timestamp = lruTimestamp.Add(1)
+				entry.next = nil
+				entry.prev = nil
 				sh.lruList.PushFront(entry)
 				sh.lruMap[kc] = entry
 			}
@@ -762,6 +795,9 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 func (t *BTree) DeleteBatch(keys [][]byte) error {
 	if len(keys) == 0 {
 		return nil
+	}
+	if t.loadErr != nil {
+		return t.loadErr
 	}
 
 	keyCopies := make([]string, len(keys))
@@ -855,6 +891,21 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 		sh.lruMu.Lock()
 		// Verify the back element is still the one we picked (or re-check).
 		entry := sh.lruList.Back()
+		if entry != nil &&
+			entry.timestamp > atomic.LoadInt64(&t.lastFlushTS) &&
+			atomic.LoadInt32(&t.dirty) != 0 {
+			// This entry was written after the horizon covered by the last
+			// flush, so its current value may exist only in memory. Re-flush
+			// before evicting; evicting now would discard the only copy
+			// (stale value or ErrKeyNotFound on the next read). If dirty==0
+			// everything in memory is known to be on disk, so eviction is
+			// safe regardless of the timestamp.
+			sh.lruMu.Unlock()
+			if err := t.flushInternal(); err != nil {
+				return fmt.Errorf("failed to flush during eviction: %w", err)
+			}
+			continue
+		}
 		if entry != nil {
 			sh.lruList.Remove(entry)
 			delete(sh.lruMap, entry.key)
@@ -874,11 +925,19 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 		evictKey := entry.key
 
 		sh.mu.Lock()
-		if val, ok := sh.data[evictKey]; ok {
-			atomic.AddInt64(&t.memoryUsed, -int64(len(evictKey)+len(val)))
-			delete(sh.data, evictKey)
-			sh.evicted[evictKey] = true
+		sh.lruMu.Lock()
+		// Skip if a concurrent Put re-added the key after we removed its LRU
+		// node: that Put's value is newer than the flush and dropping it here
+		// would lose the write. Put re-registers the key in lruMap under
+		// sh.mu, so this check is stable while we hold the lock.
+		if _, reAdded := sh.lruMap[evictKey]; !reAdded {
+			if val, ok := sh.data[evictKey]; ok {
+				atomic.AddInt64(&t.memoryUsed, -int64(len(evictKey)+len(val)))
+				delete(sh.data, evictKey)
+				sh.evicted[evictKey] = true
+			}
 		}
+		sh.lruMu.Unlock()
 		sh.mu.Unlock()
 	}
 
@@ -890,7 +949,13 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 
 // flushInternal flushes data to disk pages.  It acquires all shard RLocks to
 // read the current memStorage snapshot, then writes to the buffer pool.
-func (t *BTree) flushInternal() error {
+func (t *BTree) flushInternal() (err error) {
+	if t.loadErr != nil {
+		// Flushing a tree whose on-disk state could not be loaded would
+		// overwrite the existing (possibly recoverable) root with the empty
+		// in-memory view — total silent data loss.
+		return t.loadErr
+	}
 	if atomic.LoadInt32(&t.dirty) == 0 {
 		return nil
 	}
@@ -902,6 +967,26 @@ func (t *BTree) flushInternal() error {
 	if atomic.LoadInt32(&t.dirty) == 0 {
 		return nil
 	}
+
+	// Record the LRU-timestamp horizon covered by this flush: any entry whose
+	// timestamp is <= flushStartTS is guaranteed to be captured by the shard
+	// snapshots below (its Put still held the shard lock when the timestamp
+	// was assigned, so the snapshot's RLock observes its data). Published on
+	// success for evictToMakeSpace to consult.
+	flushStartTS := lruTimestamp.Load()
+
+	// Clear the dirty flag BEFORE snapshotting and restore it on error. A
+	// concurrent Put landing after its shard was snapshotted sets dirty=1 and
+	// the tree is re-flushed later; clearing AFTER the snapshots would clobber
+	// that Put's dirty=1 and let evictToMakeSpace evict a never-flushed key
+	// (stale value / ErrKeyNotFound on read-back). Same pattern as
+	// BufferPool.FlushPage.
+	atomic.StoreInt32(&t.dirty, 0)
+	defer func() {
+		if err != nil {
+			atomic.StoreInt32(&t.dirty, 1)
+		}
+	}()
 
 	// Snapshot each shard individually so writers to other shards can proceed
 	// while we serialize the flushed data.
@@ -928,7 +1013,6 @@ func (t *BTree) flushInternal() error {
 	t.flushBuf.Reset()
 	var count uint32
 	var lenBuf [4]byte
-	var err error
 
 	if !hasEvicted {
 		count, err = checkedUint32Len(len(dataSnap), "entry count")
@@ -1026,6 +1110,16 @@ func (t *BTree) flushInternal() error {
 		}
 	}
 
+	// The overflow page ID list must fit in the root page alongside the
+	// 8-byte count header. Refuse to flush otherwise: writing a truncated ID
+	// list while the header records the full count produces a root that fails
+	// to load on reopen — silent total data loss for the tree.
+	if int(overflowCount) > maxOverflowPages {
+		return fmt.Errorf(
+			"btree flush: serialized size %d bytes needs %d overflow pages, but only %d fit in the root page; refusing to write a truncated overflow page list",
+			len(kvData), overflowCount, maxOverflowPages)
+	}
+
 	for len(t.overflowPages) > int(overflowCount) {
 		t.overflowPages = t.overflowPages[:len(t.overflowPages)-1]
 	}
@@ -1044,11 +1138,9 @@ func (t *BTree) flushInternal() error {
 	h := crc64.New(crc64Table)
 	zeroPad := make([]byte, usablePageSize)
 
-	// Root page hash.
+	// Root page hash. The header always fits: overflowCount was bounded by
+	// maxOverflowPages above.
 	rootHeaderSize = 8 + 4*int(overflowCount)
-	if rootHeaderSize > usablePageSize {
-		rootHeaderSize = usablePageSize
-	}
 	rootDataSpace = usablePageSize - rootHeaderSize
 
 	h.Reset()
@@ -1150,7 +1242,9 @@ func (t *BTree) flushInternal() error {
 	}
 
 	t.lastPageHashes = newPageHashes
-	atomic.StoreInt32(&t.dirty, 0)
+	// dirty was already cleared before the snapshots (see above); publish the
+	// timestamp horizon this flush is guaranteed to have covered.
+	atomic.StoreInt64(&t.lastFlushTS, flushStartTS)
 	return nil
 }
 
@@ -1163,6 +1257,9 @@ func (t *BTree) Delete(key []byte) error {
 func (t *BTree) DeleteString(keyStr string) error {
 	if len(keyStr) == 0 {
 		return ErrInvalidKey
+	}
+	if t.loadErr != nil {
+		return t.loadErr
 	}
 
 	sh := &t.shards[shardIndex(keyStr)]
@@ -1212,6 +1309,10 @@ type Iterator struct {
 
 // Scan returns an iterator for range scanning
 func (t *BTree) Scan(startKey, endKey []byte) (TreeIterator, error) {
+	if t.loadErr != nil {
+		// A tree that failed to load must not masquerade as an empty tree.
+		return nil, t.loadErr
+	}
 	// Pre-size slice to avoid reallocations; t.Size() is an upper bound.
 	approxSize := t.Size()
 	pairs := make([]kvPair, 0, approxSize)
@@ -1311,7 +1412,9 @@ func (it *Iterator) Next() ([]byte, []byte, error) {
 		return nil, nil, nil
 	}
 
-	return []byte(p.key), cloneBytes(p.value), nil
+	// p.value is already a private copy made by Scan (cloneBytes at snapshot
+	// time), owned exclusively by this iterator — no second clone needed.
+	return []byte(p.key), p.value, nil
 }
 
 // NextString returns the next entry with the key as a string,
@@ -1330,7 +1433,9 @@ func (it *Iterator) NextString() (string, []byte, error) {
 		return "", nil, nil
 	}
 
-	return p.key, cloneBytes(p.value), nil
+	// p.value is already a private copy made by Scan (cloneBytes at snapshot
+	// time), owned exclusively by this iterator — no second clone needed.
+	return p.key, p.value, nil
 }
 
 func cloneBytes(value []byte) []byte {

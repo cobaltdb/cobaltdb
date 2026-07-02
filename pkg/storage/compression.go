@@ -263,8 +263,11 @@ func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 		return n, err
 	}
 
-	// Only store compressed if it meets the minimum ratio threshold.
-	if ratio <= cb.config.MinRatio {
+	// Only store compressed if it meets the minimum ratio threshold AND the
+	// header + payload fit within a single page slot. Without the size guard,
+	// a MinRatio near 1.0 could admit a payload whose 8-byte header pushes
+	// the physical record past PageSize, spilling into the next page's slot.
+	if ratio <= cb.config.MinRatio && compressionHeaderSize+len(compressed) <= PageSize {
 		originalSize, err := checkedUint16(len(buf), "compression original size")
 		if err != nil {
 			n, err := WriteFullAt(cb.backend, buf, offset)
@@ -278,23 +281,20 @@ func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 			return n, err
 		}
 
-		// Store compressed with header.
+		// Assemble header + payload into one buffer and issue a single write.
+		// Two separate WriteAt calls would let a crash between them leave a
+		// header on disk that describes stale payload bytes.
 		writeBuf := cb.getWriteBuf()
 		defer cb.putWriteBuf(writeBuf)
 
-		header := (*writeBuf)[:compressionHeaderSize]
-		copy(header[:4], cb.magicForAlgorithm())
-		binary.LittleEndian.PutUint16(header[4:6], originalSize)
-		binary.LittleEndian.PutUint16(header[6:8], compressedSize)
+		record := (*writeBuf)[:compressionHeaderSize+len(compressed)]
+		copy(record[:4], cb.magicForAlgorithm())
+		binary.LittleEndian.PutUint16(record[4:6], originalSize)
+		binary.LittleEndian.PutUint16(record[6:8], compressedSize)
+		copy(record[compressionHeaderSize:], compressed)
 
-		// Write header + compressed data.
-		n, err := WriteFullAt(cb.backend, header, offset)
-		if err != nil {
+		if n, err := WriteFullAt(cb.backend, record, offset); err != nil {
 			return n, err
-		}
-		n2, err := WriteFullAt(cb.backend, compressed, offset+int64(compressionHeaderSize))
-		if err != nil {
-			return n + n2, err
 		}
 		cb.updateLogicalSize(offset, len(buf), nil)
 		return len(buf), nil
@@ -354,9 +354,10 @@ func (cb *CompressedBackend) Size() int64 {
 }
 
 // Truncate delegates to the underlying backend.
+// It takes the write lock because it mutates cb.logicalSize.
 func (cb *CompressedBackend) Truncate(size int64) error {
-	cb.mu.RLock()
-	defer cb.mu.RUnlock()
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 
 	if cb.closed {
 		return ErrBackendClosed

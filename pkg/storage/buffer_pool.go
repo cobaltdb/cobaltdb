@@ -142,6 +142,14 @@ type BufferPool struct {
 	flushRunning  bool
 	flushErrCount int // consecutive flush errors (resets on success)
 	flushErrLimit int // max consecutive errors before halting flusher (default 3)
+
+	// flushSuspended, when true, suspends all dirty-page writes originating
+	// from the background flusher AND from eviction. It is set for the
+	// duration of a hot backup so the database file is not mutated while it
+	// is being copied (point-in-time consistency). While suspended, evict()
+	// may still recycle CLEAN pages; if only dirty pages remain, eviction
+	// fails with ErrBufferFull rather than writing to the file.
+	flushSuspended atomic.Bool
 }
 
 // NewBufferPool creates a new buffer pool.
@@ -225,9 +233,14 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 		return nil, ErrBufferPoolClosed
 	}
 	if p, ok := bp.pages[pageID]; ok {
+		// Pin while still holding the read lock. evict() runs under the write
+		// lock, so a pin taken here is always visible to it. Pinning after
+		// releasing the lock would open a window where a concurrent evict()
+		// sees the page unpinned, removes it, and recycles its data buffer via
+		// putPageData — leaving two live pages aliasing one buffer.
+		p.Pin()
 		bp.mu.RUnlock()
 		bp.touchLRU(p)
-		p.Pin()
 		bp.stats.recordHit()
 		return p, nil
 	}
@@ -258,8 +271,9 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 		}
 	}
 
-	// Read page from disk
-	data := getPageData()
+	// Read page from disk. ReadFullAt fully overwrites the buffer (or errors,
+	// in which case the buffer is returned to the pool), so skip the zeroing.
+	data := getPageDataNoZero()
 	offset := int64(pageID) * int64(PageSize)
 	start := time.Now()
 	_, err := ReadFullAt(bp.backend, data, offset)
@@ -392,15 +406,23 @@ func (bp *BufferPool) FlushDirty() error {
 	dirty := make([]*CachedPage, 0, len(bp.pages))
 	for _, page := range bp.pages {
 		if page.IsDirty() {
+			// Pin so a concurrent evict() cannot remove the page and recycle
+			// its data buffer while FlushPage snapshots it outside bp.mu.
+			page.Pin()
 			dirty = append(dirty, page)
 		}
 	}
 	bp.mu.RUnlock()
 
+	var flushErr error
 	for _, page := range dirty {
-		if err := bp.FlushPage(page); err != nil {
-			return err
+		if flushErr == nil {
+			flushErr = bp.FlushPage(page)
 		}
+		page.Unpin()
+	}
+	if flushErr != nil {
+		return flushErr
 	}
 	return bp.backend.Sync()
 }
@@ -463,11 +485,19 @@ func (bp *BufferPool) evict() error {
 	}
 
 	// Second pass: fall back to flushing a dirty page if necessary.
+	// While dirty-page flushing is suspended (hot backup in progress), only
+	// clean pages may be evicted: writing a dirty page here would mutate the
+	// database file mid-copy. Clean pages are still safe to recycle.
+	suspended := bp.flushSuspended.Load()
 	elem = bp.lru.Back()
 	for elem != nil {
 		page := elem.Value.(*CachedPage)
 		if !page.IsPinned() {
 			if page.IsDirty() {
+				if suspended {
+					elem = elem.Prev()
+					continue
+				}
 				if err := bp.FlushPage(page); err != nil {
 					return err
 				}
@@ -504,6 +534,26 @@ func (bp *BufferPool) Close() error {
 	return nil
 }
 
+// DiscardAll stops the background flusher and drops every cached page WITHOUT
+// flushing, then marks the pool closed. It is used when the underlying backend
+// contents are about to be (or have been) replaced wholesale — e.g. when a
+// replica applies a full replication snapshot — where flushing stale cached
+// pages would corrupt the new backend contents. Idempotent.
+func (bp *BufferPool) DiscardAll() {
+	bp.stopBackgroundFlusher()
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	if bp.closed {
+		return
+	}
+	// Intentionally do NOT recycle page buffers into pageDataPool: another
+	// goroutine may still hold references to pages from the old pool, and
+	// recycling their buffers would let a new page alias their memory.
+	bp.pages = make(map[uint32]*CachedPage)
+	bp.lru = list.New()
+	bp.closed = true
+}
+
 // StartBackgroundFlusher starts a goroutine that periodically flushes dirty pages.
 // This reduces eviction latency by proactively writing dirty pages to disk
 // instead of flushing them synchronously during eviction under the write lock.
@@ -522,6 +572,23 @@ func (bp *BufferPool) StartBackgroundFlusher(interval time.Duration) {
 	bp.flushDone = make(chan struct{})
 	bp.flushRunning = true
 	go bp.backgroundFlushLoop(bp.flushDone, interval)
+}
+
+// PauseBackgroundFlusher suspends all dirty-page writes to the backend that
+// originate from the background flush loop and from eviction, without
+// stopping the flusher goroutine. Intended for hot backups: after a
+// checkpoint has made the on-disk file consistent, pausing guarantees the
+// file is not mutated while it is copied. Clean pages may still be evicted,
+// and pages may still be dirtied in memory; they are flushed after
+// ResumeBackgroundFlusher. Pause/Resume are idempotent.
+func (bp *BufferPool) PauseBackgroundFlusher() {
+	bp.flushSuspended.Store(true)
+}
+
+// ResumeBackgroundFlusher re-enables dirty-page writes suspended by
+// PauseBackgroundFlusher.
+func (bp *BufferPool) ResumeBackgroundFlusher() {
+	bp.flushSuspended.Store(false)
 }
 
 func (bp *BufferPool) stopBackgroundFlusher() {
@@ -580,27 +647,39 @@ func (bp *BufferPool) dirtyRatio() float64 {
 // Errors are logged, counted, and used to track consecutive failures. After
 // flushErrLimit consecutive errors the flusher is halted to prevent infinite retry.
 func (bp *BufferPool) flushDirtyPages() {
+	// Suspended during hot backups: the database file must not be mutated
+	// while it is being copied. Dirty pages simply stay in memory until
+	// ResumeBackgroundFlusher.
+	if bp.flushSuspended.Load() {
+		return
+	}
+
 	// Collect dirty unpinned pages under read lock
 	bp.mu.RLock()
 	var dirty []*CachedPage
 	for _, page := range bp.pages {
 		if page.IsDirty() && !page.IsPinned() {
+			// Pin so a concurrent evict() cannot remove the page and recycle
+			// its data buffer (putPageData) while FlushPage snapshots it
+			// outside bp.mu — dataSnapshot on a recycled buffer would write
+			// another page's bytes to this page's disk slot.
+			page.Pin()
 			dirty = append(dirty, page)
 		}
 	}
 	bp.mu.RUnlock()
 
 	hadError := false
-	// Flush each page individually (acquires write lock briefly per page)
+	// Flush each page individually without holding bp.mu across the I/O.
 	for _, page := range dirty {
-		if !page.IsDirty() || page.IsPinned() {
-			continue // re-check after lock release
+		if page.IsDirty() {
+			if err := bp.FlushPage(page); err != nil {
+				bp.stats.recordFlushError()
+				logger.GetGlobalLogger().Errorf("buffer pool: failed to flush page %d: %v", page.id, err)
+				hadError = true
+			}
 		}
-		if err := bp.FlushPage(page); err != nil {
-			bp.stats.recordFlushError()
-			logger.GetGlobalLogger().Errorf("buffer pool: failed to flush page %d: %v", page.id, err)
-			hadError = true
-		}
+		page.Unpin()
 	}
 
 	bp.flushMu.Lock()

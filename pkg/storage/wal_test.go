@@ -1036,9 +1036,10 @@ func TestWALCheckpointFlushesPendingGroupCommit(t *testing.T) {
 }
 
 // TestWALCheckpointRetainsBufferedRecords verifies that WAL records appended by
-// concurrent writes during Checkpoint's FlushDirty phase are NOT lost when the WAL
-// is truncated. The fix (bufWriter.Flush + Sync + Seek(end) before Truncate + new
-// bufWriter) ensures that buffered records survive the truncation.
+// concurrent writes just before Checkpoint are NOT lost or torn when the WAL is
+// truncated. Checkpoint now makes all buffered records durable (Flush + Sync at
+// the current position) and flushes their page effects (FlushDirty) BEFORE
+// truncating, so the WAL is never left with a torn record stream.
 //
 // We use the public Append API with group-commit to create a scenario where a record
 // is pending (in the pending channel) when Checkpoint runs. The existing test

@@ -499,11 +499,8 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 				return err
 			}
 			copy(batchBuf[totalSize+walHeaderSize:], r.Data)
-			crcHash := crc32.ChecksumIEEE(batchBuf[totalSize : totalSize+walHeaderSize])
-			if dataLen > 0 {
-				crcHash = crc32.Update(crcHash, crc32.IEEETable, r.Data)
-			}
-			binary.LittleEndian.PutUint32(batchBuf[totalSize+walHeaderSize+dataLen:], crcHash)
+			// CRC is computed once under the lock, after the LSN is patched;
+			// computing it here (with LSN=0) would just be discarded work.
 			totalSize += walHeaderSize + dataLen + 4
 		}
 		if totalSize <= len(batchBuf) {
@@ -605,10 +602,10 @@ func (w *WAL) finishBatchSync() error {
 	return nil
 }
 
-// formatBatch serialises records into a contiguous byte slice.  LSN fields
-// are left as zeroes; the caller must patch them before writing.  The second
-// return value contains the offsets of each LSN field so they can be patched
-// efficiently.
+// formatBatch serialises records into a contiguous byte slice.  LSN and CRC
+// fields are left as zeroes; the caller must patch the LSNs and then compute
+// the CRCs before writing.  The second return value contains the offsets of
+// each LSN field so they can be patched efficiently.
 func (w *WAL) formatBatch(records []*WALRecord, c cipher.AEAD) ([]byte, []int, error) {
 	totalSize := 0
 	encrypted := make([][]byte, len(records))
@@ -662,12 +659,9 @@ func (w *WAL) formatBatch(records []*WALRecord, c cipher.AEAD) ([]byte, []int, e
 		}
 		copy(buf[offset+walHeaderSize:], data)
 
-		crcHash := crc32.ChecksumIEEE(buf[offset : offset+walHeaderSize])
-		if len(data) > 0 {
-			crcHash = crc32.Update(crcHash, crc32.IEEETable, data)
-		}
-		binary.LittleEndian.PutUint32(buf[offset+walHeaderSize+len(data):], crcHash)
-
+		// CRC bytes are left zero here; the caller computes them under the
+		// lock after patching the LSNs (they would otherwise be computed
+		// twice, once with LSN=0 and again after the patch).
 		offset += walHeaderSize + len(data) + 4
 	}
 
@@ -1039,45 +1033,40 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 		return ErrWALClosed
 	}
 
-	// 1. Flush dirty pages from buffer pool (incremental — skips clean pages
-	// and does not hold bp.mu during I/O, reducing contention).
+	// 1. Flush + fsync the old bufWriter at its CURRENT position, making every
+	// appended record durable BEFORE anything is truncated. Truncating first
+	// (the previous order) destroyed the head of any buffered transaction whose
+	// records straddled the bufio buffer: bufio may already have auto-flushed
+	// the head to the file, so truncate(0) erased it while the buffered tail
+	// was then rewritten at position 0 — a torn, self-inconsistent record
+	// stream. New appends are blocked by w.mu for the whole checkpoint.
+	if err := w.bufWriter.Flush(); err != nil {
+		return fmt.Errorf("WAL pre-checkpoint flush: %w", err)
+	}
+	if err := w.file.Sync(); err != nil {
+		return fmt.Errorf("WAL pre-checkpoint sync: %w", err)
+	}
+
+	// 2. Flush dirty pages from buffer pool (incremental — skips clean pages
+	// and does not hold bp.mu during I/O, reducing contention). After this,
+	// the page effects of every record made durable in step 1 are persisted in
+	// the main DB file, so those WAL records are no longer needed for recovery.
 	if err := bp.FlushDirty(); err != nil {
 		return fmt.Errorf("failed to flush dirty pages: %w", err)
 	}
 
-	// 2. Truncate the WAL file. Any concurrent Append calls that arrived during
-	// step 1 have their records buffered in bufWriter. New writes after this
-	// point are blocked by w.mu and will go into the NEW bufWriter created below.
+	// 3. Truncate the WAL file and start clean with a fresh bufWriter at
+	// position 0. New writes after this point are blocked by w.mu and will go
+	// into the new bufWriter.
 	if err := w.file.Truncate(0); err != nil {
 		return err
 	}
 	if _, err := w.file.Seek(0, 0); err != nil {
 		return err
 	}
-
-	// 3. Flush the old bufWriter (with buffered records from concurrent writes
-	// that arrived during FlushDirty) and sync to disk. The flush writes these
-	// records AT POSITION 0 of the now-truncated file. New writes are blocked
-	// by w.mu so they cannot interleave during this window. After this step,
-	// all records from before the truncation are durable on disk.
-	if err := w.bufWriter.Flush(); err != nil {
-		return fmt.Errorf("WAL pre-truncate flush: %w", err)
-	}
-	if err := w.file.Sync(); err != nil {
-		return fmt.Errorf("WAL pre-truncate sync: %w", err)
-	}
-
-	// 4. Replace bufWriter with a new one. Seek to the end of the file so that
-	// writeWALFull(bufWriter, ...) for the checkpoint marker appends (rather than
-	// overwriting the flushed records at position 0). Without the Seek, bufWriter
-	// writes its internal buffer at position 0 after Flush(), overwriting the
-	// buffered records that were just synced.
 	w.bufWriter = bufio.NewWriter(w.file)
-	if _, err := w.file.Seek(0, 2); err != nil {
-		return err
-	}
 
-	// 5. Write checkpoint record
+	// 4. Write checkpoint record
 	checkpointRecord := &WALRecord{
 		TxnID: 0,
 		Type:  WALCheckpoint,

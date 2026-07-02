@@ -38,6 +38,14 @@ func getPageData() []byte {
 	return b
 }
 
+// getPageDataNoZero retrieves a page-sized buffer from the pool without
+// zeroing it. Only use when the caller immediately overwrites the entire
+// buffer (e.g. ReadFullAt of a full page) before any byte is read.
+func getPageDataNoZero() []byte {
+	bp := pageDataPool.Get().(*[]byte)
+	return *bp
+}
+
 // putPageData returns a page-sized buffer to the pool
 func putPageData(b []byte) {
 	if cap(b) >= PageSize {
@@ -243,7 +251,9 @@ func (m *MetaPage) Deserialize(data []byte) error {
 	if string(m.Magic[:]) != MagicString {
 		return ErrPageCorrupted
 	}
-	if m.Checksum != 0 && metaPageChecksum(data) != m.Checksum {
+	// Serialize always writes a checksum, so there is no legacy zero-checksum
+	// population: always verify (a stored zero checksum is itself corruption).
+	if metaPageChecksum(data) != m.Checksum {
 		return fmt.Errorf("%w: meta page checksum mismatch", ErrPageCorrupted)
 	}
 
