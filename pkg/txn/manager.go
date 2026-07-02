@@ -24,10 +24,14 @@ var (
 	ErrDeadlockDetected = errors.New("deadlock detected")
 	ErrTxnTimeout       = errors.New("transaction timeout")
 	ErrReadOnlyTxn      = errors.New("read-only transaction cannot write")
+	// ErrTxnCancelled is returned when a transaction's context was cancelled by
+	// the caller (as opposed to expiring via deadline, which is ErrTxnTimeout).
+	// It wraps context.Canceled so errors.Is(err, context.Canceled) works.
+	ErrTxnCancelled = fmt.Errorf("transaction cancelled: %w", context.Canceled)
 )
 
 func checkedTxnUint32(n int, name string) (uint32, error) {
-	if n < 0 || n > 1<<32-1 {
+	if n < 0 || uint64(n) > math.MaxUint32 {
 		return 0, fmt.Errorf("%s exceeds uint32: %d", name, n)
 	}
 	return uint32(n), nil // #nosec G115 - range checked above.
@@ -124,11 +128,21 @@ type Transaction struct {
 	manager   *Manager
 
 	// Deadlock detection and timeout fields
-	ctx          context.Context    // Transaction context for timeout/cancellation
-	cancel       context.CancelFunc // Cancel function for cleanup
-	waitingFor   uint64             // Transaction ID this txn is waiting for (deadlock detection)
-	waitingSince time.Time          // When this txn started waiting
-	locksHeld    map[string]bool    // Keys this transaction currently holds locks on
+	ctx        context.Context    // Transaction context for timeout/cancellation
+	cancel     context.CancelFunc // Cancel function for cleanup
+	waitingFor uint64             // Transaction ID this txn is waiting for (deadlock detection)
+	locksHeld  map[string]bool    // Keys this transaction currently holds locks on
+
+	// beginSeq is the value of Manager.commitSeq observed when this transaction
+	// began. Any version with commitSeq <= beginSeq was committed before this
+	// transaction started, so a read of that key by this transaction records a
+	// readVersion >= that version and can never conflict on it. pruneVersions
+	// uses the minimum beginSeq across active transactions as its watermark.
+	beginSeq uint64
+
+	// lockWaitTimeout is the default lock wait applied by AcquireLockMode when
+	// the caller passes timeout <= 0. Copied from Options at Begin.
+	lockWaitTimeout time.Duration
 }
 
 // SetWaitingFor sets which transaction this one is waiting for (deadlock detection)
@@ -136,9 +150,19 @@ func (t *Transaction) SetWaitingFor(txnID uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.waitingFor = txnID
-	if txnID != 0 {
-		t.waitingSince = time.Now()
+}
+
+// setWaitingForID sets the wait-for edge only if the transaction still has the
+// expected ID. Transactions are recycled through a sync.Pool, so a stale
+// pointer may refer to a different (re-begun) transaction; the ID check
+// prevents corrupting the new incarnation's deadlock-detection state.
+func (t *Transaction) setWaitingForID(expectID, txnID uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ID != expectID {
+		return
 	}
+	t.waitingFor = txnID
 }
 
 // GetWaitingFor returns which transaction this one is waiting for
@@ -162,6 +186,25 @@ func (t *Transaction) AddLockHeld(key string) {
 func (t *Transaction) AddLockHeldIfActive(key string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.addLockHeldIfActiveLocked(key)
+}
+
+// addLockHeldIfActiveID records a lock only while the transaction is still
+// active AND still has the expected ID. Because transactions are recycled via
+// a sync.Pool, a pointer captured before a wait can refer to a different,
+// newer transaction by the time the lock is granted; without the ID check a
+// lock could be recorded against (and a lock-table entry granted to) a dead
+// transaction ID, orphaning the entry forever.
+func (t *Transaction) addLockHeldIfActiveID(expectID uint64, key string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ID != expectID {
+		return ErrTxnNotFound
+	}
+	return t.addLockHeldIfActiveLocked(key)
+}
+
+func (t *Transaction) addLockHeldIfActiveLocked(key string) error {
 	switch t.State {
 	case TxnActive:
 	case TxnCommitted:
@@ -182,6 +225,17 @@ func (t *Transaction) AddLockHeldIfActive(key string) error {
 func (t *Transaction) RemoveLockHeld(key string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	delete(t.locksHeld, key)
+}
+
+// removeLockHeldIfID removes a lock record only if the transaction still has
+// the expected ID (guards against sync.Pool recycling, see addLockHeldIfActiveID).
+func (t *Transaction) removeLockHeldIfID(expectID uint64, key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ID != expectID {
+		return
+	}
 	delete(t.locksHeld, key)
 }
 
@@ -209,10 +263,17 @@ func (t *Transaction) IsTimedOut() bool {
 	return t.ctx.Err() != nil
 }
 
-func (t *Transaction) activeStateError() error {
+// activeStateErrorForID returns nil if the transaction is active and still has
+// the expected ID. A mismatched ID means the *Transaction was recycled through
+// the sync.Pool and now belongs to a different logical transaction, so the
+// original transaction is gone (ErrTxnNotFound).
+func (t *Transaction) activeStateErrorForID(expectID uint64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	if t.ID != expectID {
+		return ErrTxnNotFound
+	}
 	switch t.State {
 	case TxnActive:
 		return nil
@@ -237,11 +298,18 @@ func (t *Transaction) Commit() error {
 		return ErrTxnAborted
 	}
 
-	// Check for timeout
-	if t.IsTimedOut() {
-		_ = t.rollbackLocked()
-		metrics.GetTransactionMetrics().RecordTxnTimeout()
-		return ErrTxnTimeout
+	// Check for timeout / cancellation. Deadline expiry is a timeout; explicit
+	// caller cancellation is reported distinctly so callers can tell "the
+	// transaction ran too long" apart from "I cancelled it".
+	if t.ctx != nil {
+		if ctxErr := t.ctx.Err(); ctxErr != nil {
+			_ = t.rollbackLocked()
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				metrics.GetTransactionMetrics().RecordTxnTimeout()
+				return ErrTxnTimeout
+			}
+			return ErrTxnCancelled
+		}
 	}
 
 	startTime := time.Now()
@@ -257,10 +325,23 @@ func (t *Transaction) Commit() error {
 	}
 
 	t.State = TxnCommitted
-	t.manager.removeActive(t.ID)
 
-	// Release all locks held by this transaction
-	t.manager.ReleaseAllLocks(t.ID)
+	// Release all locks held by this transaction using the key list available
+	// under the already-held t.mu. Calling ReleaseAllLocks(t.ID) here would not
+	// work: it looks the transaction up in the active set (already racy once we
+	// removeActive below) and its found-path calls GetLocksHeld, which would
+	// self-deadlock on t.mu. The old code always fell through to ReleaseAllLocks'
+	// O(entire-lock-table) fallback scan on every commit.
+	if len(t.locksHeld) > 0 {
+		locks := make([]string, 0, len(t.locksHeld))
+		for k := range t.locksHeld {
+			locks = append(locks, k)
+		}
+		clear(t.locksHeld)
+		t.manager.releaseLockEntries(t.ID, locks)
+	}
+
+	t.manager.removeActive(t.ID)
 
 	// Cancel context to release resources
 	if t.cancel != nil {
@@ -304,6 +385,7 @@ func (t *Transaction) rollbackLocked() error {
 	for k := range t.locksHeld {
 		locks = append(locks, k)
 	}
+	clear(t.locksHeld)
 	mgr := t.manager
 
 	t.State = TxnAborted
@@ -311,12 +393,13 @@ func (t *Transaction) rollbackLocked() error {
 	clear(t.WriteSet)
 	clear(t.ReadSet)
 
-	// Release all locks under a single lockMu acquisition to avoid per-key
-	// lockMu acquire/release cycles that create a deadlock window with
-	// AcquireLockMode (which holds lockMu and may call SetWaitingFor).
-	t.mu.Unlock()
-	mgr.releaseAllLocksUnderLock(t.ID, locks)
-	t.mu.Lock()
+	// Release all locks under a single lockMu acquisition. releaseLockEntries
+	// acquires lockMu internally and never touches t.mu, so it is safe to call
+	// with t.mu held (the global lock order is t.mu → lockMu; no code path
+	// acquires t.mu while holding lockMu).
+	if len(locks) > 0 {
+		mgr.releaseLockEntries(t.ID, locks)
+	}
 
 	mgr.removeActive(t.ID)
 
@@ -522,16 +605,30 @@ func (m *Manager) deadlockDetector() {
 
 // checkForDeadlocks detects cycles in the wait-for graph and aborts transactions to break them
 func (m *Manager) checkForDeadlocks() {
-	// Snapshot active transactions and their waiting states
+	// Snapshot active transaction pointers under the shard locks, but read the
+	// t.mu-guarded waiting state only AFTER releasing the shard lock. Holding a
+	// shard RLock while acquiring t.mu deadlocks against Commit/rollbackLocked,
+	// which hold t.mu while calling removeActive (shard write lock).
 	activeTxns := make(map[uint64]*Transaction)
-	waitingMap := make(map[uint64]uint64)
 	for i := range m.activeShards {
 		m.activeShards[i].RLock()
 		for id, txn := range m.activeShards[i].m {
 			activeTxns[id] = txn
-			waitingMap[id] = txn.GetWaitingFor()
 		}
 		m.activeShards[i].RUnlock()
+	}
+
+	waitingMap := make(map[uint64]uint64, len(activeTxns))
+	for id, txn := range activeTxns {
+		// Validate the ID under t.mu: the pointer may have been recycled through
+		// the sync.Pool between the snapshot and this read.
+		txn.mu.Lock()
+		w := txn.waitingFor
+		if txn.ID != id {
+			w = 0
+		}
+		txn.mu.Unlock()
+		waitingMap[id] = w
 	}
 
 	// Find a cycle in the wait-for graph and break it by aborting the youngest
@@ -609,6 +706,11 @@ func (m *Manager) resolveDeadlock(cycle []uint64, activeTxns map[uint64]*Transac
 		if txn, ok := activeTxns[txnID]; ok {
 			txn.mu.Lock()
 			startTS := txn.StartTS
+			// Guard against sync.Pool recycling: the snapshot pointer may now
+			// belong to a different (newer) transaction.
+			if txn.ID != txnID {
+				startTS = 0
+			}
 			txn.mu.Unlock()
 			if startTS > maxStartTS {
 				maxStartTS = startTS
@@ -618,9 +720,17 @@ func (m *Manager) resolveDeadlock(cycle []uint64, activeTxns map[uint64]*Transac
 	}
 
 	if victimID != 0 {
-		if victim, ok := activeTxns[victimID]; ok {
-			victim.SetWaitingFor(0) // Clear waiting state
-			_ = victim.Rollback()   // Abort the victim
+		// Re-fetch by ID from the active set rather than trusting the snapshot
+		// pointer, then re-validate ID and state under t.mu before aborting.
+		// A stale recycled pointer would otherwise abort an unrelated, newer
+		// transaction (sync.Pool ABA).
+		if victim, ok := m.activeTxn(victimID); ok {
+			victim.mu.Lock()
+			if victim.ID == victimID && victim.State == TxnActive {
+				victim.waitingFor = 0       // Clear waiting state
+				_ = victim.rollbackLocked() // Abort the victim
+			}
+			victim.mu.Unlock()
 		}
 	}
 }
@@ -631,6 +741,8 @@ func (m *Manager) AcquireLock(txnID uint64, key string, timeout time.Duration) e
 }
 
 // AcquireLockMode acquires a lock in the specified mode (shared or exclusive).
+// A timeout <= 0 means "use the transaction's configured LockWaitTimeout"
+// (Options.LockWaitTimeout, default 5s) — it does NOT mean fail immediately.
 func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeout time.Duration) error {
 	txn, exists := m.activeTxn(txnID)
 	if !exists {
@@ -638,6 +750,15 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 	}
 	if txn.IsTimedOut() {
 		return ErrTxnTimeout
+	}
+
+	if timeout <= 0 {
+		// lockWaitTimeout is immutable after Begin; the activeTxn lookup above
+		// provides the happens-before edge for reading it here.
+		timeout = txn.lockWaitTimeout
+		if timeout <= 0 {
+			timeout = defaultOptions.LockWaitTimeout
+		}
 	}
 
 	m.lockMu.Lock()
@@ -677,7 +798,7 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 		}
 		m.lockMu.Unlock()
 
-		if err := txn.AddLockHeldIfActive(key); err != nil {
+		if err := txn.addLockHeldIfActiveID(txnID, key); err != nil {
 			m.ReleaseLock(txnID, key)
 			return err
 		}
@@ -685,105 +806,107 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 	}
 
 	// Determine who is blocking us
-	blockerID := entry.exclusive
-	if blockerID == 0 {
-		// Blocked by shared lock holders — pick any
-		for id := range entry.shared {
-			if id != txnID {
-				blockerID = id
-				break
-			}
-		}
-	}
+	blockerID := lockEntryBlocker(entry, txnID)
+	m.lockMu.Unlock()
 
-	blockerShard := activeShardIdx(blockerID)
-	m.activeShards[blockerShard].RLock()
-	waitingTxn, waitingExists := m.activeShards[blockerShard].m[blockerID]
-	m.activeShards[blockerShard].RUnlock()
-
-	// SetWaitingFor must be called after lockMu is released to maintain the
-	// lock-ordering invariant (lockMu before t.mu). Holding lockMu while
-	// acquiring t.mu would create a deadlock window with rollbackLocked
-	// (which holds t.mu and needs lockMu).
+	// The wait-for graph is guarded by per-transaction mutexes, not lockMu, so
+	// this check (and SetWaitingFor below) must run after lockMu is released:
+	// the global lock order is t.mu → lockMu (Commit and rollbackLocked hold
+	// t.mu while releasing lock entries), and wouldCauseDeadlock acquires t.mu
+	// of chain members. The check is advisory — the background deadlock
+	// detector remains the backstop for edges formed after this point.
 	if m.wouldCauseDeadlock(txnID, blockerID) {
-		m.lockMu.Unlock()
 		return ErrDeadlockDetected
 	}
 
 	// Wait for the lock with timeout
-	if timeout > 0 {
-		m.lockMu.Unlock()
-		if waitingExists {
-			txn.SetWaitingFor(blockerID)
-			_ = waitingTxn
-		}
-		if err := txn.activeStateError(); err != nil {
-			txn.SetWaitingFor(0)
-			return err
-		}
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
+	if _, ok := m.activeTxn(blockerID); ok {
+		txn.setWaitingForID(txnID, blockerID)
+	}
+	if err := txn.activeStateErrorForID(txnID); err != nil {
+		txn.setWaitingForID(txnID, 0)
+		return err
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		var txnDone <-chan struct{}
-		if ctx := txn.Context(); ctx != nil {
-			txnDone = ctx.Done()
-		}
-
-		for {
-			select {
-			case <-txnDone:
-				txn.SetWaitingFor(0)
-				return ErrTxnTimeout
-			case <-timer.C:
-				txn.SetWaitingFor(0)
-				return fmt.Errorf("lock acquisition timeout")
-			case <-ticker.C:
-				if err := txn.activeStateError(); err != nil {
-					txn.SetWaitingFor(0)
-					return err
-				}
-				m.lockMu.Lock()
-				e := m.lockEntries[key]
-				if e == nil {
-					e = &lockEntry{shared: make(map[uint64]bool)}
-					m.lockEntries[key] = e
-				}
-				// Re-check if we can acquire
-				ok := false
-				switch mode {
-				case LockShared:
-					if e.exclusive == 0 || e.exclusive == txnID {
-						ok = true
-					}
-				case LockExclusive:
-					if e.exclusive == txnID || (e.exclusive == 0 && len(e.shared) == 0) || (len(e.shared) == 1 && e.shared[txnID]) {
-						ok = true
-					}
-				}
-				if ok {
-					switch mode {
-					case LockShared:
-						e.shared[txnID] = true
-					case LockExclusive:
-						e.exclusive = txnID
-					}
-					m.lockMu.Unlock()
-					txn.SetWaitingFor(0)
-					if err := txn.AddLockHeldIfActive(key); err != nil {
-						m.ReleaseLock(txnID, key)
-						return err
-					}
-					return nil
-				}
-				m.lockMu.Unlock()
-			}
-		}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var txnDone <-chan struct{}
+	if ctx := txn.Context(); ctx != nil {
+		txnDone = ctx.Done()
 	}
 
-	m.lockMu.Unlock()
-	return fmt.Errorf("lock is held by transaction %d", blockerID)
+	for {
+		select {
+		case <-txnDone:
+			txn.setWaitingForID(txnID, 0)
+			return ErrTxnTimeout
+		case <-timer.C:
+			txn.setWaitingForID(txnID, 0)
+			return fmt.Errorf("lock acquisition timeout")
+		case <-ticker.C:
+			if err := txn.activeStateErrorForID(txnID); err != nil {
+				txn.setWaitingForID(txnID, 0)
+				return err
+			}
+			m.lockMu.Lock()
+			e := m.lockEntries[key]
+			if e == nil {
+				e = &lockEntry{shared: make(map[uint64]bool)}
+				m.lockEntries[key] = e
+			}
+			// Re-check if we can acquire
+			ok := false
+			switch mode {
+			case LockShared:
+				if e.exclusive == 0 || e.exclusive == txnID {
+					ok = true
+				}
+			case LockExclusive:
+				if e.exclusive == txnID || (e.exclusive == 0 && len(e.shared) == 0) || (len(e.shared) == 1 && e.shared[txnID]) {
+					ok = true
+				}
+			}
+			if ok {
+				switch mode {
+				case LockShared:
+					e.shared[txnID] = true
+				case LockExclusive:
+					e.exclusive = txnID
+				}
+				m.lockMu.Unlock()
+				txn.setWaitingForID(txnID, 0)
+				if err := txn.addLockHeldIfActiveID(txnID, key); err != nil {
+					m.ReleaseLock(txnID, key)
+					return err
+				}
+				return nil
+			}
+			// Still blocked: refresh the wait-for edge. The blocker recorded at
+			// wait entry may have committed/aborted, with a different transaction
+			// now holding the lock; a stale edge makes the deadlock detector chase
+			// the wrong node and miss real deadlocks.
+			newBlocker := lockEntryBlocker(e, txnID)
+			m.lockMu.Unlock()
+			txn.setWaitingForID(txnID, newBlocker)
+		}
+	}
+}
+
+// lockEntryBlocker returns the ID of a transaction blocking txnID on the
+// given lock entry: the exclusive holder if any, otherwise any shared holder
+// other than txnID, otherwise 0. Caller must hold lockMu.
+func lockEntryBlocker(entry *lockEntry, txnID uint64) uint64 {
+	if entry.exclusive != 0 && entry.exclusive != txnID {
+		return entry.exclusive
+	}
+	for id := range entry.shared {
+		if id != txnID {
+			return id
+		}
+	}
+	return 0
 }
 
 // wouldCauseDeadlock checks if txnID waiting for ownerID would create a cycle
@@ -802,16 +925,19 @@ func (m *Manager) wouldCauseDeadlock(txnID, ownerID uint64) bool {
 		}
 		visited[current] = true
 
-		shard := activeShardIdx(current)
-		m.activeShards[shard].RLock()
-		txn, exists := m.activeShards[shard].m[current]
-		m.activeShards[shard].RUnlock()
-
+		txn, exists := m.activeTxn(current)
 		if !exists {
 			return false
 		}
 
-		waitingFor := txn.GetWaitingFor()
+		// Read the edge with an ID re-validation: the pointer may have been
+		// recycled (sync.Pool) into a different transaction after the lookup.
+		txn.mu.Lock()
+		waitingFor := txn.waitingFor
+		if txn.ID != current {
+			waitingFor = 0
+		}
+		txn.mu.Unlock()
 		if waitingFor == 0 {
 			// End of chain
 			return false
@@ -823,10 +949,10 @@ func (m *Manager) wouldCauseDeadlock(txnID, ownerID uint64) bool {
 // ReleaseLock releases a lock held by a transaction
 func (m *Manager) ReleaseLock(txnID uint64, key string) {
 	m.lockMu.Lock()
-	defer m.lockMu.Unlock()
 
 	entry := m.lockEntries[key]
 	if entry == nil {
+		m.lockMu.Unlock()
 		return
 	}
 
@@ -840,17 +966,17 @@ func (m *Manager) ReleaseLock(txnID uint64, key string) {
 		released = true
 	}
 
-	if released {
-		if entry.exclusive == 0 && len(entry.shared) == 0 {
-			delete(m.lockEntries, key)
-		}
+	if released && entry.exclusive == 0 && len(entry.shared) == 0 {
+		delete(m.lockEntries, key)
+	}
+	// Update the transaction's locksHeld map only after releasing lockMu:
+	// acquiring t.mu while holding lockMu would invert the global lock order
+	// (t.mu → lockMu, see Commit/rollbackLocked) and allow an ABBA deadlock.
+	m.lockMu.Unlock()
 
-		shard := activeShardIdx(txnID)
-		m.activeShards[shard].RLock()
-		txn, exists := m.activeShards[shard].m[txnID]
-		m.activeShards[shard].RUnlock()
-		if exists {
-			txn.RemoveLockHeld(key)
+	if released {
+		if txn, exists := m.activeTxn(txnID); exists {
+			txn.removeLockHeldIfID(txnID, key)
 		}
 	}
 }
@@ -883,12 +1009,20 @@ func (m *Manager) ReleaseAllLocks(txnID uint64) {
 	}
 }
 
-// releaseAllLocksUnderLock releases all locks for txnID under an already-held lockMu.
-// Caller must hold lockMu. This is an internal helper used by rollbackLocked to avoid
-// per-key lockMu acquire/release cycles that would create a deadlock window with
-// AcquireLockMode (which holds lockMu and may call SetWaitingFor, which acquires t.mu).
-func (m *Manager) releaseAllLocksUnderLock(txnID uint64, keys []string) {
-	// lockMu is already held by the caller
+// releaseLockEntries releases the lock-table entries for txnID for the given
+// keys under a single lockMu acquisition. It never touches a transaction's mu,
+// so callers may hold t.mu (Commit / rollbackLocked do); the caller is
+// responsible for clearing the transaction's own locksHeld map.
+//
+// This replaces the old releaseAllLocksUnderLock, whose contract said "caller
+// must hold lockMu" but whose only caller never acquired it — mutating
+// m.lockEntries unsynchronized against AcquireLockMode/ReleaseLock.
+func (m *Manager) releaseLockEntries(txnID uint64, keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	m.lockMu.Lock()
+	defer m.lockMu.Unlock()
 	for _, key := range keys {
 		entry := m.lockEntries[key]
 		if entry == nil {
@@ -897,20 +1031,9 @@ func (m *Manager) releaseAllLocksUnderLock(txnID uint64, keys []string) {
 		if entry.exclusive == txnID {
 			entry.exclusive = 0
 		}
-		if entry.shared[txnID] {
-			delete(entry.shared, txnID)
-		}
+		delete(entry.shared, txnID)
 		if entry.exclusive == 0 && len(entry.shared) == 0 {
 			delete(m.lockEntries, key)
-		}
-
-		// Also update the transaction's locksHeld map while we have lockMu.
-		shard := activeShardIdx(txnID)
-		m.activeShards[shard].RLock()
-		txn, exists := m.activeShards[shard].m[txnID]
-		m.activeShards[shard].RUnlock()
-		if exists {
-			txn.RemoveLockHeld(key)
 		}
 	}
 }
@@ -934,7 +1057,6 @@ func (m *Manager) RecycleTxn(txn *Transaction) {
 	txn.cancel = nil
 	txn.ctx = nil
 	txn.waitingFor = 0
-	txn.waitingSince = time.Time{}
 	if txn.locksHeld != nil {
 		clear(txn.locksHeld)
 	}
@@ -980,23 +1102,38 @@ func (m *Manager) Begin(opts *Options) *Transaction {
 		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
 	}
 
+	txn := m.initTxn(id, ctx, cancel, opts)
+
+	// Record metrics
+	metrics.GetTransactionMetrics().RecordTxnStart()
+
+	return txn
+}
+
+// initTxn initializes a (possibly pool-recycled) transaction and publishes it
+// in the active set. Fields are set under txn.mu so that ID re-validation by
+// holders of stale recycled pointers (see setWaitingForID and friends) is
+// well-defined under the race detector.
+func (m *Manager) initTxn(id uint64, ctx context.Context, cancel context.CancelFunc, opts *Options) *Transaction {
 	txn := m.acquireTxn()
+	txn.mu.Lock()
 	txn.ID = id
 	txn.State = TxnActive
 	txn.Isolation = opts.Isolation
 	txn.ReadOnly = opts.ReadOnly
 	txn.StartTS = id
+	// Snapshot base for pruneVersions' watermark; see Transaction.beginSeq.
+	txn.beginSeq = atomic.LoadUint64(&m.commitSeq)
+	txn.lockWaitTimeout = opts.LockWaitTimeout
 	txn.manager = m
 	txn.ctx = ctx
 	txn.cancel = cancel
+	txn.mu.Unlock()
 
 	shard := activeShardIdx(id)
 	m.activeShards[shard].Lock()
 	m.activeShards[shard].m[id] = txn
 	m.activeShards[shard].Unlock()
-
-	// Record metrics
-	metrics.GetTransactionMetrics().RecordTxnStart()
 
 	return txn
 }
@@ -1017,84 +1154,7 @@ func (m *Manager) BeginWithContext(ctx context.Context, opts *Options) *Transact
 		cancel = c
 	}
 
-	txn := m.acquireTxn()
-	txn.ID = id
-	txn.State = TxnActive
-	txn.Isolation = opts.Isolation
-	txn.ReadOnly = opts.ReadOnly
-	txn.StartTS = id
-	txn.manager = m
-	txn.ctx = ctx
-	txn.cancel = cancel
-
-	shard := activeShardIdx(id)
-	m.activeShards[shard].Lock()
-	m.activeShards[shard].m[id] = txn
-	m.activeShards[shard].Unlock()
-
-	return txn
-}
-
-// detectConflicts checks for write-write conflicts
-func (m *Manager) detectConflicts(txn *Transaction) error {
-	if txn.Isolation < SnapshotIsolation {
-		return nil
-	}
-
-	var shardArr [8]int
-	var shardExtra []int
-	shardCount := 0
-	addShard := func(s int) {
-		for i := 0; i < shardCount; i++ {
-			if shardArr[i] == s {
-				return
-			}
-		}
-		for i := range shardExtra {
-			if shardExtra[i] == s {
-				return
-			}
-		}
-		if shardCount < len(shardArr) {
-			shardArr[shardCount] = s
-			shardCount++
-		} else {
-			shardExtra = append(shardExtra, s)
-		}
-	}
-	for wk := range txn.ReadSet {
-		addShard(versionShardIdx(wk.TreeName, wk.Key))
-	}
-	var sorted []int
-	if len(shardExtra) == 0 {
-		sorted = shardArr[:shardCount]
-	} else {
-		sorted = make([]int, 0, shardCount+len(shardExtra))
-		sorted = append(sorted, shardArr[:shardCount]...)
-		sorted = append(sorted, shardExtra...)
-	}
-	sort.Ints(sorted)
-
-	for _, s := range sorted {
-		m.versionShards[s].mu.Lock()
-	}
-	defer func() {
-		for i := len(sorted) - 1; i >= 0; i-- {
-			m.versionShards[sorted[i]].mu.Unlock()
-		}
-	}()
-
-	for wk, readVersion := range txn.ReadSet {
-		currentVersion, exists := m.versionShards[versionShardIdx(wk.TreeName, wk.Key)].versions[wk]
-		if !exists {
-			continue
-		}
-		if currentVersion > readVersion {
-			return ErrConflict
-		}
-	}
-
-	return nil
+	return m.initTxn(id, ctx, cancel, opts)
 }
 
 // commitWithConflictDetection atomically checks for conflicts, durably writes
@@ -1341,35 +1401,68 @@ func (m *Manager) writeWALForCommit(txn *Transaction) error {
 	return nil
 }
 
-// pruneVersions removes version entries that are no longer needed by any active transaction
+// pruneVersions removes version entries that are no longer needed by any
+// active transaction, using a commit-sequence watermark.
+//
+// Safety argument (see the conflict checks in detectConflicts and
+// commitWithConflictDetection): a stored entry {key: V} triggers a conflict
+// for a committing transaction iff V > readVersion(key); an ABSENT entry is
+// treated as "no conflict". Removing {key: V} is therefore only safe when,
+// for every transaction that could still commit, "absent" yields the same
+// decision as "present with V" — i.e. V <= its recorded readVersion. A
+// transaction whose beginSeq >= V began after V was committed, so any read it
+// performs on key observes version >= V (readVersion >= V), making V > read
+// impossible either way. Hence entries with V <= min(beginSeq of all active
+// transactions) can be deleted without changing any conflict decision.
+//
+// The watermark is loaded from commitSeq BEFORE scanning the active shards.
+// The scan is shard-by-shard, so a transaction that begins in an
+// already-scanned shard is invisible to the scan — but its beginSeq is >= the
+// pre-scan commitSeq (commitSeq is monotonic), so it is still protected by the
+// watermark. This closes the old race where a Begin during the scan could be
+// missed and ALL version state cleared while that transaction held
+// readVersions, silently disabling conflict detection (lost update).
 func (m *Manager) pruneVersions() {
-	minActive := uint64(math.MaxUint64)
+	// Load the watermark candidates BEFORE scanning active shards (see above).
+	watermark := atomic.LoadUint64(&m.commitSeq)
+	minActiveStartTS := atomic.LoadUint64(&m.counter)
+
 	for i := range m.activeShards {
 		m.activeShards[i].RLock()
 		for _, txn := range m.activeShards[i].m {
-			if txn.StartTS < minActive {
-				minActive = txn.StartTS
+			// beginSeq/StartTS are immutable after Begin publishes the txn into
+			// this shard map, so reading them under the shard RLock is race-free.
+			if txn.beginSeq < watermark {
+				watermark = txn.beginSeq
+			}
+			if txn.StartTS < minActiveStartTS {
+				minActiveStartTS = txn.StartTS
 			}
 		}
 		m.activeShards[i].RUnlock()
 	}
 
-	// If no active transactions, clear maps in place instead of reallocating.
-	if minActive == math.MaxUint64 {
-		for i := range m.versionShards {
-			m.versionShards[i].mu.Lock()
-			clear(m.versionShards[i].versions)
-			m.versionShards[i].mu.Unlock()
+	// Delete every version entry at or below the watermark. This also runs
+	// while transactions are active (the old code never pruned the
+	// versionShards maps in that case, so they grew by one entry per distinct
+	// key ever written — unbounded memory growth under a steady workload).
+	for i := range m.versionShards {
+		s := &m.versionShards[i]
+		s.mu.Lock()
+		for wk, v := range s.versions {
+			if v <= watermark {
+				delete(s.versions, wk)
+			}
 		}
-		if m.versionStore != nil {
-			m.versionStore.Clear()
-		}
-		return
+		s.mu.Unlock()
 	}
 
-	// Prune old version chain entries
+	// Prune old MVCC version-chain entries. NOTE: VersionStore versions are
+	// commit timestamps supplied by its callers, which in this codebase are
+	// transaction IDs (Manager.counter clock) — so the minimum active StartTS
+	// is the matching watermark. Do not pass commitSeq-clock values here.
 	if m.versionStore != nil {
-		m.versionStore.Prune(minActive)
+		m.versionStore.Prune(minActiveStartTS)
 	}
 }
 

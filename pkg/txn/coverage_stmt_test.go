@@ -299,8 +299,11 @@ func TestAcquireLockRejectsInactiveTxnWithoutLeakingLock(t *testing.T) {
 
 func TestAcquireLockNoWaitFailureClearsWaitingFor(t *testing.T) {
 	mgr := NewManager(nil)
-	txn1 := mgr.Begin(nil)
-	txn2 := mgr.Begin(nil)
+	// timeout <= 0 now means "use the transaction's LockWaitTimeout" (default
+	// 5s); use a short per-txn value to keep this test fast.
+	opts := &Options{Isolation: SnapshotIsolation, LockWaitTimeout: 30 * time.Millisecond}
+	txn1 := mgr.Begin(opts)
+	txn2 := mgr.Begin(opts)
 
 	if err := mgr.AcquireLock(txn1.ID, "key1", time.Second); err != nil {
 		t.Fatalf("txn1 acquire key1: %v", err)

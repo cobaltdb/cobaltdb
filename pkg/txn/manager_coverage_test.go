@@ -41,27 +41,25 @@ func TestPruneVersionsNoActive(t *testing.T) {
 func TestPruneVersionsWithActive(t *testing.T) {
 	mgr := NewManager(nil)
 
+	// Start an active transaction BEFORE the commit below: versions committed
+	// after a transaction began (version > its beginSeq watermark) can still
+	// produce conflicts for it and must survive pruning.
+	txn2 := mgr.Begin(nil)
+
 	// Commit a transaction to populate versions
 	txn1 := mgr.Begin(nil)
 	txn1.SetWrite("", "key1", []byte("v1"))
 	txn1.Commit()
 
-	// Start a new active transaction
-	txn2 := mgr.Begin(nil)
-	_ = txn2 // keep active
-
-	// Prune should NOT clear versions since there's an active txn
+	// Prune should NOT remove key1's version: txn2 began before that commit.
 	mgr.pruneVersions()
 
-	// The versions map should not have been reset because there is an active txn
-	// (The pruneVersions function only clears if no active transactions)
-	// After prune with active, key1 should still be there
 	idx := versionShardIdx("", "key1")
 	mgr.versionShards[idx].mu.Lock()
 	_, exists := mgr.versionShards[idx].versions[WriteKey{Key: "key1"}]
 	mgr.versionShards[idx].mu.Unlock()
 	if !exists {
-		t.Error("Expected key1 version to still exist with active transaction")
+		t.Error("Expected key1 version to still exist with active transaction that began before the commit")
 	}
 
 	// Cleanup

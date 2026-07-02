@@ -139,6 +139,13 @@ func (vs *VersionStore) GetLatestVersion(key WriteKey) uint64 {
 
 // Prune removes version entries older than the minimum active snapshot.
 // Versions with commitTS < minActiveTS that have a newer version are garbage collected.
+//
+// Clock contract: minActiveTS must come from the SAME clock that callers pass
+// as commitTS to Commit/Delete. In this codebase that clock is the transaction
+// ID / StartTS sequence (Manager.counter) — see the VersionedValue.Version
+// comment. Do not pass values from Manager.commitSeq (the versionShards
+// conflict-detection clock); the two sequences advance independently and
+// mixing them silently over- or under-prunes.
 func (vs *VersionStore) Prune(minActiveTS uint64) int {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -19,6 +20,7 @@ type Scheduler struct {
 	tickInterval time.Duration
 	logger       Logger
 	started      bool
+	stopped      bool // set by Stop(); cleared by Start(). Guards Trigger-after-Stop.
 	startMu      sync.Mutex
 	// runCtx is cancelled by Stop() so in-flight job functions (and the retry
 	// backoff) abort promptly instead of blocking shutdown for up to a job's
@@ -156,7 +158,24 @@ func (s *Scheduler) Disable(jobID string) bool {
 }
 
 // Trigger executes a job immediately, outside its normal schedule.
+// Triggered runs on a started scheduler are registered in the shutdown
+// WaitGroup so Stop() waits for them instead of returning mid-job.
+// Triggering a stopped scheduler returns an error.
 func (s *Scheduler) Trigger(jobID string) error {
+	// Register with the WaitGroup under startMu so the Add cannot race with
+	// Stop's wg.Wait (Stop holds startMu for its entire duration). If Stop is
+	// in progress, this blocks until it finishes and then reports "stopped".
+	s.startMu.Lock()
+	if s.stopped {
+		s.startMu.Unlock()
+		return fmt.Errorf("scheduler is stopped")
+	}
+	if s.started {
+		s.wg.Add(1)
+		defer s.wg.Done()
+	}
+	s.startMu.Unlock()
+
 	s.mu.Lock()
 	j, ok := s.jobs[jobID]
 	if !ok {
@@ -182,6 +201,7 @@ func (s *Scheduler) Start() {
 		return
 	}
 	s.started = true
+	s.stopped = false
 	s.runCtx, s.runCancel = context.WithCancel(context.Background())
 
 	// Use a configurable resolution ticker — coarse enough to be cheap,
@@ -207,10 +227,12 @@ func (s *Scheduler) Start() {
 func (s *Scheduler) Stop() {
 	s.startMu.Lock()
 	if !s.started {
+		s.stopped = true
 		s.startMu.Unlock()
 		return
 	}
 	s.started = false
+	s.stopped = true
 
 	close(s.stopCh)
 	if s.runCancel != nil {
@@ -222,6 +244,25 @@ func (s *Scheduler) Stop() {
 	}
 	s.wg.Wait()
 	s.stopCh = make(chan struct{})
+
+	// The dispatcher marks jobs Running before enqueueing them; a job selected
+	// but never dispatched (stop raced the enqueue) would otherwise be stranded
+	// in Running forever — skipped by the dispatcher after a restart and
+	// refused by Trigger. All genuinely running jobs have finished (wg.Wait
+	// above and runJob's deferred status update), so anything still marked
+	// Running here was never executed: reset it.
+	s.mu.Lock()
+	for _, j := range s.jobs {
+		if j.Status == JobStatusRunning {
+			if j.Enabled {
+				j.Status = JobStatusIdle
+			} else {
+				j.Status = JobStatusDisabled
+			}
+		}
+	}
+	s.mu.Unlock()
+
 	s.startMu.Unlock()
 	s.logger.Infof("Scheduler stopped")
 }
@@ -287,6 +328,10 @@ func (s *Scheduler) worker(ch <-chan *Job) {
 }
 
 // runJob executes a single job with retries and panic recovery.
+// Each attempt (including retries) is individually protected against panics:
+// a panicking attempt counts as a failed attempt and is retried up to
+// MaxRetries like any other failure, and the recovered error includes the
+// panic stack trace.
 func (s *Scheduler) runJob(j *Job) (err error) {
 	s.mu.Lock()
 	j.Status = JobStatusRunning
@@ -294,7 +339,10 @@ func (s *Scheduler) runJob(j *Job) (err error) {
 
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic: %v", r)
+			// Defensive: panics from job functions are recovered per-attempt in
+			// runAttempt below; this only catches panics in the scheduler's own
+			// retry plumbing.
+			err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
 		}
 		s.mu.Lock()
 		j.LastRun = time.Now()
@@ -332,8 +380,19 @@ func (s *Scheduler) runJob(j *Job) (err error) {
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
+	// runAttempt wraps a single attempt in its own recovering closure so a
+	// panic does not bypass the retry loop (MaxRetries is honored) and the
+	// stack trace of the panic site is preserved in the error.
+	runAttempt := func() (attemptErr error) {
+		defer func() {
+			if r := recover(); r != nil {
+				attemptErr = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+			}
+		}()
+		return j.Fn(ctx)
+	}
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		err = j.Fn(ctx)
+		err = runAttempt()
 		if err == nil {
 			return nil
 		}

@@ -154,6 +154,14 @@ func ParallelGroupBy(values [][]byte, workers int, threshold int, groupFn func([
 
 // ParallelAggregate splits values into chunks and computes partial aggregates in parallel.
 // The mergeFn combines partial results into a final result.
+//
+// Contract:
+//   - partialFn may return nil for a chunk (e.g. every row filtered out); nil
+//     partials are skipped during the merge and are never passed to mergeFn.
+//   - mergeFn merges src into dst in place; both arguments are non-nil.
+//   - The returned slice is the first non-nil partial, mutated in place by the
+//     subsequent merges. It returns nil if every partial is nil (or when the
+//     sequential path's partialFn returns nil).
 func ParallelAggregate(values [][]byte, workers int, threshold int, partialFn func([][]byte) []interface{}, mergeFn func(dst, src []interface{})) []interface{} {
 	n := len(values)
 	workers = defaultWorkers(workers)
@@ -183,9 +191,13 @@ func ParallelAggregate(values [][]byte, workers int, threshold int, partialFn fu
 	wg.Wait()
 	pc.repanic()
 
-	// Merge partials
+	// Merge partials, skipping nil ones so mergeFn never sees a nil src (and a
+	// leading nil partial does not shift which slice becomes the merge target).
 	var result []interface{}
 	for _, p := range partials {
+		if p == nil {
+			continue
+		}
 		if result == nil {
 			result = p
 			continue
