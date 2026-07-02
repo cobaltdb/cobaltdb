@@ -418,7 +418,40 @@ func generateAlertID() string {
 	return fmt.Sprintf("ALERT-%d-%d", time.Now().Unix(), id)
 }
 
-// DefaultAlertRules returns a set of default alert rules for CobaltDB
+// counterDeltaCondition adapts a cumulative (monotonic) counter into a
+// per-check-interval rate condition. Lifetime totals only ever grow, so a
+// threshold on the raw total would keep the rule firing forever once the
+// counter crosses it. Instead, each evaluation compares the counter against
+// its value at the previous evaluation and alerts on the DELTA. The first
+// evaluation only records the baseline and never fires.
+//
+// The returned closure holds private state and is evaluated from a single
+// goroutine (AlertManager.checkRules), so no locking is required.
+func counterDeltaCondition(read func() int64, threshold float64) func() (bool, float64) {
+	var prev int64
+	var initialized bool
+	return func() (bool, float64) {
+		cur := read()
+		if !initialized {
+			initialized = true
+			prev = cur
+			return false, 0
+		}
+		delta := cur - prev
+		prev = cur
+		if delta < 0 {
+			// Counter reset (e.g. process restart of the metrics source).
+			delta = 0
+		}
+		return float64(delta) > threshold, float64(delta)
+	}
+}
+
+// DefaultAlertRules returns a set of default alert rules for CobaltDB.
+// Counter-backed rules (deadlocks, transaction timeouts, aborted
+// transactions) evaluate per-interval deltas via counterDeltaCondition;
+// gauge-backed rules (long-running transactions, memory usage) evaluate the
+// instantaneous value.
 func DefaultAlertRules() []*AlertRule {
 	return []*AlertRule{
 		{
@@ -427,11 +460,9 @@ func DefaultAlertRules() []*AlertRule {
 			Severity:    SeverityWarning,
 			Threshold:   10,
 			Cooldown:    5 * time.Minute,
-			Condition: func() (bool, float64) {
-				stats := GetTransactionMetrics().GetStats()
-				// Alert if more than 10 deadlocks detected
-				return stats.DeadlocksDetected > 10, float64(stats.DeadlocksDetected)
-			},
+			Condition: counterDeltaCondition(func() int64 {
+				return GetTransactionMetrics().GetStats().DeadlocksDetected
+			}, 10),
 		},
 		{
 			Name:        "high_transaction_timeout_rate",
@@ -439,10 +470,9 @@ func DefaultAlertRules() []*AlertRule {
 			Severity:    SeverityCritical,
 			Threshold:   100,
 			Cooldown:    5 * time.Minute,
-			Condition: func() (bool, float64) {
-				stats := GetTransactionMetrics().GetStats()
-				return stats.TxnTimeouts > 100, float64(stats.TxnTimeouts)
-			},
+			Condition: counterDeltaCondition(func() int64 {
+				return GetTransactionMetrics().GetStats().TxnTimeouts
+			}, 100),
 		},
 		{
 			Name:        "many_long_running_transactions",
@@ -451,6 +481,7 @@ func DefaultAlertRules() []*AlertRule {
 			Threshold:   10,
 			Cooldown:    1 * time.Minute,
 			Condition: func() (bool, float64) {
+				// Gauge: instantaneous count, evaluated directly.
 				stats := GetTransactionMetrics().GetStats()
 				return stats.LongRunningTxns > 10, float64(stats.LongRunningTxns)
 			},
@@ -462,6 +493,7 @@ func DefaultAlertRules() []*AlertRule {
 			Threshold:   85,
 			Cooldown:    5 * time.Minute,
 			Condition: func() (bool, float64) {
+				// Gauge: instantaneous usage, evaluated directly.
 				limit := debug.SetMemoryLimit(-1)
 				if limit <= 0 || limit == math.MaxInt64 {
 					return false, 0
@@ -478,10 +510,9 @@ func DefaultAlertRules() []*AlertRule {
 			Severity:    SeverityCritical,
 			Threshold:   1000,
 			Cooldown:    5 * time.Minute,
-			Condition: func() (bool, float64) {
-				stats := GetTransactionMetrics().GetStats()
-				return stats.AbortedTxns > 1000, float64(stats.AbortedTxns)
-			},
+			Condition: counterDeltaCondition(func() int64 {
+				return GetTransactionMetrics().GetStats().AbortedTxns
+			}, 1000),
 		},
 	}
 }

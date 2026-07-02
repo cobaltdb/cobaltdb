@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cobaltdb/cobaltdb/pkg/catalog"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
 	"github.com/cobaltdb/cobaltdb/pkg/metrics"
@@ -75,7 +76,7 @@ func DefaultProductionConfig() *ProductionConfig {
 		},
 		CircuitBreaker:       engine.DefaultCircuitBreakerConfig(),
 		RateLimiter:          DefaultRateLimiterConfig(),
-		Retry:                engine.DefaultRetryConfig(),
+		Retry:                defaultProductionRetryConfig(),
 		HealthAddr:           "127.0.0.1:8420",
 		EnableCircuitBreaker: true,
 		EnableRetry:          true,
@@ -84,6 +85,26 @@ func DefaultProductionConfig() *ProductionConfig {
 		EnableHealthServer:   true,
 		AllowRemoteMetrics:   false,
 	}
+}
+
+// defaultProductionRetryConfig returns the retry configuration used by the
+// production server. In addition to the engine's built-in classification
+// (context errors and deterministic parse/constraint/permission/schema errors
+// are never retried), it pins well-known sentinel errors as non-retryable so
+// the classification does not depend on message text alone.
+func defaultProductionRetryConfig() *engine.RetryConfig {
+	config := engine.DefaultRetryConfig()
+	config.NonRetryableErrors = []error{
+		context.Canceled,
+		context.DeadlineExceeded,
+		engine.ErrDatabaseClosed,
+		catalog.ErrTableNotFound,
+		catalog.ErrColumnNotFound,
+		catalog.ErrTableExists,
+		catalog.ErrIndexExists,
+		catalog.ErrIndexNotFound,
+	}
+	return config
 }
 
 // ProductionServer provides production-ready features
@@ -416,50 +437,216 @@ func (ps *ProductionServer) DB() *engine.DB {
 }
 
 // circuitBreakerKey returns the circuit breaker key for a SQL statement.
+// Keys come from a bounded, fixed set of statement classes (SELECT / INSERT /
+// UPDATE / DELETE / DDL / OTHER) — never from raw client tokens — so a client
+// cannot grow the breaker map or target an arbitrary breaker with crafted SQL.
+// Statements of the same class share a breaker, so a struggling write path
+// cannot open the read path's breaker and vice versa.
 func (ps *ProductionServer) circuitBreakerKey(sql string) string {
-	// Use the first meaningful word of the SQL as the key so statements of
-	// the same type share a circuit breaker (e.g., all SELECTs share one,
-	// all INSERTs share one, etc.). This prevents a slow DELETE from killing
-	// all other queries.
-	if len(sql) == 0 {
-		return "unknown"
-	}
 	i := 0
-	for i < len(sql) && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r') {
+	for i < len(sql) && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r' || sql[i] == '(') {
 		i++
 	}
 	end := i
-	for end < len(sql) && sql[end] > ' ' {
+	for end < len(sql) && ((sql[end] >= 'a' && sql[end] <= 'z') || (sql[end] >= 'A' && sql[end] <= 'Z')) {
 		end++
 	}
-	key := sql[i:end]
-	if key == "" {
-		return "unknown"
+	switch strings.ToUpper(sql[i:end]) {
+	case "SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN":
+		return "SELECT"
+	case "INSERT", "REPLACE", "UPSERT":
+		return "INSERT"
+	case "UPDATE":
+		return "UPDATE"
+	case "DELETE":
+		return "DELETE"
+	case "CREATE", "ALTER", "DROP", "TRUNCATE":
+		return "DDL"
+	default:
+		return "OTHER"
 	}
-	return key
 }
 
-// Exec executes a SQL statement with circuit breaker and retry protection.
+// infrastructureFailureSubstrings identifies internal/infrastructure failures
+// that indicate the backend itself is unhealthy. Only these (plus timeout
+// sentinels) count toward the circuit breaker.
+var infrastructureFailureSubstrings = []string{
+	"timeout",
+	"timed out",
+	"unavailable",
+	"storage",
+	"buffer pool",
+	"wal",
+	"i/o error",
+	"corrupt",
+	"internal error",
+	"out of memory",
+	"disk",
+}
+
+// isCircuitBreakerFailure reports whether an error should count as a breaker
+// failure. Client-caused errors — syntax/parse errors, unknown tables or
+// columns, constraint violations, permission/RLS denials — say nothing about
+// backend health; counting them would let a handful of malformed statements
+// from any single client open the shared breaker and block all traffic of
+// that statement class. Only infrastructure/internal failures (timeouts,
+// storage errors, unavailability) count.
+func isCircuitBreakerFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Caller cancellation is not a backend failure.
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, engine.ErrDatabaseClosed) {
+		return true
+	}
+	// Client-side / deterministic errors never count.
+	if errors.Is(err, catalog.ErrTableNotFound) || errors.Is(err, catalog.ErrColumnNotFound) ||
+		errors.Is(err, catalog.ErrTableExists) || errors.Is(err, catalog.ErrIndexExists) ||
+		errors.Is(err, catalog.ErrIndexNotFound) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, sub := range infrastructureFailureSubstrings {
+		if strings.Contains(msg, sub) {
+			return true
+		}
+	}
+	// Default: do not count. Failing open on unclassified errors is the safe
+	// direction for a shared breaker — an unhealthy backend will surface via
+	// the positively classified infrastructure errors above.
+	return false
+}
+
+// executeWithClassifiedBreaker is the breaker wrapper used on the SQL query
+// path. Unlike the generic ExecuteWithCircuitBreaker (which counts every
+// error), it only reports infrastructure failures to the breaker; client
+// errors are reported as successes because the backend demonstrably processed
+// the request.
+func (ps *ProductionServer) executeWithClassifiedBreaker(key string, fn func() error) error {
+	if ps.CircuitBreakers == nil {
+		return fn()
+	}
+	cb := ps.CircuitBreakers.GetOrCreate(key, ps.Config.CircuitBreaker)
+	if err := cb.Allow(); err != nil {
+		return err
+	}
+	defer cb.Release()
+
+	err := fn()
+	switch {
+	case err == nil:
+		cb.ReportSuccess()
+	case isCircuitBreakerFailure(err):
+		cb.ReportFailure()
+	case errors.Is(err, context.Canceled):
+		// Caller gave up; no signal about backend health either way.
+	default:
+		// Client-caused error: the backend responded, so this is evidence of
+		// health (important in half-open, where the probe must be resolved).
+		cb.ReportSuccess()
+	}
+	return err
+}
+
+// execWriteRetryable reports whether a failed non-idempotent statement (Exec)
+// may be retried.
+//
+// Reasoning: an INSERT/UPDATE/DELETE that fails with a timeout may or may not
+// have been applied — blindly retrying it risks double-applying the write.
+// Therefore Exec retries only errors that are (a) positively classified as
+// transient AND (b) known to occur BEFORE the statement touches any data
+// (admission-stage failures), plus any errors the operator explicitly
+// opted into via RetryConfig.RetryableErrors.
+func (ps *ProductionServer) execWriteRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if ps.Config.Retry != nil {
+		for _, r := range ps.Config.Retry.RetryableErrors {
+			if errors.Is(err, r) {
+				return true
+			}
+		}
+	}
+	// Admission-stage transient failures: these are returned before the
+	// statement is parsed/executed, so the write is known not-applied.
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection limit") ||
+		strings.Contains(msg, "too many connections") ||
+		strings.Contains(msg, "connection acquire timeout")
+}
+
+// errTransientWriteNotApplied is a retry-marker sentinel: Exec's retry config
+// lists ONLY this sentinel as retryable, so engine.Retry re-attempts a write
+// exclusively when the error was positively wrapped as transient-not-applied.
+var errTransientWriteNotApplied = errors.New("transient write error (statement not applied)")
+
+// transientWriteError marks a write error as safe to retry. It preserves the
+// original error message and chain, and additionally matches the
+// errTransientWriteNotApplied sentinel for retry classification.
+type transientWriteError struct{ err error }
+
+func (e *transientWriteError) Error() string { return e.err.Error() }
+func (e *transientWriteError) Unwrap() error { return e.err }
+func (e *transientWriteError) Is(target error) bool {
+	return target == errTransientWriteNotApplied
+}
+
+// Exec executes a SQL statement with circuit breaker protection.
+//
+// Exec statements are non-idempotent, so they are NOT blanket-retried: a
+// failed write is retried only when execWriteRetryable positively classifies
+// the error as transient AND known not-applied (see its doc comment). All
+// other errors — including timeouts, where the write may already have been
+// applied — are returned to the caller on the first attempt.
 func (ps *ProductionServer) Exec(ctx context.Context, sql string, args ...interface{}) (engine.Result, error) {
 	key := ps.circuitBreakerKey(sql)
 	var result engine.Result
-	err := ps.ExecuteWithCircuitBreaker(key, func() error {
-		return ps.ExecuteWithRetry(ctx, func() error {
-			res, err := ps.db.Exec(ctx, sql, args...)
-			if err == nil {
+	err := ps.executeWithClassifiedBreaker(key, func() error {
+		retryConfig := ps.Config.Retry
+		if retryConfig == nil {
+			res, execErr := ps.db.Exec(ctx, sql, args...)
+			if execErr == nil {
 				result = res
 			}
-			return err
+			return execErr
+		}
+		// Whitelist-only retry: errors are re-attempted only when wrapped
+		// with the transient-not-applied marker below.
+		writeRetry := *retryConfig
+		writeRetry.RetryableErrors = []error{errTransientWriteNotApplied}
+		return engine.Retry(ctx, &writeRetry, func() error {
+			res, execErr := ps.db.Exec(ctx, sql, args...)
+			if execErr == nil {
+				result = res
+				return nil
+			}
+			if ps.execWriteRetryable(execErr) {
+				return &transientWriteError{err: execErr}
+			}
+			return execErr
 		})
 	})
+	var marked *transientWriteError
+	if errors.As(err, &marked) {
+		err = marked.err
+	}
 	return result, err
 }
 
 // Query executes a SQL query with circuit breaker and retry protection.
+// Reads are idempotent, so transient failures may be retried freely (the
+// retry configuration still excludes deterministic errors).
 func (ps *ProductionServer) Query(ctx context.Context, sql string, args ...interface{}) (*engine.Rows, error) {
 	key := ps.circuitBreakerKey(sql)
 	var rows *engine.Rows
-	err := ps.ExecuteWithCircuitBreaker(key, func() error {
+	err := ps.executeWithClassifiedBreaker(key, func() error {
 		return ps.ExecuteWithRetry(ctx, func() error {
 			r, err := ps.db.Query(ctx, sql, args...)
 			if err == nil {
@@ -475,7 +662,7 @@ func (ps *ProductionServer) Query(ctx context.Context, sql string, args ...inter
 func (ps *ProductionServer) QueryRow(ctx context.Context, sql string, args ...interface{}) (*engine.Row, error) {
 	key := ps.circuitBreakerKey(sql)
 	var row *engine.Row
-	err := ps.ExecuteWithCircuitBreaker(key, func() error {
+	err := ps.executeWithClassifiedBreaker(key, func() error {
 		return ps.ExecuteWithRetry(ctx, func() error {
 			r := ps.db.QueryRow(ctx, sql, args...)
 			row = r
@@ -675,12 +862,6 @@ func isLoopbackRemoteAddr(remoteAddr string) bool {
 	host = strings.Trim(strings.TrimSpace(host), "[]")
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-}
-
-func adminTokenEqual(provided, expected string) bool {
-	providedDigest := adminTokenDigest(provided)
-	expectedDigest := adminTokenDigest(expected)
-	return subtle.ConstantTimeCompare(providedDigest[:], expectedDigest[:]) == 1
 }
 
 func adminTokenDigest(token string) [sha256.Size]byte {

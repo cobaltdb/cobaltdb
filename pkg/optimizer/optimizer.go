@@ -79,22 +79,35 @@ func New(config *Config, stats *Statistics) *Optimizer {
 	return &Optimizer{config: config, stats: stats}
 }
 
-// Optimize optimizes a SELECT statement
+// Optimize optimizes a SELECT statement.
+// The caller's statement is never mutated: when a rewrite applies, the
+// statement is deep-copied first and the copy is returned. This matters
+// because parsed statements are shared (e.g. via the query plan cache) and
+// must remain immutable after parse.
 func (o *Optimizer) Optimize(stmt *query.SelectStmt) (*query.SelectStmt, error) {
-	if !o.config.Enabled {
+	if !o.config.Enabled || stmt == nil {
 		return stmt, nil
 	}
 
-	optimized := stmt
-
-	if o.config.EnableJoinReorder && len(optimized.Joins) > 0 {
-		optimized = o.reorderJoins(optimized)
+	if !o.config.EnableJoinReorder || len(stmt.Joins) == 0 {
+		return stmt, nil
 	}
 
-	return optimized, nil
+	cloned, ok := query.CloneStatement(stmt).(*query.SelectStmt)
+	if !ok || cloned == nil {
+		return stmt, nil
+	}
+
+	return o.reorderJoins(cloned), nil
 }
 
-// reorderJoins reorders JOINs for optimal performance
+// reorderJoins reorders JOINs for optimal performance.
+//
+// Only runs of CONSECUTIVE INNER joins are reordered: INNER joins commute
+// with each other, but moving a join across a LEFT/RIGHT/CROSS (outer) join
+// changes which rows are preserved/eliminated and therefore changes query
+// results. Each maximal run of inner joins is sorted independently; outer
+// joins keep their positions.
 func (o *Optimizer) reorderJoins(stmt *query.SelectStmt) *query.SelectStmt {
 	if len(stmt.Joins) == 0 || len(stmt.Joins) > o.config.MaxJoinReorderTables {
 		return stmt
@@ -103,12 +116,31 @@ func (o *Optimizer) reorderJoins(stmt *query.SelectStmt) *query.SelectStmt {
 	ordered := make([]*query.JoinClause, len(stmt.Joins))
 	copy(ordered, stmt.Joins)
 
-	// Sort by estimated selectivity (most selective first)
-	sort.Slice(ordered, func(i, j int) bool {
-		selI := o.estimateJoinSelectivity(ordered[i])
-		selJ := o.estimateJoinSelectivity(ordered[j])
-		return selI < selJ
-	})
+	// Bare "JOIN" (TokenJoin) is an INNER join. NATURAL joins are excluded:
+	// their join columns are inferred from the accumulated column set, which
+	// is order-sensitive.
+	isInner := func(j *query.JoinClause) bool {
+		return j != nil && !j.Natural &&
+			(j.Type == query.TokenInner || j.Type == query.TokenJoin)
+	}
+
+	// Sort each maximal run of consecutive INNER joins by estimated
+	// selectivity (most selective first).
+	for start := 0; start < len(ordered); {
+		if !isInner(ordered[start]) {
+			start++
+			continue
+		}
+		end := start
+		for end < len(ordered) && isInner(ordered[end]) {
+			end++
+		}
+		run := ordered[start:end]
+		sort.SliceStable(run, func(i, j int) bool {
+			return o.estimateJoinSelectivity(run[i]) < o.estimateJoinSelectivity(run[j])
+		})
+		start = end
+	}
 
 	stmt.Joins = ordered
 	return stmt

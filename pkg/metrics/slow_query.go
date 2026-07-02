@@ -1,7 +1,9 @@
 package metrics
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,12 +59,28 @@ func (e *SlowQueryEntry) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// slowQueryLogSyncEveryN is the number of file-logged entries after which the
+// log file is fsynced.
+const slowQueryLogSyncEveryN = 64
+
+// slowQueryLogSyncInterval is the maximum time file-logged entries may remain
+// un-fsynced (checked on the next write).
+const slowQueryLogSyncInterval = time.Second
+
 // SlowQueryLog manages slow query logging.
 //
 // enabled and thresholdNanos are accessed atomically: Log() reads them on the
 // per-query hot path without taking the mutex, while Enable/Disable/SetThreshold
-// mutate them concurrently. The mutex still guards the entries buffer and file
-// write.
+// mutate them concurrently. The mutex (s.mu) guards only the in-memory entries
+// buffer; all file IO happens under a separate fileMu so slow disk syncs never
+// block readers of the in-memory buffer or other Log() bookkeeping.
+//
+// File IO strategy: the log file is opened once (with the same symlink-safety
+// validation as before), kept open, and written through a buffered writer that
+// is flushed to the OS on every entry and fsynced every slowQueryLogSyncEveryN
+// entries or slowQueryLogSyncInterval, whichever comes first, and on Close.
+// External rotation (file removed/renamed) is detected at sync time and the
+// handle is reopened on the next write.
 type SlowQueryLog struct {
 	enabled        atomic.Bool
 	thresholdNanos atomic.Int64
@@ -70,7 +88,16 @@ type SlowQueryLog struct {
 	entries        []SlowQueryEntry
 	mu             sync.RWMutex
 	logFile        string
-	lastWriteErr   error
+
+	// File-write state, guarded by fileMu (never held together with s.mu).
+	fileMu       sync.Mutex
+	file         *os.File
+	writer       *bufio.Writer
+	fileInfo     os.FileInfo // Lstat at open time, for rotation detection
+	pendingSync  int         // entries written since last fsync
+	lastSyncAt   time.Time
+	lastWriteErr error
+	fileClosed   bool
 }
 
 // NewSlowQueryLog creates a new slow query logger
@@ -106,28 +133,108 @@ func (s *SlowQueryLog) Log(sql string, duration time.Duration, rowsAffected, row
 		RowsReturned: rowsReturned,
 	}
 
+	// In-memory buffer under s.mu only — no file IO inside this lock.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Add to in-memory buffer
 	s.entries = append(s.entries, entry)
-
-	// Trim if exceeds max entries
 	if len(s.entries) > s.maxEntries {
 		s.entries = s.entries[len(s.entries)-s.maxEntries:]
 	}
+	s.mu.Unlock()
 
-	// Write to log file if configured
+	// File write under the dedicated file mutex.
 	if s.logFile != "" {
-		s.lastWriteErr = s.writeToFile(entry)
+		s.fileMu.Lock()
+		s.lastWriteErr = s.writeToFileLocked(entry)
+		s.fileMu.Unlock()
 	}
 }
 
-// writeToFile appends the entry to the log file
-func (s *SlowQueryLog) writeToFile(entry SlowQueryEntry) error {
+// Close flushes and fsyncs any buffered log entries and closes the log file
+// handle. Close is idempotent. Log calls after Close record an error instead
+// of writing (the in-memory buffer keeps working).
+func (s *SlowQueryLog) Close() error {
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
+
+	if s.fileClosed {
+		return nil
+	}
+	s.fileClosed = true
+
+	if s.file == nil {
+		return nil
+	}
+	var errs []error
+	if s.writer != nil {
+		if err := s.writer.Flush(); err != nil {
+			errs = append(errs, fmt.Errorf("flush slow query log: %w", err))
+		}
+	}
+	if err := s.file.Sync(); err != nil {
+		errs = append(errs, fmt.Errorf("sync slow query log: %w", err))
+	}
+	if err := s.file.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("close slow query log: %w", err))
+	}
+	s.file = nil
+	s.writer = nil
+	s.fileInfo = nil
+	err := errors.Join(errs...)
+	if err != nil {
+		s.lastWriteErr = err
+	}
+	return err
+}
+
+// writeToFileLocked appends the entry to the log file through the persistent
+// buffered writer. Caller must hold s.fileMu.
+func (s *SlowQueryLog) writeToFileLocked(entry SlowQueryEntry) error {
+	if s.fileClosed {
+		return fmt.Errorf("slow query log file is closed")
+	}
+
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("marshal slow query entry: %w", err)
+	}
+
+	if err := s.ensureFileOpenLocked(); err != nil {
+		return err
+	}
+
+	if _, err := s.writer.Write(append(data, '\n')); err != nil {
+		s.closeFileLocked() // force reopen (and revalidation) on next write
+		return fmt.Errorf("write slow query log entry: %w", err)
+	}
+	// Flush to the OS on every entry so records survive a process crash; the
+	// expensive fsync is batched below.
+	if err := s.writer.Flush(); err != nil {
+		s.closeFileLocked()
+		return fmt.Errorf("flush slow query log entry: %w", err)
+	}
+
+	s.pendingSync++
+	if s.pendingSync >= slowQueryLogSyncEveryN || time.Since(s.lastSyncAt) >= slowQueryLogSyncInterval {
+		if err := s.file.Sync(); err != nil {
+			s.closeFileLocked()
+			return fmt.Errorf("sync slow query log file: %w", err)
+		}
+		s.pendingSync = 0
+		s.lastSyncAt = time.Now()
+		// Rotation detection: if the path no longer refers to our open file
+		// (rotated/removed), close so the next write reopens and revalidates.
+		if info, statErr := os.Lstat(s.logFile); statErr != nil || !os.SameFile(info, s.fileInfo) {
+			s.closeFileLocked()
+		}
+	}
+	return nil
+}
+
+// ensureFileOpenLocked opens the log file (validating symlink safety) if it
+// is not already open. Caller must hold s.fileMu.
+func (s *SlowQueryLog) ensureFileOpenLocked() error {
+	if s.file != nil {
+		return nil
 	}
 
 	// Ensure directory exists
@@ -148,28 +255,38 @@ func (s *SlowQueryLog) writeToFile(entry SlowQueryEntry) error {
 	if err != nil {
 		return fmt.Errorf("open slow query log file: %w", err)
 	}
-
-	if _, err := fmt.Fprintf(f, "%s\n", data); err != nil {
-		if closeErr := f.Close(); closeErr != nil {
-			return fmt.Errorf("write slow query log entry: %w; close failed: %v", err, closeErr)
-		}
-		return fmt.Errorf("write slow query log entry: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		if closeErr := f.Close(); closeErr != nil {
-			return fmt.Errorf("sync slow query log file: %w; close failed: %v", err, closeErr)
-		}
-		return fmt.Errorf("sync slow query log file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close slow query log file: %w", err)
-	}
 	if created {
 		if err := syncSlowQueryLogParentDir(s.logFile); err != nil {
+			_ = f.Close()
 			return fmt.Errorf("sync slow query log directory: %w", err)
 		}
 	}
+	info, err := os.Lstat(s.logFile)
+	if err != nil {
+		_ = f.Close()
+		return fmt.Errorf("stat slow query log file: %w", err)
+	}
+
+	s.file = f
+	s.writer = bufio.NewWriter(f)
+	s.fileInfo = info
+	s.pendingSync = 0
+	s.lastSyncAt = time.Now()
 	return nil
+}
+
+// closeFileLocked closes the persistent handle (best effort) so the next
+// write reopens and revalidates the path. Caller must hold s.fileMu.
+func (s *SlowQueryLog) closeFileLocked() {
+	if s.writer != nil {
+		_ = s.writer.Flush()
+	}
+	if s.file != nil {
+		_ = s.file.Close()
+	}
+	s.file = nil
+	s.writer = nil
+	s.fileInfo = nil
 }
 
 func truncateSlowQuerySQL(sql string) string {
@@ -294,8 +411,8 @@ func syncSlowQueryLogParentDir(path string) error {
 
 // LastWriteError returns the last file logging error, if any.
 func (s *SlowQueryLog) LastWriteError() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	return s.lastWriteErr
 }
 

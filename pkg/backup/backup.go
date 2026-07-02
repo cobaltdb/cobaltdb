@@ -327,7 +327,17 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (backup *Ba
 		backup.ParentID = m.findParentBackupID(backupType)
 	}
 
-	// Start hot backup
+	// Perform a checkpoint BEFORE starting the hot backup to minimize WAL.
+	// It must run first: BeginHotBackup holds the database's backup mutex
+	// for the whole copy, which makes Checkpoint a deliberate no-op — a
+	// checkpoint attempted after BeginHotBackup would silently do nothing.
+	if err := m.db.Checkpoint(); err != nil {
+		return nil, fmt.Errorf("failed to checkpoint: %w", err)
+	}
+
+	// Start hot backup. BeginHotBackup performs a final catalog save +
+	// flush/checkpoint of its own and then freezes the database file, so the
+	// copy below is point-in-time consistent.
 	if err := m.db.BeginHotBackup(); err != nil {
 		return nil, fmt.Errorf("failed to begin hot backup: %w", err)
 	}
@@ -336,11 +346,6 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (backup *Ba
 			err = fmt.Errorf("failed to end hot backup: %w", endErr)
 		}
 	}()
-
-	// Perform checkpoint to minimize WAL
-	if err := m.db.Checkpoint(); err != nil {
-		return nil, fmt.Errorf("failed to checkpoint: %w", err)
-	}
 
 	// Create backup file
 	backupFile := filepath.Join(m.config.BackupDir, fmt.Sprintf("%s.db", backupID))

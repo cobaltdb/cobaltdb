@@ -107,7 +107,11 @@ type Conn struct {
 	lastUsedAtNano int64
 	inUse          int32
 	closed         int32
-	id             uint64
+	// retire is set (atomically) by the health checker when an IN-USE
+	// connection exceeds its lifetime; the connection is then destroyed on
+	// Release instead of being closed mid-query.
+	retire int32
+	id     uint64
 }
 
 // newConn wraps a net.Conn in a pooled connection
@@ -151,23 +155,51 @@ func (c *Conn) closeUnderlying() error {
 	return nil
 }
 
-// IsHealthy checks if the connection is healthy
+// maxHealthProbeWait bounds how long a liveness probe blocks waiting for the
+// (expected) read timeout on a healthy, quiet connection.
+const maxHealthProbeWait = 50 * time.Millisecond
+
+// IsHealthy performs a real liveness probe on an IDLE connection: it sets a
+// short read deadline and attempts a read. A healthy idle connection yields a
+// timeout (socket open, no data); EOF or any other error means the peer
+// closed or the socket is broken; unsolicited data on an idle connection
+// leaves the protocol state unknowable, so it is also treated as unhealthy.
+//
+// The caller MUST own the connection exclusively (e.g. after draining it from
+// the idle channel). Probing a connection that a concurrent Acquire could
+// hand to a client would race the read deadline with application reads; the
+// pool guarantees exclusivity by removing idle connections from circulation
+// before probing (see performHealthCheck).
 func (c *Conn) IsHealthy(timeout time.Duration) bool {
 	if atomic.LoadInt32(&c.closed) == 1 {
 		return false
 	}
 
-	// Set read deadline
-	if err := c.Conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+	probe := timeout
+	if probe <= 0 || probe > maxHealthProbeWait {
+		probe = maxHealthProbeWait
+	}
+	if err := c.Conn.SetReadDeadline(time.Now().Add(probe)); err != nil {
 		return false
 	}
-	defer func() {
-		_ = c.Conn.SetReadDeadline(time.Time{})
-	}()
+	var buf [1]byte
+	n, err := c.Conn.Read(buf[:])
+	// Always clear the deadline; a lingering deadline would poison the next
+	// client's reads.
+	if clearErr := c.Conn.SetReadDeadline(time.Time{}); clearErr != nil {
+		return false
+	}
 
-	// Try to read (this is a simple health check)
-	// In production, you might send a ping/pong
-	return true
+	if n > 0 {
+		// Unexpected data while idle (and the byte is now consumed): the
+		// connection's protocol state is corrupt — retire it.
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true // no data within the probe window: open and quiet
+	}
+	return false // EOF or hard error
 }
 
 // IsExpired checks if the connection has exceeded its lifetime
@@ -192,11 +224,15 @@ type Pool struct {
 	dialer func() (net.Conn, error)
 
 	// Pool state
-	mu        sync.RWMutex
-	conns     []*Conn
-	available chan *Conn
-	closed    int32
-	connIDSeq uint64
+	mu    sync.RWMutex
+	conns []*Conn
+	// pendingCreates counts dials in flight; len(conns)+pendingCreates is
+	// the authoritative capacity check (guarded by mu), closing the
+	// check-then-append TOCTOU that let concurrent Acquires exceed MaxConns.
+	pendingCreates int
+	available      chan *Conn
+	closed         int32
+	connIDSeq      uint64
 
 	// Waiting clients
 	waiters   []chan *Conn
@@ -359,14 +395,12 @@ func (p *Pool) Acquire(ctx context.Context) (*Conn, error) {
 	default:
 	}
 
-	// Try to create a new connection
-	p.mu.Lock()
-	if len(p.conns) < p.config.MaxConns {
-		p.mu.Unlock()
-		if err := p.createConnection(); err != nil {
-			return nil, err
-		}
-
+	// Try to create a new connection. createConnection enforces MaxConns
+	// atomically (it reserves a slot under p.mu before dialing), so there is
+	// no check-then-create race here; ErrPoolExhausted simply means the pool
+	// is at capacity and we should wait instead.
+	switch err := p.createConnection(); {
+	case err == nil:
 		// Get the newly created connection
 		select {
 		case conn := <-p.available:
@@ -379,8 +413,10 @@ func (p *Pool) Acquire(ctx context.Context) (*Conn, error) {
 			}
 		default:
 		}
-	} else {
-		p.mu.Unlock()
+	case errors.Is(err, ErrPoolExhausted):
+		// At capacity: fall through and wait for a release.
+	default:
+		return nil, err
 	}
 
 	// Wait for a connection to become available
@@ -486,6 +522,16 @@ func (p *Pool) release(conn *Conn) {
 		return
 	}
 
+	// Deferred retirement: the health checker marks in-use connections that
+	// exceeded MaxLifetime instead of closing them mid-query; destroy them
+	// here now that the caller is done. removeConn sees inUse==1 and adjusts
+	// ActiveConns accordingly.
+	if atomic.LoadInt32(&conn.retire) == 1 {
+		atomic.AddUint64(&p.stats.TotalReleases, 1)
+		_ = p.removeConn(conn)
+		return
+	}
+
 	atomic.StoreInt32(&conn.inUse, 0)
 	atomic.StoreInt64(&conn.lastUsedAtNano, time.Now().UnixNano())
 	atomic.AddInt32(&p.stats.ActiveConns, -1)
@@ -532,10 +578,28 @@ func (p *Pool) requeueIdleConn(conn *Conn) {
 	}
 }
 
-// createConnection creates a new connection
+// createConnection creates a new connection. The MaxConns capacity check and
+// the slot reservation happen atomically under p.mu BEFORE dialing, so
+// concurrent callers can never overshoot the cap; when the pool is full it
+// returns ErrPoolExhausted and the caller should wait for a release.
 func (p *Pool) createConnection() error {
+	p.mu.Lock()
+	if atomic.LoadInt32(&p.closed) == 1 {
+		p.mu.Unlock()
+		return ErrPoolClosed
+	}
+	if len(p.conns)+p.pendingCreates >= p.config.MaxConns {
+		p.mu.Unlock()
+		return ErrPoolExhausted
+	}
+	p.pendingCreates++
+	p.mu.Unlock()
+
 	netConn, err := p.dialer()
 	if err != nil {
+		p.mu.Lock()
+		p.pendingCreates--
+		p.mu.Unlock()
 		return err
 	}
 
@@ -543,6 +607,14 @@ func (p *Pool) createConnection() error {
 	conn := newConn(netConn, p, id)
 
 	p.mu.Lock()
+	p.pendingCreates--
+	if atomic.LoadInt32(&p.closed) == 1 {
+		// Pool closed while dialing; don't register a connection Close()
+		// will never see.
+		p.mu.Unlock()
+		_ = conn.closeUnderlying()
+		return ErrPoolClosed
+	}
 	p.conns = append(p.conns, conn)
 	atomic.AddInt32(&p.stats.TotalConns, 1)
 	atomic.AddInt32(&p.stats.IdleConns, 1)
@@ -603,26 +675,50 @@ func (p *Pool) healthCheckLoop() {
 	}
 }
 
-// performHealthCheck checks and cleans up unhealthy connections
+// performHealthCheck checks and cleans up unhealthy connections.
+//
+// In-use connections are NEVER closed here — closing a socket a client is
+// actively using would kill its query mid-flight. In-use connections that
+// exceeded MaxLifetime are only marked for retirement and destroyed on
+// Release.
+//
+// Idle connections are drained from the available channel before being
+// probed, giving this goroutine exclusive ownership of the socket for the
+// duration of the read-deadline probe; a concurrent Acquire can therefore
+// never receive a connection whose deadline is being manipulated.
 func (p *Pool) performHealthCheck() {
-	p.mu.Lock()
+	// Phase 1: mark expired IN-USE connections for retirement on Release.
+	p.mu.RLock()
 	conns := make([]*Conn, len(p.conns))
 	copy(conns, p.conns)
-	p.mu.Unlock()
+	p.mu.RUnlock()
 
 	for _, conn := range conns {
-		// Check if connection is expired
-		if conn.IsExpired(p.config.MaxLifetime, p.config.MaxIdleTime) {
-			_ = p.removeConn(conn)
+		if atomic.LoadInt32(&conn.inUse) == 1 &&
+			conn.IsExpired(p.config.MaxLifetime, 0) {
+			atomic.StoreInt32(&conn.retire, 1)
+		}
+	}
+
+	// Phase 2: drain, validate, and requeue idle connections. Snapshot the
+	// current queue length so we process each idle connection at most once.
+	n := len(p.available)
+	for i := 0; i < n; i++ {
+		var conn *Conn
+		select {
+		case conn = <-p.available:
+		default:
+			return // queue emptied by concurrent Acquires
+		}
+		if conn == nil {
 			continue
 		}
-
-		// Check health if idle
-		if atomic.LoadInt32(&conn.inUse) == 0 {
-			if !conn.IsHealthy(p.config.HealthCheckTimeout) {
-				_ = p.removeConn(conn)
-			}
+		if conn.IsExpired(p.config.MaxLifetime, p.config.MaxIdleTime) ||
+			!conn.IsHealthy(p.config.HealthCheckTimeout) {
+			_ = p.removeConn(conn) // idle: decrements IdleConns
+			continue
 		}
+		p.requeueIdleConn(conn)
 	}
 }
 

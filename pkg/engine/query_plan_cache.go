@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/query"
@@ -37,11 +38,12 @@ type QueryPlanCache struct {
 	currentSize int64
 	maxEntries  int
 
-	// Statistics
-	hits          uint64
-	misses        uint64
-	evictions     uint64
-	invalidations uint64
+	// Statistics (updated atomically so the miss path — the common case for
+	// unique ad-hoc SQL — never takes the exclusive lock just to count).
+	hits          atomic.Uint64
+	misses        atomic.Uint64
+	evictions     atomic.Uint64
+	invalidations atomic.Uint64
 }
 
 // QueryPlanCacheStats contains cache statistics
@@ -81,6 +83,13 @@ func (c *QueryPlanCache) Get(sql string, args []interface{}) (*QueryPlanCacheEnt
 	return c.get(sql, args, true)
 }
 
+// getShared returns the cached entry WITHOUT cloning the parsed statement.
+//
+// Invariant: parsed statements are immutable after parse. A statement handed
+// out by getShared is shared by every concurrent execution of the same SQL,
+// so execution paths must never mutate it in place — any rewrite (optimizer
+// join reordering, parameter substitution, ...) must copy-on-write, i.e.
+// clone the statement (query.CloneStatement) before modifying it.
 func (c *QueryPlanCache) getShared(sql string, args []interface{}) (*QueryPlanCacheEntry, bool) {
 	return c.get(sql, args, false)
 }
@@ -94,9 +103,7 @@ func (c *QueryPlanCache) get(sql string, args []interface{}, cloneStmt bool) (*Q
 	c.mu.RUnlock()
 
 	if !found {
-		c.mu.Lock()
-		c.misses++
-		c.mu.Unlock()
+		c.misses.Add(1) // atomic: no write lock on the miss path
 		return nil, false
 	}
 
@@ -105,17 +112,17 @@ func (c *QueryPlanCache) get(sql string, args []interface{}, cloneStmt bool) (*Q
 	c.mu.Lock()
 	elem, found := c.entries[hash]
 	if !found {
-		c.misses++
 		c.mu.Unlock()
+		c.misses.Add(1)
 		return nil, false
 	}
 	entry := elem.Value.(*QueryPlanCacheEntry)
 	entry.LastAccessed = time.Now()
 	entry.AccessCount++
 	c.lruList.MoveToFront(elem)
-	c.hits++
 	entryCopy := cloneQueryPlanCacheEntry(entry, cloneStmt)
 	c.mu.Unlock()
+	c.hits.Add(1)
 
 	return entryCopy, true
 }
@@ -142,6 +149,14 @@ func (c *QueryPlanCache) Put(sql string, args []interface{}, stmt query.Statemen
 		elem.Value = newEntry
 		c.lruList.MoveToFront(elem)
 		c.currentSize += newEntry.Size
+		// Replacing an entry with a larger one must still respect the size
+		// budget: evict from the LRU tail until we fit again. The updated
+		// entry was just moved to the front, so it is evicted only if it is
+		// the sole remaining entry (in which case the size check above
+		// already guaranteed it fits).
+		for c.currentSize > c.maxSize && c.lruList.Len() > 1 {
+			c.evictLRU()
+		}
 		return nil
 	}
 
@@ -171,7 +186,7 @@ func (c *QueryPlanCache) Invalidate(sql string, args []interface{}) {
 		c.currentSize -= entry.Size
 		delete(c.entries, hash)
 		c.lruList.Remove(elem)
-		c.invalidations++
+		c.invalidations.Add(1)
 	}
 }
 
@@ -184,7 +199,7 @@ func (c *QueryPlanCache) Clear() {
 	c.entries = make(map[string]*list.Element)
 	c.lruList = list.New()
 	c.currentSize = 0
-	c.invalidations += uint64(count)
+	c.invalidations.Add(uint64(count))
 }
 
 // GetStats returns cache statistics
@@ -192,10 +207,12 @@ func (c *QueryPlanCache) GetStats() QueryPlanCacheStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	hits := c.hits.Load()
+	misses := c.misses.Load()
 	hitRate := 0.0
-	total := c.hits + c.misses
+	total := hits + misses
 	if total > 0 {
-		hitRate = float64(c.hits) / float64(total) * 100
+		hitRate = float64(hits) / float64(total) * 100
 	}
 
 	return QueryPlanCacheStats{
@@ -203,10 +220,10 @@ func (c *QueryPlanCache) GetStats() QueryPlanCacheStats {
 		CurrentBytes:  c.currentSize,
 		MaxBytes:      c.maxSize,
 		HitRate:       hitRate,
-		Hits:          c.hits,
-		Misses:        c.misses,
-		Evictions:     c.evictions,
-		Invalidations: c.invalidations,
+		Hits:          hits,
+		Misses:        misses,
+		Evictions:     c.evictions.Load(),
+		Invalidations: c.invalidations.Load(),
 	}
 }
 
@@ -277,7 +294,7 @@ func (c *QueryPlanCache) evictLRU() {
 	delete(c.entries, hash)
 	c.lruList.Remove(elem)
 	c.currentSize -= entry.Size
-	c.evictions++
+	c.evictions.Add(1)
 }
 
 // createEntry creates a new cache entry
@@ -368,8 +385,8 @@ func (c *QueryPlanCache) ResetStats() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.hits = 0
-	c.misses = 0
-	c.evictions = 0
-	c.invalidations = 0
+	c.hits.Store(0)
+	c.misses.Store(0)
+	c.evictions.Store(0)
+	c.invalidations.Store(0)
 }

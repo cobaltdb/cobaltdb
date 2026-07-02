@@ -79,9 +79,18 @@ func TestReorderJoins(t *testing.T) {
 		t.Fatalf("Optimize failed: %v", err)
 	}
 
-	// Inner join should come before cross join
-	if optimized.Joins[0].Type != query.TokenInner {
-		t.Error("Inner join should be first (more selective)")
+	// Reordering is restricted to runs of consecutive INNER joins: moving a
+	// join across a CROSS (or outer) join boundary can change ON-clause
+	// resolution / result semantics, so the original order must be kept here.
+	if optimized.Joins[0].Type != query.TokenCross {
+		t.Error("cross join must keep its position (no cross-boundary reordering)")
+	}
+	if optimized.Joins[1].Type != query.TokenInner {
+		t.Error("inner join must keep its position (no cross-boundary reordering)")
+	}
+	// The caller's statement must not have been mutated either.
+	if stmt.Joins[0].Type != query.TokenCross || stmt.Joins[1].Type != query.TokenInner {
+		t.Error("caller statement was mutated by Optimize")
 	}
 }
 

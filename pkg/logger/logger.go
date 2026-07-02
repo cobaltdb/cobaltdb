@@ -65,10 +65,16 @@ func ParseLevel(s string) Level {
 
 // Logger provides structured logging
 type Logger struct {
-	level     Level
-	output    io.Writer
-	mu        sync.RWMutex
-	fields    map[string]interface{}
+	level  Level
+	output io.Writer
+	// mu guards the logger's own state (level, output, fields).
+	mu     sync.RWMutex
+	fields map[string]interface{}
+	// outMu serializes writes to the (shared) output writer. It is a pointer
+	// shared with every logger derived via WithComponent/WithField/WithFields
+	// so that a parent and its derived loggers never interleave bytes on the
+	// same writer, which independent per-logger mutexes cannot guarantee.
+	outMu     *sync.Mutex
 	component string
 }
 
@@ -81,6 +87,7 @@ func New(level Level, output io.Writer) *Logger {
 		level:  level,
 		output: output,
 		fields: make(map[string]interface{}),
+		outMu:  &sync.Mutex{},
 	}
 }
 
@@ -97,6 +104,7 @@ func (l *Logger) WithComponent(component string) *Logger {
 		level:     l.level,
 		output:    l.output,
 		fields:    copyFields(l.fields),
+		outMu:     l.sharedOutputMu(),
 		component: component,
 	}
 }
@@ -111,6 +119,7 @@ func (l *Logger) WithField(key string, value interface{}) *Logger {
 		level:     l.level,
 		output:    l.output,
 		fields:    newFields,
+		outMu:     l.sharedOutputMu(),
 		component: l.component,
 	}
 }
@@ -127,8 +136,24 @@ func (l *Logger) WithFields(fields map[string]interface{}) *Logger {
 		level:     l.level,
 		output:    l.output,
 		fields:    newFields,
+		outMu:     l.sharedOutputMu(),
 		component: l.component,
 	}
+}
+
+// fallbackOutputMu serializes writes for zero-value Loggers that were not
+// created via New (and therefore have no outMu). All such loggers share this
+// single mutex, which is safe (if coarser than necessary) and avoids mutating
+// the logger, so it can be called while l.mu is held in any mode.
+var fallbackOutputMu sync.Mutex
+
+// sharedOutputMu returns the logger's output mutex. It never locks or
+// mutates the logger (callers may hold l.mu in read mode).
+func (l *Logger) sharedOutputMu() *sync.Mutex {
+	if l.outMu != nil {
+		return l.outMu
+	}
+	return &fallbackOutputMu
 }
 
 // SetLevel sets the logging level
@@ -210,10 +235,11 @@ func (l *Logger) Log(level Level, msg string, err error) {
 }
 
 func (l *Logger) log(level Level, msg string, err error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
+	// Snapshot state under the read lock; the actual write is serialized by
+	// the output mutex shared with derived loggers.
+	l.mu.RLock()
 	if level < l.level {
+		l.mu.RUnlock()
 		return
 	}
 
@@ -253,8 +279,18 @@ func (l *Logger) log(level Level, msg string, err error) {
 
 	sb.WriteByte('\n')
 
-	// Write to output
-	fmt.Fprint(l.output, sb.String())
+	output := l.output
+	outMu := l.outMu
+	l.mu.RUnlock()
+
+	// Write to output under the shared writer mutex so lines from this
+	// logger and any derived loggers never interleave.
+	if outMu == nil {
+		outMu = l.sharedOutputMu()
+	}
+	outMu.Lock()
+	fmt.Fprint(output, sb.String())
+	outMu.Unlock()
 }
 
 func copyFields(src map[string]interface{}) map[string]interface{} {

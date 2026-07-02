@@ -108,14 +108,20 @@ func (g *GaugeMetric) Get() int64 {
 	return atomic.LoadInt64(&g.value)
 }
 
-// HistogramMetric tracks the distribution of values
+// HistogramMetric tracks the distribution of values.
+// Count and Sum are maintained as monotonic running totals independent of the
+// bounded sample window, so truncating old samples (memory cap) never makes
+// the exported Count/Sum go backwards. Bucket counts and percentiles are
+// computed from the (windowed) samples only.
 type HistogramMetric struct {
-	name    string
-	desc    string
-	labels  map[string]string
-	mu      sync.RWMutex
-	values  []float64
-	buckets []float64
+	name       string
+	desc       string
+	labels     map[string]string
+	mu         sync.RWMutex
+	values     []float64
+	buckets    []float64
+	totalCount uint64  // running observation count (never truncated)
+	totalSum   float64 // running observation sum (never truncated)
 }
 
 // NewHistogram creates a new histogram metric
@@ -137,8 +143,11 @@ func NewHistogram(name, desc string, labels map[string]string, buckets []float64
 func (h *HistogramMetric) Observe(val float64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.totalCount++
+	h.totalSum += val
 	h.values = append(h.values, val)
-	// Limit the number of stored values to prevent memory growth
+	// Limit the number of stored values to prevent memory growth. The
+	// running totals above are unaffected by this truncation.
 	if len(h.values) > 10000 {
 		h.values = h.values[len(h.values)-5000:]
 	}
@@ -150,20 +159,14 @@ func (h *HistogramMetric) GetSnapshot() HistogramSnapshot {
 	defer h.mu.RUnlock()
 
 	snapshot := HistogramSnapshot{
-		Count:   uint64(len(h.values)),
+		Count:   h.totalCount,
+		Sum:     h.totalSum,
 		Buckets: make(map[string]uint64),
 	}
 
 	if len(h.values) == 0 {
 		return snapshot
 	}
-
-	// Calculate sum and sort for percentiles
-	var sum float64
-	for _, v := range h.values {
-		sum += v
-	}
-	snapshot.Sum = sum
 
 	// Calculate bucket counts
 	for _, v := range h.values {

@@ -76,7 +76,7 @@ type CircuitBreaker struct {
 	state       atomic.Int32
 	failures    atomic.Int32
 	successes   atomic.Int32
-	lastFailure atomic.Int64 // Unix timestamp
+	lastFailure atomic.Int64 // Unix timestamp in nanoseconds
 
 	// Concurrency control
 	concurrency atomic.Int32
@@ -135,40 +135,50 @@ func normalizeCircuitBreakerConfig(config *CircuitBreakerConfig) *CircuitBreaker
 
 // Allow checks if a request should be allowed
 func (cb *CircuitBreaker) Allow() error {
-	state := CircuitState(cb.state.Load())
+	// The loop re-dispatches after an open→half-open transition so the
+	// transitioning caller goes through the same token accounting as every
+	// other half-open probe (it must consume one of the freshly refilled
+	// tokens rather than getting a free pass). It terminates in at most a
+	// few iterations: open either stays open (return) or moves forward to
+	// half-open/closed, both of which return.
+	for {
+		state := CircuitState(cb.state.Load())
 
-	switch state {
-	case CircuitOpen:
-		// Check if we should transition to half-open
-		if cb.shouldAttemptReset() {
-			if cb.tryHalfOpen() {
+		switch state {
+		case CircuitOpen:
+			// Check if we should transition to half-open
+			if !cb.shouldAttemptReset() {
+				return ErrCircuitOpen
+			}
+			cb.tryHalfOpen() // refills half-open tokens on the winning CAS
+			if CircuitState(cb.state.Load()) == CircuitOpen {
+				return ErrCircuitOpen
+			}
+			continue // state advanced (half-open or closed); re-dispatch
+
+		case CircuitHalfOpen:
+			// Only allow limited requests in half-open state
+			select {
+			case <-cb.halfOpenTokens:
 				cb.concurrency.Add(1)
 				return nil
+			default:
+				return ErrCircuitOpen
 			}
-		}
-		return ErrCircuitOpen
 
-	case CircuitHalfOpen:
-		// Only allow limited requests in half-open state
-		select {
-		case <-cb.halfOpenTokens:
-			cb.concurrency.Add(1)
+		case CircuitClosed:
+			// Check concurrency limit
+			current := cb.concurrency.Add(1)
+			if int(current) > cb.config.MaxConcurrency {
+				cb.concurrency.Add(-1)
+				return ErrCircuitTooMany
+			}
 			return nil
+
 		default:
-			return ErrCircuitOpen
+			return nil
 		}
-
-	case CircuitClosed:
-		// Check concurrency limit
-		current := cb.concurrency.Add(1)
-		if int(current) > cb.config.MaxConcurrency {
-			cb.concurrency.Add(-1)
-			return ErrCircuitTooMany
-		}
-		return nil
 	}
-
-	return nil
 }
 
 // Release must be called after Allow() succeeds, even on failure
@@ -188,8 +198,13 @@ func (cb *CircuitBreaker) ReportSuccess() {
 		successes := cb.successes.Add(1)
 		if int(successes) >= cb.config.MinSuccesses {
 			cb.closeCircuit()
+			// Do NOT return the token: tokens are refilled wholesale on the
+			// next transition into half-open (tryHalfOpen), so tokens that
+			// are "lost" across a state change can never wedge the breaker.
+			return
 		}
-		// Return token
+		// Still half-open: return the token so further probes can proceed
+		// (needed when MinSuccesses > HalfOpenMaxRequests).
 		select {
 		case cb.halfOpenTokens <- struct{}{}:
 		default:
@@ -210,27 +225,28 @@ func (cb *CircuitBreaker) ReportFailure() {
 
 	switch state {
 	case CircuitHalfOpen:
-		// Immediately reopen on failure in half-open
+		// Immediately reopen on failure in half-open. No token return is
+		// needed: tokens are refilled on the next transition into half-open.
 		cb.openCircuit()
-		// Return token
-		select {
-		case cb.halfOpenTokens <- struct{}{}:
-		default:
-		}
 
 	case CircuitClosed:
 		failures := cb.failures.Add(1)
-		cb.lastFailure.Store(time.Now().Unix())
+		cb.lastFailure.Store(time.Now().UnixNano())
 		if int(failures) >= cb.config.MaxFailures {
 			cb.openCircuit()
 		}
 	}
 }
 
-// openCircuit transitions to open state
+// openCircuit transitions to open state.
+// lastFailure is stamped on the transition so shouldAttemptReset enforces a
+// full ResetTimeout backoff before the next half-open probe — including after
+// a half-open probe failure, which previously reopened the circuit without
+// updating lastFailure and allowed an immediate (backoff-free) retry.
 func (cb *CircuitBreaker) openCircuit() {
 	if cb.state.CompareAndSwap(int32(CircuitClosed), int32(CircuitOpen)) ||
 		cb.state.CompareAndSwap(int32(CircuitHalfOpen), int32(CircuitOpen)) {
+		cb.lastFailure.Store(time.Now().UnixNano())
 		cb.successes.Store(0)
 	}
 }
@@ -243,9 +259,41 @@ func (cb *CircuitBreaker) closeCircuit() {
 	}
 }
 
-// tryHalfOpen attempts to transition to half-open state
+// tryHalfOpen attempts to transition to half-open state.
+// On the winning transition the half-open token bucket is refilled to
+// exactly HalfOpenMaxRequests. Refilling on every transition (instead of
+// relying on each token holder to return its token via ReportSuccess/
+// ReportFailure) guarantees the breaker can never wedge in a permanently
+// token-starved half-open state when a report lands after a state change.
 func (cb *CircuitBreaker) tryHalfOpen() bool {
-	return cb.state.CompareAndSwap(int32(CircuitOpen), int32(CircuitHalfOpen))
+	if cb.state.CompareAndSwap(int32(CircuitOpen), int32(CircuitHalfOpen)) {
+		cb.successes.Store(0)
+		cb.refillHalfOpenTokens()
+		return true
+	}
+	return false
+}
+
+// refillHalfOpenTokens drains and refills the half-open token bucket to its
+// configured capacity. Called only from the CAS-guarded state transition into
+// half-open, so refills cannot race each other; a concurrent stale token
+// return from ReportSuccess is bounded by the channel capacity.
+func (cb *CircuitBreaker) refillHalfOpenTokens() {
+drain:
+	for {
+		select {
+		case <-cb.halfOpenTokens:
+		default:
+			break drain
+		}
+	}
+	for i := 0; i < cap(cb.halfOpenTokens); i++ {
+		select {
+		case cb.halfOpenTokens <- struct{}{}:
+		default:
+			return
+		}
+	}
 }
 
 // shouldAttemptReset checks if enough time has passed to try half-open
@@ -254,7 +302,9 @@ func (cb *CircuitBreaker) shouldAttemptReset() bool {
 	if lastFailure == 0 {
 		return true
 	}
-	return time.Since(time.Unix(lastFailure, 0)) >= cb.config.ResetTimeout
+	// Nanosecond precision: second-granularity timestamps made sub-second
+	// ResetTimeouts (and the first second of longer ones) effectively random.
+	return time.Since(time.Unix(0, lastFailure)) >= cb.config.ResetTimeout
 }
 
 // State returns current circuit state
@@ -269,7 +319,7 @@ func (cb *CircuitBreaker) Stats() CircuitStats {
 		Failures:        int(cb.failures.Load()),
 		Successes:       int(cb.successes.Load()),
 		Concurrency:     int(cb.concurrency.Load()),
-		LastFailureTime: cb.lastFailure.Load(),
+		LastFailureTime: cb.lastFailure.Load() / int64(time.Second), // Unix seconds for compatibility
 	}
 }
 
@@ -283,24 +333,26 @@ type CircuitStats struct {
 }
 
 // Execute wraps a function with circuit breaker protection.
-// A child context is derived from ctx so that when the caller's context is
-// cancelled, the child context is also cancelled. Functions that accept a
-// context (via closure) can check the child for early termination.
-// If fn does not respect context cancellation, the goroutine will be drained
-// with a 5-second timeout; the leak risk is documented below.
+//
+// Caller context cancellation is NOT reported as a backend failure: it says
+// nothing about the health of the protected resource, and counting it would
+// let impatient clients trip the breaker for everyone. Only fn's own errors
+// (including recovered panics) count as failures.
+//
+// If ctx is cancelled while fn is still running, Execute returns immediately
+// with ctx.Err(); the goroutine running fn finishes on its own (the buffered
+// done channel guarantees its final send never blocks) and its late result is
+// discarded without affecting breaker state.
 func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
+	// Fast-fail before consuming a breaker slot when the caller has already
+	// given up, avoiding a pointless goroutine spawn.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if err := cb.Allow(); err != nil {
 		return err
 	}
-	defer cb.Release()
-
-	// Create a child context that is cancelled when Execute returns or the
-	// parent is cancelled, whichever comes first. Functions that capture
-	// this context via closure (e.g. cb.Execute(ctx, func() error { ... }))
-	// can observe cancellation and return early.
-	childCtx, childCancel := context.WithCancel(ctx)
-	defer childCancel()
-	_ = childCtx // available to fn via closure
 
 	done := make(chan error, 1)
 	go func() {
@@ -314,6 +366,7 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 
 	select {
 	case err := <-done:
+		cb.Release()
 		if err != nil {
 			cb.ReportFailure()
 			return err
@@ -321,21 +374,13 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 		cb.ReportSuccess()
 		return nil
 	case <-ctx.Done():
-		cb.ReportFailure()
-		// Cancel child context so fn() can observe cancellation if it
-		// checks the context captured via closure.
-		childCancel()
-		// Drain the goroutine with a timeout to avoid permanent leaks.
-		// If fn() does not respect context, it will run to completion;
-		// the buffered done channel ensures the goroutine won't block.
-		select {
-		case <-done:
-			// fn completed after context cancellation - no leak.
-		case <-time.After(5 * time.Second):
-			// fn did not finish within drain timeout. The goroutine
-			// will complete when fn returns; done is buffered so
-			// the send will not block.
-		}
+		// Release the concurrency slot when fn eventually finishes, so a
+		// slow backend still bounds true concurrent work; do not block the
+		// cancelled caller waiting for it.
+		go func() {
+			<-done
+			cb.Release()
+		}()
 		return ctx.Err()
 	}
 }
@@ -346,6 +391,16 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 func (cb *CircuitBreaker) Stop() {
 	cb.stopped.Store(true)
 }
+
+// circuitBreakerManagerMaxBreakers caps the number of distinct breakers a
+// manager will track. Callers are expected to key breakers by a small, fixed
+// set of operation classes; the cap is a defense-in-depth bound so untrusted
+// or unbounded key material can never grow the map without limit.
+const circuitBreakerManagerMaxBreakers = 128
+
+// circuitBreakerOverflowKey is the shared breaker used for any key requested
+// after the manager reached its capacity.
+const circuitBreakerOverflowKey = "__overflow__"
 
 // CircuitBreakerManager manages multiple circuit breakers for different operations
 type CircuitBreakerManager struct {
@@ -360,7 +415,9 @@ func NewCircuitBreakerManager() *CircuitBreakerManager {
 	}
 }
 
-// GetOrCreate gets or creates a circuit breaker for a key
+// GetOrCreate gets or creates a circuit breaker for a key. When the manager
+// already tracks circuitBreakerManagerMaxBreakers distinct keys, requests for
+// new keys share a single overflow breaker instead of growing the map.
 func (m *CircuitBreakerManager) GetOrCreate(key string, config *CircuitBreakerConfig) *CircuitBreaker {
 	m.mu.RLock()
 	cb, exists := m.breakers[key]
@@ -375,6 +432,17 @@ func (m *CircuitBreakerManager) GetOrCreate(key string, config *CircuitBreakerCo
 
 	// Double-check after acquiring write lock
 	if cb, exists := m.breakers[key]; exists {
+		return cb
+	}
+
+	// Enforce the size cap: route new keys to a shared overflow breaker.
+	// (Reserve one slot for the overflow breaker itself.)
+	if len(m.breakers) >= circuitBreakerManagerMaxBreakers-1 {
+		if cb, exists := m.breakers[circuitBreakerOverflowKey]; exists {
+			return cb
+		}
+		cb = NewCircuitBreaker(config)
+		m.breakers[circuitBreakerOverflowKey] = cb
 		return cb
 	}
 

@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -54,6 +55,14 @@ func (c *RetryConfig) IsRetryable(err error) bool {
 		return false
 	}
 
+	// Context errors are never retryable, regardless of configuration:
+	// context.Canceled means the caller gave up, and context.DeadlineExceeded
+	// means the caller's time budget is spent — retrying either just burns
+	// resources on work whose result nobody is waiting for.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
 	// Check non-retryable first (higher priority)
 	for _, nr := range c.NonRetryableErrors {
 		if errors.Is(err, nr) {
@@ -71,8 +80,57 @@ func (c *RetryConfig) IsRetryable(err error) bool {
 		return false
 	}
 
-	// Retry all by default
+	// Deterministic errors (syntax, constraint violations, permission
+	// denials, missing tables, ...) will fail identically on every attempt;
+	// retrying them only adds latency and load.
+	if isDefaultNonRetryableError(err) {
+		return false
+	}
+
+	// Retry everything else by default
 	return true
+}
+
+// defaultNonRetryableSubstrings classifies deterministic failures that will
+// never succeed on retry. Matching is by message substring because most of
+// these errors originate in the parser/catalog as formatted errors rather
+// than sentinel values.
+var defaultNonRetryableSubstrings = []string{
+	// Syntax / parse errors
+	"parse error",
+	"syntax error",
+	"unexpected token",
+	"empty statement",
+	// Constraint / duplicate-key violations
+	"constraint",
+	"duplicate",
+	"unique",
+	// Permission / RLS denials
+	"permission denied",
+	"access denied",
+	"policy",
+	// Schema errors
+	"table not found",
+	"column not found",
+	"unknown table",
+	"unknown column",
+	"already exists",
+	"index not found",
+	// Terminal state
+	"database is closed",
+}
+
+// isDefaultNonRetryableError reports whether err is a deterministic error
+// that should not be retried when no explicit retryable/non-retryable
+// classification matched.
+func isDefaultNonRetryableError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, sub := range defaultNonRetryableSubstrings {
+		if strings.Contains(msg, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // Retry executes a function with retry logic

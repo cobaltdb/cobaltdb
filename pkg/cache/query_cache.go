@@ -17,7 +17,14 @@ import (
 
 const maxCacheValueDepth = 64
 
-// Entry represents a cached query result
+// Entry represents a cached query result.
+//
+// Invariant: the payload fields (SQL, Args, Columns, Rows, TableDeps, Size,
+// CreatedAt, Key) are immutable once an entry has been stored in the cache —
+// Set() clones all caller-provided data before insertion and no cache code
+// path mutates them afterwards. Get() relies on this to deep-clone results
+// outside the cache lock. Only AccessedAt and HitCount are updated in place,
+// always under the cache's exclusive lock.
 type Entry struct {
 	Key        string
 	SQL        string
@@ -128,7 +135,10 @@ func normalizeConfig(config *Config) *Config {
 	return &normalized
 }
 
-// Close shuts down the cache
+// Close shuts down the cache's background cleanup goroutine.
+// Close is idempotent and safe to call from multiple goroutines; only the
+// first call closes the stop channel, and every call waits for the cleanup
+// goroutine to exit.
 func (c *Cache) Close() {
 	if c.config.Enabled {
 		c.closeOnce.Do(func() { close(c.stopCh) })
@@ -136,7 +146,17 @@ func (c *Cache) Close() {
 	}
 }
 
-// Get retrieves a cached result
+// Get retrieves a cached result.
+//
+// Concurrency design: the lookup runs under RLock so concurrent hits do not
+// serialize on the exclusive lock. Entry payload fields (SQL, Args, Columns,
+// Rows, TableDeps, Size, CreatedAt, Key) are IMMUTABLE once the entry is
+// stored — Set() clones all inputs before insertion and nothing mutates them
+// afterwards — so it is safe to capture references under RLock and perform the
+// expensive deep clone entirely outside the critical section. Only the LRU
+// position and the AccessedAt/HitCount bookkeeping fields are mutable; those
+// are updated under a short exclusive-lock window. TTL-expired entries are
+// deleted via a separate short write-lock path.
 func (c *Cache) Get(sql string, args []interface{}) (*Entry, bool) {
 	if !c.config.Enabled {
 		atomic.AddUint64(&c.misses, 1)
@@ -149,32 +169,58 @@ func (c *Cache) Get(sql string, args []interface{}) (*Entry, bool) {
 
 	key := generateKey(sql, args)
 
-	c.mu.Lock()
+	// Read-locked lookup; capture references to the immutable payload.
+	c.mu.RLock()
 	entry, exists := c.entries[key]
 	if !exists {
+		c.mu.RUnlock()
+		atomic.AddUint64(&c.misses, 1)
+		return nil, false
+	}
+	expired := c.config.TTL > 0 && time.Since(entry.CreatedAt) > c.config.TTL
+	var snapshot Entry
+	if !expired {
+		snapshot = Entry{
+			Key:       entry.Key,
+			SQL:       entry.SQL,
+			Args:      entry.Args,
+			Columns:   entry.Columns,
+			Rows:      entry.Rows,
+			Size:      entry.Size,
+			CreatedAt: entry.CreatedAt,
+			TableDeps: entry.TableDeps,
+		}
+	}
+	c.mu.RUnlock()
+
+	if expired {
+		// Short exclusive-lock path just for the expiry deletion. Re-check the
+		// map so we do not delete a fresh replacement inserted concurrently.
+		c.mu.Lock()
+		if current, ok := c.entries[key]; ok && current == entry {
+			c.deleteLocked(key)
+		}
 		c.mu.Unlock()
 		atomic.AddUint64(&c.misses, 1)
 		return nil, false
 	}
 
-	// Check if expired
-	if c.config.TTL > 0 && time.Since(entry.CreatedAt) > c.config.TTL {
-		c.deleteLocked(key)
-		c.mu.Unlock()
-		atomic.AddUint64(&c.misses, 1)
-		return nil, false
+	// Short exclusive-lock window for LRU bookkeeping only (no payload copy).
+	now := time.Now()
+	c.mu.Lock()
+	if current, ok := c.entries[key]; ok && current == entry {
+		current.AccessedAt = now
+		current.HitCount++
+		snapshot.AccessedAt = now
+		snapshot.HitCount = current.HitCount
+		if elem, ok := c.elemMap[key]; ok {
+			c.lruList.MoveToFront(elem)
+		}
 	}
-
-	// Update access time and hit count
-	entry.AccessedAt = time.Now()
-	entry.HitCount++
-
-	// Move to front of LRU list
-	if elem, ok := c.elemMap[key]; ok {
-		c.lruList.MoveToFront(elem)
-	}
-	entryCopy := cloneEntry(entry)
 	c.mu.Unlock()
+
+	// Deep clone outside any lock; the referenced payload is immutable.
+	entryCopy := cloneEntry(&snapshot)
 
 	atomic.AddUint64(&c.hits, 1)
 	return entryCopy, true

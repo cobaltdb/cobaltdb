@@ -1248,7 +1248,7 @@ func TestCoverage_ShouldAttemptReset_RecentFailure(t *testing.T) {
 	cb := NewCircuitBreaker(cfg)
 	defer cb.Stop()
 
-	cb.lastFailure.Store(time.Now().Unix())
+	cb.lastFailure.Store(time.Now().UnixNano()) // lastFailure is in nanoseconds
 	if cb.shouldAttemptReset() {
 		t.Error("expected false when failure was recent")
 	}
@@ -1265,7 +1265,7 @@ func TestCoverage_ShouldAttemptReset_OldFailure(t *testing.T) {
 	cb := NewCircuitBreaker(cfg)
 	defer cb.Stop()
 
-	cb.lastFailure.Store(time.Now().Add(-2 * time.Second).Unix())
+	cb.lastFailure.Store(time.Now().Add(-2 * time.Second).UnixNano()) // lastFailure is in nanoseconds
 	if !cb.shouldAttemptReset() {
 		t.Error("expected true when failure is old enough")
 	}
