@@ -1791,9 +1791,7 @@ func (c *Catalog) invalidateSchemaCache() {
 	// reference a dropped/altered table. The query result cache only tracked DML
 	// invalidation; DDL must flush it too (otherwise a SELECT could serve rows
 	// from a table that was just DROPped or ALTERed). DDL is rare, so flush all.
-	if c.queryCache != nil {
-		c.queryCache.InvalidateAll()
-	}
+	c.invalidateQueryCacheAll()
 }
 
 func (c *Catalog) CreateView(name string, query *query.SelectStmt) error {

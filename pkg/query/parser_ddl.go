@@ -833,6 +833,12 @@ func (p *Parser) parseCreateView() (*CreateViewStmt, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse view query: %w", err)
 	}
+	// Views store a single SelectStmt; set operations cannot be represented.
+	// Previously the UNION/INTERSECT/EXCEPT tail was silently dropped and the
+	// view contained only the first SELECT branch — wrong data with no error.
+	if p.current().Type == TokenUnion || p.current().Type == TokenIntersect || p.current().Type == TokenExcept {
+		return nil, fmt.Errorf("%s is not supported in CREATE VIEW", p.current().Literal)
+	}
 	if len(stmt.Columns) > 0 && len(stmt.Columns) != len(stmt.Query.Columns) {
 		return nil, fmt.Errorf("view column list has %d columns but query returns %d columns", len(stmt.Columns), len(stmt.Query.Columns))
 	}
@@ -964,7 +970,7 @@ func (p *Parser) parseCreateTrigger() (*CreateTriggerStmt, error) {
 			if p.current().Type == TokenEnd {
 				break
 			}
-			bodyStmt, err := p.Parse()
+			bodyStmt, err := p.parseStatement()
 			if err != nil {
 				return nil, fmt.Errorf("trigger body: %w", err)
 			}
@@ -982,7 +988,7 @@ func (p *Parser) parseCreateTrigger() (*CreateTriggerStmt, error) {
 		// Single-statement trigger body without BEGIN ... END (valid SQL).
 		// Without this, the body is left empty and the trigger silently never
 		// fires (executeTriggers skips a zero-length body).
-		bodyStmt, err := p.Parse()
+		bodyStmt, err := p.parseStatement()
 		if err != nil {
 			return nil, fmt.Errorf("trigger body: %w", err)
 		}
@@ -1495,6 +1501,11 @@ func (p *Parser) parseCreateMaterializedView() (*CreateMaterializedViewStmt, err
 	stmt.Query, err = p.parseSelect()
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse materialized view query: %w", err)
+	}
+	// Materialized views store a single SelectStmt; a set-operation tail was
+	// previously dropped silently (see parseCreateView).
+	if p.current().Type == TokenUnion || p.current().Type == TokenIntersect || p.current().Type == TokenExcept {
+		return nil, fmt.Errorf("%s is not supported in CREATE MATERIALIZED VIEW", p.current().Literal)
 	}
 
 	return stmt, nil

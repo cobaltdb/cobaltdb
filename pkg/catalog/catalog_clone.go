@@ -1,17 +1,32 @@
 package catalog
 
-import "github.com/cobaltdb/cobaltdb/pkg/query"
+import (
+	"sync/atomic"
+
+	"github.com/cobaltdb/cobaltdb/pkg/query"
+)
 
 func cloneTableDef(table *TableDef) *TableDef {
 	if table == nil {
 		return nil
 	}
-	cloned := *table
-	cloned.Columns = cloneColumnDefs(table.Columns)
-	cloned.PrimaryKey = cloneStringSlice(table.PrimaryKey)
-	cloned.ForeignKeys = cloneForeignKeyDefs(table.ForeignKeys)
-	cloned.Checks = cloneCheckDefs(table.Checks)
-	cloned.Partition = clonePartitionInfo(table.Partition)
+	// Field-by-field copy: a shovel copy (`*table`) reads AutoIncSeq
+	// non-atomically and races with concurrent buffered inserts that advance
+	// it via sync/atomic outside Catalog.mu (same hazard as TableDef.
+	// MarshalJSON documents). New TableDef fields must be added here.
+	cloned := TableDef{
+		Name:        table.Name,
+		Type:        table.Type,
+		Columns:     cloneColumnDefs(table.Columns),
+		PrimaryKey:  cloneStringSlice(table.PrimaryKey),
+		CreatedAt:   table.CreatedAt,
+		RootPageID:  table.RootPageID,
+		ForeignKeys: cloneForeignKeyDefs(table.ForeignKeys),
+		Checks:      cloneCheckDefs(table.Checks),
+		AutoIncSeq:  atomic.LoadInt64(&table.AutoIncSeq),
+		Partition:   clonePartitionInfo(table.Partition),
+		Temporary:   table.Temporary,
+	}
 	cloned.buildColumnIndexCache()
 	return &cloned
 }

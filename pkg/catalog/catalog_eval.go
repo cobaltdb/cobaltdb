@@ -18,7 +18,7 @@ const maxStringResultLen = 10 * 1024 * 1024 // 10 MB cap for string functions
 type functionHandler func(args []interface{}) (interface{}, error)
 
 // functionDispatchMap maps function names to their handlers.
-// This replaces the large switch statement in evaluateFunctionCall.
+// This replaces the former large evaluation switch statement.
 // Handlers return (value, error). The map covers scalar functions;
 // aggregate, special-syntax, and fallthrough functions remain in the switch.
 var scalarFunctionHandlers = map[string]functionHandler{
@@ -694,54 +694,50 @@ func (ctx *EvalContext) EvalAlias(inner interface{}) (interface{}, error) {
 	return inner, nil
 }
 
+// EvalBool implements query.BoolEvaluator: SQL truthiness for lazily
+// evaluated CASE/IIF conditions. Numbers (and numeric strings) are true when
+// non-zero; other non-NULL, non-empty values are true.
+func (ctx *EvalContext) EvalBool(val interface{}) bool {
+	if val == nil {
+		return false
+	}
+	if b, ok := val.(bool); ok {
+		return b
+	}
+	if f, ok := toFloat64(val); ok {
+		return f != 0
+	}
+	return toBool(val)
+}
+
+// EvalCase resolves a CASE from pre-evaluated values. The live path is the
+// lazy query.CaseExpr.Evaluate; this remains for Evaluator interface
+// completeness. A non-nil expr selects simple-CASE comparison semantics,
+// otherwise each condition is tested for truthiness (not strict == true, so
+// e.g. CASE WHEN 1 THEN ... matches).
 func (ctx *EvalContext) EvalCase(expr interface{}, whens [][2]interface{}, elseVal interface{}) (interface{}, error) {
 	for _, w := range whens {
 		cond, result := w[0], w[1]
-		if cond == true {
+		if expr != nil {
+			if cond != nil && compareValues(expr, cond) == 0 {
+				return result, nil
+			}
+			continue
+		}
+		if b, isNull := toBoolNullable(cond); !isNull && b {
 			return result, nil
 		}
 	}
 	return elseVal, nil
 }
 
+// EvalCast delegates to applyCast so CAST-as-expression and CAST-as-function
+// share a single implementation (they previously diverged, e.g. on
+// CAST('3.7' AS INTEGER)). Unknown target types return the value unchanged.
 func (ctx *EvalContext) EvalCast(val interface{}, dataType query.TokenType) (interface{}, error) {
-	if val == nil {
-		return nil, nil
-	}
 	switch dataType {
-	case query.TokenInteger:
-		if f, ok := toFloat64(val); ok {
-			return int64(f), nil
-		}
-		if s, ok := val.(string); ok {
-			if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-				return i, nil
-			}
-		}
-		return int64(0), nil
-	case query.TokenReal:
-		if f, ok := toFloat64(val); ok {
-			return f, nil
-		}
-		if s, ok := val.(string); ok {
-			if f, err := strconv.ParseFloat(s, 64); err == nil {
-				return f, nil
-			}
-		}
-		return float64(0), nil
-	case query.TokenText:
-		return ValueToStringKey(val), nil
-	case query.TokenBoolean:
-		if b, ok := val.(bool); ok {
-			return b, nil
-		}
-		if f, ok := toFloat64(val); ok {
-			return f != 0, nil
-		}
-		if s, ok := val.(string); ok {
-			return strings.EqualFold(s, "true") || s == "1", nil
-		}
-		return false, nil
+	case query.TokenInteger, query.TokenReal, query.TokenText, query.TokenBoolean:
+		return applyCast(val, castTypeToString(dataType))
 	}
 	return val, nil
 }
@@ -843,19 +839,6 @@ func toStringS(v interface{}) string {
 		return s
 	}
 	return ""
-}
-
-//lint:ignore U1000 retained for compatibility with generated coverage helpers.
-func evaluateBinaryExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.BinaryExpr, args []interface{}) (interface{}, error) {
-	left, err := evaluateExpression(c, row, columns, expr.Left, args)
-	if err != nil {
-		return nil, err
-	}
-	right, err := evaluateExpression(c, row, columns, expr.Right, args)
-	if err != nil {
-		return nil, err
-	}
-	return applyBinaryOp(left, right, expr.Operator)
 }
 
 // applyBinaryOp applies a binary operator to pre-evaluated left/right values.
@@ -1049,17 +1032,14 @@ func compareValues(a, b interface{}) int {
 		return -1 // non-NULL sorts before NULL
 	}
 
-	// Fast path: both are non-numeric strings (avoids failed ParseFloat)
+	// Both operands are strings: compare as strings (SQL TEXT semantics).
+	// Numeric coercion must not apply here — '0123' is not equal to '123'
+	// and '1e3' is not equal to '1000'. Coercion is kept only for mixed
+	// string/number operand pairs below.
 	aStr, aIsStr := toString(a)
 	bStr, bIsStr := toString(b)
-	if aIsStr && bIsStr && !looksLikeNumber(aStr) && !looksLikeNumber(bStr) {
-		if aStr < bStr {
-			return -1
-		}
-		if aStr > bStr {
-			return 1
-		}
-		return 0
+	if aIsStr && bIsStr {
+		return strings.Compare(aStr, bStr)
 	}
 
 	// Integer-typed operands are compared directly as int64 to avoid the
@@ -1091,152 +1071,8 @@ func compareValues(a, b interface{}) int {
 		return 0
 	}
 
-	// Handle strings
-	if aIsStr && bIsStr {
-		if aStr < bStr {
-			return -1
-		}
-		if aStr > bStr {
-			return 1
-		}
-		return 0
-	}
-
 	// Fallback to string comparison (use fast conversion for known types)
 	return strings.Compare(valueToString(a), valueToString(b))
-}
-
-//lint:ignore U1000 retained for compatibility with generated coverage helpers.
-func evaluateCaseExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.CaseExpr, args []interface{}) (interface{}, error) {
-	if expr.Expr != nil {
-		// Simple CASE: CASE expr WHEN val1 THEN result1 WHEN val2 THEN result2 ELSE default END
-		baseVal, err := evaluateExpression(c, row, columns, expr.Expr, args)
-		if err != nil {
-			return nil, err
-		}
-		// Per SQL standard, CASE NULL WHEN NULL is UNKNOWN (not true)
-		// If base value is NULL, skip all WHEN comparisons and fall through to ELSE
-		if baseVal != nil {
-			for _, when := range expr.Whens {
-				whenVal, err := evaluateExpression(c, row, columns, when.Condition, args)
-				if err != nil {
-					return nil, err
-				}
-				if whenVal != nil && compareValues(baseVal, whenVal) == 0 {
-					return evaluateExpression(c, row, columns, when.Result, args)
-				}
-			}
-		}
-	} else {
-		// Searched CASE: CASE WHEN cond1 THEN result1 WHEN cond2 THEN result2 ELSE default END
-		for _, when := range expr.Whens {
-			condVal, err := evaluateExpression(c, row, columns, when.Condition, args)
-			if err != nil {
-				return nil, err
-			}
-			if toBool(condVal) {
-				return evaluateExpression(c, row, columns, when.Result, args)
-			}
-		}
-	}
-	if expr.Else != nil {
-		return evaluateExpression(c, row, columns, expr.Else, args)
-	}
-	return nil, nil
-}
-
-func evaluateFunctionCall(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.FunctionCall, args []interface{}) (interface{}, error) {
-	// Parser uppercases function names at parse time; avoid ToUpper allocation.
-	funcName := expr.Name
-
-	// Short-circuit evaluation for COALESCE/IFNULL - evaluate lazily
-	if funcName == "COALESCE" || funcName == "IFNULL" {
-		for _, arg := range expr.Args {
-			val, err := evaluateExpression(c, row, columns, arg, args)
-			if err != nil {
-				return nil, err
-			}
-			if val != nil {
-				return val, nil
-			}
-		}
-		return nil, nil
-	}
-
-	// Evaluate arguments first (eager for all other functions)
-	evalArgs := make([]interface{}, len(expr.Args))
-	for i, arg := range expr.Args {
-		val, err := evaluateExpression(c, row, columns, arg, args)
-		if err != nil {
-			return nil, err
-		}
-		evalArgs[i] = val
-	}
-
-	// Try string functions first (largest group)
-	if result, handled := evaluateStringFunction(funcName, evalArgs); handled {
-		return result.val, result.err
-	}
-
-	// Try math functions
-	if val, handled, err := evaluateMathFunction(funcName, evalArgs); handled {
-		return val, err
-	}
-
-	// Try vector functions
-	if val, handled, err := evaluateVectorFunction(funcName, evalArgs); handled {
-		return val, err
-	}
-
-	// Try CAST
-	if val, handled, err := evaluateCastFunction(funcName, evalArgs); handled {
-		return val, err
-	}
-
-	// Try dispatch map for scalar functions that moved out of the switch
-	if handler, ok := scalarFunctionHandlers[funcName]; ok {
-		return handler(evalArgs)
-	}
-
-	switch funcName {
-	case "COALESCE", "IFNULL":
-		// Handled above with short-circuit evaluation
-		return nil, nil
-
-	case "DATE", "TIME", "DATETIME":
-		// Simple date/time functions - return current time for now
-		// Full implementation would require time parsing
-		if len(evalArgs) < 1 {
-			return nil, nil
-		}
-		return evalArgs[0], nil
-
-	case "NOW", "CURRENT_TIMESTAMP", "CURRENT_TIME", "CURRENT_DATE":
-		// Return current timestamp
-		now := time.Now()
-		return now.Format("2006-01-02 15:04:05"), nil
-
-	case "STRFTIME":
-		if len(evalArgs) < 2 {
-			return nil, fmt.Errorf("STRFTIME requires 2 arguments")
-		}
-		// Simple strftime - just return the input for now
-		if evalArgs[1] == nil {
-			return nil, nil
-		}
-		return ValueToStringKey(evalArgs[1]), nil
-
-	case "GROUP_CONCAT":
-		// GROUP_CONCAT is handled in aggregate path; scalar fallback just returns the value
-		if len(evalArgs) >= 1 && evalArgs[0] != nil {
-			return ValueToStringKey(evalArgs[0]), nil
-		}
-		return nil, nil
-
-	default:
-		// Check for JSON functions
-		return evaluateJSONFunction(funcName, evalArgs)
-	}
 }
 
 // evaluateMathFunction handles ABS, ROUND, FLOOR, CEIL math functions.
@@ -1558,7 +1394,7 @@ func evaluateCastFunction(funcName string, evalArgs []interface{}) (interface{},
 }
 
 // applyCast converts val to the target type. Used by both evaluateCastFunction
-// (CAST as function call) and evaluateCastExpr (CAST as expression node).
+// (CAST as function call) and EvalCast (CAST as expression node).
 func applyCast(val interface{}, targetType string) (interface{}, error) {
 	if val == nil {
 		return nil, nil
@@ -1973,37 +1809,23 @@ func evalBinaryExprValue(left, right interface{}, operator query.TokenType) (int
 			return nil, nil
 		}
 	}
-	// Handle arithmetic in value expressions
-	lf, lok := toFloat64(left)
-	rf, rok := toFloat64(right)
+	// Handle arithmetic in value expressions. Delegate to the shared helpers
+	// so integer operands stay in the int64 domain (routing through float64
+	// silently corrupts values above 2^53).
+	_, lok := toFloat64(left)
+	_, rok := toFloat64(right)
 	if lok && rok {
-		bothInt := isIntegerType(left) && isIntegerType(right)
 		switch operator {
 		case query.TokenPlus:
-			if bothInt {
-				return int64(lf) + int64(rf), nil
-			}
-			return lf + rf, nil
+			return addValues(left, right)
 		case query.TokenMinus:
-			if bothInt {
-				return int64(lf) - int64(rf), nil
-			}
-			return lf - rf, nil
+			return subtractValues(left, right)
 		case query.TokenStar:
-			if bothInt {
-				return int64(lf) * int64(rf), nil
-			}
-			return lf * rf, nil
+			return multiplyValues(left, right)
 		case query.TokenSlash:
-			if rf != 0 {
-				return lf / rf, nil
-			}
-			return nil, fmt.Errorf("division by zero")
+			return divideValues(left, right)
 		case query.TokenPercent:
-			if rf != 0 {
-				return int64(lf) % int64(rf), nil
-			}
-			return nil, fmt.Errorf("division by zero")
+			return moduloValues(left, right)
 		}
 	}
 	// Comparison operators
@@ -2084,7 +1906,7 @@ func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}
 		return nil, nil
 	case "LENGTH":
 		if len(evalArgs) == 1 && evalArgs[0] != nil {
-			return len(ValueToStringKey(evalArgs[0])), nil
+			return int64(len(ValueToStringKey(evalArgs[0]))), nil
 		}
 		return nil, nil
 	case "CONCAT":
@@ -2439,172 +2261,60 @@ func concatValues(a, b interface{}) string {
 	return ValueToStringKey(a) + ValueToStringKey(b)
 }
 
+// matchLikeSimple matches s against a SQL LIKE pattern (case-sensitively,
+// which is this engine's established LIKE semantics). It uses the standard
+// iterative two-pointer algorithm with a single backtrack point, giving
+// O(len(s)*len(pattern)) worst case instead of the exponential blowup of a
+// recursive matcher on patterns like %a%a%a%. It operates on runes so `_`
+// matches exactly one character, not one byte.
 func matchLikeSimple(s, pattern string, escapeChar ...byte) bool {
-	if pattern == "" {
-		return s == ""
+	var esc rune
+	if len(escapeChar) > 0 && escapeChar[0] != 0 {
+		esc = rune(escapeChar[0])
 	}
 
-	var esc byte
-	if len(escapeChar) > 0 {
-		esc = escapeChar[0]
-	}
+	sr := []rune(s)
+	pr := []rune(pattern)
 
-	sIdx := 0
-	pIdx := 0
+	sIdx, pIdx := 0, 0
+	starPIdx, starSIdx := -1, 0 // position after last '%' / string resume point
 
-	for sIdx < len(s) && pIdx < len(pattern) {
-		char := pattern[pIdx]
-
-		// Handle escape character
-		if esc != 0 && char == esc && pIdx+1 < len(pattern) {
-			pIdx++ // skip escape char
-			// Next char is literal
-			if sIdx < len(s) && s[sIdx] == pattern[pIdx] {
+	for sIdx < len(sr) {
+		if pIdx < len(pr) {
+			c := pr[pIdx]
+			switch {
+			case esc != 0 && c == esc && pIdx+1 < len(pr):
+				// Escaped character: match the next pattern rune literally.
+				if sr[sIdx] == pr[pIdx+1] {
+					sIdx++
+					pIdx += 2
+					continue
+				}
+			case c == '%':
+				starPIdx = pIdx
+				starSIdx = sIdx
+				pIdx++
+				continue
+			case c == '_' || c == sr[sIdx]:
 				sIdx++
 				pIdx++
 				continue
 			}
+		}
+		// Mismatch: backtrack to the last '%', consuming one more rune.
+		if starPIdx < 0 {
 			return false
 		}
-
-		// Handle %
-		if char == '%' {
-			// Skip consecutive %
-			for pIdx < len(pattern) && pattern[pIdx] == '%' {
-				pIdx++
-			}
-			if pIdx >= len(pattern) {
-				return true
-			}
-			// Try matching remaining pattern at each position
-			for sIdx <= len(s) {
-				if matchLikeSimple(s[sIdx:], pattern[pIdx:], escapeChar...) {
-					return true
-				}
-				if sIdx >= len(s) {
-					break
-				}
-				sIdx++
-			}
-			return false
-		}
-
-		// Handle _
-		if char == '_' {
-			sIdx++
-			pIdx++
-			continue
-		}
-
-		// Literal match
-		if sIdx < len(s) && s[sIdx] == char {
-			sIdx++
-			pIdx++
-			continue
-		}
-
-		return false
+		starSIdx++
+		sIdx = starSIdx
+		pIdx = starPIdx + 1
 	}
 
-	// Skip any trailing % in pattern
-	for pIdx < len(pattern) && pattern[pIdx] == '%' {
+	// Input consumed: any remaining pattern must be all '%'.
+	for pIdx < len(pr) && pr[pIdx] == '%' {
 		pIdx++
 	}
-
-	return sIdx == len(s) && pIdx == len(pattern)
-}
-
-func evaluateIn(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.InExpr, args []interface{}) (interface{}, error) {
-	left, err := evaluateExpression(c, row, columns, expr.Expr, args)
-	if err != nil {
-		return false, err
-	}
-
-	// SQL three-valued logic: if left is NULL, IN/NOT IN returns NULL (unknown)
-	if left == nil {
-		return nil, nil
-	}
-
-	// Handle subquery: IN (SELECT ...)
-	if expr.Subquery != nil {
-		subq := resolveOuterRefsInQuery(expr.Subquery, row, columns)
-		_, subqueryRows, err := c.selectLocked(subq, args)
-		if err != nil {
-			return false, err
-		}
-		found := false
-		hasNull := false
-		for _, subRow := range subqueryRows {
-			if len(subRow) > 0 {
-				if subRow[0] == nil {
-					hasNull = true
-				} else if compareValues(left, subRow[0]) == 0 {
-					found = true
-					break
-				}
-			}
-		}
-		if found {
-			if expr.Not {
-				return false, nil
-			}
-			return true, nil
-		}
-		// SQL three-valued logic: NOT IN with NULLs in list and no match → NULL (unknown)
-		if hasNull {
-			return nil, nil
-		}
-		if expr.Not {
-			return true, nil
-		}
-		return false, nil
-	}
-
-	// Evaluate all values in the list
-	var listValues []interface{}
-	for _, item := range expr.List {
-		val, err := evaluateExpression(c, row, columns, item, args)
-		if err != nil {
-			return false, err
-		}
-		listValues = append(listValues, val)
-	}
-
-	// Check if left is in list (with three-valued NULL logic)
-	found := false
-	hasNull := false
-	for _, v := range listValues {
-		if v == nil {
-			hasNull = true
-		} else if compareValues(left, v) == 0 {
-			found = true
-			break
-		}
-	}
-
-	if found {
-		if expr.Not {
-			return false, nil
-		}
-		return true, nil
-	}
-	// SQL three-valued logic: IN/NOT IN with NULLs in list and no match → NULL (unknown)
-	if hasNull {
-		return nil, nil
-	}
-	if expr.Not {
-		return true, nil
-	}
-	return false, nil
-}
-
-func evaluateCastExpr(c *Catalog, row []interface{}, columns []ColumnDef, expr *query.CastExpr, args []interface{}) (interface{}, error) {
-	val, err := evaluateExpression(c, row, columns, expr.Expr, args)
-	if err != nil {
-		return nil, err
-	}
-	targetType := castTypeToString(expr.DataType)
-	return applyCast(val, targetType)
+	return pIdx == len(pr)
 }
 
 func castTypeToString(t query.TokenType) string {

@@ -622,9 +622,10 @@ func TestV79JSONForeignKeyMatView(t *testing.T) {
 		"SELECT CASE WHEN 1 = 1.0 THEN 'equal' ELSE 'not equal' END", "equal")
 	check("Int + Float",
 		"SELECT 1 + 1.5", 2.5)
-	// CobaltDB does numeric comparison on number-like strings
+	// Two string operands compare as strings (numeric coercion only applies
+	// to mixed string/number operands)
 	check("String number comparison",
-		"SELECT CASE WHEN '5' > '10' THEN 'string' ELSE 'numeric' END", "numeric")
+		"SELECT CASE WHEN '5' > '10' THEN 'string' ELSE 'numeric' END", "string")
 
 	// Arithmetic edge cases
 	check("Division produces float",

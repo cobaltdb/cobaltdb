@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
@@ -389,39 +390,19 @@ func TestApplyOuterQueryWithUnionView(t *testing.T) {
 		t.Fatalf("Failed to insert pending: %v", err)
 	}
 
-	// Create view with UNION
+	// Views cannot represent set operations: the parser used to silently drop
+	// the UNION tail, so this view contained ONLY the active_users branch and
+	// returned wrong data with no error. CREATE VIEW with UNION is now
+	// rejected with a clear error.
 	_, err = db.Exec(ctx, `CREATE VIEW all_users AS
 		SELECT id, name, status FROM active_users
 		UNION ALL
 		SELECT id, name, status FROM pending_users`)
-	if err != nil {
-		t.Fatalf("Failed to create view: %v", err)
+	if err == nil {
+		t.Fatal("expected CREATE VIEW with UNION to be rejected (views cannot represent set operations)")
 	}
-
-	tests := []struct {
-		name string
-		sql  string
-	}{
-		{"Union view simple", `SELECT * FROM all_users`},
-		{"Union view with WHERE", `SELECT * FROM all_users WHERE status = 'active'`},
-		{"Union view with ORDER BY", `SELECT * FROM all_users ORDER BY name`},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rows, err := db.Query(ctx, tt.sql)
-			if err != nil {
-				t.Logf("Query error: %v", err)
-				return
-			}
-			defer rows.Close()
-
-			count := 0
-			for rows.Next() {
-				count++
-			}
-			t.Logf("Query returned %d rows", count)
-		})
+	if !strings.Contains(strings.ToUpper(err.Error()), "UNION") {
+		t.Fatalf("expected UNION-specific error, got: %v", err)
 	}
 }
 

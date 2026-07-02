@@ -95,7 +95,7 @@ func TestV101DeepCoverage(t *testing.T) {
 			if len(rows) != 2 {
 				t.Fatalf("expected 2, got %d", len(rows))
 			}
-			if fmt.Sprintf("%.0f", rows[0][1]) != "220" {
+			if fmt.Sprintf("%v", rows[0][1]) != "220" {
 				t.Fatalf("expected 220, got %v", rows[0][1])
 			}
 		})
@@ -104,7 +104,7 @@ func TestV101DeepCoverage(t *testing.T) {
 			if len(rows) != 2 {
 				t.Fatalf("expected 2, got %d", len(rows))
 			}
-			if fmt.Sprintf("%.0f", rows[0][1]) != "110" {
+			if fmt.Sprintf("%v", rows[0][1]) != "110" {
 				t.Fatalf("expected 110, got %v", rows[0][1])
 			}
 		})
@@ -225,7 +225,7 @@ func TestV101DeepCoverage(t *testing.T) {
 			if len(rows) != 1 {
 				t.Fatalf("expected 1, got %d", len(rows))
 			}
-			if fmt.Sprintf("%.0f", rows[0][1]) != "3" {
+			if fmt.Sprintf("%v", rows[0][1]) != "3" {
 				t.Fatalf("expected 3, got %v", rows[0][1])
 			}
 		})
@@ -384,10 +384,10 @@ func TestV101DeepCoverage(t *testing.T) {
 				t.Fatalf("expected 6, got %d", len(rows))
 			}
 			for _, r := range rows {
-				if fmt.Sprintf("%v", r[0]) == "1" && fmt.Sprintf("%.0f", r[3]) != "10" {
+				if fmt.Sprintf("%v", r[0]) == "1" && fmt.Sprintf("%v", r[3]) != "10" {
 					t.Fatalf("id=1 sum expected 10, got %v", r[3])
 				}
-				if fmt.Sprintf("%v", r[0]) == "3" && fmt.Sprintf("%.0f", r[3]) != "60" {
+				if fmt.Sprintf("%v", r[0]) == "3" && fmt.Sprintf("%v", r[3]) != "60" {
 					t.Fatalf("id=3 sum expected 60, got %v", r[3])
 				}
 			}
@@ -399,7 +399,7 @@ func TestV101DeepCoverage(t *testing.T) {
 			}
 			for _, r := range rows {
 				if fmt.Sprintf("%v", r[1]) == "X" {
-					if fmt.Sprintf("%.0f", r[3]) != "20" {
+					if fmt.Sprintf("%v", r[3]) != "20" {
 						t.Fatalf("X avg expected 20, got %v", r[3])
 					}
 					break
@@ -441,7 +441,7 @@ func TestV101DeepCoverage(t *testing.T) {
 			}
 			for _, r := range rows {
 				if fmt.Sprintf("%v", r[0]) == "4" {
-					if fmt.Sprintf("%.0f", r[2]) != "40" {
+					if fmt.Sprintf("%v", r[2]) != "40" {
 						t.Fatalf("Y sum expected 40, got %v", r[2])
 					}
 					break

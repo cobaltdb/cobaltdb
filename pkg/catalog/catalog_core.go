@@ -81,6 +81,24 @@ type TableDef struct {
 	columnIndices map[string]int `json:"-"`
 }
 
+// MarshalJSON serializes the table definition, reading AutoIncSeq atomically.
+// Concurrent buffered inserts advance AutoIncSeq with sync/atomic outside
+// Catalog.mu, so a plain reflective json.Marshal of the struct races with
+// those writers (observed via catalog.Save during hot backups). The embedded
+// alias suppresses its own auto_inc_seq field (the shallower explicit field
+// wins under Go's JSON field-conflict rules), so the encoder never reads the
+// atomic field non-atomically.
+func (t *TableDef) MarshalJSON() ([]byte, error) {
+	type tableDefAlias TableDef
+	return json.Marshal(&struct {
+		*tableDefAlias
+		AutoIncSeq int64 `json:"auto_inc_seq"`
+	}{
+		tableDefAlias: (*tableDefAlias)(t),
+		AutoIncSeq:    atomic.LoadInt64(&t.AutoIncSeq),
+	})
+}
+
 type CheckDef struct {
 	Name     string           `json:"name,omitempty"`
 	CheckStr string           `json:"check_str"`
@@ -377,7 +395,8 @@ type Catalog struct {
 	jsonIndexes          map[string]*JSONIndexDef              // JSON indexes for fast JSON queries
 	vectorIndexes        map[string]*VectorIndexDef            // Vector (HNSW) indexes for similarity search
 	stats                map[string]*StatsTableStats           // Table statistics for ANALYZE
-	cteResults           map[string]*cteResultSet              // Temporary CTE result cache for recursive CTEs
+	cteResults           map[string]*cteResultSet              // Shared CTE results; written only under the exclusive lock (ExecuteCTE)
+	localCTE             cteOverlayStore                       // Per-query (per-goroutine) CTE/derived-table result overlay
 	keyCounter           int64                                 // For generating unique keys
 	undoLog              []undoEntry                           // Undo log for transaction rollback (legacy)
 	txnManager           interface{}                           // *txn.Manager bridge for MVCC multi-writer (nil = legacy single-writer mode)
@@ -424,6 +443,29 @@ type Catalog struct {
 	// txnStatePool recycles per-transaction state structs to reduce GC pressure
 	// from high-frequency Begin/Commit cycles.
 	txnStatePool sync.Pool
+
+	// queryOptimizer is a lazily-initialized, catalog-wide optimizer instance.
+	// The optimizer is stateless today (its stats maps are never populated via
+	// this path), so a single shared instance avoids three map allocations per
+	// SELECT.
+	queryOptimizerOnce sync.Once
+	queryOptimizer     *query.QueryOptimizer
+
+	// cacheEpoch increments on every query-cache invalidation. The cached
+	// SELECT path releases cat.mu during the scan, so a write can commit and
+	// invalidate the cache between scan and queryCache.Set; comparing the
+	// epoch captured at query start against the current value before Set
+	// prevents re-inserting stale rows.
+	cacheEpoch atomic.Uint64
+}
+
+// getQueryOptimizer returns the catalog-wide query optimizer, creating it on
+// first use. Safe for concurrent callers.
+func (c *Catalog) getQueryOptimizer() *query.QueryOptimizer {
+	c.queryOptimizerOnce.Do(func() {
+		c.queryOptimizer = query.NewQueryOptimizer()
+	})
+	return c.queryOptimizer
 }
 
 func (c *Catalog) commitLockIdx(treeName string, key string) int {
@@ -520,10 +562,13 @@ func (c *Catalog) ensureVacuumMaps() {
 
 // tryViewSelect attempts to resolve the query against a view. Returns handled=true
 // if the FROM clause references a view and the query was fully resolved.
-func (cat *Catalog) tryViewSelect(stmt *query.SelectStmt, args []interface{}) (bool, []string, [][]interface{}, error) {
+// When the view result is materialized for later JOIN resolution (handled=false
+// with a non-nil cleanup), the caller must invoke cleanup once the query
+// finishes to release the per-query result registration.
+func (cat *Catalog) tryViewSelect(stmt *query.SelectStmt, args []interface{}) (bool, []string, [][]interface{}, func(), error) {
 	view, viewErr := cat.getViewLocked(stmt.From.Name)
 	if viewErr != nil {
-		return false, nil, nil, nil
+		return false, nil, nil, nil, nil
 	}
 
 	// A view that carries its own ORDER BY / LIMIT / OFFSET must be evaluated as
@@ -553,18 +598,18 @@ func (cat *Catalog) tryViewSelect(stmt *query.SelectStmt, args []interface{}) (b
 	if viewIsComplex {
 		viewCols, viewRows, err := cat.selectLocked(view, args)
 		if err != nil {
-			return true, nil, nil, err
+			return true, nil, nil, nil, err
 		}
 		if len(stmt.Joins) == 0 {
 			cols, rows, err := cat.applyOuterQuery(stmt, viewCols, viewRows, args)
-			return true, cols, rows, err
+			return true, cols, rows, nil, err
 		}
-		viewResultName := toLowerFast(stmt.From.Name)
-		if cat.cteResults == nil {
-			cat.cteResults = make(map[string]*cteResultSet)
-		}
-		cat.cteResults[viewResultName] = &cteResultSet{columns: viewCols, rows: viewRows}
-		return false, nil, nil, nil
+		// View + JOIN: register the materialized view result in the per-query
+		// overlay so the JOIN execution can resolve it by name. This must NOT
+		// touch the shared cteResults map — that races under the read lock and
+		// leaks results across concurrent queries using the same view.
+		cleanup := cat.setLocalCTEResult(stmt.From.Name, &cteResultSet{columns: viewCols, rows: viewRows})
+		return false, nil, nil, cleanup, nil
 	}
 
 	var mergedJoins []*query.JoinClause
@@ -604,43 +649,44 @@ func (cat *Catalog) tryViewSelect(stmt *query.SelectStmt, args []interface{}) (b
 		}
 	}
 	cols, rows, err := cat.selectLocked(mergedStmt, args)
-	return true, cols, rows, err
+	return true, cols, rows, nil, err
 }
 
 // resolveFromTable resolves the FROM clause table name to a TableDef by
 // checking the catalog table registry, CTE results, and materialized views.
-func (cat *Catalog) resolveFromTable(name string) (*TableDef, error) {
+// When the resolution materializes a result set for the current query
+// (materialized views), the returned cleanup func is non-nil and must be
+// called once the query finishes.
+func (cat *Catalog) resolveFromTable(name string) (*TableDef, func(), error) {
 	table, err := cat.getTableLocked(name)
 	if err == nil {
-		return table, nil
+		return table, nil, nil
 	}
 
-	// Check if it's a CTE result
-	if cat.cteResults != nil {
-		if cteRes, ok := cat.cteResults[toLowerFast(name)]; ok {
-			table = &TableDef{Name: name}
-			for _, colName := range cteRes.columns {
-				table.Columns = append(table.Columns, ColumnDef{Name: colName, Type: "TEXT"})
-			}
-			return table, nil
+	// Check if it's a CTE result (per-query overlay first, then shared map)
+	if cteRes, ok := cat.lookupCTEResult(name); ok {
+		table = &TableDef{Name: name}
+		for _, colName := range cteRes.columns {
+			table.Columns = append(table.Columns, ColumnDef{Name: colName, Type: "TEXT"})
 		}
+		return table, nil, nil
 	}
 
 	// Check for materialized view
 	if mv, mvErr := cat.getMaterializedViewLocked(name); mvErr == nil {
 		table = &TableDef{Name: name}
 		table.Columns = materializedViewColumnDefs(mv)
-		// Register as temporary CTE-like result for this query
-		if cat.cteResults == nil {
-			cat.cteResults = make(map[string]*cteResultSet)
-		}
+		// Register as a per-query result so downstream scan/JOIN helpers can
+		// resolve the materialized view's rows by name. Stored in the
+		// goroutine-local overlay (not the shared cteResults map, which would
+		// race under the read lock).
 		cols := materializedViewColumnNames(mv)
 		_, rows := materializedViewColumnsAndRows(mv)
-		cat.cteResults[toLowerFast(name)] = &cteResultSet{columns: cols, rows: rows}
-		return table, nil
+		cleanup := cat.setLocalCTEResult(name, &cteResultSet{columns: cols, rows: rows})
+		return table, cleanup, nil
 	}
 
-	return nil, fmt.Errorf("table '%s' not found", name)
+	return nil, nil, fmt.Errorf("table '%s' not found", name)
 }
 
 // selectLocked executes a SELECT while assuming cat.mu is already held.
@@ -718,8 +764,7 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 		len(stmt.Columns) == 0 || stmt.Limit != nil || stmt.Offset != nil ||
 		stmt.AsOf != nil
 	if needsOptimize {
-		optimizer := query.NewQueryOptimizer()
-		if optimizedStmt, err := optimizer.OptimizeSelect(stmt); err == nil && optimizedStmt != nil {
+		if optimizedStmt, err := cat.getQueryOptimizer().OptimizeSelect(stmt); err == nil && optimizedStmt != nil {
 			stmt = optimizedStmt
 		}
 	}
@@ -771,34 +816,37 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 		if len(stmt.Joins) == 0 {
 			return cat.applyOuterQuery(stmt, subCols, subRows, args)
 		}
-		// Derived table with JOINs: store as temporary CTE result so
-		// executeSelectWithJoin can resolve it
-		if cat.cteResults == nil {
-			cat.cteResults = make(map[string]*cteResultSet)
-		}
-		dtName := toLowerFast(stmt.From.Alias)
-		cat.cteResults[dtName] = &cteResultSet{columns: subCols, rows: subRows}
-		defer delete(cat.cteResults, dtName)
+		// Derived table with JOINs: register as a per-query result so
+		// executeSelectWithJoin can resolve it. The goroutine-local overlay
+		// keeps concurrent queries using the same alias isolated (the shared
+		// cteResults map raced under the read lock).
+		cleanup := cat.setLocalCTEResult(stmt.From.Alias, &cteResultSet{columns: subCols, rows: subRows})
+		defer cleanup()
 		// Fall through to normal JOIN handling
 	}
 
 	// Check if it's a pre-computed CTE result (from recursive CTE execution)
-	if cat.cteResults != nil {
-		if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
-			if result, handled := cat.handleCTEResult(stmt, args, cteRes); handled {
-				return result.cols, result.rows, result.err
-			}
-			// CTE with JOINs: fall through to executeSelectWithJoin
+	if cteRes, ok := cat.lookupCTEResult(stmt.From.Name); ok {
+		if result, handled := cat.handleCTEResult(stmt, args, cteRes); handled {
+			return result.cols, result.rows, result.err
 		}
+		// CTE with JOINs: fall through to executeSelectWithJoin
 	}
 
 	// Check if it's a view first
-	if handled, cols, rows, err := cat.tryViewSelect(stmt, args); handled {
-		return cols, rows, err
+	handled, viewCols, viewRows, viewCleanup, viewErr := cat.tryViewSelect(stmt, args)
+	if viewCleanup != nil {
+		defer viewCleanup()
+	}
+	if handled {
+		return viewCols, viewRows, viewErr
 	}
 
 	// Not a view - try to get as a table (or CTE result for JOIN queries)
-	table, err := cat.resolveFromTable(stmt.From.Name)
+	table, fromCleanup, err := cat.resolveFromTable(stmt.From.Name)
+	if fromCleanup != nil {
+		defer fromCleanup()
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -916,10 +964,7 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	var isMV bool
 	trees, err := cat.getTableTreesForScanWithOptions(table, cat.buildFDWScanOptions(stmt, args))
 	if err != nil {
-		if cat.cteResults == nil {
-			return nil, nil, err
-		}
-		cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]
+		cteRes, ok := cat.lookupCTEResult(stmt.From.Name)
 		if !ok {
 			return nil, nil, err
 		}
@@ -947,8 +992,8 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 		UseIndex:     useIndex,
 		SchemaVer:    cat.schemaVersion.Load(),
 	}
-	if !isMV && len(trees) == 0 && cat.cteResults != nil {
-		if cteRes, ok := cat.cteResults[toLowerFast(stmt.From.Name)]; ok {
+	if !isMV && len(trees) == 0 {
+		if cteRes, ok := cat.lookupCTEResult(stmt.From.Name); ok {
 			mvRows = cteRes.rows
 			isMV = true
 		}
@@ -1052,11 +1097,17 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 		for _, fullRow := range mvRows {
 			if stmt.Where != nil {
 				matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-				if err != nil || !matched {
+				if err != nil {
+					return nil, nil, err
+				}
+				if !matched {
 					continue
 				}
 			}
-			selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
+			selectedRow, err := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
+			if err != nil {
+				return nil, nil, err
+			}
 			rows = append(rows, selectedRow)
 			if hasWindowFuncs {
 				fullRowCopy := make([]interface{}, len(fullRow))
@@ -1134,11 +1185,19 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 				fullRow := vrow.Data
 				if stmt.Where != nil {
 					matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-					if err != nil || !matched {
+					if err != nil {
+						iter.Close()
+						return nil, nil, err
+					}
+					if !matched {
 						continue
 					}
 				}
-				selectedRow := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
+				selectedRow, err := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
+				if err != nil {
+					iter.Close()
+					return nil, nil, err
+				}
 				rows = append(rows, selectedRow)
 				if hasWindowFuncs {
 					fullRowCopy := make([]interface{}, len(fullRow))
@@ -1200,16 +1259,29 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			if canParallel {
 				values := make([][]byte, len(pairs))
 				for i, p := range pairs {
-					if _, err := decodeVersionedRow(p.value, len(table.Columns)); err != nil {
-						return nil, nil, fmt.Errorf("select: failed to decode row in table %s: %w", table.Name, err)
-					}
 					values[i] = p.value
 				}
+				// Workers decode/filter/project their chunks; the first error
+				// (decode, WHERE eval, or projection) fails the whole query
+				// instead of being silently dropped.
+				var workerErrMu sync.Mutex
+				var workerErr error
 				results := parallel.ParallelSelectRows(values, parallelWorkers, parallelThreshold,
 					func(chunk [][]byte) [][]interface{} {
-						chunkRows, _, _ := cat.processRowChunk(chunk, table, selectCols, stmt, args, queryTime, false)
+						chunkRows, _, err := cat.processRowChunk(chunk, table, selectCols, stmt, args, queryTime, false)
+						if err != nil {
+							workerErrMu.Lock()
+							if workerErr == nil {
+								workerErr = err
+							}
+							workerErrMu.Unlock()
+							return nil
+						}
 						return chunkRows
 					})
+				if workerErr != nil {
+					return nil, nil, workerErr
+				}
 				rows = append(rows, results...)
 			} else {
 				if cap(rows) == 0 {
@@ -1249,7 +1321,8 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 //   - selectedRow is the projected row to append to results
 //   - fullRow is the decoded row data (for window function tracking)
 //   - ok=true means the row passed visibility and WHERE filters and should be kept
-//   - err is non-nil only for decode failures (not for invisible/unmatched rows)
+//   - err is non-nil for decode failures and WHERE/projection evaluation errors
+//     (invisible/unmatched rows return ok=false with a nil error)
 //
 // This consolidates the decode → visibility → WHERE → project pattern used
 // across index scans, MV scans, and B-tree sequential scans.
@@ -1264,11 +1337,17 @@ func (cat *Catalog) filterAndProjectRow(valueData []byte, table *TableDef, stmt 
 	fullRow = vrow.Data
 	if stmt.Where != nil {
 		matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-		if err != nil || !matched {
+		if err != nil {
+			return nil, nil, false, err
+		}
+		if !matched {
 			return nil, nil, false, nil
 		}
 	}
-	selectedRow = cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
+	selectedRow, err = cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
+	if err != nil {
+		return nil, nil, false, err
+	}
 	return selectedRow, fullRow, true, nil
 }
 
@@ -2585,42 +2664,19 @@ func (cat *Catalog) processRowChunk(
 		fullRow := vrow.Data
 		if stmt.Where != nil {
 			matched, err := evaluateWhere(cat, fullRow, table.Columns, stmt.Where, args)
-			if err != nil || !matched {
-				// Match the serial scan path (filterAndProjectRow): a WHERE-eval
-				// error skips the row rather than failing the whole query, so
-				// parallel and serial scans return the same result set
-				// regardless of candidate-row count (which selects the path).
+			if err != nil {
+				// Match the serial scan path (filterAndProjectRow): WHERE
+				// evaluation errors fail the query instead of silently
+				// dropping rows.
+				return nil, nil, err
+			}
+			if !matched {
 				continue
 			}
 		}
-		var selectedRow []interface{}
-		if isIdentityProjection(selectCols, len(fullRow)) {
-			selectedRow = fullRow
-		} else {
-			selectedRow = make([]interface{}, len(selectCols))
-			for i, ci := range selectCols {
-				if ci.isWindow {
-					continue
-				}
-				if ci.index >= 0 && ci.index < len(fullRow) {
-					selectedRow[i] = fullRow[ci.index]
-				} else if ci.index == -1 && !ci.isAggregate {
-					if i < len(stmt.Columns) {
-						val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
-						if err == nil {
-							selectedRow[i] = val
-						}
-					} else if len(ci.name) > 10 && ci.name[:10] == "__orderby_" {
-						var obIdx int
-						if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
-							val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
-							if err == nil {
-								selectedRow[i] = val
-							}
-						}
-					}
-				}
-			}
+		selectedRow, err := cat.projectSelectedRow(fullRow, selectCols, stmt, table, args, hasWindowFuncs)
+		if err != nil {
+			return nil, nil, err
 		}
 		rows = append(rows, selectedRow)
 		if hasWindowFuncs {

@@ -361,7 +361,7 @@ func TestEvaluateCastExpr(t *testing.T) {
 		Expr:     &query.NullLiteral{},
 		DataType: query.TokenInteger,
 	}
-	result, err := evaluateCastExpr(catalog, row, columns, nullCast, nil)
+	result, err := evaluateExpression(catalog, row, columns, nullCast, nil)
 	if err != nil {
 		t.Errorf("evaluateCastExpr(NULL) error = %v", err)
 	}
@@ -374,7 +374,7 @@ func TestEvaluateCastExpr(t *testing.T) {
 		Expr:     &query.NumberLiteral{Value: 3.9},
 		DataType: query.TokenInteger,
 	}
-	result2, err := evaluateCastExpr(catalog, row, columns, floatToInt, nil)
+	result2, err := evaluateExpression(catalog, row, columns, floatToInt, nil)
 	if err != nil {
 		t.Errorf("evaluateCastExpr(float to int) error = %v", err)
 	}
@@ -387,7 +387,7 @@ func TestEvaluateCastExpr(t *testing.T) {
 		Expr:     &query.StringLiteral{Value: "3.14"},
 		DataType: query.TokenReal,
 	}
-	result3, err := evaluateCastExpr(catalog, row, columns, strToReal, nil)
+	result3, err := evaluateExpression(catalog, row, columns, strToReal, nil)
 	if err != nil {
 		t.Errorf("evaluateCastExpr(string to real) error = %v", err)
 	}
@@ -400,7 +400,7 @@ func TestEvaluateCastExpr(t *testing.T) {
 		Expr:     &query.BooleanLiteral{Value: true},
 		DataType: query.TokenText,
 	}
-	result4, err := evaluateCastExpr(catalog, row, columns, boolToText, nil)
+	result4, err := evaluateExpression(catalog, row, columns, boolToText, nil)
 	if err != nil {
 		t.Errorf("evaluateCastExpr(bool to text) error = %v", err)
 	}
@@ -413,7 +413,7 @@ func TestEvaluateCastExpr(t *testing.T) {
 		Expr:     &query.StringLiteral{Value: "TRUE"},
 		DataType: query.TokenBoolean,
 	}
-	result5, err := evaluateCastExpr(catalog, row, columns, strToBoolTrue, nil)
+	result5, err := evaluateExpression(catalog, row, columns, strToBoolTrue, nil)
 	if err != nil {
 		t.Errorf("evaluateCastExpr(string 'TRUE' to bool) error = %v", err)
 	}
@@ -426,7 +426,7 @@ func TestEvaluateCastExpr(t *testing.T) {
 		Expr:     &query.StringLiteral{Value: "1"},
 		DataType: query.TokenBoolean,
 	}
-	result6, err := evaluateCastExpr(catalog, row, columns, strToBoolOne, nil)
+	result6, err := evaluateExpression(catalog, row, columns, strToBoolOne, nil)
 	if err != nil {
 		t.Errorf("evaluateCastExpr(string '1' to bool) error = %v", err)
 	}
@@ -439,7 +439,7 @@ func TestEvaluateCastExpr(t *testing.T) {
 		Expr:     &query.StringLiteral{Value: "false"},
 		DataType: query.TokenBoolean,
 	}
-	result7, err := evaluateCastExpr(catalog, row, columns, strToBoolFalse, nil)
+	result7, err := evaluateExpression(catalog, row, columns, strToBoolFalse, nil)
 	if err != nil {
 		t.Errorf("evaluateCastExpr(string 'false' to bool) error = %v", err)
 	}
@@ -452,7 +452,7 @@ func TestEvaluateCastExpr(t *testing.T) {
 		Expr:     &query.NumberLiteral{Value: 0.0},
 		DataType: query.TokenBoolean,
 	}
-	result8, err := evaluateCastExpr(catalog, row, columns, floatToBool, nil)
+	result8, err := evaluateExpression(catalog, row, columns, floatToBool, nil)
 	if err != nil {
 		t.Errorf("evaluateCastExpr(float to bool) error = %v", err)
 	}
@@ -465,7 +465,7 @@ func TestEvaluateCastExpr(t *testing.T) {
 		Expr:     &query.StringLiteral{Value: "not_a_number"},
 		DataType: query.TokenInteger,
 	}
-	result9, err := evaluateCastExpr(catalog, row, columns, invalidStrToInt, nil)
+	result9, err := evaluateExpression(catalog, row, columns, invalidStrToInt, nil)
 	if err != nil {
 		t.Errorf("evaluateCastExpr(invalid string to int) error = %v", err)
 	}
@@ -478,7 +478,7 @@ func TestEvaluateCastExpr(t *testing.T) {
 		Expr:     &query.StringLiteral{Value: "not_a_number"},
 		DataType: query.TokenReal,
 	}
-	result10, err := evaluateCastExpr(catalog, row, columns, invalidStrToReal, nil)
+	result10, err := evaluateExpression(catalog, row, columns, invalidStrToReal, nil)
 	if err != nil {
 		t.Errorf("evaluateCastExpr(invalid string to real) error = %v", err)
 	}
@@ -3745,11 +3745,11 @@ func TestEvalExpression_FunctionCall(t *testing.T) {
 			Args: []query.Expression{&query.StringLiteral{Value: "HELLO"}},
 		}, nil, "hello", false},
 
-		// LENGTH
+		// LENGTH (returns int64, matching the main eval path)
 		{"length", &query.FunctionCall{
 			Name: "LENGTH",
 			Args: []query.Expression{&query.StringLiteral{Value: "hello"}},
-		}, nil, 5, false},
+		}, nil, int64(5), false},
 
 		// TRIM
 		{"trim", &query.FunctionCall{
@@ -4185,7 +4185,7 @@ func TestEvaluateFunctionCall(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := evaluateFunctionCall(catalog, row, columns, tt.expr, nil)
+			result, err := evaluateExpression(catalog, row, columns, tt.expr, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("evaluateFunctionCall() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -4305,7 +4305,7 @@ func TestEvaluateIn(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := evaluateIn(catalog, row, columns, tt.expr, nil)
+			result, err := evaluateExpression(catalog, row, columns, tt.expr, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("evaluateIn() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -4384,7 +4384,7 @@ func TestEvaluateIn_Subquery(t *testing.T) {
 		Not: false,
 	}
 
-	result, err := evaluateIn(catalog, row, columns, subqueryFound, nil)
+	result, err := evaluateExpression(catalog, row, columns, subqueryFound, nil)
 	if err != nil {
 		t.Errorf("evaluateIn(subquery found) error = %v", err)
 	}
@@ -4403,7 +4403,7 @@ func TestEvaluateIn_Subquery(t *testing.T) {
 		Not: false,
 	}
 
-	result2, err := evaluateIn(catalog, row, columns, subqueryNotFound, nil)
+	result2, err := evaluateExpression(catalog, row, columns, subqueryNotFound, nil)
 	if err != nil {
 		t.Errorf("evaluateIn(subquery not found) error = %v", err)
 	}
@@ -4422,7 +4422,7 @@ func TestEvaluateIn_Subquery(t *testing.T) {
 		Not: true,
 	}
 
-	result3, err := evaluateIn(catalog, row, columns, notInSubquery, nil)
+	result3, err := evaluateExpression(catalog, row, columns, notInSubquery, nil)
 	if err != nil {
 		t.Errorf("evaluateIn(NOT IN subquery) error = %v", err)
 	}
@@ -13090,7 +13090,10 @@ func TestEvaluateJSONFunction(t *testing.T) {
 		{"json_extract_nested", "JSON_EXTRACT", []interface{}{`{"user":{"name":"Jane"}}`, "$.user.name"}, false, func(got interface{}) bool {
 			return got == "Jane"
 		}},
-		{"json_extract_missing", "JSON_EXTRACT", []interface{}{`{"name":"John"}`, "$.missing"}, true, func(got interface{}) bool {
+		// A missing path yields SQL NULL (MySQL semantics), not an error —
+		// projection errors now propagate to the client, so an error here
+		// would fail the whole query instead of returning NULL.
+		{"json_extract_missing", "JSON_EXTRACT", []interface{}{`{"name":"John"}`, "$.missing"}, false, func(got interface{}) bool {
 			return got == nil
 		}},
 

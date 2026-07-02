@@ -84,12 +84,6 @@ func (c *boundedRegexpCache) evictIfFull() {
 	}
 }
 
-func (c *boundedRegexpCache) len() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.items)
-}
-
 func unmarshalJSONInput(input string, target interface{}) error {
 	if len(input) > maxJSONDocumentBytes {
 		return fmt.Errorf("%w: maximum allowed size is %d bytes", errJSONInputTooLarge, maxJSONDocumentBytes)
@@ -361,12 +355,6 @@ func (c *boundedJSONPathCache) evictIfFull() {
 	}
 }
 
-func (c *boundedJSONPathCache) len() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.items)
-}
-
 // JSONExtract extracts a value from JSON using a path
 func JSONExtract(jsonData, path string) (interface{}, error) {
 	if jsonData == "" {
@@ -383,7 +371,15 @@ func JSONExtract(jsonData, path string) (interface{}, error) {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
-	return jp.Get(data)
+	val, err := jp.Get(data)
+	if err != nil {
+		// A path that does not exist in the document yields SQL NULL (MySQL
+		// JSON_EXTRACT semantics), not an error. Previously projection errors
+		// were silently converted to NULL, which masked this; with projection
+		// errors now propagated, the missing-path case must be NULL here.
+		return nil, nil //nolint:nilerr // missing path => SQL NULL by design
+	}
+	return val, nil
 }
 
 // JSONSet sets a value in JSON using a path

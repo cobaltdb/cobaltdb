@@ -197,20 +197,6 @@ func extractJSONPathValue(current interface{}, path string) interface{} {
 	return current
 }
 
-func (c *Catalog) extractJSONValue(row []interface{}, column, path string) interface{} {
-	// Enhanced JSON path resolution supporting nested paths like $.key1.key2.key3
-	for _, val := range row {
-		doc, err := normalizeJSONDocument(val)
-		if err != nil || doc == nil {
-			continue
-		}
-		if current := extractJSONPathValue(doc, path); current != nil {
-			return current
-		}
-	}
-	return nil
-}
-
 // float64Key converts float64 to string key for JSON index
 // Uses integer representation for whole numbers to avoid precision issues
 func float64Key(f float64) string {

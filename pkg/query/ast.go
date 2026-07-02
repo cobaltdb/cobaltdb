@@ -916,7 +916,66 @@ type FunctionCall struct {
 
 func (e *FunctionCall) nodeType() string { return "FunctionCall" }
 func (e *FunctionCall) expressionNode()  {}
+
+// BoolEvaluator is an optional extension of Evaluator that converts an
+// evaluated value to a SQL boolean. Lazily evaluated CASE/IIF conditions use
+// it so truthiness matches the engine's coercion rules.
+type BoolEvaluator interface {
+	EvalBool(val interface{}) bool
+}
+
+// evalConditionTruthy reports whether an evaluated condition value counts as
+// true. It defers to the evaluator's own coercion rules when available.
+func evalConditionTruthy(ev Evaluator, v interface{}) bool {
+	if v == nil {
+		return false
+	}
+	if be, ok := ev.(BoolEvaluator); ok {
+		return be.EvalBool(v)
+	}
+	switch n := v.(type) {
+	case bool:
+		return n
+	case int:
+		return n != 0
+	case int64:
+		return n != 0
+	case float64:
+		return n != 0
+	case string:
+		return n != ""
+	}
+	return true
+}
+
 func (e *FunctionCall) Evaluate(ev Evaluator) (interface{}, error) {
+	// Guard-style functions must evaluate their arguments lazily: an argument
+	// that the guard makes unreachable (e.g. the 1/0 in COALESCE(a, 1/0) when
+	// a is non-NULL) must never run. All other functions evaluate eagerly.
+	switch strings.ToUpper(e.Name) {
+	case "COALESCE", "IFNULL":
+		for _, arg := range e.Args {
+			v, err := arg.Evaluate(ev)
+			if err != nil {
+				return nil, err
+			}
+			if v != nil {
+				return v, nil
+			}
+		}
+		return nil, nil
+	case "IIF", "IF":
+		if len(e.Args) == 3 {
+			cond, err := e.Args[0].Evaluate(ev)
+			if err != nil {
+				return nil, err
+			}
+			if evalConditionTruthy(ev, cond) {
+				return e.Args[1].Evaluate(ev)
+			}
+			return e.Args[2].Evaluate(ev)
+		}
+	}
 	args := make([]interface{}, len(e.Args))
 	for i, arg := range e.Args {
 		v, err := arg.Evaluate(ev)
@@ -1121,34 +1180,62 @@ type WhenClause struct {
 func (e *CaseExpr) nodeType() string { return "CaseExpr" }
 func (e *CaseExpr) expressionNode()  {}
 func (e *CaseExpr) Evaluate(ev Evaluator) (interface{}, error) {
-	var exprVal interface{}
-	var err error
+	// CASE evaluates lazily: only the conditions up to (and including) the
+	// first match run, then only that branch's result. Guarded expressions
+	// such as CASE WHEN b <> 0 THEN a/b ELSE 0 END must never evaluate a/b
+	// when b = 0.
 	if e.Expr != nil {
-		exprVal, err = e.Expr.Evaluate(ev)
+		// Simple CASE. The parser rewrites `CASE x WHEN v` conditions into
+		// `x = v` predicates (which evaluate to bool/NULL) while keeping
+		// Expr set; manually built ASTs may instead carry raw comparison
+		// values. Handle both: a bool/NULL condition value is used as a
+		// predicate, anything else is compared against the base value.
+		baseVal, err := e.Expr.Evaluate(ev)
 		if err != nil {
 			return nil, err
+		}
+		for _, w := range e.Whens {
+			condVal, err := w.Condition.Evaluate(ev)
+			if err != nil {
+				return nil, err
+			}
+			matched := false
+			switch cv := condVal.(type) {
+			case nil:
+				// UNKNOWN predicate or NULL comparison value: no match.
+			case bool:
+				matched = cv
+			default:
+				// Per SQL, a NULL base value never matches any WHEN.
+				if baseVal != nil {
+					m, err := ev.EvalBinaryExpr(baseVal, condVal, TokenEq)
+					if err != nil {
+						return nil, err
+					}
+					b, ok := m.(bool)
+					matched = ok && b
+				}
+			}
+			if matched {
+				return w.Result.Evaluate(ev)
+			}
+		}
+	} else {
+		// Searched CASE: evaluate conditions in order until one is true.
+		for _, w := range e.Whens {
+			cond, err := w.Condition.Evaluate(ev)
+			if err != nil {
+				return nil, err
+			}
+			if evalConditionTruthy(ev, cond) {
+				return w.Result.Evaluate(ev)
+			}
 		}
 	}
-	whens := make([][2]interface{}, len(e.Whens))
-	for i, w := range e.Whens {
-		cond, err := w.Condition.Evaluate(ev)
-		if err != nil {
-			return nil, err
-		}
-		result, err := w.Result.Evaluate(ev)
-		if err != nil {
-			return nil, err
-		}
-		whens[i] = [2]interface{}{cond, result}
-	}
-	var elseVal interface{}
 	if e.Else != nil {
-		elseVal, err = e.Else.Evaluate(ev)
-		if err != nil {
-			return nil, err
-		}
+		return e.Else.Evaluate(ev)
 	}
-	return ev.EvalCase(exprVal, whens, elseVal)
+	return nil, nil
 }
 
 // SubqueryExpr represents a subquery expression

@@ -63,8 +63,26 @@ func (p *Parser) leaveDepth() {
 	p.depth--
 }
 
-// Parse parses the tokens and returns a statement
+// Parse parses the tokens and returns a statement. After the statement is
+// parsed, any remaining tokens other than trailing semicolons are rejected —
+// previously trailing garbage (e.g. `DELETE FROM t WHERE id = 1 SOME GARBAGE`)
+// was silently ignored and the truncated statement executed.
 func (p *Parser) Parse() (Statement, error) {
+	stmt, err := p.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expectStatementEnd(); err != nil {
+		return nil, err
+	}
+	return stmt, nil
+}
+
+// parseStatement parses a single statement starting at the current token and
+// leaves the parser positioned after it. Used by Parse (which additionally
+// requires end-of-input) and by nested-statement contexts (procedure bodies,
+// EXPLAIN, trigger bodies) where more tokens legitimately follow.
+func (p *Parser) parseStatement() (Statement, error) {
 	// Reset placeholder counter for each parse
 	p.placeholderCount = 0
 	p.derivedAliasCount = 0
@@ -622,7 +640,7 @@ func (p *Parser) parseProcedureBody() ([]Statement, error) {
 		}
 
 		// Parse individual statements in the body
-		stmt, err := p.Parse()
+		stmt, err := p.parseStatement()
 		if err != nil {
 			return nil, fmt.Errorf("error parsing procedure body: %w", err)
 		}
@@ -725,9 +743,9 @@ func Parse(sql string) (Statement, error) {
 	return parser.Parse()
 }
 
-// ParseStrict parses a SQL string and rejects any non-semicolon tokens left
-// after the first statement. This preserves Parse's historical permissive
-// behavior while giving production callers a stricter compatibility gate.
+// ParseStrict parses a SQL string in strict mode: in addition to Parse's
+// trailing-token rejection, the parser errors on malformed token sequences
+// instead of silently tolerating mismatches.
 func ParseStrict(sql string) (Statement, error) {
 	tokens, err := Tokenize(sql)
 	if err != nil {
@@ -735,14 +753,7 @@ func ParseStrict(sql string) (Statement, error) {
 	}
 
 	parser := NewParserStrict(tokens)
-	stmt, err := parser.Parse()
-	if err != nil {
-		return nil, err
-	}
-	if err := parser.expectStatementEnd(); err != nil {
-		return nil, err
-	}
-	return stmt, nil
+	return parser.Parse()
 }
 
 func (p *Parser) expectStatementEnd() error {

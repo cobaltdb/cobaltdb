@@ -104,10 +104,8 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 		if err != nil {
 			return returnColumns, nil, err
 		}
-	} else if c.cteResults != nil {
-		if cteRes, ok := c.cteResults[toLowerFast(stmt.From.Name)]; ok {
-			groups, groupOrder = c.buildGroupByGroupsFromRows(table, stmt, args, groupBySpecs, cteRes.rows)
-		}
+	} else if cteRes, ok := c.lookupCTEResult(stmt.From.Name); ok {
+		groups, groupOrder = c.buildGroupByGroupsFromRows(table, stmt, args, groupBySpecs, cteRes.rows)
 	}
 	if groups == nil {
 		// Return empty result for GROUP BY on non-existent table
@@ -504,6 +502,62 @@ type jsonObjectAggPair struct {
 	value interface{}
 }
 
+// sumAccumulator accumulates SUM in the int64 domain while every input is an
+// integer-typed value, preserving full int64 precision (float64 can only hold
+// integers exactly up to 2^53). It falls back to float64 accumulation on the
+// first non-integer input or on int64 overflow, mirroring the addValues
+// pattern used by the + operator.
+type sumAccumulator struct {
+	isum    int64
+	fsum    float64
+	isFloat bool
+	has     bool
+}
+
+// add folds one value into the sum. NULLs and non-numeric values are ignored,
+// matching the previous float64-only behavior.
+func (a *sumAccumulator) add(v interface{}) {
+	if v == nil {
+		return
+	}
+	if !a.isFloat {
+		if i, ok := compareAsInt64(v); ok {
+			s := a.isum + i
+			// Overflow: switch to float64 accumulation.
+			if (i > 0 && s < a.isum) || (i < 0 && s > a.isum) {
+				a.isFloat = true
+				a.fsum = float64(a.isum) + float64(i)
+			} else {
+				a.isum = s
+			}
+			a.has = true
+			return
+		}
+		if f, ok := toFloat64(v); ok {
+			a.isFloat = true
+			a.fsum = float64(a.isum) + f
+			a.has = true
+		}
+		return
+	}
+	if f, ok := toFloat64(v); ok {
+		a.fsum += f
+		a.has = true
+	}
+}
+
+// result returns the accumulated sum: int64 when the accumulation stayed
+// integral, float64 otherwise, and nil (SQL NULL) when no value was added.
+func (a *sumAccumulator) result() interface{} {
+	if !a.has {
+		return nil
+	}
+	if a.isFloat {
+		return a.fsum
+	}
+	return a.isum
+}
+
 // reduceBasicAggregate applies basic aggregate functions over the supplied values.
 // For unknown function names it returns nil. When distinct is set, COUNT/SUM/AVG
 // deduplicate values first (e.g. COUNT(DISTINCT col), SUM(DISTINCT col)).
@@ -528,21 +582,11 @@ func reduceBasicAggregateWithSeparator(funcName string, values []interface{}, gr
 		}
 		return count
 	case "SUM":
-		var sum float64
-		hasVal := false
+		var acc sumAccumulator
 		for _, v := range values {
-			if v == nil {
-				continue
-			}
-			if f, ok := toFloat64(v); ok {
-				sum += f
-				hasVal = true
-			}
+			acc.add(v)
 		}
-		if hasVal {
-			return sum
-		}
-		return nil
+		return acc.result()
 	case "AVG":
 		var sum float64
 		var count int64
@@ -843,89 +887,73 @@ func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectC
 	sorted := make([][]interface{}, len(rows))
 	copy(sorted, rows)
 
-	sort.Slice(sorted, func(i, j int) bool {
-		for _, ob := range orderBy {
-			// Get the column name from the ORDER BY expression
-			var colName string
-			var exprArgMatch query.Expression // for expression-arg aggregates
-			if ident, ok := ob.Expr.(*query.Identifier); ok {
-				colName = ident.Name
-			} else if fn, ok := ob.Expr.(*query.FunctionCall); ok {
-				// Handle aggregate in ORDER BY
-				colName = fn.Name + "("
-				if len(fn.Args) > 0 {
-					switch arg := fn.Args[0].(type) {
-					case *query.Identifier:
-						colName += arg.Name + ")"
-					case *query.QualifiedIdentifier:
-						colName += arg.Column + ")"
-					case *query.StarExpr:
-						colName += "*)"
-					default:
-						// Expression argument (e.g., SUM(price * quantity))
-						// Use "*)" for name matching but also store for direct comparison
-						colName += "*)"
-						exprArgMatch = fn.Args[0]
-					}
-				} else {
+	// Resolve each ORDER BY expression to a column index ONCE before sorting.
+	// Building the aggregate signature string and scanning selectCols inside
+	// the comparator repeated that work O(n log n) times.
+	resolvedIdx := make([]int, len(orderBy))
+	for k, ob := range orderBy {
+		resolvedIdx[k] = -1
+		// Get the column name from the ORDER BY expression
+		var colName string
+		var exprArgMatch query.Expression // for expression-arg aggregates
+		if ident, ok := ob.Expr.(*query.Identifier); ok {
+			colName = ident.Name
+		} else if fn, ok := ob.Expr.(*query.FunctionCall); ok {
+			// Handle aggregate in ORDER BY
+			colName = fn.Name + "("
+			if len(fn.Args) > 0 {
+				switch arg := fn.Args[0].(type) {
+				case *query.Identifier:
+					colName += arg.Name + ")"
+				case *query.QualifiedIdentifier:
+					colName += arg.Column + ")"
+				case *query.StarExpr:
 					colName += "*)"
+				default:
+					// Expression argument (e.g., SUM(price * quantity))
+					// Use "*)" for name matching but also store for direct comparison
+					colName += "*)"
+					exprArgMatch = fn.Args[0]
 				}
-			} else if qi, ok := ob.Expr.(*query.QualifiedIdentifier); ok {
-				colName = qi.Column
-			} else if nl, ok := ob.Expr.(*query.NumberLiteral); ok {
-				// Positional ORDER BY (ORDER BY 1, 2, etc.)
-				pos := int(nl.Value) - 1 // 1-based to 0-based
-				if pos >= 0 && pos < len(selectCols) {
-					vi := sorted[i][pos]
-					vj := sorted[j][pos]
-					if vi == nil && vj == nil {
-						continue
-					}
-					if vi == nil {
-						return !ob.Desc
-					}
-					if vj == nil {
-						return ob.Desc
-					}
-					viF, viNum := toFloat64(vi)
-					vjF, vjNum := toFloat64(vj)
-					if viNum && vjNum {
-						if viF < vjF {
-							return !ob.Desc
-						} else if viF > vjF {
-							return ob.Desc
-						}
-						continue
-					}
-					viS := ValueToStringKey(vi)
-					vjS := ValueToStringKey(vj)
-					if viS < vjS {
-						return !ob.Desc
-					} else if viS > vjS {
-						return ob.Desc
-					}
-				}
-				continue
+			} else {
+				colName += "*)"
 			}
-
-			idx, ok := nameToIndex[toUpperFast(colName)]
-			if !ok {
-				continue
+		} else if qi, ok := ob.Expr.(*query.QualifiedIdentifier); ok {
+			colName = qi.Column
+		} else if nl, ok := ob.Expr.(*query.NumberLiteral); ok {
+			// Positional ORDER BY (ORDER BY 1, 2, etc.)
+			pos := int(nl.Value) - 1 // 1-based to 0-based
+			if pos >= 0 && pos < len(selectCols) {
+				resolvedIdx[k] = pos
 			}
+			continue
+		}
 
-			// For expression-arg aggregates, verify we found the right one
-			// (multiple aggregates could share "SUM(*)" name but have different expressions)
-			if exprArgMatch != nil {
-				// Try to find exact match by aggregateExpr
-				foundExact := false
-				for k, ci := range selectCols {
-					if ci.isAggregate && ci.aggregateExpr == exprArgMatch {
-						idx = k
-						foundExact = true
-						break
-					}
+		idx, ok := nameToIndex[toUpperFast(colName)]
+		if !ok {
+			continue
+		}
+
+		// For expression-arg aggregates, verify we found the right one
+		// (multiple aggregates could share "SUM(*)" name but have different expressions)
+		if exprArgMatch != nil {
+			// Try to find exact match by aggregateExpr
+			for ci2Idx, ci := range selectCols {
+				if ci.isAggregate && ci.aggregateExpr == exprArgMatch {
+					idx = ci2Idx
+					break
 				}
-				_ = foundExact // Fallback: use the name-matched index
+			}
+			// Fallback: use the name-matched index
+		}
+		resolvedIdx[k] = idx
+	}
+
+	sort.Slice(sorted, func(i, j int) bool {
+		for k, ob := range orderBy {
+			idx := resolvedIdx[k]
+			if idx < 0 || idx >= len(sorted[i]) || idx >= len(sorted[j]) {
+				continue
 			}
 
 			// Compare values

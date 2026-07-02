@@ -618,7 +618,7 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 				}
 				hasPrimaryKey = true
 				if numLit, ok := valueRow[valueIdx].(*query.NumberLiteral); ok {
-					k, iv, whole := formatFloatKey(numLit.Value)
+					k, iv, whole := numberLiteralPKKey(numLit)
 					key = k
 					if whole && iv > atomic.LoadInt64(&table.AutoIncSeq) {
 						atomic.StoreInt64(&table.AutoIncSeq, iv)
@@ -863,6 +863,19 @@ func formatFloatKey(f float64) (string, int64, bool) {
 		return formatKey(iv), iv, true
 	}
 	return "F:" + strconv.FormatFloat(f, 'g', -1, 64), 0, false
+}
+
+// numberLiteralPKKey builds the primary-key btree key for a numeric literal.
+// Integer literals go through the Raw text so full int64 precision is kept:
+// routing them through the float64 Value corrupts values above 2^53 and the
+// row is stored under (and looked up by) a wrong key.
+func numberLiteralPKKey(numLit *query.NumberLiteral) (string, int64, bool) {
+	if numLit.Raw != "" && !strings.ContainsAny(numLit.Raw, ".eE") {
+		if iv, err := strconv.ParseInt(numLit.Raw, 10, 64); err == nil {
+			return formatKey(iv), iv, true
+		}
+	}
+	return formatFloatKey(numLit.Value)
 }
 
 // compositeKeySep separates columns in a composite primary key. 0x00 is safe:
@@ -1468,7 +1481,7 @@ func (c *Catalog) prepareInsertRow(
 			}
 			hasPrimaryKey = true
 			if numLit, ok := valueRow[valueIdx].(*query.NumberLiteral); ok {
-				k, iv, whole := formatFloatKey(numLit.Value)
+				k, iv, whole := numberLiteralPKKey(numLit)
 				key = k
 				// Keep auto-inc counter ahead of explicit (integer) values.
 				if whole && iv > atomic.LoadInt64(&table.AutoIncSeq) {

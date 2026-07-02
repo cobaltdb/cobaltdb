@@ -91,12 +91,16 @@ func TestConstraintsAndEdgeCases(t *testing.T) {
 	check("Division", "SELECT a / b FROM nums WHERE id = 2", 4)
 	check("Modulo", "SELECT 10 % 3", 1)
 
-	// Division by zero
+	// Division by zero: projection evaluation errors are no longer silently
+	// converted to NULL, so this must surface as a query error (and not crash).
 	total++
-	rows := afQuery(t, db, ctx, "SELECT a / b FROM nums WHERE id = 3")
-	t.Logf("Div by zero: %v", rows)
-	// Should return NULL or error, not crash
-	pass++ // Just surviving is a pass
+	if divRows, divErr := db.Query(ctx, "SELECT a / b FROM nums WHERE id = 3"); divErr != nil {
+		t.Logf("Div by zero: correctly rejected: %v", divErr)
+		pass++
+	} else {
+		divRows.Close()
+		t.Errorf("[FAIL] Div by zero: expected error, got success")
+	}
 
 	// === String operations ===
 	check("String concat ||", "SELECT 'hello' || ' ' || 'world'", "hello world")
@@ -115,7 +119,7 @@ func TestConstraintsAndEdgeCases(t *testing.T) {
 	checkRows("Subquery aggregate WHERE", "SELECT customer, amount FROM orders WHERE amount > (SELECT AVG(amount) FROM orders)", 2)
 
 	// Multiple aggregates in one query
-	rows = afQuery(t, db, ctx, "SELECT COUNT(*), SUM(amount), AVG(amount), MIN(amount), MAX(amount) FROM orders")
+	rows := afQuery(t, db, ctx, "SELECT COUNT(*), SUM(amount), AVG(amount), MIN(amount), MAX(amount) FROM orders")
 	t.Logf("Multi aggregate: %v", rows)
 	total++
 	if len(rows) == 1 && len(rows[0]) == 5 {

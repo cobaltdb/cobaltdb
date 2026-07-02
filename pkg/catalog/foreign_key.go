@@ -1590,24 +1590,6 @@ func (fke *ForeignKeyEnforcer) deserializeValue(data []byte) interface{} {
 	return str
 }
 
-// serializeCompositeKey serializes multiple values into a composite key
-func (fke *ForeignKeyEnforcer) serializeCompositeKey(values []interface{}) []byte {
-	var parts [][]byte
-	for _, v := range values {
-		parts = append(parts, fke.serializeValue(v))
-	}
-
-	// Join with a delimiter
-	var result []byte
-	for i, part := range parts {
-		if i > 0 {
-			result = append(result, 0x00) // Null byte delimiter
-		}
-		result = append(result, part...)
-	}
-	return result
-}
-
 // CheckForeignKeyConstraints checks all foreign key constraints for a table
 // This can be used to validate the entire database after bulk operations
 func (fke *ForeignKeyEnforcer) CheckForeignKeyConstraints(ctx context.Context, tableName string) error {

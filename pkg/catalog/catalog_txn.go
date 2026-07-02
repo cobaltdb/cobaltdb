@@ -60,6 +60,16 @@ func (c *Catalog) EnableQueryCacheWithLimits(maxBytes int64, maxEntries int, ttl
 func (c *Catalog) enableQueryCache(maxBytes int64, maxEntries int, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// A zero TTL previously meant "never expire"; default it to 5 minutes so
+	// callers that only size the cache still get bounded staleness.
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+	// Stop any previously-enabled cache first — overwriting it leaked its
+	// background cleanup goroutine.
+	if c.queryCache != nil {
+		c.queryCache.Close()
+	}
 	c.queryCache = cache.New(&cache.Config{
 		MaxEntries:      maxEntries,
 		MaxSize:         maxBytes,
@@ -101,9 +111,68 @@ func clampUint64ToInt64(v uint64) int64 {
 }
 
 func (c *Catalog) invalidateQueryCache(tableName string) {
+	// Bump the epoch first so a concurrent cached SELECT that finished its
+	// scan before this invalidation skips its queryCache.Set (see Select).
+	c.cacheEpoch.Add(1)
 	if c.queryCache != nil {
 		c.queryCache.InvalidateTable(tableName)
 	}
+}
+
+// invalidateQueryCacheAll drops every cached query result and bumps the
+// invalidation epoch so in-flight cached SELECTs do not re-insert stale rows.
+func (c *Catalog) invalidateQueryCacheAll() {
+	c.cacheEpoch.Add(1)
+	if c.queryCache != nil {
+		c.queryCache.InvalidateAll()
+	}
+}
+
+// resolveCacheTableDeps expands view names in a cache dependency list to the
+// views' base tables (recursively) so writes to those tables invalidate cached
+// results. Returns cacheable=false when a dependency cannot be resolved to
+// plain tables (materialized views, foreign tables), in which case the query
+// must not be cached. Caller must hold c.mu (read or write).
+func (c *Catalog) resolveCacheTableDeps(tables []string) ([]string, bool) {
+	resolved := make([]string, 0, len(tables))
+	seen := make(map[string]bool, len(tables))
+	var expand func(name string, depth int) bool
+	expand = func(name string, depth int) bool {
+		if depth > 16 {
+			return false
+		}
+		key := toLowerFast(name)
+		if seen[key] {
+			return true
+		}
+		seen[key] = true
+		if view, ok := c.views[name]; ok {
+			for _, t := range query.ExtractTablesFromQuery(view) {
+				if !expand(t, depth+1) {
+					return false
+				}
+			}
+			return true
+		}
+		// Materialized views and foreign tables have no write-path
+		// invalidation hook — results depending on them are uncacheable.
+		if _, ok := c.materializedViews[name]; ok {
+			return false
+		}
+		if c.foreignTables != nil {
+			if _, ok := c.foreignTables[name]; ok {
+				return false
+			}
+		}
+		resolved = append(resolved, name)
+		return true
+	}
+	for _, t := range tables {
+		if !expand(t, 0) {
+			return nil, false
+		}
+	}
+	return resolved, true
 }
 
 func (c *Catalog) CreateRLSPolicy(policy *security.Policy) error {
@@ -705,6 +774,30 @@ func flushTreeStoreMapLocked(kind string, trees map[string]btree.TreeStore) erro
 func (c *Catalog) RollbackTransaction() error {
 	// Rollback the Manager transaction first if present.
 	ts := c.getCurrentTxn()
+
+	// A SELECT executed inside this (still-open) transaction saw its buffered
+	// writes (read-your-writes) and may have cached those uncommitted rows.
+	// Collect every table the transaction touched so the query cache can be
+	// invalidated once the rollback completes.
+	touchedTables := make(map[string]bool)
+	if ts != nil {
+		for _, pw := range ts.pendingWrites {
+			if pw.TreeName != "" {
+				touchedTables[pw.TreeName] = true
+			}
+		}
+	}
+	for _, e := range c.getCurrentTxnUndoLog() {
+		if e.tableName != "" {
+			touchedTables[e.tableName] = true
+		}
+	}
+	defer func() {
+		for tbl := range touchedTables {
+			c.invalidateQueryCache(tbl)
+		}
+	}()
+
 	if ts != nil {
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
 			_ = mt.Rollback() // best-effort; continue with catalog rollback

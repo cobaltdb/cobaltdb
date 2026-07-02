@@ -143,10 +143,27 @@ func TestV16Advanced(t *testing.T) {
 	afExec(t, db, ctx, "INSERT INTO t2 VALUES (3, 'c')")
 	afExec(t, db, ctx, "INSERT INTO t2 VALUES (4, 'd')")
 
-	// Recursive CTE (hierarchy traversal)
+	// Recursive CTE (hierarchy traversal). The old version of this test
+	// referenced employees.manager_id, a column that does not exist; the WHERE
+	// error was silently swallowed and the CTE returned 0 rows. WHERE errors
+	// now propagate, so use a real self-referencing hierarchy instead.
+	afExec(t, db, ctx, "CREATE TABLE emp_h (id INTEGER PRIMARY KEY, name TEXT, manager_id INTEGER)")
+	afExec(t, db, ctx, "INSERT INTO emp_h VALUES (1, 'Root', NULL)")
+	afExec(t, db, ctx, "INSERT INTO emp_h VALUES (2, 'Child1', 1)")
+	afExec(t, db, ctx, "INSERT INTO emp_h VALUES (3, 'Child2', 1)")
 	check("Recursive CTE",
-		"WITH RECURSIVE emp_tree(id, name, mgr) AS (SELECT id, name, manager_id FROM employees WHERE manager_id IS NULL UNION ALL SELECT e.id, e.name, e.manager_id FROM employees e JOIN emp_tree et ON e.manager_id = et.id) SELECT COUNT(*) FROM emp_tree",
-		0) // Note: employees table from FK test above has no NULL manager_id rows
+		"WITH RECURSIVE emp_tree(id, name, mgr) AS (SELECT id, name, manager_id FROM emp_h WHERE manager_id IS NULL UNION ALL SELECT e.id, e.name, e.manager_id FROM emp_h e JOIN emp_tree et ON e.manager_id = et.id) SELECT COUNT(*) FROM emp_tree",
+		3)
+
+	// A recursive CTE whose anchor references a nonexistent column must fail
+	// loudly instead of silently returning an empty result.
+	total++
+	if _, badErr := db.Query(ctx, "WITH RECURSIVE bad_tree(id) AS (SELECT id FROM employees WHERE manager_id IS NULL UNION ALL SELECT e.id FROM employees e JOIN bad_tree bt ON e.id = bt.id) SELECT COUNT(*) FROM bad_tree"); badErr != nil {
+		t.Logf("Recursive CTE with unknown column: correctly rejected: %v", badErr)
+		pass++
+	} else {
+		t.Errorf("[FAIL] Recursive CTE with unknown column: expected error")
+	}
 
 	// ============================================================
 	// === UNION / UNION ALL ===

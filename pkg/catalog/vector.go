@@ -70,7 +70,9 @@ func (h *HNSWIndex) insertLocked(key string, vector []float64) error {
 	}
 
 	if _, exists := h.Nodes[key]; exists {
-		h.deleteLocked(key)
+		if err := h.deleteLocked(key); err != nil {
+			return fmt.Errorf("failed to replace existing vector %q: %w", key, err)
+		}
 	}
 
 	// Generate random level for the new node

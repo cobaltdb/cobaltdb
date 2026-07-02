@@ -35,15 +35,16 @@ func (c *Catalog) evaluateWindowFunctions(rows [][]interface{}, selectCols []sel
 			if i < len(fullRows) {
 				fRow = fullRows[i]
 			}
-			// Compute partition key
+			// Compute partition key using the collision-safe encoding shared
+			// with GROUP BY (a plain "|" join would conflate e.g. the value
+			// pairs ('x|y','z') and ('x','y|z') into one partition).
 			partKey := ""
 			if len(we.PartitionBy) > 0 {
-				var keyParts []string
+				keyVals := make([]interface{}, 0, len(we.PartitionBy))
 				for _, pExpr := range we.PartitionBy {
-					val := c.evalWindowExprOnRow(pExpr, row, selectCols, table, args, fRow)
-					keyParts = append(keyParts, ValueToStringKey(val))
+					keyVals = append(keyVals, c.evalWindowExprOnRow(pExpr, row, selectCols, table, args, fRow))
 				}
-				partKey = strings.Join(keyParts, "|")
+				partKey = rowKeyForDedup(keyVals)
 			}
 
 			if _, exists := partitions[partKey]; !exists {
@@ -100,12 +101,12 @@ func (c *Catalog) computeWindowExprColumn(we *query.WindowExpr, rows, fullRows [
 		}
 		partKey := ""
 		if len(we.PartitionBy) > 0 {
-			var keyParts []string
+			// Collision-safe partition key (see evaluateWindowFunctions).
+			keyVals := make([]interface{}, 0, len(we.PartitionBy))
 			for _, pExpr := range we.PartitionBy {
-				val := c.evalWindowExprOnRow(pExpr, row, selectCols, table, args, fRow)
-				keyParts = append(keyParts, ValueToStringKey(val))
+				keyVals = append(keyVals, c.evalWindowExprOnRow(pExpr, row, selectCols, table, args, fRow))
 			}
-			partKey = strings.Join(keyParts, "|")
+			partKey = rowKeyForDedup(keyVals)
 		}
 		if _, exists := partitions[partKey]; !exists {
 			partitionOrder = append(partitionOrder, partKey)
@@ -341,16 +342,18 @@ func (c *Catalog) evalWindowOffsetFunc(rows [][]interface{}, colIdx int, entries
 				offset = int(num.Value)
 			}
 		}
-		var defaultVal interface{}
-		if len(we.Args) >= 3 {
-			defaultVal = c.evalWindowExprOnRow(we.Args[2], entries[0].row, selectCols, table, args, entries[0].fullRow)
-		}
 		for i, entry := range entries {
 			if i-offset >= 0 {
 				if len(we.Args) > 0 {
 					rows[entry.originalIdx][colIdx] = c.evalWindowExprOnRow(we.Args[0], entries[i-offset].row, selectCols, table, args, entries[i-offset].fullRow)
 				}
 			} else {
+				// The default expression is evaluated against the current
+				// (out-of-range) row, not the partition's first row.
+				var defaultVal interface{}
+				if len(we.Args) >= 3 {
+					defaultVal = c.evalWindowExprOnRow(we.Args[2], entry.row, selectCols, table, args, entry.fullRow)
+				}
 				rows[entry.originalIdx][colIdx] = defaultVal
 			}
 		}
@@ -363,16 +366,18 @@ func (c *Catalog) evalWindowOffsetFunc(rows [][]interface{}, colIdx int, entries
 				offset = int(num.Value)
 			}
 		}
-		var defaultVal interface{}
-		if len(we.Args) >= 3 {
-			defaultVal = c.evalWindowExprOnRow(we.Args[2], entries[0].row, selectCols, table, args, entries[0].fullRow)
-		}
 		for i, entry := range entries {
 			if i+offset < len(entries) {
 				if len(we.Args) > 0 {
 					rows[entry.originalIdx][colIdx] = c.evalWindowExprOnRow(we.Args[0], entries[i+offset].row, selectCols, table, args, entries[i+offset].fullRow)
 				}
 			} else {
+				// The default expression is evaluated against the current
+				// (out-of-range) row, not the partition's first row.
+				var defaultVal interface{}
+				if len(we.Args) >= 3 {
+					defaultVal = c.evalWindowExprOnRow(we.Args[2], entry.row, selectCols, table, args, entry.fullRow)
+				}
 				rows[entry.originalIdx][colIdx] = defaultVal
 			}
 		}
@@ -542,8 +547,7 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 	case "SUM":
 		if len(we.Args) > 0 {
 			if len(we.OrderBy) > 0 {
-				sum := 0.0
-				hasVal := false
+				var acc sumAccumulator
 				i := 0
 				for i < len(entries) {
 					j := i
@@ -552,44 +556,25 @@ func (c *Catalog) evalWindowAggFunc(rows [][]interface{}, colIdx int, entries []
 					}
 					for k := i; k <= j; k++ {
 						if c.windowEntryPassesFilter(we, entries[k], selectCols, table, args) {
-							val := c.evalWindowExprOnRow(we.Args[0], entries[k].row, selectCols, table, args, entries[k].fullRow)
-							if val != nil {
-								if v, ok := toFloat64(val); ok {
-									sum += v
-									hasVal = true
-								}
-							}
+							acc.add(c.evalWindowExprOnRow(we.Args[0], entries[k].row, selectCols, table, args, entries[k].fullRow))
 						}
 					}
+					runningSum := acc.result()
 					for k := i; k <= j; k++ {
-						if hasVal {
-							rows[entries[k].originalIdx][colIdx] = sum
-						} else {
-							rows[entries[k].originalIdx][colIdx] = nil
-						}
+						rows[entries[k].originalIdx][colIdx] = runningSum
 					}
 					i = j + 1
 				}
 			} else {
-				sum := 0.0
-				hasVal := false
+				var acc sumAccumulator
 				for _, entry := range entries {
 					if c.windowEntryPassesFilter(we, entry, selectCols, table, args) {
-						val := c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)
-						if val != nil {
-							if v, ok := toFloat64(val); ok {
-								sum += v
-								hasVal = true
-							}
-						}
+						acc.add(c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow))
 					}
 				}
+				sum := acc.result()
 				for _, entry := range entries {
-					if hasVal {
-						rows[entry.originalIdx][colIdx] = sum
-					} else {
-						rows[entry.originalIdx][colIdx] = nil
-					}
+					rows[entry.originalIdx][colIdx] = sum
 				}
 			}
 		}
@@ -822,22 +807,14 @@ func (c *Catalog) evalWindowAggFrame(rows [][]interface{}, colIdx int, entries [
 			}
 			result = cnt
 		case "SUM":
-			sum := 0.0
-			has := false
+			var acc sumAccumulator
 			for j := start; j <= end; j++ {
 				if !filtered[j] {
 					continue
 				}
-				if vals[j] != nil {
-					if f, ok := toFloat64(vals[j]); ok {
-						sum += f
-						has = true
-					}
-				}
+				acc.add(vals[j])
 			}
-			if has {
-				result = sum
-			}
+			result = acc.result()
 		case "AVG":
 			sum := 0.0
 			cnt := 0

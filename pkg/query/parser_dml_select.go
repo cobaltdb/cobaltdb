@@ -1675,7 +1675,7 @@ func (p *Parser) parseExplain() (Statement, error) {
 	p.advance() // consume EXPLAIN
 
 	// Parse the inner statement (SELECT, INSERT, UPDATE, DELETE)
-	innerStmt, err := p.Parse()
+	innerStmt, err := p.parseStatement()
 	if err != nil {
 		return nil, fmt.Errorf("error parsing EXPLAIN statement: %w", err)
 	}

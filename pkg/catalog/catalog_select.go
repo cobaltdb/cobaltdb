@@ -29,10 +29,30 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 		// Generate cache key from query and args using the same logic as cache.Cache
 		sql := query.QueryToSQL(stmt)
 
+		// A key containing unserializable expression nodes must not be cached:
+		// distinct predicates could collide on the same key.
+		if query.ContainsUncacheableExpr(sql) {
+			return cat.selectLockedInternal(stmt, args, true)
+		}
+
+		// Resolve view references to their base tables so writes to those
+		// tables invalidate the cached result. Unresolvable dependencies
+		// (materialized views, foreign tables) make the query uncacheable.
+		tables, cacheable := cat.resolveCacheTableDeps(query.ExtractTablesFromQuery(stmt))
+		if !cacheable {
+			return cat.selectLockedInternal(stmt, args, true)
+		}
+
 		// Try to get from cache
 		if entry, found := cat.queryCache.Get(sql, args); found {
 			return entry.Columns, entry.Rows, nil
 		}
+
+		// The scan below may release cat.mu, so a concurrent write can commit
+		// and invalidate the cache mid-query. Capture the invalidation epoch
+		// now and skip Set if it moved, so stale rows are not re-inserted
+		// after the invalidation.
+		epoch := cat.cacheEpoch.Load()
 
 		// Execute query (outermost path may release lock during scan)
 		columns, rows, err := cat.selectLockedInternal(stmt, args, true)
@@ -40,9 +60,10 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 			return nil, nil, err
 		}
 
-		// Store in cache
-		tables := query.ExtractTablesFromQuery(stmt)
-		cat.queryCache.Set(sql, args, columns, rows, tables)
+		// Store in cache unless an invalidation raced with the scan
+		if cat.cacheEpoch.Load() == epoch {
+			cat.queryCache.Set(sql, args, columns, rows, tables)
+		}
 
 		return columns, rows, nil
 	}
@@ -250,17 +271,15 @@ func (c *Catalog) loadMainTableRows(from *query.TableRef) ([]ColumnDef, [][]inte
 }
 
 func (c *Catalog) loadMainTableRowsWithFDWOptions(from *query.TableRef, scanOptions fdw.ScanOptions) ([]ColumnDef, [][]interface{}, error) {
-	// Check if main table is a CTE result
-	if c.cteResults != nil {
-		if cteRes, ok := c.cteResults[toLowerFast(from.Name)]; ok {
-			mainTableCols := make([]ColumnDef, len(cteRes.columns))
-			for i, col := range cteRes.columns {
-				mainTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
-			}
-			intermediateRows := make([][]interface{}, len(cteRes.rows))
-			copy(intermediateRows, cteRes.rows)
-			return mainTableCols, intermediateRows, nil
+	// Check if main table is a CTE result (per-query overlay first)
+	if cteRes, ok := c.lookupCTEResult(from.Name); ok {
+		mainTableCols := make([]ColumnDef, len(cteRes.columns))
+		for i, col := range cteRes.columns {
+			mainTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
 		}
+		intermediateRows := make([][]interface{}, len(cteRes.rows))
+		copy(intermediateRows, cteRes.rows)
+		return mainTableCols, intermediateRows, nil
 	}
 
 	// Get the main table
@@ -336,7 +355,7 @@ func (c *Catalog) loadMainTableRowsWithFDWOptions(from *query.TableRef, scanOpti
 	}
 
 	//lint:ignore SA1012 nil = fall back to catalog RLS ctx
-	filtered, err = c.filterRowsForSelectRLSLocked(nil, mainTable.Name, mainTable.Columns, filtered)
+	filtered, err = c.filterRowsForSelectRLSLocked(c.rlsCtx, mainTable.Name, mainTable.Columns, filtered)
 	if err != nil {
 		return mainTable.Columns, nil, err
 	}
@@ -955,9 +974,9 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 		}
 	}
 
-	// Check if join table is a CTE result
-	if joinTableCols == nil && c.cteResults != nil {
-		if cteRes, ok := c.cteResults[toLowerFast(join.Table.Name)]; ok {
+	// Check if join table is a CTE result (per-query overlay first)
+	if joinTableCols == nil {
+		if cteRes, ok := c.lookupCTEResult(join.Table.Name); ok {
 			joinTableCols = make([]ColumnDef, len(cteRes.columns))
 			for i, col := range cteRes.columns {
 				joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
@@ -1013,7 +1032,7 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 			joinRows = append(joinRows, vrow.Data)
 		}
 		//lint:ignore SA1012 nil = fall back to catalog RLS ctx
-		joinRows, err = c.filterRowsForSelectRLSLocked(nil, joinTable.Name, joinTable.Columns, joinRows)
+		joinRows, err = c.filterRowsForSelectRLSLocked(c.rlsCtx, joinTable.Name, joinTable.Columns, joinRows)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1224,8 +1243,8 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 			}
 		}
 
-		if joinTableCols == nil && c.cteResults != nil {
-			if cteRes, ok := c.cteResults[toLowerFast(join.Table.Name)]; ok {
+		if joinTableCols == nil {
+			if cteRes, ok := c.lookupCTEResult(join.Table.Name); ok {
 				joinTableCols = make([]ColumnDef, len(cteRes.columns))
 				for i, col := range cteRes.columns {
 					joinTableCols[i] = ColumnDef{Name: col, Type: "TEXT"}
@@ -1284,7 +1303,7 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 				rightRows = append(rightRows, rightRow)
 			}
 			//lint:ignore SA1012 nil = fall back to catalog RLS ctx
-			rightRows, err = c.filterRowsForSelectRLSLocked(nil, joinTable.Name, joinTable.Columns, rightRows)
+			rightRows, err = c.filterRowsForSelectRLSLocked(c.rlsCtx, joinTable.Name, joinTable.Columns, rightRows)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -1415,78 +1434,21 @@ func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo,
 		return rows
 	}
 
+	// Resolve each ORDER BY expression to a column index ONCE, up front.
+	// Doing this inside the sort comparator repeated the (allocating)
+	// case-insensitive name resolution O(n log n) times.
+	colIdxs := make([]int, len(orderBy))
+	for obIdx, ob := range orderBy {
+		colIdxs[obIdx] = resolveOrderByColumnIndex(ob.Expr, obIdx, selectCols)
+	}
+
 	// Build sort key function
 	sorted := make([][]interface{}, len(rows))
 	copy(sorted, rows)
 
 	sort.Slice(sorted, func(i, j int) bool {
 		for obIdx, ob := range orderBy {
-			// Find column index by matching expression to selectCols
-			colIdx := -1
-			switch expr := ob.Expr.(type) {
-			case *query.Identifier:
-				// Check for dotted identifier like "table.column"
-				if dotIdx := strings.IndexByte(expr.Name, '.'); dotIdx > 0 && dotIdx < len(expr.Name)-1 {
-					tblLower := toLowerFast(expr.Name[:dotIdx])
-					colNameLower := toLowerFast(expr.Name[dotIdx+1:])
-					for idx, ci := range selectCols {
-						if toLowerFast(ci.name) == colNameLower && toLowerFast(ci.tableName) == tblLower {
-							colIdx = idx
-							break
-						}
-					}
-					if colIdx < 0 {
-						for idx, ci := range selectCols {
-							if toLowerFast(ci.name) == colNameLower {
-								colIdx = idx
-								break
-							}
-						}
-					}
-				} else {
-					nameLower := toLowerFast(expr.Name)
-					for idx, ci := range selectCols {
-						if toLowerFast(ci.name) == nameLower {
-							colIdx = idx
-							break
-						}
-					}
-				}
-			case *query.QualifiedIdentifier:
-				colLower := toLowerFast(expr.Column)
-				tblLower := toLowerFast(expr.Table)
-				// First try exact match with table name
-				for idx, ci := range selectCols {
-					if toLowerFast(ci.name) == colLower && toLowerFast(ci.tableName) == tblLower {
-						colIdx = idx
-						break
-					}
-				}
-				// Fallback to column-name-only match
-				if colIdx < 0 {
-					for idx, ci := range selectCols {
-						if toLowerFast(ci.name) == colLower {
-							colIdx = idx
-							break
-						}
-					}
-				}
-			case *query.NumberLiteral:
-				// ORDER BY 1, 2, 3 (column position)
-				if pos, ok := toFloat64(expr.Value); ok {
-					colIdx = int(pos) - 1 // 1-based to 0-based
-				}
-			default:
-				// Expression ORDER BY (e.g., ORDER BY price * quantity)
-				// Match to the correct hidden ORDER BY column by index
-				targetName := "__orderby_" + strconv.Itoa(obIdx)
-				for idx, ci := range selectCols {
-					if ci.name == targetName {
-						colIdx = idx
-						break
-					}
-				}
-			}
+			colIdx := colIdxs[obIdx]
 			if colIdx < 0 || colIdx >= len(sorted[i]) || colIdx >= len(sorted[j]) {
 				continue
 			}
@@ -1520,6 +1482,68 @@ func (c *Catalog) applyOrderBy(rows [][]interface{}, selectCols []selectColInfo,
 	})
 
 	return sorted
+}
+
+// resolveOrderByColumnIndex maps an ORDER BY expression to its column index in
+// selectCols (or -1 when unresolvable). obIdx identifies the hidden
+// "__orderby_N" column used for expression ORDER BY.
+func resolveOrderByColumnIndex(expr query.Expression, obIdx int, selectCols []selectColInfo) int {
+	colIdx := -1
+	switch e := expr.(type) {
+	case *query.Identifier:
+		// Check for dotted identifier like "table.column"
+		if dotIdx := strings.IndexByte(e.Name, '.'); dotIdx > 0 && dotIdx < len(e.Name)-1 {
+			tblLower := toLowerFast(e.Name[:dotIdx])
+			colNameLower := toLowerFast(e.Name[dotIdx+1:])
+			for idx, ci := range selectCols {
+				if toLowerFast(ci.name) == colNameLower && toLowerFast(ci.tableName) == tblLower {
+					return idx
+				}
+			}
+			for idx, ci := range selectCols {
+				if toLowerFast(ci.name) == colNameLower {
+					return idx
+				}
+			}
+		} else {
+			nameLower := toLowerFast(e.Name)
+			for idx, ci := range selectCols {
+				if toLowerFast(ci.name) == nameLower {
+					return idx
+				}
+			}
+		}
+	case *query.QualifiedIdentifier:
+		colLower := toLowerFast(e.Column)
+		tblLower := toLowerFast(e.Table)
+		// First try exact match with table name
+		for idx, ci := range selectCols {
+			if toLowerFast(ci.name) == colLower && toLowerFast(ci.tableName) == tblLower {
+				return idx
+			}
+		}
+		// Fallback to column-name-only match
+		for idx, ci := range selectCols {
+			if toLowerFast(ci.name) == colLower {
+				return idx
+			}
+		}
+	case *query.NumberLiteral:
+		// ORDER BY 1, 2, 3 (column position)
+		if pos, ok := toFloat64(e.Value); ok {
+			return int(pos) - 1 // 1-based to 0-based
+		}
+	default:
+		// Expression ORDER BY (e.g., ORDER BY price * quantity)
+		// Match to the correct hidden ORDER BY column by index
+		targetName := "__orderby_" + strconv.Itoa(obIdx)
+		for idx, ci := range selectCols {
+			if ci.name == targetName {
+				return idx
+			}
+		}
+	}
+	return colIdx
 }
 
 // buildUsingCondition creates a join condition from USING clause columns
@@ -2096,9 +2120,11 @@ func isIdentityProjection(selectCols []selectColInfo, fullRowLen int) bool {
 
 // projectSelectedRow extracts selected column values from a full table row.
 // Handles regular columns, scalar expressions, and hidden ORDER BY expression columns.
-func (cat *Catalog) projectSelectedRow(fullRow []interface{}, selectCols []selectColInfo, stmt *query.SelectStmt, table *TableDef, args []interface{}, hasWindowFuncs bool) []interface{} {
+// Expression evaluation errors (e.g. division by zero) are propagated to the
+// caller instead of silently yielding NULL.
+func (cat *Catalog) projectSelectedRow(fullRow []interface{}, selectCols []selectColInfo, stmt *query.SelectStmt, table *TableDef, args []interface{}, hasWindowFuncs bool) ([]interface{}, error) {
 	if isIdentityProjection(selectCols, len(fullRow)) {
-		return fullRow
+		return fullRow, nil
 	}
 	selectedRow := make([]interface{}, len(selectCols))
 	for i, ci := range selectCols {
@@ -2108,23 +2134,41 @@ func (cat *Catalog) projectSelectedRow(fullRow []interface{}, selectCols []selec
 		if ci.index >= 0 && ci.index < len(fullRow) {
 			selectedRow[i] = fullRow[ci.index]
 		} else if ci.index == -1 && !ci.isAggregate {
-			if i < len(stmt.Columns) {
-				val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
-				if err == nil {
-					selectedRow[i] = val
+			switch {
+			case ci.originalExpr != nil:
+				val, err := evaluateExpression(cat, fullRow, table.Columns, ci.originalExpr, args)
+				if err != nil {
+					// Columns containing embedded window functions are computed
+					// later by evaluateWindowFunctions; a pre-pass evaluation
+					// error here is expected and must not fail the query.
+					if len(ci.embeddedWindows) > 0 {
+						continue
+					}
+					return nil, err
 				}
-			} else if len(ci.name) > 10 && ci.name[:10] == "__orderby_" {
+				selectedRow[i] = val
+			case len(ci.name) > 10 && ci.name[:10] == "__orderby_":
 				var obIdx int
 				if _, err := fmt.Sscanf(ci.name, "__orderby_%d", &obIdx); err == nil && obIdx < len(stmt.OrderBy) {
 					val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.OrderBy[obIdx].Expr, args)
-					if err == nil {
-						selectedRow[i] = val
+					if err != nil {
+						return nil, err
 					}
+					selectedRow[i] = val
 				}
+			case i < len(stmt.Columns):
+				val, err := evaluateExpression(cat, fullRow, table.Columns, stmt.Columns[i], args)
+				if err != nil {
+					if len(ci.embeddedWindows) > 0 {
+						continue
+					}
+					return nil, err
+				}
+				selectedRow[i] = val
 			}
 		}
 	}
-	return selectedRow
+	return selectedRow, nil
 }
 
 func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, viewRows [][]interface{}, args []interface{}) ([]string, [][]interface{}, error) {
@@ -2167,7 +2211,10 @@ func (cat *Catalog) applyOuterQuery(stmt *query.SelectStmt, viewCols []string, v
 	if stmt.Where != nil {
 		for _, row := range viewRows {
 			matched, err := evaluateWhere(cat, row, columns, stmt.Where, args)
-			if err != nil || !matched {
+			if err != nil {
+				return nil, nil, err
+			}
+			if !matched {
 				continue
 			}
 			filteredRows = append(filteredRows, row)
@@ -2376,6 +2423,26 @@ func (cat *Catalog) applyOuterQueryProjection(stmt *query.SelectStmt, filteredRo
 			if !found {
 				mappings = append(mappings, colMapping{name: c.Name, viewIdx: -1, srcCol: srcIdx})
 			}
+		case *query.QualifiedIdentifier:
+			// alias.column over a derived table / view result: resolve by the
+			// column part. Previously this fell through to the generic
+			// expression branch and the output column was named "expr", so an
+			// outer query selecting d.col lost the column name entirely.
+			found := false
+			for j, name := range viewCols {
+				if strings.EqualFold(name, c.Column) {
+					displayName := name
+					if aliasName != "" {
+						displayName = aliasName
+					}
+					mappings = append(mappings, colMapping{name: displayName, viewIdx: j, srcCol: srcIdx})
+					found = true
+					break
+				}
+			}
+			if !found {
+				mappings = append(mappings, colMapping{name: c.Column, viewIdx: -1, srcCol: srcIdx})
+			}
 		default:
 			name := "expr"
 			if aliasName != "" {
@@ -2401,9 +2468,17 @@ func (cat *Catalog) applyOuterQueryProjection(stmt *query.SelectStmt, filteredRo
 				// `*` expands to several mappings, so i can exceed len(stmt.Columns)
 				// (which previously panicked for e.g. `SELECT *, a+b FROM (...)`).
 				val, err := evaluateExpression(cat, row, columns, stmt.Columns[m.srcCol], args)
-				if err == nil {
-					resultRow[i] = val
+				if err != nil {
+					// Propagate evaluation errors (e.g. division by zero,
+					// unknown column) instead of silently projecting NULL —
+					// unless the column embeds a window function, which is
+					// computed later.
+					if query.ExprContainsWindow(stmt.Columns[m.srcCol]) {
+						continue
+					}
+					return nil, nil, err
 				}
+				resultRow[i] = val
 			}
 		}
 		resultRows = append(resultRows, resultRow)

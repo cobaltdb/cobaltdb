@@ -214,7 +214,10 @@ func (cat *Catalog) executeCTEWindowQuery(stmt *query.SelectStmt, args []interfa
 	for _, row := range cteRes.rows {
 		if stmt.Where != nil {
 			matched, err := evaluateWhere(cat, row, syntheticCols, stmt.Where, args)
-			if err != nil || !matched {
+			if err != nil {
+				return nil, nil, err
+			}
+			if !matched {
 				continue
 			}
 		}
@@ -245,21 +248,39 @@ func (cat *Catalog) executeCTEWindowQuery(stmt *query.SelectStmt, args []interfa
 
 	projectedRows = cat.evaluateWindowFunctions(projectedRows, selectCols, syntheticTable, stmt, args, filteredRows)
 
-	if len(stmt.OrderBy) > 0 {
-		sort.SliceStable(projectedRows, func(a, b int) bool {
-			for _, ob := range stmt.OrderBy {
-				va, _ := evaluateExpression(cat, projectedRows[a], syntheticCols, ob.Expr, args)
-				vb, _ := evaluateExpression(cat, projectedRows[b], syntheticCols, ob.Expr, args)
-				if va == nil {
-					for j, ci := range selectCols {
-						if id, ok := ob.Expr.(*query.Identifier); ok && strings.EqualFold(ci.name, id.Name) {
-							va = projectedRows[a][j]
-							vb = projectedRows[b][j]
-							break
-						}
+	if len(stmt.OrderBy) > 0 && len(projectedRows) > 1 {
+		// Decorate-sort-undecorate: evaluate each ORDER BY expression once per
+		// row instead of twice per comparison inside the sort callback.
+		fallbackIdx := make([]int, len(stmt.OrderBy))
+		for k, ob := range stmt.OrderBy {
+			fallbackIdx[k] = -1
+			if id, ok := ob.Expr.(*query.Identifier); ok {
+				for j, ci := range selectCols {
+					if strings.EqualFold(ci.name, id.Name) {
+						fallbackIdx[k] = j
+						break
 					}
 				}
-				cmp := compareValues(va, vb)
+			}
+		}
+		keys := make([][]interface{}, len(projectedRows))
+		order := make([]int, len(projectedRows))
+		for r := range projectedRows {
+			order[r] = r
+			rowKeys := make([]interface{}, len(stmt.OrderBy))
+			for k, ob := range stmt.OrderBy {
+				v, _ := evaluateExpression(cat, projectedRows[r], syntheticCols, ob.Expr, args)
+				if v == nil && fallbackIdx[k] >= 0 && fallbackIdx[k] < len(projectedRows[r]) {
+					v = projectedRows[r][fallbackIdx[k]]
+				}
+				rowKeys[k] = v
+			}
+			keys[r] = rowKeys
+		}
+		sort.SliceStable(order, func(a, b int) bool {
+			ka, kb := keys[order[a]], keys[order[b]]
+			for k, ob := range stmt.OrderBy {
+				cmp := compareValues(ka[k], kb[k])
 				if cmp == 0 {
 					continue
 				}
@@ -270,6 +291,11 @@ func (cat *Catalog) executeCTEWindowQuery(stmt *query.SelectStmt, args []interfa
 			}
 			return false
 		})
+		sortedRows := make([][]interface{}, len(projectedRows))
+		for i, r := range order {
+			sortedRows[i] = projectedRows[r]
+		}
+		projectedRows = sortedRows
 	}
 
 	if stmt.Offset != nil {
@@ -439,14 +465,12 @@ func (cat *Catalog) resolveJoinTableDef(ref *query.TableRef) (*TableDef, bool) {
 		}
 	}
 	name := ref.Name
-	if cat.cteResults != nil {
-		if cteRes, ok := cat.cteResults[toLowerFast(name)]; ok {
-			cols := make([]ColumnDef, len(cteRes.columns))
-			for i, col := range cteRes.columns {
-				cols[i] = ColumnDef{Name: col, Type: "TEXT"}
-			}
-			return &TableDef{Name: name, Columns: cols}, true
+	if cteRes, ok := cat.lookupCTEResult(name); ok {
+		cols := make([]ColumnDef, len(cteRes.columns))
+		for i, col := range cteRes.columns {
+			cols[i] = ColumnDef{Name: col, Type: "TEXT"}
 		}
+		return &TableDef{Name: name, Columns: cols}, true
 	}
 	if t, err := cat.getTableLocked(name); err == nil {
 		return t, true

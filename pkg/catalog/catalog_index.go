@@ -3,6 +3,10 @@ package catalog
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
+
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
@@ -296,6 +300,14 @@ func (c *Catalog) findUsableIndexWithArgs(tableName string, where query.Expressi
 func (c *Catalog) extractLiteralValue(expr query.Expression, args []interface{}) interface{} {
 	switch v := expr.(type) {
 	case *query.NumberLiteral:
+		// Integer literals must keep full int64 precision: going through the
+		// float64 Value corrupts values above 2^53, producing a wrong index
+		// key and a silent empty result for large integer PK lookups.
+		if v.Raw != "" && !strings.ContainsAny(v.Raw, ".eE") {
+			if i, err := strconv.ParseInt(v.Raw, 10, 64); err == nil {
+				return i
+			}
+		}
 		return v.Value
 	case *query.StringLiteral:
 		return v.Value
@@ -323,12 +335,122 @@ func (c *Catalog) useIndexForQueryWithArgs(tableName string, where query.Express
 
 	// Only use index for exact equality conditions
 	// Range scans are more complex and can have edge cases with composite keys
-	idxName, _, searchVal := c.findUsableIndexWithArgs(tableName, where, args)
+	idxName, colName, searchVal := c.findUsableIndexWithArgs(tableName, where, args)
 	if idxName != "" && searchVal != nil {
-		return c.useIndexForExactMatch(idxName, searchVal)
+		// Coerce the search value to the indexed column's declared type before
+		// key formatting. Without this, `WHERE id = '2'` on an INTEGER PK
+		// builds a string-typed key that never matches, so the result silently
+		// depends on whether an index exists. If coercion fails, fall back to
+		// a full scan (which applies the engine's comparison semantics) rather
+		// than returning an empty result.
+		coerced, ok := c.coerceIndexSearchValue(tableName, colName, searchVal)
+		if !ok {
+			return nil, false, nil
+		}
+		return c.useIndexForExactMatch(idxName, coerced)
 	}
 
 	return nil, false, nil
+}
+
+// coerceIndexSearchValue converts searchVal to the Go type produced by the
+// row decoder for the given column's declared SQL type, so that index key
+// formatting (formatKeyComponent / typeTaggedKey) matches the stored keys.
+// Returns ok=false when the value cannot be represented in the column's type,
+// in which case the caller must fall back to a full table scan.
+func (c *Catalog) coerceIndexSearchValue(tableName, colName string, searchVal interface{}) (interface{}, bool) {
+	table, exists := c.tables[tableName]
+	if !exists {
+		return searchVal, true
+	}
+	colIdx := table.GetColumnIndex(colName)
+	if colIdx < 0 {
+		return searchVal, true
+	}
+	return coerceValueForColumnType(searchVal, table.Columns[colIdx].Type)
+}
+
+// coerceValueForColumnType coerces val to the canonical Go representation for
+// the given declared column type (int64 for integer columns, float64 for
+// floating-point columns, string for text columns, bool for boolean columns).
+// Returns ok=false when the value cannot be losslessly represented.
+func coerceValueForColumnType(val interface{}, colType string) (interface{}, bool) {
+	t := strings.ToUpper(colType)
+	switch {
+	case strings.Contains(t, "INT"):
+		switch v := val.(type) {
+		case int:
+			return int64(v), true
+		case int32:
+			return int64(v), true
+		case int64:
+			return v, true
+		case uint64:
+			if v > math.MaxInt64 {
+				return nil, false
+			}
+			return int64(v), true
+		case float64:
+			if v == float64(int64(v)) && v >= -9.007199254740992e15 && v <= 9.007199254740992e15 {
+				return int64(v), true
+			}
+			return nil, false
+		case float32:
+			f := float64(v)
+			if f == float64(int64(f)) {
+				return int64(f), true
+			}
+			return nil, false
+		case string:
+			if i, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+				return i, true
+			}
+			if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && f == float64(int64(f)) {
+				return int64(f), true
+			}
+			return nil, false
+		default:
+			return nil, false
+		}
+	case strings.Contains(t, "CHAR"), strings.Contains(t, "TEXT"),
+		strings.Contains(t, "CLOB"), strings.Contains(t, "STRING"):
+		switch v := val.(type) {
+		case string:
+			return v, true
+		case []byte:
+			return string(v), true
+		default:
+			// Number/bool against a text column: comparison semantics are
+			// value-dependent, so let the full scan decide.
+			return nil, false
+		}
+	case strings.Contains(t, "REAL"), strings.Contains(t, "FLOA"), strings.Contains(t, "DOUB"),
+		strings.Contains(t, "DEC"), strings.Contains(t, "NUMERIC"):
+		switch v := val.(type) {
+		case float64:
+			return v, true
+		case float32:
+			return float64(v), true
+		case int:
+			return float64(v), true
+		case int64:
+			return float64(v), true
+		case string:
+			if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+				return f, true
+			}
+			return nil, false
+		default:
+			return nil, false
+		}
+	case strings.Contains(t, "BOOL"):
+		if b, ok := val.(bool); ok {
+			return b, true
+		}
+		return nil, false
+	default:
+		return val, true
+	}
 }
 
 func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) ([]string, bool, error) {

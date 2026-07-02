@@ -500,7 +500,7 @@ func TestUnitEvalExpression_Functions(t *testing.T) {
 		{"ABS negative", "ABS", []query.Expression{&query.NumberLiteral{Value: -5}}, 5.0},
 		{"UPPER", "UPPER", []query.Expression{&query.StringLiteral{Value: "hello"}}, "HELLO"},
 		{"LOWER", "LOWER", []query.Expression{&query.StringLiteral{Value: "HELLO"}}, "hello"},
-		{"LENGTH", "LENGTH", []query.Expression{&query.StringLiteral{Value: "hello"}}, 5},
+		{"LENGTH", "LENGTH", []query.Expression{&query.StringLiteral{Value: "hello"}}, int64(5)},
 		{"TRIM", "TRIM", []query.Expression{&query.StringLiteral{Value: "  hi  "}}, "hi"},
 		{"LTRIM", "LTRIM", []query.Expression{&query.StringLiteral{Value: "  hi"}}, "hi"},
 		{"RTRIM", "RTRIM", []query.Expression{&query.StringLiteral{Value: "hi  "}}, "hi"},

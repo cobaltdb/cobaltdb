@@ -62,18 +62,14 @@ func TestParseJoinTypes(t *testing.T) {
 	}
 }
 
-// TestParseTableRefWithSchema tests table references with schema
+// TestParseTableRefWithSchema tests table references with schema.
+// Schema-qualified table names are not supported: previously the parser
+// silently truncated `FROM schema.table` to `FROM schema` (querying the wrong
+// table); with trailing-token validation this is now a parse error.
 func TestParseTableRefWithSchema(t *testing.T) {
 	sql := "SELECT * FROM schema.table"
-	stmt, err := Parse(sql)
-	if err != nil {
-		t.Fatalf("Failed to parse: %v", err)
-	}
-
-	selectStmt := stmt.(*SelectStmt)
-	// Schema.table parsing may vary - just verify it parses
-	if selectStmt.From.Name == "" {
-		t.Error("Expected non-empty table name")
+	if _, err := Parse(sql); err == nil {
+		t.Fatal("expected parse error for unsupported schema-qualified table name")
 	}
 }
 

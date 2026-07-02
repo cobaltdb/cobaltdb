@@ -1,6 +1,6 @@
 package query
 
-import ()
+import "strings"
 
 // QueryOptimizer provides query optimization capabilities
 type QueryOptimizer struct {
@@ -97,9 +97,33 @@ func (qo *QueryOptimizer) pushDownPredicates(stmt *SelectStmt) *SelectStmt {
 	return stmt
 }
 
-// optimizeJoinOrder finds the optimal join order using a simple greedy algorithm
+// optimizeJoinOrder finds the optimal join order using a simple greedy algorithm.
+// Reordering is only applied when provably safe: every join must be a plain
+// INNER join on a named table (no aliases, derived tables, USING or NATURAL
+// clauses), no table may appear twice, and each candidate join's ON clause may
+// reference only tables that are already part of the join prefix. Outer joins
+// are never reordered — LEFT/RIGHT/FULL join results depend on join order.
 func (qo *QueryOptimizer) optimizeJoinOrder(stmt *SelectStmt) *SelectStmt {
 	if len(stmt.Joins) == 0 {
+		return stmt
+	}
+
+	// Only consecutive INNER joins with simple named tables are candidates.
+	for _, join := range stmt.Joins {
+		if join == nil || join.Table == nil {
+			return stmt
+		}
+		if join.Type != TokenJoin && join.Type != TokenInner {
+			return stmt
+		}
+		if join.Natural || len(join.Using) > 0 {
+			return stmt
+		}
+		if join.Table.Alias != "" || join.Table.Subquery != nil || join.Table.SubqueryStmt != nil {
+			return stmt
+		}
+	}
+	if stmt.From == nil || stmt.From.Alias != "" || stmt.From.Subquery != nil || stmt.From.SubqueryStmt != nil {
 		return stmt
 	}
 
@@ -109,43 +133,108 @@ func (qo *QueryOptimizer) optimizeJoinOrder(stmt *SelectStmt) *SelectStmt {
 		tables = append(tables, join.Table.Name)
 	}
 
+	// Skip reorder if any tables are duplicated (self-join)
+	seen := make(map[string]bool)
+	for _, t := range tables {
+		lt := strings.ToLower(t)
+		if seen[lt] {
+			return stmt
+		}
+		seen[lt] = true
+	}
+
 	// Simple heuristic: put tables with WHERE predicates first
 	// and smaller tables before larger ones
 	optimizedTables := qo.orderTablesBySelectivity(tables, stmt.Where)
 
-	// Reorder JOINs based on selectivity, but only when safe:
-	// Skip reorder if any tables are duplicated (self-join) or use aliases
-	if len(optimizedTables) > 1 && len(stmt.Joins) > 0 {
-		seen := make(map[string]bool)
-		hasDuplicates := false
-		for _, t := range tables {
-			if seen[t] {
-				hasDuplicates = true
-				break
-			}
-			seen[t] = true
+	if len(optimizedTables) > 1 {
+		joinMap := make(map[string]*JoinClause)
+		for _, join := range stmt.Joins {
+			joinMap[strings.ToLower(join.Table.Name)] = join
 		}
 
-		if !hasDuplicates {
-			joinMap := make(map[string]*JoinClause)
-			for _, join := range stmt.Joins {
-				joinMap[join.Table.Name] = join
+		reordered := make([]*JoinClause, 0, len(stmt.Joins))
+		for _, tableName := range optimizedTables {
+			if j, ok := joinMap[strings.ToLower(tableName)]; ok {
+				reordered = append(reordered, j)
 			}
-
-			reordered := make([]*JoinClause, 0, len(stmt.Joins))
-			for _, tableName := range optimizedTables {
-				if j, ok := joinMap[tableName]; ok {
-					reordered = append(reordered, j)
-				}
-			}
-			// If we matched all joins, apply reorder; otherwise keep original
-			if len(reordered) == len(stmt.Joins) {
-				stmt.Joins = reordered
-			}
+		}
+		// Apply the reorder only if all joins were matched AND each join's ON
+		// clause references only tables already joined at that point.
+		if len(reordered) == len(stmt.Joins) && joinOrderIsValid(stmt.From.Name, reordered) {
+			stmt.Joins = reordered
 		}
 	}
 
 	return stmt
+}
+
+// joinOrderIsValid reports whether each join's ON clause references only
+// tables available at that position (the FROM table plus previously joined
+// tables and the join's own table). Conditions with unqualified column
+// references cannot be attributed to a table, so they conservatively
+// invalidate the order.
+func joinOrderIsValid(fromTable string, joins []*JoinClause) bool {
+	available := map[string]bool{strings.ToLower(fromTable): true}
+	for _, join := range joins {
+		available[strings.ToLower(join.Table.Name)] = true
+		if join.Condition != nil {
+			refs, ok := qualifiedTableRefs(join.Condition)
+			if !ok {
+				return false
+			}
+			for _, r := range refs {
+				if !available[r] {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// qualifiedTableRefs collects the (lower-cased) table names referenced by
+// qualified identifiers in expr. Returns ok=false when the expression contains
+// unqualified identifiers or node types whose table references cannot be
+// determined statically.
+func qualifiedTableRefs(expr Expression) ([]string, bool) {
+	var refs []string
+	var walk func(e Expression) bool
+	walk = func(e Expression) bool {
+		switch v := e.(type) {
+		case nil:
+			return true
+		case *QualifiedIdentifier:
+			refs = append(refs, strings.ToLower(v.Table))
+			return true
+		case *ColumnRef:
+			if v.Table == "" {
+				return false
+			}
+			refs = append(refs, strings.ToLower(v.Table))
+			return true
+		case *StringLiteral, *NumberLiteral, *BooleanLiteral, *NullLiteral, *PlaceholderExpr:
+			return true
+		case *BinaryExpr:
+			return walk(v.Left) && walk(v.Right)
+		case *UnaryExpr:
+			return walk(v.Expr)
+		case *IsNullExpr:
+			return walk(v.Expr)
+		case *BetweenExpr:
+			return walk(v.Expr) && walk(v.Lower) && walk(v.Upper)
+		case *LikeExpr:
+			return walk(v.Expr) && walk(v.Pattern)
+		default:
+			// Identifier (unqualified), functions, subqueries, CASE, ...:
+			// cannot attribute references, refuse reorder.
+			return false
+		}
+	}
+	if !walk(expr) {
+		return nil, false
+	}
+	return refs, true
 }
 
 // orderTablesBySelectivity orders tables by their selectivity (most selective first)
@@ -211,9 +300,21 @@ func (qo *QueryOptimizer) estimateSelectivity(table string, where Expression) fl
 	// For equality predicates on indexed columns, use index selectivity
 	if binExpr, ok := where.(*BinaryExpr); ok {
 		if binExpr.Operator == TokenEq {
-			if col, ok := binExpr.Left.(*Identifier); ok {
-				key := table + "." + col.Name
-				if idxStats, ok := qo.stats.IndexStats[key]; ok {
+			var colName string
+			switch col := binExpr.Left.(type) {
+			case *QualifiedIdentifier:
+				// Only use stats when the predicate is actually on this table.
+				if !strings.EqualFold(col.Table, table) {
+					return defaultSelectivity
+				}
+				colName = col.Column
+			case *Identifier:
+				colName = col.Name
+			}
+			if colName != "" {
+				key := table + "." + colName
+				if idxStats, ok := qo.stats.IndexStats[key]; ok &&
+					indexStatsMatch(idxStats, table, colName) {
 					return idxStats.Selectivity
 				}
 			}
@@ -221,6 +322,25 @@ func (qo *QueryOptimizer) estimateSelectivity(table string, where Expression) fl
 	}
 
 	return defaultSelectivity
+}
+
+// indexStatsMatch verifies that the stats entry actually describes an index on
+// the given table/column. The map key alone ("table.col") cannot be trusted:
+// an unqualified WHERE column is keyed under every candidate table, so stats
+// registered for one table would otherwise be applied to another.
+func indexStatsMatch(stats *OptimizerIdxStats, table, column string) bool {
+	if stats == nil {
+		return false
+	}
+	if stats.TableName != "" && !strings.EqualFold(stats.TableName, table) {
+		return false
+	}
+	for _, c := range stats.ColumnNames {
+		if strings.EqualFold(c, column) {
+			return true
+		}
+	}
+	return len(stats.ColumnNames) == 0
 }
 
 // canUseIndex checks if an index can be used for a WHERE clause
