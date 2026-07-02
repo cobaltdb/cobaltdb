@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -744,11 +745,6 @@ func maskKeyValuePair(query, key string) string {
 	return result
 }
 
-// maskMetadataValues masks values in metadata whose keys match sensitive patterns
-func maskMetadataValues(metadata map[string]interface{}) map[string]interface{} {
-	return maskMetadataValuesWithKeys(metadata, nil)
-}
-
 func maskMetadataValuesWithKeys(metadata map[string]interface{}, extraSensitiveKeys []string) map[string]interface{} {
 	if metadata == nil {
 		return nil
@@ -963,6 +959,14 @@ func (al *Logger) Rotate() error {
 	return al.rotateLocked()
 }
 
+// AuditChainContinuationAction is the Action of the synthetic first record
+// written to a freshly rotated audit log file. The record embeds the previous
+// file's final hash (in Metadata for JSON logs and in Query for text logs), so
+// every rotated segment starts a fresh hash chain (PrevHash == "") and is
+// independently verifiable, while the cross-file chain remains checkable via
+// the embedded boundary hash.
+const AuditChainContinuationAction = "AUDIT_CHAIN_CONTINUATION"
+
 func (al *Logger) rotateLocked() error {
 	if al.file == nil {
 		return nil
@@ -988,7 +992,88 @@ func (al *Logger) rotateLocked() error {
 		return fmt.Errorf("failed to sync audit log directory after rotation: %w", err)
 	}
 
-	return al.openLogFile()
+	al.pruneBackupsLocked()
+
+	// Reset the hash chain for the new file. Without this the new file's
+	// first entry would carry PrevHash from the old file, which both
+	// VerifyLogFile and loadLastHash (on reopen after restart) reject — a
+	// server whose audit log rotated once would fail to reopen its audit log.
+	prevHash := al.lastHash
+	al.lastHash = ""
+
+	if err := al.openLogFile(); err != nil {
+		return err
+	}
+
+	if prevHash != "" {
+		continuation := &Event{
+			Timestamp: time.Now().UTC(),
+			Type:      EventAdmin,
+			EventID:   generateEventID(),
+			User:      "system",
+			Action:    AuditChainContinuationAction,
+			Status:    "SUCCESS",
+			// Query carries the boundary for the text format, whose line
+			// rendering does not include Metadata.
+			Query: fmt.Sprintf("previous_file=%s previous_last_hash=%s", backupName, prevHash),
+			Metadata: map[string]interface{}{
+				"previous_file":      backupName,
+				"previous_last_hash": prevHash,
+			},
+		}
+		if err := al.writeEvent(continuation); err != nil {
+			return fmt.Errorf("failed to write audit chain continuation record: %w", err)
+		}
+	}
+	return nil
+}
+
+// pruneBackupsLocked enforces Config.MaxBackups (count, newest kept) and
+// Config.MaxAge (days) on rotated backups named <LogFile>.<timestamp>.
+// Pruning is best-effort: failures are logged, never fatal. Caller must hold
+// al.mu.
+func (al *Logger) pruneBackupsLocked() {
+	prefix := al.config.LogFile + "."
+	matches, err := filepath.Glob(prefix + "*")
+	if err != nil {
+		if al.logger != nil {
+			al.logger.Errorf("Failed to list audit log backups: %v", err)
+		}
+		return
+	}
+
+	type backup struct {
+		path string
+		ts   time.Time
+	}
+	backups := make([]backup, 0, len(matches))
+	for _, m := range matches {
+		// Only files whose suffix is a rotation timestamp are our backups.
+		ts, parseErr := time.ParseInLocation("20060102_150405", strings.TrimPrefix(m, prefix), time.Local)
+		if parseErr != nil {
+			continue
+		}
+		backups = append(backups, backup{path: m, ts: ts})
+	}
+	// Newest first.
+	sort.Slice(backups, func(i, j int) bool { return backups[i].ts.After(backups[j].ts) })
+
+	var cutoff time.Time
+	if al.config.MaxAge > 0 {
+		cutoff = time.Now().AddDate(0, 0, -al.config.MaxAge)
+	}
+	for i, b := range backups {
+		tooMany := al.config.MaxBackups > 0 && i >= al.config.MaxBackups
+		tooOld := !cutoff.IsZero() && b.ts.Before(cutoff)
+		if !tooMany && !tooOld {
+			continue
+		}
+		if err := os.Remove(b.path); err != nil && !os.IsNotExist(err) {
+			if al.logger != nil {
+				al.logger.Errorf("Failed to prune audit log backup %s: %v", b.path, err)
+			}
+		}
+	}
 }
 
 func syncAuditLogParentDir(path string) error {

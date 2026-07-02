@@ -21,9 +21,21 @@ type VerificationResult struct {
 	Entries          int
 	EncryptedEntries int
 	LastHash         string
+	// PrevSegmentFile / PrevSegmentHash are populated when the file begins
+	// with a chain-continuation record (written on rotation). They identify
+	// the previous rotated segment and its final hash, allowing the hash
+	// chain to be verified across file boundaries: verify the previous
+	// segment and check its LastHash equals PrevSegmentHash.
+	PrevSegmentFile string
+	PrevSegmentHash string
 }
 
 // VerifyLogFile verifies the hash chain in a JSON audit log file.
+//
+// Each file's chain starts from an empty anchor: a rotated segment begins
+// with a chain-continuation record (Action == AuditChainContinuationAction)
+// whose metadata embeds the previous segment's final hash, exposed via
+// VerificationResult.PrevSegmentHash for cross-file verification.
 //
 // Encrypted entries produced with Config.EncryptionKey are supported when the
 // same key is provided. Text-format audit logs are intentionally rejected
@@ -90,6 +102,17 @@ func VerifyLogFile(path string, encryptionKey []byte) (*VerificationResult, erro
 		expectedHash := hashAuditPayload(event.PrevHash, payload)
 		if actualHash != expectedHash {
 			return nil, fmt.Errorf("audit log line %d: hash mismatch", lineNo)
+		}
+
+		// A chain-continuation first record links this segment to the previous
+		// rotated file; surface the boundary so callers can verify across files.
+		if result.Entries == 0 && event.Action == AuditChainContinuationAction {
+			if v, ok := event.Metadata["previous_last_hash"].(string); ok {
+				result.PrevSegmentHash = v
+			}
+			if v, ok := event.Metadata["previous_file"].(string); ok {
+				result.PrevSegmentFile = v
+			}
 		}
 
 		result.Entries++

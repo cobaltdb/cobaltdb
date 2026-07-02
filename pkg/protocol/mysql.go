@@ -25,6 +25,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 )
 
 const (
@@ -321,11 +322,6 @@ func (s *MySQLServer) Listen(address string) error {
 	return nil
 }
 
-func (s *MySQLServer) authEnabled() bool {
-	authenticator, _ := s.authSnapshot()
-	return authenticator != nil && authenticator.IsEnabled()
-}
-
 func (s *MySQLServer) authTransportConfig() (bool, bool) {
 	if s == nil {
 		return false, false
@@ -441,6 +437,16 @@ func (s *MySQLServer) acceptLoop() {
 	if listener == nil {
 		return
 	}
+	// Accept errors can be transient (e.g. EMFILE/ENFILE when the process is
+	// out of file descriptors). Returning on the first error would permanently
+	// stop accepting new connections while the server appears healthy, so
+	// transient errors are retried with a small exponential backoff. The loop
+	// only exits on shutdown (stopChan) or when the listener is closed.
+	const (
+		acceptBackoffInitial = 5 * time.Millisecond
+		acceptBackoffMax     = 1 * time.Second
+	)
+	var backoff time.Duration
 	for {
 		select {
 		case <-stopChan:
@@ -453,9 +459,29 @@ func (s *MySQLServer) acceptLoop() {
 			case <-stopChan:
 				return
 			default:
+			}
+			if isBenignMySQLNetworkCloseError(err) {
+				// Listener closed out from under us: shutting down.
 				return
 			}
+			if backoff == 0 {
+				backoff = acceptBackoffInitial
+			} else {
+				backoff *= 2
+				if backoff > acceptBackoffMax {
+					backoff = acceptBackoffMax
+				}
+			}
+			timer := time.NewTimer(backoff)
+			select {
+			case <-stopChan:
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
 		}
+		backoff = 0
 
 		s.wg.Add(1)
 		go func(c net.Conn) {
@@ -920,6 +946,94 @@ func maxMySQLCommandPayloadFor(command byte) int {
 	}
 }
 
+// mysqlErrAccessDenied is ER_TABLEACCESS_DENIED_ERROR — used when the
+// authenticated user lacks the permission a statement requires.
+const mysqlErrAccessDenied uint16 = 1142
+
+// requiredMySQLPermission classifies a SQL statement into the permission
+// action the authenticated user must hold, mirroring the classification model
+// of pkg/server's checkPermission (first-keyword based, which also prevents
+// multi-statement bypass like "SELECT 1;DROP TABLE"). It returns the required
+// action and whether a permission check is needed at all: pure
+// session/transaction-control statements read or write no table data and need
+// no permission. Unknown statement shapes return ("", true) and MUST be denied
+// for non-admin users (fail-closed).
+func requiredMySQLPermission(sql string) (string, bool) {
+	trimmed := strings.TrimSpace(sql)
+	firstWord := trimmed
+	if idx := strings.IndexAny(trimmed, " \t\n\r("); idx > 0 {
+		firstWord = trimmed[:idx]
+	}
+	action := strings.ToUpper(firstWord)
+	switch action {
+	case "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER":
+		return action, true
+	case "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "VALUES", "TABLE":
+		// Read statements require SELECT privilege.
+		return "SELECT", true
+	case "REPLACE":
+		return "INSERT", true
+	case "TRUNCATE":
+		// MySQL requires the DROP privilege for TRUNCATE TABLE.
+		return "DROP", true
+	case "SET", "USE", "BEGIN", "START", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE":
+		// Session/transaction control: no table data is read or written.
+		return "", false
+	default:
+		// Fail closed: unknown statements (GRANT, REVOKE, anything unparsed)
+		// are admin-only.
+		return "", true
+	}
+}
+
+// authorizeStatement enforces per-statement authorization for the
+// authenticated MySQL user, mirroring pkg/server's checkPermission model.
+// When no authenticator is configured or it is disabled, all statements are
+// allowed so embedded/no-auth deployments keep their existing behavior.
+func (c *MySQLClient) authorizeStatement(sql string) error {
+	authenticator, enabled := c.server.authSnapshot()
+	if !enabled {
+		return nil
+	}
+	user, err := authenticator.GetUser(c.username)
+	if err != nil {
+		return fmt.Errorf("access denied for user '%s'", c.username)
+	}
+	if user.IsAdmin {
+		return nil
+	}
+	action, needsCheck := requiredMySQLPermission(sql)
+	if !needsCheck {
+		return nil
+	}
+	if action == "" || !authenticator.HasPermission(c.username, "", "", action) {
+		return fmt.Errorf("access denied for user '%s' (missing %s permission)", c.username, actionOrStatement(action))
+	}
+	return nil
+}
+
+func actionOrStatement(action string) string {
+	if action == "" {
+		return "required"
+	}
+	return action
+}
+
+// queryContext returns the per-command execution context: the connection's
+// base context with the standard statement timeout and, when the connection
+// has a username, the row-level-security user identity. Without this, RLS
+// policies evaluated on the MySQL wire path would see an empty user.
+func (c *MySQLClient) queryContext() (context.Context, context.CancelFunc) {
+	baseCtx := c.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	if c.username != "" {
+		baseCtx = context.WithValue(baseCtx, security.RLSUserKey, c.username)
+	}
+	return context.WithTimeout(baseCtx, 30*time.Second)
+}
+
 // handleQuery handles a SQL query
 func (c *MySQLClient) handleQuery(sql string) error {
 	if len(sql) > maxMySQLQueryBytes {
@@ -927,17 +1041,20 @@ func (c *MySQLClient) handleQuery(sql string) error {
 	}
 	sql = strings.TrimSpace(sql)
 
-	// Handle MySQL client initialization queries that may not parse
+	// Handle MySQL client initialization queries that may not parse. These are
+	// answered synthetically (server constants), so they need no authorization.
 	if hasPrefixIgnoreCase(sql, "SELECT @@") || hasPrefixIgnoreCase(sql, "SELECT @") {
 		// MySQL clients query session variables like @@version_comment, @@max_allowed_packet
 		return c.handleSelectVariable(sql)
 	}
 
-	baseCtx := c.ctx
-	if baseCtx == nil {
-		baseCtx = context.Background()
+	// Per-statement authorization: without this check any authenticated MySQL
+	// user (e.g. SELECT-only) could execute arbitrary statements.
+	if err := c.authorizeStatement(sql); err != nil {
+		return c.sendErrorPacket(mysqlErrAccessDenied, sanitizeMySQLError(err))
 	}
-	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+
+	ctx, cancel := c.queryContext()
 	defer cancel()
 
 	// Try to execute as query first (SELECT, SHOW, DESCRIBE)
@@ -1079,7 +1196,6 @@ func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
 	seq++
 
 	// 4. Send row data packets
-	var scanErrors int
 	for rows.Next() {
 		row := make([]interface{}, len(columns))
 		dest := make([]interface{}, len(columns))
@@ -1088,8 +1204,10 @@ func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
 		}
 
 		if err := rows.Scan(dest...); err != nil {
-			scanErrors++
-			continue
+			// Surface the scan failure instead of silently dropping the row,
+			// which would return a "successful" result set with fewer rows
+			// than exist. Matches sendBinaryResultSetFromRows.
+			return c.sendErrorPacket(1, sanitizeMySQLError(err))
 		}
 		if mysqlRowValueTooLarge(row) {
 			return c.sendErrorPacket(0, "result value too large")
@@ -1101,7 +1219,6 @@ func (c *MySQLClient) sendResultSetFromRows(rows *engine.Rows) error {
 		}
 		seq++
 	}
-	_ = scanErrors
 
 	// 5. Send EOF packet (end of rows)
 	return c.sendEOFPacket(seq)
@@ -1340,14 +1457,6 @@ func appendLenEncString(dst []byte, s string) []byte {
 	return append(dst, s...)
 }
 
-// writeLenEncString returns a newly allocated length-encoded string.
-// Prefer appendLenEncString for zero-allocation appending.
-//
-//nolint:unused // used by coverage tests
-func writeLenEncString(s string) []byte {
-	return appendLenEncString(nil, s)
-}
-
 // writePacket writes a MySQL protocol packet
 func (c *MySQLClient) writePacket(data []byte, sequence byte) error {
 	if c.conn == nil {
@@ -1456,45 +1565,7 @@ func (c *MySQLClient) sendErrorPacket(code uint16, message string) error {
 	return c.writePacket(pkt, seq)
 }
 
-// scramblePassword scrambles a password using MySQL's algorithm.
-//
-//nolint:unused // retained for protocol compatibility tests.
-func scramblePassword(password, scramble []byte) []byte {
-	if len(password) == 0 {
-		return nil
-	}
-
-	// SHA1(password)
-	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
-	h1 := sha1.New()
-	h1.Write(password)
-	hash1 := h1.Sum(nil)
-
-	// SHA1(SHA1(password))
-	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
-	h2 := sha1.New()
-	h2.Write(hash1)
-	hash2 := h2.Sum(nil)
-
-	// SHA1(scramble + SHA1(SHA1(password)))
-	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
-	h3 := sha1.New()
-	h3.Write(scramble)
-	h3.Write(hash2)
-	hash3 := h3.Sum(nil)
-
-	// XOR
-	result := make([]byte, len(hash3))
-	for i := range hash3 {
-		result[i] = hash1[i] ^ hash3[i]
-	}
-
-	return result
-}
-
 // readLenEncInt reads a length-encoded integer.
-//
-//nolint:unused // retained for protocol compatibility tests.
 func readLenEncInt(data []byte) (uint64, int) {
 	if len(data) == 0 {
 		return 0, 0
@@ -1657,11 +1728,13 @@ func (c *MySQLClient) handleStmtPrepare(sql string) error {
 		return c.sendErrorPacket(0, "too many prepared statements")
 	}
 
-	baseCtx := c.ctx
-	if baseCtx == nil {
-		baseCtx = context.Background()
+	// Deny preparation of statements the user may not execute (the metadata
+	// probe below actually runs read statements against the engine).
+	if err := c.authorizeStatement(sql); err != nil {
+		return c.sendErrorPacket(mysqlErrAccessDenied, sanitizeMySQLError(err))
 	}
-	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+
+	ctx, cancel := c.queryContext()
 	defer cancel()
 
 	var numColumns int
@@ -2008,11 +2081,14 @@ func (c *MySQLClient) handleStmtExecute(data []byte) error {
 	}
 	c.longDataTotal -= stmt.clearLongData()
 
-	baseCtx := c.ctx
-	if baseCtx == nil {
-		baseCtx = context.Background()
+	// Re-check authorization at execute time: permissions may have changed
+	// since COM_STMT_PREPARE, and prepared statements must not become a
+	// privilege-check bypass.
+	if err := c.authorizeStatement(stmt.sql); err != nil {
+		return c.sendErrorPacket(mysqlErrAccessDenied, sanitizeMySQLError(err))
 	}
-	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+
+	ctx, cancel := c.queryContext()
 	defer cancel()
 
 	rows, err := c.server.db.Query(ctx, stmt.sql, args...)
@@ -2457,11 +2533,12 @@ func (c *MySQLClient) handleFieldList(data []byte) error {
 		return c.sendErrorPacket(1046, "invalid table name")
 	}
 
-	baseCtx := c.ctx
-	if baseCtx == nil {
-		baseCtx = context.Background()
+	// COM_FIELD_LIST reveals schema metadata; require read privileges.
+	if err := c.authorizeStatement("DESCRIBE " + quotedTableName); err != nil {
+		return c.sendErrorPacket(mysqlErrAccessDenied, sanitizeMySQLError(err))
 	}
-	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+
+	ctx, cancel := c.queryContext()
 	defer cancel()
 
 	// Use DESCRIBE to get column info

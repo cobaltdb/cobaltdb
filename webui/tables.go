@@ -331,10 +331,32 @@ func (a *tableAccumulator) walkExpr(e query.Expression, cteScope map[string]stru
 			}
 		}
 		return a.walkExpr(ex.Pattern, cteScope)
-	default:
-		// Leaf nodes (identifiers, literals, placeholders, star, etc.) cannot
-		// carry a table reference. They are safe to ignore.
+	case *query.WindowSpec:
+		for _, pexpr := range ex.PartitionBy {
+			if err := a.walkExpr(pexpr, cteScope); err != nil {
+				return err
+			}
+		}
+		for _, o := range ex.OrderBy {
+			if o != nil {
+				if err := a.walkExpr(o.Expr, cteScope); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
+	case *query.Identifier, *query.QualifiedIdentifier, *query.ColumnRef,
+		*query.StringLiteral, *query.NumberLiteral, *query.BooleanLiteral,
+		*query.NullLiteral, *query.VectorLiteral, *query.StarExpr,
+		*query.PlaceholderExpr, *query.DefaultExpr:
+		// Known-safe leaf nodes: identifiers, literals, placeholders, and star
+		// cannot carry a table reference.
+		return nil
+	default:
+		// TRUE fail-closed: an expression node this walker does not recognize
+		// (e.g. a future AST addition that embeds a subquery) must be denied
+		// rather than silently allowed for a table-restricted principal.
+		return fmt.Errorf("unsupported expression %T in table allow-list check", e)
 	}
 }
 

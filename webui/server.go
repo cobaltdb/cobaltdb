@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,10 +34,20 @@ type Server struct {
 	tmpl         *template.Template
 	tokens       *tokenStore
 	limiter      *rateLimiter
-	audit        *auditLog
-	tokenTTL     time.Duration
-	authEnabled  bool
-	mu           sync.RWMutex
+	// ipLimiter throttles requests per source IP *before* token resolution so
+	// unauthenticated request floods (invalid tokens) are limited too.
+	ipLimiter *rateLimiter
+	// unauthAuditLimiter caps how many "unauthorized" audit records a single
+	// source IP can generate, preventing audit-log flooding via garbage tokens.
+	unauthAuditLimiter *rateLimiter
+	audit              *auditLog
+	tokenTTL           time.Duration
+	authEnabled        bool
+	// trustProxyHeaders controls whether X-Forwarded-For is honored when
+	// deriving the client IP. Off by default: the header is client-controlled
+	// and must only be trusted behind a trusted reverse proxy.
+	trustProxyHeaders bool
+	mu                sync.RWMutex
 }
 
 // SavedQuery represents a saved query
@@ -113,6 +124,11 @@ const (
 	webUIAuditMaxSQL         = 4096
 	maxWebUIAdminMintTokens  = 256
 	tokenExpirySweepInterval = 5 * time.Minute
+
+	// Cap on "unauthorized" audit records per source IP (per minute, with a
+	// small burst) so invalid-token floods cannot fill the audit log.
+	unauthAuditPerMinute = 10
+	unauthAuditBurst     = 5
 )
 
 // toUpperFast returns an uppercased copy of s only if s contains lowercase
@@ -133,6 +149,7 @@ func main() {
 	tokenTTL := flag.Duration("token-ttl", defaultWebUITokenTTL, "lifetime of minted tokens (0 = no expiry); the bootstrap token never expires")
 	ratePerMin := flag.Int("rate-limit", defaultWebUIRatePerMin, "max API requests per principal per minute (0 = unlimited)")
 	rateBurst := flag.Int("rate-burst", defaultWebUIRateBurst, "burst allowance for the per-principal rate limiter")
+	trustProxyHeaders := flag.Bool("trust-proxy-headers", false, "trust X-Forwarded-For for client IPs (enable only behind a trusted reverse proxy)")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: webui [flags] <database_file>\n\n")
 		flag.PrintDefaults()
@@ -173,13 +190,16 @@ func main() {
 	}
 
 	server := &Server{
-		db:           db,
-		history:      make([]QueryRecord, 0),
-		savedQueries: make(map[string]SavedQuery),
-		tokens:       newTokenStore(),
-		limiter:      newRateLimiter(*ratePerMin, *rateBurst),
-		audit:        newAuditLog(os.Stderr, webUIAuditRingSize, webUIAuditMaxSQL),
-		authEnabled:  authEnabled,
+		db:                 db,
+		history:            make([]QueryRecord, 0),
+		savedQueries:       make(map[string]SavedQuery),
+		tokens:             newTokenStore(),
+		limiter:            newRateLimiter(*ratePerMin, *rateBurst),
+		ipLimiter:          newRateLimiter(*ratePerMin, *rateBurst),
+		unauthAuditLimiter: newRateLimiter(unauthAuditPerMinute, unauthAuditBurst),
+		audit:              newAuditLog(os.Stderr, webUIAuditRingSize, webUIAuditMaxSQL),
+		authEnabled:        authEnabled,
+		trustProxyHeaders:  *trustProxyHeaders,
 	}
 	// The bootstrap token is an admin credential that never expires, so the
 	// operator is never locked out of token management.
@@ -296,10 +316,23 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// IP-keyed rate limiting applied BEFORE token resolution: requests with
+		// missing/invalid tokens must not bypass the limiter (unauthenticated
+		// request floods previously skipped it entirely).
+		ip := ipRateKey(s.clientIP(r))
+		if !s.ipLimiter.allow("ip:" + ip) {
+			s.writeRateLimited(w, r)
+			return
+		}
+
 		token := s.extractToken(r)
 		p, ok := s.tokens.resolve(token)
 		if !ok {
-			s.recordAudit(r, principal{}, classRead, "", "denied", "unauthorized")
+			// Rate-limit "unauthorized" audit records per source IP so an
+			// attacker cannot flood the audit log with garbage tokens.
+			if s.unauthAuditLimiter == nil || s.unauthAuditLimiter.allow("unauth:"+ip) {
+				s.recordAudit(r, principal{}, classRead, "", "denied", "unauthorized")
+			}
 			s.writeUnauthorized(w, r)
 			return
 		}
@@ -365,7 +398,7 @@ func (s *Server) recordAudit(r *http.Request, p principal, class queryClass, sql
 		PrincipalID: p.ID,
 		Principal:   p.Name,
 		Role:        p.Role,
-		RemoteAddr:  clientIP(r),
+		RemoteAddr:  s.clientIP(r),
 		Method:      r.Method,
 		Path:        r.URL.Path,
 		Outcome:     outcome,
@@ -406,17 +439,32 @@ func (s *Server) authorizeQueryReason(r *http.Request, sql string) (principal, q
 	return p, class, "", true
 }
 
-func clientIP(r *http.Request) string {
+// clientIP returns the caller's address for auditing and rate limiting.
+// X-Forwarded-For is attacker-controlled, so it is only honored when the
+// operator explicitly opted in via -trust-proxy-headers (i.e. the UI is known
+// to sit behind a trusted reverse proxy); otherwise the transport-level
+// RemoteAddr is used.
+func (s *Server) clientIP(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	if fwd := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); fwd != "" {
-		if i := strings.IndexByte(fwd, ','); i >= 0 {
-			return strings.TrimSpace(fwd[:i])
+	if s != nil && s.trustProxyHeaders {
+		if fwd := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); fwd != "" {
+			if i := strings.IndexByte(fwd, ','); i >= 0 {
+				return strings.TrimSpace(fwd[:i])
+			}
+			return fwd
 		}
-		return fwd
 	}
 	return r.RemoteAddr
+}
+
+// ipRateKey normalizes an address to a host-only rate-limit key.
+func ipRateKey(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
 }
 
 func requestUsesHTTPS(r *http.Request) bool {
@@ -445,26 +493,6 @@ func (s *Server) extractToken(r *http.Request) string {
 	}
 
 	return strings.TrimSpace(r.URL.Query().Get("token"))
-}
-
-// setAPIToken installs a single bootstrap admin token. Retained as a
-// convenience for tests and the legacy single-token configuration path; the
-// store underneath supports the full multi-token RBAC model.
-func (s *Server) setAPIToken(token string) {
-	if s.tokens == nil {
-		s.tokens = newTokenStore()
-	}
-	s.tokens.setBootstrap(token)
-}
-
-// secureTokenCompare reports whether the raw token authenticates as any
-// non-expired principal. Kept for backward compatibility with existing tests.
-func (s *Server) secureTokenCompare(token string) bool {
-	if s.tokens == nil {
-		return false
-	}
-	_, ok := s.tokens.resolve(token)
-	return ok
 }
 
 func (s *Server) writeRateLimited(w http.ResponseWriter, r *http.Request) {
@@ -646,6 +674,12 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	p := s.effectivePrincipal(r)
 	tables := s.db.Tables()
 
 	schema := SchemaInfo{
@@ -653,6 +687,12 @@ func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, tableName := range tables {
+		// Per-token table allow-list: a restricted token must not enumerate or
+		// probe tables outside its scope (handleQuery already enforces this
+		// for SQL; the schema endpoint must not be a side channel).
+		if p.tableRestricted() && !p.allowsTable(tableName) {
+			continue
+		}
 		tableInfo := TableInfo{Name: tableName}
 
 		// Try to get column info by querying
@@ -704,6 +744,16 @@ func (s *Server) handleTableInfo(w http.ResponseWriter, r *http.Request) {
 	quotedTable, err := quoteSQLIdentifier(tableName)
 	if err != nil {
 		http.Error(w, "invalid table name", http.StatusBadRequest)
+		return
+	}
+
+	// Per-token table allow-list: reject metadata probes for tables outside a
+	// restricted token's scope, and audit the denial.
+	p := s.effectivePrincipal(r)
+	if p.tableRestricted() && !p.allowsTable(tableName) {
+		s.recordAudit(r, p, classRead, "", "denied",
+			fmt.Sprintf("table %q is not in this token's allow-list", strings.ToLower(strings.TrimSpace(tableName))))
+		http.Error(w, "forbidden: table not in allow-list", http.StatusForbidden)
 		return
 	}
 
