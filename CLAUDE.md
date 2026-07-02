@@ -88,7 +88,7 @@ The Catalog is the central execution engine. It manages tables, indexes, and exe
 - `scanTableRows` - Row scanning (index, MV, or full table scan)
 - `executeSelectWithJoin` - JOIN support
 - `executeSelectWithJoinAndGroupBy` - GROUP BY with aggregates
-- `evaluateFunctionCall` - Function evaluation with dispatch helpers (math, string, vector, CAST)
+- `evaluateExpression` / `scalarFunctionHandlers` - Function evaluation with dispatch helpers (math, string, vector, CAST); CASE/COALESCE/IIF evaluate lazily via `query.BoolEvaluator`
 
 #### Query Cache
 Query results are cached in `pkg/cache` (`cache.Cache`, see `pkg/cache/query_cache.go`). The cache is managed directly through the `Cache` type — the deprecated `catalog.QueryCache` has been removed. Disabled by default.
@@ -306,7 +306,7 @@ The following features are fully implemented and integrated in the engine:
 - **Query Plan Cache** (`pkg/engine/query_plan_cache.go`) - LRU cache for parsed statements
 - **Query Result Cache** (`pkg/cache/`) - TTL-based query result caching
 - **Query Optimizer** (`pkg/optimizer/`) - Cost-based optimizer with join reordering
-- **Replication** (`pkg/replication/`) - Master-slave with async/sync/full_sync modes
+- **Replication** (`pkg/replication/`, `pkg/engine/replication_master.go`, `pkg/engine/replication_snapshot.go`) - Statement-based logical master-slave replication. Successful writes ship as versioned `{SQL, args, timestamp}` payloads (`replication.StatementPayload`) tagged with a monotonic replication LSN; slaves apply them through the engine's `OnApply` callback with idempotent position tracking and a persisted resume state file. Explicit transactions replicate on COMMIT (discarded on rollback; `ROLLBACK TO SAVEPOINT` truncates the pending batch). Modes: `async` (default), `sync`, `full_sync` — sync modes push entries immediately and wait for slave ACKs up to `Options.Replication.SyncTimeout` (default 5s); on timeout `full_sync` returns an error, `sync` degrades to async with a warning unless `Options.Replication.SyncStrict` is set. Slaves auto-reconnect with capped, jittered exponential backoff and resume from the last applied LSN (or request a snapshot resync). Caveats of statement-based replication: non-deterministic SQL (e.g. `RANDOM()`) can diverge, and the master's replication log is in-memory, so a master restart may force slaves onto a fresh snapshot.
 - **Backup/Restore** (`pkg/backup/`) - Full, incremental, differential backups with compression
 - **Connection Pooling** (`pkg/pool/`) - Health checks and dynamic sizing
 - **Slow Query Log** (`pkg/metrics/slow_query.go`) - Threshold-based slow query tracking
