@@ -1,15 +1,30 @@
 package scheduler
 
-import (
-	"testing"
-)
+import "testing"
 
-func TestNoopLogger(t *testing.T) {
-	// Verify that the noopLogger methods exist and don't panic
-	var nl noopLogger
+// noopLogger tests ensure the no-op logger methods do not panic
+// when called with various argument patterns.
 
-	// These should be safe no-ops
-	nl.Infof("test format %d", 42)
-	nl.Warnf("test warn %s", "message")
-	nl.Errorf("test error %v", nil)
+func TestNoopLogger_Infof(t *testing.T) {
+	l := &noopLogger{}
+	// These should not panic
+	l.Infof("")
+	l.Infof("simple message")
+	l.Infof("format %d %s", 42, "test")
+	l.Infof("multiple: %v %v %v", 1, 2, 3)
+}
+
+func TestNoopLogger_Warnf(t *testing.T) {
+	l := &noopLogger{}
+	l.Warnf("")
+	l.Warnf("warning: something happened")
+	l.Warnf("format %d %s", 42, "test")
+}
+
+func TestNoopLogger_Errorf(t *testing.T) {
+	l := &noopLogger{}
+	l.Errorf("")
+	l.Errorf("error: something failed")
+	l.Errorf("format %d %s", 42, "test")
+	l.Errorf("error with args: %v %v %v", "a", 1, true)
 }
