@@ -3,7 +3,10 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -505,5 +508,163 @@ func BenchmarkLifecycleStartStop(b *testing.B) {
 
 		lifecycle.Start()
 		lifecycle.Stop()
+	}
+}
+
+// --- logInfof / logErrorf ---
+
+func TestLifecycleLogInfofNilSafe(t *testing.T) {
+	var l *Lifecycle
+	l.logInfof("test %s", "format") // should not panic
+
+	lifecycle := NewLifecycle(nil)
+	lifecycle.logInfof("test %s", "format") // should not panic
+}
+
+func TestLifecycleLogErrorfNilSafe(t *testing.T) {
+	var l *Lifecycle
+	l.logErrorf("test %s", "format") // should not panic
+
+	lifecycle := NewLifecycle(nil)
+	lifecycle.logErrorf("test %s", "format") // should not panic
+}
+
+// --- setupSignalHandling ---
+
+func TestLifecycleSetupSignalHandling(t *testing.T) {
+	// Start with signal handling enabled to exercise setupSignalHandling
+	config := &LifecycleConfig{
+		ShutdownTimeout:      1 * time.Second,
+		DrainTimeout:         100 * time.Millisecond,
+		HealthCheckInterval:  100 * time.Millisecond,
+		StartupTimeout:       1 * time.Second,
+		EnableSignalHandling: true,
+		ShutdownSignals:      []os.Signal{syscall.SIGUSR1},
+	}
+	lifecycle := NewLifecycle(config)
+	lifecycle.RegisterComponent(&MockComponent{name: "test", healthy: true})
+
+	if err := lifecycle.Start(); err != nil {
+		t.Fatalf("start with signal handling failed: %v", err)
+	}
+	lifecycle.Stop()
+}
+
+// --- GracefulShutdownHandler ---
+
+func TestLifecycleGracefulShutdownHandler(t *testing.T) {
+	config := &LifecycleConfig{
+		ShutdownTimeout:      1 * time.Second,
+		DrainTimeout:         100 * time.Millisecond,
+		HealthCheckInterval:  100 * time.Millisecond,
+		StartupTimeout:       1 * time.Second,
+		EnableSignalHandling: false,
+	}
+
+	lifecycle := NewLifecycle(config)
+	lifecycle.RegisterComponent(&MockComponent{name: "test", healthy: true})
+	if err := lifecycle.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	defer lifecycle.Stop()
+
+	handler := lifecycle.GracefulShutdownHandler()
+
+	// GET should return 405
+	req := httptest.NewRequest(http.MethodGet, "/shutdown", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for GET, got %d", w.Code)
+	}
+
+	// POST should accept and trigger shutdown
+	req = httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202 for POST, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "shutting_down") {
+		t.Errorf("expected shutting_down in body, got %s", w.Body.String())
+	}
+}
+
+// --- ReadyCheck ---
+
+func TestLifecycleReadyCheck(t *testing.T) {
+	config := &LifecycleConfig{
+		ShutdownTimeout:      1 * time.Second,
+		DrainTimeout:         100 * time.Millisecond,
+		HealthCheckInterval:  100 * time.Millisecond,
+		StartupTimeout:       1 * time.Second,
+		EnableSignalHandling: false,
+	}
+
+	lifecycle := NewLifecycle(config)
+	handler := lifecycle.ReadyCheck()
+
+	// Before start -> 503
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 before start, got %d", w.Code)
+	}
+
+	// After start -> 200
+	lifecycle.RegisterComponent(&MockComponent{name: "test", healthy: true})
+	if err := lifecycle.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	defer lifecycle.Stop()
+
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 after start, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"ready":true`) {
+		t.Errorf("expected ready:true in body, got %s", w.Body.String())
+	}
+}
+
+// --- LiveCheck ---
+
+func TestLifecycleLiveCheck(t *testing.T) {
+	config := &LifecycleConfig{
+		ShutdownTimeout:      1 * time.Second,
+		DrainTimeout:         100 * time.Millisecond,
+		HealthCheckInterval:  100 * time.Millisecond,
+		StartupTimeout:       1 * time.Second,
+		EnableSignalHandling: false,
+	}
+
+	lifecycle := NewLifecycle(config)
+	handler := lifecycle.LiveCheck()
+
+	// Initializing state -> 200
+	req := httptest.NewRequest(http.MethodGet, "/live", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for initializing, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	// Start then stop to get Stopped state
+	lifecycle.RegisterComponent(&MockComponent{name: "test", healthy: true})
+	if err := lifecycle.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	lifecycle.Stop()
+
+	// Stopped state -> 503
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for stopped, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"alive":false`) {
+		t.Errorf("expected alive:false in body, got %s", w.Body.String())
 	}
 }

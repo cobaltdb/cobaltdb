@@ -421,3 +421,62 @@ func TestConcurrentGaugeAccess(t *testing.T) {
 		t.Errorf("Expected gauge value 1000, got %d", gauge.Get())
 	}
 }
+
+// --- RecordWrite / RecordBufferPoolHit / RecordBufferPoolMiss ---
+
+func TestCollectorRecordWrite(t *testing.T) {
+	collector := NewCollector(0)
+
+	// Initial state
+	if collector.WriteCounter.Get() != 0 {
+		t.Errorf("expected WriteCounter=0, got %d", collector.WriteCounter.Get())
+	}
+
+	collector.RecordWrite(10 * time.Millisecond)
+	if collector.WriteCounter.Get() != 1 {
+		t.Errorf("expected WriteCounter=1 after RecordWrite, got %d", collector.WriteCounter.Get())
+	}
+
+	collector.RecordWrite(20 * time.Millisecond)
+	if collector.WriteCounter.Get() != 2 {
+		t.Errorf("expected WriteCounter=2 after two writes, got %d", collector.WriteCounter.Get())
+	}
+}
+
+func TestCollectorRecordBufferPoolHit(t *testing.T) {
+	collector := NewCollector(0)
+
+	if collector.BufferPoolHits.Get() != 0 {
+		t.Errorf("expected BufferPoolHits=0, got %d", collector.BufferPoolHits.Get())
+	}
+
+	collector.RecordBufferPoolHit()
+	if collector.BufferPoolHits.Get() != 1 {
+		t.Errorf("expected BufferPoolHits=1 after hit, got %d", collector.BufferPoolHits.Get())
+	}
+
+	collector.RecordBufferPoolHit()
+	collector.RecordBufferPoolHit()
+	if collector.BufferPoolHits.Get() != 3 {
+		t.Errorf("expected BufferPoolHits=3 after three hits, got %d", collector.BufferPoolHits.Get())
+	}
+}
+
+func TestCollectorRecordBufferPoolMiss(t *testing.T) {
+	collector := NewCollector(0)
+
+	if collector.BufferPoolMisses.Get() != 0 {
+		t.Errorf("expected BufferPoolMisses=0, got %d", collector.BufferPoolMisses.Get())
+	}
+
+	collector.RecordBufferPoolMiss()
+	if collector.BufferPoolMisses.Get() != 1 {
+		t.Errorf("expected BufferPoolMisses=1 after miss, got %d", collector.BufferPoolMisses.Get())
+	}
+
+	collector.RecordBufferPoolMiss()
+	collector.RecordBufferPoolMiss()
+	if collector.BufferPoolMisses.Get() != 3 {
+		t.Errorf("expected BufferPoolMisses=3 after three misses, got %d", collector.BufferPoolMisses.Get())
+	}
+}

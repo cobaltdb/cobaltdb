@@ -198,3 +198,132 @@ func TestBufferPoolStatsConcurrent(t *testing.T) {
 		t.Errorf("Expected 100 pages, got %d", stats.PageCount)
 	}
 }
+
+// --- AllocatedPageCount ---
+
+func TestBufferPoolAllocatedPageCount(t *testing.T) {
+	backend := NewMemory()
+	bp := NewBufferPool(100, backend)
+
+	// Initially page 0 is reserved for meta page, so nextPageID starts at 1
+	if count := bp.AllocatedPageCount(); count != 1 {
+		t.Errorf("expected AllocatedPageCount=1 (meta page), got %d", count)
+	}
+
+	// Create some pages
+	for i := 0; i < 5; i++ {
+		page, err := bp.NewPage(PageTypeLeaf)
+		if err != nil {
+			t.Fatalf("NewPage failed: %v", err)
+		}
+		bp.Unpin(page)
+	}
+
+	// Page 0 = meta, pages 1-5 = data, so total should be 6
+	if count := bp.AllocatedPageCount(); count != 6 {
+		t.Errorf("expected AllocatedPageCount=6 (1 meta + 5 data), got %d", count)
+	}
+}
+
+// --- FlushErrorCount ---
+
+func TestBufferPoolFlushErrorCount(t *testing.T) {
+	backend := NewMemory()
+	bp := NewBufferPool(100, backend)
+
+	// Initially 0
+	if count := bp.FlushErrorCount(); count != 0 {
+		t.Errorf("expected FlushErrorCount=0, got %d", count)
+	}
+}
+
+// --- PauseBackgroundFlusher / ResumeBackgroundFlusher ---
+
+func TestBufferPoolPauseResumeBackgroundFlusher(t *testing.T) {
+	backend := NewMemory()
+	bp := NewBufferPool(100, backend)
+
+	// Initial state: not paused
+	// Pause sets flushSuspended to true
+	bp.PauseBackgroundFlusher()
+	if !bp.flushSuspended.Load() {
+		t.Error("expected flushSuspended=true after Pause")
+	}
+
+	// Pause is idempotent
+	bp.PauseBackgroundFlusher()
+	if !bp.flushSuspended.Load() {
+		t.Error("expected flushSuspended=true after second Pause")
+	}
+
+	// Resume sets flushSuspended to false
+	bp.ResumeBackgroundFlusher()
+	if bp.flushSuspended.Load() {
+		t.Error("expected flushSuspended=false after Resume")
+	}
+
+	// Resume is idempotent
+	bp.ResumeBackgroundFlusher()
+	if bp.flushSuspended.Load() {
+		t.Error("expected flushSuspended=false after second Resume")
+	}
+}
+
+// --- DiscardAll ---
+
+func TestBufferPoolDiscardAll(t *testing.T) {
+	backend := NewMemory()
+	bp := NewBufferPool(10, backend)
+
+	// Create some pages
+	var pageIDs []uint32
+	for i := 0; i < 3; i++ {
+		page, err := bp.NewPage(PageTypeLeaf)
+		if err != nil {
+			t.Fatalf("NewPage failed: %v", err)
+		}
+		pageIDs = append(pageIDs, page.ID())
+		bp.Unpin(page)
+	}
+
+	// Verify pages exist
+	if bp.PageCount() != 3 {
+		t.Errorf("expected 3 pages before DiscardAll, got %d", bp.PageCount())
+	}
+
+	// DiscardAll should clear the pool
+	bp.DiscardAll()
+
+	if bp.PageCount() != 0 {
+		t.Errorf("expected 0 pages after DiscardAll, got %d", bp.PageCount())
+	}
+	if !bp.closed {
+		t.Error("expected closed=true after DiscardAll")
+	}
+
+	// Idempotent: second DiscardAll should not panic
+	bp.DiscardAll()
+	if bp.PageCount() != 0 {
+		t.Errorf("expected 0 pages after second DiscardAll, got %d", bp.PageCount())
+	}
+}
+
+func TestBufferPoolDiscardAllIdempotent(t *testing.T) {
+	backend := NewMemory()
+	bp := NewBufferPool(10, backend)
+
+	// Create a page
+	page, err := bp.NewPage(PageTypeLeaf)
+	if err != nil {
+		t.Fatalf("NewPage failed: %v", err)
+	}
+	bp.Unpin(page)
+
+	// DiscardAll twice
+	bp.DiscardAll()
+	bp.DiscardAll() // should not panic or error
+
+	if !bp.closed {
+		t.Error("expected closed=true after DiscardAll")
+	}
+}

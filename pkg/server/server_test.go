@@ -951,3 +951,8 @@ func TestHandleCreateIndex(t *testing.T) {
 		t.Fatalf("Expected OK message, got %T", response)
 	}
 }
+
+func TestServerLogErrorfNilSafe(t *testing.T) {
+	var s *Server
+	s.logErrorf("test %s", "format") // should not panic
+}

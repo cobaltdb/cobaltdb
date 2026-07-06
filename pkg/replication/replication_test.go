@@ -1473,3 +1473,75 @@ func TestSendSnapshotLockedErrors(t *testing.T) {
 		t.Fatal("expected error on Flush")
 	}
 }
+
+// --- Manager accessor methods ---
+
+func TestManagerRole(t *testing.T) {
+	config := DefaultConfig()
+	config.Role = RoleMaster
+	mgr := NewManager(config)
+
+	if mgr.Role() != RoleMaster {
+		t.Errorf("expected Role() = %v, got %v", RoleMaster, mgr.Role())
+	}
+
+	config2 := DefaultConfig()
+	config2.Role = RoleSlave
+	mgr2 := NewManager(config2)
+	if mgr2.Role() != RoleSlave {
+		t.Errorf("expected Role() = %v, got %v", RoleSlave, mgr2.Role())
+	}
+}
+
+func TestManagerMode(t *testing.T) {
+	config := DefaultConfig()
+	config.Mode = ModeAsync
+	mgr := NewManager(config)
+
+	if mgr.Mode() != ModeAsync {
+		t.Errorf("expected Mode() = %v, got %v", ModeAsync, mgr.Mode())
+	}
+
+	config2 := DefaultConfig()
+	config2.Mode = ModeSync
+	mgr2 := NewManager(config2)
+	if mgr2.Mode() != ModeSync {
+		t.Errorf("expected Mode() = %v, got %v", ModeSync, mgr2.Mode())
+	}
+}
+
+func TestManagerLastAppliedLSN(t *testing.T) {
+	mgr := NewManager(DefaultConfig())
+
+	if mgr.LastAppliedLSN() != 0 {
+		t.Errorf("expected LastAppliedLSN = 0, got %d", mgr.LastAppliedLSN())
+	}
+}
+
+func TestManagerListenAddr(t *testing.T) {
+	config := DefaultConfig()
+	config.Role = RoleMaster
+	config.ListenAddr = "127.0.0.1:0"
+	mgr := NewManager(config)
+
+	// Before Start, listener is nil, so ListenAddr should return ""
+	if addr := mgr.ListenAddr(); addr != "" {
+		t.Errorf("expected empty ListenAddr before start, got %q", addr)
+	}
+}
+
+func TestManagerFlushWALBuffer(t *testing.T) {
+	config := DefaultConfig()
+	mgr := NewManager(config)
+
+	// FlushWALBuffer on a manager with no entries or slaves should not panic
+	mgr.FlushWALBuffer()
+}
+
+func TestManagerDropConnections(t *testing.T) {
+	config := DefaultConfig()
+	mgr := NewManager(config)
+
+	// DropConnections on a manager with no connections should not panic
+	mgr.DropConnections()
+}
