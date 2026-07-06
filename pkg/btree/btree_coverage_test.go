@@ -607,3 +607,143 @@ func TestBTreeFlushWithExactPageSize(t *testing.T) {
 		t.Errorf("Expected %d entries after reload, got %d", numEntries, tree2.Size())
 	}
 }
+
+// ==================== lruList.Init tests (0% coverage) ====================
+
+func TestLRUListInit_Empty(t *testing.T) {
+	list := &lruList{}
+	list.Init()
+	if list.head != nil {
+		t.Error("head should be nil after Init on empty list")
+	}
+	if list.tail != nil {
+		t.Error("tail should be nil after Init on empty list")
+	}
+}
+
+func TestLRUListInit_WithEntries(t *testing.T) {
+	list := &lruList{}
+	e1 := &lruEntry{key: "k1", size: 10}
+	e2 := &lruEntry{key: "k2", size: 20}
+	list.PushFront(e1)
+	list.PushFront(e2)
+
+	if list.Len() != 2 {
+		t.Fatalf("expected 2 entries before Init, got %d", list.Len())
+	}
+
+	list.Init()
+
+	if list.head != nil {
+		t.Error("head should be nil after Init")
+	}
+	if list.tail != nil {
+		t.Error("tail should be nil after Init")
+	}
+	if list.Len() != 0 {
+		t.Errorf("expected 0 entries after Init, got %d", list.Len())
+	}
+}
+
+// ==================== PutStringNoCopy tests (0% coverage) ====================
+
+func TestPutStringNoCopy_BasicPut(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+	tree, err := NewBTree(pool)
+	if err != nil {
+		t.Fatalf("Failed to create tree: %v", err)
+	}
+
+	err = tree.PutStringNoCopy("key1", []byte("value1"))
+	if err != nil {
+		t.Fatalf("PutStringNoCopy failed: %v", err)
+	}
+
+	val, err := tree.Get([]byte("key1"))
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if string(val) != "value1" {
+		t.Errorf("expected value1, got %s", string(val))
+	}
+}
+
+func TestPutStringNoCopy_UpdateExisting(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+	tree, err := NewBTree(pool)
+	if err != nil {
+		t.Fatalf("Failed to create tree: %v", err)
+	}
+
+	err = tree.PutStringNoCopy("key1", []byte("value1"))
+	if err != nil {
+		t.Fatalf("First PutStringNoCopy failed: %v", err)
+	}
+
+	err = tree.PutStringNoCopy("key1", []byte("value2"))
+	if err != nil {
+		t.Fatalf("Update PutStringNoCopy failed: %v", err)
+	}
+
+	val, err := tree.Get([]byte("key1"))
+	if err != nil {
+		t.Fatalf("Get after update failed: %v", err)
+	}
+	if string(val) != "value2" {
+		t.Errorf("expected value2 after update, got %s", string(val))
+	}
+}
+
+func TestPutStringNoCopy_EmptyKey(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+	tree, err := NewBTree(pool)
+	if err != nil {
+		t.Fatalf("Failed to create tree: %v", err)
+	}
+
+	err = tree.PutStringNoCopy("", []byte("value"))
+	if err != ErrInvalidKey {
+		t.Errorf("expected ErrInvalidKey for empty key, got %v", err)
+	}
+}
+
+func TestPutStringNoCopy_EmptyValue(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+	tree, err := NewBTree(pool)
+	if err != nil {
+		t.Fatalf("Failed to create tree: %v", err)
+	}
+
+	err = tree.PutStringNoCopy("key1", []byte{})
+	if err != ErrInvalidValue {
+		t.Errorf("expected ErrInvalidValue for empty value, got %v", err)
+	}
+}
+
+func TestPutStringNoCopy_KeyTooLong(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+	tree, err := NewBTree(pool)
+	if err != nil {
+		t.Fatalf("Failed to create tree: %v", err)
+	}
+
+	longKey := make([]byte, MaxKeyLength+1)
+	for i := range longKey {
+		longKey[i] = 'a'
+	}
+
+	err = tree.PutStringNoCopy(string(longKey), []byte("value"))
+	if err != ErrKeyTooLong {
+		t.Errorf("expected ErrKeyTooLong for key exceeding MaxKeyLength, got %v", err)
+	}
+}
