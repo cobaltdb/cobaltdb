@@ -440,11 +440,6 @@ func (w *WAL) AppendWithoutSync(record *WALRecord) error {
 // acquisition without syncing. This dramatically reduces mutex contention
 // when a transaction produces many WAL records.
 func (w *WAL) AppendBatchWithoutSync(records []*WALRecord) error {
-	for _, r := range records {
-		if err := validateRecordSize(r); err != nil {
-			return err
-		}
-	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

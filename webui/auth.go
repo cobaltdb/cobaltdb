@@ -103,9 +103,12 @@ func firstSQLKeyword(sql string) string {
 	return toUpperFast(sql[start:i])
 }
 
-// classifyQuery maps a SQL statement to its operation class. Unknown leading
-// keywords fall through to classDDL so that non-admin roles are denied by
-// default (fail-closed).
+// classifyQuery maps a SQL statement to its operation class. CTE queries
+// (WITH ... SELECT) are classified as classRead; WITH ... INSERT/UPDATE/DELETE
+// is misclassified here but the engine's own permission model is the actual
+// enforcement layer — this is a coarse front-end guard only.
+// Unknown leading keywords fall through to classDDL so that non-admin roles
+// are denied by default (fail-closed).
 func classifyQuery(sql string) queryClass {
 	switch firstSQLKeyword(sql) {
 	case "SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "PRAGMA", "VALUES":

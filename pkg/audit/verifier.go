@@ -71,7 +71,10 @@ func VerifyLogFile(path string, encryptionKey []byte) (*VerificationResult, erro
 			if aead == nil {
 				return nil, fmt.Errorf("audit log line %d: encrypted entry requires encryption key", lineNo)
 			}
-			line, err = decryptAuditLogLine(aead, line)
+			// Use expectedPrevHash as GCM AAD to match the encrypt side
+			// (logger.go, where event.PrevHash is used). This binds each
+			// encrypted entry to its hash-chain position.
+			line, err = decryptAuditLogLine(aead, line, []byte(expectedPrevHash))
 			if err != nil {
 				return nil, fmt.Errorf("audit log line %d: decrypt entry: %w", lineNo, err)
 			}
@@ -90,7 +93,7 @@ func VerifyLogFile(path string, encryptionKey []byte) (*VerificationResult, erro
 			return nil, fmt.Errorf("audit log line %d: missing hash", lineNo)
 		}
 		if event.PrevHash != expectedPrevHash {
-			return nil, fmt.Errorf("audit log line %d: previous hash mismatch", lineNo)
+			return nil, fmt.Errorf("audit log line %d: previous hash mismatch (got %q, want %q)", lineNo, event.PrevHash, expectedPrevHash)
 		}
 
 		actualHash := event.Hash
@@ -138,7 +141,7 @@ func auditLogAEAD(key []byte) (cipher.AEAD, error) {
 	return gcm, nil
 }
 
-func decryptAuditLogLine(aead cipher.AEAD, line []byte) ([]byte, error) {
+func decryptAuditLogLine(aead cipher.AEAD, line, aad []byte) ([]byte, error) {
 	encoded := strings.TrimSpace(string(bytes.TrimPrefix(line, []byte("ENC:"))))
 	encrypted, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
@@ -150,7 +153,7 @@ func decryptAuditLogLine(aead cipher.AEAD, line []byte) ([]byte, error) {
 	}
 	nonce := encrypted[:nonceSize]
 	ciphertext := encrypted[nonceSize:]
-	plain, err := aead.Open(nil, nonce, ciphertext, nil)
+	plain, err := aead.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +181,7 @@ func readLastTextAuditHash(path string, aead cipher.AEAD) (string, error) {
 			if aead == nil {
 				return "", fmt.Errorf("audit log line %d: encrypted entry requires encryption key", lineNo)
 			}
-			line, err = decryptAuditLogLine(aead, line)
+			line, err = decryptAuditLogLine(aead, line, []byte(lastHash))
 			if err != nil {
 				return "", fmt.Errorf("audit log line %d: decrypt entry: %w", lineNo, err)
 			}

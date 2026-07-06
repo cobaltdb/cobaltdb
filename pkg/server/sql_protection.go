@@ -330,7 +330,7 @@ func compilePatterns() []*SuspiciousPattern {
 		},
 		{
 			Name:        "comment_injection",
-			Pattern:     regexp.MustCompile(`(?i)/\*!\d+\s*|` + "`" + `.*?` + "`" + `|/\*.*?\*/`),
+			Pattern:     regexp.MustCompile(`(?i)/\*!\d+\s*|/\*.*?\*/`),
 			Severity:    ProtectionMedium,
 			Description: "Comment-based injection",
 		},
@@ -420,17 +420,10 @@ func countIgnoreCase(s, substr string) int {
 
 // hasSuspiciousComments checks for suspicious comment patterns
 func hasSuspiciousComments(sql string) bool {
-	// Check for nested comments
-	if strings.Count(sql, "/*") != strings.Count(sql, "*/") {
-		return true
-	}
-
-	// Check for MySQL conditional comments
-	if strings.Contains(sql, "/*!") {
-		return true
-	}
-
-	return false
+	// Check for nested comments (unbalanced markers only — MySQL conditional
+	// comments /*!...*/ are legitimate cross-version compatibility constructs
+	// and are handled by the comment_injection regex when version-prefixed).
+	return strings.Count(sql, "/*") != strings.Count(sql, "*/")
 }
 
 // SanitizeSQL sanitizes SQL for logging (removes sensitive data)

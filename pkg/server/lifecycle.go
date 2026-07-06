@@ -292,8 +292,13 @@ func (l *Lifecycle) Stop() error {
 
 	l.setState(StateDraining)
 
-	// Wait for drain timeout
-	time.Sleep(l.config.DrainTimeout)
+	// Wait for drain timeout (cancellable via context)
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), l.config.DrainTimeout)
+	select {
+	case <-drainCtx.Done():
+	case <-l.ctx.Done():
+	}
+	drainCancel()
 
 	l.setState(StateShuttingDown)
 

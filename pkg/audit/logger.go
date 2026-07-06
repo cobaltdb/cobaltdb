@@ -592,13 +592,16 @@ func (al *Logger) writeEvent(event *Event) error {
 		line = string(data) + "\n"
 	}
 
-	// Encrypt log line if cipher is configured
+	// Encrypt log line if cipher is configured. Use prevHash as AAD so the
+	// GCM authentication binds each entry to its position in the hash chain,
+	// preventing a cut-and-paste that swaps entries of the same length.
 	if al.cipher != nil {
 		nonce := make([]byte, al.cipher.NonceSize())
 		if _, nonceErr := rand.Read(nonce); nonceErr != nil {
 			return fmt.Errorf("audit log nonce generation failed: %w", nonceErr)
 		}
-		encrypted := al.cipher.Seal(nonce, nonce, []byte(line), nil)
+		aad := []byte(event.PrevHash)
+		encrypted := al.cipher.Seal(nonce, nonce, []byte(line), aad)
 		line = "ENC:" + base64.StdEncoding.EncodeToString(encrypted) + "\n"
 	}
 

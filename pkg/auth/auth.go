@@ -297,7 +297,7 @@ func (a *Authenticator) CreateUser(username, password string, isAdmin bool) erro
 	if _, exists := a.users[username]; exists {
 		return ErrUserExists
 	}
-	if a.enforcePasswordPolicy && !enforcePasswordPolicy {
+	if a.enforcePasswordPolicy {
 		if err := validatePasswordStrength(password); err != nil {
 			return err
 		}

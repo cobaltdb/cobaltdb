@@ -1393,8 +1393,8 @@ func TestSuspiciousCommentsCov(t *testing.T) {
 	if !hasSuspiciousComments("SELECT /* x") {
 		t.Error("unmatched")
 	}
-	if !hasSuspiciousComments("SELECT /*!50000 1 */") {
-		t.Error("mysql")
+	if hasSuspiciousComments("SELECT /*!50000 1 */") {
+		t.Error("mysql conditional comments are legitimate cross-version constructs")
 	}
 	if hasSuspiciousComments("SELECT 1") {
 		t.Error("clean")

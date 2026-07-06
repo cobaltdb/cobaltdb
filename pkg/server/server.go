@@ -92,7 +92,7 @@ func generateRandomPassword() (string, error) {
 		return "", fmt.Errorf("crypto/rand failed: %w", err)
 	}
 	for i := range b {
-		b[i] = charset[b[i]%byte(len(charset))]
+		b[i] = charset[uint32(b[i])%uint32(len(charset))]
 	}
 	return string(b), nil
 }
