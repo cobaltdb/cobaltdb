@@ -258,9 +258,7 @@ func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 	if err != nil || len(compressed) >= len(buf) {
 		// Fallback to raw write on compression error or if compression
 		// didn't actually shrink the data.
-		n, err := WriteFullAt(cb.backend, buf, offset)
-		cb.updateLogicalSize(offset, n, err)
-		return n, err
+		return cb.writeRaw(buf, offset)
 	}
 
 	// Only store compressed if it meets the minimum ratio threshold AND the
@@ -270,15 +268,11 @@ func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 	if ratio <= cb.config.MinRatio && compressionHeaderSize+len(compressed) <= PageSize {
 		originalSize, err := checkedUint16(len(buf), "compression original size")
 		if err != nil {
-			n, err := WriteFullAt(cb.backend, buf, offset)
-			cb.updateLogicalSize(offset, n, err)
-			return n, err
+			return cb.writeRaw(buf, offset)
 		}
 		compressedSize, err := checkedUint16(len(compressed), "compression payload size")
 		if err != nil {
-			n, err := WriteFullAt(cb.backend, buf, offset)
-			cb.updateLogicalSize(offset, n, err)
-			return n, err
+			return cb.writeRaw(buf, offset)
 		}
 
 		// Assemble header + payload into one buffer and issue a single write.
@@ -301,6 +295,26 @@ func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 	}
 
 	// Store raw — compression didn't save enough space.
+	return cb.writeRaw(buf, offset)
+}
+
+// writeRaw stores a page verbatim (no compression header). On read, raw pages
+// are distinguished from compressed records solely by their leading 4 bytes NOT
+// matching a compression magic — a full raw page leaves no room to prepend an
+// 8-byte header. If a raw page's first 4 bytes collided with a magic, ReadAt
+// would misinterpret it as a compressed record and either error or return
+// silently-wrong bytes, so we refuse the write loudly instead of persisting a
+// silently-unreadable page.
+//
+// In practice this never triggers through the engine: the page manager always
+// writes a small little-endian page ID into bytes[0:4] (page.SerializeHeader),
+// which cannot equal the 0xC0 0xD1.. magics until page IDs approach ~3.5e9
+// (~14 TB). The guard makes CompressedBackend sound for arbitrary page content
+// at the library level.
+func (cb *CompressedBackend) writeRaw(buf []byte, offset int64) (int, error) {
+	if len(buf) >= compressionHeaderSize && cb.algorithmFromMagic(buf[:4]) != -1 {
+		return 0, fmt.Errorf("compression: cannot store raw page at offset %d: leading bytes collide with a compression magic (page unreadable if stored)", offset)
+	}
 	n, err := WriteFullAt(cb.backend, buf, offset)
 	cb.updateLogicalSize(offset, n, err)
 	return n, err
