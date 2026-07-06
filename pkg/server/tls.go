@@ -656,16 +656,17 @@ func GenerateClientCert(caCertFile, caKeyFile, clientName string, validDays int)
 
 	caKey, err := x509.ParseECPrivateKey(block.Bytes)
 	if err != nil {
-		// Try PKCS#8
-		caKeyPKCS8, err2 := x509.ParsePKCS8PrivateKey(block.Bytes)
+		// Try PKCS#8 (handles both EC and RSA).
+		caKeyAny, err2 := x509.ParsePKCS8PrivateKey(block.Bytes)
 		if err2 != nil {
 			return nil, nil, errors.New("failed to parse CA private key")
 		}
-		// Use the parsed key directly with CreateCertificate
-		caKey = nil
-		_ = caKeyPKCS8
-		// For simplicity, we'll use ECDSA for client certs too
-		// In production, you'd handle RSA keys properly
+		switch k := caKeyAny.(type) {
+		case *ecdsa.PrivateKey:
+			caKey = k
+		default:
+			return nil, nil, fmt.Errorf("unsupported CA key type %T (only ECDSA keys are supported for client cert signing)", caKeyAny)
+		}
 	}
 
 	// Generate client key
@@ -694,9 +695,11 @@ func GenerateClientCert(caCertFile, caKeyFile, clientName string, validDays int)
 		BasicConstraintsValid: true,
 	}
 
-	// Sign certificate (use caKey if parsed, otherwise this will fail - production code needs full RSA support)
+	// Sign certificate with the CA key. The type switch above guarantees caKey
+	// is non-nil here (an *ecdsa.PrivateKey from DER or PKCS#8); the nil guard
+	// is a safety net for future refactoring.
 	if caKey == nil {
-		return nil, nil, errors.New("RSA CA keys not yet fully supported")
+		return nil, nil, errors.New("CA private key is nil after parsing (unsupported key type)")
 	}
 	certDER, err := x509.CreateCertificate(rand.Reader, &template, caCert, &clientKey.PublicKey, caKey)
 	if err != nil {
