@@ -439,6 +439,16 @@ func (p *Parser) parseNumber() (Expression, error) {
 	tok := p.current()
 	p.advance()
 
+	// Hex literal (0x…): parse to an integer and normalize Raw to decimal so the
+	// int64-precision path in NumberLiteral.Evaluate (ParseInt base 10) applies.
+	if len(tok.Literal) > 2 && tok.Literal[0] == '0' && (tok.Literal[1] == 'x' || tok.Literal[1] == 'X') {
+		iv, err := strconv.ParseInt(tok.Literal, 0, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid hex number: %s", tok.Literal)
+		}
+		return &NumberLiteral{Value: float64(iv), Raw: strconv.FormatInt(iv, 10)}, nil
+	}
+
 	val, err := strconv.ParseFloat(tok.Literal, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid number: %s", tok.Literal)
@@ -741,6 +751,26 @@ func Parse(sql string) (Statement, error) {
 
 	parser := NewParser(tokens)
 	return parser.Parse()
+}
+
+// CountPlaceholders returns the number of positional `?` placeholders in sql.
+// It tokenizes so that a `?` inside a string literal (part of a string token)
+// is not miscounted as a placeholder. On a tokenizer error it returns 0 — the
+// caller's subsequent parse surfaces the real error. Used to reject a query
+// with fewer bind arguments than placeholders (which otherwise evaluates the
+// unbound placeholders to a fail-closed NULL and returns silently wrong results).
+func CountPlaceholders(sql string) int {
+	tokens, err := Tokenize(sql)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, t := range tokens {
+		if t.Type == TokenQuestion {
+			n++
+		}
+	}
+	return n
 }
 
 // ParseStrict parses a SQL string in strict mode: in addition to Parse's

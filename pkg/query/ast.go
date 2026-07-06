@@ -852,6 +852,73 @@ func (e *BooleanLiteral) nodeType() string                        { return "Bool
 func (e *BooleanLiteral) expressionNode()                         {}
 func (e *BooleanLiteral) Evaluate(Evaluator) (interface{}, error) { return e.Value, nil }
 
+// IntervalValue is the evaluated result of an INTERVAL expression: an integer
+// magnitude and an uppercase time unit (e.g. {5, "DAY"}). Date arithmetic —
+// DATE_ADD/DATE_SUB and the +/- operators — interprets it against a date/time.
+type IntervalValue struct {
+	N    int64
+	Unit string
+}
+
+// IntervalExpr is the SQL `INTERVAL <value> <unit>` construct, e.g.
+// `INTERVAL 5 DAY` / `INTERVAL n MONTH`, used in DATE_ADD/DATE_SUB and in
+// `date + INTERVAL ...` arithmetic.
+type IntervalExpr struct {
+	Value Expression
+	Unit  string
+}
+
+func (e *IntervalExpr) nodeType() string { return "IntervalExpr" }
+func (e *IntervalExpr) expressionNode()  {}
+
+// AcceptVisitor is a no-op traversal terminator: an interval wraps a scalar
+// value plus a unit and no expression visitor needs to descend into it.
+func (e *IntervalExpr) AcceptVisitor(v ExpressionVisitor, ctx interface{}) interface{} {
+	return e
+}
+
+func (e *IntervalExpr) Evaluate(ev Evaluator) (interface{}, error) {
+	if e.Value == nil {
+		return nil, nil
+	}
+	v, err := e.Value.Evaluate(ev)
+	if err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return nil, nil
+	}
+	n, ok := intervalMagnitude(v)
+	if !ok {
+		return nil, fmt.Errorf("INTERVAL value must be numeric, got %T", v)
+	}
+	return IntervalValue{N: n, Unit: strings.ToUpper(e.Unit)}, nil
+}
+
+// intervalMagnitude coerces an evaluated INTERVAL value to an int64 count.
+func intervalMagnitude(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	case float32:
+		return int64(n), true
+	case string:
+		if i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64); err == nil {
+			return i, true
+		}
+		if f, err := strconv.ParseFloat(strings.TrimSpace(n), 64); err == nil {
+			return int64(f), true
+		}
+	}
+	return 0, false
+}
+
 // NullLiteral represents NULL
 type NullLiteral struct{}
 
