@@ -9,7 +9,7 @@ CobaltDB is a production-oriented pure-Go SQL database engine (zero CGO at runti
 
 Supports standard SQL plus JSON, full-text search, window functions, CTEs, row-level security, temporal `AS OF` queries, HNSW vector search, replication, and AES-256-GCM encryption at rest.
 
-**Note:** `AGENTS.md` contains an older near-duplicate of this guide. When updating guidance, prefer editing `CLAUDE.md` — keep `AGENTS.md` aligned if the change affects agent-facing instructions.
+**Note:** `AGENTS.md` was deleted as part of a cleanup pass (the root-level copy was a stale duplicate of this guide). Prefer editing `CLAUDE.md` for agent-facing instructions.
 
 ## Build & Verify
 
