@@ -463,6 +463,25 @@ func (p *Parser) parseUnary() (Expression, error) {
 			return nil, err
 		}
 		defer p.leaveDepth()
+		// Fold a leading sign directly into a numeric literal so MinInt64
+		// (-9223372036854775808) keeps full int64 precision. Its magnitude
+		// (9223372036854775808) overflows a positive int64, so parsing it as a
+		// positive literal and negating a float64 afterwards would silently round
+		// to -9.223372036854776e+18. Folding makes the raw literal
+		// "-9223372036854775808", which strconv.ParseInt decodes exactly.
+		if (op == TokenMinus || op == TokenPlus) && p.current().Type == TokenNumber {
+			num, err := p.parseNumber()
+			if err != nil {
+				return nil, err
+			}
+			if nl, ok := num.(*NumberLiteral); ok {
+				if op == TokenMinus {
+					return &NumberLiteral{Value: -nl.Value, Raw: "-" + nl.Raw}, nil
+				}
+				return nl, nil
+			}
+			return &UnaryExpr{Operator: op, Expr: num}, nil
+		}
 		expr, err := p.parseUnary()
 		if err != nil {
 			return nil, err
@@ -569,6 +588,18 @@ func (p *Parser) parsePrimary() (Expression, error) {
 			!isStructuralKeyword(p.current().Type) {
 			tok := p.current()
 			p.advance()
+			// INTERVAL <value> <unit> (e.g. INTERVAL 5 DAY) — a temporal literal
+			// used in DATE_ADD/DATE_SUB and date +/- arithmetic. Only when it is
+			// NOT `interval.col` or `interval(...)`; a shape that isn't a real
+			// interval backtracks so a column literally named "interval" still works.
+			if strings.EqualFold(tok.Literal, "INTERVAL") &&
+				p.current().Type != TokenDot && p.current().Type != TokenLParen {
+				if iv, ok, err := p.tryParseIntervalTail(); err != nil {
+					return nil, err
+				} else if ok {
+					return iv, nil
+				}
+			}
 			// Check for qualified identifier (table.column)
 			if p.match(TokenDot) {
 				// After dot, accept any token as column name (keywords can be column names)
@@ -587,6 +618,44 @@ func (p *Parser) parsePrimary() (Expression, error) {
 		}
 		return nil, fmt.Errorf("unexpected token: %s", p.current().Literal)
 	}
+}
+
+// tryParseIntervalTail parses the `<value> <unit>` tail of an INTERVAL literal
+// after the INTERVAL keyword has been consumed. It returns ok=false (restoring
+// the parser position) when the following tokens are not an interval — e.g. a
+// column literally named "interval" — so bare-identifier usage still works.
+func (p *Parser) tryParseIntervalTail() (Expression, bool, error) {
+	savedPos := p.pos
+	savedPH := p.placeholderCount
+	if isStructuralKeyword(p.current().Type) || p.current().Type == TokenEOF {
+		return nil, false, nil
+	}
+	val, err := p.parsePrimary()
+	if err != nil {
+		p.pos = savedPos
+		p.placeholderCount = savedPH
+		return nil, false, nil
+	}
+	unitTok := p.current()
+	unit := strings.ToUpper(unitTok.Literal)
+	if unitTok.Literal == "" || !isIntervalUnit(unit) {
+		p.pos = savedPos
+		p.placeholderCount = savedPH
+		return nil, false, nil
+	}
+	p.advance()
+	return &IntervalExpr{Value: val, Unit: unit}, true, nil
+}
+
+// isIntervalUnit reports whether u (uppercased) is a supported single INTERVAL
+// time unit.
+func isIntervalUnit(u string) bool {
+	switch u {
+	case "MICROSECOND", "SECOND", "MINUTE", "HOUR",
+		"DAY", "WEEK", "MONTH", "QUARTER", "YEAR":
+		return true
+	}
+	return false
 }
 
 // parseExistsExpr parses EXISTS (SELECT ...) or NOT EXISTS (SELECT ...)
@@ -736,6 +805,19 @@ func (p *Parser) parseCast() (Expression, error) {
 func (p *Parser) parseIdentifierOrFunction() (Expression, error) {
 	tok := p.current()
 	p.advance()
+
+	// INTERVAL <value> <unit> (e.g. INTERVAL 5 DAY) — a temporal literal used in
+	// DATE_ADD/DATE_SUB and `date +/- INTERVAL ...` arithmetic. Skip when it is
+	// `interval.col` or `interval(...)`; a shape that isn't a real interval
+	// backtracks so a column literally named "interval" still parses.
+	if strings.EqualFold(tok.Literal, "INTERVAL") &&
+		p.current().Type != TokenDot && p.current().Type != TokenLParen {
+		if iv, ok, err := p.tryParseIntervalTail(); err != nil {
+			return nil, err
+		} else if ok {
+			return iv, nil
+		}
+	}
 
 	// Check for qualified identifier (table.column) or qualified star (table.*)
 	if p.match(TokenDot) {

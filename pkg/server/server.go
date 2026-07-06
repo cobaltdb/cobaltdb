@@ -18,6 +18,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/auth"
 	"github.com/cobaltdb/cobaltdb/pkg/logger"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/wire"
 )
 
@@ -589,6 +590,14 @@ func (c *ClientConn) handleMessage(msgType wire.MsgType, payload []byte) interfa
 	ctx := c.ctx
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// Inject the authenticated user identity so row-level-security policies are
+	// enforced on the msgpack wire path, mirroring the MySQL server's
+	// queryContext(). Without this the engine sees an empty RLS user and fails
+	// OPEN — every authenticated user would read/write every row regardless of
+	// any CREATE POLICY. Applies to query, prepare, and execute below.
+	if c.authed && c.username != "" {
+		ctx = context.WithValue(ctx, security.RLSUserKey, c.username)
 	}
 
 	switch msgType {

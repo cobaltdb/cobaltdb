@@ -377,16 +377,32 @@ func matchesCSVPredicate(cell interface{}, predicate csvPredicate) bool {
 		}
 	}
 	right := fmt.Sprint(predicate.value)
+	// Numeric-aware comparison: the engine materializes CSV cells as raw strings
+	// and re-applies WHERE with numeric coercion, so a cell "30.50" numerically
+	// equals 30.5. Compare numerically whenever BOTH sides parse as numbers;
+	// otherwise fall back to exact string comparison (matching the engine's
+	// case-sensitive string equality). Comparing "30.50" == "30.5" as strings
+	// silently dropped rows the engine would have matched.
+	leftNum, leftErr := strconv.ParseFloat(strings.TrimSpace(left), 64)
+	rightNum, rightErr := strconv.ParseFloat(strings.TrimSpace(right), 64)
+	bothNumeric := leftErr == nil && rightErr == nil
+
 	switch predicate.operator {
 	case "=":
+		if bothNumeric {
+			return leftNum == rightNum
+		}
 		return left == right
 	case "!=":
+		if bothNumeric {
+			return leftNum != rightNum
+		}
 		return left != right
 	}
 
-	leftNum, leftErr := strconv.ParseFloat(left, 64)
-	rightNum, rightErr := strconv.ParseFloat(right, 64)
-	if leftErr != nil || rightErr != nil {
+	if !bothNumeric {
+		// Ordering comparison on non-numeric data: don't drop — let the engine
+		// re-filter after materialization.
 		return true
 	}
 	switch predicate.operator {

@@ -268,3 +268,142 @@ func TestFDWCSVProjectionPushdownViaSQL(t *testing.T) {
 		t.Fatalf("names = %v, want %v", names, want)
 	}
 }
+
+// TestFDWCSVNumericEqualityPushdown is a regression test: the CSV `=`/`!=`
+// predicate pushdown must compare numerically (not by raw string) so a cell
+// like "30.50" matches `WHERE price = 30.5`. String comparison silently dropped
+// rows the engine would otherwise match.
+func TestFDWCSVNumericEqualityPushdown(t *testing.T) {
+	ctx := context.Background()
+	db, err := engine.Open(":memory:", engine.DefaultOptions())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	dir := t.TempDir()
+	csvPath := filepath.Join(dir, "prices.csv")
+	// Non-canonical numeric strings: trailing zeros, integer-formatted float.
+	content := "id,price\n1,30.50\n2,5.0\n3,007\n"
+	if err := os.WriteFile(csvPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write csv: %v", err)
+	}
+	if _, err := db.Exec(ctx, fmt.Sprintf(
+		`CREATE FOREIGN TABLE ext_prices (id INTEGER, price REAL) WRAPPER 'csv' OPTIONS (file '%s')`, csvPath)); err != nil {
+		t.Fatalf("create foreign table: %v", err)
+	}
+
+	idsFor := func(where string) []int64 {
+		rows, err := db.Query(ctx, "SELECT id FROM ext_prices WHERE "+where+" ORDER BY id")
+		if err != nil {
+			t.Fatalf("query %q: %v", where, err)
+		}
+		defer rows.Close()
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			ids = append(ids, id)
+		}
+		return ids
+	}
+
+	if got := idsFor("price = 30.5"); len(got) != 1 || got[0] != 1 {
+		t.Errorf("price = 30.5 returned %v, want [1]", got)
+	}
+	if got := idsFor("price = 5"); len(got) != 1 || got[0] != 2 {
+		t.Errorf("price = 5 returned %v, want [2]", got)
+	}
+	if got := idsFor("price = 7"); len(got) != 1 || got[0] != 3 {
+		t.Errorf("price = 7 returned %v, want [3]", got)
+	}
+	if got := idsFor("price != 30.5"); len(got) != 2 {
+		t.Errorf("price != 30.5 returned %v, want 2 rows", got)
+	}
+}
+
+// TestFDWAggregatesOverForeignTable is a regression test: aggregate queries over
+// a foreign table were computed against c.tableTrees directly, which foreign
+// tables are absent from, so COUNT/SUM/AVG/GROUP BY returned an empty result.
+func TestFDWAggregatesOverForeignTable(t *testing.T) {
+	ctx := context.Background()
+	db, err := engine.Open(":memory:", engine.DefaultOptions())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.csv")
+	if err := os.WriteFile(p, []byte("id,dept,score\n1,eng,95\n2,eng,80\n3,sales,92\n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := db.Exec(ctx, fmt.Sprintf(`CREATE FOREIGN TABLE ext (id INTEGER, dept TEXT, score INTEGER) WRAPPER 'csv' OPTIONS (file '%s')`, p)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	scalar := func(sql string) string {
+		r, err := db.Query(ctx, sql)
+		if err != nil {
+			t.Fatalf("query %q: %v", sql, err)
+		}
+		defer r.Close()
+		if !r.Next() {
+			t.Fatalf("query %q returned no row", sql)
+		}
+		var v interface{}
+		if err := r.Scan(&v); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		return fmt.Sprintf("%v", v)
+	}
+	if got := scalar("SELECT COUNT(*) FROM ext"); got != "3" {
+		t.Errorf("COUNT(*) = %s, want 3", got)
+	}
+	if got := scalar("SELECT SUM(score) FROM ext"); got != "267" {
+		t.Errorf("SUM(score) = %s, want 267", got)
+	}
+	if got := scalar("SELECT COUNT(*) FROM ext WHERE score > 90"); got != "2" {
+		t.Errorf("COUNT(*) WHERE score>90 = %s, want 2", got)
+	}
+}
+
+// TestFDWFreshMaterializationAlwaysVisible is a statistical regression test for
+// the intermittent empty-result bug: foreign-table rows were stamped with
+// time.Now() at materialization, so when a scan straddled a Unix-second boundary
+// the fresh rows' CreatedAt exceeded the query snapshot time and the temporal
+// visibility check dropped them (~1 in 2000). The fix stamps a fixed early time
+// so rows are always visible. Loop enough to catch a regression.
+func TestFDWFreshMaterializationAlwaysVisible(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping statistical FDW visibility loop in -short mode")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "v.csv")
+	if err := os.WriteFile(p, []byte("id,name,score\n1,alice,95\n2,bob,87\n3,charlie,92\n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	for i := 0; i < 3000; i++ {
+		db, err := engine.Open(":memory:", engine.DefaultOptions())
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if _, err := db.Exec(ctx, fmt.Sprintf(`CREATE FOREIGN TABLE ext (id INTEGER, name TEXT, score INTEGER) WRAPPER 'csv' OPTIONS (file '%s')`, p)); err != nil {
+			db.Close()
+			t.Fatalf("create: %v", err)
+		}
+		r, err := db.Query(ctx, `SELECT id FROM ext WHERE score > 90 ORDER BY id`)
+		n := 0
+		if err == nil {
+			for r.Next() {
+				n++
+			}
+			r.Close()
+		}
+		db.Close()
+		if n != 2 {
+			t.Fatalf("iter %d: foreign scan returned %d rows, want 2 (temporal-visibility regression)", i, n)
+		}
+	}
+}

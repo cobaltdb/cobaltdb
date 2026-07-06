@@ -9,7 +9,7 @@ CobaltDB is a production-oriented pure-Go SQL database engine (zero CGO at runti
 
 Supports standard SQL plus JSON, full-text search, window functions, CTEs, row-level security, temporal `AS OF` queries, HNSW vector search, replication, and AES-256-GCM encryption at rest.
 
-**Note:** `AGENTS.md` contains an older near-duplicate of this guide. When updating guidance, prefer editing `CLAUDE.md` — keep `AGENTS.md` aligned if the change affects agent-facing instructions.
+**Note:** `AGENTS.md` was deleted as part of a cleanup pass (the root-level copy was a stale duplicate of this guide). Prefer editing `CLAUDE.md` for agent-facing instructions.
 
 ## Build & Verify
 
@@ -213,9 +213,16 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 - `BufferPool.evict()` recycles page data via `putPageData()`
 
 ### Deadlock Detection
-- Automatic deadlock detection runs every 100ms in background
-- Uses wait-for graph with DFS cycle detection
-- Automatically aborts youngest transaction (highest StartTS) in cycle
+- A wait-for-graph deadlock detector with DFS cycle detection and youngest-victim
+  abort exists in `pkg/txn/manager.go` and runs every 100ms in the background.
+- **Not on the production write path (verified):** `Manager.AcquireLock`/
+  `AcquireLockMode` have no callers in `pkg/catalog` or `pkg/engine`, so
+  `Transaction.waitingFor` is never populated and the wait-for graph is always
+  empty. Real write concurrency is serialized by commit-mutex shards plus
+  version-shard write-conflict detection (`GetCurrentVersion` + `readValues`),
+  which is what actually prevents lost updates. The detector is effectively dead
+  code until the lock manager is wired into the execution path — treat the
+  "automatic deadlock detection" guarantee as aspirational, not active.
 - Metrics tracked at `/transaction-metrics` endpoint
 - Lock wait timeout: 5s default (configurable via `Options.LockWaitTimeout`)
 - Transaction timeout: Optional (configurable via `Options.Timeout`)
@@ -223,6 +230,40 @@ The main mutex can become a bottleneck under high concurrency. Consider:
 ## Known Limitations
 
 - **Single-writer model** — Only one write transaction at a time; long-running SELECTs block writes.
+- **Effective isolation is Read Committed (plus lost-update prevention), not
+  Snapshot Isolation.** This is a valid, ACID-compliant isolation level — Read
+  Committed is the *default* in PostgreSQL and Oracle, so this does NOT disqualify
+  the engine from ACID compliance; it only means the default option's *name*
+  (`SnapshotIsolation`, `pkg/txn/manager.go`) overclaims the read side. Concretely:
+  reads consult the live B-tree, not a per-transaction MVCC snapshot (the
+  `VersionStore` is write-only in production — `GetAtSnapshot` has no non-test
+  callers), so a value committed by another transaction after this one began IS
+  visible on a re-read — **non-repeatable reads are possible** (verified by
+  `TestAuditIsolationLevelIsReadCommitted`). What IS guaranteed: **dirty reads are
+  prevented** (uncommitted writes stay goroutine-local until commit) and
+  **write-write conflicts abort one writer, so there are no lost updates** (a
+  guarantee *stronger* than plain Read Committed, delivered by optimistic
+  read-set/version-shard validation at commit). Do not rely on
+  snapshot/repeatable-read/serializable semantics or phantom protection. True
+  Snapshot Isolation would require retaining old row versions on every UPDATE (MVCC
+  version chains) and routing reads through them — a dedicated architectural
+  project, not a config flag; it is deliberately not attempted piecemeal because a
+  partial implementation would risk read-your-writes/visibility regressions.
+  - **Lost-update nuance (important).** The write-conflict guarantee is: a
+    read-modify-write whose read is in the transaction's *read set* aborts at
+    COMMIT if a concurrent txn changed the row. That read set is populated by
+    **single-statement RMW** (`UPDATE t SET v = v - 1 …` — safe, verified by a
+    concurrent bank-transfer test) and by **`SELECT … FOR UPDATE`**. A **bare
+    `SELECT v; … ; UPDATE t SET v = <computed>`** across separate statements is
+    NOT protected by default (plain SELECT reads are not tracked) and CAN lose
+    updates under concurrency — this is standard Read Committed behavior (same as
+    PostgreSQL/Oracle RC). To make that pattern safe, read the rows with
+    **`SELECT … FOR UPDATE`**: those rows are added to the read set (optimistic
+    row locking via first-read-wins read tracking), so a concurrent modification
+    makes the COMMIT fail with a conflict and the application retries — no lost
+    update (verified by `TestAuditSelectForUpdatePreventsLostUpdate` and a
+    FOR UPDATE bank-transfer test). `FOR UPDATE` is enforced for simple
+    single-table queries; joins/aggregates/subqueries fall back to plain RC.
 - **Coarse-grained locking** — Catalog uses a single `sync.RWMutex`; DDL blocks all DML.
 - **HA / clustering** — No built-in sharding, Raft/Paxos, or automatic failover.
 - **WASM streaming** — Streaming results are only supported for SELECT queries.
@@ -312,7 +353,7 @@ The following features are fully implemented and integrated in the engine:
 - **Slow Query Log** (`pkg/metrics/slow_query.go`) - Threshold-based slow query tracking
 - **Query Timeout** - Configurable per-database timeout enforcement
 - **Table Partitioning** - Partition definitions in DDL
-- **Deadlock Detection** (`pkg/txn/manager.go`) - Wait-for graph with automatic cycle detection
+- **Deadlock Detection** (`pkg/txn/manager.go`) - Wait-for graph with cycle detection **implemented but not wired into the execution path** (the lock manager has no production callers; see the Deadlock Detection note above). Present as a library, not an active runtime guarantee.
 - **Transaction Timeout** - Per-transaction and lock wait timeouts
 - **Transaction Metrics** - Real-time monitoring via HTTP endpoint
 - **AutoVacuum** (`pkg/catalog/catalog_maintenance.go`, `pkg/engine/database.go`) - Automatic dead tuple cleanup with configurable interval and threshold
@@ -333,3 +374,13 @@ The following features are fully implemented and integrated in the engine:
 
 **Note:** Deadlock detection is now fully implemented in `pkg/txn/manager.go`.
 Alert system is implemented in `pkg/metrics/alerting.go` (AlertManager with rules, handlers, severity levels).
+
+**Full-text search (FTS):** `MATCH ... AGAINST` evaluates against each row's *live*
+column text on every query (a lowercased substring/term scan in
+`evaluateMatchExprLocked`). The inverted index built by `CREATE FULLTEXT INDEX`
+is **not maintained on INSERT/UPDATE/DELETE**, so it is not used to filter or
+accelerate matching — it must not gate results (doing so previously produced
+false negatives for any term added after index creation). Consequence: FTS is
+always correct against current data but is a full scan, not index-accelerated.
+Maintaining the inverted index on writes (and using it for acceleration) is
+scoped follow-up work.

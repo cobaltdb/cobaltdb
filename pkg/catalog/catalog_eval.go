@@ -225,17 +225,103 @@ func dateAddDays(sign int) functionHandler {
 		if !ok {
 			return nil, nil
 		}
-		days, ok := toFloat64(args[1])
-		if !ok {
-			return nil, nil
+		var res time.Time
+		timeUnit := false
+		// MySQL form: DATE_ADD(date, INTERVAL n unit). The bare (date, days) form
+		// is kept for backward compatibility.
+		if iv, isInterval := args[1].(query.IntervalValue); isInterval {
+			res = applyInterval(t, iv, sign)
+			timeUnit = intervalUnitHasTime(iv.Unit)
+		} else {
+			days, ok := toFloat64(args[1])
+			if !ok {
+				return nil, nil
+			}
+			res = t.AddDate(0, 0, sign*int(days))
 		}
-		res := t.AddDate(0, 0, sign*int(days))
-		// Preserve a date-only result when the input had no time component.
-		if len(s) <= 10 {
+		// Preserve a date-only result when the input had no time component and
+		// the interval unit did not introduce one.
+		if len(s) <= 10 && !timeUnit {
 			return res.Format("2006-01-02"), nil
 		}
 		return res.Format("2006-01-02 15:04:05"), nil
 	}
+}
+
+// applyInterval offsets t by an INTERVAL value; sign is +1 for ADD, -1 for SUB.
+func applyInterval(t time.Time, iv query.IntervalValue, sign int) time.Time {
+	n := int(int64(sign) * iv.N)
+	switch iv.Unit {
+	case "MICROSECOND":
+		return t.Add(time.Duration(int64(sign)*iv.N) * time.Microsecond)
+	case "SECOND":
+		return t.Add(time.Duration(n) * time.Second)
+	case "MINUTE":
+		return t.Add(time.Duration(n) * time.Minute)
+	case "HOUR":
+		return t.Add(time.Duration(n) * time.Hour)
+	case "DAY":
+		return t.AddDate(0, 0, n)
+	case "WEEK":
+		return t.AddDate(0, 0, 7*n)
+	case "MONTH":
+		return addMonthsClamped(t, n)
+	case "QUARTER":
+		return addMonthsClamped(t, 3*n)
+	case "YEAR":
+		return addMonthsClamped(t, 12*n)
+	}
+	return t
+}
+
+// addMonthsClamped adds months to t with MySQL end-of-month semantics: if the
+// original day exceeds the target month's length it clamps to the last day
+// (e.g. 2020-01-31 + 1 MONTH = 2020-02-29), instead of Go's AddDate rollover
+// (which would yield 2020-03-02).
+func addMonthsClamped(t time.Time, months int) time.Time {
+	y, m, d := t.Date()
+	total := int(m) - 1 + months
+	ty := y + total/12
+	tm := total % 12
+	if tm < 0 {
+		tm += 12
+		ty--
+	}
+	targetMonth := time.Month(tm + 1)
+	// Last day of the target month: day 0 of the following month.
+	lastDay := time.Date(ty, targetMonth+1, 0, 0, 0, 0, 0, t.Location()).Day()
+	if d > lastDay {
+		d = lastDay
+	}
+	return time.Date(ty, targetMonth, d, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+}
+
+// intervalUnitHasTime reports whether a unit introduces a sub-day (time) component.
+func intervalUnitHasTime(unit string) bool {
+	switch unit {
+	case "MICROSECOND", "SECOND", "MINUTE", "HOUR":
+		return true
+	}
+	return false
+}
+
+// applyIntervalToValue applies an INTERVAL to a date/datetime value for the +/-
+// operators. Returns NULL for an unparseable date (MySQL yields NULL).
+func applyIntervalToValue(dateVal interface{}, iv query.IntervalValue, op query.TokenType) (interface{}, error) {
+	s := ValueToStringKey(dateVal)
+	t, ok := parseFlexibleTime(s)
+	if !ok {
+		return nil, nil
+	}
+	sign := 1
+	if op == query.TokenMinus {
+		sign = -1
+	}
+	res := applyInterval(t, iv, sign)
+	if len(s) <= 10 && !intervalUnitHasTime(iv.Unit) {
+		return res.Format("2006-01-02"), nil
+	}
+	return res.Format("2006-01-02 15:04:05"), nil
 }
 
 // dateFieldFunc builds a scalar handler that parses arg0 as a date/time and
@@ -896,6 +982,17 @@ func applyBinaryOp(left, right interface{}, op query.TokenType) (interface{}, er
 		return nil, nil
 	}
 
+	// date ± INTERVAL n unit (MySQL): `col + INTERVAL 1 DAY`, `col - INTERVAL 2 MONTH`.
+	// Addition is commutative (`INTERVAL 1 DAY + col`); subtraction is not.
+	if op == query.TokenPlus || op == query.TokenMinus {
+		if iv, ok := right.(query.IntervalValue); ok {
+			return applyIntervalToValue(left, iv, op)
+		}
+		if iv, ok := left.(query.IntervalValue); ok && op == query.TokenPlus {
+			return applyIntervalToValue(right, iv, op)
+		}
+	}
+
 	// Arithmetic operators
 	switch op {
 	case query.TokenPlus:
@@ -1076,7 +1173,21 @@ func compareValues(a, b interface{}) int {
 }
 
 // evaluateMathFunction handles ABS, ROUND, FLOOR, CEIL math functions.
+// evaluateMathFunction dispatches a math function and normalizes a non-finite
+// float result (NaN/±Inf, e.g. from POWER(-2,0.5), POWER(0,-1) or EXP(1000)) to
+// SQL NULL — matching MySQL/SQLite and preventing NaN/Inf (which JSON cannot
+// encode and the wire protocol mishandles) from leaking to clients.
 func evaluateMathFunction(funcName string, evalArgs []interface{}) (interface{}, bool, error) {
+	val, handled, err := evaluateMathFunctionRaw(funcName, evalArgs)
+	if handled && err == nil {
+		if f, ok := val.(float64); ok && (math.IsNaN(f) || math.IsInf(f, 0)) {
+			return nil, true, nil
+		}
+	}
+	return val, handled, err
+}
+
+func evaluateMathFunctionRaw(funcName string, evalArgs []interface{}) (interface{}, bool, error) {
 	switch funcName {
 	case "ABS":
 		if len(evalArgs) < 1 {
@@ -1193,7 +1304,10 @@ func evaluateMathFunction(funcName string, evalArgs []interface{}) (interface{},
 			return nil, true, fmt.Errorf("SQRT requires a numeric argument")
 		}
 		if f < 0 {
-			return nil, true, fmt.Errorf("SQRT of negative number")
+			// MySQL/SQLite return NULL for SQRT of a negative value (Postgres
+			// errors, but this engine follows MySQL semantics — LOG(-1) already
+			// returns NULL here). Erroring aborts the entire query.
+			return nil, true, nil
 		}
 		return math.Sqrt(f), true, nil
 
@@ -1405,11 +1519,19 @@ func applyCast(val interface{}, targetType string) (interface{}, error) {
 			return int64(f), nil
 		}
 		if s, ok := toString(val); ok {
+			s = strings.TrimSpace(s)
 			if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 				return i, nil
 			}
 			if f, err := strconv.ParseFloat(s, 64); err == nil {
 				return int64(f), nil
+			}
+			// MySQL/SQLite parse the leading numeric run: CAST('12abc') = 12,
+			// CAST('abc') = 0 (no leading digits).
+			if prefix := leadingNumericPrefix(s); prefix != "" {
+				if f, err := strconv.ParseFloat(prefix, 64); err == nil {
+					return int64(f), nil
+				}
 			}
 			return int64(0), nil
 		}
@@ -1424,8 +1546,15 @@ func applyCast(val interface{}, targetType string) (interface{}, error) {
 			return f, nil
 		}
 		if s, ok := toString(val); ok {
+			s = strings.TrimSpace(s)
 			if f, err := strconv.ParseFloat(s, 64); err == nil {
 				return f, nil
+			}
+			// Leading numeric run (MySQL/SQLite): CAST('1.5xyz' AS REAL) = 1.5.
+			if prefix := leadingNumericPrefix(s); prefix != "" {
+				if f, err := strconv.ParseFloat(prefix, 64); err == nil {
+					return f, nil
+				}
 			}
 			return 0.0, nil
 		}
@@ -1443,6 +1572,53 @@ func applyCast(val interface{}, targetType string) (interface{}, error) {
 		}
 	}
 	return val, nil
+}
+
+// leadingNumericPrefix returns the longest leading substring of s that forms a
+// numeric literal (optional sign, digits, optional fraction, optional exponent),
+// or "" if s does not start with a number. Mirrors MySQL/SQLite string→number
+// coercion where a trailing non-numeric suffix is ignored (CAST('12abc') = 12).
+func leadingNumericPrefix(s string) string {
+	i, n := 0, len(s)
+	if i < n && (s[i] == '+' || s[i] == '-') {
+		i++
+	}
+	mantissaStart := i
+	for i < n && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i < n && s[i] == '.' {
+		i++
+		for i < n && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+	}
+	// Require at least one digit in the mantissa (rejects "", "-", ".", "abc").
+	hasDigit := false
+	for j := mantissaStart; j < i; j++ {
+		if s[j] >= '0' && s[j] <= '9' {
+			hasDigit = true
+			break
+		}
+	}
+	if !hasDigit {
+		return ""
+	}
+	// Optional exponent, only consumed if it has at least one digit.
+	if i < n && (s[i] == 'e' || s[i] == 'E') {
+		j := i + 1
+		if j < n && (s[j] == '+' || s[j] == '-') {
+			j++
+		}
+		expStart := j
+		for j < n && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		if j > expStart {
+			i = j
+		}
+	}
+	return s[:i]
 }
 
 // evaluateVectorFunction handles COSINE_SIMILARITY, L2_DISTANCE, INNER_PRODUCT.
@@ -1712,19 +1888,21 @@ func evaluateMatchExprLocked(c *Catalog, row []interface{}, columns []ColumnDef,
 				return false, nil
 			}
 
-			// Check if all search words are present in the indexed text
-			// AND logic: all words must be present
+			// Check if all search words are present in the row's live indexed text
+			// (AND logic: all words must be present). Evaluate against the row's
+			// current column text, NOT the ftsIdx.Index map: that inverted index is
+			// only populated at CREATE FULLTEXT INDEX time and never maintained on
+			// INSERT/UPDATE/DELETE, so gating on it produced false negatives — any
+			// term absent at creation time (or added by a later write) could never
+			// match, and creating an index silently broke MATCH queries that the
+			// no-index substring fallback below answered correctly.
 			for _, word := range searchWords {
 				word = toLowerFast(word)
 				found := false
-				// Check if this word is in the FTS index
-				if rowsWithWord, exists := ftsIdx.Index[word]; exists && len(rowsWithWord) > 0 {
-					// Word exists in index, now check if it's in this row's text
-					for _, text := range allText {
-						if strings.Contains(text, word) {
-							found = true
-							break
-						}
+				for _, text := range allText {
+					if strings.Contains(text, word) {
+						found = true
+						break
 					}
 				}
 				if !found {
@@ -1956,33 +2134,13 @@ func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}
 		}
 		str := ValueToStringKey(evalArgs[0])
 		start, _ := toFloat64(evalArgs[1])
-		p := int(start)
-		var startInt int
-		if p < 0 {
-			// Negative position counts from the end (MySQL/SQLite), matching the
-			// main eval path.
-			startInt = len(str) + p
-		} else {
-			startInt = p - 1
-		}
-		if startInt < 0 {
-			startInt = 0
-		}
-		if startInt >= len(str) {
-			return "", nil
-		}
+		// Character (rune) based, matching the main eval path — byte slicing split
+		// multibyte runes into invalid UTF-8.
 		if len(evalArgs) >= 3 && evalArgs[2] != nil {
 			length, _ := toFloat64(evalArgs[2])
-			lengthInt := int(length)
-			if lengthInt < 0 {
-				return "", nil
-			}
-			if startInt+lengthInt > len(str) {
-				lengthInt = len(str) - startInt
-			}
-			return str[startInt : startInt+lengthInt], nil
+			return runeSubstr(str, int(start), true, int(length)), nil
 		}
-		return str[startInt:], nil
+		return runeSubstr(str, int(start), false, 0), nil
 	case "REPLACE":
 		if len(evalArgs) < 3 || evalArgs[0] == nil || evalArgs[1] == nil || evalArgs[2] == nil {
 			return nil, nil

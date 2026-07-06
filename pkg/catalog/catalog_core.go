@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/cache"
 	"github.com/cobaltdb/cobaltdb/pkg/fdw"
@@ -865,6 +866,19 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	// `SELECT name FROM t HAVING COUNT(*) > 5` returned every row).
 	if !hasAggregates && exprHasAggregate(stmt.Having) {
 		hasAggregates = true
+	}
+
+	// SELECT ... FOR UPDATE on a simple single-table query: record the matched
+	// rows in the transaction read set so a concurrent modification aborts this
+	// transaction at commit (optimistic row locking → lost-update prevention for
+	// the read-modify-write pattern). Restricted to simple queries; joins/
+	// aggregates/subqueries fall back to plain Read Committed.
+	if stmt.Locking != nil && stmt.Locking.Mode == "UPDATE" && table != nil &&
+		table.Partition == nil && len(stmt.Joins) == 0 && !hasAggregates &&
+		len(stmt.GroupBy) == 0 && !hasSubqueries(stmt) {
+		if err := cat.recordForUpdateReads(table, stmt, args); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	// Handle JOINs if present
@@ -1806,11 +1820,67 @@ func (t *TableDef) getPartitionTreeNames() []string {
 	return names
 }
 
+// recordForUpdateReads implements SELECT ... FOR UPDATE optimistic locking for a
+// simple single-table query inside an explicit transaction: it records each
+// matching row into the transaction's read set (recordManagerRead), so a
+// concurrent transaction that modifies one of those rows makes THIS transaction's
+// commit-time read-validation fail (ErrConflict) — giving the classic
+// read-modify-write pattern (SELECT ... FOR UPDATE; UPDATE) lost-update
+// prevention that a bare SELECT-then-UPDATE lacks under Read Committed.
+//
+// It is a no-op outside an explicit transaction, for FOR SHARE, and for
+// non-simple queries (joins, aggregates, GROUP BY, subqueries) — those fall back
+// to the default Read Committed behavior. Must be called with c.mu held.
+func (c *Catalog) recordForUpdateReads(table *TableDef, stmt *query.SelectStmt, args []interface{}) error {
+	if c.getCurrentTxn() == nil {
+		return nil
+	}
+	tree, ok := c.tableTrees[table.Name]
+	if !ok {
+		return nil
+	}
+	iter, err := tree.Scan(nil, nil)
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	for iter.HasNext() {
+		key, valueData, err := iter.Next()
+		if err != nil {
+			return err
+		}
+		vrow, err := decodeVersionedRow(valueData, len(table.Columns))
+		if err != nil {
+			return err
+		}
+		if vrow.Version.DeletedAt != 0 {
+			continue
+		}
+		if stmt.Where != nil {
+			match, werr := evaluateWhere(c, vrow.Data, table.Columns, stmt.Where, args)
+			if werr != nil {
+				return werr
+			}
+			if !match {
+				continue
+			}
+		}
+		c.recordManagerRead(table.Name, string(key), valueData)
+	}
+	return nil
+}
+
 // getTableTreesForScan returns all B-trees for scanning a table
 // For partitioned tables, returns all partition trees; for non-partitioned, returns the single tree
 func (c *Catalog) getTableTreesForScan(table *TableDef) ([]btree.TreeStore, error) {
 	return c.getTableTreesForScanWithOptions(table, fdw.ScanOptions{})
 }
+
+// fdwMaterializeTime is the fixed CreatedAt stamped on foreign-table rows
+// materialized at scan time. It is deliberately in the distant past (1970) so
+// such rows are always visible to the current query regardless of the query's
+// snapshot time — foreign tables carry no temporal history.
+var fdwMaterializeTime = time.Unix(1, 0)
 
 func (c *Catalog) getTableTreesForScanWithOptions(table *TableDef, scanOptions fdw.ScanOptions) ([]btree.TreeStore, error) {
 	// Foreign table: materialize FDW data into a temporary B-tree
@@ -1857,7 +1927,15 @@ func (c *Catalog) getTableTreesForScanWithOptions(table *TableDef, scanOptions f
 				}
 			}
 			key := []byte("fdw:" + strconv.Itoa(rowIndex))
-			val, err := encodeVersionedRow(row, nil)
+			// Stamp the materialized row with a fixed early CreatedAt (not
+			// time.Now) so it is ALWAYS visible to the current query. Foreign
+			// tables are re-materialized fresh per scan and carry no temporal
+			// history; using the wall clock made a row's CreatedAt occasionally
+			// exceed the query's queryTime (captured microseconds earlier) when
+			// the scan straddled a Unix-second boundary, so the temporal
+			// visibility check treated the fresh rows as "created in the future"
+			// and dropped them — an intermittent empty result (~1 in 2000).
+			val, err := encodeVersionedRow(row, &fdwMaterializeTime)
 			if err != nil {
 				return err
 			}

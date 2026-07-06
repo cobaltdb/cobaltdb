@@ -1252,6 +1252,12 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 		data []byte
 	}
 	var updates []rowUpdate
+	// Pre-backfill row bytes, captured for transactional rollback: the backfill
+	// writes directly to the tree, so undoing only table.Columns would leave the
+	// stale trailing default in storage and corrupt a subsequent re-add of the
+	// column. Mirrors how undoAlterDropColumn restores oldRowData.
+	var oldRowData []struct{ key, val []byte }
+	txnActiveForUndo := c.isCurrentTxnActive()
 	if treeExists {
 		// Compute default value
 		var defaultVal interface{}
@@ -1294,18 +1300,24 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 				keyCopy := make([]byte, len(key))
 				copy(keyCopy, key)
 				updates = append(updates, rowUpdate{key: keyCopy, data: newData})
+				if txnActiveForUndo {
+					valCopy := make([]byte, len(valueData))
+					copy(valCopy, valueData)
+					oldRowData = append(oldRowData, struct{ key, val []byte }{keyCopy, valCopy})
+				}
 			}
 		}
 	}
 
 	// Save undo entry before modification
-	if c.isCurrentTxnActive() {
+	if txnActiveForUndo {
 		oldCols := make([]ColumnDef, len(table.Columns))
 		copy(oldCols, table.Columns)
 		c.appendUndoEntry(undoEntry{
 			action:     undoAlterAddColumn,
 			tableName:  stmt.Table,
 			oldColumns: oldCols,
+			oldRowData: oldRowData,
 		})
 	}
 

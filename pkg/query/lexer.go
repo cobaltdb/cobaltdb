@@ -332,6 +332,17 @@ func (l *Lexer) readIdentifier() string {
 // readNumber reads a number (integer or float)
 func (l *Lexer) readNumber() string {
 	pos := l.pos
+	// Hex literal (MySQL/SQLite): 0x / 0X followed by hex digits. Read it as a
+	// single token so `0xFF` is not split into number `0` + identifier `xFF`
+	// (which silently evaluated to 0 in projection position).
+	if l.ch == '0' && (l.peekChar() == 'x' || l.peekChar() == 'X') {
+		l.readChar() // '0'
+		l.readChar() // 'x'
+		for isHexDigit(l.ch) {
+			l.readChar()
+		}
+		return l.input[pos:l.pos]
+	}
 	for isDigit(l.ch) {
 		l.readChar()
 	}
@@ -418,6 +429,11 @@ func isLetter(ch byte) bool {
 // isDigit checks if a character is a digit (ASCII fast path)
 func isDigit(ch byte) bool {
 	return ch >= '0' && ch <= '9'
+}
+
+// isHexDigit checks if a character is a hexadecimal digit.
+func isHexDigit(ch byte) bool {
+	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
 
 // singleByteStrings avoids allocations for single-byte token literals

@@ -354,7 +354,7 @@ func (c *Catalog) loadMainTableRowsWithFDWOptions(from *query.TableRef, scanOpti
 		}
 	}
 
-	//lint:ignore SA1012 nil = fall back to catalog RLS ctx
+	// c.rlsCtx nil = fall back to catalog RLS ctx
 	filtered, err = c.filterRowsForSelectRLSLocked(c.rlsCtx, mainTable.Name, mainTable.Columns, filtered)
 	if err != nil {
 		return mainTable.Columns, nil, err
@@ -1031,7 +1031,7 @@ func (c *Catalog) resolveJoinTable(join *query.JoinClause, args []interface{}) (
 			}
 			joinRows = append(joinRows, vrow.Data)
 		}
-		//lint:ignore SA1012 nil = fall back to catalog RLS ctx
+		// c.rlsCtx nil = fall back to catalog RLS ctx
 		joinRows, err = c.filterRowsForSelectRLSLocked(c.rlsCtx, joinTable.Name, joinTable.Columns, joinRows)
 		if err != nil {
 			return nil, nil, err
@@ -1302,7 +1302,7 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 				}
 				rightRows = append(rightRows, rightRow)
 			}
-			//lint:ignore SA1012 nil = fall back to catalog RLS ctx
+			// c.rlsCtx nil = fall back to catalog RLS ctx
 			rightRows, err = c.filterRowsForSelectRLSLocked(c.rlsCtx, joinTable.Name, joinTable.Columns, rightRows)
 			if err != nil {
 				return nil, nil, err

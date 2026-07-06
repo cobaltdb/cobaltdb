@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"math"
 	"strconv"
 	"time"
 	"unicode/utf8"
@@ -90,6 +92,10 @@ type VersionedRow struct {
 // Uses a zero-reflection fast path for common scalar types, falling back to
 // json.Marshal for edge cases (complex strings, nested objects, etc.).
 func encodeVersionedRow(rowValues []interface{}, asOfTime *time.Time) ([]byte, error) {
+	if err := checkRowValuesEncodable(rowValues); err != nil {
+		return nil, err
+	}
+
 	createdAt := time.Now().Unix()
 	if asOfTime != nil {
 		createdAt = asOfTime.Unix()
@@ -114,6 +120,29 @@ func encodeVersionedRowFull(rowValues []interface{}, version RowVersion) ([]byte
 		return encodeBinaryVersionedRow(rowValues, version)
 	}
 	return json.Marshal(VersionedRow{Data: rowValues, Version: version})
+}
+
+// checkRowValuesEncodable rejects values that cannot be stored and read back.
+// The concrete case is a non-finite float (NaN/±Inf): the encoder renders it as
+// "+Inf"/"NaN", which the JSON-based row decoder then fails to parse, leaving the
+// row permanently unreadable (and undumpable). Ordinary SQL can produce these via
+// arithmetic overflow (e.g. UPDATE ... SET v = v * 100 on a large REAL), so this
+// rejects them at write time — mirroring the parser rejecting out-of-range float
+// literals like 1e400.
+func checkRowValuesEncodable(rowValues []interface{}) error {
+	for i, v := range rowValues {
+		switch f := v.(type) {
+		case float64:
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				return fmt.Errorf("cannot store non-finite floating-point value (%v) in column %d", f, i)
+			}
+		case float32:
+			if d := float64(f); math.IsNaN(d) || math.IsInf(d, 0) {
+				return fmt.Errorf("cannot store non-finite floating-point value (%v) in column %d", f, i)
+			}
+		}
+	}
+	return nil
 }
 
 // rowHasBinaryValue reports whether any value cannot be represented losslessly
@@ -253,8 +282,18 @@ func encodeVersionedRowFast(rowValues []interface{}, createdAt int64, dst []byte
 		case uint64:
 			buf = strconv.AppendUint(buf, val, 10)
 		case float64:
+			// Non-finite floats (NaN/±Inf) render as "+Inf"/"NaN", which the row
+			// decoder cannot parse — storing one permanently corrupts the row. Bail
+			// to the slow path, where json.Marshal rejects it and the caller
+			// (encodeVersionedRow) surfaces a clean error instead of writing garbage.
+			if math.IsNaN(val) || math.IsInf(val, 0) {
+				return buf, false
+			}
 			buf = strconv.AppendFloat(buf, val, 'g', -1, 64)
 		case float32:
+			if f := float64(val); math.IsNaN(f) || math.IsInf(f, 0) {
+				return buf, false
+			}
 			buf = strconv.AppendFloat(buf, float64(val), 'g', -1, 32)
 		case bool:
 			if val {

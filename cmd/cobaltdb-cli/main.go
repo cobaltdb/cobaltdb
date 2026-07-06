@@ -1633,14 +1633,17 @@ func dumpTupleKey(values []interface{}, indexes []int) (string, bool) {
 
 // quoteSQLStringLiteral renders s as a single-quoted SQL string literal. It
 // escapes backslashes FIRST (the lexer treats `\` as an escape character inside
-// quoted strings, MySQL-style) and then doubles single quotes. Without the
-// backslash escaping, a value containing or ending in `\` (e.g. a Windows path
-// `C:\`) corrupts the dump: on restore the lexer consumes the closing quote as
-// an escaped character, producing an unterminated string or shifting parsing
-// (a dump/restore-corruption and SQL-injection class bug). This mirrors
-// quoteSQLIdentifier, which already escapes `\`.
+// quoted strings, MySQL-style), then encodes an embedded NUL as the lexer's
+// `\0` escape, and finally doubles single quotes. Without the backslash
+// escaping, a value containing or ending in `\` (e.g. a Windows path `C:\`)
+// corrupts the dump. Without the NUL escaping, an embedded 0x00 byte terminates
+// the lexer's string scan early (readString loops `for l.ch != 0`), so the dump
+// reports success but the produced file fails to restore ("unterminated string
+// literal") — silent backup corruption for any TEXT/BLOB value holding a NUL.
+// This mirrors quoteSQLIdentifier, which already escapes `\`.
 func quoteSQLStringLiteral(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "\x00", `\0`)
 	s = strings.ReplaceAll(s, "'", "''")
 	return "'" + s + "'"
 }
