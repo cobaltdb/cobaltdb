@@ -84,7 +84,12 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 
 	var groups map[string][][]interface{}
 	var groupOrder []string
-	if _, exists := c.tableTrees[stmt.From.Name]; exists {
+	_, hasPhysicalTree := c.tableTrees[stmt.From.Name]
+	// Foreign tables have no entry in tableTrees — they materialize on demand via
+	// getEffectiveTableData/getTableTreesForScan. Without this, an aggregate over
+	// a foreign table (e.g. SELECT COUNT(*) FROM csv_table) skipped scanning and
+	// returned an empty result.
+	if hasPhysicalTree || table.Type == "foreign" {
 		// Materialize all raw values first, merging committed data with pending
 		// buffered writes for read-your-writes visibility.
 		var allValues [][]byte
@@ -664,6 +669,26 @@ func reduceBasicAggregateWithSeparator(funcName string, values []interface{}, gr
 
 func (c *Catalog) collectAggregateInput(ci selectColInfo, row []interface{}, columns []ColumnDef, args []interface{}, fallback func() (interface{}, bool)) (interface{}, bool) {
 	switch strings.ToUpper(ci.aggregateType) {
+	case "COUNT":
+		// COUNT(DISTINCT a, b, ...) counts distinct tuples over ALL argument
+		// expressions; a row is excluded if ANY argument is NULL (MySQL). The
+		// single-arg fallback only reads aggregateArgs[0], so multi-arg COUNT must
+		// build a composite distinct-able key here — otherwise the 2nd+ columns
+		// are silently ignored and the count is wrong.
+		if len(ci.aggregateArgs) >= 2 {
+			var sb strings.Builder
+			for i, a := range ci.aggregateArgs {
+				v, err := evaluateExpression(c, row, columns, a, args)
+				if err != nil || v == nil {
+					return nil, false
+				}
+				if i > 0 {
+					sb.WriteString("\x00")
+				}
+				sb.WriteString(typeTaggedKey(v))
+			}
+			return sb.String(), true
+		}
 	case "JSON_OBJECTAGG":
 		if len(ci.aggregateArgs) < 2 {
 			return nil, false

@@ -980,6 +980,18 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 		if tbl, exists := c.tables[entry.tableName]; exists {
 			tbl.Columns = entry.oldColumns
 			tbl.buildColumnIndexCache()
+			// Restore the pre-backfill row bytes; the backfill wrote the new
+			// column's default directly to the tree, so restoring only the schema
+			// would leave stale trailing values that corrupt a later re-add of the
+			// column (the re-add's "len(values) <= oldColCount" guard would treat
+			// the row as already populated and surface the rolled-back default).
+			if t, e := c.tableTrees[entry.tableName]; e {
+				for _, rd := range entry.oldRowData {
+					if err := t.Put(rd.key, rd.val); err != nil {
+						return fmt.Errorf("%s restoring row data for %s after add column undo: %w", errorPrefix, entry.tableName, err)
+					}
+				}
+			}
 			if err := c.storeTableDef(tbl); err != nil {
 				return fmt.Errorf("%s storing table def %s after add column undo: %w", errorPrefix, entry.tableName, err)
 			}
@@ -1704,6 +1716,17 @@ func reconcileManagerWriteSetAfterSavepoint(ts *catalogTxnState, tail []PendingW
 	if ts == nil || len(tail) == 0 {
 		return
 	}
+	// A read recorded by a write that is now being rolled back is no longer a
+	// valid commit-time assumption: the rollback restores a pre-image, and a DDL
+	// undo (e.g. ALTER TABLE ADD COLUMN row-data restore) may legitimately put a
+	// *different* value than the read pre-image. Leaving the stale read in
+	// readValues makes the commit-time read-validation see current != read and
+	// raise a spurious ErrConflict. Drop read entries for rolled-back keys.
+	if len(ts.readValues) > 0 {
+		for i := range tail {
+			delete(ts.readValues, txn.WriteKey{TreeName: tail[i].TreeName, Key: tail[i].Key})
+		}
+	}
 	mt, ok := ts.managerTxn.(*txn.Transaction)
 	if !ok || mt == nil {
 		return
@@ -1787,6 +1810,14 @@ func (c *Catalog) recordManagerRead(treeName string, key string, valueData []byt
 		var wk2 txn.WriteKey
 		wk2.TreeName = treeName
 		wk2.Key = key
+		// First-read-wins: preserve the value observed the FIRST time this txn
+		// touched the key. Overwriting with a later (already-changed) value would
+		// mask a concurrent modification at commit — and would defeat SELECT ...
+		// FOR UPDATE, whose recorded read must survive a subsequent UPDATE of the
+		// same row for the conflict check to fire.
+		if _, seen := ts.readValues[wk2]; seen {
+			return
+		}
 		ts.readValues[wk2] = valueData
 		// Cache tree reference so CommitTransaction doesn't need c.mu.
 		// Caller must hold c.mu for read.
@@ -1825,6 +1856,12 @@ func (c *Catalog) recordManagerReadTs(ts *catalogTxnState, treeName string, key 
 	var wk2 txn.WriteKey
 	wk2.TreeName = treeName
 	wk2.Key = key
+	// First-read-wins (see recordManagerRead): keep the first observation so a
+	// concurrent modification is detected at commit and SELECT ... FOR UPDATE is
+	// not defeated by a later UPDATE of the same row.
+	if _, seen := ts.readValues[wk2]; seen {
+		return
+	}
 	ts.readValues[wk2] = valueData
 	if ts.treeCache == nil {
 		ts.treeCache = make(map[string]btree.TreeStore, 4)

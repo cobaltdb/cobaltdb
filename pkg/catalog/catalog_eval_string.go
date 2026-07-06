@@ -148,6 +148,38 @@ func evalStringTrim(funcName string, evalArgs []interface{}) funcResult {
 	}
 }
 
+// runeSubstr implements MySQL/SQLite SUBSTR on character (rune) boundaries so
+// multibyte UTF-8 input is never split mid-rune (byte slicing produced invalid
+// UTF-8, e.g. SUBSTR('héllo',1,2) -> "h\xc3"). start is 1-based; a negative
+// start counts from the end. When hasLen is false the substring runs to the end.
+func runeSubstr(str string, start int, hasLen bool, length int) string {
+	runes := []rune(str)
+	n := len(runes)
+	var startIdx int
+	if start < 0 {
+		startIdx = n + start
+	} else {
+		startIdx = start - 1
+	}
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if startIdx >= n {
+		return ""
+	}
+	if !hasLen {
+		return string(runes[startIdx:])
+	}
+	if length < 0 {
+		return ""
+	}
+	end := startIdx + length
+	if end > n {
+		end = n
+	}
+	return string(runes[startIdx:end])
+}
+
 func evalStringSubstr(evalArgs []interface{}) funcResult {
 	if len(evalArgs) < 2 {
 		return funcResult{nil, fmt.Errorf("SUBSTR requires at least 2 arguments")}
@@ -160,34 +192,11 @@ func evalStringSubstr(evalArgs []interface{}) funcResult {
 	}
 	str, _ := argString(evalArgs, 0)
 	start, _ := toFloat64(evalArgs[1])
-	p := int(start)
-	var startInt int
-	if p < 0 {
-		// Negative position counts from the end of the string (MySQL/SQLite):
-		// SUBSTR('Hello', -2) -> 'lo'. The old code clamped it to 0 and returned
-		// from the beginning.
-		startInt = len(str) + p
-	} else {
-		startInt = p - 1
-	}
-	if startInt < 0 {
-		startInt = 0
-	}
-	if startInt >= len(str) {
-		return funcResult{"", nil}
-	}
 	if len(evalArgs) >= 3 {
 		length, _ := toFloat64(evalArgs[2])
-		lengthInt := int(length)
-		if lengthInt < 0 {
-			return funcResult{"", nil}
-		}
-		if startInt+lengthInt > len(str) {
-			lengthInt = len(str) - startInt
-		}
-		return funcResult{str[startInt : startInt+lengthInt], nil}
+		return funcResult{runeSubstr(str, int(start), true, int(length)), nil}
 	}
-	return funcResult{str[startInt:], nil}
+	return funcResult{runeSubstr(str, int(start), false, 0), nil}
 }
 
 func evalStringConcat(evalArgs []interface{}) funcResult {
@@ -262,7 +271,8 @@ func evalStringInstr(evalArgs []interface{}) funcResult {
 	if idx < 0 {
 		return funcResult{float64(0), nil}
 	}
-	return funcResult{float64(idx + 1), nil}
+	// Character (rune) position, not byte offset (MySQL): INSTR('héllo','l') = 3.
+	return funcResult{float64(utf8.RuneCountInString(haystack[:idx]) + 1), nil}
 }
 
 // evalStringLocate implements LOCATE(substr, str [, pos]) and POSITION(substr, str):
@@ -276,6 +286,9 @@ func evalStringLocate(evalArgs []interface{}) funcResult {
 	}
 	needle, _ := argString(evalArgs, 0)
 	haystack, _ := argString(evalArgs, 1)
+	// Character-based positions (MySQL): both the optional start and the returned
+	// index count runes, not bytes.
+	runes := []rune(haystack)
 	start := 0
 	if len(evalArgs) >= 3 {
 		if f, ok := toFloat64(evalArgs[2]); ok {
@@ -285,14 +298,15 @@ func evalStringLocate(evalArgs []interface{}) funcResult {
 			}
 		}
 	}
-	if start > len(haystack) {
+	if start > len(runes) {
 		return funcResult{float64(0), nil}
 	}
-	idx := strings.Index(haystack[start:], needle)
+	sub := string(runes[start:])
+	idx := strings.Index(sub, needle)
 	if idx < 0 {
 		return funcResult{float64(0), nil}
 	}
-	return funcResult{float64(start + idx + 1), nil}
+	return funcResult{float64(start + utf8.RuneCountInString(sub[:idx]) + 1), nil}
 }
 
 // evalStringSubstringIndex implements SUBSTRING_INDEX(str, delim, count): the
@@ -439,10 +453,13 @@ func evalStringLeft(evalArgs []interface{}) funcResult {
 	if ni <= 0 {
 		return funcResult{"", nil}
 	}
-	if ni >= len(str) {
+	// Character-based (MySQL): LEFT('héllo',2) = "hé", not a byte prefix that
+	// splits the é into invalid UTF-8.
+	runes := []rune(str)
+	if ni >= len(runes) {
 		return funcResult{str, nil}
 	}
-	return funcResult{str[:ni], nil}
+	return funcResult{string(runes[:ni]), nil}
 }
 
 func evalStringRight(evalArgs []interface{}) funcResult {
@@ -458,10 +475,12 @@ func evalStringRight(evalArgs []interface{}) funcResult {
 	if ni <= 0 {
 		return funcResult{"", nil}
 	}
-	if ni >= len(str) {
+	// Character-based (MySQL): RIGHT('héllo',2) = "lo" on rune boundaries.
+	runes := []rune(str)
+	if ni >= len(runes) {
 		return funcResult{str, nil}
 	}
-	return funcResult{str[len(str)-ni:], nil}
+	return funcResult{string(runes[len(runes)-ni:]), nil}
 }
 
 func evalStringLPad(evalArgs []interface{}) funcResult {
@@ -532,6 +551,12 @@ func evalStringHex(evalArgs []interface{}) funcResult {
 	}
 	if evalArgs[0] == nil {
 		return funcResult{nil, nil}
+	}
+	// A string argument is byte-encoded (MySQL/SQLite): HEX('41') = "3431", not
+	// "29". Check the concrete type FIRST — toFloat64 would happily parse a
+	// numeric-looking string like '41' as the number 41 and take the wrong branch.
+	if s, ok := toString(evalArgs[0]); ok {
+		return funcResult{strings.ToUpper(hex.EncodeToString([]byte(s))), nil}
 	}
 	if f, ok := toFloat64(evalArgs[0]); ok {
 		// Numeric HEX treats the value as an unsigned 64-bit integer (MySQL):

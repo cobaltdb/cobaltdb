@@ -59,13 +59,17 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 		return err
 	}
 
-	// For small tables (≤1000 rows) build synchronously so tests and
-	// lightweight DDL scripts get immediate index availability.
-	// Large tables get a background build so the main thread returns
-	// in <100ms and doesn't block concurrent reads/writes.
+	// Build the index synchronously while holding the exclusive catalog lock.
+	// A prior "online" background build (for >1000-row tables) populated the
+	// index under only a read lock, concurrently with buffered DML — that raced
+	// on the catalog-global c.indexTrees/c.indexes maps (a concurrent map
+	// read+write can crash the process) and left the index diverged from the
+	// base table (silent wrong results). Building under the exclusive lock keeps
+	// DDL and DML mutually exclusive, matching the documented "DDL blocks all
+	// DML" model, at the cost of blocking DML for the build duration.
 	tree := c.tableTrees[stmt.Table]
 	pendingWrites := c.pendingWritesForTable(stmt.Table)
-	if tree != nil && (tree.Size() <= 1000 || len(pendingWrites) > 0) {
+	if tree != nil {
 		if err := c.populateIndexVisibleRowsLocked(indexTree, indexDef, table, tree, pendingWrites); err != nil {
 			delete(c.indexes, stmt.Index)
 			delete(c.indexTrees, stmt.Index)
@@ -74,10 +78,8 @@ func (c *Catalog) CreateIndex(stmt *query.CreateIndexStmt) error {
 			}
 			return fmt.Errorf("failed to populate index %s: %w", stmt.Index, err)
 		}
-		indexDef.Status = IndexActive
-	} else {
-		go c.buildIndexInBackground(stmt.Index, stmt.Table, table)
 	}
+	indexDef.Status = IndexActive
 
 	// Record DDL undo only after the index has been created successfully.
 	if c.isCurrentTxnActive() {
@@ -182,30 +184,6 @@ func (c *Catalog) populateIndexLocked(indexTree btree.TreeStore, indexDef *Index
 		}
 	}
 	return nil
-}
-
-// buildIndexInBackground scans the table and populates the index.
-// It runs without holding Catalog.mu so reads/writes are not blocked.
-func (c *Catalog) buildIndexInBackground(indexName, tableName string, table *TableDef) {
-	c.mu.RLock()
-	idxDef, ok := c.indexes[indexName]
-	idxTree, treeOk := c.indexTrees[indexName]
-	tree, tableOk := c.tableTrees[tableName]
-	c.mu.RUnlock()
-
-	if !ok || !treeOk || !tableOk || idxDef.Status != IndexBuilding {
-		return
-	}
-
-	if err := c.populateIndexLocked(idxTree, idxDef, table, tree); err != nil {
-		return
-	}
-
-	c.mu.Lock()
-	if def, exists := c.indexes[indexName]; exists && def.Status == IndexBuilding {
-		def.Status = IndexActive
-	}
-	c.mu.Unlock()
 }
 
 func (c *Catalog) storeIndexDef(index *IndexDef) error {
