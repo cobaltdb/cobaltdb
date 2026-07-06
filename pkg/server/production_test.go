@@ -970,3 +970,86 @@ func TestLifecycleWaitDirect(t *testing.T) {
 		t.Error("Lifecycle.Wait() did not return after Stop()")
 	}
 }
+
+// --- ProductionServer.logErrorf ---
+
+func TestProductionServerLogErrorfNilSafe(t *testing.T) {
+	var ps *ProductionServer
+	ps.logErrorf("test %s", "format") // should not panic
+}
+
+// --- transientWriteError ---
+
+func TestTransientWriteError(t *testing.T) {
+	origErr := errors.New("underlying write error")
+	e := &transientWriteError{err: origErr}
+
+	// Error() returns the original message
+	if e.Error() != origErr.Error() {
+		t.Errorf("expected %q, got %q", origErr.Error(), e.Error())
+	}
+
+	// Unwrap returns the original error
+	if !errors.Is(e, origErr) {
+		t.Error("errors.Is should find original error through Unwrap")
+	}
+
+	// Is matches the sentinel
+	if !errors.Is(e, errTransientWriteNotApplied) {
+		t.Error("transientWriteError should match errTransientWriteNotApplied sentinel")
+	}
+
+	// Is does not match other errors
+	if errors.Is(e, io.EOF) {
+		t.Error("transientWriteError should not match io.EOF")
+	}
+}
+
+// --- QueryRow ---
+
+func TestProductionServerQueryRow(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	config := fastProductionConfig()
+	config.CircuitBreaker = engine.DefaultCircuitBreakerConfig()
+	config.EnableCircuitBreaker = true
+
+	ps := NewProductionServer(db, config)
+	if err := ps.Start(); err != nil {
+		t.Fatalf("failed to start production server: %v", err)
+	}
+	defer ps.Stop()
+
+	// Create a table
+	_, err = ps.Exec(context.Background(), "CREATE TABLE test (id INT PRIMARY KEY, name TEXT)")
+	if err != nil {
+		t.Fatalf("exec failed: %v", err)
+	}
+
+	// Insert a row
+	_, err = ps.Exec(context.Background(), "INSERT INTO test VALUES (1, 'alice')")
+	if err != nil {
+		t.Fatalf("insert failed: %v", err)
+	}
+
+	// QueryRow should return the single row
+	row, err := ps.QueryRow(context.Background(), "SELECT id, name FROM test WHERE id = ?", 1)
+	if err != nil {
+		t.Fatalf("QueryRow failed: %v", err)
+	}
+	if row == nil {
+		t.Fatal("expected a row")
+	}
+
+	// QueryRow with no results returns a row with nil data
+	row, err = ps.QueryRow(context.Background(), "SELECT id, name FROM test WHERE id = ?", 999)
+	if err != nil {
+		t.Fatalf("QueryRow for missing row failed: %v", err)
+	}
+	// A non-existent id may return a row with nil data; just verify no error
+	_ = row
+}

@@ -335,3 +335,8 @@ func TestRateLimiterCleanup(t *testing.T) {
 		t.Errorf("stale client should be cleaned up, got %d clients", stats.ClientCount)
 	}
 }
+
+func TestRateLimiterLogErrorfNilSafe(t *testing.T) {
+	var rl *RateLimiter
+	rl.logErrorf("test %s", "format") // should not panic, nil receiver
+}

@@ -108,3 +108,24 @@ func TestGetTransactionMetrics(t *testing.T) {
 		t.Error("GetTransactionMetrics should return the same instance")
 	}
 }
+
+func TestTransactionMetricsRecordLockWaitTime(t *testing.T) {
+	m := &TransactionMetrics{}
+	m.Reset()
+
+	// Initial state
+	if m.TotalLockWaitTime.Load() != 0 {
+		t.Errorf("expected TotalLockWaitTime=0, got %d", m.TotalLockWaitTime.Load())
+	}
+
+	m.RecordLockWaitTime(100 * time.Millisecond)
+	if m.TotalLockWaitTime.Load() != int64(100*time.Millisecond) {
+		t.Errorf("expected TotalLockWaitTime=%d, got %d", int64(100*time.Millisecond), m.TotalLockWaitTime.Load())
+	}
+
+	m.RecordLockWaitTime(200 * time.Millisecond)
+	expected := int64(100*time.Millisecond) + int64(200*time.Millisecond)
+	if m.TotalLockWaitTime.Load() != expected {
+		t.Errorf("expected TotalLockWaitTime=%d, got %d", expected, m.TotalLockWaitTime.Load())
+	}
+}
