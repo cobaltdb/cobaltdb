@@ -273,7 +273,7 @@ func TestCrashRecoverySyncModes(t *testing.T) {
 func runSyncModeCrashWriter(t *testing.T) {
 	t.Helper()
 	dbPath := os.Getenv("COBALTDB_SYNC_CRASH_DB")
-	var m SyncMode = SyncNormal
+	m := SyncNormal
 	if os.Getenv("COBALTDB_SYNC_CRASH_MODE") == "off" {
 		m = SyncOff
 	}

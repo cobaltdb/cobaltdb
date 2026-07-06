@@ -6,9 +6,7 @@ issues:
   exclude-dirs:
     - docs
     - cmd/cobaltdb-bench
-    - cmd/debug
     - cmd/demo
-    - cmd/realworld-test
 
 linters:
   enable:
