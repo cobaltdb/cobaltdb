@@ -9,27 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **SQL syntax**: implicit column aliases (`SELECT expr alias`), inline column-level
-  `FOREIGN KEY ... REFERENCES`, table-level composite `UNIQUE(a, b)`, `NULLS FIRST/LAST`,
-  window frames (`ROWS`/`RANGE BETWEEN ... PRECEDING/FOLLOWING/CURRENT ROW`),
-  `ON CONFLICT (...) DO NOTHING | DO UPDATE` (incl. `INSERT ... SELECT`),
-  `CREATE TABLE AS SELECT`, `TRUNCATE TABLE`, `EXTRACT(field FROM src)`,
-  `POSITION(substr IN str)`, `CAST` type parameters (`DECIMAL(p,s)`, `VARCHAR(n)`),
-  qualified star (`table.*`), `@@system_variables`, bitwise operators (`& | ^ << >>`),
-  NULL-safe equality (`<=>`), `DEFAULT` keyword in `VALUES`, `SHOW INDEX`/`KEYS`,
-  and `START TRANSACTION` (the form drivers emit for `db.Begin()`).
-- **Window functions**: `PERCENT_RANK`, `CUME_DIST`; window functions nested inside
-  expressions (e.g. `SUM(x) OVER () + 1`) and over derived tables.
-- **Aggregates**: `STDDEV`/`STDDEV_POP`/`STDDEV_SAMP` and `VARIANCE`/`VAR_POP`/`VAR_SAMP`.
-- **Function library**: math (`MOD`, `POWER`, `SQRT`, `SIGN`, `TRUNCATE`, `EXP`, `LN`,
-  `LOG`/`LOG10`/`LOG2`, `PI`, `RADIANS`, `DEGREES`, `GREATEST`, `LEAST`), trigonometric
-  (`SIN`, `COS`, `TAN`, `ASIN`, `ACOS`, `ATAN`, `ATAN2`, `COT`, ...), date
-  (`YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `DAYOFWEEK`, `DAYOFYEAR`,
-  `DATEDIFF`, `DATE_ADD`, `DATE_SUB`), string (`ASCII`, `LOCATE`, `SUBSTRING_INDEX`),
-  `JSON_OBJECT`/`JSON_ARRAY`, a real `STRFTIME`, and MySQL session functions
-  (`VERSION`, `DATABASE`, `USER`, `CONNECTION_ID`).
+- **INTERVAL expression**: `INTERVAL n UNIT` syntax for DATE_ADD/DATE_SUB and
+  `date + INTERVAL` arithmetic with MySQL end-of-month clamping.
+- **Hex literals**: `0xFF` now parsed as integer (was split into `0` + `xFF`,
+  evaluated as 0).
+- **Placeholder validation**: `CountPlaceholders` rejects queries with fewer
+  bind arguments than `?` placeholders (silent NULL evaluation hazard).
 
 ### Fixed
+
+- **FDW temporal visibility**: Foreign-table rows stamped with fixed early timestamp
+  (eliminates ~1-in-2000 empty results when scan straddles Unix-second boundary).
+- **FDW aggregates**: COUNT/SUM/AVG/GROUP BY over foreign tables now work.
+- **COUNT(DISTINCT a,b,...)**: Multi-arg composite distinct key (2nd+ args were
+  silently ignored).
+- **SELECT ... FOR UPDATE**: Optimistic row locking for simple single-table queries
+  (first-read-wins read tracking, lost-update prevention).
+- **Background index build removed**: Raced on catalog-global maps (concurrent
+  map read+write crashes process, index diverged from base table).
+- **UTF-8 string functions**: SUBSTR/LEFT/RIGHT/INSTR/LOCATE now operate on
+  rune boundaries (were splitting multibyte characters mid-code-point).
+- **NaN/Inf normalization**: Math functions (POWER, SQRT, EXP) now normalize
+  NaN/Inf results to SQL NULL instead of leaking them to JSON/wire protocol.
+- **CAST leading-numeric**: MySQL-compatible leading-numeric prefix extraction
+  (CAST('12abc' AS SIGNED) = 12).
+- **SQRT(-n)**: Returns NULL instead of error (MySQL semantics).
+- **HEX(str)**: String branch evaluated first (numeric-looking strings like '41'
+  now hex-encode correctly).
+- **Durability serialization**: flushMu.RLock across autocommit/explicit COMMIT
+  prevents WAL truncation before page-apply (acknowledged writes no longer lost
+  on concurrent checkpoint).
+- **Checkpoint exclusive lock**: Changed from conditional RLock/Lock to exclusive
+  Lock for both WAL and no-WAL paths.
+- **Failed-commit auto-rollback**: Prevents leaked implicit transaction after
+  commit failure.
+- **NUL byte in SQL dump**: quoteSQLStringLiteral now escapes embedded NUL as
+  `\0` (prevents silent backup corruption for TEXT/BLOB values).
+- **Compression magic collision**: writeRaw rejects pages whose first 4 bytes
+  match a compression magic (prevents misinterpretation as compressed on read).
+- **CSV numeric predicate pushdown**: `=`/`!=` now compare numerically (cell
+  "30.50" matches WHERE price = 30.5).
+- **RLS on msgpack wire**: Authenticated user identity now injected on msgpack
+  path (was missing, so every user bypassed RLS policies).
+- **PKCS#8 CA key parsing**: GenerateClientCert now properly handles ECDSA keys
+  in PKCS#8 wrapping (was discarding the parsed key).
+- **ALGOLANG CI config**: Removed stale cmd/debug and cmd/realworld-test
+  directory exclusions.
+- **Read-set first-read-wins**: FOR UPDATE reads survive subsequent UPDATE of
+  same row. Stale reads purged on rollback (kills spurious ErrConflict).
+- **ALTER TABLE ADD COLUMN undo**: Restores pre-backfill row data on rollback.
 
 - **JOIN / outer-query column resolution** (silent column-drop bugs): joining two CTEs,
   two derived tables, or a CTE/derived table with a real table dropped the second
