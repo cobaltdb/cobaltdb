@@ -478,6 +478,15 @@ func (db *DB) RegisterFDW(name string, factory func() fdw.ForeignDataWrapper) {
 // getPreparedStatement returns a cached prepared statement or parses and caches it
 
 func (db *DB) getPreparedStatement(sql string, args ...interface{}) (query.Statement, error) {
+	// Reject a query with fewer bind arguments than positional `?` placeholders.
+	// Without this, an unbound placeholder evaluates to a fail-closed NULL and the
+	// query returns silently wrong results (e.g. `WHERE v = ? OR v = ?` with one
+	// arg matches nothing and reports no error) — a data-correctness hazard for
+	// callers. Extra args remain tolerated (ignored), matching prior leniency.
+	if n := query.CountPlaceholders(sql); n > len(args) {
+		return nil, fmt.Errorf("statement has %d placeholder(s) but %d argument(s) were provided", n, len(args))
+	}
+
 	// First check plan cache if enabled (more sophisticated caching with size limits)
 	if db.planCache != nil {
 		if entry, found := db.planCache.getShared(sql, args); found {
@@ -1500,6 +1509,16 @@ func (db *DB) execute(ctx context.Context, sqlText string, stmt query.Statement,
 	}
 
 	if autocommit {
+		// Hold flushMu.RLock across the whole autocommit transaction (statement
+		// execution + the deferred CommitTransaction). This serializes the commit
+		// against DB.Checkpoint (flushMu.Lock) so a concurrent checkpoint cannot
+		// truncate the WAL between a commit's durable WAL append and its later
+		// page-apply (tree.PutBatch), which would otherwise lose an acknowledged
+		// write on a subsequent crash. Registered BEFORE the commit defer so, by
+		// LIFO ordering, RUnlock runs AFTER the commit has applied its pages.
+		db.flushMu.RLock()
+		defer db.flushMu.RUnlock()
+
 		// Start a transaction for this operation
 		db.catalog.BeginTransaction(db.nextTxnID.Add(1))
 		defer func() {
@@ -1510,6 +1529,16 @@ func (db *DB) execute(ctx context.Context, sqlText string, stmt query.Statement,
 			} else {
 				if cmtErr := db.catalog.CommitTransaction(); cmtErr != nil {
 					err = fmt.Errorf("commit failed: %w", cmtErr)
+					// A failed commit (WAL record size limit, or a commit-time
+					// conflict) returns before CommitTransaction clears the
+					// goroutine-local txn state, leaving txnActive=true with the
+					// failed statement's writes still buffered. Without this
+					// rollback the next statement on the same connection would see
+					// phantom uncommitted rows and run inside a leaked implicit
+					// transaction. Roll back to restore atomicity.
+					if rbErr := db.catalog.RollbackTransaction(); rbErr != nil {
+						err = fmt.Errorf("%w; rollback after failed commit failed: %v", err, rbErr)
+					}
 				}
 			}
 		}()
@@ -1598,7 +1627,18 @@ func (db *DB) execute(ctx context.Context, sqlText string, stmt query.Statement,
 		if !db.catalog.IsTransactionActive() {
 			return Result{}, errors.New("no transaction in progress")
 		}
+		// Serialize the SQL COMMIT's flush+commit (WAL-append → page-apply)
+		// against DB.Checkpoint (flushMu.Lock). Without this, a checkpoint could
+		// truncate the WAL between the commit record's fsync and the buffered
+		// writes' page-apply, losing acknowledged committed rows on a later crash
+		// — the same durability window the autocommit path guards, reachable via
+		// SQL BEGIN/COMMIT on the MySQL wire server and CLI. (The programmatic
+		// Tx.Commit path already holds flushMu.RLock.) Released right after the
+		// page-apply, BEFORE the sync-mode ACK wait, so a slow replica ACK does
+		// not block checkpoints.
+		db.flushMu.RLock()
 		if err := db.catalog.FlushTableTrees(); err != nil {
+			db.flushMu.RUnlock()
 			return Result{}, fmt.Errorf("failed to flush tables: %w", err)
 		}
 		// Hold the replication capture lock across commit+entry-append so a
@@ -1613,6 +1653,7 @@ func (db *DB) execute(ctx context.Context, sqlText string, stmt query.Statement,
 			needWait, replErr = db.replTxnFlush()
 		}
 		db.replCaptureMu.RUnlock()
+		db.flushMu.RUnlock()
 		if commitErr != nil {
 			return Result{}, commitErr
 		}
@@ -4395,6 +4436,19 @@ func scanValue(src interface{}, dest interface{}) error {
 
 func cloneScannedValue(value interface{}) interface{} {
 	switch typed := value.(type) {
+	case catalog.StringBox:
+		// The zero-allocation fast decoder wraps TEXT values in a StringBox to
+		// avoid boxing a multi-word string. It is an internal representation and
+		// must never leak through the public Scan API — unwrap to a plain string.
+		return typed.String()
+	case *string:
+		// Some decode paths carry a *string; return the dereferenced value so a
+		// caller scanning into interface{} gets a standard Go string, not a
+		// pointer into engine-internal storage.
+		if typed == nil {
+			return nil
+		}
+		return *typed
 	case []byte:
 		if typed == nil {
 			return []byte(nil)

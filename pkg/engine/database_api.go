@@ -121,10 +121,19 @@ func (db *DB) GetWALPath() string {
 }
 
 // Checkpoint performs a database checkpoint (implements backup.Database).
-// When WAL is enabled, checkpoint uses flushMu.RLock so explicit transaction
-// commits can proceed concurrently; WAL serialization is handled by w.mu in
-// WAL.Checkpoint.  The no-WAL path keeps flushMu.Lock because there is no
-// recovery log to replay changes that arrive after FlushTableTrees.
+//
+// Checkpoint takes flushMu exclusively (both the WAL and no-WAL paths). A commit
+// makes its WAL records durable (WAL.Append fsync) BEFORE it applies the row's
+// page mutations to the buffer pool (catalog applyCommittedBatchWrites: mt.Commit
+// then tree.PutBatch). WAL.Checkpoint flushes dirty pages and then TRUNCATES the
+// WAL. If a checkpoint ran concurrently with a committing writer it could
+// truncate a WAL record whose page mutation has not yet been applied to (or
+// flushed from) the buffer pool — the page effect then lives only in memory and
+// is lost on a crash, silently dropping an acknowledged committed write.
+// Serializing checkpoint (Lock) against every commit path (flushMu.RLock — see
+// Tx.Commit and the autocommit block in execute()) closes that window: checkpoint
+// observes either the whole transaction (WAL + flushed pages) or none of it.
+// w.mu alone is NOT sufficient because the page-apply step runs outside w.mu.
 
 func (db *DB) Checkpoint() error {
 	if db.closed.Load() {
@@ -138,13 +147,10 @@ func (db *DB) Checkpoint() error {
 	}
 	defer db.backupMu.Unlock()
 
-	if db.wal != nil {
-		db.flushMu.RLock()
-		defer db.flushMu.RUnlock()
-	} else {
-		db.flushMu.Lock()
-		defer db.flushMu.Unlock()
-	}
+	// Exclusive: block all in-flight commits (which hold flushMu.RLock) so no WAL
+	// record is truncated before its page mutation is applied and flushed.
+	db.flushMu.Lock()
+	defer db.flushMu.Unlock()
 
 	if db.catalog != nil {
 		if err := db.catalog.FlushTableTrees(); err != nil {

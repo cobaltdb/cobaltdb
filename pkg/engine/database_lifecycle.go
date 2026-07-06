@@ -752,6 +752,22 @@ func (db *DB) initializeCommonComponents() {
 		db.catalog.EnableQueryCacheWithLimits(db.options.QueryCache.QueryCacheSize, 0, db.options.QueryCache.QueryCacheTTL)
 	}
 
+	// Initialize query plan cache if enabled. This lives here (not in
+	// loadExisting) so both createNew() and loadExisting() honor the config —
+	// otherwise a :memory: DB or a first-time disk open (which go through
+	// createNew) silently ignored PlanCache.EnablePlanCache.
+	if db.options.PlanCache.EnablePlanCache {
+		planCacheSize := db.options.PlanCache.Size
+		if planCacheSize <= 0 {
+			planCacheSize = 32 * 1024 * 1024 // 32MB default
+		}
+		planCacheEntries := db.options.PlanCache.MaxEntries
+		if planCacheEntries <= 0 {
+			planCacheEntries = 1000
+		}
+		db.planCache = NewQueryPlanCache(planCacheSize, planCacheEntries)
+	}
+
 	// Initialize query optimizer
 	db.optimizer = optimizer.New(optimizer.DefaultConfig(), nil)
 
@@ -932,19 +948,6 @@ func (db *DB) loadExisting() error {
 	// Initialize common subsystems: FDW, RLS, txnMgr, query cache, optimizer,
 	// replication, backup, and slow-query log.
 	db.initializeCommonComponents()
-
-	// Initialize query plan cache
-	if db.options.PlanCache.EnablePlanCache {
-		planCacheSize := db.options.PlanCache.Size
-		if planCacheSize <= 0 {
-			planCacheSize = 32 * 1024 * 1024 // 32MB default
-		}
-		planCacheEntries := db.options.PlanCache.MaxEntries
-		if planCacheEntries <= 0 {
-			planCacheEntries = 1000
-		}
-		db.planCache = NewQueryPlanCache(planCacheSize, planCacheEntries)
-	}
 
 	return nil
 }
@@ -1239,9 +1242,10 @@ func (db *DB) runAnalyzeJob() error {
 }
 
 // runCheckpointJob performs a WAL checkpoint to truncate the log and flush
-// dirty pages.  Called by the scheduler; safe to run concurrently with reads
-// and explicit transaction commits because DB.Checkpoint uses flushMu.RLock
-// when WAL is enabled (WAL.Checkpoint serializes its own WAL append via w.mu).
+// dirty pages.  Called by the scheduler; safe to run concurrently with reads.
+// DB.Checkpoint takes flushMu exclusively so it cannot interleave with a commit's
+// WAL-append/page-apply sequence — otherwise it could truncate a WAL record whose
+// page mutation is not yet in the buffer pool and lose a committed write on crash.
 func (db *DB) runCheckpointJob() error {
 	if err := db.Checkpoint(); err != nil {
 		if db.options.CoreStorage.Logger != nil {
