@@ -1681,3 +1681,247 @@ func TestCleanupOldBackups(t *testing.T) {
 		}
 	}
 }
+
+func TestMetadataError(t *testing.T) {
+	t.Run("no error when metadata loads successfully", func(t *testing.T) {
+		tempDir := t.TempDir()
+		config := DefaultConfig()
+		config.BackupDir = tempDir
+		mgr := NewManager(config, &MockDatabase{dbPath: "/tmp/test.db"})
+		if err := mgr.MetadataError(); err != nil {
+			t.Errorf("MetadataError() = %v, want nil", err)
+		}
+	})
+
+	t.Run("error when metadata is corrupted", func(t *testing.T) {
+		tempDir := t.TempDir()
+		// Create a valid backup dir with a corrupted metadata file
+		metaPath := filepath.Join(tempDir, metadataFileName)
+		if err := os.WriteFile(metaPath, []byte("invalid json{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		config := DefaultConfig()
+		config.BackupDir = tempDir
+		mgr := NewManager(config, &MockDatabase{dbPath: "/tmp/test.db"})
+		if err := mgr.MetadataError(); err == nil {
+			t.Error("MetadataError() = nil, want error for corrupted metadata")
+		}
+	})
+}
+
+func TestLastCleanupError(t *testing.T) {
+	t.Run("nil when no cleanup has occurred", func(t *testing.T) {
+		config := DefaultConfig()
+		config.BackupDir = t.TempDir()
+		mgr := NewManager(config, &MockDatabase{dbPath: "/tmp/test.db"})
+		if err := mgr.LastCleanupError(); err != nil {
+			t.Errorf("LastCleanupError() = %v, want nil", err)
+		}
+	})
+
+	t.Run("returns error after setLastCleanupError with an error", func(t *testing.T) {
+		config := DefaultConfig()
+		config.BackupDir = t.TempDir()
+		mgr := NewManager(config, &MockDatabase{dbPath: "/tmp/test.db"})
+		want := fmt.Errorf("cleanup failed")
+		mgr.setLastCleanupError(want)
+		if err := mgr.LastCleanupError(); err != want {
+			t.Errorf("LastCleanupError() = %v, want %v", err, want)
+		}
+	})
+
+	t.Run("returns nil after setLastCleanupError(nil)", func(t *testing.T) {
+		config := DefaultConfig()
+		config.BackupDir = t.TempDir()
+		mgr := NewManager(config, &MockDatabase{dbPath: "/tmp/test.db"})
+		mgr.setLastCleanupError(fmt.Errorf("some error"))
+		mgr.setLastCleanupError(nil)
+		if err := mgr.LastCleanupError(); err != nil {
+			t.Errorf("LastCleanupError() = %v, want nil", err)
+		}
+	})
+
+	t.Run("is thread-safe under concurrent access", func(t *testing.T) {
+		config := DefaultConfig()
+		config.BackupDir = t.TempDir()
+		mgr := NewManager(config, &MockDatabase{dbPath: "/tmp/test.db"})
+
+		done := make(chan struct{})
+		go func() {
+			for i := 0; i < 50; i++ {
+				mgr.setLastCleanupError(fmt.Errorf("err %d", i))
+			}
+			close(done)
+		}()
+		for i := 0; i < 50; i++ {
+			_ = mgr.LastCleanupError()
+		}
+		<-done
+	})
+}
+
+func TestStagedRestoreWALCommit(t *testing.T) {
+	t.Run("nil receiver returns nil", func(t *testing.T) {
+		var s *stagedRestoreWAL
+		if err := s.commit(); err != nil {
+			t.Errorf("commit() on nil receiver = %v, want nil", err)
+		}
+	})
+
+	t.Run("file mode renames temp file to target", func(t *testing.T) {
+		dir := t.TempDir()
+		srcPath := filepath.Join(dir, "temp_wal")
+		targetPath := filepath.Join(dir, "target.wal")
+
+		if err := os.WriteFile(srcPath, []byte("wal data"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		s := &stagedRestoreWAL{
+			path:       srcPath,
+			targetPath: targetPath,
+		}
+
+		if err := s.commit(); err != nil {
+			t.Fatalf("commit() = %v", err)
+		}
+
+		// Target should exist with content
+		data, err := os.ReadFile(targetPath)
+		if err != nil {
+			t.Fatalf("read target: %v", err)
+		}
+		if string(data) != "wal data" {
+			t.Errorf("target content = %q, want %q", data, "wal data")
+		}
+
+		// Source should be cleaned up (path set to "")
+		if s.path != "" {
+			t.Error("path was not cleared after commit")
+		}
+
+		// Temp file should have been renamed (no longer exists)
+		if _, err := os.Stat(srcPath); !os.IsNotExist(err) {
+			t.Error("temp file should no longer exist after rename")
+		}
+	})
+
+	t.Run("dir mode removes target then renames temp dir", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// Create the temp WAL directory with a file in it
+		srcPath := filepath.Join(dir, "temp_wal_dir")
+		if err := os.MkdirAll(srcPath, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(srcPath, "wal_1"), []byte("data"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		targetPath := filepath.Join(dir, "target.wal")
+		// Create a pre-existing target dir to verify it gets removed
+		if err := os.MkdirAll(targetPath, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(targetPath, "old_wal"), []byte("old"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		s := &stagedRestoreWAL{
+			path:       srcPath,
+			targetPath: targetPath,
+			isDir:      true,
+		}
+
+		if err := s.commit(); err != nil {
+			t.Fatalf("commit() = %v", err)
+		}
+
+		// Target dir should exist with the new file
+		if _, err := os.Stat(filepath.Join(targetPath, "wal_1")); os.IsNotExist(err) {
+			t.Error("wal_1 should exist in target dir")
+		}
+		// Old file should be gone
+		if _, err := os.Stat(filepath.Join(targetPath, "old_wal")); !os.IsNotExist(err) {
+			t.Error("old_wal should have been removed")
+		}
+	})
+
+	t.Run("file mode returns error for non-existent source", func(t *testing.T) {
+		dir := t.TempDir()
+		s := &stagedRestoreWAL{
+			path:       filepath.Join(dir, "nonexistent"),
+			targetPath: filepath.Join(dir, "target.wal"),
+		}
+		if err := s.commit(); err == nil {
+			t.Fatal("expected error for non-existent source")
+		}
+	})
+}
+
+func TestCompoundReadCloserClose(t *testing.T) {
+	t.Run("closes all closers successfully", func(t *testing.T) {
+		var closed1, closed2 bool
+
+		cr := &compoundReadCloser{
+			Reader:  nil,
+			closers: []io.Closer{closeFunc(func() error { closed1 = true; return nil }), closeFunc(func() error { closed2 = true; return nil })},
+		}
+		if err := cr.Close(); err != nil {
+			t.Errorf("Close() = %v, want nil", err)
+		}
+		if !closed1 {
+			t.Error("first closer was not called")
+		}
+		if !closed2 {
+			t.Error("second closer was not called")
+		}
+	})
+
+	t.Run("collects errors from all closers", func(t *testing.T) {
+		err1 := fmt.Errorf("close error 1")
+		err2 := fmt.Errorf("close error 2")
+
+		cr := &compoundReadCloser{
+			Reader:  nil,
+			closers: []io.Closer{closeFunc(func() error { return err1 }), closeFunc(func() error { return err2 })},
+		}
+		err := cr.Close()
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "close error 1") {
+			t.Errorf("error should contain 'close error 1', got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "close error 2") {
+			t.Errorf("error should contain 'close error 2', got: %v", err)
+		}
+	})
+
+	t.Run("empty closers returns nil", func(t *testing.T) {
+		cr := &compoundReadCloser{
+			Reader:  nil,
+			closers: nil,
+		}
+		if err := cr.Close(); err != nil {
+			t.Errorf("Close() = %v, want nil", err)
+		}
+	})
+
+	t.Run("single closer error is propagated", func(t *testing.T) {
+		want := fmt.Errorf("single error")
+		cr := &compoundReadCloser{
+			Reader:  nil,
+			closers: []io.Closer{closeFunc(func() error { return want })},
+		}
+		if err := cr.Close(); !errors.Is(err, want) {
+			t.Errorf("Close() = %v, want %v", err, want)
+		}
+	})
+}
+
+// closeFunc adapts a function to io.Closer.
+type closeFunc func() error
+
+func (f closeFunc) Close() error { return f() }
