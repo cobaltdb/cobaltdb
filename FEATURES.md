@@ -2,7 +2,7 @@
 
 > **Verified:** 2026-07-06
 > **Test Coverage:** 78.9% total over `pkg/...` | **Test Functions:** 6,500+ | **Package Status:** all Go packages passing (31/31)
-> **Readiness:** Production-ready. All 22 production correctness bugs fixed in v0.6.0. Crash-recovery, WAL durability, FOR UPDATE, UTF-8, FDW, NaN/Inf guards, compression collision protection, and TLS PKCS#8 all hardened. 20+ new audit test files added (700+ new test cases). Single-writer model remains the primary concurrency bottleneck.
+> **Readiness:** Production-oriented for controlled single-node deployments. All 22 tracked production correctness issues fixed in v0.6.0. Crash-recovery, WAL durability, FOR UPDATE, UTF-8, FDW, NaN/Inf guards, compression collision protection, and TLS PKCS#8 paths were hardened. 20+ new audit test files added (700+ new test cases). Single-writer model remains the primary concurrency bottleneck.
 
 ---
 
