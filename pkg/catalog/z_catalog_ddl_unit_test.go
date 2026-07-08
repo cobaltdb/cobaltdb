@@ -810,7 +810,7 @@ func TestExecuteInsteadOfUpdateTrigger(t *testing.T) {
 	// Create a backing table with data
 	mustCreateTable(t, c, "backing_upd (id INTEGER PRIMARY KEY, val INTEGER)")
 	if _, _, err := c.Insert(context.Background(), &query.InsertStmt{
-		Table: "backing_upd",
+		Table:  "backing_upd",
 		Values: [][]query.Expression{{nr(1), nr(10)}},
 	}, nil); err != nil {
 		t.Fatalf("seed insert: %v", err)
@@ -873,7 +873,7 @@ func TestExecuteInsteadOfDeleteTrigger(t *testing.T) {
 	// Create a backing table with data
 	mustCreateTable(t, c, "backing_del (id INTEGER PRIMARY KEY, val INTEGER)")
 	if _, _, err := c.Insert(context.Background(), &query.InsertStmt{
-		Table: "backing_del",
+		Table:  "backing_del",
 		Values: [][]query.Expression{{nr(1), nr(10)}},
 	}, nil); err != nil {
 		t.Fatalf("seed insert: %v", err)

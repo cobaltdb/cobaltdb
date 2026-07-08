@@ -208,66 +208,228 @@ type visitCountVisitor struct {
 	counts map[string]int
 }
 
-func (v *visitCountVisitor) VisitBinaryExpr(_ *BinaryExpr, _ interface{}) interface{} { v.counts["BinaryExpr"]++; return nil }
-func (v *visitCountVisitor) VisitUnaryExpr(_ *UnaryExpr, _ interface{}) interface{} { v.counts["UnaryExpr"]++; return nil }
-func (v *visitCountVisitor) VisitFunctionCall(_ *FunctionCall, _ interface{}) interface{} { v.counts["FunctionCall"]++; return nil }
-func (v *visitCountVisitor) VisitIdentifier(_ *Identifier, _ interface{}) interface{} { v.counts["Identifier"]++; return nil }
-func (v *visitCountVisitor) VisitQualifiedIdentifier(_ *QualifiedIdentifier, _ interface{}) interface{} { v.counts["QualifiedIdentifier"]++; return nil }
-func (v *visitCountVisitor) VisitColumnRef(_ *ColumnRef, _ interface{}) interface{} { v.counts["ColumnRef"]++; return nil }
-func (v *visitCountVisitor) VisitStringLiteral(_ *StringLiteral, _ interface{}) interface{} { v.counts["StringLiteral"]++; return nil }
-func (v *visitCountVisitor) VisitNumberLiteral(_ *NumberLiteral, _ interface{}) interface{} { v.counts["NumberLiteral"]++; return nil }
-func (v *visitCountVisitor) VisitBooleanLiteral(_ *BooleanLiteral, _ interface{}) interface{} { v.counts["BooleanLiteral"]++; return nil }
-func (v *visitCountVisitor) VisitNullLiteral(_ *NullLiteral, _ interface{}) interface{} { v.counts["NullLiteral"]++; return nil }
-func (v *visitCountVisitor) VisitVectorLiteral(_ *VectorLiteral, _ interface{}) interface{} { v.counts["VectorLiteral"]++; return nil }
-func (v *visitCountVisitor) VisitPlaceholder(_ *PlaceholderExpr, _ interface{}) interface{} { v.counts["Placeholder"]++; return nil }
-func (v *visitCountVisitor) VisitInExpr(_ *InExpr, _ interface{}) interface{} { v.counts["InExpr"]++; return nil }
-func (v *visitCountVisitor) VisitBetweenExpr(_ *BetweenExpr, _ interface{}) interface{} { v.counts["BetweenExpr"]++; return nil }
-func (v *visitCountVisitor) VisitLikeExpr(_ *LikeExpr, _ interface{}) interface{} { v.counts["LikeExpr"]++; return nil }
-func (v *visitCountVisitor) VisitIsNullExpr(_ *IsNullExpr, _ interface{}) interface{} { v.counts["IsNullExpr"]++; return nil }
-func (v *visitCountVisitor) VisitCastExpr(_ *CastExpr, _ interface{}) interface{} { v.counts["CastExpr"]++; return nil }
-func (v *visitCountVisitor) VisitCaseExpr(_ *CaseExpr, _ interface{}) interface{} { v.counts["CaseExpr"]++; return nil }
-func (v *visitCountVisitor) VisitSubqueryExpr(_ *SubqueryExpr, _ interface{}) interface{} { v.counts["SubqueryExpr"]++; return nil }
-func (v *visitCountVisitor) VisitExistsExpr(_ *ExistsExpr, _ interface{}) interface{} { v.counts["ExistsExpr"]++; return nil }
-func (v *visitCountVisitor) VisitStarExpr(_ *StarExpr, _ interface{}) interface{} { v.counts["StarExpr"]++; return nil }
-func (v *visitCountVisitor) VisitJSONPathExpr(_ *JSONPathExpr, _ interface{}) interface{} { v.counts["JSONPathExpr"]++; return nil }
-func (v *visitCountVisitor) VisitJSONContainsExpr(_ *JSONContainsExpr, _ interface{}) interface{} { v.counts["JSONContainsExpr"]++; return nil }
-func (v *visitCountVisitor) VisitAliasExpr(_ *AliasExpr, _ interface{}) interface{} { v.counts["AliasExpr"]++; return nil }
-func (v *visitCountVisitor) VisitMatchExpr(_ *MatchExpr, _ interface{}) interface{} { v.counts["MatchExpr"]++; return nil }
-func (v *visitCountVisitor) VisitWindowExpr(_ *WindowExpr, _ interface{}) interface{} { v.counts["WindowExpr"]++; return nil }
-func (v *visitCountVisitor) VisitWindowSpec(_ *WindowSpec, _ interface{}) interface{} { v.counts["WindowSpec"]++; return nil }
+func (v *visitCountVisitor) VisitBinaryExpr(_ *BinaryExpr, _ interface{}) interface{} {
+	v.counts["BinaryExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitUnaryExpr(_ *UnaryExpr, _ interface{}) interface{} {
+	v.counts["UnaryExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitFunctionCall(_ *FunctionCall, _ interface{}) interface{} {
+	v.counts["FunctionCall"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitIdentifier(_ *Identifier, _ interface{}) interface{} {
+	v.counts["Identifier"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitQualifiedIdentifier(_ *QualifiedIdentifier, _ interface{}) interface{} {
+	v.counts["QualifiedIdentifier"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitColumnRef(_ *ColumnRef, _ interface{}) interface{} {
+	v.counts["ColumnRef"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitStringLiteral(_ *StringLiteral, _ interface{}) interface{} {
+	v.counts["StringLiteral"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitNumberLiteral(_ *NumberLiteral, _ interface{}) interface{} {
+	v.counts["NumberLiteral"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitBooleanLiteral(_ *BooleanLiteral, _ interface{}) interface{} {
+	v.counts["BooleanLiteral"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitNullLiteral(_ *NullLiteral, _ interface{}) interface{} {
+	v.counts["NullLiteral"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitVectorLiteral(_ *VectorLiteral, _ interface{}) interface{} {
+	v.counts["VectorLiteral"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitPlaceholder(_ *PlaceholderExpr, _ interface{}) interface{} {
+	v.counts["Placeholder"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitInExpr(_ *InExpr, _ interface{}) interface{} {
+	v.counts["InExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitBetweenExpr(_ *BetweenExpr, _ interface{}) interface{} {
+	v.counts["BetweenExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitLikeExpr(_ *LikeExpr, _ interface{}) interface{} {
+	v.counts["LikeExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitIsNullExpr(_ *IsNullExpr, _ interface{}) interface{} {
+	v.counts["IsNullExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitCastExpr(_ *CastExpr, _ interface{}) interface{} {
+	v.counts["CastExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitCaseExpr(_ *CaseExpr, _ interface{}) interface{} {
+	v.counts["CaseExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitSubqueryExpr(_ *SubqueryExpr, _ interface{}) interface{} {
+	v.counts["SubqueryExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitExistsExpr(_ *ExistsExpr, _ interface{}) interface{} {
+	v.counts["ExistsExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitStarExpr(_ *StarExpr, _ interface{}) interface{} {
+	v.counts["StarExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitJSONPathExpr(_ *JSONPathExpr, _ interface{}) interface{} {
+	v.counts["JSONPathExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitJSONContainsExpr(_ *JSONContainsExpr, _ interface{}) interface{} {
+	v.counts["JSONContainsExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitAliasExpr(_ *AliasExpr, _ interface{}) interface{} {
+	v.counts["AliasExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitMatchExpr(_ *MatchExpr, _ interface{}) interface{} {
+	v.counts["MatchExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitWindowExpr(_ *WindowExpr, _ interface{}) interface{} {
+	v.counts["WindowExpr"]++
+	return nil
+}
+func (v *visitCountVisitor) VisitWindowSpec(_ *WindowSpec, _ interface{}) interface{} {
+	v.counts["WindowSpec"]++
+	return nil
+}
 
 // collectExprVisitor returns the expression as-is so walkChildren recurses.
 type collectExprVisitor struct {
 	visitCountVisitor
 }
 
-func (v *collectExprVisitor) VisitBinaryExpr(e *BinaryExpr, _ interface{}) interface{} { v.counts["BinaryExpr"]++; return e }
-func (v *collectExprVisitor) VisitUnaryExpr(e *UnaryExpr, _ interface{}) interface{} { v.counts["UnaryExpr"]++; return e }
-func (v *collectExprVisitor) VisitFunctionCall(e *FunctionCall, _ interface{}) interface{} { v.counts["FunctionCall"]++; return e }
-func (v *collectExprVisitor) VisitIdentifier(e *Identifier, _ interface{}) interface{} { v.counts["Identifier"]++; return e }
-func (v *collectExprVisitor) VisitQualifiedIdentifier(e *QualifiedIdentifier, _ interface{}) interface{} { v.counts["QualifiedIdentifier"]++; return e }
-func (v *collectExprVisitor) VisitColumnRef(e *ColumnRef, _ interface{}) interface{} { v.counts["ColumnRef"]++; return e }
-func (v *collectExprVisitor) VisitStringLiteral(e *StringLiteral, _ interface{}) interface{} { v.counts["StringLiteral"]++; return e }
-func (v *collectExprVisitor) VisitNumberLiteral(e *NumberLiteral, _ interface{}) interface{} { v.counts["NumberLiteral"]++; return e }
-func (v *collectExprVisitor) VisitBooleanLiteral(e *BooleanLiteral, _ interface{}) interface{} { v.counts["BooleanLiteral"]++; return e }
-func (v *collectExprVisitor) VisitNullLiteral(e *NullLiteral, _ interface{}) interface{} { v.counts["NullLiteral"]++; return e }
-func (v *collectExprVisitor) VisitVectorLiteral(e *VectorLiteral, _ interface{}) interface{} { v.counts["VectorLiteral"]++; return e }
-func (v *collectExprVisitor) VisitPlaceholder(e *PlaceholderExpr, _ interface{}) interface{} { v.counts["Placeholder"]++; return e }
-func (v *collectExprVisitor) VisitInExpr(e *InExpr, _ interface{}) interface{} { v.counts["InExpr"]++; return e }
-func (v *collectExprVisitor) VisitBetweenExpr(e *BetweenExpr, _ interface{}) interface{} { v.counts["BetweenExpr"]++; return e }
-func (v *collectExprVisitor) VisitLikeExpr(e *LikeExpr, _ interface{}) interface{} { v.counts["LikeExpr"]++; return e }
-func (v *collectExprVisitor) VisitIsNullExpr(e *IsNullExpr, _ interface{}) interface{} { v.counts["IsNullExpr"]++; return e }
-func (v *collectExprVisitor) VisitCastExpr(e *CastExpr, _ interface{}) interface{} { v.counts["CastExpr"]++; return e }
-func (v *collectExprVisitor) VisitCaseExpr(e *CaseExpr, _ interface{}) interface{} { v.counts["CaseExpr"]++; return e }
-func (v *collectExprVisitor) VisitSubqueryExpr(e *SubqueryExpr, _ interface{}) interface{} { v.counts["SubqueryExpr"]++; return e }
-func (v *collectExprVisitor) VisitExistsExpr(e *ExistsExpr, _ interface{}) interface{} { v.counts["ExistsExpr"]++; return e }
-func (v *collectExprVisitor) VisitStarExpr(e *StarExpr, _ interface{}) interface{} { v.counts["StarExpr"]++; return e }
-func (v *collectExprVisitor) VisitJSONPathExpr(e *JSONPathExpr, _ interface{}) interface{} { v.counts["JSONPathExpr"]++; return e }
-func (v *collectExprVisitor) VisitJSONContainsExpr(e *JSONContainsExpr, _ interface{}) interface{} { v.counts["JSONContainsExpr"]++; return e }
-func (v *collectExprVisitor) VisitAliasExpr(e *AliasExpr, _ interface{}) interface{} { v.counts["AliasExpr"]++; return e }
-func (v *collectExprVisitor) VisitMatchExpr(e *MatchExpr, _ interface{}) interface{} { v.counts["MatchExpr"]++; return e }
-func (v *collectExprVisitor) VisitWindowExpr(e *WindowExpr, _ interface{}) interface{} { v.counts["WindowExpr"]++; return e }
-func (v *collectExprVisitor) VisitWindowSpec(e *WindowSpec, _ interface{}) interface{} { v.counts["WindowSpec"]++; return e }
+func (v *collectExprVisitor) VisitBinaryExpr(e *BinaryExpr, _ interface{}) interface{} {
+	v.counts["BinaryExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitUnaryExpr(e *UnaryExpr, _ interface{}) interface{} {
+	v.counts["UnaryExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitFunctionCall(e *FunctionCall, _ interface{}) interface{} {
+	v.counts["FunctionCall"]++
+	return e
+}
+func (v *collectExprVisitor) VisitIdentifier(e *Identifier, _ interface{}) interface{} {
+	v.counts["Identifier"]++
+	return e
+}
+func (v *collectExprVisitor) VisitQualifiedIdentifier(e *QualifiedIdentifier, _ interface{}) interface{} {
+	v.counts["QualifiedIdentifier"]++
+	return e
+}
+func (v *collectExprVisitor) VisitColumnRef(e *ColumnRef, _ interface{}) interface{} {
+	v.counts["ColumnRef"]++
+	return e
+}
+func (v *collectExprVisitor) VisitStringLiteral(e *StringLiteral, _ interface{}) interface{} {
+	v.counts["StringLiteral"]++
+	return e
+}
+func (v *collectExprVisitor) VisitNumberLiteral(e *NumberLiteral, _ interface{}) interface{} {
+	v.counts["NumberLiteral"]++
+	return e
+}
+func (v *collectExprVisitor) VisitBooleanLiteral(e *BooleanLiteral, _ interface{}) interface{} {
+	v.counts["BooleanLiteral"]++
+	return e
+}
+func (v *collectExprVisitor) VisitNullLiteral(e *NullLiteral, _ interface{}) interface{} {
+	v.counts["NullLiteral"]++
+	return e
+}
+func (v *collectExprVisitor) VisitVectorLiteral(e *VectorLiteral, _ interface{}) interface{} {
+	v.counts["VectorLiteral"]++
+	return e
+}
+func (v *collectExprVisitor) VisitPlaceholder(e *PlaceholderExpr, _ interface{}) interface{} {
+	v.counts["Placeholder"]++
+	return e
+}
+func (v *collectExprVisitor) VisitInExpr(e *InExpr, _ interface{}) interface{} {
+	v.counts["InExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitBetweenExpr(e *BetweenExpr, _ interface{}) interface{} {
+	v.counts["BetweenExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitLikeExpr(e *LikeExpr, _ interface{}) interface{} {
+	v.counts["LikeExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitIsNullExpr(e *IsNullExpr, _ interface{}) interface{} {
+	v.counts["IsNullExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitCastExpr(e *CastExpr, _ interface{}) interface{} {
+	v.counts["CastExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitCaseExpr(e *CaseExpr, _ interface{}) interface{} {
+	v.counts["CaseExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitSubqueryExpr(e *SubqueryExpr, _ interface{}) interface{} {
+	v.counts["SubqueryExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitExistsExpr(e *ExistsExpr, _ interface{}) interface{} {
+	v.counts["ExistsExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitStarExpr(e *StarExpr, _ interface{}) interface{} {
+	v.counts["StarExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitJSONPathExpr(e *JSONPathExpr, _ interface{}) interface{} {
+	v.counts["JSONPathExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitJSONContainsExpr(e *JSONContainsExpr, _ interface{}) interface{} {
+	v.counts["JSONContainsExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitAliasExpr(e *AliasExpr, _ interface{}) interface{} {
+	v.counts["AliasExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitMatchExpr(e *MatchExpr, _ interface{}) interface{} {
+	v.counts["MatchExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitWindowExpr(e *WindowExpr, _ interface{}) interface{} {
+	v.counts["WindowExpr"]++
+	return e
+}
+func (v *collectExprVisitor) VisitWindowSpec(e *WindowSpec, _ interface{}) interface{} {
+	v.counts["WindowSpec"]++
+	return e
+}
 
 func TestWalk(t *testing.T) {
 	t.Run("nil expression does nothing", func(t *testing.T) {
@@ -339,21 +501,21 @@ func TestWalkSelectStmt(t *testing.T) {
 			From: &TableRef{Name: "users"},
 			Joins: []*JoinClause{
 				{Table: &TableRef{Name: "orders"}, Condition: &BinaryExpr{
-					Left: &ColumnRef{Table: "users", Column: "id"},
+					Left:     &ColumnRef{Table: "users", Column: "id"},
 					Operator: TokenEq,
-					Right: &ColumnRef{Table: "orders", Column: "user_id"},
+					Right:    &ColumnRef{Table: "orders", Column: "user_id"},
 				}},
 			},
 			Where: &BinaryExpr{
-				Left: &Identifier{Name: "status"},
+				Left:     &Identifier{Name: "status"},
 				Operator: TokenEq,
-				Right: &StringLiteral{Value: "active"},
+				Right:    &StringLiteral{Value: "active"},
 			},
 			GroupBy: []Expression{&Identifier{Name: "x"}},
 			Having: &BinaryExpr{
-				Left: &FunctionCall{Name: "COUNT", Args: []Expression{&StarExpr{}}},
+				Left:     &FunctionCall{Name: "COUNT", Args: []Expression{&StarExpr{}}},
 				Operator: TokenGt,
-				Right: &NumberLiteral{Value: 0},
+				Right:    &NumberLiteral{Value: 0},
 			},
 			OrderBy: []*OrderByExpr{
 				{Expr: &Identifier{Name: "x"}, Desc: true},
@@ -549,9 +711,9 @@ func TestIntervalExprEvaluate(t *testing.T) {
 
 func TestIntervalMagnitude(t *testing.T) {
 	tests := []struct {
-		input    interface{}
-		wantN    int64
-		wantOK   bool
+		input  interface{}
+		wantN  int64
+		wantOK bool
 	}{
 		{int64(42), 42, true},
 		{int(42), 42, true},
@@ -644,10 +806,10 @@ func TestCollectWindowExprs(t *testing.T) {
 		var out []*WindowExpr
 		innerWE := &WindowExpr{Function: "LAG", Args: []Expression{&Identifier{Name: "x"}}}
 		we := &WindowExpr{
-			Function: "LEAD",
-			Args:     []Expression{innerWE},
-			OrderBy:  []*OrderByExpr{{Expr: &Identifier{Name: "y"}}},
-			Filter:   &BinaryExpr{Left: &Identifier{Name: "z"}, Operator: TokenGt, Right: &NumberLiteral{Value: 0}},
+			Function:    "LEAD",
+			Args:        []Expression{innerWE},
+			OrderBy:     []*OrderByExpr{{Expr: &Identifier{Name: "y"}}},
+			Filter:      &BinaryExpr{Left: &Identifier{Name: "z"}, Operator: TokenGt, Right: &NumberLiteral{Value: 0}},
 			PartitionBy: []Expression{&Identifier{Name: "p"}},
 		}
 		CollectWindowExprs(we, &out)
@@ -726,8 +888,8 @@ func TestDefaultExprAcceptVisitor(t *testing.T) {
 
 func TestIsHexDigit(t *testing.T) {
 	tests := []struct {
-		ch    byte
-		want  bool
+		ch   byte
+		want bool
 	}{
 		{'0', true},
 		{'5', true},

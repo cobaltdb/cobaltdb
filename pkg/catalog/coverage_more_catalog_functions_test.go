@@ -111,7 +111,7 @@ func TestEnableRLSTableCreatesManager(t *testing.T) {
 
 func TestEnableRLSTableExistingManager(t *testing.T) {
 	c := &Catalog{
-		tables: map[string]*TableDef{"users": {}},
+		tables:    map[string]*TableDef{"users": {}},
 		enableRLS: true, rlsManager: security.NewManager(),
 	}
 	if err := c.EnableRLSTable("users"); err != nil {
@@ -146,8 +146,8 @@ func TestBeginTransactionWithTxnNilManager(t *testing.T) {
 
 func TestUndoCreateViewEntry(t *testing.T) {
 	c := &Catalog{
-		views: map[string]*query.SelectStmt{"test_view": {}},
-		viewSQL: map[string]string{"test_view": "SELECT 1"},
+		views:         map[string]*query.SelectStmt{"test_view": {}},
+		viewSQL:       map[string]string{"test_view": "SELECT 1"},
 		viewTemporary: map[string]bool{"test_view": false},
 	}
 	if err := c.undoCreateViewEntry(undoEntry{viewName: "test_view"}, "test"); err != nil {
@@ -196,7 +196,7 @@ func TestUndoDropViewEntryEmptySQL(t *testing.T) {
 
 func TestUndoCreateTriggerEntry(t *testing.T) {
 	c := &Catalog{
-		triggers: map[string]*query.CreateTriggerStmt{"test_trg": {}},
+		triggers:   map[string]*query.CreateTriggerStmt{"test_trg": {}},
 		triggerSQL: map[string]string{"test_trg": "CREATE TRIGGER ..."},
 	}
 	if err := c.undoCreateTriggerEntry(undoEntry{triggerName: "test_trg"}, "test"); err != nil {
@@ -245,7 +245,7 @@ func TestUndoDropTriggerEntryEmptySQL(t *testing.T) {
 
 func TestUndoCreateProcedureEntry(t *testing.T) {
 	c := &Catalog{
-		procedures: map[string]*query.CreateProcedureStmt{"test_proc": {}},
+		procedures:   map[string]*query.CreateProcedureStmt{"test_proc": {}},
 		procedureSQL: map[string]string{"test_proc": "CREATE PROC ..."},
 	}
 	if err := c.undoCreateProcedureEntry(undoEntry{procedureName: "test_proc"}, "test"); err != nil {
@@ -297,7 +297,7 @@ func TestUndoDropProcedureEntryEmptySQL(t *testing.T) {
 
 func TestUndoCreateMaterializedViewEntry(t *testing.T) {
 	c := &Catalog{
-		materializedViews:  map[string]*MaterializedViewDef{"test_mv": {}},
+		materializedViews:   map[string]*MaterializedViewDef{"test_mv": {}},
 		materializedViewSQL: map[string]string{"test_mv": "SELECT 1"},
 	}
 	if err := c.undoCreateMaterializedViewEntry(undoEntry{materializedViewName: "test_mv"}, "test"); err != nil {

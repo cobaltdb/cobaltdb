@@ -269,9 +269,9 @@ func TestDistinctAggregateValues(t *testing.T) {
 
 func TestDerivedSelectColumnNames(t *testing.T) {
 	tests := []struct {
-		name  string
-		sel   *query.SelectStmt
-		want  []string
+		name   string
+		sel    *query.SelectStmt
+		want   []string
 		wantOK bool
 	}{
 		{

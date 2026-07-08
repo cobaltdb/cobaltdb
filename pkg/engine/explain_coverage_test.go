@@ -284,4 +284,3 @@ func TestReplicationSyncWaitAsync(t *testing.T) {
 		t.Fatalf("replicationSyncWait failed for async mode: %v", err)
 	}
 }
-

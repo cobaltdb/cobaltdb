@@ -165,9 +165,9 @@ func TestEstimateJoinRows(t *testing.T) {
 
 func TestIsProcedureResultStatement(t *testing.T) {
 	tests := []struct {
-		name  string
-		stmt  query.Statement
-		want  bool
+		name string
+		stmt query.Statement
+		want bool
 	}{
 		{"SelectStmt", &query.SelectStmt{}, true},
 		{"UnionStmt", &query.UnionStmt{}, true},
@@ -201,16 +201,16 @@ func TestIsProcedureResultStatement(t *testing.T) {
 
 func TestIsProcedureOutputParam(t *testing.T) {
 	params := map[string]*query.ParamDef{
-		"out_param":  {Name: "out_param", Mode: query.TokenOut},
-		"inout_param": {Name: "inout_param", Mode: query.TokenInout},
-		"in_param":   {Name: "in_param", Mode: query.TokenIn},
+		"out_param":     {Name: "out_param", Mode: query.TokenOut},
+		"inout_param":   {Name: "inout_param", Mode: query.TokenInout},
+		"in_param":      {Name: "in_param", Mode: query.TokenIn},
 		"default_param": {Name: "default_param"},
 	}
 
 	tests := []struct {
-		name string
+		name      string
 		paramName string
-		want bool
+		want      bool
 	}{
 		{"out param", "out_param", true},
 		{"inout param", "inout_param", true},

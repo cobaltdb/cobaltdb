@@ -243,10 +243,10 @@ func TestWriteLenEncString(t *testing.T) {
 
 func TestBinaryFloat64(t *testing.T) {
 	tests := []struct {
-		name      string
-		input     interface{}
-		wantVal   float64
-		wantOK    bool
+		name    string
+		input   interface{}
+		wantVal float64
+		wantOK  bool
 	}{
 		{name: "float64", input: float64(3.14), wantVal: 3.14, wantOK: true},
 		{name: "float32", input: float32(2.5), wantVal: 2.5, wantOK: true},

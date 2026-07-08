@@ -487,9 +487,9 @@ func TestLeadingNumericPrefix(t *testing.T) {
 		{"1.5e10", "1.5e10"},
 		{"1.5e+10", "1.5e+10"},
 		{"1.5e-10", "1.5e-10"},
-		{"1e", "1"},              // exponent without digits → ignored
-		{"1e+", "1"},             // exponent sign without digits → ignored
-		{"1e-abc", "1"},          // exponent without digits → ignored
+		{"1e", "1"},     // exponent without digits → ignored
+		{"1e+", "1"},    // exponent sign without digits → ignored
+		{"1e-abc", "1"}, // exponent without digits → ignored
 		{"-3.5e2", "-3.5e2"},
 		// Trailing garbage
 		{"123abc456", "123"},

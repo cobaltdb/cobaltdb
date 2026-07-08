@@ -13,49 +13,49 @@ import (
 
 func TestIsAuditHash(t *testing.T) {
 	tests := []struct {
-		name  string
-		hash  string
-		want  bool
+		name string
+		hash string
+		want bool
 	}{
 		{
-			name:  "valid 64-char hex lowercase",
-			hash:  "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-			want:  true,
+			name: "valid 64-char hex lowercase",
+			hash: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+			want: true,
 		},
 		{
-			name:  "valid 64-char hex mixed case is rejected (only a-f)",
-			hash:  "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-			want:  false,
+			name: "valid 64-char hex mixed case is rejected (only a-f)",
+			hash: "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+			want: false,
 		},
 		{
-			name:  "too short",
-			hash:  "abc",
-			want:  false,
+			name: "too short",
+			hash: "abc",
+			want: false,
 		},
 		{
-			name:  "too long",
-			hash:  "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789ff",
-			want:  false,
+			name: "too long",
+			hash: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789ff",
+			want: false,
 		},
 		{
-			name:  "contains 'g' (outside hex range)",
-			hash:  "abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345678g",
-			want:  false,
+			name: "contains 'g' (outside hex range)",
+			hash: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345678g",
+			want: false,
 		},
 		{
-			name:  "contains uppercase G",
-			hash:  "bcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789G",
-			want:  false,
+			name: "contains uppercase G",
+			hash: "bcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789G",
+			want: false,
 		},
 		{
-			name:  "empty string",
-			hash:  "",
-			want:  false,
+			name: "empty string",
+			hash: "",
+			want: false,
 		},
 		{
-			name:  "exactly sha256.Size*2 hex chars",
-			hash:  hex.EncodeToString(make([]byte, sha256.Size)),
-			want:  true,
+			name: "exactly sha256.Size*2 hex chars",
+			hash: hex.EncodeToString(make([]byte, sha256.Size)),
+			want: true,
 		},
 	}
 
