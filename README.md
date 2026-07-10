@@ -875,6 +875,7 @@ go run cmd/demo/main.go
 
 | Document | Description |
 |----------|-------------|
+| **[DOCUMENTATION.md](DOCUMENTATION.md)** | **Comprehensive reference (2,125 lines) — architecture, every package, security, production, SDKs, deployment, SQL reference** |
 | [CHANGELOG.md](CHANGELOG.md) | Version history, all changes |
 | [COVERAGE_GUIDE.md](COVERAGE_GUIDE.md) | Test coverage analysis and targets |
 | [FEATURES.md](FEATURES.md) | **Feature status - what works 100% vs partially** |
