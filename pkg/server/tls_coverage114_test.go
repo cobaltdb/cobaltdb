@@ -157,7 +157,7 @@ func TestSyncTLSDirRejectsSymlinkDirectory(t *testing.T) {
 		t.Fatalf("Mkdir target: %v", err)
 	}
 	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("Symlink: %v", err)
+		t.Fatalf("Symlink: %v", err)
 	}
 
 	err := syncTLSDir(linkDir)

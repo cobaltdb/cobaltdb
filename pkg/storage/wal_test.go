@@ -68,7 +68,7 @@ func TestOpenWALRejectsSymlink(t *testing.T) {
 
 	link := filepath.Join(tmpDir, "link.wal")
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	_, err := OpenWAL(link)
@@ -88,7 +88,7 @@ func TestOpenWALRejectsSymlinkParentComponent(t *testing.T) {
 	}
 	linkDir := filepath.Join(tmpDir, "link")
 	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	walPath := filepath.Join(linkDir, "nested", "test.wal")
@@ -129,7 +129,7 @@ func TestOpenWALDoesNotChmodSymlinkRaceTarget(t *testing.T) {
 				t.Fatalf("remove WAL: %v", err)
 			}
 			if err := os.Symlink(targetPath, walPath); err != nil {
-				t.Skipf("symlink not supported: %v", err)
+				t.Fatalf("symlink not supported: %v", err)
 			}
 		}
 		return originalOpenFile(name, flag, perm)
@@ -170,7 +170,7 @@ func TestOpenWALCreateRejectsSymlinkRace(t *testing.T) {
 		if name == filepath.Clean(walPath) && !swapped {
 			swapped = true
 			if err := os.Symlink(targetPath, walPath); err != nil {
-				t.Skipf("symlink not supported: %v", err)
+				t.Fatalf("symlink not supported: %v", err)
 			}
 		}
 		return originalOpenFile(name, flag, perm)

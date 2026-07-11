@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -1747,7 +1749,7 @@ func TestDropView(t *testing.T) {
 
 	_, err = db.Exec(ctx, "CREATE VIEW test_view AS SELECT * FROM users")
 	if err != nil {
-		t.Skipf("CREATE VIEW not supported: %v", err)
+		t.Fatalf("CREATE VIEW not supported: %v", err)
 		return
 	}
 
@@ -1803,7 +1805,7 @@ func TestDropTrigger(t *testing.T) {
 	// Create a trigger
 	_, err = db.Exec(ctx, "CREATE TRIGGER test_trigger AFTER INSERT ON users BEGIN SELECT 1; END")
 	if err != nil {
-		t.Skipf("CREATE TRIGGER not supported: %v", err)
+		t.Fatalf("CREATE TRIGGER not supported: %v", err)
 		return
 	}
 
@@ -1847,7 +1849,7 @@ func TestDropProcedure(t *testing.T) {
 	// Create a procedure
 	_, err = db.Exec(ctx, "CREATE PROCEDURE test_proc() BEGIN SELECT 1; END")
 	if err != nil {
-		t.Skipf("CREATE PROCEDURE not supported: %v", err)
+		t.Fatalf("CREATE PROCEDURE not supported: %v", err)
 		return
 	}
 
@@ -1877,7 +1879,7 @@ func TestCallProcedure(t *testing.T) {
 	// Create a procedure that inserts data
 	_, err = db.Exec(ctx, "CREATE PROCEDURE insert_data() BEGIN INSERT INTO test_table (id) VALUES (1); END")
 	if err != nil {
-		t.Skipf("CREATE PROCEDURE not supported: %v", err)
+		t.Fatalf("CREATE PROCEDURE not supported: %v", err)
 		return
 	}
 
@@ -2349,11 +2351,14 @@ func TestCreateIndex(t *testing.T) {
 
 // TestOpenInvalidPath tests opening database with invalid path
 func TestOpenInvalidPath(t *testing.T) {
-	// Try to open with a path that cannot be created
-	// On Windows, this path format is valid (relative path), so we skip if no error
-	_, err := Open("/invalid/path/that/does/not/exist/db", nil)
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("block"), 0600); err != nil {
+		t.Fatalf("create path blocker: %v", err)
+	}
+	db, err := Open(filepath.Join(blocker, "db"), nil)
 	if err == nil {
-		t.Skip("Path creation succeeded - may be valid on this system")
+		db.Close()
+		t.Fatal("Open succeeded beneath a regular file")
 	}
 }
 

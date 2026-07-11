@@ -72,7 +72,7 @@ func TestPersistSaltRejectsSymlinkDirectory(t *testing.T) {
 		t.Fatalf("mkdir target: %v", err)
 	}
 	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	dbPath := filepath.Join(linkDir, "test.db")
@@ -108,7 +108,7 @@ func TestSyncDirRejectsSymlinkDirectory(t *testing.T) {
 		t.Fatalf("mkdir target: %v", err)
 	}
 	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err := syncDir(linkDir)
@@ -205,7 +205,7 @@ func TestLoadSaltRejectsUnsafePath(t *testing.T) {
 		t.Fatalf("write target salt: %v", err)
 	}
 	if err := os.Symlink(targetPath, saltPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	_, err := LoadSalt(dbPath)

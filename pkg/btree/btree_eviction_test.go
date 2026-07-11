@@ -141,7 +141,7 @@ func TestEvictionDeleteEvictedKey(t *testing.T) {
 found:
 
 	if evictedKey == "" {
-		t.Skip("No keys were evicted")
+		t.Fatal("No keys were evicted")
 	}
 
 	// Delete the evicted key
@@ -186,7 +186,7 @@ func TestEvictionPutOverwritesEvictedKey(t *testing.T) {
 	}
 found2:
 	if evictedKey == "" {
-		t.Skip("No keys were evicted")
+		t.Fatal("No keys were evicted")
 	}
 
 	// Overwrite evicted key — should bring it back to memStorage

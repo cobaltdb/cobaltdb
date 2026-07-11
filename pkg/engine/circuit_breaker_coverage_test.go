@@ -24,15 +24,11 @@ func TestCircuitBreakerAllow_HalfOpenTokenExhausted(t *testing.T) {
 	cb.ReportFailure()
 	cb.Release()
 
-	// Wait for reset timeout → half-open
-	time.Sleep(100 * time.Millisecond)
+	// Make the reset deadline deterministic instead of depending on scheduler timing.
+	cb.lastFailure.Store(time.Now().Add(-cb.config.ResetTimeout).Add(-time.Nanosecond).UnixNano())
 
-	// First request in half-open should succeed (or still open if timing is tight)
+	// First request transitions to half-open and consumes its single token.
 	err := cb.Allow()
-	if err == ErrCircuitOpen {
-		// Timing issue — circuit hasn't transitioned yet, skip
-		t.Skip("timing: circuit still open")
-	}
 	if err != nil {
 		t.Fatalf("first half-open Allow: %v", err)
 	}

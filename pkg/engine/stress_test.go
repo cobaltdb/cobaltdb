@@ -335,8 +335,9 @@ func TestProductionSoakBoundedCheckpointBackupReopen(t *testing.T) {
 
 // TestStress_Extended runs concurrent writers and readers for 60 seconds.
 func TestStress_Extended(t *testing.T) {
+	duration := 10 * time.Second
 	if testing.Short() {
-		t.Skip("skipping extended stress test in short mode")
+		duration = 250 * time.Millisecond
 	}
 
 	dir := t.TempDir()
@@ -357,7 +358,6 @@ func TestStress_Extended(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	duration := 10 * time.Second
 	deadline := time.Now().Add(duration)
 
 	errors := make(chan error, 1000)
@@ -540,7 +540,7 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	// Restore before closing source DB so backup manager is still valid
 	tmpMgr := db.backupMgr
 	if tmpMgr == nil {
-		t.Skip("backup manager not initialized")
+		t.Fatal("backup manager not initialized")
 	}
 	if err := tmpMgr.Restore(ctx, b.ID, restorePath); err != nil {
 		t.Fatalf("restore: %v", err)

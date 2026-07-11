@@ -151,7 +151,7 @@ func TestLoadTLSConfigRejectsUnsafeTLSFiles(t *testing.T) {
 	cf, kf := generateTestCertHelper(t)
 	keyLink := filepath.Join(t.TempDir(), "server-key-link.pem")
 	if err := os.Symlink(kf, keyLink); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	_, err := LoadTLSConfig(&TLSConfig{Enabled: true, CertFile: cf, KeyFile: keyLink})

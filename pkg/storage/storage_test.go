@@ -112,7 +112,7 @@ func TestOpenDiskRejectsSymlink(t *testing.T) {
 		t.Fatalf("write target db: %v", err)
 	}
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	_, err := OpenDisk(link)
@@ -132,7 +132,7 @@ func TestOpenDiskRejectsSymlinkParentComponent(t *testing.T) {
 	}
 	linkDir := filepath.Join(dir, "link")
 	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	dbPath := filepath.Join(linkDir, "nested", "test.db")
@@ -173,7 +173,7 @@ func TestOpenDiskDoesNotChmodSymlinkRaceTarget(t *testing.T) {
 				t.Fatalf("remove original db: %v", err)
 			}
 			if err := os.Symlink(targetPath, dbPath); err != nil {
-				t.Skipf("symlink not supported: %v", err)
+				t.Fatalf("symlink not supported: %v", err)
 			}
 		}
 		return originalOpenFile(name, flag, perm)
@@ -214,7 +214,7 @@ func TestOpenDiskCreateRejectsSymlinkRace(t *testing.T) {
 		if name == filepath.Clean(dbPath) && !swapped {
 			swapped = true
 			if err := os.Symlink(targetPath, dbPath); err != nil {
-				t.Skipf("symlink not supported: %v", err)
+				t.Fatalf("symlink not supported: %v", err)
 			}
 		}
 		return originalOpenFile(name, flag, perm)

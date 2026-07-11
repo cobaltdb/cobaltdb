@@ -17,7 +17,7 @@ func TestMySQLServerListenAndClose(t *testing.T) {
 	t.Run("ListenAndClose", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
@@ -42,7 +42,7 @@ func TestMySQLServerListenAndClose(t *testing.T) {
 	t.Run("CloseWithoutListen", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
@@ -58,7 +58,7 @@ func TestMySQLServerListenAndClose(t *testing.T) {
 	t.Run("DoubleClose", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
@@ -81,7 +81,7 @@ func TestMySQLServerListenAndClose(t *testing.T) {
 	t.Run("ListenAfterCloseRejected", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
@@ -701,14 +701,14 @@ func TestAcceptLoopVariations(t *testing.T) {
 	t.Run("AcceptAndClose", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
 		server := NewMySQLServer(db, "test")
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			t.Skip("Cannot create listener:", err)
+			t.Fatal("Cannot create listener:", err)
 		}
 
 		server.listener = listener
@@ -726,7 +726,7 @@ func TestHandleConnectionVariations(t *testing.T) {
 	t.Run("ImmediateEOF", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
@@ -739,7 +739,7 @@ func TestHandleConnectionVariations(t *testing.T) {
 	t.Run("WithHandshakeResponse", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 

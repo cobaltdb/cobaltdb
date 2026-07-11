@@ -801,7 +801,7 @@ func TestListen(t *testing.T) {
 	t.Run("ListenSuccess", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
@@ -820,7 +820,7 @@ func TestListen(t *testing.T) {
 	t.Run("ListenInvalidAddress", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
@@ -837,14 +837,14 @@ func TestAcceptLoop(t *testing.T) {
 	t.Run("AcceptLoopStopsOnClose", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
 		server := NewMySQLServer(db, "test")
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			t.Skip("Cannot create listener:", err)
+			t.Fatal("Cannot create listener:", err)
 		}
 
 		server.listener = listener
@@ -890,7 +890,7 @@ func TestHandleConnection(t *testing.T) {
 	t.Run("HandleConnectionEOF", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
@@ -904,7 +904,7 @@ func TestHandleConnection(t *testing.T) {
 	t.Run("HandleConnectionWithResponse", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
@@ -945,7 +945,7 @@ func TestHandleQuery(t *testing.T) {
 	t.Run("HandleQuerySimple", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
@@ -964,7 +964,7 @@ func TestHandleQuery(t *testing.T) {
 	t.Run("HandleQueryExec", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 
@@ -983,7 +983,7 @@ func TestHandleQuery(t *testing.T) {
 	t.Run("RejectsOversizedQuery", func(t *testing.T) {
 		db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 		if err != nil {
-			t.Skip("Cannot open database:", err)
+			t.Fatal("Cannot open database:", err)
 		}
 		defer db.Close()
 

@@ -74,8 +74,9 @@ func TestAuditSelectForUpdatePreventsLostUpdate(t *testing.T) {
 // transfers using SELECT ... FOR UPDATE and asserts the total balance is
 // conserved (no lost updates). With a bare SELECT-then-UPDATE the total drifts.
 func TestAuditForUpdateBankTransferConserves(t *testing.T) {
+	transfersPerWorker := 200
 	if testing.Short() {
-		t.Skip("skipping concurrent bank-transfer stress in -short mode")
+		transfersPerWorker = 10
 	}
 	ctx := context.Background()
 	db := mustOpenMem(t)
@@ -93,7 +94,7 @@ func TestAuditForUpdateBankTransferConserves(t *testing.T) {
 		go func(seed int) {
 			defer wg.Done()
 			x := uint64(seed*2654435761 + 1)
-			for k := 0; k < 200; k++ {
+			for k := 0; k < transfersPerWorker; k++ {
 				x ^= x << 13
 				x ^= x >> 7
 				x ^= x << 17

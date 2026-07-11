@@ -15,7 +15,7 @@ func TestSyncDiskParentDirRejectsSymlinkDirectory(t *testing.T) {
 		t.Fatalf("mkdir target: %v", err)
 	}
 	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err := syncDiskParentDir(filepath.Join(linkDir, "db.cobalt"))

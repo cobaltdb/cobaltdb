@@ -3,7 +3,6 @@ package integration
 import (
 	"fmt"
 	"net"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -308,15 +307,6 @@ func TestServerMaxConnections(t *testing.T) {
 
 // TestServerSignalHandling tests graceful shutdown on signals
 func TestServerSignalHandling(t *testing.T) {
-	if os.Getenv("CI") == "true" {
-		t.Skip("Skipping signal tests in CI")
-	}
-
-	// On Windows, we can't easily send signals, so skip
-	if os.Getenv("SKIP_SIGNAL_TEST") == "true" {
-		t.Skip("Skipping signal tests")
-	}
-
 	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)

@@ -272,7 +272,7 @@ func TestImportCSVRejectsSymlink(t *testing.T) {
 	}
 	link := filepath.Join(dir, "link.csv")
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err = importCSV(db, link, "symlink_import")
@@ -1206,7 +1206,7 @@ func TestRestoreDatabaseRejectsSymlink(t *testing.T) {
 	}
 	link := filepath.Join(dir, "link.sql")
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err = restoreDatabase(db, link)

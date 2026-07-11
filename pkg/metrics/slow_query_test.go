@@ -127,7 +127,7 @@ func TestSyncSlowQueryLogParentDirRejectsSymlinkDirectory(t *testing.T) {
 		t.Fatalf("mkdir target: %v", err)
 	}
 	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err := syncSlowQueryLogParentDir(filepath.Join(linkDir, "slow.log"))
@@ -242,7 +242,7 @@ func TestSlowQueryLogRejectsSymlinkFile(t *testing.T) {
 		t.Fatalf("write target log: %v", err)
 	}
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	sql := NewSlowQueryLog(true, 1*time.Millisecond, 100, link)
@@ -265,7 +265,7 @@ func TestSlowQueryLogRejectsSymlinkParentComponent(t *testing.T) {
 	}
 	linkDir := filepath.Join(dir, "link")
 	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	logFile := filepath.Join(linkDir, "nested", "slow.log")

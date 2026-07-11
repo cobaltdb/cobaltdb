@@ -630,7 +630,7 @@ func TestCopyFileRejectsUnsafeSource(t *testing.T) {
 		t.Fatalf("write target: %v", err)
 	}
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err := copyFile(link, filepath.Join(tempDir, "copy.db"))
@@ -658,7 +658,7 @@ func TestOpenBackupReaderRejectsUnsafeDestination(t *testing.T) {
 		t.Fatalf("write target: %v", err)
 	}
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	config := DefaultConfig()
@@ -693,7 +693,7 @@ func TestCreateBackupRejectsSymlinkWALPath(t *testing.T) {
 		t.Fatalf("write wal: %v", err)
 	}
 	if err := os.Symlink(walFile, walLink); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	config := DefaultConfig()
@@ -727,7 +727,7 @@ func TestCopyWALFilesRejectsSymlinkBackupWALDir(t *testing.T) {
 
 	walBackupDir := filepath.Join(backupDir, "backup1_wal")
 	if err := os.Symlink(outsideDir, walBackupDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	config := DefaultConfig()
@@ -755,7 +755,7 @@ func TestPrepareBackupDirRejectsSymlinkDirectory(t *testing.T) {
 		t.Fatalf("mkdir target: %v", err)
 	}
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err := prepareBackupDir(link, true)
@@ -775,7 +775,7 @@ func TestPrepareBackupDirRejectsSymlinkParent(t *testing.T) {
 		t.Fatalf("mkdir target: %v", err)
 	}
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err := prepareBackupDir(filepath.Join(link, "nested"), true)
@@ -818,7 +818,7 @@ func TestLoadMetadataRejectsUnsafePath(t *testing.T) {
 		t.Fatalf("write metadata: %v", err)
 	}
 	if err := os.Symlink(metadataPath, linkPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 	if err := os.Remove(metadataPath); err != nil {
 		t.Fatalf("remove metadata: %v", err)
@@ -1031,7 +1031,7 @@ func TestRestoreRejectsSymlinkTargetDirectory(t *testing.T) {
 		t.Fatalf("mkdir real target: %v", err)
 	}
 	if err := os.Symlink(realTargetDir, linkTargetDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	mgr := NewManager(config, &MockDatabase{dbPath: filepath.Join(tempDir, "source.db")})
@@ -1077,7 +1077,7 @@ func TestRestoreRejectsSymlinkTargetFile(t *testing.T) {
 		t.Fatalf("write target: %v", err)
 	}
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	mgr := NewManager(config, &MockDatabase{dbPath: filepath.Join(tempDir, "source.db")})
@@ -1148,7 +1148,7 @@ func TestCreateSecureFileRejectsSymlinkTarget(t *testing.T) {
 		t.Fatalf("write target: %v", err)
 	}
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	file, err := createSecureFile(link)
@@ -1330,7 +1330,7 @@ func TestApplyDeltaPayloadRejectsUnsafeTarget(t *testing.T) {
 		t.Fatalf("write target: %v", err)
 	}
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err := mgr.applyDeltaPayload(context.Background(), strings.NewReader(validDelta), link)

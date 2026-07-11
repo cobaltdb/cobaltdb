@@ -131,7 +131,11 @@ func TestNewRejectsInvalidResourceConfig(t *testing.T) {
 
 func TestNewRejectsTimeoutOverflow(t *testing.T) {
 	if strconv.IntSize < 64 {
-		t.Skip("timeout overflow cannot be represented by Config int on this architecture")
+		maxInt := uint64(^uint(0) >> 1)
+		if uint64(maxServerTimeoutSeconds) <= maxInt {
+			t.Fatalf("maxServerTimeoutSeconds = %d, want a value above the architecture's max int %d", maxServerTimeoutSeconds, maxInt)
+		}
+		return
 	}
 	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
 	if err != nil {

@@ -366,7 +366,7 @@ func TestPrepareDataDir(t *testing.T) {
 		}
 		link := filepath.Join(dir, "link")
 		if err := os.Symlink(target, link); err != nil {
-			t.Skipf("symlink not supported: %v", err)
+			t.Fatalf("symlink not supported: %v", err)
 		}
 
 		_, err := prepareDataDir(link)
@@ -386,7 +386,7 @@ func TestPrepareDataDir(t *testing.T) {
 		}
 		link := filepath.Join(dir, "link")
 		if err := os.Symlink(target, link); err != nil {
-			t.Skipf("symlink not supported: %v", err)
+			t.Fatalf("symlink not supported: %v", err)
 		}
 
 		_, err := prepareDataDir(filepath.Join(link, "nested", "data"))
@@ -867,7 +867,7 @@ func TestWALConfiguration(t *testing.T) {
 
 			db, err := engine.Open(dbPath, opts)
 			if err != nil {
-				t.Skipf("Configuration not supported: %v", err)
+				t.Fatalf("Configuration not supported: %v", err)
 				return
 			}
 			defer db.Close()

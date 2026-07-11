@@ -357,7 +357,7 @@ func TestHandleStmtExecute(t *testing.T) {
 
 		// First prepare
 		if err := client.handleStmtPrepare("SELECT * FROM exec_test"); err != nil {
-			t.Skipf("prepare failed: %v", err)
+			t.Fatalf("prepare failed: %v", err)
 		}
 
 		// Find the stmt ID
@@ -384,7 +384,7 @@ func TestHandleStmtExecute(t *testing.T) {
 		client, _ := newTestClient(db)
 
 		if err := client.handleStmtPrepare("INSERT INTO exec_test (id, val) VALUES (2, 'world')"); err != nil {
-			t.Skipf("prepare failed: %v", err)
+			t.Fatalf("prepare failed: %v", err)
 		}
 
 		var stmtID uint32
@@ -409,7 +409,7 @@ func TestHandleStmtExecute(t *testing.T) {
 		client, _ := newTestClient(db)
 
 		if err := client.handleStmtPrepare("INSERT INTO exec_test (id, val) VALUES (?, ?)"); err != nil {
-			t.Skipf("prepare failed: %v", err)
+			t.Fatalf("prepare failed: %v", err)
 		}
 
 		var stmtID uint32
@@ -436,7 +436,7 @@ func TestHandleStmtExecute(t *testing.T) {
 		client, _ := newTestClient(db)
 
 		if err := client.handleStmtPrepare("INSERT INTO exec_test (id, val) VALUES (?, ?)"); err != nil {
-			t.Skipf("prepare failed: %v", err)
+			t.Fatalf("prepare failed: %v", err)
 		}
 
 		var stmtID uint32
@@ -472,7 +472,7 @@ func TestHandleStmtExecute(t *testing.T) {
 		client, conn := newTestClient(db)
 
 		if err := client.handleStmtPrepare("INSERT INTO exec_test (id, val) VALUES (?, ?)"); err != nil {
-			t.Skipf("prepare failed: %v", err)
+			t.Fatalf("prepare failed: %v", err)
 		}
 
 		var stmtID uint32
@@ -498,7 +498,7 @@ func TestHandleStmtExecute(t *testing.T) {
 		client, conn := newTestClient(db)
 
 		if err := client.handleStmtPrepare("SELECT val FROM exec_test WHERE id > ? ORDER BY id"); err != nil {
-			t.Skipf("prepare failed: %v", err)
+			t.Fatalf("prepare failed: %v", err)
 		}
 
 		var stmtID uint32
@@ -524,7 +524,7 @@ func TestHandleStmtExecute(t *testing.T) {
 		client, conn := newTestClient(db)
 
 		if err := client.handleStmtPrepare("SELECT val FROM exec_test ORDER BY id"); err != nil {
-			t.Skipf("prepare failed: %v", err)
+			t.Fatalf("prepare failed: %v", err)
 		}
 
 		var stmtID uint32

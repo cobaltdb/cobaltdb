@@ -193,8 +193,9 @@ func TestTransactionIsolation(t *testing.T) {
 }
 
 func TestLargeDataset(t *testing.T) {
+	numRows := 10000
 	if testing.Short() {
-		t.Skip("Skipping large dataset test in short mode")
+		numRows = 100
 	}
 
 	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true, CacheSize: 1024}})
@@ -211,8 +212,7 @@ func TestLargeDataset(t *testing.T) {
 		t.Fatalf("Failed to create table: %v", err)
 	}
 
-	// Insert large dataset
-	numRows := 10000
+	// Insert the selected dataset size.
 	start := time.Now()
 
 	for i := 0; i < numRows; i++ {

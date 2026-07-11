@@ -241,7 +241,7 @@ func TestCSVWrapper_OpenRejectsSymlink(t *testing.T) {
 		t.Fatalf("failed to write target csv: %v", err)
 	}
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	csv := &CSVWrapper{}

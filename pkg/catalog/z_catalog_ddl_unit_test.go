@@ -283,7 +283,7 @@ func TestDropTableConstraint_ForeignKey(t *testing.T) {
 		t.Fatalf("getTableLocked: %v", err)
 	}
 	if len(table.ForeignKeys) == 0 {
-		t.Skip("No FK parsed from CREATE TABLE; FK constraint test skipped")
+		t.Fatal("CREATE TABLE did not persist the declared foreign key")
 	}
 
 	fkName := table.ForeignKeys[0].Name

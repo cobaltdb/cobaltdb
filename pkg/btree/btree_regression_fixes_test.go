@@ -31,9 +31,6 @@ func newFixTestTree(t *testing.T, poolCap int, memLimit int64) (*BTree, *storage
 // ---------------------------------------------------------------------------
 
 func TestFlushErrorsWhenOverflowListExceedsRootPage(t *testing.T) {
-	if testing.Short() {
-		t.Skip("allocates several MB of tree data")
-	}
 	tree, pool := newFixTestTree(t, 256, 0 /* unlimited memory */)
 	defer pool.Close()
 

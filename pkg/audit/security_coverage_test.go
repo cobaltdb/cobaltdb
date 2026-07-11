@@ -180,7 +180,7 @@ func TestVerifyLogFileRejectsUnsafePath(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 	if err := os.Symlink(logPath, linkPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	if _, err := VerifyLogFile(linkPath, nil); err == nil {

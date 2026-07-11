@@ -167,7 +167,7 @@ func TestOpenRejectsSymlinkDatabaseParentDirectory(t *testing.T) {
 	}
 	link := filepath.Join(dir, "link")
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	_, err := Open(filepath.Join(link, "test.db"), nil)
@@ -187,7 +187,7 @@ func TestOpenRejectsSymlinkDatabaseParentComponent(t *testing.T) {
 	}
 	link := filepath.Join(dir, "link")
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	_, err := Open(filepath.Join(link, "nested", "test.db"), nil)
@@ -428,11 +428,14 @@ func TestOpenRejectsInvalidStorageOptions(t *testing.T) {
 
 // TestOpenWithInvalidDirectory tests opening database with invalid directory path
 func TestOpenWithInvalidDirectory(t *testing.T) {
-	// Try to create a database in a path that cannot be created
-	// This should fail on most systems
-	_, err := Open("/dev/null/invalid/db", nil)
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("block"), 0600); err != nil {
+		t.Fatalf("create path blocker: %v", err)
+	}
+	db, err := Open(filepath.Join(blocker, "db"), nil)
 	if err == nil {
-		t.Skip("Path creation succeeded - may be valid on this system")
+		db.Close()
+		t.Fatal("Open succeeded beneath a regular file")
 	}
 }
 
@@ -506,7 +509,7 @@ func TestExecuteAutocommit(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Skipf("WAL mode not supported: %v", err)
+		t.Fatalf("WAL mode not supported: %v", err)
 		return
 	}
 	defer db.Close()
@@ -677,7 +680,7 @@ func TestExecuteCallProcedureWithExecError(t *testing.T) {
 	// Create a procedure that tries to insert into non-existent table
 	_, err = db.Exec(ctx, "CREATE PROCEDURE bad_proc() BEGIN INSERT INTO nonexistent (id) VALUES (1); END")
 	if err != nil {
-		t.Skipf("CREATE PROCEDURE not supported: %v", err)
+		t.Fatalf("CREATE PROCEDURE not supported: %v", err)
 		return
 	}
 
@@ -911,10 +914,11 @@ func TestOpenDiskBackendError(t *testing.T) {
 	tmpFile.Close()
 
 	// Try to open the file as a database path with subdirectory
-	_, err = Open(tmpFile.Name()+"/db", nil)
-	// Should fail because tmpFile.Name() is a file, not a directory
+	db, err := Open(tmpFile.Name()+"/db", nil)
+	// Must fail because tmpFile.Name() is a file, not a directory.
 	if err == nil {
-		t.Skip("Path creation succeeded - may be valid on this system")
+		db.Close()
+		t.Fatal("Open succeeded beneath a regular file")
 	}
 }
 
@@ -932,7 +936,7 @@ func TestLoadExistingWithWALRecovery(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Skipf("WAL mode not supported: %v", err)
+		t.Fatalf("WAL mode not supported: %v", err)
 		return
 	}
 
@@ -964,7 +968,7 @@ func TestLoadExistingWithWALRecovery(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Skipf("Reopen with WAL recovery not supported: %v", err)
+		t.Fatalf("Reopen with WAL recovery not supported: %v", err)
 		return
 	}
 	defer db2.Close()

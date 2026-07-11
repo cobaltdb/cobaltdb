@@ -267,7 +267,7 @@ func TestDatabaseOpenErrors(t *testing.T) {
 		// Try to open with a file as database path (should fail)
 		tempFile, err := os.CreateTemp("", "test*.db")
 		if err != nil {
-			t.Skip("Cannot create temp file")
+			t.Fatal("Cannot create temp file")
 		}
 		tempFile.Close()
 		defer os.Remove(tempFile.Name())
@@ -482,9 +482,7 @@ func TestCreateNewWithReplicationOptions(t *testing.T) {
 
 		db, err := Open(dbPath, opts)
 		if err != nil {
-			// Replication may not be fully initialized - skip if it fails
-			t.Skipf("Replication initialization failed: %v", err)
-			return
+			t.Fatalf("Replication initialization failed: %v", err)
 		}
 		if db != nil {
 			db.Close()

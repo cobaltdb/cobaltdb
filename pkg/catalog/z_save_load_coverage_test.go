@@ -408,7 +408,7 @@ func TestLoadSchemaRejectsUnsafeDataFile(t *testing.T) {
 		t.Fatalf("write target schema: %v", err)
 	}
 	if err := os.Symlink(targetPath, schemaPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err := cat.LoadSchema(tmpDir)
@@ -443,7 +443,7 @@ func TestLoadDataRejectsUnsafeDataFile(t *testing.T) {
 		t.Fatalf("write target data: %v", err)
 	}
 	if err := os.Symlink(targetPath, dataPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err := cat.LoadData(tmpDir)

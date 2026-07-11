@@ -206,7 +206,7 @@ func TestCompressedWriteNeverOverflowsPageSlot(t *testing.T) {
 		}
 	}
 	if page0 == nil {
-		t.Skip("could not construct a page in the overflow window for this codec")
+		t.Fatal("could not construct a page in the overflow window for this codec")
 	}
 
 	// Neighbouring slot content that must survive intact.

@@ -62,7 +62,7 @@ func TestSyncAuditLogParentDirRejectsSymlinkDirectory(t *testing.T) {
 		t.Fatalf("mkdir target: %v", err)
 	}
 	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	err := syncAuditLogParentDir(filepath.Join(linkDir, "audit.log"))
@@ -79,7 +79,7 @@ func TestNewLoggerRejectsUnsafeLogPath(t *testing.T) {
 		t.Fatalf("write target audit log: %v", err)
 	}
 	if err := os.Symlink(targetPath, linkPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	_, err := New(&Config{
@@ -115,7 +115,7 @@ func TestNewLoggerRejectsSymlinkLogParentComponent(t *testing.T) {
 	}
 	linkDir := filepath.Join(tempDir, "link")
 	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	logPath := filepath.Join(linkDir, "nested", "audit.log")

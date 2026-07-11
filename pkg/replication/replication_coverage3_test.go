@@ -541,7 +541,7 @@ func TestSaveReplicationStateIgnoresLegacyTempSymlink(t *testing.T) {
 		t.Fatalf("WriteFile victim failed: %v", err)
 	}
 	if err := os.Symlink(victimPath, legacyTempPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	mgr := NewManager(&Config{Role: RoleSlave, StateFile: stateFile})
@@ -575,7 +575,7 @@ func TestSaveReplicationStateRejectsSymlinkDirectory(t *testing.T) {
 		t.Fatalf("mkdir target: %v", err)
 	}
 	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	stateFile := filepath.Join(linkDir, "replication-state.json")
@@ -625,7 +625,7 @@ func TestLoadReplicationStateRejectsUnsafeFile(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 	if err := os.Symlink(stateFile, linkFile); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("symlink not supported: %v", err)
 	}
 
 	mgr := NewManager(&Config{Role: RoleSlave, StateFile: linkFile})

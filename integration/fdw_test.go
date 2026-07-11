@@ -375,8 +375,9 @@ func TestFDWAggregatesOverForeignTable(t *testing.T) {
 // visibility check dropped them (~1 in 2000). The fix stamps a fixed early time
 // so rows are always visible. Loop enough to catch a regression.
 func TestFDWFreshMaterializationAlwaysVisible(t *testing.T) {
+	iterations := 3000
 	if testing.Short() {
-		t.Skip("skipping statistical FDW visibility loop in -short mode")
+		iterations = 30
 	}
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -384,7 +385,7 @@ func TestFDWFreshMaterializationAlwaysVisible(t *testing.T) {
 	if err := os.WriteFile(p, []byte("id,name,score\n1,alice,95\n2,bob,87\n3,charlie,92\n"), 0644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	for i := 0; i < 3000; i++ {
+	for i := 0; i < iterations; i++ {
 		db, err := engine.Open(":memory:", engine.DefaultOptions())
 		if err != nil {
 			t.Fatalf("open: %v", err)
