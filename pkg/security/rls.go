@@ -1262,11 +1262,9 @@ func parseLikeOperator(expr string) (PolicyExpr, error) {
 	}
 
 	// Convert SQL LIKE pattern to regex
-	regexPattern := likeToRegex(pattern)
-	re, err := regexp.Compile(regexPattern)
-	if err != nil {
-		return nil, err
-	}
+	// likeToRegex quotes every regex metacharacter before introducing only the
+	// known-safe SQL wildcard fragments, so the generated pattern is always valid.
+	re := regexp.MustCompile(likeToRegex(pattern))
 
 	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 		rowValue, ok := row[columnName]

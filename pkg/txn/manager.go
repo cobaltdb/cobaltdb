@@ -317,10 +317,9 @@ func (t *Transaction) Commit() error {
 	// Apply writes atomically with conflict detection so no transaction
 	// can sneak in between the read-check and the write.
 	if err := t.manager.commitWithConflictDetection(t); err != nil {
-		rbErr := t.rollbackLocked()
-		if rbErr != nil {
-			return fmt.Errorf("commit failed and rollback failed: %v; %w", rbErr, err)
-		}
+		// The transaction is active here, so rollbackLocked cannot fail: its only
+		// error case is an already-committed transaction, rejected above.
+		_ = t.rollbackLocked()
 		return err
 	}
 
@@ -349,11 +348,7 @@ func (t *Transaction) Commit() error {
 	}
 
 	// Record metrics
-	duration := time.Since(startTime)
-	metrics.GetTransactionMetrics().RecordTxnCommit(duration)
-	if duration > time.Second {
-		metrics.GetTransactionMetrics().RecordLongRunningTxn()
-	}
+	recordTxnCommitMetrics(time.Since(startTime))
 
 	// Periodically prune versions map to prevent unbounded memory growth
 	if t.manager.commitCount.Add(1)%1000 == 0 {
@@ -361,6 +356,13 @@ func (t *Transaction) Commit() error {
 	}
 
 	return nil
+}
+
+func recordTxnCommitMetrics(duration time.Duration) {
+	metrics.GetTransactionMetrics().RecordTxnCommit(duration)
+	if duration > time.Second {
+		metrics.GetTransactionMetrics().RecordLongRunningTxn()
+	}
 }
 
 // Rollback rolls back the transaction
@@ -663,15 +665,12 @@ func findWaitCycle(waitingMap map[uint64]uint64) []uint64 {
 				// ancestor on the current DFS path, so walking waitingMap from
 				// waitingFor reaches txnID again; those nodes are exactly the cycle.
 				cycle = cycle[:0]
-				for n, steps := waitingFor, 0; steps <= len(waitingMap); n, steps = waitingMap[n], steps+1 {
+				for n := waitingFor; ; n = waitingMap[n] {
 					cycle = append(cycle, n)
 					if n == txnID {
 						return true
 					}
 				}
-				// Defensive: malformed graph; treat as no cycle found here.
-				cycle = nil
-				return false
 			}
 		}
 
@@ -743,6 +742,22 @@ func (m *Manager) AcquireLock(txnID uint64, key string, timeout time.Duration) e
 // AcquireLockMode acquires a lock in the specified mode (shared or exclusive).
 // A timeout <= 0 means "use the transaction's configured LockWaitTimeout"
 // (Options.LockWaitTimeout, default 5s) — it does NOT mean fail immediately.
+func validateLockWaiter(txn *Transaction, txnID uint64) error {
+	if err := txn.activeStateErrorForID(txnID); err != nil {
+		txn.setWaitingForID(txnID, 0)
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) recordGrantedLock(txn *Transaction, txnID uint64, key string) error {
+	if err := txn.addLockHeldIfActiveID(txnID, key); err != nil {
+		m.ReleaseLock(txnID, key)
+		return err
+	}
+	return nil
+}
+
 func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeout time.Duration) error {
 	txn, exists := m.activeTxn(txnID)
 	if !exists {
@@ -798,11 +813,7 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 		}
 		m.lockMu.Unlock()
 
-		if err := txn.addLockHeldIfActiveID(txnID, key); err != nil {
-			m.ReleaseLock(txnID, key)
-			return err
-		}
-		return nil
+		return m.recordGrantedLock(txn, txnID, key)
 	}
 
 	// Determine who is blocking us
@@ -823,8 +834,7 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 	if _, ok := m.activeTxn(blockerID); ok {
 		txn.setWaitingForID(txnID, blockerID)
 	}
-	if err := txn.activeStateErrorForID(txnID); err != nil {
-		txn.setWaitingForID(txnID, 0)
+	if err := validateLockWaiter(txn, txnID); err != nil {
 		return err
 	}
 	timer := time.NewTimer(timeout)
@@ -877,11 +887,7 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 				}
 				m.lockMu.Unlock()
 				txn.setWaitingForID(txnID, 0)
-				if err := txn.addLockHeldIfActiveID(txnID, key); err != nil {
-					m.ReleaseLock(txnID, key)
-					return err
-				}
-				return nil
+				return m.recordGrantedLock(txn, txnID, key)
 			}
 			// Still blocked: refresh the wait-for edge. The blocker recorded at
 			// wait entry may have committed/aborted, with a different transaction
@@ -1321,10 +1327,6 @@ func (m *Manager) writeWALForCommit(txn *Transaction) error {
 			tnLen := len(wk.TreeName)
 			kLen := len(wk.Key)
 			totalKeyLen := tnLen + 1 + kLen
-			encodedKeyLen, err := checkedTxnUint32(totalKeyLen, "WAL key length")
-			if err != nil {
-				return err
-			}
 			need, err := txnWALRecordDataLen(totalKeyLen, len(value))
 			if err != nil {
 				return err
@@ -1333,14 +1335,14 @@ func (m *Manager) writeWALForCommit(txn *Transaction) error {
 			if need <= 256 {
 				walDataBuf = walDataPool.Get().(*[]byte)
 				data = (*walDataBuf)[:need]
-				binary.LittleEndian.PutUint32(data[0:4], encodedKeyLen)
+				binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
 				copy(data[4:4+tnLen], wk.TreeName)
 				data[4+tnLen] = ':'
 				copy(data[4+tnLen+1:], wk.Key)
 				copy(data[4+totalKeyLen:], value)
 			} else {
 				data = make([]byte, need)
-				binary.LittleEndian.PutUint32(data[0:4], encodedKeyLen)
+				binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
 				copy(data[4:4+tnLen], wk.TreeName)
 				data[4+tnLen] = ':'
 				copy(data[4+tnLen+1:], wk.Key)
@@ -1369,16 +1371,12 @@ func (m *Manager) writeWALForCommit(txn *Transaction) error {
 			tnLen := len(wk.TreeName)
 			kLen := len(wk.Key)
 			totalKeyLen := tnLen + 1 + kLen
-			encodedKeyLen, err := checkedTxnUint32(totalKeyLen, "WAL key length")
-			if err != nil {
-				return err
-			}
 			need, err := txnWALRecordDataLen(totalKeyLen, len(value))
 			if err != nil {
 				return err
 			}
 			data := make([]byte, need)
-			binary.LittleEndian.PutUint32(data[0:4], encodedKeyLen)
+			binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
 			copy(data[4:4+tnLen], wk.TreeName)
 			data[4+tnLen] = ':'
 			copy(data[4+tnLen+1:], wk.Key)

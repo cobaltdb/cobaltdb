@@ -103,6 +103,9 @@ func TestSecurityRemainingDeserializeValidationPaths(t *testing.T) {
 	if _, _, err := normalizeDeserializedPolicy(":", &Policy{}); !errors.Is(err, ErrInvalidPolicy) {
 		t.Fatalf("normalize empty key components: %v", err)
 	}
+	if _, _, err := normalizeDeserializedPolicy("ignored", &Policy{Name: strings.Repeat("x", maxPolicyIdentifierBytes+1), TableName: "t"}); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("normalize invalid definition: %v", err)
+	}
 	if _, _, err := normalizeDeserializedPolicy("x", nil); !errors.Is(err, ErrInvalidPolicy) {
 		t.Fatalf("normalize nil: %v", err)
 	}
@@ -172,6 +175,11 @@ func TestSecurityRemainingCompilerAndEvaluatorPaths(t *testing.T) {
 	if allow, _ := m.parseExpression(""); func() bool { ok, _ := allow(context.Background(), nil); return !ok }() {
 		t.Fatal("empty expression should allow")
 	}
+	if nested, err := m.parseExpression("((TRUE))"); err != nil {
+		t.Fatal(err)
+	} else if ok, _ := nested(context.Background(), nil); !ok {
+		t.Fatal("nested parentheses should be true")
+	}
 
 	for _, input := range []string{"NOT !!!", "TRUE AND !!!", "!!! AND TRUE", "TRUE OR !!!", "!!! OR TRUE"} {
 		if _, err := m.parseExpression(input); err == nil {
@@ -213,6 +221,14 @@ func TestSecurityRemainingCompilerAndEvaluatorPaths(t *testing.T) {
 	} {
 		fn := m.createComparisonEvaluator("left", tc.op, "right")
 		_, _ = fn(context.Background(), map[string]interface{}{"left": tc.left, "right": tc.right})
+	}
+
+	bare, err := m.parseSimpleExpression("COL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := bare(context.Background(), map[string]interface{}{"col": true}); !ok {
+		t.Fatal("bare column lowercase fallback")
 	}
 
 	between := m.parseBetweenOperator("x BETWEEN 1 AND 2")

@@ -20,7 +20,7 @@ type VersionedValue struct {
 
 // versionValuePool recycles VersionedValue structs to eliminate one heap
 // allocation per MVCC commit.
-var versionValuePool sync.Pool
+var versionValuePool = sync.Pool{New: func() interface{} { return &VersionedValue{} }}
 
 func init() {
 	for i := 0; i < 1024; i++ {
@@ -48,20 +48,11 @@ func (vs *VersionStore) Commit(key WriteKey, value []byte, commitTS uint64) {
 	defer vs.mu.Unlock()
 
 	prev := vs.versions[key]
-	var vv *VersionedValue
-	if v := versionValuePool.Get(); v != nil {
-		vv = v.(*VersionedValue)
-		vv.Value = cloneBytes(value)
-		vv.Version = commitTS
-		vv.Deleted = false
-		vv.Prev = prev
-	} else {
-		vv = &VersionedValue{
-			Value:   cloneBytes(value),
-			Version: commitTS,
-			Prev:    prev,
-		}
-	}
+	vv := versionValuePool.Get().(*VersionedValue)
+	vv.Value = cloneBytes(value)
+	vv.Version = commitTS
+	vv.Deleted = false
+	vv.Prev = prev
 	vs.versions[key] = vv
 	vs.count++
 }
@@ -72,21 +63,11 @@ func (vs *VersionStore) Delete(key WriteKey, commitTS uint64) {
 	defer vs.mu.Unlock()
 
 	prev := vs.versions[key]
-	var vv *VersionedValue
-	if v := versionValuePool.Get(); v != nil {
-		vv = v.(*VersionedValue)
-		vv.Value = nil
-		vv.Version = commitTS
-		vv.Deleted = true
-		vv.Prev = prev
-	} else {
-		vv = &VersionedValue{
-			Value:   nil,
-			Version: commitTS,
-			Deleted: true,
-			Prev:    prev,
-		}
-	}
+	vv := versionValuePool.Get().(*VersionedValue)
+	vv.Value = nil
+	vv.Version = commitTS
+	vv.Deleted = true
+	vv.Prev = prev
 	vs.versions[key] = vv
 	vs.count++
 }
