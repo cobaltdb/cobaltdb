@@ -3,6 +3,7 @@ package metrics
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 func TestCoverageCloneNilAndFloatSlices(t *testing.T) {
@@ -83,12 +84,58 @@ func TestCoverageAlertingEdgePaths(t *testing.T) {
 
 func TestCoverageHandlerSlotCapacity(t *testing.T) {
 	am := &AlertManager{handlers: make([]AlertHandler, 10)}
-	// tryAcquireHandlerSlot at capacity: handlers array is full of nil entries
-	// so len(am.handlers) < handlerSlotLimit passes
 	if !am.tryAcquireHandlerSlot() {
 		t.Fatal("handler slot should be available")
 	}
 	am.releaseHandlerSlot()
+}
+
+func TestCoverageAlertingRuleRemovedDuringCheck(t *testing.T) {
+	am := &AlertManager{rules: make(map[string]*AlertRule), stopCh: make(chan struct{})}
+	am.RegisterRule(&AlertRule{Name: "remove-me", Threshold: 1, Condition: func() (bool, float64) { return true, 1 }})
+	am.MuteRule("remove-me")
+	am.UnmuteRule("remove-me")
+	am.UnregisterRule("remove-me")
+	alerts := am.GetAlerts(10)
+	if len(alerts) != 0 {
+		t.Fatal("expected no alerts after removing rule")
+	}
+	am.Stop()
+}
+
+func TestCoverageHistogramObserveTruncation(t *testing.T) {
+	h := NewHistogram("h", "test", nil, nil)
+	for i := 0; i < 10100; i++ {
+		h.Observe(float64(i))
+	}
+	sn := h.GetSnapshot()
+	if sn.Count != 10100 {
+		t.Fatalf("expected 10100 observations, got %d", sn.Count)
+	}
+}
+
+func TestCoverageDefaultAlertRules(t *testing.T) {
+	rules := DefaultAlertRules()
+	if len(rules) == 0 {
+		t.Fatal("expected at least one default alert rule")
+	}
+}
+
+func TestCoveragePrometheusRegisterNilGates(t *testing.T) {
+	if fn := RegisterSlowQueryLog(nil); fn != nil {
+		fn()
+	}
+	if fn := RegisterStorageMetricsProvider(nil); fn != nil {
+		fn()
+	}
+	// Also test successful registration
+	sl := NewSlowQueryLog(true, time.Minute, 100, "")
+	if fn := RegisterSlowQueryLog(sl); fn != nil {
+		fn()
+	}
+	if fn := RegisterStorageMetricsProvider(func() StorageMetrics { return StorageMetrics{} }); fn != nil {
+		fn()
+	}
 }
 
 func TestCoverageRegisterMetricsEdgePaths(t *testing.T) {
