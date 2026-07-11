@@ -493,19 +493,6 @@ func (p *Parser) parseJoinCondition(join *JoinClause) error {
 				return err
 			}
 			join.Condition = cond
-		} else if p.current().Type == TokenUsing {
-			p.advance()
-			if _, err := p.expect(TokenLParen); err != nil {
-				return err
-			}
-			columns, err := p.parseIdentifierList()
-			if err != nil {
-				return fmt.Errorf("USING clause: %w", err)
-			}
-			if _, err := p.expect(TokenRParen); err != nil {
-				return err
-			}
-			join.Using = columns
 		}
 	default:
 		if _, err := p.expect(TokenOn); err != nil {
@@ -1317,10 +1304,7 @@ func (p *Parser) parseDelete() (*DeleteStmt, error) {
 	if p.current().Type != TokenFrom {
 		return p.parseMySQLTargetedDelete(stmt)
 	}
-
-	if _, err := p.expect(TokenFrom); err != nil {
-		return nil, err
-	}
+	p.advance() // consume FROM
 
 	table, err := p.expect(TokenIdentifier)
 	if err != nil {

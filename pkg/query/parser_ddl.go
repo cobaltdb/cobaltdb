@@ -966,10 +966,6 @@ func (p *Parser) parseCreateTrigger() (*CreateTriggerStmt, error) {
 				p.advance()
 				continue
 			}
-			// Check for END
-			if p.current().Type == TokenEnd {
-				break
-			}
 			bodyStmt, err := p.parseStatement()
 			if err != nil {
 				return nil, fmt.Errorf("trigger body: %w", err)

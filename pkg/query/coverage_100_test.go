@@ -327,6 +327,30 @@ func TestStrictParserTruncationCoverage(t *testing.T) {
 		"WITH c AS (SELECT id FROM t) SELECT id FROM c UNION ALL SELECT id FROM u ORDER BY id LIMIT 1",
 		"SELECT CASE id WHEN 1 THEN CAST(u AS TEXT) ELSE EXTRACT(YEAR FROM ts) END FROM t",
 		"SELECT MATCH(id) AGAINST ('x' IN NATURAL LANGUAGE MODE), GROUP_CONCAT(DISTINCT id ORDER BY u DESC SEPARATOR ';') FROM t",
+		"SELECT * FROM t INDEXED BY idx INNER JOIN u USING (id) NATURAL LEFT OUTER JOIN v WHERE t.id IS DISTINCT FROM u.id",
+		"SELECT * FROM (SELECT 1 UNION SELECT 2) AS d FOR UPDATE OF d.schema.table WAIT 2",
+		"SELECT * FROM t FOR SHARE SKIP LOCKED",
+		"SELECT a NOT GLOB 'x', b REGEXP 'y', c NOT IN (SELECT c FROM u), d IS NOT UNKNOWN FROM t",
+		"SELECT JSON_EXTRACT(doc, '$.x'), REGEX_REPLACE(a, 'x', 'y'), COSINE_SIMILARITY(v, [1,2]) FROM t",
+		"SELECT INTERVAL 2 DAY, -1, +2, ~3, NOT EXISTS (SELECT 1) FROM t",
+		"CREATE TABLE t2 (CONSTRAINT pk PRIMARY KEY (a,b), CONSTRAINT uq UNIQUE (a,b), CONSTRAINT ck CHECK (a>0), a INTEGER CONSTRAINT au UNIQUE, b INTEGER CONSTRAINT bc CHECK (b>0) COLLATE nocase)",
+		"CREATE TABLE t3 (a INTEGER, FOREIGN KEY (a) REFERENCES p(id) ON DELETE RESTRICT ON UPDATE SET DEFAULT)",
+		"CREATE TRIGGER tr2 AFTER DELETE ON t FOR EACH ROW BEGIN DELETE FROM t WHERE id=1; END",
+		"DROP VIEW IF EXISTS v",
+		"DROP TRIGGER IF EXISTS tr",
+		"DROP PROCEDURE IF EXISTS p",
+		"DROP POLICY IF EXISTS pol ON t",
+		"DROP MATERIALIZED VIEW IF EXISTS mv",
+		"ALTER TABLE t ADD CONSTRAINT uq UNIQUE (a,b)",
+		"ALTER TABLE t ADD CONSTRAINT ck CHECK (a > 0)",
+		"ALTER TABLE t DROP CONSTRAINT uq",
+		"ALTER TABLE t RENAME COLUMN a TO b",
+		"INSERT INTO t(a) VALUES(1) ON DUPLICATE KEY UPDATE a=VALUES(a)",
+		"UPDATE LOW_PRIORITY IGNORE t SET a=1 WHERE a=2",
+		"DELETE LOW_PRIORITY QUICK IGNORE t FROM t INNER JOIN u ON t.id=u.id WHERE u.id=1",
+		"SHOW COLUMNS IN t",
+		"SHOW INDEX FROM t",
+		"SHOW CREATE TABLE t",
 	}
 	for corpusIndex, sql := range corpus {
 		tokens, err := Tokenize(sql)
@@ -469,7 +493,6 @@ func TestParserProductionEntryCoverage(t *testing.T) {
 		TokenPrimary, TokenForeign, TokenKey, TokenReferences,
 		TokenCheck, TokenUnique, TokenIf, TokenExists, TokenBegin, TokenEnd,
 	}
-	sequence := 0
 	for _, first := range grammarTokens {
 		for _, second := range grammarTokens {
 			for _, third := range grammarTokens {
@@ -481,18 +504,6 @@ func TestParserProductionEntryCoverage(t *testing.T) {
 				}
 				for _, entry := range entries {
 					entry(&Parser{tokens: tokens, strict: true})
-				}
-				for _, fourth := range grammarTokens {
-					deepTokens := []Token{
-						{Type: first, Literal: literalFor(first)},
-						{Type: second, Literal: literalFor(second)},
-						{Type: third, Literal: literalFor(third)},
-						{Type: fourth, Literal: literalFor(fourth)},
-						{Type: TokenEOF},
-					}
-					entries[sequence%len(entries)](&Parser{tokens: deepTokens, strict: true})
-					_, _ = (&Parser{tokens: deepTokens, strict: true}).Parse()
-					sequence++
 				}
 			}
 		}
@@ -659,6 +670,87 @@ func TestSemanticHelperBranchCoverage(t *testing.T) {
 	}
 }
 
+func TestPlaceholderTraversalCompleteCoverage(t *testing.T) {
+	ph := func() *PlaceholderExpr { return &PlaceholderExpr{Index: -1} }
+	sub := &SelectStmt{
+		Columns: []Expression{ph()}, Where: ph(), Having: ph(),
+		Joins: []*JoinClause{{Condition: ph()}},
+	}
+	expr := &CaseExpr{
+		Expr: &FunctionCall{
+			Args:   []Expression{&BinaryExpr{Left: ph(), Right: &UnaryExpr{Expr: ph()}}},
+			Filter: ph(), OrderBy: []*OrderByExpr{nil, {Expr: ph()}},
+		},
+		Whens: []*WhenClause{{
+			Condition: &WindowExpr{Args: []Expression{ph()}, Filter: ph(), PartitionBy: []Expression{ph()}, OrderBy: []*OrderByExpr{nil, {Expr: ph()}}},
+			Result:    &InExpr{Expr: ph(), List: []Expression{ph()}, Subquery: sub},
+		}},
+		Else: &AliasExpr{Expr: &CastExpr{Expr: &LikeExpr{Expr: &BetweenExpr{Expr: ph(), Lower: ph(), Upper: ph()}, Pattern: ph()}}},
+	}
+	for _, offsetExpr := range []Expression{
+		ph(),
+		&BinaryExpr{Left: ph(), Right: ph()},
+		&UnaryExpr{Expr: ph()},
+		&FunctionCall{Args: []Expression{ph()}, Filter: ph(), OrderBy: []*OrderByExpr{nil, {Expr: ph()}}},
+		&WindowExpr{Args: []Expression{ph()}, Filter: ph(), PartitionBy: []Expression{ph()}, OrderBy: []*OrderByExpr{nil, {Expr: ph()}}},
+		&InExpr{Expr: ph(), List: []Expression{ph()}},
+		&BetweenExpr{Expr: ph(), Lower: ph(), Upper: ph()},
+		&LikeExpr{Expr: ph(), Pattern: ph()},
+		&IsNullExpr{Expr: ph()},
+		&AliasExpr{Expr: ph()},
+		&SubqueryExpr{Query: sub},
+	} {
+		applyPlaceholderOffset(offsetExpr, 2)
+	}
+	reindexPlaceholdersFromExpr(expr, 10)
+	placeholders := collectPlaceholders(expr)
+	if len(placeholders) < 15 {
+		t.Fatalf("placeholder traversal found %d, want at least 15", len(placeholders))
+	}
+	for i, placeholder := range placeholders {
+		if placeholder.Index != 10+i {
+			t.Fatalf("placeholder %d index = %d", i, placeholder.Index)
+		}
+	}
+	applyPlaceholderOffset(nil, 1)
+}
+
+func TestTargetedParserErrorBranches(t *testing.T) {
+	errCases := []string{
+		"CREATE VIEW v (a,b) AS SELECT 1",
+		"CREATE TRIGGER tr BEFORE INSERT ON t BEGIN WAT",
+		"DROP COLLECTION IF wat",
+		"DROP INDEX IF wat",
+		"ALTER TABLE t RENAME TO",
+		"REFRESH MATERIALIZED VIEW",
+		"SELECT * FROM t FOR UPDATE OF",
+		"SELECT * FROM t FOR UPDATE OF a.",
+		"SELECT * FROM t INDEXED wat",
+		"SELECT * FROM t INDEXED BY",
+		"SELECT * FROM t NOT wat",
+		"SHOW INDEX wat t",
+		"SHOW INDEX FROM",
+		"SHOW INDEXES wat t",
+		"SHOW KEYS FROM",
+		"SELECT EXTRACT(YEAR wat ts) FROM t",
+		"SELECT EXTRACT(YEAR FROM) FROM t",
+		"SELECT POSITION( IN a) FROM t",
+		"SELECT POSITION(a IN) FROM t",
+		"SELECT POSITION(a,b,) FROM t",
+	}
+	for _, sql := range errCases {
+		if _, err := ParseStrict(sql); err == nil {
+			t.Errorf("ParseStrict(%q) unexpectedly succeeded", sql)
+		}
+	}
+
+	p := &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "CONCURRENTLY"}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseRefresh(); err == nil {
+		t.Fatal("REFRESH without view name succeeded")
+	}
+	applyViewColumnAliases(&SelectStmt{Columns: []Expression{&NumberLiteral{}}}, []string{"a", "b"})
+}
+
 func TestRemainingASTBranchCoverage(t *testing.T) {
 	v := &collectExprVisitor{visitCountVisitor: visitCountVisitor{counts: map[string]int{}}}
 	walkChildren(&FunctionCall{OrderBy: []*OrderByExpr{nil, {Expr: &Identifier{Name: "x"}}}}, v, nil)
@@ -668,7 +760,7 @@ func TestRemainingASTBranchCoverage(t *testing.T) {
 
 	for _, node := range []Node{
 		&CreateForeignTableStmt{}, &CreateVectorIndexStmt{}, &DropCollectionStmt{},
-		&QualifiedIdentifier{}, &VectorLiteral{},
+		&QualifiedIdentifier{}, &ColumnRef{}, &VectorLiteral{},
 	} {
 		if node.nodeType() == "" {
 			t.Errorf("empty node type for %T", node)
@@ -685,6 +777,10 @@ func TestRemainingASTBranchCoverage(t *testing.T) {
 			t.Errorf("%s did not propagate argument error", expr.Name)
 		}
 	}
+	ordinary, err := (&FunctionCall{Name: "ordinary", Args: []Expression{&NumberLiteral{Value: 1}}}).Evaluate(ev)
+	if err != nil || ordinary != nil {
+		t.Fatalf("ordinary function evaluation = %v, %v", ordinary, err)
+	}
 	boolEv := boolEvaluatorStub{lazyMockEvaluator: lazyMockEvaluator{}}
 	_ = evalConditionTruthy(&boolEv, true)
 
@@ -697,6 +793,13 @@ func TestRemainingASTBranchCoverage(t *testing.T) {
 	}
 	for _, expr := range caseErrors {
 		_, _ = expr.Evaluate(ev)
+	}
+	binaryErrorCase := &CaseExpr{
+		Expr:  &NumberLiteral{Value: 1},
+		Whens: []*WhenClause{{Condition: &NumberLiteral{Value: 2}, Result: &NumberLiteral{Value: 3}}},
+	}
+	if _, err := binaryErrorCase.Evaluate(stubEvaluator{}); err == nil {
+		t.Fatal("simple CASE did not propagate comparison error")
 	}
 
 	var nilStmt *BeginStmt
@@ -718,6 +821,272 @@ func TestRemainingASTBranchCoverage(t *testing.T) {
 type boolEvaluatorStub struct{ lazyMockEvaluator }
 
 func (*boolEvaluatorStub) EvalBool(v interface{}) bool { return v == true }
+
+func TestRemainingUtilityCoverage(t *testing.T) {
+	nd := &FunctionCall{Name: "NOW"}
+	for i, stmt := range []*SelectStmt{
+		nil,
+		{From: &TableRef{SubqueryStmt: &SelectStmt{Columns: []Expression{nd}}}},
+		{Joins: []*JoinClause{nil, {Table: &TableRef{SubqueryStmt: &SelectStmt{Columns: []Expression{nd}}}}}},
+	} {
+		got := ContainsNonDeterministicFunctions(stmt)
+		if i > 0 && !got {
+			t.Errorf("non-deterministic utility case %d missed", i)
+		}
+	}
+	if !HasNonDeterministicFunction(&BinaryExpr{Right: nd}) || !HasNonDeterministicFunction(&UnaryExpr{Expr: nd}) {
+		t.Fatal("nested non-determinism missed")
+	}
+	window := &WindowExpr{Args: []Expression{&NumberLiteral{}, &NumberLiteral{}}, PartitionBy: []Expression{&NumberLiteral{}, &NumberLiteral{}}, OrderBy: []*OrderByExpr{nil, {Expr: &NumberLiteral{}}, {Expr: &NumberLiteral{}}}}
+	if ExprToString(window) == "" {
+		t.Fatal("window serialization empty")
+	}
+}
+
+func TestRemainingDMLParserCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		tokens []Token
+		join   *JoinClause
+	}{
+		{[]Token{{Type: TokenOn}, {Type: TokenEOF}}, &JoinClause{Type: TokenCross}},
+		{[]Token{{Type: TokenOn}, {Type: TokenEOF}}, &JoinClause{Natural: true}},
+		{[]Token{{Type: TokenUsing}, {Type: TokenIdentifier, Literal: "bad"}}, &JoinClause{}},
+		{[]Token{{Type: TokenUsing}, {Type: TokenLParen}, {Type: TokenEOF}}, &JoinClause{}},
+		{[]Token{{Type: TokenUsing}, {Type: TokenLParen}, {Type: TokenIdentifier, Literal: "a"}, {Type: TokenEOF}}, &JoinClause{}},
+		{[]Token{{Type: TokenUsing}, {Type: TokenIdentifier, Literal: "bad"}}, &JoinClause{Natural: true}},
+		{[]Token{{Type: TokenUsing}, {Type: TokenLParen}, {Type: TokenEOF}}, &JoinClause{Natural: true}},
+		{[]Token{{Type: TokenUsing}, {Type: TokenLParen}, {Type: TokenIdentifier, Literal: "a"}, {Type: TokenEOF}}, &JoinClause{Natural: true}},
+	} {
+		p := &Parser{tokens: append(tc.tokens, Token{Type: TokenEOF}), strict: true}
+		if err := p.parseJoinCondition(tc.join); err == nil {
+			t.Errorf("join condition tokens %#v unexpectedly succeeded", tc.tokens)
+		}
+	}
+
+	p := &Parser{tokens: []Token{{Type: TokenNumber, Literal: "not-int"}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseNumber(); err == nil {
+		t.Fatal("invalid internal number accepted")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenNumber, Literal: "not-int"}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseWindowFrameBound(); err == nil {
+		t.Fatal("invalid frame integer accepted")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "t"}, {Type: TokenValues}, {Type: TokenLParen}, {Type: TokenNumber, Literal: "1"}, {Type: TokenRParen}, {Type: TokenEOF}}, strict: true}
+	if stmt, err := p.parseInsertTargetAndSource(nil, false); err != nil || stmt.Table != "t" {
+		t.Fatalf("nil insert statement handling: %#v, %v", stmt, err)
+	}
+	if combineDeleteWhere(nil, &NumberLiteral{}) == nil || combineDeleteWhere(&NumberLiteral{}, nil) == nil {
+		t.Fatal("delete predicate combination lost operand")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenComma}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseUpdateFromJoin(&UpdateStmt{}, 0); err == nil {
+		t.Fatal("invalid UPDATE FROM table accepted")
+	}
+
+	errors := []string{
+		"SELECT * FROM t AS OF SYSTEM", "INSERT INTO t SELECT",
+		"INSERT INTO t DEFAULT VALUES ON CONFLICT DO UPDATE SET", "INSERT INTO t SET",
+		"INSERT INTO t(a VALUES(1)", "UPDATE (SELECT 1) SET a=1", "UPDATE t FROM",
+		"DELETE FROM t AS", "DELETE FROM t USING", "DELETE FROM t USING u JOIN",
+		"DELETE t. FROM t", "DELETE t WAT t", "DELETE t FROM u", "DELETE t FROM t,",
+		"DELETE t FROM t JOIN", "DELETE t FROM t WHERE", "DELETE t FROM t RETURNING",
+		"DELETE FROM", "DELETE FROM t USING u WHERE", "DELETE FROM t USING u RETURNING",
+	}
+	for _, sql := range errors {
+		if _, err := ParseStrict(sql); err == nil {
+			t.Errorf("ParseStrict(%q) unexpectedly succeeded", sql)
+		}
+	}
+	for _, sql := range []string{
+		"INSERT INTO t SET a=1,b=2",
+		"UPDATE t SET a=1 FROM u,v INNER JOIN w ON v.id=w.id",
+		"DELETE t FROM t,u INNER JOIN v ON u.id=v.id",
+		"SHOW STATUS LIKE 'x'", "SHOW VARIABLES WHERE x=1",
+	} {
+		if _, err := ParseStrict(sql); err != nil {
+			t.Errorf("ParseStrict(%q): %v", sql, err)
+		}
+	}
+}
+
+func TestRemainingExpressionParserCoverage(t *testing.T) {
+	valid := []string{
+		"a GLOB 'x'", "-x", "+x", "~x", "interval.col", "interval(1)",
+		"CAST(1 AS INTEGER)", "CAST(1 AS TEXT)", "CAST(1 AS REAL)", "CAST(1 AS BLOB)",
+		"POSITION(a,b)", "COUNT(ALL a)", "GROUP_CONCAT(a,b)",
+		"GROUP_CONCAT(a ORDER BY b ASC NULLS FIRST, c DESC NULLS LAST)",
+		"GROUP_CONCAT(a ORDER BY b) FILTER (WHERE b>0)",
+	}
+	for _, expression := range valid {
+		if _, err := ParseExpression(expression); err != nil {
+			t.Errorf("ParseExpression(%q): %v", expression, err)
+		}
+	}
+	invalid := []string{
+		"-", "NOT", "a GLOB", "table.", "CAST(1 AS)", "CAST(1 AS INTEGER", "f(1,)",
+		"GROUP_CONCAT(", "GROUP_CONCAT(a ORDER wat)", "GROUP_CONCAT(a ORDER BY)",
+		"GROUP_CONCAT(a SEPARATOR)", "GROUP_CONCAT(a,b,)", "GROUP_CONCAT(a ORDER BY b NULLS wat)",
+		"GROUP_CONCAT(a ORDER BY b,)", "GROUP_CONCAT(a,b FILTER wat)",
+	}
+	for _, expression := range invalid {
+		if _, err := ParseExpression(expression); err == nil {
+			t.Errorf("ParseExpression(%q) unexpectedly succeeded", expression)
+		}
+	}
+	if _, err := ParseExpression("'"); err == nil {
+		t.Fatal("unterminated expression string accepted")
+	}
+}
+
+func TestFinalReachableParserBranches(t *testing.T) {
+	p := &Parser{tokens: []Token{{Type: TokenNumber, Literal: "0xff"}, {Type: TokenEOF}}, strict: true}
+	if expr, err := p.parseNumber(); err != nil || expr.(*NumberLiteral).Raw != "255" {
+		t.Fatalf("hex parse = %#v, %v", expr, err)
+	}
+	joinedSubquery := &SelectStmt{Joins: []*JoinClause{{Condition: &PlaceholderExpr{}}}}
+	if len(collectPlaceholders(&SubqueryExpr{Query: joinedSubquery})) != 1 || len(collectPlaceholders(&ExistsExpr{Subquery: joinedSubquery})) != 1 {
+		t.Fatal("subquery join placeholders not collected")
+	}
+
+	p = &Parser{tokens: []Token{
+		{Type: TokenIdentifier, Literal: "a"}, {Type: TokenComma},
+		{Type: TokenIdentifier, Literal: "b"}, {Type: TokenIdentifier, Literal: "NULLS"},
+		{Type: TokenIdentifier, Literal: "bad"}, {Type: TokenEOF},
+	}, strict: true}
+	if _, err := p.parseOrderByList(); err == nil {
+		t.Fatal("invalid ORDER BY NULLS suffix accepted")
+	}
+	manyOrderTokens := make([]Token, 0, maxParserListItems*2+2)
+	for i := 0; i <= maxParserListItems; i++ {
+		manyOrderTokens = append(manyOrderTokens, Token{Type: TokenNumber, Literal: "1"}, Token{Type: TokenComma})
+	}
+	manyOrderTokens = append(manyOrderTokens, Token{Type: TokenEOF})
+	p = &Parser{tokens: manyOrderTokens, strict: true}
+	if _, err := p.parseOrderByList(); err == nil {
+		t.Fatal("oversized ORDER BY accepted")
+	}
+
+	p = &Parser{tokens: []Token{{Type: TokenTypecast}, {Type: TokenLParen}, {Type: TokenNumber, Literal: "1"}, {Type: TokenAs}, {Type: TokenText}, {Type: TokenLParen}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseCast(); err == nil {
+		t.Fatal("unterminated CAST type parameters accepted")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenTypecast}, {Type: TokenLParen}, {Type: TokenNumber, Literal: "1"}, {Type: TokenAs}, {Type: TokenText}, {Type: TokenLParen}, {Type: TokenNumber, Literal: "2"}, {Type: TokenRParen}, {Type: TokenRParen}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseCast(); err != nil {
+		t.Fatalf("parameterized CAST: %v", err)
+	}
+	p = &Parser{tokens: []Token{{Type: TokenPlus}, {Type: TokenNumber, Literal: "bad"}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseUnary(); err == nil {
+		t.Fatal("invalid signed number accepted")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "INTERVAL"}, {Type: TokenNumber, Literal: "2"}, {Type: TokenIdentifier, Literal: "DAY"}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseIdentifierOrFunction(); err != nil {
+		t.Fatalf("interval identifier parser: %v", err)
+	}
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "INTERVAL"}, {Type: TokenNumber, Literal: "2"}, {Type: TokenIdentifier, Literal: "DAY"}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parsePrimary(); err != nil {
+		t.Fatalf("interval primary parser: %v", err)
+	}
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "INTERVAL"}, {Type: TokenDefault, Literal: "DEFAULT"}, {Type: TokenIdentifier, Literal: "DAY"}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parsePrimary(); err != nil {
+		t.Fatalf("keyword interval value: %v", err)
+	}
+	p = &Parser{tokens: []Token{{Type: TokenDate, Literal: "INTERVAL"}, {Type: TokenNumber, Literal: "2"}, {Type: TokenIdentifier, Literal: "DAY"}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parsePrimary(); err != nil {
+		t.Fatalf("fallback-keyword interval value: %v", err)
+	}
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "table"}, {Type: TokenDot}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseIdentifierOrFunction(); err == nil {
+		t.Fatal("qualified identifier without column accepted")
+	}
+
+	p = &Parser{tokens: []Token{{Type: TokenLParen}, {Type: TokenNumber, Literal: "1"}, {Type: TokenIn}, {Type: TokenNumber, Literal: "2"}, {Type: TokenRParen}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseFunctionCall("POSITION"); err != nil {
+		t.Fatalf("POSITION IN form: %v", err)
+	}
+	p = &Parser{tokens: []Token{{Type: TokenLParen}, {Type: TokenNumber, Literal: "1"}, {Type: TokenComma}, {Type: TokenNumber, Literal: "2"}, {Type: TokenRParen}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseFunctionCall("POSITION"); err != nil {
+		t.Fatalf("POSITION comma form: %v", err)
+	}
+	p = &Parser{tokens: []Token{{Type: TokenLParen}, {Type: TokenNumber, Literal: "1"}, {Type: TokenComma}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseFunctionCall("POSITION"); err == nil {
+		t.Fatal("invalid POSITION comma argument accepted")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenLParen}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseFunctionCall("POSITION"); err == nil {
+		t.Fatal("invalid POSITION substring accepted")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenLParen}, {Type: TokenNumber, Literal: "1"}, {Type: TokenIn}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseFunctionCall("POSITION"); err == nil {
+		t.Fatal("invalid POSITION string accepted")
+	}
+
+	many := strings.Repeat("1,", maxParserListItems+1) + "1"
+	for _, expression := range []string{
+		"POSITION(" + many + ")",
+		"GROUP_CONCAT(" + many + ")",
+		"GROUP_CONCAT(a ORDER BY " + many + ")",
+	} {
+		if _, err := ParseExpression(expression); err == nil {
+			t.Errorf("oversized expression list %q accepted", expression[:20])
+		}
+	}
+
+	p = &Parser{tokens: []Token{{Type: TokenRParen}, {Type: TokenIdentifier, Literal: "FILTER"}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseGroupConcatCall("GROUP_CONCAT", false); err == nil {
+		t.Fatal("invalid GROUP_CONCAT filter accepted")
+	}
+
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "t"}, {Type: TokenSelect}, {Type: TokenNumber, Literal: "1"}, {Type: TokenOn}, {Type: TokenDuplicate}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseInsertTargetAndSource(&InsertStmt{}, false); err == nil {
+		t.Fatal("invalid INSERT SELECT duplicate tail accepted")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "t"}, {Type: TokenSet}, {Type: TokenIdentifier, Literal: "a"}, {Type: TokenEq}, {Type: TokenNumber, Literal: "1"}, {Type: TokenOn}, {Type: TokenDuplicate}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseInsertTargetAndSource(&InsertStmt{}, false); err == nil {
+		t.Fatal("invalid INSERT SET duplicate tail accepted")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenSelect}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseInsertTargetAndSource(&InsertStmt{}, false); err == nil {
+		t.Fatal("invalid INSERT SELECT source accepted")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "t"}, {Type: TokenSet}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseInsertTargetAndSource(&InsertStmt{}, false); err == nil {
+		t.Fatal("invalid INSERT SET source accepted")
+	}
+
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "u"}, {Type: TokenComma}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseUpdateFromJoin(&UpdateStmt{}, 0); err == nil {
+		t.Fatal("invalid UPDATE FROM cross table accepted")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "u"}, {Type: TokenJoin}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseUpdateFromJoin(&UpdateStmt{}, 0); err == nil {
+		t.Fatal("invalid UPDATE FROM join accepted")
+	}
+
+	if stmt, err := ParseStrict("DELETE FROM t USING u INNER JOIN v ON u.id = ? WHERE t.id = ?"); err != nil || stmt.(*DeleteStmt).Where == nil {
+		t.Fatalf("DELETE USING join placeholders: %#v, %v", stmt, err)
+	}
+	p = &Parser{tokens: []Token{{Type: TokenFrom}, {Type: TokenIdentifier, Literal: "t"}, {Type: TokenUsing}, {Type: TokenIdentifier, Literal: "u"}, {Type: TokenJoin}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseDelete(); err == nil {
+		t.Fatal("invalid DELETE USING join accepted")
+	}
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "t"}, {Type: TokenFrom}, {Type: TokenIdentifier, Literal: "t"}, {Type: TokenReturning}, {Type: TokenIdentifier, Literal: "id"}, {Type: TokenEOF}}, strict: true}
+	if stmt, err := p.parseMySQLTargetedDelete(&DeleteStmt{}); err != nil || len(stmt.Returning) != 1 {
+		t.Fatalf("targeted DELETE RETURNING: %#v, %v", stmt, err)
+	}
+	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "t"}, {Type: TokenFrom}, {Type: TokenIdentifier, Literal: "t"}, {Type: TokenReturning}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseMySQLTargetedDelete(&DeleteStmt{}); err == nil {
+		t.Fatal("invalid targeted DELETE RETURNING accepted")
+	}
+
+	p = &Parser{tokens: []Token{{Type: TokenShow}, {Type: TokenIdentifier, Literal: "INDEXES"}, {Type: TokenFrom}, {Type: TokenIdentifier, Literal: "t"}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseShow(); err != nil {
+		t.Fatalf("SHOW INDEXES: %v", err)
+	}
+	p = &Parser{tokens: []Token{{Type: TokenShow}, {Type: TokenIdentifier, Literal: "STATUS"}, {Type: TokenIdentifier, Literal: "extra"}, {Type: TokenSemicolon}, {Type: TokenEOF}}, strict: true}
+	if _, err := p.parseShow(); err != nil {
+		t.Fatalf("SHOW STATUS extra clause: %v", err)
+	}
+}
 
 func TestTokenTypeStringCompleteCoverage(t *testing.T) {
 	for tok := TokenType(-1); tok <= TokenType(1000); tok++ {

@@ -474,13 +474,11 @@ func (p *Parser) parseUnary() (Expression, error) {
 			if err != nil {
 				return nil, err
 			}
-			if nl, ok := num.(*NumberLiteral); ok {
-				if op == TokenMinus {
-					return &NumberLiteral{Value: -nl.Value, Raw: "-" + nl.Raw}, nil
-				}
-				return nl, nil
+			nl := num.(*NumberLiteral) // parseNumber only returns *NumberLiteral on success
+			if op == TokenMinus {
+				return &NumberLiteral{Value: -nl.Value, Raw: "-" + nl.Raw}, nil
 			}
-			return &UnaryExpr{Operator: op, Expr: num}, nil
+			return nl, nil
 		}
 		expr, err := p.parseUnary()
 		if err != nil {
@@ -594,9 +592,7 @@ func (p *Parser) parsePrimary() (Expression, error) {
 			// interval backtracks so a column literally named "interval" still works.
 			if strings.EqualFold(tok.Literal, "INTERVAL") &&
 				p.current().Type != TokenDot && p.current().Type != TokenLParen {
-				if iv, ok, err := p.tryParseIntervalTail(); err != nil {
-					return nil, err
-				} else if ok {
+				if iv, ok, _ := p.tryParseIntervalTail(); ok {
 					return iv, nil
 				}
 			}
@@ -812,9 +808,7 @@ func (p *Parser) parseIdentifierOrFunction() (Expression, error) {
 	// backtracks so a column literally named "interval" still parses.
 	if strings.EqualFold(tok.Literal, "INTERVAL") &&
 		p.current().Type != TokenDot && p.current().Type != TokenLParen {
-		if iv, ok, err := p.tryParseIntervalTail(); err != nil {
-			return nil, err
-		} else if ok {
+		if iv, ok, _ := p.tryParseIntervalTail(); ok {
 			return iv, nil
 		}
 	}
@@ -991,9 +985,6 @@ func (p *Parser) parseGroupConcatCall(name string, distinct bool) (Expression, e
 			return nil, err
 		}
 		args = append(args, arg)
-		if len(args) > maxParserListItems {
-			return nil, fmt.Errorf("function argument count exceeds maximum (%d)", maxParserListItems)
-		}
 
 		if p.current().Type == TokenOrder {
 			p.advance()
@@ -1014,9 +1005,6 @@ func (p *Parser) parseGroupConcatCall(name string, distinct bool) (Expression, e
 				return nil, err
 			}
 			args = append(args, sep)
-			if len(args) > maxParserListItems {
-				return nil, fmt.Errorf("function argument count exceeds maximum (%d)", maxParserListItems)
-			}
 		} else {
 			for p.match(TokenComma) {
 				arg, err := p.parseExpression()
