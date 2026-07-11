@@ -93,11 +93,7 @@ func (o *Optimizer) Optimize(stmt *query.SelectStmt) (*query.SelectStmt, error) 
 		return stmt, nil
 	}
 
-	cloned, ok := query.CloneStatement(stmt).(*query.SelectStmt)
-	if !ok || cloned == nil {
-		return stmt, nil
-	}
-
+	cloned := query.CloneStatement(stmt).(*query.SelectStmt)
 	return o.reorderJoins(cloned), nil
 }
 
