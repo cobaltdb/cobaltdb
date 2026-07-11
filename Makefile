@@ -1,4 +1,4 @@
-.PHONY: build test clean install test-coverage bench lint staticcheck fmt fmt-check deps run-server run-cli docker-build docker-run race vuln gosec verify verify-security all
+.PHONY: build test clean install test-coverage coverage-gate coverage-gate-self-test bench lint staticcheck fmt fmt-check deps run-server run-cli docker-build docker-run race vuln gosec verify verify-security all
 
 BINARY_SERVER=cobaltdb-server
 BINARY_CLI=cobaltdb-cli
@@ -30,10 +30,14 @@ gosec:
 	@go run github.com/securego/gosec/v2/cmd/gosec@latest -exclude=G104 ./...
 
 test-coverage:
-	@echo "Running tests with coverage..."
-	@go test -coverprofile=coverage.out ./...
-	@go tool cover -html=coverage.out -o coverage.html
-	@echo "Coverage report generated: coverage.html"
+	@go run ./scripts/coverage-gate.go run
+	@echo "Coverage reports generated: coverage.json, coverage.out, coverage.html"
+
+coverage-gate:
+	@go run ./scripts/coverage-gate.go check coverage.json
+
+coverage-gate-self-test:
+	@go run ./scripts/coverage-gate.go self-test
 
 bench:
 	@echo "Running benchmarks..."
@@ -46,7 +50,7 @@ bench-gate:
 clean:
 	@echo "Cleaning..."
 	@rm -rf bin/
-	@rm -f coverage.out coverage.html
+	@rm -f coverage.json coverage.out coverage.html
 	@echo "Clean complete!"
 
 install:
