@@ -117,19 +117,21 @@ const (
 	maxWebUIAllowListTables = 256
 
 	// Defaults for the hardening subsystems (overridable via flags).
-	defaultWebUITokenTTL     = 24 * time.Hour
-	defaultWebUIRatePerMin   = 120
-	defaultWebUIRateBurst    = 30
-	webUIAuditRingSize       = 1000
-	webUIAuditMaxSQL         = 4096
-	maxWebUIAdminMintTokens  = 256
-	tokenExpirySweepInterval = 5 * time.Minute
+	defaultWebUITokenTTL            = 24 * time.Hour
+	defaultWebUIRatePerMin          = 120
+	defaultWebUIRateBurst           = 30
+	webUIAuditRingSize              = 1000
+	webUIAuditMaxSQL                = 4096
+	maxWebUIAdminMintTokens         = 256
+	defaultTokenExpirySweepInterval = 5 * time.Minute
 
 	// Cap on "unauthorized" audit records per source IP (per minute, with a
 	// small burst) so invalid-token floods cannot fill the audit log.
 	unauthAuditPerMinute = 10
 	unauthAuditBurst     = 5
 )
+
+var tokenExpirySweepInterval = defaultTokenExpirySweepInterval
 
 // toUpperFast returns an uppercased copy of s only if s contains lowercase
 // letters. This avoids an allocation when s is already uppercase.
@@ -142,7 +144,20 @@ func toUpperFast(s string) string {
 	return s
 }
 
-func main() {
+var webUIListenAndServe = func(server *http.Server) error { return server.ListenAndServe() }
+var webUIRun = runWebUI
+var webUIOpen = engine.Open
+var webUIParseTemplates = template.ParseFiles
+var webUIRandomRead = rand.Read
+var webUIExit = func(err error) {
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func main() { webUIExit(webUIRun()) }
+
+func runWebUI() error {
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
 	tokenFlag := flag.String("token", "", "Web UI bootstrap admin token (defaults to COBALTDB_WEBUI_TOKEN or a generated token)")
 	insecureNoAuth := flag.Bool("insecure-no-auth", false, "disable token auth (unsafe; for trusted local development only)")
@@ -158,14 +173,12 @@ func main() {
 	flag.Parse()
 
 	if *insecureNoAuth {
-		log.Fatalf("FATAL: --insecure-no-auth is set; the Web UI will accept connections without authentication. " +
-			"This is unsafe and must not be used in production. " +
-			"Either remove the flag or use COBALTDB_WEBUI_TOKEN to set a token.")
+		return fmt.Errorf("--insecure-no-auth is unsafe and is not supported")
 	}
 
 	if flag.NArg() < 1 {
 		flag.Usage()
-		os.Exit(1)
+		return fmt.Errorf("database file is required")
 	}
 
 	dbPath := flag.Arg(0)
@@ -178,15 +191,15 @@ func main() {
 	if authEnabled && apiToken == "" {
 		generatedToken, err := generateToken(24)
 		if err != nil {
-			log.Fatalf("Failed to generate access token: %v", err)
+			return fmt.Errorf("failed to generate access token: %w", err)
 		}
 		apiToken = generatedToken
 	}
 
 	// Open database
-	db, err := engine.Open(dbPath, nil)
+	db, err := webUIOpen(dbPath, nil)
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		return fmt.Errorf("failed to open database: %w", err)
 	}
 
 	server := &Server{
@@ -206,12 +219,12 @@ func main() {
 	server.tokens.setBootstrap(apiToken)
 
 	// Load templates
-	tmpl, err := template.ParseFiles("webui/templates/index.html")
+	tmpl, err := webUIParseTemplates("webui/templates/index.html")
 	if err != nil {
 		if closeErr := db.Close(); closeErr != nil {
 			log.Printf("Failed to close database: %v", closeErr)
 		}
-		log.Fatalf("Failed to load templates: %v", err)
+		return fmt.Errorf("failed to load templates: %w", err)
 	}
 	server.tmpl = tmpl
 
@@ -278,17 +291,18 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    maxWebUIHeaderBytes,
 	}
-	if err := httpServer.ListenAndServe(); err != nil {
+	if err := webUIListenAndServe(httpServer); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		if closeErr := db.Close(); closeErr != nil {
 			log.Printf("Failed to close database: %v", closeErr)
 		}
-		log.Fatalf("Server error: %v", err)
+		return fmt.Errorf("server error: %w", err)
 	}
+	return db.Close()
 }
 
 func generateToken(size int) (string, error) {
 	tokenBytes := make([]byte, size)
-	if _, err := rand.Read(tokenBytes); err != nil {
+	if _, err := webUIRandomRead(tokenBytes); err != nil {
 		return "", fmt.Errorf("failed to generate random token: %w", err)
 	}
 	return hex.EncodeToString(tokenBytes), nil
