@@ -204,10 +204,8 @@ func NewBufferPoolWithError(capacity int, backend Backend) (*BufferPool, error) 
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrPageIDExhausted, err)
 		}
+		// A positive backend size always rounds to at least one page.
 		bp.nextPageID = pageCount
-		if bp.nextPageID == 0 {
-			bp.nextPageID = 1
-		}
 	}
 
 	return bp, nil

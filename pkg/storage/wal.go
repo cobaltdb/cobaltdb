@@ -115,7 +115,7 @@ func (t *walRecoveryBufferTracker) remove(records []*WALRecord) {
 
 // WAL (Write-Ahead Log) provides durability and crash recovery
 type WAL struct {
-	file       *os.File
+	file       walFile
 	mu         sync.Mutex
 	bufWriter  *bufio.Writer
 	lsn        uint64 // Log Sequence Number (monotonic)
@@ -138,6 +138,17 @@ type WAL struct {
 	batchSize          int
 	syncInterval       time.Duration
 	stopGC             chan struct{}
+}
+
+type walFile interface {
+	io.Reader
+	io.Writer
+	Stat() (os.FileInfo, error)
+	Chmod(os.FileMode) error
+	Seek(int64, int) (int64, error)
+	Sync() error
+	Truncate(int64) error
+	Close() error
 }
 
 var walOpenFile = os.OpenFile
@@ -925,7 +936,7 @@ func (w *WAL) flushPendingLocked() error {
 	pending := w.popPendingSyncs()
 
 	var flushErr error
-	var file *os.File
+	var file walFile
 	w.mu.Lock()
 	if w.file != nil {
 		if err := w.bufWriter.Flush(); err != nil {

@@ -11,10 +11,20 @@ import (
 
 // DiskBackend implements the Backend interface using file I/O
 type DiskBackend struct {
-	file     *os.File
+	file     diskFile
 	filePath string
 	fileSize int64
 	mu       sync.RWMutex
+}
+
+type diskFile interface {
+	diskAtWriter
+	ReadAt([]byte, int64) (int, error)
+	Stat() (os.FileInfo, error)
+	Chmod(os.FileMode) error
+	Sync() error
+	Truncate(int64) error
+	Close() error
 }
 
 var diskOpenFile = os.OpenFile
