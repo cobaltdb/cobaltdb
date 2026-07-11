@@ -11,6 +11,13 @@ import (
 	"strings"
 )
 
+var (
+	csvLstat    = os.Lstat
+	csvOpenFile = os.Open
+	csvFileStat = func(file *os.File) (os.FileInfo, error) { return file.Stat() }
+	csvSameFile = os.SameFile
+)
+
 const (
 	defaultCSVMaxRows       = 1_000_000
 	defaultCSVMaxBytes      = 256 << 20 // 256 MiB
@@ -218,7 +225,7 @@ func cleanCSVPath(path string) (string, error) {
 }
 
 func openCSVRegularFile(path string, maxBytes int64) (*os.File, error) {
-	info, err := os.Lstat(path)
+	info, err := csvLstat(path)
 	if err != nil {
 		return nil, err
 	}
@@ -232,11 +239,11 @@ func openCSVRegularFile(path string, maxBytes int64) (*os.File, error) {
 		return nil, fmt.Errorf("csv FDW file exceeds max_bytes: size=%d max_bytes=%d", info.Size(), maxBytes)
 	}
 
-	f, err := os.Open(path) // #nosec G304 - CSV FDW file is an explicit table option and is validated before use.
+	f, err := csvOpenFile(path) // #nosec G304 - CSV FDW file is an explicit table option and is validated before use.
 	if err != nil {
 		return nil, err
 	}
-	openedInfo, err := f.Stat()
+	openedInfo, err := csvFileStat(f)
 	if err != nil {
 		_ = f.Close()
 		return nil, err
@@ -245,7 +252,7 @@ func openCSVRegularFile(path string, maxBytes int64) (*os.File, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("csv FDW file must be a regular file: %s", path)
 	}
-	if !os.SameFile(info, openedInfo) {
+	if !csvSameFile(info, openedInfo) {
 		_ = f.Close()
 		return nil, fmt.Errorf("csv FDW file changed while opening: %s", path)
 	}

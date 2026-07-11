@@ -109,14 +109,7 @@ func EncodeMessage(msgType MsgType, payload interface{}) ([]byte, error) {
 		Payload: pay,
 	}
 
-	data, err := Encode(msg)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxWireEncodedMessageBytes {
-		return nil, fmt.Errorf("encoded message too large: %d bytes", len(data))
-	}
-	return data, nil
+	return Encode(msg)
 }
 
 // DecodeMessage decodes a complete message
@@ -130,9 +123,6 @@ func DecodeMessage(data []byte) (*Message, error) {
 	}
 	if !isKnownMsgType(msg.Type) {
 		return nil, fmt.Errorf("unknown message type: 0x%02x", byte(msg.Type))
-	}
-	if len(msg.Payload) > maxWireEncodedMessageBytes {
-		return nil, fmt.Errorf("message payload too large: %d bytes", len(msg.Payload))
 	}
 	return &msg, nil
 }

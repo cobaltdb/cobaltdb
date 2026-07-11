@@ -7,6 +7,8 @@ import (
 
 const maxParallelWorkers = 1024
 
+var availableCPUCount = runtime.NumCPU
+
 // defaultWorkers returns a sensible worker count.
 func defaultWorkers(requested int) int {
 	if requested > 0 {
@@ -15,7 +17,7 @@ func defaultWorkers(requested int) int {
 		}
 		return requested
 	}
-	if n := runtime.NumCPU(); n > 1 {
+	if n := availableCPUCount(); n > 1 {
 		if n > maxParallelWorkers {
 			return maxParallelWorkers
 		}

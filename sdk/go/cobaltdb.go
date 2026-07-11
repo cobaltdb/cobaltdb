@@ -299,9 +299,14 @@ func hasInvalidURLPort(host string) bool {
 		return false
 	}
 	if strings.HasPrefix(host, "[") {
+		// IPv6 address with a colon after the closing bracket (empty port)
 		end := strings.LastIndex(host, "]")
-		return end >= 0 && len(host) > end+1 && host[end+1] == ':'
+		if end < 0 {
+			return false
+		}
+		return len(host) > end+1 && host[end+1] == ':'
 	}
+	// Non-bracketed host: a single colon means a trailing colon (empty port)
 	return strings.Count(host, ":") == 1
 }
 

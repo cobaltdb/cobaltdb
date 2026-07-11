@@ -121,10 +121,14 @@ func (a *Authenticator) Stop() {
 	a.wg.Wait()
 }
 
+// sessionCleanupInterval is the default interval between background session
+// cleanup runs. Tests may inject a shorter duration.
+var sessionCleanupInterval = 5 * time.Minute
+
 // sessionCleanupLoop periodically removes expired sessions
 func (a *Authenticator) sessionCleanupLoop() {
 	defer a.wg.Done()
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(sessionCleanupInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -174,6 +178,10 @@ func hashPassword(password, salt string) string {
 
 var passwordHasher = hashPassword
 
+var (
+	authRandRead = rand.Read
+)
+
 // authDecoySalt is a fixed salt used to compute a throwaway Argon2 hash on the
 // unknown-user authentication path, so it takes the same time as the
 // wrong-password path and does not leak username existence via timing. Argon2's
@@ -183,7 +191,7 @@ const authDecoySalt = "cobaltdb-auth-timing-decoy-salt"
 // generateSalt generates a cryptographically secure random salt
 func generateSalt() (string, error) {
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := authRandRead(b); err != nil {
 		return "", fmt.Errorf("crypto/rand failed: %w", err)
 	}
 	return hex.EncodeToString(b), nil
@@ -504,7 +512,7 @@ func (a *Authenticator) evictOldestFailedAttemptLocked() {
 // generateToken generates a cryptographically secure session token
 func generateToken(username string) (string, error) {
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := authRandRead(b); err != nil {
 		return "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
 	// Use only random bytes for token - no predictable input
