@@ -122,7 +122,7 @@ func TestOpenWALDoesNotChmodSymlinkRaceTarget(t *testing.T) {
 	defer func() { walOpenFile = originalOpenFile }()
 
 	swapped := false
-	walOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+	walOpenFile = func(name string, flag int, perm os.FileMode) (walFile, error) {
 		if name == filepath.Clean(walPath) && !swapped {
 			swapped = true
 			if err := os.Remove(walPath); err != nil {
@@ -166,7 +166,7 @@ func TestOpenWALCreateRejectsSymlinkRace(t *testing.T) {
 	defer func() { walOpenFile = originalOpenFile }()
 
 	swapped := false
-	walOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+	walOpenFile = func(name string, flag int, perm os.FileMode) (walFile, error) {
 		if name == filepath.Clean(walPath) && !swapped {
 			swapped = true
 			if err := os.Symlink(targetPath, walPath); err != nil {

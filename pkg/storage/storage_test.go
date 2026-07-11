@@ -166,7 +166,7 @@ func TestOpenDiskDoesNotChmodSymlinkRaceTarget(t *testing.T) {
 	defer func() { diskOpenFile = originalOpenFile }()
 
 	swapped := false
-	diskOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+	diskOpenFile = func(name string, flag int, perm os.FileMode) (diskFile, error) {
 		if name == filepath.Clean(dbPath) && !swapped {
 			swapped = true
 			if err := os.Remove(dbPath); err != nil {
@@ -210,7 +210,7 @@ func TestOpenDiskCreateRejectsSymlinkRace(t *testing.T) {
 	defer func() { diskOpenFile = originalOpenFile }()
 
 	swapped := false
-	diskOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+	diskOpenFile = func(name string, flag int, perm os.FileMode) (diskFile, error) {
 		if name == filepath.Clean(dbPath) && !swapped {
 			swapped = true
 			if err := os.Symlink(targetPath, dbPath); err != nil {

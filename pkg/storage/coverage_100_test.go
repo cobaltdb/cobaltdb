@@ -264,7 +264,7 @@ func TestCoverage100CompressionEdges(t *testing.T) {
 	})
 	t.Run("decoder errors and pools", func(t *testing.T) {
 		cb, _ := NewCompressedBackend(NewMemory(), DefaultCompressionConfig())
-		cb.lz4Readers = syncPoolWith("wrong")
+		syncPoolWith(&cb.lz4Readers, "wrong")
 		if _, err := cb.decompressLZ4([]byte("bad"), 1); err == nil {
 			t.Fatal("bad lz4 accepted")
 		}
@@ -274,12 +274,12 @@ func TestCoverage100CompressionEdges(t *testing.T) {
 		if err := requireFullDecompressed(0, 1, nil); err == nil {
 			t.Fatal("short nil-error decode accepted")
 		}
-		cb.writeBufPool = syncPoolWith("wrong")
+		syncPoolWith(&cb.writeBufPool, "wrong")
 		wb := cb.getWriteBuf()
 		if len(*wb) != PageSize {
 			t.Fatal("write pool fallback")
 		}
-		cb.readBufPool = syncPoolWith("wrong")
+		syncPoolWith(&cb.readBufPool, "wrong")
 		rb := cb.getReadBuf()
 		if len(*rb) != PageSize {
 			t.Fatal("read pool fallback")
@@ -288,7 +288,7 @@ func TestCoverage100CompressionEdges(t *testing.T) {
 }
 
 // syncPoolWith creates a pool whose next value has a deliberately wrong type.
-func syncPoolWith(v any) (p sync.Pool) { p.Put(v); return p }
+func syncPoolWith(tgt *sync.Pool, v any) { tgt.Put(v) }
 
 func TestCoverage100MemoryPageAndDiskEdges(t *testing.T) {
 	t.Run("memory default limits and capacity branches", func(t *testing.T) {
@@ -779,6 +779,994 @@ func TestCoverage100EncryptionAndSaltEdges(t *testing.T) {
 		eb.config.Salt = nil
 		if eb.GetSalt() != nil {
 			t.Fatal("empty salt returned nonnil")
+		}
+	})
+}
+
+type coverageFile struct {
+	name        string
+	data        []byte
+	pos         int64
+	info        os.FileInfo
+	statErr     error
+	chmodErr    error
+	seekErr     error
+	seekCalls   int
+	seekFailAt  int
+	syncErr     error
+	syncCalls   int
+	syncFailAt  int
+	truncateErr error
+	closeErr    error
+	readErr     error
+	writeErr    error
+}
+
+func (f *coverageFile) Read(p []byte) (int, error) {
+	if f.readErr != nil {
+		return 0, f.readErr
+	}
+	if f.pos >= int64(len(f.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, f.data[f.pos:])
+	f.pos += int64(n)
+	return n, nil
+}
+func (f *coverageFile) Write(p []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	end := int(f.pos) + len(p)
+	if end > len(f.data) {
+		f.data = append(f.data, make([]byte, end-len(f.data))...)
+	}
+	copy(f.data[f.pos:], p)
+	f.pos = int64(end)
+	return len(p), nil
+}
+func (f *coverageFile) ReadAt(p []byte, o int64) (int, error) {
+	if f.readErr != nil {
+		return 0, f.readErr
+	}
+	if o >= int64(len(f.data)) {
+		return 0, io.EOF
+	}
+	return copy(p, f.data[o:]), nil
+}
+func (f *coverageFile) WriteAt(p []byte, o int64) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	end := int(o) + len(p)
+	if end > len(f.data) {
+		f.data = append(f.data, make([]byte, end-len(f.data))...)
+	}
+	return copy(f.data[o:], p), nil
+}
+func (f *coverageFile) Name() string {
+	if f.name == "" {
+		return "coverage-file"
+	}
+	return f.name
+}
+func (f *coverageFile) Stat() (os.FileInfo, error) { return f.info, f.statErr }
+func (f *coverageFile) Chmod(os.FileMode) error    { return f.chmodErr }
+func (f *coverageFile) Seek(o int64, w int) (int64, error) {
+	f.seekCalls++
+	if f.seekErr != nil && (f.seekFailAt == 0 || f.seekCalls == f.seekFailAt) {
+		return 0, f.seekErr
+	}
+	switch w {
+	case io.SeekStart:
+		f.pos = o
+	case io.SeekCurrent:
+		f.pos += o
+	case io.SeekEnd:
+		f.pos = int64(len(f.data)) + o
+	}
+	return f.pos, nil
+}
+func (f *coverageFile) Sync() error {
+	f.syncCalls++
+	if f.syncErr != nil && (f.syncFailAt == 0 || f.syncCalls == f.syncFailAt) {
+		return f.syncErr
+	}
+	return nil
+}
+func (f *coverageFile) Truncate(n int64) error {
+	if f.truncateErr != nil {
+		return f.truncateErr
+	}
+	if n < int64(len(f.data)) {
+		f.data = f.data[:n]
+	} else {
+		f.data = append(f.data, make([]byte, int(n)-len(f.data))...)
+	}
+	return nil
+}
+func (f *coverageFile) Close() error { return f.closeErr }
+
+type coverageInfo struct {
+	name string
+	size int64
+	mode os.FileMode
+}
+
+func (i coverageInfo) Name() string       { return i.name }
+func (i coverageInfo) Size() int64        { return i.size }
+func (i coverageInfo) Mode() os.FileMode  { return i.mode }
+func (i coverageInfo) ModTime() time.Time { return time.Time{} }
+func (i coverageInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i coverageInfo) Sys() any           { return nil }
+
+func TestCoverage100FileFailures(t *testing.T) {
+	t.Run("disk open operations", func(t *testing.T) {
+		old := diskOpenFile
+		defer func() { diskOpenFile = old }()
+		path := filepath.Join(t.TempDir(), "db")
+		for name, file := range map[string]*coverageFile{
+			"stat":        {statErr: errCoverage},
+			"not regular": {info: coverageInfo{mode: os.ModeDir}},
+			"chmod":       {info: coverageInfo{mode: 0600}, chmodErr: errCoverage},
+		} {
+			t.Run(name, func(t *testing.T) {
+				diskOpenFile = func(string, int, os.FileMode) (diskFile, error) { return nil, errCoverage }
+				_ = file
+			})
+		}
+		// Open errors are observable through the existing function seam.
+		diskOpenFile = func(string, int, os.FileMode) (diskFile, error) { return nil, errCoverage }
+		if _, err := OpenDisk(path); !errors.Is(err, errCoverage) {
+			t.Fatalf("open: %v", err)
+		}
+	})
+	t.Run("disk backend method failures", func(t *testing.T) {
+		f := &coverageFile{writeErr: errCoverage, truncateErr: errCoverage}
+		d := &DiskBackend{file: f}
+		if _, err := d.WriteAt([]byte{1}, 0); !errors.Is(err, errCoverage) {
+			t.Fatalf("write: %v", err)
+		}
+		if err := d.Truncate(0); !errors.Is(err, errCoverage) {
+			t.Fatalf("truncate: %v", err)
+		}
+	})
+	t.Run("wal readLSN failures", func(t *testing.T) {
+		for name, f := range map[string]*coverageFile{
+			"stat":       {statErr: errCoverage},
+			"seek start": {info: coverageInfo{size: 1}, seekErr: errCoverage},
+		} {
+			t.Run(name, func(t *testing.T) {
+				w := &WAL{file: f}
+				if err := w.readLSN(); !errors.Is(err, errCoverage) {
+					t.Fatalf("got %v", err)
+				}
+			})
+		}
+		partial := &coverageFile{data: []byte{1}, info: coverageInfo{size: 1}, truncateErr: errCoverage}
+		if err := (&WAL{file: partial}).readLSN(); !errors.Is(err, errCoverage) {
+			t.Fatalf("truncate: %v", err)
+		}
+		partial = &coverageFile{data: []byte{1}, info: coverageInfo{size: 1}, syncErr: errCoverage}
+		if err := (&WAL{file: partial}).readLSN(); !errors.Is(err, errCoverage) {
+			t.Fatalf("sync: %v", err)
+		}
+		valid := coverageEncodedRecord(t, &WALRecord{LSN: 1, Type: WALInsert})
+		end := &coverageFile{data: valid, info: coverageInfo{size: int64(len(valid))}}
+		end.seekErr = nil
+		w := &WAL{file: end}
+		if err := w.readLSN(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("wal sync append checkpoint close failures", func(t *testing.T) {
+		f := &coverageFile{syncErr: errCoverage}
+		w := &WAL{file: f, bufWriter: bufio.NewWriter(f)}
+		if err := w.Sync(); !errors.Is(err, errCoverage) {
+			t.Fatalf("sync: %v", err)
+		}
+		w = &WAL{file: &coverageFile{}, bufWriter: bufio.NewWriterSize(coverageWriter{n: 0, err: errCoverage}, 1)}
+		if err := w.AppendWithoutSync(&WALRecord{Type: WALInsert}); !errors.Is(err, errCoverage) {
+			t.Fatalf("append header: %v", err)
+		}
+		w = &WAL{file: &coverageFile{}, bufWriter: bufio.NewWriterSize(coverageWriter{n: 0, err: errCoverage}, 1)}
+		if err := w.AppendBatch([]*WALRecord{{Type: WALInsert}}); !errors.Is(err, errCoverage) {
+			t.Fatalf("batch write: %v", err)
+		}
+		f = &coverageFile{closeErr: errCoverage}
+		w = &WAL{file: f, bufWriter: bufio.NewWriter(f)}
+		if err := w.Close(); !errors.Is(err, errCoverage) {
+			t.Fatalf("close: %v", err)
+		}
+	})
+}
+
+func TestCoverage100BufferPoolSlowRechecks(t *testing.T) {
+	old := bufferPoolSlowPathHook
+	defer func() { bufferPoolSlowPathHook = old }()
+	t.Run("closed", func(t *testing.T) {
+		bp := NewBufferPool(1, NewMemory())
+		bufferPoolSlowPathHook = func() { bp.mu.Lock(); bp.closed = true; bp.mu.Unlock() }
+		if _, err := bp.GetPage(0); !errors.Is(err, ErrBufferPoolClosed) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("double checked hit", func(t *testing.T) {
+		bp := NewBufferPool(1, NewMemory())
+		p := &CachedPage{id: 0, data: make([]byte, PageSize), pinned: 0}
+		bufferPoolSlowPathHook = func() { bp.mu.Lock(); bp.pages[0] = p; p.lruElem = bp.lru.PushFront(p); bp.mu.Unlock() }
+		got, err := bp.GetPage(0)
+		if err != nil || got != p || !p.IsPinned() {
+			t.Fatalf("got=%p err=%v pinned=%v", got, err, p.IsPinned())
+		}
+	})
+}
+
+func TestCoverage100OpenConstructorFailures(t *testing.T) {
+	t.Run("disk", func(t *testing.T) {
+		old := diskOpenFile
+		defer func() { diskOpenFile = old }()
+		path := filepath.Join(t.TempDir(), "db")
+		for name, f := range map[string]*coverageFile{"stat": {statErr: errCoverage}, "type": {info: coverageInfo{mode: os.ModeDir}}, "chmod": {info: coverageInfo{mode: 0600}, chmodErr: errCoverage}} {
+			t.Run(name, func(t *testing.T) {
+				diskOpenFile = func(string, int, os.FileMode) (diskFile, error) { return f, nil }
+				if _, err := OpenDisk(path); err == nil {
+					t.Fatal("expected error")
+				}
+			})
+		}
+	})
+	t.Run("wal", func(t *testing.T) {
+		old := walOpenFile
+		defer func() { walOpenFile = old }()
+		path := filepath.Join(t.TempDir(), "wal")
+		for name, f := range map[string]*coverageFile{"stat": {statErr: errCoverage}, "type": {info: coverageInfo{mode: os.ModeDir}}, "chmod": {info: coverageInfo{mode: 0600}, chmodErr: errCoverage}} {
+			t.Run(name, func(t *testing.T) {
+				walOpenFile = func(string, int, os.FileMode) (walFile, error) { return f, nil }
+				if _, err := OpenWAL(path); err == nil {
+					t.Fatal("expected error")
+				}
+			})
+		}
+	})
+}
+
+func TestCoverage100CheckpointFailures(t *testing.T) {
+	newW := func(f *coverageFile) *WAL { return &WAL{file: f, bufWriter: bufio.NewWriter(f)} }
+	if err := (&WAL{}).Checkpoint(NewBufferPool(1, NewMemory())); !errors.Is(err, ErrWALClosed) {
+		t.Fatalf("closed: %v", err)
+	}
+	for name, run := range map[string]func() error{
+		"pre sync": func() error {
+			f := &coverageFile{syncErr: errCoverage}
+			return newW(f).Checkpoint(NewBufferPool(1, NewMemory()))
+		},
+		"pool sync": func() error {
+			f := &coverageFile{}
+			bp := NewBufferPool(1, &coverageBackend{syncErr: errCoverage})
+			return newW(f).Checkpoint(bp)
+		},
+		"truncate": func() error {
+			f := &coverageFile{truncateErr: errCoverage}
+			return newW(f).Checkpoint(NewBufferPool(1, NewMemory()))
+		},
+		"seek": func() error {
+			f := &coverageFile{seekErr: errCoverage}
+			return newW(f).Checkpoint(NewBufferPool(1, NewMemory()))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := run(); !errors.Is(err, errCoverage) {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+}
+
+func TestCoverage100RemainingCoreStates(t *testing.T) {
+	t.Run("conversion success", func(t *testing.T) {
+		if got, err := checkedUint64Offset(7); err != nil || got != 7 {
+			t.Fatalf("got=%d err=%v", got, err)
+		}
+	})
+	t.Run("buffer miss eviction", func(t *testing.T) {
+		bp := NewBufferPool(1, NewMemory())
+		p, _ := bp.NewPage(PageTypeLeaf)
+		if _, err := bp.GetPage(99); !errors.Is(err, ErrBufferFull) {
+			t.Fatalf("got %v", err)
+		}
+		p.Unpin()
+	})
+	t.Run("memory capped growth", func(t *testing.T) {
+		m := NewMemoryWithLimit(maxGrowthIncrement * 3)
+		m.data = make([]byte, 1, maxGrowthIncrement+1)
+		if _, err := m.WriteAt([]byte{1}, maxGrowthIncrement+1); err != nil {
+			t.Fatal(err)
+		}
+		m = NewMemoryWithLimit(maxGrowthIncrement * 3)
+		m.data = make([]byte, 1, maxGrowthIncrement+1)
+		if err := m.Truncate(maxGrowthIncrement + 2); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("disk directory validation", func(t *testing.T) {
+		if err := syncDiskParentDir("file"); err != nil {
+			t.Fatal(err)
+		}
+		root := t.TempDir()
+		missing := filepath.Join(root, "missing", "db")
+		if err := syncDiskParentDir(missing); err == nil {
+			t.Fatal("missing parent accepted")
+		}
+		file := filepath.Join(root, "file")
+		if err := os.WriteFile(file, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := syncDiskParentDir(filepath.Join(file, "db")); err == nil {
+			t.Fatal("file parent accepted")
+		}
+		link := filepath.Join(root, "link")
+		if err := os.Symlink(root, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := syncDiskParentDir(filepath.Join(link, "db")); err == nil {
+			t.Fatal("symlink parent accepted")
+		}
+	})
+	t.Run("wal random failure", func(t *testing.T) {
+		old := rand.Reader
+		rand.Reader = coverageErrorReader{}
+		defer func() { rand.Reader = old }()
+		if _, err := encryptDataWithCipher(coverageCipher(t), []byte{1}, nil); !errors.Is(err, errCoverage) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("WAL nil readLSN and unexpected read", func(t *testing.T) {
+		if err := (&WAL{}).readLSN(); err == nil {
+			t.Fatal("nil WAL accepted")
+		}
+		f := &coverageFile{info: coverageInfo{size: 1}, readErr: errCoverage}
+		if err := (&WAL{file: f}).readLSN(); !errors.Is(err, errCoverage) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("record truncations", func(t *testing.T) {
+		w := &WAL{}
+		h := make([]byte, walHeaderSize)
+		binary.LittleEndian.PutUint16(h[23:], 2)
+		if _, _, err := w.readRecord(bufio.NewReader(bytes.NewReader(append(h, 1))), make([]byte, walHeaderSize)); err == nil {
+			t.Fatal("truncated data accepted")
+		}
+		if _, _, err := w.readRecord(bufio.NewReader(bytes.NewReader(make([]byte, walHeaderSize))), make([]byte, walHeaderSize)); err == nil {
+			t.Fatal("missing CRC accepted")
+		}
+	})
+	t.Run("batch validation and sync errors", func(t *testing.T) {
+		w := &WAL{}
+		if err := w.AppendBatchWithoutSync([]*WALRecord{{Type: WALInsert}, {Type: 0xff}}); err == nil {
+			t.Fatal("bad second record accepted")
+		}
+		f := &coverageFile{syncErr: errCoverage}
+		w = &WAL{file: f, bufWriter: bufio.NewWriter(f)}
+		if err := w.AppendBatch([]*WALRecord{{Type: WALInsert}}); !errors.Is(err, errCoverage) {
+			t.Fatalf("batch sync: %v", err)
+		}
+		w = &WAL{groupCommitEnabled: true, syncInterval: time.Hour, pendingSyncs: []chan error{make(chan error, 1)}, file: &coverageFile{syncErr: errCoverage}}
+		w.bufWriter = bufio.NewWriter(w.file)
+		if err := w.flushPendingLocked(); !errors.Is(err, errCoverage) {
+			t.Fatalf("pending sync: %v", err)
+		}
+	})
+	t.Run("append data and CRC writer failures", func(t *testing.T) {
+		for _, rec := range []*WALRecord{{Type: WALInsert, Data: []byte("data")}, {Type: WALInsert}} {
+			cw := coverageWriter{n: 0, err: errCoverage}
+			w := &WAL{file: &coverageFile{}, bufWriter: bufio.NewWriterSize(cw, 1)}
+			if err := w.AppendWithoutSync(rec); !errors.Is(err, errCoverage) {
+				t.Fatalf("record=%+v err=%v", rec, err)
+			}
+		}
+	})
+	t.Run("recover corrupt and physical errors", func(t *testing.T) {
+		bad := coverageEncodedRecord(t, &WALRecord{LSN: 1, Type: WALInsert})
+		bad[len(bad)-1] ^= 1
+		f := &coverageFile{data: bad}
+		w := &WAL{file: f, bufWriter: bufio.NewWriter(f)}
+		if err := w.Recover(NewBufferPool(1, NewMemory())); !errors.Is(err, ErrWALCorrupted) {
+			t.Fatalf("crc: %v", err)
+		}
+		bp := NewBufferPool(1, NewMemory())
+		w = &WAL{}
+		if err := w.applyRecord(bp, &WALRecord{PageID: 1, Offset: PageSize - 1, Data: []byte{1, 2}}); err == nil {
+			t.Fatal("overflow applied")
+		}
+	})
+}
+
+func TestCoverage100AtomicFileInjectedFailures(t *testing.T) {
+	old := storageFSOps
+	defer func() { storageFSOps = old }()
+	regular := coverageInfo{name: "f", mode: 0600}
+	directory := coverageInfo{name: "d", mode: os.ModeDir | 0700}
+	base := old
+	base.sameFile = func(os.FileInfo, os.FileInfo) bool { return true }
+	t.Run("disk sync injected stages", func(t *testing.T) {
+		realDir := t.TempDir()
+		cases := map[string]func() error{
+			"open": func() error {
+				storageFSOps = base
+				storageFSOps.open = func(string) (atomicFile, error) { return nil, errCoverage }
+				return syncDiskParentDir("dir/db")
+			},
+			"stat": func() error {
+				storageFSOps = base
+				storageFSOps.open = func(string) (atomicFile, error) {
+					return &coverageFile{statErr: errCoverage}, nil
+				}
+				return syncDiskParentDir(filepath.Join(realDir, "db"))
+			},
+		}
+		for name, run := range cases {
+			t.Run(name, func(t *testing.T) {
+				if err := run(); err == nil {
+					t.Fatal("expected error")
+				}
+			})
+		}
+	})
+	t.Run("read salt stages", func(t *testing.T) {
+		cases := map[string]func(){
+			"open": func() {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return regular, nil }
+				storageFSOps.open = func(string) (atomicFile, error) { return nil, errCoverage }
+			},
+			"stat": func() {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return regular, nil }
+				storageFSOps.open = func(string) (atomicFile, error) { return &coverageFile{statErr: errCoverage}, nil }
+			},
+			"opened type": func() {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return regular, nil }
+				storageFSOps.open = func(string) (atomicFile, error) { return &coverageFile{info: directory}, nil }
+			},
+			"opened size": func() {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return regular, nil }
+				storageFSOps.open = func(string) (atomicFile, error) {
+					return &coverageFile{info: coverageInfo{mode: 0600, size: int64(len(saltFileMarker) + 2 + maxEncryptionSaltBytes)}}, nil
+				}
+			},
+			"changed": func() {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return regular, nil }
+				storageFSOps.open = func(string) (atomicFile, error) { return &coverageFile{info: regular}, nil }
+				storageFSOps.sameFile = func(os.FileInfo, os.FileInfo) bool { return false }
+			},
+			"chmod": func() {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return regular, nil }
+				storageFSOps.open = func(string) (atomicFile, error) { return &coverageFile{info: regular, chmodErr: errCoverage}, nil }
+			},
+			"read": func() {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return regular, nil }
+				storageFSOps.open = func(string) (atomicFile, error) { return &coverageFile{info: regular, readErr: errCoverage}, nil }
+			},
+		}
+		for name, setup := range cases {
+			t.Run(name, func(t *testing.T) {
+				setup()
+				if _, err := readSaltFile("salt"); err == nil {
+					t.Fatal("expected error")
+				}
+			})
+		}
+	})
+	t.Run("atomic write stages", func(t *testing.T) {
+		newOps := func(f *coverageFile) storageFileOps {
+			o := base
+			o.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+			o.stat = func(string) (os.FileInfo, error) { return directory, nil }
+			o.createTemp = func(string, string) (atomicFile, error) { return f, nil }
+			return o
+		}
+		cases := map[string]func() error{
+			"create": func() error {
+				o := newOps(nil)
+				o.createTemp = func(string, string) (atomicFile, error) { return nil, errCoverage }
+				storageFSOps = o
+				return writeFileAtomic("dir/file", []byte{1}, 0600)
+			},
+			"chmod": func() error {
+				storageFSOps = newOps(&coverageFile{name: "tmp", chmodErr: errCoverage})
+				return writeFileAtomic("dir/file", []byte{1}, 0600)
+			},
+			"write": func() error {
+				storageFSOps = newOps(&coverageFile{name: "tmp", writeErr: errCoverage})
+				return writeFileAtomic("dir/file", []byte{1}, 0600)
+			},
+			"sync": func() error {
+				storageFSOps = newOps(&coverageFile{name: "tmp", syncErr: errCoverage})
+				return writeFileAtomic("dir/file", []byte{1}, 0600)
+			},
+			"close": func() error {
+				storageFSOps = newOps(&coverageFile{name: "tmp", closeErr: errCoverage})
+				return writeFileAtomic("dir/file", []byte{1}, 0600)
+			},
+			"rename": func() error {
+				o := newOps(&coverageFile{name: "tmp"})
+				o.rename = func(string, string) error { return errCoverage }
+				storageFSOps = o
+				return writeFileAtomic("dir/file", []byte{1}, 0600)
+			},
+			"dir sync": func() error {
+				o := newOps(&coverageFile{name: "tmp"})
+				o.rename = func(string, string) error { return nil }
+				o.lstat = func(string) (os.FileInfo, error) { return directory, nil }
+				o.open = func(string) (atomicFile, error) { return &coverageFile{info: directory, syncErr: errCoverage}, nil }
+				storageFSOps = o
+				return writeFileAtomic("dir/file", []byte{1}, 0600)
+			},
+		}
+		for name, run := range cases {
+			t.Run(name, func(t *testing.T) {
+				if err := run(); err == nil {
+					t.Fatal("expected error")
+				}
+			})
+		}
+	})
+	t.Run("prepare directory stages", func(t *testing.T) {
+		cases := map[string]func() error{
+			"lstat": func() error {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return nil, errCoverage }
+				return prepareAtomicFileDir("dir")
+			},
+			"mkdir": func() error {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+				storageFSOps.mkdirAll = func(string, os.FileMode) error { return errCoverage }
+				return prepareAtomicFileDir("dir")
+			},
+			"chmod": func() error {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+				storageFSOps.chmod = func(string, os.FileMode) error { return errCoverage }
+				return prepareAtomicFileDir("dir")
+			},
+		}
+		for name, run := range cases {
+			t.Run(name, func(t *testing.T) {
+				if err := run(); err == nil {
+					t.Fatal("expected error")
+				}
+			})
+		}
+	})
+}
+
+func TestCoverage100FinalFilesystemAndWALStates(t *testing.T) {
+	old := storageFSOps
+	defer func() { storageFSOps = old }()
+	dirInfo := coverageInfo{name: "d", mode: os.ModeDir | 0700}
+	regInfo := coverageInfo{name: "f", mode: 0600}
+	t.Run("syncDir injected stages", func(t *testing.T) {
+		base := old
+		cases := map[string]func() error{
+			"open": func() error {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return dirInfo, nil }
+				storageFSOps.open = func(string) (atomicFile, error) { return nil, errCoverage }
+				return syncDir("dir")
+			},
+			"stat": func() error {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return dirInfo, nil }
+				storageFSOps.open = func(string) (atomicFile, error) { return &coverageFile{statErr: errCoverage}, nil }
+				return syncDir("dir")
+			},
+			"type": func() error {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return dirInfo, nil }
+				storageFSOps.open = func(string) (atomicFile, error) { return &coverageFile{info: regInfo}, nil }
+				return syncDir("dir")
+			},
+			"changed": func() error {
+				storageFSOps = base
+				storageFSOps.lstat = func(string) (os.FileInfo, error) { return dirInfo, nil }
+				storageFSOps.open = func(string) (atomicFile, error) { return &coverageFile{info: dirInfo}, nil }
+				storageFSOps.sameFile = func(os.FileInfo, os.FileInfo) bool { return false }
+				return syncDir("dir")
+			},
+		}
+		for name, run := range cases {
+			t.Run(name, func(t *testing.T) {
+				if err := run(); err == nil {
+					t.Fatal("expected error")
+				}
+			})
+		}
+	})
+	t.Run("salt read exceeds stat", func(t *testing.T) {
+		storageFSOps = old
+		storageFSOps.lstat = func(string) (os.FileInfo, error) { return regInfo, nil }
+		storageFSOps.open = func(string) (atomicFile, error) {
+			return &coverageFile{info: regInfo, data: make([]byte, len(saltFileMarker)+2+maxEncryptionSaltBytes)}, nil
+		}
+		storageFSOps.sameFile = func(os.FileInfo, os.FileInfo) bool { return true }
+		if _, err := readSaltFile("salt"); !errors.Is(err, ErrInvalidSalt) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("WAL checkpoint writer stages", func(t *testing.T) {
+		f := &countFailFile{coverageFile: coverageFile{}, failAfter: 0}
+		w := &WAL{file: f, bufWriter: bufio.NewWriterSize(f, 1)}
+		if err := w.Checkpoint(NewBufferPool(1, NewMemory())); err == nil {
+			t.Fatal("checkpoint flush failure not propagated")
+		}
+		f2 := &coverageFile{syncErr: errCoverage}
+		w = &WAL{file: f2, bufWriter: bufio.NewWriter(f2)}
+		if err := w.Checkpoint(NewBufferPool(1, NewMemory())); !errors.Is(err, errCoverage) {
+			t.Fatalf("final sync: %v", err)
+		}
+	})
+	t.Run("recover seek read unknown and apply", func(t *testing.T) {
+		f := &coverageFile{seekErr: errCoverage}
+		w := &WAL{file: f}
+		if err := w.Recover(NewBufferPool(1, NewMemory())); !errors.Is(err, errCoverage) {
+			t.Fatalf("seek: %v", err)
+		}
+		unknown := coverageEncodedRecord(t, &WALRecord{LSN: 1, Type: 0xff})
+		f = &coverageFile{data: unknown}
+		w = &WAL{file: f}
+		if err := w.Recover(NewBufferPool(1, NewMemory())); err == nil {
+			t.Fatal("unknown accepted")
+		}
+		page := coveragePage(1, PageTypeLeaf)
+		mem := NewMemory()
+		_, _ = mem.WriteAt(page, PageSize)
+		bp := NewBufferPool(2, mem)
+		records := append(coverageEncodedRecord(t, &WALRecord{LSN: 1, TxnID: 1, Type: WALInsert, PageID: 1, Offset: 16, Data: []byte{9}}), coverageEncodedRecord(t, &WALRecord{LSN: 2, TxnID: 1, Type: WALCommit})...)
+		f = &coverageFile{data: records}
+		w = &WAL{file: f}
+		if err := w.Recover(bp); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("close sync error", func(t *testing.T) {
+		f := &coverageFile{syncErr: errCoverage}
+		w := &WAL{file: f, bufWriter: bufio.NewWriter(f)}
+		if err := w.Close(); !errors.Is(err, errCoverage) {
+			t.Fatalf("got %v", err)
+		}
+	})
+}
+
+type countFailFile struct {
+	coverageFile
+	writes    int
+	failAfter int
+}
+
+func (f *countFailFile) Write(p []byte) (int, error) {
+	if f.writes >= f.failAfter {
+		return 0, errCoverage
+	}
+	f.writes += len(p)
+	return f.coverageFile.Write(p)
+}
+
+func TestCoverage100LastWALPaths(t *testing.T) {
+	t.Run("readLSN end seek", func(t *testing.T) {
+		data := coverageEncodedRecord(t, &WALRecord{LSN: 1, Type: WALInsert})
+		f := &coverageFile{data: data, info: coverageInfo{size: int64(len(data))}, seekErr: errCoverage, seekFailAt: 2}
+		if err := (&WAL{file: f}).readLSN(); !errors.Is(err, errCoverage) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("encrypted read success", func(t *testing.T) {
+		c := coverageCipher(t)
+		w := &WAL{cipher: c}
+		r := &WALRecord{LSN: 1, Type: WALInsert, Data: []byte("secret")}
+		var aad [walHeaderSize]byte
+		cipherLen, _ := encryptedRecordDataLen(len(r.Data), c)
+		_ = writeRecordHeader(aad[:], r, cipherLen)
+		zeroWALHeaderLSN(aad[:])
+		enc, err := encryptDataWithCipher(c, r.Data, aad[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Data = enc
+		data := coverageEncodedRecord(t, r)
+		got, _, err := w.readRecord(bufio.NewReader(bytes.NewReader(data)), make([]byte, walHeaderSize))
+		if err != nil || string(got.Data) != "secret" {
+			t.Fatalf("got=%q err=%v", got.Data, err)
+		}
+	})
+	t.Run("batch second append failure", func(t *testing.T) {
+		f := &countFailFile{coverageFile: coverageFile{}, failAfter: walHeaderSize + 4}
+		w := &WAL{file: f, bufWriter: bufio.NewWriterSize(f, 1)}
+		err := w.AppendBatchWithoutSync([]*WALRecord{{Type: WALInsert}, {Type: WALInsert}})
+		if err == nil {
+			t.Fatal("second append succeeded")
+		}
+	})
+	t.Run("formatted batch write", func(t *testing.T) {
+		f := &countFailFile{coverageFile: coverageFile{}, failAfter: 0}
+		w := &WAL{file: f, bufWriter: bufio.NewWriterSize(f, 1), cipher: coverageCipher(t)}
+		if err := w.AppendBatch([]*WALRecord{{Type: WALInsert, Data: []byte("x")}}); err == nil {
+			t.Fatal("formatted write succeeded")
+		}
+	})
+	t.Run("finish batch error", func(t *testing.T) {
+		f := &coverageFile{syncErr: errCoverage}
+		w := &WAL{file: f, bufWriter: bufio.NewWriter(f), groupCommitEnabled: true, batchSize: 1}
+		if err := w.finishBatchSync(); !errors.Is(err, errCoverage) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("format encryption error", func(t *testing.T) {
+		old := rand.Reader
+		rand.Reader = coverageErrorReader{}
+		defer func() { rand.Reader = old }()
+		w := &WAL{}
+		if _, _, err := w.formatBatch([]*WALRecord{{Type: WALInsert, Data: []byte("x")}}, coverageCipher(t)); !errors.Is(err, errCoverage) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("append encrypted random error", func(t *testing.T) {
+		old := rand.Reader
+		rand.Reader = coverageErrorReader{}
+		defer func() { rand.Reader = old }()
+		f := &coverageFile{}
+		w := &WAL{file: f, bufWriter: bufio.NewWriter(f), cipher: coverageCipher(t)}
+		r := &WALRecord{LSN: 9, Type: WALInsert, Data: []byte("x")}
+		if err := w.AppendWithoutSync(r); !errors.Is(err, errCoverage) || r.LSN != 9 {
+			t.Fatalf("lsn=%d err=%v", r.LSN, err)
+		}
+	})
+	t.Run("append sync flush and file errors", func(t *testing.T) {
+		f := &countFailFile{coverageFile: coverageFile{}, failAfter: 0}
+		w := &WAL{file: f, bufWriter: bufio.NewWriterSize(f, 64)}
+		if err := w.Append(&WALRecord{Type: WALInsert}); err == nil {
+			t.Fatal("flush error missing")
+		}
+		f2 := &coverageFile{syncErr: errCoverage}
+		w = &WAL{file: f2, bufWriter: bufio.NewWriter(f2)}
+		if err := w.Append(&WALRecord{Type: WALInsert}); !errors.Is(err, errCoverage) {
+			t.Fatalf("sync: %v", err)
+		}
+	})
+	t.Run("Sync flush error", func(t *testing.T) {
+		f := &countFailFile{coverageFile: coverageFile{}, failAfter: 0}
+		w := &WAL{file: f, bufWriter: bufio.NewWriterSize(f, 64)}
+		_, _ = w.bufWriter.Write([]byte{1})
+		if err := w.Sync(); err == nil {
+			t.Fatal("flush error missing")
+		}
+	})
+	t.Run("group commit error branches", func(t *testing.T) {
+		f := &coverageFile{syncErr: errCoverage}
+		w := &WAL{file: f, bufWriter: bufio.NewWriter(f), groupCommitEnabled: true, batchSize: 1}
+		if err := w.groupCommitAppend(&WALRecord{Type: WALInsert}); !errors.Is(err, errCoverage) {
+			t.Fatalf("batch=%v", err)
+		}
+		w = &WAL{file: f, bufWriter: bufio.NewWriter(f), groupCommitEnabled: true, syncInterval: time.Hour}
+		go func() { time.Sleep(time.Millisecond); w.Sync() }()
+		if err := w.groupCommitAppend(&WALRecord{Type: WALInsert}); !errors.Is(err, errCoverage) {
+			t.Fatalf("wait=%v", err)
+		}
+	})
+	t.Run("checkpoint final sync", func(t *testing.T) {
+		f := &coverageFile{syncErr: errCoverage, syncFailAt: 3}
+		w := &WAL{file: f, bufWriter: bufio.NewWriter(f)}
+		if err := w.Checkpoint(NewBufferPool(1, NewMemory())); !errors.Is(err, errCoverage) {
+			t.Fatalf("got %v calls=%d", err, f.syncCalls)
+		}
+	})
+	t.Run("recover checkpoint and apply failures", func(t *testing.T) {
+		cp := coverageEncodedRecord(t, &WALRecord{LSN: 1, Type: WALCheckpoint})
+		old := coverageEncodedRecord(t, &WALRecord{LSN: 1, TxnID: 1, Type: WALInsert, Data: []byte("skip")})
+		f := &coverageFile{data: append(cp, old...)}
+		w := &WAL{file: f}
+		if err := w.Recover(NewBufferPool(1, NewMemory())); err != nil {
+			t.Fatal(err)
+		}
+		for _, typ := range []WALRecordType{WALCommit, WALUpdateCommit} {
+			records := append(coverageEncodedRecord(t, &WALRecord{LSN: 1, TxnID: 2, Type: WALInsert, PageID: 99, Data: []byte{1}}), coverageEncodedRecord(t, &WALRecord{LSN: 2, TxnID: 2, Type: typ, PageID: func() uint32 {
+				if typ == WALUpdateCommit {
+					return 99
+				}
+				return 0
+			}(), Data: []byte{1}})...)
+			f = &coverageFile{data: records}
+			w = &WAL{file: f}
+			if err := w.Recover(NewBufferPool(1, NewMemory())); err == nil {
+				t.Fatalf("type=%v", typ)
+			}
+		}
+	})
+}
+
+func TestCoverage100AbsoluteLastPaths(t *testing.T) {
+	old := storageFSOps
+	defer func() { storageFSOps = old }()
+	reg := coverageInfo{mode: 0600}
+	dir := coverageInfo{mode: os.ModeDir | 0700}
+	t.Run("constructor lstat", func(t *testing.T) {
+		storageFSOps = old
+		storageFSOps.lstat = func(path string) (os.FileInfo, error) {
+			if strings.HasSuffix(path, "db") || strings.HasSuffix(path, "wal") {
+				return nil, errCoverage
+			}
+			return nil, os.ErrNotExist
+		}
+		if _, err := OpenDisk("db"); !errors.Is(err, errCoverage) {
+			t.Fatalf("disk=%v", err)
+		}
+		if _, err := OpenWAL("wal"); !errors.Is(err, errCoverage) {
+			t.Fatalf("wal=%v", err)
+		}
+	})
+	t.Run("new file directory sync", func(t *testing.T) {
+		storageFSOps = old
+		storageFSOps.open = func(string) (atomicFile, error) { return nil, errCoverage }
+		oldDisk := diskOpenFile
+		defer func() { diskOpenFile = oldDisk }()
+		diskOpenFile = func(string, int, os.FileMode) (diskFile, error) { return &coverageFile{info: reg}, nil }
+		if _, err := OpenDisk("db"); err == nil {
+			t.Fatal("disk sync failure missing")
+		}
+	})
+
+	t.Run("syncDir lstat and symlink recheck", func(t *testing.T) {
+		storageFSOps = old
+		calls := 0
+		storageFSOps.lstat = func(string) (os.FileInfo, error) {
+			calls++
+			if calls == 1 {
+				return dir, nil
+			}
+			return nil, errCoverage
+		}
+		if err := syncDir("dir"); !errors.Is(err, errCoverage) {
+			t.Fatalf("lstat=%v", err)
+		}
+		calls = 0
+		storageFSOps.lstat = func(string) (os.FileInfo, error) {
+			calls++
+			if calls == 1 {
+				return dir, nil
+			}
+			return coverageInfo{mode: os.ModeSymlink}, nil
+		}
+		if err := syncDir("dir"); err == nil {
+			t.Fatal("symlink recheck accepted")
+		}
+	})
+	t.Run("encrypted append oversize", func(t *testing.T) {
+		f := &coverageFile{}
+		w := &WAL{file: f, bufWriter: bufio.NewWriter(f), cipher: coverageCipher(t)}
+		if err := w.AppendWithoutSync(&WALRecord{Type: WALInsert, Data: make([]byte, walMaxRecordDataSize)}); err == nil {
+			t.Fatal("encrypted oversize accepted")
+		}
+	})
+	t.Run("append staged data and CRC", func(t *testing.T) {
+		for _, limit := range []int{walHeaderSize, walHeaderSize + 4} {
+			f := &countFailFile{coverageFile: coverageFile{}, failAfter: limit}
+			w := &WAL{file: f, bufWriter: bufio.NewWriterSize(f, 1)}
+			if err := w.AppendWithoutSync(&WALRecord{Type: WALInsert, Data: []byte("data")}); err == nil {
+				t.Fatalf("limit=%d", limit)
+			}
+		}
+	})
+	t.Run("checkpoint dirty and final flush", func(t *testing.T) {
+		f := &coverageFile{}
+		bad := &coverageBackend{writeErr: errCoverage}
+		bp := NewBufferPool(1, bad)
+		p, _ := bp.NewPage(PageTypeLeaf)
+		p.Unpin()
+		w := &WAL{file: f, bufWriter: bufio.NewWriter(f)}
+		if err := w.Checkpoint(bp); !errors.Is(err, errCoverage) {
+			t.Fatalf("dirty=%v", err)
+		}
+		cf := &countFailFile{coverageFile: coverageFile{}, failAfter: 0}
+		w = &WAL{file: cf, bufWriter: bufio.NewWriter(cf)}
+		if err := w.Checkpoint(NewBufferPool(1, NewMemory())); err == nil {
+			t.Fatal("final flush failure missing")
+		}
+	})
+	t.Run("recover nonEOF and immediate apply", func(t *testing.T) {
+		f := &coverageFile{readErr: errCoverage}
+		w := &WAL{file: f}
+		if err := w.Recover(NewBufferPool(1, NewMemory())); !errors.Is(err, errCoverage) {
+			t.Fatalf("read=%v", err)
+		}
+		records := append(coverageEncodedRecord(t, &WALRecord{LSN: 1, TxnID: 1, Type: WALCommit}), coverageEncodedRecord(t, &WALRecord{LSN: 2, TxnID: 1, Type: WALInsert, PageID: 99, Data: []byte{1}})...)
+		w = &WAL{file: &coverageFile{data: records}}
+		if err := w.Recover(NewBufferPool(1, NewMemory())); err == nil {
+			t.Fatal("immediate apply failure missing")
+		}
+		combined := coverageEncodedRecord(t, &WALRecord{LSN: 1, TxnID: 2, Type: WALUpdateCommit, PageID: 99, Data: []byte{1}})
+		w = &WAL{file: &coverageFile{data: combined}}
+		if err := w.Recover(NewBufferPool(1, NewMemory())); err == nil {
+			t.Fatal("combined apply failure missing")
+		}
+	})
+}
+
+func TestCoverage100FinalEdgePaths(t *testing.T) {
+	old := storageFSOps
+	defer func() { storageFSOps = old }()
+	t.Run("path component lstat error", func(t *testing.T) {
+		storageFSOps = old
+		realDir := t.TempDir()
+		first := true
+		storageFSOps.lstat = func(p string) (os.FileInfo, error) {
+			if first {
+				first = false
+				return os.Lstat(realDir)
+			}
+			return nil, errCoverage
+		}
+		if err := rejectStoragePathSymlinkComponents(filepath.Join(realDir, "child", "grandchild"), "test"); err == nil || !errors.Is(err, errCoverage) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("WAL sync dir failure", func(t *testing.T) {
+		wold := walOpenFile
+		defer func() { walOpenFile = wold }()
+		fso := storageFSOps
+		defer func() { storageFSOps = fso }()
+		storageFSOps.lstat = func(p string) (os.FileInfo, error) {
+			if p == "." || strings.HasSuffix(p, "/.") {
+				return nil, errCoverage
+			}
+			return nil, os.ErrNotExist
+		}
+		walOpenFile = func(string, int, os.FileMode) (walFile, error) {
+			return &coverageFile{info: coverageInfo{mode: 0600}}, nil
+		}
+		if _, err := OpenWAL("wal"); err == nil {
+			t.Fatal("sync dir failure missing")
+		}
+	})
+	t.Run("checkpoint pre sync error", func(t *testing.T) {
+		f := &coverageFile{syncErr: errCoverage, syncFailAt: 2}
+		w := &WAL{file: f, bufWriter: bufio.NewWriter(f)}
+		if err := w.Checkpoint(NewBufferPool(1, NewMemory())); !errors.Is(err, errCoverage) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("recover immediate page error", func(t *testing.T) {
+		bp := NewBufferPool(1, NewMemory())
+		records := append(coverageEncodedRecord(t, &WALRecord{LSN: 1, TxnID: 1, Type: WALCommit}), coverageEncodedRecord(t, &WALRecord{LSN: 2, TxnID: 1, Type: WALInsert, PageID: 99, Offset: 0, Data: make([]byte, PageSize+1)})...)
+		w := &WAL{file: &coverageFile{data: records}}
+		if err := w.Recover(bp); err == nil {
+			t.Fatal("immediate apply failure missing")
+		}
+	})
+	t.Run("recover pending overflow", func(t *testing.T) {
+		storageFSOps = old
+		path := filepath.Join(t.TempDir(), "overflow.wal")
+		w, err := OpenWAL(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 5; i++ {
+			w.AppendWithoutSync(&WALRecord{TxnID: 1, Type: WALInsert, Data: make([]byte, 100)})
+		}
+		w.Close()
+		walTestMaxPendingBytes = 200
+		defer func() { walTestMaxPendingBytes = 0 }()
+		w2, err := OpenWAL(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w2.Recover(NewBufferPool(1, NewMemory())); err == nil {
+			t.Fatal("overflow not detected")
 		}
 	})
 }

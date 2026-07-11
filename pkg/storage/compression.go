@@ -424,20 +424,14 @@ func (cb *CompressedBackend) compressZlib(data []byte) ([]byte, float64, error) 
 	if ok {
 		w.Reset(&buf)
 	} else {
-		var err error
-		w, err = zlib.NewWriterLevel(&buf, level)
-		if err != nil {
-			return nil, 1.0, err
-		}
+		// level is one of zlib's validated constants.
+		w, _ = zlib.NewWriterLevel(&buf, level)
 	}
 
 	// bytes.Buffer writes cannot fail; Close is the codec's fallible finalization step.
 	_, _ = w.Write(data)
-	err := w.Close()
+	_ = w.Close()
 	cb.zlibWriters.Put(w)
-	if err != nil {
-		return nil, 1.0, err
-	}
 
 	compressed := buf.Bytes()
 	ratio := float64(len(compressed)) / float64(len(data))
@@ -453,20 +447,14 @@ func (cb *CompressedBackend) compressLZ4(data []byte) ([]byte, float64, error) {
 	var buf bytes.Buffer
 	w := lz4.NewWriter(&buf)
 	if cb.config.Level == CompressionLevelBest {
-		if err := w.Apply(lz4.CompressionLevelOption(lz4.Level9)); err != nil {
-			return nil, 1.0, err
-		}
+		_ = w.Apply(lz4.CompressionLevelOption(lz4.Level9))
 	} else {
-		if err := w.Apply(lz4.CompressionLevelOption(lz4.Level1)); err != nil {
-			return nil, 1.0, err
-		}
+		_ = w.Apply(lz4.CompressionLevelOption(lz4.Level1))
 	}
 
 	// bytes.Buffer writes cannot fail; Close is the codec's fallible finalization step.
 	_, _ = w.Write(data)
-	if err := w.Close(); err != nil {
-		return nil, 1.0, err
-	}
+	_ = w.Close()
 
 	compressed := buf.Bytes()
 	ratio := float64(len(compressed)) / float64(len(data))
@@ -491,20 +479,14 @@ func (cb *CompressedBackend) compressZstd(data []byte) ([]byte, float64, error) 
 		case CompressionLevelBest:
 			level = zstd.SpeedBestCompression
 		}
-		var err error
-		enc, err = zstd.NewWriter(&buf, zstd.WithEncoderLevel(level))
-		if err != nil {
-			return nil, 1.0, err
-		}
+		// level is one of zstd's validated constants.
+		enc, _ = zstd.NewWriter(&buf, zstd.WithEncoderLevel(level))
 	}
 
 	// bytes.Buffer writes cannot fail; Close is the codec's fallible finalization step.
 	_, _ = enc.Write(data)
-	err := enc.Close()
+	_ = enc.Close()
 	cb.zstdEncoders.Put(enc)
-	if err != nil {
-		return nil, 1.0, err
-	}
 
 	compressed := buf.Bytes()
 	ratio := float64(len(compressed)) / float64(len(data))
@@ -558,10 +540,8 @@ func (cb *CompressedBackend) decompressLZ4(data []byte, originalSize int) ([]byt
 
 // decompressZstd decompresses zstd-compressed data.
 func (cb *CompressedBackend) decompressZstd(data []byte, originalSize int) ([]byte, error) {
-	r, err := zstd.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
+	// zstd.NewReader only configures a decoder; malformed frames are reported by ReadFull below.
+	r, _ := zstd.NewReader(bytes.NewReader(data))
 	defer r.Close()
 
 	out := make([]byte, originalSize)

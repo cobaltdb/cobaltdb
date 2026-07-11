@@ -25,6 +25,10 @@ const lruTouchThreshold = 8
 
 const maxCachedPagePinCount = int32(1<<31 - 1)
 
+// bufferPoolSlowPathHook is a no-op synchronization seam used to exercise
+// state changes between the cache-miss read lock and the slow-path write lock.
+var bufferPoolSlowPathHook = func() {}
+
 // CachedPage represents a page in the buffer pool
 // Fields ordered by decreasing alignment to minimize padding
 type CachedPage struct {
@@ -246,6 +250,7 @@ func (bp *BufferPool) GetPage(pageID uint32) (*CachedPage, error) {
 
 	// Slow path: load from disk
 	bp.stats.recordMiss()
+	bufferPoolSlowPathHook()
 	bp.mu.Lock()
 	if bp.closed {
 		bp.mu.Unlock()

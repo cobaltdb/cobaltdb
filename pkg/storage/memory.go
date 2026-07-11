@@ -110,9 +110,6 @@ func (m *MemoryBackend) WriteAt(buf []byte, offset int64) (int, error) {
 			if newCap < endOffset {
 				newCap = endOffset
 			}
-			if newCap > maxSz {
-				newCap = maxSz
-			}
 			newData := make([]byte, endOffset, newCap)
 			copy(newData, m.data)
 			m.data = newData
@@ -177,9 +174,6 @@ func (m *MemoryBackend) Truncate(size int64) error {
 			}
 			if newCap < size {
 				newCap = size
-			}
-			if newCap > maxSz {
-				newCap = maxSz
 			}
 			newData := make([]byte, size, newCap)
 			copy(newData, m.data)

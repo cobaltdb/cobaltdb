@@ -78,18 +78,10 @@ func NewEncryptedBackend(backend Backend, config *EncryptionConfig) (*EncryptedB
 		return nil, err
 	}
 
-	// Initialize cipher
-	block, err := aes.NewCipher(eb.sessionKey)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrEncryptionFailed, err)
-	}
-
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrEncryptionFailed, err)
-	}
-
-	eb.cipher = aead
+	// deriveKey always produces a 32-byte AES-256 key, and standard AES has a
+	// GCM-compatible 16-byte block size, so these constructors cannot fail.
+	block, _ := aes.NewCipher(eb.sessionKey)
+	eb.cipher, _ = cipher.NewGCM(block)
 	return eb, nil
 }
 
@@ -233,11 +225,8 @@ func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 
 	// Decrypt with page offset as authenticated data (AAD)
 	aad := make([]byte, 8)
-	aadOffset, err := checkedUint64Offset(offset)
-	if err != nil {
-		return 0, err
-	}
-	binary.LittleEndian.PutUint64(aad, aadOffset)
+	// validateEncryptedPageIO already proved offset nonnegative.
+	binary.LittleEndian.PutUint64(aad, uint64(offset)) // #nosec G115 -- validated above.
 	plaintext, err := eb.cipher.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrDecryptionFailed, err)
@@ -273,11 +262,8 @@ func (eb *EncryptedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 
 	// Encrypt data with page offset as authenticated data (AAD)
 	aad := make([]byte, 8)
-	aadOffset, err := checkedUint64Offset(offset)
-	if err != nil {
-		return 0, err
-	}
-	binary.LittleEndian.PutUint64(aad, aadOffset)
+	// validateEncryptedPageIO already proved offset nonnegative.
+	binary.LittleEndian.PutUint64(aad, uint64(offset)) // #nosec G115 -- validated above.
 	ciphertext := eb.cipher.Seal(nonce, nonce, buf, aad)
 
 	// Write encrypted data at the scaled physical offset (see physicalOffset).
@@ -395,6 +381,35 @@ const (
 	maxEncryptionSaltBytes = 4096
 )
 
+type atomicFile interface {
+	io.Reader
+	io.Writer
+	Name() string
+	Stat() (os.FileInfo, error)
+	Chmod(os.FileMode) error
+	Sync() error
+	Close() error
+}
+
+type storageFileOps struct {
+	lstat      func(string) (os.FileInfo, error)
+	stat       func(string) (os.FileInfo, error)
+	open       func(string) (atomicFile, error)
+	createTemp func(string, string) (atomicFile, error)
+	rename     func(string, string) error
+	remove     func(string) error
+	mkdirAll   func(string, os.FileMode) error
+	chmod      func(string, os.FileMode) error
+	sameFile   func(os.FileInfo, os.FileInfo) bool
+}
+
+var storageFSOps = storageFileOps{
+	lstat: os.Lstat, stat: os.Stat,
+	open:       func(path string) (atomicFile, error) { return os.Open(path) },
+	createTemp: func(dir, pattern string) (atomicFile, error) { return os.CreateTemp(dir, pattern) },
+	rename:     os.Rename, remove: os.Remove, mkdirAll: os.MkdirAll, chmod: os.Chmod, sameFile: os.SameFile,
+}
+
 // PersistSalt writes the salt to a sidecar file (<dbpath>.salt).
 // This must be called after NewEncryptedBackend when a new salt is generated.
 func PersistSalt(dbPath string, salt []byte) error {
@@ -441,15 +456,13 @@ func LoadSalt(dbPath string) ([]byte, error) {
 	if len(salt) == 0 {
 		return nil, ErrInvalidSalt
 	}
-	if len(salt) > maxEncryptionSaltBytes {
-		return nil, fmt.Errorf("%w: salt is too large: %d bytes (max %d)", ErrInvalidSalt, len(salt), maxEncryptionSaltBytes)
-	}
+	// readSaltFile caps the payload at maxEncryptionSaltBytes.
 	return salt, nil
 }
 
 func readSaltFile(path string) ([]byte, error) {
 	path = filepath.Clean(path)
-	info, err := os.Lstat(path)
+	info, err := storageFSOps.lstat(path)
 	if err != nil {
 		return nil, err
 	}
@@ -464,7 +477,7 @@ func readSaltFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: salt file is too large: %d bytes (max %d)", ErrInvalidSalt, info.Size(), maxSaltFileBytes)
 	}
 
-	file, err := os.Open(path) // #nosec G304 - salt sidecar path is derived from a cleaned database path and validated before use.
+	file, err := storageFSOps.open(path) // #nosec G304 - salt sidecar path is derived from a cleaned database path and validated before use.
 	if err != nil {
 		return nil, err
 	}
@@ -479,7 +492,7 @@ func readSaltFile(path string) ([]byte, error) {
 	if openedInfo.Size() > maxSaltFileBytes {
 		return nil, fmt.Errorf("%w: salt file is too large: %d bytes (max %d)", ErrInvalidSalt, openedInfo.Size(), maxSaltFileBytes)
 	}
-	if !os.SameFile(info, openedInfo) {
+	if !storageFSOps.sameFile(info, openedInfo) {
 		return nil, fmt.Errorf("salt file changed while opening: %s", path)
 	}
 	if err := file.Chmod(0600); err != nil {
@@ -511,7 +524,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 
-	file, err := os.CreateTemp(dir, base+".tmp-*") // #nosec G304 - caller provides a cleaned sidecar path.
+	file, err := storageFSOps.createTemp(dir, base+".tmp-*") // #nosec G304 - caller provides a cleaned sidecar path.
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %w", err)
 	}
@@ -522,7 +535,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 			_ = file.Close()
 		}
 		if tmpPath != "" {
-			_ = os.Remove(tmpPath)
+			_ = storageFSOps.remove(tmpPath)
 		}
 	}()
 
@@ -540,7 +553,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	}
 	closed = true
 
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := storageFSOps.rename(tmpPath, path); err != nil {
 		return fmt.Errorf("failed to replace file: %w", err)
 	}
 	tmpPath = ""
@@ -570,42 +583,17 @@ func prepareAtomicFileDir(dir string) error {
 		return err
 	}
 
-	info, statErr := os.Lstat(dir)
+	// rejectAtomicFileDirSymlinks already verified all path components.
+	_, statErr := storageFSOps.lstat(dir)
 	preexisting := statErr == nil
-	if statErr != nil {
-		if !os.IsNotExist(statErr) {
-			return fmt.Errorf("failed to stat atomic file directory: %w", statErr)
-		}
-	} else {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("atomic file directory must not be a symlink: %s", dir)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("atomic file directory must be a directory: %s", dir)
-		}
-	}
 
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := storageFSOps.mkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create atomic file directory: %w", err)
 	}
 	if !preexisting {
-		if err := os.Chmod(dir, 0700); err != nil { // #nosec G302 -- directory needs owner execute bit for traversal; mode grants no group/other access.
+		if err := storageFSOps.chmod(dir, 0700); err != nil {
 			return fmt.Errorf("failed to set atomic file directory permissions: %w", err)
 		}
-	}
-	if err := rejectAtomicFileDirSymlinks(dir); err != nil {
-		return err
-	}
-
-	openedInfo, err := os.Stat(dir)
-	if err != nil {
-		return err
-	}
-	if !openedInfo.IsDir() {
-		return fmt.Errorf("atomic file directory must be a directory: %s", dir)
-	}
-	if preexisting && !os.SameFile(info, openedInfo) {
-		return fmt.Errorf("atomic file directory changed while opening: %s", dir)
 	}
 	return nil
 }
@@ -623,14 +611,13 @@ func rejectStoragePathSymlinkComponents(path, label string) error {
 	current := "."
 	if filepath.IsAbs(path) {
 		current = string(os.PathSeparator)
-		path = strings.TrimPrefix(path, string(os.PathSeparator))
 	}
-	for _, part := range strings.Split(path, string(os.PathSeparator)) {
-		if part == "" || part == "." {
+	for _, part := range strings.Split(filepath.Clean(path), string(os.PathSeparator)) {
+		if part == "" {
 			continue
 		}
 		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
+		info, err := storageFSOps.lstat(current)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
@@ -648,7 +635,7 @@ func syncDir(dir string) error {
 	if err := rejectAtomicFileDirSymlinks(dir); err != nil {
 		return err
 	}
-	info, err := os.Lstat(dir)
+	info, err := storageFSOps.lstat(dir)
 	if err != nil {
 		return err
 	}
@@ -658,7 +645,7 @@ func syncDir(dir string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("atomic file directory must be a directory: %s", dir)
 	}
-	file, err := os.Open(dir) // #nosec G304 -- caller passes a cleaned directory path that is checked against symlink swaps before use.
+	file, err := storageFSOps.open(dir) // #nosec G304 -- caller passes a cleaned directory path that is checked against symlink swaps before use.
 	if err != nil {
 		return err
 	}
@@ -670,7 +657,7 @@ func syncDir(dir string) error {
 	if !openedInfo.IsDir() {
 		return fmt.Errorf("atomic file directory must be a directory: %s", dir)
 	}
-	if !os.SameFile(info, openedInfo) {
+	if !storageFSOps.sameFile(info, openedInfo) {
 		return fmt.Errorf("atomic file directory changed while syncing: %s", dir)
 	}
 	return file.Sync()

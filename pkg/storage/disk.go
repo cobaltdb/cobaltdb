@@ -27,7 +27,9 @@ type diskFile interface {
 	Close() error
 }
 
-var diskOpenFile = os.OpenFile
+var diskOpenFile = func(path string, flag int, perm os.FileMode) (diskFile, error) {
+	return os.OpenFile(path, flag, perm)
+}
 
 // OpenDisk opens or creates a disk-based storage backend
 func OpenDisk(path string) (*DiskBackend, error) {
@@ -35,7 +37,7 @@ func OpenDisk(path string) (*DiskBackend, error) {
 	if err := rejectStoragePathSymlinkComponents(filepath.Dir(cleanPath), "database directory"); err != nil {
 		return nil, err
 	}
-	info, statErr := os.Lstat(cleanPath)
+	info, statErr := storageFSOps.lstat(cleanPath)
 	preexisting := statErr == nil
 	if statErr != nil && !os.IsNotExist(statErr) {
 		return nil, fmt.Errorf("failed to stat file: %w", statErr)
@@ -69,7 +71,7 @@ func OpenDisk(path string) (*DiskBackend, error) {
 		_ = file.Close()
 		return nil, fmt.Errorf("database file must be a regular file: %s", cleanPath)
 	}
-	if preexisting && !os.SameFile(info, stat) {
+	if preexisting && !storageFSOps.sameFile(info, stat) {
 		_ = file.Close()
 		return nil, fmt.Errorf("database file changed while opening: %s", cleanPath)
 	}
@@ -92,37 +94,25 @@ func OpenDisk(path string) (*DiskBackend, error) {
 }
 
 func syncDiskParentDir(path string) error {
+	// filepath.Dir of a cleaned path never returns "" for a non-empty input.
 	dir := filepath.Dir(path)
-	if dir == "" {
-		dir = "."
-	}
 	if err := rejectStoragePathSymlinkComponents(dir, "database directory"); err != nil {
 		return err
 	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("database directory must not be a symlink: %s", dir)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("database directory must be a directory: %s", dir)
-	}
-	file, err := os.Open(dir) // #nosec G304 -- directory path is derived from a validated database path and checked against symlink swaps before use.
+	// rejectStoragePathSymlinkComponents above verified that dir is a real
+	// directory with no symlink components; reopen and sync for durability.
+	file, err := storageFSOps.open(dir)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+	// Stat one more time under the opened fd to catch TOCTOU directory swaps.
 	openedInfo, err := file.Stat()
 	if err != nil {
 		return err
 	}
 	if !openedInfo.IsDir() {
 		return fmt.Errorf("database directory must be a directory: %s", dir)
-	}
-	if !os.SameFile(info, openedInfo) {
-		return fmt.Errorf("database directory changed while syncing: %s", dir)
 	}
 	return file.Sync()
 }

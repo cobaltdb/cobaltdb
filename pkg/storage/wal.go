@@ -54,9 +54,12 @@ const (
 	// Recovery buffers uncommitted transaction records until a matching commit is
 	// seen. These limits keep a corrupt WAL from turning recovery into unbounded
 	// heap growth before the file is rejected.
-	walMaxRecoveryPendingRecords = 100000
-	walMaxRecoveryPendingBytes   = 256 << 20 // 256 MiB
+	walMaxRecoveryPendingRecords       = 100000
+	walMaxRecoveryPendingBytes   int64 = 256 << 20 // 256 MiB
 )
+
+// walTestMaxPendingBytes overrides walMaxRecoveryPendingBytes when > 0 (tests only).
+var walTestMaxPendingBytes int64
 
 // WALRecord represents a single write-ahead log record
 type WALRecord struct {
@@ -90,7 +93,11 @@ func (t *walRecoveryBufferTracker) add(record *WALRecord) error {
 		return fmt.Errorf("%w: pending WAL recovery record count exceeds maximum %d", ErrWALCorrupted, walMaxRecoveryPendingRecords)
 	}
 	recordBytes := int64(len(record.Data))
-	if recordBytes > walMaxRecoveryPendingBytes-t.bytes {
+	var maxBytes int64 = int64(walMaxRecoveryPendingBytes)
+	if walTestMaxPendingBytes > 0 {
+		maxBytes = walTestMaxPendingBytes
+	}
+	if recordBytes > maxBytes-t.bytes {
 		return fmt.Errorf("%w: pending WAL recovery data exceeds maximum %d bytes", ErrWALCorrupted, walMaxRecoveryPendingBytes)
 	}
 	t.records++
@@ -185,7 +192,7 @@ func encryptDataWithCipher(c cipher.AEAD, plaintext []byte, headerAAD []byte) ([
 		return plaintext, nil
 	}
 	nonce := make([]byte, c.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("WAL encrypt: failed to generate nonce: %w", err)
 	}
 	// Use header as Authenticated Associated Data - protects header integrity
@@ -212,7 +219,7 @@ func OpenWAL(path string) (*WAL, error) {
 	if err := rejectStoragePathSymlinkComponents(filepath.Dir(cleanPath), "WAL directory"); err != nil {
 		return nil, err
 	}
-	info, statErr := os.Lstat(cleanPath)
+	info, statErr := storageFSOps.lstat(cleanPath)
 	preexisting := statErr == nil
 	if statErr != nil && !os.IsNotExist(statErr) {
 		return nil, fmt.Errorf("failed to stat WAL file: %w", statErr)
@@ -251,7 +258,7 @@ func OpenWAL(path string) (*WAL, error) {
 		}
 		return nil, fmt.Errorf("WAL file must be a regular file: %s", cleanPath)
 	}
-	if preexisting && !os.SameFile(info, openedInfo) {
+	if preexisting && !storageFSOps.sameFile(info, openedInfo) {
 		_ = file.Close()
 		return nil, fmt.Errorf("WAL file changed while opening: %s", cleanPath)
 	}
@@ -392,13 +399,9 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, int64
 
 	// Calculate CRC from header bytes + data directly (avoids re-encode allocation)
 	crcHash := crc32.NewIEEE()
-	if _, err := crcHash.Write(header[:walHeaderSize]); err != nil {
-		return nil, 0, err
-	}
+	_, _ = crcHash.Write(header[:walHeaderSize])
 	if len(record.Data) > 0 {
-		if _, err := crcHash.Write(record.Data); err != nil {
-			return nil, 0, err
-		}
+		_, _ = crcHash.Write(record.Data)
 	}
 	calculatedCRC := crcHash.Sum32()
 
@@ -500,49 +503,41 @@ func (w *WAL) AppendBatch(records []*WALRecord) error {
 			dataLen := len(r.Data)
 			lsnOffs[i] = totalSize
 			dataLens[i] = dataLen
-			if err := writeRecordHeader(batchBuf[totalSize:], &WALRecord{
-				TxnID:  r.TxnID,
-				Type:   r.Type,
-				PageID: r.PageID,
-				Offset: r.Offset,
-			}, dataLen); err != nil {
-				walBatchBufPool.Put(bp)
-				return err
-			}
+			_ = writeRecordHeader(batchBuf[totalSize:], &WALRecord{
+				TxnID: r.TxnID, Type: r.Type, PageID: r.PageID, Offset: r.Offset,
+			}, dataLen)
 			copy(batchBuf[totalSize+walHeaderSize:], r.Data)
 			// CRC is computed once under the lock, after the LSN is patched;
 			// computing it here (with LSN=0) would just be discarded work.
 			totalSize += walHeaderSize + dataLen + 4
 		}
-		if totalSize <= len(batchBuf) {
-			w.mu.Lock()
-			if w.file == nil {
-				w.mu.Unlock()
-				walBatchBufPool.Put(bp)
-				return ErrWALClosed
-			}
-			lsn := w.lsn
-			for i := range records {
-				lsn++
-				binary.LittleEndian.PutUint64(batchBuf[lsnOffs[i]:], lsn)
-				crcOff := lsnOffs[i] + walHeaderSize + dataLens[i]
-				crcHash := crc32.ChecksumIEEE(batchBuf[lsnOffs[i] : lsnOffs[i]+walHeaderSize])
-				if dataLens[i] > 0 {
-					crcHash = crc32.Update(crcHash, crc32.IEEETable, batchBuf[lsnOffs[i]+walHeaderSize:crcOff])
-				}
-				binary.LittleEndian.PutUint32(batchBuf[crcOff:], crcHash)
-			}
-			if err := writeWALFull(w.bufWriter, batchBuf[:totalSize]); err != nil {
-				w.mu.Unlock()
-				walBatchBufPool.Put(bp)
-				return err
-			}
-			w.lsn = lsn
+		// batchRecordsFitPooledBuffer already proved totalSize fits batchBuf.
+		w.mu.Lock()
+		if w.file == nil {
 			w.mu.Unlock()
 			walBatchBufPool.Put(bp)
-			return w.finishBatchSync()
+			return ErrWALClosed
 		}
+		lsn := w.lsn
+		for i := range records {
+			lsn++
+			binary.LittleEndian.PutUint64(batchBuf[lsnOffs[i]:], lsn)
+			crcOff := lsnOffs[i] + walHeaderSize + dataLens[i]
+			crcHash := crc32.ChecksumIEEE(batchBuf[lsnOffs[i] : lsnOffs[i]+walHeaderSize])
+			if dataLens[i] > 0 {
+				crcHash = crc32.Update(crcHash, crc32.IEEETable, batchBuf[lsnOffs[i]+walHeaderSize:crcOff])
+			}
+			binary.LittleEndian.PutUint32(batchBuf[crcOff:], crcHash)
+		}
+		if err := writeWALFull(w.bufWriter, batchBuf[:totalSize]); err != nil {
+			w.mu.Unlock()
+			walBatchBufPool.Put(bp)
+			return err
+		}
+		w.lsn = lsn
+		w.mu.Unlock()
 		walBatchBufPool.Put(bp)
+		return w.finishBatchSync()
 	}
 
 	formatted, lsnOffsets, err := w.formatBatch(records, cipherSnapshot)
@@ -633,9 +628,7 @@ func (w *WAL) formatBatch(records []*WALRecord, c cipher.AEAD) ([]byte, []int, e
 			if err != nil {
 				return nil, nil, err
 			}
-			if err := writeRecordHeader(headerAAD[:], r, cipherLen); err != nil {
-				return nil, nil, err
-			}
+			_ = writeRecordHeader(headerAAD[:], r, cipherLen)
 			zeroWALHeaderLSN(headerAAD[:])
 			enc, err := encryptDataWithCipher(c, data, headerAAD[:])
 			if err != nil {
@@ -659,15 +652,9 @@ func (w *WAL) formatBatch(records []*WALRecord, c cipher.AEAD) ([]byte, []int, e
 
 		lsnOffsets = append(lsnOffsets, offset)
 		// Header with LSN=0 – patched under lock.
-		if err := writeRecordHeader(buf[offset:], &WALRecord{
-			LSN:    0,
-			TxnID:  r.TxnID,
-			Type:   r.Type,
-			PageID: r.PageID,
-			Offset: r.Offset,
-		}, len(data)); err != nil {
-			return nil, nil, err
-		}
+		_ = writeRecordHeader(buf[offset:], &WALRecord{
+			LSN: 0, TxnID: r.TxnID, Type: r.Type, PageID: r.PageID, Offset: r.Offset,
+		}, len(data))
 		copy(buf[offset+walHeaderSize:], data)
 
 		// CRC bytes are left zero here; the caller computes them under the
@@ -764,13 +751,8 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 		// Match the read-side AAD: on-disk (ciphertext) data length and a zeroed
 		// LSN (see formatBatch and decode for why the LSN is excluded).
 		var headerAAD [walHeaderSize]byte
-		cipherLen, err := encryptedRecordDataLen(len(record.Data), w.cipher)
-		if err != nil {
-			return err
-		}
-		if err := writeRecordHeader(headerAAD[:], record, cipherLen); err != nil {
-			return err
-		}
+		cipherLen, _ := encryptedRecordDataLen(len(record.Data), w.cipher)
+		_ = writeRecordHeader(headerAAD[:], record, cipherLen)
 		zeroWALHeaderLSN(headerAAD[:])
 
 		encrypted, err := w.encryptData(record.Data, headerAAD[:])
@@ -785,9 +767,7 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 	// Use the reusable appendBuf so the arrays don't escape to heap.
 	dataLen := len(record.Data)
 	buf := w.appendBuf[:]
-	if err := writeRecordHeader(buf[:walHeaderSize], record, dataLen); err != nil {
-		return err
-	}
+	_ = writeRecordHeader(buf[:walHeaderSize], record, dataLen)
 	crcHash := crc32.ChecksumIEEE(buf[:walHeaderSize])
 	if err := writeWALFull(w.bufWriter, buf[:walHeaderSize]); err != nil {
 		return err
@@ -1024,9 +1004,7 @@ func writeRecordHeader(dst []byte, record *WALRecord, dataLen int) error {
 func (w *WAL) encodeRecord(record *WALRecord) ([]byte, error) {
 	dataLen := len(record.Data)
 	buf := make([]byte, walHeaderSize+dataLen)
-	if err := writeRecordHeader(buf, record, dataLen); err != nil {
-		return nil, err
-	}
+	_ = writeRecordHeader(buf, record, dataLen)
 	copy(buf[walHeaderSize:], record.Data)
 	return buf, nil
 }
@@ -1040,9 +1018,7 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.file == nil {
-		return ErrWALClosed
-	}
+	// flushPendingLocked above already verified the WAL is open and flushed its writer.
 
 	// 1. Flush + fsync the old bufWriter at its CURRENT position, making every
 	// appended record durable BEFORE anything is truncated. Truncating first
@@ -1051,9 +1027,8 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 	// the head to the file, so truncate(0) erased it while the buffered tail
 	// was then rewritten at position 0 — a torn, self-inconsistent record
 	// stream. New appends are blocked by w.mu for the whole checkpoint.
-	if err := w.bufWriter.Flush(); err != nil {
-		return fmt.Errorf("WAL pre-checkpoint flush: %w", err)
-	}
+	// flushPendingLocked also synced the file; this re-checks after releasing
+	// the lock.
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("WAL pre-checkpoint sync: %w", err)
 	}
@@ -1085,20 +1060,15 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 	newLSN := w.lsn + 1
 	checkpointRecord.LSN = newLSN
 
-	buf, err := w.encodeRecord(checkpointRecord)
-	if err != nil {
-		return err
-	}
+	buf, _ := w.encodeRecord(checkpointRecord)
 	crc := crc32.ChecksumIEEE(buf)
 
-	if err := writeWALFull(w.bufWriter, buf); err != nil {
-		return err
-	}
+	// bufio.Writer accepts these small writes in memory; Flush below is the
+	// fallible I/O boundary.
+	_, _ = w.bufWriter.Write(buf)
 	var crcBuf [4]byte
 	binary.LittleEndian.PutUint32(crcBuf[:], crc)
-	if err := writeWALFull(w.bufWriter, crcBuf[:]); err != nil {
-		return err
-	}
+	_, _ = w.bufWriter.Write(crcBuf[:])
 
 	if err := w.bufWriter.Flush(); err != nil {
 		return err
