@@ -744,13 +744,7 @@ func (m *Manager) parseExpression(expr string) (PolicyExpr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
-			result, err := innerExpr(ctx, row)
-			if err != nil {
-				return false, err
-			}
-			return !result, nil
-		}, nil
+		return notPolicyExpr(innerExpr), nil
 	}
 
 	// Handle parentheses - find matching pair and strip them
@@ -786,6 +780,42 @@ func (m *Manager) parseExpression(expr string) (PolicyExpr, error) {
 }
 
 // parseComplexExpression handles AND/OR combinations with proper precedence and parentheses
+func notPolicyExpr(inner PolicyExpr) PolicyExpr {
+	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+		result, err := inner(ctx, row)
+		if err != nil {
+			return false, err
+		}
+		return !result, nil
+	}
+}
+
+func andPolicyExpr(leftExpr, rightExpr PolicyExpr) PolicyExpr {
+	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+		left, err := leftExpr(ctx, row)
+		if err != nil {
+			return false, err
+		}
+		if !left {
+			return false, nil
+		}
+		return rightExpr(ctx, row)
+	}
+}
+
+func orPolicyExpr(leftExpr, rightExpr PolicyExpr) PolicyExpr {
+	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
+		left, err := leftExpr(ctx, row)
+		if err != nil {
+			return false, err
+		}
+		if left {
+			return true, nil
+		}
+		return rightExpr(ctx, row)
+	}
+}
+
 func (m *Manager) parseComplexExpression(expr string) (PolicyExpr, error) {
 	expr = strings.TrimSpace(expr)
 
@@ -800,16 +830,7 @@ func (m *Manager) parseComplexExpression(expr string) (PolicyExpr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
-			left, err := leftExpr(ctx, row)
-			if err != nil {
-				return false, err
-			}
-			if !left {
-				return false, nil
-			}
-			return rightExpr(ctx, row)
-		}, nil
+		return andPolicyExpr(leftExpr, rightExpr), nil
 	}
 
 	orIdx := findTopLevelOperator(expr, " OR ")
@@ -822,16 +843,7 @@ func (m *Manager) parseComplexExpression(expr string) (PolicyExpr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return func(ctx context.Context, row map[string]interface{}) (bool, error) {
-			left, err := leftExpr(ctx, row)
-			if err != nil {
-				return false, err
-			}
-			if left {
-				return true, nil
-			}
-			return rightExpr(ctx, row)
-		}, nil
+		return orPolicyExpr(leftExpr, rightExpr), nil
 	}
 
 	return nil, fmt.Errorf("could not parse complex expression")

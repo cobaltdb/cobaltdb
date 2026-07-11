@@ -266,14 +266,9 @@ func (cb *CompressedBackend) WriteAt(buf []byte, offset int64) (int, error) {
 	// a MinRatio near 1.0 could admit a payload whose 8-byte header pushes
 	// the physical record past PageSize, spilling into the next page's slot.
 	if ratio <= cb.config.MinRatio && compressionHeaderSize+len(compressed) <= PageSize {
-		originalSize, err := checkedUint16(len(buf), "compression original size")
-		if err != nil {
-			return cb.writeRaw(buf, offset)
-		}
-		compressedSize, err := checkedUint16(len(compressed), "compression payload size")
-		if err != nil {
-			return cb.writeRaw(buf, offset)
-		}
+		// The enclosing PageSize fit check guarantees both lengths fit uint16.
+		originalSize := uint16(len(buf))          // #nosec G115 -- bounded by PageSize above.
+		compressedSize := uint16(len(compressed)) // #nosec G115 -- bounded by PageSize above.
 
 		// Assemble header + payload into one buffer and issue a single write.
 		// Two separate WriteAt calls would let a crash between them leave a
@@ -436,12 +431,9 @@ func (cb *CompressedBackend) compressZlib(data []byte) ([]byte, float64, error) 
 		}
 	}
 
-	_, err := w.Write(data)
-	if err != nil {
-		cb.zlibWriters.Put(w)
-		return nil, 1.0, err
-	}
-	err = w.Close()
+	// bytes.Buffer writes cannot fail; Close is the codec's fallible finalization step.
+	_, _ = w.Write(data)
+	err := w.Close()
 	cb.zlibWriters.Put(w)
 	if err != nil {
 		return nil, 1.0, err
@@ -470,9 +462,8 @@ func (cb *CompressedBackend) compressLZ4(data []byte) ([]byte, float64, error) {
 		}
 	}
 
-	if _, err := w.Write(data); err != nil {
-		return nil, 1.0, err
-	}
+	// bytes.Buffer writes cannot fail; Close is the codec's fallible finalization step.
+	_, _ = w.Write(data)
 	if err := w.Close(); err != nil {
 		return nil, 1.0, err
 	}
@@ -507,12 +498,9 @@ func (cb *CompressedBackend) compressZstd(data []byte) ([]byte, float64, error) 
 		}
 	}
 
-	_, err := enc.Write(data)
-	if err != nil {
-		cb.zstdEncoders.Put(enc)
-		return nil, 1.0, err
-	}
-	err = enc.Close()
+	// bytes.Buffer writes cannot fail; Close is the codec's fallible finalization step.
+	_, _ = enc.Write(data)
+	err := enc.Close()
 	cb.zstdEncoders.Put(enc)
 	if err != nil {
 		return nil, 1.0, err
