@@ -151,7 +151,9 @@ type walFile interface {
 	Close() error
 }
 
-var walOpenFile = os.OpenFile
+var walOpenFile = func(path string, flag int, perm os.FileMode) (walFile, error) {
+	return os.OpenFile(path, flag, perm)
+}
 
 func writeWALFull(writer io.Writer, data []byte) error {
 	n, err := writer.Write(data)
@@ -287,6 +289,9 @@ func OpenWAL(path string) (*WAL, error) {
 
 // readLSN scans the WAL file to find the last LSN
 func (w *WAL) readLSN() error {
+	if w.file == nil {
+		return errors.New("WAL not open")
+	}
 	stat, err := w.file.Stat()
 	if err != nil {
 		return err
