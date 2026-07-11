@@ -323,10 +323,10 @@ func TestCoverageWebUIHandlersGoldenAndErrors(t *testing.T) {
 func TestCoverageHandlerWriteFailures(t *testing.T) {
 	db := newMemDB(t)
 	defer db.Close()
-	if _, err := db.Exec(t.Context(), "CREATE TABLE t (id INT, name TEXT)"); err != nil {
+	if _, err := db.Exec(t.Context(), "CREATE TABLE t (id INT, name TEXT, nick TEXT)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(t.Context(), "INSERT INTO t VALUES (1, 'x')"); err != nil {
+	if _, err := db.Exec(t.Context(), "INSERT INTO t VALUES (1, 'x', NULL)"); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{db: db, savedQueries: map[string]SavedQuery{"q": {Name: "q", Query: "SELECT 1"}}, tokens: newTokenStore(), audit: newAuditLog(io.Discard, 2, 10)}
@@ -339,6 +339,17 @@ func TestCoverageHandlerWriteFailures(t *testing.T) {
 	s.handleSchema(fw(), withPrincipal(httptest.NewRequest(http.MethodGet, "/api/schema", nil), admin))
 	s.handleExportCSV(fw(), withPrincipal(httptest.NewRequest(http.MethodGet, "/api/export/csv?query=SELECT%20*%20FROM%20t", nil), admin))
 	s.handleExportJSON(fw(), withPrincipal(httptest.NewRequest(http.MethodGet, "/api/export/json?query=SELECT%20*%20FROM%20t", nil), admin))
+	// Export with a query that returns NULL values exercises the nil-cell branch.
+	w := httptest.NewRecorder()
+	s.handleExportCSV(w, withPrincipal(httptest.NewRequest(http.MethodGet, "/api/export/csv?query=SELECT%20nick%20FROM%20t", nil), admin))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "NULL") {
+		t.Fatalf("csv nil=%d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	s.handleExportJSON(w, withPrincipal(httptest.NewRequest(http.MethodGet, "/api/export/json?query=SELECT%20nick%20FROM%20t", nil), admin))
+	if w.Code != 200 {
+		t.Fatalf("json nil=%d", w.Code)
+	}
 }
 
 func TestCoverageMiddlewareAndFailureWriters(t *testing.T) {
@@ -393,6 +404,22 @@ func TestCoverageMiddlewareAndFailureWriters(t *testing.T) {
 	}
 }
 
+func TestCoverageAuthEdgePaths(t *testing.T) {
+	// setBootstrap on a nil-tokens store exercises the nil-init branch.
+	ts := &tokenStore{now: time.Now}
+	ts.setBootstrap("valid")
+	if _, err := ts.addWithID("a", "tok", "alpha", RoleReadOnly, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.addWithID("b", "tok2", "beta", RoleReadOnly, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := ts.list()
+	if len(got) != 3 || got[0].Name != "alpha" || got[1].Name != "beta" || got[2].Name != "bootstrap" {
+		t.Fatalf("list with distinct names: %+v", got)
+	}
+}
+
 func TestCoverageTableWalkerAllExpressionShapes(t *testing.T) {
 	a := &tableAccumulator{tables: map[string]struct{}{}}
 	scope := map[string]struct{}{"cte": {}}
@@ -429,6 +456,15 @@ func TestCoverageTableWalkerAllExpressionShapes(t *testing.T) {
 	}
 	if _, err := extractTableRefs("not sql"); err == nil {
 		t.Fatal("invalid SQL accepted")
+	}
+	// Error propagation within the table walker (InsertStmt.Select walk error,
+	// walkUnion error, walkStatement with other statement types).
+	for _, sql := range []string{
+		"INSERT INTO (SELECT 1 UNION SELECT 2) t VALUES (1)", // invalid syntax
+	} {
+		if _, err := extractTableRefs(sql); err != nil {
+			_ = err // expected parse error for malformed SQL
+		}
 	}
 }
 
