@@ -75,6 +75,22 @@ var ErrAutomaticFailoverUnsupported = errors.New("automatic failover is not supp
 
 var replicationDial = net.DialTimeout
 
+// OS function seams for testing: tests can replace these to inject I/O
+// failures in state file operations without using real OS error injection.
+var replicationCreateTemp = os.CreateTemp
+var replicationRename = os.Rename
+var replicationRemove = os.Remove
+var replicationLstat = os.Lstat
+var replicationStat = os.Stat
+var replicationOpenFile = os.Open
+var replicationOpenDir = os.Open
+var replicationMkdirAll = os.MkdirAll
+var replicationChmod = os.Chmod
+var replicationFileSync = func(f *os.File) error { return f.Sync() }
+var replicationFileChmod = func(f *os.File, mode os.FileMode) error { return f.Chmod(mode) }
+var replicationFileClose = func(f *os.File) error { return f.Close() }
+var replicationFileStat = func(f *os.File) (os.FileInfo, error) { return f.Stat() }
+
 // ErrPromotionRejected is returned when an externally orchestrated promotion
 // request does not provide the fencing and freshness guarantees required to
 // avoid split-brain.
@@ -129,83 +145,43 @@ func (e *WALEntry) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("WAL entry data too large: %d bytes (max %d)", len(e.Data), maxWALEntryDataBytes)
 	}
 
-	buf := new(bytes.Buffer)
-
-	// Write LSN
-	if err := binary.Write(buf, binary.BigEndian, e.LSN); err != nil {
-		return nil, err
-	}
-
-	// Write timestamp
-	ts := e.Timestamp.UnixNano()
-	if err := binary.Write(buf, binary.BigEndian, ts); err != nil {
-		return nil, err
-	}
-
-	// Write data length and data
-	dataLen, err := replicationUint32Len(len(e.Data), "WAL entry data length")
-	if err != nil {
-		return nil, err
-	}
-	if err := binary.Write(buf, binary.BigEndian, dataLen); err != nil {
-		return nil, err
-	}
-	if _, err := buf.Write(e.Data); err != nil {
-		return nil, err
-	}
-
-	// Write checksum
-	if err := binary.Write(buf, binary.BigEndian, e.Checksum); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	buf := make([]byte, 0, walEntryMetadataBytes+len(e.Data))
+	buf = binary.BigEndian.AppendUint64(buf, e.LSN)
+	buf = binary.BigEndian.AppendUint64(buf, uint64(e.Timestamp.UnixNano()))
+	// Length is bounded by the check above and can never exceed maxWALEntryDataBytes.
+	dataLen := uint32(len(e.Data)) // #nosec G115
+	buf = binary.BigEndian.AppendUint32(buf, dataLen)
+	buf = append(buf, e.Data...)
+	buf = binary.BigEndian.AppendUint32(buf, e.Checksum)
+	return buf, nil
 }
 
 // Decode deserializes a WAL entry
 func (e *WALEntry) Decode(data []byte) error {
-	buf := bytes.NewReader(data)
-
-	// Read LSN
-	if err := binary.Read(buf, binary.BigEndian, &e.LSN); err != nil {
-		return err
+	if len(data) < 24 {
+		return fmt.Errorf("WAL entry too short: %d bytes", len(data))
 	}
 
-	// Read timestamp
-	var ts int64
-	if err := binary.Read(buf, binary.BigEndian, &ts); err != nil {
-		return err
-	}
-	e.Timestamp = time.Unix(0, ts)
-
-	// Read data length and data
-	var dataLen uint32
-	if err := binary.Read(buf, binary.BigEndian, &dataLen); err != nil {
-		return err
-	}
-
-	remaining := buf.Len()
+	e.LSN = binary.BigEndian.Uint64(data[0:8])
+	e.Timestamp = time.Unix(0, int64(binary.BigEndian.Uint64(data[8:16])))
+	dataLen := binary.BigEndian.Uint32(data[16:20])
+	remaining := len(data) - 20
 	if remaining < 4 {
-		return fmt.Errorf("WAL entry truncated before checksum")
+		return fmt.Errorf("WAL entry truncated before data and checksum: %d bytes remaining", remaining)
 	}
 	if dataLen > maxWALEntryDataBytes {
 		return fmt.Errorf("WAL entry data too large: %d bytes (max %d)", dataLen, maxWALEntryDataBytes)
 	}
-	if uint64(dataLen) > uint64(remaining-4) {
+	if int(dataLen) > remaining-4 {
 		return fmt.Errorf("WAL entry data length %d exceeds remaining payload %d", dataLen, remaining-4)
 	}
 
 	e.Data = make([]byte, int(dataLen))
-	if _, err := io.ReadFull(buf, e.Data); err != nil {
-		return err
-	}
+	copy(e.Data, data[20:20+dataLen])
+	e.Checksum = binary.BigEndian.Uint32(data[20+dataLen : 24+dataLen])
 
-	// Read checksum
-	if err := binary.Read(buf, binary.BigEndian, &e.Checksum); err != nil {
-		return err
-	}
-	if buf.Len() != 0 {
-		return fmt.Errorf("WAL entry contains trailing data: %d bytes", buf.Len())
+	if len(data) > 24+int(dataLen) {
+		return fmt.Errorf("WAL entry contains trailing data: %d bytes", len(data)-(24+int(dataLen)))
 	}
 
 	return nil
@@ -1496,33 +1472,33 @@ func writeReplicationStateFileAtomic(stateFile string, data []byte) error {
 
 	dir := filepath.Dir(stateFile)
 	base := filepath.Base(stateFile)
-	file, err := os.CreateTemp(dir, "."+base+".tmp-*") // #nosec G304 - state file path is explicit replication config and directory is validated before use.
+	file, err := replicationCreateTemp(dir, "."+base+".tmp-*") // #nosec G304 - state file path is explicit replication config and directory is validated before use.
 	if err != nil {
 		return err
 	}
 	tmpPath := file.Name()
-	if err := file.Chmod(replicationStateFilePerm); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmpPath)
+	if err := replicationFileChmod(file, replicationStateFilePerm); err != nil {
+		_ = replicationFileClose(file)
+		_ = replicationRemove(tmpPath)
 		return err
 	}
 
 	if _, err := writeReplicationStateFull(file, data); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmpPath)
+		_ = replicationFileClose(file)
+		_ = replicationRemove(tmpPath)
 		return err
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmpPath)
+	if err := replicationFileSync(file); err != nil {
+		_ = replicationFileClose(file)
+		_ = replicationRemove(tmpPath)
 		return err
 	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := replicationFileClose(file); err != nil {
+		_ = replicationRemove(tmpPath)
 		return err
 	}
-	if err := os.Rename(tmpPath, stateFile); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := replicationRename(tmpPath, stateFile); err != nil {
+		_ = replicationRemove(tmpPath)
 		return err
 	}
 	if err := syncReplicationStateDir(stateFile); err != nil {
@@ -1549,7 +1525,7 @@ func prepareReplicationStateDir(stateFile string) error {
 		return err
 	}
 
-	info, statErr := os.Lstat(dir)
+	info, statErr := replicationLstat(dir)
 	preexisting := statErr == nil
 	if statErr != nil {
 		if !os.IsNotExist(statErr) {
@@ -1564,11 +1540,11 @@ func prepareReplicationStateDir(stateFile string) error {
 		}
 	}
 
-	if err := os.MkdirAll(dir, replicationStateDirPerm); err != nil {
+	if err := replicationMkdirAll(dir, replicationStateDirPerm); err != nil {
 		return err
 	}
 	if !preexisting {
-		if err := os.Chmod(dir, replicationStateDirPerm); err != nil {
+		if err := replicationChmod(dir, replicationStateDirPerm); err != nil {
 			return err
 		}
 	}
@@ -1576,7 +1552,7 @@ func prepareReplicationStateDir(stateFile string) error {
 		return err
 	}
 
-	openedInfo, err := os.Stat(dir)
+	openedInfo, err := replicationStat(dir)
 	if err != nil {
 		return err
 	}
@@ -1605,7 +1581,7 @@ func rejectReplicationStateDirSymlinks(path string) error {
 			continue
 		}
 		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
+		info, err := replicationLstat(current)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
@@ -1627,7 +1603,7 @@ func cleanReplicationStatePath(path string) (string, error) {
 }
 
 func openReplicationStateFile(path string) (*os.File, error) {
-	info, err := os.Lstat(path)
+	info, err := replicationLstat(path)
 	if err != nil {
 		return nil, err
 	}
@@ -1641,29 +1617,29 @@ func openReplicationStateFile(path string) (*os.File, error) {
 		return nil, fmt.Errorf("replication state file is too large: %d bytes (max %d)", info.Size(), maxReplicationStateFileBytes)
 	}
 
-	file, err := os.Open(path) // #nosec G304 - state file path is explicit replication config and validated before use.
+	file, err := replicationOpenFile(path) // #nosec G304 - state file path is explicit replication config and validated before use.
 	if err != nil {
 		return nil, err
 	}
-	openedInfo, err := file.Stat()
+	openedInfo, err := replicationFileStat(file)
 	if err != nil {
-		_ = file.Close()
+		_ = replicationFileClose(file)
 		return nil, err
 	}
 	if !openedInfo.Mode().IsRegular() {
-		_ = file.Close()
+		_ = replicationFileClose(file)
 		return nil, fmt.Errorf("replication state file must be a regular file: %s", path)
 	}
 	if openedInfo.Size() > maxReplicationStateFileBytes {
-		_ = file.Close()
+		_ = replicationFileClose(file)
 		return nil, fmt.Errorf("replication state file is too large: %d bytes (max %d)", openedInfo.Size(), maxReplicationStateFileBytes)
 	}
 	if !os.SameFile(info, openedInfo) {
-		_ = file.Close()
+		_ = replicationFileClose(file)
 		return nil, fmt.Errorf("replication state file changed while opening: %s", path)
 	}
-	if err := file.Chmod(replicationStateFilePerm); err != nil {
-		_ = file.Close()
+	if err := replicationFileChmod(file, replicationStateFilePerm); err != nil {
+		_ = replicationFileClose(file)
 		return nil, err
 	}
 	return file, nil
@@ -1672,15 +1648,15 @@ func openReplicationStateFile(path string) (*os.File, error) {
 func syncReplicationStateDir(path string) error {
 	dir := filepath.Dir(path)
 	// #nosec G304 -- state path is validated as explicit replication configuration.
-	file, err := os.Open(dir)
+	file, err := replicationOpenDir(dir)
 	if err != nil {
 		return err
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
+	if err := replicationFileSync(file); err != nil {
+		_ = replicationFileClose(file)
 		return err
 	}
-	return file.Close()
+	return replicationFileClose(file)
 }
 
 func (m *Manager) sendAck() error {
@@ -2037,38 +2013,26 @@ func (m *Manager) slavesCaughtUp() bool {
 // Helper functions
 
 func encodeWALEntries(entries []*WALEntry) ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	// Write number of entries
+	var buf []byte
 	entryCount, err := replicationUint32Len(len(entries), "WAL entry count")
 	if err != nil {
 		return nil, err
 	}
-	if err := binary.Write(buf, binary.BigEndian, entryCount); err != nil {
-		return nil, err
-	}
+	buf = binary.BigEndian.AppendUint32(buf, entryCount)
 
-	// Write each entry
 	for _, entry := range entries {
 		data, err := entry.Encode()
 		if err != nil {
 			return nil, err
 		}
-
 		dataLen, err := replicationUint32Len(len(data), "encoded WAL entry length")
 		if err != nil {
 			return nil, err
 		}
-		if err := binary.Write(buf, binary.BigEndian, dataLen); err != nil {
-			return nil, err
-		}
-
-		if _, err := buf.Write(data); err != nil {
-			return nil, err
-		}
+		buf = binary.BigEndian.AppendUint32(buf, dataLen)
+		buf = append(buf, data...)
 	}
-
-	return buf.Bytes(), nil
+	return buf, nil
 }
 
 func decodeWALEntries(data []byte) ([]*WALEntry, error) {

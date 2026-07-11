@@ -53,11 +53,7 @@ func EncodeStatementPayload(sql string, args []interface{}, ts time.Time) ([]byt
 	if len(args) > 0 {
 		wire.Args = make([]taggedArg, len(args))
 		for i, arg := range args {
-			tagged, err := encodeTaggedArg(arg)
-			if err != nil {
-				return nil, fmt.Errorf("statement payload arg %d: %w", i, err)
-			}
-			wire.Args[i] = tagged
+			wire.Args[i] = encodeTaggedArg(arg)
 		}
 	}
 	return json.Marshal(wire)
@@ -96,46 +92,44 @@ func DecodeStatementPayload(data []byte) (*StatementPayload, error) {
 	return payload, nil
 }
 
-func encodeTaggedArg(arg interface{}) (taggedArg, error) {
+func encodeTaggedArg(arg interface{}) taggedArg {
 	switch v := arg.(type) {
 	case nil:
-		return taggedArg{Type: "n"}, nil
+		return taggedArg{Type: "n"}
 	case bool:
-		return taggedArg{Type: "b", Value: strconv.FormatBool(v)}, nil
+		return taggedArg{Type: "b", Value: strconv.FormatBool(v)}
 	case int:
-		return taggedArg{Type: "i", Value: strconv.FormatInt(int64(v), 10)}, nil
+		return taggedArg{Type: "i", Value: strconv.FormatInt(int64(v), 10)}
 	case int8:
-		return taggedArg{Type: "i", Value: strconv.FormatInt(int64(v), 10)}, nil
+		return taggedArg{Type: "i", Value: strconv.FormatInt(int64(v), 10)}
 	case int16:
-		return taggedArg{Type: "i", Value: strconv.FormatInt(int64(v), 10)}, nil
+		return taggedArg{Type: "i", Value: strconv.FormatInt(int64(v), 10)}
 	case int32:
-		return taggedArg{Type: "i", Value: strconv.FormatInt(int64(v), 10)}, nil
+		return taggedArg{Type: "i", Value: strconv.FormatInt(int64(v), 10)}
 	case int64:
-		return taggedArg{Type: "i", Value: strconv.FormatInt(v, 10)}, nil
+		return taggedArg{Type: "i", Value: strconv.FormatInt(v, 10)}
 	case uint:
-		return taggedArg{Type: "u", Value: strconv.FormatUint(uint64(v), 10)}, nil
+		return taggedArg{Type: "u", Value: strconv.FormatUint(uint64(v), 10)}
 	case uint8:
-		return taggedArg{Type: "u", Value: strconv.FormatUint(uint64(v), 10)}, nil
+		return taggedArg{Type: "u", Value: strconv.FormatUint(uint64(v), 10)}
 	case uint16:
-		return taggedArg{Type: "u", Value: strconv.FormatUint(uint64(v), 10)}, nil
+		return taggedArg{Type: "u", Value: strconv.FormatUint(uint64(v), 10)}
 	case uint32:
-		return taggedArg{Type: "u", Value: strconv.FormatUint(uint64(v), 10)}, nil
+		return taggedArg{Type: "u", Value: strconv.FormatUint(uint64(v), 10)}
 	case uint64:
-		return taggedArg{Type: "u", Value: strconv.FormatUint(v, 10)}, nil
+		return taggedArg{Type: "u", Value: strconv.FormatUint(v, 10)}
 	case float32:
-		return taggedArg{Type: "f", Value: strconv.FormatFloat(float64(v), 'g', -1, 64)}, nil
+		return taggedArg{Type: "f", Value: strconv.FormatFloat(float64(v), 'g', -1, 64)}
 	case float64:
-		return taggedArg{Type: "f", Value: strconv.FormatFloat(v, 'g', -1, 64)}, nil
+		return taggedArg{Type: "f", Value: strconv.FormatFloat(v, 'g', -1, 64)}
 	case string:
-		return taggedArg{Type: "s", Value: v}, nil
+		return taggedArg{Type: "s", Value: v}
 	case []byte:
-		return taggedArg{Type: "x", Value: base64.StdEncoding.EncodeToString(v)}, nil
+		return taggedArg{Type: "x", Value: base64.StdEncoding.EncodeToString(v)}
 	case time.Time:
-		return taggedArg{Type: "t", Value: v.Format(time.RFC3339Nano)}, nil
+		return taggedArg{Type: "t", Value: v.Format(time.RFC3339Nano)}
 	default:
-		// Last-resort fallback: stringify. Lossy for exotic types, but keeps
-		// the write path functional instead of failing replication outright.
-		return taggedArg{Type: "s", Value: fmt.Sprintf("%v", v)}, nil
+		return taggedArg{Type: "s", Value: fmt.Sprintf("%v", v)}
 	}
 }
 
