@@ -14,10 +14,18 @@ import (
 )
 
 const (
-	slowQueryLogDirPerm  = 0750
 	slowQueryLogFilePerm = 0600
 	maxSlowQuerySQLBytes = 10000
 )
+
+var slowQueryLogDirPerm = os.FileMode(0750)
+
+// OS seam variables for deterministic test injection.
+var slowQueryOpenFile = os.OpenFile
+var slowQueryLstat = os.Lstat
+var slowQueryOpen = os.Open
+var slowQueryMkdirAll = os.MkdirAll
+var slowQuerySameFile = os.SameFile
 
 // SlowQueryEntry represents a single slow query log entry
 type SlowQueryEntry struct {
@@ -223,7 +231,7 @@ func (s *SlowQueryLog) writeToFileLocked(entry SlowQueryEntry) error {
 		s.lastSyncAt = time.Now()
 		// Rotation detection: if the path no longer refers to our open file
 		// (rotated/removed), close so the next write reopens and revalidates.
-		if info, statErr := os.Lstat(s.logFile); statErr != nil || !os.SameFile(info, s.fileInfo) {
+		if info, statErr := slowQueryLstat(s.logFile); statErr != nil || !slowQuerySameFile(info, s.fileInfo) {
 			s.closeFileLocked()
 		}
 	}
@@ -243,7 +251,7 @@ func (s *SlowQueryLog) ensureFileOpenLocked() error {
 		if err := rejectSlowQueryLogDirSymlinks(dir); err != nil {
 			return err
 		}
-		if err := os.MkdirAll(dir, slowQueryLogDirPerm); err != nil {
+		if err := slowQueryMkdirAll(dir, slowQueryLogDirPerm); err != nil {
 			return fmt.Errorf("create slow query log directory: %w", err)
 		}
 		if err := rejectSlowQueryLogDirSymlinks(dir); err != nil {
@@ -261,7 +269,7 @@ func (s *SlowQueryLog) ensureFileOpenLocked() error {
 			return fmt.Errorf("sync slow query log directory: %w", err)
 		}
 	}
-	info, err := os.Lstat(s.logFile)
+	info, err := slowQueryLstat(s.logFile)
 	if err != nil {
 		_ = f.Close()
 		return fmt.Errorf("stat slow query log file: %w", err)
@@ -315,7 +323,7 @@ func openSlowQueryLogFile(path string) (*os.File, bool, error) {
 		}
 	}
 
-	f, err := os.OpenFile(cleanPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, slowQueryLogFilePerm)
+	f, err := slowQueryOpenFile(cleanPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, slowQueryLogFilePerm)
 	if err != nil {
 		return nil, false, err
 	}
@@ -359,7 +367,7 @@ func rejectSlowQueryLogDirSymlinks(path string) error {
 			continue
 		}
 		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
+		info, err := slowQueryLstat(current)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
