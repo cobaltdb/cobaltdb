@@ -3,10 +3,12 @@ package btree
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
@@ -50,6 +52,12 @@ func TestCoverageCheckedLengthsAndNilLoadError(t *testing.T) {
 	}
 	if _, err := checkedUint32Len(-1, "x"); err == nil {
 		t.Fatal("negative uint32 length accepted")
+	}
+	if got, err := checkedUint32Len(7, "x"); err != nil || got != 7 {
+		t.Fatalf("checked uint32 = %d, %v", got, err)
+	}
+	if got, err := checkedUint32PageCount(3); err != nil || got != 3 {
+		t.Fatalf("checked page count = %d, %v", got, err)
 	}
 	var tree *BTree
 	if tree.LoadError() != nil {
@@ -358,6 +366,180 @@ func TestCoverageScanEvictedMergeAndCorruptDisk(t *testing.T) {
 	writeRootData(t, pool, tree.rootPageID, serializedRoot(^uint32(0), 0, nil))
 	if _, err := tree.Scan(nil, nil); err == nil {
 		t.Fatal("scan did not propagate corrupt disk state")
+	}
+}
+
+func TestCoverageReadKVHeaderAndScanEndFilter(t *testing.T) {
+	tree, pool := newCoverageTree(t, 0)
+	writeRootData(t, pool, tree.rootPageID, serializedRoot(1, ^uint32(0), nil))
+	if _, err := tree.readKVFromPages(); err == nil || !strings.Contains(err.Error(), "header size") {
+		t.Fatalf("read oversized header = %v", err)
+	}
+
+	// Persist a disk-only key that lies after the requested scan end; the
+	// merge must filter it just like in-memory keys.
+	tree, pool = newCoverageTree(t, 0)
+	if err := tree.Put([]byte("z"), []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tree.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	sh := &tree.shards[shardIndex("z")]
+	delete(sh.data, "z")
+	sh.evicted["z"] = true
+	it, err := tree.Scan(nil, []byte("m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Valid() {
+		t.Fatal("scan included evicted key after end bound")
+	}
+}
+
+func TestCoveragePutBatchEntryExceedsLimit(t *testing.T) {
+	tree, _ := newCoverageTree(t, 3)
+	if err := tree.PutBatch([][]byte{[]byte("key")}, [][]byte{[]byte("value")}); err != ErrMemoryLimit {
+		t.Fatalf("oversized PutBatch = %v, want ErrMemoryLimit", err)
+	}
+}
+
+func TestCoverageEvictionFlushFailures(t *testing.T) {
+	t.Run("initial dirty flush", func(t *testing.T) {
+		tree, pool := newCoverageTree(t, 10)
+		if err := tree.Put([]byte("a"), []byte("1")); err != nil {
+			t.Fatal(err)
+		}
+		_ = pool.Close()
+		if err := tree.evictToMakeSpace(9); err == nil || !strings.Contains(err.Error(), "failed to flush during eviction") {
+			t.Fatalf("eviction flush error = %v", err)
+		}
+	})
+
+	t.Run("newer than flush horizon", func(t *testing.T) {
+		tree, pool := newCoverageTree(t, 2)
+		key := ""
+		for i := 0; ; i++ {
+			candidate := fmt.Sprintf("candidate-%d", i)
+			if shardIndex(candidate) == 0 {
+				key = candidate
+				break
+			}
+		}
+		tree.SetMemoryLimit(int64(len(key) + 1))
+		if err := tree.PutString(key, []byte("1")); err != nil {
+			t.Fatal(err)
+		}
+		sh := &tree.shards[0]
+		atomic.StoreInt32(&tree.dirty, 0)
+		entry := sh.lruMap[key]
+		atomic.StoreInt64(&tree.lastFlushTS, entry.timestamp-1)
+		sh.lruMu.Lock()
+		done := make(chan error, 1)
+		go func() { done <- tree.evictToMakeSpace(1) }()
+		time.Sleep(time.Millisecond)
+		atomic.StoreInt32(&tree.dirty, 1)
+		_ = pool.Close()
+		sh.lruMu.Unlock()
+		if err := <-done; err == nil || !strings.Contains(err.Error(), "failed to flush during eviction") {
+			t.Fatalf("horizon reflush error = %v", err)
+		}
+	})
+}
+
+func TestCoverageFlushAllocationAndPageLookupFailures(t *testing.T) {
+	t.Run("overflow allocation", func(t *testing.T) {
+		pool := storage.NewBufferPool(1, storage.NewMemory())
+		defer pool.Close()
+		tree, err := NewBTree(pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root, err := pool.GetPage(tree.rootPageID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Unpin(root)
+		if err := tree.Put([]byte("k"), make([]byte, usablePageSize)); err != nil {
+			t.Fatal(err)
+		}
+		if err := tree.Flush(); err == nil || !strings.Contains(err.Error(), "allocate overflow") {
+			t.Fatalf("overflow allocation error = %v", err)
+		}
+	})
+
+	t.Run("root lookup", func(t *testing.T) {
+		tree, pool := newCoverageTree(t, 0)
+		if err := tree.Put([]byte("k"), []byte("v")); err != nil {
+			t.Fatal(err)
+		}
+		_ = pool.Close()
+		if err := tree.Flush(); err == nil {
+			t.Fatal("flush succeeded after pool close")
+		}
+	})
+
+	t.Run("overflow lookup", func(t *testing.T) {
+		tree, _ := newCoverageTree(t, 0)
+		tree.overflowPages = []uint32{9999}
+		if err := tree.Put([]byte("k"), make([]byte, usablePageSize)); err != nil {
+			t.Fatal(err)
+		}
+		if err := tree.Flush(); err == nil || !strings.Contains(err.Error(), "failed to get overflow page") {
+			t.Fatalf("overflow lookup error = %v", err)
+		}
+	})
+}
+
+func TestCoverageFlushEvictedSerializationFailures(t *testing.T) {
+	tree, pool := newCoverageTree(t, 0)
+	if err := tree.Put([]byte("old"), []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tree.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	sh := &tree.shards[shardIndex("old")]
+	delete(sh.data, "old")
+	sh.evicted["old"] = true
+	key := strings.Repeat("k", MaxKeyLength+1)
+	tree.shards[shardIndex(key)].data[key] = []byte("v")
+	atomic.StoreInt32(&tree.dirty, 1)
+	if err := tree.Flush(); err == nil || !strings.Contains(err.Error(), "key length") {
+		t.Fatalf("evicted malformed key flush = %v", err)
+	}
+
+	delete(tree.shards[shardIndex(key)].data, key)
+	writeRootData(t, pool, tree.rootPageID, serializedRoot(^uint32(0), 0, nil))
+	atomic.StoreInt32(&tree.dirty, 1)
+	if err := tree.Flush(); err == nil {
+		t.Fatal("evicted flush did not propagate corrupt disk state")
+	}
+}
+
+func TestCoverageScanBackfillsSeenBeforeEvictedShard(t *testing.T) {
+	tree, _ := newCoverageTree(t, 0)
+	early := ""
+	late := ""
+	for i := 0; early == "" || late == ""; i++ {
+		key := fmt.Sprintf("key-%d", i)
+		idx := shardIndex(key)
+		if idx < 64 && early == "" {
+			early = key
+		}
+		if idx > 192 && late == "" {
+			late = key
+		}
+	}
+	if err := tree.PutString(early, []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tree.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	tree.shards[shardIndex(late)].evicted[late] = true
+	if _, err := tree.Scan(nil, nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

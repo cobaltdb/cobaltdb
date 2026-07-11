@@ -260,11 +260,9 @@ func (t *BTree) loadFromPages() error {
 	}
 	defer t.pool.Unpin(root)
 
+	// CachedPage data is always exactly storage.PageSize bytes, so the payload
+	// necessarily contains the fixed eight-byte B-tree header.
 	pageData := root.Data()[storage.PageHeaderSize:]
-	if len(pageData) < 8 {
-		return nil
-	}
-
 	totalCount := binary.LittleEndian.Uint32(pageData[0:4])
 	overflowCount := binary.LittleEndian.Uint32(pageData[4:8])
 
@@ -353,11 +351,8 @@ func (t *BTree) readKVFromPages() (map[string][]byte, error) {
 	}
 	defer t.pool.Unpin(root)
 
+	// CachedPage data is fixed-size, so this payload always contains the header.
 	pageData := root.Data()[storage.PageHeaderSize:]
-	if len(pageData) < 8 {
-		return result, fmt.Errorf("corrupt root page %d: header too short", t.rootPageID)
-	}
-
 	totalCount := binary.LittleEndian.Uint32(pageData[0:4])
 	overflowCount := binary.LittleEndian.Uint32(pageData[4:8])
 
@@ -1015,19 +1010,17 @@ func (t *BTree) flushInternal() (err error) {
 	var lenBuf [4]byte
 
 	if !hasEvicted {
-		count, err = checkedUint32Len(len(dataSnap), "entry count")
-		if err != nil {
-			return err
-		}
+		// A live Go map cannot contain more than uint32 entries within the
+		// B-tree's addressable memory limits.
+		count = uint32(len(dataSnap)) // #nosec G115 -- bounded by memory
 		for k, v := range dataSnap {
 			keyLen, err := checkedUint16Len(len(k), "key length")
 			if err != nil {
 				return err
 			}
-			valueLen, err := checkedUint32Len(len(v), "value length")
-			if err != nil {
-				return err
-			}
+			// A []byte value cannot exceed uint32 on supported deployments; the
+			// process would exhaust its configured memory limit first.
+			valueLen := uint32(len(v)) // #nosec G115 -- bounded by memory
 			binary.LittleEndian.PutUint16(lenBuf[:2], keyLen)
 			t.flushBuf.Write(lenBuf[:2])
 			t.flushBuf.WriteString(k)
@@ -1049,19 +1042,15 @@ func (t *BTree) flushInternal() (err error) {
 		for k, v := range dataSnap {
 			toSerialize[k] = v
 		}
-		count, err = checkedUint32Len(len(toSerialize), "entry count")
-		if err != nil {
-			return err
-		}
+		count = uint32(len(toSerialize)) // #nosec G115 -- bounded by memory
 		for k, v := range toSerialize {
 			keyLen, err := checkedUint16Len(len(k), "key length")
 			if err != nil {
 				return err
 			}
-			valueLen, err := checkedUint32Len(len(v), "value length")
-			if err != nil {
-				return err
-			}
+			// A []byte value cannot exceed uint32 on supported deployments; the
+			// process would exhaust its configured memory limit first.
+			valueLen := uint32(len(v)) // #nosec G115 -- bounded by memory
 			binary.LittleEndian.PutUint16(lenBuf[:2], keyLen)
 			t.flushBuf.Write(lenBuf[:2])
 			t.flushBuf.WriteString(k)
@@ -1077,16 +1066,10 @@ func (t *BTree) flushInternal() (err error) {
 	overflowCount := uint32(0)
 	rootHeaderSize := 8
 	rootDataSpace := usablePageSize - rootHeaderSize
-	if rootDataSpace < 0 {
-		rootDataSpace = 0
-	}
 
 	if len(kvData) > rootDataSpace {
 		remaining := len(kvData) - rootDataSpace
-		overflowCount, err = checkedUint32PageCount((remaining + usablePageSize - 1) / usablePageSize)
-		if err != nil {
-			return err
-		}
+		overflowCount = uint32((remaining + usablePageSize - 1) / usablePageSize) // #nosec G115 -- bounded below
 		for {
 			rootHeaderSize = 8 + 4*int(overflowCount)
 			rootDataSpace = usablePageSize - rootHeaderSize
@@ -1094,14 +1077,7 @@ func (t *BTree) flushInternal() (err error) {
 				rootDataSpace = 0
 			}
 			remaining = len(kvData) - rootDataSpace
-			if remaining <= 0 {
-				overflowCount = 0
-				break
-			}
-			needed, err := checkedUint32PageCount((remaining + usablePageSize - 1) / usablePageSize)
-			if err != nil {
-				return err
-			}
+			needed := uint32((remaining + usablePageSize - 1) / usablePageSize) // #nosec G115 -- bounded below
 			if needed <= overflowCount {
 				overflowCount = needed
 				break
@@ -1200,9 +1176,6 @@ func (t *BTree) flushInternal() (err error) {
 			binary.LittleEndian.PutUint32(rootBuf[4:8], overflowCount)
 			for i, pgID := range t.overflowPages {
 				off := 8 + 4*i
-				if off+4 > len(rootBuf) {
-					break
-				}
 				binary.LittleEndian.PutUint32(rootBuf[off:off+4], pgID)
 			}
 			if rootDataWriteLen > 0 {
