@@ -11,12 +11,12 @@ require (
 	github.com/petermattis/goid v0.0.0-20260625140558-4207c655779d
 	github.com/pierrec/lz4/v4 v4.1.27
 	github.com/vmihailenco/msgpack/v5 v5.4.1
-	golang.org/x/crypto v0.53.0
+	golang.org/x/crypto v0.54.0
 )
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 )

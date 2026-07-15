@@ -5,6 +5,10 @@ services:
   cobaltdb:
     # Windows-specific settings
     # Use named volumes instead of bind mounts for better Windows performance
+    # ⚠ SECURITY: Only uncomment the line below in isolated/dev environments.
+    # Enabling cleartext auth allows passwords to travel unencrypted on the wire.
+    # environment:
+    #   - COBALTDB_ALLOW_CLEARTEXT_AUTH=true
     volumes:
       - cobaltdb_data:/data/cobaltdb
 
