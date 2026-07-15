@@ -308,6 +308,9 @@ func Open(path string, opts *Options) (*DB, error) {
 
 	if opts.CoreStorage.InMemory || path == ":memory:" {
 		log.Infof("Opening in-memory database")
+		if !strings.HasSuffix(os.Args[0], ".test") {
+			log.Warnf("In-memory database: ALL DATA WILL BE LOST when the process exits. This mode is intended for development and testing only.")
+		}
 		backend = storage.NewMemory()
 	} else {
 		log.Infof("Opening database at %s", path)
