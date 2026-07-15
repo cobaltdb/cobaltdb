@@ -16,18 +16,11 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/util"
 )
 
-// toLowerFast returns a lowercased copy of s only if s contains uppercase
-// letters. This avoids an allocation when s is already lowercase.
-func toLowerFast(s string) string {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 'A' && s[i] <= 'Z' {
-			return strings.ToLower(s)
-		}
-	}
-	return s
-}
+// toLowerFast is deprecated: use util.ToLowerFast.
+func toLowerFast(s string) string { return util.ToLowerFast(s) }
 
 func init() {
 	sql.Register("cobaltdb", &Driver{})

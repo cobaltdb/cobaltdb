@@ -3,7 +3,8 @@ package query
 import (
 	"fmt"
 	"strconv"
-	"strings"
+
+	"github.com/cobaltdb/cobaltdb/pkg/util"
 )
 
 // Parser parses SQL tokens into an AST
@@ -40,16 +41,8 @@ const (
 	maxParserListItems = 4096
 )
 
-// toUpperFast returns an uppercased copy of s only if s contains lowercase
-// letters. This avoids an allocation when s is already uppercase.
-func toUpperFast(s string) string {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 'a' && s[i] <= 'z' {
-			return strings.ToUpper(s)
-		}
-	}
-	return s
-}
+// toUpperFast is deprecated: use util.ToUpperFast.
+func toUpperFast(s string) string { return util.ToUpperFast(s) }
 
 func (p *Parser) enterDepth() error {
 	if p.depth+1 > maxParserDepth {

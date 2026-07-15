@@ -3,11 +3,11 @@ package catalog
 
 import (
 	"fmt"
-	"strings"
-
-	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"math"
 	"strconv"
+
+	"github.com/cobaltdb/cobaltdb/pkg/query"
+	"github.com/cobaltdb/cobaltdb/pkg/util"
 )
 
 // toString extracts a string value from an interface{}, handling plain string,
@@ -175,28 +175,11 @@ func valueToExpr(val interface{}) query.Expression {
 	}
 }
 
-// toUpperFast returns an uppercased copy of s only if s contains lowercase
-// letters. This avoids an allocation when s is already uppercase (the common
-// case for SQL identifiers parsed by the query package).
-func toUpperFast(s string) string {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 'a' && s[i] <= 'z' {
-			return strings.ToUpper(s)
-		}
-	}
-	return s
-}
+// toUpperFast is deprecated: use util.ToUpperFast.
+func toUpperFast(s string) string { return util.ToUpperFast(s) }
 
-// toLowerFast returns a lowercased copy of s only if s contains uppercase
-// letters. This avoids an allocation when s is already lowercase.
-func toLowerFast(s string) string {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 'A' && s[i] <= 'Z' {
-			return strings.ToLower(s)
-		}
-	}
-	return s
-}
+// toLowerFast is deprecated: use util.ToLowerFast.
+func toLowerFast(s string) string { return util.ToLowerFast(s) }
 
 // ValueToStringKey converts a value to a string for use in map keys (GROUP BY,
 // DISTINCT, etc.). It returns "<nil>" for nil so that nil and empty string do

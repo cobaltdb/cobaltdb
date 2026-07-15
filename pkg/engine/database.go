@@ -27,23 +27,12 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/security"
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 	"github.com/cobaltdb/cobaltdb/pkg/txn"
+	"github.com/cobaltdb/cobaltdb/pkg/util"
 )
 
-func toUpperFast(s string) string {
-	// Fast path: scan for any lowercase character, then call ToUpper once.
-	// Avoids strings.ToUpper scanning the string twice when all caps.
-	hasLower := false
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 'a' && s[i] <= 'z' {
-			hasLower = true
-			break
-		}
-	}
-	if !hasLower {
-		return s
-	}
-	return strings.ToUpper(s)
-}
+// toUpperFast delegates to util.ToUpperFast.
+// Deprecated: use util.ToUpperFast directly.
+func toUpperFast(s string) string { return util.ToUpperFast(s) }
 
 var (
 	ErrDatabaseClosed = errors.New("database is closed")

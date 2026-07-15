@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/util"
 )
 
 // Server holds the web UI server state
@@ -133,16 +134,8 @@ const (
 
 var tokenExpirySweepInterval = defaultTokenExpirySweepInterval
 
-// toUpperFast returns an uppercased copy of s only if s contains lowercase
-// letters. This avoids an allocation when s is already uppercase.
-func toUpperFast(s string) string {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 'a' && s[i] <= 'z' {
-			return strings.ToUpper(s)
-		}
-	}
-	return s
-}
+// toUpperFast is deprecated: use util.ToUpperFast.
+func toUpperFast(s string) string { return util.ToUpperFast(s) }
 
 var webUIListenAndServe = func(server *http.Server) error { return server.ListenAndServe() }
 var webUIRun = runWebUI
