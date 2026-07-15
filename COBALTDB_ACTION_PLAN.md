@@ -4,7 +4,7 @@
 **Version targeted:** v0.6.0 → v0.7.0  
 **Planning date:** 2026-07-15 (last updated: 2026-07-15)  
 **Total action items:** 23 (3 critical, 7 high, 8 medium, 5 low)  
-**Completed:** 7 items — Phase 0 all, Phase 1 items 1.2 and 1.5; 1 false positive corrected
+**Completed:** 9 items — Phase 0 all, Phase 1 items 1.2, 1.3, and 1.5, Phase 2 item 2.2; 1 false positive corrected
 
 ---
 
