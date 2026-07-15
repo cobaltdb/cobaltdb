@@ -269,13 +269,23 @@ func runWebUI() error {
 		if *tokenTTL > 0 {
 			fmt.Printf("Minted-token TTL: %s\n", *tokenTTL)
 		}
-		// Show only first 8 chars to avoid full token in logs/shell history
-		maskedToken := apiToken
-		if len(apiToken) > 8 {
-			maskedToken = apiToken[:8] + "..."
+		// Write the full token URL to a well-known file (0600) so the operator
+		// can retrieve it without exposing the token to shell history or log
+		// aggregators. Fall back to printing the file path.
+		tokenURL := fmt.Sprintf("http://%s/?token=%s", *addr, apiToken)
+		tokenPath := os.TempDir() + string(os.PathSeparator) + "cobaltdb-webui.token"
+		if err := os.WriteFile(tokenPath, []byte(tokenURL+"\n"), 0600); err != nil {
+			// Best-effort: print a truncated token as last resort.
+			maskedToken := apiToken
+			if len(apiToken) > 8 {
+				maskedToken = apiToken[:8] + "..."
+			}
+			fmt.Printf("Open http://%s/?token=%s in your browser\n", *addr, maskedToken)
+			fmt.Printf("Tip: token query parameter is converted to an HttpOnly cookie automatically\n")
+		} else {
+			fmt.Printf("Token URL written to %s (0600 permissions)\n", tokenPath)
+			fmt.Printf("Open that file in a secure editor, or visit http://%s/ and paste the token manually\n", *addr)
 		}
-		fmt.Printf("Open http://%s/?token=%s in your browser\n", *addr, maskedToken)
-		fmt.Printf("Tip: token query parameter is converted to an HttpOnly cookie automatically\n")
 	} else {
 		fmt.Printf("Token auth: DISABLED (unsafe)\n")
 		fmt.Printf("Open http://%s in your browser\n", *addr)
