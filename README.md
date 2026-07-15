@@ -8,6 +8,8 @@
   <img src="https://img.shields.io/badge/Coverage-86%25-yellow?style=for-the-badge" alt="Test Coverage">
   <img src="https://img.shields.io/badge/Race-Passing-success?style=for-the-badge" alt="Race Detector">
   <img src="https://img.shields.io/badge/Production-Candidate-yellow?style=for-the-badge" alt="Production Candidate">
+  <a href="https://goreportcard.com/report/github.com/cobaltdb/cobaltdb"><img src="https://goreportcard.com/badge/github.com/cobaltdb/cobaltdb?style=for-the-badge" alt="Go Report Card"></a>
+  <a href="https://bestpractices.coreinfrastructure.org/projects/"><img src="https://img.shields.io/badge/Security-Reviewed-2ea44f?style=for-the-badge" alt="Security Reviewed"></a>
 </p>
 
 <p align="center">
