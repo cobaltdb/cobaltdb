@@ -59,10 +59,49 @@ func main() {
 		allowRemoteMetrics   = flag.Bool("remote-metrics", false, "allow Prometheus metrics endpoint from non-loopback clients")
 		adminToken           = flag.String("admin-token", "", "admin API bearer token for protected health server endpoints")
 		allowCleartextAuth   = flag.Bool("allow-cleartext-auth", false, "allow authenticated non-loopback listeners without encrypted transport")
+		configFile           = flag.String("config", "", "path to configuration file (default: not loaded)")
 		shutdownTimeout      = flag.Duration("shutdown-timeout", 30*time.Second, "graceful shutdown timeout")
 		drainTimeout         = flag.Duration("drain-timeout", 10*time.Second, "connection drain timeout")
 	)
 	flag.Parse()
+
+	// Load optional config file — applies defaults that CLI flags override.
+	if *configFile != "" {
+		cv, err := loadConfigFile(*configFile)
+		if err != nil {
+			log.Fatalf("Failed to load config file: %v", err)
+		}
+		if cv.Address != "" {
+			*address = cv.Address
+		}
+		if cv.MySQLAddr != "" {
+			*mysqlAddr = cv.MySQLAddr
+		}
+		if cv.DataDir != "" {
+			*dataDir = cv.DataDir
+		}
+		if cv.CacheSize > 0 {
+			*cacheSize = cv.CacheSize
+		}
+		if cv.AuthEnabled != nil {
+			*authEnabled = *cv.AuthEnabled
+		}
+		if cv.TLSEnabled != nil {
+			*tlsEnabled = *cv.TLSEnabled
+		}
+		if cv.TLSCertFile != "" {
+			*tlsCert = cv.TLSCertFile
+		}
+		if cv.TLSKeyFile != "" {
+			*tlsKey = cv.TLSKeyFile
+		}
+		if cv.MySQLEnabled != nil {
+			*enableMySQL = *cv.MySQLEnabled
+		}
+		if cv.HealthAddr != "" {
+			*healthAddr = cv.HealthAddr
+		}
+	}
 
 	if *showVersion {
 		fmt.Printf("CobaltDB Server %s\n", version)
