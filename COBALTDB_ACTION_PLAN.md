@@ -4,7 +4,7 @@
 **Version targeted:** v0.6.0 → v0.7.0  
 **Planning date:** 2026-07-15 (last updated: 2026-07-15)  
 **Total action items:** 23 (3 critical, 7 high, 8 medium, 5 low)  
-**Completed:** 9 items — Phase 0 all, Phase 1 items 1.2, 1.3, and 1.5, Phase 2 item 2.2; 1 false positive corrected
+**Completed:** 9 items (+1 false positive retracted) — Phase 0 all (5), Phase 1 items 1.2, 1.3, 1.5 (3), Phase 2 items 2.1 partial (database_procedure.go, database_api.go), 2.2 (1). P1.4 (TCP keepalive) retracted as already implemented. 1.5/3 Phase 2 complete.
 
 ---
 
@@ -222,20 +222,13 @@ Zero-risk, independently testable changes. Each item is a single commit.
 | **Severity** | High |
 | **Effort** | ~16–24 hours |
 | **Risk** | High — 4671-line file touched by many development branches. Must preserve all public API signatures. |
-| **Approach** | Create 6 files from the current monolithic `database.go`:
-
-| New file | Contents |
-|----------|----------|
-| `database.go` | Struct definitions, Options, DB type, constructor `Open()`, `Close()` |
-| `database_query.go` | `Exec()`, `Query()`, `Prepare()`, prepared stmt cache |
-| `database_backup.go` | `BeginHotBackup()`, `EndHotBackup()`, backup helpers |
-| `database_replication.go` | Replication master/slave hooks, `replicateStatement()` |
-| `database_stats.go` | `Stats()`, `HealthCheck()`, `MetricsCollector()` |
-| `database_lifecycle.go` | Already exists — keep its current scope |
-
-Each file keeps its own `package engine` declaration. Package-level vars, the recovery struct, and the `DB` type stay in `database.go`. No exported symbols change. |
-| **Verification** | `go build ./...` and `go test ./pkg/engine/` pass. `git diff --stat` shows file moves, zero logic changes. |
-| **Outcome** | Each concern is in its own file. File-level `git blame` and code review become practical again. |
+| **Progress** | **~60% done** (was 4671 lines, now 3244). Extractions completed: |
+| | `database_result.go` (523 lines) — Result/Rows/Row/Tx types |
+| | `database_schema.go` (468 lines) — Schema introspection (ShowTables, ShowColumns, etc.) |
+| | `database_api.go` (462 lines) — Stats, HealthCheck, Backup, Replication, PlanCache, Vector, Optimizer |
+| | `database_procedure.go` (438 lines) — Stored procedures (CALL, param substitution, OUT params) |
+| | `database_lifecycle.go` (1265 lines) — Already existed (Open, Close, Options, lifecycle) |
+| **Remaining** | `database_query.go` — Exec/Query/Prepare, SELECT/UNION/CTE dispatch, statement cache, connection management. DDL and DML functions also remain in database.go. |
 
 ### 2.2 — Consolidate duplicated helpers (Findings #15 + #23)
 
