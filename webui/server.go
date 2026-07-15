@@ -333,6 +333,53 @@ func (s *Server) startTokenExpirySweeper() {
 	}()
 }
 
+// csrfSafeMethod reports whether the HTTP method is inherently safe from
+// cross-site request forgery (GET, HEAD, OPTIONS are read-only per HTTP spec).
+func csrfSafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	return false
+}
+
+// csrfOriginAllowed checks that, when an Origin header is present on a mutating
+// request, it matches the server's own origin. This is the second layer of CSRF
+// defense after SameSite=Strict on the auth cookie.
+//
+// Browsers send Origin on all cross-origin POST/PUT/DELETE/PATCH requests (and
+// also on some same-origin requests — that's fine, we just skip the check when
+// the header is absent since same-origin HTML forms can't set it historically).
+func (s *Server) csrfOriginAllowed(r *http.Request) bool {
+	if csrfSafeMethod(r.Method) {
+		return true
+	}
+	// Only validate on API paths (not static assets or the index page).
+	if !strings.HasPrefix(r.URL.Path, "/api/") {
+		return true
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// No Origin header: the request is same-origin (browser fetch, form POST
+		// from the same site). Allow.
+		return true
+	}
+	// Build our own origin from the request.
+	scheme := "http"
+	if requestUsesHTTPS(r) {
+		scheme = "https"
+	}
+	host := r.Host
+	if host == "" {
+		host = r.Header.Get("X-Forwarded-Host")
+	}
+	if host == "" {
+		return true // can't determine — allow (defence in depth, not sole guard)
+	}
+	selfOrigin := scheme + "://" + host
+	return origin == selfOrigin
+}
+
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.authEnabled {
@@ -365,6 +412,14 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		if !s.limiter.allow(p.ID) {
 			s.recordAudit(r, p, classRead, "", "denied", "rate limited")
 			s.writeRateLimited(w, r)
+			return
+		}
+
+		// CSRF origin validation for mutating API requests.
+		// This is a second layer after SameSite=Strict on the auth cookie.
+		if !s.csrfOriginAllowed(r) {
+			s.recordAudit(r, p, classRead, "", "denied", "csrf origin mismatch")
+			http.Error(w, `{"error":"csrf origin mismatch"}`, http.StatusForbidden)
 			return
 		}
 
