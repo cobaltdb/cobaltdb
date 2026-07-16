@@ -87,18 +87,19 @@ func TestVerifyMySQLNativeAuth_ValidAuth(t *testing.T) {
 
 	// 2. Compute what the server stores: SHA1(SHA1(password))
 	password := []byte("mysecret")
-	// #nosec G401
+	// #nosec G401 -- MySQL native_password protocol requires SHA1 per specification;
+	// this is a test verifying the protocol handshake, not a security-sensitive hash.
 	h1 := sha1.New()
 	h1.Write(password)
 	hash1 := h1.Sum(nil) // SHA1(password)
 
-	// #nosec G401
+	// #nosec G401 -- same SHA1 requirement for MySQL native_password protocol test.
 	h2 := sha1.New()
 	h2.Write(hash1)
 	storedHash := h2.Sum(nil) // SHA1(SHA1(password))
 
 	// 3. Compute what the client sends: SHA1(password) XOR SHA1(scramble + storedHash)
-	// #nosec G401
+	// #nosec G401 -- same SHA1 requirement for MySQL native_password protocol test.
 	h3 := sha1.New()
 	h3.Write(scramble)
 	h3.Write(storedHash)
@@ -122,12 +123,12 @@ func TestVerifyMySQLNativeAuth_InvalidAuth(t *testing.T) {
 	scramble := []byte("12345678901234567890")
 
 	password := []byte("mysecret")
-	// #nosec G401
+	// #nosec G401 -- MySQL native_password protocol test; SHA1 required for protocol compat.
 	h1 := sha1.New()
 	h1.Write(password)
 	hash1 := h1.Sum(nil)
 
-	// #nosec G401
+	// #nosec G401 -- same SHA1 requirement for MySQL native_password protocol test.
 	h2 := sha1.New()
 	h2.Write(hash1)
 	storedHash := h2.Sum(nil)

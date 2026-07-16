@@ -2295,7 +2295,7 @@ func binaryInt64(v interface{}) (int64, bool) {
 	case uint64:
 		return int64(n), true // #nosec G115 -- two's-complement reinterpretation
 	case uint:
-		return int64(n), true // #nosec G115
+		return int64(n), true // #nosec G115 -- uint size equals uint32 on 32-bit arch or uint64 on 64-bit; both fit in int64.
 	case uint32:
 		return int64(n), true
 	case uint16:

@@ -149,7 +149,7 @@ func (e *WALEntry) Encode() ([]byte, error) {
 	buf = binary.BigEndian.AppendUint64(buf, e.LSN)
 	buf = binary.BigEndian.AppendUint64(buf, uint64(e.Timestamp.UnixNano()))
 	// Length is bounded by the check above and can never exceed maxWALEntryDataBytes.
-	dataLen := uint32(len(e.Data)) // #nosec G115
+	dataLen := uint32(len(e.Data)) // #nosec G115 -- len(e.Data) is bounded by maxEntrySize (10 MiB) from Append; uint32 range is 4 GiB.
 	buf = binary.BigEndian.AppendUint32(buf, dataLen)
 	buf = append(buf, e.Data...)
 	buf = binary.BigEndian.AppendUint32(buf, e.Checksum)
