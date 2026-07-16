@@ -848,8 +848,6 @@ func TestLogWithEncryption(t *testing.T) {
 	}
 }
 
-
-
 // ============================================================
 // Additional VerifyLogFile coverage: error paths
 // ============================================================

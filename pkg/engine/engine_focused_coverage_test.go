@@ -241,7 +241,6 @@ func TestTableSelfForeignKeyRefs(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // Tier 2:  Integration tests
 // ---------------------------------------------------------------------------
@@ -772,8 +771,8 @@ func TestDeleteBackup(t *testing.T) {
 		dbPath := filepath.Join(dir, "testdb")
 		db, err := Open(dbPath, &Options{
 			CoreStorage: CoreStorage{
-				InMemory: false,
-				CacheSize: 1024,
+				InMemory:   false,
+				CacheSize:  1024,
 				WALEnabled: BoolPtr(true),
 			},
 			Backup: BackupConfig{

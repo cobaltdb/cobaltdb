@@ -426,7 +426,6 @@ const (
 
 // Tables returns a list of all table names in the database
 
-
 // Begin starts a new transaction
 
 // BeginWith starts a new transaction with options
@@ -978,7 +977,6 @@ func (db *DB) queryWriteWithReplication(sqlText string, args []interface{}, run 
 
 // executeCreateTable executes CREATE TABLE
 
-
 // executeCreateTableAsSelect implements CREATE TABLE ... AS SELECT (CTAS):
 // materialize the query, infer column types, create the table, insert the rows.
 
@@ -1004,51 +1002,31 @@ func valueToLiteralExpr(v interface{}) query.Expression {
 	}
 }
 
-
-
-
 // executeAlterTable executes ALTER TABLE
-
 
 // executeDropTable executes DROP TABLE
 
-
-
 // executeCreateIndex executes CREATE INDEX
-
 
 // executeCreateView executes CREATE VIEW
 
-
-
 // executeDropView executes DROP VIEW
-
 
 // executeCreateTrigger executes CREATE TRIGGER
 
-
 // executeDropTrigger executes DROP TRIGGER
-
 
 // executeCreateProcedure executes CREATE PROCEDURE
 
-
 // executeDropProcedure executes DROP PROCEDURE
-
 
 // executeCreatePolicy executes CREATE POLICY for row-level security
 
-
 // expressionToString converts an expression to its SQL string representation
-
 
 // tokenTypeToString converts a token type to its string representation
 
-
 // executeDropPolicy executes DROP POLICY
-
-
-
 
 // executeSelect executes SELECT
 // executeSelect executes SELECT
@@ -1548,24 +1526,17 @@ func (db *DB) executeSelectWithCTE(ctx context.Context, stmt *query.SelectStmtWi
 
 // executeVacuum executes VACUUM
 
-
 // executeAnalyze executes ANALYZE
-
 
 // executeCreateMaterializedView executes CREATE MATERIALIZED VIEW
 
-
 // executeDropMaterializedView executes DROP MATERIALIZED VIEW
-
 
 // executeRefreshMaterializedView executes REFRESH MATERIALIZED VIEW
 
-
 // executeCreateFTSIndex executes CREATE FULLTEXT INDEX
 
-
 // executeCreateVectorIndex executes CREATE VECTOR INDEX
-
 
 // executeShowTablesQuery returns all table names as rows
 

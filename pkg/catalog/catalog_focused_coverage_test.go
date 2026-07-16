@@ -878,7 +878,6 @@ func TestFilterAggregateRows(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // Tier 5-12: Window, RLS, Triggers, RETURNING, FOR UPDATE, DDL, FK, Buffered insert
 // ---------------------------------------------------------------------------
@@ -1463,7 +1462,6 @@ func TestFilterRowsForSelectRLSLockedWithRLS(t *testing.T) {
 		t.Errorf("expected 2 rows, got %d", len(filtered))
 	}
 }
-
 
 // TestDateAddDays tests the dateAddDays function.
 func TestDateAddDays(t *testing.T) {

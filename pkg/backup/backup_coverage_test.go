@@ -1054,7 +1054,7 @@ func TestCleanupOldBackups_MaxBackups(t *testing.T) {
 		}
 		mgr.metadata.Backups = append(mgr.metadata.Backups, &Backup{
 			ID: id, Destination: dest,
-			StartedAt: now.Add(-time.Duration(i) * time.Hour),
+			StartedAt:   now.Add(-time.Duration(i) * time.Hour),
 			CompletedAt: now.Add(-time.Duration(i) * time.Hour),
 		})
 	}
@@ -1092,7 +1092,7 @@ func TestCleanupOldBackups_RetentionPeriod(t *testing.T) {
 		}
 		mgr.metadata.Backups = append(mgr.metadata.Backups, &Backup{
 			ID: id, Destination: dest,
-			StartedAt: now.Add(-48 * time.Hour),
+			StartedAt:   now.Add(-48 * time.Hour),
 			CompletedAt: now.Add(-48 * time.Hour), // 2 days ago
 		})
 	}
@@ -1161,7 +1161,7 @@ func TestCleanupOldBackups_ChainProtection(t *testing.T) {
 		},
 		&Backup{
 			ID: "inc1", Destination: incDest, Type: TypeIncremental,
-			ParentID: "full1",
+			ParentID:  "full1",
 			StartedAt: now.Add(-1 * time.Hour), CompletedAt: now.Add(-1 * time.Hour),
 		},
 	)
@@ -1794,7 +1794,7 @@ func TestCreateBackup_BeginHotBackupError(t *testing.T) {
 	cfg.Verify = false
 	mgr := NewManager(cfg, &errDatabase{
 		MockDatabase: MockDatabase{dbPath: dbFile},
-		errMsg:      "simulated hot backup error",
+		errMsg:       "simulated hot backup error",
 	})
 	_, err := mgr.CreateBackup(context.Background(), TypeFull)
 	if err == nil {
@@ -2161,10 +2161,10 @@ func TestSaveMetadataLocked_Success(t *testing.T) {
 	mgr.metadata.mu.Lock()
 	mgr.metadata.Backups = append(mgr.metadata.Backups, &Backup{
 		ID: "test_backup", Type: TypeFull,
-		StartedAt:    time.Now(),
-		CompletedAt:  time.Now(),
-		Destination:  filepath.Join(backupDir, "test_backup.db"),
-		Source:       filepath.Join(tempDir, "test.db"),
+		StartedAt:   time.Now(),
+		CompletedAt: time.Now(),
+		Destination: filepath.Join(backupDir, "test_backup.db"),
+		Source:      filepath.Join(tempDir, "test.db"),
 	})
 	err := mgr.saveMetadataLocked()
 	mgr.metadata.mu.Unlock()
@@ -2196,10 +2196,10 @@ func TestDeleteBackup_InvalidDestination(t *testing.T) {
 	mgr.metadata.mu.Lock()
 	mgr.metadata.Backups = append(mgr.metadata.Backups, &Backup{
 		ID: "bad_dest", Type: TypeFull,
-		Destination:  "/outside/backup/dir.db",
-		Source:       filepath.Join(tempDir, "test.db"),
-		StartedAt:    time.Now(),
-		CompletedAt:  time.Now(),
+		Destination: "/outside/backup/dir.db",
+		Source:      filepath.Join(tempDir, "test.db"),
+		StartedAt:   time.Now(),
+		CompletedAt: time.Now(),
 	})
 	mgr.metadata.mu.Unlock()
 
@@ -2237,11 +2237,11 @@ func TestDeleteBackup_WithWALFiles(t *testing.T) {
 	mgr.metadata.mu.Lock()
 	mgr.metadata.Backups = append(mgr.metadata.Backups, &Backup{
 		ID: backupID, Type: TypeFull,
-		Destination:  dest,
-		WALFiles:     []string{"wal.log"},
-		Source:       filepath.Join(tempDir, "test.db"),
-		StartedAt:    time.Now(),
-		CompletedAt:  time.Now(),
+		Destination: dest,
+		WALFiles:    []string{"wal.log"},
+		Source:      filepath.Join(tempDir, "test.db"),
+		StartedAt:   time.Now(),
+		CompletedAt: time.Now(),
 	})
 	mgr.metadata.mu.Unlock()
 
@@ -2663,9 +2663,9 @@ func TestRestoreBackupPayload_DeltaBackup(t *testing.T) {
 	buf.Write(headerBytes)
 	buf.WriteByte('\n')
 	// Add one delta record
-	_ = binary.Write(&buf, binary.LittleEndian, uint64(0))    // offset
-	_ = binary.Write(&buf, binary.LittleEndian, uint32(5))    // length
-	buf.Write([]byte("hello"))                                 // data
+	_ = binary.Write(&buf, binary.LittleEndian, uint64(0)) // offset
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(5)) // length
+	buf.Write([]byte("hello"))                             // data
 	if err := os.WriteFile(dest, buf.Bytes(), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -2683,10 +2683,10 @@ func TestRestoreBackupPayload_DeltaBackup(t *testing.T) {
 	mgr.metadata.mu.Lock()
 	mgr.metadata.Backups = append(mgr.metadata.Backups, &Backup{
 		ID: "parent", Type: TypeFull,
-		Destination:  "/nonexistent/parent.db",
-		Source:       filepath.Join(tempDir, "test.db"),
-		StartedAt:    time.Now(),
-		CompletedAt:  time.Now(),
+		Destination: "/nonexistent/parent.db",
+		Source:      filepath.Join(tempDir, "test.db"),
+		StartedAt:   time.Now(),
+		CompletedAt: time.Now(),
 	})
 	mgr.metadata.mu.Unlock()
 

@@ -13,19 +13,19 @@ import (
 // configFileValues holds values parsed from the optional config file.
 // CLI flags and environment variables override these.
 type configFileValues struct {
-	Address       string
-	MySQLAddr     string
-	DataDir       string
-	CacheSize     int
-	AuthEnabled   *bool
-	TLSEnabled    *bool
-	TLSCertFile   string
-	TLSKeyFile    string
-	MySQLEnabled  *bool
-	MaxConns      int
-	ReadTimeout   int // seconds
-	WriteTimeout  int // seconds
-	HealthAddr    string
+	Address      string
+	MySQLAddr    string
+	DataDir      string
+	CacheSize    int
+	AuthEnabled  *bool
+	TLSEnabled   *bool
+	TLSCertFile  string
+	TLSKeyFile   string
+	MySQLEnabled *bool
+	MaxConns     int
+	ReadTimeout  int // seconds
+	WriteTimeout int // seconds
+	HealthAddr   string
 }
 
 // loadConfigFile parses a CobaltDB configuration file (INI-style) and returns

@@ -189,7 +189,6 @@ func (db *DB) evictLRUEntry() {
 	}
 }
 
-
 func (db *DB) acquireConnection(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -481,7 +480,6 @@ func (db *DB) QueryRow(ctx context.Context, sql string, args ...interface{}) *Ro
 }
 
 // Tables returns a list of all table names in the database
-
 
 // Begin starts a new transaction
 
