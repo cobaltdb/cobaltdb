@@ -35,8 +35,11 @@ func TestNewServer(t *testing.T) {
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
 
-	if config.Address != ":4200" {
-		t.Errorf("Expected address ':4200', got %q", config.Address)
+	if config.Address != "127.0.0.1:4200" {
+		t.Errorf("Expected loopback address, got %q", config.Address)
+	}
+	if !config.AuthEnabled || !config.RequireAuth {
+		t.Fatal("default server configuration must require authentication")
 	}
 	if config.MaxConnections != defaultMaxConnections {
 		t.Errorf("Expected MaxConnections %d, got %d", defaultMaxConnections, config.MaxConnections)
@@ -442,7 +445,7 @@ func TestServerWithNilConfig(t *testing.T) {
 	defer db.Close()
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, err := New(ps, nil)
+	srv, err := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -456,7 +459,7 @@ func TestHandlePing(t *testing.T) {
 	defer db.Close()
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -474,7 +477,7 @@ func TestHandleUnknownMessage(t *testing.T) {
 	defer db.Close()
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -496,7 +499,7 @@ func TestHandleQueryCreate(t *testing.T) {
 	defer db.Close()
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -526,7 +529,7 @@ func TestHandleQueryInsert(t *testing.T) {
 	db.Exec(context.Background(), "CREATE TABLE test (id INTEGER, name TEXT)")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -557,7 +560,7 @@ func TestHandleQuerySelect(t *testing.T) {
 	db.Exec(context.Background(), "INSERT INTO test (id, name) VALUES (1, 'Alice')")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -590,7 +593,7 @@ func TestHandleQueryWithParams(t *testing.T) {
 	db.Exec(context.Background(), "INSERT INTO test (id, name) VALUES (1, 'Alice')")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -618,7 +621,7 @@ func TestHandleQueryError(t *testing.T) {
 	defer db.Close()
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -645,7 +648,7 @@ func TestHandleInvalidQueryMessage(t *testing.T) {
 	defer db.Close()
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -668,7 +671,7 @@ func TestRemoveClient(t *testing.T) {
 	defer db.Close()
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 
 	// Add a client manually
 	srv.mu.Lock()
@@ -695,7 +698,7 @@ func TestHandleQueryUpdate(t *testing.T) {
 	db.Exec(context.Background(), "INSERT INTO test (id, name, age) VALUES (1, 'Alice', 25)")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -728,7 +731,7 @@ func TestHandleQueryDelete(t *testing.T) {
 	db.Exec(context.Background(), "INSERT INTO test (id, name, age) VALUES (2, 'Bob', 30)")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -760,7 +763,7 @@ func TestHandleQueryEmptyResult(t *testing.T) {
 	db.Exec(context.Background(), "INSERT INTO test (id, name) VALUES (1, 'Alice')")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -795,7 +798,7 @@ func TestHandleQueryMultipleRows(t *testing.T) {
 	}
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -828,7 +831,7 @@ func TestHandleQueryWhereCondition(t *testing.T) {
 	}
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -857,7 +860,7 @@ func TestHandleMultipleQueries(t *testing.T) {
 	defer db.Close()
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -901,7 +904,7 @@ func TestHandleDropTable(t *testing.T) {
 	db.Exec(context.Background(), "CREATE TABLE test (id INTEGER)")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -934,7 +937,7 @@ func TestHandleCreateIndex(t *testing.T) {
 	db.Exec(context.Background(), "CREATE TABLE test (id INTEGER, name TEXT)")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,

@@ -779,7 +779,7 @@ func TestGetAuthenticatorCov(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	if s.GetAuthenticator() == nil {
 		t.Error("nil")
 	}
@@ -789,7 +789,7 @@ func TestSetSQLProtectorCov(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	sp := NewSQLProtector(DefaultSQLProtectionConfig())
 	s.SetSQLProtector(sp)
 	if s.sqlProtector != sp {
@@ -801,7 +801,7 @@ func TestClientCountCov(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	if s.ClientCount() != 0 {
 		t.Error("not 0")
 	}
@@ -851,7 +851,7 @@ func TestHandleMsgPrepareCov(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
@@ -877,7 +877,7 @@ func TestWireQueryRejectsOversizedSQL(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	cl := &ClientConn{ID: 1, Server: s, authed: true}
 	cl.ctx, cl.cancel = context.WithCancel(context.Background())
 	defer cl.cancel()
@@ -901,7 +901,7 @@ func TestWirePrepareRejectsOversizedSQL(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
@@ -928,7 +928,7 @@ func TestWirePrepareRejectsTooManyPreparedStatements(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
@@ -964,7 +964,7 @@ func TestWirePrepareRejectsInvalidSQLWithoutRegistering(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	cl := &ClientConn{ID: 1, Server: s, authed: true}
 	cl.ctx, cl.cancel = context.WithCancel(context.Background())
 	defer cl.cancel()
@@ -992,7 +992,7 @@ func TestWirePrepareDoesNotExecuteDDL(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	cl := &ClientConn{ID: 1, Server: s, authed: true}
 	cl.ctx, cl.cancel = context.WithCancel(ctx)
 	defer cl.cancel()
@@ -1026,7 +1026,7 @@ func TestWireQueryRejectsOversizedResultSet(t *testing.T) {
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
 
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	cl := &ClientConn{ID: 1, Server: s, authed: true}
 	cl.ctx, cl.cancel = context.WithCancel(ctx)
 	defer cl.cancel()
@@ -1059,7 +1059,7 @@ func TestWireQueryRejectsOversizedResultValue(t *testing.T) {
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
 
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	cl := &ClientConn{ID: 1, Server: s, authed: true}
 	cl.ctx, cl.cancel = context.WithCancel(ctx)
 	defer cl.cancel()
@@ -1083,7 +1083,7 @@ func TestWireQueryRejectsInvalidParams(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	cl := &ClientConn{ID: 1, Server: s, authed: true}
 	cl.ctx, cl.cancel = context.WithCancel(context.Background())
 	defer cl.cancel()
@@ -1133,7 +1133,7 @@ func TestWireExecuteRejectsInvalidParams(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
@@ -1175,7 +1175,7 @@ func TestHandleMsgExecuteCov(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
@@ -1201,7 +1201,7 @@ func TestPreparedStatementHappyPath(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
@@ -1244,7 +1244,7 @@ func TestHandleQuerySQLProtCov(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	sp := NewSQLProtector(&SQLProtectionConfig{
 		Enabled: true, BlockOnDetection: true, MaxQueryLength: 10000,
 		MaxORConditions: 10, MaxUNIONCount: 5, SuspiciousThreshold: 1,
@@ -1284,7 +1284,7 @@ func TestHandleQueryPrefixesCov(t *testing.T) {
 	db, _ := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	defer db.Close()
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	s, _ := New(ps, DefaultConfig())
+	s, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()

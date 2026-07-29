@@ -13,7 +13,7 @@ func TestHandleQueryExecError(t *testing.T) {
 	defer db.Close()
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -57,7 +57,7 @@ func TestHandleQueryWithScanError(t *testing.T) {
 	db.Exec(t.Context(), "INSERT INTO test (id, data) VALUES (1, 'test')")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -86,7 +86,7 @@ func TestHandleQueryUpdateMore(t *testing.T) {
 	db.Exec(t.Context(), "INSERT INTO test (id, name) VALUES (1, 'Alice')")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -120,7 +120,7 @@ func TestHandleQueryDeleteMore(t *testing.T) {
 	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (2)")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -151,7 +151,7 @@ func TestHandleQueryDropTable(t *testing.T) {
 	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -179,7 +179,7 @@ func TestHandleQueryCreateIndex(t *testing.T) {
 	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER, name TEXT)")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -211,7 +211,7 @@ func TestHandleQueryEmptyResultMore(t *testing.T) {
 	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER)")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -245,7 +245,7 @@ func TestHandleQueryMultipleRowsMore(t *testing.T) {
 	}
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -276,7 +276,7 @@ func TestHandleQueryInsertMore(t *testing.T) {
 	db.Exec(t.Context(), "CREATE TABLE test (id INTEGER, name TEXT)")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -310,7 +310,7 @@ func TestHandleQueryWithParamsMore(t *testing.T) {
 	db.Exec(t.Context(), "INSERT INTO test (id, name) VALUES (2, 'Bob')")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,
@@ -343,7 +343,7 @@ func TestHandleQueryNoResults(t *testing.T) {
 	db.Exec(t.Context(), "INSERT INTO test (id) VALUES (1)")
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 	client := &ClientConn{
 		ID:     1,
 		Server: srv,

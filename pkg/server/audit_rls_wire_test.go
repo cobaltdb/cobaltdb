@@ -36,7 +36,7 @@ func TestAuditWireRLSEnforced(t *testing.T) {
 	}
 
 	ps := NewProductionServer(db, DefaultProductionConfig())
-	srv, _ := New(ps, nil)
+	srv, _ := New(ps, &Config{AuthEnabled: false, RequireAuth: false})
 
 	runAs := func(user string) [][]interface{} {
 		client := &ClientConn{ID: 1, Server: srv, authed: true, username: user}

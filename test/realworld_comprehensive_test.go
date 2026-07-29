@@ -257,7 +257,9 @@ func TestRealWorld_ConcurrentClients(t *testing.T) {
 	}
 	defer db.Close()
 
-	ps := server.NewProductionServer(db, server.DefaultProductionConfig())
+	prodCfg := server.DefaultProductionConfig()
+	prodCfg.EnableLoadShedding = false
+	ps := server.NewProductionServer(db, prodCfg)
 	srv, err := server.New(ps, &server.Config{
 		Address:     "127.0.0.1:0",
 		AuthEnabled: false,

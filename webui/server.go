@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/csv"
@@ -165,6 +164,9 @@ func runWebUI() error {
 	}
 	flag.Parse()
 
+	if err := validateWebUIListenAddress(*addr); err != nil {
+		return err
+	}
 	if *insecureNoAuth {
 		return fmt.Errorf("--insecure-no-auth is unsafe and is not supported")
 	}
@@ -224,7 +226,7 @@ func runWebUI() error {
 	// Setup routes
 	mux := http.NewServeMux()
 	fs := http.FileServer(http.Dir("webui/static"))
-	mux.Handle("/static/", http.StripPrefix("/static/", fs))
+	mux.Handle("/static/", staticCacheHandler(http.StripPrefix("/static/", fs)))
 
 	mux.HandleFunc("/", server.handleIndex)
 	mux.HandleFunc("/api/query", server.handleQuery)
@@ -262,12 +264,12 @@ func runWebUI() error {
 		if *tokenTTL > 0 {
 			fmt.Printf("Minted-token TTL: %s\n", *tokenTTL)
 		}
-		// Write the full token URL to a well-known file (0600) so the operator
-		// can retrieve it without exposing the token to shell history or log
-		// aggregators. Fall back to printing the file path.
+		// Create a unique 0600 file instead of following a predictable path in a
+		// shared temporary directory. The file contains a bearer credential, so
+		// an attacker-controlled pre-existing path must never receive it.
 		tokenURL := fmt.Sprintf("http://%s/?token=%s", *addr, apiToken)
-		tokenPath := os.TempDir() + string(os.PathSeparator) + "cobaltdb-webui.token"
-		if err := os.WriteFile(tokenPath, []byte(tokenURL+"\n"), 0600); err != nil {
+		tokenPath, tokenFileErr := writeBootstrapTokenFile(os.TempDir(), tokenURL)
+		if tokenFileErr != nil {
 			// Best-effort: print a truncated token as last resort.
 			maskedToken := apiToken
 			if len(apiToken) > 8 {
@@ -276,6 +278,7 @@ func runWebUI() error {
 			fmt.Printf("Open http://%s/?token=%s in your browser\n", *addr, maskedToken)
 			fmt.Printf("Tip: token query parameter is converted to an HttpOnly cookie automatically\n")
 		} else {
+			defer func() { _ = os.Remove(tokenPath) }() // #nosec G703 — tokenPath is os.TempDir() + a static suffix, not user-controlled
 			fmt.Printf("Token URL written to %s (0600 permissions)\n", tokenPath)
 			fmt.Printf("Open that file in a secure editor, or visit http://%s/ and paste the token manually\n", *addr)
 		}
@@ -301,6 +304,56 @@ func runWebUI() error {
 		return fmt.Errorf("server error: %w", err)
 	}
 	return db.Close()
+}
+
+func validateWebUIListenAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid Web UI listen address %q: %w", address, err)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("refusing cleartext Web UI listen address %q: bind to localhost/loopback or terminate TLS at a trusted local reverse proxy", address)
+}
+
+func staticCacheHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("Expires", time.Now().UTC().Add(time.Hour).Format(http.TimeFormat))
+		next.ServeHTTP(w, r)
+	})
+}
+
+func writeBootstrapTokenFile(dir, tokenURL string) (path string, err error) {
+	file, err := os.CreateTemp(dir, "cobaltdb-webui-token-*")
+	if err != nil {
+		return "", fmt.Errorf("create bootstrap token file: %w", err)
+	}
+	path = file.Name()
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close bootstrap token file: %w", closeErr)
+		}
+		if err != nil {
+			_ = os.Remove(path)
+		}
+	}()
+
+	if err = file.Chmod(0600); err != nil {
+		return path, fmt.Errorf("secure bootstrap token file: %w", err)
+	}
+	if _, err = io.WriteString(file, tokenURL+"\n"); err != nil {
+		return path, fmt.Errorf("write bootstrap token file: %w", err)
+	}
+	if err = file.Sync(); err != nil {
+		return path, fmt.Errorf("sync bootstrap token file: %w", err)
+	}
+	return path, nil
 }
 
 func generateToken(size int) (string, error) {
@@ -664,7 +717,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	ctx := context.Background()
+	ctx := r.Context()
 
 	// Determine if it's a SELECT query
 	upperQuery := toUpperFast(query)
@@ -768,7 +821,7 @@ func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
 		tableInfo := TableInfo{Name: tableName}
 
 		// Try to get column info by querying
-		ctx := context.Background()
+		ctx := r.Context()
 		quotedTable, err := quoteSQLIdentifier(tableName)
 		if err != nil {
 			continue
@@ -830,7 +883,7 @@ func (s *Server) handleTableInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get column info by querying
-	ctx := context.Background()
+	ctx := r.Context()
 	rows, err := s.db.Query(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 0", quotedTable))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -887,7 +940,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		s.recordAudit(r, p, class, query, "allowed", "export csv")
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	rows, err := s.db.Query(ctx, query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -957,7 +1010,7 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 		s.recordAudit(r, p, class, query, "allowed", "export json")
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	rows, err := s.db.Query(ctx, query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1384,7 +1437,7 @@ func (s *Server) handleUpdateRow(w http.ResponseWriter, r *http.Request) {
 	args = append([]interface{}{req.Value}, args...)
 
 	// Execute query
-	ctx := context.Background()
+	ctx := r.Context()
 	_, err = s.db.Exec(ctx, query, args...)
 
 	if err != nil {
