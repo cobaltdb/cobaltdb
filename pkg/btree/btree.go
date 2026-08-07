@@ -150,6 +150,13 @@ type btreeShard struct {
 
 var crc64Table = crc64.MakeTable(crc64.ISO)
 
+// flushTestPanicHook, when non-nil, is invoked at the start of the snapshot
+// loop in flushLocked. It exists solely to allow tests to inject a panic at
+// the boundary where the dirty flag has been cleared but the snapshot maps
+// have not yet been populated, so the dirty-restore defer can be exercised.
+// Production builds never set this; tests opt in explicitly.
+var flushTestPanicHook func()
+
 type BTree struct {
 	flushMu        sync.Mutex // serializes flushInternal and eviction flush
 	rootPageID     uint32
@@ -970,21 +977,36 @@ func (t *BTree) flushInternal() (err error) {
 	// success for evictToMakeSpace to consult.
 	flushStartTS := lruTimestamp.Load()
 
-	// Clear the dirty flag BEFORE snapshotting and restore it on error. A
-	// concurrent Put landing after its shard was snapshotted sets dirty=1 and
-	// the tree is re-flushed later; clearing AFTER the snapshots would clobber
-	// that Put's dirty=1 and let evictToMakeSpace evict a never-flushed key
-	// (stale value / ErrKeyNotFound on read-back). Same pattern as
-	// BufferPool.FlushPage.
+	// Clear the dirty flag BEFORE snapshotting and restore it on error or
+	// panic. A concurrent Put landing after its shard was snapshotted sets
+	// dirty=1 and the tree is re-flushed later; clearing AFTER the snapshots
+	// would clobber that Put's dirty=1 and let evictToMakeSpace evict a
+	// never-flushed key (stale value / ErrKeyNotFound on read-back). Same
+	// pattern as BufferPool.FlushPage.
+	//
+	// The named-return + panic-recovery defer is required: the named-return
+	// defer alone misses panics (Go does not assign to a named return on
+	// panic), so the snapshot map allocations below — `make(map[string][]byte)`
+	// at line ~1014 and `make([]map[string]bool, numShards)` — could panic
+	// under memory pressure and leave the tree permanently marked clean with
+	// its data only in memory. The recover() + re-panic path preserves the
+	// panic for upstream recovery but guarantees dirty is restored first.
 	atomic.StoreInt32(&t.dirty, 0)
 	defer func() {
 		if err != nil {
 			atomic.StoreInt32(&t.dirty, 1)
 		}
+		if r := recover(); r != nil {
+			atomic.StoreInt32(&t.dirty, 1)
+			panic(r)
+		}
 	}()
 
 	// Snapshot each shard individually so writers to other shards can proceed
 	// while we serialize the flushed data.
+	if flushTestPanicHook != nil {
+		flushTestPanicHook()
+	}
 	dataSnap := make(map[string][]byte)
 	evictedSnap := make([]map[string]bool, numShards)
 	hasEvicted := false
