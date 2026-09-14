@@ -15,7 +15,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -719,13 +718,12 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	ctx := r.Context()
 
-	// Determine if it's a SELECT query
-	upperQuery := toUpperFast(query)
-	isSelect := strings.HasPrefix(upperQuery, "SELECT") ||
-		strings.HasPrefix(upperQuery, "WITH") ||
-		strings.HasPrefix(upperQuery, "SHOW") ||
-		strings.HasPrefix(upperQuery, "DESCRIBE") ||
-		strings.HasPrefix(upperQuery, "EXPLAIN")
+	// Route on the same classification the authorization used (single source
+	// of truth): reads return rows and must go through Query; everything else
+	// goes through Exec. The previous hand-rolled HasPrefix list omitted DESC
+	// (and PRAGMA/VALUES), so "DESC t" was authorized as a read but executed
+	// via Exec, failing with "use Query() instead of Exec()...".
+	isSelect := class == classRead
 
 	resp := QueryResponse{Success: true}
 
@@ -865,7 +863,6 @@ func (s *Server) handleTableInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tableName, _ = url.QueryUnescape(tableName)
 	quotedTable, err := quoteSQLIdentifier(tableName)
 	if err != nil {
 		http.Error(w, "invalid table name", http.StatusBadRequest)
@@ -1227,8 +1224,6 @@ func (s *Server) handleSavedQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name, _ = url.QueryUnescape(name)
-
 	switch r.Method {
 	case http.MethodGet:
 		s.mu.RLock()
@@ -1571,7 +1566,6 @@ func (s *Server) handleAdminToken(w http.ResponseWriter, r *http.Request) {
 		id = rest[:i]
 		action = rest[i+1:]
 	}
-	id, _ = url.QueryUnescape(id)
 	if id == "" {
 		http.Error(w, "token id required", http.StatusBadRequest)
 		return

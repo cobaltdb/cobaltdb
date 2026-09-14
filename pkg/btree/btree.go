@@ -50,17 +50,6 @@ func checkedUint16Len(n int, name string) (uint16, error) {
 	return uint16(n), nil // #nosec G115 - range checked above.
 }
 
-func checkedUint32Len(n int, name string) (uint32, error) {
-	if n < 0 || n > 1<<32-1 {
-		return 0, fmt.Errorf("%s exceeds uint32: %d", name, n)
-	}
-	return uint32(n), nil // #nosec G115 - range checked above.
-}
-
-func checkedUint32PageCount(n int) (uint32, error) {
-	return checkedUint32Len(n, "overflow page count")
-}
-
 // lruEntry tracks memory usage for LRU eviction. It acts as an intrusive
 // doubly-linked list node, eliminating the separate list.Element allocation
 // that container/list required.
@@ -341,10 +330,25 @@ func (t *BTree) loadFromPages() error {
 		offset += valLen
 
 		keyStr := string(key)
-		t.shards[shardIndex(keyStr)].data[keyStr] = val
+		sh := &t.shards[shardIndex(keyStr)]
+		sh.data[keyStr] = val
+		entry := &lruEntry{
+			key:       keyStr,
+			size:      int64(len(keyStr) + len(val)),
+			timestamp: lruTimestamp.Add(1),
+		}
+		sh.lruList.PushFront(entry)
+		sh.lruMap[keyStr] = entry
 		loadedCount++
+		atomic.AddInt64(&t.memoryUsed, entry.size)
 	}
 	atomic.StoreInt64(&t.keyCount, loadedCount)
+	atomic.StoreInt64(&t.lastFlushTS, lruTimestamp.Load())
+	if limit := atomic.LoadInt64(&t.memoryLimit); limit > 0 && atomic.LoadInt64(&t.memoryUsed) > limit {
+		if err := t.evictToMakeSpace(0); err != nil {
+			return fmt.Errorf("enforce memory limit while loading root page %d: %w", t.rootPageID, err)
+		}
+	}
 	return nil
 }
 
@@ -890,6 +894,16 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 		}
 
 		sh := &t.shards[best.shardIdx]
+		// The safe-to-evict decision must be made under flushMu: flushLocked
+		// clears the dirty flag BEFORE taking its shard snapshots, so without
+		// flushMu an in-flight flush opens a window where dirty==0 yet a value
+		// newer than lastFlushTS exists only in memory. Evicting in that
+		// window deletes the value before the flush snapshots its shard; the
+		// flush then sees the key in `evicted`, merges the OLD disk value and
+		// persists it — the newer write is lost durably (stale value
+		// resurrected on the next read). Holding flushMu guarantees no flush
+		// is in flight, so dirty==0 really means everything is on disk.
+		t.flushMu.Lock()
 		sh.lruMu.Lock()
 		// Verify the back element is still the one we picked (or re-check).
 		entry := sh.lruList.Back()
@@ -903,7 +917,9 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 			// everything in memory is known to be on disk, so eviction is
 			// safe regardless of the timestamp.
 			sh.lruMu.Unlock()
-			if err := t.flushInternal(); err != nil {
+			err := t.flushLocked()
+			t.flushMu.Unlock()
+			if err != nil {
 				return fmt.Errorf("failed to flush during eviction: %w", err)
 			}
 			continue
@@ -914,6 +930,7 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 			// entry freed for GC
 		}
 		sh.lruMu.Unlock()
+		t.flushMu.Unlock()
 
 		if entry == nil {
 			continue // Another goroutine evicted it already; retry.
@@ -951,7 +968,7 @@ func (t *BTree) evictToMakeSpace(needed int64) error {
 
 // flushInternal flushes data to disk pages.  It acquires all shard RLocks to
 // read the current memStorage snapshot, then writes to the buffer pool.
-func (t *BTree) flushInternal() (err error) {
+func (t *BTree) flushInternal() error {
 	if t.loadErr != nil {
 		// Flushing a tree whose on-disk state could not be loaded would
 		// overwrite the existing (possibly recoverable) root with the empty
@@ -964,8 +981,17 @@ func (t *BTree) flushInternal() (err error) {
 
 	t.flushMu.Lock()
 	defer t.flushMu.Unlock()
+	return t.flushLocked()
+}
 
-	// Re-check dirty after acquiring flushMu.
+// flushLocked is the body of flushInternal; the caller must hold t.flushMu.
+// evictToMakeSpace calls it directly while already holding flushMu for its
+// safe-to-evict check.
+func (t *BTree) flushLocked() (err error) {
+	if t.loadErr != nil {
+		return t.loadErr
+	}
+	// Re-check dirty under flushMu.
 	if atomic.LoadInt32(&t.dirty) == 0 {
 		return nil
 	}
@@ -1057,7 +1083,16 @@ func (t *BTree) flushInternal() (err error) {
 			return err
 		}
 		for k, v := range diskData {
-			if evictedSnap[shardIndex(k)][k] {
+			// evictedSnap may be stale: a concurrent Delete of an evicted key
+			// removes it from the live set after this flush snapshotted its
+			// shard (and before the merge below). Trusting the snapshot would
+			// write the deleted key back to disk, resurrecting it on the next
+			// loadFromPages. Re-check the live set under the shard read lock.
+			sh := &t.shards[shardIndex(k)]
+			sh.mu.RLock()
+			_, stillEvicted := sh.evicted[k]
+			sh.mu.RUnlock()
+			if stillEvicted {
 				toSerialize[k] = v
 			}
 		}

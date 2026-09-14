@@ -145,7 +145,17 @@ func (a *tableAccumulator) walkUnion(s *query.UnionStmt, cteScope map[string]str
 			return err
 		}
 	}
-	return nil
+	for _, o := range s.OrderBy {
+		if o != nil {
+			if err := a.walkExpr(o.Expr, cteScope); err != nil {
+				return err
+			}
+		}
+	}
+	if err := a.walkExpr(s.Limit, cteScope); err != nil {
+		return err
+	}
+	return a.walkExpr(s.Offset, cteScope)
 }
 
 func (a *tableAccumulator) walkSelect(s *query.SelectStmt, cteScope map[string]struct{}) error {
@@ -191,7 +201,12 @@ func (a *tableAccumulator) walkSelect(s *query.SelectStmt, cteScope map[string]s
 			}
 		}
 	}
-	return nil
+	// LIMIT/OFFSET are expressions too and may embed subqueries over tables
+	// the allow-list must gate.
+	if err := a.walkExpr(s.Limit, cteScope); err != nil {
+		return err
+	}
+	return a.walkExpr(s.Offset, cteScope)
 }
 
 func (a *tableAccumulator) walkTableRef(t *query.TableRef, cteScope map[string]struct{}) error {

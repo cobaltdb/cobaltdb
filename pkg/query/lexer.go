@@ -262,6 +262,15 @@ func (l *Lexer) NextToken() Token {
 		tok = newToken(TokenSemicolon, l.ch, l.line, l.column)
 		l.readChar()
 	case '.':
+		if isDigit(l.peekChar()) {
+			// Leading-dot numeric literal (MySQL grammar): ".5" == 0.5.
+			// readNumber already consumes the dot and following digits.
+			tok.Type = TokenNumber
+			tok.Literal = l.readNumber()
+			tok.Line = l.line
+			tok.Column = l.column - len(tok.Literal) + 1
+			return tok
+		}
 		tok = newToken(TokenDot, l.ch, l.line, l.column)
 		l.readChar()
 	case '?':
@@ -288,15 +297,28 @@ func (l *Lexer) NextToken() Token {
 		tok.Line = l.line
 		tok.Column = l.column
 	case '`':
+		startLine, startCol := l.line, l.column
+		lit, ok := l.readBacktickString()
+		if !ok {
+			return Token{Type: TokenIllegal, Literal: "unterminated quoted identifier", Line: startLine, Column: startCol}
+		}
 		tok.Type = TokenIdentifier
-		tok.Literal = l.readBacktickString()
+		tok.Literal = lit
 		tok.Line = l.line
 		tok.Column = l.column
 	case 0:
-		tok.Literal = ""
-		tok.Type = TokenEOF
-		tok.Line = l.line
-		tok.Column = l.column
+		if l.pos < len(l.input) {
+			// A literal NUL byte inside the input, not end-of-input. Reject it
+			// rather than silently truncating the remainder of the statement
+			// (MySQL and SQLite reject NUL bytes in statement text as well).
+			tok = Token{Type: TokenIllegal, Literal: "NUL byte in SQL input", Line: l.line, Column: l.column}
+			l.readChar()
+		} else {
+			tok.Literal = ""
+			tok.Type = TokenEOF
+			tok.Line = l.line
+			tok.Column = l.column
+		}
 	default:
 		if isLetter(l.ch) {
 			literal := l.readIdentifier()
@@ -352,8 +374,16 @@ func (l *Lexer) readNumber() string {
 			l.readChar()
 		}
 	}
-	// Scientific notation
-	if l.ch == 'e' || l.ch == 'E' {
+	// Trailing-dot form (MySQL): "1." == 1.0. Reached only when the fractional
+	// branch above did not already consume the dot (its guard requires a digit
+	// after the dot).
+	if l.ch == '.' {
+		l.readChar()
+	}
+	// Scientific notation — only when a digit (optionally sign-prefixed)
+	// actually follows the e/E; otherwise the e/E belongs to the following
+	// identifier (MySQL: "SELECT 1exp" is 1 with alias exp, not invalid "1e").
+	if l.looksLikeExponent() {
 		l.readChar()
 		if l.ch == '+' || l.ch == '-' {
 			l.readChar()
@@ -363,6 +393,21 @@ func (l *Lexer) readNumber() string {
 		}
 	}
 	return l.input[pos:l.pos]
+}
+
+// looksLikeExponent reports whether an exponent — e/E followed by an optional
+// sign and at least one digit — starts at the current character. MySQL only
+// forms an exponent in that case; otherwise the e/E belongs to the following
+// identifier.
+func (l *Lexer) looksLikeExponent() bool {
+	if l.ch != 'e' && l.ch != 'E' {
+		return false
+	}
+	i := l.readPos // index of the character after e/E
+	if i < len(l.input) && (l.input[i] == '+' || l.input[i] == '-') {
+		i++
+	}
+	return i < len(l.input) && isDigit(l.input[i])
 }
 
 // readString reads a string literal
@@ -409,16 +454,38 @@ func (l *Lexer) readString(quote byte) (string, bool) {
 	return result.String(), true
 }
 
-// readBacktickString reads a backtick-quoted identifier
-func (l *Lexer) readBacktickString() string {
+// readBacktickString reads a backtick-quoted identifier.
+// It reports ok=false when the input ends before the closing backtick so the
+// caller can reject the token (matching the unterminated ' and " handling)
+// instead of silently swallowing the rest of the input into one identifier.
+// MySQL-style doubled backtick escapes are supported: two consecutive
+// backtick characters inside the identifier denote one literal backtick.
+func (l *Lexer) readBacktickString() (string, bool) {
 	l.readChar() // consume opening backtick
 	pos := l.pos
-	for l.ch != '`' && l.ch != 0 {
+	hasEscape := false
+	for {
+		if l.ch == 0 {
+			return l.input[pos:l.pos], false
+		}
+		if l.ch == '`' {
+			if l.peekChar() == '`' {
+				// Doubled backtick: one literal backtick inside the identifier.
+				hasEscape = true
+				l.readChar() // consume first of the pair
+				l.readChar() // consume second of the pair
+				continue
+			}
+			break // single backtick: closing delimiter
+		}
 		l.readChar()
 	}
 	str := l.input[pos:l.pos]
 	l.readChar() // consume closing backtick
-	return str
+	if !hasEscape {
+		return str, true
+	}
+	return strings.ReplaceAll(str, "``", "`"), true
 }
 
 // isLetter checks if a character is a letter or underscore (ASCII only)
