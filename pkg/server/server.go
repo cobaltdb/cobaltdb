@@ -101,9 +101,9 @@ func generateRandomPassword() (string, error) {
 func DefaultConfig() *Config {
 	pass, _ := generateRandomPassword()
 	return &Config{
-		Address:          ":4200",
-		AuthEnabled:      false,
-		RequireAuth:      false,
+		Address:          "127.0.0.1:4200",
+		AuthEnabled:      true,
+		RequireAuth:      true,
 		DefaultAdminUser: "admin",
 		DefaultAdminPass: pass,
 		MaxConnections:   defaultMaxConnections,
@@ -756,6 +756,9 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 	if isQuery {
 		rows, err := c.Server.prodServer.Query(ctx, query.SQL, query.Params...)
 		if err != nil {
+			if errors.Is(err, ErrLoadShed) {
+				return wire.NewErrorMessage(10, err.Error())
+			}
 			return wire.NewErrorMessage(4, sanitizeError(err))
 		}
 		defer rows.Close()
@@ -789,6 +792,9 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 	// Non-query statement (INSERT, UPDATE, DELETE, CREATE, etc.)
 	result, err := c.Server.prodServer.Exec(ctx, query.SQL, query.Params...)
 	if err != nil {
+		if errors.Is(err, ErrLoadShed) {
+			return wire.NewErrorMessage(10, err.Error())
+		}
 		return wire.NewErrorMessage(4, sanitizeError(err))
 	}
 
@@ -799,6 +805,9 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 func (c *ClientConn) handlePrepare(ctx context.Context, prep *wire.PrepareMessage) interface{} {
 	if c.Server.prodServer == nil {
 		return wire.NewErrorMessage(1, "database not initialized")
+	}
+	if err := c.Server.prodServer.Admit(false); err != nil {
+		return wire.NewErrorMessage(10, err.Error())
 	}
 	if errMsg := validateWireSQL(prep.SQL); errMsg != nil {
 		return errMsg

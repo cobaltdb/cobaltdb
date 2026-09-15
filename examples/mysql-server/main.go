@@ -40,28 +40,34 @@ func main() {
 	}
 	defer db.Close()
 
-	// Create some sample data
+	// Create some sample data. mustExec keeps the example focused on server
+	// setup while still surfacing SQL failures loudly.
 	ctx := context.Background()
-	db.Exec(ctx, `CREATE TABLE users (
+	mustExec := func(query string) {
+		if _, err := db.Exec(ctx, query); err != nil {
+			log.Fatal(err)
+		}
+	}
+	mustExec(`CREATE TABLE users (
 		id INTEGER PRIMARY KEY,
 		name TEXT NOT NULL,
 		email TEXT UNIQUE,
 		department TEXT
 	)`)
-	db.Exec(ctx, "INSERT INTO users VALUES (1, 'Alice', 'alice@example.com', 'Engineering')")
-	db.Exec(ctx, "INSERT INTO users VALUES (2, 'Bob', 'bob@example.com', 'Marketing')")
-	db.Exec(ctx, "INSERT INTO users VALUES (3, 'Charlie', 'charlie@example.com', 'Engineering')")
+	mustExec("INSERT INTO users VALUES (1, 'Alice', 'alice@example.com', 'Engineering')")
+	mustExec("INSERT INTO users VALUES (2, 'Bob', 'bob@example.com', 'Marketing')")
+	mustExec("INSERT INTO users VALUES (3, 'Charlie', 'charlie@example.com', 'Engineering')")
 
-	db.Exec(ctx, `CREATE TABLE orders (
+	mustExec(`CREATE TABLE orders (
 		id INTEGER PRIMARY KEY,
 		user_id INTEGER,
 		amount REAL,
 		status TEXT DEFAULT 'pending',
 		FOREIGN KEY (user_id) REFERENCES users(id)
 	)`)
-	db.Exec(ctx, "INSERT INTO orders VALUES (1, 1, 99.99, 'completed')")
-	db.Exec(ctx, "INSERT INTO orders VALUES (2, 1, 149.50, 'pending')")
-	db.Exec(ctx, "INSERT INTO orders VALUES (3, 2, 25.00, 'completed')")
+	mustExec("INSERT INTO orders VALUES (1, 1, 99.99, 'completed')")
+	mustExec("INSERT INTO orders VALUES (2, 1, 149.50, 'pending')")
+	mustExec("INSERT INTO orders VALUES (3, 2, 25.00, 'completed')")
 
 	fmt.Println("Sample data loaded: 3 users, 3 orders")
 	fmt.Println()

@@ -93,7 +93,7 @@ func (t *walRecoveryBufferTracker) add(record *WALRecord) error {
 		return fmt.Errorf("%w: pending WAL recovery record count exceeds maximum %d", ErrWALCorrupted, walMaxRecoveryPendingRecords)
 	}
 	recordBytes := int64(len(record.Data))
-	var maxBytes int64 = int64(walMaxRecoveryPendingBytes)
+	var maxBytes = int64(walMaxRecoveryPendingBytes)
 	if walTestMaxPendingBytes > 0 {
 		maxBytes = walTestMaxPendingBytes
 	}
@@ -159,7 +159,7 @@ type walFile interface {
 }
 
 var walOpenFile = func(path string, flag int, perm os.FileMode) (walFile, error) {
-	return os.OpenFile(path, flag, perm)
+	return os.OpenFile(path, flag, perm) // #nosec G304 -- OS seam for the WAL file; path is the operator-configured database path, validated (Clean + symlink rejection) by the caller.
 }
 
 func writeWALFull(writer io.Writer, data []byte) error {
@@ -188,7 +188,7 @@ func (w *WAL) encryptData(plaintext []byte, headerAAD []byte) ([]byte, error) {
 }
 
 func encryptDataWithCipher(c cipher.AEAD, plaintext []byte, headerAAD []byte) ([]byte, error) {
-	if c == nil || len(plaintext) == 0 {
+	if c == nil {
 		return plaintext, nil
 	}
 	nonce := make([]byte, c.NonceSize())
@@ -201,7 +201,7 @@ func encryptDataWithCipher(c cipher.AEAD, plaintext []byte, headerAAD []byte) ([
 
 // decryptData decrypts WAL record data with optional header as AAD
 func (w *WAL) decryptData(ciphertext []byte, headerAAD []byte) ([]byte, error) {
-	if w.cipher == nil || len(ciphertext) == 0 {
+	if w.cipher == nil {
 		return ciphertext, nil
 	}
 	nonceSize := w.cipher.NonceSize()
@@ -409,8 +409,10 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, int64
 		return nil, 0, ErrWALCorrupted
 	}
 
-	// Decrypt record data if cipher is configured
-	if w.cipher != nil && len(record.Data) > 0 {
+	// Decrypt every record when encryption is configured. Empty control records
+	// still carry a nonce and authentication tag so their header (including
+	// transaction ID and record type) cannot be rewritten with only a new CRC.
+	if w.cipher != nil {
 		// Use header bytes as AAD, with the LSN zeroed to match the encrypt side
 		// (the on-disk LSN is patched after encryption in the group-commit path).
 		var aad [walHeaderSize]byte
@@ -418,7 +420,7 @@ func (w *WAL) readRecord(reader *bufio.Reader, header []byte) (*WALRecord, int64
 		zeroWALHeaderLSN(aad[:])
 		decrypted, err := w.decryptData(record.Data, aad[:])
 		if err != nil {
-			return nil, 0, fmt.Errorf("WAL record decryption failed at LSN %d: %w", record.LSN, err)
+			return nil, 0, fmt.Errorf("%w: WAL record decryption failed at LSN %d: %v", ErrWALCorrupted, record.LSN, err)
 		}
 		record.Data = decrypted
 	}
@@ -617,7 +619,7 @@ func (w *WAL) formatBatch(records []*WALRecord, c cipher.AEAD) ([]byte, []int, e
 	encrypted := make([][]byte, len(records))
 	for i, r := range records {
 		data := r.Data
-		if c != nil && len(data) > 0 {
+		if c != nil {
 			// The AAD header must match the header stored on disk and used as the
 			// AAD on read: use the on-disk (ciphertext) data length, and zero the
 			// LSN — in the group-commit path the on-disk LSN is written as 0 and
@@ -688,7 +690,7 @@ func encryptedRecordDataLen(dataLen int, c cipher.AEAD) (int, error) {
 		return 0, fmt.Errorf("WAL record data size (%d bytes) exceeds maximum (%d bytes)",
 			dataLen, walMaxRecordDataSize)
 	}
-	if c == nil || dataLen == 0 {
+	if c == nil {
 		return dataLen, nil
 	}
 	overhead := c.NonceSize() + c.Overhead()
@@ -746,8 +748,9 @@ func (w *WAL) appendInternal(record *WALRecord, sync bool) error {
 	newLSN := w.lsn + 1
 	record.LSN = newLSN
 
-	// Encrypt record data if cipher is configured
-	if w.cipher != nil && len(record.Data) > 0 {
+	// Encrypt every record when a cipher is configured, including zero-length
+	// commit/rollback/checkpoint records whose headers control recovery.
+	if w.cipher != nil {
 		// Match the read-side AAD: on-disk (ciphertext) data length and a zeroed
 		// LSN (see formatBatch and decode for why the LSN is excluded).
 		var headerAAD [walHeaderSize]byte
@@ -841,6 +844,18 @@ func (w *WAL) EnableGroupCommit(batchSize int, interval time.Duration) {
 	w.groupCommitEnabled = true
 	w.batchSize = batchSize
 	w.syncInterval = interval
+	// Appends that registered as pending syncs under the previous
+	// configuration are waiting on the flush mechanisms this reconfiguration
+	// is about to dismantle or replace (groupCommitLoop returns without
+	// flushing on <-stop, and a SyncOff configuration has no flush trigger at
+	// all). Flush them across the boundary so no registered waiter is
+	// abandoned — the same obligation DisableGroupCommit already honors.
+	if len(w.pendingSyncs) > 0 {
+		// flushPendingLocked acquires groupCommitMu itself, so release first.
+		w.groupCommitMu.Unlock()
+		_ = w.flushPendingLocked()
+		w.groupCommitMu.Lock()
+	}
 	if interval > 0 {
 		stop := make(chan struct{})
 		w.stopGC = stop
@@ -999,16 +1014,6 @@ func writeRecordHeader(dst []byte, record *WALRecord, dataLen int) error {
 	return nil
 }
 
-// encodeRecord encodes a WAL record to bytes (without CRC)
-// Format: [LSN:8][TxnID:8][Type:1][PageID:4][Offset:2][Length:2][Data:N]
-func (w *WAL) encodeRecord(record *WALRecord) ([]byte, error) {
-	dataLen := len(record.Data)
-	buf := make([]byte, walHeaderSize+dataLen)
-	_ = writeRecordHeader(buf, record, dataLen)
-	copy(buf[walHeaderSize:], record.Data)
-	return buf, nil
-}
-
 // Checkpoint flushes dirty pages to main DB file and truncates WAL
 func (w *WAL) Checkpoint(bp *BufferPool) error {
 	if err := w.flushPendingLocked(); err != nil {
@@ -1052,34 +1057,13 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 	}
 	w.bufWriter = bufio.NewWriter(w.file)
 
-	// 4. Write checkpoint record
-	checkpointRecord := &WALRecord{
-		TxnID: 0,
-		Type:  WALCheckpoint,
-	}
-	newLSN := w.lsn + 1
-	checkpointRecord.LSN = newLSN
-
-	buf, _ := w.encodeRecord(checkpointRecord)
-	crc := crc32.ChecksumIEEE(buf)
-
-	// bufio.Writer accepts these small writes in memory; Flush below is the
-	// fallible I/O boundary.
-	_, _ = w.bufWriter.Write(buf)
-	var crcBuf [4]byte
-	binary.LittleEndian.PutUint32(crcBuf[:], crc)
-	_, _ = w.bufWriter.Write(crcBuf[:])
-
-	if err := w.bufWriter.Flush(); err != nil {
+	// 4. Write the checkpoint through the normal append path so encrypted
+	// control records receive the same AEAD authentication as data records.
+	checkpointRecord := &WALRecord{Type: WALCheckpoint}
+	if err := w.appendInternal(checkpointRecord, true); err != nil {
 		return err
 	}
-	if err := w.file.Sync(); err != nil {
-		return err
-	}
-
-	// Update LSN and checkpoint after successful write
-	w.lsn = newLSN
-	w.checkpoint = newLSN
+	w.checkpoint = checkpointRecord.LSN
 
 	return nil
 }

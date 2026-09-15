@@ -258,9 +258,6 @@ func TestCoverage100CompressionEdges(t *testing.T) {
 		if _, err := checkedUint16(-1, "negative"); err == nil {
 			t.Fatal("uint16 negative accepted")
 		}
-		if _, err := checkedUint64Offset(-1); err == nil {
-			t.Fatal("negative offset accepted")
-		}
 	})
 	t.Run("decoder errors and pools", func(t *testing.T) {
 		cb, _ := NewCompressedBackend(NewMemory(), DefaultCompressionConfig())
@@ -772,6 +769,7 @@ func TestCoverage100EncryptionAndSaltEdges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		//lint:ignore SA6002 deliberately puts a non-pointer to exercise the []byte branch of ReadAt's pool Get type switch.
 		eb.readPool.Put([]byte{})
 		if _, err := eb.ReadAt(make([]byte, PageSize), 0); !errors.Is(err, io.EOF) {
 			t.Fatalf("short ciphertext: %v", err)
@@ -1064,11 +1062,6 @@ func TestCoverage100CheckpointFailures(t *testing.T) {
 }
 
 func TestCoverage100RemainingCoreStates(t *testing.T) {
-	t.Run("conversion success", func(t *testing.T) {
-		if got, err := checkedUint64Offset(7); err != nil || got != 7 {
-			t.Fatalf("got=%d err=%v", got, err)
-		}
-	})
 	t.Run("buffer miss eviction", func(t *testing.T) {
 		bp := NewBufferPool(1, NewMemory())
 		p, _ := bp.NewPage(PageTypeLeaf)

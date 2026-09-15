@@ -149,6 +149,9 @@ func normalizeOptions(opts *Options) *Options {
 	if normalized.ReplicationSSLCA != "" && normalized.Replication.SSLCA == "" {
 		normalized.Replication.SSLCA = normalized.ReplicationSSLCA
 	}
+	if normalized.ReplicationSSLServerName != "" && normalized.Replication.SSLServerName == "" {
+		normalized.Replication.SSLServerName = normalized.ReplicationSSLServerName
+	}
 	if normalized.ReplicationStateFile != "" && normalized.Replication.StateFile == "" {
 		normalized.Replication.StateFile = normalized.ReplicationStateFile
 	}
@@ -577,7 +580,48 @@ func validateOptions(opts *Options) error {
 	if opts.ParallelQuery.Threshold < 0 {
 		return fmt.Errorf("parallel query threshold must be non-negative: %d", opts.ParallelQuery.Threshold)
 	}
+	if err := validateReplicationOptions(opts.Replication); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateReplicationOptions(config ReplicationConfig) error {
+	if config.Role == "" {
+		if config.ListenAddr != "" || config.MasterAddr != "" || config.AuthToken != "" ||
+			config.SSLCert != "" || config.SSLKey != "" || config.SSLCA != "" || config.SSLServerName != "" {
+			return fmt.Errorf("replication settings require role master or slave")
+		}
+		return nil
+	}
+
+	var role replication.Role
+	switch config.Role {
+	case "master":
+		role = replication.RoleMaster
+	case "slave":
+		role = replication.RoleSlave
+	default:
+		return fmt.Errorf("invalid replication role %q", config.Role)
+	}
+
+	var mode replication.ReplicationMode
+	switch config.Mode {
+	case "", "async":
+		mode = replication.ModeAsync
+	case "sync":
+		mode = replication.ModeSync
+	case "full_sync":
+		mode = replication.ModeFullSync
+	default:
+		return fmt.Errorf("invalid replication mode %q", config.Mode)
+	}
+
+	return replication.ValidateConfig(&replication.Config{
+		Role: role, Mode: mode, ListenAddr: config.ListenAddr, MasterAddr: config.MasterAddr,
+		AuthToken: config.AuthToken, SSLCert: config.SSLCert, SSLKey: config.SSLKey,
+		SSLCA: config.SSLCA, SSLServerName: config.SSLServerName, StateFile: config.StateFile,
+	})
 }
 
 func prepareDatabaseParentDir(path string) error {
@@ -725,7 +769,9 @@ func (db *DB) createNew() error {
 
 	// Initialize common subsystems: FDW, RLS, txnMgr, query cache,
 	// optimizer, replication, backup, and slow-query log.
-	db.initializeCommonComponents()
+	if err := db.initializeCommonComponents(); err != nil {
+		return err
+	}
 
 	return db.backend.Sync()
 }
@@ -734,7 +780,7 @@ func (db *DB) createNew() error {
 // and loadExisting: catalog with FDW registry, transaction manager, query
 // cache, optimizer, replication manager, backup manager, and slow-query log.
 // The catalog must already be assigned to db.catalog before calling this.
-func (db *DB) initializeCommonComponents() {
+func (db *DB) initializeCommonComponents() error {
 	// Initialize FDW registry and register built-in wrappers
 	fdwRegistry := fdw.NewRegistry()
 	fdwRegistry.Register("csv", func() fdw.ForeignDataWrapper { return &fdw.CSVWrapper{} })
@@ -797,20 +843,22 @@ func (db *DB) initializeCommonComponents() {
 		}
 
 		replConfig := &replication.Config{
-			Role:       role,
-			Mode:       mode,
-			ListenAddr: db.options.Replication.ListenAddr,
-			MasterAddr: db.options.Replication.MasterAddr,
-			AuthToken:  db.options.Replication.AuthToken,
-			SSLCert:    db.options.Replication.SSLCert,
-			SSLKey:     db.options.Replication.SSLKey,
-			SSLCA:      db.options.Replication.SSLCA,
-			StateFile:  db.options.Replication.StateFile,
+			Role:          role,
+			Mode:          mode,
+			ListenAddr:    db.options.Replication.ListenAddr,
+			MasterAddr:    db.options.Replication.MasterAddr,
+			AuthToken:     db.options.Replication.AuthToken,
+			SSLCert:       db.options.Replication.SSLCert,
+			SSLKey:        db.options.Replication.SSLKey,
+			SSLCA:         db.options.Replication.SSLCA,
+			SSLServerName: db.options.Replication.SSLServerName,
+			StateFile:     db.options.Replication.StateFile,
 		}
 		db.replicationMgr = replication.NewManager(replConfig)
 		db.configureReplicationCallbacks()
 		if err := db.replicationMgr.Start(); err != nil {
-			db.options.Logger.Errorf("Failed to start replication manager: %v", err)
+			db.replicationMgr = nil
+			return fmt.Errorf("failed to start replication manager: %w", err)
 		}
 	}
 
@@ -829,6 +877,7 @@ func (db *DB) initializeCommonComponents() {
 		db.slowQueryLog = metrics.NewSlowQueryLog(true, threshold, maxEntries, db.options.SlowQueryLog.LogFile)
 		db.unregisterSlowQueryLog = metrics.RegisterSlowQueryLog(db.slowQueryLog)
 	}
+	return nil
 }
 
 // saveMetaPage writes the current meta page to disk with updated root page ID
@@ -950,7 +999,9 @@ func (db *DB) loadExisting() error {
 
 	// Initialize common subsystems: FDW, RLS, txnMgr, query cache, optimizer,
 	// replication, backup, and slow-query log.
-	db.initializeCommonComponents()
+	if err := db.initializeCommonComponents(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -983,10 +1034,20 @@ func defaultBackupDirForDatabase(path string) string {
 // Close closes the database
 // Shutdown gracefully shuts down the database with a timeout
 
-func (db *DB) Shutdown(ctx context.Context) error {
+// signalShutdown closes shutdownCh exactly once, whether shutdown was
+// initiated by Shutdown or by Close. Both paths must go through this helper:
+// Close previously closed the channel via a select/default probe, so a later
+// Shutdown fired shutdownOnce's close on the already-closed channel and
+// panicked with "close of closed channel". sync.Once makes the close
+// idempotent and race-free across concurrent Close/Shutdown callers.
+func (db *DB) signalShutdown() {
 	db.shutdownOnce.Do(func() {
 		close(db.shutdownCh)
 	})
+}
+
+func (db *DB) Shutdown(ctx context.Context) error {
+	db.signalShutdown()
 
 	// Wait for active connections to complete or timeout
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -1027,13 +1088,9 @@ func (db *DB) Close() error {
 
 	db.closed.Store(true)
 
-	// Signal shutdown
-	select {
-	case <-db.shutdownCh:
-		// Already closed
-	default:
-		close(db.shutdownCh)
-	}
+	// Signal shutdown — must share shutdownOnce with Shutdown so that
+	// Close→Shutdown (either order, or concurrent) closes the channel exactly once.
+	db.signalShutdown()
 
 	// Stop metrics collection
 	if db.metrics != nil {

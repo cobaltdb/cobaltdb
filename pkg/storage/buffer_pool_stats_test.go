@@ -276,13 +276,11 @@ func TestBufferPoolDiscardAll(t *testing.T) {
 	bp := NewBufferPool(10, backend)
 
 	// Create some pages
-	var pageIDs []uint32
 	for i := 0; i < 3; i++ {
 		page, err := bp.NewPage(PageTypeLeaf)
 		if err != nil {
 			t.Fatalf("NewPage failed: %v", err)
 		}
-		pageIDs = append(pageIDs, page.ID())
 		bp.Unpin(page)
 	}
 

@@ -927,7 +927,7 @@ func TestCheckRowAccessLocked(t *testing.T) {
 	cat.rlsManager.EnableTable("test")
 
 	cat2 := newEmptyCatalog()
-	allowed, err := cat2.checkRowAccessLocked(nil, "test", nil, nil, security.PolicySelect)
+	allowed, err := cat2.checkRowAccessLocked(context.TODO(), "test", nil, nil, security.PolicySelect)
 	if err != nil {
 		t.Fatalf("checkRowAccessLocked: %v", err)
 	}
@@ -935,7 +935,7 @@ func TestCheckRowAccessLocked(t *testing.T) {
 		t.Errorf("expected allowed when RLS not enabled")
 	}
 
-	allowed, err = cat.checkRowAccessLocked(nil, "test", nil, nil, security.PolicySelect)
+	allowed, err = cat.checkRowAccessLocked(context.TODO(), "test", nil, nil, security.PolicySelect)
 	if err != nil {
 		t.Fatalf("checkRowAccessLocked: %v", err)
 	}
@@ -951,7 +951,7 @@ func TestCheckRowCheckLocked(t *testing.T) {
 	cat.rlsManager.EnableTable("test")
 
 	cat2 := newEmptyCatalog()
-	allowed, err := cat2.checkRowCheckLocked(nil, "test", nil, nil, security.PolicyInsert)
+	allowed, err := cat2.checkRowCheckLocked(context.TODO(), "test", nil, nil, security.PolicyInsert)
 	if err != nil {
 		t.Fatalf("checkRowCheckLocked: %v", err)
 	}
@@ -965,7 +965,7 @@ func TestFilterRowsForSelectRLSLocked(t *testing.T) {
 	cat.tables["test"] = &TableDef{Name: "test", Columns: []ColumnDef{{Name: "id", Type: "INTEGER"}}}
 
 	rows := [][]interface{}{{int64(1)}, {int64(2)}}
-	filtered, err := cat.filterRowsForSelectRLSLocked(nil, "test", nil, rows)
+	filtered, err := cat.filterRowsForSelectRLSLocked(context.TODO(), "test", nil, rows)
 	if err != nil {
 		t.Fatalf("filterRowsForSelectRLSLocked: %v", err)
 	}
@@ -982,7 +982,7 @@ func TestExecuteTriggersList(t *testing.T) {
 	}
 	columns := []ColumnDef{{Name: "id", Type: "INTEGER"}, {Name: "val", Type: "TEXT"}}
 
-	err := cat.executeTriggersList(nil, nil, "INSERT", "AFTER", nil, nil, columns)
+	err := cat.executeTriggersList(context.TODO(), nil, "INSERT", "AFTER", nil, nil, columns)
 	if err != nil {
 		t.Fatalf("executeTriggersList nil triggers: %v", err)
 	}
@@ -990,7 +990,7 @@ func TestExecuteTriggersList(t *testing.T) {
 	triggers := []*query.CreateTriggerStmt{
 		{Name: "trg1", Table: "test", Event: "INSERT", Time: "BEFORE", Body: []query.Statement{&query.SelectStmt{}}},
 	}
-	err = cat.executeTriggersList(nil, triggers, "INSERT", "AFTER", nil, nil, columns)
+	err = cat.executeTriggersList(context.TODO(), triggers, "INSERT", "AFTER", nil, nil, columns)
 	if err != nil {
 		t.Fatalf("executeTriggersList wrong timing: %v", err)
 	}
@@ -998,7 +998,7 @@ func TestExecuteTriggersList(t *testing.T) {
 	triggers2 := []*query.CreateTriggerStmt{
 		{Name: "trg2", Table: "test", Event: "INSERT", Time: "AFTER"},
 	}
-	err = cat.executeTriggersList(nil, triggers2, "INSERT", "AFTER", nil, nil, columns)
+	err = cat.executeTriggersList(context.TODO(), triggers2, "INSERT", "AFTER", nil, nil, columns)
 	if err != nil {
 		t.Fatalf("executeTriggersList empty body: %v", err)
 	}
@@ -1013,7 +1013,7 @@ func TestExecuteTriggersList(t *testing.T) {
 			Body:      []query.Statement{&query.SelectStmt{Columns: []query.Expression{&query.NumberLiteral{Value: 1}}}},
 		},
 	}
-	err = cat.executeTriggersList(nil, triggers3, "INSERT", "AFTER", nil, nil, columns)
+	err = cat.executeTriggersList(context.TODO(), triggers3, "INSERT", "AFTER", nil, nil, columns)
 	if err != nil {
 		t.Fatalf("executeTriggersList false condition: %v", err)
 	}
@@ -1152,7 +1152,7 @@ func TestAlterTableAddForeignKeyConstraint(t *testing.T) {
 			ReferencedColumns: []string{"id"},
 		},
 	}
-	err = cat.AlterTableAddForeignKeyConstraint(nil, alterStmt)
+	err = cat.AlterTableAddForeignKeyConstraint(context.TODO(), alterStmt)
 	if err != nil {
 		t.Fatalf("AlterTableAddForeignKeyConstraint: %v", err)
 	}
@@ -1454,7 +1454,7 @@ func TestFilterRowsForSelectRLSLockedWithRLS(t *testing.T) {
 	cat.rlsManager.EnableTable("test")
 
 	rows := [][]interface{}{{int64(1)}, {int64(2)}}
-	filtered, err := cat.filterRowsForSelectRLSLocked(nil, "test", nil, rows)
+	filtered, err := cat.filterRowsForSelectRLSLocked(context.TODO(), "test", nil, rows)
 	if err != nil {
 		t.Fatalf("filterRowsForSelectRLSLocked: %v", err)
 	}

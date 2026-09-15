@@ -506,6 +506,15 @@ func (p *Parser) parsePrimary() (Expression, error) {
 			return p.parseIdentifierOrFunction()
 		}
 		return nil, fmt.Errorf("unexpected token: %s", p.current().Literal)
+	case TokenIf:
+		// MySQL's IF(cond, then, else) shares a keyword with the DDL
+		// `IF [NOT] EXISTS` guards. Only a following '(' makes it the
+		// function; DDL guards are parsed in statement context, so they are
+		// unaffected. FunctionCall.Evaluate handles IF lazily, like IIF.
+		if p.peek().Type == TokenLParen {
+			return p.parseIdentifierOrFunction()
+		}
+		return nil, fmt.Errorf("unexpected token: %s", p.current().Literal)
 	case TokenIdentifier:
 		return p.parseIdentifierOrFunction()
 	// JSON functions

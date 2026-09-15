@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"math"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -29,13 +28,6 @@ var (
 	// It wraps context.Canceled so errors.Is(err, context.Canceled) works.
 	ErrTxnCancelled = fmt.Errorf("transaction cancelled: %w", context.Canceled)
 )
-
-func checkedTxnUint32(n int, name string) (uint32, error) {
-	if n < 0 || uint64(n) > math.MaxUint32 {
-		return 0, fmt.Errorf("%s exceeds uint32: %d", name, n)
-	}
-	return uint32(n), nil // #nosec G115 - range checked above.
-}
 
 const maxTxnWALRecordDataBytes = 1<<16 - 1 // storage WAL payload length is uint16
 
@@ -1335,14 +1327,14 @@ func (m *Manager) writeWALForCommit(txn *Transaction) error {
 			if need <= 256 {
 				walDataBuf = walDataPool.Get().(*[]byte)
 				data = (*walDataBuf)[:need]
-				binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+				binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen)) // #nosec G115 -- txnWALRecordDataLen above bounds totalKeyLen to <= 65531.
 				copy(data[4:4+tnLen], wk.TreeName)
 				data[4+tnLen] = ':'
 				copy(data[4+tnLen+1:], wk.Key)
 				copy(data[4+totalKeyLen:], value)
 			} else {
 				data = make([]byte, need)
-				binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+				binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen)) // #nosec G115 -- txnWALRecordDataLen above bounds totalKeyLen to <= 65531.
 				copy(data[4:4+tnLen], wk.TreeName)
 				data[4+tnLen] = ':'
 				copy(data[4+tnLen+1:], wk.Key)
@@ -1376,7 +1368,7 @@ func (m *Manager) writeWALForCommit(txn *Transaction) error {
 				return err
 			}
 			data := make([]byte, need)
-			binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen))
+			binary.LittleEndian.PutUint32(data[0:4], uint32(totalKeyLen)) // #nosec G115 -- txnWALRecordDataLen above bounds totalKeyLen to <= 65531.
 			copy(data[4:4+tnLen], wk.TreeName)
 			data[4+tnLen] = ':'
 			copy(data[4+tnLen+1:], wk.Key)

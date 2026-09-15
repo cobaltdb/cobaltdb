@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -41,6 +42,37 @@ func TestWALEntryEncodeDecode(t *testing.T) {
 
 	if decoded.Checksum != entry.Checksum {
 		t.Errorf("Checksum mismatch: got %d, want %d", decoded.Checksum, entry.Checksum)
+	}
+}
+
+func TestApplyWALDataRejectsChecksumMismatchBeforeApply(t *testing.T) {
+	mgr := NewManager(&Config{Role: RoleSlave, Mode: ModeAsync})
+	entry := &WALEntry{
+		LSN:       1,
+		Timestamp: time.Now(),
+		Data:      []byte("original statement"),
+		Checksum:  calculateCRC32([]byte("different statement")),
+	}
+	payload, err := encodeWALEntries([]*WALEntry{entry})
+	if err != nil {
+		t.Fatalf("encodeWALEntries: %v", err)
+	}
+
+	called := false
+	mgr.OnApply = func(*WALEntry) error {
+		called = true
+		return nil
+	}
+
+	err = mgr.applyWALDataBytes(payload)
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("applyWALDataBytes error = %v, want checksum mismatch", err)
+	}
+	if called {
+		t.Fatal("apply callback invoked for corrupted WAL entry")
+	}
+	if got := atomic.LoadUint64(&mgr.lastApplied); got != 0 {
+		t.Fatalf("last applied LSN advanced to %d after checksum failure", got)
 	}
 }
 
@@ -145,7 +177,13 @@ func TestManagerCreation(t *testing.T) {
 	}
 }
 
-func TestReplicationListenAddressRequiresAuth(t *testing.T) {
+// TestReplicationEndpointIsNonLoopback covers the address classifier that
+// decides whether a replication endpoint must be protected by TLS and an auth
+// token (see ValidateConfig). Loopback endpoints are exempt; everything else,
+// including addresses that fail to parse, is treated as non-loopback so a
+// malformed address fails closed rather than silently dropping the
+// TLS/auth requirement.
+func TestReplicationEndpointIsNonLoopback(t *testing.T) {
 	tests := []struct {
 		address string
 		want    bool
@@ -158,13 +196,14 @@ func TestReplicationListenAddressRequiresAuth(t *testing.T) {
 		{"[::]:0", true},
 		{"192.0.2.10:9000", true},
 		{"replica.example.com:9000", true},
-		{"invalid:address:format", false},
+		// Unparseable address: fail closed (still demands TLS/auth).
+		{"invalid:address:format", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.address, func(t *testing.T) {
-			if got := replicationListenAddressRequiresAuth(tt.address); got != tt.want {
-				t.Fatalf("replicationListenAddressRequiresAuth(%q) = %v, want %v", tt.address, got, tt.want)
+			if got := replicationEndpointIsNonLoopback(tt.address); got != tt.want {
+				t.Fatalf("replicationEndpointIsNonLoopback(%q) = %v, want %v", tt.address, got, tt.want)
 			}
 		})
 	}
@@ -181,8 +220,8 @@ func TestStartMasterRejectsUnauthenticatedNonLoopbackListener(t *testing.T) {
 		_ = mgr.Stop()
 		t.Fatal("expected unauthenticated non-loopback listener to be rejected")
 	}
-	if !strings.Contains(err.Error(), "auth token is required") {
-		t.Fatalf("expected auth token error, got %v", err)
+	if !strings.Contains(err.Error(), "requires TLS") {
+		t.Fatalf("expected TLS requirement error, got %v", err)
 	}
 }
 

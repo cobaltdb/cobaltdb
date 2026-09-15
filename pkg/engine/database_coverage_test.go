@@ -192,7 +192,7 @@ func TestDatabase_TableForeignKeyRefs_None(t *testing.T) {
 
 	refs := db.TableForeignKeyRefs("t1")
 	// var refs []string with no loop iterations stays nil
-	if refs != nil && len(refs) != 0 {
+	if len(refs) != 0 {
 		t.Fatalf("expected nil or empty refs, got %v", refs)
 	}
 }
@@ -219,7 +219,7 @@ func TestDatabase_TableSelfForeignKeyRefs_None(t *testing.T) {
 
 	refs := db.TableSelfForeignKeyRefs("t1")
 	// var refs []TableForeignKeyRef with no loop iterations stays nil
-	if refs != nil && len(refs) != 0 {
+	if len(refs) != 0 {
 		t.Fatalf("expected nil or empty self-refs, got %v", refs)
 	}
 }
@@ -715,7 +715,7 @@ func TestDatabase_TableIndexDDL_None(t *testing.T) {
 
 	ddl := db.TableIndexDDL("t1")
 	// var ddl []string with no loop iterations stays nil
-	if ddl != nil && len(ddl) != 0 {
+	if len(ddl) != 0 {
 		t.Fatalf("expected nil or empty DDL, got %d", len(ddl))
 	}
 }

@@ -532,22 +532,42 @@ async function loadSavedQueries() {
             return;
         }
 
-        let html = '';
+        list.replaceChildren();
         data.forEach(item => {
-            html += `
-                <div class="saved-query-item">
-                    <div class="query-info" onclick="loadSavedQuery('${escapeHtml(item.name)}')">
-                        <div class="query-name">${escapeHtml(item.name)}</div>
-                        ${item.description ? `<div class="query-desc">${escapeHtml(item.description)}</div>` : ''}
-                    </div>
-                    <button class="delete-btn" onclick="deleteSavedQuery('${escapeHtml(item.name)}', event)" title="Delete">
-                        <i class="fas fa-trash"></i>
-                    </button>
-                </div>
-            `;
-        });
+            const row = document.createElement('div');
+            row.className = 'saved-query-item';
 
-        list.innerHTML = html;
+            const info = document.createElement('div');
+            info.className = 'query-info';
+            info.addEventListener('click', () => loadSavedQuery(item.name));
+
+            const name = document.createElement('div');
+            name.className = 'query-name';
+            name.textContent = item.name;
+            info.appendChild(name);
+
+            if (item.description) {
+                const description = document.createElement('div');
+                description.className = 'query-desc';
+                description.textContent = item.description;
+                info.appendChild(description);
+            }
+
+            const deleteButton = document.createElement('button');
+            deleteButton.className = 'delete-btn';
+            deleteButton.type = 'button';
+            deleteButton.title = 'Delete';
+            deleteButton.setAttribute('aria-label', `Delete saved query ${item.name}`);
+            deleteButton.addEventListener('click', event => deleteSavedQuery(item.name, event));
+
+            const icon = document.createElement('i');
+            icon.className = 'fas fa-trash';
+            icon.setAttribute('aria-hidden', 'true');
+            deleteButton.appendChild(icon);
+
+            row.append(info, deleteButton);
+            list.appendChild(row);
+        });
     } catch (error) {
         console.error('Failed to load saved queries:', error);
     }

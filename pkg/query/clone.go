@@ -40,7 +40,7 @@ func cloneASTValue(v reflect.Value) reflect.Value {
 		out := reflect.New(v.Type()).Elem()
 		out.Set(cloned)
 		return out
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if v.IsNil() {
 			return reflect.Zero(v.Type())
 		}

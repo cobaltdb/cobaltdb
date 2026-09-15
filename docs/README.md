@@ -15,7 +15,7 @@ CobaltDB is a lightweight, embeddable database engine written in Go with SQL and
 - **Placeholder Support**: Prepared statement placeholders (?)
 - **Encryption at Rest**: AES-256-GCM transparent page encryption
 - **Row-Level Security**: Policy-based access control
-- **Replication**: Master-slave replication (async, sync, full_sync modes)
+- **Replication**: Master-slave replication (async, sync, full_sync modes) with authenticated TLS/mTLS for non-loopback deployments
 - **Backup & Restore**: Full, incremental, and differential backups
 - **Query Optimization**: Cost-based optimizer with join reordering and index recommendations
 - **Parallel Execution**: Multi-core parallel query processing

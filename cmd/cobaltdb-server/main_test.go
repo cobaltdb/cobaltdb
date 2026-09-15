@@ -172,6 +172,45 @@ func TestServerConfiguration(t *testing.T) {
 	}
 }
 
+func TestApplyConfigDefaultsPreservesExplicitFlagsAndWiresLimits(t *testing.T) {
+	address, mysqlAddr, dataDir := "cli:4200", "config:3307", "./data"
+	cacheSize, maxConnections := 1024, 0
+	connectionTimeout, queryTimeout := time.Duration(0), time.Duration(0)
+	authEnabled, tlsEnabled, enableMySQL := true, false, true
+	tlsCert, tlsKey, healthAddr := "", "", "127.0.0.1:8420"
+	configAuth, configTLS, configMySQL := false, true, false
+
+	applyConfigDefaults(&configFileValues{
+		Address: "config:4200", MySQLAddr: "config:3307", DataDir: "/config/data",
+		CacheSize: 2048, MaxConns: 25, ReadTimeout: 12, WriteTimeout: 34,
+		AuthEnabled: &configAuth, TLSEnabled: &configTLS, MySQLEnabled: &configMySQL,
+		TLSCertFile: "/config/cert", TLSKeyFile: "/config/key", HealthAddr: "config:8420",
+	}, map[string]bool{"addr": true, "auth": true}, serverFlagValues{
+		address: &address, mysqlAddr: &mysqlAddr, dataDir: &dataDir,
+		cacheSize: &cacheSize, maxConnections: &maxConnections,
+		connectionTimeout: &connectionTimeout, queryTimeout: &queryTimeout,
+		authEnabled: &authEnabled, tlsEnabled: &tlsEnabled,
+		tlsCert: &tlsCert, tlsKey: &tlsKey, enableMySQL: &enableMySQL,
+		healthAddr: &healthAddr,
+	})
+
+	if address != "cli:4200" || !authEnabled {
+		t.Fatalf("explicit CLI values were overwritten: addr=%q auth=%v", address, authEnabled)
+	}
+	if mysqlAddr != "config:3307" || dataDir != "/config/data" || cacheSize != 2048 {
+		t.Fatalf("config defaults not applied: mysql=%q data=%q cache=%d", mysqlAddr, dataDir, cacheSize)
+	}
+	if maxConnections != 25 || connectionTimeout != 12*time.Second || queryTimeout != 34*time.Second {
+		t.Fatalf("config limits not wired: max=%d connection=%s query=%s", maxConnections, connectionTimeout, queryTimeout)
+	}
+	if !tlsEnabled || enableMySQL || tlsCert != "/config/cert" || tlsKey != "/config/key" || healthAddr != "config:8420" {
+		t.Fatalf("config security/runtime defaults not applied")
+	}
+	if durationSeconds(1500*time.Millisecond) != 2 || durationSeconds(time.Millisecond) != 1 || durationSeconds(0) != 0 {
+		t.Fatal("durationSeconds conversion failed")
+	}
+}
+
 func TestApplyEnvOverrides(t *testing.T) {
 	t.Setenv("COBALTDB_DATA_DIR", "/var/lib/cobaltdb")
 	t.Setenv("COBALTDB_ADDR", ":14200")
@@ -179,6 +218,9 @@ func TestApplyEnvOverrides(t *testing.T) {
 	t.Setenv("COBALTDB_MYSQL_ENABLED", "false")
 	t.Setenv("COBALTDB_IN_MEMORY", "true")
 	t.Setenv("COBALTDB_CACHE_SIZE", "2048")
+	t.Setenv("COBALTDB_MAX_CONNECTIONS", "250")
+	t.Setenv("COBALTDB_CONNECTION_TIMEOUT", "12s")
+	t.Setenv("COBALTDB_QUERY_TIMEOUT", "34s")
 	t.Setenv("COBALTDB_SECURITY_AUTH_ENABLED", "false")
 	t.Setenv("COBALTDB_TLS_ENABLED", "true")
 	t.Setenv("COBALTDB_TLS_CERT_FILE", "/certs/server.crt")
@@ -200,6 +242,9 @@ func TestApplyEnvOverrides(t *testing.T) {
 	enableMySQL := true
 	inMemory := false
 	cacheSize := 1024
+	maxConnections := 100
+	connectionTimeout := 30 * time.Second
+	queryTimeout := 60 * time.Second
 	authEnabled := true
 	tlsEnabled := false
 	tlsCert := ""
@@ -222,6 +267,9 @@ func TestApplyEnvOverrides(t *testing.T) {
 		&enableMySQL,
 		&inMemory,
 		&cacheSize,
+		&maxConnections,
+		&connectionTimeout,
+		&queryTimeout,
 		&authEnabled,
 		&tlsEnabled,
 		&tlsCert,
@@ -244,8 +292,11 @@ func TestApplyEnvOverrides(t *testing.T) {
 	if dataDir != "/var/lib/cobaltdb" || address != ":14200" || mysqlAddr != ":13307" {
 		t.Fatalf("string overrides not applied: data=%q addr=%q mysql=%q", dataDir, address, mysqlAddr)
 	}
-	if enableMySQL || !inMemory || cacheSize != 2048 || authEnabled {
-		t.Fatalf("core overrides not applied: mysql=%v memory=%v cache=%d auth=%v", enableMySQL, inMemory, cacheSize, authEnabled)
+	if enableMySQL || !inMemory || cacheSize != 2048 || maxConnections != 250 || authEnabled {
+		t.Fatalf("core overrides not applied: mysql=%v memory=%v cache=%d max=%d auth=%v", enableMySQL, inMemory, cacheSize, maxConnections, authEnabled)
+	}
+	if connectionTimeout != 12*time.Second || queryTimeout != 34*time.Second {
+		t.Fatalf("runtime timeout overrides not applied: connection=%s query=%s", connectionTimeout, queryTimeout)
 	}
 	if !tlsEnabled || tlsCert != "/certs/server.crt" || tlsKey != "/certs/server.key" || !tlsGenCert {
 		t.Fatalf("tls overrides not applied")
@@ -288,6 +339,9 @@ func TestApplyEnvOverridesRejectsInvalidValues(t *testing.T) {
 			enableMySQL := true
 			inMemory := false
 			cacheSize := 1024
+			maxConnections := 100
+			connectionTimeout := 30 * time.Second
+			queryTimeout := 60 * time.Second
 			authEnabled := true
 			tlsEnabled := false
 			tlsCert := ""
@@ -310,6 +364,9 @@ func TestApplyEnvOverridesRejectsInvalidValues(t *testing.T) {
 				&enableMySQL,
 				&inMemory,
 				&cacheSize,
+				&maxConnections,
+				&connectionTimeout,
+				&queryTimeout,
 				&authEnabled,
 				&tlsEnabled,
 				&tlsCert,

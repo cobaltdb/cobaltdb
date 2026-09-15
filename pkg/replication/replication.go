@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -112,9 +113,10 @@ type Config struct {
 	MaxWALBufferBytes   int64         // Maximum encoded master WAL bytes retained for disconnected/lagging slaves
 	AuthToken           string        // Authentication token
 	Compress            bool          // Compress replication stream
-	SSLCert             string        // SSL certificate file
-	SSLKey              string        // SSL key file
-	SSLCA               string        // SSL CA certificate
+	SSLCert             string        // TLS certificate: server certificate on master, optional client certificate on slave
+	SSLKey              string        // Private key matching SSLCert
+	SSLCA               string        // CA bundle: client CA on master (enables required mTLS), server roots on slave
+	SSLServerName       string        // Optional slave-only certificate name override (defaults to MasterAddr host)
 	StateFile           string        // Optional slave state file for last applied LSN
 }
 
@@ -163,7 +165,7 @@ func (e *WALEntry) Decode(data []byte) error {
 	}
 
 	e.LSN = binary.BigEndian.Uint64(data[0:8])
-	e.Timestamp = time.Unix(0, int64(binary.BigEndian.Uint64(data[8:16])))
+	e.Timestamp = time.Unix(0, int64(binary.BigEndian.Uint64(data[8:16]))) // #nosec G115 -- round-trips the int64 UnixNano written by Encode; a corrupt value only affects replication metadata.
 	dataLen := binary.BigEndian.Uint32(data[16:20])
 	remaining := len(data) - 20
 	if remaining < 4 {
@@ -200,8 +202,10 @@ type Manager struct {
 	walBufferBytes int64
 	currentLSN     uint64
 	listener       net.Listener
+	serverTLS      *tls.Config
 
 	// Slave fields
+	clientTLS       *tls.Config
 	masterConn      net.Conn
 	lastApplied     uint64
 	requireSnapshot uint32
@@ -412,6 +416,9 @@ func normalizeConfig(config *Config) *Config {
 
 // Start begins replication
 func (m *Manager) Start() error {
+	if err := ValidateConfig(m.config); err != nil {
+		return err
+	}
 	switch m.config.Role {
 	case RoleMaster:
 		return m.startMaster()
@@ -477,17 +484,23 @@ func (m *Manager) Stop() error {
 
 // startMaster initializes master replication
 func (m *Manager) startMaster() error {
-	if m.config.AuthToken == "" && replicationListenAddressRequiresAuth(m.config.ListenAddr) {
-		return fmt.Errorf("replication auth token is required for non-loopback listen address %q", m.config.ListenAddr)
+	if err := ValidateConfig(m.config); err != nil {
+		return err
+	}
+	serverTLS, err := loadReplicationServerTLS(m.config)
+	if err != nil {
+		return fmt.Errorf("failed to configure replication TLS listener: %w", err)
 	}
 
-	// Start listening for slave connections
+	// Start listening for slave connections. TLS is completed explicitly in
+	// handleSlave before token or resume protocol bytes are read.
 	listener, err := net.Listen("tcp", m.config.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to start replication listener: %w", err)
 	}
 	m.mu.Lock()
 	m.listener = listener
+	m.serverTLS = serverTLS
 	m.mu.Unlock()
 
 	m.wg.Add(1)
@@ -498,24 +511,6 @@ func (m *Manager) startMaster() error {
 	go m.syncWAL()
 
 	return nil
-}
-
-func replicationListenAddressRequiresAuth(address string) bool {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return false
-	}
-	if host == "" {
-		return true
-	}
-	if strings.EqualFold(host, "localhost") {
-		return false
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return true
-	}
-	return !ip.IsLoopback()
 }
 
 const (
@@ -582,6 +577,12 @@ func (m *Manager) handleSlave(conn net.Conn) {
 		}
 	}()
 
+	secured, err := m.secureAcceptedConnection(conn)
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	conn = secured
 	slaveID := conn.RemoteAddr().String()
 
 	slave := &SlaveConnection{
@@ -1067,6 +1068,16 @@ const (
 
 // startSlave initializes slave replication
 func (m *Manager) startSlave() error {
+	if err := ValidateConfig(m.config); err != nil {
+		return err
+	}
+	clientTLS, err := loadReplicationClientTLS(m.config)
+	if err != nil {
+		return fmt.Errorf("failed to configure replication TLS client: %w", err)
+	}
+	m.mu.Lock()
+	m.clientTLS = clientTLS
+	m.mu.Unlock()
 	if err := m.loadReplicationState(); err != nil {
 		return fmt.Errorf("failed to load replication state: %w", err)
 	}
@@ -1076,6 +1087,16 @@ func (m *Manager) startSlave() error {
 	reader, err := m.connectToMaster()
 	if err != nil {
 		return err
+	}
+	// TLS 1.3 clients may complete their local handshake before consuming a
+	// server alert that rejects a missing/invalid client certificate. Reading
+	// the first authenticated protocol frame makes initial TLS/mTLS startup
+	// fail synchronously rather than reporting a connected replica briefly.
+	if clientTLS != nil {
+		if err := m.readMasterFrame(reader); err != nil {
+			m.closeMasterConn()
+			return fmt.Errorf("failed to establish authenticated replication stream: %w", err)
+		}
 	}
 
 	// Start replication goroutine with automatic reconnect
@@ -1089,9 +1110,17 @@ func (m *Manager) startSlave() error {
 // handshake using the persisted last-applied LSN. On success the connection is
 // stored as the manager's master connection.
 func (m *Manager) connectToMaster() (*bufio.Reader, error) {
-	conn, err := replicationDial("tcp", m.config.MasterAddr, replicationAuthTimeout)
+	rawConn, err := replicationDial("tcp", m.config.MasterAddr, replicationAuthTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to master: %w", err)
+	}
+	// Store the raw connection before the TLS handshake so Stop can interrupt a
+	// peer that accepts TCP but never completes TLS.
+	m.setMasterConn(rawConn)
+	conn, err := m.secureMasterConnection(rawConn)
+	if err != nil {
+		m.closeMasterConn()
+		return nil, err
 	}
 	m.setMasterConn(conn)
 	reader := bufio.NewReader(conn)
@@ -1308,6 +1337,19 @@ func (m *Manager) handleSnapshotMessage(reader *bufio.Reader, msg string) error 
 	}
 
 	if err := m.callOnApplySnapshot(data, lsn); err != nil {
+		// The engine-side apply may have already discarded the buffer pool and
+		// truncated the backend (applyReplicationSnapshot does both before the
+		// reload step). Resuming WAL from the stale lastApplied would re-stream
+		// entries the failed snapshot already contained: on a destroyed base
+		// every apply fails on the closed pool; on a fully-written snapshot the
+		// re-delivered entries poison the stream (PK conflicts, no LSN advance).
+		// Mark a snapshot refresh as required — mirroring the RESYNC handler —
+		// so the reconnect handshake asks for RESUME_SNAPSHOT and the slave
+		// retries the snapshot instead.
+		atomic.StoreUint32(&m.requireSnapshot, 1)
+		if persistErr := m.saveReplicationState(); persistErr != nil {
+			return fmt.Errorf("replication snapshot apply failed (%v); failed to persist resync-required state: %w", err, persistErr)
+		}
 		return err
 	}
 
@@ -1380,6 +1422,9 @@ func (m *Manager) applyWALDataBytes(data []byte) error {
 	for _, entry := range entries {
 		if entry.LSN <= atomic.LoadUint64(&m.lastApplied) {
 			continue
+		}
+		if got := calculateCRC32(entry.Data); got != entry.Checksum {
+			return fmt.Errorf("replication WAL checksum mismatch at LSN %d: got %08x, want %08x", entry.LSN, got, entry.Checksum)
 		}
 
 		if err := m.callOnApply(entry); err != nil {

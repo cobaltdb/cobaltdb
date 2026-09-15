@@ -361,6 +361,79 @@ func (a *Authenticator) GetMySQLNativeHash(username string) ([]byte, error) {
 	return cloneBytes(user.MySQLNativeHash), nil
 }
 
+// VerifyMySQLNativeChallenge validates a mysql_native_password response while
+// applying the same per-account failure accounting and lockout policy as
+// password authentication. The response is SHA1(password) XOR
+// SHA1(scramble + SHA1(SHA1(password))).
+func (a *Authenticator) VerifyMySQLNativeChallenge(username string, scramble, response []byte) error {
+	if username == "" || len(username) > maxUsernameBytes {
+		return ErrInvalidCredentials
+	}
+
+	now := time.Now()
+	a.failedMu.RLock()
+	locked := false
+	if attempt := a.failedAttempts[username]; attempt != nil {
+		locked = now.Before(attempt.lockUntil)
+	}
+	a.failedMu.RUnlock()
+	if locked {
+		return fmt.Errorf("account temporarily locked due to too many failed attempts")
+	}
+
+	// Always perform the SHA-1 challenge calculation, including for an unknown
+	// user, so username existence is not exposed through a cheap early return.
+	var decoy [sha1.Size]byte
+	a.mu.RLock()
+	user, exists := a.users[username]
+	storedHash := decoy[:]
+	if exists {
+		storedHash = cloneBytes(user.MySQLNativeHash)
+	}
+	a.mu.RUnlock()
+
+	valid := verifyMySQLNativeChallenge(storedHash, scramble, response)
+	if !exists || !valid {
+		a.recordFailedAttempt(username)
+		return ErrInvalidCredentials
+	}
+
+	// Recheck the credential under the write lock so a concurrent password
+	// change cannot authenticate using the superseded native hash.
+	a.mu.Lock()
+	user, exists = a.users[username]
+	if !exists || subtle.ConstantTimeCompare(user.MySQLNativeHash, storedHash) != 1 {
+		a.mu.Unlock()
+		a.recordFailedAttempt(username)
+		return ErrInvalidCredentials
+	}
+	user.LastLogin = now
+	a.mu.Unlock()
+
+	a.failedMu.Lock()
+	delete(a.failedAttempts, username)
+	a.failedMu.Unlock()
+	return nil
+}
+
+func verifyMySQLNativeChallenge(storedHash, scramble, response []byte) bool {
+	if len(storedHash) != sha1.Size || len(scramble) != sha1.Size || len(response) != sha1.Size {
+		return false
+	}
+	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
+	h := sha1.New()
+	_, _ = h.Write(scramble)
+	_, _ = h.Write(storedHash)
+	scrambledHash := h.Sum(nil)
+	candidate := make([]byte, sha1.Size)
+	for i := range scrambledHash {
+		candidate[i] = response[i] ^ scrambledHash[i]
+	}
+	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
+	check := sha1.Sum(candidate)
+	return subtle.ConstantTimeCompare(check[:], storedHash) == 1
+}
+
 // UserExists returns true if the given username is known to the authenticator.
 func (a *Authenticator) UserExists(username string) bool {
 	a.mu.RLock()

@@ -293,6 +293,9 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (backup *Ba
 	if err := m.ensureMetadataLoaded(); err != nil {
 		return nil, err
 	}
+	if m.config.Encrypt {
+		return nil, fmt.Errorf("backup encryption is not implemented; refusing to create a plaintext backup")
+	}
 
 	m.mu.Lock()
 	if m.activeBackup {

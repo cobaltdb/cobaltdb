@@ -64,6 +64,13 @@ The Catalog is the central execution engine. It manages tables, indexes, and exe
 - `catalog_eval.go` - Expression evaluation (`evaluateExpression`, `evaluateWhere`, `evaluateLike`, `evaluateIn`, `evaluateBetween`, function dispatch)
 - `catalog_eval_json.go` - JSON function evaluation
 - `catalog_eval_string.go` - String function evaluation (UPPER, LOWER, TRIM, SUBSTR, etc.)
+- `catalog_eval_mysql_compat.go` - MySQL builtins commonly emitted by ORMs and MySQL
+  clients (CHAR_LENGTH, MD5/SHA1/SHA2, RAND, UUID, DATE_FORMAT, CURDATE, UNIX_TIMESTAMP,
+  ELT/FIELD, BIN/OCT/UNHEX, base64, …). Registered into `scalarFunctionHandlers` from an
+  `init()` so the large map literal in `catalog_eval.go` stays untouched. Note
+  `DATE_FORMAT` needs its own formatter (`applyMySQLDateFormat`): MySQL's specifiers
+  differ from strftime's — `%i` is minutes and `%M` is the month name, whereas
+  `applyStrftime` uses `%M` for minutes.
 - `catalog_aggregate.go` - GROUP BY, aggregates, HAVING, hidden column management
 - `catalog_window.go` - Window functions (ROW_NUMBER, RANK, LAG, LEAD, aggregates OVER)
 - `catalog_insert.go` - INSERT logic with constraint validation
@@ -249,11 +256,38 @@ The main mutex can become a bottleneck under high concurrency. Consider:
   version chains) and routing reads through them — a dedicated architectural
   project, not a config flag; it is deliberately not attempted piecemeal because a
   partial implementation would risk read-your-writes/visibility regressions.
-  - **Lost-update nuance (important).** The write-conflict guarantee is: a
+  - **Lost-update nuance (important).** Two *different* mechanisms deliver the
+    no-lost-update guarantee, depending on whether a statement runs in an
+    explicit transaction:
+    - **Autocommit INSERT/UPDATE/DELETE are serialized**, not conflict-checked.
+      The public `Catalog.Insert`/`Update`/`Delete` hold only `c.mu.RLock()` for
+      the whole statement, so concurrent writers would otherwise overlap; each
+      takes `Catalog.autocommitWriteMu` first, which makes the statement's
+      read-modify-write (or check-then-insert) atomic. Clients therefore see
+      **no conflict errors** and never need to retry (matching MySQL, which
+      blocks rather than aborting). Cost is bounded: measured ~300K INSERT/sec
+      and ~208K UPDATE/sec single-worker, ~259K / ~170K at 8 workers.
+      **Regression history — two distinct silent-corruption bugs this lock
+      fixes; do not remove it without replacing the guarantee:**
+      1. *Lost updates.* 8 goroutines each running `UPDATE ctr SET n = n + 1`
+         50 times ended at ~45 instead of 400, with *every* statement reporting
+         success and `RowsAffected=1`. Pinned by `integration/lost_update_test.go`.
+      2. *UNIQUE violation.* `UNIQUE` is enforced by a check-then-insert, so 16
+         goroutines inserting the same value all saw "no duplicate" and 3–5 rows
+         landed. A duplicate **PRIMARY KEY** is caught regardless because the
+         B-tree is keyed on it; **secondary UNIQUE columns were not**. Pinned by
+         `integration/write_integrity_test.go`.
+    - **Inside an explicit transaction**, the read-set/version validation below
+      applies and a conflicting writer is aborted at COMMIT, so the application
+      must retry.
+
+    The write-conflict guarantee (explicit transactions) is: a
     read-modify-write whose read is in the transaction's *read set* aborts at
     COMMIT if a concurrent txn changed the row. That read set is populated by
-    **single-statement RMW** (`UPDATE t SET v = v - 1 …` — safe, verified by a
-    concurrent bank-transfer test) and by **`SELECT … FOR UPDATE`**. A **bare
+    **single-statement RMW** inside a transaction (`UPDATE t SET v = v - 1 …`)
+    and by **`SELECT … FOR UPDATE`**. All three shapes — autocommit, explicit
+    transaction, and `FOR UPDATE` — are pinned by
+    `integration/lost_update_test.go`. A **bare
     `SELECT v; … ; UPDATE t SET v = <computed>`** across separate statements is
     NOT protected by default (plain SELECT reads are not tracked) and CAN lose
     updates under concurrency — this is standard Read Committed behavior (same as
@@ -261,20 +295,48 @@ The main mutex can become a bottleneck under high concurrency. Consider:
     **`SELECT … FOR UPDATE`**: those rows are added to the read set (optimistic
     row locking via first-read-wins read tracking), so a concurrent modification
     makes the COMMIT fail with a conflict and the application retries — no lost
-    update (verified by `TestAuditSelectForUpdatePreventsLostUpdate` and a
-    FOR UPDATE bank-transfer test). `FOR UPDATE` is enforced for simple
+    update (verified by `TestAuditSelectForUpdatePreventsLostUpdate` and
+    `TestAuditForUpdateBankTransferConserves`). `FOR UPDATE` is enforced for simple
     single-table queries; joins/aggregates/subqueries fall back to plain RC.
 - **Coarse-grained locking** — Catalog uses a single `sync.RWMutex`; DDL blocks all DML.
+  Reads are *not* fully serialized, despite older notes claiming otherwise: `Catalog.Select`
+  takes a **read** lock, and `selectLockedInternal` releases it during the heavy table scan
+  (see the lock contract on `selectUnlocked` in `catalog_core.go`) so concurrent writes can
+  proceed. Measured concurrent point-SELECT scaling on a 16-core machine is ~260K ops/sec at
+  1 worker rising to ~3.3x at 8 workers (`test/concurrency_scaling_bench_test.go`,
+  `TestReadScaling`) — contention-limited, but not the ~1.2x lock-bound figure quoted in
+  older reports. The remaining serialization points are DDL, RLS-enabled reads (see below),
+  and the single-writer commit path.
 - **HA / clustering** — No built-in sharding, Raft/Paxos, or automatic failover.
+- **MySQL expression-semantics divergences** — the wire protocol is MySQL-compatible, but a
+  few expression semantics are not:
+  - **Division by zero raises an error**; MySQL returns NULL for `1/0` and `1%0`. Note the
+    engine is internally inconsistent here: `MOD(1,0)` returns NULL while `1%0` errors.
+    Changing this is a deliberate open decision, not an oversight — three existing tests
+    (e.g. `TestLazyCoalesceSkipsGuardedError`) use `1/0` as an *error guard* to prove
+    COALESCE/CASE/IF evaluate lazily, and would silently lose their teeth if `/` returned
+    NULL. Resolve the `%`/`MOD` inconsistency and the MySQL alignment together.
+  - **Still-missing MySQL builtins:** `INSERT(str,pos,len,new)` and `CONVERT(x, SIGNED)`
+    both fail at *parse* time (`INSERT` is a statement keyword; `CONVERT`'s type argument
+    parses as a column reference), so they need parser work rather than a handler. Use
+    `CAST(x AS SIGNED)` instead of `CONVERT`. Everything else in the common MySQL scalar
+    set is implemented — see `integration/mysql_compat_functions_test.go`.
 - **WASM streaming** — Streaming results are only supported for SELECT queries.
-- **RLS evaluates post-projection** — Row-level security policies now filter rows by the
+- **RLS locks the catalog exclusively** — Row-level security policies filter rows by the
   per-query user (the query context is propagated to the catalog via
-  `Catalog.SelectWithContext`, which holds the exclusive lock so the shared RLS context
-  is per-query-safe under concurrency). However, policies are evaluated against the
-  *projected* columns, so a column referenced by a policy must appear in the `SELECT`
-  list; if it does not, the policy cannot see it and the row is excluded (fail-closed —
-  safe but over-restrictive). Full-row policy evaluation (applying RLS before projection)
-  is scoped follow-up work.
+  `Catalog.SelectWithContext`, which holds the *exclusive* lock so the shared `rlsCtx`
+  field cannot be read by a concurrent query running as a different user). The cost is
+  that **RLS-enabled reads serialize**: unlike the normal `Catalog.Select` path (which
+  takes a read lock and releases it during the scan), concurrent SELECTs against an
+  RLS-enabled catalog cannot overlap. Moving the RLS identity from shared state into a
+  per-query parameter would remove this serialization; it is scoped follow-up work.
+  - **Not a limitation (previously mis-documented):** policies are evaluated against
+    *full* rows before projection, so a policy column does **not** need to appear in the
+    `SELECT` list. `SELECT title FROM docs` with a policy on `owner` filters correctly,
+    and `LIMIT`/`OFFSET`/`COUNT(*)` all count only visible rows. Verified by
+    `integration/rls_projection_test.go`. An earlier version of this document claimed
+    RLS was fail-closed and over-restrictive in this case; that is not the current
+    behavior.
 - **Crash recovery** — Committed writes to a disk database survive an unclean shutdown and
   are replayed from the WAL on reopen (verified end-to-end, including brand-new databases).
   The catalog schema is flushed to disk after each DDL (`DB.persistSchema`, called from

@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"testing"
 
 	"github.com/cobaltdb/cobaltdb/pkg/query"
@@ -392,7 +393,7 @@ func TestSelectWithContextSimple(t *testing.T) {
 		nr(1), sr("alice"),
 	})
 
-	cols, rows, err := c.SelectWithContext(nil, &query.SelectStmt{
+	cols, rows, err := c.SelectWithContext(context.TODO(), &query.SelectStmt{
 		Columns: []query.Expression{star()},
 		From:    tref("test_table"),
 	}, nil)

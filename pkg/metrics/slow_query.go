@@ -23,7 +23,6 @@ var slowQueryLogDirPerm = os.FileMode(0750)
 // OS seam variables for deterministic test injection.
 var slowQueryOpenFile = os.OpenFile
 var slowQueryLstat = os.Lstat
-var slowQueryOpen = os.Open
 var slowQueryMkdirAll = os.MkdirAll
 var slowQuerySameFile = os.SameFile
 

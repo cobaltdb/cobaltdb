@@ -76,3 +76,7 @@ website/dist/
 website/build.log
 pkg/server/certs/
 dist/
+!/.wrongstack/
+/.wrongstack/*
+!/.wrongstack/project.json
+.temp_files/

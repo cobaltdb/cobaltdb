@@ -26,6 +26,7 @@ type configFileValues struct {
 	ReadTimeout  int // seconds
 	WriteTimeout int // seconds
 	HealthAddr   string
+	LogFormat    string
 }
 
 // loadConfigFile parses a CobaltDB configuration file (INI-style) and returns
@@ -143,6 +144,11 @@ func loadConfigFile(path string) (*configFileValues, error) {
 	// Monitoring
 	if v, ok := vals[entry{"monitoring", "metrics_port"}]; ok {
 		cv.HealthAddr = "127.0.0.1:" + v
+	}
+
+	// Logging
+	if v, ok := vals[entry{"logging", "log_format"}]; ok {
+		cv.LogFormat = v
 	}
 
 	// Compose addresses from host+port

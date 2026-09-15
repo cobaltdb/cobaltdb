@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go Version">
-  <img src="https://img.shields.io/badge/Version-0.6.0-blue?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/Version-0.6.1-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/CGO-Free-ff6b6b?style=for-the-badge" alt="Zero CGO">
   <img src="https://img.shields.io/badge/Coverage-86%25-yellow?style=for-the-badge" alt="Test Coverage">
@@ -65,7 +65,7 @@ CobaltDB runs in two modes — use it as an **embedded library** inside your Go 
 go get github.com/cobaltdb/cobaltdb
 ```
 
-**Requirements:** Go 1.24+ (`toolchain go1.26.1`) · Zero CGO runtime dependency
+**Requirements:** Go 1.25+ (`toolchain go1.26.5`) · Zero CGO runtime dependency
 
 ### Verification and Security Checks
 
@@ -120,7 +120,7 @@ mysql> SELECT * FROM users;
 
 **Server features:** MySQL protocol, TLS 1.2+, authentication (Argon2id), connection pooling, rate limiting, circuit breaker, health checks, encrypted tamper-evident audit logging, and master-slave replication transport.
 
-**Production note:** CobaltDB is a production-oriented single-node database candidate. Use TLS for non-loopback wire access, keep the MySQL listener private or disabled, and do not treat replication as automatic HA/failover infrastructure.
+**Production note:** CobaltDB is a production-oriented single-node database candidate. Use TLS for non-loopback wire access, keep the MySQL listener private or disabled, and do not treat replication as automatic HA/failover infrastructure. Replication plaintext is now limited to syntactic loopback endpoints for local development; non-loopback replication requires authenticated TLS, with optional mutual TLS and `SSLServerName` certificate-name override on replicas.
 
 ### 2. Embedded Mode — Use as a Go Library
 

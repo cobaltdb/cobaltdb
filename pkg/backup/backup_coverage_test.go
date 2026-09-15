@@ -371,16 +371,6 @@ func TestStageRestoreWAL_InvalidWALFileName(t *testing.T) {
 // openBackupReader tests
 // ---------------------------------------------------------------------------
 
-type mockReadCloser struct {
-	io.Reader
-	closed bool
-}
-
-func (m *mockReadCloser) Close() error {
-	m.closed = true
-	return nil
-}
-
 func TestOpenBackupReader_NonGzip(t *testing.T) {
 	tempDir := t.TempDir()
 	backupDir := filepath.Join(tempDir, "backups")

@@ -36,7 +36,9 @@ export function DocsPage() {
       <div className="flex gap-8">
         {/* Sidebar - mobile overlay */}
         {sidebarOpen && (
-          <div
+          <button
+            type="button"
+            aria-label="Close documentation navigation"
             className="fixed inset-0 bg-background/80 backdrop-blur-sm z-40 lg:hidden"
             onClick={() => setSidebarOpen(false)}
           />

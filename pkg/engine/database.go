@@ -151,14 +151,6 @@ func (db *DB) recordRecoveredPanic(operation string, recovered interface{}, stac
 	}
 }
 
-
-
-
-
-
-
-
-
 // cachedStmt represents a cached prepared statement with metadata
 type cachedStmt struct {
 	stmt     query.Statement
@@ -278,6 +270,20 @@ func (db *DB) dispatchDDL(ctx context.Context, action, table string, handler fun
 // statements inside a stored procedure body) pass "" so only the outermost
 // statement is replicated.
 
+// replCapturePanicHook, when non-nil, is invoked at the start of the
+// replication capture defer in execute. It exists solely to let tests inject a
+// panic inside the capture window so the panic-safety of the capture lock
+// release can be verified. Production builds never set this; tests opt in
+// explicitly.
+var replCapturePanicHook func()
+
+// commitWindowPanicHook, when non-nil, is invoked inside the SQL COMMIT window
+// (after flushMu and replCaptureMu are read-locked, before CommitTransaction).
+// It exists solely to let tests inject a panic there so the panic-safety of
+// the window's lock releases can be verified. Production builds never set
+// this; tests opt in explicitly.
+var commitWindowPanicHook func()
+
 func (db *DB) execute(ctx context.Context, sqlText string, stmt query.Statement, args []interface{}) (result Result, err error) {
 	start := time.Now()
 
@@ -323,16 +329,29 @@ func (db *DB) execute(ctx context.Context, sqlText string, stmt query.Statement,
 		inExplicitTxn := !autocommit && db.catalog.IsTransactionActive()
 		db.replCaptureMu.RLock()
 		defer func() {
-			if err != nil {
-				db.replCaptureMu.RUnlock()
-				return
+			needWait, repErr := func() (needWait bool, repErr error) {
+				// Unlock via an inner defer registered before any fallible call:
+				// a panic inside the capture window (injected hook or
+				// replicateStatement) still releases the read lock, so a leaked
+				// RLock cannot deadlock the next replication snapshot and every
+				// later replicated write.
+				defer db.replCaptureMu.RUnlock()
+				if replCapturePanicHook != nil {
+					replCapturePanicHook()
+				}
+				if err != nil {
+					return false, nil
+				}
+				return db.replicateStatement(sqlText, args, inExplicitTxn)
+			}()
+			if repErr != nil {
+				err = repErr
+				needWait = false
 			}
-			needWait, repErr := db.replicateStatement(sqlText, args, inExplicitTxn)
 			// Release the capture lock BEFORE the sync-mode ACK wait: waiting
 			// while holding it can deadlock against a snapshot-sending slave
 			// handler (it holds the slave connection mutex and needs the
-			// capture write lock).
-			db.replCaptureMu.RUnlock()
+			// capture write lock). The inner defer above released it.
 			if repErr == nil && needWait {
 				if mgr := db.replicationMasterManager(); mgr != nil {
 					repErr = db.replicationSyncWait(mgr)
@@ -473,33 +492,43 @@ func (db *DB) execute(ctx context.Context, sqlText string, stmt query.Statement,
 		// page-apply, BEFORE the sync-mode ACK wait, so a slow replica ACK does
 		// not block checkpoints.
 		db.flushMu.RLock()
-		if err := db.catalog.FlushTableTrees(); err != nil {
-			db.flushMu.RUnlock()
-			return Result{}, fmt.Errorf("failed to flush tables: %w", err)
-		}
-		// Hold the replication capture lock across commit+entry-append so a
-		// concurrent replication snapshot cannot observe the committed data
-		// without the corresponding replication entries. The sync-mode ACK
-		// wait runs after the lock is released (see replicateStatement).
-		db.replCaptureMu.RLock()
-		commitErr := db.catalog.CommitTransaction()
-		var needWait bool
-		var replErr error
-		if commitErr == nil {
-			needWait, replErr = db.replTxnFlush()
-		}
-		db.replCaptureMu.RUnlock()
-		db.flushMu.RUnlock()
+		needWait, commitErr := func() (needWait bool, commitErr error) {
+			// Both unlocks are inner defers registered before any fallible call:
+			// a panic inside the commit window (FlushTableTrees,
+			// CommitTransaction, replTxnFlush — including the injected test
+			// hook) still releases both locks, so a recovered panic cannot
+			// deadlock all later commits and checkpoints.
+			defer db.flushMu.RUnlock()
+			if err := db.catalog.FlushTableTrees(); err != nil {
+				return false, fmt.Errorf("failed to flush tables: %w", err)
+			}
+			// Hold the replication capture lock across commit+entry-append so a
+			// concurrent replication snapshot cannot observe the committed data
+			// without the corresponding replication entries. The sync-mode ACK
+			// wait runs after the lock is released (see replicateStatement).
+			db.replCaptureMu.RLock()
+			defer db.replCaptureMu.RUnlock()
+			if commitWindowPanicHook != nil {
+				commitWindowPanicHook()
+			}
+			if err := db.catalog.CommitTransaction(); err != nil {
+				return false, err
+			}
+			needWait, replErr := db.replTxnFlush()
+			if replErr != nil {
+				return needWait, replErr
+			}
+			return needWait, nil
+		}()
 		if commitErr != nil {
 			return Result{}, commitErr
 		}
-		if replErr == nil && needWait {
+		if needWait {
 			if mgr := db.replicationMasterManager(); mgr != nil {
-				replErr = db.replicationSyncWait(mgr)
+				if replErr := db.replicationSyncWait(mgr); replErr != nil {
+					return Result{}, replErr
+				}
 			}
-		}
-		if replErr != nil {
-			return Result{}, replErr
 		}
 		return Result{}, nil
 	case *query.RollbackStmt:
@@ -1038,6 +1067,10 @@ func normalizeRowKey(row []interface{}) string {
 			if val != nil {
 				sb.WriteString("S:")
 				sb.WriteString(*val)
+			} else {
+				// Match the untyped-nil rendering so both NULL
+				// representations dedup as the same row in UNION.
+				sb.WriteString("<nil>")
 			}
 		case catalog.StringBox:
 			sb.WriteString("S:")
@@ -1177,7 +1210,15 @@ func (db *DB) compareUnionValues(a, b interface{}) int {
 		}
 	case *string:
 		if av == nil {
-			return 1
+			// A typed nil orders like the untyped nil: reflexive with itself
+			// and before every non-nil value. Returning a one-sided sign here
+			// (as this branch historically did) breaks comparator
+			// antisymmetry, invalidating the strict weak ordering that
+			// sort.Slice requires in applyUnionOrderBy.
+			if bv, ok := b.(*string); ok && bv == nil {
+				return 0
+			}
+			return -1
 		}
 		if bv, ok := b.(string); ok {
 			if *av < bv {

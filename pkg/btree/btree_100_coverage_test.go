@@ -50,15 +50,6 @@ func TestCoverageCheckedLengthsAndNilLoadError(t *testing.T) {
 	if _, err := checkedUint16Len(-1, "x"); err == nil {
 		t.Fatal("negative uint16 length accepted")
 	}
-	if _, err := checkedUint32Len(-1, "x"); err == nil {
-		t.Fatal("negative uint32 length accepted")
-	}
-	if got, err := checkedUint32Len(7, "x"); err != nil || got != 7 {
-		t.Fatalf("checked uint32 = %d, %v", got, err)
-	}
-	if got, err := checkedUint32PageCount(3); err != nil || got != 3 {
-		t.Fatalf("checked page count = %d, %v", got, err)
-	}
 	var tree *BTree
 	if tree.LoadError() != nil {
 		t.Fatal("nil tree reported a load error")
@@ -378,7 +369,7 @@ func TestCoverageReadKVHeaderAndScanEndFilter(t *testing.T) {
 
 	// Persist a disk-only key that lies after the requested scan end; the
 	// merge must filter it just like in-memory keys.
-	tree, pool = newCoverageTree(t, 0)
+	tree, _ = newCoverageTree(t, 0)
 	if err := tree.Put([]byte("z"), []byte("value")); err != nil {
 		t.Fatal(err)
 	}

@@ -434,7 +434,15 @@ func coerceValueForColumnType(val interface{}, colType string) (interface{}, boo
 func (c *Catalog) useIndexForExactMatch(idxName string, searchVal interface{}) ([]string, bool, error) {
 	// Special case: PRIMARY KEY lookup
 	if idxName == "__PK__" {
-		// Use serializePK format for consistency with table storage
+		// Use serializePK format for consistency with table storage. Float
+		// PKs must use the whole/fractional split of formatFloatKey — the
+		// same encoding as the insert path and serializePK. formatKeyComponent
+		// truncates fractional floats via int64(v), so rows inserted under
+		// the "F:"-tagged key were invisible to equality lookups.
+		if fVal, isFloat := searchVal.(float64); isFloat {
+			pkKey, _, _ := formatFloatKey(fVal)
+			return []string{pkKey}, true, nil
+		}
 		pkKey, ok := formatKeyComponent(searchVal)
 		if !ok {
 			pkKey = ValueToStringKey(searchVal)

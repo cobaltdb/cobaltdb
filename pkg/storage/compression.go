@@ -335,6 +335,13 @@ func validateCompressedWriteRange(offset int64, length int) error {
 	if int64(length) > maxMemoryOffset-offset {
 		return ErrInvalidSize
 	}
+	// Each page slot is PageSize bytes logically: a larger write would spill
+	// its record (or raw tail) across the next page's slot, and the compressed
+	// path stores originalSize as uint16(len(buf)) — a length past PageSize can
+	// therefore wrap the header field and persist a wrong original size.
+	if length > PageSize {
+		return fmt.Errorf("%w: compressed page write of %d bytes exceeds page slot size %d", ErrInvalidSize, length, PageSize)
+	}
 	return nil
 }
 

@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"testing"
@@ -346,6 +348,73 @@ func TestWALEncryptedAppendRestoresDataOnWriteError(t *testing.T) {
 	}
 }
 
+func TestWALEncryptionAuthenticatesEmptyControlRecordHeader(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "forged-control.wal")
+	backend := NewMemory()
+	pool := NewBufferPool(8, backend)
+	defer pool.Close()
+
+	page, err := pool.NewPage(PageTypeLeaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageID := page.ID()
+	pool.Unpin(page)
+
+	c := makeTestCipher(t)
+	wal, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wal.SetEncryptionCipher(c)
+	if err := wal.AppendBatch([]*WALRecord{
+		{TxnID: 1, Type: WALInsert, PageID: pageID, Offset: 100, Data: []byte("must-not-apply")},
+		{TxnID: 2, Type: WALRollback},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDataLen := int(binary.LittleEndian.Uint16(raw[23:25]))
+	secondOff := walHeaderSize + firstDataLen + 4
+	secondDataLen := int(binary.LittleEndian.Uint16(raw[secondOff+23 : secondOff+25]))
+	if secondDataLen != c.NonceSize()+c.Overhead() {
+		t.Fatalf("encrypted empty control payload length = %d, want %d", secondDataLen, c.NonceSize()+c.Overhead())
+	}
+	binary.LittleEndian.PutUint64(raw[secondOff+8:secondOff+16], 1)
+	raw[secondOff+16] = byte(WALCommit)
+	crcOff := secondOff + walHeaderSize + secondDataLen
+	binary.LittleEndian.PutUint32(raw[crcOff:crcOff+4], crc32.ChecksumIEEE(raw[secondOff:crcOff]))
+	if err := os.WriteFile(walPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	reopened.SetEncryptionCipher(c)
+	if err := reopened.Recover(pool); err == nil || !errors.Is(err, ErrWALCorrupted) {
+		t.Fatalf("forged control record recovery error = %v, want ErrWALCorrupted", err)
+	}
+	p, err := pool.GetPage(pageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Unpin(p)
+	if got := string(p.Data()[100 : 100+len("must-not-apply")]); got == "must-not-apply" {
+		t.Fatal("forged commit caused pending WAL write to be applied")
+	}
+}
+
 func containsBytes(haystack, needle []byte) bool {
 	for i := 0; i <= len(haystack)-len(needle); i++ {
 		match := true
@@ -402,8 +471,15 @@ func TestWALEncryptDataEmptyPlaintext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encryptData empty: %v", err)
 	}
-	if len(out) != 0 {
-		t.Errorf("Expected empty output, got %d bytes", len(out))
+	if want := c.NonceSize() + c.Overhead(); len(out) != want {
+		t.Fatalf("encrypted empty payload length = %d, want nonce+tag %d", len(out), want)
+	}
+	plain, err := wal.decryptData(out, nil)
+	if err != nil {
+		t.Fatalf("decrypt encrypted empty payload: %v", err)
+	}
+	if len(plain) != 0 {
+		t.Fatalf("decrypted empty payload length = %d, want 0", len(plain))
 	}
 }
 
@@ -421,12 +497,8 @@ func TestWALDecryptDataEmptyCiphertext(t *testing.T) {
 	c := makeTestCipher(t)
 	wal.SetEncryptionCipher(c)
 
-	out, err := wal.decryptData([]byte{}, nil)
-	if err != nil {
-		t.Fatalf("decryptData empty: %v", err)
-	}
-	if len(out) != 0 {
-		t.Errorf("Expected empty output, got %d bytes", len(out))
+	if _, err := wal.decryptData([]byte{}, nil); err == nil {
+		t.Fatal("configured cipher accepted missing nonce and authentication tag")
 	}
 }
 

@@ -358,7 +358,9 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request, id int64) {
 func (s *Server) respondJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		s.logger.Error("respond json encode failed", "error", err)
+	}
 }
 
 func (s *Server) respondError(w http.ResponseWriter, status int, message string) {

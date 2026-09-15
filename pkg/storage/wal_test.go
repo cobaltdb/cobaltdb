@@ -1000,6 +1000,72 @@ func TestWALGroupCommitCanBeReconfiguredAndReenabled(t *testing.T) {
 	}
 }
 
+// TestWALGroupCommitReconfigurationFlushesPendingWaiters verifies that
+// EnableGroupCommit reconfiguration flushes appends that already registered as
+// pending syncs under the previous configuration. Before the fix, the
+// reconfiguration stopped the old flush mechanism (groupCommitLoop returns
+// without flushing on <-stop) and never flushed pendingSyncs, so a waiter
+// registered under the previous configuration blocked forever when the new
+// configuration had no flush trigger (e.g. SyncOff) — the same transition
+// replication_snapshot.go and database_lifecycle.go perform in production.
+func TestWALGroupCommitReconfigurationFlushesPendingWaiters(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "groupcommit_reconfig_flush.wal")
+
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("Failed to open WAL: %v", err)
+	}
+	defer wal.Close()
+
+	// Batch size 2, no ticker: a single Append registers a pending sync and
+	// waits for a second append or an explicit flush.
+	wal.EnableGroupCommit(2, 0)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- wal.Append(&WALRecord{TxnID: 1, Type: WALInsert, Data: []byte("pending")})
+	}()
+
+	// Wait until the record is written. appendInternal bumps the LSN before
+	// the pending sync is registered, and both happen inside the same
+	// groupCommitMu critical section, so once the reconfiguration below
+	// acquires that mutex the waiter is guaranteed to be registered.
+	deadline := time.Now().Add(5 * time.Second)
+	for wal.LSN() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("append never wrote its record")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Reconfigure to SyncOff: no ticker, no batch trigger, so only the
+	// reconfiguration itself can unblock the registered waiter.
+	wal.EnableGroupCommit(0, 0)
+
+	// New appends in SyncOff mode return immediately without registering,
+	// proving the WAL is not globally stalled — the waiter below was
+	// specifically abandoned by the reconfiguration before the fix.
+	if err := wal.Append(&WALRecord{TxnID: 2, Type: WALInsert, Data: []byte("probe")}); err != nil {
+		t.Fatalf("post-reconfig Append failed: %v", err)
+	}
+
+	// The previously registered waiter must be flushed by the
+	// reconfiguration itself — no explicit Sync/Disable/Close involved.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("first Append failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Append registered before reconfiguration was stranded: EnableGroupCommit did not flush pending syncs")
+	}
+
+	if wal.LSN() != 2 {
+		t.Fatalf("expected LSN=2, got %d", wal.LSN())
+	}
+}
+
 func TestWALCheckpointFlushesPendingGroupCommit(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "groupcommit_checkpoint.wal")

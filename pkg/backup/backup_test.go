@@ -149,6 +149,26 @@ func TestManagerCreationWithNilConfig(t *testing.T) {
 	}
 }
 
+func TestCreateBackupRejectsUnsupportedEncryptionBeforeWriting(t *testing.T) {
+	tempDir := t.TempDir()
+	config := DefaultConfig()
+	config.BackupDir = filepath.Join(tempDir, "backups")
+	config.Encrypt = true
+	config.KeyFile = filepath.Join(tempDir, "backup.key")
+
+	mgr := NewManager(config, &MockDatabase{dbPath: filepath.Join(tempDir, "database.db")})
+	backup, err := mgr.CreateBackup(t.Context(), TypeFull)
+	if err == nil || !strings.Contains(err.Error(), "encryption is not implemented") {
+		t.Fatalf("CreateBackup error = %v, want unsupported encryption error", err)
+	}
+	if backup != nil {
+		t.Fatalf("CreateBackup returned backup %+v for unsupported encryption", backup)
+	}
+	if _, statErr := os.Stat(config.BackupDir); !os.IsNotExist(statErr) {
+		t.Fatalf("backup directory was created before rejecting encryption: %v", statErr)
+	}
+}
+
 func TestCreateBackup(t *testing.T) {
 	// Create temp directory
 	tempDir := t.TempDir()

@@ -8,6 +8,63 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/storage"
 )
 
+func TestOpenBTreeWithLimitRebuildsAccountingAndEvictsLoadedEntries(t *testing.T) {
+	backend := storage.NewMemory()
+	pool := storage.NewBufferPool(100, backend)
+	defer pool.Close()
+
+	tree, err := NewBTreeWithLimit(pool, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]string{
+		"alpha": strings.Repeat("a", 32),
+		"beta":  strings.Repeat("b", 32),
+		"gamma": strings.Repeat("c", 32),
+	}
+	for key, value := range values {
+		if err := tree.PutString(key, []byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tree.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	limit := int64(len("alpha") + len(values["alpha"]))
+	reopened, err := OpenBTreeWithLimitStrict(pool, tree.RootPageID(), limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.MemoryUsed(); got > limit {
+		t.Fatalf("loaded memory usage = %d, limit = %d", got, limit)
+	}
+	if got := reopened.Size(); got != len(values) {
+		t.Fatalf("loaded key count = %d, want %d", got, len(values))
+	}
+	for key, want := range values {
+		got, err := reopened.GetString(key)
+		if err != nil {
+			t.Fatalf("GetString(%q): %v", key, err)
+		}
+		if string(got) != want {
+			t.Fatalf("GetString(%q) = %q, want %q", key, got, want)
+		}
+	}
+
+	var lruEntries int
+	for i := range reopened.shards {
+		sh := &reopened.shards[i]
+		if sh.lruList.Len() != len(sh.lruMap) {
+			t.Fatalf("shard %d LRU list/map mismatch: %d/%d", i, sh.lruList.Len(), len(sh.lruMap))
+		}
+		lruEntries += len(sh.lruMap)
+	}
+	if lruEntries == 0 {
+		t.Fatal("reopened tree did not rebuild any LRU entries")
+	}
+}
+
 func TestOpenBTreeStrictRejectsTruncatedSerializedEntry(t *testing.T) {
 	backend := storage.NewMemory()
 	pool := storage.NewBufferPool(100, backend)

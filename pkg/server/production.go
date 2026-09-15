@@ -60,6 +60,8 @@ type ProductionConfig struct {
 	EnableRateLimiter    bool
 	EnableSQLProtection  bool
 	EnableHealthServer   bool
+	EnableLoadShedding   bool
+	LoadShedQueueDepth   int
 	AllowRemoteMetrics   bool
 	AdminToken           string
 	Logger               *logger.Logger
@@ -83,6 +85,8 @@ func DefaultProductionConfig() *ProductionConfig {
 		EnableRateLimiter:    false,
 		EnableSQLProtection:  false,
 		EnableHealthServer:   true,
+		EnableLoadShedding:   true,
+		LoadShedQueueDepth:   defaultLoadShedQueueDepth,
 		AllowRemoteMetrics:   false,
 	}
 }
@@ -116,6 +120,7 @@ type ProductionServer struct {
 	CircuitBreakers  *engine.CircuitBreakerManager
 	RateLimiter      *RateLimiter
 	SQLProtector     *SQLProtector
+	LoadShedder      *LoadShedder
 	healthServer     *http.Server
 	logger           *logger.Logger
 	adminTokenDigest [sha256.Size]byte
@@ -167,6 +172,9 @@ func NewProductionServer(db *engine.DB, config *ProductionConfig) *ProductionSer
 
 	if config.EnableSQLProtection {
 		ps.SQLProtector = NewSQLProtector(DefaultSQLProtectionConfig())
+	}
+	if config.EnableLoadShedding {
+		ps.LoadShedder = NewLoadShedder(db, ps.CircuitBreaker, ps.CircuitBreakers, config.LoadShedQueueDepth)
 	}
 
 	return ps
@@ -318,7 +326,21 @@ func (ps *ProductionServer) healthMux() http.Handler {
 	mux.HandleFunc("/transaction-metrics", ps.authRequiredHandler(ps.transactionMetricsHandler()))
 	mux.HandleFunc("/metrics/prometheus", ps.prometheusMetricsHandler())
 
-	return ps.rateLimitHandler(mux)
+	return ps.loadShedHTTPHandler(ps.rateLimitHandler(mux))
+}
+
+func (ps *ProductionServer) loadShedHTTPHandler(next http.Handler) http.Handler {
+	if ps == nil || ps.LoadShedder == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := ps.LoadShedder.Admit(true); err != nil {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (ps *ProductionServer) rateLimitHandler(next http.Handler) http.Handler {
@@ -434,6 +456,18 @@ func (ps *ProductionServer) ExecuteWithCircuitBreaker(key string, fn func() erro
 // bypass circuit breaker / retry (e.g., internal abort, recovery).
 func (ps *ProductionServer) DB() *engine.DB {
 	return ps.db
+}
+
+// Admit performs the shared production overload check used by every SQL
+// transport (queue depth and goroutine safety limits). Circuit-breaker
+// half-open probing is intentionally not a shed condition: the breakers
+// bound their own probe concurrency and reject the excess with
+// ErrCircuitOpen, so shedding here would only prevent recovery.
+func (ps *ProductionServer) Admit(critical bool) error {
+	if ps == nil || ps.LoadShedder == nil {
+		return nil
+	}
+	return ps.LoadShedder.Admit(critical)
 }
 
 // circuitBreakerKey returns the circuit breaker key for a SQL statement.
@@ -606,6 +640,9 @@ func (e *transientWriteError) Is(target error) bool {
 // other errors — including timeouts, where the write may already have been
 // applied — are returned to the caller on the first attempt.
 func (ps *ProductionServer) Exec(ctx context.Context, sql string, args ...interface{}) (engine.Result, error) {
+	if err := ps.Admit(false); err != nil {
+		return engine.Result{}, err
+	}
 	key := ps.circuitBreakerKey(sql)
 	var result engine.Result
 	err := ps.executeWithClassifiedBreaker(key, func() error {
@@ -644,6 +681,9 @@ func (ps *ProductionServer) Exec(ctx context.Context, sql string, args ...interf
 // Reads are idempotent, so transient failures may be retried freely (the
 // retry configuration still excludes deterministic errors).
 func (ps *ProductionServer) Query(ctx context.Context, sql string, args ...interface{}) (*engine.Rows, error) {
+	if err := ps.Admit(false); err != nil {
+		return nil, err
+	}
 	key := ps.circuitBreakerKey(sql)
 	var rows *engine.Rows
 	err := ps.executeWithClassifiedBreaker(key, func() error {
@@ -660,6 +700,9 @@ func (ps *ProductionServer) Query(ctx context.Context, sql string, args ...inter
 
 // QueryRow executes a single-row SQL query with circuit breaker and retry protection.
 func (ps *ProductionServer) QueryRow(ctx context.Context, sql string, args ...interface{}) (*engine.Row, error) {
+	if err := ps.Admit(false); err != nil {
+		return nil, err
+	}
 	key := ps.circuitBreakerKey(sql)
 	var row *engine.Row
 	err := ps.executeWithClassifiedBreaker(key, func() error {

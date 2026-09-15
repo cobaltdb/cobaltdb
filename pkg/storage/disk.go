@@ -28,7 +28,7 @@ type diskFile interface {
 }
 
 var diskOpenFile = func(path string, flag int, perm os.FileMode) (diskFile, error) {
-	return os.OpenFile(path, flag, perm)
+	return os.OpenFile(path, flag, perm) // #nosec G304 -- OS seam for the data file; OpenDisk cleans the operator-configured path and rejects symlink components before calling this.
 }
 
 // OpenDisk opens or creates a disk-based storage backend

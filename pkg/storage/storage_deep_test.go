@@ -10,7 +10,7 @@ import (
 
 // =====================================================================
 // WAL deep coverage: Checkpoint + more records, LSN continuity,
-// Recover with mixed committed/uncommitted, encodeRecord/readRecord
+// Recover with mixed committed/uncommitted, Append/readRecord
 // roundtrip, Checkpoint on closed WAL, AppendWithoutSync large record
 // =====================================================================
 
@@ -233,9 +233,9 @@ func TestWAL_RecoverMixedCommittedUncommitted(t *testing.T) {
 	}
 }
 
-// TestWAL_EncodeRecordReadRecord_Roundtrip verifies that encodeRecord and
-// readRecord are inverses (data survives a write/read cycle).
-func TestWAL_EncodeRecordReadRecord_Roundtrip(t *testing.T) {
+// TestWAL_AppendReadRecord_Roundtrip verifies that the WAL append path and
+// readRecord are inverses (records survive a write/reopen cycle).
+func TestWAL_AppendReadRecord_Roundtrip(t *testing.T) {
 	walPath := filepath.Join(t.TempDir(), "roundtrip.wal")
 	wal, err := OpenWAL(walPath)
 	if err != nil {

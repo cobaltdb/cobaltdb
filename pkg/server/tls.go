@@ -120,12 +120,11 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 	}
 
 	tlsConfig := &tls.Config{
-		Certificates:             []tls.Certificate{cert},
-		MinVersion:               config.MinVersion,
-		MaxVersion:               config.MaxVersion,
-		CipherSuites:             config.CipherSuites,
-		PreferServerCipherSuites: true,
-		ClientAuth:               config.ClientAuth,
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   config.MinVersion,
+		MaxVersion:   config.MaxVersion,
+		CipherSuites: config.CipherSuites,
+		ClientAuth:   config.ClientAuth,
 	}
 
 	// Load CA for client verification

@@ -207,7 +207,7 @@ func TestStoreMaterializedViewDef_WithTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tree.Get failed: %v", err)
 	}
-	if val == nil || len(val) == 0 {
+	if len(val) == 0 {
 		t.Fatal("expected stored materialized view data")
 	}
 }
@@ -230,7 +230,7 @@ func TestStoreMaterializedViewDef_NilMV(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tree.Get failed: %v", err)
 	}
-	if val == nil || len(val) == 0 {
+	if len(val) == 0 {
 		t.Fatal("expected stored materialized view data with nil MV")
 	}
 }

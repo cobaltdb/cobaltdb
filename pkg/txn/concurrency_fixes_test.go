@@ -8,14 +8,13 @@ package txn
 //   5. Options.LockWaitTimeout honored; timeout<=0 defaults instead of failing
 //   6. commit-path lock release uses the txn's own key list, entries removed
 //   7. wait-for edges are refreshed while polling for a lock
-//   8. checkedTxnUint32 range check
+//   8. (removed — checkedTxnUint32 was dead code and has been deleted)
 //   9. Commit distinguishes user cancellation from deadline expiry
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -421,26 +420,6 @@ func TestWaitForEdgeRefreshedWhenBlockerChanges(t *testing.T) {
 	_ = a.Rollback()
 	_ = b.Rollback()
 	_ = c.Rollback()
-}
-
-// --- Fix 8: checkedTxnUint32 range check --------------------------------------
-
-func TestCheckedTxnUint32Range(t *testing.T) {
-	if _, err := checkedTxnUint32(-1, "n"); err == nil {
-		t.Fatal("expected error for negative value")
-	}
-	if v, err := checkedTxnUint32(0, "n"); err != nil || v != 0 {
-		t.Fatalf("checkedTxnUint32(0) = %d, %v", v, err)
-	}
-	if v, err := checkedTxnUint32(math.MaxUint32, "n"); err != nil || v != math.MaxUint32 {
-		t.Fatalf("checkedTxnUint32(MaxUint32) = %d, %v", v, err)
-	}
-	// Only exercisable on 64-bit platforms where int can exceed MaxUint32.
-	if uint64(^uint(0)>>1) > math.MaxUint32 {
-		if _, err := checkedTxnUint32(math.MaxUint32+1, "n"); err == nil {
-			t.Fatal("expected error for value above MaxUint32")
-		}
-	}
 }
 
 // --- Fix 9: cancellation vs timeout in Commit ---------------------------------

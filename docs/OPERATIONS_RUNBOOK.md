@@ -60,6 +60,10 @@ Release blockers:
 5. Enable health/admin endpoints on a loopback or protected network interface.
 6. Configure TLS and authentication before exposing wire or MySQL protocol
    ports outside a trusted network.
+7. For replication, treat any non-loopback `listen_addr` or upstream `master_addr`
+   as TLS-only. Provide a certificate/key pair, an auth token or mTLS, and set
+   `ssl_server_name` when the replica dials an address whose certificate name
+   differs from the socket address.
 
 Health checks:
 

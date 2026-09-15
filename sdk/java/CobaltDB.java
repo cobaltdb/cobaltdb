@@ -1,3 +1,4 @@
+// WARNING: This is a community example, not a production SDK. Use at your own risk.
 package com.cobaltdb.sdk;
 
 import java.sql.*;
@@ -41,7 +42,11 @@ import java.util.Properties;
  */
 public class CobaltDB {
 
-    public static final String VERSION = "0.5.0";
+    static {
+        System.err.println("WARNING: This is a community example, not a production SDK. Use at your own risk.");
+    }
+
+    public static final String VERSION = "0.6.1";
     public static final int DEFAULT_PORT = 3307;
     public static final String DEFAULT_HOST = "127.0.0.1";
     public static final String DEFAULT_USER = "admin";

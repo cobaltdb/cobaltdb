@@ -212,7 +212,7 @@ async function initDatabase() {
 
 // Run it
 initDatabase().then(data => {
-    document.getElementById('output').innerHTML =
+    document.getElementById('output').textContent =
         JSON.stringify(data, null, 2);
 });`,
   },

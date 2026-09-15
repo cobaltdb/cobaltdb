@@ -1,3 +1,4 @@
+// WARNING: This is a community example, not a production SDK. Use at your own risk.
 /**
  * CobaltDB Node.js SDK
  *
@@ -17,7 +18,9 @@
 
 'use strict';
 
-const VERSION = '0.5.0';
+console.warn('WARNING: This is a community example, not a production SDK. Use at your own risk.');
+
+const VERSION = '0.6.1';
 
 class CobaltDBError extends Error {
   constructor(message) {

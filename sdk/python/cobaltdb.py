@@ -1,3 +1,4 @@
+# WARNING: This is a community example, not a production SDK. Use at your own risk.
 """
 CobaltDB Python SDK
 
@@ -28,7 +29,15 @@ Requirements:
     pip install PyMySQL
 """
 
-__version__ = "0.5.0"
+import warnings
+
+warnings.warn(
+    "WARNING: This is a community example, not a production SDK. Use at your own risk.",
+    RuntimeWarning,
+    stacklevel=2,
+)
+
+__version__ = "0.6.1"
 __all__ = ["connect", "Connection", "Cursor", "Error", "CobaltDBError"]
 
 

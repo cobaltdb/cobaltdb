@@ -856,6 +856,11 @@ func TestStartSlaveUsesDialTimeoutAndHandshakeDeadlines(t *testing.T) {
 	if err := mgr.startSlave(); err != nil {
 		t.Fatalf("startSlave failed: %v", err)
 	}
+	// startSlave launches the streaming loop; stop and join it before reading
+	// the test connection's recorded calls.
+	if err := mgr.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
 	if gotNetwork != "tcp" || gotAddress != "127.0.0.1:9999" {
 		t.Fatalf("dial called with network=%q address=%q", gotNetwork, gotAddress)
 	}

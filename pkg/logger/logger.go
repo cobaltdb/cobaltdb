@@ -2,6 +2,7 @@
 package logger
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -63,9 +64,44 @@ func ParseLevel(s string) Level {
 	}
 }
 
+// Format controls how log entries are encoded.
+type Format int
+
+const (
+	// TextFormat preserves the legacy human-readable log layout.
+	TextFormat Format = iota
+	// JSONFormat emits one JSON object per line.
+	JSONFormat
+)
+
+// String returns the configuration name for a log format.
+func (f Format) String() string {
+	switch f {
+	case TextFormat:
+		return "text"
+	case JSONFormat:
+		return "json"
+	default:
+		return "unknown"
+	}
+}
+
+// ParseFormat parses a case-insensitive format name.
+func ParseFormat(s string) (Format, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "text":
+		return TextFormat, nil
+	case "json":
+		return JSONFormat, nil
+	default:
+		return TextFormat, fmt.Errorf("unsupported log format %q (want text or json)", s)
+	}
+}
+
 // Logger provides structured logging
 type Logger struct {
 	level  Level
+	format Format
 	output io.Writer
 	// mu guards the logger's own state (level, output, fields).
 	mu     sync.RWMutex
@@ -78,20 +114,30 @@ type Logger struct {
 	component string
 }
 
-// New creates a new logger with the given level and output
+// New creates a text logger with the given level and output. A nil output
+// preserves the legacy behavior of writing to stdout.
 func New(level Level, output io.Writer) *Logger {
+	return NewWithFormat(level, output, TextFormat)
+}
+
+// NewWithFormat creates a logger with the requested output format.
+func NewWithFormat(level Level, output io.Writer, format Format) *Logger {
 	if output == nil {
 		output = os.Stdout
 	}
+	if format != JSONFormat {
+		format = TextFormat
+	}
 	return &Logger{
 		level:  level,
+		format: format,
 		output: output,
 		fields: make(map[string]interface{}),
 		outMu:  &sync.Mutex{},
 	}
 }
 
-// Default creates a new logger with default settings
+// Default creates a new text logger with default settings.
 func Default() *Logger {
 	return New(InfoLevel, os.Stdout)
 }
@@ -102,6 +148,7 @@ func (l *Logger) WithComponent(component string) *Logger {
 	defer l.mu.RUnlock()
 	return &Logger{
 		level:     l.level,
+		format:    l.format,
 		output:    l.output,
 		fields:    copyFields(l.fields),
 		outMu:     l.sharedOutputMu(),
@@ -117,6 +164,7 @@ func (l *Logger) WithField(key string, value interface{}) *Logger {
 	newFields[key] = value
 	return &Logger{
 		level:     l.level,
+		format:    l.format,
 		output:    l.output,
 		fields:    newFields,
 		outMu:     l.sharedOutputMu(),
@@ -134,6 +182,7 @@ func (l *Logger) WithFields(fields map[string]interface{}) *Logger {
 	}
 	return &Logger{
 		level:     l.level,
+		format:    l.format,
 		output:    l.output,
 		fields:    newFields,
 		outMu:     l.sharedOutputMu(),
@@ -244,40 +293,12 @@ func (l *Logger) log(level Level, msg string, err error) {
 	}
 
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-
-	// Build log entry using strings.Builder for better performance
-	var sb strings.Builder
-	sb.Grow(128) // Pre-allocate reasonable size
-
-	sb.WriteByte('[')
-	sb.WriteString(timestamp)
-	sb.WriteString("] ")
-	sb.WriteString(level.String())
-
-	if l.component != "" {
-		sb.WriteString(" [")
-		sb.WriteString(l.component)
-		sb.WriteByte(']')
+	var line []byte
+	if l.format == JSONFormat {
+		line = renderJSON(timestamp, level, msg, l.component, err, l.fields)
+	} else {
+		line = renderText(timestamp, level, msg, l.component, err, l.fields)
 	}
-
-	sb.WriteByte(' ')
-	sb.WriteString(msg)
-
-	// Add error if present
-	if err != nil {
-		sb.WriteString(" | error=")
-		sb.WriteString(err.Error())
-	}
-
-	// Add fields
-	for k, v := range l.fields {
-		sb.WriteString(" | ")
-		sb.WriteString(k)
-		sb.WriteByte('=')
-		fmt.Fprintf(&sb, "%v", v)
-	}
-
-	sb.WriteByte('\n')
 
 	output := l.output
 	outMu := l.outMu
@@ -289,8 +310,113 @@ func (l *Logger) log(level Level, msg string, err error) {
 		outMu = l.sharedOutputMu()
 	}
 	outMu.Lock()
-	fmt.Fprint(output, sb.String())
+	_, _ = output.Write(line)
 	outMu.Unlock()
+}
+
+func renderText(timestamp string, level Level, msg, component string, err error, fields map[string]interface{}) []byte {
+	// Keep the legacy text layout byte-for-byte compatible.
+	var sb strings.Builder
+	sb.Grow(128)
+
+	sb.WriteByte('[')
+	sb.WriteString(timestamp)
+	sb.WriteString("] ")
+	sb.WriteString(level.String())
+
+	if component != "" {
+		sb.WriteString(" [")
+		sb.WriteString(component)
+		sb.WriteByte(']')
+	}
+
+	sb.WriteByte(' ')
+	sb.WriteString(msg)
+
+	if err != nil {
+		sb.WriteString(" | error=")
+		sb.WriteString(err.Error())
+	}
+
+	for k, v := range fields {
+		sb.WriteString(" | ")
+		sb.WriteString(k)
+		sb.WriteByte('=')
+		fmt.Fprintf(&sb, "%v", v)
+	}
+
+	sb.WriteByte('\n')
+	return []byte(sb.String())
+}
+
+type jsonEntry struct {
+	Time      string                     `json:"time"`
+	Level     string                     `json:"level"`
+	Message   string                     `json:"msg"`
+	Component string                     `json:"component,omitempty"`
+	Error     string                     `json:"error,omitempty"`
+	Fields    map[string]json.RawMessage `json:"fields,omitempty"`
+}
+
+func renderJSON(timestamp string, level Level, msg, component string, err error, fields map[string]interface{}) []byte {
+	entry := jsonEntry{
+		Time:      timestamp,
+		Level:     level.String(),
+		Message:   msg,
+		Component: component,
+		Fields:    safeJSONFields(fields),
+	}
+	if err != nil {
+		entry.Error = err.Error()
+	}
+
+	line, marshalErr := json.Marshal(entry)
+	if marshalErr != nil {
+		// All dynamic values have already been converted to validated
+		// RawMessages, so this can only fail if the fixed envelope changes.
+		// Retain the JSON-lines contract even in that defensive case.
+		line = []byte(`{"time":"","level":"ERROR","msg":"failed to encode log entry"}`)
+	}
+	return append(line, '\n')
+}
+
+// safeJSONFields keeps caller-provided keys below a reserved "fields" object
+// and validates each value independently. Unsupported JSON values are rendered
+// as strings rather than invalidating or dropping the entire log entry.
+func safeJSONFields(fields map[string]interface{}) map[string]json.RawMessage {
+	if len(fields) == 0 {
+		return nil
+	}
+
+	safe := make(map[string]json.RawMessage, len(fields))
+	for key, value := range fields {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			encoded, err = json.Marshal(fmt.Sprint(value))
+			if err != nil {
+				encoded = []byte(`"<unprintable>"`)
+			}
+		}
+		safe[key] = encoded
+	}
+	return safe
+}
+
+// Writer returns an io.Writer that records each write as an informational log
+// entry. It is intended for adapting the standard library log package.
+func (l *Logger) Writer() io.Writer {
+	return loggerWriter{logger: l}
+}
+
+type loggerWriter struct {
+	logger *Logger
+}
+
+func (w loggerWriter) Write(p []byte) (int, error) {
+	if w.logger != nil {
+		w.logger.Info(strings.TrimSuffix(string(p), "\n"))
+	}
+	return len(p), nil
 }
 
 func copyFields(src map[string]interface{}) map[string]interface{} {

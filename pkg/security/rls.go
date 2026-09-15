@@ -454,15 +454,41 @@ func (m *Manager) ListPolicies() []*Policy {
 	return policies
 }
 
-// SerializePolicies serializes all policies to JSON
+// serializedRLSState is the persistence envelope for RLS state. The enabled
+// table set is part of the security state: an enabled table with zero (or all
+// disabled) policies is deny-all at runtime, so reconstructing enabledTables
+// from policy.Enabled flags alone would silently turn fail-closed states into
+// fail-open ones across a persistence round-trip. Legacy blobs (a bare
+// map[string]*Policy keyed "table:policy") still load via DeserializePolicies.
+type serializedRLSState struct {
+	Policies      map[string]*Policy `json:"policies"`
+	EnabledTables []string           `json:"enabled_tables,omitempty"`
+}
+
+// SerializePolicies serializes all policies and the RLS-enabled table set to
+// JSON in the serializedRLSState envelope format.
 func (m *Manager) SerializePolicies() ([]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	return json.Marshal(m.policies)
+	enabledTables := make([]string, 0, len(m.enabledTables))
+	for tableName, enabled := range m.enabledTables {
+		if enabled {
+			enabledTables = append(enabledTables, tableName)
+		}
+	}
+	sort.Strings(enabledTables)
+
+	return json.Marshal(serializedRLSState{
+		Policies:      m.policies,
+		EnabledTables: enabledTables,
+	})
 }
 
-// DeserializePolicies loads policies from JSON
+// DeserializePolicies loads policies and the RLS-enabled table set from JSON.
+// It accepts the current serializedRLSState envelope format and the legacy
+// bare map[string]*Policy format ("table:policy" keys); legacy input derives
+// the enabled-table set from enabled policies, exactly as before.
 func (m *Manager) DeserializePolicies(data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -471,12 +497,24 @@ func (m *Manager) DeserializePolicies(data []byte) error {
 		return fmt.Errorf("%w: serialized policies too large: %d bytes", ErrInvalidPolicy, len(data))
 	}
 
+	// Probe the envelope format first. json.Unmarshal into the envelope
+	// ignores unknown fields, so a legacy blob leaves Policies nil; a legacy
+	// key equal to "policies" could never be valid anyway (policy keys are
+	// "table:policy" and normalizeDeserializedPolicy rejects a missing colon).
+	var envelope serializedRLSState
 	var policies map[string]*Policy
-	if err := json.Unmarshal(data, &policies); err != nil {
+	persistedEnabledTables := false
+	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Policies != nil {
+		policies = envelope.Policies
+		persistedEnabledTables = true
+	} else if err := json.Unmarshal(data, &policies); err != nil {
 		return err
 	}
 	if len(policies) > maxSerializedPolicyCount {
 		return fmt.Errorf("%w: too many policies: %d", ErrInvalidPolicy, len(policies))
+	}
+	if persistedEnabledTables && len(envelope.EnabledTables) > maxSerializedPolicyCount {
+		return fmt.Errorf("%w: too many enabled tables: %d", ErrInvalidPolicy, len(envelope.EnabledTables))
 	}
 
 	stagedPolicies := make(map[string]*Policy, len(policies))
@@ -484,6 +522,14 @@ func (m *Manager) DeserializePolicies(data []byte) error {
 	stagedEnabledTables := make(map[string]bool)
 	stagedCompiledExprs := make(map[string]PolicyExpr)
 	stagedCompiledCheckExprs := make(map[string]PolicyExpr)
+
+	// Validate the persisted enabled-table set before staging so invalid
+	// input never mutates manager state.
+	for _, tableName := range envelope.EnabledTables {
+		if strings.TrimSpace(tableName) == "" {
+			return fmt.Errorf("%w: empty enabled table name", ErrInvalidPolicy)
+		}
+	}
 
 	for key, policy := range policies {
 		normalized, normalizedKey, err := normalizeDeserializedPolicy(key, policy)
@@ -496,7 +542,12 @@ func (m *Manager) DeserializePolicies(data []byte) error {
 
 		stagedPolicies[normalizedKey] = normalized
 		stagedTablePolicies[normalized.TableName] = append(stagedTablePolicies[normalized.TableName], normalized.Name)
-		if policy.Enabled {
+		// Legacy blobs derive the enabled-table set from enabled policies.
+		// New-format blobs carry the exact set (an enabled policy can
+		// legitimately exist on a table that is not RLS-enabled — DisableTable
+		// leaves policies in place — and that state must survive the
+		// round-trip), so only the legacy path seeds from policy.Enabled here.
+		if !persistedEnabledTables && policy.Enabled {
 			stagedEnabledTables[normalized.TableName] = true
 		}
 
@@ -505,6 +556,12 @@ func (m *Manager) DeserializePolicies(data []byte) error {
 			// Log error but continue
 			delete(stagedCompiledExprs, normalizedKey)
 			delete(stagedCompiledCheckExprs, normalizedKey)
+		}
+	}
+
+	if persistedEnabledTables {
+		for _, tableName := range envelope.EnabledTables {
+			stagedEnabledTables[strings.ToLower(strings.TrimSpace(tableName))] = true
 		}
 	}
 

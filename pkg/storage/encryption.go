@@ -405,7 +405,7 @@ type storageFileOps struct {
 
 var storageFSOps = storageFileOps{
 	lstat: os.Lstat, stat: os.Stat,
-	open:       func(path string) (atomicFile, error) { return os.Open(path) },
+	open:       func(path string) (atomicFile, error) { return os.Open(path) }, // #nosec G304 -- OS seam for the salt sidecar; path derives from the operator-configured database path, validated by the caller.
 	createTemp: func(dir, pattern string) (atomicFile, error) { return os.CreateTemp(dir, pattern) },
 	rename:     os.Rename, remove: os.Remove, mkdirAll: os.MkdirAll, chmod: os.Chmod, sameFile: os.SameFile,
 }

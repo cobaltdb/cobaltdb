@@ -15,6 +15,7 @@ cluster manager.
 | Disconnect detection | Implemented; slave status clears `Connected` after master disconnect |
 | Async replication | Implemented |
 | Sync/full-sync wait semantics | Implemented for connected slaves |
+| Authenticated TLS/mTLS transport | Implemented; TLS 1.2+ with hostname/IP SAN verification and optional mutual TLS |
 | HA readiness API | Implemented; reports explicit blockers and no automatic failover |
 | Unsafe in-process promotion guard | Implemented; `PromoteToMaster` returns an unsupported-failover error |
 | Externally fenced manual promotion | Implemented via `PromoteToMasterWithFencing` |
@@ -63,12 +64,52 @@ the rejoined node to request `RESUME_SNAPSHOT` on its next slave connection. It
 does not perform data reconciliation by itself; the normal slave resume/snapshot
 path must still validate or refresh the data set.
 
+## Replication Transport Security
+
+Replication transport is now authenticated and fail-closed by default for any
+non-loopback deployment.
+
+### Plaintext vs TLS policy
+
+| Endpoint | Plaintext | TLS | Notes |
+|---|---|---|---|
+| Loopback master listen address | Allowed | Allowed | Intended for local development and tests |
+| Loopback slave `MasterAddr` | Allowed | Allowed | Intended for local development and tests |
+| Non-loopback master listen address | Rejected | Required | Must also provide an auth token or mTLS |
+| Non-loopback slave `MasterAddr` | Rejected | Required | Must also provide an auth token or client certificate |
+
+There is **no automatic downgrade** from TLS to plaintext. A TLS mismatch,
+certificate validation failure, or hostname mismatch aborts startup or initial
+replica connection.
+
+### TLS field meanings
+
+| Field | Master role | Slave role |
+|---|---|---|
+| `SSLCert` | Server certificate | Optional client certificate |
+| `SSLKey` | Server private key | Client private key matching `SSLCert` |
+| `SSLCA` | Client CA bundle; enables required mTLS | Server CA / trust roots |
+| `SSLServerName` | Invalid | Optional hostname override for certificate verification |
+
+Notes:
+
+- `SSLCert` and `SSLKey` must be provided together.
+- `SSLServerName` is only valid for the slave role.
+- When `SSLCA` is configured on a master, client certificates are required and
+  verified (`RequireAndVerifyClientCert`).
+- When both an auth token and mTLS are configured, both are required.
+- Hostname verification uses the `MasterAddr` host by default; use
+  `SSLServerName` only when the socket address and certificate name differ.
+- IP connections require the certificate to contain the relevant IP SAN.
+
 ## Required Failure Drills
 
 ```bash
 go test ./pkg/replication -run 'TestSlaveStatusClearsConnectionOnMasterDisconnect|TestReplicateWALWithSlaves|TestWaitForSlavesFullSyncMode' -count=1
 go test ./pkg/replication -run 'TestFailoverReadinessReportsTransportIsNotHA|TestPromoteToMasterRequiresExternalFencing|TestPromoteToMasterWithFencing|TestFencePrimary|TestExternallyOrchestratedFailoverDrill|TestRejoinAsReplica' -count=1
 go test ./pkg/replication -run TestRejoinAsReplicaPersistsResumeLSN -count=1
+go test ./pkg/replication -run 'TestReplicationTLSCertificateAndHostnameVerification|TestReplicationTLSVerifiesIPAddressSAN|TestReplicationMutualTLSClientAuthentication|TestReplicationTLSAndTokenRequireBoth|TestReplicationRejectsPlaintextAndNeverDowngrades|TestReplicationTLSConfigValidation' -count=1
+go test -race ./pkg/replication -run 'TestReplicationTLSCertificateAndHostnameVerification|TestReplicationMutualTLSClientAuthentication|TestReplicationRejectsPlaintextAndNeverDowngrades|TestStartMasterRejectsUnauthenticatedNonLoopbackListener' -count=1
 ```
 
 Operational stance:
@@ -79,3 +120,6 @@ Operational stance:
 - Treat promotion/failover as an external orchestration task until consensus and
   built-in fencing are implemented.
 - Keep a verified backup/restore path even when replication is enabled.
+- For non-loopback replication, provision and rotate certificates before
+  enabling the transport; startup should fail if the certificate, key, CA, or
+  hostname policy is invalid.

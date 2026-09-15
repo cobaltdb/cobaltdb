@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -467,6 +468,31 @@ func TestDatabaseReopenWithData(t *testing.T) {
 }
 
 // TestCreateNewWithReplicationOptions tests replication config paths
+func TestOpenFailsClosedOnReplicationTLSMisconfiguration(t *testing.T) {
+	tempDir := t.TempDir()
+	_, err := Open(filepath.Join(tempDir, "replication_tls_fail.db"), &Options{
+		Replication: ReplicationConfig{
+			Role:       "master",
+			ListenAddr: "127.0.0.1:0",
+			SSLCert:    filepath.Join(tempDir, "missing-cert.pem"),
+			SSLKey:     filepath.Join(tempDir, "missing-key.pem"),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "replication TLS") {
+		t.Fatalf("Open TLS misconfiguration error = %v, want replication TLS failure", err)
+	}
+}
+
+func TestOpenFailsClosedOnReplicationRoleValidation(t *testing.T) {
+	tempDir := t.TempDir()
+	_, err := Open(filepath.Join(tempDir, "replication_role_fail.db"), &Options{
+		Replication: ReplicationConfig{Role: "invalid-role"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid replication role") {
+		t.Fatalf("Open invalid role error = %v", err)
+	}
+}
+
 func TestCreateNewWithReplicationOptions(t *testing.T) {
 	tempDir := t.TempDir()
 

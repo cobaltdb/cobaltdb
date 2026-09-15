@@ -406,11 +406,27 @@ type Catalog struct {
 	rlsManager           *security.Manager                     // Row-level security manager
 	enableRLS            bool                                  // Enable row-level security
 	rlsPolicies          map[string]*security.Policy           // RLS policies: key = "table:policyName"
-	queryCache           *cache.Cache                          // Query result cache (owned by pkg/cache)
+	queryCache           atomic.Pointer[cache.Cache]           // Query result cache (owned by pkg/cache); atomic: Close() disables it while in-flight statements read it
 	rlsCtx               context.Context                       // Context for RLS user/role extraction in SELECT
 	lastReturningRows    [][]interface{}                       // Last RETURNING clause results
 	lastReturningColumns []string                              // Column names for RETURNING results
 	returningMu          sync.Mutex                            // protects lastReturningRows/lastReturningColumns
+
+	// autocommitWriteMu serializes autocommit (no explicit transaction) UPDATE
+	// and DELETE statements so a single statement's read-modify-write — e.g.
+	// `UPDATE t SET n = n + 1` — is atomic.
+	//
+	// Why this is needed: Catalog.Update/Delete hold only c.mu.RLock() for the
+	// whole statement, so without this two concurrent updaters both read n=5
+	// and both write n=6, silently losing an increment. Inside an explicit
+	// transaction the txn machinery detects the write-write conflict at COMMIT
+	// and aborts a writer instead, so this lock is skipped there.
+	//
+	// Lock ordering: always acquired BEFORE c.mu and only by the public
+	// Update/Delete entrypoints. Triggers re-enter via the internal
+	// updateLocked/deleteLocked helpers, which never take this lock, so nested
+	// trigger DML cannot self-deadlock.
+	autocommitWriteMu sync.Mutex
 
 	// Dead tuple tracking for AutoVacuum
 	deadTuples map[string]int64 // table name -> count of soft-deleted rows
@@ -526,7 +542,6 @@ func New(tree btree.TreeStore, pool *storage.BufferPool, wal *storage.WAL) *Cata
 		stats:               make(map[string]*StatsTableStats),
 		rlsPolicies:         make(map[string]*security.Policy),
 		keyCounter:          0,
-		queryCache:          nil, // Enabled lazily via EnableQueryCache()
 		deadTuples:          make(map[string]int64),
 		liveTuples:          make(map[string]int64),
 	}

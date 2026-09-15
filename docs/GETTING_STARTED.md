@@ -296,6 +296,8 @@ export COBALTDB_ALLOW_CLEARTEXT_AUTH=true
 
 Most local options are also available as server flags, for example `-data`, `-addr`, `-mysql-addr`, `-health-addr`, `-cache`, `-auth`, `-allow-cleartext-auth`, and TLS flags. The sample `config/cobaltdb.conf` in the repository is a reference file and is not loaded automatically by the current server binary.
 
+Replication note: loopback replication can still run without TLS for local development, but any non-loopback replication `listen_addr` or `master_addr` now fails closed unless TLS is configured. When the slave certificate name differs from `master_addr`, set `SSLServerName`/`ssl_server_name` to the expected certificate identity.
+
 ---
 
 ## Monitoring

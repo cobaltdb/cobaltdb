@@ -79,10 +79,11 @@ func TestCatalogEnableQueryCacheUsesBoundedByteDefault(t *testing.T) {
 	c.EnableQueryCache(10, time.Minute)
 	defer c.DisableQueryCache()
 
-	if c.queryCache == nil {
+	qc := c.queryCache.Load()
+	if qc == nil {
 		t.Fatal("expected query cache to be enabled")
 	}
-	stats := c.queryCache.Stats()
+	stats := qc.Stats()
 	if stats.MaxSize != cache.DefaultConfig().MaxSize {
 		t.Fatalf("MaxSize = %d, want default %d", stats.MaxSize, cache.DefaultConfig().MaxSize)
 	}
@@ -93,18 +94,19 @@ func TestCatalogEnableQueryCacheWithLimitsUsesByteLimit(t *testing.T) {
 	c.EnableQueryCacheWithLimits(4096, 7, time.Minute)
 	defer c.DisableQueryCache()
 
-	if c.queryCache == nil {
+	qc := c.queryCache.Load()
+	if qc == nil {
 		t.Fatal("expected query cache to be enabled")
 	}
-	stats := c.queryCache.Stats()
+	stats := qc.Stats()
 	if stats.MaxSize != 4096 {
 		t.Fatalf("MaxSize = %d, want 4096", stats.MaxSize)
 	}
 
 	for i := 0; i < 8; i++ {
-		c.queryCache.Set(string(rune('a'+i)), nil, []string{"c"}, [][]interface{}{{i}}, nil)
+		qc.Set(string(rune('a'+i)), nil, []string{"c"}, [][]interface{}{{i}}, nil)
 	}
-	stats = c.queryCache.Stats()
+	stats = qc.Stats()
 	if stats.EntryCount > 7 {
 		t.Fatalf("EntryCount = %d, want <= 7", stats.EntryCount)
 	}
@@ -114,7 +116,7 @@ func TestCatalogDisableQueryCacheSetsNil(t *testing.T) {
 	c := &Catalog{}
 	c.EnableQueryCache(10, time.Minute)
 	c.DisableQueryCache()
-	if c.queryCache != nil {
+	if c.queryCache.Load() != nil {
 		t.Fatal("expected query cache to be nil after DisableQueryCache")
 	}
 }

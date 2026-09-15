@@ -282,6 +282,18 @@ func (db *DB) acquireConnection(ctx context.Context) error {
 	}
 }
 
+// ConnectionQueueDepth returns the number of callers waiting for a connection
+// slot. It is a race-safe admission signal for production load shedding.
+func (db *DB) ConnectionQueueDepth() int {
+	if db == nil {
+		return 0
+	}
+	db.connWaitMu.Lock()
+	depth := len(db.connWaiters)
+	db.connWaitMu.Unlock()
+	return depth
+}
+
 // releaseHandedOffSlot returns a connection slot that releaseConnection handed
 // to a waiter which then abandoned it (timeout). It passes the slot to the next
 // waiter, or decrements connCount if none. It must NOT touch activeConns: the

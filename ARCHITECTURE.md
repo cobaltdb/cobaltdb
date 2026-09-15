@@ -4,7 +4,7 @@
 
 CobaltDB: pure-Go SQL database. It runs in two modes: embedded library and standalone server. Clients can use CLI, Web UI, custom wire protocol, MySQL protocol, or direct Go API. All paths converge on pkg/engine.
 
-Module: github.com/cobaltdb/cobaltdb. Go target: 1.25. Toolchain: go1.26.4. Runtime goal: CGO-free database core.
+Module: github.com/cobaltdb/cobaltdb. Go target: 1.25. Toolchain: go1.26.5. Runtime goal: CGO-free database core.
 
 ## Runtime Layers
 

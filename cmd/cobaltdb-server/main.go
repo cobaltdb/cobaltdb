@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -35,21 +36,32 @@ func generateRandomPassword(length int) (string, error) {
 var version = "dev"
 
 func main() {
+	// Install the environment-selected logger before parsing optional config so
+	// even early startup and configuration failures follow the requested format.
+	logFormat, err := resolveLogFormat("", os.Getenv("COBALTDB_LOG_FORMAT"))
+	if err != nil {
+		log.Fatalf("Invalid environment configuration: %v", err)
+	}
+	serverLogger := configureServerLogging(logFormat, os.Stderr)
+
 	var (
-		showVersion = flag.Bool("version", false, "print version and exit")
-		dataDir     = flag.String("data", "./data", "data directory")
-		address     = flag.String("addr", "127.0.0.1:4200", "wire protocol address")
-		mysqlAddr   = flag.String("mysql-addr", "127.0.0.1:3307", "MySQL protocol address")
-		enableMySQL = flag.Bool("mysql", true, "enable MySQL protocol")
-		inMemory    = flag.Bool("memory", false, "use in-memory storage")
-		cacheSize   = flag.Int("cache", 1024, "cache size in pages")
-		authEnabled = flag.Bool("auth", true, "enable authentication")
-		adminUser   = flag.String("admin-user", "admin", "default admin username")
-		adminPass   = flag.String("admin-pass", "", "admin password (generated securely if not set)")
-		tlsEnabled  = flag.Bool("tls", false, "enable TLS")
-		tlsCert     = flag.String("tls-cert", "", "TLS certificate file")
-		tlsKey      = flag.String("tls-key", "", "TLS key file")
-		tlsGenCert  = flag.Bool("tls-gen-cert", false, "auto-generate self-signed TLS certificate")
+		showVersion       = flag.Bool("version", false, "print version and exit")
+		dataDir           = flag.String("data", "./data", "data directory")
+		address           = flag.String("addr", "127.0.0.1:4200", "wire protocol address")
+		mysqlAddr         = flag.String("mysql-addr", "127.0.0.1:3307", "MySQL protocol address")
+		enableMySQL       = flag.Bool("mysql", true, "enable MySQL protocol")
+		inMemory          = flag.Bool("memory", false, "use in-memory storage")
+		cacheSize         = flag.Int("cache", 1024, "cache size in pages")
+		maxConnections    = flag.Int("max-connections", 0, "maximum concurrent connections (0 = default)")
+		connectionTimeout = flag.Duration("connection-timeout", 0, "connection acquisition/read timeout (0 = default)")
+		queryTimeout      = flag.Duration("query-timeout", 0, "query/write timeout (0 = default)")
+		authEnabled       = flag.Bool("auth", true, "enable authentication")
+		adminUser         = flag.String("admin-user", "admin", "default admin username")
+		adminPass         = flag.String("admin-pass", "", "admin password (generated securely if not set)")
+		tlsEnabled        = flag.Bool("tls", false, "enable TLS")
+		tlsCert           = flag.String("tls-cert", "", "TLS certificate file")
+		tlsKey            = flag.String("tls-key", "", "TLS key file")
+		tlsGenCert        = flag.Bool("tls-gen-cert", false, "auto-generate self-signed TLS certificate")
 
 		// Production features
 		healthAddr           = flag.String("health-addr", "127.0.0.1:8420", "health check HTTP address")
@@ -64,43 +76,30 @@ func main() {
 		drainTimeout         = flag.Duration("drain-timeout", 10*time.Second, "connection drain timeout")
 	)
 	flag.Parse()
+	explicitFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
 
-	// Load optional config file — applies defaults that CLI flags override.
+	// Load optional config-file defaults without replacing explicitly supplied
+	// command-line values. Environment variables are applied afterward and
+	// therefore retain the documented highest precedence.
 	if *configFile != "" {
 		cv, err := loadConfigFile(*configFile)
 		if err != nil {
 			log.Fatalf("Failed to load config file: %v", err)
 		}
-		if cv.Address != "" {
-			*address = cv.Address
+		logFormat, err = resolveLogFormat(cv.LogFormat, os.Getenv("COBALTDB_LOG_FORMAT"))
+		if err != nil {
+			log.Fatalf("Invalid logging configuration: %v", err)
 		}
-		if cv.MySQLAddr != "" {
-			*mysqlAddr = cv.MySQLAddr
-		}
-		if cv.DataDir != "" {
-			*dataDir = cv.DataDir
-		}
-		if cv.CacheSize > 0 {
-			*cacheSize = cv.CacheSize
-		}
-		if cv.AuthEnabled != nil {
-			*authEnabled = *cv.AuthEnabled
-		}
-		if cv.TLSEnabled != nil {
-			*tlsEnabled = *cv.TLSEnabled
-		}
-		if cv.TLSCertFile != "" {
-			*tlsCert = cv.TLSCertFile
-		}
-		if cv.TLSKeyFile != "" {
-			*tlsKey = cv.TLSKeyFile
-		}
-		if cv.MySQLEnabled != nil {
-			*enableMySQL = *cv.MySQLEnabled
-		}
-		if cv.HealthAddr != "" {
-			*healthAddr = cv.HealthAddr
-		}
+		serverLogger = configureServerLogging(logFormat, os.Stderr)
+		applyConfigDefaults(cv, explicitFlags, serverFlagValues{
+			address: address, mysqlAddr: mysqlAddr, dataDir: dataDir,
+			cacheSize: cacheSize, maxConnections: maxConnections,
+			connectionTimeout: connectionTimeout, queryTimeout: queryTimeout,
+			authEnabled: authEnabled, tlsEnabled: tlsEnabled,
+			tlsCert: tlsCert, tlsKey: tlsKey, enableMySQL: enableMySQL,
+			healthAddr: healthAddr,
+		})
 	}
 
 	if *showVersion {
@@ -115,6 +114,9 @@ func main() {
 		enableMySQL,
 		inMemory,
 		cacheSize,
+		maxConnections,
+		connectionTimeout,
+		queryTimeout,
 		authEnabled,
 		tlsEnabled,
 		tlsCert,
@@ -165,14 +167,18 @@ func main() {
 	if *authEnabled && *allowCleartextAuth {
 		log.Printf("[SECURITY WARNING] Cleartext authentication was explicitly allowed. Use this only for local development or trusted private networks.")
 	}
-	serverLogger := cblogger.New(cblogger.InfoLevel, os.Stderr)
-
 	// Open database
 	opts := &engine.Options{
 		CoreStorage: engine.CoreStorage{
 			CacheSize:  *cacheSize,
 			InMemory:   *inMemory,
 			WALEnabled: engine.BoolPtr(!*inMemory),
+			Logger:     serverLogger.WithComponent("engine"),
+		},
+		ConnectionPool: engine.ConnectionPool{
+			MaxConnections:    *maxConnections,
+			ConnectionTimeout: *connectionTimeout,
+			QueryTimeout:      *queryTimeout,
 		},
 	}
 
@@ -243,6 +249,9 @@ func main() {
 	// Create wire protocol server
 	srv, err := server.New(prodServer, &server.Config{
 		Address:            *address,
+		MaxConnections:     *maxConnections,
+		ReadTimeout:        durationSeconds(*connectionTimeout),
+		WriteTimeout:       durationSeconds(*queryTimeout),
 		AuthEnabled:        *authEnabled,
 		RequireAuth:        *authEnabled,
 		DefaultAdminUser:   finalAdminUser,
@@ -267,6 +276,7 @@ func main() {
 	var mysqlComponent *MySQLServerComponent
 	if *enableMySQL {
 		mysqlSrv := protocol.NewMySQLServer(db, "5.7.0-CobaltDB")
+		mysqlSrv.SetAdmissionController(prodServer)
 		// Share the wire server's authenticator so both protocols use the same user store
 		if *authEnabled {
 			mysqlSrv.SetAuthenticator(srv.GetAuthenticator())
@@ -310,6 +320,89 @@ func main() {
 	log.Println("Server stopped.")
 }
 
+func resolveLogFormat(configValue, envValue string) (cblogger.Format, error) {
+	selected := configValue
+	if envValue != "" {
+		selected = envValue
+	}
+	return cblogger.ParseFormat(selected)
+}
+
+func configureServerLogging(format cblogger.Format, output io.Writer) *cblogger.Logger {
+	base := cblogger.NewWithFormat(cblogger.InfoLevel, output, format)
+	cblogger.SetGlobalLogger(base.WithComponent("global"))
+	log.SetFlags(0)
+	log.SetPrefix("")
+	log.SetOutput(base.WithComponent("stdlib").Writer())
+	return base.WithComponent("server")
+}
+
+type serverFlagValues struct {
+	address, mysqlAddr, dataDir     *string
+	cacheSize, maxConnections       *int
+	connectionTimeout, queryTimeout *time.Duration
+	authEnabled, tlsEnabled         *bool
+	tlsCert, tlsKey                 *string
+	enableMySQL                     *bool
+	healthAddr                      *string
+}
+
+func applyConfigDefaults(cv *configFileValues, explicit map[string]bool, values serverFlagValues) {
+	if cv == nil {
+		return
+	}
+	if !explicit["addr"] && cv.Address != "" {
+		*values.address = cv.Address
+	}
+	if !explicit["mysql-addr"] && cv.MySQLAddr != "" {
+		*values.mysqlAddr = cv.MySQLAddr
+	}
+	if !explicit["data"] && cv.DataDir != "" {
+		*values.dataDir = cv.DataDir
+	}
+	if !explicit["cache"] && cv.CacheSize > 0 {
+		*values.cacheSize = cv.CacheSize
+	}
+	if !explicit["max-connections"] && cv.MaxConns > 0 {
+		*values.maxConnections = cv.MaxConns
+	}
+	if !explicit["connection-timeout"] && cv.ReadTimeout > 0 {
+		*values.connectionTimeout = time.Duration(cv.ReadTimeout) * time.Second
+	}
+	if !explicit["query-timeout"] && cv.WriteTimeout > 0 {
+		*values.queryTimeout = time.Duration(cv.WriteTimeout) * time.Second
+	}
+	if !explicit["auth"] && cv.AuthEnabled != nil {
+		*values.authEnabled = *cv.AuthEnabled
+	}
+	if !explicit["tls"] && cv.TLSEnabled != nil {
+		*values.tlsEnabled = *cv.TLSEnabled
+	}
+	if !explicit["tls-cert"] && cv.TLSCertFile != "" {
+		*values.tlsCert = cv.TLSCertFile
+	}
+	if !explicit["tls-key"] && cv.TLSKeyFile != "" {
+		*values.tlsKey = cv.TLSKeyFile
+	}
+	if !explicit["mysql"] && cv.MySQLEnabled != nil {
+		*values.enableMySQL = *cv.MySQLEnabled
+	}
+	if !explicit["health-addr"] && cv.HealthAddr != "" {
+		*values.healthAddr = cv.HealthAddr
+	}
+}
+
+func durationSeconds(value time.Duration) int {
+	if value <= 0 {
+		return 0
+	}
+	seconds := value / time.Second
+	if value%time.Second != 0 {
+		seconds++
+	}
+	return int(seconds)
+}
+
 func applyEnvOverrides(
 	dataDir *string,
 	address *string,
@@ -317,6 +410,9 @@ func applyEnvOverrides(
 	enableMySQL *bool,
 	inMemory *bool,
 	cacheSize *int,
+	maxConnections *int,
+	connectionTimeout *time.Duration,
+	queryTimeout *time.Duration,
 	authEnabled *bool,
 	tlsEnabled *bool,
 	tlsCert *string,
@@ -349,6 +445,15 @@ func applyEnvOverrides(
 		return err
 	}
 	if err := envInt("COBALTDB_CACHE_SIZE", cacheSize); err != nil {
+		return err
+	}
+	if err := envInt("COBALTDB_MAX_CONNECTIONS", maxConnections); err != nil {
+		return err
+	}
+	if err := envDuration("COBALTDB_CONNECTION_TIMEOUT", connectionTimeout); err != nil {
+		return err
+	}
+	if err := envDuration("COBALTDB_QUERY_TIMEOUT", queryTimeout); err != nil {
 		return err
 	}
 	if err := envBool("COBALTDB_AUTH_ENABLED", authEnabled); err != nil {
