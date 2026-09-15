@@ -20,12 +20,18 @@ var (
 
 // ForeignKeyEnforcer handles foreign key constraint enforcement
 type ForeignKeyEnforcer struct {
-	catalog          *Catalog
-	appliedUpdates   []updateEntry
-	appliedDeletes   []deleteEntry
-	deletingRows     map[string]struct{}
-	updatingRows     map[string]struct{}
-	referenceChanges map[string][]referenceChange
+	catalog        *Catalog
+	appliedUpdates []updateEntry
+	appliedDeletes []deleteEntry
+	// cascadeVectorDeletes tracks rows whose vector index entries were
+	// removed by buffered CASCADE deletes (pendingDeleteRow). Vector
+	// deletions are applied immediately (HNSW has no MVCC), so a statement
+	// failure that rolls the pendingWrites back must re-add these entries or
+	// live rows go invisible to vector search.
+	cascadeVectorDeletes []deleteEntry
+	deletingRows         map[string]struct{}
+	updatingRows         map[string]struct{}
+	referenceChanges     map[string][]referenceChange
 }
 
 // NewForeignKeyEnforcer creates a new foreign key enforcer
@@ -675,6 +681,17 @@ func (fke *ForeignKeyEnforcer) pendingDeleteRow(ctx context.Context, tableName s
 	if err != nil {
 		return err
 	}
+	if err := fke.catalog.updateVectorIndexesForDelete(tableName, match.key); err != nil {
+		return err
+	}
+	if fke.catalog.hasVectorIndexesForTable(tableName) {
+		fke.cascadeVectorDeletes = append(fke.cascadeVectorDeletes, deleteEntry{
+			key:           []byte(match.key),
+			row:           append([]interface{}(nil), match.row...),
+			treeName:      tableName,
+			vectorDeleted: true,
+		})
+	}
 	idxUpdates := fke.pendingIndexDeletesForRow(table, tableName, match.key, match.row)
 	fke.appendPendingActionWrite(ts, tableName, match.key, valueData, idxUpdates)
 	return nil
@@ -1319,11 +1336,16 @@ func (fke *ForeignKeyEnforcer) deleteRow(ctx context.Context, tableName string, 
 		}
 	}
 
+	if err := fke.catalog.updateVectorIndexesForDelete(tableName, string(key)); err != nil {
+		return err
+	}
+
 	fke.appliedDeletes = append(fke.appliedDeletes, deleteEntry{
-		key:      append([]byte(nil), key...),
-		value:    append([]byte(nil), oldData...),
-		row:      oldRow,
-		treeName: tableName,
+		key:           append([]byte(nil), key...),
+		value:         append([]byte(nil), oldData...),
+		row:           oldRow,
+		treeName:      tableName,
+		vectorDeleted: fke.catalog.hasVectorIndexesForTable(tableName),
 	})
 
 	if txnActive {
@@ -1362,6 +1384,22 @@ func (fke *ForeignKeyEnforcer) rollbackAppliedDeletes() error {
 	if len(fke.appliedDeletes) == 0 {
 		return nil
 	}
+	// Restore vector index entries first: cascade-deleted rows are about to
+	// go back live and their vector deletions are not covered by
+	// rebuildTableIndexesLocked.
+	for i := len(fke.appliedDeletes) - 1; i >= 0; i-- {
+		entry := fke.appliedDeletes[i]
+		if !entry.vectorDeleted {
+			continue
+		}
+		table := fke.catalog.tables[entry.treeName]
+		if table == nil {
+			continue
+		}
+		if err := fke.catalog.restoreVectorIndexesForDelete(table, []deleteEntry{entry}); err != nil {
+			return err
+		}
+	}
 	touched := make(map[string]struct{}, len(fke.appliedDeletes))
 	for i := len(fke.appliedDeletes) - 1; i >= 0; i-- {
 		entry := fke.appliedDeletes[i]
@@ -1381,6 +1419,26 @@ func (fke *ForeignKeyEnforcer) rollbackAppliedDeletes() error {
 	}
 	fke.appliedDeletes = nil
 	return nil
+}
+
+// restoreCascadeVectorDeletes re-adds vector index entries removed by
+// buffered CASCADE deletes (pendingDeleteRow) when the enclosing statement
+// fails and its pendingWrites — including the cascade soft-deletes — are
+// rolled back.
+func (fke *ForeignKeyEnforcer) restoreCascadeVectorDeletes() error {
+	var firstErr error
+	for i := range fke.cascadeVectorDeletes {
+		entry := fke.cascadeVectorDeletes[i]
+		table := fke.catalog.tables[entry.treeName]
+		if table == nil {
+			continue
+		}
+		if err := fke.catalog.restoreVectorIndexesForDelete(table, []deleteEntry{entry}); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	fke.cascadeVectorDeletes = nil
+	return firstErr
 }
 
 func (fke *ForeignKeyEnforcer) actionRowKey(tableName, key string) string {

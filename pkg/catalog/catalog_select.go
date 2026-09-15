@@ -24,8 +24,11 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 	cat.mu.RLock()
 	defer cat.mu.RUnlock()
 
-	// Check if this query can be cached
-	if cat.queryCache != nil && query.IsCacheableQuery(stmt) {
+	// Check if this query can be cached. Load the pointer atomically: Close()
+	// may disable the cache while this query is in flight (the proven data
+	// race between DisableQueryCache and in-flight statements).
+	qc := cat.queryCache.Load()
+	if qc != nil && query.IsCacheableQuery(stmt) {
 		// Generate cache key from query and args using the same logic as cache.Cache
 		sql := query.QueryToSQL(stmt)
 
@@ -44,7 +47,7 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 		}
 
 		// Try to get from cache
-		if entry, found := cat.queryCache.Get(sql, args); found {
+		if entry, found := qc.Get(sql, args); found {
 			return entry.Columns, entry.Rows, nil
 		}
 
@@ -62,7 +65,7 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 
 		// Store in cache unless an invalidation raced with the scan
 		if cat.cacheEpoch.Load() == epoch {
-			cat.queryCache.Set(sql, args, columns, rows, tables)
+			qc.Set(sql, args, columns, rows, tables)
 		}
 
 		return columns, rows, nil
@@ -200,7 +203,17 @@ func (c *Catalog) executeScalarAggregate(stmt *query.SelectStmt, args []interfac
 	// Evaluate each column as an aggregate
 	row := make([]interface{}, len(stmt.Columns))
 	for i, col := range stmt.Columns {
-		fc, ok := col.(*query.FunctionCall)
+		// Unwrap the alias the same way executeScalarSelect's aggregate
+		// detection does: the parser wraps aliased select items in
+		// *AliasExpr, and a bare type assertion on the wrapper rejected
+		// every aliased FROM-less aggregate.
+		actual := col
+		alias := ""
+		if ae, ok := col.(*query.AliasExpr); ok {
+			actual = ae.Expr
+			alias = ae.Alias
+		}
+		fc, ok := actual.(*query.FunctionCall)
 		if !ok {
 			return nil, nil, errors.New("aggregate functions required in this context")
 		}
@@ -253,6 +266,10 @@ func (c *Catalog) executeScalarAggregate(stmt *query.SelectStmt, args []interfac
 		default:
 			colName = fc.Name
 			result = nil
+		}
+
+		if alias != "" {
+			colName = alias
 		}
 
 		returnColumns = append(returnColumns, colName)
@@ -911,18 +928,21 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 	for _, row := range joinedRows {
 		var groupKey strings.Builder
 		groupKey.Grow(len(joinGroupBySpecs) * 16)
-		for i, spec := range joinGroupBySpecs {
-			if i > 0 {
-				groupKey.WriteString("|")
-			}
+		for _, spec := range joinGroupBySpecs {
+			var part string
 			if spec.index >= 0 && spec.index < len(row) {
-				groupKey.WriteString(ValueToStringKey(row[spec.index]))
+				part = ValueToStringKey(row[spec.index])
 			} else if spec.expr != nil {
-				val, err := evaluateExpression(c, row, allColumns, spec.expr, args)
-				if err == nil {
-					groupKey.WriteString(ValueToStringKey(val))
+				if val, err := evaluateExpression(c, row, allColumns, spec.expr, args); err == nil {
+					part = ValueToStringKey(val)
 				}
 			}
+			// Length-prefix each component: raw "|" concatenation was
+			// ambiguous — ('x|y','z') and ('x','y|z') both keyed as
+			// "x|y|z" and merged into one group.
+			groupKey.WriteString(strconv.Itoa(len(part)))
+			groupKey.WriteString(":")
+			groupKey.WriteString(part)
 		}
 		key := groupKey.String()
 		existing := groups[key]
@@ -1154,6 +1174,13 @@ func (c *Catalog) executeJoinPass(intermediateRows [][]interface{}, rightRows []
 					if indices, ok := hashMap[key]; ok {
 						combinedLen := len(leftRow) + rightLen
 						for _, ri := range indices {
+							// Hash keys are canonical forms; confirm actual
+							// equality with compareValues semantics so
+							// canonical collisions between distinct values
+							// (e.g. '0123' vs '123' as TEXT) do not join.
+							if compareValues(leftRow[leftColIdx], rightRows[ri][rightColIdx]) != 0 {
+								continue
+							}
 							combined := make([]interface{}, combinedLen)
 							copy(combined, leftRow)
 							copy(combined[len(leftRow):], rightRows[ri])
@@ -1802,6 +1829,19 @@ func extractColumnName(expr query.Expression) string {
 	return ""
 }
 
+// canonicalJoinString maps a numeric-looking string to its canonical float
+// form so TEXT/NUMBER equality joins behave like compareValues, which
+// coerces mixed string/number operand pairs numerically ('01' = 1 and
+// '1.50' = 1.5) while comparing two strings exactly. Non-numeric strings
+// are returned unchanged; canonical collisions between distinct strings are
+// filtered by the compareValues verification on the probe side.
+func canonicalJoinString(s string) string {
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return strconv.FormatFloat(f, 'g', -1, 64)
+	}
+	return s
+}
+
 // hashJoinKey converts a value to a string key for hash join lookups.
 // Uses type-specific formatting to avoid fmt.Sprintf reflection overhead.
 func hashJoinKey(v interface{}) string {
@@ -1813,14 +1853,14 @@ func hashJoinKey(v interface{}) string {
 	case float64:
 		return strconv.FormatFloat(val, 'g', -1, 64)
 	case string:
-		return val
+		return canonicalJoinString(val)
 	case bool:
 		if val {
 			return "true"
 		}
 		return "false"
 	case []byte:
-		return string(val)
+		return canonicalJoinString(string(val))
 	case int32:
 		return strconv.FormatInt(int64(val), 10)
 	case int16:
@@ -2268,21 +2308,25 @@ func (cat *Catalog) applyOuterQueryAggregates(stmt *query.SelectStmt, filteredRo
 	if len(stmt.GroupBy) > 0 {
 		groupMap := make(map[string]int)
 		for _, row := range filteredRows {
-			var keyParts []string
+			var key strings.Builder
 			for _, gb := range stmt.GroupBy {
-				val, err := evaluateExpression(cat, row, columns, gb, args)
-				if err == nil {
-					keyParts = append(keyParts, ValueToStringKey(val))
-				} else {
-					keyParts = append(keyParts, "<nil>")
+				part := "<nil>"
+				if val, err := evaluateExpression(cat, row, columns, gb, args); err == nil {
+					part = ValueToStringKey(val)
 				}
+				// Length-prefix each component: raw "|" concatenation was
+				// ambiguous — ('x|y','z') and ('x','y|z') both keyed as
+				// "x|y|z" and merged into one group.
+				key.WriteString(strconv.Itoa(len(part)))
+				key.WriteString(":")
+				key.WriteString(part)
 			}
-			key := strings.Join(keyParts, "|")
-			if idx, exists := groupMap[key]; exists {
+			groupKey := key.String()
+			if idx, exists := groupMap[groupKey]; exists {
 				groups[idx].rows = append(groups[idx].rows, row)
 			} else {
-				groupMap[key] = len(groups)
-				groups = append(groups, rowGroup{key: key, rows: [][]interface{}{row}})
+				groupMap[groupKey] = len(groups)
+				groups = append(groups, rowGroup{key: groupKey, rows: [][]interface{}{row}})
 			}
 		}
 	} else {

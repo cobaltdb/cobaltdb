@@ -548,6 +548,48 @@ func (al *Logger) FailedWriteCount() int64 {
 }
 
 func (al *Logger) writeEvent(event *Event) error {
+	line, nextHash, err := al.renderEventLine(event)
+	if err != nil {
+		return err
+	}
+
+	if len(line) > maxAuditLogLineSize {
+		return fmt.Errorf("audit log event line too large: %d bytes (max %d)", len(line), maxAuditLogLineSize)
+	}
+	if al.config.RotationEnabled && al.config.MaxFileSize > 0 {
+		if info, err := al.file.Stat(); err != nil {
+			return fmt.Errorf("failed to stat audit log before write: %w", err)
+		} else if info.Size() > 0 && info.Size()+int64(len(line)) > al.config.MaxFileSize {
+			if err := al.rotateLocked(); err != nil {
+				return err
+			}
+			// rotateLocked reset the hash chain (al.lastHash) and wrote the
+			// new file's chain-continuation record. This event was rendered
+			// against the OLD file's anchor, so re-anchor and re-render it
+			// against the fresh chain — otherwise the entry carries the
+			// previous file's final hash as PrevHash, VerifyLogFile rejects
+			// the segment ("previous hash mismatch"; with encryption the GCM
+			// AAD no longer matches), and loadLastHash makes the logger fail
+			// to reopen after a restart. Hash fields are fixed-width, so the
+			// rendered length — and the size decision above — are unchanged.
+			line, nextHash, err = al.renderEventLine(event)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	if _, err := al.file.WriteString(line); err != nil {
+		return err
+	}
+	al.lastHash = nextHash
+	return nil
+}
+
+// renderEventLine anchors event to the current chain anchor (al.lastHash),
+// computes the entry hash, and renders/encrypts the on-disk line. Callers
+// must hold al.mu (all writeEvent callers do).
+func (al *Logger) renderEventLine(event *Event) (string, string, error) {
 	var line string
 	var nextHash string
 
@@ -581,13 +623,13 @@ func (al *Logger) writeEvent(event *Event) error {
 		event.Hash = ""
 		data, err := json.Marshal(event)
 		if err != nil {
-			return err
+			return "", "", err
 		}
 		nextHash = hashAuditPayload(event.PrevHash, data)
 		event.Hash = nextHash
 		data, err = json.Marshal(event)
 		if err != nil {
-			return err
+			return "", "", err
 		}
 		line = string(data) + "\n"
 	}
@@ -598,31 +640,14 @@ func (al *Logger) writeEvent(event *Event) error {
 	if al.cipher != nil {
 		nonce := make([]byte, al.cipher.NonceSize())
 		if _, nonceErr := rand.Read(nonce); nonceErr != nil {
-			return fmt.Errorf("audit log nonce generation failed: %w", nonceErr)
+			return "", "", fmt.Errorf("audit log nonce generation failed: %w", nonceErr)
 		}
 		aad := []byte(event.PrevHash)
 		encrypted := al.cipher.Seal(nonce, nonce, []byte(line), aad)
 		line = "ENC:" + base64.StdEncoding.EncodeToString(encrypted) + "\n"
 	}
 
-	if len(line) > maxAuditLogLineSize {
-		return fmt.Errorf("audit log event line too large: %d bytes (max %d)", len(line), maxAuditLogLineSize)
-	}
-	if al.config.RotationEnabled && al.config.MaxFileSize > 0 {
-		if info, err := al.file.Stat(); err != nil {
-			return fmt.Errorf("failed to stat audit log before write: %w", err)
-		} else if info.Size() > 0 && info.Size()+int64(len(line)) > al.config.MaxFileSize {
-			if err := al.rotateLocked(); err != nil {
-				return err
-			}
-		}
-	}
-
-	if _, err := al.file.WriteString(line); err != nil {
-		return err
-	}
-	al.lastHash = nextHash
-	return nil
+	return line, nextHash, nil
 }
 
 func hashAuditPayload(prevHash string, payload []byte) string {

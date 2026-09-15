@@ -1405,6 +1405,53 @@ func CollectWindowExprs(expr Expression, out *[]*WindowExpr) {
 			CollectWindowExprs(w.Result, out)
 		}
 		CollectWindowExprs(e.Else, out)
+	case *InExpr:
+		CollectWindowExprs(e.Expr, out)
+		if e.Subquery != nil {
+			for _, col := range e.Subquery.Columns {
+				CollectWindowExprs(col, out)
+			}
+		} else {
+			for _, item := range e.List {
+				CollectWindowExprs(item, out)
+			}
+		}
+	case *BetweenExpr:
+		CollectWindowExprs(e.Expr, out)
+		CollectWindowExprs(e.Lower, out)
+		CollectWindowExprs(e.Upper, out)
+	case *LikeExpr:
+		CollectWindowExprs(e.Expr, out)
+		CollectWindowExprs(e.Pattern, out)
+		if e.Escape != nil {
+			CollectWindowExprs(e.Escape, out)
+		}
+	case *IsNullExpr:
+		CollectWindowExprs(e.Expr, out)
+	case *SubqueryExpr:
+		if e.Query != nil {
+			for _, col := range e.Query.Columns {
+				CollectWindowExprs(col, out)
+			}
+		}
+	case *ExistsExpr:
+		if e.Subquery != nil {
+			for _, col := range e.Subquery.Columns {
+				CollectWindowExprs(col, out)
+			}
+		}
+	case *JSONPathExpr:
+		CollectWindowExprs(e.Column, out)
+	case *JSONContainsExpr:
+		CollectWindowExprs(e.Column, out)
+		CollectWindowExprs(e.Value, out)
+	case *MatchExpr:
+		for _, col := range e.Columns {
+			CollectWindowExprs(col, out)
+		}
+		CollectWindowExprs(e.Pattern, out)
+	case *IntervalExpr:
+		CollectWindowExprs(e.Value, out)
 	}
 }
 

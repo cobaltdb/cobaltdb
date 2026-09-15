@@ -38,6 +38,15 @@ type updateSnapshot struct {
 }
 
 func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (int64, int64, error) {
+	// An autocommit UPDATE runs entirely under c.mu.RLock(), so concurrent
+	// updaters would overlap and lose increments in a read-modify-write such as
+	// `UPDATE t SET n = n + 1`. Serialize them. Inside an explicit transaction
+	// the commit-time conflict check handles this instead.
+	if c.getCurrentTxn() == nil {
+		c.autocommitWriteMu.Lock()
+		defer c.autocommitWriteMu.Unlock()
+	}
+
 	// Fast path: resolve table metadata from schema cache without lock.
 	table, ver, cacheHit := c.getCachedTable(stmt.Table)
 	if !cacheHit {
@@ -1913,7 +1922,12 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 				if strVal, ok := toString(pkVal); ok {
 					newKey = []byte("S:" + strVal)
 				} else if fVal, ok := toFloat64(pkVal); ok {
-					newKey = []byte(formatKey(int64(fVal)))
+					// Match the insert path: fractional float PKs must keep the
+					// "F:"-tagged exact key (formatFloatKey). Truncating through
+					// int64 landed the row under the integer key, invisible to
+					// equality lookups and colliding with the whole-number row.
+					k, _, _ := formatFloatKey(fVal)
+					newKey = []byte(k)
 				}
 				if existingData, err := updateTree.Get(newKey); err == nil && existingData != nil {
 					return rollbackApplied(fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal), nil)
@@ -2131,6 +2145,44 @@ func (c *Catalog) applyUpdateEntryDirect(
 	return idxChanges, nil
 }
 
+// restoreVectorIndexesForUpdate re-adds the OLD row's vector entries for
+// rolled-back updates. applyUpdateEntryDirect rewrites the row key's HNSW
+// entries immediately (delete + insert with the NEW vector), so a statement
+// rollback must rewrite them back with the pre-update vectors or live rows
+// keep stale vector content (vector searches return rolled-back values).
+func (c *Catalog) restoreVectorIndexesForUpdate(table *TableDef, tableName string, entries []updateEntry) error {
+	if table == nil || !c.hasVectorIndexesForTable(tableName) {
+		return nil
+	}
+	var firstErr error
+	for i := range entries {
+		entry := &entries[i]
+		for _, vi := range c.vectorIndexes {
+			if vi.TableName != tableName || vi.HNSW == nil {
+				continue
+			}
+			colIdx := table.GetColumnIndex(vi.ColumnName)
+			if colIdx == -1 {
+				continue
+			}
+			// The apply path left the key in the HNSW graph holding the NEW
+			// vector; remove it before re-adding the OLD vector. Delete is
+			// missing-key tolerant, so entries whose vector was never
+			// rewritten are unaffected.
+			if err := vi.HNSW.Delete(string(entry.key)); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("failed to remove rolled-back vector %s for row %s: %w", vi.Name, entry.key, err)
+			}
+			if err := c.indexRowForVector(vi, entry.oldRow, string(entry.key), colIdx); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("failed to restore vector index %s for row %s: %w", vi.Name, entry.key, err)
+			}
+			if err := c.storeVectorIndexDef(vi); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("failed to persist vector index %s after restore: %w", vi.Name, err)
+			}
+		}
+	}
+	return firstErr
+}
+
 func (c *Catalog) rollbackAppliedUpdateEntries(table *TableDef, tableName string, entries []updateEntry) error {
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
@@ -2153,6 +2205,14 @@ func (c *Catalog) rollbackAppliedUpdateEntries(table *TableDef, tableName string
 			return fmt.Errorf("restore row: %w", err)
 		}
 	}
+
+	// The apply path rewrote rolled-back rows' vector entries immediately
+	// (applyUpdateEntryDirect); restore them with the OLD vectors or live
+	// rows keep stale vector content.
+	if err := c.restoreVectorIndexesForUpdate(table, tableName, entries); err != nil {
+		return err
+	}
+
 	return c.rebuildTableIndexesLocked(tableName)
 }
 

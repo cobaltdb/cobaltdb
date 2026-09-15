@@ -935,6 +935,17 @@ func buildCompositePK(table *TableDef, rowValues []interface{}) (string, bool) {
 }
 
 func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (int64, int64, error) {
+	// A UNIQUE constraint is enforced by a check-then-insert, and the whole
+	// statement runs under only c.mu.RLock(). Without serialization two
+	// concurrent autocommit inserts of the same value both observe "no
+	// duplicate" and both land, violating the constraint. (A duplicate PRIMARY
+	// KEY is caught anyway because the B-tree is keyed on it; secondary UNIQUE
+	// columns are not.) Explicit transactions rely on commit-time validation.
+	if c.getCurrentTxn() == nil {
+		c.autocommitWriteMu.Lock()
+		defer c.autocommitWriteMu.Unlock()
+	}
+
 	// Fast path: resolve table metadata from schema cache without lock.
 	table, ver, cacheHit := c.getCachedTable(stmt.Table)
 	if !cacheHit {
@@ -2271,6 +2282,14 @@ func (c *Catalog) rollbackStatementInserts(tree btree.TreeStore, table *TableDef
 				if err := idxTree.Delete(ik.key); err != nil && !errors.Is(err, btree.ErrKeyNotFound) && rollbackErr == nil {
 					rollbackErr = fmt.Errorf("delete index %s key: %w", ik.idxName, err)
 				}
+			}
+		}
+		// The insert path added the row key to the table's vector indexes
+		// immediately (applyInsertRowDirect); the rollback must remove them
+		// too or rolled-back rows stay searchable via HNSW.
+		if c.hasVectorIndexesForTable(table.Name) {
+			if vErr := c.updateVectorIndexesForDelete(table.Name, string(si.key)); vErr != nil && rollbackErr == nil {
+				rollbackErr = fmt.Errorf("remove vector index entry for inserted row %s: %w", string(si.key), vErr)
 			}
 		}
 	}

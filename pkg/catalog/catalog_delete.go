@@ -20,6 +20,11 @@ type deleteEntry struct {
 	row      []interface{} // decoded row for RETURNING clause
 	version  RowVersion    // decoded version for soft-delete re-encode (avoids double-decode)
 	treeName string        // which partition tree this entry came from
+	// vectorDeleted records that the row key was removed from the table's
+	// vector indexes. Vector deletions are applied immediately (HNSW.Delete),
+	// unlike the soft-delete B-tree write, so statement-level rollback must
+	// restore them explicitly or live rows go invisible to vector search.
+	vectorDeleted bool
 }
 
 // deleteSnapshot holds all Catalog metadata needed for the buffered DELETE scan.
@@ -33,6 +38,15 @@ type deleteSnapshot struct {
 }
 
 func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (int64, int64, error) {
+	// DELETE reads matching rows and then removes them under only c.mu.RLock(),
+	// so concurrent autocommit deletes (and deletes racing an autocommit UPDATE)
+	// can interleave between the read and the write. Serialize them on the same
+	// lock Update uses; explicit transactions rely on commit-time validation.
+	if c.getCurrentTxn() == nil {
+		c.autocommitWriteMu.Lock()
+		defer c.autocommitWriteMu.Unlock()
+	}
+
 	// Fast path: resolve table metadata from schema cache without lock.
 	table, ver, cacheHit := c.getCachedTable(stmt.Table)
 	if !cacheHit {
@@ -141,6 +155,9 @@ func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []int
 		if ts != nil {
 			ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 			rebuildPendingWriteMap(ts)
+		}
+		if vErr := c.restoreVectorIndexesForDelete(table, entries); vErr != nil {
+			return 0, rowsAffected, fmt.Errorf("%w; vector index restore failed: %v", err, vErr)
 		}
 		return 0, rowsAffected, err
 	}
@@ -407,6 +424,9 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 			if ts != nil {
 				ts.pendingWrites = ts.pendingWrites[:pendingWriteStartPos]
 				rebuildPendingWriteMap(ts)
+			}
+			if vErr := c.restoreVectorIndexesForDelete(table, entries); vErr != nil {
+				return 0, rowsAffected, fmt.Errorf("%w; vector index restore failed: %v", err, vErr)
 			}
 			return 0, rowsAffected, err
 		}
@@ -713,6 +733,7 @@ func (c *Catalog) applyDeleteEntryDirect(
 	if err := c.updateVectorIndexesForDelete(stmt.Table, string(key)); err != nil {
 		return err
 	}
+	entry.vectorDeleted = c.hasVectorIndexesForTable(stmt.Table)
 
 	// Log to WAL before applying change.
 	if c.wal != nil && txnActive {
@@ -783,7 +804,56 @@ func (c *Catalog) applyDeleteEntryDirect(
 	return nil
 }
 
+// hasVectorIndexesForTable reports whether any HNSW-backed vector index is
+// registered for the table, i.e. whether updateVectorIndexesForDelete actually
+// removes entries for it.
+func (c *Catalog) hasVectorIndexesForTable(tableName string) bool {
+	for _, vi := range c.vectorIndexes {
+		if vi.TableName == tableName && vi.HNSW != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// restoreVectorIndexesForDelete re-adds vector index entries for rows whose
+// vector deletion succeeded before the statement failed and was rolled back.
+// Without this, a rolled-back DELETE leaves live rows missing from vector
+// indexes and vector searches silently return incomplete results.
+func (c *Catalog) restoreVectorIndexesForDelete(table *TableDef, entries []deleteEntry) error {
+	if table == nil {
+		return nil
+	}
+	var firstErr error
+	for i := range entries {
+		entry := &entries[i]
+		if !entry.vectorDeleted {
+			continue
+		}
+		for _, vi := range c.vectorIndexes {
+			if vi.TableName != table.Name || vi.HNSW == nil {
+				continue
+			}
+			colIdx := table.GetColumnIndex(vi.ColumnName)
+			if colIdx == -1 {
+				continue
+			}
+			if err := c.indexRowForVector(vi, entry.row, string(entry.key), colIdx); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("failed to restore vector index %s for row %s: %w", vi.Name, entry.key, err)
+			}
+			if err := c.storeVectorIndexDef(vi); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("failed to persist vector index %s after restore: %w", vi.Name, err)
+			}
+		}
+	}
+	return firstErr
+}
+
 func (c *Catalog) rollbackAppliedDeleteEntries(tableName string, entries []deleteEntry) error {
+	// Restore vector index entries first: the rows are about to go back live
+	// and their vector deletions are not covered by rebuildTableIndexesLocked.
+	table := c.tables[tableName]
+	vectorErr := c.restoreVectorIndexesForDelete(table, entries)
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
 		deleteTree, exists := c.tableTrees[entry.treeName]
@@ -794,7 +864,10 @@ func (c *Catalog) rollbackAppliedDeleteEntries(tableName string, entries []delet
 			return fmt.Errorf("restore deleted row: %w", err)
 		}
 	}
-	return c.rebuildTableIndexesLocked(tableName)
+	if err := c.rebuildTableIndexesLocked(tableName); err != nil {
+		return err
+	}
+	return vectorErr
 }
 
 // bufferDeleteEntries buffers soft-deleted rows and their index mutations for
@@ -820,6 +893,12 @@ func (c *Catalog) bufferDeleteEntries(ctx context.Context, table *TableDef, stmt
 		}
 
 		if err := c.applyDeleteEntryBuffered(ctx, table, stmt, entry, ts); err != nil {
+			// The caller truncates ts.pendingWrites for this statement, so
+			// cascade-deleted child rows go back live — restore their vector
+			// entries too (pendingDeleteRow removes them immediately).
+			if vErr := fke.restoreCascadeVectorDeletes(); vErr != nil {
+				return fmt.Errorf("%w; cascade vector index restore failed: %v", err, vErr)
+			}
 			return err
 		}
 	}
@@ -860,6 +939,7 @@ func (c *Catalog) applyDeleteEntryBuffered(
 	if err := c.updateVectorIndexesForDelete(stmt.Table, string(key)); err != nil {
 		return err
 	}
+	entry.vectorDeleted = c.hasVectorIndexesForTable(stmt.Table)
 
 	// Soft-delete encoding: mark deleted → re-encode.
 	version.markDeleted(time.Now())

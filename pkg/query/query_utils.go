@@ -526,10 +526,57 @@ func tableRefToString(t *TableRef) string {
 	if t.Subquery != nil {
 		s = "(" + QueryToSQL(t.Subquery) + ")"
 	}
+	if t.SubqueryStmt != nil {
+		// Set-op derived tables must contribute their body to the cache key:
+		// emitting only the name/alias made any two union-derived queries with
+		// the same alias collide and the result cache serve wrong rows.
+		s = "(" + statementToCacheKey(t.SubqueryStmt) + ")"
+	}
 	if t.Alias != "" {
 		s += " " + t.Alias
 	}
 	return s
+}
+
+// statementToCacheKey serializes a Statement (set-operation trees, CTEs) for
+// cache-key generation. Unknown statement types emit UncacheableMarker — the
+// same contract as exprToStringImpl — so they are excluded from caching
+// instead of colliding.
+func statementToCacheKey(stmt Statement) string {
+	switch s := stmt.(type) {
+	case *SelectStmt:
+		return QueryToSQL(s)
+	case *UnionStmt:
+		key := statementToCacheKey(s.Left) + fmt.Sprintf(" SETOP%d", int(s.Op))
+		if s.All {
+			key += " ALL"
+		}
+		key += " " + QueryToSQL(s.Right)
+		if len(s.OrderBy) > 0 {
+			key += " ORDER BY "
+			for i, ob := range s.OrderBy {
+				if ob == nil {
+					continue
+				}
+				if i > 0 {
+					key += ","
+				}
+				key += ExprToString(ob.Expr)
+				if ob.Desc {
+					key += " DESC"
+				}
+			}
+		}
+		if s.Limit != nil {
+			key += " LIMIT " + ExprToString(s.Limit)
+		}
+		if s.Offset != nil {
+			key += " OFFSET " + ExprToString(s.Offset)
+		}
+		return key
+	default:
+		return UncacheableMarker
+	}
 }
 
 // ExprToString converts an expression to a string representation.

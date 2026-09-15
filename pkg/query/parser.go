@@ -398,6 +398,16 @@ func (p *Parser) parseVectorLiteral() (Expression, error) {
 
 	// Parse comma-separated numbers
 	for {
+		// Optional unary minus: [-1, 0.5, ...]. The lexer emits '-' as a
+		// separate token and parseUnary's sign folding never sees vector
+		// components (parsePrimary dispatches '[' straight here), so it
+		// must be folded explicitly.
+		negate := false
+		if p.current().Type == TokenMinus {
+			p.advance()
+			negate = true
+		}
+
 		// Expect a number
 		if p.current().Type != TokenNumber {
 			return nil, fmt.Errorf("expected number in vector literal, got %s", p.current().Literal)
@@ -406,6 +416,9 @@ func (p *Parser) parseVectorLiteral() (Expression, error) {
 		val, err := strconv.ParseFloat(p.current().Literal, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid number in vector literal: %s", p.current().Literal)
+		}
+		if negate {
+			val = -val
 		}
 		values = append(values, val)
 		p.advance()
@@ -581,6 +594,9 @@ func collectPlaceholdersRecursive(expr Expression, placeholders *[]*PlaceholderE
 			for _, col := range e.Subquery.Columns {
 				collectPlaceholdersRecursive(col, placeholders)
 			}
+			for _, join := range e.Subquery.Joins {
+				collectPlaceholdersRecursive(join.Condition, placeholders)
+			}
 		}
 	case *BetweenExpr:
 		collectPlaceholdersRecursive(e.Expr, placeholders)
@@ -589,6 +605,7 @@ func collectPlaceholdersRecursive(expr Expression, placeholders *[]*PlaceholderE
 	case *LikeExpr:
 		collectPlaceholdersRecursive(e.Expr, placeholders)
 		collectPlaceholdersRecursive(e.Pattern, placeholders)
+		collectPlaceholdersRecursive(e.Escape, placeholders)
 	case *IsNullExpr:
 		collectPlaceholdersRecursive(e.Expr, placeholders)
 	case *SubqueryExpr:
@@ -624,6 +641,13 @@ func collectPlaceholdersRecursive(expr Expression, placeholders *[]*PlaceholderE
 		collectPlaceholdersRecursive(e.Expr, placeholders)
 	case *CastExpr:
 		collectPlaceholdersRecursive(e.Expr, placeholders)
+	case *MatchExpr:
+		for _, col := range e.Columns {
+			collectPlaceholdersRecursive(col, placeholders)
+		}
+		collectPlaceholdersRecursive(e.Pattern, placeholders)
+	case *IntervalExpr:
+		collectPlaceholdersRecursive(e.Value, placeholders)
 	}
 }
 

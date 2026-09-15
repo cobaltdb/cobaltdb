@@ -861,24 +861,26 @@ func (p *Parser) parseInsertTargetAndSource(stmt *InsertStmt, requireInto bool) 
 		return nil, err
 	}
 
-	// Value lists
-	rowCount := 0
-	// Calculate placeholder count - if columns specified, use that; otherwise detect from first row
-	placeholderCount := len(stmt.Columns)
+	// Value lists. Placeholder indices are assigned sequentially in
+	// appearance order across all rows: the executor binds args[Index] with
+	// args in wire order, so indices must stay contiguous regardless of how
+	// many literal values share each row. The previous slot-based offset
+	// (rowCount * len(columns)) misbound rows mixing literals with
+	// placeholders — e.g. VALUES (1,?),(2,?) produced indices {0,2}, so the
+	// second row silently bound args[0] and appended the leftover arg as an
+	// extra column value.
+	phBase := 0
 	for {
 		if _, err := p.expect(TokenLParen); err != nil {
 			return nil, err
 		}
 
-		offset := rowCount * placeholderCount
-		values, err := p.parseExpressionListWithOffset(offset)
+		values, err := p.parseExpressionListWithOffset(phBase)
 		if err != nil {
 			return nil, err
 		}
-
-		// Detect placeholder count from first row when no columns specified
-		if rowCount == 0 && placeholderCount == 0 {
-			placeholderCount = len(values)
+		for _, v := range values {
+			phBase += len(collectPlaceholders(v))
 		}
 
 		stmt.Values = append(stmt.Values, values)
@@ -889,7 +891,6 @@ func (p *Parser) parseInsertTargetAndSource(stmt *InsertStmt, requireInto bool) 
 		if !p.match(TokenComma) {
 			break
 		}
-		rowCount++
 	}
 
 	if err := p.parseInsertTail(stmt); err != nil {

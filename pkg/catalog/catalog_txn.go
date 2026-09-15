@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -67,39 +68,41 @@ func (c *Catalog) enableQueryCache(maxBytes int64, maxEntries int, ttl time.Dura
 	}
 	// Stop any previously-enabled cache first — overwriting it leaked its
 	// background cleanup goroutine.
-	if c.queryCache != nil {
-		c.queryCache.Close()
+	if old := c.queryCache.Load(); old != nil {
+		old.Close()
 	}
-	c.queryCache = cache.New(&cache.Config{
+	c.queryCache.Store(cache.New(&cache.Config{
 		MaxEntries:      maxEntries,
 		MaxSize:         maxBytes,
 		TTL:             ttl,
 		Enabled:         maxBytes > 0 && maxEntries > 0,
 		CleanupInterval: 1 * time.Minute,
-	})
+	}))
 }
 
 func (c *Catalog) DisableQueryCache() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.queryCache != nil {
-		c.queryCache.Close()
+	if old := c.queryCache.Load(); old != nil {
+		old.Close()
 	}
-	c.queryCache = nil
+	c.queryCache.Store(nil)
 }
 
 // GetQueryCache returns the catalog's query cache (nil if not enabled).
+// The atomic load is what makes this safe from unsynchronized call sites:
+// Close() disables the cache while in-flight statements read it (the proven
+// data race between DisableQueryCache and invalidateQueryCache).
 func (c *Catalog) GetQueryCache() *cache.Cache {
-	return c.queryCache
+	return c.queryCache.Load()
 }
 
 func (c *Catalog) GetQueryCacheStats() (hits, misses int64, size int) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.queryCache == nil {
+	qc := c.queryCache.Load()
+	if qc == nil {
 		return 0, 0, 0
 	}
-	stats := c.queryCache.Stats()
+	stats := qc.Stats()
 	return clampUint64ToInt64(stats.Hits), clampUint64ToInt64(stats.Misses), stats.EntryCount
 }
 
@@ -114,8 +117,10 @@ func (c *Catalog) invalidateQueryCache(tableName string) {
 	// Bump the epoch first so a concurrent cached SELECT that finished its
 	// scan before this invalidation skips its queryCache.Set (see Select).
 	c.cacheEpoch.Add(1)
-	if c.queryCache != nil {
-		c.queryCache.InvalidateTable(tableName)
+	// Atomic load: callers (e.g. insertBufferedLocked under autocommitWriteMu)
+	// do NOT hold c.mu, so this read must not race DisableQueryCache's store.
+	if qc := c.queryCache.Load(); qc != nil {
+		qc.InvalidateTable(tableName)
 	}
 }
 
@@ -123,8 +128,8 @@ func (c *Catalog) invalidateQueryCache(tableName string) {
 // invalidation epoch so in-flight cached SELECTs do not re-insert stale rows.
 func (c *Catalog) invalidateQueryCacheAll() {
 	c.cacheEpoch.Add(1)
-	if c.queryCache != nil {
-		c.queryCache.InvalidateAll()
+	if qc := c.queryCache.Load(); qc != nil {
+		qc.InvalidateAll()
 	}
 }
 
@@ -850,7 +855,7 @@ func (c *Catalog) RollbackTransaction() error {
 
 			for i := len(undoLog) - 1; i >= 0; i-- {
 				entry := undoLog[i]
-				if err := applyDMLUndoEntry(entry, tableTrees, tableDefs, "rollback"); err != nil && rollbackErr == nil {
+				if err := c.applyDMLUndoEntry(entry, tableTrees, tableDefs, "rollback"); err != nil && rollbackErr == nil {
 					rollbackErr = err
 				}
 				rollbackErr = reverseIndexChangesWithMaps(entry, indexTrees, "rollback", rollbackErr)
@@ -923,6 +928,14 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 				return fmt.Errorf("%s undoing insert: %w", errorPrefix, err)
 			}
 		}
+		// The insert path removed the row key from the table's vector
+		// indexes immediately (applyInsertRowDirect); the undo must remove
+		// them too or rolled-back rows stay searchable via HNSW.
+		if c.hasVectorIndexesForTable(entry.tableName) {
+			if err := c.updateVectorIndexesForDelete(entry.tableName, string(entry.key)); err != nil {
+				return fmt.Errorf("%s undoing insert (vector index): %w", errorPrefix, err)
+			}
+		}
 	case undoUpdate:
 		if tree != nil {
 			// If the UPDATE moved the row to a new PK key, delete the orphaned
@@ -935,6 +948,18 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 			}
 			if err := tree.Put(entry.key, entry.oldValue); err != nil {
 				return fmt.Errorf("%s undoing update: %w", errorPrefix, err)
+			}
+		}
+		// The update path rewrote the row key's vector entries immediately
+		// (applyUpdateEntryDirect); the undo must restore them with the OLD
+		// row's vectors or rolled-back rows keep stale vector content.
+		if tbl, exists := c.tables[entry.tableName]; exists {
+			var oldRow []interface{}
+			if err := json.Unmarshal(entry.oldValue, &oldRow); err != nil {
+				return fmt.Errorf("%s undoing update (decode old row): %w", errorPrefix, err)
+			}
+			if err := c.restoreVectorIndexesForUpdate(tbl, entry.tableName, []updateEntry{{key: entry.key, oldRow: oldRow}}); err != nil {
+				return fmt.Errorf("%s undoing update (vector index): %w", errorPrefix, err)
 			}
 		}
 	case undoDelete:
@@ -1524,7 +1549,7 @@ func isDDLUndo(a undoAction) bool {
 
 // applyDMLUndoEntry replays a single DML undo entry using snapshotted trees.
 // It must NOT be called with DDL entries.
-func applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree.TreeStore, tableDefs map[string]*TableDef, errorPrefix string) error {
+func (c *Catalog) applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree.TreeStore, tableDefs map[string]*TableDef, errorPrefix string) error {
 	switch entry.action {
 	case undoInsert:
 		if tree := tableTrees[entry.tableName]; tree != nil {
@@ -1544,6 +1569,18 @@ func applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree.TreeStore, t
 			}
 			if err := tree.Put(entry.key, entry.oldValue); err != nil {
 				return fmt.Errorf("%s undoing update: %w", errorPrefix, err)
+			}
+		}
+		// The update path rewrote the row key's vector entries immediately
+		// (applyUpdateEntryDirect); the undo must restore them with the OLD
+		// row's vectors or rolled-back rows keep stale vector content.
+		if tbl := tableDefs[entry.tableName]; tbl != nil {
+			var oldRow []interface{}
+			if err := json.Unmarshal(entry.oldValue, &oldRow); err != nil {
+				return fmt.Errorf("%s undoing update (decode old row): %w", errorPrefix, err)
+			}
+			if err := c.restoreVectorIndexesForUpdate(tbl, entry.tableName, []updateEntry{{key: entry.key, oldRow: oldRow}}); err != nil {
+				return fmt.Errorf("%s undoing update (vector index): %w", errorPrefix, err)
 			}
 		}
 	case undoDelete:
@@ -1660,7 +1697,7 @@ func (c *Catalog) RollbackToSavepoint(name string) error {
 
 			for i := len(undoLog) - 1; i >= undoPos; i-- {
 				entry := undoLog[i]
-				if err := applyDMLUndoEntry(entry, tableTrees, tableDefs, "rollback to savepoint"); err != nil && rollbackErr == nil {
+				if err := c.applyDMLUndoEntry(entry, tableTrees, tableDefs, "rollback to savepoint"); err != nil && rollbackErr == nil {
 					rollbackErr = err
 				}
 				rollbackErr = reverseIndexChangesWithMaps(entry, indexTrees, "rollback to savepoint", rollbackErr)

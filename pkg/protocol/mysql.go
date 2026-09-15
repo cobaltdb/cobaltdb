@@ -5,8 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha1" // #nosec G505 -- MySQL native password protocol requires SHA-1 compatibility.
-	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -191,6 +189,12 @@ type mysqlColumnDefinition struct {
 	decimals byte
 }
 
+// AdmissionController rejects non-critical work before command execution.
+// The server package's production load shedder implements this interface.
+type AdmissionController interface {
+	Admit(critical bool) error
+}
+
 type mysqlColumnTypeHintProvider interface {
 	ColumnTypeHints() []string
 }
@@ -206,6 +210,7 @@ type MySQLServer struct {
 	auth               *auth.Authenticator
 	maxConnections     int
 	allowCleartextAuth bool
+	admission          AdmissionController
 	wg                 sync.WaitGroup
 	stopChan           chan struct{}
 	closed             bool
@@ -264,6 +269,13 @@ func (s *MySQLServer) SetAuthenticator(a *auth.Authenticator) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.auth = a
+}
+
+// SetAdmissionController configures shared production overload admission.
+func (s *MySQLServer) SetAdmissionController(controller AdmissionController) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.admission = controller
 }
 
 // SetAllowCleartextAuth allows authenticated MySQL listeners on non-loopback
@@ -553,20 +565,12 @@ func (s *MySQLServer) handleConnection(conn net.Conn) {
 		return
 	}
 
-	// Authenticate if an authenticator is configured and enabled (FIX-004)
+	// Authenticate through the shared policy path so MySQL challenge failures
+	// contribute to the same brute-force lockout used by password logins.
 	if authenticator, enabled := s.authSnapshot(); enabled {
-		storedHash, err := authenticator.GetMySQLNativeHash(client.username)
-		if err != nil {
+		if err := authenticator.VerifyMySQLNativeChallenge(client.username, client.scramble, client.authResponse); err != nil {
 			if sendErr := client.sendErrorPacket(1045, fmt.Sprintf("Access denied for user '%s'", client.username)); sendErr != nil {
 				logger.GetGlobalLogger().Errorf("failed to send auth error to client: %v", sendErr)
-				return
-			}
-			return
-		}
-		if !client.verifyMySQLNativeAuth(storedHash) {
-			if sendErr := client.sendErrorPacket(1045, fmt.Sprintf("Access denied for user '%s'", client.username)); sendErr != nil {
-				logger.GetGlobalLogger().Errorf("failed to send auth error to client: %v", sendErr)
-				return
 			}
 			return
 		}
@@ -760,37 +764,6 @@ func (c *MySQLClient) readHandshakeResponse() error {
 	return nil
 }
 
-// verifyMySQLNativeAuth verifies the client's mysql_native_password auth response (FIX-004).
-// storedHash is SHA1(SHA1(password)) from the auth system.
-// The client sends: SHA1(password) XOR SHA1(scramble + SHA1(SHA1(password)))
-func (c *MySQLClient) verifyMySQLNativeAuth(storedHash []byte) bool {
-	if len(c.authResponse) == 0 {
-		// Empty auth response — only valid if user has empty password (no hash stored)
-		return len(storedHash) == 0
-	}
-	if len(storedHash) == 0 || len(c.authResponse) != 20 || len(c.scramble) != 20 {
-		return false
-	}
-
-	// Compute SHA1(scramble + storedHash)
-	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
-	h := sha1.New()
-	h.Write(c.scramble)
-	h.Write(storedHash)
-	scrambledHash := h.Sum(nil)
-
-	// XOR with client response to recover candidate SHA1(password)
-	candidate := make([]byte, 20)
-	for i := range scrambledHash {
-		candidate[i] = c.authResponse[i] ^ scrambledHash[i]
-	}
-
-	// SHA1(candidate) should equal storedHash
-	// #nosec G401 -- MySQL native password protocol requires SHA-1 compatibility.
-	check := sha1.Sum(candidate)
-	return subtle.ConstantTimeCompare(check[:], storedHash) == 1
-}
-
 // handleCommand handles a MySQL command
 func (c *MySQLClient) handleCommand() error {
 	if c.conn != nil {
@@ -802,6 +775,17 @@ func (c *MySQLClient) handleCommand() error {
 	command, data, err := c.readCommandPacket()
 	if err != nil {
 		return err
+	}
+
+	if command != MySQLComQuit && command != MySQLComPing {
+		c.server.mu.Lock()
+		admission := c.server.admission
+		c.server.mu.Unlock()
+		if admission != nil {
+			if err := admission.Admit(false); err != nil {
+				return c.sendErrorPacket(1040, "Too many connections; server overloaded, retry later")
+			}
+		}
 	}
 
 	switch command {
@@ -2155,6 +2139,12 @@ func (c *MySQLClient) sendBinaryResultSetFromRows(rows *engine.Rows) error {
 		return c.sendOKPacket(0, 0)
 	}
 	columns := rows.Columns()
+	if len(columns) == 0 {
+		// A zero-column result set is invalid in the MySQL protocol: the
+		// column count packet (0x00) collides with an OK packet and crashes
+		// clients. Mirror the text-protocol path and respond with an OK packet.
+		return c.sendOKPacket(0, 0)
+	}
 	defs := c.buildBinaryColumnDefinitions(columns, rows.ColumnTypeHints())
 	colTypes := columnDefTypes(defs)
 	seq, err := c.sendBinaryResultSetMetadata(defs, MySQLServerStatusAutocommit)
@@ -2508,9 +2498,17 @@ func mysqlWireValueLen(v interface{}) int {
 
 // handleStatistics returns a simple statistics string for COM_STATISTICS.
 func (c *MySQLClient) handleStatistics() error {
+	// s.clients is mutated under s.mu by handleConnection/Close; read the
+	// count under the same lock — an unsynchronized len() here races with
+	// concurrent connection churn (Go maps are unsafe for concurrent
+	// read-during-write).
+	c.server.mu.Lock()
+	threads := len(c.server.clients)
+	c.server.mu.Unlock()
+
 	stats := fmt.Sprintf("Uptime: %d  Threads: %d  Queries: %d",
 		int64(time.Since(c.connectTime).Seconds()),
-		len(c.server.clients),
+		threads,
 		0, // Query count not tracked per-server in this version
 	)
 	pkt := []byte(stats)
