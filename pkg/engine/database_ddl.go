@@ -165,6 +165,14 @@ func (db *DB) executeAlterTable(ctx context.Context, stmt *query.AlterTableStmt)
 				Unique:  true,
 			}
 			if err := db.catalog.CreateIndex(idx); err != nil {
+				// Mirror executeCreateTable's cleanupOnError: the column was
+				// added, but its UNIQUE constraint index could not be created.
+				// Leaving the column behind would report failure while having
+				// mutated the schema.
+				cleanup := &query.AlterTableStmt{Table: stmt.Table, Action: "DROP", Column: stmt.Column}
+				if cleanupErr := db.catalog.AlterTableDropColumn(cleanup); cleanupErr != nil {
+					return Result{}, fmt.Errorf("creating unique constraint %s: %w; cleanup failed: %v", stmt.Column.UniqueName, err, cleanupErr)
+				}
 				return Result{}, fmt.Errorf("creating unique constraint %s: %w", stmt.Column.UniqueName, err)
 			}
 		}
@@ -379,10 +387,19 @@ func (db *DB) executeCreatePolicy(ctx context.Context, stmt *query.CreatePolicyS
 	usingExpr := ""
 	if stmt.Using != nil {
 		usingExpr = expressionToString(stmt.Using)
+		if usingExpr == "" {
+			// Fail closed: an expression was given but cannot be rendered.
+			// Silently storing "TRUE" would weaken a restrictive policy into
+			// allow-all.
+			return Result{}, fmt.Errorf("unsupported expression in USING clause: policy would be silently permissive")
+		}
 	}
 	checkExpr := ""
 	if stmt.WithCheck != nil {
 		checkExpr = expressionToString(stmt.WithCheck)
+		if checkExpr == "" {
+			return Result{}, fmt.Errorf("unsupported expression in WITH CHECK clause: policy would be silently permissive")
+		}
 	}
 	if usingExpr == "" {
 		usingExpr = "TRUE" // Default to allowing all if no expression
@@ -518,6 +535,22 @@ func expressionToString(expr query.Expression) string {
 			sb.WriteString(exprStr)
 			sb.WriteString(" IS NULL")
 		}
+		return sb.String()
+	case *query.BetweenExpr:
+		exprStr := expressionToString(e.Expr)
+		lowerStr := expressionToString(e.Lower)
+		upperStr := expressionToString(e.Upper)
+		keyword := " BETWEEN "
+		if e.Not {
+			keyword = " NOT BETWEEN "
+		}
+		var sb strings.Builder
+		sb.Grow(len(exprStr) + len(keyword) + len(lowerStr) + 5 + len(upperStr))
+		sb.WriteString(exprStr)
+		sb.WriteString(keyword)
+		sb.WriteString(lowerStr)
+		sb.WriteString(" AND ")
+		sb.WriteString(upperStr)
 		return sb.String()
 	default:
 		return ""
