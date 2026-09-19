@@ -427,7 +427,9 @@ func (rt *Runtime) parseResults(schema []ColumnInfo, ptr int32, rowCount int32) 
 					return nil, err
 				}
 				bits := binary.LittleEndian.Uint64(rt.Memory[offset:])
-				row.Values[j] = bits
+				// Producers (e.g. the AVG aggregate codegen) store IEEE-754 f64
+				// bits; decode them instead of handing back the raw integer.
+				row.Values[j] = math.Float64frombits(bits)
 				offset += 8
 			case "TEXT":
 				if err := rt.memCheck(offset, 4); err != nil {
@@ -499,17 +501,21 @@ func (rt *Runtime) LoadModule(bytecode []byte) error {
 		sectionID := bytecode[offset]
 		offset++
 
-		sectionSize, n := readLeb128(bytecode, offset)
+		sectionSize, n, ok := readLeb128(bytecode, offset)
+		if !ok {
+			return fmt.Errorf("invalid WASM module: truncated section header")
+		}
 		offset += n
 
 		sectionSizeInt, err := checkedInt(sectionSize, "section size")
 		if err != nil {
 			return err
 		}
-		sectionEnd := offset + sectionSizeInt
-		if sectionEnd > len(bytecode) {
+		// Overflow-safe: offset+sectionSizeInt could wrap with a hostile size.
+		if sectionSizeInt > len(bytecode)-offset {
 			return fmt.Errorf("section extends past end of module")
 		}
+		sectionEnd := offset + sectionSizeInt
 
 		sectionData := bytecode[offset:sectionEnd]
 
@@ -561,8 +567,17 @@ func (rt *Runtime) callImport(funcIdx int, params []uint64) ([]uint64, error) {
 
 // parseTypeSection parses the type section
 func (rt *Runtime) parseTypeSection(data []byte) error {
-	count, n := readLeb128(data, 0)
+	count, n, ok := readLeb128(data, 0)
+	if !ok {
+		return fmt.Errorf("type section truncated")
+	}
 	offset := n
+
+	// Each type needs at least 3 bytes (form + param count + result count);
+	// reject hostile counts instead of preallocating huge slices.
+	if count > uint64(len(data)) {
+		return fmt.Errorf("type section count %d exceeds section size", count)
+	}
 
 	rt.Types = make([]FuncType, 0, count)
 
@@ -578,7 +593,10 @@ func (rt *Runtime) parseTypeSection(data []byte) error {
 		}
 
 		// Read param count
-		paramCount, n := readLeb128(data, offset)
+		paramCount, n, ok := readLeb128(data, offset)
+		if !ok {
+			return fmt.Errorf("type section truncated reading param count")
+		}
 		offset += n
 
 		// Read params
@@ -592,7 +610,10 @@ func (rt *Runtime) parseTypeSection(data []byte) error {
 		}
 
 		// Read result count
-		resultCount, n := readLeb128(data, offset)
+		resultCount, n, ok := readLeb128(data, offset)
+		if !ok {
+			return fmt.Errorf("type section truncated reading result count")
+		}
 		offset += n
 
 		// Read results
@@ -616,8 +637,17 @@ func (rt *Runtime) parseTypeSection(data []byte) error {
 
 // parseFunctionSection parses the function section
 func (rt *Runtime) parseFunctionSection(data []byte) error {
-	count, n := readLeb128(data, 0)
+	count, n, ok := readLeb128(data, 0)
+	if !ok {
+		return fmt.Errorf("function section truncated")
+	}
 	offset := n
+
+	// Each entry needs at least 1 byte; reject hostile counts instead of
+	// preallocating huge slices.
+	if count > uint64(len(data)) {
+		return fmt.Errorf("function section count %d exceeds section size", count)
+	}
 
 	rt.funcTypeIndices = make([]uint32, 0, count)
 
@@ -625,7 +655,10 @@ func (rt *Runtime) parseFunctionSection(data []byte) error {
 		if offset >= len(data) {
 			return fmt.Errorf("function section truncated")
 		}
-		typeIdx, n := readLeb128(data, offset)
+		typeIdx, n, ok := readLeb128(data, offset)
+		if !ok {
+			return fmt.Errorf("function section truncated reading type index")
+		}
 		offset += n
 		typeIdx32, err := checkedUint32(typeIdx, "function type index")
 		if err != nil {
@@ -639,43 +672,59 @@ func (rt *Runtime) parseFunctionSection(data []byte) error {
 
 // parseImportSection parses the import section
 func (rt *Runtime) parseImportSection(data []byte) error {
-	count, n := readLeb128(data, 0)
+	count, n, ok := readLeb128(data, 0)
+	if !ok {
+		return fmt.Errorf("import section truncated")
+	}
 	_ = count
 	offset := n
 
 	for i := uint64(0); i < count; i++ {
 		// Read module name
-		modLen, n := readLeb128(data, offset)
+		modLen, n, ok := readLeb128(data, offset)
+		if !ok {
+			return fmt.Errorf("import section truncated reading module name length")
+		}
 		offset += n
 		modLenInt, err := checkedInt(modLen, "import module name length")
 		if err != nil {
 			return err
 		}
-		if offset+modLenInt > len(data) {
+		// Overflow-safe: offset+modLenInt could wrap with a hostile length.
+		if modLenInt > len(data)-offset {
 			return fmt.Errorf("import module name truncated")
 		}
 		module := string(data[offset : offset+modLenInt])
 		offset += modLenInt
 
 		// Read field name
-		fieldLen, n := readLeb128(data, offset)
+		fieldLen, n, ok := readLeb128(data, offset)
+		if !ok {
+			return fmt.Errorf("import section truncated reading field name length")
+		}
 		offset += n
 		fieldLenInt, err := checkedInt(fieldLen, "import field name length")
 		if err != nil {
 			return err
 		}
-		if offset+fieldLenInt > len(data) {
+		if fieldLenInt > len(data)-offset {
 			return fmt.Errorf("import field name truncated")
 		}
 		field := string(data[offset : offset+fieldLenInt])
 		offset += fieldLenInt
 
 		// Read import kind
+		if offset >= len(data) {
+			return fmt.Errorf("import section truncated")
+		}
 		kind := data[offset]
 		offset++
 
 		// Read index
-		idx, n := readLeb128(data, offset)
+		idx, n, ok := readLeb128(data, offset)
+		if !ok {
+			return fmt.Errorf("import section truncated reading index")
+		}
 		_ = idx
 		offset += n
 
@@ -718,21 +767,30 @@ func (rt *Runtime) parseImportSection(data []byte) error {
 
 // parseMemorySection parses the memory section
 func (rt *Runtime) parseMemorySection(data []byte) error {
-	count, n := readLeb128(data, 0)
+	count, n, ok := readLeb128(data, 0)
+	if !ok {
+		return fmt.Errorf("memory section truncated")
+	}
 	if count != 1 {
 		return fmt.Errorf("expected exactly 1 memory, got %d", count)
 	}
 
 	offset := n
+	if offset >= len(data) {
+		return fmt.Errorf("memory section truncated")
+	}
 	flags := data[offset]
 	offset++
 
-	min, n := readLeb128(data, offset)
+	min, n, ok := readLeb128(data, offset)
+	if !ok {
+		return fmt.Errorf("memory section truncated reading minimum pages")
+	}
 	offset += n
 
 	var max uint64
 	if flags&0x01 != 0 {
-		max, _ = readLeb128(data, offset)
+		max, _, _ = readLeb128(data, offset)
 		_ = max
 	}
 
@@ -754,31 +812,47 @@ func (rt *Runtime) parseMemorySection(data []byte) error {
 
 // parseCodeSection parses the code section
 func (rt *Runtime) parseCodeSection(data []byte) error {
-	count, n := readLeb128(data, 0)
+	count, n, ok := readLeb128(data, 0)
+	if !ok {
+		return fmt.Errorf("code section truncated")
+	}
 	offset := n
 
 	for i := uint64(0); i < count; i++ {
-		funcSize, n := readLeb128(data, offset)
+		funcSize, n, ok := readLeb128(data, offset)
+		if !ok {
+			return fmt.Errorf("code section truncated reading body size")
+		}
 		offset += n
 
 		funcSizeInt, err := checkedInt(funcSize, "function body size")
 		if err != nil {
 			return err
 		}
-		funcEnd := offset + funcSizeInt
-		if funcEnd > len(data) {
+		// Overflow-safe: offset+funcSizeInt could wrap with a hostile size.
+		if funcSizeInt > len(data)-offset {
 			return fmt.Errorf("code section truncated")
 		}
+		funcEnd := offset + funcSizeInt
 		funcData := data[offset:funcEnd]
 
 		// Parse local declarations
-		localCount, n := readLeb128(funcData, 0)
+		localCount, n, ok := readLeb128(funcData, 0)
+		if !ok {
+			return fmt.Errorf("code section truncated reading local declarations")
+		}
 		offset2 := n
 
 		locals := make([]ValueType, 0)
 		for j := uint64(0); j < localCount; j++ {
-			cnt, n := readLeb128(funcData, offset2)
+			cnt, n, ok := readLeb128(funcData, offset2)
+			if !ok {
+				return fmt.Errorf("code section truncated reading local count")
+			}
 			offset2 += n
+			if offset2 >= len(funcData) {
+				return fmt.Errorf("code section truncated reading local type")
+			}
 			typ := funcData[offset2]
 			offset2++
 			for k := uint64(0); k < cnt; k++ {
@@ -884,7 +958,11 @@ func (rt *Runtime) executeFunction(fn Function) error {
 				return err
 			}
 		case opcode == 0x41 || opcode == 0x42:
-			pc = rt.execConst(code, pc)
+			var err error
+			pc, err = rt.execConst(code, pc)
+			if err != nil {
+				return err
+			}
 		case opcode == 0x44:
 			pc = rt.execF64Const(code, pc)
 		case opcode >= 0x46 && opcode <= 0x4d:
@@ -896,11 +974,23 @@ func (rt *Runtime) executeFunction(fn Function) error {
 		case opcode == 0x7c || opcode == 0x7d || opcode == 0x7e:
 			rt.execI64Arith(opcode)
 		case opcode >= 0x20 && opcode <= 0x21:
-			pc = rt.execLocal(opcode, code, pc)
+			var err error
+			pc, err = rt.execLocal(opcode, code, pc)
+			if err != nil {
+				return err
+			}
 		case opcode >= 0x28 && opcode <= 0x29:
-			pc = rt.execLoad(opcode, code, pc)
+			var err error
+			pc, err = rt.execLoad(opcode, code, pc)
+			if err != nil {
+				return err
+			}
 		case opcode >= 0x36 && opcode <= 0x37:
-			pc = rt.execStore(opcode, code, pc)
+			var err error
+			pc, err = rt.execStore(opcode, code, pc)
+			if err != nil {
+				return err
+			}
 		case opcode == 0x1a:
 			if len(rt.Stack) > 0 {
 				rt.Stack = rt.Stack[:len(rt.Stack)-1]
@@ -911,7 +1001,10 @@ func (rt *Runtime) executeFunction(fn Function) error {
 			pc++
 		case opcode == 0x05: // else
 		case opcode == 0x0c || opcode == 0x0d:
-			_, n := readLeb128(code, pc)
+			_, n, ok := readLeb128(code, pc)
+			if !ok {
+				return fmt.Errorf("wasm: truncated branch operand")
+			}
 			pc += n
 			if opcode == 0x0d && len(rt.Stack) > 0 {
 				rt.Stack = rt.Stack[:len(rt.Stack)-1]
@@ -925,7 +1018,10 @@ func (rt *Runtime) executeFunction(fn Function) error {
 }
 
 func (rt *Runtime) execCall(code []byte, pc int) (int, error) {
-	funcIdx, n := readLeb128(code, pc)
+	funcIdx, n, ok := readLeb128(code, pc)
+	if !ok {
+		return pc, fmt.Errorf("wasm: truncated call operand")
+	}
 	pc += n
 	funcIdxInt, err := checkedInt(funcIdx, "function index")
 	if err != nil {
@@ -945,11 +1041,14 @@ func (rt *Runtime) execCall(code []byte, pc int) (int, error) {
 	return pc, err
 }
 
-func (rt *Runtime) execConst(code []byte, pc int) int {
-	val, n := readLeb128Signed(code, pc)
+func (rt *Runtime) execConst(code []byte, pc int) (int, error) {
+	val, n, ok := readLeb128Signed(code, pc)
+	if !ok {
+		return pc, fmt.Errorf("wasm: truncated constant operand")
+	}
 	pc += n
 	rt.Stack = append(rt.Stack, wasmI64Bits(val))
-	return pc
+	return pc, nil
 }
 
 func (rt *Runtime) execF64Const(code []byte, pc int) int {
@@ -1042,16 +1141,19 @@ func (rt *Runtime) execI64Arith(opcode byte) {
 	rt.Stack = append(rt.Stack, result)
 }
 
-func (rt *Runtime) execLocal(opcode byte, code []byte, pc int) int {
-	localIdx, n := readLeb128(code, pc)
+func (rt *Runtime) execLocal(opcode byte, code []byte, pc int) (int, error) {
+	localIdx, n, ok := readLeb128(code, pc)
+	if !ok {
+		return pc, fmt.Errorf("wasm: truncated local index")
+	}
 	pc += n
 	if len(rt.CallStack) == 0 {
-		return pc
+		return pc, nil
 	}
 	frame := &rt.CallStack[len(rt.CallStack)-1]
 	localIdxInt, err := checkedInt(localIdx, "local index")
 	if err != nil || localIdxInt >= len(frame.Locals) {
-		return pc
+		return pc, nil
 	}
 	if opcode == 0x20 { // local.get
 		rt.Stack = append(rt.Stack, frame.Locals[localIdxInt])
@@ -1061,22 +1163,28 @@ func (rt *Runtime) execLocal(opcode byte, code []byte, pc int) int {
 			rt.Stack = rt.Stack[:len(rt.Stack)-1]
 		}
 	}
-	return pc
+	return pc, nil
 }
 
-func (rt *Runtime) execLoad(opcode byte, code []byte, pc int) int {
-	memArgAlign, n := readLeb128(code, pc)
+func (rt *Runtime) execLoad(opcode byte, code []byte, pc int) (int, error) {
+	memArgAlign, n, ok := readLeb128(code, pc)
+	if !ok {
+		return pc, fmt.Errorf("wasm: truncated load alignment")
+	}
 	_ = memArgAlign
 	pc += n
-	memArgOffset, n := readLeb128(code, pc)
+	memArgOffset, n, ok := readLeb128(code, pc)
+	if !ok {
+		return pc, fmt.Errorf("wasm: truncated load offset")
+	}
 	_ = memArgOffset
 	pc += n
 	if len(rt.Stack) == 0 {
-		return pc
+		return pc, nil
 	}
 	addr, err := checkedInt(rt.Stack[len(rt.Stack)-1], "load address")
 	if err != nil {
-		return pc
+		return pc, nil
 	}
 	rt.Stack = rt.Stack[:len(rt.Stack)-1]
 	if addr >= 0 && opcode == 0x28 && addr+4 <= len(rt.Memory) { // i32.load
@@ -1086,23 +1194,29 @@ func (rt *Runtime) execLoad(opcode byte, code []byte, pc int) int {
 		val := binary.LittleEndian.Uint64(rt.Memory[addr:])
 		rt.Stack = append(rt.Stack, val)
 	}
-	return pc
+	return pc, nil
 }
 
-func (rt *Runtime) execStore(opcode byte, code []byte, pc int) int {
-	memArgAlign, n := readLeb128(code, pc)
+func (rt *Runtime) execStore(opcode byte, code []byte, pc int) (int, error) {
+	memArgAlign, n, ok := readLeb128(code, pc)
+	if !ok {
+		return pc, fmt.Errorf("wasm: truncated store alignment")
+	}
 	_ = memArgAlign
 	pc += n
-	memArgOffset, n := readLeb128(code, pc)
+	memArgOffset, n, ok := readLeb128(code, pc)
+	if !ok {
+		return pc, fmt.Errorf("wasm: truncated store offset")
+	}
 	_ = memArgOffset
 	pc += n
 	if len(rt.Stack) < 2 {
-		return pc
+		return pc, nil
 	}
 	val := rt.Stack[len(rt.Stack)-1]
 	addr, err := checkedInt(rt.Stack[len(rt.Stack)-2], "store address")
 	if err != nil {
-		return pc
+		return pc, nil
 	}
 	rt.Stack = rt.Stack[:len(rt.Stack)-2]
 	if addr >= 0 && opcode == 0x36 && addr+4 <= len(rt.Memory) { // i32.store
@@ -1110,7 +1224,7 @@ func (rt *Runtime) execStore(opcode byte, code []byte, pc int) int {
 	} else if addr >= 0 && opcode == 0x37 && addr+8 <= len(rt.Memory) { // i64.store
 		binary.LittleEndian.PutUint64(rt.Memory[addr:], val)
 	}
-	return pc
+	return pc, nil
 }
 
 func (rt *Runtime) execSelect() {

@@ -1501,11 +1501,16 @@ func writeLeb128Signed(buf *bytes.Buffer, value int64) {
 	}
 }
 
-func readLeb128(data []byte, offset int) (uint64, int) {
+func readLeb128(data []byte, offset int) (uint64, int, bool) {
 	var result uint64
 	var shift uint
 	pos := offset
 	for {
+		// Out-of-range or malformed (a valid u64 needs at most 10 bytes):
+		// report truncation instead of panicking on hostile/truncated input.
+		if pos >= len(data) || shift >= 64 {
+			return 0, 0, false
+		}
 		byteVal := data[pos]
 		pos++
 		result |= uint64(byteVal&0x7f) << shift
@@ -1514,14 +1519,17 @@ func readLeb128(data []byte, offset int) (uint64, int) {
 		}
 		shift += 7
 	}
-	return result, pos - offset
+	return result, pos - offset, true
 }
 
-func readLeb128Signed(data []byte, offset int) (int64, int) {
+func readLeb128Signed(data []byte, offset int) (int64, int, bool) {
 	var result int64
 	var shift uint
 	pos := offset
 	for {
+		if pos >= len(data) || shift >= 64 {
+			return 0, 0, false
+		}
 		byteVal := data[pos]
 		pos++
 		result |= int64(byteVal&0x7f) << shift
@@ -1533,5 +1541,5 @@ func readLeb128Signed(data []byte, offset int) (int64, int) {
 			break
 		}
 	}
-	return result, pos - offset
+	return result, pos - offset, true
 }
