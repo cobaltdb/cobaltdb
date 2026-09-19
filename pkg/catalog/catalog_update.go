@@ -188,7 +188,7 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 
 	c.invalidateQueryCache(stmt.Table)
 
-	c.setLastReturning(returningRows, returningCols)
+	c.storeReturning(ctx, returningRows, returningCols)
 
 	return 0, rowsAffected, nil
 }
@@ -604,7 +604,10 @@ func (c *Catalog) scanUpdateEntries(ctx context.Context, stmt *query.UpdateStmt,
 				}
 				if stmt.Where != nil {
 					matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
-					if err != nil || !matched {
+					if err != nil {
+						return entries, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+					}
+					if !matched {
 						continue
 					}
 				}
@@ -878,7 +881,10 @@ func (c *Catalog) resolveUpdateTargetRows(
 				}
 				if stmt.Where != nil {
 					matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
-					if err != nil || !matched {
+					if err != nil {
+						return nil, rowsAffected, fmt.Errorf("WHERE evaluation error: %w", err)
+					}
+					if !matched {
 						continue
 					}
 				}
@@ -1001,7 +1007,7 @@ func (c *Catalog) applyUpdateIndexes(
 	c.invalidateQueryCache(stmt.Table)
 
 	// Store returning rows for retrieval
-	c.setLastReturning(returningRows, returningCols)
+	c.storeReturning(ctx, returningRows, returningCols)
 
 	return nil
 }
@@ -1238,7 +1244,7 @@ func (c *Catalog) updateWithJoinLocked(ctx context.Context, stmt *query.UpdateSt
 	}
 
 	// Store returning rows for retrieval
-	c.setLastReturning(returningRows, returningCols)
+	c.storeReturning(ctx, returningRows, returningCols)
 
 	return int64(len(entries)), rowsAffected, nil
 }
@@ -1503,7 +1509,7 @@ func (c *Catalog) deleteWithUsingLocked(ctx context.Context, stmt *query.DeleteS
 	}
 
 	// Store returning rows for retrieval
-	c.setLastReturning(returningRows, returningCols)
+	c.storeReturning(ctx, returningRows, returningCols)
 
 	return int64(len(entries)), rowsAffected, nil
 }

@@ -567,9 +567,16 @@ func (c *Catalog) validateCheckConstraintsLocked(table *TableDef) error {
 			if err != nil {
 				return err
 			}
-			row, err := decodeRow(value, len(table.Columns))
+			// CHECK constraints validate LIVE rows only: deletes are soft
+			// (MVCC tombstones stay in the tree), and a previously-deleted
+			// row that violates the new CHECK must not block the ALTER.
+			// Mirrors the pending-write pass below.
+			row, live, err := decodeLiveRow(value, len(table.Columns))
 			if err != nil {
 				return err
+			}
+			if !live {
+				continue
 			}
 			if err := c.checkRowConstraints(table, row, nil); err != nil {
 				return err

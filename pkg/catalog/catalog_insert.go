@@ -782,7 +782,7 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 
 	c.invalidateQueryCache(stmt.Table)
 
-	c.setLastReturning(returningRows, returningCols)
+	c.storeReturning(ctx, returningRows, returningCols)
 
 	if rowsAffected > 0 {
 		c.ensureVacuumMaps()
@@ -1072,6 +1072,28 @@ func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt 
 				return false, fmt.Errorf("failed to delete row for REPLACE: %w; failed to restore deleted index entries: %v", err, restoreErr)
 			}
 			return false, fmt.Errorf("failed to delete row for REPLACE: %w", err)
+		}
+		// Record an undo entry so a transaction ROLLBACK restores the row this
+		// REPLACE evicted (PK conflict) and its index entries. Without it the
+		// evicted, previously committed row was permanently lost when the txn
+		// aborted. Mirrors insertRowIndexes' REPLACE eviction undo.
+		if ts := c.getCurrentTxn(); ts != nil && ts.txnActive {
+			undoIdx := make([]indexUndoEntry, 0, len(deletedIndexEntries))
+			for _, del := range deletedIndexEntries {
+				undoIdx = append(undoIdx, indexUndoEntry{
+					indexName: del.indexName,
+					key:       del.key,
+					oldValue:  del.value,
+					wasAdded:  false,
+				})
+			}
+			c.appendUndoEntry(undoEntry{
+				action:       undoDelete,
+				tableName:    stmt.Table,
+				key:          append([]byte(nil), key...),
+				oldValue:     append([]byte(nil), existingData...),
+				indexChanges: undoIdx,
+			})
 		}
 		return false, nil // Proceed with insert after cleanup
 	}
@@ -1598,7 +1620,7 @@ func (c *Catalog) finalizeInsert(
 	c.invalidateQueryCache(stmt.Table)
 
 	// Store returning rows for retrieval
-	c.setLastReturning(returningRows, returningCols)
+	c.storeReturning(ctx, returningRows, returningCols)
 
 	// Track live tuples for AutoVacuum
 	if rowsAffected > 0 {
@@ -2128,6 +2150,27 @@ func (c *Catalog) checkUniqueConstraints(tree btree.TreeStore, table *TableDef, 
 						return false, fmt.Errorf("failed to delete duplicate row: %w; failed to restore deleted index entries: %v", delErr, restoreErr)
 					}
 					return false, fmt.Errorf("failed to delete duplicate row: %w", delErr)
+				}
+				// Record an undo entry so a transaction ROLLBACK restores the row
+				// this REPLACE evicted (declared-UNIQUE column conflict) and its
+				// index entries. Mirrors insertRowIndexes' REPLACE eviction undo.
+				if getErr == nil && ts != nil && ts.txnActive {
+					undoIdx := make([]indexUndoEntry, 0, len(deletedIndexEntries))
+					for _, del := range deletedIndexEntries {
+						undoIdx = append(undoIdx, indexUndoEntry{
+							indexName: del.indexName,
+							key:       del.key,
+							oldValue:  del.value,
+							wasAdded:  false,
+						})
+					}
+					c.appendUndoEntry(undoEntry{
+						action:       undoDelete,
+						tableName:    stmt.Table,
+						key:          append([]byte(nil), duplicateKey...),
+						oldValue:     append([]byte(nil), oldData...),
+						indexChanges: undoIdx,
+					})
 				}
 			} else {
 				return false, fmt.Errorf("UNIQUE constraint failed: %s", col.Name)

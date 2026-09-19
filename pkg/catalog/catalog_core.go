@@ -2120,6 +2120,18 @@ func exprToSQL(expr query.Expression) string {
 			op = "IN"
 		case query.TokenIs:
 			op = "IS"
+		case query.TokenBitAnd:
+			op = "&"
+		case query.TokenBitOr:
+			op = "|"
+		case query.TokenBitXor:
+			op = "^"
+		case query.TokenShiftLeft:
+			op = "<<"
+		case query.TokenShiftRight:
+			op = ">>"
+		case query.TokenNullSafeEq:
+			op = "<=>"
 		default:
 			op = "?"
 		}
@@ -2142,6 +2154,44 @@ func exprToSQL(expr query.Expression) string {
 			args = append(args, exprToSQL(arg))
 		}
 		return fmt.Sprintf("%s(%s)", e.Name, strings.Join(args, ", "))
+	case *query.BetweenExpr:
+		op := "BETWEEN"
+		if e.Not {
+			op = "NOT BETWEEN"
+		}
+		return fmt.Sprintf("(%s %s %s AND %s)", exprToSQL(e.Expr), op, exprToSQL(e.Lower), exprToSQL(e.Upper))
+	case *query.InExpr:
+		if e.Subquery != nil {
+			// Subquery-bearing IN cannot be rendered faithfully (this package
+			// has no statement renderer); keep the pre-fix %v fallback for it.
+			// List-form IN — the reachable CHECK/DEFAULT shape — renders below.
+			return fmt.Sprintf("%v", expr)
+		}
+		op := "IN"
+		if e.Not {
+			op = "NOT IN"
+		}
+		items := make([]string, len(e.List))
+		for i, item := range e.List {
+			items[i] = exprToSQL(item)
+		}
+		return fmt.Sprintf("(%s %s (%s))", exprToSQL(e.Expr), op, strings.Join(items, ", "))
+	case *query.CastExpr:
+		return fmt.Sprintf("CAST(%s AS %s)", exprToSQL(e.Expr), tokenTypeToColumnType(e.DataType))
+	case *query.CaseExpr:
+		var sb strings.Builder
+		sb.WriteString("CASE")
+		if e.Expr != nil {
+			sb.WriteString(" " + exprToSQL(e.Expr))
+		}
+		for _, w := range e.Whens {
+			sb.WriteString(" WHEN " + exprToSQL(w.Condition) + " THEN " + exprToSQL(w.Result))
+		}
+		if e.Else != nil {
+			sb.WriteString(" ELSE " + exprToSQL(e.Else))
+		}
+		sb.WriteString(" END")
+		return sb.String()
 	default:
 		return fmt.Sprintf("%v", expr)
 	}
@@ -2700,6 +2750,27 @@ func hasSubqueriesInExpr(expr query.Expression) bool {
 		return hasSubqueriesInExpr(e.Expr) || hasSubqueriesInExpr(e.Pattern)
 	case *query.IsNullExpr:
 		return hasSubqueriesInExpr(e.Expr)
+	case *query.IntervalExpr:
+		// `INTERVAL -(SELECT ...) DAY`: the interval value is a full
+		// parsePrimary expression, so a subquery can hide inside it. The
+		// parallel scan paths gate on !hasSubqueries(stmt) because subquery
+		// evaluation must stay on the query's goroutine (transaction state is
+		// goroutine-keyed); an unvisited IntervalExpr hid that subquery from
+		// the gate and broke read-your-writes on the parallel path.
+		return hasSubqueriesInExpr(e.Value)
+	case *query.MatchExpr:
+		// `MATCH(col) AGAINST ((SELECT ...))`: the column list and the
+		// pattern are both full parseExpression results, so a subquery can
+		// hide in either. evaluateMatchExprLocked evaluates the pattern
+		// per-row on the WHERE path; an unvisited MatchExpr hid that subquery
+		// from the parallel-path gate and broke read-your-writes on worker
+		// goroutines.
+		for _, col := range e.Columns {
+			if hasSubqueriesInExpr(col) {
+				return true
+			}
+		}
+		return hasSubqueriesInExpr(e.Pattern)
 	case *query.AliasExpr:
 		return hasSubqueriesInExpr(e.Expr)
 	default:

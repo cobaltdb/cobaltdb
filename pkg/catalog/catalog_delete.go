@@ -164,7 +164,7 @@ func (c *Catalog) Delete(ctx context.Context, stmt *query.DeleteStmt, args []int
 
 	c.invalidateQueryCache(stmt.Table)
 
-	c.setLastReturning(returningRows, returningCols)
+	c.storeReturning(ctx, returningRows, returningCols)
 
 	return 0, rowsAffected, nil
 }
@@ -443,7 +443,7 @@ func (c *Catalog) deleteLocked(ctx context.Context, stmt *query.DeleteStmt, args
 	c.invalidateQueryCache(stmt.Table)
 
 	// Store returning rows for retrieval
-	c.setLastReturning(returningRows, returningCols)
+	c.storeReturning(ctx, returningRows, returningCols)
 
 	return 0, rowsAffected, nil
 }
@@ -472,7 +472,10 @@ func (c *Catalog) processDeleteRow(ctx context.Context, table *TableDef, tree bt
 	// Apply WHERE clause to filter (in case of partial index match)
 	if stmt.Where != nil {
 		matched, err := evaluateWhere(c, row, table.Columns, stmt.Where, args)
-		if err != nil || !matched {
+		if err != nil {
+			return fmt.Errorf("WHERE evaluation error: %w", err)
+		}
+		if !matched {
 			return nil
 		}
 	}

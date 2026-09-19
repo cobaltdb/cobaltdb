@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"fmt"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
@@ -103,6 +104,54 @@ func (c *Catalog) setLastReturning(rows [][]interface{}, cols []string) {
 	defer c.returningMu.Unlock()
 	c.lastReturningRows = rows
 	c.lastReturningColumns = cols
+}
+
+// returningCaptureKey is the context key for a per-statement RETURNING capture.
+type returningCaptureKey struct{}
+
+// ReturningCapture receives one statement's RETURNING results directly.
+//
+// The legacy lastReturningRows slot is last-writer-wins catalog-global state:
+// two concurrent RETURNING statements overwrite each other's rows between the
+// statement's write and the caller's read. Attaching a capture to the
+// statement's context gives the caller exact statement affinity.
+type ReturningCapture struct {
+	rows    [][]interface{}
+	columns []string
+	set     bool
+}
+
+// Results returns the captured RETURNING rows and column names.
+func (rc *ReturningCapture) Results() ([][]interface{}, []string) {
+	return rc.rows, rc.columns
+}
+
+// WithReturningCapture returns a context that directs RETURNING results for
+// statements executed with it into cap.
+func WithReturningCapture(ctx context.Context, cap *ReturningCapture) context.Context {
+	return context.WithValue(ctx, returningCaptureKey{}, cap)
+}
+
+func returningCaptureFrom(ctx context.Context) *ReturningCapture {
+	if ctx == nil {
+		return nil
+	}
+	cap, _ := ctx.Value(returningCaptureKey{}).(*ReturningCapture)
+	return cap
+}
+
+// storeReturning records RETURNING results for the statement executing with
+// ctx: into the per-statement capture when one is attached (statement
+// affinity), and into the legacy global slot for GetLastReturningRows
+// readers. Every setLastReturning call site must route through this so the
+// capture stays in sync with the slot.
+func (c *Catalog) storeReturning(ctx context.Context, rows [][]interface{}, cols []string) {
+	if capture := returningCaptureFrom(ctx); capture != nil {
+		capture.rows = rows
+		capture.columns = cols
+		capture.set = true
+	}
+	c.setLastReturning(rows, cols)
 }
 
 // GetLastReturningRows returns the results from the last RETURNING clause
