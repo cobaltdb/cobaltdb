@@ -1912,8 +1912,10 @@ func splitSQLStatements(sql string) []string {
 	var current strings.Builder
 	inString := false
 	var stringChar byte
-	inCompound := false // inside a CREATE TRIGGER/PROCEDURE/FUNCTION body
-	blockDepth := 0     // BEGIN/CASE ... END nesting within the body
+	inCompound := false     // inside a CREATE TRIGGER/PROCEDURE/FUNCTION body
+	blockDepth := 0         // BEGIN/CASE ... END nesting within the body
+	inLineComment := false  // inside a -- line comment
+	inBlockComment := false // inside a /* */ block comment
 
 	isWordByte := func(b byte) bool {
 		return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
@@ -1932,10 +1934,38 @@ func splitSQLStatements(sql string) []string {
 			}
 			continue
 		}
+		if inLineComment {
+			current.WriteByte(ch)
+			if ch == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			current.WriteByte(ch)
+			if ch == '*' && i+1 < n && sql[i+1] == '/' {
+				current.WriteByte('/')
+				i++
+				inBlockComment = false
+			}
+			continue
+		}
 		if ch == '\'' || ch == '"' {
 			inString = true
 			stringChar = ch
 			current.WriteByte(ch)
+			continue
+		}
+		if ch == '-' && i+1 < n && sql[i+1] == '-' {
+			current.WriteString("--")
+			i++
+			inLineComment = true
+			continue
+		}
+		if ch == '/' && i+1 < n && sql[i+1] == '*' {
+			current.WriteString("/*")
+			i++
+			inBlockComment = true
 			continue
 		}
 
