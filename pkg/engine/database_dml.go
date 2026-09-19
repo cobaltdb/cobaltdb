@@ -417,14 +417,16 @@ func (db *DB) executeDelete(ctx context.Context, stmt *query.DeleteStmt, args []
 
 // executeInsertReturning executes INSERT with RETURNING clause
 func (db *DB) executeInsertReturning(ctx context.Context, stmt *query.InsertStmt, args []interface{}) (*Rows, error) {
-	_, _, err := db.catalog.Insert(ctx, stmt, args)
-	if err != nil {
+	// Capture this statement's RETURNING results with statement affinity:
+	// reading the catalog-global slot after execution returns another
+	// concurrent statement's rows whenever one interleaves between this
+	// statement's write and its read.
+	capture := &catalog.ReturningCapture{}
+	ctx = catalog.WithReturningCapture(ctx, capture)
+	if _, _, err := db.catalog.Insert(ctx, stmt, args); err != nil {
 		return nil, err
 	}
-
-	// Get RETURNING results from catalog
-	returningRows := db.catalog.GetLastReturningRows()
-	returningCols := db.catalog.GetLastReturningColumns()
+	returningRows, returningCols := capture.Results()
 
 	if len(returningRows) == 0 {
 		return &Rows{rows: nil, columns: returningCols}, nil
@@ -435,14 +437,13 @@ func (db *DB) executeInsertReturning(ctx context.Context, stmt *query.InsertStmt
 
 // executeUpdateReturning executes UPDATE with RETURNING clause
 func (db *DB) executeUpdateReturning(ctx context.Context, stmt *query.UpdateStmt, args []interface{}) (*Rows, error) {
-	_, _, err := db.catalog.Update(ctx, stmt, args)
-	if err != nil {
+	// Statement-affinity capture — see executeInsertReturning.
+	capture := &catalog.ReturningCapture{}
+	ctx = catalog.WithReturningCapture(ctx, capture)
+	if _, _, err := db.catalog.Update(ctx, stmt, args); err != nil {
 		return nil, err
 	}
-
-	// Get RETURNING results from catalog
-	returningRows := db.catalog.GetLastReturningRows()
-	returningCols := db.catalog.GetLastReturningColumns()
+	returningRows, returningCols := capture.Results()
 
 	if len(returningRows) == 0 {
 		return &Rows{rows: nil, columns: returningCols}, nil
@@ -453,14 +454,13 @@ func (db *DB) executeUpdateReturning(ctx context.Context, stmt *query.UpdateStmt
 
 // executeDeleteReturning executes DELETE with RETURNING clause
 func (db *DB) executeDeleteReturning(ctx context.Context, stmt *query.DeleteStmt, args []interface{}) (*Rows, error) {
-	_, _, err := db.catalog.Delete(ctx, stmt, args)
-	if err != nil {
+	// Statement-affinity capture — see executeInsertReturning.
+	capture := &catalog.ReturningCapture{}
+	ctx = catalog.WithReturningCapture(ctx, capture)
+	if _, _, err := db.catalog.Delete(ctx, stmt, args); err != nil {
 		return nil, err
 	}
-
-	// Get RETURNING results from catalog
-	returningRows := db.catalog.GetLastReturningRows()
-	returningCols := db.catalog.GetLastReturningColumns()
+	returningRows, returningCols := capture.Results()
 
 	if len(returningRows) == 0 {
 		return &Rows{rows: nil, columns: returningCols}, nil

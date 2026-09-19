@@ -521,6 +521,23 @@ func (db *DB) execute(ctx context.Context, sqlText string, stmt query.Statement,
 			return needWait, nil
 		}()
 		if commitErr != nil {
+			// Mirror the autocommit path's failed-commit handling: a failed
+			// commit (flush refusal, commit conflict) returns before
+			// CommitTransaction clears the goroutine-local txn state, leaving
+			// txnActive=true with the transaction's writes still buffered.
+			// Without this rollback every later BEGIN on this connection fails
+			// with "transaction already in progress" and later statements run
+			// inside the zombie transaction. A replTxnFlush failure after a
+			// successful CommitTransaction is different — the data IS
+			// committed and the txn is no longer active — so the
+			// IsTransactionActive guard skips the rollback there and the
+			// replication error surfaces as-is.
+			if db.catalog.IsTransactionActive() {
+				if rbErr := db.catalog.RollbackTransaction(); rbErr != nil {
+					commitErr = fmt.Errorf("%w; rollback failed: %v", commitErr, rbErr)
+				}
+				db.replTxnDiscard()
+			}
 			return Result{}, commitErr
 		}
 		if needWait {
@@ -802,9 +819,12 @@ func valueToLiteralExpr(v interface{}) query.Expression {
 	case nil:
 		return &query.NullLiteral{}
 	case int:
-		return &query.NumberLiteral{Value: float64(val)}
+		// Raw preserves full integer precision: NumberLiteral.Evaluate parses
+		// Raw back to int64, while float64 corrupts values above 2^53
+		// (CTAS/INSERT materialization would silently insert a rounded value).
+		return &query.NumberLiteral{Raw: strconv.FormatInt(int64(val), 10), Value: float64(val)}
 	case int64:
-		return &query.NumberLiteral{Value: float64(val)}
+		return &query.NumberLiteral{Raw: strconv.FormatInt(val, 10), Value: float64(val)}
 	case float64:
 		return &query.NumberLiteral{Value: val}
 	case bool:
@@ -1005,25 +1025,19 @@ func (db *DB) executeUnion(ctx context.Context, stmt *query.UnionStmt, args []in
 
 	// Apply OFFSET
 	if stmt.Offset != nil {
-		if num, ok := stmt.Offset.(*query.NumberLiteral); ok {
-			offset := int(num.Value)
-			if offset > 0 {
-				if offset >= len(combined) {
-					combined = nil
-				} else {
-					combined = combined[offset:]
-				}
+		if offset, ok := evalSetOpNumeric(stmt.Offset, args); ok && offset > 0 {
+			if offset >= len(combined) {
+				combined = nil
+			} else {
+				combined = combined[offset:]
 			}
 		}
 	}
 
 	// Apply LIMIT
 	if stmt.Limit != nil {
-		if num, ok := stmt.Limit.(*query.NumberLiteral); ok {
-			limit := int(num.Value)
-			if limit >= 0 && limit <= len(combined) {
-				combined = combined[:limit]
-			}
+		if limit, ok := evalSetOpNumeric(stmt.Limit, args); ok && limit >= 0 && limit <= len(combined) {
+			combined = combined[:limit]
 		}
 	}
 
@@ -1032,6 +1046,29 @@ func (db *DB) executeUnion(ctx context.Context, stmt *query.UnionStmt, args []in
 		rows:    combined,
 		pos:     0,
 	}, nil
+}
+
+// evalSetOpNumeric evaluates a set operation's LIMIT/OFFSET expression. It
+// mirrors the select/aggregate/join paths, which evaluate these clauses as
+// full expressions (placeholders included); executeUnion previously applied
+// only *query.NumberLiteral, silently dropping `LIMIT ?`/`OFFSET ?` on set
+// operations while the placeholder-count check still required the argument.
+// Returns ok=false for NULL, unevaluable, or non-numeric results, leaving the
+// clause unapplied — the same lenient direction as the other paths.
+func evalSetOpNumeric(expr query.Expression, args []interface{}) (int, bool) {
+	v, err := catalog.EvalExpression(expr, args)
+	if err != nil || v == nil {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	}
+	return 0, false
 }
 
 // normalizeRowKey creates a type-normalized string key for deduplication.

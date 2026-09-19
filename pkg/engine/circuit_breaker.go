@@ -238,6 +238,24 @@ func (cb *CircuitBreaker) ReportFailure() {
 	}
 }
 
+// Abandon releases a half-open probe slot without recording an outcome, for
+// outcomes that say nothing about backend health (caller context
+// cancellation). Without it the consumed probe token is never returned: with
+// the default HalfOpenMaxRequests=1 the breaker wedges in half-open, because
+// every later Allow is rejected for lack of a token and no probe can
+// therefore ever run to produce the report that would move the state. The
+// non-blocking send is bounded by the channel capacity and harmless in other
+// states — refillHalfOpenTokens drains stale tokens on the next entry.
+func (cb *CircuitBreaker) Abandon() {
+	if cb.stopped.Load() {
+		return
+	}
+	select {
+	case cb.halfOpenTokens <- struct{}{}:
+	default:
+	}
+}
+
 // openCircuit transitions to open state.
 // lastFailure is stamped on the transition so shouldAttemptReset enforces a
 // full ResetTimeout backoff before the next half-open probe — including after
@@ -376,10 +394,16 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 	case <-ctx.Done():
 		// Release the concurrency slot when fn eventually finishes, so a
 		// slow backend still bounds true concurrent work; do not block the
-		// cancelled caller waiting for it.
+		// cancelled caller waiting for it. Abandon the half-open probe slot
+		// at the same time: the caller's cancellation says nothing about
+		// backend health, and without Abandon the consumed probe token is
+		// never returned, wedging a HalfOpenMaxRequests=1 breaker in
+		// half-open forever (no probe can run to produce the report that
+		// would move the state).
 		go func() {
 			<-done
 			cb.Release()
+			cb.Abandon()
 		}()
 		return ctx.Err()
 	}
