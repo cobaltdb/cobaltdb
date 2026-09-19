@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 func (c *Catalog) applyDistinct(rows [][]interface{}) [][]interface{} {
@@ -110,7 +111,10 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 			return returnColumns, nil, err
 		}
 	} else if cteRes, ok := c.lookupCTEResult(stmt.From.Name); ok {
-		groups, groupOrder = c.buildGroupByGroupsFromRows(table, stmt, args, groupBySpecs, cteRes.rows)
+		var groupErr error
+		if groups, groupOrder, groupErr = c.buildGroupByGroupsFromRows(table, stmt, args, groupBySpecs, cteRes.rows); groupErr != nil {
+			return returnColumns, nil, groupErr
+		}
 	}
 	if groups == nil {
 		// Return empty result for GROUP BY on non-existent table
@@ -285,6 +289,13 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 				return nil, nil, fmt.Errorf("group by: failed to decode row in table %s: %w", table.Name, err)
 			}
 		}
+		// WHERE evaluation errors and GROUP BY expression errors must fail
+		// the statement (the established contract from the scan and fast
+		// paths), but ParallelGroupBy's chunk closure cannot return an
+		// error — capture the first one and propagate it after the parallel
+		// grouping completes.
+		var firstRowErr error
+		var rowErrMu sync.Mutex
 		groups = parallel.ParallelGroupBy(allValues, c.parallelWorkers, c.parallelThreshold,
 			func(chunk [][]byte) map[string][][]interface{} {
 				localGroups := make(map[string][][]interface{})
@@ -302,6 +313,11 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 					if stmt.Where != nil {
 						matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
 						if err != nil {
+							rowErrMu.Lock()
+							if firstRowErr == nil {
+								firstRowErr = fmt.Errorf("group by: failed to evaluate WHERE in table %s: %w", table.Name, err)
+							}
+							rowErrMu.Unlock()
 							continue
 						}
 						if !matched {
@@ -318,9 +334,15 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 							groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
 						} else if spec.expr != nil {
 							val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
-							if err == nil {
-								groupKey.WriteString(typeTaggedKey(val))
+							if err != nil {
+								rowErrMu.Lock()
+								if firstRowErr == nil {
+									firstRowErr = fmt.Errorf("group by: failed to evaluate GROUP BY expression in table %s: %w", table.Name, err)
+								}
+								rowErrMu.Unlock()
+								continue
 							}
+							groupKey.WriteString(typeTaggedKey(val))
 						}
 					}
 					key := groupKey.String()
@@ -328,6 +350,9 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 				}
 				return localGroups
 			})
+		if firstRowErr != nil {
+			return nil, nil, firstRowErr
+		}
 		for k := range groups {
 			groupOrder = append(groupOrder, k)
 		}
@@ -356,7 +381,7 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 			if stmt.Where != nil {
 				matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
 				if err != nil {
-					continue
+					return nil, nil, fmt.Errorf("group by: failed to evaluate WHERE in table %s: %w", table.Name, err)
 				}
 				if !matched {
 					continue
@@ -372,9 +397,10 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 					groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
 				} else if spec.expr != nil {
 					val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
-					if err == nil {
-						groupKey.WriteString(typeTaggedKey(val))
+					if err != nil {
+						return nil, nil, fmt.Errorf("group by: failed to evaluate GROUP BY expression in table %s: %w", table.Name, err)
 					}
+					groupKey.WriteString(typeTaggedKey(val))
 				}
 			}
 			key := groupKey.String()
@@ -388,13 +414,16 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 	return groups, groupOrder, nil
 }
 
-func (c *Catalog) buildGroupByGroupsFromRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, specs []groupBySpec, rows [][]interface{}) (map[string][][]interface{}, []string) {
+func (c *Catalog) buildGroupByGroupsFromRows(table *TableDef, stmt *query.SelectStmt, args []interface{}, specs []groupBySpec, rows [][]interface{}) (map[string][][]interface{}, []string, error) {
 	groups := make(map[string][][]interface{})
 	var groupOrder []string
 	for _, fullRow := range rows {
 		if stmt.Where != nil {
 			matched, err := evaluateWhere(c, fullRow, table.Columns, stmt.Where, args)
-			if err != nil || !matched {
+			if err != nil {
+				return nil, nil, fmt.Errorf("group by: failed to evaluate WHERE in table %s: %w", table.Name, err)
+			}
+			if !matched {
 				continue
 			}
 		}
@@ -408,9 +437,10 @@ func (c *Catalog) buildGroupByGroupsFromRows(table *TableDef, stmt *query.Select
 				groupKey.WriteString(typeTaggedKey(fullRow[spec.index]))
 			} else if spec.expr != nil {
 				val, err := evaluateExpression(c, fullRow, table.Columns, spec.expr, args)
-				if err == nil {
-					groupKey.WriteString(typeTaggedKey(val))
+				if err != nil {
+					return nil, nil, fmt.Errorf("group by: failed to evaluate GROUP BY expression in table %s: %w", table.Name, err)
 				}
+				groupKey.WriteString(typeTaggedKey(val))
 			}
 		}
 		key := groupKey.String()
@@ -419,7 +449,7 @@ func (c *Catalog) buildGroupByGroupsFromRows(table *TableDef, stmt *query.Select
 		}
 		groups[key] = append(groups[key], fullRow)
 	}
-	return groups, groupOrder
+	return groups, groupOrder, nil
 }
 
 // computeAggregatesForExpr collects every aggregate function call inside expr,

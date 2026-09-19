@@ -2144,7 +2144,18 @@ func (c *Catalog) applyUpdateEntryDirect(
 
 	// Update vector indexes. Vector-index errors propagate so the
 	// caller can roll back the FK tracker.
-	if err := c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, string(entry.key)); err != nil {
+	// Vector keys are the row's B-tree key: a PK-changing update must move
+	// the HNSW entry to the new key (remove the old-key entry, index the
+	// row under its new key), or vector searches return the dangling old
+	// key and the updated row vanishes from vector results.
+	if pkChanged {
+		if err := c.updateVectorIndexesForDelete(stmt.Table, string(oldKey)); err != nil {
+			return nil, err
+		}
+		if err := c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, string(newKey)); err != nil {
+			return nil, err
+		}
+	} else if err := c.updateVectorIndexesForUpdate(stmt.Table, entry.newRow, string(entry.key)); err != nil {
 		return nil, err
 	}
 
@@ -2177,6 +2188,19 @@ func (c *Catalog) restoreVectorIndexesForUpdate(table *TableDef, tableName strin
 			// rewritten are unaffected.
 			if err := vi.HNSW.Delete(string(entry.key)); err != nil && firstErr == nil {
 				firstErr = fmt.Errorf("failed to remove rolled-back vector %s for row %s: %w", vi.Name, entry.key, err)
+			}
+			// A PK-changing update moved the row to a new tree key and the
+			// apply left the HNSW entry at that new key; remove it too or
+			// the rollback leaves a dangling new-key entry behind the
+			// restored original. Only the statement-rollback caller passes
+			// newRow — the txn undo appliers construct key+oldRow entries
+			// and remove the new key themselves.
+			if entry.newRow != nil {
+				if newTreeKey, ok := buildCompositePK(table, entry.newRow); ok && newTreeKey != string(entry.key) {
+					if err := vi.HNSW.Delete(newTreeKey); err != nil && firstErr == nil {
+						firstErr = fmt.Errorf("failed to remove rolled-back vector %s for row %s at new key: %w", vi.Name, newTreeKey, err)
+					}
+				}
 			}
 			if err := c.indexRowForVector(vi, entry.oldRow, string(entry.key), colIdx); err != nil && firstErr == nil {
 				firstErr = fmt.Errorf("failed to restore vector index %s for row %s: %w", vi.Name, entry.key, err)
@@ -2265,7 +2289,9 @@ func (c *Catalog) bufferUpdateEntry(table *TableDef, stmt *query.UpdateStmt, ent
 					if _, err := idxTree.Get([]byte(newIndexKey)); err == nil {
 						return nil, nil, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
 					}
-					if c.indexKeyInPendingWrites(idxName, newIndexKey) {
+					// Net pending effect (last op wins): a pending delete frees
+					// the slot for reuse, mirroring the INSERT-path checks.
+					if c.indexKeyPendingState(idxName, newIndexKey) > 0 {
 						return nil, nil, fmt.Errorf("UNIQUE constraint failed: duplicate value '%v' in index %s", newIndexKey, idxName)
 					}
 				}

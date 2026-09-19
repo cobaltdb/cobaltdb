@@ -130,9 +130,16 @@ func (c *Catalog) populateIndexVisibleRowsLocked(indexTree btree.TreeStore, inde
 }
 
 func (c *Catalog) addIndexRowLocked(indexTree btree.TreeStore, indexDef *IndexDef, table *TableDef, key, valueData []byte) error {
-	row, err := decodeRow(valueData, len(table.Columns))
+	row, live, err := decodeLiveRow(valueData, len(table.Columns))
 	if err != nil {
 		return fmt.Errorf("failed to decode row in table %s while populating index %s: %w", table.Name, indexDef.Name, err)
+	}
+	if !live {
+		// Soft-deleted rows remain in the table tree as MVCC tombstones; live
+		// indexes never carry tombstone entries (DELETE removes them), so
+		// population must skip them too — otherwise a UNIQUE index built
+		// after a delete spuriously rejects re-inserting that value.
+		return nil
 	}
 	indexKey, ok := buildCompositeIndexKey(table, indexDef, row)
 	if !ok {
@@ -161,9 +168,14 @@ func (c *Catalog) populateIndexLocked(indexTree btree.TreeStore, indexDef *Index
 		if iterErr != nil {
 			return iterErr
 		}
-		row, err := decodeRow(valueData, len(table.Columns))
+		row, live, err := decodeLiveRow(valueData, len(table.Columns))
 		if err != nil {
 			return fmt.Errorf("failed to decode row in table %s while populating index %s: %w", table.Name, indexDef.Name, err)
+		}
+		if !live {
+			// Skip MVCC tombstones: live indexes never carry entries for
+			// soft-deleted rows (DELETE removes them).
+			continue
 		}
 		indexKey, ok := buildCompositeIndexKey(table, indexDef, row)
 		if !ok {
@@ -607,10 +619,15 @@ func (c *Catalog) rebuildTableIndexesLocked(tableName string) error {
 				iter.Close()
 				return fmt.Errorf("failed to read row during index rebuild: %w", iterErr)
 			}
-			row, err := decodeRow(valueData, len(table.Columns))
+			row, live, err := decodeLiveRow(valueData, len(table.Columns))
 			if err != nil {
 				iter.Close()
 				return fmt.Errorf("failed to decode row in table %s during index rebuild: %w", tableName, err)
+			}
+			if !live {
+				// Skip MVCC tombstones: live indexes never carry entries for
+				// soft-deleted rows (DELETE removes them).
+				continue
 			}
 			indexKey, ok := buildCompositeIndexKey(table, idxDef, row)
 			if ok {

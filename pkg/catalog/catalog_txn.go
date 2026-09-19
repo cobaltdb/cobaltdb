@@ -945,6 +945,14 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 				if err := tree.Delete(entry.newKey); err != nil {
 					return fmt.Errorf("%s undoing update (new key): %w", errorPrefix, err)
 				}
+				// The apply also indexed the row's vector at the new key
+				// (applyUpdateEntryDirect rekeys on PK change); remove that
+				// HNSW entry too or the rollback leaves it dangling.
+				if c.hasVectorIndexesForTable(entry.tableName) {
+					if err := c.updateVectorIndexesForDelete(entry.tableName, string(entry.newKey)); err != nil {
+						return fmt.Errorf("%s undoing update (vector index): %w", errorPrefix, err)
+					}
+				}
 			}
 			if err := tree.Put(entry.key, entry.oldValue); err != nil {
 				return fmt.Errorf("%s undoing update: %w", errorPrefix, err)
@@ -1557,6 +1565,15 @@ func (c *Catalog) applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree
 				return fmt.Errorf("%s undoing insert: %w", errorPrefix, err)
 			}
 		}
+		// The insert path indexed the row key's vector entries immediately
+		// (applyInsertRowDirect — vector-indexed tables bypass buffering, so
+		// this runs inside transactions too); the undo must remove them too
+		// or rolled-back rows stay searchable via HNSW.
+		if c.hasVectorIndexesForTable(entry.tableName) {
+			if err := c.updateVectorIndexesForDelete(entry.tableName, string(entry.key)); err != nil {
+				return fmt.Errorf("%s undoing insert (vector index): %w", errorPrefix, err)
+			}
+		}
 	case undoUpdate:
 		if tree := tableTrees[entry.tableName]; tree != nil {
 			// If the UPDATE moved the row to a new PK key, delete the orphaned
@@ -1565,6 +1582,14 @@ func (c *Catalog) applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree
 			if len(entry.newKey) > 0 && string(entry.newKey) != string(entry.key) {
 				if err := tree.Delete(entry.newKey); err != nil {
 					return fmt.Errorf("%s undoing update (new key): %w", errorPrefix, err)
+				}
+				// The apply also indexed the row's vector at the new key
+				// (applyUpdateEntryDirect rekeys on PK change); remove that
+				// HNSW entry too or the rollback leaves it dangling.
+				if c.hasVectorIndexesForTable(entry.tableName) {
+					if err := c.updateVectorIndexesForDelete(entry.tableName, string(entry.newKey)); err != nil {
+						return fmt.Errorf("%s undoing update (vector index): %w", errorPrefix, err)
+					}
 				}
 			}
 			if err := tree.Put(entry.key, entry.oldValue); err != nil {
@@ -1587,6 +1612,24 @@ func (c *Catalog) applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree
 		if tree := tableTrees[entry.tableName]; tree != nil {
 			if err := tree.Put(entry.key, entry.oldValue); err != nil {
 				return fmt.Errorf("%s undoing delete: %w", errorPrefix, err)
+			}
+		}
+		// REPLACE evictions and deletes on vector-indexed tables leave the
+		// row's HNSW entries to later cleanup, and a REPLACE's new row
+		// overwrites the entry at the same key (insertLocked replaces
+		// existing nodes). Restoring the row must re-index its ORIGINAL
+		// vector or the restored row carries the replacing statement's
+		// stale vector content.
+		if tbl := tableDefs[entry.tableName]; tbl != nil {
+			// oldValue is the raw tree bytes: a VersionedRow JSON object (or a
+			// legacy bare array). Use the canonical row decoder, not a bare
+			// json.Unmarshal into a slice.
+			vrow, derr := decodeVersionedRow(entry.oldValue, len(tbl.Columns))
+			if derr != nil {
+				return fmt.Errorf("%s undoing delete (decode old row): %w", errorPrefix, derr)
+			}
+			if err := c.restoreVectorIndexesForUpdate(tbl, entry.tableName, []updateEntry{{key: entry.key, oldRow: vrow.Data}}); err != nil {
+				return fmt.Errorf("%s undoing delete (vector index): %w", errorPrefix, err)
 			}
 		}
 	case undoAutoIncSeq:

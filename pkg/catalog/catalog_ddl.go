@@ -2514,7 +2514,20 @@ func (c *Catalog) executeInsteadOfTrigger(ctx context.Context, trigger *query.Cr
 		// Build the NEW row from the insert values
 		newRow := make([]interface{}, len(valueRow))
 		for i, expr := range valueRow {
-			val, _ := evaluateExpression(c, nil, nil, expr, args)
+			val, err := evaluateExpression(c, nil, nil, expr, args)
+			if err != nil {
+				// Mirror buildInsertRow: a VALUES expression that fails to
+				// evaluate must fail the statement, not silently fire the
+				// trigger with a NULL-filled NEW row.
+				colName := ""
+				if i < len(columns) {
+					colName = columns[i].Name
+				}
+				if colName == "" {
+					colName = fmt.Sprintf("%d", i+1)
+				}
+				return 0, 0, fmt.Errorf("failed to evaluate value for column '%s': %w", colName, err)
+			}
 			newRow[i] = val
 		}
 
@@ -2572,7 +2585,10 @@ func (c *Catalog) executeInsteadOfUpdateTrigger(ctx context.Context, trigger *qu
 		// Check WHERE clause
 		if stmt.Where != nil {
 			matched, err := evaluateWhere(c, row, columns, stmt.Where, args)
-			if err != nil || !matched {
+			if err != nil {
+				return 0, 0, fmt.Errorf("WHERE evaluation error: %w", err)
+			}
+			if !matched {
 				continue
 			}
 		}
@@ -2644,7 +2660,10 @@ func (c *Catalog) executeInsteadOfDeleteTrigger(ctx context.Context, trigger *qu
 		// Check WHERE clause
 		if stmt.Where != nil {
 			matched, err := evaluateWhere(c, row, columns, stmt.Where, args)
-			if err != nil || !matched {
+			if err != nil {
+				return 0, 0, fmt.Errorf("WHERE evaluation error: %w", err)
+			}
+			if !matched {
 				continue
 			}
 		}

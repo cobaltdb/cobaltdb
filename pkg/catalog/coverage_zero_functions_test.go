@@ -250,7 +250,10 @@ func TestBuildGroupByGroupsFromRows_BasicGrouping(t *testing.T) {
 		Where:   nil, // no filter
 	}
 
-	groups, order := c.buildGroupByGroupsFromRows(table, stmt, nil, specs, rows)
+	groups, order, buildErr := c.buildGroupByGroupsFromRows(table, stmt, nil, specs, rows)
+	if buildErr != nil {
+		t.Fatalf("buildGroupByGroupsFromRows: %v", buildErr)
+	}
 	if len(groups) != 3 {
 		t.Errorf("expected 3 groups, got %d", len(groups))
 	}
@@ -321,7 +324,10 @@ func TestBuildGroupByGroupsFromRows_WithWhereFilter(t *testing.T) {
 		},
 	}
 
-	groups, order := c.buildGroupByGroupsFromRows(table, stmt, nil, specs, rows)
+	groups, order, buildErr := c.buildGroupByGroupsFromRows(table, stmt, nil, specs, rows)
+	if buildErr != nil {
+		t.Fatalf("buildGroupByGroupsFromRows: %v", buildErr)
+	}
 	// Only groups "a" (val=30) and "c" (val=40) and "b" (val=50) have v > 25
 	if len(groups) != 3 {
 		t.Errorf("expected 3 groups after WHERE filter, got %d", len(groups))

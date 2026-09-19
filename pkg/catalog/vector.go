@@ -255,6 +255,12 @@ func (h *HNSWIndex) SearchKNN(query []float64, k int) ([]string, []float64, erro
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
+	// A negative k would slice candidates[:k] below zero and panic; callers
+	// passing k straight through the public API must get an error instead.
+	if k < 0 {
+		return nil, nil, fmt.Errorf("k must be non-negative, got %d", k)
+	}
+
 	if h.EntryPoint == nil || len(h.Nodes) == 0 {
 		return []string{}, []float64{}, nil
 	}
