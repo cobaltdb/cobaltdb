@@ -701,6 +701,20 @@ func (c *ClientConn) checkPermission(sql string) bool {
 		}
 	}
 
+	// Normalize statement families to the permission action they belong to,
+	// mirroring the engine's statement-class authority (circuitBreakerKey):
+	// WITH/EXPLAIN/SHOW/DESC/DESCRIBE are reads (SELECT class) and
+	// REPLACE/UPSERT are writes (INSERT class). Without this, a non-admin
+	// with SELECT permission is denied `WITH ... SELECT ...` — a core read
+	// construct — because its first keyword differs. TRUNCATE stays denied:
+	// it has no unambiguous permission action and deny-by-default is safe.
+	switch action {
+	case "WITH", "EXPLAIN", "SHOW", "DESC", "DESCRIBE":
+		action = "SELECT"
+	case "REPLACE", "UPSERT":
+		action = "INSERT"
+	}
+
 	switch action {
 	case "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER":
 		// valid action
@@ -751,7 +765,9 @@ func (c *ClientConn) handleQuery(ctx context.Context, query *wire.QueryMessage) 
 		strings.EqualFold(sqlTrimmed[:4], "WITH") ||
 		strings.EqualFold(sqlTrimmed[:4], "SHOW") ||
 		(len(sqlTrimmed) >= 7 && strings.EqualFold(sqlTrimmed[:7], "EXPLAIN")) ||
-		(len(sqlTrimmed) >= 8 && strings.EqualFold(sqlTrimmed[:8], "DESCRIBE")))
+		// "DESC" is MySQL's DESCRIBE shorthand and shares its first four
+		// bytes, so one 4-byte check routes both spellings as reads.
+		strings.EqualFold(sqlTrimmed[:4], "DESC"))
 
 	if isQuery {
 		rows, err := c.Server.prodServer.Query(ctx, query.SQL, query.Params...)

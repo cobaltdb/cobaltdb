@@ -421,7 +421,15 @@ func (l *Lifecycle) setState(state LifecycleState) {
 
 // Wait blocks until the server is stopped
 func (l *Lifecycle) Wait() {
-	<-l.shutdownCh
+	// Block on stop completion, not shutdown initiation: shutdownCh closes as
+	// Stop's first action, so waiting on it returns while draining and
+	// component stops are still in flight. cmd/cobaltdb-server relies on Wait
+	// for exactly this contract — it closes the database only after Wait
+	// returns, which must happen after the components have stopped.
+	l.stopMu.Lock()
+	done := l.stopDone
+	l.stopMu.Unlock()
+	<-done
 }
 
 // IsRunning returns true if server is running

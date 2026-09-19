@@ -576,7 +576,11 @@ func (ps *ProductionServer) executeWithClassifiedBreaker(key string, fn func() e
 	case isCircuitBreakerFailure(err):
 		cb.ReportFailure()
 	case errors.Is(err, context.Canceled):
-		// Caller gave up; no signal about backend health either way.
+		// Caller gave up; no signal about backend health either way. Still
+		// abandon the half-open probe slot: without Abandon the consumed
+		// token is never returned and a HalfOpenMaxRequests=1 breaker wedges
+		// in half-open forever.
+		cb.Abandon()
 	default:
 		// Client-caused error: the backend responded, so this is evidence of
 		// health (important in half-open, where the probe must be resolved).
