@@ -1683,8 +1683,9 @@ func resolveOuterRefsInExpr(expr query.Expression, outerRow []interface{}, outer
 	case *query.LikeExpr:
 		expr := resolveOuterRefsInExpr(e.Expr, outerRow, outerColumns, innerTables)
 		pattern := resolveOuterRefsInExpr(e.Pattern, outerRow, outerColumns, innerTables)
-		if expr != e.Expr || pattern != e.Pattern {
-			return &query.LikeExpr{Expr: expr, Pattern: pattern, Not: e.Not}
+		escape := resolveOuterRefsInExpr(e.Escape, outerRow, outerColumns, innerTables)
+		if expr != e.Expr || pattern != e.Pattern || escape != e.Escape {
+			return &query.LikeExpr{Expr: expr, Pattern: pattern, Not: e.Not, Escape: escape}
 		}
 		return e
 	case *query.CaseExpr:
