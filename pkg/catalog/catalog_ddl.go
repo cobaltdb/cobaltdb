@@ -1673,6 +1673,17 @@ func (c *Catalog) AlterTableRenameColumn(stmt *query.AlterTableStmt) error {
 		return ErrTableNotFound
 	}
 
+	// Reject renames onto an existing column name: two same-named columns
+	// would silently shadow each other in the column-index cache (last one
+	// wins), misrouting reads and writes. Mirrors AddColumn's duplicate
+	// guard; the old column itself is excluded so a case-variant rename of
+	// one column stays legal.
+	for _, col := range table.Columns {
+		if !strings.EqualFold(col.Name, stmt.OldName) && strings.EqualFold(col.Name, stmt.NewName) {
+			return fmt.Errorf("column %s already exists in table %s", stmt.NewName, stmt.Table)
+		}
+	}
+
 	found := false
 	for i, col := range table.Columns {
 		if strings.EqualFold(col.Name, stmt.OldName) {
