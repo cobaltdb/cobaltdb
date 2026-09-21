@@ -2127,7 +2127,12 @@ func (c *Catalog) executeTriggers(ctx context.Context, tableName string, event s
 			resolvedCond := c.resolveTriggerExpr(trigger.Condition, newRow, oldRow, columns)
 			result, err := evaluateExpression(c, nil, nil, resolvedCond, nil)
 			if err != nil {
-				continue // Condition evaluation error - skip trigger
+				// A WHEN condition that cannot be evaluated fails the
+				// triggering statement, exactly like a body-statement error
+				// below: silently skipping would drop the trigger's side
+				// effects without a trace (the swallow class fixed for the
+				// INSTEAD OF WHERE sites).
+				return fmt.Errorf("trigger %s: %w", trigger.Name, err)
 			}
 			if result == nil {
 				continue // NULL condition - skip trigger
