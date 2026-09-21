@@ -2628,7 +2628,13 @@ func (c *Catalog) executeInsteadOfUpdateTrigger(ctx context.Context, trigger *qu
 		for _, setClause := range stmt.Set {
 			for i, col := range columns {
 				if strings.EqualFold(col.Name, setClause.Column) && i < len(newRow) {
-					val, _ := evaluateExpression(c, row, columns, setClause.Value, args)
+					val, err := evaluateExpression(c, row, columns, setClause.Value, args)
+					if err != nil {
+						// Mirror the main UPDATE path: a SET expression that
+						// fails to evaluate must fail the statement, not
+						// silently fire the trigger with a NULL-filled NEW row.
+						return 0, 0, fmt.Errorf("failed to evaluate SET expression for column '%s': %w", setClause.Column, err)
+					}
 					newRow[i] = val
 					break
 				}
