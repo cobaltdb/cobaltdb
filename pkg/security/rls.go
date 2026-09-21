@@ -24,7 +24,7 @@ var (
 
 	// Pre-compiled regex patterns for performance
 	inRegex      = regexp.MustCompile(`(?i)^(.+?)\s+(NOT\s+)?IN\s*\((.+?)\)$`)
-	likeRegex    = regexp.MustCompile(`(?i)^(.+?)\s+(NOT\s+)?LIKE\s+['"](.+?)['"]$`)
+	likeRegex    = regexp.MustCompile(`(?i)^(.+?)\s+(NOT\s+)?LIKE\s+['"](.+?)['"](?:\s+ESCAPE\s+['"](.)['"])?$`)
 	betweenRegex = regexp.MustCompile(`(?i)^(.+?)\s+(NOT\s+)?BETWEEN\s+(.+?)\s+AND\s+(.+?)$`)
 )
 
@@ -1289,10 +1289,10 @@ func parseInOperator(expr string) (PolicyExpr, error) {
 func parseLikeOperator(expr string) (PolicyExpr, error) {
 	expr = strings.TrimSpace(expr)
 
-	// Match pattern: column [NOT] LIKE 'pattern'
+	// Match pattern: column [NOT] LIKE 'pattern' [ESCAPE 'char']
 	// Uses pre-compiled package-level regex
 	matches := likeRegex.FindStringSubmatch(expr)
-	if len(matches) != 4 {
+	if len(matches) != 5 {
 		return nil, nil
 	}
 
@@ -1300,6 +1300,7 @@ func parseLikeOperator(expr string) (PolicyExpr, error) {
 	lowerCol := toLowerFast(columnName)
 	not := strings.TrimSpace(matches[2]) != ""
 	pattern := matches[3]
+	escape := matches[4]
 	if len(pattern) > maxPolicyLikePatternBytes {
 		return nil, fmt.Errorf("%w: policy LIKE pattern too large: %d bytes", ErrInvalidExpression, len(pattern))
 	}
@@ -1307,7 +1308,7 @@ func parseLikeOperator(expr string) (PolicyExpr, error) {
 	// Convert SQL LIKE pattern to regex
 	// likeToRegex quotes every regex metacharacter before introducing only the
 	// known-safe SQL wildcard fragments, so the generated pattern is always valid.
-	re := regexp.MustCompile(likeToRegex(pattern))
+	re := regexp.MustCompile(likeToRegex(pattern, escape))
 
 	return func(ctx context.Context, row map[string]interface{}) (bool, error) {
 		rowValue, ok := row[columnName]
@@ -1364,13 +1365,40 @@ func parseValueList(valuesStr string) []string {
 	return values
 }
 
-func likeToRegex(pattern string) string {
-	// Escape regex special characters except % and _
-	result := regexp.QuoteMeta(pattern)
-	// Replace SQL wildcards with regex equivalents
-	result = strings.ReplaceAll(result, "%", ".*")
-	result = strings.ReplaceAll(result, "_", ".")
-	return "^" + result + "$"
+func likeToRegex(pattern, escape string) string {
+	if escape == "" {
+		// Escape regex special characters except % and _
+		result := regexp.QuoteMeta(pattern)
+		// Replace SQL wildcards with regex equivalents
+		result = strings.ReplaceAll(result, "%", ".*")
+		result = strings.ReplaceAll(result, "_", ".")
+		return "^" + result + "$"
+	}
+	// Escape-aware translation: the escape char makes the next pattern
+	// character literal; unescaped % and _ remain SQL wildcards.
+	var b strings.Builder
+	esc := []rune(escape)[0]
+	pr := []rune(pattern)
+	for i := 0; i < len(pr); i++ {
+		c := pr[i]
+		if c == esc {
+			if i+1 < len(pr) {
+				i++
+				b.WriteString(regexp.QuoteMeta(string(pr[i])))
+			}
+			// A trailing escape char has nothing to escape; drop it.
+			continue
+		}
+		switch c {
+		case '%':
+			b.WriteString(".*")
+		case '_':
+			b.WriteString(".")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(c)))
+		}
+	}
+	return "^" + b.String() + "$"
 }
 
 // valueToString converts a value to a string without fmt.Sprintf reflection

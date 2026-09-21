@@ -522,6 +522,13 @@ func expressionToString(expr query.Expression) string {
 			sb.WriteString(" LIKE ")
 		}
 		sb.WriteString(patternStr)
+		if e.Escape != nil {
+			// The rendered string is re-parsed by the RLS evaluator
+			// (security/rls.go parses policy.Expression), so dropping ESCAPE
+			// would silently change the policy's matching semantics.
+			sb.WriteString(" ESCAPE ")
+			sb.WriteString(expressionToString(e.Escape))
+		}
 		return sb.String()
 	case *query.IsNullExpr:
 		exprStr := expressionToString(e.Expr)
