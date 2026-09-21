@@ -1266,11 +1266,11 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 	var oldRowData []struct{ key, val []byte }
 	txnActiveForUndo := c.isCurrentTxnActive()
 	if treeExists {
-		// Compute default value
+		// The default is materialized lazily on the first row that actually
+		// needs backfill, so an empty table stays lazy exactly like CREATE
+		// TABLE (which never evaluates defaults).
 		var defaultVal interface{}
-		if newCol.defaultExpr != nil {
-			defaultVal, _ = evaluateExpression(c, nil, nil, newCol.defaultExpr, nil)
-		}
+		defaultEvaluated := false
 
 		// Remember the old column count before adding the new column
 		oldColCount := len(table.Columns)
@@ -1295,6 +1295,19 @@ func (c *Catalog) AlterTableAddColumn(stmt *query.AlterTableStmt) error {
 			values := vrow.Data
 			// Only update rows that are missing the new column
 			if len(values) <= oldColCount {
+				// Materialize the default on first need. Evaluation errors must
+				// fail the ALTER: silently NULL-backfilling corrupts existing
+				// rows (the swallow class fixed for the INSTEAD OF sites in
+				// this file; buildInsertRow uses this message family for value
+				// materialization).
+				if !defaultEvaluated && newCol.defaultExpr != nil {
+					dv, evalErr := evaluateExpression(c, nil, nil, newCol.defaultExpr, nil)
+					if evalErr != nil {
+						return fmt.Errorf("failed to evaluate value for column '%s': %w", stmt.Column.Name, evalErr)
+					}
+					defaultVal = dv
+					defaultEvaluated = true
+				}
 				for len(values) < newColCount {
 					values = append(values, defaultVal)
 				}
