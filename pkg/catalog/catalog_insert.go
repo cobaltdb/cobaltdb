@@ -103,7 +103,10 @@ func (c *Catalog) executeTriggersList(ctx context.Context, triggers []*query.Cre
 			resolvedCond := c.resolveTriggerExpr(trigger.Condition, newRow, oldRow, columns)
 			result, err := evaluateExpression(c, nil, nil, resolvedCond, nil)
 			if err != nil {
-				continue
+				// Fail closed, mirroring the locked executeTriggers: a
+				// WHEN-condition evaluation error must fail the statement,
+				// never silently drop the trigger's side effects.
+				return fmt.Errorf("trigger %s: %w", trigger.Name, err)
 			}
 			if result == nil {
 				continue
