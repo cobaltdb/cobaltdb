@@ -2,11 +2,11 @@
 bin/
 /cobaltdb-server
 /cobaltdb-cli
-cobaltdb-bench
-cobaltdb-migrate
-debug
-demo
-realworld-test
+/cobaltdb-bench
+/cobaltdb-migrate
+/debug
+/demo
+/realworld-test
 *.exe
 *.exe~
 *.dll
