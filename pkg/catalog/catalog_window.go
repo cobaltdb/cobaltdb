@@ -202,6 +202,21 @@ func (c *Catalog) evalWindowPartitions(rows [][]interface{}, colIdx int, we *que
 				for _, ob := range we.OrderBy {
 					va := c.evalWindowExprOnRow(ob.Expr, entries[a].row, selectCols, table, args, entries[a].fullRow)
 					vb := c.evalWindowExprOnRow(ob.Expr, entries[b].row, selectCols, table, args, entries[b].fullRow)
+					if va == nil || vb == nil {
+						if va == nil && vb == nil {
+							continue // tie on this key; move to next
+						}
+						// Default NULL placement: last for ASC, first for DESC.
+						// NULLS FIRST/LAST overrides when explicitly specified.
+						nullsFirst := ob.Desc
+						if ob.NullsSpecified {
+							nullsFirst = ob.NullsFirst
+						}
+						if va == nil {
+							return nullsFirst // a is NULL: place first iff nullsFirst
+						}
+						return !nullsFirst // b is NULL: a (non-NULL) first iff !nullsFirst
+					}
 					cmp := compareValues(va, vb)
 					if cmp == 0 {
 						continue

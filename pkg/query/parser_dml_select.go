@@ -589,6 +589,23 @@ func (p *Parser) parseWindowExpr(funcName string, args []Expression, filter Expr
 			} else if p.current().Type == TokenAsc {
 				p.advance()
 			}
+			// Optional NULLS FIRST / NULLS LAST (NULLS/FIRST/LAST are non-keyword
+			// identifiers in this lexer), mirroring the general ORDER BY tail.
+			if p.current().Type == TokenIdentifier && strings.EqualFold(p.current().Literal, "NULLS") {
+				p.advance() // consume NULLS
+				switch {
+				case p.current().Type == TokenIdentifier && strings.EqualFold(p.current().Literal, "FIRST"):
+					p.advance()
+					orderBy.NullsFirst = true
+					orderBy.NullsSpecified = true
+				case p.current().Type == TokenIdentifier && strings.EqualFold(p.current().Literal, "LAST"):
+					p.advance()
+					orderBy.NullsFirst = false
+					orderBy.NullsSpecified = true
+				default:
+					return nil, fmt.Errorf("expected FIRST or LAST after NULLS, got %s", p.current().Literal)
+				}
+			}
 			windowExpr.OrderBy = append(windowExpr.OrderBy, orderBy)
 			if len(windowExpr.OrderBy) > maxParserListItems {
 				return nil, fmt.Errorf("window ORDER BY expression count exceeds maximum (%d)", maxParserListItems)
