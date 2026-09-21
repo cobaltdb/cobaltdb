@@ -81,7 +81,7 @@ var scalarFunctionHandlers = map[string]functionHandler{
 			return "null", nil
 		}
 		switch args[0].(type) {
-		case int, int64:
+		case int, int8, int16, int32, int64:
 			return "integer", nil
 		case float64:
 			f := args[0].(float64)
@@ -2207,7 +2207,7 @@ func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}
 			return "null", nil
 		}
 		switch evalArgs[0].(type) {
-		case int, int64:
+		case int, int8, int16, int32, int64:
 			return "integer", nil
 		case float64:
 			f := evalArgs[0].(float64)
