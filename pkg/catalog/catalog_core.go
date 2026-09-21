@@ -401,7 +401,7 @@ type Catalog struct {
 	keyCounter           int64                                 // For generating unique keys
 	undoLog              []undoEntry                           // Undo log for transaction rollback (legacy)
 	txnManager           interface{}                           // *txn.Manager bridge for MVCC multi-writer (nil = legacy single-writer mode)
-	enableBufferedWrites bool                                  // Enable buffered DML (disabled by default until read-your-writes is fully implemented)
+	enableBufferedWrites bool                                  // Enable buffered DML (MVCC multi-writer mode; enabled unconditionally at database init)
 	savepoints           []savepointEntry                      // Stack of savepoints (legacy)
 	rlsManager           *security.Manager                     // Row-level security manager
 	enableRLS            bool                                  // Enable row-level security

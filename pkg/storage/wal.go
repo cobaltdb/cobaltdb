@@ -277,7 +277,7 @@ func OpenWAL(path string) (*WAL, error) {
 		}
 	}
 
-	// 64 KiB write buffer cuts write() syscalls by ~16x vs the default 4 KiB,
+	// 1 MiB write buffer cuts write() syscalls by ~256x vs the default 4 KiB,
 	// since each small WAL record (~60-130 B) would otherwise trigger a flush.
 	wal := &WAL{
 		file:      file,
