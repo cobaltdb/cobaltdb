@@ -194,6 +194,22 @@ func (c *Catalog) executeScalarSelect(stmt *query.SelectStmt, args []interface{}
 		}
 	}
 
+	// Handle OFFSET (mirrors applyOffsetLimit: every other SELECT path —
+	// the main, fast, and retained shared helpers — applies OFFSET; the
+	// FROM-less path silently ignored it).
+	if stmt.Offset != nil {
+		offsetVal, err := evaluateExpression(c, nil, nil, stmt.Offset, args)
+		if err == nil {
+			if off, ok := toInt(offsetVal); ok && off > 0 {
+				if int(off) < len(rows) {
+					rows = rows[off:]
+				} else {
+					rows = nil
+				}
+			}
+		}
+	}
+
 	return returnColumns, rows, nil
 }
 
