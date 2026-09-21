@@ -74,7 +74,7 @@ func loadConfigFile(path string) (*configFileValues, error) {
 		}
 		k := strings.TrimSpace(line[:eq])
 		v := strings.TrimSpace(line[eq+1:])
-		if len(v) >= 2 && (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
+		if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
 			v = v[1 : len(v)-1]
 		}
 		if k == "" {
