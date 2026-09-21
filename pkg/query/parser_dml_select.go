@@ -562,6 +562,9 @@ func (p *Parser) parseWindowExpr(funcName string, args []Expression, filter Expr
 				return nil, fmt.Errorf("failed to parse PARTITION BY expression: %w", err)
 			}
 			windowExpr.PartitionBy = append(windowExpr.PartitionBy, expr)
+			if len(windowExpr.PartitionBy) > maxParserListItems {
+				return nil, fmt.Errorf("PARTITION BY expression count exceeds maximum (%d)", maxParserListItems)
+			}
 			if !p.match(TokenComma) {
 				break
 			}
@@ -587,6 +590,9 @@ func (p *Parser) parseWindowExpr(funcName string, args []Expression, filter Expr
 				p.advance()
 			}
 			windowExpr.OrderBy = append(windowExpr.OrderBy, orderBy)
+			if len(windowExpr.OrderBy) > maxParserListItems {
+				return nil, fmt.Errorf("window ORDER BY expression count exceeds maximum (%d)", maxParserListItems)
+			}
 			if !p.match(TokenComma) {
 				break
 			}
