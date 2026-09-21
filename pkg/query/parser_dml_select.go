@@ -1655,10 +1655,32 @@ func (p *Parser) parseUnion(left Statement) (Statement, error) {
 // standard precedence: INTERSECT binds tighter than UNION/EXCEPT, which are
 // left-associative between themselves. A trailing ORDER BY/LIMIT/OFFSET on
 // the final operand is relocated to the enclosing set-operation node.
+// rejectMidChainOrderBy enforces the standard rule that ORDER BY is only
+// legal after the final SELECT of a set-operation chain: an operand followed
+// by another set operation must not carry its own ORDER BY (the parser
+// previously accepted it and the executor silently dropped it — only the
+// chain-level ORDER BY is applied).
+func rejectMidChainOrderBy(operand Statement) error {
+	switch s := operand.(type) {
+	case *SelectStmt:
+		if len(s.OrderBy) > 0 {
+			return fmt.Errorf("ORDER BY must appear after the final SELECT in a set operation")
+		}
+	case *UnionStmt:
+		if len(s.OrderBy) > 0 {
+			return fmt.Errorf("ORDER BY must appear after the final SELECT in a set operation")
+		}
+	}
+	return nil
+}
+
 func (p *Parser) parseSetOp(left Statement) (Statement, error) {
 	for {
 		switch {
 		case p.current().Type == TokenUnion || p.current().Type == TokenExcept:
+			if err := rejectMidChainOrderBy(left); err != nil {
+				return nil, err
+			}
 			op := SetOpUnion
 			opName := "UNION"
 			if p.current().Type == TokenExcept {
@@ -1685,6 +1707,9 @@ func (p *Parser) parseSetOp(left Statement) (Statement, error) {
 			// INTERSECT binds tighter than UNION/EXCEPT: fold any following
 			// INTERSECT chain into this operand before combining with left.
 			for p.current().Type == TokenIntersect {
+				if err := rejectMidChainOrderBy(right); err != nil {
+					return nil, err
+				}
 				if right, err = p.foldIntersect(right); err != nil {
 					return nil, err
 				}
@@ -1693,6 +1718,9 @@ func (p *Parser) parseSetOp(left Statement) (Statement, error) {
 			left = p.foldSetOp(left, right, op, all)
 
 		case p.current().Type == TokenIntersect:
+			if err := rejectMidChainOrderBy(left); err != nil {
+				return nil, err
+			}
 			var err error
 			if left, err = p.foldIntersect(left); err != nil {
 				return nil, err
