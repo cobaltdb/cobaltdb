@@ -1329,10 +1329,16 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	var insertedRows [][]interface{} // Track rows for trigger execution
 	var insertErr error
 
-	// Track pending-write start position for statement-level rollback in buffered mode.
+	// Track pending-write and undo-log start positions for statement-level
+	// rollback. The undo-log position is captured before any per-row undo
+	// entries so the failure path can keep entries that
+	// rollbackStatementInserts does not physically roll back (REPLACE
+	// eviction undos, trigger-appended entries).
 	pendingWriteStartPos := 0
+	undoStartPos := 0
 	if ts != nil {
 		pendingWriteStartPos = len(ts.pendingWrites)
+		undoStartPos = len(ts.undoLog)
 	}
 	rollbackInsertErr := func(err error) (int64, int64, error) {
 		// Discard buffered writes added by this statement.
@@ -1346,14 +1352,29 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 		if !txnActive {
 			return 0, 0, err
 		}
-		// Inside explicit transaction - remove undo log entries
-		undoToRemove := 1 + len(stmtInserts)
-		var undoLog []undoEntry
+		// Inside explicit transaction - remove the undo entries
+		// rollbackStatementInserts has already applied: the AutoInc restore and
+		// each applied row's undoInsert. A REPLACE row also appends an eviction
+		// undoDelete (resolvePKConflict) whose restoration is NOT performed by
+		// rollbackStatementInserts, and triggers may append their own entries —
+		// those must survive so the eventual transaction ROLLBACK restores them.
 		if ts != nil {
-			undoLog = ts.undoLog
-		}
-		if len(undoLog) >= undoToRemove {
-			c.truncateUndoLog(len(undoLog) - undoToRemove)
+			inserted := make(map[string]bool, len(stmtInserts))
+			for _, si := range stmtInserts {
+				inserted[string(si.key)] = true
+			}
+			kept := ts.undoLog[:undoStartPos]
+			for i := undoStartPos; i < len(ts.undoLog); i++ {
+				e := ts.undoLog[i]
+				if e.action == undoAutoIncSeq {
+					continue
+				}
+				if e.action == undoInsert && inserted[string(e.key)] {
+					continue
+				}
+				kept = append(kept, e)
+			}
+			ts.undoLog = kept
 		}
 		return 0, 0, err
 	}
