@@ -1117,7 +1117,10 @@ func TestFormatKeyComponent(t *testing.T) {
 	}{
 		{int(42), "00000000000000000042", true},
 		{int64(42), "00000000000000000042", true},
-		{float64(42.7), "00000000000000000042", true},
+		// Fractional floats delegate to formatFloatKey ("F:"-tagged) so
+		// distinct values do not collide on the truncated integer key — the
+		// composite-PK mirror of the single-column fix in formatFloatKey.
+		{float64(42.7), "F:42.7", true},
 		{"hello", "S:hello", true},
 		{true, "B:1", true},
 		{false, "B:0", true},

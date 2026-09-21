@@ -895,7 +895,12 @@ func formatKeyComponent(val interface{}) (string, bool) {
 	case int64:
 		return formatKey(v), true
 	case float64:
-		return formatKey(int64(v)), true
+		// Delegate to formatFloatKey so fractional floats stay distinct
+		// ("F:"-tagged) instead of truncating to the same integer key —
+		// mirroring the single-column PK fix in formatFloatKey. Whole floats
+		// keep the legacy formatKey form, so existing on-disk keys are stable.
+		k, _, _ := formatFloatKey(v)
+		return k, true
 	case string:
 		return "S:" + v, true
 	case bool:
