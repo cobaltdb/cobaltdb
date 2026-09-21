@@ -1101,14 +1101,42 @@ func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt 
 }
 
 func (c *Catalog) buildInsertRow(table *TableDef, insertColIndices []int, insertColumns []string, valueRow []query.Expression, args []interface{}, autoIncValue int64, rowValues []interface{}) error {
+	// A column is "supplied" when the overlay below will write an explicit
+	// value into it (a DEFAULT keyword in the value list requests the column
+	// default, so it does not count as supplied). Supplied columns skip
+	// default evaluation entirely: the overlay overwrites the slot, so an
+	// un-evaluatable default must not fail an insert that never needs it.
+	supplied := make([]bool, len(table.Columns))
+	if insertColIndices != nil {
+		for colIdx, tableColIdx := range insertColIndices {
+			if colIdx < len(valueRow) && tableColIdx >= 0 && tableColIdx < len(supplied) {
+				if _, isDefault := valueRow[colIdx].(*query.DefaultExpr); !isDefault {
+					supplied[tableColIdx] = true
+				}
+			}
+		}
+	} else {
+		for colIdx := 0; colIdx < len(valueRow) && colIdx < len(table.Columns); colIdx++ {
+			if _, isDefault := valueRow[colIdx].(*query.DefaultExpr); !isDefault {
+				supplied[colIdx] = true
+			}
+		}
+	}
+
 	// Set defaults for all columns first.
 	for i, col := range table.Columns {
 		if col.AutoIncrement {
 			rowValues[i] = float64(autoIncValue)
-		} else if col.defaultExpr != nil {
-			if defVal, err := EvalExpression(col.defaultExpr, args); err == nil {
-				rowValues[i] = defVal
+		} else if col.defaultExpr != nil && !supplied[i] {
+			defVal, err := EvalExpression(col.defaultExpr, args)
+			if err != nil {
+				// Value-materialization errors must fail the statement:
+				// silently nil-filling stores NULL where the declared default
+				// cannot be computed (the swallow class fixed for the INSTEAD
+				// OF sites and the ALTER TABLE ADD COLUMN backfill).
+				return fmt.Errorf("failed to evaluate value for column '%s': %w", col.Name, err)
 			}
+			rowValues[i] = defVal
 		}
 	}
 
