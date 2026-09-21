@@ -109,14 +109,14 @@ func migrateUp(db *sql.DB, dir string, targetVersion int64) error {
 		return nil
 	}
 
-	currentVersion, err := getCurrentVersion(db)
+	applied, err := getAppliedMigrations(db)
 	if err != nil {
-		return fmt.Errorf("failed to get current version: %w", err)
+		return fmt.Errorf("failed to get applied migrations: %w", err)
 	}
 
 	for _, m := range migrations {
 		// Skip if already applied
-		if m.Version <= currentVersion {
+		if _, ok := applied[m.Version]; ok {
 			continue
 		}
 
@@ -145,9 +145,9 @@ func migrateDown(db *sql.DB, dir string, targetVersion int64) error {
 		return fmt.Errorf("failed to load migrations: %w", err)
 	}
 
-	currentVersion, err := getCurrentVersion(db)
+	applied, err := getAppliedMigrations(db)
 	if err != nil {
-		return fmt.Errorf("failed to get current version: %w", err)
+		return fmt.Errorf("failed to get applied migrations: %w", err)
 	}
 
 	if targetVersion == 0 {
@@ -161,7 +161,7 @@ func migrateDown(db *sql.DB, dir string, targetVersion int64) error {
 
 	for _, m := range migrations {
 		// Skip if not applied yet
-		if m.Version > currentVersion {
+		if _, ok := applied[m.Version]; !ok {
 			continue
 		}
 
@@ -398,14 +398,6 @@ func revertMigration(db *sql.DB, m Migration) error {
 	}
 
 	return tx.Commit()
-}
-
-func getCurrentVersion(db *sql.DB) (int64, error) {
-	var version int64
-	err := db.QueryRow(
-		"SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-	).Scan(&version)
-	return version, err
 }
 
 func getAppliedMigrations(db *sql.DB) (map[int64]MigrationRecord, error) {
