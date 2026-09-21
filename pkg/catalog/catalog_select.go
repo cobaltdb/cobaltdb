@@ -1410,6 +1410,13 @@ func (c *Catalog) executeJoinChainForGroupBy(stmt *query.SelectStmt, args []inte
 							key := hashJoinKey(leftRow[leftColIdx])
 							if indices, ok := hashMap[key]; ok {
 								for _, ri := range indices {
+									// Hash keys are canonical forms; confirm actual
+									// equality with compareValues semantics so
+									// canonical collisions between distinct values
+									// (e.g. '0123' vs '123' as TEXT) do not join.
+									if compareValues(leftRow[leftColIdx], rightRows[ri][rightColIdx]) != 0 {
+										continue
+									}
 									combined := make([]interface{}, len(leftRow)+len(rightRows[ri]))
 									copy(combined, leftRow)
 									copy(combined[len(leftRow):], rightRows[ri])
