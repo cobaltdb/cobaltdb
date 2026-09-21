@@ -150,8 +150,16 @@ func (c *Catalog) executeCTEUnion(stmt *query.UnionStmt, args []interface{}) ([]
 	}
 
 	// Execute right side
+	var rightCols []string
 	var rightRows [][]interface{}
-	rightCols, rightRows, err := c.selectLocked(stmt.Right, args)
+	switch r := stmt.Right.(type) {
+	case *query.SelectStmt:
+		rightCols, rightRows, err = c.selectLocked(r, args)
+	case *query.UnionStmt:
+		rightCols, rightRows, err = c.executeCTEUnion(r, args)
+	default:
+		return nil, nil, fmt.Errorf("unsupported right side of UNION in CTE: %T", stmt.Right)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -229,8 +237,12 @@ func (c *Catalog) executeRecursiveCTE(name string, nameLower string, cteColumns 
 		return fmt.Errorf("recursive CTE anchor must be a SELECT statement")
 	}
 
-	// The right side is the recursive member
-	recursiveStmt := unionStmt.Right
+	// The right side is the recursive member; like the anchor, it must be a
+	// plain SELECT (a nested set operation is not the recursive-CTE shape).
+	recursiveStmt, ok := unionStmt.Right.(*query.SelectStmt)
+	if !ok {
+		return fmt.Errorf("recursive CTE member must be a SELECT statement")
+	}
 
 	// Step 1: Execute anchor member
 	anchorCols, anchorRows, err := c.selectLocked(anchorStmt, args)

@@ -349,7 +349,7 @@ const (
 // UnionStmt represents a UNION/INTERSECT/EXCEPT of multiple SELECT statements
 type UnionStmt struct {
 	Left    Statement // SelectStmt or UnionStmt
-	Right   *SelectStmt
+	Right   Statement // SelectStmt or UnionStmt (right nesting expresses INTERSECT precedence)
 	All     bool      // ALL variant (no deduplication)
 	Op      SetOpType // UNION, INTERSECT, or EXCEPT
 	OrderBy []*OrderByExpr

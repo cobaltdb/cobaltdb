@@ -124,7 +124,9 @@ func TestIntersectBasic(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Test INTERSECT - only common rows
+	// INTERSECT binds tighter than UNION ALL: {1} UNION ALL ({2} INTERSECT {2})
+	// = {1, 2} — the round-2 set-op precedence fix (previously the chain was
+	// folded left-associatively, yielding only the intersection row).
 	rows, err := db.Query(ctx, `SELECT 1 AS n UNION ALL SELECT 2 INTERSECT SELECT 2`)
 	if err != nil {
 		t.Logf("INTERSECT error: %v", err)
@@ -143,8 +145,8 @@ func TestIntersectBasic(t *testing.T) {
 		t.Logf("Row: n=%d", n)
 	}
 
-	if count != 1 {
-		t.Errorf("Expected 1 row (intersection), got %d", count)
+	if count != 2 {
+		t.Errorf("Expected 2 rows (UNION ALL of {1} with the intersection {2}), got %d", count)
 	}
 
 	t.Log("INTERSECT works correctly")

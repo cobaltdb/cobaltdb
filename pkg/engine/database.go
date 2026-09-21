@@ -907,9 +907,15 @@ func (db *DB) executeUnion(ctx context.Context, stmt *query.UnionStmt, args []in
 	}
 
 	// Execute right side
-	// Note: stmt.Right is always *SelectStmt by parser design (see query.UnionStmt).
-	// Nested unions are represented via Left chaining, not Right nesting.
-	rightRows, err := db.executeSelect(ctx, stmt.Right, args)
+	var rightRows *Rows
+	switch r := stmt.Right.(type) {
+	case *query.SelectStmt:
+		rightRows, err = db.executeSelect(ctx, r, args)
+	case *query.UnionStmt:
+		rightRows, err = db.executeUnion(ctx, r, args)
+	default:
+		return nil, fmt.Errorf("unsupported right side of set operation: %T", stmt.Right)
+	}
 	if err != nil {
 		return nil, err
 	}

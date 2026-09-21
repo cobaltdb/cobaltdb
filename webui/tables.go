@@ -141,7 +141,7 @@ func (a *tableAccumulator) walkUnion(s *query.UnionStmt, cteScope map[string]str
 		}
 	}
 	if s.Right != nil {
-		if err := a.walkSelect(s.Right, cteScope); err != nil {
+		if err := a.walkStatement(s.Right, cteScope); err != nil {
 			return err
 		}
 	}

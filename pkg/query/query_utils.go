@@ -177,7 +177,14 @@ func unionHasNonDeterministic(u *UnionStmt) bool {
 	default:
 		return true
 	}
-	return ContainsNonDeterministicFunctions(u.Right)
+	switch r := u.Right.(type) {
+	case *SelectStmt:
+		return ContainsNonDeterministicFunctions(r)
+	case *UnionStmt:
+		return unionHasNonDeterministic(r)
+	default:
+		return true
+	}
 }
 
 // HasNonDeterministicFunction reports whether expr contains a non-deterministic function.
@@ -340,7 +347,7 @@ func collectTablesFromStatement(stmt Statement, tables map[string]bool) {
 		collectTablesFromSelect(s, tables)
 	case *UnionStmt:
 		collectTablesFromStatement(s.Left, tables)
-		collectTablesFromSelect(s.Right, tables)
+		collectTablesFromStatement(s.Right, tables)
 	case *SelectStmtWithCTE:
 		for _, cte := range s.CTEs {
 			if cte != nil {
@@ -551,7 +558,7 @@ func statementToCacheKey(stmt Statement) string {
 		if s.All {
 			key += " ALL"
 		}
-		key += " " + QueryToSQL(s.Right)
+		key += " " + statementToCacheKey(s.Right)
 		if len(s.OrderBy) > 0 {
 			key += " ORDER BY "
 			for i, ob := range s.OrderBy {

@@ -1645,63 +1645,120 @@ func (p *Parser) parseUnion(left Statement) (Statement, error) {
 	return p.parseSetOp(left)
 }
 
-// parseSetOp parses UNION/INTERSECT/EXCEPT [ALL] SELECT ... chains
+// parseSetOp parses UNION/INTERSECT/EXCEPT [ALL] SELECT ... chains with
+// standard precedence: INTERSECT binds tighter than UNION/EXCEPT, which are
+// left-associative between themselves. A trailing ORDER BY/LIMIT/OFFSET on
+// the final operand is relocated to the enclosing set-operation node.
 func (p *Parser) parseSetOp(left Statement) (Statement, error) {
-	for p.current().Type == TokenUnion || p.current().Type == TokenIntersect || p.current().Type == TokenExcept {
-		var op SetOpType
-		var opName string
-		switch p.current().Type {
-		case TokenUnion:
-			op = SetOpUnion
-			opName = "UNION"
-		case TokenIntersect:
-			op = SetOpIntersect
-			opName = "INTERSECT"
-		case TokenExcept:
-			op = SetOpExcept
-			opName = "EXCEPT"
-		}
-		p.advance() // consume UNION/INTERSECT/EXCEPT
+	for {
+		switch {
+		case p.current().Type == TokenUnion || p.current().Type == TokenExcept:
+			op := SetOpUnion
+			opName := "UNION"
+			if p.current().Type == TokenExcept {
+				op = SetOpExcept
+				opName = "EXCEPT"
+			}
+			p.advance() // consume UNION/EXCEPT
 
-		all := false
-		if p.current().Type == TokenAll {
-			all = true
-			p.advance() // consume ALL
-		}
+			all := false
+			if p.current().Type == TokenAll {
+				all = true
+				p.advance() // consume ALL
+			}
 
-		if p.current().Type != TokenSelect {
-			return nil, fmt.Errorf("expected SELECT after %s", opName)
-		}
+			if p.current().Type != TokenSelect {
+				return nil, fmt.Errorf("expected SELECT after %s", opName)
+			}
 
-		right, err := p.parseSelect()
-		if err != nil {
-			return nil, err
-		}
+			rsel, err := p.parseSelect()
+			if err != nil {
+				return nil, err
+			}
+			var right Statement = rsel
+			// INTERSECT binds tighter than UNION/EXCEPT: fold any following
+			// INTERSECT chain into this operand before combining with left.
+			for p.current().Type == TokenIntersect {
+				if right, err = p.foldIntersect(right); err != nil {
+					return nil, err
+				}
+			}
 
-		stmt := &UnionStmt{
-			Left:  left,
-			Right: right,
-			All:   all,
-			Op:    op,
-		}
+			left = p.foldSetOp(left, right, op, all)
 
-		// The right SELECT may have consumed ORDER BY/LIMIT/OFFSET that actually
-		// belong to the set operation. Move them from the right SELECT to the stmt.
-		if right.OrderBy != nil {
-			stmt.OrderBy = right.OrderBy
-			right.OrderBy = nil
-		}
-		if right.Limit != nil {
-			stmt.Limit = right.Limit
-			right.Limit = nil
-		}
-		if right.Offset != nil {
-			stmt.Offset = right.Offset
-			right.Offset = nil
-		}
+		case p.current().Type == TokenIntersect:
+			var err error
+			if left, err = p.foldIntersect(left); err != nil {
+				return nil, err
+			}
 
-		left = stmt
+		default:
+			return left, nil
+		}
+	}
+}
+
+// foldIntersect consumes `INTERSECT [ALL] SELECT ...` and combines it with
+// left at INTERSECT precedence.
+func (p *Parser) foldIntersect(left Statement) (Statement, error) {
+	p.advance() // consume INTERSECT
+
+	all := false
+	if p.current().Type == TokenAll {
+		all = true
+		p.advance() // consume ALL
 	}
 
-	return left, nil
+	if p.current().Type != TokenSelect {
+		return nil, fmt.Errorf("expected SELECT after INTERSECT")
+	}
+
+	right, err := p.parseSelect()
+	if err != nil {
+		return nil, err
+	}
+
+	return p.foldSetOp(left, right, SetOpIntersect, all), nil
+}
+
+// foldSetOp builds the UnionStmt node for one set operation and relocates the
+// right operand's trailing ORDER BY/LIMIT/OFFSET to the new node (they belong
+// to the whole chain; hoisting through nested nodes keeps them on the
+// outermost operation, matching the pre-precedence behavior).
+func (p *Parser) foldSetOp(left Statement, right Statement, op SetOpType, all bool) Statement {
+	stmt := &UnionStmt{
+		Left:  left,
+		Right: right,
+		All:   all,
+		Op:    op,
+	}
+	switch r := right.(type) {
+	case *SelectStmt:
+		if r.OrderBy != nil {
+			stmt.OrderBy = r.OrderBy
+			r.OrderBy = nil
+		}
+		if r.Limit != nil {
+			stmt.Limit = r.Limit
+			r.Limit = nil
+		}
+		if r.Offset != nil {
+			stmt.Offset = r.Offset
+			r.Offset = nil
+		}
+	case *UnionStmt:
+		if r.OrderBy != nil {
+			stmt.OrderBy = r.OrderBy
+			r.OrderBy = nil
+		}
+		if r.Limit != nil {
+			stmt.Limit = r.Limit
+			r.Limit = nil
+		}
+		if r.Offset != nil {
+			stmt.Offset = r.Offset
+			r.Offset = nil
+		}
+	}
+	return stmt
 }
