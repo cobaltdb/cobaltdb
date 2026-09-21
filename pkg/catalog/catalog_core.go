@@ -2748,7 +2748,7 @@ func hasSubqueriesInExpr(expr query.Expression) bool {
 	case *query.BetweenExpr:
 		return hasSubqueriesInExpr(e.Expr) || hasSubqueriesInExpr(e.Lower) || hasSubqueriesInExpr(e.Upper)
 	case *query.LikeExpr:
-		return hasSubqueriesInExpr(e.Expr) || hasSubqueriesInExpr(e.Pattern)
+		return hasSubqueriesInExpr(e.Expr) || hasSubqueriesInExpr(e.Pattern) || hasSubqueriesInExpr(e.Escape)
 	case *query.IsNullExpr:
 		return hasSubqueriesInExpr(e.Expr)
 	case *query.IntervalExpr:
