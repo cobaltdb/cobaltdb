@@ -1444,15 +1444,8 @@ func (p *Parser) parseCall() (*CallProcedureStmt, error) {
 		}
 	}
 
-	placeholderOffset := 0
-	for _, arg := range stmt.Args {
-		placeholders := collectPlaceholders(arg.Expr)
-		for i, ph := range placeholders {
-			ph.Index = placeholderOffset + i
-		}
-		placeholderOffset += len(placeholders)
-	}
-
+	// Placeholder ordinals are assigned at creation in appearance order
+	// (parsePrimary); no per-argument reindexing is needed.
 	return stmt, nil
 }
 

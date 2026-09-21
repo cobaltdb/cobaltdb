@@ -431,8 +431,8 @@ func TestParserProductionEntryCoverage(t *testing.T) {
 		func(p *Parser) { _, _ = p.parseOnConflict() },
 		func(p *Parser) { _, _ = p.parseReturningClause() },
 		func(p *Parser) { _, _ = p.parseUpdate() },
-		func(p *Parser) { _, _, _ = p.parseSetClauses() },
-		func(p *Parser) { _, _, _ = p.parseTupleSetClause() },
+		func(p *Parser) { _, _ = p.parseSetClauses() },
+		func(p *Parser) { _, _ = p.parseTupleSetClause() },
 		func(p *Parser) { _, _ = p.parseSetTargetColumn() },
 		func(p *Parser) { _, _ = p.parseDelete() },
 		func(p *Parser) { _, _ = p.parseMySQLTargetedDelete(&DeleteStmt{}) },
@@ -879,7 +879,7 @@ func TestRemainingDMLParserCoverage(t *testing.T) {
 		t.Fatal("delete predicate combination lost operand")
 	}
 	p = &Parser{tokens: []Token{{Type: TokenComma}, {Type: TokenEOF}}, strict: true}
-	if _, err := p.parseUpdateFromJoin(&UpdateStmt{}, 0); err == nil {
+	if err := p.parseUpdateFromJoin(&UpdateStmt{}); err == nil {
 		t.Fatal("invalid UPDATE FROM table accepted")
 	}
 
@@ -1054,11 +1054,11 @@ func TestFinalReachableParserBranches(t *testing.T) {
 	}
 
 	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "u"}, {Type: TokenComma}, {Type: TokenEOF}}, strict: true}
-	if _, err := p.parseUpdateFromJoin(&UpdateStmt{}, 0); err == nil {
+	if err := p.parseUpdateFromJoin(&UpdateStmt{}); err == nil {
 		t.Fatal("invalid UPDATE FROM cross table accepted")
 	}
 	p = &Parser{tokens: []Token{{Type: TokenIdentifier, Literal: "u"}, {Type: TokenJoin}, {Type: TokenEOF}}, strict: true}
-	if _, err := p.parseUpdateFromJoin(&UpdateStmt{}, 0); err == nil {
+	if err := p.parseUpdateFromJoin(&UpdateStmt{}); err == nil {
 		t.Fatal("invalid UPDATE FROM join accepted")
 	}
 

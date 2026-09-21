@@ -59,22 +59,17 @@ func (p *Parser) parseExpressionList() ([]Expression, error) {
 	return p.parseExpressionListWithOffset(0)
 }
 
-// parseExpressionListWithOffset parses a comma-separated list of expressions with placeholder offset
+// parseExpressionListWithOffset parses a comma-separated list of expressions.
+// The offset parameter is retained for call-site compatibility; placeholder
+// ordinals are assigned at creation (parsePrimary) in appearance order, so no
+// post-hoc reindexing is needed.
 func (p *Parser) parseExpressionListWithOffset(placeholderOffset int) ([]Expression, error) {
 	var exprs []Expression
-	phCount := 0
 
 	for {
 		expr, err := p.parseExpression()
 		if err != nil {
 			return nil, err
-		}
-
-		// Update placeholder indices sequentially (including nested ones in function calls)
-		placeholders := collectPlaceholders(expr)
-		for _, ph := range placeholders {
-			ph.Index = placeholderOffset + phCount
-			phCount++
 		}
 
 		exprs = append(exprs, expr)
@@ -557,7 +552,12 @@ func (p *Parser) parsePrimary() (Expression, error) {
 		return &BooleanLiteral{Value: false}, nil
 	case TokenQuestion:
 		p.advance()
-		return &PlaceholderExpr{}, nil
+		// Assign the ordinal at creation: appearance order == wire-arg order.
+		// p.placeholderCount is reset per statement by parseStatement and is
+		// saved/restored by tryParseIntervalTail on backtrack.
+		ph := &PlaceholderExpr{Index: p.placeholderCount}
+		p.placeholderCount++
+		return ph, nil
 	case TokenCase:
 		return p.parseCaseExpr()
 	case TokenExists:

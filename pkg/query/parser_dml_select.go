@@ -51,7 +51,6 @@ func (p *Parser) parseSelect() (*SelectStmt, error) {
 			return nil, err
 		}
 		stmt.Where = where
-		reindexPlaceholders(where, 0)
 	}
 
 	// GROUP BY
@@ -840,7 +839,7 @@ func (p *Parser) parseInsertTargetAndSource(stmt *InsertStmt, requireInto bool) 
 	// MySQL: INSERT INTO table SET col = expr [, col = expr] ...
 	if p.current().Type == TokenSet {
 		p.advance()
-		clauses, _, err := p.parseSetClauses()
+		clauses, err := p.parseSetClauses()
 		if err != nil {
 			return nil, err
 		}
@@ -861,26 +860,19 @@ func (p *Parser) parseInsertTargetAndSource(stmt *InsertStmt, requireInto bool) 
 		return nil, err
 	}
 
-	// Value lists. Placeholder indices are assigned sequentially in
-	// appearance order across all rows: the executor binds args[Index] with
-	// args in wire order, so indices must stay contiguous regardless of how
-	// many literal values share each row. The previous slot-based offset
-	// (rowCount * len(columns)) misbound rows mixing literals with
-	// placeholders — e.g. VALUES (1,?),(2,?) produced indices {0,2}, so the
-	// second row silently bound args[0] and appended the leftover arg as an
-	// extra column value.
-	phBase := 0
+	// Value lists. Placeholder ordinals are assigned at creation in
+	// appearance order (parsePrimary), so indices stay contiguous across rows
+	// regardless of how many literal values share each row — the structural
+	// form of the slot-offset fix (VALUES (1,?),(2,?) once produced indices
+	// {0,2}, silently appending the leftover arg as an extra column value).
 	for {
 		if _, err := p.expect(TokenLParen); err != nil {
 			return nil, err
 		}
 
-		values, err := p.parseExpressionListWithOffset(phBase)
+		values, err := p.parseExpressionList()
 		if err != nil {
 			return nil, err
-		}
-		for _, v := range values {
-			phBase += len(collectPlaceholders(v))
 		}
 
 		stmt.Values = append(stmt.Values, values)
@@ -946,7 +938,7 @@ func (p *Parser) parseOnDuplicateKeyUpdate() (*OnConflictClause, error) {
 	if _, err := p.expect(TokenUpdate); err != nil {
 		return nil, err
 	}
-	clauses, _, err := p.parseSetClauses()
+	clauses, err := p.parseSetClauses()
 	if err != nil {
 		return nil, err
 	}
@@ -992,7 +984,7 @@ func (p *Parser) parseOnConflict() (*OnConflictClause, error) {
 	if _, err := p.expect(TokenSet); err != nil {
 		return nil, err
 	}
-	clauses, _, err := p.parseSetClauses()
+	clauses, err := p.parseSetClauses()
 	if err != nil {
 		return nil, err
 	}
@@ -1041,11 +1033,8 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 	stmt.Table = tableRef.Name
 	stmt.Alias = tableRef.Alias
 
-	whereOffset := 0
 	if p.isJoin() {
-		var err error
-		whereOffset, err = p.parseUpdateJoins(stmt, whereOffset)
-		if err != nil {
+		if err := p.parseUpdateJoins(stmt); err != nil {
 			return nil, err
 		}
 	}
@@ -1059,20 +1048,14 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 		return nil, err
 	}
 
-	setClauses, setPlaceholders, err := p.parseSetClauses()
+	setClauses, err := p.parseSetClauses()
 	if err != nil {
 		return nil, err
 	}
 	stmt.Set = setClauses
 
-	for i, ph := range setPlaceholders {
-		ph.Index = whereOffset + i
-	}
-	whereOffset += len(setPlaceholders)
-
 	if p.match(TokenFrom) {
-		whereOffset, err = p.parseUpdateFromJoin(stmt, whereOffset)
-		if err != nil {
+		if err := p.parseUpdateFromJoin(stmt); err != nil {
 			return nil, err
 		}
 	}
@@ -1083,7 +1066,6 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 			return nil, err
 		}
 		stmt.Where = where
-		reindexPlaceholders(where, whereOffset)
 	}
 
 	if p.current().Type == TokenReturning {
@@ -1098,18 +1080,16 @@ func (p *Parser) parseUpdate() (*UpdateStmt, error) {
 	return stmt, nil
 }
 
-func (p *Parser) parseSetClauses() ([]*SetClause, []*PlaceholderExpr, error) {
+func (p *Parser) parseSetClauses() ([]*SetClause, error) {
 	var clauses []*SetClause
-	var placeholders []*PlaceholderExpr
 
 	for {
 		if p.current().Type == TokenLParen {
-			tupleClauses, tuplePlaceholders, err := p.parseTupleSetClause()
+			tupleClauses, err := p.parseTupleSetClause()
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			clauses = append(clauses, tupleClauses...)
-			placeholders = append(placeholders, tuplePlaceholders...)
 			if !p.match(TokenComma) {
 				break
 			}
@@ -1121,49 +1101,45 @@ func (p *Parser) parseSetClauses() ([]*SetClause, []*PlaceholderExpr, error) {
 		if col.Type == TokenIdentifier || (col.Literal != "" && col.Type != TokenEOF && col.Type != TokenEq) {
 			p.advance()
 		} else {
-			return nil, nil, fmt.Errorf("expected column name, got %s", col.Literal)
+			return nil, fmt.Errorf("expected column name, got %s", col.Literal)
 		}
 		if p.match(TokenDot) {
 			qualifiedCol := p.current()
 			if qualifiedCol.Literal == "" || qualifiedCol.Type == TokenEOF {
-				return nil, nil, fmt.Errorf("expected column name after '.'")
+				return nil, fmt.Errorf("expected column name after '.'")
 			}
 			colName = qualifiedCol.Literal
 			p.advance()
 		}
 
 		if _, err := p.expect(TokenEq); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
 		val, err := p.parseExpression()
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
 		clauses = append(clauses, &SetClause{Column: colName, Value: val})
-		placeholders = append(placeholders, collectPlaceholders(val)...)
 
 		if !p.match(TokenComma) {
 			break
 		}
 	}
 
-	for i, ph := range placeholders {
-		ph.Index = i
-	}
-	return clauses, placeholders, nil
+	return clauses, nil
 }
 
-func (p *Parser) parseTupleSetClause() ([]*SetClause, []*PlaceholderExpr, error) {
+func (p *Parser) parseTupleSetClause() ([]*SetClause, error) {
 	if _, err := p.expect(TokenLParen); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	var columns []string
 	for {
 		colName, err := p.parseSetTargetColumn()
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		columns = append(columns, colName)
 		if !p.match(TokenComma) {
@@ -1171,31 +1147,29 @@ func (p *Parser) parseTupleSetClause() ([]*SetClause, []*PlaceholderExpr, error)
 		}
 	}
 	if _, err := p.expect(TokenRParen); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if _, err := p.expect(TokenEq); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if _, err := p.expect(TokenLParen); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	values, err := p.parseExpressionList()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if _, err := p.expect(TokenRParen); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if len(columns) != len(values) {
-		return nil, nil, fmt.Errorf("SET column list has %d columns but value list has %d expressions", len(columns), len(values))
+		return nil, fmt.Errorf("SET column list has %d columns but value list has %d expressions", len(columns), len(values))
 	}
 	clauses := make([]*SetClause, len(columns))
-	var placeholders []*PlaceholderExpr
 	for i, col := range columns {
 		clauses[i] = &SetClause{Column: col, Value: values[i]}
-		placeholders = append(placeholders, collectPlaceholders(values[i])...)
 	}
-	return clauses, placeholders, nil
+	return clauses, nil
 }
 
 func (p *Parser) parseSetTargetColumn() (string, error) {
@@ -1216,21 +1190,15 @@ func (p *Parser) parseSetTargetColumn() (string, error) {
 	return colName, nil
 }
 
-func (p *Parser) parseUpdateJoins(stmt *UpdateStmt, whereOffset int) (int, error) {
-	offset := whereOffset
+func (p *Parser) parseUpdateJoins(stmt *UpdateStmt) error {
 	for p.isJoin() {
 		join, err := p.parseJoin()
 		if err != nil {
-			return offset, err
+			return err
 		}
 		stmt.Joins = append(stmt.Joins, join)
-		if join.Condition != nil {
-			joinPHs := collectPlaceholders(join.Condition)
-			reindexPlaceholdersFromExpr(join.Condition, offset)
-			offset += len(joinPHs)
-		}
 	}
-	return offset, nil
+	return nil
 }
 
 func (p *Parser) parseUpdateCommaJoins(stmt *UpdateStmt) error {
@@ -1247,17 +1215,17 @@ func (p *Parser) parseUpdateCommaJoins(stmt *UpdateStmt) error {
 	return nil
 }
 
-func (p *Parser) parseUpdateFromJoin(stmt *UpdateStmt, whereOffset int) (int, error) {
+func (p *Parser) parseUpdateFromJoin(stmt *UpdateStmt) error {
 	table, err := p.parseTableRef()
 	if err != nil {
-		return whereOffset, err
+		return err
 	}
 	stmt.From = table
 
 	for p.match(TokenComma) {
 		crossTable, err := p.parseTableRef()
 		if err != nil {
-			return whereOffset, err
+			return err
 		}
 		stmt.Joins = append(stmt.Joins, &JoinClause{
 			Type:  TokenCross,
@@ -1268,20 +1236,11 @@ func (p *Parser) parseUpdateFromJoin(stmt *UpdateStmt, whereOffset int) (int, er
 	for p.isJoin() {
 		join, err := p.parseJoin()
 		if err != nil {
-			return whereOffset, err
+			return err
 		}
 		stmt.Joins = append(stmt.Joins, join)
 	}
-
-	offset := whereOffset
-	for _, join := range stmt.Joins {
-		if join.Condition != nil {
-			joinPHs := collectPlaceholders(join.Condition)
-			reindexPlaceholdersFromExpr(join.Condition, offset)
-			offset += len(joinPHs)
-		}
-	}
-	return offset, nil
+	return nil
 }
 
 // parseDelete parses a DELETE statement
@@ -1328,7 +1287,6 @@ func (p *Parser) parseDelete() (*DeleteStmt, error) {
 	}
 
 	// USING - for DELETE with JOIN
-	placeholderOffset := 0
 	var joinWhere Expression
 	if p.match(TokenUsing) {
 		for {
@@ -1352,27 +1310,16 @@ func (p *Parser) parseDelete() (*DeleteStmt, error) {
 			// Add JOIN as additional table with condition in WHERE
 			stmt.Using = append(stmt.Using, join.Table)
 			if join.Condition != nil {
-				// Collect placeholders from join condition
-				joinPlaceholders := collectPlaceholders(join.Condition)
-				for i, ph := range joinPlaceholders {
-					ph.Index = placeholderOffset + i
-				}
-				placeholderOffset += len(joinPlaceholders)
 				joinWhere = combineDeleteWhere(joinWhere, join.Condition)
 			}
 		}
 	}
 
-	// WHERE - placeholders start at offset 0 (or after USING/JOIN placeholders)
+	// WHERE
 	if p.match(TokenWhere) {
 		where, err := p.parseExpression()
 		if err != nil {
 			return nil, err
-		}
-		// Fix WHERE clause placeholder indices
-		wherePlaceholders := collectPlaceholders(where)
-		for i, ph := range wherePlaceholders {
-			ph.Index = placeholderOffset + i
 		}
 		stmt.Where = combineDeleteWhere(joinWhere, where)
 	} else {
@@ -1420,7 +1367,6 @@ func (p *Parser) parseMySQLTargetedDelete(stmt *DeleteStmt) (*DeleteStmt, error)
 	stmt.Alias = fromTable.Alias
 
 	var joinWhere Expression
-	placeholderOffset := 0
 	for p.match(TokenComma) {
 		usingTable, err := p.parseTableRef()
 		if err != nil {
@@ -1435,8 +1381,6 @@ func (p *Parser) parseMySQLTargetedDelete(stmt *DeleteStmt) (*DeleteStmt, error)
 		}
 		stmt.Using = append(stmt.Using, join.Table)
 		if join.Condition != nil {
-			reindexPlaceholdersFromExpr(join.Condition, placeholderOffset)
-			placeholderOffset += len(collectPlaceholders(join.Condition))
 			joinWhere = combineDeleteWhere(joinWhere, join.Condition)
 		}
 	}
@@ -1446,7 +1390,6 @@ func (p *Parser) parseMySQLTargetedDelete(stmt *DeleteStmt) (*DeleteStmt, error)
 		if err != nil {
 			return nil, err
 		}
-		reindexPlaceholdersFromExpr(where, placeholderOffset)
 		stmt.Where = combineDeleteWhere(joinWhere, where)
 	} else {
 		stmt.Where = joinWhere
