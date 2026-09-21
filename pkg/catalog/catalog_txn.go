@@ -976,6 +976,22 @@ func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
 				return fmt.Errorf("%s undoing delete: %w", errorPrefix, err)
 			}
 		}
+		// Mirror applyDMLUndoEntry's undoDelete: deletes and REPLACE evictions
+		// on vector-indexed tables remove/relocate HNSW entries at apply time
+		// (applyInsertRowDirect/applyUpdateEntryDirect), and a REPLACE's new
+		// row overwrites the entry at the same key. Restoring the row must
+		// re-index its ORIGINAL vector or the restored row is unsearchable.
+		if tbl, exists := c.tables[entry.tableName]; exists {
+			// oldValue is the raw tree bytes: a VersionedRow JSON object (or a
+			// legacy bare array). Use the canonical row decoder.
+			vrow, derr := decodeVersionedRow(entry.oldValue, len(tbl.Columns))
+			if derr != nil {
+				return fmt.Errorf("%s undoing delete (decode old row): %w", errorPrefix, derr)
+			}
+			if err := c.restoreVectorIndexesForUpdate(tbl, entry.tableName, []updateEntry{{key: entry.key, oldRow: vrow.Data}}); err != nil {
+				return fmt.Errorf("%s undoing delete (vector index): %w", errorPrefix, err)
+			}
+		}
 	case undoCreateTable:
 		return c.undoCreateTableEntry(entry, errorPrefix)
 	case undoDropTable:
