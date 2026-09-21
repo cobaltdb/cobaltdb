@@ -1757,6 +1757,12 @@ func toFloat64(v interface{}) (float64, bool) {
 	switch n := v.(type) {
 	case int:
 		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
 	case int64:
 		return float64(n), true
 	case float64:
