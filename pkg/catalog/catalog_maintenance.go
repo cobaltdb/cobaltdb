@@ -410,6 +410,27 @@ func (c *Catalog) Load() error {
 		c.tableTrees[tableName] = tableTree
 	}
 
+	// Restore partition trees: their roots live in each table's Partition
+	// metadata (PartitionDef.RootPageID) — there is no per-partition TableDef,
+	// so the main-table load above cannot see them. Roots of 0 mean the
+	// partition tree was never created; it is lazily created on first insert.
+	for _, tableDef := range c.tables {
+		if tableDef.Partition == nil {
+			continue
+		}
+		for i := range tableDef.Partition.Partitions {
+			pd := &tableDef.Partition.Partitions[i]
+			if pd.RootPageID == 0 {
+				continue
+			}
+			partTree, err := btree.OpenBTreeStrict(c.pool, pd.RootPageID)
+			if err != nil {
+				return fmt.Errorf("load catalog: failed to open partition %s:%s: %w", tableDef.Name, pd.Name, err)
+			}
+			c.tableTrees[tableDef.Name+":"+pd.Name] = partTree
+		}
+	}
+
 	// Load regular B-tree index definitions after tables so orphaned/corrupt
 	// metadata cannot resurrect indexes for missing tables.
 	idxIter, err := c.tree.Scan([]byte("idx:"), []byte("idx;"))
@@ -1220,12 +1241,25 @@ func (c *Catalog) vacuumTreeLocked(name string, horizonSec int64) error {
 	// but Load() reopens a table from its persisted TableDef.RootPageID. Without
 	// updating + persisting the root, a reopen loads the OLD pre-vacuum tree —
 	// resurrecting soft-deleted rows and losing every write made after the
-	// vacuum (AutoVacuum is on by default, so this happens silently). Only the
-	// non-partitioned single-tree case is keyed in c.tables here.
+	// vacuum (AutoVacuum is on by default, so this happens silently). For the
+	// non-partitioned single-tree case the root lives in TableDef.RootPageID;
+	// partition trees persist theirs through the matching PartitionDef below.
 	if td, ok := c.tables[name]; ok {
 		td.RootPageID = newTree.RootPageID()
 		if err := c.storeTableDef(td); err != nil {
 			return fmt.Errorf("vacuum: failed to persist new root for table %s: %w", name, err)
+		}
+	} else if parts := strings.SplitN(name, ":", 2); len(parts) == 2 {
+		if td, ok := c.tables[parts[0]]; ok && td.Partition != nil {
+			for i := range td.Partition.Partitions {
+				if td.Name+":"+td.Partition.Partitions[i].Name == name {
+					td.Partition.Partitions[i].RootPageID = newTree.RootPageID()
+					if err := c.storeTableDef(td); err != nil {
+						return fmt.Errorf("vacuum: failed to persist new partition root for table %s: %w", name, err)
+					}
+					break
+				}
+			}
 		}
 	}
 

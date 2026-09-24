@@ -2482,5 +2482,22 @@ func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, a
 		c.partitionTreeMu.Unlock()
 	}
 
+	// Persist the partition tree root: PartitionDef is the only persisted home
+	// for partition roots. CreateTable pre-creates partition trees without a
+	// persisted root and lazy creation assigns a fresh one — either way the
+	// PartitionDef must carry the root before rows are written, or a reopen
+	// loses every row routed to this partition.
+	for i := range table.Partition.Partitions {
+		if table.Name+":"+table.Partition.Partitions[i].Name == partitionTreeName {
+			if table.Partition.Partitions[i].RootPageID != tree.RootPageID() {
+				table.Partition.Partitions[i].RootPageID = tree.RootPageID()
+				if err := c.storeTableDef(table); err != nil {
+					return nil, -1, fmt.Errorf("failed to persist partition tree root: %w", err)
+				}
+			}
+			break
+		}
+	}
+
 	return tree, partitionColIdx, nil
 }

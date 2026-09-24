@@ -60,9 +60,10 @@ type PartitionInfo struct {
 
 // PartitionDef defines a single partition
 type PartitionDef struct {
-	Name     string `json:"name"`
-	MinValue int64  `json:"min_value"`
-	MaxValue int64  `json:"max_value"`
+	Name       string `json:"name"`
+	MinValue   int64  `json:"min_value"`
+	MaxValue   int64  `json:"max_value"`
+	RootPageID uint32 `json:"root_page_id,omitempty"`
 }
 
 // TableDef holds the schema definition for a table or collection.
