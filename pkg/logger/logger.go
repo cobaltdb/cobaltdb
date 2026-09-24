@@ -301,6 +301,12 @@ func (l *Logger) log(level Level, msg string, err error) {
 	}
 
 	output := l.output
+	if output == nil {
+		// Zero-value Loggers (not created via New) have no configured writer.
+		// Preserve NewWithFormat's documented nil-output behavior of writing
+		// to stdout instead of panicking on the nil interface.
+		output = os.Stdout
+	}
 	outMu := l.outMu
 	l.mu.RUnlock()
 
