@@ -609,6 +609,9 @@ func validatePolicyDefinition(policy *Policy) error {
 	if policy == nil {
 		return ErrInvalidPolicy
 	}
+	if policy.Type < PolicySelect || policy.Type > PolicyAll {
+		return fmt.Errorf("%w: unknown policy type %d", ErrInvalidPolicy, policy.Type)
+	}
 	if strings.TrimSpace(policy.Name) == "" || strings.TrimSpace(policy.TableName) == "" {
 		return ErrInvalidPolicy
 	}
@@ -892,15 +895,30 @@ func (m *Manager) parseComplexExpression(expr string) (PolicyExpr, error) {
 	return nil, fmt.Errorf("could not parse complex expression")
 }
 
-// findTopLevelOperator finds an operator at the top level (not inside parentheses)
+// findTopLevelOperator finds an operator at the top level (not inside
+// parentheses or quoted string literals). Quoted spans are skipped so string
+// literals containing operator words (e.g. `status = 'review AND escalate'`)
+// never structure the expression.
 func findTopLevelOperator(expr, op string) int {
 	depth := 0
 	upperExpr := toUpperFast(expr)
 	upperOp := toUpperFast(op)
-	for i := 0; i <= len(upperExpr)-len(upperOp); i++ {
-		if expr[i] == '(' {
+	inQuote := byte(0)
+	for i := 0; i < len(upperExpr); i++ {
+		c := expr[i]
+		if inQuote != 0 {
+			if c == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		if c == '\'' || c == '"' {
+			inQuote = c
+			continue
+		}
+		if c == '(' {
 			depth++
-		} else if expr[i] == ')' {
+		} else if c == ')' {
 			depth--
 		} else if depth == 0 && strings.HasPrefix(upperExpr[i:], upperOp) {
 			return i
