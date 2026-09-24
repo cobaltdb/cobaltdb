@@ -4,6 +4,7 @@ package optimizer
 import (
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 )
@@ -62,6 +63,10 @@ type IndexStatistics struct {
 type Optimizer struct {
 	config *Config
 	stats  *Statistics
+	// mu guards stats. The engine shares one Optimizer across goroutines:
+	// EXPLAIN reads statistics from query handlers (explain.go) while
+	// UpdateTableStatistics replaces them from other callers.
+	mu sync.RWMutex
 }
 
 // New creates a new query optimizer
@@ -150,7 +155,11 @@ func (o *Optimizer) estimateJoinSelectivity(join *query.JoinClause) float64 {
 		return selectivity
 	}
 
+	// Stats entries are immutable snapshots (UpdateStatistics stores fresh
+	// clones), so the fetched entry may be read after releasing the lock.
+	o.mu.RLock()
 	stats := o.stats.TableStats[join.Table.Name]
+	o.mu.RUnlock()
 	if stats == nil {
 		return selectivity
 	}
@@ -177,7 +186,11 @@ func (o *Optimizer) SelectBestIndex(tableName string, where query.Expression) st
 		return ""
 	}
 
+	// Stats entries are immutable snapshots; reading the fetched entry
+	// outside the lock is safe.
+	o.mu.RLock()
 	stats := o.stats.TableStats[tableName]
+	o.mu.RUnlock()
 	if stats == nil || len(stats.IndexStats) == 0 {
 		return ""
 	}
@@ -302,6 +315,8 @@ func (o *Optimizer) scoreIndex(columns []string, indexStats *IndexStatistics) fl
 
 // UpdateStatistics updates statistics for a table
 func (o *Optimizer) UpdateStatistics(tableName string, stats *TableStatistics) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if o.stats.TableStats == nil {
 		o.stats.TableStats = make(map[string]*TableStatistics)
 	}
@@ -310,6 +325,8 @@ func (o *Optimizer) UpdateStatistics(tableName string, stats *TableStatistics) {
 
 // GetTableStatistics returns statistics for a table
 func (o *Optimizer) GetTableStatistics(tableName string) *TableStatistics {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
 	return cloneTableStatistics(o.stats.TableStats[tableName])
 }
 
