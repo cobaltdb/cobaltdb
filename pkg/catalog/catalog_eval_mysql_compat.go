@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash/crc32"
+	"math"
 	"math/big"
 	"strconv"
 	"strings"
@@ -157,17 +158,23 @@ var mysqlCompatHandlers = map[string]functionHandler{
 		return formatRadix(args, 8)
 	},
 
+	// TO_BASE64 follows MySQL: standard base-64 alphabet with a newline
+	// embedded after every 76 characters of encoded output (FROM_BASE64
+	// skips them again). NULL arguments yield NULL.
 	"TO_BASE64": func(args []interface{}) (interface{}, error) {
 		if len(args) < 1 || args[0] == nil {
 			return nil, nil
 		}
-		return base64.StdEncoding.EncodeToString([]byte(ValueToStringKey(args[0]))), nil
+		return insertBase64Breaks(base64.StdEncoding.EncodeToString([]byte(ValueToStringKey(args[0])))), nil
 	},
+	// FROM_BASE64 follows MySQL: whitespace (including the newlines
+	// TO_BASE64 embeds) is ignored while decoding, and an invalid base-64
+	// string yields NULL rather than an error.
 	"FROM_BASE64": func(args []interface{}) (interface{}, error) {
 		if len(args) < 1 || args[0] == nil {
 			return nil, nil
 		}
-		b, err := base64.StdEncoding.DecodeString(ValueToStringKey(args[0]))
+		b, err := base64.StdEncoding.DecodeString(stripBase64Whitespace(ValueToStringKey(args[0])))
 		if err != nil {
 			return nil, nil
 		}
@@ -308,6 +315,33 @@ var mysqlCompatHandlers = map[string]functionHandler{
 		last := time.Date(t.Year(), t.Month()+1, 0, 0, 0, 0, 0, t.Location())
 		return last.Format("2006-01-02"), nil
 	},
+
+	// WEEK returns the week number for a date under WEEK()'s 0..7 mode table
+	// (default mode 0). Unlike YEARWEEK it does not roll the year: modes
+	// 0/1/4/5 report week 00 for days before week 1, and modes 2/3/6/7 use
+	// week-year numbering (range 1-53). NULL dates and NULL or out-of-range
+	// modes yield NULL.
+	"WEEK": func(args []interface{}) (interface{}, error) {
+		t, mode, ok := mysqlDateAndMode(args)
+		if !ok {
+			return nil, nil
+		}
+		return int64(mysqlWeek(t, mode)), nil
+	},
+
+	// YEARWEEK returns year*100 + week with week-year semantics: the result
+	// year may differ from the date's year for the first and last week of
+	// the year, so WEEK()'s week 00 never appears. The optional mode uses
+	// WEEK()'s 0..7 table (rounded like MySQL's numeric cast); modes outside
+	// that range yield NULL.
+	"YEARWEEK": func(args []interface{}) (interface{}, error) {
+		t, mode, ok := mysqlDateAndMode(args)
+		if !ok {
+			return nil, nil
+		}
+		year, week := mysqlYearWeek(t, mode)
+		return int64(year)*100 + int64(week), nil
+	},
 }
 
 func charLengthHandler(args []interface{}) (interface{}, error) {
@@ -357,6 +391,8 @@ func applyMySQLDateFormat(format string, t time.Time) string {
 			fmt.Fprintf(&b, "%02d", int(t.Month()))
 		case 'c':
 			fmt.Fprintf(&b, "%d", int(t.Month()))
+		case 'D':
+			fmt.Fprintf(&b, "%d%s", t.Day(), mysqlDayOrdinal(t.Day()))
 		case 'd':
 			fmt.Fprintf(&b, "%02d", t.Day())
 		case 'e':
@@ -391,9 +427,22 @@ func applyMySQLDateFormat(format string, t time.Time) string {
 			fmt.Fprintf(&b, "%02d:%02d:%02d", t.Hour(), t.Minute(), t.Second())
 		case 'r':
 			fmt.Fprintf(&b, "%02d:%02d:%02d %s", hour12(t), t.Minute(), t.Second(), t.Format("PM"))
-		case 'U', 'u':
+		case 'U':
+			fmt.Fprintf(&b, "%02d", mysqlWeekMode0(t))
+		case 'u':
+			fmt.Fprintf(&b, "%02d", mysqlWeekMode1(t))
+		case 'V':
+			wk, _ := mysqlWeekMode2(t)
+			fmt.Fprintf(&b, "%02d", wk)
+		case 'v':
 			_, wk := t.ISOWeek()
 			fmt.Fprintf(&b, "%02d", wk)
+		case 'X':
+			_, yr := mysqlWeekMode2(t)
+			fmt.Fprintf(&b, "%04d", yr)
+		case 'x':
+			yr, _ := t.ISOWeek()
+			fmt.Fprintf(&b, "%04d", yr)
 		case 'w':
 			fmt.Fprintf(&b, "%d", int(t.Weekday()))
 		case '%':
@@ -412,4 +461,272 @@ func hour12(t time.Time) int {
 		h = 12
 	}
 	return h
+}
+
+// mysqlWeekMode0 implements DATE_FORMAT %U (MySQL WEEK() mode 0): weeks start
+// on Sunday and week 01 begins at the first Sunday of the year; the days
+// before it report week 00. ISOWeek() must not be used here: ISO numbering is
+// Monday-first with a 4-day rule and rolls across year boundaries.
+func mysqlWeekMode0(t time.Time) int {
+	jan1 := time.Date(t.Year(), 1, 1, 0, 0, 0, 0, t.Location())
+	firstSunday := 1 + ((7 - int(jan1.Weekday())) % 7) // YearDay of the first Sunday
+	yd := t.YearDay()
+	if yd < firstSunday {
+		return 0
+	}
+	return (yd-firstSunday)/7 + 1
+}
+
+// mysqlWeekMode1 implements DATE_FORMAT %u (MySQL WEEK() mode 1): weeks start
+// on Monday and week 01 is the first week with four or more days in the year.
+// Years beginning Friday–Sunday contribute only 1–3 days to their opening
+// Monday-week, so those leading days report week 00; years beginning
+// Monday–Thursday keep the week containing Jan 1 as week 01.
+func mysqlWeekMode1(t time.Time) int {
+	jan1 := time.Date(t.Year(), 1, 1, 0, 0, 0, 0, t.Location())
+	mondayIndex := (int(jan1.Weekday()) + 6) % 7 // Monday = 0 .. Sunday = 6
+	yd := t.YearDay()
+	if mondayIndex >= 4 {
+		if yd <= 7-mondayIndex {
+			return 0
+		}
+		return (yd-8+mondayIndex)/7 + 1
+	}
+	return (yd-1+mondayIndex)/7 + 1
+}
+
+// mysqlWeekMode2 reports DATE_FORMAT %V/%X (MySQL WEEK() mode 2): %U numbering
+// with week-year semantics. Days in week 00 belong to the previous year's
+// final week (%V = that week number, %X = that year); the year end never rolls
+// forward because week 01 always starts at the first Sunday of the year.
+func mysqlWeekMode2(t time.Time) (week, year int) {
+	year = t.Year()
+	week = mysqlWeekMode0(t)
+	if week != 0 {
+		return week, year
+	}
+	// Week 00: the week opened in the previous year, so report that year's
+	// final mode-0 week (Dec 31 is always past the first Sunday, so the
+	// recursion terminates after one step).
+	prevDec31 := time.Date(year-1, 12, 31, 0, 0, 0, 0, t.Location())
+	return mysqlWeekMode0(prevDec31), year - 1
+}
+
+// mysqlDayOrdinal renders DATE_FORMAT %D's English ordinal suffix
+// ("1st".."31st"). The 11th-13th take "th" despite ending in 1-3.
+func mysqlDayOrdinal(day int) string {
+	if d := day % 100; d == 11 || d == 12 || d == 13 {
+		return "th"
+	}
+	switch day % 10 {
+	case 1:
+		return "st"
+	case 2:
+		return "nd"
+	case 3:
+		return "rd"
+	default:
+		return "th"
+	}
+}
+
+// mysqlYearWeek reports MySQL YEARWEEK(date, mode): the week-year variant of
+// WEEK()'s mode table, in which the result year rolls for the first and last
+// week of the year. Because YEARWEEK never reports week 00, WEEK()'s
+// "leading days are week 0" cases collapse into the neighbouring year and
+// the eight modes reduce to four week-year algorithms: {0,2} Sunday-first
+// week 1 at the first Sunday, {1,3} ISO-8601, {4,6} Sunday-first week 1 at
+// the first 4-day week, {5,7} Monday-first week 1 at the first Monday.
+func mysqlYearWeek(t time.Time, mode int) (int, int) {
+	switch {
+	case mode == 1 || mode == 3:
+		return t.ISOWeek()
+	case mode == 4 || mode == 6:
+		return mysqlYearWeekMajority(t, time.Sunday)
+	case mode == 5 || mode == 7:
+		return mysqlYearWeekFirstAnchor(t, time.Monday)
+	default: // modes 0 and 2
+		w, y := mysqlWeekMode2(t)
+		return y, w
+	}
+}
+
+// mysqlWeekStart returns the start of t's week, whose days run from
+// anchorWeekday. Calendar arithmetic is done in UTC so day boundaries are
+// exact regardless of the location attached to t.
+func mysqlWeekStart(t time.Time, anchorWeekday time.Weekday) time.Time {
+	utc := t.UTC()
+	return utc.AddDate(0, 0, -((int(utc.Weekday()) - int(anchorWeekday) + 7) % 7))
+}
+
+// mysqlFirstWeekdayOnOrAfter returns the first anchorWeekday of the year.
+func mysqlFirstWeekdayOnOrAfter(year int, anchorWeekday time.Weekday) time.Time {
+	jan1 := time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
+	return jan1.AddDate(0, 0, (int(anchorWeekday)-int(jan1.Weekday())+7)%7)
+}
+
+// mysqlYearWeekFirstAnchor implements YEARWEEK modes {0,2} (Sunday) and
+// {5,7} (Monday): week 1 starts at the first anchorWeekday on or after
+// Jan 1. Days before week 1 roll back to the previous year's final week;
+// there is no forward roll, because week 1 always starts inside its own
+// year (consecutive years' first anchors are exact multiples of 7 days
+// apart).
+func mysqlYearWeekFirstAnchor(t time.Time, anchorWeekday time.Weekday) (year, week int) {
+	year = t.Year()
+	weekStart := mysqlWeekStart(t, anchorWeekday)
+	start1 := mysqlWeekStart(mysqlFirstWeekdayOnOrAfter(year, anchorWeekday), anchorWeekday)
+	if weekStart.Before(start1) {
+		year--
+		start1 = mysqlWeekStart(mysqlFirstWeekdayOnOrAfter(year, anchorWeekday), anchorWeekday)
+	}
+	week = int(weekStart.Sub(start1).Round(24*time.Hour)/(7*24*time.Hour)) + 1
+	return year, week
+}
+
+// mysqlYearWeekMajority implements YEARWEEK modes {4,6}: weeks start on
+// Sunday and week 1 is the first week with four or more days in the year —
+// equivalently the first week whose mid-week day (Wednesday) falls in that
+// year. Days of a late-December week whose majority year is the next year
+// roll forward; days of an opening week with fewer than four days in the
+// new year roll back to the previous year.
+func mysqlYearWeekMajority(t time.Time, anchorWeekday time.Weekday) (year, week int) {
+	weekStart := mysqlWeekStart(t, anchorWeekday)
+	year = weekStart.AddDate(0, 0, 3).Year()
+	start1 := mysqlWeekStart(time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC), anchorWeekday)
+	if start1.AddDate(0, 0, 3).Year() != year {
+		start1 = start1.AddDate(0, 0, 7)
+	}
+	week = int(weekStart.Sub(start1).Round(24*time.Hour)/(7*24*time.Hour)) + 1
+	return year, week
+}
+
+// mysqlDateAndMode parses the (date[, mode]) argument shape shared by the
+// YEARWEEK and WEEK builtins. A NULL or unparseable date, a NULL mode, a
+// non-numeric mode, or a mode outside 0..7 (after MySQL-style rounding)
+// reports ok=false, which the callers surface as a NULL result.
+func mysqlDateAndMode(args []interface{}) (time.Time, int, bool) {
+	if len(args) < 1 || args[0] == nil {
+		return time.Time{}, 0, false
+	}
+	t, ok := parseFlexibleTime(ValueToStringKey(args[0]))
+	if !ok {
+		return time.Time{}, 0, false
+	}
+	mode := 0
+	if len(args) >= 2 {
+		if args[1] == nil {
+			return time.Time{}, 0, false
+		}
+		f, ok := toFloat64(args[1])
+		if !ok {
+			return time.Time{}, 0, false
+		}
+		mode = int(math.Round(f))
+	}
+	if mode < 0 || mode > 7 {
+		return time.Time{}, 0, false
+	}
+	return t, mode, true
+}
+
+// mysqlWeek reports MySQL WEEK(date, mode): the week number under the 0..7
+// mode table WITHOUT week-year rolling. Modes 0/1/4/5 report week 00 for the
+// days before week 1; modes 2/3/6/7 use their week-year variants (the
+// range 1-53 rows of the manual's mode table).
+func mysqlWeek(t time.Time, mode int) int {
+	switch {
+	case mode == 1:
+		return mysqlWeekMode1(t)
+	case mode == 2:
+		w, _ := mysqlWeekMode2(t)
+		return w
+	case mode == 3:
+		_, w := t.ISOWeek()
+		return w
+	case mode == 4:
+		return mysqlWeekMajorityNoRoll(t, time.Sunday)
+	case mode == 5:
+		return mysqlWeekFirstAnchorNoRoll(t, time.Monday)
+	case mode == 6:
+		_, w := mysqlYearWeekMajority(t, time.Sunday)
+		return w
+	case mode == 7:
+		_, w := mysqlYearWeekFirstAnchor(t, time.Monday)
+		return w
+	default: // mode 0
+		return mysqlWeekMode0(t)
+	}
+}
+
+// mysqlWeekMajorityNoRoll implements WEEK() mode 4: weeks start on Sunday and
+// week 1 is the first week with four or more days in the year. Days of an
+// opening sub-4-day week report week 00, and days of the final straddling
+// week stay in the current year's numbering (mode 6 is the rolling variant).
+func mysqlWeekMajorityNoRoll(t time.Time, anchorWeekday time.Weekday) int {
+	weekStart := mysqlWeekStart(t, anchorWeekday)
+	start1 := mysqlWeekStart(time.Date(t.Year(), 1, 1, 0, 0, 0, 0, time.UTC), anchorWeekday)
+	if start1.AddDate(0, 0, 3).Year() != t.Year() {
+		start1 = start1.AddDate(0, 0, 7)
+	}
+	if weekStart.Before(start1) {
+		return 0
+	}
+	return int(weekStart.Sub(start1).Round(24*time.Hour)/(7*24*time.Hour)) + 1
+}
+
+// mysqlWeekFirstAnchorNoRoll implements WEEK() mode 5: weeks start on Monday
+// and week 1 begins at the first Monday of the year; earlier days report
+// week 00 (mode 7 is the rolling variant).
+func mysqlWeekFirstAnchorNoRoll(t time.Time, anchorWeekday time.Weekday) int {
+	weekStart := mysqlWeekStart(t, anchorWeekday)
+	start1 := mysqlWeekStart(mysqlFirstWeekdayOnOrAfter(t.Year(), anchorWeekday), anchorWeekday)
+	if weekStart.Before(start1) {
+		return 0
+	}
+	return int(weekStart.Sub(start1).Round(24*time.Hour)/(7*24*time.Hour)) + 1
+}
+
+// base64LineLength is MySQL's TO_BASE64 wrap width: the encoded output
+// embeds a newline after every 76 characters.
+const base64LineLength = 76
+
+// insertBase64Breaks embeds a newline after every 76 characters of an
+// already-encoded base-64 string (MySQL TO_BASE64 semantics); output whose
+// length is an exact multiple of 76 gets no trailing newline.
+func insertBase64Breaks(encoded string) string {
+	if len(encoded) <= base64LineLength {
+		return encoded
+	}
+	var b strings.Builder
+	b.Grow(len(encoded) + len(encoded)/base64LineLength)
+	for i := 0; i < len(encoded); i += base64LineLength {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		end := i + base64LineLength
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		b.WriteString(encoded[i:end])
+	}
+	return b.String()
+}
+
+// stripBase64Whitespace removes the whitespace MySQL's FROM_BASE64 ignores:
+// the newlines TO_BASE64 embeds plus spaces, tabs, carriage returns, form
+// and vertical feeds.
+func stripBase64Whitespace(s string) string {
+	if !strings.ContainsAny(s, " \t\r\n\f\v") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case ' ', '\t', '\r', '\n', '\f', '\v':
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
