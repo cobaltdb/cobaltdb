@@ -2072,23 +2072,6 @@ func (c *Catalog) keyInPendingWrites(tableName string, key string) bool {
 	return false
 }
 
-// indexKeyInPendingWrites reports whether the given index key already exists in
-// the current transaction's pending write buffer (for unique constraint checks).
-func (c *Catalog) indexKeyInPendingWrites(indexName string, key string) bool {
-	ts := c.getCurrentTxn()
-	if ts == nil || len(ts.pendingWrites) == 0 {
-		return false
-	}
-	for _, pw := range ts.pendingWrites {
-		for _, idx := range pw.IndexUpdates {
-			if idx.IndexName == indexName && idx.Key == key && !idx.IsDelete {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // indexKeyPendingState reports the net effect of this txn's buffered index
 // updates on the given index key: +1 if the last pending op is an insert, -1 if
 // it is a delete, 0 if there is no pending op. Walking in append order makes the
