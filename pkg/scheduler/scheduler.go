@@ -139,7 +139,13 @@ func (s *Scheduler) Enable(jobID string) bool {
 		return false
 	}
 	j.Enabled = true
-	j.Status = JobStatusIdle
+	// A run currently in flight keeps its Running status: resetting it to
+	// Idle here would let the dispatcher (or Trigger) start a second
+	// concurrent execution of the same job. runJob's deferred block settles
+	// the status when the in-flight run finishes.
+	if j.Status != JobStatusRunning {
+		j.Status = JobStatusIdle
+	}
 	j.NextRun = time.Now().Add(j.Interval)
 	return true
 }
