@@ -246,6 +246,12 @@ func (l *Lifecycle) Start() error {
 	for _, comp := range components {
 		select {
 		case <-ctx.Done():
+			// Roll back already-started components, matching the
+			// component-error path below: a timed-out startup must not
+			// leave half-started components running.
+			if stopErr := l.stopComponents(context.Background()); stopErr != nil {
+				return fmt.Errorf("startup timeout waiting for %s (cleanup failed: %v)", comp.Name(), stopErr)
+			}
 			return fmt.Errorf("startup timeout waiting for %s", comp.Name())
 		default:
 			if err := comp.Start(ctx); err != nil {
