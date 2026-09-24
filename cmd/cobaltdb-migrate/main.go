@@ -297,15 +297,18 @@ func loadMigrations(dir string) ([]Migration, error) {
 			return nil, fmt.Errorf("failed to read %s: %w", name, err)
 		}
 
-		// Load down SQL
+		// Load down SQL. A missing down file is deliberately lenient (empty
+		// DownSQL: the revert removes the record only), but a real read
+		// failure must fail the load — swallowing it let a rollback drop the
+		// migration record without reverting the schema change.
 		downName := strings.Replace(name, "_up.sql", "_down.sql", 1)
 		downPath, err := migrationFilePath(dir, downName)
 		if err != nil {
 			return nil, err
 		}
-		downSQL := []byte{}
-		if _, err := os.Stat(downPath); err == nil {
-			downSQL, _ = os.ReadFile(downPath) // #nosec G304 - migration file name is validated to stay inside dir.
+		downSQL, err := os.ReadFile(downPath) // #nosec G304 - migration file name is validated to stay inside dir.
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to read %s: %w", downName, err)
 		}
 
 		// Extract migration name from filename
