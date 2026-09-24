@@ -23,11 +23,22 @@ import (
 // generateRandomPassword generates a secure random password
 func generateRandomPassword(length int) (string, error) {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+	// Rejection sampling: mapping raw bytes straight through %len(charset)
+	// over-draws the first 256%len(charset) characters (256%70 = 46), giving
+	// the admin credential a non-uniform distribution (CWE-195). Rejecting
+	// bytes at or above the largest multiple of len(charset) keeps the
+	// remaining modulo mapping uniform.
+	maxUnbiased := 256 - (256 % len(charset))
 	b := make([]byte, length)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("failed to generate secure random password: %w", err)
 	}
 	for i := range b {
+		for int(b[i]) >= maxUnbiased {
+			if _, err := rand.Read(b[i : i+1]); err != nil {
+				return "", fmt.Errorf("failed to generate secure random password: %w", err)
+			}
+		}
 		b[i] = charset[int(b[i])%len(charset)]
 	}
 	return string(b), nil
