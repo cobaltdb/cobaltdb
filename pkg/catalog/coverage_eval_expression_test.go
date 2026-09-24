@@ -62,11 +62,11 @@ func TestEvalExpressionBranches(t *testing.T) {
 	}
 
 	// CASE with error in WHEN condition
-	val, err = EvalExpression(&query.CaseExpr{
+	_, err = EvalExpression(&query.CaseExpr{
 		Whens: []*query.WhenClause{{Condition: &query.PlaceholderExpr{Index: 99}, Result: &query.NumberLiteral{Value: 1}}},
 	}, nil)
-	if err != nil || val != nil {
-		t.Errorf("CASE with error: got %v, %v", val, err)
+	if err == nil {
+		t.Error("Expected WHEN condition eval error to propagate")
 	}
 
 	// CAST string to int

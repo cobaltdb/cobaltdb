@@ -1386,7 +1386,15 @@ func (cat *Catalog) filterAndProjectRow(valueData []byte, table *TableDef, stmt 
 // writes for read-your-writes visibility.
 func (c *Catalog) getEffectiveTableData(table *TableDef) (map[string][]byte, error) {
 	result := make(map[string][]byte)
-	trees, _ := c.getTableTreesForScan(table)
+	// Propagate tree-resolution failures (e.g. FDW open/scan errors for
+	// foreign tables) instead of silently reading an empty table: both
+	// callers already propagate, and the plain SELECT path reports the same
+	// failure, so swallowing it here made aggregates and joins over a
+	// failing foreign table return empty results with no error.
+	trees, err := c.getTableTreesForScan(table)
+	if err != nil {
+		return nil, err
+	}
 	for _, tree := range trees {
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
@@ -1414,7 +1422,11 @@ func (c *Catalog) getEffectiveTableData(table *TableDef) (map[string][]byte, err
 		iter.Close()
 	}
 	if ts := c.getCurrentTxn(); ts != nil {
-		if m, ok := ts.pendingWriteMap[table.Name]; ok {
+		// Use the accessor: after exactly one buffered write the map is
+		// deliberately still nil (appendPendingWriteTs materializes it only
+		// from the second write on), so reading the raw field here silently
+		// skipped read-your-writes for aggregates and joins.
+		if m, ok := ts.getPendingWriteMap()[table.Name]; ok {
 			for _, pw := range m {
 				k := string(pw.Key)
 				vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))
@@ -2211,9 +2223,9 @@ func typeTaggedKey(v interface{}) string {
 		return "B:0"
 	case []byte:
 		// Convert []byte to string for consistent key generation
-		return "S:" + string(val)
+		return "S:" + escapeNULs(string(val))
 	case string:
-		return "S:" + val
+		return "S:" + escapeNULs(val)
 	case float64:
 		if val == float64(int64(val)) && val >= -1e15 && val <= 1e15 {
 			return "I:" + strconv.FormatInt(int64(val), 10)
@@ -2234,8 +2246,22 @@ func typeTaggedKey(v interface{}) string {
 		if iv, ok := compareAsInt64(v); ok {
 			return "I:" + strconv.FormatInt(iv, 10)
 		}
-		return "S:" + ValueToStringKey(v)
+		return "S:" + escapeNULs(ValueToStringKey(v))
 	}
+}
+
+// escapeNULs makes a typeTaggedKey part safe for the NUL-separated joins in
+// buildCompositeIndexKey and the GROUP BY group key without changing
+// NUL-free keys: every \x00 becomes \x00\x01. In the escaped output every
+// \x00 is followed by the inserted \x01, while a join separator's \x00 is
+// followed by the next part's tag byte, so parts remain recoverable and two
+// distinct value tuples can no longer produce the same key. Injective and a
+// no-op for keys without NUL, so previously persisted keys are unaffected.
+func escapeNULs(s string) string {
+	if !strings.Contains(s, "\x00") {
+		return s
+	}
+	return strings.ReplaceAll(s, "\x00", "\x00\x01")
 }
 
 func buildCompositeIndexKey(table *TableDef, idxDef *IndexDef, row []interface{}) (string, bool) {
@@ -2383,7 +2409,10 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 				for _, when := range e.Whens {
 					whenVal, err := EvalExpression(when.Condition, args)
 					if err != nil {
-						continue
+						// Propagate: silently treating an erroring
+						// condition as non-matching turned failing
+						// DEFAULT expressions into wrong inserted values.
+						return nil, err
 					}
 					if whenVal != nil && compareValues(baseVal, whenVal) == 0 {
 						return EvalExpression(when.Result, args)
@@ -2395,7 +2424,9 @@ func EvalExpression(expr query.Expression, args []interface{}) (interface{}, err
 			for _, when := range e.Whens {
 				condVal, err := EvalExpression(when.Condition, args)
 				if err != nil {
-					continue
+					// Propagate condition errors like every other
+					// construct in this evaluator.
+					return nil, err
 				}
 				if toBool(condVal) {
 					return EvalExpression(when.Result, args)
