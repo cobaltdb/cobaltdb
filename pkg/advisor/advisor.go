@@ -357,12 +357,7 @@ func extractColumnsRecursive(expr query.Expression, out map[string][]string) {
 			extractColumnsRecursive(item, out)
 		}
 		if e.Subquery != nil {
-			cols := extractColumns(e.Subquery.Where)
-			for t, c := range cols {
-				for _, col := range c {
-					out[t] = appendIfMissing(out[t], col)
-				}
-			}
+			mergeQualifiedColumns(out, extractColumns(e.Subquery.Where))
 		}
 	case *query.LikeExpr:
 		extractColumnsRecursive(e.Expr, out)
@@ -388,12 +383,22 @@ func extractColumnsRecursive(expr query.Expression, out map[string][]string) {
 		extractColumnsRecursive(e.Else, out)
 	case *query.ExistsExpr:
 		if e.Subquery != nil {
-			cols := extractColumns(e.Subquery.Where)
-			for t, c := range cols {
-				for _, col := range c {
-					out[t] = appendIfMissing(out[t], col)
-				}
-			}
+			mergeQualifiedColumns(out, extractColumns(e.Subquery.Where))
+		}
+	}
+}
+
+// mergeQualifiedColumns merges src into dst, skipping unqualified ("" table)
+// entries: unqualified columns inside a subquery belong to the subquery's own
+// FROM tables, which are unknown here — attributing them to the outer query's
+// primary table would recommend indexes on columns that table does not have.
+func mergeQualifiedColumns(dst, src map[string][]string) {
+	for t, cols := range src {
+		if t == "" {
+			continue
+		}
+		for _, col := range cols {
+			dst[t] = appendIfMissing(dst[t], col)
 		}
 	}
 }
