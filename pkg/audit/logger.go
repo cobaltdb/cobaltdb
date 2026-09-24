@@ -1010,6 +1010,25 @@ func (al *Logger) rotateLocked() error {
 
 	timestamp := time.Now().Format("20060102_150405")
 	backupName := al.config.LogFile + "." + timestamp
+	// A second-resolution stamp collides when the log rotates twice within one
+	// wall-clock second (manual Rotate racing auto-rotation, or rapid
+	// re-rotation under a small MaxFileSize). os.Rename silently REPLACES an
+	// existing destination, which would destroy the earlier rotated segment
+	// and invalidate the chain boundary embedded in this segment's
+	// continuation record. Disambiguate on collision with sub-second
+	// precision; rotations are serialized under al.mu, so Lstat-then-rename
+	// is race-free within this process.
+	if _, err := os.Lstat(backupName); err == nil {
+		nanos := time.Now().Nanosecond()
+		for {
+			candidate := fmt.Sprintf("%s.%09d", backupName, nanos)
+			if _, err := os.Lstat(candidate); err != nil {
+				backupName = candidate
+				break
+			}
+			nanos++
+		}
+	}
 	if err := os.Rename(al.config.LogFile, backupName); err != nil {
 		// Rename failed — reopen the original file so logging can continue
 		_ = al.openLogFile()
@@ -1077,9 +1096,15 @@ func (al *Logger) pruneBackupsLocked() {
 	backups := make([]backup, 0, len(matches))
 	for _, m := range matches {
 		// Only files whose suffix is a rotation timestamp are our backups.
-		ts, parseErr := time.ParseInLocation("20060102_150405", strings.TrimPrefix(m, prefix), time.Local)
+		// Collision-disambiguated backups carry sub-second precision
+		// (<20060102_150405>.<nanoseconds>); older backups use plain seconds.
+		suffix := strings.TrimPrefix(m, prefix)
+		ts, parseErr := time.ParseInLocation("20060102_150405.000000000", suffix, time.Local)
 		if parseErr != nil {
-			continue
+			ts, parseErr = time.ParseInLocation("20060102_150405", suffix, time.Local)
+			if parseErr != nil {
+				continue
+			}
 		}
 		backups = append(backups, backup{path: m, ts: ts})
 	}

@@ -119,8 +119,8 @@ func TestAutoRotationReanchorsTriggeringEventEncrypted(t *testing.T) {
 	}
 
 	backups := findRotatedBackups(t, logFile)
-	if len(backups) != 1 {
-		t.Fatalf("expected exactly 1 auto-rotated backup, got %d: %v", len(backups), backups)
+	if len(backups) == 0 {
+		t.Fatalf("expected at least one auto-rotated backup, got 0")
 	}
 
 	// Pre-fix this failed at line 2 with "decrypt entry" (the triggering
@@ -133,13 +133,14 @@ func TestAutoRotationReanchorsTriggeringEventEncrypted(t *testing.T) {
 		t.Errorf("current segment entries = %d, want 2", seg.Entries)
 	}
 
-	oldSeg, err := VerifyLogFile(backups[0], key)
-	if err != nil {
-		t.Fatalf("VerifyLogFile on rotated-away encrypted segment: %v", err)
-	}
-	if seg.PrevSegmentHash != oldSeg.LastHash {
-		t.Errorf("encrypted chain boundary mismatch: %q vs %q", seg.PrevSegmentHash, oldSeg.LastHash)
-	}
+	// Every rotated segment must verify, and every recorded chain boundary
+	// must link to the previous segment's final hash. Encrypted entries are
+	// long enough that this scenario can fire a second auto-rotation within
+	// the same wall-clock second; since the backup-name collision fix each
+	// rotation is preserved as its own segment (previously the second
+	// os.Rename silently overwrote the first, which the old
+	// "exactly 1 backup" assertion depended on).
+	verifyCrossFileChain(t, logFile, backups, key)
 
 	al2, err := New(cfg, nil)
 	if err != nil {
