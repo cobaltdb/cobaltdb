@@ -144,6 +144,11 @@ func LoadTLSConfig(config *TLSConfig) (*tls.Config, error) {
 		}
 
 		tlsConfig.ClientCAs = caCertPool
+		// A configured CA means client certificates are the authentication
+		// layer: enforce verification exactly like pkg/replication/tls.go
+		// does. Without this, ClientCAs is decorative and mTLS is silently
+		// disabled for operators who rely on client certs for auth.
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 
 	return tlsConfig, nil
