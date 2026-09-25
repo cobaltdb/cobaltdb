@@ -245,7 +245,8 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 		count  int64
 		sum    float64
 		hasVal bool
-		genVal interface{} // for MIN/MAX on non-numeric types (strings)
+		genVal interface{}    // for MIN/MAX on non-numeric types (strings)
+		sacc   sumAccumulator // int64-exact SUM accumulation (matches the GROUP BY path)
 	}
 	states := make([]aggState, len(specs))
 
@@ -254,11 +255,14 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 		return nil, nil, true, fmt.Errorf("aggregate fast path: failed to scan table %s: %w", table.Name, err)
 	}
 
-	// Use byte-level fast path for SUM/AVG without WHERE (skip full JSON decode)
+	// Use byte-level fast path for AVG/COUNT without WHERE (skip full JSON decode).
+	// SUM is excluded: byte-level extraction converts through float64, which loses
+	// integer precision above 2^53 — SUM must accumulate through sumAccumulator
+	// (below) to match the GROUP BY path and MySQL's exact bigint SUM.
 	canUseByteFastPath := stmt.Where == nil
 	if canUseByteFastPath {
 		for _, spec := range specs {
-			if spec.funcName != "SUM" && spec.funcName != "AVG" && !(spec.funcName == "COUNT" && spec.colName == "*") {
+			if spec.funcName != "AVG" && !(spec.funcName == "COUNT" && spec.colName == "*") {
 				canUseByteFastPath = false
 				break
 			}
@@ -348,12 +352,14 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 
 			switch spec.funcName {
 			case "SUM":
-				if fval, ok := toFloat64Safe(val); ok {
-					states[i].sum += fval
-					states[i].hasVal = true
-				}
+				states[i].sacc.add(val)
+				states[i].hasVal = true
 			case "AVG":
-				if fval, ok := toFloat64Safe(val); ok {
+				// toFloat64 (not toFloat64Safe): MySQL AVG coerces numeric
+				// strings, and the GROUP BY path accumulates through
+				// sumAccumulator.add → toFloat64 — the same converter here
+				// keeps AVG consistent with SUM across execution paths.
+				if fval, ok := toFloat64(val); ok {
 					states[i].sum += fval
 					states[i].count++
 					states[i].hasVal = true
@@ -386,9 +392,7 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 		case "COUNT":
 			resultRow[i] = states[i].count
 		case "SUM":
-			if states[i].hasVal {
-				resultRow[i] = states[i].sum
-			}
+			resultRow[i] = states[i].sacc.result()
 		case "AVG":
 			if states[i].hasVal && states[i].count > 0 {
 				resultRow[i] = states[i].sum / float64(states[i].count)
