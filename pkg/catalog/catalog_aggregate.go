@@ -125,7 +125,10 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 	resultRows := c.computeEmptyGroupResult(groups, stmt, selectCols, table, args)
 
 	// Compute aggregate result for each group
-	groupResultRows := c.computeGroupResultRows(groups, groupOrder, stmt, selectCols, table, args)
+	groupResultRows, aggErr := c.computeGroupResultRows(groups, groupOrder, stmt, selectCols, table, args)
+	if aggErr != nil {
+		return nil, nil, aggErr
+	}
 	resultRows = append(resultRows, groupResultRows...)
 
 	// Apply ORDER BY, DISTINCT, OFFSET, LIMIT
@@ -171,7 +174,7 @@ func (c *Catalog) computeEmptyGroupResult(groups map[string][][]interface{}, stm
 }
 
 // computeGroupResultRows computes aggregate result rows for each group.
-func (c *Catalog) computeGroupResultRows(groups map[string][][]interface{}, groupOrder []string, stmt *query.SelectStmt, selectCols []selectColInfo, table *TableDef, args []interface{}) [][]interface{} {
+func (c *Catalog) computeGroupResultRows(groups map[string][][]interface{}, groupOrder []string, stmt *query.SelectStmt, selectCols []selectColInfo, table *TableDef, args []interface{}) ([][]interface{}, error) {
 	var resultRows [][]interface{}
 	for _, gk := range groupOrder {
 		groupRows := groups[gk]
@@ -179,13 +182,24 @@ func (c *Catalog) computeGroupResultRows(groups map[string][][]interface{}, grou
 		for i, ci := range selectCols {
 			if ci.isAggregate {
 				var values []interface{}
+				var firstAggErr error
 				aggregateRows := c.aggregateRowsForInfo(ci, groupRows, table.Columns, args)
 				for _, row := range aggregateRows {
 					v, ok := c.collectAggregateInput(ci, row, table.Columns, args, func() (interface{}, bool) {
-						if ci.aggregateCol == "*" && ci.aggregateExpr == nil {
+						// COUNT(*) counts rows regardless of how the parser shaped
+						// the select-col info (aggregateCol="*" may coexist with a
+						// StarExpr aggregateExpr), matching computeAggregatesForExpr's
+						// isCountStar handling for ORDER BY aggregates.
+						if ci.aggregateType == "COUNT" && ci.aggregateCol == "*" {
 							return int64(1), true
 						} else if ci.aggregateExpr != nil {
 							v, err := evaluateExpression(c, row, table.Columns, ci.aggregateExpr, args)
+							// Surface the first evaluation error instead of silently
+							// degrading the aggregate to NULL/empty (the same contract
+							// as the grouped WHERE evaluation fixes).
+							if err != nil && firstAggErr == nil {
+								firstAggErr = fmt.Errorf("failed to evaluate aggregate expression in table %s: %w", table.Name, err)
+							}
 							return v, err == nil
 						}
 						colIdx := table.GetColumnIndex(ci.aggregateCol)
@@ -197,6 +211,9 @@ func (c *Catalog) computeGroupResultRows(groups map[string][][]interface{}, grou
 					if ok {
 						values = append(values, v)
 					}
+				}
+				if firstAggErr != nil {
+					return nil, firstAggErr
 				}
 				resultRow[i] = computeAggregateValue(c.selectColInfoWithGroupConcatSeparator(ci, aggregateRows, table.Columns, args), values, aggregateRows)
 				if ci.aggregateType == "GROUP_CONCAT" && resultRow[i] != nil {
@@ -234,7 +251,7 @@ func (c *Catalog) computeGroupResultRows(groups map[string][][]interface{}, grou
 		}
 		resultRows = append(resultRows, resultRow)
 	}
-	return resultRows
+	return resultRows, nil
 }
 
 // applyGroupByPostProcessing applies ORDER BY, DISTINCT, OFFSET, LIMIT to grouped results.
@@ -1026,38 +1043,14 @@ func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectC
 				return ob.Desc
 			}
 
-			// Integer-typed values compare directly as int64 (avoid float64
-			// precision loss for values > 2^53; see compareValues).
-			if viI, iok := compareAsInt64(vi); iok {
-				if vjI, jok := compareAsInt64(vj); jok {
-					if viI < vjI {
-						return !ob.Desc
-					} else if viI > vjI {
-						return ob.Desc
-					}
-					continue
-				}
-			}
-
-			// Compare based on type
-			viF, viNum := toFloat64(vi)
-			vjF, vjNum := toFloat64(vj)
-			if viNum && vjNum {
-				if viF < vjF {
-					return !ob.Desc
-				} else if viF > vjF {
-					return ob.Desc
-				}
-				continue
-			}
-			if viS, ok1 := toString(vi); ok1 {
-				if vjS, ok2 := toString(vj); ok2 {
-					if viS < vjS {
-						return !ob.Desc
-					} else if viS > vjS {
-						return ob.Desc
-					}
-				}
+			// Route through the single normalized comparator (compareValues —
+			// the round-6 bool normalization included), replacing the former
+			// inline three-tier stack whose dual bool representation made
+			// grouped ORDER BY output depend on row insertion order (round 24).
+			if c := compareValues(vi, vj); c < 0 {
+				return !ob.Desc
+			} else if c > 0 {
+				return ob.Desc
 			}
 		}
 		return false
