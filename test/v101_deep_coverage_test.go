@@ -71,9 +71,8 @@ func TestV101DeepCoverage(t *testing.T) {
 			if len(rows) != 2 {
 				t.Fatalf("expected 2, got %d", len(rows))
 			}
-			got := fmt.Sprintf("%.1f", rows[0][1])
-			if got != "110.0" {
-				t.Fatalf("expected 110.0, got %s", got)
+			if rows[0][1] != int64(110) {
+				t.Fatalf("expected 110, got %v", rows[0][1])
 			}
 		})
 	})

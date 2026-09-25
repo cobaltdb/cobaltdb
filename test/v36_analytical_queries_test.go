@@ -695,10 +695,9 @@ func TestV36AnalyticalQueries(t *testing.T) {
 	// ---- Test H14: Total salary payroll ----
 	// 120000+95000+88000+72000+85000+78000+71000+65000+62000+110000+95000+80000
 	// = 375000+234000+127000+205000+80000 = 1021000
-	// Engine renders large integer sums in scientific notation: 1.021e+06
 	check("H14 total salary payroll",
 		`SELECT SUM(salary) FROM v36_employee`,
-		"1.021e+06")
+		int64(1021000))
 
 	// ---- Test H15: CTE - department salary rank (Finance is #1) ----
 	checkRowCount("H15 department salary summary via CTE has 5 rows",

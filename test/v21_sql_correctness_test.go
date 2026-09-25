@@ -149,7 +149,7 @@ func TestV21SQLCorrectness(t *testing.T) {
 
 	check("Large positive", "SELECT val FROM large_nums WHERE id = 1", 2147483647)
 	check("Large negative", "SELECT val FROM large_nums WHERE id = 2", -2147483648)
-	check("SUM of large", "SELECT SUM(val) FROM large_nums", 9.99999999e+08) // 2147483647 + -2147483648 + 1000000000
+	check("SUM of large", "SELECT SUM(val) FROM large_nums", int64(999999999)) // 2147483647 + -2147483648 + 1000000000
 
 	// ============================================================
 	// === LEFT JOIN + AGGREGATE + HAVING ===

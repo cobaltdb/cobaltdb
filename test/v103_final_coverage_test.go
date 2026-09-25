@@ -79,7 +79,7 @@ func TestV103FinalCoverage(t *testing.T) {
 			if len(rows) != 3 {
 				t.Fatalf("expected 3, got %d", len(rows))
 			}
-			if fmt.Sprintf("%.0f", rows[0][1]) != "220" {
+			if rows[0][1] != int64(220) {
 				t.Fatalf("expected 220, got %v", rows[0][1])
 			}
 		})

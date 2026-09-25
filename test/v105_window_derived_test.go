@@ -434,7 +434,7 @@ func TestV105_EvaluateExprWithGroupAggregatesJoin(t *testing.T) {
 			t.Fatalf("Expected 3 rows, got %d", len(rows))
 		}
 		// Engineering should have highest total (190000)
-		if fmt.Sprintf("%.0f", rows[0][1]) != "190000" {
+		if rows[0][1] != int64(190000) {
 			t.Fatalf("Expected 190000 for Engineering, got %v", rows[0][1])
 		}
 	})

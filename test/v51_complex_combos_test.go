@@ -264,7 +264,7 @@ func TestV51ComplexCombos(t *testing.T) {
 		   SELECT amount FROM v51_sales
 		 )
 		 SELECT SUM(amount) FROM all_amounts`,
-		"1.33e+06") // Total salaries + total sales = 1330000 (formatted as scientific notation)
+		int64(1330000)) // Total salaries + total sales = 1330000
 
 	// ============================================================
 	// === MULTIPLE WHERE SUBQUERIES ===

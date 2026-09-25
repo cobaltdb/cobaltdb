@@ -514,10 +514,9 @@ func TestV33AdvancedJoinsSubqueries(t *testing.T) {
 
 	// Test 35: Aggregate on a multiplication expression - total budget across all contracts
 	// 500000+300000+200000+150000 = 1150000
-	// The engine may return large sums in scientific notation (e.g. 1.15e+06).
 	check("SUM contract values",
 		"SELECT SUM(value) FROM v33_contract",
-		"1.15e+06")
+		int64(1150000))
 
 	// Test 36: COUNT DISTINCT on a joined column - distinct departments that have project assignments
 	// Assignments link to projects in depts: Alpha(1), Beta(1), Gamma(2), Delta(3) -> dept 1,2,3 = 3 distinct
