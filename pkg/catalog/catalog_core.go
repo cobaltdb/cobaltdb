@@ -2541,10 +2541,17 @@ func catalogCompareValues(a, b interface{}) int {
 		return 1
 	}
 
-	// Try numeric comparison
+	// Try numeric comparison. Bools are excluded: toFloat64 maps them to
+	// 0/1, but their string-tier representation is "false"/"true", and the
+	// two order differently against string values (e.g. "NaN" sits between
+	// "0" and "false" byte-wise), which breaks the transitivity a sort
+	// requires. Bools compare via their string form like every other
+	// non-numeric value.
+	_, aIsBool := a.(bool)
+	_, bIsBool := b.(bool)
 	aFloat, aOk := toFloat64(a)
 	bFloat, bOk := toFloat64(b)
-	if aOk && bOk {
+	if aOk && bOk && !aIsBool && !bIsBool {
 		if aFloat < bFloat {
 			return -1
 		}
