@@ -9,10 +9,11 @@ import (
 // type regardless of query shape. SUM is computed by several routes (the
 // aggregate fast path trySimpleAggregateFastPath, its byte-level and
 // full-decode branches, and reduceBasicAggregate on grouped/HAVING queries);
-// a future change to any route that flips the result type (e.g. introducing
-// int64 on one path) would be a Scan-visible inconsistency for consumers.
-// Current engine-wide semantics: SUM of an integral column returns float64
-// on every route.
+// a future change to any route that flips the result type would be a
+// Scan-visible inconsistency for consumers.
+// Current engine-wide semantics: SUM of an integral column returns int64
+// on every route (exact while integral — the sumAccumulator design; float64
+// only when inputs or the sum leave the integer domain).
 func TestSumTypeConsistentAcrossQueryShapes(t *testing.T) {
 	db, err := Open(":memory:", nil)
 	if err != nil {
@@ -64,8 +65,8 @@ func TestSumTypeConsistentAcrossQueryShapes(t *testing.T) {
 
 	shape := func(name string, v interface{}) {
 		t.Helper()
-		if _, ok := v.(float64); !ok {
-			t.Fatalf("FAIL: %s SUM type = %T (%v), want float64", name, v, v)
+		if _, ok := v.(int64); !ok {
+			t.Fatalf("FAIL: %s SUM type = %T (%v), want int64", name, v, v)
 		}
 	}
 	shape("plain", plain)
@@ -73,13 +74,13 @@ func TestSumTypeConsistentAcrossQueryShapes(t *testing.T) {
 	shape("withOrder", withOrder)
 	shape("grouped", gsum)
 
-	if plain != 6.0 {
+	if plain != int64(6) {
 		t.Fatalf("FAIL: plain SUM = %v, want 6", plain)
 	}
-	if withWhere != 6.0 || withOrder != 6.0 {
+	if withWhere != int64(6) || withOrder != int64(6) {
 		t.Fatalf("FAIL: filtered/ordered SUM values = %v / %v, want 6", withWhere, withOrder)
 	}
-	if gsum != 1.0 {
+	if gsum != int64(1) {
 		t.Fatalf("FAIL: grouped SUM = %v, want 1", gsum)
 	}
 }

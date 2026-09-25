@@ -277,7 +277,7 @@ func TestProductionSoakBoundedCheckpointBackupReopen(t *testing.T) {
 					return
 				}
 				row = db.QueryRow(ctx, "SELECT SUM(balance) FROM accounts")
-				var total float64
+				var total interface{}
 				if err := row.Scan(&total); err != nil && !strings.Contains(err.Error(), "cannot scan <nil>") {
 					errs <- fmt.Errorf("reader %d sum: %w", readerID, err)
 					return
@@ -297,7 +297,7 @@ func TestProductionSoakBoundedCheckpointBackupReopen(t *testing.T) {
 	}
 
 	expectedRows := int64(workers * iterations)
-	expectedTotal := float64(iterations * (workers * (workers + 1) / 2))
+	expectedTotal := int64(iterations * (workers * (workers + 1) / 2))
 	assertScalar(t, db, "SELECT COUNT(*) FROM ledger", expectedRows)
 	assertScalar(t, db, "SELECT SUM(amount) FROM ledger", expectedTotal)
 	assertScalar(t, db, "SELECT SUM(balance) FROM accounts", expectedTotal)

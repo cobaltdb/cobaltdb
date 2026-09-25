@@ -64,7 +64,7 @@ func TestWALRecoversCommittedWritesAfterProcessExit(t *testing.T) {
 	defer recovered.Close()
 
 	assertScalar(t, recovered, "SELECT COUNT(*) FROM durable", int64(2))
-	assertScalar(t, recovered, "SELECT SUM(score) FROM durable", float64(35))
+	assertScalar(t, recovered, "SELECT SUM(score) FROM durable", int64(35))
 	assertScalar(t, recovered, "SELECT score FROM durable WHERE name = 'beta'", int64(25))
 }
 
@@ -115,7 +115,7 @@ func TestWALCrashRecoveryIgnoresOpenTransaction(t *testing.T) {
 	defer recovered.Close()
 
 	assertScalar(t, recovered, "SELECT COUNT(*) FROM accounts", int64(3))
-	assertScalar(t, recovered, "SELECT SUM(balance) FROM accounts", float64(600))
+	assertScalar(t, recovered, "SELECT SUM(balance) FROM accounts", int64(600))
 	assertScalar(t, recovered, "SELECT balance FROM accounts WHERE id = 1", int64(100))
 	assertScalar(t, recovered, "SELECT balance FROM accounts WHERE id = 2", int64(200))
 	assertScalar(t, recovered, "SELECT COUNT(*) FROM accounts WHERE id = 4", int64(0))
@@ -271,18 +271,18 @@ func TestIncrementalBackupRestoreOpensAsDatabase(t *testing.T) {
 
 	restoredFull := restoreAndOpen(full.ID, "full")
 	assertScalar(t, restoredFull, "SELECT COUNT(*) FROM accounts", int64(1))
-	assertScalar(t, restoredFull, "SELECT SUM(balance) FROM accounts", float64(100))
+	assertScalar(t, restoredFull, "SELECT SUM(balance) FROM accounts", int64(100))
 	assertScalar(t, restoredFull, "SELECT balance FROM accounts WHERE owner = 'alice'", int64(100))
 
 	restoredIncremental := restoreAndOpen(incremental.ID, "incremental")
 	assertScalar(t, restoredIncremental, "SELECT COUNT(*) FROM accounts", int64(2))
-	assertScalar(t, restoredIncremental, "SELECT SUM(balance) FROM accounts", float64(175))
+	assertScalar(t, restoredIncremental, "SELECT SUM(balance) FROM accounts", int64(175))
 	assertScalar(t, restoredIncremental, "SELECT balance FROM accounts WHERE owner = 'alice'", int64(125))
 	assertScalar(t, restoredIncremental, "SELECT balance FROM accounts WHERE owner = 'bob'", int64(50))
 
 	restoredDifferential := restoreAndOpen(differential.ID, "differential")
 	assertScalar(t, restoredDifferential, "SELECT COUNT(*) FROM accounts", int64(3))
-	assertScalar(t, restoredDifferential, "SELECT SUM(balance) FROM accounts", float64(225))
+	assertScalar(t, restoredDifferential, "SELECT SUM(balance) FROM accounts", int64(225))
 	assertScalar(t, restoredDifferential, "SELECT balance FROM accounts WHERE owner = 'alice'", int64(125))
 	assertScalar(t, restoredDifferential, "SELECT balance FROM accounts WHERE owner = 'bob'", int64(75))
 	assertScalar(t, restoredDifferential, "SELECT balance FROM accounts WHERE owner = 'cara'", int64(25))
