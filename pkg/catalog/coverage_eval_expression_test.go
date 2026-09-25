@@ -99,10 +99,12 @@ func TestEvalExpressionBranches(t *testing.T) {
 		t.Error("Expected function arg eval error")
 	}
 
-	// NULLIF with less than 2 args
+	// NULLIF with less than 2 args errors — the value-expression context was
+	// aligned to the scalarFunctionHandlers NULLIF entry (the SELECT-list
+	// context always enforced this arity).
 	val, err = EvalExpression(&query.FunctionCall{Name: "NULLIF", Args: []query.Expression{&query.NumberLiteral{Value: 1}}}, nil)
-	if err != nil || val != float64(1) {
-		t.Errorf("NULLIF 1 arg: got %v, %v", val, err)
+	if err == nil || val != nil {
+		t.Errorf("NULLIF 1 arg: expected the arity error, got %v, %v", val, err)
 	}
 
 	// IIF with less than 3 args

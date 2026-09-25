@@ -81,10 +81,16 @@ var scalarFunctionHandlers = map[string]functionHandler{
 			return "null", nil
 		}
 		switch args[0].(type) {
-		case int, int8, int16, int32, int64:
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 			return "integer", nil
 		case float64:
 			f := args[0].(float64)
+			if f == float64(int64(f)) {
+				return "integer", nil
+			}
+			return "real", nil
+		case float32:
+			f := float64(args[0].(float32))
 			if f == float64(int64(f)) {
 				return "integer", nil
 			}
@@ -1139,6 +1145,27 @@ func compareValues(a, b interface{}) int {
 		return strings.Compare(aStr, bStr)
 	}
 
+	// Bools normalize to their storage representation (int64 0/1) so a
+	// stored boolean and an integer literal compare equal regardless of
+	// which form arrives (WHERE flag = 1 must match bool-true rows), and
+	// bools inherit the numeric tiers' consistent ordering instead of a
+	// dual string/numeric representation that breaks transitivity
+	// (false≡0, 0<"NaN", false>"NaN").
+	if ab, ok := a.(bool); ok {
+		if ab {
+			a = int64(1)
+		} else {
+			a = int64(0)
+		}
+	}
+	if bb, ok := b.(bool); ok {
+		if bb {
+			b = int64(1)
+		} else {
+			b = int64(0)
+		}
+	}
+
 	// Integer-typed operands are compared directly as int64 to avoid the
 	// precision loss of routing values > 2^53 through float64, which made
 	// ORDER BY, MIN/MAX and comparisons treat distinct big integers as equal.
@@ -1765,6 +1792,20 @@ func toFloat64(v interface{}) (float64, bool) {
 		return float64(n), true
 	case int64:
 		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		// #nosec G115 -- conversion may round above 2^53, matching float64
+		// semantics for large integers (int64 converts the same way).
+		return float64(n), true
+	case float32:
+		return float64(n), true
 	case float64:
 		return n, true
 	case bool:
@@ -2053,13 +2094,20 @@ func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}
 		}
 		return nil, nil
 	case "NULLIF":
-		if len(evalArgs) == 2 && compareValues(evalArgs[0], evalArgs[1]) == 0 {
-			return nil, nil
+		// Mirrors the scalarFunctionHandlers NULLIF entry so the value-expression
+		// context and the SELECT-list context enforce identical arity and
+		// NULL-semantics (a prior split let malformed 1-arg NULLIF succeed here
+		// while erroring in the SELECT list).
+		if len(evalArgs) < 2 {
+			return nil, fmt.Errorf("NULLIF requires 2 arguments")
 		}
-		if len(evalArgs) >= 1 {
+		if evalArgs[0] == nil || evalArgs[1] == nil {
 			return evalArgs[0], nil
 		}
-		return nil, nil
+		if compareValues(evalArgs[0], evalArgs[1]) == 0 {
+			return nil, nil
+		}
+		return evalArgs[0], nil
 	case "IIF":
 		if len(evalArgs) == 3 {
 			if toBool(evalArgs[0]) {
@@ -2207,10 +2255,16 @@ func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}
 			return "null", nil
 		}
 		switch evalArgs[0].(type) {
-		case int, int8, int16, int32, int64:
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 			return "integer", nil
 		case float64:
 			f := evalArgs[0].(float64)
+			if f == float64(int64(f)) {
+				return "integer", nil
+			}
+			return "real", nil
+		case float32:
+			f := float64(evalArgs[0].(float32))
 			if f == float64(int64(f)) {
 				return "integer", nil
 			}
