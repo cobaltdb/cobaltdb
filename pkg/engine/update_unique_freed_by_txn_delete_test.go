@@ -10,9 +10,11 @@ import (
 // buffered UPDATE unique check. Inside one transaction: INSERT a row holding
 // unique value 'beta', DELETE it, then UPDATE another row to 'beta'. The last
 // pending index op on 'beta' is a DELETE, so the slot is freed and the UPDATE
-// must succeed. The check at catalog_update.go used indexKeyInPendingWrites,
-// which reports the slot as taken if ANY pending non-delete op matches —
-// spuriously rejecting the UPDATE with "UNIQUE constraint failed".
+// must succeed. The check at catalog_update.go now uses indexKeyPendingState,
+// whose last-op-wins net effect correctly frees the slot; its deleted
+// predecessor indexKeyInPendingWrites reported the slot as taken if ANY
+// pending non-delete op matched, spuriously rejecting the UPDATE with
+// "UNIQUE constraint failed".
 func TestUpdateUniqueValueFreedByTxnDelete(t *testing.T) {
 	db, err := Open(":memory:", nil)
 	if err != nil {

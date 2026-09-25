@@ -216,8 +216,9 @@ func TestBufferUpdateEntryUniqueConstraintInPendingWrites(t *testing.T) {
 	}
 
 	// entry2: change row2's code from "gamma" → "beta". The live index tree
-	// does not contain "beta" (only "alpha" and "gamma"), but indexKeyInPendingWrites
-	// finds "beta" in entry1's pending write, so the UNIQUE check fires.
+	// does not contain "beta" (only "alpha" and "gamma"), but indexKeyPendingState
+	// sees entry1's pending insert of "beta" as the last op on that key, so the
+	// UNIQUE check fires.
 	entry2 := &updateEntry{
 		key:      []byte("00000000000000000002"),
 		oldRow:   []interface{}{int64(2), "gamma"},
