@@ -190,7 +190,7 @@ func TestDeletedRowSkippingCoverage(t *testing.T) {
 	}
 
 	res = covQuery(t, c, "SELECT SUM(val) FROM cov_del")
-	if res.Rows[0][0] != float64(40) {
+	if res.Rows[0][0] != int64(40) {
 		t.Errorf("SUM after delete: got %v, want 40", res.Rows[0][0])
 	}
 }

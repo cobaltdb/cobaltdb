@@ -2091,20 +2091,11 @@ func computeAggregateValue(ci selectColInfo, values []interface{}, groupRows [][
 		if ci.isDistinct {
 			values = distinctAggregateValues(values)
 		}
-		var sum float64
-		hasVal := false
+		var sacc sumAccumulator
 		for _, v := range values {
-			if v != nil {
-				if f, ok := toFloat64(v); ok {
-					sum += f
-					hasVal = true
-				}
-			}
+			sacc.add(v)
 		}
-		if hasVal {
-			return sum
-		}
-		return nil
+		return sacc.result()
 	case "AVG":
 		if ci.isDistinct {
 			values = distinctAggregateValues(values)
@@ -2672,23 +2663,16 @@ func (cat *Catalog) computeViewAggregate(fn string, fc *query.FunctionCall, rows
 		}
 		return int64(len(aggregateRows))
 	case "SUM":
-		sum := float64(0)
-		hasVal := false
+		var sacc sumAccumulator
 		for _, row := range aggregateRows {
 			if len(fc.Args) > 0 {
 				val, err := evaluateExpression(cat, row, columns, fc.Args[0], args)
 				if err == nil && val != nil {
-					if f, ok := toFloat64(val); ok {
-						sum += f
-						hasVal = true
-					}
+					sacc.add(val)
 				}
 			}
 		}
-		if hasVal {
-			return sum
-		}
-		return nil
+		return sacc.result()
 	case "AVG":
 		sum := float64(0)
 		count := 0
