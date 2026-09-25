@@ -7773,7 +7773,15 @@ func TestComputeAggregatesWithGroupBy(t *testing.T) {
 			t.Fatal("row has fewer than 2 columns")
 		}
 		customer, _ := row[0].(string)
-		total, _ := row[1].(float64)
+		var total float64
+		switch v := row[1].(type) {
+		case float64:
+			total = v
+		case int64:
+			total = float64(v)
+		case int:
+			total = float64(v)
+		}
 		switch customer {
 		case "Alice":
 			if total != 300.0 {
@@ -13036,7 +13044,7 @@ func TestComputeViewAggregate(t *testing.T) {
 		{"count_column", "COUNT", &query.FunctionCall{Name: "COUNT", Args: []query.Expression{&query.Identifier{Name: "value"}}}, int64(3)}, // excludes null
 
 		// SUM tests
-		{"sum_values", "SUM", &query.FunctionCall{Name: "SUM", Args: []query.Expression{&query.Identifier{Name: "value"}}}, float64(60)},
+		{"sum_values", "SUM", &query.FunctionCall{Name: "SUM", Args: []query.Expression{&query.Identifier{Name: "value"}}}, int64(60)},
 		{"sum_no_rows", "SUM", &query.FunctionCall{Name: "SUM", Args: []query.Expression{&query.Identifier{Name: "value"}}}, nil},
 
 		// AVG tests
