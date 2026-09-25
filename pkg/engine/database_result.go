@@ -153,6 +153,35 @@ func (r *Row) Scan(dest ...interface{}) error {
 // scanValue scans a value into a destination
 
 func scanValue(src interface{}, dest interface{}) error {
+	// database/sql convertAssign: a NULL source scans into any pointer
+	// destination as its zero value (nil for *interface{}/ *[]byte), never
+	// an error — a silent no-op would leave the destination holding the
+	// previous row's value.
+	if src == nil {
+		switch d := dest.(type) {
+		case *interface{}:
+			*d = nil
+			return nil
+		case *[]byte:
+			*d = nil
+			return nil
+		case *string:
+			*d = ""
+			return nil
+		case *int64:
+			*d = 0
+			return nil
+		case *int:
+			*d = 0
+			return nil
+		case *float64:
+			*d = 0
+			return nil
+		case *bool:
+			*d = false
+			return nil
+		}
+	}
 	switch d := dest.(type) {
 	case *interface{}:
 		*d = cloneScannedValue(src)
@@ -222,6 +251,10 @@ func scanValue(src interface{}, dest interface{}) error {
 				*d = int64(f)
 				return nil
 			}
+			if i, ok := src.(int); ok {
+				*d = int64(i)
+				return nil
+			}
 			if s, ok := src.(string); ok {
 				if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 					*d = i
@@ -247,6 +280,16 @@ func scanValue(src interface{}, dest interface{}) error {
 	case *float64:
 		v, ok := src.(float64)
 		if !ok {
+			// Try integer sources — database/sql converts them (losslessly within
+			// float64 precision), matching convertAssign's explicit int64 case.
+			if i, ok := src.(int64); ok {
+				*d = float64(i)
+				return nil
+			}
+			if i, ok := src.(int); ok {
+				*d = float64(i)
+				return nil
+			}
 			if s, ok := src.(string); ok {
 				if f, err := strconv.ParseFloat(s, 64); err == nil {
 					*d = f
@@ -293,11 +336,42 @@ func scanValue(src interface{}, dest interface{}) error {
 		}
 		*d = v
 	case *[]byte:
-		v, ok := src.([]byte)
-		if !ok {
-			return fmt.Errorf("cannot scan %T into []byte", src)
+		// database/sql's asBytes contract: []byte is the raw rendering of any
+		// scalar value — the TEXT columns (stored as StringBox) scanned into
+		// []byte, string literals, and the numerics as their string bytes.
+		switch v := src.(type) {
+		case []byte:
+			*d = cloneScannedValue(v).([]byte)
+			return nil
+		case catalog.StringBox:
+			*d = []byte(v.String())
+			return nil
+		case string:
+			*d = []byte(v)
+			return nil
+		case *string:
+			if v != nil {
+				*d = []byte(*v)
+				return nil
+			}
+		case int64:
+			*d = []byte(strconv.FormatInt(v, 10))
+			return nil
+		case int:
+			*d = []byte(strconv.Itoa(v))
+			return nil
+		case float64:
+			*d = []byte(strconv.FormatFloat(v, 'f', -1, 64))
+			return nil
+		case bool:
+			if v {
+				*d = []byte("true")
+			} else {
+				*d = []byte("false")
+			}
+			return nil
 		}
-		*d = cloneScannedValue(v).([]byte)
+		return fmt.Errorf("cannot scan %T into []byte", src)
 	default:
 		return fmt.Errorf("unsupported scan destination: %T", dest)
 	}

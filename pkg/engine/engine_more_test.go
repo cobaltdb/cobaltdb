@@ -1107,7 +1107,10 @@ func TestScanBoolInvalidType(t *testing.T) {
 
 func TestScanBytesInvalidType(t *testing.T) {
 	var val []byte
-	err := scanValue("string", &val)
+	// A struct has no []byte rendering: scanValue must still reject it.
+	// (Strings and numerics are database/sql-legal []byte sources — see
+	// TestScanBytesTextConversions.)
+	err := scanValue(struct{}{}, &val)
 	if err == nil {
 		t.Error("Expected error for invalid type conversion")
 	}
