@@ -155,6 +155,11 @@ func evalStringTrim(funcName string, evalArgs []interface{}) funcResult {
 // UTF-8, e.g. SUBSTR('héllo',1,2) -> "h\xc3"). start is 1-based; a negative
 // start counts from the end. When hasLen is false the substring runs to the end.
 func runeSubstr(str string, start int, hasLen bool, length int) string {
+	// MySQL: positions are 1-based, so position 0 yields an empty string;
+	// only negative positions count back from the end of the string.
+	if start == 0 {
+		return ""
+	}
 	runes := []rune(str)
 	n := len(runes)
 	var startIdx int
