@@ -1387,10 +1387,13 @@ func likeToRegex(pattern, escape string) string {
 	if escape == "" {
 		// Escape regex special characters except % and _
 		result := regexp.QuoteMeta(pattern)
-		// Replace SQL wildcards with regex equivalents
+		// Replace SQL wildcards with regex equivalents. (?s) makes the
+		// wildcard dots match newlines too: SQL % and _ match any character
+		// (matchLikeSimple compares runes including \n), and without the
+		// flag a multiline value would silently escape a restrictive policy.
 		result = strings.ReplaceAll(result, "%", ".*")
 		result = strings.ReplaceAll(result, "_", ".")
-		return "^" + result + "$"
+		return "(?s)^" + result + "$"
 	}
 	// Escape-aware translation: the escape char makes the next pattern
 	// character literal; unescaped % and _ remain SQL wildcards.
@@ -1416,7 +1419,7 @@ func likeToRegex(pattern, escape string) string {
 			b.WriteString(regexp.QuoteMeta(string(c)))
 		}
 	}
-	return "^" + b.String() + "$"
+	return "(?s)^" + b.String() + "$"
 }
 
 // valueToString converts a value to a string without fmt.Sprintf reflection
