@@ -881,8 +881,11 @@ func numberLiteralPKKey(numLit *query.NumberLiteral) (string, int64, bool) {
 	return formatFloatKey(numLit.Value)
 }
 
-// compositeKeySep separates columns in a composite primary key. 0x00 is safe:
-// formatKeyComponent outputs only digits or ASCII, never a null byte.
+// compositeKeySep separates columns in a composite primary key. Parts are
+// NUL-escaped before the join (see buildCompositePK): formatKeyComponent's
+// string/X: branches embed the value verbatim, and values CAN contain NUL
+// bytes (bound parameters, \0 escapes in literals) — an unescaped NUL would
+// forge a part boundary and collide distinct tuples.
 const compositeKeySep = "\x00"
 
 // formatKeyComponent formats a single value as a key component. Must be
@@ -939,6 +942,16 @@ func buildCompositePK(table *TableDef, rowValues []interface{}) (string, bool) {
 	if len(parts) == 1 {
 		return parts[0], true
 	}
+	// Multi-column keys join parts with NUL, so a NUL inside a part would
+	// forge a part boundary: ("p\0S:q","r") and ("p","q\0S:r") both joined
+	// to "S:p\0S:q\x00S:r", falsely rejecting the second tuple as a
+	// duplicate PK and making REPLACE evict the other row. Escape parts with
+	// the same injective scheme typeTaggedKey uses (identity on NUL-free
+	// parts, so persisted NUL-free keys are unchanged); single-column keys
+	// carry no separator and are returned above byte-identical.
+	for i := range parts {
+		parts[i] = escapeNULs(parts[i])
+	}
 	return strings.Join(parts, compositeKeySep), true
 }
 
@@ -993,10 +1006,6 @@ func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []int
 	// Determine buffered mode.  We can check enableBufferedWrites without the
 	// lock because it is set once at engine open and never changed afterwards.
 	useBuffer := c.isBufferedMode() && table != nil && table.Partition == nil && stmt.ConflictAction != query.ConflictReplace
-	if useBuffer && c.hasVectorIndexForTableLocked(stmt.Table) {
-		useBuffer = false
-	}
-
 	if useBuffer {
 		// Snapshot all metadata needed for the buffered row loop, then release
 		// Catalog.mu so concurrent writers and DDL do not block us.
@@ -1392,10 +1401,6 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	// with secondary indexes as long as we are not doing REPLACE (which
 	// requires immediate mutation of committed data).
 	useBuffer := c.isBufferedMode() && table.Partition == nil && stmt.ConflictAction != query.ConflictReplace
-	if useBuffer && c.hasVectorIndexForTableLocked(stmt.Table) {
-		useBuffer = false
-	}
-
 	// Skip allocating row copies when no triggers or RETURNING clause need them.
 	needsInsertedRows := len(stmt.Returning) > 0 || len(c.getTriggersForTableLocked(stmt.Table, "INSERT")) > 0
 

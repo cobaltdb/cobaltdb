@@ -278,15 +278,6 @@ func (c *Catalog) ListVectorIndexes() []string {
 	return names
 }
 
-func (c *Catalog) hasVectorIndexForTableLocked(tableName string) bool {
-	for _, vectorIndex := range c.vectorIndexes {
-		if vectorIndex.TableName == tableName {
-			return true
-		}
-	}
-	return false
-}
-
 // updateVectorIndexesForInsert updates all vector indexes when a row is inserted
 func (c *Catalog) updateVectorIndexesForInsert(tableName string, rowSlice []interface{}, key string) error {
 	for _, vectorIndex := range c.vectorIndexes {

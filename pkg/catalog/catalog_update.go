@@ -102,12 +102,15 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 
 	useBuffer := c.isBufferedMode() && table.Partition == nil
 	if useBuffer {
-		if c.hasVectorIndexForTableLocked(stmt.Table) {
-			useBuffer = false
-		}
 		for _, setClause := range stmt.Set {
 			if table.isPrimaryKeyColumn(setClause.Column) {
-				useBuffer = false
+				// Phase 2 (refactor.md §1.16): single-column PK changes
+				// buffer as a deferred rekey (new-key live write + old-key
+				// tombstone, applied at commit). Composite-PK changes keep
+				// the direct path — the rekey machinery is single-column.
+				if len(table.PrimaryKey) != 1 {
+					useBuffer = false
+				}
 				break
 			}
 		}
@@ -650,12 +653,15 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	// Determine if we can use buffered writes for this update.
 	useBuffer := c.isBufferedMode() && table.Partition == nil
 	if useBuffer {
-		if c.hasVectorIndexForTableLocked(stmt.Table) {
-			useBuffer = false
-		}
 		for _, setClause := range stmt.Set {
 			if table.isPrimaryKeyColumn(setClause.Column) {
-				useBuffer = false
+				// Phase 2 (refactor.md §1.16): single-column PK changes
+				// buffer as a deferred rekey (new-key live write + old-key
+				// tombstone, applied at commit). Composite-PK changes keep
+				// the direct path — the rekey machinery is single-column.
+				if len(table.PrimaryKey) != 1 {
+					useBuffer = false
+				}
 				break
 			}
 		}
@@ -2307,6 +2313,71 @@ func (c *Catalog) bufferUpdateEntry(table *TableDef, stmt *query.UpdateStmt, ent
 				Key:       string(newIdxStorageKey),
 				Value:     []byte(entry.key),
 			})
+		}
+	}
+
+	// Phase 2 (refactor.md §1.16): a single-column PK change rekeys the row.
+	// Buffer it as a deferred rekey — the new-key live write plus an old-key
+	// soft-delete tombstone, both applied at commit — so the old key stays
+	// visible to concurrent readers until COMMIT. The tombstone rides the
+	// same machinery as buffered DELETEs (overlay filtering in-txn, commit
+	// soft delete, vector search filtering by DeletedAt); a fresh RowVersion
+	// with DeletedAt set is sufficient.
+	if len(table.PrimaryKey) == 1 {
+		pkColIdx := table.GetColumnIndex(table.PrimaryKey[0])
+		if pkColIdx >= 0 && pkColIdx < len(entry.newRow) && pkColIdx < len(entry.oldRow) &&
+			compareValues(entry.oldRow[pkColIdx], entry.newRow[pkColIdx]) != 0 {
+			pkVal := entry.newRow[pkColIdx]
+			newKeyStr := string(entry.key)
+			if strVal, ok := toString(pkVal); ok {
+				newKeyStr = "S:" + strVal
+			} else if fVal, ok := toFloat64(pkVal); ok {
+				k, _, _ := formatFloatKey(fVal)
+				newKeyStr = k
+			}
+			// The new key must be free: not live in the committed tree and
+			// not live-pending (keyInPendingWrites ignores tombstones).
+			c.mu.RLock()
+			tree, treeExists := c.tableTrees[entry.treeName]
+			c.mu.RUnlock()
+			if treeExists {
+				if existing, gerr := tree.Get([]byte(newKeyStr)); gerr == nil && existing != nil {
+					return nil, nil, fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal)
+				}
+			}
+			if c.keyInPendingWrites(stmt.Table, newKeyStr) {
+				return nil, nil, fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal)
+			}
+			// Keep the auto-increment sequence ahead of the new PK value.
+			if fVal, ok := toFloat64(pkVal); ok {
+				if pkInt := int64(fVal); pkInt > atomic.LoadInt64(&table.AutoIncSeq) {
+					atomic.StoreInt64(&table.AutoIncSeq, pkInt)
+				}
+			}
+			var rv RowVersion
+			rv.markDeleted(time.Now())
+			deletedValueData, derr := encodeVersionedRowFull(entry.oldRow, rv)
+			if derr != nil {
+				return nil, nil, fmt.Errorf("failed to encode rekey tombstone: %w", derr)
+			}
+			c.appendPendingWriteTs(ts, PendingWrite{
+				TreeName: stmt.Table,
+				Key:      string(entry.key),
+				Value:    deletedValueData,
+			})
+			if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
+				mt.SetWrite(stmt.Table, string(entry.key), deletedValueData)
+			}
+			c.appendPendingWriteTs(ts, PendingWrite{
+				TreeName:     stmt.Table,
+				Key:          newKeyStr,
+				Value:        newValueData,
+				IndexUpdates: idxUpdates,
+			})
+			if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
+				mt.SetWrite(stmt.Table, newKeyStr, newValueData)
+			}
+			return newValueData, idxUpdates, nil
 		}
 	}
 

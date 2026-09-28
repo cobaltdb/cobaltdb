@@ -460,6 +460,11 @@ func (c *Catalog) CommitTransaction() error {
 	// This performs conflict detection and updates the version store.
 	if ts != nil {
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
+			// Snapshot vector-index state for commit-time HNSW application
+			// (buffered vector-table writes refresh HNSW at commit; option A
+			// per refactor.md §1.16) BEFORE acquiring commit shards: the
+			// snapshot takes Catalog.mu; the apply path must not.
+			vecSnap := c.snapshotVectorIndexesForCommit(ts.pendingWrites)
 			// Fast path: single-row transaction with no index updates.
 			// Bypass all batch-map allocations for the common case.
 			if len(ts.pendingWrites) == 1 && len(ts.pendingWrites[0].IndexUpdates) == 0 {
@@ -505,6 +510,12 @@ func (c *Catalog) CommitTransaction() error {
 				if putErr != nil {
 					c.commitMu[shard].Unlock()
 					return fmt.Errorf("failed to apply buffered write to %s: %w", pw.TreeName, putErr)
+				}
+				if vecSnap != nil {
+					if vecErr := c.applyCommitVectorUpdates(vecSnap, ts.pendingWrites); vecErr != nil {
+						c.commitMu[shard].Unlock()
+						return fmt.Errorf("failed to apply vector index update for %s: %w", pw.TreeName, vecErr)
+					}
 				}
 				c.commitMu[shard].Unlock()
 				ts.pendingWrites = ts.pendingWrites[:0]
@@ -572,7 +583,7 @@ func (c *Catalog) CommitTransaction() error {
 
 				// Lock all touched shards in sorted order, validate, commit through
 				// the Manager, apply writes, then unlock.
-				if err := c.applyCommittedBatchWrites(ts, mt, tableKeys, tableVals, idxPuts, idxPutVals, idxDels, tableTrees, indexTrees, shardSet); err != nil {
+				if err := c.applyCommittedBatchWrites(ts, mt, vecSnap, tableKeys, tableVals, idxPuts, idxPutVals, idxDels, tableTrees, indexTrees, shardSet); err != nil {
 					return err
 				}
 			}
@@ -617,6 +628,7 @@ func (c *Catalog) CommitTransaction() error {
 func (c *Catalog) applyCommittedBatchWrites(
 	ts *catalogTxnState,
 	mt *txn.Transaction,
+	vecSnap *vectorCommitSnapshot,
 	tableKeys map[string][][]byte,
 	tableVals map[string][][]byte,
 	idxPuts map[string][][]byte,
@@ -696,6 +708,11 @@ func (c *Catalog) applyCommittedBatchWrites(
 			return fmt.Errorf("failed to apply buffered index deletes to %s: %w", name, err)
 		}
 	}
+	if vecSnap != nil {
+		if vecErr := c.applyCommitVectorUpdates(vecSnap, ts.pendingWrites); vecErr != nil {
+			return fmt.Errorf("failed to apply vector index updates: %w", vecErr)
+		}
+	}
 	ts.pendingWrites = ts.pendingWrites[:0]
 	ts.pendingWriteMap = nil
 	return nil
@@ -718,6 +735,138 @@ func readCommitValidationValue(tree btree.TreeStore, treeName, key string) ([]by
 		return nil, nil
 	}
 	return nil, fmt.Errorf("failed to validate read for %s/%s: %w", treeName, key, err)
+}
+
+// vectorCommitSnapshot captures the vector-index state needed to apply
+// commit-time HNSW refreshes for buffered writes WITHOUT holding Catalog.mu
+// inside the commit section (commit paths take only commitMu shards; the
+// HNSW graphs and the catalog tree are internally synchronized).
+type vectorCommitSnapshot struct {
+	tables map[string]*vectorTableCommitState
+}
+
+type vectorTableCommitState struct {
+	defs   []*VectorIndexDef
+	colIdx map[*VectorIndexDef]int
+	cols   int // table column count, for row decode
+}
+
+// snapshotVectorIndexesForCommit returns nil when no vector index exists at
+// all (the common case: one RLock/RUnlock, no allocation). Otherwise it
+// captures, per pending-write table, the vector index definitions whose
+// HNSW graphs must be refreshed at commit.
+func (c *Catalog) snapshotVectorIndexesForCommit(writes []PendingWrite) *vectorCommitSnapshot {
+	c.mu.RLock()
+	if len(c.vectorIndexes) == 0 {
+		c.mu.RUnlock()
+		return nil
+	}
+	checked := make(map[string]bool, len(writes))
+	var snap *vectorCommitSnapshot
+	for _, w := range writes {
+		if checked[w.TreeName] {
+			continue
+		}
+		checked[w.TreeName] = true
+		var defs []*VectorIndexDef
+		for _, vi := range c.vectorIndexes {
+			if vi.TableName == w.TreeName && vi.HNSW != nil {
+				defs = append(defs, vi)
+			}
+		}
+		if len(defs) == 0 {
+			continue
+		}
+		table, ok := c.tables[w.TreeName]
+		if !ok || table == nil {
+			continue // table dropped mid-transaction; nothing to refresh
+		}
+		st := &vectorTableCommitState{defs: defs, colIdx: make(map[*VectorIndexDef]int, len(defs)), cols: len(table.Columns)}
+		for _, vi := range defs {
+			idx := table.GetColumnIndex(vi.ColumnName)
+			if idx < 0 {
+				continue // indexed column gone; cannot refresh
+			}
+			st.colIdx[vi] = idx
+		}
+		if len(st.colIdx) == 0 {
+			continue
+		}
+		if snap == nil {
+			snap = &vectorCommitSnapshot{tables: make(map[string]*vectorTableCommitState)}
+		}
+		snap.tables[w.TreeName] = st
+	}
+	c.mu.RUnlock()
+	return snap
+}
+
+// applyCommitVectorUpdates refreshes the HNSW entry for the final
+// (last-wins per key) live-row write on each vector-indexed table. The
+// direct path indexed vector-table rows at statement time; with the vector
+// useBuffer exemption removed, buffered vector writes refresh here, at
+// commit, so concurrent transactions never observe uncommitted embeddings
+// (refactor.md §1.16, option A). Tombstoned values keep the existing
+// search-time filtering behavior. Must be called AFTER the row writes have
+// been applied, inside the commit section; it must not take Catalog.mu.
+func (c *Catalog) applyCommitVectorUpdates(snap *vectorCommitSnapshot, writes []PendingWrite) error {
+	if snap == nil || len(snap.tables) == 0 {
+		return nil
+	}
+	type tableKey struct{ table, key string }
+	final := make(map[tableKey]PendingWrite, len(writes))
+	for _, w := range writes {
+		final[tableKey{w.TreeName, w.Key}] = w
+	}
+	for tableName, st := range snap.tables {
+		persist := false
+		for tk, w := range final {
+			if tk.table != tableName {
+				continue
+			}
+			vrow, err := decodeVersionedRow(w.Value, st.cols)
+			if err != nil {
+				return fmt.Errorf("failed to decode row for vector index refresh %s/%s: %w", tableName, tk.key, err)
+			}
+			if vrow.Version.DeletedAt > 0 {
+				// Tombstone (a buffered delete, or a Phase-2 rekey's old
+				// key): remove the node so search and tree agree
+				// post-commit. For buffered deletes this is idempotent —
+				// the statement-time path already deleted the node, and
+				// HNSW.Delete returns nil on a missing key.
+				for _, vi := range st.defs {
+					if _, ok := st.colIdx[vi]; !ok {
+						continue
+					}
+					if err := vi.HNSW.Delete(tk.key); err != nil {
+						return fmt.Errorf("failed to refresh vector index %s for %s: %w", vi.Name, tk.key, err)
+					}
+					persist = true
+				}
+				continue
+			}
+			for _, vi := range st.defs {
+				if _, ok := st.colIdx[vi]; !ok {
+					continue
+				}
+				if err := vi.HNSW.Delete(tk.key); err != nil {
+					return fmt.Errorf("failed to refresh vector index %s for %s: %w", vi.Name, tk.key, err)
+				}
+				if err := c.indexRowForVector(vi, vrow.Data, tk.key, st.colIdx[vi]); err != nil {
+					return fmt.Errorf("failed to refresh vector index %s for %s: %w", vi.Name, tk.key, err)
+				}
+				persist = true
+			}
+		}
+		if persist {
+			for _, vi := range st.defs {
+				if err := c.storeVectorIndexDef(vi); err != nil {
+					return fmt.Errorf("failed to persist vector index %s: %w", vi.Name, err)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Catalog) FlushTableTrees() error {
