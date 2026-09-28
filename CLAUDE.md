@@ -250,7 +250,22 @@ The main mutex can become a bottleneck under high concurrency. Consider:
   prevented** (uncommitted writes stay goroutine-local until commit) and
   **write-write conflicts abort one writer, so there are no lost updates** (a
   guarantee *stronger* than plain Read Committed, delivered by optimistic
-  read-set/version-shard validation at commit). Do not rely on
+  read-set/version-shard validation at commit). **One proven exception
+  (verified 2026-09-28; narrowed by the Phase-1 and Phase-2 fixes, same
+  day):** writes on the remaining *direct-path* statement classes —
+  composite-PK `SET` changes, partitioned tables, and `REPLACE` inserts —
+  bypass the pending-write buffer inside explicit transactions and land in
+  the shared B-tree immediately, so a concurrent SELECT in another
+  transaction CAN observe uncommitted values from those writes. Rollback
+  itself is correct (the undo machinery reverses them); only visibility is
+  wrong. Vector-INDEXED table INSERT/UPDATE now buffers like every other
+  table, with HNSW refreshed at COMMIT (`applyCommitVectorUpdates`; option A
+  per `refactor.md` §1.16 — a transaction's own uncommitted embeddings are
+  invisible to its own vector search until COMMIT), and single-column
+  PK-changing updates buffer as a *deferred rekey* (new-key live write +
+  old-key soft-delete tombstone, applied at commit — `bufferUpdateEntry`).
+  Remaining phases: `refactor.md` §1.16.
+  Do not rely on
   snapshot/repeatable-read/serializable semantics or phantom protection. True
   Snapshot Isolation would require retaining old row versions on every UPDATE (MVCC
   version chains) and routing reads through them — a dedicated architectural
@@ -321,6 +336,15 @@ The main mutex can become a bottleneck under high concurrency. Consider:
     parses as a column reference), so they need parser work rather than a handler. Use
     `CAST(x AS SIGNED)` instead of `CONVERT`. Everything else in the common MySQL scalar
     set is implemented — see `integration/mysql_compat_functions_test.go`.
+- **Two-level correlated subqueries fail closed** — one-level correlation (a subquery
+  referencing the outer query's columns) works, but an innermost subquery that references
+  the *outermost* table two levels up is never resolved: `resolveOuterRefsInExpr`
+  (`pkg/catalog/catalog_core.go`) has no `SubqueryExpr`/`ExistsExpr` case, so at the inner
+  level the reference is not among the inner query's columns and the query fails with a
+  clean `column not found: <table>.<column>` error — no silent wrong results (probed and
+  verified 2026-09-28; MySQL supports multi-level correlation). Restructure such queries
+  (e.g. join the intermediate table instead) until recursive outer-reference resolution
+  is implemented.
 - **WASM streaming** — Streaming results are only supported for SELECT queries.
 - **RLS locks the catalog exclusively** — Row-level security policies filter rows by the
   per-query user (the query context is propagated to the catalog via
