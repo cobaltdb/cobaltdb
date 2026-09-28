@@ -180,14 +180,44 @@ func (c *Catalog) SearchVectorKNN(indexName string, queryVector []float64, k int
 		return nil, nil, fmt.Errorf("vector index %s has no HNSW structure", indexName)
 	}
 
-	keys, dists, err := vectorIndex.HNSW.SearchKNN(queryVector, k)
+	// §1.16 option B: read-your-own-writes. The overlay can REMOVE keys
+	// from the HNSW top-k (tombstones, superseded embeddings), so the graph
+	// must be over-fetched by the pending count or the post-filter result
+	// can under-fill k.
+	fetchK := k
+	if k > 0 {
+		if p := c.pendingVectorFilterCount(vectorIndex); p > 0 {
+			fetchK = k + p
+		}
+	}
+
+	keys, dists, err := vectorIndex.HNSW.SearchKNN(queryVector, fetchK)
 	if err != nil {
 		return nil, nil, err
 	}
-	// §1.16 option B: read-your-own-writes — overlay this transaction's
-	// pending embeddings onto the (commit-refreshed) HNSW results.
 	keys, dists = c.overlayPendingVectorResults(vectorIndex, keys, dists, queryVector, k)
 	return keys, dists, nil
+}
+
+// pendingVectorFilterCount returns how many keys the current transaction's
+// pending writes could remove or supersede from a vector search result —
+// the over-fetch headroom SearchVectorKNN needs so the overlay's filtering
+// cannot under-fill k. Zero on every fast path (no txn, no table, no
+// pending writes, no indexed column).
+func (c *Catalog) pendingVectorFilterCount(vi *VectorIndexDef) int {
+	ts := c.getCurrentTxn()
+	if ts == nil {
+		return 0
+	}
+	table, ok := c.tables[vi.TableName]
+	if !ok || table == nil {
+		return 0
+	}
+	n := 0
+	for _, m := range ts.pendingWriteMapsFor(table) {
+		n += len(m)
+	}
+	return n
 }
 
 // overlayPendingVectorResults merges the current transaction's pending
@@ -202,8 +232,9 @@ func (c *Catalog) SearchVectorKNN(indexName string, queryVector []float64, k int
 //   - a live row without a valid embedding is excluded (HNSW would not have
 //     indexed it either).
 //
-// The HNSW top-k is a sufficient candidate pool: adding pending candidates
-// can only displace, never require, a key beyond it. Callers hold c.mu.RLock;
+// The HNSW pool must be over-fetched by the pending count (see
+// pendingVectorFilterCount): filtering can remove keys from the returned
+// top-k, so k alone can under-fill. Callers hold c.mu.RLock;
 // pendingWriteMapsFor reads goroutine-local transaction state.
 func (c *Catalog) overlayPendingVectorResults(vi *VectorIndexDef, keys []string, dists []float64, query []float64, k int) ([]string, []float64) {
 	if k <= 0 {

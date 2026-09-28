@@ -86,11 +86,10 @@ func TestVectorSearchReadYourOwnWrites(t *testing.T) {
 	exec(`ROLLBACK`)
 
 	// PROBE 3 — DELETE read-your-own-writes: the buffered tombstone must
-	// filter the still-indexed row out of the results. (Deletes row 2, not
-	// row 1: buffered DELETEs eagerly remove the HNSW node at statement
-	// time and ROLLBACK does not restore it — a pre-existing defect this
-	// regression exposed, recorded as the §1.16 follow-up — so the deleted
-	// row must not be one the later guard asserts on.)
+	// filter the still-indexed row out of the results. (Deletes row 2 for
+	// historical reasons: the eager statement-time HNSW delete that this
+	// probe originally had to avoid — the §1.16 rollback defect, since
+	// FIXED by deferring the node deletion to COMMIT — no longer applies.)
 	exec(`BEGIN`)
 	exec(`DELETE FROM vryow WHERE id = 2`)
 	assertTop("in-txn delete filtered from own search", 2,

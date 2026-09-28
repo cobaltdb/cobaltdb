@@ -21,9 +21,12 @@ type deleteEntry struct {
 	version  RowVersion    // decoded version for soft-delete re-encode (avoids double-decode)
 	treeName string        // which partition tree this entry came from
 	// vectorDeleted records that the row key was removed from the table's
-	// vector indexes. Vector deletions are applied immediately (HNSW.Delete),
-	// unlike the soft-delete B-tree write, so statement-level rollback must
-	// restore them explicitly or live rows go invisible to vector search.
+	// vector indexes. The DIRECT path applies vector deletions immediately
+	// (HNSW.Delete), unlike the soft-delete B-tree write, so its
+	// statement-level rollback must restore them explicitly or live rows go
+	// invisible to vector search. The BUFFERED path defers the node deletion
+	// to COMMIT (refactor.md §1.16) and leaves this flag false, making the
+	// statement-failure restores correct no-ops for its entries.
 	vectorDeleted bool
 }
 
@@ -939,10 +942,14 @@ func (c *Catalog) applyDeleteEntryBuffered(
 
 	// (BEFORE DELETE trigger already fired by the caller, ahead of the FK cascade.)
 
-	if err := c.updateVectorIndexesForDelete(stmt.Table, string(key)); err != nil {
-		return err
-	}
-	entry.vectorDeleted = c.hasVectorIndexesForTable(stmt.Table)
+	// Vector node deletion is DEFERRED to COMMIT (refactor.md §1.16): the
+	// Phase-2 tombstone sync removes the HNSW node via applyCommitVector
+	// Updates, and in-transaction search visibility is the option-B overlay's
+	// job. Deleting eagerly here leaked the uncommitted delete into every
+	// concurrent search AND left rolled-back deletes permanently absent from
+	// the index (ROLLBACK discards the tombstone but had no HNSW re-insert).
+	// entry.vectorDeleted stays false: the statement-failure restore paths
+	// (restoreVectorIndexesForDelete) become correct no-ops for this path.
 
 	// Soft-delete encoding: mark deleted → re-encode.
 	version.markDeleted(time.Now())

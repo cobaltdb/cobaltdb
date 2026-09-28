@@ -844,9 +844,10 @@ func (c *Catalog) applyCommitVectorUpdates(snap *vectorCommitSnapshot, writes []
 			if vrow.Version.DeletedAt > 0 {
 				// Tombstone (a buffered delete, or a Phase-2 rekey's old
 				// key): remove the node so search and tree agree
-				// post-commit. For buffered deletes this is idempotent —
-				// the statement-time path already deleted the node, and
-				// HNSW.Delete returns nil on a missing key.
+				// post-commit. For buffered deletes this is the SINGLE
+				// delete point (the statement-time path no longer deletes
+				// eagerly — refactor.md §1.16 rollback fix); HNSW.Delete
+				// returns nil on a missing key, so rekeys stay idempotent.
 				for _, vi := range st.defs {
 					if _, ok := st.colIdx[vi]; !ok {
 						continue
