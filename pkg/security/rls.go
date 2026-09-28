@@ -898,13 +898,16 @@ func (m *Manager) parseComplexExpression(expr string) (PolicyExpr, error) {
 // findTopLevelOperator finds an operator at the top level (not inside
 // parentheses or quoted string literals). Quoted spans are skipped so string
 // literals containing operator words (e.g. `status = 'review AND escalate'`)
-// never structure the expression.
+// never structure the expression. Operator matching is an ASCII case-fold on
+// the ORIGINAL bytes: toUpperFast's output can be byte-shorter than its
+// input (Unicode simple mapping, e.g. ı→I or ſ→S), so prefix-testing a
+// pre-uppercased copy while walking expr's bytes desynced the two index
+// spaces — operators after such a rune were missed or found at a shifted
+// index, mis-splitting the expression.
 func findTopLevelOperator(expr, op string) int {
 	depth := 0
-	upperExpr := toUpperFast(expr)
-	upperOp := toUpperFast(op)
 	inQuote := byte(0)
-	for i := 0; i < len(upperExpr); i++ {
+	for i := 0; i < len(expr); i++ {
 		c := expr[i]
 		if inQuote != 0 {
 			if c == inQuote {
@@ -920,11 +923,35 @@ func findTopLevelOperator(expr, op string) int {
 			depth++
 		} else if c == ')' {
 			depth--
-		} else if depth == 0 && strings.HasPrefix(upperExpr[i:], upperOp) {
+		} else if depth == 0 && hasPrefixFoldASCII(expr[i:], op) {
 			return i
 		}
 	}
 	return -1
+}
+
+// hasPrefixFoldASCII reports whether s starts with op, matching ASCII
+// letters case-insensitively and every other byte exactly. Operators are
+// ASCII keywords and symbols, so this preserves the previous
+// strings.HasPrefix(upperExpr[i:], upperOp) matching for every real operator
+// while staying aligned to s's own byte indices.
+func hasPrefixFoldASCII(s, op string) bool {
+	if len(s) < len(op) {
+		return false
+	}
+	for i := 0; i < len(op); i++ {
+		a, b := s[i], op[i]
+		if 'A' <= a && a <= 'Z' {
+			a += 'a' - 'A'
+		}
+		if 'A' <= b && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
 }
 
 // parseSimpleExpression handles simple comparison expressions
@@ -1167,9 +1194,14 @@ func (m *Manager) getValue(name string, ctx context.Context, row map[string]inte
 	name = strings.TrimSpace(name)
 	upperName := toUpperFast(name)
 
-	// Check for quoted strings
-	if (strings.HasPrefix(name, "'") && strings.HasSuffix(name, "'")) ||
-		(strings.HasPrefix(name, "\"") && strings.HasSuffix(name, "\"")) {
+	// Check for quoted strings. Single-quoted literals use SQL-standard
+	// quote doubling ('') — undo it after stripping the outer quotes so a
+	// literal rendered from a value like O'Brien round-trips exactly (the
+	// len guard keeps a lone quote character from slicing out of range).
+	if len(name) >= 2 && strings.HasPrefix(name, "'") && strings.HasSuffix(name, "'") {
+		return strings.ReplaceAll(name[1:len(name)-1], "''", "'")
+	}
+	if len(name) >= 2 && strings.HasPrefix(name, "\"") && strings.HasSuffix(name, "\"") {
 		return name[1 : len(name)-1]
 	}
 
@@ -1406,8 +1438,15 @@ func likeToRegex(pattern, escape string) string {
 			if i+1 < len(pr) {
 				i++
 				b.WriteString(regexp.QuoteMeta(string(pr[i])))
+			} else {
+				// A trailing escape char has nothing to escape: it matches
+				// itself literally, exactly like the engine's matchLikeSimple
+				// (whose escape case requires a next rune, so the dangling
+				// char falls through to the literal comparison). Dropping it
+				// instead made 'a\' ESCAPE '\' match "a" while the engine
+				// matches only "a\".
+				b.WriteString(regexp.QuoteMeta(string(esc)))
 			}
-			// A trailing escape char has nothing to escape; drop it.
 			continue
 		}
 		switch c {

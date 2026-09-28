@@ -198,3 +198,88 @@ func TestScanNullConversions(t *testing.T) {
 		t.Fatalf("FAIL: NULL raw scanned as %q, want nil", raw)
 	}
 }
+
+// TestScanFloatOutOfRangeErrors pins the database/sql-compatible range
+// contract for float64 → int/int64 scans: convertAssign converts numeric
+// sources into int destinations only when the value is representable (its
+// asString → ParseInt round-trip errors otherwise), so an out-of-range or NaN
+// float64 must ERROR, never return Go's implementation-defined conversion
+// garbage (amd64: the indefinite value -9223372036854775808) with a nil
+// error. In-range fractional truncation stays pinned by
+// TestScanValueIntEdgeCases / TestScanValueErrors.
+func TestScanFloatOutOfRangeErrors(t *testing.T) {
+	db, err := Open(":memory:", nil)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	mustExec := func(q string, args ...interface{}) {
+		t.Helper()
+		if _, err := db.Exec(ctx, q, args...); err != nil {
+			t.Fatalf("%q %v: %v", q, args, err)
+		}
+	}
+	mustExec(`CREATE TABLE sfo_real (r REAL)`)
+	mustExec(`INSERT INTO sfo_real VALUES (?)`, 1e300)
+	// Two MaxInt64 rows: SUM overflows int64 and the sumAccumulator promotes
+	// the result to float64 above MaxInt64 — the natural *int64 scan of a
+	// BIGINT sum then hits the same range boundary.
+	mustExec(`CREATE TABLE sfo_big (v BIGINT)`)
+	mustExec(`INSERT INTO sfo_big VALUES (?)`, int64(9223372036854775807))
+	mustExec(`INSERT INTO sfo_big VALUES (?)`, int64(9223372036854775807))
+
+	scanOne := func(sql string, dest ...interface{}) error {
+		t.Helper()
+		rows, err := db.Query(ctx, sql)
+		if err != nil {
+			t.Fatalf("query %q: %v", sql, err)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			t.Fatalf("query %q: no rows", sql)
+		}
+		return rows.Scan(dest...)
+	}
+
+	// Construction guards: the sources really are float64 on the scan path,
+	// so the probes below fail for the right reason.
+	var fsrc interface{}
+	if err := scanOne("SELECT r FROM sfo_real", &fsrc); err != nil {
+		t.Fatalf("real source scan: %v", err)
+	}
+	if _, ok := fsrc.(float64); !ok {
+		t.Fatalf("construction changed: REAL column decoded as %T, want float64", fsrc)
+	}
+	var ssum interface{}
+	if err := scanOne("SELECT SUM(v) FROM sfo_big", &ssum); err != nil {
+		t.Fatalf("sum scan: %v", err)
+	}
+	sf, ok := ssum.(float64)
+	if !ok || sf <= 9.223372036854775807e18 {
+		t.Fatalf("construction changed: SUM = %T(%v), want float64 above MaxInt64", ssum, ssum)
+	}
+
+	// Out-of-range float64 into int destinations must error.
+	var i64 int64
+	if err := scanOne("SELECT r FROM sfo_real", &i64); err == nil {
+		t.Fatalf("FAIL: REAL 1e300 into *int64 scanned as %d with no error — out-of-range float64 must error, not return conversion garbage", i64)
+	}
+	var i int
+	if err := scanOne("SELECT r FROM sfo_real", &i); err == nil {
+		t.Fatalf("FAIL: REAL 1e300 into *int scanned as %d with no error — out-of-range float64 must error", i)
+	}
+	if err := scanOne("SELECT SUM(v) FROM sfo_big", &i64); err == nil {
+		t.Fatalf("FAIL: overflowed SUM (float64 %v) into *int64 scanned as %d with no error — out-of-range float64 must error", sf, i64)
+	}
+
+	// In-range controls on the same paths.
+	var frac int64
+	if err := scanOne("SELECT 42.5", &frac); err != nil || frac != 42 {
+		t.Fatalf("in-range control 42.5→int64: err=%v val=%d (truncation is pinned behavior)", err, frac)
+	}
+	if err := scanOne("SELECT 'abc'", &frac); err == nil {
+		t.Fatalf("in-range control: 'abc'→int64 must still error")
+	}
+}

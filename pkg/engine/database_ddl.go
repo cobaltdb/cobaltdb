@@ -67,6 +67,16 @@ func (db *DB) executeCreateCollection(ctx context.Context, stmt *query.CreateCol
 // executeCreateTableAsSelect implements CREATE TABLE ... AS SELECT (CTAS):
 // materialize the query, infer column types, create the table, insert the rows.
 func (db *DB) executeCreateTableAsSelect(ctx context.Context, stmt *query.CreateTableStmt) (Result, error) {
+	// IF NOT EXISTS on an existing table is a full no-op (matching
+	// executeCreateTable's pre-check and MySQL, which warns without even
+	// evaluating the source SELECT): without this, CreateTable silently
+	// skipped while the insert loop below still appended the CTAS rows into
+	// the pre-existing table — silent data duplication.
+	if stmt.IfNotExists {
+		if _, err := db.catalog.GetTable(stmt.Table); err == nil {
+			return Result{RowsAffected: 0}, nil
+		}
+	}
 	rows, err := db.query(ctx, "", stmt.AsSelect, nil)
 	if err != nil {
 		return Result{}, err
@@ -445,10 +455,19 @@ func expressionToString(expr query.Expression) string {
 		}
 		return e.Column
 	case *query.StringLiteral:
+		// SQL-standard quote doubling: the rendered expression is re-parsed
+		// by the RLS evaluator (security/rls.go parses policy.Expression), so
+		// an embedded quote must render as '' — a bare quote would terminate
+		// the literal early and mis-structure the re-parsed policy.
 		var sb strings.Builder
 		sb.Grow(len(e.Value) + 2)
 		sb.WriteByte('\'')
-		sb.WriteString(e.Value)
+		for i := 0; i < len(e.Value); i++ {
+			if e.Value[i] == '\'' {
+				sb.WriteByte('\'')
+			}
+			sb.WriteByte(e.Value[i])
+		}
 		sb.WriteByte('\'')
 		return sb.String()
 	case *query.NumberLiteral:

@@ -152,6 +152,16 @@ func (r *Row) Scan(dest ...interface{}) error {
 
 // scanValue scans a value into a destination
 
+// float64FitsInt64 reports whether f converts to int64 without Go's
+// implementation-defined out-of-range behavior. 2^63 is exactly representable
+// in float64 (MaxInt64 is not), so f must be strictly below 2^63 and at or
+// above -2^63; NaN (the only value unequal to itself) fits nowhere.
+// database/sql's convertAssign errors on such conversions rather than
+// returning a garbage value.
+func float64FitsInt64(f float64) bool {
+	return f == f && f >= -9223372036854775808.0 && f < 9223372036854775808.0
+}
+
 func scanValue(src interface{}, dest interface{}) error {
 	// database/sql convertAssign: a NULL source scans into any pointer
 	// destination as its zero value (nil for *interface{}/ *[]byte), never
@@ -215,8 +225,13 @@ func scanValue(src interface{}, dest interface{}) error {
 	case *int:
 		v, ok := src.(int64)
 		if !ok {
-			// Try float
+			// Try float — in range only (int is 64-bit on the supported platforms):
+			// an out-of-range or NaN float converts to implementation-defined
+			// garbage, where database/sql's convertAssign errors instead.
 			if f, ok := src.(float64); ok {
+				if !float64FitsInt64(f) {
+					return fmt.Errorf("cannot scan %T into int: value out of range", src)
+				}
 				*d = int(f)
 				return nil
 			}
@@ -248,6 +263,9 @@ func scanValue(src interface{}, dest interface{}) error {
 		v, ok := src.(int64)
 		if !ok {
 			if f, ok := src.(float64); ok {
+				if !float64FitsInt64(f) {
+					return fmt.Errorf("cannot scan %T into int64: value out of range", src)
+				}
 				*d = int64(f)
 				return nil
 			}

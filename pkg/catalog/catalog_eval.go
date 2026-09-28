@@ -23,7 +23,7 @@ type functionHandler func(args []interface{}) (interface{}, error)
 // aggregate, special-syntax, and fallthrough functions remain in the switch.
 var scalarFunctionHandlers = map[string]functionHandler{
 	"NULLIF": func(args []interface{}) (interface{}, error) {
-		if len(args) < 2 {
+		if len(args) != 2 {
 			return nil, fmt.Errorf("NULLIF requires 2 arguments")
 		}
 		if args[0] == nil || args[1] == nil {
@@ -2098,7 +2098,7 @@ func evalFunctionCallValue(funcName string, evalArgs []interface{}) (interface{}
 		// context and the SELECT-list context enforce identical arity and
 		// NULL-semantics (a prior split let malformed 1-arg NULLIF succeed here
 		// while erroring in the SELECT list).
-		if len(evalArgs) < 2 {
+		if len(evalArgs) != 2 {
 			return nil, fmt.Errorf("NULLIF requires 2 arguments")
 		}
 		if evalArgs[0] == nil || evalArgs[1] == nil {

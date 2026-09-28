@@ -77,6 +77,14 @@ func TestRLSLikeToRegexEngineConsistency(t *testing.T) {
 		{"#_", "#", "_", true},
 		{"\\%", "\\", "%", true},
 		{"\\%", "\\", "x", false},
+		// A dangling trailing escape matches ITSELF literally, mirroring the
+		// engine's matchLikeSimple (its escape case requires a next pattern
+		// rune, so the char falls through to the literal branch): 'a\'
+		// (ESCAPE '\') matches exactly "a\" — not "a".
+		{"a\\", "\\", "a", false},
+		{"a\\", "\\", "a\\", true},
+		{"a!", "!", "a!", true},
+		{"a!", "!", "a", false},
 	}
 	for _, tc := range cases {
 		re, err := regexp.Compile(likeToRegex(tc.pattern, tc.escape))

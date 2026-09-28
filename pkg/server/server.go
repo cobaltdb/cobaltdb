@@ -87,11 +87,23 @@ const defaultMaxConnections = 1000
 // using crypto/rand for secure random generation.
 func generateRandomPassword() (string, error) {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	// Rejection sampling: mapping raw bytes straight through %len(charset)
+	// over-draws the first 256%len(charset) characters (256%62 = 8, so
+	// 'a'-'h' draw at 5/256 versus 4/256 — CWE-195), biasing the credential
+	// DefaultAdminPass receives from DefaultConfig. Rejecting bytes at or
+	// above the largest multiple of len(charset) keeps the modulo mapping
+	// uniform — the same fix e0e2deb applied to the cmd/cobaltdb-server copy.
+	maxUnbiased := 256 - (256 % len(charset))
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("crypto/rand failed: %w", err)
 	}
 	for i := range b {
+		for int(b[i]) >= maxUnbiased {
+			if _, err := rand.Read(b[i : i+1]); err != nil {
+				return "", fmt.Errorf("crypto/rand failed: %w", err)
+			}
+		}
 		b[i] = charset[uint32(b[i])%uint32(len(charset))]
 	}
 	return string(b), nil
