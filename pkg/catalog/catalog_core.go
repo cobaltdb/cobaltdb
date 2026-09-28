@@ -353,6 +353,27 @@ func (ts *catalogTxnState) getPendingWriteMap() map[string]map[string]PendingWri
 	return ts.pendingWriteMap
 }
 
+// pendingWriteMapsFor returns the pending-write overlay maps for every tree
+// of the table: the table's own tree for plain tables, plus each partition
+// tree for partitioned tables (buffered partitioned writes are keyed by
+// their partition tree name — refactor.md §1.16 Phase 3).
+func (ts *catalogTxnState) pendingWriteMapsFor(table *TableDef) []map[string]PendingWrite {
+	m := ts.getPendingWriteMap()
+	if table.Partition == nil {
+		if pm, ok := m[table.Name]; ok {
+			return []map[string]PendingWrite{pm}
+		}
+		return nil
+	}
+	var maps []map[string]PendingWrite
+	for _, tn := range table.getPartitionTreeNames() {
+		if pm, ok := m[tn]; ok {
+			maps = append(maps, pm)
+		}
+	}
+	return maps
+}
+
 // PendingWrite buffers a DML operation for commit-time application when the
 // txn.Manager bridge is active. This avoids holding Catalog.mu during DML.
 type PendingWrite struct {
@@ -1099,10 +1120,11 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 			}
 			// Read-your-writes: pending writes override committed data.
 			if ts := cat.getCurrentTxn(); ts != nil {
-				if m, ok := ts.getPendingWriteMap()[table.Name]; ok {
+				for _, m := range ts.pendingWriteMapsFor(table) {
 					if pw, ok2 := m[pk]; ok2 {
 						valueData = pw.Value
 						found = true
+						break
 					}
 				}
 			}
@@ -1151,7 +1173,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 		ts := cat.getCurrentTxn()
 		hasPending := ts != nil
 		if hasPending {
-			if _, ok := ts.getPendingWriteMap()[table.Name]; !ok {
+			if len(ts.pendingWriteMapsFor(table)) == 0 {
 				hasPending = false
 			}
 		}
@@ -1271,7 +1293,7 @@ func (cat *Catalog) scanTableRows(table *TableDef, stmt *query.SelectStmt, args 
 
 			// Read-your-writes: overlay buffered writes (INSERT, UPDATE, DELETE).
 			if hasPending {
-				if m, ok := ts.getPendingWriteMap()[table.Name]; ok {
+				for _, m := range ts.pendingWriteMapsFor(table) {
 					for _, pw := range m {
 						k := string(pw.Key)
 						if idx, ok := seen[k]; ok {
@@ -1426,7 +1448,7 @@ func (c *Catalog) getEffectiveTableData(table *TableDef) (map[string][]byte, err
 		// deliberately still nil (appendPendingWriteTs materializes it only
 		// from the second write on), so reading the raw field here silently
 		// skipped read-your-writes for aggregates and joins.
-		if m, ok := ts.getPendingWriteMap()[table.Name]; ok {
+		for _, m := range ts.pendingWriteMapsFor(table) {
 			for _, pw := range m {
 				k := string(pw.Key)
 				vrow, err := decodeVersionedRow(pw.Value, len(table.Columns))

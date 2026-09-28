@@ -36,6 +36,7 @@ type fkSnapshot struct {
 type insertSnapshot struct {
 	table    *TableDef
 	tree     btree.TreeStore
+	treeName string // tree name: the partition tree for partitioned tables, the table name otherwise
 	indexes  []indexSnapshot
 	triggers []*query.CreateTriggerStmt
 	fkRefs   map[string]fkSnapshot
@@ -47,11 +48,12 @@ func (c *Catalog) buildInsertSnapshot(table *TableDef, stmt *query.InsertStmt, a
 	snap := &insertSnapshot{table: table}
 
 	// Table tree (handles partitioned tables too).
-	tree, _, err := c.getInsertTargetTree(table, stmt, args)
+	tree, treeName, err := c.getInsertTargetTree(table, stmt, args)
 	if err != nil {
 		return nil, err
 	}
 	snap.tree = tree
+	snap.treeName = treeName
 
 	// Indexes for this table.
 	for idxName, idxDef := range c.indexes {
@@ -710,7 +712,7 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 		} else if skip {
 			continue
 		}
-		if c.keyInPendingWrites(stmt.Table, key) {
+		if c.keyInPendingWrites(snap.treeName, key) {
 			if stmt.ConflictAction == query.ConflictIgnore {
 				continue
 			}
@@ -724,7 +726,7 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 		} else {
 			existingValue, _ = tree.Get([]byte(key))
 		}
-		c.recordManagerReadTs(ts, stmt.Table, key, existingValue)
+		c.recordManagerReadTs(ts, snap.treeName, key, existingValue)
 
 		idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexesSnapshot(table, stmt, key, rowValues, ts, snap.indexes)
 		if idxErr != nil {
@@ -741,13 +743,13 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 		}
 
 		c.appendPendingWriteTs(ts, PendingWrite{
-			TreeName:     stmt.Table,
+			TreeName:     snap.treeName,
 			Key:          key,
 			Value:        valueData,
 			IndexUpdates: idxUpdates,
 		})
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
-			mt.SetWrite(stmt.Table, key, valueData)
+			mt.SetWrite(snap.treeName, key, valueData)
 		}
 
 		if needsInsertedRows {
@@ -1005,7 +1007,7 @@ func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []int
 
 	// Determine buffered mode.  We can check enableBufferedWrites without the
 	// lock because it is set once at engine open and never changed afterwards.
-	useBuffer := c.isBufferedMode() && table != nil && table.Partition == nil && stmt.ConflictAction != query.ConflictReplace
+	useBuffer := c.isBufferedMode() && table != nil && stmt.ConflictAction != query.ConflictReplace
 	if useBuffer {
 		// Snapshot all metadata needed for the buffered row loop, then release
 		// Catalog.mu so concurrent writers and DDL do not block us.
@@ -1282,7 +1284,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	}
 
 	// Get the target tree - may be partitioned
-	tree, _, err := c.getInsertTargetTree(table, stmt, args)
+	tree, treeName, err := c.getInsertTargetTree(table, stmt, args)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -1400,7 +1402,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 	// Buffered mode defers B-tree mutation until commit. It supports tables
 	// with secondary indexes as long as we are not doing REPLACE (which
 	// requires immediate mutation of committed data).
-	useBuffer := c.isBufferedMode() && table.Partition == nil && stmt.ConflictAction != query.ConflictReplace
+	useBuffer := c.isBufferedMode() && stmt.ConflictAction != query.ConflictReplace
 	// Skip allocating row copies when no triggers or RETURNING clause need them.
 	needsInsertedRows := len(stmt.Returning) > 0 || len(c.getTriggersForTableLocked(stmt.Table, "INSERT")) > 0
 
@@ -1458,7 +1460,7 @@ func (c *Catalog) insertLocked(ctx context.Context, stmt *query.InsertStmt, args
 			// Buffered write path: defer B-tree mutation to commit time.
 			// Skip WAL — txn.Manager handles durability at commit.
 			bufferedRow, skipRow, bufferedErr := c.applyInsertRowBuffered(
-				stmt, table, tree, ts, rowValues, key, valueData, needsInsertedRows,
+				stmt, table, tree, treeName, ts, rowValues, key, valueData, needsInsertedRows,
 			)
 			if bufferedErr != nil {
 				insertErr = bufferedErr
@@ -1718,6 +1720,7 @@ func (c *Catalog) applyInsertRowBuffered(
 	stmt *query.InsertStmt,
 	table *TableDef,
 	tree btree.TreeStore,
+	treeName string,
 	ts *catalogTxnState,
 	rowValues []interface{},
 	key string,
@@ -1730,7 +1733,7 @@ func (c *Catalog) applyInsertRowBuffered(
 	} else if skip {
 		return nil, true, nil
 	}
-	if c.keyInPendingWrites(stmt.Table, key) {
+	if c.keyInPendingWrites(treeName, key) {
 		if stmt.ConflictAction == query.ConflictIgnore {
 			return nil, true, nil
 		}
@@ -1746,7 +1749,7 @@ func (c *Catalog) applyInsertRowBuffered(
 	} else {
 		existingValue, _ = tree.Get([]byte(key))
 	}
-	c.recordManagerReadTs(ts, stmt.Table, key, existingValue)
+	c.recordManagerReadTs(ts, treeName, key, existingValue)
 
 	// Build index updates for commit-time application.
 	idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexes(table, stmt, key, rowValues, ts)
@@ -1759,7 +1762,7 @@ func (c *Catalog) applyInsertRowBuffered(
 
 	// Buffer the write for commit-time application.
 	c.appendPendingWriteTs(ts, PendingWrite{
-		TreeName:     stmt.Table,
+		TreeName:     treeName,
 		Key:          key,
 		Value:        valueData,
 		IndexUpdates: idxUpdates,
@@ -1767,7 +1770,7 @@ func (c *Catalog) applyInsertRowBuffered(
 
 	// Also buffer in the Manager transaction's WriteSet for conflict detection.
 	if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
-		mt.SetWrite(stmt.Table, key, valueData)
+		mt.SetWrite(treeName, key, valueData)
 	}
 
 	if needsInsertedRows {
@@ -2404,20 +2407,20 @@ func (c *Catalog) rollbackStatementInserts(tree btree.TreeStore, table *TableDef
 
 // getInsertTargetTree returns the BTree for inserting a row
 // For partitioned tables, determines the correct partition based on partition key value
-func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, args []interface{}) (btree.TreeStore, int, error) {
+func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, args []interface{}) (btree.TreeStore, string, error) {
 	// If table is not partitioned, use the main table tree
 	if table.Partition == nil {
 		tree, exists := c.tableTrees[table.Name]
 		if !exists {
-			return nil, -1, ErrTableNotFound
+			return nil, "", ErrTableNotFound
 		}
-		return tree, -1, nil
+		return tree, table.Name, nil
 	}
 
 	// Get the partition column index
 	partitionColIdx := table.GetColumnIndex(table.Partition.Column)
 	if partitionColIdx < 0 {
-		return nil, -1, fmt.Errorf("partition column '%s' not found in table '%s'", table.Partition.Column, table.Name)
+		return nil, "", fmt.Errorf("partition column '%s' not found in table '%s'", table.Partition.Column, table.Name)
 	}
 
 	// Determine the partition key value from the INSERT statement
@@ -2458,14 +2461,14 @@ func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, a
 			}
 		}
 		if partitionVal == nil {
-			return nil, -1, fmt.Errorf("partition column '%s' value is NULL, cannot determine partition", table.Partition.Column)
+			return nil, "", fmt.Errorf("partition column '%s' value is NULL, cannot determine partition", table.Partition.Column)
 		}
 	}
 
 	// Get the partition tree name
 	partitionTreeName := table.getPartitionTreeName(partitionVal)
 	if partitionTreeName == "" {
-		return nil, -1, fmt.Errorf("no matching partition found for value %v", partitionVal)
+		return nil, "", fmt.Errorf("no matching partition found for value %v", partitionVal)
 	}
 
 	// Get or create the partition tree
@@ -2479,7 +2482,7 @@ func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, a
 			newTree, err := btree.NewBTree(c.pool)
 			if err != nil {
 				c.partitionTreeMu.Unlock()
-				return nil, -1, fmt.Errorf("failed to create partition tree: %w", err)
+				return nil, "", fmt.Errorf("failed to create partition tree: %w", err)
 			}
 			tree = newTree
 			c.tableTrees[partitionTreeName] = tree
@@ -2497,12 +2500,12 @@ func (c *Catalog) getInsertTargetTree(table *TableDef, stmt *query.InsertStmt, a
 			if table.Partition.Partitions[i].RootPageID != tree.RootPageID() {
 				table.Partition.Partitions[i].RootPageID = tree.RootPageID()
 				if err := c.storeTableDef(table); err != nil {
-					return nil, -1, fmt.Errorf("failed to persist partition tree root: %w", err)
+					return nil, "", fmt.Errorf("failed to persist partition tree root: %w", err)
 				}
 			}
 			break
 		}
 	}
 
-	return tree, partitionColIdx, nil
+	return tree, partitionTreeName, nil
 }

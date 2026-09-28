@@ -251,20 +251,24 @@ The main mutex can become a bottleneck under high concurrency. Consider:
   **write-write conflicts abort one writer, so there are no lost updates** (a
   guarantee *stronger* than plain Read Committed, delivered by optimistic
   read-set/version-shard validation at commit). **One proven exception
-  (verified 2026-09-28; narrowed by the Phase-1 and Phase-2 fixes, same
-  day):** writes on the remaining *direct-path* statement classes —
-  composite-PK `SET` changes, partitioned tables, and `REPLACE` inserts —
-  bypass the pending-write buffer inside explicit transactions and land in
-  the shared B-tree immediately, so a concurrent SELECT in another
-  transaction CAN observe uncommitted values from those writes. Rollback
-  itself is correct (the undo machinery reverses them); only visibility is
-  wrong. Vector-INDEXED table INSERT/UPDATE now buffers like every other
-  table, with HNSW refreshed at COMMIT (`applyCommitVectorUpdates`; option A
-  per `refactor.md` §1.16 — a transaction's own uncommitted embeddings are
-  invisible to its own vector search until COMMIT), and single-column
-  PK-changing updates buffer as a *deferred rekey* (new-key live write +
-  old-key soft-delete tombstone, applied at commit — `bufferUpdateEntry`).
-  Remaining phases: `refactor.md` §1.16.
+  (verified 2026-09-28; narrowed by the Phase-1/2/3 fixes, same day):**
+  writes on the remaining *direct-path* statement classes — composite-PK
+  `SET` changes and `REPLACE` inserts — bypass the pending-write buffer
+  inside explicit transactions and land in the shared B-tree immediately,
+  so a concurrent SELECT in another transaction CAN observe uncommitted
+  values from those writes. Rollback itself is correct (the undo machinery
+  reverses them); only visibility is wrong. Vector-INDEXED table
+  INSERT/UPDATE now buffers like every other table, with HNSW refreshed at
+  COMMIT (`applyCommitVectorUpdates`; option A per `refactor.md` §1.16 — a
+  transaction's own uncommitted embeddings are invisible to its own vector
+  search until COMMIT); single-column PK-changing updates buffer as a
+  *deferred rekey* (new-key live write + old-key soft-delete tombstone,
+  applied at commit — `bufferUpdateEntry`); and partitioned-table writes
+  buffer keyed by their partition tree (statement-routed via
+  `getInsertTargetTree`/`entry.treeName`; the read-your-writes overlays
+  merge every partition's pending map — `pendingWriteMapsFor`), with the
+  vector commit machinery matching partition tree names to their logical
+  table (`logicalTreeName`). Remaining: `refactor.md` §1.16.
   Do not rely on
   snapshot/repeatable-read/serializable semantics or phantom protection. True
   Snapshot Isolation would require retaining old row versions on every UPDATE (MVCC

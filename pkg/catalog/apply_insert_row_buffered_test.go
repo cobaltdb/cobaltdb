@@ -21,7 +21,7 @@ func TestApplyInsertRowBufferedBasic(t *testing.T) {
 		t.Fatalf("getTableLocked: %v", err)
 	}
 	stmt := &query.InsertStmt{Table: "buf1"}
-	tree, _, err := c.getInsertTargetTree(table, stmt, nil)
+	tree, treeName, err := c.getInsertTargetTree(table, stmt, nil)
 	if err != nil {
 		t.Fatalf("getInsertTargetTree: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestApplyInsertRowBufferedBasic(t *testing.T) {
 	rowValues := []interface{}{int64(1), "alice"}
 	// formatKey(1) returns the 20-digit zero-padded decimal "00000000000000000001".
 	insertedRow, skipRow, err := c.applyInsertRowBuffered(
-		stmt, table, tree, ts, rowValues,
+		stmt, table, tree, treeName, ts, rowValues,
 		"00000000000000000001",
 		[]byte("v"), true,
 	)
@@ -62,7 +62,7 @@ func TestApplyInsertRowBufferedNoNeedsInsertedRows(t *testing.T) {
 		t.Fatalf("getTableLocked: %v", err)
 	}
 	stmt := &query.InsertStmt{Table: "buf_noins"}
-	tree, _, err := c.getInsertTargetTree(table, stmt, nil)
+	tree, treeName, err := c.getInsertTargetTree(table, stmt, nil)
 	if err != nil {
 		t.Fatalf("getInsertTargetTree: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestApplyInsertRowBufferedNoNeedsInsertedRows(t *testing.T) {
 
 	rowValues := []interface{}{int64(1), "alice"}
 	insertedRow, skipRow, err := c.applyInsertRowBuffered(
-		stmt, table, tree, ts, rowValues,
+		stmt, table, tree, treeName, ts, rowValues,
 		"00000000000000000001",
 		[]byte("v"), false,
 	)
@@ -102,7 +102,7 @@ func TestApplyInsertRowBufferedPKConflictIgnore(t *testing.T) {
 		t.Fatalf("getTableLocked: %v", err)
 	}
 	stmt := &query.InsertStmt{Table: "buf_ign", ConflictAction: query.ConflictIgnore}
-	tree, _, err := c.getInsertTargetTree(table, stmt, nil)
+	tree, treeName, err := c.getInsertTargetTree(table, stmt, nil)
 	if err != nil {
 		t.Fatalf("getInsertTargetTree: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestApplyInsertRowBufferedPKConflictIgnore(t *testing.T) {
 	// Second insert: id=1 again with IGNORE → should skip
 	rowValues := []interface{}{int64(1), "second"}
 	insertedRow, skipRow, err := c.applyInsertRowBuffered(
-		stmt, table, tree, ts, rowValues,
+		stmt, table, tree, treeName, ts, rowValues,
 		"00000000000000000001",
 		[]byte("v"), true,
 	)
@@ -141,7 +141,7 @@ func TestApplyInsertRowBufferedNeedsInsertedRowsCopy(t *testing.T) {
 		t.Fatalf("getTableLocked: %v", err)
 	}
 	stmt := &query.InsertStmt{Table: "buf_copy"}
-	tree, _, err := c.getInsertTargetTree(table, stmt, nil)
+	tree, treeName, err := c.getInsertTargetTree(table, stmt, nil)
 	if err != nil {
 		t.Fatalf("getInsertTargetTree: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestApplyInsertRowBufferedNeedsInsertedRowsCopy(t *testing.T) {
 
 	rowValues := []interface{}{int64(1), "alice"}
 	insertedRow, _, err := c.applyInsertRowBuffered(
-		stmt, table, tree, ts, rowValues,
+		stmt, table, tree, treeName, ts, rowValues,
 		"00000000000000000001",
 		[]byte("v"), true,
 	)

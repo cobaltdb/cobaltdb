@@ -751,6 +751,18 @@ type vectorTableCommitState struct {
 	cols   int // table column count, for row decode
 }
 
+// logicalTreeName strips the partition suffix from a tree name ("pm:p0" →
+// "pm"): table names cannot contain ':' (the anchored identifier regex), so
+// the first colon is always the partition separator. Vector index
+// definitions and table defs are keyed by the logical table name, while
+// Phase-3 buffered partition writes are keyed by their partition tree.
+func logicalTreeName(treeName string) string {
+	if i := strings.IndexByte(treeName, ':'); i >= 0 {
+		return treeName[:i]
+	}
+	return treeName
+}
+
 // snapshotVectorIndexesForCommit returns nil when no vector index exists at
 // all (the common case: one RLock/RUnlock, no allocation). Otherwise it
 // captures, per pending-write table, the vector index definitions whose
@@ -764,20 +776,21 @@ func (c *Catalog) snapshotVectorIndexesForCommit(writes []PendingWrite) *vectorC
 	checked := make(map[string]bool, len(writes))
 	var snap *vectorCommitSnapshot
 	for _, w := range writes {
-		if checked[w.TreeName] {
+		logical := logicalTreeName(w.TreeName)
+		if checked[logical] {
 			continue
 		}
-		checked[w.TreeName] = true
+		checked[logical] = true
 		var defs []*VectorIndexDef
 		for _, vi := range c.vectorIndexes {
-			if vi.TableName == w.TreeName && vi.HNSW != nil {
+			if vi.TableName == logical && vi.HNSW != nil {
 				defs = append(defs, vi)
 			}
 		}
 		if len(defs) == 0 {
 			continue
 		}
-		table, ok := c.tables[w.TreeName]
+		table, ok := c.tables[logical]
 		if !ok || table == nil {
 			continue // table dropped mid-transaction; nothing to refresh
 		}
@@ -795,7 +808,7 @@ func (c *Catalog) snapshotVectorIndexesForCommit(writes []PendingWrite) *vectorC
 		if snap == nil {
 			snap = &vectorCommitSnapshot{tables: make(map[string]*vectorTableCommitState)}
 		}
-		snap.tables[w.TreeName] = st
+		snap.tables[logical] = st
 	}
 	c.mu.RUnlock()
 	return snap
@@ -816,7 +829,7 @@ func (c *Catalog) applyCommitVectorUpdates(snap *vectorCommitSnapshot, writes []
 	type tableKey struct{ table, key string }
 	final := make(map[tableKey]PendingWrite, len(writes))
 	for _, w := range writes {
-		final[tableKey{w.TreeName, w.Key}] = w
+		final[tableKey{logicalTreeName(w.TreeName), w.Key}] = w
 	}
 	for tableName, st := range snap.tables {
 		persist := false

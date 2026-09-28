@@ -100,7 +100,7 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 		return c.updateWithJoinLocked(ctx, stmt, args)
 	}
 
-	useBuffer := c.isBufferedMode() && table.Partition == nil
+	useBuffer := c.isBufferedMode()
 	if useBuffer {
 		for _, setClause := range stmt.Set {
 			if table.isPrimaryKeyColumn(setClause.Column) {
@@ -495,7 +495,7 @@ func (c *Catalog) scanUpdateEntries(ctx context.Context, stmt *query.UpdateStmt,
 	treeNames := snap.treeNames
 	indexedRows := snap.indexedRows
 	useIndex := snap.useIndex
-	useBuffer := c.isBufferedMode() && table.Partition == nil
+	useBuffer := c.isBufferedMode()
 
 	// Pre-calculate column indices for SET clauses
 	setColumnIndices := make([]int, len(stmt.Set))
@@ -651,7 +651,7 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 	}
 
 	// Determine if we can use buffered writes for this update.
-	useBuffer := c.isBufferedMode() && table.Partition == nil
+	useBuffer := c.isBufferedMode()
 	if useBuffer {
 		for _, setClause := range stmt.Set {
 			if table.isPrimaryKeyColumn(setClause.Column) {
@@ -2345,7 +2345,7 @@ func (c *Catalog) bufferUpdateEntry(table *TableDef, stmt *query.UpdateStmt, ent
 					return nil, nil, fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal)
 				}
 			}
-			if c.keyInPendingWrites(stmt.Table, newKeyStr) {
+			if c.keyInPendingWrites(entry.treeName, newKeyStr) {
 				return nil, nil, fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal)
 			}
 			// Keep the auto-increment sequence ahead of the new PK value.
@@ -2361,35 +2361,35 @@ func (c *Catalog) bufferUpdateEntry(table *TableDef, stmt *query.UpdateStmt, ent
 				return nil, nil, fmt.Errorf("failed to encode rekey tombstone: %w", derr)
 			}
 			c.appendPendingWriteTs(ts, PendingWrite{
-				TreeName: stmt.Table,
+				TreeName: entry.treeName,
 				Key:      string(entry.key),
 				Value:    deletedValueData,
 			})
 			if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
-				mt.SetWrite(stmt.Table, string(entry.key), deletedValueData)
+				mt.SetWrite(entry.treeName, string(entry.key), deletedValueData)
 			}
 			c.appendPendingWriteTs(ts, PendingWrite{
-				TreeName:     stmt.Table,
+				TreeName:     entry.treeName,
 				Key:          newKeyStr,
 				Value:        newValueData,
 				IndexUpdates: idxUpdates,
 			})
 			if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
-				mt.SetWrite(stmt.Table, newKeyStr, newValueData)
+				mt.SetWrite(entry.treeName, newKeyStr, newValueData)
 			}
 			return newValueData, idxUpdates, nil
 		}
 	}
 
 	c.appendPendingWriteTs(ts, PendingWrite{
-		TreeName:     stmt.Table,
+		TreeName:     entry.treeName,
 		Key:          string(entry.key),
 		Value:        newValueData,
 		IndexUpdates: idxUpdates,
 	})
 	if ts != nil {
 		if mt, ok := ts.managerTxn.(*txn.Transaction); ok && mt != nil {
-			mt.SetWrite(stmt.Table, string(entry.key), newValueData)
+			mt.SetWrite(entry.treeName, string(entry.key), newValueData)
 		}
 	}
 
