@@ -259,9 +259,12 @@ The main mutex can become a bottleneck under high concurrency. Consider:
   values from those writes. Rollback itself is correct (the undo machinery
   reverses them); only visibility is wrong. Vector-INDEXED table
   INSERT/UPDATE now buffers like every other table, with HNSW refreshed at
-  COMMIT (`applyCommitVectorUpdates`; option A per `refactor.md` §1.16 — a
-  transaction's own uncommitted embeddings are invisible to its own vector
-  search until COMMIT); single-column PK-changing updates buffer as a
+  COMMIT (`applyCommitVectorUpdates`; per `refactor.md` §1.16, option A
+  keeps the graph itself commit-time-only while option B's
+  `overlayPendingVectorResults` makes in-transaction `SearchVectorKNN` see
+  the transaction's OWN pending embeddings — new candidates, updated
+  distances, tombstone filtering — without touching HNSW); single-column
+  PK-changing updates buffer as a
   *deferred rekey* (new-key live write + old-key soft-delete tombstone,
   applied at commit — `bufferUpdateEntry`); and partitioned-table writes
   buffer keyed by their partition tree (statement-routed via

@@ -180,7 +180,98 @@ func (c *Catalog) SearchVectorKNN(indexName string, queryVector []float64, k int
 		return nil, nil, fmt.Errorf("vector index %s has no HNSW structure", indexName)
 	}
 
-	return vectorIndex.HNSW.SearchKNN(queryVector, k)
+	keys, dists, err := vectorIndex.HNSW.SearchKNN(queryVector, k)
+	if err != nil {
+		return nil, nil, err
+	}
+	// §1.16 option B: read-your-own-writes — overlay this transaction's
+	// pending embeddings onto the (commit-refreshed) HNSW results.
+	keys, dists = c.overlayPendingVectorResults(vectorIndex, keys, dists, queryVector, k)
+	return keys, dists, nil
+}
+
+// overlayPendingVectorResults merges the current transaction's pending
+// embeddings into HNSW search results (refactor.md §1.16 option B). Under
+// option A the HNSW graph is only refreshed at COMMIT, so until then a
+// transaction's own buffered writes are invisible to its own vector search.
+// The overlay restores read-your-own-writes without touching HNSW:
+//   - a pending live row with a valid embedding enters as a candidate at its
+//     true l2Distance (superseding the stale HNSW entry for the same key);
+//   - a pending tombstone (buffered delete, or a rekey's old key) drops the
+//     key from the results entirely;
+//   - a live row without a valid embedding is excluded (HNSW would not have
+//     indexed it either).
+//
+// The HNSW top-k is a sufficient candidate pool: adding pending candidates
+// can only displace, never require, a key beyond it. Callers hold c.mu.RLock;
+// pendingWriteMapsFor reads goroutine-local transaction state.
+func (c *Catalog) overlayPendingVectorResults(vi *VectorIndexDef, keys []string, dists []float64, query []float64, k int) ([]string, []float64) {
+	if k <= 0 {
+		// SearchKNN already returned the empty result for k<=0.
+		return []string{}, []float64{}
+	}
+	ts := c.getCurrentTxn()
+	if ts == nil {
+		return keys, dists
+	}
+	table, ok := c.tables[vi.TableName]
+	if !ok || table == nil {
+		return keys, dists
+	}
+	maps := ts.pendingWriteMapsFor(table)
+	if len(maps) == 0 {
+		return keys, dists
+	}
+	colIdx := table.GetColumnIndex(vi.ColumnName)
+	if colIdx < 0 {
+		return keys, dists
+	}
+
+	pending := make(map[string]PendingWrite)
+	for _, m := range maps {
+		for key, w := range m {
+			pending[key] = w
+		}
+	}
+	if len(pending) == 0 {
+		return keys, dists
+	}
+
+	type candidate struct {
+		key  string
+		dist float64
+	}
+	cands := make([]candidate, 0, len(keys)+len(pending))
+	touched := make(map[string]bool, len(pending))
+	for key, w := range pending {
+		touched[key] = true
+		vrow, err := decodeVersionedRow(w.Value, len(table.Columns))
+		if err != nil || vrow.Version.DeletedAt > 0 || colIdx >= len(vrow.Data) {
+			continue // tombstone or undecodable: exclude from HNSW results
+		}
+		vec, verr := toVector(vrow.Data[colIdx])
+		if verr != nil || len(vec) != vi.Dimensions {
+			continue // no valid embedding: HNSW wouldn't index it either
+		}
+		cands = append(cands, candidate{key: key, dist: l2Distance(query, vec)})
+	}
+	for i, key := range keys {
+		if touched[key] {
+			continue // superseded or filtered by the pending state above
+		}
+		cands = append(cands, candidate{key: key, dist: dists[i]})
+	}
+	sort.Slice(cands, func(a, b int) bool { return cands[a].dist < cands[b].dist })
+	if len(cands) > k {
+		cands = cands[:k]
+	}
+	outKeys := make([]string, len(cands))
+	outDists := make([]float64, len(cands))
+	for i, cd := range cands {
+		outKeys[i] = cd.key
+		outDists[i] = cd.dist
+	}
+	return outKeys, outDists
 }
 
 // SearchVectorRange performs a range search on a vector index
