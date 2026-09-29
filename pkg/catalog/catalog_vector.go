@@ -319,7 +319,94 @@ func (c *Catalog) SearchVectorRange(indexName string, queryVector []float64, rad
 		return nil, nil, fmt.Errorf("vector index %s has no HNSW structure", indexName)
 	}
 
-	return vectorIndex.HNSW.SearchRange(queryVector, radius)
+	// §1.16 option B: read-your-own-writes — the same over-fetch reasoning
+	// as SearchVectorKNN: the overlay can REMOVE keys from the frontier
+	// results (tombstones, superseded embeddings), so the level-0
+	// exploration gets headroom for what will be filtered.
+	keys, dists, err := vectorIndex.HNSW.SearchRangeWithEf(queryVector, radius, c.pendingVectorFilterCount(vectorIndex))
+	if err != nil {
+		return nil, nil, err
+	}
+	keys, dists = c.overlayPendingVectorResultsRange(vectorIndex, keys, dists, queryVector, radius)
+	return keys, dists, nil
+}
+
+// overlayPendingVectorResultsRange is the SearchVectorRange variant of
+// overlayPendingVectorResults (§1.16 option B): the same pending-embedding
+// merge — a live pending row with a valid embedding enters at its true
+// l2Distance (superseding the stale HNSW entry), a pending tombstone drops
+// the key entirely, and untouched keys pass through — but the result keeps
+// exactly the keys within radius instead of capping at k. There is no k to
+// under-fill, though the caller must still over-fetch the frontier (see
+// SearchRangeWithEf) so filtering cannot shrink the reachable pool.
+// Callers hold c.mu.RLock; pendingWriteMapsFor reads goroutine-local
+// transaction state.
+func (c *Catalog) overlayPendingVectorResultsRange(vi *VectorIndexDef, keys []string, dists []float64, query []float64, radius float64) ([]string, []float64) {
+	if radius < 0 {
+		return []string{}, []float64{}
+	}
+	ts := c.getCurrentTxn()
+	if ts == nil {
+		return keys, dists
+	}
+	table, ok := c.tables[vi.TableName]
+	if !ok || table == nil {
+		return keys, dists
+	}
+	maps := ts.pendingWriteMapsFor(table)
+	if len(maps) == 0 {
+		return keys, dists
+	}
+	colIdx := table.GetColumnIndex(vi.ColumnName)
+	if colIdx < 0 {
+		return keys, dists
+	}
+
+	pending := make(map[string]PendingWrite)
+	for _, m := range maps {
+		for key, w := range m {
+			pending[key] = w
+		}
+	}
+	if len(pending) == 0 {
+		return keys, dists
+	}
+
+	type candidate struct {
+		key  string
+		dist float64
+	}
+	cands := make([]candidate, 0, len(keys)+len(pending))
+	touched := make(map[string]bool, len(pending))
+	for key, w := range pending {
+		touched[key] = true
+		vrow, err := decodeVersionedRow(w.Value, len(table.Columns))
+		if err != nil || vrow.Version.DeletedAt > 0 || colIdx >= len(vrow.Data) {
+			continue // tombstone or undecodable: exclude from HNSW results
+		}
+		vec, verr := toVector(vrow.Data[colIdx])
+		if verr != nil || len(vec) != vi.Dimensions {
+			continue // no valid embedding: HNSW wouldn't index it either
+		}
+		cands = append(cands, candidate{key: key, dist: l2Distance(query, vec)})
+	}
+	for i, key := range keys {
+		if touched[key] {
+			continue // superseded or filtered by the pending state above
+		}
+		cands = append(cands, candidate{key: key, dist: dists[i]})
+	}
+	sort.Slice(cands, func(a, b int) bool { return cands[a].dist < cands[b].dist })
+	outKeys := make([]string, 0, len(cands))
+	outDists := make([]float64, 0, len(cands))
+	for _, cd := range cands {
+		if cd.dist > radius {
+			continue // radius filter replaces the KNN k-cap
+		}
+		outKeys = append(outKeys, cd.key)
+		outDists = append(outDists, cd.dist)
+	}
+	return outKeys, outDists
 }
 
 // GetVectorIndex retrieves a vector index definition

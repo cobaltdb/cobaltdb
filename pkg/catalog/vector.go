@@ -311,6 +311,16 @@ func (h *HNSWIndex) SearchKNN(query []float64, k int) ([]string, []float64, erro
 
 // SearchRange finds all vectors within a distance radius from the query vector
 func (h *HNSWIndex) SearchRange(query []float64, radius float64) ([]string, []float64, error) {
+	return h.SearchRangeWithEf(query, radius, 0)
+}
+
+// SearchRangeWithEf is SearchRange with extra exploration headroom on the
+// level-0 frontier (ef + extraEf). Callers whose result is filtered
+// afterwards — the §1.16 option-B pending overlay can drop tombstoned or
+// superseded keys — pass the expected filter count (pendingVectorFilter
+// Count) so filtering cannot shrink the reachable pool below what the
+// plain ef frontier would find.
+func (h *HNSWIndex) SearchRangeWithEf(query []float64, radius float64, extraEf int) ([]string, []float64, error) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -343,8 +353,9 @@ func (h *HNSWIndex) SearchRange(query []float64, radius float64) ([]string, []fl
 		}
 	}
 
-	// Search at level 0
-	candidates := h.searchLayer(query, entryPoint, h.Ef, 0)
+	// Search at level 0 with the caller's headroom (§1.16 option B: the
+	// pending overlay filters keys afterwards; extraEf compensates).
+	candidates := h.searchLayer(query, entryPoint, h.Ef+max(extraEf, 0), 0)
 
 	// Filter by radius
 	var results []candidate

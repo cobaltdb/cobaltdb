@@ -261,8 +261,9 @@ The main mutex can become a bottleneck under high concurrency. Consider:
   INSERT/UPDATE now buffers like every other table, with HNSW refreshed at
   COMMIT (`applyCommitVectorUpdates`; per `refactor.md` §1.16, option A
   keeps the graph itself commit-time-only while option B's
-  `overlayPendingVectorResults` makes in-transaction `SearchVectorKNN` see
-  the transaction's OWN pending embeddings — new candidates, updated
+  `overlayPendingVectorResults`/`overlayPendingVectorResultsRange` make
+  in-transaction `SearchVectorKNN`/`SearchVectorRange` see the
+  transaction's OWN pending embeddings — new candidates, updated
   distances, tombstone filtering — without touching HNSW); single-column
   PK-changing updates buffer as a
   *deferred rekey* (new-key live write + old-key soft-delete tombstone,
