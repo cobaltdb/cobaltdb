@@ -1203,14 +1203,9 @@ func (c *Catalog) vacuumTreeLocked(name string, horizonSec int64) error {
 		}
 		// Apply retention horizon: live rows and rows deleted after the horizon
 		// are kept — recent tombstones protect AS OF SYSTEM TIME history.
-		if horizonSec > 0 {
-			deletedAt, ok := vacuumExtractDeletedAt(value)
-			if ok && deletedAt > 0 && deletedAt <= horizonSec {
-				continue // deleted at or before the horizon: physically remove
-			}
-		} else if bytesContainDeletedAt(value) {
-			// Legacy: horizonSec == 0 means remove all dead rows.
-			continue
+		deletedAt, ok := vacuumExtractDeletedAt(value)
+		if ok && deletedAt > 0 && deletedAt <= horizonSec {
+			continue // deleted at or before the horizon: physically remove
 		}
 		entries = append(entries, entry{key: key, value: value})
 		liveCount++
