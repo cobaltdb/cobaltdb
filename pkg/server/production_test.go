@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -1052,4 +1054,75 @@ func TestProductionServerQueryRow(t *testing.T) {
 	}
 	// A non-existent id may return a row with nil data; just verify no error
 	_ = row
+}
+
+// TestProductionHealthServerRecoverFromPanic pins the defer-recover wrapper
+// added to startHealthServer's goroutine in pkg/server/production.go. The
+// wrapper mirrors pkg/server/server.go's wire-protocol accept-loop pattern
+// (server.go:445-450) and protects the production server from a panic in
+// http.Server.Serve itself. Per-request panics are caught by net/http's
+// internal panicHandler; this test exercises the outer-goroutine wrapper.
+//
+// Test injection uses the same unexported-package-var hook convention as
+// pkg/btree.flushTestPanicHook and pkg/engine.commitWindowPanicHook.
+func TestProductionHealthServerRecoverFromPanic(t *testing.T) {
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	const sentinel = "inlined-panic: health server outer goroutine"
+	logBuf := &bytes.Buffer{}
+	logMu := &sync.Mutex{} // serialize logger writes; logger.Logger has its own internal outMu but capture is for the test assertion
+	_ = logMu
+
+	// One-shot hook: panic with a recognizable sentinel, then clear so the
+	// goroutine exits cleanly via the recover wrapper.
+	var hookOnce sync.Once
+	healthServerTestPanicHook = func() {
+		hookOnce.Do(func() {
+			panic(sentinel)
+		})
+	}
+	defer func() { healthServerTestPanicHook = nil }()
+
+	config := fastProductionConfig()
+	config.HealthAddr = "127.0.0.1:0"
+	config.Lifecycle.EnableSignalHandling = false
+	// logger.New(level, output) writes to the given io.Writer. The recover
+	// wrapper calls ps.logErrorf -> ps.logger.Errorf -> writes here.
+	config.Logger = logger.New(logger.ErrorLevel, logBuf)
+
+	ps := NewProductionServer(db, config)
+	if err := ps.Start(); err != nil {
+		t.Fatalf("failed to start production server: %v", err)
+	}
+	defer ps.Stop()
+
+	// The production server itself must stay running — only the inner
+	// health-server goroutine exited. ps.IsRunning() reflects the Lifecycle
+	// state of ps, not the health-server goroutine.
+	if !ps.IsRunning() {
+		t.Fatal("production server is not running; defer-recover wrapper did not protect it")
+	}
+
+	// Poll for the panic message. The recover wrapper logs synchronously
+	// inside the goroutine; allow a small window for the goroutine to fire
+	// and write to the captured buffer.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if bytes.Contains(logBuf.Bytes(), []byte("health server panicked")) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	got := logBuf.String()
+	if !bytes.Contains([]byte(got), []byte("health server panicked")) {
+		t.Fatalf("expected log to contain panic message, got:\n%s", got)
+	}
+	if !bytes.Contains([]byte(got), []byte(sentinel)) {
+		t.Fatalf("expected log to contain sentinel %q, got:\n%s", sentinel, got)
+	}
 }

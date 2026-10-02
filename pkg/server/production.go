@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,14 @@ const (
 	maxAdminTokenBytes               = 1024
 	maxAdminAuthorizationHeaderBytes = len("Bearer ") + maxAdminTokenBytes
 )
+
+// healthServerTestPanicHook, when non-nil, is invoked at the start of the
+// health-server goroutine in startHealthServer before ps.healthServer.Serve
+// runs. The defer-recover wrapper added above (mirroring pkg/server/server.go's
+// wire-protocol accept-loop pattern) catches the resulting panic and logs it
+// instead of crashing the production server. Production builds never set this;
+// tests opt in explicitly.
+var healthServerTestPanicHook func()
 
 func adminTokenFromAuthorizationHeader(authHeader string) (string, bool) {
 	if authHeader == "" || len(authHeader) > maxAdminAuthorizationHeaderBytes {
@@ -303,6 +312,19 @@ func (ps *ProductionServer) startHealthServer() error {
 	ps.wg.Add(1)
 	go func() {
 		defer ps.wg.Done()
+		// Recover from a panic in the http.Server's serve loop so the
+		// production server stays up if Serve itself (rare, but reachable
+		// via custom listener integration or future ServeTLS wrapping)
+		// panics. Per-request panics are already handled by net/http's
+		// internal panicHandler; this guards the outer goroutine only.
+		defer func() {
+			if r := recover(); r != nil {
+				ps.logErrorf("health server panicked: %v\n%v", r, debug.Stack())
+			}
+		}()
+		if healthServerTestPanicHook != nil {
+			healthServerTestPanicHook()
+		}
 		if err := ps.healthServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			ps.logErrorf("health server stopped with error: %v", err)
 		}
