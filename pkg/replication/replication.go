@@ -16,10 +16,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
 // ReplicationMode defines how replication operates
@@ -118,6 +121,7 @@ type Config struct {
 	SSLCA               string        // CA bundle: client CA on master (enables required mTLS), server roots on slave
 	SSLServerName       string        // Optional slave-only certificate name override (defaults to MasterAddr host)
 	StateFile           string        // Optional slave state file for last applied LSN
+	Logger              *logger.Logger // Optional structured logger; nil disables panic logging (same idiom as pkg/server.ProductionConfig.Logger)
 }
 
 // DefaultConfig returns default replication configuration
@@ -193,6 +197,11 @@ func (e *WALEntry) Decode(data []byte) error {
 type Manager struct {
 	config *Config
 	role   Role
+	// logger is the structured logger passed in via Config.Logger. Optional;
+	// when nil, logErrorf is a no-op (the goroutines still recover, but the
+	// panic is silently absorbed — same nil-guarded idiom as
+	// pkg/server/production.go:logErrorf and pkg/pool.connection_pool.go:logErrorf).
+	logger *logger.Logger
 
 	// Master fields
 	mu             sync.RWMutex
@@ -387,6 +396,7 @@ func NewManager(config *Config) *Manager {
 	return &Manager{
 		config:      config,
 		role:        config.Role,
+		logger:      config.Logger,
 		slaves:      make(map[string]*SlaveConnection),
 		slaveWALPos: make(map[string]uint64),
 		walBuffer:   make([]*WALEntry, 0),
@@ -568,14 +578,34 @@ func (m *Manager) acceptSlaves() {
 	}
 }
 
+// handleSlaveTestPanicHook, when non-nil, is invoked at the start of
+// handleSlave so tests can exercise the defer-recover wrapper below.
+// Production builds never set this; tests opt in explicitly. Mirrors the
+// unexported-hook pattern in pkg/btree.flushTestPanicHook,
+// pkg/engine.commitWindowPanicHook, pkg/server.healthServerTestPanicHook,
+// and pkg/pool.healthCheckLoopTestPanicHook.
+var handleSlaveTestPanicHook func()
+
+// logErrorf writes a structured error via the manager's logger when one is
+// configured. Nil logger is a no-op; same nil-guarded idiom used by
+// pkg/server/production.go:logErrorf and pkg/pool.connection_pool.go:logErrorf.
+func (m *Manager) logErrorf(format string, args ...interface{}) {
+	if m != nil && m.logger != nil {
+		m.logger.Errorf(format, args...)
+	}
+}
+
 // handleSlave handles a single slave connection
 func (m *Manager) handleSlave(conn net.Conn) {
 	defer func() {
 		if r := recover(); r != nil {
 			// Log panic but don't crash the master
-			_ = r
+			m.logErrorf("handleSlave recovered from panic: %v\n%v", r, debug.Stack())
 		}
 	}()
+	if handleSlaveTestPanicHook != nil {
+		handleSlaveTestPanicHook()
+	}
 
 	secured, err := m.secureAcceptedConnection(conn)
 	if err != nil {

@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
 var (
@@ -45,6 +48,11 @@ type Config struct {
 	AcquireTimeout time.Duration
 	// WaitQueueSize is the maximum number of waiting clients
 	WaitQueueSize int
+	// Logger is the structured logger the pool uses to report recovered
+	// panics from its background goroutines. Optional; nil disables logging
+	// (the goroutines still recover, but the panic is silently absorbed).
+	// Same nil-guarded idiom as pkg/server/production.go:logErrorf.
+	Logger *logger.Logger
 }
 
 // DefaultConfig returns default pool configuration
@@ -220,6 +228,12 @@ func (c *Conn) IsExpired(maxLifetime, maxIdleTime time.Duration) bool {
 type Pool struct {
 	config *Config
 
+	// logger is the structured logger passed in via Config.Logger. Optional;
+	// when nil, logErrorf is a no-op (the goroutines still recover, but the
+	// panic is silently absorbed — same nil-guarded idiom as
+	// pkg/server/production.go:logErrorf).
+	logger *logger.Logger
+
 	// Connection factory
 	dialer func() (net.Conn, error)
 
@@ -276,6 +290,7 @@ func New(config *Config, dialer func() (net.Conn, error)) (*Pool, error) {
 
 	pool := &Pool{
 		config:    config,
+		logger:    config.Logger,
 		dialer:    dialer,
 		conns:     make([]*Conn, 0, config.MaxConns),
 		available: make(chan *Conn, config.MaxConns),
@@ -652,15 +667,39 @@ func (p *Pool) removeConn(conn *Conn) error {
 	return conn.closeUnderlying()
 }
 
+// healthCheckLoopTestPanicHook, when non-nil, is invoked at the start of
+// healthCheckLoop so tests can exercise the defer-recover wrapper above.
+// Production builds never set this; tests opt in explicitly. Mirrors the
+// unexported-hook pattern in pkg/btree.flushTestPanicHook,
+// pkg/engine.commitWindowPanicHook, and pkg/server.healthServerTestPanicHook.
+var healthCheckLoopTestPanicHook func()
+
+// logErrorf writes a structured error via the pool's logger when one is
+// configured. Nil logger is a no-op; this is the same nil-guarded idiom used
+// by pkg/server/production.go:logErrorf and pkg/server/production.go:314.
+func (p *Pool) logErrorf(format string, args ...interface{}) {
+	if p != nil && p.logger != nil {
+		p.logger.Errorf(format, args...)
+	}
+}
+
 // healthCheckLoop periodically checks connection health
 func (p *Pool) healthCheckLoop() {
 	defer p.wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
 			// Log panic but don't crash the pool
-			_ = r
+			p.logErrorf("healthCheckLoop recovered from panic: %v\n%v", r, debug.Stack())
 		}
 	}()
+	// healthCheckLoopTestPanicHook, when non-nil, is invoked at the start of
+	// healthCheckLoop so tests can exercise the defer-recover wrapper above.
+	// Production builds never set this; tests opt in explicitly. Mirrors the
+	// unexported-hook pattern in pkg/btree.flushTestPanicHook,
+	// pkg/engine.commitWindowPanicHook, and pkg/server.healthServerTestPanicHook.
+	if healthCheckLoopTestPanicHook != nil {
+		healthCheckLoopTestPanicHook()
+	}
 
 	ticker := time.NewTicker(p.config.HealthCheckInterval)
 	defer ticker.Stop()

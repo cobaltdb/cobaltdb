@@ -9,9 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
 func TestWALEntryEncodeDecode(t *testing.T) {
@@ -1583,4 +1586,69 @@ func TestManagerDropConnections(t *testing.T) {
 
 	// DropConnections on a manager with no connections should not panic
 	mgr.DropConnections()
+}
+
+// TestReplicationHandleSlaveLogsRecoveredPanic pins the defer-recover wrapper
+// added to Manager.handleSlave in pkg/replication/replication.go. The wrapper
+// logs a structured error instead of silently absorbing the panic (_ = r).
+// This is the section-9 F4 Low-severity visibility fix. The function must
+// still exit cleanly via the recover path — only the panic message is now
+// surfaced.
+//
+// Test injection uses the unexported-package-var hook convention established
+// by pkg/btree.flushTestPanicHook, pkg/engine.commitWindowPanicHook,
+// pkg/server.healthServerTestPanicHook, and
+// pkg/pool.healthCheckLoopTestPanicHook.
+func TestReplicationHandleSlaveLogsRecoveredPanic(t *testing.T) {
+	const sentinel = "inlined-panic: replication handleSlave"
+
+	logBuf := &bytes.Buffer{}
+	config := &Config{
+		Role:   RoleMaster,
+		Logger: logger.New(logger.ErrorLevel, logBuf),
+	}
+	m := &Manager{
+		config: config,
+		role:   config.Role,
+		logger: config.Logger,
+		stopCh: make(chan struct{}),
+	}
+
+	var hookOnce sync.Once
+	handleSlaveTestPanicHook = func() {
+		hookOnce.Do(func() {
+			panic(sentinel)
+		})
+	}
+	defer func() { handleSlaveTestPanicHook = nil }()
+
+	// The hook runs before any field access, so passing nil for conn is safe.
+	// Mirror the production call site at pkg/replication/replication.go:573-577:
+	// the wg.Done lives in the caller goroutine, not inside handleSlave itself.
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.handleSlave(nil)
+	}()
+
+	// Bounded wait so a hang is reported as a test failure rather than
+	// blocking the suite.
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleSlave did not exit within 2s; recover wrapper failed to let the goroutine return")
+	}
+
+	got := logBuf.String()
+	if !bytes.Contains([]byte(got), []byte("handleSlave recovered from panic")) {
+		t.Fatalf("expected log to contain panic message, got:\n%s", got)
+	}
+	if !bytes.Contains([]byte(got), []byte(sentinel)) {
+		t.Fatalf("expected log to contain sentinel %q, got:\n%s", sentinel, got)
+	}
 }

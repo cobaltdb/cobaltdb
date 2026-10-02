@@ -1,12 +1,15 @@
 package pool
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/cobaltdb/cobaltdb/pkg/logger"
 )
 
 // mockConn is a mock net.Conn for testing
@@ -360,5 +363,64 @@ func TestAcquireRelease(t *testing.T) {
 	stats = pool.Stats()
 	if stats.ActiveConns != 0 {
 		t.Errorf("Expected 0 active connections after release, got %d", stats.ActiveConns)
+	}
+}
+
+// TestPoolHealthCheckLoopLogsRecoveredPanic pins the defer-recover wrapper
+// added to Pool.healthCheckLoop in pkg/pool/connection_pool.go. The wrapper
+// logs a structured error instead of silently absorbing the panic (_ = r).
+// This is the section-9 F4 Low-severity visibility fix. The goroutine must
+// still exit cleanly via the recover path — only the panic message is now
+// surfaced.
+//
+// Test injection uses the unexported-package-var hook convention established
+// by pkg/btree.flushTestPanicHook, pkg/engine.commitWindowPanicHook,
+// pkg/server.healthServerTestPanicHook, and pkg/replication.handleSlaveTestPanicHook.
+func TestPoolHealthCheckLoopLogsRecoveredPanic(t *testing.T) {
+	const sentinel = "inlined-panic: pool health check loop"
+
+	logBuf := &bytes.Buffer{}
+	config := &Config{
+		HealthCheckInterval: time.Hour, // prevent real ticks during test
+		HealthCheckTimeout:  10 * time.Second,
+		Logger:              logger.New(logger.ErrorLevel, logBuf),
+	}
+	p := &Pool{
+		config: config,
+		logger: config.Logger,
+		stopCh: make(chan struct{}),
+	}
+
+	var hookOnce sync.Once
+	healthCheckLoopTestPanicHook = func() {
+		hookOnce.Do(func() {
+			panic(sentinel)
+		})
+	}
+	defer func() { healthCheckLoopTestPanicHook = nil }()
+
+	p.wg.Add(1)
+	go p.healthCheckLoop()
+
+	// The recover wrapper logs synchronously inside the goroutine; the
+	// goroutine returns and wg.Wait unblocks. Bounded wait so a hang is
+	// reported as a test failure rather than blocking the suite.
+	done := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("healthCheckLoop did not exit within 2s; recover wrapper failed to let the goroutine return")
+	}
+
+	got := logBuf.String()
+	if !bytes.Contains([]byte(got), []byte("healthCheckLoop recovered from panic")) {
+		t.Fatalf("expected log to contain panic message, got:\n%s", got)
+	}
+	if !bytes.Contains([]byte(got), []byte(sentinel)) {
+		t.Fatalf("expected log to contain sentinel %q, got:\n%s", sentinel, got)
 	}
 }
