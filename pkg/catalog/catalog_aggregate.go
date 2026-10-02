@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -1129,15 +1130,15 @@ func rowKeyForDedup(vals []interface{}) string {
 			b.WriteString("V:")
 			switch v := val.(type) {
 			case string:
-				b.WriteString(v)
+				b.WriteString(hex.EncodeToString([]byte(v)))
 			case *string:
 				if v != nil {
-					b.WriteString(*v)
+					b.WriteString(hex.EncodeToString([]byte(*v)))
 				}
 			case StringBox:
-				b.WriteString(v.String())
+				b.WriteString(hex.EncodeToString([]byte(v.String())))
 			case []byte:
-				b.Write(v)
+				b.WriteString(hex.EncodeToString(v))
 			case int64:
 				b.WriteString(strconv.FormatInt(v, 10))
 			case int:
@@ -1151,7 +1152,7 @@ func rowKeyForDedup(vals []interface{}) string {
 					b.WriteString("false")
 				}
 			default:
-				b.WriteString(ValueToStringKey(v))
+				b.WriteString(hex.EncodeToString([]byte(ValueToStringKey(v))))
 			}
 		}
 	}
