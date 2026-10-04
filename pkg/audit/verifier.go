@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,8 +87,13 @@ func VerifyLogFile(path string, encryptionKey []byte) (*VerificationResult, erro
 		}
 
 		var event Event
-		if err := json.Unmarshal(line, &event); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.UseNumber()
+		if err := decoder.Decode(&event); err != nil {
 			return nil, fmt.Errorf("audit log line %d: decode event: %w", lineNo, err)
+		}
+		if _, err := decoder.Token(); err != io.EOF {
+			return nil, fmt.Errorf("audit log line %d: decode event: trailing data", lineNo)
 		}
 		if event.Hash == "" {
 			return nil, fmt.Errorf("audit log line %d: missing hash", lineNo)

@@ -314,6 +314,10 @@ func (eb *EncryptedBackend) Truncate(size int64) error {
 		return ErrBackendClosed
 	}
 
+	if size < 0 {
+		return ErrInvalidSize
+	}
+
 	if !eb.config.Enabled {
 		return eb.backend.Truncate(size)
 	}

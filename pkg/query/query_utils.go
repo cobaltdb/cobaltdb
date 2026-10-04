@@ -605,7 +605,7 @@ func exprToStringImpl(expr Expression, exported bool) string {
 	case *StarExpr:
 		return "*"
 	case *StringLiteral:
-		return fmt.Sprintf("'%s'", e.Value)
+		return "'" + strings.ReplaceAll(e.Value, "'", "''") + "'"
 	case *NumberLiteral:
 		return fmt.Sprintf("%v", e.Value)
 	case *AliasExpr:

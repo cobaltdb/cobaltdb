@@ -223,6 +223,10 @@ func scanValue(src interface{}, dest interface{}) error {
 			*d = catalog.ValueToStringKey(v)
 		}
 	case *int:
+		if v, ok := src.(int); ok {
+			*d = v
+			return nil
+		}
 		v, ok := src.(int64)
 		if !ok {
 			// Try float — in range only (int is 64-bit on the supported platforms):

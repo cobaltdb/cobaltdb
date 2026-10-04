@@ -1072,6 +1072,9 @@ func (m *Manager) createComparisonEvaluator(left, op, right string) PolicyExpr {
 			// For context expressions, left is column, right is context value
 			leftVal = m.getValueFromRow(leftCol, row)
 			rightVal = m.getContextValue(right, ctx)
+			if rightVal == nil {
+				return false, nil
+			}
 		} else {
 			leftVal = m.getValue(left, ctx, row)
 			rightVal = m.getValue(right, ctx, row)

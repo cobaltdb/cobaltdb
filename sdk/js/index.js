@@ -146,6 +146,13 @@ class Connection {
   }
 
   /**
+   * Return a pooled connection to its pool.
+   */
+  release() {
+    this._conn.release();
+  }
+
+  /**
    * Destroy the connection immediately.
    */
   destroy() {

@@ -327,6 +327,13 @@ func (s *MySQLServer) Listen(address string) error {
 		}
 		return ErrMySQLServerClosed
 	}
+	if s.listener != nil {
+		s.mu.Unlock()
+		if closeErr := listener.Close(); closeErr != nil && !isBenignMySQLNetworkCloseError(closeErr) {
+			return fmt.Errorf("MySQL server is already listening: close duplicate listener: %w", closeErr)
+		}
+		return fmt.Errorf("MySQL server is already listening")
+	}
 	s.listener = listener
 	s.mu.Unlock()
 

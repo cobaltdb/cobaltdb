@@ -293,6 +293,11 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (backup *Ba
 	if err := m.ensureMetadataLoaded(); err != nil {
 		return nil, err
 	}
+	switch backupType {
+	case TypeFull, TypeIncremental, TypeDifferential:
+	default:
+		return nil, fmt.Errorf("invalid backup type: %v", backupType)
+	}
 	if m.config.Encrypt {
 		return nil, fmt.Errorf("backup encryption is not implemented; refusing to create a plaintext backup")
 	}
@@ -380,7 +385,7 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (backup *Ba
 
 	// Save metadata
 	m.metadata.mu.Lock()
-	m.metadata.Backups = append(m.metadata.Backups, backup)
+	m.metadata.Backups = append(m.metadata.Backups, cloneBackup(backup))
 	if err := m.saveMetadataLocked(); err != nil {
 		m.metadata.mu.Unlock()
 		return nil, fmt.Errorf("failed to save backup metadata: %w", err)

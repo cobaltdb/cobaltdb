@@ -44,7 +44,8 @@ type bufferPoolStatsCollector struct {
 	flushErrorCount uint64          // total flush errors in background flusher
 	readTimes       []time.Duration // Circular buffer for recent read times
 	writeTimes      []time.Duration // Circular buffer for recent write times
-	timeIndex       int
+	readTimeIndex   int
+	writeTimeIndex  int
 	maxSamples      int
 
 	mu sync.RWMutex
@@ -99,8 +100,8 @@ func (sc *bufferPoolStatsCollector) addReadTime(d time.Duration) {
 	if len(sc.readTimes) < sc.maxSamples {
 		sc.readTimes = append(sc.readTimes, d)
 	} else {
-		sc.readTimes[sc.timeIndex%sc.maxSamples] = d
-		sc.timeIndex++
+		sc.readTimes[sc.readTimeIndex%sc.maxSamples] = d
+		sc.readTimeIndex++
 	}
 }
 
@@ -112,8 +113,8 @@ func (sc *bufferPoolStatsCollector) addWriteTime(d time.Duration) {
 	if len(sc.writeTimes) < sc.maxSamples {
 		sc.writeTimes = append(sc.writeTimes, d)
 	} else {
-		sc.writeTimes[sc.timeIndex%sc.maxSamples] = d
-		sc.timeIndex++
+		sc.writeTimes[sc.writeTimeIndex%sc.maxSamples] = d
+		sc.writeTimeIndex++
 	}
 }
 

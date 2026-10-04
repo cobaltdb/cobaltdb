@@ -35,6 +35,7 @@ type CachedPage struct {
 	data        []byte        // PageSize bytes (24 bytes: ptr+len+cap)
 	lruElem     *list.Element // 8 bytes pointer
 	mu          sync.RWMutex
+	flushMu     sync.Mutex
 	id          uint32 // 4 bytes
 	pinned      int32  // 4 bytes, atomic pin count
 	accessCount uint32 // 4 bytes, atomic access counter for probabilistic LRU
@@ -359,6 +360,10 @@ func (bp *BufferPool) NewPage(pageType PageType) (*CachedPage, error) {
 // SetDirty(true) and silently drop the newer version (lost update). On write
 // failure the bit is restored so the page is retried.
 func (bp *BufferPool) FlushPage(page *CachedPage) error {
+	// Serialize snapshots and writes so an older flush cannot overwrite a newer one.
+	page.flushMu.Lock()
+	defer page.flushMu.Unlock()
+
 	if !page.IsDirty() {
 		return nil
 	}

@@ -756,6 +756,9 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 		return ErrTxnNotFound
 	}
 	if txn.IsTimedOut() {
+		if errors.Is(txn.Context().Err(), context.Canceled) {
+			return ErrTxnCancelled
+		}
 		return ErrTxnTimeout
 	}
 
@@ -843,6 +846,9 @@ func (m *Manager) AcquireLockMode(txnID uint64, key string, mode LockMode, timeo
 		select {
 		case <-txnDone:
 			txn.setWaitingForID(txnID, 0)
+			if errors.Is(txn.Context().Err(), context.Canceled) {
+				return ErrTxnCancelled
+			}
 			return ErrTxnTimeout
 		case <-timer.C:
 			txn.setWaitingForID(txnID, 0)

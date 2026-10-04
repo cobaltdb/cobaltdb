@@ -108,6 +108,15 @@ func walkChildren(expr interface{}, v ExpressionVisitor, ctx interface{}) {
 				Walk(ob.Expr, v, ctx)
 			}
 		}
+	case *WindowSpec:
+		for _, partitionExpr := range e.PartitionBy {
+			Walk(partitionExpr, v, ctx)
+		}
+		for _, ob := range e.OrderBy {
+			if ob != nil {
+				Walk(ob.Expr, v, ctx)
+			}
+		}
 	case *InExpr:
 		Walk(e.Expr, v, ctx)
 		if e.Subquery == nil {

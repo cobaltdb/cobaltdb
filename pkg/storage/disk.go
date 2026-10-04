@@ -153,7 +153,7 @@ func (d *DiskBackend) WriteAt(buf []byte, offset int64) (int, error) {
 
 	// Update file size if we wrote past the end
 	endOffset := offset + int64(n)
-	if endOffset > d.fileSize {
+	if n > 0 && endOffset > d.fileSize {
 		d.fileSize = endOffset
 	}
 

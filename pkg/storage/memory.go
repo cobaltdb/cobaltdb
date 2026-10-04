@@ -80,6 +80,10 @@ func (m *MemoryBackend) WriteAt(buf []byte, offset int64) (int, error) {
 		return 0, ErrBackendClosed
 	}
 
+	if len(buf) == 0 {
+		return 0, nil
+	}
+
 	if int64(len(buf)) > maxMemoryOffset-offset {
 		return 0, ErrInvalidSize
 	}

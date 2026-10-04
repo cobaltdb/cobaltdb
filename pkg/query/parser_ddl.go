@@ -401,11 +401,15 @@ func (p *Parser) parsePartitionBy() (*PartitionDef, error) {
 func (p *Parser) parsePartitionDefs(def *PartitionDef) error {
 	if p.current().Type == TokenPartitions {
 		p.advance()
-		if p.current().Type == TokenNumber {
-			num, _ := strconv.Atoi(p.current().Literal)
-			def.NumPartitions = num
-			p.advance()
+		count, err := p.expect(TokenNumber)
+		if err != nil {
+			return err
 		}
+		num, err := strconv.Atoi(count.Literal)
+		if err != nil || num <= 0 {
+			return fmt.Errorf("invalid partition count: %s", count.Literal)
+		}
+		def.NumPartitions = num
 		return nil
 	}
 	if p.current().Type != TokenLParen {

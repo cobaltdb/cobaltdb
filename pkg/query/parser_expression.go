@@ -850,7 +850,7 @@ func (p *Parser) parseIdentifierOrFunction() (Expression, error) {
 		}
 		return &JSONPathExpr{
 			Column: &Identifier{Name: tok.Literal},
-			Path:   strings.Trim(path.Literal, "'\""),
+			Path:   path.Literal,
 			AsText: asText,
 		}, nil
 	}

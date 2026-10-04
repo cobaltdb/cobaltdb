@@ -170,7 +170,7 @@ func (rl *RateLimiter) Allow(clientID string) bool {
 	clientID = sanitizeRateLimiterClientID(clientID)
 	if rl.config.PerClient && clientID != "" {
 		cl := rl.getClientLimiter(clientID)
-		if !cl.bucket.allow() {
+		if cl.bucket != rl.global && !cl.bucket.allow() {
 			return false
 		}
 		cl.mu.Lock()
@@ -190,7 +190,7 @@ func (rl *RateLimiter) AllowN(clientID string, n int) bool {
 	clientID = sanitizeRateLimiterClientID(clientID)
 	if rl.config.PerClient && clientID != "" {
 		cl := rl.getClientLimiter(clientID)
-		if !cl.bucket.allowN(n) {
+		if cl.bucket != rl.global && !cl.bucket.allowN(n) {
 			return false
 		}
 		cl.mu.Lock()
