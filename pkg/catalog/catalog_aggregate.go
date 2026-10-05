@@ -123,7 +123,10 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 	}
 
 	// Compute empty-group result (e.g., COUNT(*) = 0 on empty table)
-	resultRows := c.computeEmptyGroupResult(groups, stmt, selectCols, table, args)
+	resultRows, err := c.computeEmptyGroupResult(groups, stmt, selectCols, table, args)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// Compute aggregate result for each group
 	groupResultRows, aggErr := c.computeGroupResultRows(groups, groupOrder, stmt, selectCols, table, args)
@@ -139,9 +142,9 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 }
 
 // computeEmptyGroupResult returns a single result row for aggregate queries on empty tables.
-func (c *Catalog) computeEmptyGroupResult(groups map[string][][]interface{}, stmt *query.SelectStmt, selectCols []selectColInfo, table *TableDef, args []interface{}) [][]interface{} {
+func (c *Catalog) computeEmptyGroupResult(groups map[string][][]interface{}, stmt *query.SelectStmt, selectCols []selectColInfo, table *TableDef, args []interface{}) ([][]interface{}, error) {
 	if len(groups) > 0 || len(stmt.GroupBy) > 0 || len(selectCols) == 0 {
-		return nil
+		return nil, nil
 	}
 	resultRow := make([]interface{}, len(selectCols))
 	hasAggregate := false
@@ -157,21 +160,25 @@ func (c *Catalog) computeEmptyGroupResult(groups map[string][][]interface{}, stm
 		} else if ci.hasEmbeddedAgg {
 			hasAggregate = true
 			val, err := c.evaluateExprWithGroupAggregates(ci.originalExpr, nil, table, args)
-			if err == nil {
-				resultRow[i] = val
+			if err != nil {
+				return nil, err
 			}
+			resultRow[i] = val
 		}
 	}
 	if !hasAggregate {
-		return nil
+		return nil, nil
 	}
 	if stmt.Having != nil {
 		havingMatched, err := evaluateHaving(c, resultRow, selectCols, table.Columns, stmt.Having, args)
-		if err != nil || !havingMatched {
-			return nil
+		if err != nil {
+			return nil, err
+		}
+		if !havingMatched {
+			return nil, nil
 		}
 	}
-	return [][]interface{}{resultRow}
+	return [][]interface{}{resultRow}, nil
 }
 
 // computeGroupResultRows computes aggregate result rows for each group.
@@ -225,9 +232,10 @@ func (c *Catalog) computeGroupResultRows(groups map[string][][]interface{}, grou
 			} else {
 				if ci.hasEmbeddedAgg && len(groupRows) > 0 {
 					val, err := c.evaluateExprWithGroupAggregates(ci.originalExpr, groupRows, table, args)
-					if err == nil {
-						resultRow[i] = val
+					if err != nil {
+						return nil, err
 					}
+					resultRow[i] = val
 				} else if ci.index >= 0 && len(groupRows) > 0 && ci.index < len(groupRows[0]) {
 					resultRow[i] = groupRows[0][ci.index]
 				} else if ci.index == -1 && len(groupRows) > 0 {
@@ -246,7 +254,10 @@ func (c *Catalog) computeGroupResultRows(groups map[string][][]interface{}, grou
 		}
 		if stmt.Having != nil {
 			havingMatched, err := evaluateHaving(c, resultRow, selectCols, table.Columns, stmt.Having, args)
-			if err != nil || !havingMatched {
+			if err != nil {
+				return nil, err
+			}
+			if !havingMatched {
 				continue
 			}
 		}
@@ -473,7 +484,7 @@ func (c *Catalog) buildGroupByGroupsFromRows(table *TableDef, stmt *query.Select
 // computeAggregatesForExpr collects every aggregate function call inside expr,
 // evaluates it across groupRows, and returns the per-call results. exprColumns
 // supplies the columns visible to argument evaluation (single-table or joined).
-func (c *Catalog) computeAggregatesForExpr(expr query.Expression, groupRows [][]interface{}, exprColumns []ColumnDef, args []interface{}) map[*query.FunctionCall]interface{} {
+func (c *Catalog) computeAggregatesForExpr(expr query.Expression, groupRows [][]interface{}, exprColumns []ColumnDef, args []interface{}) (map[*query.FunctionCall]interface{}, error) {
 	var aggCalls []*query.FunctionCall
 	collectAggregatesFromExpr(expr, &aggCalls)
 
@@ -482,6 +493,7 @@ func (c *Catalog) computeAggregatesForExpr(expr query.Expression, groupRows [][]
 		isCountStar := len(fc.Args) == 0 || isStarArg(fc.Args[0])
 
 		var values []interface{}
+		var firstAggErr error
 		aggregateRows := c.aggregateRowsForFunction(fc, groupRows, exprColumns, args)
 		for _, row := range aggregateRows {
 			v, ok := c.collectAggregateInput(selectColInfo{
@@ -492,15 +504,21 @@ func (c *Catalog) computeAggregatesForExpr(expr query.Expression, groupRows [][]
 					return int64(1), true
 				}
 				v, err := evaluateExpression(c, row, exprColumns, fc.Args[0], args)
+				if err != nil && firstAggErr == nil {
+					firstAggErr = fmt.Errorf("failed to evaluate %s argument: %w", fc.Name, err)
+				}
 				return v, err == nil
 			})
 			if ok {
 				values = append(values, v)
 			}
 		}
+		if firstAggErr != nil {
+			return nil, firstAggErr
+		}
 		aggResults[fc] = reduceBasicAggregateWithSeparator(toUpperFast(fc.Name), values, len(aggregateRows), isCountStar, fc.Distinct, c.groupConcatSeparatorForRows(fc, aggregateRows, exprColumns, args))
 	}
-	return aggResults
+	return aggResults, nil
 }
 
 // computeStdevVar computes the STDDEV/VARIANCE family over numeric values.
@@ -917,7 +935,10 @@ func literalStringValue(expr query.Expression) (string, bool) {
 }
 
 func (c *Catalog) evaluateExprWithGroupAggregates(expr query.Expression, groupRows [][]interface{}, table *TableDef, args []interface{}) (interface{}, error) {
-	aggResults := c.computeAggregatesForExpr(expr, groupRows, table.Columns, args)
+	aggResults, err := c.computeAggregatesForExpr(expr, groupRows, table.Columns, args)
+	if err != nil {
+		return nil, err
+	}
 
 	// Replace aggregate calls in expression with their computed values, then evaluate
 	replaced := replaceAggregatesInExpr(expr, aggResults)
@@ -931,7 +952,10 @@ func (c *Catalog) evaluateExprWithGroupAggregates(expr query.Expression, groupRo
 }
 
 func (c *Catalog) evaluateExprWithGroupAggregatesJoin(expr query.Expression, groupRows [][]interface{}, allColumns []ColumnDef, args []interface{}) (interface{}, error) {
-	aggResults := c.computeAggregatesForExpr(expr, groupRows, allColumns, args)
+	aggResults, err := c.computeAggregatesForExpr(expr, groupRows, allColumns, args)
+	if err != nil {
+		return nil, err
+	}
 
 	replaced := replaceAggregatesInExpr(expr, aggResults)
 	var baseRow []interface{}
@@ -1033,25 +1057,8 @@ func (c *Catalog) applyGroupByOrderBy(rows [][]interface{}, selectCols []selectC
 			vi := sorted[i][idx]
 			vj := sorted[j][idx]
 
-			// Handle nil values
-			if vi == nil && vj == nil {
-				continue
-			}
-			if vi == nil {
-				return !ob.Desc
-			}
-			if vj == nil {
-				return ob.Desc
-			}
-
-			// Route through the single normalized comparator (compareValues —
-			// the round-6 bool normalization included), replacing the former
-			// inline three-tier stack whose dual bool representation made
-			// grouped ORDER BY output depend on row insertion order (round 24).
-			if c := compareValues(vi, vj); c < 0 {
-				return !ob.Desc
-			} else if c > 0 {
-				return ob.Desc
+			if cmp := compareOrderByValues(vi, vj, ob); cmp != 0 {
+				return cmp < 0
 			}
 		}
 		return false

@@ -814,7 +814,10 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 		var filteredRows [][]interface{}
 		for _, row := range intermediateRows {
 			matched, err := evaluateWhere(c, row, allColumns, stmt.Where, args)
-			if err != nil || !matched {
+			if err != nil {
+				return nil, nil, err
+			}
+			if !matched {
 				continue
 			}
 			filteredRows = append(filteredRows, row)
@@ -969,7 +972,10 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 	}
 
 	// Compute aggregates for each group
-	resultRows := c.computeJoinGroupAggregates(stmt, selectCols, mainTableCols, allColumns, groupOrder, groups, args)
+	resultRows, err := c.computeJoinGroupAggregates(stmt, selectCols, mainTableCols, allColumns, groupOrder, groups, args)
+	if err != nil {
+		return nil, nil, err
+	}
 	if len(resultRows) == 0 && len(stmt.GroupBy) == 0 {
 		if emptyRow, ok := emptyJoinAggregateRow(selectCols); ok {
 			resultRows = [][]interface{}{emptyRow}
@@ -981,7 +987,10 @@ func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args [
 		var filtered [][]interface{}
 		for _, row := range resultRows {
 			havingMatched, err := evaluateHaving(c, row, selectCols, nil, stmt.Having, args)
-			if err == nil && havingMatched {
+			if err != nil {
+				return nil, nil, err
+			}
+			if havingMatched {
 				filtered = append(filtered, row)
 			}
 		}
@@ -1922,7 +1931,7 @@ func emptyJoinAggregateRow(selectCols []selectColInfo) ([]interface{}, bool) {
 // computeJoinGroupAggregates computes aggregate results for each group in a
 // JOIN+GROUP BY query. Returns one result row per group with aggregate and
 // non-aggregate column values.
-func (c *Catalog) computeJoinGroupAggregates(stmt *query.SelectStmt, selectCols []selectColInfo, mainTableCols []ColumnDef, allColumns []ColumnDef, groupOrder []string, groups map[string][][]interface{}, args []interface{}) [][]interface{} {
+func (c *Catalog) computeJoinGroupAggregates(stmt *query.SelectStmt, selectCols []selectColInfo, mainTableCols []ColumnDef, allColumns []ColumnDef, groupOrder []string, groups map[string][][]interface{}, args []interface{}) ([][]interface{}, error) {
 	var resultRows [][]interface{}
 
 	for _, gk := range groupOrder {
@@ -1935,13 +1944,18 @@ func (c *Catalog) computeJoinGroupAggregates(stmt *query.SelectStmt, selectCols 
 		for i, ci := range selectCols {
 			if ci.isAggregate {
 				var values []interface{}
+				var firstAggErr error
 				aggregateRows := c.aggregateRowsForInfo(ci, groupRows, allColumns, args)
 				for _, row := range aggregateRows {
 					v, ok := c.collectAggregateInput(ci, row, allColumns, args, func() (interface{}, bool) {
-						if ci.aggregateCol == "*" && ci.aggregateExpr == nil {
+						// Hidden COUNT(*) may retain a StarExpr argument.
+						if ci.aggregateCol == "*" && (ci.aggregateType == "COUNT" || ci.aggregateExpr == nil) {
 							return int64(1), true
 						} else if ci.aggregateExpr != nil {
 							v, err := evaluateExpression(c, row, allColumns, ci.aggregateExpr, args)
+							if err != nil && firstAggErr == nil {
+								firstAggErr = fmt.Errorf("failed to evaluate %s argument: %w", ci.aggregateType, err)
+							}
 							return v, err == nil
 						}
 						colIdx := c.resolveJoinAggregateColumn(ci, stmt, mainTableCols, len(row))
@@ -1954,7 +1968,9 @@ func (c *Catalog) computeJoinGroupAggregates(stmt *query.SelectStmt, selectCols 
 						values = append(values, v)
 					}
 				}
-
+				if firstAggErr != nil {
+					return nil, firstAggErr
+				}
 				resultRow[i] = computeAggregateValue(c.selectColInfoWithGroupConcatSeparator(ci, aggregateRows, allColumns, args), values, aggregateRows)
 			} else {
 				colIdx := -1
@@ -1976,9 +1992,10 @@ func (c *Catalog) computeJoinGroupAggregates(stmt *query.SelectStmt, selectCols 
 				}
 				if ci.hasEmbeddedAgg && len(groupRows) > 0 {
 					val, err := c.evaluateExprWithGroupAggregatesJoin(ci.originalExpr, groupRows, allColumns, args)
-					if err == nil {
-						resultRow[i] = val
+					if err != nil {
+						return nil, err
 					}
+					resultRow[i] = val
 				} else if colIdx >= 0 && len(groupRows) > 0 && colIdx < len(groupRows[0]) {
 					resultRow[i] = groupRows[0][colIdx]
 				} else if colIdx == -1 && len(groupRows) > 0 {
@@ -1998,7 +2015,7 @@ func (c *Catalog) computeJoinGroupAggregates(stmt *query.SelectStmt, selectCols 
 
 		resultRows = append(resultRows, resultRow)
 	}
-	return resultRows
+	return resultRows, nil
 }
 
 // resolveJoinAggregateColumn finds the column index for an aggregate column
