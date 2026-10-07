@@ -250,14 +250,20 @@ The main mutex can become a bottleneck under high concurrency. Consider:
   prevented** (uncommitted writes stay goroutine-local until commit) and
   **write-write conflicts abort one writer, so there are no lost updates** (a
   guarantee *stronger* than plain Read Committed, delivered by optimistic
-  read-set/version-shard validation at commit). **One proven exception
-  (verified 2026-09-28; narrowed by the Phase-1/2/3 fixes, same day):**
-  writes on the remaining *direct-path* statement classes — composite-PK
-  `SET` changes and `REPLACE` inserts — bypass the pending-write buffer
-  inside explicit transactions and land in the shared B-tree immediately,
-  so a concurrent SELECT in another transaction CAN observe uncommitted
-  values from those writes. Rollback itself is correct (the undo machinery
-  reverses them); only visibility is wrong. Vector-INDEXED table
+  read-set/version-shard validation at commit). **One remaining exception
+  (by design, per `refactor.md` §1.16):** `REPLACE` inserts on any table
+  bypass the pending-write buffer inside explicit transactions and mutate
+  the shared B-tree immediately — REPLACE requires immediate committed-data
+  mutation by design, so a concurrent SELECT in another transaction CAN
+  observe a REPLACE's intermediate effect. All other former direct-path
+  classes are fixed: vector-indexed tables, single- AND composite-PK
+  `SET` changes (the composite extension, 2026-10-08, generalizes the
+  Phase-2 deferred rekey to `buildCompositePK` over all PK columns — it
+  also fixes an autocommit miskey where a composite-PK change updated the
+  row under its stale key, making the live tuple re-insertable as a
+  duplicate), and partitioned tables. Rollback itself was always correct
+  (the undo machinery reverses direct-path writes); only visibility and
+  key correctness were wrong. Vector-INDEXED table
   INSERT/UPDATE now buffers like every other table, with HNSW refreshed at
   COMMIT (`applyCommitVectorUpdates`; per `refactor.md` §1.16, option A
   keeps the graph itself commit-time-only while option B's

@@ -100,21 +100,12 @@ func (c *Catalog) Update(ctx context.Context, stmt *query.UpdateStmt, args []int
 		return c.updateWithJoinLocked(ctx, stmt, args)
 	}
 
+	// PK-changing SET clauses — single- or composite-column primary keys —
+	// take the buffered path as a deferred rekey (refactor.md §1.16 Phase 2
+	// plus its composite extension): new-key live write + old-key tombstone,
+	// both applied at commit, so uncommitted rekeys stay invisible to
+	// concurrent readers until COMMIT.
 	useBuffer := c.isBufferedMode()
-	if useBuffer {
-		for _, setClause := range stmt.Set {
-			if table.isPrimaryKeyColumn(setClause.Column) {
-				// Phase 2 (refactor.md §1.16): single-column PK changes
-				// buffer as a deferred rekey (new-key live write + old-key
-				// tombstone, applied at commit). Composite-PK changes keep
-				// the direct path — the rekey machinery is single-column.
-				if len(table.PrimaryKey) != 1 {
-					useBuffer = false
-				}
-				break
-			}
-		}
-	}
 	ts := c.getCurrentTxn()
 
 	if !useBuffer {
@@ -650,22 +641,12 @@ func (c *Catalog) updateLocked(ctx context.Context, stmt *query.UpdateStmt, args
 		return c.updateWithJoinLocked(ctx, stmt, args)
 	}
 
-	// Determine if we can use buffered writes for this update.
+	// PK-changing SET clauses — single- or composite-column primary keys —
+	// take the buffered path as a deferred rekey (refactor.md §1.16 Phase 2
+	// plus its composite extension): new-key live write + old-key tombstone,
+	// both applied at commit, so uncommitted rekeys stay invisible to
+	// concurrent readers until COMMIT.
 	useBuffer := c.isBufferedMode()
-	if useBuffer {
-		for _, setClause := range stmt.Set {
-			if table.isPrimaryKeyColumn(setClause.Column) {
-				// Phase 2 (refactor.md §1.16): single-column PK changes
-				// buffer as a deferred rekey (new-key live write + old-key
-				// tombstone, applied at commit). Composite-PK changes keep
-				// the direct path — the rekey machinery is single-column.
-				if len(table.PrimaryKey) != 1 {
-					useBuffer = false
-				}
-				break
-			}
-		}
-	}
 
 	// Cache transaction state to avoid repeated goroutine-shard lookups.
 	ts := c.getCurrentTxn()
@@ -1924,26 +1905,37 @@ func (c *Catalog) applyUpdateEntries(ctx context.Context, table *TableDef, stmt 
 			return rollbackApplied(fmt.Errorf("partition tree %s not found", entry.treeName), nil)
 		}
 
-		// Check if PRIMARY KEY was changed
+		// Check if PRIMARY KEY was changed. Detection must cover EVERY PK
+		// column — a composite key (a,b) moves when either component changes —
+		// and the new key is the composite key of the new row (buildCompositePK,
+		// the INSERT path's recipe). For single-column PKs buildCompositePK
+		// returns the lone part unmodified, so on-disk keys are byte-identical
+		// to the legacy derivation.
 		newKey := oldKey
 		pkChanged := false
-		if pkColIdx >= 0 && pkColIdx < len(entry.newRow) && pkColIdx < len(entry.oldRow) {
-			if compareValues(entry.oldRow[pkColIdx], entry.newRow[pkColIdx]) != 0 {
+		pkVal := interface{}(nil)
+		for _, pkCol := range table.PrimaryKey {
+			pkIdx := table.GetColumnIndex(pkCol)
+			if pkIdx < 0 || pkIdx >= len(entry.newRow) || pkIdx >= len(entry.oldRow) {
+				continue
+			}
+			if compareValues(entry.oldRow[pkIdx], entry.newRow[pkIdx]) != 0 {
 				pkChanged = true
-				pkVal := entry.newRow[pkColIdx]
-				if strVal, ok := toString(pkVal); ok {
-					newKey = []byte("S:" + strVal)
-				} else if fVal, ok := toFloat64(pkVal); ok {
-					// Match the insert path: fractional float PKs must keep the
-					// "F:"-tagged exact key (formatFloatKey). Truncating through
-					// int64 landed the row under the integer key, invisible to
-					// equality lookups and colliding with the whole-number row.
-					k, _, _ := formatFloatKey(fVal)
-					newKey = []byte(k)
-				}
-				if existingData, err := updateTree.Get(newKey); err == nil && existingData != nil {
-					return rollbackApplied(fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal), nil)
-				}
+				pkVal = entry.newRow[pkIdx]
+				break
+			}
+		}
+		if pkChanged {
+			newKeyStr, ok := buildCompositePK(table, entry.newRow)
+			if !ok {
+				return rollbackApplied(fmt.Errorf("PRIMARY KEY constraint failed: primary key value is NULL"), nil)
+			}
+			// Matches the insert path's component formats: fractional float
+			// PKs keep the "F:"-tagged exact key (formatFloatKey via
+			// formatKeyComponent) instead of truncating to the integer key.
+			newKey = []byte(newKeyStr)
+			if existingData, err := updateTree.Get(newKey); err == nil && existingData != nil {
+				return rollbackApplied(fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal), nil)
 			}
 		}
 
@@ -2316,24 +2308,34 @@ func (c *Catalog) bufferUpdateEntry(table *TableDef, stmt *query.UpdateStmt, ent
 		}
 	}
 
-	// Phase 2 (refactor.md §1.16): a single-column PK change rekeys the row.
-	// Buffer it as a deferred rekey — the new-key live write plus an old-key
-	// soft-delete tombstone, both applied at commit — so the old key stays
-	// visible to concurrent readers until COMMIT. The tombstone rides the
-	// same machinery as buffered DELETEs (overlay filtering in-txn, commit
+	// Phase 2 + composite extension (refactor.md §1.16): a PK change rekeys
+	// the row. Buffer it as a deferred rekey — the new-key live write plus an
+	// old-key soft-delete tombstone, both applied at commit — so the old key
+	// stays visible to concurrent readers until COMMIT. The tombstone rides
+	// the same machinery as buffered DELETEs (overlay filtering in-txn, commit
 	// soft delete, vector search filtering by DeletedAt); a fresh RowVersion
-	// with DeletedAt set is sufficient.
-	if len(table.PrimaryKey) == 1 {
-		pkColIdx := table.GetColumnIndex(table.PrimaryKey[0])
-		if pkColIdx >= 0 && pkColIdx < len(entry.newRow) && pkColIdx < len(entry.oldRow) &&
-			compareValues(entry.oldRow[pkColIdx], entry.newRow[pkColIdx]) != 0 {
-			pkVal := entry.newRow[pkColIdx]
-			newKeyStr := string(entry.key)
-			if strVal, ok := toString(pkVal); ok {
-				newKeyStr = "S:" + strVal
-			} else if fVal, ok := toFloat64(pkVal); ok {
-				k, _, _ := formatFloatKey(fVal)
-				newKeyStr = k
+	// with DeletedAt set is sufficient. Detection covers EVERY PK column (a
+	// composite key (a,b) moves when either component changes), and the new
+	// key is the composite key of the new row (buildCompositePK — the INSERT
+	// path's recipe; byte-identical to the legacy form for single-column PKs).
+	if len(table.PrimaryKey) > 0 {
+		pkChanged := false
+		pkVal := interface{}(nil)
+		for _, pkCol := range table.PrimaryKey {
+			pkIdx := table.GetColumnIndex(pkCol)
+			if pkIdx < 0 || pkIdx >= len(entry.newRow) || pkIdx >= len(entry.oldRow) {
+				continue
+			}
+			if compareValues(entry.oldRow[pkIdx], entry.newRow[pkIdx]) != 0 {
+				pkChanged = true
+				pkVal = entry.newRow[pkIdx]
+				break
+			}
+		}
+		if pkChanged {
+			newKeyStr, ok := buildCompositePK(table, entry.newRow)
+			if !ok {
+				return nil, nil, fmt.Errorf("PRIMARY KEY constraint failed: primary key value is NULL")
 			}
 			// The new key must be free: not live in the committed tree and
 			// not live-pending (keyInPendingWrites ignores tombstones).
@@ -2348,10 +2350,16 @@ func (c *Catalog) bufferUpdateEntry(table *TableDef, stmt *query.UpdateStmt, ent
 			if c.keyInPendingWrites(entry.treeName, newKeyStr) {
 				return nil, nil, fmt.Errorf("PRIMARY KEY constraint failed: duplicate key '%v'", pkVal)
 			}
-			// Keep the auto-increment sequence ahead of the new PK value.
-			if fVal, ok := toFloat64(pkVal); ok {
-				if pkInt := int64(fVal); pkInt > atomic.LoadInt64(&table.AutoIncSeq) {
-					atomic.StoreInt64(&table.AutoIncSeq, pkInt)
+			// Keep the auto-increment sequence ahead of the new PK values.
+			for _, pkCol := range table.PrimaryKey {
+				pkIdx := table.GetColumnIndex(pkCol)
+				if pkIdx < 0 || pkIdx >= len(entry.newRow) {
+					continue
+				}
+				if fVal, ok := toFloat64(entry.newRow[pkIdx]); ok {
+					if pkInt := int64(fVal); pkInt > atomic.LoadInt64(&table.AutoIncSeq) {
+						atomic.StoreInt64(&table.AutoIncSeq, pkInt)
+					}
 				}
 			}
 			var rv RowVersion
