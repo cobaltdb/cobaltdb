@@ -500,7 +500,7 @@ func TestWALRecoverCommitThenData(t *testing.T) {
 	wal.Append(&WALRecord{TxnID: txnID, Type: WALInsert, PageID: pageID, Offset: 100, Data: []byte("hello")})
 	wal.Append(&WALRecord{TxnID: txnID, Type: WALCommit})
 
-	// Write more data for same txn (post-commit - should apply immediately)
+	// Reuse the ID after commit without committing the new write.
 	wal.Append(&WALRecord{TxnID: txnID, Type: WALUpdate, PageID: pageID, Offset: 200, Data: []byte("world")})
 
 	wal.Close()
@@ -513,7 +513,7 @@ func TestWALRecoverCommitThenData(t *testing.T) {
 		t.Fatalf("recovery with commit failed: %v", err)
 	}
 
-	// Verify data was applied
+	// Only the write preceding its own commit should be applied.
 	p, err := pool.GetPage(pageID)
 	if err != nil {
 		t.Fatal(err)
@@ -522,8 +522,8 @@ func TestWALRecoverCommitThenData(t *testing.T) {
 	if string(p.Data()[100:105]) != "hello" {
 		t.Errorf("expected 'hello' at offset 100, got %q", string(p.Data()[100:105]))
 	}
-	if string(p.Data()[200:205]) != "world" {
-		t.Errorf("expected 'world' at offset 200, got %q", string(p.Data()[200:205]))
+	if string(p.Data()[200:205]) != "\x00\x00\x00\x00\x00" {
+		t.Errorf("uncommitted write applied at offset 200: %q", string(p.Data()[200:205]))
 	}
 }
 

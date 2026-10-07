@@ -75,7 +75,7 @@ func (pc *panicCapture) repanic() {
 func ParallelSelectRows(values [][]byte, workers int, threshold int, processFn func([][]byte) [][]interface{}) [][]interface{} {
 	n := len(values)
 	workers = defaultWorkers(workers)
-	if workers <= 1 || n < threshold {
+	if n == 0 || workers <= 1 || n < threshold {
 		return processFn(values)
 	}
 
@@ -118,7 +118,7 @@ func ParallelSelectRows(values [][]byte, workers int, threshold int, processFn f
 func ParallelGroupBy(values [][]byte, workers int, threshold int, groupFn func([][]byte) map[string][][]interface{}) map[string][][]interface{} {
 	n := len(values)
 	workers = defaultWorkers(workers)
-	if workers <= 1 || n < threshold {
+	if n == 0 || workers <= 1 || n < threshold {
 		return groupFn(values)
 	}
 
@@ -167,7 +167,7 @@ func ParallelGroupBy(values [][]byte, workers int, threshold int, groupFn func([
 func ParallelAggregate(values [][]byte, workers int, threshold int, partialFn func([][]byte) []interface{}, mergeFn func(dst, src []interface{})) []interface{} {
 	n := len(values)
 	workers = defaultWorkers(workers)
-	if workers <= 1 || n < threshold {
+	if n == 0 || workers <= 1 || n < threshold {
 		return partialFn(values)
 	}
 

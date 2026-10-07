@@ -225,6 +225,13 @@ func cloneValue(value interface{}, depth int, seen map[wireCloneVisit]struct{}) 
 		return nil
 	}
 	switch typed := value.(type) {
+	case []float64:
+		if typed == nil {
+			return []float64(nil)
+		}
+		cloned := make([]float64, len(typed))
+		copy(cloned, typed)
+		return cloned
 	case []byte:
 		if typed == nil {
 			return []byte(nil)

@@ -351,11 +351,12 @@ func Open(path string, opts *Options) (*DB, error) {
 					opts.Security.EncryptionConfig.Salt = salt
 				}
 			}
-			backend, err = storage.NewEncryptedBackend(backend, opts.Security.EncryptionConfig)
+			wrapped, err := storage.NewEncryptedBackend(backend, opts.Security.EncryptionConfig)
 			if err != nil {
 				err = errors.Join(err, backend.Close())
 				return nil, fmt.Errorf("failed to setup encryption: %w", err)
 			}
+			backend = wrapped
 			// Persist salt for future opens
 			if path != ":memory:" {
 				if salt := backend.(*storage.EncryptedBackend).GetSalt(); salt != nil {
@@ -378,11 +379,12 @@ func Open(path string, opts *Options) (*DB, error) {
 					encConfig.Salt = salt
 				}
 			}
-			backend, err = storage.NewEncryptedBackend(backend, encConfig)
+			wrapped, err := storage.NewEncryptedBackend(backend, encConfig)
 			if err != nil {
 				err = errors.Join(err, backend.Close())
 				return nil, fmt.Errorf("failed to setup encryption: %w", err)
 			}
+			backend = wrapped
 			// Persist salt for future opens
 			if path != ":memory:" {
 				if salt := backend.(*storage.EncryptedBackend).GetSalt(); salt != nil {
@@ -396,11 +398,12 @@ func Open(path string, opts *Options) (*DB, error) {
 		// Wrap with page-level compression if configured
 		if opts.PageCompression.Config != nil && opts.PageCompression.Config.Enabled {
 			log.Infof("Enabling page-level compression")
-			backend, err = storage.NewCompressedBackend(backend, opts.PageCompression.Config)
+			wrapped, err := storage.NewCompressedBackend(backend, opts.PageCompression.Config)
 			if err != nil {
 				err = errors.Join(err, backend.Close())
 				return nil, fmt.Errorf("failed to setup compression: %w", err)
 			}
+			backend = wrapped
 		}
 	}
 

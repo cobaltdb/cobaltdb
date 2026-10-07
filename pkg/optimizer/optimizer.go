@@ -143,8 +143,62 @@ func (o *Optimizer) reorderJoins(stmt *query.SelectStmt) *query.SelectStmt {
 		start = end
 	}
 
+	// An ON clause must not move before a table it references. Preserve the
+	// original order when dependencies cannot be resolved conservatively.
+	if !joinDependenciesAvailable(stmt.From, ordered) {
+		return stmt
+	}
 	stmt.Joins = ordered
 	return stmt
+}
+
+func joinDependenciesAvailable(from *query.TableRef, joins []*query.JoinClause) bool {
+	available := make(map[string]bool)
+	addTable := func(table *query.TableRef) {
+		if table != nil {
+			name := table.Name
+			if table.Alias != "" {
+				name = table.Alias
+			}
+			available[strings.ToLower(name)] = true
+		}
+	}
+	addTable(from)
+	var valid func(query.Expression) bool
+	valid = func(expr query.Expression) bool {
+		switch e := expr.(type) {
+		case nil, *query.NumberLiteral, *query.StringLiteral, *query.BooleanLiteral, *query.NullLiteral, *query.PlaceholderExpr:
+			return true
+		case *query.QualifiedIdentifier:
+			return available[strings.ToLower(e.Table)]
+		case *query.ColumnRef:
+			return e.Table != "" && available[strings.ToLower(e.Table)]
+		case *query.BinaryExpr:
+			return valid(e.Left) && valid(e.Right)
+		case *query.UnaryExpr:
+			return valid(e.Expr)
+		case *query.IsNullExpr:
+			return valid(e.Expr)
+		case *query.CastExpr:
+			return valid(e.Expr)
+		case *query.BetweenExpr:
+			return valid(e.Expr) && valid(e.Lower) && valid(e.Upper)
+		case *query.LikeExpr:
+			return valid(e.Expr) && valid(e.Pattern) && valid(e.Escape)
+		default:
+			return false
+		}
+	}
+	for _, join := range joins {
+		if join == nil {
+			continue
+		}
+		addTable(join.Table)
+		if !valid(join.Condition) {
+			return false
+		}
+	}
+	return true
 }
 
 // estimateJoinSelectivity estimates the selectivity of a join

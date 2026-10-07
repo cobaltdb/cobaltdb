@@ -387,6 +387,9 @@ func (m *Manager) CreateBackup(ctx context.Context, backupType Type) (backup *Ba
 	m.metadata.mu.Lock()
 	m.metadata.Backups = append(m.metadata.Backups, cloneBackup(backup))
 	if err := m.saveMetadataLocked(); err != nil {
+		last := len(m.metadata.Backups) - 1
+		m.metadata.Backups[last] = nil
+		m.metadata.Backups = m.metadata.Backups[:last]
 		m.metadata.mu.Unlock()
 		return nil, fmt.Errorf("failed to save backup metadata: %w", err)
 	}
@@ -1620,7 +1623,7 @@ func openBackupMetadataFile(path string) (*os.File, error) {
 
 func (m *Manager) saveMetadataLocked() error {
 	if err := prepareBackupDir(m.config.BackupDir, false); err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && len(m.metadata.Backups) == 0 {
 			return nil
 		}
 		return fmt.Errorf("failed to validate backup directory: %w", err)

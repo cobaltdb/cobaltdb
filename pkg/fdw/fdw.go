@@ -1,6 +1,7 @@
 package fdw
 
 import (
+	"reflect"
 	"sort"
 	"sync"
 )
@@ -84,7 +85,11 @@ func (r *Registry) Get(name string) (ForeignDataWrapper, bool) {
 	if f == nil {
 		return nil, false
 	}
-	return f(), true
+	wrapper := f()
+	if wrapper == nil || (reflect.ValueOf(wrapper).Kind() == reflect.Ptr && reflect.ValueOf(wrapper).IsNil()) {
+		return nil, false
+	}
+	return wrapper, wrapper != nil
 }
 
 // Has reports whether an FDW with the given name is registered.

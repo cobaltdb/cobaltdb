@@ -160,7 +160,12 @@ func (cb *CircuitBreaker) Allow() error {
 			// Only allow limited requests in half-open state
 			select {
 			case <-cb.halfOpenTokens:
-				cb.concurrency.Add(1)
+				current := cb.concurrency.Add(1)
+				if int(current) > cb.config.MaxConcurrency {
+					cb.concurrency.Add(-1)
+					cb.Abandon()
+					return ErrCircuitTooMany
+				}
 				return nil
 			default:
 				return ErrCircuitOpen

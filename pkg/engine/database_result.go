@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -55,6 +56,9 @@ func (r *Rows) Scan(dest ...interface{}) error {
 	}
 
 	for i, d := range dest {
+		if d == nil || (reflect.ValueOf(d).Kind() == reflect.Ptr && reflect.ValueOf(d).IsNil()) {
+			return errors.New("scan destination is nil")
+		}
 		if di, ok := d.(*interface{}); ok {
 			*di = cloneScannedValue(row[i])
 			continue

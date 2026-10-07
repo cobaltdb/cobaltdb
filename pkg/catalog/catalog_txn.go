@@ -1083,7 +1083,10 @@ func (c *Catalog) replayUndoLog(startIdx, endIdx int, errorPrefix string) error 
 }
 
 func (c *Catalog) applyUndoEntry(entry undoEntry, errorPrefix string) error {
-	tree := c.tableTrees[entry.tableName]
+	tree := entry.tableTree
+	if tree == nil {
+		tree = c.tableTrees[entry.tableName]
+	}
 	switch entry.action {
 	case undoInsert:
 		if tree != nil {
@@ -1737,9 +1740,13 @@ func isDDLUndo(a undoAction) bool {
 // applyDMLUndoEntry replays a single DML undo entry using snapshotted trees.
 // It must NOT be called with DDL entries.
 func (c *Catalog) applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree.TreeStore, tableDefs map[string]*TableDef, errorPrefix string) error {
+	tree := entry.tableTree
+	if tree == nil {
+		tree = tableTrees[entry.tableName]
+	}
 	switch entry.action {
 	case undoInsert:
-		if tree := tableTrees[entry.tableName]; tree != nil {
+		if tree != nil {
 			if err := tree.Delete(entry.key); err != nil {
 				return fmt.Errorf("%s undoing insert: %w", errorPrefix, err)
 			}
@@ -1754,7 +1761,7 @@ func (c *Catalog) applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree
 			}
 		}
 	case undoUpdate:
-		if tree := tableTrees[entry.tableName]; tree != nil {
+		if tree != nil {
 			// If the UPDATE moved the row to a new PK key, delete the orphaned
 			// new-key row before restoring the old-key row; otherwise rollback
 			// leaves both rows (the duplicate-orphan corruption).
@@ -1788,7 +1795,7 @@ func (c *Catalog) applyDMLUndoEntry(entry undoEntry, tableTrees map[string]btree
 			}
 		}
 	case undoDelete:
-		if tree := tableTrees[entry.tableName]; tree != nil {
+		if tree != nil {
 			if err := tree.Put(entry.key, entry.oldValue); err != nil {
 				return fmt.Errorf("%s undoing delete: %w", errorPrefix, err)
 			}

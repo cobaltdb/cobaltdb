@@ -48,9 +48,12 @@ func (c *Catalog) CreateVectorIndex(name, tableName, columnName string) error {
 	}
 
 	// Build the index from existing data
-	tree, exists := c.tableTrees[tableName]
-	if exists {
-		pendingWrites := c.pendingWritesForTable(tableName)
+	for _, treeName := range table.getPartitionTreeNames() {
+		tree, exists := c.tableTrees[treeName]
+		if !exists {
+			continue
+		}
+		pendingWrites := c.pendingWritesForTable(treeName)
 		iter, err := tree.Scan(nil, nil)
 		if err != nil {
 			return fmt.Errorf("failed to scan table %s for vector index %s: %w", tableName, name, err)

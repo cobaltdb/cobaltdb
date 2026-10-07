@@ -184,7 +184,8 @@ func (m *MemoryBackend) Truncate(size int64) error {
 			m.data = newData
 		}
 	} else {
-		// Shrink
+		// Discard truncated bytes so later regrowth cannot expose old data.
+		clear(m.data[size:])
 		m.data = m.data[:size]
 	}
 

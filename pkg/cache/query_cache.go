@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -574,6 +575,13 @@ func cloneRows(rows [][]interface{}) [][]interface{} {
 
 func cloneValue(value interface{}) interface{} {
 	switch typed := value.(type) {
+	case []float64:
+		if typed == nil {
+			return []float64(nil)
+		}
+		cloned := make([]float64, len(typed))
+		copy(cloned, typed)
+		return cloned
 	case []byte:
 		if typed == nil {
 			return []byte(nil)
@@ -586,6 +594,9 @@ func cloneValue(value interface{}) interface{} {
 	case []string:
 		return cloneStrings(typed)
 	case map[string]interface{}:
+		if typed == nil {
+			return map[string]interface{}(nil)
+		}
 		cloned := make(map[string]interface{}, len(typed))
 		for key, mapValue := range typed {
 			cloned[key] = cloneValue(mapValue)
@@ -659,6 +670,43 @@ func writeArgToHash(h hash.Hash, v interface{}) {
 			return
 		}
 		writeBytesToHash(h, 'o', []byte{0})
+	case []string:
+		writeHashHeader(h, 'S', len(val))
+		for _, nested := range val {
+			writeArgToHash(h, nested)
+		}
+	case []interface{}:
+		writeHashHeader(h, 'A', len(val))
+		for _, nested := range val {
+			writeArgToHash(h, nested)
+		}
+	case []float64:
+		writeHashHeader(h, 'F', len(val))
+		for _, nested := range val {
+			writeArgToHash(h, nested)
+		}
+	case map[string]interface{}:
+		writeHashHeader(h, 'M', len(val))
+		keys := make([]string, 0, len(val))
+		for key := range val {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			writeArgToHash(h, key)
+			writeArgToHash(h, val[key])
+		}
+	case map[string]string:
+		writeHashHeader(h, 'm', len(val))
+		keys := make([]string, 0, len(val))
+		for key := range val {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			writeArgToHash(h, key)
+			writeArgToHash(h, val[key])
+		}
 	default:
 		writeStringToHash(h, 't', fmt.Sprintf("%T", val))
 		writeStringToHash(h, 'v', fmt.Sprint(val))
@@ -694,16 +742,7 @@ func estimateSize(columns []string, rows [][]interface{}) int64 {
 	// Rows (rough estimate)
 	for _, row := range rows {
 		for _, val := range row {
-			switch v := val.(type) {
-			case string:
-				size += int64(len(v))
-			case []byte:
-				size += int64(len(v))
-			case nil:
-				size += 8
-			default:
-				size += 16 // rough estimate for other types
-			}
+			size += estimateValueSize(val)
 		}
 	}
 
@@ -727,6 +766,8 @@ func estimateEntrySize(sql string, args []interface{}, columns []string, rows []
 
 func estimateValueSize(value interface{}) int64 {
 	switch typed := value.(type) {
+	case []float64:
+		return int64(len(typed)) * 8
 	case string:
 		return int64(len(typed))
 	case []byte:

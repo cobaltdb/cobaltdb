@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chzyer/readline"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
@@ -316,7 +317,7 @@ func printRowsTable(rows *engine.Rows, cols []string, headers bool) {
 	colCount := len(cols)
 	widths := make([]int, colCount)
 	for i, col := range cols {
-		widths[i] = len(col)
+		widths[i] = utf8.RuneCountInString(col)
 	}
 
 	var data [][]string
@@ -336,8 +337,8 @@ func printRowsTable(rows *engine.Rows, cols []string, headers bool) {
 		for i, v := range values {
 			s := formatValue(v)
 			row[i] = s
-			if len(s) > widths[i] {
-				widths[i] = len(s)
+			if n := utf8.RuneCountInString(s); n > widths[i] {
+				widths[i] = n
 			}
 		}
 		data = append(data, row)
@@ -392,7 +393,11 @@ func printRowsCSV(rows *engine.Rows, cols []string, headers bool) error {
 	if err := flushCSVWriter(writer); err != nil {
 		return fmt.Errorf("flush csv: %w", err)
 	}
-	fmt.Printf("(%d rows)\n", count)
+	// Machine-readable mode: the row-count trailer goes to stderr so stdout
+	// stays a bare CSV stream. A trailing "(N rows)" line on stdout makes the
+	// output unparseable by any CSV reader (it parses as a 1-field record).
+	// Matches the JSON-mode contract in printRowsJSON.
+	fmt.Fprintf(os.Stderr, "(%d rows)\n", count)
 	return nil
 }
 
@@ -433,7 +438,14 @@ func printRowsJSON(rows *engine.Rows, cols []string) {
 	}
 	data, _ := json.MarshalIndent(results, "", "  ")
 	fmt.Println(string(data))
-	fmt.Printf("(%d rows)\n", count)
+	// The row-count trailer goes to stderr, not stdout: `.mode json` exists to
+	// give machine-readable output, and a "(N rows)" line appended after the
+	// JSON document makes stdout unparseable by encoding/json (every consumer
+	// of `cobaltdb-cli` piped into jq/python fails). Table/csv/line modes are
+	// explicitly human-formatted and keep printing their trailer to stdout;
+	// this matches the codebase's own .export --format json path, which writes
+	// a bare JSON document.
+	fmt.Fprintf(os.Stderr, "(%d rows)\n", count)
 }
 
 func printRowsLine(rows *engine.Rows, cols []string) {
@@ -482,11 +494,17 @@ func printTableRow(cells []string, widths []int) {
 			fmt.Print(" │ ")
 		}
 		disp := cell
-		if len(disp) > widths[i] {
-			disp = disp[:widths[i]-3] + "..."
+		// Measure and cut in RUNES. Slicing at a byte offset can land inside a
+		// multi-byte UTF-8 sequence and emit invalid UTF-8 (a lone lead byte),
+		// which terminals render as mojibake.
+		if n := utf8.RuneCountInString(disp); n > widths[i] {
+			runes := []rune(disp)
+			disp = string(runes[:widths[i]-3]) + "..."
 		}
 		fmt.Print(disp)
-		fmt.Print(strings.Repeat(" ", widths[i]-len(disp)))
+		if pad := widths[i] - utf8.RuneCountInString(disp); pad > 0 {
+			fmt.Print(strings.Repeat(" ", pad))
+		}
 	}
 	fmt.Println(" │")
 }
@@ -950,6 +968,12 @@ func importCSV(db *engine.DB, filePath, table string) error {
 	defer file.Close()
 
 	reader := csv.NewReader(file)
+	// Allow variable field counts so mismatched records reach the arity check
+	// below. With the default (strict) setting csv.Reader errors on the first
+	// mismatched record, which hard-aborts the import after earlier records
+	// were already committed — a partial import reported only as an opaque
+	// reader error, and it made this function's arity branch unreachable.
+	reader.FieldsPerRecord = -1
 	headers, err := reader.Read()
 	if err != nil {
 		if errors.Is(err, io.EOF) {
@@ -980,6 +1004,7 @@ func importCSV(db *engine.DB, filePath, table string) error {
 	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quotedTable, strings.Join(quotedHeaders, ", "), strings.Join(placeholders, ", "))
 
 	imported := 0
+	skipped := 0
 	rowNumber := 1
 	for {
 		row, err := reader.Read()
@@ -994,11 +1019,21 @@ func importCSV(db *engine.DB, filePath, table string) error {
 			return fmt.Errorf("invalid csv row %d: %w", rowNumber, err)
 		}
 		if len(row) != len(headers) {
+			// A record that cannot be mapped onto the header is reported and
+			// skipped, never dropped silently.
+			skipped++
+			fmt.Fprintf(os.Stderr, "Warning: skipping CSV record %d: got %d field(s), want %d\n",
+				rowNumber, len(row), len(headers))
 			continue
 		}
 		values := make([]interface{}, len(headers))
 		for i, v := range row {
-			values[i] = strings.TrimSpace(v)
+			// CSV field content is significant data (RFC 4180): leading and
+			// trailing spaces are part of the value. Trimming here corrupted
+			// round-trips — a value exported as "  padded  " came back as
+			// "padded". Header names are still trimmed above; only data is
+			// taken verbatim.
+			values[i] = v
 		}
 		_, err = db.Exec(ctx, sql, values...)
 		if err != nil {
@@ -1007,6 +1042,9 @@ func importCSV(db *engine.DB, filePath, table string) error {
 		imported++
 	}
 
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "Skipped %d CSV record(s) with mismatched field count\n", skipped)
+	}
 	fmt.Printf("Imported %d rows into %s\n", imported, table)
 	return nil
 }
@@ -1123,7 +1161,15 @@ func exportTable(db *engine.DB, table, filePath, format string) (err error) {
 			}
 			rowMap := make(map[string]interface{})
 			for i, c := range cols {
-				rowMap[c] = formatValue(values[i])
+				// Assign the scanned value directly so JSON keeps its native
+				// types (numbers as numbers, booleans as booleans). Routing
+				// through formatValue would fmt.Sprintf every value into a
+				// string, so consumers of the exported file would have to
+				// re-parse each field to recover its type — a silent
+				// type-fidelity loss that interactive `.mode json`
+				// (printRowsJSON) does not have. The CSV branch below still
+				// uses formatValue, because encoding/csv requires []string.
+				rowMap[c] = values[i]
 			}
 			if err := encoder.Encode(rowMap); err != nil {
 				return fmt.Errorf("encode json: %w", err)

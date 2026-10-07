@@ -233,6 +233,9 @@ func (l *Logger) Debug(msg string) {
 
 // Debugf logs a formatted debug message
 func (l *Logger) Debugf(format string, args ...interface{}) {
+	if !l.IsEnabled(DebugLevel) {
+		return
+	}
 	l.log(DebugLevel, fmt.Sprintf(format, args...), nil)
 }
 
@@ -243,6 +246,9 @@ func (l *Logger) Info(msg string) {
 
 // Infof logs a formatted info message
 func (l *Logger) Infof(format string, args ...interface{}) {
+	if !l.IsEnabled(InfoLevel) {
+		return
+	}
 	l.log(InfoLevel, fmt.Sprintf(format, args...), nil)
 }
 
@@ -253,6 +259,9 @@ func (l *Logger) Warn(msg string) {
 
 // Warnf logs a formatted warning message
 func (l *Logger) Warnf(format string, args ...interface{}) {
+	if !l.IsEnabled(WarnLevel) {
+		return
+	}
 	l.log(WarnLevel, fmt.Sprintf(format, args...), nil)
 }
 
@@ -263,6 +272,9 @@ func (l *Logger) Error(msg string) {
 
 // Errorf logs a formatted error message
 func (l *Logger) Errorf(format string, args ...interface{}) {
+	if !l.IsEnabled(ErrorLevel) {
+		return
+	}
 	l.log(ErrorLevel, fmt.Sprintf(format, args...), nil)
 }
 
@@ -316,8 +328,8 @@ func (l *Logger) log(level Level, msg string, err error) {
 		outMu = l.sharedOutputMu()
 	}
 	outMu.Lock()
+	defer outMu.Unlock()
 	_, _ = output.Write(line)
-	outMu.Unlock()
 }
 
 func renderText(timestamp string, level Level, msg, component string, err error, fields map[string]interface{}) []byte {

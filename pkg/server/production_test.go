@@ -1056,6 +1056,12 @@ func TestProductionServerQueryRow(t *testing.T) {
 	_ = row
 }
 
+// logWriterFunc adapts a func to io.Writer so a test can hand the logger a
+// mutex-guarded writer without introducing a named type per call site.
+type logWriterFunc func(p []byte) (int, error)
+
+func (f logWriterFunc) Write(p []byte) (int, error) { return f(p) }
+
 // TestProductionHealthServerRecoverFromPanic pins the defer-recover wrapper
 // added to startHealthServer's goroutine in pkg/server/production.go. The
 // wrapper mirrors pkg/server/server.go's wire-protocol accept-loop pattern
@@ -1073,9 +1079,24 @@ func TestProductionHealthServerRecoverFromPanic(t *testing.T) {
 	defer db.Close()
 
 	const sentinel = "inlined-panic: health server outer goroutine"
+	// The recover wrapper logs from the health-server goroutine
+	// (production.go startHealthServer), so this buffer is written on one
+	// goroutine and read on the test goroutine. logger.Logger serializes only
+	// its OWN writes behind an internal outMu; it cannot serialize this test's
+	// direct reads. Guard both sides with logMu — a plain bytes.Buffer shared
+	// across that goroutine boundary is a data race that fails `make race`.
+	var logMu sync.Mutex
 	logBuf := &bytes.Buffer{}
-	logMu := &sync.Mutex{} // serialize logger writes; logger.Logger has its own internal outMu but capture is for the test assertion
-	_ = logMu
+	logWrite := func(p []byte) (int, error) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return logBuf.Write(p)
+	}
+	logRead := func() string {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return logBuf.String()
+	}
 
 	// One-shot hook: panic with a recognizable sentinel, then clear so the
 	// goroutine exits cleanly via the recover wrapper.
@@ -1092,7 +1113,7 @@ func TestProductionHealthServerRecoverFromPanic(t *testing.T) {
 	config.Lifecycle.EnableSignalHandling = false
 	// logger.New(level, output) writes to the given io.Writer. The recover
 	// wrapper calls ps.logErrorf -> ps.logger.Errorf -> writes here.
-	config.Logger = logger.New(logger.ErrorLevel, logBuf)
+	config.Logger = logger.New(logger.ErrorLevel, logWriterFunc(logWrite))
 
 	ps := NewProductionServer(db, config)
 	if err := ps.Start(); err != nil {
@@ -1112,17 +1133,106 @@ func TestProductionHealthServerRecoverFromPanic(t *testing.T) {
 	// and write to the captured buffer.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if bytes.Contains(logBuf.Bytes(), []byte("health server panicked")) {
+		if bytes.Contains([]byte(logRead()), []byte("health server panicked")) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	got := logBuf.String()
+	got := logRead()
 	if !bytes.Contains([]byte(got), []byte("health server panicked")) {
 		t.Fatalf("expected log to contain panic message, got:\n%s", got)
 	}
 	if !bytes.Contains([]byte(got), []byte(sentinel)) {
 		t.Fatalf("expected log to contain sentinel %q, got:\n%s", sentinel, got)
+	}
+}
+
+// TestProductionServerStopDoesNotHoldLockDuringShutdown pins that Stop() takes
+// ps.mu only for the running-state transition, never across the blocking
+// healthServer.Shutdown drain.
+//
+// Lock-order bug: Shutdown drains by polling until in-flight connections go
+// idle, but the admin-token handlers serving those connections need ps.mu.RLock()
+// to read the token digest (adminTokenRequiredHandler). Holding the write lock
+// across the drain inverted the order — a handler could never finish, so its
+// connection never went idle, so Shutdown always burned its full 5s deadline
+// and returned a spurious "context deadline exceeded", while every ps.mu reader
+// blocked for that whole window.
+//
+// One parked client keeps the drain non-quiescent (net/http waits for it); the
+// subject under test is IsRunning, a plain boolean accessor that must not be
+// held behind the drain. IsHealthy is the paired control: it reads
+// ps.Lifecycle and never takes ps.mu, so it stays prompt either way.
+func TestProductionServerStopDoesNotHoldLockDuringShutdown(t *testing.T) {
+	// The real cost of IsRunning is microseconds; 500ms leaves ample headroom
+	// for a loaded machine while staying far below the ~4.8s failure.
+	const accessorBudget = 500 * time.Millisecond
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close probe listener: %v", err)
+	}
+
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	config := fastProductionConfig()
+	config.HealthAddr = addr
+	config.EnableHealthServer = true
+	config.EnableRateLimiter = false
+	// Load shedding is not under test and its goroutineLimit is
+	// NumGoroutine()*2, which would intermittently shed unrelated requests.
+	config.EnableLoadShedding = false
+	config.Lifecycle.EnableSignalHandling = false
+
+	ps := NewProductionServer(db, config)
+	if err := ps.Start(); err != nil {
+		t.Fatalf("failed to start production server: %v", err)
+	}
+
+	// Leave one client mid-request (header block unterminated) so the health
+	// server cannot reach quiescence and Shutdown polls for its deadline.
+	parked, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial health server: %v", err)
+	}
+	defer parked.Close()
+	if _, err := fmt.Fprintf(parked, "GET /health HTTP/1.1\r\nHost: %s\r\n", addr); err != nil {
+		t.Fatalf("write partial request: %v", err)
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- ps.Stop() }()
+
+	// Let Stop() take ps.mu and enter the Shutdown poll loop.
+	time.Sleep(200 * time.Millisecond)
+
+	start := time.Now()
+	_ = ps.IsRunning()
+	elapsed := time.Since(start)
+
+	// Control: takes no ps.mu, so it must stay prompt regardless.
+	ctrlStart := time.Now()
+	_ = ps.IsHealthy()
+	ctrlElapsed := time.Since(ctrlStart)
+	if ctrlElapsed > accessorBudget {
+		t.Fatalf("control failed: IsHealthy took %v but never takes ps.mu; the test "+
+			"is measuring something other than the Stop() lock hold", ctrlElapsed)
+	}
+
+	<-stopDone
+
+	if elapsed > accessorBudget {
+		t.Fatalf("IsRunning blocked %v during Stop(); Stop() must not hold ps.mu across "+
+			"healthServer.Shutdown or every ps.mu reader stalls for the whole drain",
+			elapsed)
 	}
 }

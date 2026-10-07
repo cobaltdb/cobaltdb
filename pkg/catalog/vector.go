@@ -355,7 +355,14 @@ func (h *HNSWIndex) SearchRangeWithEf(query []float64, radius float64, extraEf i
 
 	// Search at level 0 with the caller's headroom (§1.16 option B: the
 	// pending overlay filters keys afterwards; extraEf compensates).
-	candidates := h.searchLayer(query, entryPoint, h.Ef+max(extraEf, 0), 0)
+	ef := h.Ef
+	extraEf = max(extraEf, 0)
+	if ef > 0 && extraEf > math.MaxInt-ef {
+		ef = math.MaxInt
+	} else {
+		ef += extraEf
+	}
+	candidates := h.searchLayer(query, entryPoint, ef, 0)
 
 	// Filter by radius
 	var results []candidate

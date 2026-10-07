@@ -380,14 +380,9 @@ func (am *AlertManager) GetAlerts(limit int) []Alert {
 	}
 
 	// Return most recent alerts first
-	start := len(am.alerts) - limit
-	if start < 0 {
-		start = 0
-	}
-
 	result := make([]Alert, limit)
 	for i := 0; i < limit; i++ {
-		result[i] = am.alerts[start+i]
+		result[i] = am.alerts[len(am.alerts)-1-i]
 	}
 	return result
 }

@@ -872,7 +872,10 @@ func TestFilterAggregateRows(t *testing.T) {
 	}
 	columns := []ColumnDef{{Name: "id", Type: "INTEGER"}, {Name: "name", Type: "TEXT"}}
 
-	filtered := cat.filterAggregateRows(nil, rows, columns, nil)
+	filtered, ferr := cat.filterAggregateRows(nil, rows, columns, nil)
+	if ferr != nil {
+		t.Fatalf("unexpected error: %v", ferr)
+	}
 	if len(filtered) != 3 {
 		t.Errorf("expected 3 rows, got %d", len(filtered))
 	}

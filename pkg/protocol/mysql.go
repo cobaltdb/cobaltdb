@@ -2631,6 +2631,11 @@ func (c *MySQLClient) handleProcessInfo() error {
 
 // handleResetConnection handles COM_RESET_CONNECTION by clearing session state.
 func (c *MySQLClient) handleResetConnection() error {
+	for _, stmt := range c.stmts {
+		stmt.closeCursor()
+		stmt.clearLongData()
+	}
+	c.longDataTotal = 0
 	c.database = ""
 	c.stmts = make(map[uint32]*preparedStmt)
 	c.nextStmtID = 0

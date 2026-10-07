@@ -286,7 +286,7 @@ type undoEntry struct {
 	indexChanges []indexUndoEntry
 	// DDL undo fields
 	tableDef       *TableDef                  // For undoDropTable: original table definition
-	tableTree      btree.TreeStore            // For undoDropTable: original table B-tree
+	tableTree      btree.TreeStore            // For undoDropTable/direct DML: affected B-tree
 	tableIndexes   map[string]*IndexDef       // For undoDropTable: indexes
 	tableIdxTrees  map[string]btree.TreeStore // For undoDropTable: index B-trees
 	indexDef       *IndexDef                  // For undoDropIndex: original index definition
@@ -1484,12 +1484,18 @@ func resolvePositionalRefs(stmt *query.SelectStmt) *query.SelectStmt {
 					// Replace with the SELECT column expression (unwrap alias if present)
 					col := stmt.Columns[pos-1]
 					if ae, ok := col.(*query.AliasExpr); ok {
-						newGroupBy[i] = ae.Expr
-					} else {
-						newGroupBy[i] = col
+						col = ae.Expr
 					}
-					modified = true
-					continue
+					// A bare "*" select item is not a valid GROUP BY
+					// expression (mirrors the ORDER BY guard): keep the
+					// ordinal literal so the grouped path resolves it
+					// against the expanded output columns — MySQL groups
+					// SELECT * ... GROUP BY 1 by the first table column.
+					if _, isStar := col.(*query.StarExpr); !isStar {
+						newGroupBy[i] = col
+						modified = true
+						continue
+					}
 				}
 			}
 			newGroupBy[i] = gb
@@ -1511,9 +1517,18 @@ func resolvePositionalRefs(stmt *query.SelectStmt) *query.SelectStmt {
 					} else {
 						expr = col
 					}
-					newOrderBy[i] = &query.OrderByExpr{Expr: expr, Desc: ob.Desc, NullsFirst: ob.NullsFirst, NullsSpecified: ob.NullsSpecified}
-					modified = true
-					continue
+					// A bare "*" select item is not a sortable expression:
+					// substituting it makes later evaluation fail with
+					// "invalid use of star expression". Keep the ordinal
+					// literal instead; applyOrderBy's positional resolution
+					// then sorts by the output column at that position (a
+					// SELECT * row is laid out in table column order), which
+					// is what MySQL does for SELECT * ... ORDER BY 1.
+					if _, isStar := expr.(*query.StarExpr); !isStar {
+						newOrderBy[i] = &query.OrderByExpr{Expr: expr, Desc: ob.Desc, NullsFirst: ob.NullsFirst, NullsSpecified: ob.NullsSpecified}
+						modified = true
+						continue
+					}
 				}
 			}
 			newOrderBy[i] = ob

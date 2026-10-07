@@ -201,6 +201,10 @@ func calculateDelay(attempt int, config *RetryConfig) time.Duration {
 	if delay < 0 {
 		delay = 0
 	}
+	// float64 rounds MaxInt64 up; saturate before converting to avoid overflow.
+	if delay >= float64(math.MaxInt64) {
+		return time.Duration(math.MaxInt64)
+	}
 
 	return time.Duration(delay)
 }

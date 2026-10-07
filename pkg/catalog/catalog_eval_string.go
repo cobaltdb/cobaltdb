@@ -180,10 +180,10 @@ func runeSubstr(str string, start int, hasLen bool, length int) string {
 	if length < 0 {
 		return ""
 	}
-	end := startIdx + length
-	if end > n {
-		end = n
+	if length > n-startIdx {
+		length = n - startIdx
 	}
+	end := startIdx + length
 	return string(runes[startIdx:end])
 }
 

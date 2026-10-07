@@ -93,6 +93,7 @@ type SlowQueryLog struct {
 	thresholdNanos atomic.Int64
 	maxEntries     int
 	entries        []SlowQueryEntry
+	totalQueries   uint64 // lifetime count, guarded by mu; unaffected by retention/Clear
 	mu             sync.RWMutex
 	logFile        string
 
@@ -142,6 +143,7 @@ func (s *SlowQueryLog) Log(sql string, duration time.Duration, rowsAffected, row
 
 	// In-memory buffer under s.mu only — no file IO inside this lock.
 	s.mu.Lock()
+	s.totalQueries++
 	s.entries = append(s.entries, entry)
 	if len(s.entries) > s.maxEntries {
 		s.entries = s.entries[len(s.entries)-s.maxEntries:]
@@ -438,7 +440,14 @@ func (s *SlowQueryLog) GetEntries(limit int) []SlowQueryEntry {
 	return result
 }
 
-// GetStats returns slow query statistics
+// totalLoggedQueries returns the lifetime count for cumulative exporters.
+func (s *SlowQueryLog) totalLoggedQueries() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.totalQueries
+}
+
+// GetStats returns statistics for the retained slow query entries.
 func (s *SlowQueryLog) GetStats() (total int, avgDuration time.Duration) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -489,6 +490,9 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	if c.closed {
 		return nil, ErrConnClosed
 	}
+	if opts.ReadOnly {
+		return nil, errors.New("read-only transactions are not supported")
+	}
 	_, err := c.db.Exec(ctx, "BEGIN")
 	if err != nil {
 		return nil, err
@@ -739,11 +743,19 @@ func (ni *NullInt64) Scan(value interface{}) error {
 	case int:
 		ni.Int64 = int64(v)
 	case float64:
+		// MaxInt64 rounds up to 2^63 as a float, so the upper bound is exclusive.
+		if math.Trunc(v) != v || v < -0x1p63 || v >= 0x1p63 {
+			return fmt.Errorf("cannot scan float64 %v into NullInt64: not a representable integer", v)
+		}
 		ni.Int64 = int64(v)
 	case string:
 		var err error
 		ni.Int64, err = strconv.ParseInt(v, 10, 64)
 		return err
+	case []byte:
+		return ni.Scan(string(v))
+	default:
+		return fmt.Errorf("cannot scan %T into NullInt64", value)
 	}
 	return nil
 }
@@ -778,6 +790,10 @@ func (nt *NullTime) Scan(value interface{}) error {
 			return err
 		}
 		nt.Time = t
+	case []byte:
+		return nt.Scan(string(v))
+	default:
+		return fmt.Errorf("cannot scan %T into NullTime", value)
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/cobaltdb/cobaltdb/pkg/query"
 	"math"
 	"math/big"
+	"math/bits"
 	"strconv"
 	"strings"
 	"time"
@@ -2400,10 +2401,15 @@ func isIntegerType(v interface{}) bool {
 
 func addValues(a, b interface{}) (interface{}, error) {
 	// Integer operands are added in the int64 domain to avoid float64 precision
-	// loss above 2^53 (mirrors the parallel evalBinaryExprValue path).
+	// loss above 2^53 (mirrors the parallel evalBinaryExprValue path). On int64
+	// overflow fall back to float64 rather than wrapping (same contract as
+	// sumAccumulator): MaxInt64 + 1 must not silently become MinInt64.
 	if ai, aok := wholeInt64(a); aok {
 		if bi, bok := wholeInt64(b); bok {
-			return ai + bi, nil
+			if s, ok := int64AddChecked(ai, bi); ok {
+				return s, nil
+			}
+			return float64(ai) + float64(bi), nil
 		}
 	}
 	aNum, aOk := toFloat64(a)
@@ -2414,10 +2420,25 @@ func addValues(a, b interface{}) (interface{}, error) {
 	return aNum + bNum, nil
 }
 
+// int64AddChecked returns ai+bi and true, or false when the true sum is not
+// representable as int64. Signed overflow happens only when both operands share
+// a sign and the wrapped result's sign disagrees: two non-negative operands
+// summing to a negative, or two negative operands summing to a non-negative.
+func int64AddChecked(ai, bi int64) (int64, bool) {
+	sum := ai + bi
+	if (ai >= 0 && bi >= 0 && sum < 0) || (ai < 0 && bi < 0 && sum >= 0) {
+		return 0, false
+	}
+	return sum, true
+}
+
 func subtractValues(a, b interface{}) (interface{}, error) {
 	if ai, aok := wholeInt64(a); aok {
 		if bi, bok := wholeInt64(b); bok {
-			return ai - bi, nil
+			if d, ok := int64SubChecked(ai, bi); ok {
+				return d, nil
+			}
+			return float64(ai) - float64(bi), nil
 		}
 	}
 	aNum, aOk := toFloat64(a)
@@ -2428,10 +2449,59 @@ func subtractValues(a, b interface{}) (interface{}, error) {
 	return aNum - bNum, nil
 }
 
+// int64SubChecked returns ai-bi and true, or false when the true difference is
+// not representable as int64. Overflow requires opposite-sign operands whose
+// wrapped result's sign disagrees with the minuend: a non-negative minuend
+// minus a negative subtrahend cannot go negative, and a negative minuend minus
+// a non-negative subtrahend cannot go non-negative.
+func int64SubChecked(ai, bi int64) (int64, bool) {
+	d := ai - bi
+	if (ai >= 0 && bi < 0 && d < 0) || (ai < 0 && bi >= 0 && d >= 0) {
+		return 0, false
+	}
+	return d, true
+}
+
+// int64Abs returns |v| as uint64 without overflowing for MinInt64.
+func int64Abs(v int64) uint64 {
+	if v < 0 {
+		return uint64(-(v + 1)) + 1
+	}
+	return uint64(v)
+}
+
+// int64MulChecked returns ai*bi and true, or false when the true product is not
+// representable as int64. The magnitudes are multiplied in 128 bits (a
+// division-based check is unusable because MinInt64 / -1 is itself an overflow
+// trap in Go). Only a magnitude of exactly 2^63 is representable, and only as
+// the negative value MinInt64.
+func int64MulChecked(ai, bi int64) (int64, bool) {
+	hi, lo := bits.Mul64(int64Abs(ai), int64Abs(bi))
+	const limit = uint64(1) << 63 // |MinInt64|
+	if hi != 0 || lo > limit {
+		return 0, false
+	}
+	negative := (ai < 0) != (bi < 0)
+	if lo == limit {
+		if !negative {
+			return 0, false // +2^63 is not representable
+		}
+		return math.MinInt64, true
+	}
+	product := int64(lo)
+	if negative {
+		product = -product
+	}
+	return product, true
+}
+
 func multiplyValues(a, b interface{}) (interface{}, error) {
 	if ai, aok := wholeInt64(a); aok {
 		if bi, bok := wholeInt64(b); bok {
-			return ai * bi, nil
+			if p, ok := int64MulChecked(ai, bi); ok {
+				return p, nil
+			}
+			return float64(ai) * float64(bi), nil
 		}
 	}
 	aNum, aOk := toFloat64(a)

@@ -246,11 +246,14 @@ func (p *Parser) parseTemporalExpr() (*TemporalExpr, error) {
 }
 
 func (p *Parser) parseIfNotExists() bool {
-	if p.match(TokenIf) {
-		if p.match(TokenNot) {
-			_ = p.match(TokenExists)
-			return true
-		}
+	// Leave incomplete clauses unconsumed so the caller reports a syntax
+	// error instead of silently treating them as IF NOT EXISTS.
+	if p.current().Type == TokenIf && p.pos+2 < len(p.tokens) &&
+		p.tokens[p.pos+1].Type == TokenNot && p.tokens[p.pos+2].Type == TokenExists {
+		p.advance()
+		p.advance()
+		p.advance()
+		return true
 	}
 	return false
 }

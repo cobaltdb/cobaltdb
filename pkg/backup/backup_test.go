@@ -1664,6 +1664,7 @@ func TestWriteDeltaRecordRejectsShortDataWriteDefault(t *testing.T) {
 
 func TestCleanupOldBackups(t *testing.T) {
 	config := DefaultConfig()
+	config.BackupDir = t.TempDir()
 	config.MaxBackups = 2
 	config.RetentionPeriod = 0 // Disable retention for this test
 
@@ -1699,6 +1700,54 @@ func TestCleanupOldBackups(t *testing.T) {
 		if b.ID == "backup_1" {
 			t.Error("Oldest backup should have been removed")
 		}
+	}
+}
+
+func TestCreateBackupMissingMetadataDirectory(t *testing.T) {
+	for _, prior := range []bool{false, true} {
+		t.Run(fmt.Sprint(prior), func(t *testing.T) {
+			root := t.TempDir()
+			source := filepath.Join(root, "source.db")
+			if err := os.WriteFile(source, []byte("database"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(root, "backups")
+			mgr := NewManager(&Config{BackupDir: dir, Verify: true}, &MockDatabase{dbPath: source})
+			wantCount := 0
+			if prior {
+				if _, err := mgr.CreateBackup(t.Context(), TypeFull); err != nil {
+					t.Fatal(err)
+				}
+				wantCount = 1
+			}
+			var renameErr error
+			mgr.OnVerify = func(_ *Backup, valid bool) {
+				if !valid {
+					t.Error("backup did not verify before failure injection")
+				}
+				renameErr = os.Rename(dir, dir+".moved")
+			}
+			result, err := mgr.CreateBackup(t.Context(), TypeFull)
+			if renameErr != nil {
+				t.Fatal(renameErr)
+			}
+			if err == nil || !strings.Contains(err.Error(), "failed to save backup metadata") || result != nil {
+				t.Fatalf("missing metadata directory: result=%v error=%v", result, err)
+			}
+			if got := len(mgr.ListBackups()); got != wantCount {
+				t.Fatalf("listed backups = %d, want %d", got, wantCount)
+			}
+			if mgr.IsBackupInProgress() {
+				t.Fatal("backup remained active after failed metadata save")
+			}
+			if err := os.Rename(dir+".moved", dir); err != nil {
+				t.Fatal(err)
+			}
+			mgr.OnVerify = nil
+			if _, err := mgr.CreateBackup(t.Context(), TypeFull); err != nil {
+				t.Fatalf("retry: %v", err)
+			}
+		})
 	}
 }
 

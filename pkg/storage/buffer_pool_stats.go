@@ -131,7 +131,7 @@ func (sc *bufferPoolStatsCollector) getAvgReadTime() float64 {
 	for _, t := range sc.readTimes {
 		sum += t
 	}
-	return float64(sum.Milliseconds()) / float64(len(sc.readTimes))
+	return float64(sum) / float64(time.Millisecond) / float64(len(sc.readTimes))
 }
 
 // getAvgWriteTime returns average write time in milliseconds
@@ -147,7 +147,7 @@ func (sc *bufferPoolStatsCollector) getAvgWriteTime() float64 {
 	for _, t := range sc.writeTimes {
 		sum += t
 	}
-	return float64(sum.Milliseconds()) / float64(len(sc.writeTimes))
+	return float64(sum) / float64(time.Millisecond) / float64(len(sc.writeTimes))
 }
 
 // getHitRatio returns the cache hit ratio

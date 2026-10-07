@@ -16,6 +16,7 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 
 	// Store original views temporarily
 	originalViews := make(map[string]*query.SelectStmt)
+	seenCTENames := make(map[string]bool)
 
 	// Initialize CTE results map if needed
 	if c.cteResults == nil {
@@ -23,18 +24,31 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 	}
 	// Track which CTE results we create so we can clean up
 	var createdCTEResults []string
+	var createdCTEViews []string
+	// CTE views and materialized results belong to this statement, including
+	// when a later CTE fails before the main SELECT can run.
+	defer func() {
+		for _, name := range createdCTEViews {
+			if orig, exists := originalViews[name]; exists {
+				c.views[name] = orig
+			} else {
+				delete(c.views, name)
+			}
+		}
+		for _, name := range createdCTEResults {
+			delete(c.cteResults, name)
+		}
+	}()
 
 	// Register CTEs as temporary views or execute recursive CTEs
 	for _, cte := range stmt.CTEs {
 		cteName := toLowerFast(cte.Name)
 
 		// Check for duplicates
-		if _, exists := originalViews[cte.Name]; exists {
-			for name, view := range originalViews {
-				c.views[name] = view
-			}
+		if seenCTENames[cteName] {
 			return nil, nil, fmt.Errorf("duplicate CTE name: %s", cte.Name)
 		}
+		seenCTENames[cteName] = true
 
 		// Save original view if exists
 		if orig, exists := c.views[cte.Name]; exists {
@@ -48,9 +62,6 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 				err := c.executeRecursiveCTE(cte.Name, cteName, cte.Columns, unionStmt, args)
 				if err != nil {
 					// Clean up on error
-					for _, name := range createdCTEResults {
-						delete(c.cteResults, name)
-					}
 					delete(c.cteResults, cteName)
 					return nil, nil, fmt.Errorf("recursive CTE %s: %w", cte.Name, err)
 				}
@@ -61,15 +72,12 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 
 		// Non-recursive CTE: register as a view or execute as union
 		if selectQuery, ok := cte.Query.(*query.SelectStmt); ok {
+			createdCTEViews = append(createdCTEViews, cte.Name)
 			c.views[cte.Name] = selectQuery
 			// Materialize CTE results so subsequent CTEs can reference them
 			if len(stmt.CTEs) > 1 {
 				cols, rows, err := c.selectLocked(selectQuery, args)
 				if err != nil {
-					// Clean up on error
-					for _, name := range createdCTEResults {
-						delete(c.cteResults, name)
-					}
 					return nil, nil, fmt.Errorf("CTE %s: %w", cte.Name, err)
 				}
 				c.cteResults[cteName] = &cteResultSet{columns: cols, rows: rows}
@@ -79,10 +87,6 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 			// Execute UNION query and store results in cteResults
 			cols, rows, err := c.executeCTEUnion(unionQuery, args)
 			if err != nil {
-				// Clean up on error
-				for _, name := range createdCTEResults {
-					delete(c.cteResults, name)
-				}
 				return nil, nil, fmt.Errorf("CTE %s: %w", cte.Name, err)
 			}
 			if len(cols) == 0 && len(cte.Columns) > 0 {
@@ -98,19 +102,6 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 
 	// Execute the main query (already holding lock)
 	columns, rows, err := c.selectLocked(stmt.Select, args)
-
-	// Restore original views and clean up CTE results
-	for _, cte := range stmt.CTEs {
-		name := cte.Name
-		if orig, exists := originalViews[name]; exists {
-			c.views[name] = orig
-		} else {
-			delete(c.views, name)
-		}
-	}
-	for _, name := range createdCTEResults {
-		delete(c.cteResults, name)
-	}
 
 	return columns, rows, err
 }

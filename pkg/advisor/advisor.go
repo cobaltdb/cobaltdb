@@ -72,12 +72,24 @@ func (a *IndexAdvisor) analyzeSelect(stmt *query.SelectStmt) {
 	if stmt.From != nil {
 		primaryTable = stmt.From.Name
 	}
+	aliases := make(map[string]string)
+	addAlias := func(table *query.TableRef) {
+		if table != nil && table.Alias != "" {
+			aliases[strings.ToLower(table.Alias)] = table.Name
+		}
+	}
+	addAlias(stmt.From)
+	for _, join := range stmt.Joins {
+		addAlias(join.Table)
+	}
 
 	// Helper to record columns, mapping unqualified identifiers to primary table.
 	recordCols := func(cols map[string][]string, counter func(*ColumnPattern)) {
 		for tableName, colNames := range cols {
 			if tableName == "" && primaryTable != "" {
 				tableName = primaryTable
+			} else if name, ok := aliases[strings.ToLower(tableName)]; ok {
+				tableName = name
 			}
 			if _, ok := tables[tableName]; !ok && tableName != "" {
 				tables[tableName] = true

@@ -20,7 +20,7 @@ func ToUpperFast(s string) string {
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(s[i:])
-		if unicode.IsLower(r) || unicode.IsTitle(r) || unicode.ToUpper(r) != r {
+		if (r == utf8.RuneError && size == 1) || unicode.IsLower(r) || unicode.IsTitle(r) || unicode.ToUpper(r) != r {
 			return strings.ToUpper(s)
 		}
 		i += size - 1
@@ -41,7 +41,7 @@ func ToLowerFast(s string) string {
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(s[i:])
-		if unicode.IsUpper(r) || unicode.IsTitle(r) || unicode.ToLower(r) != r {
+		if (r == utf8.RuneError && size == 1) || unicode.IsUpper(r) || unicode.IsTitle(r) || unicode.ToLower(r) != r {
 			return strings.ToLower(s)
 		}
 		i += size - 1

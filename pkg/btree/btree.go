@@ -678,6 +678,7 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 
 	keyCopies := make([]string, len(keys))
 	valCopies := make([][]byte, len(keys))
+	lastIndex := make(map[string]int, len(keys))
 	for i, key := range keys {
 		if len(key) == 0 {
 			return ErrInvalidKey
@@ -689,6 +690,7 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 			return ErrInvalidValue
 		}
 		keyCopies[i] = string(key)
+		lastIndex[keyCopies[i]] = i
 		valCopies[i] = getValueBuf(len(values[i]))
 		copy(valCopies[i], values[i])
 	}
@@ -699,6 +701,10 @@ func (t *BTree) PutBatch(keys [][]byte, values [][]byte) error {
 	}
 	shardWorks := make([]shardWork, numShards)
 	for i, kc := range keyCopies {
+		// Only the final write to each key contributes to the batch's size.
+		if lastIndex[kc] != i {
+			continue
+		}
 		idx := shardIndex(kc)
 		shardWorks[idx].indices = append(shardWorks[idx].indices, i)
 	}

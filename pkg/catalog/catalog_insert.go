@@ -31,6 +31,11 @@ type fkSnapshot struct {
 	tree  btree.TreeStore
 }
 
+type tableTreeSnapshot struct {
+	name string
+	tree btree.TreeStore
+}
+
 // insertSnapshot holds all Catalog metadata needed for the buffered INSERT path.
 // It is built under a brief Catalog.mu RLock and then used without the lock.
 type insertSnapshot struct {
@@ -40,6 +45,7 @@ type insertSnapshot struct {
 	indexes  []indexSnapshot
 	triggers []*query.CreateTriggerStmt
 	fkRefs   map[string]fkSnapshot
+	pkTrees  []tableTreeSnapshot
 }
 
 // buildInsertSnapshot captures table tree, indexes, triggers, and FK references
@@ -54,6 +60,13 @@ func (c *Catalog) buildInsertSnapshot(table *TableDef, stmt *query.InsertStmt, a
 	}
 	snap.tree = tree
 	snap.treeName = treeName
+	if table.Partition != nil {
+		for _, name := range table.getPartitionTreeNames() {
+			if partitionTree, exists := c.tableTrees[name]; exists {
+				snap.pkTrees = append(snap.pkTrees, tableTreeSnapshot{name: name, tree: partitionTree})
+			}
+		}
+	}
 
 	// Indexes for this table.
 	for idxName, idxDef := range c.indexes {
@@ -467,8 +480,8 @@ func (c *Catalog) checkForeignKeyConstraintsSnapshot(table *TableDef, rowValues 
 
 // resolvePKConflictSnapshot is the lock-free variant of resolvePKConflict.
 // It is identical because it only uses the provided tree and table.
-func (c *Catalog) resolvePKConflictSnapshot(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key string) (bool, error) {
-	return c.resolvePKConflict(tree, table, stmt, key)
+func (c *Catalog) resolvePKConflictSnapshot(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key string, pkTrees ...tableTreeSnapshot) (bool, error) {
+	return c.resolvePKConflict(tree, table, stmt, key, pkTrees...)
 }
 
 // validateInsertRowSnapshot is the lock-free variant of validateInsertRow.
@@ -706,7 +719,7 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 			}
 		}
 
-		if skip, err := c.resolvePKConflictSnapshot(tree, table, stmt, key); err != nil {
+		if skip, err := c.resolvePKConflictSnapshot(tree, table, stmt, key, snap.pkTrees...); err != nil {
 			insertErr = err
 			break
 		} else if skip {
@@ -720,13 +733,25 @@ func (c *Catalog) insertBufferedLocked(ctx context.Context, stmt *query.InsertSt
 			break
 		}
 
-		var existingValue []byte
-		if bt, ok := tree.(*btree.BTree); ok {
-			existingValue, _ = bt.GetString(key)
+		if table.Partition != nil {
+			for _, partitionTree := range snap.pkTrees {
+				var existingValue []byte
+				if bt, ok := partitionTree.tree.(*btree.BTree); ok {
+					existingValue, _ = bt.GetString(key)
+				} else {
+					existingValue, _ = partitionTree.tree.Get([]byte(key))
+				}
+				c.recordManagerReadTs(ts, partitionTree.name, key, existingValue)
+			}
 		} else {
-			existingValue, _ = tree.Get([]byte(key))
+			var existingValue []byte
+			if bt, ok := tree.(*btree.BTree); ok {
+				existingValue, _ = bt.GetString(key)
+			} else {
+				existingValue, _ = tree.Get([]byte(key))
+			}
+			c.recordManagerReadTs(ts, snap.treeName, key, existingValue)
 		}
-		c.recordManagerReadTs(ts, snap.treeName, key, existingValue)
 
 		idxUpdates, skipRow, idxErr := c.buildBufferedInsertIndexesSnapshot(table, stmt, key, rowValues, ts, snap.indexes)
 		if idxErr != nil {
@@ -1031,7 +1056,29 @@ func (c *Catalog) Insert(ctx context.Context, stmt *query.InsertStmt, args []int
 // if the existing row is soft-deleted and applying the statement conflict action
 // (IGNORE or REPLACE). Returns (true, nil) to skip the row, (false, nil) to
 // proceed with insert, or (false, error) on failure.
-func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key string) (bool, error) {
+func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt *query.InsertStmt, key string, partitionTrees ...tableTreeSnapshot) (bool, error) {
+	// PRIMARY KEY uniqueness is table-wide, including partitioned tables.
+	// Pending writes are keyed by partition tree name, so check every partition
+	// rather than only the logical table name.
+	if table.Partition != nil {
+		if ts := c.getCurrentTxn(); ts != nil && len(ts.pendingWrites) > 0 {
+			pending := ts.getPendingWriteMap()
+			for _, treeName := range table.getPartitionTreeNames() {
+				pw, exists := pending[treeName][key]
+				if !exists {
+					continue
+				}
+				if vrow, decErr := decodeVersionedRow(pw.Value, len(table.Columns)); decErr == nil && vrow.Version.DeletedAt > 0 {
+					continue
+				}
+				if stmt.ConflictAction == query.ConflictIgnore {
+					return true, nil
+				}
+				return false, fmt.Errorf("UNIQUE constraint failed: duplicate primary key value")
+			}
+		}
+	}
+
 	// Read-your-writes: a pending write in this txn supersedes the committed tree.
 	// If the key was deleted earlier in this same txn, its PK is free for re-insert
 	// even though the committed tree still holds the (not-yet-applied) live row.
@@ -1047,15 +1094,52 @@ func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt 
 		}
 	}
 
+	conflictTree := tree
 	var existingData []byte
-	var err error
-	if bt, ok := tree.(*btree.BTree); ok {
-		existingData, err = bt.GetString(key)
+	if table.Partition == nil {
+		var err error
+		if bt, ok := tree.(*btree.BTree); ok {
+			existingData, err = bt.GetString(key)
+		} else {
+			existingData, err = tree.Get([]byte(key))
+		}
+		if err != nil {
+			return false, nil // Key does not exist, proceed with insert
+		}
 	} else {
-		existingData, err = tree.Get([]byte(key))
-	}
-	if err != nil {
-		return false, nil // Key does not exist, proceed with insert
+		if len(partitionTrees) == 0 {
+			for _, treeName := range table.getPartitionTreeNames() {
+				if candidate, exists := c.tableTrees[treeName]; exists {
+					partitionTrees = append(partitionTrees, tableTreeSnapshot{name: treeName, tree: candidate})
+				}
+			}
+		}
+		for _, partitionTree := range partitionTrees {
+			candidate := partitionTree.tree
+			if candidate == nil {
+				continue
+			}
+			var data []byte
+			var err error
+			if bt, ok := candidate.(*btree.BTree); ok {
+				data, err = bt.GetString(key)
+			} else {
+				data, err = candidate.Get([]byte(key))
+			}
+			if err != nil {
+				continue
+			}
+			vrow, decErr := decodeVersionedRow(data, len(table.Columns))
+			if decErr == nil && vrow.Version.DeletedAt > 0 {
+				continue
+			}
+			existingData = data
+			conflictTree = candidate
+			break
+		}
+		if existingData == nil {
+			return false, nil
+		}
 	}
 
 	vrow, decErr := decodeVersionedRow(existingData, len(table.Columns))
@@ -1086,7 +1170,7 @@ func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt 
 				}
 			}
 		}
-		if err := deleteRowKey(tree, []byte(key)); err != nil {
+		if err := deleteRowKey(conflictTree, []byte(key)); err != nil {
 			if restoreErr := restoreDeletedIndexEntries(deletedIndexEntries); restoreErr != nil {
 				return false, fmt.Errorf("failed to delete row for REPLACE: %w; failed to restore deleted index entries: %v", err, restoreErr)
 			}
@@ -1109,6 +1193,7 @@ func (c *Catalog) resolvePKConflict(tree btree.TreeStore, table *TableDef, stmt 
 			c.appendUndoEntry(undoEntry{
 				action:       undoDelete,
 				tableName:    stmt.Table,
+				tableTree:    conflictTree,
 				key:          append([]byte(nil), key...),
 				oldValue:     append([]byte(nil), existingData...),
 				indexChanges: undoIdx,
@@ -1899,6 +1984,7 @@ func (c *Catalog) applyInsertRowDirect(
 		c.appendUndoEntry(undoEntry{
 			action:       undoInsert,
 			tableName:    stmt.Table,
+			tableTree:    tree,
 			key:          keyCopy,
 			indexChanges: idxChanges,
 		})
@@ -2319,10 +2405,8 @@ func (c *Catalog) checkRowConstraints(table *TableDef, rowValues []interface{}, 
 		if err != nil {
 			return fmt.Errorf("CHECK constraint failed: %w", err)
 		}
-		if result != nil {
-			if resultBool, ok := result.(bool); ok && !resultBool {
-				return fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
-			}
+		if result != nil && !toBool(result) {
+			return fmt.Errorf("CHECK constraint failed for column: %s", col.Name)
 		}
 	}
 	for _, check := range table.Checks {
@@ -2333,13 +2417,11 @@ func (c *Catalog) checkRowConstraints(table *TableDef, rowValues []interface{}, 
 		if err != nil {
 			return fmt.Errorf("CHECK constraint failed: %w", err)
 		}
-		if result != nil {
-			if resultBool, ok := result.(bool); ok && !resultBool {
-				if check.Name != "" {
-					return fmt.Errorf("CHECK constraint failed: %s", check.Name)
-				}
-				return fmt.Errorf("CHECK constraint failed")
+		if result != nil && !toBool(result) {
+			if check.Name != "" {
+				return fmt.Errorf("CHECK constraint failed: %s", check.Name)
 			}
+			return fmt.Errorf("CHECK constraint failed")
 		}
 	}
 	return nil

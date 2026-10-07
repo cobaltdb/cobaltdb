@@ -55,7 +55,7 @@ func (l *Lexer) peekChar() byte {
 	return l.input[l.readPos]
 }
 
-func (l *Lexer) skipWhitespaceAndComments() {
+func (l *Lexer) skipWhitespaceAndComments() bool {
 	for {
 		for l.ch == ' ' || l.ch == '\t' || l.ch == '\n' || l.ch == '\r' {
 			l.readChar()
@@ -71,7 +71,7 @@ func (l *Lexer) skipWhitespaceAndComments() {
 			l.readChar() // skip *
 			for {
 				if l.ch == 0 {
-					return
+					return false
 				}
 				if l.ch == '*' && l.peekChar() == '/' {
 					l.readChar() // skip *
@@ -82,14 +82,16 @@ func (l *Lexer) skipWhitespaceAndComments() {
 			}
 			continue
 		}
-		return
+		return true
 	}
 }
 
 // NextToken returns the next token from the input
 func (l *Lexer) NextToken() Token {
 	var tok Token
-	l.skipWhitespaceAndComments()
+	if !l.skipWhitespaceAndComments() {
+		return Token{Type: TokenIllegal, Literal: "unterminated block comment", Line: l.line, Column: l.column}
+	}
 
 	tok.Line = l.line
 	tok.Column = l.column

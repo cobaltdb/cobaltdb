@@ -384,6 +384,25 @@ func matchesCSVPredicate(cell interface{}, predicate csvPredicate) bool {
 		}
 	}
 	right := fmt.Sprint(predicate.value)
+	// Match the engine's boolean storage/comparison representation.
+	if boolean, ok := predicate.value.(bool); ok {
+		right = "0"
+		if boolean {
+			right = "1"
+		}
+	}
+	// CSV cells are strings: string parameters must retain TEXT semantics.
+	// Defer ordering to the engine rather than dropping rows numerically.
+	if _, ok := predicate.value.(string); ok {
+		switch predicate.operator {
+		case "=":
+			return left == right
+		case "!=":
+			return left != right
+		default:
+			return true
+		}
+	}
 	// Numeric-aware comparison: the engine materializes CSV cells as raw strings
 	// and re-applies WHERE with numeric coercion, so a cell "30.50" numerically
 	// equals 30.5. Compare numerically whenever BOTH sides parse as numbers;

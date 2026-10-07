@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"reflect"
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
@@ -83,6 +84,9 @@ type CompressedBackend struct {
 
 // NewCompressedBackend creates a compressed backend wrapper.
 func NewCompressedBackend(backend Backend, config *CompressionConfig) (*CompressedBackend, error) {
+	if backend == nil || (reflect.ValueOf(backend).Kind() == reflect.Ptr && reflect.ValueOf(backend).IsNil()) {
+		return nil, errors.New("compression backend is nil")
+	}
 	if config == nil {
 		config = DefaultCompressionConfig()
 	} else {
@@ -92,10 +96,14 @@ func NewCompressedBackend(backend Backend, config *CompressionConfig) (*Compress
 		}
 		config = normalized
 	}
+	logicalSize := backend.Size()
+	if config.Enabled {
+		logicalSize = compressedLogicalSize(logicalSize)
+	}
 	cb := &CompressedBackend{
 		backend:     backend,
 		config:      config,
-		logicalSize: compressedLogicalSize(backend.Size()),
+		logicalSize: logicalSize,
 	}
 	cb.writeBufPool.New = func() interface{} {
 		b := make([]byte, PageSize)

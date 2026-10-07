@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -79,6 +80,37 @@ type JobSnapshot struct {
 	RunCount  int64         `json:"run_count"`
 	FailCount int64         `json:"fail_count"`
 	LastError string        `json:"last_error,omitempty"`
+}
+
+// MarshalJSON reports the interval in milliseconds while preserving the Go
+// snapshot's time.Duration field.
+func (s JobSnapshot) MarshalJSON() ([]byte, error) {
+	type snapshotAlias JobSnapshot
+	return json.Marshal(struct {
+		snapshotAlias
+		Interval int64 `json:"interval_ms"`
+	}{snapshotAlias: snapshotAlias(s), Interval: s.Interval.Milliseconds()})
+}
+
+// UnmarshalJSON converts the reported milliseconds back to a Go duration.
+func (s *JobSnapshot) UnmarshalJSON(data []byte) error {
+	type snapshotAlias JobSnapshot
+	wire := struct {
+		*snapshotAlias
+		Interval *int64 `json:"interval_ms"`
+	}{snapshotAlias: (*snapshotAlias)(s)}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.Interval != nil {
+		const maxMillis = int64((1<<63 - 1) / time.Millisecond)
+		const minMillis = int64((-1 << 63) / time.Millisecond)
+		if *wire.Interval > maxMillis || *wire.Interval < minMillis {
+			return fmt.Errorf("interval_ms is out of duration range")
+		}
+		s.Interval = time.Duration(*wire.Interval) * time.Millisecond
+	}
+	return nil
 }
 
 // Snapshot returns a snapshot of the job.

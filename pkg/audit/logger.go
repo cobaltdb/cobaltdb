@@ -437,6 +437,14 @@ func (al *Logger) Log(eventType EventType, user, action string, opts ...LogOptio
 
 	al.maskSensitiveData(event)
 
+	// Options may finish after Close has drained the writer. Serialize the
+	// final liveness check and submission with Close's producer shutdown.
+	al.closeMu.RLock()
+	defer al.closeMu.RUnlock()
+	if al.closed {
+		return
+	}
+
 	select {
 	case al.eventChan <- event:
 	default:
@@ -603,6 +611,8 @@ func (al *Logger) renderEventLine(event *Event) (string, string, error) {
 			event.Action,
 			event.Status,
 		)
+		line = strings.ReplaceAll(line, "\r", "\\r")
+		line = strings.ReplaceAll(line, "\n", "\\n")
 		if event.Query != "" {
 			line += fmt.Sprintf(" query=%q", event.Query)
 		}

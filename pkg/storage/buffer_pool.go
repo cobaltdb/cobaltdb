@@ -140,6 +140,10 @@ type BufferPool struct {
 	initErr    error
 	closed     bool
 
+	// Public page writes hold a read lock; disposal holds the write lock.
+	// When both locks are needed, acquire mu before flushLifecycleMu.
+	flushLifecycleMu sync.RWMutex
+
 	// Background flusher
 	flushInterval time.Duration
 	flushDone     chan struct{}
@@ -320,6 +324,10 @@ func (bp *BufferPool) NewPage(pageType PageType) (*CachedPage, error) {
 		return nil, ErrBufferPoolClosed
 	}
 
+	if !validPageType(pageType) {
+		return nil, fmt.Errorf("%w: %d", ErrInvalidPageType, pageType)
+	}
+
 	// Use next available page ID
 	if bp.nextPageID == 0 {
 		return nil, ErrPageIDExhausted
@@ -360,6 +368,16 @@ func (bp *BufferPool) NewPage(pageType PageType) (*CachedPage, error) {
 // SetDirty(true) and silently drop the newer version (lost update). On write
 // failure the bit is restored so the page is retried.
 func (bp *BufferPool) FlushPage(page *CachedPage) error {
+	bp.flushLifecycleMu.RLock()
+	defer bp.flushLifecycleMu.RUnlock()
+	if bp.closed {
+		return ErrBufferPoolClosed
+	}
+	return bp.flushPage(page)
+}
+
+// flushPage requires bp.mu or flushLifecycleMu to prevent disposal during I/O.
+func (bp *BufferPool) flushPage(page *CachedPage) error {
 	// Serialize snapshots and writes so an older flush cannot overwrite a newer one.
 	page.flushMu.Lock()
 	defer page.flushMu.Unlock()
@@ -391,7 +409,7 @@ func (bp *BufferPool) FlushAll() error {
 	}
 
 	for _, page := range bp.pages {
-		if err := bp.FlushPage(page); err != nil {
+		if err := bp.flushPage(page); err != nil {
 			return err
 		}
 	}
@@ -506,7 +524,7 @@ func (bp *BufferPool) evict() error {
 					elem = elem.Prev()
 					continue
 				}
-				if err := bp.FlushPage(page); err != nil {
+				if err := bp.flushPage(page); err != nil {
 					return err
 				}
 			}
@@ -527,11 +545,13 @@ func (bp *BufferPool) Close() error {
 	bp.stopBackgroundFlusher()
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
+	bp.flushLifecycleMu.Lock()
+	defer bp.flushLifecycleMu.Unlock()
 	if bp.closed {
 		return nil
 	}
 	for _, page := range bp.pages {
-		if err := bp.FlushPage(page); err != nil {
+		if err := bp.flushPage(page); err != nil {
 			return err
 		}
 	}
@@ -551,6 +571,8 @@ func (bp *BufferPool) DiscardAll() {
 	bp.stopBackgroundFlusher()
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
+	bp.flushLifecycleMu.Lock()
+	defer bp.flushLifecycleMu.Unlock()
 	if bp.closed {
 		return
 	}

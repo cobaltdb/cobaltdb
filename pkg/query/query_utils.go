@@ -607,7 +607,8 @@ func exprToStringImpl(expr Expression, exported bool) string {
 	case *StringLiteral:
 		return "'" + strings.ReplaceAll(e.Value, "'", "''") + "'"
 	case *NumberLiteral:
-		return fmt.Sprintf("%v", e.Value)
+		value, _ := e.Evaluate(nil)
+		return fmt.Sprintf("%v", value)
 	case *AliasExpr:
 		return exprToStringImpl(e.Expr, exported) + " AS " + e.Alias
 	case *ColumnRef:
@@ -691,7 +692,11 @@ func exprToStringImpl(expr Expression, exported bool) string {
 			}
 			args = append(args, "ORDER BY "+strings.Join(orderParts, ", "))
 		}
-		result := fmt.Sprintf("%s(%s)", e.Name, strings.Join(args, ", "))
+		distinct := ""
+		if e.Distinct {
+			distinct = "DISTINCT "
+		}
+		result := fmt.Sprintf("%s(%s%s)", e.Name, distinct, strings.Join(args, ", "))
 		if e.Filter != nil {
 			result += " FILTER (WHERE " + exprToStringImpl(e.Filter, exported) + ")"
 		}

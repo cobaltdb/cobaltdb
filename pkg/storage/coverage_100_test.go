@@ -591,8 +591,8 @@ func TestCoverage100WALReadOpenAndRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		ops := w.GetReplayOps()
-		if len(ops) != 4 {
-			t.Fatalf("replay ops=%d, want 4: %+v", len(ops), ops)
+		if len(ops) != 3 {
+			t.Fatalf("replay ops=%d, want 3 committed operations: %+v", len(ops), ops)
 		}
 		ops[0].Data[0] ^= 0xff
 		if bytes.Equal(ops[0].Data, w.GetReplayOps()[0].Data) {
@@ -1671,16 +1671,17 @@ func TestCoverage100AbsoluteLastPaths(t *testing.T) {
 			t.Fatal("final flush failure missing")
 		}
 	})
-	t.Run("recover nonEOF and immediate apply", func(t *testing.T) {
+	t.Run("recover nonEOF and committed apply", func(t *testing.T) {
 		f := &coverageFile{readErr: errCoverage}
 		w := &WAL{file: f}
 		if err := w.Recover(NewBufferPool(1, NewMemory())); !errors.Is(err, errCoverage) {
 			t.Fatalf("read=%v", err)
 		}
 		records := append(coverageEncodedRecord(t, &WALRecord{LSN: 1, TxnID: 1, Type: WALCommit}), coverageEncodedRecord(t, &WALRecord{LSN: 2, TxnID: 1, Type: WALInsert, PageID: 99, Data: []byte{1}})...)
+		records = append(records, coverageEncodedRecord(t, &WALRecord{LSN: 3, TxnID: 1, Type: WALCommit})...)
 		w = &WAL{file: &coverageFile{data: records}}
 		if err := w.Recover(NewBufferPool(1, NewMemory())); err == nil {
-			t.Fatal("immediate apply failure missing")
+			t.Fatal("committed apply failure missing")
 		}
 		combined := coverageEncodedRecord(t, &WALRecord{LSN: 1, TxnID: 2, Type: WALUpdateCommit, PageID: 99, Data: []byte{1}})
 		w = &WAL{file: &coverageFile{data: combined}}
@@ -1733,12 +1734,13 @@ func TestCoverage100FinalEdgePaths(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
-	t.Run("recover immediate page error", func(t *testing.T) {
+	t.Run("recover committed page error", func(t *testing.T) {
 		bp := NewBufferPool(1, NewMemory())
 		records := append(coverageEncodedRecord(t, &WALRecord{LSN: 1, TxnID: 1, Type: WALCommit}), coverageEncodedRecord(t, &WALRecord{LSN: 2, TxnID: 1, Type: WALInsert, PageID: 99, Offset: 0, Data: make([]byte, PageSize+1)})...)
+		records = append(records, coverageEncodedRecord(t, &WALRecord{LSN: 3, TxnID: 1, Type: WALCommit})...)
 		w := &WAL{file: &coverageFile{data: records}}
 		if err := w.Recover(bp); err == nil {
-			t.Fatal("immediate apply failure missing")
+			t.Fatal("committed apply failure missing")
 		}
 	})
 	t.Run("recover pending overflow", func(t *testing.T) {

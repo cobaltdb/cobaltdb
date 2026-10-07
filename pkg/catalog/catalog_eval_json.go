@@ -107,23 +107,8 @@ func evaluateJSONFunction(funcName string, args []interface{}) (interface{}, err
 		if len(args) < 2 {
 			return nil, fmt.Errorf("JSON_EXTRACT requires 2 arguments")
 		}
-		var jsonData string
+		jsonData, _ := jsonDocArg(args, 0)
 		var path string
-
-		switch v := args[0].(type) {
-		case string:
-			jsonData = v
-		case *string:
-			if v != nil {
-				jsonData = *v
-			}
-		case StringBox:
-			jsonData = v.String()
-		default:
-			if args[0] != nil {
-				jsonData = ValueToStringKey(args[0])
-			}
-		}
 
 		switch v := args[1].(type) {
 		case string:

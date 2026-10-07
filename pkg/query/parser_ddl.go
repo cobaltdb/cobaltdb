@@ -606,18 +606,27 @@ func (p *Parser) parseColumnDef() (*ColumnDef, error) {
 	if p.current().Type == TokenLParen {
 		p.advance() // consume '('
 		// For VECTOR type, parse dimensions
-		if col.Type == TokenVector && p.current().Type == TokenNumber {
-			dims, _ := strconv.Atoi(p.current().Literal)
+		if col.Type == TokenVector {
+			tok, err := p.expect(TokenNumber)
+			if err != nil {
+				return nil, err
+			}
+			dims, err := strconv.Atoi(tok.Literal)
+			if err != nil || dims <= 0 {
+				return nil, fmt.Errorf("invalid vector dimensions: %s", tok.Literal)
+			}
 			col.Dimensions = dims
-			p.advance()
+			if _, err := p.expect(TokenRParen); err != nil {
+				return nil, err
+			}
 		} else {
 			// For other types, just skip parameters
 			for p.current().Type != TokenRParen && p.current().Type != TokenEOF {
 				p.advance()
 			}
-		}
-		if p.current().Type == TokenRParen {
-			p.advance() // consume ')'
+			if p.current().Type == TokenRParen {
+				p.advance() // consume ')'
+			}
 		}
 	}
 

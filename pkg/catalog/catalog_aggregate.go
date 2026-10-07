@@ -79,6 +79,20 @@ func (c *Catalog) computeAggregatesWithGroupBy(table *TableDef, stmt *query.Sele
 					groupBySpecs[i] = groupBySpec{index: -1, expr: gb}
 				}
 			}
+		} else if nl, ok := gb.(*query.NumberLiteral); ok {
+			// Positional GROUP BY (MySQL): resolve the ordinal against the
+			// expanded output columns. resolvePositionalRefs leaves the
+			// literal in place when the select item at that position is a
+			// bare "*" (a pure AST pass cannot know what "*" expands to),
+			// so for SELECT * the ordinal names the table's Nth column —
+			// raw rows are stored in table column order.
+			if pos := int(nl.Value); pos >= 1 && pos <= len(stmt.Columns) {
+				if _, isStar := stmt.Columns[pos-1].(*query.StarExpr); isStar && pos-1 < len(table.Columns) {
+					groupBySpecs[i] = groupBySpec{index: pos - 1}
+					continue
+				}
+			}
+			groupBySpecs[i] = groupBySpec{index: -1, expr: gb}
 		} else {
 			groupBySpecs[i] = groupBySpec{index: -1, expr: gb}
 		}
@@ -191,7 +205,10 @@ func (c *Catalog) computeGroupResultRows(groups map[string][][]interface{}, grou
 			if ci.isAggregate {
 				var values []interface{}
 				var firstAggErr error
-				aggregateRows := c.aggregateRowsForInfo(ci, groupRows, table.Columns, args)
+				aggregateRows, err := c.aggregateRowsForInfo(ci, groupRows, table.Columns, args)
+				if err != nil {
+					return nil, err
+				}
 				for _, row := range aggregateRows {
 					v, ok := c.collectAggregateInput(ci, row, table.Columns, args, func() (interface{}, bool) {
 						// COUNT(*) counts rows regardless of how the parser shaped
@@ -494,7 +511,10 @@ func (c *Catalog) computeAggregatesForExpr(expr query.Expression, groupRows [][]
 
 		var values []interface{}
 		var firstAggErr error
-		aggregateRows := c.aggregateRowsForFunction(fc, groupRows, exprColumns, args)
+		aggregateRows, err := c.aggregateRowsForFunction(fc, groupRows, exprColumns, args)
+		if err != nil {
+			return nil, err
+		}
 		for _, row := range aggregateRows {
 			v, ok := c.collectAggregateInput(selectColInfo{
 				aggregateType: toUpperFast(fc.Name),
@@ -538,11 +558,17 @@ func computeStdevVar(values []interface{}, funcName string) interface{} {
 	if n == 0 {
 		return nil
 	}
-	var mean float64
-	for _, x := range nums {
-		mean += x
+	mean := nums[0]
+	for i, x := range nums[1:] {
+		count := float64(i + 2)
+		delta := x - mean
+		if math.IsInf(delta, 0) && !math.IsInf(x, 0) && !math.IsInf(mean, 0) {
+			// Opposite-signed finite values may overflow the subtraction.
+			mean = mean*((count-1)/count) + x/count
+		} else {
+			mean += delta / count
+		}
 	}
-	mean /= float64(n)
 	var ss float64
 	for _, x := range nums {
 		d := x - mean
@@ -855,31 +881,47 @@ func (c *Catalog) groupConcatOrderedRows(orderBy []*query.OrderByExpr, rows [][]
 	return ordered
 }
 
-func (c *Catalog) aggregateRowsForInfo(ci selectColInfo, rows [][]interface{}, columns []ColumnDef, args []interface{}) [][]interface{} {
-	filtered := c.filterAggregateRows(ci.aggregateFilter, rows, columns, args)
-	return c.groupConcatOrderedRows(ci.aggregateOrderBy, filtered, columns, args)
-}
-
-func (c *Catalog) aggregateRowsForFunction(fc *query.FunctionCall, rows [][]interface{}, columns []ColumnDef, args []interface{}) [][]interface{} {
-	if fc == nil {
-		return rows
+func (c *Catalog) aggregateRowsForInfo(ci selectColInfo, rows [][]interface{}, columns []ColumnDef, args []interface{}) ([][]interface{}, error) {
+	filtered, err := c.filterAggregateRows(ci.aggregateFilter, rows, columns, args)
+	if err != nil {
+		return nil, err
 	}
-	filtered := c.filterAggregateRows(fc.Filter, rows, columns, args)
-	return c.groupConcatOrderedRows(fc.OrderBy, filtered, columns, args)
+	return c.groupConcatOrderedRows(ci.aggregateOrderBy, filtered, columns, args), nil
 }
 
-func (c *Catalog) filterAggregateRows(filter query.Expression, rows [][]interface{}, columns []ColumnDef, args []interface{}) [][]interface{} {
+func (c *Catalog) aggregateRowsForFunction(fc *query.FunctionCall, rows [][]interface{}, columns []ColumnDef, args []interface{}) ([][]interface{}, error) {
+	if fc == nil {
+		return rows, nil
+	}
+	filtered, err := c.filterAggregateRows(fc.Filter, rows, columns, args)
+	if err != nil {
+		return nil, err
+	}
+	return c.groupConcatOrderedRows(fc.OrderBy, filtered, columns, args), nil
+}
+
+// filterAggregateRows keeps the rows matching an aggregate FILTER (WHERE ...)
+// predicate. A predicate that fails to evaluate is an ERROR, not a non-match:
+// the FILTER clause is evaluated by the same expression evaluator as WHERE and
+// HAVING, and both of those propagate evaluation failures (an unresolvable
+// column yields "column not found: x"). Swallowing it here silently downgraded
+// the failure to "no rows matched", so e.g.
+// SUM(v) FILTER (WHERE nonexistent_col > 0) returned NULL instead of erroring.
+func (c *Catalog) filterAggregateRows(filter query.Expression, rows [][]interface{}, columns []ColumnDef, args []interface{}) ([][]interface{}, error) {
 	if filter == nil || len(rows) == 0 {
-		return rows
+		return rows, nil
 	}
 	filtered := make([][]interface{}, 0, len(rows))
 	for _, row := range rows {
 		ok, err := evaluateWhere(c, row, columns, filter, args)
-		if err == nil && ok {
+		if err != nil {
+			return nil, fmt.Errorf("failed to evaluate aggregate FILTER: %w", err)
+		}
+		if ok {
 			filtered = append(filtered, row)
 		}
 	}
-	return filtered
+	return filtered, nil
 }
 
 func compareOrderByValues(left, right interface{}, ob *query.OrderByExpr) int {

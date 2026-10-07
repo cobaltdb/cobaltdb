@@ -40,6 +40,7 @@ type Compiler struct {
 	queryCache map[string]*CompiledQuery
 	// Prepared statements cache
 	preparedStmts map[string]*PreparedStatement
+	nextStmtID    uint64
 }
 
 func compilerUint32(value int, name string) (uint32, error) {
@@ -264,8 +265,11 @@ func (c *Compiler) CompileQuery(sql string, stmt query.Statement, args []interfa
 // Prepare creates a prepared statement from SQL with parameter placeholders
 // Parameters are denoted by ? in the SQL string
 func (c *Compiler) Prepare(sql string, stmt query.Statement, paramCount int) (*PreparedStatement, error) {
+	if paramCount < 0 {
+		return nil, fmt.Errorf("parameter count must be non-negative")
+	}
 	// Generate unique ID for this prepared statement
-	id := fmt.Sprintf("stmt_%d", len(c.preparedStmts))
+	id := fmt.Sprintf("stmt_%d", c.nextStmtID)
 
 	// Compile the query
 	compiled, err := c.CompileQuery(sql, stmt, nil)
@@ -288,6 +292,7 @@ func (c *Compiler) Prepare(sql string, stmt query.Statement, paramCount int) (*P
 	}
 
 	// Store in cache
+	c.nextStmtID++
 	c.preparedStmts[id] = prepared
 
 	return prepared, nil

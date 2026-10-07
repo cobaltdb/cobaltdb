@@ -547,7 +547,10 @@ func (p *Pool) release(conn *Conn) {
 		return
 	}
 
-	atomic.StoreInt32(&conn.inUse, 0)
+	// Only the caller that transitions this connection to idle may requeue it.
+	if !atomic.CompareAndSwapInt32(&conn.inUse, 1, 0) {
+		return
+	}
 	atomic.StoreInt64(&conn.lastUsedAtNano, time.Now().UnixNano())
 	atomic.AddInt32(&p.stats.ActiveConns, -1)
 	atomic.AddInt32(&p.stats.IdleConns, 1)
@@ -790,7 +793,7 @@ func (p *Pool) maintainMinConns() {
 
 // Stats returns pool statistics
 func (p *Pool) Stats() Stats {
-	return Stats{
+	stats := Stats{
 		TotalConns:    atomic.LoadInt32(&p.stats.TotalConns),
 		IdleConns:     atomic.LoadInt32(&p.stats.IdleConns),
 		ActiveConns:   atomic.LoadInt32(&p.stats.ActiveConns),
@@ -801,4 +804,11 @@ func (p *Pool) Stats() Stats {
 		TotalCreates:  atomic.LoadUint64(&p.stats.TotalCreates),
 		TotalDestroys: atomic.LoadUint64(&p.stats.TotalDestroys),
 	}
+	if atomic.LoadInt32(&p.closed) == 1 {
+		stats.TotalConns = 0
+		stats.IdleConns = 0
+		stats.ActiveConns = 0
+		stats.WaitQueueLen = 0
+	}
+	return stats
 }

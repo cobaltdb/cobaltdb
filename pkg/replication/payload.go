@@ -27,7 +27,7 @@ type statementPayloadWire struct {
 	Version   int         `json:"v"`
 	SQL       string      `json:"sql"`
 	Args      []taggedArg `json:"args,omitempty"`
-	Timestamp int64       `json:"ts,omitempty"` // unix nanoseconds
+	Timestamp *int64      `json:"ts,omitempty"` // unix nanoseconds; nil means absent
 }
 
 // taggedArg carries one bound argument with an explicit type tag so values
@@ -48,7 +48,8 @@ func EncodeStatementPayload(sql string, args []interface{}, ts time.Time) ([]byt
 		SQL:     sql,
 	}
 	if !ts.IsZero() {
-		wire.Timestamp = ts.UnixNano()
+		nanos := ts.UnixNano()
+		wire.Timestamp = &nanos
 	}
 	if len(args) > 0 {
 		wire.Args = make([]taggedArg, len(args))
@@ -76,8 +77,8 @@ func DecodeStatementPayload(data []byte) (*StatementPayload, error) {
 		Version: wire.Version,
 		SQL:     wire.SQL,
 	}
-	if wire.Timestamp != 0 {
-		payload.Timestamp = time.Unix(0, wire.Timestamp)
+	if wire.Timestamp != nil {
+		payload.Timestamp = time.Unix(0, *wire.Timestamp)
 	}
 	if len(wire.Args) > 0 {
 		payload.Args = make([]interface{}, len(wire.Args))

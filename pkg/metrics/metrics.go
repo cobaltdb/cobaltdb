@@ -7,6 +7,8 @@ import (
 	"math"
 	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -173,6 +175,11 @@ func (h *HistogramMetric) GetSnapshot() HistogramSnapshot {
 		for _, bucket := range h.buckets {
 			if v <= bucket {
 				key := fmt.Sprintf("%.2f", bucket)
+				// Keep existing two-decimal keys where they represent the
+				// boundary exactly; retain precision for finer boundaries.
+				if rounded, err := strconv.ParseFloat(key, 64); err != nil || rounded != bucket {
+					key = strconv.FormatFloat(bucket, 'f', -1, 64)
+				}
 				snapshot.Buckets[key]++
 			}
 		}
@@ -202,7 +209,7 @@ func NewTimer(name, desc string, labels map[string]string) *TimerMetric {
 
 // Time records a duration
 func (t *TimerMetric) Time(duration time.Duration) {
-	t.histogram.Observe(float64(duration.Milliseconds()))
+	t.histogram.Observe(float64(duration) / float64(time.Millisecond))
 }
 
 // Start starts a new timer and returns a function to stop it
@@ -294,8 +301,10 @@ func (r *Registry) RegisterTimer(name, desc string, labels map[string]string) *T
 
 // metricKey generates a unique key for a metric
 func (r *Registry) metricKey(name string, labels map[string]string) string {
+	// Escape separators and the escape character to keep distinct labels distinct.
+	escape := strings.NewReplacer("\\", "\\\\", ";", "\\;", "=", "\\=")
 	if len(labels) == 0 {
-		return name
+		return escape.Replace(name)
 	}
 
 	keys := make([]string, 0, len(labels))
@@ -304,9 +313,9 @@ func (r *Registry) metricKey(name string, labels map[string]string) string {
 	}
 	sort.Strings(keys)
 
-	key := name
+	key := escape.Replace(name)
 	for _, labelKey := range keys {
-		key += fmt.Sprintf(";%s=%s", labelKey, labels[labelKey])
+		key += fmt.Sprintf(";%s=%s", escape.Replace(labelKey), escape.Replace(labels[labelKey]))
 	}
 	return key
 }

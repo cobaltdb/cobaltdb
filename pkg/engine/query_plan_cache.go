@@ -3,6 +3,7 @@ package engine
 import (
 	"container/list"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -354,11 +355,18 @@ func typeNameOf(v interface{}) string {
 func (c *QueryPlanCache) hashQuery(sql string, args []interface{}) string {
 	h := queryPlanSHA256Pool.Get().(hash.Hash)
 	h.Reset()
-	h.Write([]byte(sql))
+	// Length prefixes keep SQL and argument type boundaries unambiguous.
+	writePart := func(part string) {
+		var length [binary.MaxVarintLen64]byte
+		n := binary.PutUvarint(length[:], uint64(len(part)))
+		h.Write(length[:n])
+		h.Write([]byte(part))
+	}
+	writePart(sql)
 	if len(args) > 0 {
 		// Include arg types in hash (not values for security)
 		for _, arg := range args {
-			h.Write([]byte(typeNameOf(arg)))
+			writePart(typeNameOf(arg))
 		}
 	}
 	var sumBuf [32]byte

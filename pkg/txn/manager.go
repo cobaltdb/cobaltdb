@@ -1053,6 +1053,9 @@ func (m *Manager) RecycleTxn(txn *Transaction) {
 		txn.mu.Unlock()
 		return
 	}
+	if txn.State == TxnActive {
+		_ = txn.rollbackLocked()
+	}
 
 	// Fields that Begin overwrites are left as-is so that post-commit/rollback
 	// state inspection in tests and callers remains valid.

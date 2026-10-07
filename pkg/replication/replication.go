@@ -107,20 +107,20 @@ var ErrPrimaryFenced = errors.New("primary is fenced")
 type Config struct {
 	Role                Role
 	Mode                ReplicationMode
-	ListenAddr          string        // For master: address to listen on
-	MasterAddr          string        // For slave: master address to connect
-	Slaves              []string      // For master: list of slave addresses
-	MaxLag              time.Duration // Maximum allowed replication lag
-	SyncInterval        time.Duration // How often to sync WAL
-	MaxWALBufferEntries int           // Maximum master WAL entries retained for disconnected/lagging slaves
-	MaxWALBufferBytes   int64         // Maximum encoded master WAL bytes retained for disconnected/lagging slaves
-	AuthToken           string        // Authentication token
-	Compress            bool          // Compress replication stream
-	SSLCert             string        // TLS certificate: server certificate on master, optional client certificate on slave
-	SSLKey              string        // Private key matching SSLCert
-	SSLCA               string        // CA bundle: client CA on master (enables required mTLS), server roots on slave
-	SSLServerName       string        // Optional slave-only certificate name override (defaults to MasterAddr host)
-	StateFile           string        // Optional slave state file for last applied LSN
+	ListenAddr          string         // For master: address to listen on
+	MasterAddr          string         // For slave: master address to connect
+	Slaves              []string       // For master: list of slave addresses
+	MaxLag              time.Duration  // Maximum allowed replication lag
+	SyncInterval        time.Duration  // How often to sync WAL
+	MaxWALBufferEntries int            // Maximum master WAL entries retained for disconnected/lagging slaves
+	MaxWALBufferBytes   int64          // Maximum encoded master WAL bytes retained for disconnected/lagging slaves
+	AuthToken           string         // Authentication token
+	Compress            bool           // Compress replication stream
+	SSLCert             string         // TLS certificate: server certificate on master, optional client certificate on slave
+	SSLKey              string         // Private key matching SSLCert
+	SSLCA               string         // CA bundle: client CA on master (enables required mTLS), server roots on slave
+	SSLServerName       string         // Optional slave-only certificate name override (defaults to MasterAddr host)
+	StateFile           string         // Optional slave state file for last applied LSN
 	Logger              *logger.Logger // Optional structured logger; nil disables panic logging (same idiom as pkg/server.ProductionConfig.Logger)
 }
 
@@ -1440,7 +1440,7 @@ func (m *Manager) applyWALData(data string) error {
 	return m.applyWALDataBytes([]byte(data))
 }
 
-func (m *Manager) applyWALDataBytes(data []byte) error {
+func (m *Manager) applyWALDataBytes(data []byte) (applyErr error) {
 	// Decode entries
 	entries, err := decodeWALEntries(data)
 	if err != nil {
@@ -1449,6 +1449,14 @@ func (m *Manager) applyWALDataBytes(data []byte) error {
 
 	// Apply each entry
 	var advanced bool
+	defer func() {
+		if advanced {
+			atomic.StoreInt64(&m.metrics.LastAppliedTime, time.Now().Unix())
+			if persistErr := m.saveReplicationState(); persistErr != nil {
+				applyErr = errors.Join(applyErr, persistErr)
+			}
+		}
+	}()
 	for _, entry := range entries {
 		if entry.LSN <= atomic.LoadUint64(&m.lastApplied) {
 			continue
@@ -1464,11 +1472,6 @@ func (m *Manager) applyWALDataBytes(data []byte) error {
 		atomic.StoreUint64(&m.lastApplied, entry.LSN)
 		atomic.AddUint64(&m.metrics.AppliedEntries, 1)
 		advanced = true
-	}
-
-	if advanced {
-		atomic.StoreInt64(&m.metrics.LastAppliedTime, time.Now().Unix())
-		return m.saveReplicationState()
 	}
 
 	return nil
@@ -1789,6 +1792,9 @@ func (m *Manager) ReplicateWALEntry(data []byte) error {
 	if atomic.LoadUint64(&m.fencedEpoch) > 0 {
 		return ErrPrimaryFenced
 	}
+	if len(data) > maxWALEntryDataBytes {
+		return fmt.Errorf("WAL entry data too large: %d bytes (max %d)", len(data), maxWALEntryDataBytes)
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1914,6 +1920,16 @@ func (m *Manager) Role() Role {
 	return m.role
 }
 
+// roleSnapshot returns both the runtime role and the configured role, read
+// together under m.mu. PromoteToMasterWithFencing and RejoinAsReplica write
+// m.role AND m.config.Role under m.mu.Lock(), so an HA precondition guard must
+// read them under that same lock rather than touching the fields directly.
+func (m *Manager) roleSnapshot() (Role, Role) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.role, m.config.Role
+}
+
 // Mode returns the configured replication mode.
 func (m *Manager) Mode() ReplicationMode {
 	return m.config.Mode
@@ -1985,7 +2001,10 @@ func (m *Manager) GetMetrics() *Metrics {
 }
 
 func (m *Manager) currentReplicationLagMillis(now time.Time) int64 {
-	switch m.role {
+	// m.role is written under m.mu by the HA transitions
+	// (PromoteToMasterWithFencing / RejoinAsReplica); read it through the
+	// locked accessor so a concurrent metrics scrape cannot race the write.
+	switch m.Role() {
 	case RoleMaster:
 		return m.currentMasterLagMillis(now)
 	case RoleSlave:
@@ -2290,7 +2309,7 @@ func (m *Manager) PromoteToMaster() error {
 // still does not perform leader election or quorum consensus; callers must
 // obtain the epoch and fencing token from their own HA control plane.
 func (m *Manager) PromoteToMasterWithFencing(req PromotionRequest) error {
-	if m.role != RoleSlave && m.config.Role != RoleSlave {
+	if role, cfgRole := m.roleSnapshot(); role != RoleSlave && cfgRole != RoleSlave {
 		return fmt.Errorf("%w: only a slave can be promoted", ErrPromotionRejected)
 	}
 	if strings.TrimSpace(req.FencingToken) == "" {
@@ -2342,7 +2361,7 @@ func (m *Manager) PromoteToMasterWithFencing(req PromotionRequest) error {
 // that complements external fencing systems: after this succeeds, the manager
 // refuses new WAL entries through ReplicateWALEntry.
 func (m *Manager) FencePrimary(req PrimaryFenceRequest) error {
-	if m.role != RoleMaster && m.config.Role != RoleMaster {
+	if role, cfgRole := m.roleSnapshot(); role != RoleMaster && cfgRole != RoleMaster {
 		return fmt.Errorf("%w: only a master can be fenced", ErrPromotionRejected)
 	}
 	if strings.TrimSpace(req.FencingToken) == "" {
@@ -2366,7 +2385,7 @@ func (m *Manager) FencePrimary(req PrimaryFenceRequest) error {
 // transition; callers can subsequently start slave replication using the updated
 // manager config.
 func (m *Manager) RejoinAsReplica(req RejoinRequest) error {
-	if m.role != RoleMaster && m.config.Role != RoleMaster {
+	if role, cfgRole := m.roleSnapshot(); role != RoleMaster && cfgRole != RoleMaster {
 		return fmt.Errorf("%w: only a master can rejoin as replica", ErrPromotionRejected)
 	}
 	if strings.TrimSpace(req.FencingToken) == "" {

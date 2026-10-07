@@ -1016,6 +1016,9 @@ func writeRecordHeader(dst []byte, record *WALRecord, dataLen int) error {
 
 // Checkpoint flushes dirty pages to main DB file and truncates WAL
 func (w *WAL) Checkpoint(bp *BufferPool) error {
+	if bp == nil {
+		return ErrInvalidWALRecoveryTarget
+	}
 	if err := w.flushPendingLocked(); err != nil {
 		return err
 	}
@@ -1023,7 +1026,11 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// flushPendingLocked above already verified the WAL is open and flushed its writer.
+	// The initial flush releases mu while syncing. A concurrent append or close
+	// may have changed the writer or file before this final critical section.
+	if w.file == nil {
+		return ErrWALClosed
+	}
 
 	// 1. Flush + fsync the old bufWriter at its CURRENT position, making every
 	// appended record durable BEFORE anything is truncated. Truncating first
@@ -1032,8 +1039,11 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 	// the head to the file, so truncate(0) erased it while the buffered tail
 	// was then rewritten at position 0 — a torn, self-inconsistent record
 	// stream. New appends are blocked by w.mu for the whole checkpoint.
-	// flushPendingLocked also synced the file; this re-checks after releasing
-	// the lock.
+	// Flush again under the final lock to include appends made during the
+	// initial sync, and keep the buffer stable through truncation.
+	if err := w.bufWriter.Flush(); err != nil {
+		return fmt.Errorf("WAL pre-checkpoint flush: %w", err)
+	}
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("WAL pre-checkpoint sync: %w", err)
 	}
@@ -1053,6 +1063,11 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 		return err
 	}
 	if _, err := w.file.Seek(0, 0); err != nil {
+		// Truncate does not move the cursor. Restore EOF so a later append
+		// cannot leave a hole at the old log position after this seek fails.
+		if _, restoreErr := w.file.Seek(0, io.SeekEnd); restoreErr != nil {
+			return errors.Join(err, fmt.Errorf("failed to restore WAL append position: %w", restoreErr))
+		}
 		return err
 	}
 	w.bufWriter = bufio.NewWriter(w.file)
@@ -1071,7 +1086,7 @@ func (w *WAL) Checkpoint(bp *BufferPool) error {
 // Recover replays WAL records after a crash.  Physical records (PageID > 0)
 // are applied directly to the buffer pool; logical records (PageID == 0) are
 // buffered in w.replayOps for catalog-level replay after catalog init.
-func (w *WAL) Recover(bp *BufferPool) error {
+func (w *WAL) Recover(bp *BufferPool) (recoveryErr error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -1086,10 +1101,16 @@ func (w *WAL) Recover(bp *BufferPool) error {
 	if _, err := w.file.Seek(0, 0); err != nil {
 		return err
 	}
+	// Recovery borrows the append cursor; even an early read or apply error
+	// must leave subsequent writes at EOF rather than inside the existing log.
+	defer func() {
+		if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
+			recoveryErr = errors.Join(recoveryErr, fmt.Errorf("failed to restore WAL append position: %w", err))
+		}
+	}()
 	w.replayOps = nil
 
 	reader := bufio.NewReader(w.file)
-	var committedTxns = make(map[uint64]bool)
 	var pendingTxns = make(map[uint64][]*WALRecord)
 	var pendingTracker walRecoveryBufferTracker
 	var headerBuf [walHeaderSize]byte // reusable header buffer across readRecord calls
@@ -1121,7 +1142,6 @@ func (w *WAL) Recover(bp *BufferPool) error {
 
 		switch record.Type {
 		case WALCommit:
-			committedTxns[record.TxnID] = true
 			// Apply pending records for this transaction
 			if records, ok := pendingTxns[record.TxnID]; ok {
 				for _, r := range records {
@@ -1138,21 +1158,14 @@ func (w *WAL) Recover(bp *BufferPool) error {
 			delete(pendingTxns, record.TxnID)
 
 		case WALInsert, WALUpdate, WALDelete:
-			if committedTxns[record.TxnID] {
-				// Transaction already committed, apply immediately
-				if err := w.recoverRecord(bp, record); err != nil {
-					return err
-				}
-			} else {
-				// Buffer for later
-				if err := pendingTracker.add(record); err != nil {
-					return err
-				}
-				pendingTxns[record.TxnID] = append(pendingTxns[record.TxnID], record)
+			// A previous commit with this ID does not commit later writes:
+			// transaction IDs may be reused after reopening the database.
+			if err := pendingTracker.add(record); err != nil {
+				return err
 			}
+			pendingTxns[record.TxnID] = append(pendingTxns[record.TxnID], record)
 
 		case WALUpdateCommit:
-			committedTxns[record.TxnID] = true
 			// Apply pending records for this transaction
 			if records, ok := pendingTxns[record.TxnID]; ok {
 				for _, r := range records {

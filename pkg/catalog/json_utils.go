@@ -154,6 +154,10 @@ func ParseJSONPath(path string) (*JSONPath, error) {
 				remaining = remaining[1:]
 				end := 0
 				for end < len(remaining) {
+					if quote == '"' && remaining[end] == '\\' {
+						end += 2
+						continue
+					}
 					if remaining[end] == quote {
 						break
 					}
@@ -162,7 +166,13 @@ func ParseJSONPath(path string) (*JSONPath, error) {
 				if end >= len(remaining) {
 					return nil, fmt.Errorf("unclosed string in JSON path")
 				}
-				if err := appendJSONPathSegment(&segments, remaining[:end]); err != nil {
+				key := remaining[:end]
+				if quote == '"' {
+					if err := json.Unmarshal([]byte(`"`+key+`"`), &key); err != nil {
+						return nil, fmt.Errorf("invalid string in JSON path: %w", err)
+					}
+				}
+				if err := appendJSONPathSegment(&segments, key); err != nil {
 					return nil, err
 				}
 				remaining = remaining[end+1:]

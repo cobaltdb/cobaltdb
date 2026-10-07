@@ -209,7 +209,7 @@ func (eb *EncryptedBackend) ReadAt(buf []byte, offset int64) (int, error) {
 	}()
 
 	n, err := eb.backend.ReadAt(encryptedBuf, eb.physicalOffset(offset))
-	if err != nil {
+	if err != nil && !(errors.Is(err, io.EOF) && n == encryptedSize) {
 		return 0, err
 	}
 
@@ -451,7 +451,7 @@ func LoadSalt(dbPath string) ([]byte, error) {
 
 	// Verify marker
 	markerLen := len(saltFileMarker) + 1 // marker + newline
-	if len(data) < markerLen || string(data[:len(saltFileMarker)]) != saltFileMarker {
+	if len(data) < markerLen || string(data[:markerLen]) != saltFileMarker+"\n" {
 		return nil, ErrInvalidSalt
 	}
 

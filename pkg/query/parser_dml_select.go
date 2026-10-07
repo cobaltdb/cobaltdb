@@ -167,10 +167,7 @@ func (p *Parser) parseSelectLockingTargets() ([]string, error) {
 	var targets []string
 	for {
 		if isSelectLockingClauseBoundary(p.current()) {
-			if len(targets) == 0 {
-				return nil, fmt.Errorf("expected lock target after OF")
-			}
-			break
+			return nil, fmt.Errorf("expected lock target after OF or comma")
 		}
 
 		target, err := p.parseSelectLockingTarget()
@@ -553,8 +550,8 @@ func (p *Parser) parseWindowExpr(funcName string, args []Expression, filter Expr
 	// Parse PARTITION BY clause (optional)
 	if p.current().Type == TokenPartition {
 		p.advance() // consume PARTITION
-		if p.current().Type == TokenBy {
-			p.advance() // consume BY
+		if _, err := p.expect(TokenBy); err != nil {
+			return nil, err
 		}
 		for {
 			expr, err := p.parseExpression()
@@ -574,8 +571,8 @@ func (p *Parser) parseWindowExpr(funcName string, args []Expression, filter Expr
 	// Parse ORDER BY clause (optional)
 	if p.current().Type == TokenOrder {
 		p.advance() // consume ORDER
-		if p.current().Type == TokenBy {
-			p.advance() // consume BY
+		if _, err := p.expect(TokenBy); err != nil {
+			return nil, err
 		}
 		for {
 			expr, err := p.parseExpression()

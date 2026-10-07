@@ -264,6 +264,7 @@ func loadMigrations(dir string) ([]Migration, error) {
 	}
 
 	var migrations []Migration
+	versionFiles := make(map[int64]string)
 
 	for _, file := range files {
 		if file.IsDir() {
@@ -286,6 +287,10 @@ func loadMigrations(dir string) ([]Migration, error) {
 		if err != nil {
 			continue
 		}
+		if previous, ok := versionFiles[version]; ok {
+			return nil, fmt.Errorf("duplicate migration version %d: %s and %s", version, previous, name)
+		}
+		versionFiles[version] = name
 
 		// Load up SQL
 		upPath, err := migrationFilePath(dir, name)
@@ -301,7 +306,7 @@ func loadMigrations(dir string) ([]Migration, error) {
 		// DownSQL: the revert removes the record only), but a real read
 		// failure must fail the load — swallowing it let a rollback drop the
 		// migration record without reverting the schema change.
-		downName := strings.Replace(name, "_up.sql", "_down.sql", 1)
+		downName := strings.TrimSuffix(name, "_up.sql") + "_down.sql"
 		downPath, err := migrationFilePath(dir, downName)
 		if err != nil {
 			return nil, err
@@ -368,8 +373,8 @@ func applyMigration(db *sql.DB, m Migration) error {
 
 	// Record migration
 	_, err = tx.Exec(
-		"INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
-		m.Version, m.Name,
+		"INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+		m.Version, m.Name, time.Now().Format("2006-01-02 15:04:05"),
 	)
 	if err != nil {
 		return err
@@ -413,13 +418,36 @@ func getAppliedMigrations(db *sql.DB) (map[int64]MigrationRecord, error) {
 	migrations := make(map[int64]MigrationRecord)
 	for rows.Next() {
 		var r MigrationRecord
-		if err := rows.Scan(&r.Version, &r.Name, &r.AppliedAt); err != nil {
+		var appliedAt interface{}
+		if err := rows.Scan(&r.Version, &r.Name, &appliedAt); err != nil {
 			return nil, err
+		}
+		r.AppliedAt, err = parseMigrationTime(appliedAt)
+		if err != nil {
+			return nil, fmt.Errorf("migration %d applied_at: %w", r.Version, err)
 		}
 		migrations[r.Version] = r
 	}
 
 	return migrations, rows.Err()
+}
+
+func parseMigrationTime(value interface{}) (time.Time, error) {
+	switch v := value.(type) {
+	case time.Time:
+		return v, nil
+	case []byte:
+		return parseMigrationTime(string(v))
+	case string:
+		for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999"} {
+			if parsed, err := time.Parse(layout, v); err == nil {
+				return parsed, nil
+			}
+		}
+		return time.Time{}, fmt.Errorf("invalid migration timestamp: %q", v)
+	default:
+		return time.Time{}, fmt.Errorf("unsupported migration timestamp type: %T", value)
+	}
 }
 
 func getNextVersion(dir string) (int64, error) {

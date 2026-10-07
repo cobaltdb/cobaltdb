@@ -48,6 +48,10 @@ func WriteFullAt(backend Backend, buf []byte, offset int64) (int, error) {
 // It returns an error if the full buffer could not be read.
 func ReadFullAt(backend Backend, buf []byte, offset int64) (int, error) {
 	n, err := backend.ReadAt(buf, offset)
+	// ReaderAt permits EOF with a complete buffer at the end of the input.
+	if n == len(buf) && errors.Is(err, io.EOF) {
+		return n, nil
+	}
 	if err != nil {
 		return n, err
 	}

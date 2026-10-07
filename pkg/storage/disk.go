@@ -147,9 +147,6 @@ func (d *DiskBackend) WriteAt(buf []byte, offset int64) (int, error) {
 	}
 
 	n, err := writeDiskFullAt(d.file, buf, offset)
-	if err != nil {
-		return n, err
-	}
 
 	// Update file size if we wrote past the end
 	endOffset := offset + int64(n)
@@ -157,7 +154,7 @@ func (d *DiskBackend) WriteAt(buf []byte, offset int64) (int, error) {
 		d.fileSize = endOffset
 	}
 
-	return n, nil
+	return n, err
 }
 
 type diskAtWriter interface {

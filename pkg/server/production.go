@@ -392,24 +392,34 @@ func (ps *ProductionServer) Wait() {
 	ps.Lifecycle.Wait()
 }
 
-// Stop gracefully stops the production server
+// Stop gracefully stops the production server.
+//
+// ps.mu is held ONLY for the running-state transition, never across the
+// blocking calls below. It previously covered healthServer.Shutdown, which
+// drains by polling until in-flight connections go idle — but the admin-token
+// handlers serving those very connections need ps.mu.RLock() to read the token
+// digest. Holding the write lock across the drain therefore inverted the lock
+// order: a handler could never finish, so its connection never went idle, so
+// Shutdown always burned its full 5s deadline and returned a spurious
+// "context deadline exceeded" while every ps.mu reader (IsRunning, GetStats,
+// the admin endpoints) blocked for that whole window.
 func (ps *ProductionServer) Stop() error {
 	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
 	if !ps.running {
+		ps.mu.Unlock()
 		ps.stopRateLimiter()
 		return nil
 	}
-
 	ps.running = false
+	healthServer := ps.healthServer
+	ps.mu.Unlock()
 
 	// Shutdown health server
 	var shutdownErr error
-	if ps.healthServer != nil {
+	if healthServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := ps.healthServer.Shutdown(ctx); err != nil {
+		if err := healthServer.Shutdown(ctx); err != nil {
 			shutdownErr = fmt.Errorf("health server shutdown: %w", err)
 		}
 	}

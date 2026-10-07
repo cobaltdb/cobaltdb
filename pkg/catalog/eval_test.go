@@ -13074,7 +13074,10 @@ func TestComputeViewAggregate(t *testing.T) {
 				testRows = [][]interface{}{}
 			}
 
-			result := catalog.computeViewAggregate(tt.fn, tt.fc, testRows, columns, nil)
+			result, cerr := catalog.computeViewAggregate(tt.fn, tt.fc, testRows, columns, nil)
+			if cerr != nil {
+				t.Fatalf("computeViewAggregate(%s) unexpected error: %v", tt.name, cerr)
+			}
 			if result != tt.expected {
 				t.Errorf("computeViewAggregate(%s) = %v (%T), want %v (%T)", tt.name, result, result, tt.expected, tt.expected)
 			}

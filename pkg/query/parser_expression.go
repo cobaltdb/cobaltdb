@@ -1114,5 +1114,12 @@ func ParseExpression(expr string) (Expression, error) {
 	}
 	parser := NewParser(tokens)
 	parser.advance() // consume SELECT
-	return parser.parseExpression()
+	parsed, err := parser.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if err := parser.expectStatementEnd(); err != nil {
+		return nil, err
+	}
+	return parsed, nil
 }

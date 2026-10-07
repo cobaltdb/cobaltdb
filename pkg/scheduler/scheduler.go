@@ -66,12 +66,15 @@ func NewWithInterval(workers int, log Logger, tick time.Duration) *Scheduler {
 	if tick <= 0 {
 		tick = 1 * time.Second
 	}
+	runCtx, runCancel := context.WithCancel(context.Background())
 	return &Scheduler{
 		jobs:         make(map[string]*Job),
 		workers:      workers,
 		stopCh:       make(chan struct{}),
 		logger:       log,
 		tickInterval: tick,
+		runCtx:       runCtx,
+		runCancel:    runCancel,
 	}
 }
 
@@ -159,13 +162,16 @@ func (s *Scheduler) Disable(jobID string) bool {
 		return false
 	}
 	j.Enabled = false
-	j.Status = JobStatusDisabled
+	// Keep the single-run guard until the in-flight execution finishes.
+	if j.Status != JobStatusRunning {
+		j.Status = JobStatusDisabled
+	}
 	return true
 }
 
 // Trigger executes a job immediately, outside its normal schedule.
-// Triggered runs on a started scheduler are registered in the shutdown
-// WaitGroup so Stop() waits for them instead of returning mid-job.
+// Triggered runs are registered in the shutdown WaitGroup so Stop() waits
+// for them, including runs accepted before the first Start().
 // Triggering a stopped scheduler returns an error.
 func (s *Scheduler) Trigger(jobID string) error {
 	// Register with the WaitGroup under startMu so the Add cannot race with
@@ -176,10 +182,8 @@ func (s *Scheduler) Trigger(jobID string) error {
 		s.startMu.Unlock()
 		return fmt.Errorf("scheduler is stopped")
 	}
-	if s.started {
-		s.wg.Add(1)
-		defer s.wg.Done()
-	}
+	s.wg.Add(1)
+	defer s.wg.Done()
 	s.startMu.Unlock()
 
 	s.mu.Lock()
@@ -206,9 +210,13 @@ func (s *Scheduler) Start() {
 	if s.started {
 		return
 	}
+	// Initial Start must retain the context of any pre-start Trigger. After
+	// Stop has drained every run, a restart gets a fresh cancellation context.
+	if s.stopped {
+		s.runCtx, s.runCancel = context.WithCancel(context.Background())
+	}
 	s.started = true
 	s.stopped = false
-	s.runCtx, s.runCancel = context.WithCancel(context.Background())
 
 	// Use a configurable resolution ticker — coarse enough to be cheap,
 	// fine enough for typical maintenance intervals (minutes+).
@@ -232,15 +240,12 @@ func (s *Scheduler) Start() {
 // Stop halts the scheduler and waits for in-flight jobs.
 func (s *Scheduler) Stop() {
 	s.startMu.Lock()
-	if !s.started {
-		s.stopped = true
-		s.startMu.Unlock()
-		return
+	if s.started {
+		close(s.stopCh)
 	}
 	s.started = false
 	s.stopped = true
 
-	close(s.stopCh)
 	if s.runCancel != nil {
 		s.runCancel() // signal in-flight job functions to abort
 	}
@@ -340,6 +345,10 @@ func (s *Scheduler) worker(ch <-chan *Job) {
 // panic stack trace.
 func (s *Scheduler) runJob(j *Job) (err error) {
 	s.mu.Lock()
+	if s.jobs[j.ID] != j {
+		s.mu.Unlock()
+		return nil
+	}
 	j.Status = JobStatusRunning
 	s.mu.Unlock()
 
@@ -369,8 +378,7 @@ func (s *Scheduler) runJob(j *Job) (err error) {
 	}()
 
 	// Derive from runCtx so Stop() cancellation propagates into the job and the
-	// retry backoff. Fall back to Background if the scheduler was not started
-	// via Start() (e.g. RunNow in tests).
+	// retry backoff, including manual runs before the first Start().
 	parent := s.runCtx
 	if parent == nil {
 		parent = context.Background()

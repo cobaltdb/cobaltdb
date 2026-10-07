@@ -139,7 +139,7 @@ func (p *PrometheusMetrics) writeSystemMetrics(w http.ResponseWriter) {
 func (p *PrometheusMetrics) writeQueryMetrics(w http.ResponseWriter) {
 	// Get slow query stats if available
 	if slowLog := GetSlowQueryLog(); slowLog != nil {
-		total, _ := slowLog.GetStats()
+		total := slowLog.totalLoggedQueries()
 
 		fmt.Fprintf(w, "# HELP cobaltdb_slow_queries_total Total number of slow queries\n")
 		fmt.Fprintf(w, "# TYPE cobaltdb_slow_queries_total counter\n")

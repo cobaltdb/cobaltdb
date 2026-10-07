@@ -349,18 +349,54 @@ func (c *Catalog) windowSamePeer(we *query.WindowExpr, e1, e2 windowPartEntry, s
 
 // evalWindowOffsetFunc handles LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTILE, NTH_VALUE window functions.
 func (c *Catalog) evalWindowOffsetFunc(rows [][]interface{}, colIdx int, entries []windowPartEntry, we *query.WindowExpr, selectCols []selectColInfo, table *TableDef, args []interface{}) bool {
+	if we.Frame != nil && we.Frame.Mode == "ROWS" {
+		switch we.Function {
+		case "FIRST_VALUE", "LAST_VALUE", "NTH_VALUE":
+			for i, entry := range entries {
+				rows[entry.originalIdx][colIdx] = nil
+				start := frameRowBound(we.Frame.Start, i, len(entries))
+				end := frameRowBound(we.Frame.End, i, len(entries))
+				if start < 0 {
+					start = 0
+				}
+				if end >= len(entries) {
+					end = len(entries) - 1
+				}
+				if start > end || len(we.Args) == 0 {
+					continue
+				}
+				target := start
+				if we.Function == "LAST_VALUE" {
+					target = end
+				} else if we.Function == "NTH_VALUE" {
+					if len(we.Args) < 2 {
+						continue
+					}
+					num, ok := toInt64(c.evalWindowExprOnRow(we.Args[1], entry.row, selectCols, table, args, entry.fullRow))
+					if !ok || num < 1 || num > int64(end-start+1) {
+						continue
+					}
+					target += int(num) - 1
+				}
+				valueEntry := entries[target]
+				rows[entry.originalIdx][colIdx] = c.evalWindowExprOnRow(we.Args[0], valueEntry.row, selectCols, table, args, valueEntry.fullRow)
+			}
+			return true
+		}
+	}
 	switch we.Function {
 	case "LAG":
-		offset := 1
-		if len(we.Args) >= 2 {
-			if num, ok := we.Args[1].(*query.NumberLiteral); ok {
-				offset = int(num.Value)
-			}
-		}
 		for i, entry := range entries {
-			if i-offset >= 0 {
+			offset := int64(1)
+			if len(we.Args) >= 2 {
+				if num, ok := toInt64(c.evalWindowExprOnRow(we.Args[1], entry.row, selectCols, table, args, entry.fullRow)); ok {
+					offset = num
+				}
+			}
+			if offset >= 0 && offset <= int64(i) {
+				target := i - int(offset)
 				if len(we.Args) > 0 {
-					rows[entry.originalIdx][colIdx] = c.evalWindowExprOnRow(we.Args[0], entries[i-offset].row, selectCols, table, args, entries[i-offset].fullRow)
+					rows[entry.originalIdx][colIdx] = c.evalWindowExprOnRow(we.Args[0], entries[target].row, selectCols, table, args, entries[target].fullRow)
 				}
 			} else {
 				// The default expression is evaluated against the current
@@ -375,16 +411,17 @@ func (c *Catalog) evalWindowOffsetFunc(rows [][]interface{}, colIdx int, entries
 		return true
 
 	case "LEAD":
-		offset := 1
-		if len(we.Args) >= 2 {
-			if num, ok := we.Args[1].(*query.NumberLiteral); ok {
-				offset = int(num.Value)
-			}
-		}
 		for i, entry := range entries {
-			if i+offset < len(entries) {
+			offset := int64(1)
+			if len(we.Args) >= 2 {
+				if num, ok := toInt64(c.evalWindowExprOnRow(we.Args[1], entry.row, selectCols, table, args, entry.fullRow)); ok {
+					offset = num
+				}
+			}
+			if offset >= 0 && offset < int64(len(entries)-i) {
+				target := i + int(offset)
 				if len(we.Args) > 0 {
-					rows[entry.originalIdx][colIdx] = c.evalWindowExprOnRow(we.Args[0], entries[i+offset].row, selectCols, table, args, entries[i+offset].fullRow)
+					rows[entry.originalIdx][colIdx] = c.evalWindowExprOnRow(we.Args[0], entries[target].row, selectCols, table, args, entries[target].fullRow)
 				}
 			} else {
 				// The default expression is evaluated against the current
@@ -435,9 +472,13 @@ func (c *Catalog) evalWindowOffsetFunc(rows [][]interface{}, colIdx int, entries
 		return true
 
 	case "NTILE":
-		if len(we.Args) > 0 {
-			if numLit, ok := we.Args[0].(*query.NumberLiteral); ok {
-				numBuckets := int(numLit.Value)
+		if len(we.Args) > 0 && len(entries) > 0 {
+			entry := entries[0]
+			if num, ok := toInt64(c.evalWindowExprOnRow(we.Args[0], entry.row, selectCols, table, args, entry.fullRow)); ok {
+				if num > int64(len(entries)) {
+					num = int64(len(entries))
+				}
+				numBuckets := int(num)
 				if numBuckets > 0 {
 					// Standard SQL: the first (n % buckets) buckets are one row
 					// larger than the rest. Distribute the remainder into the
@@ -462,10 +503,11 @@ func (c *Catalog) evalWindowOffsetFunc(rows [][]interface{}, colIdx int, entries
 		return true
 
 	case "NTH_VALUE":
-		if len(we.Args) >= 2 {
-			if num, ok := we.Args[1].(*query.NumberLiteral); ok {
-				n := int(num.Value)
-				if n >= 1 && n <= len(entries) {
+		if len(we.Args) >= 2 && len(entries) > 0 {
+			entry := entries[0]
+			if num, ok := toInt64(c.evalWindowExprOnRow(we.Args[1], entry.row, selectCols, table, args, entry.fullRow)); ok {
+				if num >= 1 && num <= int64(len(entries)) {
+					n := int(num)
 					nthVal := c.evalWindowExprOnRow(we.Args[0], entries[n-1].row, selectCols, table, args, entries[n-1].fullRow)
 					if len(we.OrderBy) > 0 && we.Frame == nil {
 						// Default frame ends at the current row's last peer; the

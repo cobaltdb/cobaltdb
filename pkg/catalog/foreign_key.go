@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -469,7 +470,7 @@ func (fke *ForeignKeyEnforcer) ValidateUpdate(ctx context.Context, tableName str
 		for _, col := range fk.Columns {
 			oldVal, oldExists := oldRow[col]
 			newVal, newExists := newRow[col]
-			if !oldExists || !newExists || oldVal != newVal {
+			if !oldExists || !newExists || !fke.valuesEqual(oldVal, newVal) {
 				fkChanged = true
 				break
 			}
@@ -1584,8 +1585,10 @@ func (fke *ForeignKeyEnforcer) valuesEqual(a, b interface{}) bool {
 		return aFloat == bFloat
 	}
 
-	// Otherwise, use standard equality
-	return a == b
+	// Otherwise, use a comparison that is safe for slice/map-backed SQL
+	// values such as BLOBs and vectors. Direct interface equality panics for
+	// these dynamic types.
+	return reflect.DeepEqual(a, b)
 }
 
 // serializeValue serializes a value for use as a BTree key
