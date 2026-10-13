@@ -10,6 +10,21 @@ const (
 	maxRecursiveCTERows  = 100000
 )
 
+// applyCTEColumnAliases replaces the produced column names with a CTE's
+// explicit column-name list. The list is only applied when its length matches
+// the produced column count: a mismatch is left unchanged so the query keeps
+// the inner aliases rather than silently renaming a subset of columns or
+// inventing names for columns that do not exist.
+func applyCTEColumnAliases(cols, cteColumns []string) []string {
+	if len(cteColumns) == 0 || len(cteColumns) != len(cols) {
+		return cols
+	}
+	renamed := make([]string, len(cols))
+	copy(renamed, cteColumns)
+	return renamed
+}
+
+// ExecuteCTE executes a query with CTEs.
 func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) ([]string, [][]interface{}, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -74,12 +89,22 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 		if selectQuery, ok := cte.Query.(*query.SelectStmt); ok {
 			createdCTEViews = append(createdCTEViews, cte.Name)
 			c.views[cte.Name] = selectQuery
-			// Materialize CTE results so subsequent CTEs can reference them
-			if len(stmt.CTEs) > 1 {
+			// Materialize CTE results so subsequent CTEs can reference them.
+			//
+			// An explicit CTE column list must be applied here too: the plain-SELECT
+			// path used to materialize only when more than one CTE was present, so
+			// with a single CTE the main query resolved the name through the
+			// registered view and was exposed the inner SELECT's own column aliases
+			// instead of the declared ones. Materializing whenever a column list is
+			// present makes selectLockedInternal's CTE lookup (which runs before the
+			// view lookup) consume the renamed result, and also lets later CTEs
+			// reference the declared names.
+			if len(stmt.CTEs) > 1 || len(cte.Columns) > 0 {
 				cols, rows, err := c.selectLocked(selectQuery, args)
 				if err != nil {
 					return nil, nil, fmt.Errorf("CTE %s: %w", cte.Name, err)
 				}
+				cols = applyCTEColumnAliases(cols, cte.Columns)
 				c.cteResults[cteName] = &cteResultSet{columns: cols, rows: rows}
 				createdCTEResults = append(createdCTEResults, cteName)
 			}
@@ -89,9 +114,7 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 			if err != nil {
 				return nil, nil, fmt.Errorf("CTE %s: %w", cte.Name, err)
 			}
-			if len(cols) == 0 && len(cte.Columns) > 0 {
-				cols = cte.Columns
-			}
+			cols = applyCTEColumnAliases(cols, cte.Columns)
 			c.cteResults[cteName] = &cteResultSet{
 				columns: cols,
 				rows:    rows,
