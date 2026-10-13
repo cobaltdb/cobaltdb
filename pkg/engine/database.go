@@ -831,6 +831,16 @@ func valueToLiteralExpr(v interface{}) query.Expression {
 		return &query.BooleanLiteral{Value: val}
 	case string:
 		return &query.StringLiteral{Value: val}
+	case []byte:
+		// A scanned BLOB value arrives as []byte. Rendering it via the
+		// default case's fmt.Sprintf("%v", val) emits the decimal byte list
+		// ("[104 101 108 108 111]"), so CTAS and INSERT..SELECT
+		// materialization silently corrupted binary data with no error at
+		// DDL or query time. Go strings hold arbitrary bytes, and the row
+		// encoder's binary path (rowHasBinaryValue -> encodeBinaryVersionedRow)
+		// already handles non-UTF-8 strings losslessly, so converting back to
+		// string preserves the bytes exactly.
+		return &query.StringLiteral{Value: string(val)}
 	default:
 		return &query.StringLiteral{Value: fmt.Sprintf("%v", val)}
 	}
