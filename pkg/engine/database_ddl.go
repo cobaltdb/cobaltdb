@@ -397,7 +397,10 @@ func (db *DB) executeCreatePolicy(ctx context.Context, stmt *query.CreatePolicyS
 	usingExpr := ""
 	if stmt.Using != nil {
 		usingExpr = expressionToString(stmt.Using)
-		if usingExpr == "" {
+		// A partially rendered expression is as unsafe as an empty one: the
+		// stored string is re-parsed at query time, so a truncated render
+		// enforces different semantics than the authored policy.
+		if usingExpr == "" || !expressionRenderable(stmt.Using) {
 			// Fail closed: an expression was given but cannot be rendered.
 			// Silently storing "TRUE" would weaken a restrictive policy into
 			// allow-all.
@@ -407,7 +410,7 @@ func (db *DB) executeCreatePolicy(ctx context.Context, stmt *query.CreatePolicyS
 	checkExpr := ""
 	if stmt.WithCheck != nil {
 		checkExpr = expressionToString(stmt.WithCheck)
-		if checkExpr == "" {
+		if checkExpr == "" || !expressionRenderable(stmt.WithCheck) {
 			return Result{}, fmt.Errorf("unsupported expression in WITH CHECK clause: policy would be silently permissive")
 		}
 	}
@@ -580,6 +583,81 @@ func expressionToString(expr query.Expression) string {
 		return sb.String()
 	default:
 		return ""
+	}
+}
+
+// expressionRenderable reports whether expressionToString can render every node
+// of expr — the exact inverse of its case coverage. It exists because
+// executeCreatePolicy renders a policy's USING/WITH CHECK clause to a string
+// that the RLS evaluator re-parses at QUERY time (security/rls.go parses
+// policy.Expression), so a partially rendered expression must fail closed.
+//
+// expressionToString on its own cannot report that: an unhandled node renders
+// as "" but only makes the WHOLE string empty when it is the root, so
+// `active = (SELECT 1)` rendered as "active = " and satisfied the whole-string
+// emptiness check — storing a mangled policy that denied every row it was
+// authored to grant, silently, with no error at DDL or query time.
+//
+// Drift between this predicate and expressionToString must fail SAFE (treating
+// a renderable expression as unrenderable), never the reverse: the default case
+// below returns false, so a newly added expressionToString case that is not
+// mirrored here over-rejects rather than silently storing a truncated policy.
+func expressionRenderable(expr query.Expression) bool {
+	switch e := expr.(type) {
+	case nil:
+		return true
+	case *query.Identifier, *query.QualifiedIdentifier, *query.StringLiteral,
+		*query.NumberLiteral, *query.BooleanLiteral, *query.NullLiteral:
+		return true
+	case *query.BinaryExpr:
+		// An unmapped operator token would render as "" between its operands.
+		if tokenTypeToString(e.Operator) == "" {
+			return false
+		}
+		return expressionRenderable(e.Left) && expressionRenderable(e.Right)
+	case *query.UnaryExpr:
+		if tokenTypeToString(e.Operator) == "" {
+			return false
+		}
+		return expressionRenderable(e.Expr)
+	case *query.FunctionCall:
+		for _, arg := range e.Args {
+			if !expressionRenderable(arg) {
+				return false
+			}
+		}
+		return true
+	case *query.InExpr:
+		// A subquery operand is dropped entirely by the renderer, silently
+		// turning "IN (subquery)" into "IN (empty list)".
+		if e.Subquery != nil {
+			return false
+		}
+		if !expressionRenderable(e.Expr) {
+			return false
+		}
+		for _, item := range e.List {
+			if !expressionRenderable(item) {
+				return false
+			}
+		}
+		return true
+	case *query.LikeExpr:
+		if !expressionRenderable(e.Expr) || !expressionRenderable(e.Pattern) {
+			return false
+		}
+		if e.Escape != nil {
+			return expressionRenderable(e.Escape)
+		}
+		return true
+	case *query.IsNullExpr:
+		return expressionRenderable(e.Expr)
+	case *query.BetweenExpr:
+		return expressionRenderable(e.Expr) &&
+			expressionRenderable(e.Lower) &&
+			expressionRenderable(e.Upper)
+	default:
+		return false
 	}
 }
 
