@@ -70,7 +70,16 @@ func (c *Catalog) evaluateWindowFunctions(rows [][]interface{}, selectCols []sel
 		}
 		for i := range rows {
 			evalRow := rows[i]
-			evalCols := table.Columns
+			// The JOIN path calls evaluateWindowFunctions with table == nil,
+			// so table.Columns would dereference nil here. Column resolution
+			// for that path happens through selectCols (see
+			// evalWindowExprOnRow), so an empty column list is correct; the
+			// surrounding expression is re-evaluated only to substitute the
+			// already-computed window values.
+			var evalCols []ColumnDef
+			if table != nil {
+				evalCols = table.Columns
+			}
 			if i < len(fullRows) && fullRows[i] != nil {
 				evalRow = fullRows[i]
 			}

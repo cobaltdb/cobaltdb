@@ -531,12 +531,21 @@ func (c *Catalog) executeSelectWithJoin(stmt *query.SelectStmt, args []interface
 	hiddenWindowCols := c.resolveHiddenWindowCols(stmt, &selectCols, mainTableCols, mainAlias, combinedColumns, tableOffsets)
 	hiddenOrderByCols += hiddenWindowCols
 
-	resultRows := c.projectJoinSelectCols(stmt, intermediateRows, selectCols, combinedColumns, tableOffsets, args)
+	resultRows, err := c.projectJoinSelectCols(stmt, intermediateRows, selectCols, combinedColumns, tableOffsets, args)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// Evaluate window functions on projected rows
 	hasWindowFuncs := false
 	for _, ci := range selectCols {
-		if ci.isWindow {
+		// Mirror the single-table gate in selectLockedInternal: a window
+		// EMBEDDED inside a larger expression (SUM(x) OVER () + 1) sets
+		// embeddedWindows but NOT isWindow. Checking ci.isWindow alone left the
+		// gate false for those columns, so evaluateWindowFunctions was never
+		// called over a JOIN and the column kept the NULL that
+		// projectJoinSelectCols wrote.
+		if ci.isWindow || len(ci.embeddedWindows) > 0 {
 			hasWindowFuncs = true
 			break
 		}
@@ -676,10 +685,20 @@ func (c *Catalog) resolveHiddenJoinOrderByCols(stmt *query.SelectStmt, selectCol
 func (c *Catalog) resolveHiddenWindowCols(stmt *query.SelectStmt, selectCols *[]selectColInfo, mainTableCols []ColumnDef, mainAlias string, combinedColumns []ColumnDef, tableOffsets []tableOffset) int {
 	hiddenCols := 0
 	for _, ci := range *selectCols {
-		if !ci.isWindow || ci.windowExpr == nil {
+		// A window can appear two ways: as the whole column (ci.isWindow with
+		// ci.windowExpr) or EMBEDDED inside a larger expression
+		// (SUM(x) OVER () + 1), which sets ci.embeddedWindows and leaves
+		// isWindow false. Skipping the latter meant their value/PARTITION BY/
+		// ORDER BY columns were never collected, so over a JOIN they resolved
+		// to nil and the expression evaluated to NULL.
+		var windowExprs []*query.WindowExpr
+		if ci.isWindow && ci.windowExpr != nil {
+			windowExprs = append(windowExprs, ci.windowExpr)
+		}
+		windowExprs = append(windowExprs, ci.embeddedWindows...)
+		if len(windowExprs) == 0 {
 			continue
 		}
-		we := ci.windowExpr
 		// Collect column names/table names from PARTITION BY and ORDER BY expressions.
 		addColumnRef := func(expr query.Expression) {
 			var colName, tblName string
@@ -743,18 +762,33 @@ func (c *Catalog) resolveHiddenWindowCols(stmt *query.SelectStmt, selectCols *[]
 				}
 			}
 		}
-		for _, p := range we.PartitionBy {
-			addColumnRef(p)
-		}
-		for _, ob := range we.OrderBy {
-			addColumnRef(ob.Expr)
+		// The window's VALUE expression (SUM(a.v)/AVG(a.v)/MIN(a.v) …) reads a
+		// column just like PARTITION BY and ORDER BY do, but was never collected
+		// here. evalWindowExprOnRow resolves an identifier by scanning
+		// selectCols and falls back to table-column lookups guarded by
+		// `if table != nil`; the JOIN path calls evaluateWindowFunctions with
+		// table=nil and fullRows=nil, so every fallback is dead and any value
+		// column absent from the projected row resolved to nil. The aggregate
+		// then returned NULL instead of a value, with no error — and the
+		// answer silently depended on whether the column happened to also be
+		// listed in the SELECT list. Collect the value-expression columns too.
+		for _, we := range windowExprs {
+			for _, a := range we.Args {
+				addColumnRef(a)
+			}
+			for _, p := range we.PartitionBy {
+				addColumnRef(p)
+			}
+			for _, ob := range we.OrderBy {
+				addColumnRef(ob.Expr)
+			}
 		}
 	}
 	return hiddenCols
 }
 
 // projectJoinSelectCols projects select columns from joined rows.
-func (c *Catalog) projectJoinSelectCols(stmt *query.SelectStmt, intermediateRows [][]interface{}, selectCols []selectColInfo, combinedColumns []ColumnDef, tableOffsets []tableOffset, args []interface{}) [][]interface{} {
+func (c *Catalog) projectJoinSelectCols(stmt *query.SelectStmt, intermediateRows [][]interface{}, selectCols []selectColInfo, combinedColumns []ColumnDef, tableOffsets []tableOffset, args []interface{}) ([][]interface{}, error) {
 	var resultRows [][]interface{}
 	for _, row := range intermediateRows {
 		projected := make([]interface{}, 0, len(selectCols))
@@ -762,10 +796,27 @@ func (c *Catalog) projectJoinSelectCols(stmt *query.SelectStmt, intermediateRows
 			if ci.index == -1 && !ci.isAggregate {
 				if i < len(stmt.Columns) {
 					val, err := evaluateExpression(c, row, combinedColumns, stmt.Columns[i], args)
-					if err == nil {
-						projected = append(projected, val)
-						continue
+					if err != nil {
+						// Window columns (and expressions embedding them) are
+						// computed AFTER this projection by
+						// evaluateWindowFunctions, so a pre-pass evaluation
+						// error here is expected and must not fail the query —
+						// the same exemption applyOuterQueryProjection applies.
+						// Anything else is a genuine evaluation failure: the old
+						// `err == nil` form downgraded it to a NULL, so
+						// SELECT a.id, a.v/0 ... JOIN silently returned
+						// [a.id, NULL] while the same expression errors
+						// ungrouped, in WHERE, in a derived table and in
+						// LIMIT/OFFSET — contradicting the documented
+						// division-by-zero-raises contract (CLAUDE.md).
+						if ci.isWindow || len(ci.embeddedWindows) > 0 {
+							projected = append(projected, nil)
+							continue
+						}
+						return nil, err
 					}
+					projected = append(projected, val)
+					continue
 				}
 				projected = append(projected, nil)
 				continue
@@ -793,7 +844,7 @@ func (c *Catalog) projectJoinSelectCols(stmt *query.SelectStmt, intermediateRows
 		}
 		resultRows = append(resultRows, projected)
 	}
-	return resultRows
+	return resultRows, nil
 }
 
 func (c *Catalog) executeSelectWithJoinAndGroupBy(stmt *query.SelectStmt, args []interface{}, selectCols []selectColInfo, returnColumns []string) ([]string, [][]interface{}, error) {

@@ -989,6 +989,21 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 				}
 			}
 		}
+		// Window functions are evaluated on the GROUP BY branch too. This
+		// branch returns early, before the window-detection block further
+		// down, so no window column was ever evaluated for a GROUP BY query.
+		// so without this every window column in an aggregate query stayed
+		// NULL (even ROW_NUMBER() OVER (ORDER BY g)). table is passed as nil:
+		// rows here are aggregated group rows, so evalWindowExprOnRow's
+		// table-column index fallback would read the wrong element; resolution
+		// must go through the selectCols scan, as on the JOIN path.
+		for _, ci := range augSelectCols {
+			if !ci.isWindow && len(ci.embeddedWindows) == 0 {
+				continue
+			}
+			rows = cat.evaluateWindowFunctions(rows, augSelectCols, nil, stmt, args, nil)
+			break
+		}
 		return cols, rows, nil
 	}
 
