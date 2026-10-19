@@ -2465,7 +2465,11 @@ func int64SubChecked(ai, bi int64) (int64, bool) {
 // int64Abs returns |v| as uint64 without overflowing for MinInt64.
 func int64Abs(v int64) uint64 {
 	if v < 0 {
-		return uint64(-(v + 1)) + 1
+		// The `v+1` form is deliberate: `-v` overflows for MinInt64, so the
+		// negation is applied to v+1 (which is in [MinInt64+1, 0]) and 1 is
+		// added back. Reached only when v < 0, so -(v+1) is in [0, MaxInt64]
+		// and the uint64 conversion is value-preserving.
+		return uint64(-(v + 1)) + 1 // #nosec G115 -- guarded by the branch above
 	}
 	return uint64(v)
 }
@@ -2488,7 +2492,10 @@ func int64MulChecked(ai, bi int64) (int64, bool) {
 		}
 		return math.MinInt64, true
 	}
-	product := int64(lo)
+	// Guarded immediately above: `hi != 0 || lo > limit` returns false, and
+	// the `lo == limit` case returns early, so here lo < 2^63 and the
+	// narrowing is value-preserving.
+	product := int64(lo) // #nosec G115 -- guarded by the check above
 	if negative {
 		product = -product
 	}
