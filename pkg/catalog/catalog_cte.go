@@ -88,7 +88,33 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 		// Non-recursive CTE: register as a view or execute as union
 		if selectQuery, ok := cte.Query.(*query.SelectStmt); ok {
 			createdCTEViews = append(createdCTEViews, cte.Name)
-			c.views[cte.Name] = selectQuery
+			// Register the view with the DECLARED column names applied. The view
+			// is inlined by tryViewSelect (catalog_core.go) whenever the main
+			// query references it as a FROM - including a JOIN - and that inline
+			// merge copies view.From, so without this the reference resolved
+			// against the inner SELECT's own column names instead of the WITH
+			// clause's, and ON c.x never bound.
+			//
+			// Aliasing the view's projections also makes tryViewSelect's
+			// viewIsComplex check (it treats any *query.AliasExpr as complex)
+			// take the materialization branch, which registers the result in the
+			// per-query overlay under the declared names - the path the JOIN
+			// actually reads. Materialization below still uses the original
+			// selectQuery, so applyCTEColumnAliases stays a no-op-safe rename.
+			viewQuery := selectQuery
+			if len(cte.Columns) == len(selectQuery.Columns) {
+				aliased := *selectQuery
+				aliased.Columns = make([]query.Expression, len(selectQuery.Columns))
+				for i, col := range selectQuery.Columns {
+					if _, already := col.(*query.AliasExpr); already {
+						aliased.Columns[i] = col
+						continue
+					}
+					aliased.Columns[i] = &query.AliasExpr{Expr: col, Alias: cte.Columns[i]}
+				}
+				viewQuery = &aliased
+			}
+			c.views[cte.Name] = viewQuery
 			// Materialize CTE results so subsequent CTEs can reference them.
 			//
 			// An explicit CTE column list must be applied here too: the plain-SELECT
