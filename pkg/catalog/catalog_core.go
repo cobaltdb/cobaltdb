@@ -1068,8 +1068,11 @@ func (cat *Catalog) selectNeedsFullRowsForRLS(tableName string) bool {
 	if rlsCtx == nil {
 		return false
 	}
-	user, _ := rlsContext(rlsCtx)
-	return user != ""
+	// A nil context means the engine never routed through SelectWithContext,
+	// and a bypass context is privileged. Anything else - including a non-nil
+	// context carrying an empty identity - must collect full rows so
+	// checkRowAccessLocked decides (deny, or allow under bypass).
+	return !rlsBypassed(rlsCtx)
 }
 
 // scanTableRowsWithSnapshot is a thin wrapper around scanTableRows that accepts

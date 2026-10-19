@@ -875,6 +875,17 @@ func valueToLiteralExpr(v interface{}) query.Expression {
 // executeSelect executes SELECT
 // executeSelect executes SELECT
 
+// rlsBypassRequested reports whether ctx carries an explicit privileged
+// row-level security bypass. Privileged operations (`cobaltdb-cli dump` and
+// `restore`) set it; ordinary application queries never do.
+func rlsBypassRequested(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	bypass, _ := ctx.Value(security.RLSBypassKey).(bool)
+	return bypass
+}
+
 func (db *DB) executeSelect(ctx context.Context, stmt *query.SelectStmt, args []interface{}) (*Rows, error) {
 	var columns []string
 	var rows [][]interface{}
@@ -883,7 +894,12 @@ func (db *DB) executeSelect(ctx context.Context, stmt *query.SelectStmt, args []
 	// enabled, so policies see the caller's user/roles. SelectWithContext holds
 	// the exclusive lock to keep the shared RLS context per-query-safe; non-RLS
 	// reads stay on the concurrent Select path.
-	if db.catalog.IsRLSEnabled() {
+	// Route through SelectWithContext when a privileged RLS bypass is
+	// requested, even when RLS is disabled at the engine level. Catalog.Select
+	// takes NO context, so cat.rlsCtx - the only channel by which identity
+	// reaches the catalog - would be nil there and the bypass could never be
+	// observed. Ordinary non-RLS reads stay on the concurrent Select path.
+	if db.catalog.IsRLSEnabled() || rlsBypassRequested(ctx) {
 		columns, rows, err = db.catalog.SelectWithContext(ctx, stmt, args)
 	} else {
 		columns, rows, err = db.catalog.Select(stmt, args)

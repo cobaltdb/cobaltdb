@@ -17,6 +17,7 @@ import (
 
 	"github.com/chzyer/readline"
 	"github.com/cobaltdb/cobaltdb/pkg/engine"
+	"github.com/cobaltdb/cobaltdb/pkg/security"
 )
 
 var (
@@ -1236,8 +1237,18 @@ func runRestoreCommand(args []string, path string, inMemory bool) {
 	}
 }
 
+// privilegedRLSContext returns a context authorized to bypass row-level
+// security. `dump` and `restore` operate on the PHYSICAL database rather than
+// on any one tenant's view of it, and run their statements under a bare
+// context. Without this they would either write every tenant's rows into a
+// plaintext SQL dump, or - now that an ordinary identity-less query is denied -
+// silently restore zero rows for any table a policy protects.
+func privilegedRLSContext() context.Context {
+	return context.WithValue(context.Background(), security.RLSBypassKey, true)
+}
+
 func dumpDatabase(db *engine.DB, filePath string) (err error) {
-	ctx := context.Background()
+	ctx := privilegedRLSContext()
 	var out io.Writer
 	var outputFile *cliOutputFile
 	if filePath != "" {
@@ -1823,7 +1834,7 @@ func restoreDatabase(db *engine.DB, filePath string) error {
 		return fmt.Errorf("read file: %w", err)
 	}
 
-	ctx := context.Background()
+	ctx := privilegedRLSContext()
 	statements := splitSQLStatements(string(data))
 	executable := make([]string, 0, len(statements))
 	hasTxnControl := false

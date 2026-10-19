@@ -43,16 +43,35 @@ func rlsContext(ctx context.Context) (user string, roles []string) {
 	return
 }
 
+// rlsBypassed reports whether ctx carries an explicit privileged RLS bypass
+// (security.RLSBypassKey). Only operations privileged by construction set it -
+// currently `cobaltdb-cli dump` and `cobaltdb-cli restore`. An ordinary query
+// that merely omits a user does NOT set it and is denied instead, so a missing
+// identity can never silently disable a policy.
+func rlsBypassed(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	bypass, _ := ctx.Value(security.RLSBypassKey).(bool)
+	return bypass
+}
+
 // checkRowAccessLocked checks RLS access for the given operation.
 // Caller must hold the catalog lock. Returns (allowed, error).
 func (c *Catalog) checkRowAccessLocked(ctx context.Context, tableName string, columns []ColumnDef, row []interface{}, operation security.PolicyType) (bool, error) {
 	if !c.enableRLS || c.rlsManager == nil {
 		return true, nil
 	}
-	user, roles := rlsContext(ctx)
-	if user == "" {
+	if rlsBypassed(ctx) {
 		return true, nil
 	}
+	user, roles := rlsContext(ctx)
+	// Fail CLOSED on an absent identity. Returning true here disabled
+	// row-level security outright: any caller that omitted the user from its
+	// context read every row the policies exist to hide (cross-tenant leak).
+	// The manager already denies an empty user ("RLS enabled but no policies =
+	// deny all"); a policy that explicitly admits "" still grants access, so
+	// delegating changes only the fail-open case.
 	rowMap := rowToMap(columns, row)
 	return c.rlsManager.CheckAccess(ctx, tableName, operation, rowMap, user, roles)
 }
@@ -67,8 +86,7 @@ func (c *Catalog) filterRowsForSelectRLSLocked(ctx context.Context, tableName st
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	user, _ := rlsContext(ctx)
-	if user == "" {
+	if rlsBypassed(ctx) {
 		return rows, nil
 	}
 
@@ -91,10 +109,13 @@ func (c *Catalog) checkRowCheckLocked(ctx context.Context, tableName string, col
 	if !c.enableRLS || c.rlsManager == nil {
 		return true, nil
 	}
-	user, roles := rlsContext(ctx)
-	if user == "" {
+	if rlsBypassed(ctx) {
 		return true, nil
 	}
+	user, roles := rlsContext(ctx)
+	// Fail CLOSED for the same reason as checkRowAccessLocked: an absent
+	// identity must not disable WITH CHECK enforcement, or a caller that
+	// omitted the user could write rows the policy forbids.
 	rowMap := rowToMap(columns, row)
 	return c.rlsManager.CheckAccessWithCheck(ctx, tableName, operation, rowMap, user, roles)
 }

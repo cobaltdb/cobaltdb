@@ -326,8 +326,7 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 	if rlsCtx == nil {
 		rlsCtx = context.Background()
 	}
-	rlsUser, _ := rlsContext(rlsCtx)
-	applyRLS := rlsUser != "" && c.enableRLS && c.rlsManager != nil && c.rlsManager.IsEnabled(table.Name)
+	applyRLS := !rlsBypassed(rlsCtx) && c.enableRLS && c.rlsManager != nil && c.rlsManager.IsEnabled(table.Name)
 
 	if canParallel {
 		for _, valueData := range allValues {

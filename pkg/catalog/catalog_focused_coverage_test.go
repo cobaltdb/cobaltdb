@@ -942,8 +942,28 @@ func TestCheckRowAccessLocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("checkRowAccessLocked: %v", err)
 	}
+	// SECURITY RATIONALE: this previously asserted the FAIL-OPEN behaviour -
+	// an empty user short-circuited to "allowed", so any caller that omitted
+	// the user from its context read every row the policies exist to hide
+	// (cross-tenant data leak). Row-level security now fails CLOSED: the
+	// manager denies an empty user ("RLS enabled but no policies = deny all"),
+	// which is also what security.Manager documents.
+	if allowed {
+		t.Errorf("expected DENY with RLS enabled, no policies and no identity " +
+			"(an absent identity must fail closed, not bypass row-level security)")
+	}
+
+	// An explicit privileged bypass is the ONE case allowed without identity:
+	// it marks `cobaltdb-cli dump`/`restore`, which operate on the physical
+	// database rather than any single tenant's view of it.
+	allowed, err = cat.checkRowAccessLocked(
+		context.WithValue(context.Background(), security.RLSBypassKey, true),
+		"test", nil, nil, security.PolicySelect)
+	if err != nil {
+		t.Fatalf("checkRowAccessLocked(bypass): %v", err)
+	}
 	if !allowed {
-		t.Errorf("expected allowed when no user in context")
+		t.Errorf("expected ALLOW for an explicit privileged RLS bypass")
 	}
 }
 
@@ -1461,8 +1481,36 @@ func TestFilterRowsForSelectRLSLockedWithRLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("filterRowsForSelectRLSLocked: %v", err)
 	}
-	if len(filtered) != 2 {
-		t.Errorf("expected 2 rows, got %d", len(filtered))
+	// SECURITY RATIONALE: previously returned both rows because an empty user
+	// skipped filtering entirely - the same fail-open. With RLS enabled, no
+	// policies and no identity, every row must now be filtered out.
+	if len(filtered) != 0 {
+		t.Errorf("expected 0 rows (RLS enabled, no policies, no identity), got %d", len(filtered))
+	}
+
+	// Privileged bypass (CLI dump/restore): every row is returned.
+	bypassRows, err := cat.filterRowsForSelectRLSLocked(
+		context.WithValue(context.Background(), security.RLSBypassKey, true), "test", nil, rows)
+	if err != nil {
+		t.Fatalf("filterRowsForSelectRLSLocked(bypass): %v", err)
+	}
+	if len(bypassRows) != 2 {
+		t.Errorf("expected 2 rows under privileged bypass, got %d", len(bypassRows))
+	}
+
+	// A table RLS is NOT enabled on must still pass through unfiltered: the
+	// manager's IsEnabled gate is what scopes enforcement to RLS tables.
+	cat2 := newEmptyCatalog()
+	cat2.tables["other"] = &TableDef{Name: "other", Columns: []ColumnDef{{Name: "id", Type: "INTEGER"}}}
+	cat2.enableRLS = true
+	cat2.rlsManager = security.NewManager()
+	cat2.rlsManager.EnableTable("test") // deliberately NOT "other"
+	passthrough, err := cat2.filterRowsForSelectRLSLocked(context.TODO(), "other", nil, rows)
+	if err != nil {
+		t.Fatalf("filterRowsForSelectRLSLocked: %v", err)
+	}
+	if len(passthrough) != 2 {
+		t.Errorf("expected 2 rows for a table RLS is not enabled on, got %d", len(passthrough))
 	}
 }
 

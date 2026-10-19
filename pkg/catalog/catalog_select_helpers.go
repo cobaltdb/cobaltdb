@@ -33,8 +33,11 @@ func (cat *Catalog) applySelectPostProcess(p applySelectPostProcessParams) ([]st
 		if rlsCtx == nil {
 			rlsCtx = context.Background()
 		}
-		user, _ := rlsContext(rlsCtx)
-		if user != "" && cat.rlsManager.IsEnabled(p.stmt.From.Name) {
+		// The identity decision belongs to checkRowAccessLocked, which denies
+		// an empty identity and allows an explicit privileged bypass. Gating
+		// on a non-empty user here made a missing identity skip filtering
+		// entirely (fail open).
+		if cat.rlsManager.IsEnabled(p.stmt.From.Name) {
 			filteredRows := make([][]interface{}, 0, len(rows))
 			filteredFullRows := make([][]interface{}, 0, len(p.windowFullRows))
 			for i, fullRow := range p.windowFullRows {
@@ -113,8 +116,16 @@ func (cat *Catalog) applySelectPostProcess(p applySelectPostProcessParams) ([]st
 		if rlsCtx == nil {
 			rlsCtx = context.Background()
 		}
+		// applyRLSFilterInternal filters on the supplied identity and does not
+		// know about the bypass. Under bypass, selectNeedsFullRowsForRLS is
+		// false so this fallback runs instead of the full-row branch, and
+		// running it with an empty user silently dropped every row - which is
+		// why `cobaltdb-cli dump` once emitted no INSERTs at all.
+		if rlsBypassed(rlsCtx) {
+			return returnColumns, rows
+		}
 		user, roles := rlsContext(rlsCtx)
-		if user != "" {
+		{
 			cols, filteredRows, rlsErr := cat.applyRLSFilterInternal(rlsCtx, p.stmt.From.Name, returnColumns, rows, user, roles)
 			if rlsErr != nil {
 				return nil, nil
