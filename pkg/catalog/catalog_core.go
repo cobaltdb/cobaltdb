@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/cache"
@@ -36,7 +37,6 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -1794,16 +1794,33 @@ func (t *TableDef) buildColumnIndexCache() {
 	}
 }
 
+// columnIndexCacheMu guards the LAZY build of TableDef.columnIndices.
+//
+// Package-level, not a TableDef field: TableDef is copied by value
+// (cloneTableDef), so a mutex field would be copied along with the value and
+// trip go vet's copylocks check. Contention is cold-only - DDL, clone, txn
+// replay and schema load all build the cache eagerly.
+var columnIndexCacheMu sync.Mutex
+
 func (t *TableDef) GetColumnIndex(name string) int {
+	// Every access to the field goes through the mutex. Checking without the
+	// lock and locking only when nil is still a race: the map header is
+	// multi-word, so the unsynchronized read can tear, not merely go stale.
+	// The map is never written after the build, so the lookups below need no
+	// further synchronization.
+	columnIndexCacheMu.Lock()
 	if t.columnIndices == nil {
 		t.buildColumnIndexCache()
 	}
+	indices := t.columnIndices
+	columnIndexCacheMu.Unlock()
+
 	// Fast path: exact case match (common when parsed SQL matches DDL).
-	if idx, ok := t.columnIndices[name]; ok {
+	if idx, ok := indices[name]; ok {
 		return idx
 	}
 	// Fallback: case-insensitive lookup.
-	if idx, ok := t.columnIndices[toLowerFast(name)]; ok {
+	if idx, ok := indices[toLowerFast(name)]; ok {
 		return idx
 	}
 	return -1
