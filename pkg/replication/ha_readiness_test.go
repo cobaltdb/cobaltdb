@@ -373,7 +373,9 @@ func TestRejoinedReplicaRequestsSnapshotOnStart(t *testing.T) {
 	}
 	defer newPrimary.Stop()
 
-	oldPrimary := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync})
+	// SyncInterval must be non-zero: a bare &Config{} leaves it at 0, which is
+	// not a valid ticker period, so the sync path never runs as intended.
+	oldPrimary := NewManager(&Config{Role: RoleMaster, Mode: ModeAsync, SyncInterval: 10 * time.Millisecond})
 	if err := oldPrimary.ReplicateWALEntry([]byte("divergent-old-primary-write")); err != nil {
 		t.Fatalf("ReplicateWALEntry: %v", err)
 	}
@@ -411,8 +413,18 @@ func TestRejoinedReplicaRequestsSnapshotOnStart(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("rejoined replica did not request and apply snapshot")
 	}
-	if atomic.LoadUint32(&oldPrimary.requireSnapshot) != 0 {
-		t.Fatal("snapshot requirement was not cleared after applying snapshot")
+	// OnApplySnapshot is signalled from the callback, but the requireSnapshot
+	// clear is a SEPARATE atomic.StoreUint32 in applySnapshotData (after the
+	// callback returns). Receiving from `applied` therefore proves the callback
+	// ran, NOT that the clear has landed — asserting straight after it reads a
+	// flag that has not been stored yet, which is the load-sensitive failure.
+	// Wait for the clear itself, bounded, instead of asserting on a race.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadUint32(&oldPrimary.requireSnapshot) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := atomic.LoadUint32(&oldPrimary.requireSnapshot); got != 0 {
+		t.Fatalf("snapshot requirement was not cleared after applying snapshot (requireSnapshot=%d)", got)
 	}
 }
 
