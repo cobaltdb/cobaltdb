@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -841,6 +842,19 @@ func valueToLiteralExpr(v interface{}) query.Expression {
 		// already handles non-UTF-8 strings losslessly, so converting back to
 		// string preserves the bytes exactly.
 		return &query.StringLiteral{Value: string(val)}
+	case map[string]interface{}, []interface{}:
+		// A decoded JSON document must be re-encoded as JSON. The default
+		// case renders these with fmt.Sprintf("%v"), producing Go's map/slice
+		// formatting ("map[deleted_at:42 name:x]"), so CTAS and
+		// INSERT..SELECT silently replaced a JSON column's document with a
+		// display string - lossy and irreversible, with no error at DDL or
+		// query time.
+		if encoded, err := json.Marshal(val); err == nil {
+			return &query.StringLiteral{Value: string(encoded)}
+		}
+		// Marshal only fails on values JSON cannot represent (channels, funcs,
+		// cyclic graphs). Fall back rather than drop the value.
+		return &query.StringLiteral{Value: fmt.Sprintf("%v", val)}
 	default:
 		return &query.StringLiteral{Value: fmt.Sprintf("%v", val)}
 	}
