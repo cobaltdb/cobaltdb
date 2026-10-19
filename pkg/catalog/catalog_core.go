@@ -2207,6 +2207,12 @@ func exprToSQL(expr query.Expression) string {
 		for _, arg := range e.Args {
 			args = append(args, exprToSQL(arg))
 		}
+		// DISTINCT must survive a persisted round trip: COUNT(DISTINCT x) and
+		// COUNT(x) are different results, and dropping it silently changed a
+		// CHECK/DEFAULT constraint's meaning.
+		if e.Distinct {
+			return fmt.Sprintf("%s(DISTINCT %s)", e.Name, strings.Join(args, ", "))
+		}
 		return fmt.Sprintf("%s(%s)", e.Name, strings.Join(args, ", "))
 	case *query.BetweenExpr:
 		op := "BETWEEN"
@@ -2232,6 +2238,30 @@ func exprToSQL(expr query.Expression) string {
 		return fmt.Sprintf("(%s %s (%s))", exprToSQL(e.Expr), op, strings.Join(items, ", "))
 	case *query.CastExpr:
 		return fmt.Sprintf("CAST(%s AS %s)", exprToSQL(e.Expr), tokenTypeToColumnType(e.DataType))
+	case *query.IsNullExpr:
+		// Without this case an IS NULL / IS NOT NULL in a persisted CHECK or
+		// DEFAULT fell through to the %v default and was written as a Go
+		// struct dump (&{0x... false}), which then failed to re-parse on load
+		// and made the whole database unopenable.
+		if e.Not {
+			return "(" + exprToSQL(e.Expr) + " IS NOT NULL)"
+		}
+		return "(" + exprToSQL(e.Expr) + " IS NULL)"
+	case *query.LikeExpr:
+		// Same class as IsNullExpr: LIKE in a CHECK constraint is extremely
+		// common and rendered as a struct dump without this case.
+		op := " LIKE "
+		if e.Not {
+			op = " NOT LIKE "
+		}
+		out := "(" + exprToSQL(e.Expr) + op + exprToSQL(e.Pattern) + ")"
+		// ESCAPE is a property of the LIKE predicate, not of the parenthesised
+		// comparison, so it renders after the closing paren. Bind ok, not the
+		// value: a nil Escape must not render "ESCAPE ''".
+		if lit, ok := e.Escape.(*query.StringLiteral); ok {
+			out += " ESCAPE '" + strings.ReplaceAll(lit.Value, "'", "''") + "'"
+		}
+		return out
 	case *query.CaseExpr:
 		var sb strings.Builder
 		sb.WriteString("CASE")
