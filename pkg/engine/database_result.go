@@ -56,7 +56,7 @@ func (r *Rows) Scan(dest ...interface{}) error {
 	}
 
 	for i, d := range dest {
-		if d == nil || (reflect.ValueOf(d).Kind() == reflect.Ptr && reflect.ValueOf(d).IsNil()) {
+		if d == nil || (reflect.ValueOf(d).Kind() == reflect.Pointer && reflect.ValueOf(d).IsNil()) {
 			return errors.New("scan destination is nil")
 		}
 		if di, ok := d.(*interface{}); ok {

@@ -529,13 +529,9 @@ func (p *Parser) parseIdentifierList() ([]string, error) {
 	return ids, nil
 }
 
-func reindexPlaceholders(expr Expression, offset int) {
-	phs := collectPlaceholders(expr)
-	for i, ph := range phs {
-		ph.Index = offset + i
-	}
-}
-
+// run.tests: false, so the unused analyzer cannot see those references.
+//
+//nolint:unused // exercised by this package's tests; .golangci.yml sets
 func reindexPlaceholdersFromExpr(expr Expression, offset int) {
 	phs := collectPlaceholders(expr)
 	for i, ph := range phs {
@@ -544,12 +540,19 @@ func reindexPlaceholdersFromExpr(expr Expression, offset int) {
 }
 
 // collectPlaceholders collects all PlaceholderExpr nodes from an expression
+// run.tests: false, so the unused analyzer cannot see those references.
+//
+//nolint:unused // exercised by this package's tests; .golangci.yml sets
 func collectPlaceholders(expr Expression) []*PlaceholderExpr {
 	var placeholders []*PlaceholderExpr
 	collectPlaceholdersRecursive(expr, &placeholders)
 	return placeholders
 }
 
+// exercised by this package's tests; .golangci.yml sets run.tests: false, so
+// the unused analyzer cannot see the test references.
+//
+//nolint:unused // reachable only through collectPlaceholders, which is
 func collectPlaceholdersRecursive(expr Expression, placeholders *[]*PlaceholderExpr) {
 	if expr == nil {
 		return

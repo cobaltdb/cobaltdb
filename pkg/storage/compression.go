@@ -84,7 +84,7 @@ type CompressedBackend struct {
 
 // NewCompressedBackend creates a compressed backend wrapper.
 func NewCompressedBackend(backend Backend, config *CompressionConfig) (*CompressedBackend, error) {
-	if backend == nil || (reflect.ValueOf(backend).Kind() == reflect.Ptr && reflect.ValueOf(backend).IsNil()) {
+	if backend == nil || (reflect.ValueOf(backend).Kind() == reflect.Pointer && reflect.ValueOf(backend).IsNil()) {
 		return nil, errors.New("compression backend is nil")
 	}
 	if config == nil {

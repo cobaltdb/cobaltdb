@@ -409,6 +409,9 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 }
 
 // toFloat64Safe converts a value to float64, returning (value, true) or (0, false)
+// run.tests: false, so the unused analyzer cannot see those references.
+//
+//nolint:unused // exercised by this package's tests; .golangci.yml sets
 func toFloat64Safe(v interface{}) (float64, bool) {
 	switch n := v.(type) {
 	case int64:
