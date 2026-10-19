@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -831,6 +832,29 @@ func valueToLiteralExpr(v interface{}) query.Expression {
 		return &query.BooleanLiteral{Value: val}
 	case string:
 		return &query.StringLiteral{Value: val}
+	case []byte:
+		// A scanned BLOB value arrives as []byte. Rendering it via the
+		// default case's fmt.Sprintf("%v", val) emits the decimal byte list
+		// ("[104 101 108 108 111]"), so CTAS and INSERT..SELECT
+		// materialization silently corrupted binary data with no error at
+		// DDL or query time. Go strings hold arbitrary bytes, and the row
+		// encoder's binary path (rowHasBinaryValue -> encodeBinaryVersionedRow)
+		// already handles non-UTF-8 strings losslessly, so converting back to
+		// string preserves the bytes exactly.
+		return &query.StringLiteral{Value: string(val)}
+	case map[string]interface{}, []interface{}:
+		// A decoded JSON document must be re-encoded as JSON. The default
+		// case renders these with fmt.Sprintf("%v"), producing Go's map/slice
+		// formatting ("map[deleted_at:42 name:x]"), so CTAS and
+		// INSERT..SELECT silently replaced a JSON column's document with a
+		// display string - lossy and irreversible, with no error at DDL or
+		// query time.
+		if encoded, err := json.Marshal(val); err == nil {
+			return &query.StringLiteral{Value: string(encoded)}
+		}
+		// Marshal only fails on values JSON cannot represent (channels, funcs,
+		// cyclic graphs). Fall back rather than drop the value.
+		return &query.StringLiteral{Value: fmt.Sprintf("%v", val)}
 	default:
 		return &query.StringLiteral{Value: fmt.Sprintf("%v", val)}
 	}
@@ -865,6 +889,17 @@ func valueToLiteralExpr(v interface{}) query.Expression {
 // executeSelect executes SELECT
 // executeSelect executes SELECT
 
+// rlsBypassRequested reports whether ctx carries an explicit privileged
+// row-level security bypass. Privileged operations (`cobaltdb-cli dump` and
+// `restore`) set it; ordinary application queries never do.
+func rlsBypassRequested(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	bypass, _ := ctx.Value(security.RLSBypassKey).(bool)
+	return bypass
+}
+
 func (db *DB) executeSelect(ctx context.Context, stmt *query.SelectStmt, args []interface{}) (*Rows, error) {
 	var columns []string
 	var rows [][]interface{}
@@ -873,7 +908,12 @@ func (db *DB) executeSelect(ctx context.Context, stmt *query.SelectStmt, args []
 	// enabled, so policies see the caller's user/roles. SelectWithContext holds
 	// the exclusive lock to keep the shared RLS context per-query-safe; non-RLS
 	// reads stay on the concurrent Select path.
-	if db.catalog.IsRLSEnabled() {
+	// Route through SelectWithContext when a privileged RLS bypass is
+	// requested, even when RLS is disabled at the engine level. Catalog.Select
+	// takes NO context, so cat.rlsCtx - the only channel by which identity
+	// reaches the catalog - would be nil there and the bypass could never be
+	// observed. Ordinary non-RLS reads stay on the concurrent Select path.
+	if db.catalog.IsRLSEnabled() || rlsBypassRequested(ctx) {
 		columns, rows, err = db.catalog.SelectWithContext(ctx, stmt, args)
 	} else {
 		columns, rows, err = db.catalog.Select(stmt, args)

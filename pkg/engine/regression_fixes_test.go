@@ -259,6 +259,43 @@ func queryRows(t *testing.T, db *DB, sql string) [][]interface{} {
 }
 
 // scalar returns the first column of the first row, stringified.
+// scalarAs is scalar() with an explicit query context, for RLS tests that must
+// verify a read as a specific identity or under the privileged bypass.
+func scalarAs(t *testing.T, ctx context.Context, db *DB, sql string) string {
+	t.Helper()
+	rows, err := db.Query(ctx, sql)
+	if err != nil {
+		t.Fatalf("query %q: %v", sql, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatalf("query %q returned no rows", sql)
+	}
+	vals := make([]interface{}, len(rows.Columns()))
+	ptrs := make([]interface{}, len(vals))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		t.Fatalf("scan %q: %v", sql, err)
+	}
+	return fmt.Sprintf("%v", vals[0])
+}
+
+// scalarPrivileged reads physical table state under the explicit privileged
+// RLS bypass - the same authority `cobaltdb-cli dump` uses.
+//
+// SECURITY RATIONALE: RLS now fails CLOSED when a query context carries no
+// user, which is what closes the cross-tenant leak these tests were built on
+// top of. The verification reads below assert on PHYSICAL table state (was the
+// row persisted?), not on what a tenant may see, so they must run with that
+// authority rather than as an arbitrary tenant. The writes under test keep
+// their own identities (bob/alice) and still assert the real policy contract.
+func scalarPrivileged(t *testing.T, db *DB, sql string) string {
+	t.Helper()
+	return scalarAs(t, context.WithValue(context.Background(), security.RLSBypassKey, true), db, sql)
+}
+
 func scalar(t *testing.T, db *DB, sql string) string {
 	t.Helper()
 	rows := queryRows(t, db, sql)
@@ -3692,7 +3729,7 @@ func TestRegression_RLSInsertWithCheckWithoutUsing(t *testing.T) {
 	if _, err := db.Exec(bob, "INSERT INTO insert_check_docs VALUES (2,'bob')"); err != nil {
 		t.Fatalf("WITH CHECK policy rejected bob's own row: %v", err)
 	}
-	if got := scalar(t, db, "SELECT COUNT(*) FROM insert_check_docs"); got != "1" {
+	if got := scalarPrivileged(t, db, "SELECT COUNT(*) FROM insert_check_docs"); got != "1" {
 		t.Fatalf("insert_check_docs count = %s, want 1", got)
 	}
 }
@@ -3720,7 +3757,7 @@ func TestRegression_RLSUpdateWithCheckValidatesNewRow(t *testing.T) {
 	if res.RowsAffected != 0 {
 		t.Fatalf("WITH CHECK violating update affected %d rows, want 0", res.RowsAffected)
 	}
-	if got := scalar(t, db, "SELECT owner FROM update_check_docs WHERE id = 1"); got != "alice" {
+	if got := scalarPrivileged(t, db, "SELECT owner FROM update_check_docs WHERE id = 1"); got != "alice" {
 		t.Fatalf("owner after rejected update = %s, want alice", got)
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/cache"
@@ -36,7 +37,6 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -989,6 +989,21 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 				}
 			}
 		}
+		// Window functions are evaluated on the GROUP BY branch too. This
+		// branch returns early, before the window-detection block further
+		// down, so no window column was ever evaluated for a GROUP BY query.
+		// so without this every window column in an aggregate query stayed
+		// NULL (even ROW_NUMBER() OVER (ORDER BY g)). table is passed as nil:
+		// rows here are aggregated group rows, so evalWindowExprOnRow's
+		// table-column index fallback would read the wrong element; resolution
+		// must go through the selectCols scan, as on the JOIN path.
+		for _, ci := range augSelectCols {
+			if !ci.isWindow && len(ci.embeddedWindows) == 0 {
+				continue
+			}
+			rows = cat.evaluateWindowFunctions(rows, augSelectCols, nil, stmt, args, nil)
+			break
+		}
 		return cols, rows, nil
 	}
 
@@ -1068,8 +1083,11 @@ func (cat *Catalog) selectNeedsFullRowsForRLS(tableName string) bool {
 	if rlsCtx == nil {
 		return false
 	}
-	user, _ := rlsContext(rlsCtx)
-	return user != ""
+	// A nil context means the engine never routed through SelectWithContext,
+	// and a bypass context is privileged. Anything else - including a non-nil
+	// context carrying an empty identity - must collect full rows so
+	// checkRowAccessLocked decides (deny, or allow under bypass).
+	return !rlsBypassed(rlsCtx)
 }
 
 // scanTableRowsWithSnapshot is a thin wrapper around scanTableRows that accepts
@@ -1791,16 +1809,33 @@ func (t *TableDef) buildColumnIndexCache() {
 	}
 }
 
+// columnIndexCacheMu guards the LAZY build of TableDef.columnIndices.
+//
+// Package-level, not a TableDef field: TableDef is copied by value
+// (cloneTableDef), so a mutex field would be copied along with the value and
+// trip go vet's copylocks check. Contention is cold-only - DDL, clone, txn
+// replay and schema load all build the cache eagerly.
+var columnIndexCacheMu sync.Mutex
+
 func (t *TableDef) GetColumnIndex(name string) int {
+	// Every access to the field goes through the mutex. Checking without the
+	// lock and locking only when nil is still a race: the map header is
+	// multi-word, so the unsynchronized read can tear, not merely go stale.
+	// The map is never written after the build, so the lookups below need no
+	// further synchronization.
+	columnIndexCacheMu.Lock()
 	if t.columnIndices == nil {
 		t.buildColumnIndexCache()
 	}
+	indices := t.columnIndices
+	columnIndexCacheMu.Unlock()
+
 	// Fast path: exact case match (common when parsed SQL matches DDL).
-	if idx, ok := t.columnIndices[name]; ok {
+	if idx, ok := indices[name]; ok {
 		return idx
 	}
 	// Fallback: case-insensitive lookup.
-	if idx, ok := t.columnIndices[toLowerFast(name)]; ok {
+	if idx, ok := indices[toLowerFast(name)]; ok {
 		return idx
 	}
 	return -1
@@ -2204,6 +2239,12 @@ func exprToSQL(expr query.Expression) string {
 		for _, arg := range e.Args {
 			args = append(args, exprToSQL(arg))
 		}
+		// DISTINCT must survive a persisted round trip: COUNT(DISTINCT x) and
+		// COUNT(x) are different results, and dropping it silently changed a
+		// CHECK/DEFAULT constraint's meaning.
+		if e.Distinct {
+			return fmt.Sprintf("%s(DISTINCT %s)", e.Name, strings.Join(args, ", "))
+		}
 		return fmt.Sprintf("%s(%s)", e.Name, strings.Join(args, ", "))
 	case *query.BetweenExpr:
 		op := "BETWEEN"
@@ -2229,6 +2270,30 @@ func exprToSQL(expr query.Expression) string {
 		return fmt.Sprintf("(%s %s (%s))", exprToSQL(e.Expr), op, strings.Join(items, ", "))
 	case *query.CastExpr:
 		return fmt.Sprintf("CAST(%s AS %s)", exprToSQL(e.Expr), tokenTypeToColumnType(e.DataType))
+	case *query.IsNullExpr:
+		// Without this case an IS NULL / IS NOT NULL in a persisted CHECK or
+		// DEFAULT fell through to the %v default and was written as a Go
+		// struct dump (&{0x... false}), which then failed to re-parse on load
+		// and made the whole database unopenable.
+		if e.Not {
+			return "(" + exprToSQL(e.Expr) + " IS NOT NULL)"
+		}
+		return "(" + exprToSQL(e.Expr) + " IS NULL)"
+	case *query.LikeExpr:
+		// Same class as IsNullExpr: LIKE in a CHECK constraint is extremely
+		// common and rendered as a struct dump without this case.
+		op := " LIKE "
+		if e.Not {
+			op = " NOT LIKE "
+		}
+		out := "(" + exprToSQL(e.Expr) + op + exprToSQL(e.Pattern) + ")"
+		// ESCAPE is a property of the LIKE predicate, not of the parenthesised
+		// comparison, so it renders after the closing paren. Bind ok, not the
+		// value: a nil Escape must not render "ESCAPE ''".
+		if lit, ok := e.Escape.(*query.StringLiteral); ok {
+			out += " ESCAPE '" + strings.ReplaceAll(lit.Value, "'", "''") + "'"
+		}
+		return out
 	case *query.CaseExpr:
 		var sb strings.Builder
 		sb.WriteString("CASE")

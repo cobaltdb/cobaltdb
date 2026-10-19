@@ -86,7 +86,7 @@ func (r *Registry) Get(name string) (ForeignDataWrapper, bool) {
 		return nil, false
 	}
 	wrapper := f()
-	if wrapper == nil || (reflect.ValueOf(wrapper).Kind() == reflect.Ptr && reflect.ValueOf(wrapper).IsNil()) {
+	if wrapper == nil || (reflect.ValueOf(wrapper).Kind() == reflect.Pointer && reflect.ValueOf(wrapper).IsNil()) {
 		return nil, false
 	}
 	return wrapper, wrapper != nil

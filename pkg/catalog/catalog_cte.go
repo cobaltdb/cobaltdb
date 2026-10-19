@@ -10,6 +10,21 @@ const (
 	maxRecursiveCTERows  = 100000
 )
 
+// applyCTEColumnAliases replaces the produced column names with a CTE's
+// explicit column-name list. The list is only applied when its length matches
+// the produced column count: a mismatch is left unchanged so the query keeps
+// the inner aliases rather than silently renaming a subset of columns or
+// inventing names for columns that do not exist.
+func applyCTEColumnAliases(cols, cteColumns []string) []string {
+	if len(cteColumns) == 0 || len(cteColumns) != len(cols) {
+		return cols
+	}
+	renamed := make([]string, len(cols))
+	copy(renamed, cteColumns)
+	return renamed
+}
+
+// ExecuteCTE executes a query with CTEs.
 func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) ([]string, [][]interface{}, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -73,13 +88,49 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 		// Non-recursive CTE: register as a view or execute as union
 		if selectQuery, ok := cte.Query.(*query.SelectStmt); ok {
 			createdCTEViews = append(createdCTEViews, cte.Name)
-			c.views[cte.Name] = selectQuery
-			// Materialize CTE results so subsequent CTEs can reference them
-			if len(stmt.CTEs) > 1 {
+			// Register the view with the DECLARED column names applied. The view
+			// is inlined by tryViewSelect (catalog_core.go) whenever the main
+			// query references it as a FROM - including a JOIN - and that inline
+			// merge copies view.From, so without this the reference resolved
+			// against the inner SELECT's own column names instead of the WITH
+			// clause's, and ON c.x never bound.
+			//
+			// Aliasing the view's projections also makes tryViewSelect's
+			// viewIsComplex check (it treats any *query.AliasExpr as complex)
+			// take the materialization branch, which registers the result in the
+			// per-query overlay under the declared names - the path the JOIN
+			// actually reads. Materialization below still uses the original
+			// selectQuery, so applyCTEColumnAliases stays a no-op-safe rename.
+			viewQuery := selectQuery
+			if len(cte.Columns) == len(selectQuery.Columns) {
+				aliased := *selectQuery
+				aliased.Columns = make([]query.Expression, len(selectQuery.Columns))
+				for i, col := range selectQuery.Columns {
+					if _, already := col.(*query.AliasExpr); already {
+						aliased.Columns[i] = col
+						continue
+					}
+					aliased.Columns[i] = &query.AliasExpr{Expr: col, Alias: cte.Columns[i]}
+				}
+				viewQuery = &aliased
+			}
+			c.views[cte.Name] = viewQuery
+			// Materialize CTE results so subsequent CTEs can reference them.
+			//
+			// An explicit CTE column list must be applied here too: the plain-SELECT
+			// path used to materialize only when more than one CTE was present, so
+			// with a single CTE the main query resolved the name through the
+			// registered view and was exposed the inner SELECT's own column aliases
+			// instead of the declared ones. Materializing whenever a column list is
+			// present makes selectLockedInternal's CTE lookup (which runs before the
+			// view lookup) consume the renamed result, and also lets later CTEs
+			// reference the declared names.
+			if len(stmt.CTEs) > 1 || len(cte.Columns) > 0 {
 				cols, rows, err := c.selectLocked(selectQuery, args)
 				if err != nil {
 					return nil, nil, fmt.Errorf("CTE %s: %w", cte.Name, err)
 				}
+				cols = applyCTEColumnAliases(cols, cte.Columns)
 				c.cteResults[cteName] = &cteResultSet{columns: cols, rows: rows}
 				createdCTEResults = append(createdCTEResults, cteName)
 			}
@@ -89,9 +140,7 @@ func (c *Catalog) ExecuteCTE(stmt *query.SelectStmtWithCTE, args []interface{}) 
 			if err != nil {
 				return nil, nil, fmt.Errorf("CTE %s: %w", cte.Name, err)
 			}
-			if len(cols) == 0 && len(cte.Columns) > 0 {
-				cols = cte.Columns
-			}
+			cols = applyCTEColumnAliases(cols, cte.Columns)
 			c.cteResults[cteName] = &cteResultSet{
 				columns: cols,
 				rows:    rows,

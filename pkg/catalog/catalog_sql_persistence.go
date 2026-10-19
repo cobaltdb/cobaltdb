@@ -279,10 +279,11 @@ func joinClauseToSQL(join *query.JoinClause) string {
 	if join == nil {
 		return ""
 	}
+	// The join type keyword must be resolved FIRST and NATURAL prepended
+	// afterwards. Prepending before the switch let the switch overwrite the
+	// keyword and silently drop NATURAL, which changed a persisted view's
+	// join semantics (or made it unparseable) after a save/load round-trip.
 	joinType := "JOIN"
-	if join.Natural {
-		joinType = "NATURAL " + joinType
-	}
 	switch join.Type {
 	case query.TokenInner:
 		joinType = "INNER JOIN"
@@ -294,6 +295,9 @@ func joinClauseToSQL(join *query.JoinClause) string {
 		joinType = "FULL JOIN"
 	case query.TokenCross:
 		joinType = "CROSS JOIN"
+	}
+	if join.Natural {
+		joinType = "NATURAL " + joinType
 	}
 	parts := []string{joinType, tableRefToSQL(join.Table)}
 	if join.Condition != nil {

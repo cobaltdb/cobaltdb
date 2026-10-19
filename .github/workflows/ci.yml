@@ -1,0 +1,103 @@
+name: ci
+
+# Push/PR: core gate (make verify) + lint + race detector (make race).
+# Nightly: hammers the two load-sensitive concurrency tests via make flaky-repeat.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    # 03:17 UTC nightly. Off-the-hour to avoid the scheduled-run thundering herd.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+# Least privilege: this workflow only ever reads the repo. No release secrets,
+# no write scopes, no deployment jobs.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned explicitly rather than go-version-file: go.mod. The `go` directive
+  # reads 1.26.0 while `toolchain` pins go1.26.9; go-version-file would install
+  # 1.26.0 and make GOTOOLCHAIN download the real toolchain on every run. The
+  # 10 stdlib advisories (GO-2026-6599..6617) are only fixed from go1.26.9.
+  GO_VERSION: "1.26.9"
+
+jobs:
+  verify:
+    name: verify (gofmt, build, vet, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      # actions/checkout v4.3.1 — pinned to the commit the v4 tag resolves to
+      # (verified 2026-10-19). Tags are mutable, so a SHA pin is what actually
+      # makes this reproducible.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true # module cache keyed on go.sum
+      - name: make verify
+        run: make verify
+
+  lint:
+    name: lint (golangci-lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Installed via `go install` at a pinned version rather than a third-party
+      # action, so this job adds no new unpinned action to the workflow. Must match
+      # the version validated locally, which understands the v2 config format
+      # (.golangci.yml declares `version: "2"`).
+      - name: install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+
+      # make lint calls `golangci-lint` bare, so it must be on PATH. $GOPATH/bin
+      # is not in PATH by default on hosted runners.
+      - name: make lint
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH" && make lint
+
+  race:
+    name: race (CGO race detector)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # make race sets CGO_ENABLED=1 itself; it needs the gcc that ubuntu-latest
+      # ships. The target already skips the ~3min statistical RETURNING hammer.
+      - name: make race
+        run: make race
+
+  flaky-repeat:
+    name: flaky-repeat (nightly concurrency hammer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Deliberately NOT run per push: at ~1.7s + ~1.4s per iteration it costs
+    # ~10 minutes at the default count=200, and the two flakes have not
+    # reproduced in 67 targeted attempts. A clean run here is NOT evidence the
+    # flake is fixed — it only means no reproduction occurred. Schedule or manual
+    # dispatch only.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: make flaky-repeat
+        run: make flaky-repeat

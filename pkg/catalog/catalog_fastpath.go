@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -408,6 +409,9 @@ func (cat *Catalog) trySimpleAggregateFastPath(stmt *query.SelectStmt, args []in
 }
 
 // toFloat64Safe converts a value to float64, returning (value, true) or (0, false)
+// run.tests: false, so the unused analyzer cannot see those references.
+//
+//nolint:unused // exercised by this package's tests; .golangci.yml sets
 func toFloat64Safe(v interface{}) (float64, bool) {
 	switch n := v.(type) {
 	case int64:
@@ -422,32 +426,37 @@ func toFloat64Safe(v interface{}) (float64, bool) {
 	return 0, false
 }
 
+// bytesContainDeletedAt quickly checks if JSON data has a non-zero deleted_at.
+// Returns true if "deleted_at" appears with a non-zero value (soft-deleted row).
+// This avoids full JSON unmarshal for COUNT(*) fast path.
+//
+// Only the row's OWN version metadata may decide soft-deletion, and in the
+// encoded row ({"data":[...],"version":{"created_at":N,"deleted_at":M}}) that
+// object is the last one, so the LAST occurrence of the key is the version
+// one. Earlier occurrences belong to a data value: a JSON column holding a
+// native nested object serializes it unescaped inside "data", so matching the
+// first hit instead let user data decide the verdict — dropping a live row
+// whose JSON column contains a non-zero "deleted_at" (AVG/COUNT lost it) and
+// resurrecting a tombstone whose JSON column contains a zero "deleted_at"
+// (COUNT(*)/aggregates kept it). Inner quotes inside a JSON string value are
+// escaped, so text columns cannot produce a spurious match.
 func bytesContainDeletedAt(data []byte) bool {
-	// Look for "deleted_at": followed by a non-zero digit
 	needle := deletedAtKey
-	for i := 0; i <= len(data)-len(needle)-1; i++ {
-		match := true
-		for j := 0; j < len(needle); j++ {
-			if data[i+j] != needle[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			// Check the value after the colon
-			pos := i + len(needle)
-			// Skip whitespace
-			for pos < len(data) && (data[pos] == ' ' || data[pos] == '\t') {
-				pos++
-			}
-			// If value is 0, row is NOT deleted
-			if pos < len(data) && data[pos] == '0' {
-				return false
-			}
-			// Non-zero value means row IS deleted
-			return true
-		}
+	idx := bytes.LastIndex(data, needle)
+	if idx < 0 {
+		// No deleted_at field found — treat as not deleted (legacy format)
+		return false
 	}
-	// No deleted_at field found — treat as not deleted (legacy format)
-	return false
+	// Check the value after the colon
+	pos := idx + len(needle)
+	// Skip whitespace
+	for pos < len(data) && (data[pos] == ' ' || data[pos] == '\t') {
+		pos++
+	}
+	// If value is 0, row is NOT deleted
+	if pos < len(data) && data[pos] == '0' {
+		return false
+	}
+	// Non-zero value means row IS deleted
+	return true
 }

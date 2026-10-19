@@ -262,9 +262,16 @@ func (c *Catalog) computeGroupResultRows(groups map[string][][]interface{}, grou
 							expr = ae.Expr
 						}
 						val, err := evaluateExpression(c, groupRows[0], table.Columns, expr, args)
-						if err == nil {
-							resultRow[i] = val
+						if err != nil {
+							// Dropping the error degraded a failed
+							// evaluation to a silent NULL. CLAUDE.md
+							// documents that division by zero RAISES; the
+							// same expression errored in the ungrouped and
+							// WHERE paths, so this contradicted the
+							// engine's own contract.
+							return nil, err
 						}
+						resultRow[i] = val
 					}
 				}
 			}
@@ -326,8 +333,7 @@ func (c *Catalog) buildGroupByGroups(table *TableDef, stmt *query.SelectStmt, ar
 	if rlsCtx == nil {
 		rlsCtx = context.Background()
 	}
-	rlsUser, _ := rlsContext(rlsCtx)
-	applyRLS := rlsUser != "" && c.enableRLS && c.rlsManager != nil && c.rlsManager.IsEnabled(table.Name)
+	applyRLS := !rlsBypassed(rlsCtx) && c.enableRLS && c.rlsManager != nil && c.rlsManager.IsEnabled(table.Name)
 
 	if canParallel {
 		for _, valueData := range allValues {

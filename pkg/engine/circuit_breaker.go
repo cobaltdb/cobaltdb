@@ -406,6 +406,11 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 		// half-open forever (no probe can run to produce the report that
 		// would move the state).
 		go func() {
+			// Done is a buffered chan error sized so this receive never blocks.
+			// Its result is deliberately discarded: the caller's ctx already
+			// owns the outcome, and this goroutine only returns the probe slot.
+			//nolint:errcheck // bare receive is the linter-clean form; `_, _ =`
+			// would instead trip staticcheck S1005.
 			<-done
 			cb.Release()
 			cb.Abandon()

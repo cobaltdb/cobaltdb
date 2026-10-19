@@ -52,6 +52,7 @@ type rlsTenantKey struct{}
 type rlsRoleKey struct{}
 type rlsRolesKey struct{}
 type rlsSessionUserKey struct{}
+type rlsBypassKey struct{}
 
 // RLSUserKey is the context key for the current user in RLS checks
 var RLSUserKey = rlsUserKey{}
@@ -69,6 +70,15 @@ var RLSRolesKey = rlsRolesKey{}
 
 // RLSSessionUserKey is the context key for the session user in RLS checks
 var RLSSessionUserKey = rlsSessionUserKey{}
+
+// RLSBypassKey is the context key for an explicit PRIVILEGED row-level
+// security bypass (context value: bool). It is deliberately NOT derived from
+// a user identity: it marks an operation authorized to see every row of a
+// protected table regardless of policy - namely `cobaltdb-cli dump` and
+// `cobaltdb-cli restore`, which operate on the PHYSICAL database under a bare
+// context. Only code paths already privileged by construction may set it; an
+// ordinary query that merely omits a user does NOT, and is denied instead.
+var RLSBypassKey = rlsBypassKey{}
 
 // PolicyType defines the type of policy
 type PolicyType int
