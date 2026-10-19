@@ -54,3 +54,7 @@ backups/
 # Temp files
 tmp/
 temp/
+
+# Agent scratch trees (round-owned proofs, scratch harnesses). Not part of
+# the product; must never reach the image or the build context.
+.temp_files/
