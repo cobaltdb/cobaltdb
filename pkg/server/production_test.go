@@ -855,7 +855,7 @@ func BenchmarkProductionServerStartStop(b *testing.B) {
 // transactionMetricsHandler GET/POST contract. The handler must return
 // 200 with JSON on GET and reject POST with 405.
 func TestProductionTransactionMetricsHandler(t *testing.T) {
-	db, err := engine.Open(":memory:", &engine.Options{InMemory: true})
+	db, err := engine.Open(":memory:", &engine.Options{CoreStorage: engine.CoreStorage{InMemory: true}})
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
