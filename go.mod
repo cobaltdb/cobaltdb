@@ -2,7 +2,7 @@ module github.com/cobaltdb/cobaltdb
 
 go 1.26.0
 
-toolchain go1.26.6
+toolchain go1.26.9
 
 require (
 	github.com/chzyer/readline v1.5.1
