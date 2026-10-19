@@ -524,8 +524,15 @@ func expressionToString(expr query.Expression) string {
 		}
 		joined := strings.Join(items, ", ")
 		var sb strings.Builder
-		sb.Grow(len(exprStr) + 5 + len(joined) + 1)
+		sb.Grow(len(exprStr) + 10 + len(joined) + 1)
 		sb.WriteString(exprStr)
+		if e.Not {
+			// The rendered string is re-parsed by the RLS evaluator
+			// (security/rls.go parses policy.Expression), so dropping NOT
+			// silently inverted the policy: the rows it was written to hide
+			// became the only visible ones, and vice versa.
+			sb.WriteString(" NOT")
+		}
 		sb.WriteString(" IN (")
 		sb.WriteString(joined)
 		sb.WriteByte(')')
