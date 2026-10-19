@@ -75,7 +75,21 @@ func (cat *Catalog) Select(stmt *query.SelectStmt, args []interface{}) ([]string
 }
 
 // SetRLSContext sets the context used for RLS user/role extraction in SELECT queries.
+//
+// The write is synchronized with cat.mu so it cannot race the readers of the
+// shared rlsCtx field. SelectWithContext already takes this lock for the same
+// reason; this setter did not, so a concurrent SetRLSContext/SELECT pair was a
+// genuine data race (proven under -race by the probe in
+// setrlscontext_race_probe_test.go).
+//
+// The value is deliberately PERSISTENT rather than scoped. This is a setter,
+// not a scope: callers rely on the context applying to subsequent SELECTs
+// until they replace it. Saving and restoring the previous value on return
+// would restore it before any query could observe it, turning this into a
+// no-op. To scope a context to one statement, use SelectWithContext.
 func (cat *Catalog) SetRLSContext(ctx context.Context) {
+	cat.mu.Lock()
+	defer cat.mu.Unlock()
 	cat.rlsCtx = ctx
 }
 
