@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -39,7 +40,7 @@ func TestCloseDurabilityHammer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if _, err := db.Exec(nil, "CREATE TABLE hammer_round6 (k INTEGER PRIMARY KEY, v TEXT)"); err != nil {
+	if _, err := db.Exec(context.Background(), "CREATE TABLE hammer_round6 (k INTEGER PRIMARY KEY, v TEXT)"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
@@ -69,7 +70,7 @@ func TestCloseDurabilityHammer(t *testing.T) {
 				default:
 				}
 				k := fmt.Sprintf("%d", base+i)
-				_, execErr := db.Exec(nil, "INSERT INTO hammer_round6 VALUES (?, ?)", base+i, fmt.Sprintf("v%d", i))
+				_, execErr := db.Exec(context.Background(), "INSERT INTO hammer_round6 VALUES (?, ?)", base+i, fmt.Sprintf("v%d", i))
 				mu.Lock()
 				switch {
 				case execErr == nil:
@@ -124,7 +125,7 @@ func TestCloseDurabilityHammer(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer db2.Close()
-	rows, err := db2.Query(nil, "SELECT k FROM hammer_round6")
+	rows, err := db2.Query(context.Background(), "SELECT k FROM hammer_round6")
 	if err != nil {
 		t.Fatalf("query after reopen: %v", err)
 	}

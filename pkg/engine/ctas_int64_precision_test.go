@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -26,7 +27,7 @@ func TestValueToLiteralExprPreservesInt64(t *testing.T) {
 
 	// Control: the parser path preserves the big integer exactly.
 	var srcVal int64
-	if err := db.QueryRow(nil, "SELECT v FROM src").Scan(&srcVal); err != nil {
+	if err := db.QueryRow(context.Background(), "SELECT v FROM src").Scan(&srcVal); err != nil {
 		t.Fatalf("read source: %v", err)
 	}
 	if srcVal != big {
@@ -36,7 +37,7 @@ func TestValueToLiteralExprPreservesInt64(t *testing.T) {
 	// CTAS: the valueToLiteralExpr materialization path.
 	mustExec(t, db, "CREATE TABLE dst AS SELECT v FROM src")
 	var got int64
-	if err := db.QueryRow(nil, "SELECT v FROM dst").Scan(&got); err != nil {
+	if err := db.QueryRow(context.Background(), "SELECT v FROM dst").Scan(&got); err != nil {
 		t.Fatalf("read CTAS table: %v", err)
 	}
 	if got != big {
@@ -46,7 +47,7 @@ func TestValueToLiteralExprPreservesInt64(t *testing.T) {
 	// Small ints are unaffected (float64-exact range).
 	mustExec(t, db, "CREATE TABLE dst2 AS SELECT 42 AS v")
 	var small int64
-	if err := db.QueryRow(nil, "SELECT v FROM dst2").Scan(&small); err != nil {
+	if err := db.QueryRow(context.Background(), "SELECT v FROM dst2").Scan(&small); err != nil {
 		t.Fatalf("read small CTAS table: %v", err)
 	}
 	if small != 42 {

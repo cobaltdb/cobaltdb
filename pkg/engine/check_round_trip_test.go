@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,11 +34,11 @@ func TestCheckConstraintsSurviveRoundTrip(t *testing.T) {
 		{"cs_t", "(-1)"},
 		{"simple", "(-1)"},
 	} {
-		if _, err := db.Exec(nil, "INSERT INTO "+tt.table+" VALUES "+tt.values); err == nil {
+		if _, err := db.Exec(context.Background(), "INSERT INTO "+tt.table+" VALUES "+tt.values); err == nil {
 			t.Fatalf("pre-close: INSERT violating %s CHECK unexpectedly succeeded", tt.table)
 		}
 	}
-	if _, err := db.Exec(nil, "INSERT INTO simple VALUES (1)"); err != nil {
+	if _, err := db.Exec(context.Background(), "INSERT INTO simple VALUES (1)"); err != nil {
 		t.Fatalf("pre-close control INSERT failed: %v", err)
 	}
 
@@ -58,11 +59,11 @@ func TestCheckConstraintsSurviveRoundTrip(t *testing.T) {
 		{"cs_t", "(-1)"},
 		{"simple", "(-1)"},
 	} {
-		if _, err := db2.Exec(nil, "INSERT INTO "+tt.table+" VALUES "+tt.values); err == nil {
+		if _, err := db2.Exec(context.Background(), "INSERT INTO "+tt.table+" VALUES "+tt.values); err == nil {
 			t.Errorf("post-reopen: CHECK on %s silently dropped after reload", tt.table)
 		}
 	}
-	if _, err := db2.Exec(nil, "INSERT INTO simple VALUES (2)"); err != nil {
+	if _, err := db2.Exec(context.Background(), "INSERT INTO simple VALUES (2)"); err != nil {
 		t.Fatalf("post-reopen control INSERT failed: %v", err)
 	}
 	_ = os.RemoveAll(dir) // t.TempDir already cleans; keep tools honest
