@@ -417,6 +417,10 @@ func (c *Catalog) ExecuteQuery(sql string) (*QueryResult, error) {
 	case *query.DropTableStmt:
 		err := c.DropTable(s)
 		return &QueryResult{}, err
+	case *query.CreateTriggerStmt:
+		return &QueryResult{}, c.CreateTriggerSQL(s, sql)
+	case *query.DropTriggerStmt:
+		return &QueryResult{}, c.DropTrigger(s.Name)
 	case *query.InsertStmt:
 		_, _, err := c.Insert(ctx, s, nil)
 		if err != nil {
