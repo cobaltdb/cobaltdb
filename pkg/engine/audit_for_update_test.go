@@ -107,10 +107,26 @@ func TestAuditForUpdateBankTransferConserves(t *testing.T) {
 					if _, e := db.Exec(ctx, "BEGIN"); e != nil {
 						break
 					}
-					ba := selForUpd(ctx, db, a)
-					bb := selForUpd(ctx, db, b)
-					_, _ = db.Exec(ctx, fmt.Sprintf("UPDATE acct SET bal = %d WHERE id = %d", ba-10, a))
-					_, _ = db.Exec(ctx, fmt.Sprintf("UPDATE acct SET bal = %d WHERE id = %d", bb+10, b))
+					// A locking read can report a conflict before COMMIT.
+					// Roll back instead of using a failed read as a zero balance.
+					ba, err := selForUpd(ctx, db, a)
+					if err != nil {
+						_, _ = db.Exec(ctx, "ROLLBACK")
+						continue
+					}
+					bb, err := selForUpd(ctx, db, b)
+					if err != nil {
+						_, _ = db.Exec(ctx, "ROLLBACK")
+						continue
+					}
+					if _, err := db.Exec(ctx, fmt.Sprintf("UPDATE acct SET bal = %d WHERE id = %d", ba-10, a)); err != nil {
+						_, _ = db.Exec(ctx, "ROLLBACK")
+						continue
+					}
+					if _, err := db.Exec(ctx, fmt.Sprintf("UPDATE acct SET bal = %d WHERE id = %d", bb+10, b)); err != nil {
+						_, _ = db.Exec(ctx, "ROLLBACK")
+						continue
+					}
 					if _, e := db.Exec(ctx, "COMMIT"); e != nil {
 						_, _ = db.Exec(ctx, "ROLLBACK")
 						continue
@@ -136,15 +152,18 @@ func TestAuditForUpdateBankTransferConserves(t *testing.T) {
 	}
 }
 
-func selForUpd(ctx context.Context, db *DB, id int) int64 {
+func selForUpd(ctx context.Context, db *DB, id int) (int64, error) {
 	rows, err := db.Query(ctx, fmt.Sprintf("SELECT bal FROM acct WHERE id = %d FOR UPDATE", id))
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	defer rows.Close()
-	var v int64
-	if rows.Next() {
-		_ = rows.Scan(&v)
+	if !rows.Next() {
+		return 0, fmt.Errorf("account %d not found", id)
 	}
-	return v
+	var v int64
+	if err := rows.Scan(&v); err != nil {
+		return 0, err
+	}
+	return v, nil
 }
