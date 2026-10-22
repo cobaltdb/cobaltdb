@@ -30,6 +30,7 @@ func TestLifecycleIgnoresWindowResizeSignal(t *testing.T) {
 		if err := lifecycle.Stop(); err != nil {
 			t.Fatal(err)
 		}
+		fmt.Println("lifecycle-stopped")
 		return
 	}
 
@@ -54,12 +55,19 @@ func TestLifecycleIgnoresWindowResizeSignal(t *testing.T) {
 	})
 
 	ready := make(chan error, 1)
+	stopped := make(chan error, 1)
 	go func() {
-		line, err := bufio.NewReader(stdout).ReadString('\n')
+		reader := bufio.NewReader(stdout)
+		line, err := reader.ReadString('\n')
 		if err == nil && strings.TrimSpace(line) != "lifecycle-ready" {
 			err = fmt.Errorf("unexpected child output: %q", line)
 		}
 		ready <- err
+		if err != nil {
+			return
+		}
+		_, err = reader.ReadString('\n')
+		stopped <- err
 	}()
 	select {
 	case err := <-ready:
@@ -74,6 +82,10 @@ func TestLifecycleIgnoresWindowResizeSignal(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
+	case err := <-stopped:
+		// Observe lifecycle completion directly: the race detector can delay
+		// process exit even after the server has already stopped.
+		t.Fatalf("SIGWINCH stopped the lifecycle before process exit: %v", err)
 	case err := <-done:
 		exited = true
 		t.Fatalf("SIGWINCH stopped the lifecycle: %v", err)
