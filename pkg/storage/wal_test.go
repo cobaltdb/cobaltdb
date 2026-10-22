@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -963,41 +964,41 @@ func TestWALGroupCommitSyncOff(t *testing.T) {
 }
 
 func TestWALGroupCommitCanBeReconfiguredAndReenabled(t *testing.T) {
-	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "groupcommit_reenable.wal")
-
-	wal, err := OpenWAL(path)
-	if err != nil {
-		t.Fatalf("Failed to open WAL: %v", err)
-	}
-	defer wal.Close()
-
-	wal.EnableGroupCommit(0, time.Hour)
-	wal.EnableGroupCommit(0, 5*time.Millisecond)
-	if err := wal.Append(&WALRecord{TxnID: 1, Type: WALInsert, Data: []byte("first")}); err != nil {
-		t.Fatalf("append after reconfigure: %v", err)
-	}
-	wal.DisableGroupCommit()
-
-	wal.EnableGroupCommit(0, 5*time.Millisecond)
-	done := make(chan error, 1)
-	go func() {
-		done <- wal.Append(&WALRecord{TxnID: 2, Type: WALInsert, Data: []byte("second")})
-	}()
-
-	select {
-	case err := <-done:
+	// The timer contract uses virtual time; real fsync and scheduler delays
+	// must not turn a healthy background sync into a wall-clock timeout.
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "groupcommit_reenable.wal")
+		wal, err := OpenWAL(path)
 		if err != nil {
-			t.Fatalf("append after re-enable: %v", err)
+			t.Fatalf("Failed to open WAL: %v", err)
 		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("append after re-enable did not complete")
-	}
-	wal.DisableGroupCommit()
+		defer wal.Close()
 
-	if wal.LSN() != 2 {
-		t.Fatalf("expected LSN=2, got %d", wal.LSN())
-	}
+		const interval = 5 * time.Millisecond
+		appendAndCheckInterval := func(id uint64, label string) {
+			t.Helper()
+			start := time.Now()
+			if err := wal.Append(&WALRecord{TxnID: id, Type: WALInsert, Data: []byte(label)}); err != nil {
+				t.Fatalf("append after %s: %v", label, err)
+			}
+			if elapsed := time.Since(start); elapsed != interval {
+				t.Fatalf("append after %s took %v of virtual time, want %v", label, elapsed, interval)
+			}
+		}
+
+		wal.EnableGroupCommit(0, time.Hour)
+		wal.EnableGroupCommit(0, interval)
+		appendAndCheckInterval(1, "reconfigure")
+		wal.DisableGroupCommit()
+
+		wal.EnableGroupCommit(0, interval)
+		appendAndCheckInterval(2, "re-enable")
+		wal.DisableGroupCommit()
+
+		if wal.LSN() != 2 {
+			t.Fatalf("expected LSN=2, got %d", wal.LSN())
+		}
+	})
 }
 
 // TestWALGroupCommitReconfigurationFlushesPendingWaiters verifies that
