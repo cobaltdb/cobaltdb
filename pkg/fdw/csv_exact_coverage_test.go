@@ -12,8 +12,19 @@ import (
 
 func TestCSVHelpersCoverProjectionAndPredicates(t *testing.T) {
 	header := []string{"id", "name"}
-	if got := csvProjection(header, []string{"missing"}); got != nil {
-		t.Fatalf("missing projection = %v, want nil fallback", got)
+	// A column missing from the header projects as -1 (rendered as NULL by
+	// projectCSVRow), NOT as a nil projection. A nil projection means "no
+	// projection", so the cursor would return the full header-ordered row,
+	// which the catalog re-expands positionally against ScanOptions.Columns
+	// — silently reporting one column's value under another's name.
+	if got := csvProjection(header, []string{"missing"}); !reflect.DeepEqual(got, []int{-1}) {
+		t.Fatalf("missing projection = %v, want [-1]", got)
+	}
+	if got := csvProjection(header, []string{"id", "missing"}); !reflect.DeepEqual(got, []int{0, -1}) {
+		t.Fatalf("partial projection = %v, want [0 -1]", got)
+	}
+	if got := csvProjection(header, nil); got != nil {
+		t.Fatalf("empty columns projection = %v, want nil", got)
 	}
 	if got := csvProjection(header, []string{"name", "id"}); !reflect.DeepEqual(got, []int{1, 0}) {
 		t.Fatalf("reordered projection = %v", got)

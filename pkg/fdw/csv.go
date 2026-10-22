@@ -306,7 +306,16 @@ func csvProjection(header []string, columns []string) []int {
 	for _, col := range columns {
 		idx, ok := indexByName[col]
 		if !ok {
-			return nil
+			// The column is absent from the header. Record -1 (projectCSVRow
+			// renders it as NULL) instead of abandoning the whole projection.
+			// Returning nil here means "no projection", so the cursor would
+			// yield the full header-ordered row — but the catalog re-expands
+			// every streamed row POSITIONALLY against ScanOptions.Columns
+			// (expandFDWProjectedRow), so the surviving columns would be
+			// mapped by the wrong offsets and one column's value would be
+			// reported under another's name.
+			projection = append(projection, -1)
+			continue
 		}
 		projection = append(projection, idx)
 	}

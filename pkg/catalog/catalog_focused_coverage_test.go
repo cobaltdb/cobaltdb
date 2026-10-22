@@ -1113,7 +1113,7 @@ func TestEvaluateReturningExpr(t *testing.T) {
 func TestRecordForUpdateReadsNoTxn(t *testing.T) {
 	cat := newEmptyCatalog()
 	table := &TableDef{Name: "test"}
-	err := cat.recordForUpdateReads(table, nil, nil)
+	err := cat.recordForUpdateReads(table, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("recordForUpdateReads: %v", err)
 	}

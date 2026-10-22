@@ -198,6 +198,10 @@ func TestPruneBackupsParsesDisambiguatedNames(t *testing.T) {
 		if err := os.WriteFile(name, []byte("backup\n"), 0600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
+		// Equal mtimes exercise the filename timestamp tiebreaker.
+		if err := os.Chtimes(name, now, now); err != nil {
+			t.Fatal(err)
+		}
 	}
 	disambiguated := logFile + "." + now.Add(-30*time.Second).Format(rotationStampLayout) + ".123456789"
 	newest := logFile + "." + now.Add(-1*time.Minute).Format(rotationStampLayout)
@@ -209,7 +213,7 @@ func TestPruneBackupsParsesDisambiguatedNames(t *testing.T) {
 	makeFile(unrelated)
 
 	al.mu.Lock()
-	al.pruneBackupsLocked()
+	al.pruneBackupsLocked("")
 	al.mu.Unlock()
 
 	// MaxBackups=2 keeps the two newest segments (the disambiguated one at

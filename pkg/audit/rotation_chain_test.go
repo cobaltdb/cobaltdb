@@ -201,6 +201,14 @@ func TestPruneBackupsMaxBackupsAndMaxAge(t *testing.T) {
 		if err := os.WriteFile(name, []byte("backup\n"), 0600); err != nil {
 			t.Fatalf("write backup %s: %v", name, err)
 		}
+		// Real rotations come from os.Rename, which preserves the log file's
+		// mtime, so a backup's ModTime always agrees with the timestamp encoded
+		// in its name. Set it explicitly here: os.WriteFile would otherwise stamp
+		// every file with "now", making mtime order follow write order instead of
+		// logical order, and leaving prune's ModTime-primary sort untestable.
+		if err := os.Chtimes(name, ts, ts); err != nil {
+			t.Fatalf("chtimes backup %s: %v", name, err)
+		}
 		return name
 	}
 
@@ -217,7 +225,7 @@ func TestPruneBackupsMaxBackupsAndMaxAge(t *testing.T) {
 	}
 
 	al.mu.Lock()
-	al.pruneBackupsLocked()
+	al.pruneBackupsLocked("")
 	al.mu.Unlock()
 
 	assertExists := func(path string, want bool) {
@@ -260,9 +268,19 @@ func TestRotationEnforcesMaxBackups(t *testing.T) {
 	// Rotation names backups with second granularity; pre-create older backup
 	// files so this rotation triggers pruning deterministically.
 	for i := 1; i <= 3; i++ {
-		name := fmt.Sprintf("%s.%s", logFile, time.Now().Add(-time.Duration(i)*time.Hour).Format("20060102_150405"))
+		ts := time.Now().Add(-time.Duration(i) * time.Hour)
+		name := fmt.Sprintf("%s.%s", logFile, ts.Format("20060102_150405"))
 		if err := os.WriteFile(name, []byte("old backup\n"), 0600); err != nil {
 			t.Fatalf("write old backup: %v", err)
+		}
+		// Keep mtime consistent with the name. This loop writes -1h first and
+		// -3h last, so os.WriteFile's implicit "now" would leave the logically
+		// oldest file with the newest mtime — the inverse of what os.Rename
+		// preserves in a real rotation. The current assertion only counts
+		// survivors, so it cannot fail on that today, but the fixture should
+		// still not model a state the code cannot produce.
+		if err := os.Chtimes(name, ts, ts); err != nil {
+			t.Fatalf("chtimes old backup: %v", err)
 		}
 	}
 

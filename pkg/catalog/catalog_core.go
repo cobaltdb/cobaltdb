@@ -913,7 +913,7 @@ func (cat *Catalog) selectLockedInternal(stmt *query.SelectStmt, args []interfac
 	if stmt.Locking != nil && stmt.Locking.Mode == "UPDATE" && table != nil &&
 		table.Partition == nil && len(stmt.Joins) == 0 && !hasAggregates &&
 		len(stmt.GroupBy) == 0 && !hasSubqueries(stmt) {
-		if err := cat.recordForUpdateReads(table, stmt, args); err != nil {
+		if err := cat.recordForUpdateReads(table, stmt, args, queryTime); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -1932,7 +1932,7 @@ func (t *TableDef) getPartitionTreeNames() []string {
 // It is a no-op outside an explicit transaction, for FOR SHARE, and for
 // non-simple queries (joins, aggregates, GROUP BY, subqueries) — those fall back
 // to the default Read Committed behavior. Must be called with c.mu held.
-func (c *Catalog) recordForUpdateReads(table *TableDef, stmt *query.SelectStmt, args []interface{}) error {
+func (c *Catalog) recordForUpdateReads(table *TableDef, stmt *query.SelectStmt, args []interface{}, queryTime time.Time) error {
 	if c.getCurrentTxn() == nil {
 		return nil
 	}
@@ -1965,6 +1965,12 @@ func (c *Catalog) recordForUpdateReads(table *TableDef, stmt *query.SelectStmt, 
 			if !match {
 				continue
 			}
+		}
+		// A commit can cross a second boundary after SELECT captures queryTime.
+		// Recording that newer value would validate at commit even though the
+		// result scan hides it, allowing a caller to overwrite an unseen row.
+		if vrow.Version.CreatedAt > queryTime.Unix() {
+			return txn.ErrConflict
 		}
 		c.recordManagerRead(table.Name, string(key), valueData)
 	}

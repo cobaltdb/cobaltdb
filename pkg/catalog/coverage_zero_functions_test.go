@@ -3,6 +3,7 @@ package catalog
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/cobaltdb/cobaltdb/pkg/btree"
 	"github.com/cobaltdb/cobaltdb/pkg/query"
@@ -173,7 +174,7 @@ func TestRecordForUpdateReads_NoActiveTxn(t *testing.T) {
 	}
 
 	// No active transaction → should return nil immediately
-	err = c.recordForUpdateReads(table, stmt, nil)
+	err = c.recordForUpdateReads(table, stmt, nil, time.Now())
 	if err != nil {
 		t.Errorf("expected nil error with no active txn, got %v", err)
 	}
@@ -203,7 +204,7 @@ func TestRecordForUpdateReads_MissingTableTree(t *testing.T) {
 	}
 
 	// No active transaction → returns nil
-	err = c.recordForUpdateReads(table, stmt, nil)
+	err = c.recordForUpdateReads(table, stmt, nil, time.Now())
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}

@@ -24,6 +24,11 @@ const (
 type counterResult struct {
 	succeeded int64
 	conflicts int64
+	// exhausted counts increments that burned the entire retry budget without
+	// ever succeeding. Without it an exhausted increment is indistinguishable
+	// from a lost update: both leave succeeded short and the counter low, so a
+	// failure could not say which one happened.
+	exhausted int64
 	final     int
 }
 
@@ -43,7 +48,7 @@ func runConcurrentCounter(t *testing.T, mode counterMode, workers, incs int) cou
 	mustExec(t, db, ctx, `CREATE TABLE ctr (id INT PRIMARY KEY, n INT)`)
 	mustExec(t, db, ctx, `INSERT INTO ctr VALUES (1,0)`)
 
-	var succeeded, conflicts int64
+	var succeeded, conflicts, exhausted int64
 	var wg sync.WaitGroup
 
 	for w := 0; w < workers; w++ {
@@ -54,12 +59,20 @@ func runConcurrentCounter(t *testing.T, mode counterMode, workers, incs int) cou
 				// Retry is part of the contract for the transactional modes:
 				// a detected write-write conflict aborts one writer.
 				const maxAttempts = 500
+				ok := false
 				for attempt := 0; attempt < maxAttempts; attempt++ {
 					if err := incrementOnce(ctx, db, mode); err == nil {
 						atomic.AddInt64(&succeeded, 1)
+						ok = true
 						break
 					}
 					atomic.AddInt64(&conflicts, 1)
+				}
+				if !ok {
+					// Every attempt conflicted. Record it explicitly instead of
+					// letting the increment vanish, so the assertion below can
+					// separate "never applied" from "lost update".
+					atomic.AddInt64(&exhausted, 1)
 				}
 			}
 		}()
@@ -70,7 +83,7 @@ func runConcurrentCounter(t *testing.T, mode counterMode, workers, incs int) cou
 	if err := db.QueryRow(ctx, `SELECT n FROM ctr WHERE id = 1`).Scan(&final); err != nil {
 		t.Fatalf("read counter: %v", err)
 	}
-	return counterResult{succeeded: succeeded, conflicts: conflicts, final: final}
+	return counterResult{succeeded: succeeded, conflicts: conflicts, exhausted: exhausted, final: final}
 }
 
 func incrementOnce(ctx context.Context, db *engine.DB, mode counterMode) error {
@@ -142,8 +155,19 @@ func TestNoLostUpdatesAcrossConcurrencyModes(t *testing.T) {
 	for _, m := range modes {
 		t.Run(m.name, func(t *testing.T) {
 			got := runConcurrentCounter(t, m.mode, workers, incs)
-			t.Logf("%s: succeeded=%d conflicts=%d final=%d", m.name, got.succeeded, got.conflicts, got.final)
+			t.Logf("%s: succeeded=%d conflicts=%d exhausted=%d final=%d",
+				m.name, got.succeeded, got.conflicts, got.exhausted, got.final)
 
+			// Every increment must be accounted for exactly once: either it
+			// committed, or it burned the retry budget and is reported as such.
+			// An increment that is neither would silently disappear.
+			if total := got.succeeded + got.exhausted; total != int64(want) {
+				t.Errorf("%s: succeeded(%d) + retry-exhausted(%d) = %d, want %d: %d increments unaccounted for",
+					m.name, got.succeeded, got.exhausted, total, want, int64(want)-total)
+			}
+			if got.exhausted != 0 {
+				t.Errorf("%s: %d increments exhausted the 500-attempt retry budget", m.name, got.exhausted)
+			}
 			if got.succeeded != int64(want) {
 				t.Errorf("%s: %d/%d increments succeeded within the retry budget", m.name, got.succeeded, want)
 			}

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"strconv"
 	"time"
@@ -203,8 +204,23 @@ func encodeBinaryVersionedRow(rowValues []interface{}, version RowVersion) ([]by
 // (data is the JSON payload, without the leading marker byte).
 func decodeBinaryVersionedRow(data []byte, numCols int) (VersionedRow, error) {
 	var vrow VersionedRow
-	if err := json.Unmarshal(data, &vrow); err != nil {
+	// Decode with UseNumber so integers survive: plain json.Unmarshal turns
+	// every JSON number into float64 BEFORE the restore pass below runs, and
+	// an int64 above 2^53 is not representable in float64 — a stored
+	// 9007199254740993 came back as 9007199254740992 with no error, silently
+	// corrupting any INTEGER column of a row that also carries a BLOB. With
+	// json.Number the original digit text is preserved and Int64() restores
+	// the exact value (mirroring the JSON fast path, which parses integers
+	// as int64 directly).
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&vrow); err != nil {
 		return VersionedRow{}, err
+	}
+	// Match json.Unmarshal's strictness: trailing garbage after the row
+	// object is a decode error, not something to silently ignore.
+	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
+		return VersionedRow{}, fmt.Errorf("binary row JSON has trailing data")
 	}
 	binSet := make(map[int]struct{}, len(vrow.Bin))
 	for _, idx := range vrow.Bin {
@@ -218,15 +234,21 @@ func decodeBinaryVersionedRow(data []byte, numCols int) (VersionedRow, error) {
 		}
 	}
 	vrow.Bin = nil
-	// Restore integer types lost by JSON unmarshaling (skip binary positions).
+	// Restore numeric types (skip binary positions). Integers restore
+	// EXACTLY from their digit text; non-integral or exponent-form numbers
+	// fall back to float64, keeping the previous integral-restore heuristic
+	// for values Go renders in exponent form (e.g. 1e+15 written from a
+	// float64 value). Numbers NESTED inside JSON column values are
+	// normalized to float64 — the type they have always had on this path
+	// and on the JSON fast path — so no caller sees a new json.Number.
 	for i, v := range vrow.Data {
 		if _, isBin := binSet[i]; isBin {
 			continue
 		}
-		if f, ok := v.(float64); ok {
-			if f == float64(int64(f)) && f >= -1e15 && f <= 1e15 {
-				vrow.Data[i] = int64(f)
-			}
+		if num, ok := v.(json.Number); ok {
+			vrow.Data[i] = restoreBinaryRowNumber(num)
+		} else {
+			vrow.Data[i] = normalizeBinaryRowJSONValue(v)
 		}
 	}
 	for len(vrow.Data) < numCols {
@@ -236,6 +258,52 @@ func decodeBinaryVersionedRow(data []byte, numCols int) (VersionedRow, error) {
 		vrow.Data = vrow.Data[:numCols]
 	}
 	return vrow, nil
+}
+
+// restoreBinaryRowNumber converts a decoded json.Number into the exact Go
+// value it encoded: integers of ANY magnitude restore as int64 from the
+// original digit text; everything else restores as float64, with the
+// pre-UseNumber integral heuristic applied so exponent-form integers
+// (e.g. 1e+15 written from a float64 value) keep their historical int64
+// result.
+func restoreBinaryRowNumber(num json.Number) interface{} {
+	if n, err := num.Int64(); err == nil {
+		return n
+	}
+	f, err := num.Float64()
+	if err != nil {
+		return num.String()
+	}
+	if f == float64(int64(f)) && f >= -1e15 && f <= 1e15 {
+		return int64(f)
+	}
+	return f
+}
+
+// normalizeBinaryRowJSONValue converts json.Number leaves nested inside JSON
+// column values (maps/slices) back to float64 — the type encoding/json has
+// always produced for nested numbers on both row-decode paths — so callers
+// never observe a json.Number where a float64 used to be.
+func normalizeBinaryRowJSONValue(v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for k, item := range t {
+			t[k] = normalizeBinaryRowJSONValue(item)
+		}
+		return t
+	case []interface{}:
+		for i, item := range t {
+			t[i] = normalizeBinaryRowJSONValue(item)
+		}
+		return t
+	case json.Number:
+		if f, err := t.Float64(); err == nil {
+			return f
+		}
+		return t.String()
+	default:
+		return v
+	}
 }
 
 // encodeVersionedRowFast manually builds the JSON {"data":[...],"version":{...}}

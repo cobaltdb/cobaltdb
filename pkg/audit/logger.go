@@ -1049,7 +1049,9 @@ func (al *Logger) rotateLocked() error {
 		return fmt.Errorf("failed to sync audit log directory after rotation: %w", err)
 	}
 
-	al.pruneBackupsLocked()
+	// The just-renamed segment is the newest by construction; prune must
+	// never select it in this pass (see pruneBackupsLocked).
+	al.pruneBackupsLocked(backupName)
 
 	// Reset the hash chain for the new file. Without this the new file's
 	// first entry would carry PrevHash from the old file, which both
@@ -1089,7 +1091,12 @@ func (al *Logger) rotateLocked() error {
 // Config.MaxAge (days) on rotated backups named <LogFile>.<timestamp>.
 // Pruning is best-effort: failures are logged, never fatal. Caller must hold
 // al.mu.
-func (al *Logger) pruneBackupsLocked() {
+//
+// newest is the just-rotated segment named by the live chain continuation.
+// Keep it first even if file times tie or the clock moves backwards. Remaining
+// backups are ordered by modification time: a recycled same-second filename
+// can otherwise make a newer segment look older than its predecessors.
+func (al *Logger) pruneBackupsLocked(newest string) {
 	prefix := al.config.LogFile + "."
 	matches, err := filepath.Glob(prefix + "*")
 	if err != nil {
@@ -1102,6 +1109,7 @@ func (al *Logger) pruneBackupsLocked() {
 	type backup struct {
 		path string
 		ts   time.Time
+		mt   time.Time
 	}
 	backups := make([]backup, 0, len(matches))
 	for _, m := range matches {
@@ -1116,16 +1124,34 @@ func (al *Logger) pruneBackupsLocked() {
 				continue
 			}
 		}
-		backups = append(backups, backup{path: m, ts: ts})
+		mt := ts
+		if info, lerr := os.Lstat(m); lerr == nil {
+			mt = info.ModTime()
+		}
+		backups = append(backups, backup{path: m, ts: ts, mt: mt})
 	}
-	// Newest first.
-	sort.Slice(backups, func(i, j int) bool { return backups[i].ts.After(backups[j].ts) })
+	// The live predecessor counts toward MaxBackups and is always retained.
+	sort.Slice(backups, func(i, j int) bool {
+		if (backups[i].path == newest) != (backups[j].path == newest) {
+			return backups[i].path == newest
+		}
+		if !backups[i].mt.Equal(backups[j].mt) {
+			return backups[i].mt.After(backups[j].mt)
+		}
+		if !backups[i].ts.Equal(backups[j].ts) {
+			return backups[i].ts.After(backups[j].ts)
+		}
+		return backups[i].path > backups[j].path
+	})
 
 	var cutoff time.Time
 	if al.config.MaxAge > 0 {
 		cutoff = time.Now().AddDate(0, 0, -al.config.MaxAge)
 	}
 	for i, b := range backups {
+		if b.path == newest {
+			continue
+		}
 		tooMany := al.config.MaxBackups > 0 && i >= al.config.MaxBackups
 		tooOld := !cutoff.IsZero() && b.ts.Before(cutoff)
 		if !tooMany && !tooOld {
