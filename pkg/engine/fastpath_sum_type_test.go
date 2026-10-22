@@ -54,13 +54,28 @@ func TestSumTypeConsistentAcrossQueryShapes(t *testing.T) {
 		t.Fatalf("grouped query: %v", err)
 	}
 	defer groupedRows.Close()
+	// Check EVERY grouped row, not just the first: the point of this pin is
+	// that all query shapes agree on the SUM type, and breaking after one row
+	// silently compared 1 of N groups (SA4004). gsum keeps the FIRST group's
+	// value so the value pin below stays 1; each row's type is checked.
 	var gsum interface{}
+	grouped := 0
 	for groupedRows.Next() {
 		var id interface{}
-		if err := groupedRows.Scan(&id, &gsum); err != nil {
+		var cur interface{}
+		if err := groupedRows.Scan(&id, &cur); err != nil {
 			t.Fatalf("grouped scan: %v", err)
 		}
-		break
+		if grouped == 0 {
+			gsum = cur
+		}
+		if _, ok := cur.(int64); !ok {
+			t.Fatalf("FAIL: grouped SUM type = %T (%v), want int64", cur, cur)
+		}
+		grouped++
+	}
+	if grouped != 3 {
+		t.Fatalf("grouped query returned %d rows, want 3 (one per id)", grouped)
 	}
 
 	shape := func(name string, v interface{}) {
