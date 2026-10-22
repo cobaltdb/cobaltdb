@@ -1,5 +1,9 @@
 # Multi-stage build for CobaltDB
-ARG GO_IMAGE=golang:1.26-alpine3.23
+# Pinned, not floating. `golang:1.26-alpine3.23` tracks the latest 1.26.x
+# patch, so the builder toolchain could resolve BELOW the go.mod
+# `toolchain go1.26.9` directive and silently reintroduce the Go stdlib
+# advisories GO-2026-6599..6617 that the toolchain bump fixes.
+ARG GO_IMAGE=golang:1.26.9-alpine3.23
 ARG RUNTIME_IMAGE=alpine:3.23
 
 FROM ${GO_IMAGE} AS builder
