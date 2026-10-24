@@ -101,3 +101,35 @@ jobs:
           cache: true
       - name: make flaky-repeat
         run: make flaky-repeat
+
+  coverage:
+    name: coverage (per-package floors)
+    runs-on: ubuntu-latest
+    # `make test-coverage` runs the whole suite TWICE: once AST-instrumented
+    # over a copy of the module (for branch/function outcomes) and once natively
+    # (for statements and lines). That is roughly twice the cost of `make
+    # verify`, which has a 25-minute budget, so this job gets a generous limit
+    # rather than inheriting it.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # The gate's own self-test first: it is seconds, and it fails loudly if
+      # the comparison logic itself is broken. Without it, a broken gate would
+      # be discovered only after the full double test run.
+      - name: make coverage-gate-self-test
+        run: make coverage-gate-self-test
+
+      # Generates coverage.json and enforces the per-package floors as it goes.
+      - name: make test-coverage
+        run: make test-coverage
+
+      # Re-checks the report that was just written to disk. This is a separate
+      # code path from the in-memory check inside `run`: it proves the persisted
+      # artifact is itself valid and still meets the floors.
+      - name: make coverage-gate
+        run: make coverage-gate

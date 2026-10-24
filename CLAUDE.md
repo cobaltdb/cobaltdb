@@ -162,6 +162,7 @@ Shared test helpers used across the boundary live in untagged `*_test.go` files 
 - All `pkg` packages passing
 - Per-package `go test -cover` reports coverage; overall aggregate varies by package
 - Direction: lift coverage through focused table-driven tests in production-critical packages; target 90%+ per package
+- **Machine-enforced coverage gate** — `scripts/coverage-gate.go` (`make test-coverage`, `make coverage-gate`, `make coverage-gate-self-test`) enforces a per-package **minimum covered-statement count** for every package in the module, and runs as the `coverage` job in CI. The floor unit is a raw covered count, not a percentage: a covered-count floor catches LOSS of covered statements (a deleted or narrowed test) and never fails a tree that merely grew, but it does **not** fail a package whose coverage *ratio* fell because untested code was added. The 90%+ per-package target above is therefore a direction, not a machine-checked number — the gate checks covered counts, and the ratio is printed per package for a human to read. The floor table in the script holds the measured values; raising one is a deliberate act.
 
 ### Running Benchmarks Safely
 ```bash
@@ -467,7 +468,7 @@ The following features are fully implemented and integrated in the engine:
 ## Features Not Implemented / Not Production-Grade
 
 - **Automatic HA failover / clustering** — No built-in sharding, Raft/Paxos, leader election, or split-brain-safe failover.
-- **Broad production certification** — Crash-recovery fault injection, package-level coverage gates, and long-running soak tests remain active hardening work.
+- **Broad production certification** — Crash-recovery fault injection and long-running soak tests remain active hardening work. (A per-package coverage gate now exists — see Testing above — but it is a covered-count floor, not a crash or soak certification.)
 - **Audit log external trust root** — Audit logs are encrypted, hash-chained, and offline-verifiable, but external signing/HSM-backed anchoring is not yet implemented.
 - **Encryption key rotation workflow** — Storage encryption exists, but operational key rotation is not yet exposed as a production workflow.
 - **WASM as primary execution engine** — WASM execution is functional for selected paths but should be treated as experimental.

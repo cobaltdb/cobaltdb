@@ -19,6 +19,15 @@ bin/
 cover.html
 coverage.html
 coverage.out
+# The v2 coverage-gate report is a generated artifact. It must NOT be
+# committed: a stale report checked in beside the gate would either fail the
+# schema check (reading as a broken gate) or, worse, be read as the measured
+# state of the tree.
+coverage.json
+# The gate script is a `package main` tool, so `go build scripts/coverage-gate.go`
+# drops a ./coverage-gate binary in the working directory. It is a build
+# artifact, not source.
+/coverage-gate
 coverage_*.html
 cov_report.html
 storage_cov.out

@@ -26,7 +26,12 @@ import (
 	"strings"
 )
 
-const schema = "cobaltdb-coverage/v1"
+const schema = "cobaltdb-coverage/v2"
+
+// floorFailure is the phrase that identifies a floor shortfall in the gate's
+// error. The self-test asserts on it, so it is defined once instead of being
+// repeated as a literal in two places.
+const floorFailure = "below its measured floor"
 
 var metricNames = [...]string{"statements", "functions", "lines", "branches"}
 
@@ -35,9 +40,96 @@ type metric struct {
 	Total   int `json:"total"`
 }
 
-type report struct {
-	Schema  string            `json:"schema"`
+// packageMetrics holds the four raw metrics of a single package.
+type packageMetrics struct {
 	Metrics map[string]metric `json:"metrics"`
+}
+
+type report struct {
+	Schema   string                    `json:"schema"`
+	Metrics  map[string]metric         `json:"metrics"`
+	Packages map[string]packageMetrics `json:"packages"`
+}
+
+// packageFloors maps a package import path to the minimum COVERED count that
+// package must still reach, per metric. A floor is always a raw covered
+// count, never a percentage: the gate compares integers, so no rounding can
+// turn a shortfall into a pass, and a growing denominator cannot trip an
+// otherwise unchanged package.
+//
+// The trade-off is deliberate and worth stating plainly. A covered-count floor
+// catches LOSS of covered statements (a deleted, skipped or narrowed test) and
+// it never fails a tree that merely grew. It does NOT catch a falling coverage
+// ratio caused purely by newly added untested code. The ratio is still
+// reported per package so a reviewer can see it.
+//
+// Every value below is a measured covered count from this tree, not a card
+// target and not a documentation figure. The numbers come from nine
+// independent whole-module runs of the command the gate itself runs
+// (`go test -count=1 -covermode=count -coverprofile=... ./...`), taking the
+// LOWEST count observed for each package. Coverage is not perfectly
+// deterministic: a few paths are reached only under load or in a race, so the
+// lowest observed value is the one a healthy tree always meets and the one
+// that makes the gate reproducible rather than flaky.
+//
+// Only the statements metric is floored. The functions and branches totals
+// come from the AST-instrumented overlay, whose totals shift whenever the
+// instrumentation changes, so a fixed floor there would be brittle rather
+// than informative.
+//
+// The table covers every package a report contains. A package that appears in
+// a report without a floor entry is a failure (see validate), so a new
+// package cannot join the tree ungated.
+//
+// Five packages are floored at 0 because they measured ZERO covered statements
+// in every run, and their entry keeps the table complete. Four of them
+// (examples/cli, examples/mysql-server, examples/webapp, examples/worker)
+// have no test file at all. The fifth, cmd/demo, does have test files, but
+// they exercise pkg/engine rather than cmd/demo's own main(), which they
+// explicitly cannot call without a database — so its covered count is a
+// genuine measurement of zero, not a missing measurement. Raising any of
+// these floors is the ratchet, and each one needs its own coverage work.
+//
+// Raising a floor is a deliberate act: move it to the newly measured covered
+// count when the corresponding coverage work lands.
+var packageFloors = map[string]map[string]int{
+	"github.com/cobaltdb/cobaltdb/cmd/cobaltdb-bench":    {"statements": 7},
+	"github.com/cobaltdb/cobaltdb/cmd/cobaltdb-cli":      {"statements": 609},
+	"github.com/cobaltdb/cobaltdb/cmd/cobaltdb-migrate":  {"statements": 135},
+	"github.com/cobaltdb/cobaltdb/cmd/cobaltdb-server":   {"statements": 229},
+	"github.com/cobaltdb/cobaltdb/cmd/demo":              {"statements": 0},
+	"github.com/cobaltdb/cobaltdb/examples/cli":          {"statements": 0},
+	"github.com/cobaltdb/cobaltdb/examples/mysql-server": {"statements": 0},
+	"github.com/cobaltdb/cobaltdb/examples/rest-api":     {"statements": 22},
+	"github.com/cobaltdb/cobaltdb/examples/webapp":       {"statements": 0},
+	"github.com/cobaltdb/cobaltdb/examples/worker":       {"statements": 0},
+	"github.com/cobaltdb/cobaltdb/pkg/advisor":           {"statements": 192},
+	"github.com/cobaltdb/cobaltdb/pkg/audit":             {"statements": 620},
+	"github.com/cobaltdb/cobaltdb/pkg/auth":              {"statements": 448},
+	"github.com/cobaltdb/cobaltdb/pkg/backup":            {"statements": 955},
+	"github.com/cobaltdb/cobaltdb/pkg/btree":             {"statements": 754},
+	"github.com/cobaltdb/cobaltdb/pkg/cache":             {"statements": 312},
+	"github.com/cobaltdb/cobaltdb/pkg/catalog":           {"statements": 13976},
+	"github.com/cobaltdb/cobaltdb/pkg/engine":            {"statements": 3275},
+	"github.com/cobaltdb/cobaltdb/pkg/fdw":               {"statements": 257},
+	"github.com/cobaltdb/cobaltdb/pkg/logger":            {"statements": 157},
+	"github.com/cobaltdb/cobaltdb/pkg/metrics":           {"statements": 639},
+	"github.com/cobaltdb/cobaltdb/pkg/optimizer":         {"statements": 175},
+	"github.com/cobaltdb/cobaltdb/pkg/parallel":          {"statements": 109},
+	"github.com/cobaltdb/cobaltdb/pkg/pool":              {"statements": 266},
+	"github.com/cobaltdb/cobaltdb/pkg/protocol":          {"statements": 1165},
+	"github.com/cobaltdb/cobaltdb/pkg/query":             {"statements": 4396},
+	"github.com/cobaltdb/cobaltdb/pkg/replication":       {"statements": 1228},
+	"github.com/cobaltdb/cobaltdb/pkg/scheduler":         {"statements": 221},
+	"github.com/cobaltdb/cobaltdb/pkg/security":          {"statements": 719},
+	"github.com/cobaltdb/cobaltdb/pkg/server":            {"statements": 1505},
+	"github.com/cobaltdb/cobaltdb/pkg/storage":           {"statements": 1836},
+	"github.com/cobaltdb/cobaltdb/pkg/txn":               {"statements": 766},
+	"github.com/cobaltdb/cobaltdb/pkg/util":              {"statements": 20},
+	"github.com/cobaltdb/cobaltdb/pkg/wire":              {"statements": 102},
+	"github.com/cobaltdb/cobaltdb/sdk/go":                {"statements": 304},
+	"github.com/cobaltdb/cobaltdb/test":                  {"statements": 32},
+	"github.com/cobaltdb/cobaltdb/webui":                 {"statements": 1132},
 }
 
 type listedPackage struct {
@@ -45,6 +137,40 @@ type listedPackage struct {
 	ImportPath string
 	GoFiles    []string
 	CgoFiles   []string
+}
+
+// packageIndex resolves a coverage profile file key to the package that owns
+// it. A profile records a file as "<import path>/<file name>", so the owner
+// is the longest import path that prefixes the key. The exact file map is
+// consulted first, and the prefix scan then covers files the compiler
+// generated (a cgo translation unit, for example) that no package lists.
+type packageIndex struct {
+	byFileKey map[string]string
+	paths     []string
+}
+
+func newPackageIndex(packages []listedPackage) *packageIndex {
+	index := &packageIndex{byFileKey: make(map[string]string)}
+	for _, p := range packages {
+		for _, name := range append(append([]string(nil), p.GoFiles...), p.CgoFiles...) {
+			index.byFileKey[pathKey(p.ImportPath, name)] = p.ImportPath
+		}
+		index.paths = append(index.paths, p.ImportPath)
+	}
+	sort.Slice(index.paths, func(i, j int) bool { return len(index.paths[i]) > len(index.paths[j]) })
+	return index
+}
+
+func (index *packageIndex) owner(key string) string {
+	if owner, ok := index.byFileKey[key]; ok {
+		return owner
+	}
+	for _, path := range index.paths {
+		if strings.HasPrefix(key, path+"/") {
+			return path
+		}
+	}
+	return ""
 }
 
 type profileBlock struct {
@@ -108,7 +234,7 @@ func runCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return runCoverage(*root, *out, *profile, *html, true)
+	return runCoverage(*root, *out, *profile, *html, packageFloors, true)
 }
 
 func checkCommand(args []string) error {
@@ -123,10 +249,10 @@ func checkCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	return enforce(r, os.Stdout)
+	return enforce(r, packageFloors, os.Stdout)
 }
 
-func runCoverage(root, outPath, profilePath, htmlPath string, announce bool) error {
+func runCoverage(root, outPath, profilePath, htmlPath string, floors map[string]map[string]int, announce bool) error {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return err
@@ -193,6 +319,7 @@ func runCoverage(root, outPath, profilePath, htmlPath string, announce bool) err
 	r.Metrics["functions"] = probeMetric(markers, branchBlocks, "function")
 	r.Metrics["lines"] = lineMetric(sources, nativeBlocks)
 	r.Metrics["branches"] = probeMetric(markers, branchBlocks, "branch")
+	r.Packages = perPackageMetrics(packages, markers, nativeBlocks, branchBlocks, sources)
 
 	encoded, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
@@ -207,7 +334,7 @@ func runCoverage(root, outPath, profilePath, htmlPath string, announce bool) err
 			return fmt.Errorf("HTML coverage report: %w", err)
 		}
 	}
-	return enforce(r, os.Stdout)
+	return enforce(r, floors, os.Stdout)
 }
 
 func absoluteFrom(root, path string) string {
@@ -496,6 +623,68 @@ func statementMetric(blocks []profileBlock) metric {
 	return result
 }
 
+// perPackageMetrics computes the same four raw metrics per package that the
+// repo-wide totals use, so a floor can be expressed for one package without
+// changing how any metric is counted. Each package is bucketed by the file
+// keys its own files contribute, which keeps every metric on exactly the
+// blocks it was already counted on repo-wide.
+func perPackageMetrics(packages []listedPackage, markers []probeMarker, nativeBlocks, branchBlocks []profileBlock, sources []sourceFile) map[string]packageMetrics {
+	index := newPackageIndex(packages)
+
+	nativeByPackage := map[string][]profileBlock{}
+	for _, b := range nativeBlocks {
+		if owner := index.owner(b.File); owner != "" {
+			nativeByPackage[owner] = append(nativeByPackage[owner], b)
+		}
+	}
+	branchByPackage := map[string][]profileBlock{}
+	for _, b := range branchBlocks {
+		if owner := index.owner(b.File); owner != "" {
+			branchByPackage[owner] = append(branchByPackage[owner], b)
+		}
+	}
+	markersByPackage := map[string][]probeMarker{}
+	for _, m := range markers {
+		if owner := index.owner(m.ProfileKey); owner != "" {
+			markersByPackage[owner] = append(markersByPackage[owner], m)
+		}
+	}
+	sourcesByPackage := map[string][]sourceFile{}
+	for _, s := range sources {
+		if owner := index.owner(s.ProfileKey); owner != "" {
+			sourcesByPackage[owner] = append(sourcesByPackage[owner], s)
+		}
+	}
+
+	// The package set is the union of every bucket, not just the native
+	// statement blocks: a package that contributes only markers or sources
+	// still belongs in the report, and reporting it with zero coverage is
+	// honest where omitting it would read as "never measured".
+	result := make(map[string]packageMetrics, len(nativeByPackage))
+	for owner := range nativeByPackage {
+		result[owner] = packageMetrics{}
+	}
+	for owner := range branchByPackage {
+		result[owner] = packageMetrics{}
+	}
+	for owner := range markersByPackage {
+		result[owner] = packageMetrics{}
+	}
+	for owner := range sourcesByPackage {
+		result[owner] = packageMetrics{}
+	}
+	for owner := range result {
+		blocks := nativeByPackage[owner]
+		result[owner] = packageMetrics{Metrics: map[string]metric{
+			"statements": statementMetric(blocks),
+			"functions":  probeMetric(markersByPackage[owner], branchByPackage[owner], "function"),
+			"lines":      lineMetric(sourcesByPackage[owner], blocks),
+			"branches":   probeMetric(markersByPackage[owner], branchByPackage[owner], "branch"),
+		}}
+	}
+	return result
+}
+
 func matchingBlocks(key string, blocks []profileBlock) []profileBlock {
 	var result []profileBlock
 	for _, b := range blocks {
@@ -638,7 +827,7 @@ func rejectDuplicateJSONKeys(data []byte) error {
 	return consume()
 }
 
-func validate(r report) error {
+func validate(r report, floors map[string]map[string]int) error {
 	if r.Schema != schema {
 		return fmt.Errorf("unsupported schema %q (want %q)", r.Schema, schema)
 	}
@@ -657,57 +846,304 @@ func validate(r report) error {
 			return fmt.Errorf("invalid %s raw counts: %d/%d", name, m.Covered, m.Total)
 		}
 	}
+	// Per-package payloads are validated too: the report is an externally
+	// supplied file, so a package with a negative or impossible covered count
+	// must be rejected rather than compared against a floor.
+	for _, name := range sortedPackageNames(r.Packages) {
+		entry := r.Packages[name]
+		if len(entry.Metrics) != len(metricNames) {
+			return fmt.Errorf("package %s must contain exactly %s", name, strings.Join(metricNames[:], ", "))
+		}
+		for _, metric := range metricNames {
+			m, ok := entry.Metrics[metric]
+			if !ok {
+				return fmt.Errorf("package %s is missing the %s metric", name, metric)
+			}
+			if m.Covered < 0 || m.Covered > m.Total {
+				return fmt.Errorf("package %s has invalid %s raw counts: %d/%d", name, metric, m.Covered, m.Total)
+			}
+		}
+	}
+	// Every package in the report must have a floor entry. A package that
+	// appears in a report without a floor would otherwise pass silently, so a
+	// newly added package could join the tree ungated and the floor table
+	// could quietly stop describing the module.
+	for _, name := range sortedPackageNames(r.Packages) {
+		if _, ok := floors[name]; !ok {
+			return fmt.Errorf("package %s is in the report but has no floor entry", name)
+		}
+	}
+	// A gated package that is absent from the report is a failure, not an
+	// empty iteration: otherwise a report could dodge a floor simply by
+	// omitting the package.
+	for _, name := range sortedFloorPackages(floors) {
+		entry, ok := r.Packages[name]
+		if !ok {
+			return fmt.Errorf("gated package %s is missing from the report", name)
+		}
+		for _, metric := range sortedFloorMetrics(floors[name]) {
+			m, ok := entry.Metrics[metric]
+			if !ok {
+				return fmt.Errorf("gated package %s is missing the %s metric", name, metric)
+			}
+			// A floor of zero requires nothing, so there is nothing to
+			// evaluate when the metric has no statements at all: that is a
+			// package with no measurable source, not a shortfall. Only a
+			// positive floor can go unevaluated, and that IS a failure.
+			floor := floors[name][metric]
+			if floor > 0 && m.Total <= 0 {
+				return fmt.Errorf("gated package %s has a %s total of 0, so its floor of %d cannot be evaluated", name, metric, floor)
+			}
+		}
+	}
 	return nil
 }
 
-func enforce(r report, out io.Writer) error {
-	if err := validate(r); err != nil {
+// enforce compares the report against the floor table. A floor is a minimum
+// COVERED COUNT, so the comparison is a plain integer comparison of two raw
+// counts: no percentage is ever formed, and therefore no rounding can turn a
+// shortfall into a pass or a pass into a failure.
+//
+// A covered-count floor is a regression guard: it fails when a package loses
+// covered statements, and it does not fail a package that merely grew. The
+// coverage ratio is printed for every package so a reviewer can see it move.
+func enforce(r report, floors map[string]map[string]int, out io.Writer) error {
+	// An empty floor table would make the gate pass vacuously: no comparison
+	// would be made and the success line would still be printed. A mis-wired
+	// call site has to fail loudly instead of looking like a green gate.
+	if len(floors) == 0 {
+		return errors.New("coverage gate has no floors configured")
+	}
+	if err := validate(r, floors); err != nil {
 		return err
 	}
-	failed := false
-	for _, name := range metricNames {
-		m := r.Metrics[name]
-		status := "PASS"
-		if m.Covered != m.Total {
-			status = "FAIL"
-			failed = true
+	// validate() has already established that every package in the report has
+	// a floor entry, so the lookup below cannot miss.
+	var failures []string
+	for _, name := range sortedPackageNames(r.Packages) {
+		entry := r.Packages[name]
+		m := entry.Metrics["statements"]
+		// A package with no statements was never measured, which is a
+		// different fact from a package measured at 0%. Printing "0.0%" for
+		// it would read as a coverage collapse.
+		ratio := "     -"
+		if m.Total > 0 {
+			ratio = fmt.Sprintf("%5.1f%%", 100*float64(m.Covered)/float64(m.Total))
 		}
-		fmt.Fprintf(out, "%-10s %d/%d %s\n", name+":", m.Covered, m.Total, status)
+		gated := floors[name]
+		// The ratio is printed for every package. A covered-count floor
+		// deliberately does not fail a package whose ratio fell because the
+		// package grew, so the ratio is the only signal a reviewer gets for
+		// that case; suppressing it would hide the very regression the floor
+		// is chosen not to catch.
+		for _, metric := range sortedFloorMetrics(gated) {
+			floor := gated[metric]
+			actual := entry.Metrics[metric]
+			// The comparison is made once and the result drives both the
+			// verdict and the exit status, so the printed word and the gate's
+			// decision can never disagree.
+			passed := actual.Covered >= floor
+			verdict := "PASS"
+			if !passed {
+				verdict = "FAIL"
+				failures = append(failures, fmt.Sprintf("%s %s is %d covered, %s of %d", name, metric, actual.Covered, floorFailure, floor))
+			}
+			fmt.Fprintf(out, "%-52s %-10s %7d covered (floor %d) %s", name, metric, actual.Covered, floor, verdict)
+			if metric == "statements" {
+				fmt.Fprintf(out, "  statements %d/%d %s", actual.Covered, actual.Total, ratio)
+			}
+			fmt.Fprintln(out)
+		}
 	}
-	if failed {
-		return errors.New("raw coverage counts are below 100%; every covered count must equal its total")
+	if len(failures) > 0 {
+		// The failing packages are named in the error, not only in the printed
+		// rows: a CI log that says "a package is below its floor" without
+		// saying which one makes the reader go looking for it.
+		return fmt.Errorf("coverage floors not met: %s", strings.Join(failures, "; "))
 	}
-	fmt.Fprintln(out, "coverage gate: all four raw metrics are exactly 100%")
+	fmt.Fprintf(out, "coverage gate: %d gated package(s) at or above their measured floors\n", len(floors))
 	return nil
+}
+
+func sortedPackageNames(packages map[string]packageMetrics) []string {
+	names := make([]string, 0, len(packages))
+	for name := range packages {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func sortedFloorPackages(floors map[string]map[string]int) []string {
+	names := make([]string, 0, len(floors))
+	for name := range floors {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func sortedFloorMetrics(metrics map[string]int) []string {
+	names := make([]string, 0, len(metrics))
+	for name := range metrics {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func selfTest() error {
-	// First test the fail-closed report contract, independently for each metric.
-	perfect := report{Schema: schema, Metrics: map[string]metric{}}
+	// The gate is a per-package covered-count floor, so the baseline fixture
+	// has to look like a real report: repo-wide metrics plus a per-package
+	// payload for every gated package.
+	perfect := report{Schema: schema, Metrics: map[string]metric{}, Packages: map[string]packageMetrics{}}
 	for _, name := range metricNames {
 		perfect.Metrics[name] = metric{Covered: 10, Total: 10}
 	}
-	if err := enforce(perfect, io.Discard); err != nil {
+	for name, floors := range packageFloors {
+		entry := packageMetrics{Metrics: map[string]metric{}}
+		for _, metricName := range metricNames {
+			covered := floors[metricName]
+			if covered < 10 {
+				covered = 10
+			}
+			entry.Metrics[metricName] = metric{Covered: covered, Total: covered}
+		}
+		perfect.Packages[name] = entry
+	}
+	if err := enforce(perfect, packageFloors, io.Discard); err != nil {
 		return fmt.Errorf("perfect report rejected: %w", err)
 	}
-	for _, missing := range metricNames {
+
+	// Every metric name is gated per package: a package that loses covered
+	// units below its floor must be rejected, and the same report sitting
+	// exactly at the floor must pass.
+	//
+	// The floor map used here still has to describe EVERY package in the
+	// report: the gate fails closed on a report package that has no floor
+	// entry, so a floor map covering only the package under test would be
+	// rejected for the wrong reason and the assertion below would prove
+	// nothing.
+	gatedPackage := ""
+	for name := range packageFloors {
+		gatedPackage = name
+		break
+	}
+	metricFloors := cloneFloors(packageFloors)
+	for _, name := range metricNames {
+		metricFloors[gatedPackage][name] = 10
+	}
+	for _, name := range metricNames {
 		candidate := cloneReport(perfect)
-		candidate.Metrics[missing] = metric{Covered: 9, Total: 10}
-		if err := enforce(candidate, io.Discard); err == nil {
-			return fmt.Errorf("uncovered %s was accepted", missing)
+		entry := candidate.Packages[gatedPackage]
+		shortfall := entry.Metrics[name]
+		shortfall.Covered = 9
+		shortfall.Total = 10
+		entry.Metrics[name] = shortfall
+		candidate.Packages[gatedPackage] = entry
+		if err := enforce(candidate, metricFloors, io.Discard); err == nil {
+			return fmt.Errorf("uncovered %s was accepted", name)
 		}
 	}
+	if err := enforce(cloneReport(perfect), metricFloors, io.Discard); err != nil {
+		return fmt.Errorf("report at the floor was rejected: %w", err)
+	}
+
+	// The repository floor table itself must reject a package one unit below
+	// its measured floor.
+	for name, floors := range packageFloors {
+		for metricName, floor := range floors {
+			if floor == 0 {
+				// A zero floor cannot be undercut: no covered count is
+				// below zero. The meaningful assertion for these packages is
+				// the opposite one, and it is made below.
+				continue
+			}
+			candidate := cloneReport(perfect)
+			entry := candidate.Packages[name]
+			shortfall := entry.Metrics[metricName]
+			shortfall.Covered = floor - 1
+			shortfall.Total = floor
+			entry.Metrics[metricName] = shortfall
+			candidate.Packages[name] = entry
+			if err := enforce(candidate, packageFloors, io.Discard); err == nil {
+				return fmt.Errorf("package %s below its %s floor was accepted", name, metricName)
+			}
+		}
+	}
+
+	// A package with no tests at all is floored at zero, and a zero floor
+	// must accept a package measured at zero coverage rather than rejecting
+	// it for having no covered statements.
+	zeroFloored := ""
+	for name, floors := range packageFloors {
+		if floors["statements"] == 0 {
+			zeroFloored = name
+			break
+		}
+	}
+	if zeroFloored == "" {
+		return errors.New("the floor table has no zero-floored package to exercise the zero-floor case")
+	}
+	//
+	// Both shapes are exercised, because a package with no test file can
+	// reach the report either way: with statements counted but none covered
+	// (it has source that was never executed) or with no statements at all
+	// (it has no measurable source). Neither is a shortfall against a floor
+	// of zero, so neither may fail the gate.
+	for _, shape := range []metric{{Covered: 0, Total: 10}, {Covered: 0, Total: 0}} {
+		zeroReport := cloneReport(perfect)
+		zeroEntry := zeroReport.Packages[zeroFloored]
+		zeroEntry.Metrics["statements"] = shape
+		zeroReport.Packages[zeroFloored] = zeroEntry
+		if err := enforce(zeroReport, packageFloors, io.Discard); err != nil {
+			return fmt.Errorf("a zero-floored package at zero coverage (%d/%d) was rejected: %w", shape.Covered, shape.Total, err)
+		}
+	}
+	// A POSITIVE floor against a metric with no statements is the opposite
+	// case and must still fail: the floor cannot be met by a package that
+	// reports nothing.
+	positiveFloored := ""
+	for name, floors := range packageFloors {
+		if floors["statements"] > 0 {
+			positiveFloored = name
+			break
+		}
+	}
+	if positiveFloored == "" {
+		return errors.New("the floor table has no positive-floored package to exercise the unevaluatable-floor case")
+	}
+	positiveReport := cloneReport(perfect)
+	positiveEntry := positiveReport.Packages[positiveFloored]
+	positiveEntry.Metrics["statements"] = metric{Covered: 0, Total: 0}
+	positiveReport.Packages[positiveFloored] = positiveEntry
+	if err := enforce(positiveReport, packageFloors, io.Discard); err == nil {
+		return errors.New("a positive floor against a package reporting no statements was accepted")
+	}
+
 	for name, mutate := range map[string]func(*report){
-		"missing branch":     func(r *report) { delete(r.Metrics, "branches") },
-		"zero total":         func(r *report) { r.Metrics["lines"] = metric{} },
-		"covered over total": func(r *report) { r.Metrics["functions"] = metric{Covered: 11, Total: 10} },
-		"rounds to 100":      func(r *report) { r.Metrics["statements"] = metric{Covered: 99999, Total: 100000} },
-		"unknown metric":     func(r *report) { r.Metrics["conditions"] = metric{Covered: 1, Total: 1} },
-		"unknown schema":     func(r *report) { r.Schema = "other/v1" },
+		"missing branch":             func(r *report) { delete(r.Metrics, "branches") },
+		"zero total":                 func(r *report) { r.Metrics["lines"] = metric{} },
+		"covered over total":         func(r *report) { r.Metrics["functions"] = metric{Covered: 11, Total: 10} },
+		"unknown metric":             func(r *report) { r.Metrics["conditions"] = metric{Covered: 1, Total: 1} },
+		"unknown schema":             func(r *report) { r.Schema = "other/v1" },
+		"missing gated package":      func(r *report) { delete(r.Packages, gatedPackage) },
+		"package missing metric":     func(r *report) { delete(r.Packages[gatedPackage].Metrics, "branches") },
+		"package covered over total": func(r *report) { r.Packages[gatedPackage].Metrics["functions"] = metric{Covered: 11, Total: 10} },
+		// A package that appears in the report without a floor entry must be
+		// rejected: otherwise a newly added package could join the tree
+		// ungated and the floor table would stop describing the module.
+		"package without floor entry": func(r *report) {
+			entry := packageMetrics{Metrics: map[string]metric{}}
+			for _, name := range metricNames {
+				entry.Metrics[name] = metric{Covered: 1, Total: 1}
+			}
+			r.Packages["example.test/ungated"] = entry
+		},
 	} {
 		candidate := cloneReport(perfect)
 		mutate(&candidate)
-		if err := enforce(candidate, io.Discard); err == nil {
+		if err := enforce(candidate, packageFloors, io.Discard); err == nil {
 			return fmt.Errorf("invalid fixture %q was accepted", name)
 		}
 	}
@@ -748,30 +1184,83 @@ func selfTest() error {
 	if err := os.WriteFile(filepath.Join(root, "fixture_test.go"), []byte(oneSided), 0o600); err != nil {
 		return err
 	}
+	// The generation runs are gated with a floor of zero so the reports are
+	// produced; the measured branch counts are then used to build a floor the
+	// one-sided fixture must fail and the two-sided fixture must meet.
+	fixturePackage := "example.test/fixture"
+	permissive := map[string]map[string]int{fixturePackage: {"branches": 0}}
 	oneReport := filepath.Join(root, "one.json")
-	if err := runCoverage(root, oneReport, filepath.Join(root, "one.out"), "", false); err == nil || !strings.Contains(err.Error(), "below 100%") {
-		return fmt.Errorf("one-sided branch fixture did not fail specifically at the gate: %v", err)
+	if err := runCoverage(root, oneReport, filepath.Join(root, "one.out"), "", permissive, false); err != nil {
+		return fmt.Errorf("one-sided branch fixture: %w", err)
 	}
 	r, err := readReport(oneReport)
 	if err != nil {
 		return err
 	}
-	if r.Metrics["statements"].Covered != r.Metrics["statements"].Total || r.Metrics["branches"].Covered == r.Metrics["branches"].Total {
+	entry, ok := r.Packages[fixturePackage]
+	if !ok {
+		return fmt.Errorf("fixture package %q is missing from the report: %+v", fixturePackage, r.Packages)
+	}
+	branches := entry.Metrics["branches"]
+	if branches.Total <= 0 {
+		return fmt.Errorf("fixture produced no branch probes: %+v", branches)
+	}
+	if r.Metrics["statements"].Covered != r.Metrics["statements"].Total || branches.Covered >= branches.Total {
 		return fmt.Errorf("instrumentation fixture did not isolate branch coverage: %+v", r.Metrics)
+	}
+	strict := map[string]map[string]int{fixturePackage: {"branches": branches.Total}}
+	if err := enforce(r, strict, io.Discard); err == nil || !strings.Contains(err.Error(), "below its measured floor") {
+		return fmt.Errorf("one-sided branch fixture did not fail specifically at the package floor: %v", err)
 	}
 	twoSided := "package fixture\n\nimport \"testing\"\n\nfunc TestBump(t *testing.T) {\n\tif bump(true) != 1 { t.Fatal() }\n\tif bump(false) != 0 { t.Fatal() }\n}\n"
 	if err := os.WriteFile(filepath.Join(root, "fixture_test.go"), []byte(twoSided), 0o600); err != nil {
 		return err
 	}
-	if err := runCoverage(root, filepath.Join(root, "two.json"), filepath.Join(root, "two.out"), "", false); err != nil {
+	twoReport := filepath.Join(root, "two.json")
+	if err := runCoverage(root, twoReport, filepath.Join(root, "two.out"), "", permissive, false); err != nil {
 		return fmt.Errorf("two-sided instrumentation fixture: %w", err)
+	}
+	r2, err := readReport(twoReport)
+	if err != nil {
+		return err
+	}
+	for _, name := range metricNames {
+		m := r2.Metrics[name]
+		if m.Covered != m.Total {
+			return fmt.Errorf("two-sided fixture did not reach full coverage on %s: %+v", name, m)
+		}
+	}
+	twoBranches, ok := r2.Packages[fixturePackage].Metrics["branches"]
+	if !ok {
+		return fmt.Errorf("two-sided fixture package %q is missing from the report", fixturePackage)
+	}
+	if err := enforce(r2, map[string]map[string]int{fixturePackage: {"branches": twoBranches.Total}}, io.Discard); err != nil {
+		return fmt.Errorf("two-sided fixture failed a floor it met: %w", err)
 	}
 	fmt.Println("coverage gate self-tests: PASS")
 	return nil
 }
 
+// cloneFloors copies a floor table so a fixture can tighten one package's
+// floors without mutating the production table the other assertions use.
+func cloneFloors(input map[string]map[string]int) map[string]map[string]int {
+	result := make(map[string]map[string]int, len(input))
+	for name, metrics := range input {
+		copied := make(map[string]int, len(metrics))
+		for metric, value := range metrics {
+			copied[metric] = value
+		}
+		result[name] = copied
+	}
+	return result
+}
+
 func cloneReport(input report) report {
-	result := report{Schema: input.Schema, Metrics: make(map[string]metric, len(input.Metrics))}
+	result := report{
+		Schema:   input.Schema,
+		Metrics:  make(map[string]metric, len(input.Metrics)),
+		Packages: make(map[string]packageMetrics, len(input.Packages)),
+	}
 	keys := make([]string, 0, len(input.Metrics))
 	for key := range input.Metrics {
 		keys = append(keys, key)
@@ -779,6 +1268,21 @@ func cloneReport(input report) report {
 	sort.Strings(keys)
 	for _, key := range keys {
 		result.Metrics[key] = input.Metrics[key]
+	}
+	// The per-package payload is deep-copied too: a fixture that mutates one
+	// package's metrics must not corrupt the baseline it was cloned from.
+	packageKeys := make([]string, 0, len(input.Packages))
+	for key := range input.Packages {
+		packageKeys = append(packageKeys, key)
+	}
+	sort.Strings(packageKeys)
+	for _, key := range packageKeys {
+		entry := input.Packages[key]
+		metrics := make(map[string]metric, len(entry.Metrics))
+		for name, value := range entry.Metrics {
+			metrics[name] = value
+		}
+		result.Packages[key] = packageMetrics{Metrics: metrics}
 	}
 	return result
 }
