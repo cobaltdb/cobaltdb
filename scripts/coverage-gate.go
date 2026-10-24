@@ -72,6 +72,17 @@ type report struct {
 // lowest observed value is the one a healthy tree always meets and the one
 // that makes the gate reproducible rather than flaky.
 //
+// Three packages get ONE extra statement of headroom below that lowest
+// observed count: pkg/catalog, pkg/engine and pkg/query. The first CI runner
+// landed exactly on all three floors, so a slower or busier runner measuring
+// one statement lower would have failed the gate on an unchanged tree.
+// pkg/catalog and pkg/engine vary between identical runs (13976-13979 and
+// 3275-3279); pkg/query measured the same count in every run but was floored
+// at that only observed value, so it had no headroom either. The headroom
+// trades one statement of regression detection for a gate that does not go
+// red at random. Lowering a floor is always safe in this direction; raising
+// one is the ratchet and is a deliberate act.
+//
 // Only the statements metric is floored. The functions and branches totals
 // come from the AST-instrumented overlay, whose totals shift whenever the
 // instrumentation changes, so a fixed floor there would be brittle rather
@@ -109,8 +120,8 @@ var packageFloors = map[string]map[string]int{
 	"github.com/cobaltdb/cobaltdb/pkg/backup":            {"statements": 955},
 	"github.com/cobaltdb/cobaltdb/pkg/btree":             {"statements": 754},
 	"github.com/cobaltdb/cobaltdb/pkg/cache":             {"statements": 312},
-	"github.com/cobaltdb/cobaltdb/pkg/catalog":           {"statements": 13976},
-	"github.com/cobaltdb/cobaltdb/pkg/engine":            {"statements": 3275},
+	"github.com/cobaltdb/cobaltdb/pkg/catalog":           {"statements": 13975},
+	"github.com/cobaltdb/cobaltdb/pkg/engine":            {"statements": 3274},
 	"github.com/cobaltdb/cobaltdb/pkg/fdw":               {"statements": 257},
 	"github.com/cobaltdb/cobaltdb/pkg/logger":            {"statements": 157},
 	"github.com/cobaltdb/cobaltdb/pkg/metrics":           {"statements": 639},
@@ -118,7 +129,7 @@ var packageFloors = map[string]map[string]int{
 	"github.com/cobaltdb/cobaltdb/pkg/parallel":          {"statements": 109},
 	"github.com/cobaltdb/cobaltdb/pkg/pool":              {"statements": 266},
 	"github.com/cobaltdb/cobaltdb/pkg/protocol":          {"statements": 1165},
-	"github.com/cobaltdb/cobaltdb/pkg/query":             {"statements": 4396},
+	"github.com/cobaltdb/cobaltdb/pkg/query":             {"statements": 4395},
 	"github.com/cobaltdb/cobaltdb/pkg/replication":       {"statements": 1228},
 	"github.com/cobaltdb/cobaltdb/pkg/scheduler":         {"statements": 221},
 	"github.com/cobaltdb/cobaltdb/pkg/security":          {"statements": 719},
